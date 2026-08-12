@@ -205,25 +205,21 @@ pub(super) fn observe_hermes_session_inventory_with_schema(
     let mut message_reader = HermesRowReader::new(conn, &schema)
         .map_err(HermesSourceBackedError::from)
         .map_err(|error| diagnose_hermes_query_error(error, SqliteFailurePhase::Projection))?;
-    let mut frontier = super::super::sqlite::HermesFrontier {
-        phase: HermesPhase::Messages,
-        next_ordinal: 0,
-        rowid: i64::MIN,
-    };
+    let mut next_message_ordinal = 0;
     loop {
         let page = message_reader
-            .next_page(frontier)
+            .next_message_inventory_page(after_message_rowid, next_message_ordinal)
             .map_err(HermesSourceBackedError::from)
             .map_err(|error| diagnose_hermes_query_error(error, SqliteFailurePhase::Projection))?;
         if page.is_empty() {
             break;
         }
-        frontier = page
-            .last()
-            .map(|native| native.next_frontier)
-            .unwrap_or(frontier);
+        let last = page.last().ok_or(CaptureError::SystemInvariant(
+            "Hermes message inventory returned an empty nonterminal page",
+        ))?;
+        after_message_rowid = Some(last.locator.rowid);
+        next_message_ordinal = last.next_frontier.next_ordinal;
         for native in page {
-            after_message_rowid = Some(native.locator.rowid);
             observed_rows = checked_add(observed_rows, 1)?;
             let provider_session_id = match &native.record {
                 HermesNativeRecord::Message { row, .. } => row.session_id.clone(),

@@ -246,6 +246,98 @@ fn successful_route_atomically_retires_one_exact_carried_route() {
 }
 
 #[test]
+fn route_retirement_uses_logarithmic_canonical_member_lookup() {
+    const RETIRED_SOURCES: usize = 65;
+    const OTHER_ROUTE_SOURCES: usize = 513;
+
+    let temp = tempdir().unwrap();
+    let retired_route = SourceRouteIdentity::from_sha256("81".repeat(32)).unwrap();
+    let other_route = SourceRouteIdentity::from_sha256("82".repeat(32)).unwrap();
+    let replacement_route = SourceRouteIdentity::from_sha256("83".repeat(32)).unwrap();
+    let mut retired_sources = (0..RETIRED_SOURCES)
+        .map(|index| source(&format!("retirement-retired-{index:04}.jsonl")))
+        .collect::<Vec<_>>();
+    retired_sources.sort_by_key(source_sort_key);
+    let mut other_sources = (0..OTHER_ROUTE_SOURCES)
+        .map(|index| source(&format!("retirement-other-{index:04}.jsonl")))
+        .collect::<Vec<_>>();
+    other_sources.sort_by_key(source_sort_key);
+
+    let mut initial = GenerationWriter::open(temp.path(), WriterOptions::default())
+        .unwrap()
+        .into_writer()
+        .unwrap();
+    for source in retired_sources.iter().chain(&other_sources) {
+        initial.begin_source(source.clone()).unwrap();
+        initial.certify_source(certificate(source, 1, 0)).unwrap();
+    }
+    initial
+        .set_present_source_routes(vec![
+            SourceRouteSnapshot::present(retired_route.clone(), retired_sources.clone()).unwrap(),
+            SourceRouteSnapshot::present(other_route.clone(), other_sources.clone()).unwrap(),
+        ])
+        .unwrap();
+    initial.commit(|_| true).unwrap();
+
+    let mut replacement = GenerationWriter::open(temp.path(), WriterOptions::default())
+        .unwrap()
+        .into_writer()
+        .unwrap();
+    replacement
+        .set_source_route_plan(
+            BTreeSet::from([replacement_route.clone()]),
+            BTreeSet::from([retired_route.clone(), other_route.clone()]),
+        )
+        .unwrap();
+    replacement
+        .begin_source_route_stage(replacement_route.clone())
+        .unwrap();
+    replacement
+        .authorize_carried_source_route_retirement(&replacement_route, &retired_route)
+        .unwrap();
+    crate::writer_routes::reset_route_retirement_membership_probes();
+    assert_eq!(
+        replacement
+            .retire_carried_source_route(&replacement_route, &retired_route)
+            .unwrap(),
+        retired_sources
+    );
+    let (lookups, comparisons) = crate::writer_routes::route_retirement_membership_probes();
+    assert_eq!(lookups, RETIRED_SOURCES as u64);
+    assert!(
+        comparisons <= (RETIRED_SOURCES * 11) as u64,
+        "canonical binary membership lookup made {comparisons} comparisons"
+    );
+    assert!(
+        comparisons < (RETIRED_SOURCES * OTHER_ROUTE_SOURCES) as u64,
+        "retirement regressed to a retired-sources by other-route-members scan"
+    );
+
+    replacement
+        .finish_source_route_stage(&replacement_route)
+        .unwrap();
+    replacement
+        .set_present_source_routes(vec![SourceRouteSnapshot::present(
+            replacement_route,
+            Vec::new(),
+        )
+        .unwrap()])
+        .unwrap();
+    replacement.commit(|_| true).unwrap();
+
+    let published = VerifiedIndex::open(temp.path()).unwrap();
+    assert!(published.manifest().source_route(&retired_route).is_none());
+    assert_eq!(
+        published
+            .manifest()
+            .source_route(&other_route)
+            .unwrap()
+            .sources(),
+        other_sources
+    );
+}
+
+#[test]
 fn failed_route_rollback_restores_its_carried_retirement() {
     let temp = tempdir().unwrap();
     let old_source = source("rollback-retired-route.jsonl");

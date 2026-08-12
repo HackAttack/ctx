@@ -509,6 +509,15 @@ impl<'connection> HermesRowReader<'connection> {
         self.hydrate_candidates(candidates, 0)
     }
 
+    pub(super) fn next_message_inventory_page(
+        &mut self,
+        after: Option<i64>,
+        first_ordinal: u64,
+    ) -> Result<Vec<HermesNativeRow>> {
+        let candidates = bounded_candidate_prefix(self.message_candidates(after)?)?;
+        self.hydrate_candidates(candidates, first_ordinal)
+    }
+
     pub(super) fn exact_message_page(
         &mut self,
         replay: &mut HermesMessageReplay,
@@ -602,7 +611,7 @@ impl<'connection> HermesRowReader<'connection> {
         if self.session_scope.is_some() {
             SESSION_SCOPED_MESSAGE_CANDIDATE_QUERIES
                 .with(|count| count.set(count.get().saturating_add(1)));
-        } else if after == Some(i64::MIN) {
+        } else if after.is_none() {
             EXACT_GLOBAL_MESSAGE_TRAVERSALS.with(|count| count.set(count.get().saturating_add(1)));
         }
         self.candidate_query_batches =

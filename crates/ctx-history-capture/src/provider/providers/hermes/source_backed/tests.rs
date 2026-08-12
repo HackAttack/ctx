@@ -1409,6 +1409,53 @@ fn noop_and_one_changed_session_have_linear_inventory_and_changed_body_work() {
 }
 
 #[test]
+fn exhaustive_source_backed_projection_includes_minimum_message_rowid() {
+    let temp = crate::test_support_paths::tempdir().unwrap();
+    let data_root = temp.path().join("data-root");
+    let index_root = temp.path().join("index");
+    let database = temp.path().join("source/state.db");
+    create_fixture(&database);
+    let connection = Connection::open(&database).unwrap();
+    connection
+        .execute_batch(
+            "drop table messages;
+             create table messages (
+                 id integer not null,
+                 session_id text not null,
+                 role text not null,
+                 content text,
+                 timestamp real not null,
+                 active integer not null default 1,
+                 compacted integer not null default 0
+             );",
+        )
+        .unwrap();
+    connection
+        .execute(
+            "insert into messages (rowid, id, session_id, role, content, timestamp)
+             values (?1, 30, 'parent-session', 'assistant', 'minimum rowid needle', 1782259204.0)",
+            [i64::MIN],
+        )
+        .unwrap();
+    drop(connection);
+
+    let registry = fixture_registry(&data_root, &database);
+    let candidate = candidate(&data_root, &database);
+    reset_exact_message_query_counters();
+    let receipt =
+        refresh_source_backed_generation(&index_root, &registry, fixture_writer_options()).unwrap();
+
+    assert_eq!(receipt.sources.len(), 2);
+    assert_eq!(exact_message_query_counters(), (1, 0));
+    let parent_source = hermes_session_source_key(&candidate.source, PARENT).unwrap();
+    let record = indexed_record(&index_root, &parent_source, PARENT, 30);
+    assert_eq!(
+        record.content.normalized_body.as_deref(),
+        Some("minimum rowid needle")
+    );
+}
+
+#[test]
 fn exact_message_traversal_uses_the_rowid_plan_without_a_session_index_or_sort() {
     let temp = crate::test_support_paths::tempdir().unwrap();
     let database = temp.path().join("source/state.db");

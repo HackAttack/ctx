@@ -1,5 +1,25 @@
 use super::*;
 
+#[cfg(test)]
+thread_local! {
+    static ROUTE_RETIREMENT_MEMBERSHIP_LOOKUPS: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+    static ROUTE_RETIREMENT_MEMBER_COMPARISONS: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+}
+
+#[cfg(test)]
+pub(crate) fn reset_route_retirement_membership_probes() {
+    ROUTE_RETIREMENT_MEMBERSHIP_LOOKUPS.with(|lookups| lookups.set(0));
+    ROUTE_RETIREMENT_MEMBER_COMPARISONS.with(|comparisons| comparisons.set(0));
+}
+
+#[cfg(test)]
+pub(crate) fn route_retirement_membership_probes() -> (u64, u64) {
+    (
+        ROUTE_RETIREMENT_MEMBERSHIP_LOOKUPS.with(std::cell::Cell::get),
+        ROUTE_RETIREMENT_MEMBER_COMPARISONS.with(std::cell::Cell::get),
+    )
+}
+
 impl GenerationWriter {
     /// Defines every route conclusively present in the candidate snapshot.
     /// Missing routes are added separately by `observe_certified_missing_route`.
@@ -420,10 +440,7 @@ impl GenerationWriter {
         for source in retired.sources() {
             if let Some(other) = base.source_routes().iter().find(|candidate| {
                 candidate.route_identity() != retired_route
-                    && candidate
-                        .sources()
-                        .iter()
-                        .any(|member| member.exact_descriptor_eq(source))
+                    && route_contains_exact_source(candidate, source)
             }) {
                 return Err(IndexError::InvalidSourceRoutePlan(format!(
                     "retired route {} shares source {} with route {}",
@@ -575,6 +592,26 @@ impl GenerationWriter {
                 })
             })
     }
+}
+
+fn route_contains_exact_source(route: &SourceRouteSnapshot, source: &SourceKey) -> bool {
+    #[cfg(test)]
+    ROUTE_RETIREMENT_MEMBERSHIP_LOOKUPS.with(|lookups| {
+        lookups.set(lookups.get().saturating_add(1));
+    });
+    let digest = source_sort_key(source);
+    route
+        .sources()
+        .binary_search_by(|candidate| {
+            #[cfg(test)]
+            ROUTE_RETIREMENT_MEMBER_COMPARISONS.with(|comparisons| {
+                comparisons.set(comparisons.get().saturating_add(1));
+            });
+            source_sort_key(candidate).cmp(&digest)
+        })
+        .ok()
+        .and_then(|index| route.sources().get(index))
+        .is_some_and(|candidate| candidate.exact_descriptor_eq(source))
 }
 
 fn route_source_with_lineage<'a>(
