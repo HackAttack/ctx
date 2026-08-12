@@ -99,11 +99,17 @@ def main() -> int:
                 "static_abi": args.static_status,
             },
             "inspector": {"image_id": None},
-            "linux_build": selected.get("linux_build"),
+            # The shared matrix still carries the legacy Bazel Linux route for
+            # old diagnostic consumers. Do not copy its image/sysroot claims
+            # into evidence for this Cargo/Zig factory, which did not use them.
+            "linux_build": None,
             "platform": args.platform,
             "release_factory": {
                 "authority": "linux-cross-cargo-zigbuild-v1",
                 "cargo_zigbuild_version": args.cargo_zigbuild_version,
+                "glibc_max": selected.get("linux_build", {}).get("glibc_max")
+                if isinstance(selected.get("linux_build"), dict)
+                else None,
                 "macos_sdk_sha256": args.macos_sdk_sha256,
                 "zig_version": args.zig_version,
             },

@@ -71,6 +71,11 @@ class LinuxReleaseFactoryTest(unittest.TestCase):
         self.assertIn("/usr/bin/llvm-readobj", source)
         self.assertIn("ctx-release-factory.json", source)
 
+    def test_factory_build_info_does_not_claim_legacy_bazel_inputs(self) -> None:
+        source = (ROOT / "scripts" / "release" / "linux-factory-build-info.py").read_text()
+        self.assertIn('"linux_build": None', source)
+        self.assertIn('"release_factory": {', source)
+
 
 if __name__ == "__main__":
     unittest.main()
