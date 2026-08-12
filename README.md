@@ -158,7 +158,7 @@ Semantic search takes a similarly direct approach. ctx embeds your history local
 | --- | --- | --- |
 | Agent memory ([Mem0](https://mem0.ai), [Zep](https://www.getzep.com/)) | Extracted facts, summaries, conversation-derived memories, or graph nodes | “What should the agent remember?” |
 | Codebase intelligence ([Graphify](https://github.com/Graphify-Labs/graphify), [Sourcegraph](https://sourcegraph.com/)) | The current repository's code, symbols, documents, and relationships | “What is in this codebase, and how does it fit together?” |
-| Coding-agent history and provenance (ctx) | Original sessions, messages, tool calls, and local Git history | “What actually happened, and which session produced this code?” |
+| Coding-agent history and provenance ([ctx](https://ctx.rs)) | Original sessions, messages, tool calls, and local Git history | “What actually happened, and which session produced this code?” |
 
 ctx gives coding agents exact recall of prior work. They can search the original history, retrieve the cited transcript or tool call, and use ctx pro to map a line, file, commit, or PR back to the session that produced it.
 
