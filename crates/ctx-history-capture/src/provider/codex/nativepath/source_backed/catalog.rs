@@ -69,13 +69,13 @@ pub(crate) fn observe_codex_explicit_session_source_backed_v0(
         {
             Ok(Some(plan))
         }
-        Ok(_) => return Err(CodexSourceBackedErrorV0::ExplicitSourceIdentityChanged),
+        Ok(_) => Err(CodexSourceBackedErrorV0::ExplicitSourceIdentityChanged),
         Err(CodexSourceBackedErrorV0::Capture(CaptureError::Io(error)))
             if error.kind() == std::io::ErrorKind::NotFound =>
         {
             Ok(None)
         }
-        Err(error) => return Err(error),
+        Err(error) => Err(error),
     }
 }
 

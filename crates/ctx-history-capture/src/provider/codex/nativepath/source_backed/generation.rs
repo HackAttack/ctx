@@ -12,7 +12,7 @@ enum CodexGenerationParticipantAuthorityV0 {
         roots: Box<[PathBuf]>,
     },
     ExplicitSession {
-        input: CodexExplicitSessionSourceBackedInputV0,
+        input: Box<CodexExplicitSessionSourceBackedInputV0>,
     },
 }
 
@@ -110,7 +110,9 @@ impl CodexGenerationNormalizationCoordinatorV0 {
         self: &Arc<Self>,
         input: CodexExplicitSessionSourceBackedInputV0,
     ) -> CodexSourceBackedResultV0<CodexGenerationRouteV0> {
-        self.register(CodexGenerationParticipantAuthorityV0::ExplicitSession { input })
+        self.register(CodexGenerationParticipantAuthorityV0::ExplicitSession {
+            input: Box::new(input),
+        })
     }
 
     fn register(

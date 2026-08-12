@@ -132,6 +132,14 @@ struct SemanticScannerPosition {
     local_turn_started: bool,
 }
 
+#[derive(Clone, Copy)]
+struct CodexPhysicalRecordContext {
+    raw_ordinal: u64,
+    start_byte: u64,
+    end_byte: u64,
+    digest: [u8; 32],
+}
+
 #[derive(Default)]
 struct CodexRecordProjection {
     context_mutation: Option<CodexContextMutation>,

@@ -280,6 +280,20 @@ pub fn provider_source_for_path(provider: CaptureProvider, path: PathBuf) -> Pro
     ctx_history_source_discovery::provider_source_for_path(&BUILTIN_PROVIDER_PROBES, provider, path)
 }
 
+pub fn provider_source_spec(provider: CaptureProvider) -> Option<&'static ProviderSourceSpec> {
+    ctx_history_source_discovery::provider_source_spec(provider)
+}
+
+pub fn provider_source_specs() -> &'static [ProviderSourceSpec] {
+    ctx_history_source_discovery::provider_source_specs()
+}
+
+pub fn provider_source_status_reason(
+    source: &ProviderSource,
+) -> Option<ProviderSourceStatusReason> {
+    ctx_history_source_discovery::provider_source_status_reason(source)
+}
+
 #[cfg(test)]
 mod extraction_regression_tests {
     use super::*;
@@ -434,18 +448,4 @@ mod extraction_regression_tests {
         assert_eq!(facade, direct);
         assert_eq!(facade, bounded);
     }
-}
-
-pub fn provider_source_spec(provider: CaptureProvider) -> Option<&'static ProviderSourceSpec> {
-    ctx_history_source_discovery::provider_source_spec(provider)
-}
-
-pub fn provider_source_specs() -> &'static [ProviderSourceSpec] {
-    ctx_history_source_discovery::provider_source_specs()
-}
-
-pub fn provider_source_status_reason(
-    source: &ProviderSource,
-) -> Option<ProviderSourceStatusReason> {
-    ctx_history_source_discovery::provider_source_status_reason(source)
 }
