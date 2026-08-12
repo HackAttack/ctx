@@ -81,11 +81,13 @@ steps:
       if [[ "$${CTX_PUBLIC_CLI_NATIVE_SMOKE_MATRIX:-0}" == "1" ]]; then
         smoke_args+=(--native-smoke-dir target/public-cli-native-smoke/linux-x64)
       fi
-      scripts/release/build-linux-bazel-release.sh \
-        --platform linux-x64 \
-        --source-commit "$${source_commit}" \
-        --output-dir target/public-cli-artifacts \
-        "$${smoke_args[@]}"
+      python3 -I scripts/release/run-with-release-advisory-inputs.py \
+        --target linux-x64 -- \
+        scripts/release/build-linux-bazel-release.sh \
+          --platform linux-x64 \
+          --source-commit "$${source_commit}" \
+          --output-dir target/public-cli-artifacts \
+          "$${smoke_args[@]}"
     agents:
       queue: "release-linux-managed"
       ctx-runner-class: "release-linux-control"
@@ -125,11 +127,13 @@ steps:
       if [[ "$${CTX_PUBLIC_CLI_NATIVE_SMOKE_MATRIX:-0}" == "1" ]]; then
         smoke_args+=(--native-smoke-dir target/public-cli-native-smoke/linux-aarch64)
       fi
-      scripts/release/build-linux-bazel-release.sh \
-        --platform linux-arm64 \
-        --source-commit "$${source_commit}" \
-        --output-dir target/public-cli-artifacts \
-        "$${smoke_args[@]}"
+      python3 -I scripts/release/run-with-release-advisory-inputs.py \
+        --target linux-arm64 -- \
+        scripts/release/build-linux-bazel-release.sh \
+          --platform linux-arm64 \
+          --source-commit "$${source_commit}" \
+          --output-dir target/public-cli-artifacts \
+          "$${smoke_args[@]}"
     agents:
       queue: "linux-arm64"
       os: "linux"
@@ -201,8 +205,10 @@ steps:
       export CTX_MACOS_SIGNING_SECRET_SOURCE=injected
       # Buildkite injects signing values for this trusted hosted release job;
       # narrow launcher calls scrub the signer/notary worker environment.
-      scripts/bazelw run //:ctx_release_macos_arm64 --config=release -- \
-        --output-dir target/public-cli-artifacts
+      python3 -I scripts/release/run-with-release-advisory-inputs.py \
+        --target macos-arm64 -- \
+        scripts/bazelw run //:ctx_release_macos_arm64 --config=release -- \
+          --output-dir target/public-cli-artifacts
       scripts/build-onnxruntime-sidecar.sh macos-arm64
       scripts/stage-github-release-assets.sh --transcode-runtime macos-arm64
       if [[ "$${CTX_PUBLIC_CLI_NATIVE_SMOKE_MATRIX:-0}" == "1" ]]; then
@@ -298,9 +304,11 @@ steps:
       export CTX_MACOS_RELEASE_SIGNING=required
       export CTX_MACOS_SIGNING_SECRET_SOURCE=infisical
       # Native x86_64 construction receives no signing values; its signer fetches at use.
-      scripts/bazelw run //:ctx_release_macos_x64 --config=release -- \
-        --output-dir target/public-cli-artifacts \
-        --macos-llvm-task-root "$${CTX_RELEASE_MACOS_X64_LLVM_TASK_ROOT:?}"
+      python3 -I scripts/release/run-with-release-advisory-inputs.py \
+        --target macos-x64 -- \
+        scripts/bazelw run //:ctx_release_macos_x64 --config=release -- \
+          --output-dir target/public-cli-artifacts \
+          --macos-llvm-task-root "$${CTX_RELEASE_MACOS_X64_LLVM_TASK_ROOT:?}"
     agents:
       queue: "ctx-mac-gui-shared-x64"
       os: "darwin"

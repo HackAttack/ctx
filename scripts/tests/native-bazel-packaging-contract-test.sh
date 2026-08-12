@@ -392,6 +392,11 @@ if grep -Fq 'build-public-cli-artifact.sh' "${pipeline}"; then
 fi
 for required in \
   'scripts/release/build-linux-bazel-release.sh' \
+  'scripts/release/run-with-release-advisory-inputs.py' \
+  '--target linux-x64 --' \
+  '--target linux-arm64 --' \
+  '--target macos-arm64 --' \
+  '--target macos-x64 --' \
   '--native-smoke-dir target/public-cli-native-smoke/linux-x64' \
   '--native-smoke-dir target/public-cli-native-smoke/linux-aarch64' \
   '//:ctx_release_windows_x64' \
