@@ -170,29 +170,18 @@ def validate_policy(
     lockfiles = policy.get("lockfiles")
     if not isinstance(scanner, dict) or not isinstance(lockfiles, list) or not lockfiles:
         raise GateError("tool_failure", "advisory policy is incomplete")
-    scanner_hashes = scanner.get("sha256_by_target")
+    scanner_hash = scanner.get("sha256")
     if (
-        scanner.get("name") != "osv-scanner"
+        scanner.get("authority") != "ctx-release-osv-linux-x64-v1"
+        or scanner.get("name") != "osv-scanner"
+        or scanner.get("platform") != "linux-x64"
         or not isinstance(scanner.get("version"), str)
-        or not isinstance(scanner_hashes, dict)
-        or not scanner_hashes
-        or any(
-            not isinstance(target, str)
-            or not target
-            or HEX_64.fullmatch(digest or "") is None
-            for target, digest in scanner_hashes.items()
-        )
+        or HEX_64.fullmatch(scanner_hash or "") is None
         or not isinstance(scanner.get("max_database_age_hours"), int)
         or scanner["max_database_age_hours"] < 1
     ):
         raise GateError("tool_failure", "advisory scanner policy is invalid")
-    selected_scanner_hash = scanner_hashes.get(target_id)
-    if selected_scanner_hash is None:
-        raise GateError(
-            "tool_failure",
-            f"advisory scanner policy does not support target: {target_id}",
-        )
-    scanner = {**scanner, "selected_sha256": selected_scanner_hash}
+    scanner = {**scanner, "selected_sha256": scanner_hash}
 
     declared: dict[str, dict[str, Any]] = {}
     for index, entry in enumerate(lockfiles):

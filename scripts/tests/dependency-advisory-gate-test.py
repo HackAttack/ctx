@@ -49,13 +49,11 @@ class AdvisoryGateTest(unittest.TestCase):
                 {
                     "schema_version": 1,
                     "scanner": {
+                        "authority": "ctx-release-osv-linux-x64-v1",
                         "name": "osv-scanner",
+                        "platform": "linux-x64",
                         "version": "2.4.0",
-                        "sha256_by_target": {
-                            "fixture": hashlib.sha256(
-                                self.scanner.read_bytes()
-                            ).hexdigest()
-                        },
+                        "sha256": hashlib.sha256(self.scanner.read_bytes()).hexdigest(),
                         "max_database_age_hours": 48,
                     },
                     "lockfiles": [
@@ -254,7 +252,7 @@ class AdvisoryGateTest(unittest.TestCase):
 
     def test_scanner_digest_mismatch(self) -> None:
         policy = json.loads(self.policy.read_text(encoding="utf-8"))
-        policy["scanner"]["sha256_by_target"]["fixture"] = "0" * 64
+        policy["scanner"]["sha256"] = "0" * 64
         self.policy.write_text(json.dumps(policy), encoding="utf-8")
         result, receipt = self.run_gate("osv-clean.json")
         self.assertEqual(result.returncode, 21)
@@ -263,16 +261,14 @@ class AdvisoryGateTest(unittest.TestCase):
 
     def test_scanner_target_must_be_pinned(self) -> None:
         policy = json.loads(self.policy.read_text(encoding="utf-8"))
-        policy["scanner"]["sha256_by_target"] = {
-            "other": hashlib.sha256(FAKE_SCANNER.read_bytes()).hexdigest()
-        }
+        policy["scanner"]["platform"] = "linux-arm64"
         self.policy.write_text(json.dumps(policy), encoding="utf-8")
         result, receipt = self.run_gate("osv-clean.json")
         self.assertEqual(result.returncode, 21)
         self.assertEqual(receipt["status"], "tool_failure")
         self.assertEqual(
             receipt["failure_reason"],
-            "advisory scanner policy does not support target: fixture",
+            "advisory scanner policy is invalid",
         )
 
     def test_stale_database(self) -> None:

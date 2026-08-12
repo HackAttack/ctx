@@ -60,31 +60,31 @@ class ReleaseTargetMatrixTest(unittest.TestCase):
     def test_advisory_scanner_must_cover_every_release_target(self) -> None:
         value = matrix.load_and_validate()
         policy = json.loads(matrix.ADVISORY_POLICY_PATH.read_text(encoding="utf-8"))
-        del policy["scanner"]["sha256_by_target"]["linux-x64"]
+        policy["scanner"]["sha256"] = None
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "release-advisory-policy-v1.json"
             path.write_text(json.dumps(policy), encoding="utf-8")
-            with self.assertRaisesRegex(ValueError, "missing: linux-x64"):
+            with self.assertRaisesRegex(ValueError, "pinned Linux-x64 input"):
                 matrix.validate_advisory_policy_coverage(value, path)
 
     def test_advisory_scanner_rejects_unexpected_targets(self) -> None:
         value = matrix.load_and_validate()
         policy = json.loads(matrix.ADVISORY_POLICY_PATH.read_text(encoding="utf-8"))
-        policy["scanner"]["sha256_by_target"]["freebsd-arm64"] = "1" * 64
+        policy["scanner"]["platform"] = "freebsd-x64"
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "release-advisory-policy-v1.json"
             path.write_text(json.dumps(policy), encoding="utf-8")
-            with self.assertRaisesRegex(ValueError, "unexpected: freebsd-arm64"):
+            with self.assertRaisesRegex(ValueError, "pinned Linux-x64 input"):
                 matrix.validate_advisory_policy_coverage(value, path)
 
     def test_advisory_scanner_rejects_malformed_digest(self) -> None:
         value = matrix.load_and_validate()
         policy = json.loads(matrix.ADVISORY_POLICY_PATH.read_text(encoding="utf-8"))
-        policy["scanner"]["sha256_by_target"]["linux-x64"] = None
+        policy["scanner"]["sha256"] = None
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "release-advisory-policy-v1.json"
             path.write_text(json.dumps(policy), encoding="utf-8")
-            with self.assertRaisesRegex(ValueError, "malformed SHA-256 for: linux-x64"):
+            with self.assertRaisesRegex(ValueError, "pinned Linux-x64 input"):
                 matrix.validate_advisory_policy_coverage(value, path)
 
     def test_diagnostic_runner_cannot_be_authoritative(self) -> None:
