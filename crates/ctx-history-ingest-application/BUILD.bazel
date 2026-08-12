@@ -3,12 +3,17 @@ load("@rules_rust//rust:defs.bzl", "rust_library")
 load("//:rust_sources.bzl", "RUST_PROD_SRC_EXCLUDES")
 load("//tools/bazel:ctx_rust.bzl", "ctx_rust_test")
 load("//tools/bazel:gates.bzl", "loc_check_inputs")
+load(":test_targets.bzl", "history_ingest_binary_contract")
 
 package(default_visibility = ["//visibility:public"])
 
 loc_check_inputs(name = "loc_check_inputs")
 
-exports_files(["BUILD.bazel", "Cargo.toml"])
+exports_files([
+    "BUILD.bazel",
+    "Cargo.toml",
+    "test_targets.bzl",
+])
 
 filegroup(
     name = "cargo_package_data",
@@ -77,4 +82,29 @@ ctx_rust_test(
     deps = all_crate_deps(normal = True, normal_dev = True) + INGEST_APPLICATION_TEST_DEPS,
     proc_macro_deps = all_crate_deps(proc_macro = True, proc_macro_dev = True),
     rustc_env = COMMON_RUSTC_ENV,
+)
+
+history_ingest_binary_contract(
+    name = "custom_root_discovery_tests",
+    src = "tests/contracts/custom_root_discovery.rs",
+)
+
+history_ingest_binary_contract(
+    name = "explicit_path_revision_upgrade_tests",
+    src = "tests/contracts/explicit_path_revision_upgrade.rs",
+)
+
+history_ingest_binary_contract(
+    name = "history_source_plugins_tests",
+    src = "tests/contracts/history_source_plugins.rs",
+)
+
+history_ingest_binary_contract(
+    name = "import_change_reporting_tests",
+    src = "tests/contracts/import_change_reporting.rs",
+)
+
+history_ingest_binary_contract(
+    name = "self_contained_core_content_tests",
+    src = "tests/contracts/self_contained_core_content.rs",
 )

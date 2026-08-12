@@ -3,10 +3,17 @@ load("@rules_rust//rust:defs.bzl", "rust_library")
 load("//:rust_sources.bzl", "RUST_PROD_SRC_EXCLUDES")
 load("//tools/bazel:ctx_rust.bzl", "ctx_rust_test")
 load("//tools/bazel:gates.bzl", "loc_check_inputs")
+load(":test_targets.bzl", "history_read_binary_contract")
 
 package(default_visibility = ["//visibility:public"])
 
 loc_check_inputs(name = "loc_check_inputs")
+
+exports_files([
+    "BUILD.bazel",
+    "Cargo.toml",
+    "test_targets.bzl",
+])
 
 filegroup(
     name = "cargo_package_data",
@@ -52,4 +59,32 @@ ctx_rust_test(
     deps = all_crate_deps(normal = True, normal_dev = True) + APPLICATION_TEST_DEPS,
     proc_macro_deps = all_crate_deps(proc_macro = True, proc_macro_dev = True),
     rustc_env = COMMON_RUSTC_ENV,
+)
+
+history_read_binary_contract(
+    name = "search_refresh_tests",
+    src = "tests/contracts/search_refresh.rs",
+    extra_deps = ["//crates/ctx-history-core:lib"],
+    extra_env = {"RUST_TEST_THREADS": "1"},
+    extra_srcs = [
+        "tests/support/search_refresh/core_behaviors.rs",
+        "tests/support/search_refresh/generation_lifecycle.rs",
+    ],
+)
+
+history_read_binary_contract(
+    name = "search_source_identity_filters_tests",
+    src = "tests/contracts/search_source_identity_filters.rs",
+    tags = ["cli-contract"],
+)
+
+history_read_binary_contract(
+    name = "search_show_tests",
+    src = "tests/contracts/search_show.rs",
+    extra_srcs = [
+        "tests/support/search_show/import_paths.rs",
+        "tests/support/search_show/pi_flow.rs",
+        "tests/support/search_show/search_filters.rs",
+        "tests/support/search_show/search_flows.rs",
+    ],
 )

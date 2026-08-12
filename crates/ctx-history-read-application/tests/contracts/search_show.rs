@@ -1,3 +1,4 @@
+#[path = "../support/mod.rs"]
 mod support;
 
 use std::{
@@ -473,7 +474,7 @@ fn measured_json_output(command: &mut Command) -> (Value, usize) {
     (value, output_bytes)
 }
 
-#[path = "../../ctx-cli-contract-tests/tests/contracts/support/search_show/import_paths.rs"]
+#[path = "../support/search_show/import_paths.rs"]
 mod import_paths;
 
 #[test]
@@ -571,7 +572,7 @@ fn show_does_not_initialize_core_storage() {
     assert!(!data_root(&temp).join("relational.sqlite").exists());
 }
 
-include!("../../ctx-cli-contract-tests/tests/contracts/support/search_show/search_flows.rs");
+include!("../support/search_show/search_flows.rs");
 
 #[test]
 fn search_backend_defaults_and_supported_semantic_config_are_reported() {
@@ -1044,5 +1045,5 @@ fn codex_cli_provider_oracle_covers_retrieval_and_claimed_fidelity() {
     assert!(!data_root(&temp).join("relational.sqlite").exists());
 }
 
-include!("../../ctx-cli-contract-tests/tests/contracts/support/search_show/pi_flow.rs");
-include!("../../ctx-cli-contract-tests/tests/contracts/support/search_show/search_filters.rs");
+include!("../support/search_show/pi_flow.rs");
+include!("../support/search_show/search_filters.rs");

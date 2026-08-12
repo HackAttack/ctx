@@ -1,3 +1,4 @@
+#[path = "../support/mod.rs"]
 mod support;
 
 use ctx_history_index::{GenerationManifest, LEXICAL_SEGMENT_MERGE_FAN_IN};
@@ -803,7 +804,5 @@ fn write_codex_session(path: &Path, native_session_id: &str, messages: &[(&str, 
     fs::write(path, lines.join("\n") + "\n").unwrap();
 }
 
-include!("../../ctx-cli-contract-tests/tests/contracts/support/search_refresh/core_behaviors.rs");
-include!(
-    "../../ctx-cli-contract-tests/tests/contracts/support/search_refresh/generation_lifecycle.rs"
-);
+include!("../support/search_refresh/core_behaviors.rs");
+include!("../support/search_refresh/generation_lifecycle.rs");

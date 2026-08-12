@@ -76,16 +76,6 @@ filegroup(
 )
 
 filegroup(
-    name = "search_refresh_support_srcs",
-    srcs = glob(["tests/contracts/support/search_refresh/**/*.rs"]),
-)
-
-filegroup(
-    name = "search_show_support_srcs",
-    srcs = glob(["tests/contracts/support/search_show/**/*.rs"]),
-)
-
-filegroup(
     name = "upgrade_runtime_support_srcs",
     srcs = ["tests/contracts/support/upgrade/runtime_publication.rs"],
 )
