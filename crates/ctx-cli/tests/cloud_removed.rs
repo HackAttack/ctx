@@ -2,9 +2,10 @@ mod support;
 
 use support::*;
 
-const BUILD_SURFACE_MANIFESTS: [&str; 3] = [
+const BUILD_SURFACE_MANIFESTS: [&str; 4] = [
     "Cargo.toml",
     "crates/ctx-cli/Cargo.toml",
+    "crates/ctx-cli-presentation/Cargo.toml",
     "crates/ctx-daemon-runtime/Cargo.toml",
 ];
 const REMOVED_BUILD_SURFACES: [&str; 3] = ["ctx-cloud-client", "ctx-captured-batch", "cloud-v2"];
@@ -84,12 +85,13 @@ fn workspace_has_no_cloud_history_targets_or_features() {
 }
 
 #[test]
-fn daemon_runtime_manifest_is_a_fail_closed_cloud_removal_input() {
+fn extracted_cli_manifests_are_fail_closed_cloud_removal_inputs() {
     assert_eq!(
         BUILD_SURFACE_MANIFESTS,
         [
             "Cargo.toml",
             "crates/ctx-cli/Cargo.toml",
+            "crates/ctx-cli-presentation/Cargo.toml",
             "crates/ctx-daemon-runtime/Cargo.toml",
         ],
         "cloud-removal policy must retain its exact manifest inventory"
@@ -99,10 +101,11 @@ fn daemon_runtime_manifest_is_a_fail_closed_cloud_removal_input() {
             ("Cargo.toml", "[workspace]"),
             ("crates/ctx-cli/Cargo.toml", "[package]"),
             (
-                "crates/ctx-daemon-runtime/Cargo.toml",
+                "crates/ctx-cli-presentation/Cargo.toml",
                 "[dependencies]\nctx-cloud-client = \"1\"",
             ),
+            ("crates/ctx-daemon-runtime/Cargo.toml", "[package]"),
         ]),
-        Some(("crates/ctx-daemon-runtime/Cargo.toml", "ctx-cloud-client"))
+        Some(("crates/ctx-cli-presentation/Cargo.toml", "ctx-cloud-client"))
     );
 }

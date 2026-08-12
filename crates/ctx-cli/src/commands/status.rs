@@ -11,6 +11,7 @@ use crate::pro::PRO_MONTHLY_PRICE_DISPLAY;
 use crate::semantic::source_epoch_status_report;
 use crate::ui::Ui;
 use crate::StatusArgs;
+use ctx_cli_presentation::commands::compact_usage_health_json;
 
 mod usage;
 
@@ -130,26 +131,6 @@ fn load_status_config(data_root: &Path) -> Option<config::AppConfig> {
     config::AppConfig::load(data_root).ok()
 }
 
-pub(super) fn malformed_config_json() -> Value {
-    json!({
-        "schema_version": 1,
-        "local_usage": compact_usage_health_json(&local_usage::UsageReport::config_error()),
-        "local_only": true,
-        "read_only": true,
-    })
-}
-
-fn compact_usage_health_json(report: &local_usage::UsageReport) -> Value {
-    json!({
-        "schema_version": report.schema_version,
-        "enabled": report.enabled,
-        "state": report.state,
-        "definition_version": report.definition_version,
-        "retention_days": report.retention_days,
-        "error": report.error,
-    })
-}
-
 #[cfg(test)]
 mod tests {
     use std::fs;
@@ -241,7 +222,9 @@ mod tests {
         .unwrap();
 
         assert!(load_status_config(temp.path()).is_none());
-        let rendered = serde_json::to_string(&malformed_config_json()).unwrap();
+        let rendered =
+            serde_json::to_string(&ctx_cli_presentation::commands::malformed_status_config_json())
+                .unwrap();
         assert_eq!(
             serde_json::from_str::<Value>(&rendered).unwrap()["local_usage"]["error"]["code"],
             "local_usage_config_unavailable"

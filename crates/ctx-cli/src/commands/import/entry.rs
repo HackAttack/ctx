@@ -8,7 +8,7 @@ use crate::analytics::{
     ImportFailureType as AnalyticsImportFailureType, ImportOutcome as AnalyticsImportOutcome,
     ImportTelemetry, ProviderRefreshSourceMode, ProviderRefreshTrigger,
 };
-use crate::ui::{diagnostic, Diagnostic, DiagnosticLevel, Ui};
+use crate::ui::Ui;
 use crate::ImportArgs;
 
 use super::{
@@ -26,18 +26,8 @@ pub(crate) fn run_import(
 ) -> Result<()> {
     let json = args.format.is_json();
     if args.partial && !json {
-        let document = diagnostic(
-            ui.stderr_context(),
-            Diagnostic {
-                level: DiagnosticLevel::Warning,
-                summary: "--partial is deprecated",
-                detail: Some(
-                    "It no longer changes import behavior because tolerant import is always enabled.",
-                ),
-                fields: &[],
-                action: None,
-            },
-        );
+        let document =
+            ctx_cli_presentation::commands::render_partial_deprecation(ui.stderr_context());
         ui.write_stderr(&document)?;
     }
     let request = import_request(&args);

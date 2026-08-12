@@ -10,14 +10,12 @@ use crate::progress::{ProgressReporter, ProgressWriterError};
 use crate::semantic::{
     autostart_daemon_for_setup_and_wait, coordinate_source_backed_refresh_with_progress,
     daemon_autostart_suppression_reason, semantic_query_service_supported,
-    source_epoch_status_report, DaemonHandoff, DaemonSetupHandoff, SourceBackedRefreshMode,
+    source_epoch_status_report, DaemonSetupHandoff, SourceBackedRefreshMode,
     SourceBackedRefreshPendingPublication,
 };
-use crate::ui::{
-    fields, outcome, section, Document, Field, Line, Outcome, OutcomeState, RenderContext, Span,
-    Token, Ui,
-};
+use crate::ui::Ui;
 use crate::{config, SetupArgs};
+use ctx_cli_presentation::commands::{render_setup_human, SetupDaemonHandoff, SetupDaemonState};
 use ctx_history_cli::HistoryConfigPort;
 
 pub(crate) fn run_setup(
@@ -128,14 +126,13 @@ pub(crate) fn run_setup(
             mode,
             &source.report,
             &refresh_request,
-            DaemonAutostartHuman {
+            SetupDaemonState {
                 requested: daemon_autostart_requested,
                 reason: daemon_autostart_reason,
-                handoff: daemon_handoff.as_ref().map(|startup| &startup.handoff),
-                bounded_unsupervised: daemon_handoff
-                    .as_ref()
-                    .is_some_and(|startup| startup.bounded_unsupervised),
-                supervisor: &supervisor,
+                handoff: daemon_handoff.as_ref().map(|startup| SetupDaemonHandoff {
+                    bounded_unsupervised: startup.bounded_unsupervised,
+                }),
+                persistent_supervisor_verified: supervisor_persistently_verified(&supervisor),
             },
         );
         ui.write_stdout(&document)?;
@@ -327,211 +324,12 @@ fn supervisor_persistently_verified(supervisor: &Value) -> bool {
             == Some(true)
 }
 
-struct DaemonAutostartHuman<'a> {
-    requested: bool,
-    reason: Option<&'a str>,
-    handoff: Option<&'a DaemonHandoff>,
-    bounded_unsupervised: bool,
-    supervisor: &'a Value,
-}
-
-fn render_setup_human(
-    context: &RenderContext,
-    data_root: &std::path::Path,
-    mode: &str,
-    source: &Value,
-    refresh_request: &Value,
-    daemon: DaemonAutostartHuman<'_>,
-) -> Document {
-    let refresh_status = refresh_request["status"].as_str().unwrap_or("unavailable");
-    let queued = mode == "pending"
-        || matches!(
-            refresh_status,
-            "accepted" | "pending" | "queued" | "running"
-        );
-    let (state, title, detail) = if mode == "ready" {
-        (
-            OutcomeState::Success,
-            "History is ready to search",
-            queued.then_some("A refresh is running; the current index remains searchable."),
-        )
-    } else if queued {
-        (
-            OutcomeState::Neutral,
-            "History indexing is queued",
-            Some("Background indexing will publish the first searchable index."),
-        )
-    } else {
-        (
-            OutcomeState::Warning,
-            "History is not ready",
-            Some("Setup completed, but no verified search index is available."),
-        )
-    };
-    let mut document = outcome(
-        context,
-        Outcome {
-            state,
-            title,
-            detail,
-        },
-    );
-
-    let source_count = source["indexed_sources"]
-        .as_u64()
-        .or_else(|| source["lexical"]["certified_sources"].as_u64())
-        .or_else(|| source["refresh"]["certified_source_count"].as_u64())
-        .or_else(|| refresh_request["source_count"].as_u64());
-    let mut history_values = Vec::new();
-    if let Some(count) = source_count {
-        history_values.push(("Sources", counted(count, "source", "sources").to_owned()));
-    }
-    if let Some(count) = source["indexed_sessions"].as_u64() {
-        history_values.push(("Sessions", counted(count, "session", "sessions")));
-    }
-    let event_count = source["indexed_events"]
-        .as_u64()
-        .or_else(|| source["lexical"]["indexed_documents"].as_u64());
-    if let Some(count) = event_count {
-        history_values.push((
-            "Events",
-            counted(count, "searchable event", "searchable events"),
-        ));
-    }
-    history_values.push(("Semantic", component_status(&source["semantic"]).to_owned()));
-    if let Some(status) = daemon_human_status(&daemon) {
-        history_values.push(("Background", status));
-    }
-    let history_fields = history_values
-        .iter()
-        .map(|(label, value)| Field::new(label, value.as_str()))
-        .collect::<Vec<_>>();
-    document.push_blank();
-    document.append(section("History", fields(context, &history_fields)));
-
-    if daemon.handoff.is_some() && daemon.bounded_unsupervised {
-        document.push_blank();
-        document.append(outcome(
-            context,
-            Outcome {
-                state: OutcomeState::Warning,
-                title: "Continuous refresh is unavailable",
-                detail: Some(
-                    "This setup run uses a bounded ctx daemon; run ctx setup --wait again to refresh later.",
-                ),
-            },
-        ));
-    }
-
-    if mode != "ready" && !queued {
-        let data_root = data_root.display().to_string();
-        document.push_blank();
-        document.append(section(
-            "Data",
-            fields(context, &[Field::new("Root", &data_root)]),
-        ));
-    }
-
-    let next_command = if mode == "ready" {
-        "ctx search \"test failure\""
-    } else if queued {
-        "ctx index watch"
-    } else if daemon.requested && daemon.handoff.is_none() {
-        "ctx daemon status"
-    } else if matches!(daemon.reason, Some("daemon_disabled" | "explicit_opt_out")) {
-        "ctx daemon enable"
-    } else {
-        "ctx doctor"
-    };
-    document.push_blank();
-    document.append(section(
-        "Next",
-        Document::from_line(
-            Line::new()
-                .with(Span::text("  "))
-                .with(Span::new(next_command, Token::Command)),
-        ),
-    ));
-    document
-}
-
-fn component_status(component: &Value) -> &str {
-    component
-        .get("status")
-        .and_then(Value::as_str)
-        .unwrap_or("unavailable")
-}
-
-fn daemon_human_status(daemon: &DaemonAutostartHuman<'_>) -> Option<String> {
-    match daemon.handoff {
-        Some(_) if supervisor_persistently_verified(daemon.supervisor) => None,
-        Some(_) if daemon.bounded_unsupervised => {
-            Some("temporary daemon (initial maintenance only)".to_owned())
-        }
-        Some(_) => Some("persistent daemon (automatic restart unavailable)".to_owned()),
-        None if daemon.requested => {
-            Some("startup was not verified; run ctx daemon status".to_owned())
-        }
-        None if daemon.reason == Some("explicit_opt_out") => {
-            Some("skipped because --no-daemon was used".to_owned())
-        }
-        None if daemon.reason == Some("daemon_disabled") => Some("disabled".to_owned()),
-        None => None,
-    }
-}
-
-fn counted(count: u64, singular: &str, plural: &str) -> String {
-    let noun = if count == 1 { singular } else { plural };
-    format!("{} {noun}", grouped_count(count))
-}
-
-fn grouped_count(count: u64) -> String {
-    let digits = count.to_string();
-    let mut reversed = String::with_capacity(digits.len().saturating_add(digits.len() / 3));
-    for (index, character) in digits.chars().rev().enumerate() {
-        if index > 0 && index % 3 == 0 {
-            reversed.push(',');
-        }
-        reversed.push(character);
-    }
-    reversed.chars().rev().collect()
-}
-
 #[cfg(test)]
 mod tests {
-    use std::io::Write as _;
-
+    use crate::semantic::DaemonHandoff;
     use serde_json::json;
-    use unicode_width::UnicodeWidthStr as _;
-
-    use crate::ui::{ColorMode, StreamKind, TestContext};
 
     use super::*;
-
-    fn context(width: usize, color: ColorMode) -> RenderContext {
-        RenderContext::for_test(TestContext::tty(StreamKind::Stdout, width).color(color))
-    }
-
-    fn assert_fits(document: &Document, context: &RenderContext) {
-        let width = context.content_width().unwrap_or(1);
-        for line in document.render_plain().lines() {
-            assert!(line.width() <= width, "{line:?} exceeded {width} columns");
-        }
-    }
-
-    fn strip_ansi(rendered: &str) -> String {
-        let mut stream = anstream::StripStream::new(Vec::new());
-        stream.write_all(rendered.as_bytes()).unwrap();
-        String::from_utf8(stream.into_inner()).unwrap()
-    }
-
-    fn installed_supervisor() -> Value {
-        json!({
-            "status": "installed",
-            "registration_verified": true,
-            "live_owner_verified": true,
-        })
-    }
 
     #[test]
     fn admitted_background_refresh_reports_pending_before_first_publication() {
@@ -590,174 +388,6 @@ mod tests {
             .is_some_and(|pending| pending.source_count() == 0));
     }
 
-    fn ready_source() -> Value {
-        json!({
-            "indexed_sources": 1,
-            "indexed_sessions": 2,
-            "indexed_events": 1000,
-            "lexical": {
-                "status": "ready",
-                "certified_sources": 9,
-                "indexed_documents": 9,
-            },
-            "refresh": {"status": "ready"},
-            "semantic": {"status": "disabled"},
-        })
-    }
-
-    fn render_ready(context: &RenderContext) -> Document {
-        let supervisor = installed_supervisor();
-        render_setup_human(
-            context,
-            std::path::Path::new("/tmp/ctx"),
-            "ready",
-            &ready_source(),
-            &json!({"status": "published"}),
-            DaemonAutostartHuman {
-                requested: false,
-                reason: None,
-                handoff: None,
-                bounded_unsupervised: false,
-                supervisor: &supervisor,
-            },
-        )
-    }
-
-    #[test]
-    fn setup_ready_is_outcome_first_and_has_one_search_action() {
-        for width in [32, 48, 80, 120] {
-            let context = context(width, ColorMode::Never);
-            let document = render_ready(&context);
-            let rendered = document.render_plain();
-            let normalized = rendered.split_whitespace().collect::<Vec<_>>().join(" ");
-            assert!(rendered.starts_with("✓ History is ready to search\n\nHistory\n"));
-            assert!(rendered.contains("Sources   1 source\n"));
-            assert!(rendered.contains("Sessions  2 sessions\n"));
-            assert!(normalized.contains("Events 1,000 searchable events"));
-            assert!(!rendered.contains("9 sources"));
-            assert!(!rendered.contains("9 searchable events"));
-            assert!(rendered.contains("Next\n  ctx search \"test failure\"\n"));
-            assert!(!rendered.contains("Generation"));
-            assert!(!rendered.contains("PID"));
-            assert!(!rendered.contains("\nData\n"));
-            assert!(!rendered.contains("/tmp/ctx"));
-            assert_eq!(rendered.matches("\nNext\n").count(), 1);
-            assert_fits(&document, &context);
-        }
-    }
-
-    #[test]
-    fn setup_events_fall_back_to_the_equivalent_lexical_document_count() {
-        let source = json!({
-            "lexical": {
-                "status": "ready",
-                "indexed_documents": 1,
-            },
-            "refresh": {"status": "ready"},
-            "semantic": {"status": "disabled"},
-        });
-        let supervisor = installed_supervisor();
-        let document = render_setup_human(
-            &context(80, ColorMode::Never),
-            std::path::Path::new("/tmp/ctx"),
-            "ready",
-            &source,
-            &json!({"status": "published"}),
-            DaemonAutostartHuman {
-                requested: false,
-                reason: None,
-                handoff: None,
-                bounded_unsupervised: false,
-                supervisor: &supervisor,
-            },
-        );
-        let rendered = document.render_plain();
-        assert!(rendered.contains("Events    1 searchable event\n"));
-        assert!(!rendered.contains("Sessions"));
-    }
-
-    #[test]
-    fn setup_queued_has_watch_as_its_primary_action_without_an_eta() {
-        let source = json!({
-            "lexical": {"status": "pending"},
-            "refresh": {"status": "pending"},
-            "semantic": {"status": "disabled"},
-        });
-        let refresh = json!({"status": "pending"});
-        let supervisor = installed_supervisor();
-        let handoff = DaemonHandoff {
-            pid: 42,
-            heartbeat_at_ms: 1,
-        };
-
-        for width in [32, 48, 80, 120] {
-            let context = context(width, ColorMode::Never);
-            let document = render_setup_human(
-                &context,
-                std::path::Path::new("/tmp/ctx"),
-                "pending",
-                &source,
-                &refresh,
-                DaemonAutostartHuman {
-                    requested: true,
-                    reason: None,
-                    handoff: Some(&handoff),
-                    bounded_unsupervised: false,
-                    supervisor: &supervisor,
-                },
-            );
-            let rendered = document.render_plain();
-            assert!(rendered.starts_with("History indexing is queued\n"));
-            assert!(!rendered.contains("Refresh"));
-            assert!(rendered.contains("Next\n  ctx index watch\n"));
-            assert!(!rendered.contains("Estimated"));
-            assert!(!rendered.contains("ctx search"));
-            assert!(!rendered.contains("42"));
-            assert!(!rendered.contains("\nData\n"));
-            assert!(!rendered.contains("/tmp/ctx"));
-            assert_fits(&document, &context);
-        }
-    }
-
-    #[test]
-    fn setup_degraded_explains_disabled_background_work_and_recovery() {
-        let source = json!({
-            "lexical": {"status": "unavailable"},
-            "refresh": {"status": "unavailable"},
-            "semantic": {"status": "disabled"},
-        });
-        let refresh = json!({
-            "status": "unavailable",
-            "reason": "daemon_disabled",
-        });
-        let supervisor = json!({"status": "not_installed"});
-
-        for width in [32, 48, 80, 120] {
-            let context = context(width, ColorMode::Never);
-            let document = render_setup_human(
-                &context,
-                std::path::Path::new("/tmp/ctx"),
-                "unavailable",
-                &source,
-                &refresh,
-                DaemonAutostartHuman {
-                    requested: false,
-                    reason: Some("daemon_disabled"),
-                    handoff: None,
-                    bounded_unsupervised: false,
-                    supervisor: &supervisor,
-                },
-            );
-            let rendered = document.render_plain();
-            assert!(rendered.starts_with("! History is not ready\n"));
-            assert!(rendered.contains("Background  disabled\n"));
-            assert!(rendered.contains("Data\nRoot  /tmp/ctx\n"));
-            assert!(rendered.contains("Next\n  ctx daemon enable\n"));
-            assert!(!rendered.contains("ctx index watch"));
-            assert_fits(&document, &context);
-        }
-    }
-
     #[test]
     fn setup_manager_unavailable_reports_bounded_success_and_typed_limitation() {
         let supervisor = json!({
@@ -785,31 +415,6 @@ mod tests {
         assert!(autostart["limitation"]["message"]
             .as_str()
             .is_some_and(|message| message.contains("bounded ctx daemon")));
-
-        for width in [32, 48, 80, 120] {
-            let context = context(width, ColorMode::Never);
-            let document = render_setup_human(
-                &context,
-                std::path::Path::new("/tmp/ctx"),
-                "ready",
-                &ready_source(),
-                &json!({"status": "published"}),
-                DaemonAutostartHuman {
-                    requested: true,
-                    reason: None,
-                    handoff: Some(&startup.handoff),
-                    bounded_unsupervised: true,
-                    supervisor: &supervisor,
-                },
-            );
-            let rendered = document.render_plain();
-            let normalized = rendered.split_whitespace().collect::<Vec<_>>().join(" ");
-            assert!(rendered.starts_with("✓ History is ready to search\n"));
-            assert!(normalized.contains("Background temporary daemon (initial maintenance only)"));
-            assert!(normalized.contains("! Continuous refresh is unavailable"));
-            assert!(normalized.contains("run ctx setup --wait again to refresh later"));
-            assert_fits(&document, &context);
-        }
     }
 
     #[test]
@@ -833,44 +438,6 @@ mod tests {
         assert_eq!(autostart["status"], "degraded");
         assert_eq!(autostart["persistent"], true);
         assert!(autostart["limitation"].is_null());
-
-        for width in [32, 48, 80, 120] {
-            let context = context(width, ColorMode::Never);
-            let document = render_setup_human(
-                &context,
-                std::path::Path::new("/tmp/ctx"),
-                "ready",
-                &ready_source(),
-                &json!({"status": "published"}),
-                DaemonAutostartHuman {
-                    requested: true,
-                    reason: None,
-                    handoff: Some(&startup.handoff),
-                    bounded_unsupervised: false,
-                    supervisor: &supervisor,
-                },
-            );
-            let normalized = document
-                .render_plain()
-                .split_whitespace()
-                .collect::<Vec<_>>()
-                .join(" ");
-            assert!(
-                normalized.contains("Background persistent daemon (automatic restart unavailable)")
-            );
-            assert!(!normalized.contains("Continuous refresh is unavailable"));
-            assert_fits(&document, &context);
-        }
-    }
-
-    #[test]
-    fn setup_plain_output_equals_ansi_stripped_styled_output() {
-        let context = context(80, ColorMode::Always);
-        let document = render_ready(&context);
-        assert_eq!(
-            strip_ansi(&document.render(&context)),
-            document.render_plain()
-        );
     }
 
     #[test]
