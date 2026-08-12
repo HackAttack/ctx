@@ -49,6 +49,8 @@ MAX_ARCHIVE_MEMBERS = 64
 MAX_UNCOMPRESSED_BYTES = 4 * 1024 * 1024 * 1024
 MACOS_XCODE_SELECT = Path("/usr/bin/xcode-select")
 MACOS_XCRUN = Path("/usr/bin/xcrun")
+MACOS_CODESIGN = Path("/usr/bin/codesign")
+MACOS_APPLICATIONS = Path("/Applications")
 SHT_NOTE = 7
 
 
@@ -257,7 +259,51 @@ def trusted_platform_file(path: Path, label: str) -> Path:
     return selected
 
 
-def xcode_developer_directory(xcode_select: Path) -> Path:
+def require_hosted_non_writable(path: Path, boundary: Path) -> None:
+    current = path
+    while True:
+        metadata = current.stat()
+        if (
+            metadata.st_uid == os.geteuid()
+            or metadata.st_mode & 0o022
+            or os.access(current, os.W_OK)
+        ):
+            fail("hosted Xcode is writable by the release job")
+        if current == boundary:
+            break
+        current = current.parent
+
+
+def verify_hosted_xcode(developer_dir: Path) -> None:
+    application = developer_dir.parent.parent
+    if (
+        application.parent != MACOS_APPLICATIONS
+        or application.suffix != ".app"
+        or developer_dir != application / "Contents/Developer"
+    ):
+        fail("hosted Xcode is outside canonical /Applications containment")
+    require_hosted_non_writable(developer_dir, MACOS_APPLICATIONS)
+    codesign = trusted_platform_file(MACOS_CODESIGN, "platform codesign")
+    run(
+        [
+            str(codesign),
+            "--verify",
+            "--deep",
+            "--strict",
+            '--test-requirement=anchor apple and identifier "com.apple.dt.Xcode"',
+            str(application),
+        ]
+    )
+    version = run(
+        [str(MACOS_XCRUN), "xcodebuild", "-version"],
+        output=True,
+        environment=tool_environment({"DEVELOPER_DIR": str(developer_dir)}),
+    )
+    if version.splitlines() != ["Xcode 26.2", "Build version 17C52"]:
+        fail("hosted Xcode does not match pinned Xcode 26.2 build 17C52")
+
+
+def xcode_developer_directory(xcode_select: Path, *, hosted: bool) -> Path:
     output = run([str(xcode_select), "--print-path"], output=True)
     lines = [line for line in output.splitlines() if line]
     if len(lines) != 1 or not Path(lines[0]).is_absolute():
@@ -276,6 +322,9 @@ def xcode_developer_directory(xcode_select: Path) -> Path:
     command_line_tools = selected == Path("/Library/Developer/CommandLineTools")
     if not application and not command_line_tools:
         fail("xcode-select chose an unsupported developer directory")
+    if hosted:
+        verify_hosted_xcode(selected)
+        return selected
     boundary = Path("/").joinpath(*parts[1:3]) if application else selected
     current = selected
     while True:
@@ -288,10 +337,11 @@ def xcode_developer_directory(xcode_select: Path) -> Path:
     return selected
 
 
-def xcode_tools() -> tuple[dict[str, Path], dict[str, object]]:
+def xcode_tools(platform: str) -> tuple[dict[str, Path], dict[str, object]]:
     xcode_select = trusted_platform_file(MACOS_XCODE_SELECT, "platform xcode-select")
     xcrun = trusted_platform_file(MACOS_XCRUN, "platform xcrun")
-    developer_dir = xcode_developer_directory(xcode_select)
+    hosted = platform == "macos-arm64"
+    developer_dir = xcode_developer_directory(xcode_select, hosted=hosted)
     environment = tool_environment({"DEVELOPER_DIR": str(developer_dir)})
     tools: dict[str, Path] = {}
     identities: list[dict[str, object]] = []
@@ -304,11 +354,15 @@ def xcode_tools() -> tuple[dict[str, Path], dict[str, object]]:
         lines = [line for line in output.splitlines() if line]
         if len(lines) != 1 or not Path(lines[0]).is_absolute():
             fail(f"xcrun returned an invalid {name} path")
-        selected = trusted_platform_file(Path(lines[0]), f"Xcode {name}")
+        selected = executable_tool(Path(lines[0]), f"Xcode {name}")
         try:
             selected.relative_to(developer_dir)
         except ValueError:
             fail(f"Xcode {name} is outside the selected developer directory")
+        if hosted:
+            require_hosted_non_writable(selected, MACOS_APPLICATIONS)
+        else:
+            selected = trusted_platform_file(selected, f"Xcode {name}")
         tools[name] = selected
         identities.append(file_identity(selected, name))
     identity = {
@@ -326,7 +380,7 @@ def xcode_tools() -> tuple[dict[str, Path], dict[str, object]]:
 
 def release_tools(platform: str) -> tuple[dict[str, Path], dict[str, object]]:
     if PLATFORMS[platform] == "macho":
-        return xcode_tools()
+        return xcode_tools(platform)
     return declared_rust_objcopy(platform)
 
 
