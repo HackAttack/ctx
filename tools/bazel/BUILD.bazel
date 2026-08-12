@@ -28,6 +28,7 @@ exports_files([
     "check-pro-application-dependency-boundary.sh",
     "check-pro-host-dependency-boundary.sh",
     "check-pro-lifecycle-dependency-boundary.sh",
+    "pro_boundary_checks.bzl",
     "check-semantic-index-dependency-boundary.sh",
     "check_semantic_index_boundary.py",
     "check_semantic_index_boundary_test.py",
