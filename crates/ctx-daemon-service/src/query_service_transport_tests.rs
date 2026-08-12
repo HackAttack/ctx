@@ -91,15 +91,11 @@ impl CountingAfterWrite {
     }
 }
 
+#[derive(Default)]
 enum CountingPostWriteAction<'a> {
+    #[default]
     None,
     Completion(&'a CountingAfterWrite),
-}
-
-impl Default for CountingPostWriteAction<'_> {
-    fn default() -> Self {
-        Self::None
-    }
 }
 
 impl PostWriteAction for CountingPostWriteAction<'_> {

@@ -108,17 +108,26 @@ pub(super) enum DaemonConfigReloadOutcome {
     StopDisabled,
 }
 
+pub(super) struct DaemonConfigReloadTargets<'a> {
+    pub(super) query_service: &'a mut Option<DaemonQueryService>,
+    pub(super) refresh_service: &'a mut Option<DaemonQueryService>,
+    pub(super) state: &'a mut DaemonConfigReloadState,
+}
+
 pub(super) fn reload_daemon_runtime_config(
     data_root: &Path,
     args: &DaemonRunArgs,
     runtime: &mut DaemonRuntime,
-    query_service: &mut Option<DaemonQueryService>,
-    refresh_service: &mut Option<DaemonQueryService>,
-    reload: &mut DaemonConfigReloadState,
+    targets: DaemonConfigReloadTargets<'_>,
     wakeup: &Arc<DaemonWakeup>,
     lifecycle: &Arc<DaemonLifecycleState>,
     config_port: &'static dyn DaemonConfigPort,
 ) -> DaemonConfigReloadOutcome {
+    let DaemonConfigReloadTargets {
+        query_service,
+        refresh_service,
+        state: reload,
+    } = targets;
     let config = match config_port.load(data_root) {
         Ok(config) => config,
         Err(error) => {
