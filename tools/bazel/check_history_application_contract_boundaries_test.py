@@ -107,6 +107,28 @@ class HistoryApplicationContractBoundaryMutations(unittest.TestCase):
         )
         self.assert_rejected("read", "retain a ctx or shared-support Rust backedge")
 
+    def test_current_read_adapter_direct_pinned_query_bypass_is_rejected(self) -> None:
+        self.mutate(
+            "crates/ctx-history-cli/src/source_index/show.rs",
+            "const CLI_SESSION_EVENT_PAGE_ITEMS: usize =",
+            """fn direct_query_bypass_for_mutation_test(
+    index: &ctx_history_index::VerifiedIndex,
+    request: &ctx_history_read_application::ShowEventRequest,
+) {
+    let _ = ctx_history_read_application::PinnedHistoryQuery::new(index, None)
+        .show_event(request);
+}
+
+const CLI_SESSION_EVENT_PAGE_ITEMS: usize =""",
+        )
+        self.assert_rejected(
+            "read", "bypasses the application-owned show or list authority"
+        )
+
+    def test_missing_current_read_adapter_is_rejected(self) -> None:
+        (self.root / "crates/ctx-history-cli/src/source_index/locate.rs").unlink()
+        self.assert_rejected("read", "expected history CLI query consumer is missing")
+
     def test_whole_package_cloc_ceiling_is_rejected(self) -> None:
         source = self.root / "crates/ctx-history-ingest-application/tests/contracts/cloc_growth.rs"
         source.write_text("\n".join("fn line_%d() {}" % index for index in range(6_090)), encoding="utf-8")
