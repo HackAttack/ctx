@@ -468,7 +468,8 @@ def run_container_gates(
                     "\"$1\" \"$host_system\" \"$host_arch\" passed "
                     "\"$host_native_arch\" \"$process_translated\" "
                     "\"$hardware_identity\" \"$emulation\" "
-                    "\"$hypervisor\" \"$evidence_complete\""
+                    "\"$hypervisor\" \"$evidence_complete\" "
+                    "\"\" ubuntu 22.04 unknown ubuntu-22.04"
                 ),
                 "bash",
                 platform,

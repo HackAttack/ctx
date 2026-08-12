@@ -71,6 +71,7 @@ def main() -> int:
     parser.add_argument("--zig-version", required=True)
     parser.add_argument("--cargo-zigbuild-version", required=True)
     parser.add_argument("--builder-authority", required=True)
+    parser.add_argument("--builder-os", required=True)
     parser.add_argument("--inspector-authority", required=True)
     parser.add_argument("--inspector-tool", required=True)
     parser.add_argument("--macos-sdk-sha256")
@@ -95,7 +96,7 @@ def main() -> int:
             "builder": {
                 "authority": args.builder_authority,
                 "image_id": None,
-                "os": "linux-x86_64",
+                "os": args.builder_os,
                 "recipe_sha256": sha256(args.recipe),
             },
             "cargo_lock_sha256": sha256(args.cargo_lock),

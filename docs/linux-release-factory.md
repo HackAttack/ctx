@@ -1,9 +1,10 @@
 # Linux release factory
 
-The public release has one construction path. A Linux x86_64 checkout builds
-the five supported CLI binaries, signs and notarizes the two macOS binaries,
-and emits all checksums and release evidence into one directory. Native hosts
-validate those exact bytes afterwards.
+The public release has one construction path. A clean Ubuntu 24.04 x86_64
+checkout (direct, VM, container, or Buildkite image) builds the five supported
+CLI binaries, signs and notarizes the two macOS binaries, and emits all
+checksums and release evidence into one directory. Native hosts validate those
+exact bytes afterwards.
 
 ## Inputs
 
@@ -14,6 +15,12 @@ validate those exact bytes afterwards.
 - Offline OSV scanner/database inputs in official mode.
 - Infisical access at the narrow macOS signing boundary in official mode. The
   build and dependency subprocesses never receive Apple credentials.
+
+The host contract is recorded in `contracts/release-factory-inputs-v1.json`:
+Ubuntu 24.04, x86_64, authority
+`ctx-release-factory-ubuntu24-x86_64-v1`. A container or VM is optional; it is
+useful when the caller is not already on Ubuntu 24.04, but it does not create a
+different construction path.
 
 Zig 0.15.2 and rcodesign 0.29.0 are downloaded from checksum-pinned upstream
 archives into `target/release-toolchain`. cargo-zigbuild 0.23.0 must already be
@@ -39,9 +46,10 @@ scripts/release/build-public-candidate-on-linux.sh \
   --diagnostic-unsigned --skip-runtimes
 ```
 
-The factory refuses a dirty checkout, an unpinned toolchain, a missing or
-unexpected SDK archive, or missing official credentials. It builds targets with bounded parallelism; use
-`--jobs` and `--build-parallelism` to tune a local machine.
+The factory refuses a dirty checkout, an unsupported official host, an
+unpinned toolchain, a missing or unexpected SDK archive, or missing official
+credentials. It builds targets with bounded parallelism; use `--jobs` and
+`--build-parallelism` to tune a local machine.
 
 ## Native validation
 
@@ -57,3 +65,8 @@ The validator checks the factory checksum, executes the native candidate, and
 checks that validation did not mutate it. macOS additionally performs strict
 native codesign verification. Semantic runtime smokes use the same CLI bytes.
 Only after all five jobs pass does the staging job assemble GitHub assets.
+
+The legacy Bazel qualification route may still use its digest-pinned Ubuntu
+22.04 nested controller and builder internally to preserve the glibc 2.35 ABI
+contract. Its Buildkite outer host selector is Ubuntu 24.04; it is not a second
+downloadable-CLI construction path.

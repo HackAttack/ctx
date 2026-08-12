@@ -16,14 +16,23 @@ argument_count=$#
 os_identity="${12:-unknown}"
 os_version="${13:-unknown}"
 os_product_type="${14:-unknown}"
+runtime_os_baseline="${15:-ubuntu-24.04}"
 pinned_macos_x64_kvm_runner="ctx-mac-gui-shared-x64"
+
+case "${runtime_os_baseline}" in
+  ubuntu-22.04|ubuntu-24.04) ;;
+  *)
+    echo "unsupported Linux runtime authority baseline: ${runtime_os_baseline}" >&2
+    exit 2
+    ;;
+esac
 
 os_baseline_matches() {
   local windows_build=""
 
   case "${platform}" in
     linux-x64|linux-aarch64)
-      [[ "${os_identity}" == "ubuntu" && "${os_version}" == "22.04" ]]
+      [[ "${os_identity}-${os_version}" == "${runtime_os_baseline}" ]]
       ;;
     windows-x64)
       if [[ ! "${os_version}" =~ ^10\.0\.([0-9]+)(\.[0-9]+)?$ ]]; then

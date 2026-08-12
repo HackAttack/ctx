@@ -367,7 +367,8 @@ controller_probe() {
         scripts/public-cli-runtime-authority.sh \
           "${platform}" "${system}" "${arch}" passed "${native_arch}" \
           "${translated}" "${hardware}" "${emulation}" "${hypervisor}" \
-          "${complete}" "" "${os_id}" "${os_version}" "${os_product}"
+          "${complete}" "" "${os_id}" "${os_version}" "${os_product}" \
+          ubuntu-22.04
       )"
       client_version="$("${docker_cli[@]}" --version)"
       client_sha="$(sha256sum /usr/local/bin/docker | awk '"'"'{print $1}'"'"')"

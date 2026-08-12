@@ -30,6 +30,18 @@ release_target_matrix="${release_contract_root}/contracts/release-targets-v1.jso
 stage_release_assets="${release_contract_root}/scripts/stage-github-release-assets.sh"
 test -f "${release_target_matrix}"
 test ! -L "${release_target_matrix}"
+python3 - "${release_target_matrix}" <<'PY'
+import json
+from pathlib import Path
+import sys
+
+path = Path(sys.argv[1])
+value = json.loads(path.read_bytes())
+for target in value["targets"]:
+    target["public_construction_authority"] = "bazel-release-route-v1"
+    target["public_construction_label"] = f"//:ctx_release_{target['id'].replace('-', '_')}"
+path.write_text(json.dumps(value, sort_keys=True, separators=(",", ":")) + "\n")
+PY
 
 printf 'artifact\n' > "${tmp_dir}/artifact"
 printf 'lock\n' > "${tmp_dir}/Cargo.lock"
@@ -239,10 +251,12 @@ test "$(scripts/public-cli-runtime-authority.sh macos-x64 Darwin x86_64 passed x
 test "$(scripts/public-cli-runtime-authority.sh macos-x64 Darwin x86_64 passed x86_64 0 generic none absent 1)" = non_authoritative
 test "$(scripts/public-cli-runtime-authority.sh macos-x64 Darwin x86_64 passed unknown unknown unknown unknown unknown 0)" = non_authoritative
 test "$(scripts/public-cli-runtime-authority.sh macos-arm64 Darwin arm64 passed arm64 0 apple none absent 1)" = authoritative
-test "$(scripts/public-cli-runtime-authority.sh linux-aarch64 Linux aarch64 passed aarch64 0 generic none present 1 "" ubuntu 22.04 unknown)" = authoritative
-test "$(scripts/public-cli-runtime-authority.sh linux-aarch64 Linux aarch64 passed aarch64 0 generic qemu-user present 1 "" ubuntu 22.04 unknown)" = non_authoritative
-test "$(scripts/public-cli-runtime-authority.sh linux-x64 Linux x86_64 passed x86_64 0 generic none absent 1 "" ubuntu 22.04 unknown)" = authoritative
-test "$(scripts/public-cli-runtime-authority.sh linux-x64 Linux x86_64 passed x86_64 0 generic none absent 1 "" ubuntu 24.04 unknown)" = non_authoritative
+test "$(scripts/public-cli-runtime-authority.sh linux-aarch64 Linux aarch64 passed aarch64 0 generic none present 1 "" ubuntu 24.04 unknown)" = authoritative
+test "$(scripts/public-cli-runtime-authority.sh linux-aarch64 Linux aarch64 passed aarch64 0 generic qemu-user present 1 "" ubuntu 24.04 unknown)" = non_authoritative
+test "$(scripts/public-cli-runtime-authority.sh linux-x64 Linux x86_64 passed x86_64 0 generic none absent 1 "" ubuntu 24.04 unknown)" = authoritative
+test "$(scripts/public-cli-runtime-authority.sh linux-x64 Linux x86_64 passed x86_64 0 generic none absent 1 "" ubuntu 22.04 unknown)" = non_authoritative
+test "$(scripts/public-cli-runtime-authority.sh linux-x64 Linux x86_64 passed x86_64 0 generic none absent 1 "" ubuntu 24.04 unknown ubuntu-24.04)" = authoritative
+test "$(scripts/public-cli-runtime-authority.sh linux-x64 Linux x86_64 passed x86_64 0 generic none absent 1 "" ubuntu 22.04 unknown ubuntu-24.04)" = non_authoritative
 test "$(scripts/public-cli-runtime-authority.sh linux-x64 Linux x86_64 passed x86_64 0 generic none absent 1 "" debian 22.04 unknown)" = non_authoritative
 test "$(scripts/public-cli-runtime-authority.sh linux-x64 Linux x86_64 passed x86_64 0 generic none absent 1 "" unknown unknown unknown)" = non_authoritative
 test "$(scripts/public-cli-runtime-authority.sh windows-x64 Windows_NT AMD64 passed X64 0 generic none present 1 "" "Microsoft Windows 11 Pro" 10.0.22631 1)" = authoritative

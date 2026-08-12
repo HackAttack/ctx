@@ -9,6 +9,7 @@ else
 fi
 tmp="$(mktemp -d "${TMPDIR:-/tmp}/ctx-semantic-release-smoke-test.XXXXXX")"
 trap 'rm -rf "${tmp}"' EXIT
+export CTX_PUBLIC_CLI_RUNTIME_AUTHORITY_BASELINE=ubuntu-24.04
 
 release_root="${tmp}/release-root"
 mkdir -p "${release_root}/contracts" "${release_root}/scripts"
@@ -28,9 +29,9 @@ cp -L "${repo_root}/contracts/release-factory-inputs-v1.json" \
   "${release_root}/contracts/release-factory-inputs-v1.json"
 test -f "${release_root}/contracts/release-targets-v1.json"
 test ! -L "${release_root}/contracts/release-targets-v1.json"
-cat > "${tmp}/ubuntu-22.04-os-release" <<'EOF'
+cat > "${tmp}/ubuntu-24.04-os-release" <<'EOF'
 ID=ubuntu
-VERSION_ID="22.04"
+VERSION_ID="24.04"
 EOF
 mv \
   "${release_root}/scripts/public-cli-host-runtime-evidence.sh" \
@@ -41,7 +42,7 @@ set -euo pipefail
 for argument in "\$@"; do
   if [[ "\${argument}" == "--os-baseline-only" ]]; then
     exec "${release_root}/scripts/public-cli-host-runtime-evidence-real.sh" \
-      "\$@" --os-release "${tmp}/ubuntu-22.04-os-release"
+      "\$@" --os-release "${tmp}/ubuntu-24.04-os-release"
   fi
 done
 exec "${release_root}/scripts/public-cli-host-runtime-evidence-real.sh" "\$@"
@@ -298,8 +299,8 @@ import sys
 path = Path(sys.argv[1])
 value = json.loads(path.read_bytes())
 value["builder"]["recipe_sha256"] = sys.argv[2]
-value["builder"]["authority"] = "ctx-release-factory-ubuntu22-nested-docker-v1"
-value["builder"]["os"] = "linux-x86_64"
+value["builder"]["authority"] = "ctx-release-factory-ubuntu24-x86_64-v1"
+value["builder"]["os"] = "ubuntu-24.04-x86_64"
 value["inspector"]["authority"] = "ctx-release-static-llvm-v1"
 value["inspector"]["tool"] = "LLVM version 20"
 value["runtime"]["authority"] = "native-fanout-deferred-v1"

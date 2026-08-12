@@ -116,10 +116,25 @@ class LinuxReleaseFactoryTest(unittest.TestCase):
 
     def test_factory_script_pins_all_external_tools(self) -> None:
         source = (ROOT / "scripts" / "release" / "build-public-candidate-on-linux.sh").read_text()
+        factory_inputs = json.loads(
+            (ROOT / "contracts" / "release-factory-inputs-v1.json").read_text()
+        )
         for value in ("1.97.1", "0.15.2", "0.23.0", "0.29.0"):
             self.assertIn(value, source)
         self.assertIn("--diagnostic-unsigned", source)
         self.assertIn("official release requires", source)
+        self.assertIn("Ubuntu ${factory_host_os_version}", source)
+        self.assertIn('"linux_host"', source)
+        self.assertIn('--builder-os "${factory_host_os}"', source)
+        self.assertEqual(
+            factory_inputs["linux_host"],
+            {
+                "arch": "x86_64",
+                "authority": "ctx-release-factory-ubuntu24-x86_64-v1",
+                "os_id": "ubuntu",
+                "os_version": "24.04",
+            },
+        )
         self.assertIn("llvm-strip -S -x", source)
         self.assertIn("/usr/bin/llvm-readobj", source)
         self.assertIn("ctx-release-factory.json", source)
@@ -177,6 +192,7 @@ class LinuxReleaseFactoryTest(unittest.TestCase):
         source = (ROOT / "scripts" / "release" / "linux-factory-build-info.py").read_text()
         self.assertIn('"linux_build": None', source)
         self.assertIn('"release_factory": {', source)
+        self.assertIn('"os": args.builder_os', source)
 
     def test_factory_does_not_expose_apple_credentials_to_builds(self) -> None:
         source = (ROOT / "scripts" / "release" / "build-public-candidate-on-linux.sh").read_text()
@@ -191,6 +207,13 @@ class LinuxReleaseFactoryTest(unittest.TestCase):
             self.assertNotIn(name, source)
             self.assertNotIn(name, build_body)
         self.assertNotIn("CTX_MACOS_SIGNING_SECRET_SOURCE=injected", source)
+
+    def test_native_linux_validator_requires_ubuntu_24(self) -> None:
+        source = (
+            ROOT / "scripts" / "validate-public-cli-factory-artifact.sh"
+        ).read_text()
+        self.assertIn("native Linux validation requires authoritative Ubuntu 24.04 execution", source)
+        self.assertIn("ubuntu-24.04", source)
 
 
 if __name__ == "__main__":

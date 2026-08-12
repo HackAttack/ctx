@@ -128,18 +128,31 @@ def validate(
     release_factory = value.get("release_factory")
     if target.get("public_construction_authority") == "linux-cross-cargo-zigbuild-v1":
         expected_sdk_sha256 = None
-        if target.get("os") == "macos":
-            try:
-                factory_inputs = json.loads(
-                    (
-                        factory_inputs_path
-                        or Path("contracts/release-factory-inputs-v1.json")
-                    ).read_bytes()
-                )
+        try:
+            factory_inputs = json.loads(
+                (
+                    factory_inputs_path
+                    or Path("contracts/release-factory-inputs-v1.json")
+                ).read_bytes()
+            )
+            linux_host = factory_inputs["linux_host"]
+            if linux_host != {
+                "arch": "x86_64",
+                "authority": "ctx-release-factory-ubuntu24-x86_64-v1",
+                "os_id": "ubuntu",
+                "os_version": "24.04",
+            }:
+                raise ValueError("release factory Linux host contract is invalid")
+            expected_builder_authority = linux_host["authority"]
+            expected_builder_os = (
+                f'{linux_host["os_id"]}-{linux_host["os_version"]}-'
+                f'{linux_host["arch"]}'
+            )
+            if target.get("os") == "macos":
                 expected_sdk_sha256 = factory_inputs["macos_sdk"]["archive_sha256"]
                 expected_sdk_authority = factory_inputs["macos_sdk"]["authority"]
-            except (KeyError, OSError, TypeError, UnicodeDecodeError, json.JSONDecodeError):
-                raise ValueError("release factory SDK input contract is unavailable")
+        except (KeyError, OSError, TypeError, UnicodeDecodeError, json.JSONDecodeError):
+            raise ValueError("release factory input contract is unavailable")
         if (
             not isinstance(release_factory, dict)
             or release_factory.get("authority") != "linux-cross-cargo-zigbuild-v1"
@@ -175,8 +188,13 @@ def validate(
                 raise ValueError(f"{release_label} {label} authority is missing")
         if not isinstance(inspector.get("tool"), str) or not inspector["tool"]:
             raise ValueError(f"{release_label} inspector tool identity is missing")
-        if not isinstance(builder.get("os"), str) or builder["os"] != "linux-x86_64":
-            raise ValueError(f"{release_label} builder OS identity is missing")
+        if (
+            builder.get("authority") != expected_builder_authority
+            or builder.get("os") != expected_builder_os
+        ):
+            raise ValueError(
+                f"{release_label} builder authority or OS identity is incorrect"
+            )
     if target.get("os") != "linux":
         return build_info_sha256
 

@@ -1,6 +1,12 @@
 {
   "schema_version": 1,
   "kind": "ctx-release-factory-inputs",
+  "linux_host": {
+    "arch": "x86_64",
+    "authority": "ctx-release-factory-ubuntu24-x86_64-v1",
+    "os_id": "ubuntu",
+    "os_version": "24.04"
+  },
   "macos_sdk": {
     "authority": "ctx-release-macos-sdk-v1",
     "archive_size_bytes": 100814923,

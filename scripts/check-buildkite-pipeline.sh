@@ -90,7 +90,7 @@ for key, mode in (
 linux_x64_selector = {
     "queue": "release-linux-managed",
     "ctx-runner-class": "release-linux-control",
-    "ctx-release-os": "ubuntu-22.04",
+    "ctx-release-os": "ubuntu-24.04",
     "ctx-release-nested-docker": "true",
     "os": "linux",
     "arch": "x86_64",
@@ -111,6 +111,12 @@ for key, step in keyed.items():
             fail(f"{key} must require the exact Linux x86_64 release authority selector")
     elif any(tag in agents for tag in ("ctx-release-os", "ctx-release-nested-docker")):
         fail(f"{key} must not require Linux x86_64 release authority tags")
+
+for key in ("public-cli-linux-x64-native-smoke", "public-cli-linux-aarch64-native-smoke"):
+    if keyed[key].get("env") != {
+        "CTX_PUBLIC_CLI_RUNTIME_AUTHORITY_BASELINE": "ubuntu-24.04"
+    }:
+        fail(f"{key} must require the Ubuntu 24.04 runtime authority")
 
 factory = keyed["public-cli-linux-factory"]
 factory_command = factory.get("command", "")

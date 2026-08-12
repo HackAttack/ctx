@@ -47,7 +47,7 @@ steps:
     agents:
       queue: "release-linux-managed"
       ctx-runner-class: "release-linux-control"
-      ctx-release-os: "ubuntu-22.04"
+      ctx-release-os: "ubuntu-24.04"
       ctx-release-nested-docker: "true"
       os: "linux"
       arch: "x86_64"
@@ -86,7 +86,7 @@ steps:
     agents:
       queue: "release-linux-managed"
       ctx-runner-class: "release-linux-control"
-      ctx-release-os: "ubuntu-22.04"
+      ctx-release-os: "ubuntu-24.04"
       ctx-release-nested-docker: "true"
       os: "linux"
       arch: "x86_64"
@@ -117,10 +117,12 @@ steps:
     agents:
       queue: "release-linux-managed"
       ctx-runner-class: "release-linux-control"
-      ctx-release-os: "ubuntu-22.04"
+      ctx-release-os: "ubuntu-24.04"
       ctx-release-nested-docker: "true"
       os: "linux"
       arch: "x86_64"
+    env:
+      CTX_PUBLIC_CLI_RUNTIME_AUTHORITY_BASELINE: "ubuntu-24.04"
     timeout_in_minutes: 60
     artifact_paths:
       - "target/public-cli-native-smoke/linux-x64/candidate-smoke.json"
@@ -151,6 +153,8 @@ steps:
       queue: "linux-arm64"
       os: "linux"
       arch: "arm64"
+    env:
+      CTX_PUBLIC_CLI_RUNTIME_AUTHORITY_BASELINE: "ubuntu-24.04"
     timeout_in_minutes: 60
     artifact_paths:
       - "target/public-cli-native-smoke/linux-aarch64/candidate-smoke.json"
@@ -321,7 +325,7 @@ steps:
     agents:
       queue: "release-linux-managed"
       ctx-runner-class: "release-linux-control"
-      ctx-release-os: "ubuntu-22.04"
+      ctx-release-os: "ubuntu-24.04"
       ctx-release-nested-docker: "true"
       os: "linux"
       arch: "x86_64"
@@ -352,7 +356,7 @@ steps:
     agents:
       queue: "release-linux-managed"
       ctx-runner-class: "release-linux-control"
-      ctx-release-os: "ubuntu-22.04"
+      ctx-release-os: "ubuntu-24.04"
       ctx-release-nested-docker: "true"
       os: "linux"
       arch: "x86_64"
@@ -403,7 +407,7 @@ steps:
     agents:
       queue: "release-linux-managed"
       ctx-runner-class: "release-linux-control"
-      ctx-release-os: "ubuntu-22.04"
+      ctx-release-os: "ubuntu-24.04"
       ctx-release-nested-docker: "true"
       os: "linux"
       arch: "x86_64"
@@ -477,7 +481,7 @@ steps:
     agents:
       queue: "release-linux-managed"
       ctx-runner-class: "release-linux-control"
-      ctx-release-os: "ubuntu-22.04"
+      ctx-release-os: "ubuntu-24.04"
       ctx-release-nested-docker: "true"
       os: "linux"
       arch: "x86_64"

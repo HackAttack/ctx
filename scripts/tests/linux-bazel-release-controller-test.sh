@@ -139,7 +139,7 @@ if [[ "$*" == *controller-preflight* ]]; then
   authority="$(
     "${FAKE_SOURCE_ROOT}/scripts/public-cli-runtime-authority.sh" \
       "${canonical_platform}" Linux "${arch}" passed "${arch}" 0 generic none present 1 \
-      "" ubuntu "${version}" unknown
+      "" ubuntu "${version}" unknown ubuntu-22.04
   )"
   printf 'evidence\t%s\nos\t%s\nauthority\t%s\n' \
     "${evidence}" "${os}" "${authority}"

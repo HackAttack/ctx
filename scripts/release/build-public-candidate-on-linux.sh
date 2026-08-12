@@ -29,7 +29,9 @@ Options:
   --skip-runtimes          Do not build the four Linux-hostable runtime sidecars
 
 Official mode requires CTX_OSV_SCANNER, CTX_OSV_DATABASE_DIR,
-CTX_OSV_DATABASE_METADATA, and the five existing Apple signing variables.
+CTX_OSV_DATABASE_METADATA, the five existing Apple signing variables, and the
+Ubuntu 24.04 x86_64 host declared in contracts/release-factory-inputs-v1.json.
+The host may be a direct installation, VM, container, or Buildkite image.
 USAGE
 }
 
@@ -107,12 +109,21 @@ source_commit="${source_commit:-$(git rev-parse --verify HEAD^{commit})}"
   die "official release factory requires a clean checkout"
 
 factory_input_json="$(cat "${FACTORY_INPUTS}")" || die "factory input contract is unavailable"
+factory_host_arch="$(python3 -c 'import json,sys; print(json.loads(sys.stdin.read())["linux_host"]["arch"])' <<<"${factory_input_json}")"
+factory_host_authority="$(python3 -c 'import json,sys; print(json.loads(sys.stdin.read())["linux_host"]["authority"])' <<<"${factory_input_json}")"
+factory_host_os_id="$(python3 -c 'import json,sys; print(json.loads(sys.stdin.read())["linux_host"]["os_id"])' <<<"${factory_input_json}")"
+factory_host_os_version="$(python3 -c 'import json,sys; print(json.loads(sys.stdin.read())["linux_host"]["os_version"])' <<<"${factory_input_json}")"
 macos_sdk_authority="$(python3 -c 'import json,sys; print(json.loads(sys.stdin.read())["macos_sdk"]["authority"])' <<<"${factory_input_json}")"
 macos_sdk_expected_size="$(python3 -c 'import json,sys; print(json.loads(sys.stdin.read())["macos_sdk"]["archive_size_bytes"])' <<<"${factory_input_json}")"
 macos_sdk_expected_sha256="$(python3 -c 'import json,sys; print(json.loads(sys.stdin.read())["macos_sdk"]["archive_sha256"])' <<<"${factory_input_json}")"
 [[ "${macos_sdk_authority}" =~ ^[a-z0-9.-]+$ ]] || die "factory SDK authority is malformed"
 [[ "${macos_sdk_expected_size}" =~ ^[1-9][0-9]*$ ]] || die "factory SDK size is malformed"
 [[ "${macos_sdk_expected_sha256}" =~ ^[0-9a-f]{64}$ ]] || die "factory SDK digest is malformed"
+[[ "${factory_host_arch}" == "x86_64" ]] || die "factory host architecture is malformed"
+[[ "${factory_host_authority}" =~ ^[a-z0-9._-]+$ ]] || die "factory host authority is malformed"
+[[ "${factory_host_os_id}" == "ubuntu" ]] || die "factory host OS identity is malformed"
+[[ "${factory_host_os_version}" =~ ^[0-9]+\.[0-9]+$ ]] || die "factory host OS version is malformed"
+factory_host_os="${factory_host_os_id}-${factory_host_os_version}-${factory_host_arch}"
 
 for command_name in cargo cat curl file git install llvm-objdump llvm-readobj llvm-strip \
   openssl python3 rustc rustup sha256sum tar xz; do
@@ -123,7 +134,7 @@ rust_commit="$(rustc --version --verbose | sed -n 's/^commit-hash: //p')"
 [[ "${rust_release}" == "${RUST_VERSION}" && "${rust_commit}" == "${RUST_COMMIT}" ]] || \
   die "rustc must be pinned ${RUST_VERSION} (${RUST_COMMIT})"
 rust_version="$(rustc --version)"
-builder_authority="${CTX_RELEASE_BUILDER_AUTHORITY:-ctx-release-factory-ubuntu22-nested-docker-v1}"
+builder_authority="${CTX_RELEASE_BUILDER_AUTHORITY:-${factory_host_authority}}"
 inspector_authority="${CTX_RELEASE_INSPECTOR_AUTHORITY:-ctx-release-static-llvm-v1}"
 inspector_tool="$(llvm-readobj --version | head -n 1)"
 [[ -n "${builder_authority}" && -n "${inspector_authority}" && -n "${inspector_tool}" ]] || \
@@ -207,8 +218,11 @@ done
 
 if [[ "${official}" == "1" ]]; then
   . /etc/os-release
-  [[ "${ID:-}" == "ubuntu" && "${VERSION_ID:-}" == "22.04" ]] || \
-    die "official release factory requires Ubuntu 22.04"
+  [[ "${ID:-}" == "${factory_host_os_id}" \
+    && "${VERSION_ID:-}" == "${factory_host_os_version}" ]] || \
+    die "official release factory requires Ubuntu ${factory_host_os_version}"
+  [[ "${builder_authority}" == "${factory_host_authority}" ]] || \
+    die "official release factory builder authority does not match its input contract"
   for required_name in \
     CTX_OSV_SCANNER CTX_OSV_DATABASE_DIR CTX_OSV_DATABASE_METADATA; do
     [[ -n "${!required_name:-}" ]] || die "official release requires ${required_name}"
@@ -316,6 +330,7 @@ for target_id in "${target_ids[@]}"; do
       --zig-version "${ZIG_VERSION}" \
       --cargo-zigbuild-version "${cargo_zigbuild_observed_version}" \
       --builder-authority "${builder_authority}" \
+      --builder-os "${factory_host_os}" \
       --inspector-authority "${inspector_authority}" \
       --inspector-tool "${inspector_tool}"
     )

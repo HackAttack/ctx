@@ -220,9 +220,10 @@ repository policy change.
 ## Public release candidates
 
 Bazel remains the development, test, and release-qualification authority. It
-does not construct the downloadable CLI binaries. One Linux x86_64 factory
-cross-builds all five public binaries from the same clean commit and writes one
-candidate directory:
+does not construct the downloadable CLI binaries. One Ubuntu 24.04 x86_64
+factory cross-builds all five public binaries from the same clean commit and
+writes one candidate directory. The same script runs directly on a matching
+host or inside an equivalent VM, container, or Buildkite image:
 
 ```bash
 scripts/release/build-public-candidate-on-linux.sh \

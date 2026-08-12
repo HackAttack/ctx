@@ -46,6 +46,22 @@ before="$(sha256_file "${artifact}")"
   die "factory artifact checksum mismatch"
 version="$(cargo metadata --no-deps --format-version 1 | python3 -c 'import json,sys; d=json.load(sys.stdin); print(next(p["version"] for p in d["packages"] if p["name"]=="ctx"))')"
 
+if [[ "${platform}" == linux-* ]]; then
+  IFS=$'\t' read -r \
+    host_system host_arch host_native_arch process_translated _native_arch_probe \
+    hardware_identity emulation hypervisor evidence_complete \
+    < <(scripts/public-cli-host-runtime-evidence.sh)
+  IFS=$'\t' read -r os_identity os_version os_product_type \
+    < <(scripts/public-cli-host-runtime-evidence.sh --os-baseline-only)
+  runtime_authority="$(scripts/public-cli-runtime-authority.sh \
+    "${platform}" "${host_system}" "${host_arch}" passed \
+    "${host_native_arch}" "${process_translated}" "${hardware_identity}" \
+    "${emulation}" "${hypervisor}" "${evidence_complete}" "" \
+    "${os_identity}" "${os_version}" "${os_product_type}" ubuntu-24.04)"
+  [[ "${runtime_authority}" == authoritative ]] || \
+    die "native Linux validation requires authoritative Ubuntu 24.04 execution"
+fi
+
 case "${platform}" in
   macos-arm64|macos-x64)
     scripts/verify-macos-signed-cli.sh "${platform}" "${artifact}" "${version}" \

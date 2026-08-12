@@ -115,8 +115,10 @@ official release binary, run these commands against a downloaded
 `ctx-macos-arm64` or `ctx-macos-x64` release asset.
 
 Official Linux release binaries are checked to require no newer than glibc
-2.35 and are built from pinned Ubuntu 22.04 container inputs rather than the
-runner's host libraries. Local semantic search is opt-in on the prebuilt
+2.35 and are constructed by the pinned Ubuntu 24.04 x86_64 factory rather than
+depending on a runner's host libraries. The factory can run directly on an
+Ubuntu 24.04 host or in an equivalent Ubuntu 24.04 VM/container/Buildkite
+image. Local semantic search is opt-in on the prebuilt
 platforms and uses a separately installed runtime sidecar, so the CLI binary
 keeps its baseline CPU and ABI contract. The macOS binaries currently target
 macOS 13 or newer.

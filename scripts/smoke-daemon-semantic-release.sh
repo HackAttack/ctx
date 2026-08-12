@@ -274,6 +274,8 @@ IFS=$'\t' read -r \
   host_system host_arch host_native_arch process_translated native_arch_probe \
   hardware_identity emulation hypervisor evidence_complete \
   < <("${script_dir}/public-cli-host-runtime-evidence.sh")
+IFS=$'\t' read -r host_os_id host_os_version host_os_product \
+  < <("${script_dir}/public-cli-host-runtime-evidence.sh" --os-baseline-only)
 
 if [[ "${ctx_bin}" =~ ^/proc/self/fd/[0-9]+/[^/]+$ ]]; then
   ctx_source="${ctx_bin}"
@@ -318,7 +320,9 @@ runtime_authority="$(
     "${runtime_platform}" "${host_system}" "${host_arch}" passed \
     "${host_native_arch}" "${process_translated}" "${hardware_identity}" \
     "${emulation}" "${hypervisor}" "${evidence_complete}" \
-    "${CTX_RELEASE_MACOS_X64_KVM_RUNNER_ID:-}"
+    "${CTX_RELEASE_MACOS_X64_KVM_RUNNER_ID:-}" \
+    "${host_os_id}" "${host_os_version}" "${host_os_product}" \
+    "${CTX_PUBLIC_CLI_RUNTIME_AUTHORITY_BASELINE:-ubuntu-24.04}"
 )"
 if [[ "${require_authoritative}" == "1" && "${runtime_authority}" != "authoritative" ]]; then
   echo "error: semantic smoke requires authoritative native ${runtime_platform} execution" >&2

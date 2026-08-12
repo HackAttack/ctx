@@ -348,7 +348,7 @@ host_authority="$(
     "${emulation}" "${hypervisor}" "${evidence_complete}"
 )"
 [[ "${host_authority}" == "authoritative" ]] \
-  || die "${platform} host evidence is not authoritative; use the pinned Ubuntu 22 controller route from other Linux hosts"
+  || die "${platform} host evidence is not authoritative; use Ubuntu 24.04 or use the pinned Ubuntu 22 controller route"
 
 builder_image="ctx-public-cli-bazel:${platform}-builder-bazel-${bazel_version}"
 runtime_image="ctx-public-cli-bazel:${platform}-runtime-ubuntu-22.04"
@@ -605,7 +605,8 @@ scripts/run-native-candidate-smoke.sh \
   "${version}" \
   "${smoke_output_dir}/candidate-smoke.json"
 if [[ -n "${native_smoke_dir}" ]]; then
-  scripts/smoke-daemon-semantic-release.sh \
+  CTX_PUBLIC_CLI_RUNTIME_AUTHORITY_BASELINE=ubuntu-22.04 \
+    scripts/smoke-daemon-semantic-release.sh \
     --runtime-archive "${release_stage}/${runtime_base}.tar.gz" \
     --runtime-platform "${CTX_PUBLIC_TARGET_PLATFORM}" \
     --ctx "${release_stage}/${CTX_PUBLIC_TARGET_BINARY}" \

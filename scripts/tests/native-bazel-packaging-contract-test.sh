@@ -386,33 +386,6 @@ for forbidden in \
   fi
 done
 
-if grep -Fq 'build-public-cli-artifact.sh' "${pipeline}"; then
-  echo "Buildkite release candidates still use the Cargo constructor" >&2
-  exit 1
-fi
-for required in \
-  'scripts/release/build-linux-bazel-release.sh' \
-  'scripts/release/run-with-release-advisory-inputs.py' \
-  '--target linux-x64 --' \
-  '--target linux-arm64 --' \
-  '--target macos-arm64 --' \
-  '--target macos-x64 --' \
-  '--native-smoke-dir target/public-cli-native-smoke/linux-x64' \
-  '--native-smoke-dir target/public-cli-native-smoke/linux-aarch64' \
-  '//:ctx_release_windows_x64' \
-  '//:ctx_release_macos_arm64' \
-  '//:ctx_release_macos_x64' \
-  '.cdx.json.sha256' \
-  '.third-party-notices.txt.sha256' \
-  '.size.json' \
-  '.candidate.json'; do
-  grep -Fq -- "${required}" "${pipeline}" || {
-    printf 'Buildkite release graph missing Bazel/evidence contract: %s\n' \
-      "${required}" >&2
-    exit 1
-  }
-done
-
 python3 - "${matrix}" <<'PY'
 import json
 from pathlib import Path
@@ -430,9 +403,9 @@ assert {target["id"] for target in targets} == expected
 assert "freebsd-x64" not in expected
 for target in targets:
     target_id = target["id"]
-    assert target["public_construction_authority"] == "bazel-release-route-v1"
+    assert target["public_construction_authority"] == "linux-cross-cargo-zigbuild-v1"
     assert target["public_construction_label"] == (
-        f"//:ctx_release_{target_id.replace('-', '_')}"
+        "scripts/release/build-public-candidate-on-linux.sh"
     )
 PY
 
