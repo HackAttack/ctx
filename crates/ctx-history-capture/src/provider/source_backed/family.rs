@@ -8,6 +8,17 @@ pub(crate) mod document;
 #[path = "family/jsonl_compat.rs"]
 pub(crate) mod jsonl;
 
+/// Capture-owned composition binding supplied to index-free provider packs.
+pub struct CaptureProviderRuntime;
+
+#[doc(hidden)]
+pub use document::CaptureDocumentSpool;
+
+impl ctx_history_provider_runtime::ProviderRuntimeBinding for CaptureProviderRuntime {
+    type CaptureLifecycleSink = super::IndexCaptureLifecycle;
+    type DocumentRecordSpool = document::CaptureDocumentSpool;
+}
+
 #[cfg(test)]
 #[path = "family/tests.rs"]
 mod tests;

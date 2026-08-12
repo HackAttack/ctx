@@ -781,8 +781,8 @@ fn refresh_source_backed_generation_with_detailed_progress_and_discovery_timing(
             }
             match scan_result {
                 Ok(()) => {
-                    let replacement_database_identity =
-                        if route.hermes_retire_after_success.is_empty() {
+                    let replacement_control_identity =
+                        if route.controlled_retire_after_success.is_empty() {
                             None
                         } else {
                             driver
@@ -799,13 +799,17 @@ fn refresh_source_backed_generation_with_detailed_progress_and_discovery_timing(
                                 .transpose()?
                                 .flatten()
                                 .as_deref()
-                                .and_then(crate::hermes_route_control_database_identity)
+                                .and_then(|control| {
+                                    driver.route_control_expectation.as_ref().and_then(
+                                        |expectation| expectation.retirement_identity(control),
+                                    )
+                                })
                         };
                     let dynamic_retirements = route
-                        .hermes_retire_after_success
+                        .controlled_retire_after_success
                         .iter()
                         .filter(|candidate| {
-                            Some(candidate.database_identity) == replacement_database_identity
+                            Some(candidate.expected_identity) == replacement_control_identity
                         })
                         .map(|candidate| candidate.route_identity.clone())
                         .collect::<Vec<_>>();

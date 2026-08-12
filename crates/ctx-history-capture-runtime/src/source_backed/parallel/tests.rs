@@ -34,6 +34,8 @@ use crate::{
 
 use super::*;
 
+mod document_lifecycle;
+
 #[derive(Debug, thiserror::Error)]
 enum TestWorkerFailure {
     #[error("injected worker failure")]

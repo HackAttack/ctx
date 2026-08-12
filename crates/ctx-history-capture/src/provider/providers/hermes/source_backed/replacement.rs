@@ -109,9 +109,12 @@ impl ReplacementDocumentTree for HermesSourceCandidate {
     }
 
     fn route_control_expectation(&self) -> Option<SourceBackedRouteControlExpectation> {
-        Some(SourceBackedRouteControlExpectation::Hermes {
-            profile_source_descriptor: self.source.exact_descriptor_digest(),
-        })
+        Some(SourceBackedRouteControlExpectation::new(
+            HERMES_ROUTE_CONTROL_KIND,
+            self.source.exact_descriptor_digest(),
+            hermes_route_control_exact_due_for_profile,
+            Some(hermes_route_control_database_identity),
+        ))
     }
 
     fn owns_source(&self, source: &SourceKey) -> bool {

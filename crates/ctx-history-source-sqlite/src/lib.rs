@@ -13,6 +13,7 @@ mod progress;
 mod query;
 mod sqlite;
 mod sqlite_source;
+mod value;
 
 pub use error::{Result, SqliteIoError};
 pub use logical::SqliteLogicalSnapshot;
@@ -20,6 +21,7 @@ pub use progress::{SqliteSourceProgress, SqliteSourceProgressStage};
 pub use query::*;
 pub use sqlite::*;
 pub use sqlite_source::*;
+pub use value::NativeSqliteValue;
 
 pub const MAX_PROVIDER_SQLITE_VALUE_BYTES: usize = 16 * 1024 * 1024;
 

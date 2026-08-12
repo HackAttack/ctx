@@ -11,12 +11,7 @@ pub enum RouteObservation {
     Indeterminate,
 }
 
-/// Provider-owned interpretation needed to validate opaque route control
-/// without reading provider content during startup or safety reconciliation.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum SourceBackedRouteControlExpectation {
-    Hermes { profile_source_descriptor: [u8; 32] },
-}
+pub use ctx_history_provider_runtime::ProviderRouteControlExpectation as SourceBackedRouteControlExpectation;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct RouteWatchTargets {

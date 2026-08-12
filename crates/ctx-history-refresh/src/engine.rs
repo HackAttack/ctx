@@ -509,14 +509,9 @@ impl CoreRefreshEngine {
             .map(|metadata| &metadata.route_controls)
             .cloned()
             .unwrap_or_default();
-        let hermes_routes = catalog
+        let controlled_routes = catalog
             .route_ids()
-            .filter(|route| {
-                matches!(
-                    catalog.route_control_expectation(route),
-                    Some(SourceBackedRouteControlExpectation::Hermes { .. })
-                )
-            })
+            .filter(|route| catalog.route_control_expectation(route).is_some())
             .cloned()
             .collect::<BTreeSet<_>>();
         let hermes_control_recovery = hermes_routes_requiring_control_recovery(
@@ -530,7 +525,7 @@ impl CoreRefreshEngine {
         let mut state = self.lock_state();
         state
             .hermes_routes_requiring_exhaustive_recovery
-            .retain(|route| !hermes_routes.contains(route));
+            .retain(|route| !controlled_routes.contains(route));
         state
             .hermes_routes_requiring_exhaustive_recovery
             .extend(hermes_control_recovery.iter().cloned());
@@ -682,13 +677,7 @@ impl CoreRefreshEngine {
         let routes = overdue_hermes_exact_routes(
             &index,
             i64::try_from(now_ms).unwrap_or(i64::MAX),
-            |route| {
-                catalog.route_control_expectation(route).map(
-                    |SourceBackedRouteControlExpectation::Hermes {
-                         profile_source_descriptor,
-                     }| *profile_source_descriptor,
-                )
-            },
+            |route| catalog.route_control_expectation(route).copied(),
         );
         if routes.is_empty() {
             return Ok(false);

@@ -16,7 +16,7 @@ const LOGICAL_SNAPSHOT_SPOOL_MAX_CORE_RECORDS: usize =
 /// cap; large database leaves use serial direct streaming instead.
 const LOGICAL_SNAPSHOT_SPOOL_MAX_ENCODED_BYTES: usize = 256 * 1024 * 1024;
 
-pub(crate) struct DeferredCoreRecords {
+pub struct DeferredCoreRecords {
     file: std::fs::File,
     budget: DeferredCoreRecordBudget,
     resources: SourceBackedRouteResources,

@@ -596,7 +596,7 @@ fn register_automatic_hermes_profile_rename_retirements(
     for replacement in current_automatic_hermes {
         build
             .registry
-            .retire_hermes_routes_after_success(&replacement, stale.clone())?;
+            .retire_controlled_routes_after_success(&replacement, stale.clone())?;
     }
     Ok(())
 }
