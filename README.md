@@ -1,6 +1,6 @@
 <img src="docs/assets/ctx-readme-banner.png" alt="You have months of coding agent history on your machine. Search it with ctx. Blame it with ctx pro." width="100%">
 
-ctx is an open-source CLI for fast local search across your past coding agent sessions. You can search messages and tool calls across agents and sessions, then jump straight to the exact event or full transcript behind each result.
+ctx is an open-source CLI for fast local search across your past coding agent sessions. You can search messages and tool calls across agents and sessions, then jump straight to the exact event or full transcript for any result.
 
 ctx pro is a paid add-on for “git blame, but for agent sessions.” Take any line, file, commit, or PR and surface the original transcript of the agent session that produced it. Your agents can use that transcript to recover the decisions, assumptions, and tool calls behind the code.
 
@@ -44,7 +44,7 @@ By structuring agent history into sessions, events, metadata, and indexed fields
 
 `git blame` tells you which commit last changed a line. `ctx blame` tells you which agent session produced that commit, with exact citations back to the original transcript and recorded tool calls.
 
-Agents use `ctx blame` to recover context that no longer exists anywhere near the current session. Starting from a file, line range, commit, or PR, they can find the historical agent sessions behind the code and recover the decisions, constraints, failed approaches, and assumptions recorded there.
+Agents use `ctx blame` to recover context that no longer exists anywhere near the current session. Starting from a file, line range, commit, or PR, they can find the relevant historical agent sessions and recover the decisions, constraints, failed approaches, and assumptions recorded there.
 
 This helps agents:
 
@@ -61,7 +61,7 @@ Every attribution includes citations back to the original transcript and tool ca
 # are disappearing from your e-commerce app.
 $ ctx blame file src/checkout.ts --lines 118:146
 
-# ctx blame finds the agent session behind those lines:
+# ctx blame finds the agent session that produced those lines:
 # Lines 118–146
 #   commit    8f3c2a1
 #   Produced by
@@ -144,7 +144,7 @@ For the full pipeline, see [How ctx works](https://ctx.rs/concepts/how-it-works)
 
 ctx is written in Rust, but that's not the main reason why it's fast. Instead of ingesting your history into a local relational database like SQLite, ctx scans it with parallel workers and writes searchable records directly to [Tantivy](https://github.com/quickwit-oss/tantivy). That removes an entire database ingest step while still supporting structured filtering and complete record retrieval.
 
-Tantivy builds the index in parallel. It creates a compact map from each term to the records containing it, searches memory-mapped segments without loading your entire history into memory, and ranks the results with BM25. The same index stores the complete record behind every result, so `ctx search`, `ctx show`, and `ctx locate` can read it without a second database or reopening and reparsing the original agent logs.
+Tantivy builds the index in parallel. It creates a compact map from each term to the records containing it, searches memory-mapped segments without loading your entire history into memory, and ranks the results with BM25. The same index stores the complete record for every result, so `ctx search`, `ctx show`, and `ctx locate` can read it without a second database or reopening and reparsing the original agent logs.
 
 In our benchmark, this was 16x faster than ctx's previous optimized SQLite implementation.
 
