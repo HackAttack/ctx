@@ -1044,7 +1044,7 @@ class RuntimeValidationTests(unittest.TestCase):
         with self.assertRaisesRegex(SystemExit, "missing pinned build provenance"):
             self.validate("freebsd-x64", bytes(self.elf(62, 9)))
 
-    def test_cuda_static_dependency_closure_rejects_missing_user_space_library(
+    def test_cuda_dependency_closure_distinguishes_system_and_bundled_libraries(
         self,
     ) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -1054,6 +1054,7 @@ class RuntimeValidationTests(unittest.TestCase):
             complete = mock.Mock(
                 stdout=(
                     " 0x1 (NEEDED) Shared library: [libcublas.so.12]\n"
+                    " 0x1 (NEEDED) Shared library: [libz.so.1]\n"
                     " 0x1 (NEEDED) Shared library: [libc.so.6]\n"
                 )
             )

@@ -21,6 +21,8 @@ CUDA_EXTERNAL_ELF_DEPENDENCIES = {
     "libpthread.so.0",
     "librt.so.1",
     "libstdc++.so.6",
+    # The pinned manylinux cuDNN wheel uses the distribution's zlib runtime.
+    "libz.so.1",
 }
 
 
