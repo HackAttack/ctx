@@ -5,8 +5,7 @@ use ctx_history_capture_runtime::{
     CaptureSourceAggregateRef, CoreMaterialization, CorePreparationError,
     CorePreparationFailureKind, CorePreparationPort, CorePreparedBatch, CorePreparedBatchBuilder,
     CorePreparedCapture, CoreRouteByteLease, CoreRouteResourceError, CoreRouteResourceKind,
-    ImmutableCaptureSnapshot, PresentCaptureRoute, VerifiedCapture,
-    CORE_RECORD_BATCH_MAX_RECORDS,
+    ImmutableCaptureSnapshot, PresentCaptureRoute, VerifiedCapture, CORE_RECORD_BATCH_MAX_RECORDS,
 };
 use ctx_history_core::{
     CertifiedSource, CertifiedSourceAppend, CertifiedSourceDeletion, CertifiedSourceInventory,
@@ -250,8 +249,7 @@ impl CaptureLifecycleSink for IndexCaptureLifecycle {
         &self,
         route_identity: &ctx_history_capture_model::SourceRouteIdentity,
     ) -> bool {
-        self.0
-            .source_route_retains_unstaged_members(route_identity)
+        self.0.source_route_retains_unstaged_members(route_identity)
     }
 
     fn register_route_revalidation(

@@ -1032,10 +1032,9 @@ fn refresh_source_backed_generation_with_detailed_progress_and_discovery_timing(
                     remaining.values().all(|owner| {
                         owner.present
                             && members
-                                .binary_search_by_key(
-                                    &owner.source.identity().digest(),
-                                    |member| member.identity().digest(),
-                                )
+                                .binary_search_by_key(&owner.source.identity().digest(), |member| {
+                                    member.identity().digest()
+                                })
                                 .ok()
                                 .and_then(|index| members.get(index))
                                 .is_some_and(|member| member.exact_descriptor_eq(&owner.source))
@@ -1217,31 +1216,30 @@ fn refresh_source_backed_generation_with_detailed_progress_and_discovery_timing(
                 &mut revalidate_source,
                 &mut revalidate_inventory,
                 |publication| {
-                        let mut live_route_controls = route_controls.clone();
-                        live_route_controls.retain(|route, _| {
-                            publication.snapshot().source_route(route).is_some()
-                        });
-                        let outcomes = successful_route_outcomes_for_snapshot(
-                            &selected_route_ids,
-                            &failed_routes,
-                            &logical_source_failures,
-                            &base_route_content,
-                            publication.snapshot(),
-                        );
-                        prepared_successful_route_outcomes = Some(outcomes.clone());
-                        factory(SourceBackedPublicationMetadataContext::new(
-                            publication,
-                            &selected_route_ids,
-                            &failed_routes,
-                            &logical_source_failures,
-                            &record_rejections,
-                            &outcomes,
-                            &complete_inventory_route_ids,
-                            &live_route_controls,
-                            applied_removals.len(),
-                        ))
-                    },
-                )?;
+                    let mut live_route_controls = route_controls.clone();
+                    live_route_controls
+                        .retain(|route, _| publication.snapshot().source_route(route).is_some());
+                    let outcomes = successful_route_outcomes_for_snapshot(
+                        &selected_route_ids,
+                        &failed_routes,
+                        &logical_source_failures,
+                        &base_route_content,
+                        publication.snapshot(),
+                    );
+                    prepared_successful_route_outcomes = Some(outcomes.clone());
+                    factory(SourceBackedPublicationMetadataContext::new(
+                        publication,
+                        &selected_route_ids,
+                        &failed_routes,
+                        &logical_source_failures,
+                        &record_rejections,
+                        &outcomes,
+                        &complete_inventory_route_ids,
+                        &live_route_controls,
+                        applied_removals.len(),
+                    ))
+                },
+            )?;
             let (commit, disposition, verified) = published.into_parts();
             (
                 IndexCaptureCommitReceipt::new(commit),
@@ -1322,7 +1320,7 @@ fn refresh_source_backed_generation_with_detailed_progress_and_discovery_timing(
     let certified_source_bytes = commit.certified_source_bytes;
     let sources = commit.snapshot().sources().to_vec();
     let source_failures = bounded_source_failures(failed_routes.values());
-    route_controls.retain(|route, _| commit.manifest().source_route(route).is_some());
+    route_controls.retain(|route, _| commit.snapshot().source_route(route).is_some());
     Ok(SourceBackedRefreshReceipt {
         commit,
         sources,

@@ -323,6 +323,7 @@ fn persisted_metadata_rejects_malformed_route_identity() {
         refresh_scope: SourceBackedRefreshScope::All,
         receipt: receipt.to_json(),
         route_observations: BTreeMap::new(),
+        route_controls: BTreeMap::new(),
     }
     .encode()
     .unwrap();
