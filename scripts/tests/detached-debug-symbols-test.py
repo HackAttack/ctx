@@ -286,6 +286,94 @@ int main(void) { printf("%d\\n", answer()); return 0; }
         )
         self.assertEqual(SYMBOL_TOOL.macho_uuid(macho), str(identifier))
 
+    @mock.patch.object(SYMBOL_TOOL.os, "geteuid", return_value=-1)
+    def test_hosted_xcode_validation(self, _geteuid: mock.Mock) -> None:
+        applications = self.directory / "Applications"
+        developer = applications / "Xcode.app/Contents/Developer"
+        developer.mkdir(parents=True)
+        for directory in (
+            applications,
+            applications / "Xcode.app",
+            developer.parent,
+            developer,
+        ):
+            directory.chmod(0o555)
+        def restore_permissions() -> None:
+            for path in (
+                applications,
+                applications / "Xcode.app",
+                developer.parent,
+                developer,
+            ):
+                path.chmod(0o755)
+
+        self.addCleanup(restore_permissions)
+        codesign = self.directory / "codesign"
+        codesign.write_bytes(b"codesign")
+        codesign.chmod(0o555)
+
+        def accepted(arguments, **_kwargs) -> str:
+            if "xcodebuild" in arguments:
+                return "Xcode 26.2\nBuild version 17C52\n"
+            return ""
+
+        common = (
+            mock.patch.object(SYMBOL_TOOL, "MACOS_APPLICATIONS", applications),
+            mock.patch.object(SYMBOL_TOOL, "MACOS_CODESIGN", codesign),
+            mock.patch.object(
+                SYMBOL_TOOL, "trusted_platform_file", return_value=codesign
+            ),
+        )
+        with common[0], common[1], common[2], mock.patch.object(
+            SYMBOL_TOOL, "run", side_effect=accepted
+        ):
+            SYMBOL_TOOL.verify_hosted_xcode(developer)
+
+        for mutation, message in (
+            ("writable", "writable"),
+            ("substituted", "canonical"),
+            ("unsigned", "unsigned"),
+            ("version", "26.2"),
+            ("build", "17C52"),
+        ):
+            with self.subTest(mutation=mutation):
+                developer.chmod(0o755 if mutation == "writable" else 0o555)
+                selected = (
+                    self.directory / "Xcode.app/Contents/Developer"
+                    if mutation == "substituted"
+                    else developer
+                )
+                if mutation == "substituted":
+                    selected.mkdir(parents=True)
+
+                def rejected(arguments, **_kwargs) -> str:
+                    if str(arguments[0]) == str(codesign) and mutation == "unsigned":
+                        raise SYMBOL_TOOL.SymbolError("unsigned")
+                    if "xcodebuild" in arguments:
+                        return (
+                            "Xcode hostile\nBuild version 17C52\n"
+                            if mutation == "version"
+                            else (
+                                "Xcode 26.2\nBuild version hostile\n"
+                                if mutation == "build"
+                                else "Xcode 26.2\nBuild version 17C52\n"
+                            )
+                        )
+                    return ""
+
+                with common[0], common[1], common[2], mock.patch.object(
+                    SYMBOL_TOOL, "run", side_effect=rejected
+                ):
+                    with self.assertRaisesRegex(SYMBOL_TOOL.SymbolError, message):
+                        SYMBOL_TOOL.verify_hosted_xcode(selected)
+
+    def test_hosted_xcode_rejects_job_owned_path(self) -> None:
+        owned = self.directory / "owned"
+        owned.mkdir()
+        owned.chmod(0o555)
+        with self.assertRaisesRegex(SYMBOL_TOOL.SymbolError, "writable"):
+            SYMBOL_TOOL.require_hosted_non_writable(owned, owned)
+
     def test_macho_prepare_removes_the_nlist_symbol_table(self) -> None:
         artifact = self.directory / "ctx-macos"
         artifact.write_bytes(b"shipping binary")
