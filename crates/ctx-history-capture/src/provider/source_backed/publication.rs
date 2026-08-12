@@ -1009,7 +1009,15 @@ fn refresh_source_backed_generation_with_detailed_progress_and_discovery_timing(
                 let members = owners
                     .values()
                     .filter(|owner| owner.route_index == route_index && owner.present)
-                    .map(|owner| owner.source.clone())
+                    .map(|owner| {
+                        #[cfg(test)]
+                        if partial_routes.contains(route_identity) {
+                            PARTIAL_BASE_ROUTE_MEMBER_VISITS.with(|visits| {
+                                visits.set(visits.get().saturating_add(1));
+                            });
+                        }
+                        owner.source.clone()
+                    })
                     .collect();
                 Some(PresentCaptureRoute::new(route_identity.clone(), members))
             },

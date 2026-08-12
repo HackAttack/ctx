@@ -2,21 +2,15 @@ use std::thread;
 
 use ctx_history_index::{IndexError, WriterOptions};
 
-use super::super::IndexCorePreparation;
-
 pub(crate) use ctx_history_capture_runtime::{
-    ParallelLeafScanBegin, ParallelLeafScanCancelled, ParallelLeafScanComplete,
-    ParallelLeafScanEmitError, ParallelLeafScanJob, ParallelLeafScanWorkerError,
+    ParallelLeafScanBegin, ParallelLeafScanComplete, ParallelLeafScanEmitError,
+    ParallelLeafScanJob, ParallelLeafScanWorkerError,
 };
 
-pub(crate) type ParallelLeafScanEmitter<'sender, R, E> =
-    ctx_history_capture_runtime::ParallelLeafScanEmitter<'sender, R, E, IndexCorePreparation>;
 pub(crate) type ParallelLeafScanError<E> =
     ctx_history_capture_runtime::ParallelLeafScanError<E, IndexError>;
 
-pub fn source_backed_refresh_work_budget(indexer_threads: usize) -> usize {
-    ctx_history_capture_runtime::source_backed_refresh_work_budget(indexer_threads)
-}
+pub use ctx_history_capture_runtime::source_backed_refresh_work_budget;
 
 /// Binds the neutral CPU split to the index writer without moving index policy
 /// into the source-backed runtime crate.

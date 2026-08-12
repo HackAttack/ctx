@@ -1,10 +1,11 @@
 use std::io::{BufRead, BufReader, Seek, SeekFrom, Write};
 
-use super::*;
 use crate::provider::source_backed::{
-    ParallelLeafScanEmitError, SourceBackedRouteByteReservation, SourceBackedRouteResourceKind,
-    SourceBackedRouteResources,
+    SourceBackedRouteByteReservation, SourceBackedRouteError, SourceBackedRouteErrorKind,
+    SourceBackedRouteResourceKind, SourceBackedRouteResources, SourceBackedRouteResult,
 };
+use ctx_history_capture_runtime::DocumentRecordSpool;
+use ctx_history_core::CoreRecord;
 
 /// One logical source may stage no more Core records than the provider-neutral
 /// source-inventory entry ceiling.
@@ -15,21 +16,7 @@ const LOGICAL_SNAPSHOT_SPOOL_MAX_CORE_RECORDS: usize =
 /// cap; large database leaves use serial direct streaming instead.
 const LOGICAL_SNAPSHOT_SPOOL_MAX_ENCODED_BYTES: usize = 256 * 1024 * 1024;
 
-/// The only write surface available while one changed document is projected.
-///
-/// Serial durable leaves stream directly to the active generation. Logical or
-/// independently scanned leaves spool to an anonymous private file until they
-/// can be retained or replayed in deterministic discovery order.
-pub(crate) struct ChangedDocumentSink<'sink, 'writer> {
-    target: ChangedDocumentTarget<'sink, 'writer>,
-    deferred: Option<DeferredCoreRecords>,
-    logical_base: Option<CertifiedSource>,
-    source: Option<SourceKey>,
-    emitted_core_records: u64,
-    record_rejections: SourceBackedRecordRejectionDrafts,
-}
-
-struct DeferredCoreRecords {
+pub(crate) struct DeferredCoreRecords {
     file: std::fs::File,
     budget: DeferredCoreRecordBudget,
     resources: SourceBackedRouteResources,
@@ -139,7 +126,7 @@ impl DeferredCoreRecordBudget {
     }
 }
 
-impl DeferredCoreRecords {
+impl DocumentRecordSpool for DeferredCoreRecords {
     fn new(resources: SourceBackedRouteResources) -> SourceBackedRouteResult<Self> {
         let file = tempfile::tempfile().map_err(|error| {
             document_internal(format!(
@@ -154,31 +141,6 @@ impl DeferredCoreRecords {
             #[cfg(test)]
             cleanup_path: None,
         })
-    }
-
-    #[cfg(test)]
-    fn test_with_limits(
-        directory: &std::path::Path,
-        limits: DeferredCoreRecordLimits,
-        resources: SourceBackedRouteResources,
-    ) -> SourceBackedRouteResult<(Self, std::path::PathBuf)> {
-        let named = tempfile::NamedTempFile::new_in(directory).map_err(|error| {
-            document_internal(format!(
-                "could not create test logical-snapshot staging file: {error}"
-            ))
-        })?;
-        let path = named.path().to_path_buf();
-        let (file, cleanup_path) = named.into_parts();
-        Ok((
-            Self {
-                file,
-                budget: DeferredCoreRecordBudget::new(limits),
-                resources,
-                scratch: Vec::new(),
-                cleanup_path: Some(cleanup_path),
-            },
-            path,
-        ))
     }
 
     fn push(&mut self, record: CoreRecord) -> SourceBackedRouteResult<()> {
@@ -276,6 +238,41 @@ impl DeferredCoreRecords {
     }
 }
 
+#[cfg(test)]
+impl DeferredCoreRecords {
+    fn test_with_limits(
+        directory: &std::path::Path,
+        limits: DeferredCoreRecordLimits,
+        resources: SourceBackedRouteResources,
+    ) -> SourceBackedRouteResult<(Self, std::path::PathBuf)> {
+        let named = tempfile::NamedTempFile::new_in(directory).map_err(|error| {
+            document_internal(format!(
+                "could not create test logical-snapshot staging file: {error}"
+            ))
+        })?;
+        let path = named.path().to_path_buf();
+        let (file, cleanup_path) = named.into_parts();
+        Ok((
+            Self {
+                file,
+                budget: DeferredCoreRecordBudget::new(limits),
+                resources,
+                scratch: Vec::new(),
+                cleanup_path: Some(cleanup_path),
+            },
+            path,
+        ))
+    }
+}
+
+fn document_internal(detail: impl Into<String>) -> SourceBackedRouteError {
+    SourceBackedRouteError::new(SourceBackedRouteErrorKind::Internal, detail)
+}
+
+fn document_contract_error(error: impl std::fmt::Display) -> SourceBackedRouteError {
+    SourceBackedRouteError::new(SourceBackedRouteErrorKind::InvalidSource, error.to_string())
+}
+
 fn document_spool_admission_error(
     error: DeferredCoreRecordAdmissionError,
 ) -> SourceBackedRouteError {
@@ -288,363 +285,11 @@ fn document_spool_admission_error(
     SourceBackedRouteError::new(kind, error.to_string())
 }
 
-enum ChangedDocumentTarget<'sink, 'writer> {
-    Generation(&'sink mut SourceBackedGenerationSink<'writer>),
-    Parallel(
-        &'sink mut ParallelLeafScanEmitter<'writer, DocumentLeafCompletion, SourceBackedRouteError>,
-    ),
-}
-
-impl<'sink, 'writer> ChangedDocumentSink<'sink, 'writer> {
-    pub(super) fn new(sink: &'sink mut SourceBackedGenerationSink<'writer>) -> Self {
-        Self {
-            target: ChangedDocumentTarget::Generation(sink),
-            deferred: None,
-            logical_base: None,
-            source: None,
-            emitted_core_records: 0,
-            record_rejections: Default::default(),
-        }
-    }
-
-    pub(super) fn logical(
-        sink: &'sink mut SourceBackedGenerationSink<'writer>,
-    ) -> SourceBackedRouteResult<Self> {
-        let deferred = DeferredCoreRecords::new(sink.route_resources())?;
-        Ok(Self {
-            target: ChangedDocumentTarget::Generation(sink),
-            deferred: Some(deferred),
-            logical_base: None,
-            source: None,
-            emitted_core_records: 0,
-            record_rejections: Default::default(),
-        })
-    }
-
-    pub(super) fn parallel_logical(
-        emitter: &'sink mut ParallelLeafScanEmitter<
-            'writer,
-            DocumentLeafCompletion,
-            SourceBackedRouteError,
-        >,
-        logical_base: Option<CertifiedSource>,
-    ) -> SourceBackedRouteResult<Self> {
-        let deferred = DeferredCoreRecords::new(emitter.route_resources())?;
-        Ok(Self {
-            target: ChangedDocumentTarget::Parallel(emitter),
-            deferred: Some(deferred),
-            logical_base,
-            source: None,
-            emitted_core_records: 0,
-            record_rejections: Default::default(),
-        })
-    }
-
-    pub(crate) fn begin_source(&mut self, source: SourceKey) -> SourceBackedRouteResult<()> {
-        if self.source.is_some() {
-            return Err(document_internal(
-                "document adapter began more than one source for one observed leaf",
-            ));
-        }
-        if self.deferred.is_none() {
-            match &mut self.target {
-                ChangedDocumentTarget::Generation(sink) => sink
-                    .begin_source(source.clone())
-                    .map_err(route_coordinator_error)?,
-                ChangedDocumentTarget::Parallel(emitter) => emitter
-                    .begin(ParallelLeafScanBegin::replace(source.clone()))
-                    .map_err(|_| {
-                        document_internal("independent document leaf scan was cancelled")
-                    })?,
-            }
-        }
-        self.source = Some(source);
-        Ok(())
-    }
-
-    pub(crate) fn emit_core_record(&mut self, record: CoreRecord) -> SourceBackedRouteResult<()> {
-        let source = self.source.as_ref().ok_or_else(|| {
-            document_internal("document adapter emitted before beginning its source")
-        })?;
-        if !record.source.exact_descriptor_eq(source) {
-            return Err(document_changed(
-                "document adapter emitted a row outside its active exact source",
-            ));
-        }
-        if let Some(deferred) = self.deferred.as_mut() {
-            deferred.push(record)?;
-        } else {
-            match &mut self.target {
-                ChangedDocumentTarget::Generation(sink) => {
-                    sink.add_core_record(record)
-                        .map_err(route_coordinator_error)?;
-                }
-                ChangedDocumentTarget::Parallel(emitter) => {
-                    emitter
-                        .emit_core_record(record)
-                        .map_err(document_emit_error)?;
-                }
-            }
-        }
-        self.emitted_core_records = self
-            .emitted_core_records
-            .checked_add(1)
-            .ok_or_else(|| document_internal("document emission count overflowed"))?;
-        Ok(())
-    }
-
-    pub(crate) fn record_rejections(&mut self, rejections: SourceBackedRecordRejectionDrafts) {
-        self.record_rejections.merge(rejections);
-    }
-
-    pub(super) fn take_record_rejections(&mut self) -> SourceBackedRecordRejectionDrafts {
-        std::mem::take(&mut self.record_rejections)
-    }
-
-    pub(crate) fn report_completed_bytes(&mut self, bytes: u64) -> SourceBackedRouteResult<()> {
-        match &mut self.target {
-            ChangedDocumentTarget::Generation(sink) => sink
-                .report_completed_bytes(bytes)
-                .map_err(route_coordinator_error),
-            ChangedDocumentTarget::Parallel(_) => Err(document_internal(
-                "parallel document leaves cannot report source byte progress",
-            )),
-        }
-    }
-
-    pub(crate) fn report_current_source_progress(
-        &mut self,
-        progress: SourceBackedCurrentSourceProgress,
-    ) -> SourceBackedRouteResult<()> {
-        match &mut self.target {
-            ChangedDocumentTarget::Generation(sink) => {
-                sink.report_current_source_progress(progress)
-            }
-            ChangedDocumentTarget::Parallel(_) => Err(document_internal(
-                "parallel document leaves cannot report current-source progress",
-            )),
-        }
-    }
-
-    pub(super) fn source(&self) -> SourceBackedRouteResult<&SourceKey> {
-        self.source
-            .as_ref()
-            .ok_or_else(|| document_internal("document adapter did not begin its source"))
-    }
-
-    pub(super) fn finish(
-        mut self,
-        terminal: DocumentSourceTerminal,
-        replay_fingerprint: Option<DocumentLeafFingerprint>,
-        append_base: Option<DocumentAppendBase>,
-    ) -> SourceBackedRouteResult<CertifiedSource> {
-        let source = self.source()?.clone();
-        if !terminal.source.exact_descriptor_eq(&source)
-            || !terminal.opening.source().exact_descriptor_eq(&source)
-            || !terminal.closing.source().exact_descriptor_eq(&source)
-        {
-            return Err(document_changed(
-                "document terminal changed its active exact source descriptor",
-            ));
-        }
-        let expected_emitted =
-            append_base
-                .as_ref()
-                .map_or(Some(terminal.counts.indexed_documents), |base| {
-                    let base = base.certificate();
-                    terminal
-                        .counts
-                        .indexed_documents
-                        .checked_sub(base.counts().indexed_documents)
-                });
-        if expected_emitted != Some(self.emitted_core_records) {
-            return Err(document_changed(
-                "document terminal indexed count did not match forwarded Core records",
-            ));
-        }
-        let logical_base = self.deferred.as_ref().and_then(|_| {
-            append_base
-                .as_ref()
-                .map(|base| base.certificate().clone())
-                .or_else(|| self.logical_base.clone())
-                .or_else(|| match &mut self.target {
-                    ChangedDocumentTarget::Generation(sink) => {
-                        sink.base_source(&terminal.source).cloned()
-                    }
-                    ChangedDocumentTarget::Parallel(_) => None,
-                })
-        });
-        let retain_core_records = self.deferred.is_some()
-            && logical_base.as_ref().is_some_and(|base| {
-                terminal_matches_base(base, &terminal)
-                    && replay_fingerprint.is_none_or(|fingerprint| {
-                        document_frontier_fingerprint(base) == Some(fingerprint)
-                    })
-            });
-        let certificate = terminal.certify(replay_fingerprint)?;
-        if let Some(deferred) = self.deferred.take() {
-            if let Some(base) = append_base {
-                let certificate_base = base.certificate();
-                let frontier = certificate_base.frontier().ok_or_else(|| {
-                    document_changed("document append base has no certified frontier")
-                })?;
-                let append = CertifiedSourceAppend::certify(
-                    certificate_base,
-                    certificate.clone(),
-                    frontier.certified_prefix_bytes(),
-                    *frontier.certified_prefix_digest(),
-                )
-                .map_err(document_contract_error)?;
-                match &mut self.target {
-                    ChangedDocumentTarget::Generation(sink) => {
-                        match base {
-                            DocumentAppendBase::Generation(base) => sink
-                                .begin_source_append_from_base(base)
-                                .map_err(route_coordinator_error)?,
-                            DocumentAppendBase::Certificate(_) => sink
-                                .begin_source_append(source.clone())
-                                .map_err(route_coordinator_error)?,
-                        };
-                        deferred.replay(|record| {
-                            sink.add_core_record(record)
-                                .map_err(route_coordinator_error)
-                        })?;
-                        sink.certify_source_append(append)
-                            .map_err(route_coordinator_error)?;
-                    }
-                    ChangedDocumentTarget::Parallel(emitter) => {
-                        emitter
-                            .begin(ParallelLeafScanBegin::append(
-                                source.clone(),
-                                certificate_base.clone(),
-                            ))
-                            .map_err(|_| {
-                                document_internal("independent document leaf scan was cancelled")
-                            })?;
-                        deferred.replay(|record| {
-                            emitter
-                                .emit_core_record(record)
-                                .map_err(document_emit_error)
-                        })?;
-                        emitter
-                            .complete(ParallelLeafScanComplete::append(
-                                append,
-                                DocumentLeafCompletion {
-                                    certificate: certificate.clone(),
-                                    record_rejections: std::mem::take(&mut self.record_rejections),
-                                },
-                            ))
-                            .map_err(|_| {
-                                document_internal("independent document leaf scan was cancelled")
-                            })?;
-                    }
-                }
-                return Ok(certificate);
-            }
-            if retain_core_records {
-                let completion = DocumentLeafCompletion {
-                    certificate: certificate.clone(),
-                    record_rejections: std::mem::take(&mut self.record_rejections),
-                };
-                match &mut self.target {
-                    ChangedDocumentTarget::Generation(sink) => {
-                        sink.retain_source(certificate.clone())
-                            .map_err(route_coordinator_error)?;
-                        sink.record_rejections(completion.record_rejections);
-                    }
-                    ChangedDocumentTarget::Parallel(emitter) => emitter
-                        .complete(ParallelLeafScanComplete::retain(
-                            certificate.clone(),
-                            completion,
-                        ))
-                        .map_err(|_| {
-                            document_internal("independent document leaf scan was cancelled")
-                        })?,
-                }
-                return Ok(certificate);
-            }
-            let source = certificate.observation().source().clone();
-            let completion = DocumentLeafCompletion {
-                certificate: certificate.clone(),
-                record_rejections: std::mem::take(&mut self.record_rejections),
-            };
-            match &mut self.target {
-                ChangedDocumentTarget::Generation(sink) => {
-                    sink.begin_source(source).map_err(route_coordinator_error)?;
-                    deferred.replay(|record| {
-                        sink.add_core_record(record)
-                            .map_err(route_coordinator_error)
-                    })?;
-                    sink.certify_source(certificate.clone())
-                        .map_err(route_coordinator_error)?;
-                    sink.record_rejections(completion.record_rejections);
-                }
-                ChangedDocumentTarget::Parallel(emitter) => {
-                    emitter
-                        .begin(ParallelLeafScanBegin::replace(source))
-                        .map_err(|_| {
-                            document_internal("independent document leaf scan was cancelled")
-                        })?;
-                    deferred.replay(|record| {
-                        emitter
-                            .emit_core_record(record)
-                            .map_err(document_emit_error)
-                    })?;
-                    emitter
-                        .complete(ParallelLeafScanComplete::replace(
-                            certificate.clone(),
-                            completion,
-                        ))
-                        .map_err(|_| {
-                            document_internal("independent document leaf scan was cancelled")
-                        })?;
-                }
-            }
-            return Ok(certificate);
-        }
-        let completion = DocumentLeafCompletion {
-            certificate: certificate.clone(),
-            record_rejections: std::mem::take(&mut self.record_rejections),
-        };
-        match &mut self.target {
-            ChangedDocumentTarget::Generation(sink) => {
-                sink.certify_source(certificate.clone())
-                    .map_err(route_coordinator_error)?;
-                sink.record_rejections(completion.record_rejections);
-            }
-            ChangedDocumentTarget::Parallel(emitter) => emitter
-                .complete(ParallelLeafScanComplete::replace(
-                    certificate.clone(),
-                    completion,
-                ))
-                .map_err(|_| document_internal("independent document leaf scan was cancelled"))?,
-        }
-        Ok(certificate)
-    }
-}
-
-fn document_emit_error(error: ParallelLeafScanEmitError) -> SourceBackedRouteError {
-    match error {
-        ParallelLeafScanEmitError::Route(error) => error,
-        ParallelLeafScanEmitError::Cancelled(_) => {
-            document_internal("independent document leaf scan was cancelled")
-        }
-    }
-}
-
-fn terminal_matches_base(base: &CertifiedSource, terminal: &DocumentSourceTerminal) -> bool {
-    base.observation() == &terminal.opening
-        && terminal.opening == terminal.closing
-        && base.parser_revision() == terminal.parser_revision
-        && base.content_digest() == &terminal.content_digest
-        && base.counts() == terminal.counts
-}
-
 #[cfg(test)]
 mod tests {
     use ctx_history_core::{
         derive_event_id, derive_session_id, CaptureProvider, EventIdentityInput, NativeItemKey,
-        NativeSessionKey, SessionIdentityInput, SourceAnchor, TypedKey,
+        NativeSessionKey, SessionIdentityInput, SourceAnchor, SourceKey, TypedKey,
     };
 
     use super::*;

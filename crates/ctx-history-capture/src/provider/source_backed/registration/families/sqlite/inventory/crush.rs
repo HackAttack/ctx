@@ -33,7 +33,7 @@ where
             .into_iter()
             .map(|database| SqliteInventoryCatalogLeaf {
                 source: database.source_key.clone(),
-                path: database.canonical_path.clone(),
+                physical_locator: database.canonical_path.clone(),
                 provider_leaf: database,
             })
             .collect();

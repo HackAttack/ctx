@@ -1,12 +1,16 @@
 //! Provider-neutral source-backed capture runtime.
 
 mod diagnostics;
+mod document;
 mod driver;
+mod inventory;
 mod parallel;
 mod resources;
 
 pub use diagnostics::*;
+pub use document::*;
 pub use driver::*;
+pub use inventory::*;
 pub use parallel::*;
 pub use resources::*;
 

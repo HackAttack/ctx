@@ -8,6 +8,16 @@ thread_local! {
 }
 
 #[cfg(test)]
+pub(crate) fn reset_base_source_manifest_visits() {
+    BASE_SOURCE_MANIFEST_VISITS.with(|visits| visits.set(0));
+}
+
+#[cfg(test)]
+pub(crate) fn base_source_manifest_visits() -> u64 {
+    BASE_SOURCE_MANIFEST_VISITS.with(std::cell::Cell::get)
+}
+
+#[cfg(test)]
 pub(crate) fn record_base_source_manifest_visit() {
     BASE_SOURCE_MANIFEST_VISITS.with(|visits| visits.set(visits.get().saturating_add(1)));
 }
@@ -17,19 +27,21 @@ pub use ctx_history_capture_runtime::{
     SourceBackedCurrentSourceProgressStage, SourceBackedFailedRoute,
     SourceBackedFailedRouteOutcome, SourceBackedLogicalSourceFailure,
     SourceBackedLogicalSourceFailures, SourceBackedReconciliationDemand,
-    SourceBackedRecordCompletion, SourceBackedRecordRejection, SourceBackedRecordRejectionClass,
-    SourceBackedRecordRejectionDraft, SourceBackedRecordRejectionDrafts,
-    SourceBackedRecordRejections, SourceBackedRefreshScope, SourceBackedRevalidationTarget,
-    SourceBackedRouteError, SourceBackedRouteErrorKind, SourceBackedRouteResult,
-    SourceBackedRouteRevalidation, SourceBackedRouteWatchTargets, SourceBackedSourceFailureClass,
-    SourceBackedSourceFailures, SourceBackedSourceOutcome, SourceOwner,
-    MAX_RECORDED_SOURCE_BACKED_FAILURES, MAX_SOURCE_BACKED_FAILURE_DETAIL_BYTES,
+    SourceBackedRecordCompletion, SourceBackedRecordProgressDelta, SourceBackedRecordRejection,
+    SourceBackedRecordRejectionClass, SourceBackedRecordRejectionDraft,
+    SourceBackedRecordRejectionDrafts, SourceBackedRecordRejections, SourceBackedRefreshScope,
+    SourceBackedRevalidationTarget, SourceBackedRouteConstructor, SourceBackedRouteError,
+    SourceBackedRouteErrorKind, SourceBackedRouteResult, SourceBackedRouteRevalidation,
+    SourceBackedRouteSelection, SourceBackedRouteWatchTargets, SourceBackedSelectorAuthority,
+    SourceBackedSourceFailureClass, SourceBackedSourceFailures, SourceBackedWatchTargetKind,
+    SourceOwner, MAX_RECORDED_SOURCE_BACKED_FAILURES, MAX_SOURCE_BACKED_FAILURE_DETAIL_BYTES,
     MAX_SOURCE_BACKED_FAILURE_SELECTOR_BYTES, MAX_SOURCE_BACKED_ROUTE_CONTROL_BYTES,
 };
 use ctx_history_capture_runtime::{
     SourceBackedCoordinatorError as RuntimeSourceBackedCoordinatorError,
-    SourceBackedGenerationSink as RuntimeSourceBackedGenerationSink,
+    SourceBackedGenerationSink as RuntimeSourceBackedGenerationSink, SourceBackedRegistryRoute,
     SourceBackedRouteDriver as RuntimeSourceBackedRouteDriver,
+    SourceBackedRouteMetadata as RuntimeSourceBackedRouteMetadata, SourceBackedRouteRegistry,
 };
 
 pub type SourceBackedCoordinatorError = RuntimeSourceBackedCoordinatorError<IndexError>;
@@ -40,16 +52,7 @@ pub type SourceBackedRouteDriver =
     RuntimeSourceBackedRouteDriver<IndexCaptureLifecycle, SourceBackedRouteControlExpectation>;
 
 /// Runtime metadata for one selected source route.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct SourceBackedRouteMetadata {
-    pub source: ProviderSource,
-    pub certified_source_format: &'static str,
-    pub selection: Option<SourceBackedRouteSelection>,
-    pub selector_authority: SourceBackedSelectorAuthority,
-    pub unsupported_reason: Option<String>,
-    pub route_identity: Option<SourceRouteIdentity>,
-    pub watch_target_kind: SourceBackedWatchTargetKind,
-}
+pub type SourceBackedRouteMetadata = RuntimeSourceBackedRouteMetadata<ProviderSource>;
 pub(in super::super) fn source_backed_failed_route_from_route(
     route: &SourceBackedRoute,
     class: SourceBackedSourceFailureClass,
@@ -240,9 +243,42 @@ impl SourceBackedRoute {
     }
 }
 
+impl SourceBackedRegistryRoute for SourceBackedRoute {
+    type Metadata = SourceBackedRouteMetadata;
+
+    fn metadata(&self) -> &Self::Metadata {
+        &self.metadata
+    }
+
+    fn route_identity(&self) -> Option<&SourceRouteIdentity> {
+        self.metadata.route_identity.as_ref()
+    }
+
+    fn is_executable(&self) -> bool {
+        self.driver.is_some()
+    }
+
+    fn has_certified_missing_paths(&self) -> bool {
+        !self.certified_missing_paths.is_empty()
+    }
+
+    fn uses_parallel_leaf_workers(&self) -> bool {
+        self.driver
+            .as_ref()
+            .is_some_and(|driver| driver.uses_parallel_leaf_workers)
+    }
+
+    fn absorb_certified_missing_route(&mut self, mut route: Self) {
+        self.certified_missing_paths
+            .append(&mut route.certified_missing_paths);
+        self.certified_missing_paths.sort();
+        self.certified_missing_paths.dedup();
+    }
+}
+
 #[derive(Debug, Clone, Default)]
 pub struct SourceBackedProviderRegistry {
-    pub(in super::super) routes: Vec<SourceBackedRoute>,
+    pub(in super::super) routes: SourceBackedRouteRegistry<SourceBackedRoute>,
     pub(in super::super) codex_generation: Option<Arc<CodexGenerationNormalizationCoordinatorV0>>,
 }
 
@@ -252,28 +288,7 @@ impl SourceBackedProviderRegistry {
     }
 
     pub fn register(&mut self, route: SourceBackedRoute) {
-        if let Some(identity) = route.metadata.route_identity.as_ref() {
-            if let Some(existing) = self
-                .routes
-                .iter_mut()
-                .find(|existing| existing.metadata.route_identity.as_ref() == Some(identity))
-            {
-                if existing.driver.is_some() {
-                    return;
-                }
-                if route.driver.is_some() {
-                    *existing = route;
-                    return;
-                }
-                existing
-                    .certified_missing_paths
-                    .extend(route.certified_missing_paths);
-                existing.certified_missing_paths.sort();
-                existing.certified_missing_paths.dedup();
-                return;
-            }
-        }
-        self.routes.push(route);
+        self.routes.register(route);
     }
 
     /// Binds exact carried base routes to an executable replacement route.
@@ -368,14 +383,11 @@ impl SourceBackedProviderRegistry {
     }
 
     pub fn routes(&self) -> impl ExactSizeIterator<Item = &SourceBackedRouteMetadata> {
-        self.routes.iter().map(SourceBackedRoute::metadata)
+        self.routes.routes()
     }
 
     pub fn executable_route_count(&self) -> usize {
-        self.routes
-            .iter()
-            .filter(|route| route.driver.is_some())
-            .count()
+        self.routes.executable_route_count()
     }
 
     /// Returns whether any executable route selected by this exact refresh can
@@ -384,28 +396,11 @@ impl SourceBackedProviderRegistry {
         &self,
         scope: &SourceBackedRefreshScope,
     ) -> bool {
-        self.routes.iter().any(|route| {
-            route
-                .driver
-                .as_ref()
-                .is_some_and(|driver| driver.uses_parallel_leaf_workers)
-                && match scope {
-                    SourceBackedRefreshScope::All => true,
-                    SourceBackedRefreshScope::Exact(selected) => route
-                        .metadata
-                        .route_identity
-                        .as_ref()
-                        .is_some_and(|identity| selected.contains(identity)),
-                }
-        })
+        self.routes.selected_routes_use_parallel_leaf_workers(scope)
     }
 
     pub fn unsupported_route_count(&self) -> usize {
-        self.routes
-            .iter()
-            .filter(|route| route.driver.is_none())
-            .filter(|route| route.certified_missing_paths.is_empty())
-            .count()
+        self.routes.unsupported_route_count()
     }
 }
 

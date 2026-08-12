@@ -113,6 +113,10 @@ pub(super) fn take_last_work_counters() -> Option<OpenCodeSqliteWorkCounters> {
 }
 
 impl ReplacementDocumentTree for OpenCodeDocumentTreeAdapter {
+    type Lifecycle = crate::provider::source_backed::family::document::CaptureDocumentLifecycle;
+    type Spool = crate::provider::source_backed::family::document::CaptureDocumentSpool;
+    type RouteControl =
+        crate::provider::source_backed::family::document::CaptureDocumentRouteControl;
     type Leaf = OpenCodeDocumentLeaf;
     type TreeAuthority = OpenCodeTreeAuthority;
 
