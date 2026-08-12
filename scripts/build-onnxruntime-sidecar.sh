@@ -16,9 +16,9 @@ Builds or validates one pinned public ctx native runtime sidecar. CPU and CUDA
 use ONNX Runtime 1.27.0. The legacy windows-x64 lane retains its pinned
 app-local VC runtime; windows-x64-windowsml is a separate self-contained
 Windows ML 2.1.74 asset. The CUDA artifact includes its pinned CUDA 12 and
-cuDNN user-space libraries, leaving only the NVIDIA driver on the host. Every
-official input is checksum-pinned. macos-x64 is built from checksum-pinned
-source and requires a native Intel macOS host.
+cuDNN user-space libraries; the NVIDIA driver and baseline Linux system
+libraries remain host-provided. Every official input is checksum-pinned.
+macos-x64 is built from checksum-pinned source on a native Intel macOS host.
 freebsd-x64 is built from that same checksum-pinned source on a native x64
 FreeBSD 14 host. Its two compatibility patches are checksum-pinned to FreeBSD
 ports commit 7c1f125705820cd2b776056f2c492ed605f3b5e3. CMake is forced to fetch
