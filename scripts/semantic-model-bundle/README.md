@@ -16,8 +16,10 @@ model license. The producer below remains an offline packaging step.
 
 ## Reproducible production
 
-1. On macOS 26.2 with Xcode 26.2 and CPython 3.11.9, create an isolated
-   environment and install `requirements.lock`.
+1. Use the pinned Buildkite macOS Tahoe 26.3.1 hosted image with Xcode 26.2.
+   `run-pinned-producer.sh` downloads checksum-pinned CPython 3.11.9 and `uv`,
+   then installs the exact top-level distributions in `requirements.lock` into
+   that isolated interpreter. The producer verifies every locked version.
 2. Resolve the model only at revision
    `614241f622f53c4eeff9890bdc4f31cfecc418b3`; retain its `tokenizer.json`
    and source weights plus the Microsoft MIT model license locally. Convert
@@ -33,7 +35,7 @@ python scripts/convert-e5-coreml.py /artifacts/query.mlpackage \
 3. Run the producer with the same fixed tensor dimensions:
 
 ```bash
-python scripts/semantic-model-bundle/produce.py \
+scripts/semantic-model-bundle/run-pinned-producer.sh \
   --tokenizer /public-snapshot/tokenizer.json \
   --document-model /artifacts/document.mlpackage \
   --query-model /artifacts/query.mlpackage \

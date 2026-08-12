@@ -396,7 +396,7 @@ def validate_semantic_input_preparation(blocks):
         ),
         "semantic-coreml-archive": (
             "prepare-coreml \\\n  --output-dir target/semantic-coreml-source",
-            "semantic-model-bundle/produce.py",
+            "semantic-model-bundle/run-pinned-producer.sh",
             "--tokenizer target/semantic-coreml-source/tokenizer.json",
             "--document-model target/semantic-coreml-source/document.mlpackage",
             "--query-model target/semantic-coreml-source/query.mlpackage",
@@ -412,6 +412,17 @@ def validate_semantic_input_preparation(blocks):
             all(position >= 0 for position in positions) and positions == sorted(positions),
             f"{key} must prepare pinned inputs before offline packaging",
         )
+    coreml = next(block for block in blocks if step_key(block) == "semantic-coreml-archive")
+    require_route(
+        "python3 scripts/semantic-model-bundle/produce.py" not in command(coreml),
+        "semantic-coreml-archive must not use ambient Python",
+    )
+    require_route(
+        'queue: "ctx-release-macos-arm64"' in coreml
+        and 'os: "darwin"' in coreml
+        and 'arch: "arm64"' in coreml,
+        "semantic-coreml-archive must use the pinned hosted Apple Silicon queue",
+    )
 
 
 def expect_rejection(name, blocks, validator=validate_validation_routes):
@@ -547,6 +558,30 @@ mutated_missing_preparation = [
 expect_rejection(
     "missing pinned Semantic preparation",
     mutated_missing_preparation,
+    validate_semantic_input_preparation,
+)
+expect_rejection(
+    "ambient Semantic Core ML Python",
+    [
+        block.replace(
+            "scripts/semantic-model-bundle/run-pinned-producer.sh",
+            "python3 scripts/semantic-model-bundle/produce.py",
+            1,
+        )
+        if step_key(block) == "semantic-coreml-archive"
+        else block
+        for block in steps
+    ],
+    validate_semantic_input_preparation,
+)
+expect_rejection(
+    "unbound Semantic Core ML queue",
+    [
+        block.replace('queue: "ctx-release-macos-arm64"', 'queue: "mac-shared"', 1)
+        if step_key(block) == "semantic-coreml-archive"
+        else block
+        for block in steps
+    ],
     validate_semantic_input_preparation,
 )
 print(
