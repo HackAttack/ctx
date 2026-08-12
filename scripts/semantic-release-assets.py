@@ -18,6 +18,7 @@ from typing import BinaryIO
 
 
 SCHEMA_VERSION = 1
+DOWNLOAD_USER_AGENT = "ctx-semantic-release-assets/1 (+https://ctx.rs)"
 MODEL_VERSION = "1.0.0"
 MODEL_ID = "intfloat/multilingual-e5-small"
 MODEL_REVISION = "614241f622f53c4eeff9890bdc4f31cfecc418b3"
@@ -307,7 +308,12 @@ def download_exact_url(
     digest = hashlib.sha256()
     size = 0
     try:
-        with urllib.request.urlopen(url, timeout=300) as response, destination.open(
+        request = urllib.request.Request(
+            url,
+            headers={"User-Agent": DOWNLOAD_USER_AGENT},
+            method="GET",
+        )
+        with urllib.request.urlopen(request, timeout=300) as response, destination.open(
             "xb"
         ) as output:
             while block := response.read(1024 * 1024):
