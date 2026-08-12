@@ -40,7 +40,7 @@ By structuring agent history into sessions, events, metadata, and indexed fields
 
 <img src="docs/assets/ctx-token-efficiency-chart.png" alt="Token output per agent history search: ctx search 917 tokens, raw transcript search 45,734 tokens." width="100%">
 
-## ctx Pro: git blame, but for agent sessions
+## ctx pro: git blame, but for agent sessions
 
 `git blame` tells you which commit last changed a line. `ctx blame` tells you which agent session produced that commit, with exact citations back to the original transcript and recorded tool calls.
 
@@ -113,7 +113,7 @@ When semantic search is enabled, ctx embeds history locally with `multilingual-e
 
 ## How it works
 
-Your past agent sessions begin in local provider history files. `ctx setup` discovers supported sources, reads those records without modifying them, and publishes complete normalized sessions and events into an immutable Core generation. Search, show, locate, MCP, semantic indexing, and ctx Pro all start from that same verified local history.
+Your past agent sessions begin in local provider history files. `ctx setup` discovers supported sources, reads those records without modifying them, and publishes complete normalized sessions and events into an immutable Core generation. Search, show, locate, MCP, semantic indexing, and ctx pro all start from that same verified local history.
 
 Core is local and private by default. Transcript text is preserved rather than hiding local paths or secret-shaped strings, so review copied output before sharing it outside the machine.
 
@@ -167,11 +167,11 @@ For the full pipeline, see [How ctx works](https://ctx.rs/concepts/how-it-works)
 
 Up to $120 per friend.
 
-Coding agents aren't cheap. For each developer you refer who becomes a ctx Pro subscriber, you earn $10 cash for each of their first 12 qualifying paid months.
+Coding agents aren't cheap. For each developer you refer who becomes a ctx pro subscriber, you earn $10 cash for each of their first 12 qualifying paid months.
 
 Two active referrals earn you $20 per month. Ten earn you $100 per month.
 
-The developer you refer gets a 30-day Pro trial instead of the standard 14 days.
+The developer you refer gets a 30-day pro trial instead of the standard 14 days.
 
 ```bash
 # Claim your referral codename
@@ -245,7 +245,7 @@ ctx keeps retrieval tied to sessions and events, so another agent can inspect th
 | --- | --- |
 | [Install](https://ctx.rs/getting-started/install) | Install ctx, initialize local storage, and index discovered local history. |
 | [Quickstart](https://ctx.rs/first-search) | Search local history, inspect an event, open the session, and use JSON output. |
-| [ctx Pro and referrals](https://ctx.rs/reference/cli#ctx-pro-and-referrals) | Start or manage ctx Pro and use the person-to-person referral commands. |
+| [ctx pro and referrals](https://ctx.rs/reference/cli#ctx-pro-and-referrals) | Start or manage ctx pro and use the person-to-person referral commands. |
 | [Referral details](https://ctx.rs/pro/referrals) | Review referral eligibility, commissions, payouts, and terms. |
 | [Install the ctx skill](https://ctx.rs/skill) | Install the agent-history search skill with the open skills installer. |
 | [Package managers and unmanaged installs](docs/unmanaged-installs.md) | Install from GitHub Releases, mise, Homebrew, or source builds. |
