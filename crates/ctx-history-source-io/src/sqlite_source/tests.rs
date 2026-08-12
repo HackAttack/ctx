@@ -166,9 +166,19 @@ fn directory_file_bytes(path: &Path) -> BTreeMap<OsString, Vec<u8>> {
 }
 
 #[cfg(target_os = "linux")]
-fn directory_file_state(
-    path: &Path,
-) -> BTreeMap<OsString, ([u8; 32], u64, u32, i64, i64, i64, i64)> {
+#[derive(Debug, PartialEq, Eq)]
+struct DirectoryFileState {
+    digest: [u8; 32],
+    len: u64,
+    mode: u32,
+    mtime: i64,
+    mtime_nsec: i64,
+    ctime: i64,
+    ctime_nsec: i64,
+}
+
+#[cfg(target_os = "linux")]
+fn directory_file_state(path: &Path) -> BTreeMap<OsString, DirectoryFileState> {
     fs::read_dir(path)
         .unwrap()
         .map(|entry| {
@@ -176,15 +186,15 @@ fn directory_file_state(
             let metadata = entry.metadata().unwrap();
             (
                 entry.file_name(),
-                (
-                    sha2::Sha256::digest(fs::read(entry.path()).unwrap()).into(),
-                    metadata.len(),
-                    metadata.mode(),
-                    metadata.mtime(),
-                    metadata.mtime_nsec(),
-                    metadata.ctime(),
-                    metadata.ctime_nsec(),
-                ),
+                DirectoryFileState {
+                    digest: sha2::Sha256::digest(fs::read(entry.path()).unwrap()).into(),
+                    len: metadata.len(),
+                    mode: metadata.mode(),
+                    mtime: metadata.mtime(),
+                    mtime_nsec: metadata.mtime_nsec(),
+                    ctime: metadata.ctime(),
+                    ctime_nsec: metadata.ctime_nsec(),
+                },
             )
         })
         .collect()
