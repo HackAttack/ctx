@@ -1,8 +1,8 @@
 use serde_json::Value;
 
-use crate::local_usage;
+use ctx_client_observability::local_usage;
 
-use super::humanize_code;
+use super::status_presentation::humanize_code;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum StatusHealth {

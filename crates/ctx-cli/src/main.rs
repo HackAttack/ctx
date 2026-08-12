@@ -69,10 +69,12 @@ mod value_parsers;
 mod parser_prop_tests;
 
 pub(crate) use cli::{
-    Cli, DaemonArgs, DaemonCommand, DaemonStartModeArg, DaemonTriggerCommandArg, DoctorArgs,
-    ImportArgs, SetupArgs, StatusArgs, UsageStatusMode,
+    Cli, DaemonArgs, DaemonCommand, DaemonStartModeArg, DaemonTriggerCommandArg, ImportArgs,
 };
 pub(crate) use commands::locate::LocateTarget;
+pub(crate) use ctx_cli_presentation::commands::{
+    DoctorArgs, SetupArgs, StatusArgs, UsageStatusMode,
+};
 pub(crate) use ctx_history_read_application::SearchBackend as SearchBackendArg;
 pub(crate) use provider_args::{parse_provider_arg, ProviderArg};
 pub(crate) use provider_sources::{discovered_plugin_sources_json, sources_json};
