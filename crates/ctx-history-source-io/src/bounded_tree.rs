@@ -6,62 +6,92 @@ use std::{
     sync::Arc,
 };
 
-use ctx_history_core::CaptureProvider;
 use tempfile::TempDir;
 
-use crate::common::io::{
+use crate::{
     open_provider_source_path, OpenedProviderSourceFile, OpenedProviderSourcePath,
-    ProviderSourceDirectory,
+    ProviderSourceDirectory, SourceIoError, PROVIDER_JSONL_INVENTORY_MAX_METADATA_ENTRIES,
 };
-use crate::{CaptureError, Result, PROVIDER_JSONL_INVENTORY_MAX_METADATA_ENTRIES};
 
-const NATIVE_JSONL_MAX_DIRECTORY_DEPTH: usize = 128;
-const NATIVE_JSONL_DIRECTORY_RUN_ENTRIES: usize = 64;
-const NATIVE_JSONL_DIRECTORY_MERGE_FAN_IN: usize = 16;
+const BOUNDED_TREE_MAX_DIRECTORY_DEPTH: usize = 128;
+const BOUNDED_TREE_DIRECTORY_RUN_ENTRIES: usize = 64;
+const BOUNDED_TREE_DIRECTORY_MERGE_FAN_IN: usize = 16;
+
+/// One lexical file candidate presented before its child is opened.
+///
+/// The retained parent capability is present for tree children and absent
+/// when the requested root is itself a file. Selection policy may use the
+/// parent to inspect a sibling without returning to an ancestor pathname.
+#[derive(Debug, Clone, Copy)]
+pub struct BoundedTreeFileCandidate<'a> {
+    path: &'a Path,
+    parent: Option<&'a ProviderSourceDirectory>,
+}
+
+impl<'a> BoundedTreeFileCandidate<'a> {
+    pub fn path(self) -> &'a Path {
+        self.path
+    }
+
+    pub fn parent(self) -> Option<&'a ProviderSourceDirectory> {
+        self.parent
+    }
+}
 
 #[derive(Debug, Clone)]
-pub(super) struct NativeJsonlSourceFile {
+pub struct BoundedTreeSourceFile {
     path: PathBuf,
     opened: Arc<OpenedProviderSourceFile>,
 }
 
-impl NativeJsonlSourceFile {
-    pub(super) fn path(&self) -> &Path {
+impl BoundedTreeSourceFile {
+    pub fn path(&self) -> &Path {
         &self.path
     }
 }
 
-pub(super) fn visit_jsonl_tree_files(
-    provider: CaptureProvider,
+pub fn visit_bounded_tree_files<E>(
     root: &Path,
-    visit: &mut dyn FnMut(NativeJsonlSourceFile) -> Result<()>,
-) -> Result<usize> {
-    visit_jsonl_tree_files_isolating_selected(provider, root, visit, &mut |_path, error| Err(error))
+    selected: &mut dyn FnMut(BoundedTreeFileCandidate<'_>) -> bool,
+    visit: &mut dyn FnMut(BoundedTreeSourceFile) -> std::result::Result<(), E>,
+) -> std::result::Result<usize, E>
+where
+    E: From<SourceIoError>,
+{
+    visit_bounded_tree_files_isolating_selected(root, selected, visit, &mut |_path, error| {
+        Err(error)
+    })
 }
 
 /// Visits a tree while containing admission/read failures for selected child
 /// files. Root and directory-enumeration failures remain fatal because no
 /// independent source boundary has been established for them.
-pub(super) fn visit_jsonl_tree_files_isolating_selected(
-    provider: CaptureProvider,
+pub fn visit_bounded_tree_files_isolating_selected<E>(
     root: &Path,
-    visit: &mut dyn FnMut(NativeJsonlSourceFile) -> Result<()>,
-    selected_file_error: &mut dyn FnMut(&Path, CaptureError) -> Result<()>,
-) -> Result<usize> {
-    match open_provider_source_path(root) {
+    selected: &mut dyn FnMut(BoundedTreeFileCandidate<'_>) -> bool,
+    visit: &mut dyn FnMut(BoundedTreeSourceFile) -> std::result::Result<(), E>,
+    selected_file_error: &mut dyn FnMut(&Path, E) -> std::result::Result<(), E>,
+) -> std::result::Result<usize, E>
+where
+    E: From<SourceIoError>,
+{
+    match open_provider_source_path(root).map_err(E::from) {
         Ok(OpenedProviderSourcePath::File(file)) => {
-            if !super::dialect::native_jsonl_file_is_selected(provider, root, false) {
-                file.revalidate()?;
+            if !selected(BoundedTreeFileCandidate {
+                path: root,
+                parent: None,
+            }) {
+                file.revalidate().map_err(E::from)?;
                 return Ok(0);
             }
-            let file = NativeJsonlSourceFile {
+            let file = BoundedTreeSourceFile {
                 path: root.to_path_buf(),
                 opened: Arc::new(file),
             };
             let result = visit(file.clone());
             match result {
                 Ok(()) => {
-                    file.opened.revalidate()?;
+                    file.opened.revalidate().map_err(E::from)?;
                     Ok(1)
                 }
                 Err(error) => {
@@ -72,71 +102,77 @@ pub(super) fn visit_jsonl_tree_files_isolating_selected(
         }
         Ok(OpenedProviderSourcePath::Directory(directory)) => {
             let authority = directory.authority_root();
-            let visited = visit_jsonl_tree_files_at_depth(
-                provider,
+            let visited = visit_bounded_tree_files_at_depth(
                 root,
                 directory,
+                selected,
                 visit,
                 selected_file_error,
                 0,
             )?;
-            authority.revalidate()?;
+            authority.revalidate().map_err(E::from)?;
             Ok(visited)
-        }
-        Err(CaptureError::Io(error)) if error.kind() == io::ErrorKind::NotFound => {
-            Err(error.into())
         }
         Err(error) => Err(error),
     }
 }
 
-fn visit_jsonl_tree_files_at_depth(
-    provider: CaptureProvider,
+fn visit_bounded_tree_files_at_depth<E>(
     path: &Path,
     directory: ProviderSourceDirectory,
-    visit: &mut dyn FnMut(NativeJsonlSourceFile) -> Result<()>,
-    selected_file_error: &mut dyn FnMut(&Path, CaptureError) -> Result<()>,
+    selected: &mut dyn FnMut(BoundedTreeFileCandidate<'_>) -> bool,
+    visit: &mut dyn FnMut(BoundedTreeSourceFile) -> std::result::Result<(), E>,
+    selected_file_error: &mut dyn FnMut(&Path, E) -> std::result::Result<(), E>,
     depth: usize,
-) -> Result<usize> {
-    if depth > NATIVE_JSONL_MAX_DIRECTORY_DEPTH {
-        return Err(CaptureError::InvalidProviderTranscriptPath {
+) -> std::result::Result<usize, E>
+where
+    E: From<SourceIoError>,
+{
+    if depth > BOUNDED_TREE_MAX_DIRECTORY_DEPTH {
+        return Err(SourceIoError::InvalidProviderTranscriptPath {
             path: path.to_path_buf(),
             reason: "provider transcript directory nesting exceeds the supported limit",
-        });
+        }
+        .into());
     }
 
     let mut visited = 0_usize;
-    visit_native_jsonl_directory_names(&directory, &mut |name| {
+    visit_bounded_tree_directory_names::<E>(&directory, &mut |name| {
         let child_path = path.join(&name);
-        let selected = selected_file(provider, &directory, &child_path, &name);
+        let is_selected = selected(BoundedTreeFileCandidate {
+            path: &child_path,
+            parent: Some(&directory),
+        });
         let opened = match directory.open_child(&name) {
             Ok(opened) => opened,
-            Err(error) if selected => {
-                selected_file_error(&child_path, error)?;
+            Err(error) if is_selected => {
+                selected_file_error(&child_path, error.into())?;
                 return Ok(());
             }
-            Err(error) => return Err(error),
+            Err(error) => return Err(error.into()),
         };
         if let OpenedProviderSourcePath::Directory(child_directory) = opened {
-            visited = visited.saturating_add(visit_jsonl_tree_files_at_depth(
-                provider,
+            visited = visited.saturating_add(visit_bounded_tree_files_at_depth(
                 &child_path,
                 child_directory,
+                selected,
                 visit,
                 selected_file_error,
                 depth.saturating_add(1),
             )?);
-        } else if selected {
+        } else if is_selected {
             let OpenedProviderSourcePath::File(file) = opened else {
-                return Err(CaptureError::SystemInvariant(
+                return Err(SourceIoError::SystemInvariant(
                     "native JSONL child classification is incomplete",
-                ));
+                )
+                .into());
             };
-            let file = NativeJsonlSourceFile {
+            let file = BoundedTreeSourceFile {
                 path: child_path.clone(),
                 opened: Arc::new(file),
             };
-            let outcome = visit(file.clone()).and_then(|()| file.opened.revalidate());
+            let outcome =
+                visit(file.clone()).and_then(|()| file.opened.revalidate().map_err(E::from));
             match outcome {
                 Ok(()) => visited = visited.saturating_add(1),
                 Err(error) => selected_file_error(&child_path, error)?,
@@ -144,42 +180,37 @@ fn visit_jsonl_tree_files_at_depth(
         }
         Ok(())
     })?;
-    directory.revalidate()?;
+    directory.revalidate().map_err(E::from)?;
     Ok(visited)
 }
 
-fn selected_file(
-    provider: CaptureProvider,
+fn visit_bounded_tree_directory_names<E>(
     directory: &ProviderSourceDirectory,
-    path: &Path,
-    name: &OsStr,
-) -> bool {
-    let full_transcript_is_regular = provider == CaptureProvider::Antigravity
-        && name == OsStr::new("transcript.jsonl")
-        && matches!(
-            directory.open_child(OsStr::new("transcript_full.jsonl")),
-            Ok(OpenedProviderSourcePath::File(_))
-        );
-    super::dialect::native_jsonl_file_is_selected(provider, path, full_transcript_is_regular)
-}
-
-fn visit_native_jsonl_directory_names(
-    directory: &ProviderSourceDirectory,
-    visit: &mut dyn FnMut(OsString) -> Result<()>,
-) -> Result<()> {
+    visit: &mut dyn FnMut(OsString) -> std::result::Result<(), E>,
+) -> std::result::Result<(), E>
+where
+    E: From<SourceIoError>,
+{
     // `ReadDir` order is not portable. Keep small directories in memory, then
     // spill only native filenames into fixed runs so wide fanout stays bounded
     // without changing the byte-stable provider visitation order.
     traversal_stats(|stats| stats.directory_read_passes += 1);
-    let mut names = Vec::with_capacity(NATIVE_JSONL_DIRECTORY_RUN_ENTRIES);
+    let mut names = Vec::with_capacity(BOUNDED_TREE_DIRECTORY_RUN_ENTRIES);
     let mut spill = None;
-    for name in directory.entries(PROVIDER_JSONL_INVENTORY_MAX_METADATA_ENTRIES)? {
+    for name in directory
+        .entries(PROVIDER_JSONL_INVENTORY_MAX_METADATA_ENTRIES)
+        .map_err(E::from)?
+    {
         traversal_stats(|stats| stats.directory_entries_read += 1);
-        if names.len() == NATIVE_JSONL_DIRECTORY_RUN_ENTRIES {
-            let runs = spill.get_or_insert(NativeJsonlDirectoryRuns::new()?);
-            runs.write_initial_run(&mut names)?;
+        if names.len() == BOUNDED_TREE_DIRECTORY_RUN_ENTRIES {
+            let runs = spill.get_or_insert(
+                BoundedTreeDirectoryRuns::new()
+                    .map_err(|error| E::from(SourceIoError::Io(error)))?,
+            );
+            runs.write_initial_run(&mut names)
+                .map_err(|error| E::from(SourceIoError::Io(error)))?;
         }
-        names.push(native_jsonl_filename_order_key(&name));
+        names.push(native_filename_order_key(&name));
         traversal_stats(|stats| {
             stats.max_retained_names = stats.max_retained_names.max(names.len())
         });
@@ -189,28 +220,42 @@ fn visit_native_jsonl_directory_names(
         names.sort_unstable();
         for name in names {
             traversal_stats(|stats| stats.final_names_read += 1);
-            visit(native_jsonl_filename_from_order_key(name)?)?;
+            visit(
+                native_filename_from_order_key(name)
+                    .map_err(|error| E::from(SourceIoError::Io(error)))?,
+            )?;
         }
         return Ok(());
     };
     if !names.is_empty() {
-        spill.write_initial_run(&mut names)?;
+        spill
+            .write_initial_run(&mut names)
+            .map_err(|error| E::from(SourceIoError::Io(error)))?;
     }
-    let final_run = spill.merge_to_one()?;
-    let mut reader = NativeJsonlRunReader::open(final_run)?;
-    while let Some(name) = reader.next_name()? {
+    let final_run = spill
+        .merge_to_one()
+        .map_err(|error| E::from(SourceIoError::Io(error)))?;
+    let mut reader =
+        BoundedTreeRunReader::open(final_run).map_err(|error| E::from(SourceIoError::Io(error)))?;
+    while let Some(name) = reader
+        .next_name()
+        .map_err(|error| E::from(SourceIoError::Io(error)))?
+    {
         traversal_stats(|stats| stats.final_names_read += 1);
-        visit(native_jsonl_filename_from_order_key(name)?)?;
+        visit(
+            native_filename_from_order_key(name)
+                .map_err(|error| E::from(SourceIoError::Io(error)))?,
+        )?;
     }
     Ok(())
 }
 
-struct NativeJsonlDirectoryRuns {
+struct BoundedTreeDirectoryRuns {
     directory: TempDir,
     initial_runs: usize,
 }
 
-impl NativeJsonlDirectoryRuns {
+impl BoundedTreeDirectoryRuns {
     fn new() -> io::Result<Self> {
         Ok(Self {
             directory: tempfile::Builder::new()
@@ -238,9 +283,9 @@ impl NativeJsonlDirectoryRuns {
         let mut run_count = self.initial_runs;
         while run_count > 1 {
             let mut output_run = 0_usize;
-            for first_input in (0..run_count).step_by(NATIVE_JSONL_DIRECTORY_MERGE_FAN_IN) {
+            for first_input in (0..run_count).step_by(BOUNDED_TREE_DIRECTORY_MERGE_FAN_IN) {
                 let input_count =
-                    NATIVE_JSONL_DIRECTORY_MERGE_FAN_IN.min(run_count.saturating_sub(first_input));
+                    BOUNDED_TREE_DIRECTORY_MERGE_FAN_IN.min(run_count.saturating_sub(first_input));
                 let output = self.run_path(pass.saturating_add(1), output_run);
                 self.merge_run_group(pass, first_input, input_count, &output)?;
                 output_run += 1;
@@ -260,7 +305,7 @@ impl NativeJsonlDirectoryRuns {
     ) -> io::Result<()> {
         let mut inputs = Vec::with_capacity(input_count);
         for run in first_input..first_input.saturating_add(input_count) {
-            inputs.push(NativeJsonlRunReader::open(self.run_path(pass, run))?);
+            inputs.push(BoundedTreeRunReader::open(self.run_path(pass, run))?);
         }
         traversal_stats(|stats| {
             stats.max_merge_readers = stats.max_merge_readers.max(inputs.len());
@@ -299,12 +344,12 @@ impl NativeJsonlDirectoryRuns {
     }
 }
 
-struct NativeJsonlRunReader {
+struct BoundedTreeRunReader {
     reader: BufReader<File>,
     head: Option<Vec<u8>>,
 }
 
-impl NativeJsonlRunReader {
+impl BoundedTreeRunReader {
     fn open(path: impl AsRef<Path>) -> io::Result<Self> {
         let mut output = Self {
             reader: BufReader::new(File::open(path)?),
@@ -358,7 +403,7 @@ fn write_native_jsonl_run_name(writer: &mut impl Write, name: &[u8]) -> io::Resu
     writer.write_all(name)
 }
 
-fn native_jsonl_filename_order_key(name: &OsStr) -> Vec<u8> {
+fn native_filename_order_key(name: &OsStr) -> Vec<u8> {
     #[cfg(unix)]
     {
         use std::os::unix::ffi::OsStrExt;
@@ -377,7 +422,7 @@ fn native_jsonl_filename_order_key(name: &OsStr) -> Vec<u8> {
     }
 }
 
-fn native_jsonl_filename_from_order_key(name: Vec<u8>) -> io::Result<OsString> {
+fn native_filename_from_order_key(name: Vec<u8>) -> io::Result<OsString> {
     #[cfg(unix)]
     {
         use std::os::unix::ffi::OsStringExt;
@@ -409,24 +454,24 @@ fn native_jsonl_filename_from_order_key(name: Vec<u8>) -> io::Result<OsString> {
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub(super) struct NativeJsonlTraversalStats {
-    pub(super) directory_read_passes: usize,
-    pub(super) directory_entries_read: usize,
-    pub(super) max_retained_names: usize,
-    pub(super) initial_runs: usize,
-    pub(super) max_merge_readers: usize,
-    pub(super) merge_names_read: usize,
-    pub(super) final_names_read: usize,
+struct BoundedTreeTraversalStats {
+    directory_read_passes: usize,
+    directory_entries_read: usize,
+    max_retained_names: usize,
+    initial_runs: usize,
+    max_merge_readers: usize,
+    merge_names_read: usize,
+    final_names_read: usize,
 }
 
 #[cfg(test)]
 std::thread_local! {
-    static NATIVE_JSONL_TRAVERSAL_STATS: std::cell::Cell<Option<NativeJsonlTraversalStats>> = const { std::cell::Cell::new(None) };
+    static BOUNDED_TREE_TRAVERSAL_STATS: std::cell::Cell<Option<BoundedTreeTraversalStats>> = const { std::cell::Cell::new(None) };
 }
 
 #[cfg(test)]
-fn traversal_stats(update: impl FnOnce(&mut NativeJsonlTraversalStats)) {
-    NATIVE_JSONL_TRAVERSAL_STATS.with(|stats| {
+fn traversal_stats(update: impl FnOnce(&mut BoundedTreeTraversalStats)) {
+    BOUNDED_TREE_TRAVERSAL_STATS.with(|stats| {
         if let Some(mut current) = stats.get() {
             update(&mut current);
             stats.set(Some(current));
@@ -435,26 +480,74 @@ fn traversal_stats(update: impl FnOnce(&mut NativeJsonlTraversalStats)) {
 }
 
 #[cfg(not(test))]
-fn traversal_stats(_update: impl FnOnce(&mut NativeJsonlTraversalStats)) {}
+fn traversal_stats(_update: impl FnOnce(&mut BoundedTreeTraversalStats)) {}
 
 #[cfg(test)]
-pub(super) fn count_native_jsonl_traversal_work<T>(
+fn count_bounded_tree_traversal_work<T>(
     operation: impl FnOnce() -> T,
-) -> (T, NativeJsonlTraversalStats) {
-    NATIVE_JSONL_TRAVERSAL_STATS
+) -> (T, BoundedTreeTraversalStats) {
+    BOUNDED_TREE_TRAVERSAL_STATS
         .with(|stats| assert_eq!(stats.replace(Some(Default::default())), None));
     let output = operation();
-    let stats = NATIVE_JSONL_TRAVERSAL_STATS.with(|stats| stats.replace(None).unwrap());
+    let stats = BOUNDED_TREE_TRAVERSAL_STATS.with(|stats| stats.replace(None).unwrap());
     (output, stats)
 }
 
-#[cfg(all(test, unix))]
+#[cfg(test)]
 mod tests {
+    #[cfg(unix)]
     use std::os::unix::fs::symlink;
 
     use super::*;
 
     #[test]
+    fn wide_tree_visitation_is_single_scan_bounded_and_globally_sorted() {
+        const ENTRY_COUNT: usize = 1_025;
+
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("sessions");
+        fs::create_dir_all(&root).unwrap();
+        let mut expected = (0..ENTRY_COUNT)
+            .map(|index| format!("session-{index:04}.jsonl"))
+            .collect::<Vec<_>>();
+        for name in expected.iter().rev() {
+            fs::write(root.join(name), b"\n").unwrap();
+        }
+        expected.sort();
+
+        let mut visited = Vec::new();
+        let (result, stats) = count_bounded_tree_traversal_work(|| {
+            visit_bounded_tree_files(
+                &root,
+                &mut |candidate| candidate.path().extension() == Some(OsStr::new("jsonl")),
+                &mut |source_file| {
+                    visited.push(
+                        source_file
+                            .path()
+                            .file_name()
+                            .unwrap()
+                            .to_str()
+                            .unwrap()
+                            .to_owned(),
+                    );
+                    Ok::<(), SourceIoError>(())
+                },
+            )
+        });
+
+        assert_eq!(result.unwrap(), ENTRY_COUNT);
+        assert_eq!(visited, expected);
+        assert_eq!(stats.directory_read_passes, 1);
+        assert_eq!(stats.directory_entries_read, ENTRY_COUNT);
+        assert_eq!(stats.max_retained_names, 64);
+        assert_eq!(stats.initial_runs, 17);
+        assert_eq!(stats.max_merge_readers, 16);
+        assert_eq!(stats.merge_names_read, ENTRY_COUNT * 2);
+        assert_eq!(stats.final_names_read, ENTRY_COUNT);
+    }
+
+    #[test]
+    #[cfg(unix)]
     fn selected_child_failure_is_isolated_from_healthy_siblings() {
         let directory = tempfile::tempdir().unwrap();
         let root = directory.path().join("tree");
@@ -464,12 +557,12 @@ mod tests {
 
         let mut visited = Vec::new();
         let mut failures = Vec::new();
-        let count = visit_jsonl_tree_files_isolating_selected(
-            CaptureProvider::Pi,
+        let count = visit_bounded_tree_files_isolating_selected(
             &root,
+            &mut |candidate| candidate.path().extension() == Some(OsStr::new("jsonl")),
             &mut |source_file| {
                 visited.push(source_file.path().file_name().unwrap().to_owned());
-                Ok(())
+                Ok::<(), SourceIoError>(())
             },
             &mut |path, _error| {
                 failures.push(path.file_name().unwrap().to_owned());
@@ -484,6 +577,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(unix)]
     fn root_failure_is_never_downgraded_to_a_selected_file_failure() {
         let directory = tempfile::tempdir().unwrap();
         let target = directory.path().join("target");
@@ -492,10 +586,10 @@ mod tests {
         symlink(&target, &root).unwrap();
         let mut isolated = 0;
 
-        let error = visit_jsonl_tree_files_isolating_selected(
-            CaptureProvider::Pi,
+        let error = visit_bounded_tree_files_isolating_selected(
             &root,
-            &mut |_| Ok(()),
+            &mut |_| true,
+            &mut |_| Ok::<(), SourceIoError>(()),
             &mut |_path, _error| {
                 isolated += 1;
                 Ok(())
@@ -505,8 +599,31 @@ mod tests {
 
         assert!(matches!(
             error,
-            CaptureError::InvalidProviderTranscriptPath { .. }
+            SourceIoError::InvalidProviderTranscriptPath { .. }
         ));
         assert_eq!(isolated, 0);
+    }
+
+    #[test]
+    fn directory_depth_limit_keeps_the_existing_diagnostic() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("tree");
+        let mut deepest = root.clone();
+        for _ in 0..=BOUNDED_TREE_MAX_DIRECTORY_DEPTH {
+            deepest.push("d");
+        }
+        fs::create_dir_all(&deepest).unwrap();
+
+        let error =
+            visit_bounded_tree_files(&root, &mut |_| false, &mut |_| Ok::<(), SourceIoError>(()))
+                .unwrap_err();
+
+        assert!(matches!(
+            error,
+            SourceIoError::InvalidProviderTranscriptPath {
+                reason: "provider transcript directory nesting exceeds the supported limit",
+                ..
+            }
+        ));
     }
 }

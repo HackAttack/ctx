@@ -1,10 +1,9 @@
 use std::{ffi::OsStr, fs, path::Path};
 
+use crate::test_support_paths::tempdir;
 use ctx_history_core::CaptureProvider;
 
-use crate::test_support_paths::tempdir;
-
-use super::{traversal, visit_native_jsonl_files};
+use super::visit_native_jsonl_files;
 
 #[test]
 fn tree_visitation_is_sorted_by_durable_filename_bytes() {
@@ -41,34 +40,20 @@ fn tree_visitation_is_sorted_by_durable_filename_bytes() {
 }
 
 #[test]
-fn wide_tree_visitation_is_single_scan_bounded_and_globally_sorted() {
-    const ENTRY_COUNT: usize = 1_025;
-
+fn antigravity_dialect_prefers_the_full_transcript_sibling() {
     let temp = tempdir().unwrap();
     let root = temp.path().join("sessions");
     fs::create_dir_all(&root).unwrap();
-    let mut expected = (0..ENTRY_COUNT)
-        .map(|index| format!("session-{index:04}.jsonl"))
-        .collect::<Vec<_>>();
-    for name in expected.iter().rev() {
-        fs::write(root.join(name), b"\n").unwrap();
-    }
-    expected.sort();
+    fs::write(root.join("transcript.jsonl"), b"short\n").unwrap();
+    fs::write(root.join("transcript_full.jsonl"), b"full\n").unwrap();
 
     let mut visited = Vec::new();
-    let (result, stats) = traversal::count_native_jsonl_traversal_work(|| {
-        visit_native_jsonl_files(&root, CaptureProvider::Codex, &mut |path| {
-            visited.push(path.file_name().unwrap().to_str().unwrap().to_owned());
-            Ok(())
-        })
-    });
-    assert_eq!(result.unwrap(), ENTRY_COUNT);
-    assert_eq!(visited, expected);
-    assert_eq!(stats.directory_read_passes, 1);
-    assert_eq!(stats.directory_entries_read, ENTRY_COUNT);
-    assert_eq!(stats.max_retained_names, 64);
-    assert_eq!(stats.initial_runs, 17);
-    assert_eq!(stats.max_merge_readers, 16);
-    assert_eq!(stats.merge_names_read, ENTRY_COUNT * 2);
-    assert_eq!(stats.final_names_read, ENTRY_COUNT);
+    let count = visit_native_jsonl_files(&root, CaptureProvider::Antigravity, &mut |path| {
+        visited.push(path.file_name().unwrap().to_owned());
+        Ok(())
+    })
+    .unwrap();
+
+    assert_eq!(count, 1);
+    assert_eq!(visited, [OsStr::new("transcript_full.jsonl")]);
 }

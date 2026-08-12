@@ -1,6 +1,7 @@
-use std::path::Path;
+use std::{ffi::OsStr, path::Path};
 
 use ctx_history_core::CaptureProvider;
+use ctx_history_source_io::{BoundedTreeFileCandidate, OpenedProviderSourcePath};
 use serde_json::Value;
 
 use crate::{CaptureError, Result};
@@ -62,6 +63,23 @@ pub(super) fn native_jsonl_file_is_selected(
     }
     !antigravity_full_transcript_is_regular
 }
+
+pub(super) fn native_jsonl_file_candidate_is_selected(
+    provider: CaptureProvider,
+    candidate: BoundedTreeFileCandidate<'_>,
+) -> bool {
+    let path = candidate.path();
+    let full_transcript_is_regular = provider == CaptureProvider::Antigravity
+        && path.file_name() == Some(OsStr::new("transcript.jsonl"))
+        && candidate.parent().is_some_and(|directory| {
+            matches!(
+                directory.open_child(OsStr::new("transcript_full.jsonl")),
+                Ok(OpenedProviderSourcePath::File(_))
+            )
+        });
+    native_jsonl_file_is_selected(provider, path, full_transcript_is_regular)
+}
+
 pub(super) fn native_jsonl_record_starts_session(provider: CaptureProvider, value: &Value) -> bool {
     matches!(
         provider,

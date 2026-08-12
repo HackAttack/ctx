@@ -6,18 +6,22 @@
 
 #![cfg_attr(feature = "test-support", allow(dead_code, unused_imports))]
 
+mod bounded_tree;
 mod error;
 mod event_files;
 mod io;
 mod mapped_io;
 mod ordinary_file;
+mod path_identity;
 
+pub use bounded_tree::*;
 pub use error::ProviderJsonlInventoryLimit as SourceIoJsonlInventoryLimit;
 pub use error::{ProviderJsonlInventoryLimit, Result, SourceIoError};
 pub use event_files::*;
 pub use io::*;
 pub use mapped_io::*;
 pub use ordinary_file::*;
+pub use path_identity::*;
 
 pub const MAX_PROVIDER_JSONL_LINE_BYTES: usize = 16 * 1024 * 1024;
 

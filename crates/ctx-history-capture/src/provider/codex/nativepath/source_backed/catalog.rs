@@ -276,7 +276,8 @@ fn discover_codex_metadata_inventory_root_v0(
                         .and_then(|extension| extension.to_str())
                         == Some("jsonl") =>
                 {
-                    crate::provider::provider_path_identity(&source_path)?;
+                    ctx_history_source_io::provider_path_identity(&source_path)
+                        .map_err(CaptureError::from)?;
                     let observation = opened_codex_file_observation(&source_path, opened.file())?;
                     let jsonl_observation = observe_opened_file(&source_path, &opened)?;
                     let after = opened_codex_file_observation(&source_path, opened.file())?;
