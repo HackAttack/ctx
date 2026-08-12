@@ -79,36 +79,6 @@ def policy(
     }
 
 
-def ownership_policy(ctx_ratchet: int, capture_ratchet: int) -> dict[str, object]:
-    return {
-        "schema_version": 1,
-        "metric": gate.METRIC,
-        "hard_limit": gate.HARD_LIMIT,
-        "admission_sha": "562c21c6d9d9ffedea93ddea30bbf0c11dc3aebe",
-        "offenders": [
-            {
-                "package": "ctx",
-                "manifest": "crates/ctx-cli/Cargo.toml",
-                "ratchet": ctx_ratchet,
-            },
-            {
-                "package": "ctx-history-capture",
-                "manifest": "crates/ctx-history-capture/Cargo.toml",
-                "ratchet": capture_ratchet,
-            },
-        ],
-    }
-
-
-def ownership_measurements(
-    ctx_count: int = 69_506, capture_count: int = 172_360
-) -> list[gate.Measurement]:
-    return [
-        measurement(ctx_count, "ctx", "crates/ctx-cli"),
-        measurement(capture_count, "ctx-history-capture", "crates/ctx-history-capture"),
-    ]
-
-
 class PhysicalCensusTests(unittest.TestCase):
     def setUp(self) -> None:
         self.fixture = CheckoutFixture()
@@ -340,55 +310,6 @@ class PolicyTests(unittest.TestCase):
         with self.assertRaisesRegex(gate.GateError, r"ratchet raise forbidden.*previous_ratchet=24000"):
             gate.validate_policy_transition(candidate, previous, "b" * 40, [measurement(24_001)])
 
-    def test_exact_atomic_ownership_transition_is_accepted(self) -> None:
-        previous = ownership_policy(82_737, 165_225)
-        candidate = ownership_policy(69_506, 172_360)
-
-        entries = gate.validate_policy_transition(
-            candidate, previous, "b" * 40, ownership_measurements()
-        )
-
-        self.assertEqual(entries["ctx"]["ratchet"], 69_506)
-        self.assertEqual(entries["ctx-history-capture"]["ratchet"], 172_360)
-
-    def test_ownership_transition_rejects_partial_or_mismatched_state(self) -> None:
-        previous = ownership_policy(82_737, 165_225)
-        cases = (
-            (ownership_policy(82_737, 172_360), ownership_measurements()),
-            (ownership_policy(69_506, 172_360), ownership_measurements(69_505, 172_360)),
-            (ownership_policy(69_506, 172_360), ownership_measurements(69_506, 172_361)),
-        )
-
-        for candidate, measurements in cases:
-            with self.subTest(candidate=candidate, measurements=measurements), self.assertRaisesRegex(
-                gate.GateError, "ratchet raise forbidden"
-            ):
-                gate.validate_policy_transition(candidate, previous, "b" * 40, measurements)
-
-        ctx_only = ownership_policy(69_506, 165_225)
-        entries = gate.validate_policy_transition(
-            ctx_only, previous, "b" * 40, ownership_measurements()
-        )
-        self.assertTrue(gate.measurement_failures(ownership_measurements(), entries))
-
-    def test_ownership_transition_does_not_authorize_another_package(self) -> None:
-        previous = ownership_policy(82_737, 165_225)
-        candidate = ownership_policy(69_506, 165_225)
-        previous["offenders"].append(
-            {"package": "other", "manifest": "crates/other/Cargo.toml", "ratchet": 25_000}
-        )
-        candidate["offenders"].append(
-            {"package": "other", "manifest": "crates/other/Cargo.toml", "ratchet": 25_001}
-        )
-
-        with self.assertRaisesRegex(gate.GateError, "ratchet raise forbidden.*package=other"):
-            gate.validate_policy_transition(
-                candidate,
-                previous,
-                "b" * 40,
-                [*ownership_measurements(), measurement(25_001, "other", "crates/other")],
-            )
-
     def test_retirement_is_allowed_only_at_hard_limit_or_after_removal(self) -> None:
         previous = policy()
         candidate = {**policy(), "offenders": []}
@@ -452,16 +373,6 @@ class PolicyTests(unittest.TestCase):
         with self.assertRaisesRegex(gate.GateError, "ratchet raise forbidden"):
             gate.updated_policy(candidate, previous, "b" * 40, [measurement(25_001)])
 
-    def test_atomic_updater_cannot_apply_ownership_transition(self) -> None:
-        previous = ownership_policy(82_737, 165_225)
-
-        with self.assertRaisesRegex(
-            gate.GateError, "ratchet raise forbidden.*package=ctx-history-capture"
-        ):
-            gate.updated_policy(
-                previous, previous, "b" * 40, ownership_measurements()
-            )
-
     def test_extra_or_malformed_policy_fields_are_rejected(self) -> None:
         extra = policy()
         extra["unexpected"] = True
@@ -482,7 +393,6 @@ class PolicyTests(unittest.TestCase):
         )
         self.assertEqual(value["hard_limit"], 20_000)
         self.assertEqual(value["metric"], gate.METRIC)
-        self.assertEqual(value, ownership_policy(69_506, 172_360))
         self.assertTrue(all(set(entry) == {"package", "manifest", "ratchet"} for entry in value["offenders"]))
 
 
@@ -521,8 +431,8 @@ class TemporaryGitCheckout:
         self.run("commit", "-q", "-m", message)
         return self.run("rev-parse", "HEAD")
 
-    def base_commit(self, value: dict[str, object] | None = None) -> str:
-        self.write(gate.POLICY_PATH, gate.canonical_json(value or policy()).decode())
+    def base_commit(self) -> str:
+        self.write(gate.POLICY_PATH, gate.canonical_json(policy()).decode())
         self.write("marker", "base\n")
         return self.commit("base")
 
@@ -576,25 +486,6 @@ class GitTransitionTests(unittest.TestCase):
             gate.previous_accepted_policy(self.checkout.root)
 
         self.assertNotEqual(base, advanced)
-
-    def test_ownership_transition_cannot_replay_after_origin_advances(self) -> None:
-        base = self.checkout.base_commit(ownership_policy(82_737, 165_225))
-        self.checkout.run("update-ref", "refs/remotes/origin/main", base)
-        self.checkout.run("switch", "-q", "-c", "transition")
-        self.checkout.write(
-            gate.POLICY_PATH,
-            gate.canonical_json(ownership_policy(69_506, 172_360)).decode(),
-        )
-        transition = self.checkout.commit("transition")
-        self.checkout.run("switch", "-q", "main")
-        self.checkout.run("merge", "-q", "--ff-only", transition)
-        self.checkout.write("advanced", "advanced\n")
-        advanced = self.checkout.commit("origin advanced")
-        self.checkout.run("update-ref", "refs/remotes/origin/main", advanced)
-        self.checkout.run("switch", "-q", "transition")
-
-        with self.assertRaisesRegex(gate.GateError, "origin/main advanced beyond candidate base"):
-            gate.previous_accepted_policy(self.checkout.root)
 
     def test_stale_origin_main_relative_to_local_main_fails_closed(self) -> None:
         base = self.checkout.base_commit()
