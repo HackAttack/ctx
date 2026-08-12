@@ -89,7 +89,11 @@ impl From<ctx_history_source_io::SourceIoError> for CaptureError {
                 limit,
                 maximum,
                 observed,
-            } => Self::ProviderJsonlInventoryLimitExceeded { limit, maximum, observed },
+            } => Self::ProviderJsonlInventoryLimitExceeded {
+                limit,
+                maximum,
+                observed,
+            },
             SourceIoError::SystemIo { operation, source } => Self::SystemIo { operation, source },
             SourceIoError::SystemInvariant(detail) => Self::SystemInvariant(detail),
             SourceIoError::SourceChangedDuringCapture => Self::SourceChangedDuringCapture,

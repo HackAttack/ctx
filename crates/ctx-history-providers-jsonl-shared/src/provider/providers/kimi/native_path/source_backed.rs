@@ -13,19 +13,19 @@ use std::{
     sync::Arc,
 };
 
-use crate::{JsonlProviderRuntime, provider::source_backed::IndexBaseEventLookup};
+use crate::{provider::source_backed::IndexBaseEventLookup, JsonlProviderRuntime};
 use chrono::{DateTime, Utc};
 use ctx_history_capture_model::{
     file_touches::{
-        MAX_PROVIDER_FILE_TOUCHES_PER_EVENT, event_type_supports_structured_file_touches,
-        visit_provider_file_touch_drafts_with_limit,
+        event_type_supports_structured_file_touches, visit_provider_file_touch_drafts_with_limit,
+        MAX_PROVIDER_FILE_TOUCHES_PER_EVENT,
     },
     tool_input,
 };
 use ctx_history_core::{
-    AgentType, CaptureProvider, CoreRecord, CoreRecordError, EventIdentityInput, EventType,
-    ProjectionContractError, SourceKey, StableEntityId, TypedKey, derive_event_id,
-    derive_native_session_id,
+    derive_event_id, derive_native_session_id, AgentType, CaptureProvider, CoreRecord,
+    CoreRecordError, EventIdentityInput, EventType, ProjectionContractError, SourceKey,
+    StableEntityId, TypedKey,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -33,16 +33,16 @@ use sha2::{Digest, Sha256};
 use thiserror::Error;
 
 use crate::{
-    CaptureError, KIMI_CODE_CLI_SOURCE_FORMAT, OutputObservationKind,
     common::io::{OpenedProviderSourceFile, ProviderSourceRoot},
     provider::source_backed::{
-        FallbackEventIdentityState,
         family::jsonl::{
             JsonlFamilyAdapter, JsonlFamilyAppendMode, JsonlFamilyInventory, JsonlFamilyLeaf,
             JsonlFamilyProjectionMode, JsonlFamilyProjector, JsonlFamilyWorkerContext,
             JsonlRecordRef,
         },
+        FallbackEventIdentityState,
     },
+    CaptureError, OutputObservationKind, KIMI_CODE_CLI_SOURCE_FORMAT,
 };
 
 use super::super::{
@@ -51,8 +51,8 @@ use super::super::{
         kimi_record_timestamp,
     },
     layout::{
-        KIMI_WIRE_LAYOUT_MAX_AGGREGATE_BYTES, KimiWireRoute, auxiliary_paths,
-        canonical_source_root_for_wire,
+        auxiliary_paths, canonical_source_root_for_wire, KimiWireRoute,
+        KIMI_WIRE_LAYOUT_MAX_AGGREGATE_BYTES,
     },
     source::KimiWireObservation,
 };

@@ -5,18 +5,18 @@ use std::{
 };
 
 use serde::{Deserialize, Serialize};
-use serde_json::{Value, json};
+use serde_json::{json, Value};
 
 use crate::common::io::{
-    OpenedProviderSourcePath, ProviderJsonlLineRead, ProviderSourceRoot, open_provider_source_path,
-    read_provider_jsonl_line_or_skip_oversized,
+    open_provider_source_path, read_provider_jsonl_line_or_skip_oversized,
+    OpenedProviderSourcePath, ProviderJsonlLineRead, ProviderSourceRoot,
 };
 use crate::provider::provider_safe_path_segment;
-use crate::{CaptureError, PROVIDER_MAX_PREVIEW_CHARS, ProviderImportFailure, Result};
+use crate::{CaptureError, ProviderImportFailure, Result, PROVIDER_MAX_PREVIEW_CHARS};
 use ctx_history_capture_model::normalization::provider_local_preview;
 
 use super::{
-    MAX_JUNIE_FAILURE_BYTES, MAX_JUNIE_FAILURES, MAX_JUNIE_INDEX_BYTES, MAX_JUNIE_INDEX_ENTRIES,
+    MAX_JUNIE_FAILURES, MAX_JUNIE_FAILURE_BYTES, MAX_JUNIE_INDEX_BYTES, MAX_JUNIE_INDEX_ENTRIES,
     MAX_JUNIE_INDEX_METADATA_BYTES,
 };
 

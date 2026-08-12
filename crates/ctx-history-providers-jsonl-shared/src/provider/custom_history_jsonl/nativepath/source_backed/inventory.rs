@@ -11,9 +11,9 @@ use super::{
     CustomHistorySourceBackedError, CustomHistorySourceBackedInput, CustomHistorySourceBackedResult,
 };
 use crate::{
-    CaptureError,
-    common::io::{OpenedProviderSourceFile, ProviderSourceRoot, open_provider_source_file},
+    common::io::{open_provider_source_file, OpenedProviderSourceFile, ProviderSourceRoot},
     provider::source_backed::family::jsonl::{JsonlFamilyInventory, JsonlFamilyLeaf},
+    CaptureError,
 };
 
 const CUSTOM_SOURCE_REVISION_KIND: &str = "custom-history-ordinary-file-observation-v1";
