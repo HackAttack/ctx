@@ -1,6 +1,7 @@
 use std::{
     collections::BTreeMap,
     env,
+    ffi::OsString,
     path::{Component, Path, PathBuf},
 };
 
@@ -30,6 +31,9 @@ impl PathContext {
         }
         if let Some(path) = non_empty_absolute_env_path("MIMOCODE_HOME")? {
             env_overrides.insert("MIMOCODE_HOME".to_owned(), path);
+        }
+        if let Some(path) = absolute_env_path_if_present("GROK_HOME")? {
+            env_overrides.insert("GROK_HOME".to_owned(), path);
         }
         if let Some(path) = non_empty_env_path("MIMOCODE_CONFIG_DIR") {
             env_overrides.insert("MIMOCODE_CONFIG_DIR".to_owned(), path);
@@ -91,6 +95,9 @@ impl PathContext {
         {
             return true;
         }
+        if agent == SkillAgentArg::GrokBuild && self.env_overrides.contains_key("GROK_HOME") {
+            return true;
+        }
         agent.detect_dir(self).is_some_and(|path| path.exists())
     }
 }
@@ -116,6 +123,43 @@ fn non_empty_absolute_env_path(key: &str) -> Result<Option<PathBuf>> {
         ));
     }
     Ok(Some(path))
+}
+
+fn absolute_env_path_if_present(key: &str) -> Result<Option<PathBuf>> {
+    validate_absolute_env_path(key, env::var_os(key))
+}
+
+fn validate_absolute_env_path(key: &str, value: Option<OsString>) -> Result<Option<PathBuf>> {
+    let Some(value) = value else {
+        return Ok(None);
+    };
+    if value.is_empty() {
+        return Err(anyhow!("{key} must be nonempty and absolute"));
+    }
+    let path = PathBuf::from(value);
+    if !path.is_absolute() {
+        return Err(anyhow!(
+            "{key} must be an absolute path: {}",
+            path.display()
+        ));
+    }
+    Ok(Some(path))
+}
+
+#[cfg(test)]
+mod env_path_tests {
+    use super::*;
+
+    #[test]
+    fn grok_home_contract_rejects_empty_and_relative_values() {
+        assert!(validate_absolute_env_path("GROK_HOME", Some(OsString::new())).is_err());
+        assert!(validate_absolute_env_path("GROK_HOME", Some("relative".into())).is_err());
+        assert_eq!(
+            validate_absolute_env_path("GROK_HOME", Some("/grok-home".into())).unwrap(),
+            Some(PathBuf::from("/grok-home"))
+        );
+        assert_eq!(validate_absolute_env_path("GROK_HOME", None).unwrap(), None);
+    }
 }
 
 pub fn sanitize_skill_name(name: &str) -> Result<String> {

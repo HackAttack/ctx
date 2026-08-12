@@ -20,6 +20,12 @@ const CODEX_DEFAULTS: &[ProviderDefaultLocation] = &[
     },
 ];
 
+const GROK_BUILD_DEFAULTS: &[ProviderDefaultLocation] = &[ProviderDefaultLocation {
+    path_components: &[".grok", "sessions"],
+    source_format: "grok_build_session_updates_jsonl_tree",
+    source_kind: ProviderSourceKind::NativeHistory,
+}];
+
 const PI_DEFAULTS: &[ProviderDefaultLocation] = &[ProviderDefaultLocation {
     path_components: &[".pi", "agent", "sessions"],
     source_format: "pi_session_jsonl",
@@ -375,6 +381,14 @@ pub(super) const PROVIDER_SPECS: &[ProviderSourceSpec] = &[
         default_locations: CODEX_DEFAULTS,
         import_support: ProviderImportSupport::Native,
         catalog_support: ProviderCatalogSupport::Native,
+        unsupported_reason: None,
+    },
+    ProviderSourceSpec {
+        provider: CaptureProvider::GrokBuild,
+        display_name: "Grok Build",
+        default_locations: GROK_BUILD_DEFAULTS,
+        import_support: ProviderImportSupport::Native,
+        catalog_support: ProviderCatalogSupport::None,
         unsupported_reason: None,
     },
     ProviderSourceSpec {

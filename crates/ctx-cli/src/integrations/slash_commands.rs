@@ -40,6 +40,8 @@ pub(crate) struct SlashCommandInstallArgs {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, ValueEnum)]
 enum SlashCommandAgentArg {
     Codex,
+    #[value(name = "grok-build", alias = "grok")]
+    GrokBuild,
     #[value(name = "claude-code", alias = "claude")]
     ClaudeCode,
     Cursor,
@@ -61,25 +63,10 @@ enum SlashCommandAgentArg {
 }
 
 impl SlashCommandAgentArg {
-    const ALL: &'static [Self] = &[
-        Self::Codex,
-        Self::ClaudeCode,
-        Self::Cursor,
-        Self::OpenCode,
-        Self::MiMoCode,
-        Self::GeminiCli,
-        Self::QwenCode,
-        Self::Antigravity,
-        Self::GitHubCopilot,
-        Self::Pi,
-        Self::Goose,
-        Self::Continue,
-        Self::Windsurf,
-    ];
-
     const fn integration(self) -> SlashCommandAgent {
         match self {
             Self::Codex => SlashCommandAgent::Codex,
+            Self::GrokBuild => SlashCommandAgent::GrokBuild,
             Self::ClaudeCode => SlashCommandAgent::ClaudeCode,
             Self::Cursor => SlashCommandAgent::Cursor,
             Self::OpenCode => SlashCommandAgent::OpenCode,
@@ -114,7 +101,7 @@ pub(crate) fn insert_install_analytics(
     });
     telemetry.force = Some(args.force);
     telemetry.target_agents = Some(count_bucket(if args.all_agents {
-        SlashCommandAgentArg::ALL.len() as u64
+        SlashCommandAgentArg::value_variants().len() as u64
     } else {
         args.agent.len() as u64
     }));

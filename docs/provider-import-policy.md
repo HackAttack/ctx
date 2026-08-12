@@ -163,6 +163,7 @@ Secondary traits are noted only to guide tests and hardening work.
 | Provider | Source format(s) | Primary family | Notes |
 | --- | --- | --- | --- |
 | Codex | `codex_session_jsonl_tree`, `codex_history_jsonl` | JSONL transcript stream/tree | Session tree plus legacy history JSONL. |
+| Grok Build | `grok_build_session_updates_jsonl_tree` | JSONL transcript stream/tree | Session directories contain authoritative `updates.jsonl`; exact leaves use `grok_build_session_updates_jsonl`. Derived sidecars are excluded. |
 | Pi | `pi_session_jsonl` | JSONL transcript stream/tree | Single-provider JSONL sessions, including OMP-compatible paths. |
 | Claude | `claude_projects_jsonl_tree` | JSONL transcript stream/tree | Project tree of JSONL transcripts. |
 | OpenCode | `opencode_sqlite` | SQLite message store | Current schemas may split messages and parts. |

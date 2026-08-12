@@ -6,7 +6,7 @@ ctx imports existing agent history through conservative provider adapters. Each 
 
 The public CLI supports these local-history harnesses:
 
-Codex, Pi, Claude, OpenCode, Kilo Code, Kiro CLI, Crush, Goose, Lingma, Qoder, Warp, CodeBuddy, Trae, OpenClaw, Hermes Agent, NanoClaw, AstrBot, Shelley, Continue, OpenHands, Antigravity, Gemini, Tabnine, Cursor, Windsurf, Zed, Copilot CLI, Factory AI Droid, Qwen Code, Kimi Code CLI, Auggie, Junie, Firebender, ForgeCode, Deep Agents, Mistral Vibe, Mux, Rovo Dev, Cline, Roo Code, MiMo Code.
+Codex, Grok Build, Pi, Claude, OpenCode, Kilo Code, Kiro CLI, Crush, Goose, Lingma, Qoder, Warp, CodeBuddy, Trae, OpenClaw, Hermes Agent, NanoClaw, AstrBot, Shelley, Continue, OpenHands, Antigravity, Gemini, Tabnine, Cursor, Windsurf, Zed, Copilot CLI, Factory AI Droid, Qwen Code, Kimi Code CLI, Auggie, Junie, Firebender, ForgeCode, Deep Agents, Mistral Vibe, Mux, Rovo Dev, Cline, Roo Code, MiMo Code.
 
 Use `ctx sources` for the truth on the current machine:
 
@@ -19,10 +19,10 @@ ctx sources --all
 Default `ctx sources` output keeps the common missing-location list compact. Use `--all` to inspect every recognized provider location. The CLI recognizes these provider names; recognition does not imply that every detected schema is importable:
 
 ```text
-codex, claude, cursor, pi, opencode, github-copilot, copilot-cli, antigravity, gemini, kilo, kiro-cli, crush, goose, tabnine, windsurf, zed, factory-ai-droid, qwen-code, kimi-code-cli, auggie, junie, firebender, forgecode, deepagents, mistral-vibe, mux, rovodev, openclaw, hermes, nanoclaw, astrbot, shelley, continue, openhands, cline, roo, lingma, qoder, warp, codebuddy, trae, mimocode
+codex, grok-build, claude, cursor, pi, opencode, github-copilot, copilot-cli, antigravity, gemini, kilo, kiro-cli, crush, goose, tabnine, windsurf, zed, factory-ai-droid, qwen-code, kimi-code-cli, auggie, junie, firebender, forgecode, deepagents, mistral-vibe, mux, rovodev, openclaw, hermes, nanoclaw, astrbot, shelley, continue, openhands, cline, roo, lingma, qoder, warp, codebuddy, trae, mimocode
 ```
 
-Aliases are accepted for common naming differences, for example `claude-code`, `gemini-cli`, `github-copilot`, `droid`, `augment`, `qoder-cn`, `trae-cn`, and `roo-code`.
+Aliases are accepted for common naming differences, for example `grok`, `claude-code`, `gemini-cli`, `github-copilot`, `droid`, `augment`, `qoder-cn`, `trae-cn`, and `roo-code`.
 
 Custom history is separate: `ctx import --input-format ctx-history-jsonl-v1
 --path <file>` reads an explicit JSONL interchange file from any exporter, and
@@ -33,7 +33,7 @@ remain lineage/origin unknown.
 
 Exact MCP server/tool attribution is a separate, narrower event capability.
 Supported provider import does not automatically qualify it. The complete
-41-provider importable route/format partition is documented in
+42-provider importable route/format partition is documented in
 [`mcp-tool-call-attribution.md`](mcp-tool-call-attribution.md) and its
 machine-readable
 [`capability contract`](mcp-tool-call-attribution-capabilities.json).
@@ -66,6 +66,12 @@ Detected unsupported formats and sources marked `import_support: explicit` are
 excluded from setup, `--all`, daemon refresh, and search refresh. Removing an
 old automatic probe does not delete indexed history; a still-supported
 compatible path can be selected explicitly.
+
+Grok Build selects absolute `$GROK_HOME/sessions` when `GROK_HOME` is set and
+`~/.grok/sessions` otherwise. The override replaces the default. A native
+session requires authoritative `updates.jsonl`; derived sidecars are not
+discovery or import authority. Exact `updates.jsonl` files remain importable
+with `--provider grok-build --path`.
 
 Hermes Agent is supported through the native `hermes_state_sqlite` route. On
 Linux, a non-root ctx process with the certified read-only live-WAL path makes

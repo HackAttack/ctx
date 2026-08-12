@@ -36,9 +36,19 @@ global copy:
 
 ```bash
 ctx integrations install skills --agent codex
+ctx integrations install skills --agent grok-build
 ctx integrations install skills --agent claude-code --agent cursor --agent mimocode
 ctx integrations install skills --all-agents
 ```
+
+Grok Build uses a native skill directory. An explicit global install writes
+`ctx-agent-history-search` under absolute `GROK_HOME/skills` when `GROK_HOME`
+is set, or `~/.grok/skills` otherwise. `GROK_HOME` must be absolute. Project
+installs use `.grok/skills/ctx-agent-history-search`. The shorter agent name
+`grok` is accepted as an alias for `grok-build`. Grok Build also scans the
+universal `.agents/skills` location, so automatic setup does not create a
+second native copy; choose `--agent grok-build` when that native location is
+specifically desired.
 
 MiMo Code reads the universal `.agents/skills` location, so default and project
 installs use that shared folder. An explicit global MiMo install writes to the
@@ -57,6 +67,7 @@ Check installed state with:
 ```bash
 ctx integrations status skills
 ctx integrations status skills --agent codex --format json
+ctx integrations status skills --agent grok-build
 ```
 
 `status` reports `current`, `stale`, `modified`, or `missing` for the bundled
@@ -153,7 +164,9 @@ duplicating the full workflow instructions.
 Many agent harnesses now expose skills directly through slash-style commands.
 For those providers, installing the ctx skill is the right integration. Codex
 uses `/skills` or skill references, and Claude Code and Cursor expose skills as
-slash commands.
+slash commands. Grok Build is also skill-only in ctx: use
+`ctx integrations install skills --agent grok-build`; ctx does not write a
+separate Grok Build command file.
 
 Use the separate slash-command installer only for providers that still have a
 documented command-file location:
