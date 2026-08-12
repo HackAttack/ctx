@@ -71,8 +71,7 @@ mod parser_prop_tests;
 
 pub(crate) use cli::{
     Cli, DaemonArgs, DaemonCommand, DaemonStartModeArg, DaemonTriggerCommandArg, DoctorArgs,
-    ImportArgs, ListArgs, ListTarget, SearchArgs, SetupArgs, ShowArgs, ShowTarget, SourcesArgs,
-    StatsArgs, StatusArgs, UsageStatusMode, MAX_EVENT_WINDOW,
+    ImportArgs, SetupArgs, StatusArgs, UsageStatusMode, MAX_EVENT_WINDOW,
 };
 pub(crate) use commands::locate::LocateTarget;
 pub(crate) use ctx_history_read_application::SearchBackend as SearchBackendArg;

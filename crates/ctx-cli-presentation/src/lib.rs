@@ -36,6 +36,7 @@ pub mod integrations;
 pub mod analytics {
     pub use ctx_client_observability::analytics::*;
 }
+pub mod commands;
 pub mod local_usage {
     pub use ctx_client_observability::local_usage::*;
 }

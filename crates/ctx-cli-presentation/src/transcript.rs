@@ -9,7 +9,6 @@ pub enum TranscriptMode {
 
 pub use ctx_history_cli::{shell_quote_arg, write_output, TranscriptOutput};
 
-#[cfg(test)]
 pub fn normalize_uuid_prefix(value: &str, kind: &str) -> anyhow::Result<String> {
     ctx_history_read_application::normalize_uuid_prefix(value).map_err(|error| match error {
         ctx_history_read_application::UuidPrefixError::TooShort => anyhow::anyhow!(

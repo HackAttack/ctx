@@ -37,9 +37,7 @@ impl ProviderArg {
     }
 }
 
-pub fn parse_native_provider_arg(
-    value: &str,
-) -> std::result::Result<NativeProviderArg, String> {
+pub fn parse_native_provider_arg(value: &str) -> std::result::Result<NativeProviderArg, String> {
     ctx_history_cli::parse_native_provider(value).map(NativeProviderArg)
 }
 

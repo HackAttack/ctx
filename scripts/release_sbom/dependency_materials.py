@@ -42,6 +42,7 @@ TANTIVY_RESOLVED_FEATURES = [
 WORKSPACE_RELEASE_PACKAGES = {
     "ctx-agent-application",
     "ctx-agent-integrations",
+    "ctx-cli-presentation",
     "ctx-client-observability",
     "ctx-daemon-cli",
     "ctx-daemon-application",

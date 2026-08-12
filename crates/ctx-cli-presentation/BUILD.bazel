@@ -32,6 +32,16 @@ CTX_CLI_PRESENTATION_DEPS = [
     "//crates/ctx-terminal:lib",
 ]
 
+CTX_CLI_PRESENTATION_TEST_SUPPORT_DEPS = [
+    "//crates/ctx-agent-application:test_support_lib",
+    "//crates/ctx-agent-integrations:lib",
+    "//crates/ctx-client-observability:test_support_lib",
+    "//crates/ctx-history-cli:test_support_lib",
+    "//crates/ctx-history-core:lib",
+    "//crates/ctx-history-read-application:lib",
+    "//crates/ctx-terminal:lib",
+]
+
 RUST_SRCS = glob(["src/**/*.rs"])
 
 PROD_SRCS = glob(
@@ -52,6 +62,20 @@ rust_library(
     rustc_env = COMMON_RUSTC_ENV,
 )
 
+rust_library(
+    name = "test_support_lib",
+    testonly = True,
+    srcs = PROD_SRCS,
+    crate_name = "ctx_cli_presentation",
+    crate_root = "src/lib.rs",
+    edition = crate_edition(),
+    aliases = aliases(),
+    deps = all_crate_deps(normal = True) + CTX_CLI_PRESENTATION_TEST_SUPPORT_DEPS,
+    proc_macro_deps = all_crate_deps(proc_macro = True),
+    compile_data = ["//:ctx_embedded_docs"],
+    rustc_env = COMMON_RUSTC_ENV,
+)
+
 ctx_rust_test(
     name = "unit_tests",
     srcs = RUST_SRCS,
@@ -59,9 +83,8 @@ ctx_rust_test(
     crate_root = "src/lib.rs",
     edition = crate_edition(),
     aliases = aliases(normal_dev = True, proc_macro_dev = True),
-    deps = all_crate_deps(normal = True, normal_dev = True) + CTX_CLI_PRESENTATION_DEPS,
+    deps = all_crate_deps(normal = True, normal_dev = True) + CTX_CLI_PRESENTATION_TEST_SUPPORT_DEPS,
     proc_macro_deps = all_crate_deps(proc_macro = True, proc_macro_dev = True),
     compile_data = ["//:ctx_embedded_docs"],
     rustc_env = COMMON_RUSTC_ENV,
 )
-
