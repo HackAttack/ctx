@@ -3,6 +3,9 @@
 //! This crate owns no source access, discovery execution, provider implementation,
 //! repository evidence, refresh publication, or runtime policy.
 
+/// Upper bound for provider-generated diagnostic and metadata previews.
+pub const PROVIDER_MAX_PREVIEW_CHARS: usize = 4_000;
+
 pub mod ctx_retrieval;
 mod exact_json;
 pub mod file_touches;
@@ -18,12 +21,12 @@ pub mod time;
 pub mod tool_input;
 
 pub use exact_json::{
-    exact_bounded_string_alias, exact_json_value, raw_object_keys_are_unique, ExactJsonStringAlias,
+    ExactJsonStringAlias, exact_bounded_string_alias, exact_json_value, raw_object_keys_are_unique,
 };
 pub use identity::{fnv1a64, stable_capture_uuid};
 pub use import::{
-    push_provider_import_failure, CatalogSummary, ProviderImportFailure, ProviderImportSummary,
-    ProviderImportWorkResult,
+    CatalogSummary, ProviderImportFailure, ProviderImportSummary, ProviderImportWorkResult,
+    push_provider_import_failure,
 };
 pub use output::{OutputObservationKind, OutputOutcome, OutputOutcomeMetadata};
 pub use progress::{
