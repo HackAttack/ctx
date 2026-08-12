@@ -346,15 +346,30 @@ def validate_windows_release_output_root(blocks):
         "pipeline must define exactly one public-cli-windows-x64 artifact route",
     )
     source = command(matches[0])
-    output_root = "export BAZEL_OUTPUT_USER_ROOT=/c/b/o"
+    output_user_root = "/c/b"
+    output_root = f"export BAZEL_OUTPUT_USER_ROOT={output_user_root}"
     release_command = "bash scripts/bazelw run //:ctx_release_windows_x64"
     require_route(
-        source.count(output_root) == 1,
+        source.splitlines().count(output_root) == 1,
         "Windows release must pin one MAX_PATH-safe Bazel output-user-root",
     )
     require_route(
         source.find(output_root) < source.find(release_command),
         "Windows release must select its short Bazel output root before bazelw",
+    )
+    # Buildkite #152 exposed this generated rules_rust proc-macro object at 261
+    # characters beneath C:\b\o. The contracted C:\b root keeps that same path
+    # at 259 characters, the longest legacy-MAX_PATH filename (excluding NUL).
+    failed_object_suffix = (
+        r"\hlnacinz\execroot\_main\bazel-out"
+        r"\x64_windows-opt-exec-ST-d9e1ce4bc537\bin\external"
+        r"\rules_rust++crate+crates__macro_rules_attribute-proc_macro-0.2.3"
+        r"\macro_rules_attribute_proc_macro-356258450."
+        r"macro_rules_attribute_proc_macro.b57f60d88f8c307e-cgu.0.rcgu.o"
+    )
+    require_route(
+        len(r"C:\b" + failed_object_suffix) == 259,
+        "Windows release output root must retain the #152 MSVC path margin",
     )
 
 
@@ -525,7 +540,7 @@ expect_rejection(
 )
 long_windows_output_root = [
     block.replace(
-        "export BAZEL_OUTPUT_USER_ROOT=/c/b/o",
+        "export BAZEL_OUTPUT_USER_ROOT=/c/b",
         "export BAZEL_OUTPUT_USER_ROOT=$${HOME}/.cache/ctx/bazel/output-root",
         1,
     )
@@ -536,6 +551,21 @@ long_windows_output_root = [
 expect_rejection(
     "MAX_PATH-unsafe Windows Bazel output-user-root",
     long_windows_output_root,
+    validate_windows_release_output_root,
+)
+nested_windows_output_root = [
+    block.replace(
+        "export BAZEL_OUTPUT_USER_ROOT=/c/b",
+        "export BAZEL_OUTPUT_USER_ROOT=/c/b/o",
+        1,
+    )
+    if step_key(block) == "public-cli-windows-x64"
+    else block
+    for block in steps
+]
+expect_rejection(
+    "nested Windows Bazel output-user-root",
+    nested_windows_output_root,
     validate_windows_release_output_root,
 )
 open_candidate_gate = [
@@ -1059,7 +1089,7 @@ for required in \
   '--platform linux-x64' \
   '--platform linux-arm64' \
   '//:ctx_release_windows_x64' \
-  'export BAZEL_OUTPUT_USER_ROOT=/c/b/o' \
+  'export BAZEL_OUTPUT_USER_ROOT=/c/b' \
   '//:ctx_release_macos_arm64' \
   '//:ctx_release_macos_x64' \
   '.cdx.json.sha256' \
