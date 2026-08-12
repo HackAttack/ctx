@@ -141,6 +141,66 @@ class LinuxReleaseFactoryTest(unittest.TestCase):
         self.assertIn('"${cargo_zigbuild_bin}" zigbuild', source)
         self.assertNotIn("cargo zigbuild", source)
 
+    def test_factory_target_selection_defaults_to_all_and_accepts_known_ids(self) -> None:
+        source = (ROOT / "scripts" / "release" / "build-public-candidate-on-linux.sh").read_text()
+        self.assertIn("--targets ID[,ID...]", source)
+        self.assertIn("target_specs=()", source)
+        self.assertIn(
+            "public-cli-release-targets.py targets --field id",
+            source,
+        )
+        self.assertIn('target_ids=("${all_target_ids[@]}")', source)
+        self.assertIn('[[ "${target_spec}" == "all" ]]', source)
+
+    def test_factory_target_selection_rejects_invalid_empty_and_duplicate_ids(self) -> None:
+        source = (ROOT / "scripts" / "release" / "build-public-candidate-on-linux.sh").read_text()
+        self.assertIn("unsupported release target: ${target_id}", source)
+        self.assertIn("--targets contains an empty target ID", source)
+        self.assertIn("duplicate release target: ${target_id}", source)
+        self.assertIn("--targets all cannot be combined with target IDs", source)
+
+    def test_factory_skips_unselected_targets_and_their_signing_work(self) -> None:
+        source = (ROOT / "scripts" / "release" / "build-public-candidate-on-linux.sh").read_text()
+        self.assertIn('for target_id in "${target_ids[@]}"; do', source)
+        self.assertIn(
+            'scripts/run-macos-release-signing.sh "${target_id}" cli',
+            source,
+        )
+        self.assertIn('case "${target_id}" in\n      macos-*)', source)
+        self.assertNotIn(
+            "scripts/run-macos-release-signing.sh macos-arm64",
+            source,
+        )
+        self.assertNotIn(
+            "scripts/run-macos-release-signing.sh macos-x64",
+            source,
+        )
+
+    def test_factory_macos_sdk_and_signing_requirements_are_target_dependent(self) -> None:
+        source = (ROOT / "scripts" / "release" / "build-public-candidate-on-linux.sh").read_text()
+        self.assertIn('if [[ "${needs_macos}" == "1" ]]; then', source)
+        self.assertIn(
+            'if [[ "${official}" == "1" && "${needs_macos}" == "1" ]]; then',
+            source,
+        )
+        self.assertIn('build_env+=("SDKROOT=${macos_sdk_root}"', source)
+        self.assertNotIn('export SDKROOT="${macos_sdk_root}"', source)
+
+    def test_factory_partial_candidates_are_explicitly_non_promotable(self) -> None:
+        source = (ROOT / "scripts" / "release" / "build-public-candidate-on-linux.sh").read_text()
+        self.assertIn("selection_complete=1", source)
+        self.assertIn("runtimes_built=0", source)
+        self.assertIn(
+            'if [[ "${official}" == "1" && "${selection_complete}" == "1" && "${build_runtimes}" == "1" ]]; then',
+            source,
+        )
+        self.assertIn(
+            '"releasable": official and selection_complete and runtimes_built',
+            source,
+        )
+        self.assertIn('"selected_targets": selected_targets', source)
+        self.assertIn('factory_status="non-promotable"', source)
+
     def test_cargo_zigbuild_resolution_rejects_shadow_and_returns_absolute_path(self) -> None:
         helper = ROOT / "scripts" / "release" / "resolve-cargo-zigbuild.py"
         with tempfile.TemporaryDirectory() as temporary:
