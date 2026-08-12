@@ -105,15 +105,15 @@ ctx pro
 
 ## Why is ctx so fast?
 
-ctx is written in Rust, but the bigger reason is that it uses a search engine for a search problem. It reads the history files and databases your agents already write and writes each session and event directly into a [Tantivy](https://github.com/quickwit-oss/tantivy) search index. It does not first copy everything into relational SQLite tables.
+ctx is written in Rust, but that's not the main reason why it's fast. Instead of ingesting your history into a local relational database like SQLite, ctx scans it with parallel workers and writes searchable records directly to [Tantivy](https://github.com/quickwit-oss/tantivy). That removes an entire database ingest step while still supporting structured filtering and complete record retrieval.
 
 Tantivy builds the index in parallel. It creates a compact map from each term to the records containing it, searches memory-mapped segments without loading your entire history into memory, and ranks the results with BM25. The same index stores the complete record behind every result, so `ctx search`, `ctx show`, and `ctx locate` can read it without a second database or reopening and reparsing the original agent logs.
 
-In our benchmark, the Tantivy path built the lexical index 16x faster than ctx's previous SQLite pipeline. The old pipeline also built a relational copy that ctx no longer needs.
+In our benchmark, this was 16x faster than ctx's previous optimized SQLite implementation.
 
 <img src="docs/assets/ctx-cold-indexing-chart.png" alt="Cold indexing time: ctx with Tantivy, 9.65 seconds; previous ctx SQLite pipeline, 155.09 seconds. Lower is better." width="100%">
 
-Semantic search follows the same local-first approach. ctx stores embeddings in memory-mapped flat-F32 files and scans them exactly. At the scale of personal agent history, that avoids a vector database and an approximate HNSW index to build or tune.
+Semantic search takes a similarly direct approach. ctx embeds your history locally with `multilingual-e5-small` and stores the vectors in memory-mapped flat-F32 segments. At the scale of personal agent history, scanning those vectors exactly is fast, so there is no vector database or approximate HNSW graph to build, tune, or maintain.
 
 ## How it works
 
