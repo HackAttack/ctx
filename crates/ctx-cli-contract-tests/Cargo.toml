@@ -10,8 +10,24 @@ homepage.workspace = true
 rust-version.workspace = true
 publish = false
 
-# Cargo owns the publish-disabled marker library. Bazel owns and discovers the
-# final-binary contract tests under tests/contracts/.
+# Cargo preserves cross-platform all-target compilation for these final-binary
+# contracts. Bazel remains the execution authority and supplies the ctx binary.
+[[test]]
+name = "native_provider_real_shapes"
+path = "tests/contracts/native_provider_real_shapes.rs"
+
+[[test]]
+name = "native_provider_rejections"
+path = "tests/contracts/native_provider_rejections.rs"
+
+[[test]]
+name = "native_providers"
+path = "tests/contracts/native_providers.rs"
+
+[[test]]
+name = "setup_sources_import"
+path = "tests/contracts/setup_sources_import.rs"
+
 [dev-dependencies]
 assert_cmd.workspace = true
 base64.workspace = true
