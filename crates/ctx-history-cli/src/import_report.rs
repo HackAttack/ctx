@@ -239,10 +239,11 @@ fn source_failure_fields(report: &IngestReport) -> Vec<(String, String)> {
             } else {
                 ""
             };
-            let disposition = source
-                .unsupported_schema
-                .then_some(" is not importable")
-                .unwrap_or_default();
+            let disposition = if source.unsupported_schema {
+                " is not importable"
+            } else {
+                ""
+            };
             (
                 format!("Source {}", index.saturating_add(1)),
                 format!(
