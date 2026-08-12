@@ -63,6 +63,7 @@ python3 "${sdk_pipeline_check_script}" \
 
 python3 - "${pipeline}" <<'PY'
 from collections import Counter
+import ast
 import re
 import sys
 
@@ -122,6 +123,30 @@ def artifact_paths(block):
 
 def step_key(block):
     return scalar(block, "key", required=False)
+
+
+def dependencies(block):
+    inline = scalar(block, "depends_on", required=False)
+    if inline is not None:
+        try:
+            value = ast.literal_eval(inline)
+        except (SyntaxError, ValueError):
+            value = inline
+        return [value] if isinstance(value, str) else list(value)
+    match = re.search(
+        r"^    depends_on:\n((?:^      - .*(?:\n|$))*)",
+        block,
+        flags=re.MULTILINE,
+    )
+    if match is None:
+        return []
+    values = []
+    for line in match.group(1).splitlines():
+        value = line.removeprefix("      - ").strip()
+        if len(value) >= 2 and value[0] == value[-1] and value[0] in "\"'":
+            value = value[1:-1]
+        values.append(value)
+    return values
 
 
 def split_steps(source):
@@ -233,36 +258,77 @@ def validate_validation_routes(blocks):
         "pipeline must contain exactly one ci, nightly, and release invocation",
     )
 
-    release_index = next(
-        index for index, block in enumerate(blocks)
-        if step_key(block) == "public-release"
-    )
-    release_wait_indexes = [
-        index
-        for index, block in enumerate(blocks)
-        if block.startswith("  - wait:")
-        and scalar(block, "if") == release_condition
-    ]
+
+
+def validate_fail_slow_release_graph(blocks):
+    keyed = {step_key(block): block for block in blocks if step_key(block)}
     require_route(
-        len(release_wait_indexes) == 1,
-        "promotion must define exactly one release-qualified wait",
+        not any(block.startswith("  - wait:") for block in blocks),
+        "release diagnostics must not be hidden behind a global wait",
     )
-    release_wait_index = release_wait_indexes[0]
-    require_route(
-        release_index < release_wait_index,
-        "promotion wait must follow the public-release prerequisite",
+
+    independent_diagnostics = (
+        "public-cli-linux-x64",
+        "public-cli-linux-aarch64",
+        "public-cli-windows-x64",
+        "public-cli-macos-arm64",
+        "public-cli-macos-x64",
+        "semantic-model-archives",
+        "semantic-coreml-archive",
+        "semantic-runtime-linux-cuda12",
+        "semantic-runtime-windows-ml",
+        "semantic-runtime-macos-x64",
     )
-    for index, block in enumerate(blocks):
-        if index in (release_index, release_wait_index):
-            continue
-        if step_key(block) == "sdk-swift-required":
-            continue
-        condition = scalar(block, "if", required=False)
-        if condition and release_condition in condition:
+    for key in independent_diagnostics:
+        require_route(key in keyed, f"pipeline must define {key}")
+        require_route(
+            dependencies(keyed[key]) == [],
+            f"independent release diagnostic {key} must start without qualification dependencies",
+        )
+
+    branch_dependencies = {
+        "public-cli-macos-x64-native-smoke": ["public-cli-macos-x64"],
+        "public-cli-windows-x64-native-smoke": ["public-cli-windows-x64"],
+    }
+    for key, expected in branch_dependencies.items():
+        require_route(
+            dependencies(keyed[key]) == expected,
+            f"{key} must depend only on its own artifact producer",
+        )
+
+    strict_aggregates = {
+        "github-release-candidate": [
+            "public-release",
+            "sdk-swift-required",
+            "public-cli-linux-x64",
+            "public-cli-linux-aarch64",
+            "public-cli-macos-arm64",
+            "public-cli-macos-x64-native-smoke",
+            "public-cli-windows-x64-native-smoke",
+        ],
+        "semantic-release-handoff": [
+            "public-release",
+            "sdk-swift-required",
+            "public-cli-linux-x64",
+            "public-cli-linux-aarch64",
+            "public-cli-macos-arm64",
+            "semantic-model-archives",
+            "semantic-coreml-archive",
+            "semantic-runtime-linux-cuda12",
+            "semantic-runtime-windows-ml",
+            "semantic-runtime-macos-x64",
+        ],
+    }
+    for key, expected in strict_aggregates.items():
+        block = keyed[key]
+        require_route(
+            dependencies(block) == expected,
+            f"strict aggregate {key} has the wrong dependency set",
+        )
+        for field_name in ("soft_fail", "allow_dependency_failure"):
             require_route(
-                index > release_wait_index,
-                f"artifact promotion step {step_key(block) or index} "
-                "bypasses public-release",
+                scalar(block, field_name, required=False) is None,
+                f"strict aggregate {key} must fail closed",
             )
 
 
@@ -362,10 +428,11 @@ def expect_rejection(name, blocks, validator=validate_validation_routes):
 pipeline = open(sys.argv[1], encoding="utf-8").read()
 steps = split_steps(pipeline)
 require_route(
-    len(steps) == 19,
+    len(steps) == 18,
     "pipeline should include public validation and bounded release matrices",
 )
 validate_validation_routes(steps)
+validate_fail_slow_release_graph(steps)
 validate_linux_smoke_arg_escaping(steps)
 validate_runtime_parameter_escaping(steps)
 validate_semantic_input_preparation(steps)
@@ -377,20 +444,15 @@ expect_rejection(
     "missing release route",
     [block for block in steps if step_key(block) != "public-release"],
 )
-removed_wait = False
-without_release_wait = []
-for block in steps:
-    is_release_wait = (
-        not removed_wait
-        and block.startswith("  - wait:")
-        and scalar(block, "if", required=False)
-        == 'build.env("CTX_PUBLIC_CLI_ARTIFACT_MATRIX") == "1"'
-    )
-    if is_release_wait:
-        removed_wait = True
-    else:
-        without_release_wait.append(block)
-expect_rejection("missing release prerequisite wait", without_release_wait)
+expect_rejection(
+    "global release wait",
+    [
+        *steps[:4],
+        '  - wait: ~\n    if: build.env("CTX_PUBLIC_CLI_ARTIFACT_MATRIX") == "1"\n',
+        *steps[4:],
+    ],
+    validate_fail_slow_release_graph,
+)
 hosted_release = [
     block.replace('queue: "release-linux-managed"', 'queue: "default"', 1)
     if step_key(block) == "public-release"
@@ -408,19 +470,47 @@ expect_rejection(
     "public release without managed capability",
     release_without_managed_capability,
 )
-fanout_before_wait = list(steps)
-fanout_index = next(
-    index
-    for index, block in enumerate(fanout_before_wait)
+serialized_diagnostic = [
+    block.replace(
+        '    key: "public-cli-linux-x64"\n',
+        '    key: "public-cli-linux-x64"\n    depends_on: "public-release"\n',
+        1,
+    )
     if step_key(block) == "public-cli-linux-x64"
+    else block
+    for block in steps
+]
+expect_rejection(
+    "artifact diagnostic serialized behind release qualification",
+    serialized_diagnostic,
+    validate_fail_slow_release_graph,
 )
-fanout_block = fanout_before_wait.pop(fanout_index)
-wait_index = next(
-    index for index, block in enumerate(fanout_before_wait)
-    if block.startswith("  - wait:")
+open_candidate_gate = [
+    block.replace('      - "public-release"\n', "", 1)
+    if step_key(block) == "github-release-candidate"
+    else block
+    for block in steps
+]
+expect_rejection(
+    "candidate staging without public qualification",
+    open_candidate_gate,
+    validate_fail_slow_release_graph,
 )
-fanout_before_wait.insert(wait_index, fanout_block)
-expect_rejection("artifact fan-out before release prerequisite", fanout_before_wait)
+soft_candidate_gate = [
+    block.replace(
+        '    key: "github-release-candidate"\n',
+        '    key: "github-release-candidate"\n    allow_dependency_failure: true\n',
+        1,
+    )
+    if step_key(block) == "github-release-candidate"
+    else block
+    for block in steps
+]
+expect_rejection(
+    "candidate staging with failed dependencies allowed",
+    soft_candidate_gate,
+    validate_fail_slow_release_graph,
+)
 for linux_key in ("public-cli-linux-x64", "public-cli-linux-aarch64"):
     mutated = [
         block.replace('"$${smoke_args[@]}"', '"${smoke_args[@]}"', 1)
@@ -460,8 +550,8 @@ expect_rejection(
     validate_semantic_input_preparation,
 )
 print(
-    "Buildkite route parser ok: ci, nightly, and release select exactly "
-    "one validation aggregate"
+    "Buildkite route parser ok: dormant ci/nightly routes, fail-slow release "
+    "diagnostics, and strict terminal aggregates"
 )
 PY
 
@@ -476,7 +566,7 @@ if command -v ruby >/dev/null 2>&1; then
     macos_x64_kvm_runner_id = ARGV.fetch(3)
     macos_x64_llvm_task_root_env = ARGV.fetch(4)
     macos_x64_intel_concurrency_group = ARGV.fetch(5)
-    abort "pipeline should include public validation and bounded release matrices" unless steps.length == 19
+    abort "pipeline should include public validation and bounded release matrices" unless steps.length == 18
     smoke = steps.fetch(0)
     abort "pipeline step must be a mapping" unless smoke.is_a?(Hash)
     abort "pipeline public smoke step must be keyed" unless smoke.key?("key")
@@ -768,6 +858,8 @@ if command -v ruby >/dev/null 2>&1; then
     abort "legacy windows-x64 archive must remain staged" unless legacy_windows_paths.include?("target/public-cli-artifacts/ctx-onnxruntime-windows-x64.zip")
     candidate = steps.find { |step| step.is_a?(Hash) && step["key"] == "github-release-candidate" }
     candidate_dependencies = %w[
+      public-release
+      sdk-swift-required
       public-cli-linux-x64
       public-cli-linux-aarch64
       public-cli-macos-arm64
@@ -775,6 +867,7 @@ if command -v ruby >/dev/null 2>&1; then
       public-cli-windows-x64-native-smoke
     ]
     abort "release candidate staging has the wrong native dependency set" unless Array(candidate["depends_on"]) == candidate_dependencies
+    abort "release candidate staging must fail closed" if candidate["soft_fail"] || candidate["allow_dependency_failure"]
     candidate_condition = candidate["if"].to_s
     abort "release candidate staging must require artifact and native matrices" unless candidate_condition.include?("CTX_PUBLIC_CLI_ARTIFACT_MATRIX") && candidate_condition.include?("CTX_PUBLIC_CLI_NATIVE_SMOKE_MATRIX")
     abort "release candidate staging must be restricted to trusted main" unless candidate_condition.include?(%q{build.branch == "main"}) && candidate_condition.include?("build.pull_request.id == null")
@@ -826,6 +919,8 @@ if command -v ruby >/dev/null 2>&1; then
     end
     gather = steps.find { |candidate| candidate.is_a?(Hash) && candidate["key"] == "semantic-release-handoff" }
     expected_dependencies = %w[
+      public-release
+      sdk-swift-required
       public-cli-linux-x64
       public-cli-linux-aarch64
       public-cli-macos-arm64
@@ -836,6 +931,7 @@ if command -v ruby >/dev/null 2>&1; then
       semantic-runtime-macos-x64
     ]
     abort "Semantic gather has the wrong bounded producer set" unless Array(gather["depends_on"]) == expected_dependencies
+    abort "Semantic gather must fail closed" if gather["soft_fail"] || gather["allow_dependency_failure"]
     abort "Semantic gather must require native qualification" unless gather["if"].to_s.include?("CTX_PUBLIC_CLI_NATIVE_SMOKE_MATRIX")
     gather_command = gather["command"].to_s
     semantic_assets.each do |artifact|

@@ -72,9 +72,6 @@ steps:
     concurrency_group: "ctx/sdk-swift-required/ctx-release-macos-arm64"
     timeout_in_minutes: 30
 
-  - wait: ~
-    if: build.env("CTX_PUBLIC_CLI_ARTIFACT_MATRIX") == "1"
-
   - label: ":package: public CLI linux-x64"
     key: "public-cli-linux-x64"
     if: build.env("CTX_PUBLIC_CLI_ARTIFACT_MATRIX") == "1"
@@ -417,6 +414,8 @@ steps:
   - label: ":package: stage native-qualified GitHub release candidate"
     key: "github-release-candidate"
     depends_on:
+      - "public-release"
+      - "sdk-swift-required"
       - "public-cli-linux-x64"
       - "public-cli-linux-aarch64"
       - "public-cli-macos-arm64"
@@ -586,6 +585,8 @@ steps:
   - label: ":package: gather unsigned Semantic release handoff"
     key: "semantic-release-handoff"
     depends_on:
+      - "public-release"
+      - "sdk-swift-required"
       - "public-cli-linux-x64"
       - "public-cli-linux-aarch64"
       - "public-cli-macos-arm64"
