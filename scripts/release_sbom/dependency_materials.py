@@ -53,6 +53,7 @@ WORKSPACE_RELEASE_PACKAGES = {
     "ctx-history-index",
     "ctx-history-index-query",
     "ctx-history-jsonl",
+    "ctx-history-provider-runtime",
     "ctx-history-refresh-execution",
     "ctx-history-query",
     "ctx-semantic-index",
