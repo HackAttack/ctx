@@ -36,7 +36,7 @@ pub use ctx_history_source_discovery::{
 pub use ctx_history_source_io::OrdinaryFileObservation;
 ctx_history_source_io::define_mapped_ordinary_io_compat!(crate::CaptureError);
 #[cfg(test)]
-pub(crate) use ctx_history_source_io::{count_event_file_io, forbid_ordinary_file_content_open};
+pub(crate) use ctx_history_source_io::count_event_file_io;
 pub(crate) use ctx_history_source_io::{
     EventFileCoordinates, EventFileGroup, EventFileInventory, EventFileInventoryError,
     EventFileLimits,
