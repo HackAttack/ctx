@@ -40,6 +40,7 @@ Search local coding-agent history with ctx.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum SlashCommandAgent {
     Codex,
+    GrokBuild,
     ClaudeCode,
     Cursor,
     OpenCode,
@@ -57,6 +58,7 @@ pub enum SlashCommandAgent {
 impl SlashCommandAgent {
     pub const ALL: &'static [Self] = &[
         Self::Codex,
+        Self::GrokBuild,
         Self::ClaudeCode,
         Self::Cursor,
         Self::OpenCode,
@@ -82,6 +84,7 @@ impl SlashCommandAgent {
     pub const fn id(self) -> &'static str {
         match self {
             Self::Codex => "codex",
+            Self::GrokBuild => "grok-build",
             Self::ClaudeCode => "claude-code",
             Self::Cursor => "cursor",
             Self::OpenCode => "opencode",
@@ -100,6 +103,7 @@ impl SlashCommandAgent {
     pub const fn display_name(self) -> &'static str {
         match self {
             Self::Codex => "Codex",
+            Self::GrokBuild => "Grok Build",
             Self::ClaudeCode => "Claude Code",
             Self::Cursor => "Cursor",
             Self::OpenCode => "OpenCode",
@@ -127,6 +131,7 @@ impl SlashCommandAgent {
             Self::QwenCode => context.home.join(".qwen").exists(),
             Self::Windsurf => context.home.join(".codeium").join("windsurf").exists(),
             Self::Codex
+            | Self::GrokBuild
             | Self::ClaudeCode
             | Self::Cursor
             | Self::Antigravity
@@ -197,7 +202,11 @@ impl SlashCommandAgent {
                 format!("{COMMAND_NAME}.md"),
                 WINDSURF_WORKFLOW.to_owned(),
             ),
-            Self::Codex | Self::ClaudeCode | Self::Cursor | Self::Antigravity => {
+            Self::Codex
+            | Self::GrokBuild
+            | Self::ClaudeCode
+            | Self::Cursor
+            | Self::Antigravity => {
                 SlashCommandPlan::SkillOnly {
                     agent: self,
                     note: "slash-style invocation is covered by Agent Skills; run `ctx integrations install skills --agent <agent>`",
@@ -859,6 +868,22 @@ mod tests {
             SlashCommandInstallStatus::SkillOnly
         );
         assert!(!root.path().join(".codex").join("prompts").exists());
+    }
+
+    #[test]
+    fn grok_build_is_skill_only_and_writes_no_command_file() {
+        let root = tempfile::tempdir().unwrap();
+        let context = PathContext::for_tests(root.path().to_owned(), root.path().to_owned());
+        let receipt = execute_install(request(SlashCommandAgent::GrokBuild), &context).unwrap();
+
+        assert_eq!(receipt.results[0].agent.id(), "grok-build");
+        assert_eq!(receipt.results[0].agent.display_name(), "Grok Build");
+        assert_eq!(
+            receipt.results[0].status,
+            SlashCommandInstallStatus::SkillOnly
+        );
+        assert!(receipt.results[0].path.is_none());
+        assert!(!root.path().join(".grok").exists());
     }
 
     #[test]

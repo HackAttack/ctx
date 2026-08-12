@@ -74,6 +74,8 @@ pub fn provider_source_for_path(
                 "codex_session_jsonl"
             }
         }
+        CaptureProvider::GrokBuild if is_directory => "grok_build_session_updates_jsonl_tree",
+        CaptureProvider::GrokBuild => "grok_build_session_updates_jsonl",
         CaptureProvider::Pi => "pi_session_jsonl",
         CaptureProvider::Claude => "claude_projects_jsonl_tree",
         CaptureProvider::OpenCode => "opencode_sqlite",

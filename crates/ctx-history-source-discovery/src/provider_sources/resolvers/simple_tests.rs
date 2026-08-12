@@ -124,6 +124,91 @@ fn codex_official_root_includes_active_archive_history_and_compression_detection
 }
 
 #[test]
+fn grok_build_absolute_home_override_replaces_default_and_selects_updates() {
+    let temp = tempdir();
+    let base = context(&temp, DiscoveryPlatform::Linux);
+    let default_session = base.home().join(".grok/sessions/default-session");
+    fs::create_dir_all(&default_session).unwrap();
+    fs::write(default_session.join("summary.json"), "{}\n").unwrap();
+    fs::write(default_session.join("updates.jsonl"), "{}\n").unwrap();
+
+    let selected_root = temp.path().join("selected-grok");
+    let selected_session = selected_root.join("sessions/selected-session");
+    fs::create_dir_all(&selected_session).unwrap();
+    fs::write(selected_session.join("summary.json"), "{}\n").unwrap();
+    fs::write(selected_session.join("updates.jsonl"), "{}\n").unwrap();
+    fs::write(selected_session.join("chat_history.jsonl"), "{}\n").unwrap();
+
+    let report = resolve_provider(
+        &base
+            .clone()
+            .with_env("GROK_HOME", selected_root.as_os_str()),
+        CaptureProvider::GrokBuild,
+    );
+    assert_eq!(paths(&report), [selected_root.join("sessions")]);
+    assert_eq!(report.sources[0].status, ProviderSourceStatus::Available);
+    assert_eq!(
+        report.sources[0].source_format,
+        "grok_build_session_updates_jsonl_tree"
+    );
+    assert!(!report.sources[0]
+        .path
+        .starts_with(base.home().join(".grok")));
+}
+
+#[test]
+fn grok_build_home_override_must_be_nonempty_and_absolute() {
+    let temp = tempdir();
+    let base = context(&temp, DiscoveryPlatform::Linux);
+
+    let relative = resolve_provider(
+        &base.clone().with_env("GROK_HOME", "relative-grok-home"),
+        CaptureProvider::GrokBuild,
+    );
+    assert!(relative.sources.is_empty());
+    assert_eq!(
+        relative.issues[0].kind,
+        DiscoveryIssueKind::SelectorUnreconstructible
+    );
+
+    let fallback = resolve_provider(
+        &base.clone().with_env("GROK_HOME", ""),
+        CaptureProvider::GrokBuild,
+    );
+    assert!(fallback.sources.is_empty());
+    assert_eq!(
+        fallback.issues[0].kind,
+        DiscoveryIssueKind::SelectorUnreconstructible
+    );
+}
+
+#[test]
+fn grok_build_discovery_uses_authoritative_updates_without_sidecars() {
+    let temp = tempdir();
+    let base = context(&temp, DiscoveryPlatform::Linux);
+    let sessions = base.home().join(".grok/sessions");
+    let stale = sessions.join("sidecars-only-session");
+    fs::create_dir_all(&stale).unwrap();
+    fs::write(stale.join("summary.json"), "{}\n").unwrap();
+    fs::write(stale.join("chat_history.jsonl"), "{}\n").unwrap();
+
+    let without_updates = resolve_provider(&base, CaptureProvider::GrokBuild);
+    assert_eq!(
+        without_updates.sources[0].status,
+        ProviderSourceStatus::Empty
+    );
+
+    let updates_only = sessions.join("updates-only-session");
+    fs::create_dir_all(&updates_only).unwrap();
+    fs::write(updates_only.join("updates.jsonl"), "{}\n").unwrap();
+    let with_updates = resolve_provider(&base, CaptureProvider::GrokBuild);
+    assert_eq!(
+        with_updates.sources[0].status,
+        ProviderSourceStatus::Available
+    );
+}
+
+#[test]
 fn codex_compression_detection_stops_at_the_fixed_directory_bound() {
     let temp = tempdir();
     let root = temp.path().join("bounded-codex");
@@ -545,11 +630,12 @@ fn forgecode_official_root_preserves_raw_cwd_semantics_and_exists_winner() {
 }
 
 #[test]
-fn simple_lane_has_fourteen_reviewed_winner_only_policies() {
+fn simple_lane_has_fifteen_reviewed_winner_only_policies() {
     let temp = tempdir();
     let context = context(&temp, DiscoveryPlatform::Linux);
     let providers = [
         CaptureProvider::Codex,
+        CaptureProvider::GrokBuild,
         CaptureProvider::Claude,
         CaptureProvider::OpenCode,
         CaptureProvider::Kilo,
@@ -564,7 +650,7 @@ fn simple_lane_has_fourteen_reviewed_winner_only_policies() {
         CaptureProvider::FactoryAiDroid,
         CaptureProvider::ForgeCode,
     ];
-    assert_eq!(providers.len(), 14);
+    assert_eq!(providers.len(), 15);
     for provider in providers {
         let report = resolve_provider(&context, provider);
         let expected = if provider == CaptureProvider::Codex {

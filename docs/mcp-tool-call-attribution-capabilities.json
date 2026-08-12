@@ -6,7 +6,7 @@
   "conformance_authority": {
     "manifest": "crates/ctx-history-capture/tests/mcp-attribution-conformance.manifest.json",
     "suite_registry": "crates/ctx-history-capture/tests/mcp_attribution_suites.bzl",
-    "manifest_sha256": "acd45049ef1917f9df255677408ec28d43051cceacac28ade45e171ba71d57ec",
+    "manifest_sha256": "a96271361c7567ba52bb2119188205e3163f642711d77f0767557d7265e1e9a7",
     "suite_registry_sha256": "fecc57701524031b830b3c0d709470525ad99125937b74f71e07f9375cef2117",
     "manifest_schema_version": 6,
     "capability_revision": 5,
@@ -16,13 +16,13 @@
       "excluded": "excluded"
     },
     "expected_counts": {
-      "providers": 41,
-      "base_routes": 43,
-      "schema_generations": 42,
-      "capability_lanes": 46,
+      "providers": 42,
+      "base_routes": 44,
+      "schema_generations": 43,
+      "capability_lanes": 47,
       "status_rows": {
         "supported": 3,
-        "not_qualified": 42,
+        "not_qualified": 43,
         "excluded": 1
       }
     }
@@ -76,17 +76,17 @@
     "exact_requires_source_commits": false
   },
   "expected_counts": {
-    "providers": 41,
-    "base_routes": 43,
-    "capability_lanes": 46,
+    "providers": 42,
+    "base_routes": 44,
+    "capability_lanes": 47,
     "lane_statuses": {
       "exact": 3,
-      "not-qualified": 42,
+      "not-qualified": 43,
       "excluded": 1
     },
     "provider_statuses": {
       "exact": 3,
-      "not-qualified": 38,
+      "not-qualified": 39,
       "excluded": 0
     }
   },
@@ -141,6 +141,13 @@
       "status": "not-qualified", "reason": "route_mismatch",
       "detail": "The legacy prompt-history route is not the session transcript route carrying mcp_tool_call_end terminal evidence; migration never infers attribution across the two routes.",
       "evidence": ["https://github.com/openai/codex"]
+    },
+    {
+      "provider_id": "grok_build", "route": "native_import", "source_format": "grok_build_session_updates_jsonl_tree", "source_schema": "grok-build-acp-updates-jsonl-v1",
+      "producer_bound": {"kind": "source_commits", "commits": ["be713136d2a69080743a3f6b3c72077057e5948f"], "unknown_generations": "not-qualified"},
+      "status": "not-qualified", "reason": "no_server_field",
+      "detail": "The authoritative updates stream retains tool activity, but ordinary terminal rawOutput is intentionally excluded and no audited event-local server field remains. Ctx does not infer one from tool names or configuration.",
+      "evidence": ["https://github.com/xai-org/grok-build/tree/be713136d2a69080743a3f6b3c72077057e5948f"]
     },
     {
       "provider_id": "pi", "route": "native_import", "source_format": "pi_session_jsonl", "source_schema": "pi-session-v1-v3",

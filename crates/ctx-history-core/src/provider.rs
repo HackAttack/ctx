@@ -16,6 +16,8 @@ pub enum ProviderSupportStatus {
 #[serde(rename_all = "snake_case")]
 pub enum ProviderId {
     Codex,
+    #[serde(rename = "grok_build", alias = "grok-build", alias = "grok")]
+    GrokBuild,
     #[serde(alias = "claude")]
     ClaudeCode,
     ClaudeCliCrp,
@@ -104,8 +106,9 @@ pub enum ProviderId {
 }
 
 impl ProviderId {
-    pub const ALL: [Self; 51] = [
+    pub const ALL: [Self; 52] = [
         Self::Codex,
+        Self::GrokBuild,
         Self::ClaudeCode,
         Self::ClaudeCliCrp,
         Self::Pi,
@@ -326,6 +329,7 @@ mod tests {
             ProviderId::ClaudeCode,
             ProviderId::Cline,
             ProviderId::Codex,
+            ProviderId::GrokBuild,
             ProviderId::CodeBuddy,
             ProviderId::Trae,
             ProviderId::Continue,

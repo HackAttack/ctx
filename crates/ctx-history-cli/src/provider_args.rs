@@ -18,6 +18,11 @@ const NATIVE_PROVIDER_CLI_SPECS: &[ProviderCliSpec] = &[
         aliases: &[],
     },
     ProviderCliSpec {
+        provider: CaptureProvider::GrokBuild,
+        cli_name: "grok-build",
+        aliases: &["grok"],
+    },
+    ProviderCliSpec {
         provider: CaptureProvider::Pi,
         cli_name: "pi",
         aliases: &[],

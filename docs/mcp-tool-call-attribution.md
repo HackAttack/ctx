@@ -52,14 +52,14 @@ the ordinary event without attribution.
 
 ## Provider and format capability
 
-General provider support remains the 41-provider local-history contract in
+General provider support remains the 42-provider local-history contract in
 [`provider-support-matrix.json`](provider-support-matrix.json). Exact MCP
 attribution has a separate provider + route + source format + format version
 contract in
 [`mcp-tool-call-attribution-capabilities.json`](mcp-tool-call-attribution-capabilities.json).
 
-Capability revision 3 evaluates all 41 providers across 43 base routes and 46
-capability lanes: three `exact`, 42 `not-qualified`, and one `excluded`.
+Capability revision 3 evaluates all 42 providers across 44 base routes and 47
+capability lanes: three `exact`, 43 `not-qualified`, and one `excluded`.
 Codex contributes separate session-tree and legacy prompt-history routes;
 Deep Agents contributes its local SQLite import plus a separately excluded
 Deep Agents hosted trace. Capability revision 3 exact providers are
@@ -79,8 +79,8 @@ Codex, Warp, and Copilot CLI. The exact full tuples are:
   strict unversioned format generation 1. Versions 0.0.393 and 1.0.77 and the
   pinned source commit are observed evidence, not runtime admission selectors.
 
-The 42 `not-qualified` tuple rows include Codex's three observed semver lanes,
-its separate legacy prompt-history route, Hermes Agent, Mistral Vibe, and the
+The 43 `not-qualified` tuple rows include Codex's three observed semver lanes,
+its separate legacy prompt-history route, Grok Build, Hermes Agent, Mistral Vibe, and the
 local Deep Agents SQLite route. Mistral persists
 the tool and a transport URL or command, but its server alias exists only
 inside a combined function name; ctx does not reconstruct it by suffix
@@ -88,6 +88,8 @@ splitting. Deep Agents similarly persists a combined MCP wire name rather than
 a separate server field. Its hosted trace is the single `excluded` row because
 remote observability is outside the local-only boundary; its local SQLite
 history import remains generally Supported but not qualified for attribution.
+Grok Build's authoritative updates stream has no separate durable MCP dispatch
+server key, so ctx does not infer one from tool names or current configuration.
 
 `not-qualified` is deliberately narrower than unsupported. It says only that
 ctx does not publish this capability for that tuple. New source variants or

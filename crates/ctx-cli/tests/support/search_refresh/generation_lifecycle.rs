@@ -536,6 +536,11 @@ fn two_provider_mutation_publishes_while_temporarily_missing_route_is_retained()
 fn search_refresh_publishes_discovered_top_provider_sources() {
     for (cli_provider, stored_provider, install_fixture) in [
         (
+            "grok-build",
+            "grok_build",
+            install_default_grok_build_fixture as fn(&TempDir, &str),
+        ),
+        (
             "claude",
             "claude",
             install_default_claude_fixture as fn(&TempDir, &str),
@@ -554,6 +559,12 @@ fn search_refresh_publishes_discovered_top_provider_sources() {
         let temp = tempdir();
         let query = format!("{stored_provider}-default-refresh-oracle");
         install_fixture(&temp, &query);
+        let grok_source = (stored_provider == "grok_build").then(|| {
+            temp.path().join(
+                ".grok/sessions/synthetic-workspace/01990000-0000-7000-8000-000000000001/updates.jsonl",
+            )
+        });
+        let grok_source_state = grok_source.as_deref().map(published_file_state);
         let _daemon = start_source_refresh_daemon(&temp);
 
         let search = json_output(ctx(&temp).args([
@@ -580,6 +591,9 @@ fn search_refresh_publishes_discovered_top_provider_sources() {
             status["lexical"]["certified_sources"], 1,
             "{cli_provider} did not publish source inventory: {status:#}"
         );
+        if let (Some(path), Some(state)) = (&grok_source, &grok_source_state) {
+            assert_published_file_unchanged(path, state);
+        }
 
         let unchanged = json_output(ctx(&temp).args([
             "search",
@@ -604,6 +618,9 @@ fn search_refresh_publishes_discovered_top_provider_sources() {
             unchanged_status["daemon"]["jobs"]["core_refresh"]["generation_changed"], false,
             "{cli_provider} republished an unchanged source: {unchanged_status:#}"
         );
+        if let (Some(path), Some(state)) = (&grok_source, &grok_source_state) {
+            assert_published_file_unchanged(path, state);
+        }
     }
 }
 

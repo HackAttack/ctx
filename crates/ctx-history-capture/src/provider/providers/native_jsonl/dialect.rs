@@ -34,6 +34,7 @@ fn provider_jsonl_path_is_native(provider: CaptureProvider, path: &Path) -> bool
                     .components()
                     .any(|component| component.as_os_str() == "agents")
         }
+        CaptureProvider::GrokBuild => super::native_path::grok_build_file_is_selected(path),
         _ => true,
     }
 }
@@ -79,6 +80,7 @@ pub(super) fn validate_direct_native_jsonl_provider(provider: CaptureProvider) -
             | CaptureProvider::Qoder
             | CaptureProvider::CopilotCli
             | CaptureProvider::QwenCode
+            | CaptureProvider::GrokBuild
     ) {
         return Ok(());
     }

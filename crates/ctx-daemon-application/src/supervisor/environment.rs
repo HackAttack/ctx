@@ -89,6 +89,7 @@ const DISCOVERY_ENV_ALLOWLIST: &[&str] = &[
     "FORGE_CONFIG",
     "GEMINI_CLI_HOME",
     "GOOSE_PATH_ROOT",
+    "GROK_HOME",
     "HERMES_HOME",
     "JUNIE_HOME",
     "KILO_DB",
@@ -376,6 +377,7 @@ mod tests {
             "CODEX_HOME",
             "CLAUDE_CONFIG_DIR",
             "COPILOT_HOME",
+            "GROK_HOME",
             "XDG_CONFIG_HOME",
             "CTX_LOCAL_USAGE_ENABLED",
             "CTX_ANALYTICS_ENABLED",
@@ -414,6 +416,7 @@ mod tests {
             "CTX_PRO_QUALIFICATION_HELPER_CHANNEL",
             "AWS_SECRET_ACCESS_KEY",
             "GITHUB_TOKEN",
+            "XAI_API_KEY",
         ] {
             assert!(!allowlist.contains(&forbidden), "captured {forbidden}");
         }

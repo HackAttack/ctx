@@ -14,6 +14,7 @@ fn adapter(provider: CaptureProvider) -> DirectJsonlFamilyAdapter {
         CaptureProvider::Antigravity => super::super::antigravity_source_backed_adapter(),
         CaptureProvider::Tabnine => super::super::tabnine_source_backed_adapter(),
         CaptureProvider::FactoryAiDroid => super::super::factory_droid_source_backed_adapter(),
+        CaptureProvider::GrokBuild => super::super::grok_build_source_backed_adapter(),
         CaptureProvider::Windsurf => super::super::windsurf_source_backed_adapter(),
         CaptureProvider::Qoder => super::super::qoder_source_backed_adapter(),
         CaptureProvider::CopilotCli => super::super::copilot_source_backed_adapter(),
@@ -110,7 +111,14 @@ fn native_subrecord_index(record: &CoreRecord) -> u64 {
 
 fn project_all(provider: CaptureProvider, values: &[Value]) -> (Vec<CoreRecord>, u64) {
     let adapter = adapter(provider);
-    let session = session(provider);
+    let mut session = session(provider);
+    if provider == CaptureProvider::GrokBuild {
+        let first = values.first().expect("Grok fixture has a session header");
+        let native_session_id = super::super::grok_build::grok_build_header_session_id(first)
+            .expect("Grok fixture session id");
+        session.native_session_id = native_session_id.clone();
+        session.provider_session_id = native_session_id;
+    }
     let source_path = if provider == CaptureProvider::Windsurf {
         format!("{}.jsonl", session.native_session_id)
     } else {
@@ -153,6 +161,107 @@ fn project_all(provider: CaptureProvider, values: &[Value]) -> (Vec<CoreRecord>,
         .unwrap();
     }
     (records, projector.rejected_records())
+}
+
+#[test]
+fn grok_build_real_native_fixture_projects_messages_tools_failures_and_command_output() {
+    let fixture = Path::new(env!("CARGO_MANIFEST_DIR")).join(
+        "../../tests/fixtures/provider-history/grok-build/v1.0.3/sessions/synthetic-workspace/01990000-0000-7000-8000-000000000001/updates.jsonl",
+    );
+    let values = std::fs::read_to_string(&fixture)
+        .unwrap_or_else(|error| panic!("read {}: {error}", fixture.display()))
+        .lines()
+        .map(|line| serde_json::from_str::<Value>(line).expect("valid sanitized Grok JSONL"))
+        .collect::<Vec<_>>();
+
+    let (records, rejected) = project_all(CaptureProvider::GrokBuild, &values);
+    assert_eq!(rejected, 0);
+    assert_eq!(records.len(), 21);
+    assert_eq!(
+        records
+            .iter()
+            .filter(|record| record.event_type == EventType::Message.as_str())
+            .count(),
+        2
+    );
+    assert_eq!(
+        records
+            .iter()
+            .filter(|record| record.event_type == EventType::ToolCall.as_str())
+            .count(),
+        6
+    );
+    assert!(records.iter().any(|record| {
+        record.event_type == EventType::ToolOutput.as_str()
+            && record
+                .content
+                .normalized_body
+                .as_deref()
+                .is_some_and(|body| body.contains("The string to replace was not found"))
+    }));
+    for expected in [
+        "01990000-0000-7000-8000-000000000001-14",
+        "01990000-0000-7000-8000-000000000001-17",
+    ] {
+        assert!(
+            records.iter().any(|record| {
+                matches!(
+                    record.native_event_id.as_ref(),
+                    Some(TypedKey::Composite(parts))
+                        if matches!(parts.first(), Some(TypedKey::Utf8(id)) if id == expected)
+                ) && record
+                    .content
+                    .normalized_body
+                    .as_deref()
+                    .is_some_and(|body| body.contains("\"type\":\"diff\""))
+            }),
+            "missing terminal structured diff event {expected}"
+        );
+    }
+    assert!(records.iter().any(|record| {
+        record
+            .content
+            .structured_content
+            .as_ref()
+            .is_some_and(|structured| structured["tool_result"]["outcome"] == "failure")
+    }));
+    assert!(records.iter().any(|record| {
+        record
+            .content
+            .structured_content
+            .as_ref()
+            .and_then(|structured| structured["file_touches"].as_array())
+            .is_some_and(|touches| !touches.is_empty())
+    }));
+    assert!(records.iter().any(|record| {
+        record.event_type == EventType::CommandOutput.as_str()
+            && record
+                .content
+                .normalized_body
+                .as_deref()
+                .is_some_and(|body| body.contains("# pass 2"))
+    }));
+    assert!(records.iter().any(|record| {
+        record.event_type == EventType::ToolCall.as_str()
+            && record
+                .content
+                .normalized_body
+                .as_deref()
+                .is_some_and(|body| {
+                    body.contains("call_edit_source") && body.contains("calculator.js")
+                })
+    }));
+    assert!(records
+        .iter()
+        .all(|record| record.occurred_at_unix_ms == Some(1_786_547_760_000)));
+    assert!(records.iter().all(|record| {
+        let body = record
+            .content
+            .normalized_body
+            .as_deref()
+            .unwrap_or_default();
+        !body.contains("/tmp/") && !body.contains("rawOutput")
+    }));
 }
 
 fn event_ids_by_body(records: &[CoreRecord]) -> BTreeMap<String, String> {

@@ -27,13 +27,14 @@ DOCUMENT_TREE_FAMILY = "replacement_document_tree"
 EVENT_FILE_FAMILY = "event_file"
 PROVIDER_SPECIFIC_EXCEPTION = "provider_specific_exception"
 
-# The executable source-backed inventory has 42 provider identities. Codex's
+# The executable source-backed inventory has 43 provider identities. Codex's
 # session and prompt-history formats share one JSONL gate; explicit leaf/tree
 # variants remain in the same family. Custom is explicit-only and therefore
 # keeps its provider-local gate instead of acquiring an automatic corpus.
 PROVIDER_FAMILY_COVERAGE = (
     ("custom", PROVIDER_SPECIFIC_EXCEPTION, "explicit custom-history JSONL"),
     ("codex", JSONL_FAMILY, None),
+    ("grok_build", JSONL_FAMILY, None),
     ("claude", JSONL_FAMILY, None),
     ("pi", JSONL_FAMILY, None),
     ("opencode", SQLITE_WAL_FAMILY, None),

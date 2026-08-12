@@ -6,6 +6,7 @@ use toml_edit::DocumentMut;
 
 const GLOBAL_MCP_AGENTS: &[&str] = &[
     "codex",
+    "grok-build",
     "claude-code",
     "cursor",
     "opencode",
@@ -24,6 +25,7 @@ const GLOBAL_MCP_AGENTS: &[&str] = &[
 
 const PROJECT_MCP_AGENTS: &[&str] = &[
     "codex",
+    "grok-build",
     "claude-code",
     "cursor",
     "opencode",

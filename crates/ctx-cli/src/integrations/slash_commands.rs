@@ -40,6 +40,8 @@ pub(crate) struct SlashCommandInstallArgs {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, ValueEnum)]
 enum SlashCommandAgentArg {
     Codex,
+    #[value(name = "grok-build", alias = "grok")]
+    GrokBuild,
     #[value(name = "claude-code", alias = "claude")]
     ClaudeCode,
     Cursor,
@@ -63,6 +65,7 @@ enum SlashCommandAgentArg {
 impl SlashCommandAgentArg {
     const ALL: &'static [Self] = &[
         Self::Codex,
+        Self::GrokBuild,
         Self::ClaudeCode,
         Self::Cursor,
         Self::OpenCode,
@@ -80,6 +83,7 @@ impl SlashCommandAgentArg {
     const fn integration(self) -> SlashCommandAgent {
         match self {
             Self::Codex => SlashCommandAgent::Codex,
+            Self::GrokBuild => SlashCommandAgent::GrokBuild,
             Self::ClaudeCode => SlashCommandAgent::ClaudeCode,
             Self::Cursor => SlashCommandAgent::Cursor,
             Self::OpenCode => SlashCommandAgent::OpenCode,

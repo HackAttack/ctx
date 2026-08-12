@@ -1,8 +1,11 @@
 //! Source-backed discovery, parsing, and complete Core projection for native JSONL providers.
 
+use super::result_content;
+
 mod antigravity;
 mod copilot;
 mod factory_ai_droid;
+mod grok_build;
 mod model;
 mod qoder;
 mod qoder_parser;
@@ -21,6 +24,7 @@ pub(super) use factory_ai_droid::{
     factory_droid_header_session_id, factory_droid_model, factory_droid_retry_discriminator,
     factory_droid_role, factory_droid_session_relationships,
 };
+pub(crate) use grok_build::grok_build_source_backed_adapter;
 pub(crate) use model::{
     DirectJsonlEvent, DirectJsonlRejection, DirectJsonlRetryDiscriminator, DirectJsonlSession,
     DirectJsonlSourceRecord, DirectJsonlTouch,
@@ -32,3 +36,5 @@ pub(crate) use tabnine::tabnine_source_backed_adapter;
 pub(crate) use windsurf::{
     windsurf_event_role, windsurf_event_text, windsurf_event_type, windsurf_source_backed_adapter,
 };
+
+pub(super) use grok_build::grok_build_file_is_selected;

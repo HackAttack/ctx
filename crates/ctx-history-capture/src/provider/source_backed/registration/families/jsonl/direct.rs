@@ -7,6 +7,10 @@ const DIRECT_ROUTES: &[RouteEntry] = &[
         register_direct_jsonl_source_backed_route,
     ),
     RouteEntry::new(
+        CaptureProvider::GrokBuild,
+        register_direct_jsonl_source_backed_route,
+    ),
+    RouteEntry::new(
         CaptureProvider::Tabnine,
         register_direct_jsonl_source_backed_route,
     ),
@@ -47,15 +51,16 @@ fn register_direct_jsonl_source_backed_route(
 ) -> SourceBackedCoordinatorResult<()> {
     use crate::provider::providers::native_jsonl::native_path::{
         antigravity_source_backed_adapter, copilot_source_backed_adapter,
-        factory_droid_source_backed_adapter, qoder_source_backed_adapter,
-        qwen_code_source_backed_adapter, tabnine_source_backed_adapter,
-        windsurf_source_backed_adapter,
+        factory_droid_source_backed_adapter, grok_build_source_backed_adapter,
+        qoder_source_backed_adapter, qwen_code_source_backed_adapter,
+        tabnine_source_backed_adapter, windsurf_source_backed_adapter,
     };
 
     let adapter = match source.provider {
         CaptureProvider::Antigravity => antigravity_source_backed_adapter(),
         CaptureProvider::CopilotCli => copilot_source_backed_adapter(),
         CaptureProvider::FactoryAiDroid => factory_droid_source_backed_adapter(),
+        CaptureProvider::GrokBuild => grok_build_source_backed_adapter(),
         CaptureProvider::Qoder => qoder_source_backed_adapter(),
         CaptureProvider::QwenCode => qwen_code_source_backed_adapter(),
         CaptureProvider::Tabnine => tabnine_source_backed_adapter(),

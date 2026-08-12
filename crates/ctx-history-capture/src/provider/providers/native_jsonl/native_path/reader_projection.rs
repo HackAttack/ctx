@@ -29,6 +29,9 @@ impl DirectJsonlProjector {
         };
 
         let starts_session = match self.provider {
+            CaptureProvider::GrokBuild => {
+                super::grok_build::grok_build_header_session_id(&value).is_some()
+            }
             CaptureProvider::Qoder => {
                 super::qoder_parser::qoder_header_session_id(&value).is_some()
             }
@@ -88,12 +91,18 @@ impl DirectJsonlProjector {
                 "direct JSONL line number exceeds platform limits",
             ))?;
         let event_type = direct_jsonl_event_type(self.provider, &value);
-        let occurred_at = native_jsonl_timestamp(&value).unwrap_or(session.started_at);
+        let occurred_at = if self.provider == CaptureProvider::GrokBuild {
+            super::grok_build::grok_build_timestamp(&value)
+        } else {
+            native_jsonl_timestamp(&value)
+        }
+        .unwrap_or(session.started_at);
 
-        if event_type == EventType::ToolOutput
+        if matches!(event_type, EventType::ToolOutput | EventType::CommandOutput)
             && matches!(
                 self.provider,
                 CaptureProvider::FactoryAiDroid
+                    | CaptureProvider::GrokBuild
                     | CaptureProvider::Qoder
                     | CaptureProvider::QwenCode
             )
@@ -110,7 +119,7 @@ impl DirectJsonlProjector {
                 record_digest,
             );
         }
-        let result_profile = (event_type == EventType::ToolOutput)
+        let result_profile = matches!(event_type, EventType::ToolOutput | EventType::CommandOutput)
             .then(|| native_jsonl_result_content_profile(self.provider))
             .flatten();
         if let Some(profile) = result_profile {
@@ -182,6 +191,7 @@ impl DirectJsonlProjector {
     ) -> Result<ProjectedLine> {
         let extracted = match self.provider {
             CaptureProvider::FactoryAiDroid => super::enumerate_factory_droid_results(value),
+            CaptureProvider::GrokBuild => super::grok_build::enumerate_grok_build_results(value),
             CaptureProvider::Qoder => super::qoder_parser::enumerate_qoder_results(value),
             CaptureProvider::QwenCode => super::qwen_code::enumerate_qwen_code_results(value),
             _ => {
@@ -228,7 +238,7 @@ impl DirectJsonlProjector {
                 )
         });
         let retained_failure_touches = if has_retained_failure {
-            direct_jsonl_touches(value, EventType::ToolOutput, true)
+            direct_jsonl_touches(value, direct_jsonl_event_type(self.provider, value), true)
         } else {
             Vec::new()
         };
@@ -237,9 +247,11 @@ impl DirectJsonlProjector {
                 .content
                 .as_deref()
                 .filter(|content| !content.trim().is_empty());
-            let retain_contentless_copilot_completion =
-                self.provider == CaptureProvider::CopilotCli && subrecord.call_id.is_some();
-            if content.is_none() && !retain_contentless_copilot_completion {
+            let retain_contentless_completion = matches!(
+                self.provider,
+                CaptureProvider::CopilotCli | CaptureProvider::GrokBuild
+            ) && subrecord.call_id.is_some();
+            if content.is_none() && !retain_contentless_completion {
                 continue;
             }
             let sub_ordinal = subrecord.subrecord_index;
@@ -251,7 +263,7 @@ impl DirectJsonlProjector {
             } else {
                 Vec::new()
             };
-            debug_assert!(content.is_some() || retain_contentless_copilot_completion);
+            debug_assert!(content.is_some() || retain_contentless_completion);
             let mut event = direct_event(
                 self.provider,
                 &self.source_format,
@@ -288,6 +300,7 @@ impl DirectJsonlProjector {
 fn direct_jsonl_event_type(provider: CaptureProvider, value: &Value) -> EventType {
     match provider {
         CaptureProvider::FactoryAiDroid => super::factory_droid_event_type(value),
+        CaptureProvider::GrokBuild => super::grok_build::grok_build_event_type(value),
         CaptureProvider::Qoder => super::qoder_parser::qoder_event_type(value),
         CaptureProvider::QwenCode => super::qwen_code::qwen_code_event_type(value),
         _ => native_jsonl_event_type(provider, value),
@@ -297,6 +310,7 @@ fn direct_jsonl_event_type(provider: CaptureProvider, value: &Value) -> EventTyp
 fn direct_jsonl_role(provider: CaptureProvider, value: &Value) -> ctx_history_core::EventRole {
     match provider {
         CaptureProvider::FactoryAiDroid => super::factory_droid_role(value),
+        CaptureProvider::GrokBuild => super::grok_build::grok_build_role(value),
         CaptureProvider::Qoder => super::qoder_parser::qoder_role(value),
         CaptureProvider::QwenCode => super::qwen_code::qwen_code_role(value),
         _ => native_jsonl_role(provider, value),
@@ -316,6 +330,7 @@ fn direct_jsonl_event_text(
     }
     match provider {
         CaptureProvider::FactoryAiDroid => super::factory_droid_event_text(value),
+        CaptureProvider::GrokBuild => super::grok_build::grok_build_event_text(value),
         CaptureProvider::Qoder => super::qoder_parser::qoder_event_text(value, event_type),
         CaptureProvider::QwenCode => super::qwen_code::qwen_code_event_text(value),
         _ => native_jsonl_event_text(provider, value, event_type, entry_type),
@@ -332,6 +347,9 @@ fn direct_jsonl_structured_tool_call_text(
         }
         CaptureProvider::Tabnine => direct_jsonl_selected_object(value, &["content", "toolCalls"]),
         CaptureProvider::CopilotCli => value.get("data").cloned(),
+        CaptureProvider::GrokBuild => {
+            return super::grok_build::grok_build_structured_tool_call_text(value)
+        }
         CaptureProvider::FactoryAiDroid | CaptureProvider::Qoder | CaptureProvider::QwenCode => {
             value
                 .pointer("/message/content")
@@ -374,6 +392,7 @@ fn direct_jsonl_lexical_text(
 fn direct_jsonl_model(provider: CaptureProvider, value: &Value) -> Option<Value> {
     match provider {
         CaptureProvider::FactoryAiDroid => super::factory_droid_model(value),
+        CaptureProvider::GrokBuild => None,
         CaptureProvider::Qoder => super::qoder_parser::qoder_model(value),
         CaptureProvider::QwenCode => super::qwen_code::qwen_code_model(value),
         _ => native_jsonl_model(provider, value),
@@ -419,13 +438,19 @@ fn direct_event(
     let event_type = direct_jsonl_event_type(provider, value);
     let entry_type = native_jsonl_entry_type(provider, value);
     let role = direct_jsonl_role(provider, value);
-    let text = if generic_tool_call_body || event_type == EventType::ToolOutput {
+    let text = if generic_tool_call_body
+        || matches!(event_type, EventType::ToolOutput | EventType::CommandOutput)
+    {
         String::new()
     } else {
         direct_jsonl_event_text(provider, value, event_type, &entry_type)
     };
     let mut lexical_text = direct_jsonl_lexical_text(event_type, &text, result);
-    if provider == CaptureProvider::CopilotCli && result.is_some() && lexical_text.trim().is_empty()
+    if matches!(
+        provider,
+        CaptureProvider::CopilotCli | CaptureProvider::GrokBuild
+    ) && result.is_some()
+        && lexical_text.trim().is_empty()
     {
         lexical_text = event_type.as_str().to_owned();
     }
@@ -552,7 +577,7 @@ fn direct_jsonl_touches(
     event_type: EventType,
     retained_failure: bool,
 ) -> Vec<DirectJsonlTouch> {
-    if event_type == EventType::ToolOutput && !retained_failure {
+    if matches!(event_type, EventType::ToolOutput | EventType::CommandOutput) && !retained_failure {
         return Vec::new();
     }
     let mut touches = Vec::new();
@@ -588,6 +613,9 @@ fn direct_jsonl_native_event_identity(provider: CaptureProvider, value: &Value) 
         }
         CaptureProvider::FactoryAiDroid => {
             super::factory_droid_event_identity(value).map(str::to_owned)
+        }
+        CaptureProvider::GrokBuild => {
+            super::grok_build::grok_build_event_identity(value).map(str::to_owned)
         }
         CaptureProvider::Qoder => {
             super::qoder_parser::qoder_event_identity(value).map(str::to_owned)
@@ -626,6 +654,8 @@ fn session_from_header(
         }
         CaptureProvider::Windsurf => super::windsurf::windsurf_session_id_from_path(path)
             .unwrap_or_else(|| "unknown-session".to_owned()),
+        CaptureProvider::GrokBuild => super::grok_build::grok_build_header_session_id(header)
+            .unwrap_or_else(|| "unknown-session".to_owned()),
         CaptureProvider::Qoder => super::qoder_parser::qoder_header_session_id(header)
             .unwrap_or_else(|| "unknown-session".to_owned()),
         CaptureProvider::QwenCode => super::qwen_code::qwen_code_header_session_id(header)
@@ -635,9 +665,12 @@ fn session_from_header(
     };
     let (provider_session_id, parent_provider_session_id, external_agent_id, agent_type) =
         native_jsonl_path_session(provider, path, header, &native_session_id);
-    let started_at = native_jsonl_timestamp(header)
-        .or_else(|| native_jsonl_header_start_time(provider, header))
-        .unwrap_or(imported_at);
+    let started_at = match provider {
+        CaptureProvider::GrokBuild => super::grok_build::grok_build_timestamp(header),
+        _ => native_jsonl_timestamp(header),
+    }
+    .or_else(|| native_jsonl_header_start_time(provider, header))
+    .unwrap_or(imported_at);
     let cwd = match provider {
         CaptureProvider::Qoder => super::qoder_parser::qoder_header_cwd(header),
         CaptureProvider::QwenCode => super::qwen_code::qwen_code_header_cwd(header),

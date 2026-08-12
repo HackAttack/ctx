@@ -381,6 +381,68 @@ fn codex_mixed_session_replay_preserves_source_backed_rejection_counts() {
 }
 
 #[test]
+fn grok_build_mixed_jsonl_replay_retains_valid_records_and_rejection_count() {
+    let temp = finite_daemon_test_root();
+    let query = "grok-build-mixed-valid-oracle";
+    let path = write_native_grok_build_fixture(&temp, query);
+    let mut file = fs::OpenOptions::new().append(true).open(&path).unwrap();
+    writeln!(file, "{{\"malformed\":").unwrap();
+    drop(file);
+    append_native_grok_build_event(&path, "grok-build-after-malformed-oracle");
+
+    let mut first_generation = None;
+    for resume in [false, true] {
+        let mut command = ctx(&temp);
+        command.args([
+            "import",
+            "--provider",
+            "grok-build",
+            "--path",
+            &path,
+            "--format=json",
+            "--progress",
+            "none",
+        ]);
+        if resume {
+            command.arg("--resume");
+        }
+        let report = json_output(&mut command);
+        let source = assert_source_backed_publication(
+            &report,
+            "grok_build",
+            "grok_build_session_updates_jsonl",
+            1,
+        );
+        assert_eq!(source["current_sources_with_rejections"], 1, "{report:#}");
+        assert!(
+            source["current_indexed_documents"].as_u64().unwrap() >= 2,
+            "{report:#}"
+        );
+        let generation = source["published_generation"].as_str().unwrap();
+        if resume {
+            assert_eq!(source["change"], "no_op", "{report:#}");
+            assert_eq!(source["generation_changed"], false, "{report:#}");
+            assert_eq!(Some(generation), first_generation.as_deref(), "{report:#}");
+        } else {
+            first_generation = Some(generation.to_owned());
+        }
+    }
+
+    for query in [query, "grok-build-after-malformed-oracle"] {
+        let search = json_output(ctx(&temp).args([
+            "search",
+            query,
+            "--provider",
+            "grok-build",
+            "--refresh",
+            "off",
+            "--format=json",
+        ]));
+        assert_search_provider_oracle(&search, "grok_build", query, 1, "message");
+    }
+}
+
+#[test]
 fn codex_nested_root_advisory_import_is_searchable_and_showable_without_source_failures() {
     let temp = finite_daemon_test_root();
     let sessions = temp.path().join("codex-nested-lineage-sessions");
