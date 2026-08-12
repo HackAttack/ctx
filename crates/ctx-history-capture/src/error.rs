@@ -3,25 +3,12 @@ use std::path::PathBuf;
 use ctx_history_capture_model::ProviderSourceFailureKind;
 use thiserror::Error;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ProviderJsonlInventoryLimit {
-    Directories,
-    Depth,
-    EligiblePaths,
-    MetadataEntries,
-}
+pub type ProviderJsonlInventoryLimit = ctx_history_source_io::ProviderJsonlInventoryLimit;
 
-impl std::fmt::Display for ProviderJsonlInventoryLimit {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        formatter.write_str(match self {
-            Self::Directories => "directories",
-            Self::Depth => "depth",
-            Self::EligiblePaths => "eligible_jsonl_paths",
-            Self::MetadataEntries => "metadata_entries",
-        })
-    }
-}
-
+/// Capture keeps the explicit JSONL-compatible `CaptureError` surface for now
+/// so SQLite and provider-local families share one authority. The remaining
+/// overlap with shared JSONL providers is intentional parity and will be
+/// composed into `ctx-history-provider-runtime`, rather than split again here.
 #[derive(Debug, Error)]
 pub enum CaptureError {
     #[error("io error: {0}")]
@@ -89,7 +76,7 @@ pub type Result<T> = std::result::Result<T, CaptureError>;
 
 impl From<ctx_history_source_io::SourceIoError> for CaptureError {
     fn from(error: ctx_history_source_io::SourceIoError) -> Self {
-        use ctx_history_source_io::{SourceIoError, SourceIoJsonlInventoryLimit as SourceLimit};
+        use ctx_history_source_io::SourceIoError;
 
         match error {
             SourceIoError::Io(error) => Self::Io(error),
@@ -102,16 +89,7 @@ impl From<ctx_history_source_io::SourceIoError> for CaptureError {
                 limit,
                 maximum,
                 observed,
-            } => Self::ProviderJsonlInventoryLimitExceeded {
-                limit: match limit {
-                    SourceLimit::Directories => ProviderJsonlInventoryLimit::Directories,
-                    SourceLimit::Depth => ProviderJsonlInventoryLimit::Depth,
-                    SourceLimit::EligiblePaths => ProviderJsonlInventoryLimit::EligiblePaths,
-                    SourceLimit::MetadataEntries => ProviderJsonlInventoryLimit::MetadataEntries,
-                },
-                maximum,
-                observed,
-            },
+            } => Self::ProviderJsonlInventoryLimitExceeded { limit, maximum, observed },
             SourceIoError::SystemIo { operation, source } => Self::SystemIo { operation, source },
             SourceIoError::SystemInvariant(detail) => Self::SystemInvariant(detail),
             SourceIoError::SourceChangedDuringCapture => Self::SourceChangedDuringCapture,

@@ -3,25 +3,13 @@ use std::path::PathBuf;
 use ctx_history_capture_model::ProviderSourceFailureKind;
 use thiserror::Error;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ProviderJsonlInventoryLimit {
-    Directories,
-    Depth,
-    EligiblePaths,
-    MetadataEntries,
-}
+pub type ProviderJsonlInventoryLimit = ctx_history_source_io::ProviderJsonlInventoryLimit;
 
-impl std::fmt::Display for ProviderJsonlInventoryLimit {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(match self {
-            Self::Directories => "directories",
-            Self::Depth => "depth",
-            Self::EligiblePaths => "eligible_jsonl_paths",
-            Self::MetadataEntries => "metadata_entries",
-        })
-    }
-}
-
+/// Shared-provider JSONL adapters currently keep an explicit local error policy
+/// that mirrors the JSONL-relevant capture surface. This preserves one
+/// authority for provider-local behavior today; runtime composition will fold
+/// the overlap into `ctx-history-provider-runtime` instead of introducing a
+/// third policy layer here.
 #[derive(Debug, Error)]
 pub enum CaptureError {
     #[error("io error: {0}")]
@@ -69,7 +57,7 @@ pub type Result<T> = std::result::Result<T, CaptureError>;
 
 impl From<ctx_history_source_io::SourceIoError> for CaptureError {
     fn from(error: ctx_history_source_io::SourceIoError) -> Self {
-        use ctx_history_source_io::{SourceIoError, SourceIoJsonlInventoryLimit as Limit};
+        use ctx_history_source_io::SourceIoError;
         match error {
             SourceIoError::Io(error) => Self::Io(error),
             SourceIoError::Json(error) => Self::Json(error),
@@ -81,16 +69,7 @@ impl From<ctx_history_source_io::SourceIoError> for CaptureError {
                 limit,
                 maximum,
                 observed,
-            } => Self::ProviderJsonlInventoryLimitExceeded {
-                limit: match limit {
-                    Limit::Directories => ProviderJsonlInventoryLimit::Directories,
-                    Limit::Depth => ProviderJsonlInventoryLimit::Depth,
-                    Limit::EligiblePaths => ProviderJsonlInventoryLimit::EligiblePaths,
-                    Limit::MetadataEntries => ProviderJsonlInventoryLimit::MetadataEntries,
-                },
-                maximum,
-                observed,
-            },
+            } => Self::ProviderJsonlInventoryLimitExceeded { limit, maximum, observed },
             SourceIoError::SystemIo { operation, source } => Self::SystemIo { operation, source },
             SourceIoError::SystemInvariant(detail) => Self::SystemInvariant(detail),
             SourceIoError::SourceChangedDuringCapture => Self::SourceChangedDuringCapture,
