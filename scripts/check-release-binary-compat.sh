@@ -350,10 +350,12 @@ check_linux() {
   if [[ "${platform}" == "linux-x64" ]]; then
     expected_machine="EM_X86_64"
     expected_interpreter="/lib64/ld-linux-x86-64.so.2"
-    # The loader is identified by PT_INTERP, not required to appear in
-    # DT_NEEDED. Rust/Zig may also satisfy unwinding without libgcc_s; neither
-    # optional entry is part of the portable glibc ABI contract.
+    # The loader is identified by PT_INTERP. The x86_64 Zig/glibc link emits
+    # the loader in DT_NEEDED as well; AArch64 does not. Rust/Zig may also
+    # satisfy unwinding without libgcc_s, so that optional entry is not part
+    # of the portable glibc ABI contract.
     expected_needed="libc.so.6
+ld-linux-x86-64.so.2
 libm.so.6"
   else
     expected_machine="EM_AARCH64"

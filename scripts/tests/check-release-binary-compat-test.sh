@@ -190,6 +190,7 @@ DynamicSection [
 ]
 Interpreter: /lib64/ld-linux-x86-64.so.2
 NeededLibraries [
+  ld-linux-x86-64.so.2
   libm.so.6
   libc.so.6
 ]
