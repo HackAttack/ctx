@@ -29,9 +29,8 @@ use crate::{
     HistoryCliConfig, RefreshMode, SearchExecutionObservation, SearchRefreshStatus,
 };
 use ctx_daemon_cli::{
-    wait_for_daemon_query_service, PinnedSourceBackedGeneration, SemanticNotReady,
-    SemanticQueryAdapter, SourceBackedRefreshDaemonUnavailable, SourceBackedRefreshMode,
-    SourceBackedRefreshObservation,
+    wait_for_daemon_query_service, PinnedSourceBackedGeneration,
+    SourceBackedRefreshDaemonUnavailable, SourceBackedRefreshMode, SourceBackedRefreshObservation,
 };
 
 use super::{
@@ -282,6 +281,12 @@ pub(super) struct RefreshOutcome {
     pub(super) source_count: usize,
 }
 
+struct SearchRefreshContext<'a> {
+    mode: RefreshArg,
+    status: &'a str,
+    source_count: usize,
+}
+
 pub fn run_search(
     args: SearchArgs,
     data_root: PathBuf,
@@ -336,7 +341,7 @@ fn run_search_inner<P: HistorySemanticPort>(
             requested_backend,
             SearchBackend::Semantic | SearchBackend::Hybrid
         )
-        && unsupported_semantic_scope(&request).is_none()
+        && unsupported_semantic_scope(request).is_none()
         && !(requested_backend == SearchBackend::Hybrid && semantic_weight == 0.0)
     {
         wait_for_daemon_query_service(&data_root, Duration::from_secs(3));
@@ -694,9 +699,11 @@ fn search_pinned_generation<P: HistorySemanticPort>(
         plan,
         pin.into_index(),
         data_root,
-        refresh_mode,
-        status,
-        source_count,
+        SearchRefreshContext {
+            mode: refresh_mode,
+            status,
+            source_count,
+        },
         compact_projection,
         semantic_port,
     )?;
@@ -725,9 +732,11 @@ pub(super) fn search_existing_generation(
         plan,
         index,
         data_root,
-        RefreshArg::Off,
-        refresh_status,
-        refresh_source_count,
+        SearchRefreshContext {
+            mode: RefreshArg::Off,
+            status: refresh_status,
+            source_count: refresh_source_count,
+        },
         false,
         &crate::semantic::SemanticQueryAdapter::new(data_root),
     )
@@ -742,9 +751,7 @@ fn search_existing_generation_with_port<P: HistorySemanticPort>(
     plan: ctx_history_read_application::PlannedSearch,
     index: VerifiedIndex,
     data_root: &Path,
-    refresh_mode: RefreshArg,
-    refresh_status: &str,
-    refresh_source_count: usize,
+    refresh: SearchRefreshContext<'_>,
     compact_projection: bool,
     semantic_port: &P,
 ) -> SourceSearchResult<(Value, ctx_history_read_application::SearchApplicationResult)> {
@@ -777,9 +784,9 @@ fn search_existing_generation_with_port<P: HistorySemanticPort>(
         &query.filters,
         &query.presentations,
         result.copied_lineage_read_models(),
-        refresh_mode,
-        refresh_status,
-        refresh_source_count,
+        refresh.mode,
+        refresh.status,
+        refresh.source_count,
         result.query_duration(),
     )?;
     Ok((value, result))

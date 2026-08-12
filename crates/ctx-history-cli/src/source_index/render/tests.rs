@@ -1,5 +1,3 @@
-use std::io::Write as _;
-
 use ctx_history_core::MAX_CORE_CONTENT_BYTES;
 use serde_json::{json, Value};
 use unicode_segmentation::UnicodeSegmentation as _;
