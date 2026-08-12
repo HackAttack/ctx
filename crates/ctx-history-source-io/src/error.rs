@@ -27,8 +27,6 @@ pub enum SourceIoError {
     Io(#[from] std::io::Error),
     #[error("json error: {0}")]
     Json(#[from] serde_json::Error),
-    #[error("sqlite error: {0}")]
-    Sqlite(#[from] rusqlite::Error),
     #[error("invalid capture payload: {0}")]
     InvalidPayload(String),
     #[error("invalid provider transcript path {path:?}: {reason}")]
@@ -51,11 +49,6 @@ pub enum SourceIoError {
     SystemInvariant(&'static str),
     #[error("provider source changed during bounded capture")]
     SourceChangedDuringCapture,
-    #[error("{primary}; terminal SQLite revalidation/cleanup also failed: {finalization}")]
-    SqliteFinalization {
-        primary: Box<SourceIoError>,
-        finalization: Box<SourceIoError>,
-    },
 }
 
 pub type Result<T> = std::result::Result<T, SourceIoError>;

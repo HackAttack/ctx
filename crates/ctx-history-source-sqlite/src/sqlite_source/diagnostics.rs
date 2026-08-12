@@ -91,8 +91,10 @@ impl std::fmt::Display for SqliteFailureDiagnostic {
             "sqlite_phase={} artifact_kind={} sqlite_primary_code={} sqlite_extended_code={} copied_pages={} copied_bytes={} cleanup_status={}",
             self.phase.as_str(),
             self.artifact.as_str(),
-            self.sqlite_primary_code.map_or_else(|| "none".to_owned(), |code| code.to_string()),
-            self.sqlite_extended_code.map_or_else(|| "none".to_owned(), |code| code.to_string()),
+            self.sqlite_primary_code
+                .map_or_else(|| "none".to_owned(), |code| code.to_string()),
+            self.sqlite_extended_code
+                .map_or_else(|| "none".to_owned(), |code| code.to_string()),
             self.copied_pages,
             self.copied_bytes,
             self.cleanup.as_str(),

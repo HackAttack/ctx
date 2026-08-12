@@ -87,12 +87,14 @@ pub use context::{
     DiscoveryContext, DiscoveryPlatform, DiscoveryPlatformDirs, DISCOVERY_ENV_ALLOWLIST,
 };
 pub use ctx_history_source_io::OrdinaryFileObservation;
-#[cfg(test)]
-pub(crate) use ctx_history_source_io::{
-    fail_next_opened_snapshot_cleanup_for_test, SqliteSourceDirectoryAuthority,
-};
 pub(crate) use ctx_history_source_io::{
     observe_ordinary_file, open_ordinary_file_without_following,
+};
+#[cfg(test)]
+pub(crate) use ctx_history_source_sqlite::{
+    fail_next_opened_snapshot_cleanup_for_test, SqliteSourceDirectoryAuthority,
+};
+pub(crate) use ctx_history_source_sqlite::{
     open_root_handle_sqlite_source_snapshot_with_limits, retain_sqlite_source_directory_authority,
     SqliteSourceAccessError, SqliteSourceReadSnapshot, SqliteSourceSnapshotLimits,
 };

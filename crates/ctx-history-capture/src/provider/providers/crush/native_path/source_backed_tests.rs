@@ -86,12 +86,14 @@ fn query_time_corrupt_and_notadb_keep_provider_content_provenance() {
         assert!(!error.source().is_ctx_owned_corruption());
         let expected_artifact = match source.read_snapshot.strategy() {
             #[cfg(target_os = "linux")]
-            ctx_history_source_io::SqliteSourceSnapshotStrategy::ImmutableMain
-            | ctx_history_source_io::SqliteSourceSnapshotStrategy::PinnedReadOnlyWal => {
+            ctx_history_source_sqlite::SqliteSourceSnapshotStrategy::ImmutableMain => {
                 crate::provider_sources::SqliteArtifactKind::ProviderDatabase
             }
-            ctx_history_source_io::SqliteSourceSnapshotStrategy::CopiedFamily => {
+            ctx_history_source_sqlite::SqliteSourceSnapshotStrategy::CopiedFamily => {
                 crate::provider_sources::SqliteArtifactKind::PrivateSourceCopy
+            }
+            ctx_history_source_sqlite::SqliteSourceSnapshotStrategy::PinnedReadOnlyWal => {
+                crate::provider_sources::SqliteArtifactKind::ProviderDatabase
             }
         };
         assert_eq!(

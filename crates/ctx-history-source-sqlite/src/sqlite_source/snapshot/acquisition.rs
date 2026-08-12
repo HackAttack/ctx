@@ -506,7 +506,7 @@ fn measure_private_snapshot_bytes(directory: &Path, maximum: u64) -> SqliteSourc
                     operation: "measuring private SQLite route scratch",
                     path,
                     source,
-                })
+                });
             }
         };
         if !metadata.file_type().is_file() {

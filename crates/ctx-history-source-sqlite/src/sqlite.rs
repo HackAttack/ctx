@@ -9,11 +9,14 @@ use std::{
 use rusqlite::{limits::Limit, Connection};
 use sha2::{Digest, Sha256};
 
+use ctx_history_source_io::{
+    observe_ordinary_file, open_ordinary_file_without_following, OrdinaryFileObservation,
+    ProviderSourceRoot,
+};
+
 use crate::{
-    observe_ordinary_file, open_ordinary_file_without_following,
     open_root_handle_sqlite_source_snapshot, retain_sqlite_source_directory_authority,
-    OrdinaryFileObservation, ProviderSourceRoot, SqliteSourceAccessError, SqliteSourceEvidence,
-    SqliteSourceReadSnapshot,
+    SqliteSourceAccessError, SqliteSourceEvidence, SqliteSourceReadSnapshot,
 };
 
 /// Preserves both a provider operation failure and a failure encountered while
@@ -82,7 +85,7 @@ pub(crate) fn combine_sqlite_read_finalization<T, Primary, Finalization>(
         }
     }
 }
-use crate::{Result, SourceIoError, MAX_PROVIDER_SQLITE_VALUE_BYTES};
+use crate::{Result, SqliteIoError, MAX_PROVIDER_SQLITE_VALUE_BYTES};
 
 const SQLITE_COMPONENT_TOKEN_DOMAIN: &[u8] = b"ctx-provider-sqlite-component-v1\0";
 const SQLITE_HEADER_BYTES: usize = 100;
@@ -96,11 +99,11 @@ pub fn sqlite_component_change_token(
     let mut file = open_ordinary_file_without_following(path)?;
     let metadata = file.metadata()?;
     if !metadata.file_type().is_file() || metadata.len() != observation.len() {
-        return Err(SourceIoError::SourceChangedDuringCapture);
+        return Err(SqliteIoError::SourceChangedDuringCapture);
     }
 
     let prefix_len = usize::try_from(observation.len().min(SQLITE_HEADER_BYTES as u64))
-        .map_err(|_| SourceIoError::SourceChangedDuringCapture)?;
+        .map_err(|_| SqliteIoError::SourceChangedDuringCapture)?;
     let mut prefix = vec![0_u8; prefix_len];
     file.read_exact(&mut prefix)?;
 
@@ -123,7 +126,7 @@ pub fn sqlite_component_change_token(
 
     let current = observe_ordinary_file(path)?;
     if &current != observation {
-        return Err(SourceIoError::SourceChangedDuringCapture);
+        return Err(SqliteIoError::SourceChangedDuringCapture);
     }
     Ok(hasher.finalize().into())
 }
@@ -137,7 +140,7 @@ fn sqlite_wal_last_frame_header(
         return Ok(None);
     }
     let raw_page_size = u32::from_be_bytes(prefix[8..12].try_into().map_err(|_| {
-        SourceIoError::InvalidPayload("invalid SQLite WAL page-size header".to_owned())
+        SqliteIoError::InvalidPayload("invalid SQLite WAL page-size header".to_owned())
     })?);
     let page_size = match raw_page_size {
         1 => 65_536_u64,
@@ -204,10 +207,10 @@ impl ProviderSqliteSourceSnapshot {
             self.sidecar_invalid_reason,
         ) {
             Ok(current) => Ok(current == *self),
-            Err(SourceIoError::Io(error)) if error.kind() == std::io::ErrorKind::NotFound => {
+            Err(SqliteIoError::Io(error)) if error.kind() == std::io::ErrorKind::NotFound => {
                 Ok(false)
             }
-            Err(SourceIoError::InvalidProviderTranscriptPath { .. }) => Ok(false),
+            Err(SqliteIoError::InvalidProviderTranscriptPath { .. }) => Ok(false),
             Err(error) => Err(error),
         }
     }
@@ -242,7 +245,7 @@ impl RootAuthorizedProviderSqliteSnapshot {
                 .map_err(map_sqlite_source_access_error_to_io)
             {
                 Ok(_) => Err(primary),
-                Err(finalization) => Err(SourceIoError::SqliteFinalization {
+                Err(finalization) => Err(SqliteIoError::SqliteFinalization {
                     primary: Box::new(primary),
                     finalization: Box::new(finalization),
                 }),
@@ -256,7 +259,7 @@ impl RootAuthorizedProviderSqliteSnapshot {
     fn connection(&self) -> Result<&Connection> {
         self.snapshot
             .as_ref()
-            .ok_or(SourceIoError::SystemInvariant(
+            .ok_or(SqliteIoError::SystemInvariant(
                 "provider SQLite source snapshot is inactive",
             ))?
             .connection()
@@ -264,7 +267,7 @@ impl RootAuthorizedProviderSqliteSnapshot {
     }
 
     fn finish(mut self) -> Result<SqliteSourceEvidence> {
-        let snapshot = self.snapshot.take().ok_or(SourceIoError::SystemInvariant(
+        let snapshot = self.snapshot.take().ok_or(SqliteIoError::SystemInvariant(
             "provider SQLite source snapshot is inactive",
         ))?;
         snapshot
@@ -285,13 +288,13 @@ fn sqlite_parent_and_leaf(path: &Path) -> Result<(&Path, &OsStr)> {
     let parent = path
         .parent()
         .filter(|parent| !parent.as_os_str().is_empty())
-        .ok_or_else(|| SourceIoError::InvalidProviderTranscriptPath {
+        .ok_or_else(|| SqliteIoError::InvalidProviderTranscriptPath {
             path: path.to_path_buf(),
             reason: "provider SQLite path has no absolute parent directory",
         })?;
     let database_name =
         path.file_name()
-            .ok_or_else(|| SourceIoError::InvalidProviderTranscriptPath {
+            .ok_or_else(|| SqliteIoError::InvalidProviderTranscriptPath {
                 path: path.to_path_buf(),
                 reason: "provider SQLite path has no database leaf name",
             })?;
@@ -323,7 +326,7 @@ impl<E> std::ops::Deref for MappedReadOnlySqliteConnection<E> {
 
 impl<E> MappedReadOnlySqliteConnection<E>
 where
-    E: From<SourceIoError>,
+    E: From<SqliteIoError>,
 {
     pub fn open(data_root: &Path, path: &Path) -> std::result::Result<Self, E> {
         open_provider_sqlite_readonly(data_root, path)
@@ -355,7 +358,7 @@ impl ReadOnlySqliteConnection {
     fn connection(&self) -> Result<&Connection> {
         self.snapshot
             .as_ref()
-            .ok_or(SourceIoError::SystemInvariant(
+            .ok_or(SqliteIoError::SystemInvariant(
                 "provider SQLite source snapshot is inactive",
             ))?
             .connection()
@@ -364,7 +367,7 @@ impl ReadOnlySqliteConnection {
     pub fn finish(mut self) -> Result<SqliteSourceEvidence> {
         self.snapshot
             .take()
-            .ok_or(SourceIoError::SystemInvariant(
+            .ok_or(SqliteIoError::SystemInvariant(
                 "provider SQLite source snapshot is inactive",
             ))?
             .finish()
@@ -375,7 +378,7 @@ impl ReadOnlySqliteConnection {
     pub fn with_connection<T, E>(
         self,
         operation: impl FnOnce(&Connection) -> std::result::Result<T, E>,
-    ) -> std::result::Result<T, SqliteReadFinalizationError<E, SourceIoError>> {
+    ) -> std::result::Result<T, SqliteReadFinalizationError<E, SqliteIoError>> {
         let primary = operation(&self);
         self.finish_with(primary)
     }
@@ -385,14 +388,14 @@ impl ReadOnlySqliteConnection {
     pub fn finish_with<T, E>(
         self,
         primary: std::result::Result<T, E>,
-    ) -> std::result::Result<T, SqliteReadFinalizationError<E, SourceIoError>> {
+    ) -> std::result::Result<T, SqliteReadFinalizationError<E, SqliteIoError>> {
         combine_sqlite_read_finalization(primary, self.finish().map(|_| ()))
     }
 
     fn retain_after_configuration<E>(
         self,
         configured: std::result::Result<(), E>,
-    ) -> std::result::Result<Self, SqliteReadFinalizationError<E, SourceIoError>> {
+    ) -> std::result::Result<Self, SqliteReadFinalizationError<E, SqliteIoError>> {
         match configured {
             Ok(()) => Ok(self),
             Err(primary) => match self.finish() {
@@ -432,7 +435,7 @@ pub fn open_provider_sqlite_readonly(
     let conn = open_sqlite_readonly_source(data_root, path)?;
     let configured = (|| {
         let value_limit = i32::try_from(MAX_PROVIDER_SQLITE_VALUE_BYTES).map_err(|_| {
-            SourceIoError::InvalidPayload(format!(
+            SqliteIoError::InvalidPayload(format!(
                 "provider SQLite value byte limit is unrepresentable: {MAX_PROVIDER_SQLITE_VALUE_BYTES}"
             ))
         })?;
@@ -462,34 +465,34 @@ fn inactive_readonly_sqlite_connection() -> ! {
 }
 
 fn source_io_finalization_error(
-    error: SqliteReadFinalizationError<SourceIoError, SourceIoError>,
-) -> SourceIoError {
+    error: SqliteReadFinalizationError<SqliteIoError, SqliteIoError>,
+) -> SqliteIoError {
     match error {
         SqliteReadFinalizationError::Primary(primary) => primary,
         SqliteReadFinalizationError::Finalization(finalization) => finalization,
         SqliteReadFinalizationError::PrimaryAndFinalization {
             primary,
             finalization,
-        } => SourceIoError::SqliteFinalization {
+        } => SqliteIoError::SqliteFinalization {
             primary: Box::new(primary),
             finalization: Box::new(finalization),
         },
     }
 }
 
-fn map_sqlite_source_access_error_to_io(error: SqliteSourceAccessError) -> SourceIoError {
+fn map_sqlite_source_access_error_to_io(error: SqliteSourceAccessError) -> SqliteIoError {
     match error {
-        SqliteSourceAccessError::Io { source, .. } => SourceIoError::Io(source),
-        SqliteSourceAccessError::Sqlite { source, .. } => SourceIoError::Sqlite(source),
+        SqliteSourceAccessError::Io { source, .. } => SqliteIoError::Io(source),
+        SqliteSourceAccessError::Sqlite { source, .. } => SqliteIoError::Sqlite(source),
         SqliteSourceAccessError::UnsafeFile { path, reason } => {
-            SourceIoError::InvalidProviderTranscriptPath { path, reason }
+            SqliteIoError::InvalidProviderTranscriptPath { path, reason }
         }
         SqliteSourceAccessError::ConnectionIdentityMismatch
-        | SqliteSourceAccessError::SourceChanged => SourceIoError::SourceChangedDuringCapture,
+        | SqliteSourceAccessError::SourceChanged => SqliteIoError::SourceChangedDuringCapture,
         SqliteSourceAccessError::SnapshotNotActive => {
-            SourceIoError::SystemInvariant("provider SQLite source snapshot is inactive")
+            SqliteIoError::SystemInvariant("provider SQLite source snapshot is inactive")
         }
-        other => SourceIoError::SystemIo {
+        other => SqliteIoError::SystemIo {
             operation: "opening a root-authorized provider SQLite snapshot",
             source: std::io::Error::other(other),
         },

@@ -1,7 +1,7 @@
 [package]
-name = "ctx-history-source-io"
-version.workspace = true
-description = "Provider-neutral bounded source I/O for ctx history capture"
+name = "ctx-history-source-sqlite"
+version = "0.26.0"
+description = "Provider-neutral SQLite source acquisition and snapshots for ctx history"
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
@@ -14,15 +14,19 @@ default = []
 test-support = []
 
 [dependencies]
+ctx-history-capture-model = { path = "../ctx-history-capture-model" }
+ctx-history-core = { path = "../ctx-history-core" }
+ctx-history-source-io = { path = "../ctx-history-source-io" }
+fs2 = "0.4.3"
 libc.workspace = true
+rusqlite.workspace = true
 serde_json.workspace = true
 sha2.workspace = true
 tempfile.workspace = true
 thiserror.workspace = true
+url.workspace = true
 
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.61", features = [
     "Win32_Storage_FileSystem",
-    "Win32_System_IO",
-    "Win32_System_LibraryLoader",
 ] }

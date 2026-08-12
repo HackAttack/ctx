@@ -6,13 +6,13 @@ use sha2::{Digest, Sha256};
 const LOGICAL_REVISION_DOMAIN: &[u8] = b"ctx-sqlite-logical-snapshot-v1\0";
 const LOGICAL_REVISION_KIND: &str = "sqlite-logical-snapshot-v1";
 
-/// Provider-owned logical evidence derived from one physical SQLite snapshot.
+/// Provider-neutral logical evidence derived from one physical SQLite snapshot.
 ///
-/// Physical DB/WAL acquisition and lifetime stay in `ctx-history-source-io`;
-/// parser revision, schema admission, projected rows, and Core certification
-/// remain capture policy here.
+/// Physical DB/WAL acquisition and lifetime are owned by this crate. Providers
+/// supply parser revision, schema evidence, projected-row digest, and counts;
+/// this type gives those inputs one stable Core certification identity.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) struct SqliteLogicalSnapshot {
+pub struct SqliteLogicalSnapshot {
     parser_revision: String,
     content_digest: [u8; 32],
     counts: ScannedSourceCounts,
@@ -20,7 +20,7 @@ pub(crate) struct SqliteLogicalSnapshot {
 }
 
 impl SqliteLogicalSnapshot {
-    pub(crate) fn new(
+    pub fn new(
         parser_revision: impl Into<String>,
         schema_evidence: &[u8],
         logical_row_digest: [u8; 32],
@@ -41,10 +41,7 @@ impl SqliteLogicalSnapshot {
         }
     }
 
-    pub(crate) fn certify(
-        &self,
-        source: SourceKey,
-    ) -> Result<CertifiedSource, ProjectionContractError> {
+    pub fn certify(&self, source: SourceKey) -> Result<CertifiedSource, ProjectionContractError> {
         let observation =
             SourceObservation::new(source, LOGICAL_REVISION_KIND, self.revision.to_vec())?;
         CertifiedSource::certify(

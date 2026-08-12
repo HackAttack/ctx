@@ -10,14 +10,13 @@ use std::{
 };
 
 use ctx_history_core::CaptureProvider;
-use ctx_history_source_io::SqliteReadFinalizationError;
+use ctx_history_source_sqlite::{SqliteReadFinalizationError, MAX_PROVIDER_SQLITE_VALUE_BYTES};
 use rusqlite::{limits::Limit as SqliteLimit, Connection};
 use serde_json::Value;
 
 use ctx_history_source_io::{
     provider_metadata_is_link_like, provider_safe_path_segment,
     read_provider_jsonl_line_or_skip_oversized, ProviderJsonlLineRead, ProviderSourceRoot,
-    MAX_PROVIDER_SQLITE_VALUE_BYTES,
 };
 
 #[cfg(test)]

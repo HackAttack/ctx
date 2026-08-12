@@ -94,7 +94,6 @@ impl From<ctx_history_source_io::SourceIoError> for CaptureError {
         match error {
             SourceIoError::Io(error) => Self::Io(error),
             SourceIoError::Json(error) => Self::Json(error),
-            SourceIoError::Sqlite(error) => Self::Sqlite(error),
             SourceIoError::InvalidPayload(detail) => Self::InvalidPayload(detail),
             SourceIoError::InvalidProviderTranscriptPath { path, reason } => {
                 Self::InvalidProviderTranscriptPath { path, reason }
@@ -116,7 +115,26 @@ impl From<ctx_history_source_io::SourceIoError> for CaptureError {
             SourceIoError::SystemIo { operation, source } => Self::SystemIo { operation, source },
             SourceIoError::SystemInvariant(detail) => Self::SystemInvariant(detail),
             SourceIoError::SourceChangedDuringCapture => Self::SourceChangedDuringCapture,
-            SourceIoError::SqliteFinalization {
+        }
+    }
+}
+
+impl From<ctx_history_source_sqlite::SqliteIoError> for CaptureError {
+    fn from(error: ctx_history_source_sqlite::SqliteIoError) -> Self {
+        use ctx_history_source_sqlite::SqliteIoError;
+
+        match error {
+            SqliteIoError::Io(error) => Self::Io(error),
+            SqliteIoError::Sqlite(error) => Self::Sqlite(error),
+            SqliteIoError::Json(error) => Self::Json(error),
+            SqliteIoError::InvalidPayload(detail) => Self::InvalidPayload(detail),
+            SqliteIoError::InvalidProviderTranscriptPath { path, reason } => {
+                Self::InvalidProviderTranscriptPath { path, reason }
+            }
+            SqliteIoError::SystemIo { operation, source } => Self::SystemIo { operation, source },
+            SqliteIoError::SystemInvariant(detail) => Self::SystemInvariant(detail),
+            SqliteIoError::SourceChangedDuringCapture => Self::SourceChangedDuringCapture,
+            SqliteIoError::SqliteFinalization {
                 primary,
                 finalization,
             } => Self::SqliteFinalization {

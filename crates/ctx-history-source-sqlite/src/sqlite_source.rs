@@ -35,10 +35,12 @@ use std::os::fd::AsRawFd;
 #[cfg(target_os = "linux")]
 use std::os::unix::ffi::OsStrExt;
 
-use crate::{
+use ctx_history_source_io::{
     OpenedProviderSourceFile, OpenedProviderSourcePath, ProviderSourceDirectory,
-    ProviderSourceRoot, SourceIoError, SqliteSourceProgress, SqliteSourceProgressStage,
+    ProviderSourceRoot, SourceIoError,
 };
+
+use crate::{SqliteSourceProgress, SqliteSourceProgressStage};
 
 const EVIDENCE_DOMAIN: &[u8] = b"ctx-stock-sqlite-snapshot-v2\0";
 // Admit an approximately 1 GiB provider database together with an active WAL

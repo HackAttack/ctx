@@ -467,7 +467,7 @@ impl NanoClawDatabaseRead {
     #[cfg(test)]
     pub(super) fn counter_observer(
         &self,
-    ) -> ctx_history_source_io::SqliteSourceSnapshotCounterObserver {
+    ) -> ctx_history_source_sqlite::SqliteSourceSnapshotCounterObserver {
         match self {
             Self::Pathname(connection) => connection.counter_observer(),
             Self::RootBound { guard, .. } => guard.counter_observer(),

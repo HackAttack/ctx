@@ -37,21 +37,21 @@ pub use ctx_history_source_io::OrdinaryFileObservation;
 ctx_history_source_io::define_mapped_ordinary_io_compat!(crate::CaptureError);
 #[cfg(test)]
 pub(crate) use ctx_history_source_io::{count_event_file_io, forbid_ordinary_file_content_open};
-#[cfg(test)]
 pub(crate) use ctx_history_source_io::{
+    EventFileCoordinates, EventFileGroup, EventFileInventory, EventFileInventoryError,
+    EventFileLimits,
+};
+#[cfg(test)]
+pub(crate) use ctx_history_source_sqlite::{
     fail_next_opened_snapshot_cleanup_for_test, force_next_pinned_wal_unavailable_for_test,
     SqliteSourceSnapshotCounters,
 };
-pub(crate) use ctx_history_source_io::{
+pub(crate) use ctx_history_source_sqlite::{
     open_root_handle_sqlite_source_snapshot, resource_exhaustion_io_error,
     retain_sqlite_source_directory_authority, rusqlite_busy_or_locked, rusqlite_resource_failure,
     SqliteArtifactKind, SqliteCleanupStatus, SqliteFailurePhase, SqliteSourceAccessError,
     SqliteSourceDirectoryAuthority, SqliteSourceErrorComposition, SqliteSourceEvidence,
     SqliteSourceProgressError, SqliteSourceReadSnapshot,
-};
-pub(crate) use ctx_history_source_io::{
-    EventFileCoordinates, EventFileGroup, EventFileInventory, EventFileInventoryError,
-    EventFileLimits,
 };
 
 static BUILTIN_PROVIDER_PROBES: StaticProviderProbeCatalog = StaticProviderProbeCatalog::new(

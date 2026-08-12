@@ -45,7 +45,7 @@ pub use provider_sources::{
 pub(crate) const MAX_PROVIDER_JSONL_LINE_BYTES: usize =
     ctx_history_source_io::MAX_PROVIDER_JSONL_LINE_BYTES;
 pub(crate) const MAX_PROVIDER_SQLITE_VALUE_BYTES: usize =
-    ctx_history_source_io::MAX_PROVIDER_SQLITE_VALUE_BYTES;
+    ctx_history_source_sqlite::MAX_PROVIDER_SQLITE_VALUE_BYTES;
 pub(crate) const MAX_OPENCLAW_SESSION_INDEX_BYTES: usize = 1024 * 1024;
 pub(crate) const CODEX_SESSION_SOURCE_FORMAT: &str = "codex_session_jsonl";
 pub(crate) const GROK_BUILD_SOURCE_FORMAT: &str = "grok_build_session_updates_jsonl";

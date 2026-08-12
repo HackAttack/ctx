@@ -14,7 +14,7 @@ filegroup(
 )
 
 COMMON_RUSTC_ENV = {
-    "CARGO_MANIFEST_DIR": "crates/ctx-history-source-io",
+    "CARGO_MANIFEST_DIR": "crates/ctx-history-source-sqlite",
 }
 
 RUST_SRCS = glob(["src/**/*.rs"])
@@ -24,14 +24,26 @@ PROD_SRCS = glob(
     exclude = RUST_PROD_SRC_EXCLUDES,
 )
 
+CTX_HISTORY_SOURCE_SQLITE_DEPS = [
+    "//crates/ctx-history-capture-model:lib",
+    "//crates/ctx-history-core:lib",
+    "//crates/ctx-history-source-io:lib",
+]
+
+CTX_HISTORY_SOURCE_SQLITE_TEST_DEPS = [
+    "//crates/ctx-history-capture-model:lib",
+    "//crates/ctx-history-core:lib",
+    "//crates/ctx-history-source-io:test_support_lib",
+]
+
 rust_library(
     name = "lib",
     srcs = PROD_SRCS,
-    crate_name = "ctx_history_source_io",
+    crate_name = "ctx_history_source_sqlite",
     crate_root = "src/lib.rs",
     edition = crate_edition(),
     aliases = aliases(),
-    deps = all_crate_deps(normal = True),
+    deps = all_crate_deps(normal = True) + CTX_HISTORY_SOURCE_SQLITE_DEPS,
     proc_macro_deps = all_crate_deps(proc_macro = True),
     rustc_env = COMMON_RUSTC_ENV,
 )
@@ -40,11 +52,11 @@ rust_library(
     name = "test_support_lib",
     testonly = True,
     srcs = RUST_SRCS,
-    crate_name = "ctx_history_source_io",
+    crate_name = "ctx_history_source_sqlite",
     crate_root = "src/lib.rs",
     edition = crate_edition(),
     aliases = aliases(normal = True, normal_dev = True, proc_macro_dev = True),
-    deps = all_crate_deps(normal = True, normal_dev = True),
+    deps = all_crate_deps(normal = True, normal_dev = True) + CTX_HISTORY_SOURCE_SQLITE_TEST_DEPS,
     proc_macro_deps = all_crate_deps(proc_macro = True, proc_macro_dev = True),
     rustc_env = COMMON_RUSTC_ENV,
     rustc_flags = ['--cfg=feature="test-support"'],
@@ -53,11 +65,11 @@ rust_library(
 ctx_rust_test(
     name = "unit_tests",
     srcs = RUST_SRCS,
-    crate_name = "ctx_history_source_io",
+    crate_name = "ctx_history_source_sqlite",
     crate_root = "src/lib.rs",
     edition = crate_edition(),
     aliases = aliases(normal_dev = True, proc_macro_dev = True),
-    deps = all_crate_deps(normal = True, normal_dev = True),
+    deps = all_crate_deps(normal = True, normal_dev = True) + CTX_HISTORY_SOURCE_SQLITE_TEST_DEPS,
     proc_macro_deps = all_crate_deps(proc_macro = True, proc_macro_dev = True),
     rustc_env = COMMON_RUSTC_ENV,
 )

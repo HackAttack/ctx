@@ -1,22 +1,9 @@
 use super::*;
 
 pub(crate) fn sqlite_source_progress(
-    progress: ctx_history_source_io::SqliteSourceProgress,
+    progress: ctx_history_source_sqlite::SqliteSourceProgress,
 ) -> SourceBackedCurrentSourceProgress {
-    let stage = match progress.stage {
-        ctx_history_source_io::SqliteSourceProgressStage::SourceFamilyCopy => {
-            SourceBackedCurrentSourceProgressStage::SourceFamilyCopy
-        }
-    };
-    SourceBackedCurrentSourceProgress {
-        stage,
-        snapshot_pages_completed: progress.snapshot_pages_completed,
-        snapshot_pages_total: progress.snapshot_pages_total,
-        snapshot_bytes_completed: progress.snapshot_bytes_completed,
-        snapshot_bytes_total: progress.snapshot_bytes_total,
-        logical_rows_scanned: None,
-        logical_certified_bytes: None,
-    }
+    progress.into()
 }
 
 pub(super) struct SourceBackedRefreshPlan {
