@@ -119,17 +119,18 @@ fn nonterminal_checkpoint_noops_then_resumes_only_its_uncertified_tail() {
             events.push(event);
             Ok(())
         };
-        let mut output = JsonlLeafOutput::new(&mut emit);
-        let prepared = prepare_leaf(
-            &adapter,
-            leaf,
-            Some(&cold.certificate),
-            &lookup,
-            &mut worker,
-            &mut output,
-        )
-        .unwrap();
-        drop(output);
+        let prepared = {
+            let mut output = JsonlLeafOutput::new(&mut emit);
+            prepare_leaf(
+                &adapter,
+                leaf,
+                Some(&cold.certificate),
+                &lookup,
+                &mut worker,
+                &mut output,
+            )
+            .unwrap()
+        };
         assert!(events.is_empty());
         prepared
     };

@@ -149,8 +149,10 @@ impl SourceBackedRefreshExecutor {
             &self.registry,
             self.writer_options.clone(),
             SourceBackedRefreshExecutionBudget::new(self.discovery_duration, self.work_budget),
-            SourceBackedRefreshPlan::isolate(SourceBackedRefreshScope::All),
-            &self.base_route_controls,
+            (
+                SourceBackedRefreshPlan::isolate(SourceBackedRefreshScope::All),
+                &self.base_route_controls,
+            ),
             move |update| {
                 if update.current_source_progress.is_some() {
                     return Ok(());
@@ -171,8 +173,10 @@ impl SourceBackedRefreshExecutor {
             &self.registry,
             self.writer_options.clone(),
             SourceBackedRefreshExecutionBudget::new(self.discovery_duration, self.work_budget),
-            SourceBackedRefreshPlan::isolate(SourceBackedRefreshScope::All),
-            &self.base_route_controls,
+            (
+                SourceBackedRefreshPlan::isolate(SourceBackedRefreshScope::All),
+                &self.base_route_controls,
+            ),
             report_progress,
             None,
         )
@@ -190,8 +194,10 @@ impl SourceBackedRefreshExecutor {
             &self.registry,
             self.writer_options.clone(),
             SourceBackedRefreshExecutionBudget::new(self.discovery_duration, self.work_budget),
-            SourceBackedRefreshPlan::isolate(scope),
-            &self.base_route_controls,
+            (
+                SourceBackedRefreshPlan::isolate(scope),
+                &self.base_route_controls,
+            ),
             move |update| {
                 if update.current_source_progress.is_some() {
                     return Ok(());
@@ -213,8 +219,10 @@ impl SourceBackedRefreshExecutor {
             &self.registry,
             self.writer_options.clone(),
             SourceBackedRefreshExecutionBudget::new(self.discovery_duration, self.work_budget),
-            SourceBackedRefreshPlan::isolate(scope),
-            &self.base_route_controls,
+            (
+                SourceBackedRefreshPlan::isolate(scope),
+                &self.base_route_controls,
+            ),
             report_progress,
             None,
         )
@@ -232,9 +240,11 @@ impl SourceBackedRefreshExecutor {
             &self.registry,
             self.writer_options.clone(),
             SourceBackedRefreshExecutionBudget::new(self.discovery_duration, self.work_budget),
-            SourceBackedRefreshPlan::isolate(scope)
-                .with_reconciliation_demand(reconciliation_demand),
-            &self.base_route_controls,
+            (
+                SourceBackedRefreshPlan::isolate(scope)
+                    .with_reconciliation_demand(reconciliation_demand),
+                &self.base_route_controls,
+            ),
             report_progress,
             None,
         )
@@ -276,9 +286,11 @@ impl SourceBackedRefreshExecutor {
             &self.registry,
             self.writer_options.clone(),
             SourceBackedRefreshExecutionBudget::new(self.discovery_duration, self.work_budget),
-            SourceBackedRefreshPlan::isolate(scope)
-                .with_reconciliation_demand(reconciliation_demand),
-            &self.base_route_controls,
+            (
+                SourceBackedRefreshPlan::isolate(scope)
+                    .with_reconciliation_demand(reconciliation_demand),
+                &self.base_route_controls,
+            ),
             report_progress,
             Some(&mut metadata_factory),
         )
@@ -307,8 +319,10 @@ pub(crate) fn refresh_source_backed_generation_with_work_budget_for_test(
         registry,
         writer_options,
         SourceBackedRefreshExecutionBudget::new(Duration::ZERO, work_budget),
-        SourceBackedRefreshPlan::isolate(SourceBackedRefreshScope::All),
-        &BTreeMap::new(),
+        (
+            SourceBackedRefreshPlan::isolate(SourceBackedRefreshScope::All),
+            &BTreeMap::new(),
+        ),
         |_| Ok(()),
         None,
     )
@@ -328,9 +342,11 @@ pub(crate) fn refresh_source_backed_generation_with_resource_limits_for_test(
         registry,
         writer_options,
         SourceBackedRefreshExecutionBudget::new(Duration::ZERO, work_budget),
-        SourceBackedRefreshPlan::isolate(SourceBackedRefreshScope::All)
-            .with_resource_limits(maximum_live_output_bytes, maximum_physical_scratch_bytes),
-        &BTreeMap::new(),
+        (
+            SourceBackedRefreshPlan::isolate(SourceBackedRefreshScope::All)
+                .with_resource_limits(maximum_live_output_bytes, maximum_physical_scratch_bytes),
+            &BTreeMap::new(),
+        ),
         |_| Ok(()),
         None,
     )
@@ -349,8 +365,10 @@ pub fn refresh_source_backed_generation_with_progress(
         registry,
         writer_options,
         SourceBackedRefreshExecutionBudget::new(Duration::ZERO, work_budget),
-        SourceBackedRefreshPlan::isolate(SourceBackedRefreshScope::All),
-        &BTreeMap::new(),
+        (
+            SourceBackedRefreshPlan::isolate(SourceBackedRefreshScope::All),
+            &BTreeMap::new(),
+        ),
         move |update| {
             if update.current_source_progress.is_some() {
                 return Ok(());
@@ -373,8 +391,10 @@ pub fn refresh_source_backed_generation_with_detailed_progress(
         registry,
         writer_options,
         SourceBackedRefreshExecutionBudget::new(Duration::ZERO, work_budget),
-        SourceBackedRefreshPlan::isolate(SourceBackedRefreshScope::All),
-        &BTreeMap::new(),
+        (
+            SourceBackedRefreshPlan::isolate(SourceBackedRefreshScope::All),
+            &BTreeMap::new(),
+        ),
         report_progress,
         None,
     )
@@ -392,8 +412,10 @@ pub fn refresh_source_backed_generation_for_routes(
         registry,
         writer_options,
         SourceBackedRefreshExecutionBudget::new(Duration::ZERO, work_budget),
-        SourceBackedRefreshPlan::isolate(SourceBackedRefreshScope::exact(route_identities)),
-        &BTreeMap::new(),
+        (
+            SourceBackedRefreshPlan::isolate(SourceBackedRefreshScope::exact(route_identities)),
+            &BTreeMap::new(),
+        ),
         |_| Ok(()),
         None,
     )
@@ -403,16 +425,19 @@ fn refresh_source_backed_generation_with_detailed_progress_and_discovery_timing(
     index_root: impl AsRef<Path>,
     registry: &SourceBackedProviderRegistry,
     writer_options: WriterOptions,
-    execution_budget: SourceBackedRefreshExecutionBudget,
-    plan: SourceBackedRefreshPlan,
-    base_route_controls: &BTreeMap<SourceRouteIdentity, Vec<u8>>,
+    execution: SourceBackedRefreshExecutionBudget,
+    selection: (
+        SourceBackedRefreshPlan,
+        &BTreeMap<SourceRouteIdentity, Vec<u8>>,
+    ),
     mut report_progress: impl FnMut(SourceBackedDetailedRefreshProgress) -> SourceBackedRouteResult<()>,
     mut metadata_factory: Option<&mut SourceBackedPublicationMetadataFactory<'_>>,
 ) -> SourceBackedCoordinatorResult<SourceBackedRefreshReceipt> {
+    let (plan, base_route_controls) = selection;
     let SourceBackedRefreshExecutionBudget {
         discovery_duration,
         work_budget,
-    } = execution_budget;
+    } = execution;
     if matches!(&plan.scope, SourceBackedRefreshScope::All) {
         if let Some(unavailable) = registry.routes.iter().find(|route| {
             route.driver.is_none()
@@ -1095,17 +1120,17 @@ fn refresh_source_backed_generation_with_detailed_progress_and_discovery_timing(
                             publication.manifest(),
                         );
                         prepared_successful_route_outcomes = Some(outcomes.clone());
-                        factory(SourceBackedPublicationMetadataContext::new(
+                        factory(SourceBackedPublicationMetadataContext {
                             publication,
-                            &selected_route_ids,
-                            &failed_routes,
-                            &logical_source_failures,
-                            &record_rejections,
-                            &outcomes,
-                            &complete_inventory_route_ids,
-                            &live_route_controls,
-                            applied_removals.len(),
-                        ))
+                            selected_route_ids: &selected_route_ids,
+                            failed_routes: &failed_routes,
+                            logical_source_failures: &logical_source_failures,
+                            record_rejections: &record_rejections,
+                            successful_route_outcomes: &outcomes,
+                            complete_inventory_route_ids: &complete_inventory_route_ids,
+                            route_controls: &live_route_controls,
+                            removed_source_count: applied_removals.len(),
+                        })
                     },
                 )?;
             let (commit, disposition, verified) = published.into_parts();

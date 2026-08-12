@@ -128,10 +128,12 @@ pub(crate) struct CodexCausalSourceObservationV1 {
 }
 
 #[cfg(test)]
+type AfterCodexCausalStageHook = Option<Box<dyn FnOnce(Vec<CodexCausalSourceObservationV1>)>>;
+
+#[cfg(test)]
 std::thread_local! {
-    static AFTER_CODEX_CAUSAL_STAGE_HOOK: std::cell::RefCell<
-        Option<Box<dyn FnOnce(Vec<CodexCausalSourceObservationV1>)>>
-    > = const { std::cell::RefCell::new(None) };
+    static AFTER_CODEX_CAUSAL_STAGE_HOOK: std::cell::RefCell<AfterCodexCausalStageHook> =
+        const { std::cell::RefCell::new(None) };
 }
 
 #[cfg(test)]

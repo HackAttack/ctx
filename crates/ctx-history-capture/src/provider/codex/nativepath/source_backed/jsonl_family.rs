@@ -312,7 +312,7 @@ impl CodexSessionJsonlFamilyAdapterV0 {
                 source.source_path.clone(),
                 Arc::clone(&authority),
                 authority_path,
-                TypedKey::utf8(&*native_session_id)
+                TypedKey::utf8(native_session_id)
                     .map_err(|error| CaptureError::InvalidPayload(error.to_string()))?,
                 observation,
             ));

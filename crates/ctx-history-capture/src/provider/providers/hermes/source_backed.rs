@@ -274,8 +274,7 @@ fn observe_hermes_reconciliation_inventory(
             candidate,
             conn,
             prior.as_ref().expect("incremental Hermes receipt"),
-            current_session_rowid,
-            current_message_rowid,
+            (current_session_rowid, current_message_rowid),
             schema,
             schema_evidence.clone(),
             context,
@@ -1130,6 +1129,7 @@ fn project_message(
     session: &HermesSessionContext,
 ) -> HermesSourceBackedResult<CoreRecord> {
     let native = hermes_native_event(&row, ordinal)?;
+    let _provider_owned_evidence = (&native.cursor, &native.payload, &native.metadata);
     let body = native.complete_text;
     let native_item_key = NativeItemKey::composite(
         HERMES_MESSAGE_NAMESPACE,

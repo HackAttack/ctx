@@ -1224,9 +1224,8 @@ fn active_source_family_contract_jsonl_terminal_inventory_rejects_admitted_leaf_
     let resident = Mutex::new(resident);
     adapter.enabled.store(true, Ordering::SeqCst);
 
-    assert_eq!(
-        revalidate_complete_inventory(&adapter, &root, &resident, &inventory).unwrap(),
-        false,
+    assert!(
+        !revalidate_complete_inventory(&adapter, &root, &resident, &inventory).unwrap(),
         "an admitted transcript that becomes a symlink must fail terminal membership"
     );
     assert!(adapter.swapped.load(Ordering::SeqCst));

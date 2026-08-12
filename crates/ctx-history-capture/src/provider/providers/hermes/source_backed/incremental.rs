@@ -6,12 +6,12 @@ pub(super) fn observe_hermes_incremental_inventory(
     candidate: &HermesSourceCandidate,
     conn: &rusqlite::Connection,
     prior: &HermesRefreshReceipt,
-    pinned_session_rowid: i64,
-    pinned_message_rowid: i64,
+    pinned_rowids: (i64, i64),
     schema: HermesSchema,
     schema_evidence: Vec<u8>,
     context: &mut dyn HermesReconciliationContext,
 ) -> HermesSourceBackedResult<HermesSessionInventory> {
+    let (pinned_session_rowid, pinned_message_rowid) = pinned_rowids;
     context.report_progress(hermes_logical_progress(
         SourceBackedCurrentSourceProgressStage::LogicalFingerprint,
         0,

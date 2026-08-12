@@ -103,14 +103,14 @@ pub fn register_hermes_explicit_source_backed_route(
         .map_err(|error| invalid_route(source.provider, error.to_string()))?;
     #[cfg(test)]
     {
-        return crate::provider::source_backed::family::document::register_replacement_document_tree_route_unchecked_for_test(
+        crate::provider::source_backed::family::document::register_replacement_document_tree_route_unchecked_for_test(
             registry,
             source,
             SourceBackedSelectorAuthority::ExplicitPath,
             crate::HERMES_SQLITE_SOURCE_FORMAT,
             SourceBackedWatchTargetKind::SqliteDatabase,
             candidate,
-        );
+        )
     }
     #[cfg(not(test))]
     register_hermes_candidate(

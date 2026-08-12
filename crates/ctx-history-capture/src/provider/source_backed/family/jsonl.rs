@@ -120,6 +120,14 @@ struct JsonlSemanticAppendResume {
     position: Option<JsonlPhysicalStreamPosition>,
 }
 
+struct JsonlReaderFramingOptions<'a> {
+    record_framing: JsonlRecordFraming,
+    whole_record: bool,
+    bind_admitted_eof: bool,
+    deferred_append_eof_sha256: Option<Option<[u8; 32]>>,
+    frozen_observation: Option<&'a JsonlFileObservation>,
+}
+
 pub(crate) enum JsonlSemanticPreflightMode {
     AdmittedEof(Option<[u8; 32]>),
     CompletePrefix,
@@ -160,11 +168,13 @@ impl JsonlReader {
             source_file,
             previous,
             probe,
-            record_framing,
-            false,
-            false,
-            None,
-            None,
+            JsonlReaderFramingOptions {
+                record_framing,
+                whole_record: false,
+                bind_admitted_eof: false,
+                deferred_append_eof_sha256: None,
+                frozen_observation: None,
+            },
         )
     }
 
@@ -186,11 +196,13 @@ impl JsonlReader {
             source_file,
             previous,
             probe,
-            record_framing,
-            false,
-            bind_admitted_eof,
-            deferred_append_eof_sha256,
-            frozen_observation,
+            JsonlReaderFramingOptions {
+                record_framing,
+                whole_record: false,
+                bind_admitted_eof,
+                deferred_append_eof_sha256,
+                frozen_observation,
+            },
         )
     }
 
@@ -204,11 +216,13 @@ impl JsonlReader {
             source_file,
             previous,
             None,
-            JsonlRecordFraming::ordinary(),
-            true,
-            false,
-            None,
-            None,
+            JsonlReaderFramingOptions {
+                record_framing: JsonlRecordFraming::ordinary(),
+                whole_record: true,
+                bind_admitted_eof: false,
+                deferred_append_eof_sha256: None,
+                frozen_observation: None,
+            },
         )
     }
 
@@ -217,12 +231,15 @@ impl JsonlReader {
         source_file: Arc<OpenedProviderSourceFile>,
         previous: Option<&JsonlCheckpoint>,
         probe: Option<JsonlProbe>,
-        record_framing: JsonlRecordFraming,
-        whole_record: bool,
-        bind_admitted_eof: bool,
-        deferred_append_eof_sha256: Option<Option<[u8; 32]>>,
-        frozen_observation: Option<&JsonlFileObservation>,
+        options: JsonlReaderFramingOptions<'_>,
     ) -> Result<Self> {
+        let JsonlReaderFramingOptions {
+            record_framing,
+            whole_record,
+            bind_admitted_eof,
+            deferred_append_eof_sha256,
+            frozen_observation,
+        } = options;
         source_file.revalidate_same_object()?;
         let current_metadata = source_file.file().metadata()?;
         let current_observation = observe_metadata(
@@ -438,13 +455,13 @@ impl JsonlReader {
                 "semantic JSONL append lost its physical stream",
             ))?;
             let expected_end = resume.previous.complete_prefix_end();
-            if resume.position.is_none() && physical.offset() == expected_end {
-                if physical.next_physical_ordinal() == resume.previous.next_physical_ordinal()
-                    && prefix_digest(physical.digest().complete_hasher())
-                        == *resume.previous.complete_prefix_sha256()
-                {
-                    resume.position = Some(physical.position());
-                }
+            if resume.position.is_none()
+                && physical.offset() == expected_end
+                && physical.next_physical_ordinal() == resume.previous.next_physical_ordinal()
+                && prefix_digest(physical.digest().complete_hasher())
+                    == *resume.previous.complete_prefix_sha256()
+            {
+                resume.position = Some(physical.position());
             }
         }
         Ok(())

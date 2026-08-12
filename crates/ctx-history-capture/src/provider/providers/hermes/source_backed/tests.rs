@@ -950,18 +950,17 @@ fn assert_unchanged_session(
     index_root: &Path,
     receipt: &SourceBackedRefreshReceipt,
     source: &SourceKey,
-    baseline_certificate: &CertifiedSource,
-    baseline_record: &CoreRecord,
-    needle: &str,
-    session: &str,
-    message_id: i64,
+    baseline: (&CertifiedSource, &CoreRecord),
+    lookup: (&str, &str, i64),
 ) {
-    assert_eq!(source_certificate(receipt, source), baseline_certificate);
+    let (certificate, record) = baseline;
+    let (needle, session, message_id) = lookup;
+    assert_eq!(source_certificate(receipt, source), certificate);
     let current = indexed_record(index_root, source, session, message_id);
-    assert_eq!(&current, baseline_record);
+    assert_eq!(&current, record);
     assert_eq!(
         serde_json::to_vec(&current).unwrap(),
-        serde_json::to_vec(baseline_record).unwrap()
+        serde_json::to_vec(record).unwrap()
     );
     assert_search_contains(index_root, needle, &current);
 }
@@ -1038,11 +1037,8 @@ fn parent_append_and_rewrite_leave_child_byte_identical() {
         &index_root,
         &appended,
         &child_source,
-        &child_certificate,
-        &child_record,
-        "child stable needle",
-        CHILD,
-        CHILD_MESSAGE_ID,
+        (&child_certificate, &child_record),
+        ("child stable needle", CHILD, CHILD_MESSAGE_ID),
     );
 
     Connection::open(&database)
@@ -1064,11 +1060,8 @@ fn parent_append_and_rewrite_leave_child_byte_identical() {
         &index_root,
         &rewritten,
         &child_source,
-        &child_certificate,
-        &child_record,
-        "child stable needle",
-        CHILD,
-        CHILD_MESSAGE_ID,
+        (&child_certificate, &child_record),
+        ("child stable needle", CHILD, CHILD_MESSAGE_ID),
     );
 }
 
@@ -1123,11 +1116,8 @@ fn same_key_same_timestamp_body_rewrite_replaces_only_parent_source() {
         &index_root,
         &rewritten,
         &child_source,
-        &child_certificate,
-        &child_record,
-        "child stable needle",
-        CHILD,
-        CHILD_MESSAGE_ID,
+        (&child_certificate, &child_record),
+        ("child stable needle", CHILD, CHILD_MESSAGE_ID),
     );
 }
 
@@ -1170,11 +1160,8 @@ fn parent_delete_and_reappear_remove_and_scan_only_parent_source() {
         &index_root,
         &deleted,
         &child_source,
-        &child_certificate,
-        &child_record,
-        "child stable needle",
-        CHILD,
-        CHILD_MESSAGE_ID,
+        (&child_certificate, &child_record),
+        ("child stable needle", CHILD, CHILD_MESSAGE_ID),
     );
 
     Connection::open(&database)
@@ -1203,11 +1190,8 @@ fn parent_delete_and_reappear_remove_and_scan_only_parent_source() {
         &index_root,
         &reappeared,
         &child_source,
-        &child_certificate,
-        &child_record,
-        "child stable needle",
-        CHILD,
-        CHILD_MESSAGE_ID,
+        (&child_certificate, &child_record),
+        ("child stable needle", CHILD, CHILD_MESSAGE_ID),
     );
 }
 
@@ -1241,11 +1225,8 @@ fn child_only_and_simultaneous_mutations_scan_exact_changed_sources() {
         &index_root,
         &child_only,
         &parent_source,
-        &parent_certificate,
-        &parent_record,
-        "parent stable needle",
-        PARENT,
-        PARENT_MESSAGE_ID,
+        (&parent_certificate, &parent_record),
+        ("parent stable needle", PARENT, PARENT_MESSAGE_ID),
     );
 
     Connection::open(&database)
@@ -1309,11 +1290,8 @@ fn delete_and_reappear_reuses_only_the_deleted_session_lineage() {
         &index_root,
         &deleted,
         &parent_source,
-        &parent_certificate,
-        &parent_record,
-        "parent stable needle",
-        PARENT,
-        PARENT_MESSAGE_ID,
+        (&parent_certificate, &parent_record),
+        ("parent stable needle", PARENT, PARENT_MESSAGE_ID),
     );
 
     Connection::open(&database)
@@ -1340,11 +1318,8 @@ fn delete_and_reappear_reuses_only_the_deleted_session_lineage() {
         &index_root,
         &reappeared,
         &parent_source,
-        &parent_certificate,
-        &parent_record,
-        "parent stable needle",
-        PARENT,
-        PARENT_MESSAGE_ID,
+        (&parent_certificate, &parent_record),
+        ("parent stable needle", PARENT, PARENT_MESSAGE_ID),
     );
 }
 

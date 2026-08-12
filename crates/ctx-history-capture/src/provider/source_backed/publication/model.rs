@@ -256,42 +256,18 @@ impl SourceBackedRefreshReceipt {
 /// opaque metadata factory immediately before terminal revalidation. Core
 /// binds the resulting bytes only when that complete source fence succeeds.
 pub struct SourceBackedPublicationMetadataContext<'a> {
-    publication: PublicationMetadataContext<'a>,
-    selected_route_ids: &'a BTreeSet<SourceRouteIdentity>,
-    failed_routes: &'a BTreeMap<SourceRouteIdentity, SourceBackedFailedRoute>,
-    logical_source_failures: &'a SourceBackedLogicalSourceFailures,
-    record_rejections: &'a SourceBackedRecordRejections,
-    successful_route_outcomes: &'a [SourceBackedSuccessfulRouteOutcome],
-    complete_inventory_route_ids: &'a BTreeSet<SourceRouteIdentity>,
-    route_controls: &'a BTreeMap<SourceRouteIdentity, Vec<u8>>,
-    removed_source_count: usize,
+    pub(super) selected_route_ids: &'a BTreeSet<SourceRouteIdentity>,
+    pub(super) failed_routes: &'a BTreeMap<SourceRouteIdentity, SourceBackedFailedRoute>,
+    pub(super) logical_source_failures: &'a SourceBackedLogicalSourceFailures,
+    pub(super) record_rejections: &'a SourceBackedRecordRejections,
+    pub(super) successful_route_outcomes: &'a [SourceBackedSuccessfulRouteOutcome],
+    pub(super) complete_inventory_route_ids: &'a BTreeSet<SourceRouteIdentity>,
+    pub(super) route_controls: &'a BTreeMap<SourceRouteIdentity, Vec<u8>>,
+    pub(super) removed_source_count: usize,
+    pub(super) publication: PublicationMetadataContext<'a>,
 }
 
-impl<'a> SourceBackedPublicationMetadataContext<'a> {
-    pub(super) fn new(
-        publication: PublicationMetadataContext<'a>,
-        selected_route_ids: &'a BTreeSet<SourceRouteIdentity>,
-        failed_routes: &'a BTreeMap<SourceRouteIdentity, SourceBackedFailedRoute>,
-        logical_source_failures: &'a SourceBackedLogicalSourceFailures,
-        record_rejections: &'a SourceBackedRecordRejections,
-        successful_route_outcomes: &'a [SourceBackedSuccessfulRouteOutcome],
-        complete_inventory_route_ids: &'a BTreeSet<SourceRouteIdentity>,
-        route_controls: &'a BTreeMap<SourceRouteIdentity, Vec<u8>>,
-        removed_source_count: usize,
-    ) -> Self {
-        Self {
-            publication,
-            selected_route_ids,
-            failed_routes,
-            logical_source_failures,
-            record_rejections,
-            successful_route_outcomes,
-            complete_inventory_route_ids,
-            route_controls,
-            removed_source_count,
-        }
-    }
-
+impl SourceBackedPublicationMetadataContext<'_> {
     pub fn generation_id(&self) -> &str {
         self.publication.generation_id()
     }

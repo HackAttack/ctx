@@ -249,8 +249,7 @@ pub(crate) fn read_bounded_record_complete_and_prefix_sha256(
     reader: &mut BufReader<File>,
     storage: &mut Vec<u8>,
     complete_hasher: &mut Sha256,
-    bounded_prefix_hasher: &mut Sha256,
-    bounded_prefix_remaining: &mut u64,
+    bounded_prefix: (&mut Sha256, &mut u64),
     maximum_bytes: u64,
     framing: JsonlRecordFraming,
     source_changed: fn() -> CaptureError,
@@ -262,8 +261,8 @@ pub(crate) fn read_bounded_record_complete_and_prefix_sha256(
         complete_before_record: complete_hasher.clone(),
         complete_hasher,
         record_hasher: Sha256::new(),
-        bounded_prefix_hasher,
-        bounded_prefix_remaining,
+        bounded_prefix_hasher: bounded_prefix.0,
+        bounded_prefix_remaining: bounded_prefix.1,
     };
     read_bounded_record_with_digest(
         reader,
