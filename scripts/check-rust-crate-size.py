@@ -53,12 +53,6 @@ class Measurement:
     files: int
 
 
-TEMPORARY_OWNERSHIP_TRANSITION = {
-    "ctx": ("crates/ctx-cli/Cargo.toml", 82_737, 69_506),
-    "ctx-history-capture": ("crates/ctx-history-capture/Cargo.toml", 165_225, 172_360),
-}
-
-
 def normalized_relative_path(value: Any, label: str) -> str:
     if not isinstance(value, str) or not value:
         raise GateError(f"{label} must be a nonempty relative path")
@@ -483,27 +477,6 @@ def previous_accepted_policy(root: Path) -> tuple[str, dict[str, Any] | None]:
     return base, value
 
 
-def is_temporary_ownership_transition(
-    entries: dict[str, dict[str, Any]],
-    previous_entries: dict[str, dict[str, Any]],
-    measured: dict[str, Measurement],
-) -> bool:
-    old_entries = {
-        name: {"package": name, "manifest": manifest, "ratchet": old}
-        for name, (manifest, old, _new) in TEMPORARY_OWNERSHIP_TRANSITION.items()
-    }
-    new_entries = {
-        name: {"package": name, "manifest": manifest, "ratchet": new}
-        for name, (manifest, _old, new) in TEMPORARY_OWNERSHIP_TRANSITION.items()
-    }
-    return previous_entries == old_entries and entries == new_entries and all(
-        name in measured
-        and measured[name].package.manifest == manifest
-        and measured[name].cloc == new
-        for name, (manifest, _old, new) in TEMPORARY_OWNERSHIP_TRANSITION.items()
-    )
-
-
 def validate_policy_transition(
     candidate: dict[str, Any],
     previous: dict[str, Any] | None,
@@ -539,9 +512,6 @@ def validate_policy_transition(
     previous_entries = parse_policy(previous, "previous accepted")
     if candidate["admission_sha"] != previous["admission_sha"]:
         raise GateError("immutable admission_sha changed from previous accepted policy")
-    ownership_transition = is_temporary_ownership_transition(
-        entries, previous_entries, measured
-    )
     added = set(entries) - set(previous_entries)
     if added:
         raise GateError(
@@ -559,7 +529,7 @@ def validate_policy_transition(
         old = previous_entries[name]
         if entry["manifest"] != old["manifest"]:
             raise GateError(f"active offender manifest changed: {name}")
-        if entry["ratchet"] > old["ratchet"] and not ownership_transition:
+        if entry["ratchet"] > old["ratchet"]:
             count = measured[name].cloc if name in measured else 0
             raise GateError(
                 f"ratchet raise forbidden: package={name} count={count} limit={HARD_LIMIT} "
