@@ -54,9 +54,6 @@ const FALLBACK_FINGERPRINT_DOMAIN: &[u8] = b"ctx.pi.fallback-event-fingerprint.v
 const MAX_TOUCHES_PER_RECORD: usize = 63;
 const MAX_HEADER_PROBE_RECORDS: usize = 64;
 
-#[cfg(all(test, feature = "capture-integration-tests"))]
-mod publication_tests;
-
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct PiSourceBackedRoot {
     path: PathBuf,
