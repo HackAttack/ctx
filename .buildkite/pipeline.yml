@@ -45,9 +45,12 @@ steps:
     command: |
       bash scripts/buildkite-public-ci.sh --mode=release
     agents:
-      queue: "default"
+      queue: "release-linux-managed"
+      ctx-runner-class: "release-linux-control"
+      os: "linux"
+      arch: "x86_64"
     concurrency: 1
-    concurrency_group: "ctx/public-release/default-hosted"
+    concurrency_group: "ctx/public-release/release-linux-managed"
     timeout_in_minutes: 120
     artifact_paths:
       - "bazel-testlogs/**/*.log"
