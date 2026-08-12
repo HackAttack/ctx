@@ -1456,6 +1456,37 @@ fn exhaustive_source_backed_projection_includes_minimum_message_rowid() {
 }
 
 #[test]
+fn exhaustive_source_backed_projection_replays_orphan_message_session() {
+    let temp = crate::test_support_paths::tempdir().unwrap();
+    let data_root = temp.path().join("data-root");
+    let index_root = temp.path().join("index");
+    let database = temp.path().join("source/state.db");
+    create_fixture(&database);
+    Connection::open(&database)
+        .unwrap()
+        .execute("delete from sessions where id = 'parent-session'", [])
+        .unwrap();
+
+    let registry = fixture_registry(&data_root, &database);
+    let candidate = candidate(&data_root, &database);
+    reset_logical_row_traversals();
+    let receipt =
+        refresh_source_backed_generation(&index_root, &registry, fixture_writer_options()).unwrap();
+
+    assert_eq!(receipt.sources.len(), 2);
+    assert_eq!(
+        source_certificate(
+            &receipt,
+            &hermes_session_source_key(&candidate.source, PARENT).unwrap()
+        )
+        .counts()
+        .complete_records,
+        1
+    );
+    assert_eq!(session_scan_receipts()[PARENT].0, 1);
+}
+
+#[test]
 fn exact_message_traversal_uses_the_rowid_plan_without_a_session_index_or_sort() {
     let temp = crate::test_support_paths::tempdir().unwrap();
     let database = temp.path().join("source/state.db");

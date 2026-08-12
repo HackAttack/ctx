@@ -461,7 +461,14 @@ fn project_hermes_session_snapshot_with_progress(
             loop {
                 let native_page = if !session_read {
                     session_read = true;
-                    reader.next_session_inventory_page(None)?
+                    let page = reader.next_session_inventory_page(None)?;
+                    if page.is_empty() {
+                        if message_replay.is_some() {
+                            continue;
+                        }
+                        break;
+                    }
+                    page
                 } else if let Some(replay) = message_replay.as_mut() {
                     reader.exact_message_page(replay, consumed_messages, frontier.next_ordinal)?
                 } else {
