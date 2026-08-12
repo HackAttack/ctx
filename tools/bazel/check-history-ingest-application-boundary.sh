@@ -62,25 +62,27 @@ check_labels \
 
 printf '%s\n' \
   '//crates/ctx-cli:ctx' \
+  '//crates/ctx-cli:ctx_auto_upgrade_acceptance_fixture' \
+  '//crates/ctx-cli:ctx_hosted_uninstall_test_host' \
   '//crates/ctx-cli:ctx_pro_test_host' \
+  '//crates/ctx-cli:ctx_upgrade_test_harness' \
+  '//crates/ctx-history-cli:lib' \
   '//crates/ctx-history-ingest-application:lib' >"${scratch}/expected-reverse.txt"
 check_labels \
-  'normal production consumer set' \
+  'normal library consumer set' \
   'kind("rust_binary rule", rdeps(//crates/..., //crates/ctx-history-ingest-application:lib)) union kind("rust_library rule", rdeps(//crates/..., //crates/ctx-history-ingest-application:lib))' \
   "${scratch}/expected-reverse.txt"
 
 printf '%s\n' \
-  '//crates/ctx-cli:ctx_auto_upgrade_acceptance_fixture' \
-  '//crates/ctx-cli:ctx_hosted_uninstall_test_host' \
-  '//crates/ctx-cli:ctx_upgrade_test_harness' \
   '//crates/ctx-history-ingest-application:qualification_lib' >"${scratch}/expected-reverse-qualification.txt"
 check_labels \
-  'qualification consumer set' \
+  'isolated qualification consumer set' \
   'kind("rust_binary rule", rdeps(//crates/..., //crates/ctx-history-ingest-application:qualification_lib)) union kind("rust_library rule", rdeps(//crates/..., //crates/ctx-history-ingest-application:qualification_lib))' \
   "${scratch}/expected-reverse-qualification.txt"
 
 printf '%s\n' \
   '//crates/ctx-cli:unit_tests' \
+  '//crates/ctx-history-cli:test_support_lib' \
   '//crates/ctx-history-ingest-application:test_support_lib' >"${scratch}/expected-reverse-test-support.txt"
 check_labels \
   'test-support consumer set' \
@@ -121,7 +123,7 @@ reverse = []
 for candidate in sorted((root / "crates").glob("*/Cargo.toml")):
     if candidate != manifest_path and "ctx-history-ingest-application" in candidate.read_text(encoding="utf-8"):
         reverse.append(candidate.relative_to(root).as_posix())
-if reverse != ["crates/ctx-cli/Cargo.toml"]:
+if reverse != ["crates/ctx-cli/Cargo.toml", "crates/ctx-history-cli/Cargo.toml"]:
     raise SystemExit(f"unexpected reverse Cargo consumer: {reverse}")
 PY
 
