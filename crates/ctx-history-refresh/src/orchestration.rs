@@ -59,6 +59,12 @@ pub(super) fn execute_source_backed_refresh(
                 current_source: update.current_source,
                 completed_records: update.completed_records,
                 completed_bytes: update.completed_bytes,
+                providers: update.providers,
+                processed_sessions: update.processed_sessions,
+                processed_messages: update.processed_messages,
+                processed_tool_calls: update.processed_tool_calls,
+                processed_bytes: update.processed_bytes,
+                elapsed_millis: update.elapsed_millis,
                 current_source_progress: update.current_source_progress,
             },
         )

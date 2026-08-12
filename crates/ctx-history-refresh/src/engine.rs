@@ -57,6 +57,7 @@ use test_support::{
     test_refresh_runtime, test_refresh_submission, write_daemon_job_status,
 };
 
+#[derive(Default)]
 pub(crate) struct SourceBackedRefreshProgressUpdate {
     pub(super) phase: String,
     pub(super) completed_sources: usize,
@@ -65,6 +66,12 @@ pub(crate) struct SourceBackedRefreshProgressUpdate {
     pub(super) current_source: Option<String>,
     pub(super) completed_records: Option<u64>,
     pub(super) completed_bytes: Option<u64>,
+    pub(super) providers: Vec<String>,
+    pub(super) processed_sessions: u64,
+    pub(super) processed_messages: u64,
+    pub(super) processed_tool_calls: u64,
+    pub(super) processed_bytes: u64,
+    pub(super) elapsed_millis: Option<u64>,
     pub(super) current_source_progress: Option<SourceBackedCurrentSourceProgress>,
 }
 

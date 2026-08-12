@@ -1,4 +1,4 @@
-use super::layout::{display_width, pad, wrap_text};
+use super::layout::{display_width, wrap_text};
 use crate::ui::{glyph::Glyph, Document, Line, RenderContext, Span, Token};
 
 const MAX_BAR_WIDTH: usize = 48;
@@ -18,13 +18,14 @@ pub fn progress(context: &RenderContext, progress: Progress<'_>) -> Document {
         format!("{}%", complete.saturating_mul(100) / total)
     });
     let mut document = Document::new();
-    push_heading(
+    push_heading(&mut document, context, progress.label);
+    push_bar(
         &mut document,
         context,
-        progress.label,
+        progress.current,
+        progress.total,
         percentage.as_deref(),
     );
-    push_bar(&mut document, context, progress.current, progress.total);
 
     if let Some(detail) = progress.detail {
         for line in wrap_text(detail, context.content_width()) {
@@ -34,69 +35,65 @@ pub fn progress(context: &RenderContext, progress: Progress<'_>) -> Document {
     document
 }
 
-fn push_heading(
-    document: &mut Document,
-    context: &RenderContext,
-    label: &str,
-    percentage: Option<&str>,
-) {
-    let available = context.content_width();
-    let same_line = percentage.is_some_and(|percentage| {
-        available.is_none_or(|width| {
-            display_width(label)
-                .saturating_add(2)
-                .saturating_add(display_width(percentage))
-                <= width
-        })
-    });
-
-    if same_line {
-        let percentage = percentage.unwrap_or_default();
-        let gap = available.map_or(2, |width| {
-            width
-                .saturating_sub(display_width(label))
-                .saturating_sub(display_width(percentage))
-                .max(2)
-        });
-        document.push_line(
-            Line::new()
-                .with(Span::new(label, Token::Heading))
-                .with(Span::text(pad(gap)))
-                .with(Span::new(percentage, Token::Accent)),
-        );
-        return;
-    }
-
-    for line in wrap_text(label, available) {
+fn push_heading(document: &mut Document, context: &RenderContext, label: &str) {
+    for line in wrap_text(label, context.content_width()) {
         document.push_line(Line::styled(line, Token::Heading));
-    }
-    if let Some(percentage) = percentage {
-        document.push_line(Line::styled(percentage, Token::Accent));
     }
 }
 
-fn push_bar(document: &mut Document, context: &RenderContext, current: u64, total: Option<u64>) {
+fn push_bar(
+    document: &mut Document,
+    context: &RenderContext,
+    current: u64,
+    total: Option<u64>,
+    percentage: Option<&str>,
+) {
+    let suffix_width = percentage.map_or(0, |value| display_width(value).saturating_add(2));
     let bar_width = context
         .content_width()
-        .map_or(MAX_BAR_WIDTH, |width| width.min(MAX_BAR_WIDTH))
+        .map_or(MAX_BAR_WIDTH, |width| {
+            width.saturating_sub(suffix_width).min(MAX_BAR_WIDTH)
+        })
         .max(1);
     let Some(total) = total.filter(|total| *total > 0) else {
-        document.push_line(Line::styled(Glyph::Ellipsis.render(context), Token::Accent));
+        let pulse_width = bar_width.min(8);
+        let travel = bar_width.saturating_sub(pulse_width);
+        let position = usize::try_from(current).unwrap_or(usize::MAX) % travel.saturating_add(1);
+        document.push_line(
+            Line::new()
+                .with(Span::new(
+                    Glyph::Rule.render(context).repeat(position),
+                    Token::Label,
+                ))
+                .with(Span::new(
+                    Glyph::Progress.render(context).repeat(pulse_width),
+                    Token::Accent,
+                ))
+                .with(Span::new(
+                    Glyph::Rule
+                        .render(context)
+                        .repeat(bar_width.saturating_sub(position + pulse_width)),
+                    Token::Label,
+                )),
+        );
         return;
     };
 
     let filled = (u128::from(current.min(total)).saturating_mul(bar_width as u128)
         / u128::from(total)) as usize;
     let remaining = bar_width.saturating_sub(filled);
-    document.push_line(
-        Line::new()
-            .with(Span::new(
-                Glyph::Progress.render(context).repeat(filled),
-                Token::Accent,
-            ))
-            .with(Span::new(
-                Glyph::Rule.render(context).repeat(remaining),
-                Token::Label,
-            )),
-    );
+    let mut line = Line::new()
+        .with(Span::new(
+            Glyph::Progress.render(context).repeat(filled),
+            Token::Accent,
+        ))
+        .with(Span::new(
+            Glyph::Rule.render(context).repeat(remaining),
+            Token::Label,
+        ));
+    if let Some(percentage) = percentage {
+        line.push(Span::text("  "));
+        line.push(Span::new(percentage, Token::Accent));
+    }
+    document.push_line(line);
 }

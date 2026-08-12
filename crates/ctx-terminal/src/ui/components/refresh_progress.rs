@@ -240,7 +240,33 @@ pub struct RefreshProgress {
     pub current_source: Option<String>,
     pub completed_records: Option<u64>,
     pub completed_bytes: Option<u64>,
+    pub agent_histories: Vec<String>,
+    pub processed_sessions: u64,
+    pub processed_messages: u64,
+    pub processed_tool_calls: u64,
+    pub processed_bytes: u64,
+    pub elapsed_millis: Option<u64>,
     pub current_source_progress: Option<RefreshCurrentSourceProgress>,
+}
+
+impl Default for RefreshProgress {
+    fn default() -> Self {
+        Self {
+            phase: "queued".to_owned(),
+            completed_sources: 0,
+            total_sources: 0,
+            current_source: None,
+            completed_records: None,
+            completed_bytes: None,
+            agent_histories: Vec::new(),
+            processed_sessions: 0,
+            processed_messages: 0,
+            processed_tool_calls: 0,
+            processed_bytes: 0,
+            elapsed_millis: None,
+            current_source_progress: None,
+        }
+    }
 }
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RefreshCurrentSourceProgressStage {
@@ -289,71 +315,56 @@ impl RefreshCurrentSourceProgress {
 }
 
 pub fn refresh_progress(context: &RenderContext, snapshot: &RefreshProgressSnapshot) -> Document {
-    let completed = snapshot.progress.completed_sources;
-    let total = snapshot
-        .total_sources_known
-        .then_some(snapshot.progress.total_sources)
-        .map(|total| total.max(completed));
     let label = refresh_label(snapshot);
     let mut document = progress(
         context,
         Progress {
             label,
-            current: completed,
-            total,
+            current: if snapshot.is_terminal() {
+                1
+            } else {
+                snapshot.progress.elapsed_millis.unwrap_or(0) / 250
+            },
+            total: snapshot.is_terminal().then_some(1),
             detail: None,
         },
     );
 
-    let mut details = vec![
-        ("Sources", source_count_text(snapshot)),
-        (
-            "Logical phase",
-            logical_phase_text(&snapshot.kind).to_owned(),
-        ),
-        (
-            "Physical phase",
-            humanize(&bounded_dynamic_text(&snapshot.progress.phase)),
-        ),
-    ];
-    if let Some(source) = snapshot.progress.current_source.as_deref() {
-        details.push(("Source", bounded_dynamic_text(source)));
-    }
-    if let Some(records) = snapshot.progress.completed_records {
-        details.push(("Records", format!("{} accepted", format_count_u64(records))));
-    }
-    if let Some(bytes) = snapshot.progress.completed_bytes {
-        details.push(("Scanned", format_bytes(bytes)));
-    }
-    if let RefreshStatusKind::Logical(logical) = &snapshot.kind {
-        if let Some(request_id) = snapshot.request_id.as_deref() {
-            details.push(("Logical request", bounded_dynamic_text(request_id)));
-        }
-        details.push((
-            "Physical attempt",
-            bounded_dynamic_text(&logical.physical_attempt_id),
-        ));
-        details.push((
-            "Physical state",
-            request_state_text(logical.physical_attempt_state).to_owned(),
-        ));
-        details.push((
-            "Progress owner",
-            bounded_dynamic_text(&logical.progress_owner_request_id),
-        ));
-        details.push((
-            "Owner state",
-            request_state_text(logical.progress_owner_attempt_state).to_owned(),
-        ));
-        if let Some(outcome) = logical.structured_outcome.as_ref() {
-            details.push(("Outcome", outcome.code.as_str().replace('_', " ")));
+    let sessions = format_count_u64(snapshot.progress.processed_sessions);
+    let messages = format_count_u64(snapshot.progress.processed_messages);
+    let tool_calls = format_count_u64(snapshot.progress.processed_tool_calls);
+    let scanned = format_bytes(snapshot.progress.processed_bytes);
+    let elapsed = snapshot
+        .progress
+        .elapsed_millis
+        .map(format_duration_millis)
+        .unwrap_or_else(|| "measuring".to_owned());
+    let remaining = if snapshot.is_terminal() {
+        "complete".to_owned()
+    } else {
+        "estimating".to_owned()
+    };
+    let histories = if snapshot.progress.agent_histories.is_empty() {
+        vec!["discovering".to_owned()]
+    } else {
+        snapshot.progress.agent_histories.clone()
+    };
+    let mut detail_fields = Vec::with_capacity(histories.len().saturating_add(6));
+    for (index, history) in histories.iter().enumerate() {
+        if index == 0 {
+            detail_fields.push(Field::new("Agent histories", history));
+        } else {
+            detail_fields.push(Field::continuation(history));
         }
     }
-
-    let detail_fields = details
-        .iter()
-        .map(|(label, value)| Field::new(label, value))
-        .collect::<Vec<_>>();
+    detail_fields.extend([
+        Field::new("Sessions", &sessions),
+        Field::new("Messages", &messages),
+        Field::new("Tool calls", &tool_calls),
+        Field::new("Data scanned", &scanned),
+        Field::new("Elapsed", &elapsed),
+        Field::new("Remaining", &remaining),
+    ]);
     document.push_blank();
     document.append(fields(context, &detail_fields));
     document
@@ -398,7 +409,7 @@ fn physical_label(phase: &str) -> &'static str {
         "queued" | "pending" | "discovering" => "Discovering history sources",
         "committing" | "committed" | "publishing" => "Publishing search index",
         "verifying" => "Verifying refreshed history",
-        _ => "Refreshing history",
+        _ => "Indexing your agent history",
     }
 }
 
@@ -419,33 +430,19 @@ fn source_count_text(snapshot: &RefreshProgressSnapshot) -> String {
     }
 }
 
-fn logical_phase_text(kind: &RefreshStatusKind) -> &'static str {
-    match kind {
-        RefreshStatusKind::Legacy { .. } => "legacy",
-        RefreshStatusKind::BackgroundMaintenanceWake => "waiting",
-        RefreshStatusKind::Logical(logical) => match logical.logical_phase {
-            RefreshLogicalPhase::Waiting => "waiting",
-            RefreshLogicalPhase::Attached => "attached",
-            RefreshLogicalPhase::CoverageCheck => "coverage check",
-            RefreshLogicalPhase::ExactSuccessor => "exact successor",
-            RefreshLogicalPhase::Direct => "direct",
-            RefreshLogicalPhase::Terminal => "terminal",
-        },
+fn format_duration_millis(millis: u64) -> String {
+    let seconds = millis / 1_000;
+    if seconds < 60 {
+        return format!("{seconds}s");
     }
-}
-
-fn request_state_text(state: RefreshRequestState) -> &'static str {
-    match state {
-        RefreshRequestState::AdmissionPending => "admission pending",
-        RefreshRequestState::Queued => "queued",
-        RefreshRequestState::Running => "running",
-        RefreshRequestState::Published => "published",
-        RefreshRequestState::Failed => "failed",
+    let minutes = seconds / 60;
+    let seconds = seconds % 60;
+    if minutes < 60 {
+        return format!("{minutes}m {seconds:02}s");
     }
-}
-
-fn humanize(value: &str) -> String {
-    value.replace('_', " ")
+    let hours = minutes / 60;
+    let minutes = minutes % 60;
+    format!("{hours}h {minutes:02}m")
 }
 
 fn bounded_dynamic_text(value: &str) -> String {
@@ -497,7 +494,7 @@ mod tests {
                 current_source: None,
                 completed_records: None,
                 completed_bytes: None,
-                current_source_progress: None,
+                ..Default::default()
             },
             known,
         )
@@ -540,7 +537,7 @@ mod tests {
                 current_source: None,
                 completed_records: None,
                 completed_bytes: None,
-                current_source_progress: None,
+                ..Default::default()
             },
             true,
         )
@@ -576,16 +573,55 @@ mod tests {
     }
 
     #[test]
-    fn known_zero_and_unknown_totals_remain_distinct() {
+    fn human_progress_never_exposes_route_counts() {
         let context = RenderContext::for_test(TestContext::pipe(StreamKind::Stderr));
         let known = active_status(RefreshLogicalPhase::Direct, "discovering", true, 0);
         let unknown = active_status(RefreshLogicalPhase::Direct, "discovering", false, 0);
-        assert!(refresh_progress(&context, &known)
-            .render_plain()
-            .contains("0 / 0"));
-        assert!(refresh_progress(&context, &unknown)
-            .render_plain()
-            .contains("measuring"));
+        for rendered in [
+            refresh_progress(&context, &known).render_plain(),
+            refresh_progress(&context, &unknown).render_plain(),
+        ] {
+            assert!(!rendered.contains("Sources"), "{rendered}");
+            assert!(!rendered.contains("0 / 0"), "{rendered}");
+            assert!(
+                rendered.contains("Agent histories  discovering"),
+                "{rendered}"
+            );
+        }
+    }
+
+    #[test]
+    fn live_history_progress_is_stable_aligned_and_user_facing() {
+        let context = RenderContext::for_test(TestContext::tty(StreamKind::Stderr, 80));
+        let mut snapshot = active_status(RefreshLogicalPhase::Direct, "refreshing", true, 4);
+        snapshot.progress.agent_histories =
+            vec!["Codex".to_owned(), "Claude".to_owned(), "Gemini".to_owned()];
+        snapshot.progress.processed_sessions = 1_123;
+        snapshot.progress.processed_messages = 72_456;
+        snapshot.progress.processed_tool_calls = 31_009;
+        snapshot.progress.processed_bytes = 8_804_683_776;
+        snapshot.progress.elapsed_millis = Some(125_000);
+        let rendered = refresh_progress(&context, &snapshot).render_plain();
+        assert_eq!(
+            rendered,
+            concat!(
+                "Indexing your agent history\n",
+                "────────━━━━━━━━────────────────────────────────\n",
+                "\n",
+                "Agent histories  Codex\n",
+                "                 Claude\n",
+                "                 Gemini\n",
+                "Sessions         1,123\n",
+                "Messages         72,456\n",
+                "Tool calls       31,009\n",
+                "Data scanned     8.2 GiB\n",
+                "Elapsed          2m 05s\n",
+                "Remaining        estimating\n",
+            )
+        );
+        for internal in ["Logical", "Physical", "owner", "Source", "3 / 4"] {
+            assert!(!rendered.contains(internal), "{rendered}");
+        }
     }
 
     #[test]

@@ -393,6 +393,7 @@ fn duplicate_concurrent_requests_launch_one_writer() {
                             logical_rows_scanned: Some(1),
                             logical_certified_bytes: Some(128),
                         }),
+                        ..Default::default()
                     },
                 );
                 Ok(test_publication("generation-2"))
@@ -931,7 +932,14 @@ fn attached_logical_status_projects_coherent_physical_progress_and_replays_stabl
                                 current_source: Some("codex".to_owned()),
                                 completed_records: Some(89),
                                 completed_bytes: Some(4_096),
+                                providers: vec!["codex".to_owned(), "claude".to_owned()],
+                                processed_sessions: 9,
+                                processed_messages: 70,
+                                processed_tool_calls: 19,
+                                processed_bytes: 4_096,
+                                elapsed_millis: Some(2_000),
                                 current_source_progress: None,
+                                ..Default::default()
                             },
                         );
                         let physical = engine
@@ -957,11 +965,21 @@ fn attached_logical_status_projects_coherent_physical_progress_and_replays_stabl
                                             logical_certified_bytes: Some(3_072),
                                         },
                                     ),
+                                    ..Default::default()
                                 },
                             )
                             .expect("physical detailed progress");
                         assert_eq!(physical["progress"]["completed_records"], 89);
                         assert_eq!(physical["progress"]["completed_bytes"], 4_096);
+                        assert_eq!(
+                            physical["progress"]["providers"],
+                            json!(["codex", "claude"])
+                        );
+                        assert_eq!(physical["progress"]["processed_sessions"], 9);
+                        assert_eq!(physical["progress"]["processed_messages"], 70);
+                        assert_eq!(physical["progress"]["processed_tool_calls"], 19);
+                        assert_eq!(physical["progress"]["processed_bytes"], 4_096);
+                        assert_eq!(physical["progress"]["elapsed_millis"], 2_000);
                         assert_eq!(
                             physical["progress"]["current_source_progress"]["stage"],
                             "logical_scan"
@@ -977,12 +995,27 @@ fn attached_logical_status_projects_coherent_physical_progress_and_replays_stabl
                                     current_source: Some("codex".to_owned()),
                                     completed_records: Some(144),
                                     completed_bytes: Some(6_144),
+                                    processed_sessions: 12,
+                                    processed_messages: 110,
+                                    processed_tool_calls: 34,
+                                    processed_bytes: 6_144,
+                                    elapsed_millis: Some(3_000),
                                     current_source_progress: None,
+                                    ..Default::default()
                                 },
                             )
                             .expect("physical counter progress");
                         assert_eq!(physical["progress"]["completed_records"], 144);
                         assert_eq!(physical["progress"]["completed_bytes"], 6_144);
+                        assert_eq!(
+                            physical["progress"]["providers"],
+                            json!(["codex", "claude"])
+                        );
+                        assert_eq!(physical["progress"]["processed_sessions"], 12);
+                        assert_eq!(physical["progress"]["processed_messages"], 110);
+                        assert_eq!(physical["progress"]["processed_tool_calls"], 34);
+                        assert_eq!(physical["progress"]["processed_bytes"], 6_144);
+                        assert_eq!(physical["progress"]["elapsed_millis"], 3_000);
                         assert_eq!(
                             physical["progress"]["current_source_progress"]["stage"],
                             "logical_scan"
@@ -1013,6 +1046,15 @@ fn attached_logical_status_projects_coherent_physical_progress_and_replays_stabl
         assert_eq!(attached["progress"]["total_sources"], 5);
         assert_eq!(attached["progress"]["completed_records"], 144);
         assert_eq!(attached["progress"]["completed_bytes"], 6_144);
+        assert_eq!(
+            attached["progress"]["providers"],
+            json!(["codex", "claude"])
+        );
+        assert_eq!(attached["progress"]["processed_sessions"], 12);
+        assert_eq!(attached["progress"]["processed_messages"], 110);
+        assert_eq!(attached["progress"]["processed_tool_calls"], 34);
+        assert_eq!(attached["progress"]["processed_bytes"], 6_144);
+        assert_eq!(attached["progress"]["elapsed_millis"], 3_000);
         assert_eq!(
             attached["progress"]["current_source_progress"]["stage"],
             "logical_scan"
@@ -1047,6 +1089,7 @@ fn attached_logical_status_projects_coherent_physical_progress_and_replays_stabl
                         logical_rows_scanned: None,
                         logical_certified_bytes: None,
                     }),
+                    ..Default::default()
                 },
             )
             .expect("duplicate-path source boundary");
@@ -1072,6 +1115,7 @@ fn attached_logical_status_projects_coherent_physical_progress_and_replays_stabl
                     completed_records: Some(5),
                     completed_bytes: Some(512),
                     current_source_progress: None,
+                    ..Default::default()
                 },
             )
             .expect("duplicate-path counter fragment");
@@ -1094,6 +1138,7 @@ fn attached_logical_status_projects_coherent_physical_progress_and_replays_stabl
                     completed_records: None,
                     completed_bytes: None,
                     current_source_progress: None,
+                    ..Default::default()
                 },
             )
             .expect("clear duplicate-path fragments");
@@ -1117,6 +1162,7 @@ fn attached_logical_status_projects_coherent_physical_progress_and_replays_stabl
                     completed_records: None,
                     completed_bytes: None,
                     current_source_progress: None,
+                    ..Default::default()
                 },
             )
             .expect("physical verification boundary");

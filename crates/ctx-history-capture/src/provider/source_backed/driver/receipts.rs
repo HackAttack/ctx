@@ -25,10 +25,30 @@ pub const MAX_RECORDED_SOURCE_BACKED_RECORD_REJECTIONS: usize = 64;
 pub const MAX_SOURCE_BACKED_ROUTE_CONTROL_BYTES: usize = 4 * 1024;
 pub const MAX_SOURCE_BACKED_REJECTION_PAYLOAD_TYPE_BYTES: usize = 128;
 
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub(in super::super) struct SourceBackedRecordProgressDelta {
     pub(in super::super) accepted_records: u64,
     pub(in super::super) completed_bytes: u64,
+    pub(in super::super) session_ids: Vec<[u8; 32]>,
+    pub(in super::super) messages: u64,
+    pub(in super::super) tool_calls: u64,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct CoreRecordProgress {
+    pub(crate) session_id: [u8; 32],
+    pub(crate) messages: u64,
+    pub(crate) tool_calls: u64,
+}
+
+impl CoreRecordProgress {
+    pub(crate) fn from_record(record: &CoreRecord) -> Self {
+        Self {
+            session_id: record.session_id.digest(),
+            messages: u64::from(record.event_type == "message"),
+            tool_calls: u64::from(record.event_type == "tool_call"),
+        }
+    }
 }
 
 pub type SourceBackedCoordinatorResult<T> = Result<T, SourceBackedCoordinatorError>;
@@ -179,6 +199,7 @@ pub struct SourceBackedGenerationSink<'writer> {
     pub(in super::super) current_source_progress: Option<
         &'writer mut dyn FnMut(SourceBackedCurrentSourceProgress) -> SourceBackedRouteResult<()>,
     >,
+    pub(in super::super) last_progress_session_id: Option<[u8; 32]>,
 }
 
 impl SourceBackedGenerationSink<'_> {
@@ -317,17 +338,17 @@ impl SourceBackedGenerationSink<'_> {
     }
 
     pub fn add_core_record(&mut self, record: CoreRecord) -> SourceBackedCoordinatorResult<()> {
+        let progress = CoreRecordProgress::from_record(&record);
         let emission = CoreRecordEmission::new(record, &self.resources, &self.core_record_preparer)
             .map_err(SourceBackedCoordinatorError::CoreEmission)?;
-        self.add_core_record_emission(emission)
-    }
-
-    pub(crate) fn add_core_record_emission(
-        &mut self,
-        emission: CoreRecordEmission,
-    ) -> SourceBackedCoordinatorResult<()> {
         self.accept_core_record_emission(emission)?;
-        self.report_record_progress(1, 0)
+        self.report_record_progress(
+            1,
+            0,
+            std::slice::from_ref(&progress.session_id),
+            progress.messages,
+            progress.tool_calls,
+        )
     }
 
     fn accept_core_record_emission(
@@ -351,13 +372,21 @@ impl SourceBackedGenerationSink<'_> {
                 "Core-record page count overflowed",
             ))
         })?;
+        let mut progress = CoreRecordBatchProgress::default();
         for record in records {
+            progress.push(CoreRecordProgress::from_record(&record));
             let emission =
                 CoreRecordEmission::new(record, &self.resources, &self.core_record_preparer)
                     .map_err(SourceBackedCoordinatorError::CoreEmission)?;
             self.accept_core_record_emission(emission)?;
         }
-        self.report_record_progress(accepted_records, completed_bytes)
+        self.report_record_progress(
+            accepted_records,
+            completed_bytes,
+            &progress.session_ids,
+            progress.messages,
+            progress.tool_calls,
+        )
     }
 
     pub(crate) fn add_core_record_emission_batch(
@@ -371,12 +400,19 @@ impl SourceBackedGenerationSink<'_> {
                 "Core-record emission batch count overflowed",
             ))
         })?;
+        let progress = batch.progress().clone();
         let (prepared_records, reservation) = batch.into_prepared();
         for prepared in prepared_records {
             self.writer.add_prepared_core_record(prepared)?;
         }
         drop(reservation);
-        self.report_record_progress(accepted_records, completed_bytes)
+        self.report_record_progress(
+            accepted_records,
+            completed_bytes,
+            &progress.session_ids,
+            progress.messages,
+            progress.tool_calls,
+        )
     }
 
     pub(crate) fn record_logical_source_failure(
@@ -448,18 +484,31 @@ impl SourceBackedGenerationSink<'_> {
     }
 
     pub fn report_completed_bytes(&mut self, bytes: u64) -> SourceBackedCoordinatorResult<()> {
-        self.report_record_progress(0, bytes)
+        self.report_record_progress(0, bytes, &[], 0, 0)
     }
 
     fn report_record_progress(
         &mut self,
         accepted_records: u64,
         completed_bytes: u64,
+        session_ids: &[[u8; 32]],
+        messages: u64,
+        tool_calls: u64,
     ) -> SourceBackedCoordinatorResult<()> {
         if let Some(report_progress) = self.record_progress.as_mut() {
+            let mut session_transitions = Vec::new();
+            for session_id in session_ids {
+                if self.last_progress_session_id.as_ref() != Some(session_id) {
+                    session_transitions.push(*session_id);
+                    self.last_progress_session_id = Some(*session_id);
+                }
+            }
             report_progress(SourceBackedRecordProgressDelta {
                 accepted_records,
                 completed_bytes,
+                session_ids: session_transitions,
+                messages,
+                tool_calls,
             })?;
         }
         Ok(())

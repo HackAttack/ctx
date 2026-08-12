@@ -8,10 +8,12 @@ mod route_outcomes;
 #[cfg(test)]
 pub use model::assert_carried_route_failure;
 #[cfg(test)]
+use model::SourceRecordProgressSnapshot;
+#[cfg(test)]
 use model::SOURCE_RECORD_PROGRESS_INTERVAL;
 use model::{
-    source_level_progress, SourceBackedRefreshPlan, SourceBackedVerifiedPublication,
-    SourceRecordProgress,
+    source_level_progress, AttemptHistoryProgress, SourceBackedRefreshPlan,
+    SourceBackedVerifiedPublication, SourceRecordProgress,
 };
 pub use model::{
     SourceBackedCertifiedRemoval, SourceBackedCurrentSourceProgress,
@@ -483,6 +485,25 @@ fn refresh_source_backed_generation_with_detailed_progress_and_discovery_timing(
                 .is_some_and(|identity| selected_route_ids.contains(identity))
         })
         .count();
+    let mut selected_provider_set = HashSet::new();
+    let providers = registry
+        .routes
+        .iter()
+        .filter(|route| route.driver.is_some())
+        .filter(|route| {
+            route
+                .metadata
+                .route_identity
+                .as_ref()
+                .is_some_and(|identity| selected_route_ids.contains(identity))
+        })
+        .filter_map(|route| {
+            selected_provider_set
+                .insert(route.metadata.source.provider)
+                .then_some(route.metadata.source.provider)
+        })
+        .collect::<Vec<_>>();
+    let attempt_history_progress = std::cell::RefCell::new(AttemptHistoryProgress::default());
     let refresh_started = Instant::now();
     report_progress(source_level_progress(SourceBackedRefreshProgress {
         phase: "discovering",
@@ -491,6 +512,11 @@ fn refresh_source_backed_generation_with_detailed_progress_and_discovery_timing(
         current_source: None,
         completed_records: None,
         completed_bytes: None,
+        providers: providers.clone(),
+        processed_sessions: 0,
+        processed_messages: 0,
+        processed_tool_calls: 0,
+        processed_bytes: 0,
         stage_duration: discovery_duration,
         elapsed: discovery_duration,
         certified_source_count: None,
@@ -599,6 +625,7 @@ fn refresh_source_backed_generation_with_detailed_progress_and_discovery_timing(
             let Some(driver) = &route.driver else {
                 continue;
             };
+            let history_progress = attempt_history_progress.borrow().snapshot();
             report_progress(source_level_progress(SourceBackedRefreshProgress {
                 phase: "refreshing",
                 completed_sources: completed_routes,
@@ -606,6 +633,11 @@ fn refresh_source_backed_generation_with_detailed_progress_and_discovery_timing(
                 current_source: Some(route.metadata.source.path.display().to_string()),
                 completed_records: Some(0),
                 completed_bytes: Some(0),
+                providers: providers.clone(),
+                processed_sessions: history_progress.processed_sessions,
+                processed_messages: history_progress.processed_messages,
+                processed_tool_calls: history_progress.processed_tool_calls,
+                processed_bytes: history_progress.processed_bytes,
                 stage_duration: scan_started.elapsed(),
                 elapsed: discovery_duration.saturating_add(refresh_started.elapsed()),
                 certified_source_count: None,
@@ -636,20 +668,27 @@ fn refresh_source_backed_generation_with_detailed_progress_and_discovery_timing(
                     if let Some(error) = progress_failure.borrow().as_ref() {
                         return Err(SourceBackedCoordinatorError::Progress(error.clone()));
                     }
-                    let Some((completed_records, completed_bytes)) = record_progress
+                    attempt_history_progress.borrow_mut().advance(&delta);
+                    let Some(source_progress) = record_progress
                         .borrow_mut()
                         .advanced_at(delta, Instant::now())
                     else {
                         return Ok(());
                     };
+                    let history_progress = attempt_history_progress.borrow().snapshot();
                     match progress_callback.borrow_mut()(source_level_progress(
                         SourceBackedRefreshProgress {
                             phase: "refreshing",
                             completed_sources: completed_routes,
                             total_sources: scanned_routes,
                             current_source: Some(current_source.clone()),
-                            completed_records: Some(completed_records),
-                            completed_bytes: Some(completed_bytes),
+                            completed_records: Some(source_progress.completed_records),
+                            completed_bytes: Some(source_progress.completed_bytes),
+                            providers: providers.clone(),
+                            processed_sessions: history_progress.processed_sessions,
+                            processed_messages: history_progress.processed_messages,
+                            processed_tool_calls: history_progress.processed_tool_calls,
+                            processed_bytes: history_progress.processed_bytes,
                             stage_duration: scan_started.elapsed(),
                             elapsed: discovery_duration.saturating_add(refresh_started.elapsed()),
                             certified_source_count: None,
@@ -667,6 +706,7 @@ fn refresh_source_backed_generation_with_detailed_progress_and_discovery_timing(
                     if let Some(error) = progress_failure.borrow().as_ref() {
                         return Err(error.clone());
                     }
+                    let history_progress = attempt_history_progress.borrow().snapshot();
                     match progress_callback.borrow_mut()(SourceBackedDetailedRefreshProgress {
                         progress: SourceBackedRefreshProgress {
                             phase: "refreshing",
@@ -675,6 +715,11 @@ fn refresh_source_backed_generation_with_detailed_progress_and_discovery_timing(
                             current_source: Some(current_source.clone()),
                             completed_records: None,
                             completed_bytes: None,
+                            providers: providers.clone(),
+                            processed_sessions: history_progress.processed_sessions,
+                            processed_messages: history_progress.processed_messages,
+                            processed_tool_calls: history_progress.processed_tool_calls,
+                            processed_bytes: history_progress.processed_bytes,
                             stage_duration: scan_started.elapsed(),
                             elapsed: discovery_duration.saturating_add(refresh_started.elapsed()),
                             certified_source_count: None,
@@ -704,6 +749,7 @@ fn refresh_source_backed_generation_with_detailed_progress_and_discovery_timing(
                     record_rejections: &mut record_rejections,
                     record_progress: Some(&mut report_record_progress),
                     current_source_progress: Some(&mut report_current_source_progress),
+                    last_progress_session_id: None,
                 };
                 (driver.scan)(&mut sink)
             };
@@ -711,16 +757,20 @@ fn refresh_source_backed_generation_with_detailed_progress_and_discovery_timing(
             if let Some(error) = progress_failure.into_inner() {
                 return Err(SourceBackedCoordinatorError::Progress(error));
             }
-            if let Some((completed_records, completed_bytes)) =
-                record_progress.flush_at(Instant::now())
-            {
+            if let Some(source_progress) = record_progress.flush_at(Instant::now()) {
+                let history_progress = attempt_history_progress.borrow().snapshot();
                 report_progress(source_level_progress(SourceBackedRefreshProgress {
                     phase: "refreshing",
                     completed_sources: completed_routes,
                     total_sources: scanned_routes,
                     current_source: Some(current_source),
-                    completed_records: Some(completed_records),
-                    completed_bytes: Some(completed_bytes),
+                    completed_records: Some(source_progress.completed_records),
+                    completed_bytes: Some(source_progress.completed_bytes),
+                    providers: providers.clone(),
+                    processed_sessions: history_progress.processed_sessions,
+                    processed_messages: history_progress.processed_messages,
+                    processed_tool_calls: history_progress.processed_tool_calls,
+                    processed_bytes: history_progress.processed_bytes,
                     stage_duration: scan_started.elapsed(),
                     elapsed: discovery_duration.saturating_add(refresh_started.elapsed()),
                     certified_source_count: None,
@@ -771,6 +821,7 @@ fn refresh_source_backed_generation_with_detailed_progress_and_discovery_timing(
                         route_index,
                         &mut owners,
                     )?;
+                    let history_progress = attempt_history_progress.borrow().snapshot();
                     report_progress(source_level_progress(SourceBackedRefreshProgress {
                         phase: "verifying",
                         completed_sources: completed_routes,
@@ -778,6 +829,11 @@ fn refresh_source_backed_generation_with_detailed_progress_and_discovery_timing(
                         current_source: None,
                         completed_records: None,
                         completed_bytes: None,
+                        providers: providers.clone(),
+                        processed_sessions: history_progress.processed_sessions,
+                        processed_messages: history_progress.processed_messages,
+                        processed_tool_calls: history_progress.processed_tool_calls,
+                        processed_bytes: history_progress.processed_bytes,
                         stage_duration: scan_started.elapsed(),
                         elapsed: discovery_duration.saturating_add(refresh_started.elapsed()),
                         certified_source_count: None,
@@ -899,6 +955,7 @@ fn refresh_source_backed_generation_with_detailed_progress_and_discovery_timing(
                 continue;
             }
             writer.begin_source_route_stage(route_identity.clone())?;
+            let history_progress = attempt_history_progress.borrow().snapshot();
             report_progress(source_level_progress(SourceBackedRefreshProgress {
                 phase: "verifying",
                 completed_sources: completed_routes,
@@ -906,6 +963,11 @@ fn refresh_source_backed_generation_with_detailed_progress_and_discovery_timing(
                 current_source: None,
                 completed_records: None,
                 completed_bytes: None,
+                providers: providers.clone(),
+                processed_sessions: history_progress.processed_sessions,
+                processed_messages: history_progress.processed_messages,
+                processed_tool_calls: history_progress.processed_tool_calls,
+                processed_bytes: history_progress.processed_bytes,
                 stage_duration: scan_started.elapsed(),
                 elapsed: discovery_duration.saturating_add(refresh_started.elapsed()),
                 certified_source_count: None,
@@ -1004,6 +1066,7 @@ fn refresh_source_backed_generation_with_detailed_progress_and_discovery_timing(
             });
         }
 
+        let history_progress = attempt_history_progress.borrow().snapshot();
         report_progress(source_level_progress(SourceBackedRefreshProgress {
             phase: "committing",
             completed_sources: scanned_routes,
@@ -1011,6 +1074,11 @@ fn refresh_source_backed_generation_with_detailed_progress_and_discovery_timing(
             current_source: None,
             completed_records: None,
             completed_bytes: None,
+            providers: providers.clone(),
+            processed_sessions: history_progress.processed_sessions,
+            processed_messages: history_progress.processed_messages,
+            processed_tool_calls: history_progress.processed_tool_calls,
+            processed_bytes: history_progress.processed_bytes,
             stage_duration: scan_started.elapsed(),
             elapsed: discovery_duration.saturating_add(refresh_started.elapsed()),
             certified_source_count: None,
@@ -1192,6 +1260,7 @@ fn refresh_source_backed_generation_with_detailed_progress_and_discovery_timing(
         }
     }
     let scan_stage_duration = scan_started.elapsed();
+    let history_progress = attempt_history_progress.borrow().snapshot();
     let _ = report_progress(source_level_progress(SourceBackedRefreshProgress {
         phase: "committed",
         completed_sources: scanned_routes,
@@ -1199,6 +1268,11 @@ fn refresh_source_backed_generation_with_detailed_progress_and_discovery_timing(
         current_source: None,
         completed_records: None,
         completed_bytes: None,
+        providers,
+        processed_sessions: history_progress.processed_sessions,
+        processed_messages: history_progress.processed_messages,
+        processed_tool_calls: history_progress.processed_tool_calls,
+        processed_bytes: history_progress.processed_bytes,
         stage_duration: commit_duration,
         elapsed: discovery_duration.saturating_add(refresh_started.elapsed()),
         certified_source_count: Some(commit.certified_sources),

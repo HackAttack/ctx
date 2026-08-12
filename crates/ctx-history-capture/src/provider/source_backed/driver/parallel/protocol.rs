@@ -16,9 +16,10 @@ use thiserror::Error;
 
 use super::super::{
     CoreRecordEmission, CoreRecordEmissionBatch, CoreRecordEmissionBatchBuilder,
-    SourceBackedCoordinatorError, SourceBackedGenerationSink, SourceBackedLogicalSourceFailureFact,
-    SourceBackedRecordRejectionDrafts, SourceBackedRouteError, SourceBackedRouteErrorKind,
-    SourceBackedRouteResourceKind, SourceBackedRouteResources, SourceBackedSourceOutcome,
+    CoreRecordProgress, SourceBackedCoordinatorError, SourceBackedGenerationSink,
+    SourceBackedLogicalSourceFailureFact, SourceBackedRecordRejectionDrafts,
+    SourceBackedRouteError, SourceBackedRouteErrorKind, SourceBackedRouteResourceKind,
+    SourceBackedRouteResources, SourceBackedSourceOutcome,
     SOURCE_BACKED_CORE_RECORD_BATCH_MAX_RECORDS,
 };
 
@@ -538,6 +539,7 @@ impl<R, E> ParallelLeafScanEmitter<'_, R, E> {
         flush_full_batch: bool,
     ) -> Result<(), ParallelLeafScanEmitError> {
         self.require_not_cancelled()?;
+        let progress = CoreRecordProgress::from_record(&record);
         let mut draft = CoreRecordEmission::prepare_draft(record, &self.core_record_preparer)?;
         self.require_not_cancelled()?;
         let route_maximum_bytes = self
@@ -568,7 +570,7 @@ impl<R, E> ParallelLeafScanEmitter<'_, R, E> {
             })?;
             match CoreRecordEmission::materialize_draft(draft, materialization_limit)? {
                 PreparedCoreRecordMaterialization::Prepared(prepared) => {
-                    emissions.push(prepared)?;
+                    emissions.push(prepared, progress)?;
                     if flush_full_batch
                         && emissions.len() == SOURCE_BACKED_CORE_RECORD_BATCH_MAX_RECORDS
                     {

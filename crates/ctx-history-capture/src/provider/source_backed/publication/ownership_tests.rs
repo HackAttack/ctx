@@ -2,6 +2,8 @@ use ctx_history_core::{
     ProjectionContractError, SourceAnchor, SourceInventoryObservation, TypedKey,
 };
 
+use super::model::AttemptHistoryProgressSnapshot;
+
 use super::*;
 
 fn descriptor(schema_variant: &str, lineage: u8) -> SourceKey {
@@ -143,29 +145,41 @@ fn source_record_progress_is_prompt_throttled_monotonic_and_flushable() {
     let mut progress = SourceRecordProgress::default();
     let accepted = SourceBackedRecordProgressDelta {
         accepted_records: 1,
-        completed_bytes: 0,
+        ..Default::default()
     };
     let bytes = SourceBackedRecordProgressDelta {
-        accepted_records: 0,
         completed_bytes: 512,
+        ..Default::default()
     };
 
-    assert_eq!(progress.advanced_at(bytes, started), Some((0, 512)));
     assert_eq!(
-        progress.advanced_at(accepted, started + Duration::from_millis(500)),
+        progress.advanced_at(bytes.clone(), started),
+        Some(SourceRecordProgressSnapshot {
+            completed_records: 0,
+            completed_bytes: 512,
+        })
+    );
+    assert_eq!(
+        progress.advanced_at(accepted.clone(), started + Duration::from_millis(500)),
         None
     );
     assert_eq!(
         progress.advanced_at(bytes, started + SOURCE_RECORD_PROGRESS_INTERVAL),
-        Some((1, 1_024))
+        Some(SourceRecordProgressSnapshot {
+            completed_records: 1,
+            completed_bytes: 1_024,
+        })
     );
     assert_eq!(
-        progress.advanced_at(accepted, started + Duration::from_millis(1_100)),
+        progress.advanced_at(accepted.clone(), started + Duration::from_millis(1_100)),
         None
     );
     assert_eq!(
         progress.flush_at(started + Duration::from_millis(1_100)),
-        Some((2, 1_024))
+        Some(SourceRecordProgressSnapshot {
+            completed_records: 2,
+            completed_bytes: 1_024,
+        })
     );
     assert_eq!(
         progress.flush_at(started + Duration::from_millis(1_100)),
@@ -175,5 +189,42 @@ fn source_record_progress_is_prompt_throttled_monotonic_and_flushable() {
     let mut next_source = SourceRecordProgress::default();
     assert_eq!(next_source.completed_records, 0);
     assert_eq!(next_source.completed_bytes, 0);
-    assert_eq!(next_source.advanced_at(accepted, started), Some((1, 0)));
+    assert_eq!(
+        next_source.advanced_at(accepted, started),
+        Some(SourceRecordProgressSnapshot {
+            completed_records: 1,
+            completed_bytes: 0,
+        })
+    );
+}
+
+#[test]
+fn attempt_history_progress_deduplicates_full_session_identity_and_accumulates_counts() {
+    let first_session = [0x11; 32];
+    let second_session = [0x22; 32];
+    let mut progress = AttemptHistoryProgress::default();
+    progress.advance(&SourceBackedRecordProgressDelta {
+        accepted_records: 4,
+        completed_bytes: 1_024,
+        session_ids: vec![first_session, second_session, first_session],
+        messages: 3,
+        tool_calls: 1,
+    });
+    progress.advance(&SourceBackedRecordProgressDelta {
+        accepted_records: 2,
+        completed_bytes: 512,
+        session_ids: vec![second_session],
+        messages: 1,
+        tool_calls: 1,
+    });
+
+    assert_eq!(
+        progress.snapshot(),
+        AttemptHistoryProgressSnapshot {
+            processed_sessions: 2,
+            processed_messages: 4,
+            processed_tool_calls: 2,
+            processed_bytes: 1_536,
+        }
+    );
 }

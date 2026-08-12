@@ -221,6 +221,7 @@ fn lone_failed_terminal_recovers_exact_status_without_reenqueue() {
                             logical_rows_scanned: Some(3),
                             logical_certified_bytes: Some(384),
                         }),
+                        ..Default::default()
                     },
                 );
                 Err(anyhow!("exact lone terminal failure"))

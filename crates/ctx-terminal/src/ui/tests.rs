@@ -309,7 +309,8 @@ fn decorative_glyphs_have_only_the_approved_ascii_fallbacks() {
         },
     )
     .render_plain();
-    assert!(indeterminate.contains("..."));
+    assert!(indeterminate.contains("========"));
+    assert!(indeterminate.contains('-'));
 }
 
 #[test]

@@ -154,7 +154,14 @@ fn write_progress<W: Write>(
             );
             output.write_frame(&document, line.done)
         }
-        ProgressRenderMode::Plain => output.write_line(&line.message),
+        ProgressRenderMode::Plain => {
+            if let Some(snapshot) = line.refresh.as_ref() {
+                let document = refresh_progress(output.context(), snapshot);
+                output.write_line(document.render_plain().trim_end_matches('\n'))
+            } else {
+                output.write_line(&line.message)
+            }
+        }
         ProgressRenderMode::Json => output.write_line(&progress_json(operation, line, elapsed)),
     }
 }
@@ -183,6 +190,12 @@ fn progress_json(operation: &'static str, line: &ProgressLine, elapsed: StdDurat
         value["total_sources_known"] = json!(snapshot.total_sources_known());
         value["source_completed_records"] = json!(progress.completed_records);
         value["source_completed_bytes"] = json!(progress.completed_bytes);
+        value["agent_histories"] = json!(progress.agent_histories);
+        value["processed_sessions"] = json!(progress.processed_sessions);
+        value["processed_messages"] = json!(progress.processed_messages);
+        value["processed_tool_calls"] = json!(progress.processed_tool_calls);
+        value["processed_bytes"] = json!(progress.processed_bytes);
+        value["refresh_elapsed_millis"] = json!(progress.elapsed_millis);
         value["current_source"] = json!(progress
             .current_source
             .as_deref()
@@ -378,6 +391,12 @@ mod tests {
                 current_source: Some("/tmp/history\ncontrol.sqlite".to_owned()),
                 completed_records: Some(4_096),
                 completed_bytes: Some(2_048),
+                agent_histories: vec!["Codex".to_owned(), "Claude".to_owned()],
+                processed_sessions: 123,
+                processed_messages: 4_000,
+                processed_tool_calls: 96,
+                processed_bytes: 2_048,
+                elapsed_millis: Some(65_000),
                 current_source_progress: Some(crate::ui::RefreshCurrentSourceProgress {
                     stage: crate::ui::RefreshCurrentSourceProgressStage::LogicalScan,
                     snapshot_pages_completed: None,
@@ -411,6 +430,12 @@ mod tests {
                 current_source: Some("/explicit.sqlite".to_owned()),
                 completed_records: Some(100),
                 completed_bytes: Some(777),
+                agent_histories: vec!["Codex".to_owned()],
+                processed_sessions: 8,
+                processed_messages: 80,
+                processed_tool_calls: 20,
+                processed_bytes: 777,
+                elapsed_millis: Some(2_000),
                 current_source_progress: Some(crate::ui::RefreshCurrentSourceProgress {
                     stage: crate::ui::RefreshCurrentSourceProgressStage::OnlineBackup,
                     snapshot_pages_completed: None,
@@ -457,7 +482,7 @@ mod tests {
                 current_source: None,
                 completed_records: None,
                 completed_bytes: None,
-                current_source_progress: None,
+                ..Default::default()
             },
             true,
         )
@@ -524,6 +549,26 @@ mod tests {
     }
 
     #[test]
+    fn plain_refresh_progress_is_the_stable_live_document_without_internal_routes() {
+        let stderr = SharedWriter::default();
+        let stderr_capture = stderr.clone();
+        let context = crate::ui::RenderContext::for_test(crate::ui::TestContext::pipe(
+            crate::ui::StreamKind::Stderr,
+        ));
+        let expected = crate::ui::refresh_progress(&context, &active_status()).render_plain();
+        let (mut ui, stdout_capture) = ui_with_stderr(stderr, context);
+
+        let mut reporter = ProgressReporter::new(&mut ui, ProgressMode::Plain, false, "import", 0);
+        reporter.source_refresh(active_status()).unwrap();
+
+        assert_eq!(stderr_capture.text(), expected);
+        assert!(stdout_capture.text().is_empty());
+        assert!(!stderr_capture.text().contains("/tmp/history"));
+        assert!(!stderr_capture.text().contains("1 / 2"));
+        assert!(!stderr_capture.text().contains('\u{1b}'));
+    }
+
+    #[test]
     fn active_and_terminal_refresh_jsonl_contract_is_exact() {
         let active = progress_json(
             "import",
@@ -538,11 +583,11 @@ mod tests {
 
         assert_eq!(
             active,
-            r#"{"completed_bytes":256,"completed_files":null,"completed_sources":1,"current_source":"/explicit.sqlite","current_source_progress":{"snapshot_bytes_completed":256,"snapshot_bytes_total":512,"stage":"online_backup"},"done":false,"elapsed_seconds":2.0,"eta_seconds":2.0,"imported_events":100,"logical_phase":"attached","logical_request_id":"explicit-import-request","message":"Refreshing history with shared work: /explicit.sqlite (1 / 3).","operation":"import","percent":50.0,"phase":"online_backup","physical_attempt_id":"shared-physical-attempt","physical_attempt_state":"running","progress_owner_attempt_state":"running","progress_owner_request_id":"shared-physical-attempt","request_id":"explicit-import-request","request_state":"running","source_completed_bytes":777,"source_completed_records":100,"total_bytes":512,"total_files":null,"total_sources":3,"total_sources_known":true,"type":"ctx_progress"}"#
+            r#"{"agent_histories":["Codex"],"completed_bytes":256,"completed_files":null,"completed_sources":1,"current_source":"/explicit.sqlite","current_source_progress":{"snapshot_bytes_completed":256,"snapshot_bytes_total":512,"stage":"online_backup"},"done":false,"elapsed_seconds":2.0,"eta_seconds":2.0,"imported_events":100,"logical_phase":"attached","logical_request_id":"explicit-import-request","message":"Refreshing history with shared work: /explicit.sqlite (1 / 3).","operation":"import","percent":50.0,"phase":"online_backup","physical_attempt_id":"shared-physical-attempt","physical_attempt_state":"running","processed_bytes":777,"processed_messages":80,"processed_sessions":8,"processed_tool_calls":20,"progress_owner_attempt_state":"running","progress_owner_request_id":"shared-physical-attempt","refresh_elapsed_millis":2000,"request_id":"explicit-import-request","request_state":"running","source_completed_bytes":777,"source_completed_records":100,"total_bytes":512,"total_files":null,"total_sources":3,"total_sources_known":true,"type":"ctx_progress"}"#
         );
         assert_eq!(
             terminal,
-            r#"{"completed_bytes":4096,"completed_files":null,"completed_sources":2,"current_source":null,"current_source_progress":null,"done":true,"elapsed_seconds":2.0,"eta_seconds":null,"imported_events":null,"logical_phase":"terminal","logical_request_id":"logical-request","message":"History refresh complete (2 / 2).","operation":"import","percent":100.0,"phase":"published","physical_attempt_id":"physical-attempt","physical_attempt_state":"published","progress_owner_attempt_state":"published","progress_owner_request_id":"physical-attempt","request_id":"logical-request","request_state":"published","source_completed_bytes":null,"source_completed_records":null,"structured_outcome":{"affected_routes":[],"blocked_routes":[],"class":"completed","code":"completed","physical_attempt_id":"physical-attempt","retryable":false,"retryable_routes":[]},"total_bytes":4096,"total_files":null,"total_sources":2,"total_sources_known":true,"type":"ctx_progress"}"#
+            r#"{"agent_histories":[],"completed_bytes":4096,"completed_files":null,"completed_sources":2,"current_source":null,"current_source_progress":null,"done":true,"elapsed_seconds":2.0,"eta_seconds":null,"imported_events":null,"logical_phase":"terminal","logical_request_id":"logical-request","message":"History refresh complete (2 / 2).","operation":"import","percent":100.0,"phase":"published","physical_attempt_id":"physical-attempt","physical_attempt_state":"published","processed_bytes":0,"processed_messages":0,"processed_sessions":0,"processed_tool_calls":0,"progress_owner_attempt_state":"published","progress_owner_request_id":"physical-attempt","refresh_elapsed_millis":null,"request_id":"logical-request","request_state":"published","source_completed_bytes":null,"source_completed_records":null,"structured_outcome":{"affected_routes":[],"blocked_routes":[],"class":"completed","code":"completed","physical_attempt_id":"physical-attempt","retryable":false,"retryable_routes":[]},"total_bytes":4096,"total_files":null,"total_sources":2,"total_sources_known":true,"type":"ctx_progress"}"#
         );
 
         let events = [&active, &terminal]

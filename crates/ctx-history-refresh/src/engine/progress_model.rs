@@ -32,6 +32,12 @@ pub struct SourceBackedRefreshProgress {
     pub current_source: Option<String>,
     pub completed_records: Option<u64>,
     pub completed_bytes: Option<u64>,
+    pub providers: Vec<String>,
+    pub processed_sessions: u64,
+    pub processed_messages: u64,
+    pub processed_tool_calls: u64,
+    pub processed_bytes: u64,
+    pub elapsed_millis: Option<u64>,
     pub current_source_progress: Option<SourceBackedCurrentSourceProgress>,
 }
 
@@ -44,6 +50,12 @@ impl Default for SourceBackedRefreshProgress {
             current_source: None,
             completed_records: None,
             completed_bytes: None,
+            providers: Vec::new(),
+            processed_sessions: 0,
+            processed_messages: 0,
+            processed_tool_calls: 0,
+            processed_bytes: 0,
+            elapsed_millis: None,
             current_source_progress: None,
         }
     }
@@ -59,6 +71,12 @@ impl SourceBackedRefreshProgress {
             "current_source": self.current_source,
             "completed_records": self.completed_records,
             "completed_bytes": self.completed_bytes,
+            "providers": self.providers,
+            "processed_sessions": self.processed_sessions,
+            "processed_messages": self.processed_messages,
+            "processed_tool_calls": self.processed_tool_calls,
+            "processed_bytes": self.processed_bytes,
+            "elapsed_millis": self.elapsed_millis,
             "current_source_progress": self.current_source_progress
                 .map(SourceBackedCurrentSourceProgress::to_json),
         }))
@@ -91,9 +109,38 @@ impl SourceBackedRefreshProgress {
             current_source,
             completed_records: optional_progress_u64(progress, "completed_records")?,
             completed_bytes: optional_progress_u64(progress, "completed_bytes")?,
+            providers: optional_progress_strings(progress, "providers")?,
+            processed_sessions: optional_progress_u64(progress, "processed_sessions")?.unwrap_or(0),
+            processed_messages: optional_progress_u64(progress, "processed_messages")?.unwrap_or(0),
+            processed_tool_calls: optional_progress_u64(progress, "processed_tool_calls")?
+                .unwrap_or(0),
+            processed_bytes: optional_progress_u64(progress, "processed_bytes")?.unwrap_or(0),
+            elapsed_millis: optional_progress_u64(progress, "elapsed_millis")?,
             current_source_progress,
         })
     }
+}
+
+fn optional_progress_strings(
+    fields: &serde_json::Map<String, Value>,
+    field: &str,
+) -> Result<Vec<String>> {
+    let Some(value) = fields.get(field) else {
+        return Ok(Vec::new());
+    };
+    let values = value
+        .as_array()
+        .ok_or_else(|| anyhow!("daemon source refresh progress has an invalid {field}"))?;
+    values
+        .iter()
+        .map(|value| {
+            value
+                .as_str()
+                .filter(|value| !value.is_empty())
+                .map(ToOwned::to_owned)
+                .ok_or_else(|| anyhow!("daemon source refresh progress has an invalid {field}"))
+        })
+        .collect()
 }
 
 pub(super) fn status_progress_total_sources_known(response: &Value) -> bool {
