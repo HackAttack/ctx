@@ -93,11 +93,7 @@ Like ctx indexing and search capabilities, blame runs locally, so your code and 
 
 ctx pro is $20 USD per month, but you can try it for free for two weeks with no account or credit card required.
 
-Install ctx and start the trial:
-
-```bash
-curl -fsSL https://ctx.rs/install | sh -s -- --pro-trial
-```
+New to ctx? [Install ctx](https://ctx.rs/getting-started/install) and choose the free ctx pro trial when prompted.
 
 Already use ctx? Set up pro:
 
