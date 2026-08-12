@@ -25,9 +25,9 @@ pub(super) fn register_junie_route(
     source: ProviderSource,
     selection: SourceBackedRouteSelection,
 ) -> SourceBackedCoordinatorResult<()> {
-    let driver = crate::provider::source_backed::family::jsonl::jsonl_provider_family_driver(
+    let driver = crate::provider::source_backed::family::jsonl::jsonl_family_driver(
         ctx_history_providers_jsonl_shared::adapters::junie::<
-            crate::provider::source_backed::family::jsonl::CaptureProviderJsonlRuntime,
+            crate::provider::source_backed::family::jsonl::JsonlFamilyRuntime,
         >(),
         source.path.clone(),
     );
@@ -45,9 +45,9 @@ pub(super) fn register_kimi_route(
     source: ProviderSource,
     selection: SourceBackedRouteSelection,
 ) -> SourceBackedCoordinatorResult<()> {
-    let driver = crate::provider::source_backed::family::jsonl::jsonl_provider_family_driver(
+    let driver = crate::provider::source_backed::family::jsonl::jsonl_family_driver(
         ctx_history_providers_jsonl_shared::adapters::kimi::<
-            crate::provider::source_backed::family::jsonl::CaptureProviderJsonlRuntime,
+            crate::provider::source_backed::family::jsonl::JsonlFamilyRuntime,
         >(),
         source.path.clone(),
     );
@@ -91,9 +91,9 @@ pub(super) fn register_openclaw_route(
                 .unwrap_or("unsupported OpenClaw history format"),
         ));
     }
-    let driver = crate::provider::source_backed::family::jsonl::jsonl_provider_family_driver(
+    let driver = crate::provider::source_backed::family::jsonl::jsonl_family_driver(
         ctx_history_providers_jsonl_shared::adapters::openclaw::<
-            crate::provider::source_backed::family::jsonl::CaptureProviderJsonlRuntime,
+            crate::provider::source_backed::family::jsonl::JsonlFamilyRuntime,
         >(),
         source.path.clone(),
     );
@@ -129,14 +129,13 @@ pub(super) fn register_pi_route(
     selection: SourceBackedRouteSelection,
 ) -> SourceBackedCoordinatorResult<()> {
     let (root, adapter) = ctx_history_providers_jsonl_shared::adapters::pi::<
-        crate::provider::source_backed::family::jsonl::CaptureProviderJsonlRuntime,
+        crate::provider::source_backed::family::jsonl::JsonlFamilyRuntime,
     >(
         source.path.clone(),
         matches!(selection, SourceBackedRouteSelection::Automatic),
     )
     .map_err(|error| invalid_route(source.provider, error.to_string()))?;
-    let driver =
-        crate::provider::source_backed::family::jsonl::jsonl_provider_family_driver(adapter, root);
+    let driver = crate::provider::source_backed::family::jsonl::jsonl_family_driver(adapter, root);
     registry.register(executable_route(
         source,
         selection,
@@ -153,10 +152,10 @@ pub fn register_custom_history_source_backed_route(
     catalog_lineage: [u8; 32],
 ) -> SourceBackedCoordinatorResult<()> {
     let adapter = ctx_history_providers_jsonl_shared::adapters::custom_history::<
-        crate::provider::source_backed::family::jsonl::CaptureProviderJsonlRuntime,
+        crate::provider::source_backed::family::jsonl::JsonlFamilyRuntime,
     >(source.path.clone(), catalog_lineage)
     .map_err(|error| invalid_route(source.provider, error.to_string()))?;
-    let driver = crate::provider::source_backed::family::jsonl::jsonl_provider_family_driver(
+    let driver = crate::provider::source_backed::family::jsonl::jsonl_family_driver(
         adapter,
         source.path.clone(),
     );

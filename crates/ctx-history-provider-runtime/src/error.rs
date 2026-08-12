@@ -4,24 +4,7 @@ use ctx_history_capture_model::ProviderSourceFailureKind;
 use ctx_history_jsonl::JsonlFamilyError;
 use thiserror::Error;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ProviderJsonlInventoryLimit {
-    Directories,
-    Depth,
-    EligiblePaths,
-    MetadataEntries,
-}
-
-impl std::fmt::Display for ProviderJsonlInventoryLimit {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        formatter.write_str(match self {
-            Self::Directories => "directories",
-            Self::Depth => "depth",
-            Self::EligiblePaths => "eligible_jsonl_paths",
-            Self::MetadataEntries => "metadata_entries",
-        })
-    }
-}
+pub type ProviderJsonlInventoryLimit = ctx_history_source_io::ProviderJsonlInventoryLimit;
 
 #[derive(Debug, Error)]
 pub enum CaptureError {
@@ -90,7 +73,7 @@ pub type Result<T> = std::result::Result<T, CaptureError>;
 
 impl From<ctx_history_source_io::SourceIoError> for CaptureError {
     fn from(error: ctx_history_source_io::SourceIoError) -> Self {
-        use ctx_history_source_io::{SourceIoError, SourceIoJsonlInventoryLimit as SourceLimit};
+        use ctx_history_source_io::SourceIoError;
 
         match error {
             SourceIoError::Io(error) => Self::Io(error),
@@ -104,12 +87,7 @@ impl From<ctx_history_source_io::SourceIoError> for CaptureError {
                 maximum,
                 observed,
             } => Self::ProviderJsonlInventoryLimitExceeded {
-                limit: match limit {
-                    SourceLimit::Directories => ProviderJsonlInventoryLimit::Directories,
-                    SourceLimit::Depth => ProviderJsonlInventoryLimit::Depth,
-                    SourceLimit::EligiblePaths => ProviderJsonlInventoryLimit::EligiblePaths,
-                    SourceLimit::MetadataEntries => ProviderJsonlInventoryLimit::MetadataEntries,
-                },
+                limit,
                 maximum,
                 observed,
             },
