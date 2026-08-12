@@ -676,7 +676,7 @@ fn execute_sqlite_structural_probe(
     limits: SqliteProbeLimits,
     configure: impl FnOnce(&Connection, Duration) -> rusqlite::Result<()>,
     query: impl FnOnce(&Connection) -> rusqlite::Result<bool>,
-) -> Result<bool, SqliteProbeExecutionError> {
+) -> Result<bool, Box<SqliteProbeExecutionError>> {
     let exhausted = Arc::new(AtomicBool::new(false));
     let deadline = Instant::now() + limits.deadline;
     let progress_exhausted = Arc::clone(&exhausted);
@@ -717,28 +717,28 @@ fn execute_sqlite_structural_probe(
     } else {
         query_result
     };
-    snapshot.finish_with(primary)
+    snapshot.finish_with(primary).map_err(Box::new)
 }
 
 fn classify_sqlite_probe_execution(
-    result: Result<bool, SqliteProbeExecutionError>,
+    result: Result<bool, Box<SqliteProbeExecutionError>>,
 ) -> BoundedProbe {
     match result {
         Ok(true) => BoundedProbe::Found,
         Ok(false) => BoundedProbe::NotFound,
-        Err(SqliteReadFinalizationError::Primary(SqliteProbePrimaryError::BudgetExhausted)) => {
-            BoundedProbe::BudgetExhausted
-        }
-        Err(SqliteReadFinalizationError::Primary(SqliteProbePrimaryError::Connection(error)))
-            if error.is_systemic_resource_failure() =>
-        {
-            BoundedProbe::BudgetExhausted
-        }
-        Err(
+        Err(error) => match *error {
+            SqliteReadFinalizationError::Primary(SqliteProbePrimaryError::BudgetExhausted) => {
+                BoundedProbe::BudgetExhausted
+            }
+            SqliteReadFinalizationError::Primary(SqliteProbePrimaryError::Connection(error))
+                if error.is_systemic_resource_failure() =>
+            {
+                BoundedProbe::BudgetExhausted
+            }
             SqliteReadFinalizationError::Primary(_)
             | SqliteReadFinalizationError::Finalization(_)
-            | SqliteReadFinalizationError::PrimaryAndFinalization { .. },
-        ) => BoundedProbe::IoError,
+            | SqliteReadFinalizationError::PrimaryAndFinalization { .. } => BoundedProbe::IoError,
+        },
     }
 }
 
