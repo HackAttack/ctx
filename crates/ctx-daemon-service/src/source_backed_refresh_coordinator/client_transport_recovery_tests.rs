@@ -57,10 +57,12 @@ fn background_maintenance_wake_is_accepted_through_client_and_coordinator() -> R
         &crate::test_support::AVAILABILITY,
         data_root.path(),
         SourceBackedRefreshMode::Background,
-        SourceBackedRefreshOperation::Refresh,
-        None,
-        false,
-        false,
+        SourceBackedRefreshRequestPolicy {
+            operation: SourceBackedRefreshOperation::Refresh,
+            explicit_source_catalog: None,
+            fresh_after_admitted_snapshot: false,
+            allow_daemon_autostart: false,
+        },
         None,
     )?;
 
@@ -196,10 +198,12 @@ fn background_lost_ack_terminal_replay_is_not_reported_as_pending() -> Result<()
         &crate::test_support::AVAILABILITY,
         data_root.path(),
         SourceBackedRefreshMode::Background,
-        SourceBackedRefreshOperation::Refresh,
-        None,
-        false,
-        false,
+        SourceBackedRefreshRequestPolicy {
+            operation: SourceBackedRefreshOperation::Refresh,
+            explicit_source_catalog: None,
+            fresh_after_admitted_snapshot: false,
+            allow_daemon_autostart: false,
+        },
         None,
     ) {
         Ok(_) => panic!("terminal failed replay must remain a failure"),

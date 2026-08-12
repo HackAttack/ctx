@@ -1101,21 +1101,32 @@ fn run_daemon_scheduler_cycle_with_activity(
         args,
         data_root,
         runtime,
-        deadline,
-        semantic_enabled,
-        query_activity,
-        source_refresh,
-        &crate::test_support::PRO,
-        &crate::test_support::ARTIFACT,
-        &crate::test_support::CONFIG,
+        super::super::daemon_scheduler::DaemonSchedulerCycleContext {
+            deadline,
+            semantic_enabled,
+            query_activity,
+            source_refresh,
+        },
+        super::super::daemon_scheduler::DaemonSchedulerPorts {
+            pro: &crate::test_support::PRO,
+            semantic: super::super::daemon_scheduler::DaemonSemanticJobPorts {
+                artifact_fetcher: &crate::test_support::ARTIFACT,
+                config: &crate::test_support::CONFIG,
+            },
+        },
     )
 }
 
 #[test]
 fn semantic_runtime_is_requested_only_for_supported_full_daemons() {
-    let mut config = AppConfig::default();
-    config.semantic_enabled = true;
-    config.daemon.mode = DaemonMode::Full;
+    let mut config = AppConfig {
+        semantic_enabled: true,
+        daemon: crate::DaemonProductConfig {
+            mode: DaemonMode::Full,
+            ..Default::default()
+        },
+        ..Default::default()
+    };
 
     assert!(daemon_semantic_runtime_requested(&config, true));
     assert!(!daemon_semantic_runtime_requested(&config, false));

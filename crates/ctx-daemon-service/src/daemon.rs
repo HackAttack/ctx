@@ -33,7 +33,8 @@ use super::{
         preserve_daemon_background_refresh_recovery_provenance,
         restore_daemon_background_refresh_cadence, restore_daemon_consumer_retries,
         restore_daemon_source_refresh_retry, run_daemon_scheduler_cycle_with_activity,
-        DaemonBackgroundRefreshCadence, DaemonConsumerRetryDeferral, DaemonSidecarDrain,
+        DaemonBackgroundRefreshCadence, DaemonConsumerRetryDeferral, DaemonSchedulerCycleContext,
+        DaemonSchedulerPorts, DaemonSemanticJobPorts, DaemonSidecarDrain,
     },
     daemon_wakeup::{DaemonWakeup, SourceWatchBatch},
     daemon_worker::write_daemon_lifecycle_status_with_runtime,
@@ -53,7 +54,7 @@ mod watch_runtime;
 
 use config_reload::{
     daemon_semantic_runtime_active, reload_daemon_runtime_config, DaemonConfigReloadOutcome,
-    DaemonConfigReloadState,
+    DaemonConfigReloadState, DaemonConfigReloadTargets,
 };
 use lifecycle::*;
 use telemetry::{daemon_safety_reconcile_interval, send_daemon_events, DaemonTelemetry};
@@ -373,9 +374,11 @@ where
             data_root,
             &args,
             &mut runtime,
-            &mut query_service,
-            &mut refresh_service,
-            &mut config_reload,
+            DaemonConfigReloadTargets {
+                query_service: &mut query_service,
+                refresh_service: &mut refresh_service,
+                state: &mut config_reload,
+            },
             &wakeup,
             &lifecycle_state,
             ports.config,
@@ -497,9 +500,11 @@ where
                 data_root,
                 &args,
                 &mut runtime,
-                &mut query_service,
-                &mut refresh_service,
-                &mut config_reload,
+                DaemonConfigReloadTargets {
+                    query_service: &mut query_service,
+                    refresh_service: &mut refresh_service,
+                    state: &mut config_reload,
+                },
                 &wakeup,
                 &lifecycle_state,
                 ports.config,
@@ -654,15 +659,21 @@ where
                 &args,
                 data_root,
                 &mut runtime,
-                None,
-                semantic_runtime_active,
-                query_service
-                    .as_ref()
-                    .map(|service| service.activity.as_ref()),
-                source_refresh,
-                ports.pro_catch_up,
-                ports.artifact_fetcher,
-                ports.config,
+                DaemonSchedulerCycleContext {
+                    deadline: None,
+                    semantic_enabled: semantic_runtime_active,
+                    query_activity: query_service
+                        .as_ref()
+                        .map(|service| service.activity.as_ref()),
+                    source_refresh,
+                },
+                DaemonSchedulerPorts {
+                    pro: ports.pro_catch_up,
+                    semantic: DaemonSemanticJobPorts {
+                        artifact_fetcher: ports.artifact_fetcher,
+                        config: ports.config,
+                    },
+                },
             )?;
             let continue_immediately = iteration.continue_immediately;
             let cycle_duration = cycle_started.elapsed();

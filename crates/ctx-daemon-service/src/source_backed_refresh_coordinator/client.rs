@@ -10,6 +10,13 @@ use observation_recovery::{
 
 type SourceBackedRefreshProgressReporter<'a> = &'a mut dyn FnMut(&RefreshStatus) -> Result<()>;
 
+struct SourceBackedRefreshRequestPolicy<'catalog> {
+    operation: SourceBackedRefreshOperation,
+    explicit_source_catalog: Option<&'catalog ExplicitSourceCatalogAuthority>,
+    fresh_after_admitted_snapshot: bool,
+    allow_daemon_autostart: bool,
+}
+
 const SOURCE_REFRESH_PROGRESS_HEARTBEAT: StdDuration = StdDuration::from_secs(5);
 
 #[derive(Debug)]
@@ -423,10 +430,12 @@ fn coordinate_source_backed_refresh_inner(
         availability,
         data_root,
         mode,
-        SourceBackedRefreshOperation::Refresh,
-        None,
-        false,
-        true,
+        SourceBackedRefreshRequestPolicy {
+            operation: SourceBackedRefreshOperation::Refresh,
+            explicit_source_catalog: None,
+            fresh_after_admitted_snapshot: false,
+            allow_daemon_autostart: true,
+        },
         report_progress,
     )
 }
@@ -461,14 +470,16 @@ fn coordinate_import_source_backed_refresh_inner(
         availability,
         data_root,
         mode,
-        if explicit_source_catalog.is_some() {
-            SourceBackedRefreshOperation::Import
-        } else {
-            SourceBackedRefreshOperation::Refresh
+        SourceBackedRefreshRequestPolicy {
+            operation: if explicit_source_catalog.is_some() {
+                SourceBackedRefreshOperation::Import
+            } else {
+                SourceBackedRefreshOperation::Refresh
+            },
+            explicit_source_catalog,
+            fresh_after_admitted_snapshot: true,
+            allow_daemon_autostart,
         },
-        explicit_source_catalog,
-        true,
-        allow_daemon_autostart,
         report_progress,
     )
 }
@@ -477,12 +488,15 @@ fn coordinate_source_backed_refresh_with_catalog(
     availability: &dyn crate::DaemonAvailabilityPort,
     data_root: &Path,
     mode: SourceBackedRefreshMode,
-    operation: SourceBackedRefreshOperation,
-    explicit_source_catalog: Option<&ExplicitSourceCatalogAuthority>,
-    fresh_after_admitted_snapshot: bool,
-    allow_daemon_autostart: bool,
+    policy: SourceBackedRefreshRequestPolicy<'_>,
     report_progress: Option<SourceBackedRefreshProgressReporter<'_>>,
 ) -> Result<SourceBackedRefreshObservation> {
+    let SourceBackedRefreshRequestPolicy {
+        operation,
+        explicit_source_catalog,
+        fresh_after_admitted_snapshot,
+        allow_daemon_autostart,
+    } = policy;
     if mode == SourceBackedRefreshMode::Off {
         if operation == SourceBackedRefreshOperation::Import {
             bail!("explicit source catalog imports require daemon refresh mode `wait`");
