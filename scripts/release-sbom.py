@@ -297,6 +297,9 @@ def load_core_build_info(
         "ctx:builder:image-id": (
             builder.get("image_id") if isinstance(builder, dict) else None
         ),
+        "ctx:builder:authority": (
+            builder.get("authority") if isinstance(builder, dict) else None
+        ),
         "ctx:builder:recipe-sha256": (
             builder.get("recipe_sha256") if isinstance(builder, dict) else None
         ),
@@ -310,10 +313,35 @@ def load_core_build_info(
             if isinstance(value.get("inspector"), dict)
             else None
         ),
+        "ctx:builder:inspector-authority": (
+            value.get("inspector", {}).get("authority")
+            if isinstance(value.get("inspector"), dict)
+            else None
+        ),
+        "ctx:builder:inspector-tool": (
+            value.get("inspector", {}).get("tool")
+            if isinstance(value.get("inspector"), dict)
+            else None
+        ),
+        "ctx:builder:runtime-authority": (
+            value.get("runtime", {}).get("authority")
+            if isinstance(value.get("runtime"), dict)
+            else None
+        ),
         "ctx:platform": platform,
         "ctx:source:public-commit": source["commit"],
         "ctx:target": value["target"],
         "ctx:toolchain:rust-version": value.get("rust_version"),
+        "ctx:toolchain:macos-sdk-authority": (
+            value.get("release_factory", {}).get("macos_sdk_authority")
+            if isinstance(value.get("release_factory"), dict)
+            else None
+        ),
+        "ctx:toolchain:macos-sdk-sha256": (
+            value.get("release_factory", {}).get("macos_sdk_sha256")
+            if isinstance(value.get("release_factory"), dict)
+            else None
+        ),
     }
     return value, facts
 

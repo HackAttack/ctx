@@ -57,6 +57,7 @@ def validate(
     platform: str,
     expected_source_commit: str | None = None,
     cargo_lock_path: Path | None = None,
+    factory_inputs_path: Path | None = None,
 ) -> str:
     release_label = f"{platform} release"
     artifact_bytes = regular(
@@ -126,6 +127,19 @@ def validate(
     build_info_sha256 = hashlib.sha256(build_info_bytes).hexdigest()
     release_factory = value.get("release_factory")
     if target.get("public_construction_authority") == "linux-cross-cargo-zigbuild-v1":
+        expected_sdk_sha256 = None
+        if target.get("os") == "macos":
+            try:
+                factory_inputs = json.loads(
+                    (
+                        factory_inputs_path
+                        or Path("contracts/release-factory-inputs-v1.json")
+                    ).read_bytes()
+                )
+                expected_sdk_sha256 = factory_inputs["macos_sdk"]["archive_sha256"]
+                expected_sdk_authority = factory_inputs["macos_sdk"]["authority"]
+            except (KeyError, OSError, TypeError, UnicodeDecodeError, json.JSONDecodeError):
+                raise ValueError("release factory SDK input contract is unavailable")
         if (
             not isinstance(release_factory, dict)
             or release_factory.get("authority") != "linux-cross-cargo-zigbuild-v1"
@@ -133,7 +147,12 @@ def validate(
             or release_factory.get("cargo_zigbuild_version") != "0.23.0"
             or (
                 target.get("os") == "macos"
-                and not lower_hex(release_factory.get("macos_sdk_sha256"), 64)
+                and release_factory.get("macos_sdk_sha256") != expected_sdk_sha256
+            )
+            or (
+                target.get("os") == "macos"
+                and release_factory.get("macos_sdk_authority")
+                != expected_sdk_authority
             )
             or (
                 target.get("os") != "macos"
@@ -143,6 +162,21 @@ def validate(
             raise ValueError(
                 f"{release_label} build-info does not bind the pinned Linux factory"
             )
+        for label, identity in (
+            ("builder", builder),
+            ("inspector", inspector),
+            ("runtime", runtime),
+        ):
+            if (
+                not isinstance(identity, dict)
+                or not isinstance(identity.get("authority"), str)
+                or not identity["authority"]
+            ):
+                raise ValueError(f"{release_label} {label} authority is missing")
+        if not isinstance(inspector.get("tool"), str) or not inspector["tool"]:
+            raise ValueError(f"{release_label} inspector tool identity is missing")
+        if not isinstance(builder.get("os"), str) or builder["os"] != "linux-x86_64":
+            raise ValueError(f"{release_label} builder OS identity is missing")
     if target.get("os") != "linux":
         return build_info_sha256
 
@@ -228,6 +262,11 @@ def main() -> int:
     parser.add_argument("--platform", required=True)
     parser.add_argument("--source-commit")
     parser.add_argument("--cargo-lock", type=Path)
+    parser.add_argument(
+        "--factory-inputs",
+        type=Path,
+        default=Path("contracts/release-factory-inputs-v1.json"),
+    )
     args = parser.parse_args()
     if args.source_commit is not None and (
         not lower_hex(args.source_commit, 40) or args.source_commit == "0" * 40
@@ -242,6 +281,7 @@ def main() -> int:
                 args.platform,
                 args.source_commit,
                 args.cargo_lock,
+                args.factory_inputs,
             )
         )
     except (OSError, ValueError) as error:

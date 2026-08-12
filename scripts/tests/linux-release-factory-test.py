@@ -61,6 +61,18 @@ class LinuxReleaseFactoryTest(unittest.TestCase):
             self.assertEqual(portable, [{"kind": "main", "logical": "crates/fixture/Cargo.toml"}])
             self.assertTrue((Path(directory) / "crates/fixture/Cargo.toml").is_file())
 
+    def test_material_inventory_deduplicates_root_manifest_aliases(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            manifest = root / "Cargo.toml"
+            manifest.write_text("[workspace]\n", encoding="utf-8")
+            records = [
+                {"kind": "main", "logical": "./Cargo.toml", "path": str(manifest)},
+                {"kind": "main", "logical": "Cargo.toml", "path": str(manifest)},
+            ]
+            portable = inventory.stage_materials(records, root / "staged")
+            self.assertEqual(portable, [{"kind": "main", "logical": "Cargo.toml"}])
+
     def test_build_info_requires_sdk_exactly_for_macos(self) -> None:
         matrix = ROOT / "contracts" / "release-targets-v1.json"
         self.assertEqual(build_info.target(matrix, "linux-x64")["os"], "linux")
@@ -151,7 +163,7 @@ class LinuxReleaseFactoryTest(unittest.TestCase):
             )
             resolved = json.loads(selected.stdout)
             self.assertEqual(resolved["path"], os.path.realpath(trusted_tool))
-            self.assertEqual(resolved["version"], "0.23.0")
+            self.assertEqual(resolved["observed_version"], "0.23.0")
             self.assertEqual(
                 subprocess.check_output(
                     [resolved["path"], "zigbuild"],
@@ -165,6 +177,20 @@ class LinuxReleaseFactoryTest(unittest.TestCase):
         source = (ROOT / "scripts" / "release" / "linux-factory-build-info.py").read_text()
         self.assertIn('"linux_build": None', source)
         self.assertIn('"release_factory": {', source)
+
+    def test_factory_does_not_expose_apple_credentials_to_builds(self) -> None:
+        source = (ROOT / "scripts" / "release" / "build-public-candidate-on-linux.sh").read_text()
+        build_body = source[source.index("build_target()") : source.index("for target_id in")]
+        for name in (
+            "APPLE_CODESIGN_CERT_P12_B64",
+            "APPLE_CODESIGN_CERT_PASSWORD",
+            "NOTARY_ISSUER",
+            "NOTARY_KEY_ID",
+            "NOTARY_KEY_P8_B64",
+        ):
+            self.assertNotIn(name, source)
+            self.assertNotIn(name, build_body)
+        self.assertNotIn("CTX_MACOS_SIGNING_SECRET_SOURCE=injected", source)
 
 
 if __name__ == "__main__":

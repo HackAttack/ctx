@@ -309,6 +309,7 @@ case "${runtime_platform}" in
       --artifact "${ctx_source}" \
       --build-info "${build_info_path}" \
       --matrix "${script_dir}/../contracts/release-targets-v1.json" \
+      --factory-inputs "${script_dir}/../contracts/release-factory-inputs-v1.json" \
       --platform "${runtime_platform}" >/dev/null
     ;;
 esac

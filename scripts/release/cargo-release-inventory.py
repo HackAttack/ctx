@@ -7,6 +7,7 @@ import argparse
 import json
 import os
 from pathlib import Path
+from pathlib import PurePosixPath
 import re
 import shutil
 import stat
@@ -109,7 +110,8 @@ def safe_materials(package: dict[str, Any], repo: Path) -> list[dict[str, str]]:
     manifest = Path(package["manifest_path"]).resolve()
     root = manifest.parent
     if package.get("source") is None:
-        logical_root = root.relative_to(repo.resolve()).as_posix()
+        relative_root = root.relative_to(repo.resolve()).as_posix()
+        logical_root = "" if relative_root == "." else relative_root
         kind = "main"
     else:
         logical_root = logical_external_root(package)
@@ -122,9 +124,37 @@ def safe_materials(package: dict[str, Any], repo: Path) -> list[dict[str, str]]:
     )
     records = []
     for path in sorted(set(paths), key=lambda item: item.name.lower()):
-        logical = f"{logical_root}/{path.name}"
+        logical = f"{logical_root}/{path.name}" if logical_root else path.name
         records.append({"kind": kind, "logical": logical, "path": os.fspath(path)})
     return records
+
+
+def canonical_material_records(records: list[dict[str, str]]) -> list[dict[str, str]]:
+    unique: dict[tuple[str, str], dict[str, str]] = {}
+    for record in records:
+        kind = record.get("kind")
+        logical = record.get("logical")
+        if not isinstance(kind, str) or not isinstance(logical, str):
+            raise ValueError("release material record is malformed")
+        path = PurePosixPath(logical)
+        normalized = path.as_posix()
+        logical = normalized
+        if (
+            kind not in {"main", "external"}
+            or not logical
+            or path.is_absolute()
+            or ".." in path.parts
+        ):
+            raise ValueError("release material path is unsafe")
+        normalized_record = {"kind": kind, "logical": logical, "path": record["path"]}
+        key = (kind, logical)
+        previous = unique.get(key)
+        if previous is not None:
+            if Path(previous["path"]).resolve() != Path(record["path"]).resolve():
+                raise ValueError(f"duplicate release material has conflicting sources: {logical}")
+            continue
+        unique[key] = normalized_record
+    return [unique[key] for key in sorted(unique)]
 
 
 def configured_features(
@@ -169,7 +199,7 @@ def stage_materials(
     if any(material_root.iterdir()):
         raise ValueError("material root must be empty")
     portable = []
-    for record in records:
+    for record in canonical_material_records(records):
         source = Path(record["path"])
         destination = material_root / record["logical"]
         try:

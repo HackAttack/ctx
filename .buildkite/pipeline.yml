@@ -83,12 +83,6 @@ steps:
         --source-commit "$${source_commit}" \
         --macos-sdk "$${CTX_MACOS_SDK_ROOT:?}" \
         --output-dir target/public-cli-artifacts
-    secrets:
-      - "APPLE_CODESIGN_CERT_P12_B64"
-      - "APPLE_CODESIGN_CERT_PASSWORD"
-      - "NOTARY_ISSUER"
-      - "NOTARY_KEY_ID"
-      - "NOTARY_KEY_P8_B64"
     agents:
       queue: "release-linux-managed"
       ctx-runner-class: "release-linux-control"
@@ -130,6 +124,7 @@ steps:
     timeout_in_minutes: 60
     artifact_paths:
       - "target/public-cli-native-smoke/linux-x64/candidate-smoke.json"
+      - "target/public-cli-native-smoke/linux-x64/ctx-linux-x64.native-execution.json"
       - "target/public-cli-native-smoke/linux-x64/**/smoke.log"
 
   - label: ":test_tube: public CLI linux-aarch64 exact-byte validation"
@@ -159,6 +154,7 @@ steps:
     timeout_in_minutes: 60
     artifact_paths:
       - "target/public-cli-native-smoke/linux-aarch64/candidate-smoke.json"
+      - "target/public-cli-native-smoke/linux-aarch64/ctx-linux-aarch64.native-execution.json"
       - "target/public-cli-native-smoke/linux-aarch64/**/smoke.log"
 
   - label: ":test_tube: public CLI macos-arm64 exact-byte validation"
@@ -200,6 +196,7 @@ steps:
     timeout_in_minutes: 90
     artifact_paths:
       - "target/public-cli-native-smoke/macos-arm64/candidate-smoke.json"
+      - "target/public-cli-native-smoke/macos-arm64/ctx-macos-arm64.native-execution.json"
       - "target/public-cli-native-smoke/macos-arm64/**/smoke.log"
 
   - label: ":test_tube: public CLI macos-x64 exact-byte validation"
@@ -236,8 +233,8 @@ steps:
     timeout_in_minutes: 180
     artifact_paths:
       - "target/public-cli-native-smoke/macos-x64/candidate-smoke.json"
+      - "target/public-cli-native-smoke/macos-x64/ctx-macos-x64.native-execution.json"
       - "target/public-cli-native-smoke/macos-x64/**/smoke.log"
-      - "target/public-cli-artifacts/ctx-onnxruntime-macos-x64*"
 
   - label: ":package: public CLI macos-x64 runtime producer"
     key: "public-cli-macos-x64-runtime-producer"
@@ -248,12 +245,6 @@ steps:
       export CTX_MACOS_SIGNING_SECRET_SOURCE=infisical
       scripts/build-onnxruntime-sidecar.sh macos-x64
       scripts/stage-github-release-assets.sh --transcode-runtime macos-x64
-    secrets:
-      - "APPLE_CODESIGN_CERT_P12_B64"
-      - "APPLE_CODESIGN_CERT_PASSWORD"
-      - "NOTARY_ISSUER"
-      - "NOTARY_KEY_ID"
-      - "NOTARY_KEY_P8_B64"
     agents:
       queue: "ctx-mac-gui-shared-x64"
       os: "darwin"
@@ -289,6 +280,7 @@ steps:
     timeout_in_minutes: 90
     artifact_paths:
       - "target/public-cli-native-smoke/windows-x64/candidate-smoke.json"
+      - "target/public-cli-native-smoke/windows-x64/ctx-windows-x64.native-execution.json"
       - "target/public-cli-native-smoke/windows-x64-onnxruntime/**/daemon-smoke.log"
 
   - label: ":package: stage native-qualified GitHub release candidate"
@@ -300,12 +292,24 @@ steps:
       - "public-cli-linux-x64-native-smoke"
       - "public-cli-linux-aarch64-native-smoke"
       - "public-cli-macos-arm64-native-smoke"
+      - "public-cli-macos-x64-runtime-producer"
       - "public-cli-macos-x64-native-smoke"
       - "public-cli-windows-x64-native-smoke"
     if: build.env("CTX_PUBLIC_CLI_ARTIFACT_MATRIX") == "1" && build.env("CTX_PUBLIC_CLI_NATIVE_SMOKE_MATRIX") == "1" && build.branch == "main" && build.pull_request.id == null
     command: |
       source_commit="$$(git rev-parse --verify HEAD^{commit})"
       scripts/buildkite/download-linux-factory-artifacts.sh "*"
+      mkdir -p target/public-cli-artifacts
+      buildkite-agent artifact download "target/public-cli-native-smoke/linux-x64/ctx-linux-x64.native-execution.json" . --step public-cli-linux-x64-native-smoke
+      buildkite-agent artifact download "target/public-cli-native-smoke/linux-aarch64/ctx-linux-aarch64.native-execution.json" . --step public-cli-linux-aarch64-native-smoke
+      buildkite-agent artifact download "target/public-cli-native-smoke/macos-arm64/ctx-macos-arm64.native-execution.json" . --step public-cli-macos-arm64-native-smoke
+      buildkite-agent artifact download "target/public-cli-native-smoke/macos-x64/ctx-macos-x64.native-execution.json" . --step public-cli-macos-x64-native-smoke
+      buildkite-agent artifact download "target/public-cli-native-smoke/windows-x64/ctx-windows-x64.native-execution.json" . --step public-cli-windows-x64-native-smoke
+      mv target/public-cli-native-smoke/linux-x64/ctx-linux-x64.native-execution.json target/public-cli-artifacts/ctx-linux-x64.native-execution.json
+      mv target/public-cli-native-smoke/linux-aarch64/ctx-linux-aarch64.native-execution.json target/public-cli-artifacts/ctx-linux-aarch64.native-execution.json
+      mv target/public-cli-native-smoke/macos-arm64/ctx-macos-arm64.native-execution.json target/public-cli-artifacts/ctx-macos-arm64.native-execution.json
+      mv target/public-cli-native-smoke/macos-x64/ctx-macos-x64.native-execution.json target/public-cli-artifacts/ctx-macos-x64.native-execution.json
+      mv target/public-cli-native-smoke/windows-x64/ctx-windows-x64.native-execution.json target/public-cli-artifacts/ctx-windows-x64.native-execution.json
       buildkite-agent artifact download \
         "target/public-cli-artifacts/ctx-onnxruntime-macos-x64*" . \
         --step public-cli-macos-x64-runtime-producer
@@ -437,7 +441,7 @@ steps:
       - "semantic-coreml-archive"
       - "semantic-runtime-linux-cuda12"
       - "semantic-runtime-windows-ml"
-      - "public-cli-macos-x64-native-smoke"
+      - "public-cli-macos-x64-runtime-producer"
     if: build.env("CTX_PUBLIC_CLI_ARTIFACT_MATRIX") == "1" && build.env("CTX_PUBLIC_CLI_NATIVE_SMOKE_MATRIX") == "1" && build.branch == "main" && build.pull_request.id == null
     command: |
       mkdir -p target/public-cli-artifacts

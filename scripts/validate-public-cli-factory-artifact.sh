@@ -51,6 +51,10 @@ case "${platform}" in
     scripts/verify-macos-signed-cli.sh "${platform}" "${artifact}" "${version}" \
       "${artifact_dir%/}/ctx-${platform}.signing.json"
     scripts/check-macos-release-signing.sh "${platform}" cli "${artifact}"
+    mkdir -p "${output_dir%/}"
+    scripts/run-native-candidate-smoke.sh \
+      "${artifact}" tests/fixtures/custom-history-jsonl/basic.jsonl "${version}" \
+      "${output_dir%/}/candidate-smoke.json"
     ;;
   windows-x64)
     command -v powershell.exe >/dev/null 2>&1 || die "PowerShell is required"
@@ -73,4 +77,9 @@ esac
 
 after="$(sha256_file "${artifact}")"
 [[ "${after}" == "${before}" ]] || die "native validation mutated candidate bytes"
+python3 -I scripts/native-execution-proof.py create \
+  --platform "${platform}" \
+  --artifact "${artifact}" \
+  --smoke-result "${output_dir%/}/candidate-smoke.json" \
+  --output "${output_dir%/}/ctx-${platform}.native-execution.json"
 printf 'native exact-byte validation passed: %s sha256=%s\n' "${platform}" "${after}"

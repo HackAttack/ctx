@@ -1,0 +1,9 @@
+{
+  "schema_version": 1,
+  "kind": "ctx-release-factory-inputs",
+  "macos_sdk": {
+    "authority": "ctx-release-macos-sdk-v1",
+    "archive_size_bytes": 100814923,
+    "archive_sha256": "e9e77854ad84b73cdeb366da1e7facc697886acbd6922763e7815594ce315e6c"
+  }
+}

@@ -70,7 +70,11 @@ def main() -> int:
     )
     parser.add_argument("--zig-version", required=True)
     parser.add_argument("--cargo-zigbuild-version", required=True)
+    parser.add_argument("--builder-authority", required=True)
+    parser.add_argument("--inspector-authority", required=True)
+    parser.add_argument("--inspector-tool", required=True)
     parser.add_argument("--macos-sdk-sha256")
+    parser.add_argument("--macos-sdk-authority")
     args = parser.parse_args()
     try:
         repo = args.source_repo.resolve(strict=True)
@@ -79,6 +83,8 @@ def main() -> int:
         is_macos = selected["os"] == "macos"
         if is_macos != bool(args.macos_sdk_sha256):
             raise ValueError("macOS SDK identity is required exactly for macOS targets")
+        if is_macos != bool(args.macos_sdk_authority):
+            raise ValueError("macOS SDK authority is required exactly for macOS targets")
         if (args.local_runtime_status == "passed") != (
             args.local_runtime_authority == "authoritative"
         ):
@@ -87,8 +93,9 @@ def main() -> int:
             "artifact_sha256": sha256(args.artifact),
             "build_system": "cargo-zigbuild",
             "builder": {
-                "base_image": {"actual": None, "expected": None},
+                "authority": args.builder_authority,
                 "image_id": None,
+                "os": "linux-x86_64",
                 "recipe_sha256": sha256(args.recipe),
             },
             "cargo_lock_sha256": sha256(args.cargo_lock),
@@ -98,7 +105,11 @@ def main() -> int:
                 "static": args.static_status,
                 "static_abi": args.static_status,
             },
-            "inspector": {"image_id": None},
+            "inspector": {
+                "authority": args.inspector_authority,
+                "image_id": None,
+                "tool": args.inspector_tool,
+            },
             # The shared matrix still carries the legacy Bazel Linux route for
             # old diagnostic consumers. Do not copy its image/sysroot claims
             # into evidence for this Cargo/Zig factory, which did not use them.
@@ -111,10 +122,14 @@ def main() -> int:
                 if isinstance(selected.get("linux_build"), dict)
                 else None,
                 "macos_sdk_sha256": args.macos_sdk_sha256,
+                "macos_sdk_authority": args.macos_sdk_authority,
                 "zig_version": args.zig_version,
             },
             "representative_cpu_proof": {"profile": None, "qemu_version": None},
-            "runtime": {"image_id": None},
+            "runtime": {
+                "authority": "native-fanout-deferred-v1",
+                "image_id": None,
+            },
             "rust_version": args.rust_version,
             "schema_version": 1,
             "source": {"clean": True, "commit": args.source_commit},

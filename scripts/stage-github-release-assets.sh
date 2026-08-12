@@ -711,6 +711,15 @@ validate_staged_cli_evidence \
   ctx.exe ctx-windows-x64.exe windows-x64 \
   "${authority_dir%/}/.ctx.exe.candidate.base.json" \
   ctx.exe "${authority_dir}"
+for native_platform in linux-x64 linux-aarch64 macos-arm64 macos-x64 windows-x64; do
+  native_artifact="ctx-${native_platform}"
+  [[ "${native_platform}" == "linux-x64" ]] && native_artifact="ctx"
+  [[ "${native_platform}" == "windows-x64" ]] && native_artifact="ctx.exe"
+  python3 -I scripts/native-execution-proof.py verify \
+    --platform "${native_platform}" \
+    --artifact "${authority_dir%/}/${native_artifact}" \
+    --proof "${artifact_dir%/}/ctx-${native_platform}.native-execution.json"
+done
 validate_staged_runtime_asset linux-x64
 validate_staged_runtime_asset linux-aarch64
 validate_staged_runtime_asset macos-arm64

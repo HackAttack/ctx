@@ -61,6 +61,7 @@ required = {
     "public-cli-linux-x64-native-smoke",
     "public-cli-linux-aarch64-native-smoke",
     "public-cli-macos-arm64-native-smoke",
+    "public-cli-macos-x64-runtime-producer",
     "public-cli-macos-x64-native-smoke",
     "public-cli-windows-x64-native-smoke",
     "github-release-candidate",
@@ -121,15 +122,8 @@ if (
     or "--macos-sdk" not in factory_command
 ):
     fail("factory must invoke the one Linux construction entry point with an SDK")
-expected_secrets = [
-    "APPLE_CODESIGN_CERT_P12_B64",
-    "APPLE_CODESIGN_CERT_PASSWORD",
-    "NOTARY_ISSUER",
-    "NOTARY_KEY_ID",
-    "NOTARY_KEY_P8_B64",
-]
-if factory.get("secrets") != expected_secrets:
-    fail("factory must receive only the five existing Apple signing values")
+if factory.get("secrets"):
+    fail("factory must acquire Apple signing values only at the signing boundary")
 if factory.get("artifact_paths") != ["target/public-cli-artifacts/*"]:
     fail("factory must upload its complete candidate directory")
 
@@ -152,7 +146,12 @@ native = {
 }
 for key, (platform, queue, os_name, arch) in native.items():
     step = keyed[key]
-    if step.get("depends_on") != "public-cli-linux-factory":
+    expected_dependency = (
+        ["public-cli-linux-factory", "public-cli-macos-x64-runtime-producer"]
+        if key == "public-cli-macos-x64-native-smoke"
+        else "public-cli-linux-factory"
+    )
+    if step.get("depends_on") != expected_dependency:
         fail(f"{key} must depend only on the factory")
     agents = step.get("agents", {})
     if (agents.get("queue"), agents.get("os"), agents.get("arch")) != (
@@ -169,12 +168,21 @@ for key, (platform, queue, os_name, arch) in native.items():
     if re.search(r"cargo (?:build|zigbuild)|bazelw run //:ctx_release", command):
         fail(f"{key} must never rebuild the candidate")
 
-if "build-onnxruntime-sidecar.sh macos-x64" not in keyed[
+producer = keyed["public-cli-macos-x64-runtime-producer"]
+if (
+    "build-onnxruntime-sidecar.sh macos-x64" not in producer.get("command", "")
+    or "stage-github-release-assets.sh --transcode-runtime macos-x64" not in producer.get("command", "")
+    or producer.get("depends_on") != "public-cli-linux-factory"
+):
+    fail("macos-x64 runtime producer must own source construction")
+if producer.get("secrets"):
+    fail("macos-x64 producer must acquire Apple values only at signing")
+if "build-onnxruntime-sidecar.sh macos-x64" in keyed[
     "public-cli-macos-x64-native-smoke"
 ].get("command", ""):
-    fail("macos-x64 native lane must own its source-built runtime")
+    fail("macos-x64 native lane must not source-build its runtime")
 handoff = keyed["semantic-release-handoff"]
-if "public-cli-macos-x64-native-smoke" not in handoff.get("depends_on", []):
+if "public-cli-macos-x64-runtime-producer" not in handoff.get("depends_on", []):
     fail("Semantic handoff must reuse the macos-x64 native runtime")
 
 candidate = keyed["github-release-candidate"]
@@ -182,7 +190,12 @@ expected_dependencies = [
     "public-release",
     "sdk-swift-required",
     "public-cli-linux-factory",
-    *native,
+    "public-cli-linux-x64-native-smoke",
+    "public-cli-linux-aarch64-native-smoke",
+    "public-cli-macos-arm64-native-smoke",
+    "public-cli-macos-x64-runtime-producer",
+    "public-cli-macos-x64-native-smoke",
+    "public-cli-windows-x64-native-smoke",
 ]
 if candidate.get("depends_on") != expected_dependencies:
     fail("candidate staging has the wrong strict dependency set")
@@ -195,6 +208,15 @@ if (
     or "CTX_PUBLIC_RELEASE_SOURCE_COMMIT" not in candidate_command
 ):
     fail("candidate staging must consume the complete factory output and bind HEAD")
+for proof in (
+    "linux-x64",
+    "linux-aarch64",
+    "macos-arm64",
+    "macos-x64",
+    "windows-x64",
+):
+    if f"ctx-{proof}.native-execution.json" not in candidate_command:
+        fail(f"candidate staging must consume native {proof} proof")
 
 for step in steps:
     if not isinstance(step, dict):

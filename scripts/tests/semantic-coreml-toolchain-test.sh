@@ -15,7 +15,11 @@ grep -Fxq 'python_sha256=cbdac9462bab9671c8e84650e425d3f43b775752a930a2ef954a0d4
 grep -Fxq 'uv_sha256=c233bee389c15fdef09a6028db61cc54a12e6171f27d6d9c018eedca5bbbd011' <<<"${output}"
 grep -Fq -- '--exact' "${launcher}"
 grep -Fq -- 'pip check' "${launcher}"
-[[ "$(grep -c '==' "${requirements}")" == '8' ]]
+grep -Fq -- '--no-deps' "${launcher}"
+grep -Fq -- '--require-hashes' "${launcher}"
+for package in coremltools huggingface-hub numpy safetensors sentencepiece tokenizers torch transformers; do
+  grep -Eq "^${package}==" "${requirements}"
+done
 
 python3 - "${lock}" <<'PY'
 import json

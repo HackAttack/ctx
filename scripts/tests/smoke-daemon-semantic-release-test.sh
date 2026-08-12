@@ -24,6 +24,8 @@ done
 chmod 0755 "${release_root}/scripts/"*
 cp -L "${repo_root}/contracts/release-targets-v1.json" \
   "${release_root}/contracts/release-targets-v1.json"
+cp -L "${repo_root}/contracts/release-factory-inputs-v1.json" \
+  "${release_root}/contracts/release-factory-inputs-v1.json"
 test -f "${release_root}/contracts/release-targets-v1.json"
 test ! -L "${release_root}/contracts/release-targets-v1.json"
 cat > "${tmp}/ubuntu-22.04-os-release" <<'EOF'
@@ -296,11 +298,17 @@ import sys
 path = Path(sys.argv[1])
 value = json.loads(path.read_bytes())
 value["builder"]["recipe_sha256"] = sys.argv[2]
+value["builder"]["authority"] = "ctx-release-factory-ubuntu22-nested-docker-v1"
+value["builder"]["os"] = "linux-x86_64"
+value["inspector"]["authority"] = "ctx-release-static-llvm-v1"
+value["inspector"]["tool"] = "LLVM version 20"
+value["runtime"]["authority"] = "native-fanout-deferred-v1"
 value["gates"]["local_runtime"] = "not_run"
 value["gates"]["local_runtime_authority"] = "not_run"
 value["release_factory"] = {
     "authority": "linux-cross-cargo-zigbuild-v1",
     "cargo_zigbuild_version": "0.23.0",
+    "macos_sdk_authority": None,
     "macos_sdk_sha256": None,
     "zig_version": "0.15.2",
 }

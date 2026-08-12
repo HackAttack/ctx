@@ -8,6 +8,7 @@ readonly ZIG_SHA256="02aa270f183da276e5b5920b1dac44a63f1a49e55050ebde3aecc9eb82f
 readonly CARGO_ZIGBUILD_VERSION="0.23.0"
 readonly RCODESIGN_VERSION="0.29.0"
 readonly RCODESIGN_SHA256="dbe85cedd8ee4217b64e9a0e4c2aef92ab8bcaaa41f20bde99781ff02e600002"
+readonly FACTORY_INPUTS="contracts/release-factory-inputs-v1.json"
 
 usage() {
   cat >&2 <<'USAGE'
@@ -21,7 +22,7 @@ Options:
   --source-commit SHA      Required clean source commit (default: HEAD)
   --output-dir DIR         Candidate directory (default: target/public-cli-artifacts)
   --toolchain-dir DIR      Verified tool cache (default: target/release-toolchain)
-  --macos-sdk PATH         Private macOS SDK directory or tar archive
+  --macos-sdk PATH         Private regular macOS SDK archive
   --jobs N                 Cargo jobs per target (default: 2)
   --build-parallelism N    Concurrent target builds (default: 2)
   --diagnostic-unsigned    Build and inspect, but do not sign or emit releasable manifests
@@ -105,7 +106,15 @@ source_commit="${source_commit:-$(git rev-parse --verify HEAD^{commit})}"
 [[ -z "$(git status --porcelain=v1 --untracked-files=all)" ]] || \
   die "official release factory requires a clean checkout"
 
-for command_name in cargo curl file git llvm-objdump llvm-readobj llvm-strip \
+factory_input_json="$(cat "${FACTORY_INPUTS}")" || die "factory input contract is unavailable"
+macos_sdk_authority="$(python3 -c 'import json,sys; print(json.loads(sys.stdin.read())["macos_sdk"]["authority"])' <<<"${factory_input_json}")"
+macos_sdk_expected_size="$(python3 -c 'import json,sys; print(json.loads(sys.stdin.read())["macos_sdk"]["archive_size_bytes"])' <<<"${factory_input_json}")"
+macos_sdk_expected_sha256="$(python3 -c 'import json,sys; print(json.loads(sys.stdin.read())["macos_sdk"]["archive_sha256"])' <<<"${factory_input_json}")"
+[[ "${macos_sdk_authority}" =~ ^[a-z0-9.-]+$ ]] || die "factory SDK authority is malformed"
+[[ "${macos_sdk_expected_size}" =~ ^[1-9][0-9]*$ ]] || die "factory SDK size is malformed"
+[[ "${macos_sdk_expected_sha256}" =~ ^[0-9a-f]{64}$ ]] || die "factory SDK digest is malformed"
+
+for command_name in cargo cat curl file git install llvm-objdump llvm-readobj llvm-strip \
   openssl python3 rustc rustup sha256sum tar xz; do
   require_command "${command_name}"
 done
@@ -114,6 +123,11 @@ rust_commit="$(rustc --version --verbose | sed -n 's/^commit-hash: //p')"
 [[ "${rust_release}" == "${RUST_VERSION}" && "${rust_commit}" == "${RUST_COMMIT}" ]] || \
   die "rustc must be pinned ${RUST_VERSION} (${RUST_COMMIT})"
 rust_version="$(rustc --version)"
+builder_authority="${CTX_RELEASE_BUILDER_AUTHORITY:-ctx-release-factory-ubuntu22-nested-docker-v1}"
+inspector_authority="${CTX_RELEASE_INSPECTOR_AUTHORITY:-ctx-release-static-llvm-v1}"
+inspector_tool="$(llvm-readobj --version | head -n 1)"
+[[ -n "${builder_authority}" && -n "${inspector_authority}" && -n "${inspector_tool}" ]] || \
+  die "factory evidence authorities must be non-empty"
 
 mkdir -p "${toolchain_dir}"
 zig_dir="${toolchain_dir}/zig-x86_64-linux-${ZIG_VERSION}"
@@ -137,7 +151,7 @@ cargo_zigbuild_resolution="$(python3 scripts/release/resolve-cargo-zigbuild.py \
   --expected-version "${CARGO_ZIGBUILD_VERSION}")"
 cargo_zigbuild_bin="$(python3 -c 'import json,sys; print(json.loads(sys.stdin.read())["path"])' \
   <<<"${cargo_zigbuild_resolution}")"
-cargo_zigbuild_observed_version="$(python3 -c 'import json,sys; print(json.loads(sys.stdin.read())["version"])' \
+cargo_zigbuild_observed_version="$(python3 -c 'import json,sys; print(json.loads(sys.stdin.read())["observed_version"])' \
   <<<"${cargo_zigbuild_resolution}")"
 
 rcodesign_dir="${toolchain_dir}/apple-codesign-${RCODESIGN_VERSION}-x86_64-unknown-linux-musl"
@@ -160,44 +174,27 @@ macos_sdk_root=""
 sdk_cleanup=""
 if [[ -n "${macos_sdk_input}" ]]; then
   [[ "${macos_sdk_input}" == /* ]] || macos_sdk_input="${repo_root}/${macos_sdk_input}"
-  if [[ -d "${macos_sdk_input}" && ! -L "${macos_sdk_input}" ]]; then
-    macos_sdk_root="${macos_sdk_input}"
-  elif [[ -f "${macos_sdk_input}" && ! -L "${macos_sdk_input}" ]]; then
+  if [[ -f "${macos_sdk_input}" && ! -L "${macos_sdk_input}" ]]; then
     sdk_cleanup="$(mktemp -d "${TMPDIR:-/tmp}/ctx-macos-sdk.XXXXXX")"
     trap 'rm -rf "${sdk_cleanup:-}"' EXIT
-    tar --warning=no-unknown-keyword -C "${sdk_cleanup}" -xf "${macos_sdk_input}"
-    mapfile -t sdk_matches < <(find "${sdk_cleanup}" -type d -name 'MacOSX*.sdk' -print)
+    sdk_archive="${sdk_cleanup}/MacOSX.sdk.archive"
+    install -m 0600 -- "${macos_sdk_input}" "${sdk_archive}"
+    [[ "$(stat -c '%s' "${sdk_archive}")" == "${macos_sdk_expected_size}" ]] || \
+      die "macOS SDK archive size mismatch: expected ${macos_sdk_expected_size}"
+    verify_sha256 "${sdk_archive}" "${macos_sdk_expected_sha256}"
+    sdk_extract="${sdk_cleanup}/extracted"
+    mkdir -p "${sdk_extract}"
+    tar --warning=no-unknown-keyword -C "${sdk_extract}" -xf "${sdk_archive}"
+    mapfile -t sdk_matches < <(find "${sdk_extract}" -type d -name 'MacOSX*.sdk' -print)
     [[ "${#sdk_matches[@]}" == "1" ]] || die "macOS SDK archive must contain exactly one MacOSX*.sdk"
     macos_sdk_root="${sdk_matches[0]}"
   else
-    die "macOS SDK input must be a regular archive or directory"
+    die "macOS SDK input must be a regular archive"
   fi
 fi
 [[ -n "${macos_sdk_root}" && -d "${macos_sdk_root}/System/Library/Frameworks" ]] || \
   die "--macos-sdk must provide a complete MacOSX SDK"
-macos_sdk_sha256="$(python3 - "${macos_sdk_root}" <<'PY'
-import hashlib
-import os
-from pathlib import Path
-import sys
-
-root = Path(sys.argv[1])
-digest = hashlib.sha256()
-for path in sorted(root.rglob("*"), key=lambda item: item.relative_to(root).as_posix()):
-    relative = path.relative_to(root).as_posix().encode()
-    if path.is_symlink():
-        digest.update(b"S\0" + relative + b"\0" + os.readlink(path).encode() + b"\0")
-    elif path.is_file():
-        digest.update(b"F\0" + relative + b"\0")
-        with path.open("rb") as source:
-            for chunk in iter(lambda: source.read(1024 * 1024), b""):
-                digest.update(chunk)
-        digest.update(b"\0")
-    elif path.is_dir():
-        digest.update(b"D\0" + relative + b"\0")
-print(digest.hexdigest())
-PY
-)"
+macos_sdk_sha256="${macos_sdk_expected_sha256}"
 export SDKROOT="${macos_sdk_root}"
 export MACOSX_DEPLOYMENT_TARGET=13.0
 
@@ -209,10 +206,11 @@ for triple in \
 done
 
 if [[ "${official}" == "1" ]]; then
+  . /etc/os-release
+  [[ "${ID:-}" == "ubuntu" && "${VERSION_ID:-}" == "22.04" ]] || \
+    die "official release factory requires Ubuntu 22.04"
   for required_name in \
-    CTX_OSV_SCANNER CTX_OSV_DATABASE_DIR CTX_OSV_DATABASE_METADATA \
-    APPLE_CODESIGN_CERT_P12_B64 APPLE_CODESIGN_CERT_PASSWORD \
-    NOTARY_ISSUER NOTARY_KEY_ID NOTARY_KEY_P8_B64; do
+    CTX_OSV_SCANNER CTX_OSV_DATABASE_DIR CTX_OSV_DATABASE_METADATA; do
     [[ -n "${!required_name:-}" ]] || die "official release requires ${required_name}"
   done
 fi
@@ -277,7 +275,6 @@ for pid in "${pids[@]}"; do
 done
 
 if [[ "${official}" == "1" ]]; then
-  export CTX_MACOS_SIGNING_SECRET_SOURCE=injected
   export CTX_MACOS_RELEASE_SOURCE_COMMIT="${source_commit}"
   scripts/run-macos-release-signing.sh macos-arm64 cli \
     "${artifact_stage}/ctx-macos-arm64" "${artifact_stage}"
@@ -317,10 +314,16 @@ for target_id in "${target_ids[@]}"; do
       --source-repo "${repo_root}" --static-status passed \
       --local-runtime-status not_run --local-runtime-authority not_run \
       --zig-version "${ZIG_VERSION}" \
-      --cargo-zigbuild-version "${cargo_zigbuild_observed_version}"
+      --cargo-zigbuild-version "${cargo_zigbuild_observed_version}" \
+      --builder-authority "${builder_authority}" \
+      --inspector-authority "${inspector_authority}" \
+      --inspector-tool "${inspector_tool}"
     )
     if [[ "${target_id}" == macos-* ]]; then
-      build_info_args+=(--macos-sdk-sha256 "${macos_sdk_sha256}")
+      build_info_args+=(
+        --macos-sdk-sha256 "${macos_sdk_sha256}"
+        --macos-sdk-authority "${macos_sdk_authority}"
+      )
     fi
     python3 scripts/release/linux-factory-build-info.py "${build_info_args[@]}"
     python3 scripts/dependency-advisory-gate.py \

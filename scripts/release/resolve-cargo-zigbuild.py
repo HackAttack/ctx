@@ -34,7 +34,14 @@ def main() -> int:
         raise SystemExit(
             f"cargo-zigbuild version mismatch: expected {expected!r}, got {observed!r}"
         )
-    print(json.dumps({"path": os.fspath(path), "version": args.expected_version}))
+    print(
+        json.dumps(
+            {
+                "path": os.fspath(path),
+                "observed_version": observed.removeprefix("cargo-zigbuild "),
+            }
+        )
+    )
     return 0
 
 

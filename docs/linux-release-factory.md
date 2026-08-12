@@ -12,7 +12,8 @@ validate those exact bytes afterwards.
 - A complete macOS SDK directory or archive supplied with `--macos-sdk` or
   `CTX_MACOS_SDK_ROOT`. The SDK is an unredistributed private build input.
 - Offline OSV scanner/database inputs in official mode.
-- The existing five Apple signing values in official mode.
+- Infisical access at the narrow macOS signing boundary in official mode. The
+  build and dependency subprocesses never receive Apple credentials.
 
 Zig 0.15.2 and rcodesign 0.29.0 are downloaded from checksum-pinned upstream
 archives into `target/release-toolchain`. cargo-zigbuild 0.23.0 must already be
@@ -38,8 +39,8 @@ scripts/release/build-public-candidate-on-linux.sh \
   --diagnostic-unsigned --skip-runtimes
 ```
 
-The factory refuses a dirty checkout, an unpinned toolchain, a missing SDK, or
-missing official credentials. It builds targets with bounded parallelism; use
+The factory refuses a dirty checkout, an unpinned toolchain, a missing or
+unexpected SDK archive, or missing official credentials. It builds targets with bounded parallelism; use
 `--jobs` and `--build-parallelism` to tune a local machine.
 
 ## Native validation
