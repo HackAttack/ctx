@@ -163,15 +163,13 @@ Source builds and package-manager installs remain unmanaged and do not self-upgr
 
 For the full pipeline, see [How ctx works](https://ctx.rs/concepts/how-it-works). For a quick first run, see [Quickstart](https://ctx.rs/first-search).
 
-## Refer a developer. Earn $10/month toward your agent bill.
+## Refer a dev to ctx pro and we'll buy you $120 in LLM tokens
 
-Up to $120 per friend.
+Coding agents aren't cheap. For each developer you refer who becomes a ctx pro subscriber, you earn $10 cash per month for each of their first 12 paid months.
 
-Coding agents aren't cheap. For each developer you refer who becomes a ctx pro subscriber, you earn $10 cash for each of their first 12 qualifying paid months.
+Two active referrals earn you $20 per month; ten earn you $100 per month.
 
-Two active referrals earn you $20 per month. Ten earn you $100 per month.
-
-The developer you refer gets a 30-day pro trial instead of the standard 14 days.
+The dev you refer gets a 30-day pro trial instead of the standard 14 days.
 
 ```bash
 # Claim your referral codename
@@ -184,8 +182,6 @@ ctx pro --referral <codename>
 [See referral details](https://ctx.rs/pro/referrals) for eligibility, payouts, and terms.
 
 ## Supported agent histories
-
-Support means ctx can discover or read that harness's persisted local history and import it into the local search index. Use `ctx sources --format json` on your machine to see which sources are currently `importable`.
 
 | Agent harness | Support |
 | --- | --- |
