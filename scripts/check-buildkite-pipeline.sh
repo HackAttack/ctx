@@ -9,6 +9,8 @@ macos_x64_llvm_task_root_env="CTX_RELEASE_MACOS_X64_LLVM_TASK_ROOT"
 macos_x64_intel_concurrency_group="ctx-public-cli-macos-intel-native"
 public_ci_script="scripts/buildkite-public-ci.sh"
 public_ci_cache_test="scripts/tests/buildkite-public-ci-cache-test.sh"
+release_advisory_inputs="scripts/release/run-with-release-advisory-inputs.py"
+release_advisory_inputs_test="scripts/tests/run-with-release-advisory-inputs-test.py"
 sdk_check_script="scripts/check-sdks.sh"
 sdk_pipeline_check_script="scripts/check-sdk-ci-pipeline.py"
 sdk_required_groups_test="scripts/tests/check-sdks-required-groups-test.sh"
@@ -31,6 +33,8 @@ staging_script="scripts/stage-github-release-assets.sh"
 test -f "${pipeline}"
 test -f "${public_ci_script}"
 test -f "${public_ci_cache_test}"
+test -f "${release_advisory_inputs}"
+test -f "${release_advisory_inputs_test}"
 test -f "${sdk_check_script}"
 test -f "${sdk_pipeline_check_script}"
 test -f "${sdk_required_groups_test}"
@@ -58,6 +62,7 @@ fi
 
 bash "${sdk_required_groups_test}"
 bash "${public_ci_cache_test}"
+python3 "${release_advisory_inputs_test}"
 python3 "${sdk_pipeline_check_script}" \
   "${pipeline}" "${public_ci_script}" "${sdk_check_script}"
 
@@ -1130,6 +1135,26 @@ for required in \
   done
   if [[ "${found}" != "1" ]]; then
     printf 'pipeline or release scripts missing required snippet: %s\n' "${required}" >&2
+    exit 1
+  fi
+done
+
+for release_step in \
+  public-cli-linux-x64:linux-x64 \
+  public-cli-linux-aarch64:linux-arm64 \
+  public-cli-macos-arm64:macos-arm64 \
+  public-cli-macos-x64:macos-x64; do
+  step_key="${release_step%%:*}"
+  target_id="${release_step#*:}"
+  if ! awk '
+      index($0, "key: \"" step "\"") { in_step = 1 }
+      in_step && /^  - label:/ && index($0, step) == 0 { in_step = 0 }
+      in_step && index($0, "scripts/release/run-with-release-advisory-inputs.py") { wrapper = 1 }
+      in_step && index($0, "--target " target " --") { target_arg = 1 }
+      END { exit wrapper && target_arg ? 0 : 1 }
+    ' step="${step_key}" target="${target_id}" "${pipeline}"; then
+    printf '%s must acquire exact %s release advisory inputs\n' \
+      "${step_key}" "${target_id}" >&2
     exit 1
   fi
 done

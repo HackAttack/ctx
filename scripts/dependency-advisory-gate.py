@@ -51,11 +51,37 @@ STATUS_EXIT = {
     "tool_failure": 21,
 }
 
+# The scanner processes untrusted dependency metadata while release credentials
+# may be present in the parent environment. Keep only OS/runtime variables that
+# are needed to create temporary files or start a process on Windows. In
+# particular, do not expose signing, notary, Buildkite, or ambient scanner
+# controls to either scanner invocation.
+SCANNER_RUNTIME_ENVIRONMENT = {
+    "LC_CTYPE",
+    "SystemRoot",
+    "SYSTEMROOT",
+    "TEMP",
+    "TMP",
+    "TMPDIR",
+    "WINDIR",
+}
+
 
 class GateError(Exception):
     def __init__(self, status: str, message: str):
         super().__init__(message)
         self.status = status
+
+
+def scanner_environment(database_root: Path | None = None) -> dict[str, str]:
+    environment = {
+        name: value
+        for name, value in os.environ.items()
+        if name in SCANNER_RUNTIME_ENVIRONMENT
+    }
+    if database_root is not None:
+        environment["OSV_SCANNER_LOCAL_DB_CACHE_DIRECTORY"] = str(database_root)
+    return environment
 
 
 def sha256_file(path: Path) -> str:
@@ -281,7 +307,11 @@ def scanner_version(
         raise GateError("tool_failure", "OSV-Scanner digest mismatch")
     try:
         result = subprocess.run(
-            [str(scanner), "--version"], check=True, capture_output=True, text=True
+            [str(scanner), "--version"],
+            check=True,
+            capture_output=True,
+            env=scanner_environment(),
+            text=True,
         )
     except (OSError, subprocess.CalledProcessError) as error:
         raise GateError("tool_failure", "OSV-Scanner is unavailable") from error
@@ -436,11 +466,13 @@ def scan_with_osv(
     ]
     for entry in entries:
         command.extend(["-L", str(repo_root / entry["path"])])
-    environment = os.environ.copy()
-    environment["OSV_SCANNER_LOCAL_DB_CACHE_DIRECTORY"] = str(database_root)
     try:
         result = subprocess.run(
-            command, cwd=repo_root, env=environment, capture_output=True, text=True
+            command,
+            cwd=repo_root,
+            env=scanner_environment(database_root),
+            capture_output=True,
+            text=True,
         )
     except OSError as error:
         raise GateError("tool_failure", "OSV-Scanner execution failed") from error

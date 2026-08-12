@@ -6,6 +6,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -37,6 +38,11 @@ class AdvisoryGateTest(unittest.TestCase):
         self.repo = self.root / "repo"
         self.repo.mkdir()
         (self.repo / "Cargo.lock").write_text("fixture lock\n", encoding="utf-8")
+        self.scanner = self.root / "fake-osv-scanner.py"
+        shutil.copy2(FAKE_SCANNER, self.scanner)
+        self.scanner.chmod(0o700)
+        self.scanner_config = self.scanner.with_suffix(".config.json")
+        self.scanner_environment_receipt = self.root / "scanner-environments.jsonl"
         self.policy = self.repo / "policy.json"
         self.policy.write_text(
             json.dumps(
@@ -47,7 +53,7 @@ class AdvisoryGateTest(unittest.TestCase):
                         "version": "2.4.0",
                         "sha256_by_target": {
                             "fixture": hashlib.sha256(
-                                FAKE_SCANNER.read_bytes()
+                                self.scanner.read_bytes()
                             ).hexdigest()
                         },
                         "max_database_age_hours": 48,
@@ -118,9 +124,27 @@ class AdvisoryGateTest(unittest.TestCase):
     def run_gate(
         self, fixture: str, scanner_exit: int = 0
     ) -> tuple[subprocess.CompletedProcess[str], dict[str, object]]:
+        self.scanner_environment_receipt.unlink(missing_ok=True)
+        self.scanner_config.write_text(
+            json.dumps(
+                {
+                    "environment_receipt": str(self.scanner_environment_receipt),
+                    "exit_code": scanner_exit,
+                    "fixture": str(FIXTURES / fixture),
+                }
+            ),
+            encoding="utf-8",
+        )
         environment = os.environ.copy()
-        environment["FAKE_OSV_FIXTURE"] = str(FIXTURES / fixture)
-        environment["FAKE_OSV_EXIT"] = str(scanner_exit)
+        environment.update(
+            {
+                "APPLE_SIGNING_IDENTITY": "sentinel-signing-secret",
+                "BUILDKITE_AGENT_ACCESS_TOKEN": "sentinel-buildkite-secret",
+                "NOTARYTOOL_PASSWORD": "sentinel-notary-secret",
+                "OSV_SCANNER_CONFIG": "sentinel-ambient-config",
+                "OSV_SCANNER_LOCAL_DB_CACHE_DIRECTORY": "sentinel-ambient-database",
+            }
+        )
         result = subprocess.run(
             [
                 str(GATE),
@@ -135,7 +159,7 @@ class AdvisoryGateTest(unittest.TestCase):
                 "--database-metadata",
                 str(self.metadata),
                 "--scanner",
-                str(FAKE_SCANNER),
+                str(self.scanner),
                 "--target-id",
                 "fixture",
                 "--output",
@@ -149,11 +173,54 @@ class AdvisoryGateTest(unittest.TestCase):
         )
         return result, json.loads(self.receipt.read_text(encoding="utf-8"))
 
+    def scanner_environments(self) -> list[dict[str, object]]:
+        return [
+            json.loads(line)
+            for line in self.scanner_environment_receipt.read_text(
+                encoding="utf-8"
+            ).splitlines()
+        ]
+
     def test_clean(self) -> None:
         result, receipt = self.run_gate("osv-clean.json")
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(receipt["status"], "clean")
         self.assertFalse(receipt["coverage"]["os_packages_scanned"])
+
+    def test_scanner_subprocesses_receive_only_allowlisted_environment(self) -> None:
+        result, _receipt = self.run_gate("osv-clean.json")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        invocations = self.scanner_environments()
+        self.assertEqual(len(invocations), 2)
+        version, scan = invocations
+        self.assertEqual(version["arguments"], ["--version"])
+        self.assertNotIn("OSV_SCANNER_LOCAL_DB_CACHE_DIRECTORY", version["environment"])
+        self.assertIn("scan", scan["arguments"])
+        self.assertEqual(
+            scan["environment"]["OSV_SCANNER_LOCAL_DB_CACHE_DIRECTORY"],
+            str(self.database_root),
+        )
+        for invocation in invocations:
+            environment = invocation["environment"]
+            self.assertNotIn("APPLE_SIGNING_IDENTITY", environment)
+            self.assertNotIn("BUILDKITE_AGENT_ACCESS_TOKEN", environment)
+            self.assertNotIn("NOTARYTOOL_PASSWORD", environment)
+            self.assertNotIn("OSV_SCANNER_CONFIG", environment)
+            self.assertLessEqual(
+                set(environment),
+                {
+                    *{
+                        "LC_CTYPE",
+                        "SystemRoot",
+                        "SYSTEMROOT",
+                        "TEMP",
+                        "TMP",
+                        "TMPDIR",
+                        "WINDIR",
+                    },
+                    "OSV_SCANNER_LOCAL_DB_CACHE_DIRECTORY",
+                },
+            )
 
     def test_unreviewed_advisory(self) -> None:
         result, receipt = self.run_gate("osv-advisory.json", 1)
