@@ -3,7 +3,7 @@ mod support;
 #[cfg(any(unix, windows))]
 use support::*;
 
-#[path = "../../ctx-cli-contract-tests/tests/contracts/support/upgrade/runtime_publication.rs"]
+#[path = "../../../ctx-cli-contract-tests/tests/contracts/support/upgrade/runtime_publication.rs"]
 mod runtime_publication;
 
 #[path = "upgrade/release_validation.rs"]
@@ -160,7 +160,7 @@ fn assert_mode(path: &Path, expected: u32) {
 
 #[test]
 fn windows_runtime_extractor_keeps_external_source_contract() {
-    let installer_source = include_str!("../../ctx-upgrade-engine/src/upgrade/install.rs");
+    let installer_source = include_str!("../../src/upgrade/install.rs");
     let declaration = "const EXTRACT_SCRIPT: &str = r#\"\n";
     assert_eq!(
         installer_source.matches(declaration).count(),
@@ -178,7 +178,7 @@ fn windows_runtime_extractor_keeps_external_source_contract() {
     assert!(extractor.contains("$targetStream.Flush($true)"));
 
     let external_contract =
-        include_str!("../../../scripts/test-windows-runtime-upgrade-extractor.ps1");
+        include_str!("../../../../scripts/test-windows-runtime-upgrade-extractor.ps1");
     assert!(external_contract.contains(r#"..\crates\ctx-cli\src\upgrade\install.rs"#));
     assert!(external_contract.contains("const EXTRACT_SCRIPT: &str = r#"));
 }

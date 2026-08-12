@@ -1,7 +1,8 @@
-load("@crates//:defs.bzl", "aliases", "all_crate_deps", "crate_edition")
+load("@crates//:defs.bzl", "aliases", "all_crate_deps", "crate_deps", "crate_edition")
 load("@rules_rust//rust:defs.bzl", "rust_library")
 load("//:rust_sources.bzl", "RUST_PROD_SRC_EXCLUDES")
-load("//tools/bazel:ctx_rust.bzl", "ctx_rust_test")
+load("//tools/bazel:binary_contracts.bzl", "ctx_binary_contract_test")
+load("//tools/bazel:ctx_rust.bzl", "ctx_rust_binary", "ctx_rust_test")
 load("//tools/bazel:gates.bzl", "loc_check_inputs")
 
 package(default_visibility = ["//visibility:public"])
@@ -101,4 +102,58 @@ ctx_rust_test(
     rustc_env_files = ["test-harness.env"],
     rustc_flags = CTX_UPGRADE_ENGINE_RUSTC_FLAGS,
     tags = ["exclusive"],
+)
+
+ctx_rust_binary(
+    name = "ctx_v025_upgrade_fixture",
+    testonly = True,
+    srcs = ["tests/fixtures/v025_upgrade_fixture.rs"],
+    crate_name = "ctx_v025_upgrade_fixture",
+    crate_root = "tests/fixtures/v025_upgrade_fixture.rs",
+    edition = crate_edition(),
+    aliases = aliases(),
+    deps = all_crate_deps(normal = True),
+    proc_macro_deps = all_crate_deps(proc_macro = True),
+)
+
+ctx_binary_contract_test(
+    name = "upgrade_tests",
+    src = "tests/contracts/upgrade.rs",
+    binary = "//crates/ctx-cli:ctx_upgrade_test_harness",
+    cargo_manifest_dir = "crates/ctx-upgrade-engine",
+    support_deps = crate_deps([
+        "base64",
+        "chrono",
+        "flate2",
+        "ring",
+        "serde_json",
+        "sha2",
+        "tar",
+        "tempfile",
+        "uuid",
+    ]) + [
+        "@crates//assert_cmd-2.2.2:assert_cmd-2.2.2",
+        "@crates//predicates-3.1.4:predicates-3.1.4",
+        "//crates/ctx-history-core:lib",
+    ],
+    support_srcs = [
+        "tests/contracts/support.rs",
+        "//crates/ctx-cli-contract-tests:contract_support_base",
+        "//crates/ctx-cli-contract-tests:contract_support_upgrade",
+    ],
+    support_rustc_flags = ["--cfg=ctx_cli_test_support_upgrade"],
+    extra_crates = ["libc"],
+    extra_env = {
+        "CTX_ORDINARY_RELEASE_BINARY": "$(rootpath //crates/ctx-cli:ctx)",
+    },
+    extra_compile_data = [
+        "src/upgrade/install.rs",
+        "//:upgrade_extractor_contract",
+    ],
+    extra_data = ["//crates/ctx-cli:ctx"],
+    extra_srcs = [
+        "//crates/ctx-cli-contract-tests:upgrade_runtime_support_srcs",
+        "tests/contracts/upgrade/release_validation.rs",
+    ],
+    rustc_env_files = ["//crates/ctx-cli:cargo_toml_env_vars"],
 )
