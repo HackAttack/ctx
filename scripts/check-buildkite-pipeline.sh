@@ -332,6 +332,27 @@ def validate_fail_slow_release_graph(blocks):
             )
 
 
+def validate_windows_release_output_root(blocks):
+    matches = [
+        block for block in blocks if step_key(block) == "public-cli-windows-x64"
+    ]
+    require_route(
+        len(matches) == 1,
+        "pipeline must define exactly one public-cli-windows-x64 artifact route",
+    )
+    source = command(matches[0])
+    output_root = "export BAZEL_OUTPUT_USER_ROOT=/c/b/o"
+    release_command = "bash scripts/bazelw run //:ctx_release_windows_x64"
+    require_route(
+        source.count(output_root) == 1,
+        "Windows release must pin one MAX_PATH-safe Bazel output-user-root",
+    )
+    require_route(
+        source.find(output_root) < source.find(release_command),
+        "Windows release must select its short Bazel output root before bazelw",
+    )
+
+
 def validate_linux_smoke_arg_escaping(blocks):
     escaped = '"$${smoke_args[@]}"'
     unescaped = '"${smoke_args[@]}"'
@@ -444,6 +465,7 @@ require_route(
 )
 validate_validation_routes(steps)
 validate_fail_slow_release_graph(steps)
+validate_windows_release_output_root(steps)
 validate_linux_smoke_arg_escaping(steps)
 validate_runtime_parameter_escaping(steps)
 validate_semantic_input_preparation(steps)
@@ -495,6 +517,21 @@ expect_rejection(
     "artifact diagnostic serialized behind release qualification",
     serialized_diagnostic,
     validate_fail_slow_release_graph,
+)
+long_windows_output_root = [
+    block.replace(
+        "export BAZEL_OUTPUT_USER_ROOT=/c/b/o",
+        "export BAZEL_OUTPUT_USER_ROOT=$${HOME}/.cache/ctx/bazel/output-root",
+        1,
+    )
+    if step_key(block) == "public-cli-windows-x64"
+    else block
+    for block in steps
+]
+expect_rejection(
+    "MAX_PATH-unsafe Windows Bazel output-user-root",
+    long_windows_output_root,
+    validate_windows_release_output_root,
 )
 open_candidate_gate = [
     block.replace('      - "public-release"\n', "", 1)
@@ -1017,6 +1054,7 @@ for required in \
   '--platform linux-x64' \
   '--platform linux-arm64' \
   '//:ctx_release_windows_x64' \
+  'export BAZEL_OUTPUT_USER_ROOT=/c/b/o' \
   '//:ctx_release_macos_arm64' \
   '//:ctx_release_macos_x64' \
   '.cdx.json.sha256' \

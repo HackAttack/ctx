@@ -163,6 +163,9 @@ steps:
     key: "public-cli-windows-x64"
     if: build.env("CTX_PUBLIC_CLI_ARTIFACT_MATRIX") == "1"
     command: |
+      # MSVC link.exe still resolves rules_rust bootstrap inputs through the
+      # legacy MAX_PATH boundary. Keep the Bazel output tree short.
+      export BAZEL_OUTPUT_USER_ROOT=/c/b/o
       bash scripts/bazelw run //:ctx_release_windows_x64 --config=release -- \
         --output-dir target/public-cli-artifacts
       bash scripts/build-onnxruntime-sidecar.sh windows-x64
