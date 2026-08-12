@@ -25,10 +25,8 @@ RUNTIME_CARGO = """\
 [dependencies]
 ctx-history-capture-model = { path = "../ctx-history-capture-model" }
 ctx-history-core = { path = "../ctx-history-core" }
-uuid.workspace = true
-
-[dev-dependencies]
 thiserror.workspace = true
+uuid.workspace = true
 """
 
 JSONL_CARGO = """\

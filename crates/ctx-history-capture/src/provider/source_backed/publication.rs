@@ -810,13 +810,10 @@ fn refresh_source_backed_generation_with_detailed_progress_and_discovery_timing(
                         .map(|candidate| candidate.route_identity.clone())
                         .collect::<Vec<_>>();
                     for retired_route in &dynamic_retirements {
-                        lifecycle.authorize_carried_route_retirement(
-                            route_identity,
-                            retired_route,
-                        )?;
+                        lifecycle
+                            .authorize_carried_route_retirement(route_identity, retired_route)?;
                     }
-                    let route_is_partial =
-                        lifecycle.route_retains_unstaged_members(route_identity);
+                    let route_is_partial = lifecycle.route_retains_unstaged_members(route_identity);
                     capture_staged_source_route_revalidation_receipts(
                         &lifecycle,
                         route_index,

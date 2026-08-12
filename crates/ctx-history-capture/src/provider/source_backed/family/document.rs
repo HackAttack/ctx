@@ -26,7 +26,6 @@ use crate::provider::source_backed::{
 #[cfg(test)]
 use crate::provider::source_backed::{SourceBackedRoute, SourceBackedWatchTargetKind};
 use crate::ProviderSource;
-use ctx_history_capture_runtime::{CaptureLifecycleSink, ImmutableCaptureSnapshot};
 use ctx_history_core::{
     CertifiedSource, CertifiedSourceAppend, CertifiedSourceDeletion, CoreRecord,
     ScannedSourceCounts, SourceFrontier, SourceKey, SourceObservation, TypedKey,

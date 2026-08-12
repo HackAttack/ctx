@@ -12,11 +12,10 @@ use ctx_history_core::{
 };
 use ctx_history_index::{
     BaseEventIdentityLookup, CommitReceipt, CoreRecordPreparer, GenerationBaseCertifiedSource,
-    GenerationManifest,
-    GenerationWriter, GenerationWriterOpenOutcome, IndexError, PreparedCoreRecord,
-    PreparedCoreRecordDraft, PreparedCoreRecordMaterialization, PublicationDisposition,
-    PublicationMetadataContext, PublishedGeneration, RevalidationTarget, SourceRouteSnapshot,
-    VerifiedIndex, WriterOptions,
+    GenerationManifest, GenerationWriter, GenerationWriterOpenOutcome, IndexError,
+    PreparedCoreRecord, PreparedCoreRecordDraft, PreparedCoreRecordMaterialization,
+    PublicationDisposition, PublicationMetadataContext, PublishedGeneration, RevalidationTarget,
+    SourceRouteSnapshot, VerifiedIndex, WriterOptions,
 };
 use std::{collections::BTreeSet, path::Path, sync::Arc};
 use uuid::Uuid;

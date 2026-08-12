@@ -14,9 +14,10 @@ from typing import Any, Iterator, Sequence
 EXPECTED_RUNTIME_DEPENDENCIES = {
     "ctx-history-capture-model": {"path": "../ctx-history-capture-model"},
     "ctx-history-core": {"path": "../ctx-history-core"},
+    "thiserror": {"workspace": True},
     "uuid": {"workspace": True},
 }
-EXPECTED_RUNTIME_DEV_DEPENDENCIES = {"thiserror": {"workspace": True}}
+EXPECTED_RUNTIME_DEV_DEPENDENCIES: dict[str, dict[str, object]] = {}
 RUNTIME_FORBIDDEN_CARGO = {
     "ctx-history-capture",
     "ctx-history-index",

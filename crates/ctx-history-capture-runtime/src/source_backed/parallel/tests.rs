@@ -238,6 +238,7 @@ impl CaptureLifecycleSink for FakeLifecycle {
     type OpenOptions = ();
     type BaseLookup = FakeLookup;
     type Preparation = FakePreparation;
+    type PinnedAppendBase = CertifiedSource;
     type CommittedSnapshot = FakeSnapshot;
     type VerifiedPublication = ();
     type Snapshot<'a> = FakeSnapshot;
@@ -270,6 +271,18 @@ impl CaptureLifecycleSink for FakeLifecycle {
         self.base_sources
             .iter()
             .find(|candidate| candidate.observation().source().exact_descriptor_eq(source))
+    }
+
+    fn pinned_append_base(
+        &self,
+        _route_identity: &SourceRouteIdentity,
+        source: &SourceKey,
+    ) -> Option<Self::PinnedAppendBase> {
+        self.base_source(source).cloned()
+    }
+
+    fn pinned_append_base_source(base: &Self::PinnedAppendBase) -> &CertifiedSource {
+        base
     }
 
     fn base_event_lookup(&self) -> Self::BaseLookup {
@@ -366,6 +379,13 @@ impl CaptureLifecycleSink for FakeLifecycle {
         self.current_source = Some(source.clone());
         self.base_source(&source)
             .ok_or(FakeLifecycleError::Contract("append source has no base"))
+    }
+
+    fn begin_source_append_from_base(
+        &mut self,
+        base: Self::PinnedAppendBase,
+    ) -> Result<&CertifiedSource, Self::Error> {
+        self.begin_source_append(base.observation().source().clone())
     }
 
     fn add_prepared(&mut self, prepared: FakePrepared) -> Result<(), Self::Error> {
