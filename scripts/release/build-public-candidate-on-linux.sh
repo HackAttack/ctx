@@ -133,7 +133,12 @@ if ! cargo install --list | grep -Fqx "cargo-zigbuild v${CARGO_ZIGBUILD_VERSION}
   fi
   cargo install cargo-zigbuild --version "${CARGO_ZIGBUILD_VERSION}" --locked
 fi
-require_command cargo-zigbuild
+cargo_zigbuild_resolution="$(python3 scripts/release/resolve-cargo-zigbuild.py \
+  --expected-version "${CARGO_ZIGBUILD_VERSION}")"
+cargo_zigbuild_bin="$(python3 -c 'import json,sys; print(json.loads(sys.stdin.read())["path"])' \
+  <<<"${cargo_zigbuild_resolution}")"
+cargo_zigbuild_observed_version="$(python3 -c 'import json,sys; print(json.loads(sys.stdin.read())["version"])' \
+  <<<"${cargo_zigbuild_resolution}")"
 
 rcodesign_dir="${toolchain_dir}/apple-codesign-${RCODESIGN_VERSION}-x86_64-unknown-linux-musl"
 if [[ ! -x "${rcodesign_dir}/rcodesign" ]]; then
@@ -241,7 +246,7 @@ build_target() {
     CTX_RELEASE_BUILD_SOURCE_COMMIT="${source_commit}" \
     CTX_RELEASE_BUILD_CARGO_LOCK_SHA256="${cargo_lock_sha256}" \
     CTX_RELEASE_BUILD_TARGET="${triple}" \
-    cargo zigbuild --manifest-path "${repo_root}/Cargo.toml" \
+    "${cargo_zigbuild_bin}" zigbuild --manifest-path "${repo_root}/Cargo.toml" \
       -p ctx --bin ctx --release --locked --target "${build_triple}" -j "${cargo_jobs}"
   if [[ "${target_id}" == macos-* ]]; then
     # Cargo's release profile strips debug data, but the Linux cross-link can
@@ -312,7 +317,7 @@ for target_id in "${target_ids[@]}"; do
       --source-repo "${repo_root}" --static-status passed \
       --local-runtime-status not_run --local-runtime-authority not_run \
       --zig-version "${ZIG_VERSION}" \
-      --cargo-zigbuild-version "${CARGO_ZIGBUILD_VERSION}"
+      --cargo-zigbuild-version "${cargo_zigbuild_observed_version}"
     )
     if [[ "${target_id}" == macos-* ]]; then
       build_info_args+=(--macos-sdk-sha256 "${macos_sdk_sha256}")

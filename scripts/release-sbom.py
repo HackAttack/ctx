@@ -339,6 +339,15 @@ def target_contract(
         else []
     )
     expected_platform = "linux-aarch64" if target_id == "linux-arm64" else target_id
+    authority = matches[0].get("public_construction_authority") if matches else None
+    label = matches[0].get("public_construction_label") if matches else None
+    expected_label = (
+        f"//:ctx_release_{target_id.replace('-', '_')}"
+        if authority == "bazel-release-route-v1"
+        else "scripts/release/build-public-candidate-on-linux.sh"
+        if authority == "linux-cross-cargo-zigbuild-v1"
+        else None
+    )
     if (
         value.get("schema_version") != 1
         or len(matches) != 1
@@ -346,8 +355,7 @@ def target_contract(
         or matches[0].get("public_rust_target") != rust_target
         or matches[0].get("public_construction_authority")
         not in {"bazel-release-route-v1", "linux-cross-cargo-zigbuild-v1"}
-        or not isinstance(matches[0].get("public_construction_label"), str)
-        or not matches[0]["public_construction_label"]
+        or label != expected_label
     ):
         raise ValueError("release target matrix does not bind the candidate route")
     return matches[0]
@@ -864,9 +872,17 @@ def verify_bundle_only(
         != ("linux-aarch64" if target["id"] == "linux-arm64" else target["id"])
     ):
         raise ValueError("candidate manifest target is malformed")
-    if candidate.get("construction", {}).get("label") != (
+    construction = candidate.get("construction")
+    authority = construction.get("authority") if isinstance(construction, dict) else None
+    label = construction.get("label") if isinstance(construction, dict) else None
+    expected_label = (
         f"//:ctx_release_{str(target['id']).replace('-', '_')}"
-    ):
+        if authority == "bazel-release-route-v1"
+        else "scripts/release/build-public-candidate-on-linux.sh"
+        if authority == "linux-cross-cargo-zigbuild-v1"
+        else None
+    )
+    if expected_label is None or label != expected_label:
         raise ValueError("candidate manifest does not bind its target construction route")
     build_info_bytes = regular_bytes(args.build_info, "build-info", 64 * 1024)
     build_info, _ = load_core_build_info(

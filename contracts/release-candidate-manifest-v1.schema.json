@@ -27,8 +27,34 @@
         "authority": {
           "enum": ["bazel-release-route-v1", "linux-cross-cargo-zigbuild-v1"]
         },
-        "label": { "type": "string", "pattern": "^//:ctx_release_[a-z0-9_]+$" }
-      }
+        "label": { "type": "string" }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "authority": { "const": "bazel-release-route-v1" }
+            }
+          },
+          "then": {
+            "properties": {
+              "label": { "type": "string", "pattern": "^//:ctx_release_[a-z0-9_]+$" }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "authority": { "const": "linux-cross-cargo-zigbuild-v1" }
+            }
+          },
+          "then": {
+            "properties": {
+              "label": { "const": "scripts/release/build-public-candidate-on-linux.sh" }
+            }
+          }
+        }
+      ]
     },
     "product": { "const": "core" },
     "version": {
