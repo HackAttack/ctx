@@ -310,14 +310,14 @@ printf 'fixture advisory database\n' \
 python3 - "${repo}/inputs/osv-db" "${repo}/inputs/osv-db-metadata.json" <<'PY'
 import hashlib
 import json
-from datetime import UTC, datetime
+from datetime import datetime, timezone
 from pathlib import Path
 import sys
 
 root = Path(sys.argv[1])
 output = Path(sys.argv[2])
 database = root / "osv-scanner/crates.io/all.zip"
-now = datetime.now(UTC).isoformat().replace("+00:00", "Z")
+now = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
 output.write_text(json.dumps({
     "schema_version": 1,
     "fetched_at": now,
