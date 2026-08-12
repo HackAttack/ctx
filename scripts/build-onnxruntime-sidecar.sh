@@ -212,9 +212,9 @@ if [[ "${platform}" == macos-* && "${macos_signing_mode}" == required ]]; then
     --checksum "${output_dir%/}/${asset_name}.sha256" \
     --nested-artifact "${stage_dir}/lib/${library_name}" \
     --role builder
-  "${script_dir}/check-macos-release-signing.sh" \
-    "${platform}" runtime "${output_dir%/}/${asset_name}" \
-    "${output_dir%/}/ctx-onnxruntime-${platform}.signing.json"
+  "${script_dir}/verify-macos-runtime-builder-output.sh" \
+    "${platform}" "${output_dir%/}/${asset_name}" \
+    "${stage_dir}/lib/${library_name}"
 fi
 printf 'built %s sha256=%s\n' \
   "${output_dir%/}/${asset_name}" "$(cat "${output_dir%/}/${asset_name}.sha256")"

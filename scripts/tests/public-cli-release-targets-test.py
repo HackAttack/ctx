@@ -54,11 +54,11 @@ class PublicCliReleaseTargetsTest(unittest.TestCase):
         self.assertIn("CTX_PUBLIC_TARGET_PLATFORM=linux-aarch64", shell)
         self.assertIn("CTX_PUBLIC_TARGET_TRIPLE=aarch64-unknown-linux-gnu", shell)
         self.assertIn(
-            "CTX_PUBLIC_TARGET_CONSTRUCTION_AUTHORITY=bazel-release-route-v1",
+            "CTX_PUBLIC_TARGET_CONSTRUCTION_AUTHORITY=linux-cross-cargo-zigbuild-v1",
             shell,
         )
         self.assertIn(
-            "CTX_PUBLIC_TARGET_CONSTRUCTION_LABEL=//:ctx_release_linux_arm64",
+            "CTX_PUBLIC_TARGET_CONSTRUCTION_LABEL=scripts/release/build-public-candidate-on-linux.sh",
             shell,
         )
 

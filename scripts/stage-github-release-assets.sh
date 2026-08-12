@@ -206,10 +206,17 @@ PY
       --checksum "${dest_path}.sha256" \
       --nested-artifact "${nested_runtime}" \
       --role release
-    scripts/check-macos-release-signing.sh \
-      "${platform}" runtime "${dest_path}" "${signing_evidence}"
-    scripts/check-macos-release-signing.sh \
-      "${platform}" cli "${artifact_dir%/}/ctx-${platform}"
+    if [[ "$(uname -s)" == "Darwin" ]]; then
+      scripts/check-macos-release-signing.sh \
+        "${platform}" runtime "${dest_path}" "${signing_evidence}"
+      scripts/check-macos-release-signing.sh \
+        "${platform}" cli "${artifact_dir%/}/ctx-${platform}"
+    else
+      python3 scripts/macos-release-signing-evidence.py verify-archive \
+        --evidence "${signing_evidence}" --platform "${platform}" \
+        --archive "${dest_path}" --checksum "${dest_path}.sha256" \
+        --nested-artifact "${nested_runtime}" --role release
+    fi
     scripts/run-macos-release-signing.sh --attest-runtime-archive \
       "${platform}" "${dest_path}" "${nested_runtime}" "${artifact_dir}"
     rm -rf "${transcode_work}"

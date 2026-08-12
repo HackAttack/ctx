@@ -124,7 +124,36 @@ def validate(
             f"{release_label} build-info does not record passed static ABI gates"
         )
     build_info_sha256 = hashlib.sha256(build_info_bytes).hexdigest()
+    release_factory = value.get("release_factory")
+    if target.get("public_construction_authority") == "linux-cross-cargo-zigbuild-v1":
+        if (
+            not isinstance(release_factory, dict)
+            or release_factory.get("authority") != "linux-cross-cargo-zigbuild-v1"
+            or release_factory.get("zig_version") != "0.15.2"
+            or release_factory.get("cargo_zigbuild_version") != "0.23.0"
+            or (
+                target.get("os") == "macos"
+                and not lower_hex(release_factory.get("macos_sdk_sha256"), 64)
+            )
+            or (
+                target.get("os") != "macos"
+                and release_factory.get("macos_sdk_sha256") is not None
+            )
+        ):
+            raise ValueError(
+                f"{release_label} build-info does not bind the pinned Linux factory"
+            )
     if target.get("os") != "linux":
+        return build_info_sha256
+
+    if target.get("public_construction_authority") == "linux-cross-cargo-zigbuild-v1":
+        if (
+            gates.get("local_runtime") != "not_run"
+            or gates.get("local_runtime_authority") != "not_run"
+        ):
+            raise ValueError(
+                "cross-built Linux build-info must leave native runtime proof to the fan-out"
+            )
         return build_info_sha256
 
     if not isinstance(linux_build, dict):

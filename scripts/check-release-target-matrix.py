@@ -75,12 +75,12 @@ def validate_target(target: dict[str, Any]) -> None:
         raise ValueError("diagnostic authorities must be unique non-empty strings")
     if target["runtime_authority"] in diagnostics:
         raise ValueError(f"authoritative runner is also diagnostic for {target['id']}")
-    if target["public_construction_authority"] != "bazel-release-route-v1":
-        raise ValueError("public construction authority must be Bazel release V1")
+    if target["public_construction_authority"] != "linux-cross-cargo-zigbuild-v1":
+        raise ValueError("public construction authority must be Linux cross factory V1")
     if target["public_construction_label"] != (
-        f"//:ctx_release_{target['id'].replace('-', '_')}"
+        "scripts/release/build-public-candidate-on-linux.sh"
     ):
-        raise ValueError("public construction label does not match target ID")
+        raise ValueError("public construction label must name the Linux factory")
     suffix = ".exe" if target["os"] == "windows" else ""
     expected_public = f"ctx-{target['id']}{suffix}"
     if target["id"] == "linux-arm64":

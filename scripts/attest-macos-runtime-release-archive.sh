@@ -91,11 +91,13 @@ case "${platform}" in macos-arm64|macos-x64) ;; *) die "unsupported macOS platfo
 root_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 source "${root_dir}/scripts/macos-release-publisher-policy.sh"
 "${root_dir}/scripts/check-macos-signing-trusted-ref.sh" >/dev/null
+host_system="$(uname -s)"
 if [[ "${CTX_TEST_ONLY_MACOS_HOST:-}" == "Darwin" ]]; then
   [[ "${CTX_LOCAL_MACOS_SIGNING_LIVE_TEST:-0}" == "1" ]] || \
     die "CTX_TEST_ONLY_MACOS_HOST is restricted to non-CI local contract tests"
-elif [[ "$(uname -s)" != "Darwin" ]]; then
-  die "runtime archive attestation requires a native Darwin host"
+  host_system=Darwin
+elif [[ "${host_system}" != "Darwin" && "${host_system}" != "Linux" ]]; then
+  die "runtime archive attestation requires Linux or Darwin"
 fi
 
 secret_dir="${CTX_MACOS_SIGNING_SECRET_DIR:-}"
@@ -188,8 +190,9 @@ openssl cms -sign -binary \
   -md sha256 \
   -noattr >/dev/null 2>&1 || die "failed to sign final runtime archive attestation"
 chmod 0644 "${statement}" "${cms}"
-"${root_dir}/scripts/verify-macos-release-attestation.sh" \
-  --runtime-archive "${platform}" "${archive}" "${nested_artifact}" "${statement}" "${cms}" \
-  >/dev/null
+CTX_MACOS_RELEASE_SOURCE_COMMIT="$(git -C "${root_dir}" rev-parse --verify HEAD)" \
+  "${root_dir}/scripts/verify-macos-release-attestation.sh" \
+    --runtime-archive "${platform}" "${archive}" "${nested_artifact}" "${statement}" "${cms}" \
+    >/dev/null
 complete=1
 printf 'authorized final %s runtime archive: %s\n' "${platform}" "${archive}"

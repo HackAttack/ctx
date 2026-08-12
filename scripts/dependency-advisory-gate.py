@@ -422,11 +422,24 @@ def bazel_release_inventory(
     inventory_path: Path, scanner_packages: set[tuple[str, str, str]]
 ) -> set[tuple[str, str, str]]:
     try:
-        labels = inventory_path.read_text(encoding="utf-8").splitlines()
-    except (OSError, UnicodeError) as error:
-        raise GateError("tool_failure", "Bazel dependency inventory is unavailable") from error
+        inventory_text = inventory_path.read_text(encoding="utf-8")
+        if inventory_text.lstrip().startswith("{"):
+            value = json.loads(inventory_text)
+            records = value["packages"]
+            if (
+                value.get("schema_version") != 1
+                or value.get("kind") != "ctx-cargo-release-inventory"
+                or not isinstance(records, list)
+                or any(not isinstance(record, dict) for record in records)
+            ):
+                raise ValueError
+            labels = [record["label"] for record in records]
+        else:
+            labels = inventory_text.splitlines()
+    except (OSError, UnicodeError, json.JSONDecodeError, KeyError, TypeError, ValueError) as error:
+        raise GateError("tool_failure", "release dependency inventory is unavailable") from error
     if not labels or labels != sorted(set(labels)):
-        raise GateError("tool_failure", "Bazel dependency inventory is malformed")
+        raise GateError("tool_failure", "release dependency inventory is malformed")
     selected: set[tuple[str, str, str]] = set()
     crate_labels = [label for label in labels if "crates__" in label]
     for label in crate_labels:
@@ -439,10 +452,10 @@ def bazel_release_inventory(
             and f"crates__{package[1]}-{package[2].replace('+', '-')}//" in label
         ]
         if len(candidates) != 1:
-            raise GateError("tool_failure", f"Bazel inventory label is ambiguous: {label}")
+            raise GateError("tool_failure", f"release inventory label is ambiguous: {label}")
         selected.add(candidates[0])
     if not selected:
-        raise GateError("tool_failure", "Bazel inventory selected no registry crates")
+        raise GateError("tool_failure", "release inventory selected no registry crates")
     return selected
 
 

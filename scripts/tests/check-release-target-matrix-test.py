@@ -36,11 +36,11 @@ class ReleaseTargetMatrixTest(unittest.TestCase):
         self.assertEqual(windows["runtime_authority"], "native-windows-x86_64")
         self.assertEqual(
             windows["public_construction_label"],
-            "//:ctx_release_windows_x64",
+            "scripts/release/build-public-candidate-on-linux.sh",
         )
         self.assertEqual(
             windows["public_construction_authority"],
-            "bazel-release-route-v1",
+            "linux-cross-cargo-zigbuild-v1",
         )
         self.assertEqual(
             windows["bazel_platform"],

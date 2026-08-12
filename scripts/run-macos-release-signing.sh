@@ -15,7 +15,7 @@ Usage:
   scripts/run-macos-release-signing.sh PLATFORM KIND ARTIFACT [EVIDENCE_DIR]
   scripts/run-macos-release-signing.sh --attest-runtime-archive PLATFORM ARCHIVE NESTED_DYLIB [EVIDENCE_DIR]
 
-Runs a tool-only trusted macOS preflight, signs/notarizes one Mach-O using five
+Runs a tool-only trusted release preflight, signs/notarizes one Mach-O using five
 protected secret files, or authorizes a final runtime archive using only the
 Developer ID P12 and password files.
 USAGE
@@ -71,11 +71,13 @@ esac
 
 root_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 "${root_dir}/scripts/check-macos-signing-trusted-ref.sh" >/dev/null
+host_system="$(uname -s)"
 if [[ "${CTX_TEST_ONLY_MACOS_HOST:-}" == "Darwin" ]]; then
   [[ "${CTX_LOCAL_MACOS_SIGNING_LIVE_TEST:-0}" == "1" ]] || \
     die "CTX_TEST_ONLY_MACOS_HOST is restricted to non-CI local contract tests"
-elif [[ "$(uname -s)" != "Darwin" ]]; then
-  die "macOS release signing requires a native Darwin runner"
+  host_system=Darwin
+elif [[ "${host_system}" != "Darwin" && "${host_system}" != "Linux" ]]; then
+  die "macOS release signing requires Linux or Darwin"
 fi
 
 secret_source="${CTX_MACOS_SIGNING_SECRET_SOURCE:-}"
@@ -101,16 +103,19 @@ for command_name in base64 find git openssl python3 stat; do
 done
 require_openssl3_exclusive_trust
 if [[ "${mode}" == "sign" || "${mode}" == "preflight" ]]; then
-  for command_name in codesign ditto rcodesign xcode-select xcrun; do
-    require_command "${command_name}"
-  done
-  xcode-select -p >/dev/null 2>&1 || die "xcode-select has no active developer directory"
-  xcrun notarytool --version >/dev/null 2>&1 || die "xcrun notarytool is unavailable"
+  require_command rcodesign
+  if [[ "${host_system}" == "Darwin" ]]; then
+    for command_name in codesign ditto xcode-select xcrun; do
+      require_command "${command_name}"
+    done
+    xcode-select -p >/dev/null 2>&1 || die "xcode-select has no active developer directory"
+    xcrun notarytool --version >/dev/null 2>&1 || die "xcrun notarytool is unavailable"
+  fi
   rcodesign --version >/dev/null 2>&1 || die "rcodesign version check failed"
 fi
 
 if [[ "${mode}" == "preflight" ]]; then
-  printf 'macOS signing preflight ok: trusted ref, native tools, and exclusive OpenSSL 3 trust\n'
+  printf 'macOS signing preflight ok: trusted ref, %s tools, and exclusive OpenSSL 3 trust\n' "${host_system}"
   exit 0
 fi
 

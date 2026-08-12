@@ -262,6 +262,8 @@ sed \
   "${fake_ctx}" > "${cpu_ctx}"
 chmod 755 "${cpu_ctx}"
 printf 'synthetic lock\n' > "${tmp}/Cargo.lock"
+recipe="${repo_root}/scripts/release/build-public-candidate-on-linux.sh"
+recipe_sha256="$(sha256sum "${recipe}" | awk '{print $1}')"
 python3 "${repo_root}/scripts/write-public-cli-build-info.py" \
   --output "${cpu_ctx}.build-info.json" \
   --artifact "${cpu_ctx}" \
@@ -286,6 +288,24 @@ python3 "${repo_root}/scripts/write-public-cli-build-info.py" \
   --static-status passed \
   --local-runtime-status passed \
   --local-runtime-authority authoritative
+python3 - "${cpu_ctx}.build-info.json" "${recipe_sha256}" <<'PY'
+import json
+from pathlib import Path
+import sys
+
+path = Path(sys.argv[1])
+value = json.loads(path.read_bytes())
+value["builder"]["recipe_sha256"] = sys.argv[2]
+value["gates"]["local_runtime"] = "not_run"
+value["gates"]["local_runtime_authority"] = "not_run"
+value["release_factory"] = {
+    "authority": "linux-cross-cargo-zigbuild-v1",
+    "cargo_zigbuild_version": "0.23.0",
+    "macos_sdk_sha256": None,
+    "zig_version": "0.15.2",
+}
+path.write_text(json.dumps(value, sort_keys=True, separators=(",", ":")) + "\n")
+PY
 
 runtime_payload="${tmp}/runtime-payload"
 mkdir -p "${runtime_payload}/lib"

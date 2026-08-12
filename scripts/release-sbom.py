@@ -345,11 +345,11 @@ def target_contract(
         or platform != expected_platform
         or matches[0].get("public_rust_target") != rust_target
         or matches[0].get("public_construction_authority")
-        != "bazel-release-route-v1"
-        or matches[0].get("public_construction_label")
-        != f"//:ctx_release_{target_id.replace('-', '_')}"
+        not in {"bazel-release-route-v1", "linux-cross-cargo-zigbuild-v1"}
+        or not isinstance(matches[0].get("public_construction_label"), str)
+        or not matches[0]["public_construction_label"]
     ):
-        raise ValueError("release target matrix does not bind the Bazel candidate route")
+        raise ValueError("release target matrix does not bind the candidate route")
     return matches[0]
 
 
@@ -847,9 +847,9 @@ def verify_bundle_only(
             "size_bytes": artifact_size,
         }
         or candidate.get("construction", {}).get("authority")
-        != "bazel-release-route-v1"
+        not in {"bazel-release-route-v1", "linux-cross-cargo-zigbuild-v1"}
     ):
-        raise ValueError("candidate manifest does not bind the exact Bazel artifact")
+        raise ValueError("candidate manifest does not bind the exact construction artifact")
     target = candidate.get("target")
     if (
         not isinstance(target, dict)
@@ -867,7 +867,7 @@ def verify_bundle_only(
     if candidate.get("construction", {}).get("label") != (
         f"//:ctx_release_{str(target['id']).replace('-', '_')}"
     ):
-        raise ValueError("candidate manifest does not bind its target Bazel route")
+        raise ValueError("candidate manifest does not bind its target construction route")
     build_info_bytes = regular_bytes(args.build_info, "build-info", 64 * 1024)
     build_info, _ = load_core_build_info(
         build_info_bytes,

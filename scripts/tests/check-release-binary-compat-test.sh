@@ -190,10 +190,8 @@ DynamicSection [
 ]
 Interpreter: /lib64/ld-linux-x86-64.so.2
 NeededLibraries [
-  libgcc_s.so.1
   libm.so.6
   libc.so.6
-  ld-linux-x86-64.so.2
 ]
 Name: GLIBC_2.35
 Name: GCC_4.2.0
@@ -236,10 +234,8 @@ DynamicSection [
 ]
 Interpreter: /lib/ld-linux-aarch64.so.1
 NeededLibraries [
-  libgcc_s.so.1
   libm.so.6
   libc.so.6
-  ld-linux-aarch64.so.1
 ]
 Name: GLIBC_2.35
 Name: GCC_4.2.0

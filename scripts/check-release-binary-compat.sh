@@ -350,18 +350,15 @@ check_linux() {
   if [[ "${platform}" == "linux-x64" ]]; then
     expected_machine="EM_X86_64"
     expected_interpreter="/lib64/ld-linux-x86-64.so.2"
-    # The reviewed baseline-compatible x64 artifact names the loader in
-    # DT_NEEDED as well as PT_INTERP; keep that fact explicit.
-    expected_needed="ld-linux-x86-64.so.2
-libc.so.6
-libgcc_s.so.1
+    # The loader is identified by PT_INTERP, not required to appear in
+    # DT_NEEDED. Rust/Zig may also satisfy unwinding without libgcc_s; neither
+    # optional entry is part of the portable glibc ABI contract.
+    expected_needed="libc.so.6
 libm.so.6"
   else
     expected_machine="EM_AARCH64"
     expected_interpreter="/lib/ld-linux-aarch64.so.1"
-    expected_needed="ld-linux-aarch64.so.1
-libc.so.6
-libgcc_s.so.1
+    expected_needed="libc.so.6
 libm.so.6"
   fi
 

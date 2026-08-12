@@ -203,6 +203,48 @@ def command_write(args: argparse.Namespace) -> None:
     write_json(args.output, document)
 
 
+def command_write_linux(args: argparse.Namespace) -> None:
+    if not authority_matches_team(args.codesign_authority, args.team_identifier):
+        raise SystemExit("codesign authority and TeamIdentifier disagree")
+    if args.identifier != "ctx":
+        raise SystemExit("Linux codesign evidence requires the ctx binary identifier")
+    details = args.rcodesign_details.read_text(encoding="utf-8")
+    for required in (args.identifier, args.team_identifier):
+        if required not in details:
+            raise SystemExit("rcodesign details do not bind the expected signature identity")
+    notary = accepted_notary_fields(args.notary_submit)
+    document = {
+        "artifact_kind": args.kind,
+        "artifact_name": args.artifact.name,
+        "artifact_sha256": sha256(args.artifact),
+        "codesign": {
+            "authority": args.codesign_authority,
+            "hardened_runtime": True,
+            "identifier": args.identifier,
+            "secure_timestamp": True,
+            "team_identifier": args.team_identifier,
+            "verified": True,
+        },
+        "artifact_verification": {
+            "method": (
+                "signed-exact-byte-version-execution"
+                if args.kind == "cli"
+                else "accepted-notary-strict-codesign-attestation"
+            ),
+            "status": "pending" if args.kind == "cli" else "passed",
+        },
+        "notarization": {
+            "status": notary["notarization_status"],
+            "submission_id": notary["notarization_submission_id"],
+            "submit_sha256": notary["notary_submit_sha256"],
+        },
+        "packages": [],
+        "platform": args.platform,
+        "schema_version": 2,
+    }
+    write_json(args.output, document)
+
+
 def command_record_cli_execution_verification(args: argparse.Namespace) -> None:
     document = require_base_document(
         read_json(args.evidence), args.platform, "cli", allow_pending_cli=True
@@ -381,6 +423,18 @@ def build_parser() -> argparse.ArgumentParser:
     write.add_argument("--codesign-details", required=True, type=Path)
     write.add_argument("--notary-submit", required=True, type=Path)
     write.set_defaults(handler=command_write)
+
+    write_linux = subparsers.add_parser("write-linux")
+    write_linux.add_argument("--output", required=True, type=Path)
+    write_linux.add_argument("--platform", required=True)
+    write_linux.add_argument("--kind", required=True, choices=("cli", "runtime"))
+    write_linux.add_argument("--artifact", required=True, type=Path)
+    write_linux.add_argument("--rcodesign-details", required=True, type=Path)
+    write_linux.add_argument("--notary-submit", required=True, type=Path)
+    write_linux.add_argument("--codesign-authority", required=True)
+    write_linux.add_argument("--team-identifier", required=True)
+    write_linux.add_argument("--identifier", required=True)
+    write_linux.set_defaults(handler=command_write_linux)
 
     record_cli = subparsers.add_parser("record-cli-execution-verification")
     record_cli.add_argument("--evidence", required=True, type=Path)
