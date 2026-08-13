@@ -242,7 +242,6 @@ steps:
 
   - label: ":package: public CLI macos-x64 runtime producer"
     key: "public-cli-macos-x64-runtime-producer"
-    depends_on: "public-cli-linux-factory"
     if: build.env("CTX_PUBLIC_CLI_ARTIFACT_MATRIX") == "1" && build.env("CTX_PUBLIC_CLI_NATIVE_SMOKE_MATRIX") == "1" && build.branch == "main" && build.pull_request.id == null
     command: |
       export CTX_MACOS_RELEASE_SIGNING=required
