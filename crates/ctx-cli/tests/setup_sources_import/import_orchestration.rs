@@ -276,16 +276,17 @@ fn human_import_is_outcome_first_without_internal_generation_fields() {
     }
 
     let stderr = String::from_utf8(output.stderr).unwrap();
+    assert!(stderr.contains("\nHistory refresh complete\n"), "{stderr}");
+    assert_eq!(
+        stderr.matches("History refresh complete\n").count(),
+        1,
+        "{stderr}"
+    );
     assert!(
         stderr
             .lines()
             .last()
-            .is_some_and(|line| line.starts_with("History refresh complete (")),
-        "{stderr}"
-    );
-    assert_eq!(
-        stderr.matches("History refresh complete (").count(),
-        1,
+            .is_some_and(|line| line.split_whitespace().eq(["Remaining", "complete"])),
         "{stderr}"
     );
     assert!(

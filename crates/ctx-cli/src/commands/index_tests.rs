@@ -330,14 +330,15 @@ fn wait_human_output_prints_a_changed_final_snapshot() {
     output
         .print(&mut ui, &readiness("pending", 0, true))
         .unwrap();
-    output
-        .print_final(&mut ui, &readiness("pending", 4, true))
-        .unwrap();
+    let mut final_status = readiness("pending", 4, true);
+    final_status["refresh"]["progress"]["processed_sessions"] = json!(4);
+    output.print_final(&mut ui, &final_status).unwrap();
 
     let rendered = captured.text();
     assert_eq!(rendered.matches("Your history is searchable").count(), 2);
-    assert!(rendered.contains("0 / 12"), "{rendered}");
-    assert!(rendered.contains("4 / 12"), "{rendered}");
+    assert!(rendered.contains("Sessions         0"), "{rendered}");
+    assert!(rendered.contains("Sessions         4"), "{rendered}");
+    assert!(!rendered.contains("4 / 12"), "{rendered}");
 }
 
 #[test]
@@ -389,13 +390,14 @@ fn watch_writes_through_the_ui_selected_stdout_adapter() {
 
     let rendered = captured.text();
     assert!(rendered.contains("\u{1b}["));
-    assert!(rendered.contains("Refreshing history"));
+    assert!(rendered.contains("Indexing your agent history"));
 }
 
 #[test]
 fn interactive_watch_redraws_the_existing_block() {
     let first = readiness("pending", 0, true);
-    let second = readiness("pending", 4, true);
+    let mut second = readiness("pending", 4, true);
+    second["refresh"]["progress"]["processed_sessions"] = json!(4);
     let mut output = IndexWatchOutput::for_test(Vec::new(), true, 80);
 
     output.print_human(&first).unwrap();
@@ -406,7 +408,8 @@ fn interactive_watch_redraws_the_existing_block() {
     let rendered = String::from_utf8(output.into_writer()).unwrap();
     assert!(rendered.starts_with(&first_frame));
     assert!(rendered.contains(&format!("\u{1b}[{first_lines}A")));
-    assert!(rendered.contains("4 / 12"));
+    assert!(rendered.contains("Sessions         4"));
+    assert!(!rendered.contains("4 / 12"));
 }
 
 #[test]
