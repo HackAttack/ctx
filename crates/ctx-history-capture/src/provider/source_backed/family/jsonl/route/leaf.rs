@@ -1318,6 +1318,15 @@ fn terminal_proof_for_checkpoint(
     }
 }
 
+pub(super) fn unchanged_terminal_proof(
+    adapter: &dyn JsonlFamilyAdapter,
+    leaf: &JsonlFamilyLeaf,
+    certificate: &CertifiedSource,
+    checkpoint: &FamilyCheckpoint,
+) -> Result<JsonlFamilyTerminalProof> {
+    JsonlFamilyTerminalProof::unchanged(adapter, leaf, certificate, checkpoint)
+}
+
 fn certify(
     adapter: &dyn JsonlFamilyAdapter,
     leaf: &JsonlFamilyLeaf,
@@ -1500,7 +1509,7 @@ pub(super) fn source_observation(
     .map_err(contract_error)
 }
 
-fn base_for_leaf<'a>(
+pub(super) fn base_for_leaf<'a>(
     bases: &'a HashMap<[u8; 32], &CertifiedSource>,
     leaf: &JsonlFamilyLeaf,
 ) -> Option<&'a CertifiedSource> {

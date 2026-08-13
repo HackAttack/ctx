@@ -47,7 +47,10 @@ mod leaf;
 pub(crate) use leaf::checkpoint_admitted_revision_for_test;
 #[cfg(test)]
 use leaf::family_scanner_worker_count_policy;
-use leaf::{physical_identity, scan_leaves};
+use leaf::{
+    base_for_leaf, decode_checkpoint, physical_identity, scan_leaves, source_observation,
+    unchanged_terminal_proof,
+};
 #[cfg(test)]
 use leaf::{prepare_leaf, JsonlLeafOutput, JsonlLeafOutputEvent};
 mod ownership;
@@ -1403,9 +1406,46 @@ fn capture(
     }
     let bases_by_descriptor = bases_by_descriptor(&bases)?;
     let base_event_lookup = sink.writer.base_event_identity_lookup();
+    let mut scan_selected_leaves = Vec::with_capacity(selected_leaves.len());
+    let mut retained_terminal_sources = HashMap::new();
+    for leaf in &selected_leaves {
+        let Some(base) = base_for_leaf(&bases_by_descriptor, leaf) else {
+            scan_selected_leaves.push(leaf.clone());
+            continue;
+        };
+        let Ok(observation) = source_observation(leaf.source(), leaf.observation()) else {
+            scan_selected_leaves.push(leaf.clone());
+            continue;
+        };
+        if observation != *base.observation() {
+            scan_selected_leaves.push(leaf.clone());
+            continue;
+        }
+        let Ok(checkpoint) = decode_checkpoint(adapter, leaf, base) else {
+            scan_selected_leaves.push(leaf.clone());
+            continue;
+        };
+        if !checkpoint.physical.terminal() {
+            scan_selected_leaves.push(leaf.clone());
+            continue;
+        }
+        let terminal_proof = unchanged_terminal_proof(adapter, leaf, base, &checkpoint)
+            .map_err(|error| route_scan(adapter, error))?;
+        sink.retain_source(base.clone()).map_err(route_internal)?;
+        sink.report_completed_bytes(base.counts().certified_bytes)
+            .map_err(route_internal)?;
+        retained_terminal_sources.insert(
+            leaf.source().exact_descriptor_digest(),
+            TerminalSourceEvidence {
+                certificate: base.clone(),
+                terminal_proof,
+                emitted_bytes: 0,
+            },
+        );
+    }
     let terminal_sources = scan_leaves(
         adapter,
-        &selected_leaves,
+        &scan_selected_leaves,
         &bases_by_descriptor,
         base_event_lookup,
         sink,
@@ -1413,8 +1453,13 @@ fn capture(
     let finish_leaf_scans = adapter
         .finish_leaf_scans()
         .map_err(|error| route_scan(adapter, error));
-    let terminal_sources = terminal_sources?;
+    let mut terminal_sources = terminal_sources?;
     finish_leaf_scans?;
+    for (digest, evidence) in retained_terminal_sources {
+        if terminal_sources.insert(digest, evidence).is_some() {
+            return Err(route_invalid("duplicate JSONL terminal source evidence"));
+        }
+    }
 
     let selected_sources = selected_leaves
         .iter()

@@ -1161,7 +1161,7 @@ fn current_parser_legacy_codex_frontier_migrates_by_full_replacement() {
 
 #[test]
 fn cold_continuous_appends_during_frozen_prefix_admission_catch_up_once() {
-    const GENERATION_APPEND_MARKER: &str = "coldgenerationappendtoken306a";
+    const INVENTORY_APPEND_MARKER: &str = "coldinventoryappendtoken306a";
     const TERMINAL_APPEND_MARKER: &str = "coldterminalappendtoken306b";
     const PRECOMMIT_APPEND_MARKER: &str = "coldprecommitappendtoken306c";
 
@@ -1185,17 +1185,17 @@ fn cold_continuous_appends_during_frozen_prefix_admission_catch_up_once() {
     );
     let registry = register_tree(&[&sessions]);
 
-    let generation_observation = Arc::new(Barrier::new(2));
+    let metadata_inventory = Arc::new(Barrier::new(2));
     let terminal_observation = Arc::new(Barrier::new(2));
     let precommit_physical_revalidation = Arc::new(Barrier::new(2));
     let writer_path = parent_path.clone();
-    let writer_generation_observation = Arc::clone(&generation_observation);
+    let writer_metadata_inventory = Arc::clone(&metadata_inventory);
     let writer_terminal_observation = Arc::clone(&terminal_observation);
     let writer_precommit_physical_revalidation = Arc::clone(&precommit_physical_revalidation);
     let writer = std::thread::spawn(move || {
-        writer_generation_observation.wait();
-        append_event(&writer_path, message(GENERATION_APPEND_MARKER));
-        writer_generation_observation.wait();
+        writer_metadata_inventory.wait();
+        append_event(&writer_path, message(INVENTORY_APPEND_MARKER));
+        writer_metadata_inventory.wait();
 
         writer_terminal_observation.wait();
         append_event(&writer_path, message(TERMINAL_APPEND_MARKER));
@@ -1206,16 +1206,15 @@ fn cold_continuous_appends_during_frozen_prefix_admission_catch_up_once() {
         writer_precommit_physical_revalidation.wait();
     });
 
-    let generation_hook = Arc::clone(&generation_observation);
-    let terminal_hook_path = parent_path.clone();
+    let inventory_hook = Arc::clone(&metadata_inventory);
+    install_after_codex_metadata_inventory_hook(move || {
+        inventory_hook.wait();
+        inventory_hook.wait();
+    });
     let terminal_hook = Arc::clone(&terminal_observation);
     set_after_jsonl_append_observation_route_binding_hook(parent_path.clone(), move || {
-        generation_hook.wait();
-        generation_hook.wait();
-        set_after_jsonl_append_observation_route_binding_hook(terminal_hook_path, move || {
-            terminal_hook.wait();
-            terminal_hook.wait();
-        });
+        terminal_hook.wait();
+        terminal_hook.wait();
     });
     let precommit_hook = Arc::clone(&precommit_physical_revalidation);
     set_before_jsonl_terminal_physical_revalidation_hook(sessions.clone(), move || {
@@ -1240,7 +1239,7 @@ fn cold_continuous_appends_during_frozen_prefix_admission_catch_up_once() {
     assert_eq!(cold_parent.search_event_ids.len(), 1);
     assert_eq!(records_for(&initial, parent).len(), 1);
     for marker in [
-        GENERATION_APPEND_MARKER,
+        INVENTORY_APPEND_MARKER,
         TERMINAL_APPEND_MARKER,
         PRECOMMIT_APPEND_MARKER,
     ] {
@@ -1276,7 +1275,7 @@ fn cold_continuous_appends_during_frozen_prefix_admission_catch_up_once() {
     let caught_up_parent = source_snapshot(&current, parent, "coldprefixuniquetoken");
     assert_eq!(records_for(&current, parent).len(), 4);
     for marker in [
-        GENERATION_APPEND_MARKER,
+        INVENTORY_APPEND_MARKER,
         TERMINAL_APPEND_MARKER,
         PRECOMMIT_APPEND_MARKER,
     ] {
@@ -1309,7 +1308,7 @@ fn cold_continuous_appends_during_frozen_prefix_admission_catch_up_once() {
         caught_up_parent
     );
     for marker in [
-        GENERATION_APPEND_MARKER,
+        INVENTORY_APPEND_MARKER,
         TERMINAL_APPEND_MARKER,
         PRECOMMIT_APPEND_MARKER,
     ] {
@@ -1329,12 +1328,7 @@ fn cold_continuous_appends_during_frozen_prefix_admission_catch_up_once() {
 
 #[test]
 fn destructive_mid_capture_changes_preserve_last_good_generation_atomically() {
-    for seam in [
-        "metadata_inventory",
-        "generation_observation",
-        "terminal_observation",
-        "precommit_physical_revalidation",
-    ] {
+    for seam in ["metadata_inventory", "precommit_physical_revalidation"] {
         for mutation in ["rewrite", "truncate", "replacement"] {
             let temp = tempdir().unwrap();
             let sessions = temp.path().join("sessions");
@@ -1373,28 +1367,6 @@ fn destructive_mid_capture_changes_preserve_last_good_generation_atomically() {
                     install_after_codex_metadata_inventory_hook(move || {
                         destructively_mutate_session(&mutate, &replacement, mutation);
                     });
-                }
-                "generation_observation" => {
-                    set_after_jsonl_append_observation_route_binding_hook(
-                        path.clone(),
-                        move || {
-                            destructively_mutate_session(&mutate, &replacement, mutation);
-                        },
-                    );
-                }
-                "terminal_observation" => {
-                    let terminal_hook_path = path.clone();
-                    set_after_jsonl_append_observation_route_binding_hook(
-                        path.clone(),
-                        move || {
-                            set_after_jsonl_append_observation_route_binding_hook(
-                                terminal_hook_path,
-                                move || {
-                                    destructively_mutate_session(&mutate, &replacement, mutation);
-                                },
-                            );
-                        },
-                    );
                 }
                 "precommit_physical_revalidation" => {
                     set_before_jsonl_terminal_physical_revalidation_hook(

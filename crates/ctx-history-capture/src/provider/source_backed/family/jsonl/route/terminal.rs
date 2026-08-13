@@ -8,8 +8,8 @@ use super::super::{
     revalidate_frozen_prefix_sha256, JsonlFileObservation,
 };
 use super::{
-    binding_digest, contract_error, JsonlFamilyAdapter, JsonlFamilyAppendMode, JsonlFamilyLeaf,
-    FAMILY_POLICY_REVISION,
+    binding_digest, contract_error, FamilyCheckpoint, JsonlFamilyAdapter, JsonlFamilyAppendMode,
+    JsonlFamilyLeaf, FAMILY_POLICY_REVISION,
 };
 use crate::{
     common::io::{OpenedProviderSourceFile, ProviderSourceRoot},
@@ -227,6 +227,27 @@ impl JsonlFamilyTerminalProof {
                 )?,
             };
         }
+        Self::bind_admitted_frozen_prefix(
+            adapter,
+            leaf,
+            certificate,
+            prefix_length,
+            prefix_sha256,
+            hash_kind,
+        )
+    }
+
+    fn bind_admitted_frozen_prefix(
+        adapter: &dyn JsonlFamilyAdapter,
+        leaf: &JsonlFamilyLeaf,
+        certificate: &CertifiedSource,
+        prefix_length: u64,
+        prefix_sha256: [u8; 32],
+        hash_kind: JsonlFamilyTerminalPrefixHash,
+    ) -> Result<Self> {
+        if prefix_length > leaf.observation.length() {
+            return Err(CaptureError::SourceChangedDuringCapture);
+        }
         let physical = JsonlFamilyTerminalPhysicalBinding::FrozenPrefix {
             prefix_length,
             prefix_sha256,
@@ -275,6 +296,62 @@ impl JsonlFamilyTerminalProof {
             JsonlFamilyTerminalPhysicalBinding::ExactFile,
         )?);
         Ok(proof)
+    }
+
+    fn bind_admitted_exact_file(
+        adapter: &dyn JsonlFamilyAdapter,
+        leaf: &JsonlFamilyLeaf,
+        certificate: &CertifiedSource,
+    ) -> Result<Self> {
+        let binding = JsonlFamilyTerminalLeafBinding::new(
+            adapter,
+            leaf,
+            certificate,
+            JsonlFamilyTerminalPhysicalBinding::ExactFile,
+        )?;
+        Ok(Self::ExactFile {
+            binding: Some(binding),
+            source_path: leaf.source_path.clone(),
+            authority_path: leaf.authority_path.clone(),
+            authority: Arc::clone(&leaf.authority),
+            observation: leaf.observation.clone(),
+        })
+    }
+
+    /// Builds the task-local terminal proof for an unchanged certified source
+    /// from its admitted observation. The ordinary terminal revalidation still
+    /// performs the authoritative physical check immediately before publish.
+    pub(super) fn unchanged(
+        adapter: &dyn JsonlFamilyAdapter,
+        leaf: &JsonlFamilyLeaf,
+        certificate: &CertifiedSource,
+        checkpoint: &FamilyCheckpoint,
+    ) -> Result<Self> {
+        if leaf.whole_record || !adapter.append_mode().certified_suffix() {
+            return Self::bind_admitted_exact_file(adapter, leaf, certificate);
+        }
+        let (prefix_length, prefix_sha256, hash_kind) =
+            if let Some(admitted_eof_sha256) = checkpoint.admitted_eof_sha256 {
+                (
+                    checkpoint.physical.source_observation().length(),
+                    admitted_eof_sha256,
+                    JsonlFamilyTerminalPrefixHash::Sha256,
+                )
+            } else {
+                (
+                    checkpoint.physical.complete_prefix_end(),
+                    *checkpoint.physical.complete_prefix_sha256(),
+                    JsonlFamilyTerminalPrefixHash::SharedJsonlDomain,
+                )
+            };
+        Self::bind_admitted_frozen_prefix(
+            adapter,
+            leaf,
+            certificate,
+            prefix_length,
+            prefix_sha256,
+            hash_kind,
+        )
     }
 
     pub(crate) fn exact_path(
