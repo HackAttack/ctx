@@ -21,7 +21,7 @@ pub use progress::{progress, Progress};
 pub use refresh_progress::{
     refresh_progress, RefreshCurrentSourceProgress, RefreshCurrentSourceProgressStage,
     RefreshLogicalPhase, RefreshLogicalStatus, RefreshProgress, RefreshProgressSnapshot,
-    RefreshRequestState, RefreshStatusKind, RefreshStructuredOutcome,
+    RefreshRequestState, RefreshStatusKind, RefreshStructuredOutcome, RefreshWholeRunStage,
 };
 pub use section::section;
 pub use table::{table, Table};

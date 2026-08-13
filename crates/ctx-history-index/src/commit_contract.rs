@@ -3,6 +3,29 @@ use std::sync::Arc;
 
 use crate::{GenerationManifest, IndexError, Result, VerifiedIndex};
 
+/// Bounded publication transitions observable without assigning unlike work
+/// one fabricated shared denominator.
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+pub enum PublicationStage {
+    Merging,
+    Syncing,
+    PhysicalVerification,
+    LogicalVerification,
+    Activation,
+}
+
+impl PublicationStage {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Merging => "merging",
+            Self::Syncing => "syncing",
+            Self::PhysicalVerification => "physical_verification",
+            Self::LogicalVerification => "logical_verification",
+            Self::Activation => "activation",
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct CommitReceipt {
     pub generation_id: String,

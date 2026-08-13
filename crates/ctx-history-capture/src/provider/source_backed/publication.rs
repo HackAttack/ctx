@@ -1120,6 +1120,30 @@ fn refresh_source_backed_generation_with_detailed_progress_and_discovery_timing(
                     .cloned(),
             )
             .collect::<BTreeSet<_>>();
+        let mut report_publication_stage = |stage: PublicationStage| {
+            report_progress(source_level_progress(SourceBackedRefreshProgress {
+                phase: stage.as_str(),
+                completed_sources: scanned_routes,
+                total_sources: scanned_routes,
+                current_source: None,
+                completed_records: None,
+                completed_bytes: None,
+                providers: providers.clone(),
+                processed_sessions: history_progress.processed_sessions,
+                processed_messages: history_progress.processed_messages,
+                processed_tool_calls: history_progress.processed_tool_calls,
+                processed_bytes: history_progress.processed_bytes,
+                stage_duration: commit_started.elapsed(),
+                elapsed: discovery_duration.saturating_add(refresh_started.elapsed()),
+                certified_source_count: None,
+                certified_source_bytes: None,
+            }))
+            .map_err(|error| {
+                IndexError::PublicationMetadata(format!(
+                    "persist pre-publication progress: {error}"
+                ))
+            })
+        };
         let mut route_controls = base_route_controls.clone();
         for route in &registry.routes {
             let Some(route_identity) = route.metadata.route_identity.as_ref() else {
@@ -1156,7 +1180,7 @@ fn refresh_source_backed_generation_with_detailed_progress_and_discovery_timing(
             route_controls.insert(route_identity.clone(), control);
         }
         let (commit, verified_publication) = if let Some(factory) = metadata_factory.as_mut() {
-            let published = lifecycle.commit_with_metadata(
+            let published = lifecycle.commit_with_metadata_and_progress(
                 &mut revalidate_source,
                 &mut revalidate_inventory,
                 |publication| {
@@ -1183,6 +1207,7 @@ fn refresh_source_backed_generation_with_detailed_progress_and_discovery_timing(
                         applied_removals.len(),
                     ))
                 },
+                &mut report_publication_stage,
             )?;
             let (commit, disposition, verified) = published.into_parts();
             (

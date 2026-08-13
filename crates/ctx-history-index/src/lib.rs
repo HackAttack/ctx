@@ -23,8 +23,8 @@ pub use publication::{
 };
 
 pub use commit_contract::{
-    CommitReceipt, PublicationDisposition, PublicationMetadataContext, PublishedGeneration,
-    RevalidationTarget,
+    CommitReceipt, PublicationDisposition, PublicationMetadataContext, PublicationStage,
+    PublishedGeneration, RevalidationTarget,
 };
 
 pub use ctx_history_core::CoreRecord;

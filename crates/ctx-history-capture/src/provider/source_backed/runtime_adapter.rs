@@ -14,8 +14,8 @@ use ctx_history_index::{
     BaseEventIdentityLookup, CommitReceipt, CoreRecordPreparer, GenerationBaseCertifiedSource,
     GenerationManifest, GenerationWriter, GenerationWriterOpenOutcome, IndexError,
     PreparedCoreRecord, PreparedCoreRecordDraft, PreparedCoreRecordMaterialization,
-    PublicationDisposition, PublicationMetadataContext, PublishedGeneration, RevalidationTarget,
-    SourceRouteSnapshot, VerifiedIndex, WriterOptions,
+    PublicationDisposition, PublicationMetadataContext, PublicationStage, PublishedGeneration,
+    RevalidationTarget, SourceRouteSnapshot, VerifiedIndex, WriterOptions,
 };
 use std::{collections::BTreeSet, path::Path, sync::Arc};
 use uuid::Uuid;
@@ -428,6 +428,33 @@ impl CaptureLifecycleSink for IndexCaptureLifecycle {
                 |target| revalidate(index_revalidation_target(target)),
                 revalidate_inventory,
                 |context| metadata_factory(capture_publication_context(context)),
+            )
+            .map(capture_commit_outcome)
+    }
+}
+
+impl IndexCaptureLifecycle {
+    pub(crate) fn commit_with_metadata_and_progress<F, I, M, P>(
+        self,
+        mut revalidate: F,
+        revalidate_inventory: I,
+        metadata_factory: M,
+        report_progress: P,
+    ) -> Result<IndexCaptureCommitOutcome, IndexError>
+    where
+        F: FnMut(CaptureRevalidationTarget<'_>) -> bool,
+        I: FnMut(&CertifiedSourceInventory) -> bool,
+        M: for<'a> FnOnce(
+            CapturePublicationContext<'a, BorrowedIndexManifestView<'a>>,
+        ) -> Result<Vec<u8>, IndexError>,
+        P: FnMut(PublicationStage) -> Result<(), IndexError>,
+    {
+        self.0
+            .commit_with_complete_inventory_revalidation_and_publication_metadata_and_progress(
+                |target| revalidate(index_revalidation_target(target)),
+                revalidate_inventory,
+                |context| metadata_factory(capture_publication_context(context)),
+                report_progress,
             )
             .map(capture_commit_outcome)
     }

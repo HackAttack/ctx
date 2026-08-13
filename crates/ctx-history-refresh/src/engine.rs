@@ -35,8 +35,8 @@ use durable_queue::{
 };
 use generation_authority::CoreRefreshTerminalSuccess;
 pub use generation_authority::PinnedCorePublication;
-pub use progress_model::SourceBackedRefreshProgress;
 use progress_model::{status_progress_total_sources_known, SourceBackedRefreshState};
+pub use progress_model::{SourceBackedRefreshProgress, SourceBackedRefreshStage};
 use read_model::{
     projected_job_json, projected_status_json, SourceBackedRefreshAttempt,
     SourceBackedRefreshFailureOutcome,

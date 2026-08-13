@@ -82,7 +82,7 @@ pub use ctx_history_refresh_execution::{
 pub use engine::{
     CoreRefreshEngine as RefreshEngine, PinnedCorePublication, RefreshRuntime,
     RefreshRuntimeMetadata, SourceBackedRefreshCoverageCertificate, SourceBackedRefreshExecutor,
-    SourceBackedRefreshProgress, SourceBackedRefreshRun as RefreshRun,
+    SourceBackedRefreshProgress, SourceBackedRefreshRun as RefreshRun, SourceBackedRefreshStage,
     VerifiedSourceRefreshRouteBoundary,
 };
 pub use journal::{DurableAdmissionPersistence, RefreshJournal};

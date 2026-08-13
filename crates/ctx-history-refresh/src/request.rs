@@ -274,7 +274,9 @@ impl RefreshStatus {
     pub fn parse_schema_v1(fields: Value) -> Result<Self> {
         let status = Self::from_schema_v1_fields(fields);
         status.kind()?;
-        SourceBackedRefreshProgress::from_status_json(status.schema_v1_fields())?;
+        status.progress()?;
+        status.whole_run_stage()?;
+        status.estimated_remaining_millis()?;
         status.total_sources_known()?;
         Ok(status)
     }
@@ -296,6 +298,45 @@ impl RefreshStatus {
 
     pub fn progress(&self) -> Result<SourceBackedRefreshProgress> {
         SourceBackedRefreshProgress::from_status_json(self.schema_v1_fields())
+    }
+
+    pub fn whole_run_stage(&self) -> Result<SourceBackedRefreshStage> {
+        let derived = self.progress()?.whole_run_stage();
+        let progress = self
+            .schema_v1_fields
+            .get("progress")
+            .and_then(Value::as_object)
+            .ok_or_else(|| anyhow!("daemon source refresh status has no progress object"))?;
+        match progress.get("whole_run_stage") {
+            None => Ok(derived),
+            Some(Value::String(stage)) => match stage.as_str() {
+                "preparing" => Ok(SourceBackedRefreshStage::Preparing),
+                "reading" => Ok(SourceBackedRefreshStage::Reading),
+                "merging" => Ok(SourceBackedRefreshStage::Merging),
+                "syncing" => Ok(SourceBackedRefreshStage::Syncing),
+                "physical_verification" => Ok(SourceBackedRefreshStage::PhysicalVerification),
+                "logical_verification" => Ok(SourceBackedRefreshStage::LogicalVerification),
+                "activation" => Ok(SourceBackedRefreshStage::Activation),
+                "complete" => Ok(SourceBackedRefreshStage::Complete),
+                "failed" => Ok(SourceBackedRefreshStage::Failed),
+                _ => bail!("daemon source refresh progress has an invalid whole_run_stage"),
+            },
+            Some(_) => bail!("daemon source refresh progress has an invalid whole_run_stage"),
+        }
+    }
+
+    pub fn estimated_remaining_millis(&self) -> Result<Option<u64>> {
+        let progress = self
+            .schema_v1_fields
+            .get("progress")
+            .and_then(Value::as_object)
+            .ok_or_else(|| anyhow!("daemon source refresh status has no progress object"))?;
+        match progress.get("estimated_remaining_millis") {
+            None | Some(Value::Null) => Ok(None),
+            Some(value) => value.as_u64().map(Some).ok_or_else(|| {
+                anyhow!("daemon source refresh progress has an invalid estimated_remaining_millis")
+            }),
+        }
     }
 
     pub fn total_sources_known(&self) -> Result<bool> {
