@@ -3,6 +3,7 @@ use std::process::ExitCode;
 // Keep every direct CLI write on the same measured stdout/stderr seam as the
 // structured terminal UI. These preserve the standard print macro behavior;
 // `output` only adds content-free byte accounting while a command is active.
+#[allow(unused_macros)]
 macro_rules! print {
     ($($arg:tt)*) => {{
         $crate::output::write_stdout(format_args!($($arg)*));
@@ -76,9 +77,10 @@ pub(crate) use ctx_cli_presentation::commands::{
     DoctorArgs, SetupArgs, StatusArgs, UsageStatusMode,
 };
 pub(crate) use ctx_history_read_application::SearchBackend as SearchBackendArg;
-pub(crate) use provider_args::{parse_provider_arg, ProviderArg};
+pub(crate) use provider_args::ProviderArg;
 pub(crate) use provider_sources::{discovered_plugin_sources_json, sources_json};
 pub(crate) use transcript::TranscriptMode;
+#[cfg(test)]
 pub(crate) use value_parsers::parse_event_window_limit;
 
 fn main() -> ExitCode {

@@ -14,6 +14,7 @@ use crate::ui::{
 
 use super::status_health::*;
 
+#[allow(clippy::too_many_arguments)]
 pub fn render_status_human(
     context: &RenderContext,
     report: &Value,
