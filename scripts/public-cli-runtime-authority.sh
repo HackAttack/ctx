@@ -72,6 +72,12 @@ case "${runtime_status}" in
     fi
     case "${hardware_identity}:${emulation}:${hypervisor}:${evidence_complete}" in
       apple:none:absent:1|generic:none:absent:1|generic:none:present:1|generic:none:unknown:1) ;;
+      apple:none:present:1)
+        if [[ "${platform}" != "macos-arm64" ]]; then
+          printf 'non_authoritative\n'
+          exit 0
+        fi
+        ;;
       generic:qemu-kvm:present:1)
         if [[ "${platform}" != "macos-x64" || "${runner_id}" != "${pinned_macos_x64_kvm_runner}" ]]; then
           printf 'non_authoritative\n'
@@ -102,10 +108,16 @@ case "${runtime_status}" in
         exit 2
         ;;
     esac
-    if [[ "${platform}" == "macos-arm64" ]] && \
-      [[ "${hardware_identity}:${emulation}:${hypervisor}" != "apple:none:absent" ]]; then
-      printf 'non_authoritative\n'
-      exit 0
+    if [[ "${platform}" == "macos-arm64" ]]; then
+      # Apple Silicon guests execute arm64 natively; a present hypervisor is
+      # authoritative only when the remaining Apple and no-emulation facts agree.
+      case "${hardware_identity}:${emulation}:${hypervisor}" in
+        apple:none:absent|apple:none:present) ;;
+        *)
+          printf 'non_authoritative\n'
+          exit 0
+          ;;
+      esac
     fi
     if [[ "${platform}" == "macos-x64" ]] && \
       [[ "${hardware_identity}:${emulation}:${hypervisor}" != "apple:none:absent" ]] && \
