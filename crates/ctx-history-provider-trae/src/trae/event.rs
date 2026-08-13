@@ -1,9 +1,8 @@
 use std::collections::BTreeSet;
 
 use chrono::{DateTime, Utc};
+use ctx_history_capture_model::{normalization::provider_string_field, time::parse_rfc3339_utc};
 use serde_json::Value;
-
-use crate::provider::providers::task_json::{task_json_string_field, task_json_time_field};
 
 use super::TRAE_CN_INPUT_HISTORY_KEY;
 
@@ -29,7 +28,7 @@ pub(super) fn trae_event_from_owned_message(
     if text.trim().is_empty() {
         return None;
     }
-    let provider_native_message_id = task_json_string_field(
+    let provider_native_message_id = provider_string_field(
         &message,
         &[
             "id",
@@ -43,12 +42,12 @@ pub(super) fn trae_event_from_owned_message(
     let native_message_id = provider_native_message_id.clone().unwrap_or_else(|| {
         format!("{workspace_id}:{provider_session_id}:{chat_key}:{message_index}")
     });
-    let occurred_at = task_json_time_field(
+    let occurred_at = trae_time_field(
         &message,
         &["createdAt", "created_at", "timestamp", "time", "date"],
     )
     .unwrap_or(fallback_time);
-    let mut role = task_json_string_field(&message, &["role", "type", "sender"]);
+    let mut role = provider_string_field(&message, &["role", "type", "sender"]);
     if chat_key == TRAE_CN_INPUT_HISTORY_KEY && role.is_none() {
         role = Some("user".to_owned());
     }
@@ -59,6 +58,36 @@ pub(super) fn trae_event_from_owned_message(
         occurred_at,
         text,
     })
+}
+
+fn trae_time_field(value: &Value, fields: &[&str]) -> Option<DateTime<Utc>> {
+    for field in fields {
+        let Some(value) = value.get(*field) else {
+            continue;
+        };
+        if let Some(text) = value.as_str() {
+            if let Some(parsed) = parse_rfc3339_utc(text) {
+                return Some(parsed);
+            }
+            if let Ok(number) = text.parse::<i64>() {
+                if let Some(parsed) = trae_timestamp_number(number) {
+                    return Some(parsed);
+                }
+            }
+        }
+        if let Some(number) = value.as_i64().and_then(trae_timestamp_number) {
+            return Some(number);
+        }
+    }
+    None
+}
+
+fn trae_timestamp_number(value: i64) -> Option<DateTime<Utc>> {
+    if value > 10_000_000_000 {
+        DateTime::<Utc>::from_timestamp_millis(value)
+    } else {
+        DateTime::<Utc>::from_timestamp(value, 0)
+    }
 }
 
 pub(super) fn trae_message_text(message: &Value) -> Option<String> {

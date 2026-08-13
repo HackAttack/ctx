@@ -1,8 +1,8 @@
 use std::path::Path;
 
-use crate::common::io::read_json_file_limited;
-use crate::provider::providers::task_json::task_json_string_field;
 use crate::MAX_PROVIDER_JSONL_LINE_BYTES;
+use ctx_history_capture_model::normalization::provider_string_field;
+use ctx_history_provider_runtime::source_io::read_json_file_limited;
 
 pub(super) fn trae_workspace_id(path: &Path) -> String {
     path.parent()
@@ -21,7 +21,7 @@ pub(super) fn trae_workspace_folder(path: &Path) -> Option<String> {
         "Trae workspace.json",
     )
     .ok()?;
-    task_json_string_field(&value, &["folder", "workspace", "path"])
+    provider_string_field(&value, &["folder", "workspace", "path"])
         .map(|folder| trae_workspace_folder_label(&folder))
 }
 

@@ -7,28 +7,29 @@ use std::{
 };
 
 use chrono::{DateTime, Utc};
-use ctx_history_capture_model::normalization::provider_role;
+use ctx_history_capture_model::{
+    normalization::provider_role, ProviderImportFailure, ProviderSourceFailureKind,
+};
 use ctx_history_core::{CaptureProvider, EventRole, EventType};
 use rusqlite::Connection;
 use serde::de::IgnoredAny;
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 
+use ctx_history_provider_runtime::{
+    source_io::{ProviderSourceDirectory, ProviderSourceRoot},
+    sqlite_schema_fingerprint, sqlite_table_columns, sqlite_table_exists, CaptureError, Result,
+    SqliteLengthPreflightGuard,
+};
+
 use crate::{
-    common::io::{ProviderSourceDirectory, ProviderSourceRoot},
-    provider::{
-        native_ingestion::{NATIVE_INGESTION_PAGE_MAX_BYTES, NATIVE_INGESTION_PAGE_MAX_UNITS},
-        sqlite::{
-            sqlite_schema_fingerprint, sqlite_table_columns, sqlite_table_exists,
-            SqliteLengthPreflightGuard,
-        },
-    },
-    provider_sources::{
+    provider_limits::{TRAE_SOURCE_BACKED_PAGE_MAX_BYTES, TRAE_SOURCE_BACKED_PAGE_MAX_UNITS},
+    sqlite_source::{
         open_root_handle_sqlite_source_snapshot, retain_sqlite_source_directory_authority,
         SqliteSourceAccessError, SqliteSourceDirectoryAuthority, SqliteSourceEvidence,
         SqliteSourceReadSnapshot,
     },
-    CaptureError, ProviderImportFailure, Result, MAX_PROVIDER_JSONL_LINE_BYTES,
+    MAX_PROVIDER_JSONL_LINE_BYTES,
 };
 
 use super::super::{
@@ -44,8 +45,8 @@ use super::super::{
 
 const TRAE_SOURCE_PARSER_REVISION: &str = "trae-nativepath-parser-v2";
 const TRAE_SOURCE_POLICY_REVISION: &str = "trae-nativepath-core-policy-v2";
-const TRAE_PAGE_UNIT_LIMIT: usize = NATIVE_INGESTION_PAGE_MAX_UNITS - 8;
-const TRAE_PAGE_BYTE_LIMIT: usize = NATIVE_INGESTION_PAGE_MAX_BYTES - 512 * 1024;
+const TRAE_PAGE_UNIT_LIMIT: usize = TRAE_SOURCE_BACKED_PAGE_MAX_UNITS - 8;
+const TRAE_PAGE_BYTE_LIMIT: usize = TRAE_SOURCE_BACKED_PAGE_MAX_BYTES - 512 * 1024;
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub(super) struct TraeFrontier {
@@ -156,7 +157,7 @@ impl TraeSqliteDatabase {
             E::from(CaptureError::ProviderSource {
                 provider: CaptureProvider::Trae.as_str(),
                 path: path.to_path_buf(),
-                kind: crate::ProviderSourceFailureKind::SourceDatabase,
+                kind: ProviderSourceFailureKind::SourceDatabase,
                 detail: "Trae SQLite snapshot lock was poisoned".to_owned(),
             })
         })?;
@@ -195,7 +196,7 @@ impl TraeSqliteDatabase {
             .map_err(|_| CaptureError::ProviderSource {
                 provider: CaptureProvider::Trae.as_str(),
                 path: PathBuf::from(&self.database_name),
-                kind: crate::ProviderSourceFailureKind::SourceDatabase,
+                kind: ProviderSourceFailureKind::SourceDatabase,
                 detail: "Trae SQLite snapshot lock was poisoned".to_owned(),
             })?;
         retained
@@ -216,7 +217,7 @@ impl TraeSqliteDatabase {
             .map_err(|_| CaptureError::ProviderSource {
                 provider: CaptureProvider::Trae.as_str(),
                 path: path.to_path_buf(),
-                kind: crate::ProviderSourceFailureKind::SourceDatabase,
+                kind: ProviderSourceFailureKind::SourceDatabase,
                 detail: "Trae SQLite snapshot lock was poisoned".to_owned(),
             })?
             .take()
@@ -243,7 +244,7 @@ fn trae_sqlite_source_error(path: &Path, error: SqliteSourceAccessError) -> Capt
         error => CaptureError::ProviderSource {
             provider: CaptureProvider::Trae.as_str(),
             path: path.to_path_buf(),
-            kind: crate::ProviderSourceFailureKind::SourceDatabase,
+            kind: ProviderSourceFailureKind::SourceDatabase,
             detail: error.to_string(),
         },
     }
@@ -578,7 +579,7 @@ impl<'a> TraeScanner<'a> {
         self.frontier = normalize_frontier(self.frontier, self.active.as_ref())?;
         page.terminal = self.frontier.is_terminal();
         page.estimated_bytes = page.estimated_bytes.saturating_add(4096);
-        if page.estimated_bytes > NATIVE_INGESTION_PAGE_MAX_BYTES {
+        if page.estimated_bytes > TRAE_SOURCE_BACKED_PAGE_MAX_BYTES {
             return Err(CaptureError::InvalidPayload(
                 "Trae source-backed page exceeds retained-byte bounds".into(),
             ));
@@ -840,7 +841,7 @@ mod tests {
             .execute(
                 "INSERT INTO ItemTable ([key], value) VALUES (?1, ?2)",
                 params![
-                    crate::provider::providers::trae::TRAE_CHAT_KEYS[0],
+                    crate::TRAE_CHAT_KEYS[0],
                     r#"{"list":[{"id":"supported","messages":[{"content":"hello"}]}]}"#,
                 ],
             )
@@ -872,7 +873,7 @@ mod tests {
             .execute(
                 "INSERT INTO ItemTable ([key], value) VALUES (?1, ?2), (?1, ?3)",
                 params![
-                    crate::provider::providers::trae::TRAE_CHAT_KEYS[0],
+                    crate::TRAE_CHAT_KEYS[0],
                     r#"{"list":[{"id":"supported","messages":[{"content":"hello"}]}]}"#,
                     r#"{"list":[]}"#,
                 ],
@@ -911,9 +912,9 @@ mod tests {
             .execute(
                 "INSERT INTO ItemTable ([key], value) VALUES (?1, ?2), (?3, ?4)",
                 params![
-                    crate::provider::providers::trae::TRAE_CHAT_KEYS[0],
+                    crate::TRAE_CHAT_KEYS[0],
                     r#"{"list":[{"id":"supported","messages":[{"content":"hello"}]}]}"#,
-                    crate::provider::providers::trae::TRAE_CHAT_KEYS[1],
+                    crate::TRAE_CHAT_KEYS[1],
                     "invalid JSON",
                 ],
             )

@@ -16,15 +16,16 @@ use super::scanner::{
     TraeScanner, TraeSourceAuthority,
 };
 use crate::{
-    provider_sources::{SqliteLogicalSnapshot, SqliteSourceEvidence},
+    provider_limits::TRAE_SOURCE_BACKED_PAGE_MAX_UNITS, sqlite_source::SqliteSourceEvidence,
     CaptureError,
 };
+use ctx_history_provider_runtime::SqliteLogicalSnapshot;
 
 use super::super::TRAE_STATE_VSCDB_SOURCE_FORMAT;
 
 mod replacement;
 
-pub(crate) use replacement::TraeReplacementTree;
+pub use replacement::TraeReplacementTree;
 
 const TRAE_SOURCE_ANCHOR_NAMESPACE: &str = "trae.workspace-storage";
 const TRAE_SOURCE_SCHEMA_VARIANT: &str = "trae-itemtable-json-v1";
@@ -36,7 +37,6 @@ const TRAE_NATIVE_MESSAGE_NAMESPACE: &str = "trae.itemtable-message-v1";
 const TRAE_MESSAGE_POSITION_KIND: &str = "trae.itemtable-message-position-v1";
 const TRAE_LOGICAL_SESSION_KIND: &str = "trae-session";
 const TRAE_LOGICAL_EVENT_KIND: &str = "trae-message";
-const TRAE_SOURCE_BACKED_PAGE_ROWS: usize = 64;
 
 #[derive(Debug, Error)]
 pub(crate) enum TraeSourceBackedErrorV0 {
@@ -112,7 +112,7 @@ pub(super) fn scan_trae_authority(
         counts.indexed_documents = checked_add(counts.indexed_documents, retained_records)?;
         peak_buffered_documents = peak_buffered_documents.max(retained_records);
         if !documents.is_empty() {
-            if documents.len() > TRAE_SOURCE_BACKED_PAGE_ROWS {
+            if documents.len() > TRAE_SOURCE_BACKED_PAGE_MAX_UNITS {
                 return Err(TraeSourceBackedErrorV0::CountMismatch);
             }
             emitted_pages = checked_add(emitted_pages, 1)?;
@@ -255,7 +255,7 @@ fn source_key_for_workspace(workspace_id: &str) -> TraeSourceBackedResultV0<Sour
 }
 
 pub(super) fn explicit_trae_leaf(path: &Path) -> TraeSourceBackedResultV0<PathBuf> {
-    crate::common::io::ensure_provider_path_parents_are_not_symlinks(path)?;
+    ctx_history_provider_runtime::source_io::ensure_provider_path_parents_are_not_symlinks(path)?;
     let metadata = fs::symlink_metadata(path).map_err(CaptureError::from)?;
     if metadata.file_type().is_symlink() || !metadata.file_type().is_file() {
         return Err(TraeSourceBackedErrorV0::ExplicitLeafRequired);

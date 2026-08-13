@@ -3,7 +3,7 @@ use std::ops::Range;
 use serde::de::IgnoredAny;
 use serde_json::Value;
 
-use crate::{CaptureError, Result};
+use ctx_history_provider_runtime::{CaptureError, Result};
 
 use super::{event::trae_message_text, TRAE_CN_INPUT_HISTORY_KEY};
 
@@ -57,13 +57,13 @@ pub(super) fn trae_session_selection(
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum TraePayloadAdmission {
+pub enum TraePayloadAdmission {
     SupportedChat,
     Empty,
     Unrecognized,
 }
 
-pub(crate) fn trae_payload_admission(bytes: &[u8], chat_key: &str) -> Result<TraePayloadAdmission> {
+pub fn trae_payload_admission(bytes: &[u8], chat_key: &str) -> Result<TraePayloadAdmission> {
     serde_json::from_slice::<IgnoredAny>(bytes)?;
     let Some(selection) = trae_session_selection(bytes, chat_key)? else {
         return Ok(TraePayloadAdmission::Unrecognized);
