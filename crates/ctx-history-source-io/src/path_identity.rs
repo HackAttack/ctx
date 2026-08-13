@@ -11,11 +11,7 @@ pub fn provider_path_identity(path: &Path) -> Result<String> {
     {
         use std::os::unix::ffi::OsStrExt;
 
-        provider_path_identity_from_raw(
-            path,
-            "unix-bytes",
-            path.as_os_str().as_bytes().to_vec(),
-        )
+        provider_path_identity_from_raw(path, "unix-bytes", path.as_os_str().as_bytes().to_vec())
     }
     #[cfg(windows)]
     {
