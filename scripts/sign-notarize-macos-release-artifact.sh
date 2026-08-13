@@ -215,11 +215,7 @@ root_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 source "${root_dir}/scripts/macos-release-publisher-policy.sh"
 "${root_dir}/scripts/check-macos-signing-trusted-ref.sh" >/dev/null
 host_system="$(uname -s)"
-if [[ "${CTX_TEST_ONLY_MACOS_HOST:-}" == "Darwin" ]]; then
-  [[ "${CTX_LOCAL_MACOS_SIGNING_LIVE_TEST:-0}" == "1" ]] || \
-    die "CTX_TEST_ONLY_MACOS_HOST is restricted to non-CI local contract tests"
-  host_system=Darwin
-elif [[ "${host_system}" != "Darwin" && "${host_system}" != "Linux" ]]; then
+if [[ "${host_system}" != "Darwin" && "${host_system}" != "Linux" ]]; then
   die "macOS release signing requires Linux or Darwin"
 fi
 
@@ -340,8 +336,8 @@ openssl pkey -in "${notary_key_path}" -noout >/dev/null 2>&1 || \
 
 if ! rcodesign sign \
   --for-notarization \
-  --p12-file "${cert_path}" \
-  --p12-password-file "${cert_password_path}" \
+  --pem-file "${cert_pem_path}" \
+  --pem-file "${cert_private_key_path}" \
   "${artifact}"; then
   die "Developer ID signing failed for ${platform} ${kind}"
 fi
@@ -367,8 +363,8 @@ fi
 chmod 0644 "${codesign_details}"
 signed_sha256="$(sha256_file "${artifact}")"
 
+notary_zip="${secret_root}/${evidence_prefix}.zip"
 if [[ "${host_system}" == "Darwin" ]]; then
-  notary_zip="${secret_root}/${evidence_prefix}.zip"
   ditto -c -k --keepParent "${artifact}" "${notary_zip}" || \
     die "failed to create temporary notarization ZIP for ${platform} ${kind}"
   set +e
@@ -379,6 +375,9 @@ if [[ "${host_system}" == "Darwin" ]]; then
   submit_status=$?
   set -e
 else
+  (cd "$(dirname "${artifact}")" && \
+    zip -q -9 -j "${notary_zip}" "$(basename "${artifact}")") || \
+    die "failed to create temporary notarization ZIP for ${platform} ${kind}"
   timeout_value="${notary_timeout%[smh]}"
   case "${notary_timeout}" in
     *s) timeout_seconds="${timeout_value}" ;;
@@ -391,7 +390,7 @@ else
     >/dev/null 2>&1 || die "could not prepare the App Store Connect API key"
   set +e
   rcodesign notary-submit --wait --max-wait-seconds "${timeout_seconds}" \
-    --api-key-file "${notary_api_key}" "${artifact}" \
+    --api-key-file "${notary_api_key}" "${notary_zip}" \
     >"${log_json}" 2>"${submit_stderr}"
   submit_status=$?
   set -e

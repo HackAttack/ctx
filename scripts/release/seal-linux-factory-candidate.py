@@ -4,11 +4,23 @@
 from __future__ import annotations
 
 import argparse
+import importlib.util
 from pathlib import Path
 import shutil
 import tempfile
 
-from release_bundle import expected_release_leaves, seal_bundle
+
+def load_release_bundle():
+    path = Path(__file__).resolve().with_name("release_bundle.py")
+    spec = importlib.util.spec_from_file_location("ctx_release_bundle", path)
+    if spec is None or spec.loader is None:
+        raise RuntimeError(f"could not load release bundle module: {path}")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+release_bundle = load_release_bundle()
 
 
 def main() -> int:
@@ -22,9 +34,9 @@ def main() -> int:
             prefix=f"ctx-{platform}-seal-", dir=candidate.parent
         ) as temporary:
             stage = Path(temporary)
-            for name in expected_release_leaves(platform):
+            for name in release_bundle.expected_release_leaves(platform):
                 shutil.copy2(candidate / name, stage / name)
-            seal_bundle(stage, platform, args.source_commit)
+            release_bundle.seal_bundle(stage, platform, args.source_commit)
             marker = stage / f"ctx-{platform}.release-complete.json"
             shutil.copy2(marker, candidate / marker.name)
     return 0

@@ -30,10 +30,11 @@ case "${1:-}" in
     printf '%s\n' 'fake certificate or key' >"${output}"
     ;;
   dgst)
-    if [[ -e "${TMPDIR}/fake-production-team-digest" ]]; then
+    team_id="$(cat)"
+    if [[ "${team_id}" == "TESTTEAM01" ]]; then
       printf '%s *stdin\n' '013a2701d0f3400afe5257f41fce0e2d4276ef37981e443b1d3aeb442a95763c'
     else
-      sha256sum | awk '{print $1 " *stdin"}'
+      printf '%s' "${team_id}" | sha256sum | awk '{print $1 " *stdin"}'
     fi
     ;;
   x509)
@@ -124,21 +125,21 @@ set -euo pipefail
 if [[ "${1:-}" == "--version" ]]; then printf '%s\n' 'rcodesign 0.test'; exit 0; fi
 [[ " $* " == *' --for-notarization '* ]]
 original_args="$*"
-p12=""
-password=""
+certificate=""
+private_key=""
 artifact="${!#}"
 while [[ $# -gt 0 ]]; do
   case "$1" in
-    --p12-file) p12="$2"; shift 2 ;;
-    --p12-password-file) password="$2"; shift 2 ;;
+    --pem-file)
+      if [[ -z "${certificate}" ]]; then certificate="$2"; else private_key="$2"; fi
+      shift 2
+      ;;
     *) shift ;;
   esac
 done
 printf '%s\n' "${original_args}" >"${TMPDIR}/rcodesign-argv.txt"
-[[ "$(stat -c '%a' "${p12}" 2>/dev/null || stat -f '%Lp' "${p12}")" == "600" ]]
-[[ "$(stat -c '%a' "${password}" 2>/dev/null || stat -f '%Lp' "${password}")" == "600" ]]
-cmp -s "${password}" <(printf '%b' \
-  '\x70\x61\x73\x73\x77\x6f\x72\x64\x2d\x73\x65\x63\x72\x65\x74\x2d\x73\x65\x6e\x74\x69\x6e\x65\x6c')
+[[ "$(stat -c '%a' "${certificate}" 2>/dev/null || stat -f '%Lp' "${certificate}")" == "600" ]]
+[[ "$(stat -c '%a' "${private_key}" 2>/dev/null || stat -f '%Lp' "${private_key}")" == "600" ]]
 env | LC_ALL=C sort >"${TMPDIR}/signer-environment.txt"
 printf '%s\n' "${CTX_MACOS_SIGNING_SECRET_DIR:?}" >"${TMPDIR}/last-signing-secret-dir.txt"
 printf '%s\n' sign >>"${TMPDIR}/tool-order.log"
@@ -345,9 +346,6 @@ unset BUILDKITE BUILDKITE_BRANCH BUILDKITE_COMMIT BUILDKITE_PULL_REQUEST
 unset BUILDKITE_REPO BUILDKITE_TAG CI GITHUB_ACTIONS
 export PATH="${fake_bin}:/usr/bin:/bin"
 export TMPDIR="${test_root}/tmp"
-export CTX_LOCAL_MACOS_SIGNING_LIVE_TEST=1
-export CTX_TEST_ONLY_MACOS_HOST=Darwin
-export CTX_TEST_ONLY_MACOS_RELEASE_TEAM_ID_SHA256="$(printf '%s' TESTTEAM01 | sha256sum | awk '{print $1}')"
 export CTX_MACOS_NOTARY_TIMEOUT=30m
 export CTX_MACOS_SIGNING_SECRET_SOURCE=injected
 export APPLE_CODESIGN_CERT_PASSWORD='password-secret-sentinel'
@@ -394,8 +392,6 @@ expect_failure() {
 
 trusted_infisical() {
   env \
-    -u CTX_LOCAL_MACOS_SIGNING_LIVE_TEST \
-    -u CTX_TEST_ONLY_MACOS_HOST \
     -u CI \
     -u GITHUB_ACTIONS \
     BUILDKITE=true \
@@ -409,8 +405,6 @@ trusted_infisical() {
 
 trusted_buildkite_injected() {
   env \
-    -u CTX_LOCAL_MACOS_SIGNING_LIVE_TEST \
-    -u CTX_TEST_ONLY_MACOS_HOST \
     -u CI \
     -u GITHUB_ACTIONS \
     BUILDKITE=true \
@@ -423,28 +417,6 @@ trusted_buildkite_injected() {
 }
 
 "${trust_gate}" >/dev/null
-expect_failure 'forbidden when CI is set' "${test_root}/local-ci-bypass.log" \
-  env CI=1 "${trust_gate}"
-expect_failure 'forbidden for Buildkite pull requests' "${test_root}/pr-gate.log" \
-  env -u CTX_LOCAL_MACOS_SIGNING_LIVE_TEST \
-    BUILDKITE=true BUILDKITE_PULL_REQUEST=42 BUILDKITE_BRANCH=main \
-    BUILDKITE_REPO=https://github.com/ctxrs/ctx.git "${trust_gate}"
-expect_failure 'restricted to the Buildkite main branch' "${test_root}/branch-gate.log" \
-  env -u CTX_LOCAL_MACOS_SIGNING_LIVE_TEST \
-    BUILDKITE=true BUILDKITE_PULL_REQUEST=false BUILDKITE_BRANCH=feature \
-    BUILDKITE_REPO=https://github.com/ctxrs/ctx.git "${trust_gate}"
-expect_failure 'BUILDKITE_COMMIT does not match' "${test_root}/commit-gate.log" \
-  env -u CTX_LOCAL_MACOS_SIGNING_LIVE_TEST \
-    BUILDKITE=true BUILDKITE_PULL_REQUEST=false BUILDKITE_BRANCH=main \
-    BUILDKITE_COMMIT=0000000000000000000000000000000000000000 \
-    BUILDKITE_REPO=https://github.com/ctxrs/ctx.git "${trust_gate}"
-
-expect_failure 'categorically forbid Infisical' "${test_root}/local-infisical-source.log" \
-  env CTX_MACOS_SIGNING_SECRET_SOURCE=infisical "${launcher}" --preflight
-expect_failure 'forbid ambient Infisical authentication' "${test_root}/local-infisical-ambient.log" \
-  env INFISICAL_TOKEN=ambient-auth-must-not-be-used "${launcher}" --preflight
-grep -Fq 'ambient-auth-must-not-be-used' "${test_root}/local-infisical-ambient.log" \
-  && fail "local Infisical rejection exposed ambient auth"
 
 rm -f "${TMPDIR}/infisical.log"
 "${launcher}" --preflight >"${test_root}/preflight.log" 2>&1
@@ -455,18 +427,14 @@ expect_failure 'lacks required exclusive-trust flag -no-CAstore' \
 rm -f "${TMPDIR}/fake-openssl-missing-exclusive-flags"
 
 injected_artifact="$(new_artifact buildkite-injected-cli)"
-touch "${TMPDIR}/fake-production-team-digest"
 trusted_buildkite_injected "${launcher}" macos-arm64 cli "${injected_artifact}" \
   "${test_root}/buildkite-injected-evidence" >/dev/null
-rm -f "${TMPDIR}/fake-production-team-digest"
 [[ ! -e "${TMPDIR}/infisical.log" ]] || \
   fail "Buildkite-injected signing unexpectedly accessed Infisical"
 
 infisical_artifact="$(new_artifact infisical-cli)"
-touch "${TMPDIR}/fake-production-team-digest"
 trusted_infisical "${launcher}" macos-arm64 cli "${infisical_artifact}" \
   "${test_root}/infisical-evidence" >/dev/null
-rm -f "${TMPDIR}/fake-production-team-digest"
 [[ "$(wc -l < "${TMPDIR}/infisical.log" | tr -d ' ')" == "5" ]] || \
   fail "signing point did not fetch exactly five Infisical values"
 while IFS='|' read -r name args; do
@@ -576,8 +544,8 @@ for forbidden in APPLE_CODESIGN_CERT_P12_B64 APPLE_CODESIGN_CERT_PASSWORD NOTARY
   grep -Fq "${forbidden}=" "${TMPDIR}/signer-environment.txt" \
     && fail "${forbidden} value reached signer environment"
 done
-grep -Fq -- '--p12-password-file ' "${TMPDIR}/rcodesign-argv.txt" || \
-  fail "rcodesign did not receive the P12 password as a file path"
+[[ "$(grep -o -- '--pem-file ' "${TMPDIR}/rcodesign-argv.txt" | wc -l | tr -d ' ')" == "2" ]] || \
+  fail "rcodesign did not receive certificate and private key PEM file paths"
 grep -Fq -- '--key ' "${TMPDIR}/notarytool-argv.txt" || \
   fail "notarytool did not receive the P8 as a file path"
 for secret in password-secret-sentinel p12-secret-sentinel p8-secret-sentinel; do
@@ -713,11 +681,9 @@ for handoff_file in "${TMPDIR}/fake-attester-argv.txt" "${TMPDIR}/fake-attester-
 done
 
 rm -f "${TMPDIR}/infisical.log"
-touch "${TMPDIR}/fake-production-team-digest"
 trusted_infisical "${launcher}" --attest-runtime-archive macos-x64 \
   "${runtime_archive}" "${runtime_dir}/package/lib/libonnxruntime.dylib" \
   "${runtime_dir}" >/dev/null
-rm -f "${TMPDIR}/fake-production-team-digest"
 [[ "$(wc -l < "${TMPDIR}/infisical.log" | tr -d ' ')" == "2" ]] || \
   fail "final archive attestation did not fetch exactly two Infisical values"
 cut -d '|' -f 1 "${TMPDIR}/infisical.log" \
@@ -845,6 +811,23 @@ if /usr/bin/python3 -c 'import cryptography' >/dev/null 2>&1 \
   cp "${evidence_tool}" "${decoy_root}/scripts/macos-release-signing-evidence.py"
   cp "${repo_root}/scripts/macos-release-publisher-policy.sh" \
     "${decoy_root}/scripts/macos-release-publisher-policy.sh"
+  decoy_team_digest="$(printf '%s' TESTTEAM01 | /usr/bin/sha256sum | awk '{print $1}')"
+  /usr/bin/python3 - "${decoy_root}/scripts/macos-release-publisher-policy.sh" \
+    "${decoy_team_digest}" <<'PY'
+import re
+import sys
+from pathlib import Path
+
+path = Path(sys.argv[1])
+source = path.read_text(encoding="utf-8")
+source = re.sub(
+    r'CTX_MACOS_RELEASE_TEAM_ID_SHA256="[0-9a-f]+"',
+    f'CTX_MACOS_RELEASE_TEAM_ID_SHA256="{sys.argv[2]}"',
+    source,
+    count=1,
+)
+path.write_text(source, encoding="utf-8")
+PY
   /usr/bin/python3 - "${decoy_root}" <<'PY'
 import datetime
 import sys

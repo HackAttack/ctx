@@ -72,24 +72,12 @@ esac
 root_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 "${root_dir}/scripts/check-macos-signing-trusted-ref.sh" >/dev/null
 host_system="$(uname -s)"
-if [[ "${CTX_TEST_ONLY_MACOS_HOST:-}" == "Darwin" ]]; then
-  [[ "${CTX_LOCAL_MACOS_SIGNING_LIVE_TEST:-0}" == "1" ]] || \
-    die "CTX_TEST_ONLY_MACOS_HOST is restricted to non-CI local contract tests"
-  host_system=Darwin
-elif [[ "${host_system}" != "Darwin" && "${host_system}" != "Linux" ]]; then
+if [[ "${host_system}" != "Darwin" && "${host_system}" != "Linux" ]]; then
   die "macOS release signing requires Linux or Darwin"
 fi
 
 secret_source="${CTX_MACOS_SIGNING_SECRET_SOURCE:-}"
-if [[ "${CTX_LOCAL_MACOS_SIGNING_LIVE_TEST:-0}" == "1" ]]; then
-  [[ -z "${secret_source}" || "${secret_source}" == "injected" ]] || \
-    die "local macOS signing live tests categorically forbid Infisical secret access"
-  while IFS= read -r ambient_name; do
-    [[ "${ambient_name}" != INFISICAL_* ]] || \
-      die "local macOS signing live tests forbid ambient Infisical authentication"
-  done < <(compgen -e)
-  secret_source=injected
-elif [[ -z "${secret_source}" ]]; then
+if [[ -z "${secret_source}" ]]; then
   secret_source=infisical
 fi
 case "${secret_source}" in
@@ -104,6 +92,9 @@ done
 require_openssl3_exclusive_trust
 if [[ "${mode}" == "sign" || "${mode}" == "preflight" ]]; then
   require_command rcodesign
+  if [[ "${host_system}" == "Linux" ]]; then
+    require_command zip
+  fi
   if [[ "${host_system}" == "Darwin" ]]; then
     for command_name in codesign ditto xcode-select xcrun; do
       require_command "${command_name}"
@@ -196,8 +187,7 @@ done
 
 test_worker_path="${!test_worker_variable:-}"
 if [[ -n "${test_worker_path}" ]]; then
-  [[ "${CTX_LOCAL_MACOS_SIGNING_LIVE_TEST:-0}" == "1" \
-    && "${CTX_TEST_ONLY_MACOS_HOST:-}" == "Darwin" \
+  [[ -z "${BUILDKITE:-}" && -z "${CI:-}" && -z "${GITHUB_ACTIONS:-}" \
     && "${test_worker_path}" == /* \
     && -x "${test_worker_path}" ]] || \
     die "${test_worker_variable} is restricted to non-CI local contract tests"
@@ -218,8 +208,7 @@ if [[ "${mode}" == "sign" ]]; then
 fi
 for operational_name in \
   BUILDKITE BUILDKITE_BRANCH BUILDKITE_COMMIT BUILDKITE_PULL_REQUEST \
-  BUILDKITE_REPO BUILDKITE_TAG CTX_LOCAL_MACOS_SIGNING_LIVE_TEST \
-  CTX_TEST_ONLY_MACOS_HOST CTX_TEST_ONLY_MACOS_RELEASE_TEAM_ID_SHA256 \
+  BUILDKITE_REPO BUILDKITE_TAG \
   DEVELOPER_DIR LOGNAME USER; do
   if [[ -n "${!operational_name:-}" ]]; then
     minimal_env+=("${operational_name}=${!operational_name}")

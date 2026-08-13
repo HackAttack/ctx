@@ -92,11 +92,7 @@ root_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 source "${root_dir}/scripts/macos-release-publisher-policy.sh"
 "${root_dir}/scripts/check-macos-signing-trusted-ref.sh" >/dev/null
 host_system="$(uname -s)"
-if [[ "${CTX_TEST_ONLY_MACOS_HOST:-}" == "Darwin" ]]; then
-  [[ "${CTX_LOCAL_MACOS_SIGNING_LIVE_TEST:-0}" == "1" ]] || \
-    die "CTX_TEST_ONLY_MACOS_HOST is restricted to non-CI local contract tests"
-  host_system=Darwin
-elif [[ "${host_system}" != "Darwin" && "${host_system}" != "Linux" ]]; then
+if [[ "${host_system}" != "Darwin" && "${host_system}" != "Linux" ]]; then
   die "runtime archive attestation requires Linux or Darwin"
 fi
 
