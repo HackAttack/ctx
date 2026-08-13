@@ -137,6 +137,8 @@ done
 printf '%s\n' "${original_args}" >"${TMPDIR}/rcodesign-argv.txt"
 [[ "$(stat -c '%a' "${p12}" 2>/dev/null || stat -f '%Lp' "${p12}")" == "600" ]]
 [[ "$(stat -c '%a' "${password}" 2>/dev/null || stat -f '%Lp' "${password}")" == "600" ]]
+cmp -s "${password}" <(printf '%b' \
+  '\x70\x61\x73\x73\x77\x6f\x72\x64\x2d\x73\x65\x63\x72\x65\x74\x2d\x73\x65\x6e\x74\x69\x6e\x65\x6c')
 env | LC_ALL=C sort >"${TMPDIR}/signer-environment.txt"
 printf '%s\n' "${CTX_MACOS_SIGNING_SECRET_DIR:?}" >"${TMPDIR}/last-signing-secret-dir.txt"
 printf '%s\n' sign >>"${TMPDIR}/tool-order.log"
@@ -257,7 +259,16 @@ if [[ -s "${TMPDIR}/fake-infisical-missing-name" \
 fi
 case "${name}" in
   APPLE_CODESIGN_CERT_P12_B64) printf '%s' 'cDEyLXNlY3JldC1zZW50aW5lbA==' ;;
-  APPLE_CODESIGN_CERT_PASSWORD) printf '%s' 'password-secret-sentinel' ;;
+  APPLE_CODESIGN_CERT_PASSWORD)
+    if [[ -e "${TMPDIR}/fake-infisical-empty-password" ]]; then
+      printf '\n'
+    elif [[ -e "${TMPDIR}/fake-infisical-unterminated-password" ]]; then
+      printf '%s' 'password-secret-sentinel'
+    else
+      # Match `infisical secrets get --plain`: value plus one transport LF.
+      printf '%s\n' 'password-secret-sentinel'
+    fi
+    ;;
   NOTARY_ISSUER) printf '%s' 'issuer-test-value' ;;
   NOTARY_KEY_ID) printf '%s' 'key-id-test-value' ;;
   NOTARY_KEY_P8_B64) printf '%s' 'LS0tLS1CRUdJTiBQUklWQVRFIEtFWS0tLS0tCnA4LXNlY3JldC1zZW50aW5lbAotLS0tLUVORCBQUklWQVRFIEtFWS0tLS0tCg==' ;;
@@ -469,6 +480,20 @@ done <"${TMPDIR}/infisical.log"
 for secret in password-secret-sentinel p12-secret-sentinel p8-secret-sentinel; do
   grep -Fq "${secret}" "${test_root}/preflight.log" && fail "preflight exposed ${secret}"
 done
+
+touch "${TMPDIR}/fake-infisical-unterminated-password"
+expect_failure 'malformed output' "${test_root}/infisical-unterminated-password.log" \
+  trusted_infisical "${launcher}" macos-arm64 cli \
+    "$(new_artifact infisical-unterminated-password)" \
+    "${test_root}/infisical-unterminated-password-evidence"
+rm -f "${TMPDIR}/fake-infisical-unterminated-password"
+touch "${TMPDIR}/fake-infisical-empty-password"
+expect_failure 'APPLE_CODESIGN_CERT_PASSWORD was empty' \
+  "${test_root}/infisical-empty-password.log" \
+  trusted_infisical "${launcher}" macos-arm64 cli \
+    "$(new_artifact infisical-empty-password)" \
+    "${test_root}/infisical-empty-password-evidence"
+rm -f "${TMPDIR}/fake-infisical-empty-password"
 
 touch "${TMPDIR}/fake-infisical-auth-failure"
 expect_failure 'Infisical lookup failed' "${test_root}/infisical-auth.log" \

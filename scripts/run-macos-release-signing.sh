@@ -163,6 +163,22 @@ fetch_secret() {
         >"${output}" 2>"${diagnostic}"; then
         die "Infisical lookup failed for required macOS signing value ${name}"
       fi
+      # Infisical appends one transport LF; rcodesign reads this file byte-for-byte.
+      if [[ "${name}" == "APPLE_CODESIGN_CERT_PASSWORD" ]] && \
+        ! python3 - "${output}" <<'PY'
+import sys
+
+path = sys.argv[1]
+with open(path, "rb") as stream:
+    value = stream.read()
+if not value.endswith(b"\n"):
+    raise SystemExit(1)
+with open(path, "wb") as stream:
+    stream.write(value[:-1])
+PY
+      then
+        die "Infisical returned malformed output for required macOS signing value ${name}"
+      fi
       rm -f "${diagnostic}"
       ;;
     injected)
