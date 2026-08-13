@@ -126,7 +126,7 @@ def semantic_catalog_fixture(asset_id: str) -> dict[str, object]:
         }
     if asset_id == "apple_coreml":
         records["manifest.json"]["sha256"] = (
-            semantic_release_assets.COREML_MANIFEST_SHA256
+            semantic_release_assets.COREML_PUBLICATION_MANIFEST_SHA256
         )
     asset = {
         key: expected[key]
@@ -143,7 +143,7 @@ def semantic_catalog_fixture(asset_id: str) -> dict[str, object]:
         )
     }
     asset["archive_sha256"] = (
-        semantic_release_assets.COREML_ARCHIVE_SHA256
+        semantic_release_assets.COREML_PUBLICATION_ARCHIVE_SHA256
         if asset_id == "apple_coreml"
         else "a" * 64
     )
@@ -515,7 +515,7 @@ def coreml_archive_fixture() -> tuple[bytes, dict[str, bytes]]:
 
 
 class SemanticReleaseAssetTests(unittest.TestCase):
-    def test_semantic_source_authorities_preserve_exact_public_pins(self) -> None:
+    def test_semantic_source_authorities_preserve_exact_input_pins(self) -> None:
         self.assertEqual(
             (
                 semantic_release_assets.MODEL_REVISION,
@@ -547,10 +547,10 @@ class SemanticReleaseAssetTests(unittest.TestCase):
         )
         self.assertEqual(
             (
-                semantic_release_assets.COREML_ARCHIVE_URL,
-                semantic_release_assets.COREML_ARCHIVE_SIZE,
-                semantic_release_assets.COREML_ARCHIVE_SHA256,
-                semantic_release_assets.COREML_MANIFEST_SHA256,
+                semantic_release_assets.COREML_SOURCE_ARCHIVE_URL,
+                semantic_release_assets.COREML_SOURCE_ARCHIVE_SIZE,
+                semantic_release_assets.COREML_SOURCE_ARCHIVE_SHA256,
+                semantic_release_assets.COREML_SOURCE_MANIFEST_SHA256,
             ),
             (
                 "https://cli.ctx.rs/storage/v1/object/public/releases/artifacts/"
@@ -560,6 +560,89 @@ class SemanticReleaseAssetTests(unittest.TestCase):
                 "576c68756563333fdf442e6859f2392ca0065b09a2cb5d73983e30de75df1ad6",
             ),
         )
+
+    def test_coreml_publication_pins_match_the_locked_tahoe_producer(self) -> None:
+        self.assertEqual(
+            (
+                semantic_release_assets.COREML_PUBLICATION_ARCHIVE_SIZE,
+                semantic_release_assets.COREML_PUBLICATION_ARCHIVE_SHA256,
+                semantic_release_assets.COREML_PUBLICATION_MANIFEST_SHA256,
+            ),
+            (
+                423_625_016,
+                "25fbf333d1e72f5c075973ef968dfa1446459f61f3ac63ef3690d9865435af17",
+                "20a94162aca7c2f9f65be27839cd6867ec1c54e142fdf0c652de20139dffbc19",
+            ),
+        )
+
+    def test_coreml_publication_rejects_the_source_snapshot_identity(self) -> None:
+        record = semantic_catalog_fixture("apple_coreml")
+        record["asset"]["archive_sha256"] = (
+            semantic_release_assets.COREML_SOURCE_ARCHIVE_SHA256
+        )
+        for file_record in record["asset"]["files"]:
+            if file_record["path"] == "manifest.json":
+                file_record["sha256"] = (
+                    semantic_release_assets.COREML_SOURCE_MANIFEST_SHA256
+                )
+        with self.assertRaisesRegex(
+            semantic_release_assets.AssetError, "publication pin"
+        ):
+            semantic_release_assets.validate_asset_record(
+                record["id"], record["asset"]
+            )
+
+    def test_coreml_asset_record_requires_exact_publication_size(self) -> None:
+        fixture = semantic_catalog_fixture("apple_coreml")["asset"]
+        expected = semantic_release_assets.EXPECTED_ASSETS["apple_coreml"]
+        with tempfile.TemporaryDirectory() as temporary:
+            artifact = Path(temporary) / expected["artifact"]
+            artifact.write_bytes(b"fixture")
+            with mock.patch.object(
+                semantic_release_assets,
+                "sha256_file",
+                return_value=(
+                    semantic_release_assets.COREML_PUBLICATION_ARCHIVE_SIZE,
+                    semantic_release_assets.COREML_PUBLICATION_ARCHIVE_SHA256,
+                ),
+            ):
+                record = semantic_release_assets.asset_record(
+                    "apple_coreml",
+                    expected["role"],
+                    expected["backend"],
+                    expected["version"],
+                    expected["platform"],
+                    expected["archive_format"],
+                    expected["archive_path_prefix"],
+                    artifact,
+                    fixture["files"],
+                )
+            self.assertEqual(
+                record["asset"]["archive_sha256"],
+                semantic_release_assets.COREML_PUBLICATION_ARCHIVE_SHA256,
+            )
+
+            with mock.patch.object(
+                semantic_release_assets,
+                "sha256_file",
+                return_value=(
+                    semantic_release_assets.COREML_PUBLICATION_ARCHIVE_SIZE - 1,
+                    semantic_release_assets.COREML_PUBLICATION_ARCHIVE_SHA256,
+                ),
+            ), self.assertRaisesRegex(
+                semantic_release_assets.AssetError, "archive size"
+            ):
+                semantic_release_assets.asset_record(
+                    "apple_coreml",
+                    expected["role"],
+                    expected["backend"],
+                    expected["version"],
+                    expected["platform"],
+                    expected["archive_format"],
+                    expected["archive_path_prefix"],
+                    artifact,
+                    fixture["files"],
+                )
 
     def test_model_license_authority_preserves_exact_public_pin(self) -> None:
         self.assertEqual(
@@ -633,12 +716,12 @@ class SemanticReleaseAssetTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             output = Path(temporary) / "prepared"
             with mock.patch.object(
-                semantic_release_assets, "COREML_ARCHIVE_SIZE", len(archive)
+                semantic_release_assets, "COREML_SOURCE_ARCHIVE_SIZE", len(archive)
             ), mock.patch.object(
-                semantic_release_assets, "COREML_ARCHIVE_SHA256", archive_sha256
+                semantic_release_assets, "COREML_SOURCE_ARCHIVE_SHA256", archive_sha256
             ), mock.patch.object(
                 semantic_release_assets,
-                "COREML_MANIFEST_SHA256",
+                "COREML_SOURCE_MANIFEST_SHA256",
                 hashlib.sha256(manifest).hexdigest(),
             ), mock.patch.object(
                 semantic_release_assets.urllib.request,

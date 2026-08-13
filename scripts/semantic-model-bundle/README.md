@@ -9,10 +9,18 @@ machine-specific paths into the bundle.
 The public release step prepares its Core ML inputs from the immutable archive
 at
 `https://cli.ctx.rs/storage/v1/object/public/releases/artifacts/ctx-multilingual-e5-small-coreml-fp16-1.0.0.tar.xz`.
-`semantic-release-assets.py prepare-coreml` requires its pinned 423,600,648-byte
-size and `94c6fac5c4250079401d383adf1b10270fe5d370f2091dbad17bf4823222321e`
+`semantic-release-assets.py prepare-coreml` requires the source snapshot's
+pinned 423,600,648-byte size and
+`94c6fac5c4250079401d383adf1b10270fe5d370f2091dbad17bf4823222321e`
 SHA-256 before safely extracting the tokenizer, document/query packages, and
-model license. The producer below remains an offline packaging step.
+model license. The producer below remains an offline packaging step. Its
+Tahoe 26.3.1 provenance produces the distinct pinned publication identity
+423,625,016 bytes /
+`25fbf333d1e72f5c075973ef968dfa1446459f61f3ac63ef3690d9865435af17`,
+with manifest SHA-256
+`20a94162aca7c2f9f65be27839cd6867ec1c54e142fdf0c652de20139dffbc19`.
+That output is published in the immutable `artifacts/stable/1.0.0/` release
+namespace; the unversioned URL above remains the pinned source snapshot.
 
 ## Reproducible production
 
@@ -57,7 +65,9 @@ The producer rejects tool-version drift, symlinks, unknown source revisions,
 and existing output paths. Tar member order, modes, owners, and mtimes are
 normalized, so identical inputs produce an identical manifest and archive. It
 also emits `<archive>.asset.json`, the canonical signed-catalog input for the
-validated Core ML archive.
+validated Core ML archive. Source-snapshot pins and publication pins are
+separate: changing the locked producer provenance requires regenerating the
+publication identities without weakening validation of the immutable input.
 
 Verify without importing Core ML or loading model weights:
 

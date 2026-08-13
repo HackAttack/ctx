@@ -118,15 +118,25 @@ WINDOWS_ML_FILES = (
     "lib/Microsoft.Windows.AI.MachineLearning.dll",
     "lib/onnxruntime.dll",
 )
-COREML_ARCHIVE_SHA256 = (
+# The immutable July bundle is the offline producer input. Publication pins
+# bind the regenerated bundle after the locked host identity is embedded in
+# PROVENANCE.json; the two identities intentionally differ.
+COREML_SOURCE_ARCHIVE_SHA256 = (
     "94c6fac5c4250079401d383adf1b10270fe5d370f2091dbad17bf4823222321e"
 )
-COREML_ARCHIVE_SIZE = 423_600_648
-COREML_MANIFEST_SHA256 = (
+COREML_SOURCE_ARCHIVE_SIZE = 423_600_648
+COREML_SOURCE_MANIFEST_SHA256 = (
     "576c68756563333fdf442e6859f2392ca0065b09a2cb5d73983e30de75df1ad6"
 )
+COREML_PUBLICATION_ARCHIVE_SHA256 = (
+    "25fbf333d1e72f5c075973ef968dfa1446459f61f3ac63ef3690d9865435af17"
+)
+COREML_PUBLICATION_ARCHIVE_SIZE = 423_625_016
+COREML_PUBLICATION_MANIFEST_SHA256 = (
+    "20a94162aca7c2f9f65be27839cd6867ec1c54e142fdf0c652de20139dffbc19"
+)
 COREML_ARCHIVE_NAME = "ctx-multilingual-e5-small-coreml-fp16-1.0.0.tar.xz"
-COREML_ARCHIVE_URL = (
+COREML_SOURCE_ARCHIVE_URL = (
     "https://cli.ctx.rs/storage/v1/object/public/releases/artifacts/"
     + COREML_ARCHIVE_NAME
 )
@@ -636,8 +646,8 @@ def extract_coreml_archive(archive: Path, destination: Path) -> None:
 def coreml_source_paths(source: Path) -> dict[str, Path]:
     manifest_path = source / "manifest.json"
     _, manifest_sha256 = sha256_file(manifest_path, 1024 * 1024)
-    if manifest_sha256 != COREML_MANIFEST_SHA256:
-        raise AssetError("Core ML source manifest does not match its publication pin")
+    if manifest_sha256 != COREML_SOURCE_MANIFEST_SHA256:
+        raise AssetError("Core ML source manifest does not match its input pin")
     manifest = json.loads(
         manifest_path.read_bytes(), object_pairs_hook=reject_duplicate_json_keys
     )
@@ -683,10 +693,10 @@ def prepare_coreml_source(args: argparse.Namespace) -> None:
         staging = Path(temporary)
         archive = staging / COREML_ARCHIVE_NAME
         download_exact_url(
-            COREML_ARCHIVE_URL,
+            COREML_SOURCE_ARCHIVE_URL,
             archive,
-            COREML_ARCHIVE_SIZE,
-            COREML_ARCHIVE_SHA256,
+            COREML_SOURCE_ARCHIVE_SIZE,
+            COREML_SOURCE_ARCHIVE_SHA256,
         )
         source = staging / "source"
         extract_coreml_archive(archive, source)
@@ -921,9 +931,9 @@ def validate_asset_record(asset_id: str, asset: object) -> None:
         ):
             raise AssetError(f"model manifest is not canonical for {asset_id}")
     elif asset_id == "apple_coreml":
-        if asset["archive_sha256"] != COREML_ARCHIVE_SHA256:
+        if asset["archive_sha256"] != COREML_PUBLICATION_ARCHIVE_SHA256:
             raise AssetError("Core ML archive does not match its publication pin")
-        if records["manifest.json"][1] != COREML_MANIFEST_SHA256:
+        if records["manifest.json"][1] != COREML_PUBLICATION_MANIFEST_SHA256:
             raise AssetError("Core ML manifest does not match its publication pin")
 
 
@@ -953,7 +963,9 @@ def asset_record(
     for field, value in supplied.items():
         if value != expected[field]:
             raise AssetError(f"noncanonical {field} for Semantic asset {asset_id}")
-    _, archive_sha256 = sha256_file(artifact)
+    archive_size, archive_sha256 = sha256_file(artifact)
+    if asset_id == "apple_coreml" and archive_size != COREML_PUBLICATION_ARCHIVE_SIZE:
+        raise AssetError("Core ML archive size does not match its publication pin")
     value = {
         "id": asset_id,
         "asset": {
