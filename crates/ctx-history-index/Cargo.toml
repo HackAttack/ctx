@@ -1,6 +1,6 @@
 [package]
 name = "ctx-history-index"
-version = "0.26.0"
+version.workspace = true
 description = "Atomic source-backed lexical generations for ctx"
 edition.workspace = true
 license.workspace = true

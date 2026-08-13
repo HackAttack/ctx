@@ -1,6 +1,6 @@
 [package]
 name = "ctx-upgrade-engine"
-version = "0.26.0"
+version.workspace = true
 description = "Internal release upgrade engine for ctx"
 edition.workspace = true
 license.workspace = true

@@ -1,6 +1,6 @@
 [package]
 name = "ctx-history-cli"
-version = "1.0.0"
+version.workspace = true
 description = "Transport-neutral history command application and presentation"
 edition.workspace = true
 license.workspace = true

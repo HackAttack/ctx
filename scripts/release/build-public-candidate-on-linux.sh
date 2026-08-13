@@ -501,7 +501,7 @@ if [[ "${official}" == "1" && "${selection_complete}" == "1" && "${runtimes_buil
 fi
 
 python3 - "${artifact_stage}" "${source_commit}" "${official}" \
-  "${selection_complete}" "${runtimes_built}" "${target_ids[@]}" <<'PY'
+  "${selection_complete}" "${runtimes_built}" "${version}" "${target_ids[@]}" <<'PY'
 import hashlib, json, os, sys
 from pathlib import Path
 root = Path(sys.argv[1])
@@ -509,7 +509,8 @@ commit = sys.argv[2]
 official = sys.argv[3] == "1"
 selection_complete = sys.argv[4] == "1"
 runtimes_built = sys.argv[5] == "1"
-selected_targets = sys.argv[6:]
+version = sys.argv[6]
+selected_targets = sys.argv[7:]
 files=[]
 for path in sorted(root.iterdir(), key=lambda item: item.name):
     if path.is_file() and not path.name.startswith("."):
@@ -518,6 +519,7 @@ doc={
     "schema_version": 1,
     "kind": "ctx-linux-release-factory",
     "source_commit": commit,
+    "version": version,
     "selected_targets": selected_targets,
     "releasable": official and selection_complete and runtimes_built,
     "files": files,

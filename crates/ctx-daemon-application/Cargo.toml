@@ -1,6 +1,6 @@
 [package]
 name = "ctx-daemon-application"
-version = "1.0.0"
+version.workspace = true
 description = "Daemon lifecycle and supervisor application policy for ctx"
 edition.workspace = true
 license.workspace = true

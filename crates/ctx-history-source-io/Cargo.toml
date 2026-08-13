@@ -1,6 +1,6 @@
 [package]
 name = "ctx-history-source-io"
-version = "0.26.0"
+version.workspace = true
 description = "Provider-neutral bounded source I/O for ctx history capture"
 edition.workspace = true
 license.workspace = true

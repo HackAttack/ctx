@@ -1,6 +1,6 @@
 [package]
 name = "ctx-history-refresh"
-version = "0.26.0"
+version.workspace = true
 description = "Process-neutral Core refresh engine for ctx"
 edition.workspace = true
 license.workspace = true

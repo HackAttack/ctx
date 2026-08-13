@@ -1,6 +1,6 @@
 [package]
 name = "ctx-daemon-runtime"
-version = "1.0.0"
+version.workspace = true
 description = "Process-neutral daemon runtime mechanics for ctx"
 edition.workspace = true
 license.workspace = true

@@ -1,6 +1,6 @@
 [package]
 name = "ctx-terminal"
-version = "1.0.0"
+version.workspace = true
 description = "Safe terminal documents and output presentation for ctx"
 edition.workspace = true
 license.workspace = true

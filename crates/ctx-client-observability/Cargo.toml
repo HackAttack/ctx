@@ -1,6 +1,6 @@
 [package]
 name = "ctx-client-observability"
-version = "0.26.0"
+version.workspace = true
 description = "Content-free client observability primitives for ctx"
 edition.workspace = true
 license.workspace = true

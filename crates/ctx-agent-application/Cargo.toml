@@ -1,6 +1,6 @@
 [package]
 name = "ctx-agent-application"
-version = "0.26.0"
+version.workspace = true
 description = "Headless MCP application delivery for ctx"
 edition.workspace = true
 autotests = false

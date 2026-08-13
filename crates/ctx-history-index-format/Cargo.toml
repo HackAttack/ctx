@@ -1,6 +1,6 @@
 [package]
 name = "ctx-history-index-format"
-version = "0.26.0"
+version.workspace = true
 description = "Immutable lexical index format and verification contracts for ctx"
 edition.workspace = true
 license.workspace = true

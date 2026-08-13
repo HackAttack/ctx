@@ -1,6 +1,6 @@
 [package]
 name = "ctx-grok-build-qualification"
-version = "0.0.0"
+version.workspace = true
 description = "End-to-end qualification for the ctx Grok Build provider"
 edition.workspace = true
 license.workspace = true

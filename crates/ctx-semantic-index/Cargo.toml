@@ -1,6 +1,6 @@
 [package]
 name = "ctx-semantic-index"
-version = "0.26.0"
+version.workspace = true
 description = "Generation-pinned Flat-F32 semantic indexing and query for ctx"
 edition.workspace = true
 license.workspace = true

@@ -1,6 +1,6 @@
 [package]
 name = "ctx-semantic-model"
-version = "0.26.0"
+version.workspace = true
 description = "Verified semantic model contracts, caches, acquisition, and runtimes for ctx"
 edition.workspace = true
 license.workspace = true

@@ -1,6 +1,6 @@
 [package]
 name = "ctx-history-ingest-application"
-version = "1.0.0"
+version.workspace = true
 description = "Transport-neutral history source listing and ingestion application policy for ctx"
 edition.workspace = true
 license.workspace = true

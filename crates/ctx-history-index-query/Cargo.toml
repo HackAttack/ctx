@@ -1,6 +1,6 @@
 [package]
 name = "ctx-history-index-query"
-version = "0.26.0"
+version.workspace = true
 description = "Pinned immutable lexical query contracts and execution for ctx"
 edition.workspace = true
 license.workspace = true
