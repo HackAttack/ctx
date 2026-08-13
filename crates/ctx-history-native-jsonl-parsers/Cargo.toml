@@ -1,6 +1,6 @@
 [package]
 name = "ctx-history-native-jsonl-parsers"
-version = "0.26.0"
+version.workspace = true
 description = "Provider-specific native JSONL parsers for ctx history capture"
 edition.workspace = true
 license.workspace = true

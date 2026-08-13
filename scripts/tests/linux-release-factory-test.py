@@ -209,6 +209,7 @@ class LinuxReleaseFactoryTest(unittest.TestCase):
             '"releasable": official and selection_complete and runtimes_built',
             source,
         )
+        self.assertIn('"version": version', source)
         self.assertIn('"selected_targets": selected_targets', source)
         self.assertIn('factory_status="non-promotable"', source)
 

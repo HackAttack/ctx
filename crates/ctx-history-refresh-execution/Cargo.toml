@@ -1,6 +1,6 @@
 [package]
 name = "ctx-history-refresh-execution"
-version = "0.26.0"
+version.workspace = true
 description = "Physical source-refresh execution and publication for ctx"
 edition.workspace = true
 license.workspace = true

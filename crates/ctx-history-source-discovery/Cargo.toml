@@ -1,6 +1,6 @@
 [package]
 name = "ctx-history-source-discovery"
-version = "0.26.0"
+version.workspace = true
 description = "Provider-neutral local history source discovery for ctx"
 edition.workspace = true
 license.workspace = true

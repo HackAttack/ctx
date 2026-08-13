@@ -1,6 +1,6 @@
 [package]
 name = "ctx-history-index-generation"
-version = "0.26.0"
+version.workspace = true
 description = "Durable immutable lexical generation storage for ctx"
 edition.workspace = true
 license.workspace = true

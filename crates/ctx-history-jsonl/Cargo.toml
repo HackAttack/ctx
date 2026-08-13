@@ -1,6 +1,6 @@
 [package]
 name = "ctx-history-jsonl"
-version = "0.26.0"
+version.workspace = true
 description = "Provider-neutral JSONL ingestion semantics for ctx agent history"
 edition.workspace = true
 license.workspace = true

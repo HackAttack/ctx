@@ -1,6 +1,6 @@
 [package]
 name = "ctx-history-read-application"
-version = "0.26.0"
+version.workspace = true
 description = "Transport-neutral pinned history read application and structured read models for ctx"
 edition.workspace = true
 license.workspace = true

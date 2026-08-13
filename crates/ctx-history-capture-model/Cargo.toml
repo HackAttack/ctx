@@ -1,6 +1,6 @@
 [package]
 name = "ctx-history-capture-model"
-version = "0.26.0"
+version.workspace = true
 description = "Provider-neutral capture contracts and value objects for ctx"
 edition.workspace = true
 license.workspace = true
