@@ -283,7 +283,7 @@ mod tests {
         let fixture = std::path::Path::new(
             "tests/fixtures/provider-history/grok-build/v1.0.3/sessions/synthetic-workspace/01990000-0000-7000-8000-000000000001/updates.jsonl",
         );
-        let values = std::fs::read_to_string(&fixture)
+        let values = std::fs::read_to_string(fixture)
             .unwrap_or_else(|error| panic!("read {}: {error}", fixture.display()))
             .lines()
             .map(|line| serde_json::from_str::<Value>(line).expect("valid sanitized Grok JSONL"))
