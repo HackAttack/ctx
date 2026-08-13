@@ -8,6 +8,7 @@ use std::{
     time::Duration,
 };
 
+use ctx_history_capture_model::CoreRecordProgress;
 use ctx_history_core::{
     CertifiedSource, CertifiedSourceAppend, CoreRecord, SourceKey, MAX_ENCODED_CORE_RECORD_BYTES,
 };
@@ -16,10 +17,9 @@ use thiserror::Error;
 
 use super::super::{
     CoreRecordEmission, CoreRecordEmissionBatch, CoreRecordEmissionBatchBuilder,
-    CoreRecordProgress, SourceBackedCoordinatorError, SourceBackedGenerationSink,
-    SourceBackedLogicalSourceFailureFact, SourceBackedRecordRejectionDrafts,
-    SourceBackedRouteError, SourceBackedRouteErrorKind, SourceBackedRouteResourceKind,
-    SourceBackedRouteResources, SourceBackedSourceOutcome,
+    SourceBackedCoordinatorError, SourceBackedGenerationSink, SourceBackedLogicalSourceFailureFact,
+    SourceBackedRecordRejectionDrafts, SourceBackedRouteError, SourceBackedRouteErrorKind,
+    SourceBackedRouteResourceKind, SourceBackedRouteResources, SourceBackedSourceOutcome,
     SOURCE_BACKED_CORE_RECORD_BATCH_MAX_RECORDS,
 };
 

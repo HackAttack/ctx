@@ -14,6 +14,9 @@ use std::{
 };
 
 use chrono::{DateTime, Utc};
+use ctx_history_capture_model::{
+    CoreRecordBatchProgress, CoreRecordProgress, SourceBackedRecordProgressDelta,
+};
 use ctx_history_core::SourceAnchor;
 use ctx_history_core::{
     CaptureProvider, CertifiedSource, CertifiedSourceAppend, CertifiedSourceDeletion,
@@ -107,6 +110,25 @@ pub use inventory::*;
 pub use publication::*;
 pub use registration::*;
 pub use watch::*;
+
+pub(crate) fn source_io_progress(
+    progress: ctx_history_source_io::SqliteSourceProgress,
+) -> SourceBackedCurrentSourceProgress {
+    let stage = match progress.stage {
+        ctx_history_source_io::SqliteSourceProgressStage::SourceFamilyCopy => {
+            SourceBackedCurrentSourceProgressStage::SourceFamilyCopy
+        }
+    };
+    SourceBackedCurrentSourceProgress {
+        stage,
+        snapshot_pages_completed: progress.snapshot_pages_completed,
+        snapshot_pages_total: progress.snapshot_pages_total,
+        snapshot_bytes_completed: progress.snapshot_bytes_completed,
+        snapshot_bytes_total: progress.snapshot_bytes_total,
+        logical_rows_scanned: None,
+        logical_certified_bytes: None,
+    }
+}
 
 pub(crate) fn source_backed_base_sources(
     sink: &SourceBackedGenerationSink<'_>,
