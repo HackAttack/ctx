@@ -146,22 +146,6 @@ fn validate_absolute_env_path(key: &str, value: Option<OsString>) -> Result<Opti
     Ok(Some(path))
 }
 
-#[cfg(test)]
-mod env_path_tests {
-    use super::*;
-
-    #[test]
-    fn grok_home_contract_rejects_empty_and_relative_values() {
-        assert!(validate_absolute_env_path("GROK_HOME", Some(OsString::new())).is_err());
-        assert!(validate_absolute_env_path("GROK_HOME", Some("relative".into())).is_err());
-        assert_eq!(
-            validate_absolute_env_path("GROK_HOME", Some("/grok-home".into())).unwrap(),
-            Some(PathBuf::from("/grok-home"))
-        );
-        assert_eq!(validate_absolute_env_path("GROK_HOME", None).unwrap(), None);
-    }
-}
-
 pub fn sanitize_skill_name(name: &str) -> Result<String> {
     let mut sanitized = String::with_capacity(name.len());
     let mut previous_dash = false;
@@ -209,4 +193,20 @@ pub fn sha256_hex(body: &[u8]) -> String {
     let mut hasher = Sha256::new();
     hasher.update(body);
     format!("sha256:{:x}", hasher.finalize())
+}
+
+#[cfg(test)]
+mod env_path_tests {
+    use super::*;
+
+    #[test]
+    fn grok_home_contract_rejects_empty_and_relative_values() {
+        assert!(validate_absolute_env_path("GROK_HOME", Some(OsString::new())).is_err());
+        assert!(validate_absolute_env_path("GROK_HOME", Some("relative".into())).is_err());
+        assert_eq!(
+            validate_absolute_env_path("GROK_HOME", Some("/grok-home".into())).unwrap(),
+            Some(PathBuf::from("/grok-home"))
+        );
+        assert_eq!(validate_absolute_env_path("GROK_HOME", None).unwrap(), None);
+    }
 }
