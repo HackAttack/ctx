@@ -147,10 +147,11 @@ impl Ui {
 
 /// Owns all cursor motion used to replace a rendered terminal frame. Dynamic
 /// content is rendered separately and is never part of a control sequence.
-pub struct LiveOutput<W> {
+pub struct LiveOutput<W: Write> {
     writer: W,
     context: RenderContext,
-    rendered_lines: usize,
+    rendered_rows: Vec<String>,
+    cursor_hidden: bool,
 }
 
 impl<W: Write> LiveOutput<W> {
@@ -158,7 +159,8 @@ impl<W: Write> LiveOutput<W> {
         Self {
             writer,
             context,
-            rendered_lines: 0,
+            rendered_rows: Vec::new(),
+            cursor_hidden: false,
         }
     }
 
@@ -167,8 +169,12 @@ impl<W: Write> LiveOutput<W> {
     }
 
     #[doc(hidden)]
-    pub fn into_inner(self) -> W {
-        self.writer
+    pub fn into_inner(mut self) -> W {
+        self.restore_cursor_best_effort();
+        let output = std::mem::ManuallyDrop::new(self);
+        // SAFETY: `output` will not be dropped, so reading its writer transfers
+        // ownership exactly once without running `LiveOutput::drop` a second time.
+        unsafe { std::ptr::read(&output.writer) }
     }
 
     #[doc(hidden)]
@@ -196,37 +202,125 @@ impl<W: Write> LiveOutput<W> {
             return self.writer.flush();
         }
 
-        let lines = frame
-            .strip_suffix('\n')
-            .unwrap_or(&frame)
-            .split('\n')
-            .collect::<Vec<_>>();
-        if self.rendered_lines == 0 {
-            self.writer.write_all(frame.as_bytes())?;
-            self.rendered_lines = if final_frame { 0 } else { lines.len() };
-            return self.writer.flush();
+        let rows = frame_rows(&frame);
+        if !self.cursor_hidden {
+            let write_result = if final_frame {
+                self.writer.write_all(frame.as_bytes())
+            } else {
+                self.hide_cursor()?;
+                self.writer.write_all(frame.as_bytes())
+            };
+            if !final_frame && write_result.is_ok() {
+                self.rendered_rows = rows.iter().map(|row| (*row).to_owned()).collect();
+            }
+            return self.finish_frame(final_frame, write_result);
         }
 
-        write!(self.writer, "\u{1b}[{}A", self.rendered_lines)?;
-        let previous_lines = self.rendered_lines;
-        let height = previous_lines.max(lines.len());
+        let repaint_result = self.repaint_changed_rows(&rows);
+        if repaint_result.is_ok() {
+            self.rendered_rows = rows.iter().map(|row| (*row).to_owned()).collect();
+        }
+        self.finish_frame(final_frame, repaint_result)
+    }
+
+    fn hide_cursor(&mut self) -> io::Result<()> {
+        self.cursor_hidden = true;
+        self.writer.write_all(b"\x1b[?25l")
+    }
+
+    fn repaint_changed_rows(&mut self, rows: &[&str]) -> io::Result<()> {
+        if self
+            .rendered_rows
+            .iter()
+            .map(String::as_str)
+            .eq(rows.iter().copied())
+        {
+            return Ok(());
+        }
+
+        write_cursor_up(&mut self.writer, self.rendered_rows.len())?;
+        let mut cursor_row = 0;
+        let height = self.rendered_rows.len().max(rows.len());
         for row in 0..height {
-            self.writer.write_all(b"\r\x1b[2K")?;
-            if let Some(line) = lines.get(row) {
+            if self.rendered_rows.get(row).map(String::as_str) == rows.get(row).copied() {
+                continue;
+            }
+            write_cursor_down(&mut self.writer, row.saturating_sub(cursor_row))?;
+            cursor_row = row;
+            self.writer.write_all(b"\r")?;
+            if let Some(line) = rows.get(row) {
                 self.writer.write_all(line.as_bytes())?;
             }
-            self.writer.write_all(b"\n")?;
+            self.writer.write_all(b"\x1b[K")?;
         }
-        if previous_lines > lines.len() {
-            write!(
-                self.writer,
-                "\u{1b}[{}A",
-                previous_lines.saturating_sub(lines.len())
-            )?;
+
+        if cursor_row < rows.len() {
+            write_cursor_down(&mut self.writer, rows.len() - cursor_row)?;
+        } else {
+            write_cursor_up(&mut self.writer, cursor_row - rows.len())?;
         }
-        self.rendered_lines = if final_frame { 0 } else { lines.len() };
-        self.writer.flush()
+        Ok(())
     }
+
+    fn finish_frame(&mut self, final_frame: bool, result: io::Result<()>) -> io::Result<()> {
+        if final_frame {
+            let restore_result = self.restore_cursor();
+            self.rendered_rows.clear();
+            return match result {
+                Err(error) => Err(error),
+                Ok(()) => restore_result.and_then(|()| self.writer.flush()),
+            };
+        }
+        result.and_then(|()| self.writer.flush())
+    }
+
+    fn restore_cursor(&mut self) -> io::Result<()> {
+        if self.cursor_hidden {
+            self.writer.write_all(b"\x1b[?25h")?;
+            self.cursor_hidden = false;
+        }
+        Ok(())
+    }
+
+    fn restore_cursor_best_effort(&mut self) {
+        if self.cursor_hidden {
+            let _ = self.writer.write_all(b"\x1b[?25h");
+            let _ = self.writer.flush();
+            self.cursor_hidden = false;
+        }
+    }
+}
+
+impl<W: Write> Drop for LiveOutput<W> {
+    fn drop(&mut self) {
+        self.restore_cursor_best_effort();
+    }
+}
+
+fn frame_rows(frame: &str) -> Vec<&str> {
+    if frame.is_empty() {
+        Vec::new()
+    } else {
+        frame
+            .strip_suffix('\n')
+            .unwrap_or(frame)
+            .split('\n')
+            .collect()
+    }
+}
+
+fn write_cursor_up(writer: &mut impl Write, rows: usize) -> io::Result<()> {
+    for _ in 0..rows {
+        writer.write_all(b"\x1b[A")?;
+    }
+    Ok(())
+}
+
+fn write_cursor_down(writer: &mut impl Write, rows: usize) -> io::Result<()> {
+    for _ in 0..rows {
+        writer.write_all(b"\x1b[B")?;
+    }
+    Ok(())
 }
 
 struct Destination {
@@ -441,13 +535,118 @@ mod tests {
         assert_eq!(
             rendered,
             concat!(
-                "one\n",
-                "\x1b[1A\r\x1b[2Kone\n\r\x1b[2Ktwo\n",
-                "\x1b[2A\r\x1b[2Kshort\n\r\x1b[2K\n\x1b[1A",
-                "\x1b[1A\r\x1b[2Kdone\n",
-                "after\n",
+                "\x1b[?25lone\n",
+                "\x1b[A\x1b[B\rtwo\x1b[K\x1b[B",
+                "\x1b[A\x1b[A\rshort\x1b[K\x1b[B\r\x1b[K",
+                "\x1b[A\rdone\x1b[K\x1b[B\x1b[?25h",
+                "\x1b[?25lafter\n\x1b[?25h",
             )
         );
+    }
+
+    #[test]
+    fn unchanged_live_frames_emit_no_bytes() {
+        let context = RenderContext::for_test(TestContext::tty(StreamKind::Stdout, 80));
+        let mut output = LiveOutput::new(Vec::new(), context);
+        output
+            .write_frame(&document(&["first", "second"]), false)
+            .unwrap();
+        let first_frame = output.inner().clone();
+
+        output
+            .write_frame(&document(&["first", "second"]), false)
+            .unwrap();
+
+        assert_eq!(output.inner(), &first_frame);
+    }
+
+    #[test]
+    fn sparse_live_row_changes_repaint_only_the_changed_row() {
+        let context = RenderContext::for_test(TestContext::tty(StreamKind::Stdout, 80));
+        let mut output = LiveOutput::new(Vec::new(), context);
+        output
+            .write_frame(&document(&["first", "second", "third"]), false)
+            .unwrap();
+        output
+            .write_frame(&document(&["first", "SECOND", "third"]), false)
+            .unwrap();
+
+        assert_eq!(
+            output.inner(),
+            concat!(
+                "\x1b[?25lfirst\nsecond\nthird\n",
+                "\x1b[A\x1b[A\x1b[A\x1b[B\rSECOND\x1b[K\x1b[B\x1b[B",
+            )
+            .as_bytes()
+        );
+    }
+
+    #[test]
+    fn shorter_live_row_clears_only_its_stale_suffix() {
+        let context = RenderContext::for_test(TestContext::tty(StreamKind::Stdout, 80));
+        let mut output = LiveOutput::new(Vec::new(), context);
+        output.write_frame(&document(&["long row"]), false).unwrap();
+        output.write_frame(&document(&["short"]), false).unwrap();
+
+        let rendered = String::from_utf8(output.into_inner()).unwrap();
+        assert_eq!(
+            rendered,
+            concat!("\x1b[?25llong row\n", "\x1b[A\rshort\x1b[K\x1b[B\x1b[?25h",)
+        );
+        assert!(!rendered.contains("\x1b[2K"));
+    }
+
+    #[test]
+    fn live_height_changes_clear_removed_rows_and_reanchor_cursor() {
+        let context = RenderContext::for_test(TestContext::tty(StreamKind::Stdout, 80));
+        let mut output = LiveOutput::new(Vec::new(), context);
+        output.write_frame(&document(&["one"]), false).unwrap();
+        output
+            .write_frame(&document(&["one", "two", "three"]), false)
+            .unwrap();
+        output.write_frame(&document(&["one"]), false).unwrap();
+
+        assert_eq!(
+            output.inner(),
+            concat!(
+                "\x1b[?25lone\n",
+                "\x1b[A\x1b[B\rtwo\x1b[K\x1b[B\rthree\x1b[K\x1b[B",
+                "\x1b[A\x1b[A\x1b[A\x1b[B\r\x1b[K\x1b[B\r\x1b[K\x1b[A",
+            )
+            .as_bytes()
+        );
+    }
+
+    #[test]
+    fn final_live_frame_restores_cursor_and_resets_the_lifecycle() {
+        let context = RenderContext::for_test(TestContext::tty(StreamKind::Stdout, 80));
+        let mut output = LiveOutput::new(Vec::new(), context);
+        output.write_frame(&document(&["working"]), false).unwrap();
+        output.write_frame(&document(&["done"]), true).unwrap();
+        output.write_frame(&document(&["next"]), false).unwrap();
+
+        let rendered = String::from_utf8(output.into_inner()).unwrap();
+        assert_eq!(
+            rendered,
+            concat!(
+                "\x1b[?25lworking\n",
+                "\x1b[A\rdone\x1b[K\x1b[B\x1b[?25h",
+                "\x1b[?25lnext\n\x1b[?25h",
+            )
+        );
+    }
+
+    #[test]
+    fn dropping_an_active_live_output_restores_the_cursor() {
+        let context = RenderContext::for_test(TestContext::tty(StreamKind::Stdout, 80));
+        let writer = SharedWriter::default();
+        let capture = writer.clone();
+        {
+            let mut output = LiveOutput::new(writer, context);
+            output.write_frame(&document(&["working"]), false).unwrap();
+        }
+
+        assert_eq!(capture.text(), "\x1b[?25lworking\n\x1b[?25h");
     }
 
     #[test]
@@ -483,9 +682,9 @@ mod tests {
             assert_eq!(
                 rendered,
                 concat!(
-                    "long first row\nstale second row\n",
-                    "\x1b[2A\r\x1b[2Kshort replacement\n\r\x1b[2K\n\x1b[1A",
-                    "\x1b[1A\r\x1b[2Kdone\n",
+                    "\x1b[?25llong first row\nstale second row\n",
+                    "\x1b[A\x1b[A\rshort replacement\x1b[K\x1b[B\r\x1b[K",
+                    "\x1b[A\rdone\x1b[K\x1b[B\x1b[?25h",
                 )
             );
             assert!(
@@ -634,10 +833,12 @@ mod tests {
 
             let stdout = stdout_capture.text();
             let stderr = stderr_capture.text();
-            assert_eq!(stdout.contains("\x1b[2A"), stdout_controls);
-            assert_eq!(stdout.contains("\x1b[2K"), stdout_controls);
-            assert_eq!(stderr.contains("\x1b[2A"), stderr_controls);
-            assert_eq!(stderr.contains("\x1b[2K"), stderr_controls);
+            assert_eq!(stdout.contains("\x1b[A"), stdout_controls);
+            assert_eq!(stdout.contains("\x1b[?25l"), stdout_controls);
+            assert_eq!(stdout.contains("\x1b[?25h"), stdout_controls);
+            assert_eq!(stderr.contains("\x1b[A"), stderr_controls);
+            assert_eq!(stderr.contains("\x1b[?25l"), stderr_controls);
+            assert_eq!(stderr.contains("\x1b[?25h"), stderr_controls);
             assert!(!stdout.contains("\x1b[1m"));
             assert!(!stderr.contains("\x1b[1m"));
         }
@@ -693,6 +894,6 @@ mod tests {
             .write_frame(&document(&["source\x1b[999A\rname"]), false)
             .unwrap();
         let rendered = String::from_utf8(output.into_inner()).unwrap();
-        assert_eq!(rendered, "source\\x1b[999A\\rname\n");
+        assert_eq!(rendered, "\x1b[?25lsource\\x1b[999A\\rname\n\x1b[?25h");
     }
 }
