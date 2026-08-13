@@ -18,9 +18,18 @@ run_bazel() {
   scripts/bazelw "${command[@]}"
 }
 
-run_rust_crate_size_preflight() {
-  printf '==> local physical Rust crate-size preflight\n'
-  scripts/bazelw run //:rust_crate_size_preflight -- --preflight "${repo_root}"
+run_rust_crate_size_gate() {
+  local selected_mode="$1"
+  if [[ "${selected_mode}" == release ]]; then
+    local candidate_commit
+    candidate_commit="$(git rev-parse --verify HEAD^{commit})"
+    printf '==> local physical Rust crate-size exact-candidate validation\n'
+    scripts/bazelw run //:rust_crate_size_preflight -- \
+      --exact-candidate "${candidate_commit}" "${repo_root}"
+  else
+    printf '==> local physical Rust crate-size integration preflight\n'
+    scripts/bazelw run //:rust_crate_size_preflight -- --preflight "${repo_root}"
+  fi
 }
 
 usage() {
@@ -34,7 +43,9 @@ Modes:
   nightly    ci plus serialized upgrade, daemon, and fault qualification
   release    nightly qualification for a release candidate
 
-The physical Rust crate-size preflight runs locally before each named mode.
+The physical Rust crate-size gate runs locally before each named mode. CI and
+nightly enforce integration freshness; release validates the exact checked-out
+candidate without consulting a later-moving origin/main.
 Cargo is not invoked by these modes; Bazel is the build and test authority.
 --force-rerun disables test-result reuse without deleting compilation caches.
 USAGE
@@ -69,7 +80,7 @@ case "${mode}" in
   *) printf 'unknown check mode: %s\n' "${mode}" >&2; usage >&2; exit 2 ;;
 esac
 
-run_rust_crate_size_preflight
+run_rust_crate_size_gate "${mode}"
 
 case "${mode}" in
   ci)

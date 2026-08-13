@@ -487,6 +487,42 @@ class GitTransitionTests(unittest.TestCase):
 
         self.assertNotEqual(base, advanced)
 
+    def test_exact_candidate_uses_its_parent_after_origin_main_advances(self) -> None:
+        base = self.checkout.base_commit()
+        self.checkout.run("switch", "-q", "-c", "candidate")
+        self.checkout.write("candidate", "candidate\n")
+        candidate = self.checkout.commit("candidate")
+        self.checkout.run("switch", "-q", "main")
+        self.checkout.write("main", "advanced\n")
+        advanced = self.checkout.commit("main advanced")
+        self.checkout.run("update-ref", "refs/remotes/origin/main", advanced)
+        self.checkout.run("switch", "-q", "candidate")
+
+        selected, previous = gate.previous_accepted_policy(
+            self.checkout.root, candidate
+        )
+
+        self.assertEqual(selected, base)
+        self.assertEqual(previous, policy())
+        self.assertNotEqual(candidate, advanced)
+
+    def test_exact_candidate_rejects_a_different_checked_out_commit(self) -> None:
+        base = self.checkout.base_commit()
+
+        with self.assertRaisesRegex(
+            gate.GateError, "exact candidate commit does not match checked-out HEAD"
+        ):
+            gate.previous_accepted_policy(self.checkout.root, "b" * 40)
+
+        self.assertEqual(self.checkout.run("rev-parse", "HEAD"), base)
+
+    def test_exact_candidate_rejects_a_dirty_checkout(self) -> None:
+        candidate = self.checkout.base_commit()
+        self.checkout.write("dirty", "not committed\n")
+
+        with self.assertRaisesRegex(gate.GateError, "exact candidate checkout is dirty"):
+            gate.previous_accepted_policy(self.checkout.root, candidate)
+
     def test_stale_origin_main_relative_to_local_main_fails_closed(self) -> None:
         base = self.checkout.base_commit()
         self.checkout.run("update-ref", "refs/remotes/origin/main", base)

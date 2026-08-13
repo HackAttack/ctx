@@ -23,12 +23,23 @@ cat >"${repo_root}/scripts/check-rust-crate-size.py" <<'PY'
 #!/usr/bin/env python3
 import os
 from pathlib import Path
+import re
 import sys
 
-if sys.argv != [sys.argv[0], "--preflight", str(Path.cwd())]:
-    raise SystemExit(f"unexpected preflight arguments: {sys.argv[1:]!r}")
+arguments = sys.argv[1:]
+if arguments == ["--preflight", str(Path.cwd())]:
+    record = f"preflight={arguments[0]} {arguments[1]}"
+elif (
+    len(arguments) == 3
+    and arguments[0] == "--exact-candidate"
+    and re.fullmatch(r"[0-9a-f]{40}", arguments[1])
+    and arguments[2] == str(Path.cwd())
+):
+    record = f"candidate={arguments[0]} {arguments[1]} {arguments[2]}"
+else:
+    raise SystemExit(f"unexpected crate-size arguments: {arguments!r}")
 with open(os.environ["CTX_FAKE_BAZEL_LOG"], "a", encoding="utf-8") as output:
-    print(f"preflight={sys.argv[1]} {sys.argv[2]}", file=output)
+    print(record, file=output)
 PY
 cat >"${repo_root}/scripts/bazelw" <<'SH'
 #!/usr/bin/env bash
@@ -46,6 +57,12 @@ chmod +x \
   "${repo_root}/scripts/check-rust-crate-size.py" \
   "${repo_root}/scripts/fake-bazel" \
   "${repo_root}/scripts/bazelw"
+git -C "${repo_root}" init -q -b main
+git -C "${repo_root}" config user.email check-test@example.invalid
+git -C "${repo_root}" config user.name 'Check Test'
+git -C "${repo_root}" add -A
+git -C "${repo_root}" commit -q -m fixture
+candidate_commit="$(git -C "${repo_root}" rev-parse HEAD)"
 
 export CTX_FAKE_BAZEL_LOG="${test_root}/fake-bazel.log"
 unset RUST_TEST_THREADS
@@ -119,9 +136,9 @@ cmp -s "${expected}" "${CTX_FAKE_BAZEL_LOG}" \
 grep -Fq -- '--force-rerun disables test-result reuse' \
   <("${repo_root}/scripts/check.sh" --help) \
   || fail 'help does not document force-rerun cache behavior'
-grep -Fq -- 'physical Rust crate-size preflight runs locally' \
+grep -Fq -- 'physical Rust crate-size gate runs locally' \
   <("${repo_root}/scripts/check.sh" --help) \
-  || fail 'help does not document local preflight behavior'
+  || fail 'help does not document local crate-size behavior'
 
 expected_modes="$(printf '%s\n' ci nightly release)"
 [[ "$("${repo_root}/scripts/check.sh" --list-modes)" == "${expected_modes}" ]] \
@@ -143,8 +160,25 @@ for mode in ci nightly release; do
   : >"${CTX_FAKE_BAZEL_LOG}"
   "${repo_root}/scripts/check.sh" --mode "${mode}" \
     >"${test_root}/${mode}.out" 2>"${test_root}/${mode}.err"
-  [[ "$(grep -c '^preflight=' "${CTX_FAKE_BAZEL_LOG}")" == "1" ]] \
-    || fail "${mode} mode did not run exactly one local preflight"
+  if [[ "${mode}" == release ]]; then
+    [[ "$(grep -c '^candidate=' "${CTX_FAKE_BAZEL_LOG}")" == "1" ]] \
+      || fail 'release mode did not run exactly one exact-candidate gate'
+    grep -Fqx "arg=--exact-candidate" "${CTX_FAKE_BAZEL_LOG}" \
+      || fail 'release mode did not select exact-candidate validation'
+    grep -Fqx "arg=${candidate_commit}" "${CTX_FAKE_BAZEL_LOG}" \
+      || fail 'release mode did not bind the checked-out commit'
+    if grep -Fqx 'arg=--preflight' "${CTX_FAKE_BAZEL_LOG}"; then
+      fail 'release mode retained integration ancestry freshness'
+    fi
+  else
+    [[ "$(grep -c '^preflight=' "${CTX_FAKE_BAZEL_LOG}")" == "1" ]] \
+      || fail "${mode} mode did not run exactly one local preflight"
+    grep -Fqx 'arg=--preflight' "${CTX_FAKE_BAZEL_LOG}" \
+      || fail "${mode} mode did not retain integration ancestry freshness"
+    if grep -Fqx 'arg=--exact-candidate' "${CTX_FAKE_BAZEL_LOG}"; then
+      fail "${mode} mode unexpectedly selected exact-candidate validation"
+    fi
+  fi
   grep -Fqx 'arg=//...' "${CTX_FAKE_BAZEL_LOG}" \
     || fail "${mode} mode did not lint the full workspace"
   grep -Fqx "arg=//:${mode}_tests" "${CTX_FAKE_BAZEL_LOG}" \
