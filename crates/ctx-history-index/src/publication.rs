@@ -53,8 +53,8 @@ pub use retention::{
 #[cfg(test)]
 pub(crate) use ctx_history_index_format::{
     candidate_identity_verification_activity, candidate_lineage_verification_activity,
-    candidate_projection_verification_activity, reset_verification_activity, verification_activity,
-    verify_searcher_with_metrics,
+    candidate_projection_verification_activity, complete_session_id_traversals,
+    reset_verification_activity, verification_activity, verify_searcher_with_metrics,
 };
 #[cfg(test)]
 pub(crate) use ctx_history_index_generation::hashed_artifact_bytes;

@@ -106,6 +106,6 @@ pub use ctx_history_index_generation::{
 #[cfg(any(test, feature = "test-support"))]
 pub use verification::{
     candidate_identity_verification_activity, candidate_lineage_verification_activity,
-    candidate_projection_verification_activity, reset_verification_activity, verification_activity,
-    verify_searcher_with_metrics,
+    candidate_projection_verification_activity, complete_session_id_traversals,
+    reset_verification_activity, verification_activity, verify_searcher_with_metrics,
 };

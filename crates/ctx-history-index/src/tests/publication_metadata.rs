@@ -144,6 +144,7 @@ fn metadata_factory_runs_inside_the_terminal_authority_fence_without_reopen() {
         &published.receipt().shared_manifest(),
         published.verified_index().test_shared_manifest()
     ));
+    assert_eq!(crate::publication::complete_session_id_traversals(), 1);
 
     let expected_payload = format!(
         "{{\"version\":2,\"generation_id\":\"{}\",\"publication_metadata\":\"{}\"}}",
