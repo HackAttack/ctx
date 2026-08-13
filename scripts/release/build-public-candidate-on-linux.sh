@@ -8,6 +8,8 @@ readonly ZIG_SHA256="02aa270f183da276e5b5920b1dac44a63f1a49e55050ebde3aecc9eb82f
 readonly CARGO_ZIGBUILD_VERSION="0.23.0"
 readonly RCODESIGN_VERSION="0.29.0"
 readonly RCODESIGN_SHA256="dbe85cedd8ee4217b64e9a0e4c2aef92ab8bcaaa41f20bde99781ff02e600002"
+readonly TOMLI_VERSION="2.0.1"
+readonly TOMLI_SHA256="939de3e7a6161af0c887ef91b7d41a53e7c5a1ca976325f429cb46ea9bc30ecc"
 readonly FACTORY_INPUTS="contracts/release-factory-inputs-v1.json"
 
 usage() {
@@ -213,6 +215,22 @@ inspector_tool="$(llvm-readobj --version | head -n 1)"
   die "factory evidence authorities must be non-empty"
 
 mkdir -p "${toolchain_dir}"
+tomli_dir="${toolchain_dir}/python-tomli-${TOMLI_VERSION}-site-packages"
+tomli_wheel="${toolchain_dir}/tomli-${TOMLI_VERSION}-py3-none-any.whl"
+download_verified \
+  "https://files.pythonhosted.org/packages/97/75/10a9ebee3fd790d20926a90a2547f0bf78f371b2f13aa822c759680ca7b9/tomli-${TOMLI_VERSION}-py3-none-any.whl" \
+  "${TOMLI_SHA256}" "${tomli_wheel}"
+if [[ ! -f "${tomli_dir}/tomli/__init__.py" ]]; then
+  tomli_temporary="$(mktemp -d "${toolchain_dir}/python-tomli.XXXXXX")"
+  python3 -m zipfile -e "${tomli_wheel}" "${tomli_temporary}"
+  [[ -f "${tomli_temporary}/tomli/__init__.py" ]] || \
+    die "tomli wheel has an unexpected layout"
+  mv "${tomli_temporary}" "${tomli_dir}"
+fi
+python_with_tomli=(env "PYTHONPATH=${repo_root}/${tomli_dir}" python3 -S)
+[[ "$("${python_with_tomli[@]}" -c 'import tomli; print(tomli.__version__)')" == "${TOMLI_VERSION}" ]] || \
+  die "tomli version mismatch"
+
 zig_dir="${toolchain_dir}/zig-x86_64-linux-${ZIG_VERSION}"
 if [[ ! -x "${zig_dir}/zig" ]]; then
   zig_archive="${toolchain_dir}/zig-x86_64-linux-${ZIG_VERSION}.tar.xz"
@@ -430,7 +448,7 @@ for target_id in "${target_ids[@]}"; do
       )
     fi
     python3 scripts/release/linux-factory-build-info.py "${build_info_args[@]}"
-    python3 scripts/dependency-advisory-gate.py \
+    "${python_with_tomli[@]}" scripts/dependency-advisory-gate.py \
       --repo-root "${repo_root}" \
       --policy security/release-advisory-policy-v1.json \
       --exceptions security/release-advisory-exceptions-v1.json \
@@ -438,7 +456,7 @@ for target_id in "${target_ids[@]}"; do
       --database-metadata "${CTX_OSV_DATABASE_METADATA}" \
       --scanner "${CTX_OSV_SCANNER}" --cargo-inventory "${inventory}" \
       --target-id "${target_id}" --output "${artifact}.dependency-advisory.json"
-    python3 -I scripts/release-sbom.py generate \
+    "${python_with_tomli[@]}" scripts/release-sbom.py generate \
       --product core --version "${version}" --target-id "${target_id}" \
       --platform "${platform}" --artifact "${artifact}" \
       --build-info "${artifact}.build-info.json" --cargo-lock Cargo.lock \

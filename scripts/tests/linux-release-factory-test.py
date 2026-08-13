@@ -18,6 +18,7 @@ INVENTORY = ROOT / "scripts" / "release" / "cargo-release-inventory.py"
 BUILD_INFO = ROOT / "scripts" / "release" / "linux-factory-build-info.py"
 RELEASE_SBOM = ROOT / "scripts" / "release-sbom.py"
 SCHEMA = ROOT / "contracts" / "release-candidate-manifest-v1.schema.json"
+SEALER = ROOT / "scripts" / "release" / "seal-linux-factory-candidate.py"
 
 
 def load(path: Path, name: str):
@@ -119,7 +120,7 @@ class LinuxReleaseFactoryTest(unittest.TestCase):
         factory_inputs = json.loads(
             (ROOT / "contracts" / "release-factory-inputs-v1.json").read_text()
         )
-        for value in ("1.97.1", "0.15.2", "0.23.0", "0.29.0"):
+        for value in ("1.97.1", "0.15.2", "0.23.0", "0.29.0", "2.0.1"):
             self.assertIn(value, source)
         self.assertIn("--diagnostic-unsigned", source)
         self.assertIn("official release requires", source)
@@ -140,6 +141,16 @@ class LinuxReleaseFactoryTest(unittest.TestCase):
         self.assertIn("ctx-release-factory.json", source)
         self.assertIn('"${cargo_zigbuild_bin}" zigbuild', source)
         self.assertNotIn("cargo zigbuild", source)
+        self.assertIn('python_with_tomli=(env "PYTHONPATH=${repo_root}/${tomli_dir}" python3 -S)', source)
+        self.assertNotIn('export PYTHONPATH=', source)
+
+    def test_factory_sealer_loads_its_sibling_under_isolated_python(self) -> None:
+        subprocess.run(
+            [sys.executable, "-I", os.fspath(SEALER), "--help"],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
 
     def test_factory_target_selection_defaults_to_all_and_accepts_known_ids(self) -> None:
         source = (ROOT / "scripts" / "release" / "build-public-candidate-on-linux.sh").read_text()
