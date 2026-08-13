@@ -111,10 +111,7 @@ def main() -> int:
                 "image_id": None,
                 "tool": args.inspector_tool,
             },
-            # The shared matrix retains Linux ABI metadata for compatibility.
-            # Do not copy its image/sysroot claims into evidence for this
-            # Cargo/Zig factory, which did not use them.
-            "linux_build": None,
+            "linux_build": selected["linux_build"],
             "platform": args.platform,
             "release_factory": {
                 "authority": "linux-cross-cargo-zigbuild-v1",

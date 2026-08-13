@@ -262,11 +262,177 @@ class LinuxReleaseFactoryTest(unittest.TestCase):
                 "trusted",
             )
 
-    def test_factory_build_info_does_not_claim_legacy_bazel_inputs(self) -> None:
-        source = (ROOT / "scripts" / "release" / "linux-factory-build-info.py").read_text()
-        self.assertIn('"linux_build": None', source)
-        self.assertIn('"release_factory": {', source)
-        self.assertIn('"os": args.builder_os', source)
+    def _write_factory_build_info(
+        self,
+        root: Path,
+        platform: str,
+        source_repo: Path,
+        source_commit: str,
+    ) -> tuple[Path, Path, dict[str, object]]:
+        matrix = ROOT / "contracts" / "release-targets-v1.json"
+        factory_inputs_path = ROOT / "contracts" / "release-factory-inputs-v1.json"
+        factory_inputs = json.loads(factory_inputs_path.read_text(encoding="utf-8"))
+        selected = build_info.target(matrix, platform)
+        linux_x64 = build_info.target(matrix, "linux-x64")
+        linux_build = linux_x64["linux_build"]
+        self.assertIsInstance(linux_build, dict)
+        host = factory_inputs["linux_host"]
+        artifact = root / f"{platform}.artifact"
+        output = root / f"{platform}.build-info.json"
+        artifact.write_bytes(f"factory artifact: {platform}\n".encode())
+        arguments = [
+            sys.executable,
+            os.fspath(BUILD_INFO),
+            "--artifact",
+            os.fspath(artifact),
+            "--cargo-lock",
+            os.fspath(ROOT / "Cargo.lock"),
+            "--matrix",
+            os.fspath(matrix),
+            "--output",
+            os.fspath(output),
+            "--platform",
+            platform,
+            "--recipe",
+            os.fspath(
+                ROOT / "scripts" / "release" / "build-public-candidate-on-linux.sh"
+            ),
+            "--rust-version",
+            f"rustc {linux_build['rust_toolchain']} (fixture)",
+            "--source-commit",
+            source_commit,
+            "--source-repo",
+            os.fspath(source_repo),
+            "--static-status",
+            "passed",
+            "--local-runtime-status",
+            "not_run",
+            "--local-runtime-authority",
+            "not_run",
+            "--zig-version",
+            "0.15.2",
+            "--cargo-zigbuild-version",
+            "0.23.0",
+            "--builder-authority",
+            host["authority"],
+            "--builder-os",
+            f"{host['os_id']}-{host['os_version']}-{host['arch']}",
+            "--inspector-authority",
+            "ctx-release-static-llvm-v1",
+            "--inspector-tool",
+            "llvm",
+        ]
+        if selected["os"] == "macos":
+            arguments.extend(
+                (
+                    "--macos-sdk-sha256",
+                    factory_inputs["macos_sdk"]["archive_sha256"],
+                    "--macos-sdk-authority",
+                    factory_inputs["macos_sdk"]["authority"],
+                )
+            )
+        subprocess.run(arguments, check=True, capture_output=True, text=True)
+        return artifact, output, selected
+
+    def _factory_source(self, root: Path) -> tuple[Path, str]:
+        source_repo = root / "source"
+        subprocess.run(
+            ["git", "init", "--quiet", os.fspath(source_repo)], check=True
+        )
+        (source_repo / "source.txt").write_text("clean factory source\n")
+        subprocess.run(
+            ["git", "-C", os.fspath(source_repo), "add", "source.txt"], check=True
+        )
+        subprocess.run(
+            [
+                "git",
+                "-C",
+                os.fspath(source_repo),
+                "-c",
+                "user.name=Factory Test",
+                "-c",
+                "user.email=factory-test@example.invalid",
+                "commit",
+                "--quiet",
+                "-m",
+                "fixture",
+            ],
+            check=True,
+        )
+        source_commit = subprocess.check_output(
+            ["git", "-C", os.fspath(source_repo), "rev-parse", "HEAD"], text=True
+        ).strip()
+        return source_repo, source_commit
+
+    def test_factory_linux_build_info_equals_matrix_and_rejects_mutation(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source_repo, source_commit = self._factory_source(root)
+            for platform in ("linux-x64", "linux-aarch64"):
+                with self.subTest(platform=platform):
+                    artifact, output, selected = self._write_factory_build_info(
+                        root, platform, source_repo, source_commit
+                    )
+                    value = json.loads(output.read_text(encoding="utf-8"))
+                    self.assertIsInstance(selected["linux_build"], dict)
+                    self.assertEqual(value["linux_build"], selected["linux_build"])
+                    build_info_check.validate(
+                        artifact,
+                        output,
+                        ROOT / "contracts" / "release-targets-v1.json",
+                        platform,
+                        source_commit,
+                        ROOT / "Cargo.lock",
+                        ROOT / "contracts" / "release-factory-inputs-v1.json",
+                    )
+
+                    mismatched = dict(selected["linux_build"])
+                    mismatched["glibc_max"] = "0.0"
+                    for label, mutation in (("null", None), ("mismatch", mismatched)):
+                        with self.subTest(platform=platform, mutation=label):
+                            value["linux_build"] = mutation
+                            output.write_text(
+                                json.dumps(value, sort_keys=True, separators=(",", ":"))
+                                + "\n",
+                                encoding="utf-8",
+                            )
+                            with self.assertRaisesRegex(
+                                ValueError, "does not match the matrix build contract"
+                            ):
+                                build_info_check.validate(
+                                    artifact,
+                                    output,
+                                    ROOT / "contracts" / "release-targets-v1.json",
+                                    platform,
+                                    source_commit,
+                                    ROOT / "Cargo.lock",
+                                    ROOT
+                                    / "contracts"
+                                    / "release-factory-inputs-v1.json",
+                                )
+
+    def test_factory_non_linux_build_info_remains_exactly_matrix_null(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source_repo, source_commit = self._factory_source(root)
+            for platform in ("macos-arm64", "macos-x64", "windows-x64"):
+                with self.subTest(platform=platform):
+                    artifact, output, selected = self._write_factory_build_info(
+                        root, platform, source_repo, source_commit
+                    )
+                    value = json.loads(output.read_text(encoding="utf-8"))
+                    self.assertIsNone(selected["linux_build"])
+                    self.assertEqual(value["linux_build"], selected["linux_build"])
+                    self.assertIsNone(value["release_factory"]["glibc_max"])
+                    build_info_check.validate(
+                        artifact,
+                        output,
+                        ROOT / "contracts" / "release-targets-v1.json",
+                        platform,
+                        source_commit,
+                        ROOT / "Cargo.lock",
+                        ROOT / "contracts" / "release-factory-inputs-v1.json",
+                    )
 
     def test_factory_does_not_expose_apple_credentials_to_builds(self) -> None:
         source = (ROOT / "scripts" / "release" / "build-public-candidate-on-linux.sh").read_text()
