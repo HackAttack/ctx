@@ -336,8 +336,8 @@ openssl pkey -in "${notary_key_path}" -noout >/dev/null 2>&1 || \
 
 if ! rcodesign sign \
   --for-notarization \
-  --p12-file "${cert_path}" \
-  --p12-password-file "${cert_password_path}" \
+  --pem-file "${cert_pem_path}" \
+  --pem-file "${cert_private_key_path}" \
   "${artifact}"; then
   die "Developer ID signing failed for ${platform} ${kind}"
 fi

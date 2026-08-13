@@ -125,21 +125,21 @@ set -euo pipefail
 if [[ "${1:-}" == "--version" ]]; then printf '%s\n' 'rcodesign 0.test'; exit 0; fi
 [[ " $* " == *' --for-notarization '* ]]
 original_args="$*"
-p12=""
-password=""
+certificate=""
+private_key=""
 artifact="${!#}"
 while [[ $# -gt 0 ]]; do
   case "$1" in
-    --p12-file) p12="$2"; shift 2 ;;
-    --p12-password-file) password="$2"; shift 2 ;;
+    --pem-file)
+      if [[ -z "${certificate}" ]]; then certificate="$2"; else private_key="$2"; fi
+      shift 2
+      ;;
     *) shift ;;
   esac
 done
 printf '%s\n' "${original_args}" >"${TMPDIR}/rcodesign-argv.txt"
-[[ "$(stat -c '%a' "${p12}" 2>/dev/null || stat -f '%Lp' "${p12}")" == "600" ]]
-[[ "$(stat -c '%a' "${password}" 2>/dev/null || stat -f '%Lp' "${password}")" == "600" ]]
-cmp -s "${password}" <(printf '%b' \
-  '\x70\x61\x73\x73\x77\x6f\x72\x64\x2d\x73\x65\x63\x72\x65\x74\x2d\x73\x65\x6e\x74\x69\x6e\x65\x6c')
+[[ "$(stat -c '%a' "${certificate}" 2>/dev/null || stat -f '%Lp' "${certificate}")" == "600" ]]
+[[ "$(stat -c '%a' "${private_key}" 2>/dev/null || stat -f '%Lp' "${private_key}")" == "600" ]]
 env | LC_ALL=C sort >"${TMPDIR}/signer-environment.txt"
 printf '%s\n' "${CTX_MACOS_SIGNING_SECRET_DIR:?}" >"${TMPDIR}/last-signing-secret-dir.txt"
 printf '%s\n' sign >>"${TMPDIR}/tool-order.log"
@@ -544,8 +544,8 @@ for forbidden in APPLE_CODESIGN_CERT_P12_B64 APPLE_CODESIGN_CERT_PASSWORD NOTARY
   grep -Fq "${forbidden}=" "${TMPDIR}/signer-environment.txt" \
     && fail "${forbidden} value reached signer environment"
 done
-grep -Fq -- '--p12-password-file ' "${TMPDIR}/rcodesign-argv.txt" || \
-  fail "rcodesign did not receive the P12 password as a file path"
+[[ "$(grep -o -- '--pem-file ' "${TMPDIR}/rcodesign-argv.txt" | wc -l | tr -d ' ')" == "2" ]] || \
+  fail "rcodesign did not receive certificate and private key PEM file paths"
 grep -Fq -- '--key ' "${TMPDIR}/notarytool-argv.txt" || \
   fail "notarytool did not receive the P8 as a file path"
 for secret in password-secret-sentinel p12-secret-sentinel p8-secret-sentinel; do
