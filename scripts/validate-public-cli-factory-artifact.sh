@@ -38,7 +38,9 @@ esac
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "${repo_root}"
-artifact="${artifact_dir%/}/${binary}"
+artifact_dir="$(cd "${artifact_dir}" 2>/dev/null && pwd -P)" || \
+  die "factory artifact directory is unavailable"
+artifact="${artifact_dir}/${binary}"
 [[ -f "${artifact}" && ! -L "${artifact}" ]] || die "factory artifact is missing"
 [[ -s "${artifact}.sha256" ]] || die "factory checksum is missing"
 before="$(sha256_file "${artifact}")"
@@ -63,7 +65,9 @@ version="$(python3 -I scripts/check-public-cli-build-info.py \
 # Restore only owner execute permission after the exact artifact, source,
 # candidate, build-info, and construction-version bindings have passed.
 if [[ "${platform}" != windows-x64 ]]; then
-  chmod u+x -- "${artifact}" || die "could not establish factory artifact executable mode"
+  # BSD chmod rejects the GNU-only chmod u+x -- "${artifact}" form. The
+  # canonical absolute path above cannot be mistaken for an option.
+  chmod u+x "${artifact}" || die "could not establish factory artifact executable mode"
   [[ -f "${artifact}" && ! -L "${artifact}" && -x "${artifact}" ]] || \
     die "factory artifact is not an executable regular file"
 fi
