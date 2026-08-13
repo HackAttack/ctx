@@ -90,13 +90,38 @@ if grep -REn --include='*.rs' \
   exit 1
 fi
 
-fetch_impls="$(grep -REl --include='*.rs' 'impl[[:space:]]+ArtifactFetcher[[:space:]]+for' "${repo_root}/crates/ctx-cli/src" | LC_ALL=C sort -u)"
-if [[ "${fetch_impls}" != "${repo_root}/crates/ctx-cli/src/semantic/daemon_service_ports.rs" ]]; then
-  echo 'the CLI daemon service adapter must be the sole production ArtifactFetcher implementation' >&2
-  printf '%s\n' "${fetch_impls}" >&2
+daemon_cli_root="${repo_root}/crates/ctx-daemon-cli"
+fetch_impls="${tmp}/artifact-fetcher-impls.txt"
+: >"${fetch_impls}"
+while IFS= read -r source; do
+  crate_source="${source#*/src/}"
+  case "${crate_source}" in
+    tests.rs|tests/*|*/tests.rs|*/tests/*|*_tests.rs|test_support*.rs|*/test_support*.rs)
+      continue
+      ;;
+  esac
+  if grep -Eq 'impl[[:space:]]+ArtifactFetcher[[:space:]]+for' "${source}"; then
+    printf '%s\n' "${source}" >>"${fetch_impls}"
+  fi
+done < <(find "${daemon_cli_root}/src" -type f -name '*.rs' | LC_ALL=C sort)
+expected_fetch_impl="${daemon_cli_root}/src/daemon_service_ports.rs"
+if [[ "$(cat "${fetch_impls}")" != "${expected_fetch_impl}" ]]; then
+  echo 'the ctx-daemon-cli service adapter must be the sole production ArtifactFetcher implementation in ctx-daemon-cli' >&2
+  cat "${fetch_impls}" >&2
   exit 1
 fi
-if [[ "$(grep -RE --include='*.rs' -c '\.acquire_for_daemon\(' "${repo_root}/crates/ctx-daemon-service/src" | awk -F: '{ total += $2 } END { print total + 0 }')" -ne 1 ]]; then
+acquisition_calls=0
+while IFS= read -r source; do
+  crate_source="${source#*/src/}"
+  case "${crate_source}" in
+    tests.rs|tests/*|*/tests.rs|*/tests/*|*_tests.rs|test_support*.rs|*/test_support*.rs)
+      continue
+      ;;
+  esac
+  matches="$(awk '/\.acquire_for_daemon\(/ { count += 1 } END { print count + 0 }' "${source}")"
+  acquisition_calls="$((acquisition_calls + matches))"
+done < <(find "${repo_root}/crates/ctx-daemon-service/src" -type f -name '*.rs' | LC_ALL=C sort)
+if [[ "${acquisition_calls}" -ne 1 ]]; then
   echo 'ctx-daemon-service must have exactly one production daemon acquisition call' >&2
   exit 1
 fi
