@@ -8,16 +8,6 @@ thread_local! {
 }
 
 #[cfg(test)]
-pub(crate) fn reset_base_source_manifest_visits() {
-    BASE_SOURCE_MANIFEST_VISITS.with(|visits| visits.set(0));
-}
-
-#[cfg(test)]
-pub(crate) fn base_source_manifest_visits() -> u64 {
-    BASE_SOURCE_MANIFEST_VISITS.with(std::cell::Cell::get)
-}
-
-#[cfg(test)]
 pub(crate) fn record_base_source_manifest_visit() {
     BASE_SOURCE_MANIFEST_VISITS.with(|visits| visits.set(visits.get().saturating_add(1)));
 }

@@ -9,8 +9,8 @@ use ctx_history_capture_model::{
     source_level_progress, AttemptHistoryProgress, SourceRecordProgress,
 };
 pub use ctx_history_capture_model::{
-    SourceBackedCurrentSourceProgress, SourceBackedCurrentSourceProgressStage,
-    SourceBackedDetailedRefreshProgress, SourceBackedRefreshProgress,
+    SourceBackedCurrentSourceProgress, SourceBackedDetailedRefreshProgress,
+    SourceBackedRefreshProgress,
 };
 pub use ctx_history_capture_runtime::SourceBackedCertifiedRemoval;
 #[cfg(test)]
