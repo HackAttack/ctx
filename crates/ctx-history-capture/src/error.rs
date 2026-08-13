@@ -144,3 +144,16 @@ impl From<ctx_history_source_sqlite::SqliteIoError> for CaptureError {
         }
     }
 }
+
+impl From<ctx_history_jsonl::JsonlIoError> for CaptureError {
+    fn from(error: ctx_history_jsonl::JsonlIoError) -> Self {
+        use ctx_history_jsonl::JsonlIoError;
+
+        match error {
+            JsonlIoError::Io(error) => Self::Io(error),
+            JsonlIoError::InvalidPayload(detail) => Self::InvalidPayload(detail),
+            JsonlIoError::SystemInvariant(detail) => Self::SystemInvariant(detail),
+            JsonlIoError::SourceChangedDuringCapture => Self::SourceChangedDuringCapture,
+        }
+    }
+}

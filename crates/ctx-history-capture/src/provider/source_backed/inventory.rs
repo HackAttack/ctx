@@ -261,6 +261,20 @@ pub const LANDED_SOURCE_BACKED_ROUTES: &[SourceBackedProviderRouteMetadata] = &[
         ExplicitPath
     ),
     route!(
+        DeepSeekHarness,
+        "deepseek_harness_session_jsonl_tree" => "deepseek_harness_session_jsonl",
+        true,
+        true,
+        DiscoveredWinner
+    ),
+    route!(
+        DeepSeekHarness,
+        "deepseek_harness_session_jsonl" => "deepseek_harness_session_jsonl",
+        false,
+        true,
+        ExplicitPath
+    ),
+    route!(
         Claude,
         "claude_projects_jsonl_tree",
         true,
@@ -577,6 +591,8 @@ Codex|codex_history_jsonl|codex_history_jsonl|true|true|DiscoveredWinner|none|Pr
 Codex|codex_session_jsonl|codex_session_jsonl|false|true|ExplicitPath|none|ProviderSource
 GrokBuild|grok_build_session_updates_jsonl_tree|grok_build_session_updates_jsonl|true|true|DiscoveredWinner|none|ProviderSource
 GrokBuild|grok_build_session_updates_jsonl|grok_build_session_updates_jsonl|false|true|ExplicitPath|none|ProviderSource
+DeepSeekHarness|deepseek_harness_session_jsonl_tree|deepseek_harness_session_jsonl|true|true|DiscoveredWinner|none|ProviderSource
+DeepSeekHarness|deepseek_harness_session_jsonl|deepseek_harness_session_jsonl|false|true|ExplicitPath|none|ProviderSource
 Claude|claude_projects_jsonl_tree|claude_projects_jsonl_tree|true|true|DiscoveredWinner|none|ProviderSource
 Pi|pi_session_jsonl|pi_session_jsonl|true|true|DiscoveredWinner|none|ProviderSource
 OpenCode|opencode_sqlite|opencode_sqlite|true|true|DiscoveredWinner|none|ProviderSource
@@ -629,13 +645,13 @@ MiMoCode|mimocode_sqlite|mimocode_sqlite|true|true|DiscoveredWinner|none|Provide
 
     #[test]
     fn landed_registry_inventory_matches_pre_shard_oracle() {
-        assert_eq!(LANDED_SOURCE_BACKED_ROUTES.len(), 54);
+        assert_eq!(LANDED_SOURCE_BACKED_ROUTES.len(), 56);
         assert_eq!(
             LANDED_SOURCE_BACKED_ROUTES
                 .iter()
                 .filter(|route| route.automatic)
                 .count(),
-            43
+            44
         );
         assert_eq!(registry_inventory_oracle(), BASELINE_REGISTRY_INVENTORY);
     }

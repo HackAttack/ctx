@@ -3,13 +3,13 @@ use std::str::FromStr;
 
 #[test]
 fn provider_inventory_covers_supported_automatic_routes() {
-    assert_eq!(LANDED_SOURCE_BACKED_ROUTES.len(), 54);
+    assert_eq!(LANDED_SOURCE_BACKED_ROUTES.len(), 56);
     assert_eq!(
         LANDED_SOURCE_BACKED_ROUTES
             .iter()
             .filter(|route| route.automatic)
             .count(),
-        43
+        44
     );
     assert_eq!(
         LANDED_SOURCE_BACKED_ROUTES
@@ -23,7 +23,7 @@ fn provider_inventory_covers_supported_automatic_routes() {
             .iter()
             .filter(|route| route.automatic && route.unsupported_reason.is_none())
             .count(),
-        43
+        44
     );
     let unsupported = LANDED_SOURCE_BACKED_ROUTES
         .iter()
@@ -129,6 +129,20 @@ fn provider_inventory_covers_supported_automatic_routes() {
             CaptureProvider::GrokBuild,
             "grok_build_session_updates_jsonl",
             "grok_build_session_updates_jsonl",
+            false,
+            true,
+        ),
+        (
+            CaptureProvider::DeepSeekHarness,
+            "deepseek_harness_session_jsonl_tree",
+            "deepseek_harness_session_jsonl",
+            true,
+            true,
+        ),
+        (
+            CaptureProvider::DeepSeekHarness,
+            "deepseek_harness_session_jsonl",
+            "deepseek_harness_session_jsonl",
             false,
             true,
         ),

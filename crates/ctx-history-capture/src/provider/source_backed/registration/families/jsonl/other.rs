@@ -1,6 +1,26 @@
 use super::*;
 use crate::provider::custom_history_jsonl::CustomHistorySourceBackedInput;
 
+pub(super) fn register_deepseek_harness_route(
+    registry: &mut SourceBackedProviderRegistry,
+    source: ProviderSource,
+    selection: SourceBackedRouteSelection,
+) -> SourceBackedCoordinatorResult<()> {
+    let adapter = crate::provider::providers::deepseek_harness::jsonl_adapter(source.source_format)
+        .map_err(|error| invalid_route(source.provider, error.to_string()))?;
+    let driver = crate::provider::source_backed::family::jsonl::jsonl_family_driver(
+        adapter,
+        source.path.clone(),
+    );
+    registry.register(executable_route(
+        source,
+        selection,
+        SourceBackedSelectorAuthority::DiscoveredWinner,
+        driver,
+    )?);
+    Ok(())
+}
+
 /// Registers Cursor's thin adapter over the shared certified-append JSONL
 /// lifecycle.
 pub fn register_cursor_source_backed_route(

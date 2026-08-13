@@ -6,7 +6,7 @@ ctx imports existing agent history through conservative provider adapters. Each 
 
 The public CLI supports these local-history harnesses:
 
-Codex, Grok Build, Pi, Claude, OpenCode, Kilo Code, Kiro CLI, Crush, Goose, Lingma, Qoder, Warp, CodeBuddy, Trae, OpenClaw, Hermes Agent, NanoClaw, AstrBot, Shelley, Continue, OpenHands, Antigravity, Gemini, Tabnine, Cursor, Windsurf, Zed, Copilot CLI, Factory AI Droid, Qwen Code, Kimi Code CLI, Auggie, Junie, Firebender, ForgeCode, Deep Agents, Mistral Vibe, Mux, Rovo Dev, Cline, Roo Code, MiMo Code.
+Codex, Grok Build, DeepSeek Harness, Pi, Claude, OpenCode, Kilo Code, Kiro CLI, Crush, Goose, Lingma, Qoder, Warp, CodeBuddy, Trae, OpenClaw, Hermes Agent, NanoClaw, AstrBot, Shelley, Continue, OpenHands, Antigravity, Gemini, Tabnine, Cursor, Windsurf, Zed, Copilot CLI, Factory AI Droid, Qwen Code, Kimi Code CLI, Auggie, Junie, Firebender, ForgeCode, Deep Agents, Mistral Vibe, Mux, Rovo Dev, Cline, Roo Code, MiMo Code.
 
 Use `ctx sources` for the truth on the current machine:
 
@@ -19,10 +19,10 @@ ctx sources --all
 Default `ctx sources` output keeps the common missing-location list compact. Use `--all` to inspect every recognized provider location. The CLI recognizes these provider names; recognition does not imply that every detected schema is importable:
 
 ```text
-codex, grok-build, claude, cursor, pi, opencode, github-copilot, copilot-cli, antigravity, gemini, kilo, kiro-cli, crush, goose, tabnine, windsurf, zed, factory-ai-droid, qwen-code, kimi-code-cli, auggie, junie, firebender, forgecode, deepagents, mistral-vibe, mux, rovodev, openclaw, hermes, nanoclaw, astrbot, shelley, continue, openhands, cline, roo, lingma, qoder, warp, codebuddy, trae, mimocode
+codex, grok-build, deepseek-harness, claude, cursor, pi, opencode, github-copilot, copilot-cli, antigravity, gemini, kilo, kiro-cli, crush, goose, tabnine, windsurf, zed, factory-ai-droid, qwen-code, kimi-code-cli, auggie, junie, firebender, forgecode, deepagents, mistral-vibe, mux, rovodev, openclaw, hermes, nanoclaw, astrbot, shelley, continue, openhands, cline, roo, lingma, qoder, warp, codebuddy, trae, mimocode
 ```
 
-Aliases are accepted for common naming differences, for example `grok`, `claude-code`, `gemini-cli`, `github-copilot`, `droid`, `augment`, `qoder-cn`, `trae-cn`, and `roo-code`.
+Aliases are accepted for common naming differences, for example `grok`, `dsh`, `deepseek_harness`, `claude-code`, `gemini-cli`, `github-copilot`, `droid`, `augment`, `qoder-cn`, `trae-cn`, and `roo-code`. The shorter name `deepseek` is not a DeepSeek Harness alias.
 
 Custom history is separate: `ctx import --input-format ctx-history-jsonl-v1
 --path <file>` reads an explicit JSONL interchange file from any exporter, and
@@ -33,7 +33,7 @@ remain lineage/origin unknown.
 
 Exact MCP server/tool attribution is a separate, narrower event capability.
 Supported provider import does not automatically qualify it. The complete
-42-provider importable route/format partition is documented in
+43-provider importable route/format partition is documented in
 [`mcp-tool-call-attribution.md`](mcp-tool-call-attribution.md) and its
 machine-readable
 [`capability contract`](mcp-tool-call-attribution-capabilities.json).
@@ -72,6 +72,19 @@ Grok Build selects absolute `$GROK_HOME/sessions` when `GROK_HOME` is set and
 session requires authoritative `updates.jsonl`; derived sidecars are not
 discovery or import authority. Exact `updates.jsonl` files remain importable
 with `--provider grok-build --path`.
+
+DeepSeek Harness is Supported for its exact local session format version 0
+only. Discovery selects absolute `$DSH_HOME/sessions` when
+`DSH_HOME` is nonempty and absolute, or `~/.dsh/sessions` otherwise. Empty or
+whitespace-only values are unset; relative values are not automatically
+resolved because their meaning depends on the launch working directory.
+Default-encoded leaves are nested `*/*/session.jsonl.zstd`; configured raw
+history uses nested `*/*/session.jsonl`. Other layouts and format versions are
+not supported. Hosted/cloud history is outside this local import. General
+history support does not claim exact MCP server/tool attribution for this
+provider. Unknown required events and future versions fail the source.
+Delegated sessions remain independent imports; the immediate parent header
+does not prove the transitive root identity required for typed lineage edges.
 
 Hermes Agent is supported through the native `hermes_state_sqlite` route. On
 Linux, a non-root ctx process with the certified read-only live-WAL path makes

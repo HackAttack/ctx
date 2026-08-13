@@ -83,6 +83,7 @@ const DISCOVERY_ENV_ALLOWLIST: &[&str] = &[
     "CRUSH_GLOBAL_CONFIG",
     "CRUSH_GLOBAL_DATA",
     "CURSOR_DATA_DIR",
+    "DSH_HOME",
     "FILE_STORE",
     "FILE_STORE_PATH",
     "FLATPAK_XDG_DATA_HOME",
@@ -377,6 +378,7 @@ mod tests {
             "CODEX_HOME",
             "CLAUDE_CONFIG_DIR",
             "COPILOT_HOME",
+            "DSH_HOME",
             "GROK_HOME",
             "XDG_CONFIG_HOME",
             "CTX_LOCAL_USAGE_ENABLED",
@@ -415,7 +417,9 @@ mod tests {
             "CTX_PRO_QUALIFICATION_HELPER_SHA256",
             "CTX_PRO_QUALIFICATION_HELPER_CHANNEL",
             "AWS_SECRET_ACCESS_KEY",
+            "DEEPSEEK_API_KEY",
             "GITHUB_TOKEN",
+            "OPENROUTER_API_KEY",
             "XAI_API_KEY",
         ] {
             assert!(!allowlist.contains(&forbidden), "captured {forbidden}");

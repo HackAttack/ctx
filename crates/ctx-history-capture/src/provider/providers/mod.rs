@@ -6,6 +6,7 @@ pub(crate) mod continue_cli;
 pub(crate) mod crush;
 pub(crate) mod cursor;
 pub(crate) mod deepagents;
+pub(crate) mod deepseek_harness;
 pub(crate) mod firebender;
 pub(crate) mod forgecode;
 pub(crate) mod gemini;

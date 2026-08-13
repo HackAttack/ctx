@@ -839,6 +839,7 @@ fn expected_state(
                     certificate,
                     terminal_proof,
                     emitted_bytes: 0,
+                    record_rejections: Default::default(),
                 },
             )
         })

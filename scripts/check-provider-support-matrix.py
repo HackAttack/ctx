@@ -106,6 +106,7 @@ PUBLIC_COVERAGE_PATHS = {
     "crates/ctx-cli-contract-tests/tests/contracts/support/native_providers/workspace_sources.rs",
     "crates/ctx-cli-contract-tests/tests/contracts/setup_sources_import.rs",
     "crates/ctx-history-capture/src/lib.rs",
+    "crates/ctx-history-source-discovery/src/provider_sources/resolvers/simple_tests.rs",
 }
 
 

@@ -33,6 +33,9 @@ pub(super) fn register_route(
         CaptureProvider::Cursor => {
             other::register_cursor_source_backed_route(registry, source, selection)
         }
+        CaptureProvider::DeepSeekHarness => {
+            other::register_deepseek_harness_route(registry, source, selection)
+        }
         CaptureProvider::Pi => other::register_pi_route(registry, source, selection),
         CaptureProvider::Junie => other::register_junie_route(registry, source, selection),
         CaptureProvider::KimiCodeCli => other::register_kimi_route(registry, source, selection),

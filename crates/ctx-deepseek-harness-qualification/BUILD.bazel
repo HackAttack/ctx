@@ -1,0 +1,46 @@
+load("@crates//:defs.bzl", "aliases", "all_crate_deps", "crate_edition")
+load("//tools/bazel:ctx_rust.bzl", "ctx_rust_test")
+load("//tools/bazel:gates.bzl", "loc_check_inputs")
+
+package(default_visibility = ["//visibility:public"])
+
+loc_check_inputs(name = "loc_check_inputs")
+
+exports_files([
+    "BUILD.bazel",
+    "Cargo.toml",
+])
+
+filegroup(
+    name = "cargo_package_data",
+    srcs = glob(["**"], exclude = ["BUILD.bazel"]),
+)
+
+ctx_rust_test(
+    name = "deepseek_harness_tests",
+    testonly = True,
+    srcs = ["tests/deepseek_harness.rs"],
+    crate_name = "ctx_deepseek_harness_qualification",
+    crate_root = "tests/deepseek_harness.rs",
+    edition = crate_edition(),
+    aliases = aliases(
+        normal_dev = True,
+        proc_macro_dev = True,
+    ),
+    compile_data = ["//:public_test_fixtures"],
+    data = [
+        "//:public_test_fixtures",
+        "//crates/ctx-cli:ctx",
+    ],
+    deps = all_crate_deps(normal_dev = True) + [
+        "//crates/ctx-history-index-format:test_support_lib",
+        "//crates/ctx-history-index-query:test_support_lib",
+    ],
+    proc_macro_deps = all_crate_deps(proc_macro_dev = True),
+    rustc_env = {
+        "CARGO_MANIFEST_DIR": "crates/ctx-deepseek-harness-qualification",
+    },
+    env = {
+        "CARGO_BIN_EXE_ctx": "$(rootpath //crates/ctx-cli:ctx)",
+    },
+)

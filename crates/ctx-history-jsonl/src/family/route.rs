@@ -6,23 +6,29 @@ use std::{
 
 use super::{
     observe_opened_file, revalidate_frozen_prefix, JsonlCheckpoint, JsonlFileObservation,
-    JsonlOversizedRecordPolicy, JsonlProbe, JsonlReader, JsonlRecordFraming, JsonlRecordRef,
-    OpenedProviderSourceFile, OpenedProviderSourcePath, ProviderSourceDirectory,
-    ProviderSourceRoot,
+    JsonlOversizedRecordPolicy, JsonlPhysicalEncoding, JsonlProbe, JsonlReader, JsonlRecordFraming,
+    JsonlRecordRef, JsonlSourceIdentity,
 };
-use super::{
-    JsonlFamilyError, JsonlFamilyRuntime, JsonlResult, JsonlRuntimeError, JsonlRuntimeLookup,
+use crate::{
+    common::io::{
+        is_non_regular_source_rejection, is_symlink_source_rejection, open_provider_source_path,
+        OpenedProviderSourceFile, OpenedProviderSourcePath, ProviderSourceDirectory,
+        ProviderSourceRoot,
+    },
+    provider::source_backed::{
+        source_backed_base_sources, IndexBaseEventLookup, SourceBackedGenerationSink,
+        SourceBackedRecordRejectionDrafts, SourceBackedRevalidationTarget, SourceBackedRouteDriver,
+        SourceBackedRouteError, SourceBackedRouteErrorKind, SourceBackedRouteResult,
+    },
+    CaptureError, Result, PROVIDER_JSONL_INVENTORY_MAX_DEPTH,
+    PROVIDER_JSONL_INVENTORY_MAX_DIRECTORIES, PROVIDER_JSONL_INVENTORY_MAX_METADATA_ENTRIES,
+    PROVIDER_JSONL_INVENTORY_MAX_PATH_BYTES,
 };
 use chrono::{DateTime, Utc};
-use ctx_history_capture_runtime::SourceBackedRouteErrorKind;
-use ctx_history_capture_runtime::{
-    CaptureLifecycleSink, ImmutableCaptureSnapshot, SourceBackedGenerationSink,
-    SourceBackedRevalidationTarget, SourceBackedRouteError, SourceBackedRouteResult,
-};
 use ctx_history_core::{
     CaptureProvider, CertifiedSource, CertifiedSourceDeletion, CertifiedSourceInventory,
-    CoreRecord, ProjectionContractError, SourceFrontier, SourceInventoryObservation, SourceKey,
-    TypedKey,
+    CoreRecord, ProjectionContractError, ScannedSourceCounts, SourceFrontier,
+    SourceInventoryObservation, SourceKey, TypedKey,
 };
 use ctx_history_source_io::{
     open_provider_source_path_mapped as open_provider_source_path,
@@ -50,7 +56,9 @@ mod leaf;
 pub use leaf::checkpoint_admitted_revision_for_test;
 #[cfg(test)]
 use leaf::family_scanner_worker_count_policy;
-use leaf::{base_for_leaf, decode_checkpoint, scan_leaves};
+use leaf::{
+    base_for_leaf, decode_checkpoint, scan_leaves, source_observation, unchanged_terminal_proof,
+};
 #[cfg(test)]
 use leaf::{prepare_leaf, JsonlLeafOutput, JsonlLeafOutputEvent};
 mod errors;
@@ -85,6 +93,24 @@ pub use scanner::{
 };
 mod terminal;
 pub use terminal::JsonlFamilyTerminalProof;
+
+fn physical_identity(
+    adapter: &dyn JsonlFamilyAdapter,
+    leaf: &JsonlFamilyLeaf,
+) -> JsonlSourceIdentity {
+    let encoding = adapter.physical_encoding(leaf);
+    let policy_revision = match encoding {
+        JsonlPhysicalEncoding::RawJsonl => FAMILY_POLICY_REVISION.to_owned(),
+        _ => format!("{FAMILY_POLICY_REVISION}:{}", encoding.checkpoint_tag()),
+    };
+    JsonlSourceIdentity::new(
+        adapter.provider().as_str(),
+        adapter.parser_revision(),
+        &policy_revision,
+        leaf.source.exact_descriptor_digest(),
+        leaf.source_path.clone(),
+    )
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum JsonlFamilyRootMissingMode {
@@ -207,6 +233,12 @@ pub trait JsonlFamilyAdapter: Send + Sync {
     /// whole-record leaves retain their separate exact-file behavior.
     fn record_framing(&self) -> JsonlRecordFraming {
         JsonlRecordFraming::ordinary()
+    }
+
+    /// Selects the physical encoding whose validated units own the shared
+    /// digest and checkpoint frontier.
+    fn physical_encoding(&self, _leaf: &JsonlFamilyLeaf) -> JsonlPhysicalEncoding {
+        JsonlPhysicalEncoding::RawJsonl
     }
 
     /// Binds the complete admitted EOF, including an unfinished tail, with a
@@ -681,7 +713,11 @@ fn observe_membership_directory<E: JsonlFamilyError>(
                 if source_path
                     .extension()
                     .and_then(|extension| extension.to_str())
-                    .is_some_and(|extension| matches!(extension, "json" | "jsonl")) =>
+                    .is_some_and(|extension| matches!(extension, "json" | "jsonl"))
+                    || source_path
+                        .file_name()
+                        .and_then(|name| name.to_str())
+                        .is_some_and(|name| name.ends_with(".jsonl.zstd")) =>
             {
                 opened.revalidate_same_object_leaf()?;
                 if state
@@ -1241,6 +1277,10 @@ struct FamilyCheckpoint {
     #[serde(default, skip_serializing_if = "is_false")]
     complete_prefix_ends_with_terminal_nul_padding: bool,
     represented_physical_records: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    rejected_physical_records: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    logical_complete_records: Option<u64>,
     rejected_records: u64,
     indexed_documents: u64,
     provider_checkpoint: Option<TypedKey>,
@@ -1305,11 +1345,50 @@ impl FamilyCheckpoint {
                 .provider_checkpoint
                 .as_ref()
                 .is_none_or(|checkpoint| checkpoint.validate_contract().is_ok())
-            && self
-                .represented_physical_records
-                .checked_add(self.rejected_records)
-                .is_some_and(|classified| classified <= self.physical.next_physical_ordinal())
+            && self.logical_complete_records.is_none_or(|complete| {
+                self.indexed_documents
+                    .checked_add(self.rejected_records)
+                    .is_some_and(|classified| classified <= complete)
+            })
+            && classified_physical_records(
+                self.represented_physical_records,
+                self.rejected_physical_records
+                    .unwrap_or(self.rejected_records),
+            )
+            .is_some_and(|classified| classified <= self.physical.next_physical_ordinal())
     }
+
+    fn scanned_counts(&self) -> Option<ScannedSourceCounts> {
+        let classified = classified_physical_records(
+            self.represented_physical_records,
+            self.rejected_physical_records
+                .unwrap_or(self.rejected_records),
+        )?;
+        let physical_ignored = self
+            .physical
+            .next_physical_ordinal()
+            .checked_sub(classified)?;
+        let complete_records = self.logical_complete_records.unwrap_or(
+            self.indexed_documents
+                .checked_add(self.rejected_records)?
+                .checked_add(physical_ignored)?,
+        );
+        let ignored_records = complete_records
+            .checked_sub(self.indexed_documents)?
+            .checked_sub(self.rejected_records)?;
+        Some(ScannedSourceCounts {
+            complete_records,
+            retained_records: self.indexed_documents,
+            rejected_records: self.rejected_records,
+            ignored_records,
+            indexed_documents: self.indexed_documents,
+            certified_bytes: self.physical.complete_prefix_end(),
+        })
+    }
+}
+
+fn classified_physical_records(represented: u64, rejected: u64) -> Option<u64> {
+    represented.checked_add(rejected)
 }
 
 #[derive(Debug)]
@@ -1317,6 +1396,7 @@ struct TerminalSourceEvidence<E: JsonlFamilyError> {
     certificate: CertifiedSource,
     terminal_proof: JsonlFamilyTerminalProof<E>,
     emitted_bytes: u64,
+    record_rejections: SourceBackedRecordRejectionDrafts,
 }
 
 impl<E: JsonlFamilyError> Clone for TerminalSourceEvidence<E> {
@@ -1603,6 +1683,7 @@ fn capture<R: JsonlFamilyRuntime>(
                 certificate: base.clone(),
                 terminal_proof,
                 emitted_bytes: 0,
+                record_rejections: Default::default(),
             },
         );
     }

@@ -14,18 +14,16 @@ use ctx_history_source_io::{
 };
 
 mod checkpoint;
-mod framing;
 mod identity;
-mod physical;
 mod revalidation;
 mod route;
 mod single_file;
 
-#[allow(
-    unused_imports,
-    reason = "shared family modules consume this compatibility prelude"
-)]
-pub(crate) use crate::{
+pub(crate) use checkpoint::{
+    bounded_checkpoint_fits, decode_bounded_checkpoint, encode_bounded_checkpoint,
+};
+use ctx_history_jsonl::read_bounded_record_complete_sha256;
+pub(crate) use ctx_history_jsonl::{
     fit_jsonl_mcp_exchange, jsonl_prefix_digest as prefix_digest, jsonl_terminal_call_id_digest,
     new_jsonl_prefix_hasher as new_prefix_hasher, ordered_pending_exchange_entries,
     remember_pending_exchange, restore_hash_pending_exchange_entries,
@@ -37,119 +35,12 @@ pub(crate) use crate::{
     JsonlRecordEvidence, JsonlRecordRef, JsonlScanOutcome, JsonlSourceChange, JsonlSourceIdentity,
     JsonlTerminalAuthority, JsonlTerminalObservationRegion,
 };
-pub use checkpoint::{
-    bounded_checkpoint_fits, decode_bounded_checkpoint, encode_bounded_checkpoint,
-};
-
-pub trait JsonlFamilyError:
-    std::error::Error
-    + From<std::io::Error>
-    + From<serde_json::Error>
-    + From<ctx_history_source_io::SourceIoError>
-    + Send
-    + Sync
-    + 'static
-{
-    fn invalid_payload(detail: String) -> Self;
-    fn system_invariant(detail: &'static str) -> Self;
-    fn worker_panicked(worker: &'static str) -> Self;
-    fn source_changed() -> Self;
-    fn is_not_found(&self) -> bool;
-    fn is_source_changed(&self) -> bool;
-    fn is_resource_unavailable(&self) -> bool;
-    fn is_internal(&self) -> bool;
-    fn is_ignorable_membership_entry(&self) -> bool;
-}
-
-/// Static, provider-neutral configuration for one JSONL family integration.
-///
-/// Concrete storage, repository attribution, and route-control policy remain
-/// in the integrating capture crate. The family monomorphizes over those
-/// ports without error boxing or dynamic lifecycle dispatch.
-pub trait JsonlFamilyRuntime: Send + Sync + 'static {
-    type Error: JsonlFamilyError;
-    type Lifecycle: CaptureLifecycleSink;
-    type WorkerServices: Default + Send;
-    type RouteControl: Clone + Send + Sync + 'static;
-
-    fn begin_worker_leaf(services: &mut Self::WorkerServices);
-}
-
-pub type JsonlRuntimeError<R> = <R as JsonlFamilyRuntime>::Error;
-pub type JsonlRuntimeLookup<R> =
-    <<R as JsonlFamilyRuntime>::Lifecycle as CaptureLifecycleSink>::BaseLookup;
-pub type JsonlRuntimeLifecycleError<R> =
-    <<R as JsonlFamilyRuntime>::Lifecycle as CaptureLifecycleSink>::Error;
-pub type JsonlRuntimeDriver<R> = SourceBackedRouteDriver<
-    <R as JsonlFamilyRuntime>::Lifecycle,
-    <R as JsonlFamilyRuntime>::RouteControl,
->;
-
-impl JsonlFamilyError for SourceIoError {
-    fn invalid_payload(detail: String) -> Self {
-        Self::InvalidPayload(detail)
-    }
-
-    fn system_invariant(detail: &'static str) -> Self {
-        Self::SystemInvariant(detail)
-    }
-
-    fn worker_panicked(worker: &'static str) -> Self {
-        Self::SystemInvariant(worker)
-    }
-
-    fn source_changed() -> Self {
-        Self::SourceChangedDuringCapture
-    }
-
-    fn is_not_found(&self) -> bool {
-        matches!(self, Self::Io(error) if error.kind() == std::io::ErrorKind::NotFound)
-            || matches!(self, Self::SystemIo { source, .. } if source.kind() == std::io::ErrorKind::NotFound)
-    }
-
-    fn is_source_changed(&self) -> bool {
-        matches!(self, Self::SourceChangedDuringCapture)
-            || matches!(
-                self,
-                Self::InvalidProviderTranscriptPath { reason, .. }
-                    if *reason == "provider source changed while its authority handle was retained"
-            )
-    }
-
-    fn is_resource_unavailable(&self) -> bool {
-        matches!(self, Self::Io(_) | Self::SystemIo { .. }) && !self.is_not_found()
-    }
-
-    fn is_internal(&self) -> bool {
-        matches!(self, Self::SystemInvariant(_))
-    }
-
-    fn is_ignorable_membership_entry(&self) -> bool {
-        ctx_history_source_io::is_symlink_source_rejection(self)
-            || ctx_history_source_io::is_non_regular_source_rejection(self)
-    }
-}
-
-pub type JsonlResult<T, E> = std::result::Result<T, E>;
-pub type OpenedProviderSourceFile<E> = MappedOpenedProviderSourceFile<E>;
-pub type OpenedProviderSourcePath<E> = MappedOpenedProviderSourcePath<E>;
-pub type ProviderSourceDirectory<E> = MappedProviderSourceDirectory<E>;
-pub type ProviderSourceRoot<E> = MappedProviderSourceRoot<E>;
-
-#[cfg(test)]
-type CaptureError = SourceIoError;
-#[cfg(test)]
-type Result<T> = std::result::Result<T, CaptureError>;
-use framing::read_bounded_record_complete_sha256;
-pub use framing::{
-    read_bounded_record, read_bounded_record_complete_and_prefix_sha256,
-    read_bounded_record_full_complete_and_prefix_sha256, read_bounded_record_unhashed,
-    JsonlRecordFraming,
+pub(crate) use ctx_history_jsonl::{read_bounded_record_unhashed, JsonlRecordFraming};
+pub(crate) use ctx_history_jsonl::{
+    JsonlPhysicalDigest, JsonlPhysicalEncoding, JsonlPhysicalPassBinding, JsonlPhysicalRecord,
+    JsonlPhysicalStream, JsonlPhysicalStreamPosition,
 };
 use identity::observe_metadata;
-pub use physical::{
-    JsonlPhysicalDigest, JsonlPhysicalRecord, JsonlPhysicalStream, JsonlPhysicalStreamPosition,
-};
 use revalidation::hash_prefix;
 pub use revalidation::revalidate_frozen_prefix;
 pub(crate) use revalidation::revalidate_frozen_prefix_sha256;
@@ -226,6 +117,7 @@ struct JsonlSemanticAppendResume {
 }
 
 struct JsonlReaderFramingOptions<'a> {
+    physical_encoding: JsonlPhysicalEncoding,
     record_framing: JsonlRecordFraming,
     whole_record: bool,
     bind_admitted_eof: bool,
@@ -240,7 +132,7 @@ pub enum JsonlSemanticPreflightMode {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct JsonlSemanticPreflightBinding {
-    physical: physical::JsonlPhysicalPassBinding,
+    physical: JsonlPhysicalPassBinding,
     complete_prefix_ends_with_terminal_nul_padding: bool,
 }
 
@@ -274,6 +166,7 @@ impl<E: JsonlFamilyError> JsonlReader<E> {
             previous,
             probe,
             JsonlReaderFramingOptions {
+                physical_encoding: JsonlPhysicalEncoding::RawJsonl,
                 record_framing,
                 whole_record: false,
                 bind_admitted_eof: false,
@@ -283,7 +176,8 @@ impl<E: JsonlFamilyError> JsonlReader<E> {
         )
     }
 
-    pub fn open_semantic_with_record_framing(
+    #[cfg(test)]
+    pub(crate) fn open_semantic_with_record_framing(
         identity: JsonlSourceIdentity,
         source_file: Arc<OpenedProviderSourceFile<E>>,
         previous: Option<&JsonlCheckpoint>,
@@ -291,7 +185,30 @@ impl<E: JsonlFamilyError> JsonlReader<E> {
         probe: Option<JsonlProbe>,
         record_framing: JsonlRecordFraming,
         frozen_observation: Option<&JsonlFileObservation>,
-    ) -> JsonlResult<Self, E> {
+    ) -> Result<Self> {
+        Self::open_semantic_with_physical_encoding(
+            identity,
+            source_file,
+            previous,
+            mode,
+            probe,
+            JsonlPhysicalEncoding::RawJsonl,
+            record_framing,
+            frozen_observation,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn open_semantic_with_physical_encoding(
+        identity: JsonlSourceIdentity,
+        source_file: Arc<OpenedProviderSourceFile>,
+        previous: Option<&JsonlCheckpoint>,
+        mode: JsonlSemanticPreflightMode,
+        probe: Option<JsonlProbe>,
+        physical_encoding: JsonlPhysicalEncoding,
+        record_framing: JsonlRecordFraming,
+        frozen_observation: Option<&JsonlFileObservation>,
+    ) -> Result<Self> {
         let (bind_admitted_eof, deferred_append_eof_sha256) = match mode {
             JsonlSemanticPreflightMode::AdmittedEof(previous) => (true, previous.map(Some)),
             JsonlSemanticPreflightMode::CompletePrefix => (false, Some(None)),
@@ -302,6 +219,7 @@ impl<E: JsonlFamilyError> JsonlReader<E> {
             previous,
             probe,
             JsonlReaderFramingOptions {
+                physical_encoding,
                 record_framing,
                 whole_record: false,
                 bind_admitted_eof,
@@ -322,6 +240,7 @@ impl<E: JsonlFamilyError> JsonlReader<E> {
             previous,
             None,
             JsonlReaderFramingOptions {
+                physical_encoding: JsonlPhysicalEncoding::RawJsonl,
                 record_framing: JsonlRecordFraming::ordinary(),
                 whole_record: true,
                 bind_admitted_eof: false,
@@ -339,6 +258,7 @@ impl<E: JsonlFamilyError> JsonlReader<E> {
         options: JsonlReaderFramingOptions<'_>,
     ) -> JsonlResult<Self, E> {
         let JsonlReaderFramingOptions {
+            physical_encoding,
             record_framing,
             whole_record,
             bind_admitted_eof,
@@ -462,11 +382,12 @@ impl<E: JsonlFamilyError> JsonlReader<E> {
         } else {
             (
                 None,
-                Some(JsonlPhysicalStream::open(
+                Some(JsonlPhysicalStream::open_with_encoding(
                     file,
                     observation.length(),
                     complete_prefix_end,
                     next_physical_ordinal,
+                    physical_encoding,
                     record_framing,
                     match (full_hasher, semantic_append_resume.as_ref()) {
                         (Some(full), Some(resume)) if resume.admitted_eof_sha256.is_some() => {
@@ -482,7 +403,7 @@ impl<E: JsonlFamilyError> JsonlReader<E> {
                         }
                         (None, _) => JsonlPhysicalDigest::complete(prefix_hasher.clone()),
                     },
-                    E::source_changed,
+                    || ctx_history_jsonl::JsonlIoError::SourceChangedDuringCapture,
                 )?),
             )
         };
@@ -595,8 +516,11 @@ impl<E: JsonlFamilyError> JsonlReader<E> {
     ) -> JsonlResult<(), E> {
         self.physical
             .as_mut()
-            .ok_or_else(|| E::system_invariant("semantic JSONL input lost its physical stream"))?
-            .restore(position)
+            .ok_or(CaptureError::SystemInvariant(
+                "semantic JSONL input lost its physical stream",
+            ))?
+            .restore(position)?;
+        Ok(())
     }
 
     pub(super) fn execution_offset(&self) -> JsonlResult<u64, E> {
@@ -736,7 +660,13 @@ impl<E: JsonlFamilyError> JsonlReader<E> {
                     ))
                 })?;
                 let position = physical.position();
-                (position, physical.next_record().map_err(V::from)?)
+                (
+                    position,
+                    physical
+                        .next_record()
+                        .map_err(CaptureError::from)
+                        .map_err(E::from)?,
+                )
             };
             let Some(record) = record else {
                 self.finish(true).map_err(V::from)?;
@@ -783,7 +713,8 @@ impl<E: JsonlFamilyError> JsonlReader<E> {
                         ))
                     })?
                     .restore(position)
-                    .map_err(V::from)?;
+                    .map_err(CaptureError::from)
+                    .map_err(E::from)?;
                 break;
             }
 
@@ -1099,7 +1030,7 @@ fn read_bounded_line<E: JsonlFamilyError>(
         hasher,
         frozen_length.saturating_sub(start),
         JsonlRecordFraming::ordinary(),
-        E::source_changed,
+        || ctx_history_jsonl::JsonlIoError::SourceChangedDuringCapture,
     )?
     else {
         return Ok(RawLine::EndOfFile);

@@ -58,6 +58,7 @@ pub(super) fn default_location_import_probe(
         CaptureProvider::GrokBuild => has_jsonl_file_under_matching(path, 10_000, |candidate| {
             candidate.file_name().and_then(|name| name.to_str()) == Some("updates.jsonl")
         }),
+        CaptureProvider::DeepSeekHarness => has_deepseek_harness_session_file(path, 10_000),
         CaptureProvider::Pi => has_jsonl_file_under_matching(path, 10_000, |_| true),
         CaptureProvider::OpenCode => path_is_file_probe(path),
         CaptureProvider::Kilo => path_is_file_probe(path),
@@ -146,6 +147,20 @@ pub(super) fn default_location_import_probe(
         | CaptureProvider::Custom
         | CaptureProvider::Unknown => BoundedProbe::NotFound,
     }
+}
+
+pub(super) fn has_deepseek_harness_session_file(root: &Path, max_entries: usize) -> BoundedProbe {
+    has_file_under_matching(root, max_entries, |candidate| {
+        let supported_leaf = matches!(
+            candidate.file_name().and_then(|name| name.to_str()),
+            Some("session.jsonl.zstd" | "session.jsonl")
+        );
+        supported_leaf
+            && (candidate == root
+                || candidate
+                    .strip_prefix(root)
+                    .is_ok_and(|relative| relative.components().count() == 3))
+    })
 }
 
 fn has_cursor_agent_transcript(probes: &StaticProviderProbeCatalog, path: &Path) -> BoundedProbe {
