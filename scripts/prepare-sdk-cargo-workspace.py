@@ -15,6 +15,7 @@ import tomllib
 SDK_WORKSPACE_DEPENDENCIES = ("serde", "serde_json", "tempfile", "thiserror")
 SDK_VENDOR_ROOTS = SDK_WORKSPACE_DEPENDENCIES + ("windows-sys",)
 WORKSPACE_PACKAGE_KEYS = (
+    "version",
     "edition",
     "license",
     "repository",

@@ -20,7 +20,7 @@ CODEX_NOT_QUALIFIED_VERSIONS = ("0.200.0", "0.201.0", "0.202.0")
 CONFORMANCE_AUTHORITY = {
     "manifest": CONFORMANCE_MANIFEST,
     "suite_registry": CONFORMANCE_SUITES,
-    "manifest_sha256": "a96271361c7567ba52bb2119188205e3163f642711d77f0767557d7265e1e9a7",
+    "manifest_sha256": "3d8ccadae13030b1d81be665f9a3765e177cd04d8a6f07b49665a73cfdc63fba",
     "suite_registry_sha256": "fecc57701524031b830b3c0d709470525ad99125937b74f71e07f9375cef2117",
     "manifest_schema_version": 6,
     "capability_revision": 5,
