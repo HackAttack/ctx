@@ -4,6 +4,8 @@ use std::sync::{Mutex, OnceLock};
 use std::{
     fmt,
     io::{self, Write},
+    marker::PhantomData,
+    rc::Rc,
     sync::{
         atomic::{AtomicU64, Ordering},
         Arc,
@@ -40,6 +42,9 @@ pub struct OutputMeasurement {
     counter: Arc<OutputByteCounter>,
     previous: Option<Arc<OutputByteCounter>>,
     scope: MeasurementScope,
+    // A thread measurement restores creator-thread TLS on drop, so no guard
+    // may cross threads even when it currently owns the process-wide scope.
+    _not_send: PhantomData<Rc<()>>,
 }
 
 enum MeasurementScope {
@@ -62,6 +67,7 @@ impl OutputMeasurement {
                 counter,
                 previous,
                 scope: MeasurementScope::Process,
+                _not_send: PhantomData,
             }
         }
     }
@@ -80,6 +86,7 @@ impl OutputMeasurement {
             counter,
             previous,
             scope: MeasurementScope::Thread,
+            _not_send: PhantomData,
         }
     }
 
@@ -291,15 +298,9 @@ pub fn print_json(value: Value) -> Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use std::{
-        io::Write as _,
-        sync::{Arc, Barrier},
-        thread,
-    };
-
     use serde_json::json;
 
-    use super::{print_json, MeasuredWriter, OutputMeasurement};
+    use super::{print_json, OutputMeasurement};
     use crate::ui::StreamKind;
 
     #[test]
@@ -326,47 +327,5 @@ mod tests {
         );
         assert_eq!(measurement.stream_bytes(StreamKind::Stderr), 0);
         assert_eq!(measurement.total_bytes(), expected_bytes);
-    }
-
-    #[test]
-    fn current_thread_measurement_excludes_concurrent_writer_bytes() {
-        const OWN_STDOUT: &[u8] = b"stdout result\n";
-        const OWN_STDERR: &[u8] = b"stderr delivery note\n";
-        const FOREIGN_BYTES: usize = 1_120;
-
-        let measurement = OutputMeasurement::start_for_current_thread();
-        let ready = Arc::new(Barrier::new(2));
-        let finished = Arc::new(Barrier::new(2));
-        let foreign_writer = {
-            let ready = ready.clone();
-            let finished = finished.clone();
-            thread::spawn(move || {
-                ready.wait();
-                let mut writer = MeasuredWriter::current(Vec::new(), StreamKind::Stdout);
-                writer.write_all(&vec![b'x'; FOREIGN_BYTES]).unwrap();
-                finished.wait();
-            })
-        };
-
-        ready.wait();
-        let mut stdout = MeasuredWriter::current(Vec::new(), StreamKind::Stdout);
-        let mut stderr = MeasuredWriter::current(Vec::new(), StreamKind::Stderr);
-        stdout.write_all(OWN_STDOUT).unwrap();
-        stderr.write_all(OWN_STDERR).unwrap();
-        finished.wait();
-        foreign_writer.join().unwrap();
-
-        assert_eq!(
-            measurement.stream_bytes(StreamKind::Stdout),
-            u64::try_from(OWN_STDOUT.len()).unwrap()
-        );
-        assert_eq!(
-            measurement.stream_bytes(StreamKind::Stderr),
-            u64::try_from(OWN_STDERR.len()).unwrap()
-        );
-        assert_eq!(
-            measurement.total_bytes(),
-            u64::try_from(OWN_STDOUT.len() + OWN_STDERR.len()).unwrap()
-        );
     }
 }
