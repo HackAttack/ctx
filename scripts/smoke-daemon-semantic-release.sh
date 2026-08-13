@@ -324,6 +324,25 @@ runtime_authority="$(
     "${host_os_id}" "${host_os_version}" "${host_os_product}" \
     "${CTX_PUBLIC_CLI_RUNTIME_AUTHORITY_BASELINE:-ubuntu-24.04}"
 )"
+printf 'ctx semantic smoke: runtime authority evidence:'
+printf ' platform=%q' "${runtime_platform}"
+printf ' host_system=%q' "${host_system}"
+printf ' host_arch=%q' "${host_arch}"
+printf ' runtime_status=%q' passed
+printf ' host_native_arch=%q' "${host_native_arch}"
+printf ' process_translated=%q' "${process_translated}"
+printf ' native_arch_probe=%q' "${native_arch_probe}"
+printf ' hardware_identity=%q' "${hardware_identity}"
+printf ' emulation=%q' "${emulation}"
+printf ' hypervisor=%q' "${hypervisor}"
+printf ' evidence_complete=%q' "${evidence_complete}"
+printf ' runner_id=%q' "${CTX_RELEASE_MACOS_X64_KVM_RUNNER_ID:-}"
+printf ' os_identity=%q' "${host_os_id}"
+printf ' os_version=%q' "${host_os_version}"
+printf ' os_product_type=%q' "${host_os_product}"
+printf ' runtime_os_baseline=%q' \
+  "${CTX_PUBLIC_CLI_RUNTIME_AUTHORITY_BASELINE:-ubuntu-24.04}"
+printf ' authority=%q\n' "${runtime_authority}"
 if [[ "${require_authoritative}" == "1" && "${runtime_authority}" != "authoritative" ]]; then
   echo "error: semantic smoke requires authoritative native ${runtime_platform} execution" >&2
   exit 1

@@ -36,17 +36,116 @@ EOF
 mv \
   "${release_root}/scripts/public-cli-host-runtime-evidence.sh" \
   "${release_root}/scripts/public-cli-host-runtime-evidence-real.sh"
+host_runtime_evidence_real="${release_root}/scripts/public-cli-host-runtime-evidence-real.sh"
+fake_sysctl="${tmp}/fake-sysctl"
+cat > "${fake_sysctl}" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+case "${*: -1}" in
+  sysctl.proc_translated) printf '0\n' ;;
+  hw.optional.arm64) printf '1\n' ;;
+  kern.hv_vmm_present) printf '1\n' ;;
+  *) exit 1 ;;
+esac
+EOF
+chmod 0755 "${fake_sysctl}"
+fake_ioreg="${tmp}/fake-ioreg"
+cat > "${fake_ioreg}" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+case " $* " in
+  *' IOPlatformExpertDevice '*)
+    printf '%s\n' "${CTX_TEST_DARWIN_PLATFORM_IDENTITY:-Apple Inc.}"
+    ;;
+  *' IOPCIDevice '*)
+    printf '%s\n' "${CTX_TEST_DARWIN_DEVICE_SUMMARY:-Apple PCI device}"
+    ;;
+  *) exit 1 ;;
+esac
+EOF
+chmod 0755 "${fake_ioreg}"
+fake_system_profiler="${tmp}/fake-system-profiler"
+cat > "${fake_system_profiler}" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+case "${1:-}" in
+  SPHardwareDataType)
+    printf 'Model Name: Apple Virtual Machine\nModel Identifier: VirtualMac\n'
+    ;;
+  SPDisplaysDataType)
+    printf '%s\n' "${CTX_TEST_DARWIN_DISPLAY_SUMMARY:-Apple display}"
+    ;;
+  *) exit 1 ;;
+esac
+EOF
+chmod 0755 "${fake_system_profiler}"
+
+read_darwin_arm64_evidence() {
+  "${host_runtime_evidence_real}" \
+    --host-system Darwin \
+    --host-arch arm64 \
+    --sysctl "${fake_sysctl}" \
+    --ioreg "${fake_ioreg}" \
+    --system-profiler "${fake_system_profiler}"
+}
+
+expected_native_virtio_evidence=$'Darwin\tarm64\tarm64\t0\tsysctl\tapple\tnone\tpresent\t1'
+for virtio_peripheral in 'VirtIO GPU' 'virtio-net' 'virtio_blk'; do
+  actual_evidence="$(
+    CTX_TEST_DARWIN_DEVICE_SUMMARY="${virtio_peripheral}" \
+      read_darwin_arm64_evidence
+  )"
+  [[ "${actual_evidence}" == "${expected_native_virtio_evidence}" ]] || {
+    printf 'native Apple arm64 VirtIO evidence was misclassified: %s\n' \
+      "${actual_evidence}" >&2
+    exit 1
+  }
+done
+
+expected_explicit_emulation_evidence=$'Darwin\tarm64\tarm64\t0\tsysctl\tapple\tqemu-kvm\tpresent\t1'
+for explicit_emulator in QEMU KVM TCG 'VMware SVGA' VirtualBox Parallels Bochs; do
+  actual_evidence="$(
+    CTX_TEST_DARWIN_DEVICE_SUMMARY="${explicit_emulator} VirtIO GPU" \
+      read_darwin_arm64_evidence
+  )"
+  [[ "${actual_evidence}" == "${expected_explicit_emulation_evidence}" ]] || {
+    printf 'explicit Darwin emulator evidence was not rejected: %s -> %s\n' \
+      "${explicit_emulator}" "${actual_evidence}" >&2
+    exit 1
+  }
+done
+
+actual_evidence="$(
+  CTX_TEST_DARWIN_PLATFORM_IDENTITY='Generic Platform' \
+    CTX_TEST_DARWIN_DEVICE_SUMMARY='VirtIO GPU' \
+    read_darwin_arm64_evidence
+)"
+expected_generic_virtio_evidence=$'Darwin\tarm64\tarm64\t0\tsysctl\tgeneric\tqemu-kvm\tpresent\t1'
+[[ "${actual_evidence}" == "${expected_generic_virtio_evidence}" ]] || {
+  printf 'generic Darwin VirtIO evidence became native: %s\n' \
+    "${actual_evidence}" >&2
+  exit 1
+}
+
 cat > "${release_root}/scripts/public-cli-host-runtime-evidence.sh" <<EOF
 #!/usr/bin/env bash
 set -euo pipefail
 for argument in "\$@"; do
   if [[ "\${argument}" == "--os-baseline-only" ]]; then
+    if [[ "\${CTX_TEST_RUNTIME_EVIDENCE:-}" == macos-* ]]; then
+      printf 'unknown\tunknown\tunknown\n'
+      exit 0
+    fi
     exec "${release_root}/scripts/public-cli-host-runtime-evidence-real.sh" \
       "\$@" --os-release "${tmp}/ubuntu-24.04-os-release"
   fi
 done
 if [[ "\${CTX_TEST_RUNTIME_EVIDENCE:-}" == "macos-arm64-native-virtualized" ]]; then
   printf 'Darwin\tarm64\tarm64\t0\tsysctl\tapple\tnone\tpresent\t1\n'
+  exit 0
+fi
+if [[ "\${CTX_TEST_RUNTIME_EVIDENCE:-}" == "macos-arm64-generic-virtualized" ]]; then
+  printf 'Darwin\tarm64\tarm64\t0\tsysctl\tgeneric\tnone\tpresent\t1\n'
   exit 0
 fi
 exec "${release_root}/scripts/public-cli-host-runtime-evidence-real.sh" "\$@"
@@ -264,6 +363,28 @@ expect_usage_failure retired_proof_output \
   --coreml --runtime-platform macos-arm64 --proof-output "${tmp}/proof" \
   --ctx "${fake_ctx}"
 
+if CTX_TEST_RUNTIME_EVIDENCE=macos-arm64-generic-virtualized "${smoke}" \
+  --coreml \
+  --runtime-platform macos-arm64 \
+  --ctx "${fake_ctx}" \
+  --data-root "${tmp}/non-authoritative-runs" \
+  --require-authoritative \
+  --timeout-seconds 30 \
+  > "${tmp}/non-authoritative.out" 2> "${tmp}/non-authoritative.err"; then
+  printf 'generic virtualized macOS arm64 smoke unexpectedly passed\n' >&2
+  exit 1
+fi
+expected_authority_diagnostic="ctx semantic smoke: runtime authority evidence: platform=macos-arm64 host_system=Darwin host_arch=arm64 runtime_status=passed host_native_arch=arm64 process_translated=0 native_arch_probe=sysctl hardware_identity=generic emulation=none hypervisor=present evidence_complete=1 runner_id='' os_identity=unknown os_version=unknown os_product_type=unknown runtime_os_baseline=ubuntu-24.04 authority=non_authoritative"
+grep -Fqx -- "${expected_authority_diagnostic}" \
+  "${tmp}/non-authoritative.out" || {
+  printf 'missing full non-authoritative runtime evidence diagnostic\n' >&2
+  cat "${tmp}/non-authoritative.out" >&2
+  exit 1
+}
+grep -Fq -- \
+  'error: semantic smoke requires authoritative native macos-arm64 execution' \
+  "${tmp}/non-authoritative.err"
+
 run_parent="${tmp}/runs"
 CTX_TEST_RUNTIME_EVIDENCE=macos-arm64-native-virtualized "${smoke}" \
   --coreml \
@@ -279,6 +400,10 @@ run_root="$(find "${run_parent}" -mindepth 1 -maxdepth 1 -type d -name 'ctx-sema
 [[ -n "${run_root}" ]]
 test ! -e "${run_root}/data/packaged-runtime-proof.txt"
 grep -Fq 'ctx semantic smoke ok:' "${tmp}/coreml.out"
+grep -Fq \
+  'hardware_identity=apple emulation=none hypervisor=present evidence_complete=1' \
+  "${tmp}/coreml.out"
+grep -Fq 'authority=authoritative' "${tmp}/coreml.out"
 [[ ! -e "${run_root}/data/runtime/onnxruntime" ]]
 python3 -I - "${run_root}/installed/bin" <<'PY'
 import os
