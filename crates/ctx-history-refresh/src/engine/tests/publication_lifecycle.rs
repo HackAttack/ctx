@@ -769,6 +769,127 @@ fn recovered_wait_after_restart_attaches_to_equivalent_running_attempt() {
 }
 
 #[test]
+fn restart_rebuilds_all_routes_after_interrupted_background_refresh_progress() {
+    let temp = tempfile::tempdir().unwrap();
+    let data_root = temp.path().join("data");
+    ctx_history_core::platform_security::establish_private_data_root(&data_root).unwrap();
+    let routes = BTreeSet::from([
+        route_identity(0xa1),
+        route_identity(0xa2),
+        route_identity(0xa3),
+        route_identity(0xa4),
+    ]);
+    let first = CoreRefreshEngine::new();
+    first.initialize_watch_route_authority(routes.iter().cloned());
+    let queued = first.enqueue_periodic(&data_root).unwrap();
+    let interrupted_request_id = request_id(&queued);
+
+    let crash = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let _ = first.run_next_with(
+            |request_id, engine| {
+                assert_eq!(
+                    engine
+                        .admit_refresh_scope_for_test(request_id, &SourceBackedRefreshScope::All)?,
+                    BTreeSet::new()
+                );
+                let running = engine
+                    .set_progress(
+                        request_id,
+                        SourceBackedRefreshProgressUpdate {
+                            phase: "refreshing".to_owned(),
+                            completed_sources: 2,
+                            total_sources: routes.len(),
+                            total_sources_known: true,
+                            current_source: Some("synthetic-route-3".to_owned()),
+                            completed_records: Some(2),
+                            completed_bytes: Some(256),
+                            current_source_progress: None,
+                            ..Default::default()
+                        },
+                    )
+                    .expect("running refresh progress");
+                assert_eq!(running["progress"]["completed_sources"], 2);
+                assert_eq!(running["progress"]["total_sources"], routes.len());
+                engine.persist_job_status_for_test(&data_root, request_id)?;
+                panic!("injected interruption before candidate publication");
+            },
+            || Ok(None),
+            |_| Ok(()),
+            |_| Ok(()),
+        );
+    }));
+    assert!(crash.is_err());
+
+    let persisted = read_daemon_job_status(&daemon_source_backed_refresh_job_path(&data_root))
+        .expect("durable interrupted refresh progress");
+    assert_eq!(persisted["request_id"], interrupted_request_id);
+    assert_eq!(persisted["request_state"], "running");
+    assert_eq!(persisted["progress"]["completed_sources"], 2);
+    assert_eq!(persisted["progress"]["total_sources"], routes.len());
+    assert_eq!(persisted["progress"]["current_source"], "synthetic-route-3");
+    assert!(pin_published_generation(&data_root).unwrap().is_none());
+    drop(first);
+
+    let executed_routes = Arc::new(std::sync::Mutex::new(BTreeSet::new()));
+    let observed_routes = Arc::clone(&executed_routes);
+    let executor_routes = routes.clone();
+    let expected_request_id = interrupted_request_id.clone();
+    let restarted = CoreRefreshEngine::with_executor(Arc::new(
+        move |execution: SourceBackedRefreshExecution<'_>| {
+            assert_eq!(execution.request_id, expected_request_id);
+            assert_eq!(execution.scope, SourceBackedRefreshScope::All);
+            assert!(execution.covered_route_ids.is_empty());
+            execution.report_progress("refreshing", 0, executor_routes.len(), None, None, None)?;
+            let resumed_progress =
+                read_daemon_job_status(&daemon_source_backed_refresh_job_path(execution.data_root))
+                    .expect("durable resumed refresh progress");
+            assert_eq!(resumed_progress["request_id"], expected_request_id);
+            assert_eq!(resumed_progress["progress"]["completed_sources"], 0);
+            assert_eq!(
+                resumed_progress["progress"]["total_sources"],
+                executor_routes.len()
+            );
+            assert!(resumed_progress["progress"].get("current_source").is_none());
+            let selected = physically_selected_routes(&execution, &executor_routes);
+            assert_eq!(selected, executor_routes);
+            *observed_routes.lock().unwrap() = selected.clone();
+            publish_selected_routes(&execution, &selected, None)
+        },
+    ));
+    restarted.initialize_watch_route_authority(routes.clone());
+    assert!(restarted
+        .recover_interrupted_publication(&data_root)
+        .unwrap());
+
+    let recovered = restarted.status(&interrupted_request_id).unwrap();
+    assert_eq!(recovered["request_state"], "queued");
+    assert_eq!(recovered["physical_attempt_id"], interrupted_request_id);
+    assert_eq!(recovered["progress"]["phase"], "queued");
+    assert_eq!(recovered["progress"]["completed_sources"], 0);
+    assert_eq!(recovered["progress"]["total_sources"], 0);
+    assert!(recovered["progress"].get("current_source").is_none());
+
+    let resumed = restarted
+        .run_next(&data_root)
+        .expect("recovered background refresh");
+    assert!(!resumed.failed, "{:#}", resumed.job);
+    assert_eq!(request_id(&resumed.job), interrupted_request_id);
+    assert_eq!(*executed_routes.lock().unwrap(), routes);
+    assert_eq!(resumed.job["request_state"], "published");
+    assert_eq!(resumed.job["receipt"]["selected_route_total"], 4);
+    assert_eq!(resumed.job["receipt"]["successful_route_total"], 4);
+    let receipt_routes = resumed.job["receipt"]["route_results"]
+        .as_object()
+        .expect("terminal receipt route results");
+    assert_eq!(receipt_routes.len(), 4);
+    assert!(routes
+        .iter()
+        .all(|route| receipt_routes.contains_key(route.as_str())));
+    assert_eq!(resumed.job["progress"]["completed_sources"], 4);
+    assert_eq!(resumed.job["progress"]["total_sources"], 4);
+}
+
+#[test]
 fn restart_discards_incomplete_candidate_and_publishes_from_last_good() {
     let temp = tempfile::tempdir().unwrap();
     let data_root = temp.path().join("data");
