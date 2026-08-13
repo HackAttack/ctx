@@ -462,6 +462,7 @@ fn human_refresh_label(snapshot: &RefreshProgressSnapshot) -> &'static str {
 fn human_processing_label(phase: &str) -> &'static str {
     match phase {
         "queued" | "pending" | "discovering" => "Preparing your history",
+        "scanning_provider_sources" => "Indexing your agent history",
         "verifying" => "Verifying agent history",
         "committing" | "committed" | "publishing" => "Finalizing search index",
         _ => "Reading your agent history",
@@ -730,6 +731,94 @@ mod tests {
     }
 
     #[test]
+    fn live_history_progress_is_responsive_at_supported_terminal_widths() {
+        let mut snapshot = active_status(RefreshLogicalPhase::Direct, "refreshing", true, 4);
+        snapshot.progress.agent_histories =
+            vec!["Codex".to_owned(), "Claude".to_owned(), "Gemini".to_owned()];
+        snapshot.progress.processed_sessions = 1_123;
+        snapshot.progress.processed_messages = 72_456;
+        snapshot.progress.processed_tool_calls = 31_009;
+        snapshot.progress.processed_bytes = 8_804_683_776;
+        snapshot.progress.elapsed_millis = Some(125_000);
+        snapshot.set_presentation_agent_histories(Some(snapshot.progress.agent_histories.clone()));
+
+        for width in [32, 48, 80, 120] {
+            let context = RenderContext::for_test(TestContext::tty(StreamKind::Stderr, width));
+            let rendered = refresh_progress(&context, &snapshot).render_plain();
+            let lines = rendered.lines().collect::<Vec<_>>();
+
+            assert!(
+                lines.iter().all(|line| line.chars().count() <= width),
+                "width={width} rendered={rendered:?}"
+            );
+            assert_eq!(
+                lines[1].chars().count(),
+                context
+                    .content_width()
+                    .unwrap_or(width)
+                    .min(MAX_PROGRESS_BAR_WIDTH),
+                "width={width} rendered={rendered:?}"
+            );
+            for value in [
+                "Codex",
+                "Claude",
+                "Gemini",
+                "1,123",
+                "72,456",
+                "31,009",
+                "8.2 GiB",
+                "2m 05s",
+                "estimating",
+            ] {
+                assert_eq!(
+                    rendered.matches(value).count(),
+                    1,
+                    "width={width} value={value:?} rendered={rendered:?}"
+                );
+            }
+
+            assert!(rendered.contains("Agent histories  Codex"), "{rendered}");
+            assert!(rendered.contains("Sessions         1,123"), "{rendered}");
+        }
+    }
+
+    #[test]
+    fn provider_discovery_changes_height_once_then_keeps_it_stable() {
+        let context = RenderContext::for_test(TestContext::tty(StreamKind::Stderr, 80));
+        let mut discovery = active_status(RefreshLogicalPhase::Direct, "discovering", true, 4);
+        discovery.progress.agent_histories = vec!["Codex".to_owned()];
+        discovery.set_presentation_agent_histories(None);
+        let discovery_height = refresh_progress(&context, &discovery)
+            .render_plain()
+            .lines()
+            .count();
+
+        let mut active = active_status(RefreshLogicalPhase::Direct, "refreshing", true, 4);
+        let frozen = vec!["Codex".to_owned(), "Claude".to_owned(), "Gemini".to_owned()];
+        active.progress.agent_histories = frozen.clone();
+        active.set_presentation_agent_histories(Some(frozen.clone()));
+        let active_height = refresh_progress(&context, &active)
+            .render_plain()
+            .lines()
+            .count();
+
+        active
+            .progress
+            .agent_histories
+            .push("Late provider".to_owned());
+        active.progress.processed_sessions = 12_345;
+        active.set_presentation_agent_histories(Some(frozen));
+        let updated_height = refresh_progress(&context, &active)
+            .render_plain()
+            .lines()
+            .count();
+
+        assert_eq!(discovery_height, 2);
+        assert!(active_height > discovery_height);
+        assert_eq!(updated_height, active_height);
+    }
+
+    #[test]
     fn local_elapsed_changes_bar_and_elapsed_without_changing_backend_counters() {
         let context = RenderContext::for_test(TestContext::tty(StreamKind::Stderr, 80));
         let mut snapshot = active_status(RefreshLogicalPhase::Direct, "verifying", true, 4);
@@ -761,6 +850,7 @@ mod tests {
     fn local_phases_use_conservative_non_publishing_names() {
         for (phase, expected) in [
             ("refreshing", "Reading your agent history"),
+            ("scanning_provider_sources", "Indexing your agent history"),
             ("verifying", "Verifying agent history"),
             ("committing", "Finalizing search index"),
             ("committed", "Finalizing search index"),

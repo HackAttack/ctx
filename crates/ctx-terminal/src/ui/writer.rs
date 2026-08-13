@@ -240,8 +240,8 @@ impl<W: Write> LiveOutput<W> {
             let write_result = if final_frame {
                 self.writer.write_all(frame.as_bytes())
             } else {
-                self.hide_cursor()?;
-                self.writer.write_all(frame.as_bytes())
+                self.hide_cursor()
+                    .and_then(|()| self.writer.write_all(frame.as_bytes()))
             };
             if !final_frame && write_result.is_ok() {
                 self.rendered_rows = rows.iter().map(|row| (*row).to_owned()).collect();
@@ -292,19 +292,24 @@ impl<W: Write> LiveOutput<W> {
         } else {
             write_cursor_up(&mut self.writer, cursor_row - rows.len())?;
         }
+        self.writer.write_all(b"\r")?;
         Ok(())
     }
 
     fn finish_frame(&mut self, final_frame: bool, result: io::Result<()>) -> io::Result<()> {
+        if let Err(error) = result {
+            let _ = self.writer.write_all(b"\r");
+            let _ = self.restore_cursor();
+            self.rendered_rows.clear();
+            let _ = self.writer.flush();
+            return Err(error);
+        }
         if final_frame {
             let restore_result = self.restore_cursor();
             self.rendered_rows.clear();
-            return match result {
-                Err(error) => Err(error),
-                Ok(()) => restore_result.and_then(|()| self.writer.flush()),
-            };
+            return restore_result.and_then(|()| self.writer.flush());
         }
-        result.and_then(|()| self.writer.flush())
+        self.writer.flush()
     }
 
     fn restore_cursor(&mut self) -> io::Result<()> {
@@ -551,6 +556,43 @@ mod tests {
         }
     }
 
+    #[derive(Clone)]
+    struct FailOnceWriter(Arc<Mutex<FailOnceState>>);
+
+    struct FailOnceState {
+        bytes: Vec<u8>,
+        failed: bool,
+    }
+
+    impl FailOnceWriter {
+        fn new() -> Self {
+            Self(Arc::new(Mutex::new(FailOnceState {
+                bytes: Vec::new(),
+                failed: false,
+            })))
+        }
+
+        fn text(&self) -> String {
+            String::from_utf8(self.0.lock().unwrap().bytes.clone()).unwrap()
+        }
+    }
+
+    impl Write for FailOnceWriter {
+        fn write(&mut self, buffer: &[u8]) -> io::Result<usize> {
+            let mut state = self.0.lock().unwrap();
+            if !state.failed && buffer == b"\x1b[K" {
+                state.failed = true;
+                return Err(io::Error::other("injected repaint failure"));
+            }
+            state.bytes.extend_from_slice(buffer);
+            Ok(buffer.len())
+        }
+
+        fn flush(&mut self) -> io::Result<()> {
+            Ok(())
+        }
+    }
+
     fn document(lines: &[&str]) -> Document {
         let mut document = Document::new();
         for line in lines {
@@ -644,7 +686,7 @@ mod tests {
         let differential = differential_comparison_bytes(1_000);
         let full_repaint = full_repaint_comparison_bytes(1_000);
 
-        assert_eq!((differential, full_repaint), (220_162, 434_935));
+        assert_eq!((differential, full_repaint), (221_161, 434_935));
         assert!(differential * 5 < full_repaint * 3);
     }
 
@@ -677,9 +719,9 @@ mod tests {
             rendered,
             concat!(
                 "\x1b[?25lone\n",
-                "\x1b[A\x1b[B\rtwo\x1b[K\x1b[B",
-                "\x1b[A\x1b[A\rshort\x1b[K\x1b[B\r\x1b[K",
-                "\x1b[A\rdone\x1b[K\x1b[B\x1b[?25h",
+                "\x1b[A\x1b[B\rtwo\x1b[K\x1b[B\r",
+                "\x1b[A\x1b[A\rshort\x1b[K\x1b[B\r\x1b[K\r",
+                "\x1b[A\rdone\x1b[K\x1b[B\r\x1b[?25h",
                 "\x1b[?25lafter\n\x1b[?25h",
             )
         );
@@ -716,7 +758,7 @@ mod tests {
             output.inner(),
             concat!(
                 "\x1b[?25lfirst\nsecond\nthird\n",
-                "\x1b[A\x1b[A\x1b[A\x1b[B\rSECOND\x1b[K\x1b[B\x1b[B",
+                "\x1b[A\x1b[A\x1b[A\x1b[B\rSECOND\x1b[K\x1b[B\x1b[B\r",
             )
             .as_bytes()
         );
@@ -732,7 +774,10 @@ mod tests {
         let rendered = String::from_utf8(output.into_inner()).unwrap();
         assert_eq!(
             rendered,
-            concat!("\x1b[?25llong row\n", "\x1b[A\rshort\x1b[K\x1b[B\x1b[?25h",)
+            concat!(
+                "\x1b[?25llong row\n",
+                "\x1b[A\rshort\x1b[K\x1b[B\r\x1b[?25h",
+            )
         );
         assert!(!rendered.contains("\x1b[2K"));
     }
@@ -751,8 +796,8 @@ mod tests {
             output.inner(),
             concat!(
                 "\x1b[?25lone\n",
-                "\x1b[A\x1b[B\rtwo\x1b[K\x1b[B\rthree\x1b[K\x1b[B",
-                "\x1b[A\x1b[A\x1b[A\x1b[B\r\x1b[K\x1b[B\r\x1b[K\x1b[A",
+                "\x1b[A\x1b[B\rtwo\x1b[K\x1b[B\rthree\x1b[K\x1b[B\r",
+                "\x1b[A\x1b[A\x1b[A\x1b[B\r\x1b[K\x1b[B\r\x1b[K\x1b[A\r",
             )
             .as_bytes()
         );
@@ -771,9 +816,24 @@ mod tests {
             rendered,
             concat!(
                 "\x1b[?25lworking\n",
-                "\x1b[A\rdone\x1b[K\x1b[B\x1b[?25h",
+                "\x1b[A\rdone\x1b[K\x1b[B\r\x1b[?25h",
                 "\x1b[?25lnext\n\x1b[?25h",
             )
+        );
+    }
+
+    #[test]
+    fn completed_live_output_leaves_following_output_at_column_zero() {
+        let context = RenderContext::for_test(TestContext::tty(StreamKind::Stdout, 80));
+        let mut output = LiveOutput::new(Vec::new(), context);
+        output.write_frame(&document(&["working"]), false).unwrap();
+        output.write_frame(&document(&["done"]), true).unwrap();
+        output.write_document(&document(&["SENTINEL"])).unwrap();
+
+        let rendered = String::from_utf8(output.into_inner()).unwrap();
+        assert!(
+            rendered.ends_with("\x1b[B\r\x1b[?25hSENTINEL\n"),
+            "{rendered:?}"
         );
     }
 
@@ -788,6 +848,49 @@ mod tests {
         }
 
         assert_eq!(capture.text(), "\x1b[?25lworking\n\x1b[?25h");
+    }
+
+    #[test]
+    fn dropping_repainted_output_leaves_following_output_at_column_zero() {
+        let context = RenderContext::for_test(TestContext::tty(StreamKind::Stdout, 80));
+        let writer = SharedWriter::default();
+        let capture = writer.clone();
+        {
+            let mut output = LiveOutput::new(writer, context);
+            output.write_frame(&document(&["working"]), false).unwrap();
+            output.write_frame(&document(&["done"]), false).unwrap();
+        }
+        let mut sentinel = capture.clone();
+        sentinel.write_all(b"SENTINEL").unwrap();
+
+        let rendered = capture.text();
+        assert!(
+            rendered.ends_with("\x1b[B\r\x1b[?25hSENTINEL"),
+            "{rendered:?}"
+        );
+    }
+
+    #[test]
+    fn repaint_error_restores_cursor_and_column_before_following_output() {
+        let context = RenderContext::for_test(TestContext::tty(StreamKind::Stdout, 80));
+        let writer = FailOnceWriter::new();
+        let capture = writer.clone();
+        {
+            let mut output = LiveOutput::new(writer, context);
+            output.write_frame(&document(&["working"]), false).unwrap();
+            let error = output
+                .write_frame(&document(&["broken"]), false)
+                .expect_err("repaint failure must propagate");
+            assert_eq!(error.to_string(), "injected repaint failure");
+        }
+        let mut sentinel = capture.clone();
+        sentinel.write_all(b"SENTINEL").unwrap();
+
+        let rendered = capture.text();
+        assert!(
+            rendered.ends_with("\x1b[A\rbroken\r\x1b[?25hSENTINEL"),
+            "{rendered:?}"
+        );
     }
 
     #[test]
@@ -824,8 +927,8 @@ mod tests {
                 rendered,
                 concat!(
                     "\x1b[?25llong first row\nstale second row\n",
-                    "\x1b[A\x1b[A\rshort replacement\x1b[K\x1b[B\r\x1b[K",
-                    "\x1b[A\rdone\x1b[K\x1b[B\x1b[?25h",
+                    "\x1b[A\x1b[A\rshort replacement\x1b[K\x1b[B\r\x1b[K\r",
+                    "\x1b[A\rdone\x1b[K\x1b[B\r\x1b[?25h",
                 )
             );
             assert!(
