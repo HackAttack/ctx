@@ -82,9 +82,13 @@ pub(crate) fn run_setup(
     let lexical_status = source.report["lexical"]["status"]
         .as_str()
         .unwrap_or("unavailable");
+    let refresh_health_status = source.report["refresh"]["status"]
+        .as_str()
+        .unwrap_or("unavailable");
     let mode = setup_mode(
         lexical_status,
         refresh_request["status"].as_str().unwrap_or("unavailable"),
+        refresh_health_status,
     );
     telemetry.mode = Some(if mode == "ready" {
         SetupMode::Ready
@@ -144,9 +148,13 @@ fn setup_refresh_wait(requested: bool, startup: Option<&DaemonSetupHandoff>) -> 
     requested || startup.is_some_and(|startup| startup.requires_initial_refresh_wait)
 }
 
-fn setup_mode(lexical_status: &str, refresh_status: &str) -> &'static str {
+fn setup_mode(
+    lexical_status: &str,
+    refresh_status: &str,
+    refresh_health_status: &str,
+) -> &'static str {
     match lexical_status {
-        "ready" => "ready",
+        "ready" if refresh_health_status != "partial" => "ready",
         "pending" => "pending",
         "stale" => "stale",
         _ if refresh_status == "pending" => "pending",
@@ -333,10 +341,14 @@ mod tests {
 
     #[test]
     fn admitted_background_refresh_reports_pending_before_first_publication() {
-        assert_eq!(setup_mode("unavailable", "pending"), "pending");
-        assert_eq!(setup_mode("unavailable", "unavailable"), "unavailable");
-        assert_eq!(setup_mode("stale", "pending"), "stale");
-        assert_eq!(setup_mode("ready", "pending"), "ready");
+        assert_eq!(setup_mode("unavailable", "pending", "pending"), "pending");
+        assert_eq!(
+            setup_mode("unavailable", "unavailable", "unavailable"),
+            "unavailable"
+        );
+        assert_eq!(setup_mode("stale", "pending", "stale"), "stale");
+        assert_eq!(setup_mode("ready", "pending", "ready"), "ready");
+        assert_eq!(setup_mode("ready", "published", "partial"), "unavailable");
     }
 
     #[test]

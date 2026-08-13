@@ -612,7 +612,10 @@ fn terminal_label(logical: &RefreshLogicalStatus) -> &'static str {
         .map(|outcome| {
             if outcome.is_failure() {
                 "History refresh failed"
-            } else if outcome.code.as_str() == "completed" {
+            } else if matches!(
+                outcome.code.as_str(),
+                "completed" | "completed_with_rejections"
+            ) {
                 "History refresh complete"
             } else {
                 "History refresh complete with issues"
@@ -1016,7 +1019,7 @@ mod tests {
                 "completed_with_rejections",
                 "completed_with_diagnostics",
                 false,
-                "History refresh complete with issues",
+                "History refresh complete",
             ),
             (
                 RefreshRequestState::Failed,
