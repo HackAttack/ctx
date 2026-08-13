@@ -140,13 +140,23 @@ struct LocalLiveRenderer {
     worker: Option<JoinHandle<()>>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum LiveRefreshPresentation {
+    Shared,
+    Setup,
+}
+
 impl LocalLiveRenderer {
-    fn new(output: LiveOutput<Box<dyn Write + Send>>, started: Instant) -> Self {
+    fn new(
+        output: LiveOutput<Box<dyn Write + Send>>,
+        started: Instant,
+        presentation: LiveRefreshPresentation,
+    ) -> Self {
         let (commands, receiver) = mpsc::channel();
         let background_error = Arc::new(Mutex::new(None));
         let worker_error = Arc::clone(&background_error);
         let worker = thread::spawn(move || {
-            run_live_renderer(output, receiver, started, &worker_error);
+            run_live_renderer(output, receiver, started, presentation, &worker_error);
         });
         Self {
             commands,
@@ -206,6 +216,7 @@ fn run_live_renderer(
     mut output: LiveOutput<Box<dyn Write + Send>>,
     commands: mpsc::Receiver<LiveRenderCommand>,
     started: Instant,
+    presentation: LiveRefreshPresentation,
     background_error: &Mutex<Option<io::Error>>,
 ) {
     let mut active = None;
@@ -231,7 +242,7 @@ fn run_live_renderer(
                 let rendered =
                     prepare_live_snapshot((*snapshot).clone(), &mut clock, started.elapsed());
                 let context = *output.context();
-                let document = refresh_progress(&context, &rendered);
+                let document = render_live_refresh(presentation, &context, rendered);
                 let result = output.write_frame(&document, terminal);
                 let failed = result.is_err();
                 let _ = complete.send(result);
@@ -251,7 +262,7 @@ fn run_live_renderer(
                 let rendered =
                     prepare_live_snapshot(snapshot.clone(), &mut clock, started.elapsed());
                 let context = *output.context();
-                let document = refresh_progress(&context, &rendered);
+                let document = render_live_refresh(presentation, &context, rendered);
                 if let Err(error) = output.write_frame(&document, false) {
                     *background_error
                         .lock()
@@ -261,6 +272,17 @@ fn run_live_renderer(
             }
         }
     }
+}
+
+fn render_live_refresh(
+    presentation: LiveRefreshPresentation,
+    context: &crate::ui::RenderContext,
+    mut snapshot: RefreshProgressSnapshot,
+) -> Document {
+    if presentation == LiveRefreshPresentation::Setup {
+        snapshot.use_setup_live_presentation();
+    }
+    refresh_progress(context, &snapshot)
 }
 
 fn prepare_live_snapshot(
@@ -293,9 +315,15 @@ impl<'a> ProgressReporter<'a> {
         };
         let started = Instant::now();
         let output = if mode == ProgressRenderMode::Live {
+            let presentation = if operation == "setup" {
+                LiveRefreshPresentation::Setup
+            } else {
+                LiveRefreshPresentation::Shared
+            };
             ProgressOutput::Live(LocalLiveRenderer::new(
                 ui.stderr_shared_live_output(),
                 started,
+                presentation,
             ))
         } else {
             ProgressOutput::Direct(ui.stderr_live_output())
@@ -820,13 +848,30 @@ mod tests {
         let context = crate::ui::RenderContext::for_test(crate::ui::TestContext::pipe(
             crate::ui::StreamKind::Stderr,
         ));
-        let expected = crate::ui::refresh_progress(&context, &active_status()).render_plain();
+        let shared_document =
+            crate::ui::refresh_progress(&context, &active_status()).render_plain();
         let (mut ui, stdout_capture) = ui_with_stderr(stderr, context);
 
-        let mut reporter = ProgressReporter::new(&mut ui, ProgressMode::Plain, false, "import", 0);
+        let mut reporter = ProgressReporter::new(&mut ui, ProgressMode::Plain, false, "setup", 0);
         reporter.source_refresh(active_status()).unwrap();
 
-        assert_eq!(stderr_capture.text(), expected);
+        assert_eq!(stderr_capture.text(), shared_document);
+        assert_eq!(
+            shared_document,
+            concat!(
+                "Indexing your agent history\n",
+                "──────────────━━━━━━━━──────────────────────────\n",
+                "\n",
+                "Agent histories  Codex\n",
+                "                 Claude\n",
+                "Sessions         123\n",
+                "Messages         4,000\n",
+                "Tool calls       96\n",
+                "Data scanned     2.0 KiB\n",
+                "Elapsed          1m 05s\n",
+                "Remaining        estimating\n",
+            )
+        );
         assert!(stdout_capture.text().is_empty());
         assert!(!stderr_capture.text().contains("/tmp/history"));
         assert!(!stderr_capture.text().contains("1 / 2"));

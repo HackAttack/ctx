@@ -184,7 +184,14 @@ pub struct LiveOutput<W: Write> {
     writer: W,
     context: RenderContext,
     rendered_rows: Vec<String>,
+    repaint_cursor: Option<RepaintCursor>,
     cursor_hidden: bool,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct RepaintCursor {
+    current_row: usize,
+    recovery_row: usize,
 }
 
 impl<W: Write> LiveOutput<W> {
@@ -193,6 +200,7 @@ impl<W: Write> LiveOutput<W> {
             writer,
             context,
             rendered_rows: Vec::new(),
+            repaint_cursor: None,
             cursor_hidden: false,
         }
     }
@@ -271,15 +279,31 @@ impl<W: Write> LiveOutput<W> {
             return Ok(());
         }
 
-        write_cursor_up(&mut self.writer, self.rendered_rows.len())?;
-        let mut cursor_row = 0;
         let height = self.rendered_rows.len().max(rows.len());
+        self.repaint_cursor = Some(RepaintCursor {
+            current_row: self.rendered_rows.len(),
+            recovery_row: height,
+        });
+        let Some(cursor) = self.repaint_cursor.as_mut() else {
+            return Err(io::Error::other("missing repaint cursor"));
+        };
+        write_cursor_up(
+            &mut self.writer,
+            self.rendered_rows.len(),
+            Some(&mut cursor.current_row),
+        )?;
         for row in 0..height {
             if self.rendered_rows.get(row).map(String::as_str) == rows.get(row).copied() {
                 continue;
             }
-            write_cursor_down(&mut self.writer, row.saturating_sub(cursor_row))?;
-            cursor_row = row;
+            let Some(cursor) = self.repaint_cursor.as_mut() else {
+                return Err(io::Error::other("missing repaint cursor"));
+            };
+            write_cursor_down(
+                &mut self.writer,
+                row.saturating_sub(cursor.current_row),
+                Some(&mut cursor.current_row),
+            )?;
             self.writer.write_all(b"\r")?;
             if let Some(line) = rows.get(row) {
                 self.writer.write_all(line.as_bytes())?;
@@ -287,17 +311,30 @@ impl<W: Write> LiveOutput<W> {
             self.writer.write_all(b"\x1b[K")?;
         }
 
-        if cursor_row < rows.len() {
-            write_cursor_down(&mut self.writer, rows.len() - cursor_row)?;
+        let Some(cursor) = self.repaint_cursor.as_mut() else {
+            return Err(io::Error::other("missing repaint cursor"));
+        };
+        if cursor.current_row < rows.len() {
+            write_cursor_down(
+                &mut self.writer,
+                rows.len() - cursor.current_row,
+                Some(&mut cursor.current_row),
+            )?;
         } else {
-            write_cursor_up(&mut self.writer, cursor_row - rows.len())?;
+            write_cursor_up(
+                &mut self.writer,
+                cursor.current_row - rows.len(),
+                Some(&mut cursor.current_row),
+            )?;
         }
         self.writer.write_all(b"\r")?;
+        self.repaint_cursor = None;
         Ok(())
     }
 
     fn finish_frame(&mut self, final_frame: bool, result: io::Result<()>) -> io::Result<()> {
         if let Err(error) = result {
+            self.restore_repaint_anchor_best_effort();
             let _ = self.writer.write_all(b"\r");
             let _ = self.restore_cursor();
             self.rendered_rows.clear();
@@ -310,6 +347,25 @@ impl<W: Write> LiveOutput<W> {
             return restore_result.and_then(|()| self.writer.flush());
         }
         self.writer.flush()
+    }
+
+    fn restore_repaint_anchor_best_effort(&mut self) {
+        let Some(cursor) = self.repaint_cursor.take() else {
+            return;
+        };
+        if cursor.current_row < cursor.recovery_row {
+            let _ = write_cursor_down(
+                &mut self.writer,
+                cursor.recovery_row - cursor.current_row,
+                None,
+            );
+        } else {
+            let _ = write_cursor_up(
+                &mut self.writer,
+                cursor.current_row - cursor.recovery_row,
+                None,
+            );
+        }
     }
 
     fn restore_cursor(&mut self) -> io::Result<()> {
@@ -347,16 +403,30 @@ fn frame_rows(frame: &str) -> Vec<&str> {
     }
 }
 
-fn write_cursor_up(writer: &mut impl Write, rows: usize) -> io::Result<()> {
+fn write_cursor_up(
+    writer: &mut impl Write,
+    rows: usize,
+    mut current_row: Option<&mut usize>,
+) -> io::Result<()> {
     for _ in 0..rows {
         writer.write_all(b"\x1b[A")?;
+        if let Some(current_row) = current_row.as_deref_mut() {
+            *current_row = current_row.saturating_sub(1);
+        }
     }
     Ok(())
 }
 
-fn write_cursor_down(writer: &mut impl Write, rows: usize) -> io::Result<()> {
+fn write_cursor_down(
+    writer: &mut impl Write,
+    rows: usize,
+    mut current_row: Option<&mut usize>,
+) -> io::Result<()> {
     for _ in 0..rows {
         writer.write_all(b"\x1b[B")?;
+        if let Some(current_row) = current_row.as_deref_mut() {
+            *current_row = current_row.saturating_add(1);
+        }
     }
     Ok(())
 }
@@ -871,7 +941,7 @@ mod tests {
     }
 
     #[test]
-    fn repaint_error_restores_cursor_and_column_before_following_output() {
+    fn repaint_error_restores_cursor_below_live_block_before_following_output() {
         let context = RenderContext::for_test(TestContext::tty(StreamKind::Stdout, 80));
         let writer = FailOnceWriter::new();
         let capture = writer.clone();
@@ -888,9 +958,10 @@ mod tests {
 
         let rendered = capture.text();
         assert!(
-            rendered.ends_with("\x1b[A\rbroken\r\x1b[?25hSENTINEL"),
+            rendered.ends_with("\x1b[A\rbroken\x1b[B\r\x1b[?25hSENTINEL"),
             "{rendered:?}"
         );
+        assert!(!rendered.ends_with("\x1b[A\rbroken\r\x1b[?25hSENTINEL"));
     }
 
     #[test]

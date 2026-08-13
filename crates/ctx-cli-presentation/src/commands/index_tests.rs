@@ -76,7 +76,6 @@ fn readiness(
                 "completed_sources": completed_sources,
                 "total_sources": 12,
                 "total_sources_known": true,
-                "providers": if refresh_status == "ready" { json!([]) } else { json!(["codex"]) },
                 "current_source": if refresh_status == "ready" { serde_json::Value::Null } else { json!("source.db") },
                 "completed_records": if refresh_status == "ready" { serde_json::Value::Null } else { json!(1234) },
                 "completed_bytes": if refresh_status == "ready" { serde_json::Value::Null } else { json!(4 * 1024 * 1024) },

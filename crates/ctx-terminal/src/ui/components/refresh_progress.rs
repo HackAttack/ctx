@@ -2,7 +2,7 @@ use serde_json::{json, Value};
 
 use crate::{format_bytes, format_count};
 
-use super::{fields::fields_with_label_width, progress, Field, Progress};
+use super::{fields, fields::fields_with_label_width, progress, Field, Progress};
 use crate::ui::{Document, RenderContext};
 
 const MAX_DYNAMIC_TEXT_BYTES: usize = 256;
@@ -19,6 +19,13 @@ pub struct RefreshProgressSnapshot {
     progress: RefreshProgress,
     total_sources_known: bool,
     presentation_agent_histories: Option<Vec<String>>,
+    presentation: RefreshProgressPresentation,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RefreshProgressPresentation {
+    Shared,
+    SetupLive,
 }
 
 impl RefreshProgressSnapshot {
@@ -41,6 +48,7 @@ impl RefreshProgressSnapshot {
             progress,
             total_sources_known,
             presentation_agent_histories,
+            presentation: RefreshProgressPresentation::Shared,
         }
     }
 
@@ -79,6 +87,10 @@ impl RefreshProgressSnapshot {
 
     pub(crate) fn set_presentation_agent_histories(&mut self, histories: Option<Vec<String>>) {
         self.presentation_agent_histories = histories;
+    }
+
+    pub(crate) fn use_setup_live_presentation(&mut self) {
+        self.presentation = RefreshProgressPresentation::SetupLive;
     }
 
     pub fn is_terminal(&self) -> bool {
@@ -352,6 +364,106 @@ impl RefreshCurrentSourceProgress {
 }
 
 pub fn refresh_progress(context: &RenderContext, snapshot: &RefreshProgressSnapshot) -> Document {
+    match snapshot.presentation {
+        RefreshProgressPresentation::Shared => shared_refresh_progress(context, snapshot),
+        RefreshProgressPresentation::SetupLive => setup_live_refresh_progress(context, snapshot),
+    }
+}
+
+fn shared_refresh_progress(
+    context: &RenderContext,
+    snapshot: &RefreshProgressSnapshot,
+) -> Document {
+    let label = shared_refresh_label(snapshot);
+    let mut document = progress(
+        context,
+        Progress {
+            label,
+            current: if snapshot.is_terminal() {
+                1
+            } else {
+                snapshot.progress.elapsed_millis.unwrap_or(0) / 250
+            },
+            total: snapshot.is_terminal().then_some(1),
+            detail: None,
+        },
+    );
+
+    let sessions = format_count_u64(snapshot.progress.processed_sessions);
+    let messages = format_count_u64(snapshot.progress.processed_messages);
+    let tool_calls = format_count_u64(snapshot.progress.processed_tool_calls);
+    let scanned = format_bytes(snapshot.progress.processed_bytes);
+    let elapsed = snapshot
+        .progress
+        .elapsed_millis
+        .map(format_duration_millis)
+        .unwrap_or_else(|| "measuring".to_owned());
+    let remaining = if snapshot.is_terminal() {
+        "complete".to_owned()
+    } else {
+        "estimating".to_owned()
+    };
+    let histories = if snapshot.progress.agent_histories.is_empty() {
+        vec!["discovering".to_owned()]
+    } else {
+        snapshot.progress.agent_histories.clone()
+    };
+    let mut detail_fields = Vec::with_capacity(histories.len().saturating_add(6));
+    for (index, history) in histories.iter().enumerate() {
+        if index == 0 {
+            detail_fields.push(Field::new("Agent histories", history));
+        } else {
+            detail_fields.push(Field::continuation(history));
+        }
+    }
+    detail_fields.extend([
+        Field::new("Sessions", &sessions),
+        Field::new("Messages", &messages),
+        Field::new("Tool calls", &tool_calls),
+        Field::new("Data scanned", &scanned),
+        Field::new("Elapsed", &elapsed),
+        Field::new("Remaining", &remaining),
+    ]);
+    document.push_blank();
+    document.append(fields(context, &detail_fields));
+    document
+}
+
+fn shared_refresh_label(snapshot: &RefreshProgressSnapshot) -> &'static str {
+    match &snapshot.kind {
+        RefreshStatusKind::BackgroundMaintenanceWake => "History refresh is queued",
+        RefreshStatusKind::Legacy { request_state } => match request_state {
+            RefreshRequestState::AdmissionPending | RefreshRequestState::Queued => {
+                "History refresh is queued"
+            }
+            RefreshRequestState::Running => shared_physical_label(&snapshot.progress.phase),
+            RefreshRequestState::Published => "History refresh complete",
+            RefreshRequestState::Failed => "History refresh failed",
+        },
+        RefreshStatusKind::Logical(logical) => match logical.logical_phase {
+            RefreshLogicalPhase::Waiting => "History refresh is waiting",
+            RefreshLogicalPhase::Attached => "Refreshing history with shared work",
+            RefreshLogicalPhase::CoverageCheck => "Checking refresh coverage",
+            RefreshLogicalPhase::ExactSuccessor => "Waiting for successor refresh",
+            RefreshLogicalPhase::Direct => shared_physical_label(&snapshot.progress.phase),
+            RefreshLogicalPhase::Terminal => terminal_label(logical),
+        },
+    }
+}
+
+fn shared_physical_label(phase: &str) -> &'static str {
+    match phase {
+        "queued" | "pending" | "discovering" => "Discovering history sources",
+        "committing" | "committed" | "publishing" => "Publishing search index",
+        "verifying" => "Verifying refreshed history",
+        _ => "Indexing your agent history",
+    }
+}
+
+fn setup_live_refresh_progress(
+    context: &RenderContext,
+    snapshot: &RefreshProgressSnapshot,
+) -> Document {
     let label = human_refresh_label(snapshot);
     let mut document = progress(
         context,
@@ -689,13 +801,15 @@ mod tests {
         ] {
             assert!(!rendered.contains("Sources"), "{rendered}");
             assert!(!rendered.contains("0 / 0"), "{rendered}");
-            assert!(!rendered.contains("Agent histories"), "{rendered}");
-            assert_eq!(rendered.lines().count(), 2, "{rendered}");
+            assert!(
+                rendered.contains("Agent histories  discovering"),
+                "{rendered}"
+            );
         }
     }
 
     #[test]
-    fn live_history_progress_is_stable_aligned_and_user_facing() {
+    fn setup_live_history_progress_is_stable_aligned_and_user_facing() {
         let context = RenderContext::for_test(TestContext::tty(StreamKind::Stderr, 80));
         let mut snapshot = active_status(RefreshLogicalPhase::Direct, "refreshing", true, 4);
         snapshot.progress.agent_histories =
@@ -706,6 +820,7 @@ mod tests {
         snapshot.progress.processed_bytes = 8_804_683_776;
         snapshot.progress.elapsed_millis = Some(125_000);
         snapshot.set_presentation_agent_histories(Some(snapshot.progress.agent_histories.clone()));
+        snapshot.use_setup_live_presentation();
         let rendered = refresh_progress(&context, &snapshot).render_plain();
         assert_eq!(
             rendered,
@@ -731,7 +846,7 @@ mod tests {
     }
 
     #[test]
-    fn live_history_progress_is_responsive_at_supported_terminal_widths() {
+    fn setup_live_history_progress_is_responsive_at_supported_terminal_widths() {
         let mut snapshot = active_status(RefreshLogicalPhase::Direct, "refreshing", true, 4);
         snapshot.progress.agent_histories =
             vec!["Codex".to_owned(), "Claude".to_owned(), "Gemini".to_owned()];
@@ -741,6 +856,7 @@ mod tests {
         snapshot.progress.processed_bytes = 8_804_683_776;
         snapshot.progress.elapsed_millis = Some(125_000);
         snapshot.set_presentation_agent_histories(Some(snapshot.progress.agent_histories.clone()));
+        snapshot.use_setup_live_presentation();
 
         for width in [32, 48, 80, 120] {
             let context = RenderContext::for_test(TestContext::tty(StreamKind::Stderr, width));
@@ -788,6 +904,7 @@ mod tests {
         let mut discovery = active_status(RefreshLogicalPhase::Direct, "discovering", true, 4);
         discovery.progress.agent_histories = vec!["Codex".to_owned()];
         discovery.set_presentation_agent_histories(None);
+        discovery.use_setup_live_presentation();
         let discovery_height = refresh_progress(&context, &discovery)
             .render_plain()
             .lines()
@@ -797,6 +914,7 @@ mod tests {
         let frozen = vec!["Codex".to_owned(), "Claude".to_owned(), "Gemini".to_owned()];
         active.progress.agent_histories = frozen.clone();
         active.set_presentation_agent_histories(Some(frozen.clone()));
+        active.use_setup_live_presentation();
         let active_height = refresh_progress(&context, &active)
             .render_plain()
             .lines()
@@ -825,6 +943,7 @@ mod tests {
         snapshot.progress.agent_histories = vec!["Codex".to_owned()];
         snapshot.progress.processed_sessions = 7;
         snapshot.set_presentation_agent_histories(Some(vec!["Codex".to_owned()]));
+        snapshot.use_setup_live_presentation();
         snapshot.set_presentation_elapsed_millis(900);
         let first = refresh_progress(&context, &snapshot).render_plain();
         snapshot.set_presentation_elapsed_millis(1_100);
