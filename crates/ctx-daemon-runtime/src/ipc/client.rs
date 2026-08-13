@@ -762,8 +762,7 @@ pub fn windows_wide_null(value: &str) -> Vec<u16> {
 }
 
 use std::{
-    fmt,
-    fs,
+    fmt, fs,
     io::Read,
     path::{Path, PathBuf},
     process,
