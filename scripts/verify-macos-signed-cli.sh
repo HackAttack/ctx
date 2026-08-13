@@ -25,10 +25,7 @@ evidence="$4"
 case "${platform}" in macos-arm64|macos-x64) ;; *) die "unsupported macOS platform" ;; esac
 [[ -f "${artifact}" ]] || die "signed macOS CLI missing: ${artifact}"
 [[ -s "${evidence}" ]] || die "macOS signing evidence missing: ${evidence}"
-if [[ "${CTX_TEST_ONLY_MACOS_HOST:-}" == "Darwin" ]]; then
-  [[ "${CTX_LOCAL_MACOS_SIGNING_LIVE_TEST:-0}" == "1" ]] || \
-    die "CTX_TEST_ONLY_MACOS_HOST is restricted to local contract tests"
-elif [[ "$(uname -s)" != "Darwin" ]]; then
+if [[ "$(uname -s)" != "Darwin" ]]; then
   die "signed macOS CLI verification requires a native Darwin host"
 fi
 command -v python3 >/dev/null 2>&1 || die "python3 is required"
