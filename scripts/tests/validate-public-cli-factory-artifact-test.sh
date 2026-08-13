@@ -23,7 +23,7 @@ test_root="$(mktemp -d)"
 trap 'rm -rf "${test_root}"' EXIT
 
 repo_root="${test_root}/repo"
-artifact_dir="${test_root}/artifacts"
+artifact_dir="${repo_root}/-artifacts"
 command_dir="${test_root}/commands"
 output_dir="${test_root}/output"
 mkdir -p \
@@ -199,12 +199,15 @@ PATH="${command_dir}:/usr/bin:/bin" \
   CTX_TEST_REAL_CHMOD="${real_chmod}" \
   CTX_TEST_CHMOD_LOG="${chmod_log}" \
   CTX_TEST_CARGO_MARKER="${cargo_marker}" \
-  bash "${validator}" linux-x64 "${artifact_dir}" "${output_dir}" \
+  bash "${validator}" linux-x64 -artifacts "${output_dir}" \
   >"${test_root}/stdout" 2>"${test_root}/stderr"
 status=$?
 set -e
 
 [[ ${status} -ne 0 ]] || fail "fake candidate unexpectedly completed validation"
+if grep -Fq "factory artifact directory is unavailable" "${test_root}/stderr"; then
+  fail "validator parsed a leading-dash artifact directory as an option"
+fi
 [[ -x "${artifact}" ]] || fail "validator did not restore owner execute permission"
 [[ -f "${chmod_log}" ]] || fail "BSD-compatible chmod shim was not invoked"
 [[ ! -e "${cargo_marker}" ]] || fail "validator invoked Cargo"

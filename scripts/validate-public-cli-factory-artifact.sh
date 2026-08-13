@@ -38,7 +38,12 @@ esac
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "${repo_root}"
-artifact_dir="$(cd "${artifact_dir}" 2>/dev/null && pwd -P)" || \
+[[ -n "${artifact_dir}" ]] || die "factory artifact directory is unavailable"
+case "${artifact_dir}" in
+  /*) artifact_dir_operand="${artifact_dir}" ;;
+  *) artifact_dir_operand="./${artifact_dir}" ;;
+esac
+artifact_dir="$(CDPATH= cd "${artifact_dir_operand}" 2>/dev/null && pwd -P)" || \
   die "factory artifact directory is unavailable"
 artifact="${artifact_dir}/${binary}"
 [[ -f "${artifact}" && ! -L "${artifact}" ]] || die "factory artifact is missing"
@@ -65,8 +70,8 @@ version="$(python3 -I scripts/check-public-cli-build-info.py \
 # Restore only owner execute permission after the exact artifact, source,
 # candidate, build-info, and construction-version bindings have passed.
 if [[ "${platform}" != windows-x64 ]]; then
-  # BSD chmod rejects the GNU-only chmod u+x -- "${artifact}" form. The
-  # canonical absolute path above cannot be mistaken for an option.
+  # BSD chmod rejects the GNU-only extra option terminator. The canonical
+  # absolute path above cannot be mistaken for an option.
   chmod u+x "${artifact}" || die "could not establish factory artifact executable mode"
   [[ -f "${artifact}" && ! -L "${artifact}" && -x "${artifact}" ]] || \
     die "factory artifact is not an executable regular file"

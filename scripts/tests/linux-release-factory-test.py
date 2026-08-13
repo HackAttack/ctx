@@ -394,11 +394,12 @@ class LinuxReleaseFactoryTest(unittest.TestCase):
         ).read_text()
         checksum = source.index('[[ "${before}" == "${expected_sha256}" ]]')
         identity = source.index("check-public-cli-build-info.py")
-        chmod = source.index('chmod u+x -- "${artifact}"')
+        chmod = source.index('chmod u+x "${artifact}"')
         smoke = source.index("scripts/run-native-candidate-smoke.sh")
         self.assertLess(checksum, identity)
         self.assertLess(identity, chmod)
         self.assertLess(chmod, smoke)
+        self.assertNotIn('chmod u+x -- "${artifact}"', source)
         self.assertIn('if [[ "${platform}" != windows-x64 ]]; then', source)
         self.assertIn(
             '[[ -f "${artifact}" && ! -L "${artifact}" && -x "${artifact}" ]]',
