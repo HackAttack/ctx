@@ -26,11 +26,14 @@ SQLITE_WAL_FAMILY = "sqlite_wal"
 DOCUMENT_TREE_FAMILY = "replacement_document_tree"
 EVENT_FILE_FAMILY = "event_file"
 PROVIDER_SPECIFIC_EXCEPTION = "provider_specific_exception"
+PROVIDER_SUPPORT_MATRIX = (
+    Path(__file__).resolve().parents[2] / "docs/provider-support-matrix.json"
+)
 
-# The executable source-backed inventory has 43 provider identities. Codex's
-# session and prompt-history formats share one JSONL gate; explicit leaf/tree
-# variants remain in the same family. Custom is explicit-only and therefore
-# keeps its provider-local gate instead of acquiring an automatic corpus.
+# Codex's session and prompt-history formats share one JSONL gate; explicit
+# leaf/tree variants remain in the same family. Custom is explicit-only and
+# therefore keeps its provider-local gate instead of acquiring an automatic
+# corpus.
 PROVIDER_FAMILY_COVERAGE = (
     ("custom", PROVIDER_SPECIFIC_EXCEPTION, "explicit custom-history JSONL"),
     ("codex", JSONL_FAMILY, None),
@@ -82,6 +85,32 @@ PROVIDER_FAMILY_COVERAGE = (
 )
 
 
+def authoritative_provider_roster() -> set[str]:
+    matrix = json.loads(PROVIDER_SUPPORT_MATRIX.read_text(encoding="utf-8"))
+    return {
+        "custom",
+        *(provider["capture_provider"] for provider in matrix["providers"]),
+    }
+
+
+def validate_provider_family_coverage(
+    coverage: tuple[tuple[str, str, str | None], ...],
+    authoritative: set[str],
+) -> None:
+    providers = [provider for provider, _, _ in coverage]
+    duplicates = sorted(
+        provider for provider in set(providers) if providers.count(provider) > 1
+    )
+    actual = set(providers)
+    missing = sorted(authoritative - actual)
+    extra = sorted(actual - authoritative)
+    if duplicates or missing or extra:
+        raise AssertionError(
+            "provider performance taxonomy drifted: "
+            f"duplicates={duplicates} missing={missing} extra={extra}"
+        )
+
+
 @dataclass
 class FamilyCorpus:
     family: str
@@ -114,9 +143,10 @@ class FamilyCorpus:
 
 class SourceFamilyTaxonomyTest(unittest.TestCase):
     def test_every_landed_provider_has_one_family_or_exception(self) -> None:
-        providers = [provider for provider, _, _ in PROVIDER_FAMILY_COVERAGE]
-        self.assertEqual(len(providers), 42)
-        self.assertEqual(len(set(providers)), 42)
+        validate_provider_family_coverage(
+            PROVIDER_FAMILY_COVERAGE,
+            authoritative_provider_roster(),
+        )
         self.assertEqual(
             {family for _, family, _ in PROVIDER_FAMILY_COVERAGE},
             {
@@ -127,6 +157,19 @@ class SourceFamilyTaxonomyTest(unittest.TestCase):
                 PROVIDER_SPECIFIC_EXCEPTION,
             },
         )
+
+    def test_authoritative_roster_mutations_fail_closed(self) -> None:
+        authoritative = authoritative_provider_roster()
+        with self.assertRaisesRegex(AssertionError, r"missing=\['future_provider'\]"):
+            validate_provider_family_coverage(
+                PROVIDER_FAMILY_COVERAGE,
+                authoritative | {"future_provider"},
+            )
+        with self.assertRaisesRegex(AssertionError, r"duplicates=\['codex'\]"):
+            validate_provider_family_coverage(
+                PROVIDER_FAMILY_COVERAGE + (PROVIDER_FAMILY_COVERAGE[1],),
+                authoritative,
+            )
 
 
 def compact_json(value: object) -> bytes:
