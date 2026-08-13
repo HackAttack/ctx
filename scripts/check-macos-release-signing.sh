@@ -73,7 +73,12 @@ root_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 source "${root_dir}/scripts/macos-release-publisher-policy.sh"
 require_command codesign
 require_command python3
-mapfile -t evidence_identity < <(python3 - "${evidence}" <<'PY'
+evidence_identity=()
+evidence_identity_count=0
+while IFS= read -r evidence_value; do
+  evidence_identity[${evidence_identity_count}]="${evidence_value}"
+  evidence_identity_count=$((evidence_identity_count + 1))
+done < <(python3 - "${evidence}" <<'PY'
 import json
 import sys
 
@@ -90,7 +95,7 @@ if isinstance(authority, str) and isinstance(team_identifier, str):
     print(team_identifier)
 PY
 )
-[[ "${#evidence_identity[@]}" == "2" ]] || \
+[[ "${evidence_identity_count}" == "2" ]] || \
   die "macOS signing evidence does not contain one complete Apple identity"
 evidence_authority="${evidence_identity[0]}"
 evidence_team_id="${evidence_identity[1]}"

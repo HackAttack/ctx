@@ -411,6 +411,10 @@ attestation_check="${repo_root}/scripts/verify-macos-release-attestation.sh"
 evidence_tool="${repo_root}/scripts/macos-release-signing-evidence.py"
 execution_check="${repo_root}/scripts/verify-macos-signed-cli.sh"
 
+if grep -Eq '(^|[[:space:]])(mapfile|readarray)([[:space:]]|$)' "${check_script}"; then
+  fail "macOS release signing check requires a Bash 4-only line reader"
+fi
+
 new_artifact() {
   local name="$1"
   local directory="${2:-${test_root}}"
@@ -623,6 +627,33 @@ fi
 sha256sum "${success_artifact}" | awk '{print $1}' >"${success_artifact}.sha256"
 "${check_script}" macos-arm64 cli "${success_artifact}" \
   "${success_dir}/ctx-macos-arm64.signing.json"
+incomplete_identity_evidence="${success_dir}/incomplete-identity.signing.json"
+python3 - "${success_dir}/ctx-macos-arm64.signing.json" \
+  "${incomplete_identity_evidence}" <<'PY'
+import json
+import sys
+
+source_path, output_path = sys.argv[1:]
+with open(source_path, encoding="utf-8") as source:
+    value = json.load(source)
+value["codesign"]["authority"] = 1
+with open(output_path, "w", encoding="utf-8") as output:
+    json.dump(value, output)
+PY
+expect_failure 'does not contain one complete Apple identity' \
+  "${test_root}/incomplete-identity.log" \
+  "${check_script}" macos-arm64 cli "${success_artifact}" \
+    "${incomplete_identity_evidence}"
+unusual_check_dir="${test_root}/check path with spaces"
+mkdir -p "${unusual_check_dir}"
+unusual_check_artifact="${unusual_check_dir}/success-cli"
+cp "${success_artifact}" "${success_artifact}.sha256" "${unusual_check_dir}/"
+cp "${success_dir}/ctx-macos-arm64.attestation.json" \
+  "${success_dir}/ctx-macos-arm64.attestation.cms" \
+  "${success_dir}/ctx-macos-arm64.notary-submit.json" \
+  "${success_dir}/ctx-macos-arm64.signing.json" "${unusual_check_dir}/"
+"${check_script}" macos-arm64 cli "${unusual_check_artifact}" \
+  "${unusual_check_dir}/ctx-macos-arm64.signing.json"
 [[ "$(tr '\n' ' ' <"${TMPDIR}/tool-order.log")" == \
   'sign zip notary-submit attest ' ]] || fail "sign/notary/attestation ordering changed"
 [[ ! -e "${TMPDIR}/spctl-was-invoked" ]] || \
