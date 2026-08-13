@@ -1,10 +1,11 @@
-#[cfg(test)]
 use std::cell::RefCell;
 #[cfg(not(test))]
 use std::sync::{Mutex, OnceLock};
 use std::{
     fmt,
     io::{self, Write},
+    marker::PhantomData,
+    rc::Rc,
     sync::{
         atomic::{AtomicU64, Ordering},
         Arc,
@@ -16,14 +17,13 @@ use serde_json::Value;
 
 use crate::ui::StreamKind;
 
-#[cfg(test)]
 thread_local! {
-    static ACTIVE_MEASUREMENT: RefCell<Option<Arc<OutputByteCounter>>> =
+    static THREAD_MEASUREMENT: RefCell<Option<Arc<OutputByteCounter>>> =
         const { RefCell::new(None) };
 }
 
 #[cfg(not(test))]
-static ACTIVE_MEASUREMENT: OnceLock<Mutex<Option<Arc<OutputByteCounter>>>> = OnceLock::new();
+static PROCESS_MEASUREMENT: OnceLock<Mutex<Option<Arc<OutputByteCounter>>>> = OnceLock::new();
 
 #[derive(Default)]
 struct OutputByteCounter {
@@ -34,19 +34,60 @@ struct OutputByteCounter {
 /// Owns the content-free byte counter for one CLI invocation.
 ///
 /// A production CLI process owns one process-wide measurement so output from a
-/// command worker thread is included. Unit tests use thread-local measurements
-/// to keep parallel cases independent. Writers receive a cloned counter when
-/// constructed, so a destination keeps measuring through its final flush.
+/// command worker thread is included. Direct unit tests use thread-local
+/// measurements, and an in-process harness can opt into the same isolation.
+/// Writers receive a cloned counter when constructed, so a destination keeps
+/// measuring through its final flush.
 pub struct OutputMeasurement {
     counter: Arc<OutputByteCounter>,
     previous: Option<Arc<OutputByteCounter>>,
+    scope: MeasurementScope,
+    // A thread measurement restores creator-thread TLS on drop, so no guard
+    // may cross threads even when it currently owns the process-wide scope.
+    _not_send: PhantomData<Rc<()>>,
+}
+
+enum MeasurementScope {
+    Thread,
+    #[cfg(not(test))]
+    Process,
 }
 
 impl OutputMeasurement {
     pub fn start() -> Self {
+        #[cfg(test)]
+        {
+            Self::start_for_current_thread()
+        }
+        #[cfg(not(test))]
+        {
+            let counter = Arc::new(OutputByteCounter::default());
+            let previous = replace_process_measurement(Some(counter.clone()));
+            Self {
+                counter,
+                previous,
+                scope: MeasurementScope::Process,
+                _not_send: PhantomData,
+            }
+        }
+    }
+
+    /// Starts an in-process measurement isolated to writers created by the
+    /// current thread.
+    ///
+    /// This keeps independent invocations in a parallel test harness from
+    /// sharing one process-wide counter. Child-thread writers do not inherit
+    /// this scope; the production CLI uses [`Self::start`] so worker output is
+    /// included in its one invocation-wide measurement.
+    pub fn start_for_current_thread() -> Self {
         let counter = Arc::new(OutputByteCounter::default());
-        let previous = replace_active_measurement(Some(counter.clone()));
-        Self { counter, previous }
+        let previous = replace_thread_measurement(Some(counter.clone()));
+        Self {
+            counter,
+            previous,
+            scope: MeasurementScope::Thread,
+            _not_send: PhantomData,
+        }
     }
 
     pub fn stream_bytes(&self, stream: StreamKind) -> u64 {
@@ -61,41 +102,53 @@ impl OutputMeasurement {
 
 impl Drop for OutputMeasurement {
     fn drop(&mut self) {
-        replace_active_measurement(self.previous.take());
+        match self.scope {
+            MeasurementScope::Thread => {
+                replace_thread_measurement(self.previous.take());
+            }
+            #[cfg(not(test))]
+            MeasurementScope::Process => {
+                replace_process_measurement(self.previous.take());
+            }
+        }
     }
 }
 
-#[cfg(test)]
-fn replace_active_measurement(
+fn replace_thread_measurement(
     replacement: Option<Arc<OutputByteCounter>>,
 ) -> Option<Arc<OutputByteCounter>> {
-    ACTIVE_MEASUREMENT.with(|active| std::mem::replace(&mut *active.borrow_mut(), replacement))
+    THREAD_MEASUREMENT.with(|active| std::mem::replace(&mut *active.borrow_mut(), replacement))
 }
 
 #[cfg(not(test))]
-fn replace_active_measurement(
+fn replace_process_measurement(
     replacement: Option<Arc<OutputByteCounter>>,
 ) -> Option<Arc<OutputByteCounter>> {
-    let active = ACTIVE_MEASUREMENT.get_or_init(|| Mutex::new(None));
+    let active = PROCESS_MEASUREMENT.get_or_init(|| Mutex::new(None));
     let mut active = active
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
     std::mem::replace(&mut *active, replacement)
 }
 
-#[cfg(test)]
 fn active_measurement() -> Option<Arc<OutputByteCounter>> {
-    ACTIVE_MEASUREMENT.with(|active| active.borrow().clone())
-}
-
-#[cfg(not(test))]
-fn active_measurement() -> Option<Arc<OutputByteCounter>> {
-    ACTIVE_MEASUREMENT.get().and_then(|active| {
-        active
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .clone()
-    })
+    let thread_measurement = THREAD_MEASUREMENT.with(|active| active.borrow().clone());
+    if thread_measurement.is_some() {
+        return thread_measurement;
+    }
+    #[cfg(not(test))]
+    {
+        PROCESS_MEASUREMENT.get().and_then(|active| {
+            active
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .clone()
+        })
+    }
+    #[cfg(test)]
+    {
+        None
+    }
 }
 
 impl OutputByteCounter {

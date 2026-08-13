@@ -53,7 +53,8 @@ mod tests {
         cell::Cell,
         io::{self, Write},
         rc::Rc,
-        sync::{Arc, Mutex},
+        sync::{Arc, Barrier, Mutex},
+        thread,
         time::Duration,
     };
 
@@ -63,7 +64,7 @@ mod tests {
     use crate::{
         cli::Cli,
         dispatch::{command_local_usage_draft, render_generic_command_error},
-        output::OutputMeasurement,
+        output::{MeasuredWriter, OutputMeasurement},
         ui::{ColorMode, RenderContext, StreamKind, TestContext, Ui},
     };
 
@@ -90,57 +91,119 @@ mod tests {
         }
     }
 
+    fn render_and_assert_final_accounting_fixture(
+        success: bool,
+        measurement: &OutputMeasurement,
+    ) -> usize {
+        let stdout = SharedBytes::default();
+        let stdout_copy = stdout.clone();
+        let stderr = SharedBytes::default();
+        let stderr_copy = stderr.clone();
+        let mut ui = Ui::with_writers(
+            stdout,
+            RenderContext::for_test(
+                TestContext::tty(StreamKind::Stdout, 32).color(ColorMode::Always),
+            ),
+            stderr,
+            RenderContext::for_test(
+                TestContext::tty(StreamKind::Stderr, 48).color(ColorMode::Always),
+            ),
+        );
+        let document = crate::ui::Document::from_line(crate::ui::Line::text(
+            "stdout result with enough words to wrap",
+        ));
+        ui.write_stdout(&document).unwrap();
+        if success {
+            let document =
+                crate::ui::Document::from_line(crate::ui::Line::text("stderr delivery note"));
+            ui.write_stderr(&document).unwrap();
+        } else {
+            render_generic_command_error(&anyhow::anyhow!("final command failure"), false, &mut ui)
+                .unwrap();
+        }
+        ui.flush().unwrap();
+
+        let cli = Cli::try_parse_from(["ctx", "docs", "list"]).unwrap();
+        let mut draft = command_local_usage_draft(&cli.command);
+        draft.set_measured_output_bytes(1);
+        let delivered = measurement.total_bytes();
+        let completed =
+            complete_local_usage(draft, success, Duration::from_millis(25), delivered).unwrap();
+
+        let expected_stdout = stdout_copy.bytes().len();
+        let expected_stderr = stderr_copy.bytes().len();
+        let expected = expected_stdout + expected_stderr;
+        assert_eq!(
+            measurement.stream_bytes(StreamKind::Stdout),
+            u64::try_from(expected_stdout).unwrap()
+        );
+        assert_eq!(
+            measurement.stream_bytes(StreamKind::Stderr),
+            u64::try_from(expected_stderr).unwrap()
+        );
+        assert_eq!(usize::try_from(delivered).unwrap(), expected);
+        assert_eq!(
+            completed.delivered_output_bytes_for_test(),
+            u64::try_from(expected).unwrap()
+        );
+        assert_eq!(completed.duration_bucket_for_test(), "10_to_49_ms");
+        expected
+    }
+
     #[test]
     fn final_accounting_replaces_estimates_with_both_delivered_streams() {
         for success in [true, false] {
-            let measurement = OutputMeasurement::start();
-            let stdout = SharedBytes::default();
-            let stdout_copy = stdout.clone();
-            let stderr = SharedBytes::default();
-            let stderr_copy = stderr.clone();
-            let mut ui = Ui::with_writers(
-                stdout,
-                RenderContext::for_test(
-                    TestContext::tty(StreamKind::Stdout, 32).color(ColorMode::Always),
-                ),
-                stderr,
-                RenderContext::for_test(
-                    TestContext::tty(StreamKind::Stderr, 48).color(ColorMode::Always),
-                ),
-            );
-            let document = crate::ui::Document::from_line(crate::ui::Line::text(
-                "stdout result with enough words to wrap",
-            ));
-            ui.write_stdout(&document).unwrap();
-            if success {
-                let document =
-                    crate::ui::Document::from_line(crate::ui::Line::text("stderr delivery note"));
-                ui.write_stderr(&document).unwrap();
-            } else {
-                render_generic_command_error(
-                    &anyhow::anyhow!("final command failure"),
-                    false,
-                    &mut ui,
-                )
-                .unwrap();
-            }
-            ui.flush().unwrap();
-
-            let cli = Cli::try_parse_from(["ctx", "docs", "list"]).unwrap();
-            let mut draft = command_local_usage_draft(&cli.command);
-            draft.set_measured_output_bytes(1);
-            let delivered = measurement.total_bytes();
-            let completed =
-                complete_local_usage(draft, success, Duration::from_millis(25), delivered).unwrap();
-
-            let expected = stdout_copy.bytes().len() + stderr_copy.bytes().len();
-            assert_eq!(usize::try_from(delivered).unwrap(), expected);
-            assert_eq!(
-                completed.delivered_output_bytes_for_test(),
-                u64::try_from(expected).unwrap()
-            );
-            assert_eq!(completed.duration_bucket_for_test(), "10_to_49_ms");
+            let measurement = OutputMeasurement::start_for_current_thread();
+            render_and_assert_final_accounting_fixture(success, &measurement);
         }
+    }
+
+    #[test]
+    fn final_accounting_isolated_scope_excludes_foreign_bytes_and_restores_its_parent() {
+        const FOREIGN_BYTES: usize = 1_120;
+        const RESTORED_BYTES: &[u8] = b"restored parent output";
+
+        // ctx-terminal is a normal dependency of this test binary, so this
+        // exercises the non-test implementation of its measurement state.
+        let parent_measurement = OutputMeasurement::start_for_current_thread();
+        let foreign_bytes = SharedBytes::default();
+        let foreign_bytes_copy = foreign_bytes.clone();
+        let ready = Arc::new(Barrier::new(2));
+        let finished = Arc::new(Barrier::new(2));
+        let foreign_writer = {
+            let ready = ready.clone();
+            let finished = finished.clone();
+            thread::spawn(move || {
+                ready.wait();
+                let mut writer = MeasuredWriter::current(foreign_bytes, StreamKind::Stdout);
+                writer.write_all(&[b'x'; FOREIGN_BYTES]).unwrap();
+                finished.wait();
+            })
+        };
+
+        let nested_measurement = OutputMeasurement::start_for_current_thread();
+        ready.wait();
+        let expected = render_and_assert_final_accounting_fixture(true, &nested_measurement);
+        finished.wait();
+        foreign_writer.join().unwrap();
+
+        assert_eq!(expected, 61, "the focused two-stream fixture changed");
+        assert_eq!(nested_measurement.total_bytes(), 61);
+        assert_eq!(parent_measurement.total_bytes(), 0);
+        assert_eq!(
+            foreign_bytes_copy.bytes().len(),
+            FOREIGN_BYTES,
+            "the barrier-controlled foreign writer must deliver every byte"
+        );
+
+        drop(nested_measurement);
+        let mut restored_writer = MeasuredWriter::current(io::sink(), StreamKind::Stdout);
+        restored_writer.write_all(RESTORED_BYTES).unwrap();
+        assert_eq!(
+            parent_measurement.total_bytes(),
+            u64::try_from(RESTORED_BYTES.len()).unwrap(),
+            "dropping the nested scope must restore its thread-local parent"
+        );
     }
 
     struct FlushWriter {
