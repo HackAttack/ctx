@@ -113,6 +113,7 @@ case "${0##*/}" in
       : > "${candidate_dir}/.ctx.install.lock"
       : > "${candidate_dir}/.ctx.daemon-quiescence.lock"
       mkdir -p "${candidate_dir}/.ctx.daemon-quiescence-acks"
+      printf '%s\n' "${CTX_DATA_ROOT}" > "${candidate_dir}/.ctx.data-root"
       sleep 3
     fi
     ;;
@@ -297,8 +298,10 @@ v1_result="${tmp}/result-v1.json"
 }
 
 lifecycle_parent="${tmp}/lifecycle-candidate"
+lifecycle_tmpdir_real="${tmp}/lifecycle-smoke-tmp-real"
 lifecycle_tmpdir="${tmp}/lifecycle-smoke-tmp"
-mkdir -p "${lifecycle_parent}" "${lifecycle_tmpdir}"
+mkdir -p "${lifecycle_parent}" "${lifecycle_tmpdir_real}"
+ln -s "${lifecycle_tmpdir_real}" "${lifecycle_tmpdir}"
 lifecycle_fake="${lifecycle_parent}/ctx-lifecycle"
 make_fake "${lifecycle_fake}" "${pro_status_fixtures}/absent-helper-trial.json"
 mkdir -p "${lifecycle_parent}/sealed-release-metadata"
@@ -336,6 +339,14 @@ done
 [[ "${lifecycle_copy##*/}" == "${lifecycle_fake##*/}" ]]
 [[ ! -L "${lifecycle_copy}" ]]
 cmp -s "${lifecycle_fake}" "${lifecycle_copy}"
+physical_lifecycle_root="$(
+  CDPATH= cd -- "$(dirname "$(dirname "${lifecycle_copy}")")" && pwd -P
+)"
+[[ "$(cat "$(dirname "${lifecycle_copy}")/.ctx.data-root")" \
+  == "${physical_lifecycle_root}/data" ]] || {
+  printf 'candidate smoke exported a data root through a symlinked TMPDIR\n' >&2
+  exit 1
+}
 snapshot_tree "${lifecycle_parent}" > "${lifecycle_snapshot_during}"
 cmp -s "${lifecycle_snapshot_before}" "${lifecycle_snapshot_during}"
 lifecycle_root="$(dirname "$(dirname "${lifecycle_copy}")")"

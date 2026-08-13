@@ -79,6 +79,9 @@ mkdir -p "${result_dir}"
 rm -f "${result_path}"
 result_tmp="${result_path}.tmp.$$"
 root="$(mktemp -d "${TMPDIR:-/tmp}/ctx-native-candidate-smoke.XXXXXX")"
+# macOS exposes /tmp as a symlink to /private/tmp. Resolve the private root
+# before passing its descendants to ctx's no-follow directory traversal.
+root="$(CDPATH= cd -- "${root}" && pwd -P)"
 cleanup_candidate_processes() {
   [ -n "${candidate_binary:-}" ] || return 0
 
