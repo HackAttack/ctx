@@ -11,17 +11,17 @@ pub fn provider_path_identity(path: &Path) -> Result<String> {
     {
         use std::os::unix::ffi::OsStrExt;
 
-        return provider_path_identity_from_raw(
+        provider_path_identity_from_raw(
             path,
             "unix-bytes",
             path.as_os_str().as_bytes().to_vec(),
-        );
+        )
     }
     #[cfg(windows)]
     {
         use std::os::windows::ffi::OsStrExt;
 
-        return windows_provider_path_identity(path, true, path.as_os_str().encode_wide());
+        windows_provider_path_identity(path, true, path.as_os_str().encode_wide())
     }
     #[cfg(not(any(unix, windows)))]
     {
