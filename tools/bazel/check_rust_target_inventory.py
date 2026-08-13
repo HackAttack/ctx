@@ -53,6 +53,17 @@ def assert_label_exists(root: pathlib.Path, label: str) -> None:
     if not build.is_file():
         fail(f"{label} has no BUILD.bazel at {build}")
     pattern = re.compile(r'\bname\s*=\s*"' + re.escape(target) + r'"')
+    if pattern.search(build.read_text()):
+        return
+    # Some repository-level boundary targets are declared by a reviewed
+    # Starlark macro loaded from BUILD.bazel. Keep the generated inventory
+    # authoritative while checking the macro's explicit target declaration.
+    macro_sources = {
+        "pro_cli_dependency_boundary_check": root / "tools/bazel/pro_boundary_checks.bzl",
+    }
+    macro_source = macro_sources.get(target)
+    if macro_source and macro_source.is_file() and pattern.search(macro_source.read_text()):
+        return
     if not pattern.search(build.read_text()):
         fail(f"{label} is not declared in {build.relative_to(root)}")
 
