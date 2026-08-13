@@ -582,8 +582,7 @@ fn human_processing_label(phase: &str) -> &'static str {
 }
 
 // Machine progress messages remain a separate compatibility surface from the
-// live human frame. They retain request-state detail but never use the former
-// network-sounding publication label for local index work.
+// live human frame and retain their established request and phase labels.
 fn machine_refresh_label(snapshot: &RefreshProgressSnapshot) -> &'static str {
     match &snapshot.kind {
         RefreshStatusKind::BackgroundMaintenanceWake => "History refresh is queued",
@@ -625,8 +624,8 @@ fn terminal_label(logical: &RefreshLogicalStatus) -> &'static str {
 fn physical_label(phase: &str) -> &'static str {
     match phase {
         "queued" | "pending" | "discovering" => "Discovering history sources",
-        "committing" | "committed" | "publishing" => "Finalizing search index",
-        "verifying" => "Verifying agent history",
+        "committing" | "committed" | "publishing" => "Publishing search index",
+        "verifying" => "Verifying refreshed history",
         _ => "Indexing your agent history",
     }
 }
@@ -966,7 +965,7 @@ mod tests {
     }
 
     #[test]
-    fn local_phases_use_conservative_non_publishing_names() {
+    fn setup_live_local_phases_use_conservative_non_publishing_names() {
         for (phase, expected) in [
             ("refreshing", "Reading your agent history"),
             ("scanning_provider_sources", "Indexing your agent history"),
@@ -976,7 +975,6 @@ mod tests {
         ] {
             let snapshot = active_status(RefreshLogicalPhase::Direct, phase, true, 1);
             assert_eq!(human_refresh_label(&snapshot), expected);
-            assert!(!machine_refresh_label(&snapshot).contains("Publishing"));
         }
     }
 

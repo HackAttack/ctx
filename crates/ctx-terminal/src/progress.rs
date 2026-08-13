@@ -450,17 +450,6 @@ fn write_progress(
 
 fn progress_json(operation: &'static str, line: &ProgressLine, elapsed: StdDuration) -> String {
     let (completed_bytes, total_bytes) = progress_line_bytes(line);
-    let (percent, eta_seconds) = if line.refresh.is_some() {
-        // Refresh byte pairs describe a source-local stage, not whole-run
-        // completion. Keep generic completion math null until a qualified
-        // whole-run authority exists.
-        (None, None)
-    } else {
-        (
-            Some(progress_line_percent(line)),
-            progress_line_eta_seconds(line, elapsed),
-        )
-    };
     let mut value = json!({
         "type": "ctx_progress",
         "operation": operation,
@@ -468,9 +457,9 @@ fn progress_json(operation: &'static str, line: &ProgressLine, elapsed: StdDurat
         "message": line.message,
         "completed_bytes": completed_bytes,
         "total_bytes": total_bytes,
-        "percent": percent,
+        "percent": progress_line_percent(line),
         "elapsed_seconds": elapsed.as_secs_f64(),
-        "eta_seconds": eta_seconds,
+        "eta_seconds": progress_line_eta_seconds(line, elapsed),
         "completed_files": line.completed_files,
         "total_files": line.total_files,
         "imported_events": line.imported_events,
@@ -979,11 +968,11 @@ mod tests {
 
         assert_eq!(
             active,
-            r#"{"agent_histories":["Codex"],"completed_bytes":256,"completed_files":null,"completed_sources":1,"current_source":"/explicit.sqlite","current_source_progress":{"snapshot_bytes_completed":256,"snapshot_bytes_total":512,"stage":"online_backup"},"done":false,"elapsed_seconds":2.0,"eta_seconds":null,"imported_events":100,"logical_phase":"attached","logical_request_id":"explicit-import-request","message":"Refreshing history with shared work: /explicit.sqlite (1 / 3).","operation":"import","percent":null,"phase":"online_backup","physical_attempt_id":"shared-physical-attempt","physical_attempt_state":"running","processed_bytes":777,"processed_messages":80,"processed_sessions":8,"processed_tool_calls":20,"progress_owner_attempt_state":"running","progress_owner_request_id":"shared-physical-attempt","refresh_elapsed_millis":2000,"request_id":"explicit-import-request","request_state":"running","source_completed_bytes":777,"source_completed_records":100,"total_bytes":512,"total_files":null,"total_sources":3,"total_sources_known":true,"type":"ctx_progress"}"#
+            r#"{"agent_histories":["Codex"],"completed_bytes":256,"completed_files":null,"completed_sources":1,"current_source":"/explicit.sqlite","current_source_progress":{"snapshot_bytes_completed":256,"snapshot_bytes_total":512,"stage":"online_backup"},"done":false,"elapsed_seconds":2.0,"eta_seconds":2.0,"imported_events":100,"logical_phase":"attached","logical_request_id":"explicit-import-request","message":"Refreshing history with shared work: /explicit.sqlite (1 / 3).","operation":"import","percent":50.0,"phase":"online_backup","physical_attempt_id":"shared-physical-attempt","physical_attempt_state":"running","processed_bytes":777,"processed_messages":80,"processed_sessions":8,"processed_tool_calls":20,"progress_owner_attempt_state":"running","progress_owner_request_id":"shared-physical-attempt","refresh_elapsed_millis":2000,"request_id":"explicit-import-request","request_state":"running","source_completed_bytes":777,"source_completed_records":100,"total_bytes":512,"total_files":null,"total_sources":3,"total_sources_known":true,"type":"ctx_progress"}"#
         );
         assert_eq!(
             terminal,
-            r#"{"agent_histories":[],"completed_bytes":4096,"completed_files":null,"completed_sources":2,"current_source":null,"current_source_progress":null,"done":true,"elapsed_seconds":2.0,"eta_seconds":null,"imported_events":null,"logical_phase":"terminal","logical_request_id":"logical-request","message":"History refresh complete (2 / 2).","operation":"import","percent":null,"phase":"published","physical_attempt_id":"physical-attempt","physical_attempt_state":"published","processed_bytes":0,"processed_messages":0,"processed_sessions":0,"processed_tool_calls":0,"progress_owner_attempt_state":"published","progress_owner_request_id":"physical-attempt","refresh_elapsed_millis":null,"request_id":"logical-request","request_state":"published","source_completed_bytes":null,"source_completed_records":null,"structured_outcome":{"affected_routes":[],"blocked_routes":[],"class":"completed","code":"completed","physical_attempt_id":"physical-attempt","retryable":false,"retryable_routes":[]},"total_bytes":4096,"total_files":null,"total_sources":2,"total_sources_known":true,"type":"ctx_progress"}"#
+            r#"{"agent_histories":[],"completed_bytes":4096,"completed_files":null,"completed_sources":2,"current_source":null,"current_source_progress":null,"done":true,"elapsed_seconds":2.0,"eta_seconds":null,"imported_events":null,"logical_phase":"terminal","logical_request_id":"logical-request","message":"History refresh complete (2 / 2).","operation":"import","percent":100.0,"phase":"published","physical_attempt_id":"physical-attempt","physical_attempt_state":"published","processed_bytes":0,"processed_messages":0,"processed_sessions":0,"processed_tool_calls":0,"progress_owner_attempt_state":"published","progress_owner_request_id":"physical-attempt","refresh_elapsed_millis":null,"request_id":"logical-request","request_state":"published","source_completed_bytes":null,"source_completed_records":null,"structured_outcome":{"affected_routes":[],"blocked_routes":[],"class":"completed","code":"completed","physical_attempt_id":"physical-attempt","retryable":false,"retryable_routes":[]},"total_bytes":4096,"total_files":null,"total_sources":2,"total_sources_known":true,"type":"ctx_progress"}"#
         );
 
         let events = [&active, &terminal]
@@ -1001,12 +990,31 @@ mod tests {
             ),
             (Some(256), Some(512))
         );
-        assert_eq!(events[0]["percent"], serde_json::Value::Null);
-        assert_eq!(events[0]["eta_seconds"], serde_json::Value::Null);
+        assert_eq!(events[0]["percent"], 50.0);
+        assert_eq!(events[0]["eta_seconds"], 2.0);
         assert_ne!(
             events[0]["logical_request_id"],
             events[0]["progress_owner_request_id"]
         );
+    }
+
+    #[test]
+    fn refresh_jsonl_preserves_base_commit_and_verify_messages() {
+        for (phase, expected) in [
+            ("committing", "Publishing search index (1 / 2)."),
+            ("verifying", "Verifying refreshed history (1 / 2)."),
+        ] {
+            let mut snapshot = active_status();
+            snapshot.progress_mut_for_test().phase = phase.to_owned();
+            snapshot.progress_mut_for_test().current_source = None;
+            snapshot.progress_mut_for_test().current_source_progress = None;
+            let line = source_refresh_line(snapshot, 4_096);
+            let value: serde_json::Value =
+                serde_json::from_str(&progress_json("setup", &line, StdDuration::from_secs(2)))
+                    .unwrap();
+
+            assert_eq!(value["message"], expected);
+        }
     }
 
     #[test]
@@ -1167,7 +1175,7 @@ mod tests {
         let value: serde_json::Value =
             serde_json::from_str(&progress_json("import", &line, StdDuration::from_secs(2)))
                 .unwrap();
-        assert_eq!(value["percent"], serde_json::Value::Null);
+        assert_eq!(value["percent"], 0.0);
         assert_eq!(value["eta_seconds"], serde_json::Value::Null);
         assert_eq!(value["current_source_progress"]["stage"], "logical_scan");
         assert_eq!(
