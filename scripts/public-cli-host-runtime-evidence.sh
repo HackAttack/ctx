@@ -217,9 +217,18 @@ if [[ "${host_system}" == "Darwin" ]]; then
   esac
   if [[ "${process_translated}" == "1" ]]; then
     emulation=rosetta-2
-  elif grep -Ei 'qemu|(^|[^[:alnum:]_])(kvm|tcg)([^[:alnum:]_]|$)|vmware[ _-]*svga|virtualbox|parallels|bochs|virtio[-_ ]?(net|blk|gpu)' \
+  elif grep -Ei 'qemu|(^|[^[:alnum:]_])(kvm|tcg)([^[:alnum:]_]|$)|vmware[ _-]*svga|virtualbox|parallels|bochs' \
     <<<"${platform_identity}"$'\n'"${hardware_summary}"$'\n'"${device_summary}" >/dev/null; then
     emulation=qemu-kvm
+  elif grep -Ei 'virtio[-_ ]?(net|blk|gpu)' \
+    <<<"${platform_identity}"$'\n'"${hardware_summary}"$'\n'"${device_summary}" >/dev/null; then
+    # Apple Virtualization guests can expose VirtIO peripherals while the
+    # process and CPU still execute native arm64 instructions. Keep treating
+    # the same evidence as emulation everywhere else.
+    case "${host_arch}:${host_native_arch}:${process_translated}:${hardware_identity}" in
+      arm64:arm64:0:apple) emulation=none ;;
+      *) emulation=qemu-kvm ;;
+    esac
   elif [[ -n "${platform_identity}" && -n "${hardware_summary}" && -n "${device_summary}" ]]; then
     emulation=none
   fi
