@@ -443,28 +443,49 @@ def isolated_git(root: Path, *arguments: str, check: bool = True) -> subprocess.
     return result
 
 
-def previous_accepted_policy(root: Path) -> tuple[str, dict[str, Any] | None]:
+def previous_accepted_policy(
+    root: Path, exact_candidate_commit: str | None = None
+) -> tuple[str, dict[str, Any] | None]:
     top = Path(isolated_git(root, "rev-parse", "--show-toplevel").stdout.decode().strip()).resolve()
     if top != root.resolve():
         raise GateError(f"preflight requires the Git checkout root: {root}")
     head = isolated_git(root, "rev-parse", "HEAD").stdout.decode().strip()
-    origin = isolated_git(root, "rev-parse", "refs/remotes/origin/main").stdout.decode().strip()
-    local_main_result = isolated_git(root, "rev-parse", "refs/heads/main", check=False)
-    if local_main_result.returncode == 0:
-        local_main = local_main_result.stdout.decode().strip()
-        origin_precedes_local_main = isolated_git(
-            root, "merge-base", "--is-ancestor", origin, local_main, check=False
-        ).returncode == 0
-        if local_main != origin and origin_precedes_local_main:
+    if exact_candidate_commit is not None:
+        if COMMIT.fullmatch(exact_candidate_commit) is None or exact_candidate_commit == "0" * 40:
+            raise GateError("exact candidate commit must be nonzero lowercase 40-hex")
+        if head != exact_candidate_commit:
             raise GateError(
-                f"origin/main is stale relative to local main: origin={origin}, local_main={local_main}"
+                "exact candidate commit does not match checked-out HEAD: "
+                f"candidate={exact_candidate_commit} head={head}"
             )
-    if head == origin:
-        base = isolated_git(root, "rev-parse", "HEAD^1").stdout.decode().strip()
+        status = isolated_git(
+            root, "status", "--porcelain=v1", "--untracked-files=all"
+        ).stdout
+        if status:
+            raise GateError("exact candidate checkout is dirty")
+        base = isolated_git(root, "rev-parse", f"{head}^1").stdout.decode().strip()
     else:
-        base = isolated_git(root, "merge-base", "HEAD", "refs/remotes/origin/main").stdout.decode().strip()
-        if base != origin:
-            raise GateError(f"origin/main advanced beyond candidate base: origin={origin}, merge_base={base}")
+        origin = isolated_git(root, "rev-parse", "refs/remotes/origin/main").stdout.decode().strip()
+        local_main_result = isolated_git(root, "rev-parse", "refs/heads/main", check=False)
+        if local_main_result.returncode == 0:
+            local_main = local_main_result.stdout.decode().strip()
+            origin_precedes_local_main = isolated_git(
+                root, "merge-base", "--is-ancestor", origin, local_main, check=False
+            ).returncode == 0
+            if local_main != origin and origin_precedes_local_main:
+                raise GateError(
+                    f"origin/main is stale relative to local main: origin={origin}, local_main={local_main}"
+                )
+        if head == origin:
+            base = isolated_git(root, "rev-parse", "HEAD^1").stdout.decode().strip()
+        else:
+            base = isolated_git(
+                root, "merge-base", "HEAD", "refs/remotes/origin/main"
+            ).stdout.decode().strip()
+            if base != origin:
+                raise GateError(
+                    f"origin/main advanced beyond candidate base: origin={origin}, merge_base={base}"
+                )
     shown = isolated_git(root, "show", f"{base}:{POLICY_PATH}", check=False)
     if shown.returncode != 0:
         return base, None
@@ -592,10 +613,12 @@ def load_candidate_policy(root: Path) -> dict[str, Any]:
     return read_json(root / POLICY_PATH, "crate-size policy")
 
 
-def check_checkout(root: Path) -> tuple[list[Measurement], dict[str, Any]]:
+def check_checkout(
+    root: Path, exact_candidate_commit: str | None = None
+) -> tuple[list[Measurement], dict[str, Any]]:
     measurements = live_measurements(root)
     candidate = load_candidate_policy(root)
-    base, previous = previous_accepted_policy(root)
+    base, previous = previous_accepted_policy(root, exact_candidate_commit)
     entries = validate_policy_transition(candidate, previous, base, measurements)
     failures = measurement_failures(measurements, entries)
     if failures:
@@ -668,13 +691,22 @@ def resolve_root(value: str) -> Path:
 
 
 def main() -> int:
-    if len(sys.argv) != 3 or sys.argv[1] not in {"--preflight", "--update-ratchets"}:
-        raise GateError("usage: check-rust-crate-size.py --preflight|--update-ratchets ABSOLUTE_ROOT")
-    root = resolve_root(sys.argv[2])
+    usage = (
+        "usage: check-rust-crate-size.py --preflight|--update-ratchets ABSOLUTE_ROOT\n"
+        "       check-rust-crate-size.py --exact-candidate COMMIT ABSOLUTE_ROOT"
+    )
+    exact_candidate_commit = None
+    if len(sys.argv) == 3 and sys.argv[1] in {"--preflight", "--update-ratchets"}:
+        root = resolve_root(sys.argv[2])
+    elif len(sys.argv) == 4 and sys.argv[1] == "--exact-candidate":
+        exact_candidate_commit = sys.argv[2]
+        root = resolve_root(sys.argv[3])
+    else:
+        raise GateError(usage)
     if sys.argv[1] == "--update-ratchets":
         update_checkout(root)
         return 0
-    measurements, candidate = check_checkout(root)
+    measurements, candidate = check_checkout(root, exact_candidate_commit)
     total_files = sum(item.files for item in measurements)
     total_cloc = sum(item.cloc for item in measurements)
     offenders = parse_policy(candidate, "candidate")

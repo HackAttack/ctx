@@ -16,6 +16,7 @@ import unittest
 ROOT = Path(__file__).resolve().parents[2]
 INVENTORY = ROOT / "scripts" / "release" / "cargo-release-inventory.py"
 BUILD_INFO = ROOT / "scripts" / "release" / "linux-factory-build-info.py"
+BUILD_INFO_CHECK = ROOT / "scripts" / "check-public-cli-build-info.py"
 RELEASE_SBOM = ROOT / "scripts" / "release-sbom.py"
 SCHEMA = ROOT / "contracts" / "release-candidate-manifest-v1.schema.json"
 SEALER = ROOT / "scripts" / "release" / "seal-linux-factory-candidate.py"
@@ -31,6 +32,7 @@ def load(path: Path, name: str):
 
 inventory = load(INVENTORY, "cargo_release_inventory")
 build_info = load(BUILD_INFO, "linux_factory_build_info")
+build_info_check = load(BUILD_INFO_CHECK, "check_public_cli_build_info")
 release_sbom = load(RELEASE_SBOM, "release_sbom")
 
 
@@ -286,6 +288,123 @@ class LinuxReleaseFactoryTest(unittest.TestCase):
         ).read_text()
         self.assertIn("native Linux validation requires authoritative Ubuntu 24.04 execution", source)
         self.assertIn("ubuntu-24.04", source)
+
+    def test_native_validator_uses_immutable_version_evidence_without_cargo(self) -> None:
+        source = (
+            ROOT / "scripts" / "validate-public-cli-factory-artifact.sh"
+        ).read_text()
+        self.assertNotIn("cargo metadata", source)
+        self.assertIn("check-public-cli-build-info.py", source)
+        self.assertIn('--candidate-manifest "${artifact}.candidate.json"', source)
+        self.assertIn('--version-file "${artifact}.version"', source)
+
+    def test_candidate_version_binds_artifact_build_info_and_sidecar(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            artifact = root / "ctx-linux-aarch64"
+            build_info_path = root / "ctx-linux-aarch64.build-info.json"
+            candidate_path = root / "ctx-linux-aarch64.candidate.json"
+            version_path = root / "ctx-linux-aarch64.version"
+            artifact.write_bytes(b"exact factory artifact\n")
+            build_info_document = {
+                "source": {"clean": True, "commit": "a" * 40},
+                "target": "aarch64-unknown-linux-gnu",
+            }
+            build_info_path.write_text(
+                json.dumps(build_info_document, sort_keys=True) + "\n",
+                encoding="utf-8",
+            )
+            build_info_sha256 = hashlib.sha256(build_info_path.read_bytes()).hexdigest()
+            candidate_document = {
+                "schema_version": 1,
+                "kind": "ctx-public-cli-candidate",
+                "construction": {},
+                "product": "core",
+                "version": "1.0.0",
+                "target": {
+                    "id": "linux-arm64",
+                    "platform": "linux-aarch64",
+                    "rust_triple": "aarch64-unknown-linux-gnu",
+                },
+                "source": build_info_document["source"],
+                "artifact": {
+                    "file": artifact.name,
+                    "sha256": hashlib.sha256(artifact.read_bytes()).hexdigest(),
+                    "size_bytes": artifact.stat().st_size,
+                },
+                "evidence": {
+                    "build_info": {
+                        "file": build_info_path.name,
+                        "sha256": build_info_sha256,
+                    }
+                },
+                "tantivy": {},
+            }
+            candidate_path.write_text(
+                json.dumps(candidate_document, sort_keys=True) + "\n",
+                encoding="utf-8",
+            )
+            version_path.write_text(
+                "not run on this host: linux-aarch64\n", encoding="utf-8"
+            )
+
+            self.assertEqual(
+                build_info_check.candidate_version(
+                    artifact,
+                    build_info_path,
+                    candidate_path,
+                    version_path,
+                    "linux-aarch64",
+                    build_info_sha256,
+                ),
+                "1.0.0",
+            )
+
+            version_path.write_text("ctx 1.0.1\n", encoding="utf-8")
+            with self.assertRaisesRegex(ValueError, "version sidecar does not match"):
+                build_info_check.candidate_version(
+                    artifact,
+                    build_info_path,
+                    candidate_path,
+                    version_path,
+                    "linux-aarch64",
+                    build_info_sha256,
+                )
+
+            version_path.write_text("ctx 1.0.0\n", encoding="utf-8")
+            build_info_path.write_text(
+                json.dumps({**build_info_document, "mutated": True}) + "\n",
+                encoding="utf-8",
+            )
+            with self.assertRaisesRegex(ValueError, "exact artifact and build-info"):
+                build_info_check.candidate_version(
+                    artifact,
+                    build_info_path,
+                    candidate_path,
+                    version_path,
+                    "linux-aarch64",
+                    build_info_sha256,
+                )
+
+    def test_native_validator_restores_unix_execute_mode_after_identity_checks(
+        self,
+    ) -> None:
+        source = (
+            ROOT / "scripts" / "validate-public-cli-factory-artifact.sh"
+        ).read_text()
+        checksum = source.index('[[ "${before}" == "${expected_sha256}" ]]')
+        identity = source.index("check-public-cli-build-info.py")
+        chmod = source.index('chmod u+x -- "${artifact}"')
+        smoke = source.index("scripts/run-native-candidate-smoke.sh")
+        self.assertLess(checksum, identity)
+        self.assertLess(identity, chmod)
+        self.assertLess(chmod, smoke)
+        self.assertIn('if [[ "${platform}" != windows-x64 ]]; then', source)
+        self.assertIn(
+            '[[ -f "${artifact}" && ! -L "${artifact}" && -x "${artifact}" ]]',
+            source,
+        )
+        self.assertIn('[[ "${after}" == "${before}" ]]', source)
 
 
 if __name__ == "__main__":

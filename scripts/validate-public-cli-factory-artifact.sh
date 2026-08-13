@@ -42,9 +42,31 @@ artifact="${artifact_dir%/}/${binary}"
 [[ -f "${artifact}" && ! -L "${artifact}" ]] || die "factory artifact is missing"
 [[ -s "${artifact}.sha256" ]] || die "factory checksum is missing"
 before="$(sha256_file "${artifact}")"
-[[ "${before}" == "$(tr -d '[:space:]' <"${artifact}.sha256")" ]] || \
+expected_sha256="$(tr -d '[:space:]' <"${artifact}.sha256")"
+[[ "${expected_sha256}" =~ ^[0-9a-f]{64}$ ]] || die "factory checksum is malformed"
+[[ "${before}" == "${expected_sha256}" ]] || \
   die "factory artifact checksum mismatch"
-version="$(cargo metadata --no-deps --format-version 1 | python3 -c 'import json,sys; d=json.load(sys.stdin); print(next(p["version"] for p in d["packages"] if p["name"]=="ctx"))')"
+source_commit="$(git rev-parse --verify HEAD^{commit})"
+version="$(python3 -I scripts/check-public-cli-build-info.py \
+  --artifact "${artifact}" \
+  --build-info "${artifact}.build-info.json" \
+  --matrix contracts/release-targets-v1.json \
+  --platform "${platform}" \
+  --source-commit "${source_commit}" \
+  --cargo-lock Cargo.lock \
+  --factory-inputs contracts/release-factory-inputs-v1.json \
+  --candidate-manifest "${artifact}.candidate.json" \
+  --version-file "${artifact}.version")" || \
+  die "factory candidate identity or version contract failed"
+
+# Buildkite artifact downloads preserve bytes but not Unix executable mode.
+# Restore only owner execute permission after the exact artifact, source,
+# candidate, build-info, and construction-version bindings have passed.
+if [[ "${platform}" != windows-x64 ]]; then
+  chmod u+x -- "${artifact}" || die "could not establish factory artifact executable mode"
+  [[ -f "${artifact}" && ! -L "${artifact}" && -x "${artifact}" ]] || \
+    die "factory artifact is not an executable regular file"
+fi
 
 if [[ "${platform}" == linux-* ]]; then
   IFS=$'\t' read -r \
