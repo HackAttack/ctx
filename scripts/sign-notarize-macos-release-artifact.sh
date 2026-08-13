@@ -10,7 +10,9 @@ Usage: scripts/sign-notarize-macos-release-artifact.sh PLATFORM KIND ARTIFACT [E
 
 Signs one standalone macOS release Mach-O with Developer ID, submits it to
 Apple notarization, and records sanitized verification evidence. The same
-worker runs on Linux or macOS. KIND is cli or runtime.
+worker runs on Linux or macOS. KIND is cli, helper, or runtime. The helper kind
+accepts only the canonical ctx-pro executable and requires an explicit source
+commit.
 USAGE
 }
 
@@ -202,18 +204,37 @@ esac
 case "${kind}" in
   cli)
     evidence_prefix="ctx-${platform}"
+    artifact_identifier="ctx"
+    ;;
+  helper)
+    evidence_prefix="ctx-pro-${platform}"
+    artifact_identifier="ctx-pro"
     ;;
   runtime)
     evidence_prefix="ctx-onnxruntime-${platform}"
+    artifact_identifier="ctx"
     ;;
   *) usage; exit 2 ;;
 esac
 [[ -f "${artifact}" ]] || die "macOS release artifact not found: ${artifact}"
+source_commit=""
+if [[ "${kind}" == "helper" ]]; then
+  [[ "${artifact##*/}" == "${evidence_prefix}" ]] || \
+    die "macOS helper artifact must be named ${evidence_prefix}"
+  [[ ! -L "${artifact}" && -x "${artifact}" ]] || \
+    die "macOS helper artifact must be an executable regular non-symlink file"
+  source_commit="${CTX_MACOS_RELEASE_SOURCE_COMMIT:-}"
+  [[ "${source_commit}" =~ ^[0-9a-f]{40}$ && ! "${source_commit}" =~ ^0{40}$ ]] || \
+    die "macOS helper signing requires an explicit non-placeholder 40-character CTX_MACOS_RELEASE_SOURCE_COMMIT"
+fi
 [[ "${CTX_MACOS_SIGNING_LAUNCHED:-0}" == "1" ]] || \
   die "macOS signer must be invoked through the trusted narrow launcher"
 root_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 source "${root_dir}/scripts/macos-release-publisher-policy.sh"
-"${root_dir}/scripts/check-macos-signing-trusted-ref.sh" >/dev/null
+if [[ "${kind}" != "helper" ]]; then
+  "${root_dir}/scripts/check-macos-signing-trusted-ref.sh" >/dev/null
+  source_commit="$(git -C "${root_dir}" rev-parse --verify HEAD)"
+fi
 host_system="$(uname -s)"
 if [[ "${host_system}" != "Darwin" && "${host_system}" != "Linux" ]]; then
   die "macOS release signing requires Linux or Darwin"
@@ -334,11 +355,15 @@ grep -Fq 'BEGIN PRIVATE KEY' "${notary_key_path}" || \
 openssl pkey -in "${notary_key_path}" -noout >/dev/null 2>&1 || \
   die "NOTARY_KEY_P8_B64 did not decode to a valid private key"
 
-if ! rcodesign sign \
-  --for-notarization \
-  --pem-file "${cert_pem_path}" \
-  --pem-file "${cert_private_key_path}" \
-  "${artifact}"; then
+rcodesign_sign_args=(sign --for-notarization)
+if [[ "${kind}" == "helper" ]]; then
+  rcodesign_sign_args+=(--binary-identifier "${artifact_identifier}")
+fi
+rcodesign_sign_args+=(
+  --pem-file "${cert_pem_path}"
+  --pem-file "${cert_private_key_path}"
+)
+if ! rcodesign "${rcodesign_sign_args[@]}" "${artifact}"; then
   die "Developer ID signing failed for ${platform} ${kind}"
 fi
 if [[ "${host_system}" == "Darwin" ]]; then
@@ -350,6 +375,10 @@ if [[ "${host_system}" == "Darwin" ]]; then
     die "signed ${platform} ${kind} does not have the pinned ctx Apple authority"
   grep -Fqx "TeamIdentifier=${certificate_team_id}" "${codesign_details}" || \
     die "signed ${platform} ${kind} does not match the verified certificate Team ID"
+  if [[ "${kind}" == "helper" ]]; then
+    grep -Fqx "Identifier=${artifact_identifier}" "${codesign_details}" || \
+      die "signed ${platform} helper does not use identifier ${artifact_identifier}"
+  fi
   codesign_details_have_runtime "${codesign_details}" || \
     die "signed ${platform} ${kind} is missing hardened runtime flags"
   grep -Eq '^Timestamp=.+$' "${codesign_details}" || \
@@ -442,7 +471,7 @@ else
     --output "${evidence_json}" --platform "${platform}" --kind "${kind}" \
     --artifact "${artifact}" --rcodesign-details "${codesign_details}" \
     --notary-submit "${submit_json}" --codesign-authority "${certificate_authority}" \
-    --team-identifier "${certificate_team_id}" --identifier ctx
+    --team-identifier "${certificate_team_id}" --identifier "${artifact_identifier}"
 fi
 python3 "${root_dir}/scripts/macos-release-signing-evidence.py" create-attestation \
   --output "${attestation_json}" \
@@ -450,7 +479,7 @@ python3 "${root_dir}/scripts/macos-release-signing-evidence.py" create-attestati
   --kind "${kind}" \
   --artifact "${artifact}" \
   --notary-submit "${submit_json}" \
-  --source-commit "$(git -C "${root_dir}" rev-parse --verify HEAD)" \
+  --source-commit "${source_commit}" \
   --codesign-authority "${certificate_authority}"
 if ! openssl cms -sign \
   -binary \
@@ -464,7 +493,7 @@ if ! openssl cms -sign \
   die "failed to create Developer ID CMS attestation for ${platform} ${kind}"
 fi
 chmod 0644 "${attestation_json}" "${attestation_cms}"
-CTX_MACOS_RELEASE_SOURCE_COMMIT="$(git -C "${root_dir}" rev-parse --verify HEAD)" \
+CTX_MACOS_RELEASE_SOURCE_COMMIT="${source_commit}" \
   "${root_dir}/scripts/verify-macos-release-attestation.sh" \
     "${platform}" "${kind}" "${artifact}" "${attestation_json}" "${attestation_cms}" \
     >/dev/null

@@ -17,7 +17,9 @@ Usage:
 
 Runs a tool-only trusted release preflight, signs/notarizes one Mach-O using five
 protected secret files, or authorizes a final runtime archive using only the
-Developer ID P12 and password files.
+Developer ID P12 and password files. KIND is cli, helper, or runtime. The
+helper kind accepts only the canonical ctx-pro executable and requires an
+explicit CTX_MACOS_RELEASE_SOURCE_COMMIT.
 USAGE
 }
 
@@ -68,6 +70,28 @@ case "${1:-}" in
     }
     ;;
 esac
+
+helper_source_commit=""
+if [[ "${mode}" == "sign" ]]; then
+  case "${platform}" in
+    macos-arm64|macos-x64) ;;
+    *) die "unsupported macOS signing platform: ${platform}" ;;
+  esac
+  case "${kind}" in
+    cli|runtime) ;;
+    helper)
+      [[ "${artifact##*/}" == "ctx-pro-${platform}" ]] || \
+        die "macOS helper artifact must be named ctx-pro-${platform}"
+      [[ -f "${artifact}" && ! -L "${artifact}" && -x "${artifact}" ]] || \
+        die "macOS helper artifact must be an executable regular non-symlink file"
+      helper_source_commit="${CTX_MACOS_RELEASE_SOURCE_COMMIT:-}"
+      [[ "${helper_source_commit}" =~ ^[0-9a-f]{40}$ \
+        && ! "${helper_source_commit}" =~ ^0{40}$ ]] || \
+        die "macOS helper signing requires an explicit non-placeholder 40-character CTX_MACOS_RELEASE_SOURCE_COMMIT"
+      ;;
+    *) die "unsupported macOS signing artifact kind: ${kind}" ;;
+  esac
+fi
 
 root_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 "${root_dir}/scripts/check-macos-signing-trusted-ref.sh" >/dev/null
@@ -205,6 +229,9 @@ minimal_env=(
 )
 if [[ "${mode}" == "sign" ]]; then
   minimal_env+=("CTX_MACOS_NOTARY_TIMEOUT=${CTX_MACOS_NOTARY_TIMEOUT:-30m}")
+  if [[ "${kind}" == "helper" ]]; then
+    minimal_env+=("CTX_MACOS_RELEASE_SOURCE_COMMIT=${helper_source_commit}")
+  fi
 fi
 for operational_name in \
   BUILDKITE BUILDKITE_BRANCH BUILDKITE_COMMIT BUILDKITE_PULL_REQUEST \

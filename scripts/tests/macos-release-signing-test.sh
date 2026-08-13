@@ -122,29 +122,70 @@ SH
 cat >"${fake_bin}/rcodesign" <<'SH'
 #!/usr/bin/env bash
 set -euo pipefail
-if [[ "${1:-}" == "--version" ]]; then printf '%s\n' 'rcodesign 0.test'; exit 0; fi
-[[ " $* " == *' --for-notarization '* ]]
-original_args="$*"
-certificate=""
-private_key=""
-artifact="${!#}"
-while [[ $# -gt 0 ]]; do
-  case "$1" in
-    --pem-file)
-      if [[ -z "${certificate}" ]]; then certificate="$2"; else private_key="$2"; fi
-      shift 2
-      ;;
-    *) shift ;;
-  esac
-done
-printf '%s\n' "${original_args}" >"${TMPDIR}/rcodesign-argv.txt"
-[[ "$(stat -c '%a' "${certificate}" 2>/dev/null || stat -f '%Lp' "${certificate}")" == "600" ]]
-[[ "$(stat -c '%a' "${private_key}" 2>/dev/null || stat -f '%Lp' "${private_key}")" == "600" ]]
-env | LC_ALL=C sort >"${TMPDIR}/signer-environment.txt"
-printf '%s\n' "${CTX_MACOS_SIGNING_SECRET_DIR:?}" >"${TMPDIR}/last-signing-secret-dir.txt"
-printf '%s\n' sign >>"${TMPDIR}/tool-order.log"
-[[ ! -e "${TMPDIR}/fake-sign-failure" ]] || exit 17
-printf '%s\n' '# FAKE_DEVELOPER_ID_SIGNATURE' >>"${artifact}"
+operation="${1:-}"
+case "${operation}" in
+  --version)
+    printf '%s\n' 'rcodesign 0.test'
+    ;;
+  sign)
+    [[ " $* " == *' --for-notarization '* ]]
+    original_args="$*"
+    certificate=""
+    private_key=""
+    binary_identifier=""
+    artifact="${!#}"
+    while [[ $# -gt 0 ]]; do
+      case "$1" in
+        --pem-file)
+          if [[ -z "${certificate}" ]]; then certificate="$2"; else private_key="$2"; fi
+          shift 2
+          ;;
+        --binary-identifier)
+          binary_identifier="$2"
+          shift 2
+          ;;
+        *) shift ;;
+      esac
+    done
+    printf '%s\n' "${original_args}" >"${TMPDIR}/rcodesign-argv.txt"
+    if [[ -n "${binary_identifier}" ]]; then
+      printf '%s\n' "${binary_identifier}" >"${TMPDIR}/rcodesign-binary-identifier.txt"
+    else
+      rm -f "${TMPDIR}/rcodesign-binary-identifier.txt"
+    fi
+    [[ "$(stat -c '%a' "${certificate}" 2>/dev/null || stat -f '%Lp' "${certificate}")" == "600" ]]
+    [[ "$(stat -c '%a' "${private_key}" 2>/dev/null || stat -f '%Lp' "${private_key}")" == "600" ]]
+    env | LC_ALL=C sort >"${TMPDIR}/signer-environment.txt"
+    printf '%s\n' "${CTX_MACOS_SIGNING_SECRET_DIR:?}" >"${TMPDIR}/last-signing-secret-dir.txt"
+    printf '%s\n' sign >>"${TMPDIR}/tool-order.log"
+    [[ ! -e "${TMPDIR}/fake-sign-failure" ]] || exit 17
+    printf '%s\n' '# FAKE_DEVELOPER_ID_SIGNATURE' >>"${artifact}"
+    ;;
+  print-signature-info)
+    identifier="ctx"
+    if [[ -s "${TMPDIR}/rcodesign-binary-identifier.txt" ]]; then
+      identifier="$(cat "${TMPDIR}/rcodesign-binary-identifier.txt")"
+    fi
+    printf 'Identifier: %s\nTeamIdentifier: TESTTEAM01\n' "${identifier}"
+    ;;
+  encode-app-store-connect-api-key)
+    output=""
+    while [[ $# -gt 0 ]]; do
+      if [[ "$1" == "--output-path" ]]; then output="$2"; break; fi
+      shift
+    done
+    [[ -n "${output}" ]]
+    printf '%s\n' '{}' >"${output}"
+    ;;
+  notary-submit)
+    printf '%s\n' 'created submission ID: 00000000-0000-0000-0000-000000000003' >&2
+    printf '%s\n' '{"status":"Accepted"}'
+    ;;
+  notary-log)
+    printf '%s\n' '{"status":"Accepted","issues":[]}'
+    ;;
+  *) exit 2 ;;
+esac
 SH
 
 cat >"${fake_bin}/codesign" <<'SH'
@@ -165,9 +206,13 @@ if [[ "${1:-}" == "-d" ]]; then
   else
     code_directory_flags='flags=0x10000(runtime)'
   fi
+  identifier='rs.ctx.test'
+  if [[ -s "${TMPDIR}/rcodesign-binary-identifier.txt" ]]; then
+    identifier="$(cat "${TMPDIR}/rcodesign-binary-identifier.txt")"
+  fi
   cat >&2 <<DETAILS
 Executable=fake
-Identifier=rs.ctx.test
+Identifier=${identifier}
 Authority=${authority}
 TeamIdentifier=${team}
 Timestamp=Jul 12, 2026 at 12:00:00 PM
@@ -299,7 +344,11 @@ SH
 cat >"${fake_bin}/uname" <<'SH'
 #!/usr/bin/env bash
 set -euo pipefail
-printf '%s\n' Darwin
+if [[ -s "${TMPDIR}/fake-uname-system" ]]; then
+  cat "${TMPDIR}/fake-uname-system"
+else
+  printf '%s\n' Darwin
+fi
 SH
 
 cat >"${fake_bin}/stat" <<'SH'
@@ -364,7 +413,9 @@ execution_check="${repo_root}/scripts/verify-macos-signed-cli.sh"
 
 new_artifact() {
   local name="$1"
-  local path="${test_root}/${name}"
+  local directory="${2:-${test_root}}"
+  local path="${directory}/${name}"
+  mkdir -p "${directory}"
   cat >"${path}" <<'SH'
 #!/bin/sh
 if [ "${1:-}" = "--version" ]; then
@@ -425,6 +476,41 @@ touch "${TMPDIR}/fake-openssl-missing-exclusive-flags"
 expect_failure 'lacks required exclusive-trust flag -no-CAstore' \
   "${test_root}/openssl-exclusive-flags.log" "${launcher}" --preflight
 rm -f "${TMPDIR}/fake-openssl-missing-exclusive-flags"
+
+helper_source_commit=2222222222222222222222222222222222222222
+rm -f "${TMPDIR}/infisical.log"
+export CTX_MACOS_RELEASE_SOURCE_COMMIT="${helper_source_commit}"
+invalid_helper="$(new_artifact ctx-pro-macos-arm64-wrong)"
+expect_failure 'macOS helper artifact must be named ctx-pro-macos-arm64' \
+  "${test_root}/invalid-helper-name.log" \
+  trusted_infisical "${launcher}" macos-arm64 helper "${invalid_helper}" \
+    "${test_root}/invalid-helper-name-evidence"
+unset CTX_MACOS_RELEASE_SOURCE_COMMIT
+missing_source_helper="$(new_artifact ctx-pro-macos-arm64 "${test_root}/missing-helper-source")"
+expect_failure 'requires an explicit non-placeholder 40-character' \
+  "${test_root}/missing-helper-source.log" \
+  trusted_infisical "${launcher}" macos-arm64 helper "${missing_source_helper}" \
+    "${test_root}/missing-helper-source-evidence"
+export CTX_MACOS_RELEASE_SOURCE_COMMIT=0000000000000000000000000000000000000000
+expect_failure 'requires an explicit non-placeholder 40-character' \
+  "${test_root}/placeholder-helper-source.log" \
+  trusted_infisical "${launcher}" macos-arm64 helper "${missing_source_helper}" \
+    "${test_root}/placeholder-helper-source-evidence"
+export CTX_MACOS_RELEASE_SOURCE_COMMIT="${helper_source_commit}"
+mkdir -p "${test_root}/symlink-helper"
+ln -s "${missing_source_helper}" "${test_root}/symlink-helper/ctx-pro-macos-arm64"
+expect_failure 'executable regular non-symlink file' \
+  "${test_root}/invalid-helper-symlink.log" \
+  trusted_infisical "${launcher}" macos-arm64 helper \
+    "${test_root}/symlink-helper/ctx-pro-macos-arm64" \
+    "${test_root}/invalid-helper-symlink-evidence"
+expect_failure 'unsupported macOS signing artifact kind' \
+  "${test_root}/invalid-helper-kind.log" \
+  trusted_infisical "${launcher}" macos-arm64 helper-like "${invalid_helper}" \
+    "${test_root}/invalid-helper-kind-evidence"
+unset CTX_MACOS_RELEASE_SOURCE_COMMIT
+[[ ! -e "${TMPDIR}/infisical.log" ]] || \
+  fail "invalid helper signing input reached macOS credential fetch"
 
 injected_artifact="$(new_artifact buildkite-injected-cli)"
 trusted_buildkite_injected "${launcher}" macos-arm64 cli "${injected_artifact}" \
@@ -493,6 +579,21 @@ for handoff_platform in macos-arm64 macos-x64; do
     "${handoff_platform} cli ${handoff_artifact} ${handoff_evidence}" ]] || \
     fail "real launcher parser changed the ${handoff_platform} packaging handoff"
 done
+grep -Fq 'CTX_MACOS_RELEASE_SOURCE_COMMIT=' \
+  "${TMPDIR}/fake-signer-environment.txt" \
+  && fail "CLI signing unexpectedly received the helper source commit override"
+helper_handoff_dir="${test_root}/handoff-helper"
+helper_handoff_artifact="$(new_artifact ctx-pro-macos-x64 "${helper_handoff_dir}")"
+CTX_MACOS_RELEASE_SOURCE_COMMIT="${helper_source_commit}" \
+  CTX_TEST_ONLY_MACOS_SIGNER_PATH="${fake_signer}" \
+  "${launcher}" macos-x64 helper "${helper_handoff_artifact}" \
+    "${helper_handoff_dir}"
+[[ "$(cat "${TMPDIR}/fake-signer-argv.txt")" == \
+  "macos-x64 helper ${helper_handoff_artifact} ${helper_handoff_dir}" ]] || \
+  fail "real launcher parser changed the helper signing handoff"
+grep -Fqx "CTX_MACOS_RELEASE_SOURCE_COMMIT=${helper_source_commit}" \
+  "${TMPDIR}/fake-signer-environment.txt" || \
+  fail "helper source commit did not reach the narrow signing worker"
 for handoff_file in "${TMPDIR}/fake-signer-argv.txt" "${TMPDIR}/fake-signer-environment.txt"; do
   for secret in \
     cDEyLXNlY3JldC1zZW50aW5lbA== \
@@ -526,6 +627,132 @@ sha256sum "${success_artifact}" | awk '{print $1}' >"${success_artifact}.sha256"
   'sign zip notary-submit attest ' ]] || fail "sign/notary/attestation ordering changed"
 [[ ! -e "${TMPDIR}/spctl-was-invoked" ]] || \
   fail "spctl valid-but-not-app classification was treated as authoritative"
+
+helper_dir="${test_root}/helper"
+helper_artifact="$(new_artifact ctx-pro-macos-arm64 "${helper_dir}")"
+rm -f "${TMPDIR}/tool-order.log"
+CTX_MACOS_RELEASE_SOURCE_COMMIT="${helper_source_commit}" \
+  "${launcher}" macos-arm64 helper "${helper_artifact}" "${helper_dir}" \
+  >"${test_root}/helper.log" 2>&1
+sha256sum "${helper_artifact}" | awk '{print $1}' >"${helper_artifact}.sha256"
+python3 "${evidence_tool}" verify-artifact \
+  --evidence "${helper_dir}/ctx-pro-macos-arm64.signing.json" \
+  --platform macos-arm64 --kind helper --artifact "${helper_artifact}" \
+  --checksum "${helper_artifact}.sha256"
+CTX_MACOS_RELEASE_SOURCE_COMMIT="${helper_source_commit}" \
+  "${attestation_check}" macos-arm64 helper "${helper_artifact}" \
+  "${helper_dir}/ctx-pro-macos-arm64.attestation.json" \
+  "${helper_dir}/ctx-pro-macos-arm64.attestation.cms" >/dev/null
+[[ "$(tr '\n' ' ' <"${TMPDIR}/tool-order.log")" == \
+  'sign zip notary-submit attest ' ]] || \
+  fail "helper sign/notary/attestation ordering changed"
+grep -Fq -- '--binary-identifier ctx-pro' "${TMPDIR}/rcodesign-argv.txt" || \
+  fail "rcodesign did not receive the ctx-pro helper identifier"
+python3 - \
+  "${helper_dir}/ctx-pro-macos-arm64.signing.json" \
+  "${helper_dir}/ctx-pro-macos-arm64.attestation.json" \
+  "${helper_source_commit}" <<'PY'
+import json
+import sys
+
+evidence_path, attestation_path, source_commit = sys.argv[1:]
+with open(evidence_path, encoding="utf-8") as source:
+    evidence = json.load(source)
+with open(attestation_path, encoding="utf-8") as source:
+    attestation = json.load(source)
+if evidence.get("artifact_kind") != "helper":
+    raise SystemExit("helper signing evidence has the wrong artifact kind")
+if evidence.get("artifact_name") != "ctx-pro-macos-arm64":
+    raise SystemExit("helper signing evidence has the wrong artifact name")
+if evidence.get("codesign", {}).get("identifier") != "ctx-pro":
+    raise SystemExit("helper signing evidence has the wrong identifier")
+if evidence.get("artifact_verification") != {
+    "method": "accepted-notary-strict-codesign-attestation",
+    "status": "passed",
+}:
+    raise SystemExit("helper signing evidence has the wrong verification contract")
+if attestation.get("source_commit") != source_commit:
+    raise SystemExit("helper attestation has the wrong source commit")
+if attestation.get("identifier") != "ctx-pro":
+    raise SystemExit("helper attestation has the wrong identifier")
+PY
+expect_failure 'requires an explicit CTX_MACOS_RELEASE_SOURCE_COMMIT' \
+  "${test_root}/helper-attestation-missing-source.log" \
+  env -u CTX_MACOS_RELEASE_SOURCE_COMMIT \
+  "${attestation_check}" macos-arm64 helper "${helper_artifact}" \
+    "${helper_dir}/ctx-pro-macos-arm64.attestation.json" \
+    "${helper_dir}/ctx-pro-macos-arm64.attestation.cms"
+expect_failure 'does not bind the exact pinned artifact' \
+  "${test_root}/helper-attestation-wrong-source.log" \
+  env CTX_MACOS_RELEASE_SOURCE_COMMIT=3333333333333333333333333333333333333333 \
+  "${attestation_check}" macos-arm64 helper "${helper_artifact}" \
+    "${helper_dir}/ctx-pro-macos-arm64.attestation.json" \
+    "${helper_dir}/ctx-pro-macos-arm64.attestation.cms"
+wrong_helper_identifier="${helper_dir}/wrong-identifier.signing.json"
+python3 - "${helper_dir}/ctx-pro-macos-arm64.signing.json" \
+  "${wrong_helper_identifier}" <<'PY'
+import json
+import sys
+
+source_path, output_path = sys.argv[1:]
+with open(source_path, encoding="utf-8") as source:
+    value = json.load(source)
+value["codesign"]["identifier"] = "ctx"
+with open(output_path, "w", encoding="utf-8") as output:
+    json.dump(value, output, sort_keys=True, separators=(",", ":"))
+    output.write("\n")
+PY
+expect_failure 'must use identifier ctx-pro' \
+  "${test_root}/helper-evidence-wrong-identifier.log" \
+  python3 "${evidence_tool}" verify-artifact \
+    --evidence "${wrong_helper_identifier}" --platform macos-arm64 \
+    --kind helper --artifact "${helper_artifact}"
+mkdir -p "${test_root}/helper-verification-symlink"
+helper_verification_symlink="${test_root}/helper-verification-symlink/ctx-pro-macos-arm64"
+ln -s "${helper_artifact}" "${helper_verification_symlink}"
+expect_failure 'executable regular non-symlink file' \
+  "${test_root}/helper-verification-symlink.log" \
+  python3 "${evidence_tool}" verify-artifact \
+    --evidence "${helper_dir}/ctx-pro-macos-arm64.signing.json" \
+    --platform macos-arm64 --kind helper \
+    --artifact "${helper_verification_symlink}"
+
+linux_helper_dir="${test_root}/linux-helper"
+linux_helper_artifact="$(new_artifact ctx-pro-macos-x64 "${linux_helper_dir}")"
+printf '%s\n' Linux >"${TMPDIR}/fake-uname-system"
+CTX_MACOS_RELEASE_SOURCE_COMMIT="${helper_source_commit}" \
+  "${launcher}" macos-x64 helper "${linux_helper_artifact}" \
+    "${linux_helper_dir}" >"${test_root}/linux-helper.log" 2>&1
+rm -f "${TMPDIR}/fake-uname-system"
+sha256sum "${linux_helper_artifact}" | awk '{print $1}' \
+  >"${linux_helper_artifact}.sha256"
+python3 "${evidence_tool}" verify-artifact \
+  --evidence "${linux_helper_dir}/ctx-pro-macos-x64.signing.json" \
+  --platform macos-x64 --kind helper --artifact "${linux_helper_artifact}" \
+  --checksum "${linux_helper_artifact}.sha256"
+CTX_MACOS_RELEASE_SOURCE_COMMIT="${helper_source_commit}" \
+  "${attestation_check}" macos-x64 helper "${linux_helper_artifact}" \
+  "${linux_helper_dir}/ctx-pro-macos-x64.attestation.json" \
+  "${linux_helper_dir}/ctx-pro-macos-x64.attestation.cms" >/dev/null
+python3 - \
+  "${linux_helper_dir}/ctx-pro-macos-x64.signing.json" \
+  "${linux_helper_dir}/ctx-pro-macos-x64.attestation.json" \
+  "${helper_source_commit}" <<'PY'
+import json
+import sys
+
+evidence_path, attestation_path, source_commit = sys.argv[1:]
+with open(evidence_path, encoding="utf-8") as source:
+    evidence = json.load(source)
+with open(attestation_path, encoding="utf-8") as source:
+    attestation = json.load(source)
+if evidence.get("codesign", {}).get("identifier") != "ctx-pro":
+    raise SystemExit("Linux helper signing evidence has the wrong identifier")
+if attestation.get("source_commit") != source_commit:
+    raise SystemExit("Linux helper attestation has the wrong source commit")
+if attestation.get("identifier") != "ctx-pro":
+    raise SystemExit("Linux helper attestation has the wrong identifier")
+PY
 
 failed_execution_dir="${test_root}/failed-execution"
 mkdir -p "${failed_execution_dir}"

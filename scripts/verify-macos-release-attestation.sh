@@ -58,10 +58,16 @@ else
   artifact="$3"
   attestation="$4"
   cms="$5"
-  case "${kind}" in cli|runtime) ;; *) usage; exit 2 ;; esac
+  case "${kind}" in cli|helper|runtime) ;; *) usage; exit 2 ;; esac
 fi
 case "${platform}" in macos-arm64|macos-x64) ;; *) usage; exit 2 ;; esac
 [[ -f "${artifact}" ]] || die "attested macOS artifact missing: ${artifact}"
+if [[ "${mode}" == "artifact" && "${kind}" == "helper" ]]; then
+  [[ "${artifact##*/}" == "ctx-pro-${platform}" ]] || \
+    die "macOS helper artifact must be named ctx-pro-${platform}"
+  [[ ! -L "${artifact}" && -x "${artifact}" ]] || \
+    die "macOS helper artifact must be an executable regular non-symlink file"
+fi
 if [[ "${mode}" == "runtime_archive" ]]; then
   [[ -f "${nested_artifact}" ]] || die "attested macOS nested dylib missing: ${nested_artifact}"
   [[ "$(basename "${nested_artifact}")" == "libonnxruntime.dylib" ]] || \
@@ -141,7 +147,9 @@ openssl verify -purpose any -partial_chain -no-CApath -no-CAstore -ignore_critic
   die "macOS attestation actual signer does not chain exclusively to the pinned Apple G2 CA"
 
 source_commit="${CTX_MACOS_RELEASE_SOURCE_COMMIT:-}"
-if [[ -z "${source_commit}" ]]; then
+if [[ "${mode}" == "artifact" && "${kind}" == "helper" && -z "${source_commit}" ]]; then
+  die "macOS helper attestation requires an explicit CTX_MACOS_RELEASE_SOURCE_COMMIT"
+elif [[ -z "${source_commit}" ]]; then
   source_commit="$(git -C "${root_dir}" rev-parse --verify HEAD)"
 fi
 [[ "${source_commit}" =~ ^[0-9a-f]{40}$ && ! "${source_commit}" =~ ^0{40}$ ]] || \

@@ -8,8 +8,13 @@ import hashlib
 import json
 import os
 import re
+import stat
 from pathlib import Path
 from typing import Any
+
+ARTIFACT_KINDS = ("cli", "helper", "runtime")
+HELPER_IDENTIFIER = "ctx-pro"
+
 
 def authority_team_id(value: object) -> str | None:
     if not isinstance(value, str) or "\n" in value or "\r" in value:
@@ -81,6 +86,22 @@ def code_directory_flags(details: str) -> set[str]:
     return flags
 
 
+def require_helper_artifact(kind: str, platform: str, artifact: Path) -> None:
+    if kind != "helper":
+        return
+    expected_name = f"ctx-pro-{platform}"
+    if artifact.name != expected_name:
+        raise SystemExit(f"macOS helper artifact must be named {expected_name}")
+    try:
+        mode = artifact.lstat().st_mode
+    except OSError as error:
+        raise SystemExit(f"invalid macOS helper artifact {artifact}: {error}") from error
+    if not stat.S_ISREG(mode) or mode & 0o111 == 0:
+        raise SystemExit(
+            "macOS helper artifact must be an executable regular non-symlink file"
+        )
+
+
 def require_base_document(
     document: dict[str, Any],
     platform: str,
@@ -113,6 +134,12 @@ def require_base_document(
         raise SystemExit("signing evidence does not record hardened runtime")
     if signing.get("secure_timestamp") is not True:
         raise SystemExit("signing evidence does not record a secure timestamp")
+    if kind == "helper" and signing.get("identifier") != HELPER_IDENTIFIER:
+        raise SystemExit(
+            f"macOS helper signing evidence must use identifier {HELPER_IDENTIFIER}"
+        )
+    if kind == "helper" and document.get("artifact_name") != f"ctx-pro-{platform}":
+        raise SystemExit("macOS helper signing evidence has the wrong artifact name")
     if not isinstance(notarization, dict) or notarization.get("status") != "Accepted":
         raise SystemExit("signing evidence does not record accepted notarization")
     if not notarization.get("submission_id"):
@@ -121,6 +148,7 @@ def require_base_document(
         raise SystemExit("signing evidence is missing the exact notary response hash")
     expected_method = {
         "cli": "signed-exact-byte-version-execution",
+        "helper": "accepted-notary-strict-codesign-attestation",
         "runtime": "accepted-notary-strict-codesign-attestation",
     }[kind]
     if allow_pending_cli and kind == "cli":
@@ -156,12 +184,17 @@ def accepted_notary_fields(path: Path) -> dict[str, str]:
 
 
 def command_write(args: argparse.Namespace) -> None:
+    require_helper_artifact(args.kind, args.platform, args.artifact)
     details = args.codesign_details.read_text(encoding="utf-8")
     authority = detail_value(details, "Authority")
     identifier = detail_value(details, "Identifier")
     team_identifier = detail_value(details, "TeamIdentifier")
     if not authority_matches_team(authority, team_identifier):
         raise SystemExit("codesign authority and TeamIdentifier disagree")
+    if args.kind == "helper" and identifier != HELPER_IDENTIFIER:
+        raise SystemExit(
+            f"macOS helper codesign details must use identifier {HELPER_IDENTIFIER}"
+        )
     if "runtime" not in code_directory_flags(details):
         raise SystemExit(
             "codesign details do not contain runtime in CodeDirectory flags"
@@ -204,10 +237,14 @@ def command_write(args: argparse.Namespace) -> None:
 
 
 def command_write_linux(args: argparse.Namespace) -> None:
+    require_helper_artifact(args.kind, args.platform, args.artifact)
     if not authority_matches_team(args.codesign_authority, args.team_identifier):
         raise SystemExit("codesign authority and TeamIdentifier disagree")
-    if args.identifier != "ctx":
-        raise SystemExit("Linux codesign evidence requires the ctx binary identifier")
+    expected_identifier = HELPER_IDENTIFIER if args.kind == "helper" else "ctx"
+    if args.identifier != expected_identifier:
+        raise SystemExit(
+            f"Linux codesign evidence requires the {expected_identifier} binary identifier"
+        )
     details = args.rcodesign_details.read_text(encoding="utf-8")
     for required in (args.identifier, args.team_identifier):
         if required not in details:
@@ -261,6 +298,7 @@ def command_record_cli_execution_verification(args: argparse.Namespace) -> None:
 
 
 def command_verify_artifact(args: argparse.Namespace) -> None:
+    require_helper_artifact(args.kind, args.platform, args.artifact)
     document = require_base_document(read_json(args.evidence), args.platform, args.kind)
     actual = sha256(args.artifact)
     if document.get("artifact_sha256") != actual:
@@ -334,6 +372,7 @@ def command_verify_archive(args: argparse.Namespace) -> None:
 
 
 def command_create_attestation(args: argparse.Namespace) -> None:
+    require_helper_artifact(args.kind, args.platform, args.artifact)
     if not re.fullmatch(r"[0-9a-f]{40}", args.source_commit):
         raise SystemExit("attestation source commit must be a lowercase 40-character git SHA")
     team_identifier = authority_team_id(args.codesign_authority)
@@ -349,11 +388,14 @@ def command_create_attestation(args: argparse.Namespace) -> None:
         "source_commit": args.source_commit,
         "team_identifier": team_identifier,
     }
+    if args.kind == "helper":
+        document["identifier"] = HELPER_IDENTIFIER
     document.update(accepted_notary_fields(args.notary_submit))
     write_json(args.output, document)
 
 
 def command_verify_attestation(args: argparse.Namespace) -> None:
+    require_helper_artifact(args.kind, args.platform, args.artifact)
     team_identifier = authority_team_id(args.codesign_authority)
     if team_identifier is None:
         raise SystemExit("attestation codesign authority is not a ctx Developer ID identity")
@@ -368,6 +410,8 @@ def command_verify_attestation(args: argparse.Namespace) -> None:
         "source_commit": args.source_commit,
         "team_identifier": team_identifier,
     }
+    if args.kind == "helper":
+        expected["identifier"] = HELPER_IDENTIFIER
     expected.update(accepted_notary_fields(args.notary_submit))
     if document != expected:
         raise SystemExit("signed macOS attestation does not bind the exact pinned artifact")
@@ -418,7 +462,7 @@ def build_parser() -> argparse.ArgumentParser:
     write = subparsers.add_parser("write")
     write.add_argument("--output", required=True, type=Path)
     write.add_argument("--platform", required=True)
-    write.add_argument("--kind", required=True, choices=("cli", "runtime"))
+    write.add_argument("--kind", required=True, choices=ARTIFACT_KINDS)
     write.add_argument("--artifact", required=True, type=Path)
     write.add_argument("--codesign-details", required=True, type=Path)
     write.add_argument("--notary-submit", required=True, type=Path)
@@ -427,7 +471,7 @@ def build_parser() -> argparse.ArgumentParser:
     write_linux = subparsers.add_parser("write-linux")
     write_linux.add_argument("--output", required=True, type=Path)
     write_linux.add_argument("--platform", required=True)
-    write_linux.add_argument("--kind", required=True, choices=("cli", "runtime"))
+    write_linux.add_argument("--kind", required=True, choices=ARTIFACT_KINDS)
     write_linux.add_argument("--artifact", required=True, type=Path)
     write_linux.add_argument("--rcodesign-details", required=True, type=Path)
     write_linux.add_argument("--notary-submit", required=True, type=Path)
@@ -446,7 +490,7 @@ def build_parser() -> argparse.ArgumentParser:
     verify = subparsers.add_parser("verify-artifact")
     verify.add_argument("--evidence", required=True, type=Path)
     verify.add_argument("--platform", required=True)
-    verify.add_argument("--kind", required=True, choices=("cli", "runtime"))
+    verify.add_argument("--kind", required=True, choices=ARTIFACT_KINDS)
     verify.add_argument("--artifact", required=True, type=Path)
     verify.add_argument("--checksum", type=Path)
     verify.set_defaults(handler=command_verify_artifact)
@@ -475,7 +519,7 @@ def build_parser() -> argparse.ArgumentParser:
     create_attestation.add_argument("--output", required=True, type=Path)
     create_attestation.add_argument("--platform", required=True)
     create_attestation.add_argument(
-        "--kind", required=True, choices=("cli", "runtime")
+        "--kind", required=True, choices=ARTIFACT_KINDS
     )
     create_attestation.add_argument("--artifact", required=True, type=Path)
     create_attestation.add_argument("--notary-submit", required=True, type=Path)
@@ -487,7 +531,7 @@ def build_parser() -> argparse.ArgumentParser:
     verify_attestation.add_argument("--attestation", required=True, type=Path)
     verify_attestation.add_argument("--platform", required=True)
     verify_attestation.add_argument(
-        "--kind", required=True, choices=("cli", "runtime")
+        "--kind", required=True, choices=ARTIFACT_KINDS
     )
     verify_attestation.add_argument("--artifact", required=True, type=Path)
     verify_attestation.add_argument("--notary-submit", required=True, type=Path)
