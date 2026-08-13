@@ -1,10 +1,38 @@
-use std::io::{self, IsTerminal as _, Write};
+use std::{
+    io::{self, IsTerminal as _, Write},
+    sync::{Arc, Mutex},
+};
 
 use crate::output::MeasuredWriter;
 
 use super::{ColorMode, Document, RenderContext, StreamKind};
 
 type BoxedWriter = Box<dyn Write + Send>;
+
+#[derive(Clone)]
+struct SharedDestinationWriter(Arc<Mutex<BoxedWriter>>);
+
+impl SharedDestinationWriter {
+    fn new(writer: BoxedWriter) -> Self {
+        Self(Arc::new(Mutex::new(writer)))
+    }
+}
+
+impl Write for SharedDestinationWriter {
+    fn write(&mut self, buffer: &[u8]) -> io::Result<usize> {
+        self.0
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .write(buffer)
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        self.0
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .flush()
+    }
+}
 
 pub struct Ui {
     stdout: Destination,
@@ -131,6 +159,11 @@ impl Ui {
         LiveOutput::new(self.stderr.writer(), context)
     }
 
+    pub(crate) fn stderr_shared_live_output(&self) -> LiveOutput<BoxedWriter> {
+        let context = *self.stderr.context();
+        LiveOutput::new(Box::new(self.stderr.shared_writer()), context)
+    }
+
     pub fn stdout_writer(&mut self) -> &mut (dyn Write + Send) {
         self.stdout.writer()
     }
@@ -147,10 +180,18 @@ impl Ui {
 
 /// Owns all cursor motion used to replace a rendered terminal frame. Dynamic
 /// content is rendered separately and is never part of a control sequence.
-pub struct LiveOutput<W> {
+pub struct LiveOutput<W: Write> {
     writer: W,
     context: RenderContext,
-    rendered_lines: usize,
+    rendered_rows: Vec<String>,
+    repaint_cursor: Option<RepaintCursor>,
+    cursor_hidden: bool,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct RepaintCursor {
+    current_row: usize,
+    recovery_row: usize,
 }
 
 impl<W: Write> LiveOutput<W> {
@@ -158,7 +199,9 @@ impl<W: Write> LiveOutput<W> {
         Self {
             writer,
             context,
-            rendered_lines: 0,
+            rendered_rows: Vec::new(),
+            repaint_cursor: None,
+            cursor_hidden: false,
         }
     }
 
@@ -167,8 +210,12 @@ impl<W: Write> LiveOutput<W> {
     }
 
     #[doc(hidden)]
-    pub fn into_inner(self) -> W {
-        self.writer
+    pub fn into_inner(mut self) -> W {
+        self.restore_cursor_best_effort();
+        let output = std::mem::ManuallyDrop::new(self);
+        // SAFETY: `output` will not be dropped, so reading its writer transfers
+        // ownership exactly once without running `LiveOutput::drop` a second time.
+        unsafe { std::ptr::read(&output.writer) }
     }
 
     #[doc(hidden)]
@@ -196,47 +243,205 @@ impl<W: Write> LiveOutput<W> {
             return self.writer.flush();
         }
 
-        let lines = frame
-            .strip_suffix('\n')
-            .unwrap_or(&frame)
-            .split('\n')
-            .collect::<Vec<_>>();
-        if self.rendered_lines == 0 {
-            self.writer.write_all(frame.as_bytes())?;
-            self.rendered_lines = if final_frame { 0 } else { lines.len() };
-            return self.writer.flush();
+        let rows = frame_rows(&frame);
+        if !self.cursor_hidden {
+            let write_result = if final_frame {
+                self.writer.write_all(frame.as_bytes())
+            } else {
+                self.hide_cursor()
+                    .and_then(|()| self.writer.write_all(frame.as_bytes()))
+            };
+            if !final_frame && write_result.is_ok() {
+                self.rendered_rows = rows.iter().map(|row| (*row).to_owned()).collect();
+            }
+            return self.finish_frame(final_frame, write_result);
         }
 
-        write!(self.writer, "\u{1b}[{}A", self.rendered_lines)?;
-        let previous_lines = self.rendered_lines;
-        let height = previous_lines.max(lines.len());
+        let repaint_result = self.repaint_changed_rows(&rows);
+        if repaint_result.is_ok() {
+            self.rendered_rows = rows.iter().map(|row| (*row).to_owned()).collect();
+        }
+        self.finish_frame(final_frame, repaint_result)
+    }
+
+    fn hide_cursor(&mut self) -> io::Result<()> {
+        self.cursor_hidden = true;
+        self.writer.write_all(b"\x1b[?25l")
+    }
+
+    fn repaint_changed_rows(&mut self, rows: &[&str]) -> io::Result<()> {
+        if self
+            .rendered_rows
+            .iter()
+            .map(String::as_str)
+            .eq(rows.iter().copied())
+        {
+            return Ok(());
+        }
+
+        let height = self.rendered_rows.len().max(rows.len());
+        self.repaint_cursor = Some(RepaintCursor {
+            current_row: self.rendered_rows.len(),
+            recovery_row: height,
+        });
+        let Some(cursor) = self.repaint_cursor.as_mut() else {
+            return Err(io::Error::other("missing repaint cursor"));
+        };
+        write_cursor_up(
+            &mut self.writer,
+            self.rendered_rows.len(),
+            Some(&mut cursor.current_row),
+        )?;
         for row in 0..height {
-            self.writer.write_all(b"\r\x1b[2K")?;
-            if let Some(line) = lines.get(row) {
+            if self.rendered_rows.get(row).map(String::as_str) == rows.get(row).copied() {
+                continue;
+            }
+            let Some(cursor) = self.repaint_cursor.as_mut() else {
+                return Err(io::Error::other("missing repaint cursor"));
+            };
+            write_cursor_down(
+                &mut self.writer,
+                row.saturating_sub(cursor.current_row),
+                Some(&mut cursor.current_row),
+            )?;
+            self.writer.write_all(b"\r")?;
+            if let Some(line) = rows.get(row) {
                 self.writer.write_all(line.as_bytes())?;
             }
-            self.writer.write_all(b"\n")?;
+            self.writer.write_all(b"\x1b[K")?;
         }
-        if previous_lines > lines.len() {
-            write!(
-                self.writer,
-                "\u{1b}[{}A",
-                previous_lines.saturating_sub(lines.len())
+
+        let Some(cursor) = self.repaint_cursor.as_mut() else {
+            return Err(io::Error::other("missing repaint cursor"));
+        };
+        if cursor.current_row < rows.len() {
+            write_cursor_down(
+                &mut self.writer,
+                rows.len() - cursor.current_row,
+                Some(&mut cursor.current_row),
+            )?;
+        } else {
+            write_cursor_up(
+                &mut self.writer,
+                cursor.current_row - rows.len(),
+                Some(&mut cursor.current_row),
             )?;
         }
-        self.rendered_lines = if final_frame { 0 } else { lines.len() };
+        self.writer.write_all(b"\r")?;
+        self.repaint_cursor = None;
+        Ok(())
+    }
+
+    fn finish_frame(&mut self, final_frame: bool, result: io::Result<()>) -> io::Result<()> {
+        if let Err(error) = result {
+            self.restore_repaint_anchor_best_effort();
+            let _ = self.writer.write_all(b"\r");
+            let _ = self.restore_cursor();
+            self.rendered_rows.clear();
+            let _ = self.writer.flush();
+            return Err(error);
+        }
+        if final_frame {
+            let restore_result = self.restore_cursor();
+            self.rendered_rows.clear();
+            return restore_result.and_then(|()| self.writer.flush());
+        }
         self.writer.flush()
     }
+
+    fn restore_repaint_anchor_best_effort(&mut self) {
+        let Some(cursor) = self.repaint_cursor.take() else {
+            return;
+        };
+        if cursor.current_row < cursor.recovery_row {
+            let _ = write_cursor_down(
+                &mut self.writer,
+                cursor.recovery_row - cursor.current_row,
+                None,
+            );
+        } else {
+            let _ = write_cursor_up(
+                &mut self.writer,
+                cursor.current_row - cursor.recovery_row,
+                None,
+            );
+        }
+    }
+
+    fn restore_cursor(&mut self) -> io::Result<()> {
+        if self.cursor_hidden {
+            self.writer.write_all(b"\x1b[?25h")?;
+            self.cursor_hidden = false;
+        }
+        Ok(())
+    }
+
+    fn restore_cursor_best_effort(&mut self) {
+        if self.cursor_hidden {
+            let _ = self.writer.write_all(b"\x1b[?25h");
+            let _ = self.writer.flush();
+            self.cursor_hidden = false;
+        }
+    }
+}
+
+impl<W: Write> Drop for LiveOutput<W> {
+    fn drop(&mut self) {
+        self.restore_cursor_best_effort();
+    }
+}
+
+fn frame_rows(frame: &str) -> Vec<&str> {
+    if frame.is_empty() {
+        Vec::new()
+    } else {
+        frame
+            .strip_suffix('\n')
+            .unwrap_or(frame)
+            .split('\n')
+            .collect()
+    }
+}
+
+fn write_cursor_up(
+    writer: &mut impl Write,
+    rows: usize,
+    mut current_row: Option<&mut usize>,
+) -> io::Result<()> {
+    for _ in 0..rows {
+        writer.write_all(b"\x1b[A")?;
+        if let Some(current_row) = current_row.as_deref_mut() {
+            *current_row = current_row.saturating_sub(1);
+        }
+    }
+    Ok(())
+}
+
+fn write_cursor_down(
+    writer: &mut impl Write,
+    rows: usize,
+    mut current_row: Option<&mut usize>,
+) -> io::Result<()> {
+    for _ in 0..rows {
+        writer.write_all(b"\x1b[B")?;
+        if let Some(current_row) = current_row.as_deref_mut() {
+            *current_row = current_row.saturating_add(1);
+        }
+    }
+    Ok(())
 }
 
 struct Destination {
     context: RenderContext,
-    writer: BoxedWriter,
+    writer: SharedDestinationWriter,
 }
 
 impl Destination {
     fn new(context: RenderContext, writer: BoxedWriter) -> Self {
-        Self { context, writer }
+        Self {
+            context,
+            writer: SharedDestinationWriter::new(writer),
+        }
     }
 
     fn injected<W>(context: RenderContext, writer: W) -> Self
@@ -281,7 +486,11 @@ impl Destination {
     }
 
     fn writer(&mut self) -> &mut (dyn Write + Send) {
-        self.writer.as_mut()
+        &mut self.writer
+    }
+
+    fn shared_writer(&self) -> SharedDestinationWriter {
+        self.writer.clone()
     }
 
     fn flush(&mut self) -> io::Result<()> {
@@ -417,12 +626,150 @@ mod tests {
         }
     }
 
+    #[derive(Clone)]
+    struct FailOnceWriter(Arc<Mutex<FailOnceState>>);
+
+    struct FailOnceState {
+        bytes: Vec<u8>,
+        failed: bool,
+    }
+
+    impl FailOnceWriter {
+        fn new() -> Self {
+            Self(Arc::new(Mutex::new(FailOnceState {
+                bytes: Vec::new(),
+                failed: false,
+            })))
+        }
+
+        fn text(&self) -> String {
+            String::from_utf8(self.0.lock().unwrap().bytes.clone()).unwrap()
+        }
+    }
+
+    impl Write for FailOnceWriter {
+        fn write(&mut self, buffer: &[u8]) -> io::Result<usize> {
+            let mut state = self.0.lock().unwrap();
+            if !state.failed && buffer == b"\x1b[K" {
+                state.failed = true;
+                return Err(io::Error::other("injected repaint failure"));
+            }
+            state.bytes.extend_from_slice(buffer);
+            Ok(buffer.len())
+        }
+
+        fn flush(&mut self) -> io::Result<()> {
+            Ok(())
+        }
+    }
+
     fn document(lines: &[&str]) -> Document {
         let mut document = Document::new();
         for line in lines {
             document.push_line(Line::new().with(Span::new(*line, Token::Heading)));
         }
         document
+    }
+
+    fn comparison_documents() -> Vec<Document> {
+        (0..=40)
+            .map(|position| {
+                let bar = format!(
+                    "{}{}{}",
+                    "─".repeat(position),
+                    "━".repeat(8),
+                    "─".repeat(40 - position)
+                );
+                let mut document = Document::new();
+                for line in [
+                    "Reading your agent history",
+                    &bar,
+                    "",
+                    "Agent histories  Codex",
+                    "                 Claude",
+                    "",
+                    "Sessions         1,123",
+                    "Messages         72,456",
+                    "Tool calls       31,009",
+                    "Data scanned     8.20 GiB",
+                    "Elapsed          2m 05s",
+                    "Remaining        estimating",
+                ] {
+                    document.push_line(Line::text(line));
+                }
+                document
+            })
+            .collect()
+    }
+
+    fn differential_comparison_bytes(frames: usize) -> usize {
+        let context = RenderContext::for_test(
+            TestContext::tty(StreamKind::Stdout, 80).color(ColorMode::Never),
+        );
+        let documents = comparison_documents();
+        let mut output = LiveOutput::new(Vec::new(), context);
+        for frame in 0..frames {
+            output
+                .write_frame(&documents[frame % documents.len()], false)
+                .unwrap();
+        }
+        output.into_inner().len()
+    }
+
+    fn full_repaint_comparison_bytes(frames: usize) -> usize {
+        let context = RenderContext::for_test(
+            TestContext::tty(StreamKind::Stdout, 80).color(ColorMode::Never),
+        );
+        let documents = comparison_documents();
+        let mut output = Vec::new();
+        let mut rendered_lines = 0;
+        for frame in 0..frames {
+            let rendered = documents[frame % documents.len()].render(&context);
+            let lines = frame_rows(&rendered);
+            if rendered_lines == 0 {
+                output.extend_from_slice(rendered.as_bytes());
+                rendered_lines = lines.len();
+                continue;
+            }
+
+            output.extend_from_slice(format!("\x1b[{rendered_lines}A").as_bytes());
+            let height = rendered_lines.max(lines.len());
+            for row in 0..height {
+                output.extend_from_slice(b"\r\x1b[2K");
+                if let Some(line) = lines.get(row) {
+                    output.extend_from_slice(line.as_bytes());
+                }
+                output.push(b'\n');
+            }
+            if rendered_lines > lines.len() {
+                output.extend_from_slice(
+                    format!("\x1b[{}A", rendered_lines - lines.len()).as_bytes(),
+                );
+            }
+            rendered_lines = lines.len();
+        }
+        output.len()
+    }
+
+    #[test]
+    fn differential_renderer_has_deterministic_write_reduction() {
+        let differential = differential_comparison_bytes(1_000);
+        let full_repaint = full_repaint_comparison_bytes(1_000);
+
+        assert_eq!((differential, full_repaint), (221_161, 434_935));
+        assert!(differential * 5 < full_repaint * 3);
+    }
+
+    #[test]
+    #[ignore = "bounded renderer CPU comparison; run explicitly through ctx-build-governor"]
+    fn benchmark_differential_renderer() {
+        std::hint::black_box(differential_comparison_bytes(50_000));
+    }
+
+    #[test]
+    #[ignore = "bounded renderer CPU comparison; run explicitly through ctx-build-governor"]
+    fn benchmark_full_repaint_renderer() {
+        std::hint::black_box(full_repaint_comparison_bytes(50_000));
     }
 
     #[test]
@@ -441,13 +788,180 @@ mod tests {
         assert_eq!(
             rendered,
             concat!(
-                "one\n",
-                "\x1b[1A\r\x1b[2Kone\n\r\x1b[2Ktwo\n",
-                "\x1b[2A\r\x1b[2Kshort\n\r\x1b[2K\n\x1b[1A",
-                "\x1b[1A\r\x1b[2Kdone\n",
-                "after\n",
+                "\x1b[?25lone\n",
+                "\x1b[A\x1b[B\rtwo\x1b[K\x1b[B\r",
+                "\x1b[A\x1b[A\rshort\x1b[K\x1b[B\r\x1b[K\r",
+                "\x1b[A\rdone\x1b[K\x1b[B\r\x1b[?25h",
+                "\x1b[?25lafter\n\x1b[?25h",
             )
         );
+    }
+
+    #[test]
+    fn unchanged_live_frames_emit_no_bytes() {
+        let context = RenderContext::for_test(TestContext::tty(StreamKind::Stdout, 80));
+        let mut output = LiveOutput::new(Vec::new(), context);
+        output
+            .write_frame(&document(&["first", "second"]), false)
+            .unwrap();
+        let first_frame = output.inner().clone();
+
+        output
+            .write_frame(&document(&["first", "second"]), false)
+            .unwrap();
+
+        assert_eq!(output.inner(), &first_frame);
+    }
+
+    #[test]
+    fn sparse_live_row_changes_repaint_only_the_changed_row() {
+        let context = RenderContext::for_test(TestContext::tty(StreamKind::Stdout, 80));
+        let mut output = LiveOutput::new(Vec::new(), context);
+        output
+            .write_frame(&document(&["first", "second", "third"]), false)
+            .unwrap();
+        output
+            .write_frame(&document(&["first", "SECOND", "third"]), false)
+            .unwrap();
+
+        assert_eq!(
+            output.inner(),
+            concat!(
+                "\x1b[?25lfirst\nsecond\nthird\n",
+                "\x1b[A\x1b[A\x1b[A\x1b[B\rSECOND\x1b[K\x1b[B\x1b[B\r",
+            )
+            .as_bytes()
+        );
+    }
+
+    #[test]
+    fn shorter_live_row_clears_only_its_stale_suffix() {
+        let context = RenderContext::for_test(TestContext::tty(StreamKind::Stdout, 80));
+        let mut output = LiveOutput::new(Vec::new(), context);
+        output.write_frame(&document(&["long row"]), false).unwrap();
+        output.write_frame(&document(&["short"]), false).unwrap();
+
+        let rendered = String::from_utf8(output.into_inner()).unwrap();
+        assert_eq!(
+            rendered,
+            concat!(
+                "\x1b[?25llong row\n",
+                "\x1b[A\rshort\x1b[K\x1b[B\r\x1b[?25h",
+            )
+        );
+        assert!(!rendered.contains("\x1b[2K"));
+    }
+
+    #[test]
+    fn live_height_changes_clear_removed_rows_and_reanchor_cursor() {
+        let context = RenderContext::for_test(TestContext::tty(StreamKind::Stdout, 80));
+        let mut output = LiveOutput::new(Vec::new(), context);
+        output.write_frame(&document(&["one"]), false).unwrap();
+        output
+            .write_frame(&document(&["one", "two", "three"]), false)
+            .unwrap();
+        output.write_frame(&document(&["one"]), false).unwrap();
+
+        assert_eq!(
+            output.inner(),
+            concat!(
+                "\x1b[?25lone\n",
+                "\x1b[A\x1b[B\rtwo\x1b[K\x1b[B\rthree\x1b[K\x1b[B\r",
+                "\x1b[A\x1b[A\x1b[A\x1b[B\r\x1b[K\x1b[B\r\x1b[K\x1b[A\r",
+            )
+            .as_bytes()
+        );
+    }
+
+    #[test]
+    fn final_live_frame_restores_cursor_and_resets_the_lifecycle() {
+        let context = RenderContext::for_test(TestContext::tty(StreamKind::Stdout, 80));
+        let mut output = LiveOutput::new(Vec::new(), context);
+        output.write_frame(&document(&["working"]), false).unwrap();
+        output.write_frame(&document(&["done"]), true).unwrap();
+        output.write_frame(&document(&["next"]), false).unwrap();
+
+        let rendered = String::from_utf8(output.into_inner()).unwrap();
+        assert_eq!(
+            rendered,
+            concat!(
+                "\x1b[?25lworking\n",
+                "\x1b[A\rdone\x1b[K\x1b[B\r\x1b[?25h",
+                "\x1b[?25lnext\n\x1b[?25h",
+            )
+        );
+    }
+
+    #[test]
+    fn completed_live_output_leaves_following_output_at_column_zero() {
+        let context = RenderContext::for_test(TestContext::tty(StreamKind::Stdout, 80));
+        let mut output = LiveOutput::new(Vec::new(), context);
+        output.write_frame(&document(&["working"]), false).unwrap();
+        output.write_frame(&document(&["done"]), true).unwrap();
+        output.write_document(&document(&["SENTINEL"])).unwrap();
+
+        let rendered = String::from_utf8(output.into_inner()).unwrap();
+        assert!(
+            rendered.ends_with("\x1b[B\r\x1b[?25hSENTINEL\n"),
+            "{rendered:?}"
+        );
+    }
+
+    #[test]
+    fn dropping_an_active_live_output_restores_the_cursor() {
+        let context = RenderContext::for_test(TestContext::tty(StreamKind::Stdout, 80));
+        let writer = SharedWriter::default();
+        let capture = writer.clone();
+        {
+            let mut output = LiveOutput::new(writer, context);
+            output.write_frame(&document(&["working"]), false).unwrap();
+        }
+
+        assert_eq!(capture.text(), "\x1b[?25lworking\n\x1b[?25h");
+    }
+
+    #[test]
+    fn dropping_repainted_output_leaves_following_output_at_column_zero() {
+        let context = RenderContext::for_test(TestContext::tty(StreamKind::Stdout, 80));
+        let writer = SharedWriter::default();
+        let capture = writer.clone();
+        {
+            let mut output = LiveOutput::new(writer, context);
+            output.write_frame(&document(&["working"]), false).unwrap();
+            output.write_frame(&document(&["done"]), false).unwrap();
+        }
+        let mut sentinel = capture.clone();
+        sentinel.write_all(b"SENTINEL").unwrap();
+
+        let rendered = capture.text();
+        assert!(
+            rendered.ends_with("\x1b[B\r\x1b[?25hSENTINEL"),
+            "{rendered:?}"
+        );
+    }
+
+    #[test]
+    fn repaint_error_restores_cursor_below_live_block_before_following_output() {
+        let context = RenderContext::for_test(TestContext::tty(StreamKind::Stdout, 80));
+        let writer = FailOnceWriter::new();
+        let capture = writer.clone();
+        {
+            let mut output = LiveOutput::new(writer, context);
+            output.write_frame(&document(&["working"]), false).unwrap();
+            let error = output
+                .write_frame(&document(&["broken"]), false)
+                .expect_err("repaint failure must propagate");
+            assert_eq!(error.to_string(), "injected repaint failure");
+        }
+        let mut sentinel = capture.clone();
+        sentinel.write_all(b"SENTINEL").unwrap();
+
+        let rendered = capture.text();
+        assert!(
+            rendered.ends_with("\x1b[A\rbroken\x1b[B\r\x1b[?25hSENTINEL"),
+            "{rendered:?}"
+        );
+        assert!(!rendered.ends_with("\x1b[A\rbroken\r\x1b[?25hSENTINEL"));
     }
 
     #[test]
@@ -483,9 +997,9 @@ mod tests {
             assert_eq!(
                 rendered,
                 concat!(
-                    "long first row\nstale second row\n",
-                    "\x1b[2A\r\x1b[2Kshort replacement\n\r\x1b[2K\n\x1b[1A",
-                    "\x1b[1A\r\x1b[2Kdone\n",
+                    "\x1b[?25llong first row\nstale second row\n",
+                    "\x1b[A\x1b[A\rshort replacement\x1b[K\x1b[B\r\x1b[K\r",
+                    "\x1b[A\rdone\x1b[K\x1b[B\r\x1b[?25h",
                 )
             );
             assert!(
@@ -634,10 +1148,12 @@ mod tests {
 
             let stdout = stdout_capture.text();
             let stderr = stderr_capture.text();
-            assert_eq!(stdout.contains("\x1b[2A"), stdout_controls);
-            assert_eq!(stdout.contains("\x1b[2K"), stdout_controls);
-            assert_eq!(stderr.contains("\x1b[2A"), stderr_controls);
-            assert_eq!(stderr.contains("\x1b[2K"), stderr_controls);
+            assert_eq!(stdout.contains("\x1b[A"), stdout_controls);
+            assert_eq!(stdout.contains("\x1b[?25l"), stdout_controls);
+            assert_eq!(stdout.contains("\x1b[?25h"), stdout_controls);
+            assert_eq!(stderr.contains("\x1b[A"), stderr_controls);
+            assert_eq!(stderr.contains("\x1b[?25l"), stderr_controls);
+            assert_eq!(stderr.contains("\x1b[?25h"), stderr_controls);
             assert!(!stdout.contains("\x1b[1m"));
             assert!(!stderr.contains("\x1b[1m"));
         }
@@ -693,6 +1209,6 @@ mod tests {
             .write_frame(&document(&["source\x1b[999A\rname"]), false)
             .unwrap();
         let rendered = String::from_utf8(output.into_inner()).unwrap();
-        assert_eq!(rendered, "source\\x1b[999A\\rname\n");
+        assert_eq!(rendered, "\x1b[?25lsource\\x1b[999A\\rname\n\x1b[?25h");
     }
 }

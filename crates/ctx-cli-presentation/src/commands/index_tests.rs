@@ -305,6 +305,7 @@ fn noninteractive_watch_appends_plain_frames() {
     let mut output = IndexWatchOutput::for_test(&mut bytes, false, 80);
     output.print_human(&readiness("pending", 0, true)).unwrap();
     output.print_human(&readiness("pending", 4, true)).unwrap();
+    drop(output);
 
     let rendered = String::from_utf8(bytes).unwrap();
     assert_eq!(rendered.matches("Your history is searchable").count(), 2);
@@ -341,12 +342,12 @@ fn interactive_watch_redraws_the_existing_block() {
 
     output.print_human(&first).unwrap();
     let first_frame = String::from_utf8(output.writer().clone()).unwrap();
-    let first_lines = first_frame.lines().count();
     output.print_human(&second).unwrap();
 
     let rendered = String::from_utf8(output.into_writer()).unwrap();
     assert!(rendered.starts_with(&first_frame));
-    assert!(rendered.contains(&format!("\u{1b}[{first_lines}A")));
+    assert!(rendered.contains("\u{1b}[A"));
+    assert!(!rendered.contains("\u{1b}[2K"));
     assert!(rendered.contains("Sessions         4"));
     assert!(!rendered.contains("4 / 12"));
 }

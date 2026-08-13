@@ -138,7 +138,7 @@ fn index_watch_output(ui: &mut Ui) -> IndexWatchOutput<&mut (dyn io::Write + Sen
 }
 
 #[doc(hidden)]
-pub struct IndexWatchOutput<W> {
+pub struct IndexWatchOutput<W: io::Write> {
     output: LiveOutput<W>,
     dashboard: IndexDashboard,
 }
