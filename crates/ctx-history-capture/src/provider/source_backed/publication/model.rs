@@ -3,7 +3,48 @@ use super::*;
 pub(crate) fn sqlite_source_progress(
     progress: ctx_history_source_sqlite::SqliteSourceProgress,
 ) -> SourceBackedCurrentSourceProgress {
-    progress.into()
+    let stage = match progress.stage {
+        ctx_history_source_sqlite::SqliteSourceProgressStage::SourceFamilyCopy => {
+            ctx_history_capture_model::SourceBackedCurrentSourceProgressStage::SourceFamilyCopy
+        }
+    };
+    SourceBackedCurrentSourceProgress {
+        stage,
+        snapshot_pages_completed: progress.snapshot_pages_completed,
+        snapshot_pages_total: progress.snapshot_pages_total,
+        snapshot_bytes_completed: progress.snapshot_bytes_completed,
+        snapshot_bytes_total: progress.snapshot_bytes_total,
+        logical_rows_scanned: None,
+        logical_certified_bytes: None,
+    }
+}
+
+#[cfg(test)]
+mod progress_tests {
+    use super::*;
+
+    #[test]
+    fn sqlite_progress_conversion_preserves_every_field() {
+        let source = ctx_history_source_sqlite::SqliteSourceProgress {
+            stage: ctx_history_source_sqlite::SqliteSourceProgressStage::SourceFamilyCopy,
+            snapshot_pages_completed: Some(3),
+            snapshot_pages_total: Some(5),
+            snapshot_bytes_completed: Some(12_288),
+            snapshot_bytes_total: Some(20_480),
+        };
+        assert_eq!(
+            sqlite_source_progress(source),
+            SourceBackedCurrentSourceProgress {
+                stage: ctx_history_capture_model::SourceBackedCurrentSourceProgressStage::SourceFamilyCopy,
+                snapshot_pages_completed: Some(3),
+                snapshot_pages_total: Some(5),
+                snapshot_bytes_completed: Some(12_288),
+                snapshot_bytes_total: Some(20_480),
+                logical_rows_scanned: None,
+                logical_certified_bytes: None,
+            }
+        );
+    }
 }
 
 pub(super) struct SourceBackedRefreshPlan {
