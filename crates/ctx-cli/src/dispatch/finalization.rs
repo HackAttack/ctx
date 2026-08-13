@@ -93,7 +93,7 @@ mod tests {
     #[test]
     fn final_accounting_replaces_estimates_with_both_delivered_streams() {
         for success in [true, false] {
-            let measurement = OutputMeasurement::start();
+            let measurement = OutputMeasurement::start_for_current_thread();
             let stdout = SharedBytes::default();
             let stdout_copy = stdout.clone();
             let stderr = SharedBytes::default();
