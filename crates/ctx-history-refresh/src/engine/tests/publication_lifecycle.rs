@@ -1021,6 +1021,273 @@ fn restart_after_pointer_publication_recovers_exact_receipt_without_recapture() 
 }
 
 #[test]
+fn published_journal_with_incompatible_pointer_rebuilds_from_source_on_restart() {
+    let temp = tempfile::tempdir().unwrap();
+    let data_root = temp.path().join("data");
+    ctx_history_core::platform_security::establish_private_data_root(&data_root).unwrap();
+
+    let first = CoreRefreshEngine::with_executor(Arc::new(
+        |execution: SourceBackedRefreshExecution<'_>| publish_pin_fixture(&execution, false),
+    ));
+    first.enqueue_periodic(&data_root).unwrap();
+    let initial = first.run_next(&data_root).expect("initial publication");
+    assert!(!initial.failed, "{:#}", initial.job);
+    drop(first);
+
+    let index_root = source_backed_index_root(&data_root);
+    let pointer_path = index_root.join("active-generation.json");
+    let mut pointer: Value =
+        serde_json::from_slice(&std::fs::read(&pointer_path).unwrap()).unwrap();
+    pointer["version"] = Value::from(1);
+    std::fs::write(&pointer_path, serde_json::to_vec(&pointer).unwrap()).unwrap();
+    assert!(matches!(
+        open_verified_index(&index_root),
+        Err(IndexError::UnsupportedActiveGenerationPointer(1))
+    ));
+
+    let rebuild_calls = Arc::new(AtomicUsize::new(0));
+    let observed_calls = Arc::clone(&rebuild_calls);
+    let restarted = CoreRefreshEngine::with_executor(Arc::new(
+        move |execution: SourceBackedRefreshExecution<'_>| {
+            observed_calls.fetch_add(1, Ordering::SeqCst);
+            publish_pin_fixture(&execution, false)
+        },
+    ));
+    assert!(restarted
+        .recover_interrupted_publication(&data_root)
+        .unwrap());
+    let queued = read_daemon_job_status(&daemon_source_backed_refresh_job_path(&data_root))
+        .expect("durable rebuild request");
+    assert_eq!(queued["request_state"], "queued");
+    assert_eq!(queued["previous_generation"], Value::Null);
+
+    let rebuilt = restarted.run_next(&data_root).expect("source rebuild");
+    assert!(!rebuilt.failed, "{:#}", rebuilt.job);
+    assert_eq!(rebuild_calls.load(Ordering::SeqCst), 1);
+    assert!(!rebuilt.job["published_generation"]
+        .as_str()
+        .unwrap()
+        .is_empty());
+    assert!(open_verified_index(&index_root).is_ok());
+    assert_eq!(
+        pin_active_verified_generation(&data_root)
+            .unwrap()
+            .verified_index()
+            .manifest()
+            .sources
+            .len(),
+        1
+    );
+}
+
+#[test]
+fn checksum_mismatched_published_generation_fails_closed_without_source_rebuild() {
+    let temp = tempfile::tempdir().unwrap();
+    let data_root = temp.path().join("data");
+    ctx_history_core::platform_security::establish_private_data_root(&data_root).unwrap();
+
+    let first = CoreRefreshEngine::with_executor(Arc::new(
+        |execution: SourceBackedRefreshExecution<'_>| publish_pin_fixture(&execution, false),
+    ));
+    first.enqueue_periodic(&data_root).unwrap();
+    let initial = first.run_next(&data_root).expect("initial publication");
+    assert!(!initial.failed, "{:#}", initial.job);
+    drop(first);
+
+    let index_root = source_backed_index_root(&data_root);
+    let store_path = first_store_artifact(&index_root).expect("active store artifact");
+    let mut bytes = std::fs::read(&store_path).unwrap();
+    bytes[0] ^= 0x5a;
+    std::fs::write(&store_path, bytes).unwrap();
+
+    let rebuild_calls = Arc::new(AtomicUsize::new(0));
+    let observed_calls = Arc::clone(&rebuild_calls);
+    let restarted = CoreRefreshEngine::with_executor(Arc::new(
+        move |execution: SourceBackedRefreshExecution<'_>| {
+            observed_calls.fetch_add(1, Ordering::SeqCst);
+            publish_pin_fixture(&execution, false)
+        },
+    ));
+    let error = restarted
+        .recover_interrupted_publication(&data_root)
+        .expect_err("checksum corruption must fail closed");
+    assert!(format!("{error:#}").contains("checksum"));
+    assert_eq!(rebuild_calls.load(Ordering::SeqCst), 0);
+    assert!(!restarted.has_pending_request());
+}
+
+fn first_store_artifact(root: &Path) -> Option<PathBuf> {
+    for entry in std::fs::read_dir(root)
+        .ok()?
+        .filter_map(std::result::Result::ok)
+    {
+        let path = entry.path();
+        if path
+            .extension()
+            .is_some_and(|extension| extension == "store")
+        {
+            return Some(path);
+        }
+        if path.is_dir() {
+            if let Some(store) = first_store_artifact(&path) {
+                return Some(store);
+            }
+        }
+    }
+    None
+}
+
+#[test]
+fn incompatible_pointer_requires_published_terminal_receipt_before_rebuild() {
+    let temp = tempfile::tempdir().unwrap();
+    let data_root = temp.path().join("data");
+    ctx_history_core::platform_security::establish_private_data_root(&data_root).unwrap();
+
+    let first = CoreRefreshEngine::with_executor(Arc::new(
+        |execution: SourceBackedRefreshExecution<'_>| publish_pin_fixture(&execution, false),
+    ));
+    first.enqueue_periodic(&data_root).unwrap();
+    let initial = first.run_next(&data_root).expect("initial publication");
+    assert!(!initial.failed, "{:#}", initial.job);
+    drop(first);
+
+    let index_root = source_backed_index_root(&data_root);
+    let pointer_path = index_root.join("active-generation.json");
+    let mut pointer: Value =
+        serde_json::from_slice(&std::fs::read(&pointer_path).unwrap()).unwrap();
+    pointer["version"] = Value::from(1);
+    std::fs::write(&pointer_path, serde_json::to_vec(&pointer).unwrap()).unwrap();
+
+    let mut malformed = read_daemon_job_status(&daemon_source_backed_refresh_job_path(&data_root))
+        .expect("published journal");
+    malformed.as_object_mut().unwrap().remove("receipt");
+    write_daemon_job_status(
+        &daemon_source_backed_refresh_job_path(&data_root),
+        &malformed,
+    )
+    .unwrap();
+
+    let rebuild_calls = Arc::new(AtomicUsize::new(0));
+    let observed_calls = Arc::clone(&rebuild_calls);
+    let restarted = CoreRefreshEngine::with_executor(Arc::new(
+        move |execution: SourceBackedRefreshExecution<'_>| {
+            observed_calls.fetch_add(1, Ordering::SeqCst);
+            publish_pin_fixture(&execution, false)
+        },
+    ));
+    let error = restarted
+        .recover_interrupted_publication(&data_root)
+        .expect_err("published journal without a receipt must fail closed");
+    assert!(format!("{error:#}").contains("has no terminal receipt"));
+    assert_eq!(rebuild_calls.load(Ordering::SeqCst), 0);
+    assert!(!restarted.has_pending_request());
+}
+
+#[test]
+fn incompatible_pointer_does_not_normalize_mismatched_active_status() {
+    let temp = tempfile::tempdir().unwrap();
+    let data_root = temp.path().join("data");
+    ctx_history_core::platform_security::establish_private_data_root(&data_root).unwrap();
+
+    let first = CoreRefreshEngine::with_executor(Arc::new(
+        |execution: SourceBackedRefreshExecution<'_>| publish_pin_fixture(&execution, false),
+    ));
+    first.enqueue_periodic(&data_root).unwrap();
+    let initial = first.run_next(&data_root).expect("initial publication");
+    assert!(!initial.failed, "{:#}", initial.job);
+    drop(first);
+
+    let index_root = source_backed_index_root(&data_root);
+    let pointer_path = index_root.join("active-generation.json");
+    let mut pointer: Value =
+        serde_json::from_slice(&std::fs::read(&pointer_path).unwrap()).unwrap();
+    pointer["version"] = Value::from(1);
+    std::fs::write(&pointer_path, serde_json::to_vec(&pointer).unwrap()).unwrap();
+
+    let status_path = daemon_source_backed_refresh_job_path(&data_root);
+    let mut malformed = read_daemon_job_status(&status_path).expect("published journal");
+    malformed["request_state"] = Value::String("queued".to_owned());
+    malformed["status"] = Value::String("completed".to_owned());
+    write_daemon_job_status(&status_path, &malformed).unwrap();
+
+    let restarted = CoreRefreshEngine::new();
+    let error = restarted
+        .recover_interrupted_publication(&data_root)
+        .expect_err("mismatched active status must fail closed");
+    assert!(format!("{error:#}").contains("mismatched status"));
+    assert!(!restarted.has_pending_request());
+}
+
+#[test]
+fn incompatible_pointer_rebuilds_queued_and_running_journals_preserving_successors() {
+    for running in [false, true] {
+        let temp = tempfile::tempdir().unwrap();
+        let data_root = temp.path().join("data");
+        ctx_history_core::platform_security::establish_private_data_root(&data_root).unwrap();
+
+        let first = CoreRefreshEngine::with_executor(Arc::new(
+            |execution: SourceBackedRefreshExecution<'_>| publish_pin_fixture(&execution, false),
+        ));
+        first.enqueue_periodic(&data_root).unwrap();
+        let initial = first.run_next(&data_root).expect("initial publication");
+        assert!(!initial.failed, "{:#}", initial.job);
+        let previous_generation = initial.job["published_generation"].as_str().unwrap();
+        drop(first);
+
+        let index_root = source_backed_index_root(&data_root);
+        let pointer_path = index_root.join("active-generation.json");
+        let mut pointer: Value =
+            serde_json::from_slice(&std::fs::read(&pointer_path).unwrap()).unwrap();
+        pointer["version"] = Value::from(1);
+        std::fs::write(&pointer_path, serde_json::to_vec(&pointer).unwrap()).unwrap();
+
+        let queued_engine = CoreRefreshEngine::new();
+        let root = queued_engine.enqueue_periodic(&data_root).unwrap();
+        let root_id = request_id(&root);
+        let successor = queued_engine
+            .enqueue_fresh_demand_for_test(
+                Some(previous_generation.to_owned()),
+                Uuid::now_v7().to_string(),
+                BTreeMap::new(),
+            )
+            .unwrap();
+        let successor_id = request_id(&successor);
+        queued_engine
+            .persist_job_status_for_test(&data_root, &root_id)
+            .unwrap();
+        drop(queued_engine);
+
+        let status_path = daemon_source_backed_refresh_job_path(&data_root);
+        let mut queued = read_daemon_job_status(&status_path).expect("queued journal");
+        if running {
+            queued["request_state"] = Value::String("running".to_owned());
+            queued["status"] = Value::String("running".to_owned());
+            write_daemon_job_status(&status_path, &queued).unwrap();
+        }
+
+        let rebuild_calls = Arc::new(AtomicUsize::new(0));
+        let observed_calls = Arc::clone(&rebuild_calls);
+        let restarted = CoreRefreshEngine::with_executor(Arc::new(
+            move |execution: SourceBackedRefreshExecution<'_>| {
+                observed_calls.fetch_add(1, Ordering::SeqCst);
+                publish_pin_fixture(&execution, false)
+            },
+        ));
+        assert!(restarted
+            .recover_interrupted_publication(&data_root)
+            .unwrap());
+        let recovered = read_daemon_job_status(&status_path).expect("recovered journal");
+        assert_eq!(recovered["request_state"], "queued");
+        assert_eq!(request_id(&recovered), root_id);
+        let recovered_successors = recovered["queued_successors"].as_array().unwrap();
+        assert_eq!(recovered_successors.len(), 1);
+        assert_eq!(request_id(&recovered_successors[0]), successor_id);
+        assert!(restarted.run_next(&data_root).is_some());
+        assert_eq!(rebuild_calls.load(Ordering::SeqCst), 1);
+    }
+}
+
+#[test]
 fn active_generation_pin_fails_closed_when_core_state_is_missing() {
     let temp = tempfile::tempdir().unwrap();
     let error = match pin_active_verified_generation(temp.path()) {

@@ -40,7 +40,9 @@ use ctx_history_core::CaptureProvider;
 #[cfg(test)]
 use ctx_history_index::WriterOptions;
 use ctx_history_index::{
-    generation_incompatibility_requires_rebuild, IndexError, SourceRouteIdentity, VerifiedIndex,
+    generation_incompatibility_requires_rebuild,
+    generation_incompatibility_requires_recovery_rebuild, IndexError, SourceRouteIdentity,
+    VerifiedIndex,
 };
 use ctx_history_refresh_execution::{
     is_sha256_identity, refresh_scope_from_json, refresh_scope_json, required_generation,
@@ -63,8 +65,9 @@ pub use ctx_history_refresh_execution::explicit_source_catalog_authority_for_tes
 pub use ctx_history_refresh_execution::source_backed_watch_catalog;
 pub use ctx_history_refresh_execution::{
     explicit_source_for_path, nonzero_duration_micros, optional_generation,
-    published_refresh_receipt_for_index, relocate_explicit_source, source_backed_index_root,
-    upsert_explicit_source, validate_explicit_relocation_source, ExplicitSourceCatalogAuthority,
+    published_refresh_receipt_for_index, published_refresh_receipt_for_recovery,
+    relocate_explicit_source, source_backed_index_root, upsert_explicit_source,
+    validate_explicit_relocation_source, ExplicitSourceCatalogAuthority,
     ExplicitSourceCatalogRouteBinding, ExplicitSourceCatalogUpsert,
     ExplicitSourceRelocationAuthority, SourceBackedCurrentSourceProgress,
     SourceBackedCurrentSourceProgressStage, SourceBackedPublicationMetadata,
@@ -108,8 +111,8 @@ use orchestration::{
     source_backed_route_admission_fence, SourceBackedRefreshPlan,
 };
 use publication::{
-    open_published_generation, published_generation_id, retained_generation_hint,
-    verify_source_backed_publication,
+    open_published_generation, open_published_generation_for_recovery, published_generation_id,
+    retained_generation_hint, verify_source_backed_publication, PublishedGenerationOpen,
 };
 
 const SOURCE_REFRESH_ATTEMPT_HISTORY: usize = 64;

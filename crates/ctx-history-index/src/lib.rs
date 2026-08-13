@@ -264,6 +264,24 @@ pub fn generation_incompatibility_requires_rebuild(error: &IndexError) -> bool {
     )
 }
 
+/// Returns whether a generation error identifies an obsolete or incompatible
+/// source projection that recovery may replace from source authority. Physical
+/// integrity failures are intentionally excluded even though the writer-side
+/// classifier may mark them for a fresh candidate after its own checks.
+pub fn generation_incompatibility_requires_recovery_rebuild(error: &IndexError) -> bool {
+    matches!(
+        error,
+        IndexError::UnsupportedActiveGenerationPointer(_)
+            | IndexError::UnsupportedCommitPayload(_)
+            | IndexError::UnsupportedManifest(_)
+            | IndexError::GenerationContractMismatch { .. }
+            | IndexError::CoreRecordPolicyRevisionMismatch { .. }
+            | IndexError::GenerationPolicyMismatch { .. }
+            | IndexError::SchemaMismatch(_)
+            | IndexError::IndexSettingsMismatch(_)
+    )
+}
+
 fn classify_active_integrity_failure(
     root: &Path,
     active: &GenerationSlot,
