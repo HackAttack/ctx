@@ -16,10 +16,21 @@ ADVISORY_POLICY_PATH = ROOT / "security" / "release-advisory-policy-v1.json"
 SUPPORTED_TARGET_IDS = tuple(
     "linux-arm64 linux-x64 macos-arm64 macos-x64 windows-x64".split()
 )
+HELPER_RUST_TARGETS = {
+    "linux-arm64": "aarch64-unknown-linux-gnu",
+    "linux-x64": "x86_64-unknown-linux-gnu",
+    "macos-arm64": "aarch64-apple-darwin",
+    "macos-x64": "x86_64-apple-darwin",
+    "windows-x64": "x86_64-pc-windows-msvc",
+}
+HELPER_FACTORY_RUST_TARGETS = {
+    **HELPER_RUST_TARGETS,
+    "windows-x64": "x86_64-pc-windows-gnu",
+}
 STRING_FIELDS = set(
     """
-    arch archive bazel_platform helper_artifact helper_rust_target id os
-    platform_signature public_artifact public_construction_authority
+    arch archive bazel_platform helper_artifact helper_factory_rust_target
+    helper_rust_target id os platform_signature public_artifact public_construction_authority
     public_construction_label public_rust_target runtime_authority vault
     """.split()
 )
@@ -78,6 +89,15 @@ def validate_target(target: dict[str, Any]) -> None:
         "scripts/release/build-public-candidate-on-linux.sh"
     ):
         raise ValueError("public construction label must name the Linux factory")
+    if target["helper_rust_target"] != HELPER_RUST_TARGETS[target["id"]]:
+        raise ValueError(f"unexpected native helper target for {target['id']}")
+    if (
+        target["helper_factory_rust_target"]
+        != HELPER_FACTORY_RUST_TARGETS[target["id"]]
+    ):
+        raise ValueError(
+            f"unexpected helper factory target for {target['id']}"
+        )
     suffix = ".exe" if target["os"] == "windows" else ""
     expected_public = f"ctx-{target['id']}{suffix}"
     if target["id"] == "linux-arm64":
