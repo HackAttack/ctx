@@ -303,6 +303,9 @@ fn windows_ordinary_absolute_provider_file_is_accepted() {
 
     assert!(path.is_absolute());
     ensure_regular_provider_transcript_file(&path).unwrap();
+    let source = open_provider_source_file(&path).unwrap();
+    assert_eq!(source.read_all_bounded(8).unwrap(), b"provider");
+    source.revalidate().unwrap();
 }
 
 #[cfg(target_os = "windows")]

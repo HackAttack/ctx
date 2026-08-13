@@ -11,7 +11,9 @@ use std::{
     path::{Component, Path, PathBuf, Prefix},
 };
 
-use windows_sys::Win32::Foundation::{FreeLibrary, ERROR_HANDLE_EOF};
+use windows_sys::Win32::Foundation::{
+    FreeLibrary, ERROR_CLOUD_FILE_NOT_UNDER_SYNC_ROOT, ERROR_HANDLE_EOF, ERROR_INVALID_FUNCTION,
+};
 use windows_sys::Win32::Storage::FileSystem::{
     FileAttributeTagInfo, FileBasicInfo, FileIdBothDirectoryInfo, FileIdBothDirectoryRestartInfo,
     FileIdInfo, GetDriveTypeW, GetFileInformationByHandleEx, GetFileType,
@@ -33,14 +35,23 @@ use super::AuthorityOpenError;
 
 const DIRECTORY_QUERY_BUFFER_BYTES: usize = 64 * 1024;
 const ERROR_NO_MORE_FILES: i32 = 18;
-const ERROR_NOT_A_CLOUD_FILE_HRESULT: i32 = 0x8007_0178_u32 as i32;
+const ERROR_CLOUD_FILE_NOT_UNDER_SYNC_ROOT_HRESULT: i32 =
+    win32_error_hresult(ERROR_CLOUD_FILE_NOT_UNDER_SYNC_ROOT);
+const ERROR_INVALID_FUNCTION_HRESULT: i32 = win32_error_hresult(ERROR_INVALID_FUNCTION);
 const CF_SYNC_ROOT_INFO_BASIC: i32 = 0;
 
-const GENERIC_READ: u32 = 0x8000_0000;
+const FILE_READ_ATTRIBUTES: u32 = 0x0000_0080;
+const FILE_READ_DATA: u32 = 0x0000_0001;
+const SYNCHRONIZE: u32 = 0x0010_0000;
+const PROVIDER_SOURCE_READ_ACCESS: u32 = FILE_READ_DATA | FILE_READ_ATTRIBUTES | SYNCHRONIZE;
 const OBJ_CASE_INSENSITIVE: u32 = 0x0000_0040;
 const FILE_SYNCHRONOUS_IO_NONALERT: u32 = 0x0000_0020;
 const FILE_OPEN_REPARSE_POINT: u32 = 0x0020_0000;
 const DRIVE_FIXED: u32 = 3;
+
+const fn win32_error_hresult(error: u32) -> i32 {
+    (0x8007_0000_u32 | (error & 0x0000_FFFF)) as i32
+}
 
 #[link(name = "ntdll")]
 unsafe extern "system" {
@@ -467,7 +478,7 @@ fn nt_open_child(parent: &File, name: &OsStr) -> Result<File, AuthorityOpenError
     let status = unsafe {
         NtOpenFile(
             &mut handle,
-            GENERIC_READ,
+            PROVIDER_SOURCE_READ_ACCESS,
             &attributes,
             &mut io_status,
             FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
@@ -491,8 +502,8 @@ fn classify_opened(file: File) -> Result<OpenedPath, AuthorityOpenError> {
     let metadata = file.metadata()?;
     let details = handle_details(&file)?;
     ensure_handle_is_ordinary(&file, &details)?;
-    ensure_not_cloud_root(&file)?;
     let filesystem = filesystem_identity(&file, &details)?;
+    ensure_not_cloud_root(&file, &filesystem)?;
     if metadata.file_type().is_file() {
         Ok(OpenedPath::File {
             file,
@@ -573,7 +584,10 @@ fn ensure_handle_is_ordinary(
     Ok(())
 }
 
-fn ensure_not_cloud_root(file: &File) -> Result<(), AuthorityOpenError> {
+fn ensure_not_cloud_root(
+    file: &File,
+    verified_filesystem: &FilesystemIdentity,
+) -> Result<(), AuthorityOpenError> {
     let length = u32::try_from(size_of::<CfSyncRootBasicInfo>())
         .map_err(|_| AuthorityOpenError::Rejected("cloud root info is too large"))?;
     let library_name = "cldapi.dll\0".encode_utf16().collect::<Vec<_>>();
@@ -616,17 +630,35 @@ fn ensure_not_cloud_root(file: &File) -> Result<(), AuthorityOpenError> {
     unsafe {
         FreeLibrary(library);
     }
+    qualify_sync_root_query(result, verified_filesystem)
+}
+
+fn qualify_sync_root_query(
+    result: i32,
+    verified_filesystem: &FilesystemIdentity,
+) -> Result<(), AuthorityOpenError> {
     if result >= 0 {
         return Err(AuthorityOpenError::Rejected(
             "cloud-synchronized provider source roots are rejected",
         ));
     }
-    if result != ERROR_NOT_A_CLOUD_FILE_HRESULT {
-        return Err(AuthorityOpenError::Rejected(
-            "Windows could not qualify the provider source as non-cloud storage",
-        ));
+    if result == ERROR_CLOUD_FILE_NOT_UNDER_SYNC_ROOT_HRESULT {
+        return Ok(());
     }
-    Ok(())
+    // Windows returns ERROR_INVALID_FUNCTION when Cloud Files is unavailable
+    // on an ordinary fixed NTFS volume. Admit that result only after the
+    // caller has proved this handle is a disk object without reparse, offline,
+    // or recall attributes and has independently qualified its volume as NTFS.
+    if result == ERROR_INVALID_FUNCTION_HRESULT
+        && verified_filesystem
+            .filesystem_name
+            .eq_ignore_ascii_case("NTFS")
+    {
+        return Ok(());
+    }
+    Err(AuthorityOpenError::Rejected(
+        "Windows could not qualify the provider source as non-cloud storage",
+    ))
 }
 
 fn filesystem_identity(
@@ -801,5 +833,74 @@ fn ascii_upper_u16(value: u16) -> u16 {
         value - u16::from(b'a' - b'A')
     } else {
         value
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn verified_ntfs() -> FilesystemIdentity {
+        FilesystemIdentity {
+            volume_serial_number: 1,
+            filesystem_name: "NTFS".to_owned(),
+        }
+    }
+
+    #[test]
+    fn explicit_non_cloud_and_unsupported_verified_ntfs_results_are_accepted() {
+        let filesystem = verified_ntfs();
+        assert!(
+            qualify_sync_root_query(ERROR_CLOUD_FILE_NOT_UNDER_SYNC_ROOT_HRESULT, &filesystem,)
+                .is_ok()
+        );
+        assert!(qualify_sync_root_query(ERROR_INVALID_FUNCTION_HRESULT, &filesystem).is_ok());
+    }
+
+    #[test]
+    fn unsupported_cloud_query_requires_verified_ntfs() {
+        let unqualified = FilesystemIdentity {
+            volume_serial_number: 1,
+            filesystem_name: "ReFS".to_owned(),
+        };
+        assert!(matches!(
+            qualify_sync_root_query(ERROR_INVALID_FUNCTION_HRESULT, &unqualified),
+            Err(AuthorityOpenError::Rejected(
+                "Windows could not qualify the provider source as non-cloud storage"
+            ))
+        ));
+    }
+
+    #[test]
+    fn not_a_cloud_placeholder_does_not_prove_not_under_sync_root() {
+        let filesystem = verified_ntfs();
+
+        let not_a_cloud_file =
+            win32_error_hresult(windows_sys::Win32::Foundation::ERROR_NOT_A_CLOUD_FILE);
+        assert!(matches!(
+            qualify_sync_root_query(not_a_cloud_file, &filesystem),
+            Err(AuthorityOpenError::Rejected(
+                "Windows could not qualify the provider source as non-cloud storage"
+            ))
+        ));
+    }
+
+    #[test]
+    fn sync_root_and_ambiguous_query_results_remain_rejected() {
+        let filesystem = verified_ntfs();
+        let access_denied =
+            win32_error_hresult(windows_sys::Win32::Foundation::ERROR_ACCESS_DENIED);
+        assert!(matches!(
+            qualify_sync_root_query(0, &filesystem),
+            Err(AuthorityOpenError::Rejected(
+                "cloud-synchronized provider source roots are rejected"
+            ))
+        ));
+        assert!(matches!(
+            qualify_sync_root_query(access_denied, &filesystem),
+            Err(AuthorityOpenError::Rejected(
+                "Windows could not qualify the provider source as non-cloud storage"
+            ))
+        ));
     }
 }
