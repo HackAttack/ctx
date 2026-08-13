@@ -363,8 +363,8 @@ fi
 chmod 0644 "${codesign_details}"
 signed_sha256="$(sha256_file "${artifact}")"
 
+notary_zip="${secret_root}/${evidence_prefix}.zip"
 if [[ "${host_system}" == "Darwin" ]]; then
-  notary_zip="${secret_root}/${evidence_prefix}.zip"
   ditto -c -k --keepParent "${artifact}" "${notary_zip}" || \
     die "failed to create temporary notarization ZIP for ${platform} ${kind}"
   set +e
@@ -375,6 +375,9 @@ if [[ "${host_system}" == "Darwin" ]]; then
   submit_status=$?
   set -e
 else
+  (cd "$(dirname "${artifact}")" && \
+    zip -q -9 -j "${notary_zip}" "$(basename "${artifact}")") || \
+    die "failed to create temporary notarization ZIP for ${platform} ${kind}"
   timeout_value="${notary_timeout%[smh]}"
   case "${notary_timeout}" in
     *s) timeout_seconds="${timeout_value}" ;;
@@ -387,7 +390,7 @@ else
     >/dev/null 2>&1 || die "could not prepare the App Store Connect API key"
   set +e
   rcodesign notary-submit --wait --max-wait-seconds "${timeout_seconds}" \
-    --api-key-file "${notary_api_key}" "${artifact}" \
+    --api-key-file "${notary_api_key}" "${notary_zip}" \
     >"${log_json}" 2>"${submit_stderr}"
   submit_status=$?
   set -e

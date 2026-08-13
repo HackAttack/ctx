@@ -92,6 +92,9 @@ done
 require_openssl3_exclusive_trust
 if [[ "${mode}" == "sign" || "${mode}" == "preflight" ]]; then
   require_command rcodesign
+  if [[ "${host_system}" == "Linux" ]]; then
+    require_command zip
+  fi
   if [[ "${host_system}" == "Darwin" ]]; then
     for command_name in codesign ditto xcode-select xcrun; do
       require_command "${command_name}"
