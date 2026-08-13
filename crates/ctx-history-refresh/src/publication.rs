@@ -157,10 +157,28 @@ pub(super) fn published_generation_id(
     )
 }
 
+pub(super) enum PublishedGenerationOpen {
+    Missing,
+    RebuildRequired,
+    Verified(VerifiedIndex),
+}
+
 pub(super) fn open_published_generation(
     data_root: &Path,
     journal: &dyn RefreshJournal,
 ) -> Result<Option<VerifiedIndex>> {
+    Ok(
+        match open_published_generation_for_recovery(data_root, journal)? {
+            PublishedGenerationOpen::Missing | PublishedGenerationOpen::RebuildRequired => None,
+            PublishedGenerationOpen::Verified(index) => Some(index),
+        },
+    )
+}
+
+pub(super) fn open_published_generation_for_recovery(
+    data_root: &Path,
+    journal: &dyn RefreshJournal,
+) -> Result<PublishedGenerationOpen> {
     let index_root = source_backed_index_root(data_root);
     if !index_root.is_dir() {
         if let Some(generation_id) = published_generation_receipt(data_root, journal)? {
@@ -169,10 +187,10 @@ pub(super) fn open_published_generation(
                 index_root.display()
             );
         }
-        return Ok(None);
+        return Ok(PublishedGenerationOpen::Missing);
     }
     match open_verified_index(&index_root) {
-        Ok(index) => Ok(Some(index)),
+        Ok(index) => Ok(PublishedGenerationOpen::Verified(index)),
         Err(IndexError::MissingActiveGenerationPointer) => {
             if let Some(generation_id) = published_generation_receipt(data_root, journal)? {
                 bail!(
@@ -180,9 +198,11 @@ pub(super) fn open_published_generation(
                     index_root.display()
                 );
             }
-            Ok(None)
+            Ok(PublishedGenerationOpen::Missing)
         }
-        Err(error) if generation_incompatibility_requires_rebuild(&error) => Ok(None),
+        Err(error) if generation_incompatibility_requires_recovery_rebuild(&error) => {
+            Ok(PublishedGenerationOpen::RebuildRequired)
+        }
         Err(error) => {
             Err(error).with_context(|| format!("open verified Core index {}", index_root.display()))
         }
@@ -331,7 +351,9 @@ pub(super) fn retained_generation_hint(
                 index_root.display()
             )
         }
-        Err(error) if generation_incompatibility_requires_rebuild(&error) => Ok(receipt_generation),
+        Err(error) if generation_incompatibility_requires_recovery_rebuild(&error) => {
+            Ok(receipt_generation)
+        }
         Err(error) => Err(error.into()),
     }
 }

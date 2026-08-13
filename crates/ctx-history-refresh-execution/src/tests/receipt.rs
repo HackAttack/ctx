@@ -29,6 +29,48 @@ fn terminal_receipt_fixture() -> (tempfile::TempDir, Value, VerifiedIndex) {
 }
 
 #[test]
+fn recovery_receipt_requires_certified_current_facts() {
+    let (_temp, response, _verified) = terminal_receipt_fixture();
+    for (field, value) in [
+        ("certified_source_count", json!(0)),
+        ("certified_source_bytes", json!(0)),
+    ] {
+        let mut malformed = response.clone();
+        malformed[field] = value;
+        let error = published_refresh_receipt_for_recovery(&malformed).unwrap_err();
+        assert!(
+            format!("{error:#}").contains("certified current facts"),
+            "{error:#}"
+        );
+    }
+}
+
+#[test]
+fn recovery_receipt_catalog_binding_requires_a_receipt_route_and_cold_failure() {
+    let (_temp, mut response, _verified) = terminal_receipt_fixture();
+    let route = "56".repeat(32);
+    let lineage = "57".repeat(32);
+    response["receipt"]["route_results"] = json!({
+        (route.clone()): ["f", "u", false, 1, []]
+    });
+    response["receipt"]["selected_route_total"] = json!(1);
+    response["receipt"]["successful_route_total"] = json!(0);
+    response["receipt"]["source_failure_total"] = json!(1);
+    response["receipt"]["source_failures_omitted"] = json!(1);
+    response["receipt"]["catalog_route_bindings"] = json!({
+        (lineage): route
+    });
+    published_refresh_receipt_for_recovery(&response)
+        .expect("a non-retained binding may use a terminal cold failure");
+
+    response["receipt"]["catalog_route_bindings"] = json!({
+        ("58".repeat(32)): "59".repeat(32)
+    });
+    let error = published_refresh_receipt_for_recovery(&response).unwrap_err();
+    assert!(format!("{error:#}").contains("absent from route_results"));
+}
+
+#[test]
 fn refresh_scan_timing_excludes_the_separately_reported_commit_interval() {
     assert_eq!(
         exclusive_scan_stage_duration(StdDuration::from_micros(700), StdDuration::from_micros(250)),

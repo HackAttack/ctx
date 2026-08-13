@@ -79,8 +79,9 @@ pub use observation::install_after_capture_scan_before_metadata_hook_for_test;
 pub use receipt::SourceBackedRefreshReceipt;
 pub use receipt_parse::{
     is_sha256_identity, optional_generation, parse_zero_source_authority,
-    published_refresh_receipt_for_index, required_generation, required_route_results,
-    validate_zero_source_authority, zero_source_authority_json,
+    published_refresh_receipt_for_index, published_refresh_receipt_for_recovery,
+    required_generation, required_route_results, validate_zero_source_authority,
+    zero_source_authority_json,
 };
 #[doc(hidden)]
 pub use registry_issues::{

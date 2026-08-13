@@ -11,7 +11,13 @@ impl CoreRefreshEngine {
         let Some(job) = self.journal.load(data_root)? else {
             return Ok(false);
         };
-        let verified = open_published_generation(data_root, self.journal.as_ref())?.map(Arc::new);
+        let published_open =
+            open_published_generation_for_recovery(data_root, self.journal.as_ref())?;
+        let rebuild_required = matches!(&published_open, PublishedGenerationOpen::RebuildRequired);
+        let verified = match published_open {
+            PublishedGenerationOpen::Verified(index) => Some(Arc::new(index)),
+            PublishedGenerationOpen::Missing | PublishedGenerationOpen::RebuildRequired => None,
+        };
         let active_generation = verified
             .as_ref()
             .map(|verified| verified.generation_id().to_owned());
@@ -21,6 +27,56 @@ impl CoreRefreshEngine {
             .get("request_state")
             .and_then(Value::as_str)
             .unwrap_or("unknown");
+
+        if rebuild_required {
+            match request_state {
+                "published" => {
+                    // The active generation is disposable, but the durable
+                    // terminal journal is still an authority boundary. Validate
+                    // all generation-independent terminal fields before turning
+                    // it back into source-authoritative work.
+                    require_terminal_state(&job, "published", "completed")?;
+                    let _ = required_generation(
+                        job.get("published_generation"),
+                        "durable terminal published generation",
+                    )?;
+                    let publication_receipt = published_refresh_receipt_for_recovery(&job)
+                        .context(
+                            "recover durable published source refresh receipt before rebuild",
+                        )?;
+                    validate_terminal_receipt_fields(&job, &publication_receipt)?;
+                    if let Some(outcome) = job.get("request_outcome") {
+                        let mut response = job.clone();
+                        response["receipt"] = outcome.clone();
+                        let request_receipt = published_refresh_receipt_for_recovery(&response)
+                            .context("recover durable logical source refresh outcome")?;
+                        if request_receipt == publication_receipt {
+                            bail!(
+                                "durable logical source refresh redundantly stores its publication receipt"
+                            );
+                        }
+                        validate_terminal_receipt_fields(&job, &request_receipt)?;
+                    }
+                    let _ = recover_terminal_attempt(&job, SourceBackedRefreshState::Published)?;
+                    return self.recover_published_rebuild(
+                        data_root,
+                        &job,
+                        queued_successors,
+                        recovered_continuations,
+                    );
+                }
+                "queued" | "running" => {
+                    require_active_state(&job, request_state)?;
+                    return self.recover_published_rebuild(
+                        data_root,
+                        &job,
+                        queued_successors,
+                        recovered_continuations,
+                    );
+                }
+                _ => {}
+            }
+        }
 
         if request_state == "published" {
             if let Some(verified) = verified.as_ref() {
@@ -233,6 +289,55 @@ impl CoreRefreshEngine {
         );
         trim_terminal_attempt_history(&mut state);
         Ok(())
+    }
+
+    fn recover_published_rebuild(
+        &self,
+        data_root: &Path,
+        job: &Value,
+        queued_successors: Vec<SourceBackedRefreshAttempt>,
+        recovered_continuations: BTreeMap<String, ManualAllContinuation>,
+    ) -> Result<bool> {
+        let mut rebuild_job = job.clone();
+        let object = rebuild_job
+            .as_object_mut()
+            .ok_or_else(|| anyhow!("durable source refresh job is not an object"))?;
+        object.insert(
+            "request_state".to_owned(),
+            Value::String("queued".to_owned()),
+        );
+        object.insert("status".to_owned(), Value::String("queued".to_owned()));
+        object.insert("previous_generation".to_owned(), Value::Null);
+        object.insert("published_generation".to_owned(), Value::Null);
+        for field in [
+            "outcome",
+            "receipt",
+            "request_outcome",
+            "generation_changed",
+            "finished_at_ms",
+            "last_error",
+            "failure_type",
+            "structured_outcome",
+        ] {
+            object.remove(field);
+        }
+
+        let root = recover_queued_root(&rebuild_job, None)?;
+        let request_id = root.request_id.clone();
+        let mut state = self.lock_state();
+        if state.active_request_id.is_some() || !state.pending_request_ids.is_empty() {
+            bail!("interrupted source refresh recovery conflicts with an active queue");
+        }
+        state.active_request_id = Some(request_id.clone());
+        state.attempts.push_back(root);
+        install_recovered_successors(&mut state, queued_successors)?;
+        state
+            .manual_all_continuations
+            .extend(recovered_continuations);
+        state.current_published_generation = None;
+        drop(state);
+        self.persist_job_status(data_root, &request_id)?;
+        Ok(true)
     }
 
     fn recover_legacy_published(
@@ -637,6 +742,16 @@ fn require_terminal_state(job: &Value, request_state: &str, status: &str) -> Res
         || job.get("status").and_then(Value::as_str) != Some(status)
     {
         bail!("durable source refresh terminal state is inconsistent");
+    }
+    Ok(())
+}
+
+fn require_active_state(job: &Value, request_state: &str) -> Result<()> {
+    if !matches!(request_state, "queued" | "running")
+        || job.get("request_state").and_then(Value::as_str) != Some(request_state)
+        || job.get("status").and_then(Value::as_str) != Some("running")
+    {
+        bail!("durable source refresh active state `{request_state}` has mismatched status");
     }
     Ok(())
 }

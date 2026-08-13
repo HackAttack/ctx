@@ -4,6 +4,22 @@ pub fn published_refresh_receipt_for_index(
     response: &Value,
     verified_index: &VerifiedIndex,
 ) -> Result<SourceBackedRefreshReceipt> {
+    parse_published_refresh_receipt(response, Some(verified_index))
+}
+
+/// Parses and validates the durable terminal receipt shape without requiring
+/// the disposable lexical generation to be readable. Recovery uses this
+/// before replacing an incompatible active generation.
+pub fn published_refresh_receipt_for_recovery(
+    response: &Value,
+) -> Result<SourceBackedRefreshReceipt> {
+    parse_published_refresh_receipt(response, None)
+}
+
+fn parse_published_refresh_receipt(
+    response: &Value,
+    verified_index: Option<&VerifiedIndex>,
+) -> Result<SourceBackedRefreshReceipt> {
     let value = response
         .get("receipt")
         .and_then(Value::as_object)
@@ -40,6 +56,19 @@ pub fn published_refresh_receipt_for_index(
         sources_with_rejections: required_usize(current_value, "current_sources_with_rejections")?,
         removed_source_count: required_usize(current_value, "removed_source_count")?,
     };
+    if current.source_count
+        != required_usize_from_value(
+            response.get("certified_source_count"),
+            "certified_source_count",
+        )?
+        || current.certified_source_bytes
+            != required_u64_from_value(
+                response.get("certified_source_bytes"),
+                "certified_source_bytes",
+            )?
+    {
+        bail!("published daemon source refresh receipt does not match its certified current facts");
+    }
     let selected_route_total = required_usize(value, "selected_route_total")?;
     let successful_route_total = required_usize(value, "successful_route_total")?;
     let route_results = required_route_results(value.get("route_results"))?;
@@ -49,12 +78,19 @@ pub fn published_refresh_receipt_for_index(
         .as_ref()
         .map(ExplicitSourceCatalogAuthority::route_lineages)
         .unwrap_or_default();
-    let catalog_route_bindings = required_catalog_route_bindings(
-        value.get("catalog_route_bindings"),
-        verified_index.manifest(),
-        &route_results,
-        &expected_catalog_lineages,
-    )?;
+    let catalog_route_bindings = match verified_index {
+        Some(index) => required_catalog_route_bindings(
+            value.get("catalog_route_bindings"),
+            index.manifest(),
+            &route_results,
+            &expected_catalog_lineages,
+        )?,
+        None => required_catalog_route_bindings_shape(
+            value.get("catalog_route_bindings"),
+            &route_results,
+            &expected_catalog_lineages,
+        )?,
+    };
     let actual_catalog_lineages = catalog_route_bindings
         .iter()
         .map(|binding| binding.catalog_lineage.clone())
@@ -131,24 +167,17 @@ pub fn published_refresh_receipt_for_index(
         );
     }
 
-    let manifest = verified_index.manifest();
-    let verified_current =
-        SourceBackedRefreshCurrent::from_sources(&manifest.sources, current.removed_source_count)?;
-    if current != verified_current
-        || current.source_count
-            != required_usize_from_value(
-                response.get("certified_source_count"),
-                "certified_source_count",
-            )?
-        || current.certified_source_bytes
-            != required_u64_from_value(
-                response.get("certified_source_bytes"),
-                "certified_source_bytes",
-            )?
-    {
-        bail!(
-            "published daemon source refresh receipt does not match the verified current generation"
-        );
+    if let Some(verified_index) = verified_index {
+        let manifest = verified_index.manifest();
+        let verified_current = SourceBackedRefreshCurrent::from_sources(
+            &manifest.sources,
+            current.removed_source_count,
+        )?;
+        if current != verified_current {
+            bail!(
+                "published daemon source refresh receipt does not match the verified current generation"
+            );
+        }
     }
 
     Ok(SourceBackedRefreshReceipt {
@@ -482,6 +511,70 @@ fn required_catalog_route_bindings(
             })
         })
         .collect()
+}
+
+fn required_catalog_route_bindings_shape(
+    value: Option<&Value>,
+    route_results: &[SourceBackedRefreshRouteResult],
+    expected_catalog_lineages: &BTreeSet<String>,
+) -> Result<Vec<ExplicitSourceCatalogRouteBinding>> {
+    let values = value
+        .ok_or_else(|| {
+            anyhow!("published daemon source refresh receipt has no catalog_route_bindings")
+        })?
+        .as_object()
+        .ok_or_else(|| {
+            anyhow!(
+                "published daemon source refresh receipt catalog_route_bindings must be an object"
+            )
+        })?;
+    let bindings = values
+        .iter()
+        .map(|(catalog_lineage, route_identity)| {
+            if !is_sha256_identity(catalog_lineage) {
+                bail!("published daemon source refresh catalog lineage is invalid");
+            }
+            let route_identity = route_identity.as_str().ok_or_else(|| {
+                anyhow!("published daemon source refresh catalog binding route is invalid")
+            })?;
+            if !is_sha256_identity(route_identity) {
+                bail!("published daemon source refresh catalog binding route is invalid");
+            }
+            let route_result = route_results
+                .iter()
+                .find(|result| result.route_identity == route_identity)
+                .ok_or_else(|| {
+                    anyhow!(
+                        "published daemon source refresh catalog binding route is absent from route_results"
+                    )
+                })?;
+            if !expected_catalog_lineages.contains(catalog_lineage)
+                && !matches!(
+                    route_result.outcome,
+                    SourceBackedRefreshRouteOutcome::Failed {
+                        carried_forward: false,
+                        ..
+                    }
+                )
+            {
+                bail!(
+                    "published daemon source refresh unretained catalog binding has no terminal cold failure"
+                );
+            }
+            Ok(ExplicitSourceCatalogRouteBinding {
+                catalog_lineage: catalog_lineage.clone(),
+                route_identity: route_identity.to_owned(),
+            })
+        })
+        .collect::<Result<Vec<_>>>()?;
+    let actual = bindings
+        .iter()
+        .map(|binding| binding.catalog_lineage.clone())
+        .collect::<BTreeSet<_>>();
+    if actual.len() != bindings.len() || !expected_catalog_lineages.is_subset(&actual) {
+        bail!("published daemon source refresh catalog bindings are inconsistent");
+    }
+    Ok(bindings)
 }
 
 fn required_route_source_failures(
