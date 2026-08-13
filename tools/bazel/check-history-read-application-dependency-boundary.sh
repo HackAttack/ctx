@@ -21,6 +21,25 @@ query() {
     "${repo_root}/scripts/bazelw" query "$1" --output=label
 }
 
+history_cli_search="${repo_root}/crates/ctx-history-cli/src/source_index/search.rs"
+history_cli_locate="${repo_root}/crates/ctx-history-cli/src/source_index/locate.rs"
+history_cli_show="${repo_root}/crates/ctx-history-cli/src/source_index/show.rs"
+history_cli_show_mcp="${repo_root}/crates/ctx-history-cli/src/source_index/show/mcp.rs"
+history_cli_list_events="${repo_root}/crates/ctx-history-cli/src/list_events.rs"
+history_cli_query_consumers=(
+  "${history_cli_search}"
+  "${history_cli_locate}"
+  "${history_cli_show}"
+  "${history_cli_show_mcp}"
+  "${history_cli_list_events}"
+)
+for consumer in "${history_cli_query_consumers[@]}"; do
+  if [[ ! -f "${consumer}" ]]; then
+    echo "expected history CLI query consumer is missing: ${consumer#"${repo_root}/"}" >&2
+    exit 1
+  fi
+done
+
 expected_direct="${tmp}/expected-direct.txt"
 printf '%s\n' \
   '//crates/ctx-history-core:lib' \
@@ -118,18 +137,18 @@ for authority in \
   fi
 done
 if grep -Eq 'PinnedHistoryQuery|\.search\(' \
-  "${repo_root}/crates/ctx-cli/src/commands/source_index/search.rs" \
+  "${history_cli_search}" \
   || grep -Eq 'PinnedHistoryQuery|\.locate\(' \
-    "${repo_root}/crates/ctx-cli/src/commands/source_index/locate.rs"; then
-  echo 'ctx-cli bypasses the application-owned search or locate authority' >&2
+    "${history_cli_locate}"; then
+  echo 'ctx-history-cli bypasses the application-owned search or locate authority' >&2
   exit 1
 fi
 if grep -Eq 'PinnedHistoryQuery|\.show_(event|session|session_page)\(' \
-  "${repo_root}/crates/ctx-cli/src/commands/source_index/show.rs" \
-  "${repo_root}/crates/ctx-cli/src/commands/source_index/show/mcp.rs" \
+  "${history_cli_show}" \
+  "${history_cli_show_mcp}" \
   || grep -Eq 'PinnedHistoryQuery|\.list_events(_page)?\(' \
-    "${repo_root}/crates/ctx-cli/src/commands/list/events.rs"; then
-  echo 'ctx-cli bypasses the application-owned show or list authority' >&2
+    "${history_cli_list_events}"; then
+  echo 'ctx-history-cli bypasses the application-owned show or list authority' >&2
   exit 1
 fi
 for contract in \
@@ -162,7 +181,7 @@ fi
 
 physical_lines="$(find "${query_root}/src" -type f -name '*.rs' -print0 \
   | xargs -0 awk 'END { print NR }')"
-expected_physical_lines=7303
+expected_physical_lines=7304
 if (( physical_lines >= 20000 )); then
   echo "ctx-history-read-application reached its 20,000-line hard stop: ${physical_lines}" >&2
   exit 1
