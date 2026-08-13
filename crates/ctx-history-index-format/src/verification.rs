@@ -410,6 +410,28 @@ pub fn verify_and_bind_publication_candidate(
     base: Option<&PinnedPublication>,
     base_authority: Option<(&Path, &ActiveGenerationPointer, &GenerationSlot)>,
 ) -> std::result::Result<VerifiedCandidatePublication, CandidatePublicationVerificationError> {
+    verify_and_bind_publication_candidate_with_progress(
+        candidate,
+        topology_authority,
+        base,
+        base_authority,
+        || Ok(()),
+    )
+}
+
+/// Verifies a writer candidate while exposing the exact boundary between its
+/// physical artifact audit and logical Core verification.
+#[doc(hidden)]
+pub fn verify_and_bind_publication_candidate_with_progress<P>(
+    candidate: OpenedPublicationCandidate<'_>,
+    topology_authority: Option<&ActiveGenerationPointer>,
+    base: Option<&PinnedPublication>,
+    base_authority: Option<(&Path, &ActiveGenerationPointer, &GenerationSlot)>,
+    report_logical_verification: P,
+) -> std::result::Result<VerifiedCandidatePublication, CandidatePublicationVerificationError>
+where
+    P: FnOnce() -> Result<()>,
+{
     let OpenedPublicationCandidate {
         index,
         publication,
@@ -448,6 +470,7 @@ pub fn verify_and_bind_publication_candidate(
         )
         .map_err(CandidatePublicationVerificationError::Reusable)?;
     }
+    report_logical_verification().map_err(CandidatePublicationVerificationError::Candidate)?;
     verify_publication_candidate(&searcher, &manifest, base.map(PinnedPublication::searcher))
         .map_err(CandidatePublicationVerificationError::Candidate)?;
     Ok(VerifiedCandidatePublication {

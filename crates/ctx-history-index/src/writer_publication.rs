@@ -1,7 +1,7 @@
 use super::*;
 use crate::merge_policy::deletion_density_exceeds_limit;
 use ctx_history_index_format::{
-    open_publication_candidate, verify_and_bind_publication_candidate,
+    open_publication_candidate, verify_and_bind_publication_candidate_with_progress,
     verify_and_bind_reusable_publication, CandidatePublicationVerificationError,
     ReusablePublicationError, VerifiedCandidatePublication,
 };
@@ -179,7 +179,7 @@ impl GenerationWriter {
         F: FnMut(RevalidationTarget<'_>) -> bool,
     {
         Ok(self
-            .commit_generation(revalidate, |_| false, |_| Ok(None), false)?
+            .commit_generation(revalidate, |_| false, |_| Ok(None), false, |_| Ok(()))?
             .into_receipt())
     }
 
@@ -203,6 +203,7 @@ impl GenerationWriter {
             |_| false,
             |context| metadata_factory(context).map(Some),
             true,
+            |_| Ok(()),
         )?
         .into_published_generation()
     }
@@ -219,7 +220,13 @@ impl GenerationWriter {
         I: FnMut(&CertifiedSourceInventory) -> bool,
     {
         Ok(self
-            .commit_generation(revalidate, revalidate_inventory, |_| Ok(None), false)?
+            .commit_generation(
+                revalidate,
+                revalidate_inventory,
+                |_| Ok(None),
+                false,
+                |_| Ok(()),
+            )?
             .into_receipt())
     }
 
@@ -241,21 +248,54 @@ impl GenerationWriter {
             revalidate_inventory,
             |context| metadata_factory(context).map(Some),
             true,
+            |_| Ok(()),
         )?
         .into_published_generation()
     }
 
-    fn commit_generation<F, I, M>(
+    /// Publishes with terminal revalidation, owner metadata, and real
+    /// whole-run publication stage transitions.
+    pub fn commit_with_complete_inventory_revalidation_and_publication_metadata_and_progress<
+        F,
+        I,
+        M,
+        P,
+    >(
+        self,
+        revalidate: F,
+        revalidate_inventory: I,
+        metadata_factory: M,
+        report_progress: P,
+    ) -> Result<PublishedGeneration>
+    where
+        F: FnMut(RevalidationTarget<'_>) -> bool,
+        I: FnMut(&CertifiedSourceInventory) -> bool,
+        M: FnOnce(PublicationMetadataContext<'_>) -> Result<Vec<u8>>,
+        P: FnMut(PublicationStage) -> Result<()>,
+    {
+        self.commit_generation(
+            revalidate,
+            revalidate_inventory,
+            |context| metadata_factory(context).map(Some),
+            true,
+            report_progress,
+        )?
+        .into_published_generation()
+    }
+
+    fn commit_generation<F, I, M, P>(
         mut self,
         mut revalidate: F,
         mut revalidate_inventory: I,
         metadata_factory: M,
         return_verified_index: bool,
+        mut report_progress: P,
     ) -> Result<CommitGenerationOutcome>
     where
         F: FnMut(RevalidationTarget<'_>) -> bool,
         I: FnMut(&CertifiedSourceInventory) -> bool,
         M: FnOnce(PublicationMetadataContext<'_>) -> Result<Option<Vec<u8>>>,
+        P: FnMut(PublicationStage) -> Result<()>,
     {
         if self.preflight_lock.is_none() {
             return Err(IndexError::WriterInvariant(
@@ -309,7 +349,10 @@ impl GenerationWriter {
                 }
             }
             let opstamp = self.base_opstamp;
-            return self.reused_generation(opstamp, return_verified_index);
+            report_progress(PublicationStage::PhysicalVerification)?;
+            let reused = self.reused_generation(opstamp, return_verified_index)?;
+            report_progress(PublicationStage::Activation)?;
+            return Ok(reused);
         }
 
         for pending in self.pending.values() {
@@ -329,7 +372,10 @@ impl GenerationWriter {
         )? {
             self.discard_candidate()?;
             let opstamp = self.base_opstamp;
-            return self.reused_generation(opstamp, return_verified_index);
+            report_progress(PublicationStage::PhysicalVerification)?;
+            let reused = self.reused_generation(opstamp, return_verified_index)?;
+            report_progress(PublicationStage::Activation)?;
+            return Ok(reused);
         }
 
         // Build opaque owner metadata from the complete staged manifest before
@@ -407,6 +453,7 @@ impl GenerationWriter {
         if let Some(hook) = self.before_candidate_commit.take() {
             hook(&candidate_path);
         }
+        report_progress(PublicationStage::Merging)?;
         let commit_result = prepared.commit();
         #[cfg(test)]
         let commit_result = if self.return_commit_error_after_visibility {
@@ -450,6 +497,7 @@ impl GenerationWriter {
         if let Some(hook) = self.before_pointer_switch.take() {
             hook(&candidate_path);
         }
+        report_progress(PublicationStage::Syncing)?;
         sync_generation(&candidate_path)?;
 
         let directory_name =
@@ -458,12 +506,14 @@ impl GenerationWriter {
                 .ok_or(IndexError::WriterInvariant(
                     "verified candidate has no generation directory",
                 ))?;
+        report_progress(PublicationStage::PhysicalVerification)?;
         let verified = self
             .verify_candidate(
                 &candidate_path,
                 &generation_id,
                 &directory_name,
                 &committed_candidate_generation,
+                || report_progress(PublicationStage::LogicalVerification),
             )
             .map_err(
                 |verification_error| match reconciled_commit_error.as_ref() {
@@ -491,6 +541,7 @@ impl GenerationWriter {
         if let Some(hook) = self.before_pointer_publication.take() {
             hook(&candidate_path);
         }
+        report_progress(PublicationStage::Activation)?;
         match publish_active_generation_pointer(&root, &next_pointer) {
             Ok(PointerPublicationOutcome::Durable) => {}
             Ok(PointerPublicationOutcome::CommittedVisible { detail }) => {
@@ -560,13 +611,17 @@ impl GenerationWriter {
         })
     }
 
-    fn verify_candidate(
+    fn verify_candidate<P>(
         &self,
         candidate_path: &Path,
         generation_id: &str,
         directory_name: &str,
         committed_candidate_generation: &BTreeMap<String, Option<u64>>,
-    ) -> Result<VerifiedCandidate> {
+        report_logical_verification: P,
+    ) -> Result<VerifiedCandidate>
+    where
+        P: FnOnce() -> Result<()>,
+    {
         let candidate = open_publication_candidate(&self.root, candidate_path)?;
         if candidate.generation_id() != generation_id {
             return Err(IndexError::ConcurrentGenerationChange);
@@ -582,13 +637,14 @@ impl GenerationWriter {
                 });
             }
         }
-        let publication = verify_and_bind_publication_candidate(
+        let publication = verify_and_bind_publication_candidate_with_progress(
             candidate,
             self.active_pointer.as_ref(),
             self.base_publication.as_ref(),
             self.active_pointer
                 .as_ref()
                 .map(|pointer| (&*self.root, pointer, pointer.active())),
+            report_logical_verification,
         )
         .map_err(|error| match error {
             CandidatePublicationVerificationError::Candidate(error) => error,

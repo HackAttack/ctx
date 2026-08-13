@@ -459,6 +459,9 @@ fn progress_json(operation: &'static str, line: &ProgressLine, elapsed: StdDurat
         "total_bytes": total_bytes,
         "percent": progress_line_percent(line),
         "elapsed_seconds": elapsed.as_secs_f64(),
+        // Compatibility: this documented legacy field remains byte-rate based.
+        // Source-backed consumers use estimated_remaining_millis below for the
+        // explicit whole-run time until the refreshed generation is usable.
         "eta_seconds": progress_line_eta_seconds(line, elapsed),
         "completed_files": line.completed_files,
         "total_files": line.total_files,
@@ -477,6 +480,8 @@ fn progress_json(operation: &'static str, line: &ProgressLine, elapsed: StdDurat
         value["processed_messages"] = json!(progress.processed_messages);
         value["processed_tool_calls"] = json!(progress.processed_tool_calls);
         value["processed_bytes"] = json!(progress.processed_bytes);
+        value["whole_run_stage"] = json!(progress.whole_run_stage.as_str());
+        value["estimated_remaining_millis"] = json!(progress.estimated_remaining_millis);
         value["refresh_elapsed_millis"] = json!(progress.elapsed_millis);
         value["current_source"] = json!(progress
             .current_source
@@ -679,6 +684,8 @@ mod tests {
                 processed_tool_calls: 96,
                 processed_bytes: 2_048,
                 elapsed_millis: Some(65_000),
+                whole_run_stage: crate::ui::RefreshWholeRunStage::Reading,
+                estimated_remaining_millis: None,
                 current_source_progress: Some(crate::ui::RefreshCurrentSourceProgress {
                     stage: crate::ui::RefreshCurrentSourceProgressStage::LogicalScan,
                     snapshot_pages_completed: None,
@@ -718,6 +725,8 @@ mod tests {
                 processed_tool_calls: 20,
                 processed_bytes: 777,
                 elapsed_millis: Some(2_000),
+                whole_run_stage: crate::ui::RefreshWholeRunStage::Reading,
+                estimated_remaining_millis: None,
                 current_source_progress: Some(crate::ui::RefreshCurrentSourceProgress {
                     stage: crate::ui::RefreshCurrentSourceProgressStage::OnlineBackup,
                     snapshot_pages_completed: None,
@@ -733,18 +742,32 @@ mod tests {
     }
 
     fn terminal_status() -> RefreshProgressSnapshot {
+        terminal_status_with(
+            crate::ui::RefreshRequestState::Published,
+            "completed",
+            "completed",
+            false,
+        )
+    }
+
+    fn terminal_status_with(
+        state: crate::ui::RefreshRequestState,
+        code: &str,
+        class: &str,
+        failure: bool,
+    ) -> RefreshProgressSnapshot {
         RefreshProgressSnapshot::new(
             Some("logical-request".to_owned()),
             crate::ui::RefreshStatusKind::Logical(crate::ui::RefreshLogicalStatus {
-                request_state: crate::ui::RefreshRequestState::Published,
+                request_state: state,
                 logical_phase: crate::ui::RefreshLogicalPhase::Terminal,
                 physical_attempt_id: "physical-attempt".to_owned(),
-                physical_attempt_state: crate::ui::RefreshRequestState::Published,
+                physical_attempt_state: state,
                 progress_owner_request_id: "physical-attempt".to_owned(),
-                progress_owner_attempt_state: crate::ui::RefreshRequestState::Published,
+                progress_owner_attempt_state: state,
                 structured_outcome: Some(Box::new(crate::ui::RefreshStructuredOutcome {
-                    code: "completed".to_owned(),
-                    class: "completed".to_owned(),
+                    code: code.to_owned(),
+                    class: class.to_owned(),
                     retryable: false,
                     affected_routes: Vec::new(),
                     retryable_routes: Vec::new(),
@@ -754,16 +777,25 @@ mod tests {
                     published_generation: None,
                     retry_advice: None,
                     detail: None,
-                    failure: false,
+                    failure,
                 })),
             }),
             crate::ui::RefreshProgress {
-                phase: "committed".to_owned(),
+                phase: if state == crate::ui::RefreshRequestState::Failed {
+                    "failed".to_owned()
+                } else {
+                    "committed".to_owned()
+                },
                 completed_sources: 2,
                 total_sources: 2,
                 current_source: None,
                 completed_records: None,
                 completed_bytes: None,
+                whole_run_stage: if state == crate::ui::RefreshRequestState::Failed {
+                    crate::ui::RefreshWholeRunStage::Failed
+                } else {
+                    crate::ui::RefreshWholeRunStage::Complete
+                },
                 ..Default::default()
             },
             true,
@@ -891,7 +923,7 @@ mod tests {
         let output = stderr_capture.text();
         let delta = &output[first_len..];
 
-        assert!(output.contains("Elapsed          1s"), "{output:?}");
+        assert!(output.contains("Elapsed              1s"), "{output:?}");
         assert!(!delta.is_empty());
         assert!(!delta.contains("\x1b[2J"), "{delta:?}");
         assert!(!delta.contains("\x1b[H"), "{delta:?}");
@@ -968,11 +1000,11 @@ mod tests {
 
         assert_eq!(
             active,
-            r#"{"agent_histories":["Codex"],"completed_bytes":256,"completed_files":null,"completed_sources":1,"current_source":"/explicit.sqlite","current_source_progress":{"snapshot_bytes_completed":256,"snapshot_bytes_total":512,"stage":"online_backup"},"done":false,"elapsed_seconds":2.0,"eta_seconds":2.0,"imported_events":100,"logical_phase":"attached","logical_request_id":"explicit-import-request","message":"Refreshing history with shared work: /explicit.sqlite (1 / 3).","operation":"import","percent":50.0,"phase":"online_backup","physical_attempt_id":"shared-physical-attempt","physical_attempt_state":"running","processed_bytes":777,"processed_messages":80,"processed_sessions":8,"processed_tool_calls":20,"progress_owner_attempt_state":"running","progress_owner_request_id":"shared-physical-attempt","refresh_elapsed_millis":2000,"request_id":"explicit-import-request","request_state":"running","source_completed_bytes":777,"source_completed_records":100,"total_bytes":512,"total_files":null,"total_sources":3,"total_sources_known":true,"type":"ctx_progress"}"#
+            r#"{"agent_histories":["Codex"],"completed_bytes":256,"completed_files":null,"completed_sources":1,"current_source":"/explicit.sqlite","current_source_progress":{"snapshot_bytes_completed":256,"snapshot_bytes_total":512,"stage":"online_backup"},"done":false,"elapsed_seconds":2.0,"estimated_remaining_millis":null,"eta_seconds":2.0,"imported_events":100,"logical_phase":"attached","logical_request_id":"explicit-import-request","message":"Refreshing history with shared work: /explicit.sqlite (1 / 3).","operation":"import","percent":50.0,"phase":"online_backup","physical_attempt_id":"shared-physical-attempt","physical_attempt_state":"running","processed_bytes":777,"processed_messages":80,"processed_sessions":8,"processed_tool_calls":20,"progress_owner_attempt_state":"running","progress_owner_request_id":"shared-physical-attempt","refresh_elapsed_millis":2000,"request_id":"explicit-import-request","request_state":"running","source_completed_bytes":777,"source_completed_records":100,"total_bytes":512,"total_files":null,"total_sources":3,"total_sources_known":true,"type":"ctx_progress","whole_run_stage":"reading"}"#
         );
         assert_eq!(
             terminal,
-            r#"{"agent_histories":[],"completed_bytes":4096,"completed_files":null,"completed_sources":2,"current_source":null,"current_source_progress":null,"done":true,"elapsed_seconds":2.0,"eta_seconds":null,"imported_events":null,"logical_phase":"terminal","logical_request_id":"logical-request","message":"History refresh complete (2 / 2).","operation":"import","percent":100.0,"phase":"published","physical_attempt_id":"physical-attempt","physical_attempt_state":"published","processed_bytes":0,"processed_messages":0,"processed_sessions":0,"processed_tool_calls":0,"progress_owner_attempt_state":"published","progress_owner_request_id":"physical-attempt","refresh_elapsed_millis":null,"request_id":"logical-request","request_state":"published","source_completed_bytes":null,"source_completed_records":null,"structured_outcome":{"affected_routes":[],"blocked_routes":[],"class":"completed","code":"completed","physical_attempt_id":"physical-attempt","retryable":false,"retryable_routes":[]},"total_bytes":4096,"total_files":null,"total_sources":2,"total_sources_known":true,"type":"ctx_progress"}"#
+            r#"{"agent_histories":[],"completed_bytes":4096,"completed_files":null,"completed_sources":2,"current_source":null,"current_source_progress":null,"done":true,"elapsed_seconds":2.0,"estimated_remaining_millis":null,"eta_seconds":null,"imported_events":null,"logical_phase":"terminal","logical_request_id":"logical-request","message":"History refresh complete (2 / 2).","operation":"import","percent":100.0,"phase":"published","physical_attempt_id":"physical-attempt","physical_attempt_state":"published","processed_bytes":0,"processed_messages":0,"processed_sessions":0,"processed_tool_calls":0,"progress_owner_attempt_state":"published","progress_owner_request_id":"physical-attempt","refresh_elapsed_millis":null,"request_id":"logical-request","request_state":"published","source_completed_bytes":null,"source_completed_records":null,"structured_outcome":{"affected_routes":[],"blocked_routes":[],"class":"completed","code":"completed","physical_attempt_id":"physical-attempt","retryable":false,"retryable_routes":[]},"total_bytes":4096,"total_files":null,"total_sources":2,"total_sources_known":true,"type":"ctx_progress","whole_run_stage":"complete"}"#
         );
 
         let events = [&active, &terminal]
@@ -992,9 +1024,61 @@ mod tests {
         );
         assert_eq!(events[0]["percent"], 50.0);
         assert_eq!(events[0]["eta_seconds"], 2.0);
+        assert_eq!(
+            events[0]["estimated_remaining_millis"],
+            serde_json::Value::Null
+        );
         assert_ne!(
             events[0]["logical_request_id"],
             events[0]["progress_owner_request_id"]
+        );
+    }
+
+    #[test]
+    fn setup_jsonl_holds_legacy_source_eta_but_never_promotes_it_to_whole_run_eta() {
+        let value: serde_json::Value = serde_json::from_str(&progress_json(
+            "setup",
+            &source_refresh_line(active_transfer_status(), 0),
+            StdDuration::from_secs(2),
+        ))
+        .unwrap();
+
+        // eta_seconds is the documented legacy byte-rate field. Preserve it
+        // for compatibility; the explicit whole-run field is authoritative for
+        // time until setup is usable.
+        assert_eq!(value["eta_seconds"], 2.0);
+        assert_eq!(value["whole_run_stage"], "reading");
+        assert_eq!(value["estimated_remaining_millis"], serde_json::Value::Null);
+    }
+
+    #[test]
+    fn failed_setup_snapshot_is_failed_in_json_and_live_presentation() {
+        let mut snapshot = terminal_status_with(
+            crate::ui::RefreshRequestState::Failed,
+            "source_refresh_failed",
+            "internal",
+            true,
+        );
+        snapshot.use_setup_live_presentation();
+        let context = crate::ui::RenderContext::for_test(crate::ui::TestContext::tty(
+            crate::ui::StreamKind::Stderr,
+            80,
+        ));
+        let rendered = refresh_progress(&context, &snapshot).render_plain();
+        assert!(
+            rendered.starts_with("History refresh failed\n"),
+            "{rendered}"
+        );
+        assert!(!rendered.contains("Preparing"), "{rendered}");
+
+        let json = progress_json(
+            "setup",
+            &source_refresh_line(snapshot, 4_096),
+            StdDuration::from_secs(2),
+        );
+        assert_eq!(
+            json,
+            r#"{"agent_histories":[],"completed_bytes":4096,"completed_files":null,"completed_sources":2,"current_source":null,"current_source_progress":null,"done":true,"elapsed_seconds":2.0,"estimated_remaining_millis":null,"eta_seconds":null,"imported_events":null,"logical_phase":"terminal","logical_request_id":"logical-request","message":"History refresh failed (2 / 2).","operation":"setup","percent":100.0,"phase":"failed","physical_attempt_id":"physical-attempt","physical_attempt_state":"failed","processed_bytes":0,"processed_messages":0,"processed_sessions":0,"processed_tool_calls":0,"progress_owner_attempt_state":"failed","progress_owner_request_id":"physical-attempt","refresh_elapsed_millis":null,"request_id":"logical-request","request_state":"failed","source_completed_bytes":null,"source_completed_records":null,"structured_outcome":{"affected_routes":[],"blocked_routes":[],"class":"internal","code":"source_refresh_failed","physical_attempt_id":"physical-attempt","retryable":false,"retryable_routes":[]},"total_bytes":4096,"total_files":null,"total_sources":2,"total_sources_known":true,"type":"ctx_progress","whole_run_stage":"failed"}"#
         );
     }
 

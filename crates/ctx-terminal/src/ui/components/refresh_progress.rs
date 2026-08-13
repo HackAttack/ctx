@@ -6,7 +6,7 @@ use super::{fields, fields::fields_with_label_width, progress, Field, Progress};
 use crate::ui::{Document, RenderContext};
 
 const MAX_DYNAMIC_TEXT_BYTES: usize = 256;
-const REFRESH_TABLE_LABEL_WIDTH: usize = "Agent histories".len();
+const REFRESH_TABLE_LABEL_WIDTH: usize = "Estimated remaining".len();
 const MAX_PROGRESS_BAR_WIDTH: usize = 48;
 const PROGRESS_PULSE_WIDTH: usize = 8;
 
@@ -67,6 +67,14 @@ impl RefreshProgressSnapshot {
 
     pub const fn total_sources_known(&self) -> bool {
         self.total_sources_known
+    }
+
+    pub const fn whole_run_stage(&self) -> RefreshWholeRunStage {
+        self.progress.whole_run_stage
+    }
+
+    pub const fn estimated_remaining_millis(&self) -> Option<u64> {
+        self.progress.estimated_remaining_millis
     }
 
     pub(crate) fn discovery_complete(&self) -> bool {
@@ -295,6 +303,8 @@ pub struct RefreshProgress {
     pub processed_tool_calls: u64,
     pub processed_bytes: u64,
     pub elapsed_millis: Option<u64>,
+    pub whole_run_stage: RefreshWholeRunStage,
+    pub estimated_remaining_millis: Option<u64>,
     pub current_source_progress: Option<RefreshCurrentSourceProgress>,
 }
 
@@ -313,7 +323,39 @@ impl Default for RefreshProgress {
             processed_tool_calls: 0,
             processed_bytes: 0,
             elapsed_millis: None,
+            whole_run_stage: RefreshWholeRunStage::Preparing,
+            estimated_remaining_millis: None,
             current_source_progress: None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum RefreshWholeRunStage {
+    #[default]
+    Preparing,
+    Reading,
+    Merging,
+    Syncing,
+    PhysicalVerification,
+    LogicalVerification,
+    Activation,
+    Complete,
+    Failed,
+}
+
+impl RefreshWholeRunStage {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Preparing => "preparing",
+            Self::Reading => "reading",
+            Self::Merging => "merging",
+            Self::Syncing => "syncing",
+            Self::PhysicalVerification => "physical_verification",
+            Self::LogicalVerification => "logical_verification",
+            Self::Activation => "activation",
+            Self::Complete => "complete",
+            Self::Failed => "failed",
         }
     }
 }
@@ -489,9 +531,12 @@ fn setup_live_refresh_progress(
         .map(format_duration_millis)
         .unwrap_or_else(|| "measuring".to_owned());
     let remaining = if snapshot.is_terminal() {
-        "complete".to_owned()
+        "Complete".to_owned()
     } else {
-        "estimating".to_owned()
+        snapshot
+            .estimated_remaining_millis()
+            .map(format_duration_millis)
+            .unwrap_or_else(|| "Estimating".to_owned())
     };
     let Some(histories) = snapshot.presentation_agent_histories.as_ref() else {
         return document;
@@ -510,7 +555,7 @@ fn setup_live_refresh_progress(
         Field::new("Tool calls", &tool_calls),
         Field::new("Data scanned", &scanned),
         Field::new("Elapsed", &elapsed),
-        Field::new("Remaining", &remaining),
+        Field::new("Estimated remaining", &remaining),
     ];
     document.push_blank();
     document.append(fields_with_label_width(
@@ -556,28 +601,33 @@ fn human_refresh_label(snapshot: &RefreshProgressSnapshot) -> &'static str {
             RefreshRequestState::AdmissionPending | RefreshRequestState::Queued => {
                 "Preparing your history"
             }
-            RefreshRequestState::Running => human_processing_label(&snapshot.progress.phase),
+            RefreshRequestState::Running => whole_run_label(snapshot.whole_run_stage()),
             RefreshRequestState::Published => "History refresh complete",
             RefreshRequestState::Failed => "History refresh failed",
         },
         RefreshStatusKind::Logical(logical) => match logical.logical_phase {
             RefreshLogicalPhase::Waiting
-            | RefreshLogicalPhase::Attached
             | RefreshLogicalPhase::CoverageCheck
             | RefreshLogicalPhase::ExactSuccessor => "Preparing your history",
-            RefreshLogicalPhase::Direct => human_processing_label(&snapshot.progress.phase),
+            RefreshLogicalPhase::Attached | RefreshLogicalPhase::Direct => {
+                whole_run_label(snapshot.whole_run_stage())
+            }
             RefreshLogicalPhase::Terminal => terminal_label(logical),
         },
     }
 }
 
-fn human_processing_label(phase: &str) -> &'static str {
-    match phase {
-        "queued" | "pending" | "discovering" => "Preparing your history",
-        "scanning_provider_sources" => "Indexing your agent history",
-        "verifying" => "Verifying agent history",
-        "committing" | "committed" | "publishing" => "Finalizing search index",
-        _ => "Reading your agent history",
+fn whole_run_label(stage: RefreshWholeRunStage) -> &'static str {
+    match stage {
+        RefreshWholeRunStage::Preparing => "Preparing your history",
+        RefreshWholeRunStage::Reading => "Reading your agent history",
+        RefreshWholeRunStage::Merging => "Merging search index",
+        RefreshWholeRunStage::Syncing => "Syncing search index",
+        RefreshWholeRunStage::PhysicalVerification => "Verifying search index files",
+        RefreshWholeRunStage::LogicalVerification => "Verifying indexed history",
+        RefreshWholeRunStage::Activation => "Activating search index",
+        RefreshWholeRunStage::Complete => "History refresh complete",
+        RefreshWholeRunStage::Failed => "History refresh failed",
     }
 }
 
@@ -714,6 +764,12 @@ mod tests {
                 current_source: None,
                 completed_records: None,
                 completed_bytes: None,
+                whole_run_stage: match physical_phase {
+                    "queued" | "pending" | "discovering" => RefreshWholeRunStage::Preparing,
+                    "committing" => RefreshWholeRunStage::Merging,
+                    "committed" | "publishing" => RefreshWholeRunStage::Activation,
+                    _ => RefreshWholeRunStage::Reading,
+                },
                 ..Default::default()
             },
             known,
@@ -830,16 +886,16 @@ mod tests {
                 "Reading your agent history\n",
                 "──────────────────────────────━━━━━━━━──────────\n",
                 "\n",
-                "Agent histories  Codex\n",
-                "                 Claude\n",
-                "                 Gemini\n",
+                "Agent histories      Codex\n",
+                "                     Claude\n",
+                "                     Gemini\n",
                 "\n",
-                "Sessions         1,123\n",
-                "Messages         72,456\n",
-                "Tool calls       31,009\n",
-                "Data scanned     8.2 GiB\n",
-                "Elapsed          2m 05s\n",
-                "Remaining        estimating\n",
+                "Sessions             1,123\n",
+                "Messages             72,456\n",
+                "Tool calls           31,009\n",
+                "Data scanned         8.2 GiB\n",
+                "Elapsed              2m 05s\n",
+                "Estimated remaining  Estimating\n",
             )
         );
         for internal in ["Logical", "Physical", "owner", "Source", "3 / 4"] {
@@ -886,7 +942,7 @@ mod tests {
                 "31,009",
                 "8.2 GiB",
                 "2m 05s",
-                "estimating",
+                "Estimating",
             ] {
                 assert_eq!(
                     rendered.matches(value).count(),
@@ -895,8 +951,19 @@ mod tests {
                 );
             }
 
-            assert!(rendered.contains("Agent histories  Codex"), "{rendered}");
-            assert!(rendered.contains("Sessions         1,123"), "{rendered}");
+            if width >= 48 {
+                assert!(
+                    rendered.contains("Agent histories      Codex"),
+                    "{rendered}"
+                );
+                assert!(
+                    rendered.contains("Sessions             1,123"),
+                    "{rendered}"
+                );
+            } else {
+                assert!(rendered.contains("Agent histories\n  Codex"), "{rendered}");
+                assert!(rendered.contains("Sessions\n  1,123"), "{rendered}");
+            }
         }
     }
 
@@ -952,9 +1019,9 @@ mod tests {
         let second = refresh_progress(&context, &snapshot).render_plain();
 
         assert_ne!(first.lines().nth(1), second.lines().nth(1));
-        assert!(first.contains("Elapsed          0s"), "{first}");
-        assert!(second.contains("Elapsed          1s"), "{second}");
-        assert!(second.contains("Sessions         7"), "{second}");
+        assert!(first.contains("Elapsed              0s"), "{first}");
+        assert!(second.contains("Elapsed              1s"), "{second}");
+        assert!(second.contains("Sessions             7"), "{second}");
     }
 
     #[test]
@@ -968,17 +1035,53 @@ mod tests {
     }
 
     #[test]
-    fn setup_live_local_phases_use_conservative_non_publishing_names() {
-        for (phase, expected) in [
-            ("refreshing", "Reading your agent history"),
-            ("scanning_provider_sources", "Indexing your agent history"),
-            ("verifying", "Verifying agent history"),
-            ("committing", "Finalizing search index"),
-            ("committed", "Finalizing search index"),
+    fn setup_live_maps_every_whole_run_stage_truthfully() {
+        for (stage, expected) in [
+            (RefreshWholeRunStage::Preparing, "Preparing your history"),
+            (RefreshWholeRunStage::Reading, "Reading your agent history"),
+            (RefreshWholeRunStage::Merging, "Merging search index"),
+            (RefreshWholeRunStage::Syncing, "Syncing search index"),
+            (
+                RefreshWholeRunStage::PhysicalVerification,
+                "Verifying search index files",
+            ),
+            (
+                RefreshWholeRunStage::LogicalVerification,
+                "Verifying indexed history",
+            ),
+            (RefreshWholeRunStage::Activation, "Activating search index"),
+            (RefreshWholeRunStage::Complete, "History refresh complete"),
+            (RefreshWholeRunStage::Failed, "History refresh failed"),
         ] {
-            let snapshot = active_status(RefreshLogicalPhase::Direct, phase, true, 1);
+            let mut snapshot = active_status(RefreshLogicalPhase::Direct, "refreshing", true, 1);
+            snapshot.progress.whole_run_stage = stage;
             assert_eq!(human_refresh_label(&snapshot), expected);
         }
+    }
+
+    #[test]
+    fn setup_live_never_substitutes_source_byte_progress_for_whole_run_eta() {
+        let context = RenderContext::for_test(TestContext::tty(StreamKind::Stderr, 80));
+        let mut snapshot = active_status(RefreshLogicalPhase::Direct, "refreshing", true, 1);
+        snapshot.progress.current_source_progress = Some(RefreshCurrentSourceProgress {
+            stage: RefreshCurrentSourceProgressStage::OnlineBackup,
+            snapshot_pages_completed: None,
+            snapshot_pages_total: None,
+            snapshot_bytes_completed: Some(1),
+            snapshot_bytes_total: Some(2),
+            logical_rows_scanned: None,
+            logical_certified_bytes: None,
+        });
+        snapshot.progress.estimated_remaining_millis = None;
+        snapshot.set_presentation_agent_histories(Some(vec!["Codex".to_owned()]));
+        snapshot.use_setup_live_presentation();
+
+        let rendered = refresh_progress(&context, &snapshot).render_plain();
+        assert!(
+            rendered.contains("Estimated remaining  Estimating"),
+            "{rendered}"
+        );
+        assert!(!rendered.contains("50%"), "{rendered}");
     }
 
     #[test]

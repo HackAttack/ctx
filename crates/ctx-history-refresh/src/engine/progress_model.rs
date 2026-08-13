@@ -1,5 +1,51 @@
 use super::*;
 
+/// Setup-visible work remaining before a verified, durable Core generation is
+/// usable. These stages do not imply one shared numerator or denominator.
+#[derive(Debug, Clone, Copy, Default, Eq, PartialEq)]
+pub enum SourceBackedRefreshStage {
+    #[default]
+    Preparing,
+    Reading,
+    Merging,
+    Syncing,
+    PhysicalVerification,
+    LogicalVerification,
+    Activation,
+    Complete,
+    Failed,
+}
+
+impl SourceBackedRefreshStage {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Preparing => "preparing",
+            Self::Reading => "reading",
+            Self::Merging => "merging",
+            Self::Syncing => "syncing",
+            Self::PhysicalVerification => "physical_verification",
+            Self::LogicalVerification => "logical_verification",
+            Self::Activation => "activation",
+            Self::Complete => "complete",
+            Self::Failed => "failed",
+        }
+    }
+
+    pub(super) fn from_phase(phase: &str) -> Self {
+        match phase {
+            "parsing" | "reading" | "refreshing" | "verifying" => Self::Reading,
+            "committing" | "merging" => Self::Merging,
+            "syncing" => Self::Syncing,
+            "physical_verification" => Self::PhysicalVerification,
+            "logical_verification" => Self::LogicalVerification,
+            "activation" | "committed" | "persisting_terminal" => Self::Activation,
+            "complete" | "published" => Self::Complete,
+            "failed" => Self::Failed,
+            _ => Self::Preparing,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
 pub(super) enum SourceBackedRefreshState {
     AdmissionPending,
@@ -62,9 +108,25 @@ impl Default for SourceBackedRefreshProgress {
 }
 
 impl SourceBackedRefreshProgress {
+    /// Typed setup stage for the whole path to a usable Core generation.
+    pub fn whole_run_stage(&self) -> SourceBackedRefreshStage {
+        SourceBackedRefreshStage::from_phase(&self.phase)
+    }
+
+    /// Time until the generation is usable, never time until source reading
+    /// alone finishes.
+    ///
+    /// This remains `None` until direct remaining-work counters exist for all
+    /// later stages or a per-stage model is trained and qualified across CPU,
+    /// storage contention, and corpus shapes.
+    pub const fn estimated_remaining_millis(&self) -> Option<u64> {
+        None
+    }
+
     pub(super) fn to_json_with_total_known(&self, total_sources_known: bool) -> Value {
-        compact_json(json!({
+        let mut value = compact_json(json!({
             "phase": self.phase,
+            "whole_run_stage": self.whole_run_stage().as_str(),
             "completed_sources": self.completed_sources,
             "total_sources": self.total_sources,
             "total_sources_known": total_sources_known,
@@ -79,7 +141,11 @@ impl SourceBackedRefreshProgress {
             "elapsed_millis": self.elapsed_millis,
             "current_source_progress": self.current_source_progress
                 .map(SourceBackedCurrentSourceProgress::to_json),
-        }))
+        }));
+        // Preserve an explicit unknown whole-run estimate. Consumers must not
+        // substitute source-stage progress for this null.
+        value["estimated_remaining_millis"] = json!(self.estimated_remaining_millis());
+        value
     }
 
     pub fn from_status_json(response: &Value) -> Result<Self> {
@@ -173,9 +239,10 @@ fn optional_progress_u64(
 ) -> Result<Option<u64>> {
     match fields.get(field) {
         None | Some(Value::Null) => Ok(None),
-        Some(value) => value.as_u64().map(Some).ok_or_else(|| {
-            anyhow!("daemon source refresh current-source progress has an invalid {field}")
-        }),
+        Some(value) => value
+            .as_u64()
+            .map(Some)
+            .ok_or_else(|| anyhow!("daemon source refresh progress has an invalid {field}")),
     }
 }
 
@@ -223,5 +290,47 @@ mod compatibility_tests {
         assert!(!status_progress_total_sources_known(&legacy_unknown));
         assert!(status_progress_total_sources_known(&legacy_known));
         assert!(status_progress_total_sources_known(&additive_known_zero));
+    }
+
+    #[test]
+    fn whole_run_contract_is_additive_and_unknown_eta_stays_explicit() {
+        let legacy = json!({
+            "progress": {
+                "phase": "verifying",
+                "completed_sources": 2,
+                "total_sources": 2,
+            }
+        });
+        let parsed = SourceBackedRefreshProgress::from_status_json(&legacy).unwrap();
+        assert_eq!(parsed.whole_run_stage(), SourceBackedRefreshStage::Reading);
+        assert_eq!(parsed.estimated_remaining_millis(), None);
+
+        let progress = SourceBackedRefreshProgress {
+            phase: "physical_verification".to_owned(),
+            ..Default::default()
+        };
+        let json = progress.to_json_with_total_known(true);
+        assert_eq!(json["whole_run_stage"], "physical_verification");
+        assert_eq!(json["estimated_remaining_millis"], Value::Null);
+        assert_eq!(
+            SourceBackedRefreshProgress::from_status_json(&json!({ "progress": json })).unwrap(),
+            progress
+        );
+
+        let completed = SourceBackedRefreshProgress {
+            phase: "published".to_owned(),
+            ..Default::default()
+        }
+        .to_json_with_total_known(true);
+        assert_eq!(completed["whole_run_stage"], "complete");
+        assert_eq!(completed["estimated_remaining_millis"], Value::Null);
+
+        let failed = SourceBackedRefreshProgress {
+            phase: "failed".to_owned(),
+            ..Default::default()
+        }
+        .to_json_with_total_known(true);
+        assert_eq!(failed["whole_run_stage"], "failed");
+        assert_eq!(failed["estimated_remaining_millis"], Value::Null);
     }
 }

@@ -37,6 +37,41 @@ fn publish_with_metadata(
         .unwrap()
 }
 
+#[test]
+fn mutating_publication_reports_real_stage_boundaries_in_order() {
+    let temp = tempdir().unwrap();
+    let source = source("publication-progress.jsonl");
+    let inventory = complete_inventory(&source, 1, vec![source.clone()]);
+    let mut writer = staged_replacement(temp.path(), &source, 1, "progress boundaries");
+    writer
+        .certify_complete_inventory(inventory.clone())
+        .unwrap();
+    let mut stages = Vec::new();
+
+    writer
+        .commit_with_complete_inventory_revalidation_and_publication_metadata_and_progress(
+            |_| true,
+            |current| current == &inventory,
+            |_| Ok(Vec::new()),
+            |stage| {
+                stages.push(stage);
+                Ok(())
+            },
+        )
+        .unwrap();
+
+    assert_eq!(
+        stages,
+        vec![
+            PublicationStage::Merging,
+            PublicationStage::Syncing,
+            PublicationStage::PhysicalVerification,
+            PublicationStage::LogicalVerification,
+            PublicationStage::Activation,
+        ]
+    );
+}
+
 fn active_payload(root: &Path) -> String {
     let pointer = load_active_generation_pointer(root).unwrap().unwrap();
     open_slot_index(root, pointer.active())
@@ -268,23 +303,35 @@ fn exact_reuse_skips_factory_and_returns_old_metadata_as_reused() {
         .unwrap();
     stage_exact_replay(&mut replay, &source);
     let factory_called = Cell::new(false);
+    let mut stages = Vec::new();
 
     crate::publication::reset_verification_activity();
     ctx_history_index_query::reset_verified_index_reopen_count();
     ctx_history_index_query::reset_verified_index_publication_construction_count();
     let reused = replay
-        .commit_with_complete_inventory_revalidation_and_publication_metadata(
+        .commit_with_complete_inventory_revalidation_and_publication_metadata_and_progress(
             |_| true,
             |current| current == &inventory,
             |_| {
                 factory_called.set(true);
                 Ok(b"request-two".to_vec())
             },
+            |stage| {
+                stages.push(stage);
+                Ok(())
+            },
         )
         .unwrap();
 
     assert!(!factory_called.get());
     assert_eq!(reused.disposition(), PublicationDisposition::Reused);
+    assert_eq!(
+        stages,
+        vec![
+            PublicationStage::PhysicalVerification,
+            PublicationStage::Activation,
+        ]
+    );
     assert_eq!(
         reused.receipt().generation_id,
         initial.receipt().generation_id

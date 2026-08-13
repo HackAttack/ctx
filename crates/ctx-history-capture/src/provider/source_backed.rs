@@ -26,7 +26,7 @@ use ctx_history_core::{
 };
 #[cfg(test)]
 use ctx_history_core::{CertifiedSourceAppend, CertifiedSourceDeletion};
-use ctx_history_index::{IndexError, WriterOptions};
+use ctx_history_index::{IndexError, PublicationStage, WriterOptions};
 use sha2::{Digest, Sha256};
 
 use super::codex::nativepath::CodexGenerationNormalizationCoordinatorV0;

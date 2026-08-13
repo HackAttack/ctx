@@ -80,12 +80,12 @@ pub use stored_document::{
 #[doc(hidden)]
 pub use verification::{
     load_active_publication_authority, open_pinned_publication, open_publication_candidate,
-    verify_and_bind_publication_candidate, verify_and_bind_reusable_publication,
-    verify_complete_searcher, verify_pinned_publication_authority, verify_publication_candidate,
-    verify_searcher, verify_searcher_structure, ActivePublicationAuthority,
-    CandidatePublicationVerificationError, EmptyPublicationIndex, OpenedPinnedPublication,
-    OpenedPublicationCandidate, PinnedPublication, ReusablePublicationError,
-    VerifiedCandidatePublication, VerifiedPublication,
+    verify_and_bind_publication_candidate, verify_and_bind_publication_candidate_with_progress,
+    verify_and_bind_reusable_publication, verify_complete_searcher,
+    verify_pinned_publication_authority, verify_publication_candidate, verify_searcher,
+    verify_searcher_structure, ActivePublicationAuthority, CandidatePublicationVerificationError,
+    EmptyPublicationIndex, OpenedPinnedPublication, OpenedPublicationCandidate, PinnedPublication,
+    ReusablePublicationError, VerifiedCandidatePublication, VerifiedPublication,
 };
 #[doc(hidden)]
 pub use verification_record::{

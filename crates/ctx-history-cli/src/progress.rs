@@ -7,11 +7,12 @@ use ctx_history_refresh::{
     RefreshStatus, RefreshStatusKind as EngineStatusKind,
     SourceBackedCurrentSourceProgress as EngineCurrentSourceProgress,
     SourceBackedCurrentSourceProgressStage as EngineCurrentSourceProgressStage,
+    SourceBackedRefreshStage as EngineWholeRunStage,
 };
 use ctx_terminal::{
     RefreshCurrentSourceProgress, RefreshCurrentSourceProgressStage, RefreshLogicalPhase,
     RefreshLogicalStatus, RefreshProgress, RefreshProgressSnapshot, RefreshRequestState,
-    RefreshStatusKind, RefreshStructuredOutcome, Ui,
+    RefreshStatusKind, RefreshStructuredOutcome, RefreshWholeRunStage, Ui,
 };
 
 pub use ctx_terminal::{format_bytes, format_count, ProgressWriterError};
@@ -110,6 +111,8 @@ pub fn presentation_snapshot(status: &RefreshStatus) -> anyhow::Result<RefreshPr
         }),
     };
     let progress = status.progress()?;
+    let whole_run_stage = presentation_whole_run_stage(status.whole_run_stage()?);
+    let estimated_remaining_millis = status.estimated_remaining_millis()?;
     Ok(RefreshProgressSnapshot::new(
         status.request_id().map(ToOwned::to_owned),
         kind,
@@ -130,12 +133,28 @@ pub fn presentation_snapshot(status: &RefreshStatus) -> anyhow::Result<RefreshPr
             processed_tool_calls: progress.processed_tool_calls,
             processed_bytes: progress.processed_bytes,
             elapsed_millis: progress.elapsed_millis,
+            whole_run_stage,
+            estimated_remaining_millis,
             current_source_progress: progress
                 .current_source_progress
                 .map(presentation_current_source_progress),
         },
         status.total_sources_known()?,
     ))
+}
+
+fn presentation_whole_run_stage(value: EngineWholeRunStage) -> RefreshWholeRunStage {
+    match value {
+        EngineWholeRunStage::Preparing => RefreshWholeRunStage::Preparing,
+        EngineWholeRunStage::Reading => RefreshWholeRunStage::Reading,
+        EngineWholeRunStage::Merging => RefreshWholeRunStage::Merging,
+        EngineWholeRunStage::Syncing => RefreshWholeRunStage::Syncing,
+        EngineWholeRunStage::PhysicalVerification => RefreshWholeRunStage::PhysicalVerification,
+        EngineWholeRunStage::LogicalVerification => RefreshWholeRunStage::LogicalVerification,
+        EngineWholeRunStage::Activation => RefreshWholeRunStage::Activation,
+        EngineWholeRunStage::Complete => RefreshWholeRunStage::Complete,
+        EngineWholeRunStage::Failed => RefreshWholeRunStage::Failed,
+    }
 }
 
 fn provider_display_name(provider: &str) -> String {
@@ -317,5 +336,42 @@ mod tests {
                 "snapshot_bytes_total": 512,
             })
         );
+    }
+
+    #[test]
+    fn typed_adapter_carries_every_whole_run_stage_and_unknown_eta() {
+        for expected in [
+            RefreshWholeRunStage::Preparing,
+            RefreshWholeRunStage::Reading,
+            RefreshWholeRunStage::Merging,
+            RefreshWholeRunStage::Syncing,
+            RefreshWholeRunStage::PhysicalVerification,
+            RefreshWholeRunStage::LogicalVerification,
+            RefreshWholeRunStage::Activation,
+            RefreshWholeRunStage::Complete,
+            RefreshWholeRunStage::Failed,
+        ] {
+            let snapshot = presentation_snapshot(&typed_status(json!({
+                "phase": "refreshing",
+                "whole_run_stage": expected.as_str(),
+                "estimated_remaining_millis": null,
+                "completed_sources": 0,
+                "total_sources": 0,
+            })))
+            .unwrap();
+
+            assert_eq!(snapshot.whole_run_stage(), expected);
+            assert_eq!(snapshot.estimated_remaining_millis(), None);
+        }
+
+        let numeric = presentation_snapshot(&typed_status(json!({
+            "phase": "refreshing",
+            "whole_run_stage": "reading",
+            "estimated_remaining_millis": 1_234,
+            "completed_sources": 0,
+            "total_sources": 0,
+        })))
+        .unwrap();
+        assert_eq!(numeric.estimated_remaining_millis(), Some(1_234));
     }
 }

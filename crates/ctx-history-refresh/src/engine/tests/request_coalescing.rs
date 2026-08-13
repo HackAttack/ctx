@@ -1153,7 +1153,7 @@ fn attached_logical_status_projects_coherent_physical_progress_and_replays_stabl
             .set_progress(
                 &predecessor_id,
                 SourceBackedRefreshProgressUpdate {
-                    phase: "verifying".to_owned(),
+                    phase: "physical_verification".to_owned(),
                     completed_sources: 2,
                     total_sources: 5,
                     total_sources_known: true,
@@ -1166,7 +1166,15 @@ fn attached_logical_status_projects_coherent_physical_progress_and_replays_stabl
             )
             .expect("physical verification boundary");
         let verifying = coordinator.status(&demand_id).expect("attached status");
-        assert_eq!(verifying["progress"]["phase"], "verifying");
+        assert_eq!(verifying["progress"]["phase"], "physical_verification");
+        assert_eq!(
+            verifying["progress"]["whole_run_stage"],
+            "physical_verification"
+        );
+        assert_eq!(
+            verifying["progress"]["estimated_remaining_millis"],
+            Value::Null
+        );
         assert!(verifying["progress"].get("completed_records").is_none());
         assert!(verifying["progress"].get("completed_bytes").is_none());
         assert!(verifying["progress"]
