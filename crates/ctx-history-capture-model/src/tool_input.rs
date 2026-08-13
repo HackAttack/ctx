@@ -7,11 +7,11 @@ const MAX_TOOL_INPUT_BYTES: usize = 256 * 1024;
 const MAX_COMMAND_BYTES: usize = 64 * 1024;
 const MAX_DIRECT_ARGV_ITEMS: usize = 1_024;
 
-pub(crate) fn is_command_tool(name: &str) -> bool {
+pub fn is_command_tool(name: &str) -> bool {
     matches!(name, "exec" | "exec_command" | "shell" | "bash" | "command")
 }
 
-pub(crate) fn command(value: &Value) -> Option<String> {
+pub fn command(value: &Value) -> Option<String> {
     let mut values = BTreeSet::new();
     collect_object_strings(value, &["cmd", "command", "shell_command"], &mut values, 0);
     if values.len() == 1 {
