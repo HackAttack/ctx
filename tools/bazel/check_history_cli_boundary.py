@@ -589,10 +589,10 @@ def _validate_reverse_build_inventory(
     expected_labels = {
         root_build: (
             HISTORY_CARGO_DATA_LABEL,
+            HISTORY_BUILD_LABEL,
             HISTORY_CARGO_DATA_LABEL,
             HISTORY_BUILD_LABEL,
-            HISTORY_CARGO_LABEL,
-            HISTORY_CARGO_LABEL,
+            HISTORY_CARGO_DATA_LABEL,
         ),
         history_build.resolve(): (HISTORY_LABEL,),
         final_build.resolve(): (
