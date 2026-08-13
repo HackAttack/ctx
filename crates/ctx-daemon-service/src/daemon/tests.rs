@@ -973,15 +973,60 @@ fn due_dirty_route_wait_is_classified_as_scheduled_refresh_instead_of_spinning()
     assert!(!daemon_scheduled_refresh_due(
         &runtime,
         Some(&coordinator),
+        None,
         now,
         1_000,
     ));
     assert!(daemon_scheduled_refresh_due(
         &runtime,
         Some(&coordinator),
+        None,
         now + super::super::daemon_scheduler::DAEMON_BACKGROUND_REFRESH_MIN_REST,
         1_000,
     ));
+}
+
+#[test]
+fn finite_convergence_ignores_deferred_route_deadline_until_idle_exit() {
+    let coordinator =
+        CoreRefreshEngine::with_executor(Arc::new(|_: SourceBackedRefreshExecution<'_>| {
+            anyhow::bail!("executor must remain idle")
+        }));
+    let route = ctx_history_index::SourceRouteIdentity::from_sha256("ac".repeat(32))
+        .expect("route identity");
+    coordinator.reconcile_watch_routes([route], EventWatermark::new(1, 0), 0);
+    let mut runtime = DaemonRuntime::default();
+    runtime.finite_refresh_admission.observe_terminal(
+        &json!({
+            "operation": "import",
+            "trigger": "import",
+            "trigger_provenance": "explicit_source_catalog",
+            "status": "completed",
+            "request_state": "published",
+        }),
+        false,
+    );
+    let now = Instant::now();
+    let idle_exit = Some(StdDuration::from_secs(60));
+
+    let wait_for = daemon_wait_duration(
+        &runtime,
+        Some(&coordinator),
+        now + StdDuration::from_secs(30),
+        Some(now),
+        idle_exit,
+        now,
+    );
+
+    assert_eq!(wait_for, StdDuration::from_secs(30));
+    assert!(!daemon_scheduled_refresh_due(
+        &runtime,
+        Some(&coordinator),
+        idle_exit,
+        now,
+        1_000,
+    ));
+    assert!(coordinator.has_scheduled_route_work());
 }
 
 #[test]
