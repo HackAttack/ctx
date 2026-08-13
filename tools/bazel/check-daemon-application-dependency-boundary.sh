@@ -66,10 +66,14 @@ fi
 expected_reverse="${tmp}/expected-reverse.txt"
 printf '%s\n' \
   '//crates/ctx-cli:ctx' \
+  '//crates/ctx-cli:ctx_auto_upgrade_acceptance_fixture' \
+  '//crates/ctx-cli:ctx_hosted_uninstall_test_host' \
   '//crates/ctx-cli:ctx_pro_test_host' \
+  '//crates/ctx-cli:ctx_upgrade_test_harness' \
   '//crates/ctx-daemon-application:lib' \
   '//crates/ctx-daemon-cli:lib' \
-  '//crates/ctx-daemon-cli:qualification_test_support_lib' >"${expected_reverse}"
+  '//crates/ctx-daemon-cli:qualification_test_support_lib' \
+  '//crates/ctx-history-cli:lib' >"${expected_reverse}"
 query 'kind("rust_binary rule", rdeps(//crates/..., //crates/ctx-daemon-application:lib)) union kind("rust_library rule", rdeps(//crates/..., //crates/ctx-daemon-application:lib))' \
   | LC_ALL=C sort -u >"${tmp}/actual-reverse.txt"
 if ! diff -u "${expected_reverse}" "${tmp}/actual-reverse.txt"; then
@@ -96,7 +100,8 @@ printf '%s\n' \
   '//crates/ctx-cli:unit_tests' \
   '//crates/ctx-daemon-application:test_support_lib' \
   '//crates/ctx-daemon-cli:test_support_lib' \
-  '//crates/ctx-daemon-cli:unit_tests' >"${expected_reverse_test_support}"
+  '//crates/ctx-daemon-cli:unit_tests' \
+  '//crates/ctx-history-cli:test_support_lib' >"${expected_reverse_test_support}"
 query 'kind("rust_library rule", rdeps(//crates/..., //crates/ctx-daemon-application:test_support_lib)) union kind("rust_test rule", rdeps(//crates/..., //crates/ctx-daemon-application:test_support_lib))' \
   | LC_ALL=C sort -u >"${tmp}/actual-reverse-test-support.txt"
 if ! diff -u "${expected_reverse_test_support}" "${tmp}/actual-reverse-test-support.txt"; then
