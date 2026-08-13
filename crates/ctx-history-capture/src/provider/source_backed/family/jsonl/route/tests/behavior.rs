@@ -131,6 +131,7 @@ fn optimized_leaf_execution_keeps_publication_inside_the_shared_family() {
     let adapter = OptimizedLeafTestAdapter {
         scans: AtomicUsize::new(0),
         emit_wrong_source: false,
+        emit_progress_records: false,
     };
     let inventory = adapter.discover(&root).unwrap();
     let leaf = inventory.leaves().first().unwrap();
@@ -173,6 +174,71 @@ fn optimized_leaf_execution_keeps_publication_inside_the_shared_family() {
     );
 }
 
+#[test]
+fn single_leaf_serial_jsonl_page_accounts_sessions_messages_and_tool_calls() {
+    let temp = crate::test_support_paths::tempdir().unwrap();
+    let root = temp.path().join("sessions");
+    fs::create_dir_all(&root).unwrap();
+    fs::write(root.join("progress.jsonl"), PROGRESS_TEST_RECORDS).unwrap();
+    let adapter = OptimizedLeafTestAdapter {
+        scans: AtomicUsize::new(0),
+        emit_wrong_source: false,
+        emit_progress_records: true,
+    };
+    let resident = Mutex::new(FamilyResident::default());
+    let mut writer =
+        match IndexCaptureLifecycle::open(&temp.path().join("index"), test_writer_options())
+            .unwrap()
+        {
+            CaptureLifecycleOpenOutcome::Ready(lifecycle) => lifecycle,
+            CaptureLifecycleOpenOutcome::RecoveryRequired { .. } => {
+                panic!("serial progress test lifecycle unexpectedly requires recovery")
+            }
+        };
+    let mut owners = HashMap::new();
+    let mut complete_inventories = Vec::new();
+    let mut logical_source_failures = SourceBackedLogicalSourceFailures::default();
+    let mut record_rejections = SourceBackedRecordRejections::default();
+    let mut applied_removals = Vec::new();
+    let mut history_progress = AttemptHistoryProgress::default();
+    let mut report_progress = |delta| {
+        history_progress.advance(&delta);
+        Ok(())
+    };
+    let mut sink = SourceBackedGenerationSink {
+        core_record_preparer: writer.core_preparation(),
+        lifecycle: &mut writer,
+        owners: &mut owners,
+        complete_inventories: &mut complete_inventories,
+        route_index: 0,
+        route_identity: test_route_identity(),
+        base_route_control: None,
+        resources: SourceBackedRouteResources::production(1),
+        logical_source_failures: &mut logical_source_failures,
+        record_rejections: &mut record_rejections,
+        applied_removals: &mut applied_removals,
+        record_progress: Some(&mut report_progress),
+        current_source_progress: None,
+        last_progress_session_id: None,
+    };
+
+    with_family_scanner_workers(1, || {
+        capture(&adapter, &root, &resident, &mut sink).unwrap();
+    });
+    drop(sink);
+
+    assert_eq!(
+        history_progress.snapshot(),
+        ctx_history_capture_model::AttemptHistoryProgressSnapshot {
+            processed_sessions: 1,
+            processed_messages: 2,
+            processed_tool_calls: 1,
+            processed_bytes: PROGRESS_TEST_RECORDS.len() as u64,
+        },
+        "the true one-leaf serial page path must preserve Core-record progress semantics"
+    );
+}
+
 fn optimized_test_certificate(
     adapter: &dyn JsonlFamilyAdapter,
     leaf: &JsonlFamilyLeaf,
@@ -205,6 +271,7 @@ fn active_source_family_contract_jsonl_optimized_proof_rejects_cross_leaf_bindin
     let adapter = OptimizedLeafTestAdapter {
         scans: AtomicUsize::new(0),
         emit_wrong_source: false,
+        emit_progress_records: false,
     };
     let inventory = adapter.discover(&root).unwrap();
     let first = inventory.leaves().first().unwrap();
@@ -252,6 +319,7 @@ fn active_source_family_contract_jsonl_optimized_proof_rejects_mismatched_certif
     let adapter = OptimizedLeafTestAdapter {
         scans: AtomicUsize::new(0),
         emit_wrong_source: false,
+        emit_progress_records: false,
     };
     let inventory = adapter.discover(&root).unwrap();
     let leaf = inventory.leaves().first().unwrap();
@@ -278,6 +346,7 @@ fn optimized_leaf_execution_rejects_records_owned_by_another_source() {
     let adapter = OptimizedLeafTestAdapter {
         scans: AtomicUsize::new(0),
         emit_wrong_source: true,
+        emit_progress_records: false,
     };
     let inventory = adapter.discover(&root).unwrap();
     let leaf = inventory.leaves().first().unwrap();

@@ -5,7 +5,9 @@ use std::{
     sync::Arc,
 };
 
-use ctx_history_capture_model::{SourceBackedRecordProgressDelta, SourceRouteIdentity};
+use ctx_history_capture_model::{
+    CoreRecordBatchProgress, SourceBackedRecordProgressDelta, SourceRouteIdentity,
+};
 use ctx_history_core::{
     CaptureProvider, CertifiedSource, CertifiedSourceAppend, CertifiedSourceDeletion,
     CertifiedSourceInventory, CoreRecord, SourceKey,
@@ -502,14 +504,22 @@ impl<L: CaptureLifecycleSink> SourceBackedGenerationSink<'_, L> {
                 "Core-record page count overflowed",
             ))
         })?;
+        let mut progress = CoreRecordBatchProgress::default();
         for record in records {
+            progress.push(CoreRecordProgress::from_record(&record));
             let emission =
                 CoreRecordEmission::<L>::new(record, &self.resources, &self.core_record_preparer)
                     .map_err(SourceBackedRouteError::from)
                     .map_err(SourceBackedCoordinatorError::CoreEmission)?;
             self.accept_core_record_emission(emission)?;
         }
-        self.report_record_progress(accepted_records, completed_bytes, &[], 0, 0)
+        self.report_record_progress(
+            accepted_records,
+            completed_bytes,
+            &progress.session_ids,
+            progress.messages,
+            progress.tool_calls,
+        )
     }
 
     pub fn add_core_record_emission_batch(

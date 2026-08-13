@@ -481,12 +481,14 @@ impl<V> VerifiedCapture<V> {
         Self { verified }
     }
 
-    pub fn as_ref(&self) -> &V {
-        &self.verified
-    }
-
     pub fn into_inner(self) -> V {
         self.verified
+    }
+}
+
+impl<V> AsRef<V> for VerifiedCapture<V> {
+    fn as_ref(&self) -> &V {
+        &self.verified
     }
 }
 
@@ -878,6 +880,7 @@ impl<P: CorePreparationPort> CorePreparedCapture<P> {
             })
     }
 
+    #[allow(clippy::type_complexity)]
     pub fn materialize_draft(
         draft: P::Draft,
         maximum_encoded_bytes: usize,
@@ -1053,6 +1056,10 @@ pub struct CorePreparedBatch<P: CorePreparationPort> {
 }
 
 impl<P: CorePreparationPort> CorePreparedBatch<P> {
+    pub fn is_empty(&self) -> bool {
+        self.prepared.is_empty()
+    }
+
     pub fn len(&self) -> usize {
         self.prepared.len()
     }

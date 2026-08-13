@@ -19,6 +19,7 @@ use crate::provider::source_backed::{
     SourceBackedRecordRejections, SourceBackedRouteResources,
 };
 use crate::repository_attribution::AttributionInput;
+use ctx_history_capture_model::AttemptHistoryProgress;
 use ctx_history_capture_runtime::{
     CaptureLifecycleOpenOutcome, CaptureLifecycleSink, CaptureRevalidationTarget,
 };
@@ -89,6 +90,8 @@ macro_rules! capture_test_generation {
 struct TestAdapter;
 
 const TEST_RECORD: &[u8] = b"{\"message\":\"before\"}\n";
+const PROGRESS_TEST_RECORDS: &[u8] =
+    b"{\"message\":\"one\"}\n{\"message\":\"two\"}\n{\"tool_call\":\"three\"}\n";
 
 impl JsonlFamilyAdapter for TestAdapter {
     fn provider(&self) -> CaptureProvider {
@@ -1093,6 +1096,14 @@ impl EmissionTestAdapter {
 }
 
 fn emission_test_record(source: &SourceKey, ordinal: u64) -> Result<CoreRecord> {
+    emission_test_typed_record(source, ordinal, "message")
+}
+
+fn emission_test_typed_record(
+    source: &SourceKey,
+    ordinal: u64,
+    event_type: &'static str,
+) -> Result<CoreRecord> {
     let session_key = NativeSessionKey::native_id(
         "session",
         TypedKey::utf8("session").map_err(contract_error)?,
@@ -1105,11 +1116,11 @@ fn emission_test_record(source: &SourceKey, ordinal: u64) -> Result<CoreRecord> 
     })
     .map_err(contract_error)?;
     let native_item_key =
-        NativeItemKey::native_id("message", TypedKey::U64(ordinal)).map_err(contract_error)?;
+        NativeItemKey::native_id(event_type, TypedKey::U64(ordinal)).map_err(contract_error)?;
     let event_id = derive_event_id(EventIdentityInput {
         source,
         session_id,
-        logical_item_kind: "message",
+        logical_item_kind: event_type,
         native_item_key: &native_item_key,
         subrecord_selector: None,
     })
@@ -1120,7 +1131,7 @@ fn emission_test_record(source: &SourceKey, ordinal: u64) -> Result<CoreRecord> 
         session_id,
         source.clone(),
         ordinal,
-        "message",
+        event_type,
         "primary",
         true,
         "jsonl-emission-test-v1",
@@ -1242,6 +1253,7 @@ struct CheckpointTestAdapter {
 struct OptimizedLeafTestAdapter {
     scans: AtomicUsize,
     emit_wrong_source: bool,
+    emit_progress_records: bool,
 }
 
 impl JsonlFamilyAdapter for OptimizedLeafTestAdapter {
@@ -1304,23 +1316,41 @@ impl JsonlFamilyAdapter for OptimizedLeafTestAdapter {
             )
             .map_err(contract_error)?;
             vec![emission_test_record(&wrong_source, 0)?]
+        } else if self.emit_progress_records {
+            vec![
+                emission_test_record(leaf.source(), 1)?,
+                emission_test_record(leaf.source(), 2)?,
+                emission_test_typed_record(leaf.source(), 3, "tool_call")?,
+            ]
         } else {
             Vec::new()
         };
-        emit_page(JsonlFamilyPublication::Replace, 0, records)?;
+        let source_bytes = if self.emit_progress_records {
+            PROGRESS_TEST_RECORDS
+        } else {
+            TEST_RECORD
+        };
+        let retained_records = u64::try_from(records.len()).unwrap_or(u64::MAX);
+        let complete_records = if self.emit_progress_records { 3 } else { 1 };
+        let completed_bytes = if self.emit_progress_records {
+            source_bytes.len() as u64
+        } else {
+            0
+        };
+        emit_page(JsonlFamilyPublication::Replace, completed_bytes, records)?;
         let observation = leaf::source_observation(leaf.source(), leaf.observation())?;
         let certificate = CertifiedSource::certify(
             observation.clone(),
             observation,
             self.parser_revision(),
-            Sha256::digest(TEST_RECORD).into(),
+            Sha256::digest(source_bytes).into(),
             ScannedSourceCounts {
-                complete_records: 1,
-                retained_records: 0,
+                complete_records,
+                retained_records,
                 rejected_records: 0,
-                ignored_records: 1,
-                indexed_documents: 0,
-                certified_bytes: TEST_RECORD.len() as u64,
+                ignored_records: complete_records.saturating_sub(retained_records),
+                indexed_documents: retained_records,
+                certified_bytes: source_bytes.len() as u64,
             },
         )
         .map_err(contract_error)?;

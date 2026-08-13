@@ -1381,7 +1381,7 @@ fn begin_rendezvous_blocks_worker_until_coordinator_acknowledgement() {
                 sender: &sender,
                 cancellation: &cancellation,
                 resources,
-                core_record_preparer: preparer.into(),
+                core_record_preparer: preparer,
                 successful_resource_acquisitions: None,
             };
             emitter
@@ -1696,7 +1696,7 @@ fn single_core_record_transport_uses_one_bounded_zero_capacity_batch_rendezvous(
                 sender: &sender,
                 cancellation: &cancellation,
                 resources: SourceBackedRouteResources::production(1),
-                core_record_preparer: core_record_preparer.into(),
+                core_record_preparer,
                 successful_resource_acquisitions: None,
             };
             barrier.wait();
@@ -1754,7 +1754,7 @@ fn core_record_batch_transport_is_one_bounded_zero_capacity_rendezvous() {
                 sender: &sender,
                 cancellation: &cancellation,
                 resources: resources.clone(),
-                core_record_preparer: core_record_preparer.clone().into(),
+                core_record_preparer: core_record_preparer.clone(),
                 successful_resource_acquisitions: Some(&successful_resource_acquisitions),
             };
             barrier.wait();
@@ -1801,7 +1801,7 @@ fn core_record_batch_transport_is_one_bounded_zero_capacity_rendezvous() {
         sender: &sender,
         cancellation: &cancellation,
         resources: resources.clone(),
-        core_record_preparer: core_record_preparer.into(),
+        core_record_preparer,
         successful_resource_acquisitions: None,
     };
     let error = emitter.emit_core_records(vec![invalid_record]).unwrap_err();
@@ -1888,7 +1888,7 @@ fn batch_emitter_streams_records_that_fit_individually_but_not_together() {
                 sender: &sender,
                 cancellation: &cancellation,
                 resources: resources.clone(),
-                core_record_preparer: core_record_preparer.into(),
+                core_record_preparer,
                 successful_resource_acquisitions: None,
             };
             finished_sender
@@ -1955,7 +1955,7 @@ fn batch_emitter_backpressures_multiple_workers_at_the_shared_byte_limit() {
                     sender,
                     cancellation,
                     resources,
-                    core_record_preparer: core_record_preparer.into(),
+                    core_record_preparer,
                     successful_resource_acquisitions: None,
                 };
                 barrier.wait();
@@ -2001,7 +2001,7 @@ fn batch_emitter_chunks_projector_fanout_at_the_protocol_bound() {
                 sender: &sender,
                 cancellation: &cancellation,
                 resources: SourceBackedRouteResources::production(1),
-                core_record_preparer: core_record_preparer.into(),
+                core_record_preparer,
                 successful_resource_acquisitions: None,
             };
             emitter.emit_core_records(records).unwrap();

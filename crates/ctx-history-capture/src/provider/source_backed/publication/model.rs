@@ -144,6 +144,7 @@ pub struct SourceBackedPublicationMetadataContext<'a> {
 }
 
 impl<'a> SourceBackedPublicationMetadataContext<'a> {
+    #[allow(clippy::too_many_arguments)]
     pub(super) fn new(
         publication: CapturePublicationContext<'a, BorrowedIndexManifestView<'a>>,
         selected_route_ids: &'a BTreeSet<SourceRouteIdentity>,

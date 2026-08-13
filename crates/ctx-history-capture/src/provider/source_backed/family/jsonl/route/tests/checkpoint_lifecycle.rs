@@ -65,7 +65,7 @@ fn family_checkpoint_writes_compact_utf8_and_reads_legacy_bytes() {
             < serde_json::to_vec(&legacy).unwrap().len()
     );
     assert_eq!(
-        serde_json::from_str::<FamilyCheckpoint>(&json).unwrap(),
+        serde_json::from_str::<FamilyCheckpoint>(json).unwrap(),
         checkpoint
     );
 }
