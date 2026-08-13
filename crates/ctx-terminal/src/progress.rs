@@ -1,6 +1,8 @@
 use std::{
     fmt,
     io::{self, Write},
+    sync::{mpsc, Arc, Mutex},
+    thread::{self, JoinHandle},
     time::{Duration as StdDuration, Instant},
 };
 
@@ -13,6 +15,36 @@ use crate::ui::{
 const MAX_PROGRESS_MESSAGE_BYTES: usize = 512;
 const MAX_PROGRESS_SOURCE_BYTES: usize = 256;
 const MAX_PROGRESS_PHASE_BYTES: usize = 64;
+const LIVE_RENDER_INTERVAL: StdDuration = StdDuration::from_millis(100);
+
+#[derive(Debug, Default)]
+struct ActiveElapsedClock {
+    displayed_millis: u64,
+    observed_at: Option<StdDuration>,
+}
+
+impl ActiveElapsedClock {
+    fn advance(&mut self, reported_millis: Option<u64>, now: StdDuration) -> u64 {
+        let local_advance = self
+            .observed_at
+            .map(|observed_at| duration_millis(now.saturating_sub(observed_at)))
+            .unwrap_or_default();
+        self.displayed_millis = self
+            .displayed_millis
+            .saturating_add(local_advance)
+            .max(reported_millis.unwrap_or_else(|| duration_millis(now)));
+        self.observed_at = Some(now);
+        self.displayed_millis
+    }
+
+    fn reset(&mut self) {
+        *self = Self::default();
+    }
+}
+
+fn duration_millis(duration: StdDuration) -> u64 {
+    u64::try_from(duration.as_millis()).unwrap_or(u64::MAX)
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ProgressMode {
@@ -55,7 +87,192 @@ pub struct ProgressReporter<'a> {
     operation: &'static str,
     total_bytes: u64,
     started: Instant,
-    output: LiveOutput<&'a mut (dyn Write + Send)>,
+    presentation_agent_histories: Option<Vec<String>>,
+    output: ProgressOutput<'a>,
+}
+
+enum ProgressOutput<'a> {
+    Direct(LiveOutput<&'a mut (dyn Write + Send)>),
+    Live(LocalLiveRenderer),
+}
+
+impl<'a> ProgressOutput<'a> {
+    fn direct_mut<'output>(
+        &'output mut self,
+    ) -> io::Result<&'output mut LiveOutput<&'a mut (dyn Write + Send)>> {
+        match self {
+            Self::Direct(output) => Ok(output),
+            Self::Live(_) => Err(io::Error::other("live renderer has no direct writer")),
+        }
+    }
+
+    fn write_live_document(&mut self, document: Document, final_frame: bool) -> io::Result<()> {
+        match self {
+            Self::Live(output) => output.write_document(document, final_frame),
+            Self::Direct(_) => Err(io::Error::other("direct renderer has no live worker")),
+        }
+    }
+
+    fn write_live_refresh(&mut self, snapshot: RefreshProgressSnapshot) -> io::Result<()> {
+        match self {
+            Self::Live(output) => output.write_refresh(snapshot),
+            Self::Direct(_) => Err(io::Error::other("direct renderer has no live worker")),
+        }
+    }
+}
+
+enum LiveRenderCommand {
+    Document {
+        document: Document,
+        final_frame: bool,
+        complete: mpsc::Sender<io::Result<()>>,
+    },
+    Refresh {
+        snapshot: Box<RefreshProgressSnapshot>,
+        complete: mpsc::Sender<io::Result<()>>,
+    },
+    Shutdown,
+}
+
+struct LocalLiveRenderer {
+    commands: mpsc::Sender<LiveRenderCommand>,
+    background_error: Arc<Mutex<Option<io::Error>>>,
+    worker: Option<JoinHandle<()>>,
+}
+
+impl LocalLiveRenderer {
+    fn new(output: LiveOutput<Box<dyn Write + Send>>, started: Instant) -> Self {
+        let (commands, receiver) = mpsc::channel();
+        let background_error = Arc::new(Mutex::new(None));
+        let worker_error = Arc::clone(&background_error);
+        let worker = thread::spawn(move || {
+            run_live_renderer(output, receiver, started, &worker_error);
+        });
+        Self {
+            commands,
+            background_error,
+            worker: Some(worker),
+        }
+    }
+
+    fn write_document(&mut self, document: Document, final_frame: bool) -> io::Result<()> {
+        self.check_background_error()?;
+        let (complete, completed) = mpsc::channel();
+        self.commands
+            .send(LiveRenderCommand::Document {
+                document,
+                final_frame,
+                complete,
+            })
+            .map_err(|_| io::Error::new(io::ErrorKind::BrokenPipe, "live renderer stopped"))?;
+        completed
+            .recv()
+            .map_err(|_| io::Error::new(io::ErrorKind::BrokenPipe, "live renderer stopped"))?
+    }
+
+    fn write_refresh(&mut self, snapshot: RefreshProgressSnapshot) -> io::Result<()> {
+        self.check_background_error()?;
+        let (complete, completed) = mpsc::channel();
+        self.commands
+            .send(LiveRenderCommand::Refresh {
+                snapshot: Box::new(snapshot),
+                complete,
+            })
+            .map_err(|_| io::Error::new(io::ErrorKind::BrokenPipe, "live renderer stopped"))?;
+        completed
+            .recv()
+            .map_err(|_| io::Error::new(io::ErrorKind::BrokenPipe, "live renderer stopped"))?
+    }
+
+    fn check_background_error(&self) -> io::Result<()> {
+        let mut error = self
+            .background_error
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        error.take().map_or(Ok(()), Err)
+    }
+}
+
+impl Drop for LocalLiveRenderer {
+    fn drop(&mut self) {
+        let _ = self.commands.send(LiveRenderCommand::Shutdown);
+        if let Some(worker) = self.worker.take() {
+            let _ = worker.join();
+        }
+    }
+}
+
+fn run_live_renderer(
+    mut output: LiveOutput<Box<dyn Write + Send>>,
+    commands: mpsc::Receiver<LiveRenderCommand>,
+    started: Instant,
+    background_error: &Mutex<Option<io::Error>>,
+) {
+    let mut active = None;
+    let mut clock = ActiveElapsedClock::default();
+    loop {
+        match commands.recv_timeout(LIVE_RENDER_INTERVAL) {
+            Ok(LiveRenderCommand::Document {
+                document,
+                final_frame,
+                complete,
+            }) => {
+                active = None;
+                clock.reset();
+                let result = output.write_frame(&document, final_frame);
+                let failed = result.is_err();
+                let _ = complete.send(result);
+                if failed {
+                    break;
+                }
+            }
+            Ok(LiveRenderCommand::Refresh { snapshot, complete }) => {
+                let terminal = snapshot.is_terminal();
+                let rendered =
+                    prepare_live_snapshot((*snapshot).clone(), &mut clock, started.elapsed());
+                let context = *output.context();
+                let document = refresh_progress(&context, &rendered);
+                let result = output.write_frame(&document, terminal);
+                let failed = result.is_err();
+                let _ = complete.send(result);
+                if failed {
+                    break;
+                }
+                active = (!terminal).then_some(*snapshot);
+                if terminal {
+                    clock.reset();
+                }
+            }
+            Ok(LiveRenderCommand::Shutdown) | Err(mpsc::RecvTimeoutError::Disconnected) => break,
+            Err(mpsc::RecvTimeoutError::Timeout) => {
+                let Some(snapshot) = active.as_ref() else {
+                    continue;
+                };
+                let rendered =
+                    prepare_live_snapshot(snapshot.clone(), &mut clock, started.elapsed());
+                let context = *output.context();
+                let document = refresh_progress(&context, &rendered);
+                if let Err(error) = output.write_frame(&document, false) {
+                    *background_error
+                        .lock()
+                        .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(error);
+                    break;
+                }
+            }
+        }
+    }
+}
+
+fn prepare_live_snapshot(
+    mut snapshot: RefreshProgressSnapshot,
+    clock: &mut ActiveElapsedClock,
+    now: StdDuration,
+) -> RefreshProgressSnapshot {
+    if !snapshot.is_terminal() {
+        let elapsed = clock.advance(snapshot.progress().elapsed_millis, now);
+        snapshot.set_presentation_elapsed_millis(elapsed);
+    }
+    snapshot
 }
 
 impl<'a> ProgressReporter<'a> {
@@ -74,12 +291,22 @@ impl<'a> ProgressReporter<'a> {
             ProgressMode::Auto if json_output || !live_output_capable => ProgressRenderMode::None,
             ProgressMode::Auto => ProgressRenderMode::Live,
         };
+        let started = Instant::now();
+        let output = if mode == ProgressRenderMode::Live {
+            ProgressOutput::Live(LocalLiveRenderer::new(
+                ui.stderr_shared_live_output(),
+                started,
+            ))
+        } else {
+            ProgressOutput::Direct(ui.stderr_live_output())
+        };
         Self {
             mode,
             operation,
             total_bytes,
-            started: Instant::now(),
-            output: ui.stderr_live_output(),
+            started,
+            presentation_agent_histories: None,
+            output,
         }
     }
 
@@ -95,6 +322,7 @@ impl<'a> ProgressReporter<'a> {
         if !self.is_enabled() {
             return Ok(());
         }
+        self.presentation_agent_histories = None;
         let message = bounded_progress_text(&message.into(), MAX_PROGRESS_MESSAGE_BYTES);
         self.emit_status(ProgressLine {
             phase: bounded_progress_text(phase, MAX_PROGRESS_PHASE_BYTES),
@@ -113,10 +341,31 @@ impl<'a> ProgressReporter<'a> {
         &mut self,
         snapshot: RefreshProgressSnapshot,
     ) -> Result<(), ProgressWriterError> {
+        let now = self.started.elapsed();
+        self.source_refresh_at(snapshot, now)
+    }
+
+    fn source_refresh_at(
+        &mut self,
+        mut snapshot: RefreshProgressSnapshot,
+        now: StdDuration,
+    ) -> Result<(), ProgressWriterError> {
         if !self.is_enabled() {
             return Ok(());
         }
-        self.emit_status(source_refresh_line(snapshot, self.total_bytes))
+        if self.mode == ProgressRenderMode::Live {
+            if self.presentation_agent_histories.is_none()
+                && snapshot.discovery_complete()
+                && !snapshot.progress().agent_histories.is_empty()
+            {
+                self.presentation_agent_histories =
+                    Some(snapshot.progress().agent_histories.clone());
+            }
+            snapshot.set_presentation_agent_histories(self.presentation_agent_histories.clone());
+        }
+        let line = source_refresh_line(snapshot, self.total_bytes);
+        write_progress(&mut self.output, self.mode, self.operation, &line, now)
+            .map_err(ProgressWriterError)
     }
 
     fn emit_status(&mut self, line: ProgressLine) -> Result<(), ProgressWriterError> {
@@ -138,8 +387,8 @@ struct ProgressLine {
     refresh: Option<RefreshProgressSnapshot>,
 }
 
-fn write_progress<W: Write>(
-    output: &mut LiveOutput<W>,
+fn write_progress(
+    output: &mut ProgressOutput<'_>,
     mode: ProgressRenderMode,
     operation: &'static str,
     line: &ProgressLine,
@@ -148,13 +397,16 @@ fn write_progress<W: Write>(
     match mode {
         ProgressRenderMode::None => Ok(()),
         ProgressRenderMode::Live => {
-            let document = line.refresh.as_ref().map_or_else(
-                || Document::from_line(Line::new().with(Span::new(&line.message, Token::Text))),
-                |snapshot| refresh_progress(output.context(), snapshot),
-            );
-            output.write_frame(&document, line.done)
+            if let Some(snapshot) = line.refresh.as_ref() {
+                output.write_live_refresh(snapshot.clone())
+            } else {
+                let document =
+                    Document::from_line(Line::new().with(Span::new(&line.message, Token::Text)));
+                output.write_live_document(document, line.done)
+            }
         }
         ProgressRenderMode::Plain => {
+            let output = output.direct_mut()?;
             if let Some(snapshot) = line.refresh.as_ref() {
                 let document = refresh_progress(output.context(), snapshot);
                 output.write_line(document.render_plain().trim_end_matches('\n'))
@@ -162,12 +414,25 @@ fn write_progress<W: Write>(
                 output.write_line(&line.message)
             }
         }
-        ProgressRenderMode::Json => output.write_line(&progress_json(operation, line, elapsed)),
+        ProgressRenderMode::Json => output
+            .direct_mut()?
+            .write_line(&progress_json(operation, line, elapsed)),
     }
 }
 
 fn progress_json(operation: &'static str, line: &ProgressLine, elapsed: StdDuration) -> String {
     let (completed_bytes, total_bytes) = progress_line_bytes(line);
+    let (percent, eta_seconds) = if line.refresh.is_some() {
+        // Refresh byte pairs describe a source-local stage, not whole-run
+        // completion. Keep generic completion math null until a qualified
+        // whole-run authority exists.
+        (None, None)
+    } else {
+        (
+            Some(progress_line_percent(line)),
+            progress_line_eta_seconds(line, elapsed),
+        )
+    };
     let mut value = json!({
         "type": "ctx_progress",
         "operation": operation,
@@ -175,9 +440,9 @@ fn progress_json(operation: &'static str, line: &ProgressLine, elapsed: StdDurat
         "message": line.message,
         "completed_bytes": completed_bytes,
         "total_bytes": total_bytes,
-        "percent": progress_line_percent(line),
+        "percent": percent,
         "elapsed_seconds": elapsed.as_secs_f64(),
-        "eta_seconds": progress_line_eta_seconds(line, elapsed),
+        "eta_seconds": eta_seconds,
         "completed_files": line.completed_files,
         "total_files": line.total_files,
         "imported_events": line.imported_events,
@@ -569,6 +834,92 @@ mod tests {
     }
 
     #[test]
+    fn local_live_worker_ticks_without_another_backend_callback() {
+        let stderr = SharedWriter::default();
+        let stderr_capture = stderr.clone();
+        let context = crate::ui::RenderContext::for_test(crate::ui::TestContext::tty(
+            crate::ui::StreamKind::Stderr,
+            80,
+        ));
+        let (mut ui, _) = ui_with_stderr(stderr, context);
+        let mut reporter = ProgressReporter::new(&mut ui, ProgressMode::Auto, false, "setup", 0);
+        let mut snapshot = active_status();
+        snapshot.progress_mut_for_test().elapsed_millis = Some(1_000);
+
+        reporter
+            .source_refresh_at(snapshot, StdDuration::from_secs(1))
+            .unwrap();
+        let first_len = stderr_capture.text().len();
+        let deadline = Instant::now() + StdDuration::from_secs(1);
+        while stderr_capture.text().len() == first_len && Instant::now() < deadline {
+            thread::sleep(StdDuration::from_millis(10));
+        }
+        let output = stderr_capture.text();
+        let delta = &output[first_len..];
+
+        assert!(output.contains("Elapsed          1s"), "{output:?}");
+        assert!(!delta.is_empty());
+        assert!(!delta.contains("\x1b[2J"), "{delta:?}");
+        assert!(!delta.contains("\x1b[H"), "{delta:?}");
+        assert!(!delta.contains("\x1b[2K"), "{delta:?}");
+    }
+
+    #[test]
+    fn local_elapsed_clock_never_regresses_when_backend_snapshots_are_stale() {
+        let mut clock = ActiveElapsedClock::default();
+        assert_eq!(
+            clock.advance(Some(10_000), StdDuration::from_secs(10)),
+            10_000
+        );
+        assert_eq!(
+            clock.advance(Some(9_000), StdDuration::from_millis(10_100)),
+            10_100
+        );
+        assert_eq!(
+            clock.advance(Some(12_000), StdDuration::from_millis(10_200)),
+            12_000
+        );
+    }
+
+    #[test]
+    fn provider_rows_freeze_after_discovery_for_the_live_lifecycle() {
+        let stderr = SharedWriter::default();
+        let stderr_capture = stderr.clone();
+        let context = crate::ui::RenderContext::for_test(crate::ui::TestContext::tty(
+            crate::ui::StreamKind::Stderr,
+            80,
+        ));
+        let (mut ui, _) = ui_with_stderr(stderr, context);
+        let mut reporter = ProgressReporter::new(&mut ui, ProgressMode::Auto, false, "setup", 0);
+
+        let mut discovery = active_status();
+        discovery.progress_mut_for_test().phase = "discovering".to_owned();
+        reporter
+            .source_refresh_at(discovery, StdDuration::ZERO)
+            .unwrap();
+        assert!(!stderr_capture.text().contains("Agent histories"));
+
+        let scan = active_status();
+        reporter
+            .source_refresh_at(scan.clone(), StdDuration::from_millis(100))
+            .unwrap();
+        let mut later = scan;
+        later
+            .progress_mut_for_test()
+            .agent_histories
+            .push("Late provider".to_owned());
+        later.progress_mut_for_test().phase = "committing".to_owned();
+        reporter
+            .source_refresh_at(later, StdDuration::from_millis(200))
+            .unwrap();
+        drop(reporter);
+
+        let output = stderr_capture.text();
+        assert!(!output.contains("Late provider"), "{output:?}");
+        assert_eq!(output.matches("Agent histories").count(), 1, "{output:?}");
+    }
+
+    #[test]
     fn active_and_terminal_refresh_jsonl_contract_is_exact() {
         let active = progress_json(
             "import",
@@ -583,11 +934,11 @@ mod tests {
 
         assert_eq!(
             active,
-            r#"{"agent_histories":["Codex"],"completed_bytes":256,"completed_files":null,"completed_sources":1,"current_source":"/explicit.sqlite","current_source_progress":{"snapshot_bytes_completed":256,"snapshot_bytes_total":512,"stage":"online_backup"},"done":false,"elapsed_seconds":2.0,"eta_seconds":2.0,"imported_events":100,"logical_phase":"attached","logical_request_id":"explicit-import-request","message":"Refreshing history with shared work: /explicit.sqlite (1 / 3).","operation":"import","percent":50.0,"phase":"online_backup","physical_attempt_id":"shared-physical-attempt","physical_attempt_state":"running","processed_bytes":777,"processed_messages":80,"processed_sessions":8,"processed_tool_calls":20,"progress_owner_attempt_state":"running","progress_owner_request_id":"shared-physical-attempt","refresh_elapsed_millis":2000,"request_id":"explicit-import-request","request_state":"running","source_completed_bytes":777,"source_completed_records":100,"total_bytes":512,"total_files":null,"total_sources":3,"total_sources_known":true,"type":"ctx_progress"}"#
+            r#"{"agent_histories":["Codex"],"completed_bytes":256,"completed_files":null,"completed_sources":1,"current_source":"/explicit.sqlite","current_source_progress":{"snapshot_bytes_completed":256,"snapshot_bytes_total":512,"stage":"online_backup"},"done":false,"elapsed_seconds":2.0,"eta_seconds":null,"imported_events":100,"logical_phase":"attached","logical_request_id":"explicit-import-request","message":"Refreshing history with shared work: /explicit.sqlite (1 / 3).","operation":"import","percent":null,"phase":"online_backup","physical_attempt_id":"shared-physical-attempt","physical_attempt_state":"running","processed_bytes":777,"processed_messages":80,"processed_sessions":8,"processed_tool_calls":20,"progress_owner_attempt_state":"running","progress_owner_request_id":"shared-physical-attempt","refresh_elapsed_millis":2000,"request_id":"explicit-import-request","request_state":"running","source_completed_bytes":777,"source_completed_records":100,"total_bytes":512,"total_files":null,"total_sources":3,"total_sources_known":true,"type":"ctx_progress"}"#
         );
         assert_eq!(
             terminal,
-            r#"{"agent_histories":[],"completed_bytes":4096,"completed_files":null,"completed_sources":2,"current_source":null,"current_source_progress":null,"done":true,"elapsed_seconds":2.0,"eta_seconds":null,"imported_events":null,"logical_phase":"terminal","logical_request_id":"logical-request","message":"History refresh complete (2 / 2).","operation":"import","percent":100.0,"phase":"published","physical_attempt_id":"physical-attempt","physical_attempt_state":"published","processed_bytes":0,"processed_messages":0,"processed_sessions":0,"processed_tool_calls":0,"progress_owner_attempt_state":"published","progress_owner_request_id":"physical-attempt","refresh_elapsed_millis":null,"request_id":"logical-request","request_state":"published","source_completed_bytes":null,"source_completed_records":null,"structured_outcome":{"affected_routes":[],"blocked_routes":[],"class":"completed","code":"completed","physical_attempt_id":"physical-attempt","retryable":false,"retryable_routes":[]},"total_bytes":4096,"total_files":null,"total_sources":2,"total_sources_known":true,"type":"ctx_progress"}"#
+            r#"{"agent_histories":[],"completed_bytes":4096,"completed_files":null,"completed_sources":2,"current_source":null,"current_source_progress":null,"done":true,"elapsed_seconds":2.0,"eta_seconds":null,"imported_events":null,"logical_phase":"terminal","logical_request_id":"logical-request","message":"History refresh complete (2 / 2).","operation":"import","percent":null,"phase":"published","physical_attempt_id":"physical-attempt","physical_attempt_state":"published","processed_bytes":0,"processed_messages":0,"processed_sessions":0,"processed_tool_calls":0,"progress_owner_attempt_state":"published","progress_owner_request_id":"physical-attempt","refresh_elapsed_millis":null,"request_id":"logical-request","request_state":"published","source_completed_bytes":null,"source_completed_records":null,"structured_outcome":{"affected_routes":[],"blocked_routes":[],"class":"completed","code":"completed","physical_attempt_id":"physical-attempt","retryable":false,"retryable_routes":[]},"total_bytes":4096,"total_files":null,"total_sources":2,"total_sources_known":true,"type":"ctx_progress"}"#
         );
 
         let events = [&active, &terminal]
@@ -605,8 +956,8 @@ mod tests {
             ),
             (Some(256), Some(512))
         );
-        assert_eq!(events[0]["percent"], 50.0);
-        assert_eq!(events[0]["eta_seconds"], 2.0);
+        assert_eq!(events[0]["percent"], serde_json::Value::Null);
+        assert_eq!(events[0]["eta_seconds"], serde_json::Value::Null);
         assert_ne!(
             events[0]["logical_request_id"],
             events[0]["progress_owner_request_id"]
@@ -740,11 +1091,11 @@ mod tests {
             (WriterFailure::Write, "injected progress write failure"),
             (WriterFailure::Flush, "injected progress flush failure"),
         ] {
-            let writer = FailingWriter(failure);
+            let mut writer = FailingWriter(failure);
             let context = crate::ui::RenderContext::for_test(crate::ui::TestContext::pipe(
                 crate::ui::StreamKind::Stderr,
             ));
-            let mut output = LiveOutput::new(writer, context);
+            let mut output = ProgressOutput::Direct(LiveOutput::new(&mut writer, context));
             let result = write_progress(
                 &mut output,
                 ProgressRenderMode::Json,
@@ -771,7 +1122,7 @@ mod tests {
         let value: serde_json::Value =
             serde_json::from_str(&progress_json("import", &line, StdDuration::from_secs(2)))
                 .unwrap();
-        assert_eq!(value["percent"], 0.0);
+        assert_eq!(value["percent"], serde_json::Value::Null);
         assert_eq!(value["eta_seconds"], serde_json::Value::Null);
         assert_eq!(value["current_source_progress"]["stage"], "logical_scan");
         assert_eq!(

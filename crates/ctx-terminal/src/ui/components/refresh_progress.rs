@@ -2,10 +2,13 @@ use serde_json::{json, Value};
 
 use crate::{format_bytes, format_count};
 
-use super::{fields, progress, Field, Progress};
+use super::{fields::fields_with_label_width, progress, Field, Progress};
 use crate::ui::{Document, RenderContext};
 
 const MAX_DYNAMIC_TEXT_BYTES: usize = 256;
+const REFRESH_TABLE_LABEL_WIDTH: usize = "Agent histories".len();
+const MAX_PROGRESS_BAR_WIDTH: usize = 48;
+const PROGRESS_PULSE_WIDTH: usize = 8;
 
 /// Terminal-neutral presentation view of a refresh status. Composition code
 /// converts its domain snapshot to this owned value before rendering.
@@ -15,6 +18,7 @@ pub struct RefreshProgressSnapshot {
     kind: RefreshStatusKind,
     progress: RefreshProgress,
     total_sources_known: bool,
+    presentation_agent_histories: Option<Vec<String>>,
 }
 
 impl RefreshProgressSnapshot {
@@ -24,11 +28,19 @@ impl RefreshProgressSnapshot {
         progress: RefreshProgress,
         total_sources_known: bool,
     ) -> Self {
+        let presentation_agent_histories = (total_sources_known
+            && !matches!(
+                progress.phase.as_str(),
+                "queued" | "pending" | "discovering"
+            )
+            && !progress.agent_histories.is_empty())
+        .then(|| progress.agent_histories.clone());
         Self {
             request_id,
             kind,
             progress,
             total_sources_known,
+            presentation_agent_histories,
         }
     }
 
@@ -40,8 +52,33 @@ impl RefreshProgressSnapshot {
         &self.progress
     }
 
+    #[cfg(test)]
+    pub(crate) fn progress_mut_for_test(&mut self) -> &mut RefreshProgress {
+        &mut self.progress
+    }
+
     pub const fn total_sources_known(&self) -> bool {
         self.total_sources_known
+    }
+
+    pub(crate) fn discovery_complete(&self) -> bool {
+        self.total_sources_known
+            && !matches!(
+                self.progress.phase.as_str(),
+                "queued" | "pending" | "discovering"
+            )
+    }
+
+    /// Advances only the local human display clock. Backend counters and JSON
+    /// progress retain the daemon snapshot supplied by the caller.
+    pub(crate) fn set_presentation_elapsed_millis(&mut self, elapsed_millis: u64) {
+        if !self.is_terminal() {
+            self.progress.elapsed_millis = Some(elapsed_millis);
+        }
+    }
+
+    pub(crate) fn set_presentation_agent_histories(&mut self, histories: Option<Vec<String>>) {
+        self.presentation_agent_histories = histories;
     }
 
     pub fn is_terminal(&self) -> bool {
@@ -66,7 +103,7 @@ impl RefreshProgressSnapshot {
     }
 
     pub fn message(&self) -> String {
-        let label = refresh_label(self);
+        let label = machine_refresh_label(self);
         let sources = source_count_text(self);
         match self.progress.current_source.as_deref() {
             Some(source) if !self.is_terminal() => {
@@ -315,17 +352,17 @@ impl RefreshCurrentSourceProgress {
 }
 
 pub fn refresh_progress(context: &RenderContext, snapshot: &RefreshProgressSnapshot) -> Document {
-    let label = refresh_label(snapshot);
+    let label = human_refresh_label(snapshot);
     let mut document = progress(
         context,
         Progress {
             label,
             current: if snapshot.is_terminal() {
-                1
+                0
             } else {
-                snapshot.progress.elapsed_millis.unwrap_or(0) / 250
+                indeterminate_position(context, snapshot.progress.elapsed_millis.unwrap_or(0))
             },
-            total: snapshot.is_terminal().then_some(1),
+            total: None,
             detail: None,
         },
     );
@@ -344,33 +381,97 @@ pub fn refresh_progress(context: &RenderContext, snapshot: &RefreshProgressSnaps
     } else {
         "estimating".to_owned()
     };
-    let histories = if snapshot.progress.agent_histories.is_empty() {
-        vec!["discovering".to_owned()]
-    } else {
-        snapshot.progress.agent_histories.clone()
+    let Some(histories) = snapshot.presentation_agent_histories.as_ref() else {
+        return document;
     };
-    let mut detail_fields = Vec::with_capacity(histories.len().saturating_add(6));
+    let mut history_fields = Vec::with_capacity(histories.len());
     for (index, history) in histories.iter().enumerate() {
         if index == 0 {
-            detail_fields.push(Field::new("Agent histories", history));
+            history_fields.push(Field::new("Agent histories", history));
         } else {
-            detail_fields.push(Field::continuation(history));
+            history_fields.push(Field::continuation(history));
         }
     }
-    detail_fields.extend([
+    let metric_fields = [
         Field::new("Sessions", &sessions),
         Field::new("Messages", &messages),
         Field::new("Tool calls", &tool_calls),
         Field::new("Data scanned", &scanned),
         Field::new("Elapsed", &elapsed),
         Field::new("Remaining", &remaining),
-    ]);
+    ];
     document.push_blank();
-    document.append(fields(context, &detail_fields));
+    document.append(fields_with_label_width(
+        context,
+        &history_fields,
+        REFRESH_TABLE_LABEL_WIDTH,
+    ));
+    document.push_blank();
+    document.append(fields_with_label_width(
+        context,
+        &metric_fields,
+        REFRESH_TABLE_LABEL_WIDTH,
+    ));
     document
 }
 
-fn refresh_label(snapshot: &RefreshProgressSnapshot) -> &'static str {
+fn indeterminate_position(context: &RenderContext, elapsed_millis: u64) -> u64 {
+    let bar_width = context
+        .content_width()
+        .map_or(MAX_PROGRESS_BAR_WIDTH, |width| {
+            width.min(MAX_PROGRESS_BAR_WIDTH)
+        })
+        .max(1);
+    let travel = bar_width.saturating_sub(bar_width.min(PROGRESS_PULSE_WIDTH));
+    if travel == 0 {
+        return 0;
+    }
+    let travel = u64::try_from(travel).unwrap_or(u64::MAX);
+    let tick = elapsed_millis / 100;
+    let cycle = travel.saturating_mul(2);
+    let phase = tick % cycle;
+    if phase <= travel {
+        phase
+    } else {
+        cycle - phase
+    }
+}
+
+fn human_refresh_label(snapshot: &RefreshProgressSnapshot) -> &'static str {
+    match &snapshot.kind {
+        RefreshStatusKind::BackgroundMaintenanceWake => "Preparing your history",
+        RefreshStatusKind::Legacy { request_state } => match request_state {
+            RefreshRequestState::AdmissionPending | RefreshRequestState::Queued => {
+                "Preparing your history"
+            }
+            RefreshRequestState::Running => human_processing_label(&snapshot.progress.phase),
+            RefreshRequestState::Published => "History refresh complete",
+            RefreshRequestState::Failed => "History refresh failed",
+        },
+        RefreshStatusKind::Logical(logical) => match logical.logical_phase {
+            RefreshLogicalPhase::Waiting
+            | RefreshLogicalPhase::Attached
+            | RefreshLogicalPhase::CoverageCheck
+            | RefreshLogicalPhase::ExactSuccessor => "Preparing your history",
+            RefreshLogicalPhase::Direct => human_processing_label(&snapshot.progress.phase),
+            RefreshLogicalPhase::Terminal => terminal_label(logical),
+        },
+    }
+}
+
+fn human_processing_label(phase: &str) -> &'static str {
+    match phase {
+        "queued" | "pending" | "discovering" => "Preparing your history",
+        "verifying" => "Verifying agent history",
+        "committing" | "committed" | "publishing" => "Finalizing search index",
+        _ => "Reading your agent history",
+    }
+}
+
+// Machine progress messages remain a separate compatibility surface from the
+// live human frame. They retain request-state detail but never use the former
+// network-sounding publication label for local index work.
+fn machine_refresh_label(snapshot: &RefreshProgressSnapshot) -> &'static str {
     match &snapshot.kind {
         RefreshStatusKind::BackgroundMaintenanceWake => "History refresh is queued",
         RefreshStatusKind::Legacy { request_state } => match request_state {
@@ -387,28 +488,32 @@ fn refresh_label(snapshot: &RefreshProgressSnapshot) -> &'static str {
             RefreshLogicalPhase::CoverageCheck => "Checking refresh coverage",
             RefreshLogicalPhase::ExactSuccessor => "Waiting for successor refresh",
             RefreshLogicalPhase::Direct => physical_label(&snapshot.progress.phase),
-            RefreshLogicalPhase::Terminal => logical
-                .structured_outcome
-                .as_ref()
-                .map(|outcome| {
-                    if outcome.is_failure() {
-                        "History refresh failed"
-                    } else if outcome.code.as_str() == "completed" {
-                        "History refresh complete"
-                    } else {
-                        "History refresh complete with issues"
-                    }
-                })
-                .unwrap_or("History refresh complete"),
+            RefreshLogicalPhase::Terminal => terminal_label(logical),
         },
     }
+}
+
+fn terminal_label(logical: &RefreshLogicalStatus) -> &'static str {
+    logical
+        .structured_outcome
+        .as_ref()
+        .map(|outcome| {
+            if outcome.is_failure() {
+                "History refresh failed"
+            } else if outcome.code.as_str() == "completed" {
+                "History refresh complete"
+            } else {
+                "History refresh complete with issues"
+            }
+        })
+        .unwrap_or("History refresh complete")
 }
 
 fn physical_label(phase: &str) -> &'static str {
     match phase {
         "queued" | "pending" | "discovering" => "Discovering history sources",
-        "committing" | "committed" | "publishing" => "Publishing search index",
-        "verifying" => "Verifying refreshed history",
+        "committing" | "committed" | "publishing" => "Finalizing search index",
+        "verifying" => "Verifying agent history",
         _ => "Indexing your agent history",
     }
 }
@@ -561,7 +666,7 @@ mod tests {
             ),
         ] {
             let snapshot = active_status(phase, "committed", true, 2);
-            assert_eq!(refresh_label(&snapshot), expected);
+            assert_eq!(machine_refresh_label(&snapshot), expected);
             assert!(!snapshot.is_terminal(), "logical phase {phase:?}");
             let logical = match snapshot.kind() {
                 RefreshStatusKind::Logical(logical) => logical,
@@ -583,10 +688,8 @@ mod tests {
         ] {
             assert!(!rendered.contains("Sources"), "{rendered}");
             assert!(!rendered.contains("0 / 0"), "{rendered}");
-            assert!(
-                rendered.contains("Agent histories  discovering"),
-                "{rendered}"
-            );
+            assert!(!rendered.contains("Agent histories"), "{rendered}");
+            assert_eq!(rendered.lines().count(), 2, "{rendered}");
         }
     }
 
@@ -601,16 +704,18 @@ mod tests {
         snapshot.progress.processed_tool_calls = 31_009;
         snapshot.progress.processed_bytes = 8_804_683_776;
         snapshot.progress.elapsed_millis = Some(125_000);
+        snapshot.set_presentation_agent_histories(Some(snapshot.progress.agent_histories.clone()));
         let rendered = refresh_progress(&context, &snapshot).render_plain();
         assert_eq!(
             rendered,
             concat!(
-                "Indexing your agent history\n",
-                "────────━━━━━━━━────────────────────────────────\n",
+                "Reading your agent history\n",
+                "──────────────────────────────━━━━━━━━──────────\n",
                 "\n",
                 "Agent histories  Codex\n",
                 "                 Claude\n",
                 "                 Gemini\n",
+                "\n",
                 "Sessions         1,123\n",
                 "Messages         72,456\n",
                 "Tool calls       31,009\n",
@@ -621,6 +726,48 @@ mod tests {
         );
         for internal in ["Logical", "Physical", "owner", "Source", "3 / 4"] {
             assert!(!rendered.contains(internal), "{rendered}");
+        }
+    }
+
+    #[test]
+    fn local_elapsed_changes_bar_and_elapsed_without_changing_backend_counters() {
+        let context = RenderContext::for_test(TestContext::tty(StreamKind::Stderr, 80));
+        let mut snapshot = active_status(RefreshLogicalPhase::Direct, "verifying", true, 4);
+        snapshot.progress.agent_histories = vec!["Codex".to_owned()];
+        snapshot.progress.processed_sessions = 7;
+        snapshot.set_presentation_agent_histories(Some(vec!["Codex".to_owned()]));
+        snapshot.set_presentation_elapsed_millis(900);
+        let first = refresh_progress(&context, &snapshot).render_plain();
+        snapshot.set_presentation_elapsed_millis(1_100);
+        let second = refresh_progress(&context, &snapshot).render_plain();
+
+        assert_ne!(first.lines().nth(1), second.lines().nth(1));
+        assert!(first.contains("Elapsed          0s"), "{first}");
+        assert!(second.contains("Elapsed          1s"), "{second}");
+        assert!(second.contains("Sessions         7"), "{second}");
+    }
+
+    #[test]
+    fn indeterminate_bar_moves_one_cell_per_tick_and_reverses_at_edges() {
+        let context = RenderContext::for_test(TestContext::tty(StreamKind::Stderr, 80));
+        assert_eq!(indeterminate_position(&context, 0), 0);
+        assert_eq!(indeterminate_position(&context, 100), 1);
+        assert_eq!(indeterminate_position(&context, 4_000), 40);
+        assert_eq!(indeterminate_position(&context, 4_100), 39);
+        assert_eq!(indeterminate_position(&context, 8_000), 0);
+    }
+
+    #[test]
+    fn local_phases_use_conservative_non_publishing_names() {
+        for (phase, expected) in [
+            ("refreshing", "Reading your agent history"),
+            ("verifying", "Verifying agent history"),
+            ("committing", "Finalizing search index"),
+            ("committed", "Finalizing search index"),
+        ] {
+            let snapshot = active_status(RefreshLogicalPhase::Direct, phase, true, 1);
+            assert_eq!(human_refresh_label(&snapshot), expected);
+            assert!(!machine_refresh_label(&snapshot).contains("Publishing"));
         }
     }
 
@@ -675,7 +822,7 @@ mod tests {
         for (state, code, class, failure, label) in cases {
             let snapshot = terminal_status(state, code, class, failure);
             assert!(snapshot.is_terminal());
-            assert_eq!(refresh_label(&snapshot), label);
+            assert_eq!(machine_refresh_label(&snapshot), label);
         }
 
         let physically_committed = active_status(RefreshLogicalPhase::Direct, "committed", true, 0);

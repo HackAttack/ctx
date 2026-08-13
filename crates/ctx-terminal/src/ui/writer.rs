@@ -1,10 +1,38 @@
-use std::io::{self, IsTerminal as _, Write};
+use std::{
+    io::{self, IsTerminal as _, Write},
+    sync::{Arc, Mutex},
+};
 
 use crate::output::MeasuredWriter;
 
 use super::{ColorMode, Document, RenderContext, StreamKind};
 
 type BoxedWriter = Box<dyn Write + Send>;
+
+#[derive(Clone)]
+struct SharedDestinationWriter(Arc<Mutex<BoxedWriter>>);
+
+impl SharedDestinationWriter {
+    fn new(writer: BoxedWriter) -> Self {
+        Self(Arc::new(Mutex::new(writer)))
+    }
+}
+
+impl Write for SharedDestinationWriter {
+    fn write(&mut self, buffer: &[u8]) -> io::Result<usize> {
+        self.0
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .write(buffer)
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        self.0
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .flush()
+    }
+}
 
 pub struct Ui {
     stdout: Destination,
@@ -129,6 +157,11 @@ impl Ui {
     pub fn stderr_live_output(&mut self) -> LiveOutput<&mut (dyn Write + Send)> {
         let context = *self.stderr.context();
         LiveOutput::new(self.stderr.writer(), context)
+    }
+
+    pub(crate) fn stderr_shared_live_output(&self) -> LiveOutput<BoxedWriter> {
+        let context = *self.stderr.context();
+        LiveOutput::new(Box::new(self.stderr.shared_writer()), context)
     }
 
     pub fn stdout_writer(&mut self) -> &mut (dyn Write + Send) {
@@ -325,12 +358,15 @@ fn write_cursor_down(writer: &mut impl Write, rows: usize) -> io::Result<()> {
 
 struct Destination {
     context: RenderContext,
-    writer: BoxedWriter,
+    writer: SharedDestinationWriter,
 }
 
 impl Destination {
     fn new(context: RenderContext, writer: BoxedWriter) -> Self {
-        Self { context, writer }
+        Self {
+            context,
+            writer: SharedDestinationWriter::new(writer),
+        }
     }
 
     fn injected<W>(context: RenderContext, writer: W) -> Self
@@ -375,7 +411,11 @@ impl Destination {
     }
 
     fn writer(&mut self) -> &mut (dyn Write + Send) {
-        self.writer.as_mut()
+        &mut self.writer
+    }
+
+    fn shared_writer(&self) -> SharedDestinationWriter {
+        self.writer.clone()
     }
 
     fn flush(&mut self) -> io::Result<()> {
@@ -517,6 +557,107 @@ mod tests {
             document.push_line(Line::new().with(Span::new(*line, Token::Heading)));
         }
         document
+    }
+
+    fn comparison_documents() -> Vec<Document> {
+        (0..=40)
+            .map(|position| {
+                let bar = format!(
+                    "{}{}{}",
+                    "─".repeat(position),
+                    "━".repeat(8),
+                    "─".repeat(40 - position)
+                );
+                let mut document = Document::new();
+                for line in [
+                    "Reading your agent history",
+                    &bar,
+                    "",
+                    "Agent histories  Codex",
+                    "                 Claude",
+                    "",
+                    "Sessions         1,123",
+                    "Messages         72,456",
+                    "Tool calls       31,009",
+                    "Data scanned     8.20 GiB",
+                    "Elapsed          2m 05s",
+                    "Remaining        estimating",
+                ] {
+                    document.push_line(Line::text(line));
+                }
+                document
+            })
+            .collect()
+    }
+
+    fn differential_comparison_bytes(frames: usize) -> usize {
+        let context = RenderContext::for_test(
+            TestContext::tty(StreamKind::Stdout, 80).color(ColorMode::Never),
+        );
+        let documents = comparison_documents();
+        let mut output = LiveOutput::new(Vec::new(), context);
+        for frame in 0..frames {
+            output
+                .write_frame(&documents[frame % documents.len()], false)
+                .unwrap();
+        }
+        output.into_inner().len()
+    }
+
+    fn full_repaint_comparison_bytes(frames: usize) -> usize {
+        let context = RenderContext::for_test(
+            TestContext::tty(StreamKind::Stdout, 80).color(ColorMode::Never),
+        );
+        let documents = comparison_documents();
+        let mut output = Vec::new();
+        let mut rendered_lines = 0;
+        for frame in 0..frames {
+            let rendered = documents[frame % documents.len()].render(&context);
+            let lines = frame_rows(&rendered);
+            if rendered_lines == 0 {
+                output.extend_from_slice(rendered.as_bytes());
+                rendered_lines = lines.len();
+                continue;
+            }
+
+            output.extend_from_slice(format!("\x1b[{rendered_lines}A").as_bytes());
+            let height = rendered_lines.max(lines.len());
+            for row in 0..height {
+                output.extend_from_slice(b"\r\x1b[2K");
+                if let Some(line) = lines.get(row) {
+                    output.extend_from_slice(line.as_bytes());
+                }
+                output.push(b'\n');
+            }
+            if rendered_lines > lines.len() {
+                output.extend_from_slice(
+                    format!("\x1b[{}A", rendered_lines - lines.len()).as_bytes(),
+                );
+            }
+            rendered_lines = lines.len();
+        }
+        output.len()
+    }
+
+    #[test]
+    fn differential_renderer_has_deterministic_write_reduction() {
+        let differential = differential_comparison_bytes(1_000);
+        let full_repaint = full_repaint_comparison_bytes(1_000);
+
+        assert_eq!((differential, full_repaint), (220_162, 434_935));
+        assert!(differential * 5 < full_repaint * 3);
+    }
+
+    #[test]
+    #[ignore = "bounded renderer CPU comparison; run explicitly through ctx-build-governor"]
+    fn benchmark_differential_renderer() {
+        std::hint::black_box(differential_comparison_bytes(50_000));
+    }
+
+    #[test]
+    #[ignore = "bounded renderer CPU comparison; run explicitly through ctx-build-governor"]
+    fn benchmark_full_repaint_renderer() {
+        std::hint::black_box(full_repaint_comparison_bytes(50_000));
     }
 
     #[test]

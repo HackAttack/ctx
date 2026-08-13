@@ -47,6 +47,28 @@ pub fn fields(context: &RenderContext, values: &[Field<'_>]) -> Document {
         .map(|field| display_width(field.label))
         .max()
         .unwrap_or(0);
+    fields_with_label_width(context, values, label_width)
+}
+
+/// Renders a field group with a caller-owned label column. Separate groups in
+/// one live frame can therefore keep their values at the same horizontal
+/// position without merging their semantic spacing.
+pub(super) fn fields_with_label_width(
+    context: &RenderContext,
+    values: &[Field<'_>],
+    label_width: usize,
+) -> Document {
+    if values.is_empty() {
+        return Document::new();
+    }
+
+    let label_width = label_width.max(
+        values
+            .iter()
+            .map(|field| display_width(field.label))
+            .max()
+            .unwrap_or(0),
+    );
     let stacked = context.content_width().is_some_and(|width| {
         let aligned_value_width = width
             .saturating_sub(label_width)
@@ -215,6 +237,20 @@ mod tests {
                 "\u{1b}[2mCaveat\u{1b}[0m\n",
                 "  restart required\n",
             )
+        );
+    }
+
+    #[test]
+    fn explicit_label_width_aligns_separate_field_groups() {
+        let context = context(80);
+        assert_eq!(
+            fields_with_label_width(&context, &[Field::new("Agent histories", "Codex")], 19,)
+                .render_plain(),
+            "Agent histories      Codex\n"
+        );
+        assert_eq!(
+            fields_with_label_width(&context, &[Field::new("Sessions", "1")], 19).render_plain(),
+            "Sessions             1\n"
         );
     }
 }
