@@ -1,0 +1,32 @@
+[package]
+name = "ctx-cli-contract-tests"
+version = "1.0.0"
+description = "Bazel-owned final-binary contracts and shared test support for ctx"
+edition.workspace = true
+autotests = false
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+rust-version.workspace = true
+publish = false
+
+# Cargo owns the publish-disabled marker library. Bazel owns and discovers the
+# final-binary contract tests under tests/contracts/.
+[dev-dependencies]
+assert_cmd.workspace = true
+base64.workspace = true
+chrono.workspace = true
+flate2 = "1"
+libc.workspace = true
+predicates.workspace = true
+ring.workspace = true
+rusqlite.workspace = true
+serde_json.workspace = true
+serde_yaml.workspace = true
+sha2.workspace = true
+tar.workspace = true
+tempfile.workspace = true
+uuid.workspace = true
+
+[target.'cfg(windows)'.dev-dependencies]
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_System_Threading"] }

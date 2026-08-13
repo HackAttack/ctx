@@ -14,6 +14,7 @@ model_build="${root}/crates/ctx-semantic-model/BUILD.bazel"
 model_manifest="${root}/crates/ctx-semantic-model/Cargo.toml"
 cli_build_rs="${root}/crates/ctx-cli/build.rs"
 cli_targets="${root}/crates/ctx-cli/test_targets.bzl"
+cli_contract_targets="${root}/crates/ctx-cli-contract-tests/test_targets.bzl"
 
 grep -F 'cargo:rustc-check-cfg=cfg(ctx_semantic_fastembed)' "${model_build_rs}" >/dev/null
 grep -F -- '--check-cfg=cfg(ctx_semantic_fastembed)' "${model_build}" >/dev/null
@@ -45,7 +46,7 @@ done
 
 grep -F "target.'cfg(any(all(target_os = \"linux\", any(target_arch = \"x86_64\", target_arch = \"aarch64\"), target_env = \"gnu\"), all(target_os = \"macos\", any(target_arch = \"x86_64\", target_arch = \"aarch64\")), all(target_os = \"windows\", target_arch = \"x86_64\"), all(target_os = \"freebsd\", target_arch = \"x86_64\")))'.dependencies" "${model_manifest}" >/dev/null
 
-if grep -F 'ctx_semantic_fastembed' "${cli_build_rs}" "${cli_targets}" >/dev/null; then
+if grep -F 'ctx_semantic_fastembed' "${cli_build_rs}" "${cli_targets}" "${cli_contract_targets}" >/dev/null; then
   echo 'ctx_semantic_fastembed authority leaked back into ctx-cli' >&2
   exit 1
 fi

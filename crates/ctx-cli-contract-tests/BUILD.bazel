@@ -1,0 +1,166 @@
+load("@crates//:defs.bzl", "aliases", "all_crate_deps", "crate_edition")
+load("@rules_rust//cargo:defs.bzl", "cargo_toml_env_vars")
+load("@rules_rust//rust:defs.bzl", "rust_library")
+load("//tools/bazel:gates.bzl", "loc_check_inputs")
+load(":test_targets.bzl", "ctx_cli_contract_test")
+
+package(default_visibility = ["//visibility:public"])
+
+exports_files([
+    "BUILD.bazel",
+    "Cargo.toml",
+    "test_targets.bzl",
+])
+
+loc_check_inputs(name = "loc_check_inputs")
+
+filegroup(
+    name = "cargo_package_data",
+    srcs = glob(["**"], exclude = ["BUILD.bazel"]),
+)
+
+filegroup(
+    name = "contract_support_base",
+    srcs = [
+        "tests/contracts/support/mod.rs",
+        "tests/contracts/support/analytics.rs",
+        "tests/contracts/support/assertions.rs",
+        "tests/contracts/support/history_plugins.rs",
+        "tests/contracts/support/runner.rs",
+        "//crates/ctx-agent-application:tests/contracts/support/mcp.rs",
+    ],
+)
+
+filegroup(
+    name = "contract_support_fixtures",
+    srcs = [
+        "tests/contracts/support/daemon.rs",
+        "tests/contracts/support/fixtures.rs",
+        "tests/contracts/support/native_fixtures.rs",
+        "tests/contracts/support/native_fixtures/appends.rs",
+        "tests/contracts/support/native_fixtures/installs.rs",
+        "tests/contracts/support/native_fixtures/json_tree.rs",
+        "tests/contracts/support/native_fixtures/sqlite.rs",
+    ],
+)
+
+filegroup(
+    name = "contract_support_pro",
+    srcs = ["tests/contracts/support/pro.rs"],
+)
+
+filegroup(
+    name = "contract_support_upgrade",
+    srcs = ["tests/contracts/support/upgrade.rs"],
+)
+
+filegroup(
+    name = "native_providers_extra_srcs",
+    srcs = [
+        "tests/contracts/native_providers/factory_retry.rs",
+        "tests/contracts/support/native_providers/daemon.rs",
+        "tests/contracts/support/native_providers/sqlite_sources.rs",
+        "tests/contracts/support/native_providers/workspace_sources.rs",
+    ],
+)
+
+filegroup(
+    name = "setup_sources_import_extra_srcs",
+    srcs = [
+        "tests/contracts/setup_sources_import/import_orchestration.rs",
+        "tests/contracts/setup_sources_import/import_orchestration/relocation.rs",
+        "tests/contracts/setup_sources_import/lifecycle.rs",
+        "tests/contracts/setup_sources_import/source_inventory.rs",
+        "tests/contracts/support/setup_sources_import/lifecycle_helpers.rs",
+    ],
+)
+
+filegroup(
+    name = "search_refresh_support_srcs",
+    srcs = glob(["tests/contracts/support/search_refresh/**/*.rs"]),
+)
+
+filegroup(
+    name = "search_show_support_srcs",
+    srcs = glob(["tests/contracts/support/search_show/**/*.rs"]),
+)
+
+filegroup(
+    name = "upgrade_runtime_support_srcs",
+    srcs = ["tests/contracts/support/upgrade/runtime_publication.rs"],
+)
+
+cargo_toml_env_vars(
+    name = "cargo_toml_env_vars",
+    src = "Cargo.toml",
+)
+
+rust_library(
+    name = "lib",
+    srcs = ["src/lib.rs"],
+    crate_name = "ctx_cli_contract_tests",
+    crate_root = "src/lib.rs",
+    edition = crate_edition(),
+    aliases = aliases(),
+    deps = all_crate_deps(normal = True),
+    proc_macro_deps = all_crate_deps(proc_macro = True),
+    rustc_env = {"CARGO_MANIFEST_DIR": "crates/ctx-cli-contract-tests"},
+)
+
+ctx_cli_contract_test(
+    name = "test_targets_minimal_fixture",
+    src = "tests/build_support/minimal.rs",
+    extra_crates = ["serde_yaml"],
+    tags = ["manual"],
+    test_support = [],
+)
+
+ctx_cli_contract_test(
+    name = "test_targets_capabilities_fixture",
+    src = "tests/build_support/capabilities.rs",
+    tags = ["manual"],
+    test_support = [
+        "base",
+        "fixtures",
+        "pro",
+        "upgrade",
+    ],
+)
+
+ctx_cli_contract_test(
+    name = "native_provider_real_shapes_tests",
+    src = "tests/contracts/native_provider_real_shapes.rs",
+    test_support = [
+        "base",
+        "fixtures",
+    ],
+)
+
+ctx_cli_contract_test(
+    name = "native_provider_rejections_tests",
+    src = "tests/contracts/native_provider_rejections.rs",
+    test_support = [
+        "base",
+        "fixtures",
+    ],
+)
+
+ctx_cli_contract_test(
+    name = "native_providers_tests",
+    src = "tests/contracts/native_providers.rs",
+    extra_srcs = [":native_providers_extra_srcs"],
+    test_support = [
+        "base",
+        "fixtures",
+    ],
+)
+
+ctx_cli_contract_test(
+    name = "setup_sources_import_tests",
+    src = "tests/contracts/setup_sources_import.rs",
+    extra_srcs = [":setup_sources_import_extra_srcs"],
+    test_support = [
+        "base",
+        "fixtures",
+    ],
+)

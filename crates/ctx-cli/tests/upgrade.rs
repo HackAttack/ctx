@@ -3,7 +3,7 @@ mod support;
 #[cfg(any(unix, windows))]
 use support::*;
 
-#[path = "support/upgrade/runtime_publication.rs"]
+#[path = "../../ctx-cli-contract-tests/tests/contracts/support/upgrade/runtime_publication.rs"]
 mod runtime_publication;
 
 #[path = "upgrade/release_validation.rs"]

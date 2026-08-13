@@ -3,6 +3,7 @@ members = [
     "crates/ctx-agent-application",
     "crates/ctx-agent-integrations",
     "crates/ctx-cli",
+    "crates/ctx-cli-contract-tests",
     "crates/ctx-client-observability",
     "crates/ctx-daemon-cli",
     "crates/ctx-daemon-application",

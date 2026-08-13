@@ -1,4 +1,4 @@
-#[path = "../support/mod.rs"]
+#[path = "../contracts/support/mod.rs"]
 mod support;
 
 #[test]

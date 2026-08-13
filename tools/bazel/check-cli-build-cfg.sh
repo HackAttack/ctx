@@ -9,7 +9,7 @@ else
   root="${BUILD_WORKSPACE_DIRECTORY:-$(cd "$(dirname "$0")/../.." && pwd)}"
 fi
 build_rs="${root}/crates/ctx-cli/build.rs"
-bazel_cfg="${root}/crates/ctx-cli/test_targets.bzl"
+bazel_cfg="${root}/crates/ctx-cli-contract-tests/test_targets.bzl"
 binary_contracts="${root}/tools/bazel/binary_contracts.bzl"
 
 grep -F 'CTX_CLI_RUSTC_FLAGS = CTX_BINARY_CONTRACT_RUSTC_FLAGS' "${bazel_cfg}" >/dev/null

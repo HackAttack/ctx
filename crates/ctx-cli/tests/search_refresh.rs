@@ -803,5 +803,7 @@ fn write_codex_session(path: &Path, native_session_id: &str, messages: &[(&str, 
     fs::write(path, lines.join("\n") + "\n").unwrap();
 }
 
-include!("support/search_refresh/core_behaviors.rs");
-include!("support/search_refresh/generation_lifecycle.rs");
+include!("../../ctx-cli-contract-tests/tests/contracts/support/search_refresh/core_behaviors.rs");
+include!(
+    "../../ctx-cli-contract-tests/tests/contracts/support/search_refresh/generation_lifecycle.rs"
+);
