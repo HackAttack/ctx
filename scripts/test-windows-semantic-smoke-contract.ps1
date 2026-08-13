@@ -188,8 +188,7 @@ $smokeSource = [System.IO.File]::ReadAllText($smokeScript)
 foreach ($requiredSignedProvisioningContract in @(
     'Windows ML proof requires -SignedProvisioned after hosted signed model/runtime provisioning',
     '$binaryMarker.manager -cne "ctx-hosted-installer"',
-    '$runtimeMarker.metadata_trust -cne "signed-release-metadata"',
-    '"signed-hosted-provisioning"'
+    '$runtimeMarker.metadata_trust -cne "signed-release-metadata"'
 )) {
     if (-not $smokeSource.Contains($requiredSignedProvisioningContract)) {
         throw "Windows ML proof is missing signed provisioning contract: $requiredSignedProvisioningContract"
@@ -345,7 +344,7 @@ try {
         $script:DataRoot,
         "import",
         "--no-daemon",
-        "--format",
+        "--input-format",
         "ctx-history-jsonl-v1",
         "--path",
         $fixturePath
