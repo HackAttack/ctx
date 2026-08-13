@@ -10,6 +10,7 @@ use serde::{Deserialize, Serialize};
 use crate::{
     common::{io::ProviderSourceRoot, time::system_time_ms},
     provider::codex::catalog::CatalogSession,
+    provider::source_backed::family::jsonl::JsonlFileObservation,
     CODEX_SESSION_SOURCE_FORMAT,
 };
 
@@ -55,6 +56,10 @@ impl CodexFileObservation {
 pub(crate) struct CodexCatalogSource {
     pub(crate) source_path: PathBuf,
     pub(crate) catalog_observation: CodexFileObservation,
+    /// JSONL admission observation gathered by session-tree inventory while
+    /// the source was already securely open. Other catalog routes leave this
+    /// absent and retain the conservative reopen path.
+    pub(crate) carried_jsonl_observation: Option<JsonlFileObservation>,
     /// SHA-256 of exactly `catalog_observation.len` bytes from the retained
     /// discovery authority. This is task-local admission evidence, not a
     /// second transcript store.
@@ -140,6 +145,7 @@ fn catalog_source(session: &CatalogSession) -> Result<CodexCatalogSource, &'stat
             stable_token,
             change_token,
         },
+        carried_jsonl_observation: None,
         catalog_prefix_sha256: None,
         catalog_native_session_id: session.external_session_id.clone(),
         authority_root: None,

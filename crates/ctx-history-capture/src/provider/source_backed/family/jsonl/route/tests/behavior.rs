@@ -508,6 +508,131 @@ fn certified_append_generation_is_identical_with_one_and_eight_workers() {
 }
 
 #[test]
+fn unchanged_complete_sources_do_not_enter_jsonl_ingestion_tasks() {
+    let temp = crate::test_support_paths::tempdir().unwrap();
+    let root = temp.path().join("sessions");
+    let index = temp.path().join("index");
+    fs::create_dir_all(&root).unwrap();
+    for source_index in 0..4 {
+        fs::write(
+            root.join(format!("{source_index}.jsonl")),
+            format!("{{\"message\":\"cold-{source_index}\"}}\n"),
+        )
+        .unwrap();
+    }
+    let adapter = ParallelTestAdapter;
+
+    let (cold, cold_activity) = capture_parallel_test_generation(&adapter, &root, &index, 4);
+    assert_eq!(cold_activity.sources_started, 4);
+    let (unchanged, unchanged_activity) =
+        capture_parallel_test_generation(&adapter, &root, &index, 4);
+
+    assert_eq!(unchanged.generation_id, cold.generation_id);
+    assert_eq!(unchanged.manifest().sources, cold.manifest().sources);
+    assert_eq!(unchanged_activity, JsonlFamilyScannerActivity::default());
+}
+
+#[test]
+fn unchanged_terminal_proof_allows_growth_before_terminal_publication() {
+    let temp = crate::test_support_paths::tempdir().unwrap();
+    let root = temp.path().join("sessions");
+    let index = temp.path().join("index");
+    fs::create_dir_all(&root).unwrap();
+    let source_path = root.join("growing.jsonl");
+    fs::write(&source_path, TEST_RECORD).unwrap();
+    let adapter = ParallelTestAdapter;
+    let (cold, _) = capture_parallel_test_generation(&adapter, &root, &index, 1);
+
+    set_before_jsonl_terminal_physical_revalidation_hook(root.clone(), move || {
+        OpenOptions::new()
+            .append(true)
+            .open(source_path)
+            .unwrap()
+            .write_all(TEST_RECORD)
+            .unwrap();
+    });
+
+    let (unchanged, activity) =
+        capture_parallel_test_generation_with_terminal_revalidation(&adapter, &root, &index, 1)
+            .unwrap();
+
+    assert_eq!(unchanged.generation_id, cold.generation_id);
+    assert_eq!(activity, JsonlFamilyScannerActivity::default());
+
+    let (resumed, activity) = capture_parallel_test_generation(&adapter, &root, &index, 1);
+    assert_eq!(activity.sources_started, 1);
+    assert_eq!(activity.sources_completed, 1);
+    assert_eq!(resumed.manifest().sources[0].counts().complete_records, 2);
+}
+
+#[test]
+fn unchanged_terminal_proof_fails_closed_on_prepublication_source_races() {
+    let append_adapter = ParallelTestAdapter;
+    let replacement_adapter = ReplacementParallelTestAdapter;
+    for (proof_kind, adapter) in [
+        ("frozen-prefix", &append_adapter as &dyn JsonlFamilyAdapter),
+        (
+            "exact-file",
+            &replacement_adapter as &dyn JsonlFamilyAdapter,
+        ),
+    ] {
+        for race in ["mutation", "replacement", "deletion"] {
+            let temp = crate::test_support_paths::tempdir().unwrap();
+            let root = temp.path().join("sessions");
+            let index = temp.path().join("index");
+            fs::create_dir_all(&root).unwrap();
+            let source_path = root.join("racing.jsonl");
+            fs::write(&source_path, TEST_RECORD).unwrap();
+            let cold = capture_parallel_test_generation(adapter, &root, &index, 1).0;
+
+            let displaced = temp.path().join("displaced.jsonl");
+            let replacement = temp.path().join("replacement.jsonl");
+            if race == "replacement" {
+                fs::write(&replacement, TEST_RECORD).unwrap();
+            }
+            let hook_ran = Arc::new(AtomicBool::new(false));
+            let hook_observation = Arc::clone(&hook_ran);
+            let hook_source = source_path.clone();
+            set_before_jsonl_terminal_physical_revalidation_hook(root.clone(), move || {
+                match race {
+                    "mutation" => {
+                        fs::write(&hook_source, b"{\"message\":\"after!\"}\n").unwrap();
+                    }
+                    "replacement" => {
+                        fs::rename(&hook_source, displaced).unwrap();
+                        fs::rename(replacement, &hook_source).unwrap();
+                    }
+                    "deletion" => fs::remove_file(&hook_source).unwrap(),
+                    _ => unreachable!(),
+                }
+                hook_observation.store(true, Ordering::SeqCst);
+            });
+
+            let error = capture_parallel_test_generation_with_terminal_revalidation(
+                adapter, &root, &index, 1,
+            )
+            .unwrap_err();
+
+            assert!(hook_ran.load(Ordering::SeqCst), "{proof_kind} {race}");
+            assert!(
+                matches!(error, IndexError::CompleteInventoryInvalidated { .. }),
+                "{proof_kind} {race} produced {error:?}"
+            );
+            assert_eq!(
+                jsonl_family_scanner_activity(),
+                JsonlFamilyScannerActivity::default(),
+                "{proof_kind} {race} did not take unchanged admission"
+            );
+            assert_eq!(
+                VerifiedIndex::open(&index).unwrap().generation_id(),
+                cold.generation_id,
+                "{proof_kind} {race} became visible"
+            );
+        }
+    }
+}
+
+#[test]
 fn event_identity_revision_forces_replacement_with_core_base_authority() {
     let temp = crate::test_support_paths::tempdir().unwrap();
     let root = temp.path().join("sessions");

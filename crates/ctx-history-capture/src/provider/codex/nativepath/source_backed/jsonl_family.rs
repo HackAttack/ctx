@@ -32,6 +32,15 @@ fn observe_generation_source_capability_v0(
     Ok(admitted)
 }
 
+fn carried_or_observe_generation_source_capability_v0(
+    source: &CodexCatalogSource,
+) -> Result<JsonlFileObservation> {
+    match &source.carried_jsonl_observation {
+        Some(observation) => Ok(observation.clone()),
+        None => observe_generation_source_capability_v0(source),
+    }
+}
+
 #[derive(Default)]
 struct CodexSessionJsonlFamilyStateV0 {
     plans: HashMap<SourceKey, CodexSessionPlanV0>,
@@ -306,7 +315,7 @@ impl CodexSessionJsonlFamilyAdapterV0 {
                     .ok_or(CaptureError::SystemInvariant(
                         "Codex catalog source has no authority path",
                     ))?;
-            let observation = observe_generation_source_capability_v0(source)?;
+            let observation = carried_or_observe_generation_source_capability_v0(source)?;
             leaves.push(JsonlFamilyLeaf::bind_frozen_observed(
                 source_key.clone(),
                 source.source_path.clone(),

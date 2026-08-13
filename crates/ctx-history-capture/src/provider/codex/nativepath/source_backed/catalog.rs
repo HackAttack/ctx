@@ -1,4 +1,5 @@
 use super::*;
+use crate::provider::source_backed::family::jsonl::{observe_opened_file, JsonlFileObservation};
 
 #[cfg(test)]
 std::thread_local! {
@@ -178,6 +179,7 @@ struct CodexMetadataInventoryLeafV0 {
     source_path: PathBuf,
     relative_path: PathBuf,
     observation: CodexFileObservation,
+    jsonl_observation: JsonlFileObservation,
     authority: ProviderSourceRoot,
 }
 
@@ -276,6 +278,7 @@ fn discover_codex_metadata_inventory_root_v0(
                 {
                     crate::provider::provider_path_identity(&source_path)?;
                     let observation = opened_codex_file_observation(&source_path, opened.file())?;
+                    let jsonl_observation = observe_opened_file(&source_path, &opened)?;
                     let after = opened_codex_file_observation(&source_path, opened.file())?;
                     if !observation.admits_append_only_growth(&after) {
                         return Err(CodexSourceBackedErrorV0::Capture(
@@ -287,6 +290,7 @@ fn discover_codex_metadata_inventory_root_v0(
                         source_path,
                         relative_path,
                         observation,
+                        jsonl_observation,
                         authority: authority.clone(),
                     });
                     crate::provider::codex::catalog::ensure_catalog_source_bound(leaves.len())?;
@@ -344,6 +348,7 @@ fn catalog_source_from_path_hint(
     Ok(CodexCatalogSource {
         source_path: leaf.source_path.clone(),
         catalog_observation: leaf.observation.clone(),
+        carried_jsonl_observation: Some(leaf.jsonl_observation.clone()),
         catalog_prefix_sha256: None,
         catalog_native_session_id: Some(native_session_id.clone()),
         authority_root: Some(leaf.authority.clone()),

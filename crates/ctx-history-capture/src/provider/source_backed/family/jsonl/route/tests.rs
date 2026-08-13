@@ -23,6 +23,7 @@ use ctx_history_core::{
     NativeSessionKey, SessionIdentityInput, SourceAnchor,
 };
 use ctx_history_index::{CommitReceipt, GenerationWriter, SourceRouteIdentity, WriterOptions};
+use ctx_history_index::{IndexError, RevalidationTarget, VerifiedIndex};
 
 #[path = "tests/behavior.rs"]
 mod behavior;
@@ -73,7 +74,7 @@ macro_rules! capture_test_generation {
             };
             with_family_scanner_workers($workers, || $capture(&resident, &mut sink))
         };
-        (writer, result)
+        (writer, resident, result)
     }};
 }
 
@@ -501,6 +502,15 @@ impl_standard_jsonl_test_adapter!(
     ParallelTestAdapter,
     "parallel-test-parser-v1",
     JsonlFamilyAppendMode::CertifiedSuffix,
+    |_adapter, _leaf, _source_file, _imported_at| { Ok(Box::new(ParallelTestProjector)) }
+);
+
+struct ReplacementParallelTestAdapter;
+
+impl_standard_jsonl_test_adapter!(
+    ReplacementParallelTestAdapter,
+    "replacement-parallel-test-parser-v1",
+    JsonlFamilyAppendMode::Replacement,
     |_adapter, _leaf, _source_file, _imported_at| { Ok(Box::new(ParallelTestProjector)) }
 );
 
@@ -1428,7 +1438,7 @@ fn capture_parallel_test_generation(
     index_root: &Path,
     workers: usize,
 ) -> (CommitReceipt, JsonlFamilyScannerActivity) {
-    let (writer, ()) =
+    let (writer, _resident, ()) =
         capture_test_generation!(adapter, root, index_root, workers, |resident, sink| {
             capture(adapter, root, resident, sink).unwrap()
         });
@@ -1437,6 +1447,34 @@ fn capture_parallel_test_generation(
         .commit_with_complete_inventory_revalidation(|_| true, |_| true)
         .unwrap();
     (commit, activity)
+}
+
+fn capture_parallel_test_generation_with_terminal_revalidation(
+    adapter: &dyn JsonlFamilyAdapter,
+    root: &Path,
+    index_root: &Path,
+    workers: usize,
+) -> ctx_history_index::Result<(CommitReceipt, JsonlFamilyScannerActivity)> {
+    let (writer, resident, ()) =
+        capture_test_generation!(adapter, root, index_root, workers, |resident, sink| {
+            capture(adapter, root, resident, sink).unwrap()
+        });
+    let activity = jsonl_family_scanner_activity();
+    let commit = writer.commit_with_complete_inventory_revalidation(
+        |target| match target {
+            RevalidationTarget::Source(source) => {
+                revalidate_target(&resident, SourceBackedRevalidationTarget::Source(source))
+            }
+            RevalidationTarget::Deletion(deletion) => revalidate_target(
+                &resident,
+                SourceBackedRevalidationTarget::Deletion(deletion),
+            ),
+        },
+        |inventory| {
+            revalidate_complete_inventory(adapter, root, &resident, inventory).unwrap_or(false)
+        },
+    )?;
+    Ok((commit, activity))
 }
 
 fn capture_checkpoint_test_generation(
@@ -1453,7 +1491,7 @@ fn run_scheduler_test_capture(
     index_root: &Path,
     workers: usize,
 ) -> SourceBackedRouteResult<JsonlFamilyScannerActivity> {
-    let (_writer, result) = capture_test_generation!(
+    let (_writer, _resident, result) = capture_test_generation!(
         adapter,
         root,
         index_root,
