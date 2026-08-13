@@ -1,10 +1,10 @@
 use ctx_history_core::CoreDiscoveryExclusion;
 use serde_json::Value;
 
-use super::tool_input;
+use crate::tool_input;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum ContributionClass {
+pub enum ContributionClass {
     RetrievalDerived,
     Ordinary,
     Unknown,
@@ -23,14 +23,14 @@ pub(crate) enum CtxRetrievalRoute {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum ResultTerminalStatus {
+pub enum ResultTerminalStatus {
     Succeeded,
     Failed,
     Unknown,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum ResultAtom {
+pub enum ResultAtom {
     Payload,
     /// Exact provider-native structure, never normalized body-text matching.
     KnownProviderEnvelope,
@@ -38,7 +38,7 @@ pub(crate) enum ResultAtom {
     Unknown,
 }
 
-pub(crate) fn reduce_contributions(
+pub fn reduce_contributions(
     contributions: impl IntoIterator<Item = ContributionClass>,
 ) -> ContributionClass {
     let mut saw_derived = false;
@@ -57,20 +57,20 @@ pub(crate) fn reduce_contributions(
     }
 }
 
-pub(crate) fn discovery_exclusion_for(
+pub fn discovery_exclusion_for(
     contributions: impl IntoIterator<Item = ContributionClass>,
 ) -> Option<CoreDiscoveryExclusion> {
     (reduce_contributions(contributions) == ContributionClass::RetrievalDerived)
         .then_some(CoreDiscoveryExclusion::CtxRetrievalDerived)
 }
 
-pub(crate) fn classify_direct_cli_tool_input(value: &Value) -> ContributionClass {
+pub fn classify_direct_cli_tool_input(value: &Value) -> ContributionClass {
     tool_input::direct_argv(value).map_or(ContributionClass::Unknown, |argv| {
         classify_direct_cli_argv(&argv)
     })
 }
 
-pub(crate) fn classify_direct_cli_command(command: &str) -> ContributionClass {
+pub fn classify_direct_cli_command(command: &str) -> ContributionClass {
     tool_input::direct_command_argv(command).map_or(ContributionClass::Unknown, |argv| {
         classify_direct_cli_argv(&argv)
     })
@@ -86,7 +86,7 @@ pub(crate) fn classify_direct_cli_argv<T: AsRef<str>>(argv: &[T]) -> Contributio
     classify_attested_ctx_cli_args(&argv[1..])
 }
 
-pub(crate) fn classify_attested_ctx_cli_args<T: AsRef<str>>(args: &[T]) -> ContributionClass {
+pub fn classify_attested_ctx_cli_args<T: AsRef<str>>(args: &[T]) -> ContributionClass {
     let args = args.iter().map(AsRef::as_ref).collect::<Vec<_>>();
     let Some((command, tail, root)) = split_command(&args) else {
         return ContributionClass::Unknown;
@@ -120,7 +120,7 @@ fn is_operational_command(command: &str) -> bool {
     )
 }
 
-pub(crate) fn classify_mcp_invocation(server: &str, tool: &str) -> ContributionClass {
+pub fn classify_mcp_invocation(server: &str, tool: &str) -> ContributionClass {
     if server != "ctx" {
         return ContributionClass::Unknown;
     }
@@ -145,7 +145,7 @@ pub(crate) fn canonical_mcp_route(server: &str, tool: &str) -> Option<CtxRetriev
     }
 }
 
-pub(crate) fn classify_linked_result(
+pub fn classify_linked_result(
     linked_invocation: Option<ContributionClass>,
     terminal_status: ResultTerminalStatus,
     atoms: impl IntoIterator<Item = ResultAtom>,

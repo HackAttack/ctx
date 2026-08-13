@@ -1,10 +1,5 @@
-#[path = "../src/provider/ctx_retrieval.rs"]
-mod ctx_retrieval;
-#[path = "../src/provider/tool_input.rs"]
-mod tool_input;
-
+use ctx_history_capture_model::ctx_retrieval::*;
 use ctx_history_core::CoreDiscoveryExclusion;
-use ctx_retrieval::*;
 use serde_json::json;
 
 #[test]

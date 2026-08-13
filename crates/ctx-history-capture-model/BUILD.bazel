@@ -50,3 +50,17 @@ ctx_rust_test(
     deps = all_crate_deps(normal = True, normal_dev = True) + CTX_HISTORY_CAPTURE_MODEL_DEPS,
     proc_macro_deps = all_crate_deps(proc_macro = True, proc_macro_dev = True),
 )
+
+ctx_rust_test(
+    name = "ctx_retrieval_classifier_tests",
+    srcs = ["tests/ctx_retrieval_classifier.rs"],
+    crate_name = "ctx_retrieval_classifier",
+    crate_root = "tests/ctx_retrieval_classifier.rs",
+    edition = crate_edition(),
+    aliases = aliases(normal_dev = True, proc_macro_dev = True),
+    deps = all_crate_deps(normal = True, normal_dev = True) + [
+        ":lib",
+        "//crates/ctx-history-core:lib",
+    ],
+    proc_macro_deps = all_crate_deps(proc_macro = True, proc_macro_dev = True),
+)

@@ -3,6 +3,7 @@
 //! This crate owns no source access, discovery execution, provider implementation,
 //! repository evidence, refresh publication, or runtime policy.
 
+pub mod ctx_retrieval;
 mod exact_json;
 mod identity;
 mod import;
@@ -11,6 +12,7 @@ mod progress;
 mod record;
 mod route;
 mod source;
+pub mod tool_input;
 
 pub use exact_json::{
     exact_bounded_string_alias, exact_json_value, raw_object_keys_are_unique, ExactJsonStringAlias,
