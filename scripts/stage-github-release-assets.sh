@@ -207,10 +207,10 @@ PY
       --nested-artifact "${nested_runtime}" \
       --role release
     if [[ "$(uname -s)" == "Darwin" ]]; then
+      # Runtime producer workspaces intentionally contain no CLI artifacts.
+      # The native validator joins and verifies the separate factory CLI.
       scripts/check-macos-release-signing.sh \
         "${platform}" runtime "${dest_path}" "${signing_evidence}"
-      scripts/check-macos-release-signing.sh \
-        "${platform}" cli "${artifact_dir%/}/ctx-${platform}"
     else
       python3 scripts/macos-release-signing-evidence.py verify-archive \
         --evidence "${signing_evidence}" --platform "${platform}" \

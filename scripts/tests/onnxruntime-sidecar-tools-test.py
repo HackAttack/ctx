@@ -320,14 +320,33 @@ class ManifestTests(unittest.TestCase):
         pipeline = (REPO_ROOT / ".buildkite" / "pipeline.yml").read_text()
         producer = pipeline.index('key: "public-cli-macos-x64-runtime-producer"')
         validator = pipeline.index('key: "public-cli-macos-x64-native-smoke"')
-        producer_block = pipeline[producer:]
+        producer_end = pipeline.index("\n  - label:", producer)
+        producer_block = pipeline[producer:producer_end]
         validator_block = pipeline[validator:producer] if validator < producer else pipeline[validator:]
         self.assertIn("build-onnxruntime-sidecar.sh macos-x64", producer_block)
         self.assertIn("stage-github-release-assets.sh --transcode-runtime macos-x64", producer_block)
+        self.assertNotIn("depends_on:", producer_block)
+        self.assertNotIn("download-linux-factory-artifacts.sh", producer_block)
+        self.assertIn(
+            '- "target/public-cli-artifacts/ctx-onnxruntime-macos-x64*"',
+            producer_block,
+        )
+        self.assertNotIn('target/public-cli-artifacts/ctx-macos-x64', producer_block)
         self.assertIn("--step public-cli-macos-x64-runtime-producer", validator_block)
         self.assertIn('"public-cli-macos-x64-runtime-producer"', validator_block)
         self.assertNotIn("build-onnxruntime-sidecar.sh macos-x64", validator_block)
         self.assertNotIn("stage-github-release-assets.sh --transcode-runtime macos-x64", validator_block)
+
+        stager = (REPO_ROOT / "scripts" / "stage-github-release-assets.sh").read_text()
+        transcode_start = stager.index("transcode_runtime_asset()")
+        transcode_end = stager.index('\nif [[ "${mode}" == "transcode" ]]', transcode_start)
+        transcode = stager[transcode_start:transcode_end]
+        self.assertIn(
+            '"${platform}" runtime "${dest_path}" "${signing_evidence}"',
+            transcode,
+        )
+        self.assertNotIn('"${platform}" cli', transcode)
+        self.assertNotIn('"${artifact_dir%/}/ctx-${platform}"', transcode)
 
     def test_archive_tool_defers_annotations_for_macos_python(self) -> None:
         source = (TOOLS / "archive_tool.py").read_text().splitlines()

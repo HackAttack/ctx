@@ -178,11 +178,17 @@ producer = keyed["public-cli-macos-x64-runtime-producer"]
 if (
     "build-onnxruntime-sidecar.sh macos-x64" not in producer.get("command", "")
     or "stage-github-release-assets.sh --transcode-runtime macos-x64" not in producer.get("command", "")
-    or producer.get("depends_on") != "public-cli-linux-factory"
+    or producer.get("depends_on") is not None
 ):
-    fail("macos-x64 runtime producer must own source construction")
+    fail("macos-x64 runtime producer must own only runtime construction")
 if producer.get("secrets"):
     fail("macos-x64 producer must acquire Apple values only at signing")
+if "download-linux-factory-artifacts.sh" in producer.get("command", ""):
+    fail("macos-x64 runtime producer must not consume factory CLI artifacts")
+if producer.get("artifact_paths") != [
+    "target/public-cli-artifacts/ctx-onnxruntime-macos-x64*"
+]:
+    fail("macos-x64 runtime producer must upload only its exact runtime artifact set")
 if "build-onnxruntime-sidecar.sh macos-x64" in keyed[
     "public-cli-macos-x64-native-smoke"
 ].get("command", ""):
