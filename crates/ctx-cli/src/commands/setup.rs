@@ -154,7 +154,7 @@ fn setup_mode(
     refresh_health_status: &str,
 ) -> &'static str {
     match lexical_status {
-        "ready" if refresh_health_status != "partial" => "ready",
+        "ready" if refresh_health_status == "ready" => "ready",
         "pending" => "pending",
         "stale" => "stale",
         _ if refresh_status == "pending" => "pending",
@@ -349,6 +349,8 @@ mod tests {
         assert_eq!(setup_mode("stale", "pending", "stale"), "stale");
         assert_eq!(setup_mode("ready", "pending", "ready"), "ready");
         assert_eq!(setup_mode("ready", "published", "partial"), "unavailable");
+        assert_eq!(setup_mode("ready", "published", "unavailable"), "unavailable");
+        assert_eq!(setup_mode("ready", "published", "stale"), "unavailable");
     }
 
     #[test]
