@@ -15,6 +15,10 @@ fn semantic_model_identity_and_descriptor_bytes_are_frozen() {
         "614241f622f53c4eeff9890bdc4f31cfecc418b3"
     );
     assert_eq!(
+        COREML_BUNDLE_CONTRACT.artifact_url,
+        "https://cli.ctx.rs/storage/v1/object/public/releases/artifacts/stable/1.0.0/ctx-multilingual-e5-small-coreml-fp16-1.0.0.tar.xz"
+    );
+    assert_eq!(
         SEMANTIC_REQUIRED_MODEL_FILES
             .iter()
             .map(|file| (file.path, file.size, file.sha256))
@@ -67,7 +71,7 @@ fn semantic_model_identity_and_descriptor_bytes_are_frozen() {
     let descriptor_sha256 = format!("{:x}", Sha256::digest(descriptor.as_bytes()));
     assert_eq!(
         descriptor_sha256,
-        "cb3a09cf8923c26a87f1d52caee9941ddf3726e0e5adbc4fb897eb0c347d7ebc"
+        "c812eb325bc5e90e7278b2b8da3933206340c5b5a46fd678be40016e06a89fc3"
     );
 }
 

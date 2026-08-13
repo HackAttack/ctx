@@ -820,9 +820,9 @@ mod tests {
                 files: vec![file(
                     "manifest.json",
                     1,
-                    "576c68756563333fdf442e6859f2392ca0065b09a2cb5d73983e30de75df1ad6",
+                    "20a94162aca7c2f9f65be27839cd6867ec1c54e142fdf0c652de20139dffbc19",
                 )],
-                archive_sha256: "94c6fac5c4250079401d383adf1b10270fe5d370f2091dbad17bf4823222321e",
+                archive_sha256: "25fbf333d1e72f5c075973ef968dfa1446459f61f3ac63ef3690d9865435af17",
             }),
         );
 

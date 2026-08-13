@@ -139,14 +139,14 @@ impl CoreMlBundleContract<'_> {
     }
 }
 
-// This is the sole authority for the signed Core ML artifact and every model
-// value used to validate or publish it. Keep the descriptor inert with zero
+// This is the sole runtime authority for the signed Core ML publication and
+// every model value used to validate it. Keep the descriptor inert with zero
 // hashes until a replacement archive has been independently verified.
 pub(super) const COREML_BUNDLE_CONTRACT: CoreMlBundleContract<'static> = CoreMlBundleContract {
-    artifact_url: "https://cli.ctx.rs/storage/v1/object/public/releases/artifacts/ctx-multilingual-e5-small-coreml-fp16-1.0.0.tar.xz",
+    artifact_url: "https://cli.ctx.rs/storage/v1/object/public/releases/artifacts/stable/1.0.0/ctx-multilingual-e5-small-coreml-fp16-1.0.0.tar.xz",
     artifact_name: "ctx-multilingual-e5-small-coreml-fp16-1.0.0.tar.xz",
-    archive_sha256: "94c6fac5c4250079401d383adf1b10270fe5d370f2091dbad17bf4823222321e",
-    manifest_sha256: "576c68756563333fdf442e6859f2392ca0065b09a2cb5d73983e30de75df1ad6",
+    archive_sha256: "25fbf333d1e72f5c075973ef968dfa1446459f61f3ac63ef3690d9865435af17",
+    manifest_sha256: "20a94162aca7c2f9f65be27839cd6867ec1c54e142fdf0c652de20139dffbc19",
     bundle_id: "ctx.multilingual-e5-small.coreml.fp16",
     bundle_version: "1.0.0",
     schema_version: 1,
