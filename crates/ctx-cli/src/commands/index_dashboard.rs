@@ -407,6 +407,12 @@ mod tests {
                     "current_source": "~/.local/share/opencode/opencode.db",
                     "completed_records": 1234,
                     "completed_bytes": 4 * 1024 * 1024,
+                    "providers": ["opencode"],
+                    "processed_sessions": 18,
+                    "processed_messages": 1234,
+                    "processed_tool_calls": 91,
+                    "processed_bytes": 4 * 1024 * 1024,
+                    "elapsed_millis": 2_000,
                 },
             },
             "semantic": {
@@ -440,9 +446,13 @@ mod tests {
         let rendered = render_dashboard(&readiness(), &context(80)).render_plain();
         assert!(rendered.starts_with("✓ Your history is searchable"));
         assert!(rendered.contains("Refresh"));
-        assert!(rendered.contains("7 / 12"));
-        assert!(rendered.contains("~/.local/share/opencode/opencode.db"));
-        assert!(rendered.contains("1,234 accepted"));
+        assert!(rendered.contains("Agent histories  OpenCode"));
+        assert!(rendered.contains("Sessions         18"));
+        assert!(rendered.contains("Messages         1,234"));
+        assert!(rendered.contains("Tool calls       91"));
+        assert!(rendered.contains("Data scanned     4.0 MiB"));
+        assert!(!rendered.contains("7 / 12"));
+        assert!(!rendered.contains("~/.local/share/opencode/opencode.db"));
         assert!(!rendered.contains("inventory"));
         assert!(!rendered.contains("history file"));
     }
@@ -456,7 +466,7 @@ mod tests {
             "reason": "generation_not_published",
         });
         let rendered = render_dashboard(&value, &context(80)).render_plain();
-        assert!(rendered.starts_with("Refreshing history"));
+        assert!(rendered.starts_with("Indexing your agent history"));
         assert!(rendered.contains("Current index  not published"));
         assert!(!rendered.contains("ctx setup"));
     }

@@ -52,12 +52,13 @@ fn core_publication_fixture() -> (tempfile::TempDir, std::path::PathBuf, String)
                 catalog_route_bindings: Vec::new(),
             };
             serde_json::to_vec(&json!({
-                "version": 2,
+                "version": ctx_history_refresh::SOURCE_REFRESH_PUBLICATION_METADATA_VERSION,
                 "request_id": "core-publication",
                 "operation": "refresh",
                 "refresh_scope": {"kind": "all"},
                 "receipt": receipt.to_json(),
                 "route_observations": [null],
+                "route_controls": {},
             }))
             .map_err(|error| ctx_history_index::IndexError::PublicationMetadata(error.to_string()))
         },
@@ -476,6 +477,7 @@ fn legacy_zero_source_publication_is_not_projected_as_ready() {
         .as_object_mut()
         .unwrap()
         .remove("zero_source_authority");
+    metadata.as_object_mut().unwrap().remove("route_controls");
     drop(current);
     let writer = GenerationWriter::open(&index_root, WriterOptions::default())
         .unwrap()

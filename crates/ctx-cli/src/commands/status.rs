@@ -572,12 +572,13 @@ mod tests {
                     catalog_route_bindings: Vec::new(),
                 };
                 serde_json::to_vec(&json!({
-                    "version": 2,
+                    "version": ctx_history_refresh::SOURCE_REFRESH_PUBLICATION_METADATA_VERSION,
                     "request_id": "final-status-composition",
                     "operation": "refresh",
                     "refresh_scope": {"kind": "all"},
                     "receipt": receipt.to_json(),
                     "route_observations": [null],
+                    "route_controls": {},
                 }))
                 .map_err(|error| {
                     ctx_history_index::IndexError::PublicationMetadata(error.to_string())
