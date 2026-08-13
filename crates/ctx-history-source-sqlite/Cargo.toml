@@ -1,6 +1,6 @@
 [package]
 name = "ctx-history-source-sqlite"
-version = "0.26.0"
+version = "1.0.0"
 description = "Provider-neutral SQLite source acquisition and snapshots for ctx history"
 edition.workspace = true
 license.workspace = true
