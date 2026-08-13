@@ -14,8 +14,8 @@ use thiserror::Error;
 
 use crate::{
     CaptureLifecycleSink, CorePreparationError, CorePreparationFailureKind, CorePreparedBatch,
-    CorePreparedBatchBuilder, CorePreparedCapture, CoreRouteResourceError,
-    CoreRecordProgress, ImmutableCaptureSnapshot, CORE_RECORD_BATCH_MAX_RECORDS,
+    CorePreparedBatchBuilder, CorePreparedCapture, CoreRecordProgress, CoreRouteResourceError,
+    ImmutableCaptureSnapshot, CORE_RECORD_BATCH_MAX_RECORDS,
 };
 
 use super::{
@@ -478,7 +478,7 @@ impl<L: CaptureLifecycleSink> SourceBackedGenerationSink<'_, L> {
         emission: CoreRecordEmission<L>,
     ) -> SourceBackedCoordinatorResult<(), L::Error> {
         self.accept_core_record_emission(emission)?;
-        self.report_record_progress(1, 0)
+        self.report_record_progress(1, 0, &[], 0, 0)
     }
 
     fn accept_core_record_emission(

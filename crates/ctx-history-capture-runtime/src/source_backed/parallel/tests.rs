@@ -2082,6 +2082,9 @@ fn batch_application_preserves_order_accounts_progress_and_releases_reservations
         vec![SourceBackedRecordProgressDelta {
             accepted_records: 3,
             completed_bytes: 512,
+            session_ids: vec![records[0].session_id.digest()],
+            messages: 3,
+            tool_calls: 0,
         }]
     );
     assert_eq!(

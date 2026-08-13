@@ -192,14 +192,11 @@ impl CaptureLifecycleSink for IndexCaptureLifecycle {
 
     fn base_source(&self, source: &SourceKey) -> Option<&CertifiedSource> {
         self.0.base_manifest().and_then(|manifest| {
-            manifest
-                .sources
-                .iter()
-                .find(|candidate| {
-                    #[cfg(test)]
-                    super::driver::receipts::record_base_source_manifest_visit();
-                    candidate.observation().source().exact_descriptor_eq(source)
-                })
+            manifest.sources.iter().find(|candidate| {
+                #[cfg(test)]
+                super::record_base_source_manifest_visit();
+                candidate.observation().source().exact_descriptor_eq(source)
+            })
         })
     }
 

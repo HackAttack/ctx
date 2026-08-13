@@ -19,12 +19,16 @@ use crate::provider::source_backed::{
     SourceBackedRecordRejections, SourceBackedRouteResources,
 };
 use crate::repository_attribution::AttributionInput;
-use ctx_history_capture_runtime::{CaptureLifecycleOpenOutcome, CaptureLifecycleSink};
+use ctx_history_capture_runtime::{
+    CaptureLifecycleOpenOutcome, CaptureLifecycleSink, CaptureRevalidationTarget,
+};
 use ctx_history_core::{
     derive_event_id, derive_session_id, CoreRecord, EventIdentityInput, NativeItemKey,
     NativeSessionKey, SessionIdentityInput, SourceAnchor,
 };
-use ctx_history_index::{GenerationWriter, SourceRouteIdentity, WriterOptions};
+use ctx_history_index::{
+    GenerationWriter, IndexError, SourceRouteIdentity, VerifiedIndex, WriterOptions,
+};
 
 #[path = "tests/behavior.rs"]
 mod behavior;
@@ -1442,7 +1446,7 @@ fn capture_parallel_test_generation(
     index_root: &Path,
     workers: usize,
 ) -> (IndexCaptureCommitReceipt, JsonlFamilyScannerActivity) {
-    let (writer, ()) =
+    let (writer, _resident, ()) =
         capture_test_generation!(adapter, root, index_root, workers, |resident, sink| {
             capture(adapter, root, resident, sink).unwrap()
         });
@@ -1456,18 +1460,18 @@ fn capture_parallel_test_generation_with_terminal_revalidation(
     root: &Path,
     index_root: &Path,
     workers: usize,
-) -> ctx_history_index::Result<(CommitReceipt, JsonlFamilyScannerActivity)> {
+) -> ctx_history_index::Result<(IndexCaptureCommitReceipt, JsonlFamilyScannerActivity)> {
     let (writer, resident, ()) =
         capture_test_generation!(adapter, root, index_root, workers, |resident, sink| {
             capture(adapter, root, resident, sink).unwrap()
         });
     let activity = jsonl_family_scanner_activity();
-    let commit = writer.commit_with_complete_inventory_revalidation(
+    let commit = IndexCaptureCommitReceipt::new(writer.commit(
         |target| match target {
-            RevalidationTarget::Source(source) => {
+            CaptureRevalidationTarget::Source(source) => {
                 revalidate_target(&resident, SourceBackedRevalidationTarget::Source(source))
             }
-            RevalidationTarget::Deletion(deletion) => revalidate_target(
+            CaptureRevalidationTarget::Deletion(deletion) => revalidate_target(
                 &resident,
                 SourceBackedRevalidationTarget::Deletion(deletion),
             ),
@@ -1475,7 +1479,7 @@ fn capture_parallel_test_generation_with_terminal_revalidation(
         |inventory| {
             revalidate_complete_inventory(adapter, root, &resident, inventory).unwrap_or(false)
         },
-    )?;
+    )?);
     Ok((commit, activity))
 }
 

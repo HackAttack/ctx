@@ -991,15 +991,6 @@ impl<P: CorePreparationPort> CorePreparedBatchBuilder<P> {
         prepared: P::Prepared,
         port: &P,
     ) -> Result<(), CorePreparationError<P::Failure>> {
-        self.push_with_progress(prepared, port, CoreRecordProgress::default())
-    }
-
-    pub fn push_with_progress(
-        &mut self,
-        prepared: P::Prepared,
-        port: &P,
-        progress: CoreRecordProgress,
-    ) -> Result<(), CorePreparationError<P::Failure>> {
         let prepared_bytes = u64::try_from(port.encoded_bytes(&prepared)).map_err(|_| {
             CorePreparationError::Internal("prepared Core-record byte count overflowed")
         })?;
@@ -1012,6 +1003,16 @@ impl<P: CorePreparationPort> CorePreparedBatchBuilder<P> {
             CorePreparationError::Internal("prepared Core-record batch byte count overflowed"),
         )?;
         self.prepared.push(prepared);
+        Ok(())
+    }
+
+    pub fn push_with_progress(
+        &mut self,
+        prepared: P::Prepared,
+        port: &P,
+        progress: CoreRecordProgress,
+    ) -> Result<(), CorePreparationError<P::Failure>> {
+        self.push(prepared, port)?;
         self.progress.push(progress);
         Ok(())
     }
