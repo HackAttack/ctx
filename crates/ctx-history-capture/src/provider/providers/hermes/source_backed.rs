@@ -27,9 +27,9 @@ use crate::{
         normalization::provider_required_timestamp_seconds,
         source_backed::{
             family::document::{DocumentAppendBase, DocumentLeafFingerprint, ObservedDocumentLeaf},
-            source_io_progress, SourceBackedCurrentSourceProgress,
-            SourceBackedCurrentSourceProgressStage, SourceBackedReconciliationDemand,
-            SourceBackedRouteControlExpectation, SourceBackedRouteError, SourceBackedRouteResult,
+            SourceBackedCurrentSourceProgress, SourceBackedCurrentSourceProgressStage,
+            SourceBackedReconciliationDemand, SourceBackedRouteControlExpectation,
+            SourceBackedRouteError, SourceBackedRouteResult,
         },
         sqlite::sqlite_schema_fingerprint,
     },
@@ -900,11 +900,11 @@ fn open_root_authorized_snapshot_with_hook_and_progress(
         retain_sqlite_source_directory_authority(data_root, &parent_handle, parent)?;
     let sqlite_snapshot = if incremental {
         sqlite_authority.open_incremental_snapshot_with_progress(database_leaf, |progress| {
-            report_progress(source_io_progress(progress))
+            report_progress(progress.into())
         })
     } else {
         sqlite_authority.open_stable_snapshot_with_progress(database_leaf, |progress| {
-            report_progress(source_io_progress(progress))
+            report_progress(progress.into())
         })
     }
     .map_err(|error| match error {
