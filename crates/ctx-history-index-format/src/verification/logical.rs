@@ -174,7 +174,6 @@ fn verify_searcher_with_options_and_budget(
         &verification_spill,
         &mut projection_deltas,
     )?;
-    verify_lineage(searcher, fields, &verification_spill)?;
     verify_remaining_query_projections(searcher, fields, &mut projection_deltas)?;
     verify_query_projection_completion(searcher, &projection_deltas)?;
     verify_manifest_aggregates(manifest, source_aggregates)?;
@@ -1019,6 +1018,8 @@ fn verify_session_identities(
     verification_spill: &VerificationSpill,
     projection_deltas: &mut ProjectionDeltas,
 ) -> Result<()> {
+    #[cfg(any(test, feature = "test-support"))]
+    COMPLETE_SESSION_ID_TRAVERSALS.with(|count| count.set(count.get().saturating_add(1)));
     let segments = searcher.segment_readers();
     let mut mappings = Vec::with_capacity(fields.len() * segments.len());
     let mut inverted_indexes = Vec::with_capacity(fields.len() * segments.len());
@@ -1038,6 +1039,7 @@ fn verify_session_identities(
         let uuid = canonical_uuid_term(merged.key(), "session_id")?;
         let mut digest = None;
         let mut owner = None::<u32>;
+        let mut relationship = None::<SessionRelationship>;
         for (stream_index, term_info) in merged.current_segment_ords_and_term_infos() {
             let (segment_ord, role_index, role, field) = mappings[stream_index];
             let projection_digest = query_projection_digest(field, merged.key());
@@ -1075,6 +1077,20 @@ fn verify_session_identities(
                             }
                             None => owner = Some(candidate_owner),
                             _ => {}
+                        }
+                    }
+                    if matches!(role, IdentityFieldRole::Session) {
+                        let identities =
+                            verification_spill.record(address, "session_relationship")?;
+                        let candidate = lineage::relationship_for(identities);
+                        match relationship {
+                            None => relationship = Some(candidate),
+                            Some(existing) if existing == candidate => {}
+                            Some(_) => {
+                                return Err(IndexError::InvalidSessionRelationshipGraph(
+                                    "one session has contradictory relationship fields",
+                                ));
+                            }
                         }
                     }
                     Ok(())

@@ -7,11 +7,11 @@ use crate::{stored_verification_identities, CompactIdentity, Fields, IndexError,
 
 use super::{
     note_candidate_lineage_decode, note_candidate_lineage_spill,
-    spill::{IdentityDeltaSpill, IdentityKeySpill, SpillVerificationIdentities, VerificationSpill},
+    spill::{IdentityDeltaSpill, IdentityKeySpill, SpillVerificationIdentities},
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct SessionRelationship {
+pub(super) struct SessionRelationship {
     parent: Option<CompactIdentity>,
     claimed_root: CompactIdentity,
     kind: SessionRelationshipKind,
@@ -148,62 +148,7 @@ fn resolve_session_indexed(
     Ok(resolved)
 }
 
-/// Verifies local shape and one consistent set of child-owned claims per
-/// session. It intentionally does not walk parent, claimed-root, or copy edges.
-pub(super) fn verify_lineage(
-    searcher: &Searcher,
-    fields: Fields,
-    spill: &VerificationSpill,
-) -> Result<()> {
-    let segments = searcher.segment_readers();
-    let inverted = segments
-        .iter()
-        .map(|segment| segment.inverted_index(fields.session_id))
-        .collect::<std::result::Result<Vec<_>, _>>()?;
-    let streams = inverted
-        .iter()
-        .map(|index| index.terms().stream())
-        .collect::<std::io::Result<Vec<_>>>()?;
-    let mut merged = tantivy::termdict::TermMerger::new(streams);
-    while merged.advance() {
-        let mut session = None;
-        let mut relationship = None;
-        for (segment_ord, term_info) in merged.current_segment_ords_and_term_infos() {
-            for_each_live_posting(
-                &inverted[segment_ord],
-                &term_info,
-                segment_ord,
-                &segments[segment_ord],
-                |address| {
-                    let identities = spill.record(address, "session_relationship")?;
-                    match session {
-                        None => session = Some(identities.session),
-                        Some(existing) if existing == identities.session => {}
-                        Some(_) => {
-                            return Err(IndexError::InvalidSessionRelationshipGraph(
-                                "compact session identity collision",
-                            ));
-                        }
-                    }
-                    let candidate = relationship_for(identities);
-                    match relationship {
-                        None => relationship = Some(candidate),
-                        Some(existing) if existing == candidate => {}
-                        Some(_) => {
-                            return Err(IndexError::InvalidSessionRelationshipGraph(
-                                "one session has contradictory relationship fields",
-                            ));
-                        }
-                    }
-                    Ok(())
-                },
-            )?;
-        }
-    }
-    Ok(())
-}
-
-fn relationship_for(identities: SpillVerificationIdentities) -> SessionRelationship {
+pub(super) fn relationship_for(identities: SpillVerificationIdentities) -> SessionRelationship {
     SessionRelationship {
         parent: identities.parent_session,
         claimed_root: identities.root_session,

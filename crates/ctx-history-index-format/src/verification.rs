@@ -39,7 +39,7 @@ use super::{physical_integrity_audit, verify_physical_integrity};
 mod lineage;
 mod spill;
 
-use lineage::{verify_incremental_lineage, verify_lineage};
+use lineage::{verify_incremental_lineage, SessionRelationship};
 use spill::{
     reserve_verification_scratch, with_verification_scratch_budget, IdentityDeltaSpill,
     ProjectionAccumulator, ProjectionDeltas, ScratchReservation, SpillVerificationIdentities,
@@ -123,6 +123,7 @@ thread_local! {
     static CANDIDATE_PROJECTION_DOCUMENTS: Cell<usize> = const { Cell::new(0) };
     static CANDIDATE_LINEAGE_DECODES: Cell<usize> = const { Cell::new(0) };
     static CANDIDATE_LINEAGE_SPILLS: Cell<usize> = const { Cell::new(0) };
+    static COMPLETE_SESSION_ID_TRAVERSALS: Cell<usize> = const { Cell::new(0) };
 }
 
 pub fn verify_searcher_structure(searcher: &Searcher, manifest: &GenerationManifest) -> Result<()> {
@@ -946,6 +947,7 @@ pub fn reset_verification_activity() {
     CANDIDATE_PROJECTION_DOCUMENTS.with(|count| count.set(0));
     CANDIDATE_LINEAGE_DECODES.with(|count| count.set(0));
     CANDIDATE_LINEAGE_SPILLS.with(|count| count.set(0));
+    COMPLETE_SESSION_ID_TRAVERSALS.with(|count| count.set(0));
 }
 
 #[cfg(any(test, feature = "test-support"))]
@@ -975,4 +977,9 @@ pub fn candidate_lineage_verification_activity() -> (usize, usize) {
         CANDIDATE_LINEAGE_DECODES.with(Cell::get),
         CANDIDATE_LINEAGE_SPILLS.with(Cell::get),
     )
+}
+
+#[cfg(any(test, feature = "test-support"))]
+pub fn complete_session_id_traversals() -> usize {
+    COMPLETE_SESSION_ID_TRAVERSALS.with(Cell::get)
 }
