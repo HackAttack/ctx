@@ -1,6 +1,7 @@
 mod event;
 pub mod json_stream;
 pub mod nativepath;
+mod normalization;
 mod workspace;
 
 pub(crate) use crate::{

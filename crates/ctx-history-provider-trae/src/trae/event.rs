@@ -1,10 +1,10 @@
 use std::collections::BTreeSet;
 
 use chrono::{DateTime, Utc};
-use ctx_history_capture_model::{normalization::provider_string_field, time::parse_rfc3339_utc};
+use ctx_history_capture_model::time::parse_rfc3339_utc;
 use serde_json::Value;
 
-use super::TRAE_CN_INPUT_HISTORY_KEY;
+use super::{normalization::trae_first_present_string_field, TRAE_CN_INPUT_HISTORY_KEY};
 
 #[derive(Debug, Clone)]
 pub(super) struct TraeEventInput {
@@ -28,7 +28,7 @@ pub(super) fn trae_event_from_owned_message(
     if text.trim().is_empty() {
         return None;
     }
-    let provider_native_message_id = provider_string_field(
+    let provider_native_message_id = trae_first_present_string_field(
         &message,
         &[
             "id",
@@ -47,7 +47,7 @@ pub(super) fn trae_event_from_owned_message(
         &["createdAt", "created_at", "timestamp", "time", "date"],
     )
     .unwrap_or(fallback_time);
-    let mut role = provider_string_field(&message, &["role", "type", "sender"]);
+    let mut role = trae_first_present_string_field(&message, &["role", "type", "sender"]);
     if chat_key == TRAE_CN_INPUT_HISTORY_KEY && role.is_none() {
         role = Some("user".to_owned());
     }
@@ -213,5 +213,42 @@ pub(super) fn trae_content_text(value: &Value) -> Option<String> {
             None
         }
         _ => None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use chrono::{DateTime, Utc};
+    use serde_json::json;
+
+    use super::trae_event_from_owned_message;
+
+    #[test]
+    fn blank_first_aliases_preserve_fallback_native_message_id_and_unknown_role_input() {
+        let event = trae_event_from_owned_message(
+            "workspace/native-session",
+            "workspace",
+            crate::TRAE_CHAT_KEYS[0],
+            json!({
+                "id": "  ",
+                "messageId": "later-native-message",
+                "role": "\t",
+                "type": "assistant",
+                "content": "historical alias priority"
+            }),
+            4,
+            DateTime::<Utc>::UNIX_EPOCH,
+        )
+        .expect("message remains importable");
+
+        assert_eq!(
+            event.native_message_id,
+            format!(
+                "workspace:workspace/native-session:{}:4",
+                crate::TRAE_CHAT_KEYS[0]
+            )
+        );
+        assert!(!event.native_message_id_from_provider);
+        assert_eq!(event.role, None);
     }
 }

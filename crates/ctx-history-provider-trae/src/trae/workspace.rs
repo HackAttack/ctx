@@ -1,8 +1,9 @@
 use std::path::Path;
 
 use crate::MAX_PROVIDER_JSONL_LINE_BYTES;
-use ctx_history_capture_model::normalization::provider_string_field;
 use ctx_history_provider_runtime::source_io::read_json_file_limited;
+
+use super::normalization::trae_first_present_string_field;
 
 pub(super) fn trae_workspace_id(path: &Path) -> String {
     path.parent()
@@ -21,7 +22,7 @@ pub(super) fn trae_workspace_folder(path: &Path) -> Option<String> {
         "Trae workspace.json",
     )
     .ok()?;
-    provider_string_field(&value, &["folder", "workspace", "path"])
+    trae_first_present_string_field(&value, &["folder", "workspace", "path"])
         .map(|folder| trae_workspace_folder_label(&folder))
 }
 
@@ -50,4 +51,24 @@ fn percent_decode_uri_path(value: &str) -> String {
         index += 1;
     }
     String::from_utf8(out).unwrap_or_else(|_| value.to_owned())
+}
+
+#[cfg(test)]
+mod tests {
+    use std::fs;
+
+    use super::trae_workspace_folder;
+
+    #[test]
+    fn blank_folder_alias_suppresses_later_workspace_and_path_aliases() {
+        let temp = crate::test_support_paths::tempdir().unwrap();
+        let source = temp.path().join("state.vscdb");
+        fs::write(
+            temp.path().join("workspace.json"),
+            r#"{"folder":"  ","workspace":"file:///later/workspace","path":"/later/path"}"#,
+        )
+        .unwrap();
+
+        assert_eq!(trae_workspace_folder(&source), None);
+    }
 }

@@ -276,6 +276,20 @@ fn checked_add(left: u64, right: u64) -> TraeSourceBackedResultV0<u64> {
 
 #[cfg(test)]
 mod tests {
+    use std::fs;
+
+    use ctx_history_core::{
+        derive_event_id, EventIdentityInput, NativeItemKey, SubrecordSelector, TypedKey,
+    };
+    use rusqlite::{params, Connection};
+    use sha2::{Digest, Sha256};
+
+    use super::{
+        scan_trae_authority, TRAE_LOGICAL_EVENT_KIND, TRAE_MESSAGE_POSITION_KIND,
+        TRAE_NATIVE_ITEM_NAMESPACE, TRAE_NATIVE_MESSAGE_NAMESPACE,
+    };
+    use crate::trae::nativepath::scanner::acquire_source;
+
     #[test]
     fn direct_core_projection_is_self_contained() {
         let production = include_str!("source_backed.rs")
@@ -297,5 +311,95 @@ mod tests {
         ] {
             assert!(!production.contains(removed_api), "found {removed_api}");
         }
+    }
+
+    #[test]
+    fn blank_first_aliases_keep_positional_event_identity_and_workspace_fallback() {
+        let temp = crate::test_support_paths::tempdir().unwrap();
+        let data_root = crate::test_support_paths::tempdir().unwrap();
+        let workspace_root = temp.path().join("blank-first-workspace");
+        fs::create_dir(&workspace_root).unwrap();
+        let source_path = workspace_root.join("state.vscdb");
+        fs::write(
+            workspace_root.join("workspace.json"),
+            r#"{"folder":"  ","workspace":"file:///must/not/win"}"#,
+        )
+        .unwrap();
+        let payload = r#"{"list":[{"id":"native-session","messages":[{"id":"  ","messageId":"later-native-message","role":"  ","type":"assistant","content":"historical identity"},{"id":"output","role":"  ","type":"toolResult","content":"must remain output"}]}]}"#;
+        let connection = Connection::open(&source_path).unwrap();
+        connection
+            .execute(
+                "CREATE TABLE ItemTable ([key] TEXT PRIMARY KEY, value TEXT)",
+                [],
+            )
+            .unwrap();
+        connection
+            .execute(
+                "INSERT INTO ItemTable ([key], value) VALUES (?1, ?2)",
+                params![crate::TRAE_CHAT_KEYS[0], payload],
+            )
+            .unwrap();
+        drop(connection);
+
+        let authority = acquire_source(
+            data_root.path(),
+            &source_path,
+            chrono::DateTime::<chrono::Utc>::UNIX_EPOCH,
+        )
+        .unwrap();
+        let mut documents = Vec::new();
+        let scan = scan_trae_authority(&source_path, &authority, &mut |page| {
+            documents.extend(page.documents);
+            Ok(())
+        })
+        .unwrap();
+
+        assert_eq!(scan.source.counts().complete_records, 2);
+        assert_eq!(scan.source.counts().retained_records, 1);
+        assert_eq!(scan.source.counts().ignored_records, 1);
+        assert_eq!(documents.len(), 1);
+        let record = &documents[0];
+        let item_key = NativeItemKey::native_id(
+            TRAE_NATIVE_ITEM_NAMESPACE,
+            TypedKey::utf8(crate::TRAE_CHAT_KEYS[0]).unwrap(),
+        )
+        .unwrap();
+        let positional_subrecord = SubrecordSelector::revision_scoped_position(
+            TRAE_MESSAGE_POSITION_KIND,
+            TypedKey::composite(vec![TypedKey::U64(0), TypedKey::U64(0)]).unwrap(),
+            TypedKey::bytes(Sha256::digest(payload.as_bytes()).to_vec()).unwrap(),
+        )
+        .unwrap();
+        let expected_event_id = derive_event_id(EventIdentityInput {
+            source: &record.source,
+            session_id: record.session_id,
+            logical_item_kind: TRAE_LOGICAL_EVENT_KIND,
+            native_item_key: &item_key,
+            subrecord_selector: Some(&positional_subrecord),
+        })
+        .unwrap();
+        let later_alias_subrecord = SubrecordSelector::composite(
+            TRAE_NATIVE_MESSAGE_NAMESPACE,
+            vec![
+                TypedKey::utf8("native-session").unwrap(),
+                TypedKey::utf8("later-native-message").unwrap(),
+            ],
+        )
+        .unwrap();
+        let later_alias_event_id = derive_event_id(EventIdentityInput {
+            source: &record.source,
+            session_id: record.session_id,
+            logical_item_kind: TRAE_LOGICAL_EVENT_KIND,
+            native_item_key: &item_key,
+            subrecord_selector: Some(&later_alias_subrecord),
+        })
+        .unwrap();
+
+        assert_eq!(record.event_id, expected_event_id);
+        assert_ne!(record.event_id, later_alias_event_id);
+        assert_eq!(record.role.as_deref(), Some("unknown"));
+        assert_eq!(record.workspace.as_deref(), Some("blank-first-workspace"));
+        assert_eq!(record.cwd, None);
+        assert_eq!(record.parser_revision, "trae-itemtable-source-backed-v1");
     }
 }
