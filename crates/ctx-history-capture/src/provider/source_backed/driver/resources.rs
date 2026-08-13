@@ -3,6 +3,7 @@ use std::sync::{
     Arc,
 };
 
+use ctx_history_capture_model::{CoreRecordBatchProgress, CoreRecordProgress};
 use ctx_history_core::CoreRecord;
 use ctx_history_index::{
     CoreRecordPreparer, IndexError, PreparedCoreRecord, PreparedCoreRecordDraft,
@@ -10,8 +11,8 @@ use ctx_history_index::{
 };
 
 use super::{
-    CoreRecordProgress, SourceBackedReconciliationDemand, SourceBackedRouteError,
-    SourceBackedRouteErrorKind, SourceBackedRouteResult,
+    SourceBackedReconciliationDemand, SourceBackedRouteError, SourceBackedRouteErrorKind,
+    SourceBackedRouteResult,
 };
 
 /// Prepared Core records may retain at most this many exact encoded bytes
@@ -479,23 +480,6 @@ impl CoreRecordEmissionBatch {
         self,
     ) -> (Vec<PreparedCoreRecord>, SourceBackedRouteByteReservation) {
         (self.prepared, self.reservation)
-    }
-}
-
-#[derive(Debug, Clone, Default)]
-pub(crate) struct CoreRecordBatchProgress {
-    pub(crate) session_ids: Vec<[u8; 32]>,
-    pub(crate) messages: u64,
-    pub(crate) tool_calls: u64,
-}
-
-impl CoreRecordBatchProgress {
-    pub(crate) fn push(&mut self, progress: CoreRecordProgress) {
-        if self.session_ids.last() != Some(&progress.session_id) {
-            self.session_ids.push(progress.session_id);
-        }
-        self.messages = self.messages.saturating_add(progress.messages);
-        self.tool_calls = self.tool_calls.saturating_add(progress.tool_calls);
     }
 }
 

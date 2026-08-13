@@ -14,6 +14,7 @@ default = []
 test-support = []
 
 [dependencies]
+ctx-history-capture-model = { path = "../ctx-history-capture-model" }
 ctx-history-core = { path = "../ctx-history-core" }
 fs2 = "0.4.3"
 libc.workspace = true

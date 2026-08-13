@@ -14,6 +14,9 @@ use std::{
 };
 
 use chrono::{DateTime, Utc};
+use ctx_history_capture_model::{
+    CoreRecordBatchProgress, CoreRecordProgress, SourceBackedRecordProgressDelta,
+};
 use ctx_history_core::SourceAnchor;
 use ctx_history_core::{
     CaptureProvider, CertifiedSource, CertifiedSourceAppend, CertifiedSourceDeletion,

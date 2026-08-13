@@ -5,24 +5,24 @@ mod ownership;
 mod route_content;
 mod route_outcomes;
 
+use ctx_history_capture_model::{
+    source_level_progress, AttemptHistoryProgress, SourceRecordProgress,
+};
+pub use ctx_history_capture_model::{
+    SourceBackedCurrentSourceProgress, SourceBackedCurrentSourceProgressStage,
+    SourceBackedDetailedRefreshProgress, SourceBackedRefreshProgress,
+};
 #[cfg(test)]
 pub use model::assert_carried_route_failure;
-#[cfg(test)]
-use model::SourceRecordProgressSnapshot;
-#[cfg(test)]
-use model::SOURCE_RECORD_PROGRESS_INTERVAL;
-use model::{
-    source_level_progress, AttemptHistoryProgress, SourceBackedRefreshPlan,
-    SourceBackedVerifiedPublication, SourceRecordProgress,
-};
 pub use model::{
-    SourceBackedCertifiedRemoval, SourceBackedCurrentSourceProgress,
-    SourceBackedCurrentSourceProgressStage, SourceBackedDetailedRefreshProgress,
-    SourceBackedPublicationMetadataContext, SourceBackedRefreshProgress,
+    SourceBackedCertifiedRemoval, SourceBackedPublicationMetadataContext,
     SourceBackedRefreshReceipt, SourceBackedSuccessfulRouteOutcome,
 };
+use model::{SourceBackedRefreshPlan, SourceBackedVerifiedPublication};
 use route_content::source_route_content_fingerprints;
 use route_outcomes::successful_route_outcomes_for_manifest;
+
+const SOURCE_RECORD_PROGRESS_INTERVAL: Duration = Duration::from_secs(1);
 
 type SourceBackedPublicationMetadataFactory<'factory> =
     dyn for<'context> FnMut(
@@ -669,10 +669,11 @@ fn refresh_source_backed_generation_with_detailed_progress_and_discovery_timing(
                         return Err(SourceBackedCoordinatorError::Progress(error.clone()));
                     }
                     attempt_history_progress.borrow_mut().advance(&delta);
-                    let Some(source_progress) = record_progress
-                        .borrow_mut()
-                        .advanced_at(delta, Instant::now())
-                    else {
+                    let Some(source_progress) = record_progress.borrow_mut().advanced_at(
+                        delta,
+                        Instant::now(),
+                        SOURCE_RECORD_PROGRESS_INTERVAL,
+                    ) else {
                         return Ok(());
                     };
                     let history_progress = attempt_history_progress.borrow().snapshot();

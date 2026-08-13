@@ -1,4 +1,4 @@
-//! Provider-neutral capture contracts and value objects.
+//! Provider-neutral capture contracts, state, and value objects.
 //!
 //! This crate owns no source access, discovery execution, provider implementation,
 //! repository evidence, refresh publication, or runtime policy.
@@ -6,6 +6,7 @@
 mod identity;
 mod import;
 mod output;
+mod progress;
 mod record;
 mod source;
 
@@ -14,6 +15,13 @@ pub use import::{
     CatalogSummary, ProviderImportFailure, ProviderImportSummary, ProviderImportWorkResult,
 };
 pub use output::{OutputObservationKind, OutputOutcome, OutputOutcomeMetadata};
+pub use progress::{
+    source_level_progress, AttemptHistoryProgress, AttemptHistoryProgressSnapshot,
+    CoreRecordBatchProgress, CoreRecordProgress, SourceBackedCurrentSourceProgress,
+    SourceBackedCurrentSourceProgressStage, SourceBackedDetailedRefreshProgress,
+    SourceBackedRecordProgressDelta, SourceBackedRefreshProgress, SourceRecordProgress,
+    SourceRecordProgressSnapshot,
+};
 pub use record::RecordDigest;
 pub use source::{
     DiscoveryIssue, DiscoveryIssueKind, DiscoveryReport, ProviderCatalogSupport,
