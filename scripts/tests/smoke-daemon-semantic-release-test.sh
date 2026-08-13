@@ -45,10 +45,49 @@ for argument in "\$@"; do
       "\$@" --os-release "${tmp}/ubuntu-24.04-os-release"
   fi
 done
+if [[ "\${CTX_TEST_RUNTIME_EVIDENCE:-}" == "macos-arm64-native-virtualized" ]]; then
+  printf 'Darwin\tarm64\tarm64\t0\tsysctl\tapple\tnone\tpresent\t1\n'
+  exit 0
+fi
 exec "${release_root}/scripts/public-cli-host-runtime-evidence-real.sh" "\$@"
 EOF
 chmod 0755 "${release_root}/scripts/public-cli-host-runtime-evidence.sh"
 smoke="${release_root}/scripts/smoke-daemon-semantic-release.sh"
+runtime_authority="${release_root}/scripts/public-cli-runtime-authority.sh"
+
+expect_runtime_authority() {
+  local name="$1"
+  local expected="$2"
+  local actual
+  shift 2
+  actual="$("${runtime_authority}" "$@")"
+  if [[ "${actual}" != "${expected}" ]]; then
+    printf 'unexpected runtime authority for %s: expected %s, got %s\n' \
+      "${name}" "${expected}" "${actual}" >&2
+    exit 1
+  fi
+}
+
+expect_runtime_authority macos_arm64_bare_metal authoritative \
+  macos-arm64 Darwin arm64 passed arm64 0 apple none absent 1
+expect_runtime_authority macos_arm64_native_virtualized authoritative \
+  macos-arm64 Darwin arm64 passed arm64 0 apple none present 1
+expect_runtime_authority macos_arm64_rosetta non_authoritative \
+  macos-arm64 Darwin arm64 passed arm64 1 apple rosetta-2 absent 1
+expect_runtime_authority macos_arm64_emulated non_authoritative \
+  macos-arm64 Darwin arm64 passed arm64 0 apple qemu-kvm present 1
+expect_runtime_authority macos_arm64_generic_virtualized non_authoritative \
+  macos-arm64 Darwin arm64 passed arm64 0 generic none present 1
+expect_runtime_authority macos_arm64_incomplete non_authoritative \
+  macos-arm64 Darwin arm64 passed arm64 0 apple none present 0
+expect_runtime_authority macos_arm64_unknown_hypervisor non_authoritative \
+  macos-arm64 Darwin arm64 passed arm64 0 apple none unknown 1
+expect_runtime_authority macos_arm64_wrong_host_arch non_authoritative \
+  macos-arm64 Darwin x86_64 passed arm64 0 apple none present 1
+expect_runtime_authority macos_arm64_wrong_native_arch non_authoritative \
+  macos-arm64 Darwin arm64 passed x86_64 0 apple none present 1
+expect_runtime_authority macos_x64_apple_virtualized non_authoritative \
+  macos-x64 Darwin x86_64 passed x86_64 0 apple none present 1
 
 fake_ctx="${tmp}/ctx-macos-artifact"
 cat > "${fake_ctx}" <<'EOF'
@@ -226,11 +265,12 @@ expect_usage_failure retired_proof_output \
   --ctx "${fake_ctx}"
 
 run_parent="${tmp}/runs"
-"${smoke}" \
+CTX_TEST_RUNTIME_EVIDENCE=macos-arm64-native-virtualized "${smoke}" \
   --coreml \
   --runtime-platform macos-arm64 \
   --ctx "${fake_ctx}" \
   --data-root "${run_parent}" \
+  --require-authoritative \
   --timeout-seconds 30 \
   --keep-root \
   > "${tmp}/coreml.out" 2> "${tmp}/coreml.err"
