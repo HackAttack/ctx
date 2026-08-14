@@ -926,7 +926,7 @@ mod unix {
                 && !force_hardlink_fallback()
                 && !force_copy_fallback()
                 && match hard_link_authenticated_source(
-                    &source_file,
+                    &source.file,
                     &planned.path,
                     &destination.file,
                 ) {
@@ -942,6 +942,7 @@ mod unix {
                         "hardlink target identity does not match authenticated source",
                     ));
                 }
+                validate_file_binding(&source.file, &planned.path, before)?;
                 metrics.retained_full_hash_fallback_files = metrics
                     .retained_full_hash_fallback_files
                     .checked_add(1)
@@ -1024,14 +1025,16 @@ mod unix {
                 artifact: destination_artifact,
                 sha256: expected_sha256,
             });
-            metrics.retained_copied_files = metrics
-                .retained_copied_files
-                .checked_add(1)
-                .ok_or(IndexError::CountOverflow)?;
-            metrics.retained_copied_bytes = metrics
-                .retained_copied_bytes
-                .checked_add(copied)
-                .ok_or(IndexError::CountOverflow)?;
+            if !planned.copy_required {
+                metrics.retained_copied_files = metrics
+                    .retained_copied_files
+                    .checked_add(1)
+                    .ok_or(IndexError::CountOverflow)?;
+                metrics.retained_copied_bytes = metrics
+                    .retained_copied_bytes
+                    .checked_add(copied)
+                    .ok_or(IndexError::CountOverflow)?;
+            }
             validate_child_binding(&generations.file, source_name, source.identity)?;
             clone_checkpoint(CloneStage::AfterFile, &planned.path)?;
         }
@@ -1181,25 +1184,11 @@ mod unix {
 
     #[cfg(target_os = "linux")]
     fn hard_link_authenticated_source(
-        source: &File,
+        source_directory: &File,
         path: &Path,
         destination: &File,
     ) -> io::Result<()> {
-        let path = path_cstring(path)?;
-        if unsafe {
-            libc::linkat(
-                source.as_raw_fd(),
-                c"".as_ptr(),
-                destination.as_raw_fd(),
-                path.as_ptr(),
-                libc::AT_EMPTY_PATH,
-            )
-        } == 0
-        {
-            Ok(())
-        } else {
-            Err(io::Error::last_os_error())
-        }
+        hard_link_at(source_directory, path, destination)
     }
 
     #[cfg(target_os = "macos")]
