@@ -205,7 +205,7 @@ fn jsonl_page_bytes_are_a_rollover_target_not_a_record_limit() {
 fn jsonl_record_above_the_sixteen_mib_contract_is_rejected() {
     let temp = crate::test_support_paths::tempdir().unwrap();
     let path = temp.path().join("oversized-events.jsonl");
-    let mut contents = vec![b'x'; crate::MAX_PROVIDER_JSONL_LINE_BYTES + 1];
+    let mut contents = vec![b'x'; ctx_history_source_io::MAX_PROVIDER_JSONL_LINE_BYTES + 1];
     contents.push(b'\n');
     fs::write(&path, contents).unwrap();
 
