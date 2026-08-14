@@ -152,13 +152,17 @@ native = {
 }
 for key, (platform, queue, os_name, arch) in native.items():
     step = keyed[key]
-    expected_dependency = (
-        ["public-cli-linux-factory", "public-cli-macos-x64-runtime-producer"]
-        if key == "public-cli-macos-x64-native-smoke"
-        else "public-cli-linux-factory"
-    )
+    if key == "public-cli-macos-arm64-native-smoke":
+        expected_dependency = ["public-cli-linux-factory", "semantic-coreml-archive"]
+    elif key == "public-cli-macos-x64-native-smoke":
+        expected_dependency = [
+            "public-cli-linux-factory",
+            "public-cli-macos-x64-runtime-producer",
+        ]
+    else:
+        expected_dependency = "public-cli-linux-factory"
     if step.get("depends_on") != expected_dependency:
-        fail(f"{key} must depend only on the factory")
+        fail(f"{key} has the wrong strict production dependencies")
     agents = step.get("agents", {})
     if (agents.get("queue"), agents.get("os"), agents.get("arch")) != (
         queue,
@@ -173,6 +177,20 @@ for key, (platform, queue, os_name, arch) in native.items():
         fail(f"{key} must run exact-byte native validation")
     if re.search(r"cargo (?:build|zigbuild)|bazelw run //:ctx_release", command):
         fail(f"{key} must never rebuild the candidate")
+
+coreml_archive = (
+    "target/public-cli-artifacts/"
+    "ctx-multilingual-e5-small-coreml-fp16-1.0.0.tar.xz"
+)
+macos_arm_command = keyed["public-cli-macos-arm64-native-smoke"].get("command", "")
+if (
+    macos_arm_command.count(f'"{coreml_archive}*"') != 1
+    or macos_arm_command.count("--step semantic-coreml-archive") != 1
+    or macos_arm_command.count(f"--coreml-archive {coreml_archive}") != 1
+):
+    fail("macos-arm64 native smoke must download and bind the exact candidate Core ML set")
+if "https://cli.ctx.rs" in macos_arm_command:
+    fail("macos-arm64 native smoke must not fetch a published Core ML asset")
 
 producer = keyed["public-cli-macos-x64-runtime-producer"]
 if (

@@ -18,6 +18,7 @@ for release_script in \
   dev-install-from-metadata.sh \
   public-cli-host-runtime-evidence.sh \
   public-cli-runtime-authority.sh \
+  semantic-release-assets.py \
   smoke-daemon-semantic-release.sh; do
   cp -L "${repo_root}/scripts/${release_script}" \
     "${release_root}/scripts/${release_script}"
@@ -188,6 +189,57 @@ expect_runtime_authority macos_arm64_wrong_native_arch non_authoritative \
 expect_runtime_authority macos_x64_apple_virtualized non_authoritative \
   macos-x64 Darwin x86_64 passed x86_64 0 apple none present 1
 
+coreml_archive="${tmp}/ctx-multilingual-e5-small-coreml-fp16-1.0.0.tar.xz"
+printf 'candidate Core ML bytes\n' > "${coreml_archive}"
+printf 'candidate checksum sidecar\n' > "${coreml_archive}.sha256"
+printf 'candidate asset record\n' > "${coreml_archive}.asset.json"
+cat > "${release_root}/scripts/semantic-release-assets.py" <<'PY'
+#!/usr/bin/env python3
+import json
+import os
+import stat
+import sys
+from pathlib import Path
+
+expected_archive = "ctx-multilingual-e5-small-coreml-fp16-1.0.0.tar.xz"
+manifest_sha256 = "20a94162aca7c2f9f65be27839cd6867ec1c54e142fdf0c652de20139dffbc19"
+if len(sys.argv) != 6 or sys.argv[1] != "bind-coreml-cache":
+    raise SystemExit(f"unexpected candidate Core ML binder arguments: {sys.argv!r}")
+values = dict(zip(sys.argv[2::2], sys.argv[3::2]))
+if set(values) != {"--archive", "--cache-dir"}:
+    raise SystemExit(f"unexpected candidate Core ML binder options: {values!r}")
+archive = Path(values["--archive"])
+cache = Path(values["--cache-dir"])
+if archive.name != expected_archive or archive.read_bytes() != b"candidate Core ML bytes\n":
+    raise SystemExit("wrong candidate Core ML archive")
+if Path(f"{archive}.sha256").read_bytes() != b"candidate checksum sidecar\n":
+    raise SystemExit("wrong candidate Core ML checksum sidecar")
+if Path(f"{archive}.asset.json").read_bytes() != b"candidate asset record\n":
+    raise SystemExit("wrong candidate Core ML asset record")
+if stat.S_IMODE(cache.stat().st_mode) & 0o077 or any(cache.iterdir()):
+    raise SystemExit("candidate Core ML cache was not clean and owner-private")
+bundle = cache / "semantic-model-bundles" / "sha256" / manifest_sha256[:2] / manifest_sha256
+bundle.mkdir(parents=True)
+(bundle / "fixture-model").write_bytes(b"verified candidate Core ML model\n")
+marker = bundle.with_name(f"{manifest_sha256}.complete.json")
+marker.write_text(
+    json.dumps(
+        {"manifest_sha256": manifest_sha256, "schema_version": 1},
+        separators=(",", ":"),
+        sort_keys=True,
+    )
+    + "\n",
+    encoding="ascii",
+)
+Path(os.environ["CTX_TEST_COREML_BIND_LOG"]).write_text(
+    f"archive={archive}\ncache={cache}\n", encoding="utf-8"
+)
+print("archive_sha256=25fbf333d1e72f5c075973ef968dfa1446459f61f3ac63ef3690d9865435af17")
+print(f"manifest_sha256={manifest_sha256}")
+print(f"cache_bundle={bundle}")
+PY
+chmod 0755 "${release_root}/scripts/semantic-release-assets.py"
+
 fake_ctx="${tmp}/ctx-macos-artifact"
 cat > "${fake_ctx}" <<'EOF'
 #!/usr/bin/env bash
@@ -223,6 +275,16 @@ done
 [[ "${CTX_SEMANTIC_COREML_NATIVE_COMPUTE:-}" == "all" ]]
 [[ "${CTX_DAEMON_ENABLED:-}" == "true" ]]
 [[ "${CTX_SEARCH_SEMANTIC:-}" == "true" ]]
+case "${CTX_INTERNAL_SEMANTIC_BACKEND:-}" in
+  coreml)
+    coreml_identity=20a94162aca7c2f9f65be27839cd6867ec1c54e142fdf0c652de20139dffbc19
+    coreml_marker="${CTX_SEMANTIC_CACHE_DIR}/semantic-model-bundles/sha256/20/${coreml_identity}.complete.json"
+    [[ -s "${coreml_marker}" ]] || {
+      printf 'candidate Core ML cache was not bound before ctx execution\n' >&2
+      exit 1
+    }
+    ;;
+esac
 case "${HOME}" in
   "${data_root}"|"${data_root}"/*)
     printf 'semantic smoke HOME overlaps the ctx data root\n' >&2
@@ -247,10 +309,6 @@ case "${command}" in
       exit 1
     }
     no_daemon=0
-    if find "${CTX_SEMANTIC_CACHE_DIR}" -mindepth 1 -print -quit | grep -q .; then
-      printf 'daemon-backed import observed model state before publication\n' >&2
-      exit 1
-    fi
     fixture=""
     while (($# > 0)); do
       case "$1" in
@@ -346,6 +404,7 @@ expect_usage_failure() {
 
 "${smoke}" --help > "${tmp}/help.out" 2>&1
 grep -Fq -- '--coreml --runtime-platform macos-arm64|macos-x64' "${tmp}/help.out"
+grep -Fq -- '[--coreml-archive PATH]' "${tmp}/help.out"
 grep -Fq -- '--require-authoritative' "${tmp}/help.out"
 
 expect_usage_failure coreml_linux \
@@ -354,6 +413,14 @@ expect_usage_failure coreml_linux \
 expect_usage_failure coreml_archive \
   '--coreml cannot be combined with --runtime-archive' \
   --coreml --runtime-platform macos-arm64 --runtime-archive "${tmp}/unused" \
+  --ctx "${fake_ctx}"
+expect_usage_failure coreml_candidate_without_mode \
+  '--coreml-archive requires --coreml' \
+  --runtime-platform macos-arm64 --coreml-archive "${coreml_archive}" \
+  --ctx "${fake_ctx}"
+expect_usage_failure coreml_candidate_x64 \
+  '--coreml-archive requires --runtime-platform macos-arm64' \
+  --coreml --runtime-platform macos-x64 --coreml-archive "${coreml_archive}" \
   --ctx "${fake_ctx}"
 expect_usage_failure archive_required \
   '--runtime-archive is required unless --coreml is selected' \
@@ -386,9 +453,12 @@ grep -Fq -- \
   "${tmp}/non-authoritative.err"
 
 run_parent="${tmp}/runs"
-CTX_TEST_RUNTIME_EVIDENCE=macos-arm64-native-virtualized "${smoke}" \
+coreml_bind_log="${tmp}/coreml-bind.log"
+CTX_TEST_RUNTIME_EVIDENCE=macos-arm64-native-virtualized \
+CTX_TEST_COREML_BIND_LOG="${coreml_bind_log}" "${smoke}" \
   --coreml \
   --runtime-platform macos-arm64 \
+  --coreml-archive "${coreml_archive}" \
   --ctx "${fake_ctx}" \
   --data-root "${run_parent}" \
   --require-authoritative \
@@ -404,6 +474,11 @@ grep -Fq \
   'hardware_identity=apple emulation=none hypervisor=present evidence_complete=1' \
   "${tmp}/coreml.out"
 grep -Fq 'authority=authoritative' "${tmp}/coreml.out"
+grep -Fxq -- "archive=${coreml_archive}" "${coreml_bind_log}"
+grep -Fq -- '/semantic-cache' "${coreml_bind_log}"
+grep -Fq -- \
+  'archive_sha256=25fbf333d1e72f5c075973ef968dfa1446459f61f3ac63ef3690d9865435af17' \
+  "${tmp}/coreml.out"
 [[ ! -e "${run_root}/data/runtime/onnxruntime" ]]
 python3 -I - "${run_root}/installed/bin" <<'PY'
 import os

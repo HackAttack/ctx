@@ -163,10 +163,15 @@ steps:
 
   - label: ":test_tube: public CLI macos-arm64 exact-byte validation"
     key: "public-cli-macos-arm64-native-smoke"
-    depends_on: "public-cli-linux-factory"
+    depends_on:
+      - "public-cli-linux-factory"
+      - "semantic-coreml-archive"
     if: build.env("CTX_PUBLIC_CLI_ARTIFACT_MATRIX") == "1" && build.env("CTX_PUBLIC_CLI_NATIVE_SMOKE_MATRIX") == "1" && build.branch == "main" && build.pull_request.id == null
     command: |
       scripts/buildkite/download-linux-factory-artifacts.sh "ctx-macos-arm64*" "ctx-onnxruntime-macos-arm64*"
+      buildkite-agent artifact download \
+        "target/public-cli-artifacts/ctx-multilingual-e5-small-coreml-fp16-1.0.0.tar.xz*" . \
+        --step semantic-coreml-archive
       scripts/validate-public-cli-factory-artifact.sh \
         macos-arm64 target/public-cli-artifacts \
         target/public-cli-native-smoke/macos-arm64
@@ -174,6 +179,7 @@ steps:
       mkdir -p "$${coreml_root}"
       if ! scripts/smoke-daemon-semantic-release.sh \
         --coreml --runtime-platform macos-arm64 \
+        --coreml-archive target/public-cli-artifacts/ctx-multilingual-e5-small-coreml-fp16-1.0.0.tar.xz \
         --ctx target/public-cli-artifacts/ctx-macos-arm64 \
         --data-root "$${coreml_root}" --require-authoritative --keep-root \
         >"$${coreml_root}/smoke.log" 2>&1; then
