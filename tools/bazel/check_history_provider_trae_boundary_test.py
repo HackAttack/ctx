@@ -177,22 +177,72 @@ class TraeBoundaryMutationTests(unittest.TestCase):
         with self.assertRaisesRegex(BoundaryError, "forbidden authority"):
             self.validate()
 
-    def test_composition_cargo_dependency_is_required(self) -> None:
-        self.composition_manifest.write_text(
-            self.composition_manifest.read_text(encoding="utf-8").replace(
-                'ctx-history-provider-trae = { path = "../ctx-history-provider-trae" }\n',
-                "",
+    def test_composition_cargo_dependency_must_be_active(self) -> None:
+        dependency = (
+            'ctx-history-provider-trae = { path = "../ctx-history-provider-trae" }\n'
+        )
+        original = self.composition_manifest.read_text(encoding="utf-8")
+        for replacement in ("", "# " + dependency):
+            with self.subTest(replacement=replacement):
+                self.composition_manifest.write_text(
+                    original.replace(dependency, replacement), encoding="utf-8"
+                )
+                with self.assertRaisesRegex(BoundaryError, "Cargo dependency"):
+                    self.validate()
+
+    def test_composition_production_dependency_is_exactly_once(self) -> None:
+        label = '"//crates/ctx-history-provider-trae:lib"'
+        for dependency_list in (
+            "[]",
+            f"[\n    # {label},\n]",
+            f"[\n    {label},\n    {label},\n]",
+            '["//crates/ctx-history-provider-trae:test_support_lib"]',
+        ):
+            with self.subTest(dependency_list=dependency_list):
+                self.composition_build.write_text(
+                    f"COMPOSITION_DEPS = {dependency_list}\n", encoding="utf-8"
+                )
+                with self.assertRaisesRegex(BoundaryError, "production dependencies"):
+                    self.validate()
+
+    def test_composition_production_dependency_must_be_literal(self) -> None:
+        for value in ("TRAE_DEPS", "[TRAE_LABEL]", "["):
+            with self.subTest(value=value):
+                self.composition_build.write_text(
+                    f"COMPOSITION_DEPS = {value}\n", encoding="utf-8"
+                )
+                with self.assertRaisesRegex(BoundaryError, "dependency inventory"):
+                    self.validate()
+
+    def test_commented_capture_alias_is_rejected(self) -> None:
+        self.capture_facade.write_text(
+            "// " + self.capture_facade.read_text(encoding="utf-8"), encoding="utf-8"
+        )
+        with self.assertRaisesRegex(BoundaryError, "capture Trae facade"):
+            self.validate()
+
+    def test_commented_runtime_binding_is_rejected(self) -> None:
+        self.composition_facade.write_text(
+            self.composition_facade.read_text(encoding="utf-8").replace(
+                "crate::source_backed::family::CaptureProviderRuntime",
+                "// crate::source_backed::family::CaptureProviderRuntime",
             ),
             encoding="utf-8",
         )
-        with self.assertRaisesRegex(BoundaryError, "Cargo dependency"):
+        with self.assertRaisesRegex(BoundaryError, "composition Trae facade"):
             self.validate()
 
-    def test_composition_production_dependency_is_required(self) -> None:
-        self.composition_build.write_text(
-            "COMPOSITION_DEPS = []\n", encoding="utf-8"
+    def test_commented_registration_is_rejected(self) -> None:
+        self.registration.write_text(
+            "/* " + self.registration.read_text(encoding="utf-8") + " */",
+            encoding="utf-8",
         )
-        with self.assertRaisesRegex(BoundaryError, "production dependencies"):
+        with self.assertRaisesRegex(BoundaryError, "route registration"):
+            self.validate()
+
+    def test_missing_expected_input_is_rejected(self) -> None:
+        self.registration.unlink()
+        with self.assertRaises(OSError):
             self.validate()
 
     def test_composition_replacement_tree_alias_is_required(self) -> None:

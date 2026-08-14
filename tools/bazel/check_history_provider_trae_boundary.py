@@ -4,6 +4,8 @@
 from __future__ import annotations
 
 import argparse
+import ast
+import re
 import sys
 import tomllib
 from pathlib import Path
@@ -50,6 +52,11 @@ FORBIDDEN_PACK_FRAGMENTS = (
     "CaptureProviderRuntime",
     "IndexCaptureLifecycle",
 )
+RUST_BLOCK_COMMENT = re.compile(r"/\*.*?\*/", re.DOTALL)
+COMPOSITION_DEPS_ASSIGNMENT = re.compile(r"(?m)^COMPOSITION_DEPS[ \t]*=")
+COMPOSITION_DEPS_LITERAL = re.compile(
+    r"(?m)^COMPOSITION_DEPS[ \t]*=[ \t]*(\[[^\]]*\])[ \t]*(?:#.*)?$"
+)
 
 
 def _read_rust_tree(root_or_file: Path) -> str:
@@ -59,14 +66,62 @@ def _read_rust_tree(root_or_file: Path) -> str:
     )
 
 
+def _active_rust(text: str, label: str) -> str:
+    code = RUST_BLOCK_COMMENT.sub("", text)
+    if "/*" in code or "*/" in code:
+        raise BoundaryError(f"{label} has malformed block comments")
+    return "\n".join(line.split("//", 1)[0] for line in code.splitlines())
+
+
+def _active_starlark_lines(text: str) -> set[str]:
+    return {
+        code.removesuffix(",")
+        for line in text.splitlines()
+        if (code := line.split("#", 1)[0].strip())
+    }
+
+
+def _composition_dependencies(text: str) -> list[str]:
+    if len(COMPOSITION_DEPS_ASSIGNMENT.findall(text)) != 1:
+        raise BoundaryError("composition production dependency inventory drifted")
+    match = COMPOSITION_DEPS_LITERAL.search(text)
+    if match is None:
+        raise BoundaryError(
+            "composition production dependency inventory is not literal"
+        )
+    try:
+        dependencies = ast.literal_eval(match.group(1))
+    except (SyntaxError, ValueError) as error:
+        raise BoundaryError(
+            "composition production dependency inventory is malformed"
+        ) from error
+    if not isinstance(dependencies, list) or not all(
+        isinstance(dependency, str) for dependency in dependencies
+    ):
+        raise BoundaryError(
+            "composition production dependency inventory is not literal"
+        )
+    return dependencies
+
+
+def _has_exact_fragment(text: str, fragment: str) -> bool:
+    prefix = r"(?<![A-Za-z0-9_])" if fragment[0].isalnum() else ""
+    suffix = r"(?![A-Za-z0-9_])" if fragment[-1].isalnum() else ""
+    return re.search(prefix + re.escape(fragment) + suffix, text) is not None
+
+
 def _require_fragments(text: str, fragments: tuple[str, ...], label: str) -> None:
-    missing = [fragment for fragment in fragments if fragment not in text]
+    missing = [
+        fragment for fragment in fragments if not _has_exact_fragment(text, fragment)
+    ]
     if missing:
         raise BoundaryError(f"{label} drifted: missing {', '.join(missing)}")
 
 
 def _forbid_fragments(text: str, fragments: tuple[str, ...], label: str) -> None:
-    retained = [fragment for fragment in fragments if fragment in text]
+    retained = [
+        fragment for fragment in fragments if _has_exact_fragment(text, fragment)
+    ]
     if retained:
         raise BoundaryError(f"{label} retained forbidden authority: {', '.join(retained)}")
 
@@ -104,23 +159,33 @@ def validate(
         if dependencies[dependency] != {"path": expected_path}:
             raise BoundaryError(f"Trae path dependency drifted: {dependency}")
 
-    build_text = build.read_text(encoding="utf-8")
+    build_lines = _active_starlark_lines(build.read_text(encoding="utf-8"))
+    build_labels = {
+        line[1:-1]
+        for line in build_lines
+        if len(line) >= 2 and line.startswith('"') and line.endswith('"')
+    }
     forbidden_labels = ("//crates/ctx-history-capture:", "//crates/ctx-history-index:")
-    if any(label in build_text for label in forbidden_labels):
+    if any(
+        label.startswith(forbidden)
+        for label in build_labels
+        for forbidden in forbidden_labels
+    ):
         raise BoundaryError("Trae pack gained capture/index Bazel authority")
-    missing_labels = sorted(label for label in REQUIRED_BUILD_LABELS if label not in build_text)
+    missing_labels = sorted(REQUIRED_BUILD_LABELS - build_labels)
     if missing_labels:
-        raise BoundaryError("Trae lower-layer Bazel inventory drifted: " + ", ".join(missing_labels))
-    _require_fragments(
-        build_text,
-        ('crate_name = "ctx_history_provider_trae"', 'name = "test_support_lib"'),
-        "Trae Bazel targets",
-    )
+        raise BoundaryError(
+            "Trae lower-layer Bazel inventory drifted: " + ", ".join(missing_labels)
+        )
+    required_target_lines = {
+        'crate_name = "ctx_history_provider_trae"',
+        'name = "test_support_lib"',
+    }
+    if not required_target_lines.issubset(build_lines):
+        raise BoundaryError("Trae Bazel targets drifted")
 
-    pack_text = _read_rust_tree(source_root)
-    retained = [fragment for fragment in FORBIDDEN_PACK_FRAGMENTS if fragment in pack_text]
-    if retained:
-        raise BoundaryError("Trae pack retained forbidden authority: " + ", ".join(retained))
+    pack_text = _active_rust(_read_rust_tree(source_root), "Trae production source")
+    _forbid_fragments(pack_text, FORBIDDEN_PACK_FRAGMENTS, "Trae pack")
     _require_fragments(
         pack_text,
         (
@@ -133,7 +198,9 @@ def validate(
         "Trae production implementation",
     )
 
-    capture_facade_text = capture_facade.read_text(encoding="utf-8")
+    capture_facade_text = _active_rust(
+        capture_facade.read_text(encoding="utf-8"), "capture Trae facade"
+    )
     _require_fragments(
         capture_facade_text,
         (
@@ -169,20 +236,18 @@ def validate(
     if composition_dependency != {"path": "../ctx-history-provider-trae"}:
         raise BoundaryError("composition Trae Cargo dependency drifted")
 
-    composition_build_text = composition_build.read_text(encoding="utf-8")
-    production_deps_marker = "COMPOSITION_DEPS = ["
-    if production_deps_marker not in composition_build_text:
-        raise BoundaryError("composition production dependency inventory drifted")
-    production_deps = composition_build_text.split(production_deps_marker, 1)[1].split(
-        "]", 1
-    )[0]
-    _require_fragments(
-        production_deps,
-        ("//crates/ctx-history-provider-trae:lib",),
-        "composition production dependencies",
+    production_deps = _composition_dependencies(
+        composition_build.read_text(encoding="utf-8")
     )
+    trae_label = "//crates/ctx-history-provider-trae:lib"
+    if production_deps.count(trae_label) != 1:
+        raise BoundaryError(
+            "composition production dependencies must contain exactly one " + trae_label
+        )
 
-    composition_facade_text = composition_facade.read_text(encoding="utf-8")
+    composition_facade_text = _active_rust(
+        composition_facade.read_text(encoding="utf-8"), "composition Trae facade"
+    )
     _require_fragments(
         composition_facade_text,
         (
@@ -193,7 +258,9 @@ def validate(
         "composition Trae facade",
     )
 
-    registration_text = registration.read_text(encoding="utf-8")
+    registration_text = _active_rust(
+        registration.read_text(encoding="utf-8"), "composition Trae route registration"
+    )
     _require_fragments(
         registration_text,
         (
@@ -205,7 +272,9 @@ def validate(
         "composition Trae route registration",
     )
 
-    discovery_text = discovery.read_text(encoding="utf-8")
+    discovery_text = _active_rust(
+        discovery.read_text(encoding="utf-8"), "capture Trae discovery probe"
+    )
     _require_fragments(
         discovery_text,
         (
