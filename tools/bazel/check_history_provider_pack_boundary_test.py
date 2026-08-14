@@ -10,6 +10,7 @@ from check_history_provider_pack_boundary import (
     BoundaryError,
     EVALUATED_REVERSE_BAZEL_CONSUMERS,
     LIVE_BOUNDARY_TARGET,
+    MUTATION_BOUNDARY_TARGET,
     PACK_LABEL,
     validate,
     validate_evaluated_reverse_bazel_consumers,
@@ -116,6 +117,24 @@ class ProviderPackBoundaryMutations(unittest.TestCase):
                 f'    "{LIVE_BOUNDARY_TARGET}",\n',
                 "",
                 "must route",
+            ),
+            (
+                self.root / "tools/bazel/test_tiers.bzl",
+                f'    "{MUTATION_BOUNDARY_TARGET}",\n',
+                "",
+                "must route",
+            ),
+            (
+                self.root / "tools/bazel/test_tiers.bzl",
+                "RUST_FORMAT_TARGETS = [\n",
+                f'RUST_FORMAT_TARGETS = [\n    "{LIVE_BOUNDARY_TARGET}",\n',
+                "must not route",
+            ),
+            (
+                self.root / "tools/bazel/test_tiers.bzl",
+                "RUST_FORMAT_TARGETS = [\n",
+                f'RUST_FORMAT_TARGETS = [\n    "{MUTATION_BOUNDARY_TARGET}",\n',
+                "must not route",
             ),
         )
         for path, before, after, error in cases:

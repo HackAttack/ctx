@@ -799,7 +799,10 @@ def _validate_live_gate_registration(
     tier_tokens = _tokenize_starlark(
         test_tiers_path.read_text(encoding="utf-8"), "public test tiers"
     )
-    for inventory in ("RUST_FORMAT_TARGETS", "_CI_RUST_TESTS"):
+    for inventory, expected_count in (
+        ("RUST_FORMAT_TARGETS", 0),
+        ("_CI_RUST_TESTS", 1),
+    ):
         assignments = _assignments(tier_tokens, inventory)
         if len(assignments) != 1 or assignments[0][0] != "=":
             raise BoundaryError(f"public test tiers must assign {inventory} exactly once")
@@ -807,7 +810,11 @@ def _validate_live_gate_registration(
             assignments[0][1], "public test tiers", inventory
         )
         for label in (LIVE_BOUNDARY_TARGET, MUTATION_BOUNDARY_TARGET):
-            if labels.count(label) != 1:
+            if labels.count(label) != expected_count:
+                if expected_count == 0:
+                    raise BoundaryError(
+                        f"public test tiers {inventory} must not route non-Rust {label}"
+                    )
                 raise BoundaryError(
                     f"public test tiers {inventory} must route {label} exactly once"
                 )
