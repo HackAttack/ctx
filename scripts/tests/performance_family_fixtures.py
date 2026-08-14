@@ -38,6 +38,7 @@ PROVIDER_FAMILY_COVERAGE = (
     ("custom", PROVIDER_SPECIFIC_EXCEPTION, "explicit custom-history JSONL"),
     ("codex", JSONL_FAMILY, None),
     ("grok_build", JSONL_FAMILY, None),
+    ("deepseek_harness", JSONL_FAMILY, None),
     ("claude", JSONL_FAMILY, None),
     ("pi", JSONL_FAMILY, None),
     ("opencode", SQLITE_WAL_FAMILY, None),
@@ -204,11 +205,109 @@ def replace_bytes(path: Path, body: bytes) -> None:
 
 def family_query(family: str, leaf: int, phase: str = "cold") -> str:
     token = {
+        JSONL_FAMILY: "jsonl",
         SQLITE_WAL_FAMILY: "sqlitewal",
         DOCUMENT_TREE_FAMILY: "documenttree",
         EVENT_FILE_FAMILY: "eventfile",
     }[family]
     return f"ctxfamily{token}{phase}{leaf:03d}"
+
+
+def deepseek_harness_session(
+    session_id: str,
+    body: str,
+) -> bytes:
+    return b"".join(
+        compact_json(record) + b"\n"
+        for record in (
+            {
+                "type": "session",
+                "version": 0,
+                "id": session_id,
+                "createdAt": 1785412800000,
+                "cwd": "/workspace/source-family",
+                "delegationDepth": 0,
+                "agentPreset": "performance-fixture",
+            },
+            {
+                "type": "user/message",
+                "seq": 0,
+                "time": 1785412800001,
+                "data": {
+                    "content": [{"type": "text", "text": body}],
+                    "source": {"kind": "user"},
+                    "role": "user",
+                    "id": f"{session_id}-message",
+                },
+            },
+        )
+    )
+
+
+def write_deepseek_harness_jsonl_corpus(home: Path) -> FamilyCorpus:
+    # This deliberately uses DeepSeek Harness's configured raw layout. The
+    # provider's separate qualification fixture owns the default Zstandard
+    # layout; a single discovery root must never mix the two encodings.
+    root = home / ".dsh" / "sessions"
+    cold_query = family_query(JSONL_FAMILY, 0)
+    replacement_query = family_query(JSONL_FAMILY, 0, "repl")
+    cold_body = fixed_family_text(cold_query)
+    replacement_body = fixed_family_text(replacement_query)
+    first_session: Path | None = None
+
+    for leaf in range(FAMILY_LEAF_COUNT):
+        session_id = f"deepseek-family-session-{leaf:03d}"
+        session = (
+            root
+            / "ctx-source-family-performance"
+            / session_id
+            / "session.jsonl"
+        )
+        body = (
+            cold_body
+            if leaf == 0
+            else fixed_family_text(family_query(JSONL_FAMILY, leaf))
+        )
+        write_bytes(session, deepseek_harness_session(session_id, body))
+        if first_session is None:
+            first_session = session
+
+    if first_session is None:
+        raise AssertionError(
+            "DeepSeek Harness family fixture requires at least one leaf"
+        )
+
+    def replace_leaf() -> None:
+        replace_bytes(
+            first_session,
+            deepseek_harness_session("deepseek-family-session-000", replacement_body),
+        )
+
+    fixture_bytes = directory_file_bytes(root)
+    return FamilyCorpus(
+        family=JSONL_FAMILY,
+        provider="deepseek_harness",
+        source_format="deepseek_harness_session_jsonl",
+        source_root=root,
+        source_path_suffix=str(first_session.relative_to(root)),
+        cold_query=cold_query,
+        replacement_query=replacement_query,
+        cold_body=cold_body,
+        replacement_body=replacement_body,
+        source_count=FAMILY_LEAF_COUNT,
+        complete_records=FAMILY_LEAF_COUNT * 2,
+        retained_records=FAMILY_LEAF_COUNT,
+        # The valid session header completes admission but does not project a
+        # searchable Core event.
+        ignored_records=FAMILY_LEAF_COUNT,
+        rejected_records=0,
+        indexed_documents=FAMILY_LEAF_COUNT,
+        certified_source_bytes=fixture_bytes,
+        fixture_bytes=fixture_bytes,
+        independent_leaves=True,
+        _replace_leaf=replace_leaf,
+        _close=lambda: None,
+    )
 
 
 def write_lingma_sqlite_wal_corpus(home: Path) -> FamilyCorpus:
@@ -498,6 +597,7 @@ def write_openhands_event_file_corpus(home: Path) -> FamilyCorpus:
 
 
 FAMILY_CORPUS_WRITERS = (
+    write_deepseek_harness_jsonl_corpus,
     write_lingma_sqlite_wal_corpus,
     write_cline_document_tree_corpus,
     write_openhands_event_file_corpus,
