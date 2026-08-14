@@ -374,7 +374,7 @@ fn decode_binding(leaf: &JsonlFamilyLeaf) -> Result<JunieBinding> {
             "Junie family binding is malformed".to_owned(),
         ));
     };
-    Ok(serde_json::from_slice(&bytes)?)
+    Ok(serde_json::from_slice(bytes)?)
 }
 
 fn relative_to_authority(authority: &ProviderSourceRoot, path: &Path) -> Result<PathBuf> {

@@ -341,7 +341,7 @@ fn decode_family_leaf(leaf: &JsonlFamilyLeaf) -> crate::Result<KimiSourceLeaf> {
             "Kimi family leaf binding is malformed".to_owned(),
         ));
     };
-    Ok(serde_json::from_slice(&bytes)?)
+    Ok(serde_json::from_slice(bytes)?)
 }
 
 fn capture_error(error: impl std::fmt::Display) -> CaptureError {
