@@ -110,6 +110,7 @@ pub(super) struct DaemonRuntime {
     pub(super) sidecar_drain: DaemonSidecarDrain,
     pub(super) consumer_retry_deferral: DaemonConsumerRetryDeferral,
     pub(super) background_refresh_cadence: DaemonBackgroundRefreshCadence,
+    pub(super) finite_refresh_admission: FiniteRefreshAdmissionEpoch,
     pub(super) config: AppConfig,
 }
 
@@ -746,6 +747,7 @@ where
                 && daemon_scheduled_refresh_due(
                     &runtime,
                     source_refresh,
+                    idle_exit,
                     Instant::now(),
                     source_route_ledger_now_ms(),
                 );
@@ -996,8 +998,15 @@ pub(super) fn daemon_wait_duration(
     if let (Some(idle), Some(limit)) = (idle_since, idle_exit) {
         wait_for = wait_for.min(limit.saturating_sub(now.saturating_duration_since(idle)));
     }
-    if let Some(route_due_ms) = source_refresh
-        .and_then(|refresh| refresh.next_dirty_route_due_in_ms(source_route_ledger_now_ms()))
+    if let Some(route_due_ms) = runtime
+        .finite_refresh_admission
+        .allows_automatic_provider_refresh(idle_exit)
+        .then(|| {
+            source_refresh.and_then(|refresh| {
+                refresh.next_dirty_route_due_in_ms(source_route_ledger_now_ms())
+            })
+        })
+        .flatten()
     {
         let route_wait = StdDuration::from_millis(route_due_ms);
         let cadence_wait = runtime
