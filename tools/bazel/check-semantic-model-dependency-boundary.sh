@@ -24,7 +24,7 @@ query() {
 for target in lib test_support_lib; do
   expected_internal="${tmp}/${target}-expected-internal.txt"
   printf '%s\n' \
-    '//crates/ctx-history-core:lib' \
+    '//crates/ctx-history-platform:lib' \
     "//crates/ctx-semantic-model:${target}" >"${expected_internal}"
   query "kind(\"rust_library rule\", deps(//crates/ctx-semantic-model:${target})) intersect //crates/..." \
     | LC_ALL=C sort -u >"${tmp}/${target}-internal.txt"

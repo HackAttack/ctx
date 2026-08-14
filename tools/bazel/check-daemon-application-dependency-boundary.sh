@@ -27,7 +27,8 @@ printf '%s\n' \
   '//crates/ctx-daemon-application:lib' \
   '//crates/ctx-daemon-runtime:lib' \
   '//crates/ctx-daemon-service:lib' \
-  '//crates/ctx-history-core:lib' >"${expected_direct}"
+  '//crates/ctx-history-core:lib' \
+  '//crates/ctx-history-platform:lib' >"${expected_direct}"
 query 'kind("rust_library rule", deps(//crates/ctx-daemon-application:lib, 1)) intersect //crates/...' \
   | LC_ALL=C sort -u >"${tmp}/actual-direct.txt"
 if ! diff -u "${expected_direct}" "${tmp}/actual-direct.txt"; then
@@ -41,7 +42,8 @@ printf '%s\n' \
   '//crates/ctx-daemon-application:qualification_lib' \
   '//crates/ctx-daemon-runtime:qualification_lib' \
   '//crates/ctx-daemon-service:qualification_lib' \
-  '//crates/ctx-history-core:lib' >"${expected_qualification}"
+  '//crates/ctx-history-core:lib' \
+  '//crates/ctx-history-platform:lib' >"${expected_qualification}"
 query 'kind("rust_library rule", deps(//crates/ctx-daemon-application:qualification_lib, 1)) intersect //crates/...' \
   | LC_ALL=C sort -u >"${tmp}/actual-qualification.txt"
 if ! diff -u "${expected_qualification}" "${tmp}/actual-qualification.txt"; then
@@ -55,7 +57,8 @@ printf '%s\n' \
   '//crates/ctx-daemon-application:test_support_lib' \
   '//crates/ctx-daemon-runtime:lib' \
   '//crates/ctx-daemon-service:test_support_lib' \
-  '//crates/ctx-history-core:lib' >"${expected_test_support}"
+  '//crates/ctx-history-core:lib' \
+  '//crates/ctx-history-platform:lib' >"${expected_test_support}"
 query 'kind("rust_library rule", deps(//crates/ctx-daemon-application:test_support_lib, 1)) intersect //crates/...' \
   | LC_ALL=C sort -u >"${tmp}/actual-test-support.txt"
 if ! diff -u "${expected_test_support}" "${tmp}/actual-test-support.txt"; then
@@ -129,6 +132,7 @@ expected_dependencies = {
     "ctx-daemon-runtime",
     "ctx-daemon-service",
     "ctx-history-core",
+    "ctx-history-platform",
     "serde_json",
     "sha2",
 }

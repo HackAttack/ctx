@@ -32,6 +32,7 @@ for target in lib test_support_lib; do
     '//crates/ctx-history-index-generation:lib' \
     '//crates/ctx-history-index-query:lib' \
     '//crates/ctx-history-index:lib' \
+    '//crates/ctx-history-platform:lib' \
     "//crates/ctx-semantic-index:${target}" \
     '//crates/ctx-semantic-model:lib' >"${expected_internal}"
   query "kind(\"rust_library rule\", deps(//crates/ctx-semantic-index:${target})) intersect //crates/..." \

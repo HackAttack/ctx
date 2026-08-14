@@ -37,6 +37,7 @@ thiserror.workspace = true
 toml_edit.workspace = true
 ctx-history-capture-model = { path = "../ctx-history-capture-model" }
 ctx-history-core = { path = "../ctx-history-core" }
+ctx-history-platform = { path = "../ctx-history-platform" }
 ctx-history-source-io = { path = "../ctx-history-source-io" }
 ctx-history-source-sqlite = { path = "../ctx-history-source-sqlite" }
 

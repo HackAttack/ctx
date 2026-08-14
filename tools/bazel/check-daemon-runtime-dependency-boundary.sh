@@ -48,7 +48,8 @@ done <"${workspace_members}"
 expected_internal="${tmp}/expected-internal.txt"
 printf '%s\n' \
   '//crates/ctx-daemon-runtime:lib' \
-  '//crates/ctx-history-core:lib' >"${expected_internal}"
+  '//crates/ctx-history-core:lib' \
+  '//crates/ctx-history-platform:lib' >"${expected_internal}"
 query 'kind("rust_library rule", deps(//crates/ctx-daemon-runtime:lib)) intersect //crates/...' \
   | LC_ALL=C sort -u >"${tmp}/actual-internal.txt"
 if ! diff -u "${expected_internal}" "${tmp}/actual-internal.txt"; then
@@ -111,7 +112,7 @@ actual_internal_cargo="${tmp}/actual-internal-cargo.txt"
 grep -E '^[[:space:]]*ctx-[[:alnum:]-]+[[:space:]]*=' "${runtime_root}/Cargo.toml" \
   | sed -E 's/^[[:space:]]*([^[:space:]]+).*/\1/' \
   | LC_ALL=C sort -u >"${actual_internal_cargo}"
-printf '%s\n' 'ctx-history-core' >"${tmp}/expected-internal-cargo.txt"
+printf '%s\n' 'ctx-history-core' 'ctx-history-platform' >"${tmp}/expected-internal-cargo.txt"
 if ! diff -u "${tmp}/expected-internal-cargo.txt" "${actual_internal_cargo}"; then
   echo 'unexpected internal Cargo dependency for ctx-daemon-runtime' >&2
   exit 1

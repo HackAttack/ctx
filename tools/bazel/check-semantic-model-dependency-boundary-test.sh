@@ -53,12 +53,12 @@ fi
 case "$2" in
   'kind("rust_library rule", deps(//crates/ctx-semantic-model:lib)) intersect //crates/...')
     printf '%s\n' \
-      '//crates/ctx-history-core:lib' \
+      '//crates/ctx-history-platform:lib' \
       '//crates/ctx-semantic-model:lib'
     ;;
   'kind("rust_library rule", deps(//crates/ctx-semantic-model:test_support_lib)) intersect //crates/...')
     printf '%s\n' \
-      '//crates/ctx-history-core:lib' \
+      '//crates/ctx-history-platform:lib' \
       '//crates/ctx-semantic-model:test_support_lib'
     ;;
   'somepath(//crates/ctx-semantic-model:lib, //crates/ctx-history-index:lib)') ;;

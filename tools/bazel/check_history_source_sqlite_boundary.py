@@ -12,6 +12,7 @@ from typing import Any, Iterable
 
 EXPECTED_DEPENDENCIES: dict[str, Any] = {
     "ctx-history-core": {"path": "../ctx-history-core"},
+    "ctx-history-platform": {"path": "../ctx-history-platform"},
     "ctx-history-source-io": {"path": "../ctx-history-source-io"},
     "fs2": "0.4.3",
     "libc": {"workspace": True},
@@ -30,6 +31,7 @@ EXPECTED_WINDOWS_DEPENDENCIES: dict[str, Any] = {
 }
 EXPECTED_INTERNAL_BAZEL = {
     "//crates/ctx-history-core:lib",
+    "//crates/ctx-history-platform:lib",
     "//crates/ctx-history-source-io:lib",
     "//crates/ctx-history-source-sqlite:lib",
 }
@@ -70,7 +72,11 @@ def validate_sqlite_manifest(path: Path) -> None:
     if targets != expected_targets:
         raise BoundaryError("ctx-history-source-sqlite target dependencies drifted")
     internal = {name for name in dependencies if name.startswith("ctx-")}
-    if internal != {"ctx-history-core", "ctx-history-source-io"}:
+    if internal != {
+        "ctx-history-core",
+        "ctx-history-platform",
+        "ctx-history-source-io",
+    }:
         raise BoundaryError("ctx-history-source-sqlite gained an upward internal dependency")
     bypasses = sorted(
         name

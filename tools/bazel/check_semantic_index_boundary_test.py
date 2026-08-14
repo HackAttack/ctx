@@ -18,6 +18,7 @@ test-support = []
 anyhow.workspace = true
 ctx-history-core = { path = "../ctx-history-core" }
 ctx-history-index = { path = "../ctx-history-index" }
+ctx-history-platform = { path = "../ctx-history-platform" }
 ctx-semantic-model = { path = "../ctx-semantic-model" }
 fs2 = "0.4.3"
 memmap2.workspace = true
@@ -41,6 +42,7 @@ filegroup(
 CTX_SEMANTIC_INDEX_DEPS = [
     "//crates/ctx-history-core:lib",
     "//crates/ctx-history-index:lib",
+    "//crates/ctx-history-platform:lib",
     "//crates/ctx-semantic-model:lib",
 ]
 

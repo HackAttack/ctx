@@ -20,6 +20,7 @@ FORBIDDEN_HISTORY_CARGO = {"clap", "ctx-cli"}
 HISTORY_DEPS = (
     "//crates/ctx-history-capture:lib",
     "//crates/ctx-history-core:lib",
+    "//crates/ctx-history-platform:lib",
     "//crates/ctx-history-ingest-application:lib",
     "//crates/ctx-history-index:lib",
     "//crates/ctx-history-read-application:lib",
@@ -31,6 +32,7 @@ HISTORY_DEPS = (
 HISTORY_TEST_SUPPORT_DEPS = (
     "//crates/ctx-history-capture:lib",
     "//crates/ctx-history-core:lib",
+    "//crates/ctx-history-platform:lib",
     "//crates/ctx-history-ingest-application:test_support_lib",
     "//crates/ctx-history-index:lib",
     "//crates/ctx-history-read-application:lib",
