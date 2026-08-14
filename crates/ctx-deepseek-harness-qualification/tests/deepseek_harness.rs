@@ -522,6 +522,20 @@ fn rewrite_header_as_future(path: &Path, marker: &str) {
     fs::write(path, rewritten).expect("write test-authored future header");
 }
 
+fn rewrite_header_with_unknown_v0_field(path: &Path, marker: &str) {
+    let content = fs::read_to_string(path).expect("read raw fixture for unknown header field");
+    let header_end = content.find('\n').expect("fixture header newline");
+    let mut header: Value =
+        serde_json::from_str(&content[..header_end]).expect("parse fixture header");
+    header["unknownV0Field"] = json!(marker);
+    let rewritten = format!(
+        "{}\n{}",
+        serde_json::to_string(&header).expect("serialize unknown header field"),
+        &content[header_end + 1..]
+    );
+    fs::write(path, rewritten).expect("write test-authored unknown header field");
+}
+
 fn only_source<'a>(report: &'a Value, expected_format: &str) -> &'a Value {
     assert_eq!(report["schema_version"], 2, "{report:#}");
     let sources = report["sources"]
@@ -1173,6 +1187,22 @@ fn future_version_and_unknown_required_events_fail_closed() {
     );
     required_state.assert_unchanged(&required);
     required_directory.assert_unchanged(required.parent().unwrap());
+}
+
+#[test]
+fn unknown_v0_header_fields_fail_closed() {
+    let harness = Harness::new(false);
+    let marker = "deepseekharnessunknownv0headermarker7b1a";
+    let source = harness.root.path().join("unknown-v0-header/session.jsonl");
+    copy_public_session(Encoding::Raw, PARENT_SESSION_ID, &source);
+    rewrite_header_with_unknown_v0_field(&source, marker);
+
+    let _daemon = harness.start_daemon();
+    let output = harness.failed_explicit_import(&source);
+    assert!(
+        output.contains("unknown DeepSeek Harness session header field"),
+        "{output}"
+    );
 }
 
 #[test]

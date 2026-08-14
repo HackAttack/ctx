@@ -344,6 +344,25 @@ fn parse_header(value: Value) -> Result<ParsedRow, String> {
             "unsupported DeepSeek Harness session format version {version}; expected {LOGICAL_FORMAT_VERSION}"
         ));
     }
+    for key in object.keys() {
+        if !matches!(
+            key.as_str(),
+            "type"
+                | "version"
+                | "id"
+                | "createdAt"
+                | "cwd"
+                | "parentSession"
+                | "seedLength"
+                | "origin"
+                | "delegationDepth"
+                | "agentPreset"
+        ) {
+            return Err(format!(
+                "unknown DeepSeek Harness session header field {key:?}"
+            ));
+        }
+    }
     let id = nonempty(required_string(object, "id")?, "session id")?.to_owned();
     let created_at_ms = required_nonnegative_i64(object, "createdAt")?;
     let delegation_depth = required_u64(object, "delegationDepth")?;
