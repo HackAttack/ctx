@@ -143,10 +143,10 @@ impl DownloadedArtifact {
         #[cfg(all(unix, not(target_os = "linux")))]
         {
             use std::os::fd::AsRawFd as _;
-            return Ok(PathBuf::from(format!(
+            Ok(PathBuf::from(format!(
                 "/dev/fd/{}",
                 self.file_ref()?.as_raw_fd()
-            )));
+            )))
         }
         #[cfg(windows)]
         {
