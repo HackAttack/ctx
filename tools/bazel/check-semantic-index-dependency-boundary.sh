@@ -26,6 +26,7 @@ python3 "${repo_root}/tools/bazel/check_semantic_index_boundary.py" "${repo_root
 for target in lib test_support_lib; do
   expected_internal="${tmp}/${target}-expected-internal.txt"
   printf '%s\n' \
+    '//crates/ctx-history-capture-model:lib' \
     '//crates/ctx-history-core:lib' \
     '//crates/ctx-history-index-format:lib' \
     '//crates/ctx-history-index-generation:lib' \

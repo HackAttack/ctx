@@ -65,6 +65,9 @@ fi
 # so a consumer cannot migrate between variants without failing this check.
 expected_reverse_lib="${tmp}/expected-reverse-lib.txt"
 printf '%s\n' \
+  '//crates/ctx-cli-presentation:lib' \
+  '//crates/ctx-cli-presentation:qualification_lib' \
+  '//crates/ctx-cli-presentation:test_support_lib' \
   '//crates/ctx-cli:ctx' \
   '//crates/ctx-cli:ctx_auto_upgrade_acceptance_fixture' \
   '//crates/ctx-cli:ctx_hosted_uninstall_test_host' \
