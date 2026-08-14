@@ -199,7 +199,7 @@ fn typed_unknown_then_queue_full_is_typed_lost_after_acknowledgement() {
 fn typed_unknown_recovery_reenqueues_stable_uuid_and_returns_its_terminal_generation() {
     let temp = tempfile::tempdir().unwrap();
     let data_root = temp.path().join("data");
-    ctx_history_core::platform_security::establish_private_data_root(&data_root).unwrap();
+    ctx_history_platform::platform_security::establish_private_data_root(&data_root).unwrap();
     let (_service, source_refresh) = start_source_refresh_service_for_test(&data_root);
     let stable_request_id = Uuid::from_u128(0x28108).to_string();
     let terminal_generation = Arc::new(Mutex::new(None::<String>));
@@ -274,7 +274,7 @@ fn typed_unknown_recovery_reenqueues_stable_uuid_and_returns_its_terminal_genera
 fn pre_overlay_periodic_job_does_not_block_restart_on_legacy_catalog_commitment() {
     let temp = tempfile::tempdir().unwrap();
     let data_root = temp.path().join("data");
-    ctx_history_core::platform_security::establish_private_data_root(&data_root).unwrap();
+    ctx_history_platform::platform_security::establish_private_data_root(&data_root).unwrap();
     let authority = load_explicit_source_catalog_authority(&data_root).unwrap();
     let mut legacy_authority = authority.to_json();
     legacy_authority.as_object_mut().unwrap().remove("entries");
@@ -311,7 +311,7 @@ fn pre_overlay_periodic_job_does_not_block_restart_on_legacy_catalog_commitment(
 fn legacy_publication_without_source_refresh_metadata_does_not_block_restart() {
     let temp = tempfile::tempdir().unwrap();
     let data_root = temp.path().join("data");
-    ctx_history_core::platform_security::establish_private_data_root(&data_root).unwrap();
+    ctx_history_platform::platform_security::establish_private_data_root(&data_root).unwrap();
     let authority = load_explicit_source_catalog_authority(&data_root).unwrap();
 
     // A generation published by a pre-control-plane binary carries no
@@ -354,7 +354,7 @@ fn legacy_publication_without_source_refresh_metadata_does_not_block_restart() {
 fn legacy_terminal_publication_recovers_successor_without_pointer_change() {
     let temp = tempfile::tempdir().unwrap();
     let data_root = temp.path().join("data");
-    ctx_history_core::platform_security::establish_private_data_root(&data_root).unwrap();
+    ctx_history_platform::platform_security::establish_private_data_root(&data_root).unwrap();
     let authority = load_explicit_source_catalog_authority(&data_root).unwrap();
     let writer = ctx_history_index::GenerationWriter::open(
         source_backed_index_root(&data_root),
@@ -402,7 +402,7 @@ fn legacy_terminal_publication_recovers_successor_without_pointer_change() {
 fn metadata_free_publication_does_not_discard_a_running_refresh() {
     let temp = tempfile::tempdir().unwrap();
     let data_root = temp.path().join("data");
-    ctx_history_core::platform_security::establish_private_data_root(&data_root).unwrap();
+    ctx_history_platform::platform_security::establish_private_data_root(&data_root).unwrap();
     let authority = load_explicit_source_catalog_authority(&data_root).unwrap();
     let writer = ctx_history_index::GenerationWriter::open(
         source_backed_index_root(&data_root),
@@ -444,7 +444,7 @@ fn metadata_free_publication_does_not_discard_a_running_refresh() {
 fn metadata_free_publication_requires_the_exact_legacy_generation() {
     let temp = tempfile::tempdir().unwrap();
     let data_root = temp.path().join("data");
-    ctx_history_core::platform_security::establish_private_data_root(&data_root).unwrap();
+    ctx_history_platform::platform_security::establish_private_data_root(&data_root).unwrap();
     let authority = load_explicit_source_catalog_authority(&data_root).unwrap();
     let writer = ctx_history_index::GenerationWriter::open(
         source_backed_index_root(&data_root),
@@ -487,7 +487,7 @@ fn metadata_free_publication_requires_the_exact_legacy_generation() {
 fn old_wait_request_keeps_exact_identity_across_restart_and_returns_exact_generation() {
     let temp = tempfile::tempdir().unwrap();
     let data_root = temp.path().join("data");
-    ctx_history_core::platform_security::establish_private_data_root(&data_root).unwrap();
+    ctx_history_platform::platform_security::establish_private_data_root(&data_root).unwrap();
     let authority = load_explicit_source_catalog_authority(&data_root).unwrap();
 
     let prior_process = CoreRefreshEngine::new();

@@ -6,7 +6,7 @@ use crate::compact_json;
 fn interrupted_queue_is_recovered_before_endpoint_accepts_a_new_admission() -> Result<()> {
     let temp = tempfile::tempdir()?;
     let data_root = temp.path().join("data");
-    ctx_history_core::platform_security::establish_private_data_root(&data_root)?;
+    ctx_history_platform::platform_security::establish_private_data_root(&data_root)?;
 
     let interrupted = CoreRefreshEngine::new();
     let predecessor = interrupted.enqueue_periodic(&data_root)?;

@@ -23,7 +23,10 @@ filegroup(
 COMMON_RUSTC_ENV = {"CARGO_MANIFEST_DIR": "crates/ctx-client-observability"}
 RUST_SRCS = glob(["src/**/*.rs"])
 PROD_SRCS = glob(["src/**/*.rs"], exclude = RUST_PROD_SRC_EXCLUDES)
-CTX_CLIENT_OBSERVABILITY_DEPS = ["//crates/ctx-history-core:lib"]
+CTX_CLIENT_OBSERVABILITY_DEPS = [
+    "//crates/ctx-history-core:lib",
+    "//crates/ctx-history-platform:lib",
+]
 CTX_CLIENT_OBSERVABILITY_RUSTC_FLAGS = [
     "--check-cfg=cfg(test)",
     '--check-cfg=cfg(feature, values("test-support"))',

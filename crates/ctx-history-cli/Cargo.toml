@@ -18,6 +18,7 @@ thiserror.workspace = true
 uuid.workspace = true
 ctx-history-capture = { path = "../ctx-history-capture" }
 ctx-history-core = { path = "../ctx-history-core" }
+ctx-history-platform = { path = "../ctx-history-platform" }
 ctx-history-ingest-application = { path = "../ctx-history-ingest-application" }
 ctx-history-index = { path = "../ctx-history-index" }
 ctx-history-read-application = { path = "../ctx-history-read-application" }

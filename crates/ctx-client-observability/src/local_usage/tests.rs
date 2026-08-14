@@ -1,6 +1,6 @@
 use std::time::Duration;
 
-use ctx_history_core::platform_security::restrict_private_directory;
+use ctx_history_platform::platform_security::restrict_private_directory;
 
 use super::{
     read_report, CliUsage, CompletedOperation, ContextCoverage, McpCompletionFacts, McpInvocation,

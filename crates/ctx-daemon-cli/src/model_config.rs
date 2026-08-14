@@ -4,7 +4,7 @@ use std::{
 };
 
 use anyhow::{anyhow, Result};
-use ctx_history_core::default_data_root;
+use ctx_history_platform::default_data_root;
 use ctx_semantic_model::{
     semantic_model_cache_available, SemanticBackendPreference, SemanticCoreMlComputeMode,
     SemanticModelConfig, SemanticModelPaths, SemanticOnnxRuntimePaths,

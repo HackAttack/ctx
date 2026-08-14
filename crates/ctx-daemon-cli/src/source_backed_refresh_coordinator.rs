@@ -63,7 +63,7 @@ mod client_admission_recovery_tests {
     fn disabled_daemon_post_ack_recovery_preserves_stable_request_identity() {
         let temp = tempfile::tempdir().unwrap();
         let data_root = temp.path().join("data");
-        ctx_history_core::platform_security::establish_private_data_root(&data_root).unwrap();
+        ctx_history_platform::platform_security::establish_private_data_root(&data_root).unwrap();
         std::fs::write(
             data_root.join(crate::config::CONFIG_FILE),
             "[daemon]\nenabled = false\n",
@@ -89,7 +89,7 @@ mod client_admission_recovery_tests {
     fn malformed_config_post_ack_recovery_preserves_stable_request_identity() {
         let temp = tempfile::tempdir().unwrap();
         let data_root = temp.path().join("data");
-        ctx_history_core::platform_security::establish_private_data_root(&data_root).unwrap();
+        ctx_history_platform::platform_security::establish_private_data_root(&data_root).unwrap();
         std::fs::write(data_root.join(crate::config::CONFIG_FILE), "[daemon\n").unwrap();
         let request_id = "019fcaaa-0000-7000-8000-0000000002b2";
 

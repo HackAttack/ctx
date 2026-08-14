@@ -782,11 +782,11 @@ pub fn read_daemon_query_request<S: std::io::Read>(
 }
 
 use anyhow::{anyhow, Context, Result};
-use ctx_history_core::platform_security::verify_private_directory;
+use ctx_history_platform::platform_security::verify_private_directory;
 #[cfg(not(windows))]
-use ctx_history_core::platform_security::verify_private_file;
+use ctx_history_platform::platform_security::verify_private_file;
 #[cfg(windows)]
-use ctx_history_core::platform_security::verify_private_file_handle;
+use ctx_history_platform::platform_security::verify_private_file_handle;
 use serde_json::{json, Value};
 #[cfg(windows)]
 use uuid::Uuid;

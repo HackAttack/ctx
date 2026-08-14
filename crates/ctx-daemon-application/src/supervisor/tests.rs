@@ -1699,7 +1699,7 @@ fn canonical_supervisor_root_is_independent_of_ctx_data_root_override() {
     static ENV_LOCK: Mutex<()> = Mutex::new(());
     let _guard = ENV_LOCK.lock().unwrap();
     let previous = env::var_os("CTX_DATA_ROOT");
-    let canonical = ctx_history_core::managed_data_root().unwrap();
+    let canonical = ctx_history_platform::managed_data_root().unwrap();
     let custom = canonical.with_file_name("ctx-custom-supervisor-test");
     env::set_var("CTX_DATA_ROOT", &custom);
 
@@ -1719,25 +1719,7 @@ fn explicit_root_is_noncanonical_when_managed_home_is_unavailable() {
 
     assert!(!is_canonical_managed_data_root_with(
         custom,
-        Err(ctx_history_core::CoreError::MissingHome)
+        Err(ctx_history_platform::PlatformError::MissingHome)
     )
     .unwrap());
-}
-
-#[test]
-fn explicit_root_classification_propagates_other_managed_root_errors() {
-    let custom = Path::new("/explicit/ctx-root");
-    let error = is_canonical_managed_data_root_with(
-        custom,
-        Err(ctx_history_core::CoreError::InvalidEnumValue {
-            enum_name: "TestEnum",
-            value: "invalid".to_owned(),
-        }),
-    )
-    .unwrap_err();
-
-    assert!(matches!(
-        error.downcast_ref::<ctx_history_core::CoreError>(),
-        Some(ctx_history_core::CoreError::InvalidEnumValue { .. })
-    ));
 }

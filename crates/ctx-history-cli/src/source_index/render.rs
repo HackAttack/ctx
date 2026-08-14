@@ -6,8 +6,9 @@ use std::{
 
 use anyhow::Result;
 use chrono::SecondsFormat;
-use ctx_history_core::{managed_data_root, utc_now};
+use ctx_history_core::utc_now;
 use ctx_history_index::{EventSearchFilters, VerifiedIndex};
+use ctx_history_platform::managed_data_root;
 use serde_json::{json, Value};
 use uuid::Uuid;
 

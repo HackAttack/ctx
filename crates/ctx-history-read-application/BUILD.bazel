@@ -64,7 +64,10 @@ ctx_rust_test(
 history_read_binary_contract(
     name = "search_refresh_tests",
     src = "tests/contracts/search_refresh.rs",
-    extra_deps = ["//crates/ctx-history-core:lib"],
+    extra_deps = [
+        "//crates/ctx-history-core:lib",
+        "//crates/ctx-history-platform:lib",
+    ],
     extra_env = {"RUST_TEST_THREADS": "1"},
     extra_srcs = [
         "tests/support/search_refresh/core_behaviors.rs",
