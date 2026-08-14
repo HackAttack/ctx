@@ -47,12 +47,14 @@ DocumentLeafExecutionPolicy::Serial DocumentLeafExecutionPolicy::Independent
 AUGGIE_SESSION_JSON_SOURCE_FORMAT NANOCLAW_SOURCE_FORMAT OPENHANDS_FILE_EVENTS_SOURCE_FORMAT
 ProviderRuntimeBinding ReplacementDocumentTree ProviderChangedDocumentSink
 """
-CAPTURE_MANIFEST = '[dependencies]\nctx-history-provider-docproj = { path = "../ctx-history-provider-docproj" }\n'
-CAPTURE_BUILD = '"//crates/ctx-history-provider-docproj:lib"\n'
+CAPTURE_MANIFEST = "[dependencies]\n"
+CAPTURE_BUILD = ""
+COMPOSITION_MANIFEST = '[dependencies]\nctx-history-provider-docproj = { path = "../ctx-history-provider-docproj" }\n'
+COMPOSITION_BUILD = '"//crates/ctx-history-provider-docproj:lib"\n'
 FACADES = "pub(crate) mod nanoclaw;\npub(crate) mod openhands;\n"
 DOCUMENT = 'NanoClawDocumentTreeAdapter::<CaptureProviderRuntime>::new_with_base_sources'
 EVENT_FILE = 'OpenHandsEventFileAdapterV2::<CaptureProviderRuntime>'
-EXPECTED_ADVERSARIAL_MUTATION_COUNT = 8
+EXPECTED_ADVERSARIAL_MUTATION_COUNT = 12
 
 
 class DocumentProjectionBoundaryMutationTests(unittest.TestCase):
@@ -63,11 +65,14 @@ class DocumentProjectionBoundaryMutationTests(unittest.TestCase):
         self.build = root / "pack/BUILD.bazel"
         self.capture_manifest = root / "capture/Cargo.toml"
         self.capture_build = root / "capture/BUILD.bazel"
+        self.composition_manifest = root / "composition/Cargo.toml"
+        self.composition_build = root / "composition/BUILD.bazel"
         self.facades = root / "capture/facades.rs"
         self.document = root / "capture/document.rs"
         self.event_file = root / "capture/event_file.rs"
         for path, content in ((self.manifest, MANIFEST), (self.build, BUILD),
                               (self.capture_manifest, CAPTURE_MANIFEST), (self.capture_build, CAPTURE_BUILD),
+                              (self.composition_manifest, COMPOSITION_MANIFEST), (self.composition_build, COMPOSITION_BUILD),
                               (self.facades, FACADES), (self.document, DOCUMENT), (self.event_file, EVENT_FILE)):
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_text(content, encoding="utf-8")
@@ -80,7 +85,7 @@ class DocumentProjectionBoundaryMutationTests(unittest.TestCase):
         self.temporary.cleanup()
 
     def check(self) -> None:
-        validate(self.manifest, self.build, self.capture_manifest, self.capture_build, self.facades, self.document, self.event_file)
+        validate(self.manifest, self.build, self.capture_manifest, self.capture_build, self.composition_manifest, self.composition_build, self.facades, self.document, self.event_file)
 
     def test_narrow_pack_control_passes(self) -> None:
         self.check()
@@ -88,6 +93,32 @@ class DocumentProjectionBoundaryMutationTests(unittest.TestCase):
     def test_mutation_capture_dependency_alias_is_rejected(self) -> None:
         self.manifest.write_text(MANIFEST + '\ncapture_alias = { package = "ctx-history-capture", path = "../ctx-history-capture" }\n', encoding="utf-8")
         with self.assertRaisesRegex(BoundaryError, "forbidden Cargo dependency"):
+            self.check()
+
+    def test_mutation_capture_cargo_ownership_is_rejected(self) -> None:
+        self.capture_manifest.write_text(
+            CAPTURE_MANIFEST
+            + 'docproj_alias = { package = "ctx-history-provider-docproj", path = "../ctx-history-provider-docproj" }\n',
+            encoding="utf-8",
+        )
+        with self.assertRaisesRegex(BoundaryError, "capture Cargo surface unexpectedly owns"):
+            self.check()
+
+    def test_mutation_capture_bazel_ownership_is_rejected(self) -> None:
+        self.capture_build.write_text(
+            '"//crates/ctx-history-provider-docproj:lib"\n', encoding="utf-8"
+        )
+        with self.assertRaisesRegex(BoundaryError, "capture Bazel surface unexpectedly owns"):
+            self.check()
+
+    def test_mutation_composition_cargo_dependency_is_required(self) -> None:
+        self.composition_manifest.write_text("[dependencies]\n", encoding="utf-8")
+        with self.assertRaisesRegex(BoundaryError, "capture composition does not depend"):
+            self.check()
+
+    def test_mutation_composition_bazel_dependency_is_required(self) -> None:
+        self.composition_build.write_text("", encoding="utf-8")
+        with self.assertRaisesRegex(BoundaryError, "composition Bazel graph does not depend"):
             self.check()
 
     def test_mutation_cross_pack_bazel_dependency_is_rejected(self) -> None:

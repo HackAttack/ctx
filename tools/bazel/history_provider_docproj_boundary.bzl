@@ -12,6 +12,8 @@ def history_provider_docproj_boundary_checks():
         args = [
             "$(rootpath //crates/ctx-history-provider-docproj:Cargo.toml)",
             "$(rootpath //crates/ctx-history-provider-docproj:BUILD.bazel)",
+            "$(rootpath //crates/ctx-history-capture:Cargo.toml)",
+            "$(rootpath //crates/ctx-history-capture:BUILD.bazel)",
             "$(rootpath //crates/ctx-history-capture-composition:Cargo.toml)",
             "$(rootpath //crates/ctx-history-capture-composition:BUILD.bazel)",
             "$(rootpath //crates/ctx-history-capture:src/provider/providers/mod.rs)",
@@ -22,6 +24,8 @@ def history_provider_docproj_boundary_checks():
             "//crates/ctx-history-provider-docproj:BUILD.bazel",
             "//crates/ctx-history-provider-docproj:Cargo.toml",
             "//crates/ctx-history-provider-docproj:cargo_package_data",
+            "//crates/ctx-history-capture:BUILD.bazel",
+            "//crates/ctx-history-capture:Cargo.toml",
             "//crates/ctx-history-capture-composition:BUILD.bazel",
             "//crates/ctx-history-capture-composition:Cargo.toml",
             "//crates/ctx-history-capture:src/provider/providers/mod.rs",

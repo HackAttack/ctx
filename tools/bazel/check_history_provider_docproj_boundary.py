@@ -153,13 +153,44 @@ def validate_sources(manifest: Path) -> None:
         raise BoundaryError("document-projection exposed Auggie tree selection")
 
 
-def validate_capture_composition(capture_manifest: Path, capture_build: Path, facades: Path, document_registration: Path, event_file_registration: Path) -> None:
+def _depends_on(manifest: dict[str, Any], package: str) -> bool:
+    for table in _dependency_tables(manifest):
+        for alias, spec in table.items():
+            resolved = spec.get("package", alias) if isinstance(spec, dict) else alias
+            if resolved == package:
+                return True
+    return False
+
+
+def validate_capture_cleanup(capture_manifest: Path, capture_build: Path) -> None:
     with capture_manifest.open("rb") as handle:
         manifest = tomllib.load(handle)
+    if _depends_on(manifest, "ctx-history-provider-docproj"):
+        raise BoundaryError("capture Cargo surface unexpectedly owns document-projection pack")
+    if '"//crates/ctx-history-provider-docproj:lib"' in _read(capture_build):
+        raise BoundaryError("capture Bazel surface unexpectedly owns document-projection pack")
+
+
+def validate_composition_ownership(composition_manifest: Path, composition_build: Path) -> None:
+    with composition_manifest.open("rb") as handle:
+        manifest = tomllib.load(handle)
     if manifest.get("dependencies", {}).get("ctx-history-provider-docproj") != {"path": "../ctx-history-provider-docproj"}:
-        raise BoundaryError("capture Cargo composition does not depend on document-projection pack")
-    if '"//crates/ctx-history-provider-docproj:lib"' not in _read(capture_build):
-        raise BoundaryError("capture Bazel composition does not depend on document-projection pack")
+        raise BoundaryError("capture composition does not depend on document-projection pack")
+    if '"//crates/ctx-history-provider-docproj:lib"' not in _read(composition_build):
+        raise BoundaryError("capture composition Bazel graph does not depend on document-projection pack")
+
+
+def validate_capture_composition(
+    capture_manifest: Path,
+    capture_build: Path,
+    composition_manifest: Path,
+    composition_build: Path,
+    facades: Path,
+    document_registration: Path,
+    event_file_registration: Path,
+) -> None:
+    validate_capture_cleanup(capture_manifest, capture_build)
+    validate_composition_ownership(composition_manifest, composition_build)
     facade = _read(facades)
     for fragment in ("pub(crate) mod nanoclaw;", "pub(crate) mod openhands;"):
         if fragment not in facade:
@@ -172,16 +203,16 @@ def validate_capture_composition(capture_manifest: Path, capture_build: Path, fa
         raise BoundaryError("capture OpenHands registration no longer binds the provider runtime")
 
 
-def validate(manifest: Path, build: Path, capture_manifest: Path, capture_build: Path, facades: Path, document_registration: Path, event_file_registration: Path) -> None:
+def validate(manifest: Path, build: Path, capture_manifest: Path, capture_build: Path, composition_manifest: Path, composition_build: Path, facades: Path, document_registration: Path, event_file_registration: Path) -> None:
     validate_manifest(manifest)
     validate_build(build)
     validate_sources(manifest)
-    validate_capture_composition(capture_manifest, capture_build, facades, document_registration, event_file_registration)
+    validate_capture_composition(capture_manifest, capture_build, composition_manifest, composition_build, facades, document_registration, event_file_registration)
 
 
 def main(argv: list[str]) -> int:
     parser = argparse.ArgumentParser()
-    for name in ("manifest", "build", "capture_manifest", "capture_build", "facades", "document_registration", "event_file_registration"):
+    for name in ("manifest", "build", "capture_manifest", "capture_build", "composition_manifest", "composition_build", "facades", "document_registration", "event_file_registration"):
         parser.add_argument(name, type=Path)
     args = parser.parse_args(argv)
     try:
