@@ -231,11 +231,13 @@ scripts/release/build-public-candidate-on-linux.sh \
   --output-dir target/public-cli-artifacts
 ```
 
-The factory pins Rust, Zig, cargo-zigbuild, and rcodesign. Official mode also
-requires the offline OSV inputs and the existing five Apple signing values. It
-signs and notarizes the two macOS binaries from Linux. `--diagnostic-unsigned`
-is available for local cross-build diagnostics, but its output is explicitly
-non-releasable.
+The factory pins Rust, Zig, cargo-zigbuild, rcodesign, and Jsign. Official mode
+also requires Java 11 or newer, the offline OSV inputs, the existing five Apple
+signing values, and the three Azure Artifact Signing identity values. The
+Authenticode verifier always uses Java 11 source mode. The factory signs the
+Windows binary and signs/notarizes both macOS binaries from Linux before
+sealing the candidate. `--diagnostic-unsigned` is available for local
+cross-build diagnostics, but its output is explicitly non-releasable.
 
 Buildkite runs this command once, uploads the resulting directory, and fans the
 exact bytes out to Linux x64, Linux arm64, macOS arm64, macOS x64, and Windows

@@ -109,7 +109,7 @@ def validate_target(target: dict[str, Any]) -> None:
         raise ValueError(f"unexpected release contract for {target['id']}")
     if (
         target["platform_signature"]
-        not in {"developer-id-notarized", "release-manifest", "unsigned"}
+        not in {"authenticode", "developer-id-notarized", "release-manifest", "unsigned"}
         or target["archive"] not in {"tar.gz", "zip"}
         or re.fullmatch(r"native-[a-z0-9_-]+", target["runtime_authority"]) is None
         or re.fullmatch(r"[A-Za-z0-9._-]+", target["public_artifact"]) is None

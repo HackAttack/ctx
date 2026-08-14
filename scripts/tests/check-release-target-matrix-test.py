@@ -31,7 +31,7 @@ class ReleaseTargetMatrixTest(unittest.TestCase):
         windows = next(
             target for target in value["targets"] if target["id"] == "windows-x64"
         )
-        self.assertEqual(windows["platform_signature"], "unsigned")
+        self.assertEqual(windows["platform_signature"], "authenticode")
         self.assertEqual(windows["archive"], "zip")
         self.assertEqual(windows["runtime_authority"], "native-windows-x86_64")
         self.assertEqual(
@@ -145,7 +145,7 @@ class ReleaseTargetMatrixTest(unittest.TestCase):
                 matrix.load_and_validate(path)
 
         value = matrix.load_and_validate()
-        value["targets"][-1]["platform_signature"] = "authenticode"
+        value["targets"][-1]["platform_signature"] = "self-signed"
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "matrix.json"
             path.write_text(json.dumps(value), encoding="utf-8")
