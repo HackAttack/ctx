@@ -57,6 +57,9 @@ assert_log_line "arg=--local_resources=cpu=8"
 assert_log_line "arg=--local_resources=memory=65536"
 assert_log_line "arg=--local_test_jobs=2"
 assert_log_line "arg=--test_env=RUST_TEST_THREADS=4"
+if grep -Fq 'arg=--test_env=TMPDIR=' "${CTX_FAKE_BAZEL_LOG}"; then
+  fail 'wrapper forwarded TMPDIR without explicit release-test authority'
+fi
 assert_log_line "env=RUST_TEST_THREADS=4"
 grep -Fq "arg=--output_user_root=${CTX_BAZEL_CACHE_ROOT}/output-roots/bazel-9.2.0/" "${CTX_FAKE_BAZEL_LOG}" \
   || fail 'output root is not versioned per worktree'
@@ -86,6 +89,24 @@ assert_log_line "arg=--local_resources=cpu=3"
 assert_log_line "arg=--local_resources=memory=4096"
 assert_log_line "arg=--local_test_jobs=1"
 assert_log_line "arg=--test_env=RUST_TEST_THREADS=2"
+
+: >"${CTX_FAKE_BAZEL_LOG}"
+release_test_tmpdir="${test_root}/release-test-tmp"
+mkdir -p "${release_test_tmpdir}"
+CTX_BAZEL_TEST_TMPDIR="${release_test_tmpdir}" \
+  "${wrapper}" test //:release-focused --config=test \
+  2>"${test_root}/release-tmpdir-config.log"
+assert_log_line "arg=--test_env=TMPDIR=${release_test_tmpdir}"
+
+if CTX_BAZEL_TEST_TMPDIR=relative \
+  "${wrapper}" test //:invalid-release-tmpdir --config=test \
+  >"${test_root}/invalid-release-tmpdir.out" \
+  2>"${test_root}/invalid-release-tmpdir.err"; then
+  fail 'relative release test TMPDIR unexpectedly succeeded'
+fi
+grep -Fq 'CTX_BAZEL_TEST_TMPDIR must be an existing absolute directory' \
+  "${test_root}/invalid-release-tmpdir.err" \
+  || fail 'invalid release test TMPDIR did not fail explicitly'
 
 : >"${CTX_FAKE_BAZEL_LOG}"
 CTX_BAZEL_DISK_CACHE_MAX_SIZE=12G \

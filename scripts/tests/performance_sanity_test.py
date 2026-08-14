@@ -24,9 +24,9 @@ from performance_sanity_support import (
     RefreshSnapshot,
     SourceWorkerCpu,
     command_failure,
-    directory_bytes,
     isolated_env,
     published_file_state,
+    published_index_bytes,
     require_parallel_source_workers,
     refresh_snapshot,
     run_checked,
@@ -464,17 +464,26 @@ class PhysicalStorageAccountingTest(unittest.TestCase):
             prefix="ctx-performance-storage-accounting-"
         ) as temporary:
             root = Path(temporary)
-            original = root / "generation-a" / "segment"
-            linked = root / "generation-b" / "segment"
-            copied = root / "generation-c" / "segment"
-            original.parent.mkdir()
+            generations = root / "index-generations"
+            original = generations / "generation-a" / "segment"
+            linked = generations / "generation-b" / "segment"
+            copied = generations / "generation-c" / "segment"
+            original.parent.mkdir(parents=True)
             linked.parent.mkdir()
             copied.parent.mkdir()
             original.write_bytes(b"physical-segment")
             os.link(original, linked)
             copied.write_bytes(original.read_bytes())
+            (root / ".ctx-generation-writer.lock").write_bytes(b"control")
+            (root / "active-generation.json").write_bytes(b"control")
+            (generations / ".ctx-tantivy-atomic-meta.tmp").write_bytes(b"transient")
+            certifications = root / "integrity-certifications"
+            certifications.mkdir()
+            (certifications / "generation-proof.json").write_bytes(b"asynchronous")
 
-            self.assertEqual(directory_bytes(root), 2 * len(b"physical-segment"))
+            self.assertEqual(
+                published_index_bytes(root), 2 * len(b"physical-segment")
+            )
 
 
 class SmallQueryShowPerformanceTest(unittest.TestCase):

@@ -49,6 +49,8 @@ steps:
       ctx-runner-class: "release-linux-control"
       ctx-release-os: "ubuntu-24.04"
       ctx-release-nested-docker: "true"
+      ctx-release-task-bind: "true"
+      ctx-release-unshare-clone-fs: "true"
       os: "linux"
       arch: "x86_64"
     concurrency: 1

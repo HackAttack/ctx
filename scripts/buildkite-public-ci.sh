@@ -13,6 +13,16 @@ if (( "${#check_args[@]}" == 0 )); then
   check_args=(--mode=ci)
 fi
 
+release_mode=0
+for (( index = 0; index < "${#check_args[@]}"; index++ )); do
+  if [[ "${check_args[index]}" == "--mode=release" ]] \
+    || { [[ "${check_args[index]}" == "--mode" ]] \
+      && [[ "${check_args[index + 1]:-}" == "release" ]]; }; then
+    release_mode=1
+    break
+  fi
+done
+
 init_buildkite_job_tool_env() {
   if [[ -z "${BUILDKITE_JOB_ID:-}" ]]; then
     return 0
@@ -20,7 +30,18 @@ init_buildkite_job_tool_env() {
 
   local base_tmp build_path job_slug tool_root
   local repo_root_resolved repository_cache_resolved repository_contents_resolved
-  base_tmp="${TMPDIR:-/tmp}"
+  local qualified_path runner_task_root_resolved test_tmpdir_resolved tmpdir_resolved
+  if (( release_mode == 1 )); then
+    if [[ -z "${CTX_RUNNER_TASK_ROOT:-}" || "${CTX_RUNNER_TASK_ROOT}" != /* \
+      || ! -d "${CTX_RUNNER_TASK_ROOT}" ]]; then
+      printf 'Buildkite release tests require an absolute existing CTX_RUNNER_TASK_ROOT\n' >&2
+      exit 64
+    fi
+    runner_task_root_resolved="$(cd "${CTX_RUNNER_TASK_ROOT}" && pwd -P)"
+    base_tmp="${runner_task_root_resolved}/tmp"
+  else
+    base_tmp="${TMPDIR:-/tmp}"
+  fi
   build_path="${BUILDKITE_BUILD_PATH:-${base_tmp}}"
   job_slug="${BUILDKITE_JOB_ID//[^A-Za-z0-9_.-]/_}"
   tool_root="${CTX_PUBLIC_CI_TOOL_ROOT:-${base_tmp}/ctx-public-ci-${job_slug}}"
@@ -38,6 +59,9 @@ init_buildkite_job_tool_env() {
   # unsafe cross-job sharing while retaining reuse throughout this job.
   export CTX_PUBLIC_CI_REPOSITORY_CACHE="${CTX_PUBLIC_CI_REPOSITORY_CACHE:-${build_path%/}/ctx-public-ci-cache/${job_slug}/bazel-repository}"
   export CTX_BAZEL_REPOSITORY_CACHE="${CTX_BAZEL_REPOSITORY_CACHE:-${CTX_PUBLIC_CI_REPOSITORY_CACHE}}"
+  if (( release_mode == 1 )); then
+    export CTX_BAZEL_TEST_TMPDIR="${CTX_PUBLIC_CI_TEST_TMPDIR:-${tool_root}/bazel-test-tmp}"
+  fi
   mkdir -p \
     "${TMPDIR}" \
     "${HOME}" \
@@ -48,6 +72,21 @@ init_buildkite_job_tool_env() {
     "${BAZELISK_HOME}" \
     "${BAZEL_OUTPUT_USER_ROOT}" \
     "${CTX_BAZEL_REPOSITORY_CACHE}/contents"
+  if (( release_mode == 1 )); then
+    mkdir -p "${CTX_BAZEL_TEST_TMPDIR}"
+    tmpdir_resolved="$(cd "${TMPDIR}" && pwd -P)"
+    test_tmpdir_resolved="$(cd "${CTX_BAZEL_TEST_TMPDIR}" && pwd -P)"
+    for qualified_path in "${tmpdir_resolved}" "${test_tmpdir_resolved}"; do
+      case "${qualified_path}/" in
+        "${runner_task_root_resolved}/"*) ;;
+        *)
+          printf 'Buildkite release test temporary path escaped task-local bind: %s\n' \
+            "${qualified_path}" >&2
+          exit 64
+          ;;
+      esac
+    done
+  fi
 
   repo_root_resolved="$(cd "${repo_root}" && pwd -P)"
   repository_cache_resolved="$(cd "${CTX_BAZEL_REPOSITORY_CACHE}" && pwd -P)"
@@ -63,6 +102,38 @@ init_buildkite_job_tool_env() {
   printf 'Buildkite job tool root: %s\n' "${tool_root}"
   printf 'Buildkite Bazel repository cache: %s\n' "${CTX_BAZEL_REPOSITORY_CACHE}"
   printf 'Buildkite Bazel repository contents cache: %s\n' "${repository_contents_resolved}"
+  if (( release_mode == 1 )); then
+    printf 'Buildkite release Bazel test TMPDIR: %s\n' "${CTX_BAZEL_TEST_TMPDIR}"
+  fi
+}
+
+preflight_release_test_authority() {
+  if (( release_mode == 0 )); then
+    return 0
+  fi
+
+  python3 - "${CTX_BAZEL_TEST_TMPDIR}" <<'PY'
+import ctypes
+import os
+import pathlib
+import sys
+import tempfile
+
+clone_fs = 0x00000200
+libc = ctypes.CDLL(None, use_errno=True)
+if libc.unshare(clone_fs) != 0:
+    error = ctypes.get_errno()
+    raise SystemExit(
+        "Buildkite release tests require unshare(CLONE_FS) authority: "
+        f"{os.strerror(error)} (errno {error})"
+    )
+
+temporary_root = pathlib.Path(sys.argv[1])
+with tempfile.NamedTemporaryFile(dir=temporary_root) as probe:
+    if pathlib.Path(probe.name).parent != temporary_root:
+        raise SystemExit("release test TMPDIR probe escaped its task-local root")
+print("Buildkite release test authority: task-local TMPDIR and unshare(CLONE_FS) available")
+PY
 }
 
 run_apt_get() {
@@ -78,6 +149,7 @@ install_ubuntu_tools() {
     build-essential \
     ca-certificates \
     curl \
+    dbus-daemon \
     default-jdk-headless \
     dotnet-sdk-8.0 \
     git \
@@ -154,6 +226,7 @@ print_tool_versions() {
 }
 
 init_buildkite_job_tool_env
+preflight_release_test_authority
 install_ubuntu_tools
 configure_bazelisk
 print_tool_versions

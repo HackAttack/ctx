@@ -142,6 +142,21 @@ def validate_sdk_steps(blocks) -> None:
 
 
 def validate_linux_route(source: str) -> None:
+    for marker, message in (
+        (
+            'export CTX_BAZEL_TEST_TMPDIR="${CTX_PUBLIC_CI_TEST_TMPDIR:-${tool_root}/bazel-test-tmp}"',
+            "release Bazel tests must inherit the task-local temporary bind",
+        ),
+        (
+            "if libc.unshare(clone_fs) != 0:",
+            "release validation must preflight exact CLONE_FS authority",
+        ),
+        (
+            "    dbus-daemon \\\n",
+            "Linux release tests must install their D-Bus daemon harness",
+        ),
+    ):
+        require(source.count(marker) == 1, message)
     parts = source.rsplit("\n}\n", 1)
     require(
         len(parts) == 2,
@@ -160,6 +175,7 @@ def validate_linux_route(source: str) -> None:
         commands
         == [
             "init_buildkite_job_tool_env",
+            "preflight_release_test_authority",
             "install_ubuntu_tools",
             "configure_bazelisk",
             "print_tool_versions",

@@ -186,6 +186,14 @@ case "${command_name}" in
           --local_test_jobs="${BAZEL_LOCAL_TEST_JOBS}"
           --test_env="RUST_TEST_THREADS=${RUST_TEST_THREADS}"
         )
+        if [[ -n "${CTX_BAZEL_TEST_TMPDIR:-}" ]]; then
+          if [[ "${CTX_BAZEL_TEST_TMPDIR}" != /* || ! -d "${CTX_BAZEL_TEST_TMPDIR}" ]]; then
+            printf 'CTX_BAZEL_TEST_TMPDIR must be an existing absolute directory: %s\n' \
+              "${CTX_BAZEL_TEST_TMPDIR}" >&2
+            exit 64
+          fi
+          shared_args+=(--test_env="TMPDIR=${CTX_BAZEL_TEST_TMPDIR}")
+        fi
         ;;
     esac
     run_bazel "${bazel_bin}" \

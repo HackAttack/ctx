@@ -256,7 +256,17 @@ register_toolchains("@ctx_llvm_mingw//:windows_x64_gnu_toolchain")
 # configurations retain their independently keyed linker behavior.
 http_archive = use_repo_rule("@bazel_tools//tools/build_defs/repo:http.bzl", "http_archive")
 
+http_file = use_repo_rule("@bazel_tools//tools/build_defs/repo:http.bzl", "http_file")
+
 http_jar = use_repo_rule("@bazel_tools//tools/build_defs/repo:http.bzl", "http_jar")
+
+http_file(
+    name = "ctx_bazelisk_linux_x86_64",
+    downloaded_file_path = "bazelisk",
+    executable = True,
+    sha256 = "5a408715e932c0250d28bd84555f12edbf70117de42f9181691c736eacc4a992",
+    urls = ["https://github.com/bazelbuild/bazelisk/releases/download/v1.29.0/bazelisk-linux-amd64"],
+)
 
 http_archive(
     name = "ctx_tomli",
