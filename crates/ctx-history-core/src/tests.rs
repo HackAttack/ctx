@@ -1,6 +1,4 @@
-use crate::{
-    CaptureProvider, Confidence, Fidelity,
-};
+use crate::{CaptureProvider, Confidence, Fidelity};
 
 #[test]
 fn obsolete_content_reference_surface_is_absent() {
