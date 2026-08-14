@@ -1594,6 +1594,8 @@ fn capture<R: JsonlFamilyRuntime>(
     let base_event_lookup = sink.base_event_lookup();
     let mut scan_selected_leaves = Vec::with_capacity(selected_leaves.len());
     let mut retained_terminal_sources = HashMap::new();
+    #[cfg(test)]
+    tests::begin_admission(selected_leaves.len(), bases.len());
     for leaf in &selected_leaves {
         let Some(base) = base_for_leaf(&bases_by_descriptor, leaf) else {
             scan_selected_leaves.push(leaf.clone());
@@ -1609,7 +1611,12 @@ fn capture<R: JsonlFamilyRuntime>(
             scan_selected_leaves.push(leaf.clone());
             continue;
         }
-        let Ok(checkpoint) = decode_checkpoint(adapter, leaf, base) else {
+        #[cfg(test)]
+        let decoded = decode_checkpoint(adapter, leaf, base)
+            .inspect_err(|_| tests::record_checkpoint_rejection());
+        #[cfg(not(test))]
+        let decoded = decode_checkpoint(adapter, leaf, base);
+        let Ok(checkpoint) = decoded else {
             scan_selected_leaves.push(leaf.clone());
             continue;
         };
@@ -1632,6 +1639,8 @@ fn capture<R: JsonlFamilyRuntime>(
             },
         );
     }
+    #[cfg(test)]
+    tests::record_retained_sources(retained_terminal_sources.len());
     let terminal_sources = scan_leaves(
         adapter,
         &scan_selected_leaves,

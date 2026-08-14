@@ -21,6 +21,7 @@ from performance_sanity_support import (
     MAX_COMMAND_SECONDS,
     MAX_PEAK_RSS_BYTES,
     RefreshSnapshot,
+    immutable_tree_snapshot,
     isolated_env,
     require_parallel_source_workers,
     refresh_snapshot,
@@ -215,6 +216,8 @@ class SourceFamilyColdRefreshPerformanceTest(unittest.TestCase):
                         cold_event_id = self.assert_complete_core_content(
                             root, env, corpus, corpus.cold_query, corpus.cold_body
                         )
+                        index_root = Path(env["CTX_DATA_ROOT"]) / "search" / "lexical"
+                        cold_index_tree = immutable_tree_snapshot(index_root)
 
                         noop_search, noop_seconds = run_json_timed(
                             self.refresh_args(corpus.cold_query),
@@ -241,6 +244,12 @@ class SourceFamilyColdRefreshPerformanceTest(unittest.TestCase):
                         )
                         self.assertEqual(
                             noop.index_bytes, cold_snapshot.index_bytes
+                        )
+                        self.assertEqual(
+                            immutable_tree_snapshot(index_root),
+                            cold_index_tree,
+                            "an exact no-op must leave every index path, byte, "
+                            "hash, and filesystem identity immutable",
                         )
 
                         corpus.replace_leaf()

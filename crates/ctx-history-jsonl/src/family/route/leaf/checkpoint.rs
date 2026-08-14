@@ -133,14 +133,13 @@ pub(in crate::family::route) fn decode_checkpoint<R: JsonlFamilyRuntime>(
     let checkpoint =
         FamilyCheckpoint::decode_frontier_key::<JsonlRuntimeError<R>>(frontier.checkpoint())?;
     let classified = checkpoint
-        .represented_physical_records
-        .checked_add(checkpoint.rejected_records)
+        .indexed_documents
+        .checked_add(checkpoint.rejected_logical_records)
         .ok_or_else(|| {
             JsonlRuntimeError::<R>::invalid_payload("JSONL base counts are invalid".to_owned())
         })?;
     let ignored = checkpoint
-        .physical
-        .next_physical_ordinal()
+        .logical_complete_records
         .checked_sub(classified)
         .ok_or_else(|| {
             JsonlRuntimeError::<R>::invalid_payload("JSONL base counts are invalid".to_owned())
@@ -152,13 +151,9 @@ pub(in crate::family::route) fn decode_checkpoint<R: JsonlFamilyRuntime>(
         || checkpoint.physical.complete_prefix_sha256() != certificate.content_digest()
         || checkpoint.indexed_documents != counts.retained_records
         || checkpoint.indexed_documents != counts.indexed_documents
-        || checkpoint.rejected_records != counts.rejected_records
+        || checkpoint.rejected_logical_records != counts.rejected_records
         || ignored != counts.ignored_records
-        || checkpoint
-            .indexed_documents
-            .checked_add(checkpoint.rejected_records)
-            .and_then(|records| records.checked_add(ignored))
-            != Some(counts.complete_records)
+        || checkpoint.logical_complete_records != counts.complete_records
         || checkpoint.physical.complete_prefix_end() != counts.certified_bytes
         || certificate.observation()
             != &source_observation::<JsonlRuntimeError<R>>(

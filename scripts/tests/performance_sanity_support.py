@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections import Counter
 from dataclasses import dataclass
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -59,6 +60,18 @@ class RefreshSnapshot:
     manifest: PublishedFileState
     manifest_names: tuple[str, ...]
     index_bytes: int
+
+
+@dataclass(frozen=True)
+class ImmutableTreeEntry:
+    relative_path: str
+    kind: str
+    size: int
+    sha256: str | None
+    modified_ns: int
+    changed_ns: int
+    inode: int
+    link_count: int
 
 
 @dataclass(frozen=True)
@@ -369,6 +382,54 @@ def directory_bytes(path: Path) -> int:
             (metadata.st_dev, metadata.st_ino), metadata.st_size
         )
     return sum(physical_files.values())
+
+
+def immutable_tree_snapshot(path: Path) -> tuple[ImmutableTreeEntry, ...]:
+    entries: list[ImmutableTreeEntry] = []
+    for entry in sorted((path, *path.rglob("*")), key=lambda item: str(item)):
+        before = entry.lstat()
+        if entry.is_file():
+            kind = "file"
+            body = entry.read_bytes()
+            digest = hashlib.sha256(body).hexdigest()
+        elif entry.is_dir():
+            kind = "directory"
+            body = None
+            digest = None
+        else:
+            kind = "other"
+            body = None
+            digest = None
+        after = entry.lstat()
+        if (
+            before.st_dev,
+            before.st_ino,
+            before.st_size,
+            before.st_mtime_ns,
+            before.st_ctime_ns,
+        ) != (
+            after.st_dev,
+            after.st_ino,
+            after.st_size,
+            after.st_mtime_ns,
+            after.st_ctime_ns,
+        ):
+            raise RuntimeError(f"index entry changed while hashing: {entry}")
+        if body is not None and len(body) != after.st_size:
+            raise RuntimeError(f"index entry size changed while hashing: {entry}")
+        entries.append(
+            ImmutableTreeEntry(
+                relative_path="." if entry == path else str(entry.relative_to(path)),
+                kind=kind,
+                size=after.st_size,
+                sha256=digest,
+                modified_ns=after.st_mtime_ns,
+                changed_ns=after.st_ctime_ns,
+                inode=after.st_ino,
+                link_count=after.st_nlink,
+            )
+        )
+    return tuple(entries)
 
 
 def active_generation_meta_path(index_root: Path, expected_generation: str) -> Path:

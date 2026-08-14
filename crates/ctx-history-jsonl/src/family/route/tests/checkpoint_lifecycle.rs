@@ -1,5 +1,146 @@
 use super::*;
 
+fn logical_count_checkpoint(
+    adapter: &JsonlFamilyAdapterObject,
+    leaf: &JsonlFamilyLeaf,
+) -> (FamilyCheckpoint, CertifiedSource) {
+    let opened = leaf.open_verified().unwrap();
+    let mut reader =
+        JsonlReader::open(physical_identity(adapter, leaf), opened, None, None).unwrap();
+    while reader
+        .visit_page(&mut |_record| -> Result<()> { Ok(()) })
+        .unwrap()
+        .is_some()
+    {}
+    let physical = reader.outcome().unwrap().checkpoint().clone();
+    assert_eq!(physical.next_physical_ordinal(), 2);
+    assert!(physical.terminal());
+    let checkpoint = FamilyCheckpoint {
+        version: FamilyCheckpoint::VERSION,
+        provider_parser_revision: adapter.parser_revision().to_owned(),
+        event_identity_revision: adapter.event_identity_revision().to_owned(),
+        binding_digest: binding_digest(leaf).unwrap(),
+        physical,
+        admitted_eof_sha256: None,
+        complete_prefix_ends_with_terminal_nul_padding: false,
+        represented_physical_records: 2,
+        rejected_records: 0,
+        logical_complete_records: 2,
+        rejected_logical_records: 0,
+        indexed_documents: 1,
+        provider_checkpoint: None,
+    };
+    let observation =
+        source_observation::<CaptureError>(leaf.source(), leaf.observation()).unwrap();
+    let frontier = SourceFrontier::new(
+        FAMILY_FRONTIER_KIND,
+        checkpoint.encode_frontier_key::<CaptureError>().unwrap(),
+        checkpoint.physical.complete_prefix_end(),
+        *checkpoint.physical.complete_prefix_sha256(),
+    )
+    .unwrap();
+    let certificate = CertifiedSource::certify_with_frontier(
+        observation.clone(),
+        observation,
+        adapter.parser_revision(),
+        *checkpoint.physical.complete_prefix_sha256(),
+        ScannedSourceCounts {
+            complete_records: 2,
+            retained_records: 1,
+            rejected_records: 0,
+            ignored_records: 1,
+            indexed_documents: 1,
+            certified_bytes: checkpoint.physical.complete_prefix_end(),
+        },
+        Some(frontier),
+    )
+    .unwrap();
+    (checkpoint, certificate)
+}
+
+#[test]
+fn logical_counts_decode_and_retain_unchanged_committed_checkpoints() {
+    const LEAVES: usize = 48;
+
+    let temp = crate::test_support_paths::tempdir().unwrap();
+    let root = temp.path().join("sessions");
+    let index = temp.path().join("index");
+    fs::create_dir_all(&root).unwrap();
+    for leaf in 0..LEAVES {
+        fs::write(
+            root.join(format!("logical-{leaf:03}.jsonl")),
+            b"{\"message\":\"represented\"}\n{\"message\":\"logically-ignored\"}\n",
+        )
+        .unwrap();
+    }
+
+    let adapter = TestAdapter;
+    let inventory = adapter.discover(&root).unwrap();
+    assert_eq!(inventory.leaves().len(), LEAVES);
+    let mut sources = inventory
+        .leaves()
+        .iter()
+        .map(|leaf| {
+            let (checkpoint, certificate) = logical_count_checkpoint(&adapter, leaf);
+            assert_eq!(certificate.counts().complete_records, 2);
+            assert_eq!(certificate.counts().retained_records, 1);
+            assert_eq!(certificate.counts().rejected_records, 0);
+            assert_eq!(certificate.counts().ignored_records, 1);
+            assert_eq!(
+                super::super::leaf::decode_checkpoint(&adapter, leaf, &certificate).unwrap(),
+                checkpoint,
+            );
+            certificate
+        })
+        .collect::<Vec<_>>();
+    sources.sort_by(|left, right| {
+        left.observation()
+            .source()
+            .cmp(right.observation().source())
+    });
+    let route_sources = sources
+        .iter()
+        .map(|source| source.observation().source().clone())
+        .collect::<Vec<_>>();
+    let base = TestSnapshot {
+        sources,
+        route_identity: Some(test_route_identity()),
+        route_sources,
+        records: Vec::new(),
+    };
+    test_generations()
+        .lock()
+        .unwrap()
+        .insert(index.clone(), base.clone());
+
+    let writer = capture_test_generation_without_commit(&adapter, &root, &index, 8);
+    assert_eq!(
+        jsonl_family_admission_activity(),
+        JsonlFamilyAdmissionActivity {
+            selected_leaves: LEAVES,
+            bases: LEAVES,
+            retained_terminal_sources: LEAVES,
+            checkpoint_rejections: 0,
+        }
+    );
+    assert_eq!(
+        writer.activity(),
+        TestLifecycleActivity {
+            begin_source_replacements: 0,
+            begin_source_appends: 0,
+            retained_sources: LEAVES,
+        }
+    );
+    assert_eq!(
+        jsonl_family_scanner_activity(),
+        JsonlFamilyScannerActivity::default(),
+        "retained checkpoints must not enter scanner tasks",
+    );
+    let unchanged = IndexCaptureCommitReceipt::new(writer.commit(|_| true, |_| true).unwrap());
+    assert_eq!(unchanged.generation_id, "test-generation-1");
+    assert_eq!(unchanged.manifest(), &base);
+}
+
 #[test]
 fn opaque_provider_checkpoint_and_base_lookup_resume_only_the_certified_suffix() {
     for workers in [1, 8] {

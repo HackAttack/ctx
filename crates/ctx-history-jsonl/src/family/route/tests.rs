@@ -72,6 +72,48 @@ type IndexCaptureLifecycle = TestLifecycle;
 type SourceBackedGenerationSink<'writer> =
     RuntimeSourceBackedGenerationSink<'writer, TestLifecycle>;
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+struct JsonlFamilyAdmissionActivity {
+    selected_leaves: usize,
+    bases: usize,
+    retained_terminal_sources: usize,
+    checkpoint_rejections: usize,
+}
+
+thread_local! {
+    static JSONL_FAMILY_ADMISSION_ACTIVITY: std::cell::Cell<JsonlFamilyAdmissionActivity> =
+        const { std::cell::Cell::new(JsonlFamilyAdmissionActivity {
+            selected_leaves: 0,
+            bases: 0,
+            retained_terminal_sources: 0,
+            checkpoint_rejections: 0,
+        }) };
+}
+
+fn jsonl_family_admission_activity() -> JsonlFamilyAdmissionActivity {
+    JSONL_FAMILY_ADMISSION_ACTIVITY.get()
+}
+
+pub(super) fn begin_admission(selected_leaves: usize, bases: usize) {
+    JSONL_FAMILY_ADMISSION_ACTIVITY.set(JsonlFamilyAdmissionActivity {
+        selected_leaves,
+        bases,
+        ..JsonlFamilyAdmissionActivity::default()
+    });
+}
+
+pub(super) fn record_checkpoint_rejection() {
+    let mut activity = JSONL_FAMILY_ADMISSION_ACTIVITY.get();
+    activity.checkpoint_rejections += 1;
+    JSONL_FAMILY_ADMISSION_ACTIVITY.set(activity);
+}
+
+pub(super) fn record_retained_sources(retained_terminal_sources: usize) {
+    let mut activity = JSONL_FAMILY_ADMISSION_ACTIVITY.get();
+    activity.retained_terminal_sources = retained_terminal_sources;
+    JSONL_FAMILY_ADMISSION_ACTIVITY.set(activity);
+}
+
 #[derive(Default)]
 struct TestWorkerServices {
     certified_repositories: HashSet<PathBuf>,
@@ -252,6 +294,14 @@ struct TestLifecycle {
     current_source: Option<SourceKey>,
     records: Vec<CoreRecord>,
     certified_sources: Vec<CertifiedSource>,
+    activity: TestLifecycleActivity,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+struct TestLifecycleActivity {
+    begin_source_replacements: usize,
+    begin_source_appends: usize,
+    retained_sources: usize,
 }
 
 impl TestLifecycle {
@@ -275,6 +325,10 @@ impl TestLifecycle {
 
     fn base_event_identity_lookup(&self) -> TestBaseEventLookup {
         self.base_event_lookup()
+    }
+
+    fn activity(&self) -> TestLifecycleActivity {
+        self.activity
     }
 
     fn commit_receipt(self) -> CaptureCommitReceipt<TestSnapshot> {
@@ -335,6 +389,7 @@ impl CaptureLifecycleSink for TestLifecycle {
             current_source: None,
             records,
             certified_sources: Vec::new(),
+            activity: TestLifecycleActivity::default(),
         }))
     }
 
@@ -450,6 +505,7 @@ impl CaptureLifecycleSink for TestLifecycle {
     }
 
     fn begin_source_replace(&mut self, source: SourceKey) -> Result<()> {
+        self.activity.begin_source_replacements += 1;
         self.records
             .retain(|record| !record.source.exact_descriptor_eq(&source));
         self.current_source = Some(source);
@@ -457,6 +513,7 @@ impl CaptureLifecycleSink for TestLifecycle {
     }
 
     fn begin_source_append(&mut self, source: SourceKey) -> Result<&CertifiedSource> {
+        self.activity.begin_source_appends += 1;
         self.current_source = Some(source.clone());
         self.base_source(&source)
             .ok_or(CaptureError::SystemInvariant("append source has no base"))
@@ -487,6 +544,7 @@ impl CaptureLifecycleSink for TestLifecycle {
     }
 
     fn retain_source(&mut self, certificate: CertifiedSource) -> Result<()> {
+        self.activity.retained_sources += 1;
         self.certified_sources.push(certificate);
         Ok(())
     }
@@ -592,6 +650,20 @@ macro_rules! capture_test_generation {
         };
         (writer, resident, result)
     }};
+}
+
+fn capture_test_generation_without_commit(
+    adapter: &JsonlFamilyAdapterObject,
+    root: &Path,
+    index_root: &Path,
+    workers: usize,
+) -> TestLifecycle {
+    let (writer, _resident, result) =
+        capture_test_generation!(adapter, root, index_root, workers, |resident, sink| {
+            capture(adapter, root, resident, sink)
+        });
+    result.unwrap();
+    writer
 }
 
 struct TestAdapter;
