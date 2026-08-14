@@ -1521,8 +1521,8 @@
         {
           "class": "exact_boundary",
           "kind": "rust_test",
-          "suite": "mcp_attribution_provider_units",
-          "test": "provider::codex::nativepath::tests::profiles::exact_mcp_attribution_preserves_opaque_names_and_component_bound",
+          "suite": "mcp_attribution_codex_provider_units",
+          "test": "codex::nativepath::tests::profiles::exact_mcp_attribution_preserves_opaque_names_and_component_bound",
           "scope": "tuple"
         },
         {
@@ -2844,20 +2844,20 @@
           "class": "ambiguity_duplicate_linkage",
           "kind": "rust_test",
           "suite": "mcp_attribution_provider_units",
-          "test": "provider::providers::native_jsonl::native_path::source_backed::copilot_tests::copilot_late_duplicate_retracts_the_previously_attributed_completion",
+          "test": "native_path::source_backed::copilot_tests::copilot_late_duplicate_retracts_the_previously_attributed_completion",
           "scope": "tuple"
         },
         {
           "class": "canonical_terminal_outcomes",
           "kind": "rust_test",
           "suite": "mcp_attribution_provider_units",
-          "test": "provider::providers::native_jsonl::native_path::source_backed::copilot_tests::copilot_attributes_only_unique_exact_terminal_completions",
+          "test": "native_path::source_backed::copilot_tests::copilot_attributes_only_unique_exact_terminal_completions",
           "scope": "tuple"
         },
         {
           "class": "exact_boundary",
           "kind": "rust_test",
-          "suite": "mcp_attribution_provider_units",
+          "suite": "mcp_attribution_capture_provider_units",
           "test": "provider::source_backed::tests::copilot::copilot_route_enforces_independent_exact_identity_component_boundaries",
           "scope": "tuple"
         },
@@ -2865,28 +2865,28 @@
           "class": "exact_positive_pair",
           "kind": "rust_test",
           "suite": "mcp_attribution_provider_units",
-          "test": "provider::providers::native_jsonl::native_path::source_backed::copilot_tests::copilot_same_call_id_in_separate_sessions_remains_independent",
+          "test": "native_path::source_backed::copilot_tests::copilot_same_call_id_in_separate_sessions_remains_independent",
           "scope": "tuple"
         },
         {
           "class": "malformed_identity",
           "kind": "rust_test",
           "suite": "mcp_attribution_provider_units",
-          "test": "provider::providers::native_jsonl::native_path::source_backed::copilot_tests::copilot_malformed_ambiguous_or_orphan_linkage_abstains",
+          "test": "native_path::source_backed::copilot_tests::copilot_malformed_ambiguous_or_orphan_linkage_abstains",
           "scope": "tuple"
         },
         {
           "class": "result_preservation",
           "kind": "rust_test",
           "suite": "mcp_attribution_provider_units",
-          "test": "provider::providers::native_jsonl::native_path::source_backed::copilot_tests::copilot_large_unrelated_line_preserves_linkage_while_malformed_line_abstains",
+          "test": "native_path::source_backed::copilot_tests::copilot_large_unrelated_line_preserves_linkage_while_malformed_line_abstains",
           "scope": "tuple"
         },
         {
           "class": "stable_ids",
           "kind": "rust_test",
           "suite": "mcp_attribution_provider_units",
-          "test": "provider::providers::native_jsonl::native_path::source_backed::copilot_tests::copilot_attribution_does_not_change_stable_event_ids",
+          "test": "native_path::source_backed::copilot_tests::copilot_attribution_does_not_change_stable_event_ids",
           "scope": "tuple"
         },
         {

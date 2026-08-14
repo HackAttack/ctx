@@ -973,7 +973,9 @@ class ConformanceRunnerTests(unittest.TestCase):
 
     def test_rust_file_with_function_tokens_is_not_a_shape_contract(self) -> None:
         manifest = minimal_manifest()
-        reference = "crates/ctx-history-capture/src/provider/providers/pi.rs"
+        reference = (
+            "crates/ctx-history-providers-jsonl-shared/src/provider/providers/pi.rs"
+        )
         parser = repository_root() / reference
         parser_contract = replace(
             FIXTURE_ROUTE_SCHEMA_CONTRACT,
