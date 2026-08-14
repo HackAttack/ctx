@@ -160,6 +160,38 @@ fn codebuddy_cli_jsonl_imports_and_searches_through_public_cli() {
 }
 
 #[test]
+fn forgecode_sqlite_naive_timestamp_is_published_as_event_time() {
+    let temp = finite_daemon_test_root();
+    let query = "forgecode-naive-timestamp-oracle";
+    let path = write_native_forgecode_fixture(&temp, query);
+
+    let imported = json_output(ctx(&temp).args([
+        "import",
+        "--provider",
+        "forgecode",
+        "--path",
+        &path,
+        "--format=json",
+    ]));
+    assert_explicit_source_publication(&imported, "forgecode", "forgecode_sqlite");
+
+    let search = json_output(ctx(&temp).args([
+        "search",
+        query,
+        "--provider",
+        "forgecode",
+        "--refresh",
+        "off",
+        "--format=json",
+    ]));
+    assert_source_backed_search(&search, "forgecode", query);
+    assert_eq!(
+        search["results"][0]["timestamp"], "2026-06-24T12:00:00.000Z",
+        "ForgeCode event time must come from its naïve SQLite timestamp, not import fallback: {search:#}"
+    );
+}
+
+#[test]
 fn nanoclaw_import_preserves_text_timestamp_millis_and_integer_trigger() {
     let temp = finite_daemon_test_root();
     let query = "nanoclaw-real-text-timestamp-oracle";

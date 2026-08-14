@@ -773,11 +773,10 @@ def validate_exact_checks(
         conformance_suite = require_string(
             check.get("conformance_suite"), f"{label}.conformance_suite"
         )
-        expected_conformance_suite = (
-            "codex_direct_result"
-            if base[0] == "codex"
-            else "mcp_attribution_provider_units"
-        )
+        expected_conformance_suite = {
+            "codex": "codex_direct_result",
+            "warp": "mcp_attribution_selected_sqlite_provider_units",
+        }.get(base[0], "mcp_attribution_provider_units")
         if conformance_suite != expected_conformance_suite:
             fail(f"{label}.conformance_suite does not name the authoritative suite")
         tests = expect_list(check.get("tests"), f"{label}.tests")

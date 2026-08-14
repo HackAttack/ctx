@@ -64,14 +64,10 @@ pub(super) fn register_route(
     match source.provider {
         CaptureProvider::Zed => logical::register_zed_route(registry, source, selection, data_root),
         CaptureProvider::KiroCli => {
-            crate::provider::providers::kiro::native_path::register_source_backed_route(
-                registry, source, selection, data_root,
-            )
+            other::register_kiro_source_backed_route(registry, source, selection, data_root)
         }
         CaptureProvider::Firebender => {
-            crate::provider::providers::firebender::native_path::register_source_backed_route(
-                registry, source, selection, data_root,
-            )
+            other::register_firebender_source_backed_route(registry, source, selection, data_root)
         }
         CaptureProvider::DeepAgents => {
             logical::register_deepagents_route(registry, source, selection, data_root)

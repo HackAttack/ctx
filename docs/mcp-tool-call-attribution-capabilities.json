@@ -6,8 +6,8 @@
   "conformance_authority": {
     "manifest": "crates/ctx-history-capture/tests/mcp-attribution-conformance.manifest.json",
     "suite_registry": "crates/ctx-history-capture/tests/mcp_attribution_suites.bzl",
-    "manifest_sha256": "02891f9edb583e6096b343f672c475363fc964a99bd7b7b06378093235d4d1a2",
-    "suite_registry_sha256": "fecc57701524031b830b3c0d709470525ad99125937b74f71e07f9375cef2117",
+    "manifest_sha256": "b6c88b900a667e62afe282ec291dc845d45b5164ac088c21a3708883c3991194",
+    "suite_registry_sha256": "2e1d1182f0182677554fdf77dd0e0d6a644ee801c2e706826a80c64c288243be",
     "manifest_schema_version": 6,
     "capability_revision": 5,
     "status_mapping": {
@@ -16,13 +16,13 @@
       "excluded": "excluded"
     },
     "expected_counts": {
-      "providers": 43,
-      "base_routes": 45,
-      "schema_generations": 44,
-      "capability_lanes": 48,
+      "providers": 42,
+      "base_routes": 44,
+      "schema_generations": 43,
+      "capability_lanes": 47,
       "status_rows": {
         "supported": 3,
-        "not_qualified": 44,
+        "not_qualified": 43,
         "excluded": 1
       }
     }
@@ -76,17 +76,17 @@
     "exact_requires_source_commits": false
   },
   "expected_counts": {
-    "providers": 43,
-    "base_routes": 45,
-    "capability_lanes": 48,
+    "providers": 42,
+    "base_routes": 44,
+    "capability_lanes": 47,
     "lane_statuses": {
       "exact": 3,
-      "not-qualified": 44,
+      "not-qualified": 43,
       "excluded": 1
     },
     "provider_statuses": {
       "exact": 3,
-      "not-qualified": 40,
+      "not-qualified": 39,
       "excluded": 0
     }
   },
@@ -148,13 +148,6 @@
       "status": "not-qualified", "reason": "no_server_field",
       "detail": "The authoritative updates stream retains tool activity, but ordinary terminal rawOutput is intentionally excluded and no audited event-local server field remains. Ctx does not infer one from tool names or configuration.",
       "evidence": ["https://www.npmjs.com/package/@xai-official/grok/v/1.0.3", "https://github.com/xai-org/grok-build/tree/be713136d2a69080743a3f6b3c72077057e5948f"]
-    },
-    {
-      "provider_id": "deepseek_harness", "route": "native_import", "source_format": "deepseek_harness_session_jsonl_tree", "source_schema": "deepseek-harness-session-v0",
-      "producer_bound": {"kind": "versions", "versions": ["0.1.0-rc.5"], "ranges": [], "source_commits": ["47f943859bef60e4160492346772ded9b24f765a"], "unknown_generations": "not-qualified"},
-      "status": "not-qualified", "reason": "no_server_field",
-      "detail": "Format version 0 durably links each tool name and result by callId, but it retains no authoritative MCP server alias. Ctx does not infer one from the tool name or current configuration.",
-      "evidence": ["https://github.com/deepseek-ai/deepseek-harness/tree/47f943859bef60e4160492346772ded9b24f765a"]
     },
     {
       "provider_id": "pi", "route": "native_import", "source_format": "pi_session_jsonl", "source_schema": "pi-session-v1-v3",
@@ -461,14 +454,14 @@
     {
       "provider_id": "warp", "route": "native_import", "source_format": "warp_sqlite", "source_schema": "warp-agent-task-protobuf-v1",
       "producer_bound": {"kind": "unversioned", "generation": 1, "unknown_generations": "not-qualified"},
-      "implementation_source": "crates/ctx-history-capture/src/provider/providers/warp/source_backed.rs",
+      "implementation_source": "crates/ctx-history-providers-sqlite-selected/src/providers/warp/source_backed.rs",
       "parser_revision": "warp-source-backed-logical-v5",
-      "suite_id": "ctx-history-capture::native_unit",
-      "conformance_suite": "mcp_attribution_provider_units",
+      "suite_id": "ctx-history-providers-sqlite-selected::native_unit",
+      "conformance_suite": "mcp_attribution_selected_sqlite_provider_units",
       "tests": [
-        {"id": "provider::providers::warp::nativepath::decode::tests::qualified_mcp_success_error_cancellation_and_nontext_results_link_exactly", "source": "crates/ctx-history-capture/src/provider/providers/warp/nativepath/decode/tests.rs"},
-        {"id": "provider::providers::warp::nativepath::decode::tests::invalid_duplicate_orphan_and_ambiguous_mcp_relations_abstain", "source": "crates/ctx-history-capture/src/provider/providers/warp/nativepath/decode/tests.rs"},
-        {"id": "provider::providers::warp::source_backed::result_tests::sanitized_mcp_fixture_projects_only_unique_qualified_terminal_pairs", "source": "crates/ctx-history-capture/src/provider/providers/warp/source_backed/result_tests.rs"}
+        {"id": "providers::warp::nativepath::decode::tests::qualified_mcp_success_error_cancellation_and_nontext_results_link_exactly", "source": "crates/ctx-history-providers-sqlite-selected/src/providers/warp/nativepath/decode/tests.rs"},
+        {"id": "providers::warp::nativepath::decode::tests::invalid_duplicate_orphan_and_ambiguous_mcp_relations_abstain", "source": "crates/ctx-history-providers-sqlite-selected/src/providers/warp/nativepath/decode/tests.rs"},
+        {"id": "providers::warp::source_backed::result_tests::sanitized_mcp_fixture_projects_only_unique_qualified_terminal_pairs", "source": "crates/ctx-history-providers-sqlite-selected/src/providers/warp/source_backed/result_tests.rs"}
       ]
     },
     {

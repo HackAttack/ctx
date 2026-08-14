@@ -5,6 +5,7 @@ mod inventory;
 mod jsonl_shared_publication;
 mod mistral_vibe_publication;
 mod registry;
+mod sqlite_selected;
 
 use std::{
     fs,

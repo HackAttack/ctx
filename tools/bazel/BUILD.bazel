@@ -37,6 +37,8 @@ exports_files([
     "check_history_source_discovery_boundary.py",
     "check_history_source_discovery_boundary_test.py",
     "check_history_source_sqlite_boundary.py",
+    "check_history_provider_sqlite_selected_boundary.py",
+    "check_history_provider_sqlite_selected_boundary_test.py",
     "check-pro-access-build-cfg.sh",
     "check-pro-access-dependency-boundary.sh",
     "check-pro-application-dependency-boundary.sh",

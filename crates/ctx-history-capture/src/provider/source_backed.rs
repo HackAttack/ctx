@@ -47,7 +47,6 @@ use super::providers::{
     },
     deepagents::native_path::source_backed::DeepAgentsDatabaseSelectionV0,
     forgecode::nativepath::source_backed::ForgeCodeSourceSelectionV0,
-    goose::{GooseSourceBackedAdapterV0, GooseSourceBackedSelectionV0, GooseSourceRouteV0},
     hermes::source_backed::{hermes_source_backed_explicit, HermesSourceCandidate},
     lingma::native_path::{
         reject_duplicate_paths as reject_duplicate_lingma_paths, scan_lingma_snapshot_v0,
@@ -64,7 +63,6 @@ use super::providers::{
     task_json::cline_nativepath::{
         cline_task_json_source_backed_adapter, roo_task_json_source_backed_adapter,
     },
-    warp::{project_warp_source_backed_v0, WarpSourceSelectionV0},
     zed::native_path::source_backed::{
         acquire_snapshot as acquire_zed_snapshot, decode_sha256_hex as decode_zed_digest,
         scan_zed_native_snapshot, snapshot_revision_digest as zed_snapshot_revision_digest,

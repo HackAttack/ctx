@@ -147,3 +147,35 @@ def history_source_boundaries():
         imports = ["tools/bazel"],
         main = "//tools/bazel:check_history_provider_runtime_boundary_test.py",
     )
+
+    py_test(
+        name = "history_provider_sqlite_selected_dependency_boundary_check",
+        srcs = ["//tools/bazel:check_history_provider_sqlite_selected_boundary.py"],
+        main = "//tools/bazel:check_history_provider_sqlite_selected_boundary.py",
+        args = [
+            "$(rootpath //crates/ctx-history-providers-sqlite-selected:Cargo.toml)",
+            "$(rootpath //crates/ctx-history-providers-sqlite-selected:BUILD.bazel)",
+            "crates/ctx-history-providers-sqlite-selected",
+            "$(rootpath //crates/ctx-history-capture:Cargo.toml)",
+            "$(rootpath //crates/ctx-history-capture:BUILD.bazel)",
+            "crates/ctx-history-capture",
+        ],
+        data = [
+            "//crates/ctx-history-capture:BUILD.bazel",
+            "//crates/ctx-history-capture:Cargo.toml",
+            "//crates/ctx-history-capture:cargo_package_data",
+            "//crates/ctx-history-providers-sqlite-selected:BUILD.bazel",
+            "//crates/ctx-history-providers-sqlite-selected:Cargo.toml",
+            "//crates/ctx-history-providers-sqlite-selected:cargo_package_data",
+        ],
+    )
+
+    py_test(
+        name = "history_provider_sqlite_selected_boundary_mutation_tests",
+        srcs = [
+            "//tools/bazel:check_history_provider_sqlite_selected_boundary.py",
+            "//tools/bazel:check_history_provider_sqlite_selected_boundary_test.py",
+        ],
+        imports = ["tools/bazel"],
+        main = "//tools/bazel:check_history_provider_sqlite_selected_boundary_test.py",
+    )

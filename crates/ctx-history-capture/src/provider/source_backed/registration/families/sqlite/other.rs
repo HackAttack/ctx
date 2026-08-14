@@ -1,5 +1,43 @@
 use super::*;
-use crate::provider::source_backed::family::document::register_replacement_document_tree_route_with_authority;
+use crate::provider::source_backed::{
+    executable_route, family::document::CaptureSelectedSqliteBinding,
+};
+
+pub(super) fn register_firebender_source_backed_route(
+    registry: &mut SourceBackedProviderRegistry,
+    source: ProviderSource,
+    selection: SourceBackedRouteSelection,
+    data_root: &Path,
+) -> SourceBackedCoordinatorResult<()> {
+    let driver = ctx_history_providers_sqlite_selected::firebender_source_backed_driver::<
+        CaptureSelectedSqliteBinding,
+    >(&source.path, data_root);
+    registry.register(executable_route(
+        source,
+        selection,
+        SourceBackedSelectorAuthority::DiscoveredWinner,
+        driver,
+    )?);
+    Ok(())
+}
+
+pub(super) fn register_kiro_source_backed_route(
+    registry: &mut SourceBackedProviderRegistry,
+    source: ProviderSource,
+    selection: SourceBackedRouteSelection,
+    data_root: &Path,
+) -> SourceBackedCoordinatorResult<()> {
+    let driver = ctx_history_providers_sqlite_selected::kiro_source_backed_driver::<
+        CaptureSelectedSqliteBinding,
+    >(&source.path, data_root);
+    registry.register(executable_route(
+        source,
+        selection,
+        SourceBackedSelectorAuthority::DiscoveredWinner,
+        driver,
+    )?);
+    Ok(())
+}
 
 /// Registers a Warp database under its stable installed-surface key.
 pub fn register_warp_source_backed_route(
@@ -9,17 +47,17 @@ pub fn register_warp_source_backed_route(
     data_root: &Path,
     surface_key: impl Into<String>,
 ) -> SourceBackedCoordinatorResult<()> {
-    let selected = WarpSourceSelectionV0::new(data_root, source.path.clone(), surface_key)
-        .map_err(|error| invalid_route(source.provider, error.to_string()))?;
-    let adapter = project_warp_source_backed_v0(selected)
-        .map_err(|error| invalid_route(source.provider, error.to_string()))?;
-    register_replacement_document_tree_route_with_authority(
-        registry,
+    let driver = ctx_history_providers_sqlite_selected::warp_source_backed_driver::<
+        CaptureSelectedSqliteBinding,
+    >(&source.path, data_root, surface_key)
+    .map_err(|error| invalid_route(source.provider, error.to_string()))?;
+    registry.register(executable_route(
         source,
         selection,
         SourceBackedSelectorAuthority::NamedSurface,
-        adapter,
-    )
+        driver,
+    )?);
+    Ok(())
 }
 
 /// Registers Goose's selected database and the exact platform root needed to
@@ -32,25 +70,26 @@ pub fn register_goose_source_backed_route(
     platform_root: impl Into<std::path::PathBuf>,
     retained_routes: Vec<(std::path::PathBuf, std::path::PathBuf)>,
 ) -> SourceBackedCoordinatorResult<()> {
-    let mut selected =
-        GooseSourceBackedSelectionV0::exact(data_root, source.path.clone(), platform_root.into());
-    if !retained_routes.is_empty() {
-        selected = selected
-            .with_explicit_retained_routes(
-                retained_routes
-                    .into_iter()
-                    .map(|(database, root)| GooseSourceRouteV0::exact(database, root))
-                    .collect(),
-            )
-            .map_err(|error| invalid_route(source.provider, error.to_string()))?;
-    }
-    let adapter = GooseSourceBackedAdapterV0::open(selected)
-        .map_err(|error| invalid_route(source.provider, error.to_string()))?;
-    register_replacement_document_tree_route_with_authority(
-        registry,
+    let retained_routes = retained_routes
+        .into_iter()
+        .map(|(database, root)| {
+            ctx_history_providers_sqlite_selected::GooseSourceRoute::exact(database, root)
+        })
+        .collect();
+    let driver = ctx_history_providers_sqlite_selected::goose_source_backed_driver::<
+        CaptureSelectedSqliteBinding,
+    >(
+        &source.path,
+        data_root,
+        platform_root.into(),
+        retained_routes,
+    )
+    .map_err(|error| invalid_route(source.provider, error.to_string()))?;
+    registry.register(executable_route(
         source,
         selection,
         SourceBackedSelectorAuthority::SelectedWithRetainedExplicit,
-        adapter,
-    )
+        driver,
+    )?);
+    Ok(())
 }
