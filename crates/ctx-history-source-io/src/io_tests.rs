@@ -257,14 +257,11 @@ fn provider_inventory_skips_symlinked_tree_entries_without_following_them() {
 #[cfg(unix)]
 #[test]
 fn provider_inventory_skips_nonregular_jsonl_entries() {
-    use std::os::unix::net::UnixListener;
+    use crate::test_support_paths::make_fifo;
 
-    let temp = tempfile::Builder::new()
-        .prefix("ctx-io-")
-        .tempdir_in("/tmp")
-        .unwrap();
+    let temp = crate::test_support_paths::tempdir().unwrap();
     let root = fs::canonicalize(temp.path()).unwrap();
-    let _listener = UnixListener::bind(root.join("socket.jsonl")).unwrap();
+    make_fifo(&root.join("fifo.jsonl")).unwrap();
     fs::write(root.join("session.jsonl"), b"{}\n").unwrap();
 
     let inventory =

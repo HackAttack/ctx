@@ -104,4 +104,4 @@ mod safe_path_tests {
 }
 
 #[cfg(any(test, feature = "test-support"))]
-mod test_support_paths;
+pub mod test_support_paths;
