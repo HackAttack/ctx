@@ -1,7 +1,5 @@
 use super::*;
 
-const NANOCLAW_DOCUMENT_FRONTIER_KIND: &str = "ctx-document-full-snapshot-v1";
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) struct NanoClawCertifiedReplayCheckpoint {
     physical_fingerprint: [u8; 32],
@@ -97,34 +95,15 @@ impl NanoClawCertifiedReplayCheckpoint {
             return Ok(None);
         };
         if matching.next().is_some() {
-            return Err(NanoClawSourceBackedError::InvalidReplayCheckpoint(
-                "multiple current certificates name the same compound source",
-            ));
+            return Err(NanoClawSourceBackedError::DuplicateReplayCheckpoint);
         }
         base.validate_contract()?;
-        let frontier =
-            base.frontier()
-                .ok_or(NanoClawSourceBackedError::InvalidReplayCheckpoint(
-                    "current certificate has no document frontier",
-                ))?;
-        if frontier.checkpoint_kind() != NANOCLAW_DOCUMENT_FRONTIER_KIND {
-            return Err(NanoClawSourceBackedError::InvalidReplayCheckpoint(
-                "current certificate has an unexpected frontier kind",
-            ));
-        }
-        let TypedKey::Bytes(checkpoint) = frontier.checkpoint() else {
-            return Err(NanoClawSourceBackedError::InvalidReplayCheckpoint(
-                "document frontier checkpoint is not bytes",
-            ));
-        };
-        let physical_fingerprint = checkpoint.as_slice().try_into().map_err(|_| {
-            NanoClawSourceBackedError::InvalidReplayCheckpoint(
-                "document frontier checkpoint is not a SHA-256 digest",
-            )
-        })?;
+        let checkpoint =
+            ctx_history_capture_runtime::decode_document_full_snapshot_checkpoint(base)
+                .map_err(NanoClawSourceBackedError::InvalidReplayCheckpoint)?;
         Ok(Some(Self {
-            physical_fingerprint,
-            logical_fingerprint: *base.content_digest(),
+            physical_fingerprint: checkpoint.physical_fingerprint(),
+            logical_fingerprint: checkpoint.logical_fingerprint(),
         }))
     }
 }
