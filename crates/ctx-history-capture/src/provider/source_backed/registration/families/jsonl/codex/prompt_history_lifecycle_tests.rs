@@ -11,6 +11,14 @@ use serde_json::json;
 use sha2::{Digest, Sha256};
 
 use super::*;
+use crate::provider::codex::nativepath::{
+    CodexPromptHistoryJsonlFamilyAdapterV0, CodexPromptHistoryProjector,
+    CodexPromptHistorySourceBackedInputV0,
+};
+use crate::provider::source_backed::family::CaptureProviderRuntime;
+use ctx_history_provider_runtime::JsonlFamilyProjector;
+
+const SOURCE_FORMAT: &str = "codex_history_jsonl";
 use crate::provider::source_backed::{
     family::jsonl::{
         jsonl_family_driver, set_after_jsonl_append_observation_route_binding_hook,
@@ -57,7 +65,8 @@ fn active_source_family_contract_prompt_history_rejects_same_content_pathname_re
         &[prompt_line("session", 1_700_000_000, "first prompt")],
     );
     let input = CodexPromptHistorySourceBackedInputV0::explicit(&history, [6; 32]);
-    let adapter = CodexPromptHistoryJsonlFamilyAdapterV0::new(input).unwrap();
+    let adapter =
+        CodexPromptHistoryJsonlFamilyAdapterV0::<CaptureProviderRuntime>::new(input).unwrap();
     let driver = jsonl_family_driver(Arc::new(adapter.clone()), history.clone());
     let mut registry = SourceBackedProviderRegistry::new();
     registry.register(
@@ -123,7 +132,8 @@ fn active_source_family_contract_prompt_history_rejects_scanner_leaf_open_same_l
         &[prompt_line("session", 1_700_000_000, "retained seed")],
     );
     let input = CodexPromptHistorySourceBackedInputV0::explicit(&history, [19; 32]);
-    let adapter = CodexPromptHistoryJsonlFamilyAdapterV0::new(input).unwrap();
+    let adapter =
+        CodexPromptHistoryJsonlFamilyAdapterV0::<CaptureProviderRuntime>::new(input).unwrap();
     let driver = jsonl_family_driver(Arc::new(adapter.clone()), history.clone());
     let mut registry = SourceBackedProviderRegistry::new();
     registry.register(
@@ -198,7 +208,8 @@ fn active_source_family_contract_prompt_history_rejects_inflight_disappearance_t
         &[prompt_line("session", 1_700_000_000, "retained prompt")],
     );
     let input = CodexPromptHistorySourceBackedInputV0::explicit(&history, [18; 32]);
-    let adapter = CodexPromptHistoryJsonlFamilyAdapterV0::new(input).unwrap();
+    let adapter =
+        CodexPromptHistoryJsonlFamilyAdapterV0::<CaptureProviderRuntime>::new(input).unwrap();
     let driver = jsonl_family_driver(Arc::new(adapter.clone()), history.clone());
     let mut registry = SourceBackedProviderRegistry::new();
     registry.register(
@@ -268,7 +279,8 @@ fn active_source_family_contract_prompt_history_defers_live_suffix_exactly_once(
         &[prompt_line("session", 1_700_000_000, "frozen prompt")],
     );
     let input = CodexPromptHistorySourceBackedInputV0::explicit(&history, [14; 32]);
-    let adapter = CodexPromptHistoryJsonlFamilyAdapterV0::new(input).unwrap();
+    let adapter =
+        CodexPromptHistoryJsonlFamilyAdapterV0::<CaptureProviderRuntime>::new(input).unwrap();
     let driver = jsonl_family_driver(Arc::new(adapter.clone()), history.clone());
     let mut registry = SourceBackedProviderRegistry::new();
     registry.register(
@@ -345,10 +357,8 @@ fn projector_preserves_prompt_identity_and_rejections() {
     use crate::provider::source_backed::family::jsonl::{JsonlFamilyWorkerContext, JsonlRecordRef};
 
     let input = CodexPromptHistorySourceBackedInputV0::explicit("history.jsonl", [7; 32]);
-    let mut projector = CodexPromptHistoryProjector {
-        source: input.source_key().unwrap(),
-        rejected_records: 0,
-    };
+    let mut projector =
+        CodexPromptHistoryProjector::<CaptureProviderRuntime>::for_test(input).unwrap();
     let mut worker = JsonlFamilyWorkerContext::default();
     let mut records = Vec::new();
     let mut bytes = prompt_line("session-a", 1_700_000_000, "complete prompt body");
@@ -401,7 +411,8 @@ fn active_source_family_contract_prompt_history_preserves_append_noop_rewrite_an
     let history = temp.path().join("history.jsonl");
     write_lines(&history, &[prompt_line("s", 1_700_000_000, "one")]);
     let input = CodexPromptHistorySourceBackedInputV0::explicit(&history, [8; 32]);
-    let adapter = CodexPromptHistoryJsonlFamilyAdapterV0::new(input).unwrap();
+    let adapter =
+        CodexPromptHistoryJsonlFamilyAdapterV0::<CaptureProviderRuntime>::new(input).unwrap();
     let driver = jsonl_family_driver(Arc::new(adapter), history.clone());
     let mut registry = SourceBackedProviderRegistry::new();
     registry.register(

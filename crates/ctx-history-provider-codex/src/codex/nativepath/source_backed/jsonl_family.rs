@@ -1,8 +1,9 @@
-use std::{collections::BTreeMap, sync::Mutex};
+use std::{collections::BTreeMap, marker::PhantomData, sync::Mutex};
 
-#[cfg(any(test, ctx_codex_causal_qualification))]
+#[cfg(any(test, feature = "test-support", ctx_codex_causal_qualification))]
 use super::causal::CodexCausalLedgerV1;
 use super::*;
+use crate::provider::source_backed::{ProviderBaseEventLookup, ProviderRuntimeBinding};
 use crate::{
     provider::source_backed::{
         family::jsonl::{
@@ -44,28 +45,29 @@ fn carried_or_observe_generation_source_capability_v0(
 #[derive(Default)]
 struct CodexSessionJsonlFamilyStateV0 {
     plans: HashMap<SourceKey, CodexSessionPlanV0>,
-    #[cfg(any(test, ctx_codex_causal_qualification))]
+    #[cfg(any(test, feature = "test-support", ctx_codex_causal_qualification))]
     causal: CodexCausalLedgerV1,
-    #[cfg(any(test, ctx_codex_causal_qualification))]
+    #[cfg(any(test, feature = "test-support", ctx_codex_causal_qualification))]
     stage_pending: bool,
 }
 
-struct CodexSessionSemanticExecutorV0 {
-    #[cfg(any(test, ctx_codex_causal_qualification))]
+struct CodexSessionSemanticExecutorV0<B: ProviderRuntimeBinding> {
+    binding: PhantomData<fn() -> B>,
+    #[cfg(any(test, feature = "test-support", ctx_codex_causal_qualification))]
     state: Arc<Mutex<CodexSessionJsonlFamilyStateV0>>,
     scanner: Option<CodexNativeScanner>,
-    #[cfg(any(test, ctx_codex_causal_qualification))]
+    #[cfg(any(test, feature = "test-support", ctx_codex_causal_qualification))]
     native_session_id: String,
-    #[cfg(any(test, ctx_codex_causal_qualification))]
+    #[cfg(any(test, feature = "test-support", ctx_codex_causal_qualification))]
     projection_mode: JsonlFamilyProjectionMode,
 }
 
-impl CodexSessionSemanticExecutorV0 {
+impl<B: ProviderRuntimeBinding> CodexSessionSemanticExecutorV0<B> {
     fn new(
         state: Arc<Mutex<CodexSessionJsonlFamilyStateV0>>,
         leaf: &JsonlFamilyLeaf,
         _checkpoint: Option<&TypedKey>,
-        base_event_lookup: Option<CaptureBaseEventLookup>,
+        base_event_lookup: Option<ProviderBaseEventLookup<B>>,
         projection_mode: JsonlFamilyProjectionMode,
     ) -> Result<Self> {
         let plan = {
@@ -90,23 +92,24 @@ impl CodexSessionSemanticExecutorV0 {
         };
         let scanner = CodexNativeScanner::new_semantic(plan.0, base_event_lookup)?;
         Ok(Self {
-            #[cfg(any(test, ctx_codex_causal_qualification))]
+            binding: PhantomData,
+            #[cfg(any(test, feature = "test-support", ctx_codex_causal_qualification))]
             state,
             scanner: Some(scanner),
-            #[cfg(any(test, ctx_codex_causal_qualification))]
+            #[cfg(any(test, feature = "test-support", ctx_codex_causal_qualification))]
             native_session_id: plan.2,
-            #[cfg(any(test, ctx_codex_causal_qualification))]
+            #[cfg(any(test, feature = "test-support", ctx_codex_causal_qualification))]
             projection_mode,
         })
     }
 }
 
-impl JsonlFamilySemanticExecutor for CodexSessionSemanticExecutorV0 {
-    type Runtime = crate::provider::source_backed::family::jsonl::JsonlFamilyRuntime;
+impl<B: ProviderRuntimeBinding> JsonlFamilySemanticExecutor for CodexSessionSemanticExecutorV0<B> {
+    type Runtime = crate::provider::source_backed::family::jsonl::JsonlFamilyRuntime<B>;
 
     fn preflight(
         &mut self,
-        input: &mut JsonlFamilyExecutionIo,
+        input: &mut JsonlFamilyExecutionIo<B>,
     ) -> Result<JsonlFamilySemanticPreflight> {
         let retry = self
             .scanner
@@ -124,8 +127,8 @@ impl JsonlFamilySemanticExecutor for CodexSessionSemanticExecutorV0 {
 
     fn next_page(
         &mut self,
-        input: &mut JsonlFamilyExecutionIo,
-        worker: &mut JsonlFamilyWorkerContext,
+        input: &mut JsonlFamilyExecutionIo<B>,
+        worker: &mut JsonlFamilyWorkerContext<B>,
     ) -> Result<Option<JsonlFamilySemanticPage>> {
         let Some(page) = self
             .scanner
@@ -148,7 +151,7 @@ impl JsonlFamilySemanticExecutor for CodexSessionSemanticExecutorV0 {
                 "Codex semantic executor lost its scanner",
             ))?
             .finish_semantic()?;
-        #[cfg(any(test, ctx_codex_causal_qualification))]
+        #[cfg(any(test, feature = "test-support", ctx_codex_causal_qualification))]
         {
             let mut counters = CodexSourceBackedCountersV0 {
                 cold_sources: u64::from(self.projection_mode == JsonlFamilyProjectionMode::Cold),
@@ -182,16 +185,16 @@ fn codex_family_state_error() -> CaptureError {
     CaptureError::InvalidPayload("Codex JSONL family state lock was poisoned".to_owned())
 }
 
-fn prepare_codex_session_jsonl_scans_v0(
+fn prepare_codex_session_jsonl_scans_v0<B: ProviderRuntimeBinding>(
     adapter: &dyn JsonlFamilyAdapter<
-        Runtime = crate::provider::source_backed::family::jsonl::JsonlFamilyRuntime,
+        Runtime = crate::provider::source_backed::family::jsonl::JsonlFamilyRuntime<B>,
     >,
     state: &Mutex<CodexSessionJsonlFamilyStateV0>,
     leaves: &[JsonlFamilyLeaf],
     bases: &HashMap<[u8; 32], &CertifiedSource>,
 ) -> Result<Option<usize>> {
     let state = state.lock().map_err(|_| codex_family_state_error())?;
-    #[cfg(any(test, ctx_codex_causal_qualification))]
+    #[cfg(any(test, feature = "test-support", ctx_codex_causal_qualification))]
     let mut state = state;
     for leaf in leaves {
         if !state.plans.contains_key(leaf.source()) {
@@ -200,7 +203,7 @@ fn prepare_codex_session_jsonl_scans_v0(
             ));
         }
     }
-    #[cfg(any(test, ctx_codex_causal_qualification))]
+    #[cfg(any(test, feature = "test-support", ctx_codex_causal_qualification))]
     {
         let observations = state
             .plans
@@ -225,7 +228,7 @@ fn prepare_codex_session_jsonl_scans_v0(
         }
         state.stage_pending = true;
     }
-    #[cfg(not(any(test, ctx_codex_causal_qualification)))]
+    #[cfg(not(any(test, feature = "test-support", ctx_codex_causal_qualification)))]
     let _ = (adapter, bases);
     Ok(None)
 }
@@ -241,11 +244,11 @@ fn install_prepared_state_v0(
         .cloned()
         .map(|plan| (plan.1.clone(), plan))
         .collect();
-    #[cfg(any(test, ctx_codex_causal_qualification))]
+    #[cfg(any(test, feature = "test-support", ctx_codex_causal_qualification))]
     {
         state.causal = CodexCausalLedgerV1::default();
     }
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     if plans.is_empty() && !_completed_stage {
         state.stage_pending = true;
     }
@@ -259,11 +262,11 @@ fn missing_codex_inventory_v0(
 ) -> Result<JsonlFamilyInventory> {
     let mut state = state.lock().map_err(|_| codex_family_state_error())?;
     state.plans.clear();
-    #[cfg(any(test, ctx_codex_causal_qualification))]
+    #[cfg(any(test, feature = "test-support", ctx_codex_causal_qualification))]
     {
         state.causal = CodexCausalLedgerV1::default();
     }
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     if !_completed_stage {
         state.stage_pending = true;
     }
@@ -274,16 +277,18 @@ fn missing_codex_inventory_v0(
 /// tree discovery. Shared JSONL owns carried bases and the physical lifecycle;
 /// its mandatory generation route owns discovery and terminal membership.
 #[derive(Clone)]
-pub(crate) struct CodexSessionJsonlFamilyAdapterV0 {
+pub struct CodexSessionJsonlFamilyAdapterV0<B: ProviderRuntimeBinding> {
     state: Arc<Mutex<CodexSessionJsonlFamilyStateV0>>,
     generation: CodexGenerationRouteV0,
+    binding: PhantomData<fn() -> B>,
 }
 
-impl CodexSessionJsonlFamilyAdapterV0 {
-    pub(crate) fn new(generation: CodexGenerationRouteV0) -> Self {
+impl<B: ProviderRuntimeBinding> CodexSessionJsonlFamilyAdapterV0<B> {
+    pub fn new(generation: CodexGenerationRouteV0) -> Self {
         Self {
             state: Arc::new(Mutex::new(CodexSessionJsonlFamilyStateV0::default())),
             generation,
+            binding: PhantomData,
         }
     }
 
@@ -391,7 +396,7 @@ impl CodexSessionJsonlFamilyAdapterV0 {
         Ok(inventory)
     }
 
-    #[cfg(any(test, ctx_codex_causal_qualification))]
+    #[cfg(any(test, feature = "test-support", ctx_codex_causal_qualification))]
     fn run_pending_stage_observer(&self) -> Result<bool> {
         let causal = {
             let mut state = self.state.lock().map_err(|_| codex_family_state_error())?;
@@ -401,20 +406,20 @@ impl CodexSessionJsonlFamilyAdapterV0 {
             state.stage_pending = false;
             std::mem::take(&mut state.causal)
         };
-        #[cfg(test)]
+        #[cfg(any(test, feature = "test-support"))]
         causal.run_test_observer();
         causal.write_qualification_receipt()?;
         Ok(true)
     }
 
-    #[cfg(not(any(test, ctx_codex_causal_qualification)))]
+    #[cfg(not(any(test, feature = "test-support", ctx_codex_causal_qualification)))]
     fn run_pending_stage_observer(&self) -> Result<bool> {
         Ok(false)
     }
 }
 
-impl JsonlFamilyAdapter for CodexSessionJsonlFamilyAdapterV0 {
-    type Runtime = crate::provider::source_backed::family::jsonl::JsonlFamilyRuntime;
+impl<B: ProviderRuntimeBinding> JsonlFamilyAdapter for CodexSessionJsonlFamilyAdapterV0<B> {
+    type Runtime = crate::provider::source_backed::family::jsonl::JsonlFamilyRuntime<B>;
 
     fn provider(&self) -> CaptureProvider {
         CaptureProvider::Codex
@@ -539,13 +544,13 @@ impl JsonlFamilyAdapter for CodexSessionJsonlFamilyAdapterV0 {
         &self,
         leaf: &JsonlFamilyLeaf,
         checkpoint: Option<&TypedKey>,
-        base_event_lookup: Option<CaptureBaseEventLookup>,
+        base_event_lookup: Option<ProviderBaseEventLookup<B>>,
         mode: JsonlFamilyProjectionMode,
     ) -> Result<
         Option<
             Box<
                 dyn JsonlFamilySemanticExecutor<
-                    Runtime = crate::provider::source_backed::family::jsonl::JsonlFamilyRuntime,
+                    Runtime = crate::provider::source_backed::family::jsonl::JsonlFamilyRuntime<B>,
                 >,
             >,
         >,

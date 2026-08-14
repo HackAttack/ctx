@@ -1,6 +1,5 @@
 use std::{collections::BTreeMap, fs::File, path::Path, sync::Arc};
 
-use crate::provider::source_backed::CaptureBaseEventLookup;
 use chrono::{DateTime, Utc};
 use ctx_history_capture_model::file_touches::{
     event_type_supports_structured_file_touches, visit_provider_file_touch_drafts_with_limit,
@@ -52,7 +51,7 @@ const MAX_CODEX_TOOL_NAME_BYTES: usize = 512;
 const MAX_CODEX_TOOL_PREVIEW_BYTES: usize = 4 * 1024;
 
 pub(crate) const MAX_CODEX_RECORD_BYTES: usize = 16 * 1024 * 1024;
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 pub(crate) const MAX_CODEX_PAGE_ROWS: usize = MAX_CODEX_PAGE_UNITS;
 pub(crate) const MAX_CODEX_PAGE_BYTES: usize = 8 * 1024 * 1024;
 // One source-backed row may retain both decoded text and structured/path data

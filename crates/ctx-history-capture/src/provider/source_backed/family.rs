@@ -9,6 +9,7 @@ pub(crate) mod document;
 pub(crate) mod jsonl;
 
 /// Capture-owned composition binding supplied to index-free provider packs.
+#[derive(Clone, Copy)]
 pub struct CaptureProviderRuntime;
 
 #[doc(hidden)]

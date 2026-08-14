@@ -8,6 +8,8 @@ use std::{
 use serde::Serialize;
 use serde_json::Value;
 
+use super::super::source_backed::CodexSourceBackedCountersV0;
+use super::catalog::CodexCatalogWorkV0;
 use super::*;
 
 const RECEIPT_ENV: &str = "CTX_CODEX_CAUSAL_RECEIPT";
@@ -100,7 +102,7 @@ impl CodexCausalLedgerV1 {
         write_atomic_json(&config.path, &receipt)
     }
 
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     pub(super) fn run_test_observer(&self) {
         let sources = self
             .sources
@@ -120,24 +122,24 @@ impl CodexCausalLedgerV1 {
     }
 }
 
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support", ctx_codex_causal_qualification))]
 #[derive(Debug, Clone)]
-pub(crate) struct CodexCausalSourceObservationV1 {
-    pub(crate) provider_session_id: String,
-    pub(crate) counters: CodexSourceBackedCountersV0,
+pub struct CodexCausalSourceObservationV1 {
+    pub provider_session_id: String,
+    pub counters: CodexSourceBackedCountersV0,
 }
 
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support", ctx_codex_causal_qualification))]
 type AfterCodexCausalStageHook = Option<Box<dyn FnOnce(Vec<CodexCausalSourceObservationV1>)>>;
 
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support", ctx_codex_causal_qualification))]
 std::thread_local! {
     static AFTER_CODEX_CAUSAL_STAGE_HOOK: std::cell::RefCell<AfterCodexCausalStageHook> =
         const { std::cell::RefCell::new(None) };
 }
 
-#[cfg(test)]
-pub(crate) fn install_after_codex_causal_stage_hook_v1(
+#[cfg(any(test, feature = "test-support", ctx_codex_causal_qualification))]
+pub fn install_after_codex_causal_stage_hook_v1(
     hook: impl FnOnce(Vec<CodexCausalSourceObservationV1>) + 'static,
 ) {
     AFTER_CODEX_CAUSAL_STAGE_HOOK.with(|slot| {

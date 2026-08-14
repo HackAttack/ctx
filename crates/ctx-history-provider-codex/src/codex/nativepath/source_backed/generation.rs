@@ -23,13 +23,13 @@ struct CodexGenerationParticipantV0 {
 }
 
 #[derive(Clone)]
-pub(crate) struct CodexGenerationRouteV0 {
+pub struct CodexGenerationRouteV0 {
     coordinator: Arc<CodexGenerationNormalizationCoordinatorV0>,
     participant: Arc<CodexGenerationParticipantV0>,
 }
 
 impl CodexGenerationRouteV0 {
-    pub(crate) fn participant(&self) -> usize {
+    pub fn participant(&self) -> usize {
         self.participant.id
     }
 
@@ -86,7 +86,7 @@ struct CodexGenerationCoordinatorStateV0 {
 /// revalidates, or schedules an ancestor or descendant on behalf of a selected
 /// leaf.
 #[derive(Default)]
-pub(crate) struct CodexGenerationNormalizationCoordinatorV0 {
+pub struct CodexGenerationNormalizationCoordinatorV0 {
     state: Mutex<CodexGenerationCoordinatorStateV0>,
 }
 
@@ -97,7 +97,7 @@ impl std::fmt::Debug for CodexGenerationNormalizationCoordinatorV0 {
 }
 
 impl CodexGenerationNormalizationCoordinatorV0 {
-    pub(crate) fn register_session_tree(
+    pub fn register_session_tree(
         self: &Arc<Self>,
         roots: Vec<PathBuf>,
     ) -> CodexSourceBackedResultV0<CodexGenerationRouteV0> {
@@ -106,7 +106,7 @@ impl CodexGenerationNormalizationCoordinatorV0 {
         })
     }
 
-    pub(crate) fn register_explicit_session(
+    pub fn register_explicit_session(
         self: &Arc<Self>,
         input: CodexExplicitSessionSourceBackedInputV0,
     ) -> CodexSourceBackedResultV0<CodexGenerationRouteV0> {
@@ -137,7 +137,7 @@ impl CodexGenerationNormalizationCoordinatorV0 {
         })
     }
 
-    pub(crate) fn prepare(&self, selected: &[usize]) -> CodexSourceBackedResultV0<()> {
+    pub fn prepare(&self, selected: &[usize]) -> CodexSourceBackedResultV0<()> {
         // Participant IDs encode registration order. Preserve that order when
         // overlapping automatic and explicit routes establish exact source
         // ownership, independent of HashMap randomization.

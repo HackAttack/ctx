@@ -56,6 +56,7 @@ WORKSPACE_RELEASE_PACKAGES = {
     "ctx-history-provider-gemini",
     "ctx-history-provider-native-jsonl",
     "ctx-history-provider-runtime",
+    "ctx-history-provider-codex",
     "ctx-history-provider-trae",
     "ctx-history-providers-jsonl-shared",
     "ctx-history-provider-mistral-mux",

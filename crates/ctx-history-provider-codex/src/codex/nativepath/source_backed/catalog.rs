@@ -1,14 +1,14 @@
 use super::*;
 use crate::provider::source_backed::family::jsonl::{observe_opened_file, JsonlFileObservation};
 
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 std::thread_local! {
     static AFTER_CODEX_METADATA_INVENTORY_HOOK: std::cell::RefCell<Option<Box<dyn FnOnce()>>> =
         const { std::cell::RefCell::new(None) };
 }
 
-#[cfg(test)]
-pub(crate) fn install_after_codex_metadata_inventory_hook(hook: impl FnOnce() + 'static) {
+#[cfg(any(test, feature = "test-support"))]
+pub fn install_after_codex_metadata_inventory_hook(hook: impl FnOnce() + 'static) {
     AFTER_CODEX_METADATA_INVENTORY_HOOK.with(|slot| {
         assert!(
             slot.borrow().is_none(),
@@ -18,7 +18,7 @@ pub(crate) fn install_after_codex_metadata_inventory_hook(hook: impl FnOnce() + 
     });
 }
 
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 fn run_after_codex_metadata_inventory_hook() {
     let hook = AFTER_CODEX_METADATA_INVENTORY_HOOK.with(|slot| slot.borrow_mut().take());
     if let Some(hook) = hook {
@@ -26,7 +26,7 @@ fn run_after_codex_metadata_inventory_hook() {
     }
 }
 
-#[cfg(any(test, ctx_codex_causal_qualification))]
+#[cfg(any(test, feature = "test-support", ctx_codex_causal_qualification))]
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub(crate) struct CodexCatalogWorkV0 {
     pub(crate) source_metadata_opens: u64,
@@ -35,14 +35,14 @@ pub(crate) struct CodexCatalogWorkV0 {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct CodexExplicitSessionSourceBackedInputV0 {
+pub struct CodexExplicitSessionSourceBackedInputV0 {
     path: PathBuf,
     source: SourceKey,
     native_session_id: String,
 }
 
 impl CodexExplicitSessionSourceBackedInputV0 {
-    pub(crate) fn discover(path: impl AsRef<Path>) -> CodexSourceBackedResultV0<Self> {
+    pub fn discover(path: impl AsRef<Path>) -> CodexSourceBackedResultV0<Self> {
         let path = absolute_lexical_path(path.as_ref())?;
         let (_, source, native_session_id) = open_codex_explicit_source_plan_v0(&path)?;
         Ok(Self {
@@ -52,7 +52,7 @@ impl CodexExplicitSessionSourceBackedInputV0 {
         })
     }
 
-    pub(crate) fn path(&self) -> &Path {
+    pub fn path(&self) -> &Path {
         &self.path
     }
 
@@ -129,7 +129,7 @@ fn open_codex_explicit_source_plan_v0(
         })
 }
 
-pub(crate) fn absolute_lexical_path(path: &Path) -> std::io::Result<PathBuf> {
+pub fn absolute_lexical_path(path: &Path) -> std::io::Result<PathBuf> {
     let absolute = if path.is_absolute() {
         path.to_path_buf()
     } else {
@@ -198,7 +198,7 @@ fn discover_codex_session_tree_metadata_inventory_v0(
         authorities.push(root);
     }
 
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     run_after_codex_metadata_inventory_hook();
 
     let mut catalog_sources = Vec::with_capacity(leaves.len());
@@ -423,7 +423,7 @@ fn sort_bound_sources(sources: &mut [(CodexCatalogSource, SourceKey, String)]) {
     });
 }
 
-pub(crate) fn codex_session_root_rank(root: &Path) -> u8 {
+pub fn codex_session_root_rank(root: &Path) -> u8 {
     match root.file_name().and_then(std::ffi::OsStr::to_str) {
         Some("sessions") => 0,
         Some("archived_sessions") => 1,

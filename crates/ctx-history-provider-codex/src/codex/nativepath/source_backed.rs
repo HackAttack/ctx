@@ -12,7 +12,7 @@ use ctx_history_core::{
 use sha2::{Digest, Sha256};
 use thiserror::Error;
 
-#[cfg(any(test, ctx_codex_causal_qualification))]
+#[cfg(any(test, feature = "test-support", ctx_codex_causal_qualification))]
 use super::reader::CodexScanCounters;
 use super::{
     discover_codex_catalog_sources,
@@ -27,7 +27,6 @@ use super::{
     source::{CodexCatalogSource, CodexFileObservation},
     CodexNativeScanner, CodexSessionRow,
 };
-use crate::provider::source_backed::{CaptureBaseEventLookup, CaptureBaseEventLookupError};
 use crate::repository_attribution::{apply_annotation, merge_repository_annotation};
 use crate::{
     common::io::{
@@ -56,8 +55,6 @@ type CodexSessionPlanV0 = (CodexCatalogSource, SourceKey, String);
 pub enum CodexSourceBackedErrorV0 {
     #[error(transparent)]
     Capture(#[from] CaptureError),
-    #[error(transparent)]
-    Index(#[from] CaptureBaseEventLookupError),
     #[error(transparent)]
     Projection(#[from] ProjectionContractError),
     #[error(transparent)]
@@ -95,7 +92,7 @@ impl From<CodexSourceBackedErrorV0> for CaptureError {
     }
 }
 
-#[cfg(any(test, ctx_codex_causal_qualification))]
+#[cfg(any(test, feature = "test-support", ctx_codex_causal_qualification))]
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct CodexSourceBackedCountersV0 {
     pub catalog_source_metadata_opens: u64,
@@ -120,7 +117,7 @@ pub struct CodexSourceBackedCountersV0 {
     pub typed_json_parses: u64,
 }
 
-#[cfg(any(test, ctx_codex_causal_qualification))]
+#[cfg(any(test, feature = "test-support", ctx_codex_causal_qualification))]
 impl CodexSourceBackedCountersV0 {
     fn add_assign(&mut self, other: Self) {
         macro_rules! add {
@@ -194,23 +191,23 @@ impl CodexSourceBackedCountersV0 {
 }
 
 mod catalog;
-#[cfg(any(test, ctx_codex_causal_qualification))]
+#[cfg(any(test, feature = "test-support", ctx_codex_causal_qualification))]
 mod causal;
-mod generation;
+pub mod generation;
 mod identity;
-mod jsonl_family;
-#[cfg(test)]
-pub(crate) use catalog::install_after_codex_metadata_inventory_hook;
-#[cfg(any(test, ctx_codex_causal_qualification))]
+pub mod jsonl_family;
+#[cfg(any(test, feature = "test-support"))]
+pub use catalog::install_after_codex_metadata_inventory_hook;
+pub(crate) use catalog::observe_codex_explicit_session_source_backed_v0;
+#[cfg(any(test, feature = "test-support", ctx_codex_causal_qualification))]
 use catalog::CodexCatalogWorkV0;
-pub(crate) use catalog::{
-    absolute_lexical_path, codex_session_root_rank,
-    observe_codex_explicit_session_source_backed_v0, CodexExplicitSessionSourceBackedInputV0,
+pub use catalog::{
+    absolute_lexical_path, codex_session_root_rank, CodexExplicitSessionSourceBackedInputV0,
 };
-#[cfg(test)]
-pub(crate) use causal::{install_after_codex_causal_stage_hook_v1, CodexCausalSourceObservationV1};
-pub(crate) use generation::{CodexGenerationNormalizationCoordinatorV0, CodexGenerationRouteV0};
-pub(in crate::provider::codex::nativepath) use identity::{
+#[cfg(any(test, feature = "test-support", ctx_codex_causal_qualification))]
+pub use causal::{install_after_codex_causal_stage_hook_v1, CodexCausalSourceObservationV1};
+pub use generation::{CodexGenerationNormalizationCoordinatorV0, CodexGenerationRouteV0};
+pub(in crate::codex::nativepath) use identity::{
     codex_core_record, codex_session_identity, codex_source_key, CodexEventIdentityStateV0,
 };
-pub(crate) use jsonl_family::CodexSessionJsonlFamilyAdapterV0;
+pub use jsonl_family::CodexSessionJsonlFamilyAdapterV0;

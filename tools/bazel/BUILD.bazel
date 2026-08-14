@@ -26,6 +26,8 @@ exports_files([
     "check_history_capture_runtime_boundary_test.py",
     "check_history_provider_runtime_boundary.py",
     "check_history_provider_runtime_boundary_test.py",
+    "check_history_provider_codex_boundary.py",
+    "check_history_provider_codex_boundary_test.py",
     "check_history_provider_mistral_mux_boundary.py",
     "check_history_provider_mistral_mux_boundary_test.py",
     "check_history_provider_trae_boundary.py",
@@ -106,6 +108,13 @@ py_test(
     ],
     imports = ["."],
     main = "check_ci_entrypoint_contract_test.py",
+)
+
+py_test(
+    name = "history_provider_codex_boundary_mutation_tests",
+    srcs = ["check_history_provider_codex_boundary.py", "check_history_provider_codex_boundary_test.py"],
+    imports = ["."],
+    main = "check_history_provider_codex_boundary_test.py",
 )
 
 py_test(

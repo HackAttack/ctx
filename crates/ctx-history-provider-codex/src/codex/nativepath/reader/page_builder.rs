@@ -1,9 +1,10 @@
 use super::*;
+use crate::provider::source_backed::ProviderRuntimeBinding;
 
 impl CodexNativeScanner {
     pub(super) fn new_semantic_page(
         &mut self,
-        input: &JsonlFamilyExecutionIo,
+        input: &JsonlFamilyExecutionIo<impl ProviderRuntimeBinding>,
     ) -> Result<CodexNativePage> {
         let expected_offset = input.complete_prefix_end()?;
         Ok(CodexNativePage {
@@ -43,9 +44,7 @@ impl CodexNativeScanner {
         self.finish_semantic_page(page).map(Some)
     }
 
-    pub(in crate::provider::codex::nativepath) fn finish_semantic(
-        self,
-    ) -> Result<CodexSemanticScan> {
+    pub(in crate::codex::nativepath) fn finish_semantic(self) -> Result<CodexSemanticScan> {
         if !self.exhausted || self.active_core_page.is_some() {
             return Err(CaptureError::InvalidPayload(
                 "Codex semantic scan must drain every owned page before finishing".to_owned(),
@@ -58,7 +57,7 @@ impl CodexNativeScanner {
 
     pub(super) fn semantic_position(
         &self,
-        input: &JsonlFamilyExecutionIo,
+        input: &JsonlFamilyExecutionIo<impl ProviderRuntimeBinding>,
     ) -> Result<SemanticScannerPosition> {
         Ok(SemanticScannerPosition {
             input: input.position()?,
@@ -70,7 +69,7 @@ impl CodexNativeScanner {
 
     pub(super) fn restore_semantic(
         &mut self,
-        input: &mut JsonlFamilyExecutionIo,
+        input: &mut JsonlFamilyExecutionIo<impl ProviderRuntimeBinding>,
         position: SemanticScannerPosition,
     ) -> Result<()> {
         let actual_parse_counts = (

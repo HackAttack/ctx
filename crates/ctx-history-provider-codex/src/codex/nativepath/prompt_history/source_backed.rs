@@ -1,6 +1,7 @@
 //! Shared-family projection for Codex's ordinary `history.jsonl` prompt log.
 
 use std::{
+    marker::PhantomData,
     path::{Path, PathBuf},
     sync::Arc,
 };
@@ -13,6 +14,7 @@ use thiserror::Error;
 
 use super::super::absolute_lexical_path;
 use super::PromptLine;
+use crate::provider::source_backed::ProviderRuntimeBinding;
 use crate::{
     common::io::OpenedProviderSourceFile,
     provider::source_backed::family::jsonl::{
@@ -27,7 +29,7 @@ use crate::{
 mod projection;
 use projection::{core_record, retained_record_bytes};
 
-const SOURCE_FORMAT: &str = "codex_history_jsonl";
+pub(crate) const SOURCE_FORMAT: &str = "codex_history_jsonl";
 const PATH_KIND: &str = "Codex prompt-history JSONL";
 const SOURCE_SCHEMA_VARIANT: &str = "codex-prompt-history-jsonl-v1";
 const SOURCE_IDENTITY_VERSION: u32 = 1;
@@ -39,7 +41,7 @@ const LOGICAL_EVENT_KIND: &str = "codex-prompt-history-event";
 const MAX_RETAINED_RECORD_BYTES: usize = 1024 * 1024;
 
 #[derive(Debug, Error)]
-pub(crate) enum CodexPromptHistorySourceBackedErrorV0 {
+pub enum CodexPromptHistorySourceBackedErrorV0 {
     #[error(transparent)]
     Io(#[from] std::io::Error),
     #[error(transparent)]
@@ -50,24 +52,24 @@ pub(crate) enum CodexPromptHistorySourceBackedErrorV0 {
     RecordTooLarge,
 }
 
-pub(crate) type CodexPromptHistorySourceBackedResultV0<T> =
+pub type CodexPromptHistorySourceBackedResultV0<T> =
     Result<T, CodexPromptHistorySourceBackedErrorV0>;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct CodexPromptHistorySourceBackedInputV0 {
+pub struct CodexPromptHistorySourceBackedInputV0 {
     path: PathBuf,
     catalog_lineage: [u8; 32],
 }
 
 impl CodexPromptHistorySourceBackedInputV0 {
-    pub(crate) fn explicit(path: impl Into<PathBuf>, catalog_lineage: [u8; 32]) -> Self {
+    pub fn explicit(path: impl Into<PathBuf>, catalog_lineage: [u8; 32]) -> Self {
         Self {
             path: path.into(),
             catalog_lineage,
         }
     }
 
-    pub(crate) fn source_key(&self) -> CodexPromptHistorySourceBackedResultV0<SourceKey> {
+    pub fn source_key(&self) -> CodexPromptHistorySourceBackedResultV0<SourceKey> {
         Ok(SourceKey::derive(
             CaptureProvider::Codex.as_str(),
             SOURCE_FORMAT,
@@ -82,28 +84,30 @@ impl CodexPromptHistorySourceBackedInputV0 {
 /// publication, deletion, and terminal validation. This adapter supplies only
 /// the exact source binding and per-record Codex projection.
 #[derive(Clone)]
-pub(crate) struct CodexPromptHistoryJsonlFamilyAdapterV0 {
+pub struct CodexPromptHistoryJsonlFamilyAdapterV0<B: ProviderRuntimeBinding> {
     route_path: Box<Path>,
     source: SourceKey,
+    binding: PhantomData<fn() -> B>,
 }
 
-impl CodexPromptHistoryJsonlFamilyAdapterV0 {
-    pub(crate) fn new(
+impl<B: ProviderRuntimeBinding> CodexPromptHistoryJsonlFamilyAdapterV0<B> {
+    pub fn new(
         input: CodexPromptHistorySourceBackedInputV0,
     ) -> CodexPromptHistorySourceBackedResultV0<Self> {
         Ok(Self {
             route_path: absolute_lexical_path(&input.path)?.into_boxed_path(),
             source: input.source_key()?,
+            binding: PhantomData,
         })
     }
 
-    pub(crate) fn route_path(&self) -> &Path {
+    pub fn route_path(&self) -> &Path {
         &self.route_path
     }
 }
 
-impl JsonlFamilyAdapter for CodexPromptHistoryJsonlFamilyAdapterV0 {
-    type Runtime = crate::provider::source_backed::family::jsonl::JsonlFamilyRuntime;
+impl<B: ProviderRuntimeBinding> JsonlFamilyAdapter for CodexPromptHistoryJsonlFamilyAdapterV0<B> {
+    type Runtime = crate::provider::source_backed::family::jsonl::JsonlFamilyRuntime<B>;
 
     fn provider(&self) -> CaptureProvider {
         CaptureProvider::Codex
@@ -158,7 +162,7 @@ impl JsonlFamilyAdapter for CodexPromptHistoryJsonlFamilyAdapterV0 {
     ) -> crate::Result<
         Box<
             dyn JsonlFamilyProjector<
-                Runtime = crate::provider::source_backed::family::jsonl::JsonlFamilyRuntime,
+                Runtime = crate::provider::source_backed::family::jsonl::JsonlFamilyRuntime<B>,
             >,
         >,
     > {
@@ -168,28 +172,41 @@ impl JsonlFamilyAdapter for CodexPromptHistoryJsonlFamilyAdapterV0 {
         Ok(Box::new(CodexPromptHistoryProjector {
             source: self.source.clone(),
             rejected_records: 0,
+            binding: PhantomData,
         }))
     }
 }
 
-struct CodexPromptHistoryProjector {
+pub struct CodexPromptHistoryProjector<B: ProviderRuntimeBinding> {
     source: SourceKey,
     rejected_records: u64,
+    pub binding: PhantomData<fn() -> B>,
 }
 
-impl CodexPromptHistoryProjector {
+impl<B: ProviderRuntimeBinding> CodexPromptHistoryProjector<B> {
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn for_test(
+        input: CodexPromptHistorySourceBackedInputV0,
+    ) -> CodexPromptHistorySourceBackedResultV0<Self> {
+        Ok(Self {
+            source: input.source_key()?,
+            rejected_records: 0,
+            binding: PhantomData,
+        })
+    }
+
     fn reject(&mut self) {
         self.rejected_records = self.rejected_records.saturating_add(1);
     }
 }
 
-impl JsonlFamilyProjector for CodexPromptHistoryProjector {
-    type Runtime = crate::provider::source_backed::family::jsonl::JsonlFamilyRuntime;
+impl<B: ProviderRuntimeBinding> JsonlFamilyProjector for CodexPromptHistoryProjector<B> {
+    type Runtime = crate::provider::source_backed::family::jsonl::JsonlFamilyRuntime<B>;
 
     fn project(
         &mut self,
         record: JsonlRecordRef<'_>,
-        _worker: &mut JsonlFamilyWorkerContext,
+        _worker: &mut JsonlFamilyWorkerContext<B>,
         emit: &mut dyn FnMut(CoreRecord) -> crate::Result<()>,
     ) -> crate::Result<()> {
         if record.oversized() {
@@ -227,4 +244,4 @@ impl JsonlFamilyProjector for CodexPromptHistoryProjector {
 }
 
 #[cfg(test)]
-mod tests;
+mod tests {}

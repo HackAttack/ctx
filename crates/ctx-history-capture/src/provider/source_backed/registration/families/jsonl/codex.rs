@@ -5,6 +5,7 @@ use crate::provider::codex::nativepath::{
     CodexPromptHistoryJsonlFamilyAdapterV0, CodexPromptHistorySourceBackedInputV0,
     CodexSessionJsonlFamilyAdapterV0,
 };
+use crate::provider::source_backed::family::CaptureProviderRuntime;
 
 pub(super) fn register_codex_session_tree_route(
     registry: &mut SourceBackedProviderRegistry,
@@ -55,7 +56,7 @@ pub(in crate::provider::source_backed) fn register_codex_session_tree_routes(
         .register_session_tree(roots)
         .map_err(|error| invalid_route(CaptureProvider::Codex, error.to_string()))?;
     let participant = generation.participant();
-    let adapter = CodexSessionJsonlFamilyAdapterV0::new(generation);
+    let adapter = CodexSessionJsonlFamilyAdapterV0::<CaptureProviderRuntime>::new(generation);
     let driver = crate::provider::source_backed::family::jsonl::jsonl_family_driver(
         Arc::new(adapter),
         source.path.clone(),
@@ -87,7 +88,7 @@ pub(super) fn register_codex_explicit_session_route(
         .register_explicit_session(input.clone())
         .map_err(|error| invalid_route(source.provider, error.to_string()))?;
     let participant = generation.participant();
-    let adapter = CodexSessionJsonlFamilyAdapterV0::new(generation);
+    let adapter = CodexSessionJsonlFamilyAdapterV0::<CaptureProviderRuntime>::new(generation);
     let driver = crate::provider::source_backed::family::jsonl::jsonl_family_driver(
         Arc::new(adapter),
         route_path,
@@ -122,7 +123,7 @@ pub fn register_codex_prompt_history_source_backed_route(
         source.path.clone(),
         CODEX_PROMPT_HISTORY_DEFAULT_CATALOG_LINEAGE_V0,
     );
-    let adapter = CodexPromptHistoryJsonlFamilyAdapterV0::new(input)
+    let adapter = CodexPromptHistoryJsonlFamilyAdapterV0::<CaptureProviderRuntime>::new(input)
         .map_err(|error| invalid_route(source.provider, error.to_string()))?;
     let route_path = adapter.route_path().to_path_buf();
     let driver = crate::provider::source_backed::family::jsonl::jsonl_family_driver(
@@ -139,36 +140,8 @@ pub fn register_codex_prompt_history_source_backed_route(
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::{
-        ProviderCatalogSupport, ProviderImportSupport, ProviderSourceKind, ProviderSourceStatus,
-    };
+mod tests;
 
-    #[test]
-    fn codex_session_tree_registration_does_not_inventory_the_root() {
-        let temp = crate::test_support_paths::tempdir().unwrap();
-        let sessions = temp.path().join("sessions-not-created");
-        let source = ProviderSource {
-            provider: CaptureProvider::Codex,
-            path: sessions,
-            exists: true,
-            source_format: "codex_session_jsonl_tree",
-            source_kind: ProviderSourceKind::NativeHistory,
-            import_support: ProviderImportSupport::Native,
-            catalog_support: ProviderCatalogSupport::None,
-            status: ProviderSourceStatus::Available,
-            unsupported_reason: None,
-        };
-        let mut registry = SourceBackedProviderRegistry::new();
-
-        register_codex_session_tree_routes(
-            &mut registry,
-            vec![source],
-            SourceBackedRouteSelection::Automatic,
-        )
-        .unwrap();
-
-        assert_eq!(registry.routes().count(), 1);
-    }
-}
+#[cfg(test)]
+#[path = "codex/prompt_history_lifecycle_tests.rs"]
+mod prompt_history_lifecycle_tests;
