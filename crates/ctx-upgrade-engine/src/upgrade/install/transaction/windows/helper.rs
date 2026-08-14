@@ -216,8 +216,8 @@ fn copy_helper(source: &Path, helper: &Path) -> Result<()> {
     std::io::copy(&mut from, &mut to)?;
     to.sync_all()?;
     drop(to);
-    ctx_history_core::platform_security::restrict_private_executable(helper)?;
-    ctx_history_core::platform_security::verify_private_executable(helper)?;
+    ctx_history_platform::platform_security::restrict_private_executable(helper)?;
+    ctx_history_platform::platform_security::verify_private_executable(helper)?;
     Ok(())
 }
 

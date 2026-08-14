@@ -6,12 +6,10 @@ use std::{
 };
 
 use anyhow::{anyhow, Context, Result};
-use ctx_history_core::{
-    platform_security::{
-        create_private_directory_all, restrict_private_directory, restrict_private_file,
-        verify_private_directory,
-    },
-    utc_now,
+use ctx_history_core::utc_now;
+use ctx_history_platform::platform_security::{
+    create_private_directory_all, restrict_private_directory, restrict_private_file,
+    verify_private_directory,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::json;

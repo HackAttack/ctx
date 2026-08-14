@@ -411,7 +411,7 @@ pub(super) fn repair_executable_presence(
 
 fn restore_binary_backup(path: &JournalPath) -> Result<()> {
     #[cfg(windows)]
-    ctx_history_core::platform_security::verify_private_executable(&path.backup)
+    ctx_history_platform::platform_security::verify_private_executable(&path.backup)
         .context("verify private Windows executable transaction backup")?;
     retry_io(|| move_replace_file(&path.backup, &path.target))
         .context("restore ctx executable from transaction backup")
@@ -511,8 +511,8 @@ fn durable_backup_file(source: &Path, backup: &Path) -> Result<()> {
         drop(to);
         #[cfg(windows)]
         {
-            ctx_history_core::platform_security::restrict_private_executable(&temporary)?;
-            ctx_history_core::platform_security::verify_private_executable(&temporary)?;
+            ctx_history_platform::platform_security::restrict_private_executable(&temporary)?;
+            ctx_history_platform::platform_security::verify_private_executable(&temporary)?;
         }
         retry_io(|| move_replace_file(&temporary, backup))
     })();

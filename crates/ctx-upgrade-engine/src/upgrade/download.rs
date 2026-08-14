@@ -7,8 +7,8 @@ use std::{
 
 use anyhow::{anyhow, Context, Result};
 #[cfg(test)]
-use ctx_history_core::platform_security::restrict_private_directory;
-use ctx_history_core::platform_security::{
+use ctx_history_platform::platform_security::restrict_private_directory;
+use ctx_history_platform::platform_security::{
     create_private_directory_all, restrict_private_file, verify_private_directory,
     verify_private_file,
 };
@@ -435,7 +435,7 @@ fn create_private_file_windows(path: &Path) -> Result<fs::File> {
             "private artifact download identity changed while it was protected"
         ));
     }
-    if let Err(error) = ctx_history_core::platform_security::verify_private_file_handle(&file) {
+    if let Err(error) = ctx_history_platform::platform_security::verify_private_file_handle(&file) {
         drop(file);
         remove_file_if_identity(path, &identity);
         return Err(error).context("verify private artifact download handle");
@@ -486,7 +486,7 @@ fn open_private_file(path: &Path) -> Result<fs::File> {
     let file = options.open(path)?;
     verify_private_file(path)?;
     #[cfg(windows)]
-    ctx_history_core::platform_security::verify_private_file_handle(&file)?;
+    ctx_history_platform::platform_security::verify_private_file_handle(&file)?;
     if !file.metadata()?.is_file() {
         return Err(anyhow!("private artifact path is not a regular file"));
     }

@@ -6,7 +6,7 @@ use std::{
 };
 
 use anyhow::{anyhow, Context, Result};
-use ctx_history_core::platform_security::{restrict_private_directory, restrict_private_file};
+use ctx_history_platform::platform_security::{restrict_private_directory, restrict_private_file};
 #[cfg(unix)]
 use flate2::read::GzDecoder;
 use sha2::{Digest, Sha256};
