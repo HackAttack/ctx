@@ -19,18 +19,22 @@ use ctx_history_core::{
 use crate::{
     BaseEventLookup, CaptureCommitOutcome, CaptureCommitReceipt, CaptureLifecycleOpenOutcome,
     CaptureLifecycleSink, CapturePublicationContext, CapturePublicationDisposition,
-    CaptureRevalidationTarget, CaptureRouteRef, CaptureSourceAggregateRef, CompleteInventoryOwner,
-    CoreMaterialization, CorePreparationFailureKind, CorePreparationPort, ImmutableCaptureSnapshot,
-    PresentCaptureRoute, SourceBackedCoordinatorError as RuntimeSourceBackedCoordinatorError,
+    CaptureRevalidationTarget, CaptureRouteRef, CaptureSourceAggregateRef, CompleteDocumentTree,
+    CompleteInventoryOwner, CoreMaterialization, CorePreparationFailureKind, CorePreparationPort,
+    DocumentInventoryAuthority, DocumentLeafFingerprint, DocumentRecordSpool,
+    DocumentSourceTerminal, ImmutableCaptureSnapshot, ObservedDocumentLeaf, PresentCaptureRoute,
+    ReplacementDocumentTree, SourceBackedCoordinatorError as RuntimeSourceBackedCoordinatorError,
     SourceBackedGenerationSink as RuntimeSourceBackedGenerationSink,
     SourceBackedLogicalSourceFailures, SourceBackedRecordProgressDelta,
     SourceBackedRecordRejectionClass, SourceBackedRecordRejectionDraft,
     SourceBackedRecordRejectionDrafts, SourceBackedRecordRejections, SourceBackedRouteError,
     SourceBackedRouteErrorKind, SourceBackedRouteResourceKind, SourceBackedRouteResources,
-    SourceOwner, VerifiedCapture, CORE_RECORD_BATCH_MAX_RECORDS,
+    SourceBackedRouteResult, SourceOwner, VerifiedCapture, CORE_RECORD_BATCH_MAX_RECORDS,
 };
 
 use super::*;
+
+mod document_lifecycle;
 
 #[derive(Debug, thiserror::Error)]
 enum TestWorkerFailure {
@@ -183,6 +187,7 @@ struct FakeLifecycle {
     current_source: Option<SourceKey>,
     records: Vec<CoreRecord>,
     certified_sources: Vec<CertifiedSource>,
+    retained_unstaged_routes: usize,
 }
 
 impl FakeLifecycle {
@@ -312,6 +317,7 @@ impl CaptureLifecycleSink for FakeLifecycle {
         &mut self,
         _route_identity: &SourceRouteIdentity,
     ) -> Result<(), Self::Error> {
+        self.retained_unstaged_routes = self.retained_unstaged_routes.saturating_add(1);
         Ok(())
     }
 
@@ -694,6 +700,166 @@ impl SinkHarness {
     fn commit(self) -> CaptureCommitReceipt<FakeSnapshot> {
         self.writer.commit(|_| true, |_| true).unwrap()
     }
+}
+
+#[derive(Default)]
+struct NoIoDocumentSpool {
+    records: Vec<CoreRecord>,
+}
+
+impl DocumentRecordSpool for NoIoDocumentSpool {
+    fn new(_resources: SourceBackedRouteResources) -> SourceBackedRouteResult<Self> {
+        Ok(Self::default())
+    }
+
+    fn push(&mut self, record: CoreRecord) -> SourceBackedRouteResult<()> {
+        self.records.push(record);
+        Ok(())
+    }
+
+    fn replay(
+        self,
+        mut emit: impl FnMut(CoreRecord) -> SourceBackedRouteResult<()>,
+    ) -> SourceBackedRouteResult<()> {
+        for record in self.records {
+            emit(record)?;
+        }
+        Ok(())
+    }
+}
+
+#[derive(Clone)]
+struct NoIoDocumentAdapter {
+    leaves: Arc<Mutex<Vec<(u8, u8)>>>,
+    partial: bool,
+}
+
+impl NoIoDocumentAdapter {
+    fn new(leaves: &[(u8, u8)], partial: bool) -> Self {
+        Self {
+            leaves: Arc::new(Mutex::new(leaves.to_vec())),
+            partial,
+        }
+    }
+
+    fn source(id: u8) -> SourceKey {
+        test_source(id)
+    }
+
+    fn tree(&self) -> CompleteDocumentTree<(u8, u8), ()> {
+        let leaves = self
+            .leaves
+            .lock()
+            .unwrap()
+            .iter()
+            .copied()
+            .map(|leaf @ (id, revision)| {
+                ObservedDocumentLeaf::new(DocumentLeafFingerprint::new([id ^ revision; 32]), leaf)
+            })
+            .collect::<Vec<_>>();
+        let fingerprint = [leaves.len() as u8; 32];
+        if self.partial {
+            CompleteDocumentTree::new_partial(fingerprint, leaves, ())
+        } else {
+            CompleteDocumentTree::new(fingerprint, leaves, ())
+        }
+    }
+}
+
+impl ReplacementDocumentTree for NoIoDocumentAdapter {
+    type Lifecycle = FakeLifecycle;
+    type Spool = NoIoDocumentSpool;
+    type RouteControl = ();
+    type Leaf = (u8, u8);
+    type TreeAuthority = ();
+
+    fn parser_revision(&self) -> &'static str {
+        "no-io-document-v1"
+    }
+
+    fn owns_source(&self, source: &SourceKey) -> bool {
+        source.provider() == "parallel-leaf-test"
+    }
+
+    fn discover_complete(
+        &self,
+    ) -> SourceBackedRouteResult<CompleteDocumentTree<Self::Leaf, Self::TreeAuthority>> {
+        Ok(self.tree())
+    }
+
+    fn scan_changed(
+        &self,
+        _authority: &Self::TreeAuthority,
+        (id, revision): &Self::Leaf,
+        sink: &mut crate::ChangedDocumentSink<'_, '_, Self::Lifecycle, Self::Spool>,
+    ) -> SourceBackedRouteResult<DocumentSourceTerminal> {
+        let source = Self::source(*id);
+        sink.begin_source(source.clone())?;
+        sink.emit_core_record(test_core_record(&source, 0, *revision))?;
+        let observation = SourceObservation::new(
+            source.clone(),
+            "no-io-document-revision-v1",
+            vec![*revision],
+        )
+        .unwrap();
+        Ok(DocumentSourceTerminal {
+            source,
+            opening: observation.clone(),
+            closing: observation,
+            parser_revision: self.parser_revision(),
+            content_digest: [*revision; 32],
+            counts: ScannedSourceCounts {
+                complete_records: 1,
+                retained_records: 1,
+                indexed_documents: 1,
+                certified_bytes: 1,
+                ..ScannedSourceCounts::default()
+            },
+        })
+    }
+
+    fn revalidate_complete(
+        &self,
+        tree: &CompleteDocumentTree<Self::Leaf, Self::TreeAuthority>,
+    ) -> SourceBackedRouteResult<[u8; 32]> {
+        Ok((self.tree().leaves.len() == tree.leaves.len())
+            .then_some(tree.tree_fingerprint)
+            .unwrap_or([0xff; 32]))
+    }
+}
+
+#[test]
+fn no_io_document_runtime_certifies_complete_and_partial_lifecycles() {
+    for partial in [false, true] {
+        let adapter = NoIoDocumentAdapter::new(&[(1, 1), (2, 1)], partial);
+        let driver = crate::replacement_document_tree_driver(
+            DocumentInventoryAuthority::new("parallel-leaf-test".to_owned(), [7; 32]),
+            adapter,
+        );
+        let mut harness = SinkHarness::open(Path::new("/unused"));
+        (driver.scan)(&mut harness.sink()).unwrap();
+        assert_eq!(harness.writer.certified_sources.len(), 2);
+        assert_eq!(harness.writer.records.len(), 2);
+        assert_eq!(
+            harness.writer.retained_unstaged_routes,
+            usize::from(partial)
+        );
+        assert!((driver.revalidate_at_publication.as_ref().unwrap())());
+    }
+}
+
+#[test]
+fn no_io_document_runtime_rejects_duplicate_fingerprints_before_staging() {
+    let adapter = NoIoDocumentAdapter::new(&[(1, 1), (2, 2)], false);
+    let driver = crate::replacement_document_tree_driver(
+        DocumentInventoryAuthority::new("parallel-leaf-test".to_owned(), [8; 32]),
+        adapter,
+    );
+    let mut harness = SinkHarness::open(Path::new("/unused"));
+    let error = (driver.scan)(&mut harness.sink()).unwrap_err();
+    assert_eq!(error.kind, SourceBackedRouteErrorKind::SourceChanged);
+    assert!(error.detail.contains("duplicate physical leaf"));
+    assert!(harness.writer.records.is_empty());
 }
 
 struct TestWorkerState {

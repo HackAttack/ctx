@@ -178,6 +178,10 @@ pub(crate) enum GooseTreeAuthority {
 }
 
 impl ReplacementDocumentTree for GooseSourceBackedAdapterV0 {
+    type Lifecycle = crate::provider::source_backed::family::document::CaptureDocumentLifecycle;
+    type Spool = crate::provider::source_backed::family::document::CaptureDocumentSpool;
+    type RouteControl =
+        crate::provider::source_backed::family::document::CaptureDocumentRouteControl;
     type Leaf = ();
     type TreeAuthority = GooseTreeAuthority;
 

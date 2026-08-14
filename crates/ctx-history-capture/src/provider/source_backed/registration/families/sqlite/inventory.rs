@@ -106,7 +106,7 @@ impl SqliteInventoryProvider for AstrBotInventoryProvider {
             .cloned()
             .map(|leaf| SqliteInventoryCatalogLeaf {
                 source: leaf.source_key().clone(),
-                path: leaf.path().to_path_buf(),
+                physical_locator: leaf.path().to_path_buf(),
                 provider_leaf: leaf,
             })
             .collect();
@@ -233,7 +233,7 @@ impl SqliteInventoryProvider for ShelleyInventoryProvider {
         let leaves = match std::fs::symlink_metadata(leaf.database_path()) {
             Ok(_) => vec![SqliteInventoryCatalogLeaf {
                 source: leaf.source().clone(),
-                path: leaf.database_path().to_path_buf(),
+                physical_locator: leaf.database_path().to_path_buf(),
                 provider_leaf: leaf,
             }],
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => Vec::new(),
@@ -388,7 +388,7 @@ impl SqliteInventoryProvider for LingmaInventoryProvider {
             .map(|leaf| {
                 Ok(SqliteInventoryCatalogLeaf {
                     source: leaf.source_key()?,
-                    path: leaf.path().to_path_buf(),
+                    physical_locator: leaf.path().to_path_buf(),
                     provider_leaf: leaf,
                 })
             })

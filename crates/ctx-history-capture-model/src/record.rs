@@ -9,6 +9,16 @@ use sha2::{Digest, Sha256};
 pub struct RecordDigest(String);
 
 impl RecordDigest {
+    pub fn from_sha256(bytes: [u8; 32]) -> Self {
+        use std::fmt::Write as _;
+
+        let mut value = String::with_capacity(64);
+        for byte in bytes {
+            let _ = write!(value, "{byte:02x}");
+        }
+        Self(value)
+    }
+
     pub fn from_text(text: &str) -> Self {
         Self::from_bytes(text.as_bytes())
     }
@@ -72,5 +82,14 @@ mod tests {
         assert!(RecordDigest::parse("A".repeat(64)).is_none());
         assert!(RecordDigest::parse("0".repeat(63)).is_none());
         assert!(serde_json::from_str::<RecordDigest>(&format!("\"{}\"", "g".repeat(64))).is_err());
+    }
+
+    #[test]
+    fn sha256_bytes_use_the_canonical_lowercase_representation() {
+        let bytes: [u8; 32] = Sha256::digest(b"capture record").into();
+        assert_eq!(
+            RecordDigest::from_sha256(bytes),
+            RecordDigest::from_text("capture record")
+        );
     }
 }

@@ -20,36 +20,29 @@ pub use ctx_history_capture_runtime::{
     SourceBackedRecordCompletion, SourceBackedRecordRejection, SourceBackedRecordRejectionClass,
     SourceBackedRecordRejectionDraft, SourceBackedRecordRejectionDrafts,
     SourceBackedRecordRejections, SourceBackedRefreshScope, SourceBackedRevalidationTarget,
-    SourceBackedRouteError, SourceBackedRouteErrorKind, SourceBackedRouteResult,
-    SourceBackedRouteRevalidation, SourceBackedRouteWatchTargets, SourceBackedSourceFailureClass,
-    SourceBackedSourceFailures, SourceBackedSourceOutcome, SourceOwner,
+    SourceBackedRouteConstructor, SourceBackedRouteError, SourceBackedRouteErrorKind,
+    SourceBackedRouteResult, SourceBackedRouteRevalidation, SourceBackedRouteSelection,
+    SourceBackedRouteWatchTargets, SourceBackedSelectorAuthority, SourceBackedSourceFailureClass,
+    SourceBackedSourceFailures, SourceBackedWatchTargetKind, SourceOwner,
     MAX_RECORDED_SOURCE_BACKED_FAILURES, MAX_SOURCE_BACKED_FAILURE_DETAIL_BYTES,
     MAX_SOURCE_BACKED_FAILURE_SELECTOR_BYTES, MAX_SOURCE_BACKED_ROUTE_CONTROL_BYTES,
 };
 use ctx_history_capture_runtime::{
     SourceBackedCoordinatorError as RuntimeSourceBackedCoordinatorError,
-    SourceBackedGenerationSink as RuntimeSourceBackedGenerationSink,
-    SourceBackedRouteDriver as RuntimeSourceBackedRouteDriver,
+    SourceBackedGenerationSink as RuntimeSourceBackedGenerationSink, SourceBackedRegistryRoute,
+    SourceBackedRouteMetadata as RuntimeSourceBackedRouteMetadata, SourceBackedRouteRegistry,
 };
 
 pub type SourceBackedCoordinatorError = RuntimeSourceBackedCoordinatorError<IndexError>;
 pub type SourceBackedCoordinatorResult<T> = Result<T, SourceBackedCoordinatorError>;
 pub type SourceBackedGenerationSink<'writer> =
     RuntimeSourceBackedGenerationSink<'writer, IndexCaptureLifecycle>;
-pub type SourceBackedRouteDriver =
-    RuntimeSourceBackedRouteDriver<IndexCaptureLifecycle, SourceBackedRouteControlExpectation>;
+pub type SourceBackedRouteDriver = ctx_history_provider_runtime::ProviderRouteDriver<
+    crate::provider::source_backed::family::CaptureProviderRuntime,
+>;
 
 /// Runtime metadata for one selected source route.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct SourceBackedRouteMetadata {
-    pub source: ProviderSource,
-    pub certified_source_format: &'static str,
-    pub selection: Option<SourceBackedRouteSelection>,
-    pub selector_authority: SourceBackedSelectorAuthority,
-    pub unsupported_reason: Option<String>,
-    pub route_identity: Option<SourceRouteIdentity>,
-    pub watch_target_kind: SourceBackedWatchTargetKind,
-}
+pub type SourceBackedRouteMetadata = RuntimeSourceBackedRouteMetadata<ProviderSource>;
 pub(in super::super) fn source_backed_failed_route_from_route(
     route: &SourceBackedRoute,
     class: SourceBackedSourceFailureClass,
@@ -74,9 +67,9 @@ pub(in super::super) fn source_backed_failed_route_from_route(
 }
 
 #[derive(Debug, Clone)]
-pub(in super::super) struct HermesRouteRetirement {
+pub(in super::super) struct ControlledRouteRetirement {
     pub(in super::super) route_identity: SourceRouteIdentity,
-    pub(in super::super) database_identity: [u8; 32],
+    pub(in super::super) expected_identity: [u8; 32],
 }
 
 #[derive(Debug, Clone)]
@@ -85,7 +78,7 @@ pub struct SourceBackedRoute {
     pub(in super::super) driver: Option<SourceBackedRouteDriver>,
     pub(in super::super) certified_missing_paths: Vec<PathBuf>,
     pub(in super::super) retire_after_success: Vec<SourceRouteIdentity>,
-    pub(in super::super) hermes_retire_after_success: Vec<HermesRouteRetirement>,
+    pub(in super::super) controlled_retire_after_success: Vec<ControlledRouteRetirement>,
     pub(in super::super) codex_generation_participant: Option<usize>,
 }
 
@@ -117,7 +110,7 @@ impl SourceBackedRoute {
             driver: Some(driver),
             certified_missing_paths: Vec::new(),
             retire_after_success: Vec::new(),
-            hermes_retire_after_success: Vec::new(),
+            controlled_retire_after_success: Vec::new(),
             codex_generation_participant: None,
         })
     }
@@ -146,7 +139,7 @@ impl SourceBackedRoute {
             driver: Some(driver),
             certified_missing_paths: Vec::new(),
             retire_after_success: Vec::new(),
-            hermes_retire_after_success: Vec::new(),
+            controlled_retire_after_success: Vec::new(),
             codex_generation_participant: None,
         })
     }
@@ -180,7 +173,7 @@ impl SourceBackedRoute {
             driver: Some(driver),
             certified_missing_paths: Vec::new(),
             retire_after_success: Vec::new(),
-            hermes_retire_after_success: Vec::new(),
+            controlled_retire_after_success: Vec::new(),
             codex_generation_participant: None,
         })
     }
@@ -209,7 +202,7 @@ impl SourceBackedRoute {
             driver: None,
             certified_missing_paths: vec![path],
             retire_after_success: Vec::new(),
-            hermes_retire_after_success: Vec::new(),
+            controlled_retire_after_success: Vec::new(),
             codex_generation_participant: None,
         })
     }
@@ -230,7 +223,7 @@ impl SourceBackedRoute {
             driver: None,
             certified_missing_paths: Vec::new(),
             retire_after_success: Vec::new(),
-            hermes_retire_after_success: Vec::new(),
+            controlled_retire_after_success: Vec::new(),
             codex_generation_participant: None,
         }
     }
@@ -240,9 +233,42 @@ impl SourceBackedRoute {
     }
 }
 
+impl SourceBackedRegistryRoute for SourceBackedRoute {
+    type Metadata = SourceBackedRouteMetadata;
+
+    fn metadata(&self) -> &Self::Metadata {
+        &self.metadata
+    }
+
+    fn route_identity(&self) -> Option<&SourceRouteIdentity> {
+        self.metadata.route_identity.as_ref()
+    }
+
+    fn is_executable(&self) -> bool {
+        self.driver.is_some()
+    }
+
+    fn has_certified_missing_paths(&self) -> bool {
+        !self.certified_missing_paths.is_empty()
+    }
+
+    fn uses_parallel_leaf_workers(&self) -> bool {
+        self.driver
+            .as_ref()
+            .is_some_and(|driver| driver.uses_parallel_leaf_workers)
+    }
+
+    fn absorb_certified_missing_route(&mut self, mut route: Self) {
+        self.certified_missing_paths
+            .append(&mut route.certified_missing_paths);
+        self.certified_missing_paths.sort();
+        self.certified_missing_paths.dedup();
+    }
+}
+
 #[derive(Debug, Clone, Default)]
 pub struct SourceBackedProviderRegistry {
-    pub(in super::super) routes: Vec<SourceBackedRoute>,
+    pub(in super::super) routes: SourceBackedRouteRegistry<SourceBackedRoute>,
     pub(in super::super) codex_generation: Option<Arc<CodexGenerationNormalizationCoordinatorV0>>,
 }
 
@@ -252,28 +278,7 @@ impl SourceBackedProviderRegistry {
     }
 
     pub fn register(&mut self, route: SourceBackedRoute) {
-        if let Some(identity) = route.metadata.route_identity.as_ref() {
-            if let Some(existing) = self
-                .routes
-                .iter_mut()
-                .find(|existing| existing.metadata.route_identity.as_ref() == Some(identity))
-            {
-                if existing.driver.is_some() {
-                    return;
-                }
-                if route.driver.is_some() {
-                    *existing = route;
-                    return;
-                }
-                existing
-                    .certified_missing_paths
-                    .extend(route.certified_missing_paths);
-                existing.certified_missing_paths.sort();
-                existing.certified_missing_paths.dedup();
-                return;
-            }
-        }
-        self.routes.push(route);
+        self.routes.register(route);
     }
 
     /// Binds exact carried base routes to an executable replacement route.
@@ -311,10 +316,10 @@ impl SourceBackedProviderRegistry {
         Ok(())
     }
 
-    /// Registers stale automatic Hermes routes as conditional retirement
-    /// candidates. A candidate is authorized only when the replacement's
-    /// successful control reports the same stable physical database identity.
-    pub fn retire_hermes_routes_after_success(
+    /// Registers stale routes as conditional retirement candidates. A
+    /// candidate is authorized only when the replacement's successful
+    /// provider-owned control reports the expected stable identity.
+    pub fn retire_controlled_routes_after_success(
         &mut self,
         replacement: &SourceRouteIdentity,
         retired: impl IntoIterator<Item = (SourceRouteIdentity, [u8; 32])>,
@@ -326,37 +331,44 @@ impl SourceBackedProviderRegistry {
             .ok_or_else(|| SourceBackedCoordinatorError::InvalidRefreshScope {
                 route_id: replacement.as_str().to_owned(),
             })?;
-        if route.driver.is_none()
-            || route.metadata.source.provider != CaptureProvider::Hermes
-            || route.metadata.selection != Some(SourceBackedRouteSelection::Automatic)
+        if route.metadata.selection != Some(SourceBackedRouteSelection::Automatic)
+            || !route
+                .driver
+                .as_ref()
+                .and_then(|driver| driver.route_control_expectation.as_ref())
+                .is_some_and(SourceBackedRouteControlExpectation::supports_retirement_identity)
         {
             return Err(SourceBackedCoordinatorError::InvalidRefreshScope {
                 route_id: replacement.as_str().to_owned(),
             });
         }
         route
-            .hermes_retire_after_success
+            .controlled_retire_after_success
             .extend(
                 retired
                     .into_iter()
                     .map(
-                        |(route_identity, database_identity)| HermesRouteRetirement {
+                        |(route_identity, expected_identity)| ControlledRouteRetirement {
                             route_identity,
-                            database_identity,
+                            expected_identity,
                         },
                     ),
             );
-        route.hermes_retire_after_success.sort_by(|left, right| {
-            left.route_identity
-                .cmp(&right.route_identity)
-                .then(left.database_identity.cmp(&right.database_identity))
-        });
-        route.hermes_retire_after_success.dedup_by(|left, right| {
-            left.route_identity == right.route_identity
-                && left.database_identity == right.database_identity
-        });
+        route
+            .controlled_retire_after_success
+            .sort_by(|left, right| {
+                left.route_identity
+                    .cmp(&right.route_identity)
+                    .then(left.expected_identity.cmp(&right.expected_identity))
+            });
+        route
+            .controlled_retire_after_success
+            .dedup_by(|left, right| {
+                left.route_identity == right.route_identity
+                    && left.expected_identity == right.expected_identity
+            });
         if route
-            .hermes_retire_after_success
+            .controlled_retire_after_success
             .iter()
             .any(|candidate| &candidate.route_identity == replacement)
         {
@@ -368,14 +380,11 @@ impl SourceBackedProviderRegistry {
     }
 
     pub fn routes(&self) -> impl ExactSizeIterator<Item = &SourceBackedRouteMetadata> {
-        self.routes.iter().map(SourceBackedRoute::metadata)
+        self.routes.routes()
     }
 
     pub fn executable_route_count(&self) -> usize {
-        self.routes
-            .iter()
-            .filter(|route| route.driver.is_some())
-            .count()
+        self.routes.executable_route_count()
     }
 
     /// Returns whether any executable route selected by this exact refresh can
@@ -384,28 +393,34 @@ impl SourceBackedProviderRegistry {
         &self,
         scope: &SourceBackedRefreshScope,
     ) -> bool {
-        self.routes.iter().any(|route| {
-            route
-                .driver
-                .as_ref()
-                .is_some_and(|driver| driver.uses_parallel_leaf_workers)
-                && match scope {
-                    SourceBackedRefreshScope::All => true,
-                    SourceBackedRefreshScope::Exact(selected) => route
-                        .metadata
-                        .route_identity
-                        .as_ref()
-                        .is_some_and(|identity| selected.contains(identity)),
-                }
-        })
+        self.routes.selected_routes_use_parallel_leaf_workers(scope)
     }
 
     pub fn unsupported_route_count(&self) -> usize {
-        self.routes
-            .iter()
-            .filter(|route| route.driver.is_none())
-            .filter(|route| route.certified_missing_paths.is_empty())
-            .count()
+        self.routes.unsupported_route_count()
+    }
+}
+
+impl
+    ctx_history_provider_runtime::ProviderRouteRegistrar<
+        crate::provider::source_backed::family::CaptureProviderRuntime,
+    > for SourceBackedProviderRegistry
+{
+    type Error = SourceBackedCoordinatorError;
+
+    fn register_provider_route(
+        &mut self,
+        registration: ctx_history_provider_runtime::ProviderRouteRegistration<
+            crate::provider::source_backed::family::CaptureProviderRuntime,
+        >,
+    ) -> SourceBackedCoordinatorResult<()> {
+        self.register(executable_route(
+            registration.source,
+            registration.selection,
+            registration.selector_authority,
+            registration.driver,
+        )?);
+        Ok(())
     }
 }
 

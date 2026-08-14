@@ -202,6 +202,10 @@ impl OpenHandsEventFileAdapterV2 {
 }
 
 impl ReplacementDocumentTree for OpenHandsEventFileAdapterV2 {
+    type Lifecycle = crate::provider::source_backed::family::document::CaptureDocumentLifecycle;
+    type Spool = crate::provider::source_backed::family::document::CaptureDocumentSpool;
+    type RouteControl =
+        crate::provider::source_backed::family::document::CaptureDocumentRouteControl;
     type Leaf = OpenHandsEventFileSourcePlan;
     type TreeAuthority = std::sync::Arc<EventFileInventory>;
 

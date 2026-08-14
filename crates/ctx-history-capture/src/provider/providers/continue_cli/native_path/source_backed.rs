@@ -102,6 +102,10 @@ impl ContinueSourceBackedReader {
 }
 
 impl ReplacementDocumentTree for ContinueSourceBackedReader {
+    type Lifecycle = crate::provider::source_backed::family::document::CaptureDocumentLifecycle;
+    type Spool = crate::provider::source_backed::family::document::CaptureDocumentSpool;
+    type RouteControl =
+        crate::provider::source_backed::family::document::CaptureDocumentRouteControl;
     type Leaf = ContinueDocumentLeaf;
     type TreeAuthority = ContinueTreeAuthority;
 

@@ -5,8 +5,8 @@ use std::{
 
 use ctx_history_core::{CertifiedSource, CertifiedSourceInventory, SourceKey};
 
+use super::super::SourceBackedRevalidationTarget;
 use super::{CompleteDocumentTree, ReplacementDocumentTree};
-use crate::provider::source_backed::SourceBackedRevalidationTarget;
 
 pub(super) struct CurrentDocumentSources {
     ordered: Vec<SourceKey>,
@@ -233,4 +233,75 @@ where
                 _ => false,
             })
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use ctx_history_core::{CaptureProvider, SourceAnchor};
+
+    use super::*;
+
+    fn membership_source(logical_id: u64, schema_variant: &str) -> SourceKey {
+        let mut lineage = [0; 32];
+        lineage[..size_of::<u64>()].copy_from_slice(&logical_id.to_be_bytes());
+        SourceKey::derive(
+            CaptureProvider::Custom.as_str(),
+            "runtime-document-membership",
+            schema_variant,
+            1,
+            SourceAnchor::CatalogLineage(lineage),
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn document_membership_indexes_are_linear_exact_and_source_ordered() {
+        const BASE_SOURCE_COUNT: usize = 1_000;
+        const SCHEMA: &str = "runtime-document-membership-v1";
+
+        let sources = (0..BASE_SOURCE_COUNT)
+            .filter(|logical_id| logical_id % 2 == 0)
+            .map(|logical_id| membership_source(logical_id as u64, SCHEMA))
+            .collect::<Vec<_>>();
+        let mut current = CurrentDocumentSources::with_capacity(sources.len());
+        for source in &sources {
+            assert!(!current.contains_canonical(source));
+            assert!(current.insert(source.clone()));
+        }
+
+        assert!(current
+            .ordered_inventory_sources()
+            .iter()
+            .zip(&sources)
+            .all(|(actual, expected)| actual.exact_descriptor_eq(expected)));
+        assert_eq!(
+            current.operations(),
+            DocumentMembershipOperations {
+                source_insertions: sources.len(),
+                canonical_lookups: sources.len(),
+                exact_lookups: 0,
+                exact_comparisons: 0,
+            }
+        );
+
+        current.reset_operations();
+        let retained = (0..BASE_SOURCE_COUNT)
+            .map(|logical_id| membership_source(logical_id as u64, SCHEMA))
+            .filter(|source| current.contains_exact(source))
+            .count();
+        assert_eq!(retained, sources.len());
+
+        let changed_descriptor = membership_source(0, "runtime-document-membership-v2");
+        assert!(current.contains_canonical(&changed_descriptor));
+        assert!(!current.contains_exact(&changed_descriptor));
+        assert_eq!(
+            current.operations(),
+            DocumentMembershipOperations {
+                source_insertions: 0,
+                canonical_lookups: 1,
+                exact_lookups: BASE_SOURCE_COUNT + 1,
+                exact_comparisons: sources.len(),
+            }
+        );
+    }
 }

@@ -5,6 +5,9 @@ use std::{
     time::Duration,
 };
 
+use ctx_history_capture_runtime::{
+    FiniteInventoryCatalog, FiniteInventoryCatalogLeaf, FiniteInventoryTreeAuthority,
+};
 use sha2::Digest;
 
 #[cfg(test)]
@@ -65,16 +68,8 @@ struct SqliteInventorySemanticCounters {
     logical_replacements: u64,
 }
 
-pub(super) struct SqliteInventoryCatalog<L> {
-    pub(super) authority_fingerprint: [u8; 32],
-    pub(super) leaves: Vec<SqliteInventoryCatalogLeaf<L>>,
-}
-
-pub(super) struct SqliteInventoryCatalogLeaf<L> {
-    pub(super) source: SourceKey,
-    pub(super) path: PathBuf,
-    pub(super) provider_leaf: L,
-}
+pub(super) type SqliteInventoryCatalog<L> = FiniteInventoryCatalog<L, PathBuf>;
+pub(super) type SqliteInventoryCatalogLeaf<L> = FiniteInventoryCatalogLeaf<L, PathBuf>;
 
 pub(super) trait SqliteInventoryProvider: Send + Sync + 'static {
     type Leaf: Send + Sync + 'static;
@@ -177,11 +172,13 @@ where
         let mut fingerprints = Vec::with_capacity(catalog.leaves.len());
         let mut observed = Vec::with_capacity(catalog.leaves.len());
         for (index, leaf) in catalog.leaves.into_iter().enumerate() {
-            let catalog_leaf = sqlite_catalog_leaf_fingerprint(&leaf.source, &leaf.path);
+            let catalog_leaf =
+                sqlite_catalog_leaf_fingerprint(&leaf.source, &leaf.physical_locator);
             // Discovery validates one path at a time but retains no provider
             // descriptors. Active scan workers reacquire the same no-follow
             // authority, bounding descriptors by worker count.
-            let retained = RetainedSqliteInventoryLeaf::retain(&self.data_root, &leaf.path)?;
+            let retained =
+                RetainedSqliteInventoryLeaf::retain(&self.data_root, &leaf.physical_locator)?;
             let replay_fingerprint = retained.replay_fingerprint(catalog_leaf)?;
             #[cfg(test)]
             let counter_authority = retained.authority.clone();
@@ -197,7 +194,7 @@ where
                 SqliteInventoryDocumentLeaf {
                     index,
                     source: leaf.source,
-                    path: leaf.path,
+                    path: leaf.physical_locator,
                     catalog_fingerprint: catalog_leaf,
                     replay_fingerprint,
                     #[cfg(test)]
@@ -219,10 +216,7 @@ where
         Ok(CompleteDocumentTree::new(
             tree_fingerprint,
             observed,
-            SqliteInventoryTreeAuthority {
-                authority_fingerprint: catalog.authority_fingerprint,
-                catalog_leaves,
-            },
+            SqliteInventoryTreeAuthority::new(catalog.authority_fingerprint, catalog_leaves),
         ))
     }
 }
@@ -325,16 +319,16 @@ impl RetainedSqliteInventoryLeaf {
     }
 }
 
-#[derive(Debug)]
-pub(super) struct SqliteInventoryTreeAuthority {
-    authority_fingerprint: [u8; 32],
-    catalog_leaves: Vec<[u8; 32]>,
-}
+pub(super) type SqliteInventoryTreeAuthority = FiniteInventoryTreeAuthority<[u8; 32]>;
 
 impl<A> ReplacementDocumentTree for SqliteInventoryDocumentAdapter<A>
 where
     A: SqliteInventoryProvider,
 {
+    type Lifecycle = crate::provider::source_backed::family::document::CaptureDocumentLifecycle;
+    type Spool = crate::provider::source_backed::family::document::CaptureDocumentSpool;
+    type RouteControl =
+        crate::provider::source_backed::family::document::CaptureDocumentRouteControl;
     type Leaf = SqliteInventoryDocumentLeaf<A::Leaf>;
     type TreeAuthority = SqliteInventoryTreeAuthority;
 
@@ -479,10 +473,11 @@ where
         let current_catalog = current
             .leaves
             .iter()
-            .map(|leaf| sqlite_catalog_leaf_fingerprint(&leaf.source, &leaf.path))
+            .map(|leaf| sqlite_catalog_leaf_fingerprint(&leaf.source, &leaf.physical_locator))
             .collect::<Vec<_>>();
-        if current.authority_fingerprint != tree.authority.authority_fingerprint
-            || current_catalog != tree.authority.catalog_leaves
+        if !tree
+            .authority
+            .validates_complete(current.authority_fingerprint, &current_catalog)
         {
             return Err(sqlite_inventory_changed(
                 "complete SQLite inventory changed during staging",
@@ -574,9 +569,10 @@ fn validate_catalog_slot<L>(
     authority: &SqliteInventoryTreeAuthority,
     leaf: &SqliteInventoryDocumentLeaf<L>,
 ) -> SourceBackedRouteResult<()> {
-    if authority.catalog_leaves.get(leaf.index)
-        != Some(&sqlite_catalog_leaf_fingerprint(&leaf.source, &leaf.path))
-    {
+    if !authority.validates_slot(
+        leaf.index,
+        &sqlite_catalog_leaf_fingerprint(&leaf.source, &leaf.path),
+    ) {
         return Err(sqlite_inventory_changed(
             "observed leaf no longer matches its catalog slot",
         ));

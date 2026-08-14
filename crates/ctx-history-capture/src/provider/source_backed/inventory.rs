@@ -59,63 +59,11 @@ fn source_inventory_contract(error: impl fmt::Display) -> SourceBackedRouteError
     SourceBackedRouteError::new(SourceBackedRouteErrorKind::Internal, error.to_string())
 }
 
-/// Whether a route was selected by provider discovery or supplied manually.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum SourceBackedRouteSelection {
-    Automatic,
-    ExplicitManual,
-}
-
-/// Provider-specific authority that must survive central registration.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum SourceBackedSelectorAuthority {
-    DiscoveredWinner,
-    ExplicitPath,
-    CatalogLineage,
-    ExactCwd,
-    NamedSurface,
-    SelectedWithRetainedExplicit,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum SourceBackedRouteConstructor {
-    ProviderSource,
-    CatalogLineage,
-    FiniteInventory,
-    DiscoveryContext,
-    ExactCwd,
-    NamedSurface,
-    SelectedWithRetainedRoutes,
-}
-
-/// Filesystem authority exposed by one landed route to provider-neutral
-/// daemon watchers.
-///
-/// This is part of the central landed-route inventory, so watch derivation and
-/// capture registration cannot silently disagree about whether a selected
-/// path is an ordinary source root or a SQLite database family.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum SourceBackedWatchTargetKind {
-    Path,
-    SqliteDatabase,
-}
-
-/// Static inventory of one landed provider/source-format registration.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct SourceBackedProviderRouteMetadata {
-    pub provider: CaptureProvider,
-    /// Format carried by the discovered or explicitly selected root.
-    pub source_format: &'static str,
-    /// Format carried by the `SourceKey`s certified by the adapter.
-    pub certified_source_format: &'static str,
-    pub automatic: bool,
-    pub explicit_manual: bool,
-    pub selector_authority: SourceBackedSelectorAuthority,
-    pub unsupported_reason: Option<&'static str>,
-    /// Provider-owned selector input required to construct this route.
-    pub constructor: SourceBackedRouteConstructor,
-    pub watch_target_kind: SourceBackedWatchTargetKind,
-}
+pub type SourceBackedProviderRouteMetadata =
+    ctx_history_capture_runtime::SourceBackedProviderRouteMetadata<
+        CaptureProvider,
+        SourceBackedRouteConstructor,
+    >;
 
 macro_rules! route {
     (

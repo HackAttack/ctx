@@ -10,6 +10,21 @@ use crate::provider::source_backed::{
     SourceBackedRouteResult,
 };
 
+#[cfg(test)]
+thread_local! {
+    static DOCUMENT_BASE_ROUTE_SOURCE_VISITS: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+}
+
+#[cfg(test)]
+pub(crate) fn reset_document_base_route_source_visits() {
+    DOCUMENT_BASE_ROUTE_SOURCE_VISITS.with(|visits| visits.set(0));
+}
+
+#[cfg(test)]
+pub(crate) fn document_base_route_source_visits() -> u64 {
+    DOCUMENT_BASE_ROUTE_SOURCE_VISITS.with(std::cell::Cell::get)
+}
+
 pub(crate) struct HermesTreeAuthority {
     opening_evidence: Option<SqliteSourceEvidence>,
     schema: Option<HermesSchema>,
@@ -66,6 +81,10 @@ impl HermesReconciliationContext for DocumentBaseRoute<'_, '_> {
     }
 
     fn exact_base_source(&self, source: &SourceKey) -> Option<DocumentAppendBase> {
+        #[cfg(test)]
+        DOCUMENT_BASE_ROUTE_SOURCE_VISITS.with(|visits| {
+            visits.set(visits.get().saturating_add(1));
+        });
         DocumentBaseRoute::exact_source(self, source)
     }
 
@@ -78,6 +97,10 @@ impl HermesReconciliationContext for DocumentBaseRoute<'_, '_> {
 }
 
 impl ReplacementDocumentTree for HermesSourceCandidate {
+    type Lifecycle = crate::provider::source_backed::family::document::CaptureDocumentLifecycle;
+    type Spool = crate::provider::source_backed::family::document::CaptureDocumentSpool;
+    type RouteControl =
+        crate::provider::source_backed::family::document::CaptureDocumentRouteControl;
     type Leaf = HermesSessionLeaf;
     type TreeAuthority = HermesTreeAuthority;
 
@@ -86,9 +109,12 @@ impl ReplacementDocumentTree for HermesSourceCandidate {
     }
 
     fn route_control_expectation(&self) -> Option<SourceBackedRouteControlExpectation> {
-        Some(SourceBackedRouteControlExpectation::Hermes {
-            profile_source_descriptor: self.source.exact_descriptor_digest(),
-        })
+        Some(SourceBackedRouteControlExpectation::new(
+            HERMES_ROUTE_CONTROL_KIND,
+            self.source.exact_descriptor_digest(),
+            hermes_route_control_exact_due_for_profile,
+            Some(hermes_route_control_database_identity),
+        ))
     }
 
     fn owns_source(&self, source: &SourceKey) -> bool {

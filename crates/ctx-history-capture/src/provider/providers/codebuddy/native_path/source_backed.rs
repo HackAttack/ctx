@@ -35,6 +35,10 @@ struct CodeBuddyDocumentAdapter {
 }
 
 impl ReplacementDocumentTree for CodeBuddyDocumentAdapter {
+    type Lifecycle = crate::provider::source_backed::family::document::CaptureDocumentLifecycle;
+    type Spool = crate::provider::source_backed::family::document::CaptureDocumentSpool;
+    type RouteControl =
+        crate::provider::source_backed::family::document::CaptureDocumentRouteControl;
     type Leaf = CodeBuddyDocumentLeaf;
     type TreeAuthority = CodeBuddyTreeAuthority;
 

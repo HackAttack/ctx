@@ -3,7 +3,7 @@ use super::*;
 pub(super) fn overdue_hermes_exact_routes(
     index: &VerifiedIndex,
     now_ms: i64,
-    expected_profile: impl Fn(&SourceRouteIdentity) -> Option<[u8; 32]>,
+    expectation: impl Fn(&SourceRouteIdentity) -> Option<SourceBackedRouteControlExpectation>,
 ) -> BTreeSet<SourceRouteIdentity> {
     let manifest = index.manifest();
     let route_controls = SourceBackedPublicationMetadata::decode(index)
@@ -13,16 +13,10 @@ pub(super) fn overdue_hermes_exact_routes(
         .source_routes()
         .iter()
         .filter_map(|route| {
-            let profile_source_descriptor = expected_profile(route.route_identity())?;
+            let expectation = expectation(route.route_identity())?;
             let control_due = route_controls
                 .get(route.route_identity())
-                .and_then(|control| {
-                    ctx_history_capture::hermes_route_control_exact_due_for_profile(
-                        control,
-                        profile_source_descriptor,
-                        now_ms,
-                    )
-                });
+                .and_then(|control| expectation.exact_due(control, now_ms));
             control_due
                 .unwrap_or(true)
                 .then(|| route.route_identity().clone())
@@ -38,16 +32,10 @@ pub(super) fn hermes_routes_requiring_control_recovery(
     catalog
         .route_ids()
         .filter_map(|route| {
-            let SourceBackedRouteControlExpectation::Hermes {
-                profile_source_descriptor,
-            } = catalog.route_control_expectation(route)?;
-            let valid_and_future = controls.get(route).is_some_and(|control| {
-                ctx_history_capture::hermes_route_control_exact_due_for_profile(
-                    control,
-                    *profile_source_descriptor,
-                    now_ms,
-                ) == Some(false)
-            });
+            let expectation = catalog.route_control_expectation(route)?;
+            let valid_and_future = controls
+                .get(route)
+                .is_some_and(|control| expectation.exact_due(control, now_ms) == Some(false));
             (!valid_and_future).then(|| route.clone())
         })
         .collect()
@@ -275,10 +263,13 @@ mod tests {
             profile_source_descriptor,
             1_001,
         );
-        assert!(overdue_hermes_exact_routes(&future, 1_000, |_| {
-            Some(profile_source_descriptor)
-        })
-        .is_empty());
+        let expectation = SourceBackedRouteControlExpectation::new(
+            "hermes-route-control-v1",
+            profile_source_descriptor,
+            ctx_history_capture::hermes_route_control_exact_due_for_profile,
+            Some(ctx_history_capture::hermes_route_control_database_identity),
+        );
+        assert!(overdue_hermes_exact_routes(&future, 1_000, |_| { Some(expectation) }).is_empty());
         let overdue = hermes_route_control_index(
             &temp.path().join("overdue"),
             &route,
@@ -286,7 +277,7 @@ mod tests {
             1_000,
         );
         assert_eq!(
-            overdue_hermes_exact_routes(&overdue, 1_000, |_| Some(profile_source_descriptor)),
+            overdue_hermes_exact_routes(&overdue, 1_000, |_| Some(expectation)),
             BTreeSet::from([route])
         );
     }
@@ -334,14 +325,7 @@ mod tests {
             assert_eq!(recovery, BTreeSet::from([route.clone()]));
             assert_eq!(
                 overdue_hermes_exact_routes(&persisted, 1_000, |_| {
-                    catalog
-                        .route_control_expectation(&route)
-                        .map(|expectation| {
-                            let SourceBackedRouteControlExpectation::Hermes {
-                                profile_source_descriptor,
-                            } = expectation;
-                            *profile_source_descriptor
-                        })
+                    catalog.route_control_expectation(&route).copied()
                 }),
                 BTreeSet::from([route.clone()])
             );

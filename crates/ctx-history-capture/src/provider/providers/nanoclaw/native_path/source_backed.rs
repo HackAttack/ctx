@@ -96,6 +96,10 @@ struct NanoClawPreparedProjection {
 }
 
 impl ReplacementDocumentTree for NanoClawDocumentTreeAdapter {
+    type Lifecycle = crate::provider::source_backed::family::document::CaptureDocumentLifecycle;
+    type Spool = crate::provider::source_backed::family::document::CaptureDocumentSpool;
+    type RouteControl =
+        crate::provider::source_backed::family::document::CaptureDocumentRouteControl;
     type Leaf = NanoClawDocumentLeaf;
     type TreeAuthority = NanoClawDocumentTreeAuthority;
 

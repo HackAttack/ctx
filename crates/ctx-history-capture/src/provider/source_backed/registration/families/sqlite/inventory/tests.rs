@@ -222,7 +222,7 @@ impl SqliteInventoryProvider for TestProvider {
             .cloned()
             .map(|leaf| SqliteInventoryCatalogLeaf {
                 source: leaf.source.clone(),
-                path: leaf.path.clone(),
+                physical_locator: leaf.path.clone(),
                 provider_leaf: leaf,
             })
             .collect();
