@@ -9,7 +9,7 @@ pub(super) fn register_openhands_route(
     source: ProviderSource,
     selection: SourceBackedRouteSelection,
 ) -> SourceBackedCoordinatorResult<()> {
-    let adapter = OpenHandsEventFileAdapterV2::new(source.path.clone());
+    let adapter = OpenHandsEventFileAdapterV2::<CaptureProviderRuntime>::new(source.path.clone());
     register_replacement_document_tree_route(registry, source, selection, adapter)
 }
 

@@ -110,12 +110,6 @@ pub(crate) fn invalid_route(
     }
 }
 
-pub(crate) fn route_error(error: impl fmt::Display) -> SourceBackedRouteError {
-    ctx_history_provider_runtime::invalid_route_error(error)
-}
-
-pub(crate) use ctx_history_provider_runtime::combine_primary_and_cleanup_route_errors;
-
 #[cfg(test)]
 pub(crate) fn route_coordinator_error(
     error: SourceBackedCoordinatorError,

@@ -1,0 +1,14 @@
+pub mod native_path;
+mod position;
+mod project;
+mod projection;
+mod rows;
+mod source;
+
+#[cfg(test)]
+#[path = "nanoclaw/tests.rs"]
+mod tests;
+
+// These revisions remain the released NanoClaw semantic contract.
+const NANOCLAW_CAPTURE_REVISION: u32 = 2;
+const NANOCLAW_POLICY_REVISION: u32 = 4;

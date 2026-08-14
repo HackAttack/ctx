@@ -1,5 +1,6 @@
 use std::{
     collections::BTreeSet,
+    marker::PhantomData,
     path::{Component, Path, PathBuf},
 };
 
@@ -91,12 +92,13 @@ pub(crate) enum OpenHandsSourceBackedErrorV2 {
 pub(crate) type OpenHandsSourceBackedResultV2<T> = Result<T, OpenHandsSourceBackedErrorV2>;
 
 #[derive(Debug, Clone)]
-pub(crate) struct OpenHandsEventFileAdapterV2 {
+pub struct OpenHandsEventFileAdapterV2<B = ()> {
     selected: PathBuf,
+    _binding: PhantomData<fn() -> B>,
 }
 
 #[derive(Debug, Clone)]
-pub(crate) struct OpenHandsEventFileSourcePlan {
+pub struct OpenHandsEventFileSourcePlan {
     group_ordinal: usize,
     pub source: SourceKey,
     pub conversation_id: String,
@@ -136,10 +138,11 @@ impl OpenHandsEventFileSourcePlan {
     }
 }
 
-impl OpenHandsEventFileAdapterV2 {
-    pub(crate) fn new(selected: impl Into<PathBuf>) -> Self {
+impl<B> OpenHandsEventFileAdapterV2<B> {
+    pub fn new(selected: impl Into<PathBuf>) -> Self {
         Self {
             selected: selected.into(),
+            _binding: PhantomData,
         }
     }
 
@@ -201,11 +204,13 @@ impl OpenHandsEventFileAdapterV2 {
     }
 }
 
-impl ReplacementDocumentTree for OpenHandsEventFileAdapterV2 {
-    type Lifecycle = crate::provider::source_backed::family::document::CaptureDocumentLifecycle;
-    type Spool = crate::provider::source_backed::family::document::CaptureDocumentSpool;
-    type RouteControl =
-        crate::provider::source_backed::family::document::CaptureDocumentRouteControl;
+impl<B> ReplacementDocumentTree for OpenHandsEventFileAdapterV2<B>
+where
+    B: ctx_history_provider_runtime::ProviderRuntimeBinding,
+{
+    type Lifecycle = B::CaptureLifecycleSink;
+    type Spool = B::DocumentRecordSpool;
+    type RouteControl = ctx_history_provider_runtime::ProviderRouteControlExpectation;
     type Leaf = OpenHandsEventFileSourcePlan;
     type TreeAuthority = std::sync::Arc<EventFileInventory>;
 
@@ -258,7 +263,7 @@ impl ReplacementDocumentTree for OpenHandsEventFileAdapterV2 {
         &self,
         authority: &Self::TreeAuthority,
         leaf: &Self::Leaf,
-        sink: &mut ChangedDocumentSink<'_, '_>,
+        sink: &mut ChangedDocumentSink<'_, '_, B>,
     ) -> SourceBackedRouteResult<DocumentSourceTerminal> {
         let group = authority.group_at(leaf.group_ordinal()).ok_or_else(|| {
             SourceBackedRouteError::new(

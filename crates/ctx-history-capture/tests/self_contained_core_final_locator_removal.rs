@@ -1,10 +1,13 @@
 #[test]
 fn nanoclaw_uses_native_message_identity_without_a_durable_row_locator() {
     let native_source = include_str!("../../ctx-history-source-sqlite/src/value.rs");
-    let position = include_str!("../src/provider/providers/nanoclaw/position.rs");
-    let scanner = include_str!("../src/provider/providers/nanoclaw/source.rs");
-    let projection =
-        include_str!("../src/provider/providers/nanoclaw/native_path/source_backed.rs");
+    let position =
+        include_str!("../../ctx-history-provider-docproj/src/providers/nanoclaw/position.rs");
+    let scanner =
+        include_str!("../../ctx-history-provider-docproj/src/providers/nanoclaw/source.rs");
+    let projection = include_str!(
+        "../../ctx-history-provider-docproj/src/providers/nanoclaw/native_path/source_backed.rs"
+    );
 
     for source in [native_source, position, scanner, projection] {
         for removed in [

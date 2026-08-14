@@ -28,7 +28,7 @@ use sha2::{Digest, Sha256};
 
 use super::codex::nativepath::CodexGenerationNormalizationCoordinatorV0;
 use super::providers::{
-    nanoclaw::native_path::source_backed::NanoClawDocumentTreeAdapter,
+    nanoclaw::native_path::NanoClawDocumentTreeAdapter,
     openhands::nativepath::OpenHandsEventFileAdapterV2,
 };
 use crate::provider_sources::{

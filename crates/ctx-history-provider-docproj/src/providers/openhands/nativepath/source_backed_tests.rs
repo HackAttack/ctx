@@ -20,7 +20,7 @@ struct TestProjection {
 }
 
 fn project(root: &Path) -> OpenHandsSourceBackedResultV2<Vec<TestProjection>> {
-    let adapter = OpenHandsEventFileAdapterV2::new(root.to_path_buf());
+    let adapter = OpenHandsEventFileAdapterV2::<()>::new(root.to_path_buf());
     let inventory = adapter.open_inventory()?;
     let mut projected = Vec::new();
     for group in inventory.groups() {
@@ -244,7 +244,7 @@ fn projection_jobs_are_stable_independent_group_and_leaf_ordinals() {
         "nested/a.json",
         message("event-a", "a"),
     );
-    let adapter = OpenHandsEventFileAdapterV2::new(root);
+    let adapter = OpenHandsEventFileAdapterV2::<()>::new(root);
     let inventory = adapter.open_inventory().unwrap();
     let first = inventory.group_at(0).unwrap();
     let plan = adapter.bind_group(first).unwrap();
@@ -318,7 +318,7 @@ fn unchanged_plan_reads_zero_bodies_and_changed_group_reads_each_leaf_once() {
         .map(|projection| (projection.plan.conversation_id, projection.source))
         .collect::<BTreeMap<_, _>>();
 
-    let adapter = OpenHandsEventFileAdapterV2::new(root.clone());
+    let adapter = OpenHandsEventFileAdapterV2::<()>::new(root.clone());
     let (unchanged, unchanged_io) = count_event_file_io(|| {
         let inventory = adapter.open_inventory().unwrap();
         inventory
@@ -501,7 +501,7 @@ fn exact_empty_missing_and_current_cli_sources_remain_typed() {
         "event.json",
         message("event", "exact"),
     );
-    let inventory = OpenHandsEventFileAdapterV2::new(exact)
+    let inventory = OpenHandsEventFileAdapterV2::<()>::new(exact)
         .open_inventory()
         .unwrap();
     assert!(inventory.selected_file());
@@ -509,11 +509,11 @@ fn exact_empty_missing_and_current_cli_sources_remain_typed() {
 
     let empty = temp.path().join("empty-profile");
     fs::create_dir_all(empty.join("v1_conversations")).unwrap();
-    let adapter = OpenHandsEventFileAdapterV2::new(&empty);
+    let adapter = OpenHandsEventFileAdapterV2::<()>::new(&empty);
     let inventory = adapter.open_inventory().unwrap();
     assert!(inventory.is_empty());
 
-    let missing_error = OpenHandsEventFileAdapterV2::new(temp.path().join("missing"))
+    let missing_error = OpenHandsEventFileAdapterV2::<()>::new(temp.path().join("missing"))
         .open_inventory()
         .unwrap_err();
     assert!(matches!(
@@ -530,7 +530,7 @@ fn exact_empty_missing_and_current_cli_sources_remain_typed() {
     fs::create_dir_all(event.parent().unwrap()).unwrap();
     fs::write(&event, b"{}").unwrap();
     assert!(matches!(
-        OpenHandsEventFileAdapterV2::new(current).open_inventory(),
+        OpenHandsEventFileAdapterV2::<()>::new(current).open_inventory(),
         Err(OpenHandsSourceBackedErrorV2::UnsupportedCurrentCliFormat { .. })
     ));
 }

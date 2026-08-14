@@ -1,6 +1,85 @@
 use super::*;
 
 #[test]
+fn private_staging_open_failures_are_typed_as_scratch_io() {
+    let temp = tempfile::tempdir().unwrap();
+    let missing = temp.path().join("missing");
+    let error = open_private_sqlite_staging_file(&missing).unwrap_err();
+    assert!(matches!(
+        error,
+        SqliteSourceAccessError::ScratchIoUnavailable {
+            operation: "creating a private provider SQLite staging file",
+            path,
+            source,
+        } if path == missing && source.kind() == io::ErrorKind::NotFound
+    ));
+
+    fail_next_private_sqlite_staging_operation_for_test(
+        SqliteSourceStagingOperationForTest::Open,
+        io::ErrorKind::PermissionDenied,
+    );
+    let error = open_private_sqlite_staging_file(temp.path()).unwrap_err();
+    assert!(matches!(
+        error,
+        SqliteSourceAccessError::ScratchIoUnavailable {
+            operation: "creating a private provider SQLite staging file",
+            path,
+            source,
+        } if path == temp.path() && source.kind() == io::ErrorKind::PermissionDenied
+    ));
+}
+
+#[test]
+fn every_post_open_staging_operation_preserves_scratch_io_provenance() {
+    let temp = tempfile::tempdir().unwrap();
+    let mut staging = open_private_sqlite_staging_file(temp.path()).unwrap();
+    for (operation, expected_operation) in [
+        (
+            SqliteSourceStagingOperationForTest::Write,
+            "writing a private provider SQLite staging file",
+        ),
+        (
+            SqliteSourceStagingOperationForTest::Flush,
+            "flushing a private provider SQLite staging file",
+        ),
+        (
+            SqliteSourceStagingOperationForTest::Rewind,
+            "rewinding a private provider SQLite staging file",
+        ),
+        (
+            SqliteSourceStagingOperationForTest::Read,
+            "reading a private provider SQLite staging file",
+        ),
+    ] {
+        fail_next_private_sqlite_staging_operation_for_test(
+            operation,
+            io::ErrorKind::PermissionDenied,
+        );
+        let error = match operation {
+            SqliteSourceStagingOperationForTest::Write => staging.write_all(b"staged").unwrap_err(),
+            SqliteSourceStagingOperationForTest::Flush => staging.flush().unwrap_err(),
+            SqliteSourceStagingOperationForTest::Rewind => staging.rewind().unwrap_err(),
+            SqliteSourceStagingOperationForTest::Read => staging
+                .reader()
+                .read_line(&mut String::new())
+                .map(|_| ())
+                .unwrap_err(),
+            SqliteSourceStagingOperationForTest::Open => unreachable!(),
+        };
+        assert!(matches!(
+            error,
+            SqliteSourceAccessError::ScratchIoUnavailable {
+                operation,
+                path,
+                source,
+            } if operation == expected_operation
+                && path == temp.path()
+                && source.kind() == io::ErrorKind::PermissionDenied
+        ));
+    }
+}
+
+#[test]
 fn private_scratch_cleanup_failure_is_explicit_and_typed_unavailable() {
     let temp = tempfile::tempdir().unwrap();
     let provider_root = temp.path().join("provider");

@@ -1,8 +1,6 @@
 use super::*;
 
-use crate::provider::source_backed::family::document::{
-    register_replacement_document_tree_route, DocumentLeafExecutionPolicy,
-};
+use crate::provider::source_backed::family::document::register_replacement_document_tree_route;
 use ctx_history_providers_task_docs::{
     providers::{
         codebuddy::native_path::CodeBuddyDocumentAdapter,
@@ -14,25 +12,6 @@ use ctx_history_providers_task_docs::{
     },
     ProviderAdapterContext,
 };
-
-/// Central policy declaration for production replacement-document routes.
-///
-/// The exact-base Auggie and NanoClaw routes remain capture-local while this
-/// cohort owns CodeBuddy, Continue, Rovo Dev, Cline, and Roo registration.
-pub(crate) fn document_leaf_execution_policy(
-    provider: CaptureProvider,
-) -> DocumentLeafExecutionPolicy {
-    match provider {
-        CaptureProvider::Cline
-        | CaptureProvider::RooCode
-        | CaptureProvider::CodeBuddy
-        | CaptureProvider::RovoDev => DocumentLeafExecutionPolicy::Independent,
-        CaptureProvider::Auggie | CaptureProvider::Continue | CaptureProvider::NanoClaw => {
-            DocumentLeafExecutionPolicy::Serial
-        }
-        _ => DocumentLeafExecutionPolicy::Serial,
-    }
-}
 
 const DIRECT_ROUTES: &[RouteEntry] = &[RouteEntry::new(
     CaptureProvider::Auggie,
@@ -138,7 +117,7 @@ pub fn register_nanoclaw_source_backed_route_with_selection(
     catalog_lineage: [u8; 32],
     base_sources: &[CertifiedSource],
 ) -> SourceBackedCoordinatorResult<()> {
-    let adapter = NanoClawDocumentTreeAdapter::new_with_base_sources(
+    let adapter = NanoClawDocumentTreeAdapter::<CaptureProviderRuntime>::new_with_base_sources(
         data_root,
         source.path.clone(),
         catalog_lineage,

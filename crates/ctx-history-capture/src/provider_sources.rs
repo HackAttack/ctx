@@ -30,18 +30,6 @@ pub use ctx_history_source_discovery::{
 };
 pub use ctx_history_source_io::OrdinaryFileObservation;
 ctx_history_source_io::define_mapped_ordinary_io_compat!(crate::CaptureError);
-#[cfg(test)]
-pub(crate) use ctx_history_source_io::count_event_file_io;
-pub(crate) use ctx_history_source_io::{
-    EventFileCoordinates, EventFileGroup, EventFileInventory, EventFileInventoryError,
-    EventFileLimits,
-};
-#[cfg(test)]
-pub(crate) use ctx_history_source_sqlite::fail_next_opened_snapshot_cleanup_for_test;
-pub(crate) use ctx_history_source_sqlite::{
-    open_root_handle_sqlite_source_snapshot, retain_sqlite_source_directory_authority,
-    SqliteSourceAccessError, SqliteSourceDirectoryAuthority, SqliteSourceReadSnapshot,
-};
 
 static BUILTIN_PROVIDER_PROBES: StaticProviderProbeCatalog = StaticProviderProbeCatalog::new(
     CursorProbeFragment::new(probe_cursor_transcripts),

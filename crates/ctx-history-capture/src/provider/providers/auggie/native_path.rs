@@ -1,35 +1,27 @@
-use std::path::{Component, Path, PathBuf};
+use chrono::{DateTime, Utc};
 
-use crate::{CaptureError, Result};
+pub(crate) use ctx_history_provider_docproj::providers::auggie::native_path::source_backed;
 
-mod model;
-mod parse;
-mod source;
-pub(crate) mod source_backed;
-pub(crate) use source_backed::registration::register as register_source_backed_route;
+use crate::provider::source_backed::{
+    family::document::register_replacement_document_tree_route, CaptureProviderRuntime,
+    SourceBackedCoordinatorResult, SourceBackedProviderRegistry, SourceBackedRouteSelection,
+};
+use crate::{ProviderAdapterContext, ProviderSource};
 
-fn normalized_auggie_authority_path(path: &Path) -> Result<PathBuf> {
-    let absolute = if path.is_absolute() {
-        path.to_path_buf()
-    } else {
-        std::env::current_dir()?.join(path)
+pub(crate) fn register_source_backed_route(
+    registry: &mut SourceBackedProviderRegistry,
+    source: ProviderSource,
+    selection: SourceBackedRouteSelection,
+) -> SourceBackedCoordinatorResult<()> {
+    let context = ProviderAdapterContext {
+        machine_id: "source-backed-auggie".to_owned(),
+        source_path: Some(source.path.clone()),
+        source_root: Some(source.path.clone()),
+        imported_at: DateTime::<Utc>::UNIX_EPOCH,
     };
-    let mut normalized = PathBuf::new();
-    for component in absolute.components() {
-        match component {
-            Component::Prefix(_) | Component::RootDir | Component::Normal(_) => {
-                normalized.push(component.as_os_str());
-            }
-            Component::CurDir => {}
-            Component::ParentDir => {
-                if !normalized.pop() {
-                    return Err(CaptureError::InvalidProviderTranscriptPath {
-                        path: path.to_path_buf(),
-                        reason: "Auggie provider roots cannot escape the filesystem root",
-                    });
-                }
-            }
-        }
-    }
-    Ok(normalized)
+    let adapter = source_backed::AuggieDocumentTreeAdapter::<CaptureProviderRuntime>::new(
+        source_backed::AuggieSourceBackedRoot::explicit(source.path.clone()),
+        context,
+    );
+    register_replacement_document_tree_route(registry, source, selection, adapter)
 }

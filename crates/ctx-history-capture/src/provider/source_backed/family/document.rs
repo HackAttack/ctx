@@ -4,7 +4,6 @@
 //! and the index lifecycle binding remain capture-owned.
 
 use crate::ProviderSource;
-use ctx_history_capture_runtime::ChangedDocumentSink as RuntimeChangedDocumentSink;
 use ctx_history_provider_runtime::ProviderReplacementDocumentTree;
 
 use crate::provider::source_backed::{
@@ -27,14 +26,6 @@ impl ctx_history_providers_sqlite_selected::SelectedSqliteCaptureBinding
     type Spool = CaptureDocumentSpool;
     type RouteControl = CaptureDocumentRouteControl;
 }
-
-pub(crate) type ChangedDocumentSink<'sink, 'writer> =
-    RuntimeChangedDocumentSink<'sink, 'writer, CaptureDocumentLifecycle, CaptureDocumentSpool>;
-
-pub(crate) use ctx_history_capture_runtime::{
-    CompleteDocumentTree, DocumentLeafExecutionPolicy, DocumentLeafFingerprint,
-    DocumentSourceTerminal, ObservedDocumentLeaf, ReplacementDocumentTree,
-};
 
 pub(crate) fn register_replacement_document_tree_route<A>(
     registry: &mut SourceBackedProviderRegistry,

@@ -18,8 +18,8 @@ pub(super) struct NanoClawReplayFrontier {
     pub(super) logical_fingerprint: [u8; 32],
 }
 
-impl NanoClawDocumentTreeAdapter {
-    pub(crate) fn new_with_base_sources(
+impl<B> NanoClawDocumentTreeAdapter<B> {
+    pub fn new_with_base_sources(
         data_root: &Path,
         path: PathBuf,
         catalog_lineage: [u8; 32],
@@ -34,6 +34,7 @@ impl NanoClawDocumentTreeAdapter {
             source,
             certified_checkpoint,
             replay_frontier: Arc::default(),
+            _binding: std::marker::PhantomData,
         })
     }
 

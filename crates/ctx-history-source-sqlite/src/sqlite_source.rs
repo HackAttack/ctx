@@ -17,7 +17,7 @@
 use std::{
     ffi::{c_char, c_void, OsStr, OsString},
     fs::{File, Metadata, OpenOptions},
-    io::{Read, Seek, SeekFrom, Write},
+    io::{BufRead, BufReader, Read, Seek, SeekFrom, Write},
     path::{Component, Path, PathBuf},
     ptr,
     sync::{Arc, Mutex, MutexGuard},
@@ -60,6 +60,178 @@ pub use diagnostics::{
 };
 
 pub type SqliteSourceAccessResult<T> = Result<T, SqliteSourceAccessError>;
+
+/// A remove-on-close staging file created under the caller's private data root.
+///
+/// SQLite source acquisition owns the temporary-file implementation so provider
+/// packs retain only a lower-layer scratch capability rather than a direct
+/// production dependency on `tempfile`.
+#[derive(Debug)]
+pub struct SqliteSourceStagingFile {
+    file: File,
+    data_root: PathBuf,
+}
+
+pub struct SqliteSourceStagingReader<'file> {
+    reader: BufReader<&'file mut File>,
+    data_root: PathBuf,
+}
+
+#[cfg(any(test, feature = "test-support"))]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SqliteSourceStagingOperationForTest {
+    Open,
+    Write,
+    Flush,
+    Rewind,
+    Read,
+}
+
+#[cfg(any(test, feature = "test-support"))]
+thread_local! {
+    static FAIL_NEXT_PRIVATE_STAGING_OPERATION: std::cell::Cell<Option<(SqliteSourceStagingOperationForTest, std::io::ErrorKind)>> = const { std::cell::Cell::new(None) };
+}
+
+#[cfg(any(test, feature = "test-support"))]
+pub fn fail_next_private_sqlite_staging_operation_for_test(
+    operation: SqliteSourceStagingOperationForTest,
+    kind: std::io::ErrorKind,
+) {
+    FAIL_NEXT_PRIVATE_STAGING_OPERATION.with(|failure| failure.set(Some((operation, kind))));
+}
+
+#[cfg(any(test, feature = "test-support"))]
+fn take_private_sqlite_staging_failure_for_test(
+    expected: SqliteSourceStagingOperationForTest,
+) -> Option<std::io::ErrorKind> {
+    FAIL_NEXT_PRIVATE_STAGING_OPERATION.with(|failure| match failure.get() {
+        Some((operation, kind)) if operation == expected => {
+            failure.set(None);
+            Some(kind)
+        }
+        _ => None,
+    })
+}
+
+fn private_sqlite_staging_io_error(
+    operation: &'static str,
+    data_root: &Path,
+    source: std::io::Error,
+) -> SqliteSourceAccessError {
+    SqliteSourceAccessError::ScratchIoUnavailable {
+        operation,
+        path: data_root.to_path_buf(),
+        source,
+    }
+}
+
+#[cfg(any(test, feature = "test-support"))]
+fn injected_private_sqlite_staging_error(
+    expected: SqliteSourceStagingOperationForTest,
+    operation: &'static str,
+    data_root: &Path,
+) -> Option<SqliteSourceAccessError> {
+    take_private_sqlite_staging_failure_for_test(expected).map(|kind| {
+        private_sqlite_staging_io_error(operation, data_root, std::io::Error::from(kind))
+    })
+}
+
+impl SqliteSourceStagingFile {
+    pub fn write_all(&mut self, buffer: &[u8]) -> SqliteSourceAccessResult<()> {
+        const OPERATION: &str = "writing a private provider SQLite staging file";
+        #[cfg(any(test, feature = "test-support"))]
+        if let Some(error) = injected_private_sqlite_staging_error(
+            SqliteSourceStagingOperationForTest::Write,
+            OPERATION,
+            &self.data_root,
+        ) {
+            return Err(error);
+        }
+        self.file
+            .write_all(buffer)
+            .map_err(|source| private_sqlite_staging_io_error(OPERATION, &self.data_root, source))
+    }
+
+    pub fn flush(&mut self) -> SqliteSourceAccessResult<()> {
+        const OPERATION: &str = "flushing a private provider SQLite staging file";
+        #[cfg(any(test, feature = "test-support"))]
+        if let Some(error) = injected_private_sqlite_staging_error(
+            SqliteSourceStagingOperationForTest::Flush,
+            OPERATION,
+            &self.data_root,
+        ) {
+            return Err(error);
+        }
+        self.file
+            .flush()
+            .map_err(|source| private_sqlite_staging_io_error(OPERATION, &self.data_root, source))
+    }
+
+    pub fn rewind(&mut self) -> SqliteSourceAccessResult<()> {
+        const OPERATION: &str = "rewinding a private provider SQLite staging file";
+        #[cfg(any(test, feature = "test-support"))]
+        if let Some(error) = injected_private_sqlite_staging_error(
+            SqliteSourceStagingOperationForTest::Rewind,
+            OPERATION,
+            &self.data_root,
+        ) {
+            return Err(error);
+        }
+        self.file
+            .seek(SeekFrom::Start(0))
+            .map(|_| ())
+            .map_err(|source| private_sqlite_staging_io_error(OPERATION, &self.data_root, source))
+    }
+
+    pub fn reader(&mut self) -> SqliteSourceStagingReader<'_> {
+        SqliteSourceStagingReader {
+            reader: BufReader::new(&mut self.file),
+            data_root: self.data_root.clone(),
+        }
+    }
+}
+
+impl SqliteSourceStagingReader<'_> {
+    pub fn read_line(&mut self, line: &mut String) -> SqliteSourceAccessResult<usize> {
+        const OPERATION: &str = "reading a private provider SQLite staging file";
+        #[cfg(any(test, feature = "test-support"))]
+        if let Some(error) = injected_private_sqlite_staging_error(
+            SqliteSourceStagingOperationForTest::Read,
+            OPERATION,
+            &self.data_root,
+        ) {
+            return Err(error);
+        }
+        self.reader
+            .read_line(line)
+            .map_err(|source| private_sqlite_staging_io_error(OPERATION, &self.data_root, source))
+    }
+}
+
+pub fn open_private_sqlite_staging_file(
+    data_root: &Path,
+) -> SqliteSourceAccessResult<SqliteSourceStagingFile> {
+    #[cfg(any(test, feature = "test-support"))]
+    if let Some(error) = injected_private_sqlite_staging_error(
+        SqliteSourceStagingOperationForTest::Open,
+        "creating a private provider SQLite staging file",
+        data_root,
+    ) {
+        return Err(error);
+    }
+    tempfile::tempfile_in(data_root)
+        .map(|file| SqliteSourceStagingFile {
+            file,
+            data_root: data_root.to_path_buf(),
+        })
+        .map_err(|source| {
+            private_sqlite_staging_io_error(
+                "creating a private provider SQLite staging file",
+                data_root,
+                source,
+            )
+        })
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SqliteSourceSnapshotStrategy {

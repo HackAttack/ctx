@@ -3,15 +3,15 @@
 use std::{
     collections::HashSet,
     io,
+    marker::PhantomData,
     path::{Path, PathBuf},
     time::{SystemTime, UNIX_EPOCH},
 };
 
 use ctx_history_core::{
-    derive_event_id, derive_session_id, CaptureProvider, CoreRecord, CoreRecordError,
-    EventIdentityInput, NativeItemKey, NativeSessionKey, ProjectionContractError,
-    ScannedSourceCounts, SessionIdentityInput, SourceAnchor, SourceKey, SourceObservation,
-    StableEntityId, TypedKey,
+    derive_event_id, derive_session_id, CoreRecord, CoreRecordError, EventIdentityInput,
+    NativeItemKey, NativeSessionKey, ProjectionContractError, ScannedSourceCounts,
+    SessionIdentityInput, SourceAnchor, SourceKey, SourceObservation, StableEntityId, TypedKey,
 };
 use sha2::{Digest, Sha256};
 use thiserror::Error;
@@ -31,11 +31,10 @@ use crate::{
         ProviderSourceRoot,
     },
     provider::source_backed::{
-        document_leaf_execution_policy,
         family::document::{
-            register_replacement_document_tree_route, ChangedDocumentSink, CompleteDocumentTree,
-            DocumentLeafExecutionPolicy, DocumentLeafFingerprint, DocumentSourceTerminal,
-            ObservedDocumentLeaf, ReplacementDocumentTree,
+            ChangedDocumentSink, CompleteDocumentTree, DocumentLeafExecutionPolicy,
+            DocumentLeafFingerprint, DocumentSourceTerminal, ObservedDocumentLeaf,
+            ReplacementDocumentTree,
         },
         route_error, SourceBackedRouteError, SourceBackedRouteErrorKind, SourceBackedRouteResult,
     },
@@ -72,12 +71,12 @@ pub(crate) enum AuggieSourceBackedError {
 pub(crate) type AuggieSourceBackedResult<T> = Result<T, AuggieSourceBackedError>;
 
 #[derive(Debug, Clone)]
-pub(crate) struct AuggieSourceBackedRoot {
+pub struct AuggieSourceBackedRoot {
     path: PathBuf,
 }
 
 impl AuggieSourceBackedRoot {
-    pub(crate) fn explicit(path: impl Into<PathBuf>) -> Self {
+    pub fn explicit(path: impl Into<PathBuf>) -> Self {
         Self { path: path.into() }
     }
 }
@@ -123,7 +122,7 @@ impl AuggieTreeSelection {
 
 /// Handle-free identity captured while one admitted leaf was open.
 #[derive(Debug, Clone, PartialEq, Eq)]
-struct AuggieDocumentLeaf {
+pub struct AuggieDocumentLeaf {
     canonical_path: PathBuf,
     authority_relative_path: PathBuf,
     len: u64,
@@ -164,14 +163,14 @@ impl AuggieDocumentLeaf {
 }
 
 #[derive(Debug)]
-enum AuggieTreeAuthority {
+pub enum AuggieTreeAuthority {
     File {
         root: ProviderSourceRoot,
         selected: AuggieDocumentLeaf,
     },
     Directory {
         directory: ProviderSourceDirectory,
-        selection: AuggieTreeSelection,
+        selection_tag: u8,
         routes: Vec<AuggieDocumentLeaf>,
     },
 }
@@ -271,7 +270,7 @@ fn complete_auggie_file_tree(path: PathBuf) -> AuggieSourceBackedResult<AuggieDo
     drop(stamp);
     let leaves = vec![observed_auggie_leaf(selected.clone())];
     let tree_fingerprint = auggie_tree_fingerprint(
-        AuggieTreeSelection::ExplicitFile,
+        AuggieTreeSelection::ExplicitFile.tag(),
         selected.authority_fingerprint,
         std::slice::from_ref(&selected),
     );
@@ -314,13 +313,14 @@ fn complete_auggie_directory_tree(
         }
     }
     let authority_fingerprint = directory.authority_fingerprint();
-    let tree_fingerprint = auggie_tree_fingerprint(selection, authority_fingerprint, &routes);
+    let selection_tag = selection.tag();
+    let tree_fingerprint = auggie_tree_fingerprint(selection_tag, authority_fingerprint, &routes);
     Ok(CompleteDocumentTree::new(
         tree_fingerprint,
         leaves,
         AuggieTreeAuthority::Directory {
             directory,
-            selection,
+            selection_tag,
             routes,
         },
     ))
@@ -334,7 +334,7 @@ fn observed_auggie_leaf(leaf: AuggieDocumentLeaf) -> ObservedDocumentLeaf<Auggie
 }
 
 fn auggie_tree_fingerprint(
-    selection: AuggieTreeSelection,
+    selection_tag: u8,
     authority_fingerprint: [u8; 32],
     routes: &[AuggieDocumentLeaf],
 ) -> [u8; 32] {
@@ -353,7 +353,7 @@ fn auggie_tree_fingerprint(
     fingerprints.sort_unstable();
     let mut digest = Sha256::new();
     digest.update(b"ctx.auggie-document-tree-v1\0");
-    digest.update([selection.tag()]);
+    digest.update([selection_tag]);
     digest.update(authority_fingerprint);
     digest.update((fingerprints.len() as u64).to_be_bytes());
     for fingerprint in fingerprints {
@@ -363,7 +363,7 @@ fn auggie_tree_fingerprint(
 }
 
 fn revalidate_auggie_tree(tree: &AuggieDocumentTree) -> AuggieSourceBackedResult<[u8; 32]> {
-    let (selection, authority_fingerprint) = match &tree.authority {
+    let (selection_tag, authority_fingerprint) = match &tree.authority {
         AuggieTreeAuthority::File { root, selected, .. } => {
             let stamp = tree.authority.open_leaf(selected)?;
             if !stamp.revalidate()? || !selected.matches(&stamp) {
@@ -372,13 +372,13 @@ fn revalidate_auggie_tree(tree: &AuggieDocumentTree) -> AuggieSourceBackedResult
             drop(stamp);
             root.revalidate()?;
             (
-                AuggieTreeSelection::ExplicitFile,
+                AuggieTreeSelection::ExplicitFile.tag(),
                 selected.authority_fingerprint,
             )
         }
         AuggieTreeAuthority::Directory {
             directory,
-            selection,
+            selection_tag,
             routes,
             ..
         } => {
@@ -391,11 +391,11 @@ fn revalidate_auggie_tree(tree: &AuggieDocumentTree) -> AuggieSourceBackedResult
             }
             directory.revalidate()?;
             directory.authority_root().revalidate()?;
-            (*selection, directory.authority_fingerprint())
+            (*selection_tag, directory.authority_fingerprint())
         }
     };
     Ok(auggie_tree_fingerprint(
-        selection,
+        selection_tag,
         authority_fingerprint,
         match &tree.authority {
             AuggieTreeAuthority::File { selected, .. } => std::slice::from_ref(selected),
@@ -405,22 +405,29 @@ fn revalidate_auggie_tree(tree: &AuggieDocumentTree) -> AuggieSourceBackedResult
 }
 
 #[derive(Debug)]
-struct AuggieDocumentTreeAdapter {
+pub struct AuggieDocumentTreeAdapter<B = ()> {
     root: AuggieSourceBackedRoot,
     context: ProviderAdapterContext,
+    _binding: PhantomData<fn() -> B>,
 }
 
-impl AuggieDocumentTreeAdapter {
-    fn new(root: AuggieSourceBackedRoot, context: ProviderAdapterContext) -> Self {
-        Self { root, context }
+impl<B> AuggieDocumentTreeAdapter<B> {
+    pub fn new(root: AuggieSourceBackedRoot, context: ProviderAdapterContext) -> Self {
+        Self {
+            root,
+            context,
+            _binding: PhantomData,
+        }
     }
 }
 
-impl ReplacementDocumentTree for AuggieDocumentTreeAdapter {
-    type Lifecycle = crate::provider::source_backed::family::document::CaptureDocumentLifecycle;
-    type Spool = crate::provider::source_backed::family::document::CaptureDocumentSpool;
-    type RouteControl =
-        crate::provider::source_backed::family::document::CaptureDocumentRouteControl;
+impl<B> ReplacementDocumentTree for AuggieDocumentTreeAdapter<B>
+where
+    B: ctx_history_provider_runtime::ProviderRuntimeBinding,
+{
+    type Lifecycle = B::CaptureLifecycleSink;
+    type Spool = B::DocumentRecordSpool;
+    type RouteControl = ctx_history_provider_runtime::ProviderRouteControlExpectation;
     type Leaf = AuggieDocumentLeaf;
     type TreeAuthority = AuggieTreeAuthority;
 
@@ -433,7 +440,7 @@ impl ReplacementDocumentTree for AuggieDocumentTreeAdapter {
     }
 
     fn leaf_execution_policy(&self) -> DocumentLeafExecutionPolicy {
-        document_leaf_execution_policy(CaptureProvider::Auggie)
+        DocumentLeafExecutionPolicy::Serial
     }
 
     fn discover_complete(&self) -> SourceBackedRouteResult<AuggieDocumentTree> {
@@ -450,9 +457,9 @@ impl ReplacementDocumentTree for AuggieDocumentTreeAdapter {
         &self,
         authority: &Self::TreeAuthority,
         leaf: &Self::Leaf,
-        sink: &mut ChangedDocumentSink<'_, '_>,
+        sink: &mut ChangedDocumentSink<'_, '_, B>,
     ) -> SourceBackedRouteResult<DocumentSourceTerminal> {
-        scan_changed_auggie_document(authority, leaf, &self.context, sink)
+        scan_changed_auggie_document::<B>(authority, leaf, &self.context, sink)
     }
 
     fn revalidate_complete(&self, tree: &AuggieDocumentTree) -> SourceBackedRouteResult<[u8; 32]> {
@@ -460,12 +467,15 @@ impl ReplacementDocumentTree for AuggieDocumentTreeAdapter {
     }
 }
 
-fn scan_changed_auggie_document(
+fn scan_changed_auggie_document<B>(
     authority: &AuggieTreeAuthority,
     leaf: &AuggieDocumentLeaf,
     context: &ProviderAdapterContext,
-    sink: &mut ChangedDocumentSink<'_, '_>,
-) -> SourceBackedRouteResult<DocumentSourceTerminal> {
+    sink: &mut ChangedDocumentSink<'_, '_, B>,
+) -> SourceBackedRouteResult<DocumentSourceTerminal>
+where
+    B: ctx_history_provider_runtime::ProviderRuntimeBinding,
+{
     let stamp = authority.open_leaf(leaf).map_err(route_error)?;
     let parsed = parse_opened_auggie_source(stamp, context).map_err(route_error)?;
     let ParsedAuggieSource {
@@ -684,33 +694,3 @@ fn system_time_parts(time: SystemTime) -> (u8, u64, u32) {
 #[cfg(test)]
 #[path = "source_backed_tests.rs"]
 mod tests;
-
-pub(crate) mod registration {
-    use chrono::{DateTime, Utc};
-
-    use super::{
-        register_replacement_document_tree_route, AuggieDocumentTreeAdapter, AuggieSourceBackedRoot,
-    };
-    use crate::provider::source_backed::{
-        SourceBackedCoordinatorResult, SourceBackedProviderRegistry, SourceBackedRouteSelection,
-    };
-    use crate::{ProviderAdapterContext, ProviderSource};
-
-    pub(crate) fn register(
-        registry: &mut SourceBackedProviderRegistry,
-        source: ProviderSource,
-        selection: SourceBackedRouteSelection,
-    ) -> SourceBackedCoordinatorResult<()> {
-        let context = ProviderAdapterContext {
-            machine_id: "source-backed-auggie".to_owned(),
-            source_path: Some(source.path.clone()),
-            source_root: Some(source.path.clone()),
-            imported_at: DateTime::<Utc>::UNIX_EPOCH,
-        };
-        let adapter = AuggieDocumentTreeAdapter::new(
-            AuggieSourceBackedRoot::explicit(source.path.clone()),
-            context,
-        );
-        register_replacement_document_tree_route(registry, source, selection, adapter)
-    }
-}

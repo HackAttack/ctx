@@ -32,11 +32,13 @@ use super::snapshot::{
     open_root_handle_sqlite_source_stable_snapshot_before_revalidation_for_test,
 };
 use super::{
-    map_revalidation_error, map_revalidation_io_error, open_root_handle_sqlite_source_snapshot,
-    retain_sqlite_source_directory_authority, SqliteArtifactKind, SqliteCleanupStatus,
-    SqliteFailurePhase, SqliteSourceAccessError, SqliteSourceComponent,
-    SqliteSourceDirectoryAuthority, SqliteSourceProgressError, SqliteSourceProgressStage,
-    SqliteSourceReadSnapshot, SqliteSourceSnapshotStrategy, SQLITE_SNAPSHOT_FREE_HEADROOM_BYTES,
+    fail_next_private_sqlite_staging_operation_for_test, map_revalidation_error,
+    map_revalidation_io_error, open_private_sqlite_staging_file,
+    open_root_handle_sqlite_source_snapshot, retain_sqlite_source_directory_authority,
+    SqliteArtifactKind, SqliteCleanupStatus, SqliteFailurePhase, SqliteSourceAccessError,
+    SqliteSourceComponent, SqliteSourceDirectoryAuthority, SqliteSourceProgressError,
+    SqliteSourceProgressStage, SqliteSourceReadSnapshot, SqliteSourceSnapshotStrategy,
+    SqliteSourceStagingOperationForTest, SQLITE_SNAPSHOT_FREE_HEADROOM_BYTES,
     SQLITE_SNAPSHOT_MAX_TOTAL_BYTES,
 };
 

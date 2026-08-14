@@ -35,6 +35,8 @@ exports_files([
     "check_history_provider_codex_boundary_test.py",
     "check_history_provider_mistral_mux_boundary.py",
     "check_history_provider_mistral_mux_boundary_test.py",
+    "check_history_provider_docproj_boundary.py",
+    "check_history_provider_docproj_boundary_test.py",
     "check_history_provider_trae_boundary.py",
     "check_history_provider_trae_boundary_test.py",
     "check_history_source_discovery_boundary.py",
