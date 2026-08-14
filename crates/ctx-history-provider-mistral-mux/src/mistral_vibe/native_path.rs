@@ -9,16 +9,13 @@ use chrono::{DateTime, Utc};
 use ctx_history_capture_model::{
     file_touches::visit_all_file_touch_drafts,
     normalization::{provider_output_event_is_failure, provider_result_outcome_evidence},
-    tool_input,
+    tool_input, OutputObservationKind, OutputOutcome,
 };
 use ctx_history_core::{AgentType, EventType};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use crate::{
-    provider::providers::native_jsonl::native_jsonl_timestamp, CaptureError, OutputObservationKind,
-    OutputOutcome, Result, MISTRAL_VIBE_SOURCE_FORMAT,
-};
+use ctx_history_provider_runtime::{CaptureError, Result};
 
 use super::{
     schema::{
@@ -27,7 +24,7 @@ use super::{
         mistral_vibe_metadata_timestamp,
     },
     source::{visit_mistral_vibe_session_sources, MistralVibeSessionSource},
-    MISTRAL_VIBE_CAPTURE_REVISION, MISTRAL_VIBE_POLICY_REVISION,
+    MISTRAL_VIBE_CAPTURE_REVISION, MISTRAL_VIBE_POLICY_REVISION, MISTRAL_VIBE_SOURCE_FORMAT,
 };
 
 pub(crate) mod source_backed;

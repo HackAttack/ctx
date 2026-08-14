@@ -65,7 +65,7 @@ pub(super) fn register_mistral_route(
     selection: SourceBackedRouteSelection,
 ) -> SourceBackedCoordinatorResult<()> {
     let driver = crate::provider::source_backed::family::jsonl::jsonl_family_driver(
-        scan_mistral_vibe_source_backed(),
+        mistral_vibe_jsonl_adapter::<CaptureProviderRuntime>(),
         source.path.clone(),
     );
     registry.register(executable_route(
@@ -111,7 +111,7 @@ pub(super) fn register_mux_route(
     selection: SourceBackedRouteSelection,
 ) -> SourceBackedCoordinatorResult<()> {
     let driver = crate::provider::source_backed::family::jsonl::jsonl_family_driver(
-        mux_jsonl_adapter(),
+        mux_jsonl_adapter::<CaptureProviderRuntime>(),
         source.path.clone(),
     );
     registry.register(executable_route(

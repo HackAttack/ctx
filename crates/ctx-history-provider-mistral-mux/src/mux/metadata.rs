@@ -5,14 +5,14 @@ use ctx_history_capture_model::{
     normalization::{provider_local_preview, provider_timestamp_seconds_to_datetime},
     push_provider_import_failure,
     time::parse_rfc3339_utc,
+    ProviderImportSummary,
 };
+use ctx_history_provider_runtime::{CaptureError, Result};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use crate::{CaptureError, ProviderImportSummary, Result, PROVIDER_MAX_PREVIEW_CHARS};
-
 use super::source::MuxSessionSource;
-use super::{MUX_MAX_FAILURE_BYTES, MUX_MAX_ID_BYTES};
+use super::{MUX_MAX_FAILURE_BYTES, MUX_MAX_ID_BYTES, PROVIDER_MAX_PREVIEW_CHARS};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]

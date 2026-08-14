@@ -4,10 +4,13 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 
-use crate::common::io::{
-    ensure_provider_path_parents_are_not_symlinks, ensure_regular_provider_transcript_file,
+use ctx_history_capture_model::fnv1a64;
+use ctx_history_provider_runtime::{
+    source_io::{
+        ensure_provider_path_parents_are_not_symlinks, ensure_regular_provider_transcript_file,
+    },
+    CaptureError, Result,
 };
-use crate::{fnv1a64, CaptureError, Result};
 
 use super::{MISTRAL_VIBE_CAPTURE_REVISION, MISTRAL_VIBE_POLICY_REVISION};
 

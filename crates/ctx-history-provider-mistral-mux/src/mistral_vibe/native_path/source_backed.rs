@@ -1,13 +1,14 @@
 use std::{
     collections::{BTreeMap, HashSet},
     fs,
+    marker::PhantomData,
     path::{Path, PathBuf},
     sync::Arc,
 };
 
-use crate::provider::source_backed::IndexBaseEventLookup;
 use chrono::{DateTime, Utc};
 use ctx_history_capture_model::normalization::provider_explicit_result_value_text;
+use ctx_history_capture_runtime::BaseEventLookup;
 use ctx_history_core::{
     derive_event_id, derive_native_session_id, CaptureProvider, CoreRecord, EventIdentityInput,
     NativeItemKey, PositionStability, SessionRelationshipKind, SourceKey, StableEntityId,
@@ -18,18 +19,16 @@ use serde_json::Value;
 use sha2::{Digest, Sha256};
 
 use super::*;
-use crate::{
-    common::io::{OpenedProviderSourceFile, ProviderSourceRoot},
-    provider::source_backed::{
-        family::jsonl::{
-            JsonlFamilyAdapter, JsonlFamilyAppendMode, JsonlFamilyInventory, JsonlFamilyLeaf,
-            JsonlFamilyProjectionMode, JsonlFamilyProjector, JsonlFamilyWorkerContext,
-            JsonlRecordRef,
-        },
-        FallbackEventIdentityState,
-    },
-    CaptureError, Result, MAX_PROVIDER_JSONL_LINE_BYTES,
+use ctx_history_jsonl::{
+    FallbackEventIdentityState, JsonlFamilyAdapter, JsonlFamilyAppendMode, JsonlFamilyInventory,
+    JsonlFamilyLeaf, JsonlFamilyProjectionMode, JsonlFamilyProjector, JsonlFamilyWorkerContext,
+    JsonlRecordRef,
 };
+use ctx_history_provider_runtime::{
+    source_io::{OpenedProviderSourceFile, ProviderSourceRoot},
+    CaptureError, ProviderBaseEventLookup, ProviderJsonlRuntime, ProviderRuntimeBinding, Result,
+};
+use ctx_history_source_io::MAX_PROVIDER_JSONL_LINE_BYTES;
 
 const SOURCE_SCHEMA_VARIANT: &str = "meta-json-messages-jsonl-v1";
 const SOURCE_ANCHOR_NAMESPACE: &str = "mistral-vibe-session-id";
@@ -47,18 +46,15 @@ const MAX_NATIVE_ID_CANDIDATES: usize = 8_192;
 const MAX_RETAINED_NATIVE_IDS: usize = 4_096;
 const MAX_RETAINED_NATIVE_ID_BYTES: usize = 8 * 1024 * 1024;
 
-#[cfg(test)]
-mod publication_tests;
-
 #[derive(Debug, Clone, Copy)]
-pub(crate) struct MistralVibeJsonlAdapter;
+pub(crate) struct MistralVibeJsonlAdapter<B>(PhantomData<fn() -> B>);
 
-pub(crate) fn scan_mistral_vibe_source_backed() -> Arc<
-    dyn JsonlFamilyAdapter<
-        Runtime = crate::provider::source_backed::family::jsonl::CaptureJsonlRuntime,
-    >,
-> {
-    Arc::new(MistralVibeJsonlAdapter)
+pub(crate) fn mistral_vibe_jsonl_adapter<B>(
+) -> Arc<dyn JsonlFamilyAdapter<Runtime = ProviderJsonlRuntime<B>>>
+where
+    B: ProviderRuntimeBinding,
+{
+    Arc::new(MistralVibeJsonlAdapter(PhantomData))
 }
 
 #[derive(Debug)]
@@ -90,8 +86,11 @@ struct Binding {
     revision_digest: [u8; 32],
 }
 
-impl JsonlFamilyAdapter for MistralVibeJsonlAdapter {
-    type Runtime = crate::provider::source_backed::family::jsonl::CaptureJsonlRuntime;
+impl<B> JsonlFamilyAdapter for MistralVibeJsonlAdapter<B>
+where
+    B: ProviderRuntimeBinding,
+{
+    type Runtime = ProviderJsonlRuntime<B>;
 
     fn provider(&self) -> CaptureProvider {
         CaptureProvider::MistralVibe
@@ -117,7 +116,7 @@ impl JsonlFamilyAdapter for MistralVibeJsonlAdapter {
         JsonlFamilyAppendMode::Replacement
     }
 
-    fn discover(&self, root: &Path) -> Result<JsonlFamilyInventory> {
+    fn discover(&self, root: &Path) -> Result<JsonlFamilyInventory<CaptureError>> {
         if fs::symlink_metadata(root)
             .is_err_and(|error| error.kind() == std::io::ErrorKind::NotFound)
         {
@@ -209,16 +208,10 @@ impl JsonlFamilyAdapter for MistralVibeJsonlAdapter {
 
     fn projector(
         &self,
-        leaf: &JsonlFamilyLeaf,
+        leaf: &JsonlFamilyLeaf<CaptureError>,
         source_file: Arc<OpenedProviderSourceFile>,
         imported_at: DateTime<Utc>,
-    ) -> Result<
-        Box<
-            dyn JsonlFamilyProjector<
-                Runtime = crate::provider::source_backed::family::jsonl::CaptureJsonlRuntime,
-            >,
-        >,
-    > {
+    ) -> Result<Box<dyn JsonlFamilyProjector<Runtime = ProviderJsonlRuntime<B>>>> {
         self.projector_with_provider_checkpoint(
             leaf,
             source_file,
@@ -231,26 +224,20 @@ impl JsonlFamilyAdapter for MistralVibeJsonlAdapter {
 
     fn projector_with_provider_checkpoint(
         &self,
-        leaf: &JsonlFamilyLeaf,
+        leaf: &JsonlFamilyLeaf<CaptureError>,
         _source_file: Arc<OpenedProviderSourceFile>,
         _imported_at: DateTime<Utc>,
         checkpoint: Option<&TypedKey>,
-        base_event_lookup: Option<IndexBaseEventLookup>,
+        base_event_lookup: Option<ProviderBaseEventLookup<B>>,
         mode: JsonlFamilyProjectionMode,
-    ) -> Result<
-        Box<
-            dyn JsonlFamilyProjector<
-                Runtime = crate::provider::source_backed::family::jsonl::CaptureJsonlRuntime,
-            >,
-        >,
-    > {
+    ) -> Result<Box<dyn JsonlFamilyProjector<Runtime = ProviderJsonlRuntime<B>>>> {
         if checkpoint.is_some() {
             return Err(CaptureError::InvalidPayload(
                 "Mistral Vibe adapter does not accept provider checkpoint state".to_owned(),
             ));
         }
         let binding = decode_binding(leaf)?;
-        Ok(Box::new(MistralProjector {
+        Ok(Box::new(MistralProjector::<B> {
             source: leaf.source().clone(),
             fallback_identities: FallbackEventIdentityState::new(
                 leaf.source().clone(),
@@ -267,20 +254,23 @@ impl JsonlFamilyAdapter for MistralVibeJsonlAdapter {
     }
 }
 
-struct MistralProjector {
+struct MistralProjector<B: ProviderRuntimeBinding> {
     source: SourceKey,
     binding: Binding,
-    fallback_identities: FallbackEventIdentityState,
+    fallback_identities: FallbackEventIdentityState<ProviderBaseEventLookup<B>, CaptureError>,
     native_identities: MistralNativeIdentityTracker,
 }
 
-impl JsonlFamilyProjector for MistralProjector {
-    type Runtime = crate::provider::source_backed::family::jsonl::CaptureJsonlRuntime;
+impl<B> JsonlFamilyProjector for MistralProjector<B>
+where
+    B: ProviderRuntimeBinding,
+{
+    type Runtime = ProviderJsonlRuntime<B>;
 
     fn project(
         &mut self,
         record: JsonlRecordRef<'_>,
-        _worker: &mut JsonlFamilyWorkerContext,
+        _worker: &mut JsonlFamilyWorkerContext<Self::Runtime>,
         emit: &mut dyn FnMut(CoreRecord) -> Result<()>,
     ) -> Result<()> {
         if let Some(document) = core_record(
@@ -300,13 +290,16 @@ impl JsonlFamilyProjector for MistralProjector {
     }
 }
 
-fn core_record(
+fn core_record<L>(
     source: &SourceKey,
     binding: &Binding,
-    fallback_identities: &mut FallbackEventIdentityState,
+    fallback_identities: &mut FallbackEventIdentityState<L, CaptureError>,
     native_identities: &mut MistralNativeIdentityTracker,
     record: JsonlRecordRef<'_>,
-) -> Result<Option<CoreRecord>> {
+) -> Result<Option<CoreRecord>>
+where
+    L: BaseEventLookup,
+{
     let bytes = record.bytes();
     if bytes.iter().all(u8::is_ascii_whitespace) {
         return Ok(None);
@@ -420,7 +413,7 @@ fn core_record(
     record.provider_session_id = Some(binding.provider_session_id.clone());
     record.native_event_id = Some(native_event_id);
     record.occurred_at_unix_ms = Some(
-        native_jsonl_timestamp(&value)
+        mistral_vibe_record_timestamp(&value)
             .map(|timestamp| timestamp.timestamp_millis())
             .unwrap_or(binding.started_at_unix_ms),
     );
@@ -430,6 +423,25 @@ fn core_record(
     record.content.structured_content = structured_content;
     record.validate_contract().map_err(contract)?;
     Ok(Some(record))
+}
+
+fn mistral_vibe_record_timestamp(value: &Value) -> Option<DateTime<Utc>> {
+    value
+        .get("timestamp")
+        .and_then(Value::as_str)
+        .and_then(ctx_history_capture_model::time::parse_rfc3339_utc)
+        .or_else(|| {
+            value
+                .get("created_at")
+                .and_then(Value::as_str)
+                .and_then(ctx_history_capture_model::time::parse_rfc3339_utc)
+        })
+        .or_else(|| {
+            value
+                .pointer("/time/created")
+                .and_then(Value::as_i64)
+                .and_then(DateTime::<Utc>::from_timestamp_millis)
+        })
 }
 
 fn fallback_fingerprint(bytes: &[u8]) -> Result<TypedKey> {
@@ -571,7 +583,7 @@ fn projection_observation(
     .map_err(contract)
 }
 
-fn decode_binding(leaf: &JsonlFamilyLeaf) -> Result<Binding> {
+fn decode_binding(leaf: &JsonlFamilyLeaf<CaptureError>) -> Result<Binding> {
     let TypedKey::Bytes(bytes) = leaf.binding() else {
         return Err(CaptureError::InvalidPayload(
             "Mistral Vibe family binding is malformed".to_owned(),
@@ -700,9 +712,18 @@ fn contract(error: impl std::fmt::Display) -> CaptureError {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::provider::source_backed::{
-        family::jsonl::JsonlRecordRef, FallbackEventIdentityMode,
-    };
+    use ctx_history_jsonl::FallbackEventIdentityMode;
+
+    #[derive(Clone)]
+    struct EmptyLookup;
+
+    impl BaseEventLookup for EmptyLookup {
+        type Error = std::convert::Infallible;
+
+        fn contains(&self, _event_id: uuid::Uuid) -> std::result::Result<bool, Self::Error> {
+            Ok(false)
+        }
+    }
 
     fn binding() -> (SourceKey, Binding) {
         let source = source_key("session").unwrap();
@@ -723,7 +744,10 @@ mod tests {
         )
     }
 
-    fn fallback_identities(source: &SourceKey, binding: &Binding) -> FallbackEventIdentityState {
+    fn fallback_identities(
+        source: &SourceKey,
+        binding: &Binding,
+    ) -> FallbackEventIdentityState<EmptyLookup, CaptureError> {
         FallbackEventIdentityState::new(
             source.clone(),
             binding.session_id,
