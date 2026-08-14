@@ -587,10 +587,11 @@ def _validate_reverse_build_inventory(
     terminal_build = workspace_path.parent.resolve() / "crates/ctx-terminal/BUILD.bazel"
     presentation_build = workspace_path.parent.resolve() / "crates/ctx-cli-presentation/BUILD.bazel"
     expected_labels = {
+        # Release-package audit inputs now live in their loaded .bzl; this
+        # inventory covers only labels written directly in the root BUILD.
         root_build: (
             HISTORY_CARGO_DATA_LABEL,
             HISTORY_BUILD_LABEL,
-            HISTORY_CARGO_DATA_LABEL,
             HISTORY_BUILD_LABEL,
             HISTORY_CARGO_DATA_LABEL,
         ),
