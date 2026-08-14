@@ -37,6 +37,50 @@ impl Default for CodexMcpTerminalAuthority {
 }
 
 impl CodexMcpTerminalAuthority {
+    pub(in super::super) fn from_checkpoint(
+        checkpoint: &super::super::super::checkpoint::CodexTerminalAuthorityCheckpoint,
+    ) -> Self {
+        Self {
+            mcp_call_ids: JsonlCheckpointedTerminalAuthority::from_digest_counts(
+                checkpoint
+                    .mcp_call_ids
+                    .iter()
+                    .map(|entry| (entry.digest, entry.count)),
+                checkpoint.mcp_exhausted,
+            ),
+            result_call_ids: JsonlCheckpointedTerminalAuthority::from_digest_counts(
+                checkpoint
+                    .result_call_ids
+                    .iter()
+                    .map(|entry| (entry.digest, entry.count)),
+                checkpoint.result_exhausted,
+            ),
+        }
+    }
+
+    pub(in super::super) fn checkpoint(
+        &self,
+    ) -> super::super::super::checkpoint::CodexTerminalAuthorityCheckpoint {
+        use super::super::super::checkpoint::{
+            CodexDigestMultiplicityCheckpoint, CodexTerminalAuthorityCheckpoint,
+        };
+
+        CodexTerminalAuthorityCheckpoint {
+            mcp_call_ids: self
+                .mcp_call_ids
+                .digest_counts()
+                .map(|(digest, count)| CodexDigestMultiplicityCheckpoint { digest, count })
+                .collect(),
+            result_call_ids: self
+                .result_call_ids
+                .digest_counts()
+                .map(|(digest, count)| CodexDigestMultiplicityCheckpoint { digest, count })
+                .collect(),
+            mcp_exhausted: self.mcp_call_ids.exhausted(),
+            result_exhausted: self.result_call_ids.exhausted(),
+        }
+    }
+
     pub(in super::super) fn appended_suffix_invalidates(
         &self,
         combined: &CodexMcpTerminalAuthority,

@@ -11,7 +11,7 @@ use std::{
 
 use super::super::{
     jsonl_prefix_hash_bytes, reset_jsonl_prefix_hash_bytes, set_after_jsonl_prefix_hash_hook,
-    JsonlReader as RuntimeJsonlReader,
+    track_jsonl_prefix_hash_bytes, JsonlReader as RuntimeJsonlReader, JsonlRecordRef,
 };
 use super::*;
 use ctx_history_capture_model::AttemptHistoryProgress;
@@ -1546,6 +1546,173 @@ struct SemanticLifecycleTestExecutor {
     mode: JsonlFamilyProjectionMode,
     observations: Arc<Mutex<SemanticLifecycleObservations>>,
     consumed: u64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct DirectAppendPassObservation {
+    mode: JsonlFamilyProjectionMode,
+    direct_append: bool,
+    preflight_bytes: u64,
+    projection_bytes: u64,
+    projected_records: u64,
+}
+
+#[derive(Default)]
+struct DirectAppendTestAdapter {
+    observations: Arc<Mutex<Vec<DirectAppendPassObservation>>>,
+}
+
+struct DirectAppendTestExecutor {
+    mode: JsonlFamilyProjectionMode,
+    observations: Arc<Mutex<Vec<DirectAppendPassObservation>>>,
+    prior_records: u64,
+    preflight_bytes: u64,
+    projection_bytes: u64,
+    projected_records: u64,
+    direct_append: bool,
+}
+
+impl JsonlFamilySemanticExecutor for DirectAppendTestExecutor {
+    type Runtime = TestJsonlRuntime;
+
+    fn preflight(
+        &mut self,
+        input: &mut JsonlFamilyExecutionIo,
+    ) -> Result<JsonlFamilySemanticPreflight> {
+        self.direct_append = input.is_direct_append_resume();
+        while let Some(record) = input.next_record()? {
+            self.preflight_bytes = self.preflight_bytes.checked_add(record.byte_len()).ok_or(
+                CaptureError::SystemInvariant("direct append preflight byte count overflowed"),
+            )?;
+        }
+        Ok(JsonlFamilySemanticPreflight::Ready)
+    }
+
+    fn next_page(
+        &mut self,
+        input: &mut JsonlFamilyExecutionIo,
+        _worker: &mut JsonlFamilyWorkerContext,
+    ) -> Result<Option<JsonlFamilySemanticPage>> {
+        let Some(record) = input.next_record()? else {
+            return Ok(None);
+        };
+        self.projection_bytes = self.projection_bytes.checked_add(record.byte_len()).ok_or(
+            CaptureError::SystemInvariant("direct append projection byte count overflowed"),
+        )?;
+        self.projected_records =
+            self.projected_records
+                .checked_add(1)
+                .ok_or(CaptureError::SystemInvariant(
+                    "direct append record count overflowed",
+                ))?;
+        Ok(Some(JsonlFamilySemanticPage::new(Vec::new())))
+    }
+
+    fn finish(self: Box<Self>) -> Result<JsonlFamilySemanticSummary> {
+        let checkpoint = self
+            .prior_records
+            .checked_add(self.projected_records)
+            .ok_or(CaptureError::SystemInvariant(
+                "direct append checkpoint count overflowed",
+            ))?;
+        self.observations
+            .lock()
+            .unwrap()
+            .push(DirectAppendPassObservation {
+                mode: self.mode,
+                direct_append: self.direct_append,
+                preflight_bytes: self.preflight_bytes,
+                projection_bytes: self.projection_bytes,
+                projected_records: self.projected_records,
+            });
+        Ok(JsonlFamilySemanticSummary::new(
+            0,
+            0,
+            Some(TypedKey::U64(checkpoint)),
+        ))
+    }
+}
+
+impl JsonlFamilyAdapter for DirectAppendTestAdapter {
+    type Runtime = TestJsonlRuntime;
+
+    fn provider(&self) -> CaptureProvider {
+        CaptureProvider::Pi
+    }
+
+    fn source_format(&self) -> &'static str {
+        TEST_SOURCE_FORMAT
+    }
+
+    fn schema_variant(&self) -> &'static str {
+        TEST_SCHEMA
+    }
+
+    fn parser_revision(&self) -> &'static str {
+        "direct-append-test-parser-v1"
+    }
+
+    fn append_mode(&self) -> JsonlFamilyAppendMode {
+        JsonlFamilyAppendMode::CertifiedSuffix
+    }
+
+    fn bind_admitted_eof(&self) -> bool {
+        true
+    }
+
+    fn append_only_same_object_v1(&self) -> bool {
+        true
+    }
+
+    fn accepts_direct_append_checkpoint(&self, checkpoint: &TypedKey) -> bool {
+        matches!(checkpoint, TypedKey::U64(_))
+    }
+
+    fn allows_direct_append_for_leaf(&self, leaf: &JsonlFamilyLeaf) -> bool {
+        leaf.observation().supports_exact_revalidation()
+    }
+
+    fn discover(&self, root: &Path) -> Result<JsonlFamilyInventory> {
+        TestAdapter.discover(root)
+    }
+
+    fn projector(
+        &self,
+        _leaf: &JsonlFamilyLeaf,
+        _source_file: Arc<OpenedProviderSourceFile>,
+        _imported_at: DateTime<Utc>,
+    ) -> Result<Box<JsonlFamilyProjectorObject>> {
+        Err(CaptureError::SystemInvariant(
+            "direct append tests require the semantic executor",
+        ))
+    }
+
+    fn semantic_executor(
+        &self,
+        _leaf: &JsonlFamilyLeaf,
+        checkpoint: Option<&TypedKey>,
+        _base_event_lookup: Option<IndexBaseEventLookup>,
+        mode: JsonlFamilyProjectionMode,
+    ) -> Result<Option<Box<JsonlFamilySemanticExecutorObject>>> {
+        let prior_records = match checkpoint {
+            Some(TypedKey::U64(records)) => *records,
+            Some(_) => {
+                return Err(CaptureError::InvalidPayload(
+                    "direct append test checkpoint is malformed".to_owned(),
+                ))
+            }
+            None => 0,
+        };
+        Ok(Some(Box::new(DirectAppendTestExecutor {
+            mode,
+            observations: Arc::clone(&self.observations),
+            prior_records,
+            preflight_bytes: 0,
+            projection_bytes: 0,
+            projected_records: 0,
+            direct_append: false,
+        })))
+    }
 }
 
 impl JsonlFamilySemanticExecutor for SemanticLifecycleTestExecutor {

@@ -34,8 +34,8 @@ pub(crate) use crate::{
     JsonlCheckpoint, JsonlCheckpointedTerminalAuthority, JsonlFileObservation,
     JsonlMcpObservedEncodedBytes, JsonlOrderedAppendOccurrenceState, JsonlOversizedRecordPolicy,
     JsonlPage, JsonlPendingExchangeLookup, JsonlPendingExchangeRemember, JsonlPendingExchangeState,
-    JsonlRecordEvidence, JsonlRecordRef, JsonlScanOutcome, JsonlSourceChange, JsonlSourceIdentity,
-    JsonlTerminalAuthority, JsonlTerminalObservationRegion,
+    JsonlRecordEvidence, JsonlRecordRef, JsonlResumableSha256, JsonlScanOutcome, JsonlSourceChange,
+    JsonlSourceIdentity, JsonlTerminalAuthority, JsonlTerminalObservationRegion,
 };
 pub use checkpoint::{
     bounded_checkpoint_fits, decode_bounded_checkpoint, encode_bounded_checkpoint,
@@ -159,6 +159,7 @@ pub use revalidation::{
     jsonl_prefix_hash_bytes, reset_jsonl_prefix_hash_bytes, set_after_final_jsonl_prefix_hash_hook,
     set_after_jsonl_append_observation_route_binding_hook, set_after_jsonl_prefix_hash_hook,
     set_after_jsonl_semantic_preflight_hook, set_after_second_jsonl_prefix_hash_hook,
+    track_jsonl_prefix_hash_bytes, JsonlPrefixHashBytesGuard,
 };
 pub use revalidation::{observe_opened_file, observe_opened_file_allow_append};
 #[cfg(feature = "test-support")]
@@ -166,13 +167,14 @@ pub use route::{
     checkpoint_admitted_revision_for_test, set_before_jsonl_terminal_physical_revalidation_hook,
 };
 pub use route::{
-    jsonl_family_driver, JsonlFamilyAdapter, JsonlFamilyAppendMode, JsonlFamilyBaseScope,
-    JsonlFamilyExecutionIo, JsonlFamilyExecutionPosition, JsonlFamilyInventory,
-    JsonlFamilyInventoryMode, JsonlFamilyLeaf, JsonlFamilyMembershipObservation,
-    JsonlFamilyOptimizedLeafOutcome, JsonlFamilyProjectionMode, JsonlFamilyProjector,
-    JsonlFamilyPublication, JsonlFamilyRejectedLeaf, JsonlFamilyRootMissingMode,
-    JsonlFamilySemanticExecutor, JsonlFamilySemanticPage, JsonlFamilySemanticPreflight,
-    JsonlFamilySemanticSummary, JsonlFamilyTerminalProof, JsonlFamilyWorkerContext,
+    jsonl_family_driver, JsonlFamilyAdapter, JsonlFamilyAppendMode, JsonlFamilyAppendTrustContract,
+    JsonlFamilyBaseScope, JsonlFamilyExecutionIo, JsonlFamilyExecutionPosition,
+    JsonlFamilyInventory, JsonlFamilyInventoryMode, JsonlFamilyLeaf,
+    JsonlFamilyMembershipObservation, JsonlFamilyOptimizedLeafOutcome, JsonlFamilyProjectionMode,
+    JsonlFamilyProjector, JsonlFamilyPublication, JsonlFamilyRejectedLeaf,
+    JsonlFamilyRootMissingMode, JsonlFamilySemanticExecutor, JsonlFamilySemanticPage,
+    JsonlFamilySemanticPreflight, JsonlFamilySemanticSummary, JsonlFamilyTerminalProof,
+    JsonlFamilyWorkerContext,
 };
 pub use single_file::jsonl_single_file_inventory;
 const PAGE_MAX_RECORDS: usize = 64;
@@ -181,7 +183,7 @@ const PAGE_MAX_BYTES: usize = 8 * 1024 * 1024;
 #[derive(Debug, Clone)]
 pub struct JsonlProbe {
     observation: JsonlFileObservation,
-    prefix_hasher: Sha256,
+    prefix_hasher: JsonlResumableSha256,
     complete_prefix_end: u64,
     next_physical_ordinal: u64,
 }
@@ -202,7 +204,7 @@ pub struct JsonlReader<E: JsonlFamilyError> {
     source_file: Arc<OpenedProviderSourceFile<E>>,
     reader: Option<BufReader<File>>,
     physical: Option<JsonlPhysicalStream<E>>,
-    prefix_hasher: Sha256,
+    prefix_hasher: JsonlResumableSha256,
     complete_prefix_end: u64,
     next_physical_ordinal: u64,
     source_change: JsonlSourceChange,
@@ -216,6 +218,7 @@ pub struct JsonlReader<E: JsonlFamilyError> {
     bind_admitted_eof: bool,
     complete_prefix_ends_with_terminal_nul_padding: bool,
     semantic_append_resume: Option<JsonlSemanticAppendResume>,
+    direct_append_resume: bool,
     semantic_preflight_binding: Option<JsonlSemanticPreflightBinding>,
     oversized_record_policy: JsonlOversizedRecordPolicy,
 }
@@ -233,6 +236,7 @@ struct JsonlReaderFramingOptions<'a> {
     bind_admitted_eof: bool,
     deferred_append_eof_sha256: Option<Option<[u8; 32]>>,
     frozen_observation: Option<&'a JsonlFileObservation>,
+    direct_append: bool,
 }
 
 pub enum JsonlSemanticPreflightMode {
@@ -300,6 +304,7 @@ impl<E: JsonlFamilyError> JsonlReader<E> {
                 bind_admitted_eof: false,
                 deferred_append_eof_sha256: None,
                 frozen_observation: None,
+                direct_append: false,
             },
         )
     }
@@ -336,6 +341,31 @@ impl<E: JsonlFamilyError> JsonlReader<E> {
         record_framing: JsonlRecordFraming,
         frozen_observation: Option<&JsonlFileObservation>,
     ) -> JsonlResult<Self, E> {
+        Self::open_semantic_with_record_framing_and_encoding_direct(
+            identity,
+            source_file,
+            previous,
+            mode,
+            probe,
+            physical_encoding,
+            record_framing,
+            frozen_observation,
+            false,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn open_semantic_with_record_framing_and_encoding_direct(
+        identity: JsonlSourceIdentity,
+        source_file: Arc<OpenedProviderSourceFile<E>>,
+        previous: Option<&JsonlCheckpoint>,
+        mode: JsonlSemanticPreflightMode,
+        probe: Option<JsonlProbe>,
+        physical_encoding: JsonlPhysicalEncoding,
+        record_framing: JsonlRecordFraming,
+        frozen_observation: Option<&JsonlFileObservation>,
+        direct_append: bool,
+    ) -> JsonlResult<Self, E> {
         let (bind_admitted_eof, deferred_append_eof_sha256) = match mode {
             JsonlSemanticPreflightMode::AdmittedEof(previous) => (true, previous.map(Some)),
             JsonlSemanticPreflightMode::CompletePrefix => (false, Some(None)),
@@ -352,6 +382,7 @@ impl<E: JsonlFamilyError> JsonlReader<E> {
                 bind_admitted_eof,
                 deferred_append_eof_sha256,
                 frozen_observation,
+                direct_append,
             },
         )
     }
@@ -373,6 +404,7 @@ impl<E: JsonlFamilyError> JsonlReader<E> {
                 bind_admitted_eof: false,
                 deferred_append_eof_sha256: None,
                 frozen_observation: None,
+                direct_append: false,
             },
         )
     }
@@ -391,6 +423,7 @@ impl<E: JsonlFamilyError> JsonlReader<E> {
             bind_admitted_eof,
             deferred_append_eof_sha256,
             frozen_observation,
+            direct_append,
         } = options;
         source_file.revalidate_same_object()?;
         let current_metadata = source_file.file().metadata()?;
@@ -422,6 +455,7 @@ impl<E: JsonlFamilyError> JsonlReader<E> {
         let mut skip_scan = false;
         let mut unchanged_checkpoint = None;
         let mut semantic_append_resume = None;
+        let mut used_direct_append = false;
 
         if let Some(previous) = previous.filter(|checkpoint| checkpoint.supports(&identity)) {
             let previous_observation = previous.source_observation();
@@ -440,7 +474,41 @@ impl<E: JsonlFamilyError> JsonlReader<E> {
                 skip_scan = true;
                 unchanged_checkpoint = Some(previous.clone());
             } else if same_file && observation.length() >= previous.complete_prefix_end() {
-                if let Some(admitted_eof_sha256) = deferred_append_eof_sha256 {
+                if direct_append
+                    && previous.terminal()
+                    && observation.length() > previous.source_observation().length()
+                    && previous.source_observation().length() == previous.complete_prefix_end()
+                    && (!bind_admitted_eof
+                        || deferred_append_eof_sha256
+                            .flatten()
+                            .is_some_and(|expected| {
+                                previous
+                                    .restore_admitted_eof_hasher()
+                                    .is_some_and(|hasher| hasher.digest() == expected)
+                            }))
+                    && previous
+                        .restore_complete_prefix_hasher()
+                        .is_some_and(|restored| {
+                            prefix_hasher = restored;
+                            true
+                        })
+                {
+                    complete_prefix_end = previous.complete_prefix_end();
+                    next_physical_ordinal = previous.next_physical_ordinal();
+                    source_change = JsonlSourceChange::Append;
+                    semantic_append_resume = Some(JsonlSemanticAppendResume {
+                        previous: previous.clone(),
+                        admitted_eof_sha256: None,
+                        position: None,
+                    });
+                    used_direct_append = true;
+                } else if direct_append {
+                    // A provider requested the versioned direct contract, but
+                    // its physical continuation state was missing, corrupt,
+                    // or bound to another frontier. Leave this as replacement
+                    // instead of silently downgrading to a different append
+                    // protocol.
+                } else if let Some(admitted_eof_sha256) = deferred_append_eof_sha256 {
                     source_change = JsonlSourceChange::Append;
                     semantic_append_resume = Some(JsonlSemanticAppendResume {
                         previous: previous.clone(),
@@ -448,7 +516,8 @@ impl<E: JsonlFamilyError> JsonlReader<E> {
                         position: None,
                     });
                 } else {
-                    let observed_prefix = hash_prefix::<E>(
+                    let observed_prefix = hash_prefix::<E, _>(
+                        identity.source_path(),
                         &mut file,
                         previous.complete_prefix_end(),
                         new_prefix_hasher(),
@@ -493,14 +562,28 @@ impl<E: JsonlFamilyError> JsonlReader<E> {
                 next_physical_ordinal = probe.next_physical_ordinal;
             }
         }
-        let full_hasher = if semantic_append_resume
+        let full_hasher = if used_direct_append {
+            bind_admitted_eof.then(|| {
+                semantic_append_resume
+                    .as_ref()
+                    .and_then(|resume| resume.previous.restore_admitted_eof_hasher())
+                    .expect("direct admitted-EOF resume was validated above")
+            })
+        } else if semantic_append_resume
             .as_ref()
             .is_some_and(|resume| resume.admitted_eof_sha256.is_some())
         {
-            Some(Sha256::new())
+            Some(JsonlResumableSha256::new())
         } else {
             bind_admitted_eof
-                .then(|| hash_prefix::<E>(&mut file, complete_prefix_end, Sha256::new()))
+                .then(|| {
+                    hash_prefix::<E, _>(
+                        identity.source_path(),
+                        &mut file,
+                        complete_prefix_end,
+                        JsonlResumableSha256::new(),
+                    )
+                })
                 .transpose()?
         };
         file.seek(SeekFrom::Start(complete_prefix_end))?;
@@ -554,6 +637,7 @@ impl<E: JsonlFamilyError> JsonlReader<E> {
             bind_admitted_eof,
             complete_prefix_ends_with_terminal_nul_padding: false,
             semantic_append_resume,
+            direct_append_resume: used_direct_append,
             semantic_preflight_binding: None,
             oversized_record_policy: JsonlOversizedRecordPolicy::RejectSource,
         })
@@ -614,6 +698,11 @@ impl<E: JsonlFamilyError> JsonlReader<E> {
             {
                 resume.position = Some(physical.position());
             }
+            if self.direct_append_resume && resume.position.is_none() {
+                return Err(E::system_invariant(
+                    "direct JSONL append did not begin at its certified frontier",
+                ));
+            }
         }
         Ok(())
     }
@@ -669,6 +758,10 @@ impl<E: JsonlFamilyError> JsonlReader<E> {
             .map(|resume| resume.previous.complete_prefix_end())
     }
 
+    pub(super) fn execution_is_direct_append_resume(&self) -> bool {
+        self.direct_append_resume
+    }
+
     pub(super) fn release_execution_record_buffer(&mut self) -> JsonlResult<(), E> {
         self.physical
             .as_mut()
@@ -690,7 +783,7 @@ impl<E: JsonlFamilyError> JsonlReader<E> {
             .digest()
             .full_hasher()
             .ok_or_else(|| E::system_invariant("admitted-EOF JSONL input lost its full digest"))?;
-        Ok(Some(full.clone().finalize().into()))
+        Ok(Some(full.digest()))
     }
 
     pub(super) fn complete_prefix_ends_with_terminal_nul_padding(&self) -> bool {
@@ -916,24 +1009,27 @@ impl<E: JsonlFamilyError> JsonlReader<E> {
     }
 
     fn checkpoint(&self, terminal: bool) -> JsonlCheckpoint {
-        let (complete_prefix_end, complete_prefix_sha256, next_physical_ordinal) =
+        let (complete_prefix_end, complete_prefix_hasher, next_physical_ordinal) =
             match self.physical.as_ref() {
                 Some(physical) => (
                     physical.complete_prefix_end(),
-                    prefix_digest(physical.digest().complete_hasher()),
+                    physical.digest().complete_hasher(),
                     physical.next_physical_ordinal(),
                 ),
                 None => (
                     self.complete_prefix_end,
-                    prefix_digest(&self.prefix_hasher),
+                    &self.prefix_hasher,
                     self.next_physical_ordinal,
                 ),
             };
-        JsonlCheckpoint::new(
+        JsonlCheckpoint::new_with_prefix_state(
             self.identity.clone(),
             self.observation.clone(),
             complete_prefix_end,
-            complete_prefix_sha256,
+            complete_prefix_hasher,
+            self.physical
+                .as_ref()
+                .and_then(|physical| physical.digest().full_hasher()),
             next_physical_ordinal,
             terminal,
         )
@@ -979,13 +1075,20 @@ impl<E: JsonlFamilyError> JsonlReader<E> {
             if !self.append_log {
                 return Err(E::source_changed());
             }
-            revalidate_frozen_prefix(
-                self.identity.source_path(),
-                self.source_file.as_ref(),
-                &self.observation,
-                checkpoint.complete_prefix_end(),
-                *checkpoint.complete_prefix_sha256(),
-            )?;
+            if self.direct_append_resume {
+                if !self.observation.admits_frozen_prefix_in(&current) {
+                    return Err(E::source_changed());
+                }
+                self.source_file.revalidate_same_object()?;
+            } else {
+                revalidate_frozen_prefix(
+                    self.identity.source_path(),
+                    self.source_file.as_ref(),
+                    &self.observation,
+                    checkpoint.complete_prefix_end(),
+                    *checkpoint.complete_prefix_sha256(),
+                )?;
+            }
         }
         self.outcome = Some(JsonlScanOutcome::new(
             self.unchanged_checkpoint.clone().unwrap_or(checkpoint),
@@ -1133,7 +1236,7 @@ enum RawLine {
 fn read_bounded_line<E: JsonlFamilyError>(
     reader: &mut BufReader<File>,
     bytes: &mut Vec<u8>,
-    hasher: &mut Sha256,
+    hasher: &mut JsonlResumableSha256,
     frozen_length: u64,
     start: u64,
 ) -> JsonlResult<RawLine, E> {

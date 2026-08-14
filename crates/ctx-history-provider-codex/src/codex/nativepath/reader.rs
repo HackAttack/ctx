@@ -47,8 +47,8 @@ const MAX_CODEX_PAGE_UNITS: usize = 64;
 const MAX_CODEX_SOURCE_BACKED_PAGE_RECORDS: u64 = 4 * 1024;
 const MAX_CODEX_SOURCE_BACKED_PAGE_PROGRESS_BYTES: u64 = 32 * 1024 * 1024;
 const PAGE_FIXED_WIRE_BYTES: usize = 4 * 1024;
-const MAX_CODEX_TOOL_NAME_BYTES: usize = 512;
-const MAX_CODEX_TOOL_PREVIEW_BYTES: usize = 4 * 1024;
+pub(super) const MAX_CODEX_TOOL_NAME_BYTES: usize = 512;
+pub(super) const MAX_CODEX_TOOL_PREVIEW_BYTES: usize = 4 * 1024;
 
 pub(crate) const MAX_CODEX_RECORD_BYTES: usize = 16 * 1024 * 1024;
 #[cfg(test)]
@@ -104,6 +104,7 @@ pub(crate) struct CodexNativePage {
 }
 
 pub(super) struct CodexSemanticScan {
+    pub(super) checkpoint: Option<super::checkpoint::CodexSemanticCheckpoint>,
     pub(super) counters: CodexScanCounters,
 }
 
@@ -115,6 +116,8 @@ pub(crate) struct CodexNativeScanner {
     continuations: BTreeMap<String, String>,
     mcp_terminal_authority: project::CodexMcpTerminalAuthority,
     repository_candidate_authority: project::CodexRepositoryCandidateAuthority,
+    repository_occurrences: project::CodexRepositoryOccurrenceCache,
+    repository_candidate_cells: std::collections::BTreeSet<String>,
     counters: CodexScanCounters,
     local_turn_started: bool,
     core_source: SourceKey,

@@ -637,6 +637,69 @@ fn unchanged_terminal_proof_allows_growth_before_terminal_publication() {
 }
 
 #[test]
+fn append_only_terminal_growth_commits_admitted_suffix_and_successor_drains_later_bytes() {
+    let temp = crate::test_support_paths::tempdir().unwrap();
+    let root = temp.path().join("sessions");
+    let index = temp.path().join("index");
+    fs::create_dir_all(&root).unwrap();
+    let source_path = root.join("actively-growing.jsonl");
+    fs::write(&source_path, TEST_RECORD).unwrap();
+    let adapter = DirectAppendTestAdapter::default();
+    let (cold, _) = capture_parallel_test_generation(&adapter, &root, &index, 1);
+    assert_eq!(cold.manifest().sources[0].counts().complete_records, 1);
+
+    OpenOptions::new()
+        .append(true)
+        .open(&source_path)
+        .unwrap()
+        .write_all(TEST_RECORD)
+        .unwrap();
+    let terminal_append_path = source_path.clone();
+    set_before_jsonl_terminal_physical_revalidation_hook(root.clone(), move || {
+        OpenOptions::new()
+            .append(true)
+            .open(terminal_append_path)
+            .unwrap()
+            .write_all(TEST_RECORD)
+            .unwrap();
+    });
+
+    let active_prefix_hash = track_jsonl_prefix_hash_bytes(source_path.clone());
+    let (active, _) =
+        capture_parallel_test_generation_with_terminal_revalidation(&adapter, &root, &index, 1)
+            .unwrap();
+    assert_eq!(active_prefix_hash.bytes(), 0);
+    assert_eq!(active.manifest().sources[0].counts().complete_records, 2);
+    let active_observation = *adapter.observations.lock().unwrap().last().unwrap();
+    assert_eq!(
+        active_observation,
+        DirectAppendPassObservation {
+            mode: JsonlFamilyProjectionMode::CertifiedAppend,
+            direct_append: true,
+            preflight_bytes: TEST_RECORD.len() as u64,
+            projection_bytes: TEST_RECORD.len() as u64,
+            projected_records: 1,
+        }
+    );
+
+    let successor_prefix_hash = track_jsonl_prefix_hash_bytes(source_path);
+    let (successor, _) = capture_parallel_test_generation(&adapter, &root, &index, 1);
+    assert_eq!(successor_prefix_hash.bytes(), 0);
+    assert_eq!(successor.manifest().sources[0].counts().complete_records, 3);
+    let successor_observation = *adapter.observations.lock().unwrap().last().unwrap();
+    assert_eq!(
+        successor_observation,
+        DirectAppendPassObservation {
+            mode: JsonlFamilyProjectionMode::CertifiedAppend,
+            direct_append: true,
+            preflight_bytes: TEST_RECORD.len() as u64,
+            projection_bytes: TEST_RECORD.len() as u64,
+            projected_records: 1,
+        }
+    );
+}
+
+#[test]
 fn unchanged_terminal_proof_fails_closed_on_prepublication_source_races() {
     let append_adapter = ParallelTestAdapter;
     let replacement_adapter = ReplacementParallelTestAdapter;

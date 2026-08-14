@@ -17,14 +17,34 @@ pub(in super::super) struct CodexRepositoryCandidateAuthority {
     exhausted: bool,
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug, Clone, Default)]
 pub(in super::super) struct CodexRepositoryOccurrenceCache {
     entries: BTreeMap<[u8; 32], RepositoryCandidateAuthorityState>,
     exhausted: bool,
     peak_entries: usize,
+    negative_authority: super::super::super::checkpoint::CodexRepositoryOccurrenceNegativeAuthority,
 }
 
 impl CodexRepositoryOccurrenceCache {
+    pub(in super::super) fn from_negative_authority(
+        authority: super::super::super::checkpoint::CodexRepositoryOccurrenceNegativeAuthority,
+    ) -> Self {
+        Self {
+            negative_authority: authority,
+            ..Self::default()
+        }
+    }
+
+    pub(in super::super) fn negative_authority(
+        &self,
+    ) -> super::super::super::checkpoint::CodexRepositoryOccurrenceNegativeAuthority {
+        self.negative_authority.clone()
+    }
+
+    pub(in super::super) fn merge_negative_authority(&mut self, suffix: &Self) {
+        self.negative_authority.merge(&suffix.negative_authority);
+    }
+
     pub(in super::super) fn observe_call(&mut self, call_id: &str) {
         self.observe(call_id, true);
     }
@@ -34,6 +54,7 @@ impl CodexRepositoryOccurrenceCache {
     }
 
     pub(in super::super) fn observe_ambiguous_record(&mut self) {
+        self.negative_authority.mark_incomplete();
         self.exhaust();
     }
 
@@ -68,10 +89,11 @@ impl CodexRepositoryOccurrenceCache {
     }
 
     fn observe(&mut self, call_id: &str, call: bool) {
+        let digest = repository_candidate_call_id_digest(call_id);
+        self.negative_authority.observe(&digest);
         if self.exhausted {
             return;
         }
-        let digest = repository_candidate_call_id_digest(call_id);
         let new_entry = !self.entries.contains_key(&digest);
         if new_entry && self.entries.len() >= MAX_CODEX_REPOSITORY_OCCURRENCE_CACHE_ENTRIES {
             self.exhaust();
@@ -95,6 +117,40 @@ impl CodexRepositoryOccurrenceCache {
 }
 
 impl CodexRepositoryCandidateAuthority {
+    pub(in super::super) fn from_checkpoint(
+        checkpoint: &super::super::super::checkpoint::CodexRepositoryAuthorityCheckpoint,
+    ) -> Self {
+        Self {
+            entries: checkpoint
+                .candidates
+                .iter()
+                .map(|entry| {
+                    (
+                        entry.digest,
+                        RepositoryCandidateAuthorityState {
+                            calls: entry.multiplicity.calls,
+                            results: entry.multiplicity.results,
+                        },
+                    )
+                })
+                .collect(),
+            exhausted: checkpoint.candidate_exhausted,
+        }
+    }
+
+    pub(in super::super) fn checkpoint_entries(
+        &self,
+    ) -> Vec<super::super::super::checkpoint::CodexRepositoryAuthorityEntryCheckpoint> {
+        self.entries
+            .iter()
+            .map(|(digest, state)| checkpoint_entry(*digest, *state))
+            .collect()
+    }
+
+    pub(in super::super) fn is_exhausted(&self) -> bool {
+        self.exhausted
+    }
+
     pub(in super::super) fn appended_suffix_invalidates(
         &self,
         combined: &CodexRepositoryCandidateAuthority,
@@ -111,6 +167,17 @@ impl CodexRepositoryCandidateAuthority {
                         .get(digest)
                         .is_none_or(|combined| combined.calls != 1 || combined.results != 1))
         })
+    }
+
+    pub(in super::super) fn newly_admitted_candidate_hits_prefix(
+        &self,
+        combined: &CodexRepositoryCandidateAuthority,
+        prefix: &super::super::super::checkpoint::CodexRepositoryOccurrenceNegativeAuthority,
+    ) -> bool {
+        !combined.exhausted
+            && combined.entries.keys().any(|digest| {
+                !self.entries.contains_key(digest) && !prefix.definitely_absent(digest)
+            })
     }
 
     #[cfg(test)]
@@ -226,6 +293,23 @@ fn repository_candidate_call_id_digest(call_id: &str) -> [u8; 32] {
     crate::provider::codex::repository::continuation_call_id_sha256(call_id)
 }
 
+fn checkpoint_entry(
+    digest: [u8; 32],
+    state: RepositoryCandidateAuthorityState,
+) -> super::super::super::checkpoint::CodexRepositoryAuthorityEntryCheckpoint {
+    use super::super::super::checkpoint::{
+        CodexRepositoryAuthorityEntryCheckpoint, CodexRepositoryMultiplicityCheckpoint,
+    };
+
+    CodexRepositoryAuthorityEntryCheckpoint {
+        digest,
+        multiplicity: CodexRepositoryMultiplicityCheckpoint {
+            calls: state.calls,
+            results: state.results,
+        },
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -292,5 +376,53 @@ mod tests {
         }
         overflow.apply_suffix_to(&mut authority);
         assert!(authority.exhausted());
+    }
+
+    #[test]
+    fn prefix_adaptive_authority_hits_retry_and_misses_resume() {
+        let mut exact_prefix_occurrences = CodexRepositoryOccurrenceCache::default();
+        exact_prefix_occurrences.observe_result("small-prefix-occurrence");
+        let exact_negative = exact_prefix_occurrences.negative_authority();
+        let prefix_candidates = CodexRepositoryCandidateAuthority::default();
+
+        let mut exact_observed = CodexRepositoryCandidateAuthority::default();
+        exact_observed.admit_candidate("small-prefix-occurrence");
+        assert!(prefix_candidates
+            .newly_admitted_candidate_hits_prefix(&exact_observed, &exact_negative));
+        let mut exact_absent = CodexRepositoryCandidateAuthority::default();
+        exact_absent.admit_candidate("small-definitely-absent");
+        assert!(
+            !prefix_candidates.newly_admitted_candidate_hits_prefix(&exact_absent, &exact_negative)
+        );
+
+        let mut prefix_occurrences = CodexRepositoryOccurrenceCache::default();
+        for index in 0..MAX_CODEX_REPOSITORY_OCCURRENCE_CACHE_ENTRIES {
+            prefix_occurrences.observe_result(&format!("prefix-occurrence-{index}"));
+        }
+        let negative = prefix_occurrences.negative_authority();
+
+        let mut observed = CodexRepositoryCandidateAuthority::default();
+        observed.admit_candidate("prefix-occurrence-0");
+        assert!(prefix_candidates.newly_admitted_candidate_hits_prefix(&observed, &negative));
+
+        let collision = (0..100_000)
+            .map(|index| format!("unobserved-collision-candidate-{index}"))
+            .find(|call_id| {
+                !negative.definitely_absent(&repository_candidate_call_id_digest(call_id))
+            })
+            .expect("32 KiB Bloom has a deterministic false-positive fixture");
+        let mut colliding = CodexRepositoryCandidateAuthority::default();
+        colliding.admit_candidate(&collision);
+        assert!(prefix_candidates.newly_admitted_candidate_hits_prefix(&colliding, &negative));
+
+        let absent = (0..100)
+            .map(|index| format!("definitely-absent-candidate-{index}"))
+            .find(|call_id| {
+                negative.definitely_absent(&repository_candidate_call_id_digest(call_id))
+            })
+            .expect("a Bloom miss is readily available");
+        let mut resumable = CodexRepositoryCandidateAuthority::default();
+        resumable.admit_candidate(&absent);
+        assert!(!prefix_candidates.newly_admitted_candidate_hits_prefix(&resumable, &negative));
     }
 }

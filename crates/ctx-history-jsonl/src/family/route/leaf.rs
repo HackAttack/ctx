@@ -1170,6 +1170,14 @@ fn open_leaf_reader<R: JsonlFamilyRuntime>(
     previous: Option<&FamilyCheckpoint>,
     projector_preflight: bool,
 ) -> JsonlResult<JsonlReader<JsonlRuntimeError<R>>, JsonlRuntimeError<R>> {
+    let direct_append = previous
+        .and_then(|checkpoint| checkpoint.provider_checkpoint.as_ref())
+        .is_some_and(|checkpoint| {
+            adapter.append_trust_contract()
+                == super::JsonlFamilyAppendTrustContract::AppendOnlySameObjectV1
+                && adapter.allows_direct_append_for_leaf(leaf)
+                && adapter.accepts_direct_append_checkpoint(checkpoint)
+        });
     let mut reader = if leaf.whole_record {
         JsonlReader::open_whole_record(
             physical_identity(adapter, leaf),
@@ -1178,7 +1186,7 @@ fn open_leaf_reader<R: JsonlFamilyRuntime>(
         )
     } else {
         if adapter.bind_admitted_eof() {
-            JsonlReader::open_semantic_with_record_framing_and_encoding(
+            JsonlReader::open_semantic_with_record_framing_and_encoding_direct(
                 physical_identity(adapter, leaf),
                 Arc::clone(opened),
                 previous.map(|checkpoint| &checkpoint.physical),
@@ -1189,9 +1197,10 @@ fn open_leaf_reader<R: JsonlFamilyRuntime>(
                 adapter.physical_encoding(leaf),
                 adapter.record_framing(),
                 leaf.frozen_scan_observation(),
+                direct_append,
             )
         } else if projector_preflight {
-            JsonlReader::open_semantic_with_record_framing_and_encoding(
+            JsonlReader::open_semantic_with_record_framing_and_encoding_direct(
                 physical_identity(adapter, leaf),
                 Arc::clone(opened),
                 previous.map(|checkpoint| &checkpoint.physical),
@@ -1200,6 +1209,7 @@ fn open_leaf_reader<R: JsonlFamilyRuntime>(
                 adapter.physical_encoding(leaf),
                 adapter.record_framing(),
                 leaf.frozen_scan_observation(),
+                direct_append,
             )
         } else {
             JsonlReader::open_with_record_framing_and_encoding(

@@ -3,8 +3,8 @@ use ctx_history_core::{CertifiedSource, ScannedSourceCounts, SourceFrontier};
 
 use super::super::{
     contract_error, route_invalid, source_observation, FamilyCheckpoint, JsonlFamilyAdapter,
-    JsonlFamilyError, JsonlFamilyLeaf, JsonlFamilyRuntime, JsonlFamilyTerminalProof, JsonlResult,
-    JsonlRuntimeError, FAMILY_FRONTIER_KIND,
+    JsonlFamilyAppendTrustContract, JsonlFamilyError, JsonlFamilyLeaf, JsonlFamilyRuntime,
+    JsonlFamilyTerminalProof, JsonlResult, JsonlRuntimeError, FAMILY_FRONTIER_KIND,
 };
 
 pub(super) fn fit_semantic_provider_checkpoint<R: JsonlFamilyRuntime>(
@@ -40,6 +40,16 @@ pub(super) fn terminal_proof_for_checkpoint<R: JsonlFamilyRuntime>(
 ) -> JsonlResult<JsonlFamilyTerminalProof<JsonlRuntimeError<R>>, JsonlRuntimeError<R>> {
     if leaf.whole_record || !adapter.append_mode().certified_suffix() {
         JsonlFamilyTerminalProof::exact_file(adapter, leaf, certificate)
+    } else if adapter.append_trust_contract()
+        == JsonlFamilyAppendTrustContract::AppendOnlySameObjectV1
+        && adapter.allows_direct_append_for_leaf(leaf)
+    {
+        JsonlFamilyTerminalProof::append_only_same_object_v1(
+            adapter,
+            leaf,
+            certificate,
+            checkpoint.physical.complete_prefix_end(),
+        )
     } else if let Some(admitted_eof_sha256) = checkpoint.admitted_eof_sha256 {
         JsonlFamilyTerminalProof::frozen_prefix(
             adapter,

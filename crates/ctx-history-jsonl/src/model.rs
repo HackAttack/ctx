@@ -3,20 +3,20 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
-use crate::JsonlSourceIdentity;
+use crate::{JsonlResumableSha256, JsonlSha256State, JsonlSourceIdentity};
 
 const JSONL_PREFIX_HASH_DOMAIN: &[u8] = b"ctx-direct-jsonl-nativepath-prefix-v1\0";
 
 #[inline]
-pub fn new_jsonl_prefix_hasher() -> Sha256 {
-    let mut hasher = Sha256::new();
+pub fn new_jsonl_prefix_hasher() -> JsonlResumableSha256 {
+    let mut hasher = JsonlResumableSha256::new();
     hasher.update(JSONL_PREFIX_HASH_DOMAIN);
     hasher
 }
 
 #[inline]
-pub fn jsonl_prefix_digest(hasher: &Sha256) -> [u8; 32] {
-    hasher.clone().finalize().into()
+pub fn jsonl_prefix_digest(hasher: &JsonlResumableSha256) -> [u8; 32] {
+    hasher.digest()
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -108,6 +108,10 @@ pub struct JsonlCheckpoint {
     source_observation: JsonlFileObservation,
     complete_prefix_end: u64,
     complete_prefix_sha256: [u8; 32],
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    complete_prefix_sha256_state: Option<JsonlSha256State>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    admitted_eof_sha256_state: Option<JsonlSha256State>,
     next_physical_ordinal: u64,
     terminal: bool,
 }
@@ -129,6 +133,30 @@ impl JsonlCheckpoint {
             source_observation,
             complete_prefix_end,
             complete_prefix_sha256,
+            complete_prefix_sha256_state: None,
+            admitted_eof_sha256_state: None,
+            next_physical_ordinal,
+            terminal,
+        }
+    }
+
+    pub fn new_with_prefix_state(
+        identity: JsonlSourceIdentity,
+        source_observation: JsonlFileObservation,
+        complete_prefix_end: u64,
+        complete_prefix_hasher: &JsonlResumableSha256,
+        admitted_eof_hasher: Option<&JsonlResumableSha256>,
+        next_physical_ordinal: u64,
+        terminal: bool,
+    ) -> Self {
+        Self {
+            version: Self::VERSION,
+            identity,
+            source_observation,
+            complete_prefix_end,
+            complete_prefix_sha256: complete_prefix_hasher.digest(),
+            complete_prefix_sha256_state: Some(complete_prefix_hasher.snapshot()),
+            admitted_eof_sha256_state: admitted_eof_hasher.map(JsonlResumableSha256::snapshot),
             next_physical_ordinal,
             terminal,
         }
@@ -148,6 +176,24 @@ impl JsonlCheckpoint {
 
     pub fn complete_prefix_sha256(&self) -> &[u8; 32] {
         &self.complete_prefix_sha256
+    }
+
+    pub fn restore_complete_prefix_hasher(&self) -> Option<JsonlResumableSha256> {
+        let hasher = JsonlResumableSha256::restore(self.complete_prefix_sha256_state.as_ref()?)?;
+        let domain_bytes = u64::try_from(JSONL_PREFIX_HASH_DOMAIN.len()).ok()?;
+        (hasher.bytes_hashed() == domain_bytes.checked_add(self.complete_prefix_end)?
+            && hasher.digest() == self.complete_prefix_sha256)
+            .then_some(hasher)
+    }
+
+    pub fn restore_admitted_eof_hasher(&self) -> Option<JsonlResumableSha256> {
+        let hasher = JsonlResumableSha256::restore(self.admitted_eof_sha256_state.as_ref()?)?;
+        (hasher.bytes_hashed() == self.source_observation.length).then_some(hasher)
+    }
+
+    pub fn admitted_eof_sha256(&self) -> Option<[u8; 32]> {
+        self.restore_admitted_eof_hasher()
+            .map(|hasher| hasher.digest())
     }
 
     pub fn next_physical_ordinal(&self) -> u64 {
@@ -172,6 +218,14 @@ impl JsonlCheckpoint {
                 nonempty_prefix_is_possible
             }
             && (!self.terminal || self.complete_prefix_end == self.source_observation.length)
+            && self
+                .complete_prefix_sha256_state
+                .as_ref()
+                .is_none_or(|_| self.restore_complete_prefix_hasher().is_some())
+            && self
+                .admitted_eof_sha256_state
+                .as_ref()
+                .is_none_or(|_| self.restore_admitted_eof_hasher().is_some())
     }
 
     pub fn supports(&self, identity: &JsonlSourceIdentity) -> bool {
@@ -300,5 +354,71 @@ impl JsonlScanOutcome {
 
     pub fn checkpoint(&self) -> &JsonlCheckpoint {
         &self.checkpoint
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn continuation_checkpoint() -> JsonlCheckpoint {
+        let bytes = b"one complete JSONL record\n";
+        let mut complete = new_jsonl_prefix_hasher();
+        complete.update(bytes);
+        let mut admitted = JsonlResumableSha256::new();
+        admitted.update(bytes);
+        JsonlCheckpoint::new_with_prefix_state(
+            JsonlSourceIdentity::new("test", "parser-v1", "policy-v1", [3; 32], "/tmp/test"),
+            JsonlFileObservation::new(
+                bytes.len() as u64,
+                UNIX_EPOCH,
+                false,
+                Some([4; 32]),
+                Some([5; 32]),
+            ),
+            bytes.len() as u64,
+            &complete,
+            Some(&admitted),
+            1,
+            true,
+        )
+    }
+
+    #[test]
+    fn continuation_state_is_optional_for_strict_readers_and_invalid_for_direct_resume() {
+        let current = continuation_checkpoint();
+        assert!(current.is_internally_consistent());
+        assert!(current.restore_complete_prefix_hasher().is_some());
+        assert!(current.restore_admitted_eof_hasher().is_some());
+
+        let legacy = JsonlCheckpoint::new(
+            current.identity.clone(),
+            current.source_observation.clone(),
+            current.complete_prefix_end,
+            current.complete_prefix_sha256,
+            current.next_physical_ordinal,
+            current.terminal,
+        );
+        assert!(legacy.is_internally_consistent());
+        assert!(legacy.restore_complete_prefix_hasher().is_none());
+        assert!(legacy.restore_admitted_eof_hasher().is_none());
+    }
+
+    #[test]
+    fn corrupt_or_wrong_bound_continuation_state_is_inert() {
+        let current = continuation_checkpoint();
+        let mut corrupt = serde_json::to_value(&current).unwrap();
+        corrupt["complete_prefix_sha256_state"]["state"][0] = serde_json::json!(0);
+        let corrupt: JsonlCheckpoint = serde_json::from_value(corrupt).unwrap();
+        assert!(!corrupt.is_internally_consistent());
+        assert!(corrupt.restore_complete_prefix_hasher().is_none());
+
+        let mut wrong_bound = serde_json::to_value(&current).unwrap();
+        wrong_bound["complete_prefix_end"] =
+            serde_json::json!(current.complete_prefix_end.saturating_sub(1));
+        wrong_bound["terminal"] = serde_json::json!(false);
+        let wrong_bound: JsonlCheckpoint = serde_json::from_value(wrong_bound).unwrap();
+        assert!(!wrong_bound.is_internally_consistent());
+        assert!(wrong_bound.restore_complete_prefix_hasher().is_none());
     }
 }

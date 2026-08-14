@@ -6,8 +6,8 @@ use std::{
 
 use super::{
     observe_opened_file, revalidate_frozen_prefix, JsonlCheckpoint, JsonlFileObservation,
-    JsonlOversizedRecordPolicy, JsonlPhysicalEncoding, JsonlProbe, JsonlReader, JsonlRecordFraming,
-    JsonlRecordRef, OpenedProviderSourceFile, OpenedProviderSourcePath, ProviderSourceDirectory,
+    JsonlOversizedRecordPolicy, JsonlPhysicalEncoding, JsonlProbe, JsonlRecordFraming,
+    OpenedProviderSourceFile, OpenedProviderSourcePath, ProviderSourceDirectory,
     ProviderSourceRoot,
 };
 use super::{
@@ -61,6 +61,8 @@ use errors::{
 };
 mod ownership;
 use ownership::base_sources_for_root;
+mod projector;
+pub use projector::JsonlFamilyProjector;
 mod revalidation;
 #[cfg(feature = "test-support")]
 pub use revalidation::set_before_jsonl_terminal_physical_revalidation_hook;
@@ -117,51 +119,6 @@ pub enum JsonlFamilyBaseScope {
     /// Reuse only sources previously committed by this exact route. Adapters
     /// whose explicit and automatic routes can overlap must select this mode.
     Route,
-}
-
-pub trait JsonlFamilyProjector: Send {
-    type Runtime: JsonlFamilyRuntime;
-
-    fn preflight(
-        &mut self,
-        _reader: &mut JsonlReader<JsonlRuntimeError<Self::Runtime>>,
-        _certified_prefix_end: Option<u64>,
-    ) -> JsonlResult<bool, JsonlRuntimeError<Self::Runtime>> {
-        Ok(false)
-    }
-
-    fn retry_replacement(&mut self) {}
-
-    fn project(
-        &mut self,
-        record: JsonlRecordRef<'_>,
-        worker: &mut JsonlFamilyWorkerContext<Self::Runtime>,
-        emit: &mut dyn FnMut(CoreRecord) -> JsonlResult<(), JsonlRuntimeError<Self::Runtime>>,
-    ) -> JsonlResult<(), JsonlRuntimeError<Self::Runtime>>;
-
-    fn finish(&mut self) -> JsonlResult<(), JsonlRuntimeError<Self::Runtime>> {
-        Ok(())
-    }
-
-    fn finish_projecting(
-        &mut self,
-        _worker: &mut JsonlFamilyWorkerContext<Self::Runtime>,
-        _emit: &mut dyn FnMut(CoreRecord) -> JsonlResult<(), JsonlRuntimeError<Self::Runtime>>,
-    ) -> JsonlResult<(), JsonlRuntimeError<Self::Runtime>> {
-        self.finish()
-    }
-
-    fn rejected_records(&self) -> u64 {
-        0
-    }
-
-    /// Opaque, contract-bounded provider state to carry into the next certified
-    /// suffix projection. The family persists the value without interpreting it.
-    fn provider_checkpoint(
-        &self,
-    ) -> JsonlResult<Option<TypedKey>, JsonlRuntimeError<Self::Runtime>> {
-        Ok(None)
-    }
 }
 
 pub trait JsonlFamilySemanticExecutor: Send {
@@ -223,6 +180,35 @@ pub trait JsonlFamilyAdapter: Send + Sync {
     /// Binds the complete admitted EOF, including an unfinished tail, with a
     /// raw SHA-256 digest owned and revalidated by the shared family.
     fn bind_admitted_eof(&self) -> bool {
+        false
+    }
+
+    /// Explicit provider trust contract: the source authority promises that a
+    /// retained object can only be extended. The shared reader rejects object
+    /// replacement and truncation, but this contract—not filesystem metadata—
+    /// is the authority excluding same-object rewrite plus growth.
+    /// Explicitly opts this adapter into same-object physical continuation.
+    /// Implementations must still admit each leaf and checkpoint separately.
+    fn append_only_same_object_v1(&self) -> bool {
+        false
+    }
+
+    fn append_trust_contract(&self) -> JsonlFamilyAppendTrustContract {
+        if self.append_only_same_object_v1() {
+            JsonlFamilyAppendTrustContract::AppendOnlySameObjectV1
+        } else {
+            JsonlFamilyAppendTrustContract::StrictPrefixAuthentication
+        }
+    }
+
+    fn accepts_direct_append_checkpoint(&self, _checkpoint: &TypedKey) -> bool {
+        false
+    }
+
+    fn allows_direct_append_for_leaf(
+        &self,
+        _leaf: &JsonlFamilyLeaf<JsonlRuntimeError<Self::Runtime>>,
+    ) -> bool {
         false
     }
 
@@ -459,6 +445,15 @@ pub trait JsonlFamilyAdapter: Send + Sync {
             && source.schema_variant() == self.schema_variant()
             && source.provider_identity_version() == 1
     }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum JsonlFamilyAppendTrustContract {
+    StrictPrefixAuthentication,
+    /// Provider-owned rollout files retain one trusted object and promise only
+    /// append growth. This contract is versioned so broadening it requires an
+    /// explicit compatibility decision.
+    AppendOnlySameObjectV1,
 }
 
 /// Content-free physical membership observed at admission or at the terminal
