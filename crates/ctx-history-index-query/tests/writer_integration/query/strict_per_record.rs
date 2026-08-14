@@ -32,8 +32,8 @@ fn stored_source_page_matches_format_accepted_decode_and_exact_bytes() {
     let source = source("format-query-decode-parity.jsonl");
     let record = document(&source, 1, "format-owned decode evidence");
     let expected_bytes = record.encode_stored().unwrap();
-    let (_temp, index) = indexed_records(&source, std::slice::from_ref(&record));
-    let searcher = index.test_searcher();
+    let (temp, index) = indexed_records(&source, std::slice::from_ref(&record));
+    let (searcher, _) = open_unverified_generation(temp.path());
     let addresses = searcher
         .search(&AllQuery, &DocSetCollector)
         .unwrap()
@@ -44,7 +44,7 @@ fn stored_source_page_matches_format_accepted_decode_and_exact_bytes() {
     let fields = fields_from_schema(searcher.schema()).unwrap();
     let document: TantivyDocument = searcher.doc(address).unwrap();
     let (format_record, format_bytes) =
-        ctx_history_index_format::decode_core_document(searcher, address, &document, fields)
+        ctx_history_index_format::decode_core_document(&searcher, address, &document, fields)
             .unwrap();
 
     ctx_history_index_query::reset_core_record_decodes();

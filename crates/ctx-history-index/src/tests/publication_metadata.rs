@@ -169,7 +169,19 @@ fn metadata_factory_runs_inside_the_terminal_authority_fence_without_reopen() {
         published.verified_index().publication_metadata(),
         Some(metadata.as_slice())
     );
-    assert_eq!(crate::publication::verification_activity(), (1, 1));
+    assert_eq!(crate::publication::verification_activity(), (1, 0));
+    assert_eq!(
+        crate::publication::candidate_identity_verification_activity(),
+        (1, 1)
+    );
+    assert_eq!(
+        crate::publication::candidate_projection_verification_activity(),
+        0
+    );
+    assert_eq!(
+        crate::publication::candidate_lineage_verification_activity(),
+        (0, 0)
+    );
     assert_eq!(ctx_history_index_query::verified_index_reopen_count(), 0);
     assert_eq!(
         ctx_history_index_query::verified_index_publication_construction_count(),
@@ -179,7 +191,7 @@ fn metadata_factory_runs_inside_the_terminal_authority_fence_without_reopen() {
         &published.receipt().shared_manifest(),
         published.verified_index().test_shared_manifest()
     ));
-    assert_eq!(crate::publication::complete_session_id_traversals(), 1);
+    assert_eq!(crate::publication::complete_session_id_traversals(), 0);
 
     let expected_payload = format!(
         "{{\"version\":2,\"generation_id\":\"{}\",\"publication_metadata\":\"{}\"}}",
@@ -215,7 +227,19 @@ fn receipt_only_commit_does_not_construct_a_return_pin() {
         .unwrap();
 
     assert!(!receipt.generation_id.is_empty());
-    assert_eq!(crate::publication::verification_activity(), (1, 1));
+    assert_eq!(crate::publication::verification_activity(), (1, 0));
+    assert_eq!(
+        crate::publication::candidate_identity_verification_activity(),
+        (1, 1)
+    );
+    assert_eq!(
+        crate::publication::candidate_projection_verification_activity(),
+        0
+    );
+    assert_eq!(
+        crate::publication::candidate_lineage_verification_activity(),
+        (0, 0)
+    );
     assert_eq!(ctx_history_index_query::verified_index_reopen_count(), 0);
     assert_eq!(
         ctx_history_index_query::verified_index_publication_construction_count(),
@@ -243,9 +267,8 @@ fn publication_metadata_accepts_exact_bound_and_rejects_one_over_before_commit()
             .len(),
         MAX_PUBLICATION_METADATA_BYTES
     );
-    let mut oversized_metas = published
-        .verified_index()
-        .test_searcher()
+    let mut oversized_metas = open_unverified_generation(exact.path())
+        .0
         .index()
         .load_metas()
         .unwrap();
@@ -750,12 +773,8 @@ fn noncanonical_payload_is_rejected_but_raw_metadata_is_not_interpreted() {
         Err(IndexError::NonCanonicalCommitPayload)
     ));
 
-    let mut malformed_metas = published
-        .verified_index()
-        .test_searcher()
-        .index()
-        .load_metas()
-        .unwrap();
+    let directory = DurableMmapDirectory::open(active_generation_path(temp.path())).unwrap();
+    let mut malformed_metas = Index::open(directory).unwrap().load_metas().unwrap();
     malformed_metas.payload = Some(format!(
         "{{\"version\":2,\"generation_id\":\"{}\",\"publication_metadata\":\"!!\"}}",
         published.receipt().generation_id

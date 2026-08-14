@@ -24,6 +24,17 @@ thread_local! {
 }
 
 /// A verified reader pinned to one immutable lexical generation.
+///
+/// Feature-enabled downstream code cannot extract its raw Tantivy searcher or
+/// index handle:
+///
+/// ```compile_fail
+/// use ctx_history_index_query::VerifiedIndex;
+///
+/// fn expose_raw_searcher(index: &VerifiedIndex) {
+///     let _ = index.test_searcher();
+/// }
+/// ```
 pub struct VerifiedIndex {
     pub(crate) searcher: Searcher,
     pub(crate) manifest: Arc<GenerationManifest>,
@@ -399,12 +410,6 @@ impl VerifiedIndex {
 
     pub fn manifest(&self) -> &GenerationManifest {
         &self.manifest
-    }
-
-    #[cfg(any(test, feature = "test-support"))]
-    #[doc(hidden)]
-    pub fn test_searcher(&self) -> &Searcher {
-        &self.searcher
     }
 
     #[cfg(any(test, feature = "test-support"))]

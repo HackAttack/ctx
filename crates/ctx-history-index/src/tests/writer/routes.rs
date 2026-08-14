@@ -42,18 +42,56 @@ fn route_checkpoint_rolls_back_partial_route_and_keeps_prior_route_work() {
         .unwrap();
     writer.begin_source_route_stage(route_b.clone()).unwrap();
     writer.begin_source(source_b.clone()).unwrap();
-    writer
-        .add_core_record(document(&source_b, 2, "successful route b"))
-        .unwrap();
+    let route_b_record = document(&source_b, 2, "successful route b");
+    let route_b_session_uuid = route_b_record.session_id.as_uuid();
+    writer.add_core_record(route_b_record).unwrap();
     writer.certify_source(certificate(&source_b, 2, 1)).unwrap();
     writer.finish_source_route_stage(&route_b).unwrap();
+    assert!(writer.changed_sessions.contains_key(&route_b_session_uuid));
 
     writer.begin_source_route_stage(route_c.clone()).unwrap();
     writer.begin_source(source_c.clone()).unwrap();
-    writer
-        .add_core_record(document(&source_c, 3, "partial failed route c"))
+    let first_parent = document_for_session(&source_c, "first-parent", 30, "not published");
+    let second_parent = document_for_session(&source_c, "second-parent", 31, "not published");
+    let mut first_attempt = document(&source_c, 3, "partial failed route c");
+    first_attempt
+        .set_session_relationship(
+            SessionRelationshipKind::Forked,
+            Some(first_parent.session_id),
+            first_parent.session_id,
+        )
         .unwrap();
+    let route_c_session_uuid = first_attempt.session_id.as_uuid();
+    writer.add_core_record(first_attempt).unwrap();
+    assert_eq!(
+        writer
+            .active_source_route_stage
+            .as_ref()
+            .unwrap()
+            .changed_session_insertions,
+        vec![route_c_session_uuid]
+    );
     writer.rollback_source_route_stage(&route_c).unwrap();
+    assert!(writer.changed_sessions.contains_key(&route_b_session_uuid));
+    assert!(!writer.changed_sessions.contains_key(&route_c_session_uuid));
+
+    // A second attempt may legitimately reconstruct the rolled-back session
+    // with a different claim. This succeeds only when rollback restores the
+    // route's changed-session insertions alongside Tantivy and manifest state.
+    writer.begin_source_route_stage(route_c.clone()).unwrap();
+    writer.begin_source(source_c.clone()).unwrap();
+    let mut second_attempt = document(&source_c, 4, "second failed route c");
+    second_attempt
+        .set_session_relationship(
+            SessionRelationshipKind::Forked,
+            Some(second_parent.session_id),
+            second_parent.session_id,
+        )
+        .unwrap();
+    writer.add_core_record(second_attempt).unwrap();
+    writer.rollback_source_route_stage(&route_c).unwrap();
+    assert!(writer.changed_sessions.contains_key(&route_b_session_uuid));
+    assert!(!writer.changed_sessions.contains_key(&route_c_session_uuid));
     assert!(!writer
         .carry_failed_source_route_from_base(&route_c)
         .unwrap());
@@ -73,6 +111,65 @@ fn route_checkpoint_rolls_back_partial_route_and_keeps_prior_route_work() {
     assert!(published.manifest().source_route(&route_a).is_some());
     assert!(published.manifest().source_route(&route_b).is_some());
     assert!(published.manifest().source_route(&route_c).is_none());
+}
+
+#[test]
+fn many_route_checkpoints_record_only_route_local_session_insertions() {
+    const ROUTES: usize = 64;
+
+    let temp = tempdir().unwrap();
+    let routes = (1..=ROUTES)
+        .map(|index| SourceRouteIdentity::from_sha256(format!("{index:064x}")).unwrap())
+        .collect::<Vec<_>>();
+    let sources = (1..=ROUTES)
+        .map(|index| source(&format!("route-local-session-{index}.jsonl")))
+        .collect::<Vec<_>>();
+    let mut writer = GenerationWriter::open(temp.path(), WriterOptions::default())
+        .unwrap()
+        .into_writer()
+        .unwrap();
+    writer
+        .set_source_route_plan(routes.iter().cloned().collect(), BTreeSet::new())
+        .unwrap();
+
+    let mut total_undo_entries = 0;
+    for (offset, (route, source)) in routes.iter().zip(&sources).enumerate() {
+        writer.begin_source_route_stage(route.clone()).unwrap();
+        assert!(writer
+            .active_source_route_stage
+            .as_ref()
+            .unwrap()
+            .changed_session_insertions
+            .is_empty());
+        writer.begin_source(source.clone()).unwrap();
+        let record = document_for_session(
+            source,
+            &format!("route-local-session-{offset}"),
+            offset as u64 + 1,
+            "route-local insertion",
+        );
+        let session_uuid = record.session_id.as_uuid();
+        writer.add_core_record(record).unwrap();
+
+        let checkpoint = writer.active_source_route_stage.as_ref().unwrap();
+        assert_eq!(checkpoint.changed_session_insertions, vec![session_uuid]);
+        total_undo_entries += checkpoint.changed_session_insertions.len();
+        assert_eq!(writer.changed_sessions.len(), offset + 1);
+
+        writer
+            .certify_source(certificate(source, offset as u8 + 1, 1))
+            .unwrap();
+        writer.finish_source_route_stage(route).unwrap();
+        assert!(writer.active_source_route_stage.is_none());
+    }
+
+    assert_eq!(total_undo_entries, ROUTES);
+    assert_eq!(writer.changed_sessions.len(), ROUTES);
+    assert_eq!(ROUTES * (ROUTES - 1) / 2, 2016);
+    assert!(
+        total_undo_entries < ROUTES * (ROUTES - 1) / 2,
+        "route checkpoints copied prior-session registry state"
+    );
 }
 
 #[test]

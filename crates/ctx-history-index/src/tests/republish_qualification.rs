@@ -557,15 +557,15 @@ fn build_generated_predecessor(root: &Path, corpus: CorpusSpec) {
     assert_eq!(verified.document_count(), corpus.documents);
 }
 
-fn stored_payload(index: &VerifiedIndex) -> Vec<u8> {
-    let fields = fields_from_schema(index.test_searcher().schema()).unwrap();
-    let mut records = index
-        .test_searcher()
+fn stored_payload(root: &Path) -> Vec<u8> {
+    let (searcher, _) = open_unverified_generation(root);
+    let fields = fields_from_schema(searcher.schema()).unwrap();
+    let mut records = searcher
         .search(&AllQuery, &DocSetCollector)
         .unwrap()
         .into_iter()
         .map(|address| {
-            let document: TantivyDocument = index.test_searcher().doc(address).unwrap();
+            let document: TantivyDocument = searcher.doc(address).unwrap();
             let encoded = document
                 .get_first(fields.core_record)
                 .and_then(|value| value.as_bytes())
@@ -674,7 +674,8 @@ fn execute_qualification_operation(case: QualificationCase, root: &Path) {
 
 fn materialize_output_identity(root: &Path, output_path: &Path) -> OutputIdentity {
     let verified = VerifiedIndex::open(root).unwrap();
-    let output = stored_payload(&verified);
+    let output = stored_payload(root);
+    drop(verified);
     let mut output_file = File::create(output_path).unwrap();
     output_file.write_all(&output).unwrap();
     output_file.flush().unwrap();

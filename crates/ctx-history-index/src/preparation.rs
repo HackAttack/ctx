@@ -9,15 +9,15 @@ use std::{
 use std::cell::Cell;
 
 use ctx_history_core::{
-    CoreRecord, SourceKey, CORE_CONTENT_POLICY_REVISION, CORE_NORMALIZATION_REVISION,
-    MAX_ENCODED_CORE_RECORD_BYTES,
+    CoreRecord, SessionRelationshipKind, SourceKey, StableEntityId, CORE_CONTENT_POLICY_REVISION,
+    CORE_NORMALIZATION_REVISION, MAX_ENCODED_CORE_RECORD_BYTES,
 };
 use tantivy::Searcher;
 
 use crate::{
     core_record_accumulator_leaf, core_record_leaf, load_active_generation_pointer,
     prior_core_record, verify_physical_integrity, Fields, GenerationSlot, IndexDocument,
-    IndexError, IndexSourceFields, Result, INDEX_GENERATIONS_DIRECTORY,
+    IndexError, Result, INDEX_GENERATIONS_DIRECTORY,
 };
 
 #[cfg(test)]
@@ -174,6 +174,18 @@ impl PreparedCoreRecordDraft {
         #[cfg(test)]
         FINAL_ENCODINGS.with(|count| count.set(count.get() + 1));
         let event_id = self.record.event_id;
+        let identity_facts = PreparedCoreIdentityFacts {
+            event_id,
+            session: PreparedSessionIdentityFacts {
+                session_id: self.record.session_id,
+                source_owner: self.record.source.identity().digest(),
+                relationship: PreparedSessionRelationship {
+                    parent_session_id: self.record.parent_session_id,
+                    root_session_id: self.record.root_session_id,
+                    kind: self.record.session_relationship,
+                },
+            },
+        };
         let record_leaf = core_record_leaf(event_id, &encoded_core_record)?;
         let record_accumulator_leaf = core_record_accumulator_leaf(event_id, &record_leaf)?;
         let document = IndexDocument::from_core(
@@ -181,7 +193,6 @@ impl PreparedCoreRecordDraft {
             self.record,
             encoded_core_record,
             self.core_content_bytes,
-            IndexSourceFields::new(&self.source, &self.source_token),
         )?;
 
         Ok(PreparedCoreRecordMaterialization::Prepared(
@@ -191,6 +202,7 @@ impl PreparedCoreRecordDraft {
                 source_token: self.source_token,
                 encoded_core_bytes,
                 record_accumulator_leaf,
+                identity_facts,
                 document,
             },
         ))
@@ -301,7 +313,44 @@ pub struct PreparedCoreRecord {
     source_token: String,
     encoded_core_bytes: usize,
     record_accumulator_leaf: [u8; 32],
+    identity_facts: PreparedCoreIdentityFacts,
     document: IndexDocument,
+}
+
+/// Identity and child-owned relationship authority captured from the exact
+/// validated Core record used to create a prepared document.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct PreparedCoreIdentityFacts {
+    pub(crate) event_id: StableEntityId,
+    pub(crate) session: PreparedSessionIdentityFacts,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct PreparedSessionIdentityFacts {
+    pub(crate) session_id: StableEntityId,
+    pub(crate) source_owner: [u8; 32],
+    pub(crate) relationship: PreparedSessionRelationship,
+}
+
+impl PreparedSessionIdentityFacts {
+    pub(crate) fn for_core_record(record: &CoreRecord) -> Self {
+        Self {
+            session_id: record.session_id,
+            source_owner: record.source.identity().digest(),
+            relationship: PreparedSessionRelationship {
+                parent_session_id: record.parent_session_id,
+                root_session_id: record.root_session_id,
+                kind: record.session_relationship,
+            },
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct PreparedSessionRelationship {
+    pub(crate) parent_session_id: Option<StableEntityId>,
+    pub(crate) root_session_id: StableEntityId,
+    pub(crate) kind: SessionRelationshipKind,
 }
 
 impl PreparedCoreRecord {
@@ -325,8 +374,14 @@ impl PreparedCoreRecord {
     pub(crate) fn into_parts(self) -> PreparedCoreRecordParts {
         PreparedCoreRecordParts {
             record_accumulator_leaf: self.record_accumulator_leaf,
+            identity_facts: self.identity_facts,
             document: self.document,
         }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn test_identity_facts_mut(&mut self) -> &mut PreparedCoreIdentityFacts {
+        &mut self.identity_facts
     }
 }
 
@@ -342,6 +397,7 @@ impl fmt::Debug for PreparedCoreRecord {
 
 pub(crate) struct PreparedCoreRecordParts {
     pub(crate) record_accumulator_leaf: [u8; 32],
+    pub(crate) identity_facts: PreparedCoreIdentityFacts,
     pub(crate) document: IndexDocument,
 }
 

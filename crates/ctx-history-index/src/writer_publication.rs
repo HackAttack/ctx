@@ -105,7 +105,7 @@ impl GenerationWriter {
             }
         };
         best_effort_post_republish_cleanup(&self.root, &published_pointer);
-        let verified = VerifiedIndex::open(&self.root)?;
+        let verified = VerifiedIndex::open_pinned(&self.root)?;
         if verified.generation_id() != expected_generation_id {
             return Err(IndexError::ConcurrentGenerationChange);
         }
@@ -164,10 +164,14 @@ impl GenerationWriter {
         ))
     }
 
+    /// Prevents segment merging in tests without exposing the writer or its
+    /// document type.
     #[cfg(any(test, feature = "test-support"))]
     #[doc(hidden)]
-    pub fn test_writer_mut(&mut self) -> Result<&mut IndexWriter<IndexDocument>> {
-        self.writer_mut()
+    pub fn test_disable_merges(&mut self) -> Result<()> {
+        self.writer_mut()?
+            .set_merge_policy(Box::<tantivy::indexer::NoMergePolicy>::default());
+        Ok(())
     }
 
     /// Publishes one atomic lexical generation.

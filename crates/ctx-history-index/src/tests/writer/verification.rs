@@ -57,7 +57,7 @@ fn identical_staging_revalidates_active_checksum_after_terminal_callback() {
 }
 
 #[test]
-fn publication_activity_uses_exhaustive_verifier_for_empty_reusable_base() {
+fn publication_activity_uses_compact_identity_verifier_for_empty_reusable_base() {
     let temp = tempdir().unwrap();
     let empty = GenerationWriter::open(temp.path(), WriterOptions::default())
         .unwrap()
@@ -83,16 +83,24 @@ fn publication_activity_uses_exhaustive_verifier_for_empty_reusable_base() {
 
     crate::publication::reset_verification_activity();
     replacement.commit(|_| true).unwrap();
-    assert_eq!(crate::publication::verification_activity(), (1, 1));
+    assert_eq!(crate::publication::verification_activity(), (1, 0));
     assert_eq!(
         crate::publication::candidate_identity_verification_activity(),
-        (0, 0),
-        "an empty reusable base must dispatch to the exhaustive verifier"
+        (1, 1),
+        "an empty reusable base must compactly audit its one event identity"
+    );
+    assert_eq!(
+        crate::publication::candidate_projection_verification_activity(),
+        0
+    );
+    assert_eq!(
+        crate::publication::candidate_lineage_verification_activity(),
+        (0, 0)
     );
 }
 
 #[test]
-fn publication_activity_keeps_cold_scrub_and_uses_incremental_identity_audit_for_nonempty_base() {
+fn publication_activity_uses_compact_identity_audits_for_cold_and_incremental_candidates() {
     const RETAINED_DOCUMENTS: u64 = 32;
 
     let cold = tempdir().unwrap();
@@ -117,7 +125,19 @@ fn publication_activity_keeps_cold_scrub_and_uses_incremental_identity_audit_for
         .unwrap();
     crate::publication::reset_verification_activity();
     initial.commit(|_| true).unwrap();
-    assert_eq!(crate::publication::verification_activity(), (1, 1));
+    assert_eq!(crate::publication::verification_activity(), (1, 0));
+    assert_eq!(
+        crate::publication::candidate_identity_verification_activity(),
+        (RETAINED_DOCUMENTS as usize, RETAINED_DOCUMENTS as usize)
+    );
+    assert_eq!(
+        crate::publication::candidate_projection_verification_activity(),
+        0
+    );
+    assert_eq!(
+        crate::publication::candidate_lineage_verification_activity(),
+        (0, 0)
+    );
 
     crate::publication::reset_verification_activity();
     let mut noop = GenerationWriter::open(cold.path(), WriterOptions::default())
@@ -178,18 +198,18 @@ fn publication_activity_keeps_cold_scrub_and_uses_incremental_identity_audit_for
     assert_eq!(crate::publication::verification_activity(), (1, 0));
     assert_eq!(
         crate::publication::candidate_projection_verification_activity(),
-        1,
-        "one tiny append must revalidate only its query-authoritative projection"
+        0,
+        "one tiny append must not replay its query-authoritative projection"
     );
     assert_eq!(
         crate::publication::candidate_identity_verification_activity(),
-        (2, 5),
-        "one changed identity must sample the retained session without replaying its records"
+        (1, 1),
+        "one changed identity must resolve only its compact event term and posting"
     );
     assert_eq!(
         crate::publication::candidate_lineage_verification_activity(),
-        (2, 2),
-        "one tiny append must verify only the changed session's local claims"
+        (0, 0),
+        "one tiny append must not replay session or lineage claims"
     );
 }
 
@@ -268,12 +288,16 @@ fn unrelated_append_does_not_replay_retained_copy_lineage() {
     assert_eq!(crate::publication::verification_activity(), (1, 0));
     assert_eq!(
         crate::publication::candidate_identity_verification_activity(),
-        (2, 5)
+        (1, 1)
+    );
+    assert_eq!(
+        crate::publication::candidate_projection_verification_activity(),
+        0
     );
     assert_eq!(
         crate::publication::candidate_lineage_verification_activity(),
-        (2, 2),
-        "the delta verifier must not decode or spill the retained copy corpus"
+        (0, 0),
+        "the compact verifier must not decode or spill the retained copy corpus"
     );
 }
 
@@ -320,7 +344,15 @@ fn committed_visible_error_reconciliation_uses_incremental_identity_audit() {
     assert_eq!(crate::publication::verification_activity(), (1, 0));
     assert_eq!(
         crate::publication::candidate_identity_verification_activity(),
-        (2, 5)
+        (1, 1)
+    );
+    assert_eq!(
+        crate::publication::candidate_projection_verification_activity(),
+        0
+    );
+    assert_eq!(
+        crate::publication::candidate_lineage_verification_activity(),
+        (0, 0)
     );
     assert_ne!(receipt.generation_id, baseline.generation_id);
     let pointer = load_active_generation_pointer(temp.path())

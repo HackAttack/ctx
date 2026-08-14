@@ -13,22 +13,22 @@ fn stored_document_contains_exactly_one_canonical_core_record() {
     writer.commit(|_| true).unwrap();
 
     let index = VerifiedIndex::open(temp.path()).unwrap();
-    let fields = fields_from_schema(index.test_searcher().schema()).unwrap();
-    let address = index
-        .test_searcher()
+    let (searcher, _) = open_unverified_generation(temp.path());
+    let fields = fields_from_schema(searcher.schema()).unwrap();
+    let address = searcher
         .search(&AllQuery, &DocSetCollector)
         .unwrap()
         .into_iter()
         .next()
         .unwrap();
-    let stored: TantivyDocument = index.test_searcher().doc(address).unwrap();
+    let stored: TantivyDocument = searcher.doc(address).unwrap();
     let values = stored.field_values().collect::<Vec<_>>();
 
     assert_eq!(values.len(), 1);
     assert_eq!(values[0].0, fields.core_record);
     let encoded = values[0].1.as_bytes().unwrap();
     assert_eq!(CoreRecord::decode_stored(encoded).unwrap(), expected);
-    let segment = &index.test_searcher().segment_readers()[address.segment_ord as usize];
+    let segment = &searcher.segment_readers()[address.segment_ord as usize];
     let encoded_fast_bytes = segment
         .fast_fields()
         .u64("core_record_encoded_bytes")

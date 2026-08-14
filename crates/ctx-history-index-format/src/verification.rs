@@ -1,3 +1,7 @@
+// Explicit scrub and legacy test-support helpers remain available even when
+// the production candidate path no longer calls their incremental replay code.
+#![allow(dead_code)]
+
 use std::{
     collections::{BTreeMap, HashMap, HashSet},
     path::Path,
@@ -27,11 +31,11 @@ use std::cell::Cell;
 use crate::{
     accumulate_core_record, core_record_accumulator_leaf, fields_from_schema, hex,
     load_publication_for_metas, meta_generation, open_slot_index, searcher_generation,
-    stored_verification_identities, stored_verification_record, validate_schema,
-    validate_verification_projection, verify_certified_physical_integrity,
-    verify_or_certify_physical_integrity, ActiveGenerationPointer, CertifiedPhysicalIntegrity,
-    CompactIdentity, Fields, GenerationManifest, GenerationSlot, IdentityFieldRole, IndexError,
-    LoadedPublication, PhysicalIntegrityAudit, Result, VerificationRecord,
+    stored_verification_record, validate_schema, validate_verification_projection,
+    verify_certified_physical_integrity, verify_or_certify_physical_integrity,
+    ActiveGenerationPointer, CertifiedPhysicalIntegrity, CompactIdentity, Fields,
+    GenerationManifest, GenerationSlot, IdentityFieldRole, IndexError, LoadedPublication,
+    PhysicalIntegrityAudit, Result, VerificationRecord,
 };
 
 use super::{physical_integrity_audit, verify_physical_integrity};
@@ -39,11 +43,11 @@ use super::{physical_integrity_audit, verify_physical_integrity};
 mod lineage;
 mod spill;
 
-use lineage::{verify_incremental_lineage, SessionRelationship};
+use lineage::SessionRelationship;
 use spill::{
-    reserve_verification_scratch, with_verification_scratch_budget, IdentityDeltaSpill,
-    ProjectionAccumulator, ProjectionDeltas, ScratchReservation, SpillVerificationIdentities,
-    VerificationSpill, VERIFICATION_SPILL_BUFFER_BYTES, VERIFICATION_SPILL_RECORD_BYTES,
+    reserve_verification_scratch, with_verification_scratch_budget, ProjectionAccumulator,
+    ProjectionDeltas, ScratchReservation, SpillVerificationIdentities, VerificationSpill,
+    VERIFICATION_SPILL_BUFFER_BYTES, VERIFICATION_SPILL_RECORD_BYTES,
 };
 
 #[derive(Default)]
@@ -118,6 +122,7 @@ struct VerificationRunMetrics {
 #[cfg(any(test, feature = "test-support"))]
 thread_local! {
     static LOGICAL_PASSES: Cell<usize> = const { Cell::new(0) };
+    static CANDIDATE_IDENTITY_TRAVERSALS: Cell<usize> = const { Cell::new(0) };
     static CANDIDATE_IDENTITY_TERMS: Cell<usize> = const { Cell::new(0) };
     static CANDIDATE_IDENTITY_DOCUMENTS: Cell<usize> = const { Cell::new(0) };
     static CANDIDATE_PROJECTION_DOCUMENTS: Cell<usize> = const { Cell::new(0) };
@@ -559,17 +564,15 @@ pub fn verify_complete_searcher(
 
 const MAX_VERIFICATION_WORKERS: usize = 24;
 
-/// Verifies a writer-produced candidate without replaying an already-audited base.
+/// Verifies the compact logical invariants required to publish a writer candidate.
 ///
-/// A cold, recovery, or all-changed candidate has no reusable candidate segment
-/// and therefore keeps the complete stored-Core and posting audit. For a
-/// genuinely incremental candidate, every segment not present in the immutable
-/// base contributes its event and session identity terms to an identity-delta
-/// audit. Every changed Core record is fully decoded once. Each changed identity
-/// is then resolved against all live candidate segments, while an already-audited
-/// retained identity is decoded at most once per role and term. This preserves
-/// duplicate/collision and cross-source session ownership checks without
-/// replaying unrelated terms or retained records that share one session.
+/// A cold or all-changed candidate traverses the complete live `event_id` term
+/// and posting set once. A genuinely incremental candidate traverses only terms
+/// introduced by changed segments, resolving each such term across candidate
+/// segments to reject a duplicate retained identity. Retained segments are
+/// trusted through the separately revalidated base authority. This path never
+/// decodes stored Core or replays query, source, session, or lineage projections;
+/// [`verify_searcher`] retains that exhaustive behavior for explicit scrubbing.
 pub fn verify_publication_candidate(
     searcher: &Searcher,
     manifest: &GenerationManifest,
@@ -585,261 +588,191 @@ fn verify_publication_candidate_with_budget(
     manifest: &GenerationManifest,
     base_searcher: Option<&Searcher>,
 ) -> Result<()> {
-    let Some(base_searcher) = base_searcher else {
-        return verify_searcher(searcher, manifest);
-    };
-
-    let base_segment_ids = base_searcher
-        .segment_readers()
-        .iter()
-        .map(|segment| segment.segment_id().uuid_string())
-        .collect::<HashSet<_>>();
-    let candidate_segments = searcher.segment_readers();
-    let changed_segments = candidate_segments
-        .iter()
-        .enumerate()
-        .filter_map(|(segment_ord, segment)| {
-            (!base_segment_ids.contains(&segment.segment_id().uuid_string())).then_some(segment_ord)
-        })
-        .collect::<Vec<_>>();
-    if changed_segments.len() == candidate_segments.len() {
-        return verify_searcher(searcher, manifest);
-    }
-
     verify_searcher_structure(searcher, manifest)?;
-    let fields = fields_from_schema(searcher.schema())?;
-    validate_verification_projection(fields)?;
-    let mut changed_identities = IdentityDeltaSpill::create()?;
-    let expected_parent_sessions = verify_candidate_event_identities(
-        searcher,
-        fields,
-        &changed_segments,
-        &mut changed_identities,
-    )?;
-    verify_candidate_session_identities(
-        searcher,
-        fields,
-        &changed_segments,
-        expected_parent_sessions,
-    )?;
-    verify_incremental_lineage(
-        searcher,
-        base_searcher,
-        fields,
-        &changed_segments,
-        &changed_identities,
-    )
+    let candidate_segments = searcher.segment_readers();
+    let changed_segments = if let Some(base_searcher) = base_searcher {
+        let base_segment_ids = base_searcher
+            .segment_readers()
+            .iter()
+            .map(|segment| segment.segment_id().uuid_string())
+            .collect::<HashSet<_>>();
+        let changed_segments = candidate_segments
+            .iter()
+            .enumerate()
+            .filter_map(|(segment_ord, segment)| {
+                (!base_segment_ids.contains(&segment.segment_id().uuid_string()))
+                    .then_some(segment_ord)
+            })
+            .collect::<Vec<_>>();
+        if changed_segments.is_empty() {
+            return Ok(());
+        }
+        changed_segments
+    } else {
+        (0..candidate_segments.len()).collect::<Vec<_>>()
+    };
+    let scan_all_segments = changed_segments.len() == candidate_segments.len();
+    let event_id = crate::required_field(searcher.schema(), "event_id")?;
+    verify_candidate_event_identities(searcher, event_id, &changed_segments, scan_all_segments)
 }
 
 fn verify_candidate_event_identities(
     searcher: &Searcher,
-    fields: crate::Fields,
+    event_id: Field,
     changed_segments: &[usize],
-    changed_identities: &mut IdentityDeltaSpill,
-) -> Result<u64> {
-    if changed_segments.is_empty() {
-        return Ok(0);
-    }
+    scan_all_segments: bool,
+) -> Result<()> {
+    note_candidate_identity_traversal();
     let segments = searcher.segment_readers();
-    let changed_segment_set = changed_segments.iter().copied().collect::<HashSet<_>>();
-    let expected_changed_documents =
-        changed_segments.iter().try_fold(0_u64, |total, &ordinal| {
-            total
-                .checked_add(u64::from(segments[ordinal].num_docs()))
-                .ok_or(IndexError::CountOverflow)
-        })?;
-    let changed_inverted = changed_segments
+    let mut visits = CandidateIdentityVisits::new(segments, changed_segments)?;
+    let inverted_indexes = segments
         .iter()
-        .map(|segment_ord| segments[*segment_ord].inverted_index(fields.event_id))
+        .map(|segment| segment.inverted_index(event_id))
         .collect::<std::result::Result<Vec<_>, _>>()?;
-    let streams = changed_inverted
+    let streams = changed_segments
         .iter()
-        .map(|inverted| inverted.terms().stream())
+        .map(|segment_ord| inverted_indexes[*segment_ord].terms().stream())
         .collect::<std::io::Result<Vec<_>>>()?;
     let mut merged = TermMerger::new(streams);
-    let mut changed_documents = 0_u64;
-    let mut parent_sessions = 0_u64;
-    let mut projection_verifier = IncrementalProjectionVerifier::new(searcher, changed_segments)?;
     while merged.advance() {
         note_candidate_identity_term();
         let uuid = canonical_uuid_term(merged.key(), "event_id")?;
-        let mut digest = None;
-        for (segment_ord, segment) in segments.iter().enumerate() {
-            let inverted = segment.inverted_index(fields.event_id)?;
-            let Some(term_info) = inverted.terms().get(merged.key())? else {
-                continue;
-            };
-            for_each_live_posting(&inverted, &term_info, segment_ord, segment, |address| {
-                note_candidate_identity_document();
-                let identities = if changed_segment_set.contains(&segment_ord) {
-                    let record = stored_verification_record(searcher, address, fields)?;
-                    let identities = record.identities;
-                    projection_verifier.verify_document(searcher, fields, address, record)?;
-                    changed_documents = changed_documents
-                        .checked_add(1)
-                        .ok_or(IndexError::CountOverflow)?;
-                    parent_sessions = parent_sessions
-                        .checked_add(u64::from(identities.parent_session.is_some()))
-                        .ok_or(IndexError::CountOverflow)?;
-                    changed_identities.push(SpillVerificationIdentities {
-                        event: identities.event,
-                        session: identities.session,
-                        parent_session: identities.parent_session,
-                        root_session: identities.root_session,
-                        session_relationship: identities.session_relationship,
-                        event_origin: identities.event_origin,
-                        session_source_ordinal: 0,
-                    })?;
-                    note_candidate_lineage_spill();
-                    identities
-                } else {
-                    stored_verification_identities(searcher, address, fields)?
-                };
-                let identity = identities.event;
-                if identity.as_uuid() != uuid {
-                    return Err(IndexError::InvalidStoredDocumentField("event_id"));
-                }
-                match digest {
-                    None => digest = Some(identity.digest),
-                    Some(existing) if existing == identity.digest => {
-                        return Err(IndexError::DuplicateEventIdentity(uuid.to_string()));
-                    }
-                    Some(existing) => {
-                        return Err(IndexError::CompactIdentityCollision {
-                            kind: "event",
-                            uuid,
-                            existing_digest: hex(&existing),
-                            new_digest: hex(&identity.digest),
-                        });
-                    }
-                }
-                Ok(())
-            })?;
-        }
-    }
-    if changed_documents != expected_changed_documents {
-        return Err(IndexError::InvalidStoredDocumentField("event_id"));
-    }
-    projection_verifier.finish(searcher, fields, changed_segments)?;
-    Ok(parent_sessions)
-}
-
-fn verify_candidate_session_identities(
-    searcher: &Searcher,
-    fields: crate::Fields,
-    changed_segments: &[usize],
-    expected_parent_sessions: u64,
-) -> Result<()> {
-    if changed_segments.is_empty() {
-        return Ok(());
-    }
-    let segments = searcher.segment_readers();
-    let changed_segment_set = changed_segments.iter().copied().collect::<HashSet<_>>();
-    let expected_changed_documents =
-        changed_segments.iter().try_fold(0_u64, |total, &ordinal| {
-            total
-                .checked_add(u64::from(segments[ordinal].num_docs()))
-                .ok_or(IndexError::CountOverflow)
-        })?;
-    let roles = [
-        (fields.session_id, IdentityFieldRole::Session),
-        (fields.parent_session_id, IdentityFieldRole::ParentSession),
-        (fields.root_session_id, IdentityFieldRole::RootSession),
-    ];
-    let changed_inverted = roles
-        .iter()
-        .flat_map(|(field, _)| {
-            changed_segments
-                .iter()
-                .map(move |segment_ord| segments[*segment_ord].inverted_index(*field))
-        })
-        .collect::<std::result::Result<Vec<_>, _>>()?;
-    let streams = changed_inverted
-        .iter()
-        .map(|inverted| inverted.terms().stream())
-        .collect::<std::io::Result<Vec<_>>>()?;
-    let mut merged = TermMerger::new(streams);
-    let mut changed_occurrences = [0_u64; 3];
-    while merged.advance() {
-        note_candidate_identity_term();
-        let uuid = canonical_uuid_term(merged.key(), "session_id")?;
-        let mut digest = None;
-        let mut owner = None::<[u8; 32]>;
-        for (field, role) in roles {
-            let mut decoded_retained_identity = false;
+        let mut seen = false;
+        if scan_all_segments {
+            for (stream_ord, term_info) in merged.current_segment_ords_and_term_infos() {
+                let segment_ord = changed_segments[stream_ord];
+                verify_candidate_event_postings(
+                    &inverted_indexes[segment_ord],
+                    &term_info,
+                    segment_ord,
+                    &segments[segment_ord],
+                    uuid,
+                    &mut seen,
+                    &mut visits,
+                )?;
+            }
+        } else {
             for (segment_ord, segment) in segments.iter().enumerate() {
-                let inverted = segment.inverted_index(field)?;
-                let Some(term_info) = inverted.terms().get(merged.key())? else {
+                let Some(term_info) = inverted_indexes[segment_ord].terms().get(merged.key())?
+                else {
                     continue;
                 };
-                for_each_live_posting(&inverted, &term_info, segment_ord, segment, |address| {
-                    let changed = changed_segment_set.contains(&segment_ord);
-                    if changed {
-                        let role_index = match role {
-                            IdentityFieldRole::Session => 0,
-                            IdentityFieldRole::ParentSession => 1,
-                            IdentityFieldRole::RootSession => 2,
-                        };
-                        changed_occurrences[role_index] = changed_occurrences[role_index]
-                            .checked_add(1)
-                            .ok_or(IndexError::CountOverflow)?;
-                    } else if std::mem::replace(&mut decoded_retained_identity, true) {
-                        return Ok(());
-                    }
-                    note_candidate_identity_document();
-                    let identities = stored_verification_identities(searcher, address, fields)?;
-                    let (identity, candidate_owner) = match role {
-                        IdentityFieldRole::Session => {
-                            (identities.session, Some(identities.session_source_owner))
-                        }
-                        IdentityFieldRole::ParentSession => (
-                            identities.parent_session.ok_or(
-                                IndexError::InvalidStoredDocumentField("parent_session_id"),
-                            )?,
-                            None,
-                        ),
-                        IdentityFieldRole::RootSession => (identities.root_session, None),
-                    };
-                    if identity.as_uuid() != uuid {
-                        return Err(IndexError::InvalidStoredDocumentField("session_id"));
-                    }
-                    match digest {
-                        None => digest = Some(identity.digest),
-                        Some(existing) if existing == identity.digest => {}
-                        Some(existing) => {
-                            return Err(IndexError::CompactIdentityCollision {
-                                kind: "session",
-                                uuid,
-                                existing_digest: hex(&existing),
-                                new_digest: hex(&identity.digest),
-                            });
-                        }
-                    }
-                    if let Some(candidate_owner) = candidate_owner {
-                        match owner {
-                            Some(existing) if existing != candidate_owner => {
-                                return Err(IndexError::DuplicateSessionIdentity(uuid.to_string()));
-                            }
-                            None => owner = Some(candidate_owner),
-                            _ => {}
-                        }
-                    }
-                    Ok(())
-                })?;
+                verify_candidate_event_postings(
+                    &inverted_indexes[segment_ord],
+                    &term_info,
+                    segment_ord,
+                    segment,
+                    uuid,
+                    &mut seen,
+                    &mut visits,
+                )?;
             }
         }
     }
-    if changed_occurrences
-        != [
-            expected_changed_documents,
-            expected_parent_sessions,
-            expected_changed_documents,
-        ]
-    {
-        return Err(IndexError::InvalidStoredDocumentField("session_id"));
-    }
-    Ok(())
+    visits.finish()
 }
+
+fn verify_candidate_event_postings(
+    inverted: &InvertedIndexReader,
+    term_info: &tantivy::postings::TermInfo,
+    segment_ord: usize,
+    segment: &tantivy::SegmentReader,
+    uuid: Uuid,
+    seen: &mut bool,
+    visits: &mut CandidateIdentityVisits,
+) -> Result<()> {
+    for_each_live_posting(inverted, term_info, segment_ord, segment, |address| {
+        note_candidate_identity_document();
+        visits.note(address)?;
+        if std::mem::replace(seen, true) {
+            return Err(IndexError::DuplicateEventIdentity(uuid.to_string()));
+        }
+        Ok(())
+    })
+}
+
+struct CandidateIdentityVisits {
+    segments: Vec<Option<SegmentIdentityVisits>>,
+    _reservation: ScratchReservation,
+}
+
+struct SegmentIdentityVisits {
+    expected: u64,
+    seen: u64,
+    words: Vec<u64>,
+}
+
+impl CandidateIdentityVisits {
+    fn new(segments: &[tantivy::SegmentReader], audited_segments: &[usize]) -> Result<Self> {
+        let heap_bytes = audited_segments
+            .iter()
+            .try_fold(0_u64, |total, &segment_ord| {
+                let words = u64::from(segments[segment_ord].max_doc()).div_ceil(64);
+                total
+                    .checked_add(words.checked_mul(8).ok_or(IndexError::CountOverflow)?)
+                    .ok_or(IndexError::CountOverflow)
+            })?;
+        let reservation = reserve_verification_scratch(0, heap_bytes)?;
+        let mut visits = (0..segments.len()).map(|_| None).collect::<Vec<_>>();
+        for &segment_ord in audited_segments {
+            let segment = &segments[segment_ord];
+            let word_count = usize::try_from(u64::from(segment.max_doc()).div_ceil(64))
+                .map_err(|_| IndexError::CountOverflow)?;
+            visits[segment_ord] = Some(SegmentIdentityVisits {
+                expected: u64::from(segment.num_docs()),
+                seen: 0,
+                words: vec![0; word_count],
+            });
+        }
+        Ok(Self {
+            segments: visits,
+            _reservation: reservation,
+        })
+    }
+
+    fn note(&mut self, address: DocAddress) -> Result<()> {
+        let segment_ord =
+            usize::try_from(address.segment_ord).map_err(|_| IndexError::CountOverflow)?;
+        let Some(segment) = self.segments.get_mut(segment_ord).and_then(Option::as_mut) else {
+            return Ok(());
+        };
+        let word = usize::try_from(address.doc_id / 64).map_err(|_| IndexError::CountOverflow)?;
+        let mask = 1_u64 << (address.doc_id % 64);
+        let word = segment
+            .words
+            .get_mut(word)
+            .ok_or(IndexError::InvalidStoredDocumentField("event_id"))?;
+        if *word & mask != 0 {
+            return Err(IndexError::InvalidStoredDocumentField("event_id"));
+        }
+        *word |= mask;
+        segment.seen = segment
+            .seen
+            .checked_add(1)
+            .ok_or(IndexError::CountOverflow)?;
+        Ok(())
+    }
+
+    fn finish(self) -> Result<()> {
+        if self
+            .segments
+            .iter()
+            .flatten()
+            .any(|segment| segment.seen != segment.expected)
+        {
+            return Err(IndexError::InvalidStoredDocumentField("event_id"));
+        }
+        Ok(())
+    }
+}
+
+#[cfg(any(test, feature = "test-support"))]
+fn note_candidate_identity_traversal() {
+    CANDIDATE_IDENTITY_TRAVERSALS.with(|count| count.set(count.get().saturating_add(1)));
+}
+
+#[cfg(not(any(test, feature = "test-support")))]
+fn note_candidate_identity_traversal() {}
 
 #[cfg(any(test, feature = "test-support"))]
 fn note_candidate_identity_term() {
@@ -912,6 +845,145 @@ fn verification_tasks_split_large_segments_into_contiguous_bounded_ranges() {
     }
 }
 
+#[cfg(test)]
+mod candidate_identity_tests {
+    use tantivy::{indexer::NoMergePolicy, TantivyDocument};
+
+    use super::*;
+
+    fn manifest(document_count: usize) -> GenerationManifest {
+        let mut manifest = GenerationManifest::from_sources(Vec::new()).unwrap();
+        manifest.indexed_documents = u64::try_from(document_count).unwrap();
+        manifest
+    }
+
+    fn document(event_ids: impl IntoIterator<Item = Uuid>, event_id: Field) -> TantivyDocument {
+        let mut document = TantivyDocument::default();
+        for identity in event_ids {
+            document.add_text(event_id, identity.to_string());
+        }
+        document
+    }
+
+    fn cold_searcher(documents: Vec<Vec<Uuid>>) -> Searcher {
+        let schema = crate::lexical_schema();
+        let event_id = crate::required_field(&schema, "event_id").unwrap();
+        let index = Index::create_in_ram(schema);
+        crate::register_body_analyzer(&index);
+        let mut writer = index.writer(20_000_000).unwrap();
+        writer.set_merge_policy(Box::<NoMergePolicy>::default());
+        for event_ids in documents {
+            writer.add_document(document(event_ids, event_id)).unwrap();
+        }
+        writer.commit().unwrap();
+        index.reader().unwrap().searcher()
+    }
+
+    fn incremental_searchers(retained: usize, appended: Uuid) -> (Searcher, Searcher) {
+        let schema = crate::lexical_schema();
+        let event_id = crate::required_field(&schema, "event_id").unwrap();
+        let index = Index::create_in_ram(schema);
+        crate::register_body_analyzer(&index);
+        let mut writer = index.writer(20_000_000).unwrap();
+        writer.set_merge_policy(Box::<NoMergePolicy>::default());
+        for value in 1..=retained {
+            writer
+                .add_document(document([Uuid::from_u128(value as u128)], event_id))
+                .unwrap();
+        }
+        writer.commit().unwrap();
+        let reader = index
+            .reader_builder()
+            .reload_policy(ReloadPolicy::Manual)
+            .try_into()
+            .unwrap();
+        let base = reader.searcher();
+        writer.add_document(document([appended], event_id)).unwrap();
+        writer.commit().unwrap();
+        reader.reload().unwrap();
+        (base, reader.searcher())
+    }
+
+    fn assert_compact_candidate_activity(traversals: usize, terms: usize, postings: usize) {
+        assert_eq!(verification_activity().1, 0, "exhaustive logical pass");
+        assert_eq!(candidate_identity_traversals(), traversals);
+        assert_eq!(
+            candidate_identity_verification_activity(),
+            (terms, postings)
+        );
+        assert_eq!(candidate_projection_verification_activity(), 0);
+        assert_eq!(candidate_lineage_verification_activity(), (0, 0));
+    }
+
+    #[test]
+    fn cold_candidate_performs_one_compact_identity_traversal_without_core_decodes() {
+        let documents = (1..=32)
+            .map(|value| vec![Uuid::from_u128(value)])
+            .collect::<Vec<_>>();
+        let searcher = cold_searcher(documents);
+
+        reset_verification_activity();
+        verify_publication_candidate(&searcher, &manifest(32), None).unwrap();
+
+        assert_compact_candidate_activity(1, 32, 32);
+    }
+
+    #[test]
+    fn one_record_append_identity_work_is_independent_of_retained_document_count() {
+        fn activity(retained: usize) -> (usize, (usize, usize)) {
+            let appended = Uuid::from_u128(retained as u128 + 1);
+            let (base, candidate) = incremental_searchers(retained, appended);
+            reset_verification_activity();
+            verify_publication_candidate(&candidate, &manifest(retained + 1), Some(&base)).unwrap();
+            assert_compact_candidate_activity(1, 1, 1);
+            (
+                candidate_identity_traversals(),
+                candidate_identity_verification_activity(),
+            )
+        }
+
+        assert_eq!(activity(64), activity(128));
+    }
+
+    #[test]
+    fn unchanged_segment_set_performs_zero_identity_work() {
+        let searcher = cold_searcher(vec![vec![Uuid::from_u128(1)]]);
+
+        reset_verification_activity();
+        verify_publication_candidate(&searcher, &manifest(1), Some(&searcher)).unwrap();
+
+        assert_compact_candidate_activity(0, 0, 0);
+    }
+
+    #[test]
+    fn append_rejects_an_event_id_already_present_in_the_retained_base() {
+        let duplicate = Uuid::from_u128(1);
+        let (base, candidate) = incremental_searchers(16, duplicate);
+
+        let error =
+            verify_publication_candidate(&candidate, &manifest(17), Some(&base)).unwrap_err();
+
+        assert!(
+            matches!(error, IndexError::DuplicateEventIdentity(value) if value == duplicate.to_string())
+        );
+    }
+
+    #[test]
+    fn cold_candidate_rejects_missing_or_extra_event_id_occurrences() {
+        let missing = cold_searcher(vec![Vec::new()]);
+        assert!(matches!(
+            verify_publication_candidate(&missing, &manifest(1), None),
+            Err(IndexError::InvalidStoredDocumentField("event_id"))
+        ));
+
+        let extra = cold_searcher(vec![vec![Uuid::from_u128(1), Uuid::from_u128(2)]]);
+        assert!(matches!(
+            verify_publication_candidate(&extra, &manifest(1), None),
+            Err(IndexError::InvalidStoredDocumentField("event_id"))
+        ));
+    }
+}
+
 include!("verification/logical.rs");
 
 #[cfg(any(test, feature = "test-support"))]
@@ -965,12 +1037,18 @@ pub fn verify_searcher_with_metrics(
 pub fn reset_verification_activity() {
     ctx_history_index_generation::reset_physical_verification_activity();
     LOGICAL_PASSES.with(|count| count.set(0));
+    CANDIDATE_IDENTITY_TRAVERSALS.with(|count| count.set(0));
     CANDIDATE_IDENTITY_TERMS.with(|count| count.set(0));
     CANDIDATE_IDENTITY_DOCUMENTS.with(|count| count.set(0));
     CANDIDATE_PROJECTION_DOCUMENTS.with(|count| count.set(0));
     CANDIDATE_LINEAGE_DECODES.with(|count| count.set(0));
     CANDIDATE_LINEAGE_SPILLS.with(|count| count.set(0));
     COMPLETE_SESSION_ID_TRAVERSALS.with(|count| count.set(0));
+}
+
+#[cfg(any(test, feature = "test-support"))]
+pub fn candidate_identity_traversals() -> usize {
+    CANDIDATE_IDENTITY_TRAVERSALS.with(Cell::get)
 }
 
 #[cfg(any(test, feature = "test-support"))]
