@@ -3,12 +3,12 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use serde_json::{Value, json};
+use serde_json::{json, Value};
 
-use crate::{CaptureError, test_support_paths::tempdir};
+use crate::{test_support_paths::tempdir, CaptureError};
 
 use super::layout::{
-    KIMI_WIRE_LAYOUT_MAX_AGGREGATE_BYTES, KIMI_WIRE_LAYOUT_MAX_INDEX_ENTRIES, KimiWireLayout,
+    KimiWireLayout, KIMI_WIRE_LAYOUT_MAX_AGGREGATE_BYTES, KIMI_WIRE_LAYOUT_MAX_INDEX_ENTRIES,
 };
 
 const SUCCESS_BODY: &str = "KIMI_SUCCESS_BODY_RETAINED_IN_CORE";

@@ -7,12 +7,12 @@ use std::{
 use ctx_history_core::{
     CaptureProvider, CoreRecord, EventCopyProofKind, EventOrigin, SessionRelationshipKind, TypedKey,
 };
-use serde_json::{Value, json};
+use serde_json::{json, Value};
 
 use super::source_backed::*;
 use crate::{
-    CaptureError, MAX_PROVIDER_JSONL_LINE_BYTES, ProviderSourceFailureKind,
-    test_support_paths::tempdir,
+    test_support_paths::tempdir, CaptureError, ProviderSourceFailureKind,
+    MAX_PROVIDER_JSONL_LINE_BYTES,
 };
 
 fn manifest() -> Value {
@@ -256,11 +256,9 @@ fn cold_noop_and_append_emit_stable_ids_in_bounded_pages() {
         SessionRelationshipKind::RelatedUnknown
     );
     assert_eq!(cold_documents[0].event_origin, EventOrigin::Unknown);
-    assert!(
-        !serde_json::to_string(&cold_documents[0])
-            .unwrap()
-            .contains("/provider/demo/session.jsonl")
-    );
+    assert!(!serde_json::to_string(&cold_documents[0])
+        .unwrap()
+        .contains("/provider/demo/session.jsonl"));
     assert_eq!(
         cold_documents[0].parent_session_id,
         Some(cold_documents[0].root_session_id)
@@ -704,11 +702,9 @@ fn projected_records_are_complete_and_locator_free() {
         records.iter().map(body).collect::<Vec<_>>(),
         vec!["alpha exact", "beta exact"]
     );
-    assert!(
-        records
-            .iter()
-            .all(|record| record.native_event_id.is_some())
-    );
+    assert!(records
+        .iter()
+        .all(|record| record.native_event_id.is_some()));
     let Some(TypedKey::Composite(identity)) = records[0].native_event_id.as_ref() else {
         panic!("custom Core event identity must retain source selector parts");
     };
@@ -764,11 +760,9 @@ fn deep_chain_session_catalog_projects_only_direct_relationships() {
     reset_custom_history_source_backed_work();
     let (_, documents, _) = collect(&input, None);
     assert_eq!(documents.len(), EVENTS);
-    assert!(
-        documents
-            .iter()
-            .all(|document| document.root_session_id == documents[0].root_session_id)
-    );
+    assert!(documents
+        .iter()
+        .all(|document| document.root_session_id == documents[0].root_session_id));
     let work = custom_history_source_backed_work();
     assert_eq!(work.projection_parses, 1);
     assert_eq!(work.source_read_passes, 1);
@@ -803,11 +797,9 @@ fn event_bodies_live_in_the_spool_or_one_bounded_emission_page() {
     let work = custom_history_source_backed_work();
 
     assert_eq!(documents.len(), EVENTS);
-    assert!(
-        documents
-            .iter()
-            .all(|document| body(document) == expected_body)
-    );
+    assert!(documents
+        .iter()
+        .all(|document| body(document) == expected_body));
     assert!(pages.len() > 1);
     assert_eq!(work.projection_parses, 1);
     assert_eq!(work.source_read_passes, 1);

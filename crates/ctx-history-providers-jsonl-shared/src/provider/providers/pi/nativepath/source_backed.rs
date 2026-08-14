@@ -8,12 +8,12 @@ use std::{
     sync::{Arc, Mutex},
 };
 
-use crate::{JsonlProviderRuntime, provider::source_backed::IndexBaseEventLookup};
+use crate::{provider::source_backed::IndexBaseEventLookup, JsonlProviderRuntime};
 use chrono::{DateTime, Utc};
 use ctx_history_core::{
-    AgentType, CaptureProvider, CoreRecord, EventIdentityInput, EventType, NativeItemKey,
-    SessionRelationshipKind, SourceKey, StableEntityId, TypedKey, derive_event_id,
-    derive_native_session_id,
+    derive_event_id, derive_native_session_id, AgentType, CaptureProvider, CoreRecord,
+    EventIdentityInput, EventType, NativeItemKey, SessionRelationshipKind, SourceKey,
+    StableEntityId, TypedKey,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -22,24 +22,26 @@ use sha2::{Digest, Sha256};
 use ctx_history_capture_model::file_touches::visit_provider_file_touch_drafts_with_limit;
 
 use crate::{
-    CaptureError, Result,
     common::io::{OpenedProviderSourceFile, ProviderSourceRoot},
     provider::{
         providers::native_jsonl::visit_native_jsonl_files,
         source_backed::{
-            FallbackEventIdentityState,
             family::jsonl::{
-                JsonlFamilyAdapter, JsonlFamilyAppendMode, JsonlFamilyInventory, JsonlFamilyLeaf,
+                observe_opened_file, probe_records_until, JsonlFamilyAdapter,
+                JsonlFamilyAppendMode, JsonlFamilyInventory, JsonlFamilyLeaf,
                 JsonlFamilyProjectionMode, JsonlFamilyProjector, JsonlFamilyWorkerContext,
-                JsonlFileObservation, JsonlRecordRef, observe_opened_file, probe_records_until,
+                JsonlFileObservation, JsonlRecordRef,
             },
+            FallbackEventIdentityState,
         },
     },
+    CaptureError, Result,
 };
 
 use super::super::{
-    PI_SOURCE_FORMAT, pi_event_type,
+    pi_event_type,
     text::{pi_entry_text, pi_event_role, pi_result_content},
+    PI_SOURCE_FORMAT,
 };
 
 const SOURCE_ANCHOR_NAMESPACE: &str = "pi.session";
@@ -80,8 +82,8 @@ impl PiSourceBackedRoot {
     }
 }
 
-pub(crate) fn pi_source_backed_adapter<R: JsonlProviderRuntime>()
--> Arc<dyn JsonlFamilyAdapter<Runtime = R>> {
+pub(crate) fn pi_source_backed_adapter<R: JsonlProviderRuntime>(
+) -> Arc<dyn JsonlFamilyAdapter<Runtime = R>> {
     Arc::new(PiJsonlAdapter::default())
 }
 

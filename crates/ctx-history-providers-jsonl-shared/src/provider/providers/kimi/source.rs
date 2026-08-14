@@ -5,9 +5,9 @@ use std::{
 
 use chrono::{DateTime, Utc};
 use ctx_history_core::AgentType;
-use serde_json::{Value, json};
+use serde_json::{json, Value};
 
-use crate::{PROVIDER_MAX_PREVIEW_CHARS, Result, fnv1a64};
+use crate::{fnv1a64, Result, PROVIDER_MAX_PREVIEW_CHARS};
 use ctx_history_capture_model::normalization::{
     provider_capped_json, provider_local_preview, provider_timestamp_seconds_to_datetime,
 };

@@ -16,28 +16,27 @@ use std::{
     sync::Arc,
 };
 
-use crate::{JsonlProviderRuntime, provider::source_backed::IndexBaseEventLookup};
+use crate::{provider::source_backed::IndexBaseEventLookup, JsonlProviderRuntime};
 use chrono::{DateTime, Utc};
 use ctx_history_capture_model::normalization::{provider_policy_event_text, provider_value_text};
 use ctx_history_core::{
-    CTX_HISTORY_JSONL_V1_SCHEMA_VERSION, CaptureProvider, CertifiedSource, CertifiedSourceAppend,
+    derive_session_id, CaptureProvider, CertifiedSource, CertifiedSourceAppend,
     CertifiedSourceDeletion, CertifiedSourceInventory, CoreRecord,
     CtxHistoryJsonlCopiedFromSelector, CtxHistoryJsonlCopyProofKind, CtxHistoryJsonlEventRecord,
     CtxHistoryJsonlLineageContract, CtxHistoryJsonlRecord, EventCopyProofKind, NativeSessionKey,
     ProjectionContractError, ScannedSourceCounts, SessionEdgeType, SessionIdentityInput,
     SessionRelationshipKind, SourceAnchor, SourceFrontier, SourceKey, StableEntityId, TypedKey,
-    derive_session_id,
+    CTX_HISTORY_JSONL_V1_SCHEMA_VERSION,
 };
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use thiserror::Error;
 
 use super::reader::{
-    CUSTOM_HISTORY_CATALOG_ENTRY_OVERHEAD_BYTES, CatalogBudget, CustomHistoryCatalogLimits,
-    emit_projection_pages, write_spooled_event,
+    emit_projection_pages, write_spooled_event, CatalogBudget, CustomHistoryCatalogLimits,
+    CUSTOM_HISTORY_CATALOG_ENTRY_OVERHEAD_BYTES,
 };
 use crate::{
-    CaptureError, MAX_PROVIDER_JSONL_LINE_BYTES, ProviderImportSummary, ProviderSourceFailureKind,
     common::io::OpenedProviderSourceFile,
     provider::{
         custom_history_jsonl::{validate_custom_history_identifier, validate_custom_source_record},
@@ -48,14 +47,15 @@ use crate::{
             JsonlFamilyWorkerContext, JsonlPhysicalDigest, JsonlPhysicalStream, JsonlRecordFraming,
         },
     },
+    CaptureError, ProviderImportSummary, ProviderSourceFailureKind, MAX_PROVIDER_JSONL_LINE_BYTES,
 };
 use ctx_history_capture_model::push_provider_import_failure;
 
 mod inventory;
 mod parser;
-pub(crate) use inventory::CustomHistorySourceBackedInventory;
 #[cfg(test)]
 use inventory::open_explicit_source;
+pub(crate) use inventory::CustomHistorySourceBackedInventory;
 use inventory::{custom_history_jsonl_family_inventory, source_observation};
 use parser::parse_projection;
 

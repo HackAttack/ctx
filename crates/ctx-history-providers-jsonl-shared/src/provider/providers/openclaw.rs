@@ -15,8 +15,8 @@ use ctx_history_core::EventType;
 use serde_json::Value;
 
 use crate::{
-    OutputObservationKind, OutputOutcome, OutputOutcomeMetadata, PROVIDER_MAX_PREVIEW_CHARS,
-    Result, fnv1a64,
+    fnv1a64, OutputObservationKind, OutputOutcome, OutputOutcomeMetadata, Result,
+    PROVIDER_MAX_PREVIEW_CHARS,
 };
 
 pub(crate) mod native_path;
