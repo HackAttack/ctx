@@ -353,9 +353,8 @@ pub(crate) fn read_gemini_session_header(
             &mut line,
             opening.length.saturating_sub(offset),
             JsonlRecordFraming::new(MAX_PROVIDER_JSONL_LINE_BYTES.saturating_add(1), false),
-            || ctx_history_jsonl::JsonlIoError::SourceChangedDuringCapture,
-        )
-        .map_err(CaptureError::from)?
+            || CaptureError::SourceChangedDuringCapture,
+        )?
         .ok_or_else(|| GeminiScanError::UncommittedRecord {
             raw_ordinal,
             byte_start: offset,

@@ -3,6 +3,9 @@
 //! This crate owns no source access, discovery execution, provider implementation,
 //! repository evidence, refresh publication, or runtime policy.
 
+/// Upper bound for provider-generated diagnostic and metadata previews.
+pub const PROVIDER_MAX_PREVIEW_CHARS: usize = 4_000;
+
 pub mod ctx_retrieval;
 mod exact_json;
 pub mod file_touches;

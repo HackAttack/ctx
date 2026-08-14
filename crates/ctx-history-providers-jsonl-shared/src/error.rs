@@ -5,26 +5,19 @@ use thiserror::Error;
 
 pub type ProviderJsonlInventoryLimit = ctx_history_source_io::ProviderJsonlInventoryLimit;
 
-/// Capture keeps the explicit JSONL-compatible `CaptureError` surface for now
-/// so SQLite and provider-local families share one authority. The remaining
-/// overlap with shared JSONL providers is intentional parity and will be
-/// composed into `ctx-history-provider-runtime`, rather than split again here.
+/// Shared-provider JSONL adapters currently keep an explicit local error policy
+/// that mirrors the JSONL-relevant capture surface. This preserves one
+/// authority for provider-local behavior today; runtime composition will fold
+/// the overlap into `ctx-history-provider-runtime` instead of introducing a
+/// third policy layer here.
 #[derive(Debug, Error)]
 pub enum CaptureError {
     #[error("io error: {0}")]
     Io(#[from] std::io::Error),
     #[error("json error: {0}")]
     Json(#[from] serde_json::Error),
-    #[error("sqlite error: {0}")]
-    Sqlite(#[from] rusqlite::Error),
     #[error("time parse error: {0}")]
     Time(#[from] chrono::ParseError),
-    #[error("uuid parse error: {0}")]
-    Uuid(#[from] uuid::Error),
-    #[error("unsupported capture envelope schema version: {0}")]
-    UnsupportedSchemaVersion(u32),
-    #[error("unsupported provider schema: {0}")]
-    UnsupportedSchema(String),
     #[error("invalid capture payload: {0}")]
     InvalidPayload(String),
     #[error("invalid provider transcript path {path:?}: {reason}")]
@@ -49,11 +42,6 @@ pub enum CaptureError {
     SystemInvariant(&'static str),
     #[error("provider source changed during bounded capture")]
     SourceChangedDuringCapture,
-    #[error("{primary}; additional SQLite finalization failure: {finalization}")]
-    SqliteFinalization {
-        primary: Box<CaptureError>,
-        finalization: Box<CaptureError>,
-    },
     #[error("{provider} source {path:?} failed ({kind}): {detail}")]
     ProviderSource {
         provider: &'static str,
@@ -63,13 +51,6 @@ pub enum CaptureError {
     },
     #[error("provider cursor changed during bounded capture")]
     ProviderCursorConflict,
-    #[error("line {line} in {path:?} is not a valid capture envelope: {source}")]
-    InvalidJsonLine {
-        path: PathBuf,
-        line: usize,
-        #[source]
-        source: serde_json::Error,
-    },
 }
 
 pub type Result<T> = std::result::Result<T, CaptureError>;
@@ -77,7 +58,6 @@ pub type Result<T> = std::result::Result<T, CaptureError>;
 impl From<ctx_history_source_io::SourceIoError> for CaptureError {
     fn from(error: ctx_history_source_io::SourceIoError) -> Self {
         use ctx_history_source_io::SourceIoError;
-
         match error {
             SourceIoError::Io(error) => Self::Io(error),
             SourceIoError::Json(error) => Self::Json(error),
@@ -101,28 +81,35 @@ impl From<ctx_history_source_io::SourceIoError> for CaptureError {
     }
 }
 
-impl From<ctx_history_source_sqlite::SqliteIoError> for CaptureError {
-    fn from(error: ctx_history_source_sqlite::SqliteIoError) -> Self {
-        use ctx_history_source_sqlite::SqliteIoError;
-
-        match error {
-            SqliteIoError::Io(error) => Self::Io(error),
-            SqliteIoError::Sqlite(error) => Self::Sqlite(error),
-            SqliteIoError::Json(error) => Self::Json(error),
-            SqliteIoError::InvalidPayload(detail) => Self::InvalidPayload(detail),
-            SqliteIoError::InvalidProviderTranscriptPath { path, reason } => {
-                Self::InvalidProviderTranscriptPath { path, reason }
-            }
-            SqliteIoError::SystemIo { operation, source } => Self::SystemIo { operation, source },
-            SqliteIoError::SystemInvariant(detail) => Self::SystemInvariant(detail),
-            SqliteIoError::SourceChangedDuringCapture => Self::SourceChangedDuringCapture,
-            SqliteIoError::SqliteFinalization {
-                primary,
-                finalization,
-            } => Self::SqliteFinalization {
-                primary: Box::new(Self::from(*primary)),
-                finalization: Box::new(Self::from(*finalization)),
-            },
-        }
+impl ctx_history_jsonl::JsonlFamilyError for CaptureError {
+    fn invalid_payload(detail: String) -> Self {
+        Self::InvalidPayload(detail)
+    }
+    fn system_invariant(detail: &'static str) -> Self {
+        Self::SystemInvariant(detail)
+    }
+    fn worker_panicked(worker: &'static str) -> Self {
+        Self::WorkerPanicked(worker)
+    }
+    fn source_changed() -> Self {
+        Self::SourceChangedDuringCapture
+    }
+    fn is_not_found(&self) -> bool {
+        matches!(self, Self::Io(error) if error.kind() == std::io::ErrorKind::NotFound)
+            || matches!(self, Self::SystemIo { source, .. } if source.kind() == std::io::ErrorKind::NotFound)
+    }
+    fn is_source_changed(&self) -> bool {
+        matches!(self, Self::SourceChangedDuringCapture)
+            || matches!(self, Self::InvalidProviderTranscriptPath { reason, .. } if *reason == "provider source changed while its authority handle was retained")
+    }
+    fn is_resource_unavailable(&self) -> bool {
+        matches!(self, Self::Io(_) | Self::SystemIo { .. }) && !self.is_not_found()
+    }
+    fn is_internal(&self) -> bool {
+        matches!(self, Self::SystemInvariant(_) | Self::WorkerPanicked(_))
+    }
+    fn is_ignorable_membership_entry(&self) -> bool {
+        crate::common::io::is_symlink_source_rejection(self)
+            || crate::common::io::is_non_regular_source_rejection(self)
     }
 }

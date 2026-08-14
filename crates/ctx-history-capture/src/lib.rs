@@ -46,7 +46,6 @@ pub(crate) const MAX_PROVIDER_JSONL_LINE_BYTES: usize =
     ctx_history_source_io::MAX_PROVIDER_JSONL_LINE_BYTES;
 pub(crate) const MAX_PROVIDER_SQLITE_VALUE_BYTES: usize =
     ctx_history_source_sqlite::MAX_PROVIDER_SQLITE_VALUE_BYTES;
-pub(crate) const MAX_OPENCLAW_SESSION_INDEX_BYTES: usize = 1024 * 1024;
 pub(crate) const CODEX_SESSION_SOURCE_FORMAT: &str = "codex_session_jsonl";
 pub(crate) const GROK_BUILD_SOURCE_FORMAT: &str = "grok_build_session_updates_jsonl";
 pub(crate) const CLAUDE_PROJECTS_SOURCE_FORMAT: &str = "claude_projects_jsonl_tree";
@@ -54,7 +53,6 @@ pub(crate) const CLINE_TASK_JSON_SOURCE_FORMAT: &str = "cline_task_directory_jso
 pub(crate) const ROO_TASK_JSON_SOURCE_FORMAT: &str = "roo_task_directory_json";
 pub(crate) const CODEBUDDY_SOURCE_FORMAT: &str = "codebuddy_history_json";
 pub(crate) const AUGGIE_SESSION_JSON_SOURCE_FORMAT: &str = "auggie_session_json";
-pub(crate) const JUNIE_SESSION_EVENTS_SOURCE_FORMAT: &str = "junie_session_events_jsonl_tree";
 pub(crate) const FIREBENDER_SQLITE_SOURCE_FORMAT: &str = "firebender_chat_history_sqlite";
 pub(crate) const OPENCODE_SQLITE_SOURCE_FORMAT: &str = "opencode_sqlite";
 pub(crate) const KILO_SQLITE_SOURCE_FORMAT: &str = "kilo_sqlite";
@@ -62,7 +60,6 @@ pub(crate) const MIMOCODE_SQLITE_SOURCE_FORMAT: &str = "mimocode_sqlite";
 pub(crate) const KIRO_SQLITE_SOURCE_FORMAT: &str = "kiro_cli_sqlite";
 pub(crate) const CRUSH_SQLITE_SOURCE_FORMAT: &str = "crush_sqlite";
 pub(crate) const GOOSE_SESSIONS_SQLITE_SOURCE_FORMAT: &str = "goose_sessions_sqlite";
-pub(crate) const OPENCLAW_SOURCE_FORMAT: &str = "openclaw_session_jsonl_tree";
 pub(crate) const NANOCLAW_SOURCE_FORMAT: &str = "nanoclaw_project";
 pub(crate) const ASTRBOT_SQLITE_SOURCE_FORMAT: &str = "astrbot_data_v4_sqlite";
 pub(crate) const SHELLEY_SQLITE_SOURCE_FORMAT: &str = "shelley_sqlite";
@@ -81,14 +78,14 @@ pub(crate) const ZED_THREADS_SQLITE_SOURCE_FORMAT: &str = "zed_threads_sqlite";
 pub(crate) const FACTORY_DROID_SOURCE_FORMAT: &str = "factory_ai_droid_sessions_jsonl";
 pub(crate) const COPILOT_CLI_SOURCE_FORMAT: &str = "copilot_cli_session_events_jsonl";
 pub(crate) const QWEN_CODE_SOURCE_FORMAT: &str = "qwen_code_chat_jsonl";
-pub(crate) const KIMI_CODE_CLI_SOURCE_FORMAT: &str = "kimi_code_cli_wire_jsonl";
 pub(crate) const ROVODEV_SOURCE_FORMAT: &str = "rovodev_session_json_tree";
 pub(crate) const FORGECODE_SQLITE_SOURCE_FORMAT: &str = "forgecode_sqlite";
 pub(crate) const DEEPAGENTS_SQLITE_SOURCE_FORMAT: &str = "deepagents_sessions_sqlite";
 pub(crate) const HERMES_SQLITE_SOURCE_FORMAT: &str = "hermes_state_sqlite";
 pub(crate) const MISTRAL_VIBE_SOURCE_FORMAT: &str = "mistral_vibe_session_jsonl";
 pub(crate) const MUX_SOURCE_FORMAT: &str = "mux_session_jsonl";
-pub(crate) const PROVIDER_MAX_PREVIEW_CHARS: usize = 4_000;
+pub(crate) const PROVIDER_MAX_PREVIEW_CHARS: usize =
+    ctx_history_capture_model::PROVIDER_MAX_PREVIEW_CHARS;
 
 pub(crate) mod native_source;
 mod pro_output;

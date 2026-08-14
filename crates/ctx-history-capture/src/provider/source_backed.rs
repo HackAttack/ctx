@@ -48,8 +48,6 @@ use super::providers::{
     forgecode::nativepath::source_backed::ForgeCodeSourceSelectionV0,
     goose::{GooseSourceBackedAdapterV0, GooseSourceBackedSelectionV0, GooseSourceRouteV0},
     hermes::source_backed::{hermes_source_backed_explicit, HermesSourceCandidate},
-    junie::nativepath::junie_jsonl_adapter,
-    kimi::native_path::source_backed::{KimiSourceBackedCatalog, KimiSourceBackedResolver},
     lingma::native_path::{
         reject_duplicate_paths as reject_duplicate_lingma_paths, scan_lingma_snapshot_v0,
         LingmaDatabaseSourceV0, LingmaSourceBackedErrorV0, LingmaSourceBackedResultV0,
@@ -58,9 +56,7 @@ use super::providers::{
     mistral_vibe::native_path::source_backed::scan_mistral_vibe_source_backed,
     mux::mux_jsonl_adapter,
     nanoclaw::native_path::source_backed::NanoClawDocumentTreeAdapter,
-    openclaw::openclaw_source_backed_adapter_v0,
     openhands::nativepath::OpenHandsEventFileAdapterV2,
-    pi::nativepath::{pi_source_backed_adapter, PiSourceBackedRoot},
     rovodev::native_path::RovoDevDocumentTreeAdapter,
     shelley::native_path::source_backed::{
         discover_shelley_source_backed_exact_cwd, ShelleySourceBackedAdapter,

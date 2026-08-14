@@ -1,6 +1,5 @@
 pub(crate) mod adapter;
 pub(crate) mod codex;
-pub(crate) mod custom_history_jsonl;
 pub(crate) mod native_ingestion;
 pub(crate) mod normalization;
 pub(crate) mod providers;

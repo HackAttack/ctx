@@ -24,11 +24,11 @@ use crate::{
     },
     provider::source_backed::{
         family::jsonl::{
-            observe_opened_file, JsonlFamilyAdapter, JsonlFamilyAppendMode, JsonlFamilyExecutionIo,
-            JsonlFamilyInventory, JsonlFamilyLeaf, JsonlFamilyProjectionMode,
-            JsonlFamilySemanticExecutor, JsonlFamilySemanticPage, JsonlFamilySemanticPreflight,
-            JsonlFamilySemanticSummary, JsonlFamilyWorkerContext, JsonlPhysicalDigest,
-            JsonlPhysicalEncoding, JsonlPhysicalStream, JsonlRecordFraming,
+            observe_opened_file, CaptureJsonlRuntime, JsonlFamilyAdapter, JsonlFamilyAppendMode,
+            JsonlFamilyExecutionIo, JsonlFamilyInventory, JsonlFamilyLeaf,
+            JsonlFamilyProjectionMode, JsonlFamilySemanticExecutor, JsonlFamilySemanticPage,
+            JsonlFamilySemanticPreflight, JsonlFamilySemanticSummary, JsonlFamilyWorkerContext,
+            JsonlPhysicalDigest, JsonlPhysicalEncoding, JsonlPhysicalStream, JsonlRecordFraming,
         },
         IndexBaseEventLookup, SourceBackedRecordRejectionClass, SourceBackedRecordRejectionDraft,
         SourceBackedRecordRejectionDrafts,
@@ -46,7 +46,9 @@ const EVENT_IDENTITY_REVISION: &str = "deepseek-harness-sequence-v1";
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct DeepSeekHarnessJsonlAdapter;
 
-pub(crate) fn jsonl_adapter(source_format: &'static str) -> Result<Arc<dyn JsonlFamilyAdapter>> {
+pub(crate) fn jsonl_adapter(
+    source_format: &'static str,
+) -> Result<Arc<dyn JsonlFamilyAdapter<Runtime = CaptureJsonlRuntime>>> {
     if !matches!(source_format, TREE_SOURCE_FORMAT | EXPLICIT_SOURCE_FORMAT) {
         return Err(CaptureError::InvalidPayload(format!(
             "unknown DeepSeek Harness source format {source_format:?}"
@@ -56,6 +58,7 @@ pub(crate) fn jsonl_adapter(source_format: &'static str) -> Result<Arc<dyn Jsonl
 }
 
 impl JsonlFamilyAdapter for DeepSeekHarnessJsonlAdapter {
+    type Runtime = CaptureJsonlRuntime;
     fn provider(&self) -> CaptureProvider {
         CaptureProvider::DeepSeekHarness
     }
@@ -165,7 +168,7 @@ impl JsonlFamilyAdapter for DeepSeekHarnessJsonlAdapter {
         checkpoint: Option<&TypedKey>,
         _base_event_lookup: Option<IndexBaseEventLookup>,
         _mode: JsonlFamilyProjectionMode,
-    ) -> Result<Option<Box<dyn JsonlFamilySemanticExecutor>>> {
+    ) -> Result<Option<Box<dyn JsonlFamilySemanticExecutor<Runtime = CaptureJsonlRuntime>>>> {
         let expected_sequence = match checkpoint {
             None => 0,
             Some(TypedKey::U64(sequence)) => *sequence,
@@ -454,6 +457,7 @@ impl DeepSeekHarnessSemanticExecutor {
 }
 
 impl JsonlFamilySemanticExecutor for DeepSeekHarnessSemanticExecutor {
+    type Runtime = CaptureJsonlRuntime;
     fn preflight(
         &mut self,
         input: &mut JsonlFamilyExecutionIo,
@@ -565,7 +569,7 @@ fn read_header_binding(
         encoding,
         JsonlRecordFraming::ordinary(),
         JsonlPhysicalDigest::complete(Sha256::new()),
-        || ctx_history_jsonl::JsonlIoError::SourceChangedDuringCapture,
+        || CaptureError::SourceChangedDuringCapture,
     )?;
     let frame = stream.next_record()?.ok_or_else(|| {
         CaptureError::InvalidPayload("DeepSeek Harness source is empty".to_owned())

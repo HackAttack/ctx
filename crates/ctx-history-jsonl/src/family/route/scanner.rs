@@ -2,10 +2,19 @@ use ctx_history_core::{
     CertifiedSource, CertifiedSourceAppend, CoreRecord, SourceKey, SourceObservation, TypedKey,
 };
 
-use super::super::{JsonlPhysicalRecord, JsonlPhysicalStreamPosition, JsonlReader};
-use super::JsonlFamilyTerminalProof;
-use crate::provider::source_backed::SourceBackedRecordRejectionDrafts;
-use crate::Result;
+use super::super::{
+    JsonlFamilyError, JsonlFamilyRuntime, JsonlFileObservation, JsonlPhysicalRecord,
+    JsonlPhysicalStreamPosition, JsonlReader, JsonlResult, JsonlRuntimeError,
+    JsonlRuntimeLifecycleError, JsonlSourceIdentity,
+};
+use super::{
+    contract_error, route_internal, JsonlFamilyAdapter, JsonlFamilyLeaf, JsonlFamilyTerminalProof,
+    FAMILY_POLICY_REVISION, FAMILY_SOURCE_REVISION_KIND,
+};
+use ctx_history_capture_runtime::{
+    ParallelLeafScanEmitError, ParallelLeafScanError, SourceBackedCoordinatorError,
+    SourceBackedRecordRejectionDrafts, SourceBackedRouteError,
+};
 
 pub(super) fn preserve_coordinator_error<R: JsonlFamilyRuntime>(
     failure: &mut Option<SourceBackedRouteError>,
@@ -56,10 +65,15 @@ pub(super) fn physical_identity<R: JsonlFamilyRuntime>(
     adapter: &dyn JsonlFamilyAdapter<Runtime = R>,
     leaf: &JsonlFamilyLeaf<JsonlRuntimeError<R>>,
 ) -> JsonlSourceIdentity {
+    let encoding = adapter.physical_encoding(leaf);
+    let policy_revision = match encoding {
+        super::super::JsonlPhysicalEncoding::RawJsonl => FAMILY_POLICY_REVISION.to_owned(),
+        _ => format!("{FAMILY_POLICY_REVISION}:{}", encoding.checkpoint_tag()),
+    };
     JsonlSourceIdentity::new(
         adapter.provider().as_str(),
         adapter.parser_revision(),
-        FAMILY_POLICY_REVISION,
+        policy_revision,
         leaf.source.exact_descriptor_digest(),
         leaf.source_path.clone(),
     )
@@ -197,9 +211,9 @@ impl JsonlFamilySemanticPage {
 #[derive(Debug)]
 pub struct JsonlFamilySemanticSummary {
     represented_physical_records: u64,
-    rejected_physical_records: u64,
-    logical_complete_records: Option<u64>,
     rejected_records: u64,
+    logical_complete_records: u64,
+    rejected_logical_records: u64,
     provider_checkpoint: Option<TypedKey>,
     record_rejections: SourceBackedRecordRejectionDrafts,
 }
@@ -212,32 +226,32 @@ impl JsonlFamilySemanticSummary {
     ) -> Self {
         Self {
             represented_physical_records,
-            rejected_physical_records: rejected_records,
-            logical_complete_records: None,
             rejected_records,
+            logical_complete_records: represented_physical_records,
+            rejected_logical_records: rejected_records,
             provider_checkpoint,
-            record_rejections: Default::default(),
+            record_rejections: SourceBackedRecordRejectionDrafts::default(),
         }
     }
 
-    pub(crate) fn with_logical_counts(
+    pub fn with_logical_counts(
         represented_physical_records: u64,
-        rejected_physical_records: u64,
-        logical_complete_records: u64,
         rejected_records: u64,
+        logical_complete_records: u64,
+        rejected_logical_records: u64,
         provider_checkpoint: Option<TypedKey>,
     ) -> Self {
         Self {
             represented_physical_records,
-            rejected_physical_records,
-            logical_complete_records: Some(logical_complete_records),
             rejected_records,
+            logical_complete_records,
+            rejected_logical_records,
             provider_checkpoint,
-            record_rejections: Default::default(),
+            record_rejections: SourceBackedRecordRejectionDrafts::default(),
         }
     }
 
-    pub(crate) fn with_record_rejections(
+    pub fn with_record_rejections(
         mut self,
         record_rejections: SourceBackedRecordRejectionDrafts,
     ) -> Self {
@@ -253,16 +267,20 @@ impl JsonlFamilySemanticSummary {
         self.rejected_records
     }
 
-    pub(super) fn rejected_physical_records(&self) -> u64 {
-        self.rejected_physical_records
-    }
-
-    pub(super) fn logical_complete_records(&self) -> Option<u64> {
+    pub(super) fn logical_complete_records(&self) -> u64 {
         self.logical_complete_records
     }
 
-    pub(super) fn into_completion(self) -> (Option<TypedKey>, SourceBackedRecordRejectionDrafts) {
-        (self.provider_checkpoint, self.record_rejections)
+    pub(super) fn rejected_logical_records(&self) -> u64 {
+        self.rejected_logical_records
+    }
+
+    pub(super) fn into_record_rejections(self) -> SourceBackedRecordRejectionDrafts {
+        self.record_rejections
+    }
+
+    pub(super) fn provider_checkpoint(&self) -> Option<TypedKey> {
+        self.provider_checkpoint.clone()
     }
 }
 

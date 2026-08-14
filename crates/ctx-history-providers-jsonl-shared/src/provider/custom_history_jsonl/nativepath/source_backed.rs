@@ -11,11 +11,12 @@ use std::{
     collections::{BTreeMap, BTreeSet},
     fs::File,
     io::{BufWriter, Seek, SeekFrom, Write},
+    marker::PhantomData,
     path::{Path, PathBuf},
     sync::Arc,
 };
 
-use crate::provider::source_backed::IndexBaseEventLookup;
+use crate::{provider::source_backed::IndexBaseEventLookup, JsonlProviderRuntime};
 use chrono::{DateTime, Utc};
 use ctx_history_capture_model::normalization::{provider_policy_event_text, provider_value_text};
 use ctx_history_core::{
@@ -207,9 +208,10 @@ impl CustomHistorySourceBackedInput {
 }
 
 #[derive(Debug)]
-struct CustomHistoryJsonlFamilyAdapter {
+struct CustomHistoryJsonlFamilyAdapter<R> {
     input: CustomHistorySourceBackedInput,
     source: SourceKey,
+    runtime: PhantomData<fn() -> R>,
 }
 
 // Framing, physical evidence, and family publication are shared. The semantic
@@ -217,21 +219,19 @@ struct CustomHistoryJsonlFamilyAdapter {
 // source/session graph from byte zero while publishing only events beyond the
 // prior prefix; that graph can exceed the bounded provider-checkpoint contract.
 
-pub(crate) fn custom_history_jsonl_family_adapter(
+pub(crate) fn custom_history_jsonl_family_adapter<R: JsonlProviderRuntime>(
     input: CustomHistorySourceBackedInput,
-) -> CustomHistorySourceBackedResult<
-    Arc<
-        dyn JsonlFamilyAdapter<
-            Runtime = crate::provider::source_backed::family::jsonl::CaptureJsonlRuntime,
-        >,
-    >,
-> {
+) -> CustomHistorySourceBackedResult<Arc<dyn JsonlFamilyAdapter<Runtime = R>>> {
     let source = input.source_key()?;
-    Ok(Arc::new(CustomHistoryJsonlFamilyAdapter { input, source }))
+    Ok(Arc::new(CustomHistoryJsonlFamilyAdapter {
+        input,
+        source,
+        runtime: PhantomData,
+    }))
 }
 
-impl JsonlFamilyAdapter for CustomHistoryJsonlFamilyAdapter {
-    type Runtime = crate::provider::source_backed::family::jsonl::CaptureJsonlRuntime;
+impl<R: JsonlProviderRuntime> JsonlFamilyAdapter for CustomHistoryJsonlFamilyAdapter<R> {
+    type Runtime = R;
 
     fn provider(&self) -> CaptureProvider {
         CaptureProvider::Custom
@@ -284,13 +284,7 @@ impl JsonlFamilyAdapter for CustomHistoryJsonlFamilyAdapter {
         _leaf: &JsonlFamilyLeaf,
         _source_file: Arc<OpenedProviderSourceFile>,
         _imported_at: DateTime<Utc>,
-    ) -> crate::Result<
-        Box<
-            dyn JsonlFamilyProjector<
-                Runtime = crate::provider::source_backed::family::jsonl::CaptureJsonlRuntime,
-            >,
-        >,
-    > {
+    ) -> crate::Result<Box<dyn JsonlFamilyProjector<Runtime = R>>> {
         Err(CaptureError::SystemInvariant(
             "Custom History must use optimized JSONL leaf execution",
         ))
@@ -300,8 +294,8 @@ impl JsonlFamilyAdapter for CustomHistoryJsonlFamilyAdapter {
         &self,
         leaf: &JsonlFamilyLeaf,
         base: Option<&CertifiedSource>,
-        _base_event_lookup: &IndexBaseEventLookup,
-        _worker: &mut JsonlFamilyWorkerContext,
+        _base_event_lookup: &IndexBaseEventLookup<R>,
+        _worker: &mut JsonlFamilyWorkerContext<R>,
         emit_page: &mut dyn FnMut(
             JsonlFamilyPublication,
             u64,

@@ -5,9 +5,7 @@ use std::{
 
 use sha2::{Digest, Sha256};
 
-use crate::{JsonlIoError, Result};
-
-const MAX_PROVIDER_JSONL_LINE_BYTES: usize = 16 * 1024 * 1024;
+use super::{JsonlFamilyError, JsonlResult, MAX_PROVIDER_JSONL_LINE_BYTES};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct JsonlRecordFraming {
@@ -193,15 +191,15 @@ impl JsonlRecordDigest for Unhashed {
     }
 }
 
-pub fn read_bounded_record(
+pub fn read_bounded_record<E: JsonlFamilyError>(
     reader: &mut BufReader<File>,
     storage: &mut Vec<u8>,
     full_hasher: &mut Sha256,
     complete_hasher: &mut Sha256,
     maximum_bytes: u64,
     framing: JsonlRecordFraming,
-    source_changed: fn() -> JsonlIoError,
-) -> Result<Option<JsonlBoundedRecordRead>> {
+    source_changed: fn() -> E,
+) -> JsonlResult<Option<JsonlBoundedRecordRead>, E> {
     if maximum_bytes == 0 {
         return Ok(None);
     }
@@ -221,14 +219,14 @@ pub fn read_bounded_record(
     )
 }
 
-pub fn read_bounded_record_complete_sha256(
+pub(crate) fn read_bounded_record_complete_sha256<E: JsonlFamilyError>(
     reader: &mut BufReader<File>,
     storage: &mut Vec<u8>,
     complete_hasher: &mut Sha256,
     maximum_bytes: u64,
     framing: JsonlRecordFraming,
-    source_changed: fn() -> JsonlIoError,
-) -> Result<Option<JsonlBoundedRecordRead>> {
+    source_changed: fn() -> E,
+) -> JsonlResult<Option<JsonlBoundedRecordRead>, E> {
     if maximum_bytes == 0 {
         return Ok(None);
     }
@@ -247,15 +245,15 @@ pub fn read_bounded_record_complete_sha256(
     )
 }
 
-pub fn read_bounded_record_complete_and_prefix_sha256(
+pub fn read_bounded_record_complete_and_prefix_sha256<E: JsonlFamilyError>(
     reader: &mut BufReader<File>,
     storage: &mut Vec<u8>,
     complete_hasher: &mut Sha256,
     bounded_prefix: (&mut Sha256, &mut u64),
     maximum_bytes: u64,
     framing: JsonlRecordFraming,
-    source_changed: fn() -> JsonlIoError,
-) -> Result<Option<JsonlBoundedRecordRead>> {
+    source_changed: fn() -> E,
+) -> JsonlResult<Option<JsonlBoundedRecordRead>, E> {
     if maximum_bytes == 0 {
         return Ok(None);
     }
@@ -277,7 +275,7 @@ pub fn read_bounded_record_complete_and_prefix_sha256(
 }
 
 #[allow(clippy::too_many_arguments)]
-pub fn read_bounded_record_full_complete_and_prefix_sha256(
+pub fn read_bounded_record_full_complete_and_prefix_sha256<E: JsonlFamilyError>(
     reader: &mut BufReader<File>,
     storage: &mut Vec<u8>,
     full_hasher: &mut Sha256,
@@ -286,8 +284,8 @@ pub fn read_bounded_record_full_complete_and_prefix_sha256(
     bounded_prefix_remaining: &mut u64,
     maximum_bytes: u64,
     framing: JsonlRecordFraming,
-    source_changed: fn() -> JsonlIoError,
-) -> Result<Option<JsonlBoundedRecordRead>> {
+    source_changed: fn() -> E,
+) -> JsonlResult<Option<JsonlBoundedRecordRead>, E> {
     if maximum_bytes == 0 {
         return Ok(None);
     }
@@ -309,13 +307,13 @@ pub fn read_bounded_record_full_complete_and_prefix_sha256(
     )
 }
 
-pub fn read_bounded_record_unhashed(
+pub fn read_bounded_record_unhashed<E: JsonlFamilyError>(
     reader: &mut BufReader<File>,
     storage: &mut Vec<u8>,
     maximum_bytes: u64,
     framing: JsonlRecordFraming,
-    source_changed: fn() -> JsonlIoError,
-) -> Result<Option<JsonlBoundedRecordRead>> {
+    source_changed: fn() -> E,
+) -> JsonlResult<Option<JsonlBoundedRecordRead>, E> {
     if maximum_bytes == 0 {
         return Ok(None);
     }
@@ -334,7 +332,7 @@ fn read_bounded_record_with_digest<E: JsonlFamilyError, D: JsonlRecordDigest>(
     storage: &mut Vec<u8>,
     maximum_bytes: u64,
     framing: JsonlRecordFraming,
-    source_changed: fn() -> JsonlIoError,
+    source_changed: fn() -> E,
     mut digest: D,
 ) -> JsonlResult<Option<JsonlBoundedRecordRead>, E> {
     storage.clear();
@@ -371,20 +369,18 @@ fn read_bounded_record_with_digest<E: JsonlFamilyError, D: JsonlRecordDigest>(
 
             let remaining = maximum_bytes.saturating_sub(byte_len);
             let bounded = usize::try_from(remaining.min(available.len() as u64))
-                .map_err(|_| JsonlIoError::SystemInvariant("JSONL record bound exceeds usize"))?;
+                .map_err(|_| E::system_invariant("JSONL record bound exceeds usize"))?;
             let newline = available[..bounded].iter().position(|byte| *byte == b'\n');
             let consumed = newline.map_or(bounded, |index| index + 1);
             let chunk = &available[..consumed];
             digest.update(chunk);
             all_nul &= chunk.iter().all(|byte| *byte == 0);
-            byte_len =
-                byte_len
-                    .checked_add(u64::try_from(consumed).map_err(|_| {
-                        JsonlIoError::SystemInvariant("JSONL record chunk exceeds u64")
-                    })?)
-                    .ok_or(JsonlIoError::SystemInvariant(
-                        "JSONL record length exceeds u64",
-                    ))?;
+            byte_len = byte_len
+                .checked_add(
+                    u64::try_from(consumed)
+                        .map_err(|_| E::system_invariant("JSONL record chunk exceeds u64"))?,
+                )
+                .ok_or_else(|| E::system_invariant("JSONL record length exceeds u64"))?;
 
             let content_len = if newline.is_some() {
                 consumed.saturating_sub(1)
@@ -440,12 +436,12 @@ mod tests {
 
     const TEST_STORED_BYTES: usize = 1024;
 
-    fn source_changed() -> JsonlIoError {
-        JsonlIoError::SourceChangedDuringCapture
+    fn source_changed() -> super::super::CaptureError {
+        super::super::CaptureError::SourceChangedDuringCapture
     }
 
     fn assert_digest_policies_match(contents: &[u8], frozen_len: u64) {
-        let temp = tempfile::tempdir().unwrap();
+        let temp = crate::test_support_paths::tempdir().unwrap();
         let path = temp.path().join("bounded-record.jsonl");
         std::fs::write(&path, contents).unwrap();
         let framing = JsonlRecordFraming::terminal_nul_padded(TEST_STORED_BYTES);
@@ -536,7 +532,7 @@ mod tests {
 
     #[test]
     fn digest_policies_fail_closed_when_frozen_bytes_are_missing() {
-        let temp = tempfile::tempdir().unwrap();
+        let temp = crate::test_support_paths::tempdir().unwrap();
         let path = temp.path().join("truncated.jsonl");
         std::fs::write(&path, b"complete\n").unwrap();
         let framing = JsonlRecordFraming::terminal_nul_padded(TEST_STORED_BYTES);
@@ -587,7 +583,7 @@ mod tests {
         assert_eq!(unhashed_error.to_string(), hashed_error.to_string());
         assert!(matches!(
             unhashed_error,
-            JsonlIoError::SourceChangedDuringCapture
+            super::super::CaptureError::SourceChangedDuringCapture
         ));
     }
 }

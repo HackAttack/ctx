@@ -91,13 +91,12 @@ pub(super) fn parse_projection_with_limits(
             new_prefix_hasher(),
             prior_prefix_bytes.unwrap_or(0),
         ),
-        || ctx_history_jsonl::JsonlIoError::SourceChangedDuringCapture,
-    )
-    .map_err(CaptureError::from)?;
+        || CaptureError::SourceChangedDuringCapture,
+    )?;
 
     {
         let mut event_writer = BufWriter::new(&mut event_spool);
-        while let Some(record) = stream.next_record().map_err(CaptureError::from)? {
+        while let Some(record) = stream.next_record()? {
             #[cfg(test)]
             record_custom_history_work(|work| {
                 work.peak_provider_record_bytes =
