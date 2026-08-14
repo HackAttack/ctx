@@ -19,12 +19,6 @@ use serde_json::json;
 #[test]
 fn unchanged_replay_finishes_progress_and_propagates_systemic_failure() {
     let temp = tempfile::tempdir().unwrap();
-    #[cfg(target_os = "linux")]
-    let data_root = tempfile::Builder::new()
-        .prefix("ctx-logical-sqlite-replay-")
-        .tempdir_in("/dev/shm")
-        .unwrap();
-    #[cfg(not(target_os = "linux"))]
     let data_root = tempfile::tempdir().unwrap();
     let database = temp.path().join("source/opencode.sqlite");
     create_opencode_database(&database);

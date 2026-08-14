@@ -95,6 +95,11 @@ linux_x64_selector = {
     "os": "linux",
     "arch": "x86_64",
 }
+public_release_selector = {
+    **linux_x64_selector,
+    "ctx-release-task-bind": "true",
+    "ctx-release-unshare-clone-fs": "true",
+}
 linux_x64_keys = {
     "public-release",
     "public-cli-linux-factory",
@@ -106,10 +111,21 @@ linux_x64_keys = {
 }
 for key, step in keyed.items():
     agents = step.get("agents", {})
-    if key in linux_x64_keys:
+    if key == "public-release":
+        if agents != public_release_selector:
+            fail("public-release must require task-bind and exact CLONE_FS authority")
+    elif key in linux_x64_keys:
         if agents != linux_x64_selector:
             fail(f"{key} must require the exact Linux x86_64 release authority selector")
-    elif any(tag in agents for tag in ("ctx-release-os", "ctx-release-nested-docker")):
+    elif any(
+        tag in agents
+        for tag in (
+            "ctx-release-os",
+            "ctx-release-nested-docker",
+            "ctx-release-task-bind",
+            "ctx-release-unshare-clone-fs",
+        )
+    ):
         fail(f"{key} must not require Linux x86_64 release authority tags")
 
 for key in ("public-cli-linux-x64-native-smoke", "public-cli-linux-aarch64-native-smoke"):

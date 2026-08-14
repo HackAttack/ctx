@@ -41,10 +41,12 @@ probe_env=(
 )
 
 run_probe() {
-  env -i "${probe_env[@]}" "$@" bash "${checkout}/scripts/buildkite-public-ci.sh"
+  env -i "${probe_env[@]}" "$@" \
+    bash "${checkout}/scripts/buildkite-public-ci.sh" "${probe_args[@]}"
 }
 
 make_probe "${public_ci_script}" "${checkout}/scripts/buildkite-public-ci.sh"
+probe_args=()
 output="$(run_probe)"
 expected_cache="${build_path}/ctx-public-ci-cache/job_77_smoke/bazel-repository"
 expected_contents="${expected_cache}/contents"
@@ -93,5 +95,35 @@ if run_probe >"${test_root}/mutation.out" 2>"${test_root}/mutation.err"; then
 fi
 grep -Fq 'repository contents cache must be outside checkout' "${test_root}/mutation.err" \
   || fail "old-layout mutation did not exercise the cache-boundary rejection"
+
+runner_task_root="${test_root}/runner-task"
+release_checkout="${runner_task_root}/builds/host/ctx-public-release"
+release_build_path="${runner_task_root}/builds"
+mkdir -p "${release_checkout}/scripts" "${release_build_path}"
+make_probe "${public_ci_script}" "${release_checkout}/scripts/buildkite-public-ci.sh"
+checkout="${release_checkout}"
+build_path="${release_build_path}"
+probe_env=(
+  "PATH=/usr/bin:/bin"
+  "BUILDKITE=true"
+  "BUILDKITE_BUILD_ID=build-88"
+  "BUILDKITE_BUILD_PATH=${release_build_path}"
+  "BUILDKITE_BUILD_CHECKOUT_PATH=${release_checkout}"
+  "BUILDKITE_JOB_ID=job:88/release"
+  "CTX_RUNNER_TASK_ROOT=${runner_task_root}"
+  "TMPDIR=/tmp"
+)
+probe_args=(--mode=release)
+output="$(run_probe)"
+expected_release_tmp="${runner_task_root}/tmp/ctx-public-ci-job_88_release/bazel-test-tmp"
+grep -Fqx "Buildkite release Bazel test TMPDIR: ${expected_release_tmp}" <<<"${output}" \
+  || fail 'release mode did not bind Bazel tests to the task-local temporary root'
+
+if run_probe "CTX_PUBLIC_CI_TEST_TMPDIR=${test_root}/outside-task-root" \
+  >"${test_root}/outside.out" 2>"${test_root}/outside.err"; then
+  fail 'release test TMPDIR outside the task-local bind was accepted'
+fi
+grep -Fq 'release test temporary path escaped task-local bind' "${test_root}/outside.err" \
+  || fail 'outside release test TMPDIR did not explain the task-bind boundary'
 
 printf 'Buildkite public CI cache test ok: repository contents resolve outside checkout\n'

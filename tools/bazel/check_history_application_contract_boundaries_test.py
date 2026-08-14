@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import os
 import shutil
 import subprocess
 import sys
@@ -13,11 +14,12 @@ from pathlib import Path
 
 REPOSITORY = (
     Path(sys.argv[1]).resolve().parent
-    if len(sys.argv) == 2
+    if len(sys.argv) == 3
     else Path(__file__).resolve().parents[2]
 )
-if len(sys.argv) == 2:
-    sys.argv.pop()
+BAZELISK = Path(sys.argv[2]).resolve() if len(sys.argv) == 3 else None
+if len(sys.argv) == 3:
+    del sys.argv[1:]
 
 
 class HistoryApplicationContractBoundaryMutations(unittest.TestCase):
@@ -47,6 +49,9 @@ class HistoryApplicationContractBoundaryMutations(unittest.TestCase):
             "ingest": "check-history-ingest-application-boundary.sh",
             "read": "check-history-read-application-dependency-boundary.sh",
         }[package]
+        environment = os.environ.copy()
+        if BAZELISK is not None:
+            environment["CTX_BAZEL_BIN"] = str(BAZELISK)
         return subprocess.run(
             [
                 str(self.root / "tools/bazel" / script),
@@ -55,6 +60,7 @@ class HistoryApplicationContractBoundaryMutations(unittest.TestCase):
             cwd=self.root,
             check=False,
             capture_output=True,
+            env=environment,
             text=True,
         )
 

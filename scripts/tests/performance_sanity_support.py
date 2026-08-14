@@ -372,15 +372,26 @@ def published_file_state(path: Path) -> PublishedFileState:
     )
 
 
-def directory_bytes(path: Path) -> int:
+def published_index_bytes(path: Path) -> int:
     physical_files: dict[tuple[int, int], int] = {}
-    for entry in path.rglob("*"):
-        if not entry.is_file():
+    for directory_name in (
+        "ctx-generations",
+        "index-generations",
+    ):
+        directory = path / directory_name
+        if not directory.is_dir():
             continue
-        metadata = entry.stat()
-        physical_files.setdefault(
-            (metadata.st_dev, metadata.st_ino), metadata.st_size
-        )
+        for entry in directory.rglob("*"):
+            if (
+                not entry.is_file()
+                or entry.name.endswith(".lock")
+                or entry.name.startswith(".ctx-tantivy-atomic-")
+            ):
+                continue
+            metadata = entry.stat()
+            physical_files.setdefault(
+                (metadata.st_dev, metadata.st_ino), metadata.st_size
+            )
     return sum(physical_files.values())
 
 
@@ -519,7 +530,7 @@ def refresh_snapshot(
         meta=meta,
         manifest=manifest,
         manifest_names=manifest_names,
-        index_bytes=directory_bytes(index_root),
+        index_bytes=published_index_bytes(index_root),
     )
 
 
