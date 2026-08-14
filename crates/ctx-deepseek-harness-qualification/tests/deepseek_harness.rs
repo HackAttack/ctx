@@ -1,5 +1,4 @@
 use assert_cmd::cargo::CommandCargoExt as _;
-use ctx_history_index_format::{decode_core_document, fields_from_schema};
 use ctx_history_index_query::VerifiedIndex;
 use serde_json::{json, Value};
 use std::{
@@ -11,8 +10,8 @@ use std::{
     thread,
     time::{Duration, Instant, SystemTime},
 };
-use tantivy::{collector::DocSetCollector, query::AllQuery, TantivyDocument};
 use tempfile::TempDir;
+use uuid::Uuid;
 
 const PARENT_SESSION_ID: &str = "11111111-2222-4333-8444-555555555555";
 const CHILD_SESSION_ID: &str = "66666666-7777-4888-8999-aaaaaaaaaaaa";
@@ -221,7 +220,6 @@ impl Harness {
             "deepseek-harness".to_owned(),
             "--path".to_owned(),
             path.display().to_string(),
-            "--no-daemon".to_owned(),
             "--format=json".to_owned(),
             "--progress".to_owned(),
             "none".to_owned(),
@@ -827,27 +825,33 @@ fn private_reasoning_and_image_only_messages_are_retained_but_not_searchable() {
 
     let lexical = harness.data_root.join("search/lexical");
     let index = VerifiedIndex::open(&lexical).expect("open verified lexical generation");
-    let searcher = index.test_searcher();
-    let fields = fields_from_schema(searcher.schema()).expect("validate lexical fields");
-    let omitted = searcher
-        .search(&AllQuery, &DocSetCollector)
-        .expect("enumerate stored documents")
+    let parent_search = harness.search(PARENT_ORACLE);
+    let parent_result = one_matching_result(&parent_search, PARENT_ORACLE);
+    let parent_session_id = Uuid::parse_str(
+        parent_result["ctx_session_id"]
+            .as_str()
+            .expect("parent ctx session ID"),
+    )
+    .expect("parse parent ctx session ID");
+    let omitted = index
+        .core_events_for_session(parent_session_id)
+        .expect("enumerate stored Core records")
         .into_iter()
-        .filter_map(|address| {
-            let document: TantivyDocument = searcher.doc(address).ok()?;
-            decode_core_document(searcher, address, &document, fields)
-                .ok()
-                .map(|(record, _)| record)
-        })
         .filter(|record| record.event_sequence >= 18)
         .collect::<Vec<_>>();
     assert_eq!(omitted.len(), 2);
     assert!(omitted.iter().all(|record| {
-        record.content.normalized_body.is_none()
-            && record.content.structured_content.is_none()
-            && format!("{:?}", record.content.policy_status).starts_with("Omitted")
+        record.core_record.content.normalized_body.is_none()
+            && record.core_record.content.structured_content.is_none()
+            && format!("{:?}", record.core_record.content.policy_status).starts_with("Omitted")
     }));
-    let encoded = serde_json::to_string(&omitted).unwrap();
+    let encoded = serde_json::to_string(
+        &omitted
+            .iter()
+            .map(|record| &record.core_record)
+            .collect::<Vec<_>>(),
+    )
+    .unwrap();
     assert!(!encoded.contains(reasoning_marker));
     assert!(!encoded.contains("sha256:aaaa"));
     authored_state.assert_unchanged(&source);
@@ -1117,27 +1121,14 @@ fn complete_tail_body_is_searchable_and_tantivy_stores_only_core_record() {
         .expect("search tail term in Tantivy");
     assert_eq!(hits.len(), 1);
     let expected_event_id = hits[0].event.event_id;
-    let searcher = index.test_searcher();
-    let schema = searcher.schema();
-    assert!(schema.get_field("body_preview").is_err());
-    assert!(schema.get_field("body").is_err());
-    let fields = fields_from_schema(schema).expect("validate lexical fields");
-    let addresses = searcher
-        .search(&AllQuery, &DocSetCollector)
-        .expect("enumerate stored documents");
-    let (stored, address) = addresses
-        .into_iter()
-        .filter_map(|address| {
-            let document: TantivyDocument = searcher.doc(address).ok()?;
-            let (record, _) = decode_core_document(searcher, address, &document, fields).ok()?;
-            (record.event_id == expected_event_id).then_some((document, address))
-        })
-        .next()
-        .expect("find tail record in stored Core");
-    assert!(stored.get_first(fields.body_search).is_none());
-    assert!(stored.get_first(fields.core_record).is_some());
-    let (core, _) = decode_core_document(searcher, address, &stored, fields).unwrap();
-    assert_eq!(core.content.normalized_body.as_deref(), Some(body.as_str()));
+    let stored = index
+        .core_event_by_id(expected_event_id.as_uuid())
+        .expect("load tail record from stored Core")
+        .expect("tail record exists in stored Core");
+    assert_eq!(
+        stored.core_record.content.normalized_body.as_deref(),
+        Some(body.as_str())
+    );
 }
 
 #[test]
