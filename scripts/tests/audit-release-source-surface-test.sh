@@ -25,7 +25,12 @@ if ! bash "${checker}" "${fixture_root}/retained-upgrade-status" >/dev/null; the
   fail 'retained upgrade availability status was rejected'
 fi
 
+if ! bash "${checker}" "${fixture_root}/retained-workspace-product-crate-version" >/dev/null; then
+  fail 'workspace-inherited product crate version was rejected'
+fi
+
 for retired_case in \
+  mutated-hardcoded-product-crate-version \
   retired-top-level-uninstall \
   retired-command-surfaces \
   retired-presentation-command-surfaces \

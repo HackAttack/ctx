@@ -126,7 +126,7 @@ impl<'scan, 'writer, L: CaptureLifecycleSink> DocumentBaseRoute<'scan, 'writer, 
 
 pub enum DocumentAppendBase<L: CaptureLifecycleSink> {
     Generation(L::PinnedAppendBase),
-    Certificate(CertifiedSource),
+    Certificate(Box<CertifiedSource>),
 }
 
 impl<L> std::fmt::Debug for DocumentAppendBase<L>
@@ -150,7 +150,7 @@ where
     fn clone(&self) -> Self {
         match self {
             Self::Generation(base) => Self::Generation(base.clone()),
-            Self::Certificate(base) => Self::Certificate(base.clone()),
+            Self::Certificate(base) => Self::Certificate(Box::new((**base).clone())),
         }
     }
 }

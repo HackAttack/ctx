@@ -27,11 +27,6 @@ fn source_backed_refresh_writer_options_for_parallelism(
 }
 
 #[cfg(test)]
-pub(crate) fn source_backed_leaf_worker_budget(indexer_threads: usize) -> usize {
-    ctx_history_capture_runtime::source_backed_refresh_work_budget(indexer_threads)
-}
-
-#[cfg(test)]
 mod tests {
     use super::*;
 

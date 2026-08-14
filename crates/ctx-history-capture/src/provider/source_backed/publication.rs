@@ -32,21 +32,6 @@ type SourceBackedPublicationMetadataFactory<'factory> =
         ) -> ctx_history_index::Result<Vec<u8>>
         + 'factory;
 
-#[cfg(test)]
-thread_local! {
-    static PARTIAL_BASE_ROUTE_MEMBER_VISITS: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
-}
-
-#[cfg(test)]
-pub(crate) fn reset_partial_base_route_member_visits() {
-    PARTIAL_BASE_ROUTE_MEMBER_VISITS.with(|visits| visits.set(0));
-}
-
-#[cfg(test)]
-pub(crate) fn partial_base_route_member_visits() -> u64 {
-    PARTIAL_BASE_ROUTE_MEMBER_VISITS.with(std::cell::Cell::get)
-}
-
 #[derive(Debug, Clone, Copy)]
 struct SourceBackedRefreshExecutionBudget {
     discovery_duration: Duration,
@@ -1013,15 +998,7 @@ fn refresh_source_backed_generation_with_detailed_progress_and_discovery_timing(
                 let members = owners
                     .values()
                     .filter(|owner| owner.route_index == route_index && owner.present)
-                    .map(|owner| {
-                        #[cfg(test)]
-                        if partial_routes.contains(route_identity) {
-                            PARTIAL_BASE_ROUTE_MEMBER_VISITS.with(|visits| {
-                                visits.set(visits.get().saturating_add(1));
-                            });
-                        }
-                        owner.source.clone()
-                    })
+                    .map(|owner| owner.source.clone())
                     .collect();
                 Some(PresentCaptureRoute::new(route_identity.clone(), members))
             },

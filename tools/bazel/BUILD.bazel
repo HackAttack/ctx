@@ -39,6 +39,8 @@ exports_files([
     "check_history_source_sqlite_boundary.py",
     "check_history_provider_sqlite_selected_boundary.py",
     "check_history_provider_sqlite_selected_boundary_test.py",
+    "check_sqlite_inventory_provider_boundary.py",
+    "check_sqlite_inventory_provider_boundary_test.py",
     "check-pro-access-build-cfg.sh",
     "check-pro-access-dependency-boundary.sh",
     "check-pro-application-dependency-boundary.sh",
@@ -145,6 +147,16 @@ py_test(
     ],
     imports = ["."],
     main = "check_history_provider_claude_cursor_boundary_test.py",
+)
+
+py_test(
+    name = "sqlite_inventory_provider_boundary_mutation_tests",
+    srcs = [
+        "check_sqlite_inventory_provider_boundary.py",
+        "check_sqlite_inventory_provider_boundary_test.py",
+    ],
+    imports = ["."],
+    main = "check_sqlite_inventory_provider_boundary_test.py",
 )
 
 py_test(

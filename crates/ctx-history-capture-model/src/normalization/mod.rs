@@ -23,5 +23,24 @@ pub use value::{
     provider_timestamp_value, provider_value_text, text_id_index,
 };
 
+use chrono::{DateTime, Utc};
+
+/// Converts a provider-native signed integer into its nonnegative Core form.
+///
+/// Provider packs keep the field label so their stable validation text stays
+/// provider-owned without depending on the capture facade's error type.
+pub fn provider_nonnegative_i64_to_u64(value: i64, field: &'static str) -> Result<u64, String> {
+    u64::try_from(value).map_err(|_| format!("{field} must be nonnegative, got {value}"))
+}
+
+/// Requires one provider-native seconds timestamp to be representable by Core.
+pub fn provider_required_timestamp_seconds(
+    value: f64,
+    field: &'static str,
+) -> Result<DateTime<Utc>, String> {
+    provider_timestamp_seconds_to_datetime(value)
+        .ok_or_else(|| format!("{field} is outside representable timestamp range: {value}"))
+}
+
 #[cfg(test)]
 mod tests;

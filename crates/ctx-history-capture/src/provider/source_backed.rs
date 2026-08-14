@@ -31,35 +31,13 @@ use ctx_history_provider_mistral_mux::{mistral_vibe_jsonl_adapter, mux_jsonl_ada
 use sha2::{Digest, Sha256};
 
 use super::codex::nativepath::CodexGenerationNormalizationCoordinatorV0;
-pub use super::providers::crush::native_path::source_backed::{
-    CrushProjectDatabaseV0, CrushProjectInventoryObservationV0, CrushProjectInventorySourceV0,
-};
 use super::providers::{
-    astrbot::native_path::source_backed::{
-        scan_astrbot_snapshot_v0, AstrBotSourceBackedInventoryV0, AstrBotSourceBackedSourceV0,
-        PARSER_REVISION as ASTRBOT_SOURCE_BACKED_PARSER_REVISION,
-    },
     continue_cli::native_path::{ContinueSourceBackedOutcome, ContinueSourceBackedReader},
-    crush::native_path::source_backed::{
-        bind_inventory as bind_crush_inventory, finish_opened_source as finish_crush_source,
-        scan_source as scan_crush_source, CrushSourceBackedErrorV0, CrushSourceBackedResultV0,
-        CRUSH_PARSER_REVISION,
-    },
     deepagents::native_path::source_backed::DeepAgentsDatabaseSelectionV0,
     forgecode::nativepath::source_backed::ForgeCodeSourceSelectionV0,
-    hermes::source_backed::{hermes_source_backed_explicit, HermesSourceCandidate},
-    lingma::native_path::{
-        reject_duplicate_paths as reject_duplicate_lingma_paths, scan_lingma_snapshot_v0,
-        LingmaDatabaseSourceV0, LingmaSourceBackedErrorV0, LingmaSourceBackedResultV0,
-        LingmaSourceInventoryV0, LINGMA_SOURCE_BACKED_PARSER_REVISION,
-    },
     nanoclaw::native_path::source_backed::NanoClawDocumentTreeAdapter,
     openhands::nativepath::OpenHandsEventFileAdapterV2,
     rovodev::native_path::RovoDevDocumentTreeAdapter,
-    shelley::native_path::source_backed::{
-        discover_shelley_source_backed_exact_cwd, ShelleySourceBackedAdapter,
-        SHELLEY_SOURCE_PARSER_REVISION,
-    },
     task_json::cline_nativepath::{
         cline_task_json_source_backed_adapter, roo_task_json_source_backed_adapter,
     },
@@ -72,8 +50,8 @@ use super::providers::{
 };
 use crate::provider_sources::{
     path_presence, resolve_warp_discovery_authority, CrushDiscoveredProjectInventory,
-    CrushProjectInventorySelector, CrushProjectInventorySelectorError, LingmaDiscoveryUnavailable,
-    LingmaInventorySelector, PathPresence, WarpDiscoveryUnavailable,
+    CrushProjectInventorySelector, CrushProjectInventorySelectorError, LingmaInventorySelector,
+    PathPresence, WarpDiscoveryUnavailable,
 };
 use crate::{
     discover_provider_sources_with_context, provider_source_spec,
@@ -81,6 +59,9 @@ use crate::{
     DiscoveryIssue, DiscoveryPlatform, DiscoveryReport, ProviderAdapterContext,
     ProviderImportSupport, ProviderSource, ProviderSourceKind, ProviderSourceSpec,
     ProviderSourceStatus,
+};
+pub use ctx_history_providers_sqlite_inventory::{
+    CrushProjectDatabaseV0, CrushProjectInventoryObservationV0, CrushProjectInventorySourceV0,
 };
 
 mod discovery;

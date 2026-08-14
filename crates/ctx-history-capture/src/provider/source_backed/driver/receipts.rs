@@ -83,38 +83,6 @@ pub struct SourceBackedRoute {
 }
 
 impl SourceBackedRoute {
-    #[cfg(test)]
-    pub(in crate::provider) fn explicit_manual_unchecked_for_test(
-        source: ProviderSource,
-        selector_authority: SourceBackedSelectorAuthority,
-        certified_source_format: &'static str,
-        watch_target_kind: SourceBackedWatchTargetKind,
-        driver: SourceBackedRouteDriver,
-    ) -> SourceBackedCoordinatorResult<Self> {
-        let route_identity = source_backed_route_identity(
-            &source,
-            certified_source_format,
-            SourceBackedRouteSelection::ExplicitManual,
-            selector_authority,
-        )?;
-        Ok(Self {
-            metadata: SourceBackedRouteMetadata {
-                source,
-                certified_source_format,
-                selection: Some(SourceBackedRouteSelection::ExplicitManual),
-                selector_authority,
-                unsupported_reason: None,
-                route_identity: Some(route_identity),
-                watch_target_kind,
-            },
-            driver: Some(driver),
-            certified_missing_paths: Vec::new(),
-            retire_after_success: Vec::new(),
-            controlled_retire_after_success: Vec::new(),
-            codex_generation_participant: None,
-        })
-    }
-
     pub fn automatic(
         source: ProviderSource,
         selector_authority: SourceBackedSelectorAuthority,
@@ -508,10 +476,8 @@ fn source_backed_route_identity(
         digest.update(path);
     } else if source.provider == CaptureProvider::Hermes {
         let profile =
-            crate::provider::providers::hermes::source_backed::hermes_automatic_profile_name(
-                &source.path,
-            )
-            .map_err(|error| invalid_route(source.provider, error.to_string()))?;
+            ctx_history_providers_sqlite_inventory::hermes_automatic_profile_name(&source.path)
+                .map_err(|error| invalid_route(source.provider, error.to_string()))?;
         if profile != "default" {
             // Hermes discovery intentionally multiplexes independently owned
             // named profiles. Keep the historical default route identity, but

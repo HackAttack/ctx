@@ -418,13 +418,29 @@ fn register_discovered_automatic_route(
             )
         }
         (SourceBackedRouteConstructor::FiniteInventory, CaptureProvider::Lingma) => {
-            let inventory_source = discovered_lingma_inventory_source(discovery, &source)?;
-            register_lingma_inventory_source(
+            let selector = LingmaInventorySelector::new(discovery.clone());
+            let registration =
+                ctx_history_providers_sqlite_inventory::registration::discovered_lingma_registration::<
+                    crate::provider::source_backed::family::document::CaptureDocumentLifecycle,
+                    crate::provider::source_backed::family::document::CaptureDocumentSpool,
+                    _,
+                >(
+                    source,
+                    SourceBackedRouteSelection::Automatic,
+                    data_root,
+                    move || selector.observe(),
+                )
+                .map_err(|error| match error {
+                    ctx_history_providers_sqlite_inventory::registration::LingmaRegistrationError::SelectorAuthorityUnavailable(detail) => {
+                        SourceBackedAutomaticUnavailableReason::SelectorAuthorityUnavailable { detail }
+                    }
+                    ctx_history_providers_sqlite_inventory::registration::LingmaRegistrationError::RegistrationRejected(detail) => {
+                        SourceBackedAutomaticUnavailableReason::RegistrationRejected { detail }
+                    }
+                })?;
+            crate::provider::source_backed::family::document::install_sqlite_inventory_registration(
                 registry,
-                source,
-                SourceBackedRouteSelection::Automatic,
-                data_root,
-                inventory_source,
+                registration,
             )
         }
         (SourceBackedRouteConstructor::DiscoveryContext, CaptureProvider::AstrBot) => {
@@ -540,7 +556,11 @@ struct DiscoveredCrushInventorySource {
 }
 
 impl CrushProjectInventorySourceV0 for DiscoveredCrushInventorySource {
-    fn observe(&self) -> CrushSourceBackedResultV0<CrushProjectInventoryObservationV0> {
+    fn observe(
+        &self,
+    ) -> ctx_history_providers_sqlite_inventory::CrushSourceBackedResultV0<
+        CrushProjectInventoryObservationV0,
+    > {
         self.selector
             .observe(self.spec)
             .map_err(crush_selector_adapter_error)
@@ -588,7 +608,9 @@ fn discovered_crush_inventory_source(
 
 fn crush_adapter_inventory(
     inventory: CrushDiscoveredProjectInventory,
-) -> CrushSourceBackedResultV0<CrushProjectInventoryObservationV0> {
+) -> ctx_history_providers_sqlite_inventory::CrushSourceBackedResultV0<
+    CrushProjectInventoryObservationV0,
+> {
     let authority_key = inventory
         .authority_key()
         .map_err(crush_selector_adapter_error)?;
@@ -602,12 +624,12 @@ fn crush_adapter_inventory(
                 .map_err(crush_selector_adapter_error)?;
             CrushProjectDatabaseV0::new(project_key, database.database_path())
         })
-        .collect::<CrushSourceBackedResultV0<Vec<_>>>()?;
+        .collect::<ctx_history_providers_sqlite_inventory::CrushSourceBackedResultV0<Vec<_>>>()?;
     CrushProjectInventoryObservationV0::new(authority_key, inventory.revision().to_vec(), databases)
 }
 
 fn crush_selector_adapter_error(
     error: CrushProjectInventorySelectorError,
-) -> CrushSourceBackedErrorV0 {
-    CaptureError::InvalidPayload(error.to_string()).into()
+) -> ctx_history_providers_sqlite_inventory::CrushSourceBackedErrorV0 {
+    ctx_history_providers_sqlite_inventory::CaptureError::InvalidPayload(error.to_string()).into()
 }

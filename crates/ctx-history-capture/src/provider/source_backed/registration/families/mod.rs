@@ -4,11 +4,13 @@ mod document;
 mod event_file;
 mod jsonl;
 mod sqlite;
+mod sqlite_inventory;
 
 pub use document::*;
 use event_file::*;
 pub use jsonl::*;
 pub use sqlite::*;
+pub use sqlite_inventory::*;
 
 type DirectRouteRegistration = fn(
     &mut SourceBackedProviderRegistry,

@@ -1,0 +1,3 @@
+[package]
+name = "ctx-history-providers-sqlite-inventory"
+version = "0.26.0"

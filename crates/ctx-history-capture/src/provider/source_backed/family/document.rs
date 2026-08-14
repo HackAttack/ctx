@@ -4,19 +4,13 @@
 //! and the index lifecycle binding remain capture-owned.
 
 use crate::ProviderSource;
-use ctx_history_capture_runtime::{
-    ChangedDocumentSink as RuntimeChangedDocumentSink,
-    DocumentAppendBase as RuntimeDocumentAppendBase, DocumentBaseRoute as RuntimeDocumentBaseRoute,
-};
+use ctx_history_capture_runtime::ChangedDocumentSink as RuntimeChangedDocumentSink;
 use ctx_history_provider_runtime::ProviderReplacementDocumentTree;
 
 use crate::provider::source_backed::{
     IndexCaptureLifecycle, SourceBackedCoordinatorResult, SourceBackedProviderRegistry,
     SourceBackedRouteControlExpectation, SourceBackedRouteSelection, SourceBackedSelectorAuthority,
 };
-#[cfg(test)]
-use crate::provider::source_backed::{SourceBackedRoute, SourceBackedWatchTargetKind};
-
 mod spool;
 use super::CaptureProviderRuntime;
 
@@ -36,9 +30,6 @@ impl ctx_history_providers_sqlite_selected::SelectedSqliteCaptureBinding
 
 pub(crate) type ChangedDocumentSink<'sink, 'writer> =
     RuntimeChangedDocumentSink<'sink, 'writer, CaptureDocumentLifecycle, CaptureDocumentSpool>;
-pub(crate) type DocumentAppendBase = RuntimeDocumentAppendBase<CaptureDocumentLifecycle>;
-pub(crate) type DocumentBaseRoute<'scan, 'writer> =
-    RuntimeDocumentBaseRoute<'scan, 'writer, CaptureDocumentLifecycle>;
 
 pub(crate) use ctx_history_capture_runtime::{
     CompleteDocumentTree, DocumentLeafExecutionPolicy, DocumentLeafFingerprint,
@@ -80,29 +71,23 @@ where
     >(registry, source, selection, selector_authority, adapter)
 }
 
-#[cfg(test)]
-pub(crate) fn register_replacement_document_tree_route_unchecked_for_test<A>(
+pub(crate) fn install_sqlite_inventory_registration<A>(
     registry: &mut SourceBackedProviderRegistry,
-    source: ProviderSource,
-    selector_authority: SourceBackedSelectorAuthority,
-    certified_source_format: &'static str,
-    watch_target_kind: SourceBackedWatchTargetKind,
-    adapter: A,
+    registration: ctx_history_providers_sqlite_inventory::registration::SqliteInventoryRegistration<
+        A,
+    >,
 ) -> SourceBackedCoordinatorResult<()>
 where
     A: CaptureReplacementDocumentTree,
 {
-    let driver = ctx_history_provider_runtime::provider_replacement_document_tree_driver::<
-        CaptureProviderRuntime,
-        _,
-    >(&source, adapter);
-    registry.register(SourceBackedRoute::explicit_manual_unchecked_for_test(
-        source,
-        selector_authority,
-        certified_source_format,
-        watch_target_kind,
-        driver,
-    )?);
+    let (source, selection, authority, adapter, watch_targets) = registration.into_parts();
+    let watch_source = source.clone();
+    register_replacement_document_tree_route_with_authority(
+        registry, source, selection, authority, adapter,
+    )?;
+    if let Some(observe) = watch_targets {
+        registry.attach_route_watch_targets(&watch_source, observe)?;
+    }
     Ok(())
 }
 

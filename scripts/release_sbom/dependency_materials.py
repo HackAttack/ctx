@@ -60,6 +60,7 @@ WORKSPACE_RELEASE_PACKAGES = {
     "ctx-history-provider-trae",
     "ctx-history-providers-jsonl-shared",
     "ctx-history-provider-mistral-mux",
+    "ctx-history-providers-sqlite-inventory",
     "ctx-history-refresh-execution",
     "ctx-history-query",
     "ctx-semantic-index",

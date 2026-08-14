@@ -64,61 +64,16 @@ pub(super) fn register_hermes_route(
     selection: SourceBackedRouteSelection,
     data_root: &Path,
 ) -> SourceBackedCoordinatorResult<()> {
-    if selection != SourceBackedRouteSelection::Automatic {
-        return Err(invalid_route(
-            source.provider,
-            "manual Hermes registration requires persistent explicit catalog lineage",
-        ));
-    }
-    let candidate = HermesSourceCandidate::automatic(data_root, source.clone())
-        .map_err(|error| invalid_route(source.provider, error.to_string()))?;
-    register_hermes_candidate(
+    let provider = source.provider;
+    let registration =
+        ctx_history_providers_sqlite_inventory::registration::hermes_automatic_registration::<
+            crate::provider::source_backed::family::document::CaptureDocumentLifecycle,
+            crate::provider::source_backed::family::document::CaptureDocumentSpool,
+        >(source, selection, data_root)
+        .map_err(|error| invalid_route(provider, error.to_string()))?;
+    crate::provider::source_backed::family::document::install_sqlite_inventory_registration(
         registry,
-        source,
-        selection,
-        SourceBackedSelectorAuthority::DiscoveredWinner,
-        candidate,
-    )
-}
-
-fn register_hermes_candidate(
-    registry: &mut SourceBackedProviderRegistry,
-    source: ProviderSource,
-    selection: SourceBackedRouteSelection,
-    authority: SourceBackedSelectorAuthority,
-    candidate: HermesSourceCandidate,
-) -> SourceBackedCoordinatorResult<()> {
-    register_replacement_document_tree_route_with_authority(
-        registry, source, selection, authority, candidate,
-    )
-}
-
-pub fn register_hermes_explicit_source_backed_route(
-    registry: &mut SourceBackedProviderRegistry,
-    source: ProviderSource,
-    data_root: &Path,
-    anchor: SourceAnchor,
-) -> SourceBackedCoordinatorResult<()> {
-    let candidate = hermes_source_backed_explicit(data_root, source.path.clone(), anchor)
-        .map_err(|error| invalid_route(source.provider, error.to_string()))?;
-    #[cfg(test)]
-    {
-        crate::provider::source_backed::family::document::register_replacement_document_tree_route_unchecked_for_test(
-            registry,
-            source,
-            SourceBackedSelectorAuthority::ExplicitPath,
-            crate::HERMES_SQLITE_SOURCE_FORMAT,
-            SourceBackedWatchTargetKind::SqliteDatabase,
-            candidate,
-        )
-    }
-    #[cfg(not(test))]
-    register_hermes_candidate(
-        registry,
-        source,
-        SourceBackedRouteSelection::ExplicitManual,
-        SourceBackedSelectorAuthority::ExplicitPath,
-        candidate,
+        registration,
     )
 }
 
