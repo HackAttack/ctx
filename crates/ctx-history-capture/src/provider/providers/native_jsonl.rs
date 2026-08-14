@@ -10,8 +10,6 @@ pub(crate) mod native_path;
 mod normalization;
 pub(crate) mod result_content;
 
-pub(crate) use normalization::native_jsonl_timestamp;
-
 pub(crate) fn visit_native_jsonl_files(
     root: &Path,
     provider: CaptureProvider,
