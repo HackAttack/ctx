@@ -14,13 +14,13 @@ pub use prompt_history::{
     CodexPromptHistorySourceBackedInputV0,
 };
 pub(crate) use reader::{opened_codex_file_observation, CodexNativeScanner};
-#[cfg(any(test, feature = "test-support"))]
+#[cfg(test)]
 pub(crate) use reader::{
     CodexScanCounters, MAX_CODEX_PAGE_BYTES, MAX_CODEX_PAGE_ROWS, MAX_CODEX_RECORD_BYTES,
     MAX_CODEX_SOURCE_BACKED_SINGLE_ROW_PAGE_BYTES,
 };
 pub(crate) use rows::CodexSessionRow;
-#[cfg(any(test, feature = "test-support"))]
+#[cfg(test)]
 pub(crate) use source::CodexCatalogSource;
 pub(crate) use source::{discover_codex_catalog_sources, CodexFileObservation};
 pub use source_backed::{
