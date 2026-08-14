@@ -18,14 +18,16 @@ pub(crate) use ctx_history_index_generation::{
     reclaim_unreferenced_manifests,
 };
 pub(crate) use ctx_history_index_generation::{
-    physical_integrity_audit, verify_physical_integrity, PhysicalIntegrityAudit,
+    physical_integrity_audit, validate_candidate_managed_files, verify_candidate_physical_fence,
+    verify_physical_integrity, PhysicalIntegrityAudit,
 };
 pub(crate) use ctx_history_index_generation::{
-    prime_candidate_physical_proof, CandidatePhysicalProof,
+    prime_candidate_physical_proof, CandidateActivationFence, CandidatePhysicalProof,
 };
 pub(crate) use generation::{
     create_candidate_generation, lexical_index_settings, load_active_generation_pointer,
-    open_slot_index, publish_active_generation_pointer, reclaim_inactive_generation_directories,
+    open_slot_index, publish_active_generation_pointer,
+    publish_active_generation_pointer_validated, reclaim_inactive_generation_directories,
     slot_path, sync_generation, ActiveGenerationPointer, GenerationSlot, PointerPublicationOutcome,
     INDEX_GENERATIONS_DIRECTORY,
 };

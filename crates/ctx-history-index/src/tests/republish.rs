@@ -896,6 +896,7 @@ fn forced_copy_fallback_is_bounded_instrumented_and_migrates() {
             force_reflink_fallback: false,
             force_hardlink_fallback: false,
             available_bytes: None,
+            rechecked_available_bytes: None,
         },
         |_, _| Ok(()),
     );
@@ -933,6 +934,7 @@ fn forced_copy_write_failures_preserve_base_pointer_and_queries() {
                 force_reflink_fallback: false,
                 force_hardlink_fallback: false,
                 available_bytes: None,
+                rechecked_available_bytes: None,
             },
             move |stage, _| {
                 if stage == CloneStage::BeforeCopy {
@@ -984,6 +986,7 @@ fn native_copy_detects_growth_without_writing_past_authenticated_length() {
             force_reflink_fallback: false,
             force_hardlink_fallback: false,
             available_bytes: None,
+            rechecked_available_bytes: None,
         },
         move |stage, relative| {
             if stage == CloneStage::BeforeCopy && relative == Path::new(&source_name) && !grew {
@@ -1095,6 +1098,7 @@ fn insufficient_clone_headroom_is_rejected_before_writes() {
             force_reflink_fallback: false,
             force_hardlink_fallback: false,
             available_bytes: Some(0),
+            rechecked_available_bytes: None,
         },
         |_, _| panic!("headroom rejection must precede clone work"),
     );

@@ -31,7 +31,7 @@ pub use clone::{
 };
 pub use clone::{
     create_authenticated_candidate_generation, create_authenticated_republish_candidate,
-    RepublishCandidate,
+    CandidateActivationFence, RepublishCandidate,
 };
 #[cfg(all(
     any(test, feature = "test-support"),
@@ -47,7 +47,8 @@ pub use durable_directory::{AtomicWriteStage, AtomicWriteTestHookGuard};
 pub use error::{GenerationError, Result};
 pub use generation::{
     create_candidate_generation, lexical_index_settings, load_active_generation_pointer,
-    open_slot_index, publish_active_generation_pointer, reclaim_inactive_generation_directories,
+    open_slot_index, publish_active_generation_pointer,
+    publish_active_generation_pointer_validated, reclaim_inactive_generation_directories,
     slot_path, sync_directory, sync_generation, ActiveGenerationPointer, CandidateGeneration,
     GenerationSlot, PointerPublicationOutcome,
 };
@@ -58,8 +59,9 @@ pub use lock::acquire_generation_writer_lock_with_retry;
 pub use manifest::{load_manifest_bytes, reclaim_unreferenced_manifests, write_manifest_bytes};
 pub use physical::{
     active_index_files, physical_integrity_audit, physical_integrity_audit_with_candidate_proof,
-    physical_integrity_digest, prime_candidate_physical_proof, verify_physical_integrity,
-    CandidatePhysicalProof, PhysicalIntegrityAudit,
+    physical_integrity_digest, prime_candidate_physical_proof, validate_candidate_managed_files,
+    verify_candidate_physical_fence, verify_physical_integrity, CandidatePhysicalProof,
+    PhysicalIntegrityAudit,
 };
 #[cfg(any(test, feature = "test-support"))]
 pub use physical::{checksum_walks, hashed_artifact_bytes, reset_physical_verification_activity};

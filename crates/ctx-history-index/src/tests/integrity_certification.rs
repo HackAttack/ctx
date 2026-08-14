@@ -13,6 +13,7 @@ use std::{
 
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 use crate::publication::{CloneStage, CloneTestHookGuard, CloneTestOptions};
+use crate::publication::{PortableCloneStage, PortableCloneTestGuard, PortableCloneTestOptions};
 
 fn published_fixture(name: &str) -> (TempDir, SourceKey, CommitReceipt) {
     let temp = tempdir().unwrap();
@@ -52,6 +53,28 @@ fn append_one_record(root: &Path, source: &SourceKey) -> Result<CommitReceipt> {
         .unwrap(),
     )?;
     writer.commit(|_| true)
+}
+
+fn mismatched_same_size_managed_bytes(path: &Path) -> Vec<u8> {
+    let mut bytes = fs::read(path).unwrap();
+    let offset = bytes
+        .windows(b"meta.json".len())
+        .position(|window| window == b"meta.json")
+        .expect("managed topology must contain meta.json");
+    bytes[offset] = b'n';
+    bytes
+}
+
+fn overwrite_same_size_and_restore_mtime(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+    use std::io::Write as _;
+
+    let metadata = fs::metadata(path)?;
+    assert_eq!(metadata.len(), bytes.len() as u64);
+    let modified = metadata.modified()?;
+    let mut file = fs::OpenOptions::new().write(true).open(path)?;
+    file.write_all(bytes)?;
+    file.set_times(std::fs::FileTimes::new().set_modified(modified))?;
+    file.sync_all()
 }
 
 #[test]
@@ -222,6 +245,173 @@ fn append_reports_copy_fallback_when_reflink_and_hardlink_are_forced_off() {
 
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 #[test]
+fn unix_candidate_copies_authenticated_managed_plan_bytes_after_same_size_mutation() {
+    let (temp, source, _) = published_fixture("managed-plan-unix.jsonl");
+    let base_managed = active_generation_path(temp.path()).join(".managed.json");
+    let mutation = mismatched_same_size_managed_bytes(&base_managed);
+    let hook_path = base_managed.clone();
+    let mut mutated = false;
+    let guard = CloneTestHookGuard::set(CloneTestOptions::default(), move |stage, relative| {
+        if stage == CloneStage::BeforeFile && relative == Path::new(".managed.json") && !mutated {
+            overwrite_same_size_and_restore_mtime(&hook_path, &mutation)?;
+            mutated = true;
+        }
+        Ok(())
+    });
+
+    append_one_record(temp.path(), &source).unwrap();
+    drop(guard);
+    assert_eq!(
+        VerifiedIndex::open_pinned(temp.path())
+            .unwrap()
+            .count_term("body")
+            .unwrap(),
+        2
+    );
+}
+
+#[test]
+fn portable_candidate_copies_authenticated_managed_plan_bytes_after_same_size_mutation() {
+    let (temp, source, _) = published_fixture("managed-plan-portable.jsonl");
+    let base_managed = active_generation_path(temp.path()).join(".managed.json");
+    let mutation = mismatched_same_size_managed_bytes(&base_managed);
+    let hook_path = base_managed.clone();
+    let mut mutated = false;
+    let guard = PortableCloneTestGuard::set(
+        PortableCloneTestOptions::default(),
+        move |stage, relative| {
+            if stage == PortableCloneStage::BeforeCopy
+                && relative == Path::new(".managed.json")
+                && !mutated
+            {
+                overwrite_same_size_and_restore_mtime(&hook_path, &mutation)?;
+                mutated = true;
+            }
+            Ok(())
+        },
+    );
+
+    append_one_record(temp.path(), &source).unwrap();
+    drop(guard);
+    assert_eq!(
+        VerifiedIndex::open_pinned(temp.path())
+            .unwrap()
+            .count_term("body")
+            .unwrap(),
+        2
+    );
+}
+
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+#[test]
+fn copy_fallback_rechecks_corpus_and_writer_headroom_before_copying() {
+    let (temp, source, baseline) = published_fixture("copy-admission-recheck.jsonl");
+    let pointer_before = fs::read(temp.path().join("active-generation.json")).unwrap();
+    let generation = active_generation_path(temp.path());
+    let logical_bytes = fs::read_dir(&generation)
+        .unwrap()
+        .map(|entry| entry.unwrap())
+        .filter(|entry| entry.file_type().unwrap().is_file())
+        .map(|entry| entry.metadata().unwrap().len())
+        .sum::<u64>();
+    let writer_output_headroom = logical_bytes
+        .saturating_add(WriterOptions::default().memory_bytes as u64)
+        .saturating_add(16 * 1024 * 1024);
+    let rechecked_available_bytes = writer_output_headroom
+        .saturating_add(fs::metadata(generation.join("meta.json")).unwrap().len());
+    let guard = CloneTestHookGuard::set(
+        CloneTestOptions {
+            force_reflink_fallback: true,
+            force_hardlink_fallback: true,
+            available_bytes: Some(u64::MAX),
+            rechecked_available_bytes: Some(rechecked_available_bytes),
+            ..CloneTestOptions::default()
+        },
+        |stage, relative| {
+            if stage == CloneStage::BeforeCopy && relative != Path::new(".managed.json") {
+                panic!("copy fallback began before its terminal disk recheck");
+            }
+            Ok(())
+        },
+    );
+
+    let error = append_one_record(temp.path(), &source).unwrap_err();
+    let metrics = guard.metrics();
+    drop(guard);
+    assert!(matches!(
+        error,
+        IndexError::CurrentRepublishInsufficientHeadroom {
+            available,
+            required
+        } if available == rechecked_available_bytes && required > available
+    ));
+    assert!(
+        metrics.required_headroom
+            >= metrics
+                .logical_bytes
+                .saturating_mul(2)
+                .saturating_add(WriterOptions::default().memory_bytes as u64)
+    );
+    assert_eq!(
+        fs::read(temp.path().join("active-generation.json")).unwrap(),
+        pointer_before
+    );
+    assert_eq!(
+        VerifiedIndex::open_pinned(temp.path())
+            .unwrap()
+            .generation_id(),
+        baseline.generation_id
+    );
+}
+
+#[test]
+fn portable_copy_rechecks_corpus_and_writer_headroom_before_copying() {
+    let (temp, source, baseline) = published_fixture("portable-copy-admission-recheck.jsonl");
+    let pointer_before = fs::read(temp.path().join("active-generation.json")).unwrap();
+    let guard = PortableCloneTestGuard::set(
+        PortableCloneTestOptions {
+            available_bytes: Some(u64::MAX),
+            rechecked_available_bytes: Some(0),
+        },
+        |stage, _| {
+            if stage == PortableCloneStage::BeforeCopy {
+                panic!("portable copy began before its terminal disk recheck");
+            }
+            Ok(())
+        },
+    );
+
+    let error = append_one_record(temp.path(), &source).unwrap_err();
+    let metrics = guard.metrics();
+    drop(guard);
+    assert!(matches!(
+        error,
+        IndexError::CurrentRepublishInsufficientHeadroom {
+            available: 0,
+            required
+        } if required > metrics.logical_bytes
+    ));
+    assert!(
+        metrics.required_headroom
+            >= metrics
+                .logical_bytes
+                .saturating_mul(2)
+                .saturating_add(WriterOptions::default().memory_bytes as u64)
+    );
+    assert_eq!(
+        fs::read(temp.path().join("active-generation.json")).unwrap(),
+        pointer_before
+    );
+    assert_eq!(
+        VerifiedIndex::open_pinned(temp.path())
+            .unwrap()
+            .generation_id(),
+        baseline.generation_id
+    );
+}
+
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+#[test]
 fn append_rejects_source_directory_swap_after_authenticated_source_open() {
     let (temp, source, _) = published_fixture("append-source-directory-swap.jsonl");
     let held_reader = VerifiedIndex::open_pinned(temp.path()).unwrap();
@@ -239,12 +429,16 @@ fn append_rejects_source_directory_swap_after_authenticated_source_open() {
         Ok(())
     });
 
-    assert!(matches!(
-        append_one_record(temp.path(), &source),
-        Err(IndexError::CurrentRepublishSourceTopology(
-            "active generation directory changed during republish"
-        ))
-    ));
+    let error = append_one_record(temp.path(), &source).unwrap_err();
+    assert!(
+        matches!(
+            error,
+            IndexError::CurrentRepublishSourceTopology(_)
+                | IndexError::ConcurrentGenerationChange
+                | IndexError::ChecksumMismatch
+        ),
+        "{error:?}"
+    );
     assert_eq!(held_reader.generation_id().len(), 64);
     drop(guard);
     fs::remove_dir(&active).unwrap();

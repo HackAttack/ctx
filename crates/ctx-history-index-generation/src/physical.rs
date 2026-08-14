@@ -14,7 +14,10 @@ use tantivy::{
 };
 
 use crate::{
-    certification::{open_artifact, recapture_artifact, ArtifactIdentity},
+    certification::{
+        open_artifact, open_authenticated_artifact, recapture_artifact,
+        recapture_authenticated_artifact, ArtifactIdentity,
+    },
     hex, ActiveGenerationPointer, DurableMmapDirectory, GenerationError as IndexError, Result,
 };
 
@@ -30,6 +33,8 @@ thread_local! {
 const PHYSICAL_INTEGRITY_DOMAIN: &[u8] = b"ctx-tantivy-physical-integrity-v1\0";
 const PHYSICAL_HASH_BUFFER_BYTES: usize = 64 * 1024;
 const TANTIVY_META_FILE: &str = "meta.json";
+const MANAGED_FILE: &str = ".managed.json";
+pub(crate) const MAX_MANAGED_METADATA_BYTES: u64 = 1024 * 1024;
 
 #[derive(Debug)]
 pub(super) struct PhysicalFileDigest {
@@ -202,6 +207,93 @@ pub fn physical_integrity_audit_with_candidate_proof(
         digest,
         files: entries,
     })
+}
+
+pub fn verify_candidate_physical_fence(
+    index: &tantivy::Index,
+    generation_path: &Path,
+    topology_authority: Option<&ActiveGenerationPointer>,
+    expected: &PhysicalIntegrityAudit,
+) -> Result<()> {
+    let paths = active_paths(index)?;
+    if expected.artifact_paths()
+        != paths
+            .iter()
+            .map(|path| {
+                path.to_str()
+                    .map(str::to_owned)
+                    .ok_or(IndexError::ChecksumMismatch)
+            })
+            .collect::<Result<Vec<_>>>()?
+    {
+        return Err(IndexError::ChecksumMismatch);
+    }
+    let root = generation_root(generation_path)?;
+    for expected in &expected.files {
+        let current = recapture_artifact(
+            root,
+            generation_path,
+            Path::new(&expected.artifact.path),
+            topology_authority,
+        )?;
+        if current != expected.artifact {
+            return if expected.artifact.same_payload_identity_changed(&current) {
+                Err(IndexError::ConcurrentGenerationChange)
+            } else {
+                Err(IndexError::ChecksumMismatch)
+            };
+        }
+    }
+    Ok(())
+}
+
+pub fn validate_candidate_managed_files(
+    index: &tantivy::Index,
+    generation_path: &Path,
+    topology_authority: Option<&ActiveGenerationPointer>,
+) -> Result<()> {
+    let root = generation_root(generation_path)?;
+    let relative = Path::new(MANAGED_FILE);
+    let (mut file, before) =
+        open_authenticated_artifact(root, generation_path, relative, topology_authority)?;
+    let length = before.identity.length();
+    if length > MAX_MANAGED_METADATA_BYTES {
+        return Err(IndexError::ChecksumMismatch);
+    }
+    let capacity = usize::try_from(length).map_err(|_| IndexError::CountOverflow)?;
+    let mut bytes = Vec::with_capacity(capacity);
+    Read::by_ref(&mut file)
+        .take(MAX_MANAGED_METADATA_BYTES.saturating_add(1))
+        .read_to_end(&mut bytes)
+        .map_err(|_| IndexError::ChecksumMismatch)?;
+    if bytes.len() != capacity {
+        return Err(IndexError::ChecksumMismatch);
+    }
+    let after = recapture_authenticated_artifact(
+        root,
+        generation_path,
+        relative,
+        &file,
+        topology_authority,
+    )?;
+    if after != before {
+        return Err(IndexError::ConcurrentGenerationChange);
+    }
+
+    let managed =
+        serde_json::from_slice::<Vec<PathBuf>>(&bytes).map_err(|_| IndexError::ChecksumMismatch)?;
+    if managed.iter().any(|path| {
+        let mut components = path.components();
+        !matches!(components.next(), Some(std::path::Component::Normal(_)))
+            || components.next().is_some()
+    }) {
+        return Err(IndexError::ChecksumMismatch);
+    }
+    let managed_set = managed.iter().cloned().collect::<BTreeSet<_>>();
+    if managed_set.len() != managed.len() || managed_set != active_paths(index)? {
+        return Err(IndexError::ChecksumMismatch);
+    }
+    Ok(())
 }
 
 fn generation_root(generation_path: &Path) -> Result<&Path> {

@@ -80,6 +80,7 @@ fn portable_copy_rejects_insufficient_headroom_before_copying() {
     let _guard = PortableCloneTestGuard::set(
         PortableCloneTestOptions {
             available_bytes: Some(0),
+            rechecked_available_bytes: None,
         },
         |_, _| panic!("headroom rejection must precede portable copy work"),
     );

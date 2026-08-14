@@ -23,11 +23,11 @@ use serde::{Deserialize, Serialize};
 use tantivy::{schema::Schema, store::Compressor, Index, IndexSettings};
 use uuid::Uuid;
 
-use crate::clone::create_authenticated_candidate_generation;
+use crate::clone::{bind_candidate_activation_fence, create_authenticated_candidate_generation};
 use crate::is_generation_id;
 use crate::{
-    CandidatePhysicalProof, DurableAtomicWriteOutcome, DurableMmapDirectory,
-    GenerationError as IndexError, GenerationRetentionLease, Result,
+    CandidateActivationFence, CandidatePhysicalProof, DurableAtomicWriteOutcome,
+    DurableMmapDirectory, GenerationError as IndexError, GenerationRetentionLease, Result,
     ACTIVE_GENERATION_POINTER_FILE, INDEX_GENERATIONS_DIRECTORY,
 };
 const ACTIVE_GENERATION_POINTER_VERSION: u32 = 2;
@@ -143,6 +143,7 @@ pub struct CandidateGeneration {
     pub directory_name: String,
     pub index: Index,
     pub physical_proof: CandidatePhysicalProof,
+    pub activation_fence: CandidateActivationFence,
 }
 
 #[derive(Debug)]
@@ -193,6 +194,7 @@ pub fn create_candidate_generation(
     root: &Path,
     base: Option<&GenerationSlot>,
     schema: Schema,
+    writer_memory_bytes: u64,
 ) -> Result<CandidateGeneration> {
     if let Some(base) = base {
         let base_index = open_slot_index(root, base)?;
@@ -201,7 +203,12 @@ pub fn create_candidate_generation(
         if pointer.active() != base {
             return Err(IndexError::ConcurrentGenerationChange);
         }
-        return create_authenticated_candidate_generation(root, &pointer, &base_index);
+        return create_authenticated_candidate_generation(
+            root,
+            &pointer,
+            &base_index,
+            writer_memory_bytes,
+        );
     }
 
     let generations = root.join(INDEX_GENERATIONS_DIRECTORY);
@@ -213,10 +220,12 @@ pub fn create_candidate_generation(
     let directory = DurableMmapDirectory::open(&path).map_err(tantivy::TantivyError::from)?;
     let index = Index::create(directory, schema, lexical_index_settings())?;
     validate_lexical_index_settings(&index)?;
+    let activation_fence = bind_candidate_activation_fence(root, Path::new(&directory_name))?;
     Ok(CandidateGeneration {
         directory_name,
         index,
         physical_proof: CandidatePhysicalProof::default(),
+        activation_fence,
     })
 }
 
@@ -224,10 +233,25 @@ pub fn publish_active_generation_pointer(
     root: &Path,
     pointer: &ActiveGenerationPointer,
 ) -> Result<PointerPublicationOutcome> {
+    publish_active_generation_pointer_validated(root, pointer, || Ok(()))
+}
+
+pub fn publish_active_generation_pointer_validated<F>(
+    root: &Path,
+    pointer: &ActiveGenerationPointer,
+    validate_before_replace: F,
+) -> Result<PointerPublicationOutcome>
+where
+    F: FnOnce() -> Result<()>,
+{
     pointer.validate()?;
     let bytes = serde_json::to_vec(pointer)?;
     let directory = DurableMmapDirectory::open(root).map_err(tantivy::TantivyError::from)?;
-    match directory.atomic_write_with_outcome(Path::new(ACTIVE_GENERATION_POINTER_FILE), &bytes)? {
+    match directory.atomic_write_with_outcome_validated(
+        Path::new(ACTIVE_GENERATION_POINTER_FILE),
+        &bytes,
+        validate_before_replace,
+    )? {
         DurableAtomicWriteOutcome::Durable => Ok(PointerPublicationOutcome::Durable),
         DurableAtomicWriteOutcome::VisibleButDurabilityUncertain(error) => {
             Ok(PointerPublicationOutcome::CommittedVisible {
@@ -488,7 +512,7 @@ mod tests {
     fn candidate_settings_roundtrip_exactly() {
         let root = tempfile::tempdir().unwrap();
         let candidate =
-            create_candidate_generation(root.path(), None, Schema::builder().build()).unwrap();
+            create_candidate_generation(root.path(), None, Schema::builder().build(), 0).unwrap();
         let slot = GenerationSlot::new(
             "0".repeat(64),
             candidate.directory_name.clone(),
@@ -559,7 +583,7 @@ mod tests {
         let slot = create_mismatched_slot(root.path());
 
         assert!(matches!(
-            create_candidate_generation(root.path(), Some(&slot), Schema::builder().build()),
+            create_candidate_generation(root.path(), Some(&slot), Schema::builder().build(), 0),
             Err(IndexError::IndexSettingsMismatch)
         ));
     }

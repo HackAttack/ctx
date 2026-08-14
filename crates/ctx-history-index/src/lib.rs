@@ -91,17 +91,20 @@ pub use preparation::{
     PreparedCoreRecordMaterialization,
 };
 #[cfg(test)]
+pub(crate) use publication::publish_active_generation_pointer;
+#[cfg(test)]
 pub(crate) use publication::republish_current_for_qualification;
 #[cfg(test)]
 pub(crate) use publication::verify_searcher;
 pub(crate) use publication::{
     best_effort_post_republish_cleanup, canonical_commit_payload, create_candidate_generation,
     load_active_generation_pointer, meta_generation, open_slot_index, payload_generation_id,
-    prime_candidate_physical_proof, publish_active_generation_pointer,
+    prime_candidate_physical_proof, publish_active_generation_pointer_validated,
     reclaim_inactive_generation_directories, reclaim_unreferenced_certifications,
     reclaim_unreferenced_manifests, reconcile_commit_error,
     republish_current_with_publication_metadata, searcher_generation, sync_directory,
-    sync_generation, verify_physical_integrity, write_manifest, ActiveGenerationPointer,
+    sync_generation, validate_candidate_managed_files, verify_candidate_physical_fence,
+    verify_physical_integrity, write_manifest, ActiveGenerationPointer, CandidateActivationFence,
     CandidatePhysicalProof, CurrentRepublishOutcome, GenerationSlot, PointerPublicationOutcome,
     GENERATION_WRITER_LOCK_FILE, INDEX_GENERATIONS_DIRECTORY,
 };
@@ -343,6 +346,7 @@ pub struct GenerationWriter {
     active_pointer: Option<ActiveGenerationPointer>,
     candidate_directory_name: Option<String>,
     candidate_physical_proof: Option<CandidatePhysicalProof>,
+    candidate_activation_fence: Option<CandidateActivationFence>,
     preflight_lock: Option<DirectoryLock>,
     writer: Option<IndexWriter<IndexDocument>>,
     writer_options: WriterOptions,
@@ -563,23 +567,24 @@ impl GenerationWriter {
                 index,
                 candidate_directory_name,
                 candidate_physical_proof,
+                candidate_activation_fence,
                 fields,
                 base_publication,
                 base_opstamp,
             ) = match reusable_generation {
                 Some(OpenedPinnedPublication::Published(publication)) => {
                     let (index, fields, opstamp, publication) = publication.into_writer_parts()?;
-                    (index, None, None, fields, Some(publication), opstamp)
+                    (index, None, None, None, fields, Some(publication), opstamp)
                 }
                 Some(OpenedPinnedPublication::Empty(empty)) => {
                     let (index, fields, opstamp) = empty.into_parts();
-                    (index, None, None, fields, None, opstamp)
+                    (index, None, None, None, fields, None, opstamp)
                 }
                 None => {
                     // The active slot is absent, physically rejected, or belongs to
                     // an incompatible disposable generation. Build an empty current
                     // candidate and retain only the pointer as publication authority.
-                    let candidate = create_candidate_generation(&root, None)?;
+                    let candidate = create_candidate_generation(&root, None, options.memory_bytes)?;
                     validate_schema(&candidate.index.schema())?;
                     let fields = fields_from_schema(&candidate.index.schema())?;
                     let metas = candidate.index.load_metas()?;
@@ -587,6 +592,7 @@ impl GenerationWriter {
                         candidate.index,
                         Some(candidate.directory_name),
                         None,
+                        Some(candidate.activation_fence),
                         fields,
                         None,
                         metas.opstamp,
@@ -626,6 +632,7 @@ impl GenerationWriter {
                 active_pointer,
                 candidate_directory_name,
                 candidate_physical_proof,
+                candidate_activation_fence,
                 preflight_lock: Some(preflight_lock),
                 writer: None,
                 writer_options: options,

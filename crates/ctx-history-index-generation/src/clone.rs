@@ -23,13 +23,11 @@ mod exact_copy;
 ))]
 mod portable;
 
-use candidate::CandidateAuthentication;
-pub use candidate::RepublishCandidate;
+pub use candidate::{CandidateActivationFence, RepublishCandidate};
 
 pub(super) const MAX_REPUBLISH_CLONE_FILES: usize = 4_096;
 pub(super) const MAX_REPUBLISH_CLONE_BYTES: u64 = 1024 * 1024 * 1024 * 1024;
 const MAX_REPUBLISH_DIRECTORY_ENTRIES: usize = 4_096;
-const MAX_MANAGED_METADATA_BYTES: u64 = 1024 * 1024;
 const REPUBLISH_HEADROOM_RESERVE_BYTES: u64 = 16 * 1024 * 1024;
 const MANAGED_FILE: &str = ".managed.json";
 const TANTIVY_LOCK_FILES: [&str; 2] = [".tantivy-meta.lock", ".tantivy-writer.lock"];
@@ -41,39 +39,30 @@ pub fn create_authenticated_republish_candidate(
 ) -> Result<RepublishCandidate> {
     #[cfg(any(test, feature = "test-support"))]
     if portable::forced_for_test() {
-        let (candidate, guard) = portable::create_authenticated_republish_candidate(
+        let candidate = portable::create_authenticated_republish_candidate(
             root,
             predecessor_pointer,
             predecessor_index,
         )?;
-        return Ok(RepublishCandidate::new(
-            candidate,
-            CandidateAuthentication::Portable(guard),
-        ));
+        return Ok(RepublishCandidate::new(candidate));
     }
     #[cfg(any(target_os = "linux", target_os = "macos"))]
     {
-        let (candidate, guard) = unix::create_authenticated_republish_candidate(
+        let candidate = unix::create_authenticated_republish_candidate(
             root,
             predecessor_pointer,
             predecessor_index,
         )?;
-        Ok(RepublishCandidate::new(
-            candidate,
-            CandidateAuthentication::DescriptorClone(guard),
-        ))
+        Ok(RepublishCandidate::new(candidate))
     }
     #[cfg(any(target_os = "windows", target_os = "freebsd"))]
     {
-        let (candidate, guard) = portable::create_authenticated_republish_candidate(
+        let candidate = portable::create_authenticated_republish_candidate(
             root,
             predecessor_pointer,
             predecessor_index,
         )?;
-        Ok(RepublishCandidate::new(
-            candidate,
-            CandidateAuthentication::Portable(guard),
-        ))
+        Ok(RepublishCandidate::new(candidate))
     }
 }
 
@@ -81,6 +70,7 @@ pub fn create_authenticated_candidate_generation(
     root: &Path,
     predecessor_pointer: &ActiveGenerationPointer,
     predecessor_index: &Index,
+    writer_memory_bytes: u64,
 ) -> Result<CandidateGeneration> {
     #[cfg(any(test, feature = "test-support"))]
     if portable::forced_for_test() {
@@ -88,6 +78,7 @@ pub fn create_authenticated_candidate_generation(
             root,
             predecessor_pointer,
             predecessor_index,
+            writer_memory_bytes,
         );
     }
     #[cfg(any(target_os = "linux", target_os = "macos"))]
@@ -96,6 +87,7 @@ pub fn create_authenticated_candidate_generation(
             root,
             predecessor_pointer,
             predecessor_index,
+            writer_memory_bytes,
         )
     }
     #[cfg(any(target_os = "windows", target_os = "freebsd"))]
@@ -104,7 +96,28 @@ pub fn create_authenticated_candidate_generation(
             root,
             predecessor_pointer,
             predecessor_index,
+            writer_memory_bytes,
         )
+    }
+}
+
+pub(crate) fn bind_candidate_activation_fence(
+    root: &Path,
+    directory_name: &Path,
+) -> Result<CandidateActivationFence> {
+    #[cfg(any(test, feature = "test-support"))]
+    if portable::forced_for_test() {
+        return portable::CandidateGuard::bind(root, directory_name)
+            .map(CandidateActivationFence::portable);
+    }
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    {
+        unix::CandidateGuard::bind(root, directory_name)
+            .map(CandidateActivationFence::descriptor_clone)
+    }
+    #[cfg(any(target_os = "windows", target_os = "freebsd"))]
+    {
+        portable::CandidateGuard::bind(root, directory_name).map(CandidateActivationFence::portable)
     }
 }
 
@@ -221,7 +234,7 @@ mod unix {
     };
     use super::{
         admit_clone_resource, record_candidate_clone_metrics, validate_single_component,
-        CandidateCloneMetrics, MANAGED_FILE, MAX_MANAGED_METADATA_BYTES, MAX_REPUBLISH_CLONE_BYTES,
+        CandidateActivationFence, CandidateCloneMetrics, MANAGED_FILE, MAX_REPUBLISH_CLONE_BYTES,
         MAX_REPUBLISH_CLONE_FILES, MAX_REPUBLISH_DIRECTORY_ENTRIES,
         REPUBLISH_HEADROOM_RESERVE_BYTES, TANTIVY_LOCK_FILES,
     };
@@ -232,7 +245,7 @@ mod unix {
             recapture_authenticated_artifact,
         },
         lexical_index_settings,
-        physical::PhysicalFileDigest,
+        physical::{PhysicalFileDigest, MAX_MANAGED_METADATA_BYTES},
         physical_integrity_digest, verify_or_certify_physical_integrity, ActiveGenerationPointer,
         CandidateGeneration, CandidatePhysicalProof, CertifiedPhysicalIntegrity,
         DurableMmapDirectory, GenerationError as IndexError, Result, INDEX_GENERATIONS_DIRECTORY,
@@ -308,6 +321,29 @@ mod unix {
         files: Vec<PlannedFile>,
         logical_bytes: u64,
         required_headroom: u64,
+        control_copy_bytes: u64,
+        managed_bytes: Vec<u8>,
+    }
+
+    impl ClonePlan {
+        fn writer_output_headroom(&self, writer_memory_bytes: u64) -> Result<u64> {
+            self.logical_bytes
+                .checked_add(writer_memory_bytes)
+                .and_then(|bytes| bytes.checked_add(REPUBLISH_HEADROOM_RESERVE_BYTES))
+                .ok_or(IndexError::CountOverflow)
+        }
+
+        fn initial_candidate_headroom(&self, writer_memory_bytes: u64) -> Result<u64> {
+            self.control_copy_bytes
+                .checked_add(self.writer_output_headroom(writer_memory_bytes)?)
+                .ok_or(IndexError::CountOverflow)
+        }
+
+        fn full_copy_candidate_headroom(&self, writer_memory_bytes: u64) -> Result<u64> {
+            self.logical_bytes
+                .checked_add(self.writer_output_headroom(writer_memory_bytes)?)
+                .ok_or(IndexError::CountOverflow)
+        }
     }
 
     struct BoundDirectory {
@@ -344,7 +380,7 @@ mod unix {
         root: &Path,
         predecessor_pointer: &ActiveGenerationPointer,
         predecessor_index: &Index,
-    ) -> Result<(CandidateGeneration, CandidateGuard)> {
+    ) -> Result<CandidateGeneration> {
         let base = predecessor_pointer.active();
         let root_path = root.to_path_buf();
         let root_directory = BoundDirectory::open_path(root)?;
@@ -364,7 +400,7 @@ mod unix {
         validate_child_binding(&generations.file, source_name, source.identity)?;
 
         let plan = authenticated_clone_plan(&source, predecessor_index)?;
-        let available = available_bytes(&generations.file)?;
+        let available = available_bytes(&generations.file, false)?;
         record_plan_metrics(&plan, available);
         if available < plan.required_headroom {
             return Err(IndexError::CurrentRepublishInsufficientHeadroom {
@@ -412,14 +448,19 @@ mod unix {
                 return Err(IndexError::ChecksumMismatch);
             }
             guard.validate_binding()?;
-            Ok(CandidateGeneration {
-                directory_name: directory_name.clone(),
+            Ok((
+                directory_name.clone(),
                 index,
-                physical_proof: crate::CandidatePhysicalProof::default(),
-            })
+                CandidatePhysicalProof::default(),
+            ))
         })();
         match clone_result {
-            Ok(candidate) => Ok((candidate, guard)),
+            Ok((directory_name, index, physical_proof)) => Ok(CandidateGeneration {
+                directory_name,
+                index,
+                physical_proof,
+                activation_fence: CandidateActivationFence::descriptor_clone(guard),
+            }),
             Err(error) => {
                 guard.discard();
                 Err(error)
@@ -431,6 +472,7 @@ mod unix {
         root: &Path,
         predecessor_pointer: &ActiveGenerationPointer,
         predecessor_index: &Index,
+        writer_memory_bytes: u64,
     ) -> Result<CandidateGeneration> {
         let base = predecessor_pointer.active();
         let certified = verify_or_certify_physical_integrity(
@@ -458,12 +500,15 @@ mod unix {
         validate_child_binding(&generations.file, source_name, source.identity)?;
 
         let plan = authenticated_clone_plan(&source, predecessor_index)?;
-        let available = available_bytes(&generations.file)?;
-        record_plan_metrics(&plan, available);
-        if available < plan.required_headroom {
+        let required_headroom = plan.initial_candidate_headroom(writer_memory_bytes)?;
+        let full_copy_headroom = plan.full_copy_candidate_headroom(writer_memory_bytes)?;
+        let writer_output_headroom = plan.writer_output_headroom(writer_memory_bytes)?;
+        let available = available_bytes(&generations.file, false)?;
+        record_plan_metrics_with_required(&plan, available, full_copy_headroom);
+        if available < required_headroom {
             return Err(IndexError::CurrentRepublishInsufficientHeadroom {
                 available,
-                required: plan.required_headroom,
+                required: required_headroom,
             });
         }
 
@@ -496,6 +541,7 @@ mod unix {
                 &source,
                 &guard.destination,
                 &plan,
+                writer_output_headroom,
                 &mut physical_proof,
                 &mut metrics,
             )?;
@@ -510,14 +556,15 @@ mod unix {
                 return Err(IndexError::IndexSettingsMismatch);
             }
             record_candidate_clone_metrics(metrics);
-            Ok(CandidateGeneration {
+            Ok((directory_name, index, physical_proof))
+        })();
+        match clone_result {
+            Ok((directory_name, index, physical_proof)) => Ok(CandidateGeneration {
                 directory_name,
                 index,
                 physical_proof,
-            })
-        })();
-        match clone_result {
-            Ok(candidate) => Ok(candidate),
+                activation_fence: CandidateActivationFence::descriptor_clone(guard),
+            }),
             Err(error) => {
                 guard.discard();
                 Err(error)
@@ -621,10 +668,20 @@ mod unix {
         let required_headroom = total_bytes
             .checked_add(REPUBLISH_HEADROOM_RESERVE_BYTES)
             .ok_or(IndexError::CountOverflow)?;
+        let control_copy_bytes = planned
+            .values()
+            .filter(|file| file.copy_required)
+            .try_fold(0_u64, |bytes, file| {
+                bytes
+                    .checked_add(file.identity.bytes)
+                    .ok_or(IndexError::CountOverflow)
+            })?;
         Ok(ClonePlan {
             files: planned.into_values().collect(),
             logical_bytes: total_bytes,
             required_headroom,
+            control_copy_bytes,
+            managed_bytes,
         })
     }
 
@@ -667,6 +724,23 @@ mod unix {
             validate_child_binding(&generations.file, source_name, source.identity)?;
             clone_checkpoint(CloneStage::BeforeFile, &planned.path)?;
             validate_child_binding(&generations.file, source_name, source.identity)?;
+            if planned.path == Path::new(MANAGED_FILE) {
+                clone_checkpoint(CloneStage::BeforeCopy, &planned.path)?;
+                let copied = write_authenticated_plan_bytes(
+                    &destination.file,
+                    &planned.path,
+                    &plan.managed_bytes,
+                )?;
+                actual_copied_bytes = actual_copied_bytes
+                    .checked_add(copied)
+                    .ok_or(IndexError::CountOverflow)?;
+                copied_files = copied_files
+                    .checked_add(1)
+                    .ok_or(IndexError::CountOverflow)?;
+                validate_child_binding(&generations.file, source_name, source.identity)?;
+                clone_checkpoint(CloneStage::AfterFile, &planned.path)?;
+                continue;
+            }
             let mut source_file = open_regular_file_at(&source.file, &planned.path)?;
             let before = FileIdentity::from_metadata(&source_file.metadata()?);
             if before != planned.identity {
@@ -764,6 +838,7 @@ mod unix {
         source: &BoundDirectory,
         destination: &BoundDirectory,
         plan: &ClonePlan,
+        writer_output_headroom: u64,
         physical_proof: &mut CandidatePhysicalProof,
         metrics: &mut CandidateCloneMetrics,
     ) -> Result<()> {
@@ -772,41 +847,13 @@ mod unix {
             validate_child_binding(&generations.file, source_name, source.identity)?;
             clone_checkpoint(CloneStage::BeforeFile, &planned.path)?;
             validate_child_binding(&generations.file, source_name, source.identity)?;
-            if planned.copy_required {
-                let mut source_file = open_regular_file_at(&source.file, &planned.path)?;
-                let before = FileIdentity::from_metadata(&source_file.metadata()?);
-                if before != planned.identity {
-                    return Err(IndexError::CurrentRepublishSourceTopology(
-                        "source file changed after authentication",
-                    ));
-                }
-                clone_checkpoint(CloneStage::AfterSourceOpen, &planned.path)?;
-                validate_file_binding(&source.file, &planned.path, before)?;
+            if planned.path == Path::new(MANAGED_FILE) {
                 clone_checkpoint(CloneStage::BeforeCopy, &planned.path)?;
-                source_file.seek(SeekFrom::Start(0))?;
-                let remaining_allowance = plan
-                    .logical_bytes
-                    .checked_sub(actual_copied_bytes)
-                    .ok_or(IndexError::CurrentRepublishByteLimit {
-                        actual: actual_copied_bytes,
-                        maximum: plan.logical_bytes,
-                    })?;
-                let mut destination_file =
-                    create_regular_file_at(&destination.file, &planned.path)?;
-                let copied = copy_exact_authenticated_file(
-                    &mut source_file,
-                    &mut destination_file,
-                    before.bytes,
-                    remaining_allowance,
+                let copied = write_authenticated_plan_bytes(
+                    &destination.file,
+                    &planned.path,
+                    &plan.managed_bytes,
                 )?;
-                destination_file.flush()?;
-                let destination_identity =
-                    FileIdentity::from_metadata(&destination_file.metadata()?);
-                if copied != before.bytes || destination_identity.bytes != before.bytes {
-                    return Err(IndexError::CurrentRepublishSourceTopology(
-                        "copy byte count does not match authenticated source",
-                    ));
-                }
                 actual_copied_bytes = actual_copied_bytes
                     .checked_add(copied)
                     .ok_or(IndexError::CountOverflow)?;
@@ -818,13 +865,6 @@ mod unix {
                         maximum: plan.logical_bytes.min(MAX_REPUBLISH_CLONE_BYTES),
                     });
                 }
-                let after = FileIdentity::from_metadata(&source_file.metadata()?);
-                if after != before {
-                    return Err(IndexError::CurrentRepublishSourceTopology(
-                        "source file changed while cloning",
-                    ));
-                }
-                validate_file_binding(&source.file, &planned.path, after)?;
                 validate_child_binding(&generations.file, source_name, source.identity)?;
                 clone_checkpoint(CloneStage::AfterFile, &planned.path)?;
                 continue;
@@ -847,7 +887,8 @@ mod unix {
                 };
             }
             clone_checkpoint(CloneStage::AfterSourceOpen, &planned.path)?;
-            if !force_reflink_fallback()
+            if !planned.copy_required
+                && !force_reflink_fallback()
                 && try_clone_reflink_at(&source_file, &destination.file, &planned.path)?
             {
                 metrics.retained_reflinked_files = metrics
@@ -881,7 +922,8 @@ mod unix {
 
             clone_checkpoint(CloneStage::BeforeHardlink, &planned.path)?;
             let before = FileIdentity::from_metadata(&source_file.metadata()?);
-            let linked = !force_hardlink_fallback()
+            let linked = !planned.copy_required
+                && !force_hardlink_fallback()
                 && !force_copy_fallback()
                 && match hard_link_authenticated_source(
                     &source_file,
@@ -913,6 +955,17 @@ mod unix {
                 continue;
             }
 
+            let admitted_copy_bytes = if planned.copy_required {
+                source_before.identity.length()
+            } else {
+                plan.logical_bytes
+                    .checked_sub(actual_copied_bytes)
+                    .ok_or(IndexError::CountOverflow)?
+            };
+            let required = admitted_copy_bytes
+                .checked_add(writer_output_headroom)
+                .ok_or(IndexError::CountOverflow)?;
+            admit_available_bytes(&generations.file, required, true)?;
             clone_checkpoint(CloneStage::BeforeCopy, &planned.path)?;
             source_file.seek(SeekFrom::Start(0))?;
             let remaining_allowance = plan.logical_bytes.checked_sub(actual_copied_bytes).ok_or(
@@ -928,6 +981,9 @@ mod unix {
                 source_before.identity.length(),
                 remaining_allowance,
             )?;
+            if copied_sha256 != expected_sha256 {
+                return Err(IndexError::ChecksumMismatch);
+            }
             destination_file.flush()?;
             let destination_identity = FileIdentity::from_metadata(&destination_file.metadata()?);
             if copied != source_before.identity.length()
@@ -966,7 +1022,7 @@ mod unix {
                 capture_artifact_identity(root, destination_path, &planned.path, None)?;
             physical_proof.insert(PhysicalFileDigest {
                 artifact: destination_artifact,
-                sha256: copied_sha256,
+                sha256: expected_sha256,
             });
             metrics.retained_copied_files = metrics
                 .retained_copied_files
@@ -979,7 +1035,25 @@ mod unix {
             validate_child_binding(&generations.file, source_name, source.identity)?;
             clone_checkpoint(CloneStage::AfterFile, &planned.path)?;
         }
+        admit_available_bytes(&generations.file, writer_output_headroom, true)?;
         Ok(())
+    }
+
+    fn write_authenticated_plan_bytes(
+        destination: &File,
+        path: &Path,
+        bytes: &[u8],
+    ) -> Result<u64> {
+        let mut destination_file = create_regular_file_at(destination, path)?;
+        destination_file.write_all(bytes)?;
+        destination_file.flush()?;
+        let copied = u64::try_from(bytes.len()).map_err(|_| IndexError::CountOverflow)?;
+        if FileIdentity::from_metadata(&destination_file.metadata()?).bytes != copied {
+            return Err(IndexError::CurrentRepublishSourceTopology(
+                "plan byte count does not match copied control file",
+            ));
+        }
+        Ok(copied)
     }
 
     fn discard_bound_directory(
@@ -1328,12 +1402,33 @@ mod unix {
         unsafe { *libc::__error() = value };
     }
 
-    fn available_bytes(directory: &File) -> Result<u64> {
+    fn admit_available_bytes(directory: &File, required: u64, recheck: bool) -> Result<()> {
+        let available = available_bytes(directory, recheck)?;
+        if available < required {
+            return Err(IndexError::CurrentRepublishInsufficientHeadroom {
+                available,
+                required,
+            });
+        }
+        Ok(())
+    }
+
+    fn available_bytes(directory: &File, recheck: bool) -> Result<u64> {
         #[cfg(any(test, feature = "test-support"))]
-        if let Some(available) = TEST_CLONE_OPTIONS.with(|options| options.borrow().available_bytes)
-        {
+        if let Some(available) = TEST_CLONE_OPTIONS.with(|options| {
+            let options = options.borrow();
+            if recheck {
+                options
+                    .rechecked_available_bytes
+                    .or(options.available_bytes)
+            } else {
+                options.available_bytes
+            }
+        }) {
             return Ok(available);
         }
+        #[cfg(not(any(test, feature = "test-support")))]
+        let _ = recheck;
         // SAFETY: zeroed `statvfs` is initialized by successful `fstatvfs`.
         let mut stat = unsafe { std::mem::zeroed::<libc::statvfs>() };
         if unsafe { libc::fstatvfs(directory.as_raw_fd(), &mut stat) } != 0 {
@@ -1384,6 +1479,7 @@ mod unix {
         pub force_reflink_fallback: bool,
         pub force_hardlink_fallback: bool,
         pub available_bytes: Option<u64>,
+        pub rechecked_available_bytes: Option<u64>,
     }
 
     #[cfg(any(test, feature = "test-support"))]
@@ -1409,6 +1505,7 @@ mod unix {
                 force_reflink_fallback: false,
                 force_hardlink_fallback: false,
                 available_bytes: None,
+                rechecked_available_bytes: None,
             })
         };
         static TEST_CLONE_HOOK: std::cell::RefCell<Option<CloneTestHook>> =
@@ -1509,11 +1606,16 @@ mod unix {
 
     #[cfg(any(test, feature = "test-support"))]
     fn record_plan_metrics(plan: &ClonePlan, available: u64) {
+        record_plan_metrics_with_required(plan, available, plan.required_headroom);
+    }
+
+    #[cfg(any(test, feature = "test-support"))]
+    fn record_plan_metrics_with_required(plan: &ClonePlan, available: u64, required_headroom: u64) {
         TEST_CLONE_METRICS.with(|metrics| {
             metrics.set(CloneMetrics {
                 planned_files: plan.files.len(),
                 logical_bytes: plan.logical_bytes,
-                required_headroom: plan.required_headroom,
+                required_headroom,
                 available_bytes: available,
                 ..metrics.get()
             });
@@ -1522,6 +1624,14 @@ mod unix {
 
     #[cfg(not(any(test, feature = "test-support")))]
     fn record_plan_metrics(_plan: &ClonePlan, _available: u64) {}
+
+    #[cfg(not(any(test, feature = "test-support")))]
+    fn record_plan_metrics_with_required(
+        _plan: &ClonePlan,
+        _available: u64,
+        _required_headroom: u64,
+    ) {
+    }
 
     #[cfg(any(test, feature = "test-support"))]
     fn record_clone_metrics(copied_bytes: u64, linked_files: usize, copied_files: usize) {

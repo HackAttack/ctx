@@ -125,6 +125,7 @@ impl GenerationWriter {
                     self.active_pointer
                         .as_ref()
                         .map(ActiveGenerationPointer::active),
+                    self.writer_options.memory_bytes,
                 )?;
                 self.index = candidate.index;
                 self.fields = fields_from_schema(&self.index.schema())?;
@@ -134,6 +135,7 @@ impl GenerationWriter {
                     .active_pointer
                     .as_ref()
                     .map(|_| candidate.physical_proof);
+                self.candidate_activation_fence = Some(candidate.activation_fence);
             }
 
             let writer = construct_index_writer_with_retry(&self.index, &self.writer_options)?;
@@ -515,6 +517,11 @@ impl GenerationWriter {
                 proof,
             )?;
         }
+        validate_candidate_managed_files(
+            &self.index,
+            &candidate_path,
+            self.active_pointer.as_ref(),
+        )?;
 
         let directory_name =
             self.candidate_directory_name
@@ -558,7 +565,29 @@ impl GenerationWriter {
             hook(&candidate_path);
         }
         report_progress(PublicationStage::Activation)?;
-        match publish_active_generation_pointer(&root, &next_pointer) {
+        let activation_fence =
+            self.candidate_activation_fence
+                .as_ref()
+                .ok_or(IndexError::WriterInvariant(
+                    "verified candidate has no activation fence",
+                ))?;
+        let terminal_index = verified.publication.publication().searcher().index();
+        let expected_audit = verified.publication.physical_integrity_audit();
+        match publish_active_generation_pointer_validated(&root, &next_pointer, || {
+            activation_fence.validate_binding()?;
+            validate_candidate_managed_files(
+                terminal_index,
+                &candidate_path,
+                self.active_pointer.as_ref(),
+            )?;
+            verify_candidate_physical_fence(
+                terminal_index,
+                &candidate_path,
+                self.active_pointer.as_ref(),
+                expected_audit,
+            )?;
+            activation_fence.validate_binding()
+        }) {
             Ok(PointerPublicationOutcome::Durable) => {}
             Ok(PointerPublicationOutcome::CommittedVisible { detail }) => {
                 return Err(IndexError::CommittedGenerationNeedsRecovery {
@@ -783,6 +812,13 @@ impl GenerationWriter {
             proof.clear();
         }
         self.candidate_physical_proof = None;
+        let activation_fence =
+            self.candidate_activation_fence
+                .take()
+                .ok_or(IndexError::WriterInvariant(
+                    "candidate generation is missing its activation fence",
+                ))?;
+        activation_fence.validate_binding()?;
         fs::remove_dir_all(self.root.join(INDEX_GENERATIONS_DIRECTORY).join(directory))?;
         sync_directory(&self.root.join(INDEX_GENERATIONS_DIRECTORY))?;
         Ok(())
