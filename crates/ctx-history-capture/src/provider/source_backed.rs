@@ -102,8 +102,7 @@ pub use ctx_history_capture_runtime::{
 pub use discovery::*;
 pub use driver::*;
 #[cfg(test)]
-pub(crate) use family::jsonl::FallbackEventIdentityMode;
-pub(crate) use family::jsonl::FallbackEventIdentityState;
+pub(crate) use family::jsonl::{FallbackEventIdentityMode, FallbackEventIdentityState};
 pub(crate) use family::jsonl::{CaptureBaseEventLookup, CaptureBaseEventLookupError};
 #[doc(hidden)]
 pub use family::{CaptureDocumentSpool, CaptureProviderRuntime};
@@ -117,6 +116,7 @@ pub use runtime_adapter::{
 };
 pub use watch::*;
 
+#[cfg(test)]
 pub(crate) fn source_backed_base_sources(
     sink: &SourceBackedGenerationSink<'_>,
     owns: impl Fn(&SourceKey) -> bool,

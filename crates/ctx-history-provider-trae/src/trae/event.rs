@@ -1,11 +1,10 @@
 use std::collections::BTreeSet;
 
 use chrono::{DateTime, Utc};
+use ctx_history_capture_model::time::parse_rfc3339_utc;
 use serde_json::Value;
 
-use crate::provider::providers::task_json::{task_json_string_field, task_json_time_field};
-
-use super::TRAE_CN_INPUT_HISTORY_KEY;
+use super::{normalization::trae_first_present_string_field, TRAE_CN_INPUT_HISTORY_KEY};
 
 #[derive(Debug, Clone)]
 pub(super) struct TraeEventInput {
@@ -29,7 +28,7 @@ pub(super) fn trae_event_from_owned_message(
     if text.trim().is_empty() {
         return None;
     }
-    let provider_native_message_id = task_json_string_field(
+    let provider_native_message_id = trae_first_present_string_field(
         &message,
         &[
             "id",
@@ -43,12 +42,12 @@ pub(super) fn trae_event_from_owned_message(
     let native_message_id = provider_native_message_id.clone().unwrap_or_else(|| {
         format!("{workspace_id}:{provider_session_id}:{chat_key}:{message_index}")
     });
-    let occurred_at = task_json_time_field(
+    let occurred_at = trae_time_field(
         &message,
         &["createdAt", "created_at", "timestamp", "time", "date"],
     )
     .unwrap_or(fallback_time);
-    let mut role = task_json_string_field(&message, &["role", "type", "sender"]);
+    let mut role = trae_first_present_string_field(&message, &["role", "type", "sender"]);
     if chat_key == TRAE_CN_INPUT_HISTORY_KEY && role.is_none() {
         role = Some("user".to_owned());
     }
@@ -59,6 +58,36 @@ pub(super) fn trae_event_from_owned_message(
         occurred_at,
         text,
     })
+}
+
+fn trae_time_field(value: &Value, fields: &[&str]) -> Option<DateTime<Utc>> {
+    for field in fields {
+        let Some(value) = value.get(*field) else {
+            continue;
+        };
+        if let Some(text) = value.as_str() {
+            if let Some(parsed) = parse_rfc3339_utc(text) {
+                return Some(parsed);
+            }
+            if let Ok(number) = text.parse::<i64>() {
+                if let Some(parsed) = trae_timestamp_number(number) {
+                    return Some(parsed);
+                }
+            }
+        }
+        if let Some(number) = value.as_i64().and_then(trae_timestamp_number) {
+            return Some(number);
+        }
+    }
+    None
+}
+
+fn trae_timestamp_number(value: i64) -> Option<DateTime<Utc>> {
+    if value > 10_000_000_000 {
+        DateTime::<Utc>::from_timestamp_millis(value)
+    } else {
+        DateTime::<Utc>::from_timestamp(value, 0)
+    }
 }
 
 pub(super) fn trae_message_text(message: &Value) -> Option<String> {
@@ -184,5 +213,42 @@ pub(super) fn trae_content_text(value: &Value) -> Option<String> {
             None
         }
         _ => None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use chrono::{DateTime, Utc};
+    use serde_json::json;
+
+    use super::trae_event_from_owned_message;
+
+    #[test]
+    fn blank_first_aliases_preserve_fallback_native_message_id_and_unknown_role_input() {
+        let event = trae_event_from_owned_message(
+            "workspace/native-session",
+            "workspace",
+            crate::TRAE_CHAT_KEYS[0],
+            json!({
+                "id": "  ",
+                "messageId": "later-native-message",
+                "role": "\t",
+                "type": "assistant",
+                "content": "historical alias priority"
+            }),
+            4,
+            DateTime::<Utc>::UNIX_EPOCH,
+        )
+        .expect("message remains importable");
+
+        assert_eq!(
+            event.native_message_id,
+            format!(
+                "workspace:workspace/native-session:{}:4",
+                crate::TRAE_CHAT_KEYS[0]
+            )
+        );
+        assert!(!event.native_message_id_from_provider);
+        assert_eq!(event.role, None);
     }
 }

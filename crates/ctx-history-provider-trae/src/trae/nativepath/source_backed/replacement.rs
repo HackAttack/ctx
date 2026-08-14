@@ -1,41 +1,45 @@
 use super::*;
-use crate::provider::source_backed::{
-    family::document::{
-        ChangedDocumentSink, CompleteDocumentTree, DocumentLeafFingerprint, DocumentSourceTerminal,
-        ObservedDocumentLeaf, ReplacementDocumentTree,
-    },
-    route_error, SourceBackedRouteError, SourceBackedRouteErrorKind, SourceBackedRouteResult,
-};
-use crate::provider_sources::SqliteSourceAccessError;
 use chrono::{DateTime, Utc};
+use ctx_history_capture_runtime::{
+    CompleteDocumentTree, DocumentLeafFingerprint, DocumentSourceTerminal, ObservedDocumentLeaf,
+    ReplacementDocumentTree, SourceBackedRouteError, SourceBackedRouteErrorKind,
+    SourceBackedRouteResult,
+};
+use ctx_history_provider_runtime::{
+    invalid_route_error, ProviderChangedDocumentSink, ProviderRouteControlExpectation,
+    ProviderRuntimeBinding,
+};
+use ctx_history_source_sqlite::SqliteSourceAccessError;
+use std::marker::PhantomData;
 
 #[derive(Debug, Clone)]
-pub(crate) struct TraeReplacementTree {
+pub struct TraeReplacementTree<B: ProviderRuntimeBinding> {
     data_root: PathBuf,
     path: PathBuf,
+    binding: PhantomData<fn() -> B>,
 }
 
-impl TraeReplacementTree {
-    pub(crate) fn new(data_root: impl Into<PathBuf>, path: impl Into<PathBuf>) -> Self {
+impl<B: ProviderRuntimeBinding> TraeReplacementTree<B> {
+    pub fn new(data_root: impl Into<PathBuf>, path: impl Into<PathBuf>) -> Self {
         Self {
             data_root: data_root.into(),
             path: path.into(),
+            binding: PhantomData,
         }
     }
 }
 
-pub(crate) struct TraeTreeAuthority {
+pub struct TraeTreeAuthority {
     canonical_path: PathBuf,
     source: TraeSourceAuthority,
     terminal_revalidate:
         Box<dyn Fn() -> Result<(), SqliteSourceAccessError> + Send + Sync + 'static>,
 }
 
-impl ReplacementDocumentTree for TraeReplacementTree {
-    type Lifecycle = crate::provider::source_backed::family::document::CaptureDocumentLifecycle;
-    type Spool = crate::provider::source_backed::family::document::CaptureDocumentSpool;
-    type RouteControl =
-        crate::provider::source_backed::family::document::CaptureDocumentRouteControl;
+impl<B: ProviderRuntimeBinding> ReplacementDocumentTree for TraeReplacementTree<B> {
+    type Lifecycle = B::CaptureLifecycleSink;
+    type Spool = B::DocumentRecordSpool;
+    type RouteControl = ProviderRouteControlExpectation;
     type Leaf = SourceKey;
     type TreeAuthority = TraeTreeAuthority;
 
@@ -83,7 +87,7 @@ impl ReplacementDocumentTree for TraeReplacementTree {
         &self,
         authority: &Self::TreeAuthority,
         source: &Self::Leaf,
-        sink: &mut ChangedDocumentSink<'_, '_>,
+        sink: &mut ProviderChangedDocumentSink<'_, '_, B>,
     ) -> SourceBackedRouteResult<DocumentSourceTerminal> {
         sink.begin_source(source.clone())?;
         let mut sink_error = None;
@@ -106,7 +110,7 @@ impl ReplacementDocumentTree for TraeReplacementTree {
         let counts = scan.source.counts();
         if scan.row_decode_passes != 1
             || scan.decoded_rows > counts.complete_records
-            || scan.peak_buffered_documents > TRAE_SOURCE_BACKED_PAGE_ROWS as u64
+            || scan.peak_buffered_documents > TRAE_SOURCE_BACKED_PAGE_MAX_UNITS as u64
             || (counts.indexed_documents == 0) != (scan.emitted_pages == 0)
         {
             return Err(trae_internal(
@@ -158,4 +162,8 @@ fn trae_changed(detail: impl Into<String>) -> SourceBackedRouteError {
 
 fn trae_internal(detail: impl Into<String>) -> SourceBackedRouteError {
     SourceBackedRouteError::new(SourceBackedRouteErrorKind::Internal, detail)
+}
+
+fn route_error(error: impl std::fmt::Display) -> SourceBackedRouteError {
+    invalid_route_error(error)
 }
