@@ -372,17 +372,17 @@ fn late_duplicate_result_replacement_corrects_the_earlier_result() {
     }
 }
 
+#[cfg(unix)]
 #[test]
-fn gemini_projector_preflight_rejects_same_length_interpass_rewrite() {
+fn gemini_retained_root_replacement_is_route_fatal_without_partial_publication() {
     use crate::provider::source_backed::refresh_source_backed_generation;
 
     let temp = TempDir::new().unwrap();
     let root = fixture_root(&temp);
-    let native_session_id = "gemini-preflight-race";
     let path = write_transcript(
         &root,
         &[
-            header(native_session_id, "main"),
+            header("gemini-retained-root", "main"),
             json!({
                 "id": "stable-record",
                 "timestamp": "2026-01-01T00:00:01Z",
@@ -405,38 +405,37 @@ fn gemini_projector_preflight_rejects_same_length_interpass_rewrite() {
     serde_json::to_writer(
         &mut file,
         &json!({
-            "id": "racing-record",
+            "id": "uncommitted-record",
             "timestamp": "2026-01-01T00:00:02Z",
             "type": "gemini",
-            "content": "race-before"
+            "content": "must not publish after retained root replacement"
         }),
     )
     .unwrap();
     file.write_all(b"\n").unwrap();
-    file.sync_all().unwrap();
     drop(file);
     let hook_path = fs::canonicalize(&path).unwrap();
-    set_after_jsonl_semantic_preflight_hook(hook_path.clone(), move || {
-        let before = fs::read_to_string(&hook_path).unwrap();
-        let after = before.replace("race-before", "race-after!");
-        assert_eq!(before.len(), after.len());
-        assert_ne!(before, after);
-        fs::write(hook_path, after).unwrap();
+    let replacement_root = root.clone();
+    set_after_jsonl_semantic_preflight_hook(hook_path, move || {
+        fs::rename(
+            &replacement_root,
+            replacement_root.with_file_name(".gemini-displaced"),
+        )
+        .unwrap();
+        fs::create_dir(&replacement_root).unwrap();
     });
 
     let failed = refresh_source_backed_generation(&index, &registry, writer_options).unwrap();
-    assert_eq!(failed.failed_routes.len(), 1);
-    assert_eq!(
-        failed.failed_routes[0].class,
-        SourceBackedSourceFailureClass::SourceChanged
-    );
-    assert!(failed.failed_routes[0].carried_forward);
+    assert!(transcript_path(&root.with_file_name(".gemini-displaced")).is_file());
+    assert!(matches!(
+        failed.failed_routes.as_slice(),
+        [failure]
+            if failure.class == SourceBackedSourceFailureClass::SourceChanged
+                && failure.carried_forward
+    ));
     let retained = indexed_records(&index);
-    assert_eq!(retained.len(), 1);
-    assert_eq!(
-        retained[0].content.normalized_body.as_deref(),
-        Some("stable baseline")
-    );
+    assert!(matches!(retained.as_slice(), [record]
+        if record.content.normalized_body.as_deref() == Some("stable baseline")));
 }
 
 #[test]
