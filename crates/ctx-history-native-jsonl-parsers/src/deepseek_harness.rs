@@ -290,9 +290,8 @@ fn parse_chunk_row(object: &Map<String, Value>, kind: &str) -> Result<SequenceSp
         "texts"
     };
     for field in ["turn", "step", "index"] {
-        if !data.get(field).is_some_and(Value::is_number) {
-            return Err(malformed_chunk(kind, "turn/step/index must be numbers"));
-        }
+        required_u64(data, field)
+            .map_err(|error| malformed_chunk(kind, &format!("{field} is invalid: {error}")))?;
     }
     let payload = required_array(data, payload_key)?;
     if payload.is_empty() || payload.iter().any(|entry| !entry.is_string()) {
@@ -813,6 +812,18 @@ mod tests {
         ));
         assert!(parse_row(br#"{"type":"text-chunks","seq0":1}"#).is_err());
         assert!(parse_row(br#"{"type":"text-chunks","seq0":1,"time0":2,"data":{"turn":0,"step":0,"index":0,"dt":[],"texts":["a","b"]}}"#).is_err());
+        assert!(parse_row(
+            br#"{"type":"text-chunks","seq0":1,"time0":2,"data":{"turn":-1,"step":0,"index":0,"dt":[],"texts":["a"]}}"#
+        )
+        .is_err());
+        assert!(parse_row(
+            br#"{"type":"text-chunks","seq0":1,"time0":2,"data":{"turn":0.5,"step":0,"index":0,"dt":[],"texts":["a"]}}"#
+        )
+        .is_err());
+        assert!(parse_row(
+            br#"{"type":"text-chunks","seq0":1,"time0":2,"data":{"turn":9007199254740992,"step":0,"index":0,"dt":[],"texts":["a"]}}"#
+        )
+        .is_err());
         assert!(parse_row(br#"{"type":"future/event"}"#).is_err());
         assert!(parse_row(
             br#"{"type":"session","version":1,"id":"s","createdAt":1,"delegationDepth":0}"#

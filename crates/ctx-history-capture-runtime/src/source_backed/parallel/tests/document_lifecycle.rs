@@ -357,8 +357,10 @@ fn leaf(id: u8) -> LifecycleLeaf {
 }
 
 fn run(adapter: &LifecycleAdapter, base: &[CertifiedSource], workers: usize) -> SinkHarness {
-    let mut lifecycle = FakeLifecycle::default();
-    lifecycle.base_sources = base.to_vec();
+    let lifecycle = FakeLifecycle {
+        base_sources: base.to_vec(),
+        ..FakeLifecycle::default()
+    };
     let mut harness = SinkHarness::with_lifecycle(lifecycle);
     harness.leaf_worker_budget = workers;
     adapter.driver().scan(&mut harness.sink()).unwrap();
@@ -370,8 +372,10 @@ fn run_error(
     base: &[CertifiedSource],
     workers: usize,
 ) -> (SourceBackedRouteError, SinkHarness) {
-    let mut lifecycle = FakeLifecycle::default();
-    lifecycle.base_sources = base.to_vec();
+    let lifecycle = FakeLifecycle {
+        base_sources: base.to_vec(),
+        ..FakeLifecycle::default()
+    };
     let mut harness = SinkHarness::with_lifecycle(lifecycle);
     harness.leaf_worker_budget = workers;
     let error = adapter.driver().scan(&mut harness.sink()).unwrap_err();

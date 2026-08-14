@@ -700,8 +700,8 @@ fn contract(error: impl std::fmt::Display) -> CaptureError {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::provider::source_backed::{
-        family::jsonl::JsonlRecordRef, FallbackEventIdentityMode,
+    use crate::provider::source_backed::family::jsonl::{
+        FallbackEventIdentityMode, JsonlRecordRef,
     };
 
     fn binding() -> (SourceKey, Binding) {

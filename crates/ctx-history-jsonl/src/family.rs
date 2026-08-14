@@ -325,6 +325,7 @@ impl<E: JsonlFamilyError> JsonlReader<E> {
         )
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub fn open_semantic_with_record_framing_and_encoding(
         identity: JsonlSourceIdentity,
         source_file: Arc<OpenedProviderSourceFile<E>>,

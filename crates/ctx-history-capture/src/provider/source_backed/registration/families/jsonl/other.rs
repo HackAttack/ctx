@@ -1,23 +1,36 @@
 use super::*;
 
+macro_rules! register_shared_jsonl_route {
+    ($registry:expr, $source:expr, $selection:expr, $adapter:expr) => {{
+        let adapter =
+            $adapter.map_err(|error| invalid_route($source.provider, error.to_string()))?;
+        let driver = crate::provider::source_backed::family::jsonl::jsonl_family_driver(
+            adapter,
+            $source.path.clone(),
+        );
+        $registry.register(executable_route(
+            $source,
+            $selection,
+            SourceBackedSelectorAuthority::DiscoveredWinner,
+            driver,
+        )?);
+        Ok(())
+    }};
+}
+
 pub(super) fn register_deepseek_harness_route(
     registry: &mut SourceBackedProviderRegistry,
     source: ProviderSource,
     selection: SourceBackedRouteSelection,
 ) -> SourceBackedCoordinatorResult<()> {
-    let adapter = crate::provider::providers::deepseek_harness::jsonl_adapter(source.source_format)
-        .map_err(|error| invalid_route(source.provider, error.to_string()))?;
-    let driver = crate::provider::source_backed::family::jsonl::jsonl_family_driver(
-        adapter,
-        source.path.clone(),
-    );
-    registry.register(executable_route(
+    register_shared_jsonl_route!(
+        registry,
         source,
         selection,
-        SourceBackedSelectorAuthority::DiscoveredWinner,
-        driver,
-    )?);
-    Ok(())
+        ctx_history_providers_jsonl_shared::adapters::deepseek_harness::<
+            crate::provider::source_backed::family::jsonl::JsonlFamilyRuntime,
+        >(source.source_format)
+    )
 }
 /// Registers Cursor's thin adapter over the shared certified-append JSONL
 /// lifecycle.
@@ -44,19 +57,14 @@ pub(super) fn register_junie_route(
     source: ProviderSource,
     selection: SourceBackedRouteSelection,
 ) -> SourceBackedCoordinatorResult<()> {
-    let driver = crate::provider::source_backed::family::jsonl::jsonl_family_driver(
-        ctx_history_providers_jsonl_shared::adapters::junie::<
-            crate::provider::source_backed::family::jsonl::JsonlFamilyRuntime,
-        >(),
-        source.path.clone(),
-    );
-    registry.register(executable_route(
+    register_shared_jsonl_route!(
+        registry,
         source,
         selection,
-        SourceBackedSelectorAuthority::DiscoveredWinner,
-        driver,
-    )?);
-    Ok(())
+        Ok::<_, crate::CaptureError>(ctx_history_providers_jsonl_shared::adapters::junie::<
+            crate::provider::source_backed::family::jsonl::JsonlFamilyRuntime,
+        >())
+    )
 }
 
 pub(super) fn register_kimi_route(
@@ -64,19 +72,14 @@ pub(super) fn register_kimi_route(
     source: ProviderSource,
     selection: SourceBackedRouteSelection,
 ) -> SourceBackedCoordinatorResult<()> {
-    let driver = crate::provider::source_backed::family::jsonl::jsonl_family_driver(
-        ctx_history_providers_jsonl_shared::adapters::kimi::<
-            crate::provider::source_backed::family::jsonl::JsonlFamilyRuntime,
-        >(),
-        source.path.clone(),
-    );
-    registry.register(executable_route(
+    register_shared_jsonl_route!(
+        registry,
         source,
         selection,
-        SourceBackedSelectorAuthority::DiscoveredWinner,
-        driver,
-    )?);
-    Ok(())
+        Ok::<_, crate::CaptureError>(ctx_history_providers_jsonl_shared::adapters::kimi::<
+            crate::provider::source_backed::family::jsonl::JsonlFamilyRuntime,
+        >())
+    )
 }
 pub(super) fn register_mistral_route(
     registry: &mut SourceBackedProviderRegistry,

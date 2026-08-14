@@ -65,6 +65,9 @@ pub type SourceBackedProviderRouteMetadata =
         SourceBackedRouteConstructor,
     >;
 
+const DEEPSEEK_HARNESS_TREE_SOURCE_FORMAT: &str = "deepseek_harness_session_jsonl_tree";
+const DEEPSEEK_HARNESS_SOURCE_FORMAT: &str = "deepseek_harness_session_jsonl";
+
 macro_rules! route {
     (
         $provider:ident, $format:literal, $automatic:literal, $explicit:literal,
@@ -83,7 +86,7 @@ macro_rules! route {
         }
     };
     (
-        $provider:ident, $selected_format:literal => $certified_format:literal,
+        $provider:ident, $selected_format:expr => $certified_format:expr,
         $automatic:literal, $explicit:literal, $authority:ident
     ) => {
         SourceBackedProviderRouteMetadata {
@@ -208,20 +211,8 @@ pub const LANDED_SOURCE_BACKED_ROUTES: &[SourceBackedProviderRouteMetadata] = &[
         true,
         ExplicitPath
     ),
-    route!(
-        DeepSeekHarness,
-        "deepseek_harness_session_jsonl_tree" => "deepseek_harness_session_jsonl",
-        true,
-        true,
-        DiscoveredWinner
-    ),
-    route!(
-        DeepSeekHarness,
-        "deepseek_harness_session_jsonl" => "deepseek_harness_session_jsonl",
-        false,
-        true,
-        ExplicitPath
-    ),
+    route!(DeepSeekHarness, DEEPSEEK_HARNESS_TREE_SOURCE_FORMAT => DEEPSEEK_HARNESS_SOURCE_FORMAT, true, true, DiscoveredWinner),
+    route!(DeepSeekHarness, DEEPSEEK_HARNESS_SOURCE_FORMAT => DEEPSEEK_HARNESS_SOURCE_FORMAT, false, true, ExplicitPath),
     route!(
         Claude,
         "claude_projects_jsonl_tree",
@@ -593,14 +584,6 @@ MiMoCode|mimocode_sqlite|mimocode_sqlite|true|true|DiscoveredWinner|none|Provide
 
     #[test]
     fn landed_registry_inventory_matches_pre_shard_oracle() {
-        assert_eq!(LANDED_SOURCE_BACKED_ROUTES.len(), 56);
-        assert_eq!(
-            LANDED_SOURCE_BACKED_ROUTES
-                .iter()
-                .filter(|route| route.automatic)
-                .count(),
-            44
-        );
         assert_eq!(registry_inventory_oracle(), BASELINE_REGISTRY_INVENTORY);
     }
 

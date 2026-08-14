@@ -978,6 +978,45 @@ fn malformed_committed_json_is_rejected_without_losing_the_valid_prefix() {
 }
 
 #[test]
+fn malformed_packed_chunk_reports_a_bounded_line_diagnostic() {
+    let harness = Harness::new(false);
+    let source = harness.root.path().join("malformed-packed/session.jsonl");
+    copy_public_session(Encoding::Raw, PARENT_SESSION_ID, &source);
+    append_record(
+        &source,
+        &json!({
+            "type":"text-chunks","seq0":18,"time0":1786581500000_i64,
+            "data":{"turn":-1,"step":1,"index":0,"dt":[],"texts":["ignored"]}
+        }),
+    );
+    append_round(
+        &source,
+        Encoding::Raw,
+        18,
+        "deepseekharnessaftermalformedpackedmarker9e31",
+    );
+    let _daemon = harness.start_daemon();
+
+    let report = harness.explicit_import(&source, false);
+    harness.wait_for_generation(&report);
+    assert_eq!(
+        report["sources"][0]["current_rejected_records"], 1,
+        "{report:#}"
+    );
+    let diagnostics = report["sources"][0]["rejection_diagnostics"]
+        .as_array()
+        .expect("bounded malformed-packed diagnostics");
+    assert_eq!(diagnostics.len(), 1, "{report:#}");
+    assert_eq!(diagnostics[0]["line"], 20, "{report:#}");
+    assert!(
+        diagnostics[0]["detail"]
+            .as_str()
+            .is_some_and(|detail| detail.contains("malformed text-chunks storage row")),
+        "{report:#}"
+    );
+}
+
+#[test]
 fn packed_chunk_rows_advance_native_sequence_without_becoming_searchable() {
     let harness = Harness::new(false);
     let source = harness.root.path().join("packed/session.jsonl");
@@ -1027,6 +1066,33 @@ fn native_sequence_gaps_and_duplicates_fail_closed() {
         );
         authored_state.assert_unchanged(&source);
         authored_directory.assert_unchanged(source.parent().unwrap());
+    }
+}
+
+#[test]
+fn duplicate_or_foreign_later_headers_fail_closed() {
+    for (label, session_id) in [
+        ("duplicate", PARENT_SESSION_ID),
+        ("foreign", CHILD_SESSION_ID),
+    ] {
+        let harness = Harness::new(false);
+        let source = harness.root.path().join(label).join("session.jsonl");
+        copy_public_session(Encoding::Raw, PARENT_SESSION_ID, &source);
+        append_record(
+            &source,
+            &json!({
+                "type":"session","version":0,"id":session_id,
+                "createdAt":1786579200000_i64,
+                "cwd":"/workspace/deepseek-harness-fixture",
+                "delegationDepth":0,"agentPreset":"fixture-agent"
+            }),
+        );
+        let _daemon = harness.start_daemon();
+        let failure = harness.failed_explicit_import(&source);
+        assert!(
+            failure.contains("DeepSeek Harness session header is not the first row"),
+            "{label}: {failure}"
+        );
     }
 }
 
@@ -1114,17 +1180,26 @@ fn interrupted_daemon_import_is_read_only_and_restart_recovers() {
             "--no-daemon",
             "--format=json",
             "--progress",
-            "none",
+            "json",
         ])
         .stdout(Stdio::null())
-        .stderr(Stdio::null())
+        .stderr(Stdio::piped())
         .spawn()
         .expect("start cancellable import");
-    thread::sleep(Duration::from_millis(50));
-    assert!(
-        import.try_wait().unwrap().is_none(),
-        "import finished before cancellation"
+    let mut progress = std::io::BufReader::new(
+        import
+            .stderr
+            .take()
+            .expect("capture import progress output"),
     );
+    let mut first_progress_line = String::new();
+    std::io::BufRead::read_line(&mut progress, &mut first_progress_line)
+        .expect("read import progress milestone");
+    assert!(
+        first_progress_line.contains("\"type\":\"ctx_progress\""),
+        "import did not report a progress milestone: {first_progress_line:?}"
+    );
+    drop(progress);
     daemon.stop();
     assert!(!import.wait().expect("reap cancelled import").success());
     authored_state.assert_unchanged(&source);

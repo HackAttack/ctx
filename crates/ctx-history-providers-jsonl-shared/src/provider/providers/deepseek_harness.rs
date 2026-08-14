@@ -269,6 +269,10 @@ impl<R: JsonlProviderRuntime> DeepSeekHarnessSemanticExecutor<R> {
                 Err(error) if project && (ordinal != 0 || row_index != 0) => {
                     let span = sequence_span(row);
                     let rejected = span.map_or(1, |span| span.len);
+                    let line_number = self
+                        .logical_complete_rows
+                        .saturating_add(logical_complete_rows)
+                        .saturating_add(1);
                     if let Some(span) = span {
                         self.validate_sequence(span)?;
                     }
@@ -279,9 +283,7 @@ impl<R: JsonlProviderRuntime> DeepSeekHarnessSemanticExecutor<R> {
                             source: self.source.clone(),
                             provider: CaptureProvider::DeepSeekHarness,
                             source_selector: self.source_selector.display().to_string(),
-                            line_number: self
-                                .logical_complete_rows
-                                .saturating_add(logical_complete_rows),
+                            line_number,
                             payload_type: serde_json::from_slice::<Value>(row)
                                 .ok()
                                 .and_then(|value| value.get("type")?.as_str().map(str::to_owned)),
@@ -298,16 +300,12 @@ impl<R: JsonlProviderRuntime> DeepSeekHarnessSemanticExecutor<R> {
             };
             match parsed {
                 ParsedRow::Header(header) => {
-                    if ordinal != 0 || row_index != 0 || header != self.binding {
-                        if project && (ordinal != 0 || row_index != 0) {
-                            rejected_rows = rejected_rows.checked_add(1).ok_or(
-                                CaptureError::SystemInvariant(
-                                    "DeepSeek Harness rejected-row count overflowed",
-                                ),
-                            )?;
-                            logical_complete_rows = checked_add_rows(logical_complete_rows, 1)?;
-                            return Ok(());
-                        }
+                    if ordinal != 0 || row_index != 0 {
+                        return Err(CaptureError::InvalidPayload(
+                            "DeepSeek Harness session header is not the first row".to_owned(),
+                        ));
+                    }
+                    if header != self.binding {
                         return Err(CaptureError::InvalidPayload(
                             "DeepSeek Harness session header changed".to_owned(),
                         ));

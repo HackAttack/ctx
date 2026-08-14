@@ -19,6 +19,68 @@ use ctx_history_core::{
 const DOCUMENT_FRONTIER_KIND: &str = "ctx-document-full-snapshot-v1";
 const MAX_PARALLEL_DOCUMENT_LEAF_WORKERS: usize = 4;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DocumentFullSnapshotCheckpoint {
+    physical_fingerprint: DocumentLeafFingerprint,
+    logical_fingerprint: [u8; 32],
+}
+
+impl DocumentFullSnapshotCheckpoint {
+    pub fn physical_fingerprint(self) -> [u8; 32] {
+        self.physical_fingerprint.as_bytes()
+    }
+
+    pub fn logical_fingerprint(self) -> [u8; 32] {
+        self.logical_fingerprint
+    }
+}
+
+#[derive(Debug, Clone, Copy, thiserror::Error, PartialEq, Eq)]
+pub enum DocumentFullSnapshotCheckpointError {
+    #[error("current certificate has no document frontier")]
+    MissingFrontier,
+    #[error("current certificate has an unexpected document frontier kind")]
+    UnexpectedFrontierKind,
+    #[error("document frontier checkpoint is not bytes")]
+    NonByteCheckpoint,
+    #[error("document frontier checkpoint is not a SHA-256 digest")]
+    InvalidFingerprint,
+}
+
+pub fn decode_document_full_snapshot_checkpoint(
+    certificate: &CertifiedSource,
+) -> Result<DocumentFullSnapshotCheckpoint, DocumentFullSnapshotCheckpointError> {
+    let frontier = certificate
+        .frontier()
+        .ok_or(DocumentFullSnapshotCheckpointError::MissingFrontier)?;
+    if frontier.checkpoint_kind() != DOCUMENT_FRONTIER_KIND {
+        return Err(DocumentFullSnapshotCheckpointError::UnexpectedFrontierKind);
+    }
+    let TypedKey::Bytes(bytes) = frontier.checkpoint() else {
+        return Err(DocumentFullSnapshotCheckpointError::NonByteCheckpoint);
+    };
+    let physical_fingerprint = <[u8; 32]>::try_from(bytes.as_slice())
+        .map(DocumentLeafFingerprint::new)
+        .map_err(|_| DocumentFullSnapshotCheckpointError::InvalidFingerprint)?;
+    Ok(DocumentFullSnapshotCheckpoint {
+        physical_fingerprint,
+        logical_fingerprint: *certificate.content_digest(),
+    })
+}
+
+pub fn document_full_snapshot_frontier(
+    physical_fingerprint: DocumentLeafFingerprint,
+    certified_bytes: u64,
+    logical_fingerprint: [u8; 32],
+) -> Result<SourceFrontier, ctx_history_core::ProjectionContractError> {
+    SourceFrontier::new(
+        DOCUMENT_FRONTIER_KIND,
+        TypedKey::bytes(physical_fingerprint.as_bytes().to_vec())?,
+        certified_bytes,
+        logical_fingerprint,
+    )
+}
+
 pub struct DocumentBaseRoute<'scan, 'writer, L: CaptureLifecycleSink> {
     sink: &'scan mut SourceBackedGenerationSink<'writer, L>,
     owns_source: &'scan dyn Fn(&SourceKey) -> bool,
@@ -57,6 +119,7 @@ impl<'scan, 'writer, L: CaptureLifecycleSink> DocumentBaseRoute<'scan, 'writer, 
     }
 }
 
+#[allow(clippy::large_enum_variant)]
 pub enum DocumentAppendBase<L: CaptureLifecycleSink> {
     Generation(L::PinnedAppendBase),
     Certificate(CertifiedSource),

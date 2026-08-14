@@ -28,6 +28,7 @@ ctx_rust_test(
         proc_macro_dev = True,
     ),
     compile_data = ["//:public_test_fixtures"],
+    args = ["--test-threads=1"],
     data = [
         "//:public_test_fixtures",
         "//crates/ctx-cli:ctx",
