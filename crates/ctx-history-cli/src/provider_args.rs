@@ -23,6 +23,11 @@ const NATIVE_PROVIDER_CLI_SPECS: &[ProviderCliSpec] = &[
         aliases: &["grok"],
     },
     ProviderCliSpec {
+        provider: CaptureProvider::DeepSeekHarness,
+        cli_name: "deepseek-harness",
+        aliases: &["dsh", "deepseek_harness"],
+    },
+    ProviderCliSpec {
         provider: CaptureProvider::Pi,
         cli_name: "pi",
         aliases: &[],

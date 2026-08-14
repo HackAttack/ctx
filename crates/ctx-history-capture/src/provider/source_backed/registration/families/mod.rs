@@ -68,6 +68,7 @@ fn register_landed_source_backed_route_inner(
     match source.provider {
         CaptureProvider::Codex
         | CaptureProvider::GrokBuild
+        | CaptureProvider::DeepSeekHarness
         | CaptureProvider::Claude
         | CaptureProvider::Pi
         | CaptureProvider::Antigravity

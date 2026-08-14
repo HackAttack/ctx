@@ -2,13 +2,13 @@
   "schema_version": 6,
   "capability": "mcp_tool_call_attribution",
   "capability_revision": 5,
-  "expected_provider_count": 42,
-  "expected_base_route_count": 44,
-  "expected_schema_generation_count": 43,
-  "expected_capability_lane_count": 47,
+  "expected_provider_count": 43,
+  "expected_base_route_count": 45,
+  "expected_schema_generation_count": 44,
+  "expected_capability_lane_count": 48,
   "expected_status_rows": {
     "supported": 3,
-    "not_qualified": 43,
+    "not_qualified": 44,
     "excluded": 1
   },
   "required_supported_evidence_classes": [
@@ -38,6 +38,11 @@
       "provider": "grok_build",
       "route": "native_import",
       "source_format": "grok_build_session_updates_jsonl_tree"
+    },
+    {
+      "provider": "deepseek_harness",
+      "route": "native_import",
+      "source_format": "deepseek_harness_session_jsonl_tree"
     },
     {
       "provider": "pi",
@@ -331,6 +336,31 @@
         "classification": "route_schema_contract",
         "reference": "crates/ctx-history-capture/tests/contracts/mcp-attribution/grok_build/grok_build_session_updates_jsonl_tree/shape-contract.json",
         "sha256": "6ab6838309999c32190e5d152983d7774bd6e50920d88b00b6f408fe6fcc6c58"
+      }
+    },
+    {
+      "provider": "deepseek_harness",
+      "route": "native_import",
+      "source_format": "deepseek_harness_session_jsonl_tree",
+      "format_schema": {
+        "kind": "embedded_integer",
+        "version": 0,
+        "shape_sha256": "f8a922f56eb7abd45c886e08dbf937f2d260c39ef3301cb3a899d8995ef0ee4a"
+      },
+      "producer_domain": {
+        "kind": "discrete",
+        "versions": [
+          {
+            "kind": "integer",
+            "version": 0
+          }
+        ]
+      },
+      "provenance": {
+        "kind": "route_schema_contract",
+        "classification": "route_schema_contract",
+        "reference": "crates/ctx-history-capture/tests/contracts/mcp-attribution/deepseek_harness/deepseek_harness_session_jsonl_tree/shape-contract.json",
+        "sha256": "f8a922f56eb7abd45c886e08dbf937f2d260c39ef3301cb3a899d8995ef0ee4a"
       }
     },
     {
@@ -1662,6 +1692,45 @@
         "ranges": [],
         "source_commits": [
           "1a29d5bc12d45a1b44c6fa3893f9c9e2a4671dec"
+        ],
+        "unknown_generations": "not-qualified"
+      }
+    },
+    {
+      "provider": "deepseek_harness",
+      "route": "native_import",
+      "source_format": "deepseek_harness_session_jsonl_tree",
+      "format_schema": {
+        "kind": "embedded_integer",
+        "version": 0,
+        "shape_sha256": "f8a922f56eb7abd45c886e08dbf937f2d260c39ef3301cb3a899d8995ef0ee4a"
+      },
+      "producer_partition": {
+        "kind": "discrete",
+        "versions": [
+          {
+            "kind": "integer",
+            "version": 0
+          }
+        ]
+      },
+      "status": {
+        "kind": "not_qualified",
+        "reason": {
+          "kind": "identity_not_proven",
+          "evidence_ref": "provider-support-matrix:deepseek_harness/deepseek_harness_session_jsonl_tree"
+        }
+      },
+      "evidence": [],
+      "source_schema": "deepseek-harness-session-v0",
+      "producer_bound": {
+        "kind": "versions",
+        "versions": [
+          "0.1.0-rc.5"
+        ],
+        "ranges": [],
+        "source_commits": [
+          "47f943859bef60e4160492346772ded9b24f765a"
         ],
         "unknown_generations": "not-qualified"
       }
@@ -3388,7 +3457,7 @@
   ],
   "expected_provider_status_rows": {
     "supported": 3,
-    "not_qualified": 39,
+    "not_qualified": 40,
     "excluded": 0
   }
 }

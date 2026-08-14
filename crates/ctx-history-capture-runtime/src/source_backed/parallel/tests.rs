@@ -822,9 +822,11 @@ impl ReplacementDocumentTree for NoIoDocumentAdapter {
         &self,
         tree: &CompleteDocumentTree<Self::Leaf, Self::TreeAuthority>,
     ) -> SourceBackedRouteResult<[u8; 32]> {
-        Ok((self.tree().leaves.len() == tree.leaves.len())
-            .then_some(tree.tree_fingerprint)
-            .unwrap_or([0xff; 32]))
+        Ok(if self.tree().leaves.len() == tree.leaves.len() {
+            tree.tree_fingerprint
+        } else {
+            [0xff; 32]
+        })
     }
 }
 

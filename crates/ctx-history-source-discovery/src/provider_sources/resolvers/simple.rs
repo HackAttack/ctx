@@ -45,6 +45,7 @@ pub(super) fn resolve(
     match spec.provider {
         CaptureProvider::Codex => resolve_codex(probes, context, spec),
         CaptureProvider::GrokBuild => resolve_grok_build(probes, context, spec),
+        CaptureProvider::DeepSeekHarness => resolve_deepseek_harness(probes, context, spec),
         CaptureProvider::Claude => resolve_claude(probes, context, spec),
         CaptureProvider::OpenCode => resolve_open_code(probes, context, spec),
         CaptureProvider::Kilo => resolve_kilo(probes, context, spec),
@@ -60,6 +61,34 @@ pub(super) fn resolve(
         CaptureProvider::ForgeCode => resolve_forgecode(probes, context, spec),
         _ => DiscoveryReport::default(),
     }
+}
+
+fn resolve_deepseek_harness(
+    probes: &StaticProviderProbeCatalog,
+    context: &DiscoveryContext,
+    spec: &ProviderSourceSpec,
+) -> DiscoveryReport {
+    let root = match context.env("DSH_HOME") {
+        Some(value)
+            if !value.is_empty() && !value.to_str().is_some_and(|text| text.trim().is_empty()) =>
+        {
+            let path = PathBuf::from(value);
+            if !path.is_absolute() {
+                return manual_report(spec, safe_issue_path(&path), MANUAL_PATH_REASON);
+            }
+            path
+        }
+        _ => match supported_default(context, spec) {
+            Ok(()) => context.home().join(".dsh"),
+            Err(report) => return report,
+        },
+    };
+    one_source(
+        probes,
+        spec,
+        root.join("sessions"),
+        "deepseek_harness_session_jsonl_tree",
+    )
 }
 
 fn resolve_grok_build(

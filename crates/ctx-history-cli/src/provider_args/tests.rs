@@ -3,12 +3,12 @@ use std::collections::BTreeSet;
 use super::*;
 
 #[test]
-fn provider_vocabulary_keeps_all_42_recognized_native_providers_importable() {
+fn provider_vocabulary_keeps_all_43_recognized_native_providers_importable() {
     let recognized = native_provider_cli_specs()
         .iter()
         .map(|spec| spec.provider.as_str())
         .collect::<BTreeSet<_>>();
-    assert_eq!(recognized.len(), 42, "recognized provider count changed");
+    assert_eq!(recognized.len(), 43, "recognized provider count changed");
     let registered = ctx_history_capture::provider_source_specs()
         .iter()
         .map(|spec| spec.provider.as_str())
@@ -19,7 +19,7 @@ fn provider_vocabulary_keeps_all_42_recognized_native_providers_importable() {
         .iter()
         .filter(|provider| parse_native_provider_name(provider).is_some_and(provider_is_importable))
         .collect::<BTreeSet<_>>();
-    assert_eq!(importable.len(), 42, "importable provider count changed");
+    assert_eq!(importable.len(), 43, "importable provider count changed");
     assert!(provider_is_importable(CaptureProvider::Hermes));
     assert!(cli_supported_provider(CaptureProvider::Hermes));
 }
@@ -62,6 +62,8 @@ fn mcp_names_include_primary_and_storage_names_without_duplicates() {
     assert!(names.contains(&"kiro_cli"));
     assert!(names.contains(&"grok-build"));
     assert!(names.contains(&"grok_build"));
+    assert!(names.contains(&"deepseek-harness"));
+    assert!(names.contains(&"deepseek_harness"));
     assert!(names.contains(&"custom"));
 }
 
@@ -76,6 +78,22 @@ fn grok_build_uses_canonical_cli_name_and_documented_alias() {
     }
     assert_eq!(provider_cli_name(CaptureProvider::GrokBuild), "grok-build");
     assert_eq!(parse_native_provider_name("grokbuild"), None);
+}
+
+#[test]
+fn deepseek_harness_uses_canonical_cli_name_and_narrow_aliases() {
+    for name in ["deepseek-harness", "dsh", "deepseek_harness"] {
+        assert_eq!(
+            parse_native_provider_name(name),
+            Some(CaptureProvider::DeepSeekHarness),
+            "{name} did not resolve to DeepSeek Harness"
+        );
+    }
+    assert_eq!(
+        provider_cli_name(CaptureProvider::DeepSeekHarness),
+        "deepseek-harness"
+    );
+    assert_eq!(parse_native_provider_name("deepseek"), None);
 }
 
 #[test]

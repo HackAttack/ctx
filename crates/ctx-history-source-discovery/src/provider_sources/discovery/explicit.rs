@@ -9,7 +9,7 @@ use serde_json::Value;
 use ctx_history_source_io::open_provider_source_file;
 
 use super::super::{
-    probes::{has_trae_state_vscdb_chat_history, BoundedProbe},
+    probes::{has_deepseek_harness_session_file, has_trae_state_vscdb_chat_history, BoundedProbe},
     provider_source_spec,
     reasons::blocked_auth_or_encryption_reason,
     resolvers::unsupported_source,
@@ -21,6 +21,8 @@ use super::super::{
 const CODEX_AMBIGUOUS_JSONL_REASON: &str =
     "Codex JSONL schema is ambiguous; the bounded first-record probe requires either prompt-history fields (session_id, ts, text) or rollout fields (timestamp, type, payload)";
 const PI_INVALID_JSONL_REASON: &str = "Pi explicit JSONL file has no valid session header";
+const DEEPSEEK_HARNESS_INVALID_SOURCE_REASON: &str =
+    "DeepSeek Harness explicit history must be session.jsonl, session.jsonl.zstd, or a session tree containing an exact nested leaf";
 const UNSUPPORTED_EXPLICIT_ROOT_REASON: &str =
     "the explicit provider path uses an unsupported, non-local, or unsafe source root";
 const PI_HEADER_PROBE_MAX_RECORDS: usize = 64;
@@ -51,6 +53,15 @@ pub fn provider_source_for_path(
     {
         return unsupported_source(spec, path, PI_INVALID_JSONL_REASON);
     }
+    if provider == CaptureProvider::DeepSeekHarness
+        && matches!(
+            observed,
+            Ok(SourcePathKind::File | SourcePathKind::Directory)
+        )
+        && has_deepseek_harness_session_file(&path, 10_000) != BoundedProbe::Found
+    {
+        return unsupported_source(spec, path, DEEPSEEK_HARNESS_INVALID_SOURCE_REASON);
+    }
     let exists = !matches!(observed, Err(SourcePathError::Missing));
     let trae_blocked_auth_or_encryption = provider == CaptureProvider::Trae
         && observed == Ok(SourcePathKind::File)
@@ -76,6 +87,8 @@ pub fn provider_source_for_path(
         }
         CaptureProvider::GrokBuild if is_directory => "grok_build_session_updates_jsonl_tree",
         CaptureProvider::GrokBuild => "grok_build_session_updates_jsonl",
+        CaptureProvider::DeepSeekHarness if is_directory => "deepseek_harness_session_jsonl_tree",
+        CaptureProvider::DeepSeekHarness => "deepseek_harness_session_jsonl",
         CaptureProvider::Pi => "pi_session_jsonl",
         CaptureProvider::Claude => "claude_projects_jsonl_tree",
         CaptureProvider::OpenCode => "opencode_sqlite",

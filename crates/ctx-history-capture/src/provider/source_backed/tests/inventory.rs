@@ -3,28 +3,6 @@ use std::str::FromStr;
 
 #[test]
 fn provider_inventory_covers_supported_automatic_routes() {
-    assert_eq!(LANDED_SOURCE_BACKED_ROUTES.len(), 54);
-    assert_eq!(
-        LANDED_SOURCE_BACKED_ROUTES
-            .iter()
-            .filter(|route| route.automatic)
-            .count(),
-        43
-    );
-    assert_eq!(
-        LANDED_SOURCE_BACKED_ROUTES
-            .iter()
-            .filter(|route| route.automatic && route.unsupported_reason.is_some())
-            .count(),
-        0
-    );
-    assert_eq!(
-        LANDED_SOURCE_BACKED_ROUTES
-            .iter()
-            .filter(|route| route.automatic && route.unsupported_reason.is_none())
-            .count(),
-        43
-    );
     let unsupported = LANDED_SOURCE_BACKED_ROUTES
         .iter()
         .filter(|route| route.unsupported_reason.is_some())

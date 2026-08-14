@@ -1,0 +1,25 @@
+[package]
+name = "ctx-deepseek-harness-qualification"
+version.workspace = true
+description = "End-to-end qualification for the ctx DeepSeek Harness provider"
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+rust-version.workspace = true
+publish = false
+autotests = false
+
+[[test]]
+name = "deepseek_harness"
+path = "tests/deepseek_harness.rs"
+
+[dev-dependencies]
+assert_cmd.workspace = true
+ctx-history-index-format = { path = "../ctx-history-index-format", features = ["test-support"] }
+ctx-history-index-query = { path = "../ctx-history-index-query", features = ["test-support"] }
+serde_json.workspace = true
+tantivy.workspace = true
+tempfile.workspace = true
+uuid.workspace = true
+zstd.workspace = true

@@ -209,6 +209,120 @@ fn grok_build_discovery_uses_authoritative_updates_without_sidecars() {
 }
 
 #[test]
+fn deepseek_harness_absolute_home_override_replaces_default() {
+    let temp = tempdir();
+    let base = context(&temp, DiscoveryPlatform::Linux);
+    let default_leaf = base
+        .home()
+        .join(".dsh/sessions/default-workspace/default-session/session.jsonl.zstd");
+    fs::create_dir_all(default_leaf.parent().unwrap()).unwrap();
+    fs::write(&default_leaf, b"compressed").unwrap();
+
+    let selected_root = temp.path().join("selected-dsh");
+    let selected_leaf =
+        selected_root.join("sessions/selected-workspace/selected-session/session.jsonl.zstd");
+    fs::create_dir_all(selected_leaf.parent().unwrap()).unwrap();
+    fs::write(&selected_leaf, b"compressed").unwrap();
+
+    let report = resolve_provider(
+        &base.clone().with_env("DSH_HOME", selected_root.as_os_str()),
+        CaptureProvider::DeepSeekHarness,
+    );
+    assert_eq!(paths(&report), [selected_root.join("sessions")]);
+    assert_eq!(report.sources[0].status, ProviderSourceStatus::Available);
+    assert_eq!(
+        report.sources[0].source_format,
+        "deepseek_harness_session_jsonl_tree"
+    );
+    assert!(!report.sources[0].path.starts_with(base.home().join(".dsh")));
+}
+
+#[test]
+fn deepseek_harness_empty_home_is_unset_but_relative_home_is_manual() {
+    let temp = tempdir();
+    let base = context(&temp, DiscoveryPlatform::Linux);
+    let default_leaf = base
+        .home()
+        .join(".dsh/sessions/workspace/session/session.jsonl.zstd");
+    fs::create_dir_all(default_leaf.parent().unwrap()).unwrap();
+    fs::write(default_leaf, b"compressed").unwrap();
+
+    for unset in ["", "  \t "] {
+        let report = resolve_provider(
+            &base.clone().with_env("DSH_HOME", unset),
+            CaptureProvider::DeepSeekHarness,
+        );
+        assert_eq!(paths(&report), [base.home().join(".dsh/sessions")]);
+        assert_eq!(report.sources[0].status, ProviderSourceStatus::Available);
+    }
+
+    let relative = resolve_provider(
+        &base.clone().with_env("DSH_HOME", "relative-dsh-home"),
+        CaptureProvider::DeepSeekHarness,
+    );
+    assert!(relative.sources.is_empty());
+    assert_eq!(
+        relative.issues[0].kind,
+        DiscoveryIssueKind::SelectorUnreconstructible
+    );
+}
+
+#[test]
+fn deepseek_harness_probe_requires_exact_nested_session_leaf() {
+    let temp = tempdir();
+    let base = context(&temp, DiscoveryPlatform::Linux);
+    let sessions = base.home().join(".dsh/sessions");
+    fs::create_dir_all(&sessions).unwrap();
+    fs::write(sessions.join("session.jsonl.zstd"), b"wrong depth").unwrap();
+    fs::create_dir_all(sessions.join("workspace/session/extra")).unwrap();
+    fs::write(
+        sessions.join("workspace/session/extra/session.jsonl.zstd"),
+        b"wrong depth",
+    )
+    .unwrap();
+
+    let without_leaf = resolve_provider(&base, CaptureProvider::DeepSeekHarness);
+    assert_eq!(without_leaf.sources[0].status, ProviderSourceStatus::Empty);
+
+    fs::write(
+        sessions.join("workspace/session/session.jsonl"),
+        b"raw configured history",
+    )
+    .unwrap();
+    let with_raw_leaf = resolve_provider(&base, CaptureProvider::DeepSeekHarness);
+    assert_eq!(
+        with_raw_leaf.sources[0].status,
+        ProviderSourceStatus::Available
+    );
+
+    let explicit = provider_source_for_path(
+        CaptureProvider::DeepSeekHarness,
+        sessions.join("workspace/session/session.jsonl"),
+    );
+    assert_eq!(explicit.source_format, "deepseek_harness_session_jsonl");
+    assert_eq!(explicit.status, ProviderSourceStatus::Available);
+
+    let explicit_zstd = sessions.join("workspace/session/session.jsonl.zstd");
+    fs::write(&explicit_zstd, b"compressed").unwrap();
+    assert_eq!(
+        provider_source_for_path(CaptureProvider::DeepSeekHarness, explicit_zstd).status,
+        ProviderSourceStatus::Available
+    );
+
+    let arbitrary = sessions.join("workspace/session/notes.jsonl");
+    fs::write(&arbitrary, b"not a native leaf").unwrap();
+    let arbitrary = provider_source_for_path(CaptureProvider::DeepSeekHarness, arbitrary);
+    assert_eq!(arbitrary.status, ProviderSourceStatus::Unsupported);
+    assert_eq!(arbitrary.source_format, "unsupported");
+
+    let empty = temp.path().join("empty-dsh-sessions");
+    fs::create_dir_all(&empty).unwrap();
+    let empty = provider_source_for_path(CaptureProvider::DeepSeekHarness, empty);
+    assert_eq!(empty.status, ProviderSourceStatus::Unsupported);
+    assert_eq!(empty.source_format, "unsupported");
+}
+
+#[test]
 fn codex_compression_detection_stops_at_the_fixed_directory_bound() {
     let temp = tempdir();
     let root = temp.path().join("bounded-codex");
@@ -630,12 +744,13 @@ fn forgecode_official_root_preserves_raw_cwd_semantics_and_exists_winner() {
 }
 
 #[test]
-fn simple_lane_has_fifteen_reviewed_winner_only_policies() {
+fn simple_lane_has_sixteen_reviewed_winner_only_policies() {
     let temp = tempdir();
     let context = context(&temp, DiscoveryPlatform::Linux);
     let providers = [
         CaptureProvider::Codex,
         CaptureProvider::GrokBuild,
+        CaptureProvider::DeepSeekHarness,
         CaptureProvider::Claude,
         CaptureProvider::OpenCode,
         CaptureProvider::Kilo,
@@ -650,7 +765,7 @@ fn simple_lane_has_fifteen_reviewed_winner_only_policies() {
         CaptureProvider::FactoryAiDroid,
         CaptureProvider::ForgeCode,
     ];
-    assert_eq!(providers.len(), 15);
+    assert_eq!(providers.len(), 16);
     for provider in providers {
         let report = resolve_provider(&context, provider);
         let expected = if provider == CaptureProvider::Codex {

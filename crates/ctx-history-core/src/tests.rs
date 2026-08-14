@@ -26,6 +26,10 @@ fn enum_string_roundtrips_and_defaults() {
         CaptureProvider::GrokBuild
     );
     assert_eq!(
+        serde_json::from_str::<CaptureProvider>("\"deepseek_harness\"").unwrap(),
+        CaptureProvider::DeepSeekHarness
+    );
+    assert_eq!(
         serde_json::from_str::<CaptureProvider>("\"factory_ai_droid\"").unwrap(),
         CaptureProvider::FactoryAiDroid
     );

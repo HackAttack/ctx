@@ -176,16 +176,14 @@ fn all_22_fixture_screens_and_redraws_match_the_exact_golden_digest() {
             golden.extend_from_slice(&(redraw.len() as u64).to_le_bytes());
             golden.extend_from_slice(&redraw);
 
-            if *case == FixtureCase::Discovering {
-                assert!(!redraw.windows(4).any(|window| window == b"\x1b[2K"));
-            } else {
-                assert!(redraw.windows(4).any(|window| window == b"\x1b[2K"));
-            }
+            assert!(!redraw.windows(4).any(|window| window == b"\x1b[2K"));
+            assert!(redraw.windows(6).any(|window| window == b"\x1b[?25l"));
+            assert!(redraw.windows(6).any(|window| window == b"\x1b[?25h"));
         }
     }
     let digest = format!("{:x}", Sha256::digest(golden));
     assert_eq!(
         digest,
-        "a89ee718d836e87959517949985574ebc74174aa2e3070a685b605174e62d386"
+        "d9cce5302a94c14597ecdea95a4330b04952f0bfdab6ced3eb72819105ccb618"
     );
 }

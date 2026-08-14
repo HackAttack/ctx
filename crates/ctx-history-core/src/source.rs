@@ -8,6 +8,7 @@ text_enum! {
     pub enum CaptureProvider {
         Codex => "codex",
         GrokBuild => "grok_build",
+        DeepSeekHarness => "deepseek_harness",
         Claude => "claude",
         Pi => "pi",
         OpenCode => "opencode",

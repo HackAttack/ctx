@@ -37,8 +37,8 @@ event-local capability has its own provider + route + source format + format
 version authority in
 [`mcp-tool-call-attribution-capabilities.json`](mcp-tool-call-attribution-capabilities.json).
 Capability revision 3 exact providers are Codex, Warp, and Copilot CLI. The
-complete evidence matrix contains 44 base routes and 47 capability lanes:
-three exact, 43 not-qualified, and one excluded. The Deep Agents hosted trace
+complete evidence matrix contains 45 base routes and 48 capability lanes:
+three exact, 44 not-qualified, and one excluded. The Deep Agents hosted trace
 is excluded from the local-only boundary, while its local SQLite history import
 remains Supported but not qualified for exact attribution. See
 [`mcp-tool-call-attribution.md`](mcp-tool-call-attribution.md) for absence,
@@ -57,6 +57,7 @@ support matrix is:
 | --- | --- | --- |
 | Codex | Supported | `codex_session_jsonl_tree`, `codex_history_jsonl` |
 | Grok Build | Supported | `grok_build_session_updates_jsonl_tree` |
+| DeepSeek Harness | Supported | `deepseek_harness_session_jsonl_tree` |
 | Pi | Supported | `pi_session_jsonl` |
 | Claude | Supported | `claude_projects_jsonl_tree` |
 | OpenCode | Supported | `opencode_sqlite` |
@@ -115,6 +116,19 @@ override is set, or `~/.grok/sessions` otherwise. Each admitted session
 directory requires authoritative `updates.jsonl`; derived session sidecars
 are not import authority. Exact `updates.jsonl` files can be selected with
 `ctx import --provider grok-build --path /path/to/updates.jsonl`.
+
+DeepSeek Harness is Supported for exact local format version 0 only. The
+automatic winner is absolute `$DSH_HOME/sessions` for a nonempty
+absolute override, otherwise `~/.dsh/sessions`; empty or whitespace-only
+values are unset, while relative overrides require an explicit `--path`.
+Default persistence uses nested `*/*/session.jsonl.zstd`, and configured raw
+persistence uses nested `*/*/session.jsonl`. Exact leaves can be selected with
+`ctx import --provider deepseek-harness --path /path/to/session.jsonl.zstd`.
+Other format versions and layouts are unsupported, hosted/cloud history is out
+of scope, and this import does not qualify exact MCP server/tool attribution.
+Unknown required events and future format versions fail the source. Delegated
+sessions remain independently searchable, but their immediate parent header
+does not prove the transitive root identity required for typed lineage edges.
 
 Trae's current platform application-data database
 (`Trae/ModularData/ai-agent/database.db`) is located automatically on Linux,

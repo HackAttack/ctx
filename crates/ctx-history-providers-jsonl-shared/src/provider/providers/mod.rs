@@ -1,3 +1,4 @@
+pub(crate) mod deepseek_harness;
 pub(crate) mod junie;
 pub(crate) mod kimi;
 pub(crate) mod native_jsonl;

@@ -451,7 +451,6 @@ pub(crate) fn write_native_continue_fixture(temp: &TempDir, query: &str) -> Stri
 
 /// Writes a Kimi Code CLI wire tree in the shape the CLI actually journals:
 /// the assistant reply exists only as streamed `content.part` loop events.
-
 pub(crate) fn write_native_kilo_fixture(temp: &TempDir, query: &str) -> String {
     let path = temp.path().join("native-kilo.db");
     let conn = Connection::open(&path).unwrap();

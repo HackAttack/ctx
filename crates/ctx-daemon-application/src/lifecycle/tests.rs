@@ -16,6 +16,7 @@ fn daemon_child_environment_preserves_supported_pro_channel_and_strips_authority
             let expected_channel = env::var(DAEMON_ENV_PROBE_EXPECTED_CHANNEL)?;
             assert_eq!(env::var("HOME").as_deref(), Ok(DAEMON_ENV_ALLOWED_SENTINEL));
             assert_eq!(env::var("GROK_HOME").as_deref(), Ok("/ctx-grok-home"));
+            assert_eq!(env::var("DSH_HOME").as_deref(), Ok("/ctx-dsh-home"));
             if expected_channel == "default" {
                 assert!(env::var_os(DAEMON_ENV_PRO_CHANNEL).is_none());
             } else {
@@ -31,6 +32,8 @@ fn daemon_child_environment_preserves_supported_pro_channel_and_strips_authority
             assert!(env::var_os("CTX_PRO_QUALIFICATION_HELPER_PATH").is_none());
             assert!(env::var_os("CTX_PRO_API_URL").is_none());
             assert!(env::var_os("XAI_API_KEY").is_none());
+            assert!(env::var_os("DEEPSEEK_API_KEY").is_none());
+            assert!(env::var_os("OPENROUTER_API_KEY").is_none());
             return Ok(());
         }
         Ok("inherited") => {
@@ -95,7 +98,10 @@ fn daemon_child_environment_preserves_supported_pro_channel_and_strips_authority
             .env("CTX_PRO_QUALIFICATION_HELPER_PATH", "/attacker/helper")
             .env("CTX_PRO_API_URL", "https://attacker.invalid")
             .env("XAI_API_KEY", "attacker")
+            .env("DEEPSEEK_API_KEY", "attacker")
+            .env("OPENROUTER_API_KEY", "attacker")
             .env("GROK_HOME", "/ctx-grok-home")
+            .env("DSH_HOME", "/ctx-dsh-home")
             .env("HOME", DAEMON_ENV_ALLOWED_SENTINEL)
             .env_remove(DAEMON_ENV_PRO_CHANNEL);
         if let Some(channel) = channel {

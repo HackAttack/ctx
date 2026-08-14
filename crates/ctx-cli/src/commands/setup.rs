@@ -349,7 +349,10 @@ mod tests {
         assert_eq!(setup_mode("stale", "pending", "stale"), "stale");
         assert_eq!(setup_mode("ready", "pending", "ready"), "ready");
         assert_eq!(setup_mode("ready", "published", "partial"), "unavailable");
-        assert_eq!(setup_mode("ready", "published", "unavailable"), "unavailable");
+        assert_eq!(
+            setup_mode("ready", "published", "unavailable"),
+            "unavailable"
+        );
         assert_eq!(setup_mode("ready", "published", "stale"), "unavailable");
     }
 

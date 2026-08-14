@@ -6,8 +6,8 @@ use std::{
 
 use super::{
     observe_opened_file, revalidate_frozen_prefix, JsonlCheckpoint, JsonlFileObservation,
-    JsonlOversizedRecordPolicy, JsonlProbe, JsonlReader, JsonlRecordFraming, JsonlRecordRef,
-    OpenedProviderSourceFile, OpenedProviderSourcePath, ProviderSourceDirectory,
+    JsonlOversizedRecordPolicy, JsonlPhysicalEncoding, JsonlProbe, JsonlReader, JsonlRecordFraming,
+    JsonlRecordRef, OpenedProviderSourceFile, OpenedProviderSourcePath, ProviderSourceDirectory,
     ProviderSourceRoot,
 };
 use super::{
@@ -17,7 +17,8 @@ use chrono::{DateTime, Utc};
 use ctx_history_capture_runtime::SourceBackedRouteErrorKind;
 use ctx_history_capture_runtime::{
     CaptureLifecycleSink, ImmutableCaptureSnapshot, SourceBackedGenerationSink,
-    SourceBackedRevalidationTarget, SourceBackedRouteError, SourceBackedRouteResult,
+    SourceBackedRecordRejectionDrafts, SourceBackedRevalidationTarget, SourceBackedRouteError,
+    SourceBackedRouteResult,
 };
 use ctx_history_core::{
     CaptureProvider, CertifiedSource, CertifiedSourceDeletion, CertifiedSourceInventory,
@@ -207,6 +208,16 @@ pub trait JsonlFamilyAdapter: Send + Sync {
     /// whole-record leaves retain their separate exact-file behavior.
     fn record_framing(&self) -> JsonlRecordFraming {
         JsonlRecordFraming::ordinary()
+    }
+
+    /// Selects the bounded physical units owned by the shared reader. Raw
+    /// JSONL remains the compatibility default; adapters may select
+    /// concatenated checksummed Zstandard frames per leaf.
+    fn physical_encoding(
+        &self,
+        _leaf: &JsonlFamilyLeaf<JsonlRuntimeError<Self::Runtime>>,
+    ) -> JsonlPhysicalEncoding {
+        JsonlPhysicalEncoding::RawJsonl
     }
 
     /// Binds the complete admitted EOF, including an unfinished tail, with a
@@ -681,7 +692,11 @@ fn observe_membership_directory<E: JsonlFamilyError>(
                 if source_path
                     .extension()
                     .and_then(|extension| extension.to_str())
-                    .is_some_and(|extension| matches!(extension, "json" | "jsonl")) =>
+                    .is_some_and(|extension| matches!(extension, "json" | "jsonl"))
+                    || source_path
+                        .file_name()
+                        .and_then(|name| name.to_str())
+                        .is_some_and(|name| name.ends_with(".jsonl.zstd")) =>
             {
                 opened.revalidate_same_object_leaf()?;
                 if state
@@ -1242,6 +1257,10 @@ struct FamilyCheckpoint {
     complete_prefix_ends_with_terminal_nul_padding: bool,
     represented_physical_records: u64,
     rejected_records: u64,
+    #[serde(default)]
+    logical_complete_records: u64,
+    #[serde(default)]
+    rejected_logical_records: u64,
     indexed_documents: u64,
     provider_checkpoint: Option<TypedKey>,
 }
@@ -1251,7 +1270,7 @@ fn is_false(value: &bool) -> bool {
 }
 
 impl FamilyCheckpoint {
-    const VERSION: u32 = 4;
+    const VERSION: u32 = 5;
 
     fn encode_frontier_key<E: JsonlFamilyError>(&self) -> JsonlResult<TypedKey, E> {
         TypedKey::utf8(serde_json::to_string(self)?)
@@ -1261,7 +1280,7 @@ impl FamilyCheckpoint {
     fn decode_frontier_key<E: JsonlFamilyError>(key: &TypedKey) -> JsonlResult<Self, E> {
         match key {
             // Bytes was emitted before the compact UTF-8 representation. Both
-            // carry the same v4 JSON document and remain readable.
+            // carry the same versioned JSON document and remain readable.
             TypedKey::Bytes(bytes) => Ok(serde_json::from_slice(bytes)?),
             TypedKey::Utf8(json) => Ok(serde_json::from_str(json)?),
             _ => Err(E::invalid_payload(
@@ -1309,6 +1328,10 @@ impl FamilyCheckpoint {
                 .represented_physical_records
                 .checked_add(self.rejected_records)
                 .is_some_and(|classified| classified <= self.physical.next_physical_ordinal())
+            && self
+                .indexed_documents
+                .checked_add(self.rejected_logical_records)
+                .is_some_and(|classified| classified <= self.logical_complete_records)
     }
 }
 
@@ -1317,6 +1340,7 @@ struct TerminalSourceEvidence<E: JsonlFamilyError> {
     certificate: CertifiedSource,
     terminal_proof: JsonlFamilyTerminalProof<E>,
     emitted_bytes: u64,
+    record_rejections: SourceBackedRecordRejectionDrafts,
 }
 
 impl<E: JsonlFamilyError> Clone for TerminalSourceEvidence<E> {
@@ -1325,6 +1349,7 @@ impl<E: JsonlFamilyError> Clone for TerminalSourceEvidence<E> {
             certificate: self.certificate.clone(),
             terminal_proof: self.terminal_proof.clone(),
             emitted_bytes: self.emitted_bytes,
+            record_rejections: self.record_rejections.clone(),
         }
     }
 }
@@ -1603,6 +1628,7 @@ fn capture<R: JsonlFamilyRuntime>(
                 certificate: base.clone(),
                 terminal_proof,
                 emitted_bytes: 0,
+                record_rejections: SourceBackedRecordRejectionDrafts::default(),
             },
         );
     }

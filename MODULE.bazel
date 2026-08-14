@@ -49,6 +49,7 @@ _freebsd_x64_constraints = [
     "@platforms//cpu:x86_64",
     "@platforms//os:freebsd",
 ]
+
 freebsd_python_toolchains(
     name = "ctx_freebsd_python_toolchains",
     default_runtimes = ["ctx_freebsd_python_3_11"],

@@ -1,6 +1,6 @@
 use std::{
     fs::File,
-    io::{BufReader, Seek, SeekFrom},
+    io::{BufReader, Cursor, Read, Seek, SeekFrom},
 };
 
 use sha2::{Digest, Sha256};
@@ -8,9 +8,31 @@ use sha2::{Digest, Sha256};
 use super::{
     read_bounded_record, read_bounded_record_complete_and_prefix_sha256,
     read_bounded_record_complete_sha256, read_bounded_record_full_complete_and_prefix_sha256,
-    JsonlRecordFraming,
+    JsonlFamilyError, JsonlRecordFraming, JsonlResult,
 };
-use super::{JsonlFamilyError, JsonlResult};
+
+const ZSTD_FRAME_MAGIC: [u8; 4] = [0x28, 0xb5, 0x2f, 0xfd];
+// Upstream writes one append batch per frame, so a frame may contain several
+// individually bounded JSONL rows. Keep frame allocation bounded separately
+// from the per-row parser limit.
+const MAX_ZSTD_DECODED_FRAME_BYTES: usize = 64 * 1024 * 1024;
+const MAX_ZSTD_FRAME_BYTES: usize = MAX_ZSTD_DECODED_FRAME_BYTES + (1024 * 1024);
+const MAX_ZSTD_WINDOW_LOG: u32 = 26;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum JsonlPhysicalEncoding {
+    RawJsonl,
+    ChecksummedZstdFrames,
+}
+
+impl JsonlPhysicalEncoding {
+    pub const fn checkpoint_tag(self) -> &'static str {
+        match self {
+            Self::RawJsonl => "raw-jsonl-v1",
+            Self::ChecksummedZstdFrames => "checksummed-zstd-frames-v1",
+        }
+    }
+}
 
 #[derive(Debug, Clone)]
 pub enum JsonlPhysicalDigest {
@@ -101,6 +123,53 @@ impl JsonlPhysicalDigest {
             _ => None,
         }
     }
+
+    fn update_physical_unit(&mut self, bytes: &[u8], complete: bool) {
+        match self {
+            Self::Complete { complete: digest } => {
+                if complete {
+                    digest.update(bytes);
+                }
+            }
+            Self::FullAndComplete {
+                full,
+                complete: digest,
+            } => {
+                full.update(bytes);
+                if complete {
+                    digest.update(bytes);
+                }
+            }
+            Self::CompleteAndBoundedPrefix {
+                complete: digest,
+                bounded_prefix,
+                bounded_prefix_remaining,
+            } => {
+                update_bounded_prefix(bounded_prefix, bounded_prefix_remaining, bytes);
+                if complete {
+                    digest.update(bytes);
+                }
+            }
+            Self::FullCompleteAndBoundedPrefix {
+                full,
+                complete: digest,
+                bounded_prefix,
+                bounded_prefix_remaining,
+            } => {
+                full.update(bytes);
+                update_bounded_prefix(bounded_prefix, bounded_prefix_remaining, bytes);
+                if complete {
+                    digest.update(bytes);
+                }
+            }
+        }
+    }
+}
+
+fn update_bounded_prefix(hasher: &mut Sha256, remaining: &mut u64, bytes: &[u8]) {
+    let take = usize::try_from((*remaining).min(bytes.len() as u64)).unwrap_or(bytes.len());
+    hasher.update(&bytes[..take]);
+    *remaining = remaining.saturating_sub(u64::try_from(take).unwrap_or(u64::MAX));
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -132,7 +201,7 @@ pub struct JsonlPhysicalStreamPosition {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(super) struct JsonlPhysicalPassBinding {
+pub struct JsonlPhysicalPassBinding {
     frozen_length: u64,
     offset: u64,
     next_physical_ordinal: u64,
@@ -143,6 +212,40 @@ pub(super) struct JsonlPhysicalPassBinding {
     exhausted: bool,
 }
 
+impl JsonlPhysicalPassBinding {
+    pub fn frozen_length(&self) -> u64 {
+        self.frozen_length
+    }
+
+    pub fn offset(&self) -> u64 {
+        self.offset
+    }
+
+    pub fn next_physical_ordinal(&self) -> u64 {
+        self.next_physical_ordinal
+    }
+
+    pub fn complete_prefix_end(&self) -> u64 {
+        self.complete_prefix_end
+    }
+
+    pub fn complete_prefix_sha256(&self) -> &[u8; 32] {
+        &self.complete_prefix_sha256
+    }
+
+    pub fn admitted_eof_sha256(&self) -> Option<&[u8; 32]> {
+        self.admitted_eof_sha256.as_ref()
+    }
+
+    pub fn incomplete_tail(&self) -> bool {
+        self.incomplete_tail
+    }
+
+    pub fn exhausted(&self) -> bool {
+        self.exhausted
+    }
+}
+
 #[derive(Debug)]
 pub struct JsonlPhysicalStream<E: JsonlFamilyError> {
     reader: BufReader<File>,
@@ -150,6 +253,7 @@ pub struct JsonlPhysicalStream<E: JsonlFamilyError> {
     offset: u64,
     next_physical_ordinal: u64,
     complete_prefix_end: u64,
+    encoding: JsonlPhysicalEncoding,
     framing: JsonlRecordFraming,
     source_changed: fn() -> E,
     digest: JsonlPhysicalDigest,
@@ -161,10 +265,33 @@ pub struct JsonlPhysicalStream<E: JsonlFamilyError> {
 impl<E: JsonlFamilyError> JsonlPhysicalStream<E> {
     #[allow(clippy::too_many_arguments)]
     pub fn open(
+        file: File,
+        frozen_length: u64,
+        offset: u64,
+        next_physical_ordinal: u64,
+        framing: JsonlRecordFraming,
+        digest: JsonlPhysicalDigest,
+        source_changed: fn() -> E,
+    ) -> JsonlResult<Self, E> {
+        Self::open_with_encoding(
+            file,
+            frozen_length,
+            offset,
+            next_physical_ordinal,
+            JsonlPhysicalEncoding::RawJsonl,
+            framing,
+            digest,
+            source_changed,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn open_with_encoding(
         mut file: File,
         frozen_length: u64,
         offset: u64,
         next_physical_ordinal: u64,
+        encoding: JsonlPhysicalEncoding,
         framing: JsonlRecordFraming,
         digest: JsonlPhysicalDigest,
         source_changed: fn() -> E,
@@ -179,6 +306,7 @@ impl<E: JsonlFamilyError> JsonlPhysicalStream<E> {
             offset,
             next_physical_ordinal,
             complete_prefix_end: offset,
+            encoding,
             framing,
             source_changed,
             digest,
@@ -197,55 +325,82 @@ impl<E: JsonlFamilyError> JsonlPhysicalStream<E> {
             return Ok(None);
         }
         let remaining = self.frozen_length.saturating_sub(self.offset);
-        let record = match &mut self.digest {
-            JsonlPhysicalDigest::Complete { complete } => read_bounded_record_complete_sha256(
+        let record = if self.encoding == JsonlPhysicalEncoding::ChecksummedZstdFrames {
+            let frame = read_checksummed_zstd_frame::<E>(
                 &mut self.reader,
                 &mut self.record_buffer,
-                complete,
                 remaining,
-                self.framing,
-                self.source_changed,
-            )?,
-            JsonlPhysicalDigest::FullAndComplete { full, complete } => read_bounded_record(
-                &mut self.reader,
-                &mut self.record_buffer,
-                full,
-                complete,
-                remaining,
-                self.framing,
-                self.source_changed,
-            )?,
-            JsonlPhysicalDigest::CompleteAndBoundedPrefix {
-                complete,
-                bounded_prefix,
-                bounded_prefix_remaining,
-            } => read_bounded_record_complete_and_prefix_sha256(
-                &mut self.reader,
-                &mut self.record_buffer,
-                complete,
-                (bounded_prefix, bounded_prefix_remaining),
-                remaining,
-                self.framing,
-                self.source_changed,
-            )?,
-            JsonlPhysicalDigest::FullCompleteAndBoundedPrefix {
-                full,
-                complete,
-                bounded_prefix,
-                bounded_prefix_remaining,
-            } => read_bounded_record_full_complete_and_prefix_sha256(
-                &mut self.reader,
-                &mut self.record_buffer,
-                full,
-                complete,
-                bounded_prefix,
-                bounded_prefix_remaining,
-                remaining,
-                self.framing,
-                self.source_changed,
-            )?,
-        }
-        .ok_or_else(|| (self.source_changed)())?;
+            )?;
+            self.digest
+                .update_physical_unit(&frame.physical_bytes, frame.complete);
+            JsonlDecodedPhysicalUnit {
+                complete: frame.complete,
+                terminal_nul_padding: false,
+                oversized: false,
+                stored_len: self.record_buffer.len(),
+                byte_len: u64::try_from(frame.physical_bytes.len())
+                    .map_err(|_| E::system_invariant("Zstandard frame length exceeds u64"))?,
+                sha256: Sha256::digest(&frame.physical_bytes).into(),
+            }
+        } else {
+            let record = match &mut self.digest {
+                JsonlPhysicalDigest::Complete { complete } => read_bounded_record_complete_sha256(
+                    &mut self.reader,
+                    &mut self.record_buffer,
+                    complete,
+                    remaining,
+                    self.framing,
+                    self.source_changed,
+                )?,
+                JsonlPhysicalDigest::FullAndComplete { full, complete } => read_bounded_record(
+                    &mut self.reader,
+                    &mut self.record_buffer,
+                    full,
+                    complete,
+                    remaining,
+                    self.framing,
+                    self.source_changed,
+                )?,
+                JsonlPhysicalDigest::CompleteAndBoundedPrefix {
+                    complete,
+                    bounded_prefix,
+                    bounded_prefix_remaining,
+                } => read_bounded_record_complete_and_prefix_sha256(
+                    &mut self.reader,
+                    &mut self.record_buffer,
+                    complete,
+                    (bounded_prefix, bounded_prefix_remaining),
+                    remaining,
+                    self.framing,
+                    self.source_changed,
+                )?,
+                JsonlPhysicalDigest::FullCompleteAndBoundedPrefix {
+                    full,
+                    complete,
+                    bounded_prefix,
+                    bounded_prefix_remaining,
+                } => read_bounded_record_full_complete_and_prefix_sha256(
+                    &mut self.reader,
+                    &mut self.record_buffer,
+                    full,
+                    complete,
+                    bounded_prefix,
+                    bounded_prefix_remaining,
+                    remaining,
+                    self.framing,
+                    self.source_changed,
+                )?,
+            }
+            .ok_or_else(|| (self.source_changed)())?;
+            JsonlDecodedPhysicalUnit {
+                complete: record.complete,
+                terminal_nul_padding: record.terminal_nul_padding,
+                oversized: record.oversized,
+                stored_len: record.stored_len,
+                byte_len: record.byte_len,
+                sha256: record.sha256,
+            }
+        };
         let byte_start = self.offset;
         let byte_end_exclusive = byte_start
             .checked_add(record.byte_len)
@@ -322,7 +477,7 @@ impl<E: JsonlFamilyError> JsonlPhysicalStream<E> {
         &self.digest
     }
 
-    pub(super) fn admitted_pass_binding(&self) -> JsonlPhysicalPassBinding {
+    pub fn admitted_pass_binding(&self) -> JsonlPhysicalPassBinding {
         JsonlPhysicalPassBinding {
             frozen_length: self.frozen_length,
             offset: self.offset,
@@ -343,15 +498,176 @@ impl<E: JsonlFamilyError> JsonlPhysicalStream<E> {
     }
 }
 
+struct JsonlDecodedPhysicalUnit {
+    complete: bool,
+    terminal_nul_padding: bool,
+    oversized: bool,
+    stored_len: usize,
+    byte_len: u64,
+    sha256: [u8; 32],
+}
+
+struct ZstdFrameRead {
+    physical_bytes: Vec<u8>,
+    complete: bool,
+}
+
+fn read_checksummed_zstd_frame<E: JsonlFamilyError>(
+    reader: &mut BufReader<File>,
+    plaintext: &mut Vec<u8>,
+    maximum_bytes: u64,
+) -> JsonlResult<ZstdFrameRead, E> {
+    plaintext.clear();
+    let mut physical = Vec::new();
+    if !read_frame_part::<E>(reader, &mut physical, 4, maximum_bytes)? {
+        return Ok(ZstdFrameRead {
+            physical_bytes: physical,
+            complete: false,
+        });
+    }
+    if physical[..4] != ZSTD_FRAME_MAGIC {
+        return Err(invalid_zstd::<E>("invalid frame magic"));
+    }
+    if !read_frame_part::<E>(reader, &mut physical, 1, maximum_bytes)? {
+        return Ok(ZstdFrameRead {
+            physical_bytes: physical,
+            complete: false,
+        });
+    }
+    let descriptor = physical[4];
+    if descriptor & 0x18 != 0 {
+        return Err(invalid_zstd::<E>("reserved frame-header bits are set"));
+    }
+    if descriptor & 0x04 == 0 {
+        return Err(invalid_zstd::<E>("frame checksum is required"));
+    }
+    let single_segment = descriptor & 0x20 != 0;
+    let dictionary_flag = descriptor & 0x03;
+    let dictionary_bytes = if dictionary_flag == 3 {
+        4
+    } else {
+        usize::from(dictionary_flag)
+    };
+    let content_size_flag = descriptor >> 6;
+    let content_size_bytes = if content_size_flag == 0 {
+        usize::from(single_segment)
+    } else {
+        1_usize << content_size_flag
+    };
+    let remaining_header = usize::from(!single_segment)
+        .saturating_add(dictionary_bytes)
+        .saturating_add(content_size_bytes);
+    if !read_frame_part::<E>(reader, &mut physical, remaining_header, maximum_bytes)? {
+        return Ok(ZstdFrameRead {
+            physical_bytes: physical,
+            complete: false,
+        });
+    }
+
+    loop {
+        let block_header_start = physical.len();
+        if !read_frame_part::<E>(reader, &mut physical, 3, maximum_bytes)? {
+            return Ok(ZstdFrameRead {
+                physical_bytes: physical,
+                complete: false,
+            });
+        }
+        let block_header = u32::from(physical[block_header_start])
+            | (u32::from(physical[block_header_start + 1]) << 8)
+            | (u32::from(physical[block_header_start + 2]) << 16);
+        let last_block = block_header & 1 != 0;
+        let block_type = (block_header >> 1) & 0x03;
+        if block_type == 0x03 {
+            return Err(invalid_zstd::<E>("reserved block type is present"));
+        }
+        let block_size = usize::try_from(block_header >> 3)
+            .map_err(|_| invalid_zstd::<E>("block size exceeds platform limits"))?;
+        let payload_bytes = if block_type == 0x01 { 1 } else { block_size };
+        if !read_frame_part::<E>(reader, &mut physical, payload_bytes, maximum_bytes)? {
+            return Ok(ZstdFrameRead {
+                physical_bytes: physical,
+                complete: false,
+            });
+        }
+        if last_block {
+            break;
+        }
+    }
+    if !read_frame_part::<E>(reader, &mut physical, 4, maximum_bytes)? {
+        return Ok(ZstdFrameRead {
+            physical_bytes: physical,
+            complete: false,
+        });
+    }
+
+    let mut decoder = zstd::stream::read::Decoder::new(Cursor::new(&physical))?.single_frame();
+    decoder.window_log_max(MAX_ZSTD_WINDOW_LOG)?;
+    decoder
+        .take(u64::try_from(MAX_ZSTD_DECODED_FRAME_BYTES).unwrap_or(u64::MAX) + 1)
+        .read_to_end(plaintext)
+        .map_err(|error| {
+            E::invalid_payload(format!(
+                "corrupt checksummed Zstandard JSONL frame: {error}"
+            ))
+        })?;
+    if plaintext.len() > MAX_ZSTD_DECODED_FRAME_BYTES {
+        return Err(invalid_zstd::<E>(
+            "decoded frame exceeds the bounded plaintext limit",
+        ));
+    }
+    if plaintext.is_empty() || plaintext.last() != Some(&b'\n') {
+        return Err(invalid_zstd::<E>(
+            "complete frame does not contain newline-terminated JSONL",
+        ));
+    }
+    Ok(ZstdFrameRead {
+        physical_bytes: physical,
+        complete: true,
+    })
+}
+
+fn read_frame_part<E: JsonlFamilyError>(
+    reader: &mut BufReader<File>,
+    frame: &mut Vec<u8>,
+    requested: usize,
+    maximum_bytes: u64,
+) -> JsonlResult<bool, E> {
+    if frame.len().saturating_add(requested) > MAX_ZSTD_FRAME_BYTES {
+        return Err(invalid_zstd::<E>(
+            "compressed frame exceeds the bounded frame limit",
+        ));
+    }
+    let remaining = maximum_bytes.saturating_sub(frame.len() as u64);
+    let available = usize::try_from(remaining.min(requested as u64))
+        .map_err(|_| E::system_invariant("Zstandard frame bound exceeds usize"))?;
+    let start = frame.len();
+    frame.resize(start.saturating_add(available), 0);
+    let mut filled = 0_usize;
+    while filled < available {
+        let read = reader.read(&mut frame[start + filled..start + available])?;
+        if read == 0 {
+            break;
+        }
+        filled = filled.saturating_add(read);
+    }
+    frame.truncate(start.saturating_add(filled));
+    Ok(filled == requested)
+}
+
+fn invalid_zstd<E: JsonlFamilyError>(detail: &str) -> E {
+    E::invalid_payload(format!("invalid checksummed Zstandard JSONL: {detail}"))
+}
+
 #[cfg(test)]
 mod tests {
+    use ctx_history_source_io::SourceIoError;
     use sha2::{Digest, Sha256};
 
     use super::*;
 
     #[test]
     fn stream_tracks_complete_prefix_tail_and_rollback() {
-        let temp = crate::test_support_paths::tempdir().unwrap();
+        let temp = tempfile::tempdir().unwrap();
         let path = temp.path().join("records.jsonl");
         let contents = b"one\ntwo\nincomplete";
         std::fs::write(&path, contents).unwrap();
@@ -362,7 +678,7 @@ mod tests {
             0,
             JsonlRecordFraming::ordinary(),
             JsonlPhysicalDigest::full_and_complete(Sha256::new(), Sha256::new()),
-            || super::super::CaptureError::SourceChangedDuringCapture,
+            || SourceIoError::SourceChangedDuringCapture,
         )
         .unwrap();
 
@@ -390,5 +706,136 @@ mod tests {
         let full: [u8; 32] = digest.full_hasher().unwrap().clone().finalize().into();
         let expected_full: [u8; 32] = Sha256::digest(contents).into();
         assert_eq!(full, expected_full);
+    }
+
+    fn checksummed_frame(plaintext: &[u8]) -> Vec<u8> {
+        let mut encoder = zstd::stream::Encoder::new(Vec::new(), 1).unwrap();
+        encoder.include_checksum(true).unwrap();
+        std::io::Write::write_all(&mut encoder, plaintext).unwrap();
+        encoder.finish().unwrap()
+    }
+
+    #[test]
+    fn zstd_stream_decodes_concatenated_checksummed_frames_and_rolls_back() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("session.jsonl.zstd");
+        let first_bytes = checksummed_frame(b"{\"type\":\"session\"}\n");
+        let second_bytes =
+            checksummed_frame(b"{\"type\":\"user/message\"}\n{\"type\":\"assistant/message\"}\n");
+        let contents = [first_bytes.as_slice(), second_bytes.as_slice()].concat();
+        std::fs::write(&path, &contents).unwrap();
+        let mut stream = JsonlPhysicalStream::open_with_encoding(
+            File::open(&path).unwrap(),
+            contents.len() as u64,
+            0,
+            0,
+            JsonlPhysicalEncoding::ChecksummedZstdFrames,
+            JsonlRecordFraming::ordinary(),
+            JsonlPhysicalDigest::full_and_complete(Sha256::new(), Sha256::new()),
+            || SourceIoError::SourceChangedDuringCapture,
+        )
+        .unwrap();
+
+        let header = stream.next_record().unwrap().unwrap();
+        assert_eq!(stream.record_bytes(header), b"{\"type\":\"session\"}\n");
+        let after_header = stream.position();
+        let batch = stream.next_record().unwrap().unwrap();
+        assert_eq!(
+            stream.record_bytes(batch),
+            b"{\"type\":\"user/message\"}\n{\"type\":\"assistant/message\"}\n"
+        );
+        stream.restore(after_header).unwrap();
+        assert_eq!(stream.next_record().unwrap().unwrap(), batch);
+        assert!(stream.next_record().unwrap().is_none());
+        assert!(stream.terminal());
+        assert_eq!(stream.complete_prefix_end(), contents.len() as u64);
+        assert_eq!(stream.next_physical_ordinal(), 2);
+        assert_eq!(
+            <[u8; 32]>::from(stream.digest().complete_hasher().clone().finalize()),
+            <[u8; 32]>::from(Sha256::digest(&contents))
+        );
+    }
+
+    #[test]
+    fn zstd_stream_omits_torn_frame_and_rejects_corrupt_or_unchecked_frames() {
+        let temp = tempfile::tempdir().unwrap();
+        let complete = checksummed_frame(b"{\"type\":\"session\"}\n");
+        let mut torn = checksummed_frame(b"{\"type\":\"user/message\"}\n");
+        torn.truncate(torn.len().saturating_sub(2));
+        let contents = [complete.as_slice(), torn.as_slice()].concat();
+        let path = temp.path().join("torn.jsonl.zstd");
+        std::fs::write(&path, &contents).unwrap();
+        let mut stream = JsonlPhysicalStream::open_with_encoding(
+            File::open(&path).unwrap(),
+            contents.len() as u64,
+            0,
+            0,
+            JsonlPhysicalEncoding::ChecksummedZstdFrames,
+            JsonlRecordFraming::ordinary(),
+            JsonlPhysicalDigest::full_and_complete(Sha256::new(), Sha256::new()),
+            || SourceIoError::SourceChangedDuringCapture,
+        )
+        .unwrap();
+        assert!(stream.next_record().unwrap().unwrap().complete);
+        assert!(!stream.next_record().unwrap().unwrap().complete);
+        assert!(!stream.terminal());
+        assert_eq!(stream.complete_prefix_end(), complete.len() as u64);
+        assert_eq!(
+            <[u8; 32]>::from(stream.digest().full_hasher().unwrap().clone().finalize()),
+            <[u8; 32]>::from(Sha256::digest(&contents))
+        );
+
+        let mut corrupt = complete.clone();
+        let last = corrupt.len().saturating_sub(1);
+        corrupt[last] ^= 0xff;
+        let corrupt_path = temp.path().join("corrupt.jsonl.zstd");
+        std::fs::write(&corrupt_path, &corrupt).unwrap();
+        let mut corrupt_stream = JsonlPhysicalStream::open_with_encoding(
+            File::open(&corrupt_path).unwrap(),
+            corrupt.len() as u64,
+            0,
+            0,
+            JsonlPhysicalEncoding::ChecksummedZstdFrames,
+            JsonlRecordFraming::ordinary(),
+            JsonlPhysicalDigest::complete(Sha256::new()),
+            || SourceIoError::SourceChangedDuringCapture,
+        )
+        .unwrap();
+        assert!(corrupt_stream.next_record().is_err());
+
+        let mut encoder = zstd::stream::Encoder::new(Vec::new(), 1).unwrap();
+        std::io::Write::write_all(&mut encoder, b"{}\n").unwrap();
+        let unchecked = encoder.finish().unwrap();
+        let unchecked_path = temp.path().join("unchecked.jsonl.zstd");
+        std::fs::write(&unchecked_path, &unchecked).unwrap();
+        let mut unchecked_stream = JsonlPhysicalStream::open_with_encoding(
+            File::open(&unchecked_path).unwrap(),
+            unchecked.len() as u64,
+            0,
+            0,
+            JsonlPhysicalEncoding::ChecksummedZstdFrames,
+            JsonlRecordFraming::ordinary(),
+            JsonlPhysicalDigest::complete(Sha256::new()),
+            || SourceIoError::SourceChangedDuringCapture,
+        )
+        .unwrap();
+        assert!(unchecked_stream.next_record().is_err());
+
+        let mut reserved = complete.clone();
+        reserved[4] |= 0x10;
+        let reserved_path = temp.path().join("reserved.jsonl.zstd");
+        std::fs::write(&reserved_path, &reserved).unwrap();
+        let mut reserved_stream = JsonlPhysicalStream::open_with_encoding(
+            File::open(&reserved_path).unwrap(),
+            reserved.len() as u64,
+            0,
+            0,
+            JsonlPhysicalEncoding::ChecksummedZstdFrames,
+            JsonlRecordFraming::ordinary(),
+            JsonlPhysicalDigest::complete(Sha256::new()),
+            || SourceIoError::SourceChangedDuringCapture,
+        )
+        .unwrap();
+        assert!(reserved_stream.next_record().is_err());
     }
 }

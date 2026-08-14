@@ -81,6 +81,50 @@
       "public_docs": "docs/providers.md"
     },
     {
+      "id": "deepseek_harness",
+      "display_name": "DeepSeek Harness",
+      "status": "supported",
+      "capture_provider": "deepseek_harness",
+      "implemented_paths": [
+        {
+          "kind": "native_import",
+          "source_format": "deepseek_harness_session_jsonl_tree",
+          "fidelity": "imported",
+          "notes": [
+            "Reads exact DeepSeek Harness local session format version 0 from nested session.jsonl.zstd leaves or configured raw session.jsonl leaves.",
+            "An exact compressed or raw leaf remains importable as deepseek_harness_session_jsonl."
+          ]
+        }
+      ],
+      "history_locations": [
+        "Winner: nonempty absolute `$DSH_HOME/sessions` or `~/.dsh/sessions`; empty and whitespace-only values are unset, and relative overrides are manual-only."
+      ],
+      "imports_existing_history": true,
+      "captures_new_runs_passively": false,
+      "child_sessions_supported": false,
+      "lineage_support": {
+        "session_relationship": "unknown",
+        "event_origin": "unknown"
+      },
+      "fidelity": {
+        "user_prompts": true,
+        "assistant_messages": true,
+        "tool_calls": true,
+        "tool_output": true,
+        "command_output": false,
+        "files_touched": true,
+        "artifacts": false,
+        "model_identity": true,
+        "costs": false,
+        "token_usage": false,
+        "parent_child_session_edges": false
+      },
+      "limitations": [
+        "Local format version 0 only; other versions, unknown required events, and other layouts fail closed. Child sessions remain independent imports because the durable header does not preserve a transitive root identity. Hosted/cloud history is out of scope, and exact MCP server/tool attribution is not qualified."
+      ],
+      "public_docs": "docs/providers.md"
+    },
+    {
       "id": "grok_build",
       "display_name": "Grok Build",
       "status": "supported",

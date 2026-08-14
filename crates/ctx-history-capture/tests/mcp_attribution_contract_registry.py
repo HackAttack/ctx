@@ -93,6 +93,17 @@ ROUTE_SCHEMA_CONTRACTS = (
         sha256="6ab6838309999c32190e5d152983d7774bd6e50920d88b00b6f408fe6fcc6c58",
     ),
     RouteSchemaContract(
+        provider="deepseek_harness",
+        route="native_import",
+        source_format="deepseek_harness_session_jsonl_tree",
+        format_schema=_embedded_integer(0),
+        producer_domain=_discrete(_integer(0)),
+        path="crates/ctx-history-capture/tests/contracts/mcp-attribution/deepseek_harness/deepseek_harness_session_jsonl_tree/shape-contract.json",
+        allowed_subtree="crates/ctx-history-capture/tests/contracts/mcp-attribution/deepseek_harness/deepseek_harness_session_jsonl_tree",
+        classification=ROUTE_CONTRACT_CLASSIFICATION,
+        sha256="f8a922f56eb7abd45c886e08dbf937f2d260c39ef3301cb3a899d8995ef0ee4a",
+    ),
+    RouteSchemaContract(
         provider="pi",
         route="native_import",
         source_format="pi_session_jsonl",

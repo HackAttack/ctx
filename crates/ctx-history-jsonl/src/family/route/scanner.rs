@@ -13,7 +13,7 @@ use super::{
 };
 use ctx_history_capture_runtime::{
     ParallelLeafScanEmitError, ParallelLeafScanError, SourceBackedCoordinatorError,
-    SourceBackedRouteError,
+    SourceBackedRecordRejectionDrafts, SourceBackedRouteError,
 };
 
 pub(super) fn preserve_coordinator_error<R: JsonlFamilyRuntime>(
@@ -65,10 +65,15 @@ pub(super) fn physical_identity<R: JsonlFamilyRuntime>(
     adapter: &dyn JsonlFamilyAdapter<Runtime = R>,
     leaf: &JsonlFamilyLeaf<JsonlRuntimeError<R>>,
 ) -> JsonlSourceIdentity {
+    let encoding = adapter.physical_encoding(leaf);
+    let policy_revision = match encoding {
+        super::super::JsonlPhysicalEncoding::RawJsonl => FAMILY_POLICY_REVISION.to_owned(),
+        _ => format!("{FAMILY_POLICY_REVISION}:{}", encoding.checkpoint_tag()),
+    };
     JsonlSourceIdentity::new(
         adapter.provider().as_str(),
         adapter.parser_revision(),
-        FAMILY_POLICY_REVISION,
+        policy_revision,
         leaf.source.exact_descriptor_digest(),
         leaf.source_path.clone(),
     )
@@ -207,7 +212,10 @@ impl JsonlFamilySemanticPage {
 pub struct JsonlFamilySemanticSummary {
     represented_physical_records: u64,
     rejected_records: u64,
+    logical_complete_records: Option<u64>,
+    rejected_logical_records: Option<u64>,
     provider_checkpoint: Option<TypedKey>,
+    record_rejections: SourceBackedRecordRejectionDrafts,
 }
 
 impl JsonlFamilySemanticSummary {
@@ -219,8 +227,36 @@ impl JsonlFamilySemanticSummary {
         Self {
             represented_physical_records,
             rejected_records,
+            logical_complete_records: None,
+            rejected_logical_records: None,
             provider_checkpoint,
+            record_rejections: SourceBackedRecordRejectionDrafts::default(),
         }
+    }
+
+    pub fn with_logical_counts(
+        represented_physical_records: u64,
+        rejected_records: u64,
+        logical_complete_records: u64,
+        rejected_logical_records: u64,
+        provider_checkpoint: Option<TypedKey>,
+    ) -> Self {
+        Self {
+            represented_physical_records,
+            rejected_records,
+            logical_complete_records: Some(logical_complete_records),
+            rejected_logical_records: Some(rejected_logical_records),
+            provider_checkpoint,
+            record_rejections: SourceBackedRecordRejectionDrafts::default(),
+        }
+    }
+
+    pub fn with_record_rejections(
+        mut self,
+        record_rejections: SourceBackedRecordRejectionDrafts,
+    ) -> Self {
+        self.record_rejections = record_rejections;
+        self
     }
 
     pub(super) fn represented_physical_records(&self) -> u64 {
@@ -231,8 +267,20 @@ impl JsonlFamilySemanticSummary {
         self.rejected_records
     }
 
-    pub(super) fn into_provider_checkpoint(self) -> Option<TypedKey> {
-        self.provider_checkpoint
+    pub(super) fn logical_complete_records(&self) -> Option<u64> {
+        self.logical_complete_records
+    }
+
+    pub(super) fn rejected_logical_records(&self) -> Option<u64> {
+        self.rejected_logical_records
+    }
+
+    pub(super) fn into_record_rejections(self) -> SourceBackedRecordRejectionDrafts {
+        self.record_rejections
+    }
+
+    pub(super) fn provider_checkpoint(&self) -> Option<TypedKey> {
+        self.provider_checkpoint.clone()
     }
 }
 

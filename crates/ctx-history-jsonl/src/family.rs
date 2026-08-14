@@ -148,7 +148,8 @@ pub use framing::{
 };
 use identity::observe_metadata;
 pub use physical::{
-    JsonlPhysicalDigest, JsonlPhysicalRecord, JsonlPhysicalStream, JsonlPhysicalStreamPosition,
+    JsonlPhysicalDigest, JsonlPhysicalEncoding, JsonlPhysicalRecord, JsonlPhysicalStream,
+    JsonlPhysicalStreamPosition,
 };
 use revalidation::hash_prefix;
 pub use revalidation::revalidate_frozen_prefix;
@@ -226,6 +227,7 @@ struct JsonlSemanticAppendResume {
 }
 
 struct JsonlReaderFramingOptions<'a> {
+    physical_encoding: JsonlPhysicalEncoding,
     record_framing: JsonlRecordFraming,
     whole_record: bool,
     bind_admitted_eof: bool,
@@ -268,12 +270,31 @@ impl<E: JsonlFamilyError> JsonlReader<E> {
         probe: Option<JsonlProbe>,
         record_framing: JsonlRecordFraming,
     ) -> JsonlResult<Self, E> {
+        Self::open_with_record_framing_and_encoding(
+            identity,
+            source_file,
+            previous,
+            probe,
+            JsonlPhysicalEncoding::RawJsonl,
+            record_framing,
+        )
+    }
+
+    pub fn open_with_record_framing_and_encoding(
+        identity: JsonlSourceIdentity,
+        source_file: Arc<OpenedProviderSourceFile<E>>,
+        previous: Option<&JsonlCheckpoint>,
+        probe: Option<JsonlProbe>,
+        physical_encoding: JsonlPhysicalEncoding,
+        record_framing: JsonlRecordFraming,
+    ) -> JsonlResult<Self, E> {
         Self::open_with_framing(
             identity,
             source_file,
             previous,
             probe,
             JsonlReaderFramingOptions {
+                physical_encoding,
                 record_framing,
                 whole_record: false,
                 bind_admitted_eof: false,
@@ -292,6 +313,29 @@ impl<E: JsonlFamilyError> JsonlReader<E> {
         record_framing: JsonlRecordFraming,
         frozen_observation: Option<&JsonlFileObservation>,
     ) -> JsonlResult<Self, E> {
+        Self::open_semantic_with_record_framing_and_encoding(
+            identity,
+            source_file,
+            previous,
+            mode,
+            probe,
+            JsonlPhysicalEncoding::RawJsonl,
+            record_framing,
+            frozen_observation,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn open_semantic_with_record_framing_and_encoding(
+        identity: JsonlSourceIdentity,
+        source_file: Arc<OpenedProviderSourceFile<E>>,
+        previous: Option<&JsonlCheckpoint>,
+        mode: JsonlSemanticPreflightMode,
+        probe: Option<JsonlProbe>,
+        physical_encoding: JsonlPhysicalEncoding,
+        record_framing: JsonlRecordFraming,
+        frozen_observation: Option<&JsonlFileObservation>,
+    ) -> JsonlResult<Self, E> {
         let (bind_admitted_eof, deferred_append_eof_sha256) = match mode {
             JsonlSemanticPreflightMode::AdmittedEof(previous) => (true, previous.map(Some)),
             JsonlSemanticPreflightMode::CompletePrefix => (false, Some(None)),
@@ -302,6 +346,7 @@ impl<E: JsonlFamilyError> JsonlReader<E> {
             previous,
             probe,
             JsonlReaderFramingOptions {
+                physical_encoding,
                 record_framing,
                 whole_record: false,
                 bind_admitted_eof,
@@ -322,6 +367,7 @@ impl<E: JsonlFamilyError> JsonlReader<E> {
             previous,
             None,
             JsonlReaderFramingOptions {
+                physical_encoding: JsonlPhysicalEncoding::RawJsonl,
                 record_framing: JsonlRecordFraming::ordinary(),
                 whole_record: true,
                 bind_admitted_eof: false,
@@ -339,6 +385,7 @@ impl<E: JsonlFamilyError> JsonlReader<E> {
         options: JsonlReaderFramingOptions<'_>,
     ) -> JsonlResult<Self, E> {
         let JsonlReaderFramingOptions {
+            physical_encoding,
             record_framing,
             whole_record,
             bind_admitted_eof,
@@ -462,11 +509,12 @@ impl<E: JsonlFamilyError> JsonlReader<E> {
         } else {
             (
                 None,
-                Some(JsonlPhysicalStream::open(
+                Some(JsonlPhysicalStream::open_with_encoding(
                     file,
                     observation.length(),
                     complete_prefix_end,
                     next_physical_ordinal,
+                    physical_encoding,
                     record_framing,
                     match (full_hasher, semantic_append_resume.as_ref()) {
                         (Some(full), Some(resume)) if resume.admitted_eof_sha256.is_some() => {

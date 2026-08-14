@@ -91,6 +91,10 @@ impl SourceBackedRecordRejectionDrafts {
         }
     }
 
+    pub fn record_omitted(&mut self, omitted: usize) {
+        self.omitted = self.omitted.saturating_add(omitted);
+    }
+
     pub fn first(&self) -> Option<&SourceBackedRecordRejectionDraft> {
         self.rejections.first()
     }

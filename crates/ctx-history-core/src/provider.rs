@@ -18,6 +18,8 @@ pub enum ProviderId {
     Codex,
     #[serde(rename = "grok_build", alias = "grok-build", alias = "grok")]
     GrokBuild,
+    #[serde(rename = "deepseek_harness", alias = "deepseek-harness", alias = "dsh")]
+    DeepSeekHarness,
     #[serde(alias = "claude")]
     ClaudeCode,
     ClaudeCliCrp,
@@ -106,9 +108,10 @@ pub enum ProviderId {
 }
 
 impl ProviderId {
-    pub const ALL: [Self; 52] = [
+    pub const ALL: [Self; 53] = [
         Self::Codex,
         Self::GrokBuild,
+        Self::DeepSeekHarness,
         Self::ClaudeCode,
         Self::ClaudeCliCrp,
         Self::Pi,
@@ -330,6 +333,7 @@ mod tests {
             ProviderId::Cline,
             ProviderId::Codex,
             ProviderId::GrokBuild,
+            ProviderId::DeepSeekHarness,
             ProviderId::CodeBuddy,
             ProviderId::Trae,
             ProviderId::Continue,

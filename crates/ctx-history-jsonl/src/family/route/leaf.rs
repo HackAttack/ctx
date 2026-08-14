@@ -30,13 +30,14 @@ use super::{
 use ctx_history_capture_runtime::{
     CaptureLifecycleSink, CorePreparedBatchBuilder, ParallelLeafScanBegin,
     ParallelLeafScanComplete, ParallelLeafScanJob, ParallelLeafScanWorkerError,
-    SourceBackedGenerationSink, SourceBackedRouteResult,
+    SourceBackedGenerationSink, SourceBackedRecordRejectionDrafts, SourceBackedRouteResult,
 };
 
 pub(super) struct PreparedLeaf<E: JsonlFamilyError> {
     pub(super) certificate: CertifiedSource,
     pub(super) append: Option<CertifiedSourceAppend>,
     pub(super) terminal_proof: JsonlFamilyTerminalProof<E>,
+    pub(super) record_rejections: SourceBackedRecordRejectionDrafts,
 }
 
 struct JsonlLeafJob<E: JsonlFamilyError> {
@@ -199,7 +200,9 @@ fn scan_leaf_serial<R: JsonlFamilyRuntime>(
         certificate,
         append,
         terminal_proof,
+        record_rejections,
     } = prepared;
+    sink.record_rejections(record_rejections);
     match append {
         Some(append) => {
             if staging_started && !append_staging {
@@ -222,6 +225,7 @@ fn scan_leaf_serial<R: JsonlFamilyRuntime>(
                 certificate,
                 terminal_proof,
                 emitted_bytes,
+                record_rejections: SourceBackedRecordRejectionDrafts::default(),
             })
         }
         None => {
@@ -242,6 +246,7 @@ fn scan_leaf_serial<R: JsonlFamilyRuntime>(
                 certificate,
                 terminal_proof,
                 emitted_bytes,
+                record_rejections: SourceBackedRecordRejectionDrafts::default(),
             })
         }
     }
@@ -380,6 +385,7 @@ fn run_parallel_leaf_job_batch<R: JsonlFamilyRuntime>(
                 certificate,
                 append,
                 terminal_proof,
+                record_rejections,
             } = prepared;
             match append {
                 Some(append) => {
@@ -403,6 +409,7 @@ fn run_parallel_leaf_job_batch<R: JsonlFamilyRuntime>(
                                 certificate,
                                 terminal_proof,
                                 emitted_bytes,
+                                record_rejections,
                             },
                         ))
                         .map_err(ParallelLeafScanWorkerError::from)?;
@@ -422,6 +429,7 @@ fn run_parallel_leaf_job_batch<R: JsonlFamilyRuntime>(
                         certificate: certificate.clone(),
                         terminal_proof,
                         emitted_bytes,
+                        record_rejections,
                     };
                     emitter
                         .complete(ParallelLeafScanComplete::replace(certificate, evidence))
@@ -433,6 +441,7 @@ fn run_parallel_leaf_job_batch<R: JsonlFamilyRuntime>(
     );
     let evidences = result.map_err(map_parallel_leaf_error)?;
     for evidence in &evidences {
+        sink.record_rejections(evidence.record_rejections.clone());
         sink.report_completed_bytes(terminal_byte_remainder(
             &evidence.certificate,
             evidence.emitted_bytes,
@@ -837,6 +846,7 @@ pub(super) fn prepare_leaf<R: JsonlFamilyRuntime>(
             certificate: base.clone(),
             append: Some(append),
             terminal_proof: terminal_proof_for_checkpoint(adapter, &leaf, base, &decoded)?,
+            record_rejections: SourceBackedRecordRejectionDrafts::default(),
         });
     }
 
@@ -1025,6 +1035,28 @@ pub(super) fn prepare_leaf<R: JsonlFamilyRuntime>(
     if documents != before_finish {
         represented_records = physical_records;
     }
+    let classified_physical_records = represented_records
+        .checked_add(rejected_records)
+        .ok_or_else(|| {
+            JsonlRuntimeError::<R>::invalid_payload(
+                "JSONL classified physical count overflowed".to_owned(),
+            )
+        })?;
+    let physical_ignored_records = physical_records
+        .checked_sub(classified_physical_records)
+        .ok_or_else(|| {
+            JsonlRuntimeError::<R>::invalid_payload(
+                "JSONL classified physical count exceeded physical records".to_owned(),
+            )
+        })?;
+    let logical_complete_records = documents
+        .checked_add(rejected_records)
+        .and_then(|count| count.checked_add(physical_ignored_records))
+        .ok_or_else(|| {
+            JsonlRuntimeError::<R>::invalid_payload(
+                "JSONL logical complete count overflowed".to_owned(),
+            )
+        })?;
     let admitted_eof_sha256 = reader.admitted_eof_sha256()?;
     let complete_prefix_ends_with_terminal_nul_padding =
         reader.complete_prefix_ends_with_terminal_nul_padding();
@@ -1048,6 +1080,8 @@ pub(super) fn prepare_leaf<R: JsonlFamilyRuntime>(
         complete_prefix_ends_with_terminal_nul_padding,
         represented_physical_records: represented_records,
         rejected_records,
+        logical_complete_records,
+        rejected_logical_records: rejected_records,
         indexed_documents: documents,
         provider_checkpoint,
     };
@@ -1079,6 +1113,7 @@ pub(super) fn prepare_leaf<R: JsonlFamilyRuntime>(
         certificate,
         append,
         terminal_proof,
+        record_rejections: SourceBackedRecordRejectionDrafts::default(),
     })
 }
 
@@ -1097,7 +1132,7 @@ fn open_leaf_reader<R: JsonlFamilyRuntime>(
         )
     } else {
         if adapter.bind_admitted_eof() {
-            JsonlReader::open_semantic_with_record_framing(
+            JsonlReader::open_semantic_with_record_framing_and_encoding(
                 physical_identity(adapter, leaf),
                 Arc::clone(opened),
                 previous.map(|checkpoint| &checkpoint.physical),
@@ -1105,25 +1140,28 @@ fn open_leaf_reader<R: JsonlFamilyRuntime>(
                     previous.and_then(|checkpoint| checkpoint.admitted_eof_sha256),
                 ),
                 leaf.identity_probe.clone(),
+                adapter.physical_encoding(leaf),
                 adapter.record_framing(),
                 leaf.frozen_scan_observation(),
             )
         } else if projector_preflight {
-            JsonlReader::open_semantic_with_record_framing(
+            JsonlReader::open_semantic_with_record_framing_and_encoding(
                 physical_identity(adapter, leaf),
                 Arc::clone(opened),
                 previous.map(|checkpoint| &checkpoint.physical),
                 JsonlSemanticPreflightMode::CompletePrefix,
                 None,
+                adapter.physical_encoding(leaf),
                 adapter.record_framing(),
                 leaf.frozen_scan_observation(),
             )
         } else {
-            JsonlReader::open_with_record_framing(
+            JsonlReader::open_with_record_framing_and_encoding(
                 physical_identity(adapter, leaf),
                 Arc::clone(opened),
                 previous.map(|checkpoint| &checkpoint.physical),
                 leaf.identity_probe.clone(),
+                adapter.physical_encoding(leaf),
                 adapter.record_framing(),
             )
         }
@@ -1229,6 +1267,54 @@ fn prepare_semantic_leaf<R: JsonlFamilyRuntime>(
         .ok_or_else(|| {
             JsonlRuntimeError::<R>::invalid_payload("JSONL rejected count overflowed".to_owned())
         })?;
+    let logical_complete_records = if let Some(current) = summary.logical_complete_records() {
+        resumed
+            .map_or(0, |checkpoint| checkpoint.logical_complete_records)
+            .checked_add(current)
+            .ok_or_else(|| {
+                JsonlRuntimeError::<R>::invalid_payload(
+                    "JSONL logical complete count overflowed".to_owned(),
+                )
+            })?
+    } else {
+        let classified_physical_records = represented_physical_records
+            .checked_add(rejected_records)
+            .ok_or_else(|| {
+                JsonlRuntimeError::<R>::invalid_payload(
+                    "JSONL classified physical count overflowed".to_owned(),
+                )
+            })?;
+        let physical_ignored_records = terminal_checkpoint
+            .next_physical_ordinal()
+            .checked_sub(classified_physical_records)
+            .ok_or_else(|| {
+                JsonlRuntimeError::<R>::invalid_payload(
+                    "JSONL classified physical count exceeded physical records".to_owned(),
+                )
+            })?;
+        documents
+            .checked_add(rejected_records)
+            .and_then(|count| count.checked_add(physical_ignored_records))
+            .ok_or_else(|| {
+                JsonlRuntimeError::<R>::invalid_payload(
+                    "JSONL logical complete count overflowed".to_owned(),
+                )
+            })?
+    };
+    let rejected_logical_records = if let Some(current) = summary.rejected_logical_records() {
+        resumed
+            .map_or(0, |checkpoint| checkpoint.rejected_logical_records)
+            .checked_add(current)
+            .ok_or_else(|| {
+                JsonlRuntimeError::<R>::invalid_payload(
+                    "JSONL logical rejected count overflowed".to_owned(),
+                )
+            })?
+    } else {
+        rejected_records
+    };
+    let provider_checkpoint = summary.provider_checkpoint();
+    let record_rejections = summary.into_record_rejections();
     let checkpoint = FamilyCheckpoint {
         version: FamilyCheckpoint::VERSION,
         provider_parser_revision: adapter.parser_revision().to_owned(),
@@ -1239,8 +1325,10 @@ fn prepare_semantic_leaf<R: JsonlFamilyRuntime>(
         complete_prefix_ends_with_terminal_nul_padding,
         represented_physical_records,
         rejected_records,
+        logical_complete_records,
+        rejected_logical_records,
         indexed_documents: documents,
-        provider_checkpoint: summary.into_provider_checkpoint(),
+        provider_checkpoint,
     };
     let checkpoint = fit_semantic_provider_checkpoint(adapter, checkpoint)?;
     let certificate = certify(adapter, leaf, checkpoint.clone())
@@ -1273,6 +1361,7 @@ fn prepare_semantic_leaf<R: JsonlFamilyRuntime>(
         certificate,
         append,
         terminal_proof,
+        record_rejections,
     })
 }
 
@@ -1336,6 +1425,7 @@ pub(super) fn validate_optimized_outcome<R: JsonlFamilyRuntime>(
         certificate: outcome.certificate,
         append: outcome.append,
         terminal_proof: outcome.terminal_proof,
+        record_rejections: SourceBackedRecordRejectionDrafts::default(),
     })
 }
 
@@ -1374,20 +1464,16 @@ fn certify<R: JsonlFamilyRuntime>(
     if !checkpoint.valid_for(adapter, leaf) {
         return Err(route_invalid("JSONL checkpoint is internally inconsistent"));
     }
-    let classified = checkpoint
-        .represented_physical_records
-        .checked_add(checkpoint.rejected_records)
-        .ok_or_else(|| route_invalid("JSONL classified count overflowed"))?;
-    let ignored = checkpoint
-        .physical
-        .next_physical_ordinal()
-        .checked_sub(classified)
-        .ok_or_else(|| route_invalid("JSONL ignored count underflowed"))?;
-    let complete_records = checkpoint
-        .indexed_documents
-        .checked_add(checkpoint.rejected_records)
-        .and_then(|records| records.checked_add(ignored))
-        .ok_or_else(|| route_invalid("JSONL complete count overflowed"))?;
+    let complete_records = checkpoint.logical_complete_records;
+    let rejected_records = checkpoint.rejected_logical_records;
+    let ignored = complete_records
+        .checked_sub(
+            checkpoint
+                .indexed_documents
+                .checked_add(rejected_records)
+                .ok_or_else(|| route_invalid("JSONL logical count overflowed"))?,
+        )
+        .ok_or_else(|| route_invalid("JSONL logical ignored count underflowed"))?;
     let frontier = SourceFrontier::new(
         FAMILY_FRONTIER_KIND,
         checkpoint
@@ -1407,7 +1493,7 @@ fn certify<R: JsonlFamilyRuntime>(
         ScannedSourceCounts {
             complete_records,
             retained_records: checkpoint.indexed_documents,
-            rejected_records: checkpoint.rejected_records,
+            rejected_records,
             ignored_records: ignored,
             indexed_documents: checkpoint.indexed_documents,
             certified_bytes: checkpoint.physical.complete_prefix_end(),
