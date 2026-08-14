@@ -46,7 +46,7 @@ type JsonlOptimizedLeafResult<R> = JsonlResult<
     JsonlRuntimeError<R>,
 >;
 mod leaf;
-#[cfg(any(test, feature = "test-support"))]
+#[cfg(feature = "test-support")]
 pub use leaf::checkpoint_admitted_revision_for_test;
 #[cfg(test)]
 use leaf::family_scanner_worker_count_policy;
@@ -61,7 +61,7 @@ use errors::{
 mod ownership;
 use ownership::base_sources_for_root;
 mod revalidation;
-#[cfg(any(test, feature = "test-support"))]
+#[cfg(feature = "test-support")]
 pub use revalidation::set_before_jsonl_terminal_physical_revalidation_hook;
 use revalidation::{
     binding_digest, inventory_observation, reset_terminal, revalidate_complete_inventory,
