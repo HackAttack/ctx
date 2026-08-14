@@ -30,14 +30,14 @@ EXPECTED_REGISTRATIONS = {
     "lingma_registration",
     "shelley_registration",
 }
-EXPECTED_CAPTURE_FACADE_FUNCTIONS = {
+EXPECTED_COMPOSITION_FACADE_FUNCTIONS = {
     "register_astrbot_source_backed_route",
     "register_crush_source_backed_route",
     "register_hermes_explicit_source_backed_route",
     "register_lingma_source_backed_route",
     "register_shelley_source_backed_route",
 }
-EXPECTED_CAPTURE_FACADE_REGISTRATIONS = EXPECTED_REGISTRATIONS - {
+EXPECTED_COMPOSITION_FACADE_REGISTRATIONS = EXPECTED_REGISTRATIONS - {
     "discovered_lingma_registration",
     "hermes_automatic_registration",
 }
@@ -286,10 +286,31 @@ def skip_rust_non_code(text: str, index: int) -> int | None:
     return None
 
 
-def validate_capture_ownership(capture_root: Path) -> None:
+def validate_composition_ownership(composition_root: Path) -> None:
+    facade = (
+        composition_root
+        / "source_backed/registration/families/sqlite_inventory.rs"
+    )
+    if not facade.is_file():
+        raise BoundaryError("composition SQLite inventory façade is missing")
+    validate_composition_facade(facade)
+    retired = (
+        composition_root
+        / "source_backed/registration/families/sqlite/inventory.rs"
+    )
+    if retired.exists():
+        raise BoundaryError(
+            "composition reacquired the old SQLite inventory registration owner"
+        )
+
+
+def validate_capture_absence(capture_root: Path) -> None:
     providers = capture_root / "provider/providers/mod.rs"
     declarations = set(
-        re.findall(r"pub\(crate\) mod ([a-z_]+);", providers.read_text(encoding="utf-8"))
+        re.findall(
+            rf"pub(?:\(crate\))? mod ({RUST_IDENTIFIER});",
+            providers.read_text(encoding="utf-8"),
+        )
     )
     retained = PROVIDERS & declarations
     if retained:
@@ -297,23 +318,43 @@ def validate_capture_ownership(capture_root: Path) -> None:
             "capture retains production ownership of extracted providers: "
             + ", ".join(sorted(retained))
         )
-    facade = (
+    forbidden_authorities = (
         capture_root
-        / "provider/source_backed/registration/families/sqlite_inventory.rs"
-    )
-    if not facade.is_file():
-        raise BoundaryError("capture SQLite inventory façade is missing")
-    validate_capture_facade(facade)
-    retired = (
+        / "provider/source_backed/registration/families/sqlite_inventory.rs",
         capture_root
-        / "provider/source_backed/registration/families/sqlite/inventory.rs"
+        / "provider/source_backed/registration/families/sqlite/inventory.rs",
     )
-    if retired.exists():
-        raise BoundaryError("capture retains the old SQLite inventory registration owner")
+    retained_authorities = [
+        path.relative_to(capture_root).as_posix()
+        for path in forbidden_authorities
+        if path.exists()
+    ]
+    if retained_authorities:
+        raise BoundaryError(
+            "capture reacquired SQLite inventory façade or registration authority: "
+            + ", ".join(retained_authorities)
+        )
 
 
-def validate_capture_facade(path: Path) -> None:
+def validate_composition_facade(path: Path) -> None:
     source = strip_rust_non_code(path.read_text(encoding="utf-8"))
+    registration_imports = re.findall(
+        r"\buse\s+ctx_history_providers_sqlite_inventory::registration::\s*"
+        r"\{([^}]*)\}\s*;",
+        source,
+        flags=re.DOTALL,
+    )
+    imported_registrations = (
+        set(re.findall(rf"\b({REGISTRATION_IDENTIFIER})\b", registration_imports[0]))
+        if len(registration_imports) == 1
+        else set()
+    )
+    if imported_registrations != EXPECTED_COMPOSITION_FACADE_REGISTRATIONS:
+        raise BoundaryError(
+            "composition SQLite inventory façade provider bindings drifted: "
+            f"expected={sorted(EXPECTED_COMPOSITION_FACADE_REGISTRATIONS)} "
+            f"actual={sorted(imported_registrations)}"
+        )
     items = set(
         re.findall(
             r"(?m)^\s*(?:pub(?:\([^)]*\))?\s+)?"
@@ -324,11 +365,11 @@ def validate_capture_facade(path: Path) -> None:
         )
     )
     expected_items = {
-        ("fn", function) for function in EXPECTED_CAPTURE_FACADE_FUNCTIONS
+        ("fn", function) for function in EXPECTED_COMPOSITION_FACADE_FUNCTIONS
     }
     if items != expected_items:
         raise BoundaryError(
-            "capture SQLite inventory façade item surface drifted: "
+            "composition SQLite inventory façade item surface drifted: "
             f"missing={sorted(expected_items - items)} extra={sorted(items - expected_items)}"
         )
 
@@ -343,7 +384,7 @@ def validate_capture_facade(path: Path) -> None:
     expected_public_items = expected_items
     if public_items != expected_public_items:
         raise BoundaryError(
-            "capture SQLite inventory façade public surface drifted: "
+            "composition SQLite inventory façade public surface drifted: "
             f"expected={sorted(expected_public_items)} actual={sorted(public_items)}"
         )
     restricted_public_items = set(
@@ -356,7 +397,7 @@ def validate_capture_facade(path: Path) -> None:
     )
     if restricted_public_items:
         raise BoundaryError(
-            "capture SQLite inventory façade gained a restricted public surface: "
+            "composition SQLite inventory façade gained a restricted public surface: "
             f"{sorted(restricted_public_items)}"
         )
 
@@ -368,33 +409,33 @@ def validate_capture_facade(path: Path) -> None:
         for registration in registration_calls
         if registration != "install_sqlite_inventory_registration"
     ]
-    unexpected_calls = set(registration_calls) - EXPECTED_CAPTURE_FACADE_REGISTRATIONS
+    unexpected_calls = set(registration_calls) - EXPECTED_COMPOSITION_FACADE_REGISTRATIONS
     duplicate_or_missing_calls = {
         registration: registration_calls.count(registration)
-        for registration in EXPECTED_CAPTURE_FACADE_REGISTRATIONS
+        for registration in EXPECTED_COMPOSITION_FACADE_REGISTRATIONS
         if registration_calls.count(registration) != 1
     }
     if unexpected_calls or duplicate_or_missing_calls:
         raise BoundaryError(
-            "capture SQLite inventory façade constructor calls drifted: "
+            "composition SQLite inventory façade constructor calls drifted: "
             f"unexpected={sorted(unexpected_calls)} "
             f"counts={duplicate_or_missing_calls}"
         )
     registrations = set(
         re.findall(rf"\b({REGISTRATION_IDENTIFIER})\b", source)
     ) - {"install_sqlite_inventory_registration"}
-    if registrations != EXPECTED_CAPTURE_FACADE_REGISTRATIONS:
+    if registrations != EXPECTED_COMPOSITION_FACADE_REGISTRATIONS:
         raise BoundaryError(
-            "capture SQLite inventory façade registration bindings drifted: "
-            f"missing={sorted(EXPECTED_CAPTURE_FACADE_REGISTRATIONS - registrations)} "
-            f"extra={sorted(registrations - EXPECTED_CAPTURE_FACADE_REGISTRATIONS)}"
+            "composition SQLite inventory façade registration bindings drifted: "
+            f"missing={sorted(EXPECTED_COMPOSITION_FACADE_REGISTRATIONS - registrations)} "
+            f"extra={sorted(registrations - EXPECTED_COMPOSITION_FACADE_REGISTRATIONS)}"
         )
     if source.count("install_sqlite_inventory_registration(") != len(
-        EXPECTED_CAPTURE_FACADE_FUNCTIONS
+        EXPECTED_COMPOSITION_FACADE_FUNCTIONS
     ):
         raise BoundaryError(
-            "capture SQLite inventory façade must install exactly one pack registration "
-            "per compatibility function"
+            "composition SQLite inventory façade must install exactly one pack registration "
+            "per route function"
         )
 
 
@@ -419,6 +460,7 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     parser.add_argument("pack_manifest", type=Path)
     parser.add_argument("pack_build", type=Path)
     parser.add_argument("pack_lib", type=Path)
+    parser.add_argument("composition_lib", type=Path)
     parser.add_argument("capture_lib", type=Path)
     return parser.parse_args(argv)
 
@@ -429,7 +471,8 @@ def main(argv: list[str]) -> int:
         validate_manifest(args.pack_manifest)
         validate_build(args.pack_build)
         validate_pack_sources(args.pack_lib.parent)
-        validate_capture_ownership(args.capture_lib.parent)
+        validate_composition_ownership(args.composition_lib.parent)
+        validate_capture_absence(args.capture_lib.parent)
     except (BoundaryError, OSError, tomllib.TOMLDecodeError) as error:
         print(error, file=sys.stderr)
         return 1
