@@ -15,11 +15,15 @@ class TraeBoundaryMutationTests(unittest.TestCase):
         self.manifest = root / "Cargo.toml"
         self.build = root / "BUILD.bazel"
         self.source = root / "pack" / "src"
-        self.facade = root / "capture" / "providers" / "trae.rs"
-        self.registration = root / "capture" / "registration.rs"
+        self.capture_facade = root / "capture" / "providers" / "trae.rs"
+        self.composition_manifest = root / "composition" / "Cargo.toml"
+        self.composition_build = root / "composition" / "BUILD.bazel"
+        self.composition_facade = root / "composition" / "src" / "lib.rs"
+        self.registration = root / "composition" / "registration.rs"
         self.discovery = root / "capture" / "provider_sources.rs"
         self.source.mkdir(parents=True)
-        self.facade.parent.mkdir(parents=True)
+        self.capture_facade.parent.mkdir(parents=True)
+        self.composition_facade.parent.mkdir(parents=True)
         self.registration.parent.mkdir(parents=True, exist_ok=True)
 
         regular = {
@@ -73,9 +77,26 @@ class TraeBoundaryMutationTests(unittest.TestCase):
             "ProviderChangedDocumentSink TRAE_CHAT_ROWS_QUERY TRAE_CHAT_KEYS",
             encoding="utf-8",
         )
-        self.facade.write_text(
-            "pub(crate) use ctx_history_provider_trae; "
-            "ctx_history_provider_trae::TraeReplacementTree<CaptureProviderRuntime>",
+        self.capture_facade.write_text(
+            "pub(crate) use ctx_history_provider_trae::{ "
+            "trae_payload_admission, TraePayloadAdmission, TRAE_CHAT_KEYS, "
+            "TRAE_CHAT_ROWS_QUERY, TRAE_SQLITE_VALUE_OVERHEAD_BYTES };",
+            encoding="utf-8",
+        )
+        self.composition_manifest.write_text(
+            '[package]\nname = "ctx-history-capture-composition"\n'
+            "[dependencies]\n"
+            'ctx-history-provider-trae = { path = "../ctx-history-provider-trae" }\n',
+            encoding="utf-8",
+        )
+        self.composition_build.write_text(
+            'COMPOSITION_DEPS = [\n    "//crates/ctx-history-provider-trae:lib",\n]\n',
+            encoding="utf-8",
+        )
+        self.composition_facade.write_text(
+            "pub(crate) type TraeReplacementTree = "
+            "ctx_history_provider_trae::TraeReplacementTree<"
+            "crate::source_backed::family::CaptureProviderRuntime>;",
             encoding="utf-8",
         )
         self.registration.write_text(
@@ -99,7 +120,10 @@ class TraeBoundaryMutationTests(unittest.TestCase):
             self.manifest,
             self.build,
             self.source,
-            self.facade,
+            self.capture_facade,
+            self.composition_manifest,
+            self.composition_build,
+            self.composition_facade,
             self.registration,
             self.discovery,
         )
@@ -133,11 +157,47 @@ class TraeBoundaryMutationTests(unittest.TestCase):
         with self.assertRaisesRegex(BoundaryError, "forbidden authority"):
             self.validate()
 
-    def test_capture_binding_is_required(self) -> None:
-        self.facade.write_text(
-            "pub(crate) use ctx_history_provider_trae;", encoding="utf-8"
+    def test_capture_probe_imports_are_required(self) -> None:
+        self.capture_facade.write_text(
+            self.capture_facade.read_text(encoding="utf-8").replace(
+                "TRAE_CHAT_ROWS_QUERY", ""
+            ),
+            encoding="utf-8",
         )
         with self.assertRaisesRegex(BoundaryError, "capture Trae facade"):
+            self.validate()
+
+    def test_capture_replacement_tree_alias_is_rejected(self) -> None:
+        self.capture_facade.write_text(
+            self.capture_facade.read_text(encoding="utf-8")
+            + " ctx_history_provider_trae::TraeReplacementTree<"
+            "CaptureProviderRuntime>;",
+            encoding="utf-8",
+        )
+        with self.assertRaisesRegex(BoundaryError, "forbidden authority"):
+            self.validate()
+
+    def test_composition_cargo_dependency_is_required(self) -> None:
+        self.composition_manifest.write_text(
+            self.composition_manifest.read_text(encoding="utf-8").replace(
+                'ctx-history-provider-trae = { path = "../ctx-history-provider-trae" }\n',
+                "",
+            ),
+            encoding="utf-8",
+        )
+        with self.assertRaisesRegex(BoundaryError, "Cargo dependency"):
+            self.validate()
+
+    def test_composition_production_dependency_is_required(self) -> None:
+        self.composition_build.write_text(
+            "COMPOSITION_DEPS = []\n", encoding="utf-8"
+        )
+        with self.assertRaisesRegex(BoundaryError, "production dependencies"):
+            self.validate()
+
+    def test_composition_replacement_tree_alias_is_required(self) -> None:
+        self.composition_facade.write_text("", encoding="utf-8")
+        with self.assertRaisesRegex(BoundaryError, "composition Trae facade"):
             self.validate()
 
     def test_discovered_winner_route_authority_is_required(self) -> None:
@@ -156,7 +216,7 @@ class TraeBoundaryMutationTests(unittest.TestCase):
             self.validate()
 
     def test_duplicate_capture_implementation_is_rejected(self) -> None:
-        duplicate = self.facade.with_suffix("") / "event.rs"
+        duplicate = self.capture_facade.with_suffix("") / "event.rs"
         duplicate.parent.mkdir()
         duplicate.write_text("struct Duplicate;", encoding="utf-8")
         with self.assertRaisesRegex(BoundaryError, "duplicate"):
