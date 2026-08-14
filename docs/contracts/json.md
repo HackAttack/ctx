@@ -49,11 +49,12 @@ also includes its request-bound terminal `receipt`; callers should use that
 receipt rather than a later periodic daemon job when reporting the setup run.
 
 If the platform's native current-user service manager is not operational,
-setup still starts the same daemon coordinator with a finite idle exit and
-waits for the initial Core refresh. `daemon_autostart.status` is then
-`"degraded"`, `persistent` is `false`, and `limitation.code` is
-`"continuous_refresh_unavailable"`; the nested supervisor report uses status
-`"manager_unavailable"` for a managed install. Existing native registration
+setup starts the same coordinator as a persistent detached process without
+forcing an initial Core-refresh wait. `daemon_autostart.status` is then
+`"degraded"`, `persistent` is `true`, and `reason` is
+`"native_supervisor_unavailable"`; the nested supervisor report uses status
+`"manager_unavailable"` and reports that native automatic restart after
+failure, login, or reboot is unavailable. Existing native registration
 artifacts are preserved when the unavailable manager cannot verify or remove
 them. Ownership, identity, integrity, fencing, and security failures remain
 errors rather than degraded limitations.
@@ -61,8 +62,8 @@ errors rather than degraded limitations.
 An unmanaged install or custom data root instead uses the persistent
 CLI-self-healing fallback process. Its autostart status is `"degraded"` because
 automatic restart registration is unavailable, but `persistent` is `true` and
-it does not report the bounded `continuous_refresh_unavailable` limitation.
-The nested supervisor report uses status `"fallback"`.
+it does not report a process-lifetime limitation. The nested supervisor report
+uses status `"fallback"`.
 
 Setup does not perform a foreground provider import. `--wait` waits for the
 daemon-owned Core refresh; without it, setup requests a background Core
@@ -165,8 +166,10 @@ vectors may be stale after import or daemon startup freshness checks.
 nullable may be omitted when unavailable:
 
 - `enabled`;
-- `status`, one of `unknown`, `disabled`, `running`, `completed`, `failed`, or
-  `stale_lock`;
+- `status`, one of `unknown`, `disabled`, `running`, `stopped`, `completed`,
+  `failed`, or `stale_lock`; `completed` remains readable for legacy finite-run
+  receipts, while current persistent daemons use `stopped` after graceful
+  shutdown;
 - `running`;
 - `pid`, nullable/omitted;
 - `started_at_ms`, `heartbeat_at_ms`, and `finished_at_ms`, nullable/omitted;
@@ -225,7 +228,11 @@ Source-level failures remain terminal and are reported separately.
 
 `ctx daemon status --format json` returns `schema_version`, `daemon`, `pro`, and
 `local_only`. `ctx daemon enable --format json` and `ctx daemon disable --format json` return
-`schema_version`, `daemon_enabled`, `config_path`, and `local_only`.
+`schema_version`, `daemon_enabled`, `running`, `pid`, `persistent`, `supervisor`,
+`config_path`, and `local_only`. Here `persistent` means the running process has
+no planned idle exit; automatic restart after process failure is reported
+separately by `supervisor.restart_supported` and the supervisor verification
+fields.
 `ctx daemon run --format json` returns the daemon object directly. The legacy hidden
 `__ctx-daemon` entry point follows the same run output for compatibility.
 

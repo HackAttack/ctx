@@ -870,8 +870,6 @@ fn daemon_help_exposes_readable_status_and_run_controls() {
             vec!["daemon", "run", "--help"],
             vec![
                 "Usage: ctx daemon run",
-                "--idle-exit-seconds <IDLE_EXIT_SECONDS>",
-                "Exit after this many seconds without maintenance work",
                 "--loop-interval-seconds <LOOP_INTERVAL_SECONDS>",
                 "Wait this many seconds between maintenance passes",
                 "--max-chunks <MAX_CHUNKS>",
@@ -916,18 +914,43 @@ fn daemon_help_exposes_readable_status_and_run_controls() {
             "{args:?} help must not expose a daemon runtime cap in\n{help}"
         );
         assert!(!help.contains("--once"), "{args:?} help:\n{help}");
+        assert!(
+            !help.contains("--idle-exit-seconds"),
+            "{args:?} help:\n{help}"
+        );
     }
 
-    let stderr = failure_stderr(ctx(&temp).args(["daemon", "run", "--once"]));
+    let stderr = ctx(&temp)
+        .args(["daemon", "run", "--once"])
+        .assert()
+        .code(2)
+        .get_output()
+        .stderr
+        .clone();
+    let stderr = String::from_utf8(stderr).unwrap();
     assert!(
         stderr.contains("The --once option has been retired"),
         "{stderr}"
     );
+    assert!(stderr.contains("ctx import --help"), "{stderr}");
+    assert!(!stderr.contains("--idle-exit-seconds"), "{stderr}");
+    assert!(!stderr.contains("--force"), "{stderr}");
+
+    let stderr = ctx(&temp)
+        .args(["daemon", "run", "--idle-exit-seconds", "60"])
+        .assert()
+        .code(2)
+        .get_output()
+        .stderr
+        .clone();
+    let stderr = String::from_utf8(stderr).unwrap();
     assert!(
-        stderr.contains("ctx daemon run --idle-exit-seconds <SECONDS>"),
+        stderr.contains("The --idle-exit-seconds option has been removed"),
         "{stderr}"
     );
-    assert!(!stderr.contains("--force"), "{stderr}");
+    assert!(stderr.contains("persistent foreground worker"), "{stderr}");
+    assert!(stderr.contains("has no idle timeout"), "{stderr}");
+    assert!(stderr.contains("ctx daemon run --help"), "{stderr}");
 }
 
 #[test]

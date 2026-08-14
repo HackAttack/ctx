@@ -170,7 +170,7 @@ fn explicit_freshness_bypasses_background_rest_without_second_publisher() {
 }
 
 #[test]
-fn finite_daemon_defers_provider_work_observed_after_explicit_convergence() {
+fn persistent_daemon_admits_provider_work_after_explicit_convergence() {
     let temp = tempfile::tempdir().unwrap();
     let data_root = temp.path().join("data");
     ctx_history_core::platform_security::establish_private_data_root(&data_root).unwrap();
@@ -192,11 +192,10 @@ fn finite_daemon_defers_provider_work_observed_after_explicit_convergence() {
         .unwrap();
     let mut runtime = DaemonRuntime::default();
     runtime.config.daemon.mode = DaemonMode::SourceRefreshOnly;
-    let mut finite_args = daemon_args();
-    finite_args.idle_exit_seconds = Some(60);
+    let args = daemon_args();
 
     let explicit = run_daemon_scheduler_cycle_with_activity(
-        &finite_args,
+        &args,
         &data_root,
         &mut runtime,
         None,
@@ -215,8 +214,8 @@ fn finite_daemon_defers_provider_work_observed_after_explicit_convergence() {
     coordinator.reconcile_watch_routes([route], EventWatermark::new(1, 0), 0);
     assert!(coordinator.has_scheduled_route_work());
 
-    let idle = run_daemon_scheduler_cycle_with_activity(
-        &finite_args,
+    let automatic = run_daemon_scheduler_cycle_with_activity(
+        &args,
         &data_root,
         &mut runtime,
         None,
@@ -226,38 +225,19 @@ fn finite_daemon_defers_provider_work_observed_after_explicit_convergence() {
     )
     .unwrap();
 
-    assert!(!idle.did_work);
-    assert!(!idle.failed);
-    assert_eq!(
-        calls.load(Ordering::SeqCst),
-        1,
-        "finite daemon admitted a new automatic refresh after explicit convergence"
-    );
-    assert!(
-        coordinator.has_scheduled_route_work(),
-        "deferred provider work must remain pending for later observation"
-    );
-
-    let persistent = run_daemon_scheduler_cycle_with_activity(
-        &daemon_args(),
-        &data_root,
-        &mut runtime,
-        None,
-        false,
-        None,
-        Some(&coordinator),
-    )
-    .unwrap();
-    assert!(!persistent.failed);
+    assert!(!automatic.failed);
     assert_eq!(
         calls.load(Ordering::SeqCst),
         2,
-        "persistent daemon failed to admit provider work across the finite boundary"
+        "persistent daemon did not admit provider work after explicit convergence"
     );
-    assert!(!coordinator.has_scheduled_route_work());
+    assert!(
+        !coordinator.has_scheduled_route_work(),
+        "persistent daemon left admitted provider work pending"
+    );
     coordinator.enqueue_for_test(None);
     let later_explicit = run_daemon_scheduler_cycle_with_activity(
-        &finite_args,
+        &args,
         &data_root,
         &mut runtime,
         None,
@@ -270,52 +250,4 @@ fn finite_daemon_defers_provider_work_observed_after_explicit_convergence() {
     assert!(!later_explicit.failed);
     assert_eq!(calls.load(Ordering::SeqCst), 3);
     assert!(!coordinator.has_pending_request());
-}
-
-#[test]
-fn periodic_publication_does_not_close_finite_admission_epoch() {
-    let temp = tempfile::tempdir().unwrap();
-    let data_root = temp.path().join("data");
-    ctx_history_core::platform_security::establish_private_data_root(&data_root).unwrap();
-    let calls = Arc::new(AtomicUsize::new(0));
-    let executor_calls = Arc::clone(&calls);
-    let coordinator = CoreRefreshEngine::with_executor(Arc::new(
-        move |execution: SourceBackedRefreshExecution<'_>| {
-            executor_calls.fetch_add(1, Ordering::SeqCst);
-            Ok(publish_empty_authoritative_generation(&execution))
-        },
-    ));
-    coordinator.enqueue_periodic(&data_root).unwrap();
-    let mut runtime = DaemonRuntime::default();
-    runtime.config.daemon.mode = DaemonMode::SourceRefreshOnly;
-    let mut finite_args = daemon_args();
-    finite_args.idle_exit_seconds = Some(60);
-
-    let periodic = run_daemon_scheduler_cycle_with_activity(
-        &finite_args,
-        &data_root,
-        &mut runtime,
-        None,
-        false,
-        None,
-        Some(&coordinator),
-    )
-    .unwrap();
-    assert!(!periodic.failed);
-    runtime.background_refresh_cadence = DaemonBackgroundRefreshCadence::default();
-
-    let route = SourceRouteIdentity::from_sha256("52".repeat(32)).unwrap();
-    coordinator.reconcile_watch_routes([route], EventWatermark::new(1, 0), 0);
-    let dirty = run_daemon_scheduler_cycle_with_activity(
-        &finite_args,
-        &data_root,
-        &mut runtime,
-        None,
-        false,
-        None,
-        Some(&coordinator),
-    )
-    .unwrap();
-    assert!(!dirty.failed);
-    assert_eq!(calls.load(Ordering::SeqCst), 2);
 }

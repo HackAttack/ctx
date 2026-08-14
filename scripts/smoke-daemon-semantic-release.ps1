@@ -344,7 +344,7 @@ $environmentVariableNames = @(
     "CTX_DATA_ROOT",
     "CTX_DAEMON_ENABLED",
     "CTX_DAEMON_AUTOSTART_OFF", "CTX_DAEMON_AUTOSTART_EXE", "CTX_DAEMON_BACKGROUND_CHILD",
-    "CTX_DAEMON_AUTOSTART_IDLE_EXIT_SECONDS", "CTX_DAEMON_AUTOSTART_LOOP_INTERVAL_SECONDS",
+    "CTX_DAEMON_AUTOSTART_LOOP_INTERVAL_SECONDS",
     "CTX_SEARCH_SEMANTIC", "CTX_SEMANTIC_WORKER_OFF",
     "CTX_INTERNAL_SEMANTIC_BACKEND",
     "CTX_SEMANTIC_WORKER_MAX_CHUNKS", "CTX_SEMANTIC_WORKER_MAX_SECONDS",
@@ -408,6 +408,18 @@ function Invoke-CtxChecked {
         throw "ctx semantic smoke: $FailureLabel failed with status $exitCode`n$($outputLines -join [Environment]::NewLine)"
     }
     return $outputLines
+}
+
+function Stop-OwnedDaemon {
+    param([System.Diagnostics.Process]$Process)
+
+    if ($null -eq $Process -or $Process.HasExited) {
+        return
+    }
+    Stop-Process -InputObject $Process -Force -ErrorAction SilentlyContinue
+    if (-not $Process.WaitForExit(5000) -or -not $Process.HasExited) {
+        throw "ctx semantic smoke: daemon process $($Process.Id) survived bounded teardown"
+    }
 }
 
 function Read-OwnedDaemonStatus {
@@ -723,7 +735,6 @@ try {
     $daemonArgs = @(
         "--data-root", $DataRoot,
         "daemon", "run",
-        "--idle-exit-seconds", [string]$TimeoutSeconds,
         "--loop-interval-seconds", "2",
         "--format=json"
     )
@@ -893,14 +904,25 @@ Daemon stderr:
 $daemonError
 "@
 } finally {
-    if ($null -ne $daemon -and -not $daemon.HasExited) {
-        Stop-Process -InputObject $daemon -Force -ErrorAction SilentlyContinue
-        $daemon.WaitForExit()
+    $teardownError = $null
+    try {
+        Stop-OwnedDaemon -Process $daemon
+    } catch {
+        $teardownError = $_.Exception
     }
-    if (-not $KeepRoot -and $ownsRunRoot -and -not [string]::IsNullOrWhiteSpace($runRoot)) {
+    if (
+        $null -eq $teardownError -and
+        -not $KeepRoot -and
+        $ownsRunRoot -and
+        -not [string]::IsNullOrWhiteSpace($runRoot)
+    ) {
         Remove-Item -LiteralPath $runRoot -Recurse -Force -ErrorAction SilentlyContinue
     }
     foreach ($name in $environmentVariableNames) {
         Set-ProcessEnvironmentVariable -Name $name -Value $savedEnvironment[$name]
+    }
+    if ($null -ne $teardownError) {
+        Write-Error "ctx semantic smoke retained isolated root for survivor diagnosis: $runRoot"
+        throw $teardownError
     }
 }

@@ -29,7 +29,6 @@ fn bound_test_ctx_binary_preserves_ordinary_command_policy() {
         "CTX_ANALYTICS_ENABLED",
         "CTX_LOCAL_USAGE_ENABLED",
         "CTX_DAEMON_AUTOSTART_OFF",
-        "CTX_DAEMON_AUTOSTART_IDLE_EXIT_SECONDS",
     ] {
         assert_eq!(
             command_env_value(&ordinary, name),
@@ -117,15 +116,7 @@ fn start_source_refresh_daemon(temp: &TempDir) -> SourceRefreshDaemon {
         }
     }
     command
-        .args([
-            "daemon",
-            "run",
-            "--force",
-            "--idle-exit-seconds",
-            "600",
-            "--loop-interval-seconds",
-            "600",
-        ])
+        .args(["daemon", "run", "--force", "--loop-interval-seconds", "600"])
         .env("CTX_DAEMON_MODE", "source-refresh-only")
         .stdout(Stdio::null())
         .stderr(Stdio::piped());

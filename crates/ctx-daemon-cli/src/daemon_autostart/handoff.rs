@@ -183,6 +183,7 @@ pub struct DaemonUpgradeHandoff {
     fence: ctx_daemon_runtime::DurableHandoffFence,
     installation_executable: PathBuf,
     persisted_restart_label: Option<String>,
+    persisted_loop_interval_seconds: Option<u64>,
 }
 
 struct UpgradeHandoffRestartAuthority {
@@ -204,24 +205,15 @@ impl DaemonUpgradeHandoff {
         pause_after_installation_quiescence_for_test()
     }
 
-    /// Capture the effective auto-daemon restart request in data that can be
+    /// Capture persistent auto-daemon restart intent in data that can be
     /// embedded in a durable platform replacement helper.
-    pub fn replacement_restart(&self) -> Option<(&'static str, u64, u64)> {
+    pub fn replacement_restart(&self) -> Option<(&'static str, Option<u64>)> {
         let trigger = self
             .persisted_restart_label
             .as_deref()
             .and_then(|label| parse_daemon_trigger(Some(label)))
             .or_else(|| read_daemon_restart_request(&self.data_root).map(|(_, trigger)| trigger))?;
-        Some((
-            trigger.as_str(),
-            daemon_autostart_u64_env(
-                "CTX_DAEMON_AUTOSTART_IDLE_EXIT_SECONDS",
-                DAEMON_IDLE_EXIT_SECONDS_CAP,
-            )
-            .unwrap_or(DAEMON_IDLE_EXIT_SECONDS_CAP),
-            daemon_autostart_u64_env("CTX_DAEMON_AUTOSTART_LOOP_INTERVAL_SECONDS", 3_600)
-                .unwrap_or(15 * 60),
-        ))
+        Some((trigger.as_str(), self.persisted_loop_interval_seconds))
     }
 
     /// Preserve daemon restart intent while schema-2 recovery re-executes the
@@ -254,39 +246,31 @@ impl DaemonUpgradeHandoff {
         if daemon_restart_allowed(&self.data_root)? {
             if let Some(trigger) = restart_trigger {
                 let data_root = self.data_root.clone();
+                let loop_interval_seconds = self.persisted_loop_interval_seconds;
                 let mut upgrade_fence = CurrentHandoffSupervisorFence { handoff: &mut self };
                 let supervisor_resume =
                     super::super::daemon_supervisor::resume_daemon_supervisor_after_upgrade(
                         &data_root,
                         executable,
+                        loop_interval_seconds,
                         &mut upgrade_fence,
                     )?;
                 match supervisor_resume {
                     super::super::daemon_supervisor::DaemonSupervisorUpgradeResume::Native => {
                         wait_for_daemon_ready_ack(&self.data_root)?;
                     }
-                    super::super::daemon_supervisor::DaemonSupervisorUpgradeResume::Fallback => {
-                        let launch = configured_daemon_autostart_command(
+                    super::super::daemon_supervisor::DaemonSupervisorUpgradeResume::Fallback
+                    | super::super::daemon_supervisor::DaemonSupervisorUpgradeResume::ManagerUnavailable => {
+                        let launch = daemon_autostart_command(
                             executable,
                             &self.data_root,
                             trigger,
+                            self.persisted_loop_interval_seconds,
                             Some(self.fence.handoff_id()),
                         )?;
                         let mut child = restart_authority
                             .spawn(launch)
-                            .context("restart ctx daemon after upgrade")?;
-                        wait_for_replacement_daemon(&self.data_root, &mut child)?;
-                    }
-                    super::super::daemon_supervisor::DaemonSupervisorUpgradeResume::ManagerUnavailable => {
-                        let launch = configured_unsupervised_daemon_autostart_command(
-                            executable,
-                            &self.data_root,
-                            trigger,
-                            Some(self.fence.handoff_id()),
-                        )?;
-                        let mut child = restart_authority
-                            .spawn(launch)
-                            .context("restart bounded ctx daemon while native manager is unavailable")?;
+                            .context("restart persistent ctx daemon after upgrade")?;
                         wait_for_replacement_daemon(&self.data_root, &mut child)?;
                     }
                 }
@@ -438,11 +422,12 @@ fn begin_daemon_upgrade_handoff_with(
         cooperative_stop.as_mut(),
     )?;
     drop(lifecycle_transition);
-    let handoff = DaemonUpgradeHandoff {
+    let mut handoff = DaemonUpgradeHandoff {
         data_root: data_root.to_path_buf(),
         fence: ctx_daemon_runtime::DurableHandoffFence::armed(handoff_path.clone(), handoff_id),
         installation_executable: expected_process.executable.clone(),
         persisted_restart_label,
+        persisted_loop_interval_seconds: None,
     };
     if !allow_cooperative_grace && daemon_lock_is_active(&data_root) {
         terminate_identity_verified_legacy_daemon(&data_root, &expected_process.executable)
@@ -478,6 +463,13 @@ fn begin_daemon_upgrade_handoff_with(
     wait_for_daemon_lifecycle_release(&data_root)?;
     write_daemon_upgrade_handoff_at(&handoff_path, handoff.fence.handoff_id(), "ready", None)?;
     handoff.wait_for_installation_quiescence()?;
+    handoff.persisted_loop_interval_seconds = read_installation_daemon_restarts(
+        &handoff.installation_executable,
+        handoff.fence.handoff_id(),
+    )?
+    .into_iter()
+    .find(|restart| restart.data_root == handoff.data_root)
+    .and_then(|restart| restart.loop_interval_seconds);
     Ok(handoff)
 }
 
@@ -684,6 +676,7 @@ pub fn begin_current_daemon_upgrade_handoff(
     data_root: &Path,
     upgrade_attempt_id: &str,
     restart_trigger: DaemonTriggerCommandArg,
+    loop_interval_seconds: Option<u64>,
 ) -> Result<DaemonUpgradeHandoff> {
     if !ctx_upgrade_engine::is_valid_upgrade_attempt_id(upgrade_attempt_id) {
         return Err(anyhow!(
@@ -694,6 +687,7 @@ pub fn begin_current_daemon_upgrade_handoff(
         data_root: data_root.to_path_buf(),
         handoff_id: upgrade_attempt_id.to_owned(),
         persisted_restart_label: restart_trigger.as_str().to_owned(),
+        loop_interval_seconds,
         installation_executable: env::current_exe().context("resolve upgrading ctx executable")?,
         current_handoff_token: env::var(DAEMON_UPGRADE_HANDOFF_TOKEN_ENV).ok(),
         handoff_path: daemon_upgrade_handoff_path(data_root),
@@ -707,6 +701,7 @@ struct CurrentDaemonUpgradeHandoffInput {
     data_root: PathBuf,
     handoff_id: String,
     persisted_restart_label: String,
+    loop_interval_seconds: Option<u64>,
     installation_executable: PathBuf,
     current_handoff_token: Option<String>,
     handoff_path: PathBuf,
@@ -720,6 +715,7 @@ fn begin_current_daemon_upgrade_handoff_with(
         data_root,
         handoff_id,
         persisted_restart_label,
+        loop_interval_seconds,
         installation_executable,
         current_handoff_token,
         handoff_path,
@@ -755,6 +751,7 @@ fn begin_current_daemon_upgrade_handoff_with(
                 fence: ctx_daemon_runtime::DurableHandoffFence::armed(handoff_path, handoff_id),
                 installation_executable,
                 persisted_restart_label: Some(persisted_restart_label),
+                persisted_loop_interval_seconds: loop_interval_seconds,
             });
         }
         DaemonUpgradeHandoffState::Absent | DaemonUpgradeHandoffState::Terminal => {}
@@ -766,6 +763,7 @@ fn begin_current_daemon_upgrade_handoff_with(
         fence: ctx_daemon_runtime::DurableHandoffFence::armed(handoff_path, handoff_id),
         installation_executable,
         persisted_restart_label: Some(persisted_restart_label),
+        persisted_loop_interval_seconds: loop_interval_seconds,
     })
 }
 
@@ -815,8 +813,8 @@ pub fn mark_replacement_helper_handoff(
 
 /// Complete a durable replacement handoff from the Windows helper.
 ///
-/// The helper passes the origin-root identity and daemon parameters captured
-/// before the old daemon stopped. Success means either no daemon had been
+/// The helper passes the origin-root identity and persistent restart intent
+/// captured before the old daemon stopped. Success means either no daemon had been
 /// running, or the replacement process owns the existing daemon lifecycle
 /// lock; a successful `spawn` alone is never treated as readiness.
 #[cfg_attr(not(windows), allow(dead_code))]
@@ -824,7 +822,7 @@ pub fn complete_replacement_daemon_handoff(
     data_root: &Path,
     executable: &Path,
     handoff_id: &str,
-    restart: Option<(&str, u64, u64)>,
+    restart: Option<(&str, Option<u64>)>,
 ) -> Result<()> {
     if let Some(current) = read_daemon_upgrade_handoff(data_root) {
         if current.get("handoff_id").and_then(Value::as_str) != Some(handoff_id) {
@@ -834,16 +832,18 @@ pub fn complete_replacement_daemon_handoff(
         }
     }
     let captured_restart = restart
-        .map(|(trigger, idle_exit, loop_interval)| {
+        .map(|(trigger, loop_interval_seconds)| {
             parse_daemon_trigger(Some(trigger))
-                .map(|trigger| (trigger, idle_exit, loop_interval))
+                .map(|trigger| (trigger, loop_interval_seconds))
                 .ok_or_else(|| anyhow!("replacement daemon handoff has an invalid trigger"))
         })
         .transpose()?;
+    let captured_loop_interval_seconds =
+        captured_restart.and_then(|(_, loop_interval_seconds)| loop_interval_seconds);
     let selected_restart = ctx_daemon_runtime::close_daemon_handoff_restart_intake(
         data_root,
         handoff_id,
-        captured_restart.map(|(trigger, _, _)| trigger.as_str()),
+        captured_restart.map(|(trigger, _)| trigger.as_str()),
     )?;
     if let Some(selected_restart) = selected_restart {
         let trigger = parse_daemon_trigger(Some(&selected_restart))
@@ -866,54 +866,24 @@ pub fn complete_replacement_daemon_handoff(
                 super::super::daemon_supervisor::resume_daemon_supervisor_after_upgrade(
                     data_root,
                     executable,
+                    captured_loop_interval_seconds,
                     &mut upgrade_fence,
                 )?;
             match supervisor_resume {
                 super::super::daemon_supervisor::DaemonSupervisorUpgradeResume::Native => {
                     wait_for_daemon_ready_ack(data_root)?;
                 }
-                super::super::daemon_supervisor::DaemonSupervisorUpgradeResume::Fallback => {
-                    let launch = if let Some((_trigger, idle_exit, loop_interval)) = captured_restart {
-                        daemon_autostart_command(
-                            executable,
-                            data_root,
-                            trigger,
-                            (idle_exit != DAEMON_IDLE_EXIT_SECONDS_CAP).then_some(idle_exit),
-                            Some(loop_interval),
-                            Some(handoff_id),
-                        )
-                    } else {
-                        configured_daemon_autostart_command(
-                            executable,
-                            data_root,
-                            trigger,
-                            Some(handoff_id),
-                        )
-                    }?;
+                super::super::daemon_supervisor::DaemonSupervisorUpgradeResume::Fallback
+                | super::super::daemon_supervisor::DaemonSupervisorUpgradeResume::ManagerUnavailable => {
+                    let launch = daemon_autostart_command(
+                        executable,
+                        data_root,
+                        trigger,
+                        captured_loop_interval_seconds,
+                        Some(handoff_id),
+                    )?;
                     let mut child = spawn_daemon_child(launch)
-                        .context("restart ctx daemon after replacement")?;
-                    wait_for_replacement_daemon(data_root, &mut child)?;
-                }
-                super::super::daemon_supervisor::DaemonSupervisorUpgradeResume::ManagerUnavailable => {
-                    let launch = if let Some((_trigger, idle_exit, loop_interval)) = captured_restart {
-                        daemon_autostart_command(
-                            executable,
-                            data_root,
-                            trigger,
-                            Some(idle_exit.min(DAEMON_UNSUPERVISED_IDLE_EXIT_SECONDS)),
-                            Some(loop_interval),
-                            Some(handoff_id),
-                        )
-                    } else {
-                        configured_unsupervised_daemon_autostart_command(
-                            executable,
-                            data_root,
-                            trigger,
-                            Some(handoff_id),
-                        )
-                    }?;
-                    let mut child = spawn_daemon_child(launch)
-                        .context("restart bounded ctx daemon while native manager is unavailable")?;
+                        .context("restart persistent ctx daemon after replacement")?;
                     wait_for_replacement_daemon(data_root, &mut child)?;
                 }
             }

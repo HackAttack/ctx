@@ -21,7 +21,7 @@ pub use index::IndexArgs;
 pub use list::{ListArgs, ListEventsArgs, ListTarget};
 pub use locate::{LocateArgs, LocateTarget};
 pub use search::{CliRefreshArg, ContentScopeArg, SearchArgs, SearchBackendArg};
-pub use setup::{render_setup_human, SetupArgs, SetupDaemonHandoff, SetupDaemonState};
+pub use setup::{render_setup_human, SetupArgs, SetupDaemonState};
 pub use show::{ShowArgs, ShowEventArgs, ShowSessionArgs, ShowTarget};
 pub use sources::SourcesArgs;
 pub use stats::StatsArgs;

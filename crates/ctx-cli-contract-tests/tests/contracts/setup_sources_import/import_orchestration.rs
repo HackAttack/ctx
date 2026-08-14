@@ -50,15 +50,7 @@ fn start_full_source_refresh_daemon(temp: &TempDir) -> SourceRefreshDaemon {
         }
     }
     command
-        .args([
-            "daemon",
-            "run",
-            "--force",
-            "--idle-exit-seconds",
-            "600",
-            "--loop-interval-seconds",
-            "600",
-        ])
+        .args(["daemon", "run", "--force", "--loop-interval-seconds", "600"])
         .env("CTX_DAEMON_MODE", "full")
         .stdout(Stdio::null())
         .stderr(Stdio::piped());
@@ -412,7 +404,7 @@ fn machine_readable_native_import_bounds_upgrade_handoff_recovery() {
 
 #[test]
 fn human_native_import_starts_a_reported_daemon_process() {
-    let temp = finite_daemon_test_root();
+    let temp = daemon_test_root();
     let binary = copied_ctx_binary(&temp);
     let fixture = provider_history_fixture("codex-sessions");
 
@@ -426,7 +418,6 @@ fn human_native_import_starts_a_reported_daemon_process() {
             "--progress",
             "none",
         ])
-        .env("CTX_DAEMON_AUTOSTART_IDLE_EXIT_SECONDS", "2")
         .env("CTX_DAEMON_AUTOSTART_LOOP_INTERVAL_SECONDS", "60")
         .env("CTX_UPGRADE_AUTO", "off")
         .env_remove("CI")
@@ -439,9 +430,11 @@ fn human_native_import_starts_a_reported_daemon_process() {
     let pid = running["daemon"]["pid"].as_u64().unwrap() as u32;
     assert_daemon_process_running(pid);
 
-    let completed = wait_for_daemon_status(&temp, "completed", false, "import");
-    assert_eq!(completed["daemon"]["pid"], pid);
-    assert!(completed["daemon"]["finished_at_ms"].as_i64().unwrap() > 0);
+    let lock: Value =
+        serde_json::from_slice(&fs::read(data_root(&temp).join("daemon/daemon.lock")).unwrap())
+            .unwrap();
+    assert_eq!(lock["pid"], pid, "{lock:#}");
+    assert_eq!(lock["released"], false, "{lock:#}");
 }
 
 #[test]
@@ -1154,7 +1147,7 @@ fn import_all_skips_empty_gemini_source() {
 
 #[test]
 fn import_all_publishes_valid_routes_and_reports_one_invalid_route() {
-    let temp = finite_daemon_test_root();
+    let temp = daemon_test_root();
     copy_dir_all(
         Path::new(&provider_history_fixture("codex-sessions")),
         &temp.path().join(".codex").join("sessions"),

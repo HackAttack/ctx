@@ -31,8 +31,6 @@ pub(crate) use pro::*;
 const BOUND_CTX_BINARY_TEST_ROOT_MARKER: &str = ".ctx-test-bound-binary";
 const READY_CTX_BINARY_TEST_ROOT_MARKER: &str = ".ctx-test-copy-ready";
 const PERSISTENT_DAEMON_TEST_ROOT_MARKER: &str = ".ctx-test-owned-daemon";
-const FINITE_DAEMON_TEST_ROOT_MARKER: &str = ".ctx-test-daemon-idle-seconds";
-const FINITE_DAEMON_IDLE_EXIT_SECONDS: &str = "600";
 const DAEMON_STOP_TIMEOUT: Duration = Duration::from_secs(5);
 const DAEMON_STOP_POLL_INTERVAL: Duration = Duration::from_millis(20);
 
@@ -82,12 +80,7 @@ pub(crate) fn daemon_test_root() -> McpDaemonTestRoot {
     bind_test_ctx_binary(&temp);
     fs::write(
         temp.path().join(PERSISTENT_DAEMON_TEST_ROOT_MARKER),
-        b"test-owned finite MCP daemon root\n",
-    )
-    .unwrap();
-    fs::write(
-        temp.path().join(FINITE_DAEMON_TEST_ROOT_MARKER),
-        format!("{FINITE_DAEMON_IDLE_EXIT_SECONDS}\n"),
+        b"test-owned persistent MCP daemon root\n",
     )
     .unwrap();
     McpDaemonTestRoot { temp }
@@ -251,12 +244,8 @@ fn apply_hermetic_env(command: &mut Command, temp: &TempDir) {
     }
     if persistent_daemon_test {
         command.env_remove("CTX_DAEMON_AUTOSTART_OFF");
-        let seconds = fs::read_to_string(temp.path().join(FINITE_DAEMON_TEST_ROOT_MARKER))
-            .expect("finite MCP daemon root has an idle timeout");
-        command.env("CTX_DAEMON_AUTOSTART_IDLE_EXIT_SECONDS", seconds.trim());
     } else {
         command.env("CTX_DAEMON_AUTOSTART_OFF", "1");
-        command.env("CTX_DAEMON_AUTOSTART_IDLE_EXIT_SECONDS", "2");
     }
 }
 

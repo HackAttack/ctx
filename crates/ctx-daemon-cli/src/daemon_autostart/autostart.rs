@@ -19,16 +19,6 @@ pub(super) fn daemon_autostart_allowed(data_root: &Path, config: &AppConfig<'_>)
     ctx_daemon_application::daemon_autostart_allowed(data_root, &application_config(config))
 }
 
-pub(super) const fn daemon_supervisor_launch_policy(
-    start: ctx_daemon_application::DaemonSupervisorStart,
-) -> (bool, bool) {
-    match start {
-        ctx_daemon_application::DaemonSupervisorStart::Native
-        | ctx_daemon_application::DaemonSupervisorStart::Fallback => (false, false),
-        ctx_daemon_application::DaemonSupervisorStart::ManagerUnavailable => (true, true),
-    }
-}
-
 pub fn daemon_autostart_suppression_reason() -> Option<&'static str> {
     ctx_daemon_application::daemon_autostart_suppression_reason()
 }
@@ -42,20 +32,17 @@ pub fn maybe_autostart_daemon(
         if application.daemon_start_is_fenced() {
             return;
         }
-        let bounded_unsupervised = if daemon_autostart_suppression_reason().is_none() {
+        if daemon_autostart_suppression_reason().is_none() {
             match super::super::daemon_supervisor::ensure_daemon_supervisor(application, data_root)
             {
-                Ok(start) => daemon_supervisor_launch_policy(start).0,
+                Ok(_) => {}
                 Err(_) => return,
             }
-        } else {
-            false
-        };
+        }
         let _ = application.request_daemon_start(
             data_root,
             &application_config(config),
             application_trigger(trigger),
-            bounded_unsupervised,
         );
     });
 }
@@ -79,25 +66,16 @@ pub fn autostart_daemon_for_setup_and_wait(
                 "ctx daemon start was suppressed (hosted_uninstall_active); retry after it clears or run `ctx setup --no-daemon`"
             ));
         }
-        let (bounded_unsupervised, requires_initial_refresh_wait) =
-            if daemon_autostart_suppression_reason().is_none() {
-                daemon_supervisor_launch_policy(
-                    super::super::daemon_supervisor::ensure_daemon_supervisor(
-                        application,
-                        data_root,
-                    )
-                    .context("establish ctx daemon supervision")?,
-                )
-            } else {
-                (false, false)
-            };
+        if daemon_autostart_suppression_reason().is_none() {
+            super::super::daemon_supervisor::ensure_daemon_supervisor(application, data_root)
+                .context("establish ctx daemon supervision")?;
+        }
         let handoff = application
             .start_daemon_and_wait(
-            data_root,
-            &application_config(config),
-            application_trigger(trigger),
-            bounded_unsupervised,
-        )
+                data_root,
+                &application_config(config),
+                application_trigger(trigger),
+            )
             .map_err(|error| match error {
                 ctx_daemon_application::DaemonStartError::Suppressed(reason) => anyhow!(
                     "ctx daemon start was suppressed ({reason}); retry after it clears or run `ctx setup --no-daemon`"
@@ -115,8 +93,6 @@ pub fn autostart_daemon_for_setup_and_wait(
                 pid: handoff.pid,
                 heartbeat_at_ms: handoff.heartbeat_at_ms,
             },
-            bounded_unsupervised,
-            requires_initial_refresh_wait,
         })
     })
 }
@@ -132,7 +108,6 @@ pub(super) fn daemon_autostart_command(
     exe: &Path,
     root: &Path,
     trigger: DaemonTriggerCommandArg,
-    idle: Option<u64>,
     interval: Option<u64>,
     token: Option<&str>,
 ) -> io::Result<NormalizedLaunch> {
@@ -140,11 +115,11 @@ pub(super) fn daemon_autostart_command(
         exe,
         root,
         application_trigger(trigger),
-        idle,
         interval,
         token,
     )
 }
+#[cfg(test)]
 pub(super) fn configured_daemon_autostart_command(
     exe: &Path,
     root: &Path,
@@ -152,19 +127,6 @@ pub(super) fn configured_daemon_autostart_command(
     token: Option<&str>,
 ) -> io::Result<NormalizedLaunch> {
     ctx_daemon_application::configured_daemon_autostart_command(
-        exe,
-        root,
-        application_trigger(trigger),
-        token,
-    )
-}
-pub(super) fn configured_unsupervised_daemon_autostart_command(
-    exe: &Path,
-    root: &Path,
-    trigger: DaemonTriggerCommandArg,
-    token: Option<&str>,
-) -> io::Result<NormalizedLaunch> {
-    ctx_daemon_application::configured_unsupervised_daemon_autostart_command(
         exe,
         root,
         application_trigger(trigger),

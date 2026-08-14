@@ -81,6 +81,10 @@ const SUPERVISOR_ENV_ALLOWLIST: &[&str] = &[
     "XDG_RUNTIME_DIR",
 ];
 
+pub(super) fn persisted_supervisor_loop_interval_seconds(data_root: &Path) -> Option<u64> {
+    state::persisted_supervisor_loop_interval_seconds(data_root)
+}
+
 fn supervisor_manager_environment(
     host: &dyn DaemonApplicationHost,
 ) -> Result<SupervisorManagerEnvironment> {
@@ -159,11 +163,35 @@ impl ManagedSupervisorInput {
         Ok(Self {
             data_root: data_root.to_path_buf(),
             executable: executable.to_path_buf(),
-            daemon_environment: supervisor_environment_snapshot(host)
-                .context("capture native supervisor daemon environment")?,
+            daemon_environment: configured_supervisor_environment(host, data_root, None)?,
             manager_environment: supervisor_manager_environment(host)?,
         })
     }
+}
+
+fn configured_supervisor_environment(
+    host: &dyn DaemonApplicationHost,
+    data_root: &Path,
+    requested_loop_interval_seconds: Option<u64>,
+) -> Result<SupervisorEnvironmentSnapshot> {
+    let snapshot = supervisor_environment_snapshot(host)
+        .context("capture native supervisor daemon environment")?;
+    configured_supervisor_environment_from_snapshot(
+        snapshot,
+        data_root,
+        requested_loop_interval_seconds,
+    )
+}
+
+fn configured_supervisor_environment_from_snapshot(
+    snapshot: SupervisorEnvironmentSnapshot,
+    data_root: &Path,
+    requested_loop_interval_seconds: Option<u64>,
+) -> Result<SupervisorEnvironmentSnapshot> {
+    let loop_interval_seconds = requested_loop_interval_seconds
+        .or_else(|| persisted_supervisor_loop_interval_seconds(data_root))
+        .or(snapshot.loop_interval_seconds());
+    snapshot.with_loop_interval_seconds(loop_interval_seconds)
 }
 
 struct PlatformNativeSupervisor<'a> {
@@ -293,6 +321,16 @@ impl NativeSupervisorBackend<SupervisorEnvironmentSnapshot> for PlatformNativeSu
         )
     }
 
+    fn prepare_start(&self, data_root: &Path, executable: &Path) -> Result<Option<u32>> {
+        // Close the manager-startup window in which the daemon lock exists
+        // before manager-specific ownership provenance becomes visible.
+        if let Ok(owner_pid) = self.verify_live_owner(data_root, executable) {
+            return Ok(Some(owner_pid));
+        }
+        migrate_existing_daemon_to_supervisor(self.host, data_root)?;
+        Ok(None)
+    }
+
     fn start(&self, data_root: &Path) -> Result<()> {
         start_native_supervisor(data_root, self.manager_environment, self.identity()?)
     }
@@ -306,7 +344,8 @@ pub fn ensure_daemon_supervisor(
     let Some(input) = managed_supervisor_input(host, data_root)? else {
         let _installation_lock = SupervisorInstallationLock::acquire(data_root)?;
         ensure_hosted_uninstall_supervisor_admission(host)?;
-        write_supervisor_receipt(
+        let daemon_environment = configured_supervisor_environment(host, data_root, None)?;
+        write_supervisor_receipt_with_environment_snapshot(
             data_root,
             &SupervisorReceipt {
                 kind: "cli_self_heal".to_owned(),
@@ -324,6 +363,7 @@ pub fn ensure_daemon_supervisor(
                 ),
                 last_error: None,
             },
+            Some(daemon_environment.contract_report()),
         )?;
         return Ok(DaemonSupervisorStart::Fallback);
     };
@@ -454,31 +494,37 @@ fn ensure_native_supervisor_with(
                 )));
             }
             let authority_blocker = native_supervisor_product_authority_blocker();
-            write_supervisor_receipt(
-                data_root,
-                &SupervisorReceipt {
-                    kind: if authority_blocker {
-                        native_supervisor_kind()
-                    } else {
-                        "cli_self_heal"
-                    }
-                    .to_owned(),
-                    status: if authority_blocker {
-                        "degraded"
-                    } else {
-                        "install_failed"
-                    },
-                    autostart_supported: false,
-                    restart_supported: false,
-                    registration_verified: false,
-                    live_owner_verified: false,
-                    owner_pid: None,
-                    artifact_path: None,
-                    executable_path: Some(executable.to_path_buf()),
-                    limitation: Some(native_supervisor_limitation().to_owned()),
-                    last_error: Some(format!("{error:#}")),
+            let receipt = SupervisorReceipt {
+                kind: if authority_blocker {
+                    native_supervisor_kind()
+                } else {
+                    "cli_self_heal"
+                }
+                .to_owned(),
+                status: if authority_blocker {
+                    "degraded"
+                } else {
+                    "install_failed"
                 },
-            )?;
+                autostart_supported: false,
+                restart_supported: false,
+                registration_verified: false,
+                live_owner_verified: false,
+                owner_pid: None,
+                artifact_path: None,
+                executable_path: Some(executable.to_path_buf()),
+                limitation: Some(native_supervisor_limitation().to_owned()),
+                last_error: Some(format!("{error:#}")),
+            };
+            if authority_blocker {
+                write_supervisor_receipt_with_environment_snapshot(
+                    data_root,
+                    &receipt,
+                    Some(input.daemon_environment.contract_report()),
+                )?;
+            } else {
+                write_supervisor_receipt(data_root, &receipt)?;
+            }
             if authority_blocker {
                 Ok(DaemonSupervisorStart::Fallback)
             } else {
@@ -493,24 +539,40 @@ fn ensure_native_supervisor_with(
         } => manager_unavailable_fallback_locked(
             &installation_lock,
             data_root,
-            executable,
-            artifact,
-            reason,
-            native_state_preserved,
-            preceding_error,
+            ManagerUnavailableFallback {
+                executable,
+                artifact,
+                reason,
+                native_state_preserved,
+                preceding_error,
+                environment_snapshot: Some(input.daemon_environment.contract_report()),
+            },
         ),
     }
+}
+
+struct ManagerUnavailableFallback<'a> {
+    executable: &'a Path,
+    artifact: Option<PathBuf>,
+    reason: String,
+    native_state_preserved: bool,
+    preceding_error: Option<String>,
+    environment_snapshot: Option<Value>,
 }
 
 fn manager_unavailable_fallback_locked(
     _installation_lock: &SupervisorInstallationLock,
     data_root: &Path,
-    executable: &Path,
-    artifact: Option<PathBuf>,
-    reason: String,
-    native_state_preserved: bool,
-    preceding_error: Option<String>,
+    fallback: ManagerUnavailableFallback<'_>,
 ) -> Result<DaemonSupervisorStart> {
+    let ManagerUnavailableFallback {
+        executable,
+        artifact,
+        reason,
+        native_state_preserved,
+        preceding_error,
+        environment_snapshot,
+    } = fallback;
     let current = stored_supervisor_report(data_root);
     let previously_registered = current.get("kind").and_then(Value::as_str)
         == Some(native_supervisor_kind())
@@ -530,25 +592,30 @@ fn manager_unavailable_fallback_locked(
     } else {
         native_supervisor_limitation().to_owned()
     };
-    write_supervisor_receipt(
-        data_root,
-        &SupervisorReceipt {
-            kind: native_supervisor_kind().to_owned(),
-            status: "manager_unavailable",
-            autostart_supported: false,
-            restart_supported: false,
-            registration_verified: false,
-            live_owner_verified: false,
-            owner_pid: None,
-            artifact_path: artifact,
-            executable_path: Some(executable.to_path_buf()),
-            limitation: Some(limitation),
-            last_error: Some(match preceding_error {
-                Some(preceding_error) => format!("{reason}; {preceding_error}"),
-                None => reason,
-            }),
-        },
-    )?;
+    let receipt = SupervisorReceipt {
+        kind: native_supervisor_kind().to_owned(),
+        status: "manager_unavailable",
+        autostart_supported: false,
+        restart_supported: false,
+        registration_verified: false,
+        live_owner_verified: false,
+        owner_pid: None,
+        artifact_path: artifact,
+        executable_path: Some(executable.to_path_buf()),
+        limitation: Some(limitation),
+        last_error: Some(match preceding_error {
+            Some(preceding_error) => format!("{reason}; {preceding_error}"),
+            None => reason,
+        }),
+    };
+    match environment_snapshot {
+        Some(environment_snapshot) => write_supervisor_receipt_with_environment_snapshot(
+            data_root,
+            &receipt,
+            Some(environment_snapshot),
+        )?,
+        None => write_supervisor_receipt(data_root, &receipt)?,
+    }
     Ok(DaemonSupervisorStart::ManagerUnavailable)
 }
 
@@ -698,10 +765,11 @@ pub fn resume_daemon_supervisor_after_upgrade(
     host: &dyn DaemonApplicationHost,
     data_root: &Path,
     executable: &Path,
+    loop_interval_seconds: Option<u64>,
     upgrade_fence: &mut dyn DaemonSupervisorUpgradeFence,
 ) -> Result<DaemonSupervisorUpgradeResume> {
-    let daemon_environment = supervisor_environment_snapshot(host)
-        .context("capture native supervisor daemon environment")?;
+    let daemon_environment =
+        configured_supervisor_environment(host, data_root, loop_interval_seconds)?;
     let manager_environment = supervisor_manager_environment(host)?;
     let backend = PlatformNativeSupervisor::new(
         host,
@@ -709,11 +777,13 @@ pub fn resume_daemon_supervisor_after_upgrade(
         Some(&daemon_environment),
         &manager_environment,
     )?;
+    let environment_snapshot = daemon_environment.contract_report();
     resume_daemon_supervisor_after_upgrade_with(
         host,
         data_root,
         executable,
         &backend,
+        Some(environment_snapshot),
         upgrade_fence,
     )
 }
@@ -723,6 +793,7 @@ fn resume_daemon_supervisor_after_upgrade_with(
     data_root: &Path,
     executable: &Path,
     backend: &dyn NativeSupervisorBackend<SupervisorEnvironmentSnapshot>,
+    environment_snapshot: Option<Value>,
     upgrade_fence: &mut dyn DaemonSupervisorUpgradeFence,
 ) -> Result<DaemonSupervisorUpgradeResume> {
     // Probe before creating the lock, then re-probe in the runtime while the
@@ -732,18 +803,48 @@ fn resume_daemon_supervisor_after_upgrade_with(
     ensure_hosted_uninstall_supervisor_admission_for_executable(host, executable)?;
     let mut runtime_fence = RuntimeSupervisorUpgradeFence(upgrade_fence);
     match resume_runtime_supervisor_with(data_root, executable, backend, &mut runtime_fence)? {
-        SupervisorResumeOutcome::Fallback => Ok(DaemonSupervisorUpgradeResume::Fallback),
+        SupervisorResumeOutcome::Fallback => {
+            let receipt = SupervisorReceipt {
+                kind: "cli_self_heal".to_owned(),
+                status: "fallback",
+                autostart_supported: false,
+                restart_supported: false,
+                registration_verified: false,
+                live_owner_verified: false,
+                owner_pid: None,
+                artifact_path: None,
+                executable_path: Some(executable.to_path_buf()),
+                limitation: Some(
+                    "native per-user registration is absent; retrieval commands retain persistent daemon self-healing"
+                        .to_owned(),
+                ),
+                last_error: None,
+            };
+            match environment_snapshot {
+                Some(environment_snapshot) => write_supervisor_receipt_with_environment_snapshot(
+                    data_root,
+                    &receipt,
+                    Some(environment_snapshot),
+                )?,
+                None => write_supervisor_receipt(data_root, &receipt)?,
+            }
+            Ok(DaemonSupervisorUpgradeResume::Fallback)
+        }
         SupervisorResumeOutcome::Native {
             artifact,
             owner_pid,
         } => {
-            write_installed_receipt(data_root, executable, artifact, owner_pid, None)?;
+            write_installed_receipt(
+                data_root,
+                executable,
+                artifact,
+                owner_pid,
+                environment_snapshot,
+            )?;
             Ok(DaemonSupervisorUpgradeResume::Native)
         }
         SupervisorResumeOutcome::RegisteredNotRunning { artifact, error } => {
-            write_supervisor_receipt(
-                data_root,
-                &SupervisorReceipt {
+            let receipt = SupervisorReceipt {
                     kind: native_supervisor_kind().to_owned(),
                     status: "registered_not_running",
                     autostart_supported: true,
@@ -758,8 +859,15 @@ fn resume_daemon_supervisor_after_upgrade_with(
                             .to_owned(),
                     ),
                     last_error: Some(format!("{error:#}")),
-                },
-            )?;
+                };
+            match environment_snapshot {
+                Some(environment_snapshot) => write_supervisor_receipt_with_environment_snapshot(
+                    data_root,
+                    &receipt,
+                    Some(environment_snapshot),
+                )?,
+                None => write_supervisor_receipt(data_root, &receipt)?,
+            }
             Err(error).context("return upgraded daemon lifecycle ownership to native supervisor")
         }
         SupervisorResumeOutcome::ManagerUnavailable {
@@ -771,11 +879,14 @@ fn resume_daemon_supervisor_after_upgrade_with(
             manager_unavailable_fallback_locked(
                 &installation_lock,
                 data_root,
-                executable,
-                artifact,
-                reason,
-                native_state_preserved,
-                preceding_error,
+                ManagerUnavailableFallback {
+                    executable,
+                    artifact,
+                    reason,
+                    native_state_preserved,
+                    preceding_error,
+                    environment_snapshot,
+                },
             )?;
             Ok(DaemonSupervisorUpgradeResume::ManagerUnavailable)
         }
@@ -805,6 +916,13 @@ fn migrate_existing_daemon_to_supervisor(
     if !daemon_lock_is_active(data_root) {
         return Ok(());
     }
+    let owner_pid =
+        ctx_daemon_runtime::read_pid_lock_json(&ctx_daemon_runtime::daemon_lock_path(data_root))
+            .as_ref()
+            .and_then(ctx_daemon_runtime::pid_from_lock_json)
+            .ok_or_else(|| {
+                anyhow!("running daemon has no stable owner PID for supervisor handoff")
+            })?;
     let response = host.request_lifecycle_wakeup(
         data_root,
         compact_json(json!({
@@ -819,6 +937,12 @@ fn migrate_existing_daemon_to_supervisor(
         .and_then(|value| value.get("ok"))
         .and_then(Value::as_bool)
         != Some(true)
+        || response
+            .as_ref()
+            .and_then(|value| value.get("pid"))
+            .and_then(Value::as_u64)
+            .and_then(|pid| u32::try_from(pid).ok())
+            != Some(owner_pid)
     {
         return Err(anyhow!(
             "running daemon did not accept native-supervisor handoff"
@@ -832,6 +956,19 @@ fn migrate_existing_daemon_to_supervisor(
             ));
         }
         std::thread::sleep(Duration::from_millis(25));
+    }
+    Ok(())
+}
+
+#[cfg(not(any(target_os = "linux", target_os = "macos", windows)))]
+fn migrate_existing_daemon_to_supervisor(
+    _host: &dyn DaemonApplicationHost,
+    data_root: &Path,
+) -> Result<()> {
+    if daemon_lock_is_active(data_root) {
+        return Err(anyhow!(
+            "native supervisor handoff is unavailable on this platform"
+        ));
     }
     Ok(())
 }

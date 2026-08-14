@@ -35,15 +35,10 @@ pub struct SetupArgs {
     pub progress: ProgressArg,
 }
 
-#[derive(Debug, Clone, Copy)]
-pub struct SetupDaemonHandoff {
-    pub bounded_unsupervised: bool,
-}
-
 pub struct SetupDaemonState<'a> {
     pub requested: bool,
     pub reason: Option<&'a str>,
-    pub handoff: Option<SetupDaemonHandoff>,
+    pub started: bool,
     pub persistent_supervisor_verified: bool,
 }
 
@@ -121,23 +116,6 @@ pub fn render_setup_human(
     document.push_blank();
     document.append(section("History", fields(context, &history_fields)));
 
-    if daemon
-        .handoff
-        .is_some_and(|handoff| handoff.bounded_unsupervised)
-    {
-        document.push_blank();
-        document.append(outcome(
-            context,
-            Outcome {
-                state: OutcomeState::Warning,
-                title: "Continuous refresh is unavailable",
-                detail: Some(
-                    "This setup run uses a bounded ctx daemon; run ctx setup --wait again to refresh later.",
-                ),
-            },
-        ));
-    }
-
     if mode != "ready" && !queued {
         let data_root = data_root.display().to_string();
         document.push_blank();
@@ -151,7 +129,7 @@ pub fn render_setup_human(
         "ctx search \"test failure\""
     } else if queued {
         "ctx index watch"
-    } else if daemon.requested && daemon.handoff.is_none() {
+    } else if daemon.requested && !daemon.started {
         "ctx daemon status"
     } else if matches!(daemon.reason, Some("daemon_disabled" | "explicit_opt_out")) {
         "ctx daemon enable"
@@ -178,20 +156,17 @@ fn component_status(component: &Value) -> &str {
 }
 
 fn daemon_human_status(daemon: &SetupDaemonState<'_>) -> Option<String> {
-    match daemon.handoff {
-        Some(_) if daemon.persistent_supervisor_verified => None,
-        Some(SetupDaemonHandoff {
-            bounded_unsupervised: true,
-        }) => Some("temporary daemon (initial maintenance only)".to_owned()),
-        Some(_) => Some("persistent daemon (automatic restart unavailable)".to_owned()),
-        None if daemon.requested => {
+    match (daemon.started, daemon.persistent_supervisor_verified) {
+        (true, true) => None,
+        (true, false) => Some("persistent daemon (automatic restart unavailable)".to_owned()),
+        (false, _) if daemon.requested => {
             Some("startup was not verified; run ctx daemon status".to_owned())
         }
-        None if daemon.reason == Some("explicit_opt_out") => {
+        (false, _) if daemon.reason == Some("explicit_opt_out") => {
             Some("skipped because --no-daemon was used".to_owned())
         }
-        None if daemon.reason == Some("daemon_disabled") => Some("disabled".to_owned()),
-        None => None,
+        (false, _) if daemon.reason == Some("daemon_disabled") => Some("disabled".to_owned()),
+        (false, _) => None,
     }
 }
 
@@ -264,7 +239,7 @@ mod tests {
             SetupDaemonState {
                 requested: false,
                 reason: None,
-                handoff: None,
+                started: false,
                 persistent_supervisor_verified: true,
             },
         )
@@ -312,7 +287,7 @@ mod tests {
             SetupDaemonState {
                 requested: false,
                 reason: None,
-                handoff: None,
+                started: false,
                 persistent_supervisor_verified: true,
             },
         );
@@ -340,9 +315,7 @@ mod tests {
                 SetupDaemonState {
                     requested: true,
                     reason: None,
-                    handoff: Some(SetupDaemonHandoff {
-                        bounded_unsupervised: false,
-                    }),
+                    started: true,
                     persistent_supervisor_verified: true,
                 },
             );
@@ -381,7 +354,7 @@ mod tests {
                 SetupDaemonState {
                     requested: false,
                     reason: Some("daemon_disabled"),
-                    handoff: None,
+                    started: false,
                     persistent_supervisor_verified: false,
                 },
             );
@@ -396,7 +369,7 @@ mod tests {
     }
 
     #[test]
-    fn setup_manager_unavailable_reports_bounded_success() {
+    fn setup_manager_unavailable_reports_a_persistent_daemon_without_native_restart() {
         for width in [32, 48, 80, 120] {
             let context = context(width, ColorMode::Never);
             let document = render_setup_human(
@@ -408,18 +381,17 @@ mod tests {
                 SetupDaemonState {
                     requested: true,
                     reason: None,
-                    handoff: Some(SetupDaemonHandoff {
-                        bounded_unsupervised: true,
-                    }),
+                    started: true,
                     persistent_supervisor_verified: false,
                 },
             );
             let rendered = document.render_plain();
             let normalized = rendered.split_whitespace().collect::<Vec<_>>().join(" ");
             assert!(rendered.starts_with("✓ History is ready to search\n"));
-            assert!(normalized.contains("Background temporary daemon (initial maintenance only)"));
-            assert!(normalized.contains("! Continuous refresh is unavailable"));
-            assert!(normalized.contains("run ctx setup --wait again to refresh later"));
+            assert!(
+                normalized.contains("Background persistent daemon (automatic restart unavailable)")
+            );
+            assert!(!normalized.contains("Continuous refresh is unavailable"));
             assert_fits(&document, &context);
         }
     }
@@ -437,9 +409,7 @@ mod tests {
                 SetupDaemonState {
                     requested: true,
                     reason: None,
-                    handoff: Some(SetupDaemonHandoff {
-                        bounded_unsupervised: false,
-                    }),
+                    started: true,
                     persistent_supervisor_verified: false,
                 },
             );

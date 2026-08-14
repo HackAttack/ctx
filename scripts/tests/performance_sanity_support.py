@@ -7,6 +7,7 @@ from dataclasses import dataclass
 import json
 import os
 from pathlib import Path
+import signal
 import shutil
 import subprocess
 import sys
@@ -474,8 +475,6 @@ def start_daemon(
             "daemon",
             "run",
             "--force",
-            "--idle-exit-seconds",
-            "60",
             "--loop-interval-seconds",
             "300",
             "--format=json",
@@ -502,6 +501,7 @@ def start_daemon(
             )
             stdout_file.close()
             stderr_file.close()
+            terminate_daemon_process(process)
             raise error
         try:
             status = run_json(["daemon", "status", "--format=json"], env, root)
@@ -518,8 +518,7 @@ def start_daemon(
         if daemon.get("running") is True and endpoint.get("available") is True:
             return process, stdout_file, stderr_file
         time.sleep(0.02)
-    process.terminate()
-    process.wait(timeout=5)
+    terminate_daemon_process(process)
     stdout_file.seek(0)
     stderr_file.seek(0)
     error = TimeoutError(
@@ -533,6 +532,51 @@ def start_daemon(
     raise error
 
 
+def terminate_daemon_process(process: subprocess.Popen[bytes]) -> None:
+    daemon_pid = process.pid
+    if os.name == "posix":
+        try:
+            os.killpg(daemon_pid, signal.SIGTERM)
+        except ProcessLookupError:
+            pass
+        deadline = time.monotonic() + 5
+        while time.monotonic() < deadline:
+            try:
+                os.killpg(daemon_pid, 0)
+            except ProcessLookupError:
+                break
+            time.sleep(0.02)
+        else:
+            try:
+                os.killpg(daemon_pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+        try:
+            process.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            try:
+                os.killpg(daemon_pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+            process.wait(timeout=5)
+        kill_deadline = time.monotonic() + 5
+        while time.monotonic() < kill_deadline:
+            try:
+                os.killpg(daemon_pid, 0)
+            except ProcessLookupError:
+                return
+            time.sleep(0.02)
+        raise RuntimeError(f"daemon process group {daemon_pid} survived teardown")
+
+    if process.poll() is None:
+        process.terminate()
+        try:
+            process.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            process.kill()
+            process.wait(timeout=5)
+
+
 def stop_daemon(
     process: subprocess.Popen[bytes],
     stdout_file: object,
@@ -541,25 +585,10 @@ def stop_daemon(
     env: dict[str, str],
 ) -> None:
     daemon_pid = process.pid
-    if process.poll() is None:
-        process.terminate()
-        try:
-            process.wait(timeout=5)
-        except subprocess.TimeoutExpired:
-            process.kill()
-            process.wait(timeout=5)
+    terminate_daemon_process(process)
     stdout_file.close()
     stderr_file.close()
     status = run_json(["daemon", "status", "--format=json"], env, root)
     daemon = status.get("daemon", {})
     if isinstance(daemon, dict) and daemon.get("running") is True:
         raise RuntimeError(f"daemon {daemon_pid} remained live after teardown")
-    if os.name == "posix":
-        try:
-            os.killpg(daemon_pid, 0)
-        except ProcessLookupError:
-            pass
-        else:
-            raise RuntimeError(
-                f"daemon process group {daemon_pid} survived teardown"
-            )

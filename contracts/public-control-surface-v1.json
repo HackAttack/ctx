@@ -73,7 +73,7 @@
       },
       "deliberate_change_approval": {
         "previous_stable_tag": "v0.25.0",
-        "reason": "Enable bounded local daemon maintenance by default while retaining explicit opt-out controls.",
+        "reason": "Enable persistent local daemon maintenance by default while retaining explicit opt-out controls; when native supervision is unavailable, ctx uses a persistent detached process and reports that automatic restart after failure, login, or reboot is unavailable.",
         "evidence_commits": [
           "751ae2e53d416a8de26dffd7a9627cb68db38782"
         ]

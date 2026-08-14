@@ -114,7 +114,7 @@ pub(super) fn prepare_daemon_status<'a>(
     let running = lock_reports_running && owner_identity_matches;
     let stale_lock = lock_path.exists() && pid_lock_file_is_orphaned(&lock_path);
     let stale_lock_overrides_lifecycle = (stale_lock || owner_identity_mismatch)
-        && !["completed", "failed"].contains(&status.as_str());
+        && !["completed", "stopped", "failed"].contains(&status.as_str());
     let stale_running_status = !running && status == "running";
     if running {
         status = "running".to_owned();

@@ -1,6 +1,6 @@
 use std::{
     sync::{Arc, Mutex},
-    time::{Duration as StdDuration, Instant},
+    time::Duration as StdDuration,
 };
 
 #[cfg(unix)]
@@ -214,7 +214,6 @@ pub struct DaemonQueryActivity {
 
 #[derive(Default)]
 pub struct DaemonQueryActivityState {
-    pub accepting: bool,
     pub stopping: bool,
     pub active_requests: usize,
     pub generation: u64,
@@ -227,13 +226,7 @@ pub struct DaemonQueryRequestGuard {
 
 impl DaemonQueryActivity {
     pub fn new() -> Self {
-        Self {
-            state: Mutex::new(DaemonQueryActivityState {
-                accepting: true,
-                ..DaemonQueryActivityState::default()
-            }),
-            idle_wakeup: None,
-        }
+        Self::default()
     }
 
     pub fn with_idle_wakeup<W: DaemonWakePort>(idle_wakeup: Arc<W>) -> Self {
@@ -254,7 +247,7 @@ impl DaemonQueryActivity {
 
     pub fn begin_request(self: &Arc<Self>) -> Option<DaemonQueryRequestGuard> {
         let mut state = self.state();
-        if !state.accepting || state.stopping {
+        if state.stopping {
             return None;
         }
         state.active_requests = state.active_requests.saturating_add(1);
@@ -291,26 +284,8 @@ impl DaemonQueryActivity {
         self.state().wake_when_idle = false;
     }
 
-    pub fn try_stop_accepting_if_idle(&self, observed_generation: u64) -> bool {
-        let mut state = self.state();
-        if state.active_requests != 0 || state.generation != observed_generation {
-            return false;
-        }
-        state.accepting = false;
-        true
-    }
-
-    pub fn resume_accepting(&self) {
-        let mut state = self.state();
-        if !state.stopping {
-            state.accepting = true;
-        }
-    }
-
     pub fn stop(&self) {
-        let mut state = self.state();
-        state.accepting = false;
-        state.stopping = true;
+        self.state().stopping = true;
     }
 
     pub fn stopping(&self) -> bool {
@@ -349,26 +324,4 @@ impl Drop for DaemonQueryRequestGuard {
             }
         }
     }
-}
-
-pub fn observe_daemon_query_activity(
-    activity: Option<&DaemonQueryActivity>,
-    idle_since: &mut Option<Instant>,
-    observed_generation: &mut u64,
-) {
-    let Some(activity) = activity else {
-        return;
-    };
-    let (active_requests, generation) = activity.snapshot();
-    if active_requests != 0 || generation != *observed_generation {
-        *idle_since = None;
-        *observed_generation = generation;
-    }
-}
-
-pub fn daemon_can_begin_idle_shutdown(
-    activity: Option<&DaemonQueryActivity>,
-    observed_generation: u64,
-) -> bool {
-    activity.is_none_or(|activity| activity.try_stop_accepting_if_idle(observed_generation))
 }

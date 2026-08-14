@@ -43,7 +43,6 @@ pub fn wait_for_installation_quiescence(
     attempt_id: &str,
     timeout: Duration,
     poll_interval: Duration,
-    idle_exit_cap: u64,
     loop_interval_cap: u64,
 ) -> Result<()> {
     let lock = open_installation_quiescence_lock(lock_path)?;
@@ -64,14 +63,9 @@ pub fn wait_for_installation_quiescence(
             }
         }
     }
-    let result = read_installation_restart_records(
-        registration_root,
-        attempt_id,
-        true,
-        idle_exit_cap,
-        loop_interval_cap,
-    )
-    .map(|_| ());
+    let result =
+        read_installation_restart_records(registration_root, attempt_id, true, loop_interval_cap)
+            .map(|_| ());
     let _ = fs2::FileExt::unlock(&lock);
     result
 }
@@ -81,7 +75,6 @@ pub struct InstallationRestartRecord {
     pub registration_path: PathBuf,
     pub data_root: PathBuf,
     pub opaque_trigger: String,
-    pub idle_exit_seconds: Option<u64>,
     pub loop_interval_seconds: Option<u64>,
 }
 
@@ -89,7 +82,6 @@ pub fn read_installation_restart_records(
     root: &Path,
     attempt_id: &str,
     fail_on_live: bool,
-    idle_exit_cap: u64,
     loop_interval_cap: u64,
 ) -> Result<Vec<InstallationRestartRecord>> {
     let registrations = read_installation_registrations(root)?;
@@ -122,38 +114,32 @@ pub fn read_installation_restart_records(
         if status != "acknowledged" || registration_attempt != Some(attempt_id) {
             continue;
         }
+        // The acknowledged root and trigger remain restart authority across
+        // the lifecycle migration. Legacy lifetime fields are ignored, while
+        // an explicitly selected maintenance cadence remains in force.
         let data_root = PathBuf::from(value["data_root"].as_str().unwrap_or_default());
         let opaque_trigger = value["trigger_command"]
             .as_str()
             .filter(|value| !value.is_empty())
             .ok_or_else(|| anyhow!("ctx daemon acknowledgement has an invalid trigger"))?
             .to_owned();
-        let persistent = value
-            .get("persistent")
-            .and_then(Value::as_bool)
-            .unwrap_or(false);
-        let idle_exit_seconds = if persistent {
-            None
-        } else {
-            Some(
-                value["idle_exit_seconds"]
-                    .as_u64()
-                    .filter(|value| *value > 0 && *value <= idle_exit_cap)
-                    .ok_or_else(|| {
-                        anyhow!("ctx daemon acknowledgement has an invalid idle timeout")
-                    })?,
-            )
-        };
+        let legacy_persistent = value.get("persistent").and_then(Value::as_bool);
         let loop_interval_explicit = value
             .get("loop_interval_explicit")
             .and_then(Value::as_bool)
-            .unwrap_or(!persistent);
-        let loop_interval_seconds = match value["loop_interval_seconds"].as_u64() {
-            Some(value) if value > 0 && value <= loop_interval_cap && loop_interval_explicit => {
-                Some(value)
+            .unwrap_or(legacy_persistent == Some(false));
+        let loop_interval_seconds = match value.get("loop_interval_seconds") {
+            Some(value) => {
+                let interval = value
+                    .as_u64()
+                    .filter(|value| *value > 0 && *value <= loop_interval_cap)
+                    .ok_or_else(|| {
+                        anyhow!("ctx daemon acknowledgement has an invalid loop interval")
+                    })?;
+                loop_interval_explicit.then_some(interval)
             }
-            Some(value) if value > 0 && value <= loop_interval_cap && persistent => None,
-            _ => {
+            None if !loop_interval_explicit => None,
+            None => {
                 return Err(anyhow!(
                     "ctx daemon acknowledgement has an invalid loop interval"
                 ));
@@ -163,7 +149,6 @@ pub fn read_installation_restart_records(
             registration_path: path,
             data_root,
             opaque_trigger,
-            idle_exit_seconds,
             loop_interval_seconds,
         });
     }
@@ -242,4 +227,107 @@ pub fn registered_installation_roots(root: &Path) -> Result<Vec<PathBuf>> {
     roots.sort();
     roots.dedup();
     Ok(roots)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    fn write_registration(root: &Path, name: &str, value: Value) {
+        fs::create_dir_all(root).unwrap();
+        fs::write(root.join(name), serde_json::to_vec(&value).unwrap()).unwrap();
+    }
+
+    fn registration(data_root: &Path, persistent: Option<bool>) -> Value {
+        let mut value = json!({
+            "schema_version": 1,
+            "registration_id": "registration",
+            "status": "acknowledged",
+            "attempt_id": "attempt",
+            "pid": 42,
+            "data_root": data_root,
+            "trigger_command": "search",
+            "idle_exit_seconds": 5,
+            "loop_interval_seconds": 7,
+            "loop_interval_explicit": true,
+            "updated_at_ms": 1,
+        });
+        if let Some(persistent) = persistent {
+            value["persistent"] = Value::Bool(persistent);
+        }
+        value
+    }
+
+    #[test]
+    fn restart_records_accept_legacy_timing_and_replay_every_root_persistently() {
+        let temp = tempfile::tempdir().unwrap();
+        let registrations = temp.path().join("registrations");
+        let persistent_root = temp.path().join("persistent");
+        let finite_root = temp.path().join("finite");
+        let unspecified_root = temp.path().join("unspecified");
+        write_registration(
+            &registrations,
+            "persistent.json",
+            registration(&persistent_root, Some(true)),
+        );
+        write_registration(
+            &registrations,
+            "finite.json",
+            registration(&finite_root, Some(false)),
+        );
+        write_registration(
+            &registrations,
+            "unspecified.json",
+            registration(&unspecified_root, None),
+        );
+
+        let records =
+            read_installation_restart_records(&registrations, "attempt", false, 3_600).unwrap();
+
+        assert_eq!(records.len(), 3);
+        assert_eq!(
+            records
+                .iter()
+                .map(|record| record.data_root.clone())
+                .collect::<Vec<_>>(),
+            [finite_root, persistent_root, unspecified_root]
+        );
+        assert!(records
+            .iter()
+            .all(|record| record.opaque_trigger == "search"));
+        assert!(records
+            .iter()
+            .all(|record| record.loop_interval_seconds == Some(7)));
+    }
+
+    #[test]
+    fn restart_records_accept_new_timing_free_persistent_registration() {
+        let temp = tempfile::tempdir().unwrap();
+        let registrations = temp.path().join("registrations");
+        let data_root = temp.path().join("data");
+        write_registration(
+            &registrations,
+            "persistent.json",
+            json!({
+                "schema_version": 1,
+                "registration_id": "registration",
+                "status": "acknowledged",
+                "attempt_id": "attempt",
+                "pid": 42,
+                "data_root": data_root,
+                "trigger_command": "setup",
+                "persistent": true,
+                "updated_at_ms": 1,
+            }),
+        );
+
+        let records =
+            read_installation_restart_records(&registrations, "attempt", false, 3_600).unwrap();
+
+        assert_eq!(records.len(), 1);
+        assert_eq!(records[0].data_root, data_root);
+        assert_eq!(records[0].opaque_trigger, "setup");
+        assert_eq!(records[0].loop_interval_seconds, None);
+    }
 }

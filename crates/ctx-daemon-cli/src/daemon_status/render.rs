@@ -85,11 +85,10 @@ pub(crate) fn render_daemon_status_human(
         .and_then(Value::as_str)
         .is_some_and(|error| !error.is_empty());
     let service_issue = config_issue || supervisor_issue.is_some() || daemon_error;
-    let service_failed = recoverable
-        || matches!(status, "failed" | "stale_lock")
-        || (!running && enabled && status != "completed");
+    let service_failed =
+        recoverable || matches!(status, "failed" | "stale_lock") || (!running && enabled);
 
-    let presentation = if status == "completed" {
+    let presentation = if status == "completed" && !enabled {
         DaemonPresentation::Completed
     } else if !enabled || status == "disabled" {
         DaemonPresentation::Disabled
@@ -411,6 +410,17 @@ fn render_daemon_enabled_receipt(
     supervisor: &Value,
     config_path: &Path,
 ) -> Document {
+    let persistence_managed = persistent
+        && supervisor.get("restart_supported").and_then(Value::as_bool) == Some(true)
+        && supervisor
+            .get("registration_verified")
+            .and_then(Value::as_bool)
+            == Some(true)
+        && supervisor
+            .get("live_owner_verified")
+            .and_then(Value::as_bool)
+            == Some(true)
+        && supervisor_persistence_issue(supervisor).is_none();
     if enabled && running && !persistent {
         let mut document = outcome(
             context,
@@ -433,11 +443,17 @@ fn render_daemon_enabled_receipt(
     }
 
     let supervisor_disabled = supervisor.get("status").and_then(Value::as_str) == Some("disabled");
-    let (state, title, detail) = if enabled && running && persistent {
+    let (state, title, detail) = if enabled && running && persistence_managed {
         (
             OutcomeState::Success,
             "Daemon enabled",
             "Background history refresh will continue after this terminal closes.",
+        )
+    } else if enabled && running && persistent {
+        (
+            OutcomeState::Warning,
+            "Daemon enabled; automatic restart unavailable",
+            "Background refresh is running and will continue after this terminal closes.",
         )
     } else if enabled {
         (
@@ -482,8 +498,10 @@ fn render_daemon_enabled_receipt(
     }];
     service.push(state_field(
         "Persistence",
-        if enabled && persistent {
+        if enabled && persistence_managed {
             "managed"
+        } else if enabled && persistent {
+            "process only"
         } else if enabled {
             "not verified"
         } else if supervisor_disabled {
@@ -491,7 +509,7 @@ fn render_daemon_enabled_receipt(
         } else {
             "needs attention"
         },
-        if enabled && persistent || (!enabled && supervisor_disabled) {
+        if enabled && persistence_managed || (!enabled && supervisor_disabled) {
             Token::Success
         } else {
             Token::Warning
@@ -499,7 +517,7 @@ fn render_daemon_enabled_receipt(
     ));
 
     let mut details = Vec::new();
-    if enabled && !persistent || !enabled && !supervisor_disabled {
+    if enabled && !persistence_managed || !enabled && !supervisor_disabled {
         let issue = supervisor_persistence_issue(supervisor).unwrap_or_else(|| {
             let status = supervisor
                 .get("status")
@@ -611,7 +629,7 @@ fn service_state(
     recoverable: bool,
     status: &str,
 ) -> (&'static str, Token) {
-    if status == "completed" {
+    if status == "completed" && !enabled {
         ("completed", Token::Success)
     } else if !enabled || status == "disabled" {
         ("disabled", Token::Text)

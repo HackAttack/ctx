@@ -6,7 +6,6 @@ pub(crate) struct InstallationDaemonLease {
     pub(super) registration_id: String,
     pub(super) data_root: PathBuf,
     pub(super) trigger: DaemonTriggerCommandArg,
-    pub(super) idle_exit_seconds: Option<u64>,
     pub(super) loop_interval_seconds: Option<u64>,
     pub(super) status: &'static str,
 }
@@ -16,7 +15,6 @@ pub(super) struct InstallationDaemonRestart {
     pub(super) registration_path: PathBuf,
     pub(super) data_root: PathBuf,
     pub(super) trigger: DaemonTriggerCommandArg,
-    pub(super) idle_exit_seconds: Option<u64>,
     pub(super) loop_interval_seconds: Option<u64>,
 }
 
@@ -26,7 +24,6 @@ impl InstallationDaemonLease {
     pub(crate) fn acquire(
         data_root: &Path,
         trigger: DaemonTriggerCommandArg,
-        idle_exit_seconds: Option<u64>,
         loop_interval_seconds: Option<u64>,
         allow_active_upgrade: bool,
     ) -> Result<Option<Self>> {
@@ -52,7 +49,6 @@ impl InstallationDaemonLease {
             registration_id,
             data_root: data_root.to_path_buf(),
             trigger,
-            idle_exit_seconds,
             loop_interval_seconds,
             status: "live",
         };
@@ -75,11 +71,6 @@ impl InstallationDaemonLease {
     }
 
     pub(super) fn write_status(&self, status: &str, attempt_id: Option<&str>) -> Result<()> {
-        // Explicit booleans carry the persistent contract. Numeric values are
-        // retained only as bounded receipt fields for current forward upgrade
-        // recovery and are never interpreted as implicit production exits.
-        let persistent = self.idle_exit_seconds.is_none();
-        let loop_interval_explicit = self.loop_interval_seconds.is_some();
         write_private_json_file(
             &self.registration_path,
             &compact_json(json!({
@@ -90,12 +81,9 @@ impl InstallationDaemonLease {
                 "pid": process::id(),
                 "data_root": self.data_root,
                 "trigger_command": self.trigger.as_str(),
-                "persistent": persistent,
-                "loop_interval_explicit": loop_interval_explicit,
-                "idle_exit_seconds": self.idle_exit_seconds
-                    .unwrap_or(DAEMON_IDLE_EXIT_SECONDS_CAP),
-                "loop_interval_seconds": self.loop_interval_seconds
-                    .unwrap_or(15 * 60),
+                "persistent": true,
+                "loop_interval_explicit": self.loop_interval_seconds.is_some(),
+                "loop_interval_seconds": self.loop_interval_seconds.unwrap_or(15 * 60),
                 "updated_at_ms": utc_now().timestamp_millis(),
             })),
         )
@@ -159,7 +147,6 @@ pub(super) fn wait_for_installation_daemon_quiescence_at(
         attempt_id,
         timeout,
         DAEMON_UPGRADE_POLL_INTERVAL,
-        DAEMON_IDLE_EXIT_SECONDS_CAP,
         3_600,
     )
 }
@@ -177,25 +164,18 @@ pub(super) fn read_installation_daemon_restarts_from(
     attempt_id: &str,
     fail_on_live: bool,
 ) -> Result<Vec<InstallationDaemonRestart>> {
-    ctx_daemon_runtime::read_installation_restart_records(
-        root,
-        attempt_id,
-        fail_on_live,
-        DAEMON_IDLE_EXIT_SECONDS_CAP,
-        3_600,
-    )?
-    .into_iter()
-    .map(|record| {
-        Ok(InstallationDaemonRestart {
-            registration_path: record.registration_path,
-            data_root: record.data_root,
-            trigger: parse_daemon_trigger(Some(&record.opaque_trigger))
-                .ok_or_else(|| anyhow!("ctx daemon acknowledgement has an invalid trigger"))?,
-            idle_exit_seconds: record.idle_exit_seconds,
-            loop_interval_seconds: record.loop_interval_seconds,
+    ctx_daemon_runtime::read_installation_restart_records(root, attempt_id, fail_on_live, 3_600)?
+        .into_iter()
+        .map(|record| {
+            Ok(InstallationDaemonRestart {
+                registration_path: record.registration_path,
+                data_root: record.data_root,
+                trigger: parse_daemon_trigger(Some(&record.opaque_trigger))
+                    .ok_or_else(|| anyhow!("ctx daemon acknowledgement has an invalid trigger"))?,
+                loop_interval_seconds: record.loop_interval_seconds,
+            })
         })
-    })
-    .collect()
+        .collect()
 }
 
 fn read_installation_daemon_registrations_from(root: &Path) -> Result<Vec<(PathBuf, Value)>> {
@@ -225,4 +205,39 @@ pub(super) fn registered_installation_daemon_roots() -> Result<Vec<PathBuf>> {
 
 pub(super) fn registered_installation_daemon_roots_from(root: &Path) -> Result<Vec<PathBuf>> {
     ctx_daemon_runtime::registered_installation_roots(root)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn new_registration_writes_only_explicit_persistent_restart_policy() {
+        let temp = tempfile::tempdir().unwrap();
+        let registration_path = temp.path().join("registration.json");
+        let lock = fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .open(temp.path().join("lock"))
+            .unwrap();
+        let lease = InstallationDaemonLease {
+            lock,
+            registration_path: registration_path.clone(),
+            registration_id: "registration".to_owned(),
+            data_root: temp.path().join("data"),
+            trigger: DaemonTriggerCommandArg::Search,
+            loop_interval_seconds: Some(23),
+            status: "live",
+        };
+
+        lease.write_status("live", None).unwrap();
+
+        let value: Value = serde_json::from_slice(&fs::read(registration_path).unwrap()).unwrap();
+        assert_eq!(value["persistent"], Value::Bool(true));
+        assert_eq!(value["loop_interval_explicit"], Value::Bool(true));
+        assert_eq!(value["loop_interval_seconds"], Value::from(23));
+        assert!(value.get("idle_exit_seconds").is_none());
+    }
 }

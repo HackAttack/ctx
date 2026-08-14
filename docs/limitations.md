@@ -43,12 +43,11 @@ shipped.
 - Automatic restart of continuous refresh for a hosted managed install requires
   an operational native current-user service manager: systemd-user on Linux,
   the launchd GUI user domain on macOS, or Task Scheduler on Windows. When that
-  manager is unavailable, setup and eligible imports use the same daemon
-  coordinator with a finite idle exit and report a typed
-  `continuous_refresh_unavailable` limitation; initial indexing and manual
-  refresh remain supported. Unmanaged installs and custom data roots instead
-  use the persistent CLI-self-healing fallback, without automatic restart after
-  logout or reboot.
+  manager is unavailable, setup and eligible imports use the same persistent
+  detached CLI-self-healing daemon as unmanaged installs and custom data roots.
+  The process has no finite idle lifetime, but native automatic restart after a
+  crash, login, logout, or reboot is unavailable. The next eligible ctx command
+  restarts an absent fallback daemon.
 - Current importers use idempotent rescans.
 - `--resume` is reported in output but is not a universal provider cursor
   contract.

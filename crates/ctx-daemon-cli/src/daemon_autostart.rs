@@ -29,7 +29,7 @@ use super::{
         daemon_lock_is_active, daemon_lock_is_owned_by, daemon_lock_path, daemon_root_path,
         pid_lock_guard_path, write_private_json_file,
     },
-    runtime_limits::{DAEMON_IDLE_EXIT_SECONDS_CAP, DAEMON_QUERY_ENDPOINT_FILE},
+    runtime_limits::DAEMON_QUERY_ENDPOINT_FILE,
 };
 
 mod autostart;
@@ -38,18 +38,19 @@ mod installation;
 mod recovery;
 
 #[cfg(test)]
+use autostart::configured_daemon_autostart_command;
+#[cfg(test)]
+use autostart::daemon_autostart_allowed;
+#[cfg(test)]
 use autostart::handoff_mismatched_daemon_owner;
 pub use autostart::{
     autostart_daemon_and_wait, autostart_daemon_for_setup_and_wait,
     daemon_autostart_suppression_reason, maybe_autostart_daemon,
 };
 use autostart::{
-    configured_daemon_autostart_command, configured_unsupervised_daemon_autostart_command,
     daemon_autostart_command, daemon_restart_allowed, daemon_restart_trigger, parse_daemon_trigger,
     spawn_daemon_child, spawn_daemon_child_for_upgrade_handoff,
 };
-#[cfg(test)]
-use autostart::{daemon_autostart_allowed, daemon_supervisor_launch_policy};
 #[cfg(test)]
 use handoff::daemon_upgrade_handoff_is_active;
 pub use handoff::prepare_daemon_uninstall;
@@ -67,7 +68,6 @@ pub use handoff::{
 };
 #[cfg(test)]
 use handoff::{read_daemon_upgrade_handoff, write_daemon_upgrade_handoff};
-
 pub(super) use installation::InstallationDaemonLease;
 #[cfg(test)]
 use installation::{
@@ -84,14 +84,6 @@ use recovery::{
     wait_for_replacement_daemon,
 };
 
-pub(super) fn daemon_autostart_u64_env(name: &str, max: u64) -> Option<u64> {
-    env::var(name)
-        .ok()
-        .and_then(|value| value.parse::<u64>().ok())
-        .filter(|value| *value > 0)
-        .map(|value| value.min(max))
-}
-
 const DAEMON_UPGRADE_STOP_TIMEOUT: StdDuration = StdDuration::from_secs(5);
 const DAEMON_UPGRADE_RESTART_TIMEOUT: StdDuration = StdDuration::from_secs(5);
 const DAEMON_UPGRADE_POLL_INTERVAL: StdDuration = StdDuration::from_millis(50);
@@ -100,7 +92,6 @@ const DAEMON_INSTALLATION_QUIESCE_TIMEOUT: StdDuration = StdDuration::from_secs(
 const DAEMON_UPGRADE_HANDOFF_TOKEN_ENV: &str = "CTX_DAEMON_UPGRADE_HANDOFF_TOKEN";
 const DAEMON_HEALTH_TIMEOUT: StdDuration = StdDuration::from_millis(500);
 const DAEMON_HEALTH_RESPONSE_MAX_BYTES: u64 = 16 * 1024;
-const DAEMON_UNSUPERVISED_IDLE_EXIT_SECONDS: u64 = 60;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct DaemonHandoff {
@@ -110,8 +101,6 @@ pub struct DaemonHandoff {
 
 pub struct DaemonSetupHandoff {
     pub handoff: DaemonHandoff,
-    pub bounded_unsupervised: bool,
-    pub requires_initial_refresh_wait: bool,
 }
 
 #[cfg(test)]

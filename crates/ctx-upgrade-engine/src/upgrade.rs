@@ -127,8 +127,7 @@ pub trait SemanticLayoutPort: Send + Sync {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct DaemonRestart<'a> {
     pub trigger: &'a str,
-    pub idle_exit_seconds: u64,
-    pub loop_interval_seconds: u64,
+    pub loop_interval_seconds: Option<u64>,
 }
 
 pub trait DaemonUpgradeLease: Send + Sized {
@@ -156,6 +155,7 @@ pub trait DaemonUpgradePort: Send + Sync {
         data_root: &Path,
         attempt_id: &str,
         restart_trigger: &str,
+        loop_interval_seconds: Option<u64>,
     ) -> Result<Self::Lease>;
 
     fn mark_replacement_helper_handoff(

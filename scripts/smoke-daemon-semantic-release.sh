@@ -479,7 +479,6 @@ isolated_env=(
   -u CTX_DAEMON_AUTOSTART_OFF
   -u CTX_DAEMON_AUTOSTART_EXE
   -u CTX_DAEMON_BACKGROUND_CHILD
-  -u CTX_DAEMON_AUTOSTART_IDLE_EXIT_SECONDS
   -u CTX_DAEMON_AUTOSTART_LOOP_INTERVAL_SECONDS
   -u CTX_SEARCH_SEMANTIC
   -u CTX_SEMANTIC_WORKER_OFF
@@ -568,7 +567,7 @@ EOF
 
 daemon_log="${data_root}/daemon-smoke.log"
 "${ctx_env[@]}" "${ctx_bin}" --data-root "${data_root}" \
-  daemon run --idle-exit-seconds "${timeout_seconds}" --loop-interval-seconds 2 --format json \
+  daemon run --loop-interval-seconds 2 --format json \
   > "${daemon_log}" 2>&1 &
 daemon_pid="$!"
 

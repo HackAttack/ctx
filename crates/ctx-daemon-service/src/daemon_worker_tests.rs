@@ -528,10 +528,9 @@ fn core_builder_preserves_assistant_after_more_than_sixty_four_tool_events() {
 fn daemon_lifecycle_receipt_preserves_service_trigger_metadata() -> anyhow::Result<()> {
     let temp = tempfile::tempdir()?;
     let args = DaemonRunArgs {
-        idle_exit_seconds: None,
         loop_interval_seconds: None,
         max_chunks: None,
-        max_seconds: None,
+        handle_process_signals: false,
         force: false,
         start_mode: Some(crate::DaemonStartMode::Auto),
         trigger_command: Some(crate::DaemonTrigger::Setup),

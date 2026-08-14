@@ -46,15 +46,7 @@ fn start_source_refresh_daemon(temp: &TempDir) -> SourceRefreshDaemon {
         }
     }
     command
-        .args([
-            "daemon",
-            "run",
-            "--force",
-            "--idle-exit-seconds",
-            "600",
-            "--loop-interval-seconds",
-            "600",
-        ])
+        .args(["daemon", "run", "--force", "--loop-interval-seconds", "600"])
         .env("CTX_DAEMON_MODE", "full")
         .stdout(Stdio::null())
         .stderr(Stdio::piped());
@@ -124,7 +116,7 @@ fn assert_source_backed_search(search: &Value, provider: &str, query: &str) {
 
 #[test]
 fn codebuddy_cli_jsonl_imports_and_searches_through_public_cli() {
-    let temp = finite_daemon_test_root();
+    let temp = daemon_test_root();
     let query = "codebuddy-cli-real-shape-oracle";
     let path = write_native_codebuddy_cli_jsonl_fixture(&temp, query);
 
@@ -161,7 +153,7 @@ fn codebuddy_cli_jsonl_imports_and_searches_through_public_cli() {
 
 #[test]
 fn forgecode_sqlite_naive_timestamp_is_published_as_event_time() {
-    let temp = finite_daemon_test_root();
+    let temp = daemon_test_root();
     let query = "forgecode-naive-timestamp-oracle";
     let path = write_native_forgecode_fixture(&temp, query);
 
@@ -193,7 +185,7 @@ fn forgecode_sqlite_naive_timestamp_is_published_as_event_time() {
 
 #[test]
 fn nanoclaw_import_preserves_text_timestamp_millis_and_integer_trigger() {
-    let temp = finite_daemon_test_root();
+    let temp = daemon_test_root();
     let query = "nanoclaw-real-text-timestamp-oracle";
     let path = write_native_nanoclaw_fixture(&temp, query);
 
@@ -287,7 +279,7 @@ fn nanoclaw_import_preserves_text_timestamp_millis_and_integer_trigger() {
 
 #[test]
 fn kimi_code_cli_wire_indexes_streamed_assistant_output_through_public_cli() {
-    let temp = finite_daemon_test_root();
+    let temp = daemon_test_root();
     let query = "streamedassistantwireoracle";
     let path = write_native_kimi_code_cli_wire_fixture(&temp, query);
 

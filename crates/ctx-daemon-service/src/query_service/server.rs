@@ -14,8 +14,7 @@ pub(crate) use ctx_daemon_runtime::{
 };
 #[allow(unused_imports)]
 pub(crate) use ctx_daemon_runtime::{
-    daemon_can_begin_idle_shutdown, handle_authenticated_daemon_stream,
-    observe_daemon_query_activity, read_bounded_daemon_request,
+    handle_authenticated_daemon_stream, read_bounded_daemon_request,
     start_ipc_service_with_request_timeout, AuthenticatedRequest, AuthenticatedRequestHandler,
     DaemonQueryActivity, DaemonQueryActivityState, DaemonQueryRequestGuard, DaemonQueryService,
     DaemonWakePort, HandlerOutcome, IpcEndpointPublication, IpcEndpointStore, IpcServiceSpec,

@@ -829,46 +829,6 @@ fn only_enabled_long_lived_daemon_uses_upgrade_scheduler() {
 }
 
 #[test]
-fn explicit_finite_idle_exit_remains_due_with_retry_and_refresh_pending() {
-    let mut runtime = DaemonRuntime::default();
-    runtime.history_retry.consecutive_failures = 1;
-    let retry_due = super::super::daemon_scheduler::daemon_retry_due(&runtime);
-    assert!(retry_due);
-
-    let coordinator = CoreRefreshEngine::new();
-    coordinator.enqueue_for_test(None);
-    let source_refresh_pending = coordinator.has_pending_request();
-    assert!(source_refresh_pending);
-
-    assert!(daemon_should_attempt_finite_idle_shutdown(
-        Some(StdDuration::ZERO),
-        Some(Instant::now()),
-        retry_due,
-        source_refresh_pending,
-    ));
-}
-
-#[test]
-fn explicit_finite_idle_exit_can_defer_pending_pro_finalization() {
-    assert!(daemon_should_attempt_finite_idle_shutdown(
-        Some(StdDuration::ZERO),
-        Some(Instant::now()),
-        false,
-        false,
-    ));
-}
-
-#[test]
-fn persistent_default_never_has_a_finite_idle_exit() {
-    assert!(!daemon_should_attempt_finite_idle_shutdown(
-        None,
-        Some(Instant::now()),
-        true,
-        true,
-    ));
-}
-
-#[test]
 fn due_consumer_retry_wait_loop_blocks_and_wakes_when_query_becomes_idle() -> Result<()> {
     let temp = tempfile::tempdir()?;
     let generation =
@@ -906,14 +866,7 @@ fn due_consumer_retry_wait_loop_blocks_and_wakes_when_query_becomes_idle() -> Re
     assert_eq!(runtime.pro_retry.retry_after_ms(), Some(0));
 
     let now = Instant::now();
-    let wait_for = daemon_wait_duration(
-        &runtime,
-        None,
-        now + StdDuration::from_secs(30),
-        None,
-        None,
-        now,
-    );
+    let wait_for = daemon_wait_duration(&runtime, None, now + StdDuration::from_secs(30), now);
     assert!(wait_for > StdDuration::ZERO);
     assert!(wait_for <= super::super::daemon_scheduler::DAEMON_CONSUMER_RETRY_QUERY_GRACE);
 
@@ -961,8 +914,6 @@ fn due_dirty_route_wait_is_classified_as_scheduled_refresh_instead_of_spinning()
         &runtime,
         Some(&coordinator),
         now + StdDuration::from_secs(30),
-        None,
-        None,
         now,
     );
 
@@ -973,60 +924,15 @@ fn due_dirty_route_wait_is_classified_as_scheduled_refresh_instead_of_spinning()
     assert!(!daemon_scheduled_refresh_due(
         &runtime,
         Some(&coordinator),
-        None,
         now,
         1_000,
     ));
     assert!(daemon_scheduled_refresh_due(
         &runtime,
         Some(&coordinator),
-        None,
         now + super::super::daemon_scheduler::DAEMON_BACKGROUND_REFRESH_MIN_REST,
         1_000,
     ));
-}
-
-#[test]
-fn finite_convergence_ignores_deferred_route_deadline_until_idle_exit() {
-    let coordinator =
-        CoreRefreshEngine::with_executor(Arc::new(|_: SourceBackedRefreshExecution<'_>| {
-            anyhow::bail!("executor must remain idle")
-        }));
-    let route = ctx_history_index::SourceRouteIdentity::from_sha256("ac".repeat(32))
-        .expect("route identity");
-    coordinator.reconcile_watch_routes([route], EventWatermark::new(1, 0), 0);
-    let mut runtime = DaemonRuntime::default();
-    runtime.finite_refresh_admission.observe_terminal(
-        &json!({
-            "operation": "import",
-            "trigger": "import",
-            "trigger_provenance": "explicit_source_catalog",
-            "status": "completed",
-            "request_state": "published",
-        }),
-        false,
-    );
-    let now = Instant::now();
-    let idle_exit = Some(StdDuration::from_secs(60));
-
-    let wait_for = daemon_wait_duration(
-        &runtime,
-        Some(&coordinator),
-        now + StdDuration::from_secs(30),
-        Some(now),
-        idle_exit,
-        now,
-    );
-
-    assert_eq!(wait_for, StdDuration::from_secs(30));
-    assert!(!daemon_scheduled_refresh_due(
-        &runtime,
-        Some(&coordinator),
-        idle_exit,
-        now,
-        1_000,
-    ));
-    assert!(coordinator.has_scheduled_route_work());
 }
 
 #[test]
@@ -1046,8 +952,6 @@ fn pending_source_refresh_wait_respects_retry_backoff() {
         &runtime,
         Some(&coordinator),
         now + StdDuration::from_secs(30),
-        None,
-        None,
         now,
     );
 
@@ -1095,8 +999,6 @@ fn continuous_query_wait_loop_reaches_consumer_retry_fairness_deadline() -> Resu
         &runtime,
         None,
         deadline + StdDuration::from_secs(30),
-        None,
-        None,
         deadline,
     );
     assert_eq!(wait_for, StdDuration::ZERO);
@@ -1122,10 +1024,9 @@ fn continuous_query_wait_loop_reaches_consumer_retry_fairness_deadline() -> Resu
 
 fn test_daemon_run_args() -> DaemonRunArgs {
     DaemonRunArgs {
-        idle_exit_seconds: None,
         loop_interval_seconds: None,
         max_chunks: None,
-        max_seconds: None,
+        handle_process_signals: false,
         force: false,
         start_mode: None,
         trigger_command: None,

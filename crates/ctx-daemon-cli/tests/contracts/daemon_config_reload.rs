@@ -156,7 +156,7 @@ mod unix {
     ) -> DaemonGuard {
         let mut command = std_ctx_from_binary(temp, binary);
         let child = command
-            .args(["daemon", "run", "--idle-exit-seconds", "600"])
+            .args(["daemon", "run"])
             .arg("--loop-interval-seconds")
             .arg(loop_interval_seconds.to_string())
             .stdout(Stdio::null())

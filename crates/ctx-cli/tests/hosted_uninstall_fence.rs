@@ -103,8 +103,6 @@ fn assert_fresh_daemon_is_fenced(binary: &Path, environment_root: &Path, data_ro
         "daemon",
         "run",
         "--force",
-        "--idle-exit-seconds",
-        "60",
         "--loop-interval-seconds",
         "60",
         "--format=json",

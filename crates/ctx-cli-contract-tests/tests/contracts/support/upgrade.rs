@@ -19,7 +19,7 @@ use flate2::{write::GzEncoder, Compression};
 #[cfg(unix)]
 use tar::{Builder as TarBuilder, EntryType, Header};
 
-use super::{copied_binary, copied_ctx_binary, data_root, file_url, FiniteDaemonTestRoot};
+use super::{copied_binary, copied_ctx_binary, data_root, file_url};
 
 pub(crate) fn sha256_hex(bytes: &[u8]) -> String {
     use sha2::{Digest, Sha256};
@@ -467,7 +467,7 @@ pub(crate) fn managed_candidate_from_binary(
 
 #[cfg(unix)]
 pub(crate) fn managed_bound_candidate_from_binary(
-    temp: &FiniteDaemonTestRoot,
+    temp: &TempDir,
     source: &Path,
     install_attempt_id: &str,
 ) -> PathBuf {

@@ -2,7 +2,7 @@ use std::{cell::Cell, fs};
 
 use super::*;
 use crate::upgrade::install::transaction::journal::{
-    JournalPath, JournalPathKind, JournalPathState, WindowsHelperJournal,
+    JournalPath, JournalPathKind, JournalPathState, WindowsDaemonRestart, WindowsHelperJournal,
 };
 
 fn helper_journal(temp: &Path) -> WindowsHelperJournal {
@@ -78,6 +78,63 @@ fn helper_journal_contains_transaction_and_restart_data_only() {
     ] {
         assert!(!object.contains_key(obsolete), "{obsolete}");
     }
+}
+
+#[test]
+fn new_restart_descriptor_serializes_persistent_trigger_and_maintenance_cadence() {
+    let restart = WindowsDaemonRestart {
+        trigger: "search".to_owned(),
+        legacy_idle_exit_seconds: None,
+        loop_interval_seconds: Some(23),
+    };
+
+    assert_eq!(
+        serde_json::to_value(restart).unwrap(),
+        serde_json::json!({"trigger": "search", "loop_interval_seconds": 23})
+    );
+
+    let default_cadence = WindowsDaemonRestart {
+        trigger: "search".to_owned(),
+        legacy_idle_exit_seconds: None,
+        loop_interval_seconds: None,
+    };
+    assert_eq!(
+        serde_json::to_value(default_cadence).unwrap(),
+        serde_json::json!({"trigger": "search"})
+    );
+}
+
+#[test]
+fn current_format_journal_ignores_legacy_restart_timing_when_rewritten() {
+    let temp = tempfile::tempdir().unwrap();
+    let transaction = transaction(temp.path(), Vec::new());
+    let mut value = serde_json::to_value(transaction).unwrap();
+    value["windows_helper"]["daemon_restart"] = serde_json::json!({
+        "trigger": "search",
+        "idle_exit_seconds": 5,
+        "loop_interval_seconds": 7,
+    });
+
+    let decoded: InstallTransactionJournal = serde_json::from_value(value).unwrap();
+    let restart = decoded
+        .windows_helper
+        .as_ref()
+        .and_then(|helper| helper.daemon_restart.as_ref())
+        .unwrap();
+    assert_eq!(restart.trigger, "search");
+    assert_eq!(restart.legacy_idle_exit_seconds, Some(5));
+    assert_eq!(restart.loop_interval_seconds, Some(7));
+
+    let rewritten = serde_json::to_value(decoded).unwrap();
+    let restart = rewritten["windows_helper"]["daemon_restart"]
+        .as_object()
+        .unwrap();
+    assert_eq!(restart.len(), 2);
+    assert_eq!(restart.get("trigger"), Some(&serde_json::json!("search")));
+    assert_eq!(
+        restart.get("loop_interval_seconds"),
+        Some(&serde_json::json!(7))
+    );
 }
 
 #[test]

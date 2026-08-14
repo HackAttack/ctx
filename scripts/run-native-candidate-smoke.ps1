@@ -118,7 +118,6 @@ $isolation = [ordered]@{
     CTX_ANALYTICS_ENABLED = "false"
     CTX_UPGRADE_AUTO = "off"
     CTX_DAEMON_AUTOSTART_OFF = "1"
-    CTX_DAEMON_AUTOSTART_IDLE_EXIT_SECONDS = "1"
     CTX_DAEMON_AUTOSTART_LOOP_INTERVAL_SECONDS = "1"
     CTX_DAEMON_ENABLED = "false"
     CTX_SEARCH_SEMANTIC = "0"
@@ -214,13 +213,34 @@ function Candidate-ProcessIds {
     return @($ids | Sort-Object -Unique)
 }
 
+$baseline = @(Candidate-ProcessIds)
+
+function Stop-NewCandidateProcesses {
+    $remaining = @(Candidate-ProcessIds | Where-Object { $baseline -notcontains $_ })
+    if ($remaining.Count -eq 0) {
+        return
+    }
+
+    Stop-Process -Id $remaining -Force -ErrorAction SilentlyContinue
+    $deadline = [DateTime]::UtcNow.AddSeconds(5)
+    do {
+        $remaining = @(Candidate-ProcessIds | Where-Object { $baseline -notcontains $_ })
+        if ($remaining.Count -eq 0 -or [DateTime]::UtcNow -ge $deadline) {
+            break
+        }
+        Start-Sleep -Milliseconds 100
+    } while ($true)
+    if ($remaining.Count -ne 0) {
+        Fail ("could not terminate candidate processes during cleanup: " + ($remaining -join ","))
+    }
+}
+
 try {
     foreach ($name in $isolation.Keys) {
         $savedEnvironment[$name] = [Environment]::GetEnvironmentVariable($name, "Process")
         [Environment]::SetEnvironmentVariable($name, [string]$isolation[$name], "Process")
     }
     Set-Location -LiteralPath $workRoot
-    $baseline = @(Candidate-ProcessIds)
 
     $version = Invoke-Ctx @("--version")
     if ($version.Trim() -ne "ctx $ExpectedVersion") {
@@ -249,6 +269,7 @@ try {
                 "--format=json", "--progress", "none"
             )
         } finally {
+            Stop-NewCandidateProcesses
             $env:CTX_DAEMON_ENABLED = "false"
             $env:CTX_DAEMON_AUTOSTART_OFF = "1"
         }
@@ -376,10 +397,22 @@ try {
     Move-Item -LiteralPath $resultTemp -Destination $ResultPath -Force
     Write-Host "native candidate smoke passed: Windows $([Environment]::Is64BitProcess)"
 } finally {
+    $cleanupError = $null
+    try {
+        Stop-NewCandidateProcesses
+    } catch {
+        $cleanupError = $_.Exception
+    }
     Set-Location -LiteralPath $savedLocation
     foreach ($name in $isolation.Keys) {
         [Environment]::SetEnvironmentVariable($name, $savedEnvironment[$name], "Process")
     }
     Remove-Item -LiteralPath $resultTemp -Force -ErrorAction SilentlyContinue
-    Remove-Item -LiteralPath $root -Recurse -Force -ErrorAction SilentlyContinue
+    if ($null -eq $cleanupError) {
+        Remove-Item -LiteralPath $root -Recurse -Force -ErrorAction SilentlyContinue
+    } else {
+        Remove-Item -LiteralPath $ResultPath -Force -ErrorAction SilentlyContinue
+        Write-Error "native candidate smoke retained private root for survivor diagnosis: $root"
+        throw $cleanupError
+    }
 }

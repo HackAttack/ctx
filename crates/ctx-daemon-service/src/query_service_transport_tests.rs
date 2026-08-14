@@ -673,22 +673,21 @@ fn connect_valid_nonreading_query_client(data_root: &Path) -> Result<WindowsQuer
 }
 
 #[test]
-fn daemon_query_activity_prevents_idle_shutdown_during_a_request() {
+fn daemon_query_activity_tracks_requests_until_stopping() {
     let activity = Arc::new(DaemonQueryActivity::new());
     let request = activity.begin_request().expect("request accepted");
     let (active, generation) = activity.snapshot();
 
     assert_eq!(active, 1);
-    assert!(!activity.try_stop_accepting_if_idle(generation));
 
     drop(request);
     let (active, completed_generation) = activity.snapshot();
     assert_eq!(active, 0);
     assert_ne!(completed_generation, generation);
-    assert!(activity.try_stop_accepting_if_idle(completed_generation));
-    assert!(activity.begin_request().is_none());
-    activity.resume_accepting();
     assert!(activity.begin_request().is_some());
+    activity.stop();
+    assert!(activity.stopping());
+    assert!(activity.begin_request().is_none());
 }
 
 #[test]
@@ -865,33 +864,6 @@ fn valid_nonreading_client_does_not_block_later_queries_or_shutdown() -> Result<
     assert!(started.elapsed() < StdDuration::from_secs(1));
     drop(nonreader);
     Ok(())
-}
-
-#[test]
-fn observing_query_activity_resets_an_expired_idle_window() {
-    let activity = Arc::new(DaemonQueryActivity::new());
-    let request = activity.begin_request().expect("request accepted");
-    let mut idle_since = Some(Instant::now() - StdDuration::from_secs(5));
-    let mut observed_generation = 0;
-
-    observe_daemon_query_activity(
-        Some(activity.as_ref()),
-        &mut idle_since,
-        &mut observed_generation,
-    );
-
-    assert!(idle_since.is_none());
-    assert!(!daemon_can_begin_idle_shutdown(
-        Some(activity.as_ref()),
-        observed_generation
-    ));
-    drop(request);
-    observe_daemon_query_activity(
-        Some(activity.as_ref()),
-        &mut idle_since,
-        &mut observed_generation,
-    );
-    assert!(idle_since.is_none());
 }
 
 #[cfg(unix)]

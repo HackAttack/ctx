@@ -456,11 +456,13 @@ and local semantic indexing by its local runtime/model availability. Foreground
 query activity preempts background work.
 A hosted managed install probes systemd-user, the launchd GUI user domain, or
 current-user Task Scheduler before changing native registration state. When
-that manager is unavailable, setup/import runs this same coordinator with an
-explicit finite idle exit, preserves any unverified native artifact for a later
-retry, and reports that continuous refresh is unavailable. It does not create a
-second importer or index writer. Native ownership, identity, integrity,
-fencing, and security failures still fail closed.
+that manager is unavailable, setup/import runs this same coordinator as a
+persistent detached process, preserves any unverified native artifact for a
+later retry, and reports that native automatic restart after failure, login, or
+reboot is unavailable. The next eligible ctx command self-heals an absent
+process. This fallback does not create a second importer or index writer.
+Native ownership, identity, integrity, fencing, and security failures still
+fail closed.
 A looping daemon may keep the
 local embedding model resident between passes and uses semantic projection state
 to prioritize recent/stale events. Default background refresh may start the
@@ -532,7 +534,7 @@ The equivalent process override is
 profile. Autostart propagates the effective mode to its detached child. In
 source-refresh-only mode, the source refresh IPC endpoint, all-provider capture
 registry, atomic generation publication, status reporting, disable behavior,
-and idle exit remain active. History refresh, semantic indexing and serving,
+and persistent process lifecycle remain active. History refresh, semantic indexing and serving,
 canonical and Pro maintenance, and automatic upgrades do not run.
 
 Local semantic search requires daemon maintenance and remains disabled by

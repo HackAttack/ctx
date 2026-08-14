@@ -153,7 +153,7 @@ pub(in crate::upgrade) fn apply_artifact_for_attempt(
     semantic_artifacts: &mut [DownloadedArtifact],
     data_root: &Path,
     attempt_id: &str,
-    daemon_restart: Option<(&str, u64, u64)>,
+    daemon_restart: Option<(&str, Option<u64>)>,
     before_publish: &mut dyn FnMut() -> Result<()>,
 ) -> Result<ApplyResult> {
     if !journal::is_valid_attempt_id(attempt_id) {
@@ -262,6 +262,7 @@ pub(in crate::upgrade) fn apply_artifact_for_attempt(
             }
         }
     };
+    #[cfg(windows)]
     let result = publish_install(
         process,
         semantic_layout,
@@ -275,6 +276,22 @@ pub(in crate::upgrade) fn apply_artifact_for_attempt(
         daemon_restart,
         before_publish,
     );
+    #[cfg(not(windows))]
+    let result = {
+        let _ = daemon_restart;
+        publish_install(
+            process,
+            semantic_layout,
+            staged.as_deref(),
+            plan,
+            staged_runtime.as_ref(),
+            staged_semantic.as_ref(),
+            marker_staged.as_deref(),
+            attempt_id,
+            data_root,
+            before_publish,
+        )
+    };
     let transaction_retained = journal::install_transaction_path(&plan.install_path)
         .try_exists()
         .unwrap_or(true);
@@ -447,7 +464,6 @@ fn publish_install(
     marker_staged: Option<&Path>,
     attempt_id: &str,
     data_root: &Path,
-    _daemon_restart: Option<(&str, u64, u64)>,
     before_publish: &mut dyn FnMut() -> Result<()>,
 ) -> Result<ApplyResult> {
     unix::publish_install(
@@ -475,7 +491,7 @@ fn publish_install(
     marker_staged: Option<&Path>,
     attempt_id: &str,
     data_root: &Path,
-    daemon_restart: Option<(&str, u64, u64)>,
+    daemon_restart: Option<(&str, Option<u64>)>,
     before_publish: &mut dyn FnMut() -> Result<()>,
 ) -> Result<ApplyResult> {
     windows::publish_install(
@@ -502,7 +518,6 @@ fn publish_install(
     _marker_staged: Option<&Path>,
     _attempt_id: &str,
     _data_root: &Path,
-    _daemon_restart: Option<(&str, u64, u64)>,
     _before_publish: &mut dyn FnMut() -> Result<()>,
 ) -> Result<ApplyResult> {
     Err(anyhow!(

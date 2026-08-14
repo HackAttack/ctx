@@ -79,7 +79,7 @@ pub use query_service::{
     read_daemon_service_endpoint_identity, DaemonIpcService, DaemonQueryEndpoint,
     DaemonQueryServiceUnavailable, DaemonSourceRefreshServiceUnavailable,
 };
-pub use runtime_limits::{DAEMON_IDLE_EXIT_SECONDS_CAP, SEMANTIC_WORKER_BATCH_MAX};
+pub use runtime_limits::SEMANTIC_WORKER_BATCH_MAX;
 pub use source_backed_pro_catch_up::{
     cancel_core_finalization_generation_lease, helper_recheck_targets,
     publish_helper_recheck_intent, wait_for_completed_generation, wake_helper_recheck,

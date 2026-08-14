@@ -27,10 +27,9 @@ pub use host::{
     DAEMON_BACKGROUND_CHILD_ENV,
 };
 pub use lifecycle::{
-    configured_daemon_autostart_command, configured_unsupervised_daemon_autostart_command,
-    daemon_autostart_allowed, daemon_autostart_command, daemon_autostart_suppression_reason,
-    daemon_restart_trigger, parse_persisted_trigger, spawn_detached_daemon_child, DaemonHandoff,
-    DaemonStartError,
+    configured_daemon_autostart_command, daemon_autostart_allowed, daemon_autostart_command,
+    daemon_autostart_suppression_reason, daemon_restart_trigger, parse_persisted_trigger,
+    spawn_detached_daemon_child, DaemonHandoff, DaemonStartError,
 };
 pub use status::{
     DaemonConfigReloadContext, DaemonSemanticStatusContext, DaemonStatusPreparation,
@@ -187,12 +186,14 @@ impl<'a> DaemonApplication<'a> {
         &self,
         data_root: &Path,
         executable: &Path,
+        loop_interval_seconds: Option<u64>,
         upgrade_fence: &mut dyn DaemonSupervisorUpgradeFence,
     ) -> Result<DaemonSupervisorUpgradeResume> {
         supervisor::resume_daemon_supervisor_after_upgrade(
             self.host,
             data_root,
             executable,
+            loop_interval_seconds,
             upgrade_fence,
         )
     }
@@ -202,15 +203,8 @@ impl<'a> DaemonApplication<'a> {
         data_root: &Path,
         config: &DaemonConfigSnapshot,
         trigger: DaemonTrigger,
-        bounded_unsupervised: bool,
     ) -> std::result::Result<DaemonHandoff, DaemonStartError> {
-        lifecycle::start_daemon_and_wait(
-            self.host,
-            data_root,
-            config,
-            trigger,
-            bounded_unsupervised,
-        )
+        lifecycle::start_daemon_and_wait(self.host, data_root, config, trigger)
     }
 
     pub fn daemon_start_is_fenced(&self) -> bool {
@@ -222,9 +216,8 @@ impl<'a> DaemonApplication<'a> {
         data_root: &Path,
         config: &DaemonConfigSnapshot,
         trigger: DaemonTrigger,
-        bounded_unsupervised: bool,
     ) -> Result<()> {
-        lifecycle::request_daemon_start(self.host, data_root, config, trigger, bounded_unsupervised)
+        lifecycle::request_daemon_start(self.host, data_root, config, trigger)
     }
 
     pub fn handoff_mismatched_daemon_owner(
@@ -300,12 +293,6 @@ pub struct DaemonSupervisorReport(Value);
 impl DaemonSupervisorReport {
     pub(crate) fn new(value: Value) -> Self {
         Self(value)
-    }
-
-    pub fn is_persistent(&self) -> bool {
-        self.0.get("status").and_then(Value::as_str) == Some("installed")
-            && self.0.get("registration_verified").and_then(Value::as_bool) == Some(true)
-            && self.0.get("live_owner_verified").and_then(Value::as_bool) == Some(true)
     }
 
     pub fn into_json(self) -> Value {

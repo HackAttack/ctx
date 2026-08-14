@@ -237,8 +237,6 @@ impl Harness {
                 "daemon",
                 "run",
                 "--force",
-                "--idle-exit-seconds",
-                "600",
                 "--loop-interval-seconds",
                 "600",
             ])

@@ -16,9 +16,9 @@ pub enum DaemonHostStartMode {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct DaemonHostRunRequest {
-    pub idle_exit_seconds: Option<u64>,
     pub loop_interval_seconds: Option<u64>,
     pub max_chunks: Option<usize>,
+    pub handle_process_signals: bool,
     pub force: bool,
     pub start_mode: Option<DaemonHostStartMode>,
     pub trigger: Option<crate::DaemonTrigger>,
@@ -137,9 +137,9 @@ mod tests {
 
     fn manual_request() -> DaemonHostRunRequest {
         DaemonHostRunRequest {
-            idle_exit_seconds: Some(60),
             loop_interval_seconds: Some(2),
             max_chunks: Some(3),
+            handle_process_signals: false,
             force: true,
             start_mode: None,
             trigger: None,
@@ -265,9 +265,9 @@ mod tests {
         let host = TestHost;
         let application = DaemonApplication::new(&host);
         let request = DaemonHostRunRequest {
-            idle_exit_seconds: None,
             loop_interval_seconds: None,
             max_chunks: None,
+            handle_process_signals: false,
             force: false,
             start_mode: Some(DaemonHostStartMode::Auto),
             trigger: Some(crate::DaemonTrigger::Search),

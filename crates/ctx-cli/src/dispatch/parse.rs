@@ -105,13 +105,27 @@ fn human_clap_document(
         }
         ErrorKind::UnknownArgument
             if leaf.as_deref() == Some("ctx daemon run")
-                && arguments.iter().any(|argument| argument == "--once") =>
+                && arguments_select_option(arguments, "--idle-exit-seconds") =>
+        {
+            (
+                "The --idle-exit-seconds option has been removed".to_owned(),
+                Some(
+                    "ctx daemon run is a persistent foreground worker and has no idle timeout."
+                        .to_owned(),
+                ),
+                Some("ctx daemon run [OPTIONS]".to_owned()),
+                Some("ctx daemon run --help"),
+            )
+        }
+        ErrorKind::UnknownArgument
+            if leaf.as_deref() == Some("ctx daemon run")
+                && arguments_select_option(arguments, "--once") =>
         {
             (
                 "The --once option has been retired".to_owned(),
-                Some("Use a finite idle timeout for a bounded foreground run.".to_owned()),
+                Some("Use ctx import for foreground maintenance convergence.".to_owned()),
                 Some("ctx daemon run [OPTIONS]".to_owned()),
-                Some("ctx daemon run --idle-exit-seconds <SECONDS>"),
+                Some("ctx import --help"),
             )
         }
         ErrorKind::ValueValidation => {
@@ -148,6 +162,18 @@ fn human_clap_document(
             action: action.map(|command| Action { command }),
         },
     ))
+}
+
+fn arguments_select_option(arguments: &[OsString], option: &str) -> bool {
+    arguments
+        .iter()
+        .filter_map(|argument| argument.to_str())
+        .any(|argument| {
+            argument == option
+                || argument
+                    .strip_prefix(option)
+                    .is_some_and(|suffix| suffix.starts_with('='))
+        })
 }
 
 fn human_value_validation_recovery(

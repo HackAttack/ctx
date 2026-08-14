@@ -149,8 +149,10 @@ pub(super) struct WindowsTerminalJournal {
 #[serde(deny_unknown_fields)]
 pub(super) struct WindowsDaemonRestart {
     pub(super) trigger: String,
-    pub(super) idle_exit_seconds: u64,
-    pub(super) loop_interval_seconds: u64,
+    #[serde(rename = "idle_exit_seconds", default, skip_serializing)]
+    pub(super) legacy_idle_exit_seconds: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(super) loop_interval_seconds: Option<u64>,
 }
 
 impl InstallTransactionJournal {
@@ -479,8 +481,9 @@ fn validate_windows_helper(journal: &InstallTransactionJournal) -> Result<()> {
         || !valid_sha256(&helper.expected_marker_sha256)
         || helper.daemon_restart.as_ref().is_some_and(|restart| {
             !matches!(restart.trigger.as_str(), "setup" | "import" | "search")
-                || restart.idle_exit_seconds == 0
-                || restart.loop_interval_seconds == 0
+                || restart
+                    .loop_interval_seconds
+                    .is_some_and(|value| value == 0 || value > 3_600)
         })
         || helper
             .failure

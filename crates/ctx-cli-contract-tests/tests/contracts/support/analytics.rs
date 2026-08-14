@@ -54,15 +54,7 @@ pub(crate) fn start_source_refresh_daemon(
         }
     }
     command
-        .args([
-            "daemon",
-            "run",
-            "--force",
-            "--idle-exit-seconds",
-            "600",
-            "--loop-interval-seconds",
-            "600",
-        ])
+        .args(["daemon", "run", "--force", "--loop-interval-seconds", "600"])
         .env("CTX_DATA_ROOT", data_root)
         .env("HOME", home)
         .env("XDG_STATE_HOME", state)

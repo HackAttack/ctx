@@ -52,15 +52,7 @@ fn start_source_refresh_daemon(temp: &TempDir, mode: &str) -> SourceRefreshDaemo
         }
     }
     command
-        .args([
-            "daemon",
-            "run",
-            "--force",
-            "--idle-exit-seconds",
-            "600",
-            "--loop-interval-seconds",
-            "600",
-        ])
+        .args(["daemon", "run", "--force", "--loop-interval-seconds", "600"])
         .env("CTX_DAEMON_MODE", mode)
         .stdout(Stdio::null())
         .stderr(Stdio::piped());

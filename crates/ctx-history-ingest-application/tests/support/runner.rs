@@ -13,10 +13,6 @@ use tempfile::{Builder, TempDir, TempPath};
 pub(super) const PERSISTENT_DAEMON_TEST_ROOT_MARKER: &str = ".ctx-test-owned-daemon";
 const BOUND_CTX_BINARY_TEST_ROOT_MARKER: &str = ".ctx-test-bound-binary";
 const READY_CTX_BINARY_TEST_ROOT_MARKER: &str = ".ctx-test-copy-ready";
-const FINITE_DAEMON_TEST_ROOT_MARKER: &str = ".ctx-test-daemon-idle-seconds";
-const FINITE_DAEMON_IDLE_EXIT_SECONDS: &str = "600";
-const FINITE_DAEMON_STOP_TIMEOUT: Duration = Duration::from_secs(5);
-const FINITE_DAEMON_STOP_POLL_INTERVAL: Duration = Duration::from_millis(20);
 
 pub(crate) fn tempdir() -> TempDir {
     let temp_root = fs::canonicalize(std::env::temp_dir())
@@ -32,67 +28,6 @@ pub(crate) fn tempdir() -> TempDir {
         fs::set_permissions(temp.path(), fs::Permissions::from_mode(0o700)).unwrap();
     }
     temp
-}
-
-/// A temporary root whose commands may autostart one copied, finite-idle daemon.
-///
-/// The copied binary remains the daemon's ownership identity for every command
-/// in the root. Teardown asks that exact binary to disable its daemon and waits
-/// for production status to report that the owned process has exited.
-pub(crate) struct FiniteDaemonTestRoot {
-    temp: TempDir,
-}
-
-impl FiniteDaemonTestRoot {
-    fn new() -> Self {
-        let temp = tempdir();
-        mark_finite_daemon_test_root(&temp);
-        Self { temp }
-    }
-}
-
-impl Deref for FiniteDaemonTestRoot {
-    type Target = TempDir;
-
-    fn deref(&self) -> &Self::Target {
-        &self.temp
-    }
-}
-
-impl AsRef<Path> for FiniteDaemonTestRoot {
-    fn as_ref(&self) -> &Path {
-        self.temp.path()
-    }
-}
-
-impl Drop for FiniteDaemonTestRoot {
-    fn drop(&mut self) {
-        if let Err(error) = stop_finite_test_owned_daemon(&self.temp) {
-            if thread::panicking() {
-                eprintln!("finite test-owned daemon teardown also failed: {error}");
-            } else {
-                panic!("finite test-owned daemon teardown failed: {error}");
-            }
-        }
-    }
-}
-
-pub(crate) fn finite_daemon_test_root() -> FiniteDaemonTestRoot {
-    FiniteDaemonTestRoot::new()
-}
-
-pub(crate) fn mark_finite_daemon_test_root(temp: &TempDir) {
-    bind_test_ctx_binary(temp);
-    fs::write(
-        temp.path().join(PERSISTENT_DAEMON_TEST_ROOT_MARKER),
-        b"test-owned finite daemon root\n",
-    )
-    .unwrap();
-    fs::write(
-        temp.path().join(FINITE_DAEMON_TEST_ROOT_MARKER),
-        format!("{FINITE_DAEMON_IDLE_EXIT_SECONDS}\n"),
-    )
-    .unwrap();
 }
 
 /// Bind this root's future `ctx(temp)` commands to one copied executable.
@@ -179,27 +114,10 @@ pub(crate) fn apply_hermetic_env(command: &mut Command, temp: &TempDir) {
     command.env_remove("CTX_DAEMON_ENABLED");
     if persistent_daemon_test {
         command.env_remove("CTX_DAEMON_AUTOSTART_OFF");
-        let finite_idle_path = temp.path().join(FINITE_DAEMON_TEST_ROOT_MARKER);
-        match fs::read_to_string(&finite_idle_path) {
-            Ok(seconds) => {
-                command.env("CTX_DAEMON_AUTOSTART_IDLE_EXIT_SECONDS", seconds.trim());
-            }
-            Err(error) if error.kind() == io::ErrorKind::NotFound => {
-                command.env_remove("CTX_DAEMON_AUTOSTART_IDLE_EXIT_SECONDS");
-            }
-            Err(error) => {
-                panic!(
-                    "read finite daemon test marker {}: {error}",
-                    finite_idle_path.display()
-                );
-            }
-        }
     } else {
-        // Ordinary integration commands are process-local. Tests that
-        // explicitly remove this override retain a finite fallback until they
-        // adopt the identity-bound persistent-daemon harness.
+        // Ordinary integration commands are process-local. Tests that permit
+        // autostart must retain an exact foreground Child and terminate it.
         command.env("CTX_DAEMON_AUTOSTART_OFF", "1");
-        command.env("CTX_DAEMON_AUTOSTART_IDLE_EXIT_SECONDS", "2");
     }
     command.env_remove("CTX_QUIET");
     // Tests set CI explicitly when they need CI-only behavior.
@@ -412,56 +330,6 @@ pub(crate) fn copied_binary(temp: &TempDir, source: &Path) -> PathBuf {
         }
     }
     target
-}
-
-fn stop_finite_test_owned_daemon(temp: &TempDir) -> Result<(), String> {
-    let binary = test_binary_copy_path(temp);
-    if !binary.is_file() {
-        return Ok(());
-    }
-    let output = ctx_from_binary(temp, &binary)
-        .env("CTX_DAEMON_AUTOSTART_OFF", "1")
-        .args(["daemon", "disable", "--format=json"])
-        .output()
-        .map_err(|error| format!("run daemon disable with {}: {error}", binary.display()))?;
-    if !output.status.success() {
-        return Err(format!(
-            "daemon disable with {} failed ({}): {}",
-            binary.display(),
-            output.status,
-            String::from_utf8_lossy(&output.stderr)
-        ));
-    }
-
-    let deadline = Instant::now() + FINITE_DAEMON_STOP_TIMEOUT;
-    loop {
-        let status = ctx_from_binary(temp, &binary)
-            .env("CTX_DAEMON_AUTOSTART_OFF", "1")
-            .args(["daemon", "status", "--format=json"])
-            .output()
-            .map_err(|error| {
-                format!("inspect disabled daemon with {}: {error}", binary.display())
-            })?;
-        if status.status.success() {
-            let packet: Value = serde_json::from_slice(&status.stdout).map_err(|error| {
-                format!(
-                    "parse disabled daemon status from {}: {error}",
-                    binary.display()
-                )
-            })?;
-            if packet["daemon"]["running"] != true {
-                return Ok(());
-            }
-        }
-        if Instant::now() >= deadline {
-            return Err(format!(
-                "daemon owned by {} remained active after disable: {}",
-                binary.display(),
-                String::from_utf8_lossy(&status.stderr)
-            ));
-        }
-        thread::sleep(FINITE_DAEMON_STOP_POLL_INTERVAL);
-    }
 }
 
 pub(crate) fn terminate_and_reap_test_child(

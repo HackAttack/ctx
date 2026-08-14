@@ -62,15 +62,7 @@ fn start_publication_daemon(temp: &TempDir) -> PublicationDaemon {
         }
     }
     command
-        .args([
-            "daemon",
-            "run",
-            "--force",
-            "--idle-exit-seconds",
-            "600",
-            "--loop-interval-seconds",
-            "600",
-        ])
+        .args(["daemon", "run", "--force", "--loop-interval-seconds", "600"])
         .env("CTX_DAEMON_MODE", "source-refresh-only")
         .stdout(Stdio::null())
         .stderr(Stdio::piped());

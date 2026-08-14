@@ -15,7 +15,6 @@ use ctx_daemon_runtime::{
     read_daemon_status, read_pid_lock_json, spawn_detached, write_daemon_status,
     DaemonHandoffRestartDeferral, NormalizedLaunch,
 };
-use ctx_daemon_service::DAEMON_IDLE_EXIT_SECONDS_CAP;
 use ctx_history_core::utc_now;
 use serde_json::{json, Value};
 
@@ -33,7 +32,6 @@ const DAEMON_SETUP_HANDOFF_MAX_HEARTBEAT_AGE_MS: i64 = 30_000;
 const DAEMON_SETUP_HANDOFF_MAX_FUTURE_HEARTBEAT_MS: i64 = 5_000;
 const DAEMON_HEALTH_TIMEOUT: Duration = Duration::from_millis(500);
 const DAEMON_HEALTH_RESPONSE_MAX_BYTES: u64 = 16 * 1024;
-const DAEMON_UNSUPERVISED_IDLE_EXIT_SECONDS: u64 = 60;
 const DAEMON_UPGRADE_STOP_TIMEOUT: Duration = Duration::from_secs(5);
 const DAEMON_UPGRADE_RESTART_TIMEOUT: Duration = Duration::from_secs(5);
 const DAEMON_UPGRADE_HANDOFF_TOKEN_ENV: &str = "CTX_DAEMON_UPGRADE_HANDOFF_TOKEN";
@@ -196,6 +194,19 @@ fn read_daemon_owner_identity(data_root: &Path) -> Result<Option<DaemonOwnerIden
     }))
 }
 
+fn wait_for_daemon_owner_identity(data_root: &Path) -> Result<Option<DaemonOwnerIdentity>> {
+    let deadline = Instant::now() + DAEMON_SETUP_HANDOFF_TIMEOUT;
+    loop {
+        if let Some(owner) = read_daemon_owner_identity(data_root)? {
+            return Ok(Some(owner));
+        }
+        if !daemon_lock_is_active(data_root) || Instant::now() >= deadline {
+            return Ok(None);
+        }
+        std::thread::sleep(DAEMON_UPGRADE_POLL_INTERVAL);
+    }
+}
+
 fn recover_unusable_daemon_owner(
     host: &dyn DaemonApplicationHost,
     data_root: &Path,
@@ -256,7 +267,6 @@ fn request_daemon_autostart(
     data_root: &Path,
     config: &DaemonConfigSnapshot,
     trigger: DaemonTrigger,
-    bounded_unsupervised: bool,
 ) -> Result<DaemonAutostartRequest> {
     if hosted_uninstall_fences_daemon_autostart(host) {
         return Ok(DaemonAutostartRequest::Suppressed(
@@ -275,7 +285,7 @@ fn request_daemon_autostart(
         let executable = daemon_autostart_exe()?;
         if daemon_lock_matches_executable(data_root, &executable)? {
             return Ok(DaemonAutostartRequest::Existing(
-                read_daemon_owner_identity(data_root)?.ok_or_else(|| {
+                wait_for_daemon_owner_identity(data_root)?.ok_or_else(|| {
                     anyhow!("active ctx daemon lock has no stable owner identity")
                 })?,
             ));
@@ -286,7 +296,7 @@ fn request_daemon_autostart(
         handoff_mismatched_daemon_owner(host, data_root, &executable)?;
         if daemon_lock_is_active(data_root) {
             return Ok(DaemonAutostartRequest::Existing(
-                read_daemon_owner_identity(data_root)?.ok_or_else(|| {
+                wait_for_daemon_owner_identity(data_root)?.ok_or_else(|| {
                     anyhow!("active replacement ctx daemon has no stable owner identity")
                 })?,
             ));
@@ -309,7 +319,7 @@ fn request_daemon_autostart(
         handoff_mismatched_daemon_owner(host, data_root, &executable)?;
         if daemon_lock_is_active(data_root) {
             return Ok(DaemonAutostartRequest::Existing(
-                read_daemon_owner_identity(data_root)?.ok_or_else(|| {
+                wait_for_daemon_owner_identity(data_root)?.ok_or_else(|| {
                     anyhow!("active replacement ctx daemon has no stable owner identity")
                 })?,
             ));
@@ -329,11 +339,7 @@ fn request_daemon_autostart(
             return Err(error);
         }
     };
-    let launch = if bounded_unsupervised {
-        configured_unsupervised_daemon_autostart_command(&exe, data_root, trigger, None)
-    } else {
-        configured_daemon_autostart_command(&exe, data_root, trigger, None)
-    };
+    let launch = configured_daemon_autostart_command(&exe, data_root, trigger, None);
     match launch.and_then(|launch| spawn_daemon_child(host, launch)) {
         Ok(child) => Ok(DaemonAutostartRequest::Spawned(child)),
         Err(error) => {
@@ -355,10 +361,8 @@ pub fn request_daemon_start(
     data_root: &Path,
     config: &DaemonConfigSnapshot,
     trigger: DaemonTrigger,
-    bounded_unsupervised: bool,
 ) -> Result<()> {
-    let _request =
-        request_daemon_autostart(host, data_root, config, trigger, bounded_unsupervised)?;
+    let _request = request_daemon_autostart(host, data_root, config, trigger)?;
     Ok(())
 }
 
@@ -367,19 +371,17 @@ pub fn start_daemon_and_wait(
     data_root: &Path,
     config: &DaemonConfigSnapshot,
     trigger: DaemonTrigger,
-    bounded_unsupervised: bool,
 ) -> std::result::Result<DaemonHandoff, DaemonStartError> {
     let mut recovery_attempted = false;
     loop {
         let request =
-            request_daemon_autostart(host, data_root, config, trigger, bounded_unsupervised)
-                .map_err(|error| {
-                    if error.is::<BinaryIdentityHandoffError>() {
-                        DaemonStartError::BinaryIdentity(error)
-                    } else {
-                        DaemonStartError::Start(error)
-                    }
-                })?;
+            request_daemon_autostart(host, data_root, config, trigger).map_err(|error| {
+                if error.is::<BinaryIdentityHandoffError>() {
+                    DaemonStartError::BinaryIdentity(error)
+                } else {
+                    DaemonStartError::Start(error)
+                }
+            })?;
         let (mut child, pending_restart_request, existing_owner) = match request {
             DaemonAutostartRequest::Existing(owner) => (None, None, Some(owner)),
             DaemonAutostartRequest::Deferred(deferral) => (
@@ -786,7 +788,6 @@ pub fn daemon_autostart_command(
     exe: &Path,
     data_root: &Path,
     trigger: DaemonTrigger,
-    idle_exit: Option<u64>,
     loop_interval: Option<u64>,
     handoff_token: Option<&str>,
 ) -> io::Result<NormalizedLaunch> {
@@ -794,7 +795,6 @@ pub fn daemon_autostart_command(
         exe,
         data_root,
         trigger,
-        idle_exit,
         loop_interval,
         handoff_token,
         BTreeMap::new(),
@@ -805,7 +805,6 @@ fn daemon_autostart_command_with_environment_overrides(
     exe: &Path,
     data_root: &Path,
     trigger: DaemonTrigger,
-    idle_exit: Option<u64>,
     loop_interval: Option<u64>,
     handoff_token: Option<&str>,
     overrides: BTreeMap<OsString, OsString>,
@@ -821,10 +820,6 @@ fn daemon_autostart_command_with_environment_overrides(
         OsString::from(trigger.as_str()),
         OsString::from("--format=json"),
     ];
-    if let Some(idle_exit) = idle_exit {
-        args.push(OsString::from("--idle-exit-seconds"));
-        args.push(OsString::from(idle_exit.to_string()));
-    }
     if let Some(loop_interval) = loop_interval {
         args.push(OsString::from("--loop-interval-seconds"));
         args.push(OsString::from(loop_interval.to_string()));
@@ -1013,55 +1008,19 @@ pub fn configured_daemon_autostart_command(
     trigger: DaemonTrigger,
     handoff_token: Option<&str>,
 ) -> io::Result<NormalizedLaunch> {
-    configured_daemon_autostart_command_with_default_idle_exit(
-        exe,
-        data_root,
-        trigger,
-        handoff_token,
-        None,
-    )
-}
-
-pub fn configured_unsupervised_daemon_autostart_command(
-    exe: &Path,
-    data_root: &Path,
-    trigger: DaemonTrigger,
-    handoff_token: Option<&str>,
-) -> io::Result<NormalizedLaunch> {
-    configured_daemon_autostart_command_with_default_idle_exit(
-        exe,
-        data_root,
-        trigger,
-        handoff_token,
-        Some(DAEMON_UNSUPERVISED_IDLE_EXIT_SECONDS),
-    )
-}
-
-fn configured_daemon_autostart_command_with_default_idle_exit(
-    exe: &Path,
-    data_root: &Path,
-    trigger: DaemonTrigger,
-    handoff_token: Option<&str>,
-    default_idle_exit: Option<u64>,
-) -> io::Result<NormalizedLaunch> {
     let mut overrides = BTreeMap::new();
     if let Some(mode) = env::var_os(DAEMON_MODE_ENV) {
         overrides.insert(OsString::from(DAEMON_MODE_ENV), mode);
     }
-    let configured_idle_exit = daemon_autostart_u64_env(
-        "CTX_DAEMON_AUTOSTART_IDLE_EXIT_SECONDS",
-        DAEMON_IDLE_EXIT_SECONDS_CAP,
-    );
-    let idle_exit = match default_idle_exit {
-        Some(maximum) => Some(configured_idle_exit.unwrap_or(maximum).min(maximum)),
-        None => configured_idle_exit,
-    };
+    let loop_interval_seconds =
+        crate::supervisor::persisted_supervisor_loop_interval_seconds(data_root).or_else(|| {
+            daemon_autostart_u64_env("CTX_DAEMON_AUTOSTART_LOOP_INTERVAL_SECONDS", 3_600)
+        });
     daemon_autostart_command_with_environment_overrides(
         exe,
         data_root,
         trigger,
-        idle_exit,
-        daemon_autostart_u64_env("CTX_DAEMON_AUTOSTART_LOOP_INTERVAL_SECONDS", 3_600),
+        loop_interval_seconds,
         handoff_token,
         overrides,
     )

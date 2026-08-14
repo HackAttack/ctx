@@ -98,7 +98,7 @@ fn write_codex_lineage_rollout(
 
 #[test]
 fn antigravity_cli_import_skips_malformed_file_among_valid_files() {
-    let temp = finite_daemon_test_root();
+    let temp = daemon_test_root();
     let brain = write_antigravity_valid_and_malformed_file_tree(&temp);
 
     let imported = json_output(ctx(&temp).args([
@@ -141,7 +141,7 @@ fn antigravity_cli_import_skips_malformed_file_among_valid_files() {
 
 #[test]
 fn mixed_source_replay_remains_stable_after_malformed_file_is_skipped() {
-    let temp = finite_daemon_test_root();
+    let temp = daemon_test_root();
     let brain = write_antigravity_valid_and_malformed_file_tree(&temp);
     fs::create_dir_all(temp.path().join(".gemini/antigravity-cli/brain")).unwrap();
     fs::create_dir_all(temp.path().join(".gemini/antigravity-ide/brain")).unwrap();
@@ -195,7 +195,7 @@ fn mixed_source_replay_remains_stable_after_malformed_file_is_skipped() {
 
 #[test]
 fn firebender_replay_preserves_mixed_and_all_invalid_outcomes() {
-    let mixed_temp = finite_daemon_test_root();
+    let mixed_temp = daemon_test_root();
     let mixed_project =
         write_native_firebender_fixture(&mixed_temp, "firebender mixed rejection replay oracle");
     let mixed_database = Path::new(&mixed_project)
@@ -271,7 +271,7 @@ fn firebender_replay_preserves_mixed_and_all_invalid_outcomes() {
         }
     }
 
-    let invalid_temp = finite_daemon_test_root();
+    let invalid_temp = daemon_test_root();
     let invalid_project =
         write_native_firebender_fixture(&invalid_temp, "unused all-invalid oracle");
     let invalid_database = Path::new(&invalid_project)
@@ -323,7 +323,7 @@ fn firebender_replay_preserves_mixed_and_all_invalid_outcomes() {
 
 #[test]
 fn codex_mixed_session_replay_preserves_source_backed_rejection_counts() {
-    let temp = finite_daemon_test_root();
+    let temp = daemon_test_root();
     let session = temp.path().join("codex-mixed-replay.jsonl");
     fs::write(
         &session,
@@ -382,7 +382,7 @@ fn codex_mixed_session_replay_preserves_source_backed_rejection_counts() {
 
 #[test]
 fn codex_nested_root_advisory_import_is_searchable_and_showable_without_source_failures() {
-    let temp = finite_daemon_test_root();
+    let temp = daemon_test_root();
     let sessions = temp.path().join("codex-nested-lineage-sessions");
     let root = "019fc000-0000-7000-8000-0000000032a0";
     let child = "019fc000-0000-7000-8000-0000000032a1";
@@ -455,7 +455,7 @@ fn codex_nested_root_advisory_import_is_searchable_and_showable_without_source_f
 
 #[test]
 fn junie_all_unknown_session_is_published_with_ignored_accounting() {
-    let temp = finite_daemon_test_root();
+    let temp = daemon_test_root();
     let sessions = temp.path().join("junie-all-unknown");
     let session_id = "session-unknown-247";
     let session = sessions.join(session_id);
@@ -506,7 +506,7 @@ fn junie_all_unknown_session_is_published_with_ignored_accounting() {
 
 #[test]
 fn auggie_unknown_node_is_published_with_ignored_accounting() {
-    let temp = finite_daemon_test_root();
+    let temp = daemon_test_root();
     let session = temp.path().join("auggie-unknown-node.json");
     let unknown_body = "auggie-unknown-node-body-must-not-be-indexed";
     fs::write(
@@ -548,7 +548,7 @@ fn auggie_unknown_node_is_published_with_ignored_accounting() {
 
 #[test]
 fn codex_unknown_result_like_events_preserve_neighbors_on_fresh_and_warm_import() {
-    let temp = finite_daemon_test_root();
+    let temp = daemon_test_root();
     let session = temp.path().join("codex-unknown-result-like.jsonl");
     let binary_body = "iVBORw0KGgo=issue-247-cli-body";
     let future_body = "future-cli-result-body-must-not-be-indexed";
@@ -632,7 +632,7 @@ fn codex_unknown_result_like_events_preserve_neighbors_on_fresh_and_warm_import(
 
 #[test]
 fn corrected_manifested_file_retries_rejected_row_idempotently() {
-    let temp = finite_daemon_test_root();
+    let temp = daemon_test_root();
     let project = temp.path().join("claude-project");
     fs::create_dir_all(&project).unwrap();
     fs::create_dir_all(temp.path().join(".claude/projects")).unwrap();
@@ -705,7 +705,7 @@ fn corrected_manifested_file_retries_rejected_row_idempotently() {
 
 #[test]
 fn all_invalid_source_reports_daemon_owned_failure_and_exits_nonzero() {
-    let temp = finite_daemon_test_root();
+    let temp = daemon_test_root();
     let brain = temp.path().join("brain");
     let bad_logs = brain.join("agy-bad").join(".system_generated").join("logs");
     fs::create_dir_all(&bad_logs).unwrap();
@@ -731,7 +731,7 @@ fn all_invalid_source_reports_daemon_owned_failure_and_exits_nonzero() {
 
 #[test]
 fn complete_oversize_only_codex_session_reports_source_backed_rejection() {
-    let temp = finite_daemon_test_root();
+    let temp = daemon_test_root();
     let session = temp.path().join("codex-all-rejected.jsonl");
     let mut source = concat!(
         r#"{"timestamp":"2026-07-13T12:00:00Z","type":"session_meta","payload":{"id":"codex-all-rejected","timestamp":"2026-07-13T12:00:00Z","cwd":"/repo","originator":"codex-cli"}}"#,
@@ -778,7 +778,7 @@ fn complete_oversize_only_codex_session_reports_source_backed_rejection() {
 
 #[test]
 fn missing_explicit_provider_source_keeps_not_found_classification() {
-    let temp = finite_daemon_test_root();
+    let temp = daemon_test_root();
     let missing = temp.path().join("missing-history.jsonl");
     let stderr = source_refresh_failure(ctx(&temp).args([
         "import",
@@ -811,7 +811,7 @@ fn failed_warp_report(temp: &TempDir, path: &Path) -> String {
 
 #[test]
 fn warp_native_source_failures_keep_cli_classification() {
-    let corrupt_temp = finite_daemon_test_root();
+    let corrupt_temp = daemon_test_root();
     let corrupt_path = corrupt_temp.path().join("corrupt-warp.sqlite");
     fs::write(&corrupt_path, b"not a SQLite database").unwrap();
     let corrupt = failed_warp_report(&corrupt_temp, &corrupt_path);
@@ -820,7 +820,7 @@ fn warp_native_source_failures_keep_cli_classification() {
         "{corrupt}"
     );
 
-    let schema_temp = finite_daemon_test_root();
+    let schema_temp = daemon_test_root();
     let schema_path = schema_temp.path().join("schema-warp.sqlite");
     drop(Connection::open(&schema_path).unwrap());
     let schema = failed_warp_report(&schema_temp, &schema_path);
@@ -831,7 +831,7 @@ fn warp_native_source_failures_keep_cli_classification() {
 #[cfg(unix)]
 #[test]
 fn symlinked_default_source_is_not_admitted_beside_a_valid_source() {
-    let temp = finite_daemon_test_root();
+    let temp = daemon_test_root();
     write_codex_inventory_oracle(&temp);
     write_symlinked_claude_inventory_source(&temp);
 
@@ -855,7 +855,7 @@ fn symlinked_default_source_is_not_admitted_beside_a_valid_source() {
 #[cfg(unix)]
 #[test]
 fn symlinked_default_source_is_rejected_before_inventory() {
-    let temp = finite_daemon_test_root();
+    let temp = daemon_test_root();
     write_symlinked_claude_inventory_source(&temp);
 
     let error = source_refresh_failure(ctx(&temp).args([

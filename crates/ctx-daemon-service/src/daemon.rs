@@ -41,10 +41,7 @@ use super::{
     paths_status::{
         daemon_core_refresh_job_path, read_daemon_job_status, read_daemon_status, DaemonLock,
     },
-    query_service::{
-        daemon_can_begin_idle_shutdown, observe_daemon_query_activity, DaemonLifecycleState,
-        DaemonQueryService,
-    },
+    query_service::{DaemonLifecycleState, DaemonQueryService},
 };
 
 mod config_reload;
@@ -110,7 +107,6 @@ pub(super) struct DaemonRuntime {
     pub(super) sidecar_drain: DaemonSidecarDrain,
     pub(super) consumer_retry_deferral: DaemonConsumerRetryDeferral,
     pub(super) background_refresh_cadence: DaemonBackgroundRefreshCadence,
-    pub(super) finite_refresh_admission: FiniteRefreshAdmissionEpoch,
     pub(super) config: AppConfig,
 }
 
@@ -224,6 +220,20 @@ where
     run_daemon_inner(args, data_root, config, ports, upgrade)
 }
 
+fn install_daemon_process_signal_handler(
+    wakeup: Arc<DaemonWakeup>,
+    lifecycle_state: Arc<DaemonLifecycleState>,
+) -> Result<()> {
+    // A daemon launched as a shell background job can inherit SIGINT as
+    // ignored across exec. This process owns its signal lifecycle, so replace
+    // inherited dispositions instead of rejecting an otherwise valid launch.
+    ctrlc::set_handler(move || {
+        lifecycle_state.mark_stopping();
+        wakeup.signal_shutdown();
+    })
+    .context("install ctx daemon process signal handler")
+}
+
 fn publish_daemon_fatal_status_while_owned(
     _lock: &DaemonLock,
     data_root: &Path,
@@ -311,7 +321,6 @@ where
         daemon_previous_status_needs_recovery(read_daemon_status(data_root).as_ref());
     let mut telemetry =
         DaemonTelemetry::new(daemon_run_facts(&args), run_started, started_at_ms as u64);
-    let idle_exit = args.idle_exit_seconds.map(StdDuration::from_secs);
     let safety_interval = args.loop_interval_seconds.map_or_else(
         || daemon_safety_reconcile_interval(started_at_ms as u64),
         StdDuration::from_secs,
@@ -322,7 +331,6 @@ where
     let installation_daemon_lease = match ports.installation.acquire(
         data_root,
         upgrade_restart_trigger,
-        idle_exit.map(|duration| duration.as_secs()),
         args.loop_interval_seconds,
         ports
             .installation
@@ -343,6 +351,9 @@ where
     let mut auto_upgrade_handoff = None;
     let wakeup = Arc::new(DaemonWakeup::default());
     let lifecycle_state = Arc::new(DaemonLifecycleState::starting());
+    if args.handle_process_signals {
+        install_daemon_process_signal_handler(Arc::clone(&wakeup), Arc::clone(&lifecycle_state))?;
+    }
     let active_result = (|| -> Result<bool> {
         let mut failed = false;
         let mut runtime = DaemonRuntime {
@@ -476,9 +487,6 @@ where
             let events = telemetry.ready_events(recovered_previous_run, Instant::now());
             send_daemon_events(ports.observation, data_root, &events);
         }
-        let mut idle_since: Option<Instant> = None;
-        let mut observed_query_generation = 0;
-        let mut observed_refresh_generation = 0;
         let mut next_safety_reconcile = Instant::now() + safety_interval;
         // Recovery installs the coordinator once before IPC activation, and
         // configuration reload only starts or stops services around that same
@@ -488,9 +496,8 @@ where
         let source_refresh_coordinator = runtime.source_refresh_coordinator.clone();
         loop {
             // Hermetic callers may remove their complete temporary data root
-            // while an explicitly finite test daemon is winding down. Treat
-            // that as shutdown and, crucially, do not recreate the deleted
-            // root merely to publish a terminal receipt.
+            // during shutdown. Do not recreate the deleted root merely to
+            // publish a terminal receipt.
             if !data_root.exists() || !lifecycle_ready || lifecycle_state.is_stopping() {
                 break;
             }
@@ -590,66 +597,8 @@ where
             {
                 break;
             }
-            observe_daemon_query_activity(
-                query_service
-                    .as_ref()
-                    .map(|service| service.activity.as_ref()),
-                &mut idle_since,
-                &mut observed_query_generation,
-            );
-            observe_daemon_query_activity(
-                refresh_service
-                    .as_ref()
-                    .map(|service| service.activity.as_ref()),
-                &mut idle_since,
-                &mut observed_refresh_generation,
-            );
             let events = telemetry.liveness_events(Instant::now());
             send_daemon_events(ports.observation, data_root, &events);
-            let retry_due = !runtime.config.daemon.mode.runs_only_source_refresh()
-                && daemon_retry_due(&runtime);
-            let source_refresh_pending = refresh_service
-                .as_ref()
-                .and(daemon_scheduler_source_refresh(&source_refresh_coordinator))
-                .is_some_and(|source_refresh| {
-                    source_refresh.has_pending_request()
-                        || source_refresh.has_scheduled_route_work()
-                });
-            // Retry and queued-refresh state describe future scheduler work,
-            // not work currently executing. An explicit finite daemon must
-            // still attempt shutdown once its idle lifetime expires; the
-            // generation-aware service gate below protects active requests,
-            // and refresh/publication work runs synchronously between gates.
-            if daemon_should_attempt_finite_idle_shutdown(
-                idle_exit,
-                idle_since,
-                retry_due,
-                source_refresh_pending,
-            ) {
-                if daemon_services_can_begin_idle_shutdown(
-                    query_service.as_ref(),
-                    observed_query_generation,
-                    refresh_service.as_ref(),
-                    observed_refresh_generation,
-                ) {
-                    break;
-                }
-                observe_daemon_query_activity(
-                    query_service
-                        .as_ref()
-                        .map(|service| service.activity.as_ref()),
-                    &mut idle_since,
-                    &mut observed_query_generation,
-                );
-                observe_daemon_query_activity(
-                    refresh_service
-                        .as_ref()
-                        .map(|service| service.activity.as_ref()),
-                    &mut idle_since,
-                    &mut observed_refresh_generation,
-                );
-                continue;
-            }
             let cycle_started = Instant::now();
             let semantic_runtime_active =
                 daemon_semantic_runtime_active(&runtime, query_service.as_ref());
@@ -696,27 +645,6 @@ where
             if continue_immediately {
                 continue;
             }
-            observe_daemon_query_activity(
-                query_service
-                    .as_ref()
-                    .map(|service| service.activity.as_ref()),
-                &mut idle_since,
-                &mut observed_query_generation,
-            );
-            observe_daemon_query_activity(
-                refresh_service
-                    .as_ref()
-                    .map(|service| service.activity.as_ref()),
-                &mut idle_since,
-                &mut observed_refresh_generation,
-            );
-            if idle_since.is_none() {
-                // A blocking persistent loop has no synthetic follow-up tick
-                // after productive work. Start the explicit finite-idle clock
-                // here so --idle-exit-seconds/test daemons can still stop
-                // after their last work cycle without scheduler polling.
-                idle_since = Some(Instant::now());
-            }
             let now = Instant::now();
             let wait_for = daemon_wait_duration(
                 &runtime,
@@ -724,8 +652,6 @@ where
                     .as_ref()
                     .and(daemon_scheduler_source_refresh(&source_refresh_coordinator)),
                 next_safety_reconcile,
-                idle_since,
-                idle_exit,
                 now,
             );
             let wake = wakeup.wait(wait_for);
@@ -747,7 +673,6 @@ where
                 && daemon_scheduled_refresh_due(
                     &runtime,
                     source_refresh,
-                    idle_exit,
                     Instant::now(),
                     source_route_ledger_now_ms(),
                 );
@@ -833,6 +758,7 @@ where
                 data_root,
                 attempt_id,
                 upgrade_restart_trigger.as_str(),
+                args.loop_interval_seconds,
             )?);
         }
         let failure_message = failed.then(|| {
@@ -849,7 +775,7 @@ where
             write_daemon_lifecycle_status_with_runtime(
                 data_root,
                 &args,
-                if failed { "failed" } else { "completed" },
+                if failed { "failed" } else { "stopped" },
                 started_at_ms,
                 Some(utc_now().timestamp_millis()),
                 failure_message,
@@ -908,13 +834,6 @@ where
             upgrade.automatic_policy,
             upgrade.observer,
             prepared,
-            (
-                upgrade_restart_trigger.as_str(),
-                idle_exit
-                    .map(|duration| duration.as_secs())
-                    .unwrap_or(super::runtime_limits::DAEMON_IDLE_EXIT_SECONDS_CAP),
-                safety_interval.as_secs(),
-            ),
             auto_upgrade_handoff,
         )?;
     }
@@ -972,8 +891,6 @@ pub(super) fn daemon_wait_duration(
     runtime: &DaemonRuntime,
     source_refresh: Option<&CoreRefreshEngine>,
     next_safety_reconcile: Instant,
-    idle_since: Option<Instant>,
-    idle_exit: Option<StdDuration>,
     now: Instant,
 ) -> StdDuration {
     if runtime.history_retry.ready()
@@ -995,18 +912,8 @@ pub(super) fn daemon_wait_duration(
             wait_for = wait_for.min(StdDuration::from_millis(retry_after_ms));
         }
     }
-    if let (Some(idle), Some(limit)) = (idle_since, idle_exit) {
-        wait_for = wait_for.min(limit.saturating_sub(now.saturating_duration_since(idle)));
-    }
-    if let Some(route_due_ms) = runtime
-        .finite_refresh_admission
-        .allows_automatic_provider_refresh(idle_exit)
-        .then(|| {
-            source_refresh.and_then(|refresh| {
-                refresh.next_dirty_route_due_in_ms(source_route_ledger_now_ms())
-            })
-        })
-        .flatten()
+    if let Some(route_due_ms) = source_refresh
+        .and_then(|refresh| refresh.next_dirty_route_due_in_ms(source_route_ledger_now_ms()))
     {
         let route_wait = StdDuration::from_millis(route_due_ms);
         let cadence_wait = runtime

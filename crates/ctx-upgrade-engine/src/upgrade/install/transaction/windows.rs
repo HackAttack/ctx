@@ -51,7 +51,7 @@ pub(super) fn publish_install(
     marker_staged: Option<&Path>,
     attempt_id: &str,
     data_root: &Path,
-    daemon_restart: Option<(&str, u64, u64)>,
+    daemon_restart: Option<(&str, Option<u64>)>,
     before_publish: &mut dyn FnMut() -> Result<()>,
 ) -> Result<ApplyResult> {
     helper::cleanup_stale_copies(&plan.install_path)?;
@@ -76,11 +76,11 @@ pub(super) fn publish_install(
         helper_path,
         expected_binary_sha256: plan.install_fingerprint.binary_sha256.clone(),
         expected_marker_sha256: plan.install_fingerprint.marker_sha256.clone(),
-        daemon_restart: daemon_restart.map(|(trigger, idle_exit, loop_interval)| {
+        daemon_restart: daemon_restart.map(|(trigger, loop_interval_seconds)| {
             WindowsDaemonRestart {
                 trigger: trigger.to_owned(),
-                idle_exit_seconds: idle_exit,
-                loop_interval_seconds: loop_interval,
+                legacy_idle_exit_seconds: None,
+                loop_interval_seconds,
             }
         }),
         failure: None,
@@ -362,7 +362,6 @@ fn restart_daemon<D: DaemonUpgradePort + ?Sized>(
         .expect("validated Windows helper");
     let restart = helper.daemon_restart.as_ref().map(|restart| DaemonRestart {
         trigger: restart.trigger.as_str(),
-        idle_exit_seconds: restart.idle_exit_seconds,
         loop_interval_seconds: restart.loop_interval_seconds,
     });
     daemon.complete_replacement_handoff(

@@ -50,6 +50,7 @@ const SUPERVISOR_DAEMON_POLICY_ENV_ALLOWLIST: &[&str] = &[
     "no_proxy",
 ];
 const PRO_CHANNEL_ENV: &str = "CTX_PRO_CHANNEL";
+const DAEMON_LOOP_INTERVAL_ENV: &str = "CTX_DAEMON_AUTOSTART_LOOP_INTERVAL_SECONDS";
 pub(super) const HOSTED_INSTALLER_SETUP_ENV: &str = "CTX_HOSTED_INSTALLER_SETUP";
 const HOSTED_INSTALLER_TRANSIENT_POLICY_ENV: &[&str] =
     &["CTX_SEARCH_SEMANTIC", "CTX_UPGRADE_CHANNEL"];
@@ -128,11 +129,30 @@ const DISCOVERY_ENV_ALLOWLIST: &[&str] = &[
 #[derive(Debug, Clone, Eq, PartialEq)]
 pub(super) struct SupervisorEnvironmentSnapshot {
     pub(super) values: Vec<(String, String)>,
+    loop_interval_seconds: Option<u64>,
     captured_at_ms: i64,
     sha256: String,
 }
 
 impl SupervisorEnvironmentSnapshot {
+    pub(super) fn loop_interval_seconds(&self) -> Option<u64> {
+        self.loop_interval_seconds
+    }
+
+    pub(super) fn with_loop_interval_seconds(
+        mut self,
+        loop_interval_seconds: Option<u64>,
+    ) -> Result<Self> {
+        if loop_interval_seconds.is_some_and(|value| value == 0 || value > 3_600) {
+            return Err(anyhow!(
+                "daemon supervisor loop interval must be between 1 and 3600 seconds"
+            ));
+        }
+        self.loop_interval_seconds = loop_interval_seconds;
+        self.sha256 = supervisor_environment_sha256(&self.values, loop_interval_seconds);
+        Ok(self)
+    }
+
     pub(super) fn contract_report(&self) -> Value {
         compact_json(json!({
             "schema_version": 1,
@@ -143,6 +163,7 @@ impl SupervisorEnvironmentSnapshot {
                 .iter()
                 .map(|(name, _)| name)
                 .collect::<Vec<_>>(),
+            "loop_interval_seconds": self.loop_interval_seconds,
             "sha256": self.sha256,
             "values_exposed": false,
             "error": Value::Null,
@@ -187,18 +208,36 @@ pub(super) fn supervisor_environment_snapshot(
     }
 
     let values = values.into_iter().collect::<Vec<_>>();
+    let loop_interval_seconds = env::var(DAEMON_LOOP_INTERVAL_ENV)
+        .ok()
+        .and_then(|value| value.parse::<u64>().ok())
+        .filter(|value| *value > 0)
+        .map(|value| value.min(3_600));
+    let sha256 = supervisor_environment_sha256(&values, loop_interval_seconds);
+    Ok(SupervisorEnvironmentSnapshot {
+        values,
+        loop_interval_seconds,
+        captured_at_ms: utc_now().timestamp_millis(),
+        sha256,
+    })
+}
+
+fn supervisor_environment_sha256(
+    values: &[(String, String)],
+    loop_interval_seconds: Option<u64>,
+) -> String {
     let mut digest = Sha256::new();
-    for (name, value) in &values {
+    for (name, value) in values {
         digest.update(u64::try_from(name.len()).unwrap_or(u64::MAX).to_le_bytes());
         digest.update(name.as_bytes());
         digest.update(u64::try_from(value.len()).unwrap_or(u64::MAX).to_le_bytes());
         digest.update(value.as_bytes());
     }
-    Ok(SupervisorEnvironmentSnapshot {
-        values,
-        captured_at_ms: utc_now().timestamp_millis(),
-        sha256: format!("{:x}", digest.finalize()),
-    })
+    if let Some(loop_interval_seconds) = loop_interval_seconds {
+        digest.update(b"daemon_loop_interval_seconds");
+        digest.update(loop_interval_seconds.to_le_bytes());
+    }
+    format!("{:x}", digest.finalize())
 }
 
 pub(super) fn supervisor_environment_contract_report(host: &dyn DaemonApplicationHost) -> Value {
@@ -273,20 +312,21 @@ pub(super) fn supervisor_artifact_spec(
         .iter()
         .map(|(name, value)| (OsString::from(name), OsString::from(value)))
         .collect();
+    let mut arguments = vec![
+        OsString::from("--data-root"),
+        data_root.as_os_str().to_os_string(),
+        OsString::from("daemon"),
+        OsString::from("run"),
+        OsString::from("--format=json"),
+    ];
+    if let Some(loop_interval_seconds) = snapshot.loop_interval_seconds {
+        arguments.push(OsString::from("--loop-interval-seconds"));
+        arguments.push(OsString::from(loop_interval_seconds.to_string()));
+    }
     SupervisorSpec::new(
         identity,
         SUPERVISOR_DESCRIPTION,
-        NormalizedLaunch::new(
-            executable.to_path_buf(),
-            vec![
-                OsString::from("--data-root"),
-                data_root.as_os_str().to_os_string(),
-                OsString::from("daemon"),
-                OsString::from("run"),
-                OsString::from("--format=json"),
-            ],
-            environment,
-        ),
+        NormalizedLaunch::new(executable.to_path_buf(), arguments, environment),
     )
 }
 
@@ -533,6 +573,37 @@ mod tests {
 
         assert!(unit.contains("CTX_SEARCH_SEMANTIC=true"));
         assert!(unit.contains("CTX_UPGRADE_CHANNEL=staging"));
+        Ok(())
+    }
+
+    #[test]
+    fn explicit_loop_interval_is_part_of_the_verified_supervisor_launch() -> Result<()> {
+        let _env_lock = crate::test_environment_lock()
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        let _restore = RestoreEnvironment::capture(&[DAEMON_LOOP_INTERVAL_ENV]);
+        env::remove_var(DAEMON_LOOP_INTERVAL_ENV);
+
+        let default_snapshot = supervisor_environment_snapshot(&TestHost)?;
+        let custom_snapshot = default_snapshot
+            .clone()
+            .with_loop_interval_seconds(Some(23))?;
+        let unit = linux_systemd_unit_with_environment(
+            Path::new("/usr/local/bin/ctx"),
+            Path::new("/home/user/.local/share/ctx"),
+            &custom_snapshot,
+        )?;
+
+        assert_eq!(default_snapshot.loop_interval_seconds(), None);
+        assert_eq!(custom_snapshot.loop_interval_seconds(), Some(23));
+        assert_ne!(default_snapshot.sha256, custom_snapshot.sha256);
+        assert!(unit.contains("--loop-interval-seconds 23"));
+        assert!(default_snapshot
+            .with_loop_interval_seconds(Some(0))
+            .is_err());
+        assert!(custom_snapshot
+            .with_loop_interval_seconds(Some(3_601))
+            .is_err());
         Ok(())
     }
 }

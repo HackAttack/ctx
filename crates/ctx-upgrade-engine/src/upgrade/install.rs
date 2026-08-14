@@ -136,7 +136,7 @@ pub(in crate::upgrade) fn apply_artifact(
     semantic_artifacts: &mut [super::download::DownloadedArtifact],
     data_root: &Path,
     attempt_id: &str,
-    daemon_restart: Option<(&str, u64, u64)>,
+    daemon_restart: Option<(&str, Option<u64>)>,
     before_publish: &mut dyn FnMut() -> Result<()>,
 ) -> Result<ApplyResult> {
     let running_executable = current_install_path()?;

@@ -193,14 +193,13 @@ impl<D: DaemonUpgradePort + ?Sized> UpgradeEngine<'_, D> {
         policy_provider: &P,
         observer: &O,
         prepared: PreparedDaemonUpgrade,
-        restart: (&str, u64, u64),
         handoff: Option<D::Lease>,
     ) -> Result<()>
     where
         P: AutomaticUpgradePolicyProvider,
         O: UpgradeObserver<P::Snapshot>,
     {
-        finish_daemon_auto_upgrade(self, policy_provider, observer, prepared, restart, handoff)
+        finish_daemon_auto_upgrade(self, policy_provider, observer, prepared, handoff)
     }
 }
 
@@ -659,13 +658,7 @@ fn apply_upgrade<D: DaemonUpgradePort + ?Sized>(
             &mut semantic_artifacts,
             data_root,
             attempt.id(),
-            daemon_restart.map(|restart| {
-                (
-                    restart.trigger,
-                    restart.idle_exit_seconds,
-                    restart.loop_interval_seconds,
-                )
-            }),
+            daemon_restart.map(|restart| (restart.trigger, restart.loop_interval_seconds)),
             &mut before_publish,
         ) {
             Ok(result) => result,

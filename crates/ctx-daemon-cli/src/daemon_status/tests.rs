@@ -300,7 +300,7 @@ fn disabled_status_is_clear_and_enable_is_the_only_action() {
 }
 
 #[test]
-fn completed_finite_run_wins_over_disabled_persistent_preference() {
+fn legacy_completed_run_remains_readable_when_daemon_is_disabled() {
     let report = json!({
         "enabled": false,
         "status": "completed",
@@ -365,6 +365,25 @@ fn completed_finite_run_wins_over_disabled_persistent_preference() {
             "\u{1b}[2mStatus\u{1b}[0m  disabled\n",
         ),
     );
+}
+
+#[test]
+fn legacy_completed_run_is_degraded_when_persistent_daemon_remains_enabled() {
+    let report = json!({
+        "enabled": true,
+        "status": "completed",
+        "running": false,
+        "config_reload": {"status": "applied"},
+        "jobs": {
+            "core_refresh": {"status": "completed"},
+            "semantic_index": {"status": "disabled", "reason": "semantic_disabled"}
+        }
+    });
+
+    let rendered = render_status(&context(80), &report).render_plain();
+
+    assert!(rendered.starts_with("✗ Daemon failed\nAutomatic history refresh is not running.\n"));
+    assert!(rendered.contains("Service\nStatus  failed\n"));
 }
 
 #[test]
@@ -683,6 +702,7 @@ fn semantic_fallback_names_backend_and_reason_but_not_model_identity() {
 fn enable_receipts_distinguish_managed_and_limited_persistence() {
     let managed = json!({
         "status": "installed",
+        "restart_supported": true,
         "registration_verified": true,
         "live_owner_verified": true
     });
@@ -809,6 +829,27 @@ fn enable_receipts_distinguish_managed_and_limited_persistence() {
     assert_eq!(limited_rendered.lines().count(), 5);
     assert!(!limited_rendered.contains("config.toml"));
     assert!(!limited_rendered.contains("hosted installer"));
+
+    let persistent_fallback = json!({
+        "status": "degraded",
+        "restart_supported": false,
+        "registration_verified": false,
+        "live_owner_verified": false,
+        "limitation": "native restart registration is unavailable"
+    });
+    let fallback_rendered = render_daemon_enable_receipt(
+        &context(80),
+        true,
+        true,
+        &persistent_fallback,
+        Path::new("/tmp/ctx/config.toml"),
+    )
+    .render_plain();
+    assert!(fallback_rendered.starts_with(
+        "! Daemon enabled; automatic restart unavailable\nBackground refresh is running"
+    ));
+    assert!(fallback_rendered.contains("Persistence  process only\n"));
+    assert!(fallback_rendered.contains("Caveat"));
 }
 
 #[test]

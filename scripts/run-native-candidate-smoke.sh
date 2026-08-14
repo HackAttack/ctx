@@ -172,7 +172,6 @@ clean_env() {
     XDG_STATE_HOME="${state_root}" \
     CTX_DATA_ROOT="${data_root}" \
     CTX_DAEMON_AUTOSTART_OFF=1 \
-    CTX_DAEMON_AUTOSTART_IDLE_EXIT_SECONDS=1 \
     CTX_DAEMON_AUTOSTART_LOOP_INTERVAL_SECONDS=1 \
     CTX_SEMANTIC_CACHE_DIR="${root}/semantic-cache" \
     HF_HOME="${root}/huggingface" \
@@ -346,6 +345,10 @@ if ! run_bounded "${root}/import.json" "${root}/import.err" ctx import \
     cat "${root}/import.err" >&2
     exit 1
   }
+  if ! cleanup_candidate_processes; then
+    printf 'candidate import daemon did not stop after bounded teardown\n' >&2
+    exit 1
+  fi
 fi
 if [ "${fresh_epoch_required}" = true ]; then
   if ! grep -Eq '"current_source_count"[[:space:]]*:[[:space:]]*[1-9][0-9]*' "${root}/import.json" \

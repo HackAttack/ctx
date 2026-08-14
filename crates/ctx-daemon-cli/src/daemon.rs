@@ -32,9 +32,9 @@ fn run_daemon(
     ui: &mut Ui,
 ) -> Result<()> {
     let request = ctx_daemon_application::DaemonHostRunRequest {
-        idle_exit_seconds: args.idle_exit_seconds,
         loop_interval_seconds: args.loop_interval_seconds,
         max_chunks: args.max_chunks,
+        handle_process_signals: true,
         force: args.force,
         start_mode: args.start_mode.map(|mode| match mode {
             DaemonStartModeArg::Manual => ctx_daemon_application::DaemonHostStartMode::Manual,

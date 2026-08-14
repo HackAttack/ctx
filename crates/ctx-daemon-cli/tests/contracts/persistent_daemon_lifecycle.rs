@@ -21,7 +21,7 @@ mod native {
 
     const COMMAND_TIMEOUT: Duration = Duration::from_secs(20);
     const OBSERVATION_TIMEOUT: Duration = Duration::from_secs(12);
-    const QUIESCENT_WINDOW: Duration = Duration::from_secs(3);
+    const PERSISTENCE_WINDOW_BEYOND_LEGACY_IDLE_EXIT: Duration = Duration::from_secs(65);
     const PERSISTENT_DAEMON_SESSION_ID: &str = "019c08d7-0000-7000-8000-000000000029";
     #[cfg(target_os = "linux")]
     const LINUX_IDLE_SOAK: Duration = Duration::from_secs(8);
@@ -74,7 +74,6 @@ mod native {
         fn std_command(&self) -> StdCommand {
             let mut prepared: Command = ctx_from_binary(&self.temp, &self.binary);
             prepared.env_remove("CTX_DAEMON_AUTOSTART_OFF");
-            prepared.env_remove("CTX_DAEMON_AUTOSTART_IDLE_EXIT_SECONDS");
             let mut command = StdCommand::new(prepared.get_program());
             for (name, value) in prepared.get_envs() {
                 match value {
@@ -279,7 +278,7 @@ mod native {
                 .saturating_add(counter(&wakeup_before, "scheduled_refresh_wakeups")),
             "startup observed an unclassified timeout wake: {wakeup_before:#}"
         );
-        thread::sleep(QUIESCENT_WINDOW);
+        thread::sleep(PERSISTENCE_WINDOW_BEYOND_LEGACY_IDLE_EXIT);
         assert!(
             process_is_running(initial_pid),
             "default-on daemon {initial_pid} exited while quiescent"
@@ -683,54 +682,82 @@ mod native {
     }
 
     #[test]
-    fn explicit_finite_idle_daemon_exits_without_orphaning() {
+    fn explicitly_disabled_foreground_daemon_exits_without_orphaning() {
         let _serial = TEST_SERIAL
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         let harness = Harness::new();
-        write_codex_session(harness.home(), "finite idle orphan oracle");
-        let child = harness.spawn(
-            &["daemon", "run", "--force", "--idle-exit-seconds", "1"],
-            None,
-        );
+        write_codex_session(harness.home(), "persistent shutdown orphan oracle");
+        let child = harness.spawn(&["daemon", "run", "--force"], None);
         let pid = child.id();
+        wait_for_daemon(&harness, None);
+        harness.json(&["daemon", "disable", "--format=json"]);
         let output = wait_for_output(
             child,
             Duration::from_secs(8),
-            &["daemon", "run", "--idle-exit-seconds", "1"],
+            &["daemon", "run", "--explicit-disable"],
         );
         assert!(
             output.status.success(),
-            "finite-idle daemon failed:\n{}",
+            "persistent daemon failed:\n{}",
             String::from_utf8_lossy(&output.stderr)
         );
         wait_for_process_state(pid, false, Duration::from_secs(2))
-            .expect("finite-idle daemon child must exit");
+            .expect("persistent daemon child must exit");
         assert!(
             read_lock(harness.root())
                 .as_ref()
                 .and_then(|lock| json_u32(lock, "pid"))
                 .is_none_or(|owner| !process_is_running(owner)),
-            "finite-idle daemon left a live lock owner"
+            "persistent daemon left a live lock owner"
         );
         #[cfg(target_os = "linux")]
         assert!(
             linux_daemon_processes(&harness).is_empty(),
-            "finite-idle daemon left a task-root orphan"
+            "persistent daemon left a task-root orphan"
         );
     }
 
+    #[cfg(unix)]
     #[test]
-    fn finite_daemon_shutdown_does_not_need_its_deleted_socket_path() {
+    fn foreground_daemon_treats_sigterm_as_a_graceful_shutdown() {
+        let _serial = TEST_SERIAL
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let harness = Harness::new();
+        write_codex_session(harness.home(), "foreground sigterm shutdown oracle");
+        let child = harness.spawn(&["daemon", "run", "--force"], None);
+        let pid = child.id();
+        wait_for_daemon(&harness, None);
+
+        request_graceful_shutdown(pid)
+            .unwrap_or_else(|error| panic!("send SIGTERM to daemon {pid}: {error}"));
+        let output = wait_for_output(
+            child,
+            Duration::from_secs(8),
+            &["daemon", "run", "--sigterm"],
+        );
+        assert!(
+            output.status.success(),
+            "SIGTERM daemon shutdown failed:\n{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        wait_for_process_state(pid, false, Duration::from_secs(2))
+            .expect("SIGTERM daemon child must exit");
+        let status = read_json_file(&harness.root().join("daemon/status.json"));
+        assert_eq!(status["status"], "stopped", "{status:#}");
+        let lock = read_lock(harness.root()).expect("released daemon lock metadata");
+        assert_eq!(lock["released"], true, "{lock:#}");
+    }
+
+    #[test]
+    fn cooperative_daemon_shutdown_does_not_need_its_deleted_socket_path() {
         let _serial = TEST_SERIAL
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         let harness = Harness::new();
         write_codex_session(harness.home(), "deleted socket shutdown oracle");
-        let child = harness.spawn(
-            &["daemon", "run", "--force", "--idle-exit-seconds", "1"],
-            None,
-        );
+        let child = harness.spawn(&["daemon", "run", "--force"], None);
         let pid = child.id();
         wait_for_daemon(&harness, None);
 
@@ -744,7 +771,8 @@ mod native {
             .map(PathBuf::from)
             .expect("Unix source-refresh endpoint path");
         fs::remove_file(&socket_path)
-            .expect("remove source-refresh socket before finite daemon shutdown");
+            .expect("remove source-refresh socket before persistent daemon shutdown");
+        harness.json(&["daemon", "disable", "--format=json"]);
         let output = wait_for_output(
             child,
             Duration::from_secs(8),
@@ -1391,6 +1419,18 @@ mod native {
             CloseHandle(handle);
         }
         queried && exit_code == STILL_ACTIVE as u32
+    }
+
+    #[cfg(unix)]
+    fn request_graceful_shutdown(pid: u32) -> std::io::Result<()> {
+        let pid = libc::pid_t::try_from(pid).map_err(|_| {
+            std::io::Error::new(std::io::ErrorKind::InvalidInput, "pid exceeds pid_t")
+        })?;
+        if unsafe { libc::kill(pid, libc::SIGTERM) } == 0 {
+            Ok(())
+        } else {
+            Err(std::io::Error::last_os_error())
+        }
     }
 
     #[cfg(unix)]

@@ -9,9 +9,9 @@ pub(crate) use server::{
     start_daemon_source_refresh_service_with_request_timeout,
 };
 pub(crate) use server::{
-    ctx_authenticated_request_handler_with_lifecycle, daemon_can_begin_idle_shutdown,
-    observe_daemon_query_activity, start_daemon_query_service, start_daemon_source_refresh_service,
-    DaemonLifecycleState, DaemonQueryActivity, DaemonQueryService,
+    ctx_authenticated_request_handler_with_lifecycle, start_daemon_query_service,
+    start_daemon_source_refresh_service, DaemonLifecycleState, DaemonQueryActivity,
+    DaemonQueryService,
 };
 #[cfg(all(feature = "test-support", not(test)))]
 pub(crate) use transport::write_daemon_service_endpoint;

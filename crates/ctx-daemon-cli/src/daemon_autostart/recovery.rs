@@ -42,7 +42,6 @@ pub(super) fn restart_acknowledged_installation_daemons_with(
             executable,
             &restart.data_root,
             restart.trigger,
-            restart.idle_exit_seconds,
             restart.loop_interval_seconds,
             None,
         )?;

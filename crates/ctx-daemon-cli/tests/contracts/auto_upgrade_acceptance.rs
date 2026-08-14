@@ -55,7 +55,12 @@ mod unix {
 
     fn hermetic_std_command(temp: &tempfile::TempDir, binary: &Path) -> StdCommand {
         let prepared = ctx_from_binary(temp, binary);
+        std_command_from_assert(&prepared)
+    }
+
+    fn std_command_from_assert(prepared: &assert_cmd::Command) -> StdCommand {
         let mut command = StdCommand::new(prepared.get_program());
+        command.args(prepared.get_args());
         for (name, value) in prepared.get_envs() {
             match value {
                 Some(value) => {
@@ -66,10 +71,71 @@ mod unix {
                 }
             }
         }
+        if let Some(current_dir) = prepared.get_current_dir() {
+            command.current_dir(current_dir);
+        }
         command
     }
 
-    fn install_v025_fixture(temp: &FiniteDaemonTestRoot) -> PathBuf {
+    fn spawn_persistent_daemon(command: &assert_cmd::Command) -> Child {
+        std_command_from_assert(command)
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap()
+    }
+
+    fn stop_persistent_daemon(child: Child) -> std::process::Output {
+        stop_daemon(child.id());
+        child.wait_with_output().unwrap()
+    }
+
+    fn run_daemon_until(
+        description: &str,
+        command: &assert_cmd::Command,
+        mut condition: impl FnMut() -> bool,
+    ) -> std::process::Output {
+        let mut child = spawn_persistent_daemon(command);
+        let deadline = Instant::now() + Duration::from_secs(45);
+        loop {
+            if condition() {
+                break;
+            }
+            if child.try_wait().unwrap().is_some() {
+                let output = child.wait_with_output().unwrap();
+                panic!(
+                    "daemon exited before {description}: status={} stderr={}",
+                    output.status,
+                    String::from_utf8_lossy(&output.stderr)
+                );
+            }
+            if Instant::now() >= deadline {
+                let output = stop_persistent_daemon(child);
+                panic!(
+                    "timed out waiting for {description}: stderr={}",
+                    String::from_utf8_lossy(&output.stderr)
+                );
+            }
+            std::thread::sleep(Duration::from_millis(25));
+        }
+        stop_persistent_daemon(child)
+    }
+
+    fn run_daemon_until_shutdown_requested(
+        command: &assert_cmd::Command,
+        shutdown_request: &Path,
+    ) -> std::process::Output {
+        let child = spawn_persistent_daemon(command);
+        wait_for(
+            "test-owned persistent daemon shutdown",
+            Duration::from_secs(30),
+            || shutdown_request.exists(),
+        );
+        stop_persistent_daemon(child)
+    }
+
+    fn install_v025_fixture(temp: &DaemonTestRoot) -> PathBuf {
         let target = copied_ctx_binary(temp);
         fs::remove_file(&target).unwrap();
         fs::copy(configured_v025_fixture(), &target).unwrap();
@@ -93,7 +159,7 @@ mod unix {
         target
     }
 
-    fn v1_v025_candidate(temp: &FiniteDaemonTestRoot) -> PathBuf {
+    fn v1_v025_candidate(temp: &DaemonTestRoot) -> PathBuf {
         let candidate = temp.path().join("v025-next/ctx");
         if candidate.exists() {
             return candidate;
@@ -106,12 +172,12 @@ mod unix {
         candidate
     }
 
-    fn start_v025_daemon(temp: &FiniteDaemonTestRoot, target: &Path) -> Child {
+    fn start_v025_daemon(temp: &DaemonTestRoot, target: &Path) -> Child {
         let root = data_root(temp);
         start_v025_daemon_at_root(temp, target, &root)
     }
 
-    fn start_v025_daemon_at_root(temp: &FiniteDaemonTestRoot, target: &Path, root: &Path) -> Child {
+    fn start_v025_daemon_at_root(temp: &DaemonTestRoot, target: &Path, root: &Path) -> Child {
         fs::create_dir_all(root).unwrap();
         fs::write(
             root.join("config.toml"),
@@ -125,8 +191,6 @@ mod unix {
                 root.to_str().unwrap(),
                 "daemon",
                 "run",
-                "--idle-exit-seconds",
-                "600",
                 "--loop-interval-seconds",
                 "2",
                 "--json",
@@ -167,7 +231,7 @@ mod unix {
     }
 
     fn run_v025_upgrade(
-        temp: &FiniteDaemonTestRoot,
+        temp: &DaemonTestRoot,
         target: &Path,
         abort_after_probe: bool,
     ) -> std::process::Output {
@@ -215,10 +279,7 @@ mod unix {
         managed_candidate_from_binary(temp, &configured_hook_fixture(), install_attempt_id)
     }
 
-    fn managed_bound_hook_candidate(
-        temp: &FiniteDaemonTestRoot,
-        install_attempt_id: &str,
-    ) -> PathBuf {
+    fn managed_bound_hook_candidate(temp: &DaemonTestRoot, install_attempt_id: &str) -> PathBuf {
         managed_bound_candidate_from_binary(temp, &configured_hook_fixture(), install_attempt_id)
     }
 
@@ -227,21 +288,19 @@ mod unix {
         release: &FakeRelease,
         binary: &Path,
     ) -> assert_cmd::Command {
-        managed_daemon_with_timing(temp, release, binary, 1, 1)
+        managed_daemon_with_timing(temp, release, binary, 1)
     }
 
     fn managed_daemon_with_timing(
         temp: &tempfile::TempDir,
         release: &FakeRelease,
         binary: &Path,
-        idle_exit_seconds: u64,
         loop_interval_seconds: u64,
     ) -> assert_cmd::Command {
         let mut command = ctx_from_binary(temp, binary);
         managed_release_env(&mut command, release, binary);
         command
-            .args(["daemon", "run", "--idle-exit-seconds"])
-            .arg(idle_exit_seconds.to_string())
+            .args(["daemon", "run"])
             .arg("--loop-interval-seconds")
             .arg(loop_interval_seconds.to_string())
             .args([
@@ -251,14 +310,6 @@ mod unix {
                 "setup",
                 "--format=json",
             ])
-            .env(
-                "CTX_DAEMON_AUTOSTART_IDLE_EXIT_SECONDS",
-                idle_exit_seconds.to_string(),
-            )
-            .env(
-                "CTX_DAEMON_AUTOSTART_LOOP_INTERVAL_SECONDS",
-                loop_interval_seconds.to_string(),
-            )
             .env("CTX_DAEMON_BACKGROUND_CHILD", "1");
         command
     }
@@ -268,7 +319,13 @@ mod unix {
         binary: &Path,
         next_version: &str,
     ) {
-        let current_version = env!("CARGO_PKG_VERSION");
+        let version_output = StdCommand::new(binary).arg("--version").output().unwrap();
+        assert!(version_output.status.success(), "{version_output:?}");
+        let version_output = String::from_utf8(version_output.stdout).unwrap();
+        let current_version = version_output
+            .trim()
+            .strip_prefix("ctx ")
+            .unwrap_or_else(|| panic!("unexpected ctx version output: {version_output:?}"));
         assert_eq!(
             current_version.len(),
             next_version.len(),
@@ -311,7 +368,7 @@ mod unix {
     }
 
     fn start_managed_background_daemon(
-        temp: &FiniteDaemonTestRoot,
+        temp: &DaemonTestRoot,
         release: &FakeRelease,
         binary: &Path,
     ) {
@@ -529,13 +586,15 @@ mod unix {
         let owner_data_root = data_root(&owner);
         initialize_source_backed_epoch(&owner);
 
-        let prepared = managed_daemon_with_timing(&owner, &release, &binary, 1, 1)
-            .env("CTX_DAEMON_AUTOSTART_OFF", "1")
-            .env("CTX_UPGRADE_FAIL_APPLYING_STATE_WRITE_FOR_TESTS", "1")
-            .output()
-            .unwrap();
-        assert!(prepared.status.success(), "{prepared:?}");
         let journal_path = installation_sibling(&binary, "upgrade-install-transaction.json");
+        let mut prepare = managed_daemon_with_timing(&owner, &release, &binary, 1);
+        prepare
+            .env("CTX_DAEMON_AUTOSTART_OFF", "1")
+            .env("CTX_UPGRADE_FAIL_APPLYING_STATE_WRITE_FOR_TESTS", "1");
+        let prepared = run_daemon_until("prepared recovery journal", &prepare, || {
+            journal_path.exists() && scheduler_state_path(&binary).exists()
+        });
+        assert!(prepared.status.success(), "{prepared:?}");
         let journal: Value = serde_json::from_slice(&fs::read(&journal_path).unwrap()).unwrap();
         assert_eq!(journal["phase"], "prepared");
         let attempt_id = journal["attempt_id"].as_str().unwrap().to_owned();
@@ -547,12 +606,15 @@ mod unix {
         let stale_rejection = installation
             .path()
             .join(format!("stale-current-rejected-{recovery_owner:?}"));
+        let shutdown_request = installation
+            .path()
+            .join(format!("stop-stale-current-{recovery_owner:?}"));
 
         std::thread::scope(|scope| {
             let claimant = scope.spawn(|| {
                 let mut command = match recovery_owner {
                     RecoveryOwner::Automatic => {
-                        managed_daemon_with_timing(&owner, &release, &binary, 1, 1)
+                        managed_daemon_with_timing(&owner, &release, &binary, 1)
                     }
                     RecoveryOwner::Explicit => {
                         let mut command = ctx_from_binary(&owner, &binary);
@@ -572,9 +634,13 @@ mod unix {
                         "CTX_UPGRADE_PAUSE_AFTER_RECOVERY_DISCOVERY_FOR_TESTS",
                         &pause,
                     )
-                    .env("CTX_DAEMON_AUTOSTART_OFF", "1")
-                    .output()
-                    .unwrap()
+                    .env("CTX_DAEMON_AUTOSTART_OFF", "1");
+                match recovery_owner {
+                    RecoveryOwner::Automatic => {
+                        run_daemon_until_shutdown_requested(&command, &shutdown_request)
+                    }
+                    RecoveryOwner::Explicit => command.output().unwrap(),
+                }
             });
             wait_for("stale recovery discovery", Duration::from_secs(10), || {
                 pause.exists()
@@ -609,6 +675,8 @@ mod unix {
                 )
                 .unwrap();
                 fs::write(stale_rejection.with_extension("continue"), b"continue\n").unwrap();
+                std::thread::sleep(Duration::from_millis(100));
+                fs::write(&shutdown_request, b"stop\n").unwrap();
             }
             let claimant = claimant.join().unwrap();
             match recovery_owner {
@@ -644,7 +712,7 @@ mod unix {
     }
 
     fn prove_recovery_quiescence(recovery_owner: RecoveryOwner) {
-        let second = finite_daemon_test_root();
+        let second = daemon_test_root();
         let release = fake_release(&second, "9.9.9");
         let binary = managed_bound_hook_candidate(
             &second,
@@ -662,16 +730,18 @@ mod unix {
         )
         .unwrap();
 
-        let prepared = managed_daemon_with_timing(&owner, &release, &binary, 1, 1)
+        let journal_path = installation_sibling(&binary, "upgrade-install-transaction.json");
+        let mut prepare = managed_daemon_with_timing(&owner, &release, &binary, 1);
+        prepare
             .env("CTX_DAEMON_AUTOSTART_OFF", "1")
-            .env("CTX_UPGRADE_FAIL_APPLYING_STATE_WRITE_FOR_TESTS", "1")
-            .output()
-            .unwrap();
+            .env("CTX_UPGRADE_FAIL_APPLYING_STATE_WRITE_FOR_TESTS", "1");
+        let prepared = run_daemon_until("prepared recovery journal", &prepare, || {
+            journal_path.exists() && scheduler_state_path(&binary).exists()
+        });
         assert!(prepared.status.success(), "{prepared:?}");
         let state: Value =
             serde_json::from_slice(&fs::read(scheduler_state_path(&binary)).unwrap()).unwrap();
         assert_eq!(state["status"], "error");
-        let journal_path = installation_sibling(&binary, "upgrade-install-transaction.json");
         let journal: Value = serde_json::from_slice(&fs::read(&journal_path).unwrap()).unwrap();
         assert_eq!(journal["phase"], "prepared");
         let attempt_id = journal["attempt_id"].as_str().unwrap().to_owned();
@@ -700,7 +770,7 @@ mod unix {
             let owner_handle = scope.spawn(|| {
                 let mut command = match recovery_owner {
                     RecoveryOwner::Automatic => {
-                        managed_daemon_with_timing(&owner, &release, &binary, 60, 30)
+                        managed_daemon_with_timing(&owner, &release, &binary, 30)
                     }
                     RecoveryOwner::Explicit => {
                         let mut command = ctx_from_binary(&owner, &binary);
@@ -893,13 +963,16 @@ mod unix {
         let binary = managed_hook_candidate(&temp, "ia_journal_before_applying");
         let before = fs::read(&binary).unwrap();
 
-        managed_daemon(&temp, &release, &binary)
-            .env("CTX_DAEMON_AUTOSTART_OFF", "1")
-            .env("CTX_UPGRADE_FAIL_APPLYING_STATE_WRITE_FOR_TESTS", "1")
-            .assert()
-            .success();
-
         let journal = installation_sibling(&binary, "upgrade-install-transaction.json");
+        let mut daemon = managed_daemon(&temp, &release, &binary);
+        daemon
+            .env("CTX_DAEMON_AUTOSTART_OFF", "1")
+            .env("CTX_UPGRADE_FAIL_APPLYING_STATE_WRITE_FOR_TESTS", "1");
+        let output = run_daemon_until("prepublication upgrade failure", &daemon, || {
+            journal.exists() && scheduler_state_path(&binary).exists()
+        });
+        assert!(output.status.success(), "{output:?}");
+
         let transaction: Value = serde_json::from_slice(&fs::read(&journal).unwrap()).unwrap();
         assert_eq!(transaction["phase"], "prepared");
         assert_eq!(fs::read(&binary).unwrap(), before);
@@ -934,7 +1007,7 @@ mod unix {
 
     #[test]
     fn v025_automatic_upgrade_quiesces_before_replacement_and_restarts_persistent_owner() {
-        let temp = finite_daemon_test_root();
+        let temp = daemon_test_root();
         let target = install_v025_fixture(&temp);
         let old_bytes = fs::read(&target).unwrap();
         let mut old_daemon = start_v025_daemon(&temp, &target);
@@ -981,7 +1054,7 @@ mod unix {
 
     #[test]
     fn v025_automatic_upgrade_rejects_unrelated_same_binary_lock_pid() {
-        let temp = finite_daemon_test_root();
+        let temp = daemon_test_root();
         let target = install_v025_fixture(&temp);
         let old_bytes = fs::read(&target).unwrap();
         let root = data_root(&temp);
@@ -1023,7 +1096,7 @@ mod unix {
     fn v025_automatic_upgrade_rejects_same_bytes_different_inode_owner() {
         use std::os::unix::fs::MetadataExt as _;
 
-        let temp = finite_daemon_test_root();
+        let temp = daemon_test_root();
         let target = install_v025_fixture(&temp);
         let old_bytes = fs::read(&target).unwrap();
         let mut owner = start_v025_daemon(&temp, &target);
@@ -1055,7 +1128,7 @@ mod unix {
 
     #[test]
     fn v025_automatic_upgrade_does_not_downgrade_recorded_digest_verification() {
-        let temp = finite_daemon_test_root();
+        let temp = daemon_test_root();
         let target = install_v025_fixture(&temp);
         let old_bytes = fs::read(&target).unwrap();
         let root = data_root(&temp);
@@ -1086,7 +1159,7 @@ mod unix {
 
     #[test]
     fn v025_interrupted_probe_is_fix_forward_and_retry_restarts_once() {
-        let temp = finite_daemon_test_root();
+        let temp = daemon_test_root();
         let target = install_v025_fixture(&temp);
         let mut old_daemon = start_v025_daemon(&temp, &target);
         let old_pid = old_daemon.id();
@@ -1138,7 +1211,7 @@ mod unix {
 
     #[test]
     fn status_and_autostart_fail_closed_for_deleted_legacy_owner_image() {
-        let temp = finite_daemon_test_root();
+        let temp = daemon_test_root();
         let target = install_v025_fixture(&temp);
         let mut old_daemon = start_v025_daemon(&temp, &target);
         let old_pid = old_daemon.id();
@@ -1259,7 +1332,7 @@ mod unix {
 
     #[test]
     fn long_running_second_root_acknowledges_before_mutation_and_restarts() {
-        let second = finite_daemon_test_root();
+        let second = daemon_test_root();
         let mut release = fake_release(&second, FIXTURE_TARGET_VERSION);
         let binary = managed_bound_hook_candidate(&second, "ia_cross_root");
         patch_release_artifact_with_next_ctx(&mut release, &binary, FIXTURE_TARGET_VERSION);
@@ -1286,7 +1359,7 @@ mod unix {
 
         std::thread::scope(|scope| {
             let owner_handle = scope.spawn(|| {
-                managed_daemon_with_timing(&first, &release, &binary, 60, 30)
+                managed_daemon_with_timing(&first, &release, &binary, 30)
                     .env("CTX_UPGRADE_INTERVAL_SECONDS", "3600")
                     .env("CTX_UPGRADE_PAUSE_AFTER_QUIESCENCE_FOR_TESTS", &pause)
                     .env_remove("CTX_DAEMON_AUTOSTART_OFF")

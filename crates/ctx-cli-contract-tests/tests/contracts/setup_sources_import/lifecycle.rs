@@ -1,6 +1,6 @@
 use super::{
     assert_daemon_process_running, assert_no_daemon_autostart_mutation, ctx, support, support::*,
-    wait_for_daemon_status, write_codex_setup_session,
+    write_codex_setup_session,
 };
 
 #[path = "../support/setup_sources_import/lifecycle_helpers.rs"]
@@ -182,7 +182,7 @@ exit 2
 
 #[test]
 fn setup_does_not_migrate_legacy_shim_directory() {
-    let temp = tempdir();
+    let temp = daemon_test_root();
     let legacy_shims = temp.path().join("legacy-history").join("shims");
     fs::create_dir_all(&legacy_shims).unwrap();
     fs::write(legacy_shims.join("git"), "#!/bin/sh\n").unwrap();
@@ -201,7 +201,7 @@ fn setup_does_not_migrate_legacy_shim_directory() {
 
 #[test]
 fn setup_does_not_write_default_config_and_preserves_existing_config() {
-    let temp = tempdir();
+    let temp = daemon_test_root();
     let config_path = data_root(&temp).join("config.toml");
     fs::create_dir_all(data_root(&temp)).unwrap();
 
@@ -316,7 +316,7 @@ fn setup_semantic_rejects_disabled_daemon_without_mutating_source_epoch() {
 
 #[test]
 fn setup_semantic_clean_cache_queues_daemon_without_foreground_download() {
-    let temp = tempdir();
+    let temp = daemon_test_root();
     write_codex_setup_session(&temp);
     let semantic_cache = temp.path().join("clean-semantic-cache");
 
@@ -470,7 +470,7 @@ fn status_does_not_repair_missing_tantivy_publication_pointer() {
 
 #[test]
 fn deprecated_catalog_only_is_ignored_and_wait_publishes_setup_status_contract() {
-    let temp = tempdir();
+    let temp = daemon_test_root();
     write_codex_setup_session(&temp);
 
     let setup = json_output(ctx(&temp).args([
@@ -516,7 +516,7 @@ fn deprecated_catalog_only_is_ignored_and_wait_publishes_setup_status_contract()
 
 #[test]
 fn deprecated_catalog_only_is_ignored_for_non_codex_sources() {
-    let temp = tempdir();
+    let temp = daemon_test_root();
     install_default_claude_fixture(&temp, "catalog-only claude inventory");
 
     let setup = json_output(ctx(&temp).args([
@@ -540,21 +540,21 @@ fn deprecated_catalog_only_is_ignored_for_non_codex_sources() {
 
 #[test]
 fn quiet_setup_suppresses_success_output_but_not_json() {
-    let temp = tempdir();
+    let temp = daemon_test_root();
     ctx(&temp)
         .args(["--quiet", "setup", "--catalog-only"])
         .assert()
         .success()
         .stdout(predicate::str::is_empty());
 
-    let temp = tempdir();
+    let temp = daemon_test_root();
     ctx(&temp)
         .args(["setup", "--quiet", "--catalog-only", "--progress", "none"])
         .assert()
         .success()
         .stdout(predicate::str::is_empty());
 
-    let temp = tempdir();
+    let temp = daemon_test_root();
     ctx(&temp)
         .args(["setup", "--catalog-only", "--progress", "none"])
         .env("CTX_QUIET", "1")
@@ -562,7 +562,7 @@ fn quiet_setup_suppresses_success_output_but_not_json() {
         .success()
         .stdout(predicate::str::is_empty());
 
-    let temp = tempdir();
+    let temp = daemon_test_root();
     let setup = json_output(ctx(&temp).args([
         "--quiet",
         "setup",
@@ -613,7 +613,7 @@ fn quiet_status_suppresses_success_output_but_not_json() {
 
 #[test]
 fn setup_background_refresh_and_wait_publish_the_same_codex_source() {
-    let temp = tempdir();
+    let temp = daemon_test_root();
     write_codex_setup_session(&temp);
 
     let setup = json_output(ctx(&temp).args(["setup", "--format=json", "--progress", "none"]));
@@ -645,7 +645,7 @@ fn setup_background_refresh_and_wait_publish_the_same_codex_source() {
     assert!(status["lexical"]["indexed_documents"].as_u64().unwrap() > 0);
     assert_eq!(status["read_only"], true);
 
-    let human_temp = tempdir();
+    let human_temp = daemon_test_root();
     write_codex_setup_session(&human_temp);
     let human_setup =
         success_stdout(ctx(&human_temp).args(["setup", "--wait", "--progress", "none"]));
@@ -655,7 +655,7 @@ fn setup_background_refresh_and_wait_publish_the_same_codex_source() {
 
 #[test]
 fn setup_wait_imports_discovered_codex_prompt_history() {
-    let temp = tempdir();
+    let temp = daemon_test_root();
     let history = temp.path().join(".codex/history.jsonl");
     fs::create_dir_all(history.parent().unwrap()).unwrap();
     fs::write(
@@ -735,7 +735,7 @@ fn setup_no_daemon_is_one_run_opt_out_and_keeps_semantic_disabled() {
 
 #[test]
 fn setup_import_isolates_empty_codex_session_file() {
-    let temp = tempdir();
+    let temp = daemon_test_root();
     write_codex_setup_session(&temp);
     let sessions = temp
         .path()
@@ -779,7 +779,7 @@ fn setup_import_isolates_empty_codex_session_file() {
 
 #[test]
 fn setup_all_invalid_source_publishes_a_verified_empty_generation() {
-    let temp = tempdir();
+    let temp = daemon_test_root();
     let sessions = temp
         .path()
         .join(".codex")
@@ -798,7 +798,7 @@ fn setup_all_invalid_source_publishes_a_verified_empty_generation() {
 
 #[test]
 fn installer_style_setup_succeeds_with_a_genuinely_empty_source_catalog() {
-    let temp = tempdir();
+    let temp = daemon_test_root();
 
     let setup = json_output(ctx(&temp).args(["setup", "--format=json", "--progress", "none"]));
     assert_eq!(setup["schema_version"], 2, "{setup:#}");
@@ -846,9 +846,19 @@ fn operational_systemd_installer_style_setup_verifies_an_empty_noop_core() {
         .env("CTX_SEARCH_SEMANTIC", "false")
         .env("CTX_UPGRADE_CHANNEL", "staging")
         .env("PATH", &path)
-        .env_remove("CTX_DAEMON_AUTOSTART_OFF")
-        .env_remove("CTX_DAEMON_AUTOSTART_IDLE_EXIT_SECONDS");
-    let setup = json_output(setup_command.args(["setup", "--format=json", "--progress", "none"]));
+        .env_remove("CTX_DAEMON_AUTOSTART_OFF");
+    let output = setup_command
+        .args(["setup", "--format=json", "--progress", "none"])
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "setup stderr:\n{}\ndaemon stdout:\n{}\ndaemon stderr:\n{}",
+        String::from_utf8_lossy(&output.stderr),
+        fs::read_to_string(temp.path().join("fake-systemd-daemon.stdout")).unwrap_or_default(),
+        fs::read_to_string(temp.path().join("fake-systemd-daemon.stderr")).unwrap_or_default(),
+    );
+    let setup: Value = serde_json::from_slice(&output.stdout).unwrap();
     assert_eq!(setup["mode"], "ready", "{setup:#}");
     assert_eq!(setup["daemon_autostart"]["status"], "verified", "{setup:#}");
     assert_eq!(setup["daemon_autostart"]["persistent"], true, "{setup:#}");
@@ -900,7 +910,7 @@ fn operational_systemd_installer_style_setup_verifies_an_empty_noop_core() {
 
 #[cfg(target_os = "linux")]
 #[test]
-fn unavailable_systemd_installer_style_setup_succeeds_with_a_bounded_warning() {
+fn unavailable_systemd_installer_style_setup_starts_a_persistent_fallback() {
     use std::os::unix::fs::symlink;
 
     let temp = daemon_test_root();
@@ -924,14 +934,13 @@ fn unavailable_systemd_installer_style_setup_succeeds_with_a_bounded_warning() {
         .env("CTX_HOSTED_INSTALLER_SETUP", "1")
         .env("CTX_SEARCH_SEMANTIC", "false")
         .env("PATH", &path)
-        .env_remove("CTX_DAEMON_AUTOSTART_OFF")
-        .env_remove("CTX_DAEMON_AUTOSTART_IDLE_EXIT_SECONDS");
+        .env_remove("CTX_DAEMON_AUTOSTART_OFF");
     let setup = json_output(setup_command.args(["setup", "--format=json", "--progress", "none"]));
     assert_eq!(setup["mode"], "ready", "{setup:#}");
     assert_eq!(setup["daemon_autostart"]["status"], "degraded", "{setup:#}");
-    assert_eq!(setup["daemon_autostart"]["persistent"], false, "{setup:#}");
-    assert_eq!(
-        setup["daemon_autostart"]["limitation"]["code"], "continuous_refresh_unavailable",
+    assert_eq!(setup["daemon_autostart"]["persistent"], true, "{setup:#}");
+    assert!(
+        setup["daemon_autostart"]["limitation"].is_null(),
         "{setup:#}"
     );
     assert_eq!(
@@ -957,15 +966,14 @@ fn unavailable_systemd_installer_style_setup_succeeds_with_a_bounded_warning() {
         .env("CTX_DAEMON_AUTOSTART_EXE", &binary)
         .env("CTX_SEARCH_SEMANTIC", "false")
         .env("PATH", &path)
-        .env_remove("CTX_DAEMON_AUTOSTART_OFF")
-        .env_remove("CTX_DAEMON_AUTOSTART_IDLE_EXIT_SECONDS");
+        .env_remove("CTX_DAEMON_AUTOSTART_OFF");
     let human = success_stdout(human_command.args(["setup", "--progress", "none"]));
     assert!(
-        human.contains("Continuous refresh is unavailable"),
+        human.contains("persistent daemon (automatic restart unavailable)"),
         "{human}"
     );
     assert!(
-        human.contains("temporary daemon (initial maintenance only)"),
+        !human.contains("Continuous refresh is unavailable"),
         "{human}"
     );
 }
@@ -1027,7 +1035,7 @@ fn machine_readable_setup_attempts_enabled_daemon_startup() {
 
 #[test]
 fn machine_readable_setup_uses_v2_top_level_persistent_daemon_contract() {
-    let temp = tempdir();
+    let temp = daemon_test_root();
 
     let setup = json_output(ctx(&temp).args(["setup", "--format=json", "--progress", "none"]));
     assert_eq!(setup["schema_version"], 2, "{setup:#}");
@@ -1107,12 +1115,11 @@ fn setup_wait_progress_json_uses_stderr_and_keeps_final_json_on_stdout() {
 
 #[test]
 fn human_setup_without_sources_starts_daemon_and_reports_observed_refresh_state() {
-    let temp = tempdir();
+    let temp = daemon_test_root();
     let binary = copied_ctx_binary(&temp);
 
     let output = ctx_from_binary(&temp, &binary)
         .args(["setup", "--progress", "none"])
-        .env("CTX_DAEMON_AUTOSTART_IDLE_EXIT_SECONDS", "2")
         .env("CTX_DAEMON_AUTOSTART_LOOP_INTERVAL_SECONDS", "1")
         .env("CTX_UPGRADE_AUTO", "off")
         .env_remove("CI")
@@ -1149,14 +1156,11 @@ fn human_setup_without_sources_starts_daemon_and_reports_observed_refresh_state(
     let pid = running["daemon"]["pid"].as_u64().unwrap() as u32;
     assert_daemon_process_running(pid);
 
-    let completed = wait_for_daemon_status(&temp, "completed", false, "setup");
-    assert_eq!(completed["daemon"]["pid"], pid, "{completed:#}");
-    assert!(completed["daemon"]["last_error"].is_null(), "{completed:#}");
     let lock: Value =
         serde_json::from_slice(&fs::read(data_root(&temp).join("daemon/daemon.lock")).unwrap())
             .unwrap();
     assert_eq!(lock["pid"], pid, "{lock:#}");
-    assert_eq!(lock["released"], true, "{lock:#}");
+    assert_eq!(lock["released"], false, "{lock:#}");
 }
 
 #[test]
@@ -1405,13 +1409,12 @@ fn foreground_import_returns_at_ready_core_generation() {
 
 #[test]
 fn human_wait_setup_starts_daemon_after_foreground_import() {
-    let temp = tempdir();
+    let temp = daemon_test_root();
     write_codex_setup_session(&temp);
     let binary = copied_ctx_binary(&temp);
 
     let output = ctx_from_binary(&temp, &binary)
         .args(["setup", "--wait", "--progress", "none"])
-        .env("CTX_DAEMON_AUTOSTART_IDLE_EXIT_SECONDS", "2")
         .env("CTX_DAEMON_AUTOSTART_LOOP_INTERVAL_SECONDS", "60")
         .env("CTX_UPGRADE_AUTO", "off")
         .env_remove("CI")
@@ -1433,20 +1436,16 @@ fn human_wait_setup_starts_daemon_after_foreground_import() {
     let pid = running["daemon"]["pid"].as_u64().unwrap() as u32;
     assert_daemon_process_running(pid);
 
-    let completed = wait_for_daemon_status(&temp, "completed", false, "setup");
-    assert_eq!(completed["daemon"]["pid"], pid);
-    assert!(completed["daemon"]["finished_at_ms"].as_i64().unwrap() > 0);
-    assert!(completed["daemon"]["last_error"].is_null(), "{completed:#}");
     let lock: Value =
         serde_json::from_slice(&fs::read(data_root(&temp).join("daemon/daemon.lock")).unwrap())
             .unwrap();
     assert_eq!(lock["pid"], pid, "{lock:#}");
-    assert_eq!(lock["released"], true, "{lock:#}");
+    assert_eq!(lock["released"], false, "{lock:#}");
 }
 
 #[test]
 fn setup_inventories_and_imports_claude_sources_by_default() {
-    let temp = tempdir();
+    let temp = daemon_test_root();
     let project = temp.path().join(".claude").join("projects").join("-repo");
     fs::create_dir_all(&project).unwrap();
     fs::write(

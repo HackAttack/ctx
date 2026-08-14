@@ -15,7 +15,7 @@ use crate::semantic::{
 };
 use crate::ui::Ui;
 use crate::{config, SetupArgs};
-use ctx_cli_presentation::commands::{render_setup_human, SetupDaemonHandoff, SetupDaemonState};
+use ctx_cli_presentation::commands::{render_setup_human, SetupDaemonState};
 use ctx_history_cli::HistoryConfigPort;
 
 pub(crate) fn run_setup(
@@ -65,7 +65,7 @@ pub(crate) fn run_setup(
     } else {
         None
     };
-    let refresh_wait = setup_refresh_wait(args.wait, daemon_handoff.as_ref());
+    let refresh_wait = args.wait;
     let refresh_request = {
         let mut progress = ProgressReporter::new(ui, args.progress.into(), json_output, "setup", 0);
         request_source_refresh(
@@ -133,19 +133,13 @@ pub(crate) fn run_setup(
             SetupDaemonState {
                 requested: daemon_autostart_requested,
                 reason: daemon_autostart_reason,
-                handoff: daemon_handoff.as_ref().map(|startup| SetupDaemonHandoff {
-                    bounded_unsupervised: startup.bounded_unsupervised,
-                }),
+                started: daemon_handoff.is_some(),
                 persistent_supervisor_verified: supervisor_persistently_verified(&supervisor),
             },
         );
         ui.write_stdout(&document)?;
     }
     Ok(())
-}
-
-fn setup_refresh_wait(requested: bool, startup: Option<&DaemonSetupHandoff>) -> bool {
-    requested || startup.is_some_and(|startup| startup.requires_initial_refresh_wait)
 }
 
 fn setup_mode(
@@ -280,7 +274,6 @@ fn daemon_autostart_json(
     let persistently_supervised = supervisor_persistently_verified(supervisor);
     match startup {
         Some(startup) => {
-            let persistent = !startup.bounded_unsupervised;
             json!({
                 "status": if persistently_supervised { "verified" } else { "degraded" },
                 "reason": if persistently_supervised {
@@ -290,12 +283,8 @@ fn daemon_autostart_json(
                 },
                 "requested": requested,
                 "pid": startup.handoff.pid,
-                "persistent": persistent,
-                "limitation": if persistent {
-                    Value::Null
-                } else {
-                    continuous_refresh_limitation(supervisor)
-                },
+                "persistent": true,
+                "limitation": Value::Null,
                 "supervisor": supervisor,
                 "status_command": "ctx daemon status",
             })
@@ -310,14 +299,6 @@ fn daemon_autostart_json(
             "status_command": "ctx daemon status",
         }),
     }
-}
-
-fn continuous_refresh_limitation(supervisor: &Value) -> Value {
-    json!({
-        "code": "continuous_refresh_unavailable",
-        "message": "continuous refresh is unavailable; this setup run uses a bounded ctx daemon for requested maintenance",
-        "detail": supervisor.get("limitation").cloned().unwrap_or(Value::Null),
-    })
 }
 
 fn supervisor_persistently_verified(supervisor: &Value) -> bool {
@@ -357,21 +338,6 @@ mod tests {
     }
 
     #[test]
-    fn manager_unavailable_setup_forces_only_its_initial_refresh_to_wait() {
-        let startup = DaemonSetupHandoff {
-            handoff: DaemonHandoff {
-                pid: 42,
-                heartbeat_at_ms: 1,
-            },
-            bounded_unsupervised: true,
-            requires_initial_refresh_wait: true,
-        };
-        assert!(setup_refresh_wait(false, Some(&startup)));
-        assert!(setup_refresh_wait(true, None));
-        assert!(!setup_refresh_wait(false, None));
-    }
-
-    #[test]
     fn only_admitted_background_work_reports_pending() {
         let admitted: anyhow::Error = SourceBackedRefreshPendingPublication::new(
             "request-1".to_owned(),
@@ -406,32 +372,28 @@ mod tests {
     }
 
     #[test]
-    fn setup_manager_unavailable_reports_bounded_success_and_typed_limitation() {
+    fn setup_manager_unavailable_reports_a_persistent_process_and_restart_limitation() {
         let supervisor = json!({
             "kind": "systemd_user",
             "status": "manager_unavailable",
             "registration_verified": false,
             "live_owner_verified": false,
-            "limitation": "continuous refresh is unavailable because the systemd user manager is not operational",
+            "limitation": "native automatic restart at login or reboot is unavailable because the systemd user manager is not operational",
         });
         let startup = DaemonSetupHandoff {
             handoff: DaemonHandoff {
                 pid: 42,
                 heartbeat_at_ms: 1,
             },
-            bounded_unsupervised: true,
-            requires_initial_refresh_wait: true,
         };
         let autostart = daemon_autostart_json(true, None, Some(&startup), &supervisor);
         assert_eq!(autostart["status"], "degraded");
-        assert_eq!(autostart["persistent"], false);
-        assert_eq!(
-            autostart["limitation"]["code"],
-            "continuous_refresh_unavailable"
-        );
-        assert!(autostart["limitation"]["message"]
+        assert_eq!(autostart["persistent"], true);
+        assert!(autostart["limitation"].is_null());
+        assert_eq!(autostart["reason"], "native_supervisor_unavailable");
+        assert!(autostart["supervisor"]["limitation"]
             .as_str()
-            .is_some_and(|message| message.contains("bounded ctx daemon")));
+            .is_some_and(|message| message.contains("automatic restart")));
     }
 
     #[test]
@@ -448,8 +410,6 @@ mod tests {
                 pid: 42,
                 heartbeat_at_ms: 1,
             },
-            bounded_unsupervised: false,
-            requires_initial_refresh_wait: false,
         };
         let autostart = daemon_autostart_json(true, None, Some(&startup), &supervisor);
         assert_eq!(autostart["status"], "degraded");

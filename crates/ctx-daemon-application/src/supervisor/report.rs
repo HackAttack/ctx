@@ -1,11 +1,24 @@
 use super::*;
 
 pub fn daemon_supervisor_report(host: &dyn DaemonApplicationHost, data_root: &Path) -> Value {
-    let normalized = supervisor_environment_snapshot(host).and_then(|daemon_environment| {
-        supervisor_manager_environment(host)
-            .map(|manager_environment| (daemon_environment, manager_environment))
-    });
+    let normalized = supervisor_environment_snapshot_for_registration(host, data_root).and_then(
+        |daemon_environment| {
+            supervisor_manager_environment(host)
+                .map(|manager_environment| (daemon_environment, manager_environment))
+        },
+    );
     daemon_supervisor_report_with_normalized_environment(host, data_root, normalized)
+}
+
+fn supervisor_environment_snapshot_for_registration(
+    host: &dyn DaemonApplicationHost,
+    data_root: &Path,
+) -> Result<SupervisorEnvironmentSnapshot> {
+    let snapshot = supervisor_environment_snapshot(host)?;
+    let persisted_loop_interval_seconds = persisted_supervisor_loop_interval_seconds(data_root);
+    let loop_interval_seconds =
+        persisted_loop_interval_seconds.or(snapshot.loop_interval_seconds());
+    snapshot.with_loop_interval_seconds(loop_interval_seconds)
 }
 
 pub(super) fn daemon_supervisor_report_with_normalized_environment(
@@ -17,7 +30,7 @@ pub(super) fn daemon_supervisor_report_with_normalized_environment(
         let mut report = stored_supervisor_report(data_root);
         invalidate_supervisor_claims_for_environment_failure(&mut report);
         append_forced_termination_identity_report(&mut report);
-        append_supervisor_environment_report(host, &mut report);
+        append_supervisor_environment_report(host, data_root, &mut report);
         return report;
     };
     let Ok(backend) = PlatformNativeSupervisor::new(
@@ -29,7 +42,7 @@ pub(super) fn daemon_supervisor_report_with_normalized_environment(
         let mut report = stored_supervisor_report(data_root);
         invalidate_supervisor_claims_for_environment_failure(&mut report);
         append_forced_termination_identity_report(&mut report);
-        append_supervisor_environment_report(host, &mut report);
+        append_supervisor_environment_report(host, data_root, &mut report);
         return report;
     };
     revalidated_supervisor_report_with(host, data_root, &backend)
@@ -62,7 +75,7 @@ pub(super) fn revalidated_supervisor_report_with(
 ) -> Value {
     let mut report = stored_supervisor_report(data_root);
     append_forced_termination_identity_report(&mut report);
-    append_supervisor_environment_report(host, &mut report);
+    append_supervisor_environment_report(host, data_root, &mut report);
     if native_supervisor_product_authority_blocker()
         || report.get("kind").and_then(Value::as_str) != Some(native_supervisor_kind())
         || matches!(
@@ -185,8 +198,14 @@ fn suppress_environment_restart_claim(report: &mut Value) {
     }
 }
 
-fn append_supervisor_environment_report(host: &dyn DaemonApplicationHost, report: &mut Value) {
-    let current = supervisor_environment_contract_report(host);
+fn append_supervisor_environment_report(
+    host: &dyn DaemonApplicationHost,
+    data_root: &Path,
+    report: &mut Value,
+) {
+    let current = supervisor_environment_snapshot_for_registration(host, data_root)
+        .map(|snapshot| snapshot.contract_report())
+        .unwrap_or_else(|_| supervisor_environment_contract_report(host));
     let stored_sha256 = report
         .pointer("/environment_snapshot/sha256")
         .and_then(Value::as_str);

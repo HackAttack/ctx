@@ -98,12 +98,13 @@ ctx daemon enable
   successful live reload. This diagnostic remains available when malformed
   config caused the retained reload failure; ordinary commands still reject the
   malformed file.
-- `daemon run` runs bounded local maintenance in the foreground. That means
-  bounded native provider-history refresh followed by semantic catch-up when
-  semantic is enabled. The daemon may acquire the local embedding model for
-  semantic indexing. A looping daemon keeps the embedding model resident after
-  cold start, reloads daemon/semantic configuration between cycles, and performs
-  recent-work freshness checks before settling into idle loops. Enabling
+- `daemon run` runs persistent local maintenance in the foreground. Each pass
+  performs bounded native provider-history refresh followed by semantic
+  catch-up when semantic is enabled. The daemon may acquire the local embedding
+  model for semantic indexing. A looping daemon keeps the embedding model
+  resident after cold start, reloads daemon/semantic configuration between
+  cycles, and performs recent-work freshness checks before settling into idle
+  loops. Enabling
   `[search] semantic = true` and rerunning setup activates the existing daemon;
   no unrelated restart is required.
 - `daemon disable` and `daemon enable` update `[daemon].enabled` in
@@ -115,9 +116,8 @@ Setup and health checks do not change shell startup files, install repository
 integrations, write into source repositories, call model APIs, or require API
 keys. Without semantic opt-in they do not download embedding models; with
 semantic enabled, daemon maintenance may acquire the local embedding model.
-Daemon maintenance is bounded and local. Core storage checks use the configured
-data root, and JSON
-stdout remains structured.
+Each daemon maintenance pass is bounded and local. Core storage checks use the
+configured data root, and JSON stdout remains structured.
 Machine-readable foreground commands do not start or nudge daemon maintenance.
 For human-readable commands, use `--no-daemon` or search `--refresh off` for an
 invocation-level opt-out. The enabled daemon, not command dispatch, owns signed

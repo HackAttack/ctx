@@ -238,9 +238,15 @@ pub(super) fn disable_daemon_supervisor(data_root: &Path) -> Result<()> {
 pub(super) fn resume_daemon_supervisor_after_upgrade(
     data_root: &Path,
     executable: &Path,
+    loop_interval_seconds: Option<u64>,
     upgrade_fence: &mut dyn DaemonSupervisorUpgradeFence,
 ) -> Result<DaemonSupervisorUpgradeResume> {
     with_daemon_application(|application| {
-        application.resume_daemon_supervisor_after_upgrade(data_root, executable, upgrade_fence)
+        application.resume_daemon_supervisor_after_upgrade(
+            data_root,
+            executable,
+            loop_interval_seconds,
+            upgrade_fence,
+        )
     })
 }

@@ -142,8 +142,7 @@ fn failed_restart_intent_write_preserves_partial_acknowledgement() -> Result<()>
         registration_id: "partial".to_owned(),
         data_root: blocked_root,
         trigger: DaemonTriggerCommandArg::Search,
-        idle_exit_seconds: Some(60),
-        loop_interval_seconds: Some(30),
+        loop_interval_seconds: None,
         status: "live",
     };
     lease.write_status("live", None)?;
@@ -166,7 +165,6 @@ fn autostart_child_inherits_effective_analytics_policy() {
         Path::new("ctx"),
         Path::new("/tmp/ctx-daemon-telemetry-test"),
         DaemonTriggerCommandArg::Search,
-        Some(5),
         Some(5),
         None,
     )
@@ -191,7 +189,6 @@ fn persistent_autostart_child_has_no_implicit_exit_or_poll_interval() {
         DaemonTriggerCommandArg::Search,
         None,
         None,
-        None,
     )
     .expect("normalized daemon launch");
     let args = command
@@ -203,12 +200,11 @@ fn persistent_autostart_child_has_no_implicit_exit_or_poll_interval() {
 }
 
 #[test]
-fn detached_daemon_launch_dto_preserves_the_complete_cli_schema() {
+fn detached_daemon_launch_dto_keeps_only_the_explicit_loop_interval() {
     let launch = daemon_autostart_command(
         Path::new("/managed/ctx"),
         Path::new("/managed/data"),
         DaemonTriggerCommandArg::Import,
-        Some(17),
         Some(23),
         Some("handoff-token"),
     )
@@ -229,8 +225,6 @@ fn detached_daemon_launch_dto_preserves_the_complete_cli_schema() {
             "--trigger-command",
             "import",
             "--format=json",
-            "--idle-exit-seconds",
-            "17",
             "--loop-interval-seconds",
             "23",
         ]
@@ -275,7 +269,6 @@ fn detached_daemon_launch_freezes_the_normalized_environment() {
         Path::new("ctx"),
         Path::new("/data"),
         DaemonTriggerCommandArg::Search,
-        None,
         None,
         None,
     )
@@ -353,63 +346,7 @@ fn configured_autostart_child_inherits_source_refresh_only_mode() {
 }
 
 #[test]
-fn unsupervised_autostart_child_has_a_finite_default_lifetime() {
-    struct RestoreIdleEnv(Option<std::ffi::OsString>);
-    impl Drop for RestoreIdleEnv {
-        fn drop(&mut self) {
-            match self.0.take() {
-                Some(value) => env::set_var("CTX_DAEMON_AUTOSTART_IDLE_EXIT_SECONDS", value),
-                None => env::remove_var("CTX_DAEMON_AUTOSTART_IDLE_EXIT_SECONDS"),
-            }
-        }
-    }
-
-    let _env_lock = crate::config::TEST_LOCAL_USAGE_ENV_LOCK
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner());
-    let _restore = RestoreIdleEnv(env::var_os("CTX_DAEMON_AUTOSTART_IDLE_EXIT_SECONDS"));
-    env::remove_var("CTX_DAEMON_AUTOSTART_IDLE_EXIT_SECONDS");
-    let temp = tempfile::tempdir().unwrap();
-
-    let launch = configured_unsupervised_daemon_autostart_command(
-        Path::new("ctx"),
-        temp.path(),
-        DaemonTriggerCommandArg::Setup,
-        None,
-    )
-    .expect("normalized bounded daemon launch");
-    let args = launch
-        .get_args()
-        .filter_map(std::ffi::OsStr::to_str)
-        .collect::<Vec<_>>();
-    let idle_index = args
-        .iter()
-        .position(|arg| *arg == "--idle-exit-seconds")
-        .expect("bounded daemon must declare an idle exit");
-    assert_eq!(
-        args.get(idle_index + 1)
-            .and_then(|value| value.parse::<u64>().ok()),
-        Some(DAEMON_UNSUPERVISED_IDLE_EXIT_SECONDS)
-    );
-}
-
-#[test]
 fn persistent_fallback_autostart_child_has_no_idle_exit() {
-    struct RestoreIdleEnv(Option<std::ffi::OsString>);
-    impl Drop for RestoreIdleEnv {
-        fn drop(&mut self) {
-            match self.0.take() {
-                Some(value) => env::set_var("CTX_DAEMON_AUTOSTART_IDLE_EXIT_SECONDS", value),
-                None => env::remove_var("CTX_DAEMON_AUTOSTART_IDLE_EXIT_SECONDS"),
-            }
-        }
-    }
-
-    let _env_lock = crate::config::TEST_LOCAL_USAGE_ENV_LOCK
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner());
-    let _restore = RestoreIdleEnv(env::var_os("CTX_DAEMON_AUTOSTART_IDLE_EXIT_SECONDS"));
-    env::remove_var("CTX_DAEMON_AUTOSTART_IDLE_EXIT_SECONDS");
     let temp = tempfile::tempdir().unwrap();
     let launch = configured_daemon_autostart_command(
         Path::new("ctx"),
@@ -425,24 +362,6 @@ fn persistent_fallback_autostart_child_has_no_idle_exit() {
     assert!(
         !args.contains(&"--idle-exit-seconds"),
         "persistent fallback launch must not acquire the bounded manager-unavailable lifetime: {args:?}"
-    );
-}
-
-#[test]
-fn only_manager_unavailability_requires_the_initial_refresh_wait() {
-    use super::super::daemon_supervisor::DaemonSupervisorStart;
-
-    assert_eq!(
-        daemon_supervisor_launch_policy(DaemonSupervisorStart::Native),
-        (false, false)
-    );
-    assert_eq!(
-        daemon_supervisor_launch_policy(DaemonSupervisorStart::Fallback),
-        (false, false)
-    );
-    assert_eq!(
-        daemon_supervisor_launch_policy(DaemonSupervisorStart::ManagerUnavailable),
-        (true, true)
     );
 }
 
@@ -620,7 +539,10 @@ fn current_daemon_fences_starts_before_transferring_to_helper() -> Result<()> {
         temp.path(),
         attempt_id,
         DaemonTriggerCommandArg::Search,
+        Some(23),
     )?;
+
+    assert_eq!(handoff.replacement_restart(), Some(("search", Some(23))));
 
     assert!(daemon_upgrade_handoff_blocks_current_process(temp.path()));
     assert_eq!(
@@ -669,10 +591,7 @@ fn running_daemon_cooperatively_releases_its_lock_for_upgrade() -> Result<()> {
     let handoff =
         begin_daemon_upgrade_handoff(temp.path(), "ua_01890f3e-2c80-7000-8000-000000000006")?;
     assert!(!daemon_lock_is_active(temp.path()));
-    assert_eq!(
-        handoff.replacement_restart().map(|(trigger, _, _)| trigger),
-        Some("search")
-    );
+    assert_eq!(handoff.replacement_restart(), Some(("search", None)));
     daemon.join().expect("join test daemon")?;
     drop(handoff);
     Ok(())
@@ -756,7 +675,7 @@ fn replacement_handoff_waits_for_daemon_ready_ack() -> Result<()> {
             &worker_root,
             Path::new("unused-while-daemon-lock-is-active"),
             handoff_id,
-            Some(("search", 5, 5)),
+            Some(("search", Some(23))),
         )
     });
     std::thread::sleep(StdDuration::from_millis(100));
@@ -789,7 +708,6 @@ fn replacement_daemon_receives_only_its_handoff_bypass_token() {
         Path::new("ctx"),
         Path::new("/tmp/ctx-daemon-upgrade-test"),
         DaemonTriggerCommandArg::Search,
-        Some(5),
         Some(5),
         Some("handoff-token"),
     )

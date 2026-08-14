@@ -86,7 +86,9 @@ struct FakeSupervisorState {
     mutation_preparations: usize,
     registered: bool,
     registration_probes: usize,
+    detached_owner_live: bool,
     live_owner: Option<u32>,
+    handoffs: usize,
     installs: usize,
     disables: usize,
     starts: usize,
@@ -224,11 +226,23 @@ impl NativeSupervisorBackend<SupervisorEnvironmentSnapshot> for FakeSupervisorBa
             .ok_or_else(|| anyhow!("fake native manager has no owner"))
     }
 
+    fn prepare_start(&self, _data_root: &Path, _executable: &Path) -> Result<Option<u32>> {
+        let mut state = self.state.lock().unwrap();
+        state.handoffs += 1;
+        state.detached_owner_live = false;
+        Ok(None)
+    }
+
     fn start(&self, _data_root: &Path) -> Result<()> {
         let mut state = self.state.lock().unwrap();
         state.starts += 1;
         if self.fail_start {
             return Err(anyhow!("fake native manager refused to start daemon"));
+        }
+        if state.detached_owner_live {
+            return Err(anyhow!(
+                "fake native manager cannot start while detached fallback owns singleton"
+            ));
         }
         state.start_observed_released_fence = state.upgrade_fence_released;
         state.live_owner = Some(4_242);
@@ -480,7 +494,7 @@ fn windows_task_contract_is_current_user_restartable_and_spawns_with_a_clear_env
     );
     let state_script = windows_task_state_script(r"\ctx-daemon-S-1-5-21-1000");
     assert!(state_script.contains("-TaskPath '\\'"));
-    assert!(state_script.contains("-TaskName 'ctx-daemon-S-1-5-21-1000'"));
+    assert!(state_script.contains("Where-Object {$_.TaskName -eq 'ctx-daemon-S-1-5-21-1000'}"));
     assert_eq!(parse_windows_task_state(b"4\r\n"), Some(4));
     assert_ne!(parse_windows_task_state(b"3\r\n"), Some(4));
 }
@@ -888,6 +902,37 @@ fn concurrent_recovery_revalidates_registration_under_the_installation_lock() ->
 }
 
 #[test]
+fn preserved_registration_hands_same_binary_fallback_to_native_once() -> Result<()> {
+    let temp = tempfile::tempdir()?;
+    let executable = temp.path().join("ctx");
+    let backend = FakeSupervisorBackend::with_registration(None);
+    backend.state.lock().unwrap().detached_owner_live = true;
+
+    let input = ManagedSupervisorInput::new(&TestHost, temp.path(), &executable)?;
+    assert_eq!(
+        ensure_native_supervisor_with(&TestHost, &input, &backend)?,
+        DaemonSupervisorStart::Native
+    );
+    assert_eq!(
+        ensure_native_supervisor_with(&TestHost, &input, &backend)?,
+        DaemonSupervisorStart::Native
+    );
+
+    let state = backend.state.lock().unwrap();
+    assert!(!state.detached_owner_live);
+    assert_eq!(state.handoffs, 1);
+    assert_eq!(state.starts, 1);
+    assert_eq!(state.installs, 0);
+    assert_eq!(state.disables, 0);
+    assert_eq!(state.live_owner, Some(4_242));
+    drop(state);
+    let receipt = stored_supervisor_report(temp.path());
+    assert_eq!(receipt["status"], "installed");
+    assert_eq!(receipt["owner_pid"], 4_242);
+    Ok(())
+}
+
+#[test]
 fn unavailable_manager_falls_back_before_native_mutation_under_the_installation_lock() -> Result<()>
 {
     let temp = tempfile::tempdir()?;
@@ -921,7 +966,72 @@ fn unavailable_manager_falls_back_before_native_mutation_under_the_installation_
     assert_eq!(report["live_owner_verified"], false);
     assert!(report["limitation"]
         .as_str()
-        .is_some_and(|value| value.contains("continuous refresh is unavailable")));
+        .is_some_and(|value| value.contains("persistent detached daemon")));
+    assert!(report["limitation"]
+        .as_str()
+        .is_some_and(|value| value.contains("automatic restart")));
+    Ok(())
+}
+
+#[test]
+fn fallback_repairs_and_native_recovery_reuse_the_persisted_loop_interval() -> Result<()> {
+    let temp = tempfile::tempdir()?;
+    let executable = temp.path().join("ctx");
+    let backend = FakeSupervisorBackend::default();
+    backend.state.lock().unwrap().manager_unavailable = true;
+    let mut input = ManagedSupervisorInput::new(&TestHost, temp.path(), &executable)?;
+    input.daemon_environment = input
+        .daemon_environment
+        .with_loop_interval_seconds(Some(23))?;
+
+    assert_eq!(
+        ensure_native_supervisor_with(&TestHost, &input, &backend)?,
+        DaemonSupervisorStart::ManagerUnavailable
+    );
+    assert_eq!(
+        persisted_supervisor_loop_interval_seconds(temp.path()),
+        Some(23)
+    );
+
+    for _repair_attempt in 0..2 {
+        let launch = lifecycle::configured_daemon_autostart_command(
+            &executable,
+            temp.path(),
+            crate::DaemonTrigger::Search,
+            None,
+        )?;
+        let args = launch
+            .args()
+            .map(|arg| arg.to_string_lossy().into_owned())
+            .collect::<Vec<_>>();
+        assert!(args
+            .windows(2)
+            .any(|pair| pair == ["--loop-interval-seconds", "23"]));
+    }
+
+    let environment_with_different_ambient_override = input
+        .daemon_environment
+        .clone()
+        .with_loop_interval_seconds(Some(11))?;
+    let recovered_native_environment = configured_supervisor_environment_from_snapshot(
+        environment_with_different_ambient_override,
+        temp.path(),
+        None,
+    )?;
+    assert_eq!(
+        recovered_native_environment.loop_interval_seconds(),
+        Some(23)
+    );
+
+    let explicit_upgrade_environment = configured_supervisor_environment_from_snapshot(
+        recovered_native_environment,
+        temp.path(),
+        Some(41),
+    )?;
+    assert_eq!(
+        explicit_upgrade_environment.loop_interval_seconds(),
+        Some(41)
+    );
     Ok(())
 }
 
@@ -1083,6 +1193,7 @@ fn manager_unavailable_upgrade_receipt_waits_for_lock_and_preserves_fence() -> R
             &worker_root,
             &worker_executable,
             worker_backend.as_ref(),
+            None,
             &mut fence,
         )
     });
@@ -1233,6 +1344,7 @@ fn upgrade_handoff_releases_fence_before_native_manager_start() -> Result<()> {
         temp.path(),
         &executable,
         &backend,
+        None,
         &mut fence,
     )?;
     assert_eq!(result, DaemonSupervisorUpgradeResume::Native);
@@ -1257,16 +1369,36 @@ fn upgrade_handoff_keeps_fence_for_detached_fallback_without_native_registration
         fence_released.store(true, Ordering::SeqCst);
         Ok(())
     }));
+    let environment_snapshot = supervisor_environment_snapshot(&TestHost)?
+        .with_loop_interval_seconds(Some(23))?
+        .contract_report();
     let result = resume_daemon_supervisor_after_upgrade_with(
         &TestHost,
         temp.path(),
         &executable,
         &backend,
+        Some(environment_snapshot),
         &mut fence,
     )?;
     assert_eq!(result, DaemonSupervisorUpgradeResume::Fallback);
     assert!(!fence_released.load(Ordering::SeqCst));
     assert_eq!(backend.state.lock().unwrap().starts, 0);
+    let report = stored_supervisor_report(temp.path());
+    assert_eq!(report["status"], "fallback");
+    assert_eq!(report["environment_snapshot"]["loop_interval_seconds"], 23);
+    let launch = lifecycle::configured_daemon_autostart_command(
+        &executable,
+        temp.path(),
+        crate::DaemonTrigger::Search,
+        None,
+    )?;
+    let args = launch
+        .args()
+        .map(|arg| arg.to_string_lossy().into_owned())
+        .collect::<Vec<_>>();
+    assert!(args
+        .windows(2)
+        .any(|pair| pair == ["--loop-interval-seconds", "23"]));
     Ok(())
 }
 

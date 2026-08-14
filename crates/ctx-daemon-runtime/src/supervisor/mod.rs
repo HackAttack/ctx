@@ -20,6 +20,7 @@ pub use windows::*;
 
 const SUPERVISOR_HANDOFF_TIMEOUT: Duration = Duration::from_secs(5);
 const SUPERVISOR_POLL_INTERVAL: Duration = Duration::from_millis(25);
+const SUPERVISOR_STARTUP_GRACE: Duration = Duration::from_secs(1);
 
 #[derive(Debug, Clone, Eq, PartialEq)]
 pub enum SupervisorManagerOperability {
@@ -38,6 +39,10 @@ pub trait NativeSupervisorBackend<E>: Sync {
     fn disable(&self, data_root: &Path) -> Result<Option<PathBuf>>;
     fn verify_registration(&self, data_root: &Path, executable: &Path) -> Result<()>;
     fn verify_live_owner(&self, data_root: &Path, executable: &Path) -> Result<u32>;
+    /// Reverify manager ownership immediately before handing off a detached
+    /// owner. Returning an owner PID suppresses the start; returning `None`
+    /// means any detached owner was released and the manager may start safely.
+    fn prepare_start(&self, data_root: &Path, executable: &Path) -> Result<Option<u32>>;
     fn start(&self, data_root: &Path) -> Result<()>;
 }
 
@@ -98,10 +103,7 @@ pub fn ensure_native_supervisor_with<E>(
                 )? {
                     return Ok(outcome);
                 }
-                return match backend
-                    .start(data_root)
-                    .and_then(|()| wait_for_native_live_owner(data_root, executable, backend))
-                {
+                return match start_and_wait_for_native_live_owner(data_root, executable, backend) {
                     Ok(owner_pid) => Ok(SupervisorEnsureOutcome::Native {
                         artifact,
                         owner_pid,
@@ -177,9 +179,7 @@ pub fn ensure_native_supervisor_with<E>(
                         )? {
                             return Ok(outcome);
                         }
-                        backend.start(data_root).and_then(|()| {
-                            wait_for_native_live_owner(data_root, executable, backend)
-                        })
+                        start_and_wait_for_native_live_owner(data_root, executable, backend)
                     }
                 };
                 match recovery {
@@ -306,6 +306,47 @@ fn wait_for_native_live_owner<E>(
     }
 }
 
+fn wait_for_native_live_owner_during_startup_grace<E>(
+    data_root: &Path,
+    executable: &Path,
+    backend: &dyn NativeSupervisorBackend<E>,
+) -> Option<u32> {
+    if !crate::daemon_lock_is_active(data_root) {
+        return None;
+    }
+    let deadline = Instant::now() + SUPERVISOR_STARTUP_GRACE;
+    loop {
+        if let Ok(owner_pid) = backend.verify_live_owner(data_root, executable) {
+            return Some(owner_pid);
+        }
+        if Instant::now() >= deadline {
+            return None;
+        }
+        std::thread::sleep(SUPERVISOR_POLL_INTERVAL);
+    }
+}
+
+fn start_and_wait_for_native_live_owner<E>(
+    data_root: &Path,
+    executable: &Path,
+    backend: &dyn NativeSupervisorBackend<E>,
+) -> Result<u32> {
+    // A manager child can publish its process lock before the manager-specific
+    // ownership witness (notably the Windows provenance sidecar) is visible.
+    // Give that publication a bounded grace period, then reverify once more in
+    // `prepare_start` before asking a detached owner to hand off.
+    if let Some(owner_pid) =
+        wait_for_native_live_owner_during_startup_grace(data_root, executable, backend)
+    {
+        return Ok(owner_pid);
+    }
+    if let Some(owner_pid) = backend.prepare_start(data_root, executable)? {
+        return Ok(owner_pid);
+    }
+    backend.start(data_root)?;
+    wait_for_native_live_owner(data_root, executable, backend)
+}
+
 pub trait SupervisorUpgradeFence {
     fn release(&mut self) -> Result<()>;
 }
@@ -361,10 +402,7 @@ pub fn resume_native_supervisor_with<E>(
     upgrade_fence.release()?;
     let owner = backend
         .verify_live_owner(data_root, executable)
-        .or_else(|_| {
-            backend.start(data_root)?;
-            wait_for_native_live_owner(data_root, executable, backend)
-        });
+        .or_else(|_| start_and_wait_for_native_live_owner(data_root, executable, backend));
     match owner {
         Ok(owner_pid) => Ok(SupervisorResumeOutcome::Native {
             artifact: backend.artifact_path(data_root)?,
@@ -426,6 +464,8 @@ mod tests {
     struct StubBackend {
         registered: bool,
         owner_pid: Option<u32>,
+        delayed_owner: Option<(usize, u32)>,
+        prepared_owner: Option<u32>,
         install_error: bool,
         calls: Mutex<Vec<&'static str>>,
     }
@@ -435,6 +475,8 @@ mod tests {
             Self {
                 registered,
                 owner_pid,
+                delayed_owner: None,
+                prepared_owner: None,
                 install_error,
                 calls: Mutex::new(Vec::new()),
             }
@@ -446,6 +488,16 @@ mod tests {
 
         fn record(&self, call: &'static str) {
             self.calls.lock().unwrap().push(call);
+        }
+
+        fn with_delayed_owner(mut self, verification: usize, owner_pid: u32) -> Self {
+            self.delayed_owner = Some((verification, owner_pid));
+            self
+        }
+
+        fn with_prepared_owner(mut self, owner_pid: u32) -> Self {
+            self.prepared_owner = Some(owner_pid);
+            self
         }
     }
 
@@ -495,7 +547,24 @@ mod tests {
 
         fn verify_live_owner(&self, _data_root: &Path, _executable: &Path) -> Result<u32> {
             self.record("verify_live_owner");
+            if let Some((verification, owner_pid)) = self.delayed_owner {
+                let observed = self
+                    .calls
+                    .lock()
+                    .unwrap()
+                    .iter()
+                    .filter(|call| **call == "verify_live_owner")
+                    .count();
+                if observed >= verification {
+                    return Ok(owner_pid);
+                }
+            }
             self.owner_pid.ok_or_else(|| anyhow!("not running"))
+        }
+
+        fn prepare_start(&self, _data_root: &Path, _executable: &Path) -> Result<Option<u32>> {
+            self.record("prepare_start");
+            Ok(self.prepared_owner)
         }
 
         fn start(&self, _data_root: &Path) -> Result<()> {
@@ -544,6 +613,46 @@ mod tests {
                 "verify_live_owner"
             ]
         );
+    }
+
+    #[test]
+    fn ensure_waits_for_manager_provenance_before_handing_off_a_live_lock() {
+        let temp = tempfile::tempdir().unwrap();
+        let _lock = crate::DaemonLock::acquire(temp.path())
+            .unwrap()
+            .expect("test daemon lock");
+        let backend = StubBackend::new(true, None, false).with_delayed_owner(3, 73);
+
+        let outcome =
+            ensure_native_supervisor_with(temp.path(), Path::new("/tmp/ctx"), &(), &backend)
+                .unwrap();
+
+        assert!(matches!(
+            outcome,
+            SupervisorEnsureOutcome::Native { owner_pid: 73, .. }
+        ));
+        assert!(!backend.calls().contains(&"prepare_start"));
+        assert!(!backend.calls().contains(&"start"));
+    }
+
+    #[test]
+    fn ensure_reverifies_immediately_before_handoff_and_suppresses_restart() {
+        let temp = tempfile::tempdir().unwrap();
+        let _lock = crate::DaemonLock::acquire(temp.path())
+            .unwrap()
+            .expect("test daemon lock");
+        let backend = StubBackend::new(true, None, false).with_prepared_owner(89);
+
+        let outcome =
+            ensure_native_supervisor_with(temp.path(), Path::new("/tmp/ctx"), &(), &backend)
+                .unwrap();
+
+        assert!(matches!(
+            outcome,
+            SupervisorEnsureOutcome::Native { owner_pid: 89, .. }
+        ));
+        assert!(backend.calls().contains(&"prepare_start"));
+        assert!(!backend.calls().contains(&"start"));
     }
 
     #[test]
@@ -597,6 +706,141 @@ mod tests {
         assert_eq!(
             backend.calls(),
             ["probe_manager", "verify_registration", "probe_manager"]
+        );
+    }
+
+    #[test]
+    fn ensure_hands_same_binary_fallback_to_preserved_registration_once() {
+        #[derive(Default)]
+        struct State {
+            fallback_owns_lock: bool,
+            manager_owner: Option<u32>,
+            calls: Vec<&'static str>,
+        }
+
+        struct PreservedRegistrationBackend {
+            state: Mutex<State>,
+        }
+
+        impl NativeSupervisorBackend<()> for PreservedRegistrationBackend {
+            fn probe_manager(&self, _data_root: &Path) -> Result<SupervisorManagerOperability> {
+                self.state.lock().unwrap().calls.push("probe_manager");
+                Ok(SupervisorManagerOperability::Operational)
+            }
+
+            fn prepare_mutation(&self, _data_root: &Path, _executable: &Path) -> Result<()> {
+                self.state.lock().unwrap().calls.push("prepare_mutation");
+                Ok(())
+            }
+
+            fn artifact_path(&self, _data_root: &Path) -> Result<Option<PathBuf>> {
+                self.state.lock().unwrap().calls.push("artifact_path");
+                Ok(Some(PathBuf::from("/tmp/ctx.service")))
+            }
+
+            fn install(
+                &self,
+                _data_root: &Path,
+                _executable: &Path,
+                _environment: &(),
+            ) -> Result<PathBuf> {
+                self.state.lock().unwrap().calls.push("install");
+                Err(anyhow!("preserved registration must not be reinstalled"))
+            }
+
+            fn disable(&self, _data_root: &Path) -> Result<Option<PathBuf>> {
+                self.state.lock().unwrap().calls.push("disable");
+                Err(anyhow!("preserved registration must not be disabled"))
+            }
+
+            fn verify_registration(&self, _data_root: &Path, _executable: &Path) -> Result<()> {
+                self.state.lock().unwrap().calls.push("verify_registration");
+                Ok(())
+            }
+
+            fn verify_live_owner(&self, _data_root: &Path, _executable: &Path) -> Result<u32> {
+                let mut state = self.state.lock().unwrap();
+                state.calls.push("verify_live_owner");
+                state
+                    .manager_owner
+                    .ok_or_else(|| anyhow!("same-binary detached fallback is not manager-owned"))
+            }
+
+            fn prepare_start(&self, _data_root: &Path, _executable: &Path) -> Result<Option<u32>> {
+                let mut state = self.state.lock().unwrap();
+                state.calls.push("supervisor_handoff");
+                if !state.fallback_owns_lock {
+                    return Err(anyhow!("no detached fallback owns the singleton"));
+                }
+                state.fallback_owns_lock = false;
+                Ok(None)
+            }
+
+            fn start(&self, _data_root: &Path) -> Result<()> {
+                let mut state = self.state.lock().unwrap();
+                state.calls.push("start");
+                if state.fallback_owns_lock {
+                    return Err(anyhow!("manager start raced the detached fallback"));
+                }
+                state.manager_owner = Some(73);
+                Ok(())
+            }
+        }
+
+        let backend = PreservedRegistrationBackend {
+            state: Mutex::new(State {
+                fallback_owns_lock: true,
+                ..State::default()
+            }),
+        };
+        let first = ensure_native_supervisor_with(
+            Path::new("/tmp/data"),
+            Path::new("/tmp/ctx"),
+            &(),
+            &backend,
+        )
+        .unwrap();
+        assert!(matches!(
+            first,
+            SupervisorEnsureOutcome::Native {
+                owner_pid: 73,
+                environment_installed: false,
+                ..
+            }
+        ));
+        let second = ensure_native_supervisor_with(
+            Path::new("/tmp/data"),
+            Path::new("/tmp/ctx"),
+            &(),
+            &backend,
+        )
+        .unwrap();
+        assert!(matches!(
+            second,
+            SupervisorEnsureOutcome::Native {
+                owner_pid: 73,
+                environment_installed: false,
+                ..
+            }
+        ));
+        assert_eq!(
+            backend.state.lock().unwrap().calls,
+            [
+                "probe_manager",
+                "artifact_path",
+                "prepare_mutation",
+                "verify_registration",
+                "verify_live_owner",
+                "probe_manager",
+                "supervisor_handoff",
+                "start",
+                "verify_live_owner",
+                "probe_manager",
+                "artifact_path",
+                "prepare_mutation",
+                "verify_registration",
+                "verify_live_owner",
+            ]
         );
     }
 }

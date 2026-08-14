@@ -174,13 +174,10 @@ impl DaemonUpgradeLease for CliDaemonUpgradeLease {
     fn replacement_restart(&self) -> Option<DaemonRestart<'_>> {
         self.0
             .replacement_restart()
-            .map(
-                |(trigger, idle_exit_seconds, loop_interval_seconds)| DaemonRestart {
-                    trigger,
-                    idle_exit_seconds,
-                    loop_interval_seconds,
-                },
-            )
+            .map(|(trigger, loop_interval_seconds)| DaemonRestart {
+                trigger,
+                loop_interval_seconds,
+            })
     }
 
     fn resume_with(self, executable: &Path) -> Result<()> {
@@ -221,6 +218,7 @@ impl DaemonUpgradePort for CliDaemonUpgrade {
         data_root: &Path,
         attempt_id: &str,
         restart_trigger: &str,
+        loop_interval_seconds: Option<u64>,
     ) -> Result<Self::Lease> {
         let trigger = match restart_trigger {
             "setup" => crate::DaemonTriggerCommandArg::Setup,
@@ -229,7 +227,12 @@ impl DaemonUpgradePort for CliDaemonUpgrade {
             other => return Err(anyhow!("invalid daemon upgrade restart trigger {other}")),
         };
         Ok(CliDaemonUpgradeLease(
-            crate::semantic::begin_current_daemon_upgrade_handoff(data_root, attempt_id, trigger)?,
+            crate::semantic::begin_current_daemon_upgrade_handoff(
+                data_root,
+                attempt_id,
+                trigger,
+                loop_interval_seconds,
+            )?,
         ))
     }
 
@@ -262,13 +265,7 @@ impl DaemonUpgradePort for CliDaemonUpgrade {
             data_root,
             executable,
             attempt_id,
-            restart.map(|restart| {
-                (
-                    restart.trigger,
-                    restart.idle_exit_seconds,
-                    restart.loop_interval_seconds,
-                )
-            }),
+            restart.map(|restart| (restart.trigger, restart.loop_interval_seconds)),
         )
     }
 

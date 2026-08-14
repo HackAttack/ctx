@@ -1,7 +1,5 @@
 use super::*;
 use crate::NormalizedLaunch;
-#[cfg(windows)]
-use anyhow::Context as _;
 use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
 use quick_xml::{
     encoding::Decoder as XmlDecoder,
@@ -9,9 +7,33 @@ use quick_xml::{
     events::{BytesStart as XmlStart, Event as XmlEvent},
     Reader as XmlReader, XmlVersion,
 };
+use serde_json::Value;
+
+use crate::DAEMON_LOCK_FILE;
+
+#[cfg(windows)]
+use crate::{daemon_lock_path, pid_from_lock_json, read_pid_lock_json};
 
 #[cfg(windows)]
 use std::fs;
+
+const WINDOWS_SUPERVISOR_OWNER_FILE: &str = "windows-supervisor-owner.json";
+
+pub fn windows_supervisor_owner_provenance_path(identity: &SupervisorIdentity) -> Result<PathBuf> {
+    identity
+        .artifact_path()
+        .parent()
+        .map(|parent| parent.join(WINDOWS_SUPERVISOR_OWNER_FILE))
+        .ok_or_else(|| anyhow!("Windows supervisor artifact has no parent directory"))
+}
+
+fn windows_supervisor_daemon_lock_path(identity: &SupervisorIdentity) -> Result<PathBuf> {
+    identity
+        .artifact_path()
+        .parent()
+        .map(|parent| parent.join(DAEMON_LOCK_FILE))
+        .ok_or_else(|| anyhow!("Windows supervisor artifact has no parent directory"))
+}
 
 #[cfg(windows)]
 pub fn probe_windows_task_scheduler(
@@ -67,24 +89,18 @@ pub fn disable_windows_supervisor(
 ) -> Result<Option<PathBuf>> {
     let path = identity.artifact_path();
     let task_name = identity.name();
-    let mut end = supervisor_command("schtasks", manager_environment);
-    end.args(["/End", "/TN"]).arg(&task_name);
-    let _ = supervisor_output(&mut end);
+    stop_windows_supervisor_action(identity, manager_environment)?;
+    let system_root = manager_environment_value(manager_environment, "SystemRoot")
+        .ok_or_else(|| anyhow!("Windows SystemRoot is unavailable"))?;
     let mut delete = supervisor_command("schtasks", manager_environment);
     delete.args(["/Delete", "/TN"]).arg(&task_name).arg("/F");
     let output = supervisor_output(&mut delete).context("run schtasks /Delete")?;
-    let query = query_windows_task(&task_name, manager_environment)?;
-    if !output.status.success() && query.status.success() {
-        return Err(anyhow!(
-            "schtasks /Delete failed: {}",
-            String::from_utf8_lossy(&output.stderr).trim()
-        ));
-    }
-    if query.status.success() {
-        return Err(anyhow!(
-            "ctx scheduled task remained registered after deletion"
-        ));
-    }
+    verify_windows_task_deletion(
+        output.status.success(),
+        &output.stderr,
+        windows_task_state(&task_name, Path::new(system_root), manager_environment),
+    )?;
+    remove_windows_supervisor_owner_provenance(identity)?;
     match fs::remove_file(path) {
         Ok(()) => {}
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
@@ -93,12 +109,37 @@ pub fn disable_windows_supervisor(
     Ok(Some(path.to_path_buf()))
 }
 
+#[cfg(any(windows, test))]
+fn verify_windows_task_deletion(
+    delete_succeeded: bool,
+    delete_stderr: &[u8],
+    task_state: Result<Option<u32>>,
+) -> Result<()> {
+    let task_state = task_state.context("verify ctx scheduled-task deletion")?;
+    if task_state.is_none() {
+        return Ok(());
+    }
+    if !delete_succeeded {
+        return Err(anyhow!(
+            "schtasks /Delete failed: {}",
+            String::from_utf8_lossy(delete_stderr).trim()
+        ));
+    }
+    Err(anyhow!(
+        "ctx scheduled task remained registered after deletion"
+    ))
+}
+
 pub fn windows_task_xml(
     spec: &SupervisorSpec,
     system_root: &Path,
     user_sid: &str,
 ) -> Result<String> {
-    let script = windows_sanitized_process_supervisor_script(spec.launch())?;
+    let script = windows_sanitized_process_supervisor_script_with_provenance(
+        spec.launch(),
+        &windows_supervisor_daemon_lock_path(spec.identity())?,
+        &windows_supervisor_owner_provenance_path(spec.identity())?,
+    )?;
     windows_task_xml_with_script(
         system_root,
         user_sid,
@@ -153,6 +194,31 @@ pub fn windows_task_xml_bytes(xml: &str) -> Vec<u8> {
 }
 
 pub fn windows_sanitized_process_supervisor_script(launch: &NormalizedLaunch) -> Result<String> {
+    let process = windows_sanitized_process_start_info(launch)?;
+    Ok(format!(
+        "$ErrorActionPreference='Stop';{process}[int]$delay=2;while($true){{$c=$null;$code=1;$started=[DateTime]::UtcNow;try{{$c=[Diagnostics.Process]::Start($p);$c.WaitForExit();$code=$c.ExitCode}}catch{{$code=1}}finally{{if($null -ne $c){{$c.Dispose()}}}};if($code -eq 0){{exit 0}};if(([DateTime]::UtcNow-$started).TotalSeconds -ge 60){{$delay=2}};Start-Sleep -Seconds $delay;$delay=[Math]::Min($delay*2,60)}}"
+    ))
+}
+
+fn windows_sanitized_process_supervisor_script_with_provenance(
+    launch: &NormalizedLaunch,
+    daemon_lock: &Path,
+    owner_provenance: &Path,
+) -> Result<String> {
+    let process = windows_sanitized_process_start_info(launch)?;
+    let daemon_lock = validated_supervisor_artifact_path("Windows daemon lock", daemon_lock)?;
+    let owner_provenance = validated_supervisor_artifact_path(
+        "Windows supervisor owner provenance",
+        owner_provenance,
+    )?;
+    let daemon_lock = powershell_single_quote(daemon_lock);
+    let owner_provenance = powershell_single_quote(owner_provenance);
+    Ok(format!(
+        "$ErrorActionPreference='Stop';{process}$lockPath='{daemon_lock}';$ownerPath='{owner_provenance}';$tempPath=$ownerPath+'.'+$PID+'.tmp';Remove-Item -LiteralPath $ownerPath -Force -ErrorAction SilentlyContinue;Remove-Item -LiteralPath $tempPath -Force -ErrorAction SilentlyContinue;[int]$delay=2;while($true){{$c=$null;$code=1;$started=[DateTime]::UtcNow;try{{$c=[Diagnostics.Process]::Start($p);$owner=$null;while(!$c.HasExited -and $null -eq $owner){{try{{$lock=Get-Content -LiteralPath $lockPath -Raw -ErrorAction Stop|ConvertFrom-Json -ErrorAction Stop;if(([uint32]$lock.pid -eq [uint32]$c.Id)-and(-not [string]::IsNullOrWhiteSpace([string]$lock.owner_id))){{$owner=[string]$lock.owner_id}}}}catch{{}};if($null -eq $owner){{Start-Sleep -Milliseconds 25}}}};if($null -ne $owner){{$record=[ordered]@{{schema_version=1;pid=[uint32]$c.Id;owner_id=$owner}}|ConvertTo-Json -Compress;[IO.File]::WriteAllText($tempPath,$record,(New-Object Text.UTF8Encoding($false)));Move-Item -LiteralPath $tempPath -Destination $ownerPath -Force}};$c.WaitForExit();$code=$c.ExitCode}}catch{{$code=1}}finally{{Remove-Item -LiteralPath $ownerPath -Force -ErrorAction SilentlyContinue;Remove-Item -LiteralPath $tempPath -Force -ErrorAction SilentlyContinue;if($null -ne $c){{$c.Dispose()}}}};if($code -eq 0){{exit 0}};if(([DateTime]::UtcNow-$started).TotalSeconds -ge 60){{$delay=2}};Start-Sleep -Seconds $delay;$delay=[Math]::Min($delay*2,60)}}"
+    ))
+}
+
+fn windows_sanitized_process_start_info(launch: &NormalizedLaunch) -> Result<String> {
     let executable =
         validated_supervisor_artifact_path("Windows child executable", launch.program())?;
     let environment = launch
@@ -190,7 +256,7 @@ pub fn windows_sanitized_process_supervisor_script(launch: &NormalizedLaunch) ->
         .collect::<Result<Vec<_>>>()?
         .join(" ");
     Ok(format!(
-        "$ErrorActionPreference='Stop';$p=New-Object System.Diagnostics.ProcessStartInfo;$p.FileName='{}';$p.UseShellExecute=$false;$p.CreateNoWindow=$true;$p.EnvironmentVariables.Clear();{environment}$p.Arguments='{}';[int]$delay=2;while($true){{$c=$null;$code=1;$started=[DateTime]::UtcNow;try{{$c=[Diagnostics.Process]::Start($p);$c.WaitForExit();$code=$c.ExitCode}}catch{{$code=1}}finally{{if($null -ne $c){{$c.Dispose()}}}};if($code -eq 0){{exit 0}};if(([DateTime]::UtcNow-$started).TotalSeconds -ge 60){{$delay=2}};Start-Sleep -Seconds $delay;$delay=[Math]::Min($delay*2,60)}}",
+        "$p=New-Object System.Diagnostics.ProcessStartInfo;$p.FileName='{}';$p.UseShellExecute=$false;$p.CreateNoWindow=$true;$p.EnvironmentVariables.Clear();{environment}$p.Arguments='{}';",
         powershell_single_quote(executable),
         powershell_single_quote(&arguments),
     ))
@@ -306,7 +372,8 @@ pub fn verify_windows_supervisor(
             "ctx current-user scheduled task has no live supervisor ownership"
         ));
     }
-    verify_daemon_owner_identity(data_root, executable, None)
+    let owner_pid = verify_windows_supervisor_owner_provenance(data_root, spec)?;
+    verify_daemon_owner_identity(data_root, executable, Some(owner_pid))
 }
 
 #[cfg(windows)]
@@ -314,9 +381,102 @@ pub fn start_windows_supervisor(
     identity: &SupervisorIdentity,
     manager_environment: &SupervisorManagerEnvironment,
 ) -> Result<()> {
+    stop_windows_supervisor_action(identity, manager_environment)?;
+    remove_windows_supervisor_owner_provenance(identity)?;
     let mut run = supervisor_command("schtasks", manager_environment);
     run.args(["/Run", "/TN"]).arg(identity.name());
     command_success(&mut run, "schtasks /Run")
+}
+
+#[cfg(windows)]
+fn stop_windows_supervisor_action(
+    identity: &SupervisorIdentity,
+    manager_environment: &SupervisorManagerEnvironment,
+) -> Result<()> {
+    let system_root = manager_environment_value(manager_environment, "SystemRoot")
+        .ok_or_else(|| anyhow!("Windows SystemRoot is unavailable"))?;
+    let mut end = supervisor_command("schtasks", manager_environment);
+    end.args(["/End", "/TN"]).arg(identity.name());
+    let end_output = supervisor_output(&mut end).context("run schtasks /End")?;
+    let deadline = Instant::now() + SUPERVISOR_HANDOFF_TIMEOUT;
+    loop {
+        match windows_task_state(identity.name(), Path::new(system_root), manager_environment) {
+            Ok(None) => return Ok(()),
+            Ok(Some(4)) if Instant::now() < deadline => {
+                std::thread::sleep(SUPERVISOR_POLL_INTERVAL);
+            }
+            Ok(Some(4)) => {
+                let detail = String::from_utf8_lossy(&end_output.stderr);
+                return Err(anyhow!(
+                    "ctx scheduled-task action remained running after schtasks /End{}",
+                    (!end_output.status.success())
+                        .then(|| format!(": {}", detail.trim()))
+                        .unwrap_or_default()
+                ));
+            }
+            Ok(Some(_)) => return Ok(()),
+            Err(error) => {
+                return Err(error.context("verify ctx scheduled-task action stopped"));
+            }
+        }
+    }
+}
+
+#[cfg(windows)]
+fn remove_windows_supervisor_owner_provenance(identity: &SupervisorIdentity) -> Result<()> {
+    let path = windows_supervisor_owner_provenance_path(identity)?;
+    match fs::remove_file(&path) {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(error).with_context(|| {
+            format!(
+                "remove Windows supervisor owner provenance {}",
+                path.display()
+            )
+        }),
+    }
+}
+
+#[cfg(windows)]
+fn verify_windows_supervisor_owner_provenance(
+    data_root: &Path,
+    spec: &SupervisorSpec,
+) -> Result<u32> {
+    let lock = read_pid_lock_json(&daemon_lock_path(data_root))
+        .ok_or_else(|| anyhow!("Windows supervisor daemon lock has no readable identity"))?;
+    let path = windows_supervisor_owner_provenance_path(spec.identity())?;
+    let provenance: Value = serde_json::from_slice(&fs::read(&path).with_context(|| {
+        format!(
+            "read Windows supervisor owner provenance {}",
+            path.display()
+        )
+    })?)
+    .with_context(|| {
+        format!(
+            "parse Windows supervisor owner provenance {}",
+            path.display()
+        )
+    })?;
+    if !windows_supervisor_owner_provenance_matches(&lock, &provenance) {
+        return Err(anyhow!(
+            "Windows scheduled task does not own the live ctx daemon lock"
+        ));
+    }
+    pid_from_lock_json(&lock)
+        .ok_or_else(|| anyhow!("Windows supervisor daemon lock has no process identity"))
+}
+
+pub fn windows_supervisor_owner_provenance_matches(lock: &Value, provenance: &Value) -> bool {
+    let Some(lock_owner_id) = lock
+        .get("owner_id")
+        .and_then(Value::as_str)
+        .filter(|owner_id| !owner_id.is_empty())
+    else {
+        return false;
+    };
+    provenance.get("schema_version").and_then(Value::as_u64) == Some(1)
+        && provenance.get("pid").and_then(Value::as_u64) == lock.get("pid").and_then(Value::as_u64)
+        && provenance.get("owner_id").and_then(Value::as_str) == Some(lock_owner_id)
 }
 
 #[cfg(windows)]
@@ -325,6 +485,15 @@ fn windows_task_is_running(
     system_root: &Path,
     manager_environment: &SupervisorManagerEnvironment,
 ) -> Result<bool> {
+    Ok(windows_task_state(task_name, system_root, manager_environment)? == Some(4))
+}
+
+#[cfg(windows)]
+fn windows_task_state(
+    task_name: &str,
+    system_root: &Path,
+    manager_environment: &SupervisorManagerEnvironment,
+) -> Result<Option<u32>> {
     let powershell = system_root
         .join("System32")
         .join("WindowsPowerShell")
@@ -340,19 +509,37 @@ fn windows_task_is_running(
         .args(["-NoLogo", "-NoProfile", "-NonInteractive", "-Command"])
         .arg(windows_task_state_script(task_name));
     let output = supervisor_output(&mut command).context("query scheduled-task running state")?;
-    Ok(output.status.success() && parse_windows_task_state(&output.stdout) == Some(4))
+    if !output.status.success() {
+        return Err(anyhow!(
+            "query scheduled-task running state failed: {}",
+            String::from_utf8_lossy(&output.stderr).trim()
+        ));
+    }
+    parse_windows_task_state_query(&output.stdout)
+        .ok_or_else(|| anyhow!("scheduled-task running state was neither absent nor numeric"))
 }
 
 pub fn windows_task_state_script(task_name: &str) -> String {
     let task = task_name.trim_start_matches('\\');
     format!(
-        "$t=Get-ScheduledTask -TaskPath '\\' -TaskName '{}' -ErrorAction Stop;[Console]::Out.Write([int]$t.State)",
+        "$t=Get-ScheduledTask -TaskPath '\\' -ErrorAction Stop | Where-Object {{$_.TaskName -eq '{}'}};if($null -eq $t){{[Console]::Out.Write('absent')}}else{{[Console]::Out.Write([int]$t.State)}}",
         powershell_single_quote(task),
     )
 }
 
 pub fn parse_windows_task_state(output: &[u8]) -> Option<u32> {
     decode_supervisor_text(output).trim().parse().ok()
+}
+
+#[cfg(any(windows, test))]
+fn parse_windows_task_state_query(output: &[u8]) -> Option<Option<u32>> {
+    let output = decode_supervisor_text(output);
+    let output = output.trim();
+    if output == "absent" {
+        Some(None)
+    } else {
+        output.parse().ok().map(Some)
+    }
 }
 
 pub fn windows_task_registration_matches(
@@ -367,7 +554,11 @@ pub fn windows_task_registration_matches(
         .join("WindowsPowerShell")
         .join("v1.0")
         .join("powershell.exe");
-    let script = windows_sanitized_process_supervisor_script(spec.launch())?;
+    let script = windows_sanitized_process_supervisor_script_with_provenance(
+        spec.launch(),
+        &windows_supervisor_daemon_lock_path(spec.identity())?,
+        &windows_supervisor_owner_provenance_path(spec.identity())?,
+    )?;
     let encoded = BASE64.encode(
         script
             .encode_utf16()
@@ -728,8 +919,11 @@ pub fn decode_supervisor_text(bytes: &[u8]) -> String {
 #[cfg(test)]
 mod manager_probe_tests {
     use std::collections::BTreeMap;
+    #[cfg(windows)]
+    use std::ffi::OsString;
 
     use super::*;
+    use serde_json::json;
 
     #[test]
     fn task_scheduler_probe_is_read_only() {
@@ -743,5 +937,110 @@ mod manager_probe_tests {
                 .map(std::ffi::OsStr::new)
                 .collect::<Vec<_>>()
         );
+    }
+
+    #[test]
+    fn task_state_query_represents_absence_separately_from_failure() {
+        let script = windows_task_state_script(r"\ctx-test-task");
+        assert!(script.contains("-ErrorAction Stop"));
+        assert!(script.contains("Where-Object {$_.TaskName -eq 'ctx-test-task'}"));
+        assert!(script.contains("Write('absent')"));
+        assert_eq!(parse_windows_task_state_query(b"absent"), Some(None));
+        assert_eq!(parse_windows_task_state_query(b"4"), Some(Some(4)));
+        assert_eq!(parse_windows_task_state_query(b"not-a-state"), None);
+    }
+
+    #[test]
+    fn task_deletion_requires_a_successful_absence_query() {
+        verify_windows_task_deletion(false, b"task is absent", Ok(None)).unwrap();
+
+        let query_error =
+            verify_windows_task_deletion(true, b"", Err(anyhow!("Task Scheduler RPC unavailable")))
+                .unwrap_err();
+        assert!(
+            format!("{query_error:#}").contains("Task Scheduler RPC unavailable"),
+            "{query_error:#}"
+        );
+
+        let delete_error =
+            verify_windows_task_deletion(false, b"access denied", Ok(Some(3))).unwrap_err();
+        assert!(format!("{delete_error:#}").contains("access denied"));
+
+        let surviving_task = verify_windows_task_deletion(true, b"", Ok(Some(3))).unwrap_err();
+        assert!(format!("{surviving_task:#}").contains("remained registered"));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn disabling_an_already_absent_real_task_is_idempotent() -> Result<()> {
+        let temp = tempfile::tempdir()?;
+        let task_name = format!(r"\ctx-absent-disable-test-{}", std::process::id());
+        let artifact = temp.path().join("ctx-task.xml");
+        let identity = SupervisorIdentity::new(task_name, artifact.clone())?;
+        fs::write(&artifact, b"stale task definition")?;
+        fs::write(
+            windows_supervisor_owner_provenance_path(&identity)?,
+            b"stale owner provenance",
+        )?;
+        let system_root = std::env::var_os("SystemRoot")
+            .ok_or_else(|| anyhow!("Windows SystemRoot is unavailable in test"))?;
+        let manager_environment = SupervisorManagerEnvironment::new(BTreeMap::from([(
+            OsString::from("SystemRoot"),
+            system_root.clone(),
+        )]));
+
+        assert_eq!(
+            windows_task_state(
+                identity.name(),
+                Path::new(&system_root),
+                &manager_environment,
+            )?,
+            None,
+        );
+        assert_eq!(
+            disable_windows_supervisor(&identity, &manager_environment)?,
+            Some(artifact.clone()),
+        );
+        assert!(!artifact.exists());
+        assert!(!windows_supervisor_owner_provenance_path(&identity)?.exists());
+        assert_eq!(
+            disable_windows_supervisor(&identity, &manager_environment)?,
+            Some(artifact),
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn windows_manager_ownership_rejects_same_binary_detached_fallback() {
+        let detached_fallback_lock = json!({
+            "lock_protocol": "advisory-v1",
+            "owner_id": "fallback-owner",
+            "pid": 4242,
+            "binary": r"C:\Program Files\ctx\ctx.exe",
+            "binary_sha256": "same-binary-image",
+        });
+        let stale_manager_provenance = json!({
+            "schema_version": 1,
+            "owner_id": "previous-manager-owner",
+            "pid": 4242,
+        });
+        assert!(!windows_supervisor_owner_provenance_matches(
+            &detached_fallback_lock,
+            &stale_manager_provenance,
+        ));
+
+        let current_manager_provenance = json!({
+            "schema_version": 1,
+            "owner_id": "fallback-owner",
+            "pid": 4242,
+        });
+        assert!(windows_supervisor_owner_provenance_matches(
+            &detached_fallback_lock,
+            &current_manager_provenance,
+        ));
+        assert!(!windows_supervisor_owner_provenance_matches(
+            &detached_fallback_lock,
+            &json!({"schema_version": 1, "pid": 4242}),
+        ));
     }
 }

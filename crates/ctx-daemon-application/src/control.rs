@@ -5,7 +5,7 @@ use ctx_daemon_runtime::daemon_lock_is_active;
 
 use crate::{
     lifecycle, supervisor, DaemonApplicationHost, DaemonHandoff, DaemonStartError,
-    DaemonSupervisorReport, DaemonSupervisorStart, DaemonTrigger,
+    DaemonSupervisorReport, DaemonTrigger,
 };
 
 const SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(5);
@@ -45,22 +45,13 @@ pub(super) fn update_daemon_enabled(
         if lifecycle::daemon_start_is_fenced(host) {
             return Err(DaemonEnabledUpdateError::StartSuppressed);
         }
-        let bounded_unsupervised = if lifecycle::daemon_autostart_suppression_reason().is_none() {
-            let start = supervisor::ensure_daemon_supervisor(host, data_root)
+        if lifecycle::daemon_autostart_suppression_reason().is_none() {
+            supervisor::ensure_daemon_supervisor(host, data_root)
                 .map_err(DaemonEnabledUpdateError::Supervisor)?;
-            daemon_supervisor_launch_policy(start).0
-        } else {
-            false
-        };
+        }
         Some(
-            lifecycle::start_daemon_and_wait(
-                host,
-                data_root,
-                &config,
-                DaemonTrigger::Setup,
-                bounded_unsupervised,
-            )
-            .map_err(DaemonEnabledUpdateError::Start)?,
+            lifecycle::start_daemon_and_wait(host, data_root, &config, DaemonTrigger::Setup)
+                .map_err(DaemonEnabledUpdateError::Start)?,
         )
     } else {
         request_daemon_shutdown_and_wait(host, data_root)
@@ -73,21 +64,15 @@ pub(super) fn update_daemon_enabled(
     };
     let supervisor =
         DaemonSupervisorReport::new(supervisor::daemon_supervisor_report(host, data_root));
-    let persistent = enabled && supervisor.is_persistent();
+    let running = handoff.is_some();
+    let persistent = enabled && running;
     Ok(DaemonEnabledUpdate {
         enabled,
-        running: handoff.is_some(),
+        running,
         pid: handoff.map(|handoff: DaemonHandoff| handoff.pid),
         persistent,
         supervisor,
     })
-}
-
-const fn daemon_supervisor_launch_policy(start: DaemonSupervisorStart) -> (bool, bool) {
-    match start {
-        DaemonSupervisorStart::Native | DaemonSupervisorStart::Fallback => (false, false),
-        DaemonSupervisorStart::ManagerUnavailable => (true, true),
-    }
 }
 
 fn request_daemon_shutdown_and_wait(
@@ -344,42 +329,5 @@ mod tests {
         );
         assert_eq!(error.root_cause().to_string(), "identity mismatch");
         assert_eq!(cleanups.get(), 0);
-    }
-
-    #[test]
-    fn supervisor_launch_policy_distinguishes_only_manager_unavailability() {
-        assert_eq!(
-            daemon_supervisor_launch_policy(DaemonSupervisorStart::Native),
-            (false, false)
-        );
-        assert_eq!(
-            daemon_supervisor_launch_policy(DaemonSupervisorStart::Fallback),
-            (false, false)
-        );
-        assert_eq!(
-            daemon_supervisor_launch_policy(DaemonSupervisorStart::ManagerUnavailable),
-            (true, true)
-        );
-    }
-
-    #[test]
-    fn persistent_receipt_requires_all_three_supervisor_claims() {
-        let installed = |registration_verified, live_owner_verified| {
-            DaemonSupervisorReport::new(serde_json::json!({
-                "status": "installed",
-                "registration_verified": registration_verified,
-                "live_owner_verified": live_owner_verified,
-            }))
-        };
-
-        assert!(installed(true, true).is_persistent());
-        assert!(!installed(false, true).is_persistent());
-        assert!(!installed(true, false).is_persistent());
-        assert!(!DaemonSupervisorReport::new(serde_json::json!({
-            "status": "fallback",
-            "registration_verified": true,
-            "live_owner_verified": true,
-        }))
-        .is_persistent());
     }
 }

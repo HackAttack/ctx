@@ -106,6 +106,16 @@ pub(super) fn stored_supervisor_report(data_root: &Path) -> Value {
     })
 }
 
+pub(super) fn persisted_supervisor_loop_interval_seconds(data_root: &Path) -> Option<u64> {
+    read_supervisor_receipt(data_root)
+        .and_then(|report| {
+            report
+                .pointer("/environment_snapshot/loop_interval_seconds")
+                .and_then(Value::as_u64)
+        })
+        .filter(|value| (1..=3_600).contains(value))
+}
+
 fn read_supervisor_receipt(data_root: &Path) -> Option<Value> {
     fs::read_to_string(daemon_root_path(data_root).join(SUPERVISOR_RECEIPT_FILE))
         .ok()
@@ -145,15 +155,15 @@ pub(super) fn native_supervisor_kind() -> &'static str {
 pub(super) fn native_supervisor_limitation() -> &'static str {
     #[cfg(target_os = "linux")]
     {
-        "continuous refresh is unavailable because the systemd user manager is not operational; requested maintenance uses a bounded unsupervised ctx daemon"
+        "ctx launched a persistent detached daemon, but native automatic restart after failure, login, or reboot is unavailable because the systemd user manager is not operational"
     }
     #[cfg(target_os = "macos")]
     {
-        "continuous refresh is unavailable because the launchd GUI user domain is not operational; requested maintenance uses a bounded unsupervised ctx daemon"
+        "ctx launched a persistent detached daemon, but native automatic restart after failure, login, or reboot is unavailable because the launchd GUI user domain is not operational"
     }
     #[cfg(windows)]
     {
-        "continuous refresh is unavailable because current-user Task Scheduler is not operational; requested maintenance uses a bounded unsupervised ctx daemon"
+        "ctx launched a persistent detached daemon, but native automatic restart after failure, login, or reboot is unavailable because current-user Task Scheduler is not operational"
     }
     #[cfg(target_os = "freebsd")]
     {
@@ -166,6 +176,6 @@ pub(super) fn native_supervisor_limitation() -> &'static str {
         windows
     )))]
     {
-        "continuous refresh is unavailable because this platform has no maintained native per-user supervisor integration; requested maintenance uses a bounded unsupervised ctx daemon"
+        "ctx launched a persistent detached daemon, but native automatic restart after failure, login, or reboot is unavailable because this platform has no maintained native per-user supervisor integration"
     }
 }

@@ -113,10 +113,6 @@ fn value_validation_diagnostics_wrap_at_terminal_width() {
                 &["ctx", "daemon", "run", "--loop-interval-seconds", "0"][..],
                 "daemon loop interval seconds must be between 1 and 3600",
             ),
-            (
-                &["ctx", "daemon", "run", "--idle-exit-seconds", "0"][..],
-                "daemon seconds must be between",
-            ),
         ] {
             let output = human_output(arguments, width);
             let normalized = normalized(&output);
@@ -147,8 +143,33 @@ fn provider_validation_promotes_the_copyable_recovery_action() {
 }
 
 #[test]
-fn retired_once_has_bounded_human_recovery_without_force() {
-    const RECOVERY: &str = "  ctx daemon run --idle-exit-seconds <SECONDS>";
+fn removed_idle_exit_has_persistent_foreground_recovery() {
+    const RECOVERY: &str = "  ctx daemon run --help";
+    for arguments in [
+        &["ctx", "daemon", "run", "--idle-exit-seconds", "60"][..],
+        &["ctx", "daemon", "run", "--idle-exit-seconds=60"][..],
+    ] {
+        for width in [32, 80] {
+            let output = human_output(arguments, width);
+            let normalized = normalized(&output);
+            assert!(
+                normalized.contains("The --idle-exit-seconds option has been removed"),
+                "{output}"
+            );
+            assert!(
+                normalized.contains("persistent foreground worker"),
+                "{output}"
+            );
+            assert!(normalized.contains("has no idle timeout"), "{output}");
+            assert!(output.contains(RECOVERY), "{output}");
+            assert_width_safe(&output, width, &[]);
+        }
+    }
+}
+
+#[test]
+fn retired_once_recommends_foreground_import() {
+    const RECOVERY: &str = "  ctx import --help";
     for width in [32, 80] {
         let output = human_output(&["ctx", "daemon", "run", "--once"], width);
         let normalized = normalized(&output);
@@ -156,10 +177,14 @@ fn retired_once_has_bounded_human_recovery_without_force() {
             normalized.contains("The --once option has been retired"),
             "{output}"
         );
-        assert!(normalized.contains("bounded foreground run"), "{output}");
+        assert!(
+            normalized.contains("ctx import for foreground maintenance convergence"),
+            "{output}"
+        );
         assert!(output.contains(RECOVERY), "{output}");
         assert!(!output.contains("--force"), "{output}");
-        assert_width_safe(&output, width, &[RECOVERY]);
+        assert!(!output.contains("--idle-exit-seconds"), "{output}");
+        assert_width_safe(&output, width, &[]);
     }
 }
 
@@ -169,6 +194,16 @@ fn machine_parse_errors_remain_raw_clap_bytes() {
         (
             &["ctx", "daemon", "run", "--once", "--format=json"][..],
             "--force",
+        ),
+        (
+            &[
+                "ctx",
+                "daemon",
+                "run",
+                "--idle-exit-seconds=60",
+                "--format=json",
+            ][..],
+            "unexpected argument '--idle-exit-seconds'",
         ),
         (
             &["ctx", "sources", "--provider", "unknown", "--format=json"][..],

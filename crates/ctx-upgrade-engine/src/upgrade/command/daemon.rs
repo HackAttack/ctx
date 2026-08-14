@@ -302,7 +302,6 @@ pub(crate) fn finish_daemon_auto_upgrade<D, P, O>(
     policy_provider: &P,
     observer: &O,
     prepared: PreparedDaemonUpgrade,
-    restart: (&str, u64, u64),
     handoff: Option<D::Lease>,
 ) -> Result<()>
 where
@@ -312,6 +311,9 @@ where
 {
     let handoff =
         handoff.ok_or_else(|| anyhow!("automatic upgrade has no daemon lifecycle handoff"))?;
+    let restart = handoff
+        .replacement_restart()
+        .map(|restart| (restart.trigger, restart.loop_interval_seconds));
     let (data_root, interval, started, lock, attempt, plan, mut artifact, mut provisioning) =
         match prepared.0 {
             PreparedDaemonUpgradeKind::Apply {
@@ -459,7 +461,7 @@ where
         &mut provisioning.semantic,
         &data_root,
         attempt.id(),
-        Some(restart),
+        restart,
         &mut record_applying,
     );
     match result {
