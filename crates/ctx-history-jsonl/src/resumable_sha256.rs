@@ -81,10 +81,19 @@ impl JsonlResumableSha256 {
                 self.buffer.clear();
             }
         }
+        const BLOCK_BATCH: usize = 128;
+        let mut blocks = Vec::with_capacity(BLOCK_BATCH);
         while bytes.len() >= 64 {
-            let (block, remaining) = bytes.split_at(64);
-            compress_block(&mut self.state, block.try_into().expect("split SHA block"));
-            bytes = remaining;
+            let block_count = (bytes.len() / 64).min(BLOCK_BATCH);
+            let batch_bytes = block_count * 64;
+            blocks.extend(
+                bytes[..batch_bytes]
+                    .chunks_exact(64)
+                    .map(GenericArray::clone_from_slice),
+            );
+            compress256(&mut self.state, &blocks);
+            blocks.clear();
+            bytes = &bytes[batch_bytes..];
         }
         self.buffer.extend_from_slice(bytes);
     }
