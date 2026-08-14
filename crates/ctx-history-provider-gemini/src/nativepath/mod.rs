@@ -9,7 +9,9 @@ pub(crate) use dto::{
     GeminiEventIdentity, GeminiFileObservation, GeminiRetainedEvent, GeminiScanError,
     GeminiSession, GeminiTranscriptSource,
 };
-pub(crate) use source_backed::registration::register as register_source_backed_route;
+#[doc(hidden)]
+pub use parser::gemini_result_terminal_authority_is_ambiguous;
+pub use source_backed::gemini_jsonl_adapter;
 
 #[cfg(test)]
 mod tests;

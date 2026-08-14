@@ -9,7 +9,7 @@ use super::{
     GEMINI_SOURCE_ANCHOR_NAMESPACE, GEMINI_SOURCE_BACKED_PARSER_REVISION,
     GEMINI_SOURCE_SCHEMA_VARIANT, MAX_GEMINI_LEXICAL_METADATA_CHARS,
 };
-use crate::{CaptureError, GEMINI_CLI_SOURCE_FORMAT};
+use crate::{GeminiError, GEMINI_CLI_SOURCE_FORMAT};
 
 pub(super) struct GeminiProjectedContent {
     pub(super) annotation: ctx_history_core::CoreRecordAnnotation,
@@ -33,14 +33,14 @@ pub(super) fn project_event(
         .raw_ordinal
         .checked_mul(u64::from(u32::MAX) + 1)
         .and_then(|sequence| sequence.checked_add(u64::from(event.native_order.sub_ordinal)))
-        .ok_or_else(|| {
-            GeminiSourceBackedError::Capture(CaptureError::SystemInvariant(
+        .ok_or({
+            GeminiSourceBackedError::Gemini(GeminiError::SystemInvariant(
                 "Gemini event sequence overflowed",
             ))
         })?;
     let body = lexical_body(&event);
     if body.is_empty() {
-        return Err(CaptureError::InvalidPayload(
+        return Err(GeminiError::InvalidPayload(
             "Gemini source-backed event has no lexical body".to_owned(),
         )
         .into());

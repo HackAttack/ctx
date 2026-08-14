@@ -160,7 +160,6 @@ where
     crate::inventory_provider_regular_paths(root, limits).map_err(Into::into)
 }
 
-#[cfg(any(test, feature = "test-support"))]
 pub fn collect_jsonl_paths_bounded_mapped<E>(
     root: &Path,
     paths: &mut Vec<std::path::PathBuf>,

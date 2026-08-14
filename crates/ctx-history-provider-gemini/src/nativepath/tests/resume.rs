@@ -188,7 +188,7 @@ fn gemini_nativepath_full_prefix_hash_rejects_byte_zero_rewrite_with_preserved_t
     assert!(matches!(
         read_gemini_transcript_pages_from_frontier(&changed_source, &frontier),
         Err(GeminiScanError::Capture(
-            CaptureError::SourceChangedDuringCapture
+            GeminiError::SourceChangedDuringCapture
         ))
     ));
     assert_eq!(

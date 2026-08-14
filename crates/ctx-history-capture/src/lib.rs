@@ -71,7 +71,8 @@ pub(crate) const OPENHANDS_FILE_EVENTS_SOURCE_FORMAT: &str = "openhands_file_eve
 pub(crate) const WARP_SQLITE_SOURCE_FORMAT: &str = "warp_sqlite";
 pub(crate) const LINGMA_SQLITE_SOURCE_FORMAT: &str = "lingma_sqlite";
 pub(crate) const ANTIGRAVITY_CLI_SOURCE_FORMAT: &str = "antigravity_cli_transcript_jsonl_tree";
-pub(crate) const GEMINI_CLI_SOURCE_FORMAT: &str = "gemini_cli_chat_recording_jsonl";
+#[cfg(test)]
+pub(crate) use ctx_history_provider_gemini::GEMINI_CLI_SOURCE_FORMAT;
 pub(crate) const TABNINE_CLI_SOURCE_FORMAT: &str = "tabnine_cli_chat_recording_jsonl";
 pub(crate) const CURSOR_AGENT_TRANSCRIPT_SOURCE_FORMAT: &str = "cursor_agent_transcript_jsonl_tree";
 pub(crate) const WINDSURF_CASCADE_HOOK_TRANSCRIPT_SOURCE_FORMAT: &str =

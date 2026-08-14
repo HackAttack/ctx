@@ -92,7 +92,18 @@ pub fn register_gemini_source_backed_route(
     source: ProviderSource,
     selection: SourceBackedRouteSelection,
 ) -> SourceBackedCoordinatorResult<()> {
-    crate::provider::providers::gemini::nativepath::register_source_backed_route(
-        registry, source, selection,
-    )
+    let adapter = ctx_history_provider_gemini::nativepath::gemini_jsonl_adapter::<
+        crate::provider::source_backed::family::jsonl::GeminiCaptureJsonlRuntime,
+    >();
+    let driver = crate::provider::source_backed::family::jsonl::gemini_jsonl_family_driver(
+        adapter,
+        source.path.clone(),
+    );
+    registry.register(executable_route(
+        source,
+        selection,
+        SourceBackedSelectorAuthority::DiscoveredWinner,
+        driver,
+    )?);
+    Ok(())
 }

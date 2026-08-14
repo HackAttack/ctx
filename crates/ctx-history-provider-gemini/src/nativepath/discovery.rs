@@ -6,11 +6,11 @@ use std::{
 
 use sha2::{Digest, Sha256};
 
-use crate::common::io::{
+use crate::io::{
     open_provider_source_path, OpenedProviderSourceFile, OpenedProviderSourcePath,
     ProviderSourceDirectory, ProviderSourceRoot,
 };
-use crate::{CaptureError, Result};
+use crate::{GeminiError, GeminiResult};
 
 use super::dto::{
     GeminiDiscovery, GeminiFileObservation, GeminiTranscriptLayout, GeminiTranscriptSource,
@@ -52,14 +52,14 @@ impl DiscoveryBudget {
         }
     }
 
-    pub(super) fn observe(&mut self, path: &Path) -> Result<()> {
+    pub(super) fn observe(&mut self, path: &Path) -> GeminiResult<()> {
         let next_entries = self.entries.checked_add(1).ok_or_else(|| {
-            CaptureError::InvalidPayload(
+            GeminiError::InvalidPayload(
                 "Gemini transcript discovery entry count overflowed".to_owned(),
             )
         })?;
         if next_entries > self.max_entries {
-            return Err(CaptureError::InvalidPayload(format!(
+            return Err(GeminiError::InvalidPayload(format!(
                 "Gemini transcript discovery exceeds {} entries",
                 self.max_entries
             )));
@@ -68,12 +68,12 @@ impl DiscoveryBudget {
             .path_bytes
             .checked_add(path.as_os_str().as_encoded_bytes().len())
             .ok_or_else(|| {
-                CaptureError::InvalidPayload(
+                GeminiError::InvalidPayload(
                     "Gemini transcript discovery path-byte count overflowed".to_owned(),
                 )
             })?;
         if next_path_bytes > self.max_path_bytes {
-            return Err(CaptureError::InvalidPayload(format!(
+            return Err(GeminiError::InvalidPayload(format!(
                 "Gemini transcript discovery exceeds {} path bytes",
                 self.max_path_bytes
             )));
@@ -85,7 +85,7 @@ impl DiscoveryBudget {
 }
 
 impl GeminiFileObservation {
-    pub(crate) fn from_metadata(metadata: &Metadata) -> Result<Self> {
+    pub(crate) fn from_metadata(metadata: &Metadata) -> GeminiResult<Self> {
         #[cfg(unix)]
         use std::os::unix::fs::MetadataExt;
 
@@ -105,16 +105,16 @@ impl GeminiFileObservation {
 }
 
 impl GeminiTranscriptSource {
-    pub(crate) fn open(&self) -> Result<OpenedProviderSourceFile> {
+    pub(crate) fn open(&self) -> GeminiResult<OpenedProviderSourceFile> {
         let opened = self.authority.open_file(&self.authority_relative_path)?;
         if opened.ordinary_file_token() != self.ordinary_file_token {
-            return Err(CaptureError::SourceChangedDuringCapture);
+            return Err(GeminiError::SourceChangedDuringCapture);
         }
         Ok(opened)
     }
 }
 
-pub(crate) fn discover_gemini_transcripts(root: &Path) -> Result<GeminiDiscovery> {
+pub fn discover_gemini_transcripts(root: &Path) -> GeminiResult<GeminiDiscovery> {
     discover_gemini_transcripts_with_budget(root, DiscoveryBudget::default())
 }
 
@@ -123,7 +123,7 @@ pub(super) fn discover_gemini_transcripts_with_limits(
     root: &Path,
     max_entries: usize,
     max_path_bytes: usize,
-) -> Result<GeminiDiscovery> {
+) -> GeminiResult<GeminiDiscovery> {
     discover_gemini_transcripts_with_budget(
         root,
         DiscoveryBudget::with_limits(max_entries, max_path_bytes),
@@ -133,7 +133,7 @@ pub(super) fn discover_gemini_transcripts_with_limits(
 fn discover_gemini_transcripts_with_budget(
     root: &Path,
     mut budget: DiscoveryBudget,
-) -> Result<GeminiDiscovery> {
+) -> GeminiResult<GeminiDiscovery> {
     let canonical_root = root.to_path_buf();
     let opened_root = open_provider_source_path(root)?;
     let root_is_file = matches!(opened_root, OpenedProviderSourcePath::File(_));
@@ -143,7 +143,7 @@ fn discover_gemini_transcripts_with_budget(
         OpenedProviderSourcePath::File(file) => {
             budget.observe(&canonical_root)?;
             let parent = canonical_root.parent().ok_or_else(|| {
-                CaptureError::InvalidProviderTranscriptPath {
+                GeminiError::InvalidProviderTranscriptPath {
                     path: canonical_root.clone(),
                     reason: "Gemini transcript file has no parent authority",
                 }
@@ -151,7 +151,7 @@ fn discover_gemini_transcripts_with_budget(
             let relative = canonical_root
                 .file_name()
                 .map(PathBuf::from)
-                .ok_or_else(|| CaptureError::InvalidProviderTranscriptPath {
+                .ok_or_else(|| GeminiError::InvalidProviderTranscriptPath {
                     path: canonical_root.clone(),
                     reason: "Gemini transcript file has no authority-relative name",
                 })?;
@@ -166,7 +166,7 @@ fn discover_gemini_transcripts_with_budget(
                 file.revalidate_leaf()?;
                 let reopened = authority.open_file(&relative)?;
                 if reopened.ordinary_file_token() != ordinary_file_token {
-                    return Err(CaptureError::SourceChangedDuringCapture);
+                    return Err(GeminiError::SourceChangedDuringCapture);
                 }
                 reopened.revalidate_leaf()?;
                 paths.push((
@@ -229,7 +229,7 @@ fn discover_gemini_transcripts_with_budget(
 fn gemini_scan_directory(
     root: &Path,
     directory: ProviderSourceDirectory,
-) -> Result<Option<(PathBuf, ProviderSourceDirectory)>> {
+) -> GeminiResult<Option<(PathBuf, ProviderSourceDirectory)>> {
     let tmp = root.join("tmp");
     let names = directory.entries(MAX_GEMINI_DISCOVERY_ENTRIES)?;
     if names.iter().any(|name| name == "tmp") {
@@ -255,9 +255,9 @@ fn collect_candidates(
     paths: &mut Vec<GeminiCatalogCandidate>,
     budget: &mut DiscoveryBudget,
     depth: usize,
-) -> Result<()> {
+) -> GeminiResult<()> {
     if depth > MAX_GEMINI_DISCOVERY_DEPTH {
-        return Err(CaptureError::InvalidProviderTranscriptPath {
+        return Err(GeminiError::InvalidProviderTranscriptPath {
             path: path.to_path_buf(),
             reason: "Gemini transcript directory nesting exceeds the supported limit",
         });
@@ -300,14 +300,14 @@ fn open_gemini_child(
     directory: &ProviderSourceDirectory,
     name: &std::ffi::OsStr,
     path: &Path,
-) -> Result<OpenedProviderSourcePath> {
+) -> GeminiResult<OpenedProviderSourcePath> {
     directory.open_child(name).map_err(|error| match error {
-        CaptureError::InvalidProviderTranscriptPath { .. } => {
-            CaptureError::InvalidProviderTranscriptPath {
-                path: path.to_path_buf(),
-                reason: "linked Gemini transcript path components are rejected",
-            }
-        }
+        GeminiError::Source(
+            ctx_history_source_io::SourceIoError::InvalidProviderTranscriptPath { .. },
+        ) => GeminiError::InvalidProviderTranscriptPath {
+            path: path.to_path_buf(),
+            reason: "linked Gemini transcript path components are rejected",
+        },
         error => error,
     })
 }
@@ -347,7 +347,7 @@ fn gemini_transcript_layout(
     layout_root: &Path,
     path: &Path,
     direct_file: bool,
-) -> Result<Option<GeminiTranscriptLayout>> {
+) -> GeminiResult<Option<GeminiTranscriptLayout>> {
     if path.extension().and_then(|extension| extension.to_str()) != Some("jsonl") {
         return Ok(None);
     }
@@ -373,7 +373,7 @@ fn gemini_transcript_layout(
 fn gemini_relative_transcript_layout(
     path: &Path,
     relative_path: &Path,
-) -> Result<Option<GeminiTranscriptLayout>> {
+) -> GeminiResult<Option<GeminiTranscriptLayout>> {
     let components: Vec<_> = relative_path.components().collect();
     match components.as_slice() {
         [Component::Normal(tmp), Component::Normal(_project), Component::Normal(chats), Component::Normal(_file)]
@@ -391,7 +391,7 @@ fn gemini_relative_transcript_layout(
                     parent_native_session_id_hint: value.to_owned(),
                 })
                 .map(Some)
-                .ok_or_else(|| CaptureError::InvalidProviderTranscriptPath {
+                .ok_or_else(|| GeminiError::InvalidProviderTranscriptPath {
                     path: path.to_path_buf(),
                     reason: "Gemini subagent transcript parent identity must be nonempty UTF-8",
                 })

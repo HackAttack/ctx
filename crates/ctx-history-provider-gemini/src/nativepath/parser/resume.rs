@@ -1,5 +1,6 @@
 use super::reader::ScanState;
 use super::*;
+use crate::GeminiError;
 
 pub(crate) fn read_gemini_transcript_pages<'a>(
     source: &'a GeminiTranscriptSource,
@@ -29,7 +30,7 @@ fn read_gemini_transcript_pages_from<'a>(
     let initial_observation = GeminiFileObservation::from_metadata(source_file.metadata())?;
     let mut file = source_file.file().try_clone()?;
     if GeminiFileObservation::from_metadata(&file.metadata()?)? != initial_observation {
-        return Err(CaptureError::SourceChangedDuringCapture.into());
+        return Err(GeminiError::SourceChangedDuringCapture.into());
     }
 
     let mut prefix_hasher = new_prefix_hasher();
@@ -53,11 +54,11 @@ fn read_gemini_transcript_pages_from<'a>(
                 && !frontier.append_boundary_safe)
             || !frontier_file_identity_matches(frontier, &initial_observation)
         {
-            return Err(CaptureError::SourceChangedDuringCapture.into());
+            return Err(GeminiError::SourceChangedDuringCapture.into());
         }
         let observed_prefix = hash_gemini_prefix(&mut file, frontier.complete_prefix_end)?;
         if prefix_digest(&observed_prefix) != frontier.complete_prefix_sha256 {
-            return Err(CaptureError::SourceChangedDuringCapture.into());
+            return Err(GeminiError::SourceChangedDuringCapture.into());
         }
         prefix_hasher = observed_prefix;
         source_hasher = prefix_hasher.clone();

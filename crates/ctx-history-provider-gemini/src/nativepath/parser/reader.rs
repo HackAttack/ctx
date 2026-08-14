@@ -1,8 +1,9 @@
 use super::*;
+use crate::GeminiError;
 
 pub(crate) struct GeminiNativePageReader<'a> {
     pub(super) source: &'a GeminiTranscriptSource,
-    pub(super) source_file: crate::common::io::OpenedProviderSourceFile,
+    pub(super) source_file: crate::io::OpenedProviderSourceFile,
     pub(super) previous: Option<&'a GeminiPreviousSource>,
     pub(super) initial_observation: GeminiFileObservation,
     pub(super) source_hasher: Sha256,
@@ -69,7 +70,7 @@ impl<'a> GeminiNativePageReader<'a> {
         let expected_frontier = self.frontier();
         let initial_page_bytes =
             core_page_conservative_bytes(&expected_frontier, &expected_frontier, 0, 0).ok_or(
-                GeminiScanError::Capture(CaptureError::SystemInvariant(
+                GeminiScanError::Capture(GeminiError::SystemInvariant(
                     "Gemini page accounting overflowed",
                 )),
             )?;
@@ -115,14 +116,14 @@ impl<'a> GeminiNativePageReader<'a> {
                 .events
                 .len()
                 .checked_add(record.rejections.len())
-                .ok_or(GeminiScanError::Capture(CaptureError::SystemInvariant(
+                .ok_or(GeminiScanError::Capture(GeminiError::SystemInvariant(
                     "Gemini Core page logical-unit accounting overflowed",
                 )))?;
             let record_event_bytes = record
                 .events
                 .iter()
                 .try_fold(0_usize, |total, (_, bytes)| total.checked_add(*bytes))
-                .ok_or(GeminiScanError::Capture(CaptureError::SystemInvariant(
+                .ok_or(GeminiScanError::Capture(GeminiError::SystemInvariant(
                     "Gemini retained-event page byte count overflowed",
                 )))?;
             let record_rejection_bytes = record
@@ -132,7 +133,7 @@ impl<'a> GeminiNativePageReader<'a> {
                     total.checked_add(rejection_wire_bytes(rejection)?)
                 });
             let record_rejection_bytes = record_rejection_bytes.ok_or(GeminiScanError::Capture(
-                CaptureError::SystemInvariant(
+                GeminiError::SystemInvariant(
                     "Gemini structural rejection page byte count overflowed",
                 ),
             ))?;
@@ -143,20 +144,20 @@ impl<'a> GeminiNativePageReader<'a> {
                     total.checked_add(rejection_wire_bytes(rejection)?)
                 });
             let page_rejection_bytes = page_rejection_bytes.ok_or(GeminiScanError::Capture(
-                CaptureError::SystemInvariant(
+                GeminiError::SystemInvariant(
                     "Gemini structural rejection page byte count overflowed",
                 ),
             ))?;
             let next_units =
                 page.logical_units
                     .checked_add(record_units)
-                    .ok_or(GeminiScanError::Capture(CaptureError::SystemInvariant(
+                    .ok_or(GeminiScanError::Capture(GeminiError::SystemInvariant(
                         "Gemini page logical-unit accounting overflowed",
                     )))?;
             let next_event_bytes = page
                 .retained_event_bytes
                 .checked_add(record_event_bytes)
-                .ok_or(GeminiScanError::Capture(CaptureError::SystemInvariant(
+                .ok_or(GeminiScanError::Capture(GeminiError::SystemInvariant(
                     "Gemini retained-event page byte count overflowed",
                 )))?;
             let next_safe_frontier = self.frontier();
@@ -166,7 +167,7 @@ impl<'a> GeminiNativePageReader<'a> {
                 next_event_bytes,
                 page_rejection_bytes,
             )
-            .ok_or(GeminiScanError::Capture(CaptureError::SystemInvariant(
+            .ok_or(GeminiScanError::Capture(GeminiError::SystemInvariant(
                 "Gemini Core page accounting overflowed",
             )))?;
             let too_many_units = next_units > MAX_GEMINI_NATIVE_PAGE_RECORDS;
@@ -206,7 +207,7 @@ impl<'a> GeminiNativePageReader<'a> {
             page.physical_records =
                 page.physical_records
                     .checked_add(1)
-                    .ok_or(GeminiScanError::Capture(CaptureError::SystemInvariant(
+                    .ok_or(GeminiScanError::Capture(GeminiError::SystemInvariant(
                         "Gemini physical-record page count overflowed",
                     )))?;
             if let Some(native_event_id) = record.native_event_id.take() {
@@ -267,7 +268,7 @@ impl<'a> GeminiNativePageReader<'a> {
         if GeminiFileObservation::from_metadata(&self.reader.get_ref().metadata()?)?
             != self.initial_observation
         {
-            return Err(CaptureError::SourceChangedDuringCapture.into());
+            return Err(GeminiError::SourceChangedDuringCapture.into());
         }
         self.source_file.revalidate_leaf()?;
         Ok(())

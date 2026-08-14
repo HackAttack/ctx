@@ -21,15 +21,14 @@ use sha2::{Digest, Sha256};
 use std::cell::Cell;
 
 #[cfg(test)]
-use crate::Result;
-use crate::{
-    provider::source_backed::family::jsonl::{read_bounded_record_unhashed, JsonlRecordFraming},
-    CaptureError, OutputOutcome, OutputOutcomeMetadata, MAX_PROVIDER_JSONL_LINE_BYTES,
-    PROVIDER_MAX_PREVIEW_CHARS,
-};
+use crate::GeminiResult;
+use crate::{GeminiError, PROVIDER_MAX_PREVIEW_CHARS};
 use ctx_history_capture_model::ctx_retrieval::{
     ContributionClass, ResultAtom, ResultTerminalStatus,
 };
+use ctx_history_capture_model::{OutputOutcome, OutputOutcomeMetadata};
+use ctx_history_jsonl::{read_bounded_record_unhashed, JsonlRecordFraming};
+use ctx_history_source_io::MAX_PROVIDER_JSONL_LINE_BYTES;
 
 #[cfg(test)]
 use super::dto::{
@@ -204,7 +203,7 @@ impl GeminiBorrowedRecordParser {
                 }
             })?;
             if session != self.session {
-                return Err(CaptureError::SourceChangedDuringCapture.into());
+                return Err(GeminiError::SourceChangedDuringCapture.into());
             }
             self.header_seen = true;
             return Ok(Vec::new());
@@ -229,10 +228,11 @@ impl GeminiBorrowedRecordParser {
             byte_length: byte_end_exclusive.saturating_sub(byte_start),
             record_digest,
         };
-        let exact_json_authority = !matches!(
-            class,
-            GeminiRecordClass::ToolCall | GeminiRecordClass::Result
-        ) || crate::common::json::raw_object_keys_are_unique(payload);
+        let exact_json_authority =
+            !matches!(
+                class,
+                GeminiRecordClass::ToolCall | GeminiRecordClass::Result
+            ) || ctx_history_capture_model::raw_object_keys_are_unique(payload);
         let mut events = match class {
             GeminiRecordClass::Result => {
                 let decoded = match decode_result_record(payload, raw_ordinal, source_record) {
@@ -321,8 +321,9 @@ impl GeminiBorrowedRecordParser {
     }
 }
 
-pub(crate) fn gemini_result_terminal_authority_is_ambiguous(payload: &[u8]) -> bool {
-    if crate::common::json::raw_object_keys_are_unique(payload) {
+#[doc(hidden)]
+pub fn gemini_result_terminal_authority_is_ambiguous(payload: &[u8]) -> bool {
+    if ctx_history_capture_model::raw_object_keys_are_unique(payload) {
         return false;
     }
     serde_json::from_slice::<GeminiRecordProbe>(payload)
@@ -338,7 +339,7 @@ pub(crate) fn read_gemini_session_header(
     let source_file = source.open()?;
     let opening = GeminiFileObservation::from_metadata(source_file.metadata())?;
     if opening != source.observation {
-        return Err(CaptureError::SourceChangedDuringCapture.into());
+        return Err(GeminiError::SourceChangedDuringCapture.into());
     }
     let mut file = source_file.file().try_clone()?;
     file.seek(SeekFrom::Start(0))?;
@@ -353,7 +354,7 @@ pub(crate) fn read_gemini_session_header(
             &mut line,
             opening.length.saturating_sub(offset),
             JsonlRecordFraming::new(MAX_PROVIDER_JSONL_LINE_BYTES.saturating_add(1), false),
-            || CaptureError::SourceChangedDuringCapture,
+            || GeminiError::SourceChangedDuringCapture,
         )?
         .ok_or_else(|| GeminiScanError::UncommittedRecord {
             raw_ordinal,
@@ -387,7 +388,7 @@ pub(crate) fn read_gemini_session_header(
                         if GeminiFileObservation::from_metadata(&reader.get_ref().metadata()?)?
                             != opening
                         {
-                            return Err(CaptureError::SourceChangedDuringCapture.into());
+                            return Err(GeminiError::SourceChangedDuringCapture.into());
                         }
                         source_file.revalidate_leaf()?;
                         source.authority.revalidate()?;

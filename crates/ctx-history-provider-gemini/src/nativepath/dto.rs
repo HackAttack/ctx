@@ -6,7 +6,8 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use thiserror::Error;
 
-use crate::{common::io::ProviderSourceRoot, CaptureError};
+use crate::io::ProviderSourceRoot;
+use crate::GeminiError;
 use ctx_history_capture_model::ctx_retrieval::{
     ContributionClass, ResultAtom, ResultTerminalStatus,
 };
@@ -326,7 +327,7 @@ pub(crate) struct GeminiScanOutcome {
 #[derive(Debug, Error)]
 pub(crate) enum GeminiScanError {
     #[error(transparent)]
-    Capture(#[from] CaptureError),
+    Capture(#[from] GeminiError),
     #[error(
         "duplicate Gemini native event id {native_event_id:?} at raw ordinal \
          {duplicate_raw_ordinal}; first observed at raw ordinal {first_raw_ordinal}"

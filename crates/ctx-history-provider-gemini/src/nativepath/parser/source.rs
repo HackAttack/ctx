@@ -1,4 +1,5 @@
 use super::*;
+use crate::GeminiError;
 
 pub(super) struct RecordRead {
     pub(super) bytes_observed: u64,
@@ -11,7 +12,7 @@ pub(super) fn read_record(
     buffer: &mut Vec<u8>,
     prefix_hasher: &mut Sha256,
     source_hasher: &mut Sha256,
-) -> Result<Option<RecordRead>> {
+) -> GeminiResult<Option<RecordRead>> {
     buffer.clear();
     let mut bytes_observed = 0_u64;
     let mut terminated = false;
@@ -93,13 +94,13 @@ pub(super) fn hash_gemini_prefix(
     while remaining != 0 {
         let requested =
             usize::try_from(remaining.min(PREFIX_HASH_BUFFER_BYTES as u64)).map_err(|_| {
-                GeminiScanError::Capture(CaptureError::SystemInvariant(
+                GeminiScanError::Capture(GeminiError::SystemInvariant(
                     "Gemini prefix hash request exceeds platform limits",
                 ))
             })?;
         let read = file.read(&mut buffer[..requested])?;
         if read == 0 {
-            return Err(CaptureError::SourceChangedDuringCapture.into());
+            return Err(GeminiError::SourceChangedDuringCapture.into());
         }
         hasher.update(&buffer[..read]);
         remaining = remaining.saturating_sub(read as u64);

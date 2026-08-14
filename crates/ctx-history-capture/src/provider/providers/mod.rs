@@ -8,7 +8,8 @@ pub(crate) mod cursor;
 pub(crate) mod deepagents;
 pub(crate) mod firebender;
 pub(crate) mod forgecode;
-pub(crate) mod gemini;
+#[cfg(test)]
+mod gemini;
 pub(crate) mod goose;
 pub(crate) mod hermes;
 pub(crate) mod kiro;
