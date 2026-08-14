@@ -7,29 +7,27 @@ use std::{
 use super::{
     observe_opened_file, revalidate_frozen_prefix, JsonlCheckpoint, JsonlFileObservation,
     JsonlOversizedRecordPolicy, JsonlProbe, JsonlReader, JsonlRecordFraming, JsonlRecordRef,
+    OpenedProviderSourceFile, OpenedProviderSourcePath, ProviderSourceDirectory,
+    ProviderSourceRoot,
 };
-use crate::{
-    common::io::{
-        is_non_regular_source_rejection, is_symlink_source_rejection, open_provider_source_path,
-        OpenedProviderSourceFile, OpenedProviderSourcePath, ProviderSourceDirectory,
-        ProviderSourceRoot,
-    },
-    provider::source_backed::{
-        source_backed_base_sources, IndexBaseEventLookup, SourceBackedGenerationSink,
-        SourceBackedRevalidationTarget, SourceBackedRouteDriver, SourceBackedRouteError,
-        SourceBackedRouteErrorKind, SourceBackedRouteResult,
-    },
-    CaptureError, Result, PROVIDER_JSONL_INVENTORY_MAX_DEPTH,
-    PROVIDER_JSONL_INVENTORY_MAX_DIRECTORIES, PROVIDER_JSONL_INVENTORY_MAX_METADATA_ENTRIES,
-    PROVIDER_JSONL_INVENTORY_MAX_PATH_BYTES,
+use super::{
+    JsonlFamilyError, JsonlFamilyRuntime, JsonlResult, JsonlRuntimeError, JsonlRuntimeLookup,
 };
 use chrono::{DateTime, Utc};
-#[cfg(test)]
-use ctx_history_core::ScannedSourceCounts;
+use ctx_history_capture_runtime::SourceBackedRouteErrorKind;
+use ctx_history_capture_runtime::{
+    CaptureLifecycleSink, ImmutableCaptureSnapshot, SourceBackedGenerationSink,
+    SourceBackedRevalidationTarget, SourceBackedRouteError, SourceBackedRouteResult,
+};
 use ctx_history_core::{
     CaptureProvider, CertifiedSource, CertifiedSourceDeletion, CertifiedSourceInventory,
     CoreRecord, ProjectionContractError, SourceFrontier, SourceInventoryObservation, SourceKey,
     TypedKey,
+};
+use ctx_history_source_io::{
+    open_provider_source_path_mapped as open_provider_source_path,
+    PROVIDER_JSONL_INVENTORY_MAX_DEPTH, PROVIDER_JSONL_INVENTORY_MAX_DIRECTORIES,
+    PROVIDER_JSONL_INVENTORY_MAX_METADATA_ENTRIES, PROVIDER_JSONL_INVENTORY_MAX_PATH_BYTES,
 };
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -41,22 +39,30 @@ const FAMILY_INVENTORY_AUTHORITY: &str = "borrowed-jsonl-provider-root-v1";
 const FAMILY_INVENTORY_REVISION: &str = "borrowed-jsonl-inventory-v1";
 const FAMILY_DISCOVERY_REVISION: &str = "borrowed-jsonl-discovery-v1";
 const FAMILY_INVENTORY_DOMAIN: &[u8] = b"ctx-borrowed-jsonl-inventory-v1\0";
+type JsonlSemanticExecutorResult<R> =
+    JsonlResult<Option<Box<dyn JsonlFamilySemanticExecutor<Runtime = R>>>, JsonlRuntimeError<R>>;
+type JsonlOptimizedLeafResult<R> = JsonlResult<
+    Option<JsonlFamilyOptimizedLeafOutcome<JsonlRuntimeError<R>>>,
+    JsonlRuntimeError<R>,
+>;
 mod leaf;
-#[cfg(test)]
-pub(crate) use leaf::checkpoint_admitted_revision_for_test;
+#[cfg(any(test, feature = "test-support"))]
+pub use leaf::checkpoint_admitted_revision_for_test;
 #[cfg(test)]
 use leaf::family_scanner_worker_count_policy;
-use leaf::{
-    base_for_leaf, decode_checkpoint, physical_identity, scan_leaves, source_observation,
-    unchanged_terminal_proof,
-};
+use leaf::{base_for_leaf, decode_checkpoint, scan_leaves};
 #[cfg(test)]
 use leaf::{prepare_leaf, JsonlLeafOutput, JsonlLeafOutputEvent};
+mod errors;
+use errors::{
+    contract_error, normalized_jsonl_error_kind, route_discovery, route_internal, route_invalid,
+    route_scan,
+};
 mod ownership;
 use ownership::base_sources_for_root;
 mod revalidation;
-#[cfg(test)]
-pub(crate) use revalidation::set_before_jsonl_terminal_physical_revalidation_hook;
+#[cfg(any(test, feature = "test-support"))]
+pub use revalidation::set_before_jsonl_terminal_physical_revalidation_hook;
 use revalidation::{
     binding_digest, inventory_observation, reset_terminal, revalidate_complete_inventory,
     revalidate_target,
@@ -70,17 +76,18 @@ use scanner::{
     record_jsonl_family_scanner_activity, JsonlFamilyScannerActivity, JsonlFamilyScannerProbe,
     FAMILY_SCANNER_WORKERS_OVERRIDE,
 };
-pub(crate) use scanner::{
+use scanner::{physical_identity, source_observation};
+pub use scanner::{
     JsonlFamilyAppendMode, JsonlFamilyExecutionIo, JsonlFamilyExecutionPosition,
     JsonlFamilyOptimizedLeafOutcome, JsonlFamilyProjectionMode, JsonlFamilyPublication,
     JsonlFamilySemanticPage, JsonlFamilySemanticPreflight, JsonlFamilySemanticSummary,
     JsonlFamilyWorkerContext,
 };
 mod terminal;
-pub(crate) use terminal::JsonlFamilyTerminalProof;
+pub use terminal::JsonlFamilyTerminalProof;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum JsonlFamilyRootMissingMode {
+pub enum JsonlFamilyRootMissingMode {
     /// A missing provider-owned root is not evidence that every prior source
     /// was deleted; leave the route unavailable.
     Unavailable,
@@ -90,7 +97,7 @@ pub(crate) enum JsonlFamilyRootMissingMode {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum JsonlFamilyInventoryMode {
+pub enum JsonlFamilyInventoryMode {
     /// The complete discovered tree must remain byte-for-byte identical from
     /// opening through terminal revalidation.
     Exact,
@@ -102,7 +109,7 @@ pub(crate) enum JsonlFamilyInventoryMode {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum JsonlFamilyBaseScope {
+pub enum JsonlFamilyBaseScope {
     /// Compatibility mode for family adapters whose source identity is unique
     /// across every route for that provider/schema tuple.
     ProviderFamily,
@@ -111,12 +118,14 @@ pub(crate) enum JsonlFamilyBaseScope {
     Route,
 }
 
-pub(crate) trait JsonlFamilyProjector: Send {
+pub trait JsonlFamilyProjector: Send {
+    type Runtime: JsonlFamilyRuntime;
+
     fn preflight(
         &mut self,
-        _reader: &mut JsonlReader,
+        _reader: &mut JsonlReader<JsonlRuntimeError<Self::Runtime>>,
         _certified_prefix_end: Option<u64>,
-    ) -> Result<bool> {
+    ) -> JsonlResult<bool, JsonlRuntimeError<Self::Runtime>> {
         Ok(false)
     }
 
@@ -125,19 +134,19 @@ pub(crate) trait JsonlFamilyProjector: Send {
     fn project(
         &mut self,
         record: JsonlRecordRef<'_>,
-        worker: &mut JsonlFamilyWorkerContext,
-        emit: &mut dyn FnMut(CoreRecord) -> Result<()>,
-    ) -> Result<()>;
+        worker: &mut JsonlFamilyWorkerContext<Self::Runtime>,
+        emit: &mut dyn FnMut(CoreRecord) -> JsonlResult<(), JsonlRuntimeError<Self::Runtime>>,
+    ) -> JsonlResult<(), JsonlRuntimeError<Self::Runtime>>;
 
-    fn finish(&mut self) -> Result<()> {
+    fn finish(&mut self) -> JsonlResult<(), JsonlRuntimeError<Self::Runtime>> {
         Ok(())
     }
 
     fn finish_projecting(
         &mut self,
-        _worker: &mut JsonlFamilyWorkerContext,
-        _emit: &mut dyn FnMut(CoreRecord) -> Result<()>,
-    ) -> Result<()> {
+        _worker: &mut JsonlFamilyWorkerContext<Self::Runtime>,
+        _emit: &mut dyn FnMut(CoreRecord) -> JsonlResult<(), JsonlRuntimeError<Self::Runtime>>,
+    ) -> JsonlResult<(), JsonlRuntimeError<Self::Runtime>> {
         self.finish()
     }
 
@@ -147,32 +156,40 @@ pub(crate) trait JsonlFamilyProjector: Send {
 
     /// Opaque, contract-bounded provider state to carry into the next certified
     /// suffix projection. The family persists the value without interpreting it.
-    fn provider_checkpoint(&self) -> Result<Option<TypedKey>> {
+    fn provider_checkpoint(
+        &self,
+    ) -> JsonlResult<Option<TypedKey>, JsonlRuntimeError<Self::Runtime>> {
         Ok(None)
     }
 }
 
-pub(crate) trait JsonlFamilySemanticExecutor: Send {
+pub trait JsonlFamilySemanticExecutor: Send {
+    type Runtime: JsonlFamilyRuntime;
+
     /// Runs before writer staging or record emission. Append executors may ask
     /// the family to reopen and retry this leaf once as a replacement.
     fn preflight(
         &mut self,
-        input: &mut JsonlFamilyExecutionIo,
-    ) -> Result<JsonlFamilySemanticPreflight>;
+        input: &mut JsonlFamilyExecutionIo<Self::Runtime>,
+    ) -> JsonlResult<JsonlFamilySemanticPreflight, JsonlRuntimeError<Self::Runtime>>;
 
     /// Produces one bounded semantic page from shared-owned physical input.
     /// Returning `None` means the input is exhausted and no page remains.
     fn next_page(
         &mut self,
-        input: &mut JsonlFamilyExecutionIo,
-        worker: &mut JsonlFamilyWorkerContext,
-    ) -> Result<Option<JsonlFamilySemanticPage>>;
+        input: &mut JsonlFamilyExecutionIo<Self::Runtime>,
+        worker: &mut JsonlFamilyWorkerContext<Self::Runtime>,
+    ) -> JsonlResult<Option<JsonlFamilySemanticPage>, JsonlRuntimeError<Self::Runtime>>;
 
     /// Returns only semantic classification and opaque continuation state.
-    fn finish(self: Box<Self>) -> Result<JsonlFamilySemanticSummary>;
+    fn finish(
+        self: Box<Self>,
+    ) -> JsonlResult<JsonlFamilySemanticSummary, JsonlRuntimeError<Self::Runtime>>;
 }
 
-pub(crate) trait JsonlFamilyAdapter: Send + Sync {
+pub trait JsonlFamilyAdapter: Send + Sync {
+    type Runtime: JsonlFamilyRuntime;
+
     fn provider(&self) -> CaptureProvider;
     fn source_format(&self) -> &'static str;
     fn schema_variant(&self) -> &'static str;
@@ -214,7 +231,13 @@ pub(crate) trait JsonlFamilyAdapter: Send + Sync {
         JsonlFamilyBaseScope::ProviderFamily
     }
 
-    fn discover(&self, root: &Path) -> Result<JsonlFamilyInventory>;
+    fn discover(
+        &self,
+        root: &Path,
+    ) -> JsonlResult<
+        JsonlFamilyInventory<JsonlRuntimeError<Self::Runtime>>,
+        JsonlRuntimeError<Self::Runtime>,
+    >;
 
     /// Observes only physical route membership. Implementations must not parse
     /// identities or hash transcript bodies; content authority belongs to the
@@ -222,23 +245,35 @@ pub(crate) trait JsonlFamilyAdapter: Send + Sync {
     fn observe_terminal_membership(
         &self,
         root: &Path,
-        opening: &JsonlFamilyInventory,
-    ) -> Result<JsonlFamilyMembershipObservation> {
+        opening: &JsonlFamilyInventory<JsonlRuntimeError<Self::Runtime>>,
+    ) -> JsonlResult<
+        JsonlFamilyMembershipObservation<JsonlRuntimeError<Self::Runtime>>,
+        JsonlRuntimeError<Self::Runtime>,
+    > {
         JsonlFamilyMembershipObservation::observe(root, opening)
     }
 
-    fn discovery_error_kind(&self, _error: &CaptureError) -> SourceBackedRouteErrorKind {
+    fn discovery_error_kind(
+        &self,
+        _error: &JsonlRuntimeError<Self::Runtime>,
+    ) -> SourceBackedRouteErrorKind {
         SourceBackedRouteErrorKind::InvalidSource
     }
 
-    fn scan_error_kind(&self, _error: &CaptureError) -> SourceBackedRouteErrorKind {
+    fn scan_error_kind(
+        &self,
+        _error: &JsonlRuntimeError<Self::Runtime>,
+    ) -> SourceBackedRouteErrorKind {
         SourceBackedRouteErrorKind::InvalidSource
     }
 
     /// Applies a deterministic provider-declared dependency order before the
     /// shared family scheduler starts any leaf workers. Adapters may reorder
     /// the supplied leaves but must not add or remove them.
-    fn order_leaf_scans(&self, _leaves: &mut [JsonlFamilyLeaf]) -> Result<()> {
+    fn order_leaf_scans(
+        &self,
+        _leaves: &mut [JsonlFamilyLeaf<JsonlRuntimeError<Self::Runtime>>],
+    ) -> JsonlResult<(), JsonlRuntimeError<Self::Runtime>> {
         Ok(())
     }
 
@@ -247,9 +282,9 @@ pub(crate) trait JsonlFamilyAdapter: Send + Sync {
     /// The default has no preparation and keeps the shared scheduler budget.
     fn prepare_leaf_scans(
         &self,
-        _leaves: &[JsonlFamilyLeaf],
+        _leaves: &[JsonlFamilyLeaf<JsonlRuntimeError<Self::Runtime>>],
         _bases: &HashMap<[u8; 32], &CertifiedSource>,
-    ) -> Result<Option<usize>> {
+    ) -> JsonlResult<Option<usize>, JsonlRuntimeError<Self::Runtime>> {
         Ok(None)
     }
 
@@ -258,7 +293,10 @@ pub(crate) trait JsonlFamilyAdapter: Send + Sync {
     /// of those workers, and only then starts the next phase. Adapters that use
     /// this hook must order leaves by nondecreasing phase. The default keeps
     /// every leaf in one fully parallel phase.
-    fn leaf_scan_phase(&self, _leaf: &JsonlFamilyLeaf) -> Result<usize> {
+    fn leaf_scan_phase(
+        &self,
+        _leaf: &JsonlFamilyLeaf<JsonlRuntimeError<Self::Runtime>>,
+    ) -> JsonlResult<usize, JsonlRuntimeError<Self::Runtime>> {
         Ok(0)
     }
 
@@ -267,7 +305,10 @@ pub(crate) trait JsonlFamilyAdapter: Send + Sync {
     /// wave of partitions and runs each dependency-phase frontier across that
     /// wave on fixed logical cache lanes. Partition-local adapter state remains
     /// live from the begin hook through the matching finish hook.
-    fn leaf_scan_partition(&self, _leaf: &JsonlFamilyLeaf) -> Result<Option<u64>> {
+    fn leaf_scan_partition(
+        &self,
+        _leaf: &JsonlFamilyLeaf<JsonlRuntimeError<Self::Runtime>>,
+    ) -> JsonlResult<Option<u64>, JsonlRuntimeError<Self::Runtime>> {
         Ok(None)
     }
 
@@ -279,12 +320,18 @@ pub(crate) trait JsonlFamilyAdapter: Send + Sync {
     }
 
     /// Prepares partition-local state immediately before its first leaf runs.
-    fn begin_leaf_scan_partition(&self, _partition: u64) -> Result<()> {
+    fn begin_leaf_scan_partition(
+        &self,
+        _partition: u64,
+    ) -> JsonlResult<(), JsonlRuntimeError<Self::Runtime>> {
         Ok(())
     }
 
     /// Releases partition-local state after all of its leaves have joined.
-    fn finish_leaf_scan_partition(&self, _partition: u64) -> Result<()> {
+    fn finish_leaf_scan_partition(
+        &self,
+        _partition: u64,
+    ) -> JsonlResult<(), JsonlRuntimeError<Self::Runtime>> {
         Ok(())
     }
 
@@ -292,24 +339,32 @@ pub(crate) trait JsonlFamilyAdapter: Send + Sync {
     /// dependency phases. Partitioned scans use size-balanced frontier lanes
     /// instead. Equal affinities must denote leaves that may safely serialize
     /// on one worker; the default leaves assignment round-robin.
-    fn leaf_worker_affinity(&self, _leaf: &JsonlFamilyLeaf) -> Result<Option<u64>> {
+    fn leaf_worker_affinity(
+        &self,
+        _leaf: &JsonlFamilyLeaf<JsonlRuntimeError<Self::Runtime>>,
+    ) -> JsonlResult<Option<u64>, JsonlRuntimeError<Self::Runtime>> {
         Ok(None)
     }
 
     /// Releases adapter-owned scan-only state after all leaf workers have
     /// joined. Terminal source and inventory revalidation must keep only the
     /// evidence they need beyond this boundary.
-    fn finish_leaf_scans(&self) -> Result<()> {
+    fn finish_leaf_scans(&self) -> JsonlResult<(), JsonlRuntimeError<Self::Runtime>> {
         Ok(())
     }
 
     fn projector(
         &self,
-        _leaf: &JsonlFamilyLeaf,
-        _source_file: Arc<OpenedProviderSourceFile>,
+        _leaf: &JsonlFamilyLeaf<JsonlRuntimeError<Self::Runtime>>,
+        _source_file: Arc<OpenedProviderSourceFile<JsonlRuntimeError<Self::Runtime>>>,
         _imported_at: DateTime<Utc>,
-    ) -> Result<Box<dyn JsonlFamilyProjector>> {
-        Err(CaptureError::SystemInvariant("missing JSONL projector"))
+    ) -> JsonlResult<
+        Box<dyn JsonlFamilyProjector<Runtime = Self::Runtime>>,
+        JsonlRuntimeError<Self::Runtime>,
+    > {
+        Err(JsonlRuntimeError::<Self::Runtime>::system_invariant(
+            "missing JSONL projector",
+        ))
     }
 
     /// Constructs a projector for a cold/replacement scan or from the opaque
@@ -319,15 +374,18 @@ pub(crate) trait JsonlFamilyAdapter: Send + Sync {
     /// reconciliation; cold scans receive no lookup.
     fn projector_with_provider_checkpoint(
         &self,
-        leaf: &JsonlFamilyLeaf,
-        source_file: Arc<OpenedProviderSourceFile>,
+        leaf: &JsonlFamilyLeaf<JsonlRuntimeError<Self::Runtime>>,
+        source_file: Arc<OpenedProviderSourceFile<JsonlRuntimeError<Self::Runtime>>>,
         imported_at: DateTime<Utc>,
         checkpoint: Option<&TypedKey>,
-        _base_event_lookup: Option<IndexBaseEventLookup>,
+        _base_event_lookup: Option<JsonlRuntimeLookup<Self::Runtime>>,
         _mode: JsonlFamilyProjectionMode,
-    ) -> Result<Box<dyn JsonlFamilyProjector>> {
+    ) -> JsonlResult<
+        Box<dyn JsonlFamilyProjector<Runtime = Self::Runtime>>,
+        JsonlRuntimeError<Self::Runtime>,
+    > {
         if checkpoint.is_some() {
-            return Err(CaptureError::InvalidPayload(
+            return Err(JsonlRuntimeError::<Self::Runtime>::invalid_payload(
                 "JSONL adapter does not accept provider checkpoint state".to_owned(),
             ));
         }
@@ -338,11 +396,11 @@ pub(crate) trait JsonlFamilyAdapter: Send + Sync {
     /// physical projection mode and retains all lifecycle/publication authority.
     fn semantic_executor(
         &self,
-        _leaf: &JsonlFamilyLeaf,
+        _leaf: &JsonlFamilyLeaf<JsonlRuntimeError<Self::Runtime>>,
         _checkpoint: Option<&TypedKey>,
-        _base_event_lookup: Option<IndexBaseEventLookup>,
+        _base_event_lookup: Option<JsonlRuntimeLookup<Self::Runtime>>,
         _mode: JsonlFamilyProjectionMode,
-    ) -> Result<Option<Box<dyn JsonlFamilySemanticExecutor>>> {
+    ) -> JsonlSemanticExecutorResult<Self::Runtime> {
         Ok(None)
     }
 
@@ -353,7 +411,7 @@ pub(crate) trait JsonlFamilyAdapter: Send + Sync {
     fn shed_optional_provider_checkpoint_evidence(
         &self,
         _checkpoint: &TypedKey,
-    ) -> Result<Option<TypedKey>> {
+    ) -> JsonlResult<Option<TypedKey>, JsonlRuntimeError<Self::Runtime>> {
         Ok(None)
     }
 
@@ -361,19 +419,26 @@ pub(crate) trait JsonlFamilyAdapter: Send + Sync {
     /// convergence tranche. New adapters must use `semantic_executor`.
     fn scan_optimized_leaf(
         &self,
-        _leaf: &JsonlFamilyLeaf,
+        _leaf: &JsonlFamilyLeaf<JsonlRuntimeError<Self::Runtime>>,
         _base: Option<&CertifiedSource>,
-        _base_event_lookup: &IndexBaseEventLookup,
-        _worker: &mut JsonlFamilyWorkerContext,
-        _emit_page: &mut dyn FnMut(JsonlFamilyPublication, u64, Vec<CoreRecord>) -> Result<()>,
-    ) -> Result<Option<JsonlFamilyOptimizedLeafOutcome>> {
+        _base_event_lookup: &JsonlRuntimeLookup<Self::Runtime>,
+        _worker: &mut JsonlFamilyWorkerContext<Self::Runtime>,
+        _emit_page: &mut dyn FnMut(
+            JsonlFamilyPublication,
+            u64,
+            Vec<CoreRecord>,
+        ) -> JsonlResult<(), JsonlRuntimeError<Self::Runtime>>,
+    ) -> JsonlOptimizedLeafResult<Self::Runtime> {
         Ok(None)
     }
 
     /// Resolves the ordinary path represented by a committed base. Optimized
     /// adapters with their own bounded frontier format may override this; the
     /// default decodes the shared family checkpoint.
-    fn base_source_path(&self, certificate: &CertifiedSource) -> Result<PathBuf> {
+    fn base_source_path(
+        &self,
+        certificate: &CertifiedSource,
+    ) -> JsonlResult<PathBuf, JsonlRuntimeError<Self::Runtime>> {
         default_base_source_path(self, certificate)
     }
 
@@ -388,31 +453,29 @@ pub(crate) trait JsonlFamilyAdapter: Send + Sync {
 /// Content-free physical membership observed at admission or at the terminal
 /// fence. Source hints are optional and are used only to recognize a deleted
 /// logical source that reappears at a new physical route under frozen mode.
-#[derive(Debug, Clone)]
-pub(crate) struct JsonlFamilyMembershipObservation {
+#[derive(Debug)]
+pub struct JsonlFamilyMembershipObservation<E: JsonlFamilyError> {
     root_missing: bool,
-    routes: BTreeMap<PathBuf, JsonlFamilyMembershipRoute>,
+    routes: BTreeMap<PathBuf, JsonlFamilyMembershipRoute<E>>,
     source_hints: HashMap<PathBuf, SourceKey>,
 }
 
-#[derive(Debug, Clone)]
-struct JsonlFamilyMembershipRoute {
-    authority: Arc<ProviderSourceRoot>,
+#[derive(Debug)]
+struct JsonlFamilyMembershipRoute<E: JsonlFamilyError> {
+    authority: Arc<ProviderSourceRoot<E>>,
     authority_path: PathBuf,
 }
 
-impl JsonlFamilyMembershipObservation {
-    pub(crate) fn observe(root: &Path, opening: &JsonlFamilyInventory) -> Result<Self> {
+impl<E: JsonlFamilyError> JsonlFamilyMembershipObservation<E> {
+    pub fn observe(root: &Path, opening: &JsonlFamilyInventory<E>) -> JsonlResult<Self, E> {
         if opening.root_missing {
-            return match open_provider_source_path(root) {
-                Err(CaptureError::Io(error)) if error.kind() == std::io::ErrorKind::NotFound => {
-                    Ok(Self {
-                        root_missing: true,
-                        routes: BTreeMap::new(),
-                        source_hints: HashMap::new(),
-                    })
-                }
-                Ok(_) => Err(CaptureError::SourceChangedDuringCapture),
+            return match open_provider_source_path::<E>(root) {
+                Err(error) if error.is_not_found() => Ok(Self {
+                    root_missing: true,
+                    routes: BTreeMap::new(),
+                    source_hints: HashMap::new(),
+                }),
+                Ok(_) => Err(E::source_changed()),
                 Err(error) => Err(error),
             };
         }
@@ -428,7 +491,7 @@ impl JsonlFamilyMembershipObservation {
         Self::observe_authorities(opening)
     }
 
-    pub(crate) fn observe_authorities(opening: &JsonlFamilyInventory) -> Result<Self> {
+    pub fn observe_authorities(opening: &JsonlFamilyInventory<E>) -> JsonlResult<Self, E> {
         let mut state = JsonlFamilyMembershipState::default();
         for authority in &opening.authorities {
             let directory = authority.directory()?;
@@ -438,12 +501,15 @@ impl JsonlFamilyMembershipObservation {
         Self::from_routes(state.routes, opening)
     }
 
-    fn observe_leaf(leaf: &JsonlFamilyLeaf, opening: &JsonlFamilyInventory) -> Result<Self> {
-        check_membership_path(&leaf.source_path)?;
+    fn observe_leaf(
+        leaf: &JsonlFamilyLeaf<E>,
+        opening: &JsonlFamilyInventory<E>,
+    ) -> JsonlResult<Self, E> {
+        check_membership_path::<E>(&leaf.source_path)?;
         if leaf.authority_path.components().count()
             > PROVIDER_JSONL_INVENTORY_MAX_DEPTH.saturating_add(1)
         {
-            return Err(CaptureError::InvalidPayload(
+            return Err(E::invalid_payload(
                 "JSONL membership path depth exceeds the provider inventory bound".to_owned(),
             ));
         }
@@ -461,9 +527,9 @@ impl JsonlFamilyMembershipObservation {
     }
 
     fn from_routes(
-        routes: BTreeMap<PathBuf, JsonlFamilyMembershipRoute>,
-        opening: &JsonlFamilyInventory,
-    ) -> Result<Self> {
+        routes: BTreeMap<PathBuf, JsonlFamilyMembershipRoute<E>>,
+        opening: &JsonlFamilyInventory<E>,
+    ) -> JsonlResult<Self, E> {
         let source_hints = opening
             .leaves
             .iter()
@@ -477,9 +543,9 @@ impl JsonlFamilyMembershipObservation {
         })
     }
 
-    pub(crate) fn unbound_routes(
+    pub fn unbound_routes(
         &self,
-    ) -> impl Iterator<Item = (&Path, Arc<ProviderSourceRoot>, &Path)> {
+    ) -> impl Iterator<Item = (&Path, Arc<ProviderSourceRoot<E>>, &Path)> {
         self.routes
             .iter()
             .filter(|(path, _)| !self.source_hints.contains_key(*path))
@@ -492,7 +558,7 @@ impl JsonlFamilyMembershipObservation {
             })
     }
 
-    pub(crate) fn bind_source_hint(&mut self, path: PathBuf, source: SourceKey) {
+    pub fn bind_source_hint(&mut self, path: PathBuf, source: SourceKey) {
         if self.routes.contains_key(&path) {
             self.source_hints.insert(path, source);
         }
@@ -502,7 +568,7 @@ impl JsonlFamilyMembershipObservation {
         &self,
         current: &Self,
         mode: JsonlFamilyInventoryMode,
-        expected_sources: &HashMap<[u8; 32], TerminalSourceEvidence>,
+        expected_sources: &HashMap<[u8; 32], TerminalSourceEvidence<E>>,
         owned_sources: &HashMap<[u8; 32], SourceKey>,
     ) -> bool {
         if self.root_missing != current.root_missing {
@@ -523,26 +589,54 @@ impl JsonlFamilyMembershipObservation {
     }
 }
 
-#[derive(Default)]
-struct JsonlFamilyMembershipState {
-    directories: usize,
-    entries: usize,
-    routes: BTreeMap<PathBuf, JsonlFamilyMembershipRoute>,
+impl<E: JsonlFamilyError> Clone for JsonlFamilyMembershipRoute<E> {
+    fn clone(&self) -> Self {
+        Self {
+            authority: Arc::clone(&self.authority),
+            authority_path: self.authority_path.clone(),
+        }
+    }
 }
 
-fn observe_membership_directory(
-    directory: &ProviderSourceDirectory,
+impl<E: JsonlFamilyError> Clone for JsonlFamilyMembershipObservation<E> {
+    fn clone(&self) -> Self {
+        Self {
+            root_missing: self.root_missing,
+            routes: self.routes.clone(),
+            source_hints: self.source_hints.clone(),
+        }
+    }
+}
+
+struct JsonlFamilyMembershipState<E: JsonlFamilyError> {
+    directories: usize,
+    entries: usize,
+    routes: BTreeMap<PathBuf, JsonlFamilyMembershipRoute<E>>,
+}
+
+impl<E: JsonlFamilyError> Default for JsonlFamilyMembershipState<E> {
+    fn default() -> Self {
+        Self {
+            directories: 0,
+            entries: 0,
+            routes: BTreeMap::new(),
+        }
+    }
+}
+
+fn observe_membership_directory<E: JsonlFamilyError>(
+    directory: &ProviderSourceDirectory<E>,
     depth: usize,
-    state: &mut JsonlFamilyMembershipState,
-) -> Result<()> {
+    state: &mut JsonlFamilyMembershipState<E>,
+) -> JsonlResult<(), E> {
     if depth > PROVIDER_JSONL_INVENTORY_MAX_DEPTH {
-        return Err(CaptureError::InvalidPayload(
+        return Err(E::invalid_payload(
             "JSONL membership directory depth exceeds the provider inventory bound".to_owned(),
         ));
     }
     state.directories = state.directories.saturating_add(1);
     if state.directories > PROVIDER_JSONL_INVENTORY_MAX_DIRECTORIES {
-        return Err(CaptureError::InvalidPayload(
+        return Err(E::invalid_payload(
             "JSONL membership directory count exceeds the provider inventory bound".to_owned(),
         ));
     }
@@ -551,20 +645,21 @@ fn observe_membership_directory(
     let remaining = PROVIDER_JSONL_INVENTORY_MAX_METADATA_ENTRIES
         .checked_sub(state.entries)
         .ok_or_else(|| {
-            CaptureError::InvalidPayload(
+            E::invalid_payload(
                 "JSONL membership entry count exceeds the provider inventory bound".to_owned(),
             )
         })?;
     let children = directory.entries(remaining)?;
-    state.entries = state.entries.checked_add(children.len()).ok_or_else(|| {
-        CaptureError::InvalidPayload("JSONL membership entry count overflowed".to_owned())
-    })?;
+    state.entries = state
+        .entries
+        .checked_add(children.len())
+        .ok_or_else(|| E::invalid_payload("JSONL membership entry count overflowed".to_owned()))?;
 
     for name in children {
         let authority_path = directory.relative_path().join(&name);
         let authority = directory.authority_root();
         let source_path = authority.named_path().join(&authority_path);
-        check_membership_path(&source_path)?;
+        check_membership_path::<E>(&source_path)?;
         let opened = match directory.open_child(&name) {
             Ok(opened) => opened,
             // Admission never admits a link-like or non-regular route (a
@@ -573,10 +668,7 @@ fn observe_membership_directory(
             // changed into a link after admission; that change drops out of
             // the observed route set and fails the membership comparison as a
             // source change.
-            Err(error)
-                if is_symlink_source_rejection(&error)
-                    || is_non_regular_source_rejection(&error) =>
-            {
+            Err(error) if error.is_ignorable_membership_entry() => {
                 continue;
             }
             Err(error) => return Err(error),
@@ -603,7 +695,7 @@ fn observe_membership_directory(
                     )
                     .is_some()
                 {
-                    return Err(CaptureError::InvalidPayload(
+                    return Err(E::invalid_payload(
                         "JSONL membership contains a duplicate authority route".to_owned(),
                     ));
                 }
@@ -623,21 +715,21 @@ fn observe_membership_directory(
     Ok(())
 }
 
-fn check_membership_path(path: &Path) -> Result<()> {
+fn check_membership_path<E: JsonlFamilyError>(path: &Path) -> JsonlResult<(), E> {
     if path.as_os_str().as_encoded_bytes().len() > PROVIDER_JSONL_INVENTORY_MAX_PATH_BYTES {
-        return Err(CaptureError::InvalidPayload(
+        return Err(E::invalid_payload(
             "JSONL membership path exceeds the provider inventory bound".to_owned(),
         ));
     }
     Ok(())
 }
 
-#[derive(Debug, Clone)]
-pub(crate) struct JsonlFamilyLeaf {
+#[derive(Debug)]
+pub struct JsonlFamilyLeaf<E: JsonlFamilyError> {
     source: SourceKey,
     source_path: PathBuf,
     authority_path: PathBuf,
-    authority: Arc<ProviderSourceRoot>,
+    authority: Arc<ProviderSourceRoot<E>>,
     observation: JsonlFileObservation,
     binding: TypedKey,
     identity_probe: Option<JsonlProbe>,
@@ -646,18 +738,35 @@ pub(crate) struct JsonlFamilyLeaf {
     freeze_observation_at_scan: bool,
 }
 
-impl JsonlFamilyLeaf {
+impl<E: JsonlFamilyError> Clone for JsonlFamilyLeaf<E> {
+    fn clone(&self) -> Self {
+        Self {
+            source: self.source.clone(),
+            source_path: self.source_path.clone(),
+            authority_path: self.authority_path.clone(),
+            authority: Arc::clone(&self.authority),
+            observation: self.observation.clone(),
+            binding: self.binding.clone(),
+            identity_probe: self.identity_probe.clone(),
+            identity_probe_rejected_records: self.identity_probe_rejected_records,
+            whole_record: self.whole_record,
+            freeze_observation_at_scan: self.freeze_observation_at_scan,
+        }
+    }
+}
+
+impl<E: JsonlFamilyError> JsonlFamilyLeaf<E> {
     /// Binds admission to a descriptor already retained by an optimized
     /// adapter. The adapter may keep the same descriptor for its scan, avoiding
     /// a pathname reopen between shared leaf admission and provider parsing.
-    pub(crate) fn bind_opened(
+    pub fn bind_opened(
         source: SourceKey,
         source_path: PathBuf,
-        authority: Arc<ProviderSourceRoot>,
+        authority: Arc<ProviderSourceRoot<E>>,
         authority_path: PathBuf,
         binding: TypedKey,
-        opened: &OpenedProviderSourceFile,
-    ) -> Result<Self> {
+        opened: &OpenedProviderSourceFile<E>,
+    ) -> JsonlResult<Self, E> {
         let observation = observe_opened_file(&source_path, opened)?;
         Ok(Self::bind_observed(
             source,
@@ -669,10 +778,10 @@ impl JsonlFamilyLeaf {
         ))
     }
 
-    pub(crate) fn bind_observed(
+    pub fn bind_observed(
         source: SourceKey,
         source_path: PathBuf,
-        authority: Arc<ProviderSourceRoot>,
+        authority: Arc<ProviderSourceRoot<E>>,
         authority_path: PathBuf,
         binding: TypedKey,
         observation: JsonlFileObservation,
@@ -691,10 +800,10 @@ impl JsonlFamilyLeaf {
         }
     }
 
-    pub(crate) fn bind_frozen_observed(
+    pub fn bind_frozen_observed(
         source: SourceKey,
         source_path: PathBuf,
-        authority: Arc<ProviderSourceRoot>,
+        authority: Arc<ProviderSourceRoot<E>>,
         authority_path: PathBuf,
         binding: TypedKey,
         observation: JsonlFileObservation,
@@ -713,13 +822,13 @@ impl JsonlFamilyLeaf {
         }
     }
 
-    pub(crate) fn observe(
+    pub fn observe(
         source: SourceKey,
         source_path: PathBuf,
-        authority: Arc<ProviderSourceRoot>,
+        authority: Arc<ProviderSourceRoot<E>>,
         authority_path: PathBuf,
         binding: TypedKey,
-    ) -> Result<Self> {
+    ) -> JsonlResult<Self, E> {
         Self::observe_with_framing(
             source,
             source_path,
@@ -730,13 +839,13 @@ impl JsonlFamilyLeaf {
         )
     }
 
-    pub(crate) fn observe_whole_record(
+    pub fn observe_whole_record(
         source: SourceKey,
         source_path: PathBuf,
-        authority: Arc<ProviderSourceRoot>,
+        authority: Arc<ProviderSourceRoot<E>>,
         authority_path: PathBuf,
         binding: TypedKey,
-    ) -> Result<Self> {
+    ) -> JsonlResult<Self, E> {
         Self::observe_with_framing(
             source,
             source_path,
@@ -747,15 +856,15 @@ impl JsonlFamilyLeaf {
         )
     }
 
-    pub(crate) fn observe_after_identity_probe(
+    pub fn observe_after_identity_probe(
         source: SourceKey,
         source_path: PathBuf,
-        authority: Arc<ProviderSourceRoot>,
+        authority: Arc<ProviderSourceRoot<E>>,
         authority_path: PathBuf,
         binding: TypedKey,
         mut identity_probe: JsonlProbe,
         identity_probe_rejected_records: u64,
-    ) -> Result<Self> {
+    ) -> JsonlResult<Self, E> {
         let opened = authority.open_file(&authority_path)?;
         let observation = observe_opened_file(&source_path, &opened)?;
         if observation != identity_probe.observation {
@@ -786,11 +895,11 @@ impl JsonlFamilyLeaf {
     fn observe_with_framing(
         source: SourceKey,
         source_path: PathBuf,
-        authority: Arc<ProviderSourceRoot>,
+        authority: Arc<ProviderSourceRoot<E>>,
         authority_path: PathBuf,
         binding: TypedKey,
         whole_record: bool,
-    ) -> Result<Self> {
+    ) -> JsonlResult<Self, E> {
         let opened = authority.open_file(&authority_path)?;
         let observation = observe_opened_file(&source_path, &opened)?;
         drop(opened);
@@ -808,19 +917,19 @@ impl JsonlFamilyLeaf {
         })
     }
 
-    pub(crate) fn source(&self) -> &SourceKey {
+    pub fn source(&self) -> &SourceKey {
         &self.source
     }
 
-    pub(crate) fn source_path(&self) -> &Path {
+    pub fn source_path(&self) -> &Path {
         &self.source_path
     }
 
-    pub(crate) fn authority(&self) -> &Arc<ProviderSourceRoot> {
+    pub fn authority(&self) -> &Arc<ProviderSourceRoot<E>> {
         &self.authority
     }
 
-    pub(crate) fn observation(&self) -> &JsonlFileObservation {
+    pub fn observation(&self) -> &JsonlFileObservation {
         &self.observation
     }
 
@@ -832,20 +941,20 @@ impl JsonlFamilyLeaf {
         self.observation.length()
     }
 
-    pub(crate) fn binding(&self) -> &TypedKey {
+    pub fn binding(&self) -> &TypedKey {
         &self.binding
     }
 
-    #[cfg(test)]
-    pub(crate) fn open_verified(&self) -> Result<Arc<OpenedProviderSourceFile>> {
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn open_verified(&self) -> JsonlResult<Arc<OpenedProviderSourceFile<E>>, E> {
         let opened = self.authority.open_file(&self.authority_path)?;
         if observe_opened_file(&self.source_path, &opened)? != self.observation {
-            return Err(CaptureError::SourceChangedDuringCapture);
+            return Err(E::source_changed());
         }
         Ok(Arc::new(opened))
     }
 
-    fn open_for_scan(&self) -> Result<(Self, Arc<OpenedProviderSourceFile>)> {
+    fn open_for_scan(&self) -> JsonlResult<(Self, Arc<OpenedProviderSourceFile<E>>), E> {
         let opened = self.authority.open_file(&self.authority_path)?;
         let current = observe_opened_file(&self.source_path, &opened)?;
         if current == self.observation {
@@ -855,7 +964,7 @@ impl JsonlFamilyLeaf {
             || current.length() <= self.observation.length()
             || !self.observation.admits_frozen_prefix_in(&current)
         {
-            return Err(CaptureError::SourceChangedDuringCapture);
+            return Err(E::source_changed());
         }
         if self.freeze_observation_at_scan {
             return Ok((self.clone(), Arc::new(opened)));
@@ -877,7 +986,7 @@ impl JsonlFamilyLeaf {
 }
 
 #[derive(Debug, Clone)]
-pub(crate) struct JsonlFamilyRejectedLeaf {
+pub struct JsonlFamilyRejectedLeaf {
     source_path: PathBuf,
     authority_path: PathBuf,
     proof: TypedKey,
@@ -885,7 +994,7 @@ pub(crate) struct JsonlFamilyRejectedLeaf {
 }
 
 impl JsonlFamilyRejectedLeaf {
-    pub(crate) fn bind_observed(
+    pub fn bind_observed(
         source_path: PathBuf,
         authority_path: PathBuf,
         proof: TypedKey,
@@ -900,61 +1009,74 @@ impl JsonlFamilyRejectedLeaf {
     }
 }
 
-#[derive(Debug, Clone)]
-pub(crate) struct JsonlFamilyInventory {
+#[derive(Debug)]
+pub struct JsonlFamilyInventory<E: JsonlFamilyError> {
     root_missing: bool,
     observation: SourceInventoryObservation,
-    authorities: Vec<Arc<ProviderSourceRoot>>,
-    leaves: Vec<JsonlFamilyLeaf>,
+    authorities: Vec<Arc<ProviderSourceRoot<E>>>,
+    leaves: Vec<JsonlFamilyLeaf<E>>,
     rejected_leaves: Vec<JsonlFamilyRejectedLeaf>,
-    exact_dependencies: Vec<JsonlFamilyTerminalProof>,
+    exact_dependencies: Vec<JsonlFamilyTerminalProof<E>>,
 }
 
-impl JsonlFamilyInventory {
-    pub(crate) fn present(
+impl<E: JsonlFamilyError> Clone for JsonlFamilyInventory<E> {
+    fn clone(&self) -> Self {
+        Self {
+            root_missing: self.root_missing,
+            observation: self.observation.clone(),
+            authorities: self.authorities.clone(),
+            leaves: self.leaves.clone(),
+            rejected_leaves: self.rejected_leaves.clone(),
+            exact_dependencies: self.exact_dependencies.clone(),
+        }
+    }
+}
+
+impl<E: JsonlFamilyError> JsonlFamilyInventory<E> {
+    pub fn present(
         provider: CaptureProvider,
         root: &Path,
-        authority: Arc<ProviderSourceRoot>,
-        leaves: Vec<JsonlFamilyLeaf>,
-    ) -> Result<Self> {
+        authority: Arc<ProviderSourceRoot<E>>,
+        leaves: Vec<JsonlFamilyLeaf<E>>,
+    ) -> JsonlResult<Self, E> {
         Self::present_with_rejected(provider, root, authority, leaves, Vec::new())
     }
 
-    pub(crate) fn present_with_rejected(
+    pub fn present_with_rejected(
         provider: CaptureProvider,
         root: &Path,
-        authority: Arc<ProviderSourceRoot>,
-        leaves: Vec<JsonlFamilyLeaf>,
+        authority: Arc<ProviderSourceRoot<E>>,
+        leaves: Vec<JsonlFamilyLeaf<E>>,
         rejected_leaves: Vec<JsonlFamilyRejectedLeaf>,
-    ) -> Result<Self> {
+    ) -> JsonlResult<Self, E> {
         Self::present_multi_with_rejected(provider, root, vec![authority], leaves, rejected_leaves)
     }
 
-    pub(crate) fn present_multi(
+    pub fn present_multi(
         provider: CaptureProvider,
         root: &Path,
-        authorities: Vec<Arc<ProviderSourceRoot>>,
-        leaves: Vec<JsonlFamilyLeaf>,
-    ) -> Result<Self> {
+        authorities: Vec<Arc<ProviderSourceRoot<E>>>,
+        leaves: Vec<JsonlFamilyLeaf<E>>,
+    ) -> JsonlResult<Self, E> {
         Self::present_multi_with_rejected(provider, root, authorities, leaves, Vec::new())
     }
 
-    pub(crate) fn present_multi_with_rejected(
+    pub fn present_multi_with_rejected(
         provider: CaptureProvider,
         root: &Path,
-        mut authorities: Vec<Arc<ProviderSourceRoot>>,
-        mut leaves: Vec<JsonlFamilyLeaf>,
+        mut authorities: Vec<Arc<ProviderSourceRoot<E>>>,
+        mut leaves: Vec<JsonlFamilyLeaf<E>>,
         mut rejected_leaves: Vec<JsonlFamilyRejectedLeaf>,
-    ) -> Result<Self> {
+    ) -> JsonlResult<Self, E> {
         if authorities.is_empty() {
-            return Err(CaptureError::InvalidPayload(
+            return Err(E::invalid_payload(
                 "present JSONL inventory has no retained root authority".to_owned(),
             ));
         }
         authorities.sort_by(|left, right| left.named_path().cmp(right.named_path()));
         for pair in authorities.windows(2) {
             if pair[0].named_path() == pair[1].named_path() {
-                return Err(CaptureError::InvalidPayload(format!(
+                return Err(E::invalid_payload(format!(
                     "present JSONL inventory has duplicate root authority {}",
                     pair[0].named_path().display()
                 )));
@@ -966,7 +1088,7 @@ impl JsonlFamilyInventory {
                     && authority.authority_fingerprint() == leaf.authority.authority_fingerprint()
             });
             if !retained {
-                return Err(CaptureError::InvalidPayload(format!(
+                return Err(E::invalid_payload(format!(
                     "JSONL leaf {} is outside the retained root authorities",
                     leaf.source_path.display()
                 )));
@@ -992,10 +1114,10 @@ impl JsonlFamilyInventory {
         })
     }
 
-    pub(crate) fn missing(provider: CaptureProvider, root: &Path) -> Result<Self> {
+    pub fn missing(provider: CaptureProvider, root: &Path) -> JsonlResult<Self, E> {
         Ok(Self {
             root_missing: true,
-            observation: inventory_observation(provider, root, true, &[], &[], &[])?,
+            observation: inventory_observation::<E>(provider, root, true, &[], &[], &[])?,
             authorities: Vec::new(),
             leaves: Vec::new(),
             rejected_leaves: Vec::new(),
@@ -1003,28 +1125,28 @@ impl JsonlFamilyInventory {
         })
     }
 
-    pub(crate) fn with_exact_dependencies(
+    pub fn with_exact_dependencies(
         mut self,
-        exact_dependencies: Vec<JsonlFamilyTerminalProof>,
+        exact_dependencies: Vec<JsonlFamilyTerminalProof<E>>,
     ) -> Self {
         self.exact_dependencies = exact_dependencies;
         self
     }
 
-    pub(crate) fn root_missing(&self) -> bool {
+    pub fn root_missing(&self) -> bool {
         self.root_missing
     }
 
-    pub(crate) fn leaves(&self) -> &[JsonlFamilyLeaf] {
+    pub fn leaves(&self) -> &[JsonlFamilyLeaf<E>] {
         &self.leaves
     }
 
-    pub(crate) fn rejected_leaves(&self) -> &[JsonlFamilyRejectedLeaf] {
+    pub fn rejected_leaves(&self) -> &[JsonlFamilyRejectedLeaf] {
         &self.rejected_leaves
     }
 
     #[cfg(test)]
-    fn certify_against(&self, closing: &Self) -> Result<CertifiedSourceInventory> {
+    fn certify_against(&self, closing: &Self) -> JsonlResult<CertifiedSourceInventory, E> {
         self.certify_selected_against(
             closing,
             closing
@@ -1039,9 +1161,9 @@ impl JsonlFamilyInventory {
         &self,
         closing: &Self,
         sources: Vec<SourceKey>,
-    ) -> Result<CertifiedSourceInventory> {
+    ) -> JsonlResult<CertifiedSourceInventory, E> {
         if self.root_missing != closing.root_missing {
-            return Err(CaptureError::InvalidPayload(
+            return Err(E::invalid_payload(
                 "JSONL root availability changed during capture".to_owned(),
             ));
         }
@@ -1054,12 +1176,12 @@ impl JsonlFamilyInventory {
         .map_err(contract_error)
     }
 
-    fn revalidate_root(&self) -> Result<()> {
+    fn revalidate_root(&self) -> JsonlResult<(), E> {
         if self.root_missing {
             return Ok(());
         }
         if self.authorities.is_empty() {
-            return Err(CaptureError::InvalidPayload(
+            return Err(E::invalid_payload(
                 "JSONL inventory has no retained root authority".to_owned(),
             ));
         }
@@ -1069,12 +1191,12 @@ impl JsonlFamilyInventory {
         Ok(())
     }
 
-    fn revalidate_root_same_object(&self) -> Result<()> {
+    fn revalidate_root_same_object(&self) -> JsonlResult<(), E> {
         if self.root_missing {
             return Ok(());
         }
         if self.authorities.is_empty() {
-            return Err(CaptureError::InvalidPayload(
+            return Err(E::invalid_payload(
                 "JSONL inventory has no retained root authority".to_owned(),
             ));
         }
@@ -1084,13 +1206,15 @@ impl JsonlFamilyInventory {
         Ok(())
     }
 
-    fn revalidate_terminal_root(&self, root: &Path, mode: JsonlFamilyInventoryMode) -> Result<()> {
+    fn revalidate_terminal_root(
+        &self,
+        root: &Path,
+        mode: JsonlFamilyInventoryMode,
+    ) -> JsonlResult<(), E> {
         if self.root_missing {
-            return match open_provider_source_path(root) {
-                Err(CaptureError::Io(error)) if error.kind() == std::io::ErrorKind::NotFound => {
-                    Ok(())
-                }
-                Ok(_) => Err(CaptureError::SourceChangedDuringCapture),
+            return match open_provider_source_path::<E>(root) {
+                Err(error) if error.is_not_found() => Ok(()),
+                Ok(_) => Err(E::source_changed()),
                 Err(error) => Err(error),
             };
         }
@@ -1129,29 +1253,29 @@ fn is_false(value: &bool) -> bool {
 impl FamilyCheckpoint {
     const VERSION: u32 = 4;
 
-    fn encode_frontier_key(&self) -> Result<TypedKey> {
+    fn encode_frontier_key<E: JsonlFamilyError>(&self) -> JsonlResult<TypedKey, E> {
         TypedKey::utf8(serde_json::to_string(self)?)
-            .map_err(|error| CaptureError::InvalidPayload(error.to_string()))
+            .map_err(|error| E::invalid_payload(error.to_string()))
     }
 
-    fn decode_frontier_key(key: &TypedKey) -> Result<Self> {
+    fn decode_frontier_key<E: JsonlFamilyError>(key: &TypedKey) -> JsonlResult<Self, E> {
         match key {
             // Bytes was emitted before the compact UTF-8 representation. Both
             // carry the same v4 JSON document and remain readable.
             TypedKey::Bytes(bytes) => Ok(serde_json::from_slice(bytes)?),
             TypedKey::Utf8(json) => Ok(serde_json::from_str(json)?),
-            _ => Err(CaptureError::InvalidPayload(
+            _ => Err(E::invalid_payload(
                 "JSONL base checkpoint is malformed".to_owned(),
             )),
         }
     }
 
-    fn fits_frontier_key(&self) -> Result<bool> {
+    fn fits_frontier_key<E: JsonlFamilyError>(&self) -> JsonlResult<bool, E> {
         let json = serde_json::to_string(self)?;
         let key = match TypedKey::utf8(json) {
             Ok(key) => key,
             Err(ProjectionContractError::FieldTooLarge { .. }) => return Ok(false),
-            Err(error) => return Err(CaptureError::InvalidPayload(error.to_string())),
+            Err(error) => return Err(E::invalid_payload(error.to_string())),
         };
         match SourceFrontier::new(
             FAMILY_FRONTIER_KIND,
@@ -1161,11 +1285,15 @@ impl FamilyCheckpoint {
         ) {
             Ok(_) => Ok(true),
             Err(ProjectionContractError::FieldTooLarge { .. }) => Ok(false),
-            Err(error) => Err(CaptureError::InvalidPayload(error.to_string())),
+            Err(error) => Err(E::invalid_payload(error.to_string())),
         }
     }
 
-    fn valid_for(&self, adapter: &dyn JsonlFamilyAdapter, leaf: &JsonlFamilyLeaf) -> bool {
+    fn valid_for<R: JsonlFamilyRuntime>(
+        &self,
+        adapter: &dyn JsonlFamilyAdapter<Runtime = R>,
+        leaf: &JsonlFamilyLeaf<JsonlRuntimeError<R>>,
+    ) -> bool {
         self.version == Self::VERSION
             && self.provider_parser_revision == adapter.parser_revision()
             && self.event_identity_revision == adapter.event_identity_revision()
@@ -1184,60 +1312,96 @@ impl FamilyCheckpoint {
     }
 }
 
-#[derive(Debug, Clone)]
-struct TerminalSourceEvidence {
+#[derive(Debug)]
+struct TerminalSourceEvidence<E: JsonlFamilyError> {
     certificate: CertifiedSource,
-    terminal_proof: JsonlFamilyTerminalProof,
+    terminal_proof: JsonlFamilyTerminalProof<E>,
     emitted_bytes: u64,
 }
 
-fn default_base_source_path(
-    _adapter: &(impl JsonlFamilyAdapter + ?Sized),
+impl<E: JsonlFamilyError> Clone for TerminalSourceEvidence<E> {
+    fn clone(&self) -> Self {
+        Self {
+            certificate: self.certificate.clone(),
+            terminal_proof: self.terminal_proof.clone(),
+            emitted_bytes: self.emitted_bytes,
+        }
+    }
+}
+
+fn default_base_source_path<R: JsonlFamilyRuntime>(
+    _adapter: &(impl JsonlFamilyAdapter<Runtime = R> + ?Sized),
     certificate: &CertifiedSource,
-) -> Result<PathBuf> {
-    certificate.validate_contract().map_err(contract_error)?;
+) -> JsonlResult<PathBuf, JsonlRuntimeError<R>> {
+    certificate
+        .validate_contract()
+        .map_err(contract_error::<JsonlRuntimeError<R>>)?;
     // Parser revisions govern projection semantics, not source ownership. The
     // family still needs the prior source path so an unchanged source can be
     // selected and replaced under the current parser rather than rejected.
-    let frontier = certificate
-        .frontier()
-        .ok_or_else(|| CaptureError::InvalidPayload("JSONL base frontier is absent".to_owned()))?;
+    let frontier = certificate.frontier().ok_or_else(|| {
+        JsonlRuntimeError::<R>::invalid_payload("JSONL base frontier is absent".to_owned())
+    })?;
     if frontier.checkpoint_kind() != FAMILY_FRONTIER_KIND {
-        return Err(CaptureError::InvalidPayload(
+        return Err(JsonlRuntimeError::<R>::invalid_payload(
             "JSONL base frontier kind changed".to_owned(),
         ));
     }
-    let checkpoint = FamilyCheckpoint::decode_frontier_key(frontier.checkpoint())?;
+    let checkpoint =
+        FamilyCheckpoint::decode_frontier_key::<JsonlRuntimeError<R>>(frontier.checkpoint())?;
     if checkpoint.physical.identity().source_descriptor_digest()
         != &certificate.observation().source().exact_descriptor_digest()
     {
-        return Err(CaptureError::InvalidPayload(
+        return Err(JsonlRuntimeError::<R>::invalid_payload(
             "JSONL base checkpoint source changed".to_owned(),
         ));
     }
     Ok(checkpoint.physical.identity().source_path().clone())
 }
 
-#[derive(Default)]
-struct FamilyResident {
+struct FamilyResident<E: JsonlFamilyError> {
     ownership_initialized: bool,
     owned_sources: HashMap<[u8; 32], SourceKey>,
-    terminal_sources: HashMap<[u8; 32], TerminalSourceEvidence>,
-    absent_sources: Vec<JsonlFamilyAbsentMember>,
-    opening_membership: Option<JsonlFamilyMembershipObservation>,
+    terminal_sources: HashMap<[u8; 32], TerminalSourceEvidence<E>>,
+    absent_sources: Vec<JsonlFamilyAbsentMember<E>>,
+    opening_membership: Option<JsonlFamilyMembershipObservation<E>>,
     certified_inventory: Option<CertifiedSourceInventory>,
-    opening_inventory: Option<JsonlFamilyInventory>,
+    opening_inventory: Option<JsonlFamilyInventory<E>>,
 }
 
-#[derive(Debug, Clone)]
-struct JsonlFamilyAbsentMember {
+impl<E: JsonlFamilyError> Default for FamilyResident<E> {
+    fn default() -> Self {
+        Self {
+            ownership_initialized: false,
+            owned_sources: HashMap::new(),
+            terminal_sources: HashMap::new(),
+            absent_sources: Vec::new(),
+            opening_membership: None,
+            certified_inventory: None,
+            opening_inventory: None,
+        }
+    }
+}
+
+#[derive(Debug)]
+struct JsonlFamilyAbsentMember<E: JsonlFamilyError> {
     source_path: PathBuf,
-    authority: Option<Arc<ProviderSourceRoot>>,
+    authority: Option<Arc<ProviderSourceRoot<E>>>,
     authority_path: PathBuf,
 }
 
-impl JsonlFamilyAbsentMember {
-    fn from_path(opening: &JsonlFamilyInventory, source_path: PathBuf) -> Option<Self> {
+impl<E: JsonlFamilyError> Clone for JsonlFamilyAbsentMember<E> {
+    fn clone(&self) -> Self {
+        Self {
+            source_path: self.source_path.clone(),
+            authority: self.authority.as_ref().map(Arc::clone),
+            authority_path: self.authority_path.clone(),
+        }
+    }
+}
+
+impl<E: JsonlFamilyError> JsonlFamilyAbsentMember<E> {
+    fn from_path(opening: &JsonlFamilyInventory<E>, source_path: PathBuf) -> Option<Self> {
         if opening
             .authorities
             .iter()
@@ -1266,26 +1430,24 @@ impl JsonlFamilyAbsentMember {
         })
     }
 
-    fn remains_absent(&self) -> Result<bool> {
+    fn remains_absent(&self) -> JsonlResult<bool, E> {
         let opened = match &self.authority {
             Some(authority) => authority.open_path(&self.authority_path),
-            None => open_provider_source_path(&self.source_path),
+            None => open_provider_source_path::<E>(&self.source_path),
         };
         match opened {
             Ok(_) => Ok(false),
-            Err(CaptureError::Io(error)) if error.kind() == std::io::ErrorKind::NotFound => {
-                Ok(true)
-            }
+            Err(error) if error.is_not_found() => Ok(true),
             Err(error) => Err(error),
         }
     }
 }
 
-pub(crate) fn jsonl_family_driver(
-    adapter: Arc<dyn JsonlFamilyAdapter>,
+pub fn jsonl_family_driver<R: JsonlFamilyRuntime>(
+    adapter: Arc<dyn JsonlFamilyAdapter<Runtime = R>>,
     root: PathBuf,
-) -> SourceBackedRouteDriver {
-    let resident = Arc::new(Mutex::new(FamilyResident::default()));
+) -> super::JsonlRuntimeDriver<R> {
+    let resident = Arc::new(Mutex::new(FamilyResident::<JsonlRuntimeError<R>>::default()));
     let scan_adapter = Arc::clone(&adapter);
     let scan_root = root.clone();
     let scan_resident = Arc::clone(&resident);
@@ -1296,7 +1458,7 @@ pub(crate) fn jsonl_family_driver(
     let terminal_root = root;
     let inventory_resident = Arc::clone(&resident);
 
-    SourceBackedRouteDriver::new(
+    super::JsonlRuntimeDriver::<R>::new(
         move |sink| capture(&*scan_adapter, &scan_root, &scan_resident, sink),
         move |source| {
             owns_adapter.owns(source)
@@ -1331,11 +1493,11 @@ pub(crate) fn jsonl_family_driver(
     })
 }
 
-fn capture(
-    adapter: &dyn JsonlFamilyAdapter,
+fn capture<R: JsonlFamilyRuntime>(
+    adapter: &dyn JsonlFamilyAdapter<Runtime = R>,
     root: &Path,
-    resident: &Mutex<FamilyResident>,
-    sink: &mut SourceBackedGenerationSink<'_>,
+    resident: &Mutex<FamilyResident<JsonlRuntimeError<R>>>,
+    sink: &mut SourceBackedGenerationSink<'_, R::Lifecycle>,
 ) -> SourceBackedRouteResult<()> {
     reset_terminal(resident)?;
     let opening = adapter
@@ -1412,7 +1574,9 @@ fn capture(
             scan_selected_leaves.push(leaf.clone());
             continue;
         };
-        let Ok(observation) = source_observation(leaf.source(), leaf.observation()) else {
+        let Ok(observation) =
+            source_observation::<JsonlRuntimeError<R>>(leaf.source(), leaf.observation())
+        else {
             scan_selected_leaves.push(leaf.clone());
             continue;
         };
@@ -1428,7 +1592,7 @@ fn capture(
             scan_selected_leaves.push(leaf.clone());
             continue;
         }
-        let terminal_proof = unchanged_terminal_proof(adapter, leaf, base, &checkpoint)
+        let terminal_proof = JsonlFamilyTerminalProof::unchanged(adapter, leaf, base, &checkpoint)
             .map_err(|error| route_scan(adapter, error))?;
         sink.retain_source(base.clone()).map_err(route_internal)?;
         sink.report_completed_bytes(base.counts().certified_bytes)
@@ -1519,64 +1683,6 @@ fn bases_by_descriptor(
         }
     }
     Ok(by_descriptor)
-}
-
-fn route_invalid(error: impl std::fmt::Display) -> SourceBackedRouteError {
-    SourceBackedRouteError::new(SourceBackedRouteErrorKind::InvalidSource, error.to_string())
-}
-
-fn route_discovery(
-    adapter: &dyn JsonlFamilyAdapter,
-    error: CaptureError,
-) -> SourceBackedRouteError {
-    SourceBackedRouteError::new(
-        normalized_jsonl_error_kind(&error).unwrap_or_else(|| adapter.discovery_error_kind(&error)),
-        error.to_string(),
-    )
-}
-
-fn route_scan(adapter: &dyn JsonlFamilyAdapter, error: CaptureError) -> SourceBackedRouteError {
-    let kind = match &error {
-        CaptureError::Io(error) if error.kind() == std::io::ErrorKind::NotFound => {
-            Some(SourceBackedRouteErrorKind::SourceChanged)
-        }
-        CaptureError::SystemIo { source, .. } if source.kind() == std::io::ErrorKind::NotFound => {
-            Some(SourceBackedRouteErrorKind::SourceChanged)
-        }
-        _ => normalized_jsonl_error_kind(&error),
-    }
-    .unwrap_or_else(|| adapter.scan_error_kind(&error));
-    SourceBackedRouteError::new(kind, error.to_string())
-}
-
-fn normalized_jsonl_error_kind(error: &CaptureError) -> Option<SourceBackedRouteErrorKind> {
-    match error {
-        CaptureError::SourceChangedDuringCapture => Some(SourceBackedRouteErrorKind::SourceChanged),
-        CaptureError::InvalidProviderTranscriptPath { reason, .. }
-            if *reason == "provider source changed while its authority handle was retained" =>
-        {
-            Some(SourceBackedRouteErrorKind::SourceChanged)
-        }
-        CaptureError::Io(error) if error.kind() == std::io::ErrorKind::NotFound => None,
-        CaptureError::SystemIo { source, .. } if source.kind() == std::io::ErrorKind::NotFound => {
-            None
-        }
-        CaptureError::Io(_) | CaptureError::SystemIo { .. } => {
-            Some(SourceBackedRouteErrorKind::ResourceUnavailable)
-        }
-        CaptureError::SystemInvariant(_) | CaptureError::WorkerPanicked(_) => {
-            Some(SourceBackedRouteErrorKind::Internal)
-        }
-        _ => None,
-    }
-}
-
-fn route_internal(error: impl std::fmt::Display) -> SourceBackedRouteError {
-    SourceBackedRouteError::new(SourceBackedRouteErrorKind::Internal, error.to_string())
-}
-
-fn contract_error(error: impl std::fmt::Display) -> CaptureError {
-    CaptureError::InvalidPayload(error.to_string())
 }
 
 #[cfg(test)]

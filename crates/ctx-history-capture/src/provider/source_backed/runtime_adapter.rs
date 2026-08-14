@@ -3,8 +3,8 @@ use ctx_history_capture_runtime::{
     CaptureLifecycleRecovery, CaptureLifecycleSink, CapturePublicationContext,
     CapturePublicationDisposition, CaptureRevalidationTarget, CaptureRouteRef,
     CaptureSourceAggregateRef, CoreMaterialization, CorePreparationFailureKind,
-    CorePreparationPort, CorePreparedBatchBuilder, CoreRouteByteLease, CoreRouteResourceKind,
-    ImmutableCaptureSnapshot, PresentCaptureRoute, VerifiedCapture,
+    CorePreparationPort, CoreRouteByteLease, CoreRouteResourceKind, ImmutableCaptureSnapshot,
+    PresentCaptureRoute, VerifiedCapture,
 };
 use ctx_history_core::{
     CertifiedSource, CertifiedSourceAppend, CertifiedSourceDeletion, CertifiedSourceInventory,
@@ -138,7 +138,6 @@ fn index_preparation_failure_kind(failure: &IndexError) -> CorePreparationFailur
 
 pub(crate) type SourceBackedRouteResourceKind = CoreRouteResourceKind;
 pub(crate) type SourceBackedRouteByteReservation = CoreRouteByteLease;
-pub(crate) type CoreRecordEmissionBatchBuilder = CorePreparedBatchBuilder<IndexCorePreparation>;
 
 /// The index owns automatic missing-route grace. Capture supplies the route
 /// observation and terminal callback, while this adapter binds the established

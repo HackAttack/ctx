@@ -92,7 +92,6 @@ use crate::{
 
 mod discovery;
 mod driver;
-mod fallback_identity;
 pub(crate) mod family;
 mod inventory;
 mod publication;
@@ -107,8 +106,8 @@ pub use ctx_history_capture_runtime::{
 pub use discovery::*;
 pub use driver::*;
 #[cfg(test)]
-pub(crate) use fallback_identity::FallbackEventIdentityMode;
-pub(crate) use fallback_identity::FallbackEventIdentityState;
+pub(crate) use family::jsonl::FallbackEventIdentityMode;
+pub(crate) use family::jsonl::FallbackEventIdentityState;
 pub use inventory::*;
 pub use publication::*;
 pub use registration::*;

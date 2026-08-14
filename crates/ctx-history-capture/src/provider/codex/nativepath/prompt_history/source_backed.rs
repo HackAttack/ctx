@@ -103,6 +103,8 @@ impl CodexPromptHistoryJsonlFamilyAdapterV0 {
 }
 
 impl JsonlFamilyAdapter for CodexPromptHistoryJsonlFamilyAdapterV0 {
+    type Runtime = crate::provider::source_backed::family::jsonl::CaptureJsonlRuntime;
+
     fn provider(&self) -> CaptureProvider {
         CaptureProvider::Codex
     }
@@ -153,7 +155,13 @@ impl JsonlFamilyAdapter for CodexPromptHistoryJsonlFamilyAdapterV0 {
         leaf: &JsonlFamilyLeaf,
         _source_file: Arc<OpenedProviderSourceFile>,
         _imported_at: DateTime<Utc>,
-    ) -> crate::Result<Box<dyn JsonlFamilyProjector>> {
+    ) -> crate::Result<
+        Box<
+            dyn JsonlFamilyProjector<
+                Runtime = crate::provider::source_backed::family::jsonl::CaptureJsonlRuntime,
+            >,
+        >,
+    > {
         if !self.source.exact_descriptor_eq(leaf.source()) {
             return Err(CaptureError::SourceChangedDuringCapture);
         }
@@ -176,6 +184,8 @@ impl CodexPromptHistoryProjector {
 }
 
 impl JsonlFamilyProjector for CodexPromptHistoryProjector {
+    type Runtime = crate::provider::source_backed::family::jsonl::CaptureJsonlRuntime;
+
     fn project(
         &mut self,
         record: JsonlRecordRef<'_>,

@@ -5,23 +5,23 @@ use std::{
 
 use sha2::{Digest, Sha256};
 
-use crate::{CaptureError, Result, MAX_PROVIDER_JSONL_LINE_BYTES};
+use super::{JsonlFamilyError, JsonlResult, MAX_PROVIDER_JSONL_LINE_BYTES};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) struct JsonlRecordFraming {
+pub struct JsonlRecordFraming {
     maximum_stored_bytes: usize,
     terminal_nul_padding: bool,
 }
 
 impl JsonlRecordFraming {
-    pub(crate) const fn new(maximum_stored_bytes: usize, terminal_nul_padding: bool) -> Self {
+    pub const fn new(maximum_stored_bytes: usize, terminal_nul_padding: bool) -> Self {
         Self {
             maximum_stored_bytes,
             terminal_nul_padding,
         }
     }
 
-    pub(crate) const fn ordinary() -> Self {
+    pub const fn ordinary() -> Self {
         Self::new(
             // Preserve the ordinary-family contract: a maximum-sized JSON
             // value may be followed by CRLF. The common framer omits LF from
@@ -31,19 +31,19 @@ impl JsonlRecordFraming {
         )
     }
 
-    pub(crate) const fn terminal_nul_padded(maximum_stored_bytes: usize) -> Self {
+    pub const fn terminal_nul_padded(maximum_stored_bytes: usize) -> Self {
         Self::new(maximum_stored_bytes, true)
     }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) struct JsonlBoundedRecordRead {
-    pub(crate) complete: bool,
-    pub(crate) terminal_nul_padding: bool,
-    pub(crate) oversized: bool,
-    pub(crate) stored_len: usize,
-    pub(crate) byte_len: u64,
-    pub(crate) sha256: [u8; 32],
+pub struct JsonlBoundedRecordRead {
+    pub complete: bool,
+    pub terminal_nul_padding: bool,
+    pub oversized: bool,
+    pub stored_len: usize,
+    pub byte_len: u64,
+    pub sha256: [u8; 32],
 }
 
 // Static dispatch gives each caller its exact digest policy without adding a
@@ -191,15 +191,15 @@ impl JsonlRecordDigest for Unhashed {
     }
 }
 
-pub(crate) fn read_bounded_record(
+pub fn read_bounded_record<E: JsonlFamilyError>(
     reader: &mut BufReader<File>,
     storage: &mut Vec<u8>,
     full_hasher: &mut Sha256,
     complete_hasher: &mut Sha256,
     maximum_bytes: u64,
     framing: JsonlRecordFraming,
-    source_changed: fn() -> CaptureError,
-) -> Result<Option<JsonlBoundedRecordRead>> {
+    source_changed: fn() -> E,
+) -> JsonlResult<Option<JsonlBoundedRecordRead>, E> {
     if maximum_bytes == 0 {
         return Ok(None);
     }
@@ -219,14 +219,14 @@ pub(crate) fn read_bounded_record(
     )
 }
 
-pub(crate) fn read_bounded_record_complete_sha256(
+pub(crate) fn read_bounded_record_complete_sha256<E: JsonlFamilyError>(
     reader: &mut BufReader<File>,
     storage: &mut Vec<u8>,
     complete_hasher: &mut Sha256,
     maximum_bytes: u64,
     framing: JsonlRecordFraming,
-    source_changed: fn() -> CaptureError,
-) -> Result<Option<JsonlBoundedRecordRead>> {
+    source_changed: fn() -> E,
+) -> JsonlResult<Option<JsonlBoundedRecordRead>, E> {
     if maximum_bytes == 0 {
         return Ok(None);
     }
@@ -245,15 +245,15 @@ pub(crate) fn read_bounded_record_complete_sha256(
     )
 }
 
-pub(crate) fn read_bounded_record_complete_and_prefix_sha256(
+pub fn read_bounded_record_complete_and_prefix_sha256<E: JsonlFamilyError>(
     reader: &mut BufReader<File>,
     storage: &mut Vec<u8>,
     complete_hasher: &mut Sha256,
     bounded_prefix: (&mut Sha256, &mut u64),
     maximum_bytes: u64,
     framing: JsonlRecordFraming,
-    source_changed: fn() -> CaptureError,
-) -> Result<Option<JsonlBoundedRecordRead>> {
+    source_changed: fn() -> E,
+) -> JsonlResult<Option<JsonlBoundedRecordRead>, E> {
     if maximum_bytes == 0 {
         return Ok(None);
     }
@@ -275,7 +275,7 @@ pub(crate) fn read_bounded_record_complete_and_prefix_sha256(
 }
 
 #[allow(clippy::too_many_arguments)]
-pub(crate) fn read_bounded_record_full_complete_and_prefix_sha256(
+pub fn read_bounded_record_full_complete_and_prefix_sha256<E: JsonlFamilyError>(
     reader: &mut BufReader<File>,
     storage: &mut Vec<u8>,
     full_hasher: &mut Sha256,
@@ -284,8 +284,8 @@ pub(crate) fn read_bounded_record_full_complete_and_prefix_sha256(
     bounded_prefix_remaining: &mut u64,
     maximum_bytes: u64,
     framing: JsonlRecordFraming,
-    source_changed: fn() -> CaptureError,
-) -> Result<Option<JsonlBoundedRecordRead>> {
+    source_changed: fn() -> E,
+) -> JsonlResult<Option<JsonlBoundedRecordRead>, E> {
     if maximum_bytes == 0 {
         return Ok(None);
     }
@@ -307,13 +307,13 @@ pub(crate) fn read_bounded_record_full_complete_and_prefix_sha256(
     )
 }
 
-pub(crate) fn read_bounded_record_unhashed(
+pub fn read_bounded_record_unhashed<E: JsonlFamilyError>(
     reader: &mut BufReader<File>,
     storage: &mut Vec<u8>,
     maximum_bytes: u64,
     framing: JsonlRecordFraming,
-    source_changed: fn() -> CaptureError,
-) -> Result<Option<JsonlBoundedRecordRead>> {
+    source_changed: fn() -> E,
+) -> JsonlResult<Option<JsonlBoundedRecordRead>, E> {
     if maximum_bytes == 0 {
         return Ok(None);
     }
@@ -327,14 +327,14 @@ pub(crate) fn read_bounded_record_unhashed(
     )
 }
 
-fn read_bounded_record_with_digest<D: JsonlRecordDigest>(
+fn read_bounded_record_with_digest<E: JsonlFamilyError, D: JsonlRecordDigest>(
     reader: &mut BufReader<File>,
     storage: &mut Vec<u8>,
     maximum_bytes: u64,
     framing: JsonlRecordFraming,
-    source_changed: fn() -> CaptureError,
+    source_changed: fn() -> E,
     mut digest: D,
-) -> Result<Option<JsonlBoundedRecordRead>> {
+) -> JsonlResult<Option<JsonlBoundedRecordRead>, E> {
     storage.clear();
     let mut byte_len = 0_u64;
     let mut oversized = false;
@@ -369,20 +369,18 @@ fn read_bounded_record_with_digest<D: JsonlRecordDigest>(
 
             let remaining = maximum_bytes.saturating_sub(byte_len);
             let bounded = usize::try_from(remaining.min(available.len() as u64))
-                .map_err(|_| CaptureError::SystemInvariant("JSONL record bound exceeds usize"))?;
+                .map_err(|_| E::system_invariant("JSONL record bound exceeds usize"))?;
             let newline = available[..bounded].iter().position(|byte| *byte == b'\n');
             let consumed = newline.map_or(bounded, |index| index + 1);
             let chunk = &available[..consumed];
             digest.update(chunk);
             all_nul &= chunk.iter().all(|byte| *byte == 0);
-            byte_len =
-                byte_len
-                    .checked_add(u64::try_from(consumed).map_err(|_| {
-                        CaptureError::SystemInvariant("JSONL record chunk exceeds u64")
-                    })?)
-                    .ok_or(CaptureError::SystemInvariant(
-                        "JSONL record length exceeds u64",
-                    ))?;
+            byte_len = byte_len
+                .checked_add(
+                    u64::try_from(consumed)
+                        .map_err(|_| E::system_invariant("JSONL record chunk exceeds u64"))?,
+                )
+                .ok_or_else(|| E::system_invariant("JSONL record length exceeds u64"))?;
 
             let content_len = if newline.is_some() {
                 consumed.saturating_sub(1)
@@ -438,8 +436,8 @@ mod tests {
 
     const TEST_STORED_BYTES: usize = 1024;
 
-    fn source_changed() -> CaptureError {
-        CaptureError::SourceChangedDuringCapture
+    fn source_changed() -> super::super::CaptureError {
+        super::super::CaptureError::SourceChangedDuringCapture
     }
 
     fn assert_digest_policies_match(contents: &[u8], frozen_len: u64) {
@@ -585,7 +583,7 @@ mod tests {
         assert_eq!(unhashed_error.to_string(), hashed_error.to_string());
         assert!(matches!(
             unhashed_error,
-            CaptureError::SourceChangedDuringCapture
+            super::super::CaptureError::SourceChangedDuringCapture
         ));
     }
 }

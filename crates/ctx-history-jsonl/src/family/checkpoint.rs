@@ -2,56 +2,56 @@ use base64::{engine::general_purpose::STANDARD as BASE64_STANDARD, Engine as _};
 use ctx_history_core::TypedKey;
 use serde::{de::DeserializeOwned, Serialize};
 
-use crate::{CaptureError, Result};
+use super::{JsonlFamilyError, JsonlResult};
 
-pub(crate) fn bounded_checkpoint_fits(checkpoint: &impl Serialize, maximum_bytes: usize) -> bool {
+pub fn bounded_checkpoint_fits(checkpoint: &impl Serialize, maximum_bytes: usize) -> bool {
     serde_json::to_vec(checkpoint).is_ok_and(|bytes| bytes.len() <= maximum_bytes)
 }
 
-pub(crate) fn encode_bounded_checkpoint(
+pub fn encode_bounded_checkpoint<E: JsonlFamilyError>(
     prefix: &str,
     checkpoint: &impl Serialize,
     maximum_bytes: usize,
     provider: &str,
-) -> Result<TypedKey> {
+) -> JsonlResult<TypedKey, E> {
     let bytes = serde_json::to_vec(checkpoint)?;
     if bytes.len() > maximum_bytes {
         return Err(too_large(provider));
     }
     TypedKey::utf8(format!("{prefix}{}", BASE64_STANDARD.encode(bytes)))
-        .map_err(|error| CaptureError::InvalidPayload(error.to_string()))
+        .map_err(|error| E::invalid_payload(error.to_string()))
 }
 
-pub(crate) fn decode_bounded_checkpoint<T: DeserializeOwned>(
+pub fn decode_bounded_checkpoint<T: DeserializeOwned, E: JsonlFamilyError>(
     checkpoint: &TypedKey,
     prefix: &str,
     maximum_bytes: usize,
     provider: &str,
-) -> Result<T> {
+) -> JsonlResult<T, E> {
     let TypedKey::Utf8(encoded) = checkpoint else {
-        return Err(CaptureError::InvalidPayload(format!(
+        return Err(E::invalid_payload(format!(
             "{provider} projector checkpoint is not an opaque string"
         )));
     };
     let encoded = encoded.strip_prefix(prefix).ok_or_else(|| {
-        CaptureError::InvalidPayload(format!(
+        E::invalid_payload(format!(
             "{provider} projector checkpoint version is unsupported"
         ))
     })?;
     if encoded.len() > maximum_bytes.div_ceil(3) * 4 {
         return Err(too_large(provider));
     }
-    let bytes = BASE64_STANDARD.decode(encoded).map_err(|_| {
-        CaptureError::InvalidPayload(format!("{provider} projector checkpoint is malformed"))
-    })?;
+    let bytes = BASE64_STANDARD
+        .decode(encoded)
+        .map_err(|_| E::invalid_payload(format!("{provider} projector checkpoint is malformed")))?;
     if bytes.len() > maximum_bytes {
         return Err(too_large(provider));
     }
     Ok(serde_json::from_slice(&bytes)?)
 }
 
-fn too_large(provider: &str) -> CaptureError {
-    CaptureError::InvalidPayload(format!(
+fn too_large<E: JsonlFamilyError>(provider: &str) -> E {
+    E::invalid_payload(format!(
         "{provider} projector checkpoint exceeds its bounded encoding"
     ))
 }

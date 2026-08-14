@@ -1,15 +1,24 @@
 use super::*;
 
-pub(super) fn base_sources_for_root(
-    adapter: &dyn JsonlFamilyAdapter,
-    inventory: &JsonlFamilyInventory,
+pub(super) fn base_sources_for_root<R: JsonlFamilyRuntime>(
+    adapter: &dyn JsonlFamilyAdapter<Runtime = R>,
+    inventory: &JsonlFamilyInventory<JsonlRuntimeError<R>>,
     requested_root: &Path,
-    sink: &SourceBackedGenerationSink<'_>,
+    sink: &SourceBackedGenerationSink<'_, R::Lifecycle>,
 ) -> SourceBackedRouteResult<Vec<CertifiedSource>> {
-    let sources = match adapter.base_scope() {
-        JsonlFamilyBaseScope::ProviderFamily => {
-            source_backed_base_sources(sink, |source| adapter.owns(source))
-        }
+    let sources: Vec<CertifiedSource> = match adapter.base_scope() {
+        JsonlFamilyBaseScope::ProviderFamily => sink
+            .lifecycle
+            .base_snapshot()
+            .map(|snapshot| {
+                snapshot
+                    .sources()
+                    .iter()
+                    .filter(|source| adapter.owns(source.observation().source()))
+                    .cloned()
+                    .collect()
+            })
+            .unwrap_or_default(),
         JsonlFamilyBaseScope::Route => sink
             .base_route_sources()
             .map_err(route_internal)?

@@ -82,11 +82,17 @@ struct MuxBinding {
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct MuxJsonlAdapter;
 
-pub(crate) fn mux_jsonl_adapter() -> Arc<dyn JsonlFamilyAdapter> {
+pub(crate) fn mux_jsonl_adapter() -> Arc<
+    dyn JsonlFamilyAdapter<
+        Runtime = crate::provider::source_backed::family::jsonl::CaptureJsonlRuntime,
+    >,
+> {
     Arc::new(MuxJsonlAdapter)
 }
 
 impl JsonlFamilyAdapter for MuxJsonlAdapter {
+    type Runtime = crate::provider::source_backed::family::jsonl::CaptureJsonlRuntime;
+
     fn provider(&self) -> CaptureProvider {
         CaptureProvider::Mux
     }
@@ -184,7 +190,13 @@ impl JsonlFamilyAdapter for MuxJsonlAdapter {
         leaf: &JsonlFamilyLeaf,
         source_file: Arc<OpenedProviderSourceFile>,
         imported_at: DateTime<Utc>,
-    ) -> Result<Box<dyn JsonlFamilyProjector>> {
+    ) -> Result<
+        Box<
+            dyn JsonlFamilyProjector<
+                Runtime = crate::provider::source_backed::family::jsonl::CaptureJsonlRuntime,
+            >,
+        >,
+    > {
         self.projector_with_provider_checkpoint(
             leaf,
             source_file,
@@ -203,7 +215,13 @@ impl JsonlFamilyAdapter for MuxJsonlAdapter {
         checkpoint: Option<&TypedKey>,
         base_event_lookup: Option<IndexBaseEventLookup>,
         mode: JsonlFamilyProjectionMode,
-    ) -> Result<Box<dyn JsonlFamilyProjector>> {
+    ) -> Result<
+        Box<
+            dyn JsonlFamilyProjector<
+                Runtime = crate::provider::source_backed::family::jsonl::CaptureJsonlRuntime,
+            >,
+        >,
+    > {
         if checkpoint.is_some() {
             return Err(CaptureError::InvalidPayload(
                 "Mux adapter does not accept provider checkpoint state".to_owned(),

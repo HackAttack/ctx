@@ -75,6 +75,14 @@ JSONL_DEPS = [
     "//crates/ctx-history-capture-model:lib",
     "//crates/ctx-history-capture-runtime:lib",
     "//crates/ctx-history-core:lib",
+    "//crates/ctx-history-source-io:lib",
+]
+
+JSONL_TEST_DEPS = [
+    "//crates/ctx-history-capture-model:lib",
+    "//crates/ctx-history-capture-runtime:lib",
+    "//crates/ctx-history-core:lib",
+    "//crates/ctx-history-source-io:test_support_lib",
 ]
 
 rust_library(
@@ -83,9 +91,17 @@ rust_library(
     proc_macro_deps = all_crate_deps(proc_macro = True),
 )
 
+rust_library(
+    name = "test_support_lib",
+    testonly = True,
+    deps = all_crate_deps(normal = True) + JSONL_TEST_DEPS,
+    proc_macro_deps = all_crate_deps(proc_macro = True),
+    rustc_flags = ['--cfg=feature="test-support"'],
+)
+
 ctx_rust_test(
     name = "unit_tests",
-    deps = all_crate_deps(normal = True, normal_dev = True) + JSONL_DEPS,
+    deps = all_crate_deps(normal = True, normal_dev = True) + JSONL_TEST_DEPS,
     proc_macro_deps = all_crate_deps(proc_macro = True, proc_macro_dev = True),
 )
 """
@@ -125,6 +141,15 @@ class BoundaryMutationTests(unittest.TestCase):
         self.jsonl_manifest.write_text(
             JSONL_CARGO
             + '\n[dev-dependencies]\nindex_alias = { package = "ctx-history-index", path = "../ctx-history-index" }\n',
+            encoding="utf-8",
+        )
+        with self.assertRaisesRegex(ValueError, "forbidden Cargo dependencies"):
+            self.validate()
+
+    def test_jsonl_source_sqlite_dependency_is_rejected(self) -> None:
+        self.jsonl_manifest.write_text(
+            JSONL_CARGO
+            + '\n[dev-dependencies]\nctx-history-source-sqlite = { path = "../ctx-history-source-sqlite" }\n',
             encoding="utf-8",
         )
         with self.assertRaisesRegex(ValueError, "forbidden Cargo dependencies"):
@@ -352,6 +377,43 @@ class BoundaryMutationTests(unittest.TestCase):
                 with self.assertRaisesRegex(ValueError, "JSONL_DEPS"):
                     self.validate()
 
+    def test_jsonl_test_support_target_is_enforced(self) -> None:
+        cases = (
+            (
+                "name",
+                'name = "test_support_lib"',
+                'name = "concealed_support"',
+                "test-support rust_library must be named",
+            ),
+            (
+                "testonly",
+                "testonly = True",
+                "testonly = False",
+                "test-support rust_library must be testonly",
+            ),
+            (
+                "feature",
+                '''rustc_flags = ['--cfg=feature="test-support"']''',
+                '''rustc_flags = ['--cfg=feature="concealed"']''',
+                "must enable only the test-support feature",
+            ),
+            (
+                "dependencies",
+                "all_crate_deps(normal = True) + JSONL_TEST_DEPS",
+                'all_crate_deps(normal = True) + ["//crates/ctx-history-index:lib"]',
+                "test-support rust_library deps",
+            ),
+        )
+        for name, allowed, forbidden, error in cases:
+            with self.subTest(name=name):
+                self.jsonl_build.write_text(
+                    JSONL_BUILD.replace(allowed, forbidden, 1),
+                    encoding="utf-8",
+                )
+                with self.assertRaisesRegex(ValueError, error):
+                    self.validate()
+                self.jsonl_build.write_text(JSONL_BUILD, encoding="utf-8")
+
     def test_trusted_symbols_require_canonical_load_sources(self) -> None:
         cases = (
             ("all_crate_deps", "@crates//:defs.bzl"),
@@ -510,8 +572,8 @@ custom_rust_target(
             (
                 self.jsonl_build,
                 JSONL_BUILD,
-                "all_crate_deps(normal = True, normal_dev = True) + JSONL_DEPS",
-                'all_crate_deps(normal = True, normal_dev = True) + JSONL_DEPS + ["//crates/ctx-history-index-format:lib"]',
+                "all_crate_deps(normal = True, normal_dev = True) + JSONL_TEST_DEPS",
+                'all_crate_deps(normal = True, normal_dev = True) + JSONL_TEST_DEPS + ["//crates/ctx-history-index-format:lib"]',
             ),
         )
         for build_path, source, allowed, forbidden in cases:

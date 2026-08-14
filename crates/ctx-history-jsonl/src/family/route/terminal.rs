@@ -7,13 +7,13 @@ use super::super::{
     observe_opened_file, observe_opened_file_allow_append, revalidate_frozen_prefix,
     revalidate_frozen_prefix_sha256, JsonlFileObservation,
 };
+use super::super::{
+    JsonlFamilyError, JsonlFamilyRuntime, JsonlResult, JsonlRuntimeError, OpenedProviderSourceFile,
+    ProviderSourceRoot,
+};
 use super::{
     binding_digest, contract_error, FamilyCheckpoint, JsonlFamilyAdapter, JsonlFamilyAppendMode,
     JsonlFamilyLeaf, FAMILY_POLICY_REVISION,
-};
-use crate::{
-    common::io::{OpenedProviderSourceFile, ProviderSourceRoot},
-    CaptureError, Result,
 };
 
 /// Task-local physical evidence for one optimized or generic JSONL leaf.
@@ -25,7 +25,7 @@ const TERMINAL_CERTIFICATE_BINDING_DOMAIN: &[u8] =
     b"ctx.task-local-jsonl-terminal-certificate-v1\0";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum JsonlFamilyTerminalPrefixHash {
+pub enum JsonlFamilyTerminalPrefixHash {
     Sha256,
     SharedJsonlDomain,
 }
@@ -41,7 +41,8 @@ enum JsonlFamilyTerminalPhysicalBinding {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct JsonlFamilyTerminalLeafBinding {
+#[doc(hidden)]
+pub struct JsonlFamilyTerminalLeafBinding {
     source: SourceKey,
     source_path: PathBuf,
     authority_root_path: PathBuf,
@@ -63,18 +64,20 @@ pub(crate) struct JsonlFamilyTerminalLeafBinding {
 }
 
 impl JsonlFamilyTerminalLeafBinding {
-    fn new(
-        adapter: &dyn JsonlFamilyAdapter,
-        leaf: &JsonlFamilyLeaf,
+    fn new<R: JsonlFamilyRuntime>(
+        adapter: &dyn JsonlFamilyAdapter<Runtime = R>,
+        leaf: &JsonlFamilyLeaf<JsonlRuntimeError<R>>,
         certificate: &CertifiedSource,
         physical: JsonlFamilyTerminalPhysicalBinding,
-    ) -> Result<Self> {
-        certificate.validate_contract().map_err(contract_error)?;
+    ) -> JsonlResult<Self, JsonlRuntimeError<R>> {
+        certificate
+            .validate_contract()
+            .map_err(contract_error::<JsonlRuntimeError<R>>)?;
         leaf.source
             .validate_exact_descriptor(certificate.observation().source())
-            .map_err(contract_error)?;
+            .map_err(contract_error::<JsonlRuntimeError<R>>)?;
         if certificate.parser_revision() != adapter.parser_revision() {
-            return Err(CaptureError::InvalidPayload(
+            return Err(JsonlRuntimeError::<R>::invalid_payload(
                 "JSONL terminal proof parser revision does not match its adapter".to_owned(),
             ));
         }
@@ -85,7 +88,7 @@ impl JsonlFamilyTerminalLeafBinding {
             .frontier()
             .map(|frontier| {
                 let encoded = serde_json::to_vec(frontier.checkpoint())?;
-                Ok::<[u8; 32], CaptureError>(Sha256::digest(encoded).into())
+                Ok::<[u8; 32], JsonlRuntimeError<R>>(Sha256::digest(encoded).into())
             })
             .transpose()?;
         Ok(Self {
@@ -101,7 +104,7 @@ impl JsonlFamilyTerminalLeafBinding {
             event_identity_revision: adapter.event_identity_revision().to_owned(),
             append_mode: adapter.append_mode(),
             family_policy_revision: FAMILY_POLICY_REVISION,
-            certificate_sha256: terminal_certificate_binding(certificate)?,
+            certificate_sha256: terminal_certificate_binding::<JsonlRuntimeError<R>>(certificate)?,
             certified_prefix_end: certificate.counts().certified_bytes,
             certified_prefix_digest: *certificate.content_digest(),
             checkpoint_kind,
@@ -110,17 +113,22 @@ impl JsonlFamilyTerminalLeafBinding {
         })
     }
 
-    fn validate_certificate(&self, certificate: &CertifiedSource) -> Result<()> {
-        certificate.validate_contract().map_err(contract_error)?;
+    fn validate_certificate<E: JsonlFamilyError>(
+        &self,
+        certificate: &CertifiedSource,
+    ) -> JsonlResult<(), E> {
+        certificate
+            .validate_contract()
+            .map_err(contract_error::<E>)?;
         self.source
             .validate_exact_descriptor(certificate.observation().source())
-            .map_err(contract_error)?;
+            .map_err(contract_error::<E>)?;
         if self.parser_revision != certificate.parser_revision()
-            || self.certificate_sha256 != terminal_certificate_binding(certificate)?
+            || self.certificate_sha256 != terminal_certificate_binding::<E>(certificate)?
             || self.certified_prefix_end != certificate.counts().certified_bytes
             || self.certified_prefix_digest != *certificate.content_digest()
         {
-            return Err(CaptureError::InvalidPayload(
+            return Err(E::invalid_payload(
                 "JSONL terminal proof does not match its certified source".to_owned(),
             ));
         }
@@ -128,7 +136,9 @@ impl JsonlFamilyTerminalLeafBinding {
     }
 }
 
-fn terminal_certificate_binding(certificate: &CertifiedSource) -> Result<[u8; 32]> {
+fn terminal_certificate_binding<E: JsonlFamilyError>(
+    certificate: &CertifiedSource,
+) -> JsonlResult<[u8; 32], E> {
     let encoded = serde_json::to_vec(certificate)?;
     let mut digest = Sha256::new();
     digest.update(TERMINAL_CERTIFICATE_BINDING_DOMAIN);
@@ -137,13 +147,13 @@ fn terminal_certificate_binding(certificate: &CertifiedSource) -> Result<[u8; 32
     Ok(digest.finalize().into())
 }
 
-#[derive(Debug, Clone)]
-pub(crate) enum JsonlFamilyTerminalProof {
+#[derive(Debug)]
+pub enum JsonlFamilyTerminalProof<E: JsonlFamilyError> {
     FrozenPrefix {
         binding: Option<JsonlFamilyTerminalLeafBinding>,
         source_path: PathBuf,
         authority_path: PathBuf,
-        authority: Arc<ProviderSourceRoot>,
+        authority: Arc<ProviderSourceRoot<E>>,
         admitted: JsonlFileObservation,
         prefix_length: u64,
         prefix_sha256: [u8; 32],
@@ -153,19 +163,58 @@ pub(crate) enum JsonlFamilyTerminalProof {
         binding: Option<JsonlFamilyTerminalLeafBinding>,
         source_path: PathBuf,
         authority_path: PathBuf,
-        authority: Arc<ProviderSourceRoot>,
+        authority: Arc<ProviderSourceRoot<E>>,
         observation: JsonlFileObservation,
     },
 }
 
-impl JsonlFamilyTerminalProof {
-    pub(crate) fn frozen_prefix(
-        adapter: &dyn JsonlFamilyAdapter,
-        leaf: &JsonlFamilyLeaf,
+impl<E: JsonlFamilyError> Clone for JsonlFamilyTerminalProof<E> {
+    fn clone(&self) -> Self {
+        match self {
+            Self::FrozenPrefix {
+                binding,
+                source_path,
+                authority_path,
+                authority,
+                admitted,
+                prefix_length,
+                prefix_sha256,
+                hash_kind,
+            } => Self::FrozenPrefix {
+                binding: binding.clone(),
+                source_path: source_path.clone(),
+                authority_path: authority_path.clone(),
+                authority: Arc::clone(authority),
+                admitted: admitted.clone(),
+                prefix_length: *prefix_length,
+                prefix_sha256: *prefix_sha256,
+                hash_kind: *hash_kind,
+            },
+            Self::ExactFile {
+                binding,
+                source_path,
+                authority_path,
+                authority,
+                observation,
+            } => Self::ExactFile {
+                binding: binding.clone(),
+                source_path: source_path.clone(),
+                authority_path: authority_path.clone(),
+                authority: Arc::clone(authority),
+                observation: observation.clone(),
+            },
+        }
+    }
+}
+
+impl<E: JsonlFamilyError> JsonlFamilyTerminalProof<E> {
+    pub fn frozen_prefix<R: JsonlFamilyRuntime<Error = E>>(
+        adapter: &dyn JsonlFamilyAdapter<Runtime = R>,
+        leaf: &JsonlFamilyLeaf<E>,
         certificate: &CertifiedSource,
         prefix_length: u64,
         prefix_sha256: [u8; 32],
-    ) -> Result<Self> {
+    ) -> JsonlResult<Self, E> {
         Self::frozen_prefix_with_hash(
             adapter,
             leaf,
@@ -176,13 +225,13 @@ impl JsonlFamilyTerminalProof {
         )
     }
 
-    pub(super) fn frozen_shared_prefix(
-        adapter: &dyn JsonlFamilyAdapter,
-        leaf: &JsonlFamilyLeaf,
+    pub(super) fn frozen_shared_prefix<R: JsonlFamilyRuntime<Error = E>>(
+        adapter: &dyn JsonlFamilyAdapter<Runtime = R>,
+        leaf: &JsonlFamilyLeaf<E>,
         certificate: &CertifiedSource,
         prefix_length: u64,
         prefix_sha256: [u8; 32],
-    ) -> Result<Self> {
+    ) -> JsonlResult<Self, E> {
         Self::frozen_prefix_with_hash(
             adapter,
             leaf,
@@ -193,21 +242,21 @@ impl JsonlFamilyTerminalProof {
         )
     }
 
-    fn frozen_prefix_with_hash(
-        adapter: &dyn JsonlFamilyAdapter,
-        leaf: &JsonlFamilyLeaf,
+    fn frozen_prefix_with_hash<R: JsonlFamilyRuntime<Error = E>>(
+        adapter: &dyn JsonlFamilyAdapter<Runtime = R>,
+        leaf: &JsonlFamilyLeaf<E>,
         certificate: &CertifiedSource,
         prefix_length: u64,
         prefix_sha256: [u8; 32],
         hash_kind: JsonlFamilyTerminalPrefixHash,
-    ) -> Result<Self> {
+    ) -> JsonlResult<Self, E> {
         if prefix_length > leaf.observation.length() {
-            return Err(CaptureError::SourceChangedDuringCapture);
+            return Err(E::source_changed());
         }
         let opened = leaf.authority.open_file(&leaf.authority_path)?;
         let current = observe_opened_file_allow_append(&leaf.source_path, &opened)?;
         if !leaf.observation.admits_frozen_prefix_in(&current) {
-            return Err(CaptureError::SourceChangedDuringCapture);
+            return Err(E::source_changed());
         }
         if current != leaf.observation {
             match hash_kind {
@@ -237,16 +286,16 @@ impl JsonlFamilyTerminalProof {
         )
     }
 
-    fn bind_admitted_frozen_prefix(
-        adapter: &dyn JsonlFamilyAdapter,
-        leaf: &JsonlFamilyLeaf,
+    fn bind_admitted_frozen_prefix<R: JsonlFamilyRuntime<Error = E>>(
+        adapter: &dyn JsonlFamilyAdapter<Runtime = R>,
+        leaf: &JsonlFamilyLeaf<E>,
         certificate: &CertifiedSource,
         prefix_length: u64,
         prefix_sha256: [u8; 32],
         hash_kind: JsonlFamilyTerminalPrefixHash,
-    ) -> Result<Self> {
+    ) -> JsonlResult<Self, E> {
         if prefix_length > leaf.observation.length() {
-            return Err(CaptureError::SourceChangedDuringCapture);
+            return Err(E::source_changed());
         }
         let physical = JsonlFamilyTerminalPhysicalBinding::FrozenPrefix {
             prefix_length,
@@ -266,11 +315,11 @@ impl JsonlFamilyTerminalProof {
         })
     }
 
-    pub(crate) fn exact_file(
-        adapter: &dyn JsonlFamilyAdapter,
-        leaf: &JsonlFamilyLeaf,
+    pub fn exact_file<R: JsonlFamilyRuntime<Error = E>>(
+        adapter: &dyn JsonlFamilyAdapter<Runtime = R>,
+        leaf: &JsonlFamilyLeaf<E>,
         certificate: &CertifiedSource,
-    ) -> Result<Self> {
+    ) -> JsonlResult<Self, E> {
         let mut proof = Self::exact_path(
             leaf.source_path.clone(),
             Arc::clone(&leaf.authority),
@@ -282,12 +331,12 @@ impl JsonlFamilyTerminalProof {
             ..
         } = &mut proof
         else {
-            return Err(CaptureError::SystemInvariant(
+            return Err(E::system_invariant(
                 "exact JSONL proof constructor returned the wrong proof kind",
             ));
         };
         if observation != &leaf.observation {
-            return Err(CaptureError::SourceChangedDuringCapture);
+            return Err(E::source_changed());
         }
         *binding = Some(JsonlFamilyTerminalLeafBinding::new(
             adapter,
@@ -298,11 +347,11 @@ impl JsonlFamilyTerminalProof {
         Ok(proof)
     }
 
-    fn bind_admitted_exact_file(
-        adapter: &dyn JsonlFamilyAdapter,
-        leaf: &JsonlFamilyLeaf,
+    fn bind_admitted_exact_file<R: JsonlFamilyRuntime<Error = E>>(
+        adapter: &dyn JsonlFamilyAdapter<Runtime = R>,
+        leaf: &JsonlFamilyLeaf<E>,
         certificate: &CertifiedSource,
-    ) -> Result<Self> {
+    ) -> JsonlResult<Self, E> {
         let binding = JsonlFamilyTerminalLeafBinding::new(
             adapter,
             leaf,
@@ -318,15 +367,15 @@ impl JsonlFamilyTerminalProof {
         })
     }
 
-    /// Builds the task-local terminal proof for an unchanged certified source
-    /// from its admitted observation. The ordinary terminal revalidation still
-    /// performs the authoritative physical check immediately before publish.
-    pub(super) fn unchanged(
-        adapter: &dyn JsonlFamilyAdapter,
-        leaf: &JsonlFamilyLeaf,
+    /// Builds terminal evidence from a source whose admitted observation and
+    /// persisted checkpoint are unchanged. Physical evidence remains bound
+    /// and is revalidated by the normal terminal publication path.
+    pub(super) fn unchanged<R: JsonlFamilyRuntime<Error = E>>(
+        adapter: &dyn JsonlFamilyAdapter<Runtime = R>,
+        leaf: &JsonlFamilyLeaf<E>,
         certificate: &CertifiedSource,
         checkpoint: &FamilyCheckpoint,
-    ) -> Result<Self> {
+    ) -> JsonlResult<Self, E> {
         if leaf.whole_record || !adapter.append_mode().certified_suffix() {
             return Self::bind_admitted_exact_file(adapter, leaf, certificate);
         }
@@ -354,21 +403,21 @@ impl JsonlFamilyTerminalProof {
         )
     }
 
-    pub(crate) fn exact_path(
+    pub fn exact_path(
         source_path: PathBuf,
-        authority: Arc<ProviderSourceRoot>,
+        authority: Arc<ProviderSourceRoot<E>>,
         authority_path: PathBuf,
-    ) -> Result<Self> {
+    ) -> JsonlResult<Self, E> {
         let opened = authority.open_file(&authority_path)?;
         Self::exact_opened_path(source_path, authority, authority_path, &opened)
     }
 
-    pub(crate) fn exact_opened_path(
+    pub fn exact_opened_path(
         source_path: PathBuf,
-        authority: Arc<ProviderSourceRoot>,
+        authority: Arc<ProviderSourceRoot<E>>,
         authority_path: PathBuf,
-        opened: &OpenedProviderSourceFile,
-    ) -> Result<Self> {
+        opened: &OpenedProviderSourceFile<E>,
+    ) -> JsonlResult<Self, E> {
         let observation = observe_opened_file(&source_path, opened)?;
         opened.revalidate_leaf()?;
         Ok(Self::ExactFile {
@@ -404,12 +453,12 @@ impl JsonlFamilyTerminalProof {
         }
     }
 
-    pub(crate) fn validate_for(
+    pub(crate) fn validate_for<R: JsonlFamilyRuntime<Error = E>>(
         &self,
-        adapter: &dyn JsonlFamilyAdapter,
-        leaf: &JsonlFamilyLeaf,
+        adapter: &dyn JsonlFamilyAdapter<Runtime = R>,
+        leaf: &JsonlFamilyLeaf<E>,
         certificate: &CertifiedSource,
-    ) -> Result<()> {
+    ) -> JsonlResult<(), E> {
         let expected = JsonlFamilyTerminalLeafBinding::new(
             adapter,
             leaf,
@@ -417,31 +466,31 @@ impl JsonlFamilyTerminalProof {
             self.physical_binding(),
         )?;
         if self.binding() != Some(&expected) || !self.route_matches_binding(&expected) {
-            return Err(CaptureError::InvalidPayload(
+            return Err(E::invalid_payload(
                 "JSONL terminal proof is bound to another leaf or certificate".to_owned(),
             ));
         }
         Ok(())
     }
 
-    pub(crate) fn revalidate_for(&self, certificate: &CertifiedSource) -> Result<()> {
+    pub(crate) fn revalidate_for(&self, certificate: &CertifiedSource) -> JsonlResult<(), E> {
         let binding = self.binding().ok_or_else(|| {
-            CaptureError::InvalidPayload(
+            E::invalid_payload(
                 "JSONL leaf terminal proof has no leaf/certificate binding".to_owned(),
             )
         })?;
-        binding.validate_certificate(certificate)?;
+        binding.validate_certificate::<E>(certificate)?;
         if binding.physical != self.physical_binding() || !self.route_matches_binding(binding) {
-            return Err(CaptureError::InvalidPayload(
+            return Err(E::invalid_payload(
                 "JSONL terminal proof binding changed before revalidation".to_owned(),
             ));
         }
         self.revalidate_physical()
     }
 
-    pub(crate) fn revalidate_dependency(&self) -> Result<()> {
+    pub fn revalidate_dependency(&self) -> JsonlResult<(), E> {
         if self.binding().is_some() {
-            return Err(CaptureError::InvalidPayload(
+            return Err(E::invalid_payload(
                 "JSONL leaf proof cannot be reused as an exact dependency".to_owned(),
             ));
         }
@@ -479,7 +528,7 @@ impl JsonlFamilyTerminalProof {
         }
     }
 
-    fn revalidate_physical(&self) -> Result<()> {
+    fn revalidate_physical(&self) -> JsonlResult<(), E> {
         match self {
             Self::FrozenPrefix {
                 binding: _,
@@ -518,7 +567,7 @@ impl JsonlFamilyTerminalProof {
             } => {
                 let opened = authority.open_file(authority_path)?;
                 if observe_opened_file(source_path, &opened)? != *observation {
-                    return Err(CaptureError::SourceChangedDuringCapture);
+                    return Err(E::source_changed());
                 }
                 opened.revalidate_leaf()?;
             }

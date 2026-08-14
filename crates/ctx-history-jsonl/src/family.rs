@@ -7,8 +7,10 @@ use std::{
 
 use sha2::{Digest, Sha256};
 
-use crate::{
-    common::io::OpenedProviderSourceFile, CaptureError, Result, MAX_PROVIDER_JSONL_LINE_BYTES,
+use ctx_history_capture_runtime::{CaptureLifecycleSink, SourceBackedRouteDriver};
+use ctx_history_source_io::{
+    MappedOpenedProviderSourceFile, MappedOpenedProviderSourcePath, MappedProviderSourceDirectory,
+    MappedProviderSourceRoot, SourceIoError, MAX_PROVIDER_JSONL_LINE_BYTES,
 };
 
 mod checkpoint;
@@ -19,10 +21,11 @@ mod revalidation;
 mod route;
 mod single_file;
 
-pub(crate) use checkpoint::{
-    bounded_checkpoint_fits, decode_bounded_checkpoint, encode_bounded_checkpoint,
-};
-pub(crate) use ctx_history_jsonl::{
+#[allow(
+    unused_imports,
+    reason = "shared family modules consume this compatibility prelude"
+)]
+pub(crate) use crate::{
     fit_jsonl_mcp_exchange, jsonl_prefix_digest as prefix_digest, jsonl_terminal_call_id_digest,
     new_jsonl_prefix_hasher as new_prefix_hasher, ordered_pending_exchange_entries,
     remember_pending_exchange, restore_hash_pending_exchange_entries,
@@ -34,32 +37,134 @@ pub(crate) use ctx_history_jsonl::{
     JsonlRecordEvidence, JsonlRecordRef, JsonlScanOutcome, JsonlSourceChange, JsonlSourceIdentity,
     JsonlTerminalAuthority, JsonlTerminalObservationRegion,
 };
+pub use checkpoint::{
+    bounded_checkpoint_fits, decode_bounded_checkpoint, encode_bounded_checkpoint,
+};
+
+pub trait JsonlFamilyError:
+    std::error::Error
+    + From<std::io::Error>
+    + From<serde_json::Error>
+    + From<ctx_history_source_io::SourceIoError>
+    + Send
+    + Sync
+    + 'static
+{
+    fn invalid_payload(detail: String) -> Self;
+    fn system_invariant(detail: &'static str) -> Self;
+    fn worker_panicked(worker: &'static str) -> Self;
+    fn source_changed() -> Self;
+    fn is_not_found(&self) -> bool;
+    fn is_source_changed(&self) -> bool;
+    fn is_resource_unavailable(&self) -> bool;
+    fn is_internal(&self) -> bool;
+    fn is_ignorable_membership_entry(&self) -> bool;
+}
+
+/// Static, provider-neutral configuration for one JSONL family integration.
+///
+/// Concrete storage, repository attribution, and route-control policy remain
+/// in the integrating capture crate. The family monomorphizes over those
+/// ports without error boxing or dynamic lifecycle dispatch.
+pub trait JsonlFamilyRuntime: Send + Sync + 'static {
+    type Error: JsonlFamilyError;
+    type Lifecycle: CaptureLifecycleSink;
+    type WorkerServices: Default + Send;
+    type RouteControl: Clone + Send + Sync + 'static;
+
+    fn begin_worker_leaf(services: &mut Self::WorkerServices);
+}
+
+pub type JsonlRuntimeError<R> = <R as JsonlFamilyRuntime>::Error;
+pub type JsonlRuntimeLookup<R> =
+    <<R as JsonlFamilyRuntime>::Lifecycle as CaptureLifecycleSink>::BaseLookup;
+pub type JsonlRuntimeLifecycleError<R> =
+    <<R as JsonlFamilyRuntime>::Lifecycle as CaptureLifecycleSink>::Error;
+pub type JsonlRuntimeDriver<R> = SourceBackedRouteDriver<
+    <R as JsonlFamilyRuntime>::Lifecycle,
+    <R as JsonlFamilyRuntime>::RouteControl,
+>;
+
+impl JsonlFamilyError for SourceIoError {
+    fn invalid_payload(detail: String) -> Self {
+        Self::InvalidPayload(detail)
+    }
+
+    fn system_invariant(detail: &'static str) -> Self {
+        Self::SystemInvariant(detail)
+    }
+
+    fn worker_panicked(worker: &'static str) -> Self {
+        Self::SystemInvariant(worker)
+    }
+
+    fn source_changed() -> Self {
+        Self::SourceChangedDuringCapture
+    }
+
+    fn is_not_found(&self) -> bool {
+        matches!(self, Self::Io(error) if error.kind() == std::io::ErrorKind::NotFound)
+            || matches!(self, Self::SystemIo { source, .. } if source.kind() == std::io::ErrorKind::NotFound)
+    }
+
+    fn is_source_changed(&self) -> bool {
+        matches!(self, Self::SourceChangedDuringCapture)
+            || matches!(
+                self,
+                Self::InvalidProviderTranscriptPath { reason, .. }
+                    if *reason == "provider source changed while its authority handle was retained"
+            )
+    }
+
+    fn is_resource_unavailable(&self) -> bool {
+        matches!(self, Self::Io(_) | Self::SystemIo { .. }) && !self.is_not_found()
+    }
+
+    fn is_internal(&self) -> bool {
+        matches!(self, Self::SystemInvariant(_))
+    }
+
+    fn is_ignorable_membership_entry(&self) -> bool {
+        ctx_history_source_io::is_symlink_source_rejection(self)
+            || ctx_history_source_io::is_non_regular_source_rejection(self)
+    }
+}
+
+pub type JsonlResult<T, E> = std::result::Result<T, E>;
+pub type OpenedProviderSourceFile<E> = MappedOpenedProviderSourceFile<E>;
+pub type OpenedProviderSourcePath<E> = MappedOpenedProviderSourcePath<E>;
+pub type ProviderSourceDirectory<E> = MappedProviderSourceDirectory<E>;
+pub type ProviderSourceRoot<E> = MappedProviderSourceRoot<E>;
+
+#[cfg(test)]
+type CaptureError = SourceIoError;
+#[cfg(test)]
+type Result<T> = std::result::Result<T, CaptureError>;
 use framing::read_bounded_record_complete_sha256;
-pub(crate) use framing::{
+pub use framing::{
     read_bounded_record, read_bounded_record_complete_and_prefix_sha256,
     read_bounded_record_full_complete_and_prefix_sha256, read_bounded_record_unhashed,
     JsonlRecordFraming,
 };
 use identity::observe_metadata;
-pub(crate) use physical::{
+pub use physical::{
     JsonlPhysicalDigest, JsonlPhysicalRecord, JsonlPhysicalStream, JsonlPhysicalStreamPosition,
 };
 use revalidation::hash_prefix;
-#[cfg(test)]
-pub(crate) use revalidation::{
+pub use revalidation::revalidate_frozen_prefix;
+pub(crate) use revalidation::revalidate_frozen_prefix_sha256;
+#[cfg(any(test, feature = "test-support"))]
+pub use revalidation::{
     jsonl_prefix_hash_bytes, reset_jsonl_prefix_hash_bytes, set_after_final_jsonl_prefix_hash_hook,
     set_after_jsonl_append_observation_route_binding_hook, set_after_jsonl_prefix_hash_hook,
     set_after_jsonl_semantic_preflight_hook, set_after_second_jsonl_prefix_hash_hook,
 };
-pub(crate) use revalidation::{
-    observe_opened_file, observe_opened_file_allow_append, revalidate_frozen_prefix,
-    revalidate_frozen_prefix_sha256,
-};
-#[cfg(test)]
-pub(crate) use route::{
+pub use revalidation::{observe_opened_file, observe_opened_file_allow_append};
+#[cfg(any(test, feature = "test-support"))]
+pub use route::{
     checkpoint_admitted_revision_for_test, set_before_jsonl_terminal_physical_revalidation_hook,
 };
-pub(crate) use route::{
+pub use route::{
     jsonl_family_driver, JsonlFamilyAdapter, JsonlFamilyAppendMode, JsonlFamilyBaseScope,
     JsonlFamilyExecutionIo, JsonlFamilyExecutionPosition, JsonlFamilyInventory,
     JsonlFamilyInventoryMode, JsonlFamilyLeaf, JsonlFamilyMembershipObservation,
@@ -68,12 +173,12 @@ pub(crate) use route::{
     JsonlFamilySemanticExecutor, JsonlFamilySemanticPage, JsonlFamilySemanticPreflight,
     JsonlFamilySemanticSummary, JsonlFamilyTerminalProof, JsonlFamilyWorkerContext,
 };
-pub(crate) use single_file::jsonl_single_file_inventory;
+pub use single_file::jsonl_single_file_inventory;
 const PAGE_MAX_RECORDS: usize = 64;
 const PAGE_MAX_BYTES: usize = 8 * 1024 * 1024;
 
 #[derive(Debug, Clone)]
-pub(crate) struct JsonlProbe {
+pub struct JsonlProbe {
     observation: JsonlFileObservation,
     prefix_hasher: Sha256,
     complete_prefix_end: u64,
@@ -81,21 +186,21 @@ pub(crate) struct JsonlProbe {
 }
 
 impl JsonlProbe {
-    pub(crate) fn next_physical_ordinal(&self) -> u64 {
+    pub fn next_physical_ordinal(&self) -> u64 {
         self.next_physical_ordinal
     }
 
-    pub(crate) fn observation(&self) -> &JsonlFileObservation {
+    pub fn observation(&self) -> &JsonlFileObservation {
         &self.observation
     }
 }
 
-pub(crate) struct JsonlReader {
+pub struct JsonlReader<E: JsonlFamilyError> {
     identity: JsonlSourceIdentity,
     observation: JsonlFileObservation,
-    source_file: Arc<OpenedProviderSourceFile>,
+    source_file: Arc<OpenedProviderSourceFile<E>>,
     reader: Option<BufReader<File>>,
-    physical: Option<JsonlPhysicalStream>,
+    physical: Option<JsonlPhysicalStream<E>>,
     prefix_hasher: Sha256,
     complete_prefix_end: u64,
     next_physical_ordinal: u64,
@@ -128,7 +233,7 @@ struct JsonlReaderFramingOptions<'a> {
     frozen_observation: Option<&'a JsonlFileObservation>,
 }
 
-pub(crate) enum JsonlSemanticPreflightMode {
+pub enum JsonlSemanticPreflightMode {
     AdmittedEof(Option<[u8; 32]>),
     CompletePrefix,
 }
@@ -139,14 +244,14 @@ struct JsonlSemanticPreflightBinding {
     complete_prefix_ends_with_terminal_nul_padding: bool,
 }
 
-impl JsonlReader {
-    #[cfg(test)]
-    pub(crate) fn open(
+impl<E: JsonlFamilyError> JsonlReader<E> {
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn open(
         identity: JsonlSourceIdentity,
-        source_file: Arc<OpenedProviderSourceFile>,
+        source_file: Arc<OpenedProviderSourceFile<E>>,
         previous: Option<&JsonlCheckpoint>,
         probe: Option<JsonlProbe>,
-    ) -> Result<Self> {
+    ) -> JsonlResult<Self, E> {
         Self::open_with_record_framing(
             identity,
             source_file,
@@ -156,13 +261,13 @@ impl JsonlReader {
         )
     }
 
-    pub(crate) fn open_with_record_framing(
+    pub fn open_with_record_framing(
         identity: JsonlSourceIdentity,
-        source_file: Arc<OpenedProviderSourceFile>,
+        source_file: Arc<OpenedProviderSourceFile<E>>,
         previous: Option<&JsonlCheckpoint>,
         probe: Option<JsonlProbe>,
         record_framing: JsonlRecordFraming,
-    ) -> Result<Self> {
+    ) -> JsonlResult<Self, E> {
         Self::open_with_framing(
             identity,
             source_file,
@@ -178,15 +283,15 @@ impl JsonlReader {
         )
     }
 
-    pub(crate) fn open_semantic_with_record_framing(
+    pub fn open_semantic_with_record_framing(
         identity: JsonlSourceIdentity,
-        source_file: Arc<OpenedProviderSourceFile>,
+        source_file: Arc<OpenedProviderSourceFile<E>>,
         previous: Option<&JsonlCheckpoint>,
         mode: JsonlSemanticPreflightMode,
         probe: Option<JsonlProbe>,
         record_framing: JsonlRecordFraming,
         frozen_observation: Option<&JsonlFileObservation>,
-    ) -> Result<Self> {
+    ) -> JsonlResult<Self, E> {
         let (bind_admitted_eof, deferred_append_eof_sha256) = match mode {
             JsonlSemanticPreflightMode::AdmittedEof(previous) => (true, previous.map(Some)),
             JsonlSemanticPreflightMode::CompletePrefix => (false, Some(None)),
@@ -206,11 +311,11 @@ impl JsonlReader {
         )
     }
 
-    pub(crate) fn open_whole_record(
+    pub fn open_whole_record(
         identity: JsonlSourceIdentity,
-        source_file: Arc<OpenedProviderSourceFile>,
+        source_file: Arc<OpenedProviderSourceFile<E>>,
         previous: Option<&JsonlCheckpoint>,
-    ) -> Result<Self> {
+    ) -> JsonlResult<Self, E> {
         Self::open_with_framing(
             identity,
             source_file,
@@ -228,11 +333,11 @@ impl JsonlReader {
 
     fn open_with_framing(
         identity: JsonlSourceIdentity,
-        source_file: Arc<OpenedProviderSourceFile>,
+        source_file: Arc<OpenedProviderSourceFile<E>>,
         previous: Option<&JsonlCheckpoint>,
         probe: Option<JsonlProbe>,
         options: JsonlReaderFramingOptions<'_>,
-    ) -> Result<Self> {
+    ) -> JsonlResult<Self, E> {
         let JsonlReaderFramingOptions {
             record_framing,
             whole_record,
@@ -242,20 +347,20 @@ impl JsonlReader {
         } = options;
         source_file.revalidate_same_object()?;
         let current_metadata = source_file.file().metadata()?;
-        let current_observation = observe_metadata(
+        let current_observation = observe_metadata::<E>(
             identity.source_path(),
             source_file.file(),
             &current_metadata,
         )?;
         let mut file = source_file.reopen_same_object()?;
-        if observe_metadata(identity.source_path(), &file, &file.metadata()?)?
+        if observe_metadata::<E>(identity.source_path(), &file, &file.metadata()?)?
             != current_observation
         {
-            return Err(CaptureError::SourceChangedDuringCapture);
+            return Err(E::source_changed());
         }
         let observation = match frozen_observation {
             Some(frozen) if frozen.admits_frozen_prefix_in(&current_observation) => frozen.clone(),
-            Some(_) => return Err(CaptureError::SourceChangedDuringCapture),
+            Some(_) => return Err(E::source_changed()),
             None => current_observation,
         };
 
@@ -296,7 +401,7 @@ impl JsonlReader {
                         position: None,
                     });
                 } else {
-                    let observed_prefix = hash_prefix(
+                    let observed_prefix = hash_prefix::<E>(
                         &mut file,
                         previous.complete_prefix_end(),
                         new_prefix_hasher(),
@@ -326,7 +431,7 @@ impl JsonlReader {
             if let Some(probe) = probe {
                 if probe.observation != observation {
                     if !probe.observation.admits_frozen_prefix_in(&observation) {
-                        return Err(CaptureError::SourceChangedDuringCapture);
+                        return Err(E::source_changed());
                     }
                     revalidate_frozen_prefix(
                         identity.source_path(),
@@ -348,7 +453,7 @@ impl JsonlReader {
             Some(Sha256::new())
         } else {
             bind_admitted_eof
-                .then(|| hash_prefix(&mut file, complete_prefix_end, Sha256::new()))
+                .then(|| hash_prefix::<E>(&mut file, complete_prefix_end, Sha256::new()))
                 .transpose()?
         };
         file.seek(SeekFrom::Start(complete_prefix_end))?;
@@ -377,7 +482,7 @@ impl JsonlReader {
                         }
                         (None, _) => JsonlPhysicalDigest::complete(prefix_hasher.clone()),
                     },
-                    || CaptureError::SourceChangedDuringCapture,
+                    E::source_changed,
                 )?),
             )
         };
@@ -406,19 +511,19 @@ impl JsonlReader {
         })
     }
 
-    pub(crate) fn set_oversized_record_policy(&mut self, policy: JsonlOversizedRecordPolicy) {
+    pub fn set_oversized_record_policy(&mut self, policy: JsonlOversizedRecordPolicy) {
         self.oversized_record_policy = policy;
     }
 
-    pub(crate) fn source_change(&self) -> JsonlSourceChange {
+    pub fn source_change(&self) -> JsonlSourceChange {
         self.source_change
     }
 
-    pub(crate) fn outcome(&self) -> Option<&JsonlScanOutcome> {
+    pub fn outcome(&self) -> Option<&JsonlScanOutcome> {
         self.outcome.as_ref()
     }
 
-    pub(super) fn next_execution_record(&mut self) -> Result<Option<JsonlPhysicalRecord>> {
+    pub(super) fn next_execution_record(&mut self) -> JsonlResult<Option<JsonlPhysicalRecord>, E> {
         if self.finished {
             return Ok(None);
         }
@@ -427,7 +532,7 @@ impl JsonlReader {
             return Ok(None);
         }
         if self.whole_record {
-            return Err(CaptureError::SystemInvariant(
+            return Err(E::system_invariant(
                 "whole-record JSON input cannot use the semantic executor",
             ));
         }
@@ -435,9 +540,7 @@ impl JsonlReader {
         let record = self
             .physical
             .as_mut()
-            .ok_or(CaptureError::SystemInvariant(
-                "semantic JSONL input lost its physical stream",
-            ))?
+            .ok_or_else(|| E::system_invariant("semantic JSONL input lost its physical stream"))?
             .next_record()?;
         match record {
             None => self.finish(true)?,
@@ -449,11 +552,11 @@ impl JsonlReader {
         Ok(record)
     }
 
-    fn capture_semantic_append_position(&mut self) -> Result<()> {
+    fn capture_semantic_append_position(&mut self) -> JsonlResult<(), E> {
         if let Some(resume) = self.semantic_append_resume.as_mut() {
-            let physical = self.physical.as_ref().ok_or(CaptureError::SystemInvariant(
-                "semantic JSONL append lost its physical stream",
-            ))?;
+            let physical = self.physical.as_ref().ok_or_else(|| {
+                E::system_invariant("semantic JSONL append lost its physical stream")
+            })?;
             let expected_end = resume.previous.complete_prefix_end();
             if resume.position.is_none()
                 && physical.offset() == expected_end
@@ -467,55 +570,48 @@ impl JsonlReader {
         Ok(())
     }
 
-    pub(super) fn execution_record_bytes(&self, record: JsonlPhysicalRecord) -> Result<&[u8]> {
+    pub(super) fn execution_record_bytes(
+        &self,
+        record: JsonlPhysicalRecord,
+    ) -> JsonlResult<&[u8], E> {
         Ok(self
             .physical
             .as_ref()
-            .ok_or(CaptureError::SystemInvariant(
-                "semantic JSONL input lost its physical stream",
-            ))?
+            .ok_or_else(|| E::system_invariant("semantic JSONL input lost its physical stream"))?
             .record_bytes(record))
     }
 
-    pub(super) fn execution_position(&self) -> Result<JsonlPhysicalStreamPosition> {
+    pub(super) fn execution_position(&self) -> JsonlResult<JsonlPhysicalStreamPosition, E> {
         Ok(self
             .physical
             .as_ref()
-            .ok_or(CaptureError::SystemInvariant(
-                "semantic JSONL input lost its physical stream",
-            ))?
+            .ok_or_else(|| E::system_invariant("semantic JSONL input lost its physical stream"))?
             .position())
     }
 
     pub(super) fn restore_execution_position(
         &mut self,
         position: JsonlPhysicalStreamPosition,
-    ) -> Result<()> {
+    ) -> JsonlResult<(), E> {
         self.physical
             .as_mut()
-            .ok_or(CaptureError::SystemInvariant(
-                "semantic JSONL input lost its physical stream",
-            ))?
+            .ok_or_else(|| E::system_invariant("semantic JSONL input lost its physical stream"))?
             .restore(position)
     }
 
-    pub(super) fn execution_offset(&self) -> Result<u64> {
+    pub(super) fn execution_offset(&self) -> JsonlResult<u64, E> {
         Ok(self
             .physical
             .as_ref()
-            .ok_or(CaptureError::SystemInvariant(
-                "semantic JSONL input lost its physical stream",
-            ))?
+            .ok_or_else(|| E::system_invariant("semantic JSONL input lost its physical stream"))?
             .offset())
     }
 
-    pub(super) fn execution_complete_prefix_end(&self) -> Result<u64> {
+    pub(super) fn execution_complete_prefix_end(&self) -> JsonlResult<u64, E> {
         Ok(self
             .physical
             .as_ref()
-            .ok_or(CaptureError::SystemInvariant(
-                "semantic JSONL input lost its physical stream",
-            ))?
+            .ok_or_else(|| E::system_invariant("semantic JSONL input lost its physical stream"))?
             .complete_prefix_end())
     }
 
@@ -525,31 +621,27 @@ impl JsonlReader {
             .map(|resume| resume.previous.complete_prefix_end())
     }
 
-    pub(super) fn release_execution_record_buffer(&mut self) -> Result<()> {
+    pub(super) fn release_execution_record_buffer(&mut self) -> JsonlResult<(), E> {
         self.physical
             .as_mut()
-            .ok_or(CaptureError::SystemInvariant(
-                "semantic JSONL input lost its physical stream",
-            ))?
+            .ok_or_else(|| E::system_invariant("semantic JSONL input lost its physical stream"))?
             .release_record_buffer();
         Ok(())
     }
 
-    pub(super) fn admitted_eof_sha256(&self) -> Result<Option<[u8; 32]>> {
+    pub(super) fn admitted_eof_sha256(&self) -> JsonlResult<Option<[u8; 32]>, E> {
         if !self.bind_admitted_eof {
             return Ok(None);
         }
         let full = self
             .physical
             .as_ref()
-            .ok_or(CaptureError::SystemInvariant(
-                "admitted-EOF JSONL input lost its physical stream",
-            ))?
+            .ok_or_else(|| {
+                E::system_invariant("admitted-EOF JSONL input lost its physical stream")
+            })?
             .digest()
             .full_hasher()
-            .ok_or(CaptureError::SystemInvariant(
-                "admitted-EOF JSONL input lost its full digest",
-            ))?;
+            .ok_or_else(|| E::system_invariant("admitted-EOF JSONL input lost its full digest"))?;
         Ok(Some(full.clone().finalize().into()))
     }
 
@@ -562,7 +654,7 @@ impl JsonlReader {
         initial: JsonlPhysicalStreamPosition,
         resume_append: bool,
         retain_failed_preflight: bool,
-    ) -> Result<bool> {
+    ) -> JsonlResult<bool, E> {
         let binding = self.semantic_pass_binding()?;
         let (restore, ready) = match self.semantic_append_resume.as_ref() {
             Some(resume) => {
@@ -584,28 +676,27 @@ impl JsonlReader {
             None => (initial, true),
         };
         self.semantic_preflight_binding = Some(binding);
-        #[cfg(test)]
+        #[cfg(any(test, feature = "test-support"))]
         revalidation::run_after_jsonl_semantic_preflight_hook(self.identity.source_path());
         self.physical
             .as_mut()
-            .ok_or(CaptureError::SystemInvariant(
-                "semantic JSONL input lost its physical stream",
-            ))?
+            .ok_or_else(|| E::system_invariant("semantic JSONL input lost its physical stream"))?
             .restore(restore)?;
         self.finished = false;
         self.outcome = None;
         Ok(ready)
     }
 
-    fn semantic_pass_binding(&self) -> Result<JsonlSemanticPreflightBinding> {
-        let physical = self.physical.as_ref().ok_or(CaptureError::SystemInvariant(
-            "semantic JSONL input lost its physical stream",
-        ))?;
+    fn semantic_pass_binding(&self) -> JsonlResult<JsonlSemanticPreflightBinding, E> {
+        let physical = self
+            .physical
+            .as_ref()
+            .ok_or_else(|| E::system_invariant("semantic JSONL input lost its physical stream"))?;
         if !self.finished
             || self.outcome.is_none()
             || physical.offset() != self.observation.length()
         {
-            return Err(CaptureError::SystemInvariant(
+            return Err(E::system_invariant(
                 "semantic JSONL pass was sealed before its admitted EOF",
             ));
         }
@@ -616,18 +707,18 @@ impl JsonlReader {
         })
     }
 
-    pub(crate) fn visit_page<E>(
+    pub fn visit_page<V>(
         &mut self,
-        visit: &mut impl FnMut(JsonlRecordRef<'_>) -> std::result::Result<(), E>,
-    ) -> std::result::Result<Option<JsonlPage>, E>
+        visit: &mut impl FnMut(JsonlRecordRef<'_>) -> std::result::Result<(), V>,
+    ) -> std::result::Result<Option<JsonlPage>, V>
     where
-        E: From<CaptureError>,
+        V: From<E>,
     {
         if self.finished {
             return Ok(None);
         }
         if self.skip_scan {
-            self.finish(true).map_err(E::from)?;
+            self.finish(true).map_err(V::from)?;
             return Ok(None);
         }
         if self.whole_record {
@@ -637,22 +728,22 @@ impl JsonlReader {
         let mut records = 0_usize;
         let mut page_bytes = 0_usize;
         while records < PAGE_MAX_RECORDS {
-            self.capture_semantic_append_position().map_err(E::from)?;
+            self.capture_semantic_append_position().map_err(V::from)?;
             let (position, record) = {
                 let physical = self.physical.as_mut().ok_or_else(|| {
-                    E::from(CaptureError::SystemInvariant(
+                    V::from(E::system_invariant(
                         "ordinary JSONL source lost its physical stream",
                     ))
                 })?;
                 let position = physical.position();
-                (position, physical.next_record().map_err(E::from)?)
+                (position, physical.next_record().map_err(V::from)?)
             };
             let Some(record) = record else {
-                self.finish(true).map_err(E::from)?;
+                self.finish(true).map_err(V::from)?;
                 break;
             };
             if !record.complete {
-                self.finish(false).map_err(E::from)?;
+                self.finish(false).map_err(V::from)?;
                 break;
             }
             self.complete_prefix_ends_with_terminal_nul_padding = record.terminal_nul_padding;
@@ -662,7 +753,7 @@ impl JsonlReader {
                     .physical
                     .as_ref()
                     .ok_or_else(|| {
-                        E::from(CaptureError::SystemInvariant(
+                        V::from(E::system_invariant(
                             "ordinary JSONL source lost its physical stream",
                         ))
                     })?
@@ -675,7 +766,7 @@ impl JsonlReader {
             let oversized = record.oversized || stored_record_bytes > MAX_PROVIDER_JSONL_LINE_BYTES;
             if oversized && self.oversized_record_policy != JsonlOversizedRecordPolicy::RejectRecord
             {
-                return Err(E::from(CaptureError::InvalidPayload(format!(
+                return Err(V::from(E::invalid_payload(format!(
                     "{}:{} exceeds the {} byte JSONL record limit",
                     self.identity.source_path().display(),
                     record.physical_ordinal.saturating_add(1),
@@ -687,12 +778,12 @@ impl JsonlReader {
                 self.physical
                     .as_mut()
                     .ok_or_else(|| {
-                        E::from(CaptureError::SystemInvariant(
+                        V::from(E::system_invariant(
                             "ordinary JSONL source lost its physical stream",
                         ))
                     })?
                     .restore(position)
-                    .map_err(E::from)?;
+                    .map_err(V::from)?;
                 break;
             }
 
@@ -706,7 +797,7 @@ impl JsonlReader {
                 .physical
                 .as_ref()
                 .ok_or_else(|| {
-                    E::from(CaptureError::SystemInvariant(
+                    V::from(E::system_invariant(
                         "ordinary JSONL source lost its physical stream",
                     ))
                 })?
@@ -723,29 +814,29 @@ impl JsonlReader {
         Ok(Some(JsonlPage))
     }
 
-    fn visit_whole_record<E>(
+    fn visit_whole_record<V>(
         &mut self,
-        visit: &mut impl FnMut(JsonlRecordRef<'_>) -> std::result::Result<(), E>,
-    ) -> std::result::Result<Option<JsonlPage>, E>
+        visit: &mut impl FnMut(JsonlRecordRef<'_>) -> std::result::Result<(), V>,
+    ) -> std::result::Result<Option<JsonlPage>, V>
     where
-        E: From<CaptureError>,
+        V: From<E>,
     {
         if self.complete_prefix_end != 0 || self.next_physical_ordinal != 0 {
-            return Err(E::from(CaptureError::InvalidPayload(
+            return Err(V::from(E::invalid_payload(
                 "whole-record JSON source has a non-empty scan frontier".to_owned(),
             )));
         }
         if self.observation.length() == 0 {
-            self.finish(true).map_err(E::from)?;
+            self.finish(true).map_err(V::from)?;
             return Ok(None);
         }
         let length = usize::try_from(self.observation.length()).map_err(|_| {
-            E::from(CaptureError::InvalidPayload(
+            V::from(E::invalid_payload(
                 "whole-record JSON source exceeds platform limits".to_owned(),
             ))
         })?;
         if length > MAX_PROVIDER_JSONL_LINE_BYTES {
-            return Err(E::from(CaptureError::InvalidPayload(format!(
+            return Err(V::from(E::invalid_payload(format!(
                 "{} exceeds the {} byte whole-record JSON limit",
                 self.identity.source_path().display(),
                 MAX_PROVIDER_JSONL_LINE_BYTES
@@ -755,13 +846,13 @@ impl JsonlReader {
         self.reader
             .as_mut()
             .ok_or_else(|| {
-                E::from(CaptureError::SystemInvariant(
+                V::from(E::system_invariant(
                     "whole-record JSON source lost its reader",
                 ))
             })?
             .read_exact(&mut self.record_buffer)
-            .map_err(CaptureError::from)
-            .map_err(E::from)?;
+            .map_err(E::from)
+            .map_err(V::from)?;
         self.prefix_hasher.update(&self.record_buffer);
         let evidence = JsonlRecordEvidence::new(
             0,
@@ -772,7 +863,7 @@ impl JsonlReader {
         visit(JsonlRecordRef::new(&self.record_buffer, evidence, false))?;
         self.complete_prefix_end = self.observation.length();
         self.next_physical_ordinal = 1;
-        self.finish(true).map_err(E::from)?;
+        self.finish(true).map_err(V::from)?;
         Ok(Some(JsonlPage))
     }
 
@@ -800,13 +891,13 @@ impl JsonlReader {
         )
     }
 
-    fn finish(&mut self, terminal: bool) -> Result<()> {
+    fn finish(&mut self, terminal: bool) -> JsonlResult<(), E> {
         if let Some(expected) = self.semantic_preflight_binding.as_ref() {
-            let physical = self.physical.as_ref().ok_or(CaptureError::SystemInvariant(
-                "semantic JSONL input lost its physical stream",
-            ))?;
+            let physical = self.physical.as_ref().ok_or_else(|| {
+                E::system_invariant("semantic JSONL input lost its physical stream")
+            })?;
             if physical.terminal() != terminal {
-                return Err(CaptureError::SystemInvariant(
+                return Err(E::system_invariant(
                     "semantic JSONL terminal state disagreed with physical framing",
                 ));
             }
@@ -816,11 +907,11 @@ impl JsonlReader {
                     .complete_prefix_ends_with_terminal_nul_padding,
             };
             if &actual != expected {
-                return Err(CaptureError::SourceChangedDuringCapture);
+                return Err(E::source_changed());
             }
         }
         let checkpoint = self.checkpoint(terminal);
-        let current = observe_metadata(
+        let current = observe_metadata::<E>(
             self.identity.source_path(),
             self.source_file.file(),
             &self.source_file.file().metadata()?,
@@ -838,7 +929,7 @@ impl JsonlReader {
             }
         } else {
             if !self.append_log {
-                return Err(CaptureError::SourceChangedDuringCapture);
+                return Err(E::source_changed());
             }
             revalidate_frozen_prefix(
                 self.identity.source_path(),
@@ -861,72 +952,70 @@ impl JsonlReader {
 /// Cold and replacement scans resume after this record, so the provider parser
 /// sees every physical record at most once. Append and unchanged scans discard
 /// the probe state after binding identity.
-pub(crate) fn probe_first_record<T, E>(
+pub fn probe_first_record<T, E, V>(
     source_path: &Path,
-    source_file: &Arc<OpenedProviderSourceFile>,
-    visit: impl FnOnce(JsonlRecordRef<'_>) -> std::result::Result<T, E>,
-) -> std::result::Result<(T, JsonlProbe), E>
+    source_file: &Arc<OpenedProviderSourceFile<E>>,
+    visit: impl FnOnce(JsonlRecordRef<'_>) -> JsonlResult<T, V>,
+) -> JsonlResult<(T, JsonlProbe), V>
 where
-    E: From<CaptureError>,
+    E: JsonlFamilyError,
+    V: From<E>,
 {
     let mut visit = Some(visit);
     probe_records_until(source_path, source_file, 1, |record| {
         visit.take().ok_or_else(|| {
-            E::from(CaptureError::SystemInvariant(
+            V::from(E::system_invariant(
                 "provider identity probe visited more than one record",
             ))
         })?(record)
         .map(Some)
     })?
     .ok_or_else(|| {
-        E::from(CaptureError::InvalidPayload(
+        V::from(E::invalid_payload(
             "provider identity record is missing or incomplete".to_owned(),
         ))
     })
 }
 
-pub(crate) fn probe_records_until<T, E>(
+pub fn probe_records_until<T, E, V>(
     source_path: &Path,
-    source_file: &Arc<OpenedProviderSourceFile>,
+    source_file: &Arc<OpenedProviderSourceFile<E>>,
     max_records: usize,
-    mut visit: impl FnMut(JsonlRecordRef<'_>) -> std::result::Result<Option<T>, E>,
-) -> std::result::Result<Option<(T, JsonlProbe)>, E>
+    mut visit: impl FnMut(JsonlRecordRef<'_>) -> JsonlResult<Option<T>, V>,
+) -> JsonlResult<Option<(T, JsonlProbe)>, V>
 where
-    E: From<CaptureError>,
+    E: JsonlFamilyError,
+    V: From<E>,
 {
     if max_records == 0 || max_records > PAGE_MAX_RECORDS {
-        return Err(E::from(CaptureError::SystemInvariant(
+        return Err(V::from(E::system_invariant(
             "provider identity probe record bound is invalid",
         )));
     }
-    source_file.revalidate_same_object().map_err(E::from)?;
-    let observation = observe_metadata(
+    source_file.revalidate_same_object().map_err(V::from)?;
+    let observation = observe_metadata::<E>(
         source_path,
         source_file.file(),
-        &source_file
-            .file()
-            .metadata()
-            .map_err(CaptureError::from)
-            .map_err(E::from)?,
+        &source_file.file().metadata().map_err(E::from)?,
     )
-    .map_err(E::from)?;
-    let mut file = source_file.reopen_same_object().map_err(E::from)?;
+    .map_err(V::from)?;
+    let mut file = source_file.reopen_same_object().map_err(V::from)?;
     file.seek(SeekFrom::Start(0))
-        .map_err(CaptureError::from)
-        .map_err(E::from)?;
+        .map_err(E::from)
+        .map_err(V::from)?;
     let mut reader = BufReader::new(file);
     let mut hasher = new_prefix_hasher();
     let mut buffer = Vec::new();
     let mut start = 0_u64;
     for ordinal in 0..max_records {
-        let (end, record_digest, _wire_bytes) = match read_bounded_line(
+        let (end, record_digest, _wire_bytes) = match read_bounded_line::<E>(
             &mut reader,
             &mut buffer,
             &mut hasher,
             observation.length(),
             start,
         )
-        .map_err(E::from)?
+        .map_err(V::from)?
         {
             RawLine::Complete {
                 end,
@@ -935,14 +1024,14 @@ where
             } => (end, record_digest, wire_bytes),
             RawLine::EndOfFile | RawLine::IncompleteTail => break,
             RawLine::Oversized => {
-                return Err(E::from(CaptureError::InvalidPayload(format!(
+                return Err(V::from(E::invalid_payload(format!(
                     "provider identity record exceeds the {} byte JSONL record limit",
                     MAX_PROVIDER_JSONL_LINE_BYTES
                 ))));
             }
         };
         let physical_ordinal = u64::try_from(ordinal).map_err(|_| {
-            E::from(CaptureError::SystemInvariant(
+            V::from(E::system_invariant(
                 "provider identity probe ordinal exceeds u64",
             ))
         })?;
@@ -958,7 +1047,7 @@ where
                 end,
                 prefix_digest(&hasher),
             )
-            .map_err(E::from)?;
+            .map_err(V::from)?;
             return Ok(Some((
                 value,
                 JsonlProbe {
@@ -978,7 +1067,7 @@ where
         start,
         prefix_digest(&hasher),
     )
-    .map_err(E::from)?;
+    .map_err(V::from)?;
     Ok(None)
 }
 
@@ -993,13 +1082,13 @@ enum RawLine {
     },
 }
 
-fn read_bounded_line(
+fn read_bounded_line<E: JsonlFamilyError>(
     reader: &mut BufReader<File>,
     bytes: &mut Vec<u8>,
     hasher: &mut Sha256,
     frozen_length: u64,
     start: u64,
-) -> Result<RawLine> {
+) -> JsonlResult<RawLine, E> {
     bytes.clear();
     if start >= frozen_length {
         return Ok(RawLine::EndOfFile);
@@ -1010,7 +1099,7 @@ fn read_bounded_line(
         hasher,
         frozen_length.saturating_sub(start),
         JsonlRecordFraming::ordinary(),
-        || CaptureError::SourceChangedDuringCapture,
+        E::source_changed,
     )?
     else {
         return Ok(RawLine::EndOfFile);
@@ -1020,9 +1109,7 @@ fn read_bounded_line(
     }
     let end = start
         .checked_add(record.byte_len)
-        .ok_or(CaptureError::SystemInvariant(
-            "JSONL byte offset overflowed",
-        ))?;
+        .ok_or_else(|| E::system_invariant("JSONL byte offset overflowed"))?;
     let wire_bytes = usize::try_from(record.byte_len).unwrap_or(usize::MAX);
     if bytes.last() == Some(&b'\r') {
         bytes.pop();
@@ -1046,9 +1133,9 @@ mod tests {
     };
 
     use super::*;
-    use crate::common::io::open_provider_source_file;
+    use ctx_history_source_io::open_provider_source_file_mapped as open_provider_source_file;
 
-    fn drain(reader: &mut JsonlReader) -> Result<Vec<Vec<u8>>> {
+    fn drain(reader: &mut JsonlReader<CaptureError>) -> Result<Vec<Vec<u8>>> {
         let mut records = Vec::new();
         while reader
             .visit_page(&mut |record| -> Result<()> {
@@ -1070,7 +1157,9 @@ mod tests {
         )
     }
 
-    fn finish_semantic_pass(reader: &mut JsonlReader) -> Result<Vec<JsonlPhysicalRecord>> {
+    fn finish_semantic_pass(
+        reader: &mut JsonlReader<CaptureError>,
+    ) -> Result<Vec<JsonlPhysicalRecord>> {
         let mut records = Vec::new();
         while let Some(record) = reader.next_execution_record()? {
             records.push(record);

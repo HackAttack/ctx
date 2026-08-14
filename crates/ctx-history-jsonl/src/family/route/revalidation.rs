@@ -1,18 +1,18 @@
 use super::*;
 
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 struct BeforeTerminalPhysicalRevalidationHook {
     root: PathBuf,
     hook: Box<dyn FnOnce() + Send>,
 }
 
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 static BEFORE_TERMINAL_PHYSICAL_REVALIDATION_HOOKS: Mutex<
     Vec<BeforeTerminalPhysicalRevalidationHook>,
 > = Mutex::new(Vec::new());
 
-#[cfg(test)]
-pub(crate) fn set_before_jsonl_terminal_physical_revalidation_hook(
+#[cfg(any(test, feature = "test-support"))]
+pub fn set_before_jsonl_terminal_physical_revalidation_hook(
     root: PathBuf,
     hook: impl FnOnce() + Send + 'static,
 ) {
@@ -29,7 +29,7 @@ pub(crate) fn set_before_jsonl_terminal_physical_revalidation_hook(
     });
 }
 
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 fn run_before_jsonl_terminal_physical_revalidation_hook(root: &Path) {
     let hook = {
         let mut hooks = BEFORE_TERMINAL_PHYSICAL_REVALIDATION_HOOKS
@@ -45,7 +45,9 @@ fn run_before_jsonl_terminal_physical_revalidation_hook(root: &Path) {
     }
 }
 
-pub(super) fn reset_terminal(resident: &Mutex<FamilyResident>) -> SourceBackedRouteResult<()> {
+pub(super) fn reset_terminal<E: JsonlFamilyError>(
+    resident: &Mutex<FamilyResident<E>>,
+) -> SourceBackedRouteResult<()> {
     let mut resident = resident
         .lock()
         .map_err(|_| route_internal("JSONL resident catalog lock was poisoned"))?;
@@ -57,8 +59,8 @@ pub(super) fn reset_terminal(resident: &Mutex<FamilyResident>) -> SourceBackedRo
     Ok(())
 }
 
-pub(super) fn revalidate_target(
-    resident: &Mutex<FamilyResident>,
+pub(super) fn revalidate_target<E: JsonlFamilyError>(
+    resident: &Mutex<FamilyResident<E>>,
     target: SourceBackedRevalidationTarget<'_>,
 ) -> bool {
     let Ok(resident) = resident.lock() else {
@@ -86,12 +88,12 @@ pub(super) fn revalidate_target(
     }
 }
 
-pub(super) fn revalidate_complete_inventory(
-    adapter: &dyn JsonlFamilyAdapter,
+pub(super) fn revalidate_complete_inventory<R: JsonlFamilyRuntime>(
+    adapter: &dyn JsonlFamilyAdapter<Runtime = R>,
     root: &Path,
-    resident: &Mutex<FamilyResident>,
+    resident: &Mutex<FamilyResident<JsonlRuntimeError<R>>>,
     expected_inventory: &CertifiedSourceInventory,
-) -> Result<bool> {
+) -> JsonlResult<bool, JsonlRuntimeError<R>> {
     let (
         owned_sources,
         expected_sources,
@@ -101,7 +103,9 @@ pub(super) fn revalidate_complete_inventory(
         opening_inventory,
     ) = {
         let resident = resident.lock().map_err(|_| {
-            CaptureError::InvalidPayload("JSONL resident catalog lock was poisoned".to_owned())
+            JsonlRuntimeError::<R>::invalid_payload(
+                "JSONL resident catalog lock was poisoned".to_owned(),
+            )
         })?;
         (
             resident.owned_sources.clone(),
@@ -137,7 +141,7 @@ pub(super) fn revalidate_complete_inventory(
     // only retained membership routes and their physical proofs; provider
     // discovery, identity probing, parsing, and content cataloging are admission
     // work and are never repeated here.
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     run_before_jsonl_terminal_physical_revalidation_hook(root);
     for evidence in expected_sources.values() {
         evidence
@@ -156,14 +160,14 @@ pub(super) fn revalidate_complete_inventory(
     Ok(true)
 }
 
-pub(super) fn inventory_observation(
+pub(super) fn inventory_observation<E: JsonlFamilyError>(
     provider: CaptureProvider,
     root: &Path,
     missing: bool,
-    authorities: &[Arc<ProviderSourceRoot>],
-    leaves: &[JsonlFamilyLeaf],
+    authorities: &[Arc<ProviderSourceRoot<E>>],
+    leaves: &[JsonlFamilyLeaf<E>],
     rejected_leaves: &[JsonlFamilyRejectedLeaf],
-) -> Result<SourceInventoryObservation> {
+) -> JsonlResult<SourceInventoryObservation, E> {
     let mut digest = Sha256::new();
     digest.update(FAMILY_INVENTORY_DOMAIN);
     digest.update([u8::from(missing)]);
@@ -211,13 +215,16 @@ pub(super) fn inventory_observation(
     SourceInventoryObservation::new(
         provider.as_str(),
         FAMILY_INVENTORY_AUTHORITY,
-        TypedKey::bytes(root.as_os_str().as_encoded_bytes().to_vec()).map_err(contract_error)?,
+        TypedKey::bytes(root.as_os_str().as_encoded_bytes().to_vec())
+            .map_err(contract_error::<E>)?,
         FAMILY_INVENTORY_REVISION,
         digest.finalize().to_vec(),
     )
-    .map_err(contract_error)
+    .map_err(contract_error::<E>)
 }
 
-pub(super) fn binding_digest(leaf: &JsonlFamilyLeaf) -> Result<[u8; 32]> {
+pub(super) fn binding_digest<E: JsonlFamilyError>(
+    leaf: &JsonlFamilyLeaf<E>,
+) -> JsonlResult<[u8; 32], E> {
     Ok(Sha256::digest(serde_json::to_vec(leaf.binding())?).into())
 }

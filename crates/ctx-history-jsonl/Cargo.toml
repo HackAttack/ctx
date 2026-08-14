@@ -9,10 +9,20 @@ homepage.workspace = true
 rust-version.workspace = true
 publish = false
 
+[features]
+test-support = ["ctx-history-source-io/test-support"]
+
 [dependencies]
+base64.workspace = true
+chrono.workspace = true
 ctx-history-capture-model = { path = "../ctx-history-capture-model" }
 ctx-history-capture-runtime = { path = "../ctx-history-capture-runtime" }
 ctx-history-core = { path = "../ctx-history-core" }
+ctx-history-source-io = { path = "../ctx-history-source-io" }
 serde.workspace = true
 serde_json.workspace = true
 sha2.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+uuid.workspace = true

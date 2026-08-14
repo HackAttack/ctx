@@ -1,35 +1,36 @@
 use std::{
+    collections::{BTreeSet, HashMap, HashSet},
     fs::{self, OpenOptions},
     io::Write,
     path::{Path, PathBuf},
-    process::Command,
     sync::{
         atomic::{AtomicBool, AtomicUsize, Ordering},
-        Arc, Mutex,
+        Arc, Mutex, OnceLock,
     },
 };
 
 use super::super::{
     jsonl_prefix_hash_bytes, reset_jsonl_prefix_hash_bytes, set_after_jsonl_prefix_hash_hook,
-    JsonlReader,
+    JsonlReader as RuntimeJsonlReader,
 };
 use super::*;
-use crate::provider::source_backed::{
-    IndexCaptureCommitReceipt, IndexCaptureLifecycle, SourceBackedLogicalSourceFailures,
-    SourceBackedRecordRejections, SourceBackedRouteResources,
-};
-use crate::repository_attribution::AttributionInput;
 use ctx_history_capture_model::AttemptHistoryProgress;
+use ctx_history_capture_model::SourceRouteIdentity;
 use ctx_history_capture_runtime::{
-    CaptureLifecycleOpenOutcome, CaptureLifecycleSink, CaptureRevalidationTarget,
+    BaseEventLookup, CaptureCommitOutcome, CaptureCommitReceipt, CaptureLifecycleOpenOutcome,
+    CaptureLifecycleSink, CapturePublicationContext, CapturePublicationDisposition,
+    CaptureRevalidationTarget, CaptureRouteRef, CaptureSourceAggregateRef, CoreMaterialization,
+    CorePreparationFailureKind, CorePreparationPort, ImmutableCaptureSnapshot, PresentCaptureRoute,
+    SourceBackedGenerationSink as RuntimeSourceBackedGenerationSink,
+    SourceBackedLogicalSourceFailures, SourceBackedRecordRejections,
+    SourceBackedRevalidationTarget, SourceBackedRouteResources, VerifiedCapture,
 };
 use ctx_history_core::{
-    derive_event_id, derive_session_id, CoreRecord, EventIdentityInput, NativeItemKey,
-    NativeSessionKey, SessionIdentityInput, SourceAnchor,
+    derive_event_id, derive_session_id, CertifiedSourceAppend, CertifiedSourceDeletion, CoreRecord,
+    EventIdentityInput, NativeItemKey, NativeSessionKey, ScannedSourceCounts, SessionIdentityInput,
+    SourceAnchor,
 };
-use ctx_history_index::{
-    GenerationWriter, IndexError, SourceRouteIdentity, VerifiedIndex, WriterOptions,
-};
+use ctx_history_source_io::{SourceIoError, MAX_PROVIDER_JSONL_LINE_BYTES};
 
 #[path = "tests/behavior.rs"]
 mod behavior;
@@ -43,44 +44,550 @@ fn test_route_identity() -> SourceRouteIdentity {
     SourceRouteIdentity::from_sha256("00".repeat(32)).unwrap()
 }
 
-fn test_writer_options() -> WriterOptions {
-    WriterOptions {
-        indexer_threads: 1,
-        memory_bytes: 15_000_000,
+fn test_contract_error(error: impl std::fmt::Display) -> CaptureError {
+    CaptureError::InvalidPayload(error.to_string())
+}
+
+type CaptureError = SourceIoError;
+type Result<T> = std::result::Result<T, CaptureError>;
+type OpenedProviderSourceFile = super::super::OpenedProviderSourceFile<CaptureError>;
+type ProviderSourceRoot = super::super::ProviderSourceRoot<CaptureError>;
+type JsonlReader = RuntimeJsonlReader<CaptureError>;
+type JsonlFamilyLeaf = super::JsonlFamilyLeaf<CaptureError>;
+type JsonlFamilyInventory = super::JsonlFamilyInventory<CaptureError>;
+type JsonlFamilyMembershipObservation = super::JsonlFamilyMembershipObservation<CaptureError>;
+type JsonlFamilyTerminalProof = super::JsonlFamilyTerminalProof<CaptureError>;
+type JsonlFamilyOptimizedLeafOutcome = super::JsonlFamilyOptimizedLeafOutcome<CaptureError>;
+type JsonlFamilyWorkerContext = super::JsonlFamilyWorkerContext<TestJsonlRuntime>;
+type JsonlFamilyExecutionIo = super::JsonlFamilyExecutionIo<TestJsonlRuntime>;
+type JsonlFamilyAdapterObject = dyn JsonlFamilyAdapter<Runtime = TestJsonlRuntime>;
+type JsonlFamilyProjectorObject = dyn JsonlFamilyProjector<Runtime = TestJsonlRuntime>;
+type JsonlFamilySemanticExecutorObject =
+    dyn JsonlFamilySemanticExecutor<Runtime = TestJsonlRuntime>;
+type FamilyResident = super::FamilyResident<CaptureError>;
+type TerminalSourceEvidence = super::TerminalSourceEvidence<CaptureError>;
+type JsonlFamilyAbsentMember = super::JsonlFamilyAbsentMember<CaptureError>;
+type IndexBaseEventLookup = TestBaseEventLookup;
+type IndexCaptureLifecycle = TestLifecycle;
+type SourceBackedGenerationSink<'writer> =
+    RuntimeSourceBackedGenerationSink<'writer, TestLifecycle>;
+
+#[derive(Default)]
+struct TestWorkerServices {
+    certified_repositories: HashSet<PathBuf>,
+    full_certification_probes: usize,
+    event_time_entries: usize,
+}
+
+impl TestWorkerServices {
+    fn begin_source(&mut self) {
+        self.event_time_entries = 0;
+    }
+
+    fn attribute(&mut self, repository: &Path) -> bool {
+        if self.certified_repositories.insert(repository.to_path_buf()) {
+            self.full_certification_probes = self.full_certification_probes.saturating_add(1);
+        }
+        self.event_time_entries = self.event_time_entries.saturating_add(1);
+        true
+    }
+
+    fn full_certification_probe_count(&self) -> usize {
+        self.full_certification_probes
+    }
+
+    fn event_time_cache_len(&self) -> usize {
+        self.event_time_entries
+    }
+}
+
+struct TestJsonlRuntime;
+
+impl JsonlFamilyRuntime for TestJsonlRuntime {
+    type Error = CaptureError;
+    type Lifecycle = TestLifecycle;
+    type WorkerServices = TestWorkerServices;
+    type RouteControl = ();
+
+    fn begin_worker_leaf(services: &mut Self::WorkerServices) {
+        services.begin_source();
+    }
+}
+
+#[derive(Clone, Default)]
+struct TestBaseEventLookup {
+    events: HashSet<uuid::Uuid>,
+}
+
+impl BaseEventLookup for TestBaseEventLookup {
+    type Error = CaptureError;
+
+    fn contains(&self, event_id: uuid::Uuid) -> Result<bool> {
+        Ok(self.events.contains(&event_id))
+    }
+}
+
+#[derive(Clone, Default)]
+struct TestPreparation;
+
+struct TestPreparedRecord {
+    record: CoreRecord,
+    encoded_bytes: usize,
+}
+
+impl CorePreparationPort for TestPreparation {
+    type Prepared = TestPreparedRecord;
+    type Draft = CoreRecord;
+    type Failure = CaptureError;
+
+    fn prepare(&self, record: CoreRecord) -> Result<Self::Prepared> {
+        let encoded_bytes = record
+            .encode_stored()
+            .map_err(|error| CaptureError::InvalidPayload(error.to_string()))?
+            .len();
+        Ok(TestPreparedRecord {
+            record,
+            encoded_bytes,
+        })
+    }
+
+    fn prepare_draft(&self, record: CoreRecord) -> Result<Self::Draft> {
+        record
+            .validate_contract()
+            .map_err(|error| CaptureError::InvalidPayload(error.to_string()))?;
+        Ok(record)
+    }
+
+    fn materialize_draft(
+        &self,
+        draft: Self::Draft,
+        maximum_encoded_bytes: usize,
+    ) -> Result<CoreMaterialization<Self::Prepared, Self::Draft>> {
+        let encoded_bytes = draft
+            .encode_stored()
+            .map_err(|error| CaptureError::InvalidPayload(error.to_string()))?
+            .len();
+        if encoded_bytes > maximum_encoded_bytes {
+            return Ok(CoreMaterialization::CapacityExceeded(Box::new(draft)));
+        }
+        Ok(CoreMaterialization::Prepared(TestPreparedRecord {
+            record: draft,
+            encoded_bytes,
+        }))
+    }
+
+    fn prepared_source<'a>(&self, prepared: &'a Self::Prepared) -> &'a SourceKey {
+        &prepared.record.source
+    }
+
+    fn encoded_bytes(&self, prepared: &Self::Prepared) -> usize {
+        prepared.encoded_bytes
+    }
+
+    fn failure_kind(&self, _failure: &Self::Failure) -> CorePreparationFailureKind {
+        CorePreparationFailureKind::InvalidSource
+    }
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+struct TestSnapshot {
+    sources: Vec<CertifiedSource>,
+    route_identity: Option<SourceRouteIdentity>,
+    route_sources: Vec<SourceKey>,
+    records: Vec<CoreRecord>,
+}
+
+impl ImmutableCaptureSnapshot for TestSnapshot {
+    fn sources(&self) -> &[CertifiedSource] {
+        &self.sources
+    }
+
+    fn source_aggregates(&self) -> impl ExactSizeIterator<Item = CaptureSourceAggregateRef<'_>> {
+        std::iter::empty()
+    }
+
+    fn source_routes(&self) -> impl ExactSizeIterator<Item = CaptureRouteRef<'_>> {
+        self.route_identity
+            .as_ref()
+            .map(|identity| CaptureRouteRef::new(identity, &self.route_sources, false))
+            .into_iter()
+    }
+
+    fn source_route(&self, route_identity: &SourceRouteIdentity) -> Option<CaptureRouteRef<'_>> {
+        self.route_identity
+            .as_ref()
+            .filter(|identity| *identity == route_identity)
+            .map(|identity| CaptureRouteRef::new(identity, &self.route_sources, false))
+    }
+}
+
+#[derive(Debug)]
+struct IndexCaptureCommitReceipt {
+    generation_id: String,
+    manifest: TestSnapshot,
+}
+
+impl IndexCaptureCommitReceipt {
+    fn new(receipt: CaptureCommitReceipt<TestSnapshot>) -> Self {
+        let (generation_id, _, _, _, _, manifest) = receipt.into_parts();
+        Self {
+            generation_id,
+            manifest,
+        }
+    }
+
+    fn manifest(&self) -> &TestSnapshot {
+        &self.manifest
+    }
+}
+
+fn test_generations() -> &'static Mutex<HashMap<PathBuf, TestSnapshot>> {
+    static GENERATIONS: OnceLock<Mutex<HashMap<PathBuf, TestSnapshot>>> = OnceLock::new();
+    GENERATIONS.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+struct TestLifecycle {
+    root: PathBuf,
+    base: Option<TestSnapshot>,
+    current_source: Option<SourceKey>,
+    records: Vec<CoreRecord>,
+    certified_sources: Vec<CertifiedSource>,
+}
+
+impl TestLifecycle {
+    fn snapshot(&self) -> TestSnapshot {
+        let mut sources = self.certified_sources.clone();
+        sources.sort_by(|left, right| {
+            left.observation()
+                .source()
+                .cmp(right.observation().source())
+        });
+        TestSnapshot {
+            route_identity: Some(test_route_identity()),
+            route_sources: sources
+                .iter()
+                .map(|source| source.observation().source().clone())
+                .collect(),
+            sources,
+            records: self.records.clone(),
+        }
+    }
+
+    fn base_event_identity_lookup(&self) -> TestBaseEventLookup {
+        self.base_event_lookup()
+    }
+
+    fn commit_receipt(self) -> CaptureCommitReceipt<TestSnapshot> {
+        let root = self.root.clone();
+        let snapshot = self.snapshot();
+        let indexed_documents = snapshot
+            .sources
+            .iter()
+            .map(|source| source.counts().indexed_documents)
+            .sum();
+        let certified_source_bytes = snapshot
+            .sources
+            .iter()
+            .map(|source| source.counts().certified_bytes)
+            .sum();
+        let mut generations = test_generations().lock().unwrap();
+        let next_opstamp = if self.base.as_ref() == Some(&snapshot) {
+            1
+        } else {
+            generations.get(&root).map_or(1, |_| 2)
+        };
+        let generation_id = format!("test-generation-{next_opstamp}");
+        generations.insert(root, snapshot.clone());
+        CaptureCommitReceipt::new(
+            generation_id,
+            next_opstamp,
+            indexed_documents,
+            snapshot.sources.len(),
+            certified_source_bytes,
+            snapshot,
+        )
+    }
+}
+
+impl CaptureLifecycleSink for TestLifecycle {
+    type Error = CaptureError;
+    type OpenOptions = ();
+    type BaseLookup = TestBaseEventLookup;
+    type Preparation = TestPreparation;
+    type PinnedAppendBase = CertifiedSource;
+    type CommittedSnapshot = TestSnapshot;
+    type VerifiedPublication = ();
+    type Snapshot<'a> = TestSnapshot;
+
+    fn invariant_error(detail: &'static str) -> Self::Error {
+        CaptureError::SystemInvariant(detail)
+    }
+
+    fn open(root: &Path, _options: Self::OpenOptions) -> Result<CaptureLifecycleOpenOutcome<Self>> {
+        let base = test_generations().lock().unwrap().get(root).cloned();
+        let records = base
+            .as_ref()
+            .map(|snapshot| snapshot.records.clone())
+            .unwrap_or_default();
+        Ok(CaptureLifecycleOpenOutcome::Ready(Self {
+            root: root.to_path_buf(),
+            base,
+            current_source: None,
+            records,
+            certified_sources: Vec::new(),
+        }))
+    }
+
+    fn base_snapshot(&self) -> Option<Self::Snapshot<'_>> {
+        self.base.clone()
+    }
+
+    fn base_source(&self, source: &SourceKey) -> Option<&CertifiedSource> {
+        self.base
+            .as_ref()?
+            .sources
+            .iter()
+            .find(|candidate| candidate.observation().source().exact_descriptor_eq(source))
+    }
+
+    fn pinned_append_base(
+        &self,
+        _route_identity: &SourceRouteIdentity,
+        source: &SourceKey,
+    ) -> Option<Self::PinnedAppendBase> {
+        self.base_source(source).cloned()
+    }
+
+    fn pinned_append_base_source(base: &Self::PinnedAppendBase) -> &CertifiedSource {
+        base
+    }
+
+    fn base_event_lookup(&self) -> Self::BaseLookup {
+        TestBaseEventLookup {
+            events: self
+                .base
+                .iter()
+                .flat_map(|snapshot| {
+                    snapshot
+                        .records
+                        .iter()
+                        .map(|record| record.event_id.as_uuid())
+                })
+                .collect(),
+        }
+    }
+
+    fn core_preparation(&self) -> Self::Preparation {
+        TestPreparation
+    }
+
+    fn set_route_plan(
+        &mut self,
+        _selected: BTreeSet<SourceRouteIdentity>,
+        _carried_from_base: BTreeSet<SourceRouteIdentity>,
+    ) -> Result<()> {
+        Ok(())
+    }
+
+    fn begin_route_stage(&mut self, _route_identity: SourceRouteIdentity) -> Result<()> {
+        Ok(())
+    }
+
+    fn retain_unstaged_route_members(
+        &mut self,
+        _route_identity: &SourceRouteIdentity,
+    ) -> Result<()> {
+        Ok(())
+    }
+
+    fn route_retains_unstaged_members(&self, _route_identity: &SourceRouteIdentity) -> bool {
+        false
+    }
+
+    fn register_route_revalidation(
+        &mut self,
+        _route_identity: SourceRouteIdentity,
+        _revalidate: impl Fn() -> bool + Send + 'static,
+    ) -> Result<()> {
+        Ok(())
+    }
+
+    fn visit_revalidation_targets<E>(
+        &self,
+        mut visit: impl for<'a> FnMut(CaptureRevalidationTarget<'a>) -> std::result::Result<(), E>,
+    ) -> Result<std::result::Result<(), E>> {
+        for source in &self.certified_sources {
+            if let Err(error) = visit(CaptureRevalidationTarget::Source(source)) {
+                return Ok(Err(error));
+            }
+        }
+        Ok(Ok(()))
+    }
+
+    fn finish_route_stage(&mut self, _route_identity: &SourceRouteIdentity) -> Result<()> {
+        Ok(())
+    }
+
+    fn rollback_route_stage(&mut self, _route_identity: &SourceRouteIdentity) -> Result<()> {
+        self.current_source = None;
+        Ok(())
+    }
+
+    fn authorize_carried_route_retirement(
+        &mut self,
+        _replacement_route: &SourceRouteIdentity,
+        _retired_route: &SourceRouteIdentity,
+    ) -> Result<()> {
+        Ok(())
+    }
+
+    fn retire_carried_route(
+        &mut self,
+        _replacement_route: &SourceRouteIdentity,
+        _retired_route: &SourceRouteIdentity,
+    ) -> Result<Vec<SourceKey>> {
+        Ok(Vec::new())
+    }
+
+    fn begin_source_replace(&mut self, source: SourceKey) -> Result<()> {
+        self.records
+            .retain(|record| !record.source.exact_descriptor_eq(&source));
+        self.current_source = Some(source);
+        Ok(())
+    }
+
+    fn begin_source_append(&mut self, source: SourceKey) -> Result<&CertifiedSource> {
+        self.current_source = Some(source.clone());
+        self.base_source(&source)
+            .ok_or(CaptureError::SystemInvariant("append source has no base"))
+    }
+
+    fn begin_source_append_from_base(
+        &mut self,
+        base: Self::PinnedAppendBase,
+    ) -> Result<&CertifiedSource> {
+        self.begin_source_append(base.observation().source().clone())
+    }
+
+    fn add_prepared(&mut self, prepared: TestPreparedRecord) -> Result<()> {
+        self.records.push(prepared.record);
+        Ok(())
+    }
+
+    fn certify_source(&mut self, certificate: CertifiedSource) -> Result<()> {
+        self.certified_sources.push(certificate);
+        self.current_source = None;
+        Ok(())
+    }
+
+    fn certify_source_append(&mut self, append: CertifiedSourceAppend) -> Result<()> {
+        self.certified_sources.push(append.into_current());
+        self.current_source = None;
+        Ok(())
+    }
+
+    fn retain_source(&mut self, certificate: CertifiedSource) -> Result<()> {
+        self.certified_sources.push(certificate);
+        Ok(())
+    }
+
+    fn certify_complete_inventory(&mut self, _inventory: CertifiedSourceInventory) -> Result<()> {
+        Ok(())
+    }
+
+    fn delete_source(
+        &mut self,
+        deletion: CertifiedSourceDeletion,
+        _inventory: CertifiedSourceInventory,
+    ) -> Result<()> {
+        self.records
+            .retain(|record| !record.source.exact_descriptor_eq(deletion.source()));
+        Ok(())
+    }
+
+    fn carry_failed_route(&mut self, _route_identity: &SourceRouteIdentity) -> Result<bool> {
+        Ok(false)
+    }
+
+    fn observe_missing_route(
+        &mut self,
+        _route_identity: SourceRouteIdentity,
+        _observed_at_unix_ms: u64,
+        _revalidate_missing: impl Fn() -> bool + Send + 'static,
+    ) -> Result<()> {
+        Ok(())
+    }
+
+    fn set_present_routes(
+        &mut self,
+        _routes: impl IntoIterator<Item = PresentCaptureRoute>,
+    ) -> Result<()> {
+        Ok(())
+    }
+
+    fn commit<F, I>(
+        self,
+        _revalidate: F,
+        _revalidate_inventory: I,
+    ) -> Result<CaptureCommitReceipt<TestSnapshot>>
+    where
+        F: FnMut(CaptureRevalidationTarget<'_>) -> bool,
+        I: FnMut(&CertifiedSourceInventory) -> bool,
+    {
+        Ok(self.commit_receipt())
+    }
+
+    fn commit_with_metadata<F, I, M>(
+        self,
+        _revalidate: F,
+        _revalidate_inventory: I,
+        metadata_factory: M,
+    ) -> Result<CaptureCommitOutcome<TestSnapshot, ()>>
+    where
+        F: FnMut(CaptureRevalidationTarget<'_>) -> bool,
+        I: FnMut(&CertifiedSourceInventory) -> bool,
+        M: for<'a> FnOnce(CapturePublicationContext<'a, Self::Snapshot<'a>>) -> Result<Vec<u8>>,
+    {
+        let snapshot = self.snapshot();
+        metadata_factory(CapturePublicationContext::new("test-generation", snapshot))?;
+        Ok(CaptureCommitOutcome::new(
+            self.commit_receipt(),
+            CapturePublicationDisposition::Published,
+            VerifiedCapture::new(()),
+        ))
     }
 }
 
 macro_rules! capture_test_generation {
     ($adapter:expr, $root:expr, $index_root:expr, $workers:expr, $capture:expr) => {{
         let resident = Mutex::new(FamilyResident::default());
-        let mut writer =
-            match IndexCaptureLifecycle::open($index_root, test_writer_options()).unwrap() {
-                CaptureLifecycleOpenOutcome::Ready(lifecycle) => lifecycle,
-                CaptureLifecycleOpenOutcome::RecoveryRequired { .. } => {
-                    panic!("test lifecycle unexpectedly requires recovery")
-                }
-            };
+        let mut writer = match IndexCaptureLifecycle::open($index_root, ()).unwrap() {
+            CaptureLifecycleOpenOutcome::Ready(lifecycle) => lifecycle,
+            CaptureLifecycleOpenOutcome::RecoveryRequired { .. } => {
+                panic!("test lifecycle unexpectedly requires recovery")
+            }
+        };
         let mut owners = HashMap::new();
         let mut complete_inventories = Vec::new();
         let mut logical_source_failures = SourceBackedLogicalSourceFailures::default();
         let mut record_rejections = SourceBackedRecordRejections::default();
         let result = {
-            let mut sink = SourceBackedGenerationSink {
-                core_record_preparer: writer.core_preparation(),
-                lifecycle: &mut writer,
-                owners: &mut owners,
-                complete_inventories: &mut complete_inventories,
-                route_index: 0,
-                route_identity: test_route_identity(),
-                base_route_control: None,
-                resources: SourceBackedRouteResources::production($workers),
-                logical_source_failures: &mut logical_source_failures,
-                record_rejections: &mut record_rejections,
-                applied_removals: &mut Vec::new(),
-                record_progress: None,
-                current_source_progress: None,
-                last_progress_session_id: None,
-            };
+            let mut applied_removals = Vec::new();
+            let mut sink = SourceBackedGenerationSink::new(
+                &mut writer,
+                &mut owners,
+                &mut complete_inventories,
+                &mut applied_removals,
+                0,
+                test_route_identity(),
+                None,
+                SourceBackedRouteResources::production($workers),
+                &mut logical_source_failures,
+                &mut record_rejections,
+                None,
+                None,
+                None,
+            );
             with_family_scanner_workers($workers, || $capture(&resident, &mut sink))
         };
         (writer, resident, result)
@@ -94,6 +601,8 @@ const PROGRESS_TEST_RECORDS: &[u8] =
     b"{\"message\":\"one\"}\n{\"message\":\"two\"}\n{\"tool_call\":\"three\"}\n";
 
 impl JsonlFamilyAdapter for TestAdapter {
+    type Runtime = TestJsonlRuntime;
+
     fn provider(&self) -> CaptureProvider {
         CaptureProvider::Pi
     }
@@ -134,17 +643,18 @@ impl JsonlFamilyAdapter for TestAdapter {
                 1,
                 SourceAnchor::provider_native(
                     "terminal-witness-file",
-                    TypedKey::bytes(name.as_encoded_bytes().to_vec()).map_err(contract_error)?,
+                    TypedKey::bytes(name.as_encoded_bytes().to_vec())
+                        .map_err(test_contract_error)?,
                 )
-                .map_err(contract_error)?,
+                .map_err(test_contract_error)?,
             )
-            .map_err(contract_error)?;
+            .map_err(test_contract_error)?;
             leaves.push(JsonlFamilyLeaf::observe(
                 source,
                 path,
                 Arc::clone(&authority),
                 PathBuf::from(&name),
-                TypedKey::bytes(name.as_encoded_bytes().to_vec()).map_err(contract_error)?,
+                TypedKey::bytes(name.as_encoded_bytes().to_vec()).map_err(test_contract_error)?,
             )?);
         }
         JsonlFamilyInventory::present(self.provider(), root, authority, leaves)
@@ -155,7 +665,7 @@ impl JsonlFamilyAdapter for TestAdapter {
         _leaf: &JsonlFamilyLeaf,
         _source_file: Arc<OpenedProviderSourceFile>,
         _imported_at: DateTime<Utc>,
-    ) -> Result<Box<dyn JsonlFamilyProjector>> {
+    ) -> Result<Box<JsonlFamilyProjectorObject>> {
         Err(CaptureError::SystemInvariant(
             "terminal witness tests never project",
         ))
@@ -171,6 +681,8 @@ macro_rules! impl_standard_jsonl_test_adapter {
         $(, |$framing_adapter:ident| $record_framing:expr)?
     ) => {
         impl JsonlFamilyAdapter for $adapter {
+            type Runtime = TestJsonlRuntime;
+
             fn provider(&self) -> CaptureProvider {
                 CaptureProvider::Pi
             }
@@ -207,7 +719,7 @@ macro_rules! impl_standard_jsonl_test_adapter {
                 leaf: &JsonlFamilyLeaf,
                 source_file: Arc<OpenedProviderSourceFile>,
                 imported_at: DateTime<Utc>,
-            ) -> Result<Box<dyn JsonlFamilyProjector>> {
+            ) -> Result<Box<JsonlFamilyProjectorObject>> {
                 let $this = self;
                 let $leaf = leaf;
                 let $source_file = source_file;
@@ -228,6 +740,8 @@ struct TerminalLeafSwapTestAdapter {
 
 #[cfg(unix)]
 impl JsonlFamilyAdapter for TerminalLeafSwapTestAdapter {
+    type Runtime = TestJsonlRuntime;
+
     fn provider(&self) -> CaptureProvider {
         TestAdapter.provider()
     }
@@ -269,7 +783,7 @@ impl JsonlFamilyAdapter for TerminalLeafSwapTestAdapter {
         _leaf: &JsonlFamilyLeaf,
         _source_file: Arc<OpenedProviderSourceFile>,
         _imported_at: DateTime<Utc>,
-    ) -> Result<Box<dyn JsonlFamilyProjector>> {
+    ) -> Result<Box<JsonlFamilyProjectorObject>> {
         Err(CaptureError::SystemInvariant(
             "terminal leaf swap tests never project",
         ))
@@ -277,7 +791,7 @@ impl JsonlFamilyAdapter for TerminalLeafSwapTestAdapter {
 }
 
 fn expected_state(
-    adapter: &dyn JsonlFamilyAdapter,
+    adapter: &JsonlFamilyAdapterObject,
     root: &Path,
 ) -> (FamilyResident, CertifiedSourceInventory) {
     let observed = adapter.discover(root).unwrap();
@@ -298,8 +812,11 @@ fn expected_state(
                 .is_some()
             {}
             let checkpoint = reader.outcome().unwrap().checkpoint().clone();
-            let observation =
-                leaf::source_observation(leaf.source(), checkpoint.source_observation()).unwrap();
+            let observation = scanner::source_observation::<CaptureError>(
+                leaf.source(),
+                checkpoint.source_observation(),
+            )
+            .unwrap();
             let certificate = CertifiedSource::certify(
                 observation.clone(),
                 observation,
@@ -355,6 +872,8 @@ struct FrozenMultiRootTestAdapter {
 }
 
 impl JsonlFamilyAdapter for FrozenMultiRootTestAdapter {
+    type Runtime = TestJsonlRuntime;
+
     fn provider(&self) -> CaptureProvider {
         CaptureProvider::Pi
     }
@@ -403,17 +922,18 @@ impl JsonlFamilyAdapter for FrozenMultiRootTestAdapter {
                     SourceAnchor::provider_native(
                         "frozen-multi-root-file",
                         TypedKey::bytes(path.as_os_str().as_encoded_bytes().to_vec())
-                            .map_err(contract_error)?,
+                            .map_err(test_contract_error)?,
                     )
-                    .map_err(contract_error)?,
+                    .map_err(test_contract_error)?,
                 )
-                .map_err(contract_error)?;
+                .map_err(test_contract_error)?;
                 leaves.push(JsonlFamilyLeaf::observe(
                     source,
                     path,
                     Arc::clone(&authority),
                     PathBuf::from(&name),
-                    TypedKey::bytes(name.as_encoded_bytes().to_vec()).map_err(contract_error)?,
+                    TypedKey::bytes(name.as_encoded_bytes().to_vec())
+                        .map_err(test_contract_error)?,
                 )?);
             }
             authorities.push(authority);
@@ -427,7 +947,7 @@ impl JsonlFamilyAdapter for FrozenMultiRootTestAdapter {
         _leaf: &JsonlFamilyLeaf,
         _source_file: Arc<OpenedProviderSourceFile>,
         _imported_at: DateTime<Utc>,
-    ) -> Result<Box<dyn JsonlFamilyProjector>> {
+    ) -> Result<Box<JsonlFamilyProjectorObject>> {
         Err(CaptureError::SystemInvariant(
             "frozen inventory tests never project",
         ))
@@ -440,6 +960,8 @@ struct TerminalRootSwapTestAdapter {
 }
 
 impl JsonlFamilyAdapter for TerminalRootSwapTestAdapter {
+    type Runtime = TestJsonlRuntime;
+
     fn provider(&self) -> CaptureProvider {
         CaptureProvider::Pi
     }
@@ -477,7 +999,7 @@ impl JsonlFamilyAdapter for TerminalRootSwapTestAdapter {
         _leaf: &JsonlFamilyLeaf,
         _source_file: Arc<OpenedProviderSourceFile>,
         _imported_at: DateTime<Utc>,
-    ) -> Result<Box<dyn JsonlFamilyProjector>> {
+    ) -> Result<Box<JsonlFamilyProjectorObject>> {
         Err(CaptureError::SystemInvariant(
             "terminal root swap tests never project",
         ))
@@ -499,6 +1021,8 @@ struct ParallelTestAdapter;
 struct ParallelTestProjector;
 
 impl JsonlFamilyProjector for ParallelTestProjector {
+    type Runtime = TestJsonlRuntime;
+
     fn project(
         &mut self,
         _record: JsonlRecordRef<'_>,
@@ -537,6 +1061,8 @@ struct PhasedTestProjector {
 }
 
 impl JsonlFamilyProjector for PhasedTestProjector {
+    type Runtime = TestJsonlRuntime;
+
     fn project(
         &mut self,
         _record: JsonlRecordRef<'_>,
@@ -559,6 +1085,8 @@ impl JsonlFamilyProjector for PhasedTestProjector {
 }
 
 impl JsonlFamilyAdapter for PhasedTestAdapter {
+    type Runtime = TestJsonlRuntime;
+
     fn provider(&self) -> CaptureProvider {
         CaptureProvider::Pi
     }
@@ -602,7 +1130,7 @@ impl JsonlFamilyAdapter for PhasedTestAdapter {
         leaf: &JsonlFamilyLeaf,
         _source_file: Arc<OpenedProviderSourceFile>,
         _imported_at: DateTime<Utc>,
-    ) -> Result<Box<dyn JsonlFamilyProjector>> {
+    ) -> Result<Box<JsonlFamilyProjectorObject>> {
         Ok(Box::new(PhasedTestProjector {
             phase: self.leaf_scan_phase(leaf)?,
             completed_first_phase: Arc::clone(&self.completed_first_phase),
@@ -683,6 +1211,8 @@ fn scheduler_leaf_state(leaf: &JsonlFamilyLeaf) -> Result<SchedulerLeafState> {
 }
 
 impl JsonlFamilyProjector for SchedulerStateTestProjector {
+    type Runtime = TestJsonlRuntime;
+
     fn project(
         &mut self,
         _record: JsonlRecordRef<'_>,
@@ -697,30 +1227,15 @@ impl JsonlFamilyProjector for SchedulerStateTestProjector {
         if let Some(barrier) = &self.parallel_frontier {
             barrier.wait();
         }
-        let full_probes_before = worker
-            .repository_attributor()
-            .full_certification_probe_count();
-        let event_time_entries_before = worker.repository_attributor().event_time_cache_len();
-        if self.attribute_repository {
-            let annotation = worker.repository_attributor().attribute(AttributionInput {
-                activity_at_unix_ms: Some(
-                    1_700_000_000_000_i64
-                        .saturating_add(self.leaf.phase as i64)
-                        .saturating_add(self.leaf.ordinal as i64),
-                ),
-                declared_tool_workdir: Some(self.repository.to_string_lossy().into_owned()),
-                ..AttributionInput::default()
-            });
-            if annotation.repository_bindings.len() != 1 {
-                return Err(CaptureError::InvalidPayload(
-                    "scheduler test repository attribution did not bind".to_owned(),
-                ));
-            }
+        let full_probes_before = worker.services().full_certification_probe_count();
+        let event_time_entries_before = worker.services().event_time_cache_len();
+        if self.attribute_repository && !worker.services().attribute(&self.repository) {
+            return Err(CaptureError::InvalidPayload(
+                "scheduler test repository attribution did not bind".to_owned(),
+            ));
         }
-        let full_probes_after = worker
-            .repository_attributor()
-            .full_certification_probe_count();
-        let event_time_entries_after = worker.repository_attributor().event_time_cache_len();
+        let full_probes_after = worker.services().full_certification_probe_count();
+        let event_time_entries_after = worker.services().event_time_cache_len();
         self.events
             .lock()
             .map_err(|_| CaptureError::SystemInvariant("scheduler test event log was poisoned"))?
@@ -736,6 +1251,8 @@ impl JsonlFamilyProjector for SchedulerStateTestProjector {
 }
 
 impl JsonlFamilyAdapter for SchedulerStateTestAdapter {
+    type Runtime = TestJsonlRuntime;
+
     fn provider(&self) -> CaptureProvider {
         CaptureProvider::Pi
     }
@@ -800,7 +1317,7 @@ impl JsonlFamilyAdapter for SchedulerStateTestAdapter {
         leaf: &JsonlFamilyLeaf,
         _source_file: Arc<OpenedProviderSourceFile>,
         _imported_at: DateTime<Utc>,
-    ) -> Result<Box<dyn JsonlFamilyProjector>> {
+    ) -> Result<Box<JsonlFamilyProjectorObject>> {
         let leaf = scheduler_leaf_state(leaf)?;
         let parallel_frontier = self
             .parallel_frontier
@@ -819,6 +1336,8 @@ impl JsonlFamilyAdapter for SchedulerStateTestAdapter {
 }
 
 impl JsonlFamilyAdapter for UnpartitionedSchedulerStateTestAdapter {
+    type Runtime = TestJsonlRuntime;
+
     fn provider(&self) -> CaptureProvider {
         self.0.provider()
     }
@@ -856,7 +1375,7 @@ impl JsonlFamilyAdapter for UnpartitionedSchedulerStateTestAdapter {
         leaf: &JsonlFamilyLeaf,
         source_file: Arc<OpenedProviderSourceFile>,
         imported_at: DateTime<Utc>,
-    ) -> Result<Box<dyn JsonlFamilyProjector>> {
+    ) -> Result<Box<JsonlFamilyProjectorObject>> {
         self.0.projector(leaf, source_file, imported_at)
     }
 }
@@ -868,6 +1387,8 @@ struct IdentityRevisionTestAdapter {
 }
 
 impl JsonlFamilyAdapter for IdentityRevisionTestAdapter {
+    type Runtime = TestJsonlRuntime;
+
     fn provider(&self) -> CaptureProvider {
         CaptureProvider::Pi
     }
@@ -901,7 +1422,7 @@ impl JsonlFamilyAdapter for IdentityRevisionTestAdapter {
         _leaf: &JsonlFamilyLeaf,
         _source_file: Arc<OpenedProviderSourceFile>,
         _imported_at: DateTime<Utc>,
-    ) -> Result<Box<dyn JsonlFamilyProjector>> {
+    ) -> Result<Box<JsonlFamilyProjectorObject>> {
         Ok(Box::new(ParallelTestProjector))
     }
 
@@ -913,7 +1434,7 @@ impl JsonlFamilyAdapter for IdentityRevisionTestAdapter {
         checkpoint: Option<&TypedKey>,
         base_event_lookup: Option<IndexBaseEventLookup>,
         mode: JsonlFamilyProjectionMode,
-    ) -> Result<Box<dyn JsonlFamilyProjector>> {
+    ) -> Result<Box<JsonlFamilyProjectorObject>> {
         if checkpoint.is_some()
             || mode != self.expected_mode
             || base_event_lookup.is_some() != (mode != JsonlFamilyProjectionMode::Cold)
@@ -954,6 +1475,8 @@ struct SemanticLifecycleTestExecutor {
 }
 
 impl JsonlFamilySemanticExecutor for SemanticLifecycleTestExecutor {
+    type Runtime = TestJsonlRuntime;
+
     fn preflight(
         &mut self,
         input: &mut JsonlFamilyExecutionIo,
@@ -1009,6 +1532,8 @@ impl JsonlFamilySemanticExecutor for SemanticLifecycleTestExecutor {
 }
 
 impl JsonlFamilyAdapter for SemanticLifecycleTestAdapter {
+    type Runtime = TestJsonlRuntime;
+
     fn provider(&self) -> CaptureProvider {
         CaptureProvider::Pi
     }
@@ -1042,7 +1567,7 @@ impl JsonlFamilyAdapter for SemanticLifecycleTestAdapter {
         _leaf: &JsonlFamilyLeaf,
         _source_file: Arc<OpenedProviderSourceFile>,
         _imported_at: DateTime<Utc>,
-    ) -> Result<Box<dyn JsonlFamilyProjector>> {
+    ) -> Result<Box<JsonlFamilyProjectorObject>> {
         Err(CaptureError::SystemInvariant(
             "semantic lifecycle tests require the semantic executor",
         ))
@@ -1054,7 +1579,7 @@ impl JsonlFamilyAdapter for SemanticLifecycleTestAdapter {
         _checkpoint: Option<&TypedKey>,
         _base_event_lookup: Option<IndexBaseEventLookup>,
         mode: JsonlFamilyProjectionMode,
-    ) -> Result<Option<Box<dyn JsonlFamilySemanticExecutor>>> {
+    ) -> Result<Option<Box<JsonlFamilySemanticExecutorObject>>> {
         self.observations
             .lock()
             .unwrap()
@@ -1106,17 +1631,17 @@ fn emission_test_typed_record(
 ) -> Result<CoreRecord> {
     let session_key = NativeSessionKey::native_id(
         "session",
-        TypedKey::utf8("session").map_err(contract_error)?,
+        TypedKey::utf8("session").map_err(test_contract_error)?,
     )
-    .map_err(contract_error)?;
+    .map_err(test_contract_error)?;
     let session_id = derive_session_id(SessionIdentityInput {
         source,
         logical_session_kind: "session",
         native_session_key: &session_key,
     })
-    .map_err(contract_error)?;
-    let native_item_key =
-        NativeItemKey::native_id(event_type, TypedKey::U64(ordinal)).map_err(contract_error)?;
+    .map_err(test_contract_error)?;
+    let native_item_key = NativeItemKey::native_id(event_type, TypedKey::U64(ordinal))
+        .map_err(test_contract_error)?;
     let event_id = derive_event_id(EventIdentityInput {
         source,
         session_id,
@@ -1124,7 +1649,7 @@ fn emission_test_typed_record(
         native_item_key: &native_item_key,
         subrecord_selector: None,
     })
-    .map_err(contract_error)?;
+    .map_err(test_contract_error)?;
     let mut projected = CoreRecord::new_selected(
         event_id,
         session_id,
@@ -1137,7 +1662,7 @@ fn emission_test_typed_record(
         "jsonl-emission-test-v1",
         "bounded",
     )
-    .map_err(contract_error)?;
+    .map_err(test_contract_error)?;
     projected.provider_session_id = Some("session".to_owned());
     projected.native_event_id = Some(TypedKey::U64(ordinal));
     projected.occurred_at_unix_ms = Some(ordinal as i64);
@@ -1146,6 +1671,8 @@ fn emission_test_typed_record(
 }
 
 impl JsonlFamilyProjector for EmissionTestProjector {
+    type Runtime = TestJsonlRuntime;
+
     fn project(
         &mut self,
         record: JsonlRecordRef<'_>,
@@ -1222,6 +1749,8 @@ struct FramingPolicyTestProjector {
 }
 
 impl JsonlFamilyProjector for FramingPolicyTestProjector {
+    type Runtime = TestJsonlRuntime;
+
     fn project(
         &mut self,
         record: JsonlRecordRef<'_>,
@@ -1257,6 +1786,8 @@ struct OptimizedLeafTestAdapter {
 }
 
 impl JsonlFamilyAdapter for OptimizedLeafTestAdapter {
+    type Runtime = TestJsonlRuntime;
+
     fn provider(&self) -> CaptureProvider {
         CaptureProvider::Pi
     }
@@ -1286,7 +1817,7 @@ impl JsonlFamilyAdapter for OptimizedLeafTestAdapter {
         _leaf: &JsonlFamilyLeaf,
         _source_file: Arc<OpenedProviderSourceFile>,
         _imported_at: DateTime<Utc>,
-    ) -> Result<Box<dyn JsonlFamilyProjector>> {
+    ) -> Result<Box<JsonlFamilyProjectorObject>> {
         Err(CaptureError::SystemInvariant(
             "optimized leaf test must not construct the generic projector",
         ))
@@ -1310,11 +1841,11 @@ impl JsonlFamilyAdapter for OptimizedLeafTestAdapter {
                 1,
                 SourceAnchor::provider_native(
                     "wrong-optimized-source",
-                    TypedKey::utf8("wrong").map_err(contract_error)?,
+                    TypedKey::utf8("wrong").map_err(test_contract_error)?,
                 )
-                .map_err(contract_error)?,
+                .map_err(test_contract_error)?,
             )
-            .map_err(contract_error)?;
+            .map_err(test_contract_error)?;
             vec![emission_test_record(&wrong_source, 0)?]
         } else if self.emit_progress_records {
             vec![
@@ -1338,7 +1869,8 @@ impl JsonlFamilyAdapter for OptimizedLeafTestAdapter {
             0
         };
         emit_page(JsonlFamilyPublication::Replace, completed_bytes, records)?;
-        let observation = leaf::source_observation(leaf.source(), leaf.observation())?;
+        let observation =
+            scanner::source_observation::<CaptureError>(leaf.source(), leaf.observation())?;
         let certificate = CertifiedSource::certify(
             observation.clone(),
             observation,
@@ -1353,7 +1885,7 @@ impl JsonlFamilyAdapter for OptimizedLeafTestAdapter {
                 certified_bytes: source_bytes.len() as u64,
             },
         )
-        .map_err(contract_error)?;
+        .map_err(test_contract_error)?;
         let terminal_proof = JsonlFamilyTerminalProof::exact_file(self, leaf, &certificate)?;
         Ok(Some(JsonlFamilyOptimizedLeafOutcome::replacement(
             certificate,
@@ -1368,6 +1900,8 @@ struct CheckpointTestProjector {
 }
 
 impl JsonlFamilyProjector for CheckpointTestProjector {
+    type Runtime = TestJsonlRuntime;
+
     fn project(
         &mut self,
         record: JsonlRecordRef<'_>,
@@ -1394,6 +1928,8 @@ impl JsonlFamilyProjector for CheckpointTestProjector {
 }
 
 impl JsonlFamilyAdapter for CheckpointTestAdapter {
+    type Runtime = TestJsonlRuntime;
+
     fn provider(&self) -> CaptureProvider {
         CaptureProvider::Pi
     }
@@ -1423,7 +1959,7 @@ impl JsonlFamilyAdapter for CheckpointTestAdapter {
         _leaf: &JsonlFamilyLeaf,
         _source_file: Arc<OpenedProviderSourceFile>,
         _imported_at: DateTime<Utc>,
-    ) -> Result<Box<dyn JsonlFamilyProjector>> {
+    ) -> Result<Box<JsonlFamilyProjectorObject>> {
         Ok(Box::new(CheckpointTestProjector {
             projected_records: 0,
             resumed: false,
@@ -1438,7 +1974,7 @@ impl JsonlFamilyAdapter for CheckpointTestAdapter {
         checkpoint: Option<&TypedKey>,
         base_event_lookup: Option<IndexBaseEventLookup>,
         mode: JsonlFamilyProjectionMode,
-    ) -> Result<Box<dyn JsonlFamilyProjector>> {
+    ) -> Result<Box<JsonlFamilyProjectorObject>> {
         self.projection_modes.lock().unwrap().push(mode);
         let Some(checkpoint) = checkpoint else {
             if mode == JsonlFamilyProjectionMode::Cold && base_event_lookup.is_some() {
@@ -1471,7 +2007,7 @@ impl JsonlFamilyAdapter for CheckpointTestAdapter {
 }
 
 fn capture_parallel_test_generation(
-    adapter: &dyn JsonlFamilyAdapter,
+    adapter: &JsonlFamilyAdapterObject,
     root: &Path,
     index_root: &Path,
     workers: usize,
@@ -1486,30 +2022,33 @@ fn capture_parallel_test_generation(
 }
 
 fn capture_parallel_test_generation_with_terminal_revalidation(
-    adapter: &dyn JsonlFamilyAdapter,
+    adapter: &JsonlFamilyAdapterObject,
     root: &Path,
     index_root: &Path,
     workers: usize,
-) -> ctx_history_index::Result<(IndexCaptureCommitReceipt, JsonlFamilyScannerActivity)> {
+) -> Result<(IndexCaptureCommitReceipt, JsonlFamilyScannerActivity)> {
     let (writer, resident, ()) =
         capture_test_generation!(adapter, root, index_root, workers, |resident, sink| {
             capture(adapter, root, resident, sink).unwrap()
         });
+    let inventory = resident
+        .lock()
+        .map_err(|_| CaptureError::SystemInvariant("JSONL test resident lock was poisoned"))?
+        .certified_inventory
+        .clone()
+        .ok_or(CaptureError::SystemInvariant(
+            "JSONL test capture did not certify an inventory",
+        ))?;
+    let valid = match revalidate_complete_inventory(adapter, root, &resident, &inventory) {
+        Ok(valid) => valid,
+        Err(error) if error.is_not_found() || error.is_source_changed() => false,
+        Err(error) => return Err(error),
+    };
+    if !valid {
+        return Err(CaptureError::SourceChangedDuringCapture);
+    }
     let activity = jsonl_family_scanner_activity();
-    let commit = IndexCaptureCommitReceipt::new(writer.commit(
-        |target| match target {
-            CaptureRevalidationTarget::Source(source) => {
-                revalidate_target(&resident, SourceBackedRevalidationTarget::Source(source))
-            }
-            CaptureRevalidationTarget::Deletion(deletion) => revalidate_target(
-                &resident,
-                SourceBackedRevalidationTarget::Deletion(deletion),
-            ),
-        },
-        |inventory| {
-            revalidate_complete_inventory(adapter, root, &resident, inventory).unwrap_or(false)
-        },
-    )?);
+    let commit = IndexCaptureCommitReceipt::new(writer.commit(|_| true, |_| true)?);
     Ok((commit, activity))
 }
 
@@ -1522,7 +2061,7 @@ fn capture_checkpoint_test_generation(
 }
 
 fn run_scheduler_test_capture(
-    adapter: &dyn JsonlFamilyAdapter,
+    adapter: &JsonlFamilyAdapterObject,
     root: &Path,
     index_root: &Path,
     workers: usize,
@@ -1540,33 +2079,6 @@ fn run_scheduler_test_capture(
 fn scheduler_test_repository(parent: &Path) -> PathBuf {
     let repository = parent.join("attributed-repository");
     fs::create_dir(&repository).unwrap();
-    for arguments in [
-        vec!["init", "-q"],
-        vec!["config", "user.name", "ctx test"],
-        vec!["config", "user.email", "ctx@example.invalid"],
-    ] {
-        let status = Command::new("/usr/bin/git")
-            .arg("-C")
-            .arg(&repository)
-            .args(arguments)
-            .env("GIT_CONFIG_NOSYSTEM", "1")
-            .env("GIT_CONFIG_GLOBAL", "/dev/null")
-            .status()
-            .unwrap();
-        assert!(status.success());
-    }
-    fs::write(repository.join("tracked.txt"), "tracked\n").unwrap();
-    for arguments in [vec!["add", "tracked.txt"], vec!["commit", "-qm", "fixture"]] {
-        let status = Command::new("/usr/bin/git")
-            .arg("-C")
-            .arg(&repository)
-            .args(arguments)
-            .env("GIT_CONFIG_NOSYSTEM", "1")
-            .env("GIT_CONFIG_GLOBAL", "/dev/null")
-            .status()
-            .unwrap();
-        assert!(status.success());
-    }
     repository
 }
 
@@ -1587,7 +2099,7 @@ fn provider_checkpoints(receipt: &IndexCaptureCommitReceipt) -> Vec<Option<Typed
         .iter()
         .map(|source| {
             let frontier = source.frontier().unwrap();
-            FamilyCheckpoint::decode_frontier_key(frontier.checkpoint())
+            FamilyCheckpoint::decode_frontier_key::<CaptureError>(frontier.checkpoint())
                 .unwrap()
                 .provider_checkpoint
         })
@@ -1600,7 +2112,7 @@ fn prepare_semantic_lifecycle_test(
     index_root: &Path,
     base: Option<&CertifiedSource>,
     publications: &mut Vec<(bool, u64, usize)>,
-) -> Result<leaf::PreparedLeaf> {
+) -> Result<leaf::PreparedLeaf<CaptureError>> {
     let inventory = adapter.discover(root)?;
     let leaf = inventory
         .leaves()
@@ -1608,10 +2120,10 @@ fn prepare_semantic_lifecycle_test(
         .ok_or(CaptureError::SystemInvariant(
             "semantic lifecycle test has no leaf",
         ))?;
-    let writer = GenerationWriter::open(index_root, test_writer_options())
-        .unwrap()
-        .into_writer()
-        .unwrap();
+    let writer = match TestLifecycle::open(index_root, ()).unwrap() {
+        CaptureLifecycleOpenOutcome::Ready(writer) => writer,
+        CaptureLifecycleOpenOutcome::RecoveryRequired { .. } => unreachable!(),
+    };
     let mut worker = JsonlFamilyWorkerContext::default();
     let mut emit = |event| {
         if let JsonlLeafOutputEvent::Page {
@@ -1628,7 +2140,7 @@ fn prepare_semantic_lifecycle_test(
         adapter,
         leaf,
         base,
-        &writer.base_event_identity_lookup().into(),
+        &writer.base_event_identity_lookup(),
         &mut worker,
         &mut JsonlLeafOutput::new(&mut emit),
     )

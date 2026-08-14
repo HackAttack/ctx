@@ -55,11 +55,17 @@ struct JunieBinding {
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct JunieJsonlAdapter;
 
-pub(crate) fn junie_jsonl_adapter() -> Arc<dyn JsonlFamilyAdapter> {
+pub(crate) fn junie_jsonl_adapter() -> Arc<
+    dyn JsonlFamilyAdapter<
+        Runtime = crate::provider::source_backed::family::jsonl::CaptureJsonlRuntime,
+    >,
+> {
     Arc::new(JunieJsonlAdapter)
 }
 
 impl JsonlFamilyAdapter for JunieJsonlAdapter {
+    type Runtime = crate::provider::source_backed::family::jsonl::CaptureJsonlRuntime;
+
     fn provider(&self) -> CaptureProvider {
         CaptureProvider::Junie
     }
@@ -151,7 +157,13 @@ impl JsonlFamilyAdapter for JunieJsonlAdapter {
         leaf: &JsonlFamilyLeaf,
         source_file: Arc<OpenedProviderSourceFile>,
         imported_at: DateTime<Utc>,
-    ) -> Result<Box<dyn JsonlFamilyProjector>> {
+    ) -> Result<
+        Box<
+            dyn JsonlFamilyProjector<
+                Runtime = crate::provider::source_backed::family::jsonl::CaptureJsonlRuntime,
+            >,
+        >,
+    > {
         self.projector_with_provider_checkpoint(
             leaf,
             source_file,
@@ -170,7 +182,13 @@ impl JsonlFamilyAdapter for JunieJsonlAdapter {
         checkpoint: Option<&TypedKey>,
         base_event_lookup: Option<IndexBaseEventLookup>,
         mode: JsonlFamilyProjectionMode,
-    ) -> Result<Box<dyn JsonlFamilyProjector>> {
+    ) -> Result<
+        Box<
+            dyn JsonlFamilyProjector<
+                Runtime = crate::provider::source_backed::family::jsonl::CaptureJsonlRuntime,
+            >,
+        >,
+    > {
         if checkpoint.is_some() {
             return Err(CaptureError::InvalidPayload(
                 "Junie adapter does not accept provider checkpoint state".to_owned(),
@@ -211,6 +229,8 @@ struct JunieProjector {
 }
 
 impl JsonlFamilyProjector for JunieProjector {
+    type Runtime = crate::provider::source_backed::family::jsonl::CaptureJsonlRuntime;
+
     fn project(
         &mut self,
         record: JsonlRecordRef<'_>,

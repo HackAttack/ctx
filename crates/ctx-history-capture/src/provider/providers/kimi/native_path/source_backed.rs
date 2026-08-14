@@ -142,11 +142,17 @@ impl AdmittedKimiCompound {
 #[derive(Debug, Clone, Copy)]
 struct KimiJsonlAdapter;
 
-fn kimi_jsonl_adapter() -> Arc<dyn JsonlFamilyAdapter> {
+fn kimi_jsonl_adapter() -> Arc<
+    dyn JsonlFamilyAdapter<
+        Runtime = crate::provider::source_backed::family::jsonl::CaptureJsonlRuntime,
+    >,
+> {
     Arc::new(KimiJsonlAdapter)
 }
 
 impl JsonlFamilyAdapter for KimiJsonlAdapter {
+    type Runtime = crate::provider::source_backed::family::jsonl::CaptureJsonlRuntime;
+
     fn provider(&self) -> CaptureProvider {
         CaptureProvider::KimiCodeCli
     }
@@ -197,7 +203,13 @@ impl JsonlFamilyAdapter for KimiJsonlAdapter {
         leaf: &JsonlFamilyLeaf,
         source_file: Arc<OpenedProviderSourceFile>,
         imported_at: DateTime<Utc>,
-    ) -> crate::Result<Box<dyn JsonlFamilyProjector>> {
+    ) -> crate::Result<
+        Box<
+            dyn JsonlFamilyProjector<
+                Runtime = crate::provider::source_backed::family::jsonl::CaptureJsonlRuntime,
+            >,
+        >,
+    > {
         self.projector_with_provider_checkpoint(
             leaf,
             source_file,
@@ -216,7 +228,13 @@ impl JsonlFamilyAdapter for KimiJsonlAdapter {
         checkpoint: Option<&TypedKey>,
         base_event_lookup: Option<IndexBaseEventLookup>,
         mode: JsonlFamilyProjectionMode,
-    ) -> crate::Result<Box<dyn JsonlFamilyProjector>> {
+    ) -> crate::Result<
+        Box<
+            dyn JsonlFamilyProjector<
+                Runtime = crate::provider::source_backed::family::jsonl::CaptureJsonlRuntime,
+            >,
+        >,
+    > {
         if checkpoint.is_some() {
             return Err(CaptureError::InvalidPayload(
                 "Kimi adapter does not accept provider checkpoint state".to_owned(),
@@ -277,6 +295,8 @@ struct KimiProjector {
 }
 
 impl JsonlFamilyProjector for KimiProjector {
+    type Runtime = crate::provider::source_backed::family::jsonl::CaptureJsonlRuntime;
+
     fn project(
         &mut self,
         record: JsonlRecordRef<'_>,
@@ -344,7 +364,13 @@ fn capture_error(error: impl std::fmt::Display) -> CaptureError {
 }
 
 pub(crate) struct KimiSourceBackedCatalog;
-pub(crate) struct KimiSourceBackedResolver(Arc<dyn JsonlFamilyAdapter>);
+pub(crate) struct KimiSourceBackedResolver(
+    Arc<
+        dyn JsonlFamilyAdapter<
+            Runtime = crate::provider::source_backed::family::jsonl::CaptureJsonlRuntime,
+        >,
+    >,
+);
 
 impl KimiSourceBackedCatalog {
     pub(crate) fn shared() -> KimiSourceBackedResolver {
@@ -353,7 +379,13 @@ impl KimiSourceBackedCatalog {
 }
 
 impl KimiSourceBackedResolver {
-    pub(crate) fn into_shared(self) -> Arc<dyn JsonlFamilyAdapter> {
+    pub(crate) fn into_shared(
+        self,
+    ) -> Arc<
+        dyn JsonlFamilyAdapter<
+            Runtime = crate::provider::source_backed::family::jsonl::CaptureJsonlRuntime,
+        >,
+    > {
         self.0
     }
 }

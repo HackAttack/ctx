@@ -1,4 +1,4 @@
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 use std::{
     cell::{Cell, RefCell},
     path::PathBuf,
@@ -9,9 +9,9 @@ use std::{fs::File, io::Read, path::Path};
 use sha2::Sha256;
 
 use super::{identity::observe_metadata, new_prefix_hasher, prefix_digest, JsonlFileObservation};
-use crate::{common::io::OpenedProviderSourceFile, CaptureError, Result};
+use super::{JsonlFamilyError, JsonlResult, OpenedProviderSourceFile};
 
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 thread_local! {
     static PREFIX_HASH_BYTES: Cell<u64> = const { Cell::new(0) };
     static AFTER_PREFIX_HASH_HOOK: RefCell<Option<Box<dyn FnOnce()>>> =
@@ -22,58 +22,58 @@ thread_local! {
         const { RefCell::new(None) };
 }
 
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 struct AppendObservationHook {
     source_path: PathBuf,
     hook: Box<dyn FnOnce() + Send>,
 }
 
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 struct SemanticPreflightHook {
     source_path: PathBuf,
     hook: Box<dyn FnOnce() + Send>,
 }
 
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 static AFTER_APPEND_OBSERVATION_ROUTE_BINDING_HOOKS: Mutex<Vec<AppendObservationHook>> =
     Mutex::new(Vec::new());
 
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 static AFTER_SEMANTIC_PREFLIGHT_HOOKS: Mutex<Vec<SemanticPreflightHook>> = Mutex::new(Vec::new());
 
-#[cfg(test)]
-pub(crate) fn reset_jsonl_prefix_hash_bytes() {
+#[cfg(any(test, feature = "test-support"))]
+pub fn reset_jsonl_prefix_hash_bytes() {
     PREFIX_HASH_BYTES.set(0);
 }
 
-#[cfg(test)]
-pub(crate) fn jsonl_prefix_hash_bytes() -> u64 {
+#[cfg(any(test, feature = "test-support"))]
+pub fn jsonl_prefix_hash_bytes() -> u64 {
     PREFIX_HASH_BYTES.get()
 }
 
-#[cfg(test)]
-pub(crate) fn set_after_jsonl_prefix_hash_hook(hook: impl FnOnce() + 'static) {
+#[cfg(any(test, feature = "test-support"))]
+pub fn set_after_jsonl_prefix_hash_hook(hook: impl FnOnce() + 'static) {
     AFTER_PREFIX_HASH_HOOK.with(|slot| {
         *slot.borrow_mut() = Some(Box::new(hook));
     });
 }
 
-#[cfg(test)]
-pub(crate) fn set_after_second_jsonl_prefix_hash_hook(hook: impl FnOnce() + 'static) {
+#[cfg(any(test, feature = "test-support"))]
+pub fn set_after_second_jsonl_prefix_hash_hook(hook: impl FnOnce() + 'static) {
     AFTER_SECOND_PREFIX_HASH_HOOK.with(|slot| {
         *slot.borrow_mut() = Some(Box::new(hook));
     });
 }
 
-#[cfg(test)]
-pub(crate) fn set_after_final_jsonl_prefix_hash_hook(hook: impl FnOnce() + 'static) {
+#[cfg(any(test, feature = "test-support"))]
+pub fn set_after_final_jsonl_prefix_hash_hook(hook: impl FnOnce() + 'static) {
     AFTER_FINAL_PREFIX_HASH_HOOK.with(|slot| {
         *slot.borrow_mut() = Some(Box::new(hook));
     });
 }
 
-#[cfg(test)]
-pub(crate) fn set_after_jsonl_append_observation_route_binding_hook(
+#[cfg(any(test, feature = "test-support"))]
+pub fn set_after_jsonl_append_observation_route_binding_hook(
     source_path: PathBuf,
     hook: impl FnOnce() + Send + 'static,
 ) {
@@ -92,8 +92,8 @@ pub(crate) fn set_after_jsonl_append_observation_route_binding_hook(
     });
 }
 
-#[cfg(test)]
-pub(crate) fn set_after_jsonl_semantic_preflight_hook(
+#[cfg(any(test, feature = "test-support"))]
+pub fn set_after_jsonl_semantic_preflight_hook(
     source_path: PathBuf,
     hook: impl FnOnce() + Send + 'static,
 ) {
@@ -112,7 +112,7 @@ pub(crate) fn set_after_jsonl_semantic_preflight_hook(
     });
 }
 
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 fn run_after_jsonl_prefix_hash_hook() {
     AFTER_PREFIX_HASH_HOOK.with(|slot| {
         if let Some(hook) = slot.borrow_mut().take() {
@@ -121,7 +121,7 @@ fn run_after_jsonl_prefix_hash_hook() {
     });
 }
 
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 fn run_after_second_jsonl_prefix_hash_hook() {
     AFTER_SECOND_PREFIX_HASH_HOOK.with(|slot| {
         if let Some(hook) = slot.borrow_mut().take() {
@@ -130,7 +130,7 @@ fn run_after_second_jsonl_prefix_hash_hook() {
     });
 }
 
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 fn run_after_final_jsonl_prefix_hash_hook() {
     AFTER_FINAL_PREFIX_HASH_HOOK.with(|slot| {
         if let Some(hook) = slot.borrow_mut().take() {
@@ -139,7 +139,7 @@ fn run_after_final_jsonl_prefix_hash_hook() {
     });
 }
 
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 fn run_after_jsonl_append_observation_route_binding_hook(source_path: &Path) {
     let hook = {
         let mut hooks = AFTER_APPEND_OBSERVATION_ROUTE_BINDING_HOOKS
@@ -155,7 +155,7 @@ fn run_after_jsonl_append_observation_route_binding_hook(source_path: &Path) {
     }
 }
 
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 pub(super) fn run_after_jsonl_semantic_preflight_hook(source_path: &Path) {
     let hook = {
         let mut hooks = AFTER_SEMANTIC_PREFLIGHT_HOOKS
@@ -171,12 +171,12 @@ pub(super) fn run_after_jsonl_semantic_preflight_hook(source_path: &Path) {
     }
 }
 
-pub(crate) fn observe_opened_file(
+pub fn observe_opened_file<E: JsonlFamilyError>(
     source_path: &Path,
-    opened: &OpenedProviderSourceFile,
-) -> Result<JsonlFileObservation> {
+    opened: &OpenedProviderSourceFile<E>,
+) -> JsonlResult<JsonlFileObservation, E> {
     opened.revalidate()?;
-    let observation = observe_metadata(source_path, opened.file(), opened.metadata())?;
+    let observation = observe_metadata::<E>(source_path, opened.file(), opened.metadata())?;
     opened.revalidate()?;
     Ok(observation)
 }
@@ -184,26 +184,26 @@ pub(crate) fn observe_opened_file(
 /// Observes current metadata for a retained append-only file while requiring
 /// its named route to keep identifying the same ordinary object. Callers must
 /// separately prove the exact bytes in their frozen publication prefix.
-pub(crate) fn observe_opened_file_allow_append(
+pub fn observe_opened_file_allow_append<E: JsonlFamilyError>(
     source_path: &Path,
-    opened: &OpenedProviderSourceFile,
-) -> Result<JsonlFileObservation> {
+    opened: &OpenedProviderSourceFile<E>,
+) -> JsonlResult<JsonlFileObservation, E> {
     opened.revalidate_same_object()?;
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     run_after_jsonl_append_observation_route_binding_hook(source_path);
     let metadata = opened.file().metadata()?;
-    let observation = observe_metadata(source_path, opened.file(), &metadata)?;
+    let observation = observe_metadata::<E>(source_path, opened.file(), &metadata)?;
     opened.revalidate_same_object()?;
     Ok(observation)
 }
 
-pub(crate) fn revalidate_frozen_prefix(
+pub fn revalidate_frozen_prefix<E: JsonlFamilyError>(
     source_path: &Path,
-    source_file: &OpenedProviderSourceFile,
+    source_file: &OpenedProviderSourceFile<E>,
     frozen: &JsonlFileObservation,
     prefix_length: u64,
     expected_prefix_digest: [u8; 32],
-) -> Result<JsonlFileObservation> {
+) -> JsonlResult<JsonlFileObservation, E> {
     revalidate_frozen_prefix_with_hasher(
         source_path,
         source_file,
@@ -214,13 +214,13 @@ pub(crate) fn revalidate_frozen_prefix(
     )
 }
 
-pub(crate) fn revalidate_frozen_prefix_sha256(
+pub(crate) fn revalidate_frozen_prefix_sha256<E: JsonlFamilyError>(
     source_path: &Path,
-    source_file: &OpenedProviderSourceFile,
+    source_file: &OpenedProviderSourceFile<E>,
     frozen: &JsonlFileObservation,
     prefix_length: u64,
     expected_prefix_digest: [u8; 32],
-) -> Result<JsonlFileObservation> {
+) -> JsonlResult<JsonlFileObservation, E> {
     revalidate_frozen_prefix_with_hasher(
         source_path,
         source_file,
@@ -231,24 +231,24 @@ pub(crate) fn revalidate_frozen_prefix_sha256(
     )
 }
 
-fn revalidate_frozen_prefix_with_hasher(
+fn revalidate_frozen_prefix_with_hasher<E: JsonlFamilyError>(
     source_path: &Path,
-    source_file: &OpenedProviderSourceFile,
+    source_file: &OpenedProviderSourceFile<E>,
     frozen: &JsonlFileObservation,
     prefix_length: u64,
     expected_prefix_digest: [u8; 32],
     prefix_hasher: Sha256,
-) -> Result<JsonlFileObservation> {
+) -> JsonlResult<JsonlFileObservation, E> {
     if prefix_length > frozen.length() {
-        return Err(CaptureError::SourceChangedDuringCapture);
+        return Err(E::source_changed());
     }
-    let before = observe_metadata(
+    let before = observe_metadata::<E>(
         source_path,
         source_file.file(),
         &source_file.file().metadata()?,
     )?;
     if !frozen.admits_frozen_prefix_in(&before) {
-        return Err(CaptureError::SourceChangedDuringCapture);
+        return Err(E::source_changed());
     }
     source_file.revalidate_same_object()?;
 
@@ -264,16 +264,16 @@ fn revalidate_frozen_prefix_with_hasher(
         expected_prefix_digest,
         prefix_hasher.clone(),
     )?;
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     run_after_jsonl_prefix_hash_hook();
-    let middle = observe_metadata(
+    let middle = observe_metadata::<E>(
         source_path,
         source_file.file(),
         &source_file.file().metadata()?,
     )?;
     source_file.revalidate_same_object()?;
     if !before.admits_frozen_prefix_in(&middle) {
-        return Err(CaptureError::SourceChangedDuringCapture);
+        return Err(E::source_changed());
     }
 
     // Exact prefix equality plus monotonic same-object observations admits a
@@ -285,16 +285,16 @@ fn revalidate_frozen_prefix_with_hasher(
         expected_prefix_digest,
         prefix_hasher.clone(),
     )?;
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     run_after_second_jsonl_prefix_hash_hook();
-    let after = observe_metadata(
+    let after = observe_metadata::<E>(
         source_path,
         source_file.file(),
         &source_file.file().metadata()?,
     )?;
     source_file.revalidate_same_object()?;
     if !middle.admits_frozen_prefix_in(&after) {
-        return Err(CaptureError::SourceChangedDuringCapture);
+        return Err(E::source_changed());
     }
 
     // End on content proof so rewrite-plus-append after the preceding metadata
@@ -305,7 +305,7 @@ fn revalidate_frozen_prefix_with_hasher(
         expected_prefix_digest,
         prefix_hasher,
     )?;
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     run_after_final_jsonl_prefix_hash_hook();
     // Bind the final content proof to both the retained object that was hashed
     // and the authority-relative directory entry that currently names it.
@@ -315,24 +315,28 @@ fn revalidate_frozen_prefix_with_hasher(
     Ok(after)
 }
 
-fn verify_prefix_digest(
-    source_file: &OpenedProviderSourceFile,
+fn verify_prefix_digest<E: JsonlFamilyError>(
+    source_file: &OpenedProviderSourceFile<E>,
     prefix_length: u64,
     expected_prefix_digest: [u8; 32],
     prefix_hasher: Sha256,
-) -> Result<()> {
-    let observed = hash_prefix(
+) -> JsonlResult<(), E> {
+    let observed = hash_prefix::<E>(
         &mut source_file.reopen_same_object()?,
         prefix_length,
         prefix_hasher,
     )?;
     if prefix_digest(&observed) != expected_prefix_digest {
-        return Err(CaptureError::SourceChangedDuringCapture);
+        return Err(E::source_changed());
     }
     Ok(())
 }
 
-pub(super) fn hash_prefix(file: &mut File, length: u64, mut hasher: Sha256) -> Result<Sha256> {
+pub(super) fn hash_prefix<E: JsonlFamilyError>(
+    file: &mut File,
+    length: u64,
+    mut hasher: Sha256,
+) -> JsonlResult<Sha256, E> {
     use sha2::Digest;
     use std::io::{Seek, SeekFrom};
 
@@ -341,12 +345,12 @@ pub(super) fn hash_prefix(file: &mut File, length: u64, mut hasher: Sha256) -> R
     let mut buffer = [0_u8; 64 * 1024];
     while remaining > 0 {
         let requested = usize::try_from(remaining.min(buffer.len() as u64))
-            .map_err(|_| CaptureError::SystemInvariant("JSONL prefix length exceeds usize"))?;
+            .map_err(|_| E::system_invariant("JSONL prefix length exceeds usize"))?;
         let read = file.read(&mut buffer[..requested])?;
         if read == 0 {
-            return Err(CaptureError::SourceChangedDuringCapture);
+            return Err(E::source_changed());
         }
-        #[cfg(test)]
+        #[cfg(any(test, feature = "test-support"))]
         PREFIX_HASH_BYTES.with(|bytes| {
             bytes.set(bytes.get().saturating_add(read as u64));
         });

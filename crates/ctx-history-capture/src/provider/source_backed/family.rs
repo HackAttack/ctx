@@ -5,6 +5,7 @@
 //! projection.
 
 pub(crate) mod document;
+#[path = "family/jsonl_compat.rs"]
 pub(crate) mod jsonl;
 
 #[cfg(test)]

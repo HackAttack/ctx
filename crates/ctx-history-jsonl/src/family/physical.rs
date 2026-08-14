@@ -10,10 +10,10 @@ use super::{
     read_bounded_record_complete_sha256, read_bounded_record_full_complete_and_prefix_sha256,
     JsonlRecordFraming,
 };
-use crate::{CaptureError, Result};
+use super::{JsonlFamilyError, JsonlResult};
 
 #[derive(Debug, Clone)]
-pub(crate) enum JsonlPhysicalDigest {
+pub enum JsonlPhysicalDigest {
     Complete {
         complete: Sha256,
     },
@@ -35,11 +35,11 @@ pub(crate) enum JsonlPhysicalDigest {
 }
 
 impl JsonlPhysicalDigest {
-    pub(crate) fn complete(complete: Sha256) -> Self {
+    pub fn complete(complete: Sha256) -> Self {
         Self::Complete { complete }
     }
 
-    pub(crate) fn complete_and_bounded_prefix(
+    pub fn complete_and_bounded_prefix(
         complete: Sha256,
         bounded_prefix: Sha256,
         bounded_prefix_remaining: u64,
@@ -51,11 +51,11 @@ impl JsonlPhysicalDigest {
         }
     }
 
-    pub(crate) fn full_and_complete(full: Sha256, complete: Sha256) -> Self {
+    pub fn full_and_complete(full: Sha256, complete: Sha256) -> Self {
         Self::FullAndComplete { full, complete }
     }
 
-    pub(crate) fn full_complete_and_bounded_prefix(
+    pub fn full_complete_and_bounded_prefix(
         full: Sha256,
         complete: Sha256,
         bounded_prefix: Sha256,
@@ -69,7 +69,7 @@ impl JsonlPhysicalDigest {
         }
     }
 
-    pub(crate) fn complete_hasher(&self) -> &Sha256 {
+    pub fn complete_hasher(&self) -> &Sha256 {
         match self {
             Self::Complete { complete }
             | Self::FullAndComplete { complete, .. }
@@ -78,7 +78,7 @@ impl JsonlPhysicalDigest {
         }
     }
 
-    pub(crate) fn full_hasher(&self) -> Option<&Sha256> {
+    pub fn full_hasher(&self) -> Option<&Sha256> {
         match self {
             Self::FullAndComplete { full, .. }
             | Self::FullCompleteAndBoundedPrefix { full, .. } => Some(full),
@@ -86,7 +86,7 @@ impl JsonlPhysicalDigest {
         }
     }
 
-    pub(crate) fn bounded_prefix(&self) -> Option<(&Sha256, u64)> {
+    pub fn bounded_prefix(&self) -> Option<(&Sha256, u64)> {
         match self {
             Self::CompleteAndBoundedPrefix {
                 bounded_prefix,
@@ -104,25 +104,25 @@ impl JsonlPhysicalDigest {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) struct JsonlPhysicalRecord {
-    pub(crate) physical_ordinal: u64,
-    pub(crate) byte_start: u64,
-    pub(crate) byte_end_exclusive: u64,
-    pub(crate) complete: bool,
-    pub(crate) terminal_nul_padding: bool,
-    pub(crate) oversized: bool,
-    pub(crate) stored_len: usize,
-    pub(crate) sha256: [u8; 32],
+pub struct JsonlPhysicalRecord {
+    pub physical_ordinal: u64,
+    pub byte_start: u64,
+    pub byte_end_exclusive: u64,
+    pub complete: bool,
+    pub terminal_nul_padding: bool,
+    pub oversized: bool,
+    pub stored_len: usize,
+    pub sha256: [u8; 32],
 }
 
 impl JsonlPhysicalRecord {
-    pub(crate) fn byte_len(self) -> u64 {
+    pub fn byte_len(self) -> u64 {
         self.byte_end_exclusive.saturating_sub(self.byte_start)
     }
 }
 
 #[derive(Debug, Clone)]
-pub(crate) struct JsonlPhysicalStreamPosition {
+pub struct JsonlPhysicalStreamPosition {
     offset: u64,
     next_physical_ordinal: u64,
     complete_prefix_end: u64,
@@ -144,31 +144,31 @@ pub(super) struct JsonlPhysicalPassBinding {
 }
 
 #[derive(Debug)]
-pub(crate) struct JsonlPhysicalStream {
+pub struct JsonlPhysicalStream<E: JsonlFamilyError> {
     reader: BufReader<File>,
     frozen_length: u64,
     offset: u64,
     next_physical_ordinal: u64,
     complete_prefix_end: u64,
     framing: JsonlRecordFraming,
-    source_changed: fn() -> CaptureError,
+    source_changed: fn() -> E,
     digest: JsonlPhysicalDigest,
     record_buffer: Vec<u8>,
     incomplete_tail: bool,
     exhausted: bool,
 }
 
-impl JsonlPhysicalStream {
+impl<E: JsonlFamilyError> JsonlPhysicalStream<E> {
     #[allow(clippy::too_many_arguments)]
-    pub(crate) fn open(
+    pub fn open(
         mut file: File,
         frozen_length: u64,
         offset: u64,
         next_physical_ordinal: u64,
         framing: JsonlRecordFraming,
         digest: JsonlPhysicalDigest,
-        source_changed: fn() -> CaptureError,
-    ) -> Result<Self> {
+        source_changed: fn() -> E,
+    ) -> JsonlResult<Self, E> {
         if offset > frozen_length {
             return Err(source_changed());
         }
@@ -188,7 +188,7 @@ impl JsonlPhysicalStream {
         })
     }
 
-    pub(crate) fn next_record(&mut self) -> Result<Option<JsonlPhysicalRecord>> {
+    pub fn next_record(&mut self) -> JsonlResult<Option<JsonlPhysicalRecord>, E> {
         if self.exhausted {
             return Ok(None);
         }
@@ -247,22 +247,17 @@ impl JsonlPhysicalStream {
         }
         .ok_or_else(|| (self.source_changed)())?;
         let byte_start = self.offset;
-        let byte_end_exclusive =
-            byte_start
-                .checked_add(record.byte_len)
-                .ok_or(CaptureError::SystemInvariant(
-                    "JSONL physical stream offset overflowed",
-                ))?;
+        let byte_end_exclusive = byte_start
+            .checked_add(record.byte_len)
+            .ok_or_else(|| E::system_invariant("JSONL physical stream offset overflowed"))?;
         self.offset = byte_end_exclusive;
         let physical_ordinal = self.next_physical_ordinal;
         if record.complete {
             self.complete_prefix_end = byte_end_exclusive;
-            self.next_physical_ordinal =
-                self.next_physical_ordinal
-                    .checked_add(1)
-                    .ok_or(CaptureError::SystemInvariant(
-                        "JSONL physical stream ordinal overflowed",
-                    ))?;
+            self.next_physical_ordinal = self
+                .next_physical_ordinal
+                .checked_add(1)
+                .ok_or_else(|| E::system_invariant("JSONL physical stream ordinal overflowed"))?;
         } else {
             self.incomplete_tail = true;
             self.exhausted = true;
@@ -279,17 +274,17 @@ impl JsonlPhysicalStream {
         }))
     }
 
-    pub(crate) fn record_bytes(&self, record: JsonlPhysicalRecord) -> &[u8] {
+    pub fn record_bytes(&self, record: JsonlPhysicalRecord) -> &[u8] {
         &self.record_buffer[..record.stored_len]
     }
 
     /// Drops retained record capacity before a prepared page crosses a worker
     /// boundary. Providers that do not transfer pages keep the allocation.
-    pub(crate) fn release_record_buffer(&mut self) {
+    pub fn release_record_buffer(&mut self) {
         self.record_buffer = Vec::new();
     }
 
-    pub(crate) fn position(&self) -> JsonlPhysicalStreamPosition {
+    pub fn position(&self) -> JsonlPhysicalStreamPosition {
         JsonlPhysicalStreamPosition {
             offset: self.offset,
             next_physical_ordinal: self.next_physical_ordinal,
@@ -300,7 +295,7 @@ impl JsonlPhysicalStream {
         }
     }
 
-    pub(crate) fn restore(&mut self, position: JsonlPhysicalStreamPosition) -> Result<()> {
+    pub fn restore(&mut self, position: JsonlPhysicalStreamPosition) -> JsonlResult<(), E> {
         self.reader.seek(SeekFrom::Start(position.offset))?;
         self.offset = position.offset;
         self.next_physical_ordinal = position.next_physical_ordinal;
@@ -311,19 +306,19 @@ impl JsonlPhysicalStream {
         Ok(())
     }
 
-    pub(crate) fn complete_prefix_end(&self) -> u64 {
+    pub fn complete_prefix_end(&self) -> u64 {
         self.complete_prefix_end
     }
 
-    pub(crate) fn offset(&self) -> u64 {
+    pub fn offset(&self) -> u64 {
         self.offset
     }
 
-    pub(crate) fn next_physical_ordinal(&self) -> u64 {
+    pub fn next_physical_ordinal(&self) -> u64 {
         self.next_physical_ordinal
     }
 
-    pub(crate) fn digest(&self) -> &JsonlPhysicalDigest {
+    pub fn digest(&self) -> &JsonlPhysicalDigest {
         &self.digest
     }
 
@@ -343,7 +338,7 @@ impl JsonlPhysicalStream {
         }
     }
 
-    pub(crate) fn terminal(&self) -> bool {
+    pub fn terminal(&self) -> bool {
         self.exhausted && !self.incomplete_tail
     }
 }
@@ -367,7 +362,7 @@ mod tests {
             0,
             JsonlRecordFraming::ordinary(),
             JsonlPhysicalDigest::full_and_complete(Sha256::new(), Sha256::new()),
-            || CaptureError::SourceChangedDuringCapture,
+            || super::super::CaptureError::SourceChangedDuringCapture,
         )
         .unwrap();
 

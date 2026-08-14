@@ -280,6 +280,8 @@ fn mux_output_content_omission(
 }
 
 impl JsonlFamilyProjector for MuxProjector {
+    type Runtime = crate::provider::source_backed::family::jsonl::CaptureJsonlRuntime;
+
     fn project(
         &mut self,
         record: JsonlRecordRef<'_>,

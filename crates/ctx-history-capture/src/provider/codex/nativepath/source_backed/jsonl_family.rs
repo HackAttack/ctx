@@ -102,6 +102,8 @@ impl CodexSessionSemanticExecutorV0 {
 }
 
 impl JsonlFamilySemanticExecutor for CodexSessionSemanticExecutorV0 {
+    type Runtime = crate::provider::source_backed::family::jsonl::CaptureJsonlRuntime;
+
     fn preflight(
         &mut self,
         input: &mut JsonlFamilyExecutionIo,
@@ -131,7 +133,7 @@ impl JsonlFamilySemanticExecutor for CodexSessionSemanticExecutorV0 {
             .ok_or(CaptureError::SystemInvariant(
                 "Codex semantic executor lost its scanner",
             ))?
-            .next_semantic_page(input, worker.repository_attributor())?
+            .next_semantic_page(input, worker.services())?
         else {
             return Ok(None);
         };
@@ -181,7 +183,9 @@ fn codex_family_state_error() -> CaptureError {
 }
 
 fn prepare_codex_session_jsonl_scans_v0(
-    adapter: &dyn JsonlFamilyAdapter,
+    adapter: &dyn JsonlFamilyAdapter<
+        Runtime = crate::provider::source_backed::family::jsonl::CaptureJsonlRuntime,
+    >,
     state: &Mutex<CodexSessionJsonlFamilyStateV0>,
     leaves: &[JsonlFamilyLeaf],
     bases: &HashMap<[u8; 32], &CertifiedSource>,
@@ -410,6 +414,8 @@ impl CodexSessionJsonlFamilyAdapterV0 {
 }
 
 impl JsonlFamilyAdapter for CodexSessionJsonlFamilyAdapterV0 {
+    type Runtime = crate::provider::source_backed::family::jsonl::CaptureJsonlRuntime;
+
     fn provider(&self) -> CaptureProvider {
         CaptureProvider::Codex
     }
@@ -535,7 +541,15 @@ impl JsonlFamilyAdapter for CodexSessionJsonlFamilyAdapterV0 {
         checkpoint: Option<&TypedKey>,
         base_event_lookup: Option<IndexBaseEventLookup>,
         mode: JsonlFamilyProjectionMode,
-    ) -> Result<Option<Box<dyn JsonlFamilySemanticExecutor>>> {
+    ) -> Result<
+        Option<
+            Box<
+                dyn JsonlFamilySemanticExecutor<
+                    Runtime = crate::provider::source_backed::family::jsonl::CaptureJsonlRuntime,
+                >,
+            >,
+        >,
+    > {
         Ok(Some(Box::new(CodexSessionSemanticExecutorV0::new(
             Arc::clone(&self.state),
             leaf,

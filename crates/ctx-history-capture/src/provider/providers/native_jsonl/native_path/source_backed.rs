@@ -212,6 +212,8 @@ impl DirectJsonlFamilyAdapter {
 }
 
 impl JsonlFamilyAdapter for DirectJsonlFamilyAdapter {
+    type Runtime = crate::provider::source_backed::family::jsonl::CaptureJsonlRuntime;
+
     fn provider(&self) -> CaptureProvider {
         self.provider
     }
@@ -272,7 +274,13 @@ impl JsonlFamilyAdapter for DirectJsonlFamilyAdapter {
         leaf: &JsonlFamilyLeaf,
         source_file: Arc<OpenedProviderSourceFile>,
         imported_at: DateTime<Utc>,
-    ) -> Result<Box<dyn JsonlFamilyProjector>> {
+    ) -> Result<
+        Box<
+            dyn JsonlFamilyProjector<
+                Runtime = crate::provider::source_backed::family::jsonl::CaptureJsonlRuntime,
+            >,
+        >,
+    > {
         DirectJsonlFamilyProjector::new(
             *self,
             leaf,
@@ -281,7 +289,7 @@ impl JsonlFamilyAdapter for DirectJsonlFamilyAdapter {
             None,
             JsonlFamilyProjectionMode::Cold,
         )
-        .map(|projector| Box::new(projector) as Box<dyn JsonlFamilyProjector>)
+        .map(|projector| Box::new(projector) as Box<dyn JsonlFamilyProjector<Runtime = crate::provider::source_backed::family::jsonl::CaptureJsonlRuntime>>)
         .map_err(capture_error)
     }
 
@@ -293,7 +301,13 @@ impl JsonlFamilyAdapter for DirectJsonlFamilyAdapter {
         checkpoint: Option<&TypedKey>,
         base_event_lookup: Option<IndexBaseEventLookup>,
         mode: JsonlFamilyProjectionMode,
-    ) -> Result<Box<dyn JsonlFamilyProjector>> {
+    ) -> Result<
+        Box<
+            dyn JsonlFamilyProjector<
+                Runtime = crate::provider::source_backed::family::jsonl::CaptureJsonlRuntime,
+            >,
+        >,
+    > {
         if checkpoint.is_some() {
             return Err(CaptureError::InvalidPayload(
                 "direct JSONL adapter does not accept provider checkpoint state".to_owned(),
@@ -307,7 +321,7 @@ impl JsonlFamilyAdapter for DirectJsonlFamilyAdapter {
             base_event_lookup,
             mode,
         )
-        .map(|projector| Box::new(projector) as Box<dyn JsonlFamilyProjector>)
+        .map(|projector| Box::new(projector) as Box<dyn JsonlFamilyProjector<Runtime = crate::provider::source_backed::family::jsonl::CaptureJsonlRuntime>>)
         .map_err(capture_error)
     }
 }
@@ -609,6 +623,8 @@ impl DirectJsonlFamilyProjector {
 }
 
 impl JsonlFamilyProjector for DirectJsonlFamilyProjector {
+    type Runtime = crate::provider::source_backed::family::jsonl::CaptureJsonlRuntime;
+
     fn project(
         &mut self,
         record: JsonlRecordRef<'_>,

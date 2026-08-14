@@ -219,12 +219,20 @@ struct CustomHistoryJsonlFamilyAdapter {
 
 pub(crate) fn custom_history_jsonl_family_adapter(
     input: CustomHistorySourceBackedInput,
-) -> CustomHistorySourceBackedResult<Arc<dyn JsonlFamilyAdapter>> {
+) -> CustomHistorySourceBackedResult<
+    Arc<
+        dyn JsonlFamilyAdapter<
+            Runtime = crate::provider::source_backed::family::jsonl::CaptureJsonlRuntime,
+        >,
+    >,
+> {
     let source = input.source_key()?;
     Ok(Arc::new(CustomHistoryJsonlFamilyAdapter { input, source }))
 }
 
 impl JsonlFamilyAdapter for CustomHistoryJsonlFamilyAdapter {
+    type Runtime = crate::provider::source_backed::family::jsonl::CaptureJsonlRuntime;
+
     fn provider(&self) -> CaptureProvider {
         CaptureProvider::Custom
     }
@@ -276,7 +284,13 @@ impl JsonlFamilyAdapter for CustomHistoryJsonlFamilyAdapter {
         _leaf: &JsonlFamilyLeaf,
         _source_file: Arc<OpenedProviderSourceFile>,
         _imported_at: DateTime<Utc>,
-    ) -> crate::Result<Box<dyn JsonlFamilyProjector>> {
+    ) -> crate::Result<
+        Box<
+            dyn JsonlFamilyProjector<
+                Runtime = crate::provider::source_backed::family::jsonl::CaptureJsonlRuntime,
+            >,
+        >,
+    > {
         Err(CaptureError::SystemInvariant(
             "Custom History must use optimized JSONL leaf execution",
         ))

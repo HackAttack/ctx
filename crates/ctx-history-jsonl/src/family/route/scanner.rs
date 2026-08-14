@@ -1,0 +1,510 @@
+use ctx_history_core::{
+    CertifiedSource, CertifiedSourceAppend, CoreRecord, SourceKey, SourceObservation, TypedKey,
+};
+
+use super::super::{
+    JsonlFamilyError, JsonlFamilyRuntime, JsonlFileObservation, JsonlPhysicalRecord,
+    JsonlPhysicalStreamPosition, JsonlReader, JsonlResult, JsonlRuntimeError,
+    JsonlRuntimeLifecycleError, JsonlSourceIdentity,
+};
+use super::{
+    contract_error, route_internal, JsonlFamilyAdapter, JsonlFamilyLeaf, JsonlFamilyTerminalProof,
+    FAMILY_POLICY_REVISION, FAMILY_SOURCE_REVISION_KIND,
+};
+use ctx_history_capture_runtime::{
+    ParallelLeafScanEmitError, ParallelLeafScanError, SourceBackedCoordinatorError,
+    SourceBackedRouteError,
+};
+
+pub(super) fn preserve_coordinator_error<R: JsonlFamilyRuntime>(
+    failure: &mut Option<SourceBackedRouteError>,
+    error: SourceBackedCoordinatorError<JsonlRuntimeLifecycleError<R>>,
+) -> JsonlRuntimeError<R> {
+    let error = match error {
+        SourceBackedCoordinatorError::CoreEmission(source) => source,
+        error => route_internal(error),
+    };
+    preserve_route_error(failure, error)
+}
+
+fn preserve_route_error<E: JsonlFamilyError>(
+    failure: &mut Option<SourceBackedRouteError>,
+    error: SourceBackedRouteError,
+) -> E {
+    let detail = error.to_string();
+    *failure = Some(error);
+    E::invalid_payload(detail)
+}
+
+pub(super) fn preserve_parallel_emit_error<E: JsonlFamilyError>(
+    failure: &mut Option<SourceBackedRouteError>,
+    error: ParallelLeafScanEmitError,
+) -> E {
+    match error {
+        ParallelLeafScanEmitError::Route(error) => preserve_route_error(failure, error),
+        ParallelLeafScanEmitError::Cancelled(_) => {
+            E::system_invariant("JSONL parallel scan was cancelled during replacement")
+        }
+    }
+}
+
+pub(super) fn map_parallel_leaf_error<E: std::error::Error + 'static>(
+    error: ParallelLeafScanError<SourceBackedRouteError, E>,
+) -> SourceBackedRouteError {
+    match error {
+        ParallelLeafScanError::Worker { source, .. } => source,
+        ParallelLeafScanError::Sink { source, .. } => match source {
+            SourceBackedCoordinatorError::CoreEmission(source) => source,
+            source => route_internal(source),
+        },
+        other => route_internal(other),
+    }
+}
+
+pub(super) fn physical_identity<R: JsonlFamilyRuntime>(
+    adapter: &dyn JsonlFamilyAdapter<Runtime = R>,
+    leaf: &JsonlFamilyLeaf<JsonlRuntimeError<R>>,
+) -> JsonlSourceIdentity {
+    JsonlSourceIdentity::new(
+        adapter.provider().as_str(),
+        adapter.parser_revision(),
+        FAMILY_POLICY_REVISION,
+        leaf.source.exact_descriptor_digest(),
+        leaf.source_path.clone(),
+    )
+}
+
+pub(super) fn source_observation<E: JsonlFamilyError>(
+    source: &SourceKey,
+    observation: &JsonlFileObservation,
+) -> JsonlResult<SourceObservation, E> {
+    SourceObservation::new(
+        source.clone(),
+        FAMILY_SOURCE_REVISION_KIND,
+        serde_json::to_vec(observation)?,
+    )
+    .map_err(contract_error)
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum JsonlFamilyAppendMode {
+    CertifiedSuffix,
+    Replacement,
+    ProjectorPreflight(bool),
+}
+
+impl JsonlFamilyAppendMode {
+    pub(super) fn certified_suffix(self) -> bool {
+        matches!(self, Self::CertifiedSuffix | Self::ProjectorPreflight(true))
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum JsonlFamilyProjectionMode {
+    Cold,
+    CertifiedAppend,
+    Replacement,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum JsonlFamilySemanticPreflight {
+    Ready,
+    RetryReplacement,
+}
+
+/// Legacy optimized publication mode retained for non-Codex adapters while
+/// they migrate independently to the shared executor.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum JsonlFamilyPublication {
+    Append,
+    Replace,
+}
+
+/// Mutable services reused by one shared JSONL scanner worker across every
+/// leaf in its stripe. Keeping these caches at worker lifetime preserves
+/// bounded parallelism while amortizing provider-neutral projection work.
+pub struct JsonlFamilyWorkerContext<R: JsonlFamilyRuntime> {
+    services: R::WorkerServices,
+}
+
+impl<R: JsonlFamilyRuntime> Default for JsonlFamilyWorkerContext<R> {
+    fn default() -> Self {
+        Self {
+            services: R::WorkerServices::default(),
+        }
+    }
+}
+
+impl<R: JsonlFamilyRuntime> JsonlFamilyWorkerContext<R> {
+    pub(super) fn begin_leaf(&mut self) {
+        R::begin_worker_leaf(&mut self.services);
+    }
+
+    pub fn services(&mut self) -> &mut R::WorkerServices {
+        &mut self.services
+    }
+}
+
+/// Legacy optimized outcome retained for non-Codex adapters. Codex uses the
+/// semantic executor, which cannot construct lifecycle evidence.
+#[derive(Debug)]
+pub struct JsonlFamilyOptimizedLeafOutcome<E: super::super::JsonlFamilyError> {
+    pub(super) certificate: CertifiedSource,
+    pub(super) append: Option<CertifiedSourceAppend>,
+    pub(super) terminal_proof: JsonlFamilyTerminalProof<E>,
+}
+
+impl<E: super::super::JsonlFamilyError> Clone for JsonlFamilyOptimizedLeafOutcome<E> {
+    fn clone(&self) -> Self {
+        Self {
+            certificate: self.certificate.clone(),
+            append: self.append.clone(),
+            terminal_proof: self.terminal_proof.clone(),
+        }
+    }
+}
+
+impl<E: super::super::JsonlFamilyError> JsonlFamilyOptimizedLeafOutcome<E> {
+    pub fn replacement(
+        certificate: CertifiedSource,
+        terminal_proof: JsonlFamilyTerminalProof<E>,
+    ) -> Self {
+        Self {
+            certificate,
+            append: None,
+            terminal_proof,
+        }
+    }
+
+    pub fn append(
+        append: CertifiedSourceAppend,
+        terminal_proof: JsonlFamilyTerminalProof<E>,
+    ) -> Self {
+        Self {
+            certificate: append.current().clone(),
+            append: Some(append),
+            terminal_proof,
+        }
+    }
+}
+
+#[derive(Debug)]
+pub struct JsonlFamilySemanticPage {
+    records: Vec<CoreRecord>,
+}
+
+impl JsonlFamilySemanticPage {
+    pub fn new(records: Vec<CoreRecord>) -> Self {
+        Self { records }
+    }
+
+    pub(super) fn into_records(self) -> Vec<CoreRecord> {
+        self.records
+    }
+}
+
+#[derive(Debug)]
+pub struct JsonlFamilySemanticSummary {
+    represented_physical_records: u64,
+    rejected_records: u64,
+    provider_checkpoint: Option<TypedKey>,
+}
+
+impl JsonlFamilySemanticSummary {
+    pub fn new(
+        represented_physical_records: u64,
+        rejected_records: u64,
+        provider_checkpoint: Option<TypedKey>,
+    ) -> Self {
+        Self {
+            represented_physical_records,
+            rejected_records,
+            provider_checkpoint,
+        }
+    }
+
+    pub(super) fn represented_physical_records(&self) -> u64 {
+        self.represented_physical_records
+    }
+
+    pub(super) fn rejected_records(&self) -> u64 {
+        self.rejected_records
+    }
+
+    pub(super) fn into_provider_checkpoint(self) -> Option<TypedKey> {
+        self.provider_checkpoint
+    }
+}
+
+/// Shared-owned physical input for an adapter's bounded semantic executor.
+///
+/// The executor may consume and roll back records for provider-native paging,
+/// but it cannot construct or return physical checkpoints, certificates,
+/// append evidence, terminal proof, or publication mode. Those remain sealed
+/// in the family driver.
+pub struct JsonlFamilyExecutionIo<R: JsonlFamilyRuntime> {
+    reader: JsonlReader<JsonlRuntimeError<R>>,
+}
+
+impl<R: JsonlFamilyRuntime> JsonlFamilyExecutionIo<R> {
+    pub fn new(reader: JsonlReader<JsonlRuntimeError<R>>) -> Self {
+        Self { reader }
+    }
+
+    pub fn next_record(
+        &mut self,
+    ) -> JsonlResult<Option<JsonlFamilyExecutionRecord>, JsonlRuntimeError<R>> {
+        self.reader
+            .next_execution_record()
+            .map(|record| record.map(JsonlFamilyExecutionRecord::new))
+    }
+
+    pub fn record_bytes(
+        &self,
+        record: JsonlFamilyExecutionRecord,
+    ) -> JsonlResult<&[u8], JsonlRuntimeError<R>> {
+        self.reader.execution_record_bytes(record.physical)
+    }
+
+    pub fn position(&self) -> JsonlResult<JsonlFamilyExecutionPosition, JsonlRuntimeError<R>> {
+        self.reader
+            .execution_position()
+            .map(|physical| JsonlFamilyExecutionPosition { physical })
+    }
+
+    pub fn settle_preflight(
+        &mut self,
+        initial: JsonlFamilyExecutionPosition,
+    ) -> JsonlResult<bool, JsonlRuntimeError<R>> {
+        self.reader
+            .settle_semantic_preflight(initial.physical, true, false)
+    }
+
+    pub fn restore(
+        &mut self,
+        position: JsonlFamilyExecutionPosition,
+    ) -> JsonlResult<(), JsonlRuntimeError<R>> {
+        self.reader.restore_execution_position(position.physical)
+    }
+
+    pub fn offset(&self) -> JsonlResult<u64, JsonlRuntimeError<R>> {
+        self.reader.execution_offset()
+    }
+
+    pub fn complete_prefix_end(&self) -> JsonlResult<u64, JsonlRuntimeError<R>> {
+        self.reader.execution_complete_prefix_end()
+    }
+
+    /// Boundary between the previously certified source prefix and bytes
+    /// admitted by this append. No physical checkpoint state crosses the
+    /// shared executor seam.
+    pub fn certified_prefix_end(&self) -> Option<u64> {
+        self.reader.execution_certified_prefix_end()
+    }
+
+    pub fn release_record_buffer(&mut self) -> JsonlResult<(), JsonlRuntimeError<R>> {
+        self.reader.release_execution_record_buffer()
+    }
+
+    pub(super) fn admitted_eof_sha256(
+        &self,
+    ) -> JsonlResult<Option<[u8; 32]>, JsonlRuntimeError<R>> {
+        self.reader.admitted_eof_sha256()
+    }
+
+    pub(super) fn complete_prefix_ends_with_terminal_nul_padding(&self) -> bool {
+        self.reader.complete_prefix_ends_with_terminal_nul_padding()
+    }
+
+    pub(super) fn into_reader(self) -> JsonlReader<JsonlRuntimeError<R>> {
+        self.reader
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct JsonlFamilyExecutionPosition {
+    physical: JsonlPhysicalStreamPosition,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct JsonlFamilyExecutionRecord {
+    physical: JsonlPhysicalRecord,
+}
+
+impl JsonlFamilyExecutionRecord {
+    fn new(physical: JsonlPhysicalRecord) -> Self {
+        Self { physical }
+    }
+
+    pub fn physical_ordinal(self) -> u64 {
+        self.physical.physical_ordinal
+    }
+
+    pub fn byte_start(self) -> u64 {
+        self.physical.byte_start
+    }
+
+    pub fn byte_end_exclusive(self) -> u64 {
+        self.physical.byte_end_exclusive
+    }
+
+    pub fn byte_len(self) -> u64 {
+        self.physical.byte_len()
+    }
+
+    pub fn complete(self) -> bool {
+        self.physical.complete
+    }
+
+    pub fn terminal_nul_padding(self) -> bool {
+        self.physical.terminal_nul_padding
+    }
+
+    pub fn oversized(self) -> bool {
+        self.physical.oversized
+    }
+
+    pub fn stored_len(self) -> usize {
+        self.physical.stored_len
+    }
+
+    pub fn sha256(self) -> [u8; 32] {
+        self.physical.sha256
+    }
+}
+
+#[cfg(test)]
+pub(crate) use activity::with_family_scanner_workers;
+#[cfg(test)]
+pub(super) use activity::{
+    jsonl_family_scanner_activity, jsonl_family_scanner_probe,
+    record_jsonl_family_scanner_activity, JsonlFamilyScannerActivity, JsonlFamilyScannerProbe,
+    FAMILY_SCANNER_WORKERS_OVERRIDE,
+};
+
+#[cfg(test)]
+mod activity {
+    use std::{
+        cell::Cell,
+        sync::{
+            atomic::{AtomicUsize, Ordering},
+            Arc, Barrier,
+        },
+    };
+
+    #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+    pub(crate) struct JsonlFamilyScannerActivity {
+        pub(crate) worker_count: usize,
+        pub(crate) sources_started: usize,
+        pub(crate) sources_completed: usize,
+        pub(crate) peak_active_scanners: usize,
+    }
+
+    thread_local! {
+        pub(in super::super) static FAMILY_SCANNER_WORKERS_OVERRIDE: Cell<Option<usize>> =
+            const { Cell::new(None) };
+        static FAMILY_SCANNER_ACTIVITY: Cell<JsonlFamilyScannerActivity> =
+            const { Cell::new(JsonlFamilyScannerActivity {
+                worker_count: 0,
+                sources_started: 0,
+                sources_completed: 0,
+                peak_active_scanners: 0,
+            }) };
+    }
+
+    pub(crate) fn jsonl_family_scanner_activity() -> JsonlFamilyScannerActivity {
+        FAMILY_SCANNER_ACTIVITY.get()
+    }
+
+    pub(in super::super) struct JsonlFamilyScannerProbe {
+        sources_started: AtomicUsize,
+        sources_completed: AtomicUsize,
+        active_scanners: AtomicUsize,
+        peak_active_scanners: AtomicUsize,
+        rendezvous_arrivals: AtomicUsize,
+        rendezvous_target: usize,
+        rendezvous: Barrier,
+    }
+
+    impl JsonlFamilyScannerProbe {
+        pub(in super::super) fn enter(&self) -> JsonlFamilyActiveScanner<'_> {
+            self.sources_started.fetch_add(1, Ordering::SeqCst);
+            let active = self
+                .active_scanners
+                .fetch_add(1, Ordering::SeqCst)
+                .saturating_add(1);
+            self.peak_active_scanners
+                .fetch_max(active, Ordering::SeqCst);
+            if self.rendezvous_arrivals.fetch_add(1, Ordering::SeqCst) < self.rendezvous_target {
+                self.rendezvous.wait();
+            }
+            JsonlFamilyActiveScanner { probe: self }
+        }
+
+        fn snapshot(&self, worker_count: usize) -> JsonlFamilyScannerActivity {
+            debug_assert_eq!(self.active_scanners.load(Ordering::SeqCst), 0);
+            JsonlFamilyScannerActivity {
+                worker_count,
+                sources_started: self.sources_started.load(Ordering::SeqCst),
+                sources_completed: self.sources_completed.load(Ordering::SeqCst),
+                peak_active_scanners: self.peak_active_scanners.load(Ordering::SeqCst),
+            }
+        }
+    }
+
+    pub(in super::super) struct JsonlFamilyActiveScanner<'probe> {
+        probe: &'probe JsonlFamilyScannerProbe,
+    }
+
+    impl Drop for JsonlFamilyActiveScanner<'_> {
+        fn drop(&mut self) {
+            self.probe.sources_completed.fetch_add(1, Ordering::SeqCst);
+            self.probe.active_scanners.fetch_sub(1, Ordering::SeqCst);
+        }
+    }
+
+    pub(in super::super) fn jsonl_family_scanner_probe(
+        worker_count: usize,
+    ) -> Option<Arc<JsonlFamilyScannerProbe>> {
+        FAMILY_SCANNER_WORKERS_OVERRIDE.with(|workers| {
+            workers.get().map(|_| {
+                let rendezvous_target = worker_count.clamp(1, 4);
+                Arc::new(JsonlFamilyScannerProbe {
+                    sources_started: AtomicUsize::new(0),
+                    sources_completed: AtomicUsize::new(0),
+                    active_scanners: AtomicUsize::new(0),
+                    peak_active_scanners: AtomicUsize::new(0),
+                    rendezvous_arrivals: AtomicUsize::new(0),
+                    rendezvous_target,
+                    rendezvous: Barrier::new(rendezvous_target),
+                })
+            })
+        })
+    }
+
+    pub(in super::super) fn record_jsonl_family_scanner_activity(
+        worker_count: usize,
+        probe: Option<&JsonlFamilyScannerProbe>,
+    ) {
+        FAMILY_SCANNER_ACTIVITY.set(
+            probe.map_or_else(JsonlFamilyScannerActivity::default, |probe| {
+                probe.snapshot(worker_count)
+            }),
+        );
+    }
+
+    pub(crate) fn with_family_scanner_workers<T>(workers: usize, run: impl FnOnce() -> T) -> T {
+        struct Restore(Option<usize>);
+
+        impl Drop for Restore {
+            fn drop(&mut self) {
+                FAMILY_SCANNER_WORKERS_OVERRIDE.set(self.0);
+            }
+        }
+
+        let previous = FAMILY_SCANNER_WORKERS_OVERRIDE.replace(Some(workers));
+        let _restore = Restore(previous);
+        FAMILY_SCANNER_ACTIVITY.set(JsonlFamilyScannerActivity::default());
+        run()
+    }
+}

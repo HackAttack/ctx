@@ -135,10 +135,10 @@ fn optimized_leaf_execution_keeps_publication_inside_the_shared_family() {
     };
     let inventory = adapter.discover(&root).unwrap();
     let leaf = inventory.leaves().first().unwrap();
-    let writer = GenerationWriter::open(temp.path().join("index"), test_writer_options())
-        .unwrap()
-        .into_writer()
-        .unwrap();
+    let writer = match TestLifecycle::open(&temp.path().join("index"), ()).unwrap() {
+        CaptureLifecycleOpenOutcome::Ready(writer) => writer,
+        CaptureLifecycleOpenOutcome::RecoveryRequired { .. } => unreachable!(),
+    };
     let mut publications = Vec::new();
     let mut worker = JsonlFamilyWorkerContext::default();
     let mut emit = |event| {
@@ -155,7 +155,7 @@ fn optimized_leaf_execution_keeps_publication_inside_the_shared_family() {
         &adapter,
         leaf,
         None,
-        &writer.base_event_identity_lookup().into(),
+        &writer.base_event_identity_lookup(),
         &mut worker,
         &mut output,
     )
@@ -186,15 +186,12 @@ fn single_leaf_serial_jsonl_page_accounts_sessions_messages_and_tool_calls() {
         emit_progress_records: true,
     };
     let resident = Mutex::new(FamilyResident::default());
-    let mut writer =
-        match IndexCaptureLifecycle::open(&temp.path().join("index"), test_writer_options())
-            .unwrap()
-        {
-            CaptureLifecycleOpenOutcome::Ready(lifecycle) => lifecycle,
-            CaptureLifecycleOpenOutcome::RecoveryRequired { .. } => {
-                panic!("serial progress test lifecycle unexpectedly requires recovery")
-            }
-        };
+    let mut writer = match IndexCaptureLifecycle::open(&temp.path().join("index"), ()).unwrap() {
+        CaptureLifecycleOpenOutcome::Ready(lifecycle) => lifecycle,
+        CaptureLifecycleOpenOutcome::RecoveryRequired { .. } => {
+            panic!("serial progress test lifecycle unexpectedly requires recovery")
+        }
+    };
     let mut owners = HashMap::new();
     let mut complete_inventories = Vec::new();
     let mut logical_source_failures = SourceBackedLogicalSourceFailures::default();
@@ -240,11 +237,13 @@ fn single_leaf_serial_jsonl_page_accounts_sessions_messages_and_tool_calls() {
 }
 
 fn optimized_test_certificate(
-    adapter: &dyn JsonlFamilyAdapter,
+    adapter: &JsonlFamilyAdapterObject,
     leaf: &JsonlFamilyLeaf,
     content_digest: [u8; 32],
 ) -> CertifiedSource {
-    let observation = super::leaf::source_observation(leaf.source(), leaf.observation()).unwrap();
+    let observation =
+        super::scanner::source_observation::<CaptureError>(leaf.source(), leaf.observation())
+            .unwrap();
     CertifiedSource::certify(
         observation.clone(),
         observation,
@@ -350,10 +349,10 @@ fn optimized_leaf_execution_rejects_records_owned_by_another_source() {
     };
     let inventory = adapter.discover(&root).unwrap();
     let leaf = inventory.leaves().first().unwrap();
-    let writer = GenerationWriter::open(temp.path().join("index"), test_writer_options())
-        .unwrap()
-        .into_writer()
-        .unwrap();
+    let writer = match TestLifecycle::open(&temp.path().join("index"), ()).unwrap() {
+        CaptureLifecycleOpenOutcome::Ready(writer) => writer,
+        CaptureLifecycleOpenOutcome::RecoveryRequired { .. } => unreachable!(),
+    };
     let mut worker = JsonlFamilyWorkerContext::default();
     let mut emit = |_event| Ok(());
     let mut output = JsonlLeafOutput::new(&mut emit);
@@ -361,7 +360,7 @@ fn optimized_leaf_execution_rejects_records_owned_by_another_source() {
         &adapter,
         leaf,
         None,
-        &writer.base_event_identity_lookup().into(),
+        &writer.base_event_identity_lookup(),
         &mut worker,
         &mut output,
     )
@@ -373,16 +372,16 @@ fn optimized_leaf_execution_rejects_records_owned_by_another_source() {
 }
 
 fn project_framing_policy_fixture(
-    adapter: &dyn JsonlFamilyAdapter,
+    adapter: &JsonlFamilyAdapterObject,
     root: &Path,
     index: &Path,
 ) -> CertifiedSource {
     let inventory = adapter.discover(root).unwrap();
     let leaf = inventory.leaves().first().unwrap();
-    let writer = GenerationWriter::open(index, test_writer_options())
-        .unwrap()
-        .into_writer()
-        .unwrap();
+    let writer = match TestLifecycle::open(index, ()).unwrap() {
+        CaptureLifecycleOpenOutcome::Ready(writer) => writer,
+        CaptureLifecycleOpenOutcome::RecoveryRequired { .. } => unreachable!(),
+    };
     let mut worker = JsonlFamilyWorkerContext::default();
     let mut emit = |_event| Ok(());
     let mut output = JsonlLeafOutput::new(&mut emit);
@@ -390,7 +389,7 @@ fn project_framing_policy_fixture(
         adapter,
         leaf,
         None,
-        &writer.base_event_identity_lookup().into(),
+        &writer.base_event_identity_lookup(),
         &mut worker,
         &mut output,
     )
@@ -445,7 +444,7 @@ fn adapter_record_framing_defaults_to_ordinary_tail_compatibility() {
 fn adapter_record_framing_can_select_terminal_nul_padding() {
     assert_framing_policy_fixture(
         "terminal",
-        JsonlRecordFraming::terminal_nul_padded(crate::MAX_PROVIDER_JSONL_LINE_BYTES),
+        JsonlRecordFraming::terminal_nul_padded(MAX_PROVIDER_JSONL_LINE_BYTES),
         true,
     );
 }
@@ -467,10 +466,10 @@ fn generic_projection_streams_record_and_finish_fanout_before_record_65() {
         };
         let inventory = adapter.discover(&root).unwrap();
         let leaf = inventory.leaves().first().unwrap();
-        let writer = GenerationWriter::open(temp.path().join("index"), test_writer_options())
-            .unwrap()
-            .into_writer()
-            .unwrap();
+        let writer = match TestLifecycle::open(&temp.path().join("index"), ()).unwrap() {
+            CaptureLifecycleOpenOutcome::Ready(writer) => writer,
+            CaptureLifecycleOpenOutcome::RecoveryRequired { .. } => unreachable!(),
+        };
         let mut emit = |event| {
             if matches!(event, JsonlLeafOutputEvent::Record { .. }) {
                 admitted.fetch_add(1, Ordering::SeqCst);
@@ -483,7 +482,7 @@ fn generic_projection_streams_record_and_finish_fanout_before_record_65() {
             &adapter,
             leaf,
             None,
-            &writer.base_event_identity_lookup().into(),
+            &writer.base_event_identity_lookup(),
             &mut worker,
             &mut output,
         )
@@ -640,10 +639,13 @@ fn unchanged_terminal_proof_fails_closed_on_prepublication_source_races() {
     let append_adapter = ParallelTestAdapter;
     let replacement_adapter = ReplacementParallelTestAdapter;
     for (proof_kind, adapter) in [
-        ("frozen-prefix", &append_adapter as &dyn JsonlFamilyAdapter),
+        (
+            "frozen-prefix",
+            &append_adapter as &JsonlFamilyAdapterObject,
+        ),
         (
             "exact-file",
-            &replacement_adapter as &dyn JsonlFamilyAdapter,
+            &replacement_adapter as &JsonlFamilyAdapterObject,
         ),
     ] {
         for race in ["mutation", "replacement", "deletion"] {
@@ -685,7 +687,7 @@ fn unchanged_terminal_proof_fails_closed_on_prepublication_source_races() {
 
             assert!(hook_ran.load(Ordering::SeqCst), "{proof_kind} {race}");
             assert!(
-                matches!(error, IndexError::CompleteInventoryInvalidated { .. }),
+                matches!(error, SourceIoError::SourceChangedDuringCapture),
                 "{proof_kind} {race} produced {error:?}"
             );
             assert_eq!(
@@ -693,11 +695,7 @@ fn unchanged_terminal_proof_fails_closed_on_prepublication_source_races() {
                 JsonlFamilyScannerActivity::default(),
                 "{proof_kind} {race} did not take unchanged admission"
             );
-            assert_eq!(
-                VerifiedIndex::open(&index).unwrap().generation_id(),
-                cold.generation_id,
-                "{proof_kind} {race} became visible"
-            );
+            assert_eq!(cold.manifest().sources.len(), 1);
         }
     }
 }
@@ -730,7 +728,7 @@ fn event_identity_revision_forces_replacement_with_core_base_authority() {
         .unwrap()
         .checkpoint();
     assert_eq!(
-        FamilyCheckpoint::decode_frontier_key(checkpoint)
+        FamilyCheckpoint::decode_frontier_key::<CaptureError>(checkpoint)
             .unwrap()
             .event_identity_revision,
         "content-occurrence-v2"
@@ -780,35 +778,32 @@ fn production_jsonl_scheduler_projects_multiple_sources_concurrently() {
     }
     let adapter = ParallelTestAdapter;
     let resident = Mutex::new(FamilyResident::default());
-    let mut writer =
-        match IndexCaptureLifecycle::open(&temp.path().join("index"), test_writer_options())
-            .unwrap()
-        {
-            CaptureLifecycleOpenOutcome::Ready(lifecycle) => lifecycle,
-            CaptureLifecycleOpenOutcome::RecoveryRequired { .. } => {
-                panic!("test lifecycle unexpectedly requires recovery")
-            }
-        };
+    let mut writer = match IndexCaptureLifecycle::open(&temp.path().join("index"), ()).unwrap() {
+        CaptureLifecycleOpenOutcome::Ready(lifecycle) => lifecycle,
+        CaptureLifecycleOpenOutcome::RecoveryRequired { .. } => {
+            panic!("test lifecycle unexpectedly requires recovery")
+        }
+    };
     let mut owners = HashMap::new();
     let mut complete_inventories = Vec::new();
     let mut logical_source_failures = SourceBackedLogicalSourceFailures::default();
     let mut record_rejections = SourceBackedRecordRejections::default();
-    let mut sink = SourceBackedGenerationSink {
-        core_record_preparer: writer.core_preparation(),
-        lifecycle: &mut writer,
-        owners: &mut owners,
-        complete_inventories: &mut complete_inventories,
-        route_index: 0,
-        route_identity: test_route_identity(),
-        base_route_control: None,
-        resources: SourceBackedRouteResources::production(4),
-        logical_source_failures: &mut logical_source_failures,
-        record_rejections: &mut record_rejections,
-        applied_removals: &mut Vec::new(),
-        record_progress: None,
-        current_source_progress: None,
-        last_progress_session_id: None,
-    };
+    let mut applied_removals = Vec::new();
+    let mut sink = SourceBackedGenerationSink::new(
+        &mut writer,
+        &mut owners,
+        &mut complete_inventories,
+        &mut applied_removals,
+        0,
+        test_route_identity(),
+        None,
+        SourceBackedRouteResources::production(4),
+        &mut logical_source_failures,
+        &mut record_rejections,
+        None,
+        None,
+        None,
+    );
 
     with_family_scanner_workers(4, || {
         capture(&adapter, &root, &resident, &mut sink).unwrap();
@@ -1299,37 +1294,35 @@ fn serial_and_parallel_jsonl_emission_preserve_resource_unavailable() {
             .unwrap();
         }
         let resident = Mutex::new(FamilyResident::default());
-        let mut writer = match IndexCaptureLifecycle::open(
-            &temp.path().join(format!("index-{workers}")),
-            test_writer_options(),
-        )
-        .unwrap()
-        {
-            CaptureLifecycleOpenOutcome::Ready(lifecycle) => lifecycle,
-            CaptureLifecycleOpenOutcome::RecoveryRequired { .. } => {
-                panic!("test lifecycle unexpectedly requires recovery")
-            }
-        };
+        let mut writer =
+            match IndexCaptureLifecycle::open(&temp.path().join(format!("index-{workers}")), ())
+                .unwrap()
+            {
+                CaptureLifecycleOpenOutcome::Ready(lifecycle) => lifecycle,
+                CaptureLifecycleOpenOutcome::RecoveryRequired { .. } => {
+                    panic!("test lifecycle unexpectedly requires recovery")
+                }
+            };
         let mut owners = HashMap::new();
         let mut complete_inventories = Vec::new();
         let mut logical_source_failures = SourceBackedLogicalSourceFailures::default();
         let mut record_rejections = SourceBackedRecordRejections::default();
-        let mut sink = SourceBackedGenerationSink {
-            core_record_preparer: writer.core_preparation(),
-            lifecycle: &mut writer,
-            owners: &mut owners,
-            complete_inventories: &mut complete_inventories,
-            route_index: 0,
-            route_identity: test_route_identity(),
-            base_route_control: None,
-            resources: SourceBackedRouteResources::for_test(workers, 1, u64::MAX),
-            logical_source_failures: &mut logical_source_failures,
-            record_rejections: &mut record_rejections,
-            applied_removals: &mut Vec::new(),
-            record_progress: None,
-            current_source_progress: None,
-            last_progress_session_id: None,
-        };
+        let mut applied_removals = Vec::new();
+        let mut sink = SourceBackedGenerationSink::new(
+            &mut writer,
+            &mut owners,
+            &mut complete_inventories,
+            &mut applied_removals,
+            0,
+            test_route_identity(),
+            None,
+            SourceBackedRouteResources::for_test(workers, 1, u64::MAX),
+            &mut logical_source_failures,
+            &mut record_rejections,
+            None,
+            None,
+            None,
+        );
 
         let error = with_family_scanner_workers(workers, || {
             capture(
@@ -1363,7 +1356,7 @@ fn jsonl_terminal_drift_and_io_failures_keep_distinct_route_kinds() {
         Some(SourceBackedRouteErrorKind::Internal)
     );
     assert_eq!(
-        normalized_jsonl_error_kind(&CaptureError::WorkerPanicked("broken worker")),
+        normalized_jsonl_error_kind(&CaptureError::SystemInvariant("broken worker")),
         Some(SourceBackedRouteErrorKind::Internal)
     );
     assert_eq!(

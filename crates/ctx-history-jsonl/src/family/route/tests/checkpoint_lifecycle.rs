@@ -52,12 +52,13 @@ fn family_checkpoint_writes_compact_utf8_and_reads_legacy_bytes() {
     let TypedKey::Utf8(json) = frontier.checkpoint() else {
         panic!("new family checkpoint was not compact UTF-8");
     };
-    let checkpoint = FamilyCheckpoint::decode_frontier_key(frontier.checkpoint()).unwrap();
+    let checkpoint =
+        FamilyCheckpoint::decode_frontier_key::<CaptureError>(frontier.checkpoint()).unwrap();
     assert_eq!(checkpoint.version, FamilyCheckpoint::VERSION);
 
     let legacy = TypedKey::bytes(serde_json::to_vec(&checkpoint).unwrap()).unwrap();
     assert_eq!(
-        FamilyCheckpoint::decode_frontier_key(&legacy).unwrap(),
+        FamilyCheckpoint::decode_frontier_key::<CaptureError>(&legacy).unwrap(),
         checkpoint
     );
     assert!(
@@ -81,11 +82,11 @@ fn nonterminal_checkpoint_noops_then_resumes_only_its_uncertified_tail() {
         b"{\"message\":\"prefix\"}\n{\"message\":\"tail\"",
     )
     .unwrap();
-    let writer = GenerationWriter::open(temp.path().join("index"), test_writer_options())
-        .unwrap()
-        .into_writer()
-        .unwrap();
-    let lookup = writer.base_event_identity_lookup().into();
+    let writer = match TestLifecycle::open(&temp.path().join("index"), ()).unwrap() {
+        CaptureLifecycleOpenOutcome::Ready(writer) => writer,
+        CaptureLifecycleOpenOutcome::RecoveryRequired { .. } => unreachable!(),
+    };
+    let lookup = writer.base_event_identity_lookup();
     let adapter = CheckpointTestAdapter::default();
     let mut worker = JsonlFamilyWorkerContext::default();
 
