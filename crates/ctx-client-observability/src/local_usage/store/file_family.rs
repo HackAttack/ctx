@@ -7,7 +7,7 @@ use std::{
     time::SystemTime,
 };
 
-use ctx_history_core::platform_security::{
+use ctx_history_platform::platform_security::{
     restrict_private_file_handle, verify_private_directory, verify_private_file,
     verify_private_file_handle,
 };

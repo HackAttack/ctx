@@ -29,7 +29,7 @@ pub struct DaemonLock {
 
 impl DaemonLock {
     pub fn acquire(data_root: &Path) -> Result<Option<Self>> {
-        ctx_history_core::platform_security::establish_private_data_root(data_root)?;
+        ctx_history_platform::platform_security::establish_private_data_root(data_root)?;
         create_private_dir_all(&daemon_root_path(data_root))?;
         let payload = current_daemon_lock_identity(data_root)?;
         Ok(PidFileLock::acquire(&daemon_lock_path(data_root), payload)?
@@ -53,7 +53,7 @@ pub struct DaemonQuiescenceGuard {
 
 impl DaemonQuiescenceGuard {
     pub fn acquire(data_root: &Path) -> Result<Option<Self>> {
-        ctx_history_core::platform_security::establish_private_data_root(data_root)?;
+        ctx_history_platform::platform_security::establish_private_data_root(data_root)?;
         create_private_dir_all(&daemon_root_path(data_root))?;
         let lock_path = daemon_lock_path(data_root);
         let guard_path = pid_lock_guard_path(&lock_path);

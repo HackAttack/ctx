@@ -30,7 +30,7 @@ fn source_refresh_endpoint(socket_path: &Path) -> DaemonQueryEndpoint {
 #[test]
 fn background_maintenance_wake_is_accepted_through_client_and_coordinator() -> Result<()> {
     let data_root = short_data_root()?;
-    ctx_history_core::platform_security::establish_private_data_root(data_root.path())?;
+    ctx_history_platform::platform_security::establish_private_data_root(data_root.path())?;
     let generation = super::publish_authoritative_empty_generation_for_test(
         &source_backed_index_root(data_root.path()),
         "background-maintenance-wake-fixture",
@@ -160,7 +160,7 @@ fn same_id_reenqueue_replays_the_exact_payload_after_a_lost_ack() -> Result<()> 
 #[test]
 fn background_lost_ack_terminal_replay_is_not_reported_as_pending() -> Result<()> {
     let data_root = short_data_root()?;
-    ctx_history_core::platform_security::establish_private_data_root(data_root.path())?;
+    ctx_history_platform::platform_security::establish_private_data_root(data_root.path())?;
     let socket_path = data_root.path().join("lost-ack-terminal.sock");
     let listener = UnixListener::bind(&socket_path)?;
     write_daemon_service_endpoint(

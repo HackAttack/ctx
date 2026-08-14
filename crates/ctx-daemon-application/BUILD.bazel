@@ -40,6 +40,7 @@ CTX_DAEMON_APPLICATION_DEPS = [
     "//crates/ctx-daemon-runtime:lib",
     "//crates/ctx-daemon-service:lib",
     "//crates/ctx-history-core:lib",
+    "//crates/ctx-history-platform:lib",
 ]
 
 CTX_DAEMON_APPLICATION_QUALIFICATION_DEPS = [
@@ -47,6 +48,7 @@ CTX_DAEMON_APPLICATION_QUALIFICATION_DEPS = [
     "//crates/ctx-daemon-runtime:qualification_lib",
     "//crates/ctx-daemon-service:qualification_lib",
     "//crates/ctx-history-core:lib",
+    "//crates/ctx-history-platform:lib",
 ]
 
 CTX_DAEMON_APPLICATION_TEST_DEPS = [
@@ -54,6 +56,7 @@ CTX_DAEMON_APPLICATION_TEST_DEPS = [
     "//crates/ctx-daemon-runtime:lib",
     "//crates/ctx-daemon-service:test_support_lib",
     "//crates/ctx-history-core:lib",
+    "//crates/ctx-history-platform:lib",
 ]
 
 CTX_DAEMON_APPLICATION_RUSTC_FLAGS = [

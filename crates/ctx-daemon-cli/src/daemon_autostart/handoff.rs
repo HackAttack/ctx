@@ -496,7 +496,7 @@ pub fn prepare_daemon_uninstall(data_root: &Path) -> Result<Value> {
     let expected_executable =
         env::current_exe().context("resolve installed ctx executable before uninstall")?;
     let canonical_root =
-        ctx_history_core::managed_data_root().context("resolve canonical ctx data root")?;
+        ctx_history_platform::managed_data_root().context("resolve canonical ctx data root")?;
     let mut roots = BTreeSet::from([data_root.to_path_buf(), canonical_root.clone()]);
     let mut disabled_roots = BTreeSet::new();
     discover_and_disable_installation_roots(&mut roots, &mut disabled_roots)?;

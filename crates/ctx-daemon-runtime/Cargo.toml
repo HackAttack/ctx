@@ -21,6 +21,7 @@ serde_json.workspace = true
 thiserror.workspace = true
 uuid.workspace = true
 ctx-history-core = { path = "../ctx-history-core" }
+ctx-history-platform = { path = "../ctx-history-platform" }
 
 [target.'cfg(unix)'.dependencies]
 libc.workspace = true

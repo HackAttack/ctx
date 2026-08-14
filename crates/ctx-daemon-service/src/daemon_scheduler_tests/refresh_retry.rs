@@ -56,7 +56,7 @@ fn hot_route_failure_retries_exact_after_cooldown_while_blocked_route_stays_idle
     ] {
         let temp = tempfile::tempdir().unwrap();
         let data_root = temp.path().join("data");
-        ctx_history_core::platform_security::establish_private_data_root(&data_root).unwrap();
+        ctx_history_platform::platform_security::establish_private_data_root(&data_root).unwrap();
         publish_empty_core_generation(&data_root);
         let route = route_identity(byte);
         let scopes = Arc::new(Mutex::new(Vec::new()));
@@ -124,7 +124,7 @@ fn hot_route_failure_retries_exact_after_cooldown_while_blocked_route_stays_idle
 fn mixed_route_dispositions_schedule_only_retryable_routes() {
     let temp = tempfile::tempdir().unwrap();
     let data_root = temp.path().join("data");
-    ctx_history_core::platform_security::establish_private_data_root(&data_root).unwrap();
+    ctx_history_platform::platform_security::establish_private_data_root(&data_root).unwrap();
     publish_empty_core_generation(&data_root);
     let retryable_route = route_identity(0xc1);
     let blocked_route = route_identity(0xc2);
@@ -203,7 +203,7 @@ fn mixed_route_dispositions_schedule_only_retryable_routes() {
 fn terminal_admission_fence_failure_releases_root_before_exact_dirty_route_runs() {
     let temp = tempfile::tempdir().unwrap();
     let data_root = temp.path().join("data");
-    ctx_history_core::platform_security::establish_private_data_root(&data_root).unwrap();
+    ctx_history_platform::platform_security::establish_private_data_root(&data_root).unwrap();
     publish_empty_core_generation(&data_root);
     let dirty_route = route_identity(0xd1);
     let executor_route = dirty_route.clone();
@@ -326,7 +326,7 @@ fn terminal_admission_fence_failure_releases_root_before_exact_dirty_route_runs(
 fn failed_attached_demand_is_terminal_replayable_and_never_executes_a_successor() {
     let temp = tempfile::tempdir().unwrap();
     let data_root = temp.path().join("data");
-    ctx_history_core::platform_security::establish_private_data_root(&data_root).unwrap();
+    ctx_history_platform::platform_security::establish_private_data_root(&data_root).unwrap();
     let entered = Arc::new(Barrier::new(2));
     let release = Arc::new(Barrier::new(2));
     let executor_entered = Arc::clone(&entered);
@@ -424,7 +424,7 @@ fn failed_attached_demand_is_terminal_replayable_and_never_executes_a_successor(
 fn persistent_admission_status_failure_uses_scheduler_backoff() {
     let temp = tempfile::tempdir().unwrap();
     let data_root = temp.path().join("data");
-    ctx_history_core::platform_security::establish_private_data_root(&data_root).unwrap();
+    ctx_history_platform::platform_security::establish_private_data_root(&data_root).unwrap();
     let fence_calls = Arc::new(AtomicUsize::new(0));
     let observed_fence_calls = Arc::clone(&fence_calls);
     let queued_writes = Arc::new(AtomicUsize::new(0));
@@ -513,7 +513,7 @@ fn persistent_admission_status_failure_uses_scheduler_backoff() {
 fn persistent_terminal_status_failure_retries_without_reexecution_or_hot_spin() {
     let temp = tempfile::tempdir().unwrap();
     let data_root = temp.path().join("data");
-    ctx_history_core::platform_security::establish_private_data_root(&data_root).unwrap();
+    ctx_history_platform::platform_security::establish_private_data_root(&data_root).unwrap();
     let executions = Arc::new(AtomicUsize::new(0));
     let observed_executions = Arc::clone(&executions);
     let executor = Arc::new(move |execution: SourceBackedRefreshExecution<'_>| {
@@ -584,7 +584,7 @@ fn persistent_terminal_status_failure_retries_without_reexecution_or_hot_spin() 
 fn scheduler_retries_terminal_status_without_republishing_core() {
     let temp = tempfile::tempdir().unwrap();
     let data_root = temp.path().join("data");
-    ctx_history_core::platform_security::establish_private_data_root(&data_root).unwrap();
+    ctx_history_platform::platform_security::establish_private_data_root(&data_root).unwrap();
     let executions = Arc::new(AtomicUsize::new(0));
     let execution_count = Arc::clone(&executions);
     let executor = Arc::new(move |execution: SourceBackedRefreshExecution<'_>| {
@@ -646,7 +646,7 @@ fn scheduler_retries_terminal_status_without_republishing_core() {
 fn scheduler_failed_terminal_retry_preserves_successor_across_restart() {
     let temp = tempfile::tempdir().unwrap();
     let data_root = temp.path().join("data");
-    ctx_history_core::platform_security::establish_private_data_root(&data_root).unwrap();
+    ctx_history_platform::platform_security::establish_private_data_root(&data_root).unwrap();
     let executions = Arc::new(AtomicUsize::new(0));
     let execution_count = Arc::clone(&executions);
     let executor = Arc::new(move |_execution: SourceBackedRefreshExecution<'_>| {
@@ -746,7 +746,7 @@ fn scheduler_failed_terminal_retry_preserves_successor_across_restart() {
 fn blocked_retry_writer_serializes_concurrent_admission_and_restart() {
     let temp = tempfile::tempdir().unwrap();
     let data_root = temp.path().join("data");
-    ctx_history_core::platform_security::establish_private_data_root(&data_root).unwrap();
+    ctx_history_platform::platform_security::establish_private_data_root(&data_root).unwrap();
     let executions = Arc::new(AtomicUsize::new(0));
     let execution_count = Arc::clone(&executions);
     let executor = Arc::new(move |_execution: SourceBackedRefreshExecution<'_>| {
@@ -869,7 +869,7 @@ fn blocked_retry_writer_serializes_concurrent_admission_and_restart() {
 fn failed_terminal_root_keeps_capacity_through_successful_retry_and_restart() {
     let temp = tempfile::tempdir().unwrap();
     let data_root = temp.path().join("data");
-    ctx_history_core::platform_security::establish_private_data_root(&data_root).unwrap();
+    ctx_history_platform::platform_security::establish_private_data_root(&data_root).unwrap();
     let executor = Arc::new(move |_execution: SourceBackedRefreshExecution<'_>| {
         Err(anyhow::anyhow!("injected provider failure"))
     });
@@ -961,7 +961,7 @@ fn failed_terminal_root_keeps_capacity_through_successful_retry_and_restart() {
 fn stale_global_backoff_cannot_overwrite_durable_same_id_admission() {
     let temp = tempfile::tempdir().unwrap();
     let data_root = temp.path().join("data");
-    ctx_history_core::platform_security::establish_private_data_root(&data_root).unwrap();
+    ctx_history_platform::platform_security::establish_private_data_root(&data_root).unwrap();
     let coordinator = CoreRefreshEngine::with_executor(Arc::new(
         |_execution: SourceBackedRefreshExecution<'_>| {
             panic!("stale global backoff must not execute refresh work")

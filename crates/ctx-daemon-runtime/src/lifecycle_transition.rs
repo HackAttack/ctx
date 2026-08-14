@@ -24,7 +24,7 @@ pub struct DaemonLifecycleTransitionLock {
 
 impl DaemonLifecycleTransitionLock {
     pub fn acquire(data_root: &Path) -> Result<Self> {
-        ctx_history_core::platform_security::establish_private_data_root(data_root)?;
+        ctx_history_platform::platform_security::establish_private_data_root(data_root)?;
         create_private_dir_all(&daemon_root_path(data_root))?;
         let path = daemon_lifecycle_transition_lock_path(data_root);
         let (file, _) = open_or_create_pid_lock_file(&path).with_context(|| {

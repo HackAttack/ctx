@@ -2,8 +2,9 @@ use std::path::Path;
 
 use anyhow::Result;
 use ctx_history_capture::{source_backed_source_failure_identity, ProviderSource};
-use ctx_history_core::{platform_security::establish_private_data_root, CaptureProvider};
+use ctx_history_core::CaptureProvider;
 use ctx_history_ingest_application::{HistorySourcePluginSource, IngestPublication};
+use ctx_history_platform::platform_security::establish_private_data_root;
 use ctx_history_refresh::{ExplicitSourceCatalogAuthority, ExplicitSourceCatalogUpsert};
 
 use crate::{

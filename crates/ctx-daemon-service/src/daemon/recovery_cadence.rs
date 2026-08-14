@@ -8,7 +8,7 @@ use crate::source_backed_refresh_coordinator::{
 fn recovered_periodic_publication_restores_crash_cooldown_before_explicit_bypass() -> Result<()> {
     let temp = tempfile::tempdir()?;
     let data_root = temp.path().join("data");
-    ctx_history_core::platform_security::establish_private_data_root(&data_root)?;
+    ctx_history_platform::platform_security::establish_private_data_root(&data_root)?;
     let interrupted = CoreRefreshEngine::with_executor(Arc::new(
         move |execution: SourceBackedRefreshExecution<'_>| {
             let published = publish_authoritative_empty_generation_for_test(
@@ -112,7 +112,7 @@ fn recovered_periodic_publication_restores_crash_cooldown_before_explicit_bypass
 fn recovered_periodic_no_op_restores_cooldown_from_original_request() -> Result<()> {
     let temp = tempfile::tempdir()?;
     let data_root = temp.path().join("data");
-    ctx_history_core::platform_security::establish_private_data_root(&data_root)?;
+    ctx_history_platform::platform_security::establish_private_data_root(&data_root)?;
     let executor = Arc::new(move |execution: SourceBackedRefreshExecution<'_>| {
         publish_authoritative_empty_generation_for_test(
             execution.index_root,

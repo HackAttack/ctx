@@ -87,7 +87,7 @@ fn background_rest_is_bounded_and_restores_from_periodic_terminal_status() {
 #[test]
 fn unrelated_manual_recovery_does_not_restore_background_cooldown() {
     let temp = tempfile::tempdir().unwrap();
-    ctx_history_core::platform_security::establish_private_data_root(temp.path()).unwrap();
+    ctx_history_platform::platform_security::establish_private_data_root(temp.path()).unwrap();
     write_daemon_job_status(
         &daemon_core_refresh_job_path(temp.path()),
         &json!({
@@ -173,7 +173,7 @@ fn explicit_freshness_bypasses_background_rest_without_second_publisher() {
 fn persistent_daemon_admits_provider_work_after_explicit_convergence() {
     let temp = tempfile::tempdir().unwrap();
     let data_root = temp.path().join("data");
-    ctx_history_core::platform_security::establish_private_data_root(&data_root).unwrap();
+    ctx_history_platform::platform_security::establish_private_data_root(&data_root).unwrap();
     let calls = Arc::new(AtomicUsize::new(0));
     let executor_calls = Arc::clone(&calls);
     let coordinator = CoreRefreshEngine::with_executor(Arc::new(

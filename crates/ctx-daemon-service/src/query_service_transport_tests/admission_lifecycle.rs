@@ -14,7 +14,7 @@ use crate::{daemon_wakeup::DaemonWakeup, source_backed_refresh_coordinator::Core
 fn private_data_root() -> Result<(tempfile::TempDir, PathBuf)> {
     let temp = tempfile::tempdir()?;
     let data_root = temp.path().join("data");
-    ctx_history_core::platform_security::establish_private_data_root(&data_root)?;
+    ctx_history_platform::platform_security::establish_private_data_root(&data_root)?;
     Ok((temp, data_root))
 }
 

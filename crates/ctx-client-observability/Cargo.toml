@@ -16,6 +16,7 @@ test-support = []
 anyhow.workspace = true
 chrono.workspace = true
 ctx-history-core = { path = "../ctx-history-core" }
+ctx-history-platform = { path = "../ctx-history-platform" }
 libc.workspace = true
 rusqlite.workspace = true
 serde.workspace = true

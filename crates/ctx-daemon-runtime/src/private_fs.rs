@@ -4,7 +4,7 @@ use std::{fs, path::Path};
 use std::os::unix::fs::OpenOptionsExt;
 
 use anyhow::{Context, Result};
-use ctx_history_core::platform_security::{restrict_private_directory, restrict_private_file};
+use ctx_history_platform::platform_security::{restrict_private_directory, restrict_private_file};
 
 pub fn create_private_dir_all(path: &Path) -> Result<()> {
     fs::create_dir_all(path)

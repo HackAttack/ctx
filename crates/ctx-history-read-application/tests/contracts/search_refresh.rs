@@ -62,7 +62,7 @@ fn start_source_refresh_daemon_with_codex_home(
     codex_home: Option<&Path>,
 ) -> SourceRefreshDaemon {
     let data_root = search_refresh_data_root(temp);
-    ctx_history_core::platform_security::establish_private_data_root(&data_root).unwrap();
+    ctx_history_platform::platform_security::establish_private_data_root(&data_root).unwrap();
     fs::write(
         data_root.join("config.toml"),
         "[daemon]\nenabled = true\nmode = \"source-refresh-only\"\n\n[search]\nsemantic = false\n",
