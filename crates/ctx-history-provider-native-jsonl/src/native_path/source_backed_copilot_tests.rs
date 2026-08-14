@@ -16,7 +16,7 @@ use ctx_history_core::{
 use serde_json::{json, Value};
 
 use super::*;
-use crate::provider::source_backed::family::jsonl::{
+use ctx_history_jsonl::{
     probe_first_record, JsonlFamilyWorkerContext, JsonlOversizedRecordPolicy, JsonlReader,
     JsonlSourceIdentity,
 };
@@ -59,7 +59,9 @@ fn project_copilot_root(root: &Path) -> Vec<CoreRecord> {
 }
 
 fn try_project_copilot_root(root: &Path) -> Result<Vec<CoreRecord>> {
-    let adapter = super::super::copilot_source_backed_adapter();
+    let adapter = super::super::copilot_source_backed_adapter::<
+        crate::test_support::NativeJsonlTestRuntime,
+    >();
     let inventory = adapter.discover(root)?;
     assert!(!inventory.leaves().is_empty());
     assert!(inventory.rejected_leaves().is_empty());
@@ -146,7 +148,9 @@ fn linkage_plan(
 ) -> super::copilot::CopilotMcpToolCallAttributions {
     let temp = crate::test_support_paths::tempdir().unwrap();
     write_session(temp.path(), "session", "generated-session", events);
-    let adapter = super::super::copilot_source_backed_adapter();
+    let adapter = super::super::copilot_source_backed_adapter::<
+        crate::test_support::NativeJsonlTestRuntime,
+    >();
     let inventory = adapter.discover(temp.path()).unwrap();
     assert_eq!(inventory.leaves().len(), 1);
     let source_file = inventory.leaves()[0].open_verified().unwrap();
@@ -633,6 +637,48 @@ fn copilot_no_id_mcp_starts_keep_distinct_fallback_ids_across_reordering() {
     assert_eq!(original, reordered);
     assert_eq!(original.len(), 2);
     assert_ne!(original["fallback-call-one"], original["fallback-call-two"]);
+}
+
+#[test]
+fn copilot_no_native_id_fixture_keeps_exact_fallback_event_ids() {
+    fn start_without_id(call_id: &str) -> String {
+        json!({
+            "type": "tool.execution_start",
+            "timestamp": "2026-08-03T12:00:01Z",
+            "data": {
+                "toolCallId": call_id,
+                "mcpServerName": "fallback-server",
+                "mcpToolName": "identical-fallback-tool",
+                "arguments": {"query": "identical-fallback-argument"}
+            }
+        })
+        .to_string()
+    }
+
+    let actual: BTreeMap<_, _> = project_events(&[
+        start_without_id("fallback-call-one"),
+        start_without_id("fallback-call-two"),
+    ])
+    .into_iter()
+    .filter_map(|record| {
+        let exchange = record.content.mcp_exchange?;
+        exchange.invocation?;
+        Some((exchange.provider_call_id, record.event_id.to_string()))
+    })
+    .collect();
+
+    let expected = BTreeMap::from([
+        (
+            "fallback-call-one".to_owned(),
+            "403a97f0-77ec-8be9-a327-250eb2442143".to_owned(),
+        ),
+        (
+            "fallback-call-two".to_owned(),
+            "9c92b287-acea-8610-afbe-545a06e0bd64".to_owned(),
+        ),
+    ]);
+
+    assert_eq!(actual, expected);
 }
 
 #[test]
@@ -1615,7 +1661,9 @@ fn copilot_attribution_does_not_change_stable_event_ids() {
 
 #[test]
 fn only_copilot_bumps_the_shared_direct_jsonl_parser_revision() {
-    let copilot = super::super::copilot_source_backed_adapter();
+    let copilot = super::super::copilot_source_backed_adapter::<
+        crate::test_support::NativeJsonlTestRuntime,
+    >();
     assert_eq!(
         super::copilot::COPILOT_DIRECT_NATIVE_JSONL_PARSER_REVISION,
         "copilot-cli-direct-native-jsonl-v6-mcp-start-generic-body"
@@ -1634,12 +1682,19 @@ fn only_copilot_bumps_the_shared_direct_jsonl_parser_revision() {
     );
 
     for adapter in [
-        super::super::antigravity_source_backed_adapter(),
-        super::super::factory_droid_source_backed_adapter(),
-        super::super::qoder_source_backed_adapter(),
-        super::super::qwen_code_source_backed_adapter(),
-        super::super::tabnine_source_backed_adapter(),
-        super::super::windsurf_source_backed_adapter(),
+        super::super::antigravity_source_backed_adapter::<
+            crate::test_support::NativeJsonlTestRuntime,
+        >(),
+        super::super::factory_droid_source_backed_adapter::<
+            crate::test_support::NativeJsonlTestRuntime,
+        >(),
+        super::super::qoder_source_backed_adapter::<crate::test_support::NativeJsonlTestRuntime>(),
+        super::super::qwen_code_source_backed_adapter::<crate::test_support::NativeJsonlTestRuntime>(
+        ),
+        super::super::tabnine_source_backed_adapter::<crate::test_support::NativeJsonlTestRuntime>(
+        ),
+        super::super::windsurf_source_backed_adapter::<crate::test_support::NativeJsonlTestRuntime>(
+        ),
     ] {
         assert_eq!(
             JsonlFamilyAdapter::parser_revision(&adapter),

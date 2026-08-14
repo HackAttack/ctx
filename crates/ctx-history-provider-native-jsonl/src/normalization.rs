@@ -37,9 +37,7 @@ pub(crate) fn native_jsonl_header_session_id(
         return factory_droid_header_session_id(value);
     }
     match provider {
-        CaptureProvider::Gemini | CaptureProvider::Tabnine => {
-            value.get("sessionId").and_then(Value::as_str)
-        }
+        CaptureProvider::Tabnine => value.get("sessionId").and_then(Value::as_str),
         CaptureProvider::CopilotCli => (value.get("type").and_then(Value::as_str)
             == Some("session.start"))
         .then(|| value.pointer("/data/sessionId").and_then(Value::as_str))
@@ -57,9 +55,7 @@ pub(crate) fn native_jsonl_header_start_time(
 ) -> Option<DateTime<Utc>> {
     match provider {
         CaptureProvider::Antigravity => value.get("created_at").and_then(Value::as_str),
-        CaptureProvider::Gemini | CaptureProvider::Tabnine => {
-            value.get("startTime").and_then(Value::as_str)
-        }
+        CaptureProvider::Tabnine => value.get("startTime").and_then(Value::as_str),
         CaptureProvider::CopilotCli => value.pointer("/data/startTime").and_then(Value::as_str),
         _ => None,
     }
@@ -71,7 +67,7 @@ pub(crate) fn native_jsonl_header_cwd(provider: CaptureProvider, value: &Value) 
         return factory_droid_header_cwd(value);
     }
     match provider {
-        CaptureProvider::Gemini | CaptureProvider::Tabnine => value
+        CaptureProvider::Tabnine => value
             .get("directories")
             .and_then(Value::as_array)
             .and_then(|dirs| dirs.first())
@@ -91,7 +87,7 @@ pub(crate) fn native_jsonl_path_session(
     native_session_id: &str,
 ) -> (String, Option<String>, Option<String>, AgentType) {
     match provider {
-        CaptureProvider::Gemini | CaptureProvider::Tabnine => {
+        CaptureProvider::Tabnine => {
             let parent = path
                 .parent()
                 .and_then(Path::file_name)
@@ -194,7 +190,7 @@ pub(crate) fn native_jsonl_entry_type(provider: CaptureProvider, value: &Value) 
             .get("type")
             .and_then(Value::as_str)
             .unwrap_or("unknown"),
-        CaptureProvider::Gemini | CaptureProvider::Tabnine => {
+        CaptureProvider::Tabnine => {
             if value.get("$set").is_some() {
                 "$set"
             } else if value.get("$rewindTo").is_some() {
@@ -230,7 +226,7 @@ pub(crate) fn native_jsonl_event_type(provider: CaptureProvider, value: &Value) 
             Some("SYSTEM_MESSAGE") => EventType::Notice,
             _ => EventType::Notice,
         },
-        CaptureProvider::Gemini | CaptureProvider::Tabnine => {
+        CaptureProvider::Tabnine => {
             if value.get("$set").is_some() || value.get("$rewindTo").is_some() {
                 EventType::Notice
             } else if value.get("toolCalls").is_some() {
@@ -283,13 +279,11 @@ pub(crate) fn native_jsonl_role(provider: CaptureProvider, value: &Value) -> Eve
                 _ => EventRole::Assistant,
             },
         },
-        CaptureProvider::Gemini | CaptureProvider::Tabnine => {
-            match value.get("type").and_then(Value::as_str) {
-                Some("user") => EventRole::User,
-                Some("gemini" | "tabnine") => EventRole::Assistant,
-                _ => EventRole::System,
-            }
-        }
+        CaptureProvider::Tabnine => match value.get("type").and_then(Value::as_str) {
+            Some("user") => EventRole::User,
+            Some("gemini" | "tabnine") => EventRole::Assistant,
+            _ => EventRole::System,
+        },
         CaptureProvider::FactoryAiDroid => factory_droid_role(value),
         CaptureProvider::CopilotCli => match value.get("type").and_then(Value::as_str) {
             Some("user.message") => EventRole::User,
@@ -328,7 +322,7 @@ pub(crate) fn native_jsonl_event_text(
             .or_else(|| value.get("thinking").and_then(provider_value_text))
             .or_else(|| value.get("tool_calls").and_then(antigravity_tool_call_text))
             .unwrap_or_default(),
-        CaptureProvider::Gemini | CaptureProvider::Tabnine => value
+        CaptureProvider::Tabnine => value
             .get("content")
             .and_then(provider_value_text)
             .or_else(|| value.get("toolCalls").and_then(provider_value_text))
@@ -379,7 +373,7 @@ pub(crate) fn native_jsonl_event_text(
 pub(crate) fn native_jsonl_model(provider: CaptureProvider, value: &Value) -> Option<Value> {
     match provider {
         CaptureProvider::Antigravity => value.get("model").cloned(),
-        CaptureProvider::Gemini | CaptureProvider::Tabnine => value.get("model").cloned(),
+        CaptureProvider::Tabnine => value.get("model").cloned(),
         CaptureProvider::FactoryAiDroid => factory_droid_model(value),
         CaptureProvider::CopilotCli => value.pointer("/data/selectedModel").cloned(),
         CaptureProvider::QwenCode => value

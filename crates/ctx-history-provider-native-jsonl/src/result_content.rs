@@ -6,13 +6,11 @@ use serde_json::Value;
 use crate::{OutputOutcome, OutputOutcomeMetadata};
 use ctx_history_capture_model::normalization::provider_output_event_is_failure;
 
-pub(crate) const GEMINI_RESULT_PROFILE: &str = "gemini-jsonl.result-body.v1";
 pub(crate) const TABNINE_RESULT_PROFILE: &str = "tabnine.result-body.v2";
 pub(crate) const FACTORY_DROID_RESULT_PROFILE: &str = "factory-droid.result-body.v2";
 pub(crate) const COPILOT_CLI_RESULT_PROFILE: &str = "copilot-cli.result-body.v2";
 pub(crate) const QWEN_CODE_RESULT_PROFILE: &str = "qwen-code.result-body.v2";
 
-const GEMINI_RESULT_TYPES: &[&str] = &["gemini"];
 const TABNINE_RESULT_TYPES: &[&str] = &["tabnine", "gemini"];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -35,19 +33,13 @@ pub(super) fn enumerate_native_jsonl_result_subrecords<'a>(
     profile: &str,
     value: &'a Value,
 ) -> Result<Vec<NativeJsonlResultSubrecord<'a>>, NativeJsonlResultExtractionError> {
-    if !matches!(
-        profile,
-        GEMINI_RESULT_PROFILE | TABNINE_RESULT_PROFILE | COPILOT_CLI_RESULT_PROFILE
-    ) {
+    if !matches!(profile, TABNINE_RESULT_PROFILE | COPILOT_CLI_RESULT_PROFILE) {
         return Err(NativeJsonlResultExtractionError::UnsupportedProfile);
     }
     if reject_redacted(value).is_err() {
         return enumerate_redacted_result_subrecords(profile, value);
     }
     match profile {
-        GEMINI_RESULT_PROFILE => {
-            enumerate_tool_call_results(value, GEMINI_RESULT_TYPES, false, false)
-        }
         TABNINE_RESULT_PROFILE => {
             enumerate_tool_call_results(value, TABNINE_RESULT_TYPES, true, true)
         }
@@ -122,9 +114,6 @@ fn enumerate_redacted_result_subrecords<'a>(
     value: &'a Value,
 ) -> Result<Vec<NativeJsonlResultSubrecord<'a>>, NativeJsonlResultExtractionError> {
     let indices = match profile {
-        GEMINI_RESULT_PROFILE => {
-            redacted_tool_call_result_indices(value, GEMINI_RESULT_TYPES, false)?
-        }
         TABNINE_RESULT_PROFILE => {
             redacted_tool_call_result_indices(value, TABNINE_RESULT_TYPES, true)?
         }
@@ -431,7 +420,6 @@ pub(crate) const fn native_jsonl_result_content_profile(
     provider: CaptureProvider,
 ) -> Option<&'static str> {
     match provider {
-        CaptureProvider::Gemini => Some(GEMINI_RESULT_PROFILE),
         CaptureProvider::Tabnine => Some(TABNINE_RESULT_PROFILE),
         CaptureProvider::FactoryAiDroid => Some(FACTORY_DROID_RESULT_PROFILE),
         CaptureProvider::CopilotCli => Some(COPILOT_CLI_RESULT_PROFILE),
@@ -467,7 +455,6 @@ mod tests {
     #[test]
     fn profile_tokens_are_provider_specific_and_stable() {
         for (provider, expected) in [
-            (CaptureProvider::Gemini, GEMINI_RESULT_PROFILE),
             (CaptureProvider::Tabnine, TABNINE_RESULT_PROFILE),
             (
                 CaptureProvider::FactoryAiDroid,
@@ -486,33 +473,10 @@ mod tests {
             CaptureProvider::Windsurf,
             CaptureProvider::Qoder,
             CaptureProvider::Codex,
+            CaptureProvider::Gemini,
         ] {
             assert_eq!(native_jsonl_result_content_profile(provider), None);
         }
-    }
-
-    #[test]
-    fn enumerates_multiple_result_subrecords_in_native_order() {
-        let gemini = json!({
-            "type": "gemini",
-            "toolCalls": [
-                {"id": "call-0", "result": {"content": "zero"}, "success": true},
-                {"id": "call-only"},
-                {"id": "call-2", "name": "shell", "result": {"content": "two"}, "exitCode": 9}
-            ]
-        });
-        let results =
-            enumerate_native_jsonl_result_subrecords(GEMINI_RESULT_PROFILE, &gemini).unwrap();
-        assert_eq!(results.len(), 2);
-        assert_eq!(results[0].subrecord_index, 0);
-        assert_eq!(results[0].content.as_deref(), Some("zero"));
-        assert_eq!(results[0].call_id, Some("call-0"));
-        assert_eq!(results[0].outcome.outcome, OutputOutcome::Success);
-        assert_eq!(results[1].subrecord_index, 1);
-        assert_eq!(results[1].content.as_deref(), Some("two"));
-        assert_eq!(results[1].tool_name, Some("shell"));
-        assert_eq!(results[1].outcome.outcome, OutputOutcome::Failure);
-        assert_eq!(results[1].outcome.exit_code, Some(9));
     }
 
     #[test]
@@ -570,7 +534,7 @@ mod tests {
     #[test]
     fn redaction_preserves_all_native_subrecord_coordinates() {
         let partially_redacted = json!({
-            "type": "gemini",
+            "type": "tabnine",
             "toolCalls": [
                 {"result": {"content": "visible-zero"}},
                 {"result": {"redacted": true, "content": "secret-one"}},
@@ -578,7 +542,7 @@ mod tests {
             ]
         });
         let results =
-            enumerate_native_jsonl_result_subrecords(GEMINI_RESULT_PROFILE, &partially_redacted)
+            enumerate_native_jsonl_result_subrecords(TABNINE_RESULT_PROFILE, &partially_redacted)
                 .unwrap();
         assert_eq!(results.len(), 3);
         assert_eq!(results[0].content.as_deref(), Some("visible-zero"));
@@ -589,14 +553,14 @@ mod tests {
 
         let entirely_redacted = json!({
             "redacted": true,
-            "type": "gemini",
+            "type": "tabnine",
             "toolCalls": [
                 {"result": {"content": "secret-zero"}},
                 {"result": {"content": "secret-one"}}
             ]
         });
         let results =
-            enumerate_native_jsonl_result_subrecords(GEMINI_RESULT_PROFILE, &entirely_redacted)
+            enumerate_native_jsonl_result_subrecords(TABNINE_RESULT_PROFILE, &entirely_redacted)
                 .unwrap();
         assert_eq!(results.len(), 2);
         assert!(results.iter().all(|result| result.content.is_none()));

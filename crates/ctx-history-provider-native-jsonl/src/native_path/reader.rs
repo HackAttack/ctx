@@ -7,9 +7,9 @@ use chrono::{DateTime, Utc};
 use ctx_history_core::{CaptureProvider, EventType};
 use serde_json::{json, Value};
 
-use crate::provider::source_backed::family::jsonl::JsonlRecordRef;
-use crate::{CaptureError, OutputOutcome, Result};
+use crate::{NativeJsonlError as CaptureError, OutputOutcome, Result};
 use ctx_history_capture_model::file_touches::visit_all_file_touch_drafts;
+use ctx_history_jsonl::JsonlRecordRef;
 
 use super::super::{
     dialect::{native_jsonl_record_starts_session, validate_direct_native_jsonl_provider},
@@ -59,11 +59,6 @@ impl DirectJsonlProjector {
         session: Option<DirectJsonlSession>,
     ) -> Result<Self> {
         validate_direct_native_jsonl_provider(provider)?;
-        if provider == CaptureProvider::Gemini {
-            return Err(CaptureError::SystemInvariant(
-                "Gemini requires its bespoke NativePath reader",
-            ));
-        }
         Ok(Self {
             provider,
             source_format: source_format.to_owned(),

@@ -7,7 +7,7 @@ use ctx_history_capture_model::normalization::{
     provider_output_event_is_failure, provider_role, provider_value_text,
 };
 
-use crate::{OutputOutcome, OutputOutcomeMetadata, QWEN_CODE_SOURCE_FORMAT};
+use crate::{NativeJsonlRuntime, OutputOutcome, OutputOutcomeMetadata, QWEN_CODE_SOURCE_FORMAT};
 
 use super::super::result_content::{
     extract_direct_result_content, NativeJsonlResultExtractionError, NativeJsonlResultSubrecord,
@@ -15,7 +15,8 @@ use super::super::result_content::{
 
 const PARSER_REVISION: &str = "direct-native-jsonl-parser-v4";
 
-pub(crate) const fn qwen_code_source_backed_adapter() -> super::DirectJsonlFamilyAdapter {
+pub const fn qwen_code_source_backed_adapter<R: NativeJsonlRuntime>(
+) -> super::DirectJsonlFamilyAdapter<R> {
     super::DirectJsonlFamilyAdapter::new(
         CaptureProvider::QwenCode,
         QWEN_CODE_SOURCE_FORMAT,

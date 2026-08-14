@@ -2,7 +2,7 @@ use std::path::Path;
 
 use ctx_history_core::CaptureProvider;
 
-use crate::WINDSURF_CASCADE_HOOK_TRANSCRIPT_SOURCE_FORMAT;
+use crate::{NativeJsonlRuntime, WINDSURF_CASCADE_HOOK_TRANSCRIPT_SOURCE_FORMAT};
 
 const PARSER_REVISION: &str = "direct-native-jsonl-parser-v4";
 
@@ -18,7 +18,8 @@ pub(crate) fn windsurf_session_id_from_path(path: &Path) -> Option<String> {
         .map(str::to_owned)
 }
 
-pub(crate) const fn windsurf_source_backed_adapter() -> super::DirectJsonlFamilyAdapter {
+pub const fn windsurf_source_backed_adapter<R: NativeJsonlRuntime>(
+) -> super::DirectJsonlFamilyAdapter<R> {
     super::DirectJsonlFamilyAdapter::new(
         CaptureProvider::Windsurf,
         WINDSURF_CASCADE_HOOK_TRANSCRIPT_SOURCE_FORMAT,

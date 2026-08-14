@@ -7,7 +7,8 @@ use std::{
 use ctx_history_core::{McpToolCallAttribution, MAX_MCP_TOOL_CALL_ATTRIBUTION_COMPONENT_BYTES};
 
 use super::*;
-use crate::{DiscoveryPlatformDirs, COPILOT_CLI_SOURCE_FORMAT, MAX_PROVIDER_JSONL_LINE_BYTES};
+use crate::{DiscoveryPlatformDirs, MAX_PROVIDER_JSONL_LINE_BYTES};
+use ctx_history_provider_native_jsonl::COPILOT_CLI_SOURCE_FORMAT;
 
 fn session_header(session_id: &str) -> String {
     serde_json::json!({

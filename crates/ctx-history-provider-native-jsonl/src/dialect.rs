@@ -16,7 +16,7 @@ fn provider_jsonl_path_is_native(provider: CaptureProvider, path: &Path) -> bool
                 Some("transcript_full.jsonl" | "transcript.jsonl")
             )
         }
-        CaptureProvider::Gemini | CaptureProvider::Tabnine => path
+        CaptureProvider::Tabnine => path
             .components()
             .any(|component| component.as_os_str() == "chats"),
         CaptureProvider::Windsurf => path.extension().and_then(|ext| ext.to_str()) == Some("jsonl"),
@@ -91,7 +91,6 @@ pub(super) fn validate_direct_native_jsonl_provider(provider: CaptureProvider) -
     if matches!(
         provider,
         CaptureProvider::Antigravity
-            | CaptureProvider::Gemini
             | CaptureProvider::Tabnine
             | CaptureProvider::FactoryAiDroid
             | CaptureProvider::Windsurf

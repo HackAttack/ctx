@@ -2,23 +2,40 @@ use std::{collections::BTreeMap, path::Path};
 
 use chrono::{DateTime, Utc};
 use ctx_history_core::{
-    core_record_leaf_sha256, AgentType, CaptureProvider, CoreRecord, EventType, SessionStatus,
-    TypedKey, MAX_ENCODED_CORE_RECORD_BYTES,
+    compute_payload_hash as core_compute_payload_hash, core_record_leaf_sha256, AgentType,
+    CaptureProvider, CoreRecord, EventType, SessionStatus, TypedKey, MAX_ENCODED_CORE_RECORD_BYTES,
 };
 use serde_json::{json, Value};
 
 use super::*;
+use crate::test_support::NativeJsonlTestRuntime;
 
-fn adapter(provider: CaptureProvider) -> DirectJsonlFamilyAdapter {
+fn adapter(provider: CaptureProvider) -> DirectJsonlFamilyAdapter<NativeJsonlTestRuntime> {
     match provider {
-        CaptureProvider::Antigravity => super::super::antigravity_source_backed_adapter(),
-        CaptureProvider::Tabnine => super::super::tabnine_source_backed_adapter(),
-        CaptureProvider::FactoryAiDroid => super::super::factory_droid_source_backed_adapter(),
-        CaptureProvider::GrokBuild => super::super::grok_build_source_backed_adapter(),
-        CaptureProvider::Windsurf => super::super::windsurf_source_backed_adapter(),
-        CaptureProvider::Qoder => super::super::qoder_source_backed_adapter(),
-        CaptureProvider::CopilotCli => super::super::copilot_source_backed_adapter(),
-        CaptureProvider::QwenCode => super::super::qwen_code_source_backed_adapter(),
+        CaptureProvider::Antigravity => {
+            super::super::antigravity_source_backed_adapter::<NativeJsonlTestRuntime>()
+        }
+        CaptureProvider::Tabnine => {
+            super::super::tabnine_source_backed_adapter::<NativeJsonlTestRuntime>()
+        }
+        CaptureProvider::FactoryAiDroid => {
+            super::super::factory_droid_source_backed_adapter::<NativeJsonlTestRuntime>()
+        }
+        CaptureProvider::GrokBuild => {
+            super::super::grok_build_source_backed_adapter::<NativeJsonlTestRuntime>()
+        }
+        CaptureProvider::Windsurf => {
+            super::super::windsurf_source_backed_adapter::<NativeJsonlTestRuntime>()
+        }
+        CaptureProvider::Qoder => {
+            super::super::qoder_source_backed_adapter::<NativeJsonlTestRuntime>()
+        }
+        CaptureProvider::CopilotCli => {
+            super::super::copilot_source_backed_adapter::<NativeJsonlTestRuntime>()
+        }
+        CaptureProvider::QwenCode => {
+            super::super::qwen_code_source_backed_adapter::<NativeJsonlTestRuntime>()
+        }
         other => panic!("unsupported direct JSONL test provider: {other:?}"),
     }
 }
@@ -43,10 +60,10 @@ fn session(provider: CaptureProvider) -> DirectJsonlSession {
 }
 
 fn fallback_identities(
-    adapter: DirectJsonlFamilyAdapter,
+    adapter: DirectJsonlFamilyAdapter<NativeJsonlTestRuntime>,
     source: &SourceKey,
     session_id: StableEntityId,
-) -> FallbackEventIdentityState {
+) -> FallbackEventIdentityState<crate::test_support::NativeJsonlTestLookup, CaptureError> {
     FallbackEventIdentityState::new(
         source.clone(),
         session_id,
@@ -209,6 +226,53 @@ fn tabnine_fallback_ids_ignore_earlier_position_changes() {
     assert_eq!(rewritten.get("anchor"), baseline.get("anchor"));
     assert_eq!(rewritten.get("suffix"), baseline.get("suffix"));
     assert_ne!(rewritten.get("rewritten"), baseline.get("target"));
+}
+
+#[test]
+fn tabnine_extracted_payload_hash_matches_core_fnv_authority() {
+    let extracted_payload = json!({
+        "event_type": EventType::Message.as_str(),
+        "role": ctx_history_core::EventRole::User.as_str(),
+        "native_record_id": Value::Null,
+        "stable_retry_discriminator": Value::Null,
+        "sub_ordinal": 0,
+        "lexical_text": "hash parity body",
+        "tool_result": Value::Null,
+        "touches": [],
+    });
+    let expected = core_compute_payload_hash(&extracted_payload).unwrap();
+    let actual = crate::compute_payload_hash(&extracted_payload).unwrap();
+
+    assert_eq!(actual, expected);
+    assert_eq!(actual, "fnv1a64:8b6eff8fc2a36709");
+}
+
+#[test]
+fn tabnine_no_native_id_fixture_keeps_exact_fallback_event_ids() {
+    let event = |body: &str| json!({"type": "user", "content": body});
+    let (records, rejected) = project_all(
+        CaptureProvider::Tabnine,
+        &[event("anchor"), event("target"), event("suffix")],
+    );
+    assert_eq!(rejected, 0);
+
+    let actual = event_ids_by_body(&records);
+    let expected = BTreeMap::from([
+        (
+            "anchor".to_owned(),
+            "d29e227c-d7ae-8905-af52-5aaf16f4b0b4".to_owned(),
+        ),
+        (
+            "target".to_owned(),
+            "58f55c34-d379-8693-8552-62ce13faef12".to_owned(),
+        ),
+        (
+            "suffix".to_owned(),
+            "12c6de0b-3150-8d1c-9110-046134dbfe8b".to_owned(),
+        ),
+    ]);
+
+    assert_eq!(actual, expected);
 }
 
 #[test]

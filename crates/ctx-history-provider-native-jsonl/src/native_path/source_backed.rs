@@ -4,7 +4,6 @@ use std::{
     sync::Arc,
 };
 
-use crate::provider::source_backed::IndexBaseEventLookup;
 use chrono::{DateTime, Utc};
 use ctx_history_core::{
     derive_event_id, derive_native_session_id, CaptureProvider, CoreRecord, CoreRecordError,
@@ -22,21 +21,19 @@ use super::{
     DirectJsonlRetryDiscriminator, DirectJsonlSession,
 };
 use crate::{
-    common::io::{
-        open_provider_source_path, OpenedProviderSourceFile, OpenedProviderSourcePath,
-        ProviderSourceDirectory, ProviderSourceRoot,
-    },
-    provider::source_backed::{
-        family::jsonl::{
-            fit_jsonl_mcp_exchange, observe_opened_file, probe_first_record, JsonlFamilyAdapter,
-            JsonlFamilyAppendMode, JsonlFamilyInventory, JsonlFamilyLeaf,
-            JsonlFamilyProjectionMode, JsonlFamilyProjector, JsonlFamilyRejectedLeaf,
-            JsonlFamilyWorkerContext, JsonlMcpObservedEncodedBytes, JsonlOversizedRecordPolicy,
-            JsonlRecordRef,
-        },
-        FallbackEventIdentityState,
-    },
-    CaptureError, ProviderJsonlInventoryLimit, ProviderSourceFailureKind, Result,
+    NativeJsonlError as CaptureError, NativeJsonlRuntime, ProviderJsonlInventoryLimit, Result,
+};
+use ctx_history_capture_model::ProviderSourceFailureKind;
+use ctx_history_jsonl::{
+    fit_jsonl_mcp_exchange, observe_opened_file, probe_first_record, FallbackEventIdentityState,
+    JsonlFamilyAdapter, JsonlFamilyAppendMode, JsonlFamilyError, JsonlFamilyInventory,
+    JsonlFamilyLeaf, JsonlFamilyProjectionMode, JsonlFamilyProjector, JsonlFamilyRejectedLeaf,
+    JsonlFamilyWorkerContext, JsonlMcpObservedEncodedBytes, JsonlOversizedRecordPolicy,
+    JsonlRecordRef, JsonlRuntimeLookup, OpenedProviderSourceFile, OpenedProviderSourcePath,
+    ProviderSourceDirectory, ProviderSourceRoot,
+};
+use ctx_history_source_io::{
+    open_provider_source_path_mapped as open_provider_source_path,
     PROVIDER_JSONL_INVENTORY_MAX_DIRECTORIES, PROVIDER_JSONL_INVENTORY_MAX_ELIGIBLE_PATHS,
     PROVIDER_JSONL_INVENTORY_MAX_METADATA_ENTRIES, PROVIDER_JSONL_INVENTORY_MAX_PATH_BYTES,
 };
@@ -81,15 +78,24 @@ struct DirectJsonlRejectedLeafProof {
     rejections: Vec<DirectJsonlRejection>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) struct DirectJsonlFamilyAdapter {
+#[derive(Debug, PartialEq, Eq)]
+pub struct DirectJsonlFamilyAdapter<R: NativeJsonlRuntime> {
     provider: CaptureProvider,
     source_format: &'static str,
     schema_variant: &'static str,
     parser_revision: &'static str,
+    runtime: std::marker::PhantomData<R>,
 }
 
-impl DirectJsonlFamilyAdapter {
+impl<R: NativeJsonlRuntime> Copy for DirectJsonlFamilyAdapter<R> {}
+
+impl<R: NativeJsonlRuntime> Clone for DirectJsonlFamilyAdapter<R> {
+    fn clone(&self) -> Self {
+        *self
+    }
+}
+
+impl<R: NativeJsonlRuntime> DirectJsonlFamilyAdapter<R> {
     pub(super) const fn new(
         provider: CaptureProvider,
         source_format: &'static str,
@@ -101,6 +107,7 @@ impl DirectJsonlFamilyAdapter {
             source_format,
             schema_variant,
             parser_revision,
+            runtime: std::marker::PhantomData,
         }
     }
 
@@ -136,7 +143,7 @@ impl DirectJsonlFamilyAdapter {
         Ok((source, session_id))
     }
 
-    fn discover_family(self, root: &Path) -> Result<JsonlFamilyInventory> {
+    fn discover_family(self, root: &Path) -> Result<JsonlFamilyInventory<CaptureError>> {
         let opened = match open_provider_source_path(root) {
             Ok(opened) => opened,
             Err(CaptureError::Io(error)) if error.kind() == std::io::ErrorKind::NotFound => {
@@ -150,7 +157,7 @@ impl DirectJsonlFamilyAdapter {
         let authority = match opened {
             OpenedProviderSourcePath::Directory(directory) => {
                 let authority = Arc::new(directory.authority_root());
-                DirectJsonlDirectoryTraversal {
+                DirectJsonlDirectoryTraversal::<R> {
                     adapter: self,
                     source_root: root,
                     authority: &authority,
@@ -211,8 +218,8 @@ impl DirectJsonlFamilyAdapter {
     }
 }
 
-impl JsonlFamilyAdapter for DirectJsonlFamilyAdapter {
-    type Runtime = crate::provider::source_backed::family::jsonl::CaptureJsonlRuntime;
+impl<R: NativeJsonlRuntime> JsonlFamilyAdapter for DirectJsonlFamilyAdapter<R> {
+    type Runtime = R;
 
     fn provider(&self) -> CaptureProvider {
         self.provider
@@ -248,14 +255,14 @@ impl JsonlFamilyAdapter for DirectJsonlFamilyAdapter {
         }
     }
 
-    fn discover(&self, root: &Path) -> Result<JsonlFamilyInventory> {
+    fn discover(&self, root: &Path) -> Result<JsonlFamilyInventory<CaptureError>> {
         self.discover_family(root)
     }
 
     fn discovery_error_kind(
         &self,
         error: &CaptureError,
-    ) -> crate::provider::source_backed::SourceBackedRouteErrorKind {
+    ) -> ctx_history_capture_runtime::SourceBackedRouteErrorKind {
         if matches!(
             error,
             CaptureError::ProviderSource {
@@ -263,24 +270,18 @@ impl JsonlFamilyAdapter for DirectJsonlFamilyAdapter {
                 ..
             }
         ) {
-            crate::provider::source_backed::SourceBackedRouteErrorKind::Unavailable
+            ctx_history_capture_runtime::SourceBackedRouteErrorKind::Unavailable
         } else {
-            crate::provider::source_backed::SourceBackedRouteErrorKind::InvalidSource
+            ctx_history_capture_runtime::SourceBackedRouteErrorKind::InvalidSource
         }
     }
 
     fn projector(
         &self,
-        leaf: &JsonlFamilyLeaf,
-        source_file: Arc<OpenedProviderSourceFile>,
+        leaf: &JsonlFamilyLeaf<CaptureError>,
+        source_file: Arc<OpenedProviderSourceFile<CaptureError>>,
         imported_at: DateTime<Utc>,
-    ) -> Result<
-        Box<
-            dyn JsonlFamilyProjector<
-                Runtime = crate::provider::source_backed::family::jsonl::CaptureJsonlRuntime,
-            >,
-        >,
-    > {
+    ) -> Result<Box<dyn JsonlFamilyProjector<Runtime = R>>> {
         DirectJsonlFamilyProjector::new(
             *self,
             leaf,
@@ -289,25 +290,19 @@ impl JsonlFamilyAdapter for DirectJsonlFamilyAdapter {
             None,
             JsonlFamilyProjectionMode::Cold,
         )
-        .map(|projector| Box::new(projector) as Box<dyn JsonlFamilyProjector<Runtime = crate::provider::source_backed::family::jsonl::CaptureJsonlRuntime>>)
+        .map(|projector| Box::new(projector) as Box<dyn JsonlFamilyProjector<Runtime = R>>)
         .map_err(capture_error)
     }
 
     fn projector_with_provider_checkpoint(
         &self,
-        leaf: &JsonlFamilyLeaf,
-        source_file: Arc<OpenedProviderSourceFile>,
+        leaf: &JsonlFamilyLeaf<CaptureError>,
+        source_file: Arc<OpenedProviderSourceFile<CaptureError>>,
         imported_at: DateTime<Utc>,
         checkpoint: Option<&TypedKey>,
-        base_event_lookup: Option<IndexBaseEventLookup>,
+        base_event_lookup: Option<JsonlRuntimeLookup<R>>,
         mode: JsonlFamilyProjectionMode,
-    ) -> Result<
-        Box<
-            dyn JsonlFamilyProjector<
-                Runtime = crate::provider::source_backed::family::jsonl::CaptureJsonlRuntime,
-            >,
-        >,
-    > {
+    ) -> Result<Box<dyn JsonlFamilyProjector<Runtime = R>>> {
         if checkpoint.is_some() {
             return Err(CaptureError::InvalidPayload(
                 "direct JSONL adapter does not accept provider checkpoint state".to_owned(),
@@ -321,7 +316,7 @@ impl JsonlFamilyAdapter for DirectJsonlFamilyAdapter {
             base_event_lookup,
             mode,
         )
-        .map(|projector| Box::new(projector) as Box<dyn JsonlFamilyProjector<Runtime = crate::provider::source_backed::family::jsonl::CaptureJsonlRuntime>>)
+        .map(|projector| Box::new(projector) as Box<dyn JsonlFamilyProjector<Runtime = R>>)
         .map_err(capture_error)
     }
 }
@@ -332,21 +327,21 @@ struct DirectJsonlInventoryBudget {
     metadata_entries: usize,
 }
 
-struct DirectJsonlDirectoryTraversal<'capture> {
-    adapter: DirectJsonlFamilyAdapter,
+struct DirectJsonlDirectoryTraversal<'capture, R: NativeJsonlRuntime> {
+    adapter: DirectJsonlFamilyAdapter<R>,
     source_root: &'capture Path,
-    authority: &'capture Arc<ProviderSourceRoot>,
-    leaves: &'capture mut Vec<JsonlFamilyLeaf>,
+    authority: &'capture Arc<ProviderSourceRoot<CaptureError>>,
+    leaves: &'capture mut Vec<JsonlFamilyLeaf<CaptureError>>,
     rejected_leaves: &'capture mut Vec<JsonlFamilyRejectedLeaf>,
     budget: &'capture mut DirectJsonlInventoryBudget,
 }
 
-impl DirectJsonlDirectoryTraversal<'_> {
+impl<R: NativeJsonlRuntime> DirectJsonlDirectoryTraversal<'_, R> {
     fn visit(
         &mut self,
         absolute_path: &Path,
         relative_path: &Path,
-        directory: &ProviderSourceDirectory,
+        directory: &ProviderSourceDirectory<CaptureError>,
         depth: usize,
     ) -> Result<()> {
         if depth > DIRECT_JSONL_MAX_DIRECTORY_DEPTH {
@@ -378,7 +373,7 @@ impl DirectJsonlDirectoryTraversal<'_> {
             let opened = match directory.open_child(&name) {
                 Ok(opened) => opened,
                 Err(error) if selected && self.adapter.provider == CaptureProvider::Tabnine => {
-                    return Err(tabnine_unavailable_source(&child_path, error));
+                    return Err(R::tabnine_unavailable_source(&child_path, error));
                 }
                 // A link-like or non-regular entry that can never hold a
                 // transcript (for example a `CLAUDE.md -> AGENTS.md` symlink
@@ -387,11 +382,7 @@ impl DirectJsonlDirectoryTraversal<'_> {
                 // entry is never followed, so skipping it preserves the
                 // no-follow boundary; a selected transcript path stays
                 // fail-closed below.
-                Err(error)
-                    if !selected
-                        && (crate::common::io::is_symlink_source_rejection(&error)
-                            || crate::common::io::is_non_regular_source_rejection(&error)) =>
-                {
+                Err(error) if membership_open_error_is_ignorable(selected, &error) => {
                     continue;
                 }
                 Err(error) => return Err(error),
@@ -415,7 +406,7 @@ impl DirectJsonlDirectoryTraversal<'_> {
                         self.rejected_leaves,
                     ) {
                         if self.adapter.provider == CaptureProvider::Tabnine {
-                            return Err(tabnine_unavailable_source(&child_path, error));
+                            return Err(R::tabnine_unavailable_source(&child_path, error));
                         }
                         return Err(error);
                     }
@@ -428,18 +419,13 @@ impl DirectJsonlDirectoryTraversal<'_> {
     }
 }
 
-fn tabnine_unavailable_source(path: &Path, error: CaptureError) -> CaptureError {
-    CaptureError::ProviderSource {
-        provider: CaptureProvider::Tabnine.as_str(),
-        path: path.to_path_buf(),
-        kind: ProviderSourceFailureKind::Io,
-        detail: error.to_string(),
-    }
+fn membership_open_error_is_ignorable(selected: bool, error: &CaptureError) -> bool {
+    !selected && error.is_ignorable_membership_entry()
 }
 
 fn selected_file(
     provider: CaptureProvider,
-    directory: &ProviderSourceDirectory,
+    directory: &ProviderSourceDirectory<CaptureError>,
     path: &Path,
     name: &OsStr,
 ) -> Result<bool> {
@@ -463,14 +449,14 @@ fn selected_file(
 }
 
 #[allow(clippy::too_many_arguments)]
-fn bind_opened_leaf(
-    adapter: DirectJsonlFamilyAdapter,
+fn bind_opened_leaf<R: NativeJsonlRuntime>(
+    adapter: DirectJsonlFamilyAdapter<R>,
     source_root: &Path,
     path: PathBuf,
     authority_path: PathBuf,
-    authority: Arc<ProviderSourceRoot>,
-    source_file: OpenedProviderSourceFile,
-    leaves: &mut Vec<JsonlFamilyLeaf>,
+    authority: Arc<ProviderSourceRoot<CaptureError>>,
+    source_file: OpenedProviderSourceFile<CaptureError>,
+    leaves: &mut Vec<JsonlFamilyLeaf<CaptureError>>,
     rejected_leaves: &mut Vec<JsonlFamilyRejectedLeaf>,
 ) -> Result<()> {
     if leaves.len().saturating_add(rejected_leaves.len())
@@ -555,23 +541,23 @@ fn bind_opened_leaf(
     Ok(())
 }
 
-struct DirectJsonlFamilyProjector {
-    adapter: DirectJsonlFamilyAdapter,
+struct DirectJsonlFamilyProjector<R: NativeJsonlRuntime> {
+    adapter: DirectJsonlFamilyAdapter<R>,
     source: SourceKey,
     bound_session: DirectJsonlSession,
     session_id: StableEntityId,
     projector: DirectJsonlProjector,
-    fallback_identities: FallbackEventIdentityState,
+    fallback_identities: FallbackEventIdentityState<JsonlRuntimeLookup<R>, CaptureError>,
     rejected_records: u64,
 }
 
-impl DirectJsonlFamilyProjector {
+impl<R: NativeJsonlRuntime> DirectJsonlFamilyProjector<R> {
     fn new(
-        adapter: DirectJsonlFamilyAdapter,
-        leaf: &JsonlFamilyLeaf,
-        source_file: &OpenedProviderSourceFile,
+        adapter: DirectJsonlFamilyAdapter<R>,
+        leaf: &JsonlFamilyLeaf<CaptureError>,
+        source_file: &OpenedProviderSourceFile<CaptureError>,
         imported_at: DateTime<Utc>,
-        base_event_lookup: Option<IndexBaseEventLookup>,
+        base_event_lookup: Option<JsonlRuntimeLookup<R>>,
         mode: JsonlFamilyProjectionMode,
     ) -> DirectJsonlAdapterResult<Self> {
         let binding = decode_binding(leaf)?;
@@ -622,13 +608,13 @@ impl DirectJsonlFamilyProjector {
     }
 }
 
-impl JsonlFamilyProjector for DirectJsonlFamilyProjector {
-    type Runtime = crate::provider::source_backed::family::jsonl::CaptureJsonlRuntime;
+impl<R: NativeJsonlRuntime> JsonlFamilyProjector for DirectJsonlFamilyProjector<R> {
+    type Runtime = R;
 
     fn project(
         &mut self,
         record: JsonlRecordRef<'_>,
-        _worker: &mut JsonlFamilyWorkerContext,
+        _worker: &mut JsonlFamilyWorkerContext<R>,
         emit: &mut dyn FnMut(CoreRecord) -> Result<()>,
     ) -> Result<()> {
         let projected = self.projector.project_record(record)?;
@@ -674,7 +660,9 @@ impl JsonlFamilyProjector for DirectJsonlFamilyProjector {
     }
 }
 
-fn decode_binding(leaf: &JsonlFamilyLeaf) -> DirectJsonlAdapterResult<DirectJsonlFamilyBinding> {
+fn decode_binding(
+    leaf: &JsonlFamilyLeaf<CaptureError>,
+) -> DirectJsonlAdapterResult<DirectJsonlFamilyBinding> {
     let TypedKey::Bytes(bytes) = leaf.binding() else {
         return Err(DirectJsonlAdapterError::CountMismatch);
     };
@@ -688,12 +676,12 @@ fn same_session_identity(left: &DirectJsonlSession, right: &DirectJsonlSession) 
         && left.root_provider_session_id == right.root_provider_session_id
 }
 
-fn project_event(
-    adapter: DirectJsonlFamilyAdapter,
+fn project_event<R: NativeJsonlRuntime>(
+    adapter: DirectJsonlFamilyAdapter<R>,
     source: &SourceKey,
     session_id: StableEntityId,
     session: &DirectJsonlSession,
-    fallback_identities: &mut FallbackEventIdentityState,
+    fallback_identities: &mut FallbackEventIdentityState<JsonlRuntimeLookup<R>, CaptureError>,
     event: DirectJsonlEvent,
 ) -> DirectJsonlAdapterResult<CoreRecord> {
     let subrecord_selector = match &event.stable_retry_discriminator {
@@ -893,6 +881,10 @@ fn capture_error(error: DirectJsonlAdapterError) -> CaptureError {
 #[cfg(test)]
 #[path = "source_backed_result_tests.rs"]
 mod result_tests;
+
+#[cfg(test)]
+#[path = "source_backed_authority_swap_tests.rs"]
+mod authority_swap_tests;
 
 #[cfg(test)]
 #[path = "source_backed_copilot_tests.rs"]

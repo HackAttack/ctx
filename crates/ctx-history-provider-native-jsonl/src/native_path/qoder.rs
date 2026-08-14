@@ -1,10 +1,11 @@
 use ctx_history_core::CaptureProvider;
 
-use crate::QODER_SOURCE_FORMAT;
+use crate::{NativeJsonlRuntime, QODER_SOURCE_FORMAT};
 
 const PARSER_REVISION: &str = "direct-native-jsonl-parser-v4";
 
-pub(crate) const fn qoder_source_backed_adapter() -> super::DirectJsonlFamilyAdapter {
+pub const fn qoder_source_backed_adapter<R: NativeJsonlRuntime>(
+) -> super::DirectJsonlFamilyAdapter<R> {
     super::DirectJsonlFamilyAdapter::new(
         CaptureProvider::Qoder,
         QODER_SOURCE_FORMAT,

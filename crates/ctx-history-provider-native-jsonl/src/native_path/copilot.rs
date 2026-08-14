@@ -13,8 +13,9 @@ use serde_json::{value::RawValue, Map, Number, Value};
 use sha2::{Digest, Sha256};
 
 use crate::{
-    common::io::OpenedProviderSourceFile, CaptureError, Result, COPILOT_CLI_SOURCE_FORMAT,
+    NativeJsonlError as CaptureError, NativeJsonlRuntime, Result, COPILOT_CLI_SOURCE_FORMAT,
 };
+use ctx_history_jsonl::OpenedProviderSourceFile;
 
 pub(super) const COPILOT_DIRECT_NATIVE_JSONL_PARSER_REVISION: &str =
     "copilot-cli-direct-native-jsonl-v6-mcp-start-generic-body";
@@ -232,7 +233,8 @@ fn run_after_copilot_linkage_plan_hook() {
 
 const PARSER_REVISION: &str = "direct-native-jsonl-parser-v4";
 
-pub(crate) const fn copilot_source_backed_adapter() -> super::DirectJsonlFamilyAdapter {
+pub const fn copilot_source_backed_adapter<R: NativeJsonlRuntime>(
+) -> super::DirectJsonlFamilyAdapter<R> {
     super::DirectJsonlFamilyAdapter::new(
         CaptureProvider::CopilotCli,
         COPILOT_CLI_SOURCE_FORMAT,
@@ -562,7 +564,7 @@ fn observe_redaction_marker(explicitly_redacted: &mut bool, key: &str, raw: &Raw
 }
 
 pub(super) fn copilot_mcp_tool_call_attributions(
-    source_file: &OpenedProviderSourceFile,
+    source_file: &OpenedProviderSourceFile<CaptureError>,
 ) -> Result<CopilotMcpToolCallAttributions> {
     copilot_mcp_tool_call_attributions_with_limits(source_file, CopilotLinkageLimits::DEFAULT)
 }
@@ -589,7 +591,7 @@ impl CopilotLinkageLimits {
 }
 
 pub(super) fn copilot_mcp_tool_call_attributions_with_limits(
-    source_file: &OpenedProviderSourceFile,
+    source_file: &OpenedProviderSourceFile<CaptureError>,
     limits: CopilotLinkageLimits,
 ) -> Result<CopilotMcpToolCallAttributions> {
     let frozen_length = source_file.file().metadata()?.len();

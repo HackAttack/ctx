@@ -1,11 +1,12 @@
 use ctx_history_core::CaptureProvider;
 use serde_json::Value;
 
-use crate::TABNINE_CLI_SOURCE_FORMAT;
+use crate::{NativeJsonlRuntime, TABNINE_CLI_SOURCE_FORMAT};
 
 const PARSER_REVISION: &str = "direct-native-jsonl-parser-v4";
 
-pub(crate) const fn tabnine_source_backed_adapter() -> super::DirectJsonlFamilyAdapter {
+pub const fn tabnine_source_backed_adapter<R: NativeJsonlRuntime>(
+) -> super::DirectJsonlFamilyAdapter<R> {
     super::DirectJsonlFamilyAdapter::new(
         CaptureProvider::Tabnine,
         TABNINE_CLI_SOURCE_FORMAT,

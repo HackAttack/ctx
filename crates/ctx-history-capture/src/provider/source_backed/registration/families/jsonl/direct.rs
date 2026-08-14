@@ -49,7 +49,8 @@ fn register_direct_jsonl_source_backed_route(
     source: ProviderSource,
     selection: SourceBackedRouteSelection,
 ) -> SourceBackedCoordinatorResult<()> {
-    use crate::provider::providers::native_jsonl::native_path::{
+    use crate::provider::source_backed::family::jsonl::NativeJsonlCaptureRuntime;
+    use ctx_history_provider_native_jsonl::native_path::{
         antigravity_source_backed_adapter, copilot_source_backed_adapter,
         factory_droid_source_backed_adapter, grok_build_source_backed_adapter,
         qoder_source_backed_adapter, qwen_code_source_backed_adapter,
@@ -57,14 +58,20 @@ fn register_direct_jsonl_source_backed_route(
     };
 
     let adapter = match source.provider {
-        CaptureProvider::Antigravity => antigravity_source_backed_adapter(),
-        CaptureProvider::CopilotCli => copilot_source_backed_adapter(),
-        CaptureProvider::FactoryAiDroid => factory_droid_source_backed_adapter(),
-        CaptureProvider::GrokBuild => grok_build_source_backed_adapter(),
-        CaptureProvider::Qoder => qoder_source_backed_adapter(),
-        CaptureProvider::QwenCode => qwen_code_source_backed_adapter(),
-        CaptureProvider::Tabnine => tabnine_source_backed_adapter(),
-        CaptureProvider::Windsurf => windsurf_source_backed_adapter(),
+        CaptureProvider::Antigravity => {
+            antigravity_source_backed_adapter::<NativeJsonlCaptureRuntime>()
+        }
+        CaptureProvider::CopilotCli => copilot_source_backed_adapter::<NativeJsonlCaptureRuntime>(),
+        CaptureProvider::FactoryAiDroid => {
+            factory_droid_source_backed_adapter::<NativeJsonlCaptureRuntime>()
+        }
+        CaptureProvider::GrokBuild => {
+            grok_build_source_backed_adapter::<NativeJsonlCaptureRuntime>()
+        }
+        CaptureProvider::Qoder => qoder_source_backed_adapter::<NativeJsonlCaptureRuntime>(),
+        CaptureProvider::QwenCode => qwen_code_source_backed_adapter::<NativeJsonlCaptureRuntime>(),
+        CaptureProvider::Tabnine => tabnine_source_backed_adapter::<NativeJsonlCaptureRuntime>(),
+        CaptureProvider::Windsurf => windsurf_source_backed_adapter::<NativeJsonlCaptureRuntime>(),
         provider => {
             return Err(invalid_route(
                 provider,
@@ -72,10 +79,7 @@ fn register_direct_jsonl_source_backed_route(
             ));
         }
     };
-    let driver = crate::provider::source_backed::family::jsonl::jsonl_family_driver(
-        Arc::new(adapter),
-        source.path.clone(),
-    );
+    let driver = ctx_history_jsonl::jsonl_family_driver(Arc::new(adapter), source.path.clone());
     registry.register(executable_route(
         source,
         selection,

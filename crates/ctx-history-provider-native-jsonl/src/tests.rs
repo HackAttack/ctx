@@ -3,7 +3,7 @@ use std::{ffi::OsStr, fs, path::Path};
 use crate::test_support_paths::tempdir;
 use ctx_history_core::CaptureProvider;
 
-use super::visit_native_jsonl_files;
+use super::visit_native_jsonl_files_with;
 
 #[test]
 fn tree_visitation_is_sorted_by_durable_filename_bytes() {
@@ -15,16 +15,20 @@ fn tree_visitation_is_sorted_by_durable_filename_bytes() {
         }
 
         let mut visited = Vec::new();
-        visit_native_jsonl_files(root, CaptureProvider::KimiCodeCli, &mut |path| {
-            visited.push(
-                path.parent()
-                    .and_then(Path::file_name)
-                    .and_then(OsStr::to_str)
-                    .unwrap()
-                    .to_owned(),
-            );
-            Ok(())
-        })
+        visit_native_jsonl_files_with::<crate::NativeJsonlError>(
+            root,
+            CaptureProvider::KimiCodeCli,
+            &mut |path| {
+                visited.push(
+                    path.parent()
+                        .and_then(Path::file_name)
+                        .and_then(OsStr::to_str)
+                        .unwrap()
+                        .to_owned(),
+                );
+                Ok(())
+            },
+        )
         .unwrap();
         visited
     }
@@ -48,10 +52,14 @@ fn antigravity_dialect_prefers_the_full_transcript_sibling() {
     fs::write(root.join("transcript_full.jsonl"), b"full\n").unwrap();
 
     let mut visited = Vec::new();
-    let count = visit_native_jsonl_files(&root, CaptureProvider::Antigravity, &mut |path| {
-        visited.push(path.file_name().unwrap().to_owned());
-        Ok(())
-    })
+    let count = visit_native_jsonl_files_with::<crate::NativeJsonlError>(
+        &root,
+        CaptureProvider::Antigravity,
+        &mut |path| {
+            visited.push(path.file_name().unwrap().to_owned());
+            Ok(())
+        },
+    )
     .unwrap();
 
     assert_eq!(count, 1);

@@ -4,14 +4,15 @@ use ctx_history_core::CaptureProvider;
 use ctx_history_native_jsonl_parsers::grok_build;
 use serde_json::Value;
 
-use crate::provider::providers::native_jsonl::result_content::{
-    NativeJsonlResultExtractionError, NativeJsonlResultSubrecord,
-};
-use crate::GROK_BUILD_SOURCE_FORMAT;
+use crate::result_content::{NativeJsonlResultExtractionError, NativeJsonlResultSubrecord};
+use crate::NativeJsonlRuntime;
+
+pub const GROK_BUILD_SOURCE_FORMAT: &str = "grok_build_session_updates_jsonl";
 
 const PARSER_REVISION: &str = "direct-native-jsonl-parser-v5";
 
-pub(crate) const fn grok_build_source_backed_adapter() -> super::DirectJsonlFamilyAdapter {
+pub const fn grok_build_source_backed_adapter<R: NativeJsonlRuntime>(
+) -> super::DirectJsonlFamilyAdapter<R> {
     super::DirectJsonlFamilyAdapter::new(
         CaptureProvider::GrokBuild,
         GROK_BUILD_SOURCE_FORMAT,

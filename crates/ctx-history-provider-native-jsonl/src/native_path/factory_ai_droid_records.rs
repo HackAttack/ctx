@@ -105,7 +105,7 @@ pub(crate) fn factory_droid_model(value: &Value) -> Option<Value> {
         .or_else(|| value.pointer("/metadata/model").cloned())
 }
 
-pub(in crate::provider::providers::native_jsonl) fn enumerate_factory_droid_results(
+pub(crate) fn enumerate_factory_droid_results(
     value: &Value,
 ) -> std::result::Result<Vec<NativeJsonlResultSubrecord<'_>>, NativeJsonlResultExtractionError> {
     if value.get("type").and_then(Value::as_str) != Some("message") {
@@ -125,7 +125,7 @@ pub(in crate::provider::providers::native_jsonl) fn enumerate_factory_droid_resu
     Ok(results)
 }
 
-pub(in crate::provider::providers::native_jsonl) fn factory_droid_retry_discriminator(
+pub(crate) fn factory_droid_retry_discriminator(
     value: &Value,
     subrecord_index: u32,
 ) -> std::result::Result<
