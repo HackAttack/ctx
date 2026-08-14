@@ -15,7 +15,7 @@ test-support = []
 
 [dependencies]
 crc32fast = "1.5"
-ctx-history-core = { path = "../ctx-history-core" }
+ctx-history-platform = { path = "../ctx-history-platform" }
 libc.workspace = true
 memmap2.workspace = true
 serde.workspace = true

@@ -25,7 +25,7 @@ PROD_SRCS = glob(
 )
 
 CTX_HISTORY_INDEX_GENERATION_DEPS = [
-    "//crates/ctx-history-core:lib",
+    "//crates/ctx-history-platform:lib",
 ]
 
 rust_library(

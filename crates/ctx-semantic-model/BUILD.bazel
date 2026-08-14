@@ -31,7 +31,7 @@ PROD_SRCS = glob(
 )
 
 CTX_SEMANTIC_MODEL_DEPS = [
-    "//crates/ctx-history-core:lib",
+    "//crates/ctx-history-platform:lib",
 ]
 
 CTX_SEMANTIC_MODEL_RUSTC_FLAGS = [

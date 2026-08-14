@@ -291,7 +291,7 @@ fn terminal_generation_can_be_pinned_after_one_successor_advances_active() {
 fn cold_dirty_routes_are_published_in_one_all_route_generation() {
     let temp = tempfile::tempdir().unwrap();
     let data_root = temp.path().join("data");
-    ctx_history_core::platform_security::establish_private_data_root(&data_root).unwrap();
+    ctx_history_platform::platform_security::establish_private_data_root(&data_root).unwrap();
     let routes = BTreeSet::from([route_identity(0x94), route_identity(0x95)]);
     let executor_routes = routes.clone();
     let scopes = Arc::new(std::sync::Mutex::new(Vec::new()));
@@ -425,7 +425,7 @@ fn mismatched_pin_fails_without_rebinding_stale_prior_authority() {
 fn missing_pin_retries_exact_route_and_reopens_without_stale_authority() {
     let temp = tempfile::tempdir().unwrap();
     let data_root = temp.path().join("data");
-    ctx_history_core::platform_security::establish_private_data_root(&data_root).unwrap();
+    ctx_history_platform::platform_security::establish_private_data_root(&data_root).unwrap();
     let publish_nonempty = Arc::new(AtomicBool::new(false));
     let coordinator =
         CoreRefreshEngine::with_executor(publication_pin_executor(Arc::clone(&publish_nonempty)));
@@ -772,7 +772,7 @@ fn recovered_wait_after_restart_attaches_to_equivalent_running_attempt() {
 fn restart_rebuilds_all_routes_after_interrupted_background_refresh_progress() {
     let temp = tempfile::tempdir().unwrap();
     let data_root = temp.path().join("data");
-    ctx_history_core::platform_security::establish_private_data_root(&data_root).unwrap();
+    ctx_history_platform::platform_security::establish_private_data_root(&data_root).unwrap();
     let routes = BTreeSet::from([
         route_identity(0xa1),
         route_identity(0xa2),
@@ -1024,7 +1024,7 @@ fn restart_after_pointer_publication_recovers_exact_receipt_without_recapture() 
 fn published_journal_with_incompatible_pointer_rebuilds_from_source_on_restart() {
     let temp = tempfile::tempdir().unwrap();
     let data_root = temp.path().join("data");
-    ctx_history_core::platform_security::establish_private_data_root(&data_root).unwrap();
+    ctx_history_platform::platform_security::establish_private_data_root(&data_root).unwrap();
 
     let first = CoreRefreshEngine::with_executor(Arc::new(
         |execution: SourceBackedRefreshExecution<'_>| publish_pin_fixture(&execution, false),
@@ -1084,7 +1084,7 @@ fn published_journal_with_incompatible_pointer_rebuilds_from_source_on_restart()
 fn checksum_mismatched_published_generation_fails_closed_without_source_rebuild() {
     let temp = tempfile::tempdir().unwrap();
     let data_root = temp.path().join("data");
-    ctx_history_core::platform_security::establish_private_data_root(&data_root).unwrap();
+    ctx_history_platform::platform_security::establish_private_data_root(&data_root).unwrap();
 
     let first = CoreRefreshEngine::with_executor(Arc::new(
         |execution: SourceBackedRefreshExecution<'_>| publish_pin_fixture(&execution, false),
@@ -1141,7 +1141,7 @@ fn first_store_artifact(root: &Path) -> Option<PathBuf> {
 fn incompatible_pointer_requires_published_terminal_receipt_before_rebuild() {
     let temp = tempfile::tempdir().unwrap();
     let data_root = temp.path().join("data");
-    ctx_history_core::platform_security::establish_private_data_root(&data_root).unwrap();
+    ctx_history_platform::platform_security::establish_private_data_root(&data_root).unwrap();
 
     let first = CoreRefreshEngine::with_executor(Arc::new(
         |execution: SourceBackedRefreshExecution<'_>| publish_pin_fixture(&execution, false),
@@ -1187,7 +1187,7 @@ fn incompatible_pointer_requires_published_terminal_receipt_before_rebuild() {
 fn incompatible_pointer_does_not_normalize_mismatched_active_status() {
     let temp = tempfile::tempdir().unwrap();
     let data_root = temp.path().join("data");
-    ctx_history_core::platform_security::establish_private_data_root(&data_root).unwrap();
+    ctx_history_platform::platform_security::establish_private_data_root(&data_root).unwrap();
 
     let first = CoreRefreshEngine::with_executor(Arc::new(
         |execution: SourceBackedRefreshExecution<'_>| publish_pin_fixture(&execution, false),
@@ -1223,7 +1223,7 @@ fn incompatible_pointer_rebuilds_queued_and_running_journals_preserving_successo
     for running in [false, true] {
         let temp = tempfile::tempdir().unwrap();
         let data_root = temp.path().join("data");
-        ctx_history_core::platform_security::establish_private_data_root(&data_root).unwrap();
+        ctx_history_platform::platform_security::establish_private_data_root(&data_root).unwrap();
 
         let first = CoreRefreshEngine::with_executor(Arc::new(
             |execution: SourceBackedRefreshExecution<'_>| publish_pin_fixture(&execution, false),

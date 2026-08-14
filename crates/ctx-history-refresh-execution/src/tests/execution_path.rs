@@ -49,7 +49,7 @@ fn provider_wide_execution_discovers_once_and_preserves_progress_order() {
     let temp = tempfile::tempdir().unwrap();
     let data_root = temp.path().join("data");
     let index_root = source_backed_index_root(&data_root);
-    ctx_history_core::platform_security::establish_private_data_root(&data_root).unwrap();
+    ctx_history_platform::platform_security::establish_private_data_root(&data_root).unwrap();
     let home = temp.path().join("home");
     let cwd = temp.path().join("cwd");
     std::fs::create_dir_all(home.join(".forge")).unwrap();

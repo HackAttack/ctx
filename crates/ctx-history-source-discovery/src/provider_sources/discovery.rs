@@ -8,8 +8,8 @@ use std::{
     thread,
 };
 
-use ctx_history_core::platform_security::validate_provider_source_outside_data_root;
 use ctx_history_core::CaptureProvider;
+use ctx_history_platform::platform_security::validate_provider_source_outside_data_root;
 use thiserror::Error;
 
 use super::{

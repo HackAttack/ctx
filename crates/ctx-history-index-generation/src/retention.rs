@@ -4,7 +4,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use ctx_history_core::platform_security::{restrict_private_file_handle, verify_private_file};
+use ctx_history_platform::platform_security::{restrict_private_file_handle, verify_private_file};
 use serde::{Deserialize, Serialize};
 use tantivy::directory::Lock;
 

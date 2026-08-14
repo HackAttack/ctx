@@ -4,7 +4,7 @@ use std::{
 };
 
 use anyhow::{Context, Result};
-use ctx_history_core::platform_security::{restrict_private_directory, restrict_private_file};
+use ctx_history_platform::platform_security::{restrict_private_directory, restrict_private_file};
 
 pub(crate) fn create_private_dir_all(path: &Path) -> Result<()> {
     fs::create_dir_all(path)

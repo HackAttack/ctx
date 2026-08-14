@@ -15,6 +15,7 @@ test-support = []
 
 [dependencies]
 ctx-history-core = { path = "../ctx-history-core" }
+ctx-history-platform = { path = "../ctx-history-platform" }
 ctx-history-source-io = { path = "../ctx-history-source-io" }
 fs2 = "0.4.3"
 libc.workspace = true

@@ -534,7 +534,7 @@ fn manual_all_request(
 fn queued_startup_exact_is_upgraded_to_one_manual_all_scan() {
     let temp = tempfile::tempdir().unwrap();
     let data_root = temp.path().join("data");
-    ctx_history_core::platform_security::establish_private_data_root(&data_root).unwrap();
+    ctx_history_platform::platform_security::establish_private_data_root(&data_root).unwrap();
     let routes = BTreeSet::from([
         route_identity(0x11),
         route_identity(0x12),
@@ -602,7 +602,7 @@ fn queued_startup_exact_is_upgraded_to_one_manual_all_scan() {
 fn warm_dirty_route_burst_uses_one_bounded_refresh_and_publication() {
     let temp = tempfile::tempdir().unwrap();
     let data_root = temp.path().join("data");
-    ctx_history_core::platform_security::establish_private_data_root(&data_root).unwrap();
+    ctx_history_platform::platform_security::establish_private_data_root(&data_root).unwrap();
     ctx_history_index::GenerationWriter::open(
         source_backed_index_root(&data_root),
         WriterOptions::default(),
@@ -670,7 +670,7 @@ fn warm_dirty_route_burst_uses_one_bounded_refresh_and_publication() {
 fn running_incremental_startup_exact_promotes_manual_exhaustive_with_full_rescan() {
     let temp = tempfile::tempdir().unwrap();
     let data_root = temp.path().join("data");
-    ctx_history_core::platform_security::establish_private_data_root(&data_root).unwrap();
+    ctx_history_platform::platform_security::establish_private_data_root(&data_root).unwrap();
     let routes = BTreeSet::from([
         route_identity(0x21),
         route_identity(0x22),
@@ -796,7 +796,7 @@ fn running_incremental_startup_exact_promotes_manual_exhaustive_with_full_rescan
 fn failed_running_exact_remains_in_manual_all_successor_work() {
     let temp = tempfile::tempdir().unwrap();
     let data_root = temp.path().join("data");
-    ctx_history_core::platform_security::establish_private_data_root(&data_root).unwrap();
+    ctx_history_platform::platform_security::establish_private_data_root(&data_root).unwrap();
     let routes = BTreeSet::from([route_identity(0x31), route_identity(0x32)]);
     let first_route = routes.iter().next().unwrap().clone();
     let scans = Arc::new(Mutex::new(BTreeMap::<SourceRouteIdentity, usize>::new()));
@@ -867,7 +867,7 @@ fn failed_running_exact_remains_in_manual_all_successor_work() {
 fn event_during_running_exact_invalidates_manual_all_coverage() {
     let temp = tempfile::tempdir().unwrap();
     let data_root = temp.path().join("data");
-    ctx_history_core::platform_security::establish_private_data_root(&data_root).unwrap();
+    ctx_history_platform::platform_security::establish_private_data_root(&data_root).unwrap();
     let routes = BTreeSet::from([route_identity(0x41), route_identity(0x42)]);
     let first_route = routes.iter().next().unwrap().clone();
     let scans = Arc::new(Mutex::new(BTreeMap::<SourceRouteIdentity, usize>::new()));
@@ -933,7 +933,7 @@ fn event_during_running_exact_invalidates_manual_all_coverage() {
 fn ordinary_manual_all_still_scans_every_current_route() {
     let temp = tempfile::tempdir().unwrap();
     let data_root = temp.path().join("data");
-    ctx_history_core::platform_security::establish_private_data_root(&data_root).unwrap();
+    ctx_history_platform::platform_security::establish_private_data_root(&data_root).unwrap();
     let routes = BTreeSet::from([route_identity(0x45), route_identity(0x46)]);
     let scans = Arc::new(Mutex::new(BTreeMap::<SourceRouteIdentity, usize>::new()));
     let executor_routes = routes.clone();
@@ -981,7 +981,7 @@ fn ordinary_manual_all_still_scans_every_current_route() {
 fn exact_route_event_during_execution_creates_one_successor_and_noop_ack_cleans_it() {
     let temp = tempfile::tempdir().unwrap();
     let data_root = temp.path().join("data");
-    ctx_history_core::platform_security::establish_private_data_root(&data_root).unwrap();
+    ctx_history_platform::platform_security::establish_private_data_root(&data_root).unwrap();
     let route = route_identity(0x51);
     let calls = Arc::new(AtomicUsize::new(0));
     let entered = Arc::new(Barrier::new(2));
@@ -1095,7 +1095,7 @@ fn exact_route_receipt_failures_back_off_or_block_until_a_new_event() {
 
     let retry_temp = tempfile::tempdir().unwrap();
     let retry_root = retry_temp.path().join("data");
-    ctx_history_core::platform_security::establish_private_data_root(&retry_root).unwrap();
+    ctx_history_platform::platform_security::establish_private_data_root(&retry_root).unwrap();
     let retry =
         CoreRefreshEngine::with_executor(route_failure_executor(route.clone(), "unavailable"));
     retry.reconcile_watch_routes([route.clone()], EventWatermark::new(1, 0), observed_at_ms);
@@ -1113,7 +1113,7 @@ fn exact_route_receipt_failures_back_off_or_block_until_a_new_event() {
 
     let blocked_temp = tempfile::tempdir().unwrap();
     let blocked_root = blocked_temp.path().join("data");
-    ctx_history_core::platform_security::establish_private_data_root(&blocked_root).unwrap();
+    ctx_history_platform::platform_security::establish_private_data_root(&blocked_root).unwrap();
     let blocked =
         CoreRefreshEngine::with_executor(route_failure_executor(route.clone(), "incompatible"));
     blocked.reconcile_watch_routes([route.clone()], EventWatermark::new(2, 0), observed_at_ms);
@@ -1132,7 +1132,7 @@ fn exact_route_receipt_failures_back_off_or_block_until_a_new_event() {
 fn failed_exhaustive_exact_predecessor_cancels_attached_broad_successor_and_retains_route_retry() {
     let temp = tempfile::tempdir().unwrap();
     let data_root = temp.path().join("data");
-    ctx_history_core::platform_security::establish_private_data_root(&data_root).unwrap();
+    ctx_history_platform::platform_security::establish_private_data_root(&data_root).unwrap();
     let route = route_identity(0x64);
     let entered = Arc::new(Barrier::new(2));
     let release = Arc::new(Barrier::new(2));
@@ -1252,7 +1252,7 @@ fn failed_exhaustive_exact_predecessor_cancels_attached_broad_successor_and_reta
 fn successful_partial_publication_retains_mixed_route_retry_dispositions() {
     let temp = tempfile::tempdir().unwrap();
     let data_root = temp.path().join("data");
-    ctx_history_core::platform_security::establish_private_data_root(&data_root).unwrap();
+    ctx_history_platform::platform_security::establish_private_data_root(&data_root).unwrap();
     let retryable_route = route_identity(0x62);
     let blocked_route = route_identity(0x63);
     let routes = BTreeSet::from([retryable_route.clone(), blocked_route.clone()]);
@@ -1341,7 +1341,7 @@ fn successful_partial_publication_retains_mixed_route_retry_dispositions() {
 fn systemic_exact_publication_failure_leaves_the_route_dirty_with_backoff() {
     let temp = tempfile::tempdir().unwrap();
     let data_root = temp.path().join("data");
-    ctx_history_core::platform_security::establish_private_data_root(&data_root).unwrap();
+    ctx_history_platform::platform_security::establish_private_data_root(&data_root).unwrap();
     let route = route_identity(0x71);
     let executor: Arc<dyn SourceBackedRefreshExecutor> =
         Arc::new(|_: SourceBackedRefreshExecution<'_>| Err(anyhow!("systemic fixture failure")));
@@ -1549,7 +1549,7 @@ fn terminal_history_is_trimmed_independently_from_inflight_capacity() {
 fn production_run_persists_discovering_before_executor_entry() {
     let temp = tempfile::tempdir().unwrap();
     let data_root = temp.path().join("data");
-    ctx_history_core::platform_security::establish_private_data_root(&data_root).unwrap();
+    ctx_history_platform::platform_security::establish_private_data_root(&data_root).unwrap();
     let observed = Arc::new(AtomicBool::new(false));
     let observed_from_executor = Arc::clone(&observed);
     let coordinator = CoreRefreshEngine::with_executor(Arc::new(

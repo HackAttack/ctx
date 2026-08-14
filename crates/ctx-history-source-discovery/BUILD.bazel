@@ -33,6 +33,7 @@ PROD_SRCS = glob(
 CTX_HISTORY_SOURCE_DISCOVERY_DEPS = [
     "//crates/ctx-history-capture-model:lib",
     "//crates/ctx-history-core:lib",
+    "//crates/ctx-history-platform:lib",
     "//crates/ctx-history-source-io:lib",
     "//crates/ctx-history-source-sqlite:lib",
 ]
@@ -63,6 +64,7 @@ ctx_rust_test(
     deps = all_crate_deps(normal = True, normal_dev = True) + [
         "//crates/ctx-history-capture-model:lib",
         "//crates/ctx-history-core:lib",
+        "//crates/ctx-history-platform:lib",
         "//crates/ctx-history-source-io:test_support_lib",
         "//crates/ctx-history-source-sqlite:test_support_lib",
     ],
