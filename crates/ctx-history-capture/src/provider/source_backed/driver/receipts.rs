@@ -8,16 +8,6 @@ thread_local! {
 }
 
 #[cfg(test)]
-pub(crate) fn reset_base_source_manifest_visits() {
-    BASE_SOURCE_MANIFEST_VISITS.with(|visits| visits.set(0));
-}
-
-#[cfg(test)]
-pub(crate) fn base_source_manifest_visits() -> u64 {
-    BASE_SOURCE_MANIFEST_VISITS.with(std::cell::Cell::get)
-}
-
-#[cfg(test)]
 pub(crate) fn record_base_source_manifest_visit() {
     BASE_SOURCE_MANIFEST_VISITS.with(|visits| visits.set(visits.get().saturating_add(1)));
 }
@@ -27,14 +17,14 @@ pub use ctx_history_capture_runtime::{
     SourceBackedCurrentSourceProgressStage, SourceBackedFailedRoute,
     SourceBackedFailedRouteOutcome, SourceBackedLogicalSourceFailure,
     SourceBackedLogicalSourceFailures, SourceBackedReconciliationDemand,
-    SourceBackedRecordCompletion, SourceBackedRecordProgressDelta, SourceBackedRecordRejection,
-    SourceBackedRecordRejectionClass, SourceBackedRecordRejectionDraft,
-    SourceBackedRecordRejectionDrafts, SourceBackedRecordRejections, SourceBackedRefreshScope,
-    SourceBackedRevalidationTarget, SourceBackedRouteConstructor, SourceBackedRouteError,
-    SourceBackedRouteErrorKind, SourceBackedRouteResult, SourceBackedRouteRevalidation,
-    SourceBackedRouteSelection, SourceBackedRouteWatchTargets, SourceBackedSelectorAuthority,
-    SourceBackedSourceFailureClass, SourceBackedSourceFailures, SourceBackedWatchTargetKind,
-    SourceOwner, MAX_RECORDED_SOURCE_BACKED_FAILURES, MAX_SOURCE_BACKED_FAILURE_DETAIL_BYTES,
+    SourceBackedRecordCompletion, SourceBackedRecordRejection, SourceBackedRecordRejectionClass,
+    SourceBackedRecordRejectionDraft, SourceBackedRecordRejectionDrafts,
+    SourceBackedRecordRejections, SourceBackedRefreshScope, SourceBackedRevalidationTarget,
+    SourceBackedRouteConstructor, SourceBackedRouteError, SourceBackedRouteErrorKind,
+    SourceBackedRouteResult, SourceBackedRouteRevalidation, SourceBackedRouteSelection,
+    SourceBackedRouteWatchTargets, SourceBackedSelectorAuthority, SourceBackedSourceFailureClass,
+    SourceBackedSourceFailures, SourceBackedWatchTargetKind, SourceOwner,
+    MAX_RECORDED_SOURCE_BACKED_FAILURES, MAX_SOURCE_BACKED_FAILURE_DETAIL_BYTES,
     MAX_SOURCE_BACKED_FAILURE_SELECTOR_BYTES, MAX_SOURCE_BACKED_ROUTE_CONTROL_BYTES,
 };
 use ctx_history_capture_runtime::{

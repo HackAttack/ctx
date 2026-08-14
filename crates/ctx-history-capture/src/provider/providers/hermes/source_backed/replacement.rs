@@ -16,12 +16,12 @@ thread_local! {
 }
 
 #[cfg(test)]
-pub(super) fn reset_document_base_route_source_visits() {
+pub(crate) fn reset_document_base_route_source_visits() {
     DOCUMENT_BASE_ROUTE_SOURCE_VISITS.with(|visits| visits.set(0));
 }
 
 #[cfg(test)]
-pub(super) fn document_base_route_source_visits() -> u64 {
+pub(crate) fn document_base_route_source_visits() -> u64 {
     DOCUMENT_BASE_ROUTE_SOURCE_VISITS.with(std::cell::Cell::get)
 }
 

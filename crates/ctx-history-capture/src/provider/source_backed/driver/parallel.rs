@@ -1,14 +1,6 @@
 use std::thread;
 
-use ctx_history_index::{IndexError, WriterOptions};
-
-pub(crate) use ctx_history_capture_runtime::{
-    ParallelLeafScanBegin, ParallelLeafScanComplete, ParallelLeafScanEmitError,
-    ParallelLeafScanJob, ParallelLeafScanWorkerError,
-};
-
-pub(crate) type ParallelLeafScanError<E> =
-    ctx_history_capture_runtime::ParallelLeafScanError<E, IndexError>;
+use ctx_history_index::WriterOptions;
 
 pub use ctx_history_capture_runtime::source_backed_refresh_work_budget;
 

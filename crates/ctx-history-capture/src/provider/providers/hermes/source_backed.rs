@@ -86,8 +86,6 @@ mod replacement;
 pub(crate) use contracts::*;
 use incremental::*;
 use inventory::*;
-#[cfg(test)]
-use replacement::{document_base_route_source_visits, reset_document_base_route_source_visits};
 
 const HERMES_SESSION_KEY_MAX_BYTES: usize = 64 * 1024;
 

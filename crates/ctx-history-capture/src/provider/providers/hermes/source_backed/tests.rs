@@ -11,16 +11,15 @@ use super::super::sqlite::{
     exact_message_query_counters, exact_message_spool_counters, hermes_message_candidate_sql,
     reset_exact_message_query_counters,
 };
+use super::replacement::{
+    document_base_route_source_visits, reset_document_base_route_source_visits,
+};
 use super::*;
 use crate::{
     automatic_source_backed_route_identity,
     provider::source_backed::{
-        build_automatic_source_backed_registry_from_report,
-        family::document::{
-            document_base_route_source_visits, reset_document_base_route_source_visits,
-        },
-        partial_base_route_member_visits, refresh_source_backed_generation,
-        refresh_source_backed_generation_with_detailed_progress,
+        build_automatic_source_backed_registry_from_report, partial_base_route_member_visits,
+        refresh_source_backed_generation, refresh_source_backed_generation_with_detailed_progress,
         reset_partial_base_route_member_visits, SourceBackedCoordinatorError,
         SourceBackedCurrentSourceProgressStage, SourceBackedProviderRegistry,
         SourceBackedReconciliationDemand, SourceBackedRefreshExecutor, SourceBackedRefreshReceipt,

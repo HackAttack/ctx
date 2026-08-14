@@ -172,7 +172,7 @@ impl SourceBackedProviderRegistry {
                     control: route
                         .driver
                         .as_ref()
-                        .and_then(|driver| driver.route_control_expectation.clone()),
+                        .and_then(|driver| driver.route_control_expectation),
                     targets: BTreeSet::new(),
                 });
             if targets.primary != route.metadata.source.path
