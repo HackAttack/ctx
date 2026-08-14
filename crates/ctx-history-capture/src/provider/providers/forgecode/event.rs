@@ -1,11 +1,10 @@
 use std::collections::BTreeSet;
 
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, NaiveDateTime, Utc};
 use ctx_history_core::{Confidence, EventRole, EventType, FileChangeKind};
 use serde::Serialize;
 use serde_json::{json, Value};
 
-use crate::provider::providers::goose::goose_timestamp;
 use crate::{compute_payload_hash, FORGECODE_SQLITE_SOURCE_FORMAT, PROVIDER_MAX_PREVIEW_CHARS};
 use ctx_history_capture_model::file_touches::normalized_key;
 use ctx_history_capture_model::normalization::{
@@ -475,5 +474,11 @@ fn forgecode_json_i64(value: &Value) -> Option<i64> {
 }
 
 pub(super) fn forgecode_timestamp(raw: Option<&str>, fallback: DateTime<Utc>) -> DateTime<Utc> {
-    goose_timestamp(raw, fallback)
+    let Some(raw) = raw.map(str::trim).filter(|raw| !raw.is_empty()) else {
+        return fallback;
+    };
+    if let Ok(naive) = NaiveDateTime::parse_from_str(raw, "%Y-%m-%d %H:%M:%S%.f") {
+        return DateTime::<Utc>::from_naive_utc_and_offset(naive, Utc);
+    }
+    provider_timestamp_value(Some(&Value::String(raw.to_owned())), fallback)
 }

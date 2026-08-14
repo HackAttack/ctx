@@ -1,0 +1,874 @@
+use rusqlite::{params_from_iter, types::Value, Connection};
+
+use crate::native_source::NativeSqliteValue;
+use crate::provider::sqlite::SqliteLengthPreflightGuard;
+use crate::{CaptureError, OutputOutcome, Result};
+
+use super::schema::{GooseNativeSchema, GooseSessionRow};
+
+mod identity;
+
+pub(super) use identity::{
+    goose_message_identity_counts_sql, goose_native_message_identity,
+    goose_normalized_message_id_sql, goose_require_canonical_native_order,
+};
+
+pub(super) fn goose_retained_length_expr(expressions: &[String]) -> String {
+    expressions
+        .iter()
+        .map(|expression| format!("coalesce(octet_length({expression}), 0)"))
+        .collect::<Vec<_>>()
+        .join(" + ")
+}
+
+pub(super) const GOOSE_NATIVE_DEFAULT_PAGE_ROWS: usize = 64;
+pub(super) const GOOSE_NATIVE_DEFAULT_PAGE_BYTES: u64 = 8 * 1024 * 1024;
+const GOOSE_NATIVE_PAGE_ENVELOPE_BYTES: u64 = 2 * 1024;
+const GOOSE_NATIVE_PAGE_UNIT_OVERHEAD_BYTES: u64 = 1024;
+const GOOSE_NATIVE_MAX_SESSION_ID_BYTES: u64 = 16 * 1024;
+const GOOSE_NATIVE_MAX_MESSAGE_ID_BYTES: u64 = 1_024;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) struct GooseNativePageLimits {
+    pub(super) rows: usize,
+    pub(super) retained_bytes: u64,
+}
+
+impl Default for GooseNativePageLimits {
+    fn default() -> Self {
+        Self {
+            rows: GOOSE_NATIVE_DEFAULT_PAGE_ROWS,
+            retained_bytes: GOOSE_NATIVE_DEFAULT_PAGE_BYTES,
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(super) enum GooseNativeSessionKeyset {
+    Unstarted,
+    After(String),
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum GooseNativeRowKeyset {
+    Unstarted,
+    After(i64),
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub(super) struct GooseScannedSession {
+    pub(super) native_identity: String,
+    pub(super) observed_bytes: u64,
+    pub(super) storage_class_supported: bool,
+    pub(super) row: Option<GooseSessionRow>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum GooseMessageCellDisposition {
+    Retained,
+    OutputSuccess,
+    OutputFailure,
+    OutputTimeout,
+    OutputUnknown,
+    MalformedJson,
+    UnsupportedJsonRoot,
+    NonObjectBlock,
+    UnknownBlockType,
+    OversizedRetainedContent,
+    MissingSession,
+    UnsupportedStorageClass,
+    DuplicateBlockType,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum GooseRetainedContentClass {
+    Message,
+    ToolCall,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(super) struct GooseScannedMessage {
+    pub(super) sqlite_rowid: i64,
+    pub(super) native_order: i64,
+    pub(super) native_identity: String,
+    pub(super) provider_message_identity: Option<String>,
+    pub(super) identity_degraded: bool,
+    pub(super) session_identity: String,
+    pub(super) role: String,
+    pub(super) disposition: GooseMessageCellDisposition,
+    pub(super) output_outcome: Option<OutputOutcome>,
+    pub(super) retained_class: Option<GooseRetainedContentClass>,
+    pub(super) content_json: Option<String>,
+    pub(super) content_bytes: u64,
+    pub(super) created_timestamp: Option<i64>,
+    pub(super) timestamp: Option<String>,
+    pub(super) tokens_json: Option<String>,
+    pub(super) metadata_json: Option<String>,
+    pub(super) logical_row_digest: Option<[u8; 32]>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(super) struct GooseRetainedMessage {
+    pub(super) sqlite_rowid: i64,
+    pub(super) native_order: i64,
+    pub(super) native_identity: String,
+    pub(super) provider_message_identity: Option<String>,
+    pub(super) identity_degraded: bool,
+    pub(super) session_identity: String,
+    pub(super) role: String,
+    pub(super) retained_class: GooseRetainedContentClass,
+    pub(super) content_json: String,
+    pub(super) content_bytes: u64,
+    pub(super) created_timestamp: Option<i64>,
+    pub(super) timestamp: Option<String>,
+    pub(super) tokens_json: Option<String>,
+    pub(super) metadata_json: Option<String>,
+    pub(super) logical_row_digest: [u8; 32],
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(super) struct GooseNativeMessageIdentity {
+    pub(super) native_identity: String,
+    pub(super) provider_message_identity: Option<String>,
+    pub(super) identity_degraded: bool,
+}
+
+impl GooseScannedMessage {
+    pub(super) fn into_retained(self) -> Result<GooseRetainedMessage> {
+        if self.disposition != GooseMessageCellDisposition::Retained {
+            return Err(CaptureError::SystemInvariant(
+                "Goose attempted to normalize a non-retained message",
+            ));
+        }
+        let content_json = self.content_json.ok_or(CaptureError::SystemInvariant(
+            "Goose retained message was not hydrated",
+        ))?;
+        let retained_class = self.retained_class.ok_or(CaptureError::SystemInvariant(
+            "Goose retained message omitted its SQLite visitor class",
+        ))?;
+        let logical_row_digest = self
+            .logical_row_digest
+            .ok_or(CaptureError::SystemInvariant(
+                "Goose retained message omitted its logical-row digest",
+            ))?;
+        Ok(GooseRetainedMessage {
+            sqlite_rowid: self.sqlite_rowid,
+            native_order: self.native_order,
+            native_identity: self.native_identity,
+            provider_message_identity: self.provider_message_identity,
+            identity_degraded: self.identity_degraded,
+            session_identity: self.session_identity,
+            role: self.role,
+            retained_class,
+            content_json,
+            content_bytes: self.content_bytes,
+            created_timestamp: self.created_timestamp,
+            timestamp: self.timestamp,
+            tokens_json: self.tokens_json,
+            metadata_json: self.metadata_json,
+            logical_row_digest,
+        })
+    }
+}
+
+pub(super) fn goose_fetch_native_session_page(
+    conn: &Connection,
+    schema: &GooseNativeSchema,
+    keyset: &GooseNativeSessionKeyset,
+    limits: GooseNativePageLimits,
+) -> Result<Vec<GooseScannedSession>> {
+    let row_limit = i64::try_from(limits.rows)
+        .map_err(|_| CaptureError::InvalidPayload("Goose page row limit exceeds i64".to_owned()))?;
+    let expressions = schema.session_hydration_expressions("s");
+    let retained_bytes = goose_retained_length_expr(&expressions);
+    let storage_class_supported = schema.session_storage_class_predicate("s");
+    let guarded_select = expressions
+        .iter()
+        .map(|expression| {
+            format!("case when selected.representable = 1 then {expression} else null end")
+        })
+        .collect::<Vec<_>>()
+        .join(", ");
+    let page_budget = goose_projection_page_budget(limits)?;
+    let page_budget = i64::try_from(page_budget)
+        .map_err(|_| CaptureError::SystemInvariant("Goose session page limit exceeds i64"))?;
+    let (key_predicate, limit_parameter, page_budget_parameter, parameters) = match keyset {
+        GooseNativeSessionKeyset::Unstarted => (
+            "",
+            "?1",
+            "?2",
+            vec![Value::Integer(row_limit), Value::Integer(page_budget)],
+        ),
+        GooseNativeSessionKeyset::After(native_identity) => (
+            "where s.id > ?1",
+            "?2",
+            "?3",
+            vec![
+                Value::Text(native_identity.clone()),
+                Value::Integer(row_limit),
+                Value::Integer(page_budget),
+            ],
+        ),
+    };
+    let mut statement = conn.prepare(&format!(
+        "with candidates as (
+             select
+                 s.rowid as sqlite_rowid,
+                 s.id as canonical_native_identity,
+                 {retained_bytes} as retained_bytes,
+                 case when {storage_class_supported} then 1 else 0 end
+                     as storage_class_supported,
+                 case
+                     when typeof(s.id) = 'text'
+                          and octet_length(s.id) <= {GOOSE_NATIVE_MAX_SESSION_ID_BYTES}
+                     then cast(s.id as text)
+                     else null
+                 end as bounded_native_identity
+             from sessions s
+             {key_predicate}
+             order by s.id
+             limit {limit_parameter}
+         ),
+         classified as (
+             select *,
+                 case
+                     when storage_class_supported = 1 then 1
+                     else 0
+                 end as representable
+             from candidates
+         ),
+         measured as (
+             select *,
+                 sum(
+                     case when representable = 1
+                          then retained_bytes + {GOOSE_NATIVE_PAGE_UNIT_OVERHEAD_BYTES}
+                          else {GOOSE_NATIVE_PAGE_UNIT_OVERHEAD_BYTES}
+                     end
+                 ) over (
+                     order by canonical_native_identity rows unbounded preceding
+                 ) as running_bytes,
+                 row_number() over (order by canonical_native_identity) as page_ordinal
+             from classified
+         ),
+         selected as (
+             select *
+             from measured
+             where running_bytes <= {page_budget_parameter} or page_ordinal = 1
+         )
+         select
+             selected.sqlite_rowid,
+             selected.bounded_native_identity,
+             selected.retained_bytes,
+             selected.storage_class_supported,
+             selected.representable,
+             {guarded_select}
+         from selected
+         join sessions s on s.rowid = selected.sqlite_rowid
+         order by selected.canonical_native_identity"
+    ))?;
+    let _length_guard = SqliteLengthPreflightGuard::new(conn);
+    let rows = statement.query_map(params_from_iter(parameters), |row| {
+        let raw_observed_bytes: i64 = row.get(2)?;
+        let observed_bytes = u64::try_from(raw_observed_bytes)
+            .map_err(|_| rusqlite::Error::IntegralValueOutOfRange(2, raw_observed_bytes))?;
+        let storage_class_supported = row.get::<_, i64>(3)? != 0;
+        let representable = row.get::<_, i64>(4)? != 0;
+        let native_identity = row.get::<_, Option<String>>(1)?.ok_or_else(|| {
+            rusqlite::Error::FromSqlConversionFailure(
+                1,
+                rusqlite::types::Type::Null,
+                CaptureError::InvalidPayload(
+                    "Goose session row has no bounded canonical native key".to_owned(),
+                )
+                .into(),
+            )
+        })?;
+        Ok(GooseScannedSession {
+            native_identity,
+            observed_bytes,
+            storage_class_supported,
+            row: if representable {
+                Some(GooseSessionRow {
+                    id: row.get(5)?,
+                    name: row.get(6)?,
+                    description: row.get(7)?,
+                    user_set_name: row.get::<_, i64>(8)? != 0,
+                    session_type: row.get(9)?,
+                    working_dir: row.get(10)?,
+                    created_at: row.get(11)?,
+                    updated_at: row.get(12)?,
+                    extension_data: row.get(13)?,
+                    total_tokens: row.get(14)?,
+                    input_tokens: row.get(15)?,
+                    output_tokens: row.get(16)?,
+                    accumulated_total_tokens: row.get(17)?,
+                    accumulated_input_tokens: row.get(18)?,
+                    accumulated_output_tokens: row.get(19)?,
+                    accumulated_cost: row.get(20)?,
+                    provider_name: row.get(21)?,
+                    model_config_json: row.get(22)?,
+                    goose_mode: row.get(23)?,
+                    archived_at: row.get(24)?,
+                    project_id: row.get(25)?,
+                    parent_session_id: row.get(26)?,
+                })
+            } else {
+                None
+            },
+        })
+    })?;
+    rows.collect::<std::result::Result<Vec<_>, _>>()
+        .map_err(CaptureError::from)
+}
+
+pub(super) fn goose_fetch_native_message_page(
+    conn: &Connection,
+    schema: &GooseNativeSchema,
+    keyset: GooseNativeRowKeyset,
+    limits: GooseNativePageLimits,
+) -> Result<Vec<GooseScannedMessage>> {
+    let row_limit = i64::try_from(limits.rows)
+        .map_err(|_| CaptureError::InvalidPayload("Goose page row limit exceeds i64".to_owned()))?;
+    let projection_budget = goose_projection_page_budget(limits)?;
+    let max_content = i64::try_from(ctx_history_source_sqlite::MAX_PROVIDER_SQLITE_VALUE_BYTES)
+        .map_err(|_| CaptureError::SystemInvariant("Goose retained content limit exceeds i64"))?;
+    let page_bytes = i64::try_from(projection_budget).map_err(|_| {
+        CaptureError::InvalidPayload("Goose page byte limit exceeds i64".to_owned())
+    })?;
+    let (key_predicate, limit_parameter, max_content_parameter, page_bytes_parameter, parameters) =
+        match keyset {
+            GooseNativeRowKeyset::Unstarted => (
+                "",
+                "?1",
+                "?2",
+                "?3",
+                vec![
+                    Value::Integer(row_limit),
+                    Value::Integer(max_content),
+                    Value::Integer(page_bytes),
+                ],
+            ),
+            GooseNativeRowKeyset::After(native_order) => (
+                "where m.id > ?1",
+                "?2",
+                "?3",
+                "?4",
+                vec![
+                    Value::Integer(native_order),
+                    Value::Integer(row_limit),
+                    Value::Integer(max_content),
+                    Value::Integer(page_bytes),
+                ],
+            ),
+        };
+    let message_id = schema.message_id_expression("m");
+    let created_timestamp = schema.message_created_timestamp_expression("m");
+    let timestamp = schema.message_timestamp_expression("m");
+    let tokens = schema.message_tokens_expression("m");
+    let metadata = schema.message_metadata_expression("m");
+    let normalized_message_id = goose_normalized_message_id_sql(&message_id);
+    let identity_counts =
+        goose_message_identity_counts_sql(schema, "identity_candidate", "page_message_ids");
+    let accepted_sessions = goose_accepted_sessions_sql(schema, limits)?;
+    let storage_class_supported = schema.message_storage_class_predicate("m");
+    let content_disposition = goose_native_content_visitor_sql(max_content_parameter);
+    let output_outcome = goose_native_output_outcome_sql();
+    let sql = format!(
+        "with page_keys as materialized (
+             select
+                 m.rowid as sqlite_rowid,
+                 case when typeof(m.id) = 'integer' then m.id end as native_order,
+                 {normalized_message_id} as native_message_id,
+                 case when typeof(m.session_id) = 'text' then m.session_id end
+                     as native_session_id
+             from messages m
+             {key_predicate}
+             order by m.id
+             limit {limit_parameter}
+         ),
+         page_message_ids as (
+             select distinct native_session_id, native_message_id
+             from page_keys
+             where native_session_id is not null and native_message_id is not null
+         ),
+         identity_counts as (
+             {identity_counts}
+         ),
+         accepted_sessions as materialized (
+             {accepted_sessions}
+         ),
+         candidates as (
+             select
+                 page_keys.sqlite_rowid,
+                 page_keys.native_order,
+                 page_keys.native_message_id,
+                 case
+                     when typeof({message_id}) in ('null', 'text')
+                     then cast({message_id} as text)
+                 end as source_message_id,
+                 coalesce(identity_counts.message_id_uses, 0) as message_id_uses,
+                 coalesce(
+                     case when typeof(m.session_id) = 'text' then m.session_id end,
+                     ''
+                 ) as session_identity,
+                 accepted_sessions.parent_rowid,
+                 coalesce(
+                     case when typeof(m.role) = 'text' then m.role end,
+                     ''
+                 ) as role,
+                 m.content_json as content_json,
+                 typeof(m.content_json) as content_storage_class,
+                 coalesce(octet_length(m.content_json), 0) as content_bytes,
+                 coalesce(octet_length({tokens}), 0)
+                     + coalesce(octet_length({metadata}), 0) as auxiliary_bytes,
+                 case
+                     when typeof({created_timestamp}) in ('null', 'integer')
+                     then {created_timestamp}
+                 end as created_timestamp,
+                 case
+                     when typeof({timestamp}) in ('null', 'text')
+                     then {timestamp}
+                 end as native_timestamp,
+                 case
+                     when typeof({tokens}) in ('null', 'integer', 'real')
+                     then {tokens}
+                 end as tokens_json,
+                 case
+                     when typeof({tokens}) in ('null', 'text')
+                     then cast({tokens} as text)
+                 end as digest_tokens_json,
+                 case
+                     when typeof({metadata}) in ('null', 'text')
+                     then {metadata}
+                 end as metadata_json,
+                 case when {storage_class_supported} then 1 else 0 end
+                     as storage_class_supported
+             from page_keys
+             join messages m on m.rowid = page_keys.sqlite_rowid
+             left join identity_counts
+               on identity_counts.native_session_id = page_keys.native_session_id
+              and identity_counts.native_message_id = page_keys.native_message_id
+             left join accepted_sessions
+               on accepted_sessions.session_identity = m.session_id
+         ),
+         structural as (
+             select *,
+                 {content_disposition} as disposition
+             from candidates
+         ),
+         classified as (
+             select *,
+                 case when disposition = 1 then {output_outcome} else disposition end
+                     as classified_disposition
+             from structural
+         ),
+         measured as (
+             select *,
+                 sum(
+                     case
+                         when classified_disposition in (0, 9, 11, 12, 13, 14)
+                              and content_bytes + auxiliary_bytes <= {max_content_parameter}
+                              then content_bytes + auxiliary_bytes
+                         else 512 + auxiliary_bytes
+                     end
+                 )
+                     over (order by native_order rows unbounded preceding) as running_bytes,
+                 row_number() over (order by native_order) as page_ordinal
+             from classified
+         )
+         select
+             sqlite_rowid,
+             native_order,
+             native_message_id,
+             message_id_uses,
+             session_identity,
+             role,
+             classified_disposition,
+             case
+                 when classified_disposition in (0, 9, 11, 12, 13, 14)
+                      and content_bytes + auxiliary_bytes <= {max_content_parameter}
+                 then content_json
+                 else null
+             end,
+             content_bytes,
+             created_timestamp,
+             native_timestamp,
+             case when classified_disposition in (0, 9, 11, 12, 13, 14)
+                  then cast(tokens_json as text) else null end,
+                 case when classified_disposition in (0, 9, 11, 12, 13, 14)
+                  then cast(metadata_json as text) else null end
+             ,
+             parent_rowid,
+             source_message_id,
+             case when classified_disposition in (0, 9, 11, 12, 13, 14)
+                  then digest_tokens_json else null end
+         from measured
+         where running_bytes <= {page_bytes_parameter} or page_ordinal = 1
+         order by native_order"
+    );
+
+    let _length_guard = SqliteLengthPreflightGuard::new(conn);
+    let mut statement = conn.prepare(&sql)?;
+    let rows = statement.query_map(params_from_iter(parameters), |row| {
+        let native_order = row.get::<_, Option<i64>>(1)?.ok_or_else(|| {
+            rusqlite::Error::FromSqlConversionFailure(
+                1,
+                rusqlite::types::Type::Null,
+                CaptureError::InvalidPayload(
+                    "Goose message row has no canonical integer native key".to_owned(),
+                )
+                .into(),
+            )
+        })?;
+        let native_message_id: Option<String> = row.get(2)?;
+        let message_id_uses: i64 = row.get(3)?;
+        let identity =
+            goose_native_message_identity(native_message_id, message_id_uses, native_order);
+        let (disposition, retained_class, output_outcome) = match row.get::<_, i64>(6)? {
+            0 => (
+                GooseMessageCellDisposition::Retained,
+                Some(GooseRetainedContentClass::Message),
+                None,
+            ),
+            2 => (GooseMessageCellDisposition::MalformedJson, None, None),
+            3 => (GooseMessageCellDisposition::UnsupportedJsonRoot, None, None),
+            4 => (GooseMessageCellDisposition::NonObjectBlock, None, None),
+            5 => (GooseMessageCellDisposition::UnknownBlockType, None, None),
+            6 => (
+                GooseMessageCellDisposition::OversizedRetainedContent,
+                None,
+                None,
+            ),
+            7 => (GooseMessageCellDisposition::MissingSession, None, None),
+            8 => (
+                GooseMessageCellDisposition::UnsupportedStorageClass,
+                None,
+                None,
+            ),
+            9 => (
+                GooseMessageCellDisposition::Retained,
+                Some(GooseRetainedContentClass::ToolCall),
+                None,
+            ),
+            10 => (GooseMessageCellDisposition::DuplicateBlockType, None, None),
+            11 => (
+                GooseMessageCellDisposition::OutputFailure,
+                None,
+                Some(OutputOutcome::Failure),
+            ),
+            12 => (
+                GooseMessageCellDisposition::OutputTimeout,
+                None,
+                Some(OutputOutcome::Timeout),
+            ),
+            13 => (
+                GooseMessageCellDisposition::OutputUnknown,
+                None,
+                Some(OutputOutcome::Unknown),
+            ),
+            14 => (
+                GooseMessageCellDisposition::OutputSuccess,
+                None,
+                Some(OutputOutcome::Success),
+            ),
+            value => {
+                return Err(rusqlite::Error::FromSqlConversionFailure(
+                    6,
+                    rusqlite::types::Type::Integer,
+                    format!("unknown Goose NativePath disposition {value}").into(),
+                ));
+            }
+        };
+        let raw_content_bytes: i64 = row.get(8)?;
+        let content_bytes = u64::try_from(raw_content_bytes)
+            .map_err(|_| rusqlite::Error::IntegralValueOutOfRange(8, raw_content_bytes))?;
+        let sqlite_rowid: i64 = row.get(0)?;
+        let session_identity: String = row.get(4)?;
+        let role: String = row.get(5)?;
+        let content_json: Option<String> = row.get(7)?;
+        let created_timestamp: Option<i64> = row.get(9)?;
+        let timestamp: Option<String> = row.get(10)?;
+        let tokens_json: Option<String> = row.get(11)?;
+        let metadata_json: Option<String> = row.get(12)?;
+        let parent_rowid: Option<i64> = row.get(13)?;
+        let source_message_id: Option<String> = row.get(14)?;
+        let digest_tokens_json: Option<String> = row.get(15)?;
+        let logical_row_digest = content_json
+            .as_ref()
+            .map(|content_json| {
+                super::content::goose_message_record_digest(&[
+                    parent_rowid.map_or(NativeSqliteValue::Null, NativeSqliteValue::Integer),
+                    NativeSqliteValue::Integer(sqlite_rowid),
+                    NativeSqliteValue::Integer(native_order),
+                    source_message_id
+                        .clone()
+                        .map_or(NativeSqliteValue::Null, NativeSqliteValue::Text),
+                    NativeSqliteValue::Text(session_identity.clone()),
+                    NativeSqliteValue::Text(role.clone()),
+                    NativeSqliteValue::Text(content_json.clone()),
+                    created_timestamp.map_or(NativeSqliteValue::Null, NativeSqliteValue::Integer),
+                    timestamp
+                        .clone()
+                        .map_or(NativeSqliteValue::Null, NativeSqliteValue::Text),
+                    digest_tokens_json
+                        .clone()
+                        .map_or(NativeSqliteValue::Null, NativeSqliteValue::Text),
+                    metadata_json
+                        .clone()
+                        .map_or(NativeSqliteValue::Null, NativeSqliteValue::Text),
+                ])
+            })
+            .transpose()
+            .map_err(|error| {
+                rusqlite::Error::FromSqlConversionFailure(
+                    7,
+                    rusqlite::types::Type::Text,
+                    Box::new(error),
+                )
+            })?;
+        Ok(GooseScannedMessage {
+            sqlite_rowid,
+            native_order,
+            native_identity: identity.native_identity,
+            provider_message_identity: identity.provider_message_identity,
+            identity_degraded: identity.identity_degraded,
+            session_identity,
+            role,
+            disposition,
+            output_outcome,
+            retained_class,
+            content_json,
+            content_bytes,
+            created_timestamp,
+            timestamp,
+            tokens_json,
+            metadata_json,
+            logical_row_digest,
+        })
+    })?;
+    rows.collect::<std::result::Result<Vec<_>, _>>()
+        .map_err(CaptureError::from)
+}
+
+fn goose_projection_page_budget(limits: GooseNativePageLimits) -> Result<u64> {
+    let units = u64::try_from(limits.rows)
+        .map_err(|_| CaptureError::InvalidPayload("Goose page row limit exceeds u64".to_owned()))?;
+    let reserved = GOOSE_NATIVE_PAGE_ENVELOPE_BYTES
+        .saturating_add(units.saturating_mul(GOOSE_NATIVE_PAGE_UNIT_OVERHEAD_BYTES));
+    let available = limits.retained_bytes.checked_sub(reserved).ok_or_else(|| {
+        CaptureError::InvalidPayload(
+            "Goose page byte limit cannot contain its bounded envelope".to_owned(),
+        )
+    })?;
+    Ok(available)
+}
+
+fn goose_accepted_sessions_sql(
+    schema: &GooseNativeSchema,
+    _limits: GooseNativePageLimits,
+) -> Result<String> {
+    let accepted_alias = "accepted_session";
+    let session_expressions = schema.session_hydration_expressions(accepted_alias);
+    let retained_bytes = goose_retained_length_expr(&session_expressions);
+    let max_session_bytes =
+        u64::try_from(ctx_history_source_sqlite::MAX_PROVIDER_SQLITE_VALUE_BYTES)
+            .map_err(|_| CaptureError::SystemInvariant("Goose session byte limit exceeds u64"))?;
+    Ok(format!(
+        "select
+             {accepted_alias}.id as session_identity,
+             {accepted_alias}.rowid as parent_rowid
+         from sessions {accepted_alias}
+         where {}
+           and trim({accepted_alias}.id) != ''
+           and {retained_bytes} <= {max_session_bytes}",
+        schema.session_storage_class_predicate(accepted_alias)
+    ))
+}
+
+pub(super) fn goose_tagged_native_message_identity(message_id: &str) -> String {
+    format!(
+        "goose-message-identity-v1:message-id:{}:{message_id}",
+        message_id.len()
+    )
+}
+
+fn goose_tagged_fallback_message_identity(native_order: i64) -> String {
+    let ordered = format!("{:016x}", (native_order as u64) ^ (1_u64 << 63));
+    format!(
+        "goose-message-identity-v1:messages-id:{}:{ordered}",
+        ordered.len()
+    )
+}
+
+fn goose_native_content_visitor_sql(max_content_parameter: &str) -> String {
+    // This provider-owned JSON1 visitor is the sole authority for whether a
+    // content cell may cross the SQLite/Rust boundary and which retained class
+    // normalization receives. Direct object members are visited rather than
+    // json_extract'ed so duplicate `type` keys cannot acquire different
+    // SQLite/serde semantics. Any direct toolResponse value dominates the
+    // entire row; other duplicate type keys fail closed as a local rejection.
+    format!(
+        "(with recursive direct_item(value, storage_type) as (
+             select item.value, item.type
+             from json_each(
+                 case
+                     when json_valid(content_json) != 0
+                          and json_type(content_json) = 'array'
+                     then content_json
+                     else '[]'
+                 end
+             ) item
+             union all
+             select child.value, child.type
+             from direct_item
+             join json_each(
+                 case when direct_item.storage_type = 'array'
+                      then direct_item.value else '[]' end
+             ) child
+         )
+         select case
+         when storage_class_supported = 0 then 8
+         when parent_rowid is null then 7
+         when content_storage_class != 'text' then 8
+         when json_valid(content_json) = 0 then 2
+         when json_type(content_json) != 'array' then 3
+         when exists (
+             select 1
+             from direct_item item
+             where item.storage_type not in ('array', 'object')
+         ) then 4
+         when exists (
+             select 1
+             from direct_item item,
+                  json_each(item.value) member
+             where item.storage_type = 'object'
+               and member.key = 'type'
+               and member.type = 'text'
+               and member.atom = 'toolResponse'
+         ) then 1
+         when exists (
+             select 1
+             from direct_item item
+             where item.storage_type = 'object'
+               and (
+                 select count(*)
+                 from json_each(item.value) member
+                 where member.key = 'type'
+             ) > 1
+         ) then 10
+         when exists (
+             select 1
+             from direct_item item
+             where item.storage_type = 'object'
+               and ((
+                 select count(*)
+                 from json_each(item.value) member
+                 where member.key = 'type'
+             ) = 0
+                or exists (
+                    select 1
+                    from json_each(item.value) member
+                    where member.key = 'type'
+                      and (
+                          member.type != 'text'
+                          or member.atom not in (
+                              'text',
+                              'thinking',
+                              'redactedThinking',
+                              'toolRequest',
+                              'frontendToolRequest',
+                              'toolConfirmationRequest',
+                              'systemNotification',
+                              'actionRequired'
+                          )
+                      )
+                ))
+         ) then 5
+         when content_bytes + auxiliary_bytes > {max_content_parameter} then 6
+         when exists (
+             select 1
+             from direct_item item,
+                  json_each(item.value) member
+             where item.storage_type = 'object'
+               and member.key = 'type'
+               and member.type = 'text'
+               and member.atom in ('toolRequest', 'frontendToolRequest')
+         ) then 9
+         else 0
+         end)"
+    )
+}
+
+fn goose_native_output_outcome_sql() -> &'static str {
+    // Outcome classification inspects only structural control fields. The
+    // canonical Rust extractor retains the selected result body for every
+    // outcome after this visitor has admitted the native toolResponse shape.
+    "case
+         when exists (
+             select 1
+             from json_each(content_json) item,
+                  json_tree(item.value) node
+             where node.key in ('timed_out', 'timedOut', 'timeout')
+               and node.type in ('true', 'integer')
+               and cast(node.atom as integer) != 0
+         ) or exists (
+             select 1
+             from json_each(content_json) item,
+                  json_tree(item.value) node
+             where node.key in ('status', 'state', 'outcome')
+               and node.type = 'text'
+               and lower(trim(cast(node.atom as text)))
+                   in ('timeout', 'timed_out', 'timedout')
+         ) then 12
+         when exists (
+             select 1
+             from json_each(content_json) item,
+                  json_tree(item.value) node
+             where (
+                    node.key = 'success'
+                    and node.type in ('false', 'integer')
+                    and cast(node.atom as integer) = 0
+                 ) or (
+                    node.key in ('isError', 'is_error')
+                    and node.type in ('true', 'integer')
+                    and cast(node.atom as integer) != 0
+                 ) or (
+                    node.key in ('exit_code', 'exitCode')
+                    and node.type in ('integer', 'real')
+                    and cast(node.atom as integer) != 0
+                 ) or (
+                    node.key in ('status', 'state', 'outcome')
+                    and node.type = 'text'
+                    and lower(trim(cast(node.atom as text)))
+                        in ('failed', 'failure', 'error', 'errored', 'cancelled', 'canceled')
+                 ) or (
+                    node.key = 'error'
+                    and node.type not in ('null', 'false')
+                    and (
+                        node.type in ('array', 'object')
+                        or trim(cast(node.atom as text)) not in ('', '0')
+                    )
+                 )
+         ) then 11
+         when exists (
+             select 1
+             from json_each(content_json) item,
+                  json_tree(item.value) node
+             where (
+                    node.key = 'success'
+                    and node.type in ('true', 'integer')
+                    and cast(node.atom as integer) != 0
+                 ) or (
+                    node.key in ('exit_code', 'exitCode')
+                    and node.type in ('integer', 'real')
+                    and cast(node.atom as integer) = 0
+                 ) or (
+                    node.key in ('status', 'state', 'outcome')
+                    and node.type = 'text'
+                    and lower(trim(cast(node.atom as text)))
+                        in ('success', 'succeeded', 'complete', 'completed', 'ok', 'passed')
+                 )
+         ) then 14
+         else 13
+     end"
+}

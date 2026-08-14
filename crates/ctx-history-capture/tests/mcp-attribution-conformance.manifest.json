@@ -2091,50 +2091,50 @@
         {
           "class": "ambiguity_duplicate_linkage",
           "kind": "rust_test",
-          "suite": "mcp_attribution_provider_units",
-          "test": "provider::providers::warp::nativepath::decode::tests::invalid_duplicate_orphan_and_ambiguous_mcp_relations_abstain",
+          "suite": "mcp_attribution_selected_sqlite_provider_units",
+          "test": "providers::warp::nativepath::decode::tests::invalid_duplicate_orphan_and_ambiguous_mcp_relations_abstain",
           "scope": "tuple"
         },
         {
           "class": "canonical_terminal_outcomes",
           "kind": "rust_test",
-          "suite": "mcp_attribution_provider_units",
-          "test": "provider::providers::warp::nativepath::decode::tests::textual_success_failure_and_unknown_results_are_complete",
+          "suite": "mcp_attribution_selected_sqlite_provider_units",
+          "test": "providers::warp::nativepath::decode::tests::textual_success_failure_and_unknown_results_are_complete",
           "scope": "tuple"
         },
         {
           "class": "exact_boundary",
           "kind": "rust_test",
-          "suite": "mcp_attribution_provider_units",
-          "test": "provider::providers::warp::nativepath::decode::tests::validated_uuid_text_is_preserved_exactly",
+          "suite": "mcp_attribution_selected_sqlite_provider_units",
+          "test": "providers::warp::nativepath::decode::tests::validated_uuid_text_is_preserved_exactly",
           "scope": "tuple"
         },
         {
           "class": "exact_positive_pair",
           "kind": "rust_test",
-          "suite": "mcp_attribution_provider_units",
-          "test": "provider::providers::warp::nativepath::decode::tests::qualified_mcp_success_error_cancellation_and_nontext_results_link_exactly",
+          "suite": "mcp_attribution_selected_sqlite_provider_units",
+          "test": "providers::warp::nativepath::decode::tests::qualified_mcp_success_error_cancellation_and_nontext_results_link_exactly",
           "scope": "tuple"
         },
         {
           "class": "malformed_identity",
           "kind": "rust_test",
-          "suite": "mcp_attribution_provider_units",
-          "test": "provider::providers::warp::nativepath::decode::tests::invalid_then_valid_required_strings_permanently_invalidate_attribution",
+          "suite": "mcp_attribution_selected_sqlite_provider_units",
+          "test": "providers::warp::nativepath::decode::tests::invalid_then_valid_required_strings_permanently_invalidate_attribution",
           "scope": "tuple"
         },
         {
           "class": "result_preservation",
           "kind": "rust_test",
-          "suite": "mcp_attribution_provider_units",
-          "test": "provider::providers::warp::source_backed::result_tests::core_projection_keeps_success_failure_unknown_and_large_result_bodies_once",
+          "suite": "mcp_attribution_selected_sqlite_provider_units",
+          "test": "providers::warp::source_backed::result_tests::core_projection_keeps_success_failure_unknown_and_large_result_bodies_once",
           "scope": "tuple"
         },
         {
           "class": "stable_ids",
           "kind": "rust_test",
-          "suite": "mcp_attribution_provider_units",
-          "test": "provider::providers::warp::source_backed::result_tests::sanitized_mcp_fixture_projects_only_unique_qualified_terminal_pairs",
+          "suite": "mcp_attribution_selected_sqlite_provider_units",
+          "test": "providers::warp::source_backed::result_tests::sanitized_mcp_fixture_projects_only_unique_qualified_terminal_pairs",
           "scope": "tuple"
         },
         {

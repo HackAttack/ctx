@@ -24,6 +24,16 @@ pub type CaptureDocumentSpool = spool::DeferredCoreRecords;
 pub(crate) type CaptureDocumentLifecycle = IndexCaptureLifecycle;
 pub(crate) type CaptureDocumentRouteControl = SourceBackedRouteControlExpectation;
 
+pub(crate) struct CaptureSelectedSqliteBinding;
+
+impl ctx_history_providers_sqlite_selected::SelectedSqliteCaptureBinding
+    for CaptureSelectedSqliteBinding
+{
+    type Lifecycle = CaptureDocumentLifecycle;
+    type Spool = CaptureDocumentSpool;
+    type RouteControl = CaptureDocumentRouteControl;
+}
+
 pub(crate) type ChangedDocumentSink<'sink, 'writer> =
     RuntimeChangedDocumentSink<'sink, 'writer, CaptureDocumentLifecycle, CaptureDocumentSpool>;
 pub(crate) type DocumentAppendBase = RuntimeDocumentAppendBase<CaptureDocumentLifecycle>;

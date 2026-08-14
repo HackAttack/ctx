@@ -145,7 +145,7 @@ class CapabilityMutationTests(unittest.TestCase):
                 "capability_lanes": 47,
                 "lane_statuses": {"exact": 3, "not-qualified": 43, "excluded": 1},
                 "provider_statuses": {"exact": 3, "not-qualified": 39, "excluded": 0},
-                "exact_suites": 2,
+                "exact_suites": 3,
                 "exact_tests": 9,
                 "exact_links": 4,
                 "conformance_authority": "validated",

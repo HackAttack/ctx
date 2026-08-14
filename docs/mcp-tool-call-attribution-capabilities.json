@@ -6,8 +6,8 @@
   "conformance_authority": {
     "manifest": "crates/ctx-history-capture/tests/mcp-attribution-conformance.manifest.json",
     "suite_registry": "crates/ctx-history-capture/tests/mcp_attribution_suites.bzl",
-    "manifest_sha256": "3d8ccadae13030b1d81be665f9a3765e177cd04d8a6f07b49665a73cfdc63fba",
-    "suite_registry_sha256": "fecc57701524031b830b3c0d709470525ad99125937b74f71e07f9375cef2117",
+    "manifest_sha256": "b6c88b900a667e62afe282ec291dc845d45b5164ac088c21a3708883c3991194",
+    "suite_registry_sha256": "2e1d1182f0182677554fdf77dd0e0d6a644ee801c2e706826a80c64c288243be",
     "manifest_schema_version": 6,
     "capability_revision": 5,
     "status_mapping": {
@@ -454,14 +454,14 @@
     {
       "provider_id": "warp", "route": "native_import", "source_format": "warp_sqlite", "source_schema": "warp-agent-task-protobuf-v1",
       "producer_bound": {"kind": "unversioned", "generation": 1, "unknown_generations": "not-qualified"},
-      "implementation_source": "crates/ctx-history-capture/src/provider/providers/warp/source_backed.rs",
+      "implementation_source": "crates/ctx-history-providers-sqlite-selected/src/providers/warp/source_backed.rs",
       "parser_revision": "warp-source-backed-logical-v5",
-      "suite_id": "ctx-history-capture::native_unit",
-      "conformance_suite": "mcp_attribution_provider_units",
+      "suite_id": "ctx-history-providers-sqlite-selected::native_unit",
+      "conformance_suite": "mcp_attribution_selected_sqlite_provider_units",
       "tests": [
-        {"id": "provider::providers::warp::nativepath::decode::tests::qualified_mcp_success_error_cancellation_and_nontext_results_link_exactly", "source": "crates/ctx-history-capture/src/provider/providers/warp/nativepath/decode/tests.rs"},
-        {"id": "provider::providers::warp::nativepath::decode::tests::invalid_duplicate_orphan_and_ambiguous_mcp_relations_abstain", "source": "crates/ctx-history-capture/src/provider/providers/warp/nativepath/decode/tests.rs"},
-        {"id": "provider::providers::warp::source_backed::result_tests::sanitized_mcp_fixture_projects_only_unique_qualified_terminal_pairs", "source": "crates/ctx-history-capture/src/provider/providers/warp/source_backed/result_tests.rs"}
+        {"id": "providers::warp::nativepath::decode::tests::qualified_mcp_success_error_cancellation_and_nontext_results_link_exactly", "source": "crates/ctx-history-providers-sqlite-selected/src/providers/warp/nativepath/decode/tests.rs"},
+        {"id": "providers::warp::nativepath::decode::tests::invalid_duplicate_orphan_and_ambiguous_mcp_relations_abstain", "source": "crates/ctx-history-providers-sqlite-selected/src/providers/warp/nativepath/decode/tests.rs"},
+        {"id": "providers::warp::source_backed::result_tests::sanitized_mcp_fixture_projects_only_unique_qualified_terminal_pairs", "source": "crates/ctx-history-providers-sqlite-selected/src/providers/warp/source_backed/result_tests.rs"}
       ]
     },
     {
