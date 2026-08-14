@@ -460,7 +460,9 @@ pub trait JsonlFamilyAdapter: Send + Sync {
 
     /// Removes one unit of provider-declared optional checkpoint evidence.
     /// The shared family calls this only when the completed FamilyCheckpoint
-    /// fails the real SourceFrontier typed-key contract. Durable provider
+    /// fails the real SourceFrontier typed-key contract. Returning `None`
+    /// omits provider continuation state, so the next mutation safely retries
+    /// replacement instead of making cold ingestion fail. Durable provider
     /// authority must never be removed by this hook.
     fn shed_optional_provider_checkpoint_evidence(
         &self,

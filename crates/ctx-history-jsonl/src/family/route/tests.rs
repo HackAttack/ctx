@@ -2024,6 +2024,7 @@ impl_standard_jsonl_test_adapter!(
 #[derive(Default)]
 struct CheckpointTestAdapter {
     projection_modes: Mutex<Vec<JsonlFamilyProjectionMode>>,
+    fixed_checkpoint_bytes: Option<usize>,
 }
 
 struct OptimizedLeafTestAdapter {
@@ -2144,6 +2145,7 @@ impl JsonlFamilyAdapter for OptimizedLeafTestAdapter {
 struct CheckpointTestProjector {
     projected_records: u64,
     resumed: bool,
+    fixed_checkpoint_bytes: Option<usize>,
 }
 
 impl JsonlFamilyProjector for CheckpointTestProjector {
@@ -2170,7 +2172,14 @@ impl JsonlFamilyProjector for CheckpointTestProjector {
     }
 
     fn provider_checkpoint(&self) -> Result<Option<TypedKey>> {
-        Ok(Some(TypedKey::U64(self.projected_records)))
+        self.fixed_checkpoint_bytes.map_or_else(
+            || Ok(Some(TypedKey::U64(self.projected_records))),
+            |bytes| {
+                TypedKey::utf8("\"".repeat(bytes))
+                    .map(Some)
+                    .map_err(test_contract_error)
+            },
+        )
     }
 }
 
@@ -2210,6 +2219,7 @@ impl JsonlFamilyAdapter for CheckpointTestAdapter {
         Ok(Box::new(CheckpointTestProjector {
             projected_records: 0,
             resumed: false,
+            fixed_checkpoint_bytes: self.fixed_checkpoint_bytes,
         }))
     }
 
@@ -2249,6 +2259,7 @@ impl JsonlFamilyAdapter for CheckpointTestAdapter {
         Ok(Box::new(CheckpointTestProjector {
             projected_records: *projected_records,
             resumed: true,
+            fixed_checkpoint_bytes: self.fixed_checkpoint_bytes,
         }))
     }
 }

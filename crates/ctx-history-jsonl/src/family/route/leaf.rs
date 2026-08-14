@@ -1131,6 +1131,7 @@ pub(super) fn prepare_leaf<R: JsonlFamilyRuntime>(
         indexed_documents: documents,
         provider_checkpoint,
     };
+    let checkpoint = fit_semantic_provider_checkpoint(adapter, checkpoint)?;
     let certificate = certify(adapter, &leaf, checkpoint.clone())
         .map_err(|error| JsonlRuntimeError::<R>::invalid_payload(error.to_string()))?;
     let append = if is_append {

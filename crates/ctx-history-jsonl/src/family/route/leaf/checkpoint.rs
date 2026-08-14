@@ -18,16 +18,8 @@ pub(super) fn fit_semantic_provider_checkpoint<R: JsonlFamilyRuntime>(
                     .to_owned(),
             )
         })?;
-        checkpoint.provider_checkpoint = Some(
-            adapter
-                .shed_optional_provider_checkpoint_evidence(provider_checkpoint)?
-                .ok_or_else(|| {
-                    JsonlRuntimeError::<R>::invalid_payload(
-                        "JSONL provider checkpoint has no optional evidence left to fit the SourceFrontier"
-                            .to_owned(),
-                    )
-                })?,
-        );
+        checkpoint.provider_checkpoint =
+            adapter.shed_optional_provider_checkpoint_evidence(provider_checkpoint)?;
     }
     Ok(checkpoint)
 }
