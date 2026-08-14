@@ -195,12 +195,12 @@ pub fn create_candidate_generation(
     schema: Schema,
 ) -> Result<CandidateGeneration> {
     if let Some(base) = base {
+        let base_index = open_slot_index(root, base)?;
         let pointer = load_active_generation_pointer(root)?
             .ok_or(IndexError::MissingActiveGenerationPointer)?;
         if pointer.active() != base {
             return Err(IndexError::ConcurrentGenerationChange);
         }
-        let base_index = open_slot_index(root, base)?;
         return create_authenticated_candidate_generation(root, &pointer, &base_index);
     }
 
