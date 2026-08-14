@@ -212,8 +212,8 @@ impl JsonlFamilySemanticPage {
 pub struct JsonlFamilySemanticSummary {
     represented_physical_records: u64,
     rejected_records: u64,
-    logical_complete_records: u64,
-    rejected_logical_records: u64,
+    logical_complete_records: Option<u64>,
+    rejected_logical_records: Option<u64>,
     provider_checkpoint: Option<TypedKey>,
     record_rejections: SourceBackedRecordRejectionDrafts,
 }
@@ -227,8 +227,8 @@ impl JsonlFamilySemanticSummary {
         Self {
             represented_physical_records,
             rejected_records,
-            logical_complete_records: represented_physical_records,
-            rejected_logical_records: rejected_records,
+            logical_complete_records: None,
+            rejected_logical_records: None,
             provider_checkpoint,
             record_rejections: SourceBackedRecordRejectionDrafts::default(),
         }
@@ -244,8 +244,8 @@ impl JsonlFamilySemanticSummary {
         Self {
             represented_physical_records,
             rejected_records,
-            logical_complete_records,
-            rejected_logical_records,
+            logical_complete_records: Some(logical_complete_records),
+            rejected_logical_records: Some(rejected_logical_records),
             provider_checkpoint,
             record_rejections: SourceBackedRecordRejectionDrafts::default(),
         }
@@ -267,11 +267,11 @@ impl JsonlFamilySemanticSummary {
         self.rejected_records
     }
 
-    pub(super) fn logical_complete_records(&self) -> u64 {
+    pub(super) fn logical_complete_records(&self) -> Option<u64> {
         self.logical_complete_records
     }
 
-    pub(super) fn rejected_logical_records(&self) -> u64 {
+    pub(super) fn rejected_logical_records(&self) -> Option<u64> {
         self.rejected_logical_records
     }
 

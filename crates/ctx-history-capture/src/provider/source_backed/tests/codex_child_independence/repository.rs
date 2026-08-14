@@ -1029,7 +1029,7 @@ fn parser_revision_migration_rescans_once_without_catalog_body_hydration() {
             panic!("Codex family checkpoint must be compact UTF-8");
         };
         let wire = serde_json::from_str::<serde_json::Value>(json).unwrap();
-        assert_eq!(wire["version"], 4);
+        assert_eq!(wire["version"], 5);
         assert_eq!(wire["provider_checkpoint"], serde_json::Value::Null);
         assert!(wire.get("certified_lineage_facts").is_none());
         assert!(wire.get("dependency_digest").is_none());

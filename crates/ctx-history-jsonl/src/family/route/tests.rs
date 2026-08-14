@@ -839,6 +839,7 @@ fn expected_state(
                     certificate,
                     terminal_proof,
                     emitted_bytes: 0,
+                    record_rejections: SourceBackedRecordRejectionDrafts::default(),
                 },
             )
         })
@@ -1527,7 +1528,13 @@ impl JsonlFamilySemanticExecutor for SemanticLifecycleTestExecutor {
         } else {
             0
         };
-        Ok(JsonlFamilySemanticSummary::new(represented, 0, None))
+        Ok(JsonlFamilySemanticSummary::with_logical_counts(
+            represented,
+            0,
+            self.consumed,
+            0,
+            None,
+        ))
     }
 }
 

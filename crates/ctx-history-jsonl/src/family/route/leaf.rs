@@ -1035,6 +1035,28 @@ pub(super) fn prepare_leaf<R: JsonlFamilyRuntime>(
     if documents != before_finish {
         represented_records = physical_records;
     }
+    let classified_physical_records = represented_records
+        .checked_add(rejected_records)
+        .ok_or_else(|| {
+            JsonlRuntimeError::<R>::invalid_payload(
+                "JSONL classified physical count overflowed".to_owned(),
+            )
+        })?;
+    let physical_ignored_records = physical_records
+        .checked_sub(classified_physical_records)
+        .ok_or_else(|| {
+            JsonlRuntimeError::<R>::invalid_payload(
+                "JSONL classified physical count exceeded physical records".to_owned(),
+            )
+        })?;
+    let logical_complete_records = documents
+        .checked_add(rejected_records)
+        .and_then(|count| count.checked_add(physical_ignored_records))
+        .ok_or_else(|| {
+            JsonlRuntimeError::<R>::invalid_payload(
+                "JSONL logical complete count overflowed".to_owned(),
+            )
+        })?;
     let admitted_eof_sha256 = reader.admitted_eof_sha256()?;
     let complete_prefix_ends_with_terminal_nul_padding =
         reader.complete_prefix_ends_with_terminal_nul_padding();
@@ -1058,7 +1080,7 @@ pub(super) fn prepare_leaf<R: JsonlFamilyRuntime>(
         complete_prefix_ends_with_terminal_nul_padding,
         represented_physical_records: represented_records,
         rejected_records,
-        logical_complete_records: physical_records,
+        logical_complete_records,
         rejected_logical_records: rejected_records,
         indexed_documents: documents,
         provider_checkpoint,
@@ -1245,22 +1267,52 @@ fn prepare_semantic_leaf<R: JsonlFamilyRuntime>(
         .ok_or_else(|| {
             JsonlRuntimeError::<R>::invalid_payload("JSONL rejected count overflowed".to_owned())
         })?;
-    let logical_complete_records = resumed
-        .map_or(0, |checkpoint| checkpoint.logical_complete_records)
-        .checked_add(summary.logical_complete_records())
-        .ok_or_else(|| {
-            JsonlRuntimeError::<R>::invalid_payload(
-                "JSONL logical complete count overflowed".to_owned(),
-            )
-        })?;
-    let rejected_logical_records = resumed
-        .map_or(0, |checkpoint| checkpoint.rejected_logical_records)
-        .checked_add(summary.rejected_logical_records())
-        .ok_or_else(|| {
-            JsonlRuntimeError::<R>::invalid_payload(
-                "JSONL logical rejected count overflowed".to_owned(),
-            )
-        })?;
+    let logical_complete_records = if let Some(current) = summary.logical_complete_records() {
+        resumed
+            .map_or(0, |checkpoint| checkpoint.logical_complete_records)
+            .checked_add(current)
+            .ok_or_else(|| {
+                JsonlRuntimeError::<R>::invalid_payload(
+                    "JSONL logical complete count overflowed".to_owned(),
+                )
+            })?
+    } else {
+        let classified_physical_records = represented_physical_records
+            .checked_add(rejected_records)
+            .ok_or_else(|| {
+                JsonlRuntimeError::<R>::invalid_payload(
+                    "JSONL classified physical count overflowed".to_owned(),
+                )
+            })?;
+        let physical_ignored_records = terminal_checkpoint
+            .next_physical_ordinal()
+            .checked_sub(classified_physical_records)
+            .ok_or_else(|| {
+                JsonlRuntimeError::<R>::invalid_payload(
+                    "JSONL classified physical count exceeded physical records".to_owned(),
+                )
+            })?;
+        documents
+            .checked_add(rejected_records)
+            .and_then(|count| count.checked_add(physical_ignored_records))
+            .ok_or_else(|| {
+                JsonlRuntimeError::<R>::invalid_payload(
+                    "JSONL logical complete count overflowed".to_owned(),
+                )
+            })?
+    };
+    let rejected_logical_records = if let Some(current) = summary.rejected_logical_records() {
+        resumed
+            .map_or(0, |checkpoint| checkpoint.rejected_logical_records)
+            .checked_add(current)
+            .ok_or_else(|| {
+                JsonlRuntimeError::<R>::invalid_payload(
+                    "JSONL logical rejected count overflowed".to_owned(),
+                )
+            })?
+    } else {
+        rejected_records
+    };
     let provider_checkpoint = summary.provider_checkpoint();
     let record_rejections = summary.into_record_rejections();
     let checkpoint = FamilyCheckpoint {
