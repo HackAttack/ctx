@@ -9,8 +9,6 @@ pub(crate) use dto::{
     GeminiEventIdentity, GeminiFileObservation, GeminiRetainedEvent, GeminiScanError,
     GeminiSession, GeminiTranscriptSource,
 };
-#[doc(hidden)]
-pub use parser::gemini_result_terminal_authority_is_ambiguous;
 pub use source_backed::gemini_jsonl_adapter;
 
 #[cfg(test)]

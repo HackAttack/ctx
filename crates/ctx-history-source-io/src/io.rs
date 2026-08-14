@@ -292,6 +292,7 @@ fn inventory_provider_paths(
     Ok(state.finish())
 }
 
+#[cfg(any(test, feature = "test-support"))]
 pub fn collect_jsonl_paths_bounded(
     root: &Path,
     paths: &mut Vec<PathBuf>,

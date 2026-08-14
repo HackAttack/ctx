@@ -282,18 +282,6 @@ fn malformed_duplicate_result_terminal_invalidates_source_wide_uniqueness() {
 }
 
 #[test]
-fn malformed_terminal_candidates_poison_result_uniqueness_authority() {
-    use ctx_history_provider_gemini::nativepath::gemini_result_terminal_authority_is_ambiguous;
-
-    assert!(gemini_result_terminal_authority_is_ambiguous(
-        br#"{"type":"gemini","toolCalls":[{"id":"call","result":{"content":"payload"}}]} trailing"#,
-    ));
-    assert!(gemini_result_terminal_authority_is_ambiguous(
-        br#"{"type":"gemini","toolCalls":[],"toolCalls":[{"id":"call","result":{"content":"payload"}}]}"#,
-    ));
-}
-
-#[test]
 fn late_duplicate_result_replacement_corrects_the_earlier_result() {
     use crate::provider::source_backed::refresh_source_backed_generation;
 

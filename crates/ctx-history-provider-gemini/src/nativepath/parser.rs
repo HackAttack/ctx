@@ -321,8 +321,7 @@ impl GeminiBorrowedRecordParser {
     }
 }
 
-#[doc(hidden)]
-pub fn gemini_result_terminal_authority_is_ambiguous(payload: &[u8]) -> bool {
+pub(crate) fn gemini_result_terminal_authority_is_ambiguous(payload: &[u8]) -> bool {
     if ctx_history_capture_model::raw_object_keys_are_unique(payload) {
         return false;
     }
