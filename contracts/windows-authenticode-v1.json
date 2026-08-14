@@ -1,0 +1,23 @@
+{
+  "account": "ctxsignkimmy",
+  "authority": "microsoft-azure-artifact-signing-public-trust-v1",
+  "certificate_profile": "ctx-public-release",
+  "code_signing_endpoint": "https://eus.codesigning.azure.net/",
+  "credential": {
+    "client_id_key": "AZURE_ARTIFACT_SIGNING_CLIENT_ID",
+    "client_secret_key": "AZURE_ARTIFACT_SIGNING_CLIENT_SECRET",
+    "environment": "prod",
+    "path": "/",
+    "project_id": "590927ab-758e-41b0-9e15-4cf070e87cf4",
+    "tenant_id_key": "AZURE_ARTIFACT_SIGNING_TENANT_ID"
+  },
+  "expected_common_name": "CTX ENGINEERING, INC.",
+  "expected_organization": "CTX ENGINEERING, INC.",
+  "jsign": {
+    "sha256": "602a51c3545a6dc4fb99bd2ea7152b26d1345916d0c93ddfbd5936cb735af91c",
+    "url": "https://github.com/ebourg/jsign/releases/download/7.5/jsign-7.5.jar",
+    "version": "7.5"
+  },
+  "schema_version": 1,
+  "timestamp_url": "http://timestamp.acs.microsoft.com/"
+}

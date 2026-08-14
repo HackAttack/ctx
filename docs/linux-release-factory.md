@@ -2,7 +2,8 @@
 
 The public release has one construction path. A clean Ubuntu 24.04 x86_64
 checkout (direct, VM, container, or Buildkite image) builds the five supported
-CLI binaries, signs and notarizes the two macOS binaries, and emits all
+CLI binaries, signs the Windows binary with Azure Artifact Signing, signs and
+notarizes the two macOS binaries, and emits all
 checksums and release evidence into one directory. Native hosts validate those
 exact bytes afterwards.
 
@@ -13,8 +14,12 @@ exact bytes afterwards.
 - A complete macOS SDK directory or archive supplied with `--macos-sdk` or
   `CTX_MACOS_SDK_ROOT`. The SDK is an unredistributed private build input.
 - Offline OSV scanner/database inputs in official mode.
-- Infisical access at the narrow macOS signing boundary in official mode. The
-  build and dependency subprocesses never receive Apple credentials.
+- Java 11 or newer for the checksum-pinned Jsign client and the Linux
+  Authenticode verifier. The verifier is always compiled in Java 11 source
+  mode, including on newer factory JDKs.
+- Infisical access at the narrow macOS and Windows signing boundaries in
+  official mode. Build and dependency subprocesses never receive Apple or
+  Azure signing credentials.
 
 The host contract is recorded in `contracts/release-factory-inputs-v1.json`:
 Ubuntu 24.04, x86_64, authority
@@ -22,10 +27,13 @@ Ubuntu 24.04, x86_64, authority
 useful when the caller is not already on Ubuntu 24.04, but it does not create a
 different construction path.
 
-Zig 0.15.2 and rcodesign 0.29.0 are downloaded from checksum-pinned upstream
-archives into `target/release-toolchain`. cargo-zigbuild 0.23.0 must already be
-installed; `CTX_RELEASE_ALLOW_TOOL_INSTALL=1` permits the factory to install
-that pinned version.
+Zig 0.15.2, rcodesign 0.29.0, and Jsign 7.5 are downloaded from
+checksum-pinned upstream archives into `target/release-toolchain`.
+cargo-zigbuild 0.23.0 must already be installed;
+`CTX_RELEASE_ALLOW_TOOL_INSTALL=1` permits the factory to install that pinned
+version. Jsign calls the `ctxsignkimmy/ctx-public-release` Public Trust profile
+directly from Linux and records exact-byte Authenticode evidence beside
+`ctx.exe` before any factory checksum or manifest is written.
 
 ## Commands
 
@@ -63,7 +71,9 @@ scripts/validate-public-cli-factory-artifact.sh \
 
 The validator checks the factory checksum, executes the native candidate, and
 checks that validation did not mutate it. macOS additionally performs strict
-native codesign verification. Semantic runtime smokes use the same CLI bytes.
+native codesign verification. Windows requires `Get-AuthenticodeSignature` to
+accept the exact factory bytes and match the factory certificate evidence.
+Semantic runtime smokes use the same CLI bytes.
 Only after all five jobs pass does the staging job assemble GitHub assets.
 
 Bazel remains available for hermetic development and qualification checks. It

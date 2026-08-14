@@ -8,6 +8,9 @@ readonly ZIG_SHA256="02aa270f183da276e5b5920b1dac44a63f1a49e55050ebde3aecc9eb82f
 readonly CARGO_ZIGBUILD_VERSION="0.23.0"
 readonly RCODESIGN_VERSION="0.29.0"
 readonly RCODESIGN_SHA256="dbe85cedd8ee4217b64e9a0e4c2aef92ab8bcaaa41f20bde99781ff02e600002"
+readonly JSIGN_VERSION="7.5"
+readonly JSIGN_SHA256="602a51c3545a6dc4fb99bd2ea7152b26d1345916d0c93ddfbd5936cb735af91c"
+readonly JSIGN_URL="https://github.com/ebourg/jsign/releases/download/7.5/jsign-7.5.jar"
 readonly TOMLI_VERSION="2.0.1"
 readonly TOMLI_SHA256="939de3e7a6161af0c887ef91b7d41a53e7c5a1ca976325f429cb46ea9bc30ecc"
 readonly FACTORY_INPUTS="contracts/release-factory-inputs-v1.json"
@@ -35,7 +38,9 @@ Official mode requires CTX_OSV_SCANNER, CTX_OSV_DATABASE_DIR,
 CTX_OSV_DATABASE_METADATA, and the Ubuntu 24.04 x86_64 host declared in
 contracts/release-factory-inputs-v1.json. Selecting a macOS target also
 requires --macos-sdk; official macOS selection signs and notarizes those
-selected binaries. A filtered or --skip-runtimes candidate is non-promotable.
+selected binaries. Official Windows selection applies Azure Artifact Signing
+on this Linux host before checksums and manifests are sealed. A filtered or
+--skip-runtimes candidate is non-promotable.
 The host may be a direct installation, VM, container, or Buildkite image.
 USAGE
 }
@@ -149,8 +154,10 @@ else
   [[ "${#target_ids[@]}" -gt 0 ]] || die "--targets selected no targets"
 fi
 needs_macos=0
+needs_windows=0
 for target_id in "${target_ids[@]}"; do
   [[ "${target_id}" == macos-* ]] && needs_macos=1
+  [[ "${target_id}" == windows-x64 ]] && needs_windows=1
 done
 selection_complete=1
 if [[ "${#target_ids[@]}" != "${#all_target_ids[@]}" ]]; then
@@ -202,6 +209,9 @@ for command_name in cargo cat curl file git install llvm-objdump llvm-readobj ll
 done
 if [[ "${official}" == "1" && "${needs_macos}" == "1" ]]; then
   require_command openssl
+fi
+if [[ "${official}" == "1" && "${needs_windows}" == "1" ]]; then
+  require_command java
 fi
 rust_release="$(rustc --version --verbose | sed -n 's/^release: //p')"
 rust_commit="$(rustc --version --verbose | sed -n 's/^commit-hash: //p')"
@@ -271,6 +281,14 @@ if [[ "${official}" == "1" && "${needs_macos}" == "1" ]]; then
   export PATH="${repo_root}/${rcodesign_dir}:${PATH}"
   rcodesign --version | grep -F "${RCODESIGN_VERSION}" >/dev/null || \
     die "rcodesign version mismatch"
+fi
+
+jsign_jar=""
+if [[ "${official}" == "1" && "${needs_windows}" == "1" ]]; then
+  jsign_jar="${toolchain_dir}/jsign-${JSIGN_VERSION}.jar"
+  download_verified "${JSIGN_URL}" "${JSIGN_SHA256}" "${jsign_jar}"
+  export CTX_WINDOWS_JSIGN_JAR="${jsign_jar}"
+  scripts/run-windows-release-signing.sh --preflight
 fi
 
 macos_sdk_root=""
@@ -401,6 +419,12 @@ if [[ "${official}" == "1" && "${needs_macos}" == "1" ]]; then
         ;;
     esac
   done
+fi
+
+if [[ "${official}" == "1" && "${needs_windows}" == "1" ]]; then
+  eval "$(python3 scripts/public-cli-release-targets.py shell windows-x64)"
+  scripts/run-windows-release-signing.sh cli \
+    "${artifact_stage}/${CTX_PUBLIC_TARGET_BINARY}" "${artifact_stage}"
 fi
 
 for target_id in "${target_ids[@]}"; do

@@ -107,7 +107,7 @@
       "vault": "credential-manager",
       "runtime_authority": "native-windows-x86_64",
       "diagnostic_authorities": [],
-      "platform_signature": "unsigned",
+      "platform_signature": "authenticode",
       "linux_build": null
     }
   ]

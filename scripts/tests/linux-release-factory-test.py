@@ -199,6 +199,39 @@ class LinuxReleaseFactoryTest(unittest.TestCase):
         self.assertIn('build_env+=("SDKROOT=${macos_sdk_root}"', source)
         self.assertNotIn('export SDKROOT="${macos_sdk_root}"', source)
 
+    def test_factory_windows_signing_is_linux_native_and_precedes_sealing(self) -> None:
+        source = (ROOT / "scripts" / "release" / "build-public-candidate-on-linux.sh").read_text()
+        self.assertIn("needs_windows=0", source)
+        self.assertIn('[[ "${target_id}" == windows-x64 ]] && needs_windows=1', source)
+        self.assertIn(
+            'if [[ "${official}" == "1" && "${needs_windows}" == "1" ]]; then',
+            source,
+        )
+        signing = source.index("scripts/run-windows-release-signing.sh cli \\")
+        checksum_loop = source.index('for target_id in "${target_ids[@]}"; do', signing)
+        self.assertLess(signing, checksum_loop)
+        self.assertLess(signing, source.index('sha256_file "${artifact}"', signing))
+        self.assertNotIn("signtool", source.lower())
+
+    def test_windows_signing_contract_and_secret_boundary_are_pinned(self) -> None:
+        contract = json.loads(
+            (ROOT / "contracts" / "windows-authenticode-v1.json").read_text()
+        )
+        launcher = (ROOT / "scripts" / "run-windows-release-signing.sh").read_text()
+        factory = (ROOT / "scripts" / "release" / "build-public-candidate-on-linux.sh").read_text()
+        validator = (ROOT / "scripts" / "validate-public-cli-factory-artifact.sh").read_text()
+        self.assertEqual(contract["account"], "ctxsignkimmy")
+        self.assertEqual(contract["certificate_profile"], "ctx-public-release")
+        self.assertEqual(contract["jsign"]["version"], "7.5")
+        self.assertEqual(len(contract["jsign"]["sha256"]), 64)
+        self.assertIn(contract["jsign"]["sha256"], factory)
+        self.assertIn('--storepass "file:${access_token}"', launcher)
+        self.assertIn('--data-urlencode "client_secret@${client_secret_file}"', launcher)
+        self.assertIn('env -i PATH="/usr/bin:/bin"', launcher)
+        self.assertIn('java --source 11 --class-path "${jsign_jar}"', launcher)
+        self.assertIn("verify-windows-authenticode.ps1", validator)
+        self.assertNotIn("powershell.exe", launcher.lower())
+
     def test_factory_partial_candidates_are_explicitly_non_promotable(self) -> None:
         source = (ROOT / "scripts" / "release" / "build-public-candidate-on-linux.sh").read_text()
         self.assertIn("selection_complete=1", source)

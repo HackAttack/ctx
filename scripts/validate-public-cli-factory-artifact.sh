@@ -105,6 +105,10 @@ case "${platform}" in
     ;;
   windows-x64)
     command -v powershell.exe >/dev/null 2>&1 || die "PowerShell is required"
+    powershell.exe -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass \
+      -File scripts/verify-windows-authenticode.ps1 \
+      -Artifact "${artifact}" \
+      -Evidence "${artifact}.authenticode.json"
     printf '%s\n' "${version}" >"${artifact}.expected-version"
     mkdir -p "${output_dir}"
     powershell.exe -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass \
