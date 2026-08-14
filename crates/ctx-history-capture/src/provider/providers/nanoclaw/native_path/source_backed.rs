@@ -61,7 +61,11 @@ pub(crate) enum NanoClawSourceBackedError {
     #[error("NanoClaw source-backed scanner emitted inconsistent counts")]
     CountMismatch,
     #[error("NanoClaw certified replay checkpoint is invalid: {0}")]
-    InvalidReplayCheckpoint(&'static str),
+    InvalidReplayCheckpoint(
+        #[source] ctx_history_capture_runtime::DocumentFullSnapshotCheckpointError,
+    ),
+    #[error("multiple current NanoClaw certificates name the same compound source")]
+    DuplicateReplayCheckpoint,
 }
 
 pub(crate) type NanoClawSourceBackedResult<T> = Result<T, NanoClawSourceBackedError>;

@@ -337,7 +337,7 @@ fn redacted_real_shape_fixture_is_admitted_with_linkage_and_metadata() {
     fs::write(
         sessions.join("redacted-mcp-direct-result.jsonl"),
         include_str!(
-            "../src/provider/codex/nativepath/tests/fixtures/mcp_tool_call_end_direct_result.jsonl"
+            "../../ctx-history-provider-codex/src/codex/nativepath/tests/fixtures/mcp_tool_call_end_direct_result.jsonl"
         ),
     )
     .unwrap();
@@ -435,7 +435,7 @@ fn exact_error_attribution_and_ambiguous_pair_abstention_survive_publication() {
     fs::write(
         sessions.join("redacted-mcp-attribution.jsonl"),
         include_str!(
-            "../src/provider/codex/nativepath/tests/fixtures/mcp_tool_call_attribution_adversarial.jsonl"
+            "../../ctx-history-provider-codex/src/codex/nativepath/tests/fixtures/mcp_tool_call_attribution_adversarial.jsonl"
         ),
     )
     .unwrap();

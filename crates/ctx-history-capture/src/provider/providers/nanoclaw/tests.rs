@@ -1,6 +1,7 @@
 #[test]
 fn direct_core_projection_is_complete_and_self_contained() {
     let scanner = include_str!("source.rs");
+    let replay = include_str!("native_path/source_backed/replay.rs");
     let sources = [
         include_str!("../../../native_source.rs"),
         include_str!("position.rs"),
@@ -14,6 +15,8 @@ fn direct_core_projection_is_complete_and_self_contained() {
     assert!(production.contains("TypedKey::utf8(&message.id)"));
     assert!(production.contains("NANOCLAW_SOURCE_BACKED_PARSER_REVISION"));
     assert!(production.contains("validate_contract"));
+    assert!(replay.contains("decode_document_full_snapshot_checkpoint"));
+    assert!(!replay.contains("ctx-document-full-snapshot-v1"));
     assert!(production.contains("let mut body = exact_text"));
     assert!(scanner.contains("nanoclaw_hydrate_native_message"));
     assert!(scanner.contains("message_rowid"));

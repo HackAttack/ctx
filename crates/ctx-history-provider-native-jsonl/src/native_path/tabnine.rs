@@ -1,0 +1,23 @@
+use ctx_history_core::CaptureProvider;
+use serde_json::Value;
+
+use crate::{NativeJsonlRuntime, TABNINE_CLI_SOURCE_FORMAT};
+
+const PARSER_REVISION: &str = "direct-native-jsonl-parser-v4";
+
+pub const fn tabnine_source_backed_adapter<R: NativeJsonlRuntime>(
+) -> super::DirectJsonlFamilyAdapter<R> {
+    super::DirectJsonlFamilyAdapter::new(
+        CaptureProvider::Tabnine,
+        TABNINE_CLI_SOURCE_FORMAT,
+        "tabnine-direct-native-jsonl-v1",
+        PARSER_REVISION,
+    )
+}
+
+pub(super) fn tabnine_event_identity(value: &Value) -> Option<&str> {
+    value
+        .get("id")
+        .and_then(Value::as_str)
+        .filter(|event_id| !event_id.trim().is_empty())
+}

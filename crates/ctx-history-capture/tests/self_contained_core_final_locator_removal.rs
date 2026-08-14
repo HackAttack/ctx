@@ -27,13 +27,13 @@ fn nanoclaw_uses_native_message_identity_without_a_durable_row_locator() {
 #[test]
 fn cursor_claude_and_core_have_no_content_reference_seam() {
     let sources = [
-        include_str!("../src/provider/providers/cursor/parser.rs"),
-        include_str!("../src/provider/providers/cursor/projection.rs"),
-        include_str!("../src/provider/providers/cursor/source_backed.rs"),
-        include_str!("../src/provider/providers/claude.rs"),
-        include_str!("../src/provider/providers/claude/nativepath/rows.rs"),
-        include_str!("../src/provider/providers/claude/nativepath/record.rs"),
-        include_str!("../src/provider/providers/claude/nativepath/record/value_decoding.rs"),
+        include_str!("../../ctx-history-provider-claude-cursor/src/cursor/parser.rs"),
+        include_str!("../../ctx-history-provider-claude-cursor/src/cursor/projection.rs"),
+        include_str!("../../ctx-history-provider-claude-cursor/src/cursor/source_backed.rs"),
+        include_str!("../../ctx-history-provider-claude-cursor/src/claude.rs"),
+        include_str!("../../ctx-history-provider-claude-cursor/src/claude/nativepath/rows.rs"),
+        include_str!("../../ctx-history-provider-claude-cursor/src/claude/nativepath/record.rs"),
+        include_str!("../../ctx-history-provider-claude-cursor/src/claude/nativepath/record/value_decoding.rs"),
         include_str!("../../ctx-history-core/src/lib.rs"),
     ];
 

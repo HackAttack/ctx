@@ -1,3 +1,4 @@
+mod claude_cursor;
 mod codex_child_independence;
 mod copilot;
 mod inventory;

@@ -1,5 +1,5 @@
 pub(crate) mod adapter;
-pub(crate) mod codex;
+pub(crate) use ctx_history_provider_codex::codex;
 pub(crate) mod native_ingestion;
 pub(crate) mod normalization;
 pub(crate) mod providers;

@@ -47,6 +47,11 @@ pub enum DocumentFullSnapshotCheckpointError {
     InvalidFingerprint,
 }
 
+/// Decodes the persisted full-document snapshot frontier owned by this runtime.
+///
+/// Provider adapters may combine the returned logical fingerprint with their
+/// own provider-specific authority, but must not reinterpret the checkpoint
+/// kind, typed-key representation, or physical digest width themselves.
 pub fn decode_document_full_snapshot_checkpoint(
     certificate: &CertifiedSource,
 ) -> Result<DocumentFullSnapshotCheckpoint, DocumentFullSnapshotCheckpointError> {
@@ -119,7 +124,6 @@ impl<'scan, 'writer, L: CaptureLifecycleSink> DocumentBaseRoute<'scan, 'writer, 
     }
 }
 
-#[allow(clippy::large_enum_variant)]
 pub enum DocumentAppendBase<L: CaptureLifecycleSink> {
     Generation(L::PinnedAppendBase),
     Certificate(CertifiedSource),
@@ -291,10 +295,8 @@ impl DocumentSourceTerminal {
     ) -> SourceBackedRouteResult<CertifiedSource> {
         let frontier = replay_fingerprint
             .map(|fingerprint| {
-                SourceFrontier::new(
-                    DOCUMENT_FRONTIER_KIND,
-                    TypedKey::bytes(fingerprint.as_bytes().to_vec())
-                        .map_err(document_contract_error)?,
+                document_full_snapshot_frontier(
+                    fingerprint,
                     self.counts.certified_bytes,
                     self.content_digest,
                 )
@@ -1090,15 +1092,9 @@ fn exact_document_replay_append(
 pub fn document_frontier_fingerprint(
     certificate: &CertifiedSource,
 ) -> Option<DocumentLeafFingerprint> {
-    let frontier = certificate.frontier()?;
-    if frontier.checkpoint_kind() != DOCUMENT_FRONTIER_KIND {
-        return None;
-    }
-    let TypedKey::Bytes(bytes) = frontier.checkpoint() else {
-        return None;
-    };
-    let fingerprint = <[u8; 32]>::try_from(bytes.as_slice()).ok()?;
-    Some(DocumentLeafFingerprint::new(fingerprint))
+    decode_document_full_snapshot_checkpoint(certificate)
+        .ok()
+        .map(|checkpoint| checkpoint.physical_fingerprint)
 }
 
 fn document_base_sources<L: CaptureLifecycleSink>(

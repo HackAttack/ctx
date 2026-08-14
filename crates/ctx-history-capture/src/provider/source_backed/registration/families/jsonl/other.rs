@@ -40,7 +40,7 @@ pub fn register_cursor_source_backed_route(
     selection: SourceBackedRouteSelection,
 ) -> SourceBackedCoordinatorResult<()> {
     let driver = crate::provider::source_backed::family::jsonl::jsonl_family_driver(
-        crate::provider::providers::cursor::cursor_jsonl_adapter(),
+        ctx_history_provider_claude_cursor::cursor_jsonl_adapter::<CaptureProviderRuntime>(),
         source.path.clone(),
     );
     registry.register(executable_route(
