@@ -8,11 +8,11 @@ use std::{
 #[cfg(test)]
 use std::fs::File;
 
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
+use crate::common::io::{ProviderJsonlLineRead, read_provider_jsonl_line_or_skip_oversized};
 #[cfg(test)]
 use crate::common::io::{ensure_regular_provider_transcript_file, read_text_file_limited};
-use crate::common::io::{read_provider_jsonl_line_or_skip_oversized, ProviderJsonlLineRead};
 use crate::{CaptureError, Result};
 use ctx_history_capture_model::normalization::provider_local_preview;
 

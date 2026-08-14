@@ -3,23 +3,23 @@
 use std::io::{BufReader, Read, Seek, SeekFrom, Write};
 
 use ctx_history_core::{
-    derive_event_id, CoreRecord, EventIdentityInput, EventOrigin, NativeItemKey, SourceKey,
-    TypedKey,
+    CoreRecord, EventIdentityInput, EventOrigin, NativeItemKey, SourceKey, TypedKey,
+    derive_event_id,
 };
 
 #[cfg(test)]
 use super::source_backed::record_custom_history_work;
 use super::source_backed::{
-    custom_event_typed_key_parts, custom_session_identity, CustomHistorySourceBackedError,
-    CustomHistorySourceBackedPage, CustomHistorySourceBackedResult, CustomSessionCatalogEntry,
-    CustomSourceCatalogEntry, ParsedProjection, SpooledCustomEvent, ValidatedCopiedFrom,
     CUSTOM_EVENT_KEY_NAMESPACE, CUSTOM_LOGICAL_EVENT_KIND, CUSTOM_PAGE_MAX_DOCUMENTS,
     CUSTOM_PAGE_MAX_RETAINED_BYTES, CUSTOM_SOURCE_BACKED_PARSER_REVISION,
-};
-use crate::provider::custom_history_jsonl::{
-    custom_history_internal_session_id, CUSTOM_HISTORY_IDENTIFIER_MAX_BYTES,
+    CustomHistorySourceBackedError, CustomHistorySourceBackedPage, CustomHistorySourceBackedResult,
+    CustomSessionCatalogEntry, CustomSourceCatalogEntry, ParsedProjection, SpooledCustomEvent,
+    ValidatedCopiedFrom, custom_event_typed_key_parts, custom_session_identity,
 };
 use crate::MAX_PROVIDER_JSONL_LINE_BYTES;
+use crate::provider::custom_history_jsonl::{
+    CUSTOM_HISTORY_IDENTIFIER_MAX_BYTES, custom_history_internal_session_id,
+};
 
 pub(super) const CUSTOM_HISTORY_CATALOG_ENTRY_OVERHEAD_BYTES: usize = 128;
 

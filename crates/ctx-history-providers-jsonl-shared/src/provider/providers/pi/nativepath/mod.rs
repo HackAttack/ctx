@@ -2,4 +2,4 @@
 
 mod source_backed;
 
-pub(crate) use source_backed::{pi_source_backed_adapter, PiSourceBackedRoot};
+pub(crate) use source_backed::{PiSourceBackedRoot, pi_source_backed_adapter};

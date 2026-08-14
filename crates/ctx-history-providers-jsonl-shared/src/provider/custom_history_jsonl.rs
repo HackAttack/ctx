@@ -1,5 +1,5 @@
-use ctx_history_core::{CtxHistoryJsonlSourceRecord, CTX_HISTORY_JSONL_V1_SCHEMA_VERSION};
-use serde_json::{json, Value};
+use ctx_history_core::{CTX_HISTORY_JSONL_V1_SCHEMA_VERSION, CtxHistoryJsonlSourceRecord};
+use serde_json::{Value, json};
 
 use crate::stable_capture_uuid;
 
@@ -11,7 +11,7 @@ pub(crate) const CUSTOM_HISTORY_IDENTIFIER_MAX_BYTES: usize = 512;
 
 mod nativepath;
 
-pub(crate) use nativepath::{custom_history_jsonl_family_adapter, CustomHistorySourceBackedInput};
+pub(crate) use nativepath::{CustomHistorySourceBackedInput, custom_history_jsonl_family_adapter};
 
 pub(crate) fn validate_custom_source_record(
     summary: &mut ProviderImportSummary,

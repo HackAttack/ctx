@@ -2,7 +2,7 @@ mod reader;
 mod source_backed;
 
 pub(crate) use source_backed::{
-    custom_history_jsonl_family_adapter, CustomHistorySourceBackedInput,
+    CustomHistorySourceBackedInput, custom_history_jsonl_family_adapter,
 };
 
 #[cfg(test)]

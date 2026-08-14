@@ -1,20 +1,20 @@
 use chrono::{DateTime, Utc};
 use ctx_history_capture_model::normalization::{provider_local_preview, provider_timestamp_millis};
 use ctx_history_core::{EventRole, EventType};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 use crate::{
-    provider::source_backed::family::jsonl::JsonlRecordRef, CaptureError, Result,
-    PROVIDER_MAX_PREVIEW_CHARS,
+    CaptureError, PROVIDER_MAX_PREVIEW_CHARS, Result,
+    provider::source_backed::family::jsonl::JsonlRecordRef,
 };
 
 use super::super::{
+    MAX_JUNIE_TRANSIENT_TURN_BYTES,
     assistant::{
-        junie_buffer_result_text, junie_merge_buffered_agent_event, junie_step_output_projection,
         JunieAssistantBuffer, JunieOutputOutcome, JunieStepAgg, JunieStepOutputProjection,
+        junie_buffer_result_text, junie_merge_buffered_agent_event, junie_step_output_projection,
     },
     session_tree::JunieIndexMeta,
-    MAX_JUNIE_TRANSIENT_TURN_BYTES,
 };
 
 #[derive(Debug, Clone)]
@@ -435,10 +435,12 @@ mod result_tests {
             "event": { "agentEvent": agent_event },
         }))
         .unwrap();
-        assert!(projection
-            .project(JsonlRecordRef::for_test(&bytes, ordinal))
-            .unwrap()
-            .is_empty());
+        assert!(
+            projection
+                .project(JsonlRecordRef::for_test(&bytes, ordinal))
+                .unwrap()
+                .is_empty()
+        );
     }
 
     #[test]
@@ -459,10 +461,12 @@ mod result_tests {
         .enumerate()
         {
             let bytes = serde_json::to_vec(&value).unwrap();
-            assert!(projection
-                .project(JsonlRecordRef::for_test(&bytes, ordinal as u64))
-                .unwrap()
-                .is_empty());
+            assert!(
+                projection
+                    .project(JsonlRecordRef::for_test(&bytes, ordinal as u64))
+                    .unwrap()
+                    .is_empty()
+            );
         }
         assert!(projection.finish().unwrap().is_empty());
     }

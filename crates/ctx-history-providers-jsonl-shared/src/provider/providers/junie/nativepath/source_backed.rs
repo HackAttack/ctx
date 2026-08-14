@@ -6,32 +6,32 @@ use std::{
     sync::Arc,
 };
 
-use crate::{provider::source_backed::IndexBaseEventLookup, JsonlProviderRuntime};
+use crate::{JsonlProviderRuntime, provider::source_backed::IndexBaseEventLookup};
 use chrono::{DateTime, Utc};
 use ctx_history_capture_model::normalization::provider_local_preview;
 use ctx_history_core::{
-    derive_event_id, derive_native_session_id, AgentType, CaptureProvider, CoreRecord,
-    EventIdentityInput, EventType, NativeItemKey, SourceKey, StableEntityId, TypedKey,
+    AgentType, CaptureProvider, CoreRecord, EventIdentityInput, EventType, NativeItemKey,
+    SourceKey, StableEntityId, TypedKey, derive_event_id, derive_native_session_id,
 };
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 use crate::{
+    CaptureError, JUNIE_SESSION_EVENTS_SOURCE_FORMAT, Result,
     common::io::{OpenedProviderSourceFile, ProviderSourceRoot},
     provider::source_backed::{
+        FallbackEventIdentityState,
         family::jsonl::{
             JsonlFamilyAdapter, JsonlFamilyAppendMode, JsonlFamilyInventory, JsonlFamilyLeaf,
             JsonlFamilyProjectionMode, JsonlFamilyProjector, JsonlFamilyWorkerContext,
             JsonlRecordRef,
         },
-        FallbackEventIdentityState,
     },
-    CaptureError, Result, JUNIE_SESSION_EVENTS_SOURCE_FORMAT,
 };
 
 use super::super::session_tree::{
-    bounded_junie_index_meta, junie_provider_session_id, visit_junie_session_event_paths,
-    JunieIndexMeta,
+    JunieIndexMeta, bounded_junie_index_meta, junie_provider_session_id,
+    visit_junie_session_event_paths,
 };
 use super::projection::{EventDraft, JunieProjection};
 
@@ -56,8 +56,8 @@ struct JunieBinding {
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct JunieJsonlAdapter<R>(PhantomData<fn() -> R>);
 
-pub(crate) fn junie_jsonl_adapter<R: JsonlProviderRuntime>(
-) -> Arc<dyn JsonlFamilyAdapter<Runtime = R>> {
+pub(crate) fn junie_jsonl_adapter<R: JsonlProviderRuntime>()
+-> Arc<dyn JsonlFamilyAdapter<Runtime = R>> {
     Arc::new(JunieJsonlAdapter(PhantomData))
 }
 
