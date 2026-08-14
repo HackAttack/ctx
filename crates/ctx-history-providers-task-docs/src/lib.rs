@@ -6,15 +6,16 @@
 
 mod error;
 
-pub use ctx_history_capture_model::{OutputObservationKind, OutputOutcome, OutputOutcomeMetadata};
+pub use ctx_history_capture_model::{
+    OutputObservationKind, OutputOutcome, OutputOutcomeMetadata, ProviderAdapterContext,
+    ProviderSource, ProviderSourceKind, ProviderSourceStatus,
+};
 pub use ctx_history_capture_runtime::{
     CaptureLifecycleSink, ChangedDocumentSink, CompleteDocumentTree, DocumentLeafExecutionPolicy,
     DocumentLeafFingerprint, DocumentRecordSpool, DocumentSourceTerminal, ObservedDocumentLeaf,
     ReplacementDocumentTree, SourceBackedRouteError, SourceBackedRouteErrorKind,
     SourceBackedRouteResult,
 };
-pub use ctx_history_provider_runtime::ProviderAdapterContext;
-pub use ctx_history_source_discovery::{ProviderSource, ProviderSourceKind, ProviderSourceStatus};
 pub(crate) use error::{CaptureError, Result};
 pub(crate) const MAX_PROVIDER_JSONL_LINE_BYTES: usize =
     ctx_history_source_io::MAX_PROVIDER_JSONL_LINE_BYTES;

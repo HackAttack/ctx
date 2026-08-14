@@ -21,10 +21,8 @@ thiserror.workspace = true
 uuid.workspace = true
 ctx-history-capture-model = { path = "../ctx-history-capture-model" }
 ctx-history-capture-runtime = { path = "../ctx-history-capture-runtime" }
-ctx-history-provider-runtime = { path = "../ctx-history-provider-runtime" }
 ctx-history-core = { path = "../ctx-history-core" }
 ctx-history-source-io = { path = "../ctx-history-source-io" }
-ctx-history-source-discovery = { path = "../ctx-history-source-discovery" }
 
 [dev-dependencies]
 tempfile.workspace = true

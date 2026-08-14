@@ -40,8 +40,6 @@ EXPECTED_PACK_DEPENDENCIES = {
     "ctx-history-capture-model": {"path": "../ctx-history-capture-model"},
     "ctx-history-capture-runtime": {"path": "../ctx-history-capture-runtime"},
     "ctx-history-core": {"path": "../ctx-history-core"},
-    "ctx-history-provider-runtime": {"path": "../ctx-history-provider-runtime"},
-    "ctx-history-source-discovery": {"path": "../ctx-history-source-discovery"},
     "ctx-history-source-io": {"path": "../ctx-history-source-io"},
 }
 EXPECTED_PACK_DEV_DEPENDENCIES = {
@@ -50,9 +48,7 @@ EXPECTED_PACK_DEV_DEPENDENCIES = {
 PACK_DIRECT_BAZEL_DEPENDENCIES = (
     "//crates/ctx-history-capture-model:lib",
     "//crates/ctx-history-capture-runtime:lib",
-    "//crates/ctx-history-provider-runtime:lib",
     "//crates/ctx-history-core:lib",
-    "//crates/ctx-history-source-discovery:lib",
     "//crates/ctx-history-source-io:lib",
 )
 DEPENDENCY_TABLE_NAMES = {"dependencies", "dev-dependencies", "build-dependencies"}

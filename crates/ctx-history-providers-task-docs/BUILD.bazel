@@ -23,9 +23,7 @@ PROD_SRCS = glob(["src/**/*.rs"], exclude = RUST_PROD_SRC_EXCLUDES)
 TASK_DOCS_DEPS = [
     "//crates/ctx-history-capture-model:lib",
     "//crates/ctx-history-capture-runtime:lib",
-    "//crates/ctx-history-provider-runtime:lib",
     "//crates/ctx-history-core:lib",
-    "//crates/ctx-history-source-discovery:lib",
     "//crates/ctx-history-source-io:lib",
 ]
 
