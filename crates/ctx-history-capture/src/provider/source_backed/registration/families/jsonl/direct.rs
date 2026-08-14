@@ -34,14 +34,29 @@ const DIRECT_ROUTES: &[RouteEntry] = &[
         CaptureProvider::Qoder,
         register_direct_jsonl_source_backed_route,
     ),
-    RouteEntry::new(
-        CaptureProvider::Claude,
-        crate::provider::providers::claude::nativepath::register_source_backed_route,
-    ),
+    RouteEntry::new(CaptureProvider::Claude, register_claude_source_backed_route),
 ];
 
 pub(super) fn registration(provider: CaptureProvider) -> Option<DirectRouteRegistration> {
     direct_route_registration(DIRECT_ROUTES, provider)
+}
+
+fn register_claude_source_backed_route(
+    registry: &mut SourceBackedProviderRegistry,
+    source: ProviderSource,
+    selection: SourceBackedRouteSelection,
+) -> SourceBackedCoordinatorResult<()> {
+    let driver = crate::provider::source_backed::family::jsonl::jsonl_family_driver(
+        ctx_history_provider_claude_cursor::claude_jsonl_adapter::<CaptureProviderRuntime>(),
+        source.path.clone(),
+    );
+    registry.register(executable_route(
+        source,
+        selection,
+        SourceBackedSelectorAuthority::DiscoveredWinner,
+        driver,
+    )?);
+    Ok(())
 }
 
 fn register_direct_jsonl_source_backed_route(

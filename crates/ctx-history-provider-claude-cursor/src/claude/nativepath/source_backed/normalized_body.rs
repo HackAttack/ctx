@@ -1,5 +1,5 @@
 use super::claude_tool_result_body;
-use crate::provider::providers::claude::nativepath::{
+use crate::claude::nativepath::{
     invocation_evidence::normalized_tool_call_body,
     rows::{ClaudeEventKind, ClaudeRetainedRow},
 };

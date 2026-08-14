@@ -6,7 +6,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{value::RawValue, Value};
 use sha2::{Digest, Sha256};
 
-use crate::Result;
+use ctx_history_provider_runtime::Result;
 
 pub(super) const MAX_CURSOR_INPUT_PATHS: usize = 32;
 

@@ -4,11 +4,11 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use crate::common::io::{
+use ctx_history_provider_runtime::source_io::{
     open_provider_source_path, OpenedProviderSourceFile, OpenedProviderSourcePath,
     ProviderSourceDirectory, ProviderSourceRoot,
 };
-use crate::CaptureError;
+use ctx_history_provider_runtime::CaptureError;
 
 const AGENT_TRANSCRIPTS: &str = "agent-transcripts";
 pub(super) const CURSOR_MAX_DIRECTORY_DEPTH: usize = 128;
@@ -104,7 +104,7 @@ impl PartialEq for CursorTranscriptPath {
 impl Eq for CursorTranscriptPath {}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum CursorDiscoveryIssueKind {
+pub enum CursorDiscoveryIssueKind {
     Io,
     InvalidLayout,
     NotFound,
@@ -130,7 +130,7 @@ pub(crate) struct CursorDiscoveryStats {
 }
 
 #[derive(Debug, Clone)]
-pub(crate) struct CursorRootInventory {
+pub struct CursorRootInventory {
     pub(crate) input: PathBuf,
     pub(crate) projects_roots: Vec<PathBuf>,
     pub(crate) transcripts: Vec<CursorTranscriptPath>,
@@ -141,6 +141,18 @@ pub(crate) struct CursorRootInventory {
 }
 
 impl CursorRootInventory {
+    pub fn completed(&self) -> bool {
+        self.completed
+    }
+
+    pub fn has_issue_kind(&self, expected: CursorDiscoveryIssueKind) -> bool {
+        self.issues.iter().any(|issue| issue.kind == expected)
+    }
+
+    pub fn has_transcripts(&self) -> bool {
+        !self.transcripts.is_empty()
+    }
+
     fn new(input: &Path) -> Self {
         Self {
             input: input.to_path_buf(),
@@ -187,7 +199,7 @@ impl CursorRootInventory {
         self.projects_roots = roots.into_iter().collect();
     }
 
-    pub(crate) fn revalidate(&self) -> crate::Result<()> {
+    pub(crate) fn revalidate(&self) -> ctx_history_provider_runtime::Result<()> {
         match self.authority.as_ref() {
             Some(root) => root.revalidate(),
             None => Err(CaptureError::InvalidProviderTranscriptPath {
@@ -215,7 +227,7 @@ impl PartialEq for CursorRootInventory {
 
 impl Eq for CursorRootInventory {}
 
-pub(crate) fn discover_cursor_transcripts(input: &Path) -> CursorRootInventory {
+pub fn discover_cursor_transcripts(input: &Path) -> CursorRootInventory {
     let mut inventory = CursorRootInventory::new(input);
     let opened = match open_provider_source_path(input) {
         Ok(opened) => opened,
@@ -283,7 +295,9 @@ pub(crate) fn discover_cursor_transcripts(input: &Path) -> CursorRootInventory {
     inventory
 }
 
-fn cursor_explicit_authority(input: &Path) -> crate::Result<(ProviderSourceRoot, PathBuf)> {
+fn cursor_explicit_authority(
+    input: &Path,
+) -> ctx_history_provider_runtime::Result<(ProviderSourceRoot, PathBuf)> {
     let parent = input
         .parent()
         .ok_or_else(|| CaptureError::InvalidProviderTranscriptPath {
@@ -401,7 +415,9 @@ fn visit_directories(
                     // without invalidating completion: its mere presence beside
                     // valid transcripts must not mark the whole Cursor source
                     // unreadable, which would otherwise fail the full refresh.
-                    if crate::common::io::is_non_regular_source_rejection(&error) {
+                    if ctx_history_provider_runtime::source_io::is_non_regular_source_rejection(
+                        &error,
+                    ) {
                         inventory.reject(
                             path,
                             CursorDiscoveryIssueKind::SpecialFile,
@@ -584,7 +600,7 @@ fn cursor_catalog_token(
     authority: &ProviderSourceRoot,
     authority_relative_path: &Path,
     explicit_file: bool,
-) -> crate::Result<[u8; 32]> {
+) -> ctx_history_provider_runtime::Result<[u8; 32]> {
     let token = source_file.ordinary_file_token();
     source_file.revalidate_leaf()?;
     if explicit_file {
@@ -622,7 +638,7 @@ mod tests {
         // as an unreadable source. Previously it invalidated completion, marked
         // the whole Cursor provider `unknown`, and failed the full refresh so
         // no lexical index was published for any provider.
-        let temp = crate::test_support_paths::tempdir().unwrap();
+        let temp = tempfile::tempdir().unwrap();
         let root = temp.path();
         let session_directory = root
             .join("projects")

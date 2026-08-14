@@ -4,9 +4,9 @@ mod invocation_evidence;
 mod layout;
 mod parser;
 mod projection;
-mod source_backed;
+pub(crate) mod source_backed;
 
-pub(crate) use layout::{discover_cursor_transcripts, CursorDiscoveryIssueKind};
+pub use layout::{discover_cursor_transcripts, CursorDiscoveryIssueKind};
 pub(crate) use source_backed::cursor_jsonl_adapter;
 
 #[cfg(test)]

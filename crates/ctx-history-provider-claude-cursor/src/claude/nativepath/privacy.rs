@@ -2,7 +2,7 @@ use std::ops::Range;
 
 use ctx_history_core::MAX_CORE_CONTENT_BYTES;
 
-use crate::{OutputOutcome, OutputOutcomeMetadata};
+use ctx_history_capture_model::{OutputOutcome, OutputOutcomeMetadata};
 
 use super::rows::CLAUDE_MAX_RECORD_ROWS;
 

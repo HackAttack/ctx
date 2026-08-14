@@ -1,10 +1,8 @@
 pub(crate) mod astrbot;
 pub(crate) mod auggie;
-pub(crate) mod claude;
 pub(crate) mod codebuddy;
 pub(crate) mod continue_cli;
 pub(crate) mod crush;
-pub(crate) mod cursor;
 pub(crate) mod deepagents;
 pub(crate) mod firebender;
 pub(crate) mod forgecode;
@@ -15,7 +13,6 @@ pub(crate) mod hermes;
 pub(crate) mod kiro;
 pub(crate) mod lingma;
 pub(crate) mod nanoclaw;
-pub(crate) mod native_jsonl;
 pub(crate) mod opencode;
 pub(crate) mod openhands;
 pub(crate) mod rovodev;

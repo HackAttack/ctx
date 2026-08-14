@@ -1,5 +1,5 @@
 use super::*;
-use crate::provider::source_backed::family::jsonl::{
+use ctx_history_provider_runtime::{
     bounded_checkpoint_fits, decode_bounded_checkpoint, encode_bounded_checkpoint,
     restore_hash_pending_exchange_entries, sorted_pending_exchange_entries,
 };
@@ -23,7 +23,9 @@ struct ProjectorCheckpoint {
     linkage_capacity_exceeded: bool,
 }
 
-fn checkpoint_value(projector: &ClaudeProjector) -> ProjectorCheckpoint {
+fn checkpoint_value<B: ProviderRuntimeBinding>(
+    projector: &ClaudeProjector<B>,
+) -> ProjectorCheckpoint {
     ProjectorCheckpoint {
         version: PROJECTOR_CHECKPOINT_VERSION,
         session: projector.session.clone(),
@@ -32,14 +34,21 @@ fn checkpoint_value(projector: &ClaudeProjector) -> ProjectorCheckpoint {
     }
 }
 
-pub(super) fn projector_checkpoint_fits(projector: &ClaudeProjector) -> bool {
-    bounded_checkpoint_fits(&checkpoint_value(projector), MAX_PROJECTOR_CHECKPOINT_BYTES)
+pub(super) fn projector_checkpoint_fits<B: ProviderRuntimeBinding>(
+    projector: &ClaudeProjector<B>,
+) -> bool {
+    bounded_checkpoint_fits(
+        &checkpoint_value::<B>(projector),
+        MAX_PROJECTOR_CHECKPOINT_BYTES,
+    )
 }
 
-pub(super) fn encode_projector_checkpoint(projector: &ClaudeProjector) -> Result<TypedKey> {
+pub(super) fn encode_projector_checkpoint<B: ProviderRuntimeBinding>(
+    projector: &ClaudeProjector<B>,
+) -> Result<TypedKey> {
     encode_bounded_checkpoint(
         PROJECTOR_CHECKPOINT_PREFIX,
-        &checkpoint_value(projector),
+        &checkpoint_value::<B>(projector),
         MAX_PROJECTOR_CHECKPOINT_BYTES,
         "Claude",
     )

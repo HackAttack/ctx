@@ -8,13 +8,11 @@ use ctx_history_source_discovery::{
     TraePayloadProbeOutcome, TraeProbeFragment,
 };
 
-use crate::provider::providers::{
-    cursor::{discover_cursor_transcripts, CursorDiscoveryIssueKind},
-    trae::{
-        trae_payload_admission, TraePayloadAdmission, TRAE_CHAT_KEYS, TRAE_CHAT_ROWS_QUERY,
-        TRAE_SQLITE_VALUE_OVERHEAD_BYTES,
-    },
+use crate::provider::providers::trae::{
+    trae_payload_admission, TraePayloadAdmission, TRAE_CHAT_KEYS, TRAE_CHAT_ROWS_QUERY,
+    TRAE_SQLITE_VALUE_OVERHEAD_BYTES,
 };
+use ctx_history_provider_claude_cursor::{discover_cursor_transcripts, CursorDiscoveryIssueKind};
 
 pub(crate) use crate::provider::sqlite::{
     sqlite_retry_decision, SqliteLogicalSnapshot, SqliteRetryDecision,
@@ -78,25 +76,18 @@ fn probe_cursor_transcripts(path: &Path) -> CursorTranscriptProbeOutcome {
         path.to_path_buf()
     };
     let inventory = discover_cursor_transcripts(&input);
-    if !inventory.completed {
-        if inventory
-            .issues
-            .iter()
-            .any(|issue| issue.kind == CursorDiscoveryIssueKind::LimitExceeded)
-        {
+    if !inventory.completed() {
+        if inventory.has_issue_kind(CursorDiscoveryIssueKind::LimitExceeded) {
             return CursorTranscriptProbeOutcome::BudgetExhausted;
         }
-        if inventory.issues.iter().any(|issue| {
-            matches!(
-                issue.kind,
-                CursorDiscoveryIssueKind::Io | CursorDiscoveryIssueKind::Symlink
-            )
-        }) {
+        if inventory.has_issue_kind(CursorDiscoveryIssueKind::Io)
+            || inventory.has_issue_kind(CursorDiscoveryIssueKind::Symlink)
+        {
             return CursorTranscriptProbeOutcome::IoError;
         }
         return CursorTranscriptProbeOutcome::NotFound;
     }
-    if inventory.transcripts.is_empty() {
+    if !inventory.has_transcripts() {
         CursorTranscriptProbeOutcome::NotFound
     } else {
         CursorTranscriptProbeOutcome::Found

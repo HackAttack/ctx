@@ -1,6 +1,6 @@
 use super::super::rows::ClaudeDiscoveryResultEvidence;
 use super::*;
-use crate::common::json::{exact_bounded_string_alias, ExactJsonStringAlias};
+use ctx_history_capture_model::{exact_bounded_string_alias, ExactJsonStringAlias};
 
 const RESULT_CALL_ID_ALIASES: &[&str] = &["tool_use_id", "toolUseId", "toolCallId"];
 const MAX_RESULT_CALL_ID_BYTES: usize = 256;

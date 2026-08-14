@@ -94,13 +94,11 @@ mod registration;
 mod runtime_adapter;
 mod watch;
 
-pub(crate) use ctx_history_capture_runtime::BaseEventLookup;
 pub use ctx_history_capture_runtime::{
     CaptureLifecycleOpenOutcome, CaptureRevalidationTarget, PresentCaptureRoute,
 };
 #[cfg(test)]
 pub(crate) use family::jsonl::FallbackEventIdentityMode;
-pub(crate) use family::jsonl::FallbackEventIdentityState;
 #[doc(hidden)]
 pub use family::{CaptureDocumentSpool, CaptureProviderRuntime};
 pub(crate) use runtime_adapter::*;

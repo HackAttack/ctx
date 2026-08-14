@@ -1,5 +1,5 @@
 use super::*;
-use crate::provider::source_backed::family::jsonl::{
+use ctx_history_provider_runtime::{
     bounded_checkpoint_fits, decode_bounded_checkpoint, encode_bounded_checkpoint,
     ordered_pending_exchange_entries, restore_ordered_pending_exchange_entries,
 };
@@ -23,7 +23,7 @@ pub(super) struct RestoredCursorCheckpoint {
     pub(super) linkage_capacity_exceeded: bool,
 }
 
-fn checkpoint_value(projector: &CursorProjector) -> CursorCheckpoint {
+fn checkpoint_value<B: ProviderRuntimeBinding>(projector: &CursorProjector<B>) -> CursorCheckpoint {
     CursorCheckpoint {
         version: CURSOR_CHECKPOINT_VERSION,
         native_session_id: projector.native_session_id.clone(),
@@ -32,14 +32,21 @@ fn checkpoint_value(projector: &CursorProjector) -> CursorCheckpoint {
     }
 }
 
-pub(super) fn cursor_checkpoint_fits(projector: &CursorProjector) -> bool {
-    bounded_checkpoint_fits(&checkpoint_value(projector), MAX_CURSOR_CHECKPOINT_BYTES)
+pub(super) fn cursor_checkpoint_fits<B: ProviderRuntimeBinding>(
+    projector: &CursorProjector<B>,
+) -> bool {
+    bounded_checkpoint_fits(
+        &checkpoint_value::<B>(projector),
+        MAX_CURSOR_CHECKPOINT_BYTES,
+    )
 }
 
-pub(super) fn encode_cursor_checkpoint(projector: &CursorProjector) -> Result<TypedKey> {
+pub(super) fn encode_cursor_checkpoint<B: ProviderRuntimeBinding>(
+    projector: &CursorProjector<B>,
+) -> Result<TypedKey> {
     encode_bounded_checkpoint(
         CURSOR_CHECKPOINT_PREFIX,
-        &checkpoint_value(projector),
+        &checkpoint_value::<B>(projector),
         MAX_CURSOR_CHECKPOINT_BYTES,
         "Cursor",
     )
