@@ -268,7 +268,9 @@ py_test(
     ],
     imports = ["tests"],
     main = "tests/mcp_attribution_conformance_test.py",
-    data = MCP_ATTRIBUTION_ROUTE_CONTRACTS + MCP_ATTRIBUTION_TEST_CONTRACTS,
+    data = [
+        "//crates/ctx-history-providers-jsonl-shared:src/provider/providers/pi.rs",
+    ] + MCP_ATTRIBUTION_ROUTE_CONTRACTS + MCP_ATTRIBUTION_TEST_CONTRACTS,
     tags = ["provider-conformance"],
 )
 
