@@ -98,21 +98,22 @@ pub(crate) use ctx_history_capture_runtime::BaseEventLookup;
 pub use ctx_history_capture_runtime::{
     CaptureLifecycleOpenOutcome, CaptureRevalidationTarget, PresentCaptureRoute,
 };
-pub use discovery::*;
-pub use driver::*;
+#[cfg(test)]
+pub(crate) use family::jsonl::FallbackEventIdentityMode;
 pub(crate) use family::jsonl::FallbackEventIdentityState;
 pub(crate) use family::jsonl::{CaptureBaseEventLookup, CaptureBaseEventLookupError};
 #[doc(hidden)]
 pub use family::{CaptureDocumentSpool, CaptureProviderRuntime};
-pub use inventory::*;
-pub use publication::*;
-pub use registration::*;
 pub(crate) use runtime_adapter::*;
 pub use runtime_adapter::{
     BorrowedIndexManifestView, CommittedIndexManifestView, IndexCaptureCommitReceipt,
     IndexCaptureLifecycle, IndexCaptureVerifiedPin, IndexManifestView, IndexVerifiedCapture,
 };
-pub use watch::*;
+pub use {discovery::*, driver::*, watch::*};
+pub use {inventory::*, publication::*, registration::*};
+
+#[cfg(test)]
+const _: Option<FallbackEventIdentityMode> = None;
 
 #[cfg(test)]
 pub(crate) fn source_backed_base_sources(
