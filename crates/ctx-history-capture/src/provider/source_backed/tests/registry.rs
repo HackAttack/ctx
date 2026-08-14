@@ -1,4 +1,5 @@
 use super::*;
+use ctx_history_providers_task_docs::{CLINE_TASK_JSON_SOURCE_FORMAT, CONTINUE_CLI_SOURCE_FORMAT};
 
 mod inventory_replay;
 mod progress;
@@ -158,14 +159,14 @@ fn production_route_families_advertise_parallel_leaf_capability() {
         ),
         (
             CaptureProvider::Cline,
-            crate::CLINE_TASK_JSON_SOURCE_FORMAT,
+            CLINE_TASK_JSON_SOURCE_FORMAT,
             temp.path().join("cline"),
             true,
             false,
         ),
         (
             CaptureProvider::Continue,
-            crate::CONTINUE_CLI_SOURCE_FORMAT,
+            CONTINUE_CLI_SOURCE_FORMAT,
             temp.path().join("continue"),
             false,
             false,

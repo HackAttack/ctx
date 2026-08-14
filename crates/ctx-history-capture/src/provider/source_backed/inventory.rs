@@ -1,6 +1,10 @@
 use super::*;
 #[cfg(test)]
 use ctx_history_core::{ScannedSourceCounts, SourceInventoryObservation};
+use ctx_history_providers_task_docs::{
+    CLINE_TASK_JSON_SOURCE_FORMAT, CODEBUDDY_SOURCE_FORMAT, CONTINUE_CLI_SOURCE_FORMAT,
+    ROO_TASK_JSON_SOURCE_FORMAT, ROVODEV_SOURCE_FORMAT,
+};
 #[cfg(test)]
 use sha2::{Digest, Sha256};
 #[cfg(test)]
@@ -70,7 +74,7 @@ const DEEPSEEK_HARNESS_SOURCE_FORMAT: &str = "deepseek_harness_session_jsonl";
 
 macro_rules! route {
     (
-        $provider:ident, $format:literal, $automatic:literal, $explicit:literal,
+        $provider:ident, $format:expr, $automatic:literal, $explicit:literal,
         $authority:ident, $constructor:ident
     ) => {
         SourceBackedProviderRouteMetadata {
@@ -102,7 +106,7 @@ macro_rules! route {
         }
     };
     (
-        $provider:ident, $format:literal, $automatic:literal, $explicit:literal,
+        $provider:ident, $format:expr, $automatic:literal, $explicit:literal,
         $authority:ident
     ) => {
         SourceBackedProviderRouteMetadata {
@@ -380,13 +384,7 @@ pub const LANDED_SOURCE_BACKED_ROUTES: &[SourceBackedProviderRouteMetadata] = &[
         true,
         ExplicitPath
     ),
-    route!(
-        RovoDev,
-        "rovodev_session_json_tree",
-        true,
-        true,
-        DiscoveredWinner
-    ),
+    route!(RovoDev, ROVODEV_SOURCE_FORMAT, true, true, DiscoveredWinner),
     route!(
         OpenClaw,
         "openclaw_session_jsonl_tree",
@@ -414,7 +412,7 @@ pub const LANDED_SOURCE_BACKED_ROUTES: &[SourceBackedProviderRouteMetadata] = &[
     sqlite_route!(Shelley, "shelley_sqlite", true, false, ExactCwd, ExactCwd),
     route!(
         Continue,
-        "continue_cli_sessions_json",
+        CONTINUE_CLI_SOURCE_FORMAT,
         true,
         true,
         DiscoveredWinner
@@ -428,14 +426,14 @@ pub const LANDED_SOURCE_BACKED_ROUTES: &[SourceBackedProviderRouteMetadata] = &[
     ),
     route!(
         Cline,
-        "cline_task_directory_json",
+        CLINE_TASK_JSON_SOURCE_FORMAT,
         true,
         true,
         DiscoveredWinner
     ),
     route!(
         RooCode,
-        "roo_task_directory_json",
+        ROO_TASK_JSON_SOURCE_FORMAT,
         true,
         true,
         DiscoveredWinner
@@ -481,7 +479,7 @@ pub const LANDED_SOURCE_BACKED_ROUTES: &[SourceBackedProviderRouteMetadata] = &[
     sqlite_route!(Warp, "warp_sqlite", true, true, NamedSurface, NamedSurface),
     route!(
         CodeBuddy,
-        "codebuddy_history_json",
+        CODEBUDDY_SOURCE_FORMAT,
         true,
         true,
         DiscoveredWinner

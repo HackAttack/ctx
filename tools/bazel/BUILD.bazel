@@ -17,6 +17,9 @@ exports_files([
     "check-history-cli-boundary.sh",
     "check_history_cli_boundary.py",
     "check_history_cli_boundary_test.py",
+    "check-history-provider-pack-boundary.sh",
+    "check_history_provider_pack_boundary.py",
+    "check_history_provider_pack_boundary_test.py",
     "history_cli_boundary.bzl",
     "check-history-ingest-application-boundary.sh",
     "check-history-read-application-dependency-boundary.sh",
@@ -157,6 +160,17 @@ py_test(
     ],
     imports = ["."],
     main = "check_sqlite_inventory_provider_boundary_test.py",
+)
+
+py_test(
+    name = "history_provider_pack_boundary_mutation_tests",
+    srcs = [
+        "check_history_provider_pack_boundary.py",
+        "check_history_provider_pack_boundary_test.py",
+    ],
+    data = ["//:history_provider_pack_boundary_inputs"],
+    imports = ["."],
+    main = "check_history_provider_pack_boundary_test.py",
 )
 
 py_test(

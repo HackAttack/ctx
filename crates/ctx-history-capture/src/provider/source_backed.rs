@@ -28,13 +28,8 @@ use sha2::{Digest, Sha256};
 
 use super::codex::nativepath::CodexGenerationNormalizationCoordinatorV0;
 use super::providers::{
-    continue_cli::native_path::{ContinueSourceBackedOutcome, ContinueSourceBackedReader},
     nanoclaw::native_path::source_backed::NanoClawDocumentTreeAdapter,
     openhands::nativepath::OpenHandsEventFileAdapterV2,
-    rovodev::native_path::RovoDevDocumentTreeAdapter,
-    task_json::cline_nativepath::{
-        cline_task_json_source_backed_adapter, roo_task_json_source_backed_adapter,
-    },
 };
 use crate::provider_sources::{
     path_presence, resolve_warp_discovery_authority, CrushDiscoveredProjectInventory,
@@ -44,8 +39,8 @@ use crate::provider_sources::{
 use crate::{
     discover_provider_sources_with_context, provider_source_spec,
     validate_provider_source_roots_outside_data_root, DiscoveryContext, DiscoveryIssue,
-    DiscoveryPlatform, DiscoveryReport, ProviderAdapterContext, ProviderImportSupport,
-    ProviderSource, ProviderSourceKind, ProviderSourceSpec, ProviderSourceStatus,
+    DiscoveryPlatform, DiscoveryReport, ProviderImportSupport, ProviderSource, ProviderSourceKind,
+    ProviderSourceSpec, ProviderSourceStatus,
 };
 pub use ctx_history_providers_sqlite_inventory::{
     CrushProjectDatabaseV0, CrushProjectInventoryObservationV0, CrushProjectInventorySourceV0,

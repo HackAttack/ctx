@@ -1,19 +1,24 @@
 use super::*;
 
-use crate::provider::source_backed::family::document::DocumentLeafExecutionPolicy;
+use crate::provider::source_backed::family::document::{
+    register_replacement_document_tree_route, DocumentLeafExecutionPolicy,
+};
+use ctx_history_providers_task_docs::{
+    providers::{
+        codebuddy::native_path::CodeBuddyDocumentAdapter,
+        continue_cli::native_path::ContinueSourceBackedReader,
+        rovodev::native_path::RovoDevDocumentTreeAdapter,
+        task_json::cline_nativepath::{
+            cline_task_json_source_backed_adapter, roo_task_json_source_backed_adapter,
+        },
+    },
+    ProviderAdapterContext,
+};
 
 /// Central policy declaration for production replacement-document routes.
 ///
-/// Cline, Roo, and CodeBuddy discover a content-free exact source descriptor
-/// per leaf, and each scan validates and certifies only that leaf. CodeBuddy's
-/// extension project index is immutable evidence copied into each affected
-/// leaf; it does not create cross-leaf session lineage.
-///
-/// Rovo Dev fingerprints each leaf's direct parent claim without consulting
-/// the parent leaf, so parent lifecycle cannot invalidate an unchanged child.
-/// Auggie and Continue derive exact source identity from document bodies, while
-/// NanoClaw is one catalog-lineage compound source; those routes retain the
-/// serial default.
+/// The exact-base Auggie and NanoClaw routes remain capture-local while this
+/// cohort owns CodeBuddy, Continue, Rovo Dev, Cline, and Roo registration.
 pub(crate) fn document_leaf_execution_policy(
     provider: CaptureProvider,
 ) -> DocumentLeafExecutionPolicy {
@@ -29,16 +34,10 @@ pub(crate) fn document_leaf_execution_policy(
     }
 }
 
-const DIRECT_ROUTES: &[RouteEntry] = &[
-    RouteEntry::new(
-        CaptureProvider::Auggie,
-        crate::provider::providers::auggie::native_path::register_source_backed_route,
-    ),
-    RouteEntry::new(
-        CaptureProvider::CodeBuddy,
-        crate::provider::providers::codebuddy::native_path::register_source_backed_route,
-    ),
-];
+const DIRECT_ROUTES: &[RouteEntry] = &[RouteEntry::new(
+    CaptureProvider::Auggie,
+    crate::provider::providers::auggie::native_path::register_source_backed_route,
+)];
 
 pub(super) fn register_route(
     registry: &mut SourceBackedProviderRegistry,
@@ -52,6 +51,7 @@ pub(super) fn register_route(
         CaptureProvider::Cline | CaptureProvider::RooCode => {
             register_task_json_route(registry, source, selection)
         }
+        CaptureProvider::CodeBuddy => register_codebuddy_route(registry, source, selection),
         CaptureProvider::RovoDev => register_rovodev_route(registry, source, selection),
         CaptureProvider::Continue => register_continue_route(registry, source, selection),
         provider => Err(invalid_route(
@@ -71,11 +71,29 @@ pub(super) fn register_task_json_route(
     let adapter = match provider {
         CaptureProvider::Cline => cline_task_json_source_backed_adapter(&selected),
         CaptureProvider::RooCode => roo_task_json_source_backed_adapter(&selected),
-        _ => unreachable!("caller restricts task JSON providers"),
+        _ => {
+            return Err(invalid_route(
+                provider,
+                "caller restricts task JSON providers",
+            ));
+        }
     };
-    crate::provider::source_backed::family::document::register_replacement_document_tree_route(
-        registry, source, selection, adapter,
-    )
+    register_replacement_document_tree_route(registry, source, selection, adapter)
+}
+
+pub(super) fn register_codebuddy_route(
+    registry: &mut SourceBackedProviderRegistry,
+    source: ProviderSource,
+    selection: SourceBackedRouteSelection,
+) -> SourceBackedCoordinatorResult<()> {
+    let context = ProviderAdapterContext {
+        machine_id: "source-backed-codebuddy".to_owned(),
+        source_path: Some(source.path.clone()),
+        source_root: Some(source.path.clone()),
+        imported_at: DateTime::<Utc>::UNIX_EPOCH,
+    };
+    let adapter = CodeBuddyDocumentAdapter::new(source.path.clone(), context);
+    register_replacement_document_tree_route(registry, source, selection, adapter)
 }
 
 /// Registers one explicit NanoClaw compound project with caller-owned catalog
@@ -148,18 +166,15 @@ pub(super) fn register_rovodev_route(
         imported_at: DateTime::<Utc>::UNIX_EPOCH,
     };
     let adapter = RovoDevDocumentTreeAdapter::new(source.path.clone(), context);
-    crate::provider::source_backed::family::document::register_replacement_document_tree_route(
-        registry, source, selection, adapter,
-    )
+    register_replacement_document_tree_route(registry, source, selection, adapter)
 }
 pub(super) fn register_continue_route(
     registry: &mut SourceBackedProviderRegistry,
     source: ProviderSource,
     selection: SourceBackedRouteSelection,
 ) -> SourceBackedCoordinatorResult<()> {
-    let outcome: ContinueSourceBackedOutcome =
-        ContinueSourceBackedReader::register(registry, source, selection);
-    outcome
+    let adapter = ContinueSourceBackedReader::new(source.path.clone());
+    register_replacement_document_tree_route(registry, source, selection, adapter)
 }
 
 #[cfg(test)]
@@ -167,7 +182,6 @@ mod tests {
     use super::*;
     use crate::{
         ProviderCatalogSupport, ProviderImportSupport, ProviderSourceKind, ProviderSourceStatus,
-        ROVODEV_SOURCE_FORMAT,
     };
     use ctx_history_index::{CoreEventRecord, VerifiedIndex, WriterOptions};
     use std::{fs, path::Path};
@@ -487,7 +501,7 @@ mod tests {
                 provider: CaptureProvider::RovoDev,
                 path: path.to_path_buf(),
                 exists: true,
-                source_format: ROVODEV_SOURCE_FORMAT,
+                source_format: ctx_history_providers_task_docs::ROVODEV_SOURCE_FORMAT,
                 source_kind: ProviderSourceKind::NativeHistory,
                 import_support: ProviderImportSupport::Native,
                 catalog_support: ProviderCatalogSupport::None,

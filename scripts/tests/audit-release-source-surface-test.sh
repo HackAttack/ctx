@@ -39,6 +39,7 @@ for retired_case in \
   retired-capture-repository-authority \
   retired-misplaced-pro-uninstall \
   retired-repository-exact-json-authority \
+  retired-task-documents-command-surface \
   retired-update-invocation \
   retired-update-route; do
   if bash "${checker}" "${fixture_root}/${retired_case}" >/dev/null 2>&1; then
