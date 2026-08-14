@@ -42,7 +42,6 @@ pub use provider_sources::{
     WarpInstalledSurfaceKey, WarpReleaseChannel, WarpTerminalSurface, DISCOVERY_ENV_ALLOWLIST,
 };
 
-#[cfg(test)]
 pub(crate) const MAX_PROVIDER_JSONL_LINE_BYTES: usize =
     ctx_history_source_io::MAX_PROVIDER_JSONL_LINE_BYTES;
 pub(crate) const MAX_PROVIDER_SQLITE_VALUE_BYTES: usize =

@@ -117,6 +117,7 @@ pub use runtime_adapter::{
 };
 pub use watch::*;
 
+#[cfg(test)]
 pub(crate) fn source_backed_base_sources(
     sink: &SourceBackedGenerationSink<'_>,
     owns: impl Fn(&SourceKey) -> bool,
