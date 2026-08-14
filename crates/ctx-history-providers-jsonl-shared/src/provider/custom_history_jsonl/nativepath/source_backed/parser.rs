@@ -87,7 +87,7 @@ pub(super) fn parse_projection_with_limits(
         0,
         JsonlRecordFraming::new(MAX_PROVIDER_JSONL_LINE_BYTES.saturating_sub(1), false),
         JsonlPhysicalDigest::complete_and_bounded_prefix(
-            new_prefix_hasher(),
+            new_complete_prefix_hasher(),
             new_prefix_hasher(),
             prior_prefix_bytes.unwrap_or(0),
         ),
@@ -135,7 +135,7 @@ pub(super) fn parse_projection_with_limits(
     let complete_records = usize::try_from(stream.next_physical_ordinal())
         .map_err(|_| CustomHistorySourceBackedError::CountMismatch)?;
     let source_hasher = stream.digest().complete_hasher();
-    let content_digest = finish_prefix_digest(source_hasher, certified_prefix_bytes);
+    let content_digest = finish_complete_prefix_digest(source_hasher, certified_prefix_bytes);
     let (prior_hasher, prior_remaining) = stream
         .digest()
         .bounded_prefix()
@@ -947,6 +947,18 @@ fn new_prefix_hasher() -> Sha256 {
     let mut digest = Sha256::new();
     digest.update(SOURCE_DIGEST_DOMAIN);
     digest
+}
+
+fn new_complete_prefix_hasher() -> JsonlResumableSha256 {
+    let mut digest = JsonlResumableSha256::new();
+    digest.update(SOURCE_DIGEST_DOMAIN);
+    digest
+}
+
+fn finish_complete_prefix_digest(hasher: &JsonlResumableSha256, prefix_bytes: u64) -> [u8; 32] {
+    let mut digest = hasher.clone();
+    digest.update(&prefix_bytes.to_be_bytes());
+    digest.digest()
 }
 
 fn finish_prefix_digest(hasher: &Sha256, prefix_bytes: u64) -> [u8; 32] {

@@ -170,11 +170,11 @@ pub use route::{
     jsonl_family_driver, JsonlFamilyAdapter, JsonlFamilyAppendMode, JsonlFamilyAppendTrustContract,
     JsonlFamilyBaseScope, JsonlFamilyExecutionIo, JsonlFamilyExecutionPosition,
     JsonlFamilyInventory, JsonlFamilyInventoryMode, JsonlFamilyLeaf,
-    JsonlFamilyMembershipObservation, JsonlFamilyOptimizedLeafOutcome, JsonlFamilyProjectionMode,
-    JsonlFamilyProjector, JsonlFamilyPublication, JsonlFamilyRejectedLeaf,
-    JsonlFamilyRootMissingMode, JsonlFamilySemanticExecutor, JsonlFamilySemanticPage,
-    JsonlFamilySemanticPreflight, JsonlFamilySemanticSummary, JsonlFamilyTerminalProof,
-    JsonlFamilyWorkerContext,
+    JsonlFamilyMembershipObservation, JsonlFamilyOpenedMember, JsonlFamilyOptimizedLeafOutcome,
+    JsonlFamilyProjectionMode, JsonlFamilyProjector, JsonlFamilyPublication,
+    JsonlFamilyRejectedLeaf, JsonlFamilyRootMissingMode, JsonlFamilySemanticExecutor,
+    JsonlFamilySemanticPage, JsonlFamilySemanticPreflight, JsonlFamilySemanticSummary,
+    JsonlFamilyTerminalProof, JsonlFamilyWorkerContext,
 };
 pub use single_file::jsonl_single_file_inventory;
 const PAGE_MAX_RECORDS: usize = 64;

@@ -44,6 +44,10 @@ impl CodexGenerationRouteV0 {
         self.coordinator.prepared(self.participant.id)
     }
 
+    pub(super) fn prepare_selected(&self) -> CodexSourceBackedResultV0<()> {
+        self.coordinator.prepare_selected()
+    }
+
     pub(super) fn session_tree_roots(&self) -> Option<&[PathBuf]> {
         match &self.participant.authority {
             CodexGenerationParticipantAuthorityV0::SessionTree { roots } => Some(roots),
@@ -75,6 +79,7 @@ struct CodexPreparedGenerationV0 {
 struct CodexGenerationCoordinatorStateV0 {
     next_participant: usize,
     participants: BTreeMap<usize, Arc<CodexGenerationParticipantV0>>,
+    selected: Vec<usize>,
     prepared: Option<CodexPreparedGenerationV0>,
 }
 
@@ -97,6 +102,32 @@ impl std::fmt::Debug for CodexGenerationNormalizationCoordinatorV0 {
 }
 
 impl CodexGenerationNormalizationCoordinatorV0 {
+    pub fn select(&self, selected: &[usize]) -> CodexSourceBackedResultV0<()> {
+        let mut state = self
+            .state
+            .lock()
+            .map_err(|_| CodexSourceBackedErrorV0::GenerationCoordinatorUnavailable)?;
+        if selected
+            .iter()
+            .any(|participant| !state.participants.contains_key(participant))
+        {
+            return Err(CodexSourceBackedErrorV0::GenerationCoordinatorUnavailable);
+        }
+        state.selected = selected.to_vec();
+        state.prepared = None;
+        Ok(())
+    }
+
+    pub fn prepare_selected(&self) -> CodexSourceBackedResultV0<()> {
+        let selected = self
+            .state
+            .lock()
+            .map_err(|_| CodexSourceBackedErrorV0::GenerationCoordinatorUnavailable)?
+            .selected
+            .clone();
+        self.prepare(&selected)
+    }
+
     pub fn register_session_tree(
         self: &Arc<Self>,
         roots: Vec<PathBuf>,

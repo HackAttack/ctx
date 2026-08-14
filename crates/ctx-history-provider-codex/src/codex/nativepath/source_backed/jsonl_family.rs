@@ -10,7 +10,7 @@ use crate::{
             observe_opened_file, observe_opened_file_allow_append, JsonlFamilyAdapter,
             JsonlFamilyAppendMode, JsonlFamilyBaseScope, JsonlFamilyExecutionIo,
             JsonlFamilyInventory, JsonlFamilyInventoryMode, JsonlFamilyLeaf,
-            JsonlFamilyMembershipObservation, JsonlFamilyProjectionMode,
+            JsonlFamilyMembershipObservation, JsonlFamilyOpenedMember, JsonlFamilyProjectionMode,
             JsonlFamilyRootMissingMode, JsonlFamilySemanticExecutor, JsonlFamilySemanticPage,
             JsonlFamilySemanticPreflight, JsonlFamilySemanticSummary, JsonlFamilyWorkerContext,
             JsonlFileObservation, JsonlRecordFraming,
@@ -519,6 +519,42 @@ impl<B: ProviderRuntimeBinding> JsonlFamilyAdapter for CodexSessionJsonlFamilyAd
                 "Codex generation route has no discovery authority",
             ))
         }
+    }
+
+    fn partial_member_roots(&self, _root: &Path) -> Option<Vec<PathBuf>> {
+        self.generation.session_tree_roots().map(<[_]>::to_vec)
+    }
+
+    fn bind_partial_member(
+        &self,
+        member: &JsonlFamilyOpenedMember<'_>,
+    ) -> Result<Option<JsonlFamilyLeaf>> {
+        if !self.generation.is_session_tree() {
+            return Ok(None);
+        }
+        let plan = match super::catalog::bind_codex_partial_member_v0(member) {
+            Ok(plan) => plan,
+            Err(_) => return Ok(None),
+        };
+        let leaf = JsonlFamilyLeaf::bind_frozen_observed(
+            plan.1.clone(),
+            member.source_path().to_path_buf(),
+            Arc::clone(member.authority()),
+            member.authority_path().to_path_buf(),
+            TypedKey::utf8(&plan.2)
+                .map_err(|error| CaptureError::InvalidPayload(error.to_string()))?,
+            member.observation().clone(),
+        );
+        self.state
+            .lock()
+            .map_err(|_| codex_family_state_error())?
+            .plans
+            .insert(plan.1.clone(), plan);
+        Ok(Some(leaf))
+    }
+
+    fn prepare_partial_member_fallback(&self) -> Result<()> {
+        self.generation.prepare_selected().map_err(Into::into)
     }
 
     fn observe_terminal_membership(

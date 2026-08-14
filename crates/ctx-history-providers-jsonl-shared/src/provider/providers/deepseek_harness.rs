@@ -30,6 +30,7 @@ use crate::{
             JsonlFamilyLeaf, JsonlFamilyProjectionMode, JsonlFamilySemanticExecutor,
             JsonlFamilySemanticPage, JsonlFamilySemanticPreflight, JsonlFamilySemanticSummary,
             JsonlFamilyWorkerContext, JsonlPhysicalDigest, JsonlPhysicalStream, JsonlRecordFraming,
+            JsonlResumableSha256,
         },
         IndexBaseEventLookup,
     },
@@ -572,7 +573,7 @@ fn read_header_binding(
         0,
         encoding,
         JsonlRecordFraming::ordinary(),
-        JsonlPhysicalDigest::complete(Sha256::new()),
+        JsonlPhysicalDigest::complete(JsonlResumableSha256::new()),
         || CaptureError::SourceChangedDuringCapture,
     )?;
     let frame = stream.next_record()?.ok_or_else(|| {

@@ -45,6 +45,7 @@ use crate::{
             JsonlFamilyLeaf, JsonlFamilyOptimizedLeafOutcome, JsonlFamilyProjector,
             JsonlFamilyPublication, JsonlFamilyRootMissingMode, JsonlFamilyTerminalProof,
             JsonlFamilyWorkerContext, JsonlPhysicalDigest, JsonlPhysicalStream, JsonlRecordFraming,
+            JsonlResumableSha256,
         },
     },
     CaptureError, ProviderImportSummary, ProviderSourceFailureKind, MAX_PROVIDER_JSONL_LINE_BYTES,
