@@ -2,12 +2,12 @@ mod generation;
 mod republish;
 mod retention;
 
-#[cfg(test)]
-pub(crate) use ctx_history_index_format::{verify_publication_candidate, verify_searcher};
 pub(crate) use ctx_history_index_format::{
     canonical_commit_payload, load_publication_for_metas, meta_generation, payload_generation_id,
     reconcile_commit_error, searcher_generation, write_manifest,
 };
+#[cfg(test)]
+pub(crate) use ctx_history_index_format::{verify_publication_candidate, verify_searcher};
 #[cfg(test)]
 pub(crate) use ctx_history_index_generation::manifest_path;
 #[cfg(test)]
