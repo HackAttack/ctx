@@ -7,6 +7,9 @@ use ctx_history_source_io::{
     SYMLINK_PROVIDER_SOURCE_REASON,
 };
 
+#[cfg(unix)]
+use ctx_history_source_io::test_support_paths::{make_fifo, tempdir};
+
 use super::*;
 
 fn discovered_leaf() -> (
@@ -88,12 +91,9 @@ fn shared_native_jsonl_skips_only_unselected_membership_rejections() {
 #[cfg(unix)]
 #[test]
 fn shared_native_jsonl_skips_unselected_link_and_special_file_siblings() {
-    use std::{os::unix::fs::symlink, os::unix::net::UnixListener};
+    use std::os::unix::fs::symlink;
 
-    let temp = tempfile::Builder::new()
-        .prefix("ctx-native-jsonl-membership-")
-        .tempdir_in("/tmp")
-        .unwrap();
+    let temp = tempdir().unwrap();
     let outside = crate::test_support_paths::tempdir().unwrap();
     let root = temp.path().join("transcripts");
     fs::create_dir_all(&root).unwrap();
@@ -104,7 +104,7 @@ fn shared_native_jsonl_skips_unselected_link_and_special_file_siblings() {
     )
     .unwrap();
     symlink(outside.path(), root.join("unselected-link")).unwrap();
-    let _listener = UnixListener::bind(root.join("unselected.sock")).unwrap();
+    make_fifo(&root.join("unselected.fifo")).unwrap();
 
     let adapter = super::super::windsurf_source_backed_adapter::<
         crate::test_support::NativeJsonlTestRuntime,
@@ -121,7 +121,7 @@ fn shared_native_jsonl_skips_unselected_link_and_special_file_siblings() {
 #[cfg(unix)]
 #[test]
 fn shared_native_jsonl_rejects_selected_link_and_special_file_transcripts() {
-    use std::{os::unix::fs::symlink, os::unix::net::UnixListener};
+    use std::os::unix::fs::symlink;
 
     let outside = crate::test_support_paths::tempdir().unwrap();
     let adapter = super::super::windsurf_source_backed_adapter::<
@@ -146,11 +146,8 @@ fn shared_native_jsonl_rejects_selected_link_and_special_file_transcripts() {
             if reason == SYMLINK_PROVIDER_SOURCE_REASON
     ));
 
-    let special = tempfile::Builder::new()
-        .prefix("ctx-native-jsonl-selected-")
-        .tempdir_in("/tmp")
-        .unwrap();
-    let _listener = UnixListener::bind(special.path().join("socket.jsonl")).unwrap();
+    let special = tempdir().unwrap();
+    make_fifo(&special.path().join("fifo.jsonl")).unwrap();
     let error = adapter.discover(special.path()).unwrap_err();
     assert!(matches!(
         error,
