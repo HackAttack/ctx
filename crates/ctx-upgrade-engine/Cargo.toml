@@ -17,6 +17,7 @@ anyhow.workspace = true
 base64.workspace = true
 chrono.workspace = true
 ctx-history-core = { path = "../ctx-history-core" }
+ctx-history-platform = { path = "../ctx-history-platform" }
 fs2 = "0.4.3"
 ring.workspace = true
 semver.workspace = true

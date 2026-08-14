@@ -51,7 +51,7 @@ pub(super) fn validate_private_directory(path: &Path) -> Result<()> {
 
 #[cfg(windows)]
 pub(super) fn validate_private_directory(path: &Path) -> Result<()> {
-    ctx_history_core::platform_security::verify_private_directory(path)
+    ctx_history_platform::platform_security::verify_private_directory(path)
         .context("verify hosted transaction install directory")
 }
 
@@ -314,7 +314,7 @@ pub(super) fn restrict_private_file(path: &Path) -> Result<()> {
 
 #[cfg(windows)]
 pub(super) fn restrict_private_file(path: &Path) -> Result<()> {
-    ctx_history_core::platform_security::restrict_private_file(path).map_err(Into::into)
+    ctx_history_platform::platform_security::restrict_private_file(path).map_err(Into::into)
 }
 
 #[cfg(not(any(unix, windows)))]
@@ -343,7 +343,7 @@ pub(super) fn set_installed_executable_permissions(_path: &Path) -> Result<()> {
 
 #[cfg(windows)]
 pub(super) fn restrict_private_executable(path: &Path) -> Result<()> {
-    ctx_history_core::platform_security::restrict_private_executable(path).map_err(Into::into)
+    ctx_history_platform::platform_security::restrict_private_executable(path).map_err(Into::into)
 }
 
 #[cfg(not(any(unix, windows)))]
@@ -367,7 +367,7 @@ pub(super) fn verify_private_file(path: &Path) -> Result<()> {
 
 #[cfg(windows)]
 pub(super) fn verify_private_file(path: &Path) -> Result<()> {
-    ctx_history_core::platform_security::verify_private_file(path).map_err(Into::into)
+    ctx_history_platform::platform_security::verify_private_file(path).map_err(Into::into)
 }
 
 #[cfg(not(any(unix, windows)))]

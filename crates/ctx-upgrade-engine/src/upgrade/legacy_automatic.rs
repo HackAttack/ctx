@@ -13,7 +13,7 @@ mod unix {
     };
 
     use anyhow::{anyhow, Context, Result};
-    use ctx_history_core::default_data_root;
+    use ctx_history_platform::default_data_root;
     use uuid::Uuid;
 
     use super::super::{

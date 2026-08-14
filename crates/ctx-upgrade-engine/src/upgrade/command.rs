@@ -8,7 +8,9 @@ use std::{
 };
 
 use anyhow::{anyhow, Context, Result};
-use ctx_history_core::platform_security::{establish_private_data_root, verify_private_directory};
+use ctx_history_platform::platform_security::{
+    establish_private_data_root, verify_private_directory,
+};
 
 use super::download::DownloadedArtifact;
 use super::install::{

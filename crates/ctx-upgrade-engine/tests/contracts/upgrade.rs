@@ -245,7 +245,7 @@ fn upgrade_enable_and_disable_reject_insecure_config_without_repair() {
 #[cfg(windows)]
 #[test]
 fn upgrade_enable_creates_protected_nested_root_and_config_on_windows() {
-    use ctx_history_core::platform_security::{verify_private_directory, verify_private_file};
+    use ctx_history_platform::platform_security::{verify_private_directory, verify_private_file};
 
     let temp = tempdir();
     let first = temp.path().join("upgrade-state");
@@ -661,7 +661,7 @@ fn runtime_installs_at_semantic_discovery_roots() {
     let _runtime = add_fake_release_runtime(&custom_data, &release);
     let data_root = custom_data.path().join("custom-data-root");
     fs::create_dir(&data_root).unwrap();
-    ctx_history_core::platform_security::restrict_private_directory(&data_root).unwrap();
+    ctx_history_platform::platform_security::restrict_private_directory(&data_root).unwrap();
     let applied = json_output(
         fake_release_env(
             ctx(&custom_data).args(["upgrade", "--format=json"]),
@@ -687,7 +687,7 @@ fn runtime_install_honors_cli_selected_data_root() {
     let _runtime = add_fake_release_runtime(&temp, &release);
     let selected_root = temp.path().join("selected-data-root");
     fs::create_dir(&selected_root).unwrap();
-    ctx_history_core::platform_security::restrict_private_directory(&selected_root).unwrap();
+    ctx_history_platform::platform_security::restrict_private_directory(&selected_root).unwrap();
     let unrelated_home = temp.path().join("unrelated-home");
     fs::create_dir(&unrelated_home).unwrap();
     let mut command = ctx(&temp);

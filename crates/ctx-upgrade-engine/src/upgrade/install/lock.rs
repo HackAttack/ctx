@@ -345,9 +345,9 @@ fn protect_open_lock(path: &Path, file: &File) -> Result<()> {
 
 #[cfg(windows)]
 fn protect_open_lock(path: &Path, file: &File) -> Result<()> {
-    use ctx_history_core::platform_security::verify_private_file_handle;
+    use ctx_history_platform::platform_security::verify_private_file_handle;
 
-    ctx_history_core::platform_security::restrict_private_file(path)
+    ctx_history_platform::platform_security::restrict_private_file(path)
         .with_context(|| format!("protect ctx installation lock {}", path.display()))?;
     verify_private_file_handle(file)
         .with_context(|| format!("verify ctx installation lock {}", path.display()))

@@ -236,8 +236,8 @@ pub(super) fn write(journal: &InstallTransactionJournal) -> Result<()> {
         file.sync_all()?;
         #[cfg(windows)]
         {
-            ctx_history_core::platform_security::restrict_private_file(&temporary)?;
-            ctx_history_core::platform_security::verify_private_file(&temporary)?;
+            ctx_history_platform::platform_security::restrict_private_file(&temporary)?;
+            ctx_history_platform::platform_security::verify_private_file(&temporary)?;
         }
         publish_temporary(&temporary, &path, parent)
     })();
@@ -640,7 +640,7 @@ fn validate_windows_private_root(path: &Path, label: &str) -> Result<()> {
     if canonical != path {
         return Err(anyhow!("{label} is not canonical: {}", path.display()));
     }
-    ctx_history_core::platform_security::verify_private_directory(path)
+    ctx_history_platform::platform_security::verify_private_directory(path)
         .with_context(|| format!("verify {label} {}", path.display()))
 }
 
