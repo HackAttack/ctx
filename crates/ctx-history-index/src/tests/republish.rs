@@ -893,6 +893,8 @@ fn forced_copy_fallback_is_bounded_instrumented_and_migrates() {
     let hook = CloneTestHookGuard::set(
         CloneTestOptions {
             force_copy: true,
+            force_reflink_fallback: false,
+            force_hardlink_fallback: false,
             available_bytes: None,
         },
         |_, _| Ok(()),
@@ -928,6 +930,8 @@ fn forced_copy_write_failures_preserve_base_pointer_and_queries() {
         let fault = CloneTestHookGuard::set(
             CloneTestOptions {
                 force_copy: true,
+                force_reflink_fallback: false,
+                force_hardlink_fallback: false,
                 available_bytes: None,
             },
             move |stage, _| {
@@ -977,6 +981,8 @@ fn native_copy_detects_growth_without_writing_past_authenticated_length() {
     let guard = CloneTestHookGuard::set(
         CloneTestOptions {
             force_copy: true,
+            force_reflink_fallback: false,
+            force_hardlink_fallback: false,
             available_bytes: None,
         },
         move |stage, relative| {
@@ -1086,6 +1092,8 @@ fn insufficient_clone_headroom_is_rejected_before_writes() {
     let fault = CloneTestHookGuard::set(
         CloneTestOptions {
             force_copy: false,
+            force_reflink_fallback: false,
+            force_hardlink_fallback: false,
             available_bytes: Some(0),
         },
         |_, _| panic!("headroom rejection must precede clone work"),

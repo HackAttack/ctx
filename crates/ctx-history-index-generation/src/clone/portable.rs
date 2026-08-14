@@ -11,14 +11,21 @@ use tantivy::Index;
 use uuid::Uuid;
 
 use super::{
-    admit_clone_resource, validate_single_component, MANAGED_FILE, MAX_MANAGED_METADATA_BYTES,
-    MAX_REPUBLISH_CLONE_BYTES, MAX_REPUBLISH_CLONE_FILES, MAX_REPUBLISH_DIRECTORY_ENTRIES,
-    REPUBLISH_HEADROOM_RESERVE_BYTES, TANTIVY_LOCK_FILES,
+    admit_clone_resource, record_candidate_clone_metrics, validate_single_component,
+    CandidateCloneMetrics, MANAGED_FILE, MAX_MANAGED_METADATA_BYTES, MAX_REPUBLISH_CLONE_BYTES,
+    MAX_REPUBLISH_CLONE_FILES, MAX_REPUBLISH_DIRECTORY_ENTRIES, REPUBLISH_HEADROOM_RESERVE_BYTES,
+    TANTIVY_LOCK_FILES,
 };
 use crate::{
-    active_index_files, lexical_index_settings, physical_integrity_digest, ActiveGenerationPointer,
-    CandidateGeneration, DurableMmapDirectory, GenerationError as IndexError, Result,
-    INDEX_GENERATIONS_DIRECTORY,
+    active_index_files,
+    certification::{
+        capture_artifact_identity, open_authenticated_artifact, recapture_authenticated_artifact,
+    },
+    lexical_index_settings,
+    physical::PhysicalFileDigest,
+    physical_integrity_digest, verify_or_certify_physical_integrity, ActiveGenerationPointer,
+    CandidateGeneration, CandidatePhysicalProof, CertifiedPhysicalIntegrity, DurableMmapDirectory,
+    GenerationError as IndexError, Result, INDEX_GENERATIONS_DIRECTORY,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -241,10 +248,94 @@ pub(super) fn create_authenticated_republish_candidate(
         Ok(CandidateGeneration {
             directory_name,
             index,
+            physical_proof: crate::CandidatePhysicalProof::default(),
         })
     })();
     match clone_result {
         Ok(candidate) => Ok((candidate, guard)),
+        Err(error) => {
+            guard.discard();
+            Err(error)
+        }
+    }
+}
+
+pub(super) fn create_authenticated_candidate_generation(
+    root: &Path,
+    predecessor_pointer: &ActiveGenerationPointer,
+    predecessor_index: &Index,
+) -> Result<CandidateGeneration> {
+    let base = predecessor_pointer.active();
+    let certified =
+        verify_or_certify_physical_integrity(root, predecessor_pointer, base, predecessor_index)?;
+    let root_directory = BoundDirectory::open_path(root)?;
+    let generations_name = Path::new(INDEX_GENERATIONS_DIRECTORY);
+    let generations = BoundDirectory::open_at(&root_directory, generations_name)?;
+    let source_name = Path::new(base.directory());
+    validate_single_component(source_name)?;
+    let source = BoundDirectory::open_at(&generations, source_name)?;
+
+    let plan = authenticated_clone_plan(&generations, source_name, &source, predecessor_index)?;
+    let available = available_bytes(&generations)?;
+    record_plan_metrics(&plan, available);
+    if available < plan.required_headroom {
+        return Err(IndexError::CurrentRepublishInsufficientHeadroom {
+            available,
+            required: plan.required_headroom,
+        });
+    }
+
+    let directory_name = format!("generation-{}", Uuid::now_v7().simple());
+    let destination_name = PathBuf::from(&directory_name);
+    let destination = BoundDirectory::create_at(&generations, &destination_name)?;
+    platform::restrict_destination_directory(&destination.file)?;
+    let guard = CandidateGuard {
+        _root: root_directory,
+        generations,
+        destination_name,
+        destination,
+    };
+    let source_path = guard.generations.path.join(source_name);
+    let destination_path = guard.destination.path.clone();
+    let clone_result = (|| {
+        source.validate_child_binding(&guard.generations, source_name)?;
+        guard.validate_binding()?;
+        let mut physical_proof = CandidatePhysicalProof::default();
+        let mut metrics = CandidateCloneMetrics::default();
+        clone_candidate_files(
+            root,
+            &source_path,
+            predecessor_pointer,
+            &certified,
+            &guard.generations,
+            source_name,
+            &source,
+            &guard.destination_name,
+            &guard.destination,
+            &plan,
+            &mut physical_proof,
+            &mut metrics,
+        )?;
+        platform::sync_directory(&guard.destination.file)?;
+        platform::sync_directory(&guard.generations.file)?;
+        source.validate_child_binding(&guard.generations, source_name)?;
+        guard.validate_binding()?;
+
+        let directory =
+            DurableMmapDirectory::open(&destination_path).map_err(tantivy::TantivyError::from)?;
+        let index = Index::open(directory)?;
+        if index.settings() != &lexical_index_settings() {
+            return Err(IndexError::IndexSettingsMismatch);
+        }
+        record_candidate_clone_metrics(metrics);
+        Ok(CandidateGeneration {
+            directory_name,
+            index,
+            physical_proof,
+        })
+    })();
+    match clone_result {
+        Ok(candidate) => Ok(candidate),
         Err(error) => {
             guard.discard();
             Err(error)
@@ -497,6 +588,163 @@ fn clone_files(
         clone_checkpoint(PortableCloneStage::AfterCopy, &planned.path)?;
     }
     record_clone_metrics(copied_bytes, plan.files.len());
+    Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
+fn clone_candidate_files(
+    root: &Path,
+    source_path: &Path,
+    predecessor_pointer: &ActiveGenerationPointer,
+    certified: &CertifiedPhysicalIntegrity,
+    generations: &BoundDirectory,
+    source_name: &Path,
+    source: &BoundDirectory,
+    destination_name: &Path,
+    destination: &BoundDirectory,
+    plan: &ClonePlan,
+    physical_proof: &mut CandidatePhysicalProof,
+    metrics: &mut CandidateCloneMetrics,
+) -> Result<()> {
+    let mut copied_bytes = 0_u64;
+    for planned in &plan.files {
+        source.validate_child_binding(generations, source_name)?;
+        clone_checkpoint(PortableCloneStage::BeforeCopy, &planned.path)?;
+        if planned.path == Path::new("meta.json") || planned.path == Path::new(MANAGED_FILE) {
+            let mut source_file = open_planned_file(source, planned)?;
+            clone_checkpoint(PortableCloneStage::AfterSourceOpen, &planned.path)?;
+            destination.validate_child_binding(generations, destination_name)?;
+            let mut destination_file = platform::create_regular_file_at(
+                &destination.file,
+                &destination.path,
+                &planned.path,
+            )?;
+            let remaining_allowance = plan.logical_bytes.checked_sub(copied_bytes).ok_or(
+                IndexError::CurrentRepublishByteLimit {
+                    actual: copied_bytes,
+                    maximum: plan.logical_bytes,
+                },
+            )?;
+            let (copied, _) = copy_with_digest(
+                &mut source_file,
+                &mut destination_file,
+                planned.identity.bytes,
+                remaining_allowance,
+            )?;
+            destination_file.flush()?;
+            destination_file.set_permissions(planned.permissions.clone())?;
+            destination_file.sync_all()?;
+            if copied != planned.identity.bytes {
+                return Err(IndexError::CurrentRepublishSourceTopology(
+                    "copy byte count does not match authenticated source",
+                ));
+            }
+            copied_bytes = copied_bytes
+                .checked_add(copied)
+                .ok_or(IndexError::CountOverflow)?;
+            if copied_bytes > MAX_REPUBLISH_CLONE_BYTES || copied_bytes > plan.logical_bytes {
+                return Err(IndexError::CurrentRepublishByteLimit {
+                    actual: copied_bytes,
+                    maximum: plan.logical_bytes.min(MAX_REPUBLISH_CLONE_BYTES),
+                });
+            }
+            validate_open_and_named_file(source, planned, &source_file)?;
+            clone_checkpoint(PortableCloneStage::AfterCopy, &planned.path)?;
+            continue;
+        }
+
+        let (expected_artifact, expected_sha256) = certified
+            .certified_artifact(&planned.path)
+            .ok_or(IndexError::ChecksumMismatch)?;
+        let (mut source_file, source_before) = open_authenticated_artifact(
+            root,
+            source_path,
+            &planned.path,
+            Some(predecessor_pointer),
+        )?;
+        if source_before != expected_artifact {
+            return if expected_artifact.same_payload_identity_changed(&source_before) {
+                Err(IndexError::ConcurrentGenerationChange)
+            } else {
+                Err(IndexError::ChecksumMismatch)
+            };
+        }
+        clone_checkpoint(PortableCloneStage::AfterSourceOpen, &planned.path)?;
+        destination.validate_child_binding(generations, destination_name)?;
+        let mut destination_file =
+            platform::create_regular_file_at(&destination.file, &destination.path, &planned.path)?;
+        let remaining_allowance = plan.logical_bytes.checked_sub(copied_bytes).ok_or(
+            IndexError::CurrentRepublishByteLimit {
+                actual: copied_bytes,
+                maximum: plan.logical_bytes,
+            },
+        )?;
+        let (copied, source_digest) = copy_with_digest(
+            &mut source_file,
+            &mut destination_file,
+            source_before.identity.length(),
+            remaining_allowance,
+        )?;
+        destination_file.flush()?;
+        destination_file.set_permissions(planned.permissions.clone())?;
+        destination_file.sync_all()?;
+        if copied != source_before.identity.length() {
+            return Err(IndexError::CurrentRepublishSourceTopology(
+                "copy byte count does not match authenticated source",
+            ));
+        }
+        copied_bytes = copied_bytes
+            .checked_add(copied)
+            .ok_or(IndexError::CountOverflow)?;
+        if copied_bytes > MAX_REPUBLISH_CLONE_BYTES || copied_bytes > plan.logical_bytes {
+            return Err(IndexError::CurrentRepublishByteLimit {
+                actual: copied_bytes,
+                maximum: plan.logical_bytes.min(MAX_REPUBLISH_CLONE_BYTES),
+            });
+        }
+
+        let source_after = recapture_authenticated_artifact(
+            root,
+            source_path,
+            &planned.path,
+            &source_file,
+            Some(predecessor_pointer),
+        )?;
+        if source_after != expected_artifact {
+            return if expected_artifact.same_payload_identity_changed(&source_after) {
+                Err(IndexError::ConcurrentGenerationChange)
+            } else {
+                Err(IndexError::ChecksumMismatch)
+            };
+        }
+        let destination_opened = open_bound_file(destination, &planned.path)?;
+        if destination_opened.identity.bytes != planned.identity.bytes
+            || destination_opened.identity.permissions != planned.identity.permissions
+        {
+            return Err(IndexError::CurrentRepublishSourceTopology(
+                "copied file metadata does not match authenticated source",
+            ));
+        }
+        let destination_artifact =
+            capture_artifact_identity(root, &destination.path, &planned.path, None)?;
+        physical_proof.insert(PhysicalFileDigest {
+            artifact: destination_artifact,
+            sha256: if source_digest == expected_sha256 {
+                expected_sha256
+            } else {
+                source_digest
+            },
+        });
+        metrics.retained_copied_files = metrics
+            .retained_copied_files
+            .checked_add(1)
+            .ok_or(IndexError::CountOverflow)?;
+        metrics.retained_copied_bytes = metrics
+            .retained_copied_bytes
+            .checked_add(copied)
+            .ok_or(IndexError::CountOverflow)?;
+        clone_checkpoint(PortableCloneStage::AfterCopy, &planned.path)?;
+    }
     Ok(())
 }
 

@@ -23,10 +23,12 @@ use serde::{Deserialize, Serialize};
 use tantivy::{schema::Schema, store::Compressor, Index, IndexSettings};
 use uuid::Uuid;
 
+use crate::clone::create_authenticated_candidate_generation;
 use crate::is_generation_id;
 use crate::{
-    DurableAtomicWriteOutcome, DurableMmapDirectory, GenerationError as IndexError,
-    GenerationRetentionLease, Result, ACTIVE_GENERATION_POINTER_FILE, INDEX_GENERATIONS_DIRECTORY,
+    CandidatePhysicalProof, DurableAtomicWriteOutcome, DurableMmapDirectory,
+    GenerationError as IndexError, GenerationRetentionLease, Result,
+    ACTIVE_GENERATION_POINTER_FILE, INDEX_GENERATIONS_DIRECTORY,
 };
 const ACTIVE_GENERATION_POINTER_VERSION: u32 = 2;
 const GENERATION_DIRECTORY_PREFIX: &str = "generation-";
@@ -140,6 +142,7 @@ impl ActiveGenerationPointer {
 pub struct CandidateGeneration {
     pub directory_name: String,
     pub index: Index,
+    pub physical_proof: CandidatePhysicalProof,
 }
 
 #[derive(Debug)]
@@ -191,25 +194,29 @@ pub fn create_candidate_generation(
     base: Option<&GenerationSlot>,
     schema: Schema,
 ) -> Result<CandidateGeneration> {
+    if let Some(base) = base {
+        let pointer = load_active_generation_pointer(root)?
+            .ok_or(IndexError::MissingActiveGenerationPointer)?;
+        if pointer.active() != base {
+            return Err(IndexError::ConcurrentGenerationChange);
+        }
+        let base_index = open_slot_index(root, base)?;
+        return create_authenticated_candidate_generation(root, &pointer, &base_index);
+    }
+
     let generations = root.join(INDEX_GENERATIONS_DIRECTORY);
     fs::create_dir_all(&generations)?;
     let directory_name = format!("{GENERATION_DIRECTORY_PREFIX}{}", Uuid::now_v7().simple());
     let path = generations.join(&directory_name);
     fs::create_dir(&path)?;
-    if let Some(base) = base {
-        clone_index_files(&slot_path(root, base), &path)?;
-    }
     sync_directory(&generations)?;
     let directory = DurableMmapDirectory::open(&path).map_err(tantivy::TantivyError::from)?;
-    let index = if base.is_some() {
-        Index::open(directory)?
-    } else {
-        Index::create(directory, schema, lexical_index_settings())?
-    };
+    let index = Index::create(directory, schema, lexical_index_settings())?;
     validate_lexical_index_settings(&index)?;
     Ok(CandidateGeneration {
         directory_name,
         index,
+        physical_proof: CandidatePhysicalProof::default(),
     })
 }
 
@@ -436,31 +443,6 @@ fn reclamation_checkpoint(_stage: ReclamationStage, _path: &Path) -> Result<()> 
     Ok(())
 }
 
-fn clone_index_files(source: &Path, destination: &Path) -> Result<()> {
-    for entry in fs::read_dir(source)? {
-        let entry = entry?;
-        if !entry.file_type()?.is_file() || should_skip_index_file(&entry.file_name()) {
-            continue;
-        }
-        let target = destination.join(entry.file_name());
-        let copy_required = matches!(
-            entry.file_name().to_str(),
-            Some("meta.json" | ".managed.json")
-        );
-        if copy_required || fs::hard_link(entry.path(), &target).is_err() {
-            fs::copy(entry.path(), target)?;
-        }
-    }
-    Ok(())
-}
-
-fn should_skip_index_file(name: &std::ffi::OsStr) -> bool {
-    let Some(name) = name.to_str() else {
-        return true;
-    };
-    name.ends_with(".lock") || name.starts_with(".ctx-tantivy-atomic-")
-}
-
 fn is_generation_directory_name(name: &str) -> bool {
     name.strip_prefix(GENERATION_DIRECTORY_PREFIX)
         .is_some_and(|suffix| {
@@ -470,7 +452,6 @@ fn is_generation_directory_name(name: &str) -> bool {
                     .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
         })
 }
-
 #[cfg(test)]
 mod tests {
     use super::*;

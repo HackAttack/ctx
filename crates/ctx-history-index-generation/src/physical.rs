@@ -1,4 +1,5 @@
 use std::{
+    collections::BTreeMap,
     collections::BTreeSet,
     io::Read,
     path::{Path, PathBuf},
@@ -36,6 +37,15 @@ pub(super) struct PhysicalFileDigest {
     pub(super) sha256: [u8; 32],
 }
 
+impl Clone for PhysicalFileDigest {
+    fn clone(&self) -> Self {
+        Self {
+            artifact: self.artifact.clone(),
+            sha256: self.sha256,
+        }
+    }
+}
+
 #[derive(Debug)]
 struct PhysicalDigestPart {
     path: String,
@@ -47,6 +57,21 @@ struct PhysicalDigestPart {
 pub struct PhysicalIntegrityAudit {
     digest: String,
     files: Vec<PhysicalFileDigest>,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct CandidatePhysicalProof {
+    files: BTreeMap<String, PhysicalFileDigest>,
+}
+
+impl CandidatePhysicalProof {
+    pub fn clear(&mut self) {
+        self.files.clear();
+    }
+
+    pub(crate) fn insert(&mut self, file: PhysicalFileDigest) {
+        self.files.insert(file.artifact.path.clone(), file);
+    }
 }
 
 impl PhysicalIntegrityAudit {
@@ -92,32 +117,76 @@ pub fn physical_integrity_audit(
     generation_path: &Path,
     topology_authority: Option<&ActiveGenerationPointer>,
 ) -> Result<PhysicalIntegrityAudit> {
+    physical_integrity_audit_with_candidate_proof(index, generation_path, topology_authority, None)
+}
+
+pub fn prime_candidate_physical_proof(
+    index: &tantivy::Index,
+    generation_path: &Path,
+    topology_authority: Option<&ActiveGenerationPointer>,
+    proof: &mut CandidatePhysicalProof,
+) -> Result<()> {
+    let paths = active_paths(index)?;
+    proof
+        .files
+        .retain(|path, _| paths.contains(&PathBuf::from(path.as_str())));
+    for path in paths {
+        let Some(path_text) = path.to_str() else {
+            return Err(IndexError::ChecksumMismatch);
+        };
+        if let Some(cached) = proof.files.get(path_text) {
+            let root = generation_root(generation_path)?;
+            let current = recapture_artifact(root, generation_path, &path, topology_authority)?;
+            if current == cached.artifact {
+                continue;
+            }
+        }
+        let file = hash_physical_file(
+            generation_root(generation_path)?,
+            &DurableMmapDirectory::open(generation_path)
+                .map_err(|_| IndexError::ChecksumMismatch)?,
+            generation_path,
+            &path,
+            path != Path::new(TANTIVY_META_FILE),
+            topology_authority,
+        )?;
+        proof.insert(file);
+    }
+    Ok(())
+}
+
+pub fn physical_integrity_audit_with_candidate_proof(
+    index: &tantivy::Index,
+    generation_path: &Path,
+    topology_authority: Option<&ActiveGenerationPointer>,
+    candidate_proof: Option<&CandidatePhysicalProof>,
+) -> Result<PhysicalIntegrityAudit> {
     #[cfg(any(test, feature = "test-support"))]
     CHECKSUM_WALKS.with(|count| count.set(count.get() + 1));
     let directory =
         DurableMmapDirectory::open(generation_path).map_err(|_| IndexError::ChecksumMismatch)?;
-    let root = generation_path
-        .parent()
-        .filter(|parent| {
-            parent
-                .file_name()
-                .is_some_and(|name| name == "index-generations")
-        })
-        .and_then(Path::parent)
-        .ok_or(IndexError::ChecksumMismatch)?;
-    let mut paths = active_index_files(index)?;
-    paths.insert(PathBuf::from(TANTIVY_META_FILE));
+    let root = generation_root(generation_path)?;
+    let paths = active_paths(index)?;
     let entries = paths
         .into_iter()
         .map(|path| {
-            hash_physical_file(
-                root,
-                &directory,
-                generation_path,
-                &path,
-                path != Path::new(TANTIVY_META_FILE),
-                topology_authority,
-            )
+            match candidate_proof.and_then(|proof| {
+                let path_text = path.to_str()?;
+                let cached = proof.files.get(path_text)?;
+                let current =
+                    recapture_artifact(root, generation_path, &path, topology_authority).ok()?;
+                (current == cached.artifact).then_some(cached.clone())
+            }) {
+                Some(cached) => Ok(cached),
+                None => hash_physical_file(
+                    root,
+                    &directory,
+                    generation_path,
+                    &path,
+                    path != Path::new(TANTIVY_META_FILE),
+                    topology_authority,
+                ),
+            }
         })
         .collect::<Result<Vec<_>>>()?;
     let parts = entries
@@ -133,6 +202,24 @@ pub fn physical_integrity_audit(
         digest,
         files: entries,
     })
+}
+
+fn generation_root(generation_path: &Path) -> Result<&Path> {
+    generation_path
+        .parent()
+        .filter(|parent| {
+            parent
+                .file_name()
+                .is_some_and(|name| name == "index-generations")
+        })
+        .and_then(Path::parent)
+        .ok_or(IndexError::ChecksumMismatch)
+}
+
+fn active_paths(index: &tantivy::Index) -> Result<BTreeSet<PathBuf>> {
+    let mut paths = active_index_files(index)?;
+    paths.insert(PathBuf::from(TANTIVY_META_FILE));
+    Ok(paths)
 }
 
 /// Verifies a generation against the physical authority in its pointer slot.

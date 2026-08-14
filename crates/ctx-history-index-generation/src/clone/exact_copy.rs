@@ -1,5 +1,7 @@
 use std::io::{Read, Write};
 
+use sha2::{Digest, Sha256};
+
 use crate::{GenerationError as IndexError, Result};
 
 pub(super) fn copy_exact_authenticated_file<R: Read, W: Write>(
@@ -8,6 +10,21 @@ pub(super) fn copy_exact_authenticated_file<R: Read, W: Write>(
     expected_bytes: u64,
     aggregate_allowance: u64,
 ) -> Result<u64> {
+    Ok(copy_and_hash_exact_authenticated_file(
+        source,
+        destination,
+        expected_bytes,
+        aggregate_allowance,
+    )?
+    .0)
+}
+
+pub(super) fn copy_and_hash_exact_authenticated_file<R: Read, W: Write>(
+    source: &mut R,
+    destination: &mut W,
+    expected_bytes: u64,
+    aggregate_allowance: u64,
+) -> Result<(u64, [u8; 32])> {
     if expected_bytes > aggregate_allowance {
         return Err(IndexError::CurrentRepublishByteLimit {
             actual: expected_bytes,
@@ -15,6 +32,7 @@ pub(super) fn copy_exact_authenticated_file<R: Read, W: Write>(
         });
     }
     let mut copied = 0_u64;
+    let mut digest = Sha256::new();
     let mut buffer = [0_u8; 64 * 1024];
     while copied < expected_bytes {
         let remaining = expected_bytes - copied;
@@ -26,6 +44,7 @@ pub(super) fn copy_exact_authenticated_file<R: Read, W: Write>(
                 "source file truncated while cloning",
             ));
         }
+        digest.update(&buffer[..read]);
         destination.write_all(&buffer[..read])?;
         copied = copied
             .checked_add(read as u64)
@@ -37,7 +56,7 @@ pub(super) fn copy_exact_authenticated_file<R: Read, W: Write>(
             "source file grew while cloning",
         ));
     }
-    Ok(copied)
+    Ok((copied, digest.finalize().into()))
 }
 
 #[cfg(test)]

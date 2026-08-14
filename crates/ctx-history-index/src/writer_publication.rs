@@ -130,6 +130,10 @@ impl GenerationWriter {
                 self.fields = fields_from_schema(&self.index.schema())?;
                 validate_schema(&self.index.schema())?;
                 self.candidate_directory_name = Some(candidate.directory_name);
+                self.candidate_physical_proof = self
+                    .active_pointer
+                    .as_ref()
+                    .map(|_| candidate.physical_proof);
             }
 
             let writer = construct_index_writer_with_retry(&self.index, &self.writer_options)?;
@@ -503,6 +507,14 @@ impl GenerationWriter {
         }
         report_progress(PublicationStage::Syncing)?;
         sync_generation(&candidate_path)?;
+        if let Some(proof) = self.candidate_physical_proof.as_mut() {
+            prime_candidate_physical_proof(
+                &self.index,
+                &candidate_path,
+                self.active_pointer.as_ref(),
+                proof,
+            )?;
+        }
 
         let directory_name =
             self.candidate_directory_name
@@ -648,6 +660,7 @@ impl GenerationWriter {
             self.active_pointer
                 .as_ref()
                 .map(|pointer| (&*self.root, pointer, pointer.active())),
+            self.candidate_physical_proof.as_ref(),
             report_logical_verification,
         )
         .map_err(|error| match error {
@@ -766,6 +779,10 @@ impl GenerationWriter {
         let Some(directory) = self.candidate_directory_name.take() else {
             return Ok(());
         };
+        if let Some(proof) = self.candidate_physical_proof.as_mut() {
+            proof.clear();
+        }
+        self.candidate_physical_proof = None;
         fs::remove_dir_all(self.root.join(INDEX_GENERATIONS_DIRECTORY).join(directory))?;
         sync_directory(&self.root.join(INDEX_GENERATIONS_DIRECTORY))?;
         Ok(())

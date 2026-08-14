@@ -97,11 +97,12 @@ pub(crate) use publication::verify_searcher;
 pub(crate) use publication::{
     best_effort_post_republish_cleanup, canonical_commit_payload, create_candidate_generation,
     load_active_generation_pointer, meta_generation, open_slot_index, payload_generation_id,
-    publish_active_generation_pointer, reclaim_inactive_generation_directories,
-    reclaim_unreferenced_certifications, reclaim_unreferenced_manifests, reconcile_commit_error,
+    prime_candidate_physical_proof, publish_active_generation_pointer,
+    reclaim_inactive_generation_directories, reclaim_unreferenced_certifications,
+    reclaim_unreferenced_manifests, reconcile_commit_error,
     republish_current_with_publication_metadata, searcher_generation, sync_directory,
     sync_generation, verify_physical_integrity, write_manifest, ActiveGenerationPointer,
-    CurrentRepublishOutcome, GenerationSlot, PointerPublicationOutcome,
+    CandidatePhysicalProof, CurrentRepublishOutcome, GenerationSlot, PointerPublicationOutcome,
     GENERATION_WRITER_LOCK_FILE, INDEX_GENERATIONS_DIRECTORY,
 };
 #[cfg(test)]
@@ -341,6 +342,7 @@ pub struct GenerationWriter {
     index: Index,
     active_pointer: Option<ActiveGenerationPointer>,
     candidate_directory_name: Option<String>,
+    candidate_physical_proof: Option<CandidatePhysicalProof>,
     preflight_lock: Option<DirectoryLock>,
     writer: Option<IndexWriter<IndexDocument>>,
     writer_options: WriterOptions,
@@ -557,34 +559,40 @@ impl GenerationWriter {
             };
             let active_pointer = active_authority.map(ActivePublicationAuthority::into_pointer);
 
-            let (index, candidate_directory_name, fields, base_publication, base_opstamp) =
-                match reusable_generation {
-                    Some(OpenedPinnedPublication::Published(publication)) => {
-                        let (index, fields, opstamp, publication) =
-                            publication.into_writer_parts()?;
-                        (index, None, fields, Some(publication), opstamp)
-                    }
-                    Some(OpenedPinnedPublication::Empty(empty)) => {
-                        let (index, fields, opstamp) = empty.into_parts();
-                        (index, None, fields, None, opstamp)
-                    }
-                    None => {
-                        // The active slot is absent, physically rejected, or belongs to
-                        // an incompatible disposable generation. Build an empty current
-                        // candidate and retain only the pointer as publication authority.
-                        let candidate = create_candidate_generation(&root, None)?;
-                        validate_schema(&candidate.index.schema())?;
-                        let fields = fields_from_schema(&candidate.index.schema())?;
-                        let metas = candidate.index.load_metas()?;
-                        (
-                            candidate.index,
-                            Some(candidate.directory_name),
-                            fields,
-                            None,
-                            metas.opstamp,
-                        )
-                    }
-                };
+            let (
+                index,
+                candidate_directory_name,
+                candidate_physical_proof,
+                fields,
+                base_publication,
+                base_opstamp,
+            ) = match reusable_generation {
+                Some(OpenedPinnedPublication::Published(publication)) => {
+                    let (index, fields, opstamp, publication) = publication.into_writer_parts()?;
+                    (index, None, None, fields, Some(publication), opstamp)
+                }
+                Some(OpenedPinnedPublication::Empty(empty)) => {
+                    let (index, fields, opstamp) = empty.into_parts();
+                    (index, None, None, fields, None, opstamp)
+                }
+                None => {
+                    // The active slot is absent, physically rejected, or belongs to
+                    // an incompatible disposable generation. Build an empty current
+                    // candidate and retain only the pointer as publication authority.
+                    let candidate = create_candidate_generation(&root, None)?;
+                    validate_schema(&candidate.index.schema())?;
+                    let fields = fields_from_schema(&candidate.index.schema())?;
+                    let metas = candidate.index.load_metas()?;
+                    (
+                        candidate.index,
+                        Some(candidate.directory_name),
+                        None,
+                        fields,
+                        None,
+                        metas.opstamp,
+                    )
+                }
+            };
             let preparation_base = active_pointer.as_ref().and_then(|pointer| {
                 base_publication.as_ref().map(|publication| {
                     (
@@ -617,6 +625,7 @@ impl GenerationWriter {
                 index,
                 active_pointer,
                 candidate_directory_name,
+                candidate_physical_proof,
                 preflight_lock: Some(preflight_lock),
                 writer: None,
                 writer_options: options,

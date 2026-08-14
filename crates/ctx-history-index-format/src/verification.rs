@@ -33,12 +33,12 @@ use crate::{
     load_publication_for_metas, meta_generation, open_slot_index, searcher_generation,
     stored_verification_record, validate_schema, validate_verification_projection,
     verify_certified_physical_integrity, verify_or_certify_physical_integrity,
-    ActiveGenerationPointer, CertifiedPhysicalIntegrity, CompactIdentity, Fields,
-    GenerationManifest, GenerationSlot, IdentityFieldRole, IndexError, LoadedPublication,
+    ActiveGenerationPointer, CandidatePhysicalProof, CertifiedPhysicalIntegrity, CompactIdentity,
+    Fields, GenerationManifest, GenerationSlot, IdentityFieldRole, IndexError, LoadedPublication,
     PhysicalIntegrityAudit, Result, VerificationRecord,
 };
 
-use super::{physical_integrity_audit, verify_physical_integrity};
+use super::{physical_integrity_audit_with_candidate_proof, verify_physical_integrity};
 
 mod lineage;
 mod spill;
@@ -420,6 +420,7 @@ pub fn verify_and_bind_publication_candidate(
         topology_authority,
         base,
         base_authority,
+        None,
         || Ok(()),
     )
 }
@@ -432,6 +433,7 @@ pub fn verify_and_bind_publication_candidate_with_progress<P>(
     topology_authority: Option<&ActiveGenerationPointer>,
     base: Option<&PinnedPublication>,
     base_authority: Option<(&Path, &ActiveGenerationPointer, &GenerationSlot)>,
+    candidate_physical_proof: Option<&CandidatePhysicalProof>,
     report_logical_verification: P,
 ) -> std::result::Result<VerifiedCandidatePublication, CandidatePublicationVerificationError>
 where
@@ -457,9 +459,13 @@ where
         ));
     }
     let (generation_id, manifest, publication_metadata) = publication.into_parts();
-    let physical_integrity_audit =
-        physical_integrity_audit(searcher.index(), generation_path, topology_authority)
-            .map_err(|error| CandidatePublicationVerificationError::Candidate(error.into()))?;
+    let physical_integrity_audit = physical_integrity_audit_with_candidate_proof(
+        searcher.index(),
+        generation_path,
+        topology_authority,
+        candidate_physical_proof,
+    )
+    .map_err(|error| CandidatePublicationVerificationError::Candidate(error.into()))?;
     if let Some(base) = base {
         let (root, pointer, slot) = base_authority.ok_or({
             CandidatePublicationVerificationError::Candidate(IndexError::WriterInvariant(

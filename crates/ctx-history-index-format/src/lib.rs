@@ -97,8 +97,9 @@ pub use verification_record::{
 #[doc(hidden)]
 pub use ctx_history_index_generation::{
     certify_activated_generation, hex, is_generation_id, open_slot_index, physical_integrity_audit,
-    scrub_and_certify_physical_integrity, sha256_hex, verify_certified_physical_integrity,
-    verify_or_certify_physical_integrity, verify_physical_integrity, ActiveGenerationPointer,
+    physical_integrity_audit_with_candidate_proof, scrub_and_certify_physical_integrity,
+    sha256_hex, verify_certified_physical_integrity, verify_or_certify_physical_integrity,
+    verify_physical_integrity, ActiveGenerationPointer, CandidatePhysicalProof,
     CertifiedPhysicalIntegrity, DurableMmapDirectory, GenerationRetentionLease, GenerationSlot,
     PhysicalIntegrityAudit, MANIFEST_DIRECTORY,
 };

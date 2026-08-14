@@ -24,16 +24,20 @@ pub use certification::{
     scrub_and_certify_physical_integrity, verify_certified_physical_integrity,
     verify_or_certify_physical_integrity, CertifiedPhysicalIntegrity,
 };
-pub use clone::{create_authenticated_republish_candidate, RepublishCandidate};
+#[cfg(any(test, feature = "test-support"))]
+pub use clone::{
+    candidate_clone_metrics, reset_candidate_clone_metrics, CandidateCloneMetrics,
+    PortableCloneMetrics, PortableCloneStage, PortableCloneTestGuard, PortableCloneTestOptions,
+};
+pub use clone::{
+    create_authenticated_candidate_generation, create_authenticated_republish_candidate,
+    RepublishCandidate,
+};
 #[cfg(all(
     any(test, feature = "test-support"),
     any(target_os = "linux", target_os = "macos")
 ))]
 pub use clone::{CloneMetrics, CloneStage, CloneTestHookGuard, CloneTestOptions};
-#[cfg(any(test, feature = "test-support"))]
-pub use clone::{
-    PortableCloneMetrics, PortableCloneStage, PortableCloneTestGuard, PortableCloneTestOptions,
-};
 pub use durable_directory::{
     durable_atomic_replace_file, reclaim_abandoned_atomic_writes, DurableAtomicWriteOutcome,
     DurableMmapDirectory,
@@ -53,8 +57,9 @@ pub use identity::{hex, is_generation_id, sha256_hex};
 pub use lock::acquire_generation_writer_lock_with_retry;
 pub use manifest::{load_manifest_bytes, reclaim_unreferenced_manifests, write_manifest_bytes};
 pub use physical::{
-    active_index_files, physical_integrity_audit, physical_integrity_digest,
-    verify_physical_integrity, PhysicalIntegrityAudit,
+    active_index_files, physical_integrity_audit, physical_integrity_audit_with_candidate_proof,
+    physical_integrity_digest, prime_candidate_physical_proof, verify_physical_integrity,
+    CandidatePhysicalProof, PhysicalIntegrityAudit,
 };
 #[cfg(any(test, feature = "test-support"))]
 pub use physical::{checksum_walks, hashed_artifact_bytes, reset_physical_verification_activity};

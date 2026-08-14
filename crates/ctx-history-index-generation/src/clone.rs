@@ -2,7 +2,7 @@ use std::path::Path;
 
 use tantivy::Index;
 
-use crate::{ActiveGenerationPointer, GenerationError as IndexError, Result};
+use crate::{ActiveGenerationPointer, CandidateGeneration, GenerationError as IndexError, Result};
 
 #[cfg(not(any(
     target_os = "linux",
@@ -77,6 +77,88 @@ pub fn create_authenticated_republish_candidate(
     }
 }
 
+pub fn create_authenticated_candidate_generation(
+    root: &Path,
+    predecessor_pointer: &ActiveGenerationPointer,
+    predecessor_index: &Index,
+) -> Result<CandidateGeneration> {
+    #[cfg(any(test, feature = "test-support"))]
+    if portable::forced_for_test() {
+        return portable::create_authenticated_candidate_generation(
+            root,
+            predecessor_pointer,
+            predecessor_index,
+        );
+    }
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    {
+        unix::create_authenticated_candidate_generation(
+            root,
+            predecessor_pointer,
+            predecessor_index,
+        )
+    }
+    #[cfg(any(target_os = "windows", target_os = "freebsd"))]
+    {
+        portable::create_authenticated_candidate_generation(
+            root,
+            predecessor_pointer,
+            predecessor_index,
+        )
+    }
+}
+
+#[cfg(any(test, feature = "test-support"))]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct CandidateCloneMetrics {
+    pub retained_reflinked_files: usize,
+    pub retained_full_hash_fallback_files: usize,
+    pub retained_full_hash_fallback_bytes: u64,
+    pub retained_copied_files: usize,
+    pub retained_copied_bytes: u64,
+}
+
+#[cfg(not(any(test, feature = "test-support")))]
+#[derive(Debug, Clone, Copy, Default)]
+pub(crate) struct CandidateCloneMetrics {
+    retained_reflinked_files: usize,
+    retained_full_hash_fallback_files: usize,
+    retained_full_hash_fallback_bytes: u64,
+    retained_copied_files: usize,
+    retained_copied_bytes: u64,
+}
+
+#[cfg(any(test, feature = "test-support"))]
+thread_local! {
+    static CANDIDATE_CLONE_METRICS: std::cell::Cell<CandidateCloneMetrics> = const {
+        std::cell::Cell::new(CandidateCloneMetrics {
+            retained_reflinked_files: 0,
+            retained_full_hash_fallback_files: 0,
+            retained_full_hash_fallback_bytes: 0,
+            retained_copied_files: 0,
+            retained_copied_bytes: 0,
+        })
+    };
+}
+
+#[cfg(any(test, feature = "test-support"))]
+fn record_candidate_clone_metrics(metrics: CandidateCloneMetrics) {
+    CANDIDATE_CLONE_METRICS.with(|slot| slot.set(metrics));
+}
+
+#[cfg(not(any(test, feature = "test-support")))]
+fn record_candidate_clone_metrics(_metrics: CandidateCloneMetrics) {}
+
+#[cfg(any(test, feature = "test-support"))]
+pub fn reset_candidate_clone_metrics() {
+    CANDIDATE_CLONE_METRICS.with(|slot| slot.set(CandidateCloneMetrics::default()));
+}
+
+#[cfg(any(test, feature = "test-support"))]
+pub fn candidate_clone_metrics() -> CandidateCloneMetrics {
+    CANDIDATE_CLONE_METRICS.with(std::cell::Cell::get)
+}
+
 fn validate_single_component(path: &Path) -> Result<()> {
     let mut components = path.components();
     if !matches!(components.next(), Some(std::path::Component::Normal(_)))
@@ -134,16 +216,26 @@ mod unix {
     use tantivy::Index;
     use uuid::Uuid;
 
-    use super::exact_copy::copy_exact_authenticated_file;
+    use super::exact_copy::{
+        copy_and_hash_exact_authenticated_file, copy_exact_authenticated_file,
+    };
     use super::{
-        admit_clone_resource, validate_single_component, MANAGED_FILE, MAX_MANAGED_METADATA_BYTES,
-        MAX_REPUBLISH_CLONE_BYTES, MAX_REPUBLISH_CLONE_FILES, MAX_REPUBLISH_DIRECTORY_ENTRIES,
+        admit_clone_resource, record_candidate_clone_metrics, validate_single_component,
+        CandidateCloneMetrics, MANAGED_FILE, MAX_MANAGED_METADATA_BYTES, MAX_REPUBLISH_CLONE_BYTES,
+        MAX_REPUBLISH_CLONE_FILES, MAX_REPUBLISH_DIRECTORY_ENTRIES,
         REPUBLISH_HEADROOM_RESERVE_BYTES, TANTIVY_LOCK_FILES,
     };
     use crate::{
-        active_index_files, lexical_index_settings, physical_integrity_digest,
-        ActiveGenerationPointer, CandidateGeneration, DurableMmapDirectory,
-        GenerationError as IndexError, Result, INDEX_GENERATIONS_DIRECTORY,
+        active_index_files,
+        certification::{
+            capture_artifact_identity, open_authenticated_artifact,
+            recapture_authenticated_artifact,
+        },
+        lexical_index_settings,
+        physical::PhysicalFileDigest,
+        physical_integrity_digest, verify_or_certify_physical_integrity, ActiveGenerationPointer,
+        CandidateGeneration, CandidatePhysicalProof, CertifiedPhysicalIntegrity,
+        DurableMmapDirectory, GenerationError as IndexError, Result, INDEX_GENERATIONS_DIRECTORY,
     };
     pub(super) use guard::CandidateGuard;
 
@@ -323,10 +415,109 @@ mod unix {
             Ok(CandidateGeneration {
                 directory_name: directory_name.clone(),
                 index,
+                physical_proof: crate::CandidatePhysicalProof::default(),
             })
         })();
         match clone_result {
             Ok(candidate) => Ok((candidate, guard)),
+            Err(error) => {
+                guard.discard();
+                Err(error)
+            }
+        }
+    }
+
+    pub(super) fn create_authenticated_candidate_generation(
+        root: &Path,
+        predecessor_pointer: &ActiveGenerationPointer,
+        predecessor_index: &Index,
+    ) -> Result<CandidateGeneration> {
+        let base = predecessor_pointer.active();
+        let certified = verify_or_certify_physical_integrity(
+            root,
+            predecessor_pointer,
+            base,
+            predecessor_index,
+        )?;
+        let root_path = root.to_path_buf();
+        let root_directory = BoundDirectory::open_path(root)?;
+        validate_path_binding(root, root_directory.identity)?;
+        let generations_name = PathBuf::from(INDEX_GENERATIONS_DIRECTORY);
+        let generations_path = root.join(INDEX_GENERATIONS_DIRECTORY);
+        let generations = BoundDirectory::open_at(&root_directory.file, &generations_name)?;
+        validate_child_binding(
+            &root_directory.file,
+            &generations_name,
+            generations.identity,
+        )?;
+        validate_path_binding(&generations_path, generations.identity)?;
+        let source_name = Path::new(base.directory());
+        validate_single_component(source_name)?;
+        let source_path = generations_path.join(source_name);
+        let source = BoundDirectory::open_at(&generations.file, source_name)?;
+        validate_child_binding(&generations.file, source_name, source.identity)?;
+
+        let plan = authenticated_clone_plan(&source, predecessor_index)?;
+        let available = available_bytes(&generations.file)?;
+        record_plan_metrics(&plan, available);
+        if available < plan.required_headroom {
+            return Err(IndexError::CurrentRepublishInsufficientHeadroom {
+                available,
+                required: plan.required_headroom,
+            });
+        }
+
+        let directory_name = format!("generation-{}", Uuid::now_v7().simple());
+        let destination_name = PathBuf::from(&directory_name);
+        create_directory_at(&generations.file, &destination_name)?;
+        let destination_path = generations_path.join(&directory_name);
+        let destination = BoundDirectory::open_at(&generations.file, &destination_name)?;
+        validate_child_binding(&generations.file, &destination_name, destination.identity)?;
+        let guard = CandidateGuard {
+            root_path,
+            root: root_directory,
+            generations_name,
+            generations_path,
+            generations,
+            destination_name,
+            destination,
+        };
+        let clone_result = (|| {
+            let mut physical_proof = CandidatePhysicalProof::default();
+            let mut metrics = CandidateCloneMetrics::default();
+            clone_candidate_files(
+                root,
+                &source_path,
+                &destination_path,
+                predecessor_pointer,
+                &certified,
+                &guard.generations,
+                source_name,
+                &source,
+                &guard.destination,
+                &plan,
+                &mut physical_proof,
+                &mut metrics,
+            )?;
+            guard.generations.file.sync_all()?;
+            validate_child_binding(&guard.generations.file, source_name, source.identity)?;
+            guard.validate_binding()?;
+
+            let directory = DurableMmapDirectory::open(&destination_path)
+                .map_err(tantivy::TantivyError::from)?;
+            let index = Index::open(directory)?;
+            if index.settings() != &lexical_index_settings() {
+                return Err(IndexError::IndexSettingsMismatch);
+            }
+            record_candidate_clone_metrics(metrics);
+            Ok(CandidateGeneration {
+                directory_name,
+                index,
+                physical_proof,
+            })
+        })();
+        match clone_result {
+            Ok(candidate) => Ok(candidate),
             Err(error) => {
                 guard.discard();
                 Err(error)
@@ -561,6 +752,236 @@ mod unix {
         Ok(())
     }
 
+    #[allow(clippy::too_many_arguments)]
+    fn clone_candidate_files(
+        root: &Path,
+        source_path: &Path,
+        destination_path: &Path,
+        predecessor_pointer: &ActiveGenerationPointer,
+        certified: &CertifiedPhysicalIntegrity,
+        generations: &BoundDirectory,
+        source_name: &Path,
+        source: &BoundDirectory,
+        destination: &BoundDirectory,
+        plan: &ClonePlan,
+        physical_proof: &mut CandidatePhysicalProof,
+        metrics: &mut CandidateCloneMetrics,
+    ) -> Result<()> {
+        let mut actual_copied_bytes = 0_u64;
+        for planned in &plan.files {
+            validate_child_binding(&generations.file, source_name, source.identity)?;
+            clone_checkpoint(CloneStage::BeforeFile, &planned.path)?;
+            validate_child_binding(&generations.file, source_name, source.identity)?;
+            if planned.copy_required {
+                let mut source_file = open_regular_file_at(&source.file, &planned.path)?;
+                let before = FileIdentity::from_metadata(&source_file.metadata()?);
+                if before != planned.identity {
+                    return Err(IndexError::CurrentRepublishSourceTopology(
+                        "source file changed after authentication",
+                    ));
+                }
+                clone_checkpoint(CloneStage::AfterSourceOpen, &planned.path)?;
+                validate_file_binding(&source.file, &planned.path, before)?;
+                clone_checkpoint(CloneStage::BeforeCopy, &planned.path)?;
+                source_file.seek(SeekFrom::Start(0))?;
+                let remaining_allowance = plan
+                    .logical_bytes
+                    .checked_sub(actual_copied_bytes)
+                    .ok_or(IndexError::CurrentRepublishByteLimit {
+                        actual: actual_copied_bytes,
+                        maximum: plan.logical_bytes,
+                    })?;
+                let mut destination_file =
+                    create_regular_file_at(&destination.file, &planned.path)?;
+                let copied = copy_exact_authenticated_file(
+                    &mut source_file,
+                    &mut destination_file,
+                    before.bytes,
+                    remaining_allowance,
+                )?;
+                destination_file.flush()?;
+                let destination_identity =
+                    FileIdentity::from_metadata(&destination_file.metadata()?);
+                if copied != before.bytes || destination_identity.bytes != before.bytes {
+                    return Err(IndexError::CurrentRepublishSourceTopology(
+                        "copy byte count does not match authenticated source",
+                    ));
+                }
+                actual_copied_bytes = actual_copied_bytes
+                    .checked_add(copied)
+                    .ok_or(IndexError::CountOverflow)?;
+                if actual_copied_bytes > MAX_REPUBLISH_CLONE_BYTES
+                    || actual_copied_bytes > plan.logical_bytes
+                {
+                    return Err(IndexError::CurrentRepublishByteLimit {
+                        actual: actual_copied_bytes,
+                        maximum: plan.logical_bytes.min(MAX_REPUBLISH_CLONE_BYTES),
+                    });
+                }
+                let after = FileIdentity::from_metadata(&source_file.metadata()?);
+                if after != before {
+                    return Err(IndexError::CurrentRepublishSourceTopology(
+                        "source file changed while cloning",
+                    ));
+                }
+                validate_file_binding(&source.file, &planned.path, after)?;
+                validate_child_binding(&generations.file, source_name, source.identity)?;
+                clone_checkpoint(CloneStage::AfterFile, &planned.path)?;
+                continue;
+            }
+
+            let (expected_artifact, expected_sha256) = certified
+                .certified_artifact(&planned.path)
+                .ok_or(IndexError::ChecksumMismatch)?;
+            let (mut source_file, source_before) = open_authenticated_artifact(
+                root,
+                source_path,
+                &planned.path,
+                Some(predecessor_pointer),
+            )?;
+            if source_before != expected_artifact {
+                return if expected_artifact.same_payload_identity_changed(&source_before) {
+                    Err(IndexError::ConcurrentGenerationChange)
+                } else {
+                    Err(IndexError::ChecksumMismatch)
+                };
+            }
+            clone_checkpoint(CloneStage::AfterSourceOpen, &planned.path)?;
+            if !force_reflink_fallback()
+                && try_clone_reflink_at(&source_file, &destination.file, &planned.path)?
+            {
+                metrics.retained_reflinked_files = metrics
+                    .retained_reflinked_files
+                    .checked_add(1)
+                    .ok_or(IndexError::CountOverflow)?;
+                let source_after = recapture_authenticated_artifact(
+                    root,
+                    source_path,
+                    &planned.path,
+                    &source_file,
+                    Some(predecessor_pointer),
+                )?;
+                if source_after != expected_artifact {
+                    return if expected_artifact.same_payload_identity_changed(&source_after) {
+                        Err(IndexError::ConcurrentGenerationChange)
+                    } else {
+                        Err(IndexError::ChecksumMismatch)
+                    };
+                }
+                let destination_artifact =
+                    capture_artifact_identity(root, destination_path, &planned.path, None)?;
+                physical_proof.insert(PhysicalFileDigest {
+                    artifact: destination_artifact,
+                    sha256: expected_sha256,
+                });
+                validate_child_binding(&generations.file, source_name, source.identity)?;
+                clone_checkpoint(CloneStage::AfterFile, &planned.path)?;
+                continue;
+            }
+
+            clone_checkpoint(CloneStage::BeforeHardlink, &planned.path)?;
+            let before = FileIdentity::from_metadata(&source_file.metadata()?);
+            let linked = !force_hardlink_fallback()
+                && !force_copy_fallback()
+                && match hard_link_authenticated_source(
+                    &source_file,
+                    &planned.path,
+                    &destination.file,
+                ) {
+                    Ok(()) => true,
+                    Err(error) if hardlink_copy_fallback_error(&error) => false,
+                    Err(error) => return Err(error.into()),
+                };
+            if linked {
+                let linked_file = open_regular_file_at(&destination.file, &planned.path)?;
+                let linked_identity = FileIdentity::from_metadata(&linked_file.metadata()?);
+                if linked_identity != before {
+                    return Err(IndexError::CurrentRepublishSourceTopology(
+                        "hardlink target identity does not match authenticated source",
+                    ));
+                }
+                metrics.retained_full_hash_fallback_files = metrics
+                    .retained_full_hash_fallback_files
+                    .checked_add(1)
+                    .ok_or(IndexError::CountOverflow)?;
+                metrics.retained_full_hash_fallback_bytes = metrics
+                    .retained_full_hash_fallback_bytes
+                    .checked_add(source_before.identity.length())
+                    .ok_or(IndexError::CountOverflow)?;
+                validate_child_binding(&generations.file, source_name, source.identity)?;
+                clone_checkpoint(CloneStage::AfterFile, &planned.path)?;
+                continue;
+            }
+
+            clone_checkpoint(CloneStage::BeforeCopy, &planned.path)?;
+            source_file.seek(SeekFrom::Start(0))?;
+            let remaining_allowance = plan.logical_bytes.checked_sub(actual_copied_bytes).ok_or(
+                IndexError::CurrentRepublishByteLimit {
+                    actual: actual_copied_bytes,
+                    maximum: plan.logical_bytes,
+                },
+            )?;
+            let mut destination_file = create_regular_file_at(&destination.file, &planned.path)?;
+            let (copied, copied_sha256) = copy_and_hash_exact_authenticated_file(
+                &mut source_file,
+                &mut destination_file,
+                source_before.identity.length(),
+                remaining_allowance,
+            )?;
+            destination_file.flush()?;
+            let destination_identity = FileIdentity::from_metadata(&destination_file.metadata()?);
+            if copied != source_before.identity.length()
+                || destination_identity.bytes != source_before.identity.length()
+            {
+                return Err(IndexError::CurrentRepublishSourceTopology(
+                    "copy byte count does not match authenticated source",
+                ));
+            }
+            actual_copied_bytes = actual_copied_bytes
+                .checked_add(copied)
+                .ok_or(IndexError::CountOverflow)?;
+            if actual_copied_bytes > MAX_REPUBLISH_CLONE_BYTES
+                || actual_copied_bytes > plan.logical_bytes
+            {
+                return Err(IndexError::CurrentRepublishByteLimit {
+                    actual: actual_copied_bytes,
+                    maximum: plan.logical_bytes.min(MAX_REPUBLISH_CLONE_BYTES),
+                });
+            }
+            let source_after = recapture_authenticated_artifact(
+                root,
+                source_path,
+                &planned.path,
+                &source_file,
+                Some(predecessor_pointer),
+            )?;
+            if source_after != expected_artifact {
+                return if expected_artifact.same_payload_identity_changed(&source_after) {
+                    Err(IndexError::ConcurrentGenerationChange)
+                } else {
+                    Err(IndexError::ChecksumMismatch)
+                };
+            }
+            let destination_artifact =
+                capture_artifact_identity(root, destination_path, &planned.path, None)?;
+            physical_proof.insert(PhysicalFileDigest {
+                artifact: destination_artifact,
+                sha256: copied_sha256,
+            });
+            metrics.retained_copied_files = metrics
+                .retained_copied_files
+                .checked_add(1)
+                .ok_or(IndexError::CountOverflow)?;
+            metrics.retained_copied_bytes = metrics
+                .retained_copied_bytes
+                .checked_add(copied)
+                .ok_or(IndexError::CountOverflow)?;
+            validate_child_binding(&generations.file, source_name, source.identity)?;
+            clone_checkpoint(CloneStage::AfterFile, &planned.path)?;
+        }
+        Ok(())
+    }
+
     fn discard_bound_directory(
         generations: &BoundDirectory,
         destination_name: &Path,
@@ -684,6 +1105,100 @@ mod unix {
         }
     }
 
+    #[cfg(target_os = "linux")]
+    fn hard_link_authenticated_source(
+        source: &File,
+        path: &Path,
+        destination: &File,
+    ) -> io::Result<()> {
+        let path = path_cstring(path)?;
+        if unsafe {
+            libc::linkat(
+                source.as_raw_fd(),
+                c"".as_ptr(),
+                destination.as_raw_fd(),
+                path.as_ptr(),
+                libc::AT_EMPTY_PATH,
+            )
+        } == 0
+        {
+            Ok(())
+        } else {
+            Err(io::Error::last_os_error())
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    fn hard_link_authenticated_source(
+        _source: &File,
+        _path: &Path,
+        _destination: &File,
+    ) -> io::Result<()> {
+        Err(io::Error::from_raw_os_error(libc::EOPNOTSUPP))
+    }
+
+    #[cfg(target_os = "linux")]
+    fn try_clone_reflink_at(source: &File, destination: &File, path: &Path) -> Result<bool> {
+        let destination_file = create_regular_file_at(destination, path)?;
+        let result = unsafe {
+            libc::ioctl(
+                destination_file.as_raw_fd(),
+                libc::FICLONE,
+                source.as_raw_fd(),
+            )
+        };
+        if result == 0 {
+            return Ok(true);
+        }
+        let error = io::Error::last_os_error();
+        if error.raw_os_error().is_some_and(|code| {
+            [
+                libc::EOPNOTSUPP,
+                libc::ENOTTY,
+                libc::EINVAL,
+                libc::EXDEV,
+                libc::EPERM,
+                libc::EACCES,
+            ]
+            .contains(&code)
+        }) {
+            drop(destination_file);
+            let _ = unlink_at(destination, path, 0);
+            return Ok(false);
+        }
+        Err(error.into())
+    }
+
+    #[cfg(target_os = "macos")]
+    fn try_clone_reflink_at(source: &File, destination: &File, path: &Path) -> Result<bool> {
+        let path = path_cstring(path)?;
+        let result = unsafe {
+            libc::fclonefileat(
+                source.as_raw_fd(),
+                destination.as_raw_fd(),
+                path.as_ptr(),
+                0,
+            )
+        };
+        if result == 0 {
+            return Ok(true);
+        }
+        let error = io::Error::last_os_error();
+        if error.raw_os_error().is_some_and(|code| {
+            [
+                libc::ENOTSUP,
+                libc::EINVAL,
+                libc::EXDEV,
+                libc::EPERM,
+                libc::EACCES,
+            ]
+            .contains(&code)
+        }) {
+            return Ok(false);
+        }
+        Err(error.into())
+    }
+
     fn hardlink_copy_fallback_error(error: &io::Error) -> bool {
         error.raw_os_error().is_some_and(|code| {
             [
@@ -692,6 +1207,7 @@ mod unix {
                 libc::EACCES,
                 libc::EMLINK,
                 libc::EOPNOTSUPP,
+                libc::ENOENT,
             ]
             .contains(&code)
         })
@@ -843,6 +1359,7 @@ mod unix {
     #[derive(Debug, Clone, Copy, PartialEq, Eq)]
     pub enum CloneStage {
         BeforeFile,
+        AfterSourceOpen,
         BeforeHardlink,
         BeforeCopy,
         AfterFile,
@@ -853,6 +1370,7 @@ mod unix {
     #[derive(Debug, Clone, Copy)]
     enum CloneStage {
         BeforeFile,
+        AfterSourceOpen,
         BeforeHardlink,
         BeforeCopy,
         AfterFile,
@@ -863,6 +1381,8 @@ mod unix {
     #[derive(Debug, Clone, Copy, Default)]
     pub struct CloneTestOptions {
         pub force_copy: bool,
+        pub force_reflink_fallback: bool,
+        pub force_hardlink_fallback: bool,
         pub available_bytes: Option<u64>,
     }
 
@@ -884,7 +1404,12 @@ mod unix {
     #[cfg(any(test, feature = "test-support"))]
     thread_local! {
         static TEST_CLONE_OPTIONS: std::cell::RefCell<CloneTestOptions> = const {
-            std::cell::RefCell::new(CloneTestOptions { force_copy: false, available_bytes: None })
+            std::cell::RefCell::new(CloneTestOptions {
+                force_copy: false,
+                force_reflink_fallback: false,
+                force_hardlink_fallback: false,
+                available_bytes: None,
+            })
         };
         static TEST_CLONE_HOOK: std::cell::RefCell<Option<CloneTestHook>> =
             std::cell::RefCell::new(None);
@@ -946,6 +1471,26 @@ mod unix {
 
     #[cfg(not(any(test, feature = "test-support")))]
     fn force_copy_fallback() -> bool {
+        false
+    }
+
+    #[cfg(any(test, feature = "test-support"))]
+    fn force_reflink_fallback() -> bool {
+        TEST_CLONE_OPTIONS.with(|options| options.borrow().force_reflink_fallback)
+    }
+
+    #[cfg(not(any(test, feature = "test-support")))]
+    fn force_reflink_fallback() -> bool {
+        false
+    }
+
+    #[cfg(any(test, feature = "test-support"))]
+    fn force_hardlink_fallback() -> bool {
+        TEST_CLONE_OPTIONS.with(|options| options.borrow().force_hardlink_fallback)
+    }
+
+    #[cfg(not(any(test, feature = "test-support")))]
+    fn force_hardlink_fallback() -> bool {
         false
     }
 

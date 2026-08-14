@@ -11,6 +11,9 @@ use std::{
     io::{Read, Seek, Write},
 };
 
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+use crate::publication::{CloneStage, CloneTestHookGuard, CloneTestOptions};
+
 fn published_fixture(name: &str) -> (TempDir, SourceKey, CommitReceipt) {
     let temp = tempdir().unwrap();
     let source = source(name);
@@ -30,6 +33,25 @@ fn published_fixture(name: &str) -> (TempDir, SourceKey, CommitReceipt) {
         &crate::publication::certification_file_for_active(temp.path()).unwrap(),
     );
     (temp, source, receipt)
+}
+
+fn append_one_record(root: &Path, source: &SourceKey) -> Result<CommitReceipt> {
+    let mut writer = GenerationWriter::open(root, WriterOptions::default())
+        .unwrap()
+        .into_writer()
+        .unwrap();
+    let base = writer.begin_source_append(source.clone())?.clone();
+    writer.add_core_record(document(source, 2, "candidate append body"))?;
+    writer.certify_source_append(
+        CertifiedSourceAppend::certify(
+            &base,
+            appendable_certificate(source, 2, 2, 20),
+            10,
+            [1; 32],
+        )
+        .unwrap(),
+    )?;
+    writer.commit(|_| true)
 }
 
 #[test]
@@ -144,6 +166,141 @@ fn each_new_generation_hashes_once_and_is_immediately_restart_reusable() {
     drop(VerifiedIndex::open_pinned(temp.path()).unwrap());
     assert_eq!(crate::publication::verification_activity().0, 0);
     assert_eq!(crate::publication::hashed_artifact_bytes(), 0);
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn append_reports_nonreflink_fallback_without_faking_hardlink_availability() {
+    let (temp, source, _) = published_fixture("append-nonreflink-fallback.jsonl");
+    crate::publication::reset_candidate_clone_metrics();
+    let guard = CloneTestHookGuard::set(
+        CloneTestOptions {
+            force_reflink_fallback: true,
+            ..CloneTestOptions::default()
+        },
+        |_, _| Ok(()),
+    );
+
+    append_one_record(temp.path(), &source).unwrap();
+    let metrics = crate::publication::candidate_clone_metrics();
+    drop(guard);
+    assert_eq!(metrics.retained_reflinked_files, 0);
+    if metrics.retained_full_hash_fallback_files > 0 {
+        assert!(metrics.retained_full_hash_fallback_bytes > 0);
+        assert_eq!(metrics.retained_copied_files, 0);
+        assert_eq!(metrics.retained_copied_bytes, 0);
+    } else {
+        assert_eq!(metrics.retained_full_hash_fallback_bytes, 0);
+        assert!(metrics.retained_copied_files > 0);
+        assert!(metrics.retained_copied_bytes > 0);
+    }
+}
+
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+#[test]
+fn append_reports_copy_fallback_when_reflink_and_hardlink_are_forced_off() {
+    let (temp, source, _) = published_fixture("append-copy-fallback.jsonl");
+    crate::publication::reset_candidate_clone_metrics();
+    let guard = CloneTestHookGuard::set(
+        CloneTestOptions {
+            force_reflink_fallback: true,
+            force_hardlink_fallback: true,
+            ..CloneTestOptions::default()
+        },
+        |_, _| Ok(()),
+    );
+
+    append_one_record(temp.path(), &source).unwrap();
+    let metrics = crate::publication::candidate_clone_metrics();
+    drop(guard);
+    assert_eq!(metrics.retained_reflinked_files, 0);
+    assert_eq!(metrics.retained_full_hash_fallback_files, 0);
+    assert_eq!(metrics.retained_full_hash_fallback_bytes, 0);
+    assert!(metrics.retained_copied_files > 0);
+    assert!(metrics.retained_copied_bytes > 0);
+}
+
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+#[test]
+fn append_rejects_source_directory_swap_after_authenticated_source_open() {
+    let (temp, source, _) = published_fixture("append-source-directory-swap.jsonl");
+    let held_reader = VerifiedIndex::open_pinned(temp.path()).unwrap();
+    let active = active_generation_path(temp.path());
+    let displaced = temp.path().join("append-displaced-active-generation");
+    let hook_active = active.clone();
+    let hook_displaced = displaced.clone();
+    let mut swapped = false;
+    let guard = CloneTestHookGuard::set(CloneTestOptions::default(), move |stage, _| {
+        if stage == CloneStage::AfterSourceOpen && !swapped {
+            fs::rename(&hook_active, &hook_displaced)?;
+            fs::create_dir(&hook_active)?;
+            swapped = true;
+        }
+        Ok(())
+    });
+
+    assert!(matches!(
+        append_one_record(temp.path(), &source),
+        Err(IndexError::CurrentRepublishSourceTopology(
+            "active generation directory changed during republish"
+        ))
+    ));
+    assert_eq!(held_reader.generation_id().len(), 64);
+    drop(guard);
+    fs::remove_dir(&active).unwrap();
+    fs::rename(displaced, active).unwrap();
+    assert_eq!(
+        VerifiedIndex::open_pinned(temp.path())
+            .unwrap()
+            .count_term("body")
+            .unwrap(),
+        1
+    );
+}
+
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+#[test]
+fn append_copy_fallback_rejects_source_growth_after_authenticated_open() {
+    use std::io::Write as _;
+
+    let (temp, source, _) = published_fixture("append-copy-growth-rejection.jsonl");
+    let source_file = active_store_path(temp.path());
+    let source_name = source_file.file_name().unwrap().to_owned();
+    let original_bytes = fs::metadata(&source_file).unwrap().len();
+    let source_for_hook = source_file.clone();
+    let mut grew = false;
+    let guard = CloneTestHookGuard::set(
+        CloneTestOptions {
+            force_reflink_fallback: true,
+            force_hardlink_fallback: true,
+            ..CloneTestOptions::default()
+        },
+        move |stage, relative| {
+            if stage == CloneStage::AfterSourceOpen && relative == Path::new(&source_name) && !grew
+            {
+                std::fs::OpenOptions::new()
+                    .append(true)
+                    .open(&source_for_hook)?
+                    .write_all(b"growth-after-authenticated-open")?;
+                grew = true;
+            }
+            Ok(())
+        },
+    );
+
+    assert!(matches!(
+        append_one_record(temp.path(), &source),
+        Err(IndexError::CurrentRepublishSourceTopology(
+            "source file grew while cloning"
+        ))
+    ));
+    drop(guard);
+    std::fs::OpenOptions::new()
+        .write(true)
+        .open(&source_file)
+        .unwrap()
+        .set_len(original_bytes)
+        .unwrap();
 }
 
 #[test]
