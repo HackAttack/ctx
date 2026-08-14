@@ -10,6 +10,8 @@ use ctx_history_index_format::{
     LEXICAL_DELETED_DOCUMENT_RECLAIM_DENOMINATOR, LEXICAL_DELETED_DOCUMENT_RECLAIM_NUMERATOR,
 };
 
+const LEXICAL_MIN_LAYER_SIZE: u32 = 64;
+
 #[derive(Debug)]
 pub(crate) struct LexicalMergePolicy {
     append_policy: LogMergePolicy,
@@ -19,6 +21,7 @@ impl Default for LexicalMergePolicy {
     fn default() -> Self {
         let mut append_policy = LogMergePolicy::default();
         append_policy.set_min_num_segments(LEXICAL_SEGMENT_MERGE_FAN_IN);
+        append_policy.set_min_layer_size(LEXICAL_MIN_LAYER_SIZE);
         append_policy.set_del_docs_ratio_before_merge(1.0);
         Self { append_policy }
     }
@@ -115,5 +118,41 @@ mod tests {
         let candidates = LexicalMergePolicy::default().compute_merge_candidates(&fan_in);
         assert_eq!(candidates.len(), 1);
         assert_eq!(candidates[0].0.len(), LEXICAL_SEGMENT_MERGE_FAN_IN);
+    }
+
+    #[test]
+    fn append_tiering_keeps_a_packed_base_out_of_one_doc_delta_merges() {
+        let index = Index::create_in_ram(Schema::builder().build());
+        let base = segment(&index, 1_024, 0);
+        let deltas = (0..LEXICAL_SEGMENT_MERGE_FAN_IN)
+            .map(|_| segment(&index, 1, 0))
+            .collect::<Vec<_>>();
+
+        let candidates = LexicalMergePolicy::default().compute_merge_candidates(
+            &[vec![base.clone()], deltas.clone()].concat(),
+        );
+        assert_eq!(candidates.len(), 1);
+        assert_eq!(
+            candidates[0].0,
+            deltas.iter().map(SegmentMeta::id).collect::<Vec<_>>()
+        );
+        assert!(!candidates[0].0.contains(&base.id()));
+    }
+
+    #[test]
+    fn append_tiering_waits_for_eight_one_doc_deltas_before_merging() {
+        let index = Index::create_in_ram(Schema::builder().build());
+        let base = segment(&index, 1_024, 0);
+        let one_doc_deltas = (0..(LEXICAL_SEGMENT_MERGE_FAN_IN - 1))
+            .map(|_| segment(&index, 1, 0))
+            .collect::<Vec<_>>();
+
+        let candidates = LexicalMergePolicy::default().compute_merge_candidates(
+            &[vec![base], one_doc_deltas].concat(),
+        );
+        assert!(
+            candidates.is_empty(),
+            "seven one-doc deltas must stay below the merge threshold even when a larger packed base exists"
+        );
     }
 }
