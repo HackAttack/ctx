@@ -123,7 +123,7 @@ impl SourceBackedWatchCatalog {
 }
 
 impl SourceBackedProviderRegistry {
-    pub(in crate::provider::source_backed) fn attach_route_watch_targets(
+    pub(in crate::source_backed) fn attach_route_watch_targets(
         &mut self,
         source: &ProviderSource,
         observe: impl Fn() -> Option<SourceBackedRouteWatchTargets> + Send + Sync + 'static,

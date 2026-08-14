@@ -181,15 +181,11 @@ def validate_capture_composition(
     dependency = manifest.get("dependencies", {}).get(
         "ctx-history-provider-mistral-mux"
     )
-    if dependency != {"path": "../ctx-history-provider-mistral-mux"}:
-        raise BoundaryError(
-            "capture Cargo composition does not depend on the provider pack"
-        )
+    if dependency is not None:
+        raise BoundaryError("capture Cargo facade regained provider-pack authority")
     build = _read(capture_build)
-    if '"//crates/ctx-history-provider-mistral-mux:lib"' not in build:
-        raise BoundaryError(
-            "capture Bazel composition does not depend on the provider pack"
-        )
+    if '"//crates/ctx-history-provider-mistral-mux:lib"' in build:
+        raise BoundaryError("capture Bazel facade regained provider-pack authority")
     modules = _read(provider_modules)
     if "mod mistral_vibe" in modules or "mod mux" in modules:
         raise BoundaryError("capture still owns Mistral Vibe or Mux provider modules")

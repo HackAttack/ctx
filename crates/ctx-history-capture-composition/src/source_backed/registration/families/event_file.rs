@@ -18,12 +18,12 @@ mod tests {
     use super::*;
     use crate::{
         ProviderCatalogSupport, ProviderImportSupport, ProviderSourceKind, ProviderSourceStatus,
-        OPENHANDS_FILE_EVENTS_SOURCE_FORMAT,
     };
     use ctx_history_core::{CaptureProvider, CertifiedSource, CoreRecord};
     use ctx_history_index::{
         GenerationWriter, RevalidationTarget, SourceRouteSnapshot, VerifiedIndex, WriterOptions,
     };
+    use ctx_history_provider_docproj::OPENHANDS_FILE_EVENTS_SOURCE_FORMAT;
     use std::{fs, path::Path};
 
     #[test]

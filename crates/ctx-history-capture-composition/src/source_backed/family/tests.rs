@@ -13,6 +13,7 @@ use crate::{
     common::io::{open_provider_source_file, ProviderSourceRoot},
     CaptureError,
 };
+use ctx_history_source_io::MAX_PROVIDER_JSONL_LINE_BYTES;
 
 fn opened(path: &std::path::Path) -> Arc<crate::common::io::OpenedProviderSourceFile> {
     Arc::new(open_provider_source_file(path).unwrap())
@@ -33,7 +34,7 @@ type DrainOutcome = (JsonlSourceChange, DrainedRecords, JsonlCheckpoint);
 
 #[test]
 fn active_source_family_contract_documented_storage_families_cover_routed_provider_formats() {
-    let policy = include_str!("../../../../../../docs/provider-import-policy.md");
+    let policy = include_str!("../../../../../docs/provider-import-policy.md");
     let storage_families = policy
         .split_once("## Storage Families")
         .and_then(|(_, remainder)| {
@@ -205,7 +206,7 @@ fn jsonl_page_bytes_are_a_rollover_target_not_a_record_limit() {
 fn jsonl_record_above_the_sixteen_mib_contract_is_rejected() {
     let temp = crate::test_support_paths::tempdir().unwrap();
     let path = temp.path().join("oversized-events.jsonl");
-    let mut contents = vec![b'x'; ctx_history_source_io::MAX_PROVIDER_JSONL_LINE_BYTES + 1];
+    let mut contents = vec![b'x'; MAX_PROVIDER_JSONL_LINE_BYTES + 1];
     contents.push(b'\n');
     fs::write(&path, contents).unwrap();
 

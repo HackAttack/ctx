@@ -6,8 +6,8 @@
   "conformance_authority": {
     "manifest": "crates/ctx-history-capture/tests/mcp-attribution-conformance.manifest.json",
     "suite_registry": "crates/ctx-history-capture/tests/mcp_attribution_suites.bzl",
-    "manifest_sha256": "a6cff92b5d5629860e456feb71ebb925c0bef936bd92dc460e7c3194773a07a0",
-    "suite_registry_sha256": "42fb8b78042ff9e6ff6da1251da47d0e811fe6b85b5489db6efe28b82ffc5c91",
+    "manifest_sha256": "a20a69ef346364e671c06bd554050dfd65fc084c41dad0db15c6830bcbcd0455",
+    "suite_registry_sha256": "a7c5142048f923d3b966ada496d92476b3d1848ed3d8c7dec5ede58eac509f85",
     "manifest_schema_version": 6,
     "capability_revision": 5,
     "status_mapping": {
@@ -477,7 +477,7 @@
       "implementation_source": "crates/ctx-history-provider-native-jsonl/src/native_path/copilot.rs",
       "parser_revision": "copilot-cli-direct-native-jsonl-v6-mcp-start-generic-body",
       "suite_id": "ctx-history-provider-native-jsonl::native_unit",
-      "conformance_suite": "mcp_attribution_provider_units",
+      "conformance_suite": "mcp_attribution_native_jsonl_provider_units",
       "tests": [
         {"id": "native_path::source_backed::copilot_tests::copilot_attributes_only_unique_exact_terminal_completions", "source": "crates/ctx-history-provider-native-jsonl/src/native_path/source_backed_copilot_tests.rs"},
         {"id": "native_path::source_backed::copilot_tests::copilot_malformed_ambiguous_or_orphan_linkage_abstains", "source": "crates/ctx-history-provider-native-jsonl/src/native_path/source_backed_copilot_tests.rs"},

@@ -16,6 +16,7 @@ def history_source_boundaries():
             "//crates/ctx-daemon-application:supervisor_discovery_environment_policy_source",
             "//crates/ctx-history-capture-model:BUILD.bazel",
             "//crates/ctx-history-capture-model:cargo_package_data",
+            "//crates/ctx-history-capture-composition:cargo_package_data",
             "//crates/ctx-history-capture-runtime:BUILD.bazel",
             "//crates/ctx-history-capture-runtime:cargo_package_data",
             "//crates/ctx-history-core:BUILD.bazel",
@@ -39,6 +40,16 @@ def history_source_boundaries():
     )
 
     py_test(
+        name = "history_source_discovery_boundary_mutation_tests",
+        srcs = [
+            "//tools/bazel:check_history_source_discovery_boundary.py",
+            "//tools/bazel:check_history_source_discovery_boundary_test.py",
+        ],
+        imports = ["tools/bazel"],
+        main = "//tools/bazel:check_history_source_discovery_boundary_test.py",
+    )
+
+    py_test(
         name = "history_provider_trae_dependency_boundary_check",
         srcs = ["//tools/bazel:check_history_provider_trae_boundary.py"],
         main = "//tools/bazel:check_history_provider_trae_boundary.py",
@@ -47,7 +58,7 @@ def history_source_boundaries():
             "$(rootpath //crates/ctx-history-provider-trae:BUILD.bazel)",
             "$(rootpath //crates/ctx-history-provider-trae:src/lib.rs)",
             "$(rootpath //crates/ctx-history-capture:src/provider/providers/trae.rs)",
-            "$(rootpath //crates/ctx-history-capture:src/provider/source_backed/registration/families/sqlite/logical.rs)",
+            "$(rootpath //crates/ctx-history-capture-composition:src/source_backed/registration/families/sqlite/logical.rs)",
             "$(rootpath //crates/ctx-history-capture:src/provider_sources.rs)",
         ],
         data = [
@@ -56,7 +67,7 @@ def history_source_boundaries():
             "//crates/ctx-history-provider-trae:cargo_package_data",
             "//crates/ctx-history-provider-trae:src/lib.rs",
             "//crates/ctx-history-capture:src/provider/providers/trae.rs",
-            "//crates/ctx-history-capture:src/provider/source_backed/registration/families/sqlite/logical.rs",
+            "//crates/ctx-history-capture-composition:src/source_backed/registration/families/sqlite/logical.rs",
             "//crates/ctx-history-capture:src/provider_sources.rs",
         ],
     )
@@ -71,6 +82,8 @@ def history_source_boundaries():
             "$(rootpath //crates/ctx-history-capture-runtime:BUILD.bazel)",
             "$(rootpath //crates/ctx-history-jsonl:Cargo.toml)",
             "$(rootpath //crates/ctx-history-jsonl:BUILD.bazel)",
+            "$(rootpath //crates/ctx-history-provider-native-jsonl:Cargo.toml)",
+            "$(rootpath //crates/ctx-history-provider-native-jsonl:BUILD.bazel)",
         ],
         data = [
             "Cargo.toml",
@@ -78,6 +91,8 @@ def history_source_boundaries():
             "//crates/ctx-history-capture-runtime:Cargo.toml",
             "//crates/ctx-history-jsonl:BUILD.bazel",
             "//crates/ctx-history-jsonl:Cargo.toml",
+            "//crates/ctx-history-provider-native-jsonl:BUILD.bazel",
+            "//crates/ctx-history-provider-native-jsonl:Cargo.toml",
         ],
     )
 
@@ -108,12 +123,11 @@ def history_source_boundaries():
             "$(rootpath //crates/ctx-history-provider-runtime:src/sqlite.rs)",
             "$(rootpath //crates/ctx-history-provider-runtime:tests/provider_pack_jsonl_compile.rs)",
             "$(rootpath //crates/ctx-history-providers-jsonl-shared:src/error.rs)",
-            "$(rootpath //crates/ctx-history-capture:src/provider/source_backed/family.rs)",
-            "$(rootpath //crates/ctx-history-capture:src/provider/source_backed.rs)",
-            "$(rootpath //crates/ctx-history-capture:src/provider/source_backed/family/jsonl_compat.rs)",
+            "$(rootpath //crates/ctx-history-capture-composition:src/source_backed/family.rs)",
+            "$(rootpath //crates/ctx-history-capture-composition:src/source_backed.rs)",
+            "$(rootpath //crates/ctx-history-capture-composition:src/source_backed/family/jsonl_compat.rs)",
             "$(rootpath //crates/ctx-history-source-sqlite:src/lib.rs)",
             "$(rootpath //crates/ctx-history-source-sqlite:src/value.rs)",
-            "$(rootpath //crates/ctx-history-capture:src/native_source.rs)",
         ],
         data = [
             "//crates/ctx-history-provider-runtime:BUILD.bazel",
@@ -129,12 +143,11 @@ def history_source_boundaries():
             "//crates/ctx-history-provider-runtime:src/sqlite.rs",
             "//crates/ctx-history-provider-runtime:tests/provider_pack_jsonl_compile.rs",
             "//crates/ctx-history-providers-jsonl-shared:src/error.rs",
-            "//crates/ctx-history-capture:src/provider/source_backed/family.rs",
-            "//crates/ctx-history-capture:src/provider/source_backed.rs",
-            "//crates/ctx-history-capture:src/provider/source_backed/family/jsonl_compat.rs",
+            "//crates/ctx-history-capture-composition:src/source_backed/family.rs",
+            "//crates/ctx-history-capture-composition:src/source_backed.rs",
+            "//crates/ctx-history-capture-composition:src/source_backed/family/jsonl_compat.rs",
             "//crates/ctx-history-source-sqlite:src/lib.rs",
             "//crates/ctx-history-source-sqlite:src/value.rs",
-            "//crates/ctx-history-capture:src/native_source.rs",
         ],
     )
 
@@ -149,6 +162,52 @@ def history_source_boundaries():
     )
 
     py_test(
+        name = "history_provider_codex_dependency_boundary_check",
+        srcs = ["//tools/bazel:check_history_provider_codex_boundary.py"],
+        main = "//tools/bazel:check_history_provider_codex_boundary.py",
+        args = [
+            "$(rootpath //crates/ctx-history-provider-codex:Cargo.toml)",
+            "$(rootpath //crates/ctx-history-provider-codex:BUILD.bazel)",
+            "$(rootpath //crates/ctx-history-provider-codex:src/lib.rs)",
+            "$(rootpath //crates/ctx-history-capture-composition:src/source_backed/registration/families/jsonl/codex.rs)",
+        ],
+        data = [
+            "//crates/ctx-history-provider-codex:Cargo.toml",
+            "//crates/ctx-history-provider-codex:BUILD.bazel",
+            "//crates/ctx-history-provider-codex:cargo_package_data",
+            "//crates/ctx-history-provider-codex:src/lib.rs",
+            "//crates/ctx-history-capture-composition:src/source_backed/registration/families/jsonl/codex.rs",
+        ],
+    )
+
+    py_test(
+        name = "history_provider_claude_cursor_dependency_boundary_check",
+        srcs = ["//tools/bazel:check_history_provider_claude_cursor_boundary.py"],
+        main = "//tools/bazel:check_history_provider_claude_cursor_boundary.py",
+        args = [
+            "$(rootpath //crates/ctx-history-provider-claude-cursor:Cargo.toml)",
+            "$(rootpath //crates/ctx-history-provider-claude-cursor:BUILD.bazel)",
+            "$(rootpath //crates/ctx-history-capture-composition:Cargo.toml)",
+            "$(rootpath //crates/ctx-history-capture-composition:BUILD.bazel)",
+            "$(rootpath //crates/ctx-history-capture-composition:src/source_backed/registration/families/sqlite/other.rs)",
+            "$(rootpath //crates/ctx-history-capture-composition:src/source_backed/registration/families/jsonl/direct.rs)",
+            "$(rootpath //crates/ctx-history-capture-composition:src/source_backed/registration/families/jsonl/other.rs)",
+            "$(rootpath //crates/ctx-history-capture:src/provider_sources.rs)",
+        ],
+        data = [
+            "//crates/ctx-history-provider-claude-cursor:BUILD.bazel",
+            "//crates/ctx-history-provider-claude-cursor:Cargo.toml",
+            "//crates/ctx-history-provider-claude-cursor:cargo_package_data",
+            "//crates/ctx-history-capture-composition:BUILD.bazel",
+            "//crates/ctx-history-capture-composition:Cargo.toml",
+            "//crates/ctx-history-capture-composition:src/source_backed/registration/families/sqlite/other.rs",
+            "//crates/ctx-history-capture-composition:src/source_backed/registration/families/jsonl/direct.rs",
+            "//crates/ctx-history-capture-composition:src/source_backed/registration/families/jsonl/other.rs",
+            "//crates/ctx-history-capture:src/provider_sources.rs",
+        ],
+    )
+
+    py_test(
         name = "history_provider_sqlite_selected_dependency_boundary_check",
         srcs = ["//tools/bazel:check_history_provider_sqlite_selected_boundary.py"],
         main = "//tools/bazel:check_history_provider_sqlite_selected_boundary.py",
@@ -156,14 +215,14 @@ def history_source_boundaries():
             "$(rootpath //crates/ctx-history-providers-sqlite-selected:Cargo.toml)",
             "$(rootpath //crates/ctx-history-providers-sqlite-selected:BUILD.bazel)",
             "crates/ctx-history-providers-sqlite-selected",
-            "$(rootpath //crates/ctx-history-capture:Cargo.toml)",
-            "$(rootpath //crates/ctx-history-capture:BUILD.bazel)",
-            "crates/ctx-history-capture",
+            "$(rootpath //crates/ctx-history-capture-composition:Cargo.toml)",
+            "$(rootpath //crates/ctx-history-capture-composition:BUILD.bazel)",
+            "crates/ctx-history-capture-composition",
         ],
         data = [
-            "//crates/ctx-history-capture:BUILD.bazel",
-            "//crates/ctx-history-capture:Cargo.toml",
-            "//crates/ctx-history-capture:cargo_package_data",
+            "//crates/ctx-history-capture-composition:BUILD.bazel",
+            "//crates/ctx-history-capture-composition:Cargo.toml",
+            "//crates/ctx-history-capture-composition:cargo_package_data",
             "//crates/ctx-history-providers-sqlite-selected:BUILD.bazel",
             "//crates/ctx-history-providers-sqlite-selected:Cargo.toml",
             "//crates/ctx-history-providers-sqlite-selected:cargo_package_data",
@@ -178,4 +237,39 @@ def history_source_boundaries():
         ],
         imports = ["tools/bazel"],
         main = "//tools/bazel:check_history_provider_sqlite_selected_boundary_test.py",
+    )
+
+    py_test(
+        name = "history_provider_mistral_mux_dependency_boundary_check",
+        srcs = ["//tools/bazel:check_history_provider_mistral_mux_boundary.py"],
+        main = "//tools/bazel:check_history_provider_mistral_mux_boundary.py",
+        args = [
+            "$(rootpath //crates/ctx-history-provider-mistral-mux:Cargo.toml)",
+            "$(rootpath //crates/ctx-history-provider-mistral-mux:BUILD.bazel)",
+            "$(rootpath //crates/ctx-history-capture:Cargo.toml)",
+            "$(rootpath //crates/ctx-history-capture:BUILD.bazel)",
+            "$(rootpath //crates/ctx-history-capture:src/provider/providers/mod.rs)",
+            "$(rootpath //crates/ctx-history-capture-composition:src/source_backed.rs)",
+            "$(rootpath //crates/ctx-history-capture-composition:src/source_backed/registration/families/jsonl/other.rs)",
+        ],
+        data = [
+            "//crates/ctx-history-provider-mistral-mux:BUILD.bazel",
+            "//crates/ctx-history-provider-mistral-mux:Cargo.toml",
+            "//crates/ctx-history-provider-mistral-mux:cargo_package_data",
+            "//crates/ctx-history-capture:BUILD.bazel",
+            "//crates/ctx-history-capture:Cargo.toml",
+            "//crates/ctx-history-capture:src/provider/providers/mod.rs",
+            "//crates/ctx-history-capture-composition:src/source_backed.rs",
+            "//crates/ctx-history-capture-composition:src/source_backed/registration/families/jsonl/other.rs",
+        ],
+    )
+
+    py_test(
+        name = "history_provider_mistral_mux_boundary_mutation_tests",
+        srcs = [
+            "//tools/bazel:check_history_provider_mistral_mux_boundary.py",
+            "//tools/bazel:check_history_provider_mistral_mux_boundary_test.py",
+        ],
+        imports = ["tools/bazel"],
+        main = "//tools/bazel:check_history_provider_mistral_mux_boundary_test.py",
     )

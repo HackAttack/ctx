@@ -116,15 +116,18 @@ impl SourceBackedAutomaticRegistryBuild {
 /// typed issues. A detected format whose adapter seam is unavailable is also
 /// retained as a typed unsupported route, so refresh and hydration cannot
 /// silently claim it.
-pub fn build_automatic_source_backed_registry(
+pub fn build_automatic_source_backed_registry_with_probes(
+    probes: &StaticProviderProbeCatalog,
     discovery: &DiscoveryContext,
     data_root: &Path,
 ) -> SourceBackedAutomaticRegistryBuild {
     let discovery_started = Instant::now();
     let discovery = discovery.clone().with_data_root(data_root);
-    let report = discover_provider_sources_with_context(&discovery);
-    let mut build =
-        build_automatic_source_backed_registry_from_report(&discovery, data_root, report);
+    let report =
+        ctx_history_source_discovery::discover_provider_sources_with_context(probes, &discovery);
+    let mut build = build_automatic_source_backed_registry_from_report_with_probes(
+        probes, &discovery, data_root, report,
+    );
     build.discovery_duration = discovery_started.elapsed();
     build
 }
@@ -134,12 +137,14 @@ pub fn build_automatic_source_backed_registry(
 /// Callers that must validate source roots before their first persistent write
 /// can pass the same report through registration instead of traversing every
 /// provider tree a second time.
-pub fn build_automatic_source_backed_registry_from_report(
+pub fn build_automatic_source_backed_registry_from_report_with_probes(
+    probes: &StaticProviderProbeCatalog,
     discovery: &DiscoveryContext,
     data_root: &Path,
     report: DiscoveryReport,
 ) -> SourceBackedAutomaticRegistryBuild {
-    build_automatic_source_backed_registry_from_parts(
+    build_automatic_source_backed_registry_from_parts_with_probes(
+        probes,
         discovery,
         data_root,
         report.sources,
@@ -147,7 +152,8 @@ pub fn build_automatic_source_backed_registry_from_report(
     )
 }
 
-pub(in crate::provider::source_backed) fn build_automatic_source_backed_registry_from_parts(
+fn build_automatic_source_backed_registry_from_parts_with_probes(
+    probes: &StaticProviderProbeCatalog,
     discovery: &DiscoveryContext,
     data_root: &Path,
     sources: Vec<ProviderSource>,
@@ -279,6 +285,7 @@ pub(in crate::provider::source_backed) fn build_automatic_source_backed_registry
 
         match register_discovered_automatic_route(
             &mut registry,
+            probes,
             discovery,
             data_root,
             format_route,
@@ -334,6 +341,22 @@ pub(in crate::provider::source_backed) fn build_automatic_source_backed_registry
     }
 }
 
+#[cfg(test)]
+pub(in crate::source_backed) fn build_automatic_source_backed_registry_from_parts(
+    discovery: &DiscoveryContext,
+    data_root: &Path,
+    sources: Vec<ProviderSource>,
+    discovery_issues: Vec<DiscoveryIssue>,
+) -> SourceBackedAutomaticRegistryBuild {
+    build_automatic_source_backed_registry_from_parts_with_probes(
+        &crate::test_provider_probes(),
+        discovery,
+        data_root,
+        sources,
+        discovery_issues,
+    )
+}
+
 fn codex_automatic_session_root_rank(root: &Path) -> u8 {
     match root.file_name().and_then(std::ffi::OsStr::to_str) {
         Some("sessions") => 0,
@@ -371,6 +394,7 @@ fn automatic_unavailable_detail(reason: &SourceBackedAutomaticUnavailableReason)
 
 fn register_discovered_automatic_route(
     registry: &mut SourceBackedProviderRegistry,
+    probes: &StaticProviderProbeCatalog,
     discovery: &DiscoveryContext,
     data_root: &Path,
     format_route: &'static SourceBackedProviderRouteMetadata,
@@ -379,7 +403,7 @@ fn register_discovered_automatic_route(
     let result = match (format_route.constructor, source.provider) {
         (SourceBackedRouteConstructor::NamedSurface, CaptureProvider::Warp) => {
             let selected =
-                resolve_warp_discovery_authority(discovery, &source).map_err(|error| {
+                resolve_warp_discovery_authority(probes, discovery, &source).map_err(|error| {
                     SourceBackedAutomaticUnavailableReason::SelectorAuthorityUnavailable {
                         detail: warp_discovery_unavailable_detail(error),
                     }
@@ -408,7 +432,7 @@ fn register_discovered_automatic_route(
             )
         }
         (SourceBackedRouteConstructor::FiniteInventory, CaptureProvider::Crush) => {
-            let inventory_source = discovered_crush_inventory_source(discovery, &source)?;
+            let inventory_source = discovered_crush_inventory_source(probes, discovery, &source)?;
             register_crush_source_backed_route(
                 registry,
                 source,
@@ -418,7 +442,7 @@ fn register_discovered_automatic_route(
             )
         }
         (SourceBackedRouteConstructor::FiniteInventory, CaptureProvider::Lingma) => {
-            let selector = LingmaInventorySelector::new(discovery.clone());
+            let selector = LingmaInventorySelector::new(discovery.clone(), *probes);
             let registration =
                 ctx_history_providers_sqlite_inventory::registration::discovered_lingma_registration::<
                     crate::provider::source_backed::family::document::CaptureDocumentLifecycle,
@@ -569,6 +593,7 @@ impl CrushProjectInventorySourceV0 for DiscoveredCrushInventorySource {
 }
 
 fn discovered_crush_inventory_source(
+    probes: &StaticProviderProbeCatalog,
     discovery: &DiscoveryContext,
     selected_source: &ProviderSource,
 ) -> Result<Arc<DiscoveredCrushInventorySource>, SourceBackedAutomaticUnavailableReason> {
@@ -578,7 +603,7 @@ fn discovered_crush_inventory_source(
         },
     )?;
     let source = Arc::new(DiscoveredCrushInventorySource {
-        selector: CrushProjectInventorySelector::new(discovery.clone()),
+        selector: CrushProjectInventorySelector::new(discovery.clone(), *probes),
         spec,
     });
     let opening = source.selector.observe(spec).map_err(|error| {

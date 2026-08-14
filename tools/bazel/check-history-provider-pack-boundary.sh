@@ -13,8 +13,8 @@ exec python3 "$repo_root/tools/bazel/check_history_provider_pack_boundary.py" \
   "$repo_root/Cargo.toml" \
   "$repo_root/crates/ctx-history-providers-task-docs/Cargo.toml" \
   "$repo_root/crates/ctx-history-providers-task-docs/BUILD.bazel" \
-  "$repo_root/crates/ctx-history-capture/Cargo.toml" \
-  "$repo_root/crates/ctx-history-capture/BUILD.bazel" \
+  "$repo_root/crates/ctx-history-capture-composition/Cargo.toml" \
+  "$repo_root/crates/ctx-history-capture-composition/BUILD.bazel" \
   "$repo_root"/crates/*/Cargo.toml \
   --member-builds \
   "$repo_root/BUILD.bazel" \

@@ -44,11 +44,8 @@ BUILD = "\n".join(
         "ctx-history-source-io:test_support_lib",
     )
 )
-CAPTURE_MANIFEST = """\
-[dependencies]
-ctx-history-provider-mistral-mux = { path = "../ctx-history-provider-mistral-mux" }
-"""
-CAPTURE_BUILD = '"//crates/ctx-history-provider-mistral-mux:lib"\n'
+CAPTURE_MANIFEST = "[dependencies]\n"
+CAPTURE_BUILD = ""
 PROVIDER_MODULES = "mod codex;\n"
 SOURCE_BACKED = (
     "use ctx_history_provider_mistral_mux::{mistral_vibe_jsonl_adapter, "

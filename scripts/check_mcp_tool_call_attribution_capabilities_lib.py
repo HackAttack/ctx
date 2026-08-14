@@ -775,6 +775,7 @@ def validate_exact_checks(
         )
         expected_conformance_suite = {
             "codex": "codex_direct_result",
+            "copilot_cli": "mcp_attribution_native_jsonl_provider_units",
             "warp": "mcp_attribution_selected_sqlite_provider_units",
         }.get(base[0], "mcp_attribution_provider_units")
         if conformance_suite != expected_conformance_suite:

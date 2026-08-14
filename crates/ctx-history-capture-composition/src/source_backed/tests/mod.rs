@@ -1,6 +1,7 @@
 mod claude_cursor;
 mod codex_child_independence;
 mod copilot;
+mod gemini_retrieval_exclusion;
 mod inventory;
 mod jsonl_shared_publication;
 mod mistral_vibe_publication;

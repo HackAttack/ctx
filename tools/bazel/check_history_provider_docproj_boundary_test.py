@@ -49,7 +49,7 @@ ProviderRuntimeBinding ReplacementDocumentTree ProviderChangedDocumentSink
 """
 CAPTURE_MANIFEST = '[dependencies]\nctx-history-provider-docproj = { path = "../ctx-history-provider-docproj" }\n'
 CAPTURE_BUILD = '"//crates/ctx-history-provider-docproj:lib"\n'
-FACADES = "pub(crate) mod auggie;\npub(crate) mod nanoclaw;\npub(crate) mod openhands;\n"
+FACADES = "pub(crate) mod nanoclaw;\npub(crate) mod openhands;\n"
 DOCUMENT = 'NanoClawDocumentTreeAdapter::<CaptureProviderRuntime>::new_with_base_sources'
 EVENT_FILE = 'OpenHandsEventFileAdapterV2::<CaptureProviderRuntime>'
 EXPECTED_ADVERSARIAL_MUTATION_COUNT = 8

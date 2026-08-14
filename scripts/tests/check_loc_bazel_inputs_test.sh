@@ -23,7 +23,7 @@ assert_reaches_gate() {
   }
 }
 
-assert_reaches_gate crates/ctx-history-capture/src/provider/source_backed/driver.rs
+assert_reaches_gate crates/ctx-history-capture-composition/src/source_backed/driver.rs
 assert_reaches_gate scripts/check-loc.py
 assert_reaches_gate scripts/check-loc-policy-v2.json
 
@@ -40,7 +40,7 @@ if grep -Eq '^(bazel-[^/]*/|external/|target/)' "${manifest}"; then
   exit 1
 fi
 for path in \
-  crates/ctx-history-capture/src/provider/source_backed/driver.rs \
+  crates/ctx-history-capture-composition/src/source_backed/driver.rs \
   scripts/source-backed-recovery/fault_shim.c \
   scripts/source-backed-recovery/run-bazel-linux-fault-test.sh \
   scripts/check-loc.py; do

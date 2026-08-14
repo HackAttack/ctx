@@ -15,7 +15,7 @@ pub(super) fn register_codex_session_tree_route(
     register_codex_session_tree_routes(registry, vec![source], selection)
 }
 
-pub(in crate::provider::source_backed) fn register_codex_session_tree_routes(
+pub(in crate::source_backed) fn register_codex_session_tree_routes(
     registry: &mut SourceBackedProviderRegistry,
     mut sources: Vec<ProviderSource>,
     selection: SourceBackedRouteSelection,
@@ -105,8 +105,7 @@ pub(super) fn register_codex_explicit_session_route(
 }
 // SHA-256("ctx.codex.prompt-history.default-catalog-lineage.v0"). This is
 // catalog-route identity, not a digest of the user-specific source path.
-pub(in crate::provider::source_backed) const CODEX_PROMPT_HISTORY_DEFAULT_CATALOG_LINEAGE_V0: [u8;
-    32] = [
+pub(in crate::source_backed) const CODEX_PROMPT_HISTORY_DEFAULT_CATALOG_LINEAGE_V0: [u8; 32] = [
     0x2d, 0x2e, 0xb3, 0x41, 0xde, 0xe9, 0x7a, 0xd3, 0x15, 0xec, 0xfa, 0xb3, 0x33, 0x20, 0x7c, 0x44,
     0x53, 0x18, 0xb9, 0x32, 0x1c, 0xc1, 0x6b, 0xf2, 0x2c, 0xdb, 0x09, 0x68, 0xe0, 0xf1, 0xf5, 0x0a,
 ];

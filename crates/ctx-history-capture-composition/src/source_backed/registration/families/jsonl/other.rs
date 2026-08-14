@@ -104,11 +104,10 @@ pub(super) fn register_openclaw_route(
     source: ProviderSource,
     selection: SourceBackedRouteSelection,
 ) -> SourceBackedCoordinatorResult<()> {
-    let selected = crate::provider_source_for_path(CaptureProvider::OpenClaw, source.path.clone());
-    if selected.status == ProviderSourceStatus::Unsupported {
+    if source.status == ProviderSourceStatus::Unsupported {
         return Err(invalid_route(
             source.provider,
-            selected
+            source
                 .unsupported_reason
                 .unwrap_or("unsupported OpenClaw history format"),
         ));

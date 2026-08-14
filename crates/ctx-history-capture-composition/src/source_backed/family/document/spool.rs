@@ -6,11 +6,12 @@ use crate::provider::source_backed::{
 };
 use ctx_history_capture_runtime::DocumentRecordSpool;
 use ctx_history_core::CoreRecord;
+use ctx_history_source_io::PROVIDER_JSONL_INVENTORY_MAX_METADATA_ENTRIES;
 
 /// One logical source may stage no more Core records than the provider-neutral
 /// source-inventory entry ceiling.
 const LOGICAL_SNAPSHOT_SPOOL_MAX_CORE_RECORDS: usize =
-    crate::PROVIDER_JSONL_INVENTORY_MAX_METADATA_ENTRIES;
+    PROVIDER_JSONL_INVENTORY_MAX_METADATA_ENTRIES;
 /// This matches the existing bounded source-document catalog byte ceiling.
 /// Independent file scans remain bounded per leaf and by the shared worker
 /// cap; large database leaves use serial direct streaming instead.

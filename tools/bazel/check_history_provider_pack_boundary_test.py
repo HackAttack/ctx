@@ -52,11 +52,11 @@ class ProviderPackBoundaryMutations(unittest.TestCase):
 
     @property
     def capture_cargo(self) -> Path:
-        return self.root / "crates/ctx-history-capture/Cargo.toml"
+        return self.root / "crates/ctx-history-capture-composition/Cargo.toml"
 
     @property
     def capture_build(self) -> Path:
-        return self.root / "crates/ctx-history-capture/BUILD.bazel"
+        return self.root / "crates/ctx-history-capture-composition/BUILD.bazel"
 
     def member_cargos(self) -> tuple[Path, ...]:
         return tuple(sorted((self.root / "crates").glob("*/Cargo.toml")))
@@ -157,12 +157,12 @@ class ProviderPackBoundaryMutations(unittest.TestCase):
             (
                 "[dev-dependencies]\n",
                 '[dev-dependencies]\nindex_alias = { package = "ctx-history-index", path = "../ctx-history-index" }\n',
-                "forbidden Cargo dependencies",
+                "forbidden Cargo dependencies|Cargo build dependencies drifted",
             ),
             (
                 "\n[dev-dependencies]\ntempfile.workspace = true\n",
                 '\n[dev-dependencies]\ntempfile.workspace = true\n\n[build-dependencies]\ncapture_alias = { package = "ctx-history-capture", path = "../ctx-history-capture" }\n',
-                "forbidden Cargo dependencies",
+                "Cargo build dependencies drifted",
             ),
             (
                 "\n[dev-dependencies]\ntempfile.workspace = true\n",

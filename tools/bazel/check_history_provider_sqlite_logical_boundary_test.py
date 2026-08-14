@@ -80,10 +80,10 @@ class BoundaryMutationTests(unittest.TestCase):
         with self.assertRaises(BoundaryError):
             validate_manifest(self.manifest)
 
-    def test_bazel_capture_edge_is_rejected(self) -> None:
+    def test_bazel_composition_edge_is_rejected(self) -> None:
         with self.assertRaises(BoundaryError):
             validate_bazel_inventory(
-                EXPECTED_INTERNAL_BAZEL | {"//crates/ctx-history-capture:lib"},
+                EXPECTED_INTERNAL_BAZEL | {"//crates/ctx-history-capture-composition:lib"},
                 "transitive",
             )
 

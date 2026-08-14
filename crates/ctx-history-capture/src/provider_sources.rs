@@ -31,22 +31,23 @@ pub use ctx_history_source_discovery::{
 pub use ctx_history_source_io::OrdinaryFileObservation;
 ctx_history_source_io::define_mapped_ordinary_io_compat!(crate::CaptureError);
 
-static BUILTIN_PROVIDER_PROBES: StaticProviderProbeCatalog = StaticProviderProbeCatalog::new(
-    CursorProbeFragment::new(probe_cursor_transcripts),
-    TraeProbeFragment::new(
-        [
-            TRAE_CHAT_KEYS[0],
-            TRAE_CHAT_KEYS[1],
-            TRAE_CHAT_KEYS[2],
-            TRAE_CHAT_KEYS[3],
-            TRAE_CHAT_KEYS[4],
-            TRAE_CHAT_KEYS[5],
-        ],
-        TRAE_CHAT_ROWS_QUERY,
-        TRAE_SQLITE_VALUE_OVERHEAD_BYTES,
-        classify_trae_payload_for_discovery,
-    ),
-);
+pub(crate) static BUILTIN_PROVIDER_PROBES: StaticProviderProbeCatalog =
+    StaticProviderProbeCatalog::new(
+        CursorProbeFragment::new(probe_cursor_transcripts),
+        TraeProbeFragment::new(
+            [
+                TRAE_CHAT_KEYS[0],
+                TRAE_CHAT_KEYS[1],
+                TRAE_CHAT_KEYS[2],
+                TRAE_CHAT_KEYS[3],
+                TRAE_CHAT_KEYS[4],
+                TRAE_CHAT_KEYS[5],
+            ],
+            TRAE_CHAT_ROWS_QUERY,
+            TRAE_SQLITE_VALUE_OVERHEAD_BYTES,
+            classify_trae_payload_for_discovery,
+        ),
+    );
 
 fn probe_cursor_transcripts(path: &Path) -> CursorTranscriptProbeOutcome {
     let input = if path.is_dir() && path.join("projects").is_dir() {

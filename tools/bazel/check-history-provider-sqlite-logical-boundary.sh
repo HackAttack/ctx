@@ -30,8 +30,8 @@ query "kind(\"rust_library rule\", deps(${target})) intersect //crates/..." \
 python3 "${repo_root}/tools/bazel/check_history_provider_sqlite_logical_boundary.py" \
   "${repo_root}/crates/ctx-history-providers-sqlite-logical/Cargo.toml" \
   "${repo_root}/crates/ctx-history-providers-sqlite-logical/src" \
-  "${repo_root}/crates/ctx-history-capture/Cargo.toml" \
-  "${repo_root}/crates/ctx-history-capture/src" \
+  "${repo_root}/crates/ctx-history-capture-composition/Cargo.toml" \
+  "${repo_root}/crates/ctx-history-capture-composition/src" \
   "${repo_root}/crates/ctx-history-capture-runtime/src" \
   "${repo_root}/crates/ctx-history-source-discovery/src" \
   "${scratch}/direct-labels.txt" \

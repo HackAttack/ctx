@@ -15,8 +15,8 @@ def history_provider_docproj_boundary_checks():
             "$(rootpath //crates/ctx-history-capture:Cargo.toml)",
             "$(rootpath //crates/ctx-history-capture:BUILD.bazel)",
             "$(rootpath //crates/ctx-history-capture:src/provider/providers/mod.rs)",
-            "$(rootpath //crates/ctx-history-capture:src/provider/source_backed/registration/families/document.rs)",
-            "$(rootpath //crates/ctx-history-capture:src/provider/source_backed/registration/families/event_file.rs)",
+            "$(rootpath //crates/ctx-history-capture-composition:src/source_backed/registration/families/document.rs)",
+            "$(rootpath //crates/ctx-history-capture-composition:src/source_backed/registration/families/event_file.rs)",
         ],
         data = [
             "//crates/ctx-history-provider-docproj:BUILD.bazel",
@@ -25,8 +25,8 @@ def history_provider_docproj_boundary_checks():
             "//crates/ctx-history-capture:BUILD.bazel",
             "//crates/ctx-history-capture:Cargo.toml",
             "//crates/ctx-history-capture:src/provider/providers/mod.rs",
-            "//crates/ctx-history-capture:src/provider/source_backed/registration/families/document.rs",
-            "//crates/ctx-history-capture:src/provider/source_backed/registration/families/event_file.rs",
+            "//crates/ctx-history-capture-composition:src/source_backed/registration/families/document.rs",
+            "//crates/ctx-history-capture-composition:src/source_backed/registration/families/event_file.rs",
         ],
     )
 

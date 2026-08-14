@@ -18,14 +18,12 @@ PACK_PACKAGE = "ctx-history-providers-task-docs"
 PACK_LABEL = "//crates/ctx-history-providers-task-docs:lib"
 LIVE_BOUNDARY_TARGET = "//:history_provider_pack_boundary_check"
 MUTATION_BOUNDARY_TARGET = "//tools/bazel:history_provider_pack_boundary_mutation_tests"
-CAPTURE_PACKAGE = "ctx-history-capture"
-CAPTURE_BUILD_LABEL = "//crates/ctx-history-capture:BUILD.bazel"
+CAPTURE_PACKAGE = "ctx-history-capture-composition"
+CAPTURE_BUILD_LABEL = "//crates/ctx-history-capture-composition:BUILD.bazel"
 EVALUATED_REVERSE_BAZEL_CONSUMERS = {
     PACK_LABEL: (
-        "//crates/ctx-history-capture:codex_direct_result_tests",
-        "//crates/ctx-history-capture:lib",
-        "//crates/ctx-history-capture:qualification_lib",
-        "//crates/ctx-history-capture:unit_tests",
+        "//crates/ctx-history-capture-composition:lib",
+        "//crates/ctx-history-capture-composition:unit_tests",
         "//crates/ctx-history-providers-task-docs:lib",
     ),
 }

@@ -26,7 +26,7 @@ pub(crate) fn executable_route(
     }
 }
 
-pub(in crate::provider::source_backed) fn validate_executable_route(
+pub(in crate::source_backed) fn validate_executable_route(
     source: &ProviderSource,
     selection: SourceBackedRouteSelection,
     selector_authority: SourceBackedSelectorAuthority,
@@ -91,7 +91,7 @@ pub(in crate::provider::source_backed) fn validate_executable_route(
     Ok(known)
 }
 
-pub(in crate::provider::source_backed) fn landed_format_route(
+pub(in crate::source_backed) fn landed_format_route(
     provider: CaptureProvider,
     selected_source_format: &str,
 ) -> Option<&'static SourceBackedProviderRouteMetadata> {

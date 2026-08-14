@@ -67,7 +67,7 @@ PUBLIC_DOCS_WITH_SELF_CONTAINED_CLAIMS = (
 PUBLIC_PRIVATE_BOUNDARY_SCAN_PATHS = PUBLIC_DOCS_WITH_SELF_CONTAINED_CLAIMS
 CODEX_PUBLIC_CLAIM_TEST_SUITE = (
     REPO_ROOT
-    / "crates/ctx-history-capture/src/provider/source_backed/tests/codex_child_independence.rs"
+    / "crates/ctx-history-capture-composition/src/source_backed/tests/codex_child_independence.rs"
 )
 FORBIDDEN_PUBLIC_CLAIM_RE = re.compile(
     r"ctx-" + r"private|private\s+conformance|conformance\s+evidence|"

@@ -3,11 +3,5 @@
   "metric": "physical-rust-cloc-v1",
   "hard_limit": 20000,
   "admission_sha": "562c21c6d9d9ffedea93ddea30bbf0c11dc3aebe",
-  "offenders": [
-    {
-      "package": "ctx-history-capture",
-      "manifest": "crates/ctx-history-capture/Cargo.toml",
-      "ratchet": 20751
-    }
-  ]
+  "offenders": []
 }

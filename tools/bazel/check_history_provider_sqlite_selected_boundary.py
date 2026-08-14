@@ -273,7 +273,7 @@ def validate_capture(cargo: Path, build: Path, root: Path) -> None:
         "ctx-history-providers-sqlite-selected"
     )
     if dependency != {"path": "../ctx-history-providers-sqlite-selected"}:
-        raise BoundaryError("capture Cargo façade does not depend on the selected SQLite pack")
+        raise BoundaryError("composition Cargo façade does not depend on the selected SQLite pack")
     dev_dependency = manifest.get("dev-dependencies", {}).get(
         "ctx-history-providers-sqlite-selected"
     )
@@ -284,7 +284,7 @@ def validate_capture(cargo: Path, build: Path, root: Path) -> None:
         raise BoundaryError("capture test façade does not enable selected SQLite test support")
     build_text = build.read_text()
     if "//crates/ctx-history-providers-sqlite-selected:lib" not in build_text:
-        raise BoundaryError("capture Bazel façade does not depend on the selected SQLite pack")
+        raise BoundaryError("composition Bazel façade does not depend on the selected SQLite pack")
     if (
         "//crates/ctx-history-providers-sqlite-selected:test_support_lib"
         not in build_text
@@ -293,19 +293,17 @@ def validate_capture(cargo: Path, build: Path, root: Path) -> None:
     stale = [
         provider
         for provider in PROVIDERS
-        if any(
-            (root / "src/provider/providers" / provider).rglob("*.rs")
-        )
-        or (root / "src/provider/providers" / f"{provider}.rs").exists()
+        if any((root / "src/providers" / provider).rglob("*.rs"))
+        or (root / "src/providers" / f"{provider}.rs").exists()
     ]
     if stale:
-        raise BoundaryError("capture retains selected SQLite provider bodies: " + ", ".join(stale))
-    inventory = root / "src/provider/source_backed/inventory.rs"
+        raise BoundaryError("composition retains selected SQLite provider bodies: " + ", ".join(stale))
+    inventory = root / "src/source_backed/inventory.rs"
     authorities = selected_sqlite_selector_authorities(inventory)
-    facade = root / "src/provider/source_backed/registration/families/sqlite/other.rs"
+    facade = root / "src/source_backed/registration/families/sqlite/other.rs"
     if compact_rust(facade.read_text()) != compact_rust(expected_capture_facade(authorities)):
         raise BoundaryError(
-            "capture selected SQLite registration façade is not the exact thin composition "
+            "composition selected SQLite registration façade is not the exact thin composition "
             "of pack drivers and inventory-owned selector authorities"
         )
     selected_references = {
@@ -316,9 +314,9 @@ def validate_capture(cargo: Path, build: Path, root: Path) -> None:
         if "ctx_history_providers_sqlite_selected::" in path.read_text()
     }
     expected_references = {
-        "src/provider/source_backed/family/document.rs": 1,
-        "src/provider/source_backed/registration/families/sqlite/other.rs": 5,
-        "src/provider/source_backed/tests/sqlite_selected.rs": 1,
+        "src/source_backed/family/document.rs": 1,
+        "src/source_backed/registration/families/sqlite/other.rs": 5,
+        "src/source_backed/tests/sqlite_selected.rs": 1,
     }
     if selected_references != expected_references:
         raise BoundaryError(

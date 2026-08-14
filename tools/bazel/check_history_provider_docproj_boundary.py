@@ -161,7 +161,7 @@ def validate_capture_composition(capture_manifest: Path, capture_build: Path, fa
     if '"//crates/ctx-history-provider-docproj:lib"' not in _read(capture_build):
         raise BoundaryError("capture Bazel composition does not depend on document-projection pack")
     facade = _read(facades)
-    for fragment in ("pub(crate) mod auggie;", "pub(crate) mod nanoclaw;", "pub(crate) mod openhands;"):
+    for fragment in ("pub(crate) mod nanoclaw;", "pub(crate) mod openhands;"):
         if fragment not in facade:
             raise BoundaryError("capture provider facade roster drifted: " + fragment)
     document = _read(document_registration)

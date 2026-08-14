@@ -59,8 +59,8 @@ class BoundaryMutationTests(unittest.TestCase):
         self.capture_build = self.capture / "BUILD.bazel"
 
         (self.pack / "src/providers").mkdir(parents=True)
-        (self.capture / "src/provider/source_backed/family").mkdir(parents=True)
-        (self.capture / "src/provider/source_backed/registration/families/sqlite").mkdir(
+        (self.capture / "src/source_backed/family").mkdir(parents=True)
+        (self.capture / "src/source_backed/registration/families/sqlite").mkdir(
             parents=True
         )
         for provider in PROVIDERS:
@@ -100,7 +100,7 @@ class BoundaryMutationTests(unittest.TestCase):
             'test_deps = ["//crates/ctx-history-providers-sqlite-selected:test_support_lib"]\n',
             encoding="utf-8",
         )
-        inventory = self.capture / "src/provider/source_backed/inventory.rs"
+        inventory = self.capture / "src/source_backed/inventory.rs"
         inventory.write_text(
             """
 sqlite_route!(Firebender, "firebender", true, true, DiscoveredWinner);
@@ -110,12 +110,12 @@ sqlite_route!(Warp, "warp", true, true, NamedSurface, NamedSurface);
 """,
             encoding="utf-8",
         )
-        (self.capture / "src/provider/source_backed/family/document.rs").write_text(
+        (self.capture / "src/source_backed/family/document.rs").write_text(
             "impl ctx_history_providers_sqlite_selected::SelectedSqliteCaptureBinding for Binding {}\n",
             encoding="utf-8",
         )
-        (self.capture / "src/provider/source_backed/tests").mkdir(parents=True)
-        (self.capture / "src/provider/source_backed/tests/sqlite_selected.rs").write_text(
+        (self.capture / "src/source_backed/tests").mkdir(parents=True)
+        (self.capture / "src/source_backed/tests/sqlite_selected.rs").write_text(
             "ctx_history_providers_sqlite_selected::fail_next_opened_snapshot_cleanup_for_test();\n",
             encoding="utf-8",
         )
@@ -125,15 +125,15 @@ sqlite_route!(Warp, "warp", true, true, NamedSurface, NamedSurface);
         self.temporary.cleanup()
 
     def write_capture_composition(self) -> None:
-        inventory = self.capture / "src/provider/source_backed/inventory.rs"
+        inventory = self.capture / "src/source_backed/inventory.rs"
         authorities = selected_sqlite_selector_authorities(inventory)
-        facade = self.capture / "src/provider/source_backed/registration/families/sqlite/other.rs"
+        facade = self.capture / "src/source_backed/registration/families/sqlite/other.rs"
         facade.write_text(expected_capture_facade(authorities), encoding="utf-8")
 
     def capture_facade(self) -> Path:
         return (
             self.capture
-            / "src/provider/source_backed/registration/families/sqlite/other.rs"
+            / "src/source_backed/registration/families/sqlite/other.rs"
         )
 
     def validate(self) -> None:
@@ -230,7 +230,7 @@ sqlite_route!(Warp, "warp", true, true, NamedSurface, NamedSurface);
             self.validate()
 
     def test_stale_capture_provider_body_is_rejected(self) -> None:
-        stale = self.capture / "src/provider/providers/goose"
+        stale = self.capture / "src/providers/goose"
         stale.mkdir(parents=True)
         (stale / "mod.rs").write_text("", encoding="utf-8")
         with self.assertRaisesRegex(BoundaryError, "retains selected SQLite provider bodies"):
@@ -265,7 +265,7 @@ sqlite_route!(Warp, "warp", true, true, NamedSurface, NamedSurface);
         facade.write_text(original, encoding="utf-8")
 
     def test_inventory_authority_change_requires_matching_facade(self) -> None:
-        inventory = self.capture / "src/provider/source_backed/inventory.rs"
+        inventory = self.capture / "src/source_backed/inventory.rs"
         inventory.write_text(
             inventory.read_text().replace(
                 'sqlite_route!(Warp, "warp", true, true, NamedSurface, NamedSurface);',

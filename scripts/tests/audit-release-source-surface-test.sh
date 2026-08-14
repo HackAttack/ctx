@@ -36,6 +36,7 @@ for retired_case in \
   retired-presentation-command-surfaces \
   retired-pro-command-surfaces \
   retired-capture-pro-output-authority \
+  retired-composition-exact-json-authority \
   retired-capture-repository-authority \
   retired-misplaced-pro-uninstall \
   retired-repository-exact-json-authority \

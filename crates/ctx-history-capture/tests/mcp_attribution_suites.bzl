@@ -45,10 +45,10 @@ MCP_ATTRIBUTION_PUBLIC_SUITES = {
         },
     ),
     "mcp_attribution_capture_provider_units": struct(
-        target = "//crates/ctx-history-capture:unit_tests",
+        target = "//crates/ctx-history-capture-composition:unit_tests",
         selected_inventory = True,
         tests = {
-            "provider::source_backed::tests::copilot::copilot_route_enforces_independent_exact_identity_component_boundaries": ["exact_boundary"],
+            "source_backed::tests::copilot::copilot_route_enforces_independent_exact_identity_component_boundaries": ["exact_boundary"],
         },
     ),
     "mcp_attribution_codex_provider_units": struct(
@@ -58,7 +58,7 @@ MCP_ATTRIBUTION_PUBLIC_SUITES = {
             "codex::nativepath::tests::profiles::exact_mcp_attribution_preserves_opaque_names_and_component_bound": ["exact_boundary"],
         },
     ),
-    "mcp_attribution_provider_units": struct(
+    "mcp_attribution_native_jsonl_provider_units": struct(
         target = "//crates/ctx-history-provider-native-jsonl:unit_tests",
         selected_inventory = True,
         tests = {

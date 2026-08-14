@@ -1,97 +1,40 @@
-//! Shared coordination for provider-owned source-backed projections.
-//!
-//! Provider adapters remain responsible for discovery, parsing, projection,
-//! and source certification. This module owns the one production
-//! publication boundary: all registered adapters stage into one neutral
-//! lifecycle and no adapter can publish a generation by itself.
+//! Compatibility facade for index-backed provider capture composition.
 
-use std::{
-    collections::{BTreeMap, BTreeSet, HashMap, HashSet},
-    fmt,
-    path::{Path, PathBuf},
-    sync::Arc,
-    time::{Duration, Instant},
-};
+use std::path::Path;
 
-use chrono::{DateTime, Utc};
-use ctx_history_capture_model::SourceRouteIdentity;
-use ctx_history_capture_runtime::{
-    CaptureLifecycleSink, CapturePublicationContext, CapturePublicationDisposition,
-    CaptureSourceAggregateRef, ImmutableCaptureSnapshot,
-};
-use ctx_history_core::{CaptureProvider, CertifiedSource, CertifiedSourceInventory, SourceKey};
-#[cfg(test)]
-use ctx_history_core::{CertifiedSourceAppend, CertifiedSourceDeletion, SourceAnchor, TypedKey};
-use ctx_history_index::{IndexError, PublicationStage, WriterOptions};
-use ctx_history_provider_mistral_mux::{mistral_vibe_jsonl_adapter, mux_jsonl_adapter};
-use sha2::{Digest, Sha256};
+pub use ctx_history_capture_composition::source_backed::*;
 
-use super::codex::nativepath::CodexGenerationNormalizationCoordinatorV0;
-use super::providers::{
-    nanoclaw::native_path::NanoClawDocumentTreeAdapter,
-    openhands::nativepath::OpenHandsEventFileAdapterV2,
-};
-use crate::provider_sources::{
-    path_presence, resolve_warp_discovery_authority, CrushDiscoveredProjectInventory,
-    CrushProjectInventorySelector, CrushProjectInventorySelectorError, LingmaInventorySelector,
-    PathPresence, WarpDiscoveryUnavailable,
-};
-use crate::{
-    discover_provider_sources_with_context, provider_source_spec,
-    validate_provider_source_roots_outside_data_root, DiscoveryContext, DiscoveryIssue,
-    DiscoveryPlatform, DiscoveryReport, ProviderImportSupport, ProviderSource, ProviderSourceKind,
-    ProviderSourceSpec, ProviderSourceStatus,
-};
-pub use ctx_history_providers_sqlite_inventory::{
-    CrushProjectDatabaseV0, CrushProjectInventoryObservationV0, CrushProjectInventorySourceV0,
-};
-
-mod discovery;
-mod driver;
-pub(crate) mod family;
-mod inventory;
-mod publication;
-mod registration;
-mod runtime_adapter;
-mod watch;
-
-pub use ctx_history_capture_runtime::{
-    CaptureLifecycleOpenOutcome, CaptureRevalidationTarget, PresentCaptureRoute,
-};
-#[cfg(test)]
-pub(crate) use family::jsonl::FallbackEventIdentityMode;
-pub(crate) use family::jsonl::FallbackEventIdentityState;
-#[doc(hidden)]
-pub use family::{CaptureDocumentSpool, CaptureProviderRuntime};
-pub(crate) use runtime_adapter::*;
-pub use runtime_adapter::{
-    BorrowedIndexManifestView, CommittedIndexManifestView, IndexCaptureCommitReceipt,
-    IndexCaptureLifecycle, IndexCaptureVerifiedPin, IndexManifestView, IndexVerifiedCapture,
-};
-pub use {discovery::*, driver::*, watch::*};
-pub use {inventory::*, publication::*, registration::*};
-
-#[cfg(test)]
-const _: Option<FallbackEventIdentityMode> = None;
-const _: Option<FallbackEventIdentityState> = None;
-
-#[cfg(test)]
-pub(crate) fn source_backed_base_sources(
-    sink: &SourceBackedGenerationSink<'_>,
-    owns: impl Fn(&SourceKey) -> bool,
-) -> Vec<CertifiedSource> {
-    sink.lifecycle
-        .base_snapshot()
-        .map(|manifest| {
-            manifest
-                .sources()
-                .iter()
-                .filter(|source| owns(source.observation().source()))
-                .cloned()
-                .collect()
-        })
-        .unwrap_or_default()
+pub(crate) mod family {
+    #[allow(
+        dead_code,
+        reason = "capture-local provider compatibility aliases retain the pre-split path"
+    )]
+    pub(crate) type CaptureProviderRuntime =
+        ctx_history_capture_composition::CaptureProviderRuntime;
 }
 
-#[cfg(test)]
-mod tests;
+use crate::{DiscoveryContext, DiscoveryReport};
+
+pub fn build_automatic_source_backed_registry(
+    discovery: &DiscoveryContext,
+    data_root: &Path,
+) -> SourceBackedAutomaticRegistryBuild {
+    ctx_history_capture_composition::build_automatic_source_backed_registry_with_probes(
+        &crate::provider_sources::BUILTIN_PROVIDER_PROBES,
+        discovery,
+        data_root,
+    )
+}
+
+pub fn build_automatic_source_backed_registry_from_report(
+    discovery: &DiscoveryContext,
+    data_root: &Path,
+    report: DiscoveryReport,
+) -> SourceBackedAutomaticRegistryBuild {
+    ctx_history_capture_composition::build_automatic_source_backed_registry_from_report_with_probes(
+        &crate::provider_sources::BUILTIN_PROVIDER_PROBES,
+        discovery,
+        data_root,
+        report,
+    )
+}
