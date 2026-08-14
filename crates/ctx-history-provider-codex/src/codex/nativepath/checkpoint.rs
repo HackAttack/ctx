@@ -12,6 +12,8 @@ use crate::provider::codex::events::{CodexInvocationOriginV0, CodexToolCallConte
 // complete state does not fit either bound, Codex omits it and the next append
 // must use exhaustive replay.
 pub(super) const MAX_CODEX_SEMANTIC_CHECKPOINT_BYTES: usize = 64 * 1024 - 5;
+const MAX_CODEX_SEMANTIC_CHECKPOINT_DECOMPRESSED_BYTES: usize = 4 * 1024 * 1024;
+const CODEX_SEMANTIC_CHECKPOINT_ZSTD_PREFIX: &str = "zstd-json-v1:";
 
 pub(crate) const MAX_CODEX_TOOL_CONTEXTS: usize = 24;
 pub(super) const MAX_CODEX_TOOL_CALL_ID_BYTES: usize = 1024;
@@ -401,16 +403,36 @@ impl CodexSemanticCheckpoint {
         };
         checkpoint.validate_wire_state()?;
         let encoded = serde_json::to_vec(&checkpoint)?;
-        Ok((encoded.len() <= MAX_CODEX_SEMANTIC_CHECKPOINT_BYTES).then_some(checkpoint))
+        if encoded.len() > MAX_CODEX_SEMANTIC_CHECKPOINT_DECOMPRESSED_BYTES {
+            return Ok(None);
+        }
+        let compressed = zstd::bulk::compress(&encoded, 1).map_err(checkpoint_codec_error)?;
+        let encoded_len = CODEX_SEMANTIC_CHECKPOINT_ZSTD_PREFIX
+            .len()
+            .saturating_add(compressed.len().div_ceil(3).saturating_mul(4));
+        Ok((encoded_len <= MAX_CODEX_SEMANTIC_CHECKPOINT_BYTES).then_some(checkpoint))
     }
 
     #[cfg(test)]
     pub(super) fn encoded_len(&self) -> serde_json::Result<usize> {
-        serde_json::to_vec(self).map(|bytes| bytes.len())
+        self.encode_key().and_then(|key| match key {
+            TypedKey::Utf8(encoded) => Ok(encoded.len()),
+            _ => Err(<serde_json::Error as serde::ser::Error>::custom(
+                "Codex semantic checkpoint encoder returned a non-UTF-8 key",
+            )),
+        })
     }
 
     pub(super) fn encode_key(&self) -> serde_json::Result<TypedKey> {
-        let encoded = serde_json::to_string(self)?;
+        let canonical = serde_json::to_vec(self)?;
+        if canonical.len() > MAX_CODEX_SEMANTIC_CHECKPOINT_DECOMPRESSED_BYTES {
+            return Err(checkpoint_decompressed_size_error(canonical.len()));
+        }
+        let compressed = zstd::bulk::compress(&canonical, 1).map_err(checkpoint_codec_error)?;
+        let encoded = format!(
+            "{CODEX_SEMANTIC_CHECKPOINT_ZSTD_PREFIX}{}",
+            BASE64_STANDARD.encode(compressed)
+        );
         if encoded.len() > MAX_CODEX_SEMANTIC_CHECKPOINT_BYTES {
             return Err(checkpoint_size_error(encoded.len()));
         }
@@ -424,15 +446,39 @@ impl CodexSemanticCheckpoint {
                 "Codex semantic checkpoint is not current UTF-8 state",
             ));
         };
-        if encoded.len() > MAX_CODEX_SEMANTIC_CHECKPOINT_BYTES {
-            return Err(checkpoint_size_error(encoded.len()));
+        let canonical =
+            if let Some(payload) = encoded.strip_prefix(CODEX_SEMANTIC_CHECKPOINT_ZSTD_PREFIX) {
+                if encoded.len() > MAX_CODEX_SEMANTIC_CHECKPOINT_BYTES {
+                    return Err(checkpoint_size_error(encoded.len()));
+                }
+                let compressed = BASE64_STANDARD
+                    .decode(payload)
+                    .map_err(checkpoint_codec_error)?;
+                if BASE64_STANDARD.encode(&compressed) != payload {
+                    return Err(<serde_json::Error as serde::de::Error>::custom(
+                        "Codex semantic checkpoint base64 is not canonical",
+                    ));
+                }
+                zstd::bulk::decompress(
+                    &compressed,
+                    MAX_CODEX_SEMANTIC_CHECKPOINT_DECOMPRESSED_BYTES,
+                )
+                .map_err(checkpoint_codec_error)?
+            } else {
+                if encoded.len() > MAX_CODEX_SEMANTIC_CHECKPOINT_BYTES {
+                    return Err(checkpoint_size_error(encoded.len()));
+                }
+                encoded.as_bytes().to_vec()
+            };
+        if canonical.len() > MAX_CODEX_SEMANTIC_CHECKPOINT_DECOMPRESSED_BYTES {
+            return Err(checkpoint_decompressed_size_error(canonical.len()));
         }
-        let checkpoint = serde_json::from_str::<Self>(encoded)?;
+        let checkpoint = serde_json::from_slice::<Self>(&canonical)?;
         checkpoint.validate_wire_state()?;
-        // Require one canonical representation. This rejects duplicate fields,
-        // noncanonical object ordering, whitespace, and alternate number forms
-        // instead of guessing which representation should be authoritative.
-        if serde_json::to_string(&checkpoint)? != *encoded {
+        // Require canonical provider state after decompression. The compressed
+        // frame itself is intentionally not canonicalized across zstd library
+        // upgrades; its authenticated meaning is the exact canonical JSON.
+        if serde_json::to_vec(&checkpoint)? != canonical {
             return Err(<serde_json::Error as serde::de::Error>::custom(
                 "Codex semantic checkpoint is not canonical",
             ));
@@ -692,6 +738,18 @@ fn checkpoint_size_error(actual: usize) -> serde_json::Error {
     ))
 }
 
+fn checkpoint_decompressed_size_error(actual: usize) -> serde_json::Error {
+    <serde_json::Error as serde::ser::Error>::custom(format!(
+        "Codex semantic checkpoint expands to {actual} bytes, maximum is {MAX_CODEX_SEMANTIC_CHECKPOINT_DECOMPRESSED_BYTES}"
+    ))
+}
+
+fn checkpoint_codec_error(error: impl std::fmt::Display) -> serde_json::Error {
+    <serde_json::Error as serde::ser::Error>::custom(format!(
+        "Codex semantic checkpoint codec failed: {error}"
+    ))
+}
+
 #[cfg(test)]
 mod tests {
     use chrono::{DateTime, Utc};
@@ -841,9 +899,23 @@ mod tests {
     #[test]
     fn checkpoint_is_complete_or_omitted_at_the_bound() {
         assert!(checkpoint_with_command("git status").is_some());
-        assert!(checkpoint_with_command(&"x".repeat(128 * 1024)).is_none());
+        assert!(
+            checkpoint_with_command(&"x".repeat(128 * 1024)).is_some(),
+            "large compressible reducer state should remain resumable"
+        );
         let oversized = TypedKey::Utf8("x".repeat(MAX_CODEX_SEMANTIC_CHECKPOINT_BYTES + 1));
         assert!(CodexSemanticCheckpoint::decode_key(&oversized).is_err());
+        let oversized_expansion = TypedKey::Utf8(format!(
+            "{CODEX_SEMANTIC_CHECKPOINT_ZSTD_PREFIX}{}",
+            BASE64_STANDARD.encode(
+                zstd::bulk::compress(
+                    &vec![b'x'; MAX_CODEX_SEMANTIC_CHECKPOINT_DECOMPRESSED_BYTES + 1],
+                    1,
+                )
+                .unwrap()
+            )
+        ));
+        assert!(CodexSemanticCheckpoint::decode_key(&oversized_expansion).is_err());
     }
 
     #[test]
@@ -853,9 +925,12 @@ mod tests {
         assert!(CodexSemanticCheckpoint::decode_key(&TypedKey::U64(1)).is_err());
 
         let checkpoint = checkpoint_with_command("git status").unwrap();
-        let TypedKey::Utf8(canonical) = checkpoint.encode_key().unwrap() else {
-            unreachable!();
-        };
+        let canonical = serde_json::to_string(&checkpoint).unwrap();
+        assert_eq!(
+            CodexSemanticCheckpoint::decode_key(&TypedKey::Utf8(canonical.clone())).unwrap(),
+            checkpoint,
+            "canonical legacy JSON remains readable"
+        );
         assert!(
             CodexSemanticCheckpoint::decode_key(&TypedKey::Utf8(format!("{canonical}\n"))).is_err()
         );
@@ -1032,7 +1107,10 @@ mod tests {
             sizes[3]
         );
         assert!(sizes[4] < MAX_CODEX_SEMANTIC_CHECKPOINT_BYTES);
-        assert_eq!(sizes[4], sizes[5], "Bloom wire size must remain fixed");
+        assert!(
+            sizes[4].abs_diff(sizes[5]) < 1024,
+            "fixed-size Bloom checkpoints should remain within one compressed KiB"
+        );
 
         let empty = checkpoint_with_command_and_occurrences(
             "git status",
@@ -1087,7 +1165,6 @@ mod tests {
         assert!(ordinary_bytes > empty_bytes);
         assert!(ordinary_bytes < 4 * 1024 * SOURCES);
         assert!(ordinary_bytes < fixed_raw_bloom_floor / 8);
-        assert!(ordinary_bytes < fixed_checkpoint_bytes / 16);
         eprintln!(
             "Codex 1k-source checkpoint proxy: occurrences={occurrence_count} empty_total={empty_bytes} ordinary_total={ordinary_bytes} fixed_raw_bloom_floor={fixed_raw_bloom_floor} fixed_checkpoint_total={fixed_checkpoint_bytes} bytes"
         );
