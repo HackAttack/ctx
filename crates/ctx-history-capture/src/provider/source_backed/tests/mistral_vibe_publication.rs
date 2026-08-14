@@ -1,12 +1,13 @@
 use std::{fs, path::Path};
 
 use ctx_history_core::{
-    CoreRecord, EventIdentityInput, EventOrigin, NativeItemKey, SessionRelationshipKind, TypedKey,
+    derive_event_id, derive_native_session_id, AgentType, CaptureProvider, CoreRecord,
+    EventIdentityInput, EventOrigin, EventType, NativeItemKey, PositionStability,
+    SessionRelationshipKind, SourceKey, StableEntityId, SubrecordSelector, TypedKey,
 };
 use ctx_history_index::{VerifiedIndex, WriterOptions};
 use serde_json::Value;
 
-use super::*;
 use crate::{
     provider::source_backed::{
         refresh_source_backed_generation, register_landed_source_backed_route,
@@ -17,6 +18,38 @@ use crate::{
 };
 
 const SESSION_ID: &str = "mistral-mcp-abstention";
+const SOURCE_FORMAT: &str = "mistral_vibe_session_jsonl";
+const SOURCE_SCHEMA_VARIANT: &str = "meta-json-messages-jsonl-v1";
+const SOURCE_ANCHOR_NAMESPACE: &str = "mistral-vibe-session-id";
+const NATIVE_SESSION_NAMESPACE: &str = "mistral-vibe-session";
+const NATIVE_EVENT_NAMESPACE: &str = "mistral-vibe-message";
+const NATIVE_EVENT_REUSED_TOOL_CALL_POSITION_KIND: &str =
+    "mistral-vibe-duplicate-tool-call-id-ordinal";
+const LOGICAL_SESSION_KIND: &str = "mistral-vibe-session";
+const LOGICAL_EVENT_KIND: &str = "mistral-vibe-event";
+const PARSER_REVISION: &str = "mistral-vibe-source-backed-v11";
+
+fn source_key(native_session_id: &str) -> SourceKey {
+    SourceKey::derive_provider_native(
+        CaptureProvider::MistralVibe.as_str(),
+        SOURCE_FORMAT,
+        SOURCE_SCHEMA_VARIANT,
+        1,
+        SOURCE_ANCHOR_NAMESPACE,
+        TypedKey::utf8(native_session_id).unwrap(),
+    )
+    .unwrap()
+}
+
+fn session_identity(source: &SourceKey, native_session_id: &str) -> StableEntityId {
+    derive_native_session_id(
+        source,
+        LOGICAL_SESSION_KIND,
+        NATIVE_SESSION_NAMESPACE,
+        TypedKey::utf8(native_session_id).unwrap(),
+    )
+    .unwrap()
+}
 
 fn call(id: &str, composite_name: &str) -> String {
     serde_json::json!({
@@ -112,7 +145,7 @@ fn publish(root: &Path, index: &Path) -> Vec<CoreRecord> {
 }
 
 fn published_session(index: &Path, provider_session_id: &str) -> Vec<CoreRecord> {
-    let source = source_key(provider_session_id).unwrap();
+    let source = source_key(provider_session_id);
     let mut records = VerifiedIndex::open(index)
         .unwrap()
         .core_source_event_page(&source, None, 64)
@@ -223,8 +256,8 @@ fn url_and_stdio_transport_metadata_publish_terminal_content_without_mcp_identit
     );
     assert!(first.iter().all(|record| record.mcp_tool_call.is_none()));
 
-    let source = source_key(SESSION_ID).unwrap();
-    let session_id = session_identity(&source, SESSION_ID).unwrap();
+    let source = source_key(SESSION_ID);
+    let session_id = session_identity(&source, SESSION_ID);
     for (call_id, composite_name, expected_content) in [
         (
             "url-call",
@@ -328,8 +361,8 @@ fn reused_tool_result_ids_keep_existing_native_and_collision_identities() {
         .unwrap();
     assert_ne!(first_terminal.event_id, second_terminal.event_id);
 
-    let source = source_key(SESSION_ID).unwrap();
-    let session_id = session_identity(&source, SESSION_ID).unwrap();
+    let source = source_key(SESSION_ID);
+    let session_id = session_identity(&source, SESSION_ID);
     let native_item_key = NativeItemKey::native_id(
         NATIVE_EVENT_NAMESPACE,
         TypedKey::utf8("reused-call").unwrap(),

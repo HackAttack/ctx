@@ -16,10 +16,7 @@ fn source_event_pages_order_across_segments_isolate_and_do_not_duplicate() {
         .unwrap()
         .into_writer()
         .unwrap();
-    first
-        .test_writer_mut()
-        .unwrap()
-        .set_merge_policy(Box::<NoMergePolicy>::default());
+    first.test_disable_merges().unwrap();
     first.begin_source(target.clone()).unwrap();
     first.add_core_record(target_fourth.clone()).unwrap();
     first.add_core_record(target_first.clone()).unwrap();
@@ -36,10 +33,7 @@ fn source_event_pages_order_across_segments_isolate_and_do_not_duplicate() {
         .unwrap()
         .into_writer()
         .unwrap();
-    append
-        .test_writer_mut()
-        .unwrap()
-        .set_merge_policy(Box::<NoMergePolicy>::default());
+    append.test_disable_merges().unwrap();
     let base = append.begin_source_append(target.clone()).unwrap().clone();
     append.add_core_record(target_third.clone()).unwrap();
     append.add_core_record(target_second.clone()).unwrap();
@@ -54,8 +48,9 @@ fn source_event_pages_order_across_segments_isolate_and_do_not_duplicate() {
     append.commit(|_| true).unwrap();
 
     let index = VerifiedIndex::open(temp.path()).unwrap();
+    let (searcher, _) = open_unverified_generation(temp.path());
     assert!(
-        index.test_searcher().segment_readers().len() >= 2,
+        searcher.segment_readers().len() >= 2,
         "test requires a multi-segment generation"
     );
     let mut expected = vec![
@@ -266,7 +261,11 @@ fn source_event_second_page_reopens_without_materializing_the_remaining_source()
         .core_source_event_page(&source, Some(&cursor), PAGE_LIMIT)
         .unwrap();
     let materializations = ctx_history_index_query::stored_core_event_record_materializations();
-    let segment_bound = (PAGE_LIMIT + 1) * reopened.test_searcher().segment_readers().len();
+    let segment_count = open_unverified_generation(temp.path())
+        .0
+        .segment_readers()
+        .len();
+    let segment_bound = (PAGE_LIMIT + 1) * segment_count;
     assert!(
         materializations <= segment_bound,
         "stored Core materializations {materializations} exceeded page/lookahead × segment bound {segment_bound}"
@@ -328,10 +327,7 @@ fn sparse_source_pages_visit_only_exact_source_terms_across_segments_and_reopen(
         .unwrap()
         .into_writer()
         .unwrap();
-    writer
-        .test_writer_mut()
-        .unwrap()
-        .set_merge_policy(Box::<NoMergePolicy>::default());
+    writer.test_disable_merges().unwrap();
     writer.begin_source(target.clone()).unwrap();
     for sequence in 1..=2 {
         let event = document(&target, sequence, "sparse target first segment");
@@ -359,10 +355,7 @@ fn sparse_source_pages_visit_only_exact_source_terms_across_segments_and_reopen(
         .unwrap()
         .into_writer()
         .unwrap();
-    append
-        .test_writer_mut()
-        .unwrap()
-        .set_merge_policy(Box::<NoMergePolicy>::default());
+    append.test_disable_merges().unwrap();
     let base = append.begin_source_append(target.clone()).unwrap().clone();
     for sequence in 3..=4 {
         let event = document(&target, sequence, "sparse target second segment");
@@ -384,7 +377,10 @@ fn sparse_source_pages_visit_only_exact_source_terms_across_segments_and_reopen(
     expected.sort_by_key(|identity| identity.encode_canonical().unwrap());
 
     let first_pin = VerifiedIndex::open(temp.path()).unwrap();
-    let segment_count = first_pin.test_searcher().segment_readers().len();
+    let segment_count = open_unverified_generation(temp.path())
+        .0
+        .segment_readers()
+        .len();
     assert!(segment_count >= 2, "test requires multiple live segments");
     ctx_history_index_query::reset_source_event_order_term_visits();
     ctx_history_index_query::reset_stored_core_event_record_materializations();

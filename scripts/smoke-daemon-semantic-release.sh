@@ -6,7 +6,7 @@ usage() {
   cat >&2 <<'USAGE'
 Usage:
   scripts/smoke-daemon-semantic-release.sh --runtime-archive PATH --runtime-platform PLATFORM [--ctx PATH] [--data-root DIR] [--timeout-seconds N] [--require-authoritative] [--keep-root]
-  scripts/smoke-daemon-semantic-release.sh --coreml --runtime-platform macos-arm64|macos-x64 [--ctx PATH] [--data-root DIR] [--timeout-seconds N] [--require-authoritative] [--keep-root]
+  scripts/smoke-daemon-semantic-release.sh --coreml --runtime-platform macos-arm64|macos-x64 [--coreml-archive PATH] [--ctx PATH] [--data-root DIR] [--timeout-seconds N] [--require-authoritative] [--keep-root]
 
 Native release smoke for opt-in daemon + semantic search. The smoke creates an
 isolated ctx data root, imports a tiny custom-history fixture, enables daemon
@@ -15,10 +15,12 @@ search can find the fixture, and stops the daemon process it started. The
 default mode installs the packaged ONNX Runtime 1.27.0 sidecar under an isolated
 CTX_RUNTIME_DIR. --coreml instead exercises the production hash-pinned CoreML
 bundle acquisition path using the exact supplied macOS ctx artifact; it cannot
-be combined with --runtime-archive. When --data-root is provided, it is the
-parent for a fresh unique run root; --keep-root preserves that child for
-inspection. --require-authoritative fails unless host evidence confirms native
-execution for the requested platform.
+be combined with --runtime-archive. --coreml-archive binds a candidate-built
+macOS ARM bundle and its adjacent checksum/asset-record sidecars into that
+production acquisition path without publication. When --data-root is provided,
+it is the parent for a fresh unique run root; --keep-root preserves that child
+for inspection. --require-authoritative fails unless host evidence confirms
+native execution for the requested platform.
 USAGE
 }
 
@@ -26,6 +28,7 @@ ctx_bin="${CTX_BIN:-ctx}"
 script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
 data_root_parent=""
 runtime_archive=""
+coreml_archive=""
 runtime_platform=""
 runtime_version="1.27.0"
 timeout_seconds="${CTX_SEMANTIC_SMOKE_TIMEOUT_SECONDS:-900}"
@@ -53,6 +56,10 @@ while (($# > 0)); do
       ;;
     --coreml)
       coreml_mode=1
+      ;;
+    --coreml-archive)
+      shift
+      coreml_archive="${1:-}"
       ;;
     --require-authoritative)
       require_authoritative=1
@@ -119,7 +126,22 @@ if [[ "${coreml_mode}" == "1" ]]; then
     echo "error: --coreml cannot be combined with --runtime-archive" >&2
     exit 2
   fi
+  if [[ -n "${coreml_archive}" ]]; then
+    if [[ "${runtime_platform}" != "macos-arm64" ]]; then
+      echo "error: --coreml-archive requires --runtime-platform macos-arm64" >&2
+      exit 2
+    fi
+    if [[ ! -f "${coreml_archive}" ]]; then
+      echo "error: Core ML archive not found: ${coreml_archive}" >&2
+      exit 1
+    fi
+    coreml_archive="$(cd "$(dirname "${coreml_archive}")" && pwd -P)/$(basename "${coreml_archive}")"
+  fi
 else
+  if [[ -n "${coreml_archive}" ]]; then
+    echo "error: --coreml-archive requires --coreml" >&2
+    exit 2
+  fi
   if [[ -z "${runtime_archive}" ]]; then
     echo "error: --runtime-archive is required unless --coreml is selected" >&2
     exit 2
@@ -354,6 +376,11 @@ if [[ "${coreml_mode}" == "1" ]]; then
   if ! cmp -s "${ctx_source}" "${ctx_bin}"; then
     echo "error: isolated CoreML smoke artifact differs from the supplied ctx artifact" >&2
     exit 1
+  fi
+  if [[ -n "${coreml_archive}" ]]; then
+    python3 -I "${script_dir}/semantic-release-assets.py" bind-coreml-cache \
+      --archive "${coreml_archive}" \
+      --cache-dir "${semantic_cache}"
   fi
   runtime_dylib=""
 else

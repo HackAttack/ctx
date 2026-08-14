@@ -1,5 +1,5 @@
 load("@crates//:defs.bzl", "aliases", "all_crate_deps", "crate_edition")
-load("@rules_rust//rust:defs.bzl", "rust_library")
+load("@rules_rust//rust:defs.bzl", "rust_doc_test", "rust_library")
 load("//:rust_sources.bzl", "RUST_PROD_SRC_EXCLUDES")
 load("//tools/bazel:ctx_rust.bzl", "ctx_rust_test")
 load("//tools/bazel:gates.bzl", "loc_check_inputs")
@@ -56,6 +56,13 @@ rust_library(
     proc_macro_deps = all_crate_deps(proc_macro = True),
     rustc_env = COMMON_RUSTC_ENV,
     rustc_flags = ['--cfg=feature="test-support"'],
+)
+
+# The feature-enabled library is intentional: this compile-fail contract
+# exercises the maximal shippable Cargo feature surface.
+rust_doc_test(
+    name = "publication_seal_doc_tests",
+    crate = ":test_support_lib",
 )
 
 ctx_rust_test(

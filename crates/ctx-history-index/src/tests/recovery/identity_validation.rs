@@ -281,13 +281,190 @@ fn contradictory_child_owned_claims_within_one_session_cannot_publish() {
         .unwrap();
     writer.begin_source(source.clone()).unwrap();
     writer.add_core_record(first).unwrap();
-    writer.add_core_record(second).unwrap();
-    writer.certify_source(certificate(&source, 1, 2)).unwrap();
+    let error = writer.add_core_record(second).unwrap_err();
     assert!(matches!(
-        writer.commit(|_| true),
+        error,
+        IndexError::InvalidSessionRelationshipGraph(
+            "one session has contradictory relationship fields"
+        )
+    ));
+    writer.certify_source(certificate(&source, 1, 1)).unwrap();
+    writer.commit(|_| true).unwrap();
+}
+
+#[test]
+fn append_session_claim_must_match_the_pinned_base_claim() {
+    let temp = tempdir().unwrap();
+    let source = source("append-session-claim.jsonl");
+    let first_parent = document_for_session(&source, "first-parent", 10, "not published");
+    let second_parent = document_for_session(&source, "second-parent", 11, "not published");
+    let mut base_event = document_for_session(&source, "child", 1, "base child event");
+    base_event
+        .set_session_relationship(
+            SessionRelationshipKind::Forked,
+            Some(first_parent.session_id),
+            first_parent.session_id,
+        )
+        .unwrap();
+
+    let mut initial = GenerationWriter::open(temp.path(), WriterOptions::default())
+        .unwrap()
+        .into_writer()
+        .unwrap();
+    initial.begin_source(source.clone()).unwrap();
+    initial.add_core_record(base_event).unwrap();
+    initial
+        .certify_source(appendable_certificate(&source, 1, 1, 10))
+        .unwrap();
+    initial.commit(|_| true).unwrap();
+
+    let mut append = GenerationWriter::open(temp.path(), WriterOptions::default())
+        .unwrap()
+        .into_writer()
+        .unwrap();
+    let base = append.begin_source_append(source.clone()).unwrap().clone();
+    let mut contradictory = document_for_session(&source, "child", 2, "invalid append");
+    contradictory
+        .set_session_relationship(
+            SessionRelationshipKind::Forked,
+            Some(second_parent.session_id),
+            second_parent.session_id,
+        )
+        .unwrap();
+    assert!(matches!(
+        append.add_core_record(contradictory),
         Err(IndexError::InvalidSessionRelationshipGraph(
             "one session has contradictory relationship fields"
         ))
+    ));
+
+    let mut valid = document_for_session(&source, "child", 2, "valid append");
+    valid
+        .set_session_relationship(
+            SessionRelationshipKind::Forked,
+            Some(first_parent.session_id),
+            first_parent.session_id,
+        )
+        .unwrap();
+    append.add_core_record(valid).unwrap();
+    append
+        .certify_source_append(
+            CertifiedSourceAppend::certify(
+                &base,
+                appendable_certificate(&source, 2, 2, 20),
+                10,
+                [1; 32],
+            )
+            .unwrap(),
+        )
+        .unwrap();
+    append.commit(|_| true).unwrap();
+}
+
+#[test]
+fn replacement_may_change_a_session_claim_from_deleted_source_history() {
+    let temp = tempdir().unwrap();
+    let source = source("replacement-session-claim.jsonl");
+    let first_parent = document_for_session(&source, "first-parent", 10, "not published");
+    let second_parent = document_for_session(&source, "second-parent", 11, "not published");
+    let mut old = document_for_session(&source, "child", 1, "old child event");
+    old.set_session_relationship(
+        SessionRelationshipKind::Forked,
+        Some(first_parent.session_id),
+        first_parent.session_id,
+    )
+    .unwrap();
+
+    let mut initial = GenerationWriter::open(temp.path(), WriterOptions::default())
+        .unwrap()
+        .into_writer()
+        .unwrap();
+    initial.begin_source(source.clone()).unwrap();
+    initial.add_core_record(old).unwrap();
+    initial.certify_source(certificate(&source, 1, 1)).unwrap();
+    initial.commit(|_| true).unwrap();
+
+    let mut replacement = GenerationWriter::open(temp.path(), WriterOptions::default())
+        .unwrap()
+        .into_writer()
+        .unwrap();
+    replacement.begin_source(source.clone()).unwrap();
+    let mut current = document_for_session(&source, "child", 2, "current child event");
+    current
+        .set_session_relationship(
+            SessionRelationshipKind::Forked,
+            Some(second_parent.session_id),
+            second_parent.session_id,
+        )
+        .unwrap();
+    replacement.add_core_record(current).unwrap();
+    replacement
+        .certify_source(certificate(&source, 2, 1))
+        .unwrap();
+    replacement.commit(|_| true).unwrap();
+
+    let index = VerifiedIndex::open(temp.path()).unwrap();
+    assert_eq!(index.document_count(), 1);
+    assert_eq!(index.count_term("current").unwrap(), 1);
+}
+
+#[test]
+fn replacement_rejects_a_compact_session_collision_owned_by_a_retained_source() {
+    const IDENTITY_DIGEST_OFFSET: usize = 3;
+    const IDENTITY_SOURCE_DIGEST_OFFSET: usize = IDENTITY_DIGEST_OFFSET + 32;
+    const IDENTITY_UUID_OFFSET: usize = StableEntityId::CANONICAL_LEN - 16;
+
+    let temp = tempdir().unwrap();
+    let retained_source = source("retained-session-owner.jsonl");
+    let replacement_source = source("replacement-session-owner.jsonl");
+    let retained_record = document(&retained_source, 1, "retained session");
+    let retained_session = retained_record.session_id;
+    let mut initial = GenerationWriter::open(temp.path(), WriterOptions::default())
+        .unwrap()
+        .into_writer()
+        .unwrap();
+    initial.begin_source(retained_source.clone()).unwrap();
+    initial.add_core_record(retained_record).unwrap();
+    initial
+        .certify_source(certificate(&retained_source, 1, 1))
+        .unwrap();
+    initial.commit(|_| true).unwrap();
+
+    let mut replacement = GenerationWriter::open(temp.path(), WriterOptions::default())
+        .unwrap()
+        .into_writer()
+        .unwrap();
+    replacement
+        .begin_source(replacement_source.clone())
+        .unwrap();
+    let mut prepared = replacement
+        .core_record_preparer()
+        .prepare(document(&replacement_source, 1, "colliding replacement"))
+        .unwrap();
+
+    // Production preparation cannot manufacture a compact collision. This
+    // crate-local test hook preserves the candidate source authority while
+    // forcing a different full digest to share the retained session's UUID.
+    let candidate_session = prepared.test_identity_facts_mut().session.session_id;
+    let mut encoded = candidate_session.encode_canonical().unwrap();
+    encoded[IDENTITY_DIGEST_OFFSET..IDENTITY_DIGEST_OFFSET + 16]
+        .copy_from_slice(&retained_session.digest()[..16]);
+    encoded[IDENTITY_UUID_OFFSET..].copy_from_slice(retained_session.as_uuid().as_bytes());
+    let colliding_session = StableEntityId::decode_canonical(&encoded).unwrap();
+    assert_eq!(colliding_session.as_uuid(), retained_session.as_uuid());
+    assert_ne!(colliding_session.digest(), retained_session.digest());
+    assert_eq!(
+        &encoded[IDENTITY_SOURCE_DIGEST_OFFSET..IDENTITY_SOURCE_DIGEST_OFFSET + 32],
+        &replacement_source.identity().digest()
+    );
+    prepared.test_identity_facts_mut().session.session_id = colliding_session;
+
+    assert!(matches!(
+        replacement.add_prepared_core_record(prepared),
+        Err(IndexError::CompactIdentityCollision {
+            kind: "session",
+            ..
+        })
     ));
 }
 
@@ -306,14 +483,11 @@ fn verified_generation_rejects_a_forged_duplicate_event_identity() {
     writer.certify_source(certificate(&source, 1, 1)).unwrap();
     writer.commit(|_| true).unwrap();
 
-    let pinned = VerifiedIndex::open(temp.path()).unwrap();
-    let addresses = pinned
-        .test_searcher()
-        .search(&AllQuery, &DocSetCollector)
-        .unwrap();
+    let (searcher, _) = open_unverified_generation(temp.path());
+    let addresses = searcher.search(&AllQuery, &DocSetCollector).unwrap();
     let address = addresses.into_iter().next().unwrap();
-    let duplicate = indexed_document(decoded_stored_core(pinned.test_searcher(), address));
-    let index = pinned.test_searcher().index().clone();
+    let duplicate = indexed_document(decoded_stored_core(&searcher, address));
+    let index = searcher.index().clone();
     publish_unchecked_generation(
         temp.path(),
         &index,
@@ -348,16 +522,15 @@ fn verified_generation_rejects_forged_source_ownership() {
     writer.certify_source(certificate(&first, 1, 1)).unwrap();
     writer.commit(|_| true).unwrap();
 
-    let pinned = VerifiedIndex::open(temp.path()).unwrap();
-    let fields = fields_from_schema(pinned.test_searcher().schema()).unwrap();
-    let address = pinned
-        .test_searcher()
+    let (searcher, _) = open_unverified_generation(temp.path());
+    let fields = fields_from_schema(searcher.schema()).unwrap();
+    let address = searcher
         .search(&AllQuery, &DocSetCollector)
         .unwrap()
         .into_iter()
         .next()
         .unwrap();
-    let document = indexed_document(decoded_stored_core(pinned.test_searcher(), address));
+    let document = indexed_document(decoded_stored_core(&searcher, address));
     let mut forged = TantivyDocument::default();
     for (field, value) in document.field_values() {
         if field != fields.source_key {
@@ -365,7 +538,7 @@ fn verified_generation_rejects_forged_source_ownership() {
         }
     }
     forged.add_text(fields.source_key, source_token(&second));
-    let index = pinned.test_searcher().index().clone();
+    let index = searcher.index().clone();
     publish_unchecked_generation(
         temp.path(),
         &index,
@@ -403,19 +576,15 @@ fn verified_generation_rejects_malformed_stored_core_during_exhaustive_audit() {
     writer.certify_source(certificate(&source, 1, 1)).unwrap();
     writer.commit(|_| true).unwrap();
 
-    let pinned = VerifiedIndex::open(temp.path()).unwrap();
-    let fields = fields_from_schema(pinned.test_searcher().schema()).unwrap();
-    let address = pinned
-        .test_searcher()
+    let (searcher, _) = open_unverified_generation(temp.path());
+    let fields = fields_from_schema(searcher.schema()).unwrap();
+    let address = searcher
         .search(&AllQuery, &DocSetCollector)
         .unwrap()
         .into_iter()
         .next()
         .unwrap();
-    let document = pinned
-        .test_searcher()
-        .doc::<TantivyDocument>(address)
-        .unwrap();
+    let document = searcher.doc::<TantivyDocument>(address).unwrap();
     let mut forged = TantivyDocument::default();
     for (field, value) in document.field_values() {
         if field != fields.core_record && field != fields.core_record_encoded_bytes {
@@ -424,7 +593,7 @@ fn verified_generation_rejects_malformed_stored_core_during_exhaustive_audit() {
     }
     forged.add_u64(fields.core_record_encoded_bytes, 1);
     forged.add_bytes(fields.core_record, b"{");
-    let index = pinned.test_searcher().index().clone();
+    let index = searcher.index().clone();
     publish_unchecked_generation(
         temp.path(),
         &index,

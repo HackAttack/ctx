@@ -3,11 +3,11 @@
 use std::{
     collections::HashSet,
     fs, io,
+    marker::PhantomData,
     path::{Path, PathBuf},
     sync::Arc,
 };
 
-use crate::provider::source_backed::IndexBaseEventLookup;
 use chrono::{DateTime, Utc};
 use ctx_history_core::{
     derive_native_session_id, CaptureProvider, SourceKey, StableEntityId, TypedKey,
@@ -15,24 +15,25 @@ use ctx_history_core::{
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
-use crate::{
-    common::io::{OpenedProviderSourceFile, ProviderSourceRoot},
-    provider::{
-        providers::mux::{
-            metadata::{mux_bounded_session_metadata_from_bytes, MuxBoundedSessionMetadata},
-            source::{visit_mux_session_sources, MuxSessionSource},
-        },
-        source_backed::family::jsonl::{
-            observe_opened_file, JsonlFamilyAdapter, JsonlFamilyAppendMode, JsonlFamilyInventory,
-            JsonlFamilyLeaf, JsonlFamilyProjectionMode, JsonlFamilyProjector, JsonlFileObservation,
-        },
-    },
-    CaptureError, Result, MAX_PROVIDER_JSONL_LINE_BYTES, MUX_SOURCE_FORMAT,
+use ctx_history_jsonl::{
+    observe_opened_file, JsonlFamilyAdapter, JsonlFamilyAppendMode, JsonlFamilyInventory,
+    JsonlFamilyLeaf, JsonlFamilyProjectionMode, JsonlFamilyProjector, JsonlFileObservation,
+};
+use ctx_history_provider_runtime::{
+    source_io::{OpenedProviderSourceFile, ProviderSourceRoot},
+    CaptureError, ProviderBaseEventLookup, ProviderJsonlRuntime, ProviderRuntimeBinding, Result,
+};
+use ctx_history_source_io::MAX_PROVIDER_JSONL_LINE_BYTES;
+
+use crate::mux::{
+    metadata::{mux_bounded_session_metadata_from_bytes, MuxBoundedSessionMetadata},
+    source::{visit_mux_session_sources, MuxSessionSource},
+    MUX_SOURCE_FORMAT,
 };
 
 mod projection;
 
-use projection::MuxProjector;
+use projection::MuxJsonlProjector;
 
 const SOURCE_ANCHOR_NAMESPACE: &str = "mux.session";
 const NATIVE_SESSION_NAMESPACE: &str = "mux.session";
@@ -80,18 +81,21 @@ struct MuxBinding {
 }
 
 #[derive(Debug, Clone, Copy)]
-pub(crate) struct MuxJsonlAdapter;
+pub(crate) struct MuxJsonlAdapter<B>(PhantomData<fn() -> B>);
 
-pub(crate) fn mux_jsonl_adapter() -> Arc<
-    dyn JsonlFamilyAdapter<
-        Runtime = crate::provider::source_backed::family::jsonl::CaptureJsonlRuntime,
-    >,
-> {
-    Arc::new(MuxJsonlAdapter)
+pub(crate) fn mux_jsonl_adapter<B>(
+) -> Arc<dyn JsonlFamilyAdapter<Runtime = ProviderJsonlRuntime<B>>>
+where
+    B: ProviderRuntimeBinding,
+{
+    Arc::new(MuxJsonlAdapter(PhantomData))
 }
 
-impl JsonlFamilyAdapter for MuxJsonlAdapter {
-    type Runtime = crate::provider::source_backed::family::jsonl::CaptureJsonlRuntime;
+impl<B> JsonlFamilyAdapter for MuxJsonlAdapter<B>
+where
+    B: ProviderRuntimeBinding,
+{
+    type Runtime = ProviderJsonlRuntime<B>;
 
     fn provider(&self) -> CaptureProvider {
         CaptureProvider::Mux
@@ -117,7 +121,7 @@ impl JsonlFamilyAdapter for MuxJsonlAdapter {
         JsonlFamilyAppendMode::Replacement
     }
 
-    fn discover(&self, root: &Path) -> Result<JsonlFamilyInventory> {
+    fn discover(&self, root: &Path) -> Result<JsonlFamilyInventory<CaptureError>> {
         let metadata = match fs::symlink_metadata(root) {
             Ok(metadata) => metadata,
             Err(error) if error.kind() == io::ErrorKind::NotFound => {
@@ -187,16 +191,10 @@ impl JsonlFamilyAdapter for MuxJsonlAdapter {
 
     fn projector(
         &self,
-        leaf: &JsonlFamilyLeaf,
+        leaf: &JsonlFamilyLeaf<CaptureError>,
         source_file: Arc<OpenedProviderSourceFile>,
         imported_at: DateTime<Utc>,
-    ) -> Result<
-        Box<
-            dyn JsonlFamilyProjector<
-                Runtime = crate::provider::source_backed::family::jsonl::CaptureJsonlRuntime,
-            >,
-        >,
-    > {
+    ) -> Result<Box<dyn JsonlFamilyProjector<Runtime = ProviderJsonlRuntime<B>>>> {
         self.projector_with_provider_checkpoint(
             leaf,
             source_file,
@@ -209,25 +207,19 @@ impl JsonlFamilyAdapter for MuxJsonlAdapter {
 
     fn projector_with_provider_checkpoint(
         &self,
-        leaf: &JsonlFamilyLeaf,
+        leaf: &JsonlFamilyLeaf<CaptureError>,
         _source_file: Arc<OpenedProviderSourceFile>,
         _imported_at: DateTime<Utc>,
         checkpoint: Option<&TypedKey>,
-        base_event_lookup: Option<IndexBaseEventLookup>,
+        base_event_lookup: Option<ProviderBaseEventLookup<B>>,
         mode: JsonlFamilyProjectionMode,
-    ) -> Result<
-        Box<
-            dyn JsonlFamilyProjector<
-                Runtime = crate::provider::source_backed::family::jsonl::CaptureJsonlRuntime,
-            >,
-        >,
-    > {
+    ) -> Result<Box<dyn JsonlFamilyProjector<Runtime = ProviderJsonlRuntime<B>>>> {
         if checkpoint.is_some() {
             return Err(CaptureError::InvalidPayload(
                 "Mux adapter does not accept provider checkpoint state".to_owned(),
             ));
         }
-        Ok(Box::new(MuxProjector::new(
+        Ok(Box::new(MuxJsonlProjector::<B>::new(
             leaf.source().clone(),
             Arc::clone(leaf.authority()),
             decode_binding(leaf)?,
@@ -370,7 +362,7 @@ fn related_session_identity(native_session_id: &str) -> Result<StableEntityId> {
     session_identity(&source, native_session_id)
 }
 
-fn decode_binding(leaf: &JsonlFamilyLeaf) -> Result<MuxBinding> {
+fn decode_binding(leaf: &JsonlFamilyLeaf<CaptureError>) -> Result<MuxBinding> {
     let TypedKey::Bytes(bytes) = leaf.binding() else {
         return Err(CaptureError::InvalidPayload(
             "Mux family binding is malformed".to_owned(),

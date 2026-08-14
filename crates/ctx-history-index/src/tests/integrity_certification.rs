@@ -341,29 +341,16 @@ fn crc_valid_retained_segment_mutation_cannot_be_rebound_by_mutating_publication
         .unwrap()
         .into_writer()
         .unwrap();
-    let base = append.begin_source_append(source.clone()).unwrap().clone();
+    append.begin_source_append(source.clone()).unwrap();
 
     rewrite_active_store_with_valid_crc(temp.path());
-    append
+    let error = append
         .add_core_record(document(
             &source,
             2,
             "candidate must not rebind altered base bytes",
         ))
-        .unwrap();
-    append
-        .certify_source_append(
-            CertifiedSourceAppend::certify(
-                &base,
-                appendable_certificate(&source, 2, 2, 20),
-                10,
-                [1; 32],
-            )
-            .unwrap(),
-        )
-        .unwrap();
-
-    let error = append.commit(|_| true).unwrap_err();
+        .unwrap_err();
     assert!(matches!(
         error,
         IndexError::ActiveGenerationNeedsRebuild { generation_id, .. }
@@ -373,6 +360,10 @@ fn crc_valid_retained_segment_mutation_cannot_be_rebound_by_mutating_publication
         fs::read(temp.path().join("active-generation.json")).unwrap(),
         pointer_before
     );
+    assert!(temp
+        .path()
+        .join("active-generation-rebuild-required.json")
+        .exists());
 }
 
 #[cfg(unix)]

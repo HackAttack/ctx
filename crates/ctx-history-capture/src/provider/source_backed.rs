@@ -27,6 +27,7 @@ use ctx_history_core::{
 #[cfg(test)]
 use ctx_history_core::{CertifiedSourceAppend, CertifiedSourceDeletion};
 use ctx_history_index::{IndexError, PublicationStage, WriterOptions};
+use ctx_history_provider_mistral_mux::{mistral_vibe_jsonl_adapter, mux_jsonl_adapter};
 use sha2::{Digest, Sha256};
 
 use super::codex::nativepath::CodexGenerationNormalizationCoordinatorV0;
@@ -53,8 +54,6 @@ use super::providers::{
         LingmaDatabaseSourceV0, LingmaSourceBackedErrorV0, LingmaSourceBackedResultV0,
         LingmaSourceInventoryV0, LINGMA_SOURCE_BACKED_PARSER_REVISION,
     },
-    mistral_vibe::native_path::source_backed::scan_mistral_vibe_source_backed,
-    mux::mux_jsonl_adapter,
     nanoclaw::native_path::source_backed::NanoClawDocumentTreeAdapter,
     openhands::nativepath::OpenHandsEventFileAdapterV2,
     rovodev::native_path::RovoDevDocumentTreeAdapter,

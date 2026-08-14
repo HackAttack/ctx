@@ -6,7 +6,7 @@ use crate::{
     fields_from_schema, validate_schema, writer_support::construct_index_writer_with_retry,
     GenerationManifest, IndexError, Result, WriterOptions,
 };
-use ctx_history_index_format::register_body_analyzer;
+use ctx_history_index_format::{register_body_analyzer, verify_searcher_structure};
 use ctx_history_index_generation::DurableMmapDirectory;
 
 use super::{
@@ -15,9 +15,9 @@ use super::{
     meta_generation, open_slot_index, payload_generation_id, physical_integrity_audit,
     publish_active_generation_pointer, reclaim_inactive_generation_directories,
     reclaim_unreferenced_certifications, reclaim_unreferenced_manifests, reconcile_commit_error,
-    searcher_generation, slot_path, sync_generation, verify_complete_searcher, verify_searcher,
-    write_manifest, ActiveGenerationPointer, GenerationSlot, PhysicalIntegrityAudit,
-    PointerPublicationOutcome, INDEX_GENERATIONS_DIRECTORY,
+    searcher_generation, slot_path, sync_generation, verify_physical_integrity, write_manifest,
+    ActiveGenerationPointer, GenerationSlot, PhysicalIntegrityAudit, PointerPublicationOutcome,
+    INDEX_GENERATIONS_DIRECTORY,
 };
 
 mod clone {
@@ -121,13 +121,16 @@ fn republish_current(
         .reload_policy(ReloadPolicy::Manual)
         .try_into()?;
     let current_searcher = current_reader.searcher();
-    verify_complete_searcher(
-        &current_searcher,
-        current_publication.manifest(),
+    if searcher_generation(&current_searcher) != meta_generation(&current_metas) {
+        return Err(IndexError::ConcurrentGenerationChange);
+    }
+    verify_physical_integrity(
+        &current_index,
         &slot_path(root, pointer.active()),
         Some(pointer),
         pointer.active().physical_integrity_digest(),
     )?;
+    verify_searcher_structure(&current_searcher, current_publication.manifest())?;
     let (current_generation_id, current_manifest, current_publication_metadata) =
         current_publication.into_parts();
 
@@ -336,7 +339,7 @@ fn verify_candidate(
     }
     let physical_integrity_audit =
         physical_integrity_audit(&reopened, candidate_path, Some(base_pointer))?;
-    verify_searcher(&searcher, expected_manifest)?;
+    verify_searcher_structure(&searcher, expected_manifest)?;
     let slot = GenerationSlot::new(
         expected_generation_id.to_owned(),
         candidate_directory_name.to_owned(),

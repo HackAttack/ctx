@@ -8,9 +8,8 @@ use ctx_history_core::{EventRole, EventType};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 
-use crate::{MUX_SOURCE_FORMAT, PROVIDER_MAX_PREVIEW_CHARS};
-
 use super::metadata::mux_value_timestamp;
+use super::{MUX_SOURCE_FORMAT, PROVIDER_MAX_PREVIEW_CHARS};
 
 #[derive(Debug, Clone)]
 pub(super) struct MuxMessageRow {

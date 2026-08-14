@@ -51,7 +51,7 @@ pub use ctx_history_index_format::{
     SEMANTIC_CHUNK_TARGET_CHARS, SEMANTIC_SOURCE_MAX_CHARS,
 };
 pub(crate) use ctx_history_index_format::{
-    fields_from_schema, lexical_schema, validate_schema, Fields, IndexSourceFields,
+    fields_from_schema, lexical_schema, validate_schema, Fields,
 };
 pub use ctx_history_index_format::{
     CommittedPredecessorMigrationRecovery, ConsecutiveSourceMissingCount, GenerationManifest,
@@ -83,7 +83,9 @@ pub use ctx_history_index_query::{
     MAX_SESSION_EVENT_PAGE_ITEMS, MAX_SOURCE_EVENT_PAGE_ITEMS, SEARCH_COPIED_EVENT_LINEAGE_POLICY,
     SHOW_COPIED_EVENT_LINEAGE_POLICY,
 };
-pub(crate) use identity::{prior_core_record, register_compact_identity};
+pub(crate) use identity::{
+    prior_core_record, prior_session_identity_facts, register_compact_identity,
+};
 pub use preparation::{
     CoreRecordPreparer, PreparedCoreRecord, PreparedCoreRecordDraft,
     PreparedCoreRecordMaterialization,
@@ -147,7 +149,9 @@ use ctx_history_index_format::{
 };
 use ctx_history_index_generation::{reclaim_abandoned_atomic_writes, DurableMmapDirectory};
 use merge_policy::LexicalMergePolicy;
+use preparation::PreparedSessionIdentityFacts;
 use staging::{finish_identical_staging, PendingSource as StagedPendingSource, PendingSourceMode};
+use writer_options::CHANGED_SESSION_REGISTRY_ENTRY_CHARGE_BYTES;
 use writer_support::{
     acquire_generation_writer_lock_with_retry, clear_active_generation_rebuild_marker,
     construct_index_writer_with_retry, load_active_generation_rebuild_marker,
@@ -208,7 +212,6 @@ struct PartialSourceRouteDelta {
     deletions: BTreeSet<[u8; 32]>,
 }
 
-#[derive(Clone)]
 struct SourceRouteStageCheckpoint {
     route_identity: SourceRouteIdentity,
     source_route_plan: SourceRoutePlan,
@@ -221,6 +224,7 @@ struct SourceRouteStageCheckpoint {
     partially_reconciled_routes: BTreeSet<SourceRouteIdentity>,
     partial_source_route_deltas: BTreeMap<SourceRouteIdentity, PartialSourceRouteDelta>,
     source_identities: HashMap<Uuid, [u8; 32]>,
+    changed_session_insertions: Vec<Uuid>,
 }
 
 impl PendingDeletion {
@@ -302,6 +306,36 @@ fn classify_active_integrity_failure(
 #[cfg(test)]
 type GenerationPathHook = Box<dyn FnOnce(&Path) + Send>;
 
+/// Sole authority for constructing and publishing a lexical generation.
+///
+/// Feature-enabled downstream code cannot obtain the raw Tantivy writer or
+/// submit an `IndexDocument` without its unsplittable preparation facts:
+///
+/// ```compile_fail
+/// use ctx_history_index::GenerationWriter;
+///
+/// fn expose_raw_writer(writer: &mut GenerationWriter) {
+///     let _ = writer.test_writer_mut();
+/// }
+/// ```
+///
+/// ```compile_fail
+/// use ctx_history_index::GenerationWriter;
+/// use ctx_history_index_format::IndexDocument;
+///
+/// fn expose_internal_writer(writer: &mut GenerationWriter) {
+///     let _: &mut tantivy::IndexWriter<IndexDocument> = writer.writer_mut().unwrap();
+/// }
+/// ```
+///
+/// ```compile_fail
+/// use ctx_history_index::GenerationWriter;
+/// use ctx_history_index_format::IndexDocument;
+///
+/// fn submit_raw_document(writer: &mut GenerationWriter, document: IndexDocument) {
+///     writer.add_prepared_core_record(document).unwrap();
+/// }
+/// ```
 pub struct GenerationWriter {
     root: PathBuf,
     index: Index,
@@ -325,6 +359,8 @@ pub struct GenerationWriter {
     partially_reconciled_routes: BTreeSet<SourceRouteIdentity>,
     partial_source_route_deltas: BTreeMap<SourceRouteIdentity, PartialSourceRouteDelta>,
     source_identities: HashMap<Uuid, [u8; 32]>,
+    changed_sessions: HashMap<Uuid, PreparedSessionIdentityFacts>,
+    changed_session_registry_memory_bytes: usize,
     source_route_plan: Option<SourceRoutePlan>,
     active_source_route_stage: Option<SourceRouteStageCheckpoint>,
     #[cfg(test)]
@@ -409,6 +445,7 @@ impl GenerationWriter {
             indexer_threads,
             memory_bytes: options.memory_bytes,
         };
+        let changed_session_registry_memory_bytes = options.memory_bytes;
         let requested_root = root.as_ref().to_path_buf();
         fs::create_dir_all(&requested_root)?;
         let directory =
@@ -597,6 +634,8 @@ impl GenerationWriter {
                 partially_reconciled_routes: BTreeSet::new(),
                 partial_source_route_deltas: BTreeMap::new(),
                 source_identities,
+                changed_sessions: HashMap::new(),
+                changed_session_registry_memory_bytes,
                 source_route_plan: None,
                 active_source_route_stage: None,
                 #[cfg(test)]
@@ -977,9 +1016,58 @@ impl GenerationWriter {
         }
         let preparation::PreparedCoreRecordParts {
             record_accumulator_leaf,
+            identity_facts,
             document,
         } = prepared.into_parts();
+        let session_facts = identity_facts.session;
+        let source_owner = pending_source.source.identity().digest();
+        if session_facts.source_owner != source_owner
+            || identity_facts.event_id.source_digest() != source_owner
+            || session_facts.session_id.source_digest() != source_owner
+        {
+            return Err(IndexError::WriterInvariant(
+                "prepared Core identity facts do not match their staged source",
+            ));
+        }
+        let session_uuid = session_facts.session_id.as_uuid();
+        let first_insertion = if let Some(existing) = self.changed_sessions.get(&session_uuid) {
+            validate_session_identity_facts(*existing, session_facts)?;
+            false
+        } else {
+            self.ensure_changed_session_registry_capacity()?;
+            if let Some(base) = self.base_publication.as_ref() {
+                let base_facts = prior_session_identity_facts(
+                    base.searcher(),
+                    self.fields,
+                    session_facts.session_id,
+                )
+                .map_err(|error| match self.active_pointer.as_ref() {
+                    Some(pointer) => {
+                        classify_active_integrity_failure(&self.root, pointer.active(), error)
+                    }
+                    None => error,
+                })?;
+                if let Some(existing) = base_facts {
+                    // Replacement deletes this source's old postings, so its old
+                    // claim is not candidate authority. A claim owned by any
+                    // other source remains live and must still agree. Append
+                    // preserves every base posting and therefore always agrees.
+                    if is_append || existing.source_owner != source_owner {
+                        validate_session_identity_facts(existing, session_facts)?;
+                    }
+                }
+            }
+            true
+        };
         self.writer_mut()?.add_document(document)?;
+        if first_insertion {
+            self.changed_sessions
+                .entry(session_uuid)
+                .or_insert(session_facts);
+            if let Some(checkpoint) = self.active_source_route_stage.as_mut() {
+                checkpoint.changed_session_insertions.push(session_uuid);
+            }
+        }
         let pending = self
             .pending
             .get_mut(&token)
@@ -992,6 +1080,22 @@ impl GenerationWriter {
             .staged_documents
             .checked_add(1)
             .ok_or(IndexError::CountOverflow)?;
+        Ok(())
+    }
+
+    fn ensure_changed_session_registry_capacity(&self) -> Result<()> {
+        let maximum_entries = self.changed_session_registry_memory_bytes
+            / CHANGED_SESSION_REGISTRY_ENTRY_CHARGE_BYTES;
+        let attempted_entries = self.changed_sessions.len().saturating_add(1);
+        if attempted_entries > maximum_entries {
+            return Err(IndexError::ChangedSessionRegistryMemoryLimitExceeded {
+                attempted_entries,
+                required_bytes: attempted_entries
+                    .saturating_mul(CHANGED_SESSION_REGISTRY_ENTRY_CHARGE_BYTES),
+                maximum_bytes: self.changed_session_registry_memory_bytes,
+                maximum_entries,
+            });
+        }
         Ok(())
     }
 
@@ -1058,6 +1162,50 @@ impl GenerationWriter {
         }
         pending.certificate = Some(append.into_current());
         Ok(())
+    }
+}
+
+fn validate_session_identity_facts(
+    existing: PreparedSessionIdentityFacts,
+    candidate: PreparedSessionIdentityFacts,
+) -> Result<()> {
+    let uuid = candidate.session_id.as_uuid();
+    if existing.session_id.digest() != candidate.session_id.digest() {
+        return Err(IndexError::CompactIdentityCollision {
+            kind: "session",
+            uuid,
+            existing_digest: hex(&existing.session_id.digest()),
+            new_digest: hex(&candidate.session_id.digest()),
+        });
+    }
+    if existing.session_id.encode_canonical()? != candidate.session_id.encode_canonical()?
+        || existing.source_owner != candidate.source_owner
+    {
+        return Err(IndexError::DuplicateSessionIdentity(uuid.to_string()));
+    }
+    if existing.relationship.kind != candidate.relationship.kind
+        || !same_optional_full_identity(
+            existing.relationship.parent_session_id,
+            candidate.relationship.parent_session_id,
+        )?
+        || existing.relationship.root_session_id.encode_canonical()?
+            != candidate.relationship.root_session_id.encode_canonical()?
+    {
+        return Err(IndexError::InvalidSessionRelationshipGraph(
+            "one session has contradictory relationship fields",
+        ));
+    }
+    Ok(())
+}
+
+fn same_optional_full_identity(
+    left: Option<ctx_history_core::StableEntityId>,
+    right: Option<ctx_history_core::StableEntityId>,
+) -> Result<bool> {
+    match (left, right) {
+        (Some(left), Some(right)) => Ok(left.encode_canonical()? == right.encode_canonical()?),
+        (None, None) => Ok(true),
+        (Some(_), None) | (None, Some(_)) => Ok(false),
     }
 }
 

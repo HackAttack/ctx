@@ -54,8 +54,8 @@ pub use core_contract::{
 };
 #[doc(hidden)]
 pub use index_document::{
-    core_content_bytes, EventRangeOrderKey, IndexDocument, IndexSourceFields,
-    SemanticEventOrderKey, SessionEventOrderKey, SourceEventOrderKey, EVENT_RANGE_ORDER_KEY_LEN,
+    core_content_bytes, EventRangeOrderKey, IndexDocument, SemanticEventOrderKey,
+    SessionEventOrderKey, SourceEventOrderKey, EVENT_RANGE_ORDER_KEY_LEN,
     SEMANTIC_EVENT_ORDER_KEY_LEN, SESSION_EVENT_ORDER_KEY_LEN, SOURCE_EVENT_ORDER_KEY_LEN,
     SOURCE_EVENT_ORDER_SIZE_SUFFIX_LEN, SOURCE_EVENT_ORDER_SOURCE_PREFIX_LEN,
 };

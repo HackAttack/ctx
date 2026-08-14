@@ -389,11 +389,11 @@ fn deleted_exact_identity_postings_hit_the_shared_typed_absolute_bound() {
         &ancestor,
     );
     let survivor = session_event(&source, "survivor", 3, "survivor");
-    let (_temp, baseline) = publish_records(
+    let (temp, baseline) = publish_records(
         &source,
         &[ancestor.clone(), selected.clone(), survivor.clone()],
     );
-    let index = baseline.test_searcher().index().clone();
+    let index = open_unverified_generation(temp.path()).0.index().clone();
     let event_id = required_field(&index.schema(), "event_id").unwrap();
 
     let mut writer = index
@@ -469,7 +469,7 @@ fn depth_1024_is_complete_and_a_deeper_edge_truncates_truthfully() {
         previous = next;
     }
     let (temp, baseline) = publish_records(&source, std::slice::from_ref(&root));
-    let index = baseline.test_searcher().index().clone();
+    let index = open_unverified_generation(temp.path()).0.index().clone();
     drop(baseline);
     super::super::publish_unchecked_generation(
         temp.path(),
@@ -576,7 +576,8 @@ fn forged_inverse_origin_projection_fails_closed() {
         &other,
     );
     let (temp, pinned) = publish_records(&source, &[root.clone(), other.clone(), copy.clone()]);
-    let fields = fields_from_schema(pinned.test_searcher().schema()).unwrap();
+    let (searcher, _) = open_unverified_generation(temp.path());
+    let fields = fields_from_schema(searcher.schema()).unwrap();
     let target = fields.origin_event_id;
     let complete = super::super::indexed_document(copy);
     let mut forged = TantivyDocument::default();
@@ -586,7 +587,8 @@ fn forged_inverse_origin_projection_fails_closed() {
         }
     }
     forged.add_text(target, root.event_id.as_uuid().to_string());
-    let index = pinned.test_searcher().index().clone();
+    let index = searcher.index().clone();
+    drop(searcher);
     drop(pinned);
     super::super::publish_unchecked_generation(
         temp.path(),

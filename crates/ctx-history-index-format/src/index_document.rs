@@ -322,7 +322,7 @@ impl SessionEventOrderKey {
 }
 
 #[derive(Clone)]
-pub struct IndexSourceFields {
+struct IndexSourceFields {
     token: Arc<str>,
     identity_digest: [u8; 32],
     descriptor_digest: [u8; 32],
@@ -331,7 +331,7 @@ pub struct IndexSourceFields {
 }
 
 impl IndexSourceFields {
-    pub fn new(document_source: &ctx_history_core::SourceKey, token: &str) -> Self {
+    fn new(document_source: &ctx_history_core::SourceKey, token: &str) -> Self {
         Self {
             token: Arc::from(token),
             identity_digest: document_source.identity().digest(),
@@ -566,39 +566,67 @@ impl<'a> Value<'a> for &'a IndexValue {
     }
 }
 
+/// Opaque schema-owned projection accepted by the production index writer.
+///
+/// Callers can construct this type only through the canonical [`Self::from_core`]
+/// projection. Raw construction, mutation, and conversion remain unavailable
+/// even when every Cargo feature is enabled:
+///
+/// ```compile_fail
+/// use ctx_history_index_format::IndexDocument;
+///
+/// let _ = IndexDocument::with_capacity(1);
+/// ```
+///
+/// ```compile_fail
+/// use ctx_history_index_format::IndexDocument;
+/// use tantivy::schema::Field;
+///
+/// fn mutate(document: &mut IndexDocument, field: Field) {
+///     document.add_u64(field, 1);
+/// }
+/// ```
+///
+/// ```compile_fail
+/// use ctx_history_index_format::IndexDocument;
+///
+/// fn convert(document: IndexDocument) {
+///     let _ = document.into_tantivy_document();
+/// }
+/// ```
 pub struct IndexDocument {
     fields: Vec<(Field, IndexValue)>,
 }
 
 impl IndexDocument {
-    pub fn with_capacity(field_values: usize) -> Self {
+    fn with_capacity(field_values: usize) -> Self {
         Self {
             fields: Vec::with_capacity(field_values),
         }
     }
 
-    pub fn add_text(&mut self, field: Field, value: String) {
+    fn add_text(&mut self, field: Field, value: String) {
         self.fields.push((field, IndexValue::Text(value)));
     }
 
-    pub fn add_shared_text(&mut self, field: Field, value: Arc<str>) {
+    fn add_shared_text(&mut self, field: Field, value: Arc<str>) {
         self.fields.push((field, IndexValue::SharedText(value)));
     }
 
-    pub fn add_bytes(&mut self, field: Field, value: impl Into<Vec<u8>>) {
+    fn add_bytes(&mut self, field: Field, value: impl Into<Vec<u8>>) {
         self.fields.push((field, IndexValue::Bytes(value.into())));
     }
 
-    pub fn add_u64(&mut self, field: Field, value: u64) {
+    fn add_u64(&mut self, field: Field, value: u64) {
         self.fields.push((field, IndexValue::U64(value)));
     }
 
-    pub fn add_i64(&mut self, field: Field, value: i64) {
+    fn add_i64(&mut self, field: Field, value: i64) {
         self.fields.push((field, IndexValue::I64(value)));
     }
 
-    #[cfg(any(test, feature = "test-support"))]
-    pub fn into_tantivy_document(self) -> tantivy::TantivyDocument {
+    #[cfg(test)]
+    fn into_tantivy_document(self) -> tantivy::TantivyDocument {
         let mut document = tantivy::TantivyDocument::default();
         for (field, value) in self.fields {
             match value {
@@ -612,13 +640,15 @@ impl IndexDocument {
         document
     }
 
+    #[doc(hidden)]
     pub fn from_core(
         fields: Fields,
         record: CoreRecord,
         core_record_bytes: Vec<u8>,
         core_content_bytes: usize,
-        source: IndexSourceFields,
     ) -> Result<Self> {
+        let source_token = crate::source_token(&record.source);
+        let source = IndexSourceFields::new(&record.source, &source_token);
         let core_record_encoded_bytes = core_record_bytes.len();
         let discovery_eligible = record.content.is_discovery_eligible();
         let semantic_event_order = SemanticEventOrderKey::for_event(record.event_id)?;
@@ -963,12 +993,9 @@ mod tests {
         let expected_body = record.content.normalized_body.clone();
         let encoded = record.encode_stored().unwrap();
         let content_bytes = core_content_bytes(&record.content).unwrap();
-        let source_fields = IndexSourceFields::new(&source, &crate::source_token(&source));
-
-        let document =
-            IndexDocument::from_core(fields, record, encoded, content_bytes, source_fields)
-                .unwrap()
-                .into_tantivy_document();
+        let document = IndexDocument::from_core(fields, record, encoded, content_bytes)
+            .unwrap()
+            .into_tantivy_document();
 
         assert!(document.get_first(fields.body_search).is_none());
         assert_eq!(

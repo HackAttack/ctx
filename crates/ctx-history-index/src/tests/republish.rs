@@ -435,6 +435,131 @@ fn corrupt_republish_candidate_never_changes_or_damages_the_predecessor() {
 }
 
 #[test]
+fn metadata_only_republish_keeps_stored_core_replay_explicit() {
+    let predecessor = GoldenPredecessor::copy();
+    let writer = GenerationWriter::open(predecessor.root(), WriterOptions::default())
+        .unwrap()
+        .into_writer()
+        .unwrap();
+
+    crate::publication::reset_verification_activity();
+    ctx_history_index_query::reset_verified_index_reopen_count();
+    let verified = writer
+        .republish_current_publication_metadata(
+            predecessor.generation_id(),
+            b"replacement-owner-metadata".to_vec(),
+        )
+        .unwrap();
+
+    assert_eq!(verified.generation_id(), predecessor.generation_id());
+    assert_eq!(
+        verified.publication_metadata(),
+        Some(b"replacement-owner-metadata".as_slice())
+    );
+    assert_eq!(
+        crate::publication::verification_activity(),
+        (3, 0),
+        "base, authenticated clone, and committed candidate remain physically checked without a stored-Core pass"
+    );
+    assert_eq!(
+        crate::publication::candidate_identity_verification_activity(),
+        (0, 0)
+    );
+    assert_eq!(
+        crate::publication::candidate_projection_verification_activity(),
+        0
+    );
+    assert_eq!(
+        crate::publication::candidate_lineage_verification_activity(),
+        (0, 0)
+    );
+    assert_eq!(ctx_history_index_query::verified_index_reopen_count(), 1);
+
+    let (searcher, _) = open_unverified_generation(predecessor.root());
+    let explicit_scrub =
+        crate::publication::verify_searcher_with_metrics(&searcher, verified.manifest(), 1, false)
+            .unwrap();
+    assert_eq!(
+        explicit_scrub.document_decodes, 3,
+        "the explicit deep diagnostic remains the only path that decodes stored Core"
+    );
+}
+
+#[test]
+fn metadata_only_republish_rejects_candidate_payload_rebinding_without_logical_replay() {
+    let predecessor = GoldenPredecessor::copy();
+    let generation_id = predecessor.generation_id().to_owned();
+    let pointer_before = fs::read(predecessor.root().join("active-generation.json")).unwrap();
+    let fault = RepublishTestHookGuard::set(move |stage, path| {
+        if stage == RepublishStage::BeforeCandidateVerification {
+            let meta_path = path.unwrap().join("meta.json");
+            let mut meta: serde_json::Value = serde_json::from_slice(&fs::read(&meta_path)?)?;
+            meta["payload"] = serde_json::Value::String(canonical_commit_payload(
+                &generation_id,
+                Some(b"unauthenticated-owner-metadata"),
+            )?);
+            fs::write(meta_path, serde_json::to_vec(&meta)?)?;
+        }
+        Ok(())
+    });
+
+    crate::publication::reset_verification_activity();
+    assert!(matches!(
+        open_writer_error(predecessor.root()),
+        IndexError::ConcurrentGenerationChange
+    ));
+    assert_eq!(crate::publication::verification_activity().1, 0);
+    assert_eq!(
+        fs::read(predecessor.root().join("active-generation.json")).unwrap(),
+        pointer_before
+    );
+    drop(fault);
+}
+
+#[test]
+fn metadata_only_republish_rejects_candidate_physical_corruption_without_logical_replay() {
+    let predecessor = GoldenPredecessor::copy();
+    let pointer_before = fs::read(predecessor.root().join("active-generation.json")).unwrap();
+    let fault = RepublishTestHookGuard::set(|stage, path| {
+        if stage == RepublishStage::BeforeCandidateVerification {
+            let generation_path = path.unwrap();
+            let segment = fs::read_dir(generation_path)?
+                .map(|entry| entry.map(|entry| entry.path()))
+                .collect::<io::Result<Vec<_>>>()?
+                .into_iter()
+                .find(|path| {
+                    path.extension().and_then(|extension| extension.to_str()) == Some("store")
+                })
+                .ok_or_else(|| io::Error::other("candidate lacks a store segment"))?;
+            let mut bytes = fs::read(&segment)?;
+            let offset = bytes
+                .len()
+                .checked_div(2)
+                .filter(|offset| *offset < bytes.len())
+                .ok_or_else(|| io::Error::other("candidate store segment is empty"))?;
+            bytes[offset] ^= 0x80;
+            let replacement = generation_path.join("corrupt-segment-replacement");
+            fs::write(&replacement, bytes)?;
+            fs::remove_file(&segment)?;
+            fs::rename(replacement, segment)?;
+        }
+        Ok(())
+    });
+
+    crate::publication::reset_verification_activity();
+    assert!(matches!(
+        open_writer_error(predecessor.root()),
+        IndexError::ChecksumMismatch
+    ));
+    assert_eq!(crate::publication::verification_activity().1, 0);
+    assert_eq!(
+        fs::read(predecessor.root().join("active-generation.json")).unwrap(),
+        pointer_before
+    );
+    drop(fault);
+}
+
+#[test]
 fn unknown_core_fingerprint_fails_all_reads_and_never_starts_source_rebuild() {
     let predecessor = GoldenPredecessor::copy();
     let pointer = load_active_generation_pointer(predecessor.root())
@@ -547,10 +672,12 @@ fn unexpected_regular_file_is_not_cloned_and_keeps_predecessor_queryable() {
     .unwrap();
     let pointer_before = fs::read(predecessor.root().join("active-generation.json")).unwrap();
 
+    crate::publication::reset_verification_activity();
     assert!(matches!(
         open_writer_error(predecessor.root()),
         IndexError::CurrentRepublishSourceTopology("unexpected directory entry")
     ));
+    assert_eq!(crate::publication::verification_activity().1, 0);
     assert_eq!(
         fs::read(predecessor.root().join("active-generation.json")).unwrap(),
         pointer_before

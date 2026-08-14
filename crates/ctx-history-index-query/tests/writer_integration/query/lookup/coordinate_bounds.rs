@@ -19,10 +19,7 @@ fn bounded_session_coordinate_queries_ignore_pathological_nonselected_cardinalit
             .unwrap()
             .into_writer()
             .unwrap();
-        writer
-            .test_writer_mut()
-            .unwrap()
-            .set_merge_policy(Box::<NoMergePolicy>::default());
+        writer.test_disable_merges().unwrap();
         let append_base = if segment_index == 0 {
             writer.begin_source(source.clone()).unwrap();
             None
@@ -62,7 +59,11 @@ fn bounded_session_coordinate_queries_ignore_pathological_nonselected_cardinalit
     }
 
     let index = VerifiedIndex::open(temp.path()).unwrap();
-    assert!(index.test_searcher().segment_readers().len() >= SEGMENTS as usize);
+    let active_segment_count = open_unverified_generation(temp.path())
+        .0
+        .segment_readers()
+        .len();
+    assert!(active_segment_count >= SEGMENTS as usize);
     ctx_history_index_query::reset_stored_event_record_materializations();
     ctx_history_index_query::reset_stored_core_event_record_materializations();
     ctx_history_index_query::reset_session_event_order_term_visits();
@@ -130,10 +131,7 @@ fn bounded_session_coordinate_queries_ignore_pathological_nonselected_cardinalit
         .unwrap()
         .into_writer()
         .unwrap();
-    appending
-        .test_writer_mut()
-        .unwrap()
-        .set_merge_policy(Box::<NoMergePolicy>::default());
+    appending.test_disable_merges().unwrap();
     let base = appending
         .begin_source_append(source.clone())
         .unwrap()

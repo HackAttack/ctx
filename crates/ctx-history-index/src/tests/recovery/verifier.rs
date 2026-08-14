@@ -157,16 +157,15 @@ fn complete_verifier_rejects_identity_digest_corruption() {
     writer.certify_source(certificate(&source, 1, 1)).unwrap();
     writer.commit(|_| true).unwrap();
 
-    let pinned = VerifiedIndex::open(temp.path()).unwrap();
-    let fields = fields_from_schema(pinned.test_searcher().schema()).unwrap();
-    let address = pinned
-        .test_searcher()
+    let (searcher, _) = open_unverified_generation(temp.path());
+    let fields = fields_from_schema(searcher.schema()).unwrap();
+    let address = searcher
         .search(&AllQuery, &DocSetCollector)
         .unwrap()
         .into_iter()
         .next()
         .unwrap();
-    let document = indexed_document(decoded_stored_core(pinned.test_searcher(), address));
+    let document = indexed_document(decoded_stored_core(&searcher, address));
     let mut forged = TantivyDocument::default();
     for (field, value) in document.field_values() {
         if field != fields.event_identity_digest {
@@ -174,7 +173,7 @@ fn complete_verifier_rejects_identity_digest_corruption() {
         }
     }
     forged.add_text(fields.event_identity_digest, "00");
-    let index = pinned.test_searcher().index().clone();
+    let index = searcher.index().clone();
     publish_unchecked_generation(
         temp.path(),
         &index,
@@ -270,8 +269,8 @@ fn complete_verifier_rejects_missing_discovery_eligibility_for_ordinary_core() {
     writer.certify_source(certificate(&source, 1, 1)).unwrap();
     writer.commit(|_| true).unwrap();
 
-    let pinned = VerifiedIndex::open(temp.path()).unwrap();
-    let fields = fields_from_schema(pinned.test_searcher().schema()).unwrap();
+    let (searcher, _) = open_unverified_generation(temp.path());
+    let fields = fields_from_schema(searcher.schema()).unwrap();
     let document = indexed_document(expected);
     let mut forged = TantivyDocument::default();
     for (field, value) in document.field_values() {
@@ -279,7 +278,7 @@ fn complete_verifier_rejects_missing_discovery_eligibility_for_ordinary_core() {
             forged.add_field_value(field, value);
         }
     }
-    let index = pinned.test_searcher().index().clone();
+    let index = searcher.index().clone();
     publish_unchecked_generation(
         temp.path(),
         &index,
@@ -311,11 +310,11 @@ fn excluded_projection_forgery_error(
     writer.certify_source(certificate(&source, 1, 1)).unwrap();
     writer.commit(|_| true).unwrap();
 
-    let pinned = VerifiedIndex::open(temp.path()).unwrap();
-    let fields = fields_from_schema(pinned.test_searcher().schema()).unwrap();
+    let (searcher, _) = open_unverified_generation(temp.path());
+    let fields = fields_from_schema(searcher.schema()).unwrap();
     let mut forged = indexed_document(excluded);
     forge(&mut forged, fields);
-    let index = pinned.test_searcher().index().clone();
+    let index = searcher.index().clone();
     publish_unchecked_generation(
         temp.path(),
         &index,
@@ -378,8 +377,7 @@ fn complete_verifier_rejects_source_count_corruption() {
     writer.certify_source(certificate(&second, 1, 2)).unwrap();
     writer.commit(|_| true).unwrap();
 
-    let pinned = VerifiedIndex::open(temp.path()).unwrap();
-    let index = pinned.test_searcher().index().clone();
+    let index = open_unverified_generation(temp.path()).0.index().clone();
     publish_unchecked_generation(
         temp.path(),
         &index,
@@ -415,8 +413,7 @@ fn complete_verifier_rejects_total_count_corruption() {
     writer.certify_source(certificate(&source, 1, 1)).unwrap();
     writer.commit(|_| true).unwrap();
 
-    let pinned = VerifiedIndex::open(temp.path()).unwrap();
-    let index = pinned.test_searcher().index().clone();
+    let index = open_unverified_generation(temp.path()).0.index().clone();
     publish_unchecked_generation(
         temp.path(),
         &index,

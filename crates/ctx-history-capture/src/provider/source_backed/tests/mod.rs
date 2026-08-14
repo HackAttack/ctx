@@ -2,6 +2,7 @@ mod codex_child_independence;
 mod copilot;
 mod inventory;
 mod jsonl_shared_publication;
+mod mistral_vibe_publication;
 mod registry;
 
 use std::{

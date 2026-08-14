@@ -13,8 +13,6 @@ pub(crate) mod goose;
 pub(crate) mod hermes;
 pub(crate) mod kiro;
 pub(crate) mod lingma;
-pub(crate) mod mistral_vibe;
-pub(crate) mod mux;
 pub(crate) mod nanoclaw;
 pub(crate) mod native_jsonl;
 pub(crate) mod opencode;

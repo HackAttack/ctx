@@ -82,8 +82,6 @@ pub(crate) const ROVODEV_SOURCE_FORMAT: &str = "rovodev_session_json_tree";
 pub(crate) const FORGECODE_SQLITE_SOURCE_FORMAT: &str = "forgecode_sqlite";
 pub(crate) const DEEPAGENTS_SQLITE_SOURCE_FORMAT: &str = "deepagents_sessions_sqlite";
 pub(crate) const HERMES_SQLITE_SOURCE_FORMAT: &str = "hermes_state_sqlite";
-pub(crate) const MISTRAL_VIBE_SOURCE_FORMAT: &str = "mistral_vibe_session_jsonl";
-pub(crate) const MUX_SOURCE_FORMAT: &str = "mux_session_jsonl";
 pub(crate) const PROVIDER_MAX_PREVIEW_CHARS: usize =
     ctx_history_capture_model::PROVIDER_MAX_PREVIEW_CHARS;
 

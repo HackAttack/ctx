@@ -1,6 +1,5 @@
 use std::sync::Arc;
 
-use crate::provider::source_backed::IndexBaseEventLookup;
 use chrono::{DateTime, Utc};
 use ctx_history_capture_model::{
     file_touches::{
@@ -8,6 +7,7 @@ use ctx_history_capture_model::{
     },
     normalization::provider_value_text,
 };
+use ctx_history_capture_runtime::BaseEventLookup;
 use ctx_history_core::{
     derive_event_id, CoreContentPolicyStatus, CoreRecord, EventIdentityInput, EventOrigin,
     NativeItemKey, SessionRelationshipKind, SourceKey, TypedKey,
@@ -15,21 +15,19 @@ use ctx_history_core::{
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 
-use crate::{
-    common::io::ProviderSourceRoot,
-    provider::{
-        providers::mux::normalization::{
-            apply_mux_core_output_diagnostic, mux_core_event, mux_event_text, mux_event_type,
-            mux_message_timestamp_opt, mux_output_projection, mux_partial_event_index,
-            mux_provider_event_id, mux_result_content, MuxMessageRow, MuxOutputProjection,
-        },
-        source_backed::family::jsonl::{
-            JsonlFamilyProjectionMode, JsonlFamilyProjector, JsonlFamilyWorkerContext, JsonlReader,
-            JsonlRecordRef, JsonlSourceIdentity,
-        },
-        source_backed::FallbackEventIdentityState,
-    },
-    CaptureError, Result,
+use ctx_history_jsonl::{
+    FallbackEventIdentityState, JsonlFamilyProjectionMode, JsonlFamilyProjector,
+    JsonlFamilyWorkerContext, JsonlReader, JsonlRecordRef, JsonlSourceIdentity,
+};
+use ctx_history_provider_runtime::{
+    source_io::ProviderSourceRoot, CaptureError, ProviderBaseEventLookup, ProviderJsonlRuntime,
+    ProviderRuntimeBinding, Result,
+};
+
+use crate::mux::normalization::{
+    apply_mux_core_output_diagnostic, mux_core_event, mux_event_text, mux_event_type,
+    mux_message_timestamp_opt, mux_output_projection, mux_partial_event_index,
+    mux_provider_event_id, mux_result_content, MuxMessageRow, MuxOutputProjection,
 };
 
 use super::{
@@ -42,20 +40,23 @@ const FALLBACK_ITEM_NAMESPACE: &str = "mux.record.fallback";
 const FALLBACK_FINGERPRINT_DOMAIN: &[u8] = b"ctx.mux.fallback-event-fingerprint.v1\0";
 const MAX_FILE_TOUCHES: usize = 448;
 
-pub(super) struct MuxProjector {
+pub(super) struct MuxProjector<L: BaseEventLookup> {
     source: SourceKey,
     authority: Arc<ProviderSourceRoot>,
     binding: MuxBinding,
-    fallback_identities: FallbackEventIdentityState,
+    fallback_identities: FallbackEventIdentityState<L, CaptureError>,
 }
 
-impl MuxProjector {
+impl<L> MuxProjector<L>
+where
+    L: BaseEventLookup,
+{
     pub(super) fn new(
         source: SourceKey,
         authority: Arc<ProviderSourceRoot>,
         binding: MuxBinding,
         mode: JsonlFamilyProjectionMode,
-        base_event_lookup: Option<IndexBaseEventLookup>,
+        base_event_lookup: Option<L>,
     ) -> Result<Self> {
         let fallback_identities = FallbackEventIdentityState::new(
             source.clone(),
@@ -255,6 +256,27 @@ impl MuxProjector {
     }
 }
 
+pub(super) struct MuxJsonlProjector<B: ProviderRuntimeBinding> {
+    inner: MuxProjector<ProviderBaseEventLookup<B>>,
+}
+
+impl<B> MuxJsonlProjector<B>
+where
+    B: ProviderRuntimeBinding,
+{
+    pub(super) fn new(
+        source: SourceKey,
+        authority: Arc<ProviderSourceRoot>,
+        binding: MuxBinding,
+        mode: JsonlFamilyProjectionMode,
+        base_event_lookup: Option<ProviderBaseEventLookup<B>>,
+    ) -> Result<Self> {
+        Ok(Self {
+            inner: MuxProjector::new(source, authority, binding, mode, base_event_lookup)?,
+        })
+    }
+}
+
 fn mux_output_content_omission(
     value: &Value,
     output: Option<&MuxOutputProjection>,
@@ -279,33 +301,41 @@ fn mux_output_content_omission(
     }
 }
 
-impl JsonlFamilyProjector for MuxProjector {
-    type Runtime = crate::provider::source_backed::family::jsonl::CaptureJsonlRuntime;
+impl<B> JsonlFamilyProjector for MuxJsonlProjector<B>
+where
+    B: ProviderRuntimeBinding,
+{
+    type Runtime = ProviderJsonlRuntime<B>;
 
     fn project(
         &mut self,
         record: JsonlRecordRef<'_>,
-        _worker: &mut JsonlFamilyWorkerContext,
+        _worker: &mut JsonlFamilyWorkerContext<Self::Runtime>,
         emit: &mut dyn FnMut(CoreRecord) -> Result<()>,
     ) -> Result<()> {
-        self.project_record(self.binding.primary_stream, record, emit)
+        let stream = self.inner.binding.primary_stream;
+        self.inner.project_record(stream, record, emit)
     }
 
     fn finish_projecting(
         &mut self,
-        _worker: &mut JsonlFamilyWorkerContext,
+        _worker: &mut JsonlFamilyWorkerContext<Self::Runtime>,
         emit: &mut dyn FnMut(CoreRecord) -> Result<()>,
     ) -> Result<()> {
-        if !self.binding.primary_stream.is_partial() {
-            if let Some(partial) = self.binding.partial.clone() {
-                let source_file = open_verified(&self.authority, &partial)?;
-                let path = self.authority.named_path().join(&partial.relative_path);
+        if !self.inner.binding.primary_stream.is_partial() {
+            if let Some(partial) = self.inner.binding.partial.clone() {
+                let source_file = open_verified(&self.inner.authority, &partial)?;
+                let path = self
+                    .inner
+                    .authority
+                    .named_path()
+                    .join(&partial.relative_path);
                 let mut reader = JsonlReader::open_whole_record(
                     JsonlSourceIdentity::new(
                         "mux",
                         PARSER_REVISION,
                         "mux-bounded-partial-snapshot-v1",
-                        self.source.exact_descriptor_digest(),
+                        self.inner.source.exact_descriptor_digest(),
                         path,
                     ),
                     source_file,
@@ -313,7 +343,8 @@ impl JsonlFamilyProjector for MuxProjector {
                 )?;
                 while reader
                     .visit_page(&mut |record| {
-                        self.project_record(MuxStreamKind::Partial, record, emit)
+                        self.inner
+                            .project_record(MuxStreamKind::Partial, record, emit)
                     })?
                     .is_some()
                 {}
@@ -324,7 +355,7 @@ impl JsonlFamilyProjector for MuxProjector {
                 }
             }
         }
-        self.fallback_identities.finish()
+        self.inner.fallback_identities.finish()
     }
 }
 
@@ -454,6 +485,17 @@ fn contract(error: impl std::fmt::Display) -> CaptureError {
 mod tests {
     use super::*;
 
+    #[derive(Clone)]
+    struct EmptyLookup;
+
+    impl ctx_history_capture_runtime::BaseEventLookup for EmptyLookup {
+        type Error = std::convert::Infallible;
+
+        fn contains(&self, _event_id: uuid::Uuid) -> std::result::Result<bool, Self::Error> {
+            Ok(false)
+        }
+    }
+
     fn project_relationship_fixture(parent: Option<&str>) -> CoreRecord {
         let temp = tempfile::tempdir().unwrap();
         let authority = Arc::new(ProviderSourceRoot::open(temp.path()).unwrap());
@@ -469,7 +511,7 @@ mod tests {
             .transpose()
             .unwrap();
         let binding = MuxBinding {
-            metadata: crate::provider::providers::mux::metadata::MuxBoundedSessionMetadata {
+            metadata: crate::mux::metadata::MuxBoundedSessionMetadata {
                 provider_session_id: provider_session_id.to_owned(),
                 parent_provider_session_id: parent.map(str::to_owned),
                 root_provider_session_id: parent.map(str::to_owned),
@@ -489,7 +531,7 @@ mod tests {
             metadata_file: None,
             source_revision_digest: [7; 32],
         };
-        let mut projector = MuxProjector::new(
+        let mut projector = MuxProjector::<EmptyLookup>::new(
             source,
             authority,
             binding,
@@ -549,7 +591,7 @@ mod tests {
     #[test]
     fn provider_p1_lineage_contradictory_aliases_are_related_unknown() {
         let temp = tempfile::tempdir().unwrap();
-        let native = crate::provider::providers::mux::source::MuxSessionSource {
+        let native = crate::mux::source::MuxSessionSource {
             session_dir: temp.path().join("mux-child"),
             chat_path: None,
             partial_path: None,
@@ -557,23 +599,22 @@ mod tests {
             provider_session_id: "mux-child".to_owned(),
             parent_provider_session_id: None,
         };
-        let metadata =
-            crate::provider::providers::mux::metadata::mux_bounded_session_metadata_from_bytes(
-                &native,
-                "mux-test-metadata-v2",
-                "2026-08-05T12:00:00Z".parse().unwrap(),
-                Some(
-                    &serde_json::to_vec(&serde_json::json!({
-                        "workspaceId": "mux-child",
-                        "parentWorkspaceId": "mux-parent",
-                        "parentTaskId": "contradictory-parent",
-                        "rootWorkspaceId": "mux-parent",
-                        "rootTaskId": "contradictory-root"
-                    }))
-                    .unwrap(),
-                ),
-            )
-            .unwrap();
+        let metadata = crate::mux::metadata::mux_bounded_session_metadata_from_bytes(
+            &native,
+            "mux-test-metadata-v2",
+            "2026-08-05T12:00:00Z".parse().unwrap(),
+            Some(
+                &serde_json::to_vec(&serde_json::json!({
+                    "workspaceId": "mux-child",
+                    "parentWorkspaceId": "mux-parent",
+                    "parentTaskId": "contradictory-parent",
+                    "rootWorkspaceId": "mux-parent",
+                    "rootTaskId": "contradictory-root"
+                }))
+                .unwrap(),
+            ),
+        )
+        .unwrap();
         assert!(metadata.lineage_ambiguous);
         assert_eq!(
             metadata.parent_provider_session_id.as_deref(),
@@ -600,7 +641,7 @@ mod tests {
             source_revision_digest: [8; 32],
         };
         let authority = Arc::new(ProviderSourceRoot::open(temp.path()).unwrap());
-        let mut projector = MuxProjector::new(
+        let mut projector = MuxProjector::<EmptyLookup>::new(
             source,
             authority,
             binding,

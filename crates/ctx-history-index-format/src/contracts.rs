@@ -202,6 +202,15 @@ pub enum IndexError {
     #[error("index memory {actual} is below the {minimum} byte minimum")]
     IndexMemoryTooSmall { actual: usize, minimum: usize },
     #[error(
+        "changed-session registry requires {required_bytes} charged bytes for {attempted_entries} entries, exceeding the {maximum_bytes} byte writer memory budget ({maximum_entries} entries maximum)"
+    )]
+    ChangedSessionRegistryMemoryLimitExceeded {
+        attempted_entries: usize,
+        required_bytes: usize,
+        maximum_bytes: usize,
+        maximum_entries: usize,
+    },
+    #[error(
         "logical verification scratch requires {required_bytes} bytes, exceeding the {maximum_bytes} byte ceiling"
     )]
     VerificationScratchLimitExceeded {

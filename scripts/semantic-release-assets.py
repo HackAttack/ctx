@@ -1065,6 +1065,119 @@ def reject_duplicate_json_keys(pairs: list[tuple[str, object]]) -> dict[str, obj
     return value
 
 
+def bind_coreml_cache(args: argparse.Namespace) -> None:
+    archive = args.archive
+    if archive.name != COREML_ARCHIVE_NAME:
+        raise AssetError(
+            f"Core ML archive must be named {COREML_ARCHIVE_NAME}, got {archive.name}"
+    )
+    checksum_path = Path(f"{archive}.sha256")
+    asset_record_path = Path(f"{archive}.asset.json")
+    checksum_metadata = checksum_path.lstat()
+    if (
+        stat.S_ISLNK(checksum_metadata.st_mode)
+        or not stat.S_ISREG(checksum_metadata.st_mode)
+        or checksum_metadata.st_size > 256
+    ):
+        raise AssetError("Core ML checksum sidecar is not a bounded regular file")
+    checksum = checksum_path.read_bytes()
+    expected_checksum = (
+        f"{COREML_PUBLICATION_ARCHIVE_SHA256}  {COREML_ARCHIVE_NAME}\n".encode(
+            "ascii"
+        )
+    )
+    if checksum != expected_checksum:
+        raise AssetError("Core ML checksum sidecar does not match its publication pin")
+
+    archive_size, archive_sha256 = sha256_file(archive)
+    if (archive_size, archive_sha256) != (
+        COREML_PUBLICATION_ARCHIVE_SIZE,
+        COREML_PUBLICATION_ARCHIVE_SHA256,
+    ):
+        raise AssetError(
+            "Core ML archive does not match its publication size/SHA-256 pin"
+        )
+
+    record_metadata = asset_record_path.lstat()
+    if (
+        stat.S_ISLNK(record_metadata.st_mode)
+        or not stat.S_ISREG(record_metadata.st_mode)
+        or record_metadata.st_size > 16 * 1024 * 1024
+    ):
+        raise AssetError("Core ML asset record is not a bounded regular file")
+    record_raw = asset_record_path.read_bytes()
+    record = json.loads(record_raw, object_pairs_hook=reject_duplicate_json_keys)
+    if (
+        not isinstance(record, dict)
+        or set(record) != {"asset", "id"}
+        or record.get("id") != "apple_coreml"
+        or canonical_json(record) + b"\n" != record_raw
+    ):
+        raise AssetError("Core ML asset record is not canonical apple_coreml metadata")
+    asset = record["asset"]
+    validate_asset_record("apple_coreml", asset)
+    if asset["archive_sha256"] != archive_sha256:
+        raise AssetError("Core ML asset record does not match the candidate archive")
+
+    cache_metadata = args.cache_dir.lstat()
+    if stat.S_ISLNK(cache_metadata.st_mode) or not stat.S_ISDIR(
+        cache_metadata.st_mode
+    ):
+        raise AssetError("Core ML cache root is not a real directory")
+    if stat.S_IMODE(cache_metadata.st_mode) & 0o077:
+        raise AssetError("Core ML cache root is not owner-private")
+    if next(args.cache_dir.iterdir(), None) is not None:
+        raise AssetError("Core ML candidate binding requires an empty cache root")
+
+    manifest_sha256 = COREML_PUBLICATION_MANIFEST_SHA256
+    target_parent = (
+        args.cache_dir
+        / "semantic-model-bundles"
+        / "sha256"
+        / manifest_sha256[:2]
+    )
+    target = target_parent / manifest_sha256
+    marker = target.with_name(f"{manifest_sha256}.complete.json")
+    installed = False
+    try:
+        with tempfile.TemporaryDirectory(
+            prefix=".candidate-coreml.", dir=args.cache_dir
+        ) as temporary:
+            staging = Path(temporary) / "bundle"
+            extract_coreml_archive(archive, staging)
+            paths = [entry["path"] for entry in asset["files"]]
+            if collect_records(staging, paths) != asset["files"]:
+                raise AssetError(
+                    "Core ML candidate contents do not match the canonical asset record"
+                )
+            _, actual_manifest_sha256 = sha256_file(
+                staging / "manifest.json", 1024 * 1024
+            )
+            if actual_manifest_sha256 != manifest_sha256:
+                raise AssetError(
+                    "Core ML candidate manifest does not match its publication pin"
+                )
+            target_parent.mkdir(parents=True, mode=0o700)
+            os.replace(staging, target)
+            installed = True
+        marker_body = canonical_json(
+            {"manifest_sha256": manifest_sha256, "schema_version": 1}
+        ) + b"\n"
+        with marker.open("xb") as output:
+            output.write(marker_body)
+            output.flush()
+            os.fsync(output.fileno())
+    except Exception:
+        marker.unlink(missing_ok=True)
+        if installed:
+            shutil.rmtree(target, ignore_errors=True)
+        raise
+
+    print(f"archive_sha256={archive_sha256}")
+    print(f"manifest_sha256={manifest_sha256}")
+    print(f"cache_bundle={target}")
+
+
 def build_catalog(args: argparse.Namespace) -> None:
     records: dict[str, dict[str, object]] = {}
     for path in args.asset_record:
@@ -1176,6 +1289,11 @@ def parse_args() -> argparse.Namespace:
     catalog.add_argument("--asset-record", action="append", type=Path, required=True)
     catalog.add_argument("--output", type=Path, required=True)
     catalog.set_defaults(run=build_catalog)
+
+    bind_coreml = commands.add_parser("bind-coreml-cache")
+    bind_coreml.add_argument("--archive", type=Path, required=True)
+    bind_coreml.add_argument("--cache-dir", type=Path, required=True)
+    bind_coreml.set_defaults(run=bind_coreml_cache)
     return parser.parse_args()
 
 

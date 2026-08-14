@@ -4,12 +4,12 @@ use chrono::{DateTime, Utc};
 use ctx_history_core::EventType;
 use serde_json::{json, Value};
 
-use crate::{CaptureError, Result, PROVIDER_MAX_PREVIEW_CHARS};
 use ctx_history_capture_model::normalization::provider_value_text;
 use ctx_history_capture_model::time::parse_rfc3339_utc;
+use ctx_history_provider_runtime::{CaptureError, Result};
 
 use super::source::MistralVibeSessionSource;
-use super::MISTRAL_VIBE_MAX_ID_BYTES;
+use super::{MISTRAL_VIBE_MAX_ID_BYTES, PROVIDER_MAX_PREVIEW_CHARS};
 
 pub(super) fn mistral_vibe_bounded_metadata_from_bytes(
     source: &MistralVibeSessionSource,

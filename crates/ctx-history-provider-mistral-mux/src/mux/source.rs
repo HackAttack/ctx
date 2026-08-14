@@ -3,10 +3,12 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use crate::common::io::{
-    ensure_provider_path_parents_are_not_symlinks, ensure_regular_provider_transcript_file,
+use ctx_history_provider_runtime::{
+    source_io::{
+        ensure_provider_path_parents_are_not_symlinks, ensure_regular_provider_transcript_file,
+    },
+    CaptureError, Result,
 };
-use crate::{CaptureError, Result};
 
 pub(super) const MUX_MAX_DIRECTORY_DEPTH: usize = 128;
 

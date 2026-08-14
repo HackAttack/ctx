@@ -511,6 +511,8 @@ def coreml_archive_fixture() -> tuple[bytes, dict[str, bytes]]:
     ).encode()
     payloads = {
         "LICENSES/MODEL_LICENSE.txt": b"model license\r\n",
+        "PROVENANCE.json": b'{"producer":"fixture"}\n',
+        "THIRD_PARTY_NOTICES.md": b"fixture notices\n",
         "document.mlpackage/Data/model.bin": b"document",
         "manifest.json": manifest,
         "query.mlpackage/Data/model.bin": b"query",
@@ -531,6 +533,33 @@ def coreml_archive_fixture() -> tuple[bytes, dict[str, bytes]]:
         for relative, body in payloads.items()
     )
     return tar_xz_fixture(entries), payloads
+
+
+def write_coreml_candidate_fixture(
+    root: Path,
+) -> tuple[Path, str, str, dict[str, bytes]]:
+    archive_bytes, payloads = coreml_archive_fixture()
+    archive = root / semantic_release_assets.COREML_ARCHIVE_NAME
+    archive.write_bytes(archive_bytes)
+    archive_sha256 = hashlib.sha256(archive_bytes).hexdigest()
+    manifest_sha256 = hashlib.sha256(payloads["manifest.json"]).hexdigest()
+    Path(f"{archive}.sha256").write_text(
+        f"{archive_sha256}  {archive.name}\n", encoding="ascii"
+    )
+    record = semantic_catalog_fixture("apple_coreml")
+    record["asset"]["archive_sha256"] = archive_sha256
+    record["asset"]["files"] = [
+        {
+            "path": path,
+            "sha256": hashlib.sha256(payloads[path]).hexdigest(),
+            "size": len(payloads[path]),
+        }
+        for path in sorted(payloads)
+    ]
+    Path(f"{archive}.asset.json").write_bytes(
+        semantic_release_assets.canonical_json(record) + b"\n"
+    )
+    return archive, archive_sha256, manifest_sha256, payloads
 
 
 class SemanticReleaseAssetTests(unittest.TestCase):
@@ -610,6 +639,77 @@ class SemanticReleaseAssetTests(unittest.TestCase):
             semantic_release_assets.validate_asset_record(
                 record["id"], record["asset"]
             )
+
+    def test_candidate_coreml_binding_publishes_exact_verified_cache(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            archive, archive_sha256, manifest_sha256, payloads = (
+                write_coreml_candidate_fixture(root)
+            )
+            cache = root / "cache"
+            cache.mkdir(mode=0o700)
+            with mock.patch.object(
+                semantic_release_assets,
+                "COREML_PUBLICATION_ARCHIVE_SIZE",
+                archive.stat().st_size,
+            ), mock.patch.object(
+                semantic_release_assets,
+                "COREML_PUBLICATION_ARCHIVE_SHA256",
+                archive_sha256,
+            ), mock.patch.object(
+                semantic_release_assets,
+                "COREML_PUBLICATION_MANIFEST_SHA256",
+                manifest_sha256,
+            ):
+                semantic_release_assets.bind_coreml_cache(
+                    Namespace(archive=archive, cache_dir=cache)
+                )
+
+            bundle = (
+                cache
+                / "semantic-model-bundles"
+                / "sha256"
+                / manifest_sha256[:2]
+                / manifest_sha256
+            )
+            for relative, body in payloads.items():
+                self.assertEqual(bundle.joinpath(*relative.split("/")).read_bytes(), body)
+            marker = bundle.with_name(f"{manifest_sha256}.complete.json")
+            self.assertEqual(
+                json.loads(marker.read_bytes()),
+                {"manifest_sha256": manifest_sha256, "schema_version": 1},
+            )
+
+    def test_candidate_coreml_binding_rejects_mismatched_download_sidecar(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            archive, archive_sha256, manifest_sha256, _ = (
+                write_coreml_candidate_fixture(root)
+            )
+            Path(f"{archive}.sha256").write_text(
+                f"{'0' * 64}  {archive.name}\n", encoding="ascii"
+            )
+            cache = root / "cache"
+            cache.mkdir(mode=0o700)
+            with mock.patch.object(
+                semantic_release_assets,
+                "COREML_PUBLICATION_ARCHIVE_SIZE",
+                archive.stat().st_size,
+            ), mock.patch.object(
+                semantic_release_assets,
+                "COREML_PUBLICATION_ARCHIVE_SHA256",
+                archive_sha256,
+            ), mock.patch.object(
+                semantic_release_assets,
+                "COREML_PUBLICATION_MANIFEST_SHA256",
+                manifest_sha256,
+            ), self.assertRaisesRegex(
+                semantic_release_assets.AssetError, "checksum sidecar"
+            ):
+                semantic_release_assets.bind_coreml_cache(
+                    Namespace(archive=archive, cache_dir=cache)
+                )
+            self.assertEqual(list(cache.iterdir()), [])
 
     def test_coreml_asset_record_requires_exact_publication_size(self) -> None:
         fixture = semantic_catalog_fixture("apple_coreml")["asset"]
