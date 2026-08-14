@@ -5,32 +5,6 @@
 //! This crate receives those authorities through explicit per-call values and
 //! ports; it never depends on the final binary.
 
-// Keep direct CLI writes on the same measured stdout/stderr seam as structured
-// terminal UI so analytics and local-usage byte accounting remain unchanged.
-macro_rules! print {
-    ($($arg:tt)*) => {{
-        ctx_terminal::write_stdout(format_args!($($arg)*));
-    }};
-}
-
-macro_rules! println {
-    () => {{
-        ctx_terminal::write_stdout_line(format_args!(""));
-    }};
-    ($($arg:tt)*) => {{
-        ctx_terminal::write_stdout_line(format_args!($($arg)*));
-    }};
-}
-
-macro_rules! eprintln {
-    () => {{
-        ctx_terminal::write_stderr_line(format_args!(""));
-    }};
-    ($($arg:tt)*) => {{
-        ctx_terminal::write_stderr_line(format_args!($($arg)*));
-    }};
-}
-
 pub mod docs;
 pub mod integrations;
 pub mod mcp_text;

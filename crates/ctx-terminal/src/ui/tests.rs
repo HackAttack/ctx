@@ -688,6 +688,24 @@ fn ui_owns_independent_injectable_streams_and_capabilities() {
 }
 
 #[test]
+fn ui_writes_exact_framed_machine_bytes_to_the_selected_stream() {
+    let stdout = SharedWriter::default();
+    let stdout_copy = stdout.clone();
+    let stderr = SharedWriter::default();
+    let stderr_copy = stderr.clone();
+    let stdout_context = RenderContext::for_test(TestContext::pipe(StreamKind::Stdout));
+    let stderr_context = RenderContext::for_test(TestContext::pipe(StreamKind::Stderr));
+    let mut ui = Ui::with_writers(stdout, stdout_context, stderr, stderr_context);
+
+    ui.write_stdout_bytes(b"{\"stream\":\"stdout\"}\n").unwrap();
+    ui.write_stderr_bytes(b"{\"stream\":\"stderr\"}\n").unwrap();
+    ui.flush().unwrap();
+
+    assert_eq!(stdout_copy.bytes(), b"{\"stream\":\"stdout\"}\n");
+    assert_eq!(stderr_copy.bytes(), b"{\"stream\":\"stderr\"}\n");
+}
+
+#[test]
 fn ui_measurement_matches_final_cross_width_color_and_stream_bytes() {
     let mut rendered_sizes = Vec::new();
     for (width, color) in [

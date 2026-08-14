@@ -46,7 +46,11 @@ fn auto_mode_json(enabled: bool) -> Value {
 
 pub fn render_outcome(upgrade: &UpgradeOutcome, json_output: bool, ui: &mut Ui) -> Result<()> {
     if json_output {
-        println!("{}", serde_json::to_string_pretty(&outcome_json(upgrade))?);
+        let output = format!(
+            "{}\n",
+            serde_json::to_string_pretty(&outcome_json(upgrade))?
+        );
+        ui.write_stdout_bytes(output.as_bytes())?;
         return Ok(());
     }
 

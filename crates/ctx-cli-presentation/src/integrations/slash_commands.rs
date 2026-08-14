@@ -133,15 +133,14 @@ pub(crate) fn run_install(
     crate::integrations::apply_workflow_telemetry(outcome.telemetry, telemetry);
     let receipt = outcome.receipt;
     if json_output {
-        println!(
-            "{}",
-            serde_json::to_string_pretty(&json!({
-                "integration": "slash-commands",
-                "command": COMMAND_NAME,
-                "scope": if receipt.project { "project" } else { "global" },
-                "results": receipt.results.iter().map(install_result_json).collect::<Vec<_>>(),
-            }))?
-        );
+        let mut output = serde_json::to_string_pretty(&json!({
+            "integration": "slash-commands",
+            "command": COMMAND_NAME,
+            "scope": if receipt.project { "project" } else { "global" },
+            "results": receipt.results.iter().map(install_result_json).collect::<Vec<_>>(),
+        }))?;
+        output.push('\n');
+        ui.write_stdout_bytes(output.as_bytes())?;
     } else {
         let document = render_install_results(ui.stdout_context(), &receipt.results);
         ui.write_stdout(&document)?;

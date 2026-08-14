@@ -36,7 +36,8 @@ pub fn render_status(view: UpgradeStatusView<'_>, json_output: bool, ui: &mut Ui
         "pro": view.pro,
     });
     if json_output {
-        println!("{}", serde_json::to_string_pretty(&value)?);
+        let output = format!("{}\n", serde_json::to_string_pretty(&value)?);
+        ui.write_stdout_bytes(output.as_bytes())?;
         return Ok(());
     }
 

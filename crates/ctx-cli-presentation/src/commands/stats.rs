@@ -42,7 +42,8 @@ pub fn run(
 pub fn malformed_config_failure(json_output: bool, ui: &mut Ui) -> Result<()> {
     let report = UsageReport::config_error();
     if json_output {
-        eprintln!("{}", serde_json::to_string(&report)?);
+        let output = format!("{}\n", serde_json::to_string(&report)?);
+        ui.write_stderr_bytes(output.as_bytes())?;
     } else {
         let document = render_stats_human(ui.stderr_context(), &report, false);
         ui.write_stderr(&document)?;
@@ -290,7 +291,10 @@ fn render_stats_human(context: &RenderContext, report: &UsageReport, detailed: b
 
 #[cfg(test)]
 mod ui_tests {
-    use std::io::Write as _;
+    use std::{
+        io::{self, Write as _},
+        sync::{Arc, Mutex},
+    };
 
     use unicode_width::UnicodeWidthStr as _;
 
@@ -327,6 +331,26 @@ mod ui_tests {
         let mut stream = anstream::StripStream::new(Vec::new());
         stream.write_all(rendered.as_bytes()).unwrap();
         String::from_utf8(stream.into_inner()).unwrap()
+    }
+
+    #[derive(Clone, Default)]
+    struct SharedWriter(Arc<Mutex<Vec<u8>>>);
+
+    impl SharedWriter {
+        fn text(&self) -> String {
+            String::from_utf8(self.0.lock().unwrap().clone()).unwrap()
+        }
+    }
+
+    impl io::Write for SharedWriter {
+        fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+            self.0.lock().unwrap().extend_from_slice(bytes);
+            Ok(bytes.len())
+        }
+
+        fn flush(&mut self) -> io::Result<()> {
+            Ok(())
+        }
     }
 
     #[test]
@@ -378,6 +402,29 @@ mod ui_tests {
         assert!(rendered.contains("local_usage_config_unavailable"));
         assert!(rendered.contains("Next\n  ctx stats\n"));
         assert_fits(&document, &context);
+    }
+
+    #[test]
+    fn malformed_config_machine_error_is_exact_json_on_stderr_only() {
+        let stdout = SharedWriter::default();
+        let stdout_copy = stdout.clone();
+        let stderr = SharedWriter::default();
+        let stderr_copy = stderr.clone();
+        let mut ui = Ui::with_writers(
+            stdout,
+            RenderContext::for_test(TestContext::pipe(StreamKind::Stdout)),
+            stderr,
+            RenderContext::for_test(TestContext::pipe(StreamKind::Stderr)),
+        );
+
+        let error = malformed_config_failure(true, &mut ui).unwrap_err();
+
+        let value: serde_json::Value = serde_json::from_str(stderr_copy.text().trim()).unwrap();
+        assert_eq!(value["state"], "error");
+        assert_eq!(value["error"]["code"], "local_usage_config_unavailable");
+        assert!(stderr_copy.text().ends_with('\n'));
+        assert!(stdout_copy.text().is_empty());
+        assert!(error.is::<crate::RenderedCliError>());
     }
 
     #[test]

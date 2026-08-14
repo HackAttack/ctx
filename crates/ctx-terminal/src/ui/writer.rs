@@ -149,6 +149,16 @@ impl Ui {
         self.stderr.write(document)
     }
 
+    /// Writes an already-framed machine or plain-text protocol to the selected stdout stream.
+    pub fn write_stdout_bytes(&mut self, bytes: &[u8]) -> io::Result<()> {
+        self.stdout.writer().write_all(bytes)
+    }
+
+    /// Writes an already-framed machine or plain-text protocol to the selected stderr stream.
+    pub fn write_stderr_bytes(&mut self, bytes: &[u8]) -> io::Result<()> {
+        self.stderr.writer().write_all(bytes)
+    }
+
     pub fn stdout_live_output(&mut self) -> LiveOutput<&mut (dyn Write + Send)> {
         let context = *self.stdout.context();
         LiveOutput::new(self.stdout.writer(), context)

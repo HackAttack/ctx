@@ -1,9 +1,8 @@
 //! Shared human-terminal rendering foundation.
 //!
-//! Machine-readable output deliberately bypasses this module. Commands will
-//! migrate to this internal surface separately; keeping it registered but
-//! otherwise unused in this patch lets the foundation land without changing
-//! existing output contracts.
+//! Machine-readable output uses Ui's explicit byte-delivery methods whenever a
+//! command needs selected-stream delivery. Those bytes remain opaque to the
+//! document renderer while retaining the same injected-stream contract.
 
 mod bootstrap;
 mod components;

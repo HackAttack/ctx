@@ -25,12 +25,12 @@ pub(super) fn run_install(
     telemetry: &mut IntegrationTelemetry,
     ui: &mut Ui,
 ) -> Result<()> {
-    let selection = install_agent_selection(&args, context)?;
+    let selection = install_agent_selection(&args, context, ui)?;
     let outcome = application::install(selection, args.project, args.force, context, identity)?;
     crate::integrations::apply_workflow_telemetry(outcome.telemetry, telemetry);
     let receipt = outcome.receipt;
     if args.format.is_json() {
-        println!(
+        let output = format!(
             "{}",
             json!({
                 "skill": BUNDLED_SKILL_NAME,
@@ -38,6 +38,7 @@ pub(super) fn run_install(
                 "results": receipt.results.iter().map(install_result_json).collect::<Vec<_>>(),
             })
         );
+        ui.write_stdout_bytes(format!("{output}\n").as_bytes())?;
     } else {
         let document = render_install_results(ui.stdout_context(), &receipt.results);
         ui.write_stdout(&document)?;
@@ -72,7 +73,7 @@ pub(super) fn run_status(
     let recovery_command = outcome.recovery_command;
     let receipt = outcome.receipt;
     if args.format.is_json() {
-        println!(
+        let output = format!(
             "{}",
             json!({
                 "skill": BUNDLED_SKILL_NAME,
@@ -80,6 +81,7 @@ pub(super) fn run_status(
                 "results": receipt.results.iter().map(status_result_json).collect::<Vec<_>>(),
             })
         );
+        ui.write_stdout_bytes(format!("{output}\n").as_bytes())?;
     } else {
         let document =
             render_status_results(ui.stdout_context(), &receipt.results, &recovery_command);

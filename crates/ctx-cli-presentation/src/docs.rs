@@ -362,7 +362,7 @@ fn list_docs(json_output: bool, telemetry: &mut DocsTelemetry, ui: &mut Ui) -> R
                 "topics": topics
             }))?
         );
-        print!("{output}");
+        ui.write_stdout_bytes(output.as_bytes())?;
         Ok(output.len())
     } else {
         let document = render_docs_list(ui.stdout_context());
@@ -411,7 +411,7 @@ fn search_docs(
                 "suggested_next_commands": docs_search_suggestions(query, rows.is_empty())
             }))?
         );
-        print!("{output}");
+        ui.write_stdout_bytes(output.as_bytes())?;
         Ok(output.len())
     } else {
         let document = render_docs_search(ui.stdout_context(), query, &results);
@@ -617,7 +617,8 @@ fn show_doc(args: DocsShowArgs, telemetry: &mut DocsTelemetry, ui: &mut Ui) -> R
         fs::write(&path, body).with_context(|| format!("write {}", path.display()))?;
         Ok(0)
     } else {
-        println!("{body}");
+        let output = format!("{body}\n");
+        ui.write_stdout_bytes(output.as_bytes())?;
         Ok(body.len().saturating_add(1))
     }
 }
@@ -669,7 +670,7 @@ fn man_docs(args: DocsManArgs, ui: &mut Ui, root_command: &Command) -> Result<us
         let mut out = Vec::new();
         clap_mangen::Man::new(command).render(&mut out)?;
         let output = String::from_utf8(out)?;
-        print!("{output}");
+        ui.write_stdout_bytes(output.as_bytes())?;
         return Ok(output.len());
     }
     let out_dir = args
@@ -805,7 +806,10 @@ fn markdown_to_text(markdown: &str) -> String {
 
 #[cfg(test)]
 mod ui_tests {
-    use std::io::Write as _;
+    use std::{
+        io::{self, Write as _},
+        sync::{Arc, Mutex},
+    };
 
     use unicode_width::UnicodeWidthStr as _;
 
@@ -829,6 +833,38 @@ mod ui_tests {
         String::from_utf8(stream.into_inner()).unwrap()
     }
 
+    #[derive(Clone, Default)]
+    struct SharedWriter(Arc<Mutex<Vec<u8>>>);
+
+    impl SharedWriter {
+        fn text(&self) -> String {
+            String::from_utf8(self.0.lock().unwrap().clone()).unwrap()
+        }
+    }
+
+    impl io::Write for SharedWriter {
+        fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+            self.0.lock().unwrap().extend_from_slice(bytes);
+            Ok(bytes.len())
+        }
+
+        fn flush(&mut self) -> io::Result<()> {
+            Ok(())
+        }
+    }
+
+    fn test_ui() -> (Ui, SharedWriter, SharedWriter) {
+        let stdout = SharedWriter::default();
+        let stderr = SharedWriter::default();
+        let ui = Ui::with_writers(
+            stdout.clone(),
+            RenderContext::for_test(TestContext::pipe(StreamKind::Stdout)),
+            stderr.clone(),
+            RenderContext::for_test(TestContext::pipe(StreamKind::Stderr)),
+        );
+        (ui, stdout, stderr)
+    }
+
     #[test]
     fn docs_list_is_structured_and_responsive() {
         for width in [32, 48, 80, 120] {
@@ -843,6 +879,89 @@ mod ui_tests {
             assert!(rendered.contains("ctx docs search \"file path\""));
             assert_fits(&document, &context);
         }
+    }
+
+    #[test]
+    fn docs_machine_and_plain_branches_write_exact_selected_stdout_protocols() {
+        let mut telemetry = DocsTelemetry::default();
+        let (mut ui, stdout, stderr) = test_ui();
+
+        list_docs(true, &mut telemetry, &mut ui).unwrap();
+        let list: Value = serde_json::from_str(stdout.text().trim()).unwrap();
+        assert_eq!(list["schema_version"], 1);
+        assert_eq!(list["topics"].as_array().unwrap().len(), TOPICS.len());
+        assert!(stderr.text().is_empty());
+
+        let (mut ui, stdout, stderr) = test_ui();
+        search_docs("search", 1, true, &mut DocsTelemetry::default(), &mut ui).unwrap();
+        let search: Value = serde_json::from_str(stdout.text().trim()).unwrap();
+        assert_eq!(search["query"], "search");
+        assert_eq!(search["results"].as_array().unwrap().len(), 1);
+        assert!(stderr.text().is_empty());
+
+        let (mut ui, stdout, stderr) = test_ui();
+        show_doc(
+            DocsShowArgs {
+                id: "docs".to_owned(),
+                format: DocsFormat::Json,
+                out: None,
+            },
+            &mut DocsTelemetry::default(),
+            &mut ui,
+        )
+        .unwrap();
+        let show: Value = serde_json::from_str(stdout.text().trim()).unwrap();
+        assert_eq!(show["schema_version"], 1);
+        assert_eq!(show["id"], "docs");
+        assert_eq!(
+            show["body"],
+            TOPICS.iter().find(|topic| topic.id == "docs").unwrap().body
+        );
+        assert!(stderr.text().is_empty());
+
+        let (mut ui, stdout, stderr) = test_ui();
+        show_doc(
+            DocsShowArgs {
+                id: "docs".to_owned(),
+                format: DocsFormat::Markdown,
+                out: None,
+            },
+            &mut DocsTelemetry::default(),
+            &mut ui,
+        )
+        .unwrap();
+        assert!(stdout.text().starts_with("# Docs\n"));
+        assert!(stdout.text().ends_with('\n'));
+        assert!(stderr.text().is_empty());
+
+        let (mut ui, stdout, stderr) = test_ui();
+        man_docs(
+            DocsManArgs {
+                out: None,
+                print: Some("ctx".to_owned()),
+            },
+            &mut ui,
+            &Command::new("ctx"),
+        )
+        .unwrap();
+        assert!(stdout.text().contains("ctx"));
+        assert!(stdout.text().ends_with('\n'));
+        assert!(stderr.text().is_empty());
+
+        let directory = tempfile::tempdir().unwrap();
+        let (mut ui, stdout, stderr) = test_ui();
+        man_docs(
+            DocsManArgs {
+                out: Some(directory.path().join("man")),
+                print: None,
+            },
+            &mut ui,
+            &Command::new("ctx"),
+        )
+        .unwrap();
+        assert!(directory.path().join("man/ctx.1").is_file());
+        assert!(stdout.text().starts_with("✓ ctx man pages written\n"));
+        assert!(stderr.text().is_empty());
     }
 
     #[test]
