@@ -1,6 +1,6 @@
 use super::*;
 #[cfg(test)]
-use ctx_history_core::SourceInventoryObservation;
+use ctx_history_core::{ScannedSourceCounts, SourceInventoryObservation};
 #[cfg(test)]
 use sha2::{Digest, Sha256};
 #[cfg(test)]

@@ -19,13 +19,9 @@ use ctx_history_capture_runtime::{
     CaptureLifecycleSink, CapturePublicationContext, CapturePublicationDisposition,
     CaptureSourceAggregateRef, ImmutableCaptureSnapshot,
 };
-use ctx_history_core::SourceAnchor;
-use ctx_history_core::{
-    CaptureProvider, CertifiedSource, CertifiedSourceInventory, ScannedSourceCounts, SourceKey,
-    TypedKey,
-};
+use ctx_history_core::{CaptureProvider, CertifiedSource, CertifiedSourceInventory, SourceKey};
 #[cfg(test)]
-use ctx_history_core::{CertifiedSourceAppend, CertifiedSourceDeletion};
+use ctx_history_core::{CertifiedSourceAppend, CertifiedSourceDeletion, SourceAnchor, TypedKey};
 use ctx_history_index::{IndexError, PublicationStage, WriterOptions};
 use ctx_history_provider_mistral_mux::{mistral_vibe_jsonl_adapter, mux_jsonl_adapter};
 use sha2::{Digest, Sha256};
@@ -33,19 +29,11 @@ use sha2::{Digest, Sha256};
 use super::codex::nativepath::CodexGenerationNormalizationCoordinatorV0;
 use super::providers::{
     continue_cli::native_path::{ContinueSourceBackedOutcome, ContinueSourceBackedReader},
-    deepagents::native_path::source_backed::DeepAgentsDatabaseSelectionV0,
-    forgecode::nativepath::source_backed::ForgeCodeSourceSelectionV0,
     nanoclaw::native_path::source_backed::NanoClawDocumentTreeAdapter,
     openhands::nativepath::OpenHandsEventFileAdapterV2,
     rovodev::native_path::RovoDevDocumentTreeAdapter,
     task_json::cline_nativepath::{
         cline_task_json_source_backed_adapter, roo_task_json_source_backed_adapter,
-    },
-    zed::native_path::source_backed::{
-        acquire_snapshot as acquire_zed_snapshot, decode_sha256_hex as decode_zed_digest,
-        scan_zed_native_snapshot, snapshot_revision_digest as zed_snapshot_revision_digest,
-        source_observation as zed_source_observation, zed_source_key, ZedSourceBackedSinkV0,
-        ZED_PARSER_REVISION,
     },
 };
 use crate::provider_sources::{
@@ -55,10 +43,9 @@ use crate::provider_sources::{
 };
 use crate::{
     discover_provider_sources_with_context, provider_source_spec,
-    validate_provider_source_roots_outside_data_root, CaptureError, DiscoveryContext,
-    DiscoveryIssue, DiscoveryPlatform, DiscoveryReport, ProviderAdapterContext,
-    ProviderImportSupport, ProviderSource, ProviderSourceKind, ProviderSourceSpec,
-    ProviderSourceStatus,
+    validate_provider_source_roots_outside_data_root, DiscoveryContext, DiscoveryIssue,
+    DiscoveryPlatform, DiscoveryReport, ProviderAdapterContext, ProviderImportSupport,
+    ProviderSource, ProviderSourceKind, ProviderSourceSpec, ProviderSourceStatus,
 };
 pub use ctx_history_providers_sqlite_inventory::{
     CrushProjectDatabaseV0, CrushProjectInventoryObservationV0, CrushProjectInventorySourceV0,
@@ -78,6 +65,7 @@ pub use ctx_history_capture_runtime::{
 };
 #[cfg(test)]
 pub(crate) use family::jsonl::FallbackEventIdentityMode;
+pub(crate) use family::jsonl::FallbackEventIdentityState;
 #[doc(hidden)]
 pub use family::{CaptureDocumentSpool, CaptureProviderRuntime};
 pub(crate) use runtime_adapter::*;
@@ -90,6 +78,7 @@ pub use {inventory::*, publication::*, registration::*};
 
 #[cfg(test)]
 const _: Option<FallbackEventIdentityMode> = None;
+const _: Option<FallbackEventIdentityState> = None;
 
 #[cfg(test)]
 pub(crate) fn source_backed_base_sources(

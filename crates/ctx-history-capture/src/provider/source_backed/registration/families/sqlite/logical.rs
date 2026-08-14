@@ -1,51 +1,55 @@
-use std::sync::Mutex;
-
 use super::*;
 use crate::provider::{
     providers::trae::nativepath::TraeReplacementTree,
-    source_backed::family::document::{
-        register_replacement_document_tree_route_with_authority, ChangedDocumentSink,
-        CompleteDocumentTree, DocumentLeafFingerprint, DocumentSourceTerminal,
-        ObservedDocumentLeaf, ReplacementDocumentTree,
-    },
+    source_backed::family::document::register_replacement_document_tree_route_with_authority,
 };
-use crate::ZED_THREADS_SQLITE_SOURCE_FORMAT;
+use ctx_history_providers_sqlite_logical::{
+    explicit_forgecode_route_plan, logical_sqlite_route_plan, LogicalSqliteRoutePlan,
+    LogicalSqliteRuntimeBinding,
+};
 
-pub(super) fn register_forgecode_route(
-    registry: &mut SourceBackedProviderRegistry,
-    source: ProviderSource,
-    selection: SourceBackedRouteSelection,
-    data_root: &Path,
-    make_selection: impl Fn(std::path::PathBuf, &Path) -> ForgeCodeSourceSelectionV0
-        + Send
-        + Sync
-        + Clone
-        + 'static,
-) -> SourceBackedCoordinatorResult<()> {
-    let authority = if selection == SourceBackedRouteSelection::Automatic {
-        SourceBackedSelectorAuthority::SelectedWithRetainedExplicit
-    } else {
-        SourceBackedSelectorAuthority::ExplicitPath
-    };
-    let adapter = make_selection(source.path.clone(), data_root);
-    register_replacement_document_tree_route_with_authority(
-        registry, source, selection, authority, adapter,
-    )
+pub(crate) struct CaptureLogicalSqliteBinding;
+
+impl LogicalSqliteRuntimeBinding for CaptureLogicalSqliteBinding {
+    type Lifecycle = crate::provider::source_backed::family::document::CaptureDocumentLifecycle;
+    type Spool = crate::provider::source_backed::family::document::CaptureDocumentSpool;
+    type RouteControl =
+        crate::provider::source_backed::family::document::CaptureDocumentRouteControl;
 }
+
+fn register_logical_plan(
+    registry: &mut SourceBackedProviderRegistry,
+    selection: SourceBackedRouteSelection,
+    plan: LogicalSqliteRoutePlan<CaptureLogicalSqliteBinding>,
+) -> SourceBackedCoordinatorResult<()> {
+    let authority = plan.selector_authority();
+    macro_rules! register {
+        ($source:expr, $adapter:expr) => {
+            register_replacement_document_tree_route_with_authority(
+                registry, $source, selection, authority, $adapter,
+            )
+        };
+    }
+    match plan {
+        LogicalSqliteRoutePlan::DeepAgents { source, adapter } => register!(source, adapter),
+        LogicalSqliteRoutePlan::ForgeCode {
+            source, adapter, ..
+        } => register!(source, adapter),
+        LogicalSqliteRoutePlan::OpenCodeFamily { source, adapter } => register!(source, adapter),
+        LogicalSqliteRoutePlan::Zed { source, adapter } => register!(source, adapter),
+    }
+}
+
 pub(super) fn register_deepagents_route(
     registry: &mut SourceBackedProviderRegistry,
     source: ProviderSource,
     selection: SourceBackedRouteSelection,
     data_root: &Path,
 ) -> SourceBackedCoordinatorResult<()> {
-    let adapter = DeepAgentsDatabaseSelectionV0::explicit(data_root, source.path.clone());
-    register_replacement_document_tree_route_with_authority(
-        registry,
-        source,
-        selection,
-        SourceBackedSelectorAuthority::DiscoveredWinner,
-        adapter,
-    )
+    let provider = source.provider;
+    let plan = logical_sqlite_route_plan(source, selection, data_root)
+        .map_err(|error| invalid_route(provider, error.to_string()))?;
+    register_logical_plan(registry, selection, plan)
 }
 pub(super) fn register_opencode_family_route(
     registry: &mut SourceBackedProviderRegistry,
@@ -53,9 +57,10 @@ pub(super) fn register_opencode_family_route(
     selection: SourceBackedRouteSelection,
     data_root: &Path,
 ) -> SourceBackedCoordinatorResult<()> {
-    crate::provider::providers::opencode::native_path::source_backed::register_source_backed_route(
-        registry, source, selection, data_root,
-    )
+    let provider = source.provider;
+    let plan = logical_sqlite_route_plan(source, selection, data_root)
+        .map_err(|error| invalid_route(provider, error.to_string()))?;
+    register_logical_plan(registry, selection, plan)
 }
 
 pub(super) fn register_hermes_route(
@@ -99,176 +104,10 @@ pub(super) fn register_zed_route(
     selection: SourceBackedRouteSelection,
     data_root: &Path,
 ) -> SourceBackedCoordinatorResult<()> {
-    let adapter = ZedReplacementTree::new(data_root, source.path.clone());
-    register_replacement_document_tree_route_with_authority(
-        registry,
-        source,
-        selection,
-        SourceBackedSelectorAuthority::DiscoveredWinner,
-        adapter,
-    )
-}
-
-#[derive(Debug, Clone)]
-struct ZedReplacementTree {
-    data_root: PathBuf,
-    path: PathBuf,
-}
-
-impl ZedReplacementTree {
-    fn new(data_root: &Path, path: PathBuf) -> Self {
-        Self {
-            data_root: data_root.to_path_buf(),
-            path,
-        }
-    }
-}
-
-struct ZedTreeAuthority {
-    snapshot:
-        Mutex<Option<crate::provider::providers::zed::native_path::ZedImmutableSqliteSnapshot>>,
-    terminal_revalidate: Box<
-        dyn Fn() -> std::result::Result<
-                (),
-                crate::provider::providers::zed::native_path::ZedNativePathError,
-            > + Send
-            + Sync
-            + 'static,
-    >,
-}
-
-impl ReplacementDocumentTree for ZedReplacementTree {
-    type Lifecycle = crate::provider::source_backed::family::document::CaptureDocumentLifecycle;
-    type Spool = crate::provider::source_backed::family::document::CaptureDocumentSpool;
-    type RouteControl =
-        crate::provider::source_backed::family::document::CaptureDocumentRouteControl;
-    type Leaf = SourceKey;
-    type TreeAuthority = ZedTreeAuthority;
-
-    fn parser_revision(&self) -> &'static str {
-        ZED_PARSER_REVISION
-    }
-
-    fn owns_source(&self, source: &SourceKey) -> bool {
-        source.provider() == CaptureProvider::Zed.as_str()
-            && source.source_format() == ZED_THREADS_SQLITE_SOURCE_FORMAT
-    }
-
-    fn discover_complete(
-        &self,
-    ) -> SourceBackedRouteResult<CompleteDocumentTree<Self::Leaf, Self::TreeAuthority>> {
-        let snapshot = acquire_zed_snapshot(&self.data_root, &self.path).map_err(route_error)?;
-        let fingerprint =
-            DocumentLeafFingerprint::new(zed_snapshot_revision_digest(&snapshot.snapshot_revision));
-        let terminal_revalidate = snapshot.terminal_revalidator().map_err(route_error)?;
-        let source = zed_source_key().map_err(route_error)?;
-        Ok(CompleteDocumentTree::new(
-            fingerprint.as_bytes(),
-            vec![ObservedDocumentLeaf::new(fingerprint, source)],
-            ZedTreeAuthority {
-                snapshot: Mutex::new(Some(snapshot)),
-                terminal_revalidate,
-            },
-        ))
-    }
-
-    fn scan_changed(
-        &self,
-        authority: &Self::TreeAuthority,
-        source: &Self::Leaf,
-        sink: &mut ChangedDocumentSink<'_, '_>,
-    ) -> SourceBackedRouteResult<DocumentSourceTerminal> {
-        let mut snapshot = authority
-            .snapshot
-            .lock()
-            .map_err(|_| zed_internal("Zed snapshot lock was poisoned"))?
-            .take()
-            .ok_or_else(|| zed_internal("Zed snapshot was consumed twice"))?;
-        let snapshot_revision = snapshot.snapshot_revision.clone();
-        sink.begin_source(source.clone())?;
-        let connection = snapshot.connection().map_err(route_error)?;
-        let mut sink_failure = None;
-        let mut projection =
-            ZedSourceBackedSinkV0::with_emitter(connection, source.clone(), |record| {
-                sink.emit_core_record(record).map_err(|error| {
-                    let detail = error.to_string();
-                    sink_failure = Some(error);
-                    CaptureError::InvalidPayload(detail).into()
-                })
-            })
-            .map_err(route_error)?;
-        let scan = scan_zed_native_snapshot(connection, &snapshot_revision, &mut projection);
-        let projection_failure = projection.take_failure();
-        let staged_core_records = projection.staged_core_records();
-        drop(projection);
-        if let Some(error) = sink_failure {
-            return Err(error);
-        }
-        if let Some(error) = projection_failure {
-            return Err(route_error(error));
-        }
-        let scan = scan.map_err(route_error)?;
-        snapshot.finish().map_err(route_error)?;
-        if staged_core_records != scan.counters.retained_events {
-            return Err(zed_internal("Zed source-backed counts do not reconcile"));
-        }
-        let complete_records = scan
-            .counters
-            .retained_events
-            .checked_add(scan.counters.rejected_threads)
-            .ok_or_else(|| zed_internal("Zed source-backed counts overflowed"))?;
-        let counts = ScannedSourceCounts {
-            complete_records,
-            retained_records: scan.counters.retained_events,
-            rejected_records: scan.counters.rejected_threads,
-            ignored_records: 0,
-            indexed_documents: staged_core_records,
-            certified_bytes: scan.counters.certified_logical_bytes,
-        };
-        let observation =
-            zed_source_observation(source, &snapshot_revision).map_err(route_error)?;
-        let certificate = CertifiedSource::certify(
-            observation.clone(),
-            observation,
-            ZED_PARSER_REVISION,
-            decode_zed_digest(&scan.source_integrity_digest).map_err(route_error)?,
-            counts,
-        )
-        .map_err(route_error)?;
-        Ok(zed_document_terminal(certificate))
-    }
-
-    fn revalidate_complete(
-        &self,
-        tree: &CompleteDocumentTree<Self::Leaf, Self::TreeAuthority>,
-    ) -> SourceBackedRouteResult<[u8; 32]> {
-        if let Some(mut snapshot) = tree
-            .authority
-            .snapshot
-            .lock()
-            .map_err(|_| zed_internal("Zed snapshot lock was poisoned"))?
-            .take()
-        {
-            snapshot.finish().map_err(route_error)?;
-        }
-        (tree.authority.terminal_revalidate)().map_err(route_error)?;
-        Ok(tree.tree_fingerprint)
-    }
-}
-
-fn zed_document_terminal(certificate: CertifiedSource) -> DocumentSourceTerminal {
-    DocumentSourceTerminal {
-        source: certificate.observation().source().clone(),
-        opening: certificate.observation().clone(),
-        closing: certificate.observation().clone(),
-        parser_revision: ZED_PARSER_REVISION,
-        content_digest: *certificate.content_digest(),
-        counts: certificate.counts(),
-    }
-}
-
-fn zed_internal(detail: impl Into<String>) -> SourceBackedRouteError {
-    SourceBackedRouteError::new(SourceBackedRouteErrorKind::Internal, detail)
+    let provider = source.provider;
+    let plan = logical_sqlite_route_plan(source, selection, data_root)
+        .map_err(|error| invalid_route(provider, error.to_string()))?;
+    register_logical_plan(registry, selection, plan)
 }
 pub(super) fn register_forgecode_selected_route(
     registry: &mut SourceBackedProviderRegistry,
@@ -276,15 +115,10 @@ pub(super) fn register_forgecode_selected_route(
     selection: SourceBackedRouteSelection,
     data_root: &Path,
 ) -> SourceBackedCoordinatorResult<()> {
-    if selection != SourceBackedRouteSelection::Automatic {
-        return Err(invalid_route(
-            source.provider,
-            "manual ForgeCode registration requires explicit catalog lineage",
-        ));
-    }
-    register_forgecode_route(registry, source, selection, data_root, |path, data_root| {
-        ForgeCodeSourceSelectionV0::selected(data_root, path)
-    })
+    let provider = source.provider;
+    let plan = logical_sqlite_route_plan(source, selection, data_root)
+        .map_err(|error| invalid_route(provider, error.to_string()))?;
+    register_logical_plan(registry, selection, plan)
 }
 
 pub fn register_forgecode_explicit_source_backed_route(
@@ -293,13 +127,85 @@ pub fn register_forgecode_explicit_source_backed_route(
     data_root: &Path,
     catalog_lineage: [u8; 32],
 ) -> SourceBackedCoordinatorResult<()> {
-    register_forgecode_route(
-        registry,
-        source,
-        SourceBackedRouteSelection::ExplicitManual,
-        data_root,
-        move |path, data_root| {
-            ForgeCodeSourceSelectionV0::explicit(data_root, path, catalog_lineage)
-        },
-    )
+    let provider = source.provider;
+    let plan = explicit_forgecode_route_plan(source, data_root, catalog_lineage)
+        .map_err(|error| invalid_route(provider, error.to_string()))?;
+    register_logical_plan(registry, SourceBackedRouteSelection::ExplicitManual, plan)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn capture_binding_consumes_exact_pack_registration_authorities() {
+        let data_root = crate::test_provider_sqlite_data_root();
+        for provider in [
+            CaptureProvider::DeepAgents,
+            CaptureProvider::OpenCode,
+            CaptureProvider::Kilo,
+            CaptureProvider::MiMoCode,
+            CaptureProvider::Zed,
+        ] {
+            let plan = logical_sqlite_route_plan::<CaptureLogicalSqliteBinding>(
+                source(provider),
+                SourceBackedRouteSelection::Automatic,
+                data_root,
+            )
+            .unwrap();
+            assert_eq!(
+                plan.selector_authority(),
+                SourceBackedSelectorAuthority::DiscoveredWinner,
+                "{provider:?}"
+            );
+        }
+
+        let selected = logical_sqlite_route_plan::<CaptureLogicalSqliteBinding>(
+            source(CaptureProvider::ForgeCode),
+            SourceBackedRouteSelection::Automatic,
+            data_root,
+        )
+        .unwrap();
+        assert_eq!(
+            selected.selector_authority(),
+            SourceBackedSelectorAuthority::SelectedWithRetainedExplicit
+        );
+        let explicit = explicit_forgecode_route_plan::<CaptureLogicalSqliteBinding>(
+            source(CaptureProvider::ForgeCode),
+            data_root,
+            [7; 32],
+        )
+        .unwrap();
+        assert_eq!(
+            explicit.selector_authority(),
+            SourceBackedSelectorAuthority::ExplicitPath
+        );
+
+        assert!(logical_sqlite_route_plan::<CaptureLogicalSqliteBinding>(
+            source(CaptureProvider::Hermes),
+            SourceBackedRouteSelection::Automatic,
+            data_root,
+        )
+        .is_err());
+        assert!(logical_sqlite_route_plan::<CaptureLogicalSqliteBinding>(
+            source(CaptureProvider::ForgeCode),
+            SourceBackedRouteSelection::ExplicitManual,
+            data_root,
+        )
+        .is_err());
+    }
+
+    fn source(provider: CaptureProvider) -> ProviderSource {
+        ProviderSource {
+            provider,
+            path: PathBuf::from("provider.sqlite"),
+            exists: true,
+            source_format: "logical_sqlite_registration_test",
+            source_kind: ProviderSourceKind::NativeHistory,
+            import_support: ProviderImportSupport::Native,
+            catalog_support: crate::ProviderCatalogSupport::None,
+            status: ProviderSourceStatus::Available,
+            unsupported_reason: None,
+        }
+    }
 }

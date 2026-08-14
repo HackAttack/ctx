@@ -14,9 +14,6 @@ use crate::provider::providers::trae::{
 };
 use ctx_history_provider_claude_cursor::{discover_cursor_transcripts, CursorDiscoveryIssueKind};
 
-pub(crate) use crate::provider::sqlite::{
-    sqlite_retry_decision, SqliteLogicalSnapshot, SqliteRetryDecision,
-};
 pub use ctx_history_source_discovery::{
     path_presence, CrushDiscoveredProjectInventory, CrushProjectInventorySelectorError,
 };
@@ -42,11 +39,8 @@ pub(crate) use ctx_history_source_io::{
 #[cfg(test)]
 pub(crate) use ctx_history_source_sqlite::fail_next_opened_snapshot_cleanup_for_test;
 pub(crate) use ctx_history_source_sqlite::{
-    open_root_handle_sqlite_source_snapshot, resource_exhaustion_io_error,
-    retain_sqlite_source_directory_authority, rusqlite_resource_failure, SqliteArtifactKind,
-    SqliteCleanupStatus, SqliteFailurePhase, SqliteSourceAccessError,
-    SqliteSourceDirectoryAuthority, SqliteSourceErrorComposition, SqliteSourceEvidence,
-    SqliteSourceProgressError, SqliteSourceReadSnapshot,
+    open_root_handle_sqlite_source_snapshot, retain_sqlite_source_directory_authority,
+    SqliteSourceAccessError, SqliteSourceDirectoryAuthority, SqliteSourceReadSnapshot,
 };
 
 static BUILTIN_PROVIDER_PROBES: StaticProviderProbeCatalog = StaticProviderProbeCatalog::new(

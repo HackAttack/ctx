@@ -6,31 +6,9 @@ use crate::{CaptureError, Result};
 
 pub use ctx_history_source_sqlite::{
     optional_column_expr, optional_text_column_expr, optional_timestamp_millis_expr, sqlite_ident,
-    SqliteLengthPreflightGuard, SqliteLogicalSnapshot, SqliteSourceAccessError,
+    sqlite_retry_decision, SqliteLengthPreflightGuard, SqliteLogicalSnapshot, SqliteRetryDecision,
+    SqliteSourceAccessError,
 };
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum SqliteRetryDecision {
-    DoNotRetry,
-    DoNotRetryCorrupt,
-    RetryBusyOrLocked,
-    RetrySourceTransition,
-    RouteFatalResource,
-}
-
-pub fn sqlite_retry_decision(error: &SqliteSourceAccessError) -> SqliteRetryDecision {
-    if error.is_systemic_resource_failure() {
-        SqliteRetryDecision::RouteFatalResource
-    } else if error.is_source_changed() {
-        SqliteRetryDecision::RetrySourceTransition
-    } else if error.is_provider_corruption() || error.is_ctx_owned_corruption() {
-        SqliteRetryDecision::DoNotRetryCorrupt
-    } else if error.is_busy_or_locked() {
-        SqliteRetryDecision::RetryBusyOrLocked
-    } else {
-        SqliteRetryDecision::DoNotRetry
-    }
-}
 
 pub fn sqlite_table_exists(conn: &Connection, table: &str) -> Result<bool> {
     ctx_history_source_sqlite::sqlite_table_exists(conn, table).map_err(Into::into)

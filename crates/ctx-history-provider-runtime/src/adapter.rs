@@ -1,36 +1,5 @@
-use std::{env, path::PathBuf};
-
-use chrono::{DateTime, Utc};
-use ctx_history_core::utc_now;
+pub use ctx_history_capture_model::{default_machine_id, ProviderAdapterContext};
 use uuid::Uuid;
-
-#[derive(Debug, Clone)]
-pub struct ProviderAdapterContext {
-    pub machine_id: String,
-    pub source_path: Option<PathBuf>,
-    pub source_root: Option<PathBuf>,
-    pub imported_at: DateTime<Utc>,
-}
-
-impl ProviderAdapterContext {
-    pub fn source_root_display(&self) -> Option<String> {
-        self.source_root
-            .as_ref()
-            .or(self.source_path.as_ref())
-            .map(|path| path.display().to_string())
-    }
-}
-
-impl Default for ProviderAdapterContext {
-    fn default() -> Self {
-        Self {
-            machine_id: default_machine_id(),
-            source_path: None,
-            source_root: None,
-            imported_at: utc_now(),
-        }
-    }
-}
 
 #[derive(Debug, Clone)]
 pub struct ProviderImportOptions {
@@ -56,15 +25,12 @@ impl Default for ProviderImportOptions {
     }
 }
 
-pub fn default_machine_id() -> String {
-    env::var("CTX_MACHINE_ID")
-        .or_else(|_| env::var("HOSTNAME"))
-        .or_else(|_| env::var("COMPUTERNAME"))
-        .unwrap_or_else(|_| "local".to_owned())
-}
-
 #[cfg(test)]
 mod tests {
+    use std::path::PathBuf;
+
+    use chrono::DateTime;
+
     use super::*;
 
     #[test]

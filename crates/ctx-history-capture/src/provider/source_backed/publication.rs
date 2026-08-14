@@ -9,13 +9,11 @@ use ctx_history_capture_model::{
     source_level_progress, AttemptHistoryProgress, SourceRecordProgress,
 };
 pub use ctx_history_capture_model::{
-    SourceBackedCurrentSourceProgress, SourceBackedDetailedRefreshProgress,
-    SourceBackedRefreshProgress,
+    SourceBackedDetailedRefreshProgress, SourceBackedRefreshProgress,
 };
 pub use ctx_history_capture_runtime::SourceBackedCertifiedRemoval;
 #[cfg(test)]
 pub use model::assert_carried_route_failure;
-pub(crate) use model::sqlite_source_progress;
 pub use model::{
     SourceBackedPublicationMetadataContext, SourceBackedRefreshReceipt,
     SourceBackedSuccessfulRouteOutcome,

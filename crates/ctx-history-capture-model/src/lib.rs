@@ -25,8 +25,8 @@ pub use exact_json::{
 };
 pub use identity::{fnv1a64, stable_capture_uuid};
 pub use import::{
-    push_provider_import_failure, CatalogSummary, ProviderImportFailure, ProviderImportSummary,
-    ProviderImportWorkResult,
+    default_machine_id, push_provider_import_failure, CatalogSummary, ProviderAdapterContext,
+    ProviderImportFailure, ProviderImportSummary, ProviderImportWorkResult,
 };
 pub use output::{OutputObservationKind, OutputOutcome, OutputOutcomeMetadata};
 pub use progress::{

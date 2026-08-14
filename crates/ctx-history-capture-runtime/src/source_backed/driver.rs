@@ -89,6 +89,37 @@ impl SourceBackedRouteError {
     }
 }
 
+/// Preserves both failures from an explicit source cleanup while retaining the
+/// stronger route-level failure class for coordinator policy.
+pub fn combine_primary_and_cleanup_route_errors(
+    primary: SourceBackedRouteError,
+    cleanup: SourceBackedRouteError,
+) -> SourceBackedRouteError {
+    let kind = if route_error_severity(primary.kind) >= route_error_severity(cleanup.kind) {
+        primary.kind
+    } else {
+        cleanup.kind
+    };
+    SourceBackedRouteError::new(
+        kind,
+        format!(
+            "{}; explicit SQLite snapshot cleanup also failed: {}",
+            primary.detail, cleanup.detail
+        ),
+    )
+}
+
+const fn route_error_severity(kind: SourceBackedRouteErrorKind) -> u8 {
+    match kind {
+        SourceBackedRouteErrorKind::Internal => 6,
+        SourceBackedRouteErrorKind::ResourceUnavailable => 5,
+        SourceBackedRouteErrorKind::SourceChanged => 4,
+        SourceBackedRouteErrorKind::InvalidSource => 3,
+        SourceBackedRouteErrorKind::Unsupported => 2,
+        SourceBackedRouteErrorKind::Unavailable => 1,
+    }
+}
+
 impl From<CoreRouteResourceError> for SourceBackedRouteError {
     fn from(error: CoreRouteResourceError) -> Self {
         Self::new(

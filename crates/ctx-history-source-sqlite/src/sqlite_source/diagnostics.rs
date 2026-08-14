@@ -206,6 +206,29 @@ pub enum SqliteSourceAccessError {
     SnapshotNotActive,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SqliteRetryDecision {
+    DoNotRetry,
+    DoNotRetryCorrupt,
+    RetryBusyOrLocked,
+    RetrySourceTransition,
+    RouteFatalResource,
+}
+
+pub fn sqlite_retry_decision(error: &SqliteSourceAccessError) -> SqliteRetryDecision {
+    if error.is_systemic_resource_failure() {
+        SqliteRetryDecision::RouteFatalResource
+    } else if error.is_source_changed() {
+        SqliteRetryDecision::RetrySourceTransition
+    } else if error.is_provider_corruption() || error.is_ctx_owned_corruption() {
+        SqliteRetryDecision::DoNotRetryCorrupt
+    } else if error.is_busy_or_locked() {
+        SqliteRetryDecision::RetryBusyOrLocked
+    } else {
+        SqliteRetryDecision::DoNotRetry
+    }
+}
+
 #[derive(Debug)]
 pub enum SqliteSourceProgressError<E> {
     Source(SqliteSourceAccessError),

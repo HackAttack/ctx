@@ -1,4 +1,44 @@
+use std::path::PathBuf;
+
+use chrono::{DateTime, Utc};
+use ctx_history_core::utc_now;
 use serde::{Deserialize, Serialize};
+
+/// Provider-local capture context shared by isolated adapter crates.
+#[derive(Debug, Clone)]
+pub struct ProviderAdapterContext {
+    pub machine_id: String,
+    pub source_path: Option<PathBuf>,
+    pub source_root: Option<PathBuf>,
+    pub imported_at: DateTime<Utc>,
+}
+
+impl ProviderAdapterContext {
+    pub fn source_root_display(&self) -> Option<String> {
+        self.source_root
+            .as_ref()
+            .or(self.source_path.as_ref())
+            .map(|path| path.display().to_string())
+    }
+}
+
+impl Default for ProviderAdapterContext {
+    fn default() -> Self {
+        Self {
+            machine_id: default_machine_id(),
+            source_path: None,
+            source_root: None,
+            imported_at: utc_now(),
+        }
+    }
+}
+
+pub fn default_machine_id() -> String {
+    std::env::var("CTX_MACHINE_ID")
+        .or_else(|_| std::env::var("HOSTNAME"))
+        .or_else(|_| std::env::var("COMPUTERNAME"))
+        .unwrap_or_else(|_| "local".to_owned())
+}
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ProviderImportSummary {

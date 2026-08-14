@@ -54,8 +54,9 @@ const SQLITE_SHM_MAX_BYTES: u64 = 8 * 1024 * 1024;
 mod diagnostics;
 pub use diagnostics::{
     resource_exhaustion_io_error, rusqlite_busy_or_locked, rusqlite_resource_failure,
-    SqliteArtifactKind, SqliteCleanupStatus, SqliteFailurePhase, SqliteSourceAccessError,
-    SqliteSourceComponent, SqliteSourceErrorComposition, SqliteSourceProgressError,
+    sqlite_retry_decision, SqliteArtifactKind, SqliteCleanupStatus, SqliteFailurePhase,
+    SqliteRetryDecision, SqliteSourceAccessError, SqliteSourceComponent,
+    SqliteSourceErrorComposition, SqliteSourceProgressError,
 };
 
 pub type SqliteSourceAccessResult<T> = Result<T, SqliteSourceAccessError>;

@@ -3,7 +3,6 @@ fn direct_core_projection_is_complete_and_self_contained() {
     let scanner = include_str!("source.rs");
     let replay = include_str!("native_path/source_backed/replay.rs");
     let sources = [
-        include_str!("../../../native_source.rs"),
         include_str!("position.rs"),
         include_str!("native_path/source_backed.rs"),
     ];

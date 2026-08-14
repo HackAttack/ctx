@@ -9,6 +9,8 @@ use sha2::{Digest, Sha256};
 
 use crate::{ProviderReplacementDocumentTree, ProviderRouteDriver, ProviderRuntimeBinding};
 
+pub use ctx_history_capture_runtime::combine_primary_and_cleanup_route_errors;
+
 type ExactDueInterpreter = fn(&[u8], [u8; 32], i64) -> Option<bool>;
 type RetirementIdentityInterpreter = fn(&[u8]) -> Option<[u8; 32]>;
 
@@ -150,35 +152,6 @@ fn document_inventory_authority(route: &ProviderSource) -> DocumentInventoryAuth
 
 pub fn invalid_route_error(error: impl fmt::Display) -> SourceBackedRouteError {
     SourceBackedRouteError::new(SourceBackedRouteErrorKind::InvalidSource, error.to_string())
-}
-
-pub fn combine_primary_and_cleanup_route_errors(
-    primary: SourceBackedRouteError,
-    cleanup: SourceBackedRouteError,
-) -> SourceBackedRouteError {
-    let kind = if route_error_severity(primary.kind) >= route_error_severity(cleanup.kind) {
-        primary.kind
-    } else {
-        cleanup.kind
-    };
-    SourceBackedRouteError::new(
-        kind,
-        format!(
-            "{}; explicit SQLite snapshot cleanup also failed: {}",
-            primary.detail, cleanup.detail
-        ),
-    )
-}
-
-const fn route_error_severity(kind: SourceBackedRouteErrorKind) -> u8 {
-    match kind {
-        SourceBackedRouteErrorKind::Internal => 6,
-        SourceBackedRouteErrorKind::ResourceUnavailable => 5,
-        SourceBackedRouteErrorKind::SourceChanged => 4,
-        SourceBackedRouteErrorKind::InvalidSource => 3,
-        SourceBackedRouteErrorKind::Unsupported => 2,
-        SourceBackedRouteErrorKind::Unavailable => 1,
-    }
 }
 
 #[cfg(test)]
