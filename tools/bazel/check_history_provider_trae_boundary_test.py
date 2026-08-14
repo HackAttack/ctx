@@ -158,14 +158,15 @@ class TraeBoundaryMutationTests(unittest.TestCase):
             self.validate()
 
     def test_capture_probe_imports_are_required(self) -> None:
-        self.capture_facade.write_text(
-            self.capture_facade.read_text(encoding="utf-8").replace(
-                "TRAE_CHAT_ROWS_QUERY", ""
-            ),
-            encoding="utf-8",
-        )
-        with self.assertRaisesRegex(BoundaryError, "capture Trae facade"):
-            self.validate()
+        facade = self.capture_facade.read_text(encoding="utf-8")
+        for replacement in ("", "NotTRAE_CHAT_ROWS_QUERY"):
+            with self.subTest(replacement=replacement):
+                self.capture_facade.write_text(
+                    facade.replace("TRAE_CHAT_ROWS_QUERY", replacement),
+                    encoding="utf-8",
+                )
+                with self.assertRaisesRegex(BoundaryError, "capture Trae facade"):
+                    self.validate()
 
     def test_capture_replacement_tree_alias_is_rejected(self) -> None:
         self.capture_facade.write_text(
@@ -214,31 +215,59 @@ class TraeBoundaryMutationTests(unittest.TestCase):
                 with self.assertRaisesRegex(BoundaryError, "dependency inventory"):
                     self.validate()
 
-    def test_commented_capture_alias_is_rejected(self) -> None:
-        self.capture_facade.write_text(
-            "// " + self.capture_facade.read_text(encoding="utf-8"), encoding="utf-8"
-        )
-        with self.assertRaisesRegex(BoundaryError, "capture Trae facade"):
-            self.validate()
+    def test_commented_or_literal_capture_alias_is_rejected(self) -> None:
+        alias = self.capture_facade.read_text(encoding="utf-8")
+        for decoy in ("// " + alias, f'const _: &str = "{alias}";', f'br#"{alias}"#'):
+            with self.subTest(decoy=decoy):
+                self.capture_facade.write_text(decoy, encoding="utf-8")
+                with self.assertRaisesRegex(BoundaryError, "capture Trae facade"):
+                    self.validate()
 
     def test_commented_runtime_binding_is_rejected(self) -> None:
-        self.composition_facade.write_text(
-            self.composition_facade.read_text(encoding="utf-8").replace(
+        facade = self.composition_facade.read_text(encoding="utf-8")
+        for decoy in (
+            facade.replace(
                 "crate::source_backed::family::CaptureProviderRuntime",
                 "// crate::source_backed::family::CaptureProviderRuntime",
             ),
-            encoding="utf-8",
-        )
-        with self.assertRaisesRegex(BoundaryError, "composition Trae facade"):
-            self.validate()
+            f'r#"{facade}"#',
+        ):
+            with self.subTest(decoy=decoy):
+                self.composition_facade.write_text(decoy, encoding="utf-8")
+                with self.assertRaisesRegex(BoundaryError, "composition Trae facade"):
+                    self.validate()
 
     def test_commented_registration_is_rejected(self) -> None:
-        self.registration.write_text(
-            "/* " + self.registration.read_text(encoding="utf-8") + " */",
+        registration = self.registration.read_text(encoding="utf-8")
+        for decoy in (
+            f"/* {registration} */",
+            f"/* outer /* {registration} */ */",
+            f'b"{registration}"',
+        ):
+            with self.subTest(decoy=decoy):
+                self.registration.write_text(decoy, encoding="utf-8")
+                with self.assertRaisesRegex(BoundaryError, "route registration"):
+                    self.validate()
+
+    def test_literal_comment_delimiters_preserve_following_code(self) -> None:
+        facade = self.capture_facade.read_text(encoding="utf-8")
+        self.capture_facade.write_text(
+            'const _: &str = "/* //"; const _: &[u8] = b"//"; '
+            "const _: char = '/'; const _: u8 = b'/'; const _: &str = r#\"/*\"#;\n"
+            + facade,
             encoding="utf-8",
         )
-        with self.assertRaisesRegex(BoundaryError, "route registration"):
-            self.validate()
+        (self.source / "near_miss.rs").write_text(
+            "NotCaptureProviderRuntime", encoding="utf-8"
+        )
+        self.validate()
+
+    def test_cross_file_malformed_rust_is_rejected(self) -> None:
+        for opening, closing in (("/*", "*/"), ('"', '"'), ('r#"', '"#')):
+            (self.source / "a.rs").write_text(opening, encoding="utf-8")
+            (self.source / "b.rs").write_text(closing, encoding="utf-8")
+            with self.assertRaisesRegex(BoundaryError, "unterminated"):
+                self.validate()
 
     def test_missing_expected_input_is_rejected(self) -> None:
         self.registration.unlink()

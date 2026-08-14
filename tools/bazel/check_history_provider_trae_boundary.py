@@ -52,25 +52,94 @@ FORBIDDEN_PACK_FRAGMENTS = (
     "CaptureProviderRuntime",
     "IndexCaptureLifecycle",
 )
-RUST_BLOCK_COMMENT = re.compile(r"/\*.*?\*/", re.DOTALL)
 COMPOSITION_DEPS_ASSIGNMENT = re.compile(r"(?m)^COMPOSITION_DEPS[ \t]*=")
 COMPOSITION_DEPS_LITERAL = re.compile(
     r"(?m)^COMPOSITION_DEPS[ \t]*=[ \t]*(\[[^\]]*\])[ \t]*(?:#.*)?$"
 )
 
 
+def _active_rust(text: str, label: str) -> str:
+    active: list[str] = []
+    state = "code"
+    block_depth = 0
+    escaped = False
+    raw_end = ""
+    index = 0
+    while index < len(text):
+        character = text[index]
+        masked = "\n" if character == "\n" else " "
+        if state == "code":
+            if text.startswith("//", index):
+                state = "line comment"
+            elif text.startswith("/*", index):
+                state, block_depth = "block comment", 1
+            elif character in "bcr" and (
+                index == 0 or not (text[index - 1].isalnum() or text[index - 1] == "_")
+            ):
+                marker = index + (text.startswith(("br", "cr"), index))
+                if marker < len(text) and text[marker] == "r":
+                    quote = marker + 1
+                    while quote < len(text) and text[quote] == "#":
+                        quote += 1
+                    if quote < len(text) and text[quote] == '"':
+                        raw_end = '"' + "#" * (quote - marker - 1)
+                        state = "raw string"
+                        active.extend(" " * (quote - index + 1))
+                        index = quote + 1
+                        continue
+            elif character == '"':
+                state, escaped = "string", False
+            elif character == "'" and (
+                (index + 2 < len(text) and text[index + 2] == "'")
+                or (index + 1 < len(text) and text[index + 1] == "\\")
+            ):
+                state, escaped = "char", False
+            if state == "code":
+                active.append(character)
+                index += 1
+                continue
+        elif state == "line comment":
+            if character == "\n":
+                state = "code"
+        elif state == "block comment":
+            if text.startswith("/*", index):
+                block_depth += 1
+                active.extend("  ")
+                index += 2
+                continue
+            if text.startswith("*/", index):
+                block_depth -= 1
+                state = "code" if block_depth == 0 else state
+                active.extend("  ")
+                index += 2
+                continue
+        elif state == "raw string":
+            if text.startswith(raw_end, index):
+                active.extend(" " * len(raw_end))
+                index += len(raw_end)
+                state = "code"
+                continue
+        else:
+            quote = '"' if state == "string" else "'"
+            if escaped:
+                escaped = False
+            elif character == "\\":
+                escaped = True
+            elif character == quote:
+                state = "code"
+        active.append(masked)
+        index += 1
+    if state not in ("code", "line comment"):
+        raise BoundaryError(f"{label} has unterminated {state}")
+    return "".join(active)
+
+
 def _read_rust_tree(root_or_file: Path) -> str:
     root = root_or_file if root_or_file.is_dir() else root_or_file.parent
     return "\n".join(
-        path.read_text(encoding="utf-8") for path in sorted(root.rglob("*.rs"))
+        _active_rust(path.read_text(encoding="utf-8"), f"Trae source {path}")
+        for path in sorted(root.rglob("*.rs"))
     )
-
-
-def _active_rust(text: str, label: str) -> str:
-    code = RUST_BLOCK_COMMENT.sub("", text)
-    if "/*" in code or "*/" in code:
-        raise BoundaryError(f"{label} has malformed block comments")
-    return "\n".join(line.split("//", 1)[0] for line in code.splitlines())
 
 
 def _active_starlark_lines(text: str) -> set[str]:
@@ -184,7 +253,7 @@ def validate(
     if not required_target_lines.issubset(build_lines):
         raise BoundaryError("Trae Bazel targets drifted")
 
-    pack_text = _active_rust(_read_rust_tree(source_root), "Trae production source")
+    pack_text = _read_rust_tree(source_root)
     _forbid_fragments(pack_text, FORBIDDEN_PACK_FRAGMENTS, "Trae pack")
     _require_fragments(
         pack_text,
