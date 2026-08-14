@@ -11,7 +11,7 @@ fn post_scan_jsonl_append_is_not_certified_clean_across_restart() {
     let source_path = temp.path().join("history.jsonl");
     let home = temp.path().join("home");
     let cwd = temp.path().join("cwd");
-    ctx_history_core::platform_security::establish_private_data_root(&data_root).unwrap();
+    ctx_history_platform::platform_security::establish_private_data_root(&data_root).unwrap();
     fs::create_dir_all(&home).unwrap();
     fs::create_dir_all(&cwd).unwrap();
     writeln!(

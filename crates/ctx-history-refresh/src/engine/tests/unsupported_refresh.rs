@@ -87,7 +87,7 @@ fn present_unsupported_only_refresh_fails_cold_and_reports_against_a_warm_genera
     let temp = tempfile::tempdir().unwrap();
     let data_root = temp.path().join("data");
     let index_root = source_backed_index_root(&data_root);
-    ctx_history_core::platform_security::establish_private_data_root(&data_root).unwrap();
+    ctx_history_platform::platform_security::establish_private_data_root(&data_root).unwrap();
     let (_, _, discovery) = discovery_fixture(temp.path());
     let report = DiscoveryReport {
         sources: vec![unsupported_warp(temp.path())],
@@ -133,7 +133,7 @@ fn executable_empty_inventory_publishes_v2_authority_and_survives_restart() {
     let temp = tempfile::tempdir().unwrap();
     let data_root = temp.path().join("data");
     let index_root = source_backed_index_root(&data_root);
-    ctx_history_core::platform_security::establish_private_data_root(&data_root).unwrap();
+    ctx_history_platform::platform_security::establish_private_data_root(&data_root).unwrap();
     let (_, _, discovery) = discovery_fixture(temp.path());
     let source_root = temp.path().join("empty-codex-sessions");
     fs::create_dir_all(&source_root).unwrap();
@@ -225,7 +225,7 @@ fn genuinely_empty_catalog_publishes_a_verified_noop_generation() {
     let temp = tempfile::tempdir().unwrap();
     let data_root = temp.path().join("data");
     let index_root = source_backed_index_root(&data_root);
-    ctx_history_core::platform_security::establish_private_data_root(&data_root).unwrap();
+    ctx_history_platform::platform_security::establish_private_data_root(&data_root).unwrap();
     let (_, _, discovery) = discovery_fixture(temp.path());
 
     let publication = run_report(
@@ -254,7 +254,7 @@ fn confirmed_deletion_can_publish_empty_but_mixed_unavailable_cannot() {
     let temp = tempfile::tempdir().unwrap();
     let data_root = temp.path().join("data");
     let index_root = source_backed_index_root(&data_root);
-    ctx_history_core::platform_security::establish_private_data_root(&data_root).unwrap();
+    ctx_history_platform::platform_security::establish_private_data_root(&data_root).unwrap();
     let (_, _, discovery) = discovery_fixture(temp.path());
     let source_root = temp.path().join("codex-sessions");
     let session = "019fb600-0000-7000-8000-000000000011";

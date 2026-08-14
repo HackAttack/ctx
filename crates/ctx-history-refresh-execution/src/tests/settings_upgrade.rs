@@ -7,7 +7,7 @@ fn automatic_execution_replaces_an_incompatible_settings_generation() {
     let temp = tempfile::tempdir().unwrap();
     let data_root = temp.path().join("data");
     let index_root = source_backed_index_root(&data_root);
-    ctx_history_core::platform_security::establish_private_data_root(&data_root).unwrap();
+    ctx_history_platform::platform_security::establish_private_data_root(&data_root).unwrap();
     let (_, _, discovery) = discovery_fixture(temp.path());
     let empty_sessions = temp.path().join("empty-sessions");
     std::fs::create_dir_all(&empty_sessions).unwrap();

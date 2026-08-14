@@ -70,7 +70,7 @@ fn warm_automatic_hermes_profile_rename_retires_the_old_route_and_remains_refres
     let temp = tempfile::tempdir().unwrap();
     let data_root = temp.path().join("data");
     let index_root = source_backed_index_root(&data_root);
-    ctx_history_core::platform_security::establish_private_data_root(&data_root).unwrap();
+    ctx_history_platform::platform_security::establish_private_data_root(&data_root).unwrap();
     let (_, _, discovery) = discovery_fixture(temp.path());
     let profiles = temp.path().join("profiles");
     let alpha = profiles.join("alpha/state.db");
@@ -202,7 +202,7 @@ fn distinct_nanoclaw_registry_failures_match_retained_automatic_routes() {
     let temp = tempfile::tempdir().unwrap();
     let data_root = temp.path().join("data");
     let index_root = source_backed_index_root(&data_root);
-    ctx_history_core::platform_security::establish_private_data_root(&data_root).unwrap();
+    ctx_history_platform::platform_security::establish_private_data_root(&data_root).unwrap();
     let first_checkout = temp.path().join("nanoclaw-first");
     let second_checkout = temp.path().join("nanoclaw-second");
     std::fs::create_dir_all(&first_checkout).unwrap();
@@ -266,7 +266,7 @@ fn mixed_codex_and_unsupported_warp_routes_continue_with_typed_evidence() {
     let temp = tempfile::tempdir().unwrap();
     let data_root = temp.path().join("data");
     let index_root = source_backed_index_root(&data_root);
-    ctx_history_core::platform_security::establish_private_data_root(&data_root).unwrap();
+    ctx_history_platform::platform_security::establish_private_data_root(&data_root).unwrap();
     let (home, _, discovery) = discovery_fixture(temp.path());
     let codex_root = temp.path().join("codex-sessions");
     let unsupported_warp = home.join("unsupported-warp.sqlite");
@@ -329,7 +329,7 @@ fn unsupported_warp_preserves_same_epoch_last_good_route_as_stale() {
     let temp = tempfile::tempdir().unwrap();
     let data_root = temp.path().join("data");
     let index_root = source_backed_index_root(&data_root);
-    ctx_history_core::platform_security::establish_private_data_root(&data_root).unwrap();
+    ctx_history_platform::platform_security::establish_private_data_root(&data_root).unwrap();
     let (home, _, discovery) = discovery_fixture(temp.path());
     let database = home.join("unsupported-warp.sqlite");
     std::fs::create_dir_all(database.parent().unwrap()).unwrap();
@@ -409,7 +409,7 @@ fn registry_issue_only_cold_refresh_retains_the_all_fail_guard() {
     let temp = tempfile::tempdir().unwrap();
     let data_root = temp.path().join("data");
     let index_root = source_backed_index_root(&data_root);
-    ctx_history_core::platform_security::establish_private_data_root(&data_root).unwrap();
+    ctx_history_platform::platform_security::establish_private_data_root(&data_root).unwrap();
     let (_, _, discovery) = discovery_fixture(temp.path());
     let invalid_warp = temp.path().join("unselected-warp.sqlite");
     std::fs::write(&invalid_warp, b"not selected by Warp discovery").unwrap();

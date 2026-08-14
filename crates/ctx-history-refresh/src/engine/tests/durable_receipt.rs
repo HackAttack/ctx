@@ -36,7 +36,7 @@ fn publication_pin_test_publication(
 fn exact_no_op_restart_migrates_pre_fix_source_count_and_reuses_durable_receipt() {
     let temp = tempfile::tempdir().unwrap();
     let data_root = temp.path().join("data");
-    ctx_history_core::platform_security::establish_private_data_root(&data_root).unwrap();
+    ctx_history_platform::platform_security::establish_private_data_root(&data_root).unwrap();
     let metadata_factories = Arc::new(AtomicUsize::new(0));
     let first_factories = Arc::clone(&metadata_factories);
     let first = CoreRefreshEngine::with_executor(Arc::new(
@@ -195,7 +195,7 @@ fn exact_no_op_restart_migrates_pre_fix_source_count_and_reuses_durable_receipt(
 fn lone_failed_terminal_recovers_exact_status_without_reenqueue() {
     let temp = tempfile::tempdir().unwrap();
     let data_root = temp.path().join("data");
-    ctx_history_core::platform_security::establish_private_data_root(&data_root).unwrap();
+    ctx_history_platform::platform_security::establish_private_data_root(&data_root).unwrap();
     let first = CoreRefreshEngine::new();
     let request = first.enqueue_periodic(&data_root).unwrap();
     let request_id = request_id(&request);
@@ -283,7 +283,7 @@ fn lone_failed_terminal_recovers_exact_status_without_reenqueue() {
 fn pointer_crash_recovers_active_receipt_and_preserves_fresh_successor() {
     let temp = tempfile::tempdir().unwrap();
     let data_root = temp.path().join("data");
-    ctx_history_core::platform_security::establish_private_data_root(&data_root).unwrap();
+    ctx_history_platform::platform_security::establish_private_data_root(&data_root).unwrap();
     let first = CoreRefreshEngine::new();
     let active = first.enqueue_periodic(&data_root).unwrap();
     let active_request_id = request_id(&active);
@@ -400,7 +400,7 @@ fn pointer_crash_recovers_active_receipt_and_preserves_fresh_successor() {
 fn pointer_crash_recovers_exact_manual_all_continuation_receipt_without_recapture() {
     let temp = tempfile::tempdir().unwrap();
     let data_root = temp.path().join("data");
-    ctx_history_core::platform_security::establish_private_data_root(&data_root).unwrap();
+    ctx_history_platform::platform_security::establish_private_data_root(&data_root).unwrap();
     let covered_routes = BTreeSet::from([route_identity(0xa1), route_identity(0xa2)]);
     let routes = covered_routes
         .iter()
@@ -581,7 +581,7 @@ fn pointer_crash_recovers_exact_manual_all_continuation_receipt_without_recaptur
 fn failed_predecessor_terminalizes_and_recovers_its_attached_fresh_demand() {
     let temp = tempfile::tempdir().unwrap();
     let data_root = temp.path().join("data");
-    ctx_history_core::platform_security::establish_private_data_root(&data_root).unwrap();
+    ctx_history_platform::platform_security::establish_private_data_root(&data_root).unwrap();
     let first = CoreRefreshEngine::new();
     let predecessor_id = Uuid::from_u128(0x5a11ec).to_string();
     let predecessor = first
@@ -649,7 +649,7 @@ fn failed_predecessor_terminalizes_and_recovers_its_attached_fresh_demand() {
 fn failed_terminal_retry_journals_successor_before_restart() {
     let temp = tempfile::tempdir().unwrap();
     let data_root = temp.path().join("data");
-    ctx_history_core::platform_security::establish_private_data_root(&data_root).unwrap();
+    ctx_history_platform::platform_security::establish_private_data_root(&data_root).unwrap();
     let first = CoreRefreshEngine::new();
     let active = first.enqueue_periodic(&data_root).unwrap();
     let active_id = request_id(&active);

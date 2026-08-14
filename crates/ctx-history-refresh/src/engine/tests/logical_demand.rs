@@ -232,7 +232,7 @@ fn complete_running_all_with_demand(
 fn running_cold_all_satisfies_fresh_demand_with_one_full_pass() {
     let temp = tempfile::tempdir().unwrap();
     let data_root = temp.path().join("data");
-    ctx_history_core::platform_security::establish_private_data_root(&data_root).unwrap();
+    ctx_history_platform::platform_security::establish_private_data_root(&data_root).unwrap();
     let route = route_identity(0x61);
     let route_observation = observation(0xa1);
     let demand_id = Uuid::from_u128(0x28101).to_string();
@@ -280,7 +280,7 @@ fn running_cold_all_satisfies_fresh_demand_with_one_full_pass() {
 fn fully_covered_resolver_samples_after_seen_fence_and_extends_matching_boundary() {
     let temp = tempfile::tempdir().unwrap();
     let data_root = temp.path().join("data");
-    ctx_history_core::platform_security::establish_private_data_root(&data_root).unwrap();
+    ctx_history_platform::platform_security::establish_private_data_root(&data_root).unwrap();
     let route = route_identity(0x69);
     let route_observation = observation(0xa9);
     let demand_id = Uuid::from_u128(0x28109).to_string();
@@ -325,7 +325,7 @@ fn fully_covered_resolver_mismatch_and_unavailable_samples_execute_exact_delta()
     {
         let temp = tempfile::tempdir().unwrap();
         let data_root = temp.path().join("data");
-        ctx_history_core::platform_security::establish_private_data_root(&data_root).unwrap();
+        ctx_history_platform::platform_security::establish_private_data_root(&data_root).unwrap();
         let route = route_identity(0x6a);
         let route_observation = observation(0xaa);
         let demand_id = Uuid::now_v7().to_string();
@@ -417,7 +417,7 @@ fn fully_covered_resolver_mismatch_and_unavailable_samples_execute_exact_delta()
 fn unavailable_fully_covered_sample_persists_exact_delta_across_restart() {
     let temp = tempfile::tempdir().unwrap();
     let data_root = temp.path().join("data");
-    ctx_history_core::platform_security::establish_private_data_root(&data_root).unwrap();
+    ctx_history_platform::platform_security::establish_private_data_root(&data_root).unwrap();
     let route = route_identity(0x6f);
     let route_observation = observation(0xaf);
     let demand_id = Uuid::from_u128(0x2810b).to_string();
@@ -577,7 +577,7 @@ fn regular_publication_fence_samples_only_advanced_route_and_bounds_later_event(
 fn post_snapshot_change_executes_only_exact_uncovered_delta() {
     let temp = tempfile::tempdir().unwrap();
     let data_root = temp.path().join("data");
-    ctx_history_core::platform_security::establish_private_data_root(&data_root).unwrap();
+    ctx_history_platform::platform_security::establish_private_data_root(&data_root).unwrap();
     let stable = route_identity(0x63);
     let changed = route_identity(0x64);
     let routes = BTreeSet::from([stable.clone(), changed.clone()]);
@@ -635,7 +635,7 @@ fn post_snapshot_change_executes_only_exact_uncovered_delta() {
 fn logical_demand_keeps_its_own_terminal_request_resolution() {
     let temp = tempfile::tempdir().unwrap();
     let data_root = temp.path().join("data");
-    ctx_history_core::platform_security::establish_private_data_root(&data_root).unwrap();
+    ctx_history_platform::platform_security::establish_private_data_root(&data_root).unwrap();
     let route = route_identity(0x65);
     let token = observation(0xc1);
     let demand_id = Uuid::from_u128(0x28103).to_string();
@@ -682,7 +682,7 @@ fn logical_demand_keeps_its_own_terminal_request_resolution() {
 fn fully_covered_logical_terminal_recovers_stable_uuid_and_exact_response() {
     let temp = tempfile::tempdir().unwrap();
     let data_root = temp.path().join("data");
-    ctx_history_core::platform_security::establish_private_data_root(&data_root).unwrap();
+    ctx_history_platform::platform_security::establish_private_data_root(&data_root).unwrap();
     let route = route_identity(0x70);
     let route_observation = observation(0xb0);
     let demand_id = Uuid::from_u128(0x2810c).to_string();
@@ -727,7 +727,7 @@ fn fully_covered_logical_terminal_recovers_stable_uuid_and_exact_response() {
 fn indeterminate_admission_observation_is_not_covered() {
     let temp = tempfile::tempdir().unwrap();
     let data_root = temp.path().join("data");
-    ctx_history_core::platform_security::establish_private_data_root(&data_root).unwrap();
+    ctx_history_platform::platform_security::establish_private_data_root(&data_root).unwrap();
     let route = route_identity(0x66);
     let routes = BTreeSet::from([route.clone()]);
     let demand_id = Uuid::from_u128(0x28104).to_string();
@@ -772,7 +772,7 @@ fn indeterminate_admission_observation_is_not_covered() {
 fn watcher_event_invalidates_indeterminate_ledger_coverage() {
     let temp = tempfile::tempdir().unwrap();
     let data_root = temp.path().join("data");
-    ctx_history_core::platform_security::establish_private_data_root(&data_root).unwrap();
+    ctx_history_platform::platform_security::establish_private_data_root(&data_root).unwrap();
     let route = route_identity(0x6b);
     let routes = BTreeSet::from([route.clone()]);
     let demand_id = Uuid::from_u128(0x2810d).to_string();
@@ -837,7 +837,7 @@ fn watcher_event_invalidates_indeterminate_ledger_coverage() {
 fn event_after_certified_boundary_survives_for_exact_delta() {
     let temp = tempfile::tempdir().unwrap();
     let data_root = temp.path().join("data");
-    ctx_history_core::platform_security::establish_private_data_root(&data_root).unwrap();
+    ctx_history_platform::platform_security::establish_private_data_root(&data_root).unwrap();
     let route = route_identity(0x68);
     let routes = BTreeSet::from([route.clone()]);
     let token = observation(0xf1);
@@ -898,7 +898,7 @@ fn event_after_certified_boundary_survives_for_exact_delta() {
 fn restart_before_publication_preserves_logical_demand_fence() {
     let temp = tempfile::tempdir().unwrap();
     let data_root = temp.path().join("data");
-    ctx_history_core::platform_security::establish_private_data_root(&data_root).unwrap();
+    ctx_history_platform::platform_security::establish_private_data_root(&data_root).unwrap();
     let route = route_identity(0x67);
     let routes = BTreeSet::from([route.clone()]);
     let token = observation(0xe1);
@@ -976,7 +976,7 @@ fn restart_before_publication_preserves_logical_demand_fence() {
 fn restart_after_predecessor_publication_recovers_predecessor_root_and_logical_continuation() {
     let temp = tempfile::tempdir().unwrap();
     let data_root = temp.path().join("data");
-    ctx_history_core::platform_security::establish_private_data_root(&data_root).unwrap();
+    ctx_history_platform::platform_security::establish_private_data_root(&data_root).unwrap();
     let route = route_identity(0x6b);
     let route_observation = observation(0xab);
     let observations = BTreeMap::from([(route.clone(), route_observation.clone())]);

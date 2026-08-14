@@ -5,7 +5,7 @@ use super::*;
 fn delayed_real_route_fence_after_predecessor_publication_stays_logical() {
     let temp = tempfile::tempdir().unwrap();
     let data_root = temp.path().join("data");
-    ctx_history_core::platform_security::establish_private_data_root(&data_root).unwrap();
+    ctx_history_platform::platform_security::establish_private_data_root(&data_root).unwrap();
     let route = route_identity(0x62);
     let directory_route = route_identity(0x63);
     let routes = BTreeSet::from([route.clone(), directory_route.clone()]);

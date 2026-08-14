@@ -23,7 +23,7 @@ use std::{
     sync::{Arc, Mutex, MutexGuard},
 };
 
-use ctx_history_core::platform_security::create_private_directory_all;
+use ctx_history_platform::platform_security::create_private_directory_all;
 use rusqlite::{config::DbConfig, ffi, Connection, OpenFlags};
 use sha2::{Digest, Sha256};
 use tempfile::TempDir;

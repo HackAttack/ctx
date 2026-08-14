@@ -34,7 +34,7 @@ fn queued_exhaustive_route_request_subsumes_incremental_request() {
 fn running_incremental_gets_one_exhaustive_manual_successor() {
     let temp = tempfile::tempdir().unwrap();
     let data_root = temp.path().join("data");
-    ctx_history_core::platform_security::establish_private_data_root(&data_root).unwrap();
+    ctx_history_platform::platform_security::establish_private_data_root(&data_root).unwrap();
     let coordinator = Arc::new(CoreRefreshEngine::new());
     let incremental = coordinator.enqueue_periodic(&data_root).unwrap();
     let incremental_id = request_id(&incremental);
@@ -97,7 +97,7 @@ fn running_incremental_gets_one_exhaustive_manual_successor() {
 fn concurrent_manual_exhaustive_callers_share_one_queued_exhaustive_successor() {
     let temp = tempfile::tempdir().unwrap();
     let data_root = temp.path().join("data");
-    ctx_history_core::platform_security::establish_private_data_root(&data_root).unwrap();
+    ctx_history_platform::platform_security::establish_private_data_root(&data_root).unwrap();
     let coordinator = Arc::new(CoreRefreshEngine::new());
     let incremental = coordinator.enqueue_periodic(&data_root).unwrap();
     let incremental_id = request_id(&incremental);
@@ -179,7 +179,7 @@ fn concurrent_manual_exhaustive_callers_share_one_queued_exhaustive_successor() 
 fn manual_after_queued_safety_exhaustive_attaches_without_second_scan() {
     let temp = tempfile::tempdir().unwrap();
     let data_root = temp.path().join("data");
-    ctx_history_core::platform_security::establish_private_data_root(&data_root).unwrap();
+    ctx_history_platform::platform_security::establish_private_data_root(&data_root).unwrap();
     let coordinator = CoreRefreshEngine::new();
     let route = route_identity(0xe4);
     coordinator.reconcile_watch_routes(
@@ -251,7 +251,7 @@ fn manual_after_queued_safety_exhaustive_attaches_without_second_scan() {
 fn exact_import_overlay_upgrades_queued_route_work_without_rescan() {
     let temp = tempfile::tempdir().unwrap();
     let data_root = temp.path().join("data");
-    ctx_history_core::platform_security::establish_private_data_root(&data_root).unwrap();
+    ctx_history_platform::platform_security::establish_private_data_root(&data_root).unwrap();
     let coordinator = CoreRefreshEngine::new();
     let route = route_identity(0xa1);
     let observation = format!("{:02x}", 0xa3).repeat(32);

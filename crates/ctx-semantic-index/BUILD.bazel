@@ -32,6 +32,7 @@ PROD_SRCS = glob(
 CTX_SEMANTIC_INDEX_DEPS = [
     "//crates/ctx-history-core:lib",
     "//crates/ctx-history-index:lib",
+    "//crates/ctx-history-platform:lib",
     "//crates/ctx-semantic-model:lib",
 ]
 

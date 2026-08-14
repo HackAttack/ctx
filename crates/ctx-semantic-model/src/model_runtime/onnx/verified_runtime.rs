@@ -131,7 +131,7 @@ pub(super) fn validate_runtime_candidate(path: &Path, flavor: OnnxRuntimeFlavor)
     let root = lib
         .parent()
         .ok_or_else(|| anyhow!("runtime lib directory has no parent"))?;
-    ctx_history_core::platform_security::verify_private_directory(root)
+    ctx_history_platform::platform_security::verify_private_directory(root)
         .with_context(|| format!("verify private runtime directory {}", root.display()))?;
     let manifest_path = root.join(RUNTIME_INSTALL_MANIFEST);
     let bytes = read_runtime_file_nofollow(&manifest_path, 16 * 1024)
@@ -414,7 +414,7 @@ mod tests {
     fn signed_accelerator_runtime_manifest_is_exact_and_tamper_evident() {
         let temporary = tempfile::tempdir().unwrap();
         let root = temporary.path();
-        ctx_history_core::platform_security::restrict_private_directory(root).unwrap();
+        ctx_history_platform::platform_security::restrict_private_directory(root).unwrap();
         let mut files = Vec::new();
         for relative in expected_accelerator_runtime_files(OnnxRuntimeFlavor::Cuda) {
             let path = root.join(relative);

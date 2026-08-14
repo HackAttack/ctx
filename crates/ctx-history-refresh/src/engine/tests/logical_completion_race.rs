@@ -10,7 +10,7 @@ fn observation(byte: u8) -> String {
 fn successor_admitted_during_logical_sampling_is_durably_unfenced() {
     let temp = tempfile::tempdir().unwrap();
     let data_root = temp.path().join("data");
-    ctx_history_core::platform_security::establish_private_data_root(&data_root).unwrap();
+    ctx_history_platform::platform_security::establish_private_data_root(&data_root).unwrap();
     let route = route_identity(0x7a);
     let route_observation = observation(0xba);
     let first_demand_id = Uuid::from_u128(0x28120).to_string();
