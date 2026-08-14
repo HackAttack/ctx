@@ -7,7 +7,7 @@
     {
       "package": "ctx-history-capture",
       "manifest": "crates/ctx-history-capture/Cargo.toml",
-      "ratchet": 155038
+      "ratchet": 142298
     }
   ]
 }
