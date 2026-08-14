@@ -35,7 +35,7 @@ pub use ctx_history_jsonl::{
     JsonlRecordFraming, JsonlRecordRef, JsonlScanOutcome, JsonlSemanticPreflightMode,
     JsonlSourceChange, JsonlSourceIdentity, JsonlTerminalAuthority, JsonlTerminalObservationRegion,
 };
-#[cfg(any(test, feature = "test-support"))]
+#[cfg(feature = "test-support")]
 pub use ctx_history_jsonl::{
     checkpoint_admitted_revision_for_test, jsonl_prefix_hash_bytes, reset_jsonl_prefix_hash_bytes,
     revalidate_frozen_prefix, set_after_final_jsonl_prefix_hash_hook,
