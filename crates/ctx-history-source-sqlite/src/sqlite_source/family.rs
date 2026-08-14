@@ -110,6 +110,7 @@ impl SqliteSourceFamily {
         Ok(SqliteFamilyEvidence {
             parent_identity: self.authority.identity.clone(),
             database: self.database.capture_state()?,
+            database_token: self.database.bounded_revision_token()?,
             wal: self
                 .wal
                 .as_ref()
@@ -123,7 +124,7 @@ impl SqliteSourceFamily {
             wal_token: self
                 .wal
                 .as_ref()
-                .map(SqliteFamilyMember::bounded_token)
+                .map(SqliteFamilyMember::bounded_revision_token)
                 .transpose()?,
             shared_memory_token: self
                 .shared_memory
@@ -155,6 +156,7 @@ impl SqliteSourceFamily {
         Ok(SqliteFamilyEvidence {
             parent_identity: self.authority.identity.clone(),
             database: self.database.capture_state()?,
+            database_token: self.database.bounded_revision_token()?,
             wal: self
                 .wal
                 .as_ref()
@@ -164,7 +166,7 @@ impl SqliteSourceFamily {
             wal_token: self
                 .wal
                 .as_ref()
-                .map(SqliteFamilyMember::bounded_token)
+                .map(SqliteFamilyMember::bounded_revision_token)
                 .transpose()?,
             shared_memory_token: None,
         })
@@ -182,8 +184,7 @@ impl SqliteSourceFamily {
         if self.authority.identity != expected.parent_identity {
             return Err(SqliteSourceAccessError::SourceChanged);
         }
-        self.database
-            .revalidate(&self.authority, &expected.database)?;
+        self.revalidate_database_revision(expected)?;
         self.revalidate_wal(expected)?;
         revalidate_optional_member_identity(
             &self.authority,
@@ -241,8 +242,7 @@ impl SqliteSourceFamily {
         if self.authority.identity != expected.parent_identity {
             return Err(SqliteSourceAccessError::SourceChanged);
         }
-        self.database
-            .revalidate(&self.authority, &expected.database)?;
+        self.revalidate_database_revision(expected)?;
         self.revalidate_wal(expected)?;
         revalidate_optional_member(
             &self.authority,
@@ -276,6 +276,26 @@ impl SqliteSourceFamily {
         Ok(())
     }
 
+    fn revalidate_database_revision(
+        &self,
+        expected: &SqliteFamilyEvidence,
+    ) -> SqliteSourceAccessResult<()> {
+        self.database
+            .revalidate(&self.authority, &expected.database)?;
+        // Filesystems may coalesce timestamps for same-size writes. SQLite's
+        // bounded header evidence includes the database change counter, so a
+        // committed transaction cannot pass only because metadata is equal.
+        let token = self
+            .database
+            .bounded_revision_token()
+            .map_err(map_revalidation_error)?;
+        if token == expected.database_token {
+            Ok(())
+        } else {
+            Err(SqliteSourceAccessError::SourceChanged)
+        }
+    }
+
     fn revalidate_wal(&self, expected: &SqliteFamilyEvidence) -> SqliteSourceAccessResult<()> {
         match expected.wal.as_ref() {
             None | Some(NativeFileState { length: 0, .. }) => {
@@ -291,7 +311,9 @@ impl SqliteSourceFamily {
                     .wal_token
                     .as_ref()
                     .ok_or(SqliteSourceAccessError::SourceChanged)?;
-                let token = wal.bounded_token().map_err(map_revalidation_error)?;
+                let token = wal
+                    .bounded_revision_token()
+                    .map_err(map_revalidation_error)?;
                 if &token == expected_token {
                     Ok(())
                 } else {
@@ -405,29 +427,29 @@ impl SqliteFamilyMember {
         }
     }
 
-    fn bounded_token(&self) -> SqliteSourceAccessResult<[u8; 32]> {
+    fn bounded_revision_token(&self) -> SqliteSourceAccessResult<[u8; 32]> {
         let state = self.capture_state()?;
         let mut file =
             self.opened
                 .file()
                 .try_clone()
                 .map_err(|source| SqliteSourceAccessError::Io {
-                    operation: "retaining the SQLite WAL for bounded revision evidence",
+                    operation: "retaining a SQLite source component for bounded revision evidence",
                     path: self.path.clone(),
                     source,
                 })?;
         file.seek(SeekFrom::Start(0))
             .map_err(|source| SqliteSourceAccessError::Io {
-                operation: "seeking the SQLite WAL for bounded revision evidence",
+                operation: "seeking a SQLite source component for bounded revision evidence",
                 path: self.path.clone(),
                 source,
             })?;
-        let prefix_len = usize::try_from(state.length.min(SQLITE_WAL_TOKEN_BYTES as u64))
+        let prefix_len = usize::try_from(state.length.min(SQLITE_REVISION_TOKEN_BYTES as u64))
             .map_err(|_| SqliteSourceAccessError::SourceChanged)?;
         let mut prefix = vec![0_u8; prefix_len];
         file.read_exact(&mut prefix)
             .map_err(|source| SqliteSourceAccessError::Io {
-                operation: "reading the SQLite WAL prefix for bounded revision evidence",
+                operation: "reading a SQLite source component prefix for bounded revision evidence",
                 path: self.path.clone(),
                 source,
             })?;
@@ -436,13 +458,15 @@ impl SqliteFamilyMember {
         if suffix_len > 0 {
             file.seek(SeekFrom::Start(state.length - suffix_len as u64))
                 .map_err(|source| SqliteSourceAccessError::Io {
-                    operation: "seeking the SQLite WAL suffix for bounded revision evidence",
+                    operation:
+                        "seeking a SQLite source component suffix for bounded revision evidence",
                     path: self.path.clone(),
                     source,
                 })?;
             file.read_exact(&mut suffix)
                 .map_err(|source| SqliteSourceAccessError::Io {
-                    operation: "reading the SQLite WAL suffix for bounded revision evidence",
+                    operation:
+                        "reading a SQLite source component suffix for bounded revision evidence",
                     path: self.path.clone(),
                     source,
                 })?;
@@ -598,6 +622,7 @@ fn revalidate_empty_or_absent_wal(
 pub(super) struct SqliteFamilyEvidence {
     parent_identity: NativeFileIdentity,
     pub(super) database: NativeFileState,
+    database_token: [u8; 32],
     pub(super) wal: Option<NativeFileState>,
     shared_memory: Option<NativeFileState>,
     wal_token: Option<[u8; 32]>,
@@ -662,6 +687,7 @@ impl SqliteFamilyEvidence {
     fn hash_into(&self, digest: &mut Sha256) {
         self.parent_identity.hash_into(digest);
         self.database.hash_into(digest);
+        digest.update(self.database_token);
         let committed_wal = self.wal.as_ref().filter(|state| state.length != 0);
         hash_optional_state(digest, committed_wal);
         // SHM is SQLite's volatile lock coordination, not provider content.

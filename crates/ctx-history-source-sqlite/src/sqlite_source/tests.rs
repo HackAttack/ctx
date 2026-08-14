@@ -36,10 +36,10 @@ use super::{
     map_revalidation_io_error, open_private_sqlite_staging_file,
     open_root_handle_sqlite_source_snapshot, retain_sqlite_source_directory_authority,
     SqliteArtifactKind, SqliteCleanupStatus, SqliteFailurePhase, SqliteSourceAccessError,
-    SqliteSourceComponent, SqliteSourceDirectoryAuthority, SqliteSourceProgressError,
-    SqliteSourceProgressStage, SqliteSourceReadSnapshot, SqliteSourceSnapshotStrategy,
-    SqliteSourceStagingOperationForTest, SQLITE_SNAPSHOT_FREE_HEADROOM_BYTES,
-    SQLITE_SNAPSHOT_MAX_TOTAL_BYTES,
+    SqliteSourceComponent, SqliteSourceDirectoryAuthority, SqliteSourceFamily,
+    SqliteSourceProgressError, SqliteSourceProgressStage, SqliteSourceReadSnapshot,
+    SqliteSourceSnapshotStrategy, SqliteSourceStagingOperationForTest,
+    SQLITE_SNAPSHOT_FREE_HEADROOM_BYTES, SQLITE_SNAPSHOT_MAX_TOTAL_BYTES,
 };
 
 mod diagnostics;
@@ -762,20 +762,60 @@ fn source_race_after_database_copy_fails_closed_and_cleans_scratch() {
     let database = temp.path().join("provider.sqlite");
     create_database(&database, "before");
     let authority = retain_parent_in_data_root(data_root.path(), temp.path());
+    let mut committed_user_version = None;
 
     let result = open_root_handle_sqlite_source_stable_snapshot_after_database_copy_for_test(
         &authority,
         OsStr::new("provider.sqlite"),
         || {
-            Connection::open(&database)
-                .unwrap()
-                .pragma_update(None, "user_version", 7)
-                .unwrap();
+            let connection = Connection::open(&database).unwrap();
+            connection.pragma_update(None, "user_version", 7).unwrap();
+            committed_user_version = Some(
+                connection
+                    .query_row("PRAGMA user_version", [], |row| row.get::<_, i64>(0))
+                    .unwrap(),
+            );
         },
     );
 
-    assert!(matches!(result, Err(error) if error.is_source_changed()));
+    assert_eq!(committed_user_version, Some(7));
+    assert!(
+        matches!(&result, Err(error) if error.is_source_changed()),
+        "expected source_changed after the committed hook mutation, got {result:?}"
+    );
     assert_eq!(staging_entries(data_root.path()), 0);
+}
+
+#[test]
+fn database_revision_token_fails_closed_when_native_metadata_cannot_distinguish_mutation() {
+    let temp = tempfile::tempdir().unwrap();
+    let data_root = tempfile::tempdir().unwrap();
+    let database = temp.path().join("provider.sqlite");
+    create_database(&database, "before");
+    let authority = retain_parent_in_data_root(data_root.path(), temp.path());
+    let family =
+        SqliteSourceFamily::open(&authority, OsStr::new("provider.sqlite"), || {}).unwrap();
+    let mut evidence = family.capture_evidence().unwrap();
+
+    let connection = Connection::open(&database).unwrap();
+    let journal_mode: String = connection
+        .query_row("PRAGMA journal_mode=OFF", [], |row| row.get(0))
+        .unwrap();
+    assert_eq!(journal_mode, "off");
+    connection.pragma_update(None, "user_version", 7).unwrap();
+    let committed_user_version = connection
+        .query_row("PRAGMA user_version", [], |row| row.get::<_, i64>(0))
+        .unwrap();
+    drop(connection);
+
+    // Model timestamp coalescing by retaining the pre-commit content token
+    // while making every native database-state field equal to the new state.
+    evidence.database = family.database.capture_state().unwrap();
+    assert!(family.revalidate_database_identity(&evidence).is_ok());
+    let result = family.revalidate(&evidence);
+
+    assert_eq!(committed_user_version, 7);
+    assert!(matches!(result, Err(error) if error.is_source_changed()));
 }
 
 #[test]
