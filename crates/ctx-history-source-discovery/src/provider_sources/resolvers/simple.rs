@@ -10,14 +10,11 @@ use super::{
         context::{DiscoveryContext, DiscoveryPlatform},
         reasons::path_presence_unknown_reason,
         selectors::{direct_entries, encoded_path_within_limit, source_path_kind, SourcePathKind},
-        types::{
-            DiscoveryIssueKind, DiscoveryReport, ProviderSource, ProviderSourceKind,
-            ProviderSourceSpec, ProviderSourceStatus,
-        },
+        types::{DiscoveryIssueKind, DiscoveryReport, ProviderSourceKind, ProviderSourceSpec},
         StaticProviderProbeCatalog,
     },
     issue, path_presence, push_source_candidate, select_current_or_legacy,
-    source_from_parts_with_data_root, unsupported_source, PathPresence, SourceAdmission,
+    source_from_parts_with_data_root, unsupported_source, PathPresence,
 };
 
 const MANUAL_PATH_REASON: &str =
@@ -44,10 +41,9 @@ pub(super) fn resolve(
     probes: &StaticProviderProbeCatalog,
     context: &DiscoveryContext,
     spec: &ProviderSourceSpec,
-    admission: SourceAdmission,
 ) -> DiscoveryReport {
     match spec.provider {
-        CaptureProvider::Codex => resolve_codex(probes, context, spec, admission),
+        CaptureProvider::Codex => resolve_codex(probes, context, spec),
         CaptureProvider::GrokBuild => resolve_grok_build(probes, context, spec),
         CaptureProvider::DeepSeekHarness => resolve_deepseek_harness(probes, context, spec),
         CaptureProvider::Claude => resolve_claude(probes, context, spec),
@@ -125,7 +121,6 @@ fn resolve_codex(
     probes: &StaticProviderProbeCatalog,
     context: &DiscoveryContext,
     spec: &ProviderSourceSpec,
-    admission: SourceAdmission,
 ) -> DiscoveryReport {
     let root = match context.env("CODEX_HOME").and_then(OsStr::to_str) {
         Some("") | None => match supported_default(context, spec) {
@@ -151,12 +146,7 @@ fn resolve_codex(
 
     let mut report = DiscoveryReport::default();
     for tree in [root.join("sessions"), root.join("archived_sessions")] {
-        match admission {
-            SourceAdmission::ReconcileAll => {
-                add_source(probes, &mut report, spec, tree, "codex_session_jsonl_tree")
-            }
-            SourceAdmission::ExactMembers => add_exact_codex_tree_source(&mut report, spec, tree),
-        }
+        add_source(probes, &mut report, spec, tree, "codex_session_jsonl_tree");
     }
     add_source(
         probes,
@@ -166,100 +156,32 @@ fn resolve_codex(
         "codex_history_jsonl",
     );
 
-    if admission == SourceAdmission::ReconcileAll {
-        for tree in [root.join("sessions"), root.join("archived_sessions")] {
-            match compressed_codex_rollouts(&tree) {
-                Ok(paths) => {
-                    for path in paths {
-                        let source = unsupported_source(spec, path, CODEX_COMPRESSION_REASON);
-                        if !push_source_candidate(&mut report.sources, source) {
-                            push_issue_once(
-                                &mut report,
-                                spec,
-                                None,
-                                DiscoveryIssueKind::SelectorUnreconstructible,
-                                PATH_LIMIT_REASON,
-                            );
-                        }
+    for tree in [root.join("sessions"), root.join("archived_sessions")] {
+        match compressed_codex_rollouts(&tree) {
+            Ok(paths) => {
+                for path in paths {
+                    let source = unsupported_source(spec, path, CODEX_COMPRESSION_REASON);
+                    if !push_source_candidate(&mut report.sources, source) {
+                        push_issue_once(
+                            &mut report,
+                            spec,
+                            None,
+                            DiscoveryIssueKind::SelectorUnreconstructible,
+                            PATH_LIMIT_REASON,
+                        );
                     }
                 }
-                Err(()) => push_issue_once(
-                    &mut report,
-                    spec,
-                    safe_issue_path(&tree),
-                    DiscoveryIssueKind::SelectorUnreconstructible,
-                    CODEX_COMPRESSION_SCAN_REASON,
-                ),
             }
+            Err(()) => push_issue_once(
+                &mut report,
+                spec,
+                safe_issue_path(&tree),
+                DiscoveryIssueKind::SelectorUnreconstructible,
+                CODEX_COMPRESSION_SCAN_REASON,
+            ),
         }
     }
     report
-}
-
-/// Registers an exact-refresh tree root without recursively proving that a
-/// sibling JSONL exists. The selected member is opened and authenticated by
-/// Codex's partial-member adapter before publication can succeed.
-fn add_exact_codex_tree_source(
-    report: &mut DiscoveryReport,
-    spec: &ProviderSourceSpec,
-    path: PathBuf,
-) {
-    if !encoded_path_within_limit(&path) {
-        push_issue_once(
-            report,
-            spec,
-            None,
-            DiscoveryIssueKind::SelectorUnreconstructible,
-            PATH_LIMIT_REASON,
-        );
-        return;
-    }
-    let (exists, status) = match path_presence(&path) {
-        PathPresence::Missing => (false, ProviderSourceStatus::Missing),
-        PathPresence::Present => (true, ProviderSourceStatus::Available),
-        PathPresence::Unknown(kind) => {
-            push_issue_once(
-                report,
-                spec,
-                safe_issue_path(&path),
-                DiscoveryIssueKind::SelectorUnreconstructible,
-                path_presence_unknown_reason(kind),
-            );
-            return;
-        }
-        PathPresence::Unsupported => {
-            push_issue_once(
-                report,
-                spec,
-                safe_issue_path(&path),
-                DiscoveryIssueKind::SelectorUnreconstructible,
-                SYMLINK_REASON,
-            );
-            return;
-        }
-    };
-    if !push_source_candidate(
-        &mut report.sources,
-        ProviderSource {
-            provider: spec.provider,
-            path,
-            exists,
-            source_format: "codex_session_jsonl_tree",
-            source_kind: ProviderSourceKind::NativeHistory,
-            import_support: spec.import_support,
-            catalog_support: spec.catalog_support,
-            status,
-            unsupported_reason: spec.unsupported_reason,
-        },
-    ) {
-        push_issue_once(
-            report,
-            spec,
-            None,
-            DiscoveryIssueKind::SelectorUnreconstructible,
-            PATH_LIMIT_REASON,
-        );
-    }
 }
 
 fn resolve_claude(

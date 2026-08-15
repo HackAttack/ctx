@@ -7,6 +7,7 @@ use crate::{
 fn codex_session_tree_registration_does_not_inventory_the_root() {
     let temp = crate::test_support_paths::tempdir().unwrap();
     let sessions = temp.path().join("sessions-not-created");
+    let archived_sessions = temp.path().join("archived-sessions-not-created");
     let source = ProviderSource {
         provider: CaptureProvider::Codex,
         path: sessions,
@@ -22,10 +23,26 @@ fn codex_session_tree_registration_does_not_inventory_the_root() {
 
     register_codex_session_tree_routes(
         &mut registry,
-        vec![source],
+        vec![
+            source,
+            ProviderSource {
+                provider: CaptureProvider::Codex,
+                path: archived_sessions.clone(),
+                exists: true,
+                source_format: "codex_session_jsonl_tree",
+                source_kind: ProviderSourceKind::NativeHistory,
+                import_support: ProviderImportSupport::Native,
+                catalog_support: ProviderCatalogSupport::None,
+                status: ProviderSourceStatus::Available,
+                unsupported_reason: None,
+            },
+        ],
         SourceBackedRouteSelection::Automatic,
     )
     .unwrap();
 
     assert_eq!(registry.routes().count(), 1);
+    let catalog = registry.watch_catalog();
+    let targets = catalog.route_targets().next().unwrap().1;
+    assert!(targets.contains(&archived_sessions));
 }

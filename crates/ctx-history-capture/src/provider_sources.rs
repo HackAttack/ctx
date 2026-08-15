@@ -24,7 +24,7 @@ pub use ctx_history_source_discovery::{
     LingmaDiscoveredInventory, LingmaDiscoveryUnavailable, LingmaVscodeClient, LingmaVscodeProfile,
     PathPresence, ProviderCatalogSupport, ProviderDefaultLocation, ProviderImportSupport,
     ProviderSource, ProviderSourceKind, ProviderSourceRootBoundaryError, ProviderSourceSpec,
-    ProviderSourceStatus, ProviderSourceStatusReason, SourceAdmission, WarpDiscoveryUnavailable,
+    ProviderSourceStatus, ProviderSourceStatusReason, WarpDiscoveryUnavailable,
     WarpInstalledPlatform, WarpInstalledSurfaceKey, WarpReleaseChannel, WarpTerminalSurface,
     DISCOVERY_ENV_ALLOWLIST,
 };
@@ -182,13 +182,11 @@ pub fn discover_provider_sources_with_context(context: &DiscoveryContext) -> Dis
 pub fn discover_provider_sources_with_context_and_work_budget(
     context: &DiscoveryContext,
     worker_limit: usize,
-    admission: SourceAdmission,
 ) -> DiscoveryReport {
     ctx_history_source_discovery::discover_provider_sources_with_context_and_work_budget(
         &BUILTIN_PROVIDER_PROBES,
         context,
         worker_limit,
-        admission,
     )
 }
 
@@ -416,11 +414,7 @@ mod extraction_regression_tests {
             &BUILTIN_PROVIDER_PROBES,
             &context,
         );
-        let bounded = discover_provider_sources_with_context_and_work_budget(
-            &context,
-            1,
-            SourceAdmission::ReconcileAll,
-        );
+        let bounded = discover_provider_sources_with_context_and_work_budget(&context, 1);
 
         assert_eq!(facade, direct);
         assert_eq!(facade, bounded);

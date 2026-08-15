@@ -383,6 +383,9 @@ pub struct SourceBackedRefreshExecution<'a> {
     pub explicit_source_catalog: Option<&'a ExplicitSourceCatalogAuthority>,
     pub scope: SourceBackedRefreshScope,
     pub route_worksets: BTreeMap<SourceRouteIdentity, SourceBackedRefreshWorkset>,
+    /// Immutable authenticated watch-catalog snapshot admitted with this
+    /// request. It is absent for manual and uncertainty fallbacks.
+    pub watch_catalog: Option<SourceBackedWatchCatalog>,
     pub covered_route_ids: BTreeSet<SourceRouteIdentity>,
     pub covered_publication: SourceBackedRefreshCoveredPublication,
     pub discovery_context: &'a DiscoveryContext,
@@ -420,6 +423,7 @@ impl<'a> SourceBackedRefreshExecution<'a> {
             explicit_source_catalog,
             scope,
             route_worksets: BTreeMap::new(),
+            watch_catalog: None,
             covered_route_ids,
             covered_publication,
             discovery_context,
@@ -438,6 +442,11 @@ impl<'a> SourceBackedRefreshExecution<'a> {
         route_worksets: BTreeMap<SourceRouteIdentity, SourceBackedRefreshWorkset>,
     ) -> Self {
         self.route_worksets = route_worksets;
+        self
+    }
+
+    pub fn with_watch_catalog_opt(mut self, catalog: Option<SourceBackedWatchCatalog>) -> Self {
+        self.watch_catalog = catalog;
         self
     }
 

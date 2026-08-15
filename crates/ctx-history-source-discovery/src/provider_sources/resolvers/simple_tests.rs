@@ -32,19 +32,6 @@ fn resolve_provider(context: &DiscoveryContext, provider: CaptureProvider) -> Di
         &crate::provider_sources::TEST_PROVIDER_PROBES,
         context,
         spec(provider),
-        SourceAdmission::ReconcileAll,
-    )
-}
-
-fn resolve_provider_for_exact_members(
-    context: &DiscoveryContext,
-    provider: CaptureProvider,
-) -> DiscoveryReport {
-    resolve(
-        &crate::provider_sources::TEST_PROVIDER_PROBES,
-        context,
-        spec(provider),
-        SourceAdmission::ExactMembers,
     )
 }
 
@@ -134,47 +121,6 @@ fn codex_official_root_includes_active_archive_history_and_compression_detection
         invalid.issues[0].kind,
         DiscoveryIssueKind::SelectorUnreconstructible
     );
-}
-
-#[test]
-fn codex_exact_member_intent_skips_recursive_root_and_compression_probes() {
-    let temp = tempdir();
-    let base = context(&temp, DiscoveryPlatform::Linux);
-    let custom = temp.path().join("exact-codex");
-    fs::create_dir_all(custom.join("sessions/2026/08/15")).unwrap();
-    fs::create_dir_all(custom.join("archived_sessions")).unwrap();
-    for index in 0..128 {
-        fs::write(
-            custom.join(format!("sessions/2026/08/15/rollout-{index:03}.jsonl")),
-            "{}\n",
-        )
-        .unwrap();
-    }
-    let compressed = custom.join("archived_sessions/rollout.jsonl.zst");
-    fs::write(&compressed, "compressed").unwrap();
-    fs::write(custom.join("history.jsonl"), "{}\n").unwrap();
-    let selected = base.with_env("CODEX_HOME", custom.as_os_str());
-
-    crate::provider_sources::probes::reset_default_location_probe_calls();
-    let exact = resolve_provider_for_exact_members(&selected, CaptureProvider::Codex);
-    assert_eq!(
-        crate::provider_sources::probes::default_location_probe_calls(),
-        1,
-        "only the O(1) prompt-history file probe remains"
-    );
-    assert_eq!(exact.sources.len(), 3);
-    assert!(exact.sources.iter().all(|source| source.path != compressed));
-
-    crate::provider_sources::probes::reset_default_location_probe_calls();
-    let exhaustive = resolve_provider(&selected, CaptureProvider::Codex);
-    assert_eq!(
-        crate::provider_sources::probes::default_location_probe_calls(),
-        3
-    );
-    assert!(exhaustive
-        .sources
-        .iter()
-        .any(|source| source.path == compressed));
 }
 
 #[test]

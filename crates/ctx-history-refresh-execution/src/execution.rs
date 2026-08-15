@@ -17,15 +17,15 @@ enum SourceBackedInventoryDisposition {
 }
 
 #[derive(Debug)]
-struct ReconciliationRequired;
+struct ExactMemberFallbackRequired;
 
-impl std::fmt::Display for ReconciliationRequired {
+impl std::fmt::Display for ExactMemberFallbackRequired {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        formatter.write_str("exact-member execution requires provider reconciliation")
+        formatter.write_str("exact member requires registered-route family reconciliation")
     }
 }
 
-impl std::error::Error for ReconciliationRequired {}
+impl std::error::Error for ExactMemberFallbackRequired {}
 
 struct PreopenedPublishedState(Mutex<Option<PublishedSourceBackedState>>);
 
@@ -42,16 +42,20 @@ impl PublishedSourceBackedStatePort for PreopenedPublishedState {
 pub(super) fn execute_capture_owned_refresh(
     execution: SourceBackedRefreshExecution<'_>,
 ) -> Result<SourceBackedRefreshPublication> {
-    let mut reconciliation_retry = execution.clone();
-    match execute_capture_owned_refresh_once(execution) {
-        Err(error) if error.downcast_ref::<ReconciliationRequired>().is_some() => {
-            reconciliation_retry.reconciliation_demand =
-                SourceBackedReconciliationDemand::Exhaustive;
-            reconciliation_retry
+    let catalog_report = exact_catalog_report(&execution);
+    let mut family_fallback = execution.clone();
+    match execute_capture_owned_refresh_once(execution, catalog_report.clone()) {
+        Err(error)
+            if error
+                .downcast_ref::<ExactMemberFallbackRequired>()
+                .is_some() =>
+        {
+            family_fallback.reconciliation_demand = SourceBackedReconciliationDemand::Exhaustive;
+            family_fallback
                 .route_worksets
                 .values_mut()
                 .for_each(|workset| *workset = SourceBackedRefreshWorkset::Exhaustive);
-            execute_capture_owned_refresh_once(reconciliation_retry)
+            execute_capture_owned_refresh_once(family_fallback, catalog_report)
         }
         result => result,
     }
@@ -59,6 +63,7 @@ pub(super) fn execute_capture_owned_refresh(
 
 fn execute_capture_owned_refresh_once(
     execution: SourceBackedRefreshExecution<'_>,
+    catalog_report: Option<DiscoveryReport>,
 ) -> Result<SourceBackedRefreshPublication> {
     let discovery_context = execution.discovery_context;
     let reconciliation_demand = execution.reconciliation_demand;
@@ -73,10 +78,10 @@ fn execute_capture_owned_refresh_once(
     execute_capture_owned_refresh_with(
         execution,
         discovery_context,
+        catalog_report.clone(),
         move |discovery,
               report,
               discovery_duration,
-              source_admission,
               request_id,
               operation,
               data_root,
@@ -94,7 +99,7 @@ fn execute_capture_owned_refresh_once(
                 request_id,
                 operation,
                 reconciliation_demand,
-                source_admission,
+                catalog_report.is_some(),
                 &route_worksets,
                 data_root,
                 index_root,
@@ -113,6 +118,7 @@ fn execute_capture_owned_refresh_once(
 pub fn execute_capture_owned_refresh_with<Refresh>(
     execution: SourceBackedRefreshExecution<'_>,
     discovery: &DiscoveryContext,
+    catalog_report: Option<DiscoveryReport>,
     refresh_all: Refresh,
 ) -> Result<SourceBackedRefreshPublication>
 where
@@ -120,7 +126,6 @@ where
         &DiscoveryContext,
         DiscoveryReport,
         StdDuration,
-        SourceAdmission,
         &str,
         RefreshOperation,
         &Path,
@@ -137,17 +142,13 @@ where
     let published_state = execution
         .published_state
         .open_published_state(execution.data_root)?;
-    let source_admission =
-        refresh_source_admission(&execution, published_state.verified_index.as_ref());
     let published_state = PreopenedPublishedState(Mutex::new(Some(published_state)));
     let work_budget =
         source_backed_refresh_work_budget(source_backed_refresh_writer_options().indexer_threads);
     let discovery_started = StdInstant::now();
-    let report = discover_provider_sources_with_context_and_work_budget(
-        &discovery,
-        work_budget,
-        source_admission,
-    );
+    let report = catalog_report.unwrap_or_else(|| {
+        discover_provider_sources_with_context_and_work_budget(&discovery, work_budget)
+    });
     let discovery_duration = discovery_started.elapsed();
     validate_provider_source_roots_outside_data_root(execution.data_root, report.sources.iter())
         .context("validate provider roots before source-refresh state writes")?;
@@ -200,7 +201,6 @@ where
         &discovery,
         report,
         discovery_duration,
-        source_admission,
         execution.request_id,
         execution.operation,
         execution.data_root,
@@ -214,230 +214,28 @@ where
     )
 }
 
-/// Exact-member admission is deliberately narrower than exact route scope:
-/// every selected route must carry only existing ordinary `.jsonl` members.
-/// Any ambiguity reconciles the provider inventory.
-fn refresh_source_admission(
-    execution: &SourceBackedRefreshExecution<'_>,
-    retained_generation: Option<&VerifiedIndex>,
-) -> SourceAdmission {
-    let retained_route_authority = match (&execution.scope, retained_generation) {
-        (SourceBackedRefreshScope::Exact(routes), Some(generation)) => routes.iter().all(|route| {
-            generation
-                .manifest()
-                .source_route(route)
-                .is_some_and(|snapshot| {
-                    snapshot.missing_state().is_none() && !snapshot.sources().is_empty()
-                })
-        }),
-        _ => false,
-    };
-    source_admission_for_refresh(
-        execution.operation,
-        execution.reconciliation_demand,
-        execution.explicit_source_catalog.is_some(),
-        retained_route_authority,
-        &execution.scope,
-        &execution.route_worksets,
-    )
-}
-
-fn source_admission_for_refresh(
-    operation: RefreshOperation,
-    reconciliation_demand: SourceBackedReconciliationDemand,
-    has_explicit_source_catalog: bool,
-    retained_route_authority: bool,
-    scope: &SourceBackedRefreshScope,
-    route_worksets: &BTreeMap<SourceRouteIdentity, SourceBackedRefreshWorkset>,
-) -> SourceAdmission {
-    if operation != RefreshOperation::Refresh
-        || reconciliation_demand != SourceBackedReconciliationDemand::Incremental
-        || has_explicit_source_catalog
-        || !retained_route_authority
+fn exact_catalog_report(execution: &SourceBackedRefreshExecution<'_>) -> Option<DiscoveryReport> {
+    if execution.operation != RefreshOperation::Refresh
+        || execution.reconciliation_demand != SourceBackedReconciliationDemand::Incremental
+        || execution.explicit_source_catalog.is_some()
     {
-        return SourceAdmission::ReconcileAll;
+        return None;
     }
-    let SourceBackedRefreshScope::Exact(routes) = scope else {
-        return SourceAdmission::ReconcileAll;
+    let SourceBackedRefreshScope::Exact(routes) = &execution.scope else {
+        return None;
     };
-    if routes.is_empty() || routes.len() != route_worksets.len() {
-        return SourceAdmission::ReconcileAll;
-    }
-    let every_member_is_exact_jsonl = routes.iter().all(|route| {
-        let Some(SourceBackedRefreshWorkset::Members(members)) = route_worksets.get(route) else {
-            return false;
-        };
-        !members.is_empty()
-            && members.iter().all(|member| {
-                member.extension().and_then(std::ffi::OsStr::to_str) == Some("jsonl")
-                    && std::fs::symlink_metadata(member)
-                        .is_ok_and(|metadata| metadata.file_type().is_file())
-            })
-    });
-    if every_member_is_exact_jsonl {
-        SourceAdmission::ExactMembers
-    } else {
-        SourceAdmission::ReconcileAll
-    }
-}
-
-#[cfg(test)]
-#[allow(clippy::items_after_test_module)]
-mod source_admission_tests {
-    use super::*;
-
-    fn route(byte: char) -> SourceRouteIdentity {
-        SourceRouteIdentity::from_sha256(byte.to_string().repeat(64)).unwrap()
-    }
-
-    fn admission_for(
-        scope: SourceBackedRefreshScope,
-        worksets: BTreeMap<SourceRouteIdentity, SourceBackedRefreshWorkset>,
-    ) -> SourceAdmission {
-        source_admission_for_refresh(
-            RefreshOperation::Refresh,
-            SourceBackedReconciliationDemand::Incremental,
-            false,
-            true,
-            &scope,
-            &worksets,
-        )
-    }
-
-    #[test]
-    fn existing_jsonl_members_select_exact_admission() {
-        let temp = tempfile::tempdir().unwrap();
-        let member = temp.path().join("rollout.jsonl");
-        std::fs::write(&member, "{}\n").unwrap();
-        let route = route('1');
-        assert_eq!(
-            admission_for(
-                SourceBackedRefreshScope::exact([route.clone()]),
-                BTreeMap::from([(route, SourceBackedRefreshWorkset::members([member]))]),
-            ),
-            SourceAdmission::ExactMembers
-        );
-    }
-
-    #[test]
-    fn uncertain_members_require_provider_reconciliation() {
-        let temp = tempfile::tempdir().unwrap();
-        let jsonl = temp.path().join("missing.jsonl");
-        let compressed = temp.path().join("rollout.jsonl.zst");
-        std::fs::write(&compressed, "compressed").unwrap();
-        let route = route('2');
-        for workset in [
-            SourceBackedRefreshWorkset::members([jsonl]),
-            SourceBackedRefreshWorkset::members([compressed]),
-            SourceBackedRefreshWorkset::Exhaustive,
-        ] {
-            assert_eq!(
-                admission_for(
-                    SourceBackedRefreshScope::exact([route.clone()]),
-                    BTreeMap::from([(route.clone(), workset)]),
-                ),
-                SourceAdmission::ReconcileAll
-            );
-        }
-    }
-
-    #[test]
-    fn all_scope_import_explicit_and_mixed_worksets_retain_full_discovery() {
-        let temp = tempfile::tempdir().unwrap();
-        let member = temp.path().join("rollout.jsonl");
-        std::fs::write(&member, "{}\n").unwrap();
-        let route = route('3');
-        let worksets =
-            BTreeMap::from([(route.clone(), SourceBackedRefreshWorkset::members([member]))]);
-        assert_eq!(
-            admission_for(SourceBackedRefreshScope::All, worksets.clone()),
-            SourceAdmission::ReconcileAll
-        );
-        for (operation, demand, explicit) in [
-            (
-                RefreshOperation::Import,
-                SourceBackedReconciliationDemand::Incremental,
-                false,
-            ),
-            (
-                RefreshOperation::Refresh,
-                SourceBackedReconciliationDemand::Exhaustive,
-                false,
-            ),
-            (
-                RefreshOperation::Refresh,
-                SourceBackedReconciliationDemand::Incremental,
-                true,
-            ),
-        ] {
-            assert_eq!(
-                source_admission_for_refresh(
-                    operation,
-                    demand,
-                    explicit,
-                    true,
-                    &SourceBackedRefreshScope::exact([route.clone()]),
-                    &worksets,
-                ),
-                SourceAdmission::ReconcileAll
-            );
-        }
-    }
-
-    #[test]
-    fn unretained_route_requires_provider_reconciliation() {
-        let temp = tempfile::tempdir().unwrap();
-        let member = temp.path().join("new.jsonl");
-        std::fs::write(&member, "{}\n").unwrap();
-        let route = route('4');
-        assert_eq!(
-            source_admission_for_refresh(
-                RefreshOperation::Refresh,
-                SourceBackedReconciliationDemand::Incremental,
-                false,
-                false,
-                &SourceBackedRefreshScope::exact([route.clone()]),
-                &BTreeMap::from([(route, SourceBackedRefreshWorkset::members([member]))]),
-            ),
-            SourceAdmission::ReconcileAll
-        );
-    }
-
-    #[test]
-    fn exact_member_fallback_requires_a_reconciliation_retry() {
-        let route = route('5');
-        let worksets = BTreeMap::from([(
-            route.clone(),
-            BTreeSet::from([PathBuf::from("rollout.jsonl")]),
-        )]);
-        let complete_inventory_routes = BTreeSet::from([route]);
-
-        assert!(exact_admission_requires_reconciliation(
-            SourceAdmission::ExactMembers,
-            &worksets,
-            &complete_inventory_routes,
-            &[],
-            &[],
-        ));
-    }
-
-    #[test]
-    fn reconcile_all_never_requests_an_exact_member_retry() {
-        let route = route('6');
-        let worksets = BTreeMap::from([(
-            route.clone(),
-            BTreeSet::from([PathBuf::from("rollout.jsonl")]),
-        )]);
-        let complete_inventory_routes = BTreeSet::from([route]);
-
-        assert!(!exact_admission_requires_reconciliation(
-            SourceAdmission::ReconcileAll,
-            &worksets,
-            &complete_inventory_routes,
-            &[],
-            &[],
-        ));
-    }
+    let worksets = execution
+        .route_worksets
+        .iter()
+        .map(|(route, workset)| match workset {
+            SourceBackedRefreshWorkset::Members(members) => Some((route.clone(), members.clone())),
+            SourceBackedRefreshWorkset::Exhaustive => None,
+        })
+        .collect::<Option<BTreeMap<_, _>>>()?;
+    execution
+        .watch_catalog
+        .as_ref()?
+        .exact_member_discovery_report(routes, &worksets)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -466,7 +264,7 @@ pub fn refresh_all_provider_sources_route_local(
         request_id,
         operation,
         SourceBackedReconciliationDemand::Exhaustive,
-        SourceAdmission::ReconcileAll,
+        false,
         &BTreeMap::new(),
         data_root,
         index_root,
@@ -507,7 +305,7 @@ pub fn refresh_all_provider_sources_route_local_with_worksets(
         request_id,
         operation,
         reconciliation_demand,
-        SourceAdmission::ReconcileAll,
+        false,
         route_worksets,
         data_root,
         index_root,
@@ -528,7 +326,7 @@ fn refresh_all_provider_sources_route_local_with_reconciliation(
     request_id: &str,
     operation: RefreshOperation,
     reconciliation_demand: SourceBackedReconciliationDemand,
-    source_admission: SourceAdmission,
+    exact_catalog_members: bool,
     route_worksets: &BTreeMap<SourceRouteIdentity, BTreeSet<PathBuf>>,
     data_root: &Path,
     index_root: &Path,
@@ -674,16 +472,17 @@ fn refresh_all_provider_sources_route_local_with_reconciliation(
                     .complete_inventory_route_ids()
                     .cloned()
                     .collect::<BTreeSet<_>>();
-                if exact_admission_requires_reconciliation(
-                    source_admission,
-                    route_worksets,
-                    &complete_inventory_route_ids,
-                    successful_route_outcomes,
-                    &failed_routes,
-                ) {
+                if exact_catalog_members
+                    && exact_member_family_fallback_required(
+                        route_worksets,
+                        &complete_inventory_route_ids,
+                        successful_route_outcomes,
+                        &failed_routes,
+                    )
+                {
                     reconciliation_required = true;
                     return Err(IndexError::PublicationMetadata(
-                        ReconciliationRequired.to_string(),
+                        ExactMemberFallbackRequired.to_string(),
                     ));
                 }
                 let route_results = provider_route_results(
@@ -781,7 +580,7 @@ fn refresh_all_provider_sources_route_local_with_reconciliation(
         Ok(receipt) => receipt,
         Err(error) => {
             if reconciliation_required {
-                return Err(ReconciliationRequired.into());
+                return Err(ExactMemberFallbackRequired.into());
             }
             if let Some(error) = terminal_coverage_error {
                 return Err(error.into());
@@ -927,16 +726,12 @@ fn refresh_all_provider_sources_route_local_with_reconciliation(
     Ok(publication)
 }
 
-fn exact_admission_requires_reconciliation(
-    admission: SourceAdmission,
+fn exact_member_family_fallback_required(
     route_worksets: &BTreeMap<SourceRouteIdentity, BTreeSet<PathBuf>>,
     complete_inventory_routes: &BTreeSet<SourceRouteIdentity>,
     successful_routes: &[SourceBackedSuccessfulRouteOutcome],
     failed_routes: &[SourceBackedFailedRouteOutcome],
 ) -> bool {
-    if admission != SourceAdmission::ExactMembers {
-        return false;
-    }
     let exact_routes = route_worksets.keys().collect::<BTreeSet<_>>();
     complete_inventory_routes
         .iter()

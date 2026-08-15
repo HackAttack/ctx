@@ -107,10 +107,10 @@ fn provider_wide_execution_discovers_once_and_preserves_progress_order() {
     let publication = execute_capture_owned_refresh_with(
         execution,
         &discovery,
+        None,
         |observed_discovery,
          observed_report,
          observed_discovery_duration,
-         observed_source_admission,
          observed_request_id,
          observed_operation,
          observed_data_root,
@@ -131,7 +131,6 @@ fn provider_wide_execution_discovers_once_and_preserves_progress_order() {
                     && source.status == ProviderSourceStatus::Available
             }));
             assert_ne!(observed_discovery_duration, StdDuration::ZERO);
-            assert_eq!(observed_source_admission, SourceAdmission::ReconcileAll);
             assert_eq!(observed_request_id, "all-provider-request");
             assert_eq!(observed_operation, RefreshOperation::Refresh);
             assert_eq!(observed_data_root, data_root);

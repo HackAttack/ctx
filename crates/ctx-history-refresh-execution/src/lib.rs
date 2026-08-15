@@ -25,14 +25,15 @@ use ctx_history_capture::{
     automatic_source_backed_route_identity, build_automatic_source_backed_registry_from_report,
     discover_provider_sources_with_context_and_work_budget, source_backed_refresh_work_budget,
     source_backed_refresh_writer_options, validate_provider_source_roots_outside_data_root,
-    DiscoveryContext, SourceAdmission, SourceBackedAutomaticRegistryIssue,
-    SourceBackedAutomaticUnavailableReason, SourceBackedCoordinatorError,
+    DiscoveryContext, SourceBackedAutomaticRegistryIssue, SourceBackedAutomaticUnavailableReason,
+    SourceBackedCoordinatorError,
     SourceBackedDetailedRefreshProgress as CaptureSourceBackedDetailedRefreshProgress,
     SourceBackedFailedRoute, SourceBackedFailedRouteOutcome, SourceBackedLogicalSourceFailures,
     SourceBackedProviderRegistry, SourceBackedRecordRejections, SourceBackedRouteError,
     SourceBackedRouteErrorKind, SourceBackedRouteResult, SourceBackedRouteSelection,
     SourceBackedSelectorAuthority, SourceBackedSourceFailureClass, SourceBackedSourceFailures,
-    SourceBackedSuccessfulRouteOutcome, MAX_SOURCE_BACKED_ROUTE_CONTROL_BYTES,
+    SourceBackedSuccessfulRouteOutcome, SourceBackedWatchCatalog,
+    MAX_SOURCE_BACKED_ROUTE_CONTROL_BYTES,
 };
 #[cfg(test)]
 use ctx_history_capture_model::DiscoveryIssue;
@@ -145,11 +146,7 @@ pub fn source_backed_watch_catalog(
     let work_budget =
         source_backed_refresh_work_budget(source_backed_refresh_writer_options().indexer_threads);
     let discovery_started = StdInstant::now();
-    let report = discover_provider_sources_with_context_and_work_budget(
-        &discovery,
-        work_budget,
-        SourceAdmission::ReconcileAll,
-    );
+    let report = discover_provider_sources_with_context_and_work_budget(&discovery, work_budget);
     let discovery_duration = discovery_started.elapsed();
     validate_provider_source_roots_outside_data_root(data_root, report.sources.iter())
         .context("validate provider roots before deriving source watch catalog")?;
