@@ -217,6 +217,8 @@ fn single_leaf_serial_jsonl_page_accounts_sessions_messages_and_tool_calls() {
         record_progress: Some(&mut report_progress),
         current_source_progress: None,
         last_progress_session_id: None,
+        exact_scan_total_bytes: None,
+        exact_scan_accounting_enabled: false,
     };
 
     with_family_scanner_workers(1, || {

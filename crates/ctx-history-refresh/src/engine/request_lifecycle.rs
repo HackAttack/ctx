@@ -817,6 +817,7 @@ impl CoreRefreshEngine {
                     attempt.progress.completed_records = None;
                     attempt.progress.completed_bytes = None;
                     attempt.progress.current_source_progress = None;
+                    attempt.whole_run_eta.clear();
                     attempt.state = SourceBackedRefreshState::Published;
                     attempt.published_generation = Some(observed.clone());
                     attempt.progress.phase = "published".to_owned();
@@ -865,6 +866,7 @@ impl CoreRefreshEngine {
                     attempt.progress.completed_records = None;
                     attempt.progress.completed_bytes = None;
                     attempt.progress.current_source_progress = None;
+                    attempt.whole_run_eta.clear();
                     if observed_for_status.is_some() {
                         attempt.published_generation = observed_for_status.clone();
                     }

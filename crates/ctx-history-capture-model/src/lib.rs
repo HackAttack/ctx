@@ -33,8 +33,8 @@ pub use progress::{
     source_level_progress, AttemptHistoryProgress, AttemptHistoryProgressSnapshot,
     CoreRecordBatchProgress, CoreRecordProgress, SourceBackedCurrentSourceProgress,
     SourceBackedCurrentSourceProgressStage, SourceBackedDetailedRefreshProgress,
-    SourceBackedRecordProgressDelta, SourceBackedRefreshProgress, SourceRecordProgress,
-    SourceRecordProgressSnapshot,
+    SourceBackedExactScanProgress, SourceBackedRecordProgressDelta, SourceBackedRefreshProgress,
+    SourceRecordProgress, SourceRecordProgressSnapshot,
 };
 pub use record::RecordDigest;
 pub use route::{SourceRouteIdentity, SourceRouteIdentityError};

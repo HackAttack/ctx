@@ -16,15 +16,23 @@ const MAX_PROGRESS_MESSAGE_BYTES: usize = 512;
 const MAX_PROGRESS_SOURCE_BYTES: usize = 256;
 const MAX_PROGRESS_PHASE_BYTES: usize = 64;
 const LIVE_RENDER_INTERVAL: StdDuration = StdDuration::from_millis(100);
+const LIVE_BACKEND_SILENCE_TIMEOUT: StdDuration = StdDuration::from_secs(5);
 
 #[derive(Debug, Default)]
 struct ActiveElapsedClock {
     displayed_millis: u64,
     observed_at: Option<StdDuration>,
+    backend_snapshot_observed_at: Option<StdDuration>,
+    backend_elapsed_millis_high_water: Option<u64>,
 }
 
 impl ActiveElapsedClock {
-    fn advance(&mut self, reported_millis: Option<u64>, now: StdDuration) -> u64 {
+    fn advance(
+        &mut self,
+        reported_millis: Option<u64>,
+        now: StdDuration,
+        backend_snapshot_received: bool,
+    ) -> u64 {
         let local_advance = self
             .observed_at
             .map(|observed_at| duration_millis(now.saturating_sub(observed_at)))
@@ -34,7 +42,31 @@ impl ActiveElapsedClock {
             .saturating_add(local_advance)
             .max(reported_millis.unwrap_or_else(|| duration_millis(now)));
         self.observed_at = Some(now);
+        if backend_snapshot_received {
+            let first_snapshot = self.backend_snapshot_observed_at.is_none();
+            let backend_clock_advanced = reported_millis
+                .zip(self.backend_elapsed_millis_high_water)
+                .is_some_and(|(reported, high_water)| reported > high_water);
+            if first_snapshot || backend_clock_advanced {
+                self.backend_snapshot_observed_at = Some(now);
+            }
+            if let Some(reported_millis) = reported_millis {
+                self.backend_elapsed_millis_high_water = Some(
+                    self.backend_elapsed_millis_high_water
+                        .map_or(reported_millis, |high_water| {
+                            high_water.max(reported_millis)
+                        }),
+                );
+            }
+        }
         self.displayed_millis
+    }
+
+    fn backend_snapshot_silent(&self, now: StdDuration) -> bool {
+        self.backend_snapshot_observed_at
+            .is_some_and(|observed_at| {
+                now.saturating_sub(observed_at) >= LIVE_BACKEND_SILENCE_TIMEOUT
+            })
     }
 
     fn reset(&mut self) {
@@ -240,7 +272,7 @@ fn run_live_renderer(
             Ok(LiveRenderCommand::Refresh { snapshot, complete }) => {
                 let terminal = snapshot.is_terminal();
                 let rendered =
-                    prepare_live_snapshot((*snapshot).clone(), &mut clock, started.elapsed());
+                    prepare_live_snapshot((*snapshot).clone(), &mut clock, started.elapsed(), true);
                 let context = *output.context();
                 let document = render_live_refresh(presentation, &context, rendered);
                 let result = output.write_frame(&document, terminal);
@@ -260,7 +292,7 @@ fn run_live_renderer(
                     continue;
                 };
                 let rendered =
-                    prepare_live_snapshot(snapshot.clone(), &mut clock, started.elapsed());
+                    prepare_live_snapshot(snapshot.clone(), &mut clock, started.elapsed(), false);
                 let context = *output.context();
                 let document = render_live_refresh(presentation, &context, rendered);
                 if let Err(error) = output.write_frame(&document, false) {
@@ -289,10 +321,18 @@ fn prepare_live_snapshot(
     mut snapshot: RefreshProgressSnapshot,
     clock: &mut ActiveElapsedClock,
     now: StdDuration,
+    backend_snapshot_received: bool,
 ) -> RefreshProgressSnapshot {
     if !snapshot.is_terminal() {
-        let elapsed = clock.advance(snapshot.progress().elapsed_millis, now);
-        snapshot.set_presentation_elapsed_millis(elapsed);
+        let elapsed = clock.advance(
+            snapshot.progress().elapsed_millis,
+            now,
+            backend_snapshot_received,
+        );
+        if clock.backend_snapshot_silent(now) {
+            snapshot.suppress_stale_presentation_eta();
+        }
+        snapshot.advance_presentation_clock(elapsed);
     }
     snapshot
 }
@@ -934,17 +974,183 @@ mod tests {
     fn local_elapsed_clock_never_regresses_when_backend_snapshots_are_stale() {
         let mut clock = ActiveElapsedClock::default();
         assert_eq!(
-            clock.advance(Some(10_000), StdDuration::from_secs(10)),
+            clock.advance(Some(10_000), StdDuration::from_secs(10), true),
             10_000
         );
         assert_eq!(
-            clock.advance(Some(9_000), StdDuration::from_millis(10_100)),
+            clock.advance(Some(9_000), StdDuration::from_millis(10_100), true),
             10_100
         );
         assert_eq!(
-            clock.advance(Some(12_000), StdDuration::from_millis(10_200)),
+            clock.advance(Some(12_000), StdDuration::from_millis(10_200), true),
             12_000
         );
+    }
+
+    #[test]
+    fn local_live_clock_counts_down_whole_run_eta_without_backend_updates() {
+        let mut snapshot = active_status();
+        snapshot.progress_mut_for_test().elapsed_millis = Some(10_000);
+        snapshot.progress_mut_for_test().estimated_remaining_millis = Some(5_000);
+        let mut clock = ActiveElapsedClock::default();
+
+        let first = prepare_live_snapshot(
+            snapshot.clone(),
+            &mut clock,
+            StdDuration::from_secs(10),
+            true,
+        );
+        assert_eq!(first.estimated_remaining_millis(), Some(5_000));
+
+        let next = prepare_live_snapshot(
+            snapshot.clone(),
+            &mut clock,
+            StdDuration::from_millis(10_100),
+            false,
+        );
+        assert_eq!(next.estimated_remaining_millis(), Some(4_900));
+
+        let expired =
+            prepare_live_snapshot(snapshot, &mut clock, StdDuration::from_secs(15), false);
+        assert_eq!(expired.estimated_remaining_millis(), None);
+    }
+
+    #[test]
+    fn local_live_clock_suppresses_eta_after_backend_snapshot_silence() {
+        let mut snapshot = active_status();
+        snapshot.progress_mut_for_test().elapsed_millis = Some(10_000);
+        snapshot.progress_mut_for_test().estimated_remaining_millis = Some(30_000);
+        let mut clock = ActiveElapsedClock::default();
+
+        let fresh = prepare_live_snapshot(
+            snapshot.clone(),
+            &mut clock,
+            StdDuration::from_secs(10),
+            true,
+        );
+        assert_eq!(fresh.estimated_remaining_millis(), Some(30_000));
+
+        let nearly_stale = prepare_live_snapshot(
+            snapshot.clone(),
+            &mut clock,
+            StdDuration::from_millis(14_999),
+            false,
+        );
+        assert_eq!(nearly_stale.estimated_remaining_millis(), Some(25_001));
+
+        let stale = prepare_live_snapshot(snapshot, &mut clock, StdDuration::from_secs(15), false);
+        assert_eq!(stale.estimated_remaining_millis(), None);
+
+        let context = crate::ui::RenderContext::for_test(crate::ui::TestContext::tty(
+            crate::ui::StreamKind::Stderr,
+            80,
+        ));
+        let rendered =
+            render_live_refresh(LiveRefreshPresentation::Setup, &context, stale).render_plain();
+        assert!(
+            rendered.contains("Estimated remaining  Estimating"),
+            "{rendered}"
+        );
+        assert!(
+            !rendered.lines().nth(1).unwrap_or_default().contains('%'),
+            "{rendered}"
+        );
+    }
+
+    #[test]
+    fn identical_backend_snapshots_do_not_extend_the_silence_deadline() {
+        let mut snapshot = active_status();
+        snapshot.progress_mut_for_test().elapsed_millis = Some(10_000);
+        snapshot.progress_mut_for_test().estimated_remaining_millis = Some(30_000);
+        let mut clock = ActiveElapsedClock::default();
+
+        let fresh = prepare_live_snapshot(
+            snapshot.clone(),
+            &mut clock,
+            StdDuration::from_secs(10),
+            true,
+        );
+        assert_eq!(fresh.estimated_remaining_millis(), Some(30_000));
+
+        let repeated = prepare_live_snapshot(
+            snapshot.clone(),
+            &mut clock,
+            StdDuration::from_secs(12),
+            true,
+        );
+        assert_eq!(repeated.estimated_remaining_millis(), Some(28_000));
+
+        let nearly_stale = prepare_live_snapshot(
+            snapshot.clone(),
+            &mut clock,
+            StdDuration::from_millis(14_999),
+            true,
+        );
+        assert_eq!(nearly_stale.estimated_remaining_millis(), Some(25_001));
+
+        let stale =
+            prepare_live_snapshot(snapshot, &mut clock, StdDuration::from_millis(15_001), true);
+        assert_eq!(stale.estimated_remaining_millis(), None);
+    }
+
+    #[test]
+    fn regressed_backend_snapshot_does_not_extend_the_silence_deadline() {
+        let mut snapshot = active_status();
+        snapshot.progress_mut_for_test().elapsed_millis = Some(10_000);
+        snapshot.progress_mut_for_test().estimated_remaining_millis = Some(30_000);
+        let mut clock = ActiveElapsedClock::default();
+
+        prepare_live_snapshot(
+            snapshot.clone(),
+            &mut clock,
+            StdDuration::from_secs(10),
+            true,
+        );
+
+        let mut regressed = snapshot;
+        regressed.progress_mut_for_test().elapsed_millis = Some(9_000);
+        let still_live = prepare_live_snapshot(
+            regressed.clone(),
+            &mut clock,
+            StdDuration::from_secs(14),
+            true,
+        );
+        assert_eq!(still_live.estimated_remaining_millis(), Some(25_000));
+
+        let stale = prepare_live_snapshot(
+            regressed,
+            &mut clock,
+            StdDuration::from_millis(15_001),
+            false,
+        );
+        assert_eq!(stale.estimated_remaining_millis(), None);
+    }
+
+    #[test]
+    fn advanced_backend_snapshot_restores_liveness_after_silence() {
+        let mut snapshot = active_status();
+        snapshot.progress_mut_for_test().elapsed_millis = Some(10_000);
+        snapshot.progress_mut_for_test().estimated_remaining_millis = Some(30_000);
+        let mut clock = ActiveElapsedClock::default();
+
+        prepare_live_snapshot(
+            snapshot.clone(),
+            &mut clock,
+            StdDuration::from_secs(10),
+            true,
+        );
+        let stale = prepare_live_snapshot(
+            snapshot.clone(),
+            &mut clock,
+            StdDuration::from_secs(15),
+            false,
+        );
+        assert_eq!(stale.estimated_remaining_millis(), None);
+
+        snapshot.progress_mut_for_test().elapsed_millis = Some(16_000);
+        snapshot.progress_mut_for_test().estimated_remaining_millis = Some(20_000);
+        let resumed = prepare_live_snapshot(snapshot, &mut clock, StdDuration::from_secs(16), true);
+        assert_eq!(resumed.estimated_remaining_millis(), Some(20_000));
     }
 
     #[test]

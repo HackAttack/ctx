@@ -105,6 +105,18 @@ impl SourceBackedCurrentSourceProgress {
 pub struct SourceBackedDetailedRefreshProgress {
     pub progress: SourceBackedRefreshProgress,
     pub current_source_progress: Option<SourceBackedCurrentSourceProgress>,
+    /// Attempt-local estimator input. This is never part of public progress.
+    #[doc(hidden)]
+    pub exact_scan_progress: Option<SourceBackedExactScanProgress>,
+}
+
+/// Exact logical bytes from the selected routes' existing scan accounting.
+///
+/// This is an internal model input, not a source-scan progress contract.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SourceBackedExactScanProgress {
+    pub total_bytes: u64,
+    pub completed_bytes: u64,
 }
 
 impl SourceBackedDetailedRefreshProgress {
@@ -119,6 +131,7 @@ pub fn source_level_progress(
     SourceBackedDetailedRefreshProgress {
         progress,
         current_source_progress: None,
+        exact_scan_progress: None,
     }
 }
 
@@ -141,6 +154,12 @@ pub struct SourceRecordProgressSnapshot {
 pub struct SourceBackedRecordProgressDelta {
     pub accepted_records: u64,
     pub completed_bytes: u64,
+    /// One exact route total from accounting already performed by its scanner.
+    #[doc(hidden)]
+    pub exact_total_bytes: Option<u64>,
+    /// Exact physical bytes advanced by this existing scanner callback.
+    #[doc(hidden)]
+    pub exact_completed_bytes: Option<u64>,
     pub session_ids: Vec<[u8; 32]>,
     pub messages: u64,
     pub tool_calls: u64,
@@ -338,6 +357,8 @@ mod tests {
         progress.advance(&SourceBackedRecordProgressDelta {
             accepted_records: 4,
             completed_bytes: 1_024,
+            exact_total_bytes: None,
+            exact_completed_bytes: None,
             session_ids: vec![first_session, second_session, first_session],
             messages: 3,
             tool_calls: 1,
@@ -345,6 +366,8 @@ mod tests {
         progress.advance(&SourceBackedRecordProgressDelta {
             accepted_records: 2,
             completed_bytes: 512,
+            exact_total_bytes: None,
+            exact_completed_bytes: None,
             session_ids: vec![second_session],
             messages: 1,
             tool_calls: 1,
@@ -358,6 +381,29 @@ mod tests {
                 processed_tool_calls: 2,
                 processed_bytes: 1_536,
             }
+        );
+    }
+
+    #[test]
+    fn exact_total_declaration_does_not_change_ingestion_progress() {
+        let delta = SourceBackedRecordProgressDelta {
+            exact_total_bytes: Some(4_096),
+            ..Default::default()
+        };
+        let mut attempt = AttemptHistoryProgress::default();
+        attempt.advance(&delta);
+        assert_eq!(
+            attempt.snapshot(),
+            AttemptHistoryProgressSnapshot::default()
+        );
+
+        let mut source = SourceRecordProgress::default();
+        assert_eq!(
+            source.advanced_at(delta, Instant::now(), SOURCE_RECORD_PROGRESS_INTERVAL),
+            Some(SourceRecordProgressSnapshot {
+                completed_records: 0,
+                completed_bytes: 0,
+            })
         );
     }
 }

@@ -1135,6 +1135,12 @@ authoritative total exists, ctx reports completed source work without inventing
 a total or ETA; the common transfer fields use `total_bytes: 0` and
 `percent: 0.0` as unknown-denominator sentinels.
 
+Source refresh progress also includes `whole_run_stage` and
+`estimated_remaining_millis`. The latter is a number only when ctx has a
+credible estimate through verification and activation; otherwise it is
+`null`. It is not promised for every provider mix or refresh mode, and the
+legacy `eta_seconds` field remains unchanged.
+
 ## JSON Contract
 
 JSON output is intended for local scripts, harnesses, and exact field

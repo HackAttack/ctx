@@ -18,6 +18,7 @@ mod startup_observation;
 mod test_support;
 #[cfg(test)]
 mod tests;
+mod whole_run_eta;
 #[cfg(test)]
 type TestStatusWriter = Arc<dyn Fn(&Path, &Value) -> Result<()> + Send + Sync>;
 use attempt_helpers::*;
@@ -56,6 +57,7 @@ use test_support::{
     test_refresh_engine_with_executor, test_refresh_engine_with_status_writer,
     test_refresh_runtime, test_refresh_submission, write_daemon_job_status,
 };
+use whole_run_eta::WholeRunEtaEstimator;
 
 #[derive(Default)]
 pub(crate) struct SourceBackedRefreshProgressUpdate {
@@ -73,6 +75,7 @@ pub(crate) struct SourceBackedRefreshProgressUpdate {
     pub(super) processed_bytes: u64,
     pub(super) elapsed_millis: Option<u64>,
     pub(super) current_source_progress: Option<SourceBackedCurrentSourceProgress>,
+    pub(super) exact_scan_progress: Option<SourceBackedExactScanProgress>,
 }
 
 /// Provider-neutral callback boundary for one daemon-serialized refresh.

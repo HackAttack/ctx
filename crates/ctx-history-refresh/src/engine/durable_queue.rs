@@ -225,6 +225,16 @@ fn update_progress(
     let previous_processed_tool_calls = attempt.progress.processed_tool_calls;
     let previous_processed_bytes = attempt.progress.processed_bytes;
     let previous_elapsed_millis = attempt.progress.elapsed_millis;
+    attempt.whole_run_eta.update(
+        SourceBackedRefreshStage::from_phase(&update.phase),
+        update.exact_scan_progress,
+        update.elapsed_millis,
+    );
+    // `committed` means the generation is already usable even though the
+    // durable terminal receipt follows as a distinct progress event.
+    if update.phase == "committed" {
+        attempt.whole_run_eta.clear();
+    }
     attempt.progress = SourceBackedRefreshProgress {
         phase: update.phase,
         completed_sources: update.completed_sources,

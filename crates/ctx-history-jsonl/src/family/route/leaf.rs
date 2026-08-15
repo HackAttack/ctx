@@ -19,7 +19,7 @@ use super::{
     JsonlFamilyAdapter, JsonlFamilyAppendMode, JsonlFamilyExecutionIo, JsonlFamilyLeaf,
     JsonlFamilyOptimizedLeafOutcome, JsonlFamilyProjectionMode, JsonlFamilyPublication,
     JsonlFamilySemanticExecutor, JsonlFamilySemanticPreflight, JsonlFamilyTerminalProof,
-    JsonlFamilyWorkerContext, TerminalSourceEvidence,
+    JsonlFamilyWorkerContext,
 };
 mod checkpoint;
 #[cfg(test)]
@@ -41,6 +41,27 @@ pub(super) struct PreparedLeaf<E: JsonlFamilyError> {
     pub(super) append: Option<CertifiedSourceAppend>,
     pub(super) terminal_proof: JsonlFamilyTerminalProof<E>,
     pub(super) record_rejections: SourceBackedRecordRejectionDrafts,
+}
+
+#[derive(Debug)]
+pub(super) struct TerminalSourceEvidence<E: JsonlFamilyError> {
+    pub(super) certificate: CertifiedSource,
+    pub(super) terminal_proof: JsonlFamilyTerminalProof<E>,
+    pub(super) emitted_bytes: u64,
+    pub(super) exact_scan_bytes: Option<u64>,
+    pub(super) record_rejections: SourceBackedRecordRejectionDrafts,
+}
+
+impl<E: JsonlFamilyError> Clone for TerminalSourceEvidence<E> {
+    fn clone(&self) -> Self {
+        Self {
+            certificate: self.certificate.clone(),
+            terminal_proof: self.terminal_proof.clone(),
+            emitted_bytes: self.emitted_bytes,
+            exact_scan_bytes: self.exact_scan_bytes,
+            record_rejections: self.record_rejections.clone(),
+        }
+    }
 }
 
 struct JsonlLeafJob<E: JsonlFamilyError> {
@@ -222,12 +243,19 @@ fn scan_leaf_serial<R: JsonlFamilyRuntime>(
                 }
             }
             sink.certify_source_append(append).map_err(route_internal)?;
-            sink.report_completed_bytes(terminal_byte_remainder(&certificate, emitted_bytes)?)
-                .map_err(route_internal)?;
+            sink.report_completed_bytes_with_exact(
+                terminal_byte_remainder(&certificate, emitted_bytes)?,
+                leaf.frozen_scan_observation()
+                    .and_then(|observation| observation.length().checked_sub(emitted_bytes)),
+            )
+            .map_err(route_internal)?;
             Ok(TerminalSourceEvidence {
                 certificate,
                 terminal_proof,
                 emitted_bytes,
+                exact_scan_bytes: leaf
+                    .frozen_scan_observation()
+                    .map(|observation| observation.length()),
                 record_rejections: SourceBackedRecordRejectionDrafts::default(),
             })
         }
@@ -243,12 +271,19 @@ fn scan_leaf_serial<R: JsonlFamilyRuntime>(
             }
             sink.certify_source(certificate.clone())
                 .map_err(route_internal)?;
-            sink.report_completed_bytes(terminal_byte_remainder(&certificate, emitted_bytes)?)
-                .map_err(route_internal)?;
+            sink.report_completed_bytes_with_exact(
+                terminal_byte_remainder(&certificate, emitted_bytes)?,
+                leaf.frozen_scan_observation()
+                    .and_then(|observation| observation.length().checked_sub(emitted_bytes)),
+            )
+            .map_err(route_internal)?;
             Ok(TerminalSourceEvidence {
                 certificate,
                 terminal_proof,
                 emitted_bytes,
+                exact_scan_bytes: leaf
+                    .frozen_scan_observation()
+                    .map(|observation| observation.length()),
                 record_rejections: SourceBackedRecordRejectionDrafts::default(),
             })
         }
@@ -412,6 +447,9 @@ fn run_parallel_leaf_job_batch<R: JsonlFamilyRuntime>(
                                 certificate,
                                 terminal_proof,
                                 emitted_bytes,
+                                exact_scan_bytes: leaf
+                                    .frozen_scan_observation()
+                                    .map(|observation| observation.length()),
                                 record_rejections,
                             },
                         ))
@@ -432,6 +470,9 @@ fn run_parallel_leaf_job_batch<R: JsonlFamilyRuntime>(
                         certificate: certificate.clone(),
                         terminal_proof,
                         emitted_bytes,
+                        exact_scan_bytes: leaf
+                            .frozen_scan_observation()
+                            .map(|observation| observation.length()),
                         record_rejections,
                     };
                     emitter
@@ -445,10 +486,12 @@ fn run_parallel_leaf_job_batch<R: JsonlFamilyRuntime>(
     let evidences = result.map_err(map_parallel_leaf_error)?;
     for evidence in &evidences {
         sink.record_rejections(evidence.record_rejections.clone());
-        sink.report_completed_bytes(terminal_byte_remainder(
-            &evidence.certificate,
-            evidence.emitted_bytes,
-        )?)
+        sink.report_completed_bytes_with_exact(
+            terminal_byte_remainder(&evidence.certificate, evidence.emitted_bytes)?,
+            evidence
+                .exact_scan_bytes
+                .and_then(|total| total.checked_sub(evidence.emitted_bytes)),
+        )
         .map_err(route_internal)?;
     }
     Ok(evidences)

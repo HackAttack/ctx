@@ -119,6 +119,12 @@ where
                 progress.processed_tool_calls,
                 progress.processed_bytes,
                 Some(u64::try_from(progress.elapsed.as_millis()).unwrap_or(u64::MAX)),
+                update
+                    .exact_scan_progress
+                    .map(|exact| SourceBackedExactScanProgress {
+                        total_bytes: exact.total_bytes,
+                        completed_bytes: exact.completed_bytes,
+                    }),
             )
             .map_err(|error| {
                 SourceBackedRouteError::new(
@@ -305,13 +311,23 @@ fn refresh_all_provider_sources_route_local_with_reconciliation(
     };
     let (executor, _issues) = build.into_refresh_executor(writer_options);
     let executor = executor.with_base_route_controls(previous_route_controls.clone());
+    let eta_execution_eligible = retained_generation.is_none()
+        && scope == SourceBackedRefreshScope::All
+        && covered_route_ids.is_empty()
+        && registry_failures.is_empty();
+    let mut report_attempt_progress = |mut update: CaptureSourceBackedDetailedRefreshProgress| {
+        if !eta_execution_eligible {
+            update.exact_scan_progress = None;
+        }
+        report_progress(update)
+    };
     let mut terminal_coverage_error = None;
     let refresh_result = executor
         .refresh_scope_with_detailed_progress_publication_metadata_and_reconciliation(
             index_root,
             physical_scope,
             reconciliation_demand,
-            report_progress,
+            &mut report_attempt_progress,
             |context| {
                 run_after_capture_scan_before_metadata_hook();
                 let successful_route_outcomes = context.successful_route_outcomes();

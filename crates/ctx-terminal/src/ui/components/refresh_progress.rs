@@ -9,6 +9,7 @@ const MAX_DYNAMIC_TEXT_BYTES: usize = 256;
 const REFRESH_TABLE_LABEL_WIDTH: usize = "Estimated remaining".len();
 const MAX_PROGRESS_BAR_WIDTH: usize = 48;
 const PROGRESS_PULSE_WIDTH: usize = 8;
+const MIN_USEFUL_REMAINING_MILLIS: u64 = 2_000;
 
 /// Terminal-neutral presentation view of a refresh status. Composition code
 /// converts its domain snapshot to this owned value before rendering.
@@ -87,10 +88,22 @@ impl RefreshProgressSnapshot {
 
     /// Advances only the local human display clock. Backend counters and JSON
     /// progress retain the daemon snapshot supplied by the caller.
-    pub(crate) fn set_presentation_elapsed_millis(&mut self, elapsed_millis: u64) {
+    pub(crate) fn advance_presentation_clock(&mut self, elapsed_millis: u64) {
         if !self.is_terminal() {
+            let backend_elapsed = self.progress.elapsed_millis.unwrap_or(elapsed_millis);
+            if let Some(remaining) = self.progress.estimated_remaining_millis {
+                let local_advance = elapsed_millis.saturating_sub(backend_elapsed);
+                self.progress.estimated_remaining_millis = remaining
+                    .checked_sub(local_advance)
+                    .filter(|remaining| *remaining > MIN_USEFUL_REMAINING_MILLIS);
+            }
             self.progress.elapsed_millis = Some(elapsed_millis);
         }
+    }
+
+    /// Clears only presentation ETA derived from a stale backend snapshot.
+    pub(crate) fn suppress_stale_presentation_eta(&mut self) {
+        self.progress.estimated_remaining_millis = None;
     }
 
     pub(crate) fn set_presentation_agent_histories(&mut self, histories: Option<Vec<String>>) {
@@ -507,16 +520,25 @@ fn setup_live_refresh_progress(
     snapshot: &RefreshProgressSnapshot,
 ) -> Document {
     let label = human_refresh_label(snapshot);
+    let (bar_current, bar_total) = if snapshot.is_terminal() {
+        (1, Some(1))
+    } else if let (Some(elapsed), Some(remaining)) = (
+        snapshot.progress.elapsed_millis,
+        snapshot.estimated_remaining_millis(),
+    ) {
+        (elapsed, Some(elapsed.saturating_add(remaining).max(1)))
+    } else {
+        (
+            indeterminate_position(context, snapshot.progress.elapsed_millis.unwrap_or(0)),
+            None,
+        )
+    };
     let mut document = progress(
         context,
         Progress {
             label,
-            current: if snapshot.is_terminal() {
-                0
-            } else {
-                indeterminate_position(context, snapshot.progress.elapsed_millis.unwrap_or(0))
-            },
-            total: None,
+            current: bar_current,
+            total: bar_total,
             detail: None,
         },
     );
@@ -530,14 +552,10 @@ fn setup_live_refresh_progress(
         .elapsed_millis
         .map(format_duration_millis)
         .unwrap_or_else(|| "measuring".to_owned());
-    let remaining = if snapshot.is_terminal() {
-        "Complete".to_owned()
-    } else {
-        snapshot
-            .estimated_remaining_millis()
-            .map(format_duration_millis)
-            .unwrap_or_else(|| "Estimating".to_owned())
-    };
+    let remaining = snapshot
+        .estimated_remaining_millis()
+        .map(format_eta_duration_millis)
+        .unwrap_or_else(|| "Estimating".to_owned());
     let Some(histories) = snapshot.presentation_agent_histories.as_ref() else {
         return document;
     };
@@ -549,14 +567,16 @@ fn setup_live_refresh_progress(
             history_fields.push(Field::continuation(history));
         }
     }
-    let metric_fields = [
+    let mut metric_fields = vec![
         Field::new("Sessions", &sessions),
         Field::new("Messages", &messages),
         Field::new("Tool calls", &tool_calls),
         Field::new("Data scanned", &scanned),
         Field::new("Elapsed", &elapsed),
-        Field::new("Estimated remaining", &remaining),
     ];
+    if !snapshot.is_terminal() {
+        metric_fields.push(Field::new("Estimated remaining", &remaining));
+    }
     document.push_blank();
     document.append(fields_with_label_width(
         context,
@@ -701,7 +721,14 @@ fn source_count_text(snapshot: &RefreshProgressSnapshot) -> String {
 }
 
 fn format_duration_millis(millis: u64) -> String {
-    let seconds = millis / 1_000;
+    format_duration_seconds(millis / 1_000)
+}
+
+fn format_eta_duration_millis(millis: u64) -> String {
+    format_duration_seconds(millis / 1_000 + u64::from(millis % 1_000 != 0))
+}
+
+fn format_duration_seconds(seconds: u64) -> String {
     if seconds < 60 {
         return format!("{seconds}s");
     }
@@ -739,6 +766,14 @@ fn format_count_u64(value: u64) -> String {
 mod tests {
     use super::*;
     use crate::ui::{StreamKind, TestContext};
+
+    #[test]
+    fn positive_subsecond_duration_never_renders_as_zero() {
+        assert_eq!(format_eta_duration_millis(1), "1s");
+        assert_eq!(format_eta_duration_millis(999), "1s");
+        assert_eq!(format_eta_duration_millis(1_000), "1s");
+        assert_eq!(format_eta_duration_millis(1_001), "2s");
+    }
 
     fn active_status(
         logical_phase: RefreshLogicalPhase,
@@ -1013,15 +1048,42 @@ mod tests {
         snapshot.progress.processed_sessions = 7;
         snapshot.set_presentation_agent_histories(Some(vec!["Codex".to_owned()]));
         snapshot.use_setup_live_presentation();
-        snapshot.set_presentation_elapsed_millis(900);
+        snapshot.advance_presentation_clock(900);
         let first = refresh_progress(&context, &snapshot).render_plain();
-        snapshot.set_presentation_elapsed_millis(1_100);
+        snapshot.advance_presentation_clock(1_100);
         let second = refresh_progress(&context, &snapshot).render_plain();
 
         assert_ne!(first.lines().nth(1), second.lines().nth(1));
         assert!(first.contains("Elapsed              0s"), "{first}");
         assert!(second.contains("Elapsed              1s"), "{second}");
         assert!(second.contains("Sessions             7"), "{second}");
+    }
+
+    #[test]
+    fn presentation_eta_honors_usefulness_floor_and_terminal_state() {
+        for (remaining, expected) in [(2_101, Some(2_001)), (2_100, None), (2_099, None)] {
+            let mut snapshot = active_status(RefreshLogicalPhase::Direct, "verifying", true, 4);
+            snapshot.progress.elapsed_millis = Some(1_000);
+            snapshot.progress.estimated_remaining_millis = Some(remaining);
+
+            snapshot.advance_presentation_clock(1_100);
+
+            assert_eq!(snapshot.estimated_remaining_millis(), expected);
+        }
+
+        let mut terminal = terminal_status(
+            RefreshRequestState::Published,
+            "completed",
+            "completed",
+            false,
+        );
+        terminal.progress.elapsed_millis = Some(1_000);
+        terminal.progress.estimated_remaining_millis = Some(2_100);
+
+        terminal.advance_presentation_clock(1_100);
+
+        assert_eq!(terminal.progress.elapsed_millis, Some(1_000));
+        assert_eq!(terminal.estimated_remaining_millis(), Some(2_100));
     }
 
     #[test]
@@ -1082,6 +1144,52 @@ mod tests {
             "{rendered}"
         );
         assert!(!rendered.contains("50%"), "{rendered}");
+    }
+
+    #[test]
+    fn setup_live_uses_whole_run_eta_for_determinate_progress() {
+        let context = RenderContext::for_test(TestContext::tty(StreamKind::Stderr, 80));
+        let mut snapshot = active_status(RefreshLogicalPhase::Direct, "refreshing", true, 1);
+        snapshot.progress.elapsed_millis = Some(30_000);
+        snapshot.progress.estimated_remaining_millis = Some(90_000);
+        snapshot.set_presentation_agent_histories(Some(vec!["Codex".to_owned()]));
+        snapshot.use_setup_live_presentation();
+
+        let rendered = refresh_progress(&context, &snapshot).render_plain();
+        assert!(
+            rendered.lines().nth(1).unwrap_or_default().ends_with("25%"),
+            "{rendered}"
+        );
+        assert!(
+            rendered.contains("Estimated remaining  1m 30s"),
+            "{rendered}"
+        );
+    }
+
+    #[test]
+    fn setup_terminal_omits_stale_estimated_remaining_row() {
+        let context = RenderContext::for_test(TestContext::tty(StreamKind::Stderr, 80));
+        let mut snapshot = terminal_status(
+            RefreshRequestState::Published,
+            "completed",
+            "completed",
+            false,
+        );
+        snapshot.progress.estimated_remaining_millis = Some(5_000);
+        snapshot.set_presentation_agent_histories(Some(vec!["Codex".to_owned()]));
+        snapshot.use_setup_live_presentation();
+
+        let rendered = refresh_progress(&context, &snapshot).render_plain();
+        assert!(
+            rendered
+                .lines()
+                .nth(1)
+                .unwrap_or_default()
+                .ends_with("100%"),
+            "{rendered}"
+        );
+        assert!(!rendered.contains("Estimated remaining"), "{rendered}");
+        assert!(!rendered.contains("Complete"), "{rendered}");
     }
 
     #[test]

@@ -689,6 +689,8 @@ impl SinkHarness {
             record_progress: Some(report_progress),
             current_source_progress: None,
             last_progress_session_id: None,
+            exact_scan_total_bytes: None,
+            exact_scan_accounting_enabled: false,
         };
         sink.run_parallel_leaf_scans(jobs, worker_count, scan)
     }
@@ -1837,6 +1839,8 @@ fn worker_budget_coordinates_indexers_runtime_and_scanners() {
         record_progress: None,
         current_source_progress: None,
         last_progress_session_id: None,
+        exact_scan_total_bytes: None,
+        exact_scan_accounting_enabled: false,
     };
     assert_eq!(sink.recommended_leaf_workers(0), 0);
     assert_eq!(sink.recommended_leaf_workers(2), 2);
@@ -2250,6 +2254,8 @@ fn batch_application_preserves_order_accounts_progress_and_releases_reservations
         vec![SourceBackedRecordProgressDelta {
             accepted_records: 3,
             completed_bytes: 512,
+            exact_total_bytes: None,
+            exact_completed_bytes: None,
             session_ids: vec![records[0].session_id.digest()],
             messages: 3,
             tool_calls: 0,

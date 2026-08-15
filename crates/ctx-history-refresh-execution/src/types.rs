@@ -309,6 +309,13 @@ pub trait PublishedSourceBackedStatePort: Send + Sync {
 }
 
 #[doc(hidden)]
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+pub struct SourceBackedExactScanProgress {
+    pub total_bytes: u64,
+    pub completed_bytes: u64,
+}
+
+#[doc(hidden)]
 pub struct SourceBackedRefreshProgressUpdate {
     pub phase: String,
     pub completed_sources: usize,
@@ -324,6 +331,7 @@ pub struct SourceBackedRefreshProgressUpdate {
     pub processed_bytes: u64,
     pub elapsed_millis: Option<u64>,
     pub current_source_progress: Option<SourceBackedCurrentSourceProgress>,
+    pub exact_scan_progress: Option<SourceBackedExactScanProgress>,
 }
 
 pub struct SourceBackedRefreshExecution<'a> {
@@ -410,6 +418,7 @@ impl<'a> SourceBackedRefreshExecution<'a> {
             0,
             0,
             None,
+            None,
         )
     }
 
@@ -430,6 +439,7 @@ impl<'a> SourceBackedRefreshExecution<'a> {
         processed_tool_calls: u64,
         processed_bytes: u64,
         elapsed_millis: Option<u64>,
+        exact_scan_progress: Option<SourceBackedExactScanProgress>,
     ) -> Result<()> {
         (self.report_progress)(SourceBackedRefreshProgressUpdate {
             phase: phase.to_owned(),
@@ -446,6 +456,7 @@ impl<'a> SourceBackedRefreshExecution<'a> {
             processed_bytes,
             elapsed_millis,
             current_source_progress,
+            exact_scan_progress,
         })
     }
 

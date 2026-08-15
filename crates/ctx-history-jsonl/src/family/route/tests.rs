@@ -911,6 +911,7 @@ fn expected_state(
                     certificate,
                     terminal_proof,
                     emitted_bytes: 0,
+                    exact_scan_bytes: None,
                     record_rejections: SourceBackedRecordRejectionDrafts::default(),
                 },
             )

@@ -66,6 +66,7 @@ pub(super) fn execute_source_backed_refresh(
                 processed_bytes: update.processed_bytes,
                 elapsed_millis: update.elapsed_millis,
                 current_source_progress: update.current_source_progress,
+                exact_scan_progress: update.exact_scan_progress,
             },
         )
     };

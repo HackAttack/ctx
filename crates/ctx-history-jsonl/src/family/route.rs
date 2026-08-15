@@ -51,7 +51,7 @@ mod leaf;
 pub use leaf::checkpoint_admitted_revision_for_test;
 #[cfg(test)]
 use leaf::family_scanner_worker_count_policy;
-use leaf::{base_for_leaf, decode_checkpoint, scan_leaves};
+use leaf::{base_for_leaf, decode_checkpoint, scan_leaves, TerminalSourceEvidence};
 #[cfg(test)]
 use leaf::{prepare_leaf, JsonlLeafOutput, JsonlLeafOutputEvent};
 mod errors;
@@ -1335,25 +1335,6 @@ impl FamilyCheckpoint {
     }
 }
 
-#[derive(Debug)]
-struct TerminalSourceEvidence<E: JsonlFamilyError> {
-    certificate: CertifiedSource,
-    terminal_proof: JsonlFamilyTerminalProof<E>,
-    emitted_bytes: u64,
-    record_rejections: SourceBackedRecordRejectionDrafts,
-}
-
-impl<E: JsonlFamilyError> Clone for TerminalSourceEvidence<E> {
-    fn clone(&self) -> Self {
-        Self {
-            certificate: self.certificate.clone(),
-            terminal_proof: self.terminal_proof.clone(),
-            emitted_bytes: self.emitted_bytes,
-            record_rejections: self.record_rejections.clone(),
-        }
-    }
-}
-
 fn default_base_source_path<R: JsonlFamilyRuntime>(
     _adapter: &(impl JsonlFamilyAdapter<Runtime = R> + ?Sized),
     certificate: &CertifiedSource,
@@ -1574,6 +1555,18 @@ fn capture<R: JsonlFamilyRuntime>(
     adapter
         .order_leaf_scans(&mut selected_leaves)
         .map_err(|error| route_scan(adapter, error))?;
+    let exact_scan_total_bytes = selected_leaves.iter().try_fold(0_u64, |total, leaf| {
+        total.checked_add(leaf.frozen_scan_observation()?.length())
+    });
+    // Only leaves whose existing capture contract already freezes the opening
+    // observation opt in. Overflow or any other family shape simply abstains.
+    if let Some(total) = exact_scan_total_bytes {
+        sink.enable_exact_scan_accounting(total);
+        if selected_leaves.is_empty() {
+            sink.report_completed_bytes_with_exact(0, Some(0))
+                .map_err(route_internal)?;
+        }
+    }
     let mut owned_sources = HashMap::with_capacity(bases.len() + selected_leaves.len());
     for source in bases
         .iter()
@@ -1627,14 +1620,21 @@ fn capture<R: JsonlFamilyRuntime>(
         let terminal_proof = JsonlFamilyTerminalProof::unchanged(adapter, leaf, base, &checkpoint)
             .map_err(|error| route_scan(adapter, error))?;
         sink.retain_source(base.clone()).map_err(route_internal)?;
-        sink.report_completed_bytes(base.counts().certified_bytes)
-            .map_err(route_internal)?;
+        sink.report_completed_bytes_with_exact(
+            base.counts().certified_bytes,
+            leaf.frozen_scan_observation()
+                .map(|observation| observation.length()),
+        )
+        .map_err(route_internal)?;
         retained_terminal_sources.insert(
             leaf.source().exact_descriptor_digest(),
             TerminalSourceEvidence {
                 certificate: base.clone(),
                 terminal_proof,
                 emitted_bytes: 0,
+                exact_scan_bytes: leaf
+                    .frozen_scan_observation()
+                    .map(|observation| observation.length()),
                 record_rejections: SourceBackedRecordRejectionDrafts::default(),
             },
         );

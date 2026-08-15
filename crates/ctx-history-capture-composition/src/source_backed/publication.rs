@@ -1,5 +1,6 @@
 use super::*;
 
+mod exact_scan;
 mod model;
 mod ownership;
 mod route_content;
@@ -12,6 +13,7 @@ pub use ctx_history_capture_model::{
     SourceBackedDetailedRefreshProgress, SourceBackedRefreshProgress,
 };
 pub use ctx_history_capture_runtime::SourceBackedCertifiedRemoval;
+use exact_scan::AttemptExactScanAccounting;
 #[cfg(test)]
 pub use model::assert_carried_route_failure;
 pub use model::{
@@ -417,7 +419,7 @@ fn refresh_source_backed_generation_with_detailed_progress_and_discovery_timing(
         SourceBackedRefreshPlan,
         &BTreeMap<SourceRouteIdentity, Vec<u8>>,
     ),
-    mut report_progress: impl FnMut(SourceBackedDetailedRefreshProgress) -> SourceBackedRouteResult<()>,
+    mut emit_progress: impl FnMut(SourceBackedDetailedRefreshProgress) -> SourceBackedRouteResult<()>,
     mut metadata_factory: Option<&mut SourceBackedPublicationMetadataFactory<'_>>,
 ) -> SourceBackedCoordinatorResult<SourceBackedRefreshReceipt> {
     let (plan, base_route_controls) = selection;
@@ -489,6 +491,15 @@ fn refresh_source_backed_generation_with_detailed_progress_and_discovery_timing(
         })
         .collect::<Vec<_>>();
     let attempt_history_progress = std::cell::RefCell::new(AttemptHistoryProgress::default());
+    let exact_scan_accounting = std::cell::RefCell::new(AttemptExactScanAccounting::default());
+    let exact_scan_accounting_valid = Arc::new(std::sync::atomic::AtomicBool::new(true));
+    let mut report_progress = |mut update: SourceBackedDetailedRefreshProgress| {
+        update.exact_scan_progress = exact_scan_accounting_valid
+            .load(std::sync::atomic::Ordering::SeqCst)
+            .then(|| exact_scan_accounting.borrow().snapshot(scanned_routes))
+            .flatten();
+        emit_progress(update)
+    };
     let refresh_started = Instant::now();
     report_progress(source_level_progress(SourceBackedRefreshProgress {
         phase: "discovering",
@@ -610,6 +621,7 @@ fn refresh_source_backed_generation_with_detailed_progress_and_discovery_timing(
             let Some(driver) = &route.driver else {
                 continue;
             };
+            exact_scan_accounting.borrow_mut().begin_route();
             let history_progress = attempt_history_progress.borrow().snapshot();
             report_progress(source_level_progress(SourceBackedRefreshProgress {
                 phase: "refreshing",
@@ -632,8 +644,14 @@ fn refresh_source_backed_generation_with_detailed_progress_and_discovery_timing(
             lifecycle.begin_route_stage(route_identity.clone())?;
             if let Some(revalidate) = driver.revalidate_at_publication.as_ref() {
                 let revalidate = Arc::clone(revalidate);
-                lifecycle
-                    .register_route_revalidation(route_identity.clone(), move || revalidate())?;
+                let accounting_valid = Arc::clone(&exact_scan_accounting_valid);
+                lifecycle.register_route_revalidation(route_identity.clone(), move || {
+                    let valid = revalidate();
+                    if !valid {
+                        accounting_valid.store(false, std::sync::atomic::Ordering::SeqCst);
+                    }
+                    valid
+                })?;
             }
             let removal_checkpoint = applied_removals.len();
             let logical_failure_checkpoint =
@@ -651,6 +669,7 @@ fn refresh_source_backed_generation_with_detailed_progress_and_discovery_timing(
                     if let Some(error) = progress_failure.borrow().as_ref() {
                         return Err(SourceBackedCoordinatorError::Progress(error.clone()));
                     }
+                    exact_scan_accounting.borrow_mut().observe(&delta);
                     attempt_history_progress.borrow_mut().advance(&delta);
                     let Some(source_progress) = record_progress.borrow_mut().advanced_at(
                         delta,
@@ -710,6 +729,7 @@ fn refresh_source_backed_generation_with_detailed_progress_and_discovery_timing(
                             certified_source_bytes: None,
                         },
                         current_source_progress: Some(current_source_progress),
+                        exact_scan_progress: None,
                     }) {
                         Ok(()) => Ok(()),
                         Err(error) => {
@@ -734,6 +754,8 @@ fn refresh_source_backed_generation_with_detailed_progress_and_discovery_timing(
                     record_progress: Some(&mut report_record_progress),
                     current_source_progress: Some(&mut report_current_source_progress),
                     last_progress_session_id: None,
+                    exact_scan_total_bytes: None,
+                    exact_scan_accounting_enabled: false,
                 };
                 (driver.scan)(&mut sink)
             };
@@ -762,6 +784,9 @@ fn refresh_source_backed_generation_with_detailed_progress_and_discovery_timing(
                 }))
                 .map_err(SourceBackedCoordinatorError::Progress)?;
             }
+            let terminal_route_for_eta = exact_scan_accounting
+                .borrow_mut()
+                .finish_route(scan_result.is_ok());
             match scan_result {
                 Ok(()) => {
                     let replacement_control_identity =
@@ -871,6 +896,11 @@ fn refresh_source_backed_generation_with_detailed_progress_and_discovery_timing(
                         }
                         successful_this_attempt.insert(route_identity.clone());
                     } else {
+                        if !terminal_route_for_eta {
+                            exact_scan_accounting.borrow_mut().revoke();
+                            exact_scan_accounting_valid
+                                .store(false, std::sync::atomic::Ordering::SeqCst);
+                        }
                         lifecycle.rollback_route_stage(route_identity)?;
                         owners.retain(|_, owner| owner.route_index != route_index);
                         complete_inventory_owners.retain(|owner| owner.route_index != route_index);
@@ -898,6 +928,11 @@ fn refresh_source_backed_generation_with_detailed_progress_and_discovery_timing(
                             source,
                         });
                     };
+                    if !terminal_route_for_eta {
+                        exact_scan_accounting.borrow_mut().revoke();
+                        exact_scan_accounting_valid
+                            .store(false, std::sync::atomic::Ordering::SeqCst);
+                    }
                     lifecycle.rollback_route_stage(route_identity)?;
                     owners.retain(|_, owner| owner.route_index != route_index);
                     complete_inventory_owners.retain(|owner| owner.route_index != route_index);
@@ -957,6 +992,8 @@ fn refresh_source_backed_generation_with_detailed_progress_and_discovery_timing(
                 .iter()
                 .all(|path| path_presence(path) == PathPresence::Missing)
             {
+                exact_scan_accounting.borrow_mut().revoke();
+                exact_scan_accounting_valid.store(false, std::sync::atomic::Ordering::SeqCst);
                 lifecycle.rollback_route_stage(route_identity)?;
                 let carried_forward = lifecycle.carry_failed_route(route_identity)?;
                 attempt_carried.insert(route_identity.clone());
@@ -971,13 +1008,18 @@ fn refresh_source_backed_generation_with_detailed_progress_and_discovery_timing(
                 );
                 continue;
             }
+            let accounting_valid = Arc::clone(&exact_scan_accounting_valid);
             lifecycle.observe_missing_route(
                 route_identity.clone(),
                 automatic_missing_observed_at_unix_ms,
                 move || {
-                    paths
+                    let valid = paths
                         .iter()
-                        .all(|path| path_presence(path) == PathPresence::Missing)
+                        .all(|path| path_presence(path) == PathPresence::Missing);
+                    if !valid {
+                        accounting_valid.store(false, std::sync::atomic::Ordering::SeqCst);
+                    }
+                    valid
                 },
             )?;
             lifecycle.finish_route_stage(route_identity)?;
@@ -1064,30 +1106,37 @@ fn refresh_source_backed_generation_with_detailed_progress_and_discovery_timing(
                 CaptureRevalidationTarget::Source(source) => source.observation().source(),
                 CaptureRevalidationTarget::Deletion(deletion) => deletion.source(),
             };
-            let Some(owner) = owners.get(&source.identity().digest()) else {
-                return false;
-            };
-            if !owner.source.exact_descriptor_eq(source) {
-                return false;
+            let valid = owners
+                .get(&source.identity().digest())
+                .filter(|owner| owner.source.exact_descriptor_eq(source))
+                .is_some_and(|owner| {
+                    matches!(
+                        (&owner.revalidation, target),
+                        (
+                            Some(SourceBackedRouteRevalidation::Source(expected)),
+                            CaptureRevalidationTarget::Source(actual)
+                        ) if *expected == *actual
+                    ) || matches!(
+                        (&owner.revalidation, target),
+                        (
+                            Some(SourceBackedRouteRevalidation::Deletion(expected)),
+                            CaptureRevalidationTarget::Deletion(actual)
+                        ) if *expected == *actual
+                    )
+                });
+            if !valid {
+                exact_scan_accounting_valid.store(false, std::sync::atomic::Ordering::SeqCst);
             }
-            matches!(
-                (&owner.revalidation, target),
-                (
-                    Some(SourceBackedRouteRevalidation::Source(expected)),
-                    CaptureRevalidationTarget::Source(actual)
-                ) if *expected == *actual
-            ) || matches!(
-                (&owner.revalidation, target),
-                (
-                    Some(SourceBackedRouteRevalidation::Deletion(expected)),
-                    CaptureRevalidationTarget::Deletion(actual)
-                ) if *expected == *actual
-            )
+            valid
         };
         let mut revalidate_inventory = |inventory: &CertifiedSourceInventory| {
-            complete_inventory_owners
+            let valid = complete_inventory_owners
                 .iter()
-                .any(|owner| owner.inventory == *inventory)
+                .any(|owner| owner.inventory == *inventory);
+            if !valid {
+                exact_scan_accounting_valid.store(false, std::sync::atomic::Ordering::SeqCst);
+            }
+            valid
         };
         let complete_inventory_route_ids = complete_inventory_owners
             .iter()

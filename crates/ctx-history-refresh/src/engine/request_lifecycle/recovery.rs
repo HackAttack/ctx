@@ -568,6 +568,9 @@ fn recover_terminal_attempt(
                 .unwrap_or_else(|| attempt.request_id.clone()),
         );
     }
+    // Estimator state is deliberately non-durable. Recovery never revives a
+    // deadline from a prior process or physical attempt.
+    attempt.whole_run_eta.clear();
     Ok(attempt)
 }
 

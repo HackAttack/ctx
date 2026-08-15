@@ -939,6 +939,7 @@ fn attached_logical_status_projects_coherent_physical_progress_and_replays_stabl
                                 processed_bytes: 4_096,
                                 elapsed_millis: Some(2_000),
                                 current_source_progress: None,
+                                exact_scan_progress: None,
                             },
                         );
                         let physical = engine

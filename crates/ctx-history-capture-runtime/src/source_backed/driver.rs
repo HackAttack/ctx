@@ -232,6 +232,11 @@ pub struct SourceBackedGenerationSink<'writer, L: CaptureLifecycleSink> {
         &'writer mut dyn FnMut(SourceBackedCurrentSourceProgress) -> SourceBackedRouteResult<()>,
     >,
     pub last_progress_session_id: Option<[u8; 32]>,
+    /// Private estimator accounting, carried on existing progress callbacks.
+    #[doc(hidden)]
+    pub exact_scan_total_bytes: Option<u64>,
+    #[doc(hidden)]
+    pub exact_scan_accounting_enabled: bool,
 }
 
 impl<L: CaptureLifecycleSink> SourceBackedGenerationSink<'_, L> {
@@ -275,6 +280,8 @@ impl<L: CaptureLifecycleSink> SourceBackedGenerationSink<'_, L> {
             record_progress,
             current_source_progress,
             last_progress_session_id,
+            exact_scan_total_bytes: None,
+            exact_scan_accounting_enabled: false,
         }
     }
 
@@ -654,10 +661,50 @@ impl<L: CaptureLifecycleSink> SourceBackedGenerationSink<'_, L> {
         self.report_record_progress(0, bytes, &[], 0, 0)
     }
 
+    /// Enables optional exact accounting from observations the scanner already
+    /// owns. The total is piggybacked on its next normal progress callback.
+    pub fn enable_exact_scan_accounting(&mut self, bytes: u64) {
+        self.exact_scan_total_bytes = Some(bytes);
+        self.exact_scan_accounting_enabled = true;
+    }
+
+    /// Reports the ordinary certified-byte delta while allowing a scanner to
+    /// account for a terminal physical suffix that is not publication data.
+    pub fn report_completed_bytes_with_exact(
+        &mut self,
+        bytes: u64,
+        exact_bytes: Option<u64>,
+    ) -> SourceBackedCoordinatorResult<(), L::Error> {
+        if exact_bytes.is_none() {
+            self.exact_scan_total_bytes = None;
+            self.exact_scan_accounting_enabled = false;
+        }
+        self.report_record_progress_with_exact(0, bytes, exact_bytes, &[], 0, 0)
+    }
+
     fn report_record_progress(
         &mut self,
         accepted_records: u64,
         completed_bytes: u64,
+        session_ids: &[[u8; 32]],
+        messages: u64,
+        tool_calls: u64,
+    ) -> SourceBackedCoordinatorResult<(), L::Error> {
+        self.report_record_progress_with_exact(
+            accepted_records,
+            completed_bytes,
+            None,
+            session_ids,
+            messages,
+            tool_calls,
+        )
+    }
+
+    fn report_record_progress_with_exact(
+        &mut self,
+        accepted_records: u64,
+        completed_bytes: u64,
+        exact_completed_bytes: Option<u64>,
         session_ids: &[[u8; 32]],
         messages: u64,
         tool_calls: u64,
@@ -673,6 +720,10 @@ impl<L: CaptureLifecycleSink> SourceBackedGenerationSink<'_, L> {
             report_progress(SourceBackedRecordProgressDelta {
                 accepted_records,
                 completed_bytes,
+                exact_total_bytes: self.exact_scan_total_bytes.take(),
+                exact_completed_bytes: self
+                    .exact_scan_accounting_enabled
+                    .then_some(exact_completed_bytes.unwrap_or(completed_bytes)),
                 session_ids: session_transitions,
                 messages,
                 tool_calls,

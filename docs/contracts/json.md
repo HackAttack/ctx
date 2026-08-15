@@ -472,6 +472,11 @@ Daemon-owned source refresh events additionally include:
   `progress_owner_request_id`, `progress_owner_attempt_state`, and
   `maintenance_wake` when the corresponding status authority supplies them;
 - `structured_outcome` when a terminal refresh outcome is available.
+- `whole_run_stage`, the current stage on the path to a verified, durable,
+  active generation, and `estimated_remaining_millis`, a whole-run numeric
+  estimate or `null`. The estimate is intentionally unavailable unless the
+  active cold setup attempt has complete exact accounting and has passed its
+  credibility gate. `eta_seconds` retains its legacy meaning.
 
 Source record and byte counters reset or clear at source and finalization
 boundaries. A scan with no authoritative total does not fabricate a total or

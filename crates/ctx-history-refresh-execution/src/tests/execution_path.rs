@@ -151,6 +151,7 @@ fn provider_wide_execution_discovers_once_and_preserves_progress_order() {
                     ..Default::default()
                 },
                 current_source_progress: None,
+                exact_scan_progress: None,
             })?;
             progress(CaptureSourceBackedDetailedRefreshProgress {
                 progress: ctx_history_capture::SourceBackedRefreshProgress {
@@ -169,6 +170,7 @@ fn provider_wide_execution_discovers_once_and_preserves_progress_order() {
                     ..Default::default()
                 },
                 current_source_progress: None,
+                exact_scan_progress: None,
             })?;
             progress(CaptureSourceBackedDetailedRefreshProgress {
                 progress: ctx_history_capture::SourceBackedRefreshProgress {
@@ -187,6 +189,7 @@ fn provider_wide_execution_discovers_once_and_preserves_progress_order() {
                     ..Default::default()
                 },
                 current_source_progress: None,
+                exact_scan_progress: None,
             })?;
             Ok(test_publication("all-provider-generation"))
         },

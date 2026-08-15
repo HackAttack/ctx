@@ -119,11 +119,11 @@ impl SourceBackedRefreshProgress {
     /// This remains `None` until direct remaining-work counters exist for all
     /// later stages or a per-stage model is trained and qualified across CPU,
     /// storage contention, and corpus shapes.
-    pub const fn estimated_remaining_millis(&self) -> Option<u64> {
-        None
-    }
-
-    pub(super) fn to_json_with_total_known(&self, total_sources_known: bool) -> Value {
+    pub(super) fn to_json_with_total_known(
+        &self,
+        total_sources_known: bool,
+        estimated_remaining_millis: Option<u64>,
+    ) -> Value {
         let mut value = compact_json(json!({
             "phase": self.phase,
             "whole_run_stage": self.whole_run_stage().as_str(),
@@ -144,7 +144,7 @@ impl SourceBackedRefreshProgress {
         }));
         // Preserve an explicit unknown whole-run estimate. Consumers must not
         // substitute source-stage progress for this null.
-        value["estimated_remaining_millis"] = json!(self.estimated_remaining_millis());
+        value["estimated_remaining_millis"] = json!(estimated_remaining_millis);
         value
     }
 
@@ -303,13 +303,12 @@ mod compatibility_tests {
         });
         let parsed = SourceBackedRefreshProgress::from_status_json(&legacy).unwrap();
         assert_eq!(parsed.whole_run_stage(), SourceBackedRefreshStage::Reading);
-        assert_eq!(parsed.estimated_remaining_millis(), None);
 
         let progress = SourceBackedRefreshProgress {
             phase: "physical_verification".to_owned(),
             ..Default::default()
         };
-        let json = progress.to_json_with_total_known(true);
+        let json = progress.to_json_with_total_known(true, None);
         assert_eq!(json["whole_run_stage"], "physical_verification");
         assert_eq!(json["estimated_remaining_millis"], Value::Null);
         assert_eq!(
@@ -321,7 +320,7 @@ mod compatibility_tests {
             phase: "published".to_owned(),
             ..Default::default()
         }
-        .to_json_with_total_known(true);
+        .to_json_with_total_known(true, None);
         assert_eq!(completed["whole_run_stage"], "complete");
         assert_eq!(completed["estimated_remaining_millis"], Value::Null);
 
@@ -329,7 +328,7 @@ mod compatibility_tests {
             phase: "failed".to_owned(),
             ..Default::default()
         }
-        .to_json_with_total_known(true);
+        .to_json_with_total_known(true, None);
         assert_eq!(failed["whole_run_stage"], "failed");
         assert_eq!(failed["estimated_remaining_millis"], Value::Null);
     }

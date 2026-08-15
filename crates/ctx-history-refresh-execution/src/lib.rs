@@ -97,9 +97,10 @@ pub use route_result::{
 pub use types::{
     nonzero_duration_micros, PublishedSourceBackedState, PublishedSourceBackedStatePort,
     RefreshOperation, SourceBackedCurrentSourceProgress, SourceBackedCurrentSourceProgressStage,
-    SourceBackedRefreshCoveredPublication, SourceBackedRefreshExecution,
-    SourceBackedRefreshProgressUpdate, SourceBackedRefreshPublication, SourceBackedRefreshTimings,
-    SourceBackedZeroSourceAuthority, SourceBackedZeroSourceAuthorityKind,
+    SourceBackedExactScanProgress, SourceBackedRefreshCoveredPublication,
+    SourceBackedRefreshExecution, SourceBackedRefreshProgressUpdate,
+    SourceBackedRefreshPublication, SourceBackedRefreshTimings, SourceBackedZeroSourceAuthority,
+    SourceBackedZeroSourceAuthorityKind,
 };
 
 const SEARCH_DIRECTORY: &str = "search";

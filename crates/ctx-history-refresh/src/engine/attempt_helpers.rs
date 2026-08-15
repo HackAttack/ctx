@@ -408,6 +408,7 @@ pub(super) fn coalesce_attempt(
 ) -> Value {
     if metadata.operation == SourceBackedRefreshOperation::Import {
         attempt.operation = SourceBackedRefreshOperation::Import;
+        attempt.whole_run_eta.disable();
         attempt.trigger = metadata.trigger;
         attempt.trigger_provenance = metadata.trigger_provenance;
     }
@@ -422,6 +423,9 @@ pub(super) fn new_refresh_attempt(
     refresh_scope: SourceBackedRefreshScope,
 ) -> SourceBackedRefreshAttempt {
     let request_id = Uuid::now_v7().to_string();
+    let eta_eligible = observed_generation.is_none()
+        && metadata.operation == SourceBackedRefreshOperation::Refresh
+        && matches!(&refresh_scope, SourceBackedRefreshScope::All);
     SourceBackedRefreshAttempt {
         request_id: request_id.clone(),
         state: SourceBackedRefreshState::Queued,
@@ -445,6 +449,7 @@ pub(super) fn new_refresh_attempt(
         coalesced_requests: 0,
         progress: SourceBackedRefreshProgress::default(),
         progress_total_sources_known: false,
+        whole_run_eta: WholeRunEtaEstimator::new(eta_eligible),
         physical_attempt_id: Some(request_id),
         scanned_routes: None,
         unsupported_routes: None,

@@ -104,6 +104,7 @@ pub(super) struct SourceBackedRefreshAttempt {
     pub(super) coalesced_requests: u64,
     pub(super) progress: SourceBackedRefreshProgress,
     pub(super) progress_total_sources_known: bool,
+    pub(super) whole_run_eta: WholeRunEtaEstimator,
     pub(super) physical_attempt_id: Option<String>,
     pub(super) scanned_routes: Option<usize>,
     pub(super) unsupported_routes: Option<usize>,
@@ -298,8 +299,10 @@ impl SourceBackedRefreshAttempt {
                 .map(SourceBackedRefreshReceipt::to_json),
             "outcome": self.receipt.as_ref().map(SourceBackedRefreshReceipt::terminal_outcome),
             "coalesced_requests": self.coalesced_requests,
-            "progress": self.progress
-                .to_json_with_total_known(self.progress_total_sources_known),
+            "progress": self.progress.to_json_with_total_known(
+                self.progress_total_sources_known,
+                self.whole_run_eta.estimated_remaining_millis(),
+            ),
             "scanned_routes": self.scanned_routes,
             "unsupported_routes": self.unsupported_routes,
             "certified_source_count": self.certified_source_count,
@@ -360,8 +363,10 @@ impl SourceBackedRefreshAttempt {
                 .map(SourceBackedRefreshReceipt::to_json),
             "outcome": self.receipt.as_ref().map(SourceBackedRefreshReceipt::terminal_outcome),
             "coalesced_requests": self.coalesced_requests,
-            "progress": self.progress
-                .to_json_with_total_known(self.progress_total_sources_known),
+            "progress": self.progress.to_json_with_total_known(
+                self.progress_total_sources_known,
+                self.whole_run_eta.estimated_remaining_millis(),
+            ),
             "scanned_routes": self.scanned_routes,
             "unsupported_routes": self.unsupported_routes,
             "certified_source_count": self.certified_source_count,
@@ -483,9 +488,10 @@ fn apply_read_projection(
     );
     fields.insert(
         "progress".to_owned(),
-        progress_owner
-            .progress
-            .to_json_with_total_known(progress_owner.progress_total_sources_known),
+        progress_owner.progress.to_json_with_total_known(
+            progress_owner.progress_total_sources_known,
+            progress_owner.whole_run_eta.estimated_remaining_millis(),
+        ),
     );
     if job {
         fields.insert(
