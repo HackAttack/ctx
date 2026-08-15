@@ -11,7 +11,7 @@ use ctx_daemon_runtime::{
     launchctl_print_pid, supervisor_command, systemd_main_pid, verify_daemon_owner_identity,
     write_atomic_supervisor_file as write_atomic_file,
 };
-use ctx_history_core::managed_data_root;
+use ctx_history_core::{managed_data_root, CoreError};
 use serde_json::{json, Value};
 use std::env;
 use std::{
@@ -904,8 +904,20 @@ fn safely_supported_managed_install(
 }
 
 fn is_canonical_managed_data_root(data_root: &Path) -> Result<bool> {
-    let managed_root = managed_data_root().context("resolve canonical managed ctx data root")?;
-    Ok(data_root == managed_root)
+    is_canonical_managed_data_root_with(data_root, managed_data_root())
+}
+
+fn is_canonical_managed_data_root_with(
+    data_root: &Path,
+    managed_root: ctx_history_core::Result<PathBuf>,
+) -> Result<bool> {
+    match managed_root {
+        Ok(managed_root) => Ok(data_root == managed_root),
+        Err(CoreError::MissingHome) => Ok(false),
+        Err(error) => {
+            Err(anyhow::Error::new(error).context("resolve canonical managed ctx data root"))
+        }
+    }
 }
 
 #[cfg(any(target_os = "linux", target_os = "macos", windows))]
