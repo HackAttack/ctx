@@ -648,11 +648,20 @@ function Invoke-CtxRaw([string[]]$Arguments) {
         $stderr = $process.StandardError.ReadToEndAsync()
 
         $timeoutPhase = $null
+        $rootExitCode = $null
+        $cleanupAfterExit = $false
         if (-not (Wait-ProcessUntil $process $commandClock $timeoutMilliseconds)) {
             $timeoutPhase = "process exit"
         } else {
-            [void](Wait-TaskUntil $stdout $commandClock $timeoutMilliseconds)
-            [void](Wait-TaskUntil $stderr $commandClock $timeoutMilliseconds)
+            # Preserve the root result before terminating any descendants that
+            # retained inherited pipe handles. A short grace lets ordinary
+            # buffered output finish without turning a successful root exit
+            # into a full command-deadline wait.
+            $rootExitCode = $process.ExitCode
+            $postExitDrainClock = [System.Diagnostics.Stopwatch]::StartNew()
+            $postExitDrainMilliseconds = 1000
+            [void](Wait-TaskUntil $stdout $postExitDrainClock $postExitDrainMilliseconds)
+            [void](Wait-TaskUntil $stderr $postExitDrainClock $postExitDrainMilliseconds)
             $pendingStreams = @()
             if (-not $stdout.IsCompleted) {
                 $pendingStreams += "stdout"
@@ -661,15 +670,15 @@ function Invoke-CtxRaw([string[]]$Arguments) {
                 $pendingStreams += "stderr"
             }
             if ($pendingStreams.Count -ne 0) {
-                $timeoutPhase = (($pendingStreams -join "/") + " drain after process exit")
+                $cleanupAfterExit = $true
             }
         }
 
-        if ($null -eq $timeoutPhase) {
+        if ($null -eq $timeoutPhase -and -not $cleanupAfterExit) {
             $text = @($stdout.GetAwaiter().GetResult(), $stderr.GetAwaiter().GetResult()) |
                 Where-Object { -not [string]::IsNullOrEmpty($_) }
             return [pscustomobject]@{
-                ExitCode = $process.ExitCode
+                ExitCode = $rootExitCode
                 Text = ($text -join [Environment]::NewLine).TrimEnd()
             }
         }
@@ -707,12 +716,27 @@ function Invoke-CtxRaw([string[]]$Arguments) {
             "final drain still pending: " + ($pendingFinal -join ",")
         }
 
-        Fail ("ctx command exceeded {0} seconds during {1}; {2}; {3}: {4}" -f
-            $timeoutSeconds,
-            $timeoutPhase,
-            $terminationDiagnostic,
-            $finalDrainDiagnostic,
-            ($Arguments -join " "))
+        if ($null -ne $timeoutPhase) {
+            Fail ("ctx command exceeded {0} seconds during {1}; {2}; {3}: {4}" -f
+                $timeoutSeconds,
+                $timeoutPhase,
+                $terminationDiagnostic,
+                $finalDrainDiagnostic,
+                ($Arguments -join " "))
+        }
+        if ($terminationErrors.Count -ne 0 -or $pendingFinal.Count -ne 0) {
+            Fail ("ctx command root exited but owned tree cleanup failed; {0}; {1}: {2}" -f
+                $terminationDiagnostic,
+                $finalDrainDiagnostic,
+                ($Arguments -join " "))
+        }
+
+        $text = @($stdout.GetAwaiter().GetResult(), $stderr.GetAwaiter().GetResult()) |
+            Where-Object { -not [string]::IsNullOrEmpty($_) }
+        return [pscustomobject]@{
+            ExitCode = $rootExitCode
+            Text = ($text -join [Environment]::NewLine).TrimEnd()
+        }
     } finally {
         if ($null -ne $process) {
             $process.Dispose()
