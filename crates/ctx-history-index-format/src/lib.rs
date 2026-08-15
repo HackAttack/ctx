@@ -62,7 +62,8 @@ pub use index_document::{
 #[doc(hidden)]
 pub use manifest::{
     canonical_commit_payload, load_publication_for_metas, meta_generation, payload_generation_id,
-    reconcile_commit_error, searcher_generation, write_manifest, LoadedPublication,
+    prepare_successor_manifest, reconcile_commit_error, searcher_generation, write_manifest,
+    write_prepared_manifest, LoadedPublication, PreparedManifest,
 };
 #[doc(hidden)]
 pub use record_digest::{accumulate_core_record, core_record_accumulator_leaf, core_record_leaf};
@@ -97,8 +98,9 @@ pub use verification_record::{
 #[doc(hidden)]
 pub use ctx_history_index_generation::{
     certify_activated_generation, hex, is_generation_id, open_slot_index, physical_integrity_audit,
-    scrub_and_certify_physical_integrity, sha256_hex, verify_certified_physical_integrity,
-    verify_or_certify_physical_integrity, verify_physical_integrity, ActiveGenerationPointer,
+    physical_integrity_audit_with_candidate_proof, scrub_and_certify_physical_integrity,
+    sha256_hex, verify_certified_physical_integrity, verify_or_certify_physical_integrity,
+    verify_physical_integrity, ActiveGenerationPointer, CandidatePhysicalProof,
     CertifiedPhysicalIntegrity, DurableMmapDirectory, GenerationRetentionLease, GenerationSlot,
     PhysicalIntegrityAudit, MANIFEST_DIRECTORY,
 };

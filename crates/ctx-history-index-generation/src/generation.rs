@@ -23,10 +23,12 @@ use serde::{Deserialize, Serialize};
 use tantivy::{schema::Schema, store::Compressor, Index, IndexSettings};
 use uuid::Uuid;
 
+use crate::clone::{bind_candidate_activation_fence, create_authenticated_candidate_generation};
 use crate::is_generation_id;
 use crate::{
-    DurableAtomicWriteOutcome, DurableMmapDirectory, GenerationError as IndexError,
-    GenerationRetentionLease, Result, ACTIVE_GENERATION_POINTER_FILE, INDEX_GENERATIONS_DIRECTORY,
+    CandidateActivationFence, CandidatePhysicalProof, DurableAtomicWriteOutcome,
+    DurableMmapDirectory, GenerationError as IndexError, GenerationRetentionLease, Result,
+    ACTIVE_GENERATION_POINTER_FILE, INDEX_GENERATIONS_DIRECTORY,
 };
 const ACTIVE_GENERATION_POINTER_VERSION: u32 = 2;
 const GENERATION_DIRECTORY_PREFIX: &str = "generation-";
@@ -140,6 +142,8 @@ impl ActiveGenerationPointer {
 pub struct CandidateGeneration {
     pub directory_name: String,
     pub index: Index,
+    pub physical_proof: CandidatePhysicalProof,
+    pub activation_fence: CandidateActivationFence,
 }
 
 #[derive(Debug)]
@@ -190,26 +194,38 @@ pub fn create_candidate_generation(
     root: &Path,
     base: Option<&GenerationSlot>,
     schema: Schema,
+    writer_memory_bytes: u64,
 ) -> Result<CandidateGeneration> {
+    if let Some(base) = base {
+        let base_index = open_slot_index(root, base)?;
+        let pointer = load_active_generation_pointer(root)?
+            .ok_or(IndexError::MissingActiveGenerationPointer)?;
+        if pointer.active() != base {
+            return Err(IndexError::ConcurrentGenerationChange);
+        }
+        return create_authenticated_candidate_generation(
+            root,
+            &pointer,
+            &base_index,
+            writer_memory_bytes,
+        );
+    }
+
     let generations = root.join(INDEX_GENERATIONS_DIRECTORY);
     fs::create_dir_all(&generations)?;
     let directory_name = format!("{GENERATION_DIRECTORY_PREFIX}{}", Uuid::now_v7().simple());
     let path = generations.join(&directory_name);
     fs::create_dir(&path)?;
-    if let Some(base) = base {
-        clone_index_files(&slot_path(root, base), &path)?;
-    }
     sync_directory(&generations)?;
     let directory = DurableMmapDirectory::open(&path).map_err(tantivy::TantivyError::from)?;
-    let index = if base.is_some() {
-        Index::open(directory)?
-    } else {
-        Index::create(directory, schema, lexical_index_settings())?
-    };
+    let index = Index::create(directory, schema, lexical_index_settings())?;
     validate_lexical_index_settings(&index)?;
+    let activation_fence = bind_candidate_activation_fence(root, Path::new(&directory_name))?;
     Ok(CandidateGeneration {
         directory_name,
         index,
+        physical_proof: CandidatePhysicalProof::default(),
+        activation_fence,
     })
 }
 
@@ -217,10 +233,25 @@ pub fn publish_active_generation_pointer(
     root: &Path,
     pointer: &ActiveGenerationPointer,
 ) -> Result<PointerPublicationOutcome> {
+    publish_active_generation_pointer_validated(root, pointer, || Ok(()))
+}
+
+pub fn publish_active_generation_pointer_validated<F>(
+    root: &Path,
+    pointer: &ActiveGenerationPointer,
+    validate_before_replace: F,
+) -> Result<PointerPublicationOutcome>
+where
+    F: FnOnce() -> Result<()>,
+{
     pointer.validate()?;
     let bytes = serde_json::to_vec(pointer)?;
     let directory = DurableMmapDirectory::open(root).map_err(tantivy::TantivyError::from)?;
-    match directory.atomic_write_with_outcome(Path::new(ACTIVE_GENERATION_POINTER_FILE), &bytes)? {
+    match directory.atomic_write_with_outcome_validated(
+        Path::new(ACTIVE_GENERATION_POINTER_FILE),
+        &bytes,
+        validate_before_replace,
+    )? {
         DurableAtomicWriteOutcome::Durable => Ok(PointerPublicationOutcome::Durable),
         DurableAtomicWriteOutcome::VisibleButDurabilityUncertain(error) => {
             Ok(PointerPublicationOutcome::CommittedVisible {
@@ -436,31 +467,6 @@ fn reclamation_checkpoint(_stage: ReclamationStage, _path: &Path) -> Result<()> 
     Ok(())
 }
 
-fn clone_index_files(source: &Path, destination: &Path) -> Result<()> {
-    for entry in fs::read_dir(source)? {
-        let entry = entry?;
-        if !entry.file_type()?.is_file() || should_skip_index_file(&entry.file_name()) {
-            continue;
-        }
-        let target = destination.join(entry.file_name());
-        let copy_required = matches!(
-            entry.file_name().to_str(),
-            Some("meta.json" | ".managed.json")
-        );
-        if copy_required || fs::hard_link(entry.path(), &target).is_err() {
-            fs::copy(entry.path(), target)?;
-        }
-    }
-    Ok(())
-}
-
-fn should_skip_index_file(name: &std::ffi::OsStr) -> bool {
-    let Some(name) = name.to_str() else {
-        return true;
-    };
-    name.ends_with(".lock") || name.starts_with(".ctx-tantivy-atomic-")
-}
-
 fn is_generation_directory_name(name: &str) -> bool {
     name.strip_prefix(GENERATION_DIRECTORY_PREFIX)
         .is_some_and(|suffix| {
@@ -470,7 +476,6 @@ fn is_generation_directory_name(name: &str) -> bool {
                     .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
         })
 }
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -507,7 +512,7 @@ mod tests {
     fn candidate_settings_roundtrip_exactly() {
         let root = tempfile::tempdir().unwrap();
         let candidate =
-            create_candidate_generation(root.path(), None, Schema::builder().build()).unwrap();
+            create_candidate_generation(root.path(), None, Schema::builder().build(), 0).unwrap();
         let slot = GenerationSlot::new(
             "0".repeat(64),
             candidate.directory_name.clone(),
@@ -578,7 +583,7 @@ mod tests {
         let slot = create_mismatched_slot(root.path());
 
         assert!(matches!(
-            create_candidate_generation(root.path(), Some(&slot), Schema::builder().build()),
+            create_candidate_generation(root.path(), Some(&slot), Schema::builder().build(), 0),
             Err(IndexError::IndexSettingsMismatch)
         ));
     }

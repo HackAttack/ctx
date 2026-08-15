@@ -2,14 +2,17 @@
 use std::{
     cell::{Cell, RefCell},
     path::PathBuf,
-    sync::Mutex,
+    sync::{
+        atomic::{AtomicU64, Ordering},
+        Arc, Mutex,
+    },
 };
 use std::{fs::File, io::Read, path::Path};
 
-use sha2::Sha256;
+use sha2::{Digest, Sha256};
 
-use super::{identity::observe_metadata, new_prefix_hasher, prefix_digest, JsonlFileObservation};
-use super::{JsonlFamilyError, JsonlResult, OpenedProviderSourceFile};
+use super::{identity::observe_metadata, new_prefix_hasher, JsonlFileObservation};
+use super::{JsonlFamilyError, JsonlResult, JsonlResumableSha256, OpenedProviderSourceFile};
 
 #[cfg(any(test, feature = "test-support"))]
 thread_local! {
@@ -35,11 +38,64 @@ struct SemanticPreflightHook {
 }
 
 #[cfg(any(test, feature = "test-support"))]
+struct TrackedPrefixHashBytes {
+    source_path: PathBuf,
+    bytes: Arc<AtomicU64>,
+}
+
+/// Process-global, source-scoped prefix-hash accounting for worker-thread
+/// assertions. Hook dispatch and the legacy aggregate remain thread-local.
+#[cfg(any(test, feature = "test-support"))]
+pub struct JsonlPrefixHashBytesGuard {
+    source_path: PathBuf,
+    bytes: Arc<AtomicU64>,
+}
+
+#[cfg(any(test, feature = "test-support"))]
+impl JsonlPrefixHashBytesGuard {
+    pub fn bytes(&self) -> u64 {
+        self.bytes.load(Ordering::SeqCst)
+    }
+}
+
+#[cfg(any(test, feature = "test-support"))]
+impl Drop for JsonlPrefixHashBytesGuard {
+    fn drop(&mut self) {
+        let mut tracked = TRACKED_PREFIX_HASH_BYTES
+            .lock()
+            .expect("JSONL tracked prefix-hash byte lock was poisoned");
+        let index = tracked
+            .iter()
+            .position(|entry| {
+                entry.source_path == self.source_path && Arc::ptr_eq(&entry.bytes, &self.bytes)
+            })
+            .expect("JSONL tracked prefix-hash byte guard was not registered");
+        tracked.remove(index);
+    }
+}
+
+#[cfg(any(test, feature = "test-support"))]
 static AFTER_APPEND_OBSERVATION_ROUTE_BINDING_HOOKS: Mutex<Vec<AppendObservationHook>> =
     Mutex::new(Vec::new());
 
 #[cfg(any(test, feature = "test-support"))]
 static AFTER_SEMANTIC_PREFLIGHT_HOOKS: Mutex<Vec<SemanticPreflightHook>> = Mutex::new(Vec::new());
+
+#[cfg(any(test, feature = "test-support"))]
+static TRACKED_PREFIX_HASH_BYTES: Mutex<Vec<TrackedPrefixHashBytes>> = Mutex::new(Vec::new());
+
+#[cfg(any(test, feature = "test-support"))]
+pub fn track_jsonl_prefix_hash_bytes(source_path: PathBuf) -> JsonlPrefixHashBytesGuard {
+    let bytes = Arc::new(AtomicU64::new(0));
+    TRACKED_PREFIX_HASH_BYTES
+        .lock()
+        .expect("JSONL tracked prefix-hash byte lock was poisoned")
+        .push(TrackedPrefixHashBytes {
+            source_path: source_path.clone(),
+            bytes: Arc::clone(&bytes),
+        });
+    JsonlPrefixHashBytesGuard { source_path, bytes }
+}
 
 #[cfg(any(test, feature = "test-support"))]
 pub fn reset_jsonl_prefix_hash_bytes() {
@@ -49,6 +105,21 @@ pub fn reset_jsonl_prefix_hash_bytes() {
 #[cfg(any(test, feature = "test-support"))]
 pub fn jsonl_prefix_hash_bytes() -> u64 {
     PREFIX_HASH_BYTES.get()
+}
+
+#[cfg(any(test, feature = "test-support"))]
+fn record_jsonl_prefix_hash_bytes(source_path: &Path, bytes: u64) {
+    PREFIX_HASH_BYTES.with(|total| {
+        total.set(total.get().saturating_add(bytes));
+    });
+    for tracked in TRACKED_PREFIX_HASH_BYTES
+        .lock()
+        .expect("JSONL tracked prefix-hash byte lock was poisoned")
+        .iter()
+        .filter(|tracked| tracked.source_path == source_path)
+    {
+        tracked.bytes.fetch_add(bytes, Ordering::SeqCst);
+    }
 }
 
 #[cfg(any(test, feature = "test-support"))]
@@ -237,7 +308,7 @@ fn revalidate_frozen_prefix_with_hasher<E: JsonlFamilyError>(
     frozen: &JsonlFileObservation,
     prefix_length: u64,
     expected_prefix_digest: [u8; 32],
-    prefix_hasher: Sha256,
+    prefix_hasher: impl JsonlPrefixHasher,
 ) -> JsonlResult<JsonlFileObservation, E> {
     if prefix_length > frozen.length() {
         return Err(E::source_changed());
@@ -259,6 +330,7 @@ fn revalidate_frozen_prefix_with_hasher<E: JsonlFamilyError>(
     }
 
     verify_prefix_digest(
+        source_path,
         source_file,
         prefix_length,
         expected_prefix_digest,
@@ -280,6 +352,7 @@ fn revalidate_frozen_prefix_with_hasher<E: JsonlFamilyError>(
     // continuously growing append log. Requiring metadata to stop changing
     // would make an active terminal source impossible to certify.
     verify_prefix_digest(
+        source_path,
         source_file,
         prefix_length,
         expected_prefix_digest,
@@ -300,6 +373,7 @@ fn revalidate_frozen_prefix_with_hasher<E: JsonlFamilyError>(
     // End on content proof so rewrite-plus-append after the preceding metadata
     // observation cannot be mistaken for deferred growth.
     verify_prefix_digest(
+        source_path,
         source_file,
         prefix_length,
         expected_prefix_digest,
@@ -315,30 +389,60 @@ fn revalidate_frozen_prefix_with_hasher<E: JsonlFamilyError>(
     Ok(after)
 }
 
-fn verify_prefix_digest<E: JsonlFamilyError>(
+pub(super) trait JsonlPrefixHasher: Clone {
+    fn update_bytes(&mut self, bytes: &[u8]);
+    fn finish_digest(&self) -> [u8; 32];
+}
+
+impl JsonlPrefixHasher for JsonlResumableSha256 {
+    fn update_bytes(&mut self, bytes: &[u8]) {
+        self.update(bytes);
+    }
+
+    fn finish_digest(&self) -> [u8; 32] {
+        self.digest()
+    }
+}
+
+impl JsonlPrefixHasher for Sha256 {
+    fn update_bytes(&mut self, bytes: &[u8]) {
+        Digest::update(self, bytes);
+    }
+
+    fn finish_digest(&self) -> [u8; 32] {
+        self.clone().finalize().into()
+    }
+}
+
+fn verify_prefix_digest<E: JsonlFamilyError, H: JsonlPrefixHasher>(
+    source_path: &Path,
     source_file: &OpenedProviderSourceFile<E>,
     prefix_length: u64,
     expected_prefix_digest: [u8; 32],
-    prefix_hasher: Sha256,
+    prefix_hasher: H,
 ) -> JsonlResult<(), E> {
-    let observed = hash_prefix::<E>(
+    let observed = hash_prefix::<E, _>(
+        source_path,
         &mut source_file.reopen_same_object()?,
         prefix_length,
         prefix_hasher,
     )?;
-    if prefix_digest(&observed) != expected_prefix_digest {
+    if observed.finish_digest() != expected_prefix_digest {
         return Err(E::source_changed());
     }
     Ok(())
 }
 
-pub(super) fn hash_prefix<E: JsonlFamilyError>(
+pub(super) fn hash_prefix<E: JsonlFamilyError, H: JsonlPrefixHasher>(
+    source_path: &Path,
     file: &mut File,
     length: u64,
-    mut hasher: Sha256,
-) -> JsonlResult<Sha256, E> {
-    use sha2::Digest;
+    mut hasher: H,
+) -> JsonlResult<H, E> {
     use std::io::{Seek, SeekFrom};
+
+    #[cfg(not(any(test, feature = "test-support")))]
+    let _ = source_path;
 
     file.seek(SeekFrom::Start(0))?;
     let mut remaining = length;
@@ -351,10 +455,8 @@ pub(super) fn hash_prefix<E: JsonlFamilyError>(
             return Err(E::source_changed());
         }
         #[cfg(any(test, feature = "test-support"))]
-        PREFIX_HASH_BYTES.with(|bytes| {
-            bytes.set(bytes.get().saturating_add(read as u64));
-        });
-        hasher.update(&buffer[..read]);
+        record_jsonl_prefix_hash_bytes(source_path, read as u64);
+        hasher.update_bytes(&buffer[..read]);
         remaining = remaining.saturating_sub(read as u64);
     }
     Ok(hasher)

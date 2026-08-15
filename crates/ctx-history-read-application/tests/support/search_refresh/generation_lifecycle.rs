@@ -23,7 +23,7 @@ fn search_refresh_codex_generation_covers_full_source_lifecycle() {
             "certified-deletion-sibling-oracle",
         )],
     );
-    let _daemon = start_source_refresh_daemon(&temp);
+    let mut daemon = start_source_refresh_daemon(&temp);
 
     let cold = json_output(ctx(&temp).args([
         "search",
@@ -117,6 +117,10 @@ fn search_refresh_codex_generation_covers_full_source_lifecycle() {
 
     let rewrite_query = "rewrite-source-lifecycle-oracle";
     let rewrite_padding = format!("rewrite-companion-{}", "x".repeat(2_048));
+    // Stop before mutating so no live watcher event can enqueue the ordinary
+    // append-only fast path. Restart below must discover the offline rewrite
+    // through its exhaustive startup boundary.
+    daemon.stop();
     write_codex_session(
         &session,
         native_session_id,
@@ -126,6 +130,20 @@ fn search_refresh_codex_generation_covers_full_source_lifecycle() {
         ],
     );
     let rewrite_length = fs::metadata(&session).unwrap().len();
+    // Stable-object growth is the live append-only fast path. An arbitrary
+    // old-prefix rewrite becomes authoritative at an exhaustive boundary;
+    // restart supplies that boundary without weakening ordinary appends.
+    let _daemon = restart_source_refresh_daemon(&temp);
+    wait_for_status(
+        &temp,
+        "startup reconciliation after an old-prefix rewrite",
+        |status| {
+            status["history_epoch"]["status"] == "ready"
+                && status["lexical"]["generation_id"]
+                    .as_str()
+                    .is_some_and(|generation| generation != append_generation)
+        },
+    );
     let rewritten = json_output(ctx(&temp).args([
         "search",
         rewrite_query,

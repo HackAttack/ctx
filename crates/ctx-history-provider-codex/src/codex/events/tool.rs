@@ -23,7 +23,8 @@ pub(crate) enum CodexInvocationOriginV0 {
     Unproven,
 }
 
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub(crate) struct CodexToolCallContext {
     pub(crate) tool_name: String,
     pub(crate) command_preview: Option<String>,

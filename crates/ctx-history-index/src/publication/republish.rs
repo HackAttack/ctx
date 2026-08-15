@@ -171,7 +171,7 @@ fn republish_candidate(
     candidate_directory_name: &str,
     base_metas: &tantivy::IndexMeta,
     publication_metadata: Option<Arc<[u8]>>,
-    current_manifest: GenerationManifest,
+    current_manifest: Arc<GenerationManifest>,
     current_generation_id: String,
 ) -> Result<CurrentRepublishOutcome> {
     republish_checkpoint(RepublishStage::AfterCandidateCreation, Some(candidate_path))?;

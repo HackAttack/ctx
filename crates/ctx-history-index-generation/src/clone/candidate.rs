@@ -4,10 +4,14 @@ use crate::Result;
 
 use crate::CandidateGeneration;
 
+pub struct CandidateActivationFence {
+    authentication: CandidateAuthentication,
+}
+
 pub struct RepublishCandidate {
     directory_name: String,
     index: Index,
-    authentication: CandidateAuthentication,
+    activation_fence: CandidateActivationFence,
 }
 
 pub(super) enum CandidateAuthentication {
@@ -23,14 +27,11 @@ pub(super) enum CandidateAuthentication {
 }
 
 impl RepublishCandidate {
-    pub(super) fn new(
-        candidate: CandidateGeneration,
-        authentication: CandidateAuthentication,
-    ) -> Self {
+    pub(super) fn new(candidate: CandidateGeneration) -> Self {
         Self {
             directory_name: candidate.directory_name,
             index: candidate.index,
-            authentication,
+            activation_fence: candidate.activation_fence,
         }
     }
 
@@ -40,6 +41,41 @@ impl RepublishCandidate {
 
     pub fn index(&self) -> &Index {
         &self.index
+    }
+
+    pub fn validate_binding(&self) -> Result<()> {
+        self.activation_fence.validate_binding()
+    }
+
+    pub fn discard(self) {
+        let Self {
+            index,
+            activation_fence,
+            ..
+        } = self;
+        drop(index);
+        activation_fence.discard();
+    }
+}
+
+impl CandidateActivationFence {
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    pub(super) fn descriptor_clone(guard: super::unix::CandidateGuard) -> Self {
+        Self {
+            authentication: CandidateAuthentication::DescriptorClone(guard),
+        }
+    }
+
+    #[cfg(any(
+        test,
+        feature = "test-support",
+        target_os = "windows",
+        target_os = "freebsd"
+    ))]
+    pub(super) fn portable(guard: super::portable::CandidateGuard) -> Self {
+        Self {
+            authentication: CandidateAuthentication::Portable(guard),
+        }
     }
 
     pub fn validate_binding(&self) -> Result<()> {
@@ -57,13 +93,7 @@ impl RepublishCandidate {
     }
 
     pub fn discard(self) {
-        let Self {
-            index,
-            authentication,
-            ..
-        } = self;
-        drop(index);
-        match authentication {
+        match self.authentication {
             #[cfg(any(target_os = "linux", target_os = "macos"))]
             CandidateAuthentication::DescriptorClone(guard) => guard.discard(),
             #[cfg(any(

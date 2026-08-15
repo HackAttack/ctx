@@ -75,6 +75,22 @@ impl DurableMmapDirectory {
         path: &Path,
         data: &[u8],
     ) -> io::Result<DurableAtomicWriteOutcome> {
+        match self.atomic_write_with_outcome_validated(path, data, || Ok(())) {
+            Ok(outcome) => Ok(outcome),
+            Err(crate::GenerationError::Io(error)) => Err(error),
+            Err(error) => Err(io::Error::other(error)),
+        }
+    }
+
+    pub(crate) fn atomic_write_with_outcome_validated<F>(
+        &self,
+        path: &Path,
+        data: &[u8],
+        validate_before_replace: F,
+    ) -> crate::Result<DurableAtomicWriteOutcome>
+    where
+        F: FnOnce() -> crate::Result<()>,
+    {
         let target_path = self.resolve_path(path);
         let parent_path = target_path.parent().ok_or_else(|| {
             io::Error::new(
@@ -86,7 +102,13 @@ impl DurableMmapDirectory {
         // is therefore known to occur either before replacement or after the
         // target became visible.
         let parent_sync = ParentDirectorySync::open(parent_path)?;
-        atomic_replace_with_outcome(&target_path, data, replace_file, move || parent_sync.sync())
+        atomic_replace_with_outcome_validated(
+            &target_path,
+            data,
+            replace_file,
+            move || parent_sync.sync(),
+            validate_before_replace,
+        )
     }
 
     fn resolve_path(&self, relative_path: &Path) -> PathBuf {
@@ -253,6 +275,7 @@ where
     atomic_replace_with_outcome(target_path, data, replace, sync_parent)?.into_io_result()
 }
 
+#[cfg(test)]
 fn atomic_replace_with_outcome<Replace, SyncParent>(
     target_path: &Path,
     data: &[u8],
@@ -262,6 +285,26 @@ fn atomic_replace_with_outcome<Replace, SyncParent>(
 where
     Replace: FnOnce(&Path, &Path) -> io::Result<()>,
     SyncParent: FnOnce() -> io::Result<()>,
+{
+    match atomic_replace_with_outcome_validated(target_path, data, replace, sync_parent, || Ok(()))
+    {
+        Ok(outcome) => Ok(outcome),
+        Err(crate::GenerationError::Io(error)) => Err(error),
+        Err(error) => Err(io::Error::other(error)),
+    }
+}
+
+fn atomic_replace_with_outcome_validated<Replace, SyncParent, Validate>(
+    target_path: &Path,
+    data: &[u8],
+    replace: Replace,
+    sync_parent: SyncParent,
+    validate_before_replace: Validate,
+) -> crate::Result<DurableAtomicWriteOutcome>
+where
+    Replace: FnOnce(&Path, &Path) -> io::Result<()>,
+    SyncParent: FnOnce() -> io::Result<()>,
+    Validate: FnOnce() -> crate::Result<()>,
 {
     let parent_path = target_path.parent().ok_or_else(|| {
         io::Error::new(
@@ -282,7 +325,7 @@ where
     drop(temporary_file);
     if let Err(error) = write_result {
         let _ = fs::remove_file(&temporary_path);
-        return Err(error);
+        return Err(error.into());
     }
 
     atomic_write_checkpoint(
@@ -291,9 +334,18 @@ where
     )?;
     atomic_write_checkpoint(AtomicWriteStage::BeforeReplace, target_path)?;
 
-    if let Err(error) = replace(&temporary_path, target_path) {
+    // This is the terminal publication fence: every fallible preparation and
+    // test checkpoint has completed, and the replacement below is the next
+    // operation. The validator can therefore reject a raced candidate while
+    // the previous target is still authoritative.
+    if let Err(error) = validate_before_replace() {
         let _ = fs::remove_file(&temporary_path);
         return Err(error);
+    }
+
+    if let Err(error) = replace(&temporary_path, target_path) {
+        let _ = fs::remove_file(&temporary_path);
+        return Err(error.into());
     }
 
     if let Err(error) = atomic_write_checkpoint(

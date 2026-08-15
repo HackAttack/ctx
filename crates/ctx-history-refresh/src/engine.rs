@@ -126,7 +126,9 @@ pub(super) struct CoreRefreshEngineState {
     dirty_routes: DirtySourceRoutes,
     known_route_ids: BTreeSet<SourceRouteIdentity>,
     hermes_routes_requiring_exhaustive_recovery: BTreeSet<SourceRouteIdentity>,
+    routes_requiring_exhaustive_reconciliation: BTreeSet<SourceRouteIdentity>,
     route_event_watermarks: BTreeMap<SourceRouteIdentity, EventWatermark>,
+    route_worksets: BTreeMap<SourceRouteIdentity, SourceBackedRefreshWorkset>,
     route_admissions: BTreeMap<String, Vec<DirtySourceRouteAdmission>>,
     route_admission_watermarks: BTreeMap<String, BTreeMap<SourceRouteIdentity, EventWatermark>>,
     manual_all_continuations: BTreeMap<String, ManualAllContinuation>,
@@ -337,7 +339,9 @@ impl CoreRefreshEngine {
                 dirty_routes: DirtySourceRoutes::default(),
                 known_route_ids: BTreeSet::new(),
                 hermes_routes_requiring_exhaustive_recovery: BTreeSet::new(),
+                routes_requiring_exhaustive_reconciliation: BTreeSet::new(),
                 route_event_watermarks: BTreeMap::new(),
+                route_worksets: BTreeMap::new(),
                 route_admissions: BTreeMap::new(),
                 route_admission_watermarks: BTreeMap::new(),
                 manual_all_continuations: BTreeMap::new(),
@@ -411,7 +415,13 @@ impl CoreRefreshEngine {
             .hermes_routes_requiring_exhaustive_recovery
             .retain(|route| routes.contains(route));
         state
+            .routes_requiring_exhaustive_reconciliation
+            .retain(|route| routes.contains(route));
+        state
             .route_event_watermarks
+            .retain(|route, _| routes.contains(route));
+        state
+            .route_worksets
             .retain(|route, _| routes.contains(route));
         for continuation in state.manual_all_continuations.values_mut() {
             for route in &routes {
@@ -431,7 +441,7 @@ impl CoreRefreshEngine {
     ) {
         let routes = routes.into_iter().collect::<BTreeSet<_>>();
         self.initialize_watch_route_authority(routes.iter().cloned());
-        self.schedule_startup_route_reconciliation(routes, watermark, observed_at_ms);
+        self.schedule_route_reconciliation(routes, watermark, observed_at_ms, false);
     }
 
     pub fn schedule_startup_route_reconciliation(
@@ -440,11 +450,26 @@ impl CoreRefreshEngine {
         watermark: EventWatermark,
         observed_at_ms: u64,
     ) {
+        self.schedule_route_reconciliation(routes, watermark, observed_at_ms, true);
+    }
+
+    fn schedule_route_reconciliation(
+        &self,
+        routes: impl IntoIterator<Item = SourceRouteIdentity>,
+        watermark: EventWatermark,
+        observed_at_ms: u64,
+        requires_exhaustive_reconciliation: bool,
+    ) {
         let mut state = self.lock_state();
         let routes = routes
             .into_iter()
             .filter(|route| state.known_route_ids.contains(route))
             .collect::<Vec<_>>();
+        if requires_exhaustive_reconciliation {
+            state
+                .routes_requiring_exhaustive_reconciliation
+                .extend(routes.iter().cloned());
+        }
         for route in &routes {
             state
                 .route_event_watermarks
@@ -553,6 +578,33 @@ impl CoreRefreshEngine {
         routes: impl IntoIterator<Item = (SourceRouteIdentity, EventWatermark)>,
         observed_at_ms: u64,
     ) {
+        self.record_watch_routes_with_members_mode(routes, BTreeMap::new(), observed_at_ms, false);
+    }
+
+    pub fn record_watch_routes_with_members(
+        &self,
+        routes: impl IntoIterator<Item = (SourceRouteIdentity, EventWatermark)>,
+        members: BTreeMap<SourceRouteIdentity, BTreeSet<PathBuf>>,
+        observed_at_ms: u64,
+    ) {
+        self.record_watch_routes_with_members_mode(routes, members, observed_at_ms, true);
+    }
+
+    pub fn record_watch_routes_requiring_exhaustive_reconciliation(
+        &self,
+        routes: impl IntoIterator<Item = (SourceRouteIdentity, EventWatermark)>,
+        observed_at_ms: u64,
+    ) {
+        self.record_watch_routes_with_members_mode(routes, BTreeMap::new(), observed_at_ms, true);
+    }
+
+    fn record_watch_routes_with_members_mode(
+        &self,
+        routes: impl IntoIterator<Item = (SourceRouteIdentity, EventWatermark)>,
+        mut members: BTreeMap<SourceRouteIdentity, BTreeSet<PathBuf>>,
+        observed_at_ms: u64,
+        missing_member_requires_exhaustive: bool,
+    ) {
         let mut state = self.lock_state();
         for (route, watermark) in routes {
             if state.known_route_ids.contains(&route) {
@@ -561,6 +613,24 @@ impl CoreRefreshEngine {
                         .dirty_routes
                         .record_event(route.clone(), watermark, observed_at_ms);
                 if recorded {
+                    let workset = members
+                        .remove(&route)
+                        .map(SourceBackedRefreshWorkset::members)
+                        .unwrap_or_default();
+                    state
+                        .route_worksets
+                        .entry(route.clone())
+                        .and_modify(|current| current.merge(workset.clone()))
+                        .or_insert(workset);
+                    if missing_member_requires_exhaustive
+                        && state.route_worksets.get(&route).is_some_and(|workset| {
+                            matches!(workset, SourceBackedRefreshWorkset::Exhaustive)
+                        })
+                    {
+                        state
+                            .routes_requiring_exhaustive_reconciliation
+                            .insert(route.clone());
+                    }
                     state
                         .route_event_watermarks
                         .insert(route.clone(), watermark);
@@ -763,6 +833,9 @@ impl CoreRefreshEngine {
                 state
                     .hermes_routes_requiring_exhaustive_recovery
                     .contains(route)
+                    || state
+                        .routes_requiring_exhaustive_reconciliation
+                        .contains(route)
             });
             let refresh_scope = if cold_all && observed_generation.is_none() {
                 // A cold generation has no retained routes to carry. Publish
@@ -924,6 +997,9 @@ impl CoreRefreshEngine {
                     state.dirty_routes.permanent_failure(&admission);
                 } else {
                     state.dirty_routes.retryable_failure(&admission, now_ms);
+                    state
+                        .routes_requiring_exhaustive_reconciliation
+                        .insert(admission.route().clone());
                 }
                 continue;
             }
@@ -933,11 +1009,17 @@ impl CoreRefreshEngine {
                 .copied()
             else {
                 state.dirty_routes.retryable_failure(&admission, now_ms);
+                state
+                    .routes_requiring_exhaustive_reconciliation
+                    .insert(admission.route().clone());
                 continue;
             };
             if let Some(retryable) = source_backed_route_retry_disposition(result) {
                 if retryable {
                     state.dirty_routes.retryable_failure(&admission, now_ms);
+                    state
+                        .routes_requiring_exhaustive_reconciliation
+                        .insert(admission.route().clone());
                 } else {
                     state.dirty_routes.permanent_failure(&admission);
                 }
@@ -981,6 +1063,9 @@ impl CoreRefreshEngine {
                         state
                             .hermes_routes_requiring_exhaustive_recovery
                             .remove(admission.route());
+                        state
+                            .routes_requiring_exhaustive_reconciliation
+                            .remove(admission.route());
                     }
                     covered_route_results.insert(admission.route().clone(), result.clone());
                     if let Some((boundary, observation)) = verified_boundary {
@@ -995,6 +1080,9 @@ impl CoreRefreshEngine {
                 }
             } else {
                 state.dirty_routes.retryable_failure(&admission, now_ms);
+                state
+                    .routes_requiring_exhaustive_reconciliation
+                    .insert(admission.route().clone());
             }
         }
         if attempt

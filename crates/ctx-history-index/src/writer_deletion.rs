@@ -79,7 +79,14 @@ impl GenerationWriter {
                 deleted: false,
             });
         }
-        let base_generation = base.generation_id()?;
+        let base_generation = self
+            .base_publication
+            .as_ref()
+            .ok_or(IndexError::WriterInvariant(
+                "missing-route observation is missing its base publication",
+            ))?
+            .generation_id()
+            .to_owned();
         let observation = SourceMissingObservationPoint::new(base_generation, observed_at_unix_ms)?;
         let state = match base_route.missing_state() {
             Some(previous) => previous.advance(observation)?,

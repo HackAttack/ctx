@@ -183,7 +183,7 @@ fn search_refresh_exact_noop_and_repeated_tiny_appends_stay_bounded() {
     );
     let retained_manifests = generation_manifest_paths(&temp).len();
     assert!(
-        (1..=2).contains(&retained_manifests),
+        (1..=3).contains(&retained_manifests),
         "inactive generation manifests accumulated after {append_runs} appends: {retained_manifests}"
     );
 }

@@ -213,6 +213,22 @@ fn family_checkpoint_writes_compact_utf8_and_reads_legacy_bytes() {
 }
 
 #[test]
+fn oversized_optional_provider_checkpoint_is_omitted() {
+    let temp = crate::test_support_paths::tempdir().unwrap();
+    let root = temp.path().join("sessions");
+    let index = temp.path().join("index");
+    fs::create_dir_all(&root).unwrap();
+    fs::write(root.join("checkpoint.jsonl"), b"{\"message\":\"prefix\"}\n").unwrap();
+
+    let adapter = CheckpointTestAdapter {
+        fixed_checkpoint_bytes: Some(60 * 1024),
+        ..CheckpointTestAdapter::default()
+    };
+    let receipt = capture_parallel_test_generation(&adapter, &root, &index, 1).0;
+    assert_eq!(provider_checkpoints(&receipt), [None]);
+}
+
+#[test]
 fn nonterminal_checkpoint_noops_then_resumes_only_its_uncertified_tail() {
     let temp = crate::test_support_paths::tempdir().unwrap();
     let root = temp.path().join("sessions");
@@ -236,7 +252,16 @@ fn nonterminal_checkpoint_noops_then_resumes_only_its_uncertified_tail() {
         let leaf = inventory.leaves().first().unwrap();
         let mut emit = |_event| Ok(());
         let mut output = JsonlLeafOutput::new(&mut emit);
-        prepare_leaf(&adapter, leaf, None, &lookup, &mut worker, &mut output).unwrap()
+        prepare_leaf(
+            &adapter,
+            leaf,
+            None,
+            &lookup,
+            &mut worker,
+            &mut output,
+            true,
+        )
+        .unwrap()
     };
     let cold_inventory = adapter.discover(&root).unwrap();
     let cold_checkpoint = super::super::leaf::decode_checkpoint(
@@ -270,6 +295,7 @@ fn nonterminal_checkpoint_noops_then_resumes_only_its_uncertified_tail() {
                 &lookup,
                 &mut worker,
                 &mut output,
+                true,
             )
             .unwrap()
         };
@@ -302,6 +328,7 @@ fn nonterminal_checkpoint_noops_then_resumes_only_its_uncertified_tail() {
             &lookup,
             &mut worker,
             &mut output,
+            true,
         )
         .unwrap()
     };

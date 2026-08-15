@@ -4,6 +4,45 @@ use ctx_history_capture::{
     SourceBackedReconciliationDemand, SourceBackedRefreshScope,
 };
 
+/// Maximum exact filesystem members admitted for one route before the route
+/// conservatively falls back to exhaustive reconciliation.
+pub const SOURCE_BACKED_REFRESH_MEMBER_LIMIT: usize = 256;
+
+/// Provider-neutral physical work admitted for one selected route.
+#[derive(Debug, Clone, Eq, PartialEq, Default)]
+pub enum SourceBackedRefreshWorkset {
+    #[default]
+    Exhaustive,
+    Members(BTreeSet<PathBuf>),
+}
+
+impl SourceBackedRefreshWorkset {
+    pub fn members(members: impl IntoIterator<Item = PathBuf>) -> Self {
+        let members = members.into_iter().collect::<BTreeSet<_>>();
+        if members.is_empty() || members.len() > SOURCE_BACKED_REFRESH_MEMBER_LIMIT {
+            Self::Exhaustive
+        } else {
+            Self::Members(members)
+        }
+    }
+
+    pub fn merge(&mut self, other: Self) {
+        match (self, other) {
+            (Self::Exhaustive, _) => {}
+            (current @ Self::Members(_), Self::Exhaustive) => *current = Self::Exhaustive,
+            (current @ Self::Members(_), Self::Members(additional)) => {
+                let Self::Members(members) = current else {
+                    return;
+                };
+                members.extend(additional);
+                if members.len() > SOURCE_BACKED_REFRESH_MEMBER_LIMIT {
+                    *current = Self::Exhaustive;
+                }
+            }
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
 pub enum SourceBackedCurrentSourceProgressStage {
     SourceFamilyCopy,
@@ -342,6 +381,7 @@ pub struct SourceBackedRefreshExecution<'a> {
     pub reconciliation_demand: SourceBackedReconciliationDemand,
     pub explicit_source_catalog: Option<&'a ExplicitSourceCatalogAuthority>,
     pub scope: SourceBackedRefreshScope,
+    pub route_worksets: BTreeMap<SourceRouteIdentity, SourceBackedRefreshWorkset>,
     pub covered_route_ids: BTreeSet<SourceRouteIdentity>,
     pub covered_publication: SourceBackedRefreshCoveredPublication,
     pub discovery_context: &'a DiscoveryContext,
@@ -378,6 +418,7 @@ impl<'a> SourceBackedRefreshExecution<'a> {
             reconciliation_demand,
             explicit_source_catalog,
             scope,
+            route_worksets: BTreeMap::new(),
             covered_route_ids,
             covered_publication,
             discovery_context,
@@ -388,6 +429,14 @@ impl<'a> SourceBackedRefreshExecution<'a> {
 
     pub fn with_reconciliation_demand(mut self, demand: SourceBackedReconciliationDemand) -> Self {
         self.reconciliation_demand = demand;
+        self
+    }
+
+    pub fn with_route_worksets(
+        mut self,
+        route_worksets: BTreeMap<SourceRouteIdentity, SourceBackedRefreshWorkset>,
+    ) -> Self {
+        self.route_worksets = route_worksets;
         self
     }
 

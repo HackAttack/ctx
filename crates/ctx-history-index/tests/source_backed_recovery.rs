@@ -1312,6 +1312,10 @@ fn corrupt_active_store(root: &Path) -> PathBuf {
         .map(|entry| entry.path())
         .find(|path| path.extension() == Some(OsStr::new("store")))
         .expect("active generation did not contain a .store file");
+    let original_permissions = fs::metadata(&path).unwrap().permissions();
+    let mut writable_permissions = original_permissions.clone();
+    writable_permissions.set_mode(writable_permissions.mode() | 0o200);
+    fs::set_permissions(&path, writable_permissions).unwrap();
     let mut file = OpenOptions::new()
         .read(true)
         .write(true)
@@ -1327,6 +1331,8 @@ fn corrupt_active_store(root: &Path) -> PathBuf {
     file.seek(SeekFrom::Start(offset)).unwrap();
     file.write_all(&byte).unwrap();
     file.sync_all().unwrap();
+    drop(file);
+    fs::set_permissions(&path, original_permissions).unwrap();
     path.file_name().unwrap().into()
 }
 

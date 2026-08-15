@@ -266,6 +266,27 @@ impl SourceBackedRefreshExecutor {
         scope: SourceBackedRefreshScope,
         reconciliation_demand: SourceBackedReconciliationDemand,
         report_progress: impl FnMut(SourceBackedDetailedRefreshProgress) -> SourceBackedRouteResult<()>,
+        metadata_factory: impl for<'a> FnMut(
+            SourceBackedPublicationMetadataContext<'a>,
+        ) -> ctx_history_index::Result<Vec<u8>>,
+    ) -> SourceBackedCoordinatorResult<SourceBackedRefreshReceipt> {
+        self.refresh_scope_with_detailed_progress_publication_metadata_reconciliation_and_worksets(
+            index_root,
+            scope,
+            reconciliation_demand,
+            BTreeMap::new(),
+            report_progress,
+            metadata_factory,
+        )
+    }
+
+    pub fn refresh_scope_with_detailed_progress_publication_metadata_reconciliation_and_worksets(
+        &self,
+        index_root: impl AsRef<Path>,
+        scope: SourceBackedRefreshScope,
+        reconciliation_demand: SourceBackedReconciliationDemand,
+        route_worksets: BTreeMap<SourceRouteIdentity, BTreeSet<PathBuf>>,
+        report_progress: impl FnMut(SourceBackedDetailedRefreshProgress) -> SourceBackedRouteResult<()>,
         mut metadata_factory: impl for<'a> FnMut(
             SourceBackedPublicationMetadataContext<'a>,
         ) -> ctx_history_index::Result<Vec<u8>>,
@@ -277,7 +298,8 @@ impl SourceBackedRefreshExecutor {
             SourceBackedRefreshExecutionBudget::new(self.discovery_duration, self.work_budget),
             (
                 SourceBackedRefreshPlan::isolate(scope)
-                    .with_reconciliation_demand(reconciliation_demand),
+                    .with_reconciliation_demand(reconciliation_demand)
+                    .with_route_worksets(route_worksets),
                 &self.base_route_controls,
             ),
             report_progress,
@@ -294,6 +316,28 @@ pub fn refresh_source_backed_generation(
     writer_options: WriterOptions,
 ) -> SourceBackedCoordinatorResult<SourceBackedRefreshReceipt> {
     refresh_source_backed_generation_with_progress(index_root, registry, writer_options, |_| Ok(()))
+}
+
+#[cfg(test)]
+pub(crate) fn refresh_source_backed_generation_incremental_for_test(
+    index_root: impl AsRef<Path>,
+    registry: &SourceBackedProviderRegistry,
+    writer_options: WriterOptions,
+) -> SourceBackedCoordinatorResult<SourceBackedRefreshReceipt> {
+    let work_budget = source_backed_refresh_work_budget(writer_options.indexer_threads);
+    refresh_source_backed_generation_with_detailed_progress_and_discovery_timing(
+        index_root,
+        registry,
+        writer_options,
+        SourceBackedRefreshExecutionBudget::new(Duration::ZERO, work_budget),
+        (
+            SourceBackedRefreshPlan::isolate(SourceBackedRefreshScope::All)
+                .with_reconciliation_demand(SourceBackedReconciliationDemand::Incremental),
+            &BTreeMap::new(),
+        ),
+        |_| Ok(()),
+        None,
+    )
 }
 
 #[cfg(test)]
@@ -590,7 +634,7 @@ fn refresh_source_backed_generation_with_detailed_progress_and_discovery_timing(
                 .collect::<Vec<_>>();
             if !selected_participants.is_empty() {
                 coordinator
-                    .prepare(&selected_participants)
+                    .select(&selected_participants)
                     .map_err(|error| SourceBackedCoordinatorError::RouteScan {
                         provider: CaptureProvider::Codex,
                         source: SourceBackedRouteError::new(
@@ -598,6 +642,28 @@ fn refresh_source_backed_generation_with_detailed_progress_and_discovery_timing(
                             error.to_string(),
                         ),
                     })?;
+                let needs_exhaustive_catalog = registry.routes.iter().any(|route| {
+                    route.codex_generation_participant.is_some()
+                        && route
+                            .metadata
+                            .route_identity
+                            .as_ref()
+                            .is_some_and(|identity| {
+                                selected_route_ids.contains(identity)
+                                    && !plan.route_worksets.contains_key(identity)
+                            })
+                });
+                if needs_exhaustive_catalog {
+                    coordinator.prepare_selected().map_err(|error| {
+                        SourceBackedCoordinatorError::RouteScan {
+                            provider: CaptureProvider::Codex,
+                            source: SourceBackedRouteError::new(
+                                SourceBackedRouteErrorKind::InvalidSource,
+                                error.to_string(),
+                            ),
+                        }
+                    })?;
+                }
             }
         }
         let attempt_selected = selected_route_ids.clone();
@@ -748,7 +814,7 @@ fn refresh_source_backed_generation_with_detailed_progress_and_discovery_timing(
                     route_index,
                     route_identity: route_identity.clone(),
                     base_route_control: base_route_controls.get(route_identity).cloned(),
-                    resources: plan.route_resources(work_budget),
+                    resources: plan.route_resources_for(route_identity, work_budget),
                     logical_source_failures: &mut logical_source_failures,
                     record_rejections: &mut record_rejections,
                     record_progress: Some(&mut report_record_progress),
@@ -1121,7 +1187,7 @@ fn refresh_source_backed_generation_with_detailed_progress_and_discovery_timing(
                         (
                             Some(SourceBackedRouteRevalidation::Deletion(expected)),
                             CaptureRevalidationTarget::Deletion(actual)
-                        ) if *expected == *actual
+                        ) if expected.as_ref() == actual
                     )
                 });
             if !valid {

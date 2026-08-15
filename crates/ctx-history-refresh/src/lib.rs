@@ -9,13 +9,13 @@ use std::{
     cell::{Cell, RefCell},
     collections::{BTreeMap, BTreeSet, VecDeque},
     fmt,
-    path::Path,
+    path::{Path, PathBuf},
     sync::{Arc, Mutex},
     time::{Duration as StdDuration, Instant as StdInstant},
 };
 
 #[cfg(test)]
-use std::{collections::HashMap, fs, path::PathBuf};
+use std::{collections::HashMap, fs};
 
 use anyhow::{anyhow, bail, Context, Result};
 #[cfg(test)]
@@ -76,8 +76,9 @@ pub use ctx_history_refresh_execution::{
     SourceBackedRefreshExecution, SourceBackedRefreshPublication, SourceBackedRefreshReceipt,
     SourceBackedRefreshRecordRejection, SourceBackedRefreshRouteOutcome,
     SourceBackedRefreshRouteResult, SourceBackedRefreshSourceFailure, SourceBackedRefreshTimings,
-    SourceBackedZeroSourceAuthority, SourceBackedZeroSourceAuthorityKind,
-    ZeroSourcePublicationBlocked, SOURCE_REFRESH_PUBLICATION_METADATA_VERSION,
+    SourceBackedRefreshWorkset, SourceBackedZeroSourceAuthority,
+    SourceBackedZeroSourceAuthorityKind, ZeroSourcePublicationBlocked,
+    SOURCE_REFRESH_PUBLICATION_METADATA_VERSION,
 };
 pub use engine::{
     CoreRefreshEngine as RefreshEngine, PinnedCorePublication, RefreshRuntime,

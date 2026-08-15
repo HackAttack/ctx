@@ -1,4 +1,9 @@
-use std::ops::Deref;
+use std::{
+    collections::BTreeSet,
+    ops::Deref,
+    path::{Path, PathBuf},
+    sync::Arc,
+};
 
 use crate::{
     CoreRouteByteLease, CoreRouteResourceError, CoreRouteResourceKind, CoreRouteResources,
@@ -18,6 +23,7 @@ pub type SourceBackedRouteByteReservation = CoreRouteByteLease;
 pub struct SourceBackedRouteResources {
     core: CoreRouteResources,
     reconciliation_demand: SourceBackedReconciliationDemand,
+    member_workset: Option<Arc<BTreeSet<PathBuf>>>,
 }
 
 impl SourceBackedRouteResources {
@@ -25,6 +31,7 @@ impl SourceBackedRouteResources {
         Self {
             core: CoreRouteResources::production(leaf_worker_budget),
             reconciliation_demand: SourceBackedReconciliationDemand::Exhaustive,
+            member_workset: None,
         }
     }
 
@@ -41,6 +48,7 @@ impl SourceBackedRouteResources {
                 maximum_physical_scratch_bytes,
             ),
             reconciliation_demand: SourceBackedReconciliationDemand::Exhaustive,
+            member_workset: None,
         }
     }
 
@@ -51,6 +59,20 @@ impl SourceBackedRouteResources {
 
     pub const fn reconciliation_demand(&self) -> SourceBackedReconciliationDemand {
         self.reconciliation_demand
+    }
+
+    pub fn with_member_workset(mut self, members: Option<BTreeSet<PathBuf>>) -> Self {
+        self.member_workset = members.map(Arc::new);
+        self
+    }
+
+    pub fn member_workset(&self) -> Option<&BTreeSet<PathBuf>> {
+        self.member_workset.as_deref()
+    }
+
+    pub fn member_selected(&self, path: &Path) -> bool {
+        self.member_workset()
+            .is_some_and(|members| members.contains(path))
     }
 
     pub fn leaf_worker_budget(&self) -> usize {

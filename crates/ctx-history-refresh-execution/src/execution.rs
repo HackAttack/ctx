@@ -21,6 +21,14 @@ pub(super) fn execute_capture_owned_refresh(
 ) -> Result<SourceBackedRefreshPublication> {
     let discovery_context = execution.discovery_context;
     let reconciliation_demand = execution.reconciliation_demand;
+    let route_worksets = execution
+        .route_worksets
+        .iter()
+        .filter_map(|(route, workset)| match workset {
+            SourceBackedRefreshWorkset::Members(paths) => Some((route.clone(), paths.clone())),
+            SourceBackedRefreshWorkset::Exhaustive => None,
+        })
+        .collect::<BTreeMap<_, _>>();
     execute_capture_owned_refresh_with(
         execution,
         discovery_context,
@@ -44,6 +52,7 @@ pub(super) fn execute_capture_owned_refresh(
                 request_id,
                 operation,
                 reconciliation_demand,
+                &route_worksets,
                 data_root,
                 index_root,
                 explicit_source_catalog,
@@ -176,6 +185,47 @@ pub fn refresh_all_provider_sources_route_local(
         request_id,
         operation,
         SourceBackedReconciliationDemand::Exhaustive,
+        &BTreeMap::new(),
+        data_root,
+        index_root,
+        explicit_source_catalog,
+        scope,
+        covered_route_ids,
+        covered_publication,
+        published_state,
+        report_progress,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+#[doc(hidden)]
+pub fn refresh_all_provider_sources_route_local_with_worksets(
+    discovery: &DiscoveryContext,
+    report: DiscoveryReport,
+    discovery_duration: StdDuration,
+    request_id: &str,
+    operation: RefreshOperation,
+    reconciliation_demand: SourceBackedReconciliationDemand,
+    route_worksets: &BTreeMap<SourceRouteIdentity, BTreeSet<PathBuf>>,
+    data_root: &Path,
+    index_root: &Path,
+    explicit_source_catalog: Option<&ExplicitSourceCatalogAuthority>,
+    scope: SourceBackedRefreshScope,
+    covered_route_ids: &BTreeSet<SourceRouteIdentity>,
+    covered_publication: &SourceBackedRefreshCoveredPublication,
+    published_state: &dyn PublishedSourceBackedStatePort,
+    report_progress: &mut dyn FnMut(
+        CaptureSourceBackedDetailedRefreshProgress,
+    ) -> SourceBackedRouteResult<()>,
+) -> Result<SourceBackedRefreshPublication> {
+    refresh_all_provider_sources_route_local_with_reconciliation(
+        discovery,
+        report,
+        discovery_duration,
+        request_id,
+        operation,
+        reconciliation_demand,
+        route_worksets,
         data_root,
         index_root,
         explicit_source_catalog,
@@ -195,6 +245,7 @@ fn refresh_all_provider_sources_route_local_with_reconciliation(
     request_id: &str,
     operation: RefreshOperation,
     reconciliation_demand: SourceBackedReconciliationDemand,
+    route_worksets: &BTreeMap<SourceRouteIdentity, BTreeSet<PathBuf>>,
     data_root: &Path,
     index_root: &Path,
     explicit_source_catalog: Option<&ExplicitSourceCatalogAuthority>,
@@ -323,10 +374,11 @@ fn refresh_all_provider_sources_route_local_with_reconciliation(
     };
     let mut terminal_coverage_error = None;
     let refresh_result = executor
-        .refresh_scope_with_detailed_progress_publication_metadata_and_reconciliation(
+        .refresh_scope_with_detailed_progress_publication_metadata_reconciliation_and_worksets(
             index_root,
             physical_scope,
             reconciliation_demand,
+            route_worksets.clone(),
             &mut report_attempt_progress,
             |context| {
                 run_after_capture_scan_before_metadata_hook();

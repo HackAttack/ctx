@@ -14,7 +14,7 @@ pub(super) fn capture_staged_source_route_revalidation_receipts(
                 ),
                 CaptureRevalidationTarget::Deletion(deletion) => (
                     deletion.source(),
-                    SourceBackedRouteRevalidation::Deletion(deletion.clone()),
+                    SourceBackedRouteRevalidation::Deletion(Box::new(deletion.clone())),
                 ),
             };
             let owner = owners

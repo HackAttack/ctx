@@ -78,6 +78,35 @@ impl SourceBackedWatchCatalog {
             .collect()
     }
 
+    /// Returns one exact ordinary-file member when a native event identifies
+    /// it without weakening the route's declared watch authority. Directory,
+    /// missing, symlink, database-family, and otherwise ambiguous events must
+    /// use exhaustive route reconciliation.
+    pub fn exact_member_for_event(
+        &self,
+        route: &SourceRouteIdentity,
+        event: &Path,
+    ) -> Option<PathBuf> {
+        let targets = self.routes.get(route)?;
+        if targets.kind != Some(SourceBackedWatchTargetKind::Path)
+            || targets.targets.len() != 1
+            || !targets.targets.contains(&targets.primary)
+        {
+            return None;
+        }
+        let event_metadata = fs::symlink_metadata(event).ok()?;
+        if !event_metadata.file_type().is_file() {
+            return None;
+        }
+        if event == targets.primary
+            || (targets.primary.is_dir() && event.starts_with(&targets.primary))
+        {
+            Some(event.to_path_buf())
+        } else {
+            None
+        }
+    }
+
     /// Returns the current content-free certification token for one exact
     /// route. Routes without a bounded provider-neutral adapter deliberately
     /// return no token and therefore cannot participate in the warm skip.

@@ -382,7 +382,7 @@ impl VerifiedIndex {
         }
         Ok(Self {
             searcher,
-            manifest: Arc::new(manifest),
+            manifest,
             generation_id,
             publication_metadata,
             semantic_eligibility_postings: OnceLock::new(),

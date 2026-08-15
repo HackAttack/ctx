@@ -24,16 +24,17 @@ pub use ctx_history_jsonl::{
     sorted_pending_exchange_entries, take_pending_exchange, JsonlAppendOccurrenceState,
     JsonlCheckpoint, JsonlCheckpointedTerminalAuthority, JsonlFamilyAdapter, JsonlFamilyAppendMode,
     JsonlFamilyBaseScope, JsonlFamilyExecutionPosition, JsonlFamilyInventoryMode,
-    JsonlFamilyMembershipObservation, JsonlFamilyOptimizedLeafOutcome, JsonlFamilyProjectionMode,
-    JsonlFamilyProjector, JsonlFamilyPublication, JsonlFamilyRejectedLeaf,
-    JsonlFamilyRootMissingMode, JsonlFamilySemanticExecutor, JsonlFamilySemanticPage,
-    JsonlFamilySemanticPreflight, JsonlFamilySemanticSummary, JsonlFamilyTerminalProof,
-    JsonlFileObservation, JsonlMcpObservedEncodedBytes, JsonlOrderedAppendOccurrenceState,
-    JsonlOversizedRecordPolicy, JsonlPage, JsonlPendingExchangeLookup,
-    JsonlPendingExchangeRemember, JsonlPendingExchangeState, JsonlPhysicalDigest,
-    JsonlPhysicalRecord, JsonlPhysicalStreamPosition, JsonlProbe, JsonlRecordEvidence,
-    JsonlRecordFraming, JsonlRecordRef, JsonlScanOutcome, JsonlSemanticPreflightMode,
-    JsonlSourceChange, JsonlSourceIdentity, JsonlTerminalAuthority, JsonlTerminalObservationRegion,
+    JsonlFamilyMembershipObservation, JsonlFamilyOpenedMember, JsonlFamilyOptimizedLeafOutcome,
+    JsonlFamilyProjectionMode, JsonlFamilyProjector, JsonlFamilyPublication,
+    JsonlFamilyRejectedLeaf, JsonlFamilyRootMissingMode, JsonlFamilySemanticExecutor,
+    JsonlFamilySemanticPage, JsonlFamilySemanticPreflight, JsonlFamilySemanticSummary,
+    JsonlFamilyTerminalProof, JsonlFileObservation, JsonlMcpObservedEncodedBytes,
+    JsonlOrderedAppendOccurrenceState, JsonlOversizedRecordPolicy, JsonlPage,
+    JsonlPendingExchangeLookup, JsonlPendingExchangeRemember, JsonlPendingExchangeState,
+    JsonlPhysicalDigest, JsonlPhysicalRecord, JsonlPhysicalStreamPosition, JsonlProbe,
+    JsonlRecordEvidence, JsonlRecordFraming, JsonlRecordRef, JsonlResumableSha256,
+    JsonlScanOutcome, JsonlSemanticPreflightMode, JsonlSourceChange, JsonlSourceIdentity,
+    JsonlTerminalAuthority, JsonlTerminalObservationRegion,
 };
 #[cfg(feature = "test-support")]
 pub use ctx_history_jsonl::{
@@ -47,6 +48,8 @@ pub use ctx_history_jsonl::{
 pub type ProviderJsonlReader = ctx_history_jsonl::JsonlReader<CaptureError>;
 pub type ProviderJsonlPhysicalStream = ctx_history_jsonl::JsonlPhysicalStream<CaptureError>;
 pub type ProviderJsonlLeaf = ctx_history_jsonl::JsonlFamilyLeaf<CaptureError>;
+pub type ProviderJsonlOpenedMember<'a> =
+    ctx_history_jsonl::JsonlFamilyOpenedMember<'a, CaptureError>;
 pub type ProviderJsonlInventory = ctx_history_jsonl::JsonlFamilyInventory<CaptureError>;
 pub type ProviderJsonlMembershipObservation =
     ctx_history_jsonl::JsonlFamilyMembershipObservation<CaptureError>;

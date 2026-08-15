@@ -271,6 +271,88 @@ fn verified_publication_atomically_installs_pinned_core_receipt() {
 }
 
 #[test]
+fn exact_watcher_member_reaches_physical_execution() {
+    let temp = tempfile::tempdir().unwrap();
+    let data_root = temp.path().join("data");
+    let route = route_identity(0xb1);
+    let member = temp.path().join("provider/session.jsonl");
+    let observed = Arc::new(Mutex::new(None));
+    let executor_observed = Arc::clone(&observed);
+    let executor = Arc::new(move |execution: SourceBackedRefreshExecution<'_>| {
+        *executor_observed
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) =
+            Some(execution.route_worksets.clone());
+        publish_pin_fixture(&execution, false)
+    });
+    let coordinator = CoreRefreshEngine::with_executor(executor);
+    coordinator.initialize_watch_route_authority([route.clone()]);
+    coordinator.record_watch_routes_with_members(
+        [(route.clone(), EventWatermark::new(8, 1))],
+        BTreeMap::from([(route.clone(), BTreeSet::from([member.clone()]))]),
+        ledger_now_ms().saturating_sub(1_000),
+    );
+    assert!(coordinator
+        .enqueue_next_dirty_route(&data_root, ledger_now_ms())
+        .unwrap());
+
+    let run = coordinator
+        .run_next(&data_root)
+        .expect("exact watcher refresh");
+    assert!(!run.failed, "{:#}", run.job);
+    assert_eq!(
+        *observed
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner),
+        Some(BTreeMap::from([(
+            route,
+            SourceBackedRefreshWorkset::Members(BTreeSet::from([member])),
+        )]))
+    );
+}
+
+#[test]
+fn watcher_event_without_exact_member_requires_exhaustive_execution() {
+    let temp = tempfile::tempdir().unwrap();
+    let data_root = temp.path().join("data");
+    let route = route_identity(0xb2);
+    let observed = Arc::new(Mutex::new(None));
+    let executor_observed = Arc::clone(&observed);
+    let executor = Arc::new(move |execution: SourceBackedRefreshExecution<'_>| {
+        *executor_observed
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some((
+            execution.reconciliation_demand,
+            execution.route_worksets.clone(),
+        ));
+        publish_pin_fixture(&execution, false)
+    });
+    let coordinator = CoreRefreshEngine::with_executor(executor);
+    coordinator.initialize_watch_route_authority([route.clone()]);
+    coordinator.record_watch_routes_requiring_exhaustive_reconciliation(
+        [(route, EventWatermark::new(9, 1))],
+        ledger_now_ms().saturating_sub(1_000),
+    );
+    assert!(coordinator
+        .enqueue_next_dirty_route(&data_root, ledger_now_ms())
+        .unwrap());
+
+    let run = coordinator
+        .run_next(&data_root)
+        .expect("exhaustive watcher refresh");
+    assert!(!run.failed, "{:#}", run.job);
+    assert_eq!(
+        *observed
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner),
+        Some((
+            SourceBackedReconciliationDemand::Exhaustive,
+            BTreeMap::new()
+        ))
+    );
+}
+
+#[test]
 fn terminal_generation_can_be_pinned_after_one_successor_advances_active() {
     let temp = tempfile::tempdir().unwrap();
     let data_root = temp.path().join("data");
@@ -1098,7 +1180,18 @@ fn checksum_mismatched_published_generation_fails_closed_without_source_rebuild(
     let store_path = first_store_artifact(&index_root).expect("active store artifact");
     let mut bytes = std::fs::read(&store_path).unwrap();
     bytes[0] ^= 0x5a;
+    let sealed_permissions = std::fs::metadata(&store_path).unwrap().permissions();
+    let mut writable_permissions = sealed_permissions.clone();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        writable_permissions.set_mode(writable_permissions.mode() | 0o200);
+    }
+    #[cfg(not(unix))]
+    writable_permissions.set_readonly(false);
+    std::fs::set_permissions(&store_path, writable_permissions).unwrap();
     std::fs::write(&store_path, bytes).unwrap();
+    std::fs::set_permissions(&store_path, sealed_permissions).unwrap();
 
     let rebuild_calls = Arc::new(AtomicUsize::new(0));
     let observed_calls = Arc::clone(&rebuild_calls);

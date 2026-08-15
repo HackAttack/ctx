@@ -13,7 +13,7 @@ use super::super::{
 };
 use super::{
     binding_digest, contract_error, FamilyCheckpoint, JsonlFamilyAdapter, JsonlFamilyAppendMode,
-    JsonlFamilyLeaf, FAMILY_POLICY_REVISION,
+    JsonlFamilyAppendTrustContract, JsonlFamilyLeaf, FAMILY_POLICY_REVISION,
 };
 
 /// Task-local physical evidence for one optimized or generic JSONL leaf.
@@ -32,6 +32,9 @@ pub enum JsonlFamilyTerminalPrefixHash {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum JsonlFamilyTerminalPhysicalBinding {
+    AppendOnlySameObjectV1 {
+        certified_prefix_end: u64,
+    },
     FrozenPrefix {
         prefix_length: u64,
         prefix_sha256: [u8; 32],
@@ -70,6 +73,19 @@ impl JsonlFamilyTerminalLeafBinding {
         certificate: &CertifiedSource,
         physical: JsonlFamilyTerminalPhysicalBinding,
     ) -> JsonlResult<Self, JsonlRuntimeError<R>> {
+        if matches!(
+            &physical,
+            JsonlFamilyTerminalPhysicalBinding::AppendOnlySameObjectV1 { .. }
+        ) && (adapter.append_trust_contract()
+            != JsonlFamilyAppendTrustContract::AppendOnlySameObjectV1
+            || !adapter.allows_direct_append_for_leaf(leaf)
+            || leaf.whole_record
+            || !adapter.append_mode().certified_suffix())
+        {
+            return Err(JsonlRuntimeError::<R>::invalid_payload(
+                "JSONL append-only terminal proof is not authorized for this leaf".to_owned(),
+            ));
+        }
         certificate
             .validate_contract()
             .map_err(contract_error::<JsonlRuntimeError<R>>)?;
@@ -149,6 +165,14 @@ fn terminal_certificate_binding<E: JsonlFamilyError>(
 
 #[derive(Debug)]
 pub enum JsonlFamilyTerminalProof<E: JsonlFamilyError> {
+    AppendOnlySameObjectV1 {
+        binding: Option<JsonlFamilyTerminalLeafBinding>,
+        source_path: PathBuf,
+        authority_path: PathBuf,
+        authority: Arc<ProviderSourceRoot<E>>,
+        admitted: JsonlFileObservation,
+        certified_prefix_end: u64,
+    },
     FrozenPrefix {
         binding: Option<JsonlFamilyTerminalLeafBinding>,
         source_path: PathBuf,
@@ -171,6 +195,21 @@ pub enum JsonlFamilyTerminalProof<E: JsonlFamilyError> {
 impl<E: JsonlFamilyError> Clone for JsonlFamilyTerminalProof<E> {
     fn clone(&self) -> Self {
         match self {
+            Self::AppendOnlySameObjectV1 {
+                binding,
+                source_path,
+                authority_path,
+                authority,
+                admitted,
+                certified_prefix_end,
+            } => Self::AppendOnlySameObjectV1 {
+                binding: binding.clone(),
+                source_path: source_path.clone(),
+                authority_path: authority_path.clone(),
+                authority: Arc::clone(authority),
+                admitted: admitted.clone(),
+                certified_prefix_end: *certified_prefix_end,
+            },
             Self::FrozenPrefix {
                 binding,
                 source_path,
@@ -208,6 +247,54 @@ impl<E: JsonlFamilyError> Clone for JsonlFamilyTerminalProof<E> {
 }
 
 impl<E: JsonlFamilyError> JsonlFamilyTerminalProof<E> {
+    /// Certifies a parsed prefix using the provider's explicit immutable-prefix
+    /// contract. Same-object growth is accepted without hashing retained bytes;
+    /// bytes beyond `certified_prefix_end` remain dirty for a successor refresh.
+    pub(super) fn append_only_same_object_v1<R: JsonlFamilyRuntime<Error = E>>(
+        adapter: &dyn JsonlFamilyAdapter<Runtime = R>,
+        leaf: &JsonlFamilyLeaf<E>,
+        certificate: &CertifiedSource,
+        certified_prefix_end: u64,
+    ) -> JsonlResult<Self, E> {
+        let proof = Self::bind_admitted_append_only_same_object_v1(
+            adapter,
+            leaf,
+            certificate,
+            certified_prefix_end,
+        )?;
+        let opened = leaf.authority.open_file(&leaf.authority_path)?;
+        let current = observe_opened_file_allow_append(&leaf.source_path, &opened)?;
+        if !leaf.observation.admits_frozen_prefix_in(&current) {
+            return Err(E::source_changed());
+        }
+        Ok(proof)
+    }
+
+    fn bind_admitted_append_only_same_object_v1<R: JsonlFamilyRuntime<Error = E>>(
+        adapter: &dyn JsonlFamilyAdapter<Runtime = R>,
+        leaf: &JsonlFamilyLeaf<E>,
+        certificate: &CertifiedSource,
+        certified_prefix_end: u64,
+    ) -> JsonlResult<Self, E> {
+        if certified_prefix_end > leaf.observation.length()
+            || certified_prefix_end != certificate.counts().certified_bytes
+        {
+            return Err(E::source_changed());
+        }
+        let physical = JsonlFamilyTerminalPhysicalBinding::AppendOnlySameObjectV1 {
+            certified_prefix_end,
+        };
+        let binding = JsonlFamilyTerminalLeafBinding::new(adapter, leaf, certificate, physical)?;
+        Ok(Self::AppendOnlySameObjectV1 {
+            binding: Some(binding),
+            source_path: leaf.source_path.clone(),
+            authority_path: leaf.authority_path.clone(),
+            authority: Arc::clone(&leaf.authority),
+            admitted: leaf.observation.clone(),
+            certified_prefix_end,
+        })
+    }
+
     pub fn frozen_prefix<R: JsonlFamilyRuntime<Error = E>>(
         adapter: &dyn JsonlFamilyAdapter<Runtime = R>,
         leaf: &JsonlFamilyLeaf<E>,
@@ -379,6 +466,16 @@ impl<E: JsonlFamilyError> JsonlFamilyTerminalProof<E> {
         if leaf.whole_record || !adapter.append_mode().certified_suffix() {
             return Self::bind_admitted_exact_file(adapter, leaf, certificate);
         }
+        if adapter.append_trust_contract() == JsonlFamilyAppendTrustContract::AppendOnlySameObjectV1
+            && adapter.allows_direct_append_for_leaf(leaf)
+        {
+            return Self::bind_admitted_append_only_same_object_v1(
+                adapter,
+                leaf,
+                certificate,
+                checkpoint.physical.complete_prefix_end(),
+            );
+        }
         let (prefix_length, prefix_sha256, hash_kind) =
             if let Some(admitted_eof_sha256) = checkpoint.admitted_eof_sha256 {
                 (
@@ -431,6 +528,12 @@ impl<E: JsonlFamilyError> JsonlFamilyTerminalProof<E> {
 
     fn physical_binding(&self) -> JsonlFamilyTerminalPhysicalBinding {
         match self {
+            Self::AppendOnlySameObjectV1 {
+                certified_prefix_end,
+                ..
+            } => JsonlFamilyTerminalPhysicalBinding::AppendOnlySameObjectV1 {
+                certified_prefix_end: *certified_prefix_end,
+            },
             Self::FrozenPrefix {
                 prefix_length,
                 prefix_sha256,
@@ -447,9 +550,9 @@ impl<E: JsonlFamilyError> JsonlFamilyTerminalProof<E> {
 
     fn binding(&self) -> Option<&JsonlFamilyTerminalLeafBinding> {
         match self {
-            Self::FrozenPrefix { binding, .. } | Self::ExactFile { binding, .. } => {
-                binding.as_ref()
-            }
+            Self::AppendOnlySameObjectV1 { binding, .. }
+            | Self::FrozenPrefix { binding, .. }
+            | Self::ExactFile { binding, .. } => binding.as_ref(),
         }
     }
 
@@ -499,7 +602,14 @@ impl<E: JsonlFamilyError> JsonlFamilyTerminalProof<E> {
 
     fn route_matches_binding(&self, binding: &JsonlFamilyTerminalLeafBinding) -> bool {
         match self {
-            Self::FrozenPrefix {
+            Self::AppendOnlySameObjectV1 {
+                source_path,
+                authority_path,
+                authority,
+                admitted,
+                ..
+            }
+            | Self::FrozenPrefix {
                 source_path,
                 authority_path,
                 authority,
@@ -530,6 +640,23 @@ impl<E: JsonlFamilyError> JsonlFamilyTerminalProof<E> {
 
     fn revalidate_physical(&self) -> JsonlResult<(), E> {
         match self {
+            Self::AppendOnlySameObjectV1 {
+                binding: _,
+                source_path,
+                authority_path,
+                authority,
+                admitted,
+                certified_prefix_end,
+            } => {
+                if *certified_prefix_end > admitted.length() {
+                    return Err(E::source_changed());
+                }
+                let opened = authority.open_file(authority_path)?;
+                let current = observe_opened_file_allow_append(source_path, &opened)?;
+                if !admitted.admits_frozen_prefix_in(&current) {
+                    return Err(E::source_changed());
+                }
+            }
             Self::FrozenPrefix {
                 binding: _,
                 source_path,

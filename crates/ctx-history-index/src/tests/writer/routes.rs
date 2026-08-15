@@ -617,7 +617,7 @@ fn incremental_route_delta_exposes_full_manifest_materialization() {
     let published = incremental.commit(|_| true).unwrap();
     assert_eq!(
         crate::writer_publication::manifest_materialization_visits(),
-        (3, 3),
+        (3, 3, 0),
         "the current self-contained manifest format still materializes every base certificate and partial-route member once"
     );
     assert_eq!(

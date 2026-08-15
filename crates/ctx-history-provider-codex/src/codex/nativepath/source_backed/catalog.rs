@@ -1,5 +1,7 @@
 use super::*;
-use crate::provider::source_backed::family::jsonl::{observe_opened_file, JsonlFileObservation};
+use crate::provider::source_backed::family::jsonl::{
+    observe_opened_file, JsonlFamilyOpenedMember, JsonlFileObservation,
+};
 
 #[cfg(any(test, feature = "test-support"))]
 std::thread_local! {
@@ -172,6 +174,52 @@ pub(crate) fn discover_codex_deferred_session_tree_inventory_v0(
     session_roots: &[PathBuf],
 ) -> CodexSourceBackedResultV0<Vec<(CodexCatalogSource, SourceKey, String)>> {
     discover_codex_session_tree_metadata_inventory_v0(session_roots)
+}
+
+/// Binds one already-authorized member without walking the surrounding Codex
+/// catalog. Shared JSONL retains physical authority and owns later scanning
+/// and publication proof.
+pub(super) fn bind_codex_partial_member_v0(
+    member: &JsonlFamilyOpenedMember<'_>,
+) -> CodexSourceBackedResultV0<(CodexCatalogSource, SourceKey, String)> {
+    if member
+        .source_path()
+        .extension()
+        .and_then(|value| value.to_str())
+        != Some("jsonl")
+    {
+        return Err(CodexSourceBackedErrorV0::IncompleteCatalog {
+            rejected: 1,
+            failed: 0,
+        });
+    }
+    ctx_history_source_io::provider_path_identity(member.source_path())
+        .map_err(CaptureError::from)?;
+    let observation = opened_codex_file_observation(member.source_path(), member.opened().file())?;
+    let native_session_id = codex_canonical_native_session_id_path_hint(member.source_path())
+        .or(crate::provider::codex::catalog::probe_codex_native_session_id(member.opened())?)
+        .or_else(|| codex_native_session_id_path_hint(member.source_path()))
+        .ok_or_else(|| CodexSourceBackedErrorV0::MissingNativeSessionId {
+            path: member.source_path().to_path_buf(),
+        })?;
+    let after = opened_codex_file_observation(member.source_path(), member.opened().file())?;
+    if !observation.admits_append_only_growth(&after) {
+        return Err(CodexSourceBackedErrorV0::Capture(
+            CaptureError::SourceChangedDuringCapture,
+        ));
+    }
+    member.opened().revalidate_same_object()?;
+    let source = CodexCatalogSource {
+        source_path: member.source_path().to_path_buf(),
+        catalog_observation: observation,
+        carried_jsonl_observation: Some(member.observation().clone()),
+        catalog_prefix_sha256: None,
+        catalog_native_session_id: Some(native_session_id.clone()),
+        authority_root: Some(member.authority().as_ref().clone()),
+        authority_relative_path: Some(member.authority_path().to_path_buf()),
+    };
+    let source_key = codex_source_key(&native_session_id)?;
+    Ok((source, source_key, native_session_id))
 }
 
 #[derive(Debug)]
