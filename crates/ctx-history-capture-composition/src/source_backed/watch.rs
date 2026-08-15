@@ -536,24 +536,34 @@ mod tests {
         SourceBackedRouteDriver::new(|_| Ok(()), |_| false, |_| true)
     }
 
-    #[test]
-    fn sqlite_route_authorizes_only_its_exact_database_family() {
-        let database = PathBuf::from("/provider/state.db");
-        let route = SourceBackedRoute::automatic(
-            source(
-                CaptureProvider::OpenCode,
-                database.clone(),
-                "opencode_sqlite",
-            ),
+    fn automatic_route(
+        provider: CaptureProvider,
+        path: PathBuf,
+        source_format: &'static str,
+    ) -> SourceBackedRoute {
+        SourceBackedRoute::automatic(
+            source(provider, path, source_format),
             SourceBackedSelectorAuthority::DiscoveredWinner,
             driver(),
         )
-        .unwrap();
+        .unwrap()
+    }
+
+    fn catalog_for(route: SourceBackedRoute) -> (SourceBackedWatchCatalog, SourceRouteIdentity) {
         let identity = route.metadata.route_identity.clone().unwrap();
         let mut registry = SourceBackedProviderRegistry::new();
         registry.register(route);
+        (registry.watch_catalog(), identity)
+    }
 
-        let catalog = registry.watch_catalog();
+    #[test]
+    fn sqlite_route_authorizes_only_its_exact_database_family() {
+        let database = PathBuf::from("/provider/state.db");
+        let (catalog, identity) = catalog_for(automatic_route(
+            CaptureProvider::OpenCode,
+            database.clone(),
+            "opencode_sqlite",
+        ));
         let targets = catalog.route_targets().next().unwrap().1;
         assert_eq!(targets.len(), 4);
         assert!(targets.contains(&database));
@@ -615,20 +625,11 @@ mod tests {
     #[test]
     fn ordinary_file_route_does_not_invent_sqlite_companions_or_match_siblings() {
         let source_path = PathBuf::from("/provider/history.jsonl");
-        let route = SourceBackedRoute::automatic(
-            source(
-                CaptureProvider::Codex,
-                source_path.clone(),
-                "codex_history_jsonl",
-            ),
-            SourceBackedSelectorAuthority::DiscoveredWinner,
-            driver(),
-        )
-        .unwrap();
-        let mut registry = SourceBackedProviderRegistry::new();
-        registry.register(route);
-
-        let catalog = registry.watch_catalog();
+        let (catalog, _) = catalog_for(automatic_route(
+            CaptureProvider::Codex,
+            source_path.clone(),
+            "codex_history_jsonl",
+        ));
         let targets = catalog.route_targets().next().unwrap().1;
         assert_eq!(targets, &BTreeSet::from([source_path]));
         assert!(catalog
@@ -644,20 +645,11 @@ mod tests {
         let temp = tempfile::tempdir().unwrap();
         let member = temp.path().join("session.jsonl");
         fs::write(&member, b"{}\n").unwrap();
-        let route = SourceBackedRoute::automatic(
-            source(
-                CaptureProvider::Claude,
-                member.clone(),
-                "claude_projects_jsonl_tree",
-            ),
-            SourceBackedSelectorAuthority::DiscoveredWinner,
-            driver(),
-        )
-        .unwrap();
-        let identity = route.metadata.route_identity.clone().unwrap();
-        let mut registry = SourceBackedProviderRegistry::new();
-        registry.register(route);
-        let catalog = registry.watch_catalog();
+        let (catalog, identity) = catalog_for(automatic_route(
+            CaptureProvider::Claude,
+            member.clone(),
+            "claude_projects_jsonl_tree",
+        ));
         let worksets = BTreeMap::from([(identity.clone(), BTreeSet::from([member.clone()]))]);
 
         assert_eq!(
@@ -708,10 +700,7 @@ mod tests {
         )
         .unwrap();
         route.registration_sources = vec![active.clone(), archived_source.clone()];
-        let identity = route.metadata.route_identity.clone().unwrap();
-        let mut registry = SourceBackedProviderRegistry::new();
-        registry.register(route);
-        let catalog = registry.watch_catalog();
+        let (catalog, identity) = catalog_for(route);
         let worksets = BTreeMap::from([(
             identity.clone(),
             BTreeSet::from([active_member.clone(), archived_member.clone()]),
@@ -765,10 +754,7 @@ mod tests {
         )
         .unwrap();
         route.registration_sources = vec![primary, nested_source];
-        let identity = route.metadata.route_identity.clone().unwrap();
-        let mut registry = SourceBackedProviderRegistry::new();
-        registry.register(route);
-        let catalog = registry.watch_catalog();
+        let (catalog, identity) = catalog_for(route);
         let worksets = BTreeMap::from([(identity.clone(), BTreeSet::from([member.clone()]))]);
         assert!(catalog.exact_member_for_event(&identity, &member).is_none());
         assert!(catalog
@@ -777,16 +763,11 @@ mod tests {
 
         let sqlite = temp.path().join("history.sqlite");
         fs::write(&sqlite, b"sqlite").unwrap();
-        let route = SourceBackedRoute::automatic(
-            source(CaptureProvider::OpenCode, sqlite.clone(), "opencode_sqlite"),
-            SourceBackedSelectorAuthority::DiscoveredWinner,
-            driver(),
-        )
-        .unwrap();
-        let identity = route.metadata.route_identity.clone().unwrap();
-        let mut registry = SourceBackedProviderRegistry::new();
-        registry.register(route);
-        let catalog = registry.watch_catalog();
+        let (catalog, identity) = catalog_for(automatic_route(
+            CaptureProvider::OpenCode,
+            sqlite.clone(),
+            "opencode_sqlite",
+        ));
         let worksets = BTreeMap::from([(identity.clone(), BTreeSet::from([sqlite.clone()]))]);
         assert!(catalog.exact_member_for_event(&identity, &sqlite).is_none());
         assert!(catalog
@@ -812,20 +793,11 @@ mod tests {
         let temp = tempfile::tempdir().unwrap();
         let source_path = temp.path().join("history.jsonl");
         fs::write(&source_path, b"one\n").unwrap();
-        let route = SourceBackedRoute::automatic(
-            source(
-                CaptureProvider::Codex,
-                source_path.clone(),
-                "codex_history_jsonl",
-            ),
-            SourceBackedSelectorAuthority::DiscoveredWinner,
-            driver(),
-        )
-        .unwrap();
-        let identity = route.metadata.route_identity.clone().unwrap();
-        let mut registry = SourceBackedProviderRegistry::new();
-        registry.register(route);
-        let catalog = registry.watch_catalog();
+        let (catalog, identity) = catalog_for(automatic_route(
+            CaptureProvider::Codex,
+            source_path.clone(),
+            "codex_history_jsonl",
+        ));
         let certified = catalog.certify_route_observation(&identity).unwrap();
 
         assert_eq!(
@@ -856,20 +828,11 @@ mod tests {
         let temp = tempfile::tempdir().unwrap();
         let database = temp.path().join("state.db");
         fs::write(&database, b"sqlite-main").unwrap();
-        let route = SourceBackedRoute::automatic(
-            source(
-                CaptureProvider::OpenCode,
-                database.clone(),
-                "opencode_sqlite",
-            ),
-            SourceBackedSelectorAuthority::DiscoveredWinner,
-            driver(),
-        )
-        .unwrap();
-        let identity = route.metadata.route_identity.clone().unwrap();
-        let mut registry = SourceBackedProviderRegistry::new();
-        registry.register(route);
-        let catalog = registry.watch_catalog();
+        let (catalog, identity) = catalog_for(automatic_route(
+            CaptureProvider::OpenCode,
+            database.clone(),
+            "opencode_sqlite",
+        ));
         let certified = catalog.certify_route_observation(&identity).unwrap();
 
         let mut wal = database.as_os_str().to_os_string();
@@ -889,20 +852,11 @@ mod tests {
     #[test]
     fn directories_and_missing_certificates_are_indeterminate() {
         let temp = tempfile::tempdir().unwrap();
-        let route = SourceBackedRoute::automatic(
-            source(
-                CaptureProvider::Codex,
-                temp.path().to_path_buf(),
-                "codex_history_jsonl",
-            ),
-            SourceBackedSelectorAuthority::DiscoveredWinner,
-            driver(),
-        )
-        .unwrap();
-        let identity = route.metadata.route_identity.clone().unwrap();
-        let mut registry = SourceBackedProviderRegistry::new();
-        registry.register(route);
-        let catalog = registry.watch_catalog();
+        let (catalog, identity) = catalog_for(automatic_route(
+            CaptureProvider::Codex,
+            temp.path().to_path_buf(),
+            "codex_history_jsonl",
+        ));
 
         assert_eq!(
             catalog.observe_route(&identity, Some(&"00".repeat(32))),
