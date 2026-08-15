@@ -82,7 +82,8 @@ pub use query_service::{
 pub use runtime_limits::SEMANTIC_WORKER_BATCH_MAX;
 pub use source_backed_pro_catch_up::{
     cancel_core_finalization_generation_lease, helper_recheck_targets,
-    publish_helper_recheck_intent, wait_for_completed_generation, wake_helper_recheck,
+    publish_helper_recheck_intent, rearm_helper_recheck_intent, wait_for_completed_generation,
+    wake_helper_recheck,
 };
 pub use source_backed_refresh_coordinator::{
     coordinate_import_source_backed_refresh_with_progress, coordinate_source_backed_refresh,

@@ -15,6 +15,7 @@ progress output and does not include `schema_version`.
 
 ```bash
 ctx setup --format json
+ctx setup --pro --format json
 ctx setup --format json --no-daemon
 ```
 
@@ -35,8 +36,17 @@ Writes local storage and returns schema version 2:
 - `daemon_autostart`;
 - `deprecated_catalog_only_ignored`;
 - `source_rebuild_required`;
-- `network_required: false`;
+- `network_required`, `false` for Core-only setup and `true` when `--pro`
+  requests anonymous-trial enrollment and helper delivery;
 - `repo_writes: false`.
+
+Every setup receipt includes a top-level `pro` object; Core-only setup reports
+`status: "skipped"`, while `--pro` reports `ready` or `unavailable`. The object
+also includes `trial_started`, nullable ISO-date
+`trial_ends_on`, nullable HTTPS `action_url`, and `next_command: "ctx pro"`.
+Core readiness and command exit remain authoritative if this additive Pro
+operation is unavailable. The flag requires daemon maintenance so the verified
+helper can consume the committed Core generation in the background.
 
 When daemon maintenance is enabled, human and machine-readable setup both
 health-check and recover the persistent daemon before returning.
