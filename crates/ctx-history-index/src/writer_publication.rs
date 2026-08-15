@@ -400,6 +400,7 @@ impl GenerationWriter {
         // by the owner cannot describe state newer than the Core projection
         // that the fence accepts.
         let prepared_manifest = prepare_successor_manifest(
+            &self.root,
             &manifest,
             self.base_publication
                 .as_ref()

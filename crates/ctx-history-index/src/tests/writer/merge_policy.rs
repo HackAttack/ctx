@@ -85,8 +85,8 @@ fn production_merge_policy_bounds_repeated_tiny_appends_amortized() {
         fs::read_dir(temp.path().join(MANIFEST_DIRECTORY))
             .unwrap()
             .count(),
-        2,
-        "publication should retain one manifest for each visible and grace generation"
+        3,
+        "publication should retain bounded active/grace deltas plus their shared full anchor"
     );
 }
 
@@ -303,12 +303,12 @@ fn production_merge_policy_bounds_repeated_substantial_replacements() {
             active_segments <= 2,
             "replacement reclamation exposed {active_segments} active segments"
         );
-        assert_eq!(
+        assert!(
             fs::read_dir(temp.path().join(MANIFEST_DIRECTORY))
                 .unwrap()
-                .count(),
-            2,
-            "only current and grace manifests may remain"
+                .count()
+                <= 3,
+            "current/grace deltas and their shared full anchor must remain bounded"
         );
         assert!(
             fs::read_dir(temp.path().join(INDEX_GENERATIONS_DIRECTORY))

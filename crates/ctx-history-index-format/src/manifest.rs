@@ -1,5 +1,7 @@
 use std::{
     collections::BTreeMap,
+    fs::File,
+    io::Read,
     path::{Path, PathBuf},
     sync::{Arc, Mutex, OnceLock, Weak},
 };
@@ -25,8 +27,12 @@ const MAX_PUBLICATION_METADATA_ENCODED_BYTES: usize =
     MAX_PUBLICATION_METADATA_BYTES.div_ceil(3) * 4;
 const MAX_COMMIT_PAYLOAD_BYTES: usize = MAX_PUBLICATION_METADATA_ENCODED_BYTES + 256;
 const MANIFEST_DELTA_STORAGE: &str = "ctx-manifest-delta-v1";
+const MANIFEST_FLAT_DELTA_STORAGE: &str = "ctx-manifest-flat-delta-v1";
+const MANIFEST_DELTA_PREFIX: &[u8] = br#"{"storage_format":"ctx-manifest-delta-v1","#;
+const MANIFEST_FLAT_DELTA_PREFIX: &[u8] = br#"{"storage_format":"ctx-manifest-flat-delta-v1","#;
 const MAX_MANIFEST_DELTA_CHANGES: usize = 64;
 const MAX_MANIFEST_DELTA_BYTES: usize = 1024 * 1024;
+const MAX_MANIFEST_DELTA_ANCESTORS: usize = 128;
 
 type ManifestCacheKey = (PathBuf, String);
 static MANIFEST_CACHE: OnceLock<Mutex<BTreeMap<ManifestCacheKey, Weak<GenerationManifest>>>> =
@@ -35,6 +41,17 @@ static MANIFEST_CACHE: OnceLock<Mutex<BTreeMap<ManifestCacheKey, Weak<Generation
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct StoredManifestDeltaV1 {
+    storage_format: String,
+    base_generation_id: String,
+    indexed_documents: u64,
+    certified_source_bytes: u64,
+    source_count: usize,
+    changes: Vec<StoredManifestSourceChangeV1>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct StoredManifestFlatDeltaV1 {
     storage_format: String,
     base_generation_id: String,
     indexed_documents: u64,
@@ -130,17 +147,23 @@ fn load_materialized_manifest(
         return Err(IndexError::NonCanonicalManifest);
     }
     let key = (root.to_path_buf(), generation_id.to_owned());
-    if let Some(manifest) = MANIFEST_CACHE
-        .get_or_init(|| Mutex::new(BTreeMap::new()))
-        .lock()
-        .map_err(|_| IndexError::NonCanonicalManifest)?
-        .get(&key)
-        .and_then(Weak::upgrade)
-    {
-        return Ok(manifest);
+    // Always authenticate the publication's named manifest. Recursive bases
+    // are content-addressed immutable snapshots already authenticated in this
+    // process, so reusing those avoids rereading a large full anchor on every
+    // ordinary append while preserving fail-closed top-level opens.
+    if depth != 0 {
+        if let Some(manifest) = MANIFEST_CACHE
+            .get_or_init(|| Mutex::new(BTreeMap::new()))
+            .lock()
+            .map_err(|_| IndexError::NonCanonicalManifest)?
+            .get(&key)
+            .and_then(Weak::upgrade)
+        {
+            return Ok(manifest);
+        }
     }
     let bytes = load_manifest_bytes(root, generation_id)?;
-    let manifest = if bytes.starts_with(br#"{"storage_format":"ctx-manifest-delta-v1","#) {
+    let manifest = if bytes.starts_with(MANIFEST_DELTA_PREFIX) {
         let delta: StoredManifestDeltaV1 = serde_json::from_slice(&bytes)?;
         if serde_json::to_vec(&delta)? != bytes
             || delta.storage_format != MANIFEST_DELTA_STORAGE
@@ -151,7 +174,31 @@ fn load_materialized_manifest(
             return Err(IndexError::NonCanonicalManifest);
         }
         let base = load_materialized_manifest(root, &delta.base_generation_id, depth + 1)?;
-        materialize_delta(base.as_ref(), delta)?
+        materialize_delta(
+            base.as_ref(),
+            delta.indexed_documents,
+            delta.certified_source_bytes,
+            delta.source_count,
+            delta.changes,
+        )?
+    } else if bytes.starts_with(MANIFEST_FLAT_DELTA_PREFIX) {
+        let delta: StoredManifestFlatDeltaV1 = serde_json::from_slice(&bytes)?;
+        if serde_json::to_vec(&delta)? != bytes
+            || delta.storage_format != MANIFEST_FLAT_DELTA_STORAGE
+            || !is_generation_id(&delta.base_generation_id)
+            || delta.changes.is_empty()
+            || delta.changes.len() > MAX_MANIFEST_DELTA_CHANGES
+        {
+            return Err(IndexError::NonCanonicalManifest);
+        }
+        let base = load_materialized_manifest(root, &delta.base_generation_id, depth + 1)?;
+        materialize_delta(
+            base.as_ref(),
+            delta.indexed_documents,
+            delta.certified_source_bytes,
+            delta.source_count,
+            delta.changes,
+        )?
     } else {
         let manifest: GenerationManifest = serde_json::from_slice(&bytes)?;
         if serde_json::to_vec(&manifest)? != bytes {
@@ -172,14 +219,17 @@ fn load_materialized_manifest(
 
 fn materialize_delta(
     base: &GenerationManifest,
-    delta: StoredManifestDeltaV1,
+    indexed_documents: u64,
+    certified_source_bytes: u64,
+    source_count: usize,
+    changes: Vec<StoredManifestSourceChangeV1>,
 ) -> Result<GenerationManifest> {
-    if delta.source_count != base.sources.len() {
+    if source_count != base.sources.len() {
         return Err(IndexError::NonCanonicalManifest);
     }
-    let mut replacements = Vec::with_capacity(delta.changes.len());
+    let mut replacements = Vec::with_capacity(changes.len());
     let mut previous = None;
-    for change in delta.changes {
+    for change in changes {
         if previous.is_some_and(|digest| digest >= change.source_identity) {
             return Err(IndexError::NonCanonicalManifest);
         }
@@ -211,9 +261,9 @@ fn materialize_delta(
         replacements.push((change.source, change.aggregate));
     }
     let materialized = base.apply_validated_source_replacements(replacements)?;
-    if materialized.indexed_documents != delta.indexed_documents
-        || materialized.certified_source_bytes != delta.certified_source_bytes
-        || materialized.sources.len() != delta.source_count
+    if materialized.indexed_documents != indexed_documents
+        || materialized.certified_source_bytes != certified_source_bytes
+        || materialized.sources.len() != source_count
     {
         return Err(IndexError::NonCanonicalManifest);
     }
@@ -406,6 +456,7 @@ pub fn write_manifest(
 }
 
 pub fn prepare_successor_manifest(
+    root: &Path,
     manifest: &GenerationManifest,
     base: Option<(&str, &GenerationManifest)>,
 ) -> Result<PreparedManifest> {
@@ -466,13 +517,21 @@ pub fn prepare_successor_manifest(
     if changes.is_empty() || changes.len() > MAX_MANIFEST_DELTA_CHANGES {
         return full();
     }
-    let delta = StoredManifestDeltaV1 {
-        storage_format: MANIFEST_DELTA_STORAGE.to_owned(),
-        base_generation_id: base_generation_id.to_owned(),
+    let (base_generation_id, mut accumulated) =
+        accumulated_manifest_changes(root, base_generation_id, 0)?;
+    for change in changes {
+        accumulated.insert(change.source_identity, change);
+    }
+    if accumulated.len() > MAX_MANIFEST_DELTA_CHANGES {
+        return full();
+    }
+    let delta = StoredManifestFlatDeltaV1 {
+        storage_format: MANIFEST_FLAT_DELTA_STORAGE.to_owned(),
+        base_generation_id,
         indexed_documents: manifest.indexed_documents,
         certified_source_bytes: manifest.certified_source_bytes,
         source_count: manifest.sources.len(),
-        changes,
+        changes: accumulated.into_values().collect(),
     };
     let bytes = serde_json::to_vec(&delta)?;
     if bytes.len() > MAX_MANIFEST_DELTA_BYTES {
@@ -482,6 +541,72 @@ pub fn prepare_successor_manifest(
         generation_id: sha256_hex(&bytes),
         bytes,
     })
+}
+
+fn accumulated_manifest_changes(
+    root: &Path,
+    generation_id: &str,
+    depth: usize,
+) -> Result<(String, BTreeMap<[u8; 32], StoredManifestSourceChangeV1>)> {
+    if depth > MAX_MANIFEST_DELTA_ANCESTORS {
+        return Err(IndexError::NonCanonicalManifest);
+    }
+    let mut prefix = [0_u8; 64];
+    let mut file = File::open(manifest_path(root, generation_id)).map_err(|error| {
+        if error.kind() == std::io::ErrorKind::NotFound {
+            IndexError::MissingManifest(generation_id.to_owned())
+        } else {
+            IndexError::Io(error)
+        }
+    })?;
+    let prefix_len = file.read(&mut prefix)?;
+    let prefix = &prefix[..prefix_len];
+    if !prefix.starts_with(MANIFEST_DELTA_PREFIX) && !prefix.starts_with(MANIFEST_FLAT_DELTA_PREFIX)
+    {
+        // `base` was materialized through the authenticated loader before this
+        // helper was called, so reaching its non-delta anchor does not require
+        // reading and hashing the potentially corpus-sized full manifest again.
+        return Ok((generation_id.to_owned(), BTreeMap::new()));
+    }
+
+    let bytes = load_manifest_bytes(root, generation_id)?;
+    if bytes.starts_with(MANIFEST_FLAT_DELTA_PREFIX) {
+        let delta: StoredManifestFlatDeltaV1 = serde_json::from_slice(&bytes)?;
+        if serde_json::to_vec(&delta)? != bytes
+            || delta.storage_format != MANIFEST_FLAT_DELTA_STORAGE
+            || !is_generation_id(&delta.base_generation_id)
+            || delta.changes.is_empty()
+            || delta.changes.len() > MAX_MANIFEST_DELTA_CHANGES
+        {
+            return Err(IndexError::NonCanonicalManifest);
+        }
+        return Ok((
+            delta.base_generation_id,
+            delta
+                .changes
+                .into_iter()
+                .map(|change| (change.source_identity, change))
+                .collect(),
+        ));
+    }
+    if bytes.starts_with(MANIFEST_DELTA_PREFIX) {
+        let delta: StoredManifestDeltaV1 = serde_json::from_slice(&bytes)?;
+        if serde_json::to_vec(&delta)? != bytes
+            || delta.storage_format != MANIFEST_DELTA_STORAGE
+            || !is_generation_id(&delta.base_generation_id)
+            || delta.changes.is_empty()
+            || delta.changes.len() > MAX_MANIFEST_DELTA_CHANGES
+        {
+            return Err(IndexError::NonCanonicalManifest);
+        }
+        let (base_generation_id, mut accumulated) =
+            accumulated_manifest_changes(root, &delta.base_generation_id, depth + 1)?;
+        for change in delta.changes {
+            accumulated.insert(change.source_identity, change);
+        }
+        return Ok((base_generation_id, accumulated));
+    }
+    Err(IndexError::NonCanonicalManifest)
 }
 
 pub fn write_prepared_manifest(root: &Path, manifest: &PreparedManifest) -> Result<()> {

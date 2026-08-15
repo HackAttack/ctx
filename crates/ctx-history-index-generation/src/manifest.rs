@@ -108,6 +108,7 @@ pub fn reclaim_unreferenced_manifests(
 }
 
 const MANIFEST_DELTA_PREFIX: &[u8] = br#"{"storage_format":"ctx-manifest-delta-v1","#;
+const MANIFEST_FLAT_DELTA_PREFIX: &[u8] = br#"{"storage_format":"ctx-manifest-flat-delta-v1","#;
 const MAX_MANIFEST_ANCESTORS: usize = 128;
 
 #[derive(Deserialize)]
@@ -150,13 +151,17 @@ fn referenced_base_generation_id(root: &Path, generation_id: &str) -> Result<Opt
     })?;
     let mut prefix = [0_u8; 64];
     let prefix_bytes = file.read(&mut prefix)?;
-    if !prefix[..prefix_bytes].starts_with(MANIFEST_DELTA_PREFIX) {
+    let prefix = &prefix[..prefix_bytes];
+    if !prefix.starts_with(MANIFEST_DELTA_PREFIX) && !prefix.starts_with(MANIFEST_FLAT_DELTA_PREFIX)
+    {
         return Ok(None);
     }
     let bytes = load_manifest_bytes(root, generation_id)?;
     let reference: ManifestDeltaReference = serde_json::from_slice(&bytes)?;
-    if reference.storage_format != "ctx-manifest-delta-v1"
-        || !is_generation_id(&reference.base_generation_id)
+    if !matches!(
+        reference.storage_format.as_str(),
+        "ctx-manifest-delta-v1" | "ctx-manifest-flat-delta-v1"
+    ) || !is_generation_id(&reference.base_generation_id)
     {
         return Err(GenerationError::InvalidGenerationId);
     }

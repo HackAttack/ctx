@@ -690,6 +690,15 @@ impl GenerationWriter {
             .map(PinnedPublication::manifest)
     }
 
+    /// Returns the exact persisted manifest descriptor captured with the base
+    /// publication. This may differ from the digest of the materialized full
+    /// manifest when the publication uses a compact delta descriptor.
+    pub fn base_generation_id(&self) -> Option<&str> {
+        self.base_publication
+            .as_ref()
+            .map(PinnedPublication::generation_id)
+    }
+
     /// Registers one complete provider inventory captured by the current
     /// refresh. Exact no-op admission requires these inventories to cover the
     /// full retained/removal set and requires a separate terminal callback to
