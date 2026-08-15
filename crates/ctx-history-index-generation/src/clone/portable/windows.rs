@@ -30,8 +30,8 @@ use windows_sys::{
             FILE_DISPOSITION_FLAG_IGNORE_READONLY_ATTRIBUTE, FILE_DISPOSITION_FLAG_POSIX_SEMANTICS,
             FILE_DISPOSITION_INFO, FILE_DISPOSITION_INFO_EX, FILE_FLAG_BACKUP_SEMANTICS,
             FILE_FLAG_OPEN_REPARSE_POINT, FILE_GENERIC_READ, FILE_GENERIC_WRITE,
-            FILE_LIST_DIRECTORY, FILE_READ_ATTRIBUTES, FILE_SHARE_READ, FILE_SHARE_WRITE,
-            FILE_WRITE_ATTRIBUTES, SYNCHRONIZE,
+            FILE_LIST_DIRECTORY, FILE_READ_ATTRIBUTES, FILE_SHARE_DELETE, FILE_SHARE_READ,
+            FILE_SHARE_WRITE, FILE_WRITE_ATTRIBUTES, SYNCHRONIZE,
         },
         System::IO::IO_STATUS_BLOCK,
     },
@@ -40,10 +40,13 @@ use windows_sys::{
 use super::{entry_kind, require_regular, ObjectIdentity};
 use crate::{GenerationError as IndexError, Result};
 
+const DIRECTORY_SHARE_MODE: u32 = FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE;
+const REGULAR_FILE_SHARE_MODE: u32 = FILE_SHARE_READ | FILE_SHARE_WRITE;
+
 pub(super) fn open_directory_path(path: &Path) -> io::Result<File> {
     OpenOptions::new()
         .access_mode(FILE_GENERIC_READ | DELETE)
-        .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE)
+        .share_mode(DIRECTORY_SHARE_MODE)
         .custom_flags(FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT)
         .open(path)
 }
@@ -153,6 +156,11 @@ fn nt_open_at(
     } else {
         FILE_OPEN_NO_RECALL
     };
+    let share_mode = if kind == FILE_DIRECTORY_FILE {
+        DIRECTORY_SHARE_MODE
+    } else {
+        REGULAR_FILE_SHARE_MODE
+    };
     // SAFETY: all structures and the relative UTF-16 name remain live for
     // the call, and a successful handle is transferred into `File` once.
     let status = unsafe {
@@ -163,7 +171,7 @@ fn nt_open_at(
             &mut status_block,
             std::ptr::null(),
             file_attributes,
-            FILE_SHARE_READ | FILE_SHARE_WRITE,
+            share_mode,
             disposition,
             kind | FILE_OPEN_REPARSE_POINT | recall_option | FILE_SYNCHRONOUS_IO_NONALERT,
             std::ptr::null(),
@@ -230,7 +238,11 @@ pub(super) fn permission_identity(metadata: &Metadata) -> bool {
 }
 
 pub(super) fn is_unsafe_link_or_provider(metadata: &Metadata) -> bool {
-    metadata.file_attributes()
+    has_unsafe_file_attributes(metadata.file_attributes())
+}
+
+fn has_unsafe_file_attributes(attributes: u32) -> bool {
+    attributes
         & (FILE_ATTRIBUTE_REPARSE_POINT
             | FILE_ATTRIBUTE_OFFLINE
             | FILE_ATTRIBUTE_RECALL_ON_OPEN
@@ -339,5 +351,45 @@ fn delete_by_handle(file: &File) -> io::Result<()> {
         Err(io::Error::last_os_error())
     } else {
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn delete_capable_directory_handles_can_reopen_for_validation() -> io::Result<()> {
+        let temporary = tempfile::tempdir()?;
+        let generation_name = Path::new("generation-test");
+        fs::create_dir(temporary.path().join(generation_name))?;
+
+        let root = open_directory_path(temporary.path())?;
+        let reopened_root = open_directory_path(temporary.path())?;
+        assert_eq!(object_identity(&root)?, object_identity(&reopened_root)?);
+
+        let generation = open_directory_at(&root, temporary.path(), generation_name)?;
+        let reopened_generation = open_directory_at(&root, temporary.path(), generation_name)?;
+        assert_eq!(
+            object_identity(&generation)?,
+            object_identity(&reopened_generation)?
+        );
+        assert_eq!(REGULAR_FILE_SHARE_MODE & FILE_SHARE_DELETE, 0);
+        Ok(())
+    }
+
+    #[test]
+    fn reparse_and_remote_provider_attributes_remain_fail_closed() {
+        for attributes in [
+            FILE_ATTRIBUTE_REPARSE_POINT,
+            FILE_ATTRIBUTE_OFFLINE,
+            FILE_ATTRIBUTE_RECALL_ON_OPEN,
+            FILE_ATTRIBUTE_RECALL_ON_DATA_ACCESS,
+        ] {
+            assert!(has_unsafe_file_attributes(attributes));
+        }
+        assert!(!has_unsafe_file_attributes(
+            FILE_ATTRIBUTE_DIRECTORY | FILE_ATTRIBUTE_NORMAL
+        ));
     }
 }
