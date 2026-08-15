@@ -368,7 +368,7 @@ pub fn install_launch_agent(
     write_atomic_supervisor_file(path, super::launch_agent_plist(spec)?.as_bytes())?;
     let domain = launchctl_domain();
     let mut bootout = supervisor_command("launchctl", manager_environment);
-    bootout.args(["bootout", &domain]).arg(&path);
+    bootout.args(["bootout", &domain]).arg(path);
     let bootout = supervisor_output(&mut bootout).context("run launchctl bootout")?;
     if launchctl_print(&domain, identity.name(), manager_environment)?
         .status
@@ -381,7 +381,7 @@ pub fn install_launch_agent(
     }
     migrate_owner(data_root)?;
     let mut bootstrap = supervisor_command("launchctl", manager_environment);
-    bootstrap.args(["bootstrap", &domain]).arg(&path);
+    bootstrap.args(["bootstrap", &domain]).arg(path);
     command_success(&mut bootstrap, "launchctl bootstrap")?;
     start_launch_agent(identity, manager_environment)?;
     Ok(path.to_path_buf())
@@ -396,7 +396,7 @@ pub fn disable_launch_agent(
     let path = identity.artifact_path();
     let domain = launchctl_domain();
     let mut bootout = supervisor_command("launchctl", manager_environment);
-    bootout.args(["bootout", &domain]).arg(&path);
+    bootout.args(["bootout", &domain]).arg(path);
     let bootout = supervisor_output(&mut bootout).context("run launchctl bootout")?;
     if launchctl_print(&domain, label, manager_environment)?
         .status
