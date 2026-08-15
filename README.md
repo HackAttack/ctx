@@ -101,6 +101,8 @@ Already use ctx? Set up pro:
 ctx pro
 ```
 
+[Learn more about ctx pro](docs/ctx-pro.md), including supported inputs, local privacy, pricing, and the free trial.
+
 ## How it works
 
 Your past coding agent sessions already live on your machine, usually in JSONL files or SQLite databases under directories such as `~/.claude` and `~/.codex`.
@@ -234,7 +236,7 @@ ctx pro --referral <codename>
 | --- | --- |
 | [Install](https://ctx.rs/getting-started/install) | Install ctx, initialize local storage, and index discovered local history. |
 | [Quickstart](https://ctx.rs/first-search) | Search local history, inspect an event, open the session, and use JSON output. |
-| [ctx pro and referrals](https://ctx.rs/reference/cli#ctx-pro-and-referrals) | Start or manage ctx pro and use the person-to-person referral commands. |
+| [ctx pro](docs/ctx-pro.md) | Use git blame for agent sessions, start the free trial, and review pricing and local privacy. |
 | [Referral details](https://ctx.rs/pro/referrals) | Review referral eligibility, commissions, payouts, and terms. |
 | [Install the ctx skill](https://ctx.rs/skill) | Install the agent-history search skill with the open skills installer. |
 | [Package managers and unmanaged installs](docs/unmanaged-installs.md) | Install from GitHub Releases, mise, Homebrew, or source builds. |
