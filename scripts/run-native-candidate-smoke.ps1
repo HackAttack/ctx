@@ -141,6 +141,76 @@ $isolation = [ordered]@{
     VIBE_HOME = (Join-Path $profile ".vibe")
 }
 
+function Get-RemainingMilliseconds(
+    [System.Diagnostics.Stopwatch]$Clock,
+    [int]$LimitMilliseconds
+) {
+    $remaining = [long]$LimitMilliseconds - $Clock.ElapsedMilliseconds
+    if ($remaining -le 0) {
+        return 0
+    }
+    return [int]$remaining
+}
+
+function Wait-ProcessUntil(
+    [System.Diagnostics.Process]$Process,
+    [System.Diagnostics.Stopwatch]$Clock,
+    [int]$LimitMilliseconds
+) {
+    if ($Process.HasExited) {
+        return $true
+    }
+    return $Process.WaitForExit((Get-RemainingMilliseconds $Clock $LimitMilliseconds))
+}
+
+function Wait-TaskUntil(
+    [System.Threading.Tasks.Task]$Task,
+    [System.Diagnostics.Stopwatch]$Clock,
+    [int]$LimitMilliseconds
+) {
+    if ($Task.IsCompleted) {
+        return $true
+    }
+    try {
+        return $Task.Wait((Get-RemainingMilliseconds $Clock $LimitMilliseconds))
+    } catch [System.AggregateException] {
+        # A faulted task is complete. GetResult below will preserve its precise
+        # stream error instead of misclassifying it as a timeout.
+        return $true
+    }
+}
+
+function Stop-ProcessTree([System.Diagnostics.Process]$Process) {
+    if ($Process.HasExited) {
+        return
+    }
+
+    try {
+        $Process.Kill($true)
+        return
+    } catch [System.Management.Automation.MethodException] {
+        # Windows PowerShell 5.1 does not expose Process.Kill(Boolean).
+    } catch [System.InvalidOperationException] {
+        if ($Process.HasExited) {
+            return
+        }
+        throw
+    }
+
+    $taskkill = Join-Path $env:SystemRoot "System32\taskkill.exe"
+    $savedErrorActionPreference = $ErrorActionPreference
+    try {
+        $ErrorActionPreference = "Continue"
+        & $taskkill /PID $Process.Id /T /F 2>&1 | Out-Null
+        $taskkillExitCode = $LASTEXITCODE
+    } finally {
+        $ErrorActionPreference = $savedErrorActionPreference
+    }
+    if ($taskkillExitCode -ne 0 -and -not $Process.HasExited) {
+        $Process.Kill()
+    }
+}
+
 function Invoke-CtxRaw([string[]]$Arguments) {
     $start = New-Object System.Diagnostics.ProcessStartInfo
     $start.UseShellExecute = $false
@@ -167,27 +237,86 @@ function Invoke-CtxRaw([string[]]$Arguments) {
     }
     $process = New-Object System.Diagnostics.Process
     $process.StartInfo = $start
-    [void]$process.Start()
-    $stdout = $process.StandardOutput.ReadToEndAsync()
-    $stderr = $process.StandardError.ReadToEndAsync()
-    if (-not $process.WaitForExit($timeoutSeconds * 1000)) {
-        try {
-            $process.Kill($true)
-        } catch [System.Management.Automation.MethodException] {
-            $taskkill = Join-Path $env:SystemRoot "System32\taskkill.exe"
-            & $taskkill /PID $process.Id /T /F 2>&1 | Out-Null
-            if (-not $process.HasExited) {
-                $process.Kill()
+    $timeoutMilliseconds = $timeoutSeconds * 1000
+    $commandClock = [System.Diagnostics.Stopwatch]::StartNew()
+    try {
+        [void]$process.Start()
+        $stdout = $process.StandardOutput.ReadToEndAsync()
+        $stderr = $process.StandardError.ReadToEndAsync()
+
+        $timeoutPhase = $null
+        if (-not (Wait-ProcessUntil $process $commandClock $timeoutMilliseconds)) {
+            $timeoutPhase = "process exit"
+        } else {
+            [void](Wait-TaskUntil $stdout $commandClock $timeoutMilliseconds)
+            [void](Wait-TaskUntil $stderr $commandClock $timeoutMilliseconds)
+            $pendingStreams = @()
+            if (-not $stdout.IsCompleted) {
+                $pendingStreams += "stdout"
+            }
+            if (-not $stderr.IsCompleted) {
+                $pendingStreams += "stderr"
+            }
+            if ($pendingStreams.Count -ne 0) {
+                $timeoutPhase = (($pendingStreams -join "/") + " drain after process exit")
             }
         }
-        $process.WaitForExit()
-        Fail ("ctx command exceeded {0} seconds: {1}" -f $timeoutSeconds, ($Arguments -join " "))
-    }
-    $text = @($stdout.GetAwaiter().GetResult(), $stderr.GetAwaiter().GetResult()) |
-        Where-Object { -not [string]::IsNullOrEmpty($_) }
-    return [pscustomobject]@{
-        ExitCode = $process.ExitCode
-        Text = ($text -join [Environment]::NewLine).TrimEnd()
+
+        if ($null -eq $timeoutPhase) {
+            $text = @($stdout.GetAwaiter().GetResult(), $stderr.GetAwaiter().GetResult()) |
+                Where-Object { -not [string]::IsNullOrEmpty($_) }
+            return [pscustomobject]@{
+                ExitCode = $process.ExitCode
+                Text = ($text -join [Environment]::NewLine).TrimEnd()
+            }
+        }
+
+        $cleanupErrors = @()
+        try {
+            if (-not $process.HasExited) {
+                Stop-ProcessTree $process
+            }
+        } catch {
+            $cleanupErrors += ("command tree: " + $_.Exception.Message)
+        }
+        try {
+            Stop-NewCandidateProcesses
+        } catch {
+            $cleanupErrors += ("candidate processes: " + $_.Exception.Message)
+        }
+
+        $finalDrainClock = [System.Diagnostics.Stopwatch]::StartNew()
+        $finalDrainMilliseconds = 5000
+        $pendingFinal = @()
+        if (-not (Wait-ProcessUntil $process $finalDrainClock $finalDrainMilliseconds)) {
+            $pendingFinal += "process exit"
+        }
+        if (-not (Wait-TaskUntil $stdout $finalDrainClock $finalDrainMilliseconds)) {
+            $pendingFinal += "stdout"
+        }
+        if (-not (Wait-TaskUntil $stderr $finalDrainClock $finalDrainMilliseconds)) {
+            $pendingFinal += "stderr"
+        }
+
+        $cleanupDiagnostic = if ($cleanupErrors.Count -eq 0) {
+            "candidate cleanup completed"
+        } else {
+            "candidate cleanup failed: " + ($cleanupErrors -join "; ")
+        }
+        $finalDrainDiagnostic = if ($pendingFinal.Count -eq 0) {
+            "final drain completed"
+        } else {
+            "final drain still pending: " + ($pendingFinal -join ",")
+        }
+
+        Fail ("ctx command exceeded {0} seconds during {1}; {2}; {3}: {4}" -f
+            $timeoutSeconds,
+            $timeoutPhase,
+            $cleanupDiagnostic,
+            $finalDrainDiagnostic,
+            ($Arguments -join " "))
+    } finally {
+        $process.Dispose()
     }
 }
 
@@ -222,7 +351,19 @@ function Stop-NewCandidateProcesses {
         return
     }
 
-    Stop-Process -Id $remaining -Force -ErrorAction SilentlyContinue
+    foreach ($id in $remaining) {
+        $candidate = $null
+        try {
+            $candidate = [System.Diagnostics.Process]::GetProcessById($id)
+            Stop-ProcessTree $candidate
+        } catch [System.ArgumentException] {
+            # The candidate exited between enumeration and opening its handle.
+        } finally {
+            if ($null -ne $candidate) {
+                $candidate.Dispose()
+            }
+        }
+    }
     $deadline = [DateTime]::UtcNow.AddSeconds(5)
     do {
         $remaining = @(Candidate-ProcessIds | Where-Object { $baseline -notcontains $_ })

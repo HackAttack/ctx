@@ -7,6 +7,7 @@ $root = Join-Path ([System.IO.Path]::GetTempPath()) ("ctx-native-smoke-test-" + 
 New-Item -ItemType Directory -Path $root | Out-Null
 $savedCI = $env:CI
 $env:CI = "true"
+$unrelated = $null
 
 try {
     $fake = Join-Path $root "ctx.cmd"
@@ -33,6 +34,10 @@ if "%1"=="--version" (
 )
 if "%1"=="setup" exit /b 0
 if "%1"=="import" (
+  for /L %%I in (1,1,2048) do (
+    echo ordinary-stdout-%%I-xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
+    1>&2 echo ordinary-stderr-%%I-xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
+  )
   if "%CTX_FAKE_VERSION%"=="1.0.0" (
     mkdir "%CTX_DATA_ROOT%\search\lexical\ctx-generations" >nul
     mkdir "%CTX_DATA_ROOT%\search\lexical\index-generations\generation-11111111111111111111111111111111" >nul
@@ -109,7 +114,8 @@ exit /b 99
         & $smoke -Binary $hung -Fixture $fixture -ExpectedVersion 0.25.0 -ResultPath $hungResult 2>$null | Out-Null
         throw "candidate smoke accepted a hung command"
     } catch {
-        if ($_.Exception.Message -notmatch "exceeded 1 seconds") {
+        if ($_.Exception.Message -notmatch
+            "exceeded 1 seconds during process exit; candidate cleanup completed; final drain completed") {
             throw
         }
     } finally {
@@ -122,8 +128,98 @@ exit /b 99
         throw "candidate smoke wrote evidence after a hung command"
     }
 
+    $pipeOwner = Join-Path $root "ctx-pipe-owner.exe"
+    $pipeOwnerSource = @'
+using System;
+using System.Diagnostics;
+using System.IO;
+using System.Threading;
+
+public static class CtxPipeOwner {
+    public static int Main(string[] args) {
+        string mode = args.Length == 0 ? "" : args[0];
+        if (mode == "--unrelated") {
+            Thread.Sleep(30000);
+            return 0;
+        }
+        if (mode == "--pipe-owner") {
+            string pidPath = Environment.GetEnvironmentVariable("CTX_NATIVE_CANDIDATE_TEST_PIPE_OWNER_PID");
+            if (!String.IsNullOrEmpty(pidPath)) {
+                File.WriteAllText(pidPath, Process.GetCurrentProcess().Id.ToString());
+            }
+            Thread.Sleep(30000);
+            return 0;
+        }
+        if (mode == "--version") {
+            ProcessStartInfo start = new ProcessStartInfo(
+                Process.GetCurrentProcess().MainModule.FileName,
+                "--pipe-owner");
+            start.UseShellExecute = false;
+            Process.Start(start);
+            Console.WriteLine("ctx 0.25.0");
+            return 0;
+        }
+        return 99;
+    }
+}
+'@
+    Add-Type -TypeDefinition $pipeOwnerSource -Language CSharp `
+        -OutputAssembly $pipeOwner -OutputType ConsoleApplication
+
+    # This process has the exact candidate image but predates the harness
+    # baseline. Cleanup must leave it alone while killing the later pipe owner.
+    $unrelated = Start-Process -FilePath $pipeOwner -ArgumentList "--unrelated" -PassThru
+    Start-Sleep -Milliseconds 200
+    if ($unrelated.HasExited) {
+        throw "unrelated candidate fixture exited before the timeout test"
+    }
+
+    $pipeOwnerPidPath = Join-Path $root "pipe-owner.pid"
+    $pipeOwnerResult = Join-Path $root "pipe-owner-result.json"
+    $savedPipeOwnerPidPath = $env:CTX_NATIVE_CANDIDATE_TEST_PIPE_OWNER_PID
+    $savedTimeout = $env:CTX_NATIVE_CANDIDATE_COMMAND_TIMEOUT_SECONDS
+    $env:CTX_NATIVE_CANDIDATE_TEST_PIPE_OWNER_PID = $pipeOwnerPidPath
+    $env:CTX_NATIVE_CANDIDATE_COMMAND_TIMEOUT_SECONDS = "1"
+    $started = Get-Date
+    try {
+        & $smoke -Binary $pipeOwner -Fixture $fixture -ExpectedVersion 0.25.0 `
+            -ResultPath $pipeOwnerResult 2>$null | Out-Null
+        throw "candidate smoke accepted a stuck redirected stream"
+    } catch {
+        if ($_.Exception.Message -notmatch
+            "exceeded 1 seconds during stdout/stderr drain after process exit; candidate cleanup completed; final drain completed") {
+            throw
+        }
+    } finally {
+        $env:CTX_NATIVE_CANDIDATE_TEST_PIPE_OWNER_PID = $savedPipeOwnerPidPath
+        $env:CTX_NATIVE_CANDIDATE_COMMAND_TIMEOUT_SECONDS = $savedTimeout
+    }
+    if (((Get-Date) - $started).TotalSeconds -ge 10) {
+        throw "candidate smoke redirected-stream timeout was not bounded"
+    }
+    if (-not (Test-Path -LiteralPath $pipeOwnerPidPath -PathType Leaf)) {
+        throw "candidate smoke fixture did not create the redirected pipe owner"
+    }
+    $pipeOwnerPid = [int](Get-Content -LiteralPath $pipeOwnerPidPath -Raw)
+    if ($null -ne (Get-Process -Id $pipeOwnerPid -ErrorAction SilentlyContinue)) {
+        throw "candidate smoke left the redirected pipe owner running"
+    }
+    if ($unrelated.HasExited) {
+        throw "candidate smoke killed a candidate process that predated its baseline"
+    }
+    if (Test-Path -LiteralPath $pipeOwnerResult) {
+        throw "candidate smoke wrote evidence after a stuck redirected stream"
+    }
+
     Write-Host "Windows native candidate smoke tests passed"
 } finally {
+    if ($null -ne $unrelated -and -not $unrelated.HasExited) {
+        Stop-Process -Id $unrelated.Id -Force -ErrorAction SilentlyContinue
+        [void]$unrelated.WaitForExit(5000)
+    }
+    if ($null -ne $unrelated) {
+        $unrelated.Dispose()
+    }
     $env:CI = $savedCI
     Remove-Item -LiteralPath $root -Recurse -Force -ErrorAction SilentlyContinue
 }
