@@ -379,7 +379,7 @@ impl GenerationWriter {
             }
         }
 
-        let manifest = self.next_manifest()?;
+        let manifest = std::sync::Arc::new(self.next_manifest()?);
         if finish_identical_staging(
             &mut self,
             &manifest,
@@ -401,7 +401,7 @@ impl GenerationWriter {
         // that the fence accepts.
         let prepared_manifest = prepare_successor_manifest(
             &self.root,
-            &manifest,
+            std::sync::Arc::clone(&manifest),
             self.base_publication
                 .as_ref()
                 .map(|base| (base.generation_id(), base.manifest())),

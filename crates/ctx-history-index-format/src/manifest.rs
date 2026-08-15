@@ -71,6 +71,7 @@ struct StoredManifestSourceChangeV1 {
 pub struct PreparedManifest {
     generation_id: String,
     bytes: Vec<u8>,
+    materialized: Arc<GenerationManifest>,
 }
 
 impl PreparedManifest {
@@ -147,22 +148,18 @@ fn load_materialized_manifest(
         return Err(IndexError::NonCanonicalManifest);
     }
     let key = (root.to_path_buf(), generation_id.to_owned());
-    // Always authenticate the publication's named manifest. Recursive bases
-    // are content-addressed immutable snapshots already authenticated in this
-    // process, so reusing those avoids rereading a large full anchor on every
-    // ordinary append while preserving fail-closed top-level opens.
+    // Recursive bases are content-addressed immutable snapshots already
+    // authenticated in this process. Top-level opens still authenticate their
+    // named descriptor before reusing an in-memory materialization.
     if depth != 0 {
-        if let Some(manifest) = MANIFEST_CACHE
-            .get_or_init(|| Mutex::new(BTreeMap::new()))
-            .lock()
-            .map_err(|_| IndexError::NonCanonicalManifest)?
-            .get(&key)
-            .and_then(Weak::upgrade)
-        {
+        if let Some(manifest) = cached_manifest(&key)? {
             return Ok(manifest);
         }
     }
     let bytes = load_manifest_bytes(root, generation_id)?;
+    if let Some(manifest) = cached_manifest(&key)? {
+        return Ok(manifest);
+    }
     let manifest = if bytes.starts_with(MANIFEST_DELTA_PREFIX) {
         let delta: StoredManifestDeltaV1 = serde_json::from_slice(&bytes)?;
         if serde_json::to_vec(&delta)? != bytes
@@ -215,6 +212,15 @@ fn load_materialized_manifest(
     cache.retain(|_, manifest| manifest.strong_count() != 0);
     cache.insert(key, Arc::downgrade(&manifest));
     Ok(manifest)
+}
+
+fn cached_manifest(key: &ManifestCacheKey) -> Result<Option<Arc<GenerationManifest>>> {
+    Ok(MANIFEST_CACHE
+        .get_or_init(|| Mutex::new(BTreeMap::new()))
+        .lock()
+        .map_err(|_| IndexError::NonCanonicalManifest)?
+        .get(key)
+        .and_then(Weak::upgrade))
 }
 
 fn materialize_delta(
@@ -457,14 +463,15 @@ pub fn write_manifest(
 
 pub fn prepare_successor_manifest(
     root: &Path,
-    manifest: &GenerationManifest,
+    manifest: Arc<GenerationManifest>,
     base: Option<(&str, &GenerationManifest)>,
 ) -> Result<PreparedManifest> {
     let full = || -> Result<PreparedManifest> {
-        let bytes = serde_json::to_vec(manifest)?;
+        let bytes = serde_json::to_vec(&manifest)?;
         Ok(PreparedManifest {
             generation_id: sha256_hex(&bytes),
             bytes,
+            materialized: Arc::clone(&manifest),
         })
     };
     let Some((base_generation_id, base)) = base else {
@@ -540,6 +547,7 @@ pub fn prepare_successor_manifest(
     Ok(PreparedManifest {
         generation_id: sha256_hex(&bytes),
         bytes,
+        materialized: manifest,
     })
 }
 
@@ -610,11 +618,15 @@ fn accumulated_manifest_changes(
 }
 
 pub fn write_prepared_manifest(root: &Path, manifest: &PreparedManifest) -> Result<()> {
-    Ok(write_manifest_bytes(
-        root,
-        &manifest.generation_id,
-        &manifest.bytes,
-    )?)
+    write_manifest_bytes(root, &manifest.generation_id, &manifest.bytes)?;
+    let key = (root.to_path_buf(), manifest.generation_id.clone());
+    let mut cache = MANIFEST_CACHE
+        .get_or_init(|| Mutex::new(BTreeMap::new()))
+        .lock()
+        .map_err(|_| IndexError::NonCanonicalManifest)?;
+    cache.retain(|_, manifest| manifest.strong_count() != 0);
+    cache.insert(key, Arc::downgrade(&manifest.materialized));
+    Ok(())
 }
 
 pub fn meta_generation(metas: &IndexMeta) -> BTreeMap<String, Option<u64>> {
