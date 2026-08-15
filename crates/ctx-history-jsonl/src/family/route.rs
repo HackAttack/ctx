@@ -1545,6 +1545,17 @@ fn capture_partial_members<R: JsonlFamilyRuntime>(
                 return Ok(false);
             }
         }
+        let Ok(checkpoint) = decode_checkpoint(adapter, leaf, &base) else {
+            return Ok(false);
+        };
+        let retained = checkpoint.physical.source_observation();
+        let current = leaf.observation();
+        let unchanged = retained == current;
+        let append_candidate =
+            current.length() > retained.length() && retained.same_stable_file(current);
+        if !unchanged && !append_candidate {
+            return Ok(false);
+        }
         bases.push(base);
     }
     reset_terminal(resident)?;

@@ -113,11 +113,11 @@ pub use lingma::{
     LingmaDiscoveryUnavailable, LingmaInventorySelector, LingmaVscodeClient, LingmaVscodeProfile,
 };
 
-pub use resolvers::PathPresence;
 pub use resolvers::{
     path_presence, CrushDiscoveredProjectInventory, CrushProjectInventorySelector,
     CrushProjectInventorySelectorError,
 };
+pub use resolvers::{PathPresence, SourceAdmission};
 pub use specs::{provider_source_spec, provider_source_specs};
 pub use types::{
     provider_source_status_reason, DiscoveryIssue, DiscoveryIssueKind, DiscoveryReport,

@@ -373,6 +373,7 @@ pub struct SourceBackedRefreshProgressUpdate {
     pub exact_scan_progress: Option<SourceBackedExactScanProgress>,
 }
 
+#[derive(Clone)]
 pub struct SourceBackedRefreshExecution<'a> {
     pub data_root: &'a Path,
     pub index_root: &'a Path,
