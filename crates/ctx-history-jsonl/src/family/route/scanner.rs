@@ -350,6 +350,12 @@ impl<R: JsonlFamilyRuntime> JsonlFamilyExecutionIo<R> {
         self.reader.execution_certified_prefix_end()
     }
 
+    /// Whether the physical reader resumed at the certified frontier and will
+    /// expose only appended records to this executor.
+    pub fn is_direct_append_resume(&self) -> bool {
+        self.reader.execution_is_direct_append_resume()
+    }
+
     pub fn release_record_buffer(&mut self) -> JsonlResult<(), JsonlRuntimeError<R>> {
         self.reader.release_execution_record_buffer()
     }

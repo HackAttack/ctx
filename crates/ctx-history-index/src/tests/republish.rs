@@ -3,6 +3,7 @@ use std::{
     collections::BTreeSet,
     env, io,
     process::{Child, Command, Stdio},
+    sync::Arc,
     thread,
     time::{Duration, Instant},
 };
@@ -567,10 +568,11 @@ fn unknown_core_fingerprint_fails_all_reads_and_never_starts_source_rebuild() {
         .unwrap();
     let index = open_slot_index(predecessor.root(), pointer.active()).unwrap();
     let metas = index.load_metas().unwrap();
-    let mut manifest = load_publication_for_metas(predecessor.root(), &metas)
+    let manifest = load_publication_for_metas(predecessor.root(), &metas)
         .unwrap()
         .into_parts()
         .1;
+    let mut manifest = Arc::unwrap_or_clone(manifest);
     let unknown = "f".repeat(64);
     assert_ne!(unknown, current_core_record_contract_fingerprint());
     manifest.core_record_contract_fingerprint = unknown.clone();
@@ -629,10 +631,11 @@ fn schema_18_rejects_the_retired_predecessor_fingerprint_policy_pair() {
         .unwrap();
     let index = open_slot_index(generation.root(), pointer.active()).unwrap();
     let metas = index.load_metas().unwrap();
-    let mut manifest = load_publication_for_metas(generation.root(), &metas)
+    let manifest = load_publication_for_metas(generation.root(), &metas)
         .unwrap()
         .into_parts()
         .1;
+    let mut manifest = Arc::unwrap_or_clone(manifest);
     manifest.core_record_contract_fingerprint = RETIRED_CORE_FINGERPRINT.to_owned();
     manifest.policy_schema_hash = RETIRED_SOURCE_GENERATION_POLICY_HASH.to_owned();
     publish_unchecked_generation(generation.root(), &index, manifest, &[], Vec::new());
@@ -893,7 +896,10 @@ fn forced_copy_fallback_is_bounded_instrumented_and_migrates() {
     let hook = CloneTestHookGuard::set(
         CloneTestOptions {
             force_copy: true,
+            force_reflink_fallback: false,
+            force_hardlink_fallback: false,
             available_bytes: None,
+            rechecked_available_bytes: None,
         },
         |_, _| Ok(()),
     );
@@ -928,7 +934,10 @@ fn forced_copy_write_failures_preserve_base_pointer_and_queries() {
         let fault = CloneTestHookGuard::set(
             CloneTestOptions {
                 force_copy: true,
+                force_reflink_fallback: false,
+                force_hardlink_fallback: false,
                 available_bytes: None,
+                rechecked_available_bytes: None,
             },
             move |stage, _| {
                 if stage == CloneStage::BeforeCopy {
@@ -977,35 +986,47 @@ fn native_copy_detects_growth_without_writing_past_authenticated_length() {
     let guard = CloneTestHookGuard::set(
         CloneTestOptions {
             force_copy: true,
+            force_reflink_fallback: false,
+            force_hardlink_fallback: false,
             available_bytes: None,
+            rechecked_available_bytes: None,
         },
         move |stage, relative| {
             if stage == CloneStage::BeforeCopy && relative == Path::new(&source_name) && !grew {
-                std::fs::OpenOptions::new()
-                    .append(true)
-                    .open(&source_for_hook)?
-                    .write_all(b"growth-after-authentication")?;
+                with_temporarily_writable(&source_for_hook, || {
+                    std::fs::OpenOptions::new()
+                        .append(true)
+                        .open(&source_for_hook)?
+                        .write_all(b"growth-after-authentication")
+                })?;
                 grew = true;
             }
             Ok(())
         },
     );
 
-    assert!(matches!(
-        open_writer_error(predecessor.root()),
-        IndexError::CurrentRepublishSourceTopology("source file grew while cloning")
-    ));
+    let error = open_writer_error(predecessor.root());
+    assert!(
+        matches!(
+            error,
+            IndexError::CurrentRepublishSourceTopology("source file grew while cloning")
+                | IndexError::ConcurrentGenerationChange
+                | IndexError::ChecksumMismatch
+        ),
+        "{error:?}"
+    );
     assert_eq!(
         fs::read(predecessor.root().join("active-generation.json")).unwrap(),
         pointer_before
     );
     drop(guard);
-    std::fs::OpenOptions::new()
-        .write(true)
-        .open(&source_file)
-        .unwrap()
-        .set_len(original_bytes)
-        .unwrap();
+    with_temporarily_writable(&source_file, || {
+        std::fs::OpenOptions::new()
+            .write(true)
+            .open(&source_file)?
+            .set_len(original_bytes)
+    })
+    .unwrap();
     assert_eq!(
         VerifiedIndex::open(predecessor.root())
             .unwrap()
@@ -1086,7 +1107,10 @@ fn insufficient_clone_headroom_is_rejected_before_writes() {
     let fault = CloneTestHookGuard::set(
         CloneTestOptions {
             force_copy: false,
+            force_reflink_fallback: false,
+            force_hardlink_fallback: false,
             available_bytes: Some(0),
+            rechecked_available_bytes: None,
         },
         |_, _| panic!("headroom rejection must precede clone work"),
     );

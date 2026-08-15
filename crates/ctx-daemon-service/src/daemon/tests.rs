@@ -1,4 +1,3 @@
-mod recovery_cadence;
 #[path = "tests/startup_recovery.rs"]
 mod startup_recovery;
 
@@ -896,7 +895,7 @@ fn due_consumer_retry_wait_loop_blocks_and_wakes_when_query_becomes_idle() -> Re
 }
 
 #[test]
-fn due_dirty_route_wait_is_classified_as_scheduled_refresh_instead_of_spinning() {
+fn due_dirty_route_wakes_the_scheduler_immediately() {
     let coordinator =
         CoreRefreshEngine::with_executor(Arc::new(|_: SourceBackedRefreshExecution<'_>| {
             anyhow::bail!("executor must remain idle")
@@ -905,10 +904,7 @@ fn due_dirty_route_wait_is_classified_as_scheduled_refresh_instead_of_spinning()
         .expect("route identity");
     coordinator.reconcile_watch_routes([route], EventWatermark::new(1, 0), 0);
     let now = Instant::now();
-    let mut runtime = DaemonRuntime::default();
-    runtime
-        .background_refresh_cadence
-        .record_completion(now, now);
+    let runtime = DaemonRuntime::default();
 
     let wait_for = daemon_wait_duration(
         &runtime,
@@ -917,36 +913,31 @@ fn due_dirty_route_wait_is_classified_as_scheduled_refresh_instead_of_spinning()
         now,
     );
 
-    assert_eq!(
-        wait_for,
-        super::super::daemon_scheduler::DAEMON_BACKGROUND_REFRESH_MIN_REST
-    );
-    assert!(!daemon_scheduled_refresh_due(
-        &runtime,
-        Some(&coordinator),
-        now,
-        1_000,
-    ));
-    assert!(daemon_scheduled_refresh_due(
-        &runtime,
-        Some(&coordinator),
-        now + super::super::daemon_scheduler::DAEMON_BACKGROUND_REFRESH_MIN_REST,
-        1_000,
-    ));
+    assert_eq!(wait_for, StdDuration::ZERO);
+    assert!(daemon_scheduled_refresh_due(Some(&coordinator), 1_000));
 }
 
 #[test]
-fn pending_source_refresh_wait_respects_retry_backoff() {
+fn pending_source_refresh_wait_ignores_unreachable_work_until_retry() {
     let coordinator =
         CoreRefreshEngine::with_executor(Arc::new(|_: SourceBackedRefreshExecution<'_>| {
             anyhow::bail!("executor must remain backed off")
         }));
     coordinator.enqueue_for_test(None);
+    let route = ctx_history_index::SourceRouteIdentity::from_sha256("cd".repeat(32))
+        .expect("route identity");
+    coordinator.reconcile_watch_routes([route], EventWatermark::new(1, 0), 0);
     let now = Instant::now();
     let mut runtime = DaemonRuntime::default();
     runtime.history_retry.consecutive_failures = 1;
     runtime.history_retry.retry_not_before = Some(now + StdDuration::from_secs(5));
     runtime.history_retry.retry_not_before_at_ms = Some(utc_now().timestamp_millis() + 5_000);
+    runtime.browser_handoff_next_due = Some(now);
+    runtime.semantic_retry.consecutive_failures = 1;
+    runtime.semantic_retry.retry_not_before = Some(now);
+    runtime.pro_retry.consecutive_failures = 1;
+    runtime.pro_retry.retry_not_before = Some(now);
+    runtime.consumer_retry_deferral.retry_at = Some(now + StdDuration::from_millis(1));
 
     let wait_for = daemon_wait_duration(
         &runtime,
@@ -957,6 +948,7 @@ fn pending_source_refresh_wait_respects_retry_backoff() {
 
     assert!(wait_for > StdDuration::from_secs(4));
     assert!(wait_for <= StdDuration::from_secs(5));
+    assert!(daemon_scheduled_refresh_due(Some(&coordinator), 1_000));
 }
 
 #[test]

@@ -7,23 +7,28 @@ use ctx_history_index_format::{
 };
 use std::collections::BTreeMap;
 
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 thread_local! {
     static BASE_MANIFEST_SOURCE_MATERIALIZATIONS: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
     static PARTIAL_BASE_ROUTE_MEMBER_MATERIALIZATIONS: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+    static SOURCE_REPLACEMENT_MANIFESTS: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
 }
 
-#[cfg(test)]
-pub(crate) fn reset_manifest_materialization_visits() {
+#[cfg(any(test, feature = "test-support"))]
+#[doc(hidden)]
+pub fn reset_manifest_materialization_visits() {
     BASE_MANIFEST_SOURCE_MATERIALIZATIONS.with(|visits| visits.set(0));
     PARTIAL_BASE_ROUTE_MEMBER_MATERIALIZATIONS.with(|visits| visits.set(0));
+    SOURCE_REPLACEMENT_MANIFESTS.with(|visits| visits.set(0));
 }
 
-#[cfg(test)]
-pub(crate) fn manifest_materialization_visits() -> (u64, u64) {
+#[cfg(any(test, feature = "test-support"))]
+#[doc(hidden)]
+pub fn manifest_materialization_visits() -> (u64, u64, u64) {
     (
         BASE_MANIFEST_SOURCE_MATERIALIZATIONS.with(std::cell::Cell::get),
         PARTIAL_BASE_ROUTE_MEMBER_MATERIALIZATIONS.with(std::cell::Cell::get),
+        SOURCE_REPLACEMENT_MANIFESTS.with(std::cell::Cell::get),
     )
 }
 
@@ -71,11 +76,12 @@ impl GenerationWriter {
                 "publication metadata republish requires an active generation",
             ))?;
         let generation_id = self
-            .base_manifest()
+            .base_publication
+            .as_ref()
             .ok_or(IndexError::WriterInvariant(
-                "publication metadata republish requires a base manifest",
+                "publication metadata republish requires a base publication",
             ))?
-            .generation_id()?;
+            .generation_id();
         if generation_id != expected_generation_id
             || pointer.active().generation_id() != expected_generation_id
         {
@@ -125,11 +131,17 @@ impl GenerationWriter {
                     self.active_pointer
                         .as_ref()
                         .map(ActiveGenerationPointer::active),
+                    self.writer_options.memory_bytes,
                 )?;
                 self.index = candidate.index;
                 self.fields = fields_from_schema(&self.index.schema())?;
                 validate_schema(&self.index.schema())?;
                 self.candidate_directory_name = Some(candidate.directory_name);
+                self.candidate_physical_proof = self
+                    .active_pointer
+                    .as_ref()
+                    .map(|_| candidate.physical_proof);
+                self.candidate_activation_fence = Some(candidate.activation_fence);
             }
 
             let writer = construct_index_writer_with_retry(&self.index, &self.writer_options)?;
@@ -138,9 +150,9 @@ impl GenerationWriter {
                 .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
             let current_metas = self.index.load_metas()?;
             let expected_generation = self
-                .base_manifest()
-                .map(GenerationManifest::generation_id)
-                .transpose()?;
+                .base_publication
+                .as_ref()
+                .map(PinnedPublication::generation_id);
             let current_generation = payload_generation_id(&current_metas)?;
             let expected_segments = self
                 .base_publication
@@ -149,7 +161,7 @@ impl GenerationWriter {
                 .map(searcher_generation)
                 .unwrap_or_default();
             if current_metas.opstamp != self.base_opstamp
-                || current_generation != expected_generation
+                || current_generation.as_deref() != expected_generation
                 || meta_generation(&current_metas) != expected_segments
             {
                 return Err(IndexError::ConcurrentGenerationChange);
@@ -367,7 +379,7 @@ impl GenerationWriter {
             }
         }
 
-        let manifest = self.next_manifest()?;
+        let manifest = std::sync::Arc::new(self.next_manifest()?);
         if finish_identical_staging(
             &mut self,
             &manifest,
@@ -387,16 +399,24 @@ impl GenerationWriter {
         // and inventory revalidation below succeeds, so observations sampled
         // by the owner cannot describe state newer than the Core projection
         // that the fence accepts.
-        let generation_id = manifest.generation_id()?;
+        let prepared_manifest = prepare_successor_manifest(
+            &self.root,
+            std::sync::Arc::clone(&manifest),
+            self.base_publication
+                .as_ref()
+                .map(|base| (base.generation_id(), base.manifest())),
+        )?;
+        let generation_id = prepared_manifest.generation_id().to_owned();
         let publication_metadata =
             metadata_factory(PublicationMetadataContext::new(&generation_id, &manifest))?;
 
         self.writer_mut()?;
         let candidate_path = self.candidate_path()?;
         let previous_generation_id = self
-            .base_manifest()
-            .map(GenerationManifest::generation_id)
-            .transpose()?;
+            .base_publication
+            .as_ref()
+            .map(PinnedPublication::generation_id)
+            .map(str::to_owned);
         let root = self.root.clone();
         let mut prepared = self
             .writer
@@ -448,7 +468,7 @@ impl GenerationWriter {
                     return Err(error);
                 }
             };
-        if let Err(error) = write_manifest(&root, &generation_id, &manifest) {
+        if let Err(error) = write_prepared_manifest(&root, &prepared_manifest) {
             let _ = prepared.abort();
             return Err(error);
         }
@@ -503,6 +523,19 @@ impl GenerationWriter {
         }
         report_progress(PublicationStage::Syncing)?;
         sync_generation(&candidate_path)?;
+        if let Some(proof) = self.candidate_physical_proof.as_mut() {
+            prime_candidate_physical_proof(
+                &self.index,
+                &candidate_path,
+                self.active_pointer.as_ref(),
+                proof,
+            )?;
+        }
+        validate_candidate_managed_files(
+            &self.index,
+            &candidate_path,
+            self.active_pointer.as_ref(),
+        )?;
 
         let directory_name =
             self.candidate_directory_name
@@ -546,7 +579,32 @@ impl GenerationWriter {
             hook(&candidate_path);
         }
         report_progress(PublicationStage::Activation)?;
-        match publish_active_generation_pointer(&root, &next_pointer) {
+        let activation_fence =
+            self.candidate_activation_fence
+                .as_ref()
+                .ok_or(IndexError::WriterInvariant(
+                    "verified candidate has no activation fence",
+                ))?;
+        let terminal_index = verified.publication.publication().searcher().index();
+        let expected_audit = verified.publication.physical_integrity_audit();
+        match publish_active_generation_pointer_validated(&root, &next_pointer, || {
+            activation_fence.validate_binding()?;
+            prepared_manifest
+                .verify_persisted(&root)
+                .map_err(|_| ctx_history_index_generation::GenerationError::ChecksumMismatch)?;
+            validate_candidate_managed_files(
+                terminal_index,
+                &candidate_path,
+                self.active_pointer.as_ref(),
+            )?;
+            verify_candidate_physical_fence(
+                terminal_index,
+                &candidate_path,
+                self.active_pointer.as_ref(),
+                expected_audit,
+            )?;
+            activation_fence.validate_binding()
+        }) {
             Ok(PointerPublicationOutcome::Durable) => {}
             Ok(PointerPublicationOutcome::CommittedVisible { detail }) => {
                 return Err(IndexError::CommittedGenerationNeedsRecovery {
@@ -648,6 +706,7 @@ impl GenerationWriter {
             self.active_pointer
                 .as_ref()
                 .map(|pointer| (&*self.root, pointer, pointer.active())),
+            self.candidate_physical_proof.as_ref(),
             report_logical_verification,
         )
         .map_err(|error| match error {
@@ -766,6 +825,17 @@ impl GenerationWriter {
         let Some(directory) = self.candidate_directory_name.take() else {
             return Ok(());
         };
+        if let Some(proof) = self.candidate_physical_proof.as_mut() {
+            proof.clear();
+        }
+        self.candidate_physical_proof = None;
+        let activation_fence =
+            self.candidate_activation_fence
+                .take()
+                .ok_or(IndexError::WriterInvariant(
+                    "candidate generation is missing its activation fence",
+                ))?;
+        activation_fence.validate_binding()?;
         fs::remove_dir_all(self.root.join(INDEX_GENERATIONS_DIRECTORY).join(directory))?;
         sync_directory(&self.root.join(INDEX_GENERATIONS_DIRECTORY))?;
         Ok(())
@@ -773,6 +843,16 @@ impl GenerationWriter {
 
     fn next_manifest(&self) -> Result<GenerationManifest> {
         self.validate_source_route_plan_complete()?;
+        if let Some(base) = self.base_publication.as_ref() {
+            if self.source_replacement_manifest_is_route_stable(base.manifest()) {
+                #[cfg(any(test, feature = "test-support"))]
+                SOURCE_REPLACEMENT_MANIFESTS
+                    .with(|visits| visits.set(visits.get().saturating_add(1)));
+                return base.successor_manifest_from_source_replacements(
+                    staging::manifest_source_replacements(self)?,
+                );
+            }
+        }
         let deleted_sources = self
             .deletions
             .keys()
@@ -819,6 +899,62 @@ impl GenerationWriter {
             source_routes,
         )
     }
+
+    fn source_replacement_manifest_is_route_stable(&self, base: &GenerationManifest) -> bool {
+        if self.pending.is_empty()
+            || !self.deletions.is_empty()
+            || !self.route_deletions.is_empty()
+            || !self.observed_missing_routes.is_empty()
+        {
+            return false;
+        }
+        let Some(routes) = self.present_source_routes.as_deref() else {
+            return false;
+        };
+        if routes.len() != base.source_routes().len()
+            || routes
+                .iter()
+                .zip(base.source_routes())
+                .any(|(current, base)| !current.exact_snapshot_eq(base))
+        {
+            return false;
+        }
+        for (route_identity, delta) in &self.partial_source_route_deltas {
+            if !delta.deletions.is_empty() {
+                return false;
+            }
+            let Some(base_route) = base.source_route(route_identity) else {
+                return false;
+            };
+            for (digest, source) in &delta.upserts {
+                let Some(base_source) = base_route
+                    .sources()
+                    .binary_search_by_key(digest, |source| source.identity().digest())
+                    .ok()
+                    .and_then(|index| base_route.sources().get(index))
+                else {
+                    return false;
+                };
+                if !base_source.exact_descriptor_eq(source) {
+                    return false;
+                }
+            }
+        }
+        self.pending.values().all(|pending| {
+            base.sources
+                .binary_search_by_key(&pending.source.identity().digest(), |source| {
+                    source.observation().source().identity().digest()
+                })
+                .ok()
+                .and_then(|index| base.sources.get(index))
+                .is_some_and(|source| {
+                    source
+                        .observation()
+                        .source()
+                        .exact_descriptor_eq(&pending.source)
+                })
+        })
+    }
 }
 
 fn merge_manifest_sources(
@@ -828,7 +964,7 @@ fn merge_manifest_sources(
 ) -> Vec<CertifiedSource> {
     let mut sources = Vec::with_capacity(base.len().saturating_add(upserts.len()));
     for certificate in base {
-        #[cfg(test)]
+        #[cfg(any(test, feature = "test-support"))]
         BASE_MANIFEST_SOURCE_MATERIALIZATIONS
             .with(|visits| visits.set(visits.get().saturating_add(1)));
         let digest = source_sort_key(certificate.observation().source());
@@ -849,7 +985,7 @@ fn merge_partial_route_members(
     let mut upserts = delta.upserts.clone();
     let mut members = Vec::with_capacity(base.len().saturating_add(upserts.len()));
     for member in base {
-        #[cfg(test)]
+        #[cfg(any(test, feature = "test-support"))]
         PARTIAL_BASE_ROUTE_MEMBER_MATERIALIZATIONS
             .with(|visits| visits.set(visits.get().saturating_add(1)));
         let digest = member.identity().digest();

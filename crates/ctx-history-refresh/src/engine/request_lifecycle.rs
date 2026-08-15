@@ -420,6 +420,7 @@ impl CoreRefreshEngine {
     ) -> Result<(
         BTreeSet<SourceRouteIdentity>,
         SourceBackedRefreshCoveredPublication,
+        BTreeMap<SourceRouteIdentity, SourceBackedRefreshWorkset>,
     )> {
         let now_ms = source_route_ledger_now_ms();
         let mut state = self.lock_state();
@@ -528,7 +529,26 @@ impl CoreRefreshEngine {
             .get(request_id)
             .map(ManualAllContinuation::covered_publication)
             .unwrap_or_default();
-        Ok((covered_route_ids, covered_publication))
+        let incremental_exact = find_attempt(&state, request_id).is_some_and(|attempt| {
+            attempt.reconciliation_demand == SourceBackedReconciliationDemand::Incremental
+                && matches!(scope, SourceBackedRefreshScope::Exact(_))
+        });
+        let admitted_routes = state
+            .route_admissions
+            .get(request_id)
+            .into_iter()
+            .flatten()
+            .map(|admission| admission.route().clone())
+            .collect::<Vec<_>>();
+        let mut route_worksets = BTreeMap::new();
+        for route in admitted_routes {
+            if let Some(workset) = state.route_worksets.remove(&route) {
+                if incremental_exact {
+                    route_worksets.insert(route, workset);
+                }
+            }
+        }
+        Ok((covered_route_ids, covered_publication, route_worksets))
     }
 
     #[cfg(any(test, feature = "test-support"))]
@@ -538,7 +558,7 @@ impl CoreRefreshEngine {
         scope: &SourceBackedRefreshScope,
     ) -> Result<BTreeSet<SourceRouteIdentity>> {
         self.admit_refresh_scope(request_id, scope)
-            .map(|(routes, _)| routes)
+            .map(|(routes, _, _)| routes)
     }
 
     fn run_next_with_terminal_success<Execute, Probe, Terminal, Published, Failed>(

@@ -15,6 +15,14 @@ local usage aggregates, and optional Local Pro data.
 
 ## Boundaries
 
+The local integrity boundary assumes that another process running as the same
+OS user does not maliciously modify the owner-private ctx data root while ctx is
+using it. Such a process can directly replace the active-generation pointer or
+rewrite candidate bytes regardless of clone strategy; defending against it
+requires an OS sandbox or a distinct service identity. Generation fences still
+fail closed on ordinary concurrent mutation, replacement, truncation, and
+corruption within the supported single-owner lifecycle.
+
 The default-enabled persistent daemon and explicit provider-source import route
 write Core generations and derived state only under the configured ctx data
 root. Search and MCP may send a bounded, content-free daemon wake, but query

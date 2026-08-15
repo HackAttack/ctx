@@ -10,7 +10,7 @@ use crate::{
             observe_opened_file, observe_opened_file_allow_append, JsonlFamilyAdapter,
             JsonlFamilyAppendMode, JsonlFamilyBaseScope, JsonlFamilyExecutionIo,
             JsonlFamilyInventory, JsonlFamilyInventoryMode, JsonlFamilyLeaf,
-            JsonlFamilyMembershipObservation, JsonlFamilyProjectionMode,
+            JsonlFamilyMembershipObservation, JsonlFamilyOpenedMember, JsonlFamilyProjectionMode,
             JsonlFamilyRootMissingMode, JsonlFamilySemanticExecutor, JsonlFamilySemanticPage,
             JsonlFamilySemanticPreflight, JsonlFamilySemanticSummary, JsonlFamilyWorkerContext,
             JsonlFileObservation, JsonlRecordFraming,
@@ -56,6 +56,8 @@ struct CodexSessionSemanticExecutorV0<B: ProviderRuntimeBinding> {
     #[cfg(any(test, feature = "test-support", ctx_codex_causal_qualification))]
     state: Arc<Mutex<CodexSessionJsonlFamilyStateV0>>,
     scanner: Option<CodexNativeScanner>,
+    checkpoint: Option<super::super::checkpoint::CodexSemanticCheckpoint>,
+    append_checkpoint_required: bool,
     #[cfg(any(test, feature = "test-support", ctx_codex_causal_qualification))]
     native_session_id: String,
     #[cfg(any(test, feature = "test-support", ctx_codex_causal_qualification))]
@@ -66,7 +68,7 @@ impl<B: ProviderRuntimeBinding> CodexSessionSemanticExecutorV0<B> {
     fn new(
         state: Arc<Mutex<CodexSessionJsonlFamilyStateV0>>,
         leaf: &JsonlFamilyLeaf,
-        _checkpoint: Option<&TypedKey>,
+        checkpoint: Option<&TypedKey>,
         base_event_lookup: Option<ProviderBaseEventLookup<B>>,
         projection_mode: JsonlFamilyProjectionMode,
     ) -> Result<Self> {
@@ -81,9 +83,15 @@ impl<B: ProviderRuntimeBinding> CodexSessionSemanticExecutorV0<B> {
         if plan.0.source_path != leaf.source_path() {
             return Err(CaptureError::SourceChangedDuringCapture);
         }
-        // The shared family owns all append authority. Historical Codex
-        // provider payloads are inert; the mandatory semantic preflight below
-        // reconstructs owner and continuation state from the certified prefix.
+        let append_checkpoint_required =
+            projection_mode == JsonlFamilyProjectionMode::CertifiedAppend;
+        let checkpoint = match (projection_mode, checkpoint) {
+            (JsonlFamilyProjectionMode::CertifiedAppend, Some(checkpoint)) => {
+                super::super::checkpoint::CodexSemanticCheckpoint::decode_key(checkpoint).ok()
+            }
+            (JsonlFamilyProjectionMode::CertifiedAppend, None)
+            | (JsonlFamilyProjectionMode::Cold | JsonlFamilyProjectionMode::Replacement, _) => None,
+        };
         let base_event_lookup = match projection_mode {
             JsonlFamilyProjectionMode::CertifiedAppend => Some(base_event_lookup.ok_or(
                 CaptureError::SystemInvariant("Codex semantic append has no base event lookup"),
@@ -96,6 +104,8 @@ impl<B: ProviderRuntimeBinding> CodexSessionSemanticExecutorV0<B> {
             #[cfg(any(test, feature = "test-support", ctx_codex_causal_qualification))]
             state,
             scanner: Some(scanner),
+            checkpoint,
+            append_checkpoint_required,
             #[cfg(any(test, feature = "test-support", ctx_codex_causal_qualification))]
             native_session_id: plan.2,
             #[cfg(any(test, feature = "test-support", ctx_codex_causal_qualification))]
@@ -111,6 +121,22 @@ impl<B: ProviderRuntimeBinding> JsonlFamilySemanticExecutor for CodexSessionSema
         &mut self,
         input: &mut JsonlFamilyExecutionIo<B>,
     ) -> Result<JsonlFamilySemanticPreflight> {
+        if self.append_checkpoint_required {
+            let Some(checkpoint) = self.checkpoint.as_ref() else {
+                return Ok(JsonlFamilySemanticPreflight::RetryReplacement);
+            };
+            if self
+                .scanner
+                .as_mut()
+                .ok_or(CaptureError::SystemInvariant(
+                    "Codex semantic executor lost its scanner",
+                ))?
+                .restore_semantic_checkpoint(checkpoint)
+                .is_err()
+            {
+                return Ok(JsonlFamilySemanticPreflight::RetryReplacement);
+            }
+        }
         let retry = self
             .scanner
             .as_mut()
@@ -173,10 +199,14 @@ impl<B: ProviderRuntimeBinding> JsonlFamilySemanticExecutor for CodexSessionSema
             state.causal.observe_scan(&self.native_session_id, counters);
             state.stage_pending = true;
         }
+        let provider_checkpoint = scan
+            .checkpoint
+            .map(|checkpoint| checkpoint.encode_key().map_err(CaptureError::from))
+            .transpose()?;
         Ok(JsonlFamilySemanticSummary::new(
             scan.counters.retained_records,
             scan.counters.rejected_complete_records,
-            None,
+            provider_checkpoint,
         ))
     }
 }
@@ -297,6 +327,7 @@ impl<B: ProviderRuntimeBinding> CodexSessionJsonlFamilyAdapterV0<B> {
         route_root: &Path,
         roots: &[PathBuf],
     ) -> Result<JsonlFamilyInventory> {
+        let completed_stage = self.run_pending_stage_observer()?;
         // Shared JSONL invokes this only after route admission and freezes the
         // opening inventory before leaf workers start.
         let prepared = self.generation.prepared()?;
@@ -350,7 +381,7 @@ impl<B: ProviderRuntimeBinding> CodexSessionJsonlFamilyAdapterV0<B> {
             authorities.into_values().collect(),
             leaves,
         )?;
-        install_prepared_state_v0(&self.state, &plans, false)?;
+        install_prepared_state_v0(&self.state, &plans, completed_stage)?;
         Ok(inventory)
     }
 
@@ -449,6 +480,19 @@ impl<B: ProviderRuntimeBinding> JsonlFamilyAdapter for CodexSessionJsonlFamilyAd
         true
     }
 
+    fn append_only_same_object_v1(&self) -> bool {
+        self.generation.is_session_tree()
+    }
+
+    fn accepts_direct_append_checkpoint(&self, checkpoint: &TypedKey) -> bool {
+        super::super::checkpoint::CodexSemanticCheckpoint::decode_key(checkpoint)
+            .is_ok_and(|checkpoint| checkpoint.direct_append_safe())
+    }
+
+    fn allows_direct_append_for_leaf(&self, leaf: &JsonlFamilyLeaf) -> bool {
+        self.generation.is_session_tree() && leaf.observation().supports_exact_revalidation()
+    }
+
     fn root_missing_mode(&self) -> JsonlFamilyRootMissingMode {
         if self.generation.is_session_tree() {
             JsonlFamilyRootMissingMode::Unavailable
@@ -475,6 +519,42 @@ impl<B: ProviderRuntimeBinding> JsonlFamilyAdapter for CodexSessionJsonlFamilyAd
                 "Codex generation route has no discovery authority",
             ))
         }
+    }
+
+    fn partial_member_roots(&self, _root: &Path) -> Option<Vec<PathBuf>> {
+        self.generation.session_tree_roots().map(<[_]>::to_vec)
+    }
+
+    fn bind_partial_member(
+        &self,
+        member: &JsonlFamilyOpenedMember<'_>,
+    ) -> Result<Option<JsonlFamilyLeaf>> {
+        if !self.generation.is_session_tree() {
+            return Ok(None);
+        }
+        let plan = match super::catalog::bind_codex_partial_member_v0(member) {
+            Ok(plan) => plan,
+            Err(_) => return Ok(None),
+        };
+        let leaf = JsonlFamilyLeaf::bind_frozen_observed(
+            plan.1.clone(),
+            member.source_path().to_path_buf(),
+            Arc::clone(member.authority()),
+            member.authority_path().to_path_buf(),
+            TypedKey::utf8(&plan.2)
+                .map_err(|error| CaptureError::InvalidPayload(error.to_string()))?,
+            member.observation().clone(),
+        );
+        self.state
+            .lock()
+            .map_err(|_| codex_family_state_error())?
+            .plans
+            .insert(plan.1.clone(), plan);
+        Ok(Some(leaf))
+    }
+
+    fn prepare_partial_member_fallback(&self) -> Result<()> {
+        self.generation.prepare_selected().map_err(Into::into)
     }
 
     fn observe_terminal_membership(
@@ -562,19 +642,5 @@ impl<B: ProviderRuntimeBinding> JsonlFamilyAdapter for CodexSessionJsonlFamilyAd
             base_event_lookup,
             mode,
         )?)))
-    }
-
-    fn base_source_path(&self, _certificate: &CertifiedSource) -> Result<PathBuf> {
-        if let Some(roots) = self.generation.session_tree_roots() {
-            roots.first().cloned().ok_or(CaptureError::SystemInvariant(
-                "Codex JSONL family has no route root",
-            ))
-        } else if let Some(input) = self.generation.explicit_session_input() {
-            Ok(input.path().to_path_buf())
-        } else {
-            Err(CaptureError::SystemInvariant(
-                "Codex generation route has no base source path",
-            ))
-        }
     }
 }

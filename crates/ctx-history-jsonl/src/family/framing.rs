@@ -5,7 +5,7 @@ use std::{
 
 use sha2::{Digest, Sha256};
 
-use super::{JsonlFamilyError, JsonlResult, MAX_PROVIDER_JSONL_LINE_BYTES};
+use super::{JsonlFamilyError, JsonlResult, JsonlResumableSha256, MAX_PROVIDER_JSONL_LINE_BYTES};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct JsonlRecordFraming {
@@ -55,9 +55,9 @@ trait JsonlRecordDigest {
 }
 
 struct FullAndCompleteSha256<'a> {
-    full_hasher: &'a mut Sha256,
-    complete_hasher: &'a mut Sha256,
-    complete_before_record: Sha256,
+    full_hasher: &'a mut JsonlResumableSha256,
+    complete_hasher: &'a mut JsonlResumableSha256,
+    complete_before_record: JsonlResumableSha256,
     record_hasher: Sha256,
 }
 
@@ -82,23 +82,23 @@ impl JsonlRecordDigest for FullAndCompleteSha256<'_> {
 }
 
 struct CompleteSha256<'a> {
-    complete_hasher: &'a mut Sha256,
-    complete_before_record: Sha256,
+    complete_hasher: &'a mut JsonlResumableSha256,
+    complete_before_record: JsonlResumableSha256,
     record_hasher: Sha256,
 }
 
 struct CompleteAndBoundedPrefixSha256<'a> {
-    complete_hasher: &'a mut Sha256,
-    complete_before_record: Sha256,
+    complete_hasher: &'a mut JsonlResumableSha256,
+    complete_before_record: JsonlResumableSha256,
     record_hasher: Sha256,
     bounded_prefix_hasher: &'a mut Sha256,
     bounded_prefix_remaining: &'a mut u64,
 }
 
 struct FullCompleteAndBoundedPrefixSha256<'a> {
-    full_hasher: &'a mut Sha256,
-    complete_hasher: &'a mut Sha256,
-    complete_before_record: Sha256,
+    full_hasher: &'a mut JsonlResumableSha256,
+    complete_hasher: &'a mut JsonlResumableSha256,
+    complete_before_record: JsonlResumableSha256,
     record_hasher: Sha256,
     bounded_prefix_hasher: &'a mut Sha256,
     bounded_prefix_remaining: &'a mut u64,
@@ -194,8 +194,8 @@ impl JsonlRecordDigest for Unhashed {
 pub fn read_bounded_record<E: JsonlFamilyError>(
     reader: &mut BufReader<File>,
     storage: &mut Vec<u8>,
-    full_hasher: &mut Sha256,
-    complete_hasher: &mut Sha256,
+    full_hasher: &mut JsonlResumableSha256,
+    complete_hasher: &mut JsonlResumableSha256,
     maximum_bytes: u64,
     framing: JsonlRecordFraming,
     source_changed: fn() -> E,
@@ -222,7 +222,7 @@ pub fn read_bounded_record<E: JsonlFamilyError>(
 pub(crate) fn read_bounded_record_complete_sha256<E: JsonlFamilyError>(
     reader: &mut BufReader<File>,
     storage: &mut Vec<u8>,
-    complete_hasher: &mut Sha256,
+    complete_hasher: &mut JsonlResumableSha256,
     maximum_bytes: u64,
     framing: JsonlRecordFraming,
     source_changed: fn() -> E,
@@ -248,7 +248,7 @@ pub(crate) fn read_bounded_record_complete_sha256<E: JsonlFamilyError>(
 pub fn read_bounded_record_complete_and_prefix_sha256<E: JsonlFamilyError>(
     reader: &mut BufReader<File>,
     storage: &mut Vec<u8>,
-    complete_hasher: &mut Sha256,
+    complete_hasher: &mut JsonlResumableSha256,
     bounded_prefix: (&mut Sha256, &mut u64),
     maximum_bytes: u64,
     framing: JsonlRecordFraming,
@@ -278,8 +278,8 @@ pub fn read_bounded_record_complete_and_prefix_sha256<E: JsonlFamilyError>(
 pub fn read_bounded_record_full_complete_and_prefix_sha256<E: JsonlFamilyError>(
     reader: &mut BufReader<File>,
     storage: &mut Vec<u8>,
-    full_hasher: &mut Sha256,
-    complete_hasher: &mut Sha256,
+    full_hasher: &mut JsonlResumableSha256,
+    complete_hasher: &mut JsonlResumableSha256,
     bounded_prefix_hasher: &mut Sha256,
     bounded_prefix_remaining: &mut u64,
     maximum_bytes: u64,
@@ -449,8 +449,8 @@ mod tests {
         let mut unhashed_reader = BufReader::with_capacity(64 * 1024, File::open(&path).unwrap());
         let mut hashed_storage = Vec::new();
         let mut unhashed_storage = Vec::new();
-        let mut full_hasher = Sha256::new();
-        let mut complete_hasher = Sha256::new();
+        let mut full_hasher = JsonlResumableSha256::new();
+        let mut complete_hasher = JsonlResumableSha256::new();
         let mut offset = 0_u64;
         let mut complete_end = 0_u64;
 
@@ -504,11 +504,11 @@ mod tests {
         let frozen_end = usize::try_from(frozen_len).unwrap();
         assert_eq!(offset, frozen_len);
         assert_eq!(
-            <[u8; 32]>::from(full_hasher.finalize()),
+            full_hasher.digest(),
             <[u8; 32]>::from(Sha256::digest(&contents[..frozen_end]))
         );
         assert_eq!(
-            <[u8; 32]>::from(complete_hasher.finalize()),
+            complete_hasher.digest(),
             <[u8; 32]>::from(Sha256::digest(
                 &contents[..usize::try_from(complete_end).unwrap()]
             ))
@@ -540,8 +540,8 @@ mod tests {
         let mut unhashed_reader = BufReader::new(File::open(&path).unwrap());
         let mut hashed_storage = Vec::new();
         let mut unhashed_storage = Vec::new();
-        let mut full_hasher = Sha256::new();
-        let mut complete_hasher = Sha256::new();
+        let mut full_hasher = JsonlResumableSha256::new();
+        let mut complete_hasher = JsonlResumableSha256::new();
 
         read_bounded_record(
             &mut hashed_reader,

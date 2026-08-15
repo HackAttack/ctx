@@ -18,7 +18,7 @@ use crate::{
     PhysicalIntegrityAudit, Result, INDEX_GENERATIONS_DIRECTORY, MANIFEST_DIRECTORY,
 };
 
-const CERTIFICATION_VERSION: u32 = 2;
+const CERTIFICATION_VERSION: u32 = 3;
 const CERTIFICATION_SUFFIX: &str = ".physical-certification.json";
 const CERTIFICATION_DIRECTORY: &str = "integrity-certifications";
 const TANTIVY_META_FILE: &str = "meta.json";
@@ -46,12 +46,28 @@ pub struct CertifiedPhysicalIntegrity {
     certification: GenerationIntegrityCertification,
 }
 
+impl CertifiedPhysicalIntegrity {
+    pub(crate) fn certified_artifact(
+        &self,
+        path: &Path,
+    ) -> Option<(ArtifactIdentity, [u8; 32], bool)> {
+        let path = path.to_str()?;
+        self.certification
+            .artifacts
+            .iter()
+            .find(|artifact| artifact.artifact.path == path)
+            .map(|artifact| (artifact.artifact.clone(), artifact.sha256, artifact.sealed))
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct CertifiedArtifact {
     #[serde(flatten)]
     artifact: ArtifactIdentity,
     sha256: [u8; 32],
+    #[serde(default)]
+    sealed: bool,
 }
 
 fn deserialize_artifacts<'de, D>(
@@ -173,6 +189,21 @@ impl FileIdentity {
         #[cfg(not(any(unix, windows)))]
         {
             0
+        }
+    }
+
+    fn is_readonly(&self) -> bool {
+        #[cfg(unix)]
+        {
+            self.mode & 0o222 == 0
+        }
+        #[cfg(windows)]
+        {
+            self.attributes & 0x1 != 0
+        }
+        #[cfg(not(any(unix, windows)))]
+        {
+            false
         }
     }
 
@@ -324,33 +355,38 @@ fn install_certification(
     )?;
     let mut artifacts = Vec::with_capacity(audit.files().len());
     for prior in audit.files() {
-        let current = capture_artifact(
+        let mut current = capture_artifact(
             root,
             &generation_path,
             Path::new(&prior.artifact.path),
             Some(pointer),
         )?;
-        if current.identity != prior.artifact.identity {
-            if allow_link_reclamation
+        if current.identity != prior.artifact.identity
+            && !(allow_link_reclamation
                 && current
                     .identity
-                    .follows_link_reclamation(&prior.artifact.identity)
-            {
-                artifacts.push(CertifiedArtifact {
-                    artifact: current,
-                    sha256: prior.sha256,
-                });
-                continue;
-            }
+                    .follows_link_reclamation(&prior.artifact.identity))
+        {
             return if prior.artifact.same_payload_identity_changed(&current) {
                 Err(IndexError::ConcurrentGenerationChange)
             } else {
                 Err(IndexError::ChecksumMismatch)
             };
         }
+        let sealed = prior.artifact.path != TANTIVY_META_FILE;
+        if sealed {
+            current = seal_artifact(
+                root,
+                &generation_path,
+                Path::new(&prior.artifact.path),
+                pointer,
+                &current,
+            )?;
+        }
         artifacts.push(CertifiedArtifact {
             artifact: current,
             sha256: prior.sha256,
+            sealed,
         });
     }
     let certification = GenerationIntegrityCertification {
@@ -381,6 +417,33 @@ fn install_certification(
         }
     }
     Ok(CertifiedPhysicalIntegrity { certification })
+}
+
+fn seal_artifact(
+    root: &Path,
+    generation_path: &Path,
+    relative_path: &Path,
+    pointer: &ActiveGenerationPointer,
+    expected: &ArtifactIdentity,
+) -> Result<ArtifactIdentity> {
+    let (file, observed) = open_artifact(root, generation_path, relative_path, Some(pointer))?;
+    if observed != *expected {
+        return Err(IndexError::ConcurrentGenerationChange);
+    }
+    if !observed.identity.is_readonly() {
+        let mut permissions = file.metadata()?.permissions();
+        permissions.set_readonly(true);
+        file.set_permissions(permissions)?;
+        file.sync_all()?;
+    }
+    let sealed = recapture_artifact(root, generation_path, relative_path, Some(pointer))?;
+    if !sealed.identity.is_readonly()
+        || !sealed.identity.same_native_file(&observed.identity)
+        || sealed.identity.length() != observed.identity.length()
+    {
+        return Err(IndexError::ConcurrentGenerationChange);
+    }
+    Ok(sealed)
 }
 
 fn matching_certification(
@@ -629,6 +692,69 @@ pub(super) fn open_artifact(
     Err(IndexError::ConcurrentGenerationChange)
 }
 
+pub(crate) fn open_authenticated_artifact(
+    root: &Path,
+    generation_path: &Path,
+    relative_path: &Path,
+    pointer: Option<&ActiveGenerationPointer>,
+) -> Result<(File, ArtifactIdentity)> {
+    open_artifact(root, generation_path, relative_path, pointer)
+}
+
+pub(crate) fn recapture_authenticated_artifact(
+    root: &Path,
+    generation_path: &Path,
+    relative_path: &Path,
+    file: &File,
+    pointer: Option<&ActiveGenerationPointer>,
+) -> Result<ArtifactIdentity> {
+    if relative_path.components().count() != 1 {
+        return Err(IndexError::ChecksumMismatch);
+    }
+    let path = relative_path
+        .to_str()
+        .ok_or(IndexError::ChecksumMismatch)?
+        .to_owned();
+    let artifact_path = generation_path.join(relative_path);
+    let mut unaccounted_observation: Option<(FileIdentity, u64)> = None;
+    let mut stable_unaccounted_attempts = 0_usize;
+    for _ in 0..ARTIFACT_STABLE_SNAPSHOT_ATTEMPTS {
+        let current = file_identity(file).map_err(|_| IndexError::ChecksumMismatch)?;
+        match stable_artifact_link_snapshot(
+            root,
+            &artifact_path,
+            relative_path,
+            file,
+            &current,
+            pointer,
+        )? {
+            ArtifactLinkSnapshot::Stable(identity) => {
+                return Ok(ArtifactIdentity { path, identity });
+            }
+            ArtifactLinkSnapshot::Retry => {
+                unaccounted_observation = None;
+                stable_unaccounted_attempts = 0;
+            }
+            ArtifactLinkSnapshot::Unaccounted { identity, aliases } => {
+                let observation = (identity, aliases);
+                if unaccounted_observation.as_ref() == Some(&observation) {
+                    stable_unaccounted_attempts = stable_unaccounted_attempts
+                        .checked_add(1)
+                        .ok_or(IndexError::CountOverflow)?;
+                } else {
+                    unaccounted_observation = Some(observation);
+                    stable_unaccounted_attempts = 1;
+                }
+                if stable_unaccounted_attempts == ARTIFACT_STABLE_SNAPSHOT_ATTEMPTS {
+                    return Err(IndexError::ChecksumMismatch);
+                }
+            }
+        }
+        std::thread::yield_now();
+    }
+    Err(IndexError::ConcurrentGenerationChange)
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum ArtifactLinkSnapshot {
     Stable(FileIdentity),
@@ -713,6 +839,15 @@ fn stable_artifact_link_snapshot(
 }
 
 pub(super) fn recapture_artifact(
+    root: &Path,
+    generation_path: &Path,
+    relative_path: &Path,
+    pointer: Option<&ActiveGenerationPointer>,
+) -> Result<ArtifactIdentity> {
+    capture_artifact(root, generation_path, relative_path, pointer)
+}
+
+pub(crate) fn capture_artifact_identity(
     root: &Path,
     generation_path: &Path,
     relative_path: &Path,

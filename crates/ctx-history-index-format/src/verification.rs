@@ -33,12 +33,13 @@ use crate::{
     load_publication_for_metas, meta_generation, open_slot_index, searcher_generation,
     stored_verification_record, validate_schema, validate_verification_projection,
     verify_certified_physical_integrity, verify_or_certify_physical_integrity,
-    ActiveGenerationPointer, CertifiedPhysicalIntegrity, CompactIdentity, Fields,
-    GenerationManifest, GenerationSlot, IdentityFieldRole, IndexError, LoadedPublication,
-    PhysicalIntegrityAudit, Result, VerificationRecord,
+    ActiveGenerationPointer, CandidatePhysicalProof, CertifiedPhysicalIntegrity, CompactIdentity,
+    Fields, GenerationManifest, GenerationSlot, IdentityFieldRole, IndexError, LoadedPublication,
+    PhysicalIntegrityAudit, Result, SourceCoreRecordAggregate, VerificationRecord,
 };
+use ctx_history_core::CertifiedSource;
 
-use super::{physical_integrity_audit, verify_physical_integrity};
+use super::{physical_integrity_audit_with_candidate_proof, verify_physical_integrity};
 
 mod lineage;
 mod spill;
@@ -153,7 +154,7 @@ pub fn verify_searcher(searcher: &Searcher, manifest: &GenerationManifest) -> Re
 pub struct PinnedPublication {
     writer_index: Option<Index>,
     searcher: Searcher,
-    manifest: GenerationManifest,
+    manifest: Arc<GenerationManifest>,
     generation_id: String,
     publication_metadata: Option<Arc<[u8]>>,
     fields: Fields,
@@ -180,6 +181,17 @@ impl PinnedPublication {
     #[doc(hidden)]
     pub fn publication_metadata(&self) -> Option<&Arc<[u8]>> {
         self.publication_metadata.as_ref()
+    }
+
+    /// Applies replacements to this already-validated immutable base without
+    /// revalidating inherited certificates or route members.
+    #[doc(hidden)]
+    pub fn successor_manifest_from_source_replacements(
+        &self,
+        replacements: Vec<(CertifiedSource, SourceCoreRecordAggregate)>,
+    ) -> Result<GenerationManifest> {
+        self.manifest
+            .apply_validated_source_replacements(replacements)
     }
 
     #[doc(hidden)]
@@ -420,6 +432,7 @@ pub fn verify_and_bind_publication_candidate(
         topology_authority,
         base,
         base_authority,
+        None,
         || Ok(()),
     )
 }
@@ -432,6 +445,7 @@ pub fn verify_and_bind_publication_candidate_with_progress<P>(
     topology_authority: Option<&ActiveGenerationPointer>,
     base: Option<&PinnedPublication>,
     base_authority: Option<(&Path, &ActiveGenerationPointer, &GenerationSlot)>,
+    candidate_physical_proof: Option<&CandidatePhysicalProof>,
     report_logical_verification: P,
 ) -> std::result::Result<VerifiedCandidatePublication, CandidatePublicationVerificationError>
 where
@@ -457,9 +471,13 @@ where
         ));
     }
     let (generation_id, manifest, publication_metadata) = publication.into_parts();
-    let physical_integrity_audit =
-        physical_integrity_audit(searcher.index(), generation_path, topology_authority)
-            .map_err(|error| CandidatePublicationVerificationError::Candidate(error.into()))?;
+    let physical_integrity_audit = physical_integrity_audit_with_candidate_proof(
+        searcher.index(),
+        generation_path,
+        topology_authority,
+        candidate_physical_proof,
+    )
+    .map_err(|error| CandidatePublicationVerificationError::Candidate(error.into()))?;
     if let Some(base) = base {
         let (root, pointer, slot) = base_authority.ok_or({
             CandidatePublicationVerificationError::Candidate(IndexError::WriterInvariant(
@@ -481,7 +499,7 @@ where
     Ok(VerifiedCandidatePublication {
         publication: VerifiedPublication {
             searcher,
-            manifest: Arc::new(manifest),
+            manifest,
             generation_id,
             publication_metadata,
         },
@@ -539,7 +557,7 @@ pub fn verify_and_bind_reusable_publication(
         .map_err(|error| ReusablePublicationError::Integrity(error.into()))?;
     Ok(VerifiedPublication {
         searcher: publication.searcher,
-        manifest: Arc::new(publication.manifest),
+        manifest: publication.manifest,
         generation_id: publication.generation_id,
         publication_metadata: publication.publication_metadata,
     })

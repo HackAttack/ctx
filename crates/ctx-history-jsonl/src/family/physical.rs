@@ -8,7 +8,7 @@ use sha2::{Digest, Sha256};
 use super::{
     read_bounded_record, read_bounded_record_complete_and_prefix_sha256,
     read_bounded_record_complete_sha256, read_bounded_record_full_complete_and_prefix_sha256,
-    JsonlFamilyError, JsonlRecordFraming, JsonlResult,
+    JsonlFamilyError, JsonlRecordFraming, JsonlResult, JsonlResumableSha256,
 };
 
 const ZSTD_FRAME_MAGIC: [u8; 4] = [0x28, 0xb5, 0x2f, 0xfd];
@@ -37,32 +37,32 @@ impl JsonlPhysicalEncoding {
 #[derive(Debug, Clone)]
 pub enum JsonlPhysicalDigest {
     Complete {
-        complete: Sha256,
+        complete: JsonlResumableSha256,
     },
     FullAndComplete {
-        full: Sha256,
-        complete: Sha256,
+        full: JsonlResumableSha256,
+        complete: JsonlResumableSha256,
     },
     CompleteAndBoundedPrefix {
-        complete: Sha256,
+        complete: JsonlResumableSha256,
         bounded_prefix: Sha256,
         bounded_prefix_remaining: u64,
     },
     FullCompleteAndBoundedPrefix {
-        full: Sha256,
-        complete: Sha256,
+        full: JsonlResumableSha256,
+        complete: JsonlResumableSha256,
         bounded_prefix: Sha256,
         bounded_prefix_remaining: u64,
     },
 }
 
 impl JsonlPhysicalDigest {
-    pub fn complete(complete: Sha256) -> Self {
+    pub fn complete(complete: JsonlResumableSha256) -> Self {
         Self::Complete { complete }
     }
 
     pub fn complete_and_bounded_prefix(
-        complete: Sha256,
+        complete: JsonlResumableSha256,
         bounded_prefix: Sha256,
         bounded_prefix_remaining: u64,
     ) -> Self {
@@ -73,13 +73,13 @@ impl JsonlPhysicalDigest {
         }
     }
 
-    pub fn full_and_complete(full: Sha256, complete: Sha256) -> Self {
+    pub fn full_and_complete(full: JsonlResumableSha256, complete: JsonlResumableSha256) -> Self {
         Self::FullAndComplete { full, complete }
     }
 
     pub fn full_complete_and_bounded_prefix(
-        full: Sha256,
-        complete: Sha256,
+        full: JsonlResumableSha256,
+        complete: JsonlResumableSha256,
         bounded_prefix: Sha256,
         bounded_prefix_remaining: u64,
     ) -> Self {
@@ -91,7 +91,7 @@ impl JsonlPhysicalDigest {
         }
     }
 
-    pub fn complete_hasher(&self) -> &Sha256 {
+    pub fn complete_hasher(&self) -> &JsonlResumableSha256 {
         match self {
             Self::Complete { complete }
             | Self::FullAndComplete { complete, .. }
@@ -100,7 +100,7 @@ impl JsonlPhysicalDigest {
         }
     }
 
-    pub fn full_hasher(&self) -> Option<&Sha256> {
+    pub fn full_hasher(&self) -> Option<&JsonlResumableSha256> {
         match self {
             Self::FullAndComplete { full, .. }
             | Self::FullCompleteAndBoundedPrefix { full, .. } => Some(full),
@@ -483,11 +483,8 @@ impl<E: JsonlFamilyError> JsonlPhysicalStream<E> {
             offset: self.offset,
             next_physical_ordinal: self.next_physical_ordinal,
             complete_prefix_end: self.complete_prefix_end,
-            complete_prefix_sha256: self.digest.complete_hasher().clone().finalize().into(),
-            admitted_eof_sha256: self
-                .digest
-                .full_hasher()
-                .map(|full| full.clone().finalize().into()),
+            complete_prefix_sha256: self.digest.complete_hasher().digest(),
+            admitted_eof_sha256: self.digest.full_hasher().map(JsonlResumableSha256::digest),
             incomplete_tail: self.incomplete_tail,
             exhausted: self.exhausted,
         }
@@ -677,7 +674,10 @@ mod tests {
             0,
             0,
             JsonlRecordFraming::ordinary(),
-            JsonlPhysicalDigest::full_and_complete(Sha256::new(), Sha256::new()),
+            JsonlPhysicalDigest::full_and_complete(
+                JsonlResumableSha256::new(),
+                JsonlResumableSha256::new(),
+            ),
             || SourceIoError::SourceChangedDuringCapture,
         )
         .unwrap();
@@ -700,10 +700,10 @@ mod tests {
         assert_eq!(stream.next_physical_ordinal(), 2);
         assert!(!stream.terminal());
         let digest = stream.digest();
-        let complete: [u8; 32] = digest.complete_hasher().clone().finalize().into();
+        let complete = digest.complete_hasher().digest();
         let expected_complete: [u8; 32] = Sha256::digest(&contents[..8]).into();
         assert_eq!(complete, expected_complete);
-        let full: [u8; 32] = digest.full_hasher().unwrap().clone().finalize().into();
+        let full = digest.full_hasher().unwrap().digest();
         let expected_full: [u8; 32] = Sha256::digest(contents).into();
         assert_eq!(full, expected_full);
     }
@@ -731,7 +731,10 @@ mod tests {
             0,
             JsonlPhysicalEncoding::ChecksummedZstdFrames,
             JsonlRecordFraming::ordinary(),
-            JsonlPhysicalDigest::full_and_complete(Sha256::new(), Sha256::new()),
+            JsonlPhysicalDigest::full_and_complete(
+                JsonlResumableSha256::new(),
+                JsonlResumableSha256::new(),
+            ),
             || SourceIoError::SourceChangedDuringCapture,
         )
         .unwrap();
@@ -751,7 +754,7 @@ mod tests {
         assert_eq!(stream.complete_prefix_end(), contents.len() as u64);
         assert_eq!(stream.next_physical_ordinal(), 2);
         assert_eq!(
-            <[u8; 32]>::from(stream.digest().complete_hasher().clone().finalize()),
+            stream.digest().complete_hasher().digest(),
             <[u8; 32]>::from(Sha256::digest(&contents))
         );
     }
@@ -772,7 +775,10 @@ mod tests {
             0,
             JsonlPhysicalEncoding::ChecksummedZstdFrames,
             JsonlRecordFraming::ordinary(),
-            JsonlPhysicalDigest::full_and_complete(Sha256::new(), Sha256::new()),
+            JsonlPhysicalDigest::full_and_complete(
+                JsonlResumableSha256::new(),
+                JsonlResumableSha256::new(),
+            ),
             || SourceIoError::SourceChangedDuringCapture,
         )
         .unwrap();
@@ -781,7 +787,7 @@ mod tests {
         assert!(!stream.terminal());
         assert_eq!(stream.complete_prefix_end(), complete.len() as u64);
         assert_eq!(
-            <[u8; 32]>::from(stream.digest().full_hasher().unwrap().clone().finalize()),
+            stream.digest().full_hasher().unwrap().digest(),
             <[u8; 32]>::from(Sha256::digest(&contents))
         );
 
@@ -797,7 +803,7 @@ mod tests {
             0,
             JsonlPhysicalEncoding::ChecksummedZstdFrames,
             JsonlRecordFraming::ordinary(),
-            JsonlPhysicalDigest::complete(Sha256::new()),
+            JsonlPhysicalDigest::complete(JsonlResumableSha256::new()),
             || SourceIoError::SourceChangedDuringCapture,
         )
         .unwrap();
@@ -815,7 +821,7 @@ mod tests {
             0,
             JsonlPhysicalEncoding::ChecksummedZstdFrames,
             JsonlRecordFraming::ordinary(),
-            JsonlPhysicalDigest::complete(Sha256::new()),
+            JsonlPhysicalDigest::complete(JsonlResumableSha256::new()),
             || SourceIoError::SourceChangedDuringCapture,
         )
         .unwrap();
@@ -832,7 +838,7 @@ mod tests {
             0,
             JsonlPhysicalEncoding::ChecksummedZstdFrames,
             JsonlRecordFraming::ordinary(),
-            JsonlPhysicalDigest::complete(Sha256::new()),
+            JsonlPhysicalDigest::complete(JsonlResumableSha256::new()),
             || SourceIoError::SourceChangedDuringCapture,
         )
         .unwrap();

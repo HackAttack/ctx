@@ -22,6 +22,7 @@ use super::{
     JsonlFamilyWorkerContext,
 };
 mod checkpoint;
+mod semantic;
 #[cfg(test)]
 use super::{
     jsonl_family_scanner_probe, record_jsonl_family_scanner_activity, JsonlFamilyScannerProbe,
@@ -35,6 +36,7 @@ use ctx_history_capture_runtime::{
     ParallelLeafScanComplete, ParallelLeafScanJob, ParallelLeafScanWorkerError,
     SourceBackedGenerationSink, SourceBackedRecordRejectionDrafts, SourceBackedRouteResult,
 };
+use semantic::{prepare_semantic_leaf, SemanticLeafExecution, SemanticLeafPlan};
 
 pub(super) struct PreparedLeaf<E: JsonlFamilyError> {
     pub(super) certificate: CertifiedSource,
@@ -156,6 +158,7 @@ fn scan_leaf_serial<R: JsonlFamilyRuntime>(
     base_event_lookup: &JsonlRuntimeLookup<R>,
     worker: &mut JsonlFamilyWorkerContext<R>,
     sink: &mut SourceBackedGenerationSink<'_, R::Lifecycle>,
+    append_only_trust_allowed: bool,
 ) -> SourceBackedRouteResult<TerminalSourceEvidence<JsonlRuntimeError<R>>> {
     let mut staging_started = false;
     let mut append_staging = false;
@@ -214,7 +217,15 @@ fn scan_leaf_serial<R: JsonlFamilyRuntime>(
         Ok(())
     };
     let mut output = JsonlLeafOutput::new(&mut emit);
-    let prepared = prepare_leaf(adapter, leaf, base, base_event_lookup, worker, &mut output);
+    let prepared = prepare_leaf(
+        adapter,
+        leaf,
+        base,
+        base_event_lookup,
+        worker,
+        &mut output,
+        append_only_trust_allowed,
+    );
     if let Some(error) = sink_failure {
         return Err(error);
     }
@@ -296,6 +307,7 @@ fn run_parallel_leaf_job_batch<R: JsonlFamilyRuntime>(
     worker_states: &mut [JsonlFamilyWorkerContexts<R>],
     base_event_lookup: &JsonlRuntimeLookup<R>,
     sink: &mut SourceBackedGenerationSink<'_, R::Lifecycle>,
+    append_only_trust_allowed: bool,
     #[cfg(test)] scanner_probe: Option<&JsonlFamilyScannerProbe>,
 ) -> SourceBackedRouteResult<Vec<TerminalSourceEvidence<JsonlRuntimeError<R>>>> {
     let result = sink.run_parallel_leaf_scans_with_worker_states(
@@ -411,6 +423,7 @@ fn run_parallel_leaf_job_batch<R: JsonlFamilyRuntime>(
                 base_event_lookup,
                 worker,
                 &mut output,
+                append_only_trust_allowed,
             );
             if let Some(error) = emission_failure {
                 return Err(ParallelLeafScanWorkerError::provider(error));
@@ -516,6 +529,7 @@ pub(super) fn scan_leaves<R: JsonlFamilyRuntime>(
     bases: &HashMap<[u8; 32], &CertifiedSource>,
     base_event_lookup: JsonlRuntimeLookup<R>,
     sink: &mut SourceBackedGenerationSink<'_, R::Lifecycle>,
+    append_only_trust_allowed: bool,
 ) -> SourceBackedRouteResult<HashMap<[u8; 32], TerminalSourceEvidence<JsonlRuntimeError<R>>>> {
     let worker_limit = adapter
         .prepare_leaf_scans(leaves, bases)
@@ -589,6 +603,7 @@ pub(super) fn scan_leaves<R: JsonlFamilyRuntime>(
                 &base_event_lookup,
                 &mut serial_worker,
                 sink,
+                append_only_trust_allowed,
             );
             let finish_partition = partition
                 .map(|partition| {
@@ -709,6 +724,7 @@ pub(super) fn scan_leaves<R: JsonlFamilyRuntime>(
                             &mut worker_states,
                             &base_event_lookup,
                             sink,
+                            append_only_trust_allowed,
                             #[cfg(test)]
                             scanner_probe.as_deref(),
                         )?);
@@ -772,6 +788,7 @@ pub(super) fn scan_leaves<R: JsonlFamilyRuntime>(
             &mut worker_states,
             &base_event_lookup,
             sink,
+            append_only_trust_allowed,
             #[cfg(test)]
             scanner_probe.as_deref(),
         )?;
@@ -808,29 +825,38 @@ pub(super) fn prepare_leaf<R: JsonlFamilyRuntime>(
     base_event_lookup: &JsonlRuntimeLookup<R>,
     worker: &mut JsonlFamilyWorkerContext<R>,
     output: &mut JsonlLeafOutput<'_, JsonlRuntimeError<R>>,
+    append_only_trust_allowed: bool,
 ) -> JsonlResult<PreparedLeaf<JsonlRuntimeError<R>>, JsonlRuntimeError<R>> {
     worker.begin_leaf();
-    if let Some(outcome) = adapter.scan_optimized_leaf(
-        leaf,
-        base,
-        base_event_lookup,
-        worker,
-        &mut |publication, completed_bytes, records| {
-            if records
-                .iter()
-                .any(|record| !record.source.exact_descriptor_eq(leaf.source()))
-            {
-                return Err(JsonlRuntimeError::<R>::invalid_payload(
-                    "optimized JSONL leaf emitted a record for another source".to_owned(),
-                ));
-            }
-            output.emit_page(
-                publication == JsonlFamilyPublication::Append,
-                completed_bytes,
-                records,
-            )
-        },
-    )? {
+    let optimized_outcome = if append_only_trust_allowed
+        || adapter.append_trust_contract()
+            != super::JsonlFamilyAppendTrustContract::AppendOnlySameObjectV1
+    {
+        adapter.scan_optimized_leaf(
+            leaf,
+            base,
+            base_event_lookup,
+            worker,
+            &mut |publication, completed_bytes, records| {
+                if records
+                    .iter()
+                    .any(|record| !record.source.exact_descriptor_eq(leaf.source()))
+                {
+                    return Err(JsonlRuntimeError::<R>::invalid_payload(
+                        "optimized JSONL leaf emitted a record for another source".to_owned(),
+                    ));
+                }
+                output.emit_page(
+                    publication == JsonlFamilyPublication::Append,
+                    completed_bytes,
+                    records,
+                )
+            },
+        )?
+    } else {
+        None
+    };
+    if let Some(outcome) = optimized_outcome {
         return validate_optimized_outcome(adapter, leaf, base, outcome);
     }
 
@@ -851,8 +877,16 @@ pub(super) fn prepare_leaf<R: JsonlFamilyRuntime>(
         checkpoint.physical.source_observation() == leaf.observation()
             || append_mode.certified_suffix()
     });
-    let open_reader =
-        |previous| open_leaf_reader(adapter, &leaf, &opened, previous, projector_preflight);
+    let open_reader = |previous| {
+        open_leaf_reader(
+            adapter,
+            &leaf,
+            &opened,
+            previous,
+            projector_preflight,
+            append_only_trust_allowed,
+        )
+    };
     let mut reader = open_reader(previous_physical)?;
 
     if reader.source_change() == JsonlSourceChange::Unchanged {
@@ -891,7 +925,13 @@ pub(super) fn prepare_leaf<R: JsonlFamilyRuntime>(
         return Ok(PreparedLeaf {
             certificate: base.clone(),
             append: Some(append),
-            terminal_proof: terminal_proof_for_checkpoint(adapter, &leaf, base, &decoded)?,
+            terminal_proof: terminal_proof_for_checkpoint(
+                adapter,
+                &leaf,
+                base,
+                &decoded,
+                append_only_trust_allowed,
+            )?,
             record_rejections: SourceBackedRecordRejectionDrafts::default(),
         });
     }
@@ -975,7 +1015,17 @@ pub(super) fn prepare_leaf<R: JsonlFamilyRuntime>(
                     ));
                 }
                 return prepare_semantic_leaf(
-                    adapter, &leaf, base, None, worker, output, executor, input, false,
+                    adapter,
+                    &leaf,
+                    SemanticLeafPlan {
+                        base,
+                        resumed: None,
+                        is_append: false,
+                        append_only_trust_allowed,
+                    },
+                    worker,
+                    output,
+                    SemanticLeafExecution { executor, input },
                 );
             }
             (_, false) => {
@@ -991,7 +1041,17 @@ pub(super) fn prepare_leaf<R: JsonlFamilyRuntime>(
             }
         }
         return prepare_semantic_leaf(
-            adapter, &leaf, base, resumed, worker, output, executor, input, is_append,
+            adapter,
+            &leaf,
+            SemanticLeafPlan {
+                base,
+                resumed,
+                is_append,
+                append_only_trust_allowed,
+            },
+            worker,
+            output,
+            SemanticLeafExecution { executor, input },
         );
     }
     let mut projector = adapter.projector_with_provider_checkpoint(
@@ -1131,6 +1191,7 @@ pub(super) fn prepare_leaf<R: JsonlFamilyRuntime>(
         indexed_documents: documents,
         provider_checkpoint,
     };
+    let checkpoint = fit_semantic_provider_checkpoint(adapter, checkpoint)?;
     let certificate = certify(adapter, &leaf, checkpoint.clone())
         .map_err(|error| JsonlRuntimeError::<R>::invalid_payload(error.to_string()))?;
     let append = if is_append {
@@ -1154,7 +1215,13 @@ pub(super) fn prepare_leaf<R: JsonlFamilyRuntime>(
     } else {
         None
     };
-    let terminal_proof = terminal_proof_for_checkpoint(adapter, &leaf, &certificate, &checkpoint)?;
+    let terminal_proof = terminal_proof_for_checkpoint(
+        adapter,
+        &leaf,
+        &certificate,
+        &checkpoint,
+        append_only_trust_allowed,
+    )?;
     Ok(PreparedLeaf {
         certificate,
         append,
@@ -1169,7 +1236,17 @@ fn open_leaf_reader<R: JsonlFamilyRuntime>(
     opened: &Arc<OpenedProviderSourceFile<JsonlRuntimeError<R>>>,
     previous: Option<&FamilyCheckpoint>,
     projector_preflight: bool,
+    append_only_trust_allowed: bool,
 ) -> JsonlResult<JsonlReader<JsonlRuntimeError<R>>, JsonlRuntimeError<R>> {
+    let direct_append = previous
+        .and_then(|checkpoint| checkpoint.provider_checkpoint.as_ref())
+        .is_some_and(|checkpoint| {
+            append_only_trust_allowed
+                && adapter.append_trust_contract()
+                    == super::JsonlFamilyAppendTrustContract::AppendOnlySameObjectV1
+                && adapter.allows_direct_append_for_leaf(leaf)
+                && adapter.accepts_direct_append_checkpoint(checkpoint)
+        });
     let mut reader = if leaf.whole_record {
         JsonlReader::open_whole_record(
             physical_identity(adapter, leaf),
@@ -1178,7 +1255,7 @@ fn open_leaf_reader<R: JsonlFamilyRuntime>(
         )
     } else {
         if adapter.bind_admitted_eof() {
-            JsonlReader::open_semantic_with_record_framing_and_encoding(
+            JsonlReader::open_semantic_with_record_framing_and_encoding_direct(
                 physical_identity(adapter, leaf),
                 Arc::clone(opened),
                 previous.map(|checkpoint| &checkpoint.physical),
@@ -1189,9 +1266,10 @@ fn open_leaf_reader<R: JsonlFamilyRuntime>(
                 adapter.physical_encoding(leaf),
                 adapter.record_framing(),
                 leaf.frozen_scan_observation(),
+                direct_append,
             )
         } else if projector_preflight {
-            JsonlReader::open_semantic_with_record_framing_and_encoding(
+            JsonlReader::open_semantic_with_record_framing_and_encoding_direct(
                 physical_identity(adapter, leaf),
                 Arc::clone(opened),
                 previous.map(|checkpoint| &checkpoint.physical),
@@ -1200,6 +1278,7 @@ fn open_leaf_reader<R: JsonlFamilyRuntime>(
                 adapter.physical_encoding(leaf),
                 adapter.record_framing(),
                 leaf.frozen_scan_observation(),
+                direct_append,
             )
         } else {
             JsonlReader::open_with_record_framing_and_encoding(
@@ -1217,200 +1296,6 @@ fn open_leaf_reader<R: JsonlFamilyRuntime>(
 }
 
 #[allow(clippy::too_many_arguments)]
-fn prepare_semantic_leaf<R: JsonlFamilyRuntime>(
-    adapter: &dyn JsonlFamilyAdapter<Runtime = R>,
-    leaf: &JsonlFamilyLeaf<JsonlRuntimeError<R>>,
-    base: Option<&CertifiedSource>,
-    resumed: Option<&FamilyCheckpoint>,
-    worker: &mut JsonlFamilyWorkerContext<R>,
-    output: &mut JsonlLeafOutput<'_, JsonlRuntimeError<R>>,
-    mut executor: Box<dyn JsonlFamilySemanticExecutor<Runtime = R>>,
-    mut input: JsonlFamilyExecutionIo<R>,
-    is_append: bool,
-) -> JsonlResult<PreparedLeaf<JsonlRuntimeError<R>>, JsonlRuntimeError<R>> {
-    let initial_ordinal = resumed.map_or_else(
-        || {
-            leaf.identity_probe
-                .as_ref()
-                .map(JsonlProbe::next_physical_ordinal)
-                .unwrap_or(0)
-        },
-        |checkpoint| checkpoint.physical.next_physical_ordinal(),
-    );
-    let mut documents = resumed.map_or(0, |checkpoint| checkpoint.indexed_documents);
-    let mut reported_prefix_end = input.complete_prefix_end()?;
-    while let Some(page) = executor.next_page(&mut input, worker)? {
-        let complete_prefix_end = input.complete_prefix_end()?;
-        let completed_bytes = complete_prefix_end
-            .checked_sub(reported_prefix_end)
-            .ok_or_else(|| {
-                JsonlRuntimeError::<R>::invalid_payload(
-                    "JSONL semantic physical progress regressed".to_owned(),
-                )
-            })?;
-        reported_prefix_end = complete_prefix_end;
-        let records = page.into_records();
-        if records
-            .iter()
-            .any(|record| !record.source.exact_descriptor_eq(leaf.source()))
-        {
-            return Err(JsonlRuntimeError::<R>::invalid_payload(
-                "JSONL semantic executor changed the bound source".to_owned(),
-            ));
-        }
-        documents = documents
-            .checked_add(u64::try_from(records.len()).unwrap_or(u64::MAX))
-            .ok_or_else(|| {
-                JsonlRuntimeError::<R>::invalid_payload(
-                    "JSONL document count overflowed".to_owned(),
-                )
-            })?;
-        input.release_record_buffer()?;
-        output.emit_page(is_append, completed_bytes, records)?;
-    }
-    input.release_record_buffer()?;
-    let summary = executor.finish()?;
-    let admitted_eof_sha256 = input.admitted_eof_sha256()?;
-    let complete_prefix_ends_with_terminal_nul_padding =
-        input.complete_prefix_ends_with_terminal_nul_padding();
-    let reader = input.into_reader();
-    let outcome = reader.outcome().ok_or_else(|| {
-        JsonlRuntimeError::<R>::invalid_payload(
-            "JSONL semantic scan has no terminal checkpoint".to_owned(),
-        )
-    })?;
-    let terminal_checkpoint = outcome.checkpoint().clone();
-    let scanned_physical_records = terminal_checkpoint
-        .next_physical_ordinal()
-        .checked_sub(initial_ordinal)
-        .ok_or_else(|| {
-            JsonlRuntimeError::<R>::invalid_payload("JSONL semantic ordinal regressed".to_owned())
-        })?;
-    let classified = summary
-        .represented_physical_records()
-        .checked_add(summary.rejected_records())
-        .ok_or_else(|| {
-            JsonlRuntimeError::<R>::invalid_payload(
-                "JSONL semantic classified count overflowed".to_owned(),
-            )
-        })?;
-    if classified > scanned_physical_records {
-        return Err(JsonlRuntimeError::<R>::invalid_payload(
-            "JSONL semantic classified count exceeds physical records".to_owned(),
-        ));
-    }
-    let represented_physical_records = resumed
-        .map_or(0, |checkpoint| checkpoint.represented_physical_records)
-        .checked_add(summary.represented_physical_records())
-        .ok_or_else(|| {
-            JsonlRuntimeError::<R>::invalid_payload("JSONL represented count overflowed".to_owned())
-        })?;
-    let rejected_records = resumed
-        .map_or(leaf.identity_probe_rejected_records, |checkpoint| {
-            checkpoint.rejected_records
-        })
-        .checked_add(summary.rejected_records())
-        .ok_or_else(|| {
-            JsonlRuntimeError::<R>::invalid_payload("JSONL rejected count overflowed".to_owned())
-        })?;
-    let logical_complete_records = if let Some(current) = summary.logical_complete_records() {
-        resumed
-            .map_or(0, |checkpoint| checkpoint.logical_complete_records)
-            .checked_add(current)
-            .ok_or_else(|| {
-                JsonlRuntimeError::<R>::invalid_payload(
-                    "JSONL logical complete count overflowed".to_owned(),
-                )
-            })?
-    } else {
-        let classified_physical_records = represented_physical_records
-            .checked_add(rejected_records)
-            .ok_or_else(|| {
-                JsonlRuntimeError::<R>::invalid_payload(
-                    "JSONL classified physical count overflowed".to_owned(),
-                )
-            })?;
-        let physical_ignored_records = terminal_checkpoint
-            .next_physical_ordinal()
-            .checked_sub(classified_physical_records)
-            .ok_or_else(|| {
-                JsonlRuntimeError::<R>::invalid_payload(
-                    "JSONL classified physical count exceeded physical records".to_owned(),
-                )
-            })?;
-        documents
-            .checked_add(rejected_records)
-            .and_then(|count| count.checked_add(physical_ignored_records))
-            .ok_or_else(|| {
-                JsonlRuntimeError::<R>::invalid_payload(
-                    "JSONL logical complete count overflowed".to_owned(),
-                )
-            })?
-    };
-    let rejected_logical_records = if let Some(current) = summary.rejected_logical_records() {
-        resumed
-            .map_or(0, |checkpoint| checkpoint.rejected_logical_records)
-            .checked_add(current)
-            .ok_or_else(|| {
-                JsonlRuntimeError::<R>::invalid_payload(
-                    "JSONL logical rejected count overflowed".to_owned(),
-                )
-            })?
-    } else {
-        rejected_records
-    };
-    let provider_checkpoint = summary.provider_checkpoint();
-    let record_rejections = summary.into_record_rejections();
-    let checkpoint = FamilyCheckpoint {
-        version: FamilyCheckpoint::VERSION,
-        provider_parser_revision: adapter.parser_revision().to_owned(),
-        event_identity_revision: adapter.event_identity_revision().to_owned(),
-        binding_digest: binding_digest(leaf)?,
-        physical: terminal_checkpoint.clone(),
-        admitted_eof_sha256,
-        complete_prefix_ends_with_terminal_nul_padding,
-        represented_physical_records,
-        rejected_records,
-        logical_complete_records,
-        rejected_logical_records,
-        indexed_documents: documents,
-        provider_checkpoint,
-    };
-    let checkpoint = fit_semantic_provider_checkpoint(adapter, checkpoint)?;
-    let certificate = certify(adapter, leaf, checkpoint.clone())
-        .map_err(|error| JsonlRuntimeError::<R>::invalid_payload(error.to_string()))?;
-    let append = if is_append {
-        let base = base.ok_or_else(|| {
-            JsonlRuntimeError::<R>::invalid_payload(
-                "JSONL semantic append base is absent".to_owned(),
-            )
-        })?;
-        let frontier = base.frontier().ok_or_else(|| {
-            JsonlRuntimeError::<R>::invalid_payload(
-                "JSONL semantic append frontier is absent".to_owned(),
-            )
-        })?;
-        Some(
-            CertifiedSourceAppend::certify(
-                base,
-                certificate.clone(),
-                frontier.certified_prefix_bytes(),
-                *frontier.certified_prefix_digest(),
-            )
-            .map_err(contract_error::<JsonlRuntimeError<R>>)?,
-        )
-    } else {
-        None
-    };
-    let terminal_proof = terminal_proof_for_checkpoint(adapter, leaf, &certificate, &checkpoint)?;
-    Ok(PreparedLeaf {
-        certificate,
-        append,
-        terminal_proof,
-        record_rejections,
-    })
-}
-
 pub(super) fn validate_optimized_outcome<R: JsonlFamilyRuntime>(
     adapter: &dyn JsonlFamilyAdapter<Runtime = R>,
     leaf: &JsonlFamilyLeaf<JsonlRuntimeError<R>>,

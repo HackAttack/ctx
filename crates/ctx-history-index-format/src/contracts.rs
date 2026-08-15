@@ -12,7 +12,7 @@ use crate::{
     policy::{
         current_source_generation_policy_hash, LEXICAL_SCHEMA_REVISION, LEXICAL_TOKENIZER_REVISION,
     },
-    sha256_hex, source_sort_key,
+    sha256_hex, source_sort_key, source_token,
 };
 
 mod digest;
@@ -908,6 +908,95 @@ impl GenerationManifest {
 
     pub fn generation_id(&self) -> Result<String> {
         Ok(sha256_hex(&serde_json::to_vec(self)?))
+    }
+
+    /// Compares the complete logical snapshot independently of its persisted
+    /// descriptor encoding. A compact manifest descriptor may materialize to
+    /// the same snapshot while having a different descriptor generation ID.
+    pub fn exact_snapshot_eq(&self, other: &Self) -> bool {
+        self.manifest_version == other.manifest_version
+            && self.identity_version == other.identity_version
+            && self.core_record_version == other.core_record_version
+            && self.core_record_contract_fingerprint == other.core_record_contract_fingerprint
+            && self.lexical_schema_version == other.lexical_schema_version
+            && self.lexical_analyzer_version == other.lexical_analyzer_version
+            && self.policy_schema_hash == other.policy_schema_hash
+            && self.indexed_documents == other.indexed_documents
+            && self.certified_source_bytes == other.certified_source_bytes
+            && self.sources == other.sources
+            && self.core_record_aggregates == other.core_record_aggregates
+            && self.source_routes.len() == other.source_routes.len()
+            && self
+                .source_routes
+                .iter()
+                .zip(&other.source_routes)
+                .all(|(left, right)| left.exact_snapshot_eq(right))
+    }
+
+    pub(crate) fn apply_validated_source_replacements(
+        &self,
+        mut replacements: Vec<(CertifiedSource, SourceCoreRecordAggregate)>,
+    ) -> Result<Self> {
+        replacements.sort_by_key(|(source, _)| source_sort_key(source.observation().source()));
+        if replacements.is_empty()
+            || replacements.windows(2).any(|pair| {
+                source_sort_key(pair[0].0.observation().source())
+                    >= source_sort_key(pair[1].0.observation().source())
+            })
+        {
+            return Err(IndexError::NonCanonicalManifestSources);
+        }
+        let mut sources = self.sources.clone();
+        let mut aggregates = self.core_record_aggregates.clone();
+        let mut indexed_documents = self.indexed_documents;
+        let mut certified_source_bytes = self.certified_source_bytes;
+        for (source, aggregate) in replacements {
+            source.validate_contract()?;
+            aggregate.validate_contract()?;
+            let source_identity = source_sort_key(source.observation().source());
+            let source_index = sources
+                .binary_search_by_key(&source_identity, |candidate| {
+                    source_sort_key(candidate.observation().source())
+                })
+                .map_err(|_| IndexError::NonCanonicalManifestSources)?;
+            if !sources[source_index]
+                .observation()
+                .source()
+                .exact_descriptor_eq(source.observation().source())
+            {
+                return Err(IndexError::NonCanonicalManifestSources);
+            }
+            let source_id = source_token(source.observation().source());
+            if aggregate.source_identity_digest != source_id
+                || aggregate.indexed_documents != source.counts().indexed_documents
+            {
+                return Err(IndexError::CoreRecordAggregateMismatch(source_id));
+            }
+            indexed_documents = indexed_documents
+                .checked_sub(sources[source_index].counts().indexed_documents)
+                .and_then(|count| count.checked_add(source.counts().indexed_documents))
+                .ok_or(IndexError::CountOverflow)?;
+            certified_source_bytes = certified_source_bytes
+                .checked_sub(sources[source_index].counts().certified_bytes)
+                .and_then(|count| count.checked_add(source.counts().certified_bytes))
+                .ok_or(IndexError::CountOverflow)?;
+            sources[source_index] = source;
+            aggregates[source_index] = aggregate;
+        }
+        Ok(Self {
+            manifest_version: self.manifest_version,
+            identity_version: self.identity_version,
+            core_record_version: self.core_record_version,
+            core_record_contract_fingerprint: self.core_record_contract_fingerprint.clone(),
+            lexical_schema_version: self.lexical_schema_version,
+            lexical_analyzer_version: self.lexical_analyzer_version,
+            policy_schema_hash: self.policy_schema_hash.clone(),
+            indexed_documents,
+            certified_source_bytes,
+            sources,
+            core_record_aggregates: aggregates,
+            source_routes: self.source_routes.clone(),
+        })
     }
 
     pub fn source_routes(&self) -> &[SourceRouteSnapshot] {

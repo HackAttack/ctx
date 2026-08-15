@@ -637,7 +637,10 @@ fn clone_guard(mode: CloneMode) -> Option<CloneTestHookGuard> {
         CloneTestHookGuard::set(
             CloneTestOptions {
                 force_copy: true,
+                force_reflink_fallback: false,
+                force_hardlink_fallback: false,
                 available_bytes: None,
+                rechecked_available_bytes: None,
             },
             |_stage, _path| Ok(()),
         )

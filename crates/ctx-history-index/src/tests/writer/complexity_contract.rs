@@ -196,6 +196,7 @@ fn one_record_append_verification_work_is_independent_of_retained_corpus_size() 
 fn cold_writer_publication_avoids_an_exhaustive_logical_pass() {
     let root = tempdir().unwrap();
     let source = source("complexity-cold.jsonl");
+    crate::publication::reset_candidate_clone_metrics();
     let mut writer = GenerationWriter::open(root.path(), WriterOptions::default())
         .unwrap()
         .into_writer()
@@ -216,6 +217,11 @@ fn cold_writer_publication_avoids_an_exhaustive_logical_pass() {
     assert_eq!(
         logical_passes, 0,
         "writer-produced proof must replace exhaustive cold logical replay"
+    );
+    assert_eq!(
+        crate::publication::candidate_clone_metrics(),
+        crate::publication::CandidateCloneMetrics::default(),
+        "cold creation must stay off the incremental candidate clone path"
     );
 }
 

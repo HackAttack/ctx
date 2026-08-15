@@ -113,6 +113,7 @@ pub struct CodexSourceBackedCountersV0 {
     pub ignored_records_scanned: u64,
     pub scanner_bytes_read: u64,
     pub mcp_terminal_authority_bytes_read: u64,
+    pub repository_candidate_authority_bytes_read: u64,
     pub structural_json_parses: u64,
     pub typed_json_parses: u64,
 }
@@ -144,6 +145,7 @@ impl CodexSourceBackedCountersV0 {
             ignored_records_scanned,
             scanner_bytes_read,
             mcp_terminal_authority_bytes_read,
+            repository_candidate_authority_bytes_read,
             structural_json_parses,
             typed_json_parses,
         );
@@ -181,6 +183,9 @@ impl CodexSourceBackedCountersV0 {
         self.mcp_terminal_authority_bytes_read = self
             .mcp_terminal_authority_bytes_read
             .saturating_add(scan.mcp_terminal_authority_bytes_read);
+        self.repository_candidate_authority_bytes_read = self
+            .repository_candidate_authority_bytes_read
+            .saturating_add(scan.repository_candidate_authority_bytes_read);
         self.structural_json_parses = self
             .structural_json_parses
             .saturating_add(scan.structural_json_parses);

@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use serde::{Deserialize, Serialize};
 
 use super::errors::{
@@ -39,11 +41,11 @@ impl ScannedSourceCounts {
 /// required parser/hash pass and is not used as the source key.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CertifiedSource {
-    observation: SourceObservation,
-    parser_revision: String,
+    observation: Arc<SourceObservation>,
+    parser_revision: Arc<str>,
     content_digest: [u8; 32],
     counts: ScannedSourceCounts,
-    frontier: Option<SourceFrontier>,
+    frontier: Option<Arc<SourceFrontier>>,
 }
 
 impl CertifiedSource {
@@ -91,11 +93,11 @@ impl CertifiedSource {
             }
         }
         Ok(Self {
-            observation: opening,
-            parser_revision,
+            observation: Arc::new(opening),
+            parser_revision: Arc::from(parser_revision),
             content_digest,
             counts,
-            frontier,
+            frontier: frontier.map(Arc::new),
         })
     }
 
@@ -116,7 +118,25 @@ impl CertifiedSource {
     }
 
     pub fn frontier(&self) -> Option<&SourceFrontier> {
-        self.frontier.as_ref()
+        self.frontier.as_deref()
+    }
+
+    /// Reports whether two certificates share the exact immutable allocations
+    /// created by a trusted shallow generation clone.
+    ///
+    /// This is only a fast-path hint: `false` does not mean the certificates
+    /// differ semantically.
+    #[doc(hidden)]
+    pub fn shares_immutable_parts_with(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.observation, &other.observation)
+            && Arc::ptr_eq(&self.parser_revision, &other.parser_revision)
+            && self.content_digest == other.content_digest
+            && self.counts == other.counts
+            && match (&self.frontier, &other.frontier) {
+                (Some(left), Some(right)) => Arc::ptr_eq(left, right),
+                (None, None) => true,
+                _ => false,
+            }
     }
 
     pub fn validate_contract(&self) -> ProjectionContractResult<()> {

@@ -27,9 +27,16 @@ pub(crate) fn open_slot_index(root: &Path, slot: &GenerationSlot) -> Result<Inde
 pub(crate) fn create_candidate_generation(
     root: &Path,
     base: Option<&GenerationSlot>,
+    writer_memory_bytes: usize,
 ) -> Result<ctx_history_index_generation::CandidateGeneration> {
-    let candidate =
-        ctx_history_index_generation::create_candidate_generation(root, base, lexical_schema())?;
+    let writer_memory_bytes =
+        u64::try_from(writer_memory_bytes).map_err(|_| crate::IndexError::CountOverflow)?;
+    let candidate = ctx_history_index_generation::create_candidate_generation(
+        root,
+        base,
+        lexical_schema(),
+        writer_memory_bytes,
+    )?;
     register_body_analyzer(&candidate.index);
     Ok(candidate)
 }
@@ -39,6 +46,23 @@ pub(crate) fn publish_active_generation_pointer(
     pointer: &ActiveGenerationPointer,
 ) -> Result<PointerPublicationOutcome> {
     Ok(ctx_history_index_generation::publish_active_generation_pointer(root, pointer)?)
+}
+
+pub(crate) fn publish_active_generation_pointer_validated<F>(
+    root: &Path,
+    pointer: &ActiveGenerationPointer,
+    validate_before_replace: F,
+) -> Result<PointerPublicationOutcome>
+where
+    F: FnOnce() -> ctx_history_index_generation::Result<()>,
+{
+    Ok(
+        ctx_history_index_generation::publish_active_generation_pointer_validated(
+            root,
+            pointer,
+            validate_before_replace,
+        )?,
+    )
 }
 
 pub(crate) fn sync_generation(path: &Path) -> Result<()> {
@@ -84,7 +108,7 @@ mod tests {
     #[test]
     fn candidate_schema_and_settings_roundtrip_exactly() {
         let root = tempfile::tempdir().unwrap();
-        let candidate = create_candidate_generation(root.path(), None).unwrap();
+        let candidate = create_candidate_generation(root.path(), None, 0).unwrap();
         assert_eq!(candidate.index.schema(), lexical_schema());
         assert_eq!(candidate.index.settings(), &lexical_index_settings());
         let slot = GenerationSlot::new(
@@ -108,7 +132,7 @@ mod tests {
             Err(IndexError::IndexSettingsMismatch(LEXICAL_SCHEMA_VERSION))
         ));
         assert!(matches!(
-            create_candidate_generation(root.path(), Some(&slot)),
+            create_candidate_generation(root.path(), Some(&slot), 0),
             Err(IndexError::IndexSettingsMismatch(LEXICAL_SCHEMA_VERSION))
         ));
     }

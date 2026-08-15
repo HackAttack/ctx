@@ -29,6 +29,9 @@ const WATCH_RECEIPT_FILE: &str = "wakeup.json";
 #[derive(Debug, Clone, Default)]
 pub(super) struct SourceWatchBatch {
     pub(super) routes: BTreeMap<SourceRouteIdentity, EventWatermark>,
+    /// Exact ordinary-file members for routes whose entire coalesced event
+    /// batch remained member-specific. A missing entry means exhaustive work.
+    pub(super) members: BTreeMap<SourceRouteIdentity, BTreeSet<PathBuf>>,
     pub(super) reconcile: Option<EventWatermark>,
     pub(super) rearm: bool,
 }
@@ -39,11 +42,30 @@ impl SourceWatchBatch {
     }
 
     fn merge(&mut self, other: Self) {
+        let mut other_members = other.members;
         for (route, watermark) in other.routes {
+            let already_recorded = self.routes.contains_key(&route);
+            let incoming_members = other_members.remove(&route);
             self.routes
-                .entry(route)
+                .entry(route.clone())
                 .and_modify(|current| *current = (*current).max(watermark))
                 .or_insert(watermark);
+            match (
+                already_recorded,
+                self.members.get_mut(&route),
+                incoming_members,
+            ) {
+                (false, _, Some(members)) => {
+                    self.members.insert(route, members);
+                }
+                (false, _, None) | (true, Some(_), None) => {
+                    self.members.remove(&route);
+                }
+                (true, Some(current), Some(additional)) => {
+                    current.extend(additional);
+                }
+                (true, None, _) => {}
+            }
         }
         if let Some(watermark) = other.reconcile {
             self.reconcile = Some(
@@ -52,6 +74,20 @@ impl SourceWatchBatch {
             );
         }
         self.rearm |= other.rearm;
+    }
+
+    fn record_route(
+        &mut self,
+        route: SourceRouteIdentity,
+        watermark: EventWatermark,
+        member: Option<PathBuf>,
+    ) {
+        let mut batch = Self::default();
+        batch.routes.insert(route.clone(), watermark);
+        if let Some(member) = member {
+            batch.members.insert(route, BTreeSet::from([member]));
+        }
+        self.merge(batch);
     }
 
     fn catalog_reconciliation(watermark: EventWatermark) -> Self {

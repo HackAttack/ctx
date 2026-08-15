@@ -264,6 +264,7 @@ fn unrelated_append_does_not_replay_retained_copy_lineage() {
         .unwrap()
         .into_writer()
         .unwrap();
+    append.test_disable_merges().unwrap();
     let base = append
         .begin_source_append(append_source.clone())
         .unwrap()

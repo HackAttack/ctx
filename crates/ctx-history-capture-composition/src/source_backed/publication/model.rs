@@ -3,6 +3,7 @@ use super::*;
 pub(super) struct SourceBackedRefreshPlan {
     pub(super) scope: SourceBackedRefreshScope,
     pub(super) reconciliation_demand: SourceBackedReconciliationDemand,
+    pub(super) route_worksets: BTreeMap<SourceRouteIdentity, BTreeSet<PathBuf>>,
     #[cfg(test)]
     resource_limits: Option<(u64, u64)>,
 }
@@ -12,6 +13,7 @@ impl SourceBackedRefreshPlan {
         Self {
             scope,
             reconciliation_demand: SourceBackedReconciliationDemand::Exhaustive,
+            route_worksets: BTreeMap::new(),
             #[cfg(test)]
             resource_limits: None,
         }
@@ -25,6 +27,14 @@ impl SourceBackedRefreshPlan {
         self
     }
 
+    pub(super) fn with_route_worksets(
+        mut self,
+        route_worksets: BTreeMap<SourceRouteIdentity, BTreeSet<PathBuf>>,
+    ) -> Self {
+        self.route_worksets = route_worksets;
+        self
+    }
+
     #[cfg(test)]
     pub(super) fn with_resource_limits(
         mut self,
@@ -35,14 +45,20 @@ impl SourceBackedRefreshPlan {
         self
     }
 
-    pub(super) fn route_resources(&self, work_budget: usize) -> SourceBackedRouteResources {
+    pub(super) fn route_resources_for(
+        &self,
+        route: &SourceRouteIdentity,
+        work_budget: usize,
+    ) -> SourceBackedRouteResources {
         #[cfg(test)]
         if let Some((output, scratch)) = self.resource_limits {
             return SourceBackedRouteResources::for_test(work_budget, output, scratch)
-                .with_reconciliation_demand(self.reconciliation_demand);
+                .with_reconciliation_demand(self.reconciliation_demand)
+                .with_member_workset(self.route_worksets.get(route).cloned());
         }
         SourceBackedRouteResources::production(work_budget)
             .with_reconciliation_demand(self.reconciliation_demand)
+            .with_member_workset(self.route_worksets.get(route).cloned())
     }
 }
 

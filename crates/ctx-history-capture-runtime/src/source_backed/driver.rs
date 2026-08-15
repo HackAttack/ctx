@@ -289,6 +289,10 @@ impl<L: CaptureLifecycleSink> SourceBackedGenerationSink<'_, L> {
         self.resources.reconciliation_demand()
     }
 
+    pub fn member_workset(&self) -> Option<&BTreeSet<PathBuf>> {
+        self.resources.member_workset()
+    }
+
     pub fn base_route_control(&self) -> Option<&[u8]> {
         self.base_route_control.as_deref()
     }
@@ -355,7 +359,7 @@ impl SourceOwner {
 #[derive(Clone)]
 pub enum SourceBackedRouteRevalidation {
     Source(CertifiedSource),
-    Deletion(CertifiedSourceDeletion),
+    Deletion(Box<CertifiedSourceDeletion>),
 }
 
 #[derive(Clone)]
@@ -407,6 +411,23 @@ impl<L: CaptureLifecycleSink> SourceBackedGenerationSink<'_, L> {
     }
 
     pub fn base_source(&self, source: &SourceKey) -> Option<&CertifiedSource> {
+        self.lifecycle.base_source(source)
+    }
+
+    /// Returns the retained certificate only when this exact route owns the
+    /// requested source. Both the route members and generation sources are in
+    /// canonical source-identity order, so lifecycle implementations can keep
+    /// this lookup logarithmic without materializing the rest of the route.
+    pub fn base_route_source(&self, source: &SourceKey) -> Option<&CertifiedSource> {
+        let snapshot = self.lifecycle.base_snapshot()?;
+        let route = snapshot.source_route(&self.route_identity)?;
+        let key = source.identity().digest();
+        route
+            .sources()
+            .binary_search_by_key(&key, |candidate| candidate.identity().digest())
+            .ok()
+            .and_then(|index| route.sources().get(index))
+            .filter(|candidate| candidate.exact_descriptor_eq(source))?;
         self.lifecycle.base_source(source)
     }
 
@@ -790,7 +811,7 @@ impl<L: CaptureLifecycleSink> SourceBackedGenerationSink<'_, L> {
             .delete_source(deletion.clone(), inventory.clone())?;
         self.record_revalidation(
             deletion.source(),
-            SourceBackedRouteRevalidation::Deletion(deletion.clone()),
+            SourceBackedRouteRevalidation::Deletion(Box::new(deletion.clone())),
         )?;
         self.applied_removals.push(SourceBackedCertifiedRemoval {
             deletion,

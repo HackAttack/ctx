@@ -30,11 +30,10 @@ use super::{
     daemon_retry::DaemonRetryBackoff,
     daemon_scheduler::{
         daemon_retry_due, daemon_run_start_mode, daemon_scheduled_refresh_due,
-        preserve_daemon_background_refresh_recovery_provenance,
-        restore_daemon_background_refresh_cadence, restore_daemon_consumer_retries,
-        restore_daemon_source_refresh_retry, run_daemon_scheduler_cycle_with_activity,
-        DaemonBackgroundRefreshCadence, DaemonConsumerRetryDeferral, DaemonSchedulerCycleContext,
-        DaemonSchedulerPorts, DaemonSemanticJobPorts, DaemonSidecarDrain,
+        restore_daemon_consumer_retries, restore_daemon_source_refresh_retry,
+        run_daemon_scheduler_cycle_with_activity, DaemonConsumerRetryDeferral,
+        DaemonSchedulerCycleContext, DaemonSchedulerPorts, DaemonSemanticJobPorts,
+        DaemonSidecarDrain,
     },
     daemon_wakeup::{DaemonWakeup, SourceWatchBatch},
     daemon_worker::write_daemon_lifecycle_status_with_runtime,
@@ -109,7 +108,6 @@ pub(super) struct DaemonRuntime {
     pub(super) browser_handoff_marker_revision:
         Option<crate::browser_handoff_wake::BrowserHandoffMarkerRevision>,
     pub(super) browser_handoff_next_due: Option<Instant>,
-    pub(super) background_refresh_cadence: DaemonBackgroundRefreshCadence,
     pub(super) config: AppConfig,
 }
 
@@ -673,12 +671,7 @@ where
                 .and(daemon_scheduler_source_refresh(&source_refresh_coordinator));
             let scheduled_refresh_wakeup_due = wake.timed_out
                 && !retry_wakeup_due
-                && daemon_scheduled_refresh_due(
-                    &runtime,
-                    source_refresh,
-                    Instant::now(),
-                    source_route_ledger_now_ms(),
-                );
+                && daemon_scheduled_refresh_due(source_refresh, source_route_ledger_now_ms());
             if scheduled_refresh_wakeup_due {
                 wakeup.record_scheduled_refresh_wakeup();
             }
@@ -725,8 +718,11 @@ where
                 );
             }
             if let Some(source_refresh) = source_refresh {
-                source_refresh
-                    .record_watch_routes(wake.source_watch.routes, source_route_ledger_now_ms());
+                source_refresh.record_watch_routes_with_members(
+                    wake.source_watch.routes,
+                    wake.source_watch.members,
+                    source_route_ledger_now_ms(),
+                );
             }
             if let Some(watcher) = watch_runtime.file_watcher.as_ref() {
                 let _ = watcher.write_receipt(
@@ -856,23 +852,14 @@ fn publish_lifecycle_ready<I: DaemonInstallationPort>(
     Ok(true)
 }
 
-fn recover_source_refresh_before_background_cadence(
-    runtime: &mut DaemonRuntime,
+fn recover_source_refresh_before_ipc(
     data_root: &Path,
-    source_refresh: Option<&CoreRefreshEngine>,
+    source_refresh: &CoreRefreshEngine,
 ) -> Result<()> {
-    if let Some(source_refresh) = source_refresh {
-        preserve_daemon_background_refresh_recovery_provenance(data_root)
-            .context("preserve automatic Core refresh provenance before recovery")?;
-        source_refresh
-            .recover_interrupted_publication(data_root)
-            .context("recover interrupted Core refresh before daemon readiness")?;
-    }
-    // Recovery replaces the original trigger with `recovery`. Restore only
-    // after that transition, using the request-bound automatic provenance
-    // preserved above, so restart cannot erase background rest.
-    restore_daemon_background_refresh_cadence(runtime, data_root);
-    Ok(())
+    source_refresh
+        .recover_interrupted_publication(data_root)
+        .map(|_| ())
+        .context("recover interrupted Core refresh before daemon readiness")
 }
 
 fn recover_source_refresh_coordinator_before_ipc(
@@ -881,11 +868,7 @@ fn recover_source_refresh_coordinator_before_ipc(
     config: &'static dyn DaemonConfigPort,
 ) -> Result<Arc<CoreRefreshEngine>> {
     let source_refresh = Arc::new(super::source_backed_refresh_adapter::refresh_engine(config));
-    recover_source_refresh_before_background_cadence(
-        runtime,
-        data_root,
-        Some(source_refresh.as_ref()),
-    )?;
+    recover_source_refresh_before_ipc(data_root, source_refresh.as_ref())?;
     runtime.source_refresh_coordinator = Some(Arc::clone(&source_refresh));
     Ok(source_refresh)
 }
@@ -896,12 +879,21 @@ pub(super) fn daemon_wait_duration(
     next_safety_reconcile: Instant,
     now: Instant,
 ) -> StdDuration {
-    if runtime.history_retry.ready()
-        && source_refresh.is_some_and(CoreRefreshEngine::has_pending_request)
-    {
-        return StdDuration::ZERO;
-    }
+    let pending_source_refresh = source_refresh.is_some_and(CoreRefreshEngine::has_pending_request);
     let mut wait_for = next_safety_reconcile.saturating_duration_since(now);
+    if pending_source_refresh {
+        if runtime.history_retry.ready() {
+            return StdDuration::ZERO;
+        }
+        // A retained Core request owns the scheduler while its control-plane
+        // retry is backed off. The scheduler returns before dirty routes and
+        // every optional consumer/sidecar, so only the owning retry deadline
+        // can usefully wake it in this state.
+        if let Some(retry_after_ms) = runtime.history_retry.retry_after_ms() {
+            wait_for = wait_for.min(StdDuration::from_millis(retry_after_ms));
+        }
+        return wait_for;
+    }
     if let Some(next_due) = runtime.browser_handoff_next_due {
         wait_for = wait_for.min(next_due.saturating_duration_since(now));
     }
@@ -922,11 +914,7 @@ pub(super) fn daemon_wait_duration(
         .and_then(|refresh| refresh.next_dirty_route_due_in_ms(source_route_ledger_now_ms()))
     {
         let route_wait = StdDuration::from_millis(route_due_ms);
-        let cadence_wait = runtime
-            .background_refresh_cadence
-            .remaining(now)
-            .unwrap_or_default();
-        wait_for = wait_for.min(route_wait.max(cadence_wait));
+        wait_for = wait_for.min(route_wait);
     }
     wait_for
 }
@@ -950,11 +938,12 @@ fn install_source_watch_ingress(
         return;
     };
     wakeup.install_source_watch_sink(Arc::new(move |batch: &SourceWatchBatch| {
-        source_refresh.record_watch_routes(
+        source_refresh.record_watch_routes_with_members(
             batch
                 .routes
                 .iter()
                 .map(|(route, watermark)| (route.clone(), *watermark)),
+            batch.members.clone(),
             source_route_ledger_now_ms(),
         );
     }));

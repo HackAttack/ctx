@@ -210,8 +210,13 @@ impl DaemonWatchRuntime {
                         source_route_ledger_now_ms(),
                     );
                 } else if coordinator_needs_authority || watcher_recreated {
-                    source_refresh.schedule_startup_route_observation(
-                        &catalog,
+                    // Startup and watcher replacement are exhaustive safety
+                    // boundaries. Live watcher events may trust append-only
+                    // growth, but these boundaries must authenticate existing
+                    // history so an offline old-prefix rewrite cannot be
+                    // carried forward as an append.
+                    source_refresh.schedule_startup_route_reconciliation(
+                        catalog.route_ids().cloned(),
                         watermark,
                         source_route_ledger_now_ms(),
                     );
@@ -225,12 +230,15 @@ impl DaemonWatchRuntime {
                 if let (Some(catalog), Some(watermark)) =
                     (self.catalog.snapshot(), trigger.watermark())
                 {
-                    source_refresh.record_watch_routes(
+                    source_refresh.record_watch_routes_requiring_exhaustive_reconciliation(
                         catalog.route_ids().cloned().map(|route| (route, watermark)),
                         source_route_ledger_now_ms(),
                     );
                 }
-                source_refresh.record_watch_routes(affected.routes, source_route_ledger_now_ms());
+                source_refresh.record_watch_routes_requiring_exhaustive_reconciliation(
+                    affected.routes,
+                    source_route_ledger_now_ms(),
+                );
             }
         }
         if matches!(trigger, WatchCatalogReconcileTrigger::SafetyTimeout)

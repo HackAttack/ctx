@@ -4,7 +4,8 @@ mod retention;
 
 pub(crate) use ctx_history_index_format::{
     canonical_commit_payload, load_publication_for_metas, meta_generation, payload_generation_id,
-    reconcile_commit_error, searcher_generation, write_manifest,
+    prepare_successor_manifest, reconcile_commit_error, searcher_generation, write_manifest,
+    write_prepared_manifest,
 };
 #[cfg(test)]
 pub(crate) use ctx_history_index_format::{verify_publication_candidate, verify_searcher};
@@ -18,11 +19,16 @@ pub(crate) use ctx_history_index_generation::{
     reclaim_unreferenced_manifests,
 };
 pub(crate) use ctx_history_index_generation::{
-    physical_integrity_audit, verify_physical_integrity, PhysicalIntegrityAudit,
+    physical_integrity_audit, validate_candidate_managed_files, verify_candidate_physical_fence,
+    verify_physical_integrity, PhysicalIntegrityAudit,
+};
+pub(crate) use ctx_history_index_generation::{
+    prime_candidate_physical_proof, CandidateActivationFence, CandidatePhysicalProof,
 };
 pub(crate) use generation::{
     create_candidate_generation, lexical_index_settings, load_active_generation_pointer,
-    open_slot_index, publish_active_generation_pointer, reclaim_inactive_generation_directories,
+    open_slot_index, publish_active_generation_pointer,
+    publish_active_generation_pointer_validated, reclaim_inactive_generation_directories,
     slot_path, sync_generation, ActiveGenerationPointer, GenerationSlot, PointerPublicationOutcome,
     INDEX_GENERATIONS_DIRECTORY,
 };
@@ -60,5 +66,6 @@ pub(crate) use ctx_history_index_generation::hashed_artifact_bytes;
 
 #[cfg(test)]
 pub(crate) use ctx_history_index_generation::{
-    certification_file_for_active, MAX_CERTIFICATION_BYTES, MAX_CERTIFIED_ARTIFACTS,
+    candidate_clone_metrics, certification_file_for_active, reset_candidate_clone_metrics,
+    CandidateCloneMetrics, MAX_CERTIFICATION_BYTES, MAX_CERTIFIED_ARTIFACTS,
 };

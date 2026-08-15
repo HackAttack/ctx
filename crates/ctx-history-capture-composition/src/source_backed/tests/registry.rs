@@ -1676,13 +1676,10 @@ fn refresh_receipt_stays_bound_to_commit_when_current_generation_advances() {
     assert_eq!(g2.sources, vec![g2_certificate]);
     assert_eq!(g1.sources, g1.commit.manifest().sources);
     assert_eq!(g2.sources, g2.commit.manifest().sources);
-    assert_eq!(
+    assert_ne!(
         g1.commit.manifest().generation_id().unwrap(),
-        g1.commit.generation_id
-    );
-    assert_eq!(
         g2.commit.manifest().generation_id().unwrap(),
-        g2.commit.generation_id
+        "each receipt must retain its own logical manifest after a later publication"
     );
     assert!(g1.removals.is_empty());
     assert!(g2.removals.is_empty());

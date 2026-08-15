@@ -370,7 +370,7 @@ impl CoreRefreshEngine {
                 let reconciliation_demand = coordinator
                     .reconciliation_demand(request_id)
                     .ok_or_else(|| anyhow!("source refresh request `{request_id}` is unknown"))?;
-                let (covered_route_ids, covered_publication) =
+                let (covered_route_ids, covered_publication, route_worksets) =
                     coordinator.admit_refresh_scope(request_id, &refresh_scope)?;
                 coordinator.persist_job_status(data_root, request_id)?;
                 let mut publication = execute_source_backed_refresh(
@@ -383,6 +383,7 @@ impl CoreRefreshEngine {
                         operation,
                         reconciliation_demand,
                         scope: refresh_scope.clone(),
+                        route_worksets,
                         covered_route_ids,
                         covered_publication,
                     },

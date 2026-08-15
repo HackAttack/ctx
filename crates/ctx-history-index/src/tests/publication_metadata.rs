@@ -655,7 +655,7 @@ fn assert_metadata_crash_stage(stage: CrashStage) {
             .into_writer()
             .unwrap();
         assert_eq!(
-            reopened.base_manifest().unwrap().generation_id().unwrap(),
+            reopened.base_publication.as_ref().unwrap().generation_id(),
             active.generation_id()
         );
         return;

@@ -61,6 +61,7 @@ pub use current_state::SourceBackedRefreshCurrent;
 pub use execution::{
     exclusive_scan_stage_duration, execute_capture_owned_refresh_with,
     refresh_all_provider_sources_route_local,
+    refresh_all_provider_sources_route_local_with_worksets,
 };
 #[cfg(any(test, feature = "test-support"))]
 pub use explicit_source_catalog::explicit_source_catalog_authority_for_test;
@@ -99,8 +100,8 @@ pub use types::{
     RefreshOperation, SourceBackedCurrentSourceProgress, SourceBackedCurrentSourceProgressStage,
     SourceBackedExactScanProgress, SourceBackedRefreshCoveredPublication,
     SourceBackedRefreshExecution, SourceBackedRefreshProgressUpdate,
-    SourceBackedRefreshPublication, SourceBackedRefreshTimings, SourceBackedZeroSourceAuthority,
-    SourceBackedZeroSourceAuthorityKind,
+    SourceBackedRefreshPublication, SourceBackedRefreshTimings, SourceBackedRefreshWorkset,
+    SourceBackedZeroSourceAuthority, SourceBackedZeroSourceAuthorityKind,
 };
 
 const SEARCH_DIRECTORY: &str = "search";
