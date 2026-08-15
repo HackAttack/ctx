@@ -7,6 +7,22 @@ $root = Join-Path ([System.IO.Path]::GetTempPath()) ("ctx-native-smoke-test-" + 
 New-Item -ItemType Directory -Path $root | Out-Null
 $savedCI = $env:CI
 $env:CI = "true"
+$unrelated = $null
+$unrelatedLauncher = $null
+$pipeHolderPidPath = $null
+$unrelatedPidPath = $null
+$testEnvironmentNames = @(
+    "CTX_NATIVE_CANDIDATE_TEST_PIPE_HOLDER",
+    "CTX_NATIVE_CANDIDATE_TEST_PIPE_HOLDER_PID",
+    "CTX_NATIVE_CANDIDATE_TEST_READY",
+    "CTX_NATIVE_CANDIDATE_TEST_BINARY",
+    "CTX_NATIVE_CANDIDATE_TEST_UNRELATED_PID",
+    "CTX_NATIVE_CANDIDATE_COMMAND_TIMEOUT_SECONDS"
+)
+$savedTestEnvironment = @{}
+foreach ($name in $testEnvironmentNames) {
+    $savedTestEnvironment[$name] = [Environment]::GetEnvironmentVariable($name, "Process")
+}
 
 try {
     $fake = Join-Path $root "ctx.cmd"
@@ -33,6 +49,10 @@ if "%1"=="--version" (
 )
 if "%1"=="setup" exit /b 0
 if "%1"=="import" (
+  for /L %%I in (1,1,2048) do (
+    echo ordinary-stdout-%%I-xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
+    1>&2 echo ordinary-stderr-%%I-xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
+  )
   if "%CTX_FAKE_VERSION%"=="1.0.0" (
     mkdir "%CTX_DATA_ROOT%\search\lexical\ctx-generations" >nul
     mkdir "%CTX_DATA_ROOT%\search\lexical\index-generations\generation-11111111111111111111111111111111" >nul
@@ -109,7 +129,8 @@ exit /b 99
         & $smoke -Binary $hung -Fixture $fixture -ExpectedVersion 0.25.0 -ResultPath $hungResult 2>$null | Out-Null
         throw "candidate smoke accepted a hung command"
     } catch {
-        if ($_.Exception.Message -notmatch "exceeded 1 seconds") {
+        if ($_.Exception.Message -notmatch
+            "exceeded 1 seconds during process exit; owned tree termination completed; final drain completed") {
             throw
         }
     } finally {
@@ -122,8 +143,176 @@ exit /b 99
         throw "candidate smoke wrote evidence after a hung command"
     }
 
+    $pipeHolder = Join-Path $root "ctx-pipe-holder.exe"
+    $pipeHolderSource = @'
+using System;
+using System.Diagnostics;
+using System.IO;
+using System.Threading;
+
+public static class CtxPipeHolder {
+    public static int Main(string[] args) {
+        string mode = args.Length == 0 ? "" : args[0];
+        if (mode == "--hold") {
+            string pidPath = Environment.GetEnvironmentVariable("CTX_NATIVE_CANDIDATE_TEST_PIPE_HOLDER_PID");
+            File.WriteAllText(pidPath, Process.GetCurrentProcess().Id.ToString());
+            Thread.Sleep(30000);
+            return 0;
+        }
+        if (mode == "--launch-unrelated") {
+            string readyPath = Environment.GetEnvironmentVariable("CTX_NATIVE_CANDIDATE_TEST_READY");
+            DateTime deadline = DateTime.UtcNow.AddSeconds(10);
+            while (!File.Exists(readyPath) && DateTime.UtcNow < deadline) {
+                Thread.Sleep(10);
+            }
+            if (!File.Exists(readyPath)) {
+                return 98;
+            }
+            string candidate = Environment.GetEnvironmentVariable("CTX_NATIVE_CANDIDATE_TEST_BINARY");
+            string pidPath = Environment.GetEnvironmentVariable("CTX_NATIVE_CANDIDATE_TEST_UNRELATED_PID");
+            ProcessStartInfo start = new ProcessStartInfo(candidate, "--unrelated");
+            start.UseShellExecute = false;
+            using (Process unrelated = Process.Start(start)) {
+                File.WriteAllText(pidPath, unrelated.Id.ToString());
+                unrelated.WaitForExit();
+                return unrelated.ExitCode;
+            }
+        }
+        return 99;
+    }
+}
+'@
+    Add-Type -TypeDefinition $pipeHolderSource -Language CSharp `
+        -OutputAssembly $pipeHolder -OutputType ConsoleApplication
+
+    $pipeOwner = Join-Path $root "ctx-pipe-owner.exe"
+    $pipeOwnerSource = @'
+using System;
+using System.Diagnostics;
+using System.IO;
+using System.Threading;
+
+public static class CtxPipeOwner {
+    public static int Main(string[] args) {
+        string mode = args.Length == 0 ? "" : args[0];
+        if (mode == "--unrelated") {
+            Thread.Sleep(30000);
+            return 0;
+        }
+        if (mode == "--version") {
+            string readyPath = Environment.GetEnvironmentVariable("CTX_NATIVE_CANDIDATE_TEST_READY");
+            string unrelatedPidPath = Environment.GetEnvironmentVariable("CTX_NATIVE_CANDIDATE_TEST_UNRELATED_PID");
+            File.WriteAllText(readyPath, "ready");
+            DateTime deadline = DateTime.UtcNow.AddSeconds(10);
+            while (!File.Exists(unrelatedPidPath) && DateTime.UtcNow < deadline) {
+                Thread.Sleep(10);
+            }
+            if (!File.Exists(unrelatedPidPath)) {
+                return 97;
+            }
+
+            string holder = Environment.GetEnvironmentVariable("CTX_NATIVE_CANDIDATE_TEST_PIPE_HOLDER");
+            ProcessStartInfo start = new ProcessStartInfo(holder, "--hold");
+            start.UseShellExecute = false;
+            Process.Start(start);
+            Console.WriteLine("ctx 0.25.0");
+            return 0;
+        }
+        return 99;
+    }
+}
+'@
+    Add-Type -TypeDefinition $pipeOwnerSource -Language CSharp `
+        -OutputAssembly $pipeOwner -OutputType ConsoleApplication
+
+    $readyPath = Join-Path $root "pipe-owner-ready"
+    $pipeHolderPidPath = Join-Path $root "pipe-holder.pid"
+    $unrelatedPidPath = Join-Path $root "unrelated.pid"
+    $pipeOwnerResult = Join-Path $root "pipe-owner-result.json"
+    $savedTimeout = $env:CTX_NATIVE_CANDIDATE_COMMAND_TIMEOUT_SECONDS
+    $env:CTX_NATIVE_CANDIDATE_TEST_PIPE_HOLDER = $pipeHolder
+    $env:CTX_NATIVE_CANDIDATE_TEST_PIPE_HOLDER_PID = $pipeHolderPidPath
+    $env:CTX_NATIVE_CANDIDATE_TEST_READY = $readyPath
+    $env:CTX_NATIVE_CANDIDATE_TEST_BINARY = $pipeOwner
+    $env:CTX_NATIVE_CANDIDATE_TEST_UNRELATED_PID = $unrelatedPidPath
+    $env:CTX_NATIVE_CANDIDATE_COMMAND_TIMEOUT_SECONDS = "3"
+    # This launcher is outside the candidate tree. It starts the same candidate
+    # image only after the job-owned root signals that it is running.
+    $unrelatedLauncher = Start-Process -FilePath $pipeHolder `
+        -ArgumentList "--launch-unrelated" -PassThru
+    if ($unrelatedLauncher.HasExited) {
+        throw "unrelated candidate launcher exited before the timeout test"
+    }
+    $started = Get-Date
+    try {
+        & $smoke -Binary $pipeOwner -Fixture $fixture -ExpectedVersion 0.25.0 `
+            -ResultPath $pipeOwnerResult 2>$null | Out-Null
+        throw "candidate smoke accepted a stuck redirected stream"
+    } catch {
+        if ($_.Exception.Message -notmatch
+            "exceeded 3 seconds during stdout/stderr drain after process exit; owned tree termination completed; final drain completed") {
+            throw
+        }
+    } finally {
+        $env:CTX_NATIVE_CANDIDATE_COMMAND_TIMEOUT_SECONDS = $savedTimeout
+    }
+    if (((Get-Date) - $started).TotalSeconds -ge 12) {
+        throw "candidate smoke redirected-stream timeout was not bounded"
+    }
+    if (-not (Test-Path -LiteralPath $pipeHolderPidPath -PathType Leaf)) {
+        throw "candidate smoke fixture did not create the redirected pipe owner"
+    }
+    $pipeHolderPid = [int](Get-Content -LiteralPath $pipeHolderPidPath -Raw)
+    if ($null -ne (Get-Process -Id $pipeHolderPid -ErrorAction SilentlyContinue)) {
+        throw "candidate smoke left the redirected pipe owner running"
+    }
+    if (-not (Test-Path -LiteralPath $unrelatedPidPath -PathType Leaf)) {
+        throw "unrelated same-image candidate fixture did not start"
+    }
+    $unrelatedPid = [int](Get-Content -LiteralPath $unrelatedPidPath -Raw)
+    $unrelated = Get-Process -Id $unrelatedPid -ErrorAction SilentlyContinue
+    if ($null -eq $unrelated -or $unrelated.HasExited) {
+        throw "candidate smoke killed an unrelated same-image process"
+    }
+    if (Test-Path -LiteralPath $pipeOwnerResult) {
+        throw "candidate smoke wrote evidence after a stuck redirected stream"
+    }
+
     Write-Host "Windows native candidate smoke tests passed"
 } finally {
+    if ($null -eq $unrelated -and
+        -not [string]::IsNullOrWhiteSpace($unrelatedPidPath) -and
+        (Test-Path -LiteralPath $unrelatedPidPath -PathType Leaf)) {
+        $unrelatedPid = [int](Get-Content -LiteralPath $unrelatedPidPath -Raw)
+        $unrelated = Get-Process -Id $unrelatedPid -ErrorAction SilentlyContinue
+    }
+    if ($null -ne $unrelated -and -not $unrelated.HasExited) {
+        Stop-Process -Id $unrelated.Id -Force -ErrorAction SilentlyContinue
+        [void]$unrelated.WaitForExit(5000)
+    }
+    if ($null -ne $unrelated) {
+        $unrelated.Dispose()
+    }
+    if ($null -ne $unrelatedLauncher -and -not $unrelatedLauncher.HasExited) {
+        Stop-Process -Id $unrelatedLauncher.Id -Force -ErrorAction SilentlyContinue
+        [void]$unrelatedLauncher.WaitForExit(5000)
+    }
+    if ($null -ne $unrelatedLauncher) {
+        $unrelatedLauncher.Dispose()
+    }
+    if (-not [string]::IsNullOrWhiteSpace($pipeHolderPidPath) -and
+        (Test-Path -LiteralPath $pipeHolderPidPath -PathType Leaf)) {
+        $pipeHolderPid = [int](Get-Content -LiteralPath $pipeHolderPidPath -Raw)
+        $pipeHolderProcess = Get-Process -Id $pipeHolderPid -ErrorAction SilentlyContinue
+        if ($null -ne $pipeHolderProcess) {
+            Stop-Process -InputObject $pipeHolderProcess -Force -ErrorAction SilentlyContinue
+            [void]$pipeHolderProcess.WaitForExit(5000)
+            $pipeHolderProcess.Dispose()
+        }
+    }
+    foreach ($name in $testEnvironmentNames) {
+        [Environment]::SetEnvironmentVariable($name, $savedTestEnvironment[$name], "Process")
+    }
     $env:CI = $savedCI
     Remove-Item -LiteralPath $root -Recurse -Force -ErrorAction SilentlyContinue
 }
