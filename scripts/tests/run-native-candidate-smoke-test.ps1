@@ -17,6 +17,7 @@ $testEnvironmentNames = @(
     "CTX_NATIVE_CANDIDATE_TEST_READY",
     "CTX_NATIVE_CANDIDATE_TEST_BINARY",
     "CTX_NATIVE_CANDIDATE_TEST_UNRELATED_PID",
+    "CTX_NATIVE_CANDIDATE_TEST_ROOT_EXIT_CODE",
     "CTX_NATIVE_CANDIDATE_COMMAND_TIMEOUT_SECONDS"
 )
 $savedTestEnvironment = @{}
@@ -193,12 +194,27 @@ using System.IO;
 using System.Threading;
 
 public static class CtxPipeOwner {
+    private static bool HasArgument(string[] args, string expected) {
+        foreach (string arg in args) {
+            if (String.Equals(arg, expected, StringComparison.OrdinalIgnoreCase)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
     public static int Main(string[] args) {
         string mode = args.Length == 0 ? "" : args[0];
         if (mode == "--unrelated") {
             Thread.Sleep(30000);
             return 0;
         }
+        if (Environment.GetEnvironmentVariable("CTX_ANALYTICS_ENABLED") != "false") return 91;
+        if (Environment.GetEnvironmentVariable("CTX_UPGRADE_AUTO") != "off") return 92;
+        if (Environment.GetEnvironmentVariable("CTX_DAEMON_AUTOSTART_OFF") != "1") return 93;
+        if (String.IsNullOrEmpty(Environment.GetEnvironmentVariable("HOME"))) return 94;
+        if (String.IsNullOrEmpty(Environment.GetEnvironmentVariable("USERPROFILE"))) return 95;
+        if (!String.IsNullOrEmpty(Environment.GetEnvironmentVariable("CI"))) return 96;
         if (mode == "--version") {
             string readyPath = Environment.GetEnvironmentVariable("CTX_NATIVE_CANDIDATE_TEST_READY");
             string unrelatedPidPath = Environment.GetEnvironmentVariable("CTX_NATIVE_CANDIDATE_TEST_UNRELATED_PID");
@@ -216,6 +232,34 @@ public static class CtxPipeOwner {
             start.UseShellExecute = false;
             Process.Start(start);
             Console.WriteLine("ctx 0.25.0");
+            string forcedExitText = Environment.GetEnvironmentVariable("CTX_NATIVE_CANDIDATE_TEST_ROOT_EXIT_CODE");
+            int forcedExitCode;
+            if (Int32.TryParse(forcedExitText, out forcedExitCode)) {
+                return forcedExitCode;
+            }
+            return 0;
+        }
+        if (mode == "setup") {
+            return 0;
+        }
+        if (mode == "import") {
+            Console.WriteLine("{\"totals\":{\"imported_events\":2}}");
+            return 0;
+        }
+        if (mode == "search" && HasArgument(args, "semantic")) {
+            if (Environment.GetEnvironmentVariable("CTX_SEARCH_SEMANTIC") != "1") return 98;
+            if (Environment.GetEnvironmentVariable("CTX_DAEMON_ENABLED") != "true") return 99;
+            Console.Error.WriteLine("semantic-only search will not initialize or download a model during search");
+            return 1;
+        }
+        if (mode == "search") {
+            Console.WriteLine("{\"retrieval\":{\"requested_mode\":\"lexical\",\"effective_mode\":\"lexical\"},\"results\":[{\"text\":\"Add a parser test.\"}]}");
+            return 0;
+        }
+        if (mode == "status") {
+            if (Environment.GetEnvironmentVariable("CTX_SEARCH_SEMANTIC") != null) return 89;
+            if (Environment.GetEnvironmentVariable("CTX_DAEMON_ENABLED") != null) return 90;
+            Console.WriteLine("{\"read_only\":true,\"semantic\":{\"config_source\":\"default\",\"enabled\":false,\"reason\":\"semantic_disabled\",\"embed_policy\":{\"source\":\"dynamic_quiet\"}}}");
             return 0;
         }
         return 99;
@@ -235,29 +279,23 @@ public static class CtxPipeOwner {
     $env:CTX_NATIVE_CANDIDATE_TEST_READY = $readyPath
     $env:CTX_NATIVE_CANDIDATE_TEST_BINARY = $pipeOwner
     $env:CTX_NATIVE_CANDIDATE_TEST_UNRELATED_PID = $unrelatedPidPath
-    $env:CTX_NATIVE_CANDIDATE_COMMAND_TIMEOUT_SECONDS = "3"
+    $env:CTX_NATIVE_CANDIDATE_COMMAND_TIMEOUT_SECONDS = "60"
     # This launcher is outside the candidate tree. It starts the same candidate
     # image only after the job-owned root signals that it is running.
     $unrelatedLauncher = Start-Process -FilePath $pipeHolder `
         -ArgumentList "--launch-unrelated" -PassThru
     if ($unrelatedLauncher.HasExited) {
-        throw "unrelated candidate launcher exited before the timeout test"
+        throw "unrelated candidate launcher exited before the pipe-drain test"
     }
     $started = Get-Date
     try {
         & $smoke -Binary $pipeOwner -Fixture $fixture -ExpectedVersion 0.25.0 `
-            -ResultPath $pipeOwnerResult 2>$null | Out-Null
-        throw "candidate smoke accepted a stuck redirected stream"
-    } catch {
-        if ($_.Exception.Message -notmatch
-            "exceeded 3 seconds during stdout/stderr drain after process exit; owned tree termination completed; final drain completed") {
-            throw
-        }
+            -ResultPath $pipeOwnerResult | Out-Null
     } finally {
         $env:CTX_NATIVE_CANDIDATE_COMMAND_TIMEOUT_SECONDS = $savedTimeout
     }
-    if (((Get-Date) - $started).TotalSeconds -ge 12) {
-        throw "candidate smoke redirected-stream timeout was not bounded"
+    if (((Get-Date) - $started).TotalSeconds -ge 15) {
+        throw "candidate smoke waited too long to clean up a post-root-exit pipe holder"
     }
     if (-not (Test-Path -LiteralPath $pipeHolderPidPath -PathType Leaf)) {
         throw "candidate smoke fixture did not create the redirected pipe owner"
@@ -274,8 +312,45 @@ public static class CtxPipeOwner {
     if ($null -eq $unrelated -or $unrelated.HasExited) {
         throw "candidate smoke killed an unrelated same-image process"
     }
-    if (Test-Path -LiteralPath $pipeOwnerResult) {
-        throw "candidate smoke wrote evidence after a stuck redirected stream"
+    if (-not (Test-Path -LiteralPath $pipeOwnerResult -PathType Leaf)) {
+        throw "candidate smoke did not write evidence after owned pipe-holder cleanup"
+    }
+    $pipeOwnerParsed = Get-Content -LiteralPath $pipeOwnerResult -Raw | ConvertFrom-Json
+    if ($pipeOwnerParsed.status -ne "passed") {
+        throw "candidate smoke did not pass after owned pipe-holder cleanup"
+    }
+
+    $pipeHolderPidPath = Join-Path $root "failed-pipe-holder.pid"
+    $failedPipeOwnerResult = Join-Path $root "failed-pipe-owner-result.json"
+    $env:CTX_NATIVE_CANDIDATE_TEST_PIPE_HOLDER_PID = $pipeHolderPidPath
+    $env:CTX_NATIVE_CANDIDATE_TEST_ROOT_EXIT_CODE = "7"
+    $started = Get-Date
+    try {
+        & $smoke -Binary $pipeOwner -Fixture $fixture -ExpectedVersion 0.25.0 `
+            -ResultPath $failedPipeOwnerResult 2>$null | Out-Null
+        throw "candidate smoke accepted a failed root after owned pipe-holder cleanup"
+    } catch {
+        if ($_.Exception.Message -notmatch "ctx --version failed: ctx 0.25.0") {
+            throw
+        }
+    } finally {
+        $env:CTX_NATIVE_CANDIDATE_TEST_ROOT_EXIT_CODE = $null
+    }
+    if (((Get-Date) - $started).TotalSeconds -ge 15) {
+        throw "candidate smoke waited too long to preserve a failed root result"
+    }
+    if (-not (Test-Path -LiteralPath $pipeHolderPidPath -PathType Leaf)) {
+        throw "failed-root fixture did not create the redirected pipe owner"
+    }
+    $pipeHolderPid = [int](Get-Content -LiteralPath $pipeHolderPidPath -Raw)
+    if ($null -ne (Get-Process -Id $pipeHolderPid -ErrorAction SilentlyContinue)) {
+        throw "candidate smoke left the failed root's redirected pipe owner running"
+    }
+    if (Test-Path -LiteralPath $failedPipeOwnerResult) {
+        throw "candidate smoke wrote evidence after a failed root command"
+    }
+    if ($unrelated.HasExited) {
+        throw "failed root cleanup killed an unrelated same-image process"
     }
 
     Write-Host "Windows native candidate smoke tests passed"
