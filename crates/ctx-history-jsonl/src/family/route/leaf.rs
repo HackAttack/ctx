@@ -36,7 +36,7 @@ use ctx_history_capture_runtime::{
     ParallelLeafScanComplete, ParallelLeafScanJob, ParallelLeafScanWorkerError,
     SourceBackedGenerationSink, SourceBackedRecordRejectionDrafts, SourceBackedRouteResult,
 };
-use semantic::prepare_semantic_leaf;
+use semantic::{prepare_semantic_leaf, SemanticLeafExecution, SemanticLeafPlan};
 
 pub(super) struct PreparedLeaf<E: JsonlFamilyError> {
     pub(super) certificate: CertifiedSource,
@@ -1017,14 +1017,15 @@ pub(super) fn prepare_leaf<R: JsonlFamilyRuntime>(
                 return prepare_semantic_leaf(
                     adapter,
                     &leaf,
-                    base,
-                    None,
+                    SemanticLeafPlan {
+                        base,
+                        resumed: None,
+                        is_append: false,
+                        append_only_trust_allowed,
+                    },
                     worker,
                     output,
-                    executor,
-                    input,
-                    false,
-                    append_only_trust_allowed,
+                    SemanticLeafExecution { executor, input },
                 );
             }
             (_, false) => {
@@ -1042,14 +1043,15 @@ pub(super) fn prepare_leaf<R: JsonlFamilyRuntime>(
         return prepare_semantic_leaf(
             adapter,
             &leaf,
-            base,
-            resumed,
+            SemanticLeafPlan {
+                base,
+                resumed,
+                is_append,
+                append_only_trust_allowed,
+            },
             worker,
             output,
-            executor,
-            input,
-            is_append,
-            append_only_trust_allowed,
+            SemanticLeafExecution { executor, input },
         );
     }
     let mut projector = adapter.projector_with_provider_checkpoint(

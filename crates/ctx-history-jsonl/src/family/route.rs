@@ -46,6 +46,10 @@ type JsonlOptimizedLeafResult<R> = JsonlResult<
     Option<JsonlFamilyOptimizedLeafOutcome<JsonlRuntimeError<R>>>,
     JsonlRuntimeError<R>,
 >;
+pub type JsonlFamilyBoundLeafResult<R> =
+    JsonlResult<Option<JsonlFamilyLeaf<JsonlRuntimeError<R>>>, JsonlRuntimeError<R>>;
+type JsonlPartialLeavesResult<R> =
+    JsonlResult<Option<Vec<JsonlFamilyLeaf<JsonlRuntimeError<R>>>>, JsonlRuntimeError<R>>;
 mod leaf;
 #[cfg(any(test, feature = "test-support"))]
 pub use leaf::checkpoint_admitted_revision_for_test;
@@ -282,10 +286,7 @@ pub trait JsonlFamilyAdapter: Send + Sync {
     fn bind_partial_member(
         &self,
         _member: &JsonlFamilyOpenedMember<'_, JsonlRuntimeError<Self::Runtime>>,
-    ) -> JsonlResult<
-        Option<JsonlFamilyLeaf<JsonlRuntimeError<Self::Runtime>>>,
-        JsonlRuntimeError<Self::Runtime>,
-    > {
+    ) -> JsonlFamilyBoundLeafResult<Self::Runtime> {
         Ok(None)
     }
 
@@ -1588,7 +1589,7 @@ fn open_partial_members<R: JsonlFamilyRuntime>(
     adapter: &dyn JsonlFamilyAdapter<Runtime = R>,
     _root: &Path,
     members: &BTreeSet<PathBuf>,
-) -> JsonlResult<Option<Vec<JsonlFamilyLeaf<JsonlRuntimeError<R>>>>, JsonlRuntimeError<R>> {
+) -> JsonlPartialLeavesResult<R> {
     let Some(root_paths) = adapter.partial_member_roots(_root) else {
         return Ok(None);
     };

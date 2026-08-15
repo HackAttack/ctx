@@ -1,17 +1,35 @@
 use super::*;
 
+pub(super) struct SemanticLeafPlan<'a> {
+    pub(super) base: Option<&'a CertifiedSource>,
+    pub(super) resumed: Option<&'a FamilyCheckpoint>,
+    pub(super) is_append: bool,
+    pub(super) append_only_trust_allowed: bool,
+}
+
+pub(super) struct SemanticLeafExecution<R: JsonlFamilyRuntime> {
+    pub(super) executor: Box<dyn JsonlFamilySemanticExecutor<Runtime = R>>,
+    pub(super) input: JsonlFamilyExecutionIo<R>,
+}
+
 pub(super) fn prepare_semantic_leaf<R: JsonlFamilyRuntime>(
     adapter: &dyn JsonlFamilyAdapter<Runtime = R>,
     leaf: &JsonlFamilyLeaf<JsonlRuntimeError<R>>,
-    base: Option<&CertifiedSource>,
-    resumed: Option<&FamilyCheckpoint>,
+    plan: SemanticLeafPlan<'_>,
     worker: &mut JsonlFamilyWorkerContext<R>,
     output: &mut JsonlLeafOutput<'_, JsonlRuntimeError<R>>,
-    mut executor: Box<dyn JsonlFamilySemanticExecutor<Runtime = R>>,
-    mut input: JsonlFamilyExecutionIo<R>,
-    is_append: bool,
-    append_only_trust_allowed: bool,
+    execution: SemanticLeafExecution<R>,
 ) -> JsonlResult<PreparedLeaf<JsonlRuntimeError<R>>, JsonlRuntimeError<R>> {
+    let SemanticLeafPlan {
+        base,
+        resumed,
+        is_append,
+        append_only_trust_allowed,
+    } = plan;
+    let SemanticLeafExecution {
+        mut executor,
+        mut input,
+    } = execution;
     let initial_ordinal = resumed.map_or_else(
         || {
             leaf.identity_probe
