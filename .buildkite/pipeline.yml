@@ -478,7 +478,7 @@ steps:
         "target/public-cli-artifacts/ctx-onnxruntime-linux-x64-cuda12.tar.zst*" . \
         --step semantic-runtime-linux-cuda12
       buildkite-agent artifact download \
-        "target/public-cli-artifacts/ctx-windowsml-windows-x64.zip*" . \
+        "*ctx-windowsml-windows-x64.zip*" . \
         --step semantic-runtime-windows-ml
       buildkite-agent artifact download \
         "target/public-cli-artifacts/ctx-onnxruntime-macos-x64.tar.zst*" . \
