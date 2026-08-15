@@ -501,10 +501,10 @@ fn map_sqlite_source_access_error_to_io(error: SqliteSourceAccessError) -> Sqlit
 
 #[cfg(any(test, feature = "test-support"))]
 mod tests {
-    use std::{fs, path::Path};
+    use std::fs;
 
     #[cfg(target_os = "linux")]
-    use std::{collections::BTreeMap, ffi::OsString};
+    use std::{collections::BTreeMap, ffi::OsString, path::Path};
 
     #[cfg(target_os = "linux")]
     use rusqlite::config::DbConfig;
