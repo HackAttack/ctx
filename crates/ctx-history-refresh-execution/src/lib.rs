@@ -23,9 +23,11 @@ use std::{
 use anyhow::{anyhow, bail, Context, Result};
 use ctx_history_capture::{
     automatic_source_backed_route_identity, build_automatic_source_backed_registry_from_report,
-    discover_provider_sources_with_context_and_work_budget, source_backed_refresh_work_budget,
-    source_backed_refresh_writer_options, validate_provider_source_roots_outside_data_root,
-    DiscoveryContext, SourceBackedAutomaticRegistryIssue, SourceBackedAutomaticUnavailableReason,
+    discover_provider_sources_with_context_and_work_budget,
+    discover_provider_sources_with_context_and_work_budget_for_intent,
+    source_backed_refresh_work_budget, source_backed_refresh_writer_options,
+    validate_provider_source_roots_outside_data_root, DiscoveryContext, DiscoveryIntent,
+    SourceBackedAutomaticRegistryIssue, SourceBackedAutomaticUnavailableReason,
     SourceBackedCoordinatorError,
     SourceBackedDetailedRefreshProgress as CaptureSourceBackedDetailedRefreshProgress,
     SourceBackedFailedRoute, SourceBackedFailedRouteOutcome, SourceBackedLogicalSourceFailures,

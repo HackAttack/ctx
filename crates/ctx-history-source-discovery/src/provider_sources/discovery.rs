@@ -14,7 +14,7 @@ use thiserror::Error;
 
 use super::{
     context::DiscoveryContext,
-    resolvers::{dedupe_report, resolve},
+    resolvers::{dedupe_report, resolve, DiscoveryIntent},
     specs::PROVIDER_SPECS,
     types::{DiscoveryReport, ProviderSource},
     StaticProviderProbeCatalog,
@@ -75,7 +75,7 @@ pub fn discover_provider_sources_with_context(
 ) -> DiscoveryReport {
     let mut report = DiscoveryReport::default();
     for spec in PROVIDER_SPECS {
-        let mut provider_report = resolve(probes, context, spec);
+        let mut provider_report = resolve(probes, context, spec, DiscoveryIntent::Exhaustive);
         report.sources.append(&mut provider_report.sources);
         report.issues.append(&mut provider_report.issues);
     }
@@ -90,8 +90,24 @@ pub fn discover_provider_sources_with_context_and_work_budget(
     context: &DiscoveryContext,
     worker_limit: usize,
 ) -> DiscoveryReport {
+    discover_provider_sources_with_context_and_work_budget_for_intent(
+        probes,
+        context,
+        worker_limit,
+        DiscoveryIntent::Exhaustive,
+    )
+}
+
+/// Resolves provider roots for a refresh whose ordinary-file members were
+/// selected exactly by the native watcher.
+pub fn discover_provider_sources_with_context_and_work_budget_for_intent(
+    probes: &StaticProviderProbeCatalog,
+    context: &DiscoveryContext,
+    worker_limit: usize,
+    intent: DiscoveryIntent,
+) -> DiscoveryReport {
     let reports = bounded_ordered_map(PROVIDER_SPECS.len(), worker_limit, |index| {
-        resolve(probes, context, &PROVIDER_SPECS[index])
+        resolve(probes, context, &PROVIDER_SPECS[index], intent)
     });
     let mut report = DiscoveryReport::default();
     for mut provider_report in reports {
@@ -222,7 +238,7 @@ pub fn discover_provider_sources_for_provider_with_context(
         .iter()
         .find(|spec| spec.provider == provider)
         .map_or_else(DiscoveryReport::default, |spec| {
-            resolve(probes, context, spec)
+            resolve(probes, context, spec, DiscoveryIntent::Exhaustive)
         });
     dedupe_report(report)
 }

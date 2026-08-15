@@ -93,7 +93,12 @@ where
     let work_budget =
         source_backed_refresh_work_budget(source_backed_refresh_writer_options().indexer_threads);
     let discovery_started = StdInstant::now();
-    let report = discover_provider_sources_with_context_and_work_budget(&discovery, work_budget);
+    let discovery_intent = refresh_discovery_intent(&execution);
+    let report = discover_provider_sources_with_context_and_work_budget_for_intent(
+        &discovery,
+        work_budget,
+        discovery_intent,
+    );
     let discovery_duration = discovery_started.elapsed();
     validate_provider_source_roots_outside_data_root(execution.data_root, report.sources.iter())
         .context("validate provider roots before source-refresh state writes")?;
@@ -157,6 +162,158 @@ where
         execution.published_state,
         &mut report_progress,
     )
+}
+
+/// The ordinary fast intent is deliberately narrower than exact route scope:
+/// every selected route must carry only existing ordinary `.jsonl` members.
+/// Any ambiguity retains complete provider discovery.
+fn refresh_discovery_intent(execution: &SourceBackedRefreshExecution<'_>) -> DiscoveryIntent {
+    discovery_intent_for_refresh(
+        execution.operation,
+        execution.reconciliation_demand,
+        execution.explicit_source_catalog.is_some(),
+        &execution.scope,
+        &execution.route_worksets,
+    )
+}
+
+fn discovery_intent_for_refresh(
+    operation: RefreshOperation,
+    reconciliation_demand: SourceBackedReconciliationDemand,
+    has_explicit_source_catalog: bool,
+    scope: &SourceBackedRefreshScope,
+    route_worksets: &BTreeMap<SourceRouteIdentity, SourceBackedRefreshWorkset>,
+) -> DiscoveryIntent {
+    if operation != RefreshOperation::Refresh
+        || reconciliation_demand != SourceBackedReconciliationDemand::Incremental
+        || has_explicit_source_catalog
+    {
+        return DiscoveryIntent::Exhaustive;
+    }
+    let SourceBackedRefreshScope::Exact(routes) = scope else {
+        return DiscoveryIntent::Exhaustive;
+    };
+    if routes.is_empty() || routes.len() != route_worksets.len() {
+        return DiscoveryIntent::Exhaustive;
+    }
+    let every_member_is_exact_jsonl = routes.iter().all(|route| {
+        let Some(SourceBackedRefreshWorkset::Members(members)) = route_worksets.get(route) else {
+            return false;
+        };
+        !members.is_empty()
+            && members.iter().all(|member| {
+                member.extension().and_then(std::ffi::OsStr::to_str) == Some("jsonl")
+                    && std::fs::symlink_metadata(member)
+                        .is_ok_and(|metadata| metadata.file_type().is_file())
+            })
+    });
+    if every_member_is_exact_jsonl {
+        DiscoveryIntent::ExactOrdinaryMembers
+    } else {
+        DiscoveryIntent::Exhaustive
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::items_after_test_module)]
+mod discovery_intent_tests {
+    use super::*;
+
+    fn route(byte: char) -> SourceRouteIdentity {
+        SourceRouteIdentity::from_sha256(byte.to_string().repeat(64)).unwrap()
+    }
+
+    fn intent_for(
+        scope: SourceBackedRefreshScope,
+        worksets: BTreeMap<SourceRouteIdentity, SourceBackedRefreshWorkset>,
+    ) -> DiscoveryIntent {
+        discovery_intent_for_refresh(
+            RefreshOperation::Refresh,
+            SourceBackedReconciliationDemand::Incremental,
+            false,
+            &scope,
+            &worksets,
+        )
+    }
+
+    #[test]
+    fn existing_jsonl_members_select_exact_discovery() {
+        let temp = tempfile::tempdir().unwrap();
+        let member = temp.path().join("rollout.jsonl");
+        std::fs::write(&member, "{}\n").unwrap();
+        let route = route('1');
+        assert_eq!(
+            intent_for(
+                SourceBackedRefreshScope::exact([route.clone()]),
+                BTreeMap::from([(route, SourceBackedRefreshWorkset::members([member]))]),
+            ),
+            DiscoveryIntent::ExactOrdinaryMembers
+        );
+    }
+
+    #[test]
+    fn missing_compressed_and_exhaustive_members_retain_full_discovery() {
+        let temp = tempfile::tempdir().unwrap();
+        let jsonl = temp.path().join("missing.jsonl");
+        let compressed = temp.path().join("rollout.jsonl.zst");
+        std::fs::write(&compressed, "compressed").unwrap();
+        let route = route('2');
+        for workset in [
+            SourceBackedRefreshWorkset::members([jsonl]),
+            SourceBackedRefreshWorkset::members([compressed]),
+            SourceBackedRefreshWorkset::Exhaustive,
+        ] {
+            assert_eq!(
+                intent_for(
+                    SourceBackedRefreshScope::exact([route.clone()]),
+                    BTreeMap::from([(route.clone(), workset)]),
+                ),
+                DiscoveryIntent::Exhaustive
+            );
+        }
+    }
+
+    #[test]
+    fn all_scope_import_explicit_and_mixed_worksets_retain_full_discovery() {
+        let temp = tempfile::tempdir().unwrap();
+        let member = temp.path().join("rollout.jsonl");
+        std::fs::write(&member, "{}\n").unwrap();
+        let route = route('3');
+        let worksets =
+            BTreeMap::from([(route.clone(), SourceBackedRefreshWorkset::members([member]))]);
+        assert_eq!(
+            intent_for(SourceBackedRefreshScope::All, worksets.clone()),
+            DiscoveryIntent::Exhaustive
+        );
+        for (operation, demand, explicit) in [
+            (
+                RefreshOperation::Import,
+                SourceBackedReconciliationDemand::Incremental,
+                false,
+            ),
+            (
+                RefreshOperation::Refresh,
+                SourceBackedReconciliationDemand::Exhaustive,
+                false,
+            ),
+            (
+                RefreshOperation::Refresh,
+                SourceBackedReconciliationDemand::Incremental,
+                true,
+            ),
+        ] {
+            assert_eq!(
+                discovery_intent_for_refresh(
+                    operation,
+                    demand,
+                    explicit,
+                    &SourceBackedRefreshScope::exact([route.clone()]),
+                    &worksets,
+                ),
+                DiscoveryIntent::Exhaustive
+            );
+        }
+    }
 }
 
 #[allow(clippy::too_many_arguments)]

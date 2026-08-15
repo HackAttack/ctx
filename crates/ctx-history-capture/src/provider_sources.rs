@@ -19,8 +19,8 @@ pub use ctx_history_source_discovery::{
 };
 pub use ctx_history_source_discovery::{
     validate_provider_source_roots_outside_data_root, DiscoveredLingmaDatabase,
-    DiscoveredWarpSource, DiscoveryContext, DiscoveryIssue, DiscoveryIssueKind, DiscoveryPlatform,
-    DiscoveryPlatformDirs, DiscoveryReport, LingmaDatabaseCatalogLineage,
+    DiscoveredWarpSource, DiscoveryContext, DiscoveryIntent, DiscoveryIssue, DiscoveryIssueKind,
+    DiscoveryPlatform, DiscoveryPlatformDirs, DiscoveryReport, LingmaDatabaseCatalogLineage,
     LingmaDiscoveredInventory, LingmaDiscoveryUnavailable, LingmaVscodeClient, LingmaVscodeProfile,
     PathPresence, ProviderCatalogSupport, ProviderDefaultLocation, ProviderImportSupport,
     ProviderSource, ProviderSourceKind, ProviderSourceRootBoundaryError, ProviderSourceSpec,
@@ -187,6 +187,19 @@ pub fn discover_provider_sources_with_context_and_work_budget(
         &BUILTIN_PROVIDER_PROBES,
         context,
         worker_limit,
+    )
+}
+
+pub fn discover_provider_sources_with_context_and_work_budget_for_intent(
+    context: &DiscoveryContext,
+    worker_limit: usize,
+    intent: DiscoveryIntent,
+) -> DiscoveryReport {
+    ctx_history_source_discovery::discover_provider_sources_with_context_and_work_budget_for_intent(
+        &BUILTIN_PROVIDER_PROBES,
+        context,
+        worker_limit,
+        intent,
     )
 }
 
