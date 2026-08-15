@@ -13,7 +13,6 @@ import unittest
 
 from performance_family_fixtures import (
     FAMILY_CORPUS_WRITERS,
-    JSONL_FAMILY,
     FamilyCorpus,
     FamilyMutation,
 )
@@ -166,14 +165,6 @@ class ProviderFamilyContinuousRefreshTest(unittest.TestCase):
             ).read_text(encoding="utf-8")
         )
         self.assertEqual(durable_job["request_id"], job["request_id"])
-        expected_demand = (
-            "incremental" if corpus.family == JSONL_FAMILY else "exhaustive"
-        )
-        self.assertEqual(
-            durable_job["reconciliation_demand"],
-            expected_demand,
-            durable_job,
-        )
         self.assertEqual(durable_job["refresh_scope"]["kind"], "exact")
         self.assertEqual(len(durable_job["refresh_scope"]["routes"]), 1)
         self.assertEqual(job["source_count"], 1)

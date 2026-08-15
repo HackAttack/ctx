@@ -19,7 +19,19 @@ struct RouteWatchTargets {
     kind: Option<SourceBackedWatchTargetKind>,
     control: Option<SourceBackedRouteControlExpectation>,
     targets: BTreeSet<PathBuf>,
-    registration_sources: Option<Vec<ProviderSource>>,
+    registration_sources: Option<Vec<RegisteredSource>>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RegisteredPathKind {
+    File,
+    Directory,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct RegisteredSource {
+    source: ProviderSource,
+    path_kind: RegisteredPathKind,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -99,7 +111,7 @@ impl SourceBackedWatchCatalog {
         let registrations = targets.registration_sources.as_ref()?;
         (registrations
             .iter()
-            .filter(|source| member_belongs_to_root(event, &source.path))
+            .filter(|source| member_belongs_to_root(event, &source.source.path))
             .count()
             == 1)
             .then(|| event.to_path_buf())
@@ -124,7 +136,11 @@ impl SourceBackedWatchCatalog {
             {
                 return None;
             }
-            sources.extend(registrations.iter().cloned());
+            sources.extend(
+                registrations
+                    .iter()
+                    .map(|registration| registration.source.clone()),
+            );
         }
         sources.sort_by(|left, right| {
             left.provider
@@ -166,7 +182,7 @@ impl SourceBackedWatchCatalog {
                         .is_ok_and(|metadata| metadata.file_type().is_file())
                         || registrations
                             .iter()
-                            .filter(|source| member_belongs_to_root(member, &source.path))
+                            .filter(|source| member_belongs_to_root(member, &source.source.path))
                             .count()
                             != 1
                 })
@@ -339,12 +355,24 @@ impl SourceBackedProviderRegistry {
 
 fn automatic_executable_registration_sources(
     route: &SourceBackedRoute,
-) -> Option<Vec<ProviderSource>> {
+) -> Option<Vec<RegisteredSource>> {
     (route.metadata.selection == Some(SourceBackedRouteSelection::Automatic)
         && route.driver.is_some()
         && route.certified_missing_paths.is_empty()
         && !route.registration_sources.is_empty())
-    .then(|| route.registration_sources.clone())
+    .then(|| {
+        route
+            .registration_sources
+            .iter()
+            .map(|source| {
+                Some(RegisteredSource {
+                    path_kind: registered_path_kind(&source.path)?,
+                    source: source.clone(),
+                })
+            })
+            .collect::<Option<Vec<_>>>()
+    })
+    .flatten()
 }
 
 fn member_belongs_to_root(member: &Path, root: &Path) -> bool {
@@ -354,12 +382,23 @@ fn member_belongs_to_root(member: &Path, root: &Path) -> bool {
             .is_some_and(|metadata| metadata.file_type().is_dir() && member.starts_with(root))
 }
 
-fn registration_source_is_available(source: &ProviderSource) -> bool {
-    source.exists
-        && fs::symlink_metadata(&source.path).is_ok_and(|metadata| {
-            let kind = metadata.file_type();
-            !kind.is_symlink() && (kind.is_file() || kind.is_dir())
-        })
+fn registered_path_kind(path: &Path) -> Option<RegisteredPathKind> {
+    fs::symlink_metadata(path).ok().and_then(|metadata| {
+        let kind = metadata.file_type();
+        if kind.is_symlink() {
+            None
+        } else if kind.is_file() {
+            Some(RegisteredPathKind::File)
+        } else if kind.is_dir() {
+            Some(RegisteredPathKind::Directory)
+        } else {
+            None
+        }
+    })
+}
+
+fn registration_source_is_available(source: &RegisteredSource) -> bool {
+    source.source.exists && registered_path_kind(&source.source.path) == Some(source.path_kind)
 }
 
 fn sample_ordinary_file(route: &RouteWatchTargets) -> RouteTargetSample {
@@ -696,7 +735,12 @@ mod tests {
 
         fs::remove_file(&archived_member).unwrap();
         assert!(catalog
-            .exact_member_discovery_report(&BTreeSet::from([identity]), &worksets)
+            .exact_member_discovery_report(&BTreeSet::from([identity.clone()]), &worksets)
+            .is_none());
+        fs::remove_dir_all(&sessions).unwrap();
+        fs::write(&sessions, b"not a directory").unwrap();
+        assert!(catalog
+            .route_discovery_report(&BTreeSet::from([identity]))
             .is_none());
     }
 
@@ -753,7 +797,11 @@ mod tests {
             .expect("SQLite keeps its registered route while abstaining from member work");
         assert_eq!(report.sources.len(), 1);
         assert_eq!(report.sources[0].provider, CaptureProvider::OpenCode);
-        fs::remove_file(sqlite).unwrap();
+        fs::remove_file(&sqlite).unwrap();
+        assert!(catalog
+            .route_discovery_report(&BTreeSet::from([identity.clone()]))
+            .is_none());
+        fs::create_dir(&sqlite).unwrap();
         assert!(catalog
             .route_discovery_report(&BTreeSet::from([identity]))
             .is_none());
