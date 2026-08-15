@@ -644,17 +644,4 @@ impl<B: ProviderRuntimeBinding> JsonlFamilyAdapter for CodexSessionJsonlFamilyAd
         )?)))
     }
 
-    fn base_source_path(&self, _certificate: &CertifiedSource) -> Result<PathBuf> {
-        if let Some(roots) = self.generation.session_tree_roots() {
-            roots.first().cloned().ok_or(CaptureError::SystemInvariant(
-                "Codex JSONL family has no route root",
-            ))
-        } else if let Some(input) = self.generation.explicit_session_input() {
-            Ok(input.path().to_path_buf())
-        } else {
-            Err(CaptureError::SystemInvariant(
-                "Codex generation route has no base source path",
-            ))
-        }
-    }
 }

@@ -182,6 +182,67 @@ pub(super) fn manifest_record_aggregates(
     Ok(aggregates)
 }
 
+pub(super) fn manifest_source_replacements(
+    generation: &GenerationWriter,
+) -> Result<Vec<(CertifiedSource, SourceCoreRecordAggregate)>> {
+    let base = generation
+        .base_publication
+        .as_ref()
+        .map(PinnedPublication::manifest)
+        .ok_or(IndexError::WriterInvariant(
+            "source replacement fast path is missing its base manifest",
+        ))?;
+    let mut replacements = Vec::with_capacity(generation.pending.len());
+    for pending in generation.pending.values() {
+        let certificate = pending
+            .certificate
+            .as_ref()
+            .ok_or_else(|| IndexError::SourceNotCertified(pending.source.identity().to_string()))?;
+        let source_id = source_token(&pending.source);
+        let base_aggregate = base
+            .core_record_aggregates
+            .binary_search_by(|aggregate| aggregate.source_identity_digest().cmp(&source_id))
+            .ok()
+            .and_then(|index| base.core_record_aggregates.get(index))
+            .ok_or(IndexError::WriterInvariant(
+                "source replacement is missing its base Core-record aggregate",
+            ))?;
+        let aggregate = match &pending.mode {
+            PendingSourceMode::Replace => source_record_aggregate(
+                &pending.source,
+                pending.staged_documents,
+                pending.core_record_accumulator,
+            )?,
+            PendingSourceMode::Retain { .. } => base_aggregate.clone(),
+            PendingSourceMode::Append { base } => {
+                if base_aggregate.indexed_documents() != base.counts().indexed_documents {
+                    return Err(IndexError::CoreRecordAggregateCountMismatch {
+                        source_id,
+                        manifest: base.counts().indexed_documents,
+                        index: base_aggregate.indexed_documents(),
+                    });
+                }
+                let indexed_documents = base_aggregate
+                    .indexed_documents()
+                    .checked_add(pending.staged_documents)
+                    .ok_or(IndexError::CountOverflow)?;
+                let mut accumulator = base_aggregate.accumulator_bytes()?;
+                accumulate_core_record(&mut accumulator, &pending.core_record_accumulator);
+                source_record_aggregate(&pending.source, indexed_documents, accumulator)?
+            }
+        };
+        if aggregate.indexed_documents() != certificate.counts().indexed_documents {
+            return Err(IndexError::CoreRecordAggregateCountMismatch {
+                source_id: source_token(&pending.source),
+                manifest: certificate.counts().indexed_documents,
+                index: aggregate.indexed_documents(),
+            });
+        }
+        replacements.push((certificate.clone(), aggregate));
+    }
+    Ok(replacements)
+}
+
 /// Discards a completed one-pass staging run when it reproduced the full
 /// verified base manifest exactly.
 ///

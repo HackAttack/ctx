@@ -121,6 +121,24 @@ impl CertifiedSource {
         self.frontier.as_deref()
     }
 
+    /// Reports whether two certificates share the exact immutable allocations
+    /// created by a trusted shallow generation clone.
+    ///
+    /// This is only a fast-path hint: `false` does not mean the certificates
+    /// differ semantically.
+    #[doc(hidden)]
+    pub fn shares_immutable_parts_with(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.observation, &other.observation)
+            && Arc::ptr_eq(&self.parser_revision, &other.parser_revision)
+            && self.content_digest == other.content_digest
+            && self.counts == other.counts
+            && match (&self.frontier, &other.frontier) {
+                (Some(left), Some(right)) => Arc::ptr_eq(left, right),
+                (None, None) => true,
+                _ => false,
+            }
+    }
+
     pub fn validate_contract(&self) -> ProjectionContractResult<()> {
         self.observation.source.validate_contract()?;
         validate_text(

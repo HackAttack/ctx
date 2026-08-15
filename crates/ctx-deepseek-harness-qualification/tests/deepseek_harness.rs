@@ -233,13 +233,7 @@ impl Harness {
     fn start_daemon(&self) -> DaemonGuard {
         let mut command = self.command();
         let child = command
-            .args([
-                "daemon",
-                "run",
-                "--force",
-                "--loop-interval-seconds",
-                "600",
-            ])
+            .args(["daemon", "run", "--force", "--loop-interval-seconds", "600"])
             .env("CTX_DAEMON_MODE", "full")
             .stdout(Stdio::null())
             .stderr(Stdio::piped())

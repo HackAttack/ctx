@@ -26,6 +26,53 @@ use route_outcomes::successful_route_outcomes_for_snapshot;
 
 const SOURCE_RECORD_PROGRESS_INTERVAL: Duration = Duration::from_secs(1);
 
+#[cfg(feature = "test-support")]
+#[derive(Debug, Clone, Copy, Default)]
+pub struct SourceBackedBenchPhaseTimings {
+    pub lifecycle_open_us: u64,
+    pub route_driver_us: u64,
+}
+
+#[cfg(feature = "test-support")]
+thread_local! {
+    static BENCH_PHASE_TIMINGS: std::cell::RefCell<SourceBackedBenchPhaseTimings> =
+        const { std::cell::RefCell::new(SourceBackedBenchPhaseTimings {
+            lifecycle_open_us: 0,
+            route_driver_us: 0,
+        }) };
+}
+
+#[cfg(feature = "test-support")]
+#[doc(hidden)]
+pub fn reset_source_backed_bench_phase_timings() {
+    BENCH_PHASE_TIMINGS
+        .with(|timings| *timings.borrow_mut() = SourceBackedBenchPhaseTimings::default());
+}
+
+#[cfg(feature = "test-support")]
+#[doc(hidden)]
+pub fn source_backed_bench_phase_timings() -> SourceBackedBenchPhaseTimings {
+    BENCH_PHASE_TIMINGS.with(|timings| *timings.borrow())
+}
+
+#[cfg(feature = "test-support")]
+fn record_lifecycle_open_timing(elapsed: Duration) {
+    BENCH_PHASE_TIMINGS.with(|timings| {
+        timings.borrow_mut().lifecycle_open_us =
+            u64::try_from(elapsed.as_micros()).unwrap_or(u64::MAX);
+    });
+}
+
+#[cfg(feature = "test-support")]
+fn record_route_driver_timing(elapsed: Duration) {
+    BENCH_PHASE_TIMINGS.with(|timings| {
+        let mut timings = timings.borrow_mut();
+        timings.route_driver_us = timings
+            .route_driver_us
+            .saturating_add(u64::try_from(elapsed.as_micros()).unwrap_or(u64::MAX));
+    });
+}
+
 type SourceBackedPublicationMetadataFactory<'factory> =
     dyn for<'context> FnMut(
             SourceBackedPublicationMetadataContext<'context>,
@@ -565,7 +612,11 @@ fn refresh_source_backed_generation_with_detailed_progress_and_discovery_timing(
         mut route_controls,
         verified_publication,
     ) = {
+        #[cfg(feature = "test-support")]
+        let lifecycle_open_started = Instant::now();
         let open = IndexCaptureLifecycle::open(index_root, writer_options)?;
+        #[cfg(feature = "test-support")]
+        record_lifecycle_open_timing(lifecycle_open_started.elapsed());
         let mut lifecycle = match open {
             CaptureLifecycleOpenOutcome::Ready(lifecycle) => lifecycle,
             CaptureLifecycleOpenOutcome::RecoveryRequired { recovery } => {
@@ -801,7 +852,12 @@ fn refresh_source_backed_generation_with_detailed_progress_and_discovery_timing(
                     exact_scan_total_bytes: None,
                     exact_scan_accounting_enabled: false,
                 };
-                (driver.scan)(&mut sink)
+                #[cfg(feature = "test-support")]
+                let route_driver_started = Instant::now();
+                let result = (driver.scan)(&mut sink);
+                #[cfg(feature = "test-support")]
+                record_route_driver_timing(route_driver_started.elapsed());
+                result
             };
             let mut record_progress = record_progress.into_inner();
             if let Some(error) = progress_failure.into_inner() {

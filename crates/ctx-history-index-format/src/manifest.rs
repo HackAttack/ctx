@@ -157,9 +157,9 @@ fn load_materialized_manifest(
         if serde_json::to_vec(&manifest)? != bytes {
             return Err(IndexError::NonCanonicalManifest);
         }
+        validate_manifest_contract(&manifest)?;
         manifest
     };
-    validate_manifest_contract(&manifest)?;
     let manifest = Arc::new(manifest);
     let mut cache = MANIFEST_CACHE
         .get_or_init(|| Mutex::new(BTreeMap::new()))
@@ -177,15 +177,15 @@ fn materialize_delta(
     if delta.source_count != base.sources.len() {
         return Err(IndexError::NonCanonicalManifest);
     }
-    let mut sources = base.sources.clone();
-    let mut aggregates = base.core_record_aggregates.clone();
+    let mut replacements = Vec::with_capacity(delta.changes.len());
     let mut previous = None;
     for change in delta.changes {
         if previous.is_some_and(|digest| digest >= change.source_identity) {
             return Err(IndexError::NonCanonicalManifest);
         }
         previous = Some(change.source_identity);
-        let source_index = sources
+        let source_index = base
+            .sources
             .binary_search_by_key(&change.source_identity, |source| {
                 source.observation().source().identity().digest()
             })
@@ -194,24 +194,23 @@ fn materialize_delta(
             return Err(IndexError::NonCanonicalManifest);
         }
         let source_identity_hex = hex_digest(change.source_identity);
-        let aggregate_index = aggregates
+        let aggregate_index = base
+            .core_record_aggregates
             .binary_search_by(|aggregate| {
                 aggregate.source_identity_digest().cmp(&source_identity_hex)
             })
             .map_err(|_| IndexError::NonCanonicalManifest)?;
-        if aggregates[aggregate_index].source_identity_digest()
+        if base.core_record_aggregates[aggregate_index].source_identity_digest()
             != change.aggregate.source_identity_digest()
         {
             return Err(IndexError::NonCanonicalManifest);
         }
-        sources[source_index] = change.source;
-        aggregates[aggregate_index] = change.aggregate;
+        if source_index != aggregate_index {
+            return Err(IndexError::NonCanonicalManifest);
+        }
+        replacements.push((change.source, change.aggregate));
     }
-    let materialized = GenerationManifest::from_parts_with_record_aggregates(
-        sources,
-        aggregates,
-        base.source_routes().to_vec(),
-    )?;
+    let materialized = base.apply_validated_source_replacements(replacements)?;
     if materialized.indexed_documents != delta.indexed_documents
         || materialized.certified_source_bytes != delta.certified_source_bytes
         || materialized.sources.len() != delta.source_count
@@ -423,7 +422,12 @@ pub fn prepare_successor_manifest(
     if !is_generation_id(base_generation_id)
         || base.sources.len() != manifest.sources.len()
         || base.core_record_aggregates.len() != manifest.core_record_aggregates.len()
-        || base.source_routes() != manifest.source_routes()
+        || base.source_routes().len() != manifest.source_routes().len()
+        || base
+            .source_routes()
+            .iter()
+            .zip(manifest.source_routes())
+            .any(|(base, current)| !base.exact_snapshot_eq(current))
         || base.manifest_version != manifest.manifest_version
         || base.identity_version != manifest.identity_version
         || base.core_record_version != manifest.core_record_version
@@ -449,7 +453,9 @@ pub fn prepare_successor_manifest(
         {
             return full();
         }
-        if base_source != source || base_aggregate != aggregate {
+        let source_changed =
+            !base_source.shares_immutable_parts_with(source) && base_source != source;
+        if source_changed || base_aggregate != aggregate {
             changes.push(StoredManifestSourceChangeV1 {
                 source_identity,
                 source: source.clone(),

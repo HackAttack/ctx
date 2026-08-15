@@ -113,6 +113,11 @@ pub(crate) use publication::{
     load_publication_for_metas, manifest_path, physical_integrity_digest, write_manifest,
 };
 pub use writer_options::WriterOptions;
+#[cfg(any(test, feature = "test-support"))]
+#[doc(hidden)]
+pub use writer_publication::{
+    manifest_materialization_visits, reset_manifest_materialization_visits,
+};
 pub use writer_support::{
     BaseEventIdentityLookup, CandidateEventOriginResolution, CandidateEventOriginResolver,
 };

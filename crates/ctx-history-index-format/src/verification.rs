@@ -35,8 +35,9 @@ use crate::{
     verify_certified_physical_integrity, verify_or_certify_physical_integrity,
     ActiveGenerationPointer, CandidatePhysicalProof, CertifiedPhysicalIntegrity, CompactIdentity,
     Fields, GenerationManifest, GenerationSlot, IdentityFieldRole, IndexError, LoadedPublication,
-    PhysicalIntegrityAudit, Result, VerificationRecord,
+    PhysicalIntegrityAudit, Result, SourceCoreRecordAggregate, VerificationRecord,
 };
+use ctx_history_core::CertifiedSource;
 
 use super::{physical_integrity_audit_with_candidate_proof, verify_physical_integrity};
 
@@ -180,6 +181,17 @@ impl PinnedPublication {
     #[doc(hidden)]
     pub fn publication_metadata(&self) -> Option<&Arc<[u8]>> {
         self.publication_metadata.as_ref()
+    }
+
+    /// Applies replacements to this already-validated immutable base without
+    /// revalidating inherited certificates or route members.
+    #[doc(hidden)]
+    pub fn successor_manifest_from_source_replacements(
+        &self,
+        replacements: Vec<(CertifiedSource, SourceCoreRecordAggregate)>,
+    ) -> Result<GenerationManifest> {
+        self.manifest
+            .apply_validated_source_replacements(replacements)
     }
 
     #[doc(hidden)]

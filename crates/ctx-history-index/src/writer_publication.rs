@@ -7,23 +7,28 @@ use ctx_history_index_format::{
 };
 use std::collections::BTreeMap;
 
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 thread_local! {
     static BASE_MANIFEST_SOURCE_MATERIALIZATIONS: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
     static PARTIAL_BASE_ROUTE_MEMBER_MATERIALIZATIONS: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+    static SOURCE_REPLACEMENT_MANIFESTS: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
 }
 
-#[cfg(test)]
-pub(crate) fn reset_manifest_materialization_visits() {
+#[cfg(any(test, feature = "test-support"))]
+#[doc(hidden)]
+pub fn reset_manifest_materialization_visits() {
     BASE_MANIFEST_SOURCE_MATERIALIZATIONS.with(|visits| visits.set(0));
     PARTIAL_BASE_ROUTE_MEMBER_MATERIALIZATIONS.with(|visits| visits.set(0));
+    SOURCE_REPLACEMENT_MANIFESTS.with(|visits| visits.set(0));
 }
 
-#[cfg(test)]
-pub(crate) fn manifest_materialization_visits() -> (u64, u64) {
+#[cfg(any(test, feature = "test-support"))]
+#[doc(hidden)]
+pub fn manifest_materialization_visits() -> (u64, u64, u64) {
     (
         BASE_MANIFEST_SOURCE_MATERIALIZATIONS.with(std::cell::Cell::get),
         PARTIAL_BASE_ROUTE_MEMBER_MATERIALIZATIONS.with(std::cell::Cell::get),
+        SOURCE_REPLACEMENT_MANIFESTS.with(std::cell::Cell::get),
     )
 }
 
@@ -834,6 +839,16 @@ impl GenerationWriter {
 
     fn next_manifest(&self) -> Result<GenerationManifest> {
         self.validate_source_route_plan_complete()?;
+        if let Some(base) = self.base_publication.as_ref() {
+            if self.source_replacement_manifest_is_route_stable(base.manifest()) {
+                #[cfg(any(test, feature = "test-support"))]
+                SOURCE_REPLACEMENT_MANIFESTS
+                    .with(|visits| visits.set(visits.get().saturating_add(1)));
+                return base.successor_manifest_from_source_replacements(
+                    staging::manifest_source_replacements(self)?,
+                );
+            }
+        }
         let deleted_sources = self
             .deletions
             .keys()
@@ -880,6 +895,62 @@ impl GenerationWriter {
             source_routes,
         )
     }
+
+    fn source_replacement_manifest_is_route_stable(&self, base: &GenerationManifest) -> bool {
+        if self.pending.is_empty()
+            || !self.deletions.is_empty()
+            || !self.route_deletions.is_empty()
+            || !self.observed_missing_routes.is_empty()
+        {
+            return false;
+        }
+        let Some(routes) = self.present_source_routes.as_deref() else {
+            return false;
+        };
+        if routes.len() != base.source_routes().len()
+            || routes
+                .iter()
+                .zip(base.source_routes())
+                .any(|(current, base)| !current.exact_snapshot_eq(base))
+        {
+            return false;
+        }
+        for (route_identity, delta) in &self.partial_source_route_deltas {
+            if !delta.deletions.is_empty() {
+                return false;
+            }
+            let Some(base_route) = base.source_route(route_identity) else {
+                return false;
+            };
+            for (digest, source) in &delta.upserts {
+                let Some(base_source) = base_route
+                    .sources()
+                    .binary_search_by_key(digest, |source| source.identity().digest())
+                    .ok()
+                    .and_then(|index| base_route.sources().get(index))
+                else {
+                    return false;
+                };
+                if !base_source.exact_descriptor_eq(source) {
+                    return false;
+                }
+            }
+        }
+        self.pending.values().all(|pending| {
+            base.sources
+                .binary_search_by_key(&pending.source.identity().digest(), |source| {
+                    source.observation().source().identity().digest()
+                })
+                .ok()
+                .and_then(|index| base.sources.get(index))
+                .is_some_and(|source| {
+                    source
+                        .observation()
+                        .source()
+                        .exact_descriptor_eq(&pending.source)
+                })
+        })
+    }
 }
 
 fn merge_manifest_sources(
@@ -889,7 +960,7 @@ fn merge_manifest_sources(
 ) -> Vec<CertifiedSource> {
     let mut sources = Vec::with_capacity(base.len().saturating_add(upserts.len()));
     for certificate in base {
-        #[cfg(test)]
+        #[cfg(any(test, feature = "test-support"))]
         BASE_MANIFEST_SOURCE_MATERIALIZATIONS
             .with(|visits| visits.set(visits.get().saturating_add(1)));
         let digest = source_sort_key(certificate.observation().source());
@@ -910,7 +981,7 @@ fn merge_partial_route_members(
     let mut upserts = delta.upserts.clone();
     let mut members = Vec::with_capacity(base.len().saturating_add(upserts.len()));
     for member in base {
-        #[cfg(test)]
+        #[cfg(any(test, feature = "test-support"))]
         PARTIAL_BASE_ROUTE_MEMBER_MATERIALIZATIONS
             .with(|visits| visits.set(visits.get().saturating_add(1)));
         let digest = member.identity().digest();
