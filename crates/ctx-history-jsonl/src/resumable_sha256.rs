@@ -1,5 +1,8 @@
 use serde::{Deserialize, Serialize};
-use sha2::{compress256, digest::generic_array::GenericArray};
+use sha2::{
+    compress256,
+    digest::{generic_array::GenericArray, typenum::U64},
+};
 
 const SHA256_INITIAL_STATE: [u32; 8] = [
     0x6a09e667, 0xbb67ae85, 0x3c6ef372, 0xa54ff53a, 0x510e527f, 0x9b05688c, 0x1f83d9ab, 0x5be0cd19,
@@ -20,7 +23,8 @@ pub struct JsonlSha256State {
 pub struct JsonlResumableSha256 {
     state: [u32; 8],
     bytes_hashed: u64,
-    buffer: Vec<u8>,
+    buffer: [u8; 64],
+    buffer_len: u8,
 }
 
 impl Default for JsonlResumableSha256 {
@@ -36,7 +40,8 @@ impl JsonlResumableSha256 {
         Self {
             state: SHA256_INITIAL_STATE,
             bytes_hashed: 0,
-            buffer: Vec::new(),
+            buffer: [0; 64],
+            buffer_len: 0,
         }
     }
 
@@ -46,10 +51,15 @@ impl JsonlResumableSha256 {
             && snapshot.buffer.len() < 64
             && snapshot.bytes_hashed % 64 == buffered
             && snapshot.bytes_hashed <= u64::MAX / 8)
-            .then(|| Self {
-                state: snapshot.state,
-                bytes_hashed: snapshot.bytes_hashed,
-                buffer: snapshot.buffer.clone(),
+            .then(|| {
+                let mut buffer = [0; 64];
+                buffer[..snapshot.buffer.len()].copy_from_slice(&snapshot.buffer);
+                Self {
+                    state: snapshot.state,
+                    bytes_hashed: snapshot.bytes_hashed,
+                    buffer,
+                    buffer_len: snapshot.buffer.len() as u8,
+                }
             })
     }
 
@@ -58,7 +68,7 @@ impl JsonlResumableSha256 {
             version: Self::STATE_VERSION,
             state: self.state,
             bytes_hashed: self.bytes_hashed,
-            buffer: self.buffer.clone(),
+            buffer: self.buffer[..usize::from(self.buffer_len)].to_vec(),
         }
     }
 
@@ -71,31 +81,25 @@ impl JsonlResumableSha256 {
             .bytes_hashed
             .checked_add(u64::try_from(bytes.len()).unwrap_or(u64::MAX))
             .expect("SHA-256 input length exceeds its 64-bit bit-length encoding");
-        if !self.buffer.is_empty() {
-            let take = (64 - self.buffer.len()).min(bytes.len());
-            self.buffer.extend_from_slice(&bytes[..take]);
+        let buffered = usize::from(self.buffer_len);
+        if buffered != 0 {
+            let take = (64 - buffered).min(bytes.len());
+            self.buffer[buffered..buffered + take].copy_from_slice(&bytes[..take]);
+            self.buffer_len += take as u8;
             bytes = &bytes[take..];
-            if self.buffer.len() == 64 {
-                let block: [u8; 64] = self.buffer.as_slice().try_into().expect("full SHA block");
-                compress_block(&mut self.state, &block);
-                self.buffer.clear();
+            if self.buffer_len != 64 {
+                return;
             }
+            compress_blocks(&mut self.state, &self.buffer);
+            self.buffer_len = 0;
         }
-        const BLOCK_BATCH: usize = 128;
-        let mut blocks = Vec::with_capacity(BLOCK_BATCH);
-        while bytes.len() >= 64 {
-            let block_count = (bytes.len() / 64).min(BLOCK_BATCH);
-            let batch_bytes = block_count * 64;
-            blocks.extend(
-                bytes[..batch_bytes]
-                    .chunks_exact(64)
-                    .map(GenericArray::clone_from_slice),
-            );
-            compress256(&mut self.state, &blocks);
-            blocks.clear();
-            bytes = &bytes[batch_bytes..];
+        let block_bytes = bytes.len() / 64 * 64;
+        if block_bytes != 0 {
+            compress_blocks(&mut self.state, &bytes[..block_bytes]);
+            bytes = &bytes[block_bytes..];
         }
-        self.buffer.extend_from_slice(bytes);
+        self.buffer[..bytes.len()].copy_from_slice(bytes);
+        self.buffer_len = bytes.len() as u8;
     }
 
     pub fn digest(&self) -> [u8; 32] {
@@ -104,15 +108,13 @@ impl JsonlResumableSha256 {
             .bytes_hashed
             .checked_mul(8)
             .expect("SHA-256 input length exceeds its bit-length encoding");
-        let mut tail = self.buffer.clone();
-        tail.push(0x80);
-        while tail.len() % 64 != 56 {
-            tail.push(0);
-        }
-        tail.extend_from_slice(&bit_length.to_be_bytes());
-        for block in tail.chunks_exact(64) {
-            compress_block(&mut state, block.try_into().expect("padded SHA block"));
-        }
+        let buffered = usize::from(self.buffer_len);
+        let padded_len = if buffered < 56 { 64 } else { 128 };
+        let mut tail = [0; 128];
+        tail[..buffered].copy_from_slice(&self.buffer[..buffered]);
+        tail[buffered] = 0x80;
+        tail[padded_len - 8..padded_len].copy_from_slice(&bit_length.to_be_bytes());
+        compress_blocks(&mut state, &tail[..padded_len]);
         let mut digest = [0_u8; 32];
         for (encoded, word) in digest.chunks_exact_mut(4).zip(state) {
             encoded.copy_from_slice(&word.to_be_bytes());
@@ -121,9 +123,17 @@ impl JsonlResumableSha256 {
     }
 }
 
-fn compress_block(state: &mut [u32; 8], block: &[u8; 64]) {
-    let block = GenericArray::clone_from_slice(block);
-    compress256(state, std::slice::from_ref(&block));
+fn compress_blocks(state: &mut [u32; 8], bytes: &[u8]) {
+    debug_assert_eq!(bytes.len() % 64, 0);
+    // SAFETY: `GenericArray<u8, U64>` is transparent over 64 bytes, has byte
+    // alignment, and `bytes` contains an exact whole number of blocks.
+    let blocks = unsafe {
+        std::slice::from_raw_parts(
+            bytes.as_ptr().cast::<GenericArray<u8, U64>>(),
+            bytes.len() / 64,
+        )
+    };
+    compress256(state, blocks);
 }
 
 #[cfg(test)]
