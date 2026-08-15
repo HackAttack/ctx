@@ -501,19 +501,22 @@ fn map_sqlite_source_access_error_to_io(error: SqliteSourceAccessError) -> Sqlit
 
 #[cfg(any(test, feature = "test-support"))]
 mod tests {
-    use std::{collections::BTreeMap, ffi::OsString, fs, path::Path};
+    use std::{fs, path::Path};
+
+    #[cfg(target_os = "linux")]
+    use std::{collections::BTreeMap, ffi::OsString};
 
     #[cfg(target_os = "linux")]
     use rusqlite::config::DbConfig;
     use rusqlite::Connection;
 
-    use super::{
-        open_provider_sqlite_readonly, ProviderSqliteSourceSnapshot, SqliteReadFinalizationError,
-        SqliteSourceEvidence,
-    };
+    use super::{open_provider_sqlite_readonly, SqliteReadFinalizationError};
+    #[cfg(target_os = "linux")]
+    use super::{ProviderSqliteSourceSnapshot, SqliteSourceEvidence};
     #[cfg(target_os = "linux")]
     use crate::Result;
 
+    #[cfg(target_os = "linux")]
     fn directory_file_bytes(path: &Path) -> BTreeMap<OsString, Vec<u8>> {
         fs::read_dir(path)
             .unwrap()

@@ -704,6 +704,7 @@ impl SqliteFamilyEvidence {
 }
 
 impl SqliteSnapshotEvidence {
+    #[cfg(target_os = "linux")]
     pub(super) fn schema(&self) -> &SqliteSchemaEvidence {
         &self.schema
     }

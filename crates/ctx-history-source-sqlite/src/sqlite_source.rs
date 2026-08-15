@@ -1325,9 +1325,9 @@ fn revalidate_live_database_schema(
     #[cfg(not(target_os = "linux"))]
     {
         let _ = (family, native_evidence, expected_schema);
-        return Err(SqliteSourceAccessError::SnapshotUnavailable {
+        Err(SqliteSourceAccessError::SnapshotUnavailable {
             reason: "pinned read-only WAL snapshots require the Linux unix VFS".to_owned(),
-        });
+        })
     }
     #[cfg(target_os = "linux")]
     {

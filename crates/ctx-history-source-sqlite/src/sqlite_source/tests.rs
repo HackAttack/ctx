@@ -31,6 +31,8 @@ use super::snapshot::{
     open_root_handle_sqlite_source_stable_snapshot_after_database_copy_for_test,
     open_root_handle_sqlite_source_stable_snapshot_before_revalidation_for_test,
 };
+#[cfg(target_os = "linux")]
+use super::SQLITE_SNAPSHOT_MAX_TOTAL_BYTES;
 use super::{
     fail_next_private_sqlite_staging_operation_for_test, map_revalidation_error,
     map_revalidation_io_error, open_private_sqlite_staging_file,
@@ -39,7 +41,7 @@ use super::{
     SqliteSourceComponent, SqliteSourceDirectoryAuthority, SqliteSourceFamily,
     SqliteSourceProgressError, SqliteSourceProgressStage, SqliteSourceReadSnapshot,
     SqliteSourceSnapshotStrategy, SqliteSourceStagingOperationForTest,
-    SQLITE_SNAPSHOT_FREE_HEADROOM_BYTES, SQLITE_SNAPSHOT_MAX_TOTAL_BYTES,
+    SQLITE_SNAPSHOT_FREE_HEADROOM_BYTES,
 };
 
 mod diagnostics;
