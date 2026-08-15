@@ -23,12 +23,10 @@ use std::{
 use anyhow::{anyhow, bail, Context, Result};
 use ctx_history_capture::{
     automatic_source_backed_route_identity, build_automatic_source_backed_registry_from_report,
-    discover_provider_sources_with_context_and_work_budget,
-    discover_provider_sources_with_context_and_work_budget_for_intent,
-    source_backed_refresh_work_budget, source_backed_refresh_writer_options,
-    validate_provider_source_roots_outside_data_root, DiscoveryContext, DiscoveryIntent,
-    SourceBackedAutomaticRegistryIssue, SourceBackedAutomaticUnavailableReason,
-    SourceBackedCoordinatorError,
+    discover_provider_sources_with_context_and_work_budget, source_backed_refresh_work_budget,
+    source_backed_refresh_writer_options, validate_provider_source_roots_outside_data_root,
+    DiscoveryContext, SourceAdmission, SourceBackedAutomaticRegistryIssue,
+    SourceBackedAutomaticUnavailableReason, SourceBackedCoordinatorError,
     SourceBackedDetailedRefreshProgress as CaptureSourceBackedDetailedRefreshProgress,
     SourceBackedFailedRoute, SourceBackedFailedRouteOutcome, SourceBackedLogicalSourceFailures,
     SourceBackedProviderRegistry, SourceBackedRecordRejections, SourceBackedRouteError,
@@ -147,7 +145,11 @@ pub fn source_backed_watch_catalog(
     let work_budget =
         source_backed_refresh_work_budget(source_backed_refresh_writer_options().indexer_threads);
     let discovery_started = StdInstant::now();
-    let report = discover_provider_sources_with_context_and_work_budget(&discovery, work_budget);
+    let report = discover_provider_sources_with_context_and_work_budget(
+        &discovery,
+        work_budget,
+        SourceAdmission::ReconcileAll,
+    );
     let discovery_duration = discovery_started.elapsed();
     validate_provider_source_roots_outside_data_root(data_root, report.sources.iter())
         .context("validate provider roots before deriving source watch catalog")?;

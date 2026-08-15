@@ -208,7 +208,11 @@ fn source_backed_route_observation_fence(
     let work_budget =
         source_backed_refresh_work_budget(source_backed_refresh_writer_options().indexer_threads);
     let discovery_started = StdInstant::now();
-    let report = discover_provider_sources_with_context_and_work_budget(&discovery, work_budget);
+    let report = discover_provider_sources_with_context_and_work_budget(
+        &discovery,
+        work_budget,
+        ctx_history_capture::SourceAdmission::ReconcileAll,
+    );
     let discovery_duration = discovery_started.elapsed();
     validate_provider_source_roots_outside_data_root(data_root, report.sources.iter())
         .context("validate provider roots before admitting source refresh demand")?;

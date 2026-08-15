@@ -32,7 +32,7 @@ fn resolve_provider(context: &DiscoveryContext, provider: CaptureProvider) -> Di
         &crate::provider_sources::TEST_PROVIDER_PROBES,
         context,
         spec(provider),
-        DiscoveryIntent::Exhaustive,
+        SourceAdmission::ReconcileAll,
     )
 }
 
@@ -44,7 +44,7 @@ fn resolve_provider_for_exact_members(
         &crate::provider_sources::TEST_PROVIDER_PROBES,
         context,
         spec(provider),
-        DiscoveryIntent::ExactOrdinaryMembers,
+        SourceAdmission::ExactMembers,
     )
 }
 

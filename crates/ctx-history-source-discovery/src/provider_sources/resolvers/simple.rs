@@ -17,7 +17,7 @@ use super::{
         StaticProviderProbeCatalog,
     },
     issue, path_presence, push_source_candidate, select_current_or_legacy,
-    source_from_parts_with_data_root, unsupported_source, DiscoveryIntent, PathPresence,
+    source_from_parts_with_data_root, unsupported_source, PathPresence, SourceAdmission,
 };
 
 const MANUAL_PATH_REASON: &str =
@@ -44,10 +44,10 @@ pub(super) fn resolve(
     probes: &StaticProviderProbeCatalog,
     context: &DiscoveryContext,
     spec: &ProviderSourceSpec,
-    intent: DiscoveryIntent,
+    admission: SourceAdmission,
 ) -> DiscoveryReport {
     match spec.provider {
-        CaptureProvider::Codex => resolve_codex(probes, context, spec, intent),
+        CaptureProvider::Codex => resolve_codex(probes, context, spec, admission),
         CaptureProvider::GrokBuild => resolve_grok_build(probes, context, spec),
         CaptureProvider::DeepSeekHarness => resolve_deepseek_harness(probes, context, spec),
         CaptureProvider::Claude => resolve_claude(probes, context, spec),
@@ -125,7 +125,7 @@ fn resolve_codex(
     probes: &StaticProviderProbeCatalog,
     context: &DiscoveryContext,
     spec: &ProviderSourceSpec,
-    intent: DiscoveryIntent,
+    admission: SourceAdmission,
 ) -> DiscoveryReport {
     let root = match context.env("CODEX_HOME").and_then(OsStr::to_str) {
         Some("") | None => match supported_default(context, spec) {
@@ -151,13 +151,11 @@ fn resolve_codex(
 
     let mut report = DiscoveryReport::default();
     for tree in [root.join("sessions"), root.join("archived_sessions")] {
-        match intent {
-            DiscoveryIntent::Exhaustive => {
+        match admission {
+            SourceAdmission::ReconcileAll => {
                 add_source(probes, &mut report, spec, tree, "codex_session_jsonl_tree")
             }
-            DiscoveryIntent::ExactOrdinaryMembers => {
-                add_exact_codex_tree_source(&mut report, spec, tree)
-            }
+            SourceAdmission::ExactMembers => add_exact_codex_tree_source(&mut report, spec, tree),
         }
     }
     add_source(
@@ -168,7 +166,7 @@ fn resolve_codex(
         "codex_history_jsonl",
     );
 
-    if intent == DiscoveryIntent::Exhaustive {
+    if admission == SourceAdmission::ReconcileAll {
         for tree in [root.join("sessions"), root.join("archived_sessions")] {
             match compressed_codex_rollouts(&tree) {
                 Ok(paths) => {

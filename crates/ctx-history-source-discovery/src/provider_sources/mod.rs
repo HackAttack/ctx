@@ -104,7 +104,6 @@ pub use discovery::{
     discover_provider_sources_for_provider_with_context,
     discover_provider_sources_for_provider_with_projects, discover_provider_sources_report,
     discover_provider_sources_with_context, discover_provider_sources_with_context_and_work_budget,
-    discover_provider_sources_with_context_and_work_budget_for_intent,
     discover_provider_sources_with_projects, provider_source_for_path,
     validate_provider_source_roots_outside_data_root, ProviderSourceRootBoundaryError,
 };
@@ -118,7 +117,7 @@ pub use resolvers::{
     path_presence, CrushDiscoveredProjectInventory, CrushProjectInventorySelector,
     CrushProjectInventorySelectorError,
 };
-pub use resolvers::{DiscoveryIntent, PathPresence};
+pub use resolvers::{PathPresence, SourceAdmission};
 pub use specs::{provider_source_spec, provider_source_specs};
 pub use types::{
     provider_source_status_reason, DiscoveryIssue, DiscoveryIssueKind, DiscoveryReport,

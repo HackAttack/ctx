@@ -66,15 +66,15 @@ pub enum PathPresence {
     Unknown(ErrorKind),
 }
 
-/// Declares how completely provider discovery must reconcile sibling inputs.
+/// Selects the source admission strategy for one refresh attempt.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum DiscoveryIntent {
-    /// Discover every supported and detected sibling input.
-    Exhaustive,
+pub enum SourceAdmission {
+    /// Reconcile every supported and detected sibling input.
+    ReconcileAll,
     /// A native watcher selected only exact existing ordinary-file members.
     /// Sibling-format inventory may be deferred, but member authentication and
     /// terminal publication fences remain mandatory.
-    ExactOrdinaryMembers,
+    ExactMembers,
 }
 
 impl PathPresence {
@@ -160,10 +160,10 @@ pub(super) fn resolve(
     probes: &StaticProviderProbeCatalog,
     context: &DiscoveryContext,
     spec: &ProviderSourceSpec,
-    intent: DiscoveryIntent,
+    admission: SourceAdmission,
 ) -> DiscoveryReport {
     match resolver_group(spec.provider) {
-        Some(ResolverGroup::Simple) => simple::resolve(probes, context, spec, intent),
+        Some(ResolverGroup::Simple) => simple::resolve(probes, context, spec, admission),
         Some(ResolverGroup::Platform) => platform::resolve(probes, context, spec),
         Some(ResolverGroup::ConfigProject) => config_project::resolve(probes, context, spec),
         Some(ResolverGroup::ProfileProject) => profile_project::resolve(probes, context, spec),

@@ -19,12 +19,12 @@ pub use ctx_history_source_discovery::{
 };
 pub use ctx_history_source_discovery::{
     validate_provider_source_roots_outside_data_root, DiscoveredLingmaDatabase,
-    DiscoveredWarpSource, DiscoveryContext, DiscoveryIntent, DiscoveryIssue, DiscoveryIssueKind,
-    DiscoveryPlatform, DiscoveryPlatformDirs, DiscoveryReport, LingmaDatabaseCatalogLineage,
+    DiscoveredWarpSource, DiscoveryContext, DiscoveryIssue, DiscoveryIssueKind, DiscoveryPlatform,
+    DiscoveryPlatformDirs, DiscoveryReport, LingmaDatabaseCatalogLineage,
     LingmaDiscoveredInventory, LingmaDiscoveryUnavailable, LingmaVscodeClient, LingmaVscodeProfile,
     PathPresence, ProviderCatalogSupport, ProviderDefaultLocation, ProviderImportSupport,
     ProviderSource, ProviderSourceKind, ProviderSourceRootBoundaryError, ProviderSourceSpec,
-    ProviderSourceStatus, ProviderSourceStatusReason, WarpDiscoveryUnavailable,
+    ProviderSourceStatus, ProviderSourceStatusReason, SourceAdmission, WarpDiscoveryUnavailable,
     WarpInstalledPlatform, WarpInstalledSurfaceKey, WarpReleaseChannel, WarpTerminalSurface,
     DISCOVERY_ENV_ALLOWLIST,
 };
@@ -182,24 +182,13 @@ pub fn discover_provider_sources_with_context(context: &DiscoveryContext) -> Dis
 pub fn discover_provider_sources_with_context_and_work_budget(
     context: &DiscoveryContext,
     worker_limit: usize,
+    admission: SourceAdmission,
 ) -> DiscoveryReport {
     ctx_history_source_discovery::discover_provider_sources_with_context_and_work_budget(
         &BUILTIN_PROVIDER_PROBES,
         context,
         worker_limit,
-    )
-}
-
-pub fn discover_provider_sources_with_context_and_work_budget_for_intent(
-    context: &DiscoveryContext,
-    worker_limit: usize,
-    intent: DiscoveryIntent,
-) -> DiscoveryReport {
-    ctx_history_source_discovery::discover_provider_sources_with_context_and_work_budget_for_intent(
-        &BUILTIN_PROVIDER_PROBES,
-        context,
-        worker_limit,
-        intent,
+        admission,
     )
 }
 
@@ -427,7 +416,11 @@ mod extraction_regression_tests {
             &BUILTIN_PROVIDER_PROBES,
             &context,
         );
-        let bounded = discover_provider_sources_with_context_and_work_budget(&context, 1);
+        let bounded = discover_provider_sources_with_context_and_work_budget(
+            &context,
+            1,
+            SourceAdmission::ReconcileAll,
+        );
 
         assert_eq!(facade, direct);
         assert_eq!(facade, bounded);
