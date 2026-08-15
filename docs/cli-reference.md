@@ -28,6 +28,7 @@ as `search`, `show`, `sources`, and `docs` are not suppressed.
 
 ```bash
 ctx setup
+ctx setup --pro
 ctx setup --no-daemon
 ctx setup --format json
 ctx setup --progress json --format json
@@ -60,6 +61,12 @@ ctx daemon enable
 - `setup --quiet` performs setup without printing success status lines, import
   summaries, data-root details, or get-started tips. It still exits nonzero and
   prints errors on failure.
+- `setup --pro` also starts an anonymous ctx Pro trial and durably schedules
+  Pro materialization from the daemon-owned committed Core generation. Pro
+  enrollment failure is reported independently and does not make successful
+  Core setup fail. This mode requires daemon maintenance and may use the
+  network; Core-only `setup` remains local and is the default for scripts and
+  CI.
 - `setup --catalog-only` remains accepted only for command-line compatibility.
   It is deprecated and ignored; setup follows the same refresh lifecycle as
   when the flag is omitted.

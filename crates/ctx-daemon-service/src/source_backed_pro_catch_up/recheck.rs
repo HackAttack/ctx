@@ -74,6 +74,17 @@ pub fn publish(data_root: &Path, target_helper_sha256: &str) -> Result<()> {
     })
 }
 
+/// Publish a fresh request identity for an explicit materialization attempt.
+///
+/// Unlike helper-installation publication, an explicit materialization must be
+/// reconsidered even when it targets the already-installed helper.
+pub fn rearm(data_root: &Path, target_helper_sha256: &str) -> Result<()> {
+    let next = HelperRecheckIntent::new(target_helper_sha256)?;
+    with_lock(data_root, || {
+        write_daemon_job_status(&path(data_root), &compact_json(serde_json::to_value(next)?))
+    })
+}
+
 pub fn targets(data_root: &Path, target_helper_sha256: &str) -> Result<bool> {
     validate_sha256(target_helper_sha256)?;
     Ok(read(data_root)?.is_some_and(|intent| intent.target_helper_sha256 == target_helper_sha256))
@@ -191,4 +202,41 @@ fn validate_sha256(value: &str) -> Result<()> {
         anyhow::bail!("invalid Pro helper SHA-256 identity");
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use anyhow::Result;
+
+    use super::*;
+
+    const HELPER_SHA256: &str = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+
+    #[test]
+    fn publish_preserves_same_helper_request_identity() -> Result<()> {
+        let temp = tempfile::tempdir()?;
+        publish(temp.path(), HELPER_SHA256)?;
+        let first = read(temp.path())?.expect("published recheck intent");
+
+        publish(temp.path(), HELPER_SHA256)?;
+        let second = read(temp.path())?.expect("deduplicated recheck intent");
+
+        assert_eq!(second.request_id, first.request_id);
+        assert_eq!(second.target_helper_sha256, HELPER_SHA256);
+        Ok(())
+    }
+
+    #[test]
+    fn rearm_changes_same_helper_request_identity() -> Result<()> {
+        let temp = tempfile::tempdir()?;
+        publish(temp.path(), HELPER_SHA256)?;
+        let first = read(temp.path())?.expect("published recheck intent");
+
+        rearm(temp.path(), HELPER_SHA256)?;
+        let rearmed = read(temp.path())?.expect("rearmed recheck intent");
+
+        assert_ne!(rearmed.request_id, first.request_id);
+        assert_eq!(rearmed.target_helper_sha256, HELPER_SHA256);
+        Ok(())
+    }
 }

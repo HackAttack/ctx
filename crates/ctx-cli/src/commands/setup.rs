@@ -28,6 +28,12 @@ pub(crate) fn run_setup(
     ui: &mut Ui,
 ) -> Result<()> {
     let semantic_supported = semantic_query_service_supported();
+    let suppression_reason = daemon_autostart_suppression_reason();
+    if args.pro && (!config.daemon.enabled || args.no_daemon) {
+        bail!(
+            "`ctx setup --pro` requires daemon maintenance. Enable [daemon] enabled = true and rerun without --no-daemon"
+        );
+    }
     if args.semantic && (!config.daemon.enabled || args.no_daemon) {
         bail!(
             "`ctx setup --semantic` requires daemon maintenance. Enable [daemon] enabled = true and rerun without --no-daemon"
@@ -46,7 +52,6 @@ pub(crate) fn run_setup(
     CliHistoryConfigAdapter::new(&data_root, config).write_default_config()?;
 
     let json_output = args.format.is_json();
-    let suppression_reason = daemon_autostart_suppression_reason();
     let daemon_autostart_requested =
         config.daemon.enabled && !args.no_daemon && suppression_reason.is_none();
     let daemon_autostart_reason = if args.no_daemon {
@@ -78,6 +83,12 @@ pub(crate) fn run_setup(
         )?
     };
     let source = source_epoch_status_report(&data_root, config)?;
+    let pro_setup = setup_pro(
+        args.pro,
+        core_admitted_for_pro(source.initialized, &refresh_request),
+        &data_root,
+        ui,
+    );
     let supervisor = source.report["daemon"]["supervisor"].clone();
     let lexical_status = source.report["lexical"]["status"]
         .as_str()
@@ -118,7 +129,8 @@ pub(crate) fn run_setup(
         "deprecated_catalog_only_ignored".to_owned(),
         json!(args.catalog_only),
     );
-    output_fields.insert("network_required".to_owned(), json!(false));
+    output_fields.insert("pro".to_owned(), pro_setup.clone());
+    output_fields.insert("network_required".to_owned(), json!(args.pro));
     output_fields.insert("repo_writes".to_owned(), json!(false));
 
     if json_output {
@@ -136,10 +148,79 @@ pub(crate) fn run_setup(
                 started: daemon_handoff.is_some(),
                 persistent_supervisor_verified: supervisor_persistently_verified(&supervisor),
             },
+            &pro_setup,
         );
         ui.write_stdout(&document)?;
     }
     Ok(())
+}
+
+fn core_admitted_for_pro(initialized: bool, refresh_request: &Value) -> bool {
+    initialized
+        || matches!(
+            refresh_request["status"].as_str(),
+            Some("accepted" | "pending" | "published" | "queued" | "running")
+        )
+}
+
+fn setup_pro(
+    requested: bool,
+    core_admitted: bool,
+    data_root: &std::path::Path,
+    ui: &mut Ui,
+) -> Value {
+    if !requested {
+        return json!({
+            "requested": false,
+            "status": "skipped",
+            "trial_started": false,
+            "trial_ends_on": Value::Null,
+            "action_url": Value::Null,
+            "next_command": "ctx pro",
+        });
+    }
+    if !core_admitted {
+        return json!({
+            "requested": true,
+            "status": "unavailable",
+            "error_code": "core_setup_unavailable",
+            "trial_started": false,
+            "trial_ends_on": Value::Null,
+            "action_url": Value::Null,
+            "next_command": "ctx pro",
+        });
+    }
+    match crate::pro::run_deferred_trial_setup(data_root, ui) {
+        Ok(outcome) => {
+            let trial_started = outcome.account_state == "trial";
+            let trial_ends_on = outcome.status["access_deadline_unix"]
+                .as_i64()
+                .and_then(|unix| chrono::DateTime::from_timestamp(unix, 0))
+                .map(|deadline| deadline.format("%Y-%m-%d").to_string());
+            json!({
+                "requested": true,
+                "status": "ready",
+                "account_state": outcome.account_state,
+                "helper_updated": outcome.helper_updated,
+                "materialization": if outcome.materialization_deferred { "pending" } else { "ready" },
+                "trial_started": trial_started,
+                "trial_ends_on": trial_ends_on,
+                // No secure browser conversion route exists yet. Keep this
+                // null rather than presenting a generic marketing URL.
+                "action_url": Value::Null,
+                "next_command": "ctx pro",
+            })
+        }
+        Err(error) => json!({
+            "requested": true,
+            "status": "unavailable",
+            "error_code": crate::pro::stable_error_code(&error).unwrap_or("pro_setup_failed"),
+            "trial_started": false,
+            "trial_ends_on": Value::Null,
+            "action_url": Value::Null,
+            "next_command": "ctx pro",
+        }),
+    }
 }
 
 fn setup_mode(
@@ -372,6 +453,20 @@ mod tests {
     }
 
     #[test]
+    fn pro_activation_requires_existing_core_or_durable_core_admission() {
+        assert!(core_admitted_for_pro(
+            true,
+            &json!({"status": "unavailable"})
+        ));
+        for status in ["accepted", "pending", "published", "queued", "running"] {
+            assert!(core_admitted_for_pro(false, &json!({"status": status})));
+        }
+        for status in ["unavailable", "failed", "unknown"] {
+            assert!(!core_admitted_for_pro(false, &json!({"status": status})));
+        }
+    }
+
+    #[test]
     fn setup_manager_unavailable_reports_a_persistent_process_and_restart_limitation() {
         let supervisor = json!({
             "kind": "systemd_user",
@@ -433,5 +528,21 @@ mod tests {
                 "setup retained forbidden legacy dependency {forbidden}"
             );
         }
+    }
+
+    #[test]
+    fn setup_admits_and_inspects_core_before_irreversible_pro_activation() {
+        let source = include_str!("setup.rs");
+        let runtime = source.split("#[cfg(test)]").next().unwrap();
+        let refresh = runtime
+            .find("let refresh_request =")
+            .expect("Core refresh admission");
+        let inspection = runtime
+            .find("let source = source_epoch_status_report")
+            .expect("Core status inspection");
+        let pro = runtime
+            .find("let pro_setup = setup_pro(")
+            .expect("Pro activation");
+        assert!(refresh < inspection && inspection < pro);
     }
 }
