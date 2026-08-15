@@ -26,7 +26,6 @@ use super::metadata::{
     metadata_signature_url, metadata_url, parse_release_metadata, validate_artifact_url,
     verify_metadata_signature,
 };
-use super::path::path_diagnostics;
 use super::state::{
     begin_manual_attempt_locked, begin_recovery_attempt_locked, claim_daemon_auto_upgrade,
     reconcile_replacement_terminal_locked, write_state_checked_locked, write_state_error_locked,
@@ -814,8 +813,6 @@ fn build_upgrade_plan<D: DaemonUpgradePort + ?Sized>(
     }
     let current_version = snapshot.marker.version.clone();
     let managed = warnings.is_empty();
-    let path = path_diagnostics(&snapshot.marker.install_path, &current_version);
-    warnings.extend(path.warnings.clone());
     let metadata_url = metadata_url(&channel);
     let signature_url = metadata_signature_url(&metadata_url);
     let metadata_bytes = engine
@@ -872,7 +869,6 @@ fn build_upgrade_plan<D: DaemonUpgradePort + ?Sized>(
         update_available,
         managed,
         warnings,
-        path,
         metadata,
         semantic_provisioning,
     })

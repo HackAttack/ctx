@@ -1057,7 +1057,7 @@ fn upgrade_status_reconciles_completed_scheduled_replacement() {
 
 #[cfg(unix)]
 #[test]
-fn upgrade_status_reports_path_shadowing() {
+fn managed_upgrade_status_ignores_an_older_ctx_earlier_on_path() {
     let temp = tempdir();
     let release = fake_release(&temp, "9.9.9");
     let shadow_dir = temp.path().join("shadow-bin");
@@ -1075,26 +1075,10 @@ fn upgrade_status_reports_path_shadowing() {
 
     assert_eq!(status["schema_version"], 1);
     assert_eq!(status["current_version"], env!("CARGO_PKG_VERSION"));
-    assert_eq!(
-        status["path"]["entries"][0]["path"],
-        shadow_ctx.display().to_string()
-    );
-    assert!(status["path"]["entries"][0]["version"].is_null());
-    assert_eq!(status["path"]["resolver_status"], "shadowed");
-    assert_eq!(status["path"]["background_apply"]["allowed"], false);
-    assert_eq!(
-        status["path"]["background_apply"]["reason"],
-        "path_shadowed"
-    );
-    assert_eq!(status["warnings"], status["path"]["warnings"]);
-    assert_eq!(status["warnings"].as_array().unwrap().len(), 2);
-    assert!(status["warnings"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .any(|warning| { warning.as_str().unwrap().contains("PATH resolves ctx to") }));
+    assert_eq!(status["install"]["managed"], true);
+    assert!(status.get("path").is_none(), "{status:#}");
+    assert_eq!(status["warnings"], json!([]));
 
-    let managed_ctx = status["path"]["current_exe"].as_str().unwrap();
     let mut command = ctx(&temp);
     command.args(["upgrade", "status"]).env("PATH", &path);
     let human_output = fake_release_env(&mut command, &release)
@@ -1105,48 +1089,35 @@ fn upgrade_status_reports_path_shadowing() {
     let stdout = String::from_utf8(human_output.stdout).unwrap();
     let stderr = String::from_utf8(human_output.stderr).unwrap();
     assert!(
-        stdout.contains("A different ctx takes precedence on PATH"),
+        stdout.contains("ctx has not checked for updates yet"),
         "{stdout}"
     );
+    assert!(!stdout.contains("PATH"), "{stdout}");
     assert!(
-        stdout.contains(&shadow_ctx.display().to_string()),
+        !stdout.contains(&shadow_ctx.display().to_string()),
         "{stdout}"
     );
-    assert!(stdout.contains(managed_ctx), "{stdout}");
-    assert!(
-        stdout.contains("Automatic upgrades are blocked"),
-        "{stdout}"
-    );
-    assert!(
-        stdout.contains("shell will keep running the shadowing ctx"),
-        "{stdout}"
-    );
-    assert!(stdout.contains("ctx upgrade enable"), "{stdout}");
     assert!(stderr.is_empty(), "{stderr}");
-    assert!(!stdout.contains("PATH resolves ctx to"), "{stdout}");
-    assert!(
-        !stdout.contains("multiple ctx binaries are on PATH"),
-        "{stdout}"
-    );
 }
 
 #[cfg(unix)]
 #[test]
-fn upgrade_status_preserves_non_shadow_path_warning() {
+fn unmanaged_source_built_upgrade_status_produces_no_path_warning() {
     let temp = tempdir();
-    let release = fake_release(&temp, "9.9.9");
-    let empty_path = temp.path().join("empty-path");
-    fs::create_dir_all(&empty_path).unwrap();
+    let shadow_dir = temp.path().join("shadow-bin");
+    fs::create_dir_all(&shadow_dir).unwrap();
+    let shadow_ctx = shadow_dir.join("ctx");
+    write_fake_ctx_binary(&shadow_ctx, "0.9.0");
 
     let mut command = ctx(&temp);
-    command.args(["upgrade", "status"]).env("PATH", &empty_path);
-    let output = fake_release_env(&mut command, &release)
-        .assert()
-        .success()
-        .get_output()
-        .clone();
-    let stderr = String::from_utf8(output.stderr).unwrap();
-    assert!(stderr.contains("not discoverable on PATH"), "{stderr}");
+    command
+        .args(["upgrade", "status", "--format=json"])
+        .env("PATH", &shadow_dir);
+    let status = json_output(&mut command);
+    assert_eq!(status["install"]["managed"], false);
+    assert_eq!(status["install"]["marker"], "absent");
+    assert!(status.get("path").is_none(), "{status:#}");
+    assert_eq!(status["warnings"], json!([]));
 }
 
 #[cfg(unix)]
@@ -1174,14 +1145,12 @@ fn upgrade_commands_do_not_execute_hanging_shadow_path_ctx() {
             .env("PATH", &path)
             .env("CTX_SHADOW_MARKER", &marker);
         let output = json_output(fake_release_env(&mut command, &release));
-        assert_eq!(
-            output["path"]["entries"][0]["path"],
-            shadow_ctx.display().to_string()
-        );
-        assert!(
-            output["path"]["entries"][0]["version"].is_null(),
-            "shadow ctx versions should not be probed"
-        );
+        assert!(output.get("path").is_none(), "{output:#}");
+        assert!(!output["warnings"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|warning| warning.as_str().unwrap_or_default().contains("PATH")));
         assert!(
             !marker.exists(),
             "PATH shadow ctx should not have been executed"

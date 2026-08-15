@@ -132,18 +132,10 @@ pub(super) fn component_display(component: &Value) -> String {
 
 pub(super) fn upgrade_service_issue(upgrade: &Value) -> Option<String> {
     let install = upgrade.get("install")?;
-    if let Some(error) = install.get("error").and_then(Value::as_str) {
-        return Some(format!("needs attention ({error})"));
-    }
-    let background_apply = install.get("path")?.get("background_apply")?;
-    if background_apply.get("allowed").and_then(Value::as_bool) != Some(false) {
-        return None;
-    }
-    background_apply
-        .get("reason")
+    install
+        .get("error")
         .and_then(Value::as_str)
-        .map(humanize_code)
-        .map(|reason| format!("blocked ({reason})"))
+        .map(|error| format!("needs attention ({error})"))
 }
 
 pub(super) fn service_progress_message(count: usize) -> String {

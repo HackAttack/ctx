@@ -255,7 +255,6 @@ pub(super) fn humanize_code(value: &str) -> String {
         "projection_missing" => "still being prepared".to_owned(),
         "generation_not_published" => "history has not been indexed yet".to_owned(),
         "lexical_generation_unavailable" => "search index unavailable".to_owned(),
-        "path_shadowed" => "another ctx binary appears earlier in PATH".to_owned(),
         _ => value.replace('_', " "),
     }
 }
@@ -416,7 +415,7 @@ mod tests {
     }
 
     #[test]
-    fn status_surfaces_only_actionable_auxiliary_service_errors() {
+    fn status_ignores_legacy_path_precedence_diagnostics() {
         let report = status_report(true, "ready", "ready");
         let upgrade = json!({
             "auto": "apply",
@@ -446,9 +445,8 @@ mod tests {
         let rendered = document.render_plain();
         let normalized = rendered.split_whitespace().collect::<Vec<_>>().join(" ");
         assert!(rendered.starts_with("! ctx needs attention\n"));
-        assert!(normalized
-            .contains("Automatic upgrades blocked (another ctx binary appears earlier in PATH)"));
-        assert!(!rendered.contains("path shadowed"));
+        assert!(!normalized.contains("Automatic upgrades"), "{rendered}");
+        assert!(!normalized.contains("PATH"), "{rendered}");
         assert!(rendered.contains("Local usage"));
         assert!(rendered.contains("local_usage_config_unavailable"));
         assert!(normalized.contains("local usage configuration could not be read"));

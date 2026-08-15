@@ -6,7 +6,7 @@ use std::{
 use anyhow::{anyhow, Context, Result};
 
 use super::super::download::DownloadedArtifact;
-use super::super::path::ctx_binary_version;
+use super::super::version_probe::ctx_binary_version;
 use super::super::ReleaseProcessPort;
 
 pub(super) fn stage_downloaded_binary(

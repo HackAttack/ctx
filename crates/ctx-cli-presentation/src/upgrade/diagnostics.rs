@@ -1,8 +1,6 @@
 use ctx_upgrade_engine::{ManagedInstallDiagnostic, UpgradeDiagnostics as EngineDiagnostics};
 use serde_json::{json, Value};
 
-use super::path_diagnostics_json;
-
 pub struct UpgradeDiagnostics {
     pub report: Value,
     pub findings: Vec<String>,
@@ -23,11 +21,10 @@ pub fn present_upgrade_diagnostics(
             "marker": "corrupt",
             "error": reason,
         }),
-        ManagedInstallDiagnostic::Valid { install_path, path } => json!({
+        ManagedInstallDiagnostic::Valid { install_path } => json!({
             "managed": true,
             "marker": "valid",
             "install_path": install_path,
-            "path": path_diagnostics_json(&path),
         }),
         ManagedInstallDiagnostic::Unavailable { error } => json!({
             "managed": false,

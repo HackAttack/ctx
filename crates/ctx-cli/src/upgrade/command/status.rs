@@ -2,8 +2,8 @@ use std::path::Path;
 
 use anyhow::Result;
 use ctx_upgrade_engine::{
-    current_install_path, managed_install_marker_for_current_exe, path_diagnostics,
-    read_state_json, ManagedInstallMarker, STATE_SCHEMA_VERSION,
+    managed_install_marker_for_current_exe, read_state_json, ManagedInstallMarker,
+    STATE_SCHEMA_VERSION,
 };
 use serde_json::json;
 
@@ -22,10 +22,6 @@ pub(super) fn render_status(
         })
     });
     let current_version = super::super::ports::product_identity().version();
-    let current_exe = current_install_path().ok();
-    let path_diagnostics = current_exe
-        .as_ref()
-        .map(|path| path_diagnostics(path, current_version));
     let marker_result = managed_install_marker_for_current_exe();
     let valid_marker = match &marker_result {
         Ok(ManagedInstallMarker::Valid(marker)) => Some(marker),
@@ -59,13 +55,6 @@ pub(super) fn render_status(
             "reason": format!("{error:#}"),
         }),
     };
-    let path = path_diagnostics
-        .as_ref()
-        .map(ctx_cli_presentation::upgrade::path_diagnostics_json);
-    let warnings = path_diagnostics
-        .as_ref()
-        .map(|diagnostics| diagnostics.warnings())
-        .unwrap_or_default();
     let pro = crate::pro::lifecycle_status_json(data_root);
     let auto_mode = config.auto_upgrade_mode();
     ctx_cli_presentation::upgrade::render_status(
@@ -75,8 +64,6 @@ pub(super) fn render_status(
             auto_enabled: config.auto_upgrade_enabled(),
             state: &state,
             install: &install,
-            path: path.as_ref(),
-            warnings,
             pro: &pro,
         },
         json_output,

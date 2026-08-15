@@ -7,12 +7,10 @@ use crate::output::JsonOutputFormat;
 
 mod diagnostics;
 mod human;
-mod presentation;
 mod status;
 
 pub use diagnostics::{present_upgrade_diagnostics, UpgradeDiagnostics};
 pub use human::{render_auto_mode, render_error, render_outcome};
-pub use presentation::path_diagnostics_json;
 pub use status::{reconcile_scheduled_state, render_status, UpgradeStatusView};
 
 #[derive(Debug, Args)]

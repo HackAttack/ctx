@@ -15,9 +15,9 @@ mod download;
 mod install;
 mod legacy_automatic;
 mod metadata;
-mod path;
 mod state;
 mod version;
+mod version_probe;
 
 pub use command::{PreparedDaemonUpgrade, UpgradeOutcome};
 pub use diagnostics::{
@@ -28,10 +28,6 @@ pub use install::{
     installation_hosted_uninstall_is_active_for_executable, is_valid_install_attempt_id,
     managed_install_marker_for_current_exe, run_hosted_transaction, HostedTransactionAction,
     HostedTransactionArgs, InstallMarker, ManagedInstallMarker,
-};
-pub use path::{
-    path_diagnostics, BackgroundApplyBlockReason, PathDiagnosticEntry, PathDiagnostics,
-    PathResolverStatus,
 };
 pub use state::{
     active_installation_upgrade_attempt_id, installation_daemon_coordination_paths,
@@ -298,7 +294,6 @@ pub struct UpgradePlan {
     update_available: bool,
     managed: bool,
     warnings: Vec<String>,
-    path: path::PathDiagnostics,
     metadata: metadata::ReleaseMetadata,
     semantic_provisioning: Option<metadata::SelectedSemanticProvisioning>,
 }
@@ -360,10 +355,6 @@ impl UpgradePlan {
 
     pub fn warnings(&self) -> &[String] {
         &self.warnings
-    }
-
-    pub fn path(&self) -> &PathDiagnostics {
-        &self.path
     }
 
     pub fn self_upgrade_allowed(&self) -> bool {

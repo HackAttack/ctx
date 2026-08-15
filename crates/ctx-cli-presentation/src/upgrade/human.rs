@@ -96,7 +96,6 @@ fn outcome_json(upgrade: &UpgradeOutcome) -> Value {
         "artifact_url": plan.map(ctx_upgrade_engine::UpgradePlan::artifact_url),
         "install_path": plan.map(|plan| plan.install_path().display().to_string()),
         "managed": plan.map(ctx_upgrade_engine::UpgradePlan::managed).unwrap_or(false),
-        "path": plan.map(|plan| super::path_diagnostics_json(plan.path())),
         "applied": upgrade.applied(),
         "dry_run": upgrade.dry_run(),
         "warnings": upgrade.warnings(),
