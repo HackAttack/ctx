@@ -38,13 +38,8 @@ pub fn recover_wait_refresh_request_for_test(
         availability,
         data_root,
         request_id,
-        SourceBackedRefreshOperation::Refresh,
-        None,
-        false,
-        client::WaitRefreshRecoveryPolicy {
-            trigger: request::SourceBackedRefreshTrigger::Search,
-            allow_daemon_autostart: true,
-        },
+        request::SourceBackedRefreshTrigger::Search,
+        true,
     )
 }
 

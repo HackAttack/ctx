@@ -581,13 +581,8 @@ fn wait_for_published_generation_inner(
                     availability,
                     data_root,
                     &request_id,
-                    operation,
-                    expected_catalog,
-                    fresh_after_admitted_snapshot,
-                    WaitRefreshRecoveryPolicy {
-                        trigger,
-                        allow_daemon_autostart,
-                    },
+                    trigger,
+                    allow_daemon_autostart,
                 )
                 .with_context(|| {
                     format!("recover daemon while waiting for source refresh request {request_id}")
@@ -606,13 +601,8 @@ fn wait_for_published_generation_inner(
                     availability,
                     data_root,
                     &request_id,
-                    operation,
-                    expected_catalog,
-                    fresh_after_admitted_snapshot,
-                    WaitRefreshRecoveryPolicy {
-                        trigger,
-                        allow_daemon_autostart,
-                    },
+                    trigger,
+                    allow_daemon_autostart,
                 )
                 .with_context(|| {
                     format!(
@@ -847,25 +837,18 @@ fn legacy_failed_refresh_response(response: &Value) -> Result<SourceBackedRefres
     }
 }
 
-pub(super) struct WaitRefreshRecoveryPolicy {
-    pub(super) trigger: SourceBackedRefreshTrigger,
-    pub(super) allow_daemon_autostart: bool,
-}
-
 pub(super) fn recover_wait_refresh_request(
     availability: &dyn crate::DaemonAvailabilityPort,
     data_root: &Path,
     request_id: &str,
-    _operation: SourceBackedRefreshOperation,
-    _explicit_source_catalog: Option<&ExplicitSourceCatalogAuthority>,
-    _fresh_after_admitted_snapshot: bool,
-    policy: WaitRefreshRecoveryPolicy,
+    trigger: SourceBackedRefreshTrigger,
+    allow_daemon_autostart: bool,
 ) -> Result<String> {
-    if !policy.allow_daemon_autostart {
+    if !allow_daemon_autostart {
         return Err(retained_request_unobservable(request_id, 0));
     }
     let recovery = (|| {
-        if availability.ensure_available(data_root, policy.trigger.daemon_trigger())?
+        if availability.ensure_available(data_root, trigger.daemon_trigger())?
             == crate::DaemonAvailability::Disabled
         {
             bail!("daemon was disabled while waiting for source refresh");
