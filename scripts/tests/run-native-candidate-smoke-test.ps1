@@ -5,6 +5,8 @@ $repoRoot = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot "..\.."))
 $smoke = Join-Path $repoRoot "scripts\run-native-candidate-smoke.ps1"
 $root = Join-Path ([System.IO.Path]::GetTempPath()) ("ctx-native-smoke-test-" + [Guid]::NewGuid().ToString("n"))
 New-Item -ItemType Directory -Path $root | Out-Null
+$savedCI = $env:CI
+$env:CI = "true"
 
 try {
     $fake = Join-Path $root "ctx.cmd"
@@ -15,6 +17,7 @@ if not "%CTX_UPGRADE_AUTO%"=="off" exit /b 92
 if not "%CTX_DAEMON_AUTOSTART_OFF%"=="1" exit /b 93
 if "%HOME%"=="" exit /b 94
 if "%USERPROFILE%"=="" exit /b 95
+if not "%CI%"=="" exit /b 97
 set "CTX_FAKE_VERSION=0.25.0"
 if /I "%~n0"=="ctx-v1" set "CTX_FAKE_VERSION=1.0.0"
 echo %* | findstr /c:"--backend semantic" >nul
@@ -63,6 +66,9 @@ exit /b 99
     "0.25.0`n" | Set-Content -LiteralPath $expectedVersionFile -NoNewline -Encoding Ascii
 
     & $smoke -Binary $fake -Fixture $fixture -ExpectedVersionFile $expectedVersionFile -ResultPath $result | Out-Null
+    if ($env:CI -ne "true") {
+        throw "candidate smoke mutated parent CI"
+    }
     $parsed = Get-Content -LiteralPath $result -Raw | ConvertFrom-Json
     if ($parsed.schema_version -ne 1 -or
         $parsed.kind -ne "ctx-native-candidate-smoke" -or
@@ -93,7 +99,7 @@ exit /b 99
     }
 
     $hung = Join-Path $root "ctx-hang.cmd"
-    "@echo off`r`nping -n 30 127.0.0.1 >nul`r`n" |
+    "@echo off`r`nif defined CI exit /b 97`r`nping -n 30 127.0.0.1 >nul`r`n" |
         Set-Content -LiteralPath $hung -Encoding Ascii
     $hungResult = Join-Path $root "hung-result.json"
     $savedTimeout = $env:CTX_NATIVE_CANDIDATE_COMMAND_TIMEOUT_SECONDS
@@ -118,5 +124,6 @@ exit /b 99
 
     Write-Host "Windows native candidate smoke tests passed"
 } finally {
+    $env:CI = $savedCI
     Remove-Item -LiteralPath $root -Recurse -Force -ErrorAction SilentlyContinue
 }

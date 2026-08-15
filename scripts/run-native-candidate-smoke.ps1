@@ -147,6 +147,7 @@ function Invoke-CtxRaw([string[]]$Arguments) {
     $start.RedirectStandardOutput = $true
     $start.RedirectStandardError = $true
     $start.CreateNoWindow = $true
+    [void]$start.EnvironmentVariables.Remove("CI")
     $isCommandScript = [System.IO.Path]::GetExtension($Binary) -ieq ".cmd"
     if ($isCommandScript) {
         $start.FileName = $env:ComSpec
