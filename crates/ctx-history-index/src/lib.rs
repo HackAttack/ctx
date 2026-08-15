@@ -99,18 +99,18 @@ pub(crate) use publication::verify_searcher;
 pub(crate) use publication::{
     best_effort_post_republish_cleanup, canonical_commit_payload, create_candidate_generation,
     load_active_generation_pointer, meta_generation, open_slot_index, payload_generation_id,
-    prime_candidate_physical_proof, publish_active_generation_pointer_validated,
-    reclaim_inactive_generation_directories, reclaim_unreferenced_certifications,
-    reclaim_unreferenced_manifests, reconcile_commit_error,
+    prepare_successor_manifest, prime_candidate_physical_proof,
+    publish_active_generation_pointer_validated, reclaim_inactive_generation_directories,
+    reclaim_unreferenced_certifications, reclaim_unreferenced_manifests, reconcile_commit_error,
     republish_current_with_publication_metadata, searcher_generation, sync_directory,
     sync_generation, validate_candidate_managed_files, verify_candidate_physical_fence,
-    verify_physical_integrity, write_manifest, ActiveGenerationPointer, CandidateActivationFence,
-    CandidatePhysicalProof, CurrentRepublishOutcome, GenerationSlot, PointerPublicationOutcome,
-    GENERATION_WRITER_LOCK_FILE, INDEX_GENERATIONS_DIRECTORY,
+    verify_physical_integrity, write_prepared_manifest, ActiveGenerationPointer,
+    CandidateActivationFence, CandidatePhysicalProof, CurrentRepublishOutcome, GenerationSlot,
+    PointerPublicationOutcome, GENERATION_WRITER_LOCK_FILE, INDEX_GENERATIONS_DIRECTORY,
 };
 #[cfg(test)]
 pub(crate) use publication::{
-    load_publication_for_metas, manifest_path, physical_integrity_digest,
+    load_publication_for_metas, manifest_path, physical_integrity_digest, write_manifest,
 };
 pub use writer_options::WriterOptions;
 pub use writer_support::{

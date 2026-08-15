@@ -153,7 +153,7 @@ pub fn verify_searcher(searcher: &Searcher, manifest: &GenerationManifest) -> Re
 pub struct PinnedPublication {
     writer_index: Option<Index>,
     searcher: Searcher,
-    manifest: GenerationManifest,
+    manifest: Arc<GenerationManifest>,
     generation_id: String,
     publication_metadata: Option<Arc<[u8]>>,
     fields: Fields,
@@ -487,7 +487,7 @@ where
     Ok(VerifiedCandidatePublication {
         publication: VerifiedPublication {
             searcher,
-            manifest: Arc::new(manifest),
+            manifest,
             generation_id,
             publication_metadata,
         },
@@ -545,7 +545,7 @@ pub fn verify_and_bind_reusable_publication(
         .map_err(|error| ReusablePublicationError::Integrity(error.into()))?;
     Ok(VerifiedPublication {
         searcher: publication.searcher,
-        manifest: Arc::new(publication.manifest),
+        manifest: publication.manifest,
         generation_id: publication.generation_id,
         publication_metadata: publication.publication_metadata,
     })

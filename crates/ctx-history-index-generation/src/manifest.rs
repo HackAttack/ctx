@@ -1,8 +1,11 @@
 use std::{
+    collections::BTreeSet,
     fs::{self, File},
+    io::Read,
     path::Path,
 };
 
+use serde::Deserialize;
 use tantivy::directory::Directory as _;
 use uuid::Uuid;
 
@@ -68,6 +71,7 @@ pub fn reclaim_unreferenced_manifests(
 ) -> Result<()> {
     let directory = root.join(MANIFEST_DIRECTORY);
     fs::create_dir_all(&directory)?;
+    let retained_generation_ids = retained_manifest_closure(root, retained_generation_ids)?;
     let mut removed = false;
     for entry in fs::read_dir(&directory)? {
         let entry = entry?;
@@ -88,11 +92,9 @@ pub fn reclaim_unreferenced_manifests(
                 is_generation_id(generation_id) && !suffix.is_empty()
             });
         let obsolete_integrity_sidecar = is_legacy_generation_integrity_sidecar(file_name);
-        let should_remove = immutable_generation.is_some_and(|generation_id| {
-            !retained_generation_ids
-                .iter()
-                .any(|retained| retained == generation_id)
-        }) || corrupt_quarantine
+        let should_remove = immutable_generation
+            .is_some_and(|generation_id| !retained_generation_ids.contains(generation_id))
+            || corrupt_quarantine
             || obsolete_integrity_sidecar;
         if should_remove {
             fs::remove_file(entry.path())?;
@@ -103,6 +105,62 @@ pub fn reclaim_unreferenced_manifests(
         sync_directory(&directory)?;
     }
     Ok(())
+}
+
+const MANIFEST_DELTA_PREFIX: &[u8] = br#"{"storage_format":"ctx-manifest-delta-v1","#;
+const MAX_MANIFEST_ANCESTORS: usize = 128;
+
+#[derive(Deserialize)]
+struct ManifestDeltaReference {
+    storage_format: String,
+    base_generation_id: String,
+}
+
+fn retained_manifest_closure(
+    root: &Path,
+    retained_generation_ids: &[String],
+) -> Result<BTreeSet<String>> {
+    let mut retained = BTreeSet::new();
+    for generation_id in retained_generation_ids {
+        if !is_generation_id(generation_id) {
+            return Err(GenerationError::InvalidGenerationId);
+        }
+        let mut next = Some(generation_id.clone());
+        for _ in 0..=MAX_MANIFEST_ANCESTORS {
+            let Some(generation_id) = next.take() else {
+                break;
+            };
+            if !retained.insert(generation_id.clone()) {
+                break;
+            }
+            next = referenced_base_generation_id(root, &generation_id)?;
+        }
+        if next.is_some() {
+            return Err(GenerationError::InvalidGenerationId);
+        }
+    }
+    Ok(retained)
+}
+
+fn referenced_base_generation_id(root: &Path, generation_id: &str) -> Result<Option<String>> {
+    let path = manifest_path(root, generation_id);
+    let mut file = File::open(&path).map_err(|error| match error.kind() {
+        std::io::ErrorKind::NotFound => GenerationError::MissingManifest(generation_id.to_owned()),
+        _ => GenerationError::Io(error),
+    })?;
+    let mut prefix = [0_u8; 64];
+    let prefix_bytes = file.read(&mut prefix)?;
+    if !prefix[..prefix_bytes].starts_with(MANIFEST_DELTA_PREFIX) {
+        return Ok(None);
+    }
+    let bytes = load_manifest_bytes(root, generation_id)?;
+    let reference: ManifestDeltaReference = serde_json::from_slice(&bytes)?;
+    if reference.storage_format != "ctx-manifest-delta-v1"
+        || !is_generation_id(&reference.base_generation_id)
+    {
+        return Err(GenerationError::InvalidGenerationId);
+    }
+    Ok(Some(reference.base_generation_id))
 }
 
 fn is_legacy_generation_integrity_sidecar(file_name: &str) -> bool {
@@ -176,5 +234,28 @@ mod tests {
             load_manifest_bytes(root.path(), &retained).unwrap(),
             retained_bytes
         );
+    }
+
+    #[test]
+    fn reclamation_retains_delta_ancestors_without_reading_legacy_body() {
+        let root = tempfile::tempdir().unwrap();
+        let base_bytes = vec![b'x'; 2 * 1024 * 1024];
+        let base = sha256_hex(&base_bytes);
+        write_manifest_bytes(root.path(), &base, &base_bytes).unwrap();
+        let delta_bytes = format!(
+            "{{\"storage_format\":\"ctx-manifest-delta-v1\",\"base_generation_id\":\"{base}\",\"other\":true}}"
+        )
+        .into_bytes();
+        let delta = sha256_hex(&delta_bytes);
+        write_manifest_bytes(root.path(), &delta, &delta_bytes).unwrap();
+        let reclaimed_bytes = b"reclaimed";
+        let reclaimed = sha256_hex(reclaimed_bytes);
+        write_manifest_bytes(root.path(), &reclaimed, reclaimed_bytes).unwrap();
+
+        reclaim_unreferenced_manifests(root.path(), std::slice::from_ref(&delta)).unwrap();
+
+        assert!(manifest_path(root.path(), &delta).is_file());
+        assert!(manifest_path(root.path(), &base).is_file());
+        assert!(!manifest_path(root.path(), &reclaimed).exists());
     }
 }

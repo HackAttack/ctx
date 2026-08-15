@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use serde::{Deserialize, Serialize};
 
 use super::errors::{
@@ -39,11 +41,11 @@ impl ScannedSourceCounts {
 /// required parser/hash pass and is not used as the source key.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CertifiedSource {
-    observation: SourceObservation,
-    parser_revision: String,
+    observation: Arc<SourceObservation>,
+    parser_revision: Arc<str>,
     content_digest: [u8; 32],
     counts: ScannedSourceCounts,
-    frontier: Option<SourceFrontier>,
+    frontier: Option<Arc<SourceFrontier>>,
 }
 
 impl CertifiedSource {
@@ -91,11 +93,11 @@ impl CertifiedSource {
             }
         }
         Ok(Self {
-            observation: opening,
-            parser_revision,
+            observation: Arc::new(opening),
+            parser_revision: Arc::from(parser_revision),
             content_digest,
             counts,
-            frontier,
+            frontier: frontier.map(Arc::new),
         })
     }
 
@@ -116,7 +118,7 @@ impl CertifiedSource {
     }
 
     pub fn frontier(&self) -> Option<&SourceFrontier> {
-        self.frontier.as_ref()
+        self.frontier.as_deref()
     }
 
     pub fn validate_contract(&self) -> ProjectionContractResult<()> {

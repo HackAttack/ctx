@@ -3,6 +3,7 @@ use std::{
     collections::BTreeSet,
     env, io,
     process::{Child, Command, Stdio},
+    sync::Arc,
     thread,
     time::{Duration, Instant},
 };
@@ -567,10 +568,11 @@ fn unknown_core_fingerprint_fails_all_reads_and_never_starts_source_rebuild() {
         .unwrap();
     let index = open_slot_index(predecessor.root(), pointer.active()).unwrap();
     let metas = index.load_metas().unwrap();
-    let mut manifest = load_publication_for_metas(predecessor.root(), &metas)
+    let manifest = load_publication_for_metas(predecessor.root(), &metas)
         .unwrap()
         .into_parts()
         .1;
+    let mut manifest = Arc::unwrap_or_clone(manifest);
     let unknown = "f".repeat(64);
     assert_ne!(unknown, current_core_record_contract_fingerprint());
     manifest.core_record_contract_fingerprint = unknown.clone();
@@ -629,10 +631,11 @@ fn schema_18_rejects_the_retired_predecessor_fingerprint_policy_pair() {
         .unwrap();
     let index = open_slot_index(generation.root(), pointer.active()).unwrap();
     let metas = index.load_metas().unwrap();
-    let mut manifest = load_publication_for_metas(generation.root(), &metas)
+    let manifest = load_publication_for_metas(generation.root(), &metas)
         .unwrap()
         .into_parts()
         .1;
+    let mut manifest = Arc::unwrap_or_clone(manifest);
     manifest.core_record_contract_fingerprint = RETIRED_CORE_FINGERPRINT.to_owned();
     manifest.policy_schema_hash = RETIRED_SOURCE_GENERATION_POLICY_HASH.to_owned();
     publish_unchecked_generation(generation.root(), &index, manifest, &[], Vec::new());

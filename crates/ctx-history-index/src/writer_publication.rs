@@ -71,11 +71,12 @@ impl GenerationWriter {
                 "publication metadata republish requires an active generation",
             ))?;
         let generation_id = self
-            .base_manifest()
+            .base_publication
+            .as_ref()
             .ok_or(IndexError::WriterInvariant(
-                "publication metadata republish requires a base manifest",
+                "publication metadata republish requires a base publication",
             ))?
-            .generation_id()?;
+            .generation_id();
         if generation_id != expected_generation_id
             || pointer.active().generation_id() != expected_generation_id
         {
@@ -144,9 +145,9 @@ impl GenerationWriter {
                 .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
             let current_metas = self.index.load_metas()?;
             let expected_generation = self
-                .base_manifest()
-                .map(GenerationManifest::generation_id)
-                .transpose()?;
+                .base_publication
+                .as_ref()
+                .map(PinnedPublication::generation_id);
             let current_generation = payload_generation_id(&current_metas)?;
             let expected_segments = self
                 .base_publication
@@ -155,7 +156,7 @@ impl GenerationWriter {
                 .map(searcher_generation)
                 .unwrap_or_default();
             if current_metas.opstamp != self.base_opstamp
-                || current_generation != expected_generation
+                || current_generation.as_deref() != expected_generation
                 || meta_generation(&current_metas) != expected_segments
             {
                 return Err(IndexError::ConcurrentGenerationChange);
@@ -393,16 +394,23 @@ impl GenerationWriter {
         // and inventory revalidation below succeeds, so observations sampled
         // by the owner cannot describe state newer than the Core projection
         // that the fence accepts.
-        let generation_id = manifest.generation_id()?;
+        let prepared_manifest = prepare_successor_manifest(
+            &manifest,
+            self.base_publication
+                .as_ref()
+                .map(|base| (base.generation_id(), base.manifest())),
+        )?;
+        let generation_id = prepared_manifest.generation_id().to_owned();
         let publication_metadata =
             metadata_factory(PublicationMetadataContext::new(&generation_id, &manifest))?;
 
         self.writer_mut()?;
         let candidate_path = self.candidate_path()?;
         let previous_generation_id = self
-            .base_manifest()
-            .map(GenerationManifest::generation_id)
-            .transpose()?;
+            .base_publication
+            .as_ref()
+            .map(PinnedPublication::generation_id)
+            .map(str::to_owned);
         let root = self.root.clone();
         let mut prepared = self
             .writer
@@ -454,7 +462,7 @@ impl GenerationWriter {
                     return Err(error);
                 }
             };
-        if let Err(error) = write_manifest(&root, &generation_id, &manifest) {
+        if let Err(error) = write_prepared_manifest(&root, &prepared_manifest) {
             let _ = prepared.abort();
             return Err(error);
         }
