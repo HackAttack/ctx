@@ -57,6 +57,7 @@ generate_selection() {
     scripts/bazelw run //:bazel-diff -- generate-hashes \
       --workspacePath="${base_worktree}" \
       --bazelPath="${repo_root}/scripts/bazelw" \
+      --excludeExternalTargets \
       --alwaysAffectedTags=non-rust-action \
       "${starting_tmp}" || return 1
     if [[ ! -s "${starting_tmp}" ]]; then
@@ -69,6 +70,7 @@ generate_selection() {
   scripts/bazelw run //:bazel-diff -- generate-hashes \
     --workspacePath="${repo_root}" \
     --bazelPath="${repo_root}/scripts/bazelw" \
+    --excludeExternalTargets \
     --alwaysAffectedTags=non-rust-action \
     "${final}" || return 1
   scripts/bazelw run //:bazel-diff -- get-impacted-targets \
@@ -76,15 +78,18 @@ generate_selection() {
     --bazelPath="${repo_root}/scripts/bazelw" \
     --startingHashes="${starting}" \
     --finalHashes="${final}" \
+    --excludeExternalTargets \
     --output="${impacted}" || return 1
 
   # bazel-diff deliberately reports every affected graph node. Let Bazel reduce
-  # that set to executable tests/test suites and keep manual, network,
-  # external-harness, and release targets out of routine affected runs.
+  # that set to executable leaf tests and keep aggregate test suites, manual,
+  # network, external-harness, and release targets out of routine affected
+  # runs. Selecting an affected tier suite such as //:ci_tests would erase the
+  # benefit of selecting its affected members.
   if [[ -s "${impacted}" ]]; then
     impacted_set="$(tr '\n' ' ' <"${impacted}")"
     scripts/bazelw query \
-      "kind(\".*(_test|test_suite) rule\", set(${impacted_set})) except attr(\"tags\", \".*(advisory|external|flaky-repetition|manual|network|no-cache|platform-native|release|requires-local-history|requires-signing|requires-vm|stress).*\", set(${impacted_set}))" \
+      "kind(\".*_test rule\", set(${impacted_set})) except attr(\"tags\", \".*(advisory|external|flaky-repetition|manual|network|no-cache|platform-native|release|requires-local-history|requires-signing|requires-vm|stress).*\", set(${impacted_set}))" \
       --output=label >"${filtered_impacted}" || return 1
   else
     : >"${filtered_impacted}"

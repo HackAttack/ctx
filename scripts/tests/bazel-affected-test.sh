@@ -63,6 +63,7 @@ run_affected() {
     CTX_FAKE_BAZEL_IMPACTED_FILE="${impacted}" \
     CTX_FAKE_BAZEL_LOG="${fake_log}" \
     CTX_FAKE_BAZEL_QUERY_FILE="${query_output}" \
+    CTX_FAKE_BAZEL_REQUIRE_EXCLUDE_EXTERNAL=1 \
     CTX_TOTAL_MEMORY_GB=16 \
       scripts/bazel-affected.sh HEAD
   ) >"${stdout}" 2>"${stderr}"
@@ -96,6 +97,11 @@ unique_output_roots="$(
   || fail 'concurrent base worktrees did not receive isolated output roots'
 grep -Fq "arg=--bazelPath=${repo_root}/scripts/bazelw" "${fake_log}" \
   || fail 'bazel-diff impacted-target calculation bypassed the repository wrapper'
+grep -Fq 'arg=--excludeExternalTargets' "${fake_log}" \
+  || fail 'bazel-diff was not told to exclude non-buildable //external targets'
+if grep -Fq 'test_suite' "${fake_log}"; then
+  fail 'affected query retained aggregate test suites'
+fi
 grep -Fq 'advisory|external|flaky-repetition|manual|network|no-cache|platform-native|release|requires-local-history|requires-signing|requires-vm|stress' "${fake_log}" \
   || fail 'query did not exclude non-routine tags'
 

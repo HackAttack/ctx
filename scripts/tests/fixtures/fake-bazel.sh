@@ -12,6 +12,7 @@ command_name=""
 mode=""
 workspace=""
 output=""
+exclude_external_targets=0
 for argument in "$@"; do
   printf 'arg=%s\n' "${argument}" >>"${CTX_FAKE_BAZEL_LOG}"
   if [[ -z "${command_name}" && "${argument}" != --* ]]; then
@@ -27,9 +28,19 @@ for argument in "$@"; do
     --output=*)
       output="${argument#*=}"
       ;;
+    --excludeExternalTargets)
+      exclude_external_targets=1
+      ;;
   esac
 done
 printf 'env=RUST_TEST_THREADS=%s\n' "${RUST_TEST_THREADS:-}" >>"${CTX_FAKE_BAZEL_LOG}"
+
+if [[ "${CTX_FAKE_BAZEL_REQUIRE_EXCLUDE_EXTERNAL:-0}" == "1" ]] \
+  && [[ "${mode}" == "generate-hashes" || "${mode}" == "get-impacted-targets" ]] \
+  && (( exclude_external_targets == 0 )); then
+  printf 'bazel-diff fixture expected --excludeExternalTargets for %s\n' "${mode}" >&2
+  exit 24
+fi
 
 if [[ -n "${CTX_FAKE_BAZEL_FAIL_MODE:-}" && "${CTX_FAKE_BAZEL_FAIL_MODE}" == "${mode}" ]]; then
   exit 23
