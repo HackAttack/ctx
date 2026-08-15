@@ -398,7 +398,8 @@ fn append_after_large_terminal_authority_prefix_replays_combined_authority_once(
 
     append_event(&path, message("largeprefixappenduniquetoken"));
     let observed = capture_causal_stage();
-    refresh_source_backed_generation(&index_root, &registry, writer_options()).unwrap();
+    refresh_source_backed_generation_incremental_for_test(&index_root, &registry, writer_options())
+        .unwrap();
     let sources = causal_by_id(&observed);
     let counters = sources.get(native_session_id).unwrap().counters;
     assert_eq!(counters.appended_sources, 1);
@@ -508,7 +509,8 @@ fn replayed_source_state_is_exact_across_cold_unchanged_and_child_mcp_append() {
     drop(cold);
 
     let unchanged_observed = capture_causal_stage();
-    refresh_source_backed_generation(&index_root, &registry, writer_options()).unwrap();
+    refresh_source_backed_generation_incremental_for_test(&index_root, &registry, writer_options())
+        .unwrap();
     let unchanged_sources = causal_by_id(&unchanged_observed);
     assert_exact_zero_work(&unchanged_sources, child, Some(parent));
     let unchanged = VerifiedIndex::open(&index_root).unwrap();
@@ -534,7 +536,8 @@ fn replayed_source_state_is_exact_across_cold_unchanged_and_child_mcp_append() {
         ),
     );
     let append_observed = capture_causal_stage();
-    refresh_source_backed_generation(&index_root, &registry, writer_options()).unwrap();
+    refresh_source_backed_generation_incremental_for_test(&index_root, &registry, writer_options())
+        .unwrap();
     let append_sources = causal_by_id(&append_observed);
     assert_eq!(
         append_sources.get(child).unwrap().counters.appended_sources,
@@ -612,7 +615,8 @@ fn suffix_completes_last_of_twenty_four_replayed_pending_calls() {
         exec_result("replayed-pending-23", "twentyfourthpendingcontexttoken"),
     );
     let observed = capture_causal_stage();
-    refresh_source_backed_generation(&index_root, &registry, writer_options()).unwrap();
+    refresh_source_backed_generation_incremental_for_test(&index_root, &registry, writer_options())
+        .unwrap();
     let counters = causal_by_id(&observed)
         .get(native_session_id)
         .unwrap()

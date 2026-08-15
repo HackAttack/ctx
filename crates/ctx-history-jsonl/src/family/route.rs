@@ -1652,6 +1652,8 @@ fn capture<R: JsonlFamilyRuntime>(
     let mut retained_terminal_sources = HashMap::new();
     #[cfg(test)]
     tests::begin_admission(selected_leaves.len(), bases.len());
+    let append_only_trust_allowed = sink.reconciliation_demand()
+        == ctx_history_capture_runtime::SourceBackedReconciliationDemand::Incremental;
     for leaf in &selected_leaves {
         let Some(base) = base_for_leaf(&bases_by_descriptor, leaf) else {
             scan_selected_leaves.push(leaf.clone());
@@ -1677,6 +1679,13 @@ fn capture<R: JsonlFamilyRuntime>(
             continue;
         };
         if !checkpoint.physical.terminal() {
+            scan_selected_leaves.push(leaf.clone());
+            continue;
+        }
+        if !append_only_trust_allowed
+            && adapter.append_trust_contract()
+                == JsonlFamilyAppendTrustContract::AppendOnlySameObjectV1
+        {
             scan_selected_leaves.push(leaf.clone());
             continue;
         }
@@ -1710,6 +1719,7 @@ fn capture<R: JsonlFamilyRuntime>(
         &bases_by_descriptor,
         base_event_lookup,
         sink,
+        append_only_trust_allowed,
     );
     let finish_leaf_scans = adapter
         .finish_leaf_scans()
@@ -1830,6 +1840,7 @@ fn capture_partial_members<R: JsonlFamilyRuntime>(
         &bases_by_descriptor,
         base_event_lookup,
         sink,
+        true,
     );
     let finish_leaf_scans = adapter
         .finish_leaf_scans()

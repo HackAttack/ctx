@@ -376,7 +376,8 @@ fn append_restart_counts_candidate_id_occurrences_before_first_admission() {
     }
 
     let observed = capture_causal_stage();
-    refresh_source_backed_generation(&index_root, &registry, writer_options()).unwrap();
+    refresh_source_backed_generation_incremental_for_test(&index_root, &registry, writer_options())
+        .unwrap();
     let counters = causal_by_id(&observed)
         .get(native_session_id)
         .unwrap()

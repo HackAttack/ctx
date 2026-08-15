@@ -361,18 +361,17 @@ fn install_certification(
             Path::new(&prior.artifact.path),
             Some(pointer),
         )?;
-        if current.identity != prior.artifact.identity {
-            if !(allow_link_reclamation
+        if current.identity != prior.artifact.identity
+            && !(allow_link_reclamation
                 && current
                     .identity
                     .follows_link_reclamation(&prior.artifact.identity))
-            {
-                return if prior.artifact.same_payload_identity_changed(&current) {
-                    Err(IndexError::ConcurrentGenerationChange)
-                } else {
-                    Err(IndexError::ChecksumMismatch)
-                };
-            }
+        {
+            return if prior.artifact.same_payload_identity_changed(&current) {
+                Err(IndexError::ConcurrentGenerationChange)
+            } else {
+                Err(IndexError::ChecksumMismatch)
+            };
         }
         let sealed = prior.artifact.path != TANTIVY_META_FILE;
         if sealed {

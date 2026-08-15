@@ -225,12 +225,15 @@ impl DaemonWatchRuntime {
                 if let (Some(catalog), Some(watermark)) =
                     (self.catalog.snapshot(), trigger.watermark())
                 {
-                    source_refresh.record_watch_routes(
+                    source_refresh.record_watch_routes_requiring_exhaustive_reconciliation(
                         catalog.route_ids().cloned().map(|route| (route, watermark)),
                         source_route_ledger_now_ms(),
                     );
                 }
-                source_refresh.record_watch_routes(affected.routes, source_route_ledger_now_ms());
+                source_refresh.record_watch_routes_requiring_exhaustive_reconciliation(
+                    affected.routes,
+                    source_route_ledger_now_ms(),
+                );
             }
         }
         if matches!(trigger, WatchCatalogReconcileTrigger::SafetyTimeout)

@@ -252,7 +252,16 @@ fn nonterminal_checkpoint_noops_then_resumes_only_its_uncertified_tail() {
         let leaf = inventory.leaves().first().unwrap();
         let mut emit = |_event| Ok(());
         let mut output = JsonlLeafOutput::new(&mut emit);
-        prepare_leaf(&adapter, leaf, None, &lookup, &mut worker, &mut output).unwrap()
+        prepare_leaf(
+            &adapter,
+            leaf,
+            None,
+            &lookup,
+            &mut worker,
+            &mut output,
+            true,
+        )
+        .unwrap()
     };
     let cold_inventory = adapter.discover(&root).unwrap();
     let cold_checkpoint = super::super::leaf::decode_checkpoint(
@@ -286,6 +295,7 @@ fn nonterminal_checkpoint_noops_then_resumes_only_its_uncertified_tail() {
                 &lookup,
                 &mut worker,
                 &mut output,
+                true,
             )
             .unwrap()
         };
@@ -318,6 +328,7 @@ fn nonterminal_checkpoint_noops_then_resumes_only_its_uncertified_tail() {
             &lookup,
             &mut worker,
             &mut output,
+            true,
         )
         .unwrap()
     };

@@ -725,8 +725,11 @@ where
                 );
             }
             if let Some(source_refresh) = source_refresh {
-                source_refresh
-                    .record_watch_routes(wake.source_watch.routes, source_route_ledger_now_ms());
+                source_refresh.record_watch_routes_with_members(
+                    wake.source_watch.routes,
+                    wake.source_watch.members,
+                    source_route_ledger_now_ms(),
+                );
             }
             if let Some(watcher) = watch_runtime.file_watcher.as_ref() {
                 let _ = watcher.write_receipt(
@@ -950,11 +953,12 @@ fn install_source_watch_ingress(
         return;
     };
     wakeup.install_source_watch_sink(Arc::new(move |batch: &SourceWatchBatch| {
-        source_refresh.record_watch_routes(
+        source_refresh.record_watch_routes_with_members(
             batch
                 .routes
                 .iter()
                 .map(|(route, watermark)| (route.clone(), *watermark)),
+            batch.members.clone(),
             source_route_ledger_now_ms(),
         );
     }));

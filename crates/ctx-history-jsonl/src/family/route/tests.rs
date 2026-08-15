@@ -22,8 +22,9 @@ use ctx_history_capture_runtime::{
     CaptureRevalidationTarget, CaptureRouteRef, CaptureSourceAggregateRef, CoreMaterialization,
     CorePreparationFailureKind, CorePreparationPort, ImmutableCaptureSnapshot, PresentCaptureRoute,
     SourceBackedGenerationSink as RuntimeSourceBackedGenerationSink,
-    SourceBackedLogicalSourceFailures, SourceBackedRecordRejections,
-    SourceBackedRevalidationTarget, SourceBackedRouteResources, VerifiedCapture,
+    SourceBackedLogicalSourceFailures, SourceBackedReconciliationDemand,
+    SourceBackedRecordRejections, SourceBackedRevalidationTarget, SourceBackedRouteResources,
+    VerifiedCapture,
 };
 use ctx_history_core::{
     derive_event_id, derive_session_id, CertifiedSourceAppend, CertifiedSourceDeletion, CoreRecord,
@@ -618,6 +619,16 @@ impl CaptureLifecycleSink for TestLifecycle {
 
 macro_rules! capture_test_generation {
     ($adapter:expr, $root:expr, $index_root:expr, $workers:expr, $capture:expr) => {{
+        capture_test_generation!(
+            $adapter,
+            $root,
+            $index_root,
+            $workers,
+            SourceBackedReconciliationDemand::Incremental,
+            $capture
+        )
+    }};
+    ($adapter:expr, $root:expr, $index_root:expr, $workers:expr, $demand:expr, $capture:expr) => {{
         let resident = Mutex::new(FamilyResident::default());
         let mut writer = match IndexCaptureLifecycle::open($index_root, ()).unwrap() {
             CaptureLifecycleOpenOutcome::Ready(lifecycle) => lifecycle,
@@ -639,7 +650,8 @@ macro_rules! capture_test_generation {
                 0,
                 test_route_identity(),
                 None,
-                SourceBackedRouteResources::production($workers),
+                SourceBackedRouteResources::production($workers)
+                    .with_reconciliation_demand($demand),
                 &mut logical_source_failures,
                 &mut record_rejections,
                 None,
@@ -2279,6 +2291,36 @@ fn capture_parallel_test_generation(
     (commit, activity)
 }
 
+fn capture_parallel_test_generation_exhaustive_with_terminal_revalidation(
+    adapter: &JsonlFamilyAdapterObject,
+    root: &Path,
+    index_root: &Path,
+    workers: usize,
+) -> Result<(IndexCaptureCommitReceipt, JsonlFamilyScannerActivity)> {
+    let (writer, resident, ()) = capture_test_generation!(
+        adapter,
+        root,
+        index_root,
+        workers,
+        SourceBackedReconciliationDemand::Exhaustive,
+        |resident, sink| { capture(adapter, root, resident, sink).unwrap() }
+    );
+    let inventory = resident
+        .lock()
+        .map_err(|_| CaptureError::SystemInvariant("JSONL test resident lock was poisoned"))?
+        .certified_inventory
+        .clone()
+        .ok_or(CaptureError::SystemInvariant(
+            "JSONL test capture did not certify an inventory",
+        ))?;
+    if !revalidate_complete_inventory(adapter, root, &resident, &inventory)? {
+        return Err(CaptureError::SourceChangedDuringCapture);
+    }
+    let activity = jsonl_family_scanner_activity();
+    let commit = IndexCaptureCommitReceipt::new(writer.commit(|_| true, |_| true)?);
+    Ok((commit, activity))
+}
+
 fn capture_parallel_test_generation_with_terminal_revalidation(
     adapter: &JsonlFamilyAdapterObject,
     root: &Path,
@@ -2401,5 +2443,6 @@ fn prepare_semantic_lifecycle_test(
         &writer.base_event_identity_lookup(),
         &mut worker,
         &mut JsonlLeafOutput::new(&mut emit),
+        true,
     )
 }

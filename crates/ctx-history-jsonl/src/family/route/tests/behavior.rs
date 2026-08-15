@@ -158,6 +158,7 @@ fn optimized_leaf_execution_keeps_publication_inside_the_shared_family() {
         &writer.base_event_identity_lookup(),
         &mut worker,
         &mut output,
+        true,
     )
     .unwrap();
 
@@ -365,6 +366,7 @@ fn optimized_leaf_execution_rejects_records_owned_by_another_source() {
         &writer.base_event_identity_lookup(),
         &mut worker,
         &mut output,
+        true,
     )
     .err()
     .expect("wrong-source optimized emission must fail");
@@ -394,6 +396,7 @@ fn project_framing_policy_fixture(
         &writer.base_event_identity_lookup(),
         &mut worker,
         &mut output,
+        true,
     )
     .unwrap()
     .certificate
@@ -487,6 +490,7 @@ fn generic_projection_streams_record_and_finish_fanout_before_record_65() {
             &writer.base_event_identity_lookup(),
             &mut worker,
             &mut output,
+            true,
         )
         .unwrap();
 
@@ -732,6 +736,39 @@ fn append_only_contract_reads_the_suffix_without_reauthenticating_old_bytes() {
             projected_records: 1,
         }
     );
+}
+
+#[test]
+fn exhaustive_reconciliation_authenticates_and_replaces_a_rewritten_prefix() {
+    let temp = crate::test_support_paths::tempdir().unwrap();
+    let root = temp.path().join("sessions");
+    let index = temp.path().join("index");
+    fs::create_dir_all(&root).unwrap();
+    let source_path = root.join("exhaustively-reconciled.jsonl");
+    fs::write(&source_path, TEST_RECORD).unwrap();
+    let adapter = DirectAppendTestAdapter::default();
+    capture_parallel_test_generation(&adapter, &root, &index, 1);
+
+    let replacement = b"{\"message\":\"after!\"}\n";
+    assert_eq!(replacement.len(), TEST_RECORD.len());
+    let mut rewritten_and_appended = replacement.to_vec();
+    rewritten_and_appended.extend_from_slice(TEST_RECORD);
+    fs::write(&source_path, rewritten_and_appended).unwrap();
+
+    let (reconciled, activity) =
+        capture_parallel_test_generation_exhaustive_with_terminal_revalidation(
+            &adapter, &root, &index, 1,
+        )
+        .unwrap();
+    assert_eq!(activity.sources_started, 1);
+    assert_eq!(activity.sources_completed, 1);
+    assert_eq!(
+        reconciled.manifest().sources[0].counts().complete_records,
+        2
+    );
+    let observation = *adapter.observations.lock().unwrap().last().unwrap();
+    assert_eq!(observation.mode, JsonlFamilyProjectionMode::Replacement);
+    assert!(!observation.direct_append);
 }
 
 #[test]

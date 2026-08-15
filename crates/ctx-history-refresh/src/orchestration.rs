@@ -8,6 +8,7 @@ pub(super) struct SourceBackedRefreshPlan<'a> {
     pub(super) operation: SourceBackedRefreshOperation,
     pub(super) reconciliation_demand: SourceBackedReconciliationDemand,
     pub(super) scope: SourceBackedRefreshScope,
+    pub(super) route_worksets: BTreeMap<SourceRouteIdentity, SourceBackedRefreshWorkset>,
     pub(super) covered_route_ids: BTreeSet<SourceRouteIdentity>,
     pub(super) covered_publication: SourceBackedRefreshCoveredPublication,
 }
@@ -84,7 +85,8 @@ pub(super) fn execute_source_backed_refresh(
             &published_state,
             &report_progress,
         )
-        .with_reconciliation_demand(plan.reconciliation_demand),
+        .with_reconciliation_demand(plan.reconciliation_demand)
+        .with_route_worksets(plan.route_worksets),
     )
 }
 

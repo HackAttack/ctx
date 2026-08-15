@@ -156,6 +156,7 @@ fn scan_leaf_serial<R: JsonlFamilyRuntime>(
     base_event_lookup: &JsonlRuntimeLookup<R>,
     worker: &mut JsonlFamilyWorkerContext<R>,
     sink: &mut SourceBackedGenerationSink<'_, R::Lifecycle>,
+    append_only_trust_allowed: bool,
 ) -> SourceBackedRouteResult<TerminalSourceEvidence<JsonlRuntimeError<R>>> {
     let mut staging_started = false;
     let mut append_staging = false;
@@ -214,7 +215,15 @@ fn scan_leaf_serial<R: JsonlFamilyRuntime>(
         Ok(())
     };
     let mut output = JsonlLeafOutput::new(&mut emit);
-    let prepared = prepare_leaf(adapter, leaf, base, base_event_lookup, worker, &mut output);
+    let prepared = prepare_leaf(
+        adapter,
+        leaf,
+        base,
+        base_event_lookup,
+        worker,
+        &mut output,
+        append_only_trust_allowed,
+    );
     if let Some(error) = sink_failure {
         return Err(error);
     }
@@ -296,6 +305,7 @@ fn run_parallel_leaf_job_batch<R: JsonlFamilyRuntime>(
     worker_states: &mut [JsonlFamilyWorkerContexts<R>],
     base_event_lookup: &JsonlRuntimeLookup<R>,
     sink: &mut SourceBackedGenerationSink<'_, R::Lifecycle>,
+    append_only_trust_allowed: bool,
     #[cfg(test)] scanner_probe: Option<&JsonlFamilyScannerProbe>,
 ) -> SourceBackedRouteResult<Vec<TerminalSourceEvidence<JsonlRuntimeError<R>>>> {
     let result = sink.run_parallel_leaf_scans_with_worker_states(
@@ -411,6 +421,7 @@ fn run_parallel_leaf_job_batch<R: JsonlFamilyRuntime>(
                 base_event_lookup,
                 worker,
                 &mut output,
+                append_only_trust_allowed,
             );
             if let Some(error) = emission_failure {
                 return Err(ParallelLeafScanWorkerError::provider(error));
@@ -516,6 +527,7 @@ pub(super) fn scan_leaves<R: JsonlFamilyRuntime>(
     bases: &HashMap<[u8; 32], &CertifiedSource>,
     base_event_lookup: JsonlRuntimeLookup<R>,
     sink: &mut SourceBackedGenerationSink<'_, R::Lifecycle>,
+    append_only_trust_allowed: bool,
 ) -> SourceBackedRouteResult<HashMap<[u8; 32], TerminalSourceEvidence<JsonlRuntimeError<R>>>> {
     let worker_limit = adapter
         .prepare_leaf_scans(leaves, bases)
@@ -589,6 +601,7 @@ pub(super) fn scan_leaves<R: JsonlFamilyRuntime>(
                 &base_event_lookup,
                 &mut serial_worker,
                 sink,
+                append_only_trust_allowed,
             );
             let finish_partition = partition
                 .map(|partition| {
@@ -709,6 +722,7 @@ pub(super) fn scan_leaves<R: JsonlFamilyRuntime>(
                             &mut worker_states,
                             &base_event_lookup,
                             sink,
+                            append_only_trust_allowed,
                             #[cfg(test)]
                             scanner_probe.as_deref(),
                         )?);
@@ -772,6 +786,7 @@ pub(super) fn scan_leaves<R: JsonlFamilyRuntime>(
             &mut worker_states,
             &base_event_lookup,
             sink,
+            append_only_trust_allowed,
             #[cfg(test)]
             scanner_probe.as_deref(),
         )?;
@@ -808,29 +823,38 @@ pub(super) fn prepare_leaf<R: JsonlFamilyRuntime>(
     base_event_lookup: &JsonlRuntimeLookup<R>,
     worker: &mut JsonlFamilyWorkerContext<R>,
     output: &mut JsonlLeafOutput<'_, JsonlRuntimeError<R>>,
+    append_only_trust_allowed: bool,
 ) -> JsonlResult<PreparedLeaf<JsonlRuntimeError<R>>, JsonlRuntimeError<R>> {
     worker.begin_leaf();
-    if let Some(outcome) = adapter.scan_optimized_leaf(
-        leaf,
-        base,
-        base_event_lookup,
-        worker,
-        &mut |publication, completed_bytes, records| {
-            if records
-                .iter()
-                .any(|record| !record.source.exact_descriptor_eq(leaf.source()))
-            {
-                return Err(JsonlRuntimeError::<R>::invalid_payload(
-                    "optimized JSONL leaf emitted a record for another source".to_owned(),
-                ));
-            }
-            output.emit_page(
-                publication == JsonlFamilyPublication::Append,
-                completed_bytes,
-                records,
-            )
-        },
-    )? {
+    let optimized_outcome = if append_only_trust_allowed
+        || adapter.append_trust_contract()
+            != super::JsonlFamilyAppendTrustContract::AppendOnlySameObjectV1
+    {
+        adapter.scan_optimized_leaf(
+            leaf,
+            base,
+            base_event_lookup,
+            worker,
+            &mut |publication, completed_bytes, records| {
+                if records
+                    .iter()
+                    .any(|record| !record.source.exact_descriptor_eq(leaf.source()))
+                {
+                    return Err(JsonlRuntimeError::<R>::invalid_payload(
+                        "optimized JSONL leaf emitted a record for another source".to_owned(),
+                    ));
+                }
+                output.emit_page(
+                    publication == JsonlFamilyPublication::Append,
+                    completed_bytes,
+                    records,
+                )
+            },
+        )?
+    } else {
+        None
+    };
+    if let Some(outcome) = optimized_outcome {
         return validate_optimized_outcome(adapter, leaf, base, outcome);
     }
 
@@ -851,8 +875,16 @@ pub(super) fn prepare_leaf<R: JsonlFamilyRuntime>(
         checkpoint.physical.source_observation() == leaf.observation()
             || append_mode.certified_suffix()
     });
-    let open_reader =
-        |previous| open_leaf_reader(adapter, &leaf, &opened, previous, projector_preflight);
+    let open_reader = |previous| {
+        open_leaf_reader(
+            adapter,
+            &leaf,
+            &opened,
+            previous,
+            projector_preflight,
+            append_only_trust_allowed,
+        )
+    };
     let mut reader = open_reader(previous_physical)?;
 
     if reader.source_change() == JsonlSourceChange::Unchanged {
@@ -891,7 +923,13 @@ pub(super) fn prepare_leaf<R: JsonlFamilyRuntime>(
         return Ok(PreparedLeaf {
             certificate: base.clone(),
             append: Some(append),
-            terminal_proof: terminal_proof_for_checkpoint(adapter, &leaf, base, &decoded)?,
+            terminal_proof: terminal_proof_for_checkpoint(
+                adapter,
+                &leaf,
+                base,
+                &decoded,
+                append_only_trust_allowed,
+            )?,
             record_rejections: SourceBackedRecordRejectionDrafts::default(),
         });
     }
@@ -975,7 +1013,16 @@ pub(super) fn prepare_leaf<R: JsonlFamilyRuntime>(
                     ));
                 }
                 return prepare_semantic_leaf(
-                    adapter, &leaf, base, None, worker, output, executor, input, false,
+                    adapter,
+                    &leaf,
+                    base,
+                    None,
+                    worker,
+                    output,
+                    executor,
+                    input,
+                    false,
+                    append_only_trust_allowed,
                 );
             }
             (_, false) => {
@@ -991,7 +1038,16 @@ pub(super) fn prepare_leaf<R: JsonlFamilyRuntime>(
             }
         }
         return prepare_semantic_leaf(
-            adapter, &leaf, base, resumed, worker, output, executor, input, is_append,
+            adapter,
+            &leaf,
+            base,
+            resumed,
+            worker,
+            output,
+            executor,
+            input,
+            is_append,
+            append_only_trust_allowed,
         );
     }
     let mut projector = adapter.projector_with_provider_checkpoint(
@@ -1155,7 +1211,13 @@ pub(super) fn prepare_leaf<R: JsonlFamilyRuntime>(
     } else {
         None
     };
-    let terminal_proof = terminal_proof_for_checkpoint(adapter, &leaf, &certificate, &checkpoint)?;
+    let terminal_proof = terminal_proof_for_checkpoint(
+        adapter,
+        &leaf,
+        &certificate,
+        &checkpoint,
+        append_only_trust_allowed,
+    )?;
     Ok(PreparedLeaf {
         certificate,
         append,
@@ -1170,12 +1232,14 @@ fn open_leaf_reader<R: JsonlFamilyRuntime>(
     opened: &Arc<OpenedProviderSourceFile<JsonlRuntimeError<R>>>,
     previous: Option<&FamilyCheckpoint>,
     projector_preflight: bool,
+    append_only_trust_allowed: bool,
 ) -> JsonlResult<JsonlReader<JsonlRuntimeError<R>>, JsonlRuntimeError<R>> {
     let direct_append = previous
         .and_then(|checkpoint| checkpoint.provider_checkpoint.as_ref())
         .is_some_and(|checkpoint| {
-            adapter.append_trust_contract()
-                == super::JsonlFamilyAppendTrustContract::AppendOnlySameObjectV1
+            append_only_trust_allowed
+                && adapter.append_trust_contract()
+                    == super::JsonlFamilyAppendTrustContract::AppendOnlySameObjectV1
                 && adapter.allows_direct_append_for_leaf(leaf)
                 && adapter.accepts_direct_append_checkpoint(checkpoint)
         });
@@ -1238,6 +1302,7 @@ fn prepare_semantic_leaf<R: JsonlFamilyRuntime>(
     mut executor: Box<dyn JsonlFamilySemanticExecutor<Runtime = R>>,
     mut input: JsonlFamilyExecutionIo<R>,
     is_append: bool,
+    append_only_trust_allowed: bool,
 ) -> JsonlResult<PreparedLeaf<JsonlRuntimeError<R>>, JsonlRuntimeError<R>> {
     let initial_ordinal = resumed.map_or_else(
         || {
@@ -1413,7 +1478,13 @@ fn prepare_semantic_leaf<R: JsonlFamilyRuntime>(
     } else {
         None
     };
-    let terminal_proof = terminal_proof_for_checkpoint(adapter, leaf, &certificate, &checkpoint)?;
+    let terminal_proof = terminal_proof_for_checkpoint(
+        adapter,
+        leaf,
+        &certificate,
+        &checkpoint,
+        append_only_trust_allowed,
+    )?;
     Ok(PreparedLeaf {
         certificate,
         append,

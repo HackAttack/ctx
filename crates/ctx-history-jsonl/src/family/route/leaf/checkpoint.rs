@@ -29,11 +29,12 @@ pub(super) fn terminal_proof_for_checkpoint<R: JsonlFamilyRuntime>(
     leaf: &JsonlFamilyLeaf<JsonlRuntimeError<R>>,
     certificate: &CertifiedSource,
     checkpoint: &FamilyCheckpoint,
+    append_only_trust_allowed: bool,
 ) -> JsonlResult<JsonlFamilyTerminalProof<JsonlRuntimeError<R>>, JsonlRuntimeError<R>> {
     if leaf.whole_record || !adapter.append_mode().certified_suffix() {
         JsonlFamilyTerminalProof::exact_file(adapter, leaf, certificate)
-    } else if adapter.append_trust_contract()
-        == JsonlFamilyAppendTrustContract::AppendOnlySameObjectV1
+    } else if append_only_trust_allowed
+        && adapter.append_trust_contract() == JsonlFamilyAppendTrustContract::AppendOnlySameObjectV1
         && adapter.allows_direct_append_for_leaf(leaf)
     {
         JsonlFamilyTerminalProof::append_only_same_object_v1(

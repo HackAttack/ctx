@@ -348,6 +348,10 @@ fn in_capture_route_reaches_handoff_fence_before_debounced_wake() {
         Some(EventWatermark::new(13, 1)),
         "the publication handoff fence must see the event immediately"
     );
+    assert!(
+        batch.members.is_empty(),
+        "a missing event path must fail closed"
+    );
     let before_debounce = wakeup.wait(Duration::ZERO);
     assert!(!before_debounce.filesystem);
     assert!(before_debounce.source_watch.is_empty());
@@ -358,6 +362,41 @@ fn in_capture_route_reaches_handoff_fence_before_debounced_wake() {
     assert_eq!(
         after_debounce.source_watch.routes.get(&route),
         Some(&EventWatermark::new(13, 1))
+    );
+}
+
+#[test]
+fn ordinary_tree_event_preserves_one_exact_regular_member() {
+    let temp = tempfile::tempdir().expect("create exact-member fixture");
+    let data_root = temp.path().join("data");
+    let daemon_root = data_root.join("daemon");
+    let provider_root = temp.path().join("provider");
+    let provider_file = provider_root.join("session.jsonl");
+    fs::create_dir_all(&data_root).expect("create data root");
+    fs::create_dir_all(&provider_root).expect("create provider root");
+    fs::write(&provider_file, b"{\"event\":1}\n").expect("write provider member");
+    let catalog = watch_catalog([catalog_route(
+        CaptureProvider::Codex,
+        provider_root,
+        "codex_session_jsonl_tree",
+    )]);
+    let route = catalog.route_ids().next().unwrap().clone();
+    let authority = RwLock::new(watch_authority(&data_root, catalog));
+    let counters = Mutex::new(WatchCounters::default());
+
+    let batch = record_watch_event(
+        &authority,
+        &counters,
+        &data_root,
+        &daemon_root,
+        Ok(NativeWatchEvent::ordinary(vec![provider_file.clone()])),
+        EventWatermark::new(14, 1),
+    );
+
+    assert_eq!(batch.routes.len(), 1);
+    assert_eq!(
+        batch.members.get(&route),
+        Some(&BTreeSet::from([provider_file]))
     );
 }
 #[cfg(target_os = "linux")]

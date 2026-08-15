@@ -101,8 +101,7 @@ pub use types::{
     SourceBackedExactScanProgress, SourceBackedRefreshCoveredPublication,
     SourceBackedRefreshExecution, SourceBackedRefreshProgressUpdate,
     SourceBackedRefreshPublication, SourceBackedRefreshTimings, SourceBackedRefreshWorkset,
-    SourceBackedZeroSourceAuthority,
-    SourceBackedZeroSourceAuthorityKind,
+    SourceBackedZeroSourceAuthority, SourceBackedZeroSourceAuthorityKind,
 };
 
 const SEARCH_DIRECTORY: &str = "search";

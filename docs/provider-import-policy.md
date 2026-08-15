@@ -222,12 +222,16 @@ truncate, rename, or copy an agent's live history merely to create a scan
 boundary. Each scan records its read bound in ctx memory and applies the
 contract for that source family:
 
-- Append-log JSONL freezes each admitted file's EOF. A same-object,
-  nonshrinking file may grow while ctx scans; ctx verifies the exact frozen
-  prefix, publishes only complete records ending at or before that EOF, and
-  reads the suffix on the next refresh. A partial final record is deferred
-  until a later refresh completes it. Rewrite, truncation, path replacement,
-  or a failed prefix proof invalidates the candidate generation.
+- Append-log JSONL freezes each admitted file's EOF. On an ordinary exact-file
+  watcher refresh, a provider that declares a live append-only contract may
+  trust stable file identity plus growth and read only the new suffix. This
+  makes continuous ingestion proportional to new bytes, but an arbitrary
+  rewrite of old bytes is detected at an exhaustive reconciliation boundary,
+  not necessarily by the next append event. Ambiguous watcher events, retries,
+  truncation, path replacement, parser/checkpoint uncertainty, and explicit
+  exhaustive refreshes disable that shortcut and authenticate the retained
+  prefix. Ctx publishes only complete records ending at or before the frozen
+  EOF; a partial final record is deferred until a later refresh completes it.
 - SQLite is observed as one short read-only logical snapshot. WAL size,
   checkpointing, and physical database-file size are not ingestion states.
   Concurrent committed rows belong to a subsequent certified snapshot unless
