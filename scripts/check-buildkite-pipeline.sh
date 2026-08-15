@@ -280,6 +280,7 @@ print(
 )
 PY
 
+python3 scripts/tests/buildkite-windowsml-artifact-path-test.py "${pipeline}"
 bash scripts/tests/buildkite-public-ci-cache-test.sh
 bash scripts/tests/check-sdks-required-groups-test.sh
 python3 scripts/check-sdk-ci-pipeline.py \
