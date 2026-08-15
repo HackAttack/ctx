@@ -169,6 +169,45 @@ impl SourceBackedRefreshReceipt {
             .count()
     }
 
+    /// Whether one admitted explicit catalog lineage attempted and retained
+    /// any records in the verified published generation.
+    pub fn catalog_route_content(
+        &self,
+        verified: &VerifiedIndex,
+        catalog_lineage: &str,
+    ) -> Result<(bool, bool)> {
+        if self.published_generation != verified.generation_id() {
+            bail!("terminal receipt and verified generation do not match");
+        }
+        let outcome = self
+            .catalog_route_outcome(catalog_lineage)
+            .context("terminal receipt has no exact catalog-lineage result")?;
+        let route = SourceRouteIdentity::from_sha256(outcome.route_identity)
+            .context("validate exact catalog route identity")?;
+        let Some(snapshot) = verified.manifest().source_route(&route) else {
+            return Ok((false, false));
+        };
+        if snapshot.missing_state().is_some() {
+            return Ok((false, false));
+        }
+        snapshot
+            .sources()
+            .iter()
+            .try_fold((false, false), |(attempted, usable), source_key| {
+                let source = verified
+                    .manifest()
+                    .sources
+                    .iter()
+                    .find(|source| source.observation().source() == source_key)
+                    .context("exact catalog route names a missing certified source")?;
+                let counts = source.counts();
+                Ok((
+                    attempted || counts.complete_records > 0,
+                    usable || counts.retained_records > 0,
+                ))
+            })
+    }
+
     #[cfg(any(test, feature = "test-support"))]
     #[doc(hidden)]
     pub fn state_only_source_count(&self) -> usize {

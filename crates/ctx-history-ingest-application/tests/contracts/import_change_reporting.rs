@@ -453,7 +453,7 @@ fn codex_reimport_rebuilds_from_provider_source() {
     assert_eq!(rejected["sources"][0]["failure_type"], "record_rejection");
     assert_eq!(rejected["sources"][0]["rejections"]["rejected_records"], 1);
     let rejection_analytics = latest_source_refresh_properties(&temp);
-    assert_eq!(rejection_analytics["refresh_result"], "partial");
+    assert_eq!(rejection_analytics["refresh_result"], "complete");
     assert_eq!(rejection_analytics["failure_scope"], "record");
     assert_eq!(rejection_analytics["failure_type"], "record_rejection");
     assert!(rejection_analytics.get("source_mode").is_none());

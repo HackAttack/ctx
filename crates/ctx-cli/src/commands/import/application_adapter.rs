@@ -92,11 +92,23 @@ impl ctx_history_cli::ImportApplicationPort for CliImportHost<'_> {
         let policy_schema_hash = admission.is_none().then(|| {
             refresh
                 .pin
-                .into_index()
+                .verified_index()
                 .manifest()
                 .policy_schema_hash
                 .clone()
         });
+        let catalog_content = match (admission, refresh.receipt.as_ref()) {
+            (Some(authority), Some(receipt)) => authority
+                .route_lineages()
+                .into_iter()
+                .map(|lineage| {
+                    receipt
+                        .catalog_route_content(refresh.pin.verified_index(), &lineage)
+                        .map(|content| (lineage, content))
+                })
+                .collect::<Result<_>>()?,
+            _ => std::collections::BTreeMap::new(),
+        };
         Ok(IngestPublication {
             request_id: refresh.request_id,
             request_previous_generation: refresh.request_previous_generation,
@@ -104,6 +116,7 @@ impl ctx_history_cli::ImportApplicationPort for CliImportHost<'_> {
             scanned_routes: refresh.scanned_routes,
             pinned_generation,
             policy_schema_hash,
+            catalog_content,
             receipt: refresh.receipt,
         })
     }

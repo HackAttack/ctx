@@ -91,20 +91,57 @@ pub struct ImportTotals {
     pub current_certified_source_bytes: Option<u64>,
     pub current_sources_with_rejections: Option<usize>,
     pub removed_source_count: Option<usize>,
+    pub request_records_attempted: Option<bool>,
+    pub request_has_usable_records: Option<bool>,
     pub capture_work_remaining: bool,
     pub work_result: ProviderImportWorkResult,
 }
 
 impl ImportTotals {
+    fn has_usable_current_generation(&self) -> bool {
+        self.current_retained_records.map_or_else(
+            || self.imported_sessions > 0 || self.imported_events > 0 || self.imported_edges > 0,
+            |retained| retained > 0,
+        )
+    }
+
     pub fn has_usable_source_result(&self) -> bool {
-        self.imported_sources > 0 || self.current_source_count.unwrap_or_default() > 0
+        self.request_has_usable_records.unwrap_or_else(|| {
+            self.current_retained_records.map_or_else(
+                || {
+                    self.imported_sessions > 0
+                        || self.imported_events > 0
+                        || self.imported_edges > 0
+                },
+                |retained| retained > 0,
+            )
+        })
+    }
+    pub fn has_attempted_source_records(&self) -> bool {
+        self.request_records_attempted.unwrap_or_else(|| {
+            self.current_complete_records
+                .is_some_and(|records| records > 0)
+        }) || self.failed > 0
     }
     pub fn reported_source_failures(&self) -> usize {
         self.failed_sources
     }
     pub fn outcome(&self) -> (ImportOutcome, ImportFailureScope) {
-        if !self.has_usable_source_result() && self.failed_sources > 0 {
-            return (ImportOutcome::Failure, ImportFailureScope::Source);
+        let has_usable_history = if self.failed_sources > 0 {
+            self.has_usable_current_generation()
+        } else {
+            self.has_usable_source_result()
+        };
+        if !has_usable_history && (self.failed_sources > 0 || self.has_attempted_source_records()) {
+            return (
+                ImportOutcome::Failure,
+                match (self.failed_sources > 0, self.failed > 0) {
+                    (false, true) => ImportFailureScope::Record,
+                    (true, false) => ImportFailureScope::Source,
+                    (true, true) => ImportFailureScope::RecordAndSource,
+                    (false, false) => ImportFailureScope::None,
+                },
+            );
         }
         match (self.failed_sources > 0, self.failed > 0) {
             (false, false) => (ImportOutcome::Success, ImportFailureScope::None),
@@ -154,7 +191,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn aggregate_outcomes_preserve_failure_and_partial_truth() {
+    fn aggregate_outcomes_preserve_machine_compatibility_and_genuine_failures() {
         for (failed_sources, rejected, outcome, scope, failure_type) in [
             (0, 0, "success", "none", "none"),
             (
@@ -182,7 +219,7 @@ mod tests {
             let totals = ImportTotals {
                 failed_sources,
                 failed: rejected,
-                current_source_count: Some(1),
+                current_retained_records: Some(1),
                 ..ImportTotals::default()
             };
             let (actual_outcome, actual_scope) = totals.outcome();
@@ -195,5 +232,32 @@ mod tests {
             ..ImportTotals::default()
         };
         assert_eq!(failed.outcome().0, ImportOutcome::Failure);
+
+        let all_rejected = ImportTotals {
+            failed: 3,
+            current_source_count: Some(2),
+            current_complete_records: Some(8),
+            current_retained_records: Some(5),
+            current_rejected_records: Some(3),
+            request_records_attempted: Some(true),
+            request_has_usable_records: Some(false),
+            ..ImportTotals::default()
+        };
+        assert_eq!(
+            all_rejected.outcome(),
+            (ImportOutcome::Failure, ImportFailureScope::Record)
+        );
+
+        let all_ignored = ImportTotals {
+            current_source_count: Some(1),
+            current_complete_records: Some(2),
+            current_retained_records: Some(0),
+            current_ignored_records: Some(2),
+            ..ImportTotals::default()
+        };
+        assert_eq!(
+            all_ignored.outcome(),
+            (ImportOutcome::Failure, ImportFailureScope::None)
+        );
     }
 }

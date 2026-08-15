@@ -235,7 +235,6 @@ pub(crate) fn render_daemon_status_human(
             core_refresh,
             enabled || matches!(presentation, DaemonPresentation::Completed),
             source_failures,
-            rejected_records,
         );
         let mut history_fields = vec![state_field("Status", history_state, history_token)];
         let mut history_details = Vec::new();
@@ -281,10 +280,7 @@ pub(crate) fn render_daemon_status_human(
             ));
         }
         if rejected_records > 0 {
-            history_details.push((
-                "Rejected",
-                counted(rejected_records, "provider record", "provider records"),
-            ));
+            history_details.push(("Skipped records", rejected_records.to_string()));
         }
         if history_failed {
             history_details.push((
@@ -364,7 +360,6 @@ pub(crate) fn render_daemon_status_human(
             recoverable,
             history_failed,
             source_failures,
-            rejected_records,
             semantic_failed,
             history_catching_up,
             service_issue,
@@ -648,7 +643,6 @@ fn core_refresh_state(
     core_refresh: Option<&Value>,
     enabled: bool,
     source_failures: usize,
-    rejected_records: u64,
 ) -> (&'static str, Token) {
     if !enabled {
         return ("disabled", Token::Text);
@@ -661,9 +655,6 @@ fn core_refresh_state(
     }
     if source_failures > 0 {
         return ("ready with source failures", Token::Warning);
-    }
-    if rejected_records > 0 {
-        return ("ready with rejections", Token::Warning);
     }
     let status = job_status(core_refresh);
     match status {
@@ -731,7 +722,6 @@ struct RecoverySignals {
     recoverable: bool,
     history_failed: bool,
     source_failures: usize,
-    rejected_records: u64,
     semantic_failed: bool,
     history_catching_up: bool,
     service_issue: bool,
@@ -745,7 +735,6 @@ fn recovery_action(
         recoverable,
         history_failed,
         source_failures,
-        rejected_records,
         semantic_failed,
         history_catching_up,
         service_issue,
@@ -768,12 +757,6 @@ fn recovery_action(
     if history_failed || source_failures > 0 {
         return Some((
             "Inspect source-level refresh failures.",
-            "ctx import --all --no-daemon",
-        ));
-    }
-    if rejected_records > 0 {
-        return Some((
-            "Inspect rejected provider records.",
             "ctx import --all --no-daemon",
         ));
     }

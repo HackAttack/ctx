@@ -360,7 +360,6 @@ impl ProviderRefreshCollector {
                 } => {
                     let has_source_failures = source_failure_total != 0;
                     let has_rejections = rejected_record_total != 0;
-                    let partial = has_source_failures || has_rejections;
                     let mut event = ProviderRefreshCompletedV1::foreground_bucketed(
                         Outcome::Success,
                         duration_bucket(single_provider_fallback_duration),
@@ -376,7 +375,7 @@ impl ProviderRefreshCollector {
                             content_evidence: ProviderRefreshContentEvidence::Unknown,
                             work_kind: (!generation_changed)
                                 .then_some(ProviderRefreshWorkKind::NoOp),
-                            refresh_result: if partial {
+                            refresh_result: if has_source_failures {
                                 ProviderRefreshResult::Partial
                             } else {
                                 ProviderRefreshResult::Complete
@@ -612,10 +611,9 @@ fn refresh_result(
     canonical_pro_result: ProviderProResult,
     output_pro_result: ProviderProResult,
 ) -> ProviderRefreshResult {
-    if !totals.has_usable_source_result() && totals.failed_sources > 0 {
+    if totals.outcome().0 == ctx_history_ingest_application::ImportOutcome::Failure {
         ProviderRefreshResult::Failure
     } else if totals.failed_sources > 0
-        || totals.failed > 0
         || matches!(
             core_result,
             ProviderCoreResult::Partial | ProviderCoreResult::Failure

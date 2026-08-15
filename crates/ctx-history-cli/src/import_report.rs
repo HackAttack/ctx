@@ -30,6 +30,9 @@ pub fn resume_mode_name(resume: bool) -> &'static str {
 
 pub fn import_completion_error(report: &IngestReport) -> Option<anyhow::Error> {
     (import_report_outcome(&report.totals).0 == "failure").then(|| {
+        if report.totals.failed_sources == 0 && !report.totals.has_usable_source_result() {
+            return anyhow::anyhow!("No usable history was imported");
+        }
         let detail = report
             .first_failure_detail()
             .map(|(selector, failure_type, error)| {
@@ -131,7 +134,6 @@ fn import_totals_json(totals: &ImportTotals) -> Value {
 
 pub fn render_import_report_human(context: &RenderContext, report: &IngestReport) -> Document {
     let totals = &report.totals;
-    let rejected_records = u64::try_from(totals.failed).unwrap_or(u64::MAX);
     let (state, title, detail) = import_outcome_copy(totals);
     let mut document = outcome(
         context,
@@ -142,17 +144,20 @@ pub fn render_import_report_human(context: &RenderContext, report: &IngestReport
         },
     );
 
+    let mut imported = Vec::new();
     if totals.per_run_counts_available {
-        let mut imported = vec![("Sources", totals.imported_sources.to_string())];
+        imported.push(("Sources", totals.imported_sources.to_string()));
         push_nonzero(&mut imported, "Sessions", totals.imported_sessions);
         push_nonzero(&mut imported, "Events", totals.imported_events);
         push_nonzero(&mut imported, "Edges", totals.imported_edges);
-        push_nonzero(&mut imported, "Skipped records", totals.skipped);
-        push_nonzero(&mut imported, "Rejected records", totals.failed);
         push_nonzero(&mut imported, "Failed sources", totals.failed_sources);
-        document.push_blank();
-        document.append(section("Imported", fields_from_owned(context, &imported)));
     }
+    imported.push((
+        "Skipped records",
+        totals.skipped.saturating_add(totals.failed).to_string(),
+    ));
+    document.push_blank();
+    document.append(section("Imported", fields_from_owned(context, &imported)));
 
     let mut current = Vec::new();
     push_optional(&mut current, "Sources", totals.current_source_count);
@@ -160,16 +165,6 @@ pub fn render_import_report_human(context: &RenderContext, report: &IngestReport
         &mut current,
         "Searchable events",
         totals.current_indexed_documents,
-    );
-    push_optional(
-        &mut current,
-        "Rejected records",
-        totals.current_rejected_records,
-    );
-    push_optional(
-        &mut current,
-        "Sources with rejections",
-        totals.current_sources_with_rejections,
     );
     push_optional(&mut current, "Removed sources", totals.removed_source_count);
     if !current.is_empty() {
@@ -193,21 +188,17 @@ pub fn render_import_report_human(context: &RenderContext, report: &IngestReport
         ));
     }
 
-    if totals.failed_sources > 0 || rejected_records > 0 {
+    if totals.failed_sources > 0 {
         document.push_blank();
-        let fully_failed = !totals.has_usable_source_result() && totals.failed_sources > 0;
-        let (text, command) = if !fully_failed && rejected_records > 0 {
-            (
-                "Diagnose rejected records while keeping the imported history available.",
-                "ctx doctor",
-            )
-        } else {
-            (
-                "Inspect source availability and import support.",
-                "ctx sources",
-            )
-        };
-        document.append(hint(context, Hint { text }, Some(Action { command })));
+        document.append(hint(
+            context,
+            Hint {
+                text: "Inspect source availability and import support.",
+            },
+            Some(Action {
+                command: "ctx sources",
+            }),
+        ));
     }
     document
 }
@@ -329,44 +320,24 @@ fn human_source_failure(source: &IngestSourceOutcome) -> Option<HumanSourceFailu
 }
 
 fn import_outcome_copy(totals: &ImportTotals) -> (OutcomeState, &'static str, String) {
-    if !totals.has_usable_source_result() && totals.failed_sources > 0 {
+    if totals.outcome().0 == ctx_history_ingest_application::ImportOutcome::Failure {
         return (
             OutcomeState::Error,
             "History import failed",
-            counted_failure(
-                u64::try_from(totals.failed_sources).unwrap_or(u64::MAX),
-                "source failed",
-                "sources failed",
-            ),
+            "No usable history was imported.".to_owned(),
         );
     }
-    let rejected_records = u64::try_from(totals.failed).unwrap_or(u64::MAX);
-    if totals.failed_sources > 0 || rejected_records > 0 {
-        let mut details = Vec::new();
-        if totals.failed_sources > 0 {
-            details.push(counted_failure(
-                u64::try_from(totals.failed_sources).unwrap_or(u64::MAX),
-                "source failed",
-                "sources failed",
-            ));
-        }
-        if rejected_records > 0 {
-            details.push(counted_failure(
-                rejected_records,
-                "record was rejected",
-                "records were rejected",
-            ));
-        }
+    if totals.failed_sources > 0 {
         return (
             OutcomeState::Warning,
-            if rejected_records > 0 {
-                "History import completed with rejections"
-            } else {
-                "History import completed with source failures"
-            },
+            "History import completed with source failures",
             format!(
                 "{}; imported history remains available.",
-                details.join("; ")
+                counted_failure(
+                    u64::try_from(totals.failed_sources).unwrap_or(u64::MAX),
+                    "source failed",
+                    "sources failed",
+                )
             ),
         );
     }
@@ -691,7 +662,7 @@ mod tests {
     }
 
     #[test]
-    fn human_import_report_has_stable_copy_and_warning_recovery() {
+    fn human_import_report_has_stable_copy_and_source_failure_recovery() {
         let success = render_import_report_human(&context(80, ColorMode::Never), &changed_report())
             .render_plain();
         assert_eq!(
@@ -707,11 +678,9 @@ mod tests {
              Skipped records  1\n\
              \n\
              Current index\n\
-             Sources                  1\n\
-             Searchable events        7\n\
-             Rejected records         0\n\
-             Sources with rejections  0\n\
-             Removed sources          0\n"
+             Sources            1\n\
+             Searchable events  7\n\
+             Removed sources    0\n"
         );
 
         let report = report(
@@ -721,6 +690,7 @@ mod tests {
                 imported_sources: 1,
                 failed_sources: 1,
                 failed: 2,
+                current_retained_records: Some(1),
                 work_result: ProviderImportWorkResult::Changed,
                 ..ImportTotals::default()
             },
@@ -729,17 +699,102 @@ mod tests {
         let warning =
             render_import_report_human(&context(80, ColorMode::Never), &report).render_plain();
         assert!(warning.starts_with(
-            "! History import completed with rejections\n\
-             1 source failed; 2 records were rejected; imported history remains available.\n"
+            "! History import completed with source failures\n\
+             1 source failed; imported history remains available.\n"
         ));
+        assert!(warning.contains("Skipped records  2\n"), "{warning:?}");
+        assert!(!warning.contains("rejected"), "{warning:?}");
         assert!(
             warning.ends_with(concat!(
-                "Hint: Diagnose rejected records while keeping the imported history available.\n",
+                "Hint: Inspect source availability and import support.\n",
                 "\n",
                 "Next\n",
-                "  ctx doctor\n",
+                "  ctx sources\n",
             )),
             "{warning:?}"
+        );
+    }
+
+    #[test]
+    fn human_import_report_always_renders_zero_skipped_records() {
+        let mut report = changed_report();
+        report.totals.skipped = 0;
+
+        let rendered =
+            render_import_report_human(&context(80, ColorMode::Never), &report).render_plain();
+
+        assert!(rendered.contains("Skipped records  0\n"), "{rendered:?}");
+    }
+
+    #[test]
+    fn rejection_only_import_is_success_without_warning_prose_or_retry() {
+        let report = report(
+            false,
+            ImportTotals {
+                terminal_route_counts_available: true,
+                failed: 2,
+                sources_completed_with_rejections: 1,
+                current_source_count: Some(1),
+                current_complete_records: Some(3),
+                current_retained_records: Some(1),
+                current_rejected_records: Some(2),
+                current_sources_with_rejections: Some(1),
+                work_result: ProviderImportWorkResult::Changed,
+                ..ImportTotals::default()
+            },
+            Vec::new(),
+        );
+
+        let rendered =
+            render_import_report_human(&context(80, ColorMode::Never), &report).render_plain();
+        assert!(
+            rendered.starts_with("✓ History import completed\n"),
+            "{rendered}"
+        );
+        assert!(rendered.contains("Skipped records  2\n"), "{rendered}");
+        for forbidden in ["warning", "rejected", "Hint:", "\nNext\n", "retry"] {
+            assert!(
+                !rendered.to_lowercase().contains(&forbidden.to_lowercase()),
+                "{rendered}"
+            );
+        }
+        assert!(import_completion_error(&report).is_none());
+
+        let json = import_report_json(&report);
+        assert_eq!(json["outcome"], "completed_with_rejections");
+        assert_eq!(json["failure_scope"], "record");
+        assert_eq!(json["failure_type"], "record_rejection");
+        assert_eq!(json["totals"]["rejected_records"], 2);
+        assert_eq!(json["totals"]["sources_completed_with_rejections"], 1);
+    }
+
+    #[test]
+    fn all_attempted_records_unusable_is_a_concise_failure() {
+        let report = report(
+            false,
+            ImportTotals {
+                terminal_route_counts_available: true,
+                failed: 3,
+                sources_completed_with_rejections: 1,
+                current_source_count: Some(1),
+                current_complete_records: Some(3),
+                current_retained_records: Some(0),
+                current_rejected_records: Some(3),
+                current_sources_with_rejections: Some(1),
+                work_result: ProviderImportWorkResult::Changed,
+                ..ImportTotals::default()
+            },
+            Vec::new(),
+        );
+
+        let rendered =
+            render_import_report_human(&context(80, ColorMode::Never), &report).render_plain();
+        assert!(rendered.starts_with("✗ History import failed\nNo usable history was imported.\n"));
+        assert!(rendered.contains("Skipped records  3\n"), "{rendered}");
+        assert_eq!(import_report_json(&report)["outcome"], "failure");
+        assert_eq!(
+            import_completion_error(&report).unwrap().to_string(),
+            "No usable history was imported"
         );
     }
 
@@ -764,11 +819,10 @@ mod tests {
             rendered.starts_with("✓ History import completed\nNo source changes were found.\n"),
             "{rendered}"
         );
-        assert!(
-            rendered.contains("Searchable events        7"),
-            "{rendered}"
-        );
+        assert!(rendered.contains("Searchable events  7"), "{rendered}");
         assert!(!rendered.contains("records were rejected"), "{rendered}");
+        assert!(rendered.contains("Skipped records  0"), "{rendered}");
+        assert!(!rendered.contains("Rejected records"), "{rendered}");
         assert!(!rendered.contains("ctx doctor"), "{rendered}");
     }
 
@@ -780,6 +834,7 @@ mod tests {
                 failed_sources: 5,
                 current_source_count: Some(2),
                 current_indexed_documents: Some(7),
+                current_retained_records: Some(7),
                 work_result: ProviderImportWorkResult::NoOp,
                 ..ImportTotals::default()
             },
@@ -851,7 +906,10 @@ mod tests {
             rendered,
             concat!(
                 "✗ History import failed\n",
-                "3 sources failed\n",
+                "No usable history was imported.\n",
+                "\n",
+                "Imported\n",
+                "Skipped records  0\n",
                 "\n",
                 "Source failures\n",
                 "Source 1    /history/codex/sessions.jsonl is not importable (codex, incompatible, retained prior data): unsupported\n",

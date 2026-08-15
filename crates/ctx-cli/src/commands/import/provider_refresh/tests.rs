@@ -354,13 +354,13 @@ fn core_publication_emits_only_global_authoritative_facts() {
 }
 
 #[test]
-fn core_publication_reports_record_rejections_as_partial() {
+fn core_publication_keeps_record_rejections_diagnostic_without_partial_severity() {
     let mut collector = ProviderRefreshCollector::default();
     collector.record_core_publication(ProviderRefreshTrigger::Import, true, 0, 3);
 
     let events = collector.finish();
     let refresh = foreground(&events[0]);
-    assert_eq!(refresh.refresh_result, ProviderRefreshResult::Partial);
+    assert_eq!(refresh.refresh_result, ProviderRefreshResult::Complete);
     assert_eq!(refresh.failure_scope, ProviderRefreshFailureScope::Record);
     assert_eq!(
         refresh.failure_type,

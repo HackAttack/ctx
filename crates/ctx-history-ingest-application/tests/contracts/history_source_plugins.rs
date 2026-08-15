@@ -199,6 +199,69 @@ fn durable_plugin_path_indexes_in_place_and_renders_complete_core_content() {
 }
 
 #[test]
+fn all_rejected_plugin_fails_even_when_unrelated_history_is_retained() {
+    let temp = tempdir();
+    let (manifest_dir, source_path) = write_durable_plugin(&temp);
+    let source = fs::read_to_string(&source_path).unwrap();
+    let malformed = source.replace(r#""event_index":0"#, r#""event_index":"invalid""#);
+    assert_ne!(malformed, source);
+    fs::write(&source_path, malformed).unwrap();
+
+    let state = temp.path().join("state");
+    fs::create_dir_all(&state).unwrap();
+    let _daemon = start_source_refresh_daemon(&temp, &data_root(&temp), temp.path(), &state);
+    let codex_path = temp.path().join("unrelated-codex.jsonl");
+    fs::write(
+        &codex_path,
+        concat!(
+            r#"{"timestamp":"2026-07-30T03:00:00Z","type":"session_meta","payload":{"id":"unrelated-codex","timestamp":"2026-07-30T03:00:00Z","cwd":"/workspace/unrelated","originator":"codex-cli"}}"#,
+            "\n",
+            r#"{"timestamp":"2026-07-30T03:00:01Z","type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"unrelated retained oracle"}]}}"#,
+            "\n",
+        ),
+    )
+    .unwrap();
+    let retained = json_output(ctx(&temp).args([
+        "import",
+        "--provider",
+        "codex",
+        "--path",
+        codex_path.to_str().unwrap(),
+        "--no-daemon",
+        "--progress",
+        "none",
+        "--format=json",
+    ]));
+    assert_eq!(retained["outcome"], "success", "{retained:#}");
+    let retained_records = retained["totals"]["current_retained_records"]
+        .as_u64()
+        .filter(|count| *count > 0)
+        .expect("retained Codex fixture records");
+
+    let rejected = failure_json_output(
+        ctx(&temp)
+            .env("CTX_HISTORY_PLUGIN_PATH", &manifest_dir)
+            .args([
+                "import",
+                "--history-source",
+                "example-plugin/primary",
+                "--no-daemon",
+                "--progress",
+                "none",
+                "--format=json",
+            ]),
+    );
+    assert_eq!(rejected["outcome"], "failure", "{rejected:#}");
+    assert_eq!(rejected["failure_scope"], "record", "{rejected:#}");
+    assert_eq!(rejected["failure_type"], "record_rejection", "{rejected:#}");
+    assert_eq!(rejected["sources"][0]["status"], "partial", "{rejected:#}");
+    assert_eq!(
+        rejected["totals"]["current_retained_records"], retained_records,
+        "generation-wide retained history must not mask this failed plugin request: {rejected:#}"
+    );
+}
+
+#[test]
 fn durable_plugin_manifest_rejects_command_runtime_options() {
     let temp = tempdir();
     let (manifest_dir, _) = write_durable_plugin(&temp);

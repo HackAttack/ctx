@@ -28,9 +28,11 @@ history where those existing contracts still apply.
 
 ## Import Failure Policy
 
-Every import keeps independently valid content and reports rejected records.
-There is no user-selectable failure mode. Parse, validation, and reference
-errors reject the narrowest safe record plus records that depend on it. An
+Every import keeps independently valid content. Human receipts present
+record-local rejections in one stable `Skipped records` count; JSON keeps the
+stable `rejected_records` fields and bounded diagnostic details. There is no
+user-selectable failure mode. Parse, validation, and reference errors reject
+the narrowest safe record plus records that depend on it. An
 unreadable root, incompatible manifest/schema, or provider-database failure
 fails that source while independent sources continue. Ctx-owned store, index,
 worker, lock, and operational-I/O failures abort the run.
@@ -45,8 +47,8 @@ source, Store, or system failures do not advance it. Corrected complete records
 remain eligible after source replacement is detected.
 
 A fully published generation with deterministic record rejections and no source
-failures is converged and searchable. Status and doctor report its Core refresh
-as ready while retaining the current rejected-record count as a diagnostic.
+failures is converged and searchable. Human import reports success and calls
+those records skipped; status and doctor report the Core refresh as ready.
 Source failures, retryable failures, an unpublished or retained generation, and
 an unavailable verified search generation remain partial or unhealthy.
 

@@ -481,7 +481,7 @@ fn enabled_daemon_without_observed_lifecycle_is_not_a_failure() {
 }
 
 #[test]
-fn source_rejections_are_visible_without_internal_provenance() {
+fn source_rejections_are_simple_diagnostics_without_warning_or_retry() {
     let mut report = running_report();
     report["jobs"]["core_refresh"] = json!({
         "status": "completed",
@@ -491,10 +491,10 @@ fn source_rejections_are_visible_without_internal_provenance() {
     let rendered = render_status(&context(80), &report).render_plain();
 
     assert!(rendered.starts_with("✓ Daemon is healthy\n"));
-    assert!(rendered.contains("Status    ready with rejections\n"));
-    assert!(rendered.contains("Rejected  3 provider records\n"));
-    assert!(rendered.contains("Hint: Inspect rejected provider records.\n"));
-    assert!(rendered.contains("ctx import --all --no-daemon\n"));
+    assert!(rendered.contains("Status           ready\n"), "{rendered}");
+    assert!(rendered.contains("Skipped records  3\n"), "{rendered}");
+    assert!(!rendered.contains("Hint:"), "{rendered}");
+    assert!(!rendered.contains("\nNext\n"), "{rendered}");
     assert!(!rendered.contains("source-level refresh failures"));
     assert!(!rendered.contains("internal-import-route"));
 }
@@ -541,10 +541,7 @@ fn source_failures_with_rejections_remain_partial_and_name_source_failures() {
         rendered.contains("ready with source failures"),
         "{rendered}"
     );
-    assert!(
-        rendered.contains("Rejected  2 provider records"),
-        "{rendered}"
-    );
+    assert!(rendered.contains("Skipped records  2"), "{rendered}");
     assert!(
         rendered.contains("Hint: Inspect source-level refresh failures."),
         "{rendered}"

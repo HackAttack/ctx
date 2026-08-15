@@ -939,7 +939,7 @@ fn explicit_import_reports_warm_carried_route_failure() {
 }
 
 #[test]
-fn all_invalid_custom_source_publishes_empty_then_refreshes_after_fix() {
+fn all_invalid_custom_source_fails_with_unrelated_history_then_refreshes_after_fix() {
     let temp = tempdir();
     let _daemon = start_full_source_refresh_daemon(&temp);
     let fixture = temp.path().join("custom-retry.jsonl");
@@ -951,9 +951,25 @@ fn all_invalid_custom_source_publishes_empty_then_refreshes_after_fix() {
 "#
         .replace("EVENT_INDEX", event_index)
     };
+    let retained = json_output(ctx(&temp).args([
+        "import",
+        "--provider",
+        "codex",
+        "--path",
+        &provider_history_fixture("codex-sessions"),
+        "--no-daemon",
+        "--format=json",
+        "--progress",
+        "none",
+    ]));
+    assert_eq!(retained["outcome"], "success", "{retained:#}");
+    let retained_documents = retained["totals"]["current_indexed_documents"]
+        .as_u64()
+        .filter(|count| *count > 0)
+        .expect("retained Codex fixture documents");
     fs::write(&fixture, records(r#""invalid""#)).unwrap();
 
-    let empty = json_output(ctx(&temp).args([
+    let empty = failure_json_output(ctx(&temp).args([
         "import",
         "--input-format",
         "ctx-history-jsonl-v1",
@@ -964,15 +980,24 @@ fn all_invalid_custom_source_publishes_empty_then_refreshes_after_fix() {
         "--progress",
         "none",
     ]));
-    assert_eq!(empty["outcome"], "completed_with_rejections", "{empty:#}");
+    assert_eq!(empty["outcome"], "failure", "{empty:#}");
+    assert_eq!(empty["failure_scope"], "record", "{empty:#}");
+    assert_eq!(empty["failure_type"], "record_rejection", "{empty:#}");
+    assert_eq!(empty["sources"][0]["status"], "partial", "{empty:#}");
     assert_eq!(
-        empty["sources"][0]["current_indexed_documents"], 0,
+        empty["sources"][0]["current_indexed_documents"], retained_documents,
         "{empty:#}"
+    );
+    assert!(
+        empty["sources"][0]["current_retained_records"]
+            .as_u64()
+            .is_some_and(|records| records > 0),
+        "generation-wide retained history must not mask this failed request: {empty:#}"
     );
     let empty_generation = published_generation(&empty);
     let empty_status = wait_for_core_generation(&temp, &empty_generation);
     assert_eq!(
-        empty_status["lexical"]["indexed_documents"], 0,
+        empty_status["lexical"]["indexed_documents"], retained_documents,
         "{empty_status:#}"
     );
     assert_eq!(provider_core_counts(&data_root(&temp), "custom"), (0, 0));
@@ -993,7 +1018,11 @@ fn all_invalid_custom_source_publishes_empty_then_refreshes_after_fix() {
     let generation = published_generation(&retry);
     assert_ne!(generation, empty_generation);
     let status = wait_for_core_generation(&temp, &generation);
-    assert_eq!(status["lexical"]["indexed_documents"], 1, "{status:#}");
+    assert_eq!(
+        status["lexical"]["indexed_documents"],
+        retained_documents + 1,
+        "{status:#}"
+    );
     assert_eq!(provider_core_counts(&data_root(&temp), "custom"), (1, 1));
     assert!(!data_root(&temp).join("relational.sqlite").exists());
     let search = json_output(ctx(&temp).args([

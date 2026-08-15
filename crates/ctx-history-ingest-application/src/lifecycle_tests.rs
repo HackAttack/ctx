@@ -236,6 +236,7 @@ fn publication(receipt: SourceBackedRefreshReceipt) -> IngestPublication {
         scanned_routes: Some(receipt.route_results.len()),
         pinned_generation: receipt.published_generation.clone(),
         policy_schema_hash: Some("policy-v1".to_owned()),
+        catalog_content: std::collections::BTreeMap::new(),
         receipt: Some(receipt),
     }
 }
@@ -548,10 +549,91 @@ fn automatic_failure_rejection_totals_and_bounded_omissions_remain_exact() {
     let IngestSourceOutcome::Automatic(summary) = &report.sources[0] else {
         panic!("expected automatic summary")
     };
+    assert_eq!(summary.status, crate::IngestStatus::Partial);
     assert_eq!(summary.source_failures_omitted, 3);
     assert_eq!(summary.rejection_diagnostics_omitted, 4);
     assert_eq!(report.sources.len(), 3);
     assert_eq!(host.refresh_calls.get(), 1);
+}
+
+#[test]
+fn rejection_only_publication_is_published_but_all_unusable_input_fails() {
+    let temp = tempfile::tempdir().unwrap();
+    let source_path = write_source(&temp);
+    let mut result = SourceBackedRefreshRouteResult::succeeded(ROUTE.into(), true);
+    result.rejected_record_total = 2;
+
+    let mut usable_receipt = receipt(None, result.clone());
+    usable_receipt.current.complete_records = 3;
+    usable_receipt.current.retained_records = 1;
+    usable_receipt.current.rejected_records = 2;
+    let mut usable_host = FakeHost::new(source_path.clone(), publication(usable_receipt));
+    usable_host.all_discovery.sources = vec![provider_source(
+        source_path.clone(),
+        ProviderSourceStatus::Available,
+    )];
+
+    let usable = run_ingest(
+        &IngestRequest::default(),
+        &temp.path().join("ctx-usable"),
+        &mut usable_host,
+    )
+    .unwrap();
+    assert_eq!(
+        usable.totals.outcome().0,
+        crate::ImportOutcome::CompletedWithRejections
+    );
+    let IngestSourceOutcome::Automatic(usable_source) = &usable.sources[0] else {
+        panic!("expected automatic summary")
+    };
+    assert_eq!(usable_source.status, crate::IngestStatus::Partial);
+
+    let mut unusable_receipt = receipt(None, result);
+    unusable_receipt.current.complete_records = 2;
+    unusable_receipt.current.retained_records = 0;
+    unusable_receipt.current.rejected_records = 2;
+    let mut unusable_host = FakeHost::new(source_path.clone(), publication(unusable_receipt));
+    unusable_host.all_discovery.sources = vec![provider_source(
+        source_path.clone(),
+        ProviderSourceStatus::Available,
+    )];
+
+    let unusable = run_ingest(
+        &IngestRequest::default(),
+        &temp.path().join("ctx-unusable"),
+        &mut unusable_host,
+    )
+    .unwrap();
+    assert_eq!(unusable.totals.outcome().0, crate::ImportOutcome::Failure);
+    let IngestSourceOutcome::Automatic(unusable_source) = &unusable.sources[0] else {
+        panic!("expected automatic summary")
+    };
+    assert_eq!(unusable_source.status, crate::IngestStatus::Partial);
+
+    let mut ignored_receipt = receipt(
+        None,
+        SourceBackedRefreshRouteResult::succeeded(ROUTE.into(), true),
+    );
+    ignored_receipt.current.complete_records = 2;
+    ignored_receipt.current.retained_records = 0;
+    ignored_receipt.current.ignored_records = 2;
+    let mut ignored_host = FakeHost::new(source_path.clone(), publication(ignored_receipt));
+    ignored_host.all_discovery.sources = vec![provider_source(
+        source_path,
+        ProviderSourceStatus::Available,
+    )];
+
+    let ignored = run_ingest(
+        &IngestRequest::default(),
+        &temp.path().join("ctx-ignored"),
+        &mut ignored_host,
+    )
+    .unwrap();
+    assert_eq!(ignored.totals.outcome().0, crate::ImportOutcome::Failure);
+    let IngestSourceOutcome::Automatic(ignored_source) = &ignored.sources[0] else {
+        panic!("expected automatic summary")
+    };
+    assert_eq!(ignored_source.status, crate::IngestStatus::Published);
 }
 
 #[test]

@@ -75,14 +75,7 @@ pub fn render_doctor_human(
             "History",
             fields(
                 context,
-                &[Field::new(
-                    "Rejected",
-                    &format!(
-                        "{} provider record{}",
-                        rejected_records,
-                        if rejected_records == 1 { "" } else { "s" }
-                    ),
-                )],
+                &[Field::new("Skipped records", &rejected_records.to_string())],
             ),
         ));
     }
@@ -216,12 +209,12 @@ mod ui_tests {
     }
 
     #[test]
-    fn healthy_doctor_discloses_rejected_provider_records() {
+    fn healthy_doctor_presents_record_rejections_as_skipped_records() {
         let rendered = render_doctor_human(&context(80), "apply", &[], 2).render_plain();
 
         assert!(rendered.starts_with("✓ No problems found\n"), "{rendered}");
         assert!(
-            rendered.contains("History\nRejected  2 provider records\n"),
+            rendered.contains("History\nSkipped records  2\n"),
             "{rendered}"
         );
         assert!(!rendered.contains("issue"), "{rendered}");

@@ -44,6 +44,57 @@ fn assert_source_backed_publication<'a>(
     source
 }
 
+fn assert_unusable_source_backed_failure<'a>(
+    report: &'a Value,
+    provider: &str,
+    source_format: &str,
+    rejected_records: u64,
+) -> &'a Value {
+    assert_eq!(report["schema_version"], 2, "{report:#}");
+    assert_eq!(report["outcome"], "failure", "{report:#}");
+    assert_eq!(
+        report["failure_scope"],
+        if rejected_records == 0 {
+            "none"
+        } else {
+            "record"
+        },
+        "{report:#}"
+    );
+    assert_eq!(
+        report["failure_type"],
+        if rejected_records == 0 {
+            "none"
+        } else {
+            "record_rejection"
+        },
+        "{report:#}"
+    );
+    let sources = report["sources"]
+        .as_array()
+        .unwrap_or_else(|| panic!("missing explicit source receipt in {report:#}"));
+    assert_eq!(sources.len(), 1, "{report:#}");
+    let source = &sources[0];
+    assert_eq!(source["provider"], provider, "{report:#}");
+    assert_eq!(source["source_format"], source_format, "{report:#}");
+    assert_eq!(
+        source["status"],
+        if rejected_records == 0 {
+            "published"
+        } else {
+            "partial"
+        },
+        "{report:#}"
+    );
+    assert_eq!(source["current_indexed_documents"], 0, "{report:#}");
+    assert_eq!(source["current_retained_records"], 0, "{report:#}");
+    assert_eq!(
+        report["totals"]["rejected_records"], rejected_records,
+        "{report:#}"
+    );
+    source
+}
+
 fn source_refresh_failure(command: &mut Command) -> String {
     let output = command.assert().failure().get_output().clone();
     assert!(
@@ -298,8 +349,8 @@ fn firebender_replay_preserves_mixed_and_all_invalid_outcomes() {
         if resume {
             command.arg("--resume");
         }
-        let report = json_output(&mut command);
-        let source = assert_source_backed_publication(
+        let report = failure_json_output(&mut command);
+        let source = assert_unusable_source_backed_failure(
             &report,
             "firebender",
             "firebender_chat_history_sqlite",
@@ -454,7 +505,7 @@ fn codex_nested_root_advisory_import_is_searchable_and_showable_without_source_f
 }
 
 #[test]
-fn junie_all_unknown_session_is_published_with_ignored_accounting() {
+fn junie_all_unknown_session_fails_with_ignored_accounting() {
     let temp = daemon_test_root();
     let sessions = temp.path().join("junie-all-unknown");
     let session_id = "session-unknown-247";
@@ -485,7 +536,7 @@ fn junie_all_unknown_session_is_published_with_ignored_accounting() {
     )
     .unwrap();
 
-    let report = json_output(ctx(&temp).args([
+    let report = failure_json_output(ctx(&temp).args([
         "import",
         "--provider",
         "junie",
@@ -495,8 +546,12 @@ fn junie_all_unknown_session_is_published_with_ignored_accounting() {
         "--progress",
         "none",
     ]));
-    let source =
-        assert_source_backed_publication(&report, "junie", "junie_session_events_jsonl_tree", 0);
+    let source = assert_unusable_source_backed_failure(
+        &report,
+        "junie",
+        "junie_session_events_jsonl_tree",
+        0,
+    );
     assert_eq!(source["current_source_count"], 1, "{report:#}");
     assert_eq!(source["current_indexed_documents"], 0, "{report:#}");
     assert_eq!(source["current_complete_records"], 2, "{report:#}");
@@ -505,7 +560,7 @@ fn junie_all_unknown_session_is_published_with_ignored_accounting() {
 }
 
 #[test]
-fn auggie_unknown_node_is_published_with_ignored_accounting() {
+fn auggie_unknown_node_fails_with_ignored_accounting() {
     let temp = daemon_test_root();
     let session = temp.path().join("auggie-unknown-node.json");
     let unknown_body = "auggie-unknown-node-body-must-not-be-indexed";
@@ -527,7 +582,7 @@ fn auggie_unknown_node_is_published_with_ignored_accounting() {
     )
     .unwrap();
 
-    let report = json_output(ctx(&temp).args([
+    let report = failure_json_output(ctx(&temp).args([
         "import",
         "--provider",
         "auggie",
@@ -537,7 +592,7 @@ fn auggie_unknown_node_is_published_with_ignored_accounting() {
         "--progress",
         "none",
     ]));
-    let source = assert_source_backed_publication(&report, "auggie", "auggie_session_json", 0);
+    let source = assert_unusable_source_backed_failure(&report, "auggie", "auggie_session_json", 0);
     assert_eq!(source["current_source_count"], 1, "{report:#}");
     assert_eq!(source["current_indexed_documents"], 0, "{report:#}");
     assert_eq!(source["current_complete_records"], 1, "{report:#}");
@@ -758,8 +813,9 @@ fn complete_oversize_only_codex_session_reports_source_backed_rejection() {
         if resume {
             command.arg("--resume");
         }
-        let report = json_output(&mut command);
-        let source = assert_source_backed_publication(&report, "codex", "codex_session_jsonl", 1);
+        let report = failure_json_output(&mut command);
+        let source =
+            assert_unusable_source_backed_failure(&report, "codex", "codex_session_jsonl", 1);
         assert_eq!(source["current_indexed_documents"], 0, "{report:#}");
         assert_eq!(source["current_retained_records"], 0, "{report:#}");
         assert_eq!(source["current_sources_with_rejections"], 1, "{report:#}");

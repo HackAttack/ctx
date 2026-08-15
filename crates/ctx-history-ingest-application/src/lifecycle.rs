@@ -202,6 +202,7 @@ fn exact_report(
         .cloned();
     let requested_source_failed = requested_outcome.source_failure_total != 0;
     let requested_rejected = requested_outcome.rejected_record_total != 0;
+    let request_content = publication.catalog_content.get(&catalog_lineage).copied();
     let requested_changed = if requested_succeeded && publication.request_generation_changed {
         requested_outcome
             .changed
@@ -237,6 +238,8 @@ fn exact_report(
         current_certified_source_bytes: Some(current.certified_source_bytes),
         current_sources_with_rejections: Some(current.sources_with_rejections),
         removed_source_count: Some(current.removed_source_count),
+        request_records_attempted: request_content.map(|content| content.0),
+        request_has_usable_records: request_content.map(|content| content.1),
         work_result: if requested_succeeded && requested_changed {
             ProviderImportWorkResult::Changed
         } else {
@@ -377,6 +380,7 @@ fn plugin_report(
             .changed
             .context("successful history source plugin route has no change result")?;
     let rejected_record_total = requested_outcome.rejected_record_total;
+    let request_content = publication.catalog_content.get(&catalog_lineage).copied();
     let rejection_diagnostics = route_rejections(&receipt, &requested_outcome.route_identity);
     let receipt_source_failure_total = receipt.source_failure_total();
     let receipt_rejected_record_total = receipt.rejected_record_total();
@@ -399,6 +403,8 @@ fn plugin_report(
         current_certified_source_bytes: Some(current.certified_source_bytes),
         current_sources_with_rejections: Some(current.sources_with_rejections),
         removed_source_count: Some(current.removed_source_count),
+        request_records_attempted: request_content.map(|content| content.0),
+        request_has_usable_records: request_content.map(|content| content.1),
         work_result: if route_changed {
             ProviderImportWorkResult::Changed
         } else {

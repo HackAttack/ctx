@@ -577,7 +577,8 @@ ctx import --history-source example-agent/default
 
 Current adapters are safe to re-run. They rescan sources idempotently and keep
 stable source identity and import-progress metadata. Imports always commit valid
-records and report rejected records. Sources with no usable imported content
+records; human receipts summarize record-local rejections as `Skipped records`
+while JSON preserves rejection diagnostics. Sources with no usable imported content
 fail, as do unreadable or incompatible sources; ctx-owned generation failures
 abort the command. Native provider progress is scoped by provider, source format,
 and an opaque source identity derived from the configured source root.

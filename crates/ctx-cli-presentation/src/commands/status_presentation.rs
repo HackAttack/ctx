@@ -111,10 +111,7 @@ pub fn render_status_human(
     }
     let rejected_records = current_rejected_record_count(report);
     if rejected_records > 0 {
-        history_values.push((
-            "Rejected",
-            counted(rejected_records, "provider record", "provider records"),
-        ));
+        history_values.push(("Skipped records", rejected_records.to_string()));
     }
     if history_health == StatusHealth::Healthy {
         history_values.push(("Refresh", component_display(&report["refresh"]).to_owned()));
@@ -403,13 +400,11 @@ mod tests {
             "current_sources_with_rejections": 1,
         });
         let rendered = render_report(&context(80, ColorMode::Never), &report).render_plain();
+        let normalized = rendered.split_whitespace().collect::<Vec<_>>().join(" ");
 
         assert!(rendered.starts_with("✓ ctx is healthy\n"), "{rendered}");
-        assert!(rendered.contains("Refresh   ready"), "{rendered}");
-        assert!(
-            rendered.contains("Rejected  3 provider records"),
-            "{rendered}"
-        );
+        assert!(normalized.contains("Refresh ready"), "{rendered}");
+        assert!(normalized.contains("Skipped records 3"), "{rendered}");
         assert!(!rendered.contains("partially ready"), "{rendered}");
         assert!(!rendered.contains("\nNext\n"), "{rendered}");
     }

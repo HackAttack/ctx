@@ -342,11 +342,14 @@ the custom acquisition route, and waits for daemon-owned Core publication.
 Command-only manifests are reported as unsupported and are never copied into
 ctx storage. Plugins are not imported by `import --all` or setup.
 
-Imports always commit valid records and report rejected records. An unreadable
+Imports always commit valid records. Human receipts report one stable
+`Skipped records` count, including zero; JSON retains the detailed
+`rejected_records` diagnostics. An unreadable
 or structurally incompatible input fails that source, while ctx-owned storage
 or index failures abort the command. A source with only rejected records is a
 failure; a source with valid content and rejections completes with an explicit
-`completed_with_rejections` outcome. A structurally valid record with an
+`completed_with_rejections` JSON outcome and a successful human receipt. A
+structurally valid record with an
 unrecognized provider-native discriminator is retained generically, counted as
 ignored, or rejected at record scope; it does not make an otherwise compatible
 source unreadable.

@@ -314,5 +314,6 @@ pub struct IngestPublication {
     pub scanned_routes: Option<usize>,
     pub pinned_generation: String,
     pub policy_schema_hash: Option<String>,
+    pub catalog_content: std::collections::BTreeMap<String, (bool, bool)>,
     pub receipt: Option<ctx_history_refresh::SourceBackedRefreshReceipt>,
 }
