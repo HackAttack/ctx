@@ -823,8 +823,7 @@ fn refresh_source_backed_generation_with_detailed_progress_and_discovery_timing(
                     exact_scan_total_bytes: None,
                     exact_scan_accounting_enabled: false,
                 };
-                let result = (driver.scan)(&mut sink);
-                result
+                (driver.scan)(&mut sink)
             };
             let mut record_progress = record_progress.into_inner();
             if let Some(error) = progress_failure.into_inner() {
@@ -1188,7 +1187,7 @@ fn refresh_source_backed_generation_with_detailed_progress_and_discovery_timing(
                         (
                             Some(SourceBackedRouteRevalidation::Deletion(expected)),
                             CaptureRevalidationTarget::Deletion(actual)
-                        ) if *expected == *actual
+                        ) if expected.as_ref() == actual
                     )
                 });
             if !valid {

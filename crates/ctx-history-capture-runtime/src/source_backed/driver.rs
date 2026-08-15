@@ -359,7 +359,7 @@ impl SourceOwner {
 #[derive(Clone)]
 pub enum SourceBackedRouteRevalidation {
     Source(CertifiedSource),
-    Deletion(CertifiedSourceDeletion),
+    Deletion(Box<CertifiedSourceDeletion>),
 }
 
 #[derive(Clone)]
@@ -811,7 +811,7 @@ impl<L: CaptureLifecycleSink> SourceBackedGenerationSink<'_, L> {
             .delete_source(deletion.clone(), inventory.clone())?;
         self.record_revalidation(
             deletion.source(),
-            SourceBackedRouteRevalidation::Deletion(deletion.clone()),
+            SourceBackedRouteRevalidation::Deletion(Box::new(deletion.clone())),
         )?;
         self.applied_removals.push(SourceBackedCertifiedRemoval {
             deletion,
