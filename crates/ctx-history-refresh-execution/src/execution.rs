@@ -27,6 +27,12 @@ impl std::fmt::Display for ExactMemberFallbackRequired {
 
 impl std::error::Error for ExactMemberFallbackRequired {}
 
+#[derive(Clone)]
+struct CatalogRefreshAdmission {
+    report: DiscoveryReport,
+    exact_members: bool,
+}
+
 struct PreopenedPublishedState(Mutex<Option<PublishedSourceBackedState>>);
 
 impl PublishedSourceBackedStatePort for PreopenedPublishedState {
@@ -42,9 +48,9 @@ impl PublishedSourceBackedStatePort for PreopenedPublishedState {
 pub(super) fn execute_capture_owned_refresh(
     execution: SourceBackedRefreshExecution<'_>,
 ) -> Result<SourceBackedRefreshPublication> {
-    let catalog_report = exact_catalog_report(&execution);
+    let catalog_admission = catalog_refresh_admission(&execution);
     let mut family_fallback = execution.clone();
-    match execute_capture_owned_refresh_once(execution, catalog_report.clone()) {
+    match execute_capture_owned_refresh_once(execution, catalog_admission.clone()) {
         Err(error)
             if error
                 .downcast_ref::<ExactMemberFallbackRequired>()
@@ -55,7 +61,13 @@ pub(super) fn execute_capture_owned_refresh(
                 .route_worksets
                 .values_mut()
                 .for_each(|workset| *workset = SourceBackedRefreshWorkset::Exhaustive);
-            execute_capture_owned_refresh_once(family_fallback, catalog_report)
+            execute_capture_owned_refresh_once(
+                family_fallback,
+                catalog_admission.map(|mut admission| {
+                    admission.exact_members = false;
+                    admission
+                }),
+            )
         }
         result => result,
     }
@@ -63,7 +75,7 @@ pub(super) fn execute_capture_owned_refresh(
 
 fn execute_capture_owned_refresh_once(
     execution: SourceBackedRefreshExecution<'_>,
-    catalog_report: Option<DiscoveryReport>,
+    catalog_admission: Option<CatalogRefreshAdmission>,
 ) -> Result<SourceBackedRefreshPublication> {
     let discovery_context = execution.discovery_context;
     let reconciliation_demand = execution.reconciliation_demand;
@@ -78,7 +90,9 @@ fn execute_capture_owned_refresh_once(
     execute_capture_owned_refresh_with(
         execution,
         discovery_context,
-        catalog_report.clone(),
+        catalog_admission
+            .as_ref()
+            .map(|admission| admission.report.clone()),
         move |discovery,
               report,
               discovery_duration,
@@ -99,7 +113,9 @@ fn execute_capture_owned_refresh_once(
                 request_id,
                 operation,
                 reconciliation_demand,
-                catalog_report.is_some(),
+                catalog_admission
+                    .as_ref()
+                    .is_some_and(|admission| admission.exact_members),
                 &route_worksets,
                 data_root,
                 index_root,
@@ -214,9 +230,10 @@ where
     )
 }
 
-fn exact_catalog_report(execution: &SourceBackedRefreshExecution<'_>) -> Option<DiscoveryReport> {
+fn catalog_refresh_admission(
+    execution: &SourceBackedRefreshExecution<'_>,
+) -> Option<CatalogRefreshAdmission> {
     if execution.operation != RefreshOperation::Refresh
-        || execution.reconciliation_demand != SourceBackedReconciliationDemand::Incremental
         || execution.explicit_source_catalog.is_some()
     {
         return None;
@@ -224,18 +241,33 @@ fn exact_catalog_report(execution: &SourceBackedRefreshExecution<'_>) -> Option<
     let SourceBackedRefreshScope::Exact(routes) = &execution.scope else {
         return None;
     };
-    let worksets = execution
-        .route_worksets
-        .iter()
-        .map(|(route, workset)| match workset {
-            SourceBackedRefreshWorkset::Members(members) => Some((route.clone(), members.clone())),
-            SourceBackedRefreshWorkset::Exhaustive => None,
+    let catalog = execution.watch_catalog.as_ref()?;
+    let exact_member_report = (execution.reconciliation_demand
+        == SourceBackedReconciliationDemand::Incremental)
+        .then(|| {
+            execution
+                .route_worksets
+                .iter()
+                .map(|(route, workset)| match workset {
+                    SourceBackedRefreshWorkset::Members(members) => {
+                        Some((route.clone(), members.clone()))
+                    }
+                    SourceBackedRefreshWorkset::Exhaustive => None,
+                })
+                .collect::<Option<BTreeMap<_, _>>>()
+                .and_then(|worksets| catalog.exact_member_discovery_report(routes, &worksets))
         })
-        .collect::<Option<BTreeMap<_, _>>>()?;
-    execution
-        .watch_catalog
-        .as_ref()?
-        .exact_member_discovery_report(routes, &worksets)
+        .flatten();
+    if let Some(report) = exact_member_report {
+        return Some(CatalogRefreshAdmission {
+            report,
+            exact_members: true,
+        });
+    }
+    Some(CatalogRefreshAdmission {
+        report: catalog.route_discovery_report(routes)?,
+        exact_members: false,
+    })
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1265,4 +1297,73 @@ pub(super) fn build_merged_source_backed_registry(
         requested_catalog_route_bindings,
         previous_route_controls,
     })
+}
+
+#[cfg(test)]
+mod catalog_refresh_admission_tests {
+    use super::*;
+    use std::fs;
+
+    use ctx_history_capture::{
+        provider_source_for_path, DiscoveryPlatform, DiscoveryPlatformDirs, SourceBackedRoute,
+        SourceBackedRouteDriver,
+    };
+
+    struct UnusedPublishedState;
+
+    impl PublishedSourceBackedStatePort for UnusedPublishedState {
+        fn open_published_state(&self, _data_root: &Path) -> Result<PublishedSourceBackedState> {
+            unreachable!("catalog admission does not open published state")
+        }
+    }
+
+    #[test]
+    fn exhaustive_exact_route_reuses_catalog_without_claiming_member_work() {
+        let temp = tempfile::tempdir().unwrap();
+        let home = temp.path().join("home");
+        let cwd = temp.path().join("cwd");
+        let data_root = temp.path().join("data");
+        let index_root = temp.path().join("index");
+        fs::create_dir_all(&home).unwrap();
+        fs::create_dir_all(&cwd).unwrap();
+        let database = home.join("history.db");
+        fs::write(&database, b"sqlite").unwrap();
+        let source = provider_source_for_path(CaptureProvider::OpenCode, database);
+        let route = SourceBackedRoute::automatic(
+            source.clone(),
+            SourceBackedSelectorAuthority::DiscoveredWinner,
+            SourceBackedRouteDriver::new(|_| Ok(()), |_| false, |_| true),
+        )
+        .unwrap();
+        let route_identity = route.metadata().route_identity.clone().unwrap();
+        let mut registry = SourceBackedProviderRegistry::new();
+        registry.register(route);
+        let discovery = DiscoveryContext::new(
+            &home,
+            &cwd,
+            DiscoveryPlatform::Linux,
+            DiscoveryPlatformDirs::default(),
+        );
+        let progress = |_: SourceBackedRefreshProgressUpdate| Ok(());
+        let execution = SourceBackedRefreshExecution::new(
+            &data_root,
+            &index_root,
+            "route-local-exhaustive",
+            RefreshOperation::Refresh,
+            None,
+            SourceBackedRefreshScope::exact([route_identity]),
+            BTreeSet::new(),
+            SourceBackedRefreshCoveredPublication::default(),
+            &discovery,
+            &UnusedPublishedState,
+            &progress,
+        )
+        .with_reconciliation_demand(SourceBackedReconciliationDemand::Exhaustive)
+        .with_watch_catalog_opt(Some(registry.watch_catalog()));
+
+        let admission = catalog_refresh_admission(&execution)
+            .expect("exact registered route should avoid global discovery");
+        assert!(!admission.exact_members);
+        assert_eq!(admission.report.sources, vec![source]);
+    }
 }

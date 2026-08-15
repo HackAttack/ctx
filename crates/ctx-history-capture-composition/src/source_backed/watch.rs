@@ -105,10 +105,46 @@ impl SourceBackedWatchCatalog {
             .then(|| event.to_path_buf())
     }
 
-    /// Reconstructs one exact-route discovery report from this immutable
+    /// Reconstructs the bounded discovery inputs for exact registered routes.
+    /// This skips unrelated provider discovery without weakening the selected
+    /// route's own exhaustive inventory or terminal revalidation.
+    pub fn route_discovery_report(
+        &self,
+        routes: &BTreeSet<SourceRouteIdentity>,
+    ) -> Option<DiscoveryReport> {
+        if routes.is_empty() {
+            return None;
+        }
+        let mut sources = Vec::new();
+        for route in routes {
+            let registrations = self.routes.get(route)?.registration_sources.as_ref()?;
+            if registrations
+                .iter()
+                .any(|source| !registration_source_is_available(source))
+            {
+                return None;
+            }
+            sources.extend(registrations.iter().cloned());
+        }
+        sources.sort_by(|left, right| {
+            left.provider
+                .as_str()
+                .cmp(right.provider.as_str())
+                .then_with(|| left.source_format.cmp(right.source_format))
+                .then_with(|| left.path.cmp(&right.path))
+        });
+        sources.dedup();
+        Some(DiscoveryReport {
+            sources,
+            issues: Vec::new(),
+        })
+    }
+
+    /// Reconstructs one exact-member discovery report from this immutable
     /// catalog snapshot. Every member is revalidated against exactly one
     /// retained ordinary-file registration root before any source is returned.
-    /// `None` is a fail-closed abstention; callers use normal global discovery.
+    /// `None` is a fail-closed abstention; callers retain route-local exhaustive
+    /// work when possible and otherwise use normal global discovery.
     pub fn exact_member_discovery_report(
         &self,
         routes: &BTreeSet<SourceRouteIdentity>,
@@ -117,7 +153,6 @@ impl SourceBackedWatchCatalog {
         if routes.is_empty() || routes.len() != worksets.len() {
             return None;
         }
-        let mut sources = Vec::new();
         for route in routes {
             let targets = self.routes.get(route)?;
             if targets.kind != Some(SourceBackedWatchTargetKind::Path) {
@@ -138,20 +173,8 @@ impl SourceBackedWatchCatalog {
             {
                 return None;
             }
-            sources.extend(registrations.iter().cloned());
         }
-        sources.sort_by(|left, right| {
-            left.provider
-                .as_str()
-                .cmp(right.provider.as_str())
-                .then_with(|| left.source_format.cmp(right.source_format))
-                .then_with(|| left.path.cmp(&right.path))
-        });
-        sources.dedup();
-        Some(DiscoveryReport {
-            sources,
-            issues: Vec::new(),
-        })
+        self.route_discovery_report(routes)
     }
 
     /// Returns the current content-free certification token for one exact
@@ -310,11 +333,6 @@ impl SourceBackedProviderRegistry {
                 }
             }
         }
-        for targets in catalog.routes.values_mut() {
-            if targets.kind.is_none() {
-                targets.registration_sources = None;
-            }
-        }
         catalog
     }
 }
@@ -334,6 +352,14 @@ fn member_belongs_to_root(member: &Path, root: &Path) -> bool {
         || fs::symlink_metadata(root)
             .ok()
             .is_some_and(|metadata| metadata.file_type().is_dir() && member.starts_with(root))
+}
+
+fn registration_source_is_available(source: &ProviderSource) -> bool {
+    source.exists
+        && fs::symlink_metadata(&source.path).is_ok_and(|metadata| {
+            let kind = metadata.file_type();
+            !kind.is_symlink() && (kind.is_file() || kind.is_dir())
+        })
 }
 
 fn sample_ordinary_file(route: &RouteWatchTargets) -> RouteTargetSample {
@@ -502,6 +528,49 @@ mod tests {
         assert!(catalog
             .routes_overlapping_path(Path::new("/provider/other.db-wal"))
             .is_empty());
+    }
+
+    #[test]
+    fn dynamic_sqlite_inventory_keeps_route_local_discovery_authority() {
+        let temp = tempfile::tempdir().unwrap();
+        let database = temp.path().join("profiles/active/state.db");
+        fs::create_dir_all(database.parent().unwrap()).unwrap();
+        fs::write(&database, b"sqlite").unwrap();
+        let source = source(
+            CaptureProvider::OpenCode,
+            database.clone(),
+            "opencode_sqlite",
+        );
+        let route = SourceBackedRoute::automatic(
+            source.clone(),
+            SourceBackedSelectorAuthority::DiscoveredWinner,
+            driver(),
+        )
+        .unwrap();
+        let identity = route.metadata.route_identity.clone().unwrap();
+        let mut registry = SourceBackedProviderRegistry::new();
+        registry.register(route);
+        let observed_database = database.clone();
+        registry
+            .attach_route_watch_targets(&source, move || {
+                Some(SourceBackedRouteWatchTargets {
+                    sqlite_databases: BTreeSet::from([observed_database.clone()]),
+                    authority_paths: BTreeSet::from([observed_database
+                        .parent()
+                        .unwrap()
+                        .to_path_buf()]),
+                })
+            })
+            .unwrap();
+
+        let catalog = registry.watch_catalog();
+        assert!(catalog
+            .exact_member_for_event(&identity, &database)
+            .is_none());
+        let report = catalog
+            .route_discovery_report(&BTreeSet::from([identity]))
+            .expect("dynamic SQLite inventory retains its registered route input");
+        assert_eq!(report.sources, vec![source]);
     }
 
     #[test]
@@ -677,7 +746,16 @@ mod tests {
         let worksets = BTreeMap::from([(identity.clone(), BTreeSet::from([sqlite.clone()]))]);
         assert!(catalog.exact_member_for_event(&identity, &sqlite).is_none());
         assert!(catalog
-            .exact_member_discovery_report(&BTreeSet::from([identity]), &worksets)
+            .exact_member_discovery_report(&BTreeSet::from([identity.clone()]), &worksets)
+            .is_none());
+        let report = catalog
+            .route_discovery_report(&BTreeSet::from([identity.clone()]))
+            .expect("SQLite keeps its registered route while abstaining from member work");
+        assert_eq!(report.sources.len(), 1);
+        assert_eq!(report.sources[0].provider, CaptureProvider::OpenCode);
+        fs::remove_file(sqlite).unwrap();
+        assert!(catalog
+            .route_discovery_report(&BTreeSet::from([identity]))
             .is_none());
     }
 
