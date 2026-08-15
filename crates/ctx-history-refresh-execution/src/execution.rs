@@ -16,7 +16,47 @@ enum SourceBackedInventoryDisposition {
     UnsupportedOrUnavailable(ZeroSourcePublicationBlocked),
 }
 
+#[derive(Debug)]
+struct ExactDiscoveryRetry;
+
+impl std::fmt::Display for ExactDiscoveryRetry {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("exact-member execution requires exhaustive provider discovery")
+    }
+}
+
+impl std::error::Error for ExactDiscoveryRetry {}
+
+struct PreopenedPublishedState(Mutex<Option<PublishedSourceBackedState>>);
+
+impl PublishedSourceBackedStatePort for PreopenedPublishedState {
+    fn open_published_state(&self, _data_root: &Path) -> Result<PublishedSourceBackedState> {
+        self.0
+            .lock()
+            .map_err(|_| anyhow!("preopened published source state lock was poisoned"))?
+            .take()
+            .ok_or_else(|| anyhow!("preopened published source state was already consumed"))
+    }
+}
+
 pub(super) fn execute_capture_owned_refresh(
+    execution: SourceBackedRefreshExecution<'_>,
+) -> Result<SourceBackedRefreshPublication> {
+    let mut exhaustive_retry = execution.clone();
+    match execute_capture_owned_refresh_once(execution) {
+        Err(error) if error.downcast_ref::<ExactDiscoveryRetry>().is_some() => {
+            exhaustive_retry.reconciliation_demand = SourceBackedReconciliationDemand::Exhaustive;
+            exhaustive_retry
+                .route_worksets
+                .values_mut()
+                .for_each(|workset| *workset = SourceBackedRefreshWorkset::Exhaustive);
+            execute_capture_owned_refresh_once(exhaustive_retry)
+        }
+        result => result,
+    }
+}
+
+fn execute_capture_owned_refresh_once(
     execution: SourceBackedRefreshExecution<'_>,
 ) -> Result<SourceBackedRefreshPublication> {
     let discovery_context = execution.discovery_context;
@@ -35,6 +75,7 @@ pub(super) fn execute_capture_owned_refresh(
         move |discovery,
               report,
               discovery_duration,
+              discovery_intent,
               request_id,
               operation,
               data_root,
@@ -52,6 +93,7 @@ pub(super) fn execute_capture_owned_refresh(
                 request_id,
                 operation,
                 reconciliation_demand,
+                discovery_intent,
                 &route_worksets,
                 data_root,
                 index_root,
@@ -77,6 +119,7 @@ where
         &DiscoveryContext,
         DiscoveryReport,
         StdDuration,
+        DiscoveryIntent,
         &str,
         RefreshOperation,
         &Path,
@@ -90,10 +133,15 @@ where
     ) -> Result<SourceBackedRefreshPublication>,
 {
     let discovery = discovery.clone().with_data_root(execution.data_root);
+    let published_state = execution
+        .published_state
+        .open_published_state(execution.data_root)?;
+    let discovery_intent =
+        refresh_discovery_intent(&execution, published_state.verified_index.as_ref());
+    let published_state = PreopenedPublishedState(Mutex::new(Some(published_state)));
     let work_budget =
         source_backed_refresh_work_budget(source_backed_refresh_writer_options().indexer_threads);
     let discovery_started = StdInstant::now();
-    let discovery_intent = refresh_discovery_intent(&execution);
     let report = discover_provider_sources_with_context_and_work_budget_for_intent(
         &discovery,
         work_budget,
@@ -151,6 +199,7 @@ where
         &discovery,
         report,
         discovery_duration,
+        discovery_intent,
         execution.request_id,
         execution.operation,
         execution.data_root,
@@ -159,7 +208,7 @@ where
         execution.scope.clone(),
         &execution.covered_route_ids,
         &execution.covered_publication,
-        execution.published_state,
+        &published_state,
         &mut report_progress,
     )
 }
@@ -167,11 +216,26 @@ where
 /// The ordinary fast intent is deliberately narrower than exact route scope:
 /// every selected route must carry only existing ordinary `.jsonl` members.
 /// Any ambiguity retains complete provider discovery.
-fn refresh_discovery_intent(execution: &SourceBackedRefreshExecution<'_>) -> DiscoveryIntent {
+fn refresh_discovery_intent(
+    execution: &SourceBackedRefreshExecution<'_>,
+    retained_generation: Option<&VerifiedIndex>,
+) -> DiscoveryIntent {
+    let retained_route_authority = match (&execution.scope, retained_generation) {
+        (SourceBackedRefreshScope::Exact(routes), Some(generation)) => routes.iter().all(|route| {
+            generation
+                .manifest()
+                .source_route(route)
+                .is_some_and(|snapshot| {
+                    snapshot.missing_state().is_none() && !snapshot.sources().is_empty()
+                })
+        }),
+        _ => false,
+    };
     discovery_intent_for_refresh(
         execution.operation,
         execution.reconciliation_demand,
         execution.explicit_source_catalog.is_some(),
+        retained_route_authority,
         &execution.scope,
         &execution.route_worksets,
     )
@@ -181,12 +245,14 @@ fn discovery_intent_for_refresh(
     operation: RefreshOperation,
     reconciliation_demand: SourceBackedReconciliationDemand,
     has_explicit_source_catalog: bool,
+    retained_route_authority: bool,
     scope: &SourceBackedRefreshScope,
     route_worksets: &BTreeMap<SourceRouteIdentity, SourceBackedRefreshWorkset>,
 ) -> DiscoveryIntent {
     if operation != RefreshOperation::Refresh
         || reconciliation_demand != SourceBackedReconciliationDemand::Incremental
         || has_explicit_source_catalog
+        || !retained_route_authority
     {
         return DiscoveryIntent::Exhaustive;
     }
@@ -231,6 +297,7 @@ mod discovery_intent_tests {
             RefreshOperation::Refresh,
             SourceBackedReconciliationDemand::Incremental,
             false,
+            true,
             &scope,
             &worksets,
         )
@@ -307,12 +374,68 @@ mod discovery_intent_tests {
                     operation,
                     demand,
                     explicit,
+                    true,
                     &SourceBackedRefreshScope::exact([route.clone()]),
                     &worksets,
                 ),
                 DiscoveryIntent::Exhaustive
             );
         }
+    }
+
+    #[test]
+    fn unretained_route_requires_exhaustive_discovery() {
+        let temp = tempfile::tempdir().unwrap();
+        let member = temp.path().join("new.jsonl");
+        std::fs::write(&member, "{}\n").unwrap();
+        let route = route('4');
+        assert_eq!(
+            discovery_intent_for_refresh(
+                RefreshOperation::Refresh,
+                SourceBackedReconciliationDemand::Incremental,
+                false,
+                false,
+                &SourceBackedRefreshScope::exact([route.clone()]),
+                &BTreeMap::from([(route, SourceBackedRefreshWorkset::members([member]))]),
+            ),
+            DiscoveryIntent::Exhaustive
+        );
+    }
+
+    #[test]
+    fn exact_member_fallback_requires_an_exhaustive_retry() {
+        let route = route('5');
+        let worksets = BTreeMap::from([(
+            route.clone(),
+            BTreeSet::from([PathBuf::from("rollout.jsonl")]),
+        )]);
+        let complete_inventory_routes = BTreeSet::from([route]);
+
+        assert!(exact_discovery_requires_retry(
+            DiscoveryIntent::ExactOrdinaryMembers,
+            &worksets,
+            &complete_inventory_routes,
+            &[],
+            &[],
+        ));
+    }
+
+    #[test]
+    fn exhaustive_discovery_never_requests_the_exact_member_retry() {
+        let route = route('6');
+        let worksets = BTreeMap::from([(
+            route.clone(),
+            BTreeSet::from([PathBuf::from("rollout.jsonl")]),
+        )]);
+        let complete_inventory_routes = BTreeSet::from([route]);
+
+        assert!(!exact_discovery_requires_retry(
+            DiscoveryIntent::Exhaustive,
+            &worksets,
+            &complete_inventory_routes,
+            &[],
+            &[],
+        ));
     }
 }
 
@@ -342,6 +465,7 @@ pub fn refresh_all_provider_sources_route_local(
         request_id,
         operation,
         SourceBackedReconciliationDemand::Exhaustive,
+        DiscoveryIntent::Exhaustive,
         &BTreeMap::new(),
         data_root,
         index_root,
@@ -382,6 +506,7 @@ pub fn refresh_all_provider_sources_route_local_with_worksets(
         request_id,
         operation,
         reconciliation_demand,
+        DiscoveryIntent::Exhaustive,
         route_worksets,
         data_root,
         index_root,
@@ -402,6 +527,7 @@ fn refresh_all_provider_sources_route_local_with_reconciliation(
     request_id: &str,
     operation: RefreshOperation,
     reconciliation_demand: SourceBackedReconciliationDemand,
+    discovery_intent: DiscoveryIntent,
     route_worksets: &BTreeMap<SourceRouteIdentity, BTreeSet<PathBuf>>,
     data_root: &Path,
     index_root: &Path,
@@ -530,6 +656,7 @@ fn refresh_all_provider_sources_route_local_with_reconciliation(
         report_progress(update)
     };
     let mut terminal_coverage_error = None;
+    let mut exact_discovery_retry = false;
     let refresh_result = executor
         .refresh_scope_with_detailed_progress_publication_metadata_reconciliation_and_worksets(
             index_root,
@@ -542,6 +669,22 @@ fn refresh_all_provider_sources_route_local_with_reconciliation(
                 let successful_route_outcomes = context.successful_route_outcomes();
                 let failed_routes = context.failed_route_outcomes();
                 let source_failures = context.source_failures();
+                let complete_inventory_route_ids = context
+                    .complete_inventory_route_ids()
+                    .cloned()
+                    .collect::<BTreeSet<_>>();
+                if exact_discovery_requires_retry(
+                    discovery_intent,
+                    route_worksets,
+                    &complete_inventory_route_ids,
+                    successful_route_outcomes,
+                    &failed_routes,
+                ) {
+                    exact_discovery_retry = true;
+                    return Err(IndexError::PublicationMetadata(
+                        ExactDiscoveryRetry.to_string(),
+                    ));
+                }
                 let route_results = provider_route_results(
                     ProviderPublicationFacts {
                         selected_route_ids: &context
@@ -593,7 +736,7 @@ fn refresh_all_provider_sources_route_local_with_reconciliation(
                 covered_publication.apply_receipt(&mut publication);
                 publication.zero_source_authority = match classify_inventory_disposition(
                     &publication,
-                    &context.complete_inventory_route_ids().cloned().collect(),
+                    &complete_inventory_route_ids,
                     &previous_nonempty_routes,
                     &route_less_blockers,
                 ) {
@@ -636,6 +779,9 @@ fn refresh_all_provider_sources_route_local_with_reconciliation(
     let mut receipt = match refresh_result {
         Ok(receipt) => receipt,
         Err(error) => {
+            if exact_discovery_retry {
+                return Err(ExactDiscoveryRetry.into());
+            }
             if let Some(error) = terminal_coverage_error {
                 return Err(error.into());
             }
@@ -778,6 +924,29 @@ fn refresh_all_provider_sources_route_local_with_reconciliation(
         publication.verified_index = Some(recertified);
     }
     Ok(publication)
+}
+
+fn exact_discovery_requires_retry(
+    intent: DiscoveryIntent,
+    route_worksets: &BTreeMap<SourceRouteIdentity, BTreeSet<PathBuf>>,
+    complete_inventory_routes: &BTreeSet<SourceRouteIdentity>,
+    successful_routes: &[SourceBackedSuccessfulRouteOutcome],
+    failed_routes: &[SourceBackedFailedRouteOutcome],
+) -> bool {
+    if intent != DiscoveryIntent::ExactOrdinaryMembers {
+        return false;
+    }
+    let exact_routes = route_worksets.keys().collect::<BTreeSet<_>>();
+    complete_inventory_routes
+        .iter()
+        .any(|route| exact_routes.contains(route))
+        || successful_routes.iter().any(|outcome| {
+            exact_routes.contains(&outcome.route_identity)
+                && outcome.logical_source_failure_total != 0
+        })
+        || failed_routes
+            .iter()
+            .any(|outcome| exact_routes.contains(&outcome.route_identity))
 }
 
 fn register_automatic_hermes_profile_rename_retirements(

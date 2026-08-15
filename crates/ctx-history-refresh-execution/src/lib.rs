@@ -16,7 +16,7 @@ use std::{
     collections::{BTreeMap, BTreeSet, HashMap},
     fmt,
     path::{Path, PathBuf},
-    sync::Arc,
+    sync::{Arc, Mutex},
     time::{Duration as StdDuration, Instant as StdInstant},
 };
 
