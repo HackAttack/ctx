@@ -399,7 +399,10 @@ does not create a Pro directory or preservation marker. The foreground
 usage reporting, so it may create or increment `usage.sqlite` unless local usage
 is disabled.
 
-Trial setup does not open a browser or request an account or payment method.
+Automatic first-install activation through `ctx setup --pro` does not open a
+browser or request an account or payment method. An explicit human `ctx pro`
+(including its `ctx pro setup` synonym) prints and best-effort opens the browser
+handoff URL; JSON mode returns the URL without opening it.
 It downloads a release-signed helper with a short-lived bootstrap credential,
 uses that helper to produce bounded challenge-bound device evidence, obtains an
 installation-bound signed entitlement, and installs the same verified helper.
