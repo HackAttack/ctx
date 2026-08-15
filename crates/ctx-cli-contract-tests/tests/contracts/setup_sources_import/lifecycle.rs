@@ -796,24 +796,81 @@ fn setup_all_invalid_source_publishes_a_verified_empty_generation() {
     assert_eq!(setup["lexical"]["indexed_documents"], 0, "{setup:#}");
 }
 
+fn validate_empty_catalog_refresh_request(refresh_request: &Value) -> Result<(), &'static str> {
+    if refresh_request.get("source_count").and_then(Value::as_u64) != Some(0) {
+        return Err("empty-catalog refresh request must have zero sources");
+    }
+    let Some(receipt) = refresh_request.get("receipt") else {
+        return Err("empty-catalog refresh request must include receipt");
+    };
+    match refresh_request.get("status").and_then(Value::as_str) {
+        Some("published")
+            if receipt["successful_route_total"].as_u64().is_some()
+                && receipt["successful_route_total"].as_u64()
+                    == receipt["selected_route_total"].as_u64()
+                && receipt["source_failure_total"].as_u64() == Some(0) =>
+        {
+            Ok(())
+        }
+        Some("published") => Err("published empty-catalog refresh must have terminal totals"),
+        Some("admission_pending" | "queued" | "running") if receipt.is_null() => Ok(()),
+        Some("admission_pending" | "queued" | "running") => {
+            Err("active empty-catalog refresh must not have a receipt")
+        }
+        _ => Err("unknown empty-catalog refresh request status"),
+    }
+}
+
+fn assert_empty_catalog_default_background_setup(setup: &Value) {
+    assert_eq!(setup["mode"], "ready", "{setup:#}");
+    assert_eq!(setup["lexical"]["status"], "ready", "{setup:#}");
+    assert_eq!(setup["lexical"]["certified_sources"], 0, "{setup:#}");
+    assert_eq!(setup["lexical"]["indexed_documents"], 0, "{setup:#}");
+    if let Err(error) = validate_empty_catalog_refresh_request(&setup["refresh_request"]) {
+        panic!("{error}: {setup:#}");
+    }
+}
+
+#[test]
+fn empty_catalog_default_background_oracle_is_status_sensitive() {
+    let request = |status: &str, receipt: Value| json!({ "status": status, "source_count": 0, "receipt": receipt });
+    let terminal_receipt = json!({
+        "selected_route_total": 0,
+        "successful_route_total": 0,
+        "source_failure_total": 0,
+    });
+
+    assert_eq!(
+        validate_empty_catalog_refresh_request(&request("published", terminal_receipt.clone())),
+        Ok(())
+    );
+    assert!(validate_empty_catalog_refresh_request(&request("published", Value::Null)).is_err());
+    for status in ["admission_pending", "queued", "running"] {
+        assert_eq!(
+            validate_empty_catalog_refresh_request(&request(status, Value::Null)),
+            Ok(())
+        );
+        assert!(
+            validate_empty_catalog_refresh_request(&request(status, terminal_receipt.clone()))
+                .is_err()
+        );
+    }
+    assert!(validate_empty_catalog_refresh_request(&request("unknown", Value::Null)).is_err());
+    assert!(validate_empty_catalog_refresh_request(&json!({
+        "status": "running",
+        "source_count": 1,
+        "receipt": null,
+    }))
+    .is_err());
+}
+
 #[test]
 fn installer_style_setup_succeeds_with_a_genuinely_empty_source_catalog() {
     let temp = daemon_test_root();
 
     let setup = json_output(ctx(&temp).args(["setup", "--format=json", "--progress", "none"]));
     assert_eq!(setup["schema_version"], 2, "{setup:#}");
-    assert_eq!(setup["mode"], "ready", "{setup:#}");
-    assert_eq!(setup["lexical"]["certified_sources"], 0, "{setup:#}");
-    assert_eq!(setup["lexical"]["indexed_documents"], 0, "{setup:#}");
-    assert_eq!(
-        setup["refresh_request"]["receipt"]["successful_route_total"],
-        setup["refresh_request"]["receipt"]["selected_route_total"],
-        "{setup:#}"
-    );
-    assert_eq!(
-        setup["refresh_request"]["receipt"]["source_failure_total"], 0,
-        "{setup:#}"
-    );
+    assert_empty_catalog_default_background_setup(&setup);
 
     let status = json_output(ctx(&temp).args(["status", "--format=json"]));
     assert_eq!(status["lexical"]["status"], "ready", "{status:#}");
@@ -866,17 +923,7 @@ fn operational_systemd_installer_style_setup_verifies_an_empty_noop_core() {
         setup["daemon"]["supervisor"]["status"], "installed",
         "{setup:#}"
     );
-    assert_eq!(setup["lexical"]["certified_sources"], 0, "{setup:#}");
-    assert_eq!(setup["lexical"]["indexed_documents"], 0, "{setup:#}");
-    assert_eq!(
-        setup["refresh_request"]["receipt"]["successful_route_total"],
-        setup["refresh_request"]["receipt"]["selected_route_total"],
-        "{setup:#}"
-    );
-    assert_eq!(
-        setup["refresh_request"]["receipt"]["source_failure_total"], 0,
-        "{setup:#}"
-    );
+    assert_empty_catalog_default_background_setup(&setup);
 
     let mut ordinary_status = ctx_from_binary(&temp, &binary);
     ordinary_status
@@ -948,17 +995,7 @@ fn unavailable_systemd_installer_style_setup_starts_a_persistent_fallback() {
         "{setup:#}"
     );
     assert_eq!(setup["refresh_request"]["mode"], "wait", "{setup:#}");
-    assert_eq!(setup["lexical"]["certified_sources"], 0, "{setup:#}");
-    assert_eq!(setup["lexical"]["indexed_documents"], 0, "{setup:#}");
-    assert_eq!(
-        setup["refresh_request"]["receipt"]["successful_route_total"],
-        setup["refresh_request"]["receipt"]["selected_route_total"],
-        "{setup:#}"
-    );
-    assert_eq!(
-        setup["refresh_request"]["receipt"]["source_failure_total"], 0,
-        "{setup:#}"
-    );
+    assert_empty_catalog_default_background_setup(&setup);
 
     let mut human_command = ctx_from_binary(&temp, &binary);
     human_command
