@@ -51,15 +51,16 @@ uploads transcript or repository content, or requires a hosted research agent.
   These commands do not reopen provider history at query time.
   `ctx show session --out` writes transcript artifacts. Search/show expose the
   provider-owned session ID when known; for Codex, it is the resume UUID.
-- `ctx pro` starts or resumes an anonymous 14-day trial without an account,
-  authentication, or payment method, installs or repairs the signed
-  target-specific helper, and catches the encrypted graph up. The official
-  interactive installer offers the same trial with an explicit default-yes
-  confirmation; unattended, CI, and machine-readable setup remain Core-only
-  unless the installer receives an explicit Pro-trial option. Trial activation
-  failure never changes Core setup success or daemon startup. WorkOS sign-in
-  and Stripe are used only for paid conversion, account management, and
-  explicit referral commands.
+- `ctx pro` tries to start or resume an anonymous 14-day trial without an
+  account, authentication, or payment method, installs or repairs the signed
+  target-specific helper when access is available, and catches the encrypted
+  graph up. If the trial is expired, consumed, or unavailable, it still returns
+  an actionable browser handoff without using the trial as access authority;
+  browser completion can link an existing subscription or purchase Pro. The
+  official installer starts the same trial by default after durably admitting Core work;
+  `--no-pro-trial` keeps installer setup Core-only. Trial activation failure
+  never changes Core setup success or daemon startup. Account creation,
+  payment, account management, and referrals use explicit hosted browser flows.
   `ctx pro setup` is a supported explicit synonym.
   `ctx status` reports Pro state and the next useful action without mutating
   canonical history or graph data. Entitlement authorization may advance
@@ -112,12 +113,13 @@ uploads transcript or repository content, or requires a hosted research agent.
   commands and `ctx pro --referral` fail before local identity creation,
   authentication, or browser side effects. The human-only `ctx blame` CTA is
   suppressed and does not consume its once-only marker while unavailable.
-- Any WorkOS-verified person can use `ctx referral create` to claim one stable
+- Any person with a verified ctx account can use `ctx referral create` to claim one stable
   codename without a Pro trial or subscription.
   `ctx referral create|status|payout` are explicit hosted-service commands and
-  form the complete referrer management surface. Human mode may start WorkOS
-  AuthKit, and payout may open Stripe-hosted onboarding. JSON mode uses cached
-  authentication only and never starts authentication or opens a browser.
+  form the complete referrer management surface. Browser setup must first be
+  completed through `ctx pro`; payout may open Stripe-hosted onboarding. JSON
+  mode uses the cached opaque account credential only and never starts
+  authentication or opens a browser.
   Referrer status is authenticated, private, and aggregate; it exposes no
   referred identity, invoice, or per-referral ledger. Its cash buckets are
   earned, pending, manual review, payable, processing, paid, and debt.

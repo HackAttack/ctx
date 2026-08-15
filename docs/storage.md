@@ -282,8 +282,8 @@ separate nonsecret
 keep-data uninstall from first use, but it is created only when encrypted graph
 data actually exists. Provider history and Core generations remain separate
 and usable without Pro. The selected credential store holds an anonymous-trial
-credential, an optional WorkOS session used for
-explicit hosted account and referral commands, an installation-scoped signing
+credential, an optional pending browser handoff, an opaque account credential
+used for explicit hosted account and referral commands, an installation-scoped signing
 key, a signed entitlement, and, after accepted referral activation, an optional
 opaque referral claim. The platform-native store is preferred: Secret Service
 on Linux, Keychain Services on macOS, and Credential Manager on Windows. On a
@@ -404,9 +404,9 @@ local upsert as described above.
 | `ctx list events` | complete policy-selected records and existing index terms in one pinned verified Core/Tantivy generation | none; event enumeration is read-only |
 | `ctx search` | active verified Core/Tantivy generation and existing semantic generation; depending on refresh mode, bounded provider discovery/path metadata | candidate Core generation publication only when refresh runs; background mode may write daemon state, and semantic-enabled search may create query endpoint files |
 | `ctx pro` / `ctx pro setup` | selected credential store, commercial account state, signed release metadata/artifact, pinned Core materialization feed, and an optional first-challenge codename only for `ctx pro --referral <codename>` | selected credential store, signed helper installation, encrypted derived graph, and an optional opaque referral claim after accepted activation; the raw codename is not retained, and the explicit `setup` form is a synonym without referral attribution |
-| `ctx pro manage` | selected credential store and commercial account state | may refresh the WorkOS session in the selected credential store and open a hosted billing-portal URL |
+| `ctx pro manage` | selected credential store and commercial account state | uses the opaque account credential with a fresh installation proof and may open a hosted billing-portal URL |
 | `ctx pro uninstall` | helper and local Pro paths | requires or prompts for a data choice; `--keep-data` removes only the helper and records preserved local Pro graph data when it exists, while `--delete-data` removes and verifies local Pro data; never-Pro roots leave Pro state unchanged, while independent default-on Core usage reporting may create or increment `usage.sqlite` |
-| `ctx referral create` / `status` / `payout` | selected-store commercial session and explicit hosted referral state; status reads only the authenticated referrer's aggregate summary | may refresh the commercial session in the selected credential store; human mode may open WorkOS AuthKit, and payout may open a one-use Stripe-hosted onboarding URL; JSON mode never opens a browser |
+| `ctx referral create` / `status` / `payout` | selected-store opaque account credential and explicit hosted referral state; status reads only the authenticated referrer's aggregate summary | uses a fresh installation proof; payout may open a one-use Stripe-hosted onboarding URL, while JSON mode never opens a browser |
 | first successful nonempty interactive `ctx blame` | normal Pro blame inputs and whether the local shown-once marker already exists | may atomically create the private nonsecret shown-once marker after delivering the result; no referral network request or telemetry |
 | `ctx docs` | embedded documentation in the binary | selected topic `--out` path for `ctx docs show --out` or selected `--out` directory for `ctx docs man --out` |
 | `ctx upgrade` | signed release metadata and installed binary/sidecar metadata | installed binary for manual upgrade, install sidecar, and executable-adjacent `.ctx.upgrade-state.json`, `.ctx.install.lock`, and transaction journal |
@@ -719,21 +719,22 @@ their own configuration; ctx indexing those transcripts does not repeat that
 behavior.
 
 Local Pro trial setup and renewal contact the ctx commercial API and signed
-artifact service without an account. WorkOS and Stripe are contacted only for
-paid conversion, account management, and explicit referral commands. Trial
+artifact service without an account. Explicit browser handoff, account
+management, and referral operations contact the hosted commercial service. Trial
 setup sends challenge-bound,
 application-specific device-anchor digests produced by the signed helper; raw
 platform identifiers never leave it, and the service stores separately keyed
 anti-repeat tokens rather than the submitted evidence. An optional referral
 codename is sent only with the first anonymous-trial challenge. After accepted
 activation, attribution is immutable; only the returned opaque claim may remain
-in the selected credential store and survive credential refresh. Paid Checkout
-sends only that opaque claim, never the raw codename. No website or cookie is an
+in the selected credential store. Browser conversion resolves attribution from
+the authoritative anonymous-trial record, never from a client-supplied claim.
+No website or cookie is an
 attribution input. `ctx pro manage` creates a hosted Stripe portal session
-after sign-in. `ctx referral create`, `status`, and `payout` are explicit
-hosted-service operations; human mode may start WorkOS AuthKit, and eligible
-payout can open Stripe-hosted onboarding. Referral JSON uses cached
-authentication only and never starts AuthKit or opens a browser. These
+after browser setup. `ctx referral create`, `status`, and `payout` are explicit
+hosted-service operations; eligible payout can open Stripe-hosted onboarding.
+Referral JSON uses cached opaque account credentials only and never starts
+browser setup or opens a browser. These
 requests do not include transcript text, source content,
 repository paths, facts, graph rows, queries, or query results. Valid offline
 grants keep local graph operations usable when renewal is temporarily

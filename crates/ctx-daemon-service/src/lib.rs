@@ -22,6 +22,7 @@ use ctx_semantic_model::SharedSemanticRuntime;
 #[cfg(test)]
 use serde_json::{json, Value};
 
+mod browser_handoff_wake;
 mod daemon;
 mod daemon_retry;
 mod daemon_scheduler;
@@ -65,6 +66,7 @@ use source_backed_refresh_coordinator::SourceBackedRefreshPublication;
 #[cfg(test)]
 mod query_service_transport_tests;
 
+pub use browser_handoff_wake::publish_browser_handoff_pending;
 pub use daemon::run_daemon;
 pub use daemon_wakeup::daemon_wakeup_report;
 pub use paths_status::{

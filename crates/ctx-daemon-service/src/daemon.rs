@@ -106,6 +106,9 @@ pub(super) struct DaemonRuntime {
     pub(super) semantic_blocked_job: Option<Value>,
     pub(super) sidecar_drain: DaemonSidecarDrain,
     pub(super) consumer_retry_deferral: DaemonConsumerRetryDeferral,
+    pub(super) browser_handoff_marker_revision:
+        Option<crate::browser_handoff_wake::BrowserHandoffMarkerRevision>,
+    pub(super) browser_handoff_next_due: Option<Instant>,
     pub(super) background_refresh_cadence: DaemonBackgroundRefreshCadence,
     pub(super) config: AppConfig,
 }
@@ -899,6 +902,9 @@ pub(super) fn daemon_wait_duration(
         return StdDuration::ZERO;
     }
     let mut wait_for = next_safety_reconcile.saturating_duration_since(now);
+    if let Some(next_due) = runtime.browser_handoff_next_due {
+        wait_for = wait_for.min(next_due.saturating_duration_since(now));
+    }
     if let Some(remaining) = runtime.consumer_retry_deferral.remaining(now) {
         wait_for = wait_for.min(remaining);
     } else {

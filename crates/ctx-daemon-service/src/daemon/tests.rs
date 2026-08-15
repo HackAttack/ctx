@@ -960,6 +960,27 @@ fn pending_source_refresh_wait_respects_retry_backoff() {
 }
 
 #[test]
+fn browser_handoff_deadline_shortens_wait_without_a_periodic_vault_tick() {
+    let now = Instant::now();
+    let safety = now + StdDuration::from_secs(30);
+    let runtime = DaemonRuntime::default();
+    assert_eq!(
+        daemon_wait_duration(&runtime, None, safety, now),
+        StdDuration::from_secs(30),
+        "no handoff must not manufacture a short periodic wake"
+    );
+
+    let runtime = DaemonRuntime {
+        browser_handoff_next_due: Some(now + StdDuration::from_secs(2)),
+        ..DaemonRuntime::default()
+    };
+    assert_eq!(
+        daemon_wait_duration(&runtime, None, safety, now),
+        StdDuration::from_secs(2)
+    );
+}
+
+#[test]
 fn continuous_query_wait_loop_reaches_consumer_retry_fairness_deadline() -> Result<()> {
     let temp = tempfile::tempdir()?;
     let generation =

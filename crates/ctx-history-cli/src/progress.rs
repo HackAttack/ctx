@@ -45,12 +45,43 @@ impl<'a> ProgressReporter<'a> {
         ))
     }
 
+    pub fn new_with_live_json_stderr(
+        ui: &'a mut Ui,
+        mode: ProgressMode,
+        json_output: bool,
+        operation: &'static str,
+        total_bytes: u64,
+        allow_live_json_stderr: bool,
+    ) -> Self {
+        Self(ctx_terminal::ProgressReporter::new_with_live_json_stderr(
+            ui,
+            match mode {
+                ProgressMode::Auto => ctx_terminal::ProgressMode::Auto,
+                ProgressMode::Plain => ctx_terminal::ProgressMode::Plain,
+                ProgressMode::Json => ctx_terminal::ProgressMode::Json,
+                ProgressMode::None => ctx_terminal::ProgressMode::None,
+            },
+            json_output,
+            operation,
+            total_bytes,
+            allow_live_json_stderr,
+        ))
+    }
+
     pub fn message(
         &mut self,
         phase: &'static str,
         message: impl Into<String>,
     ) -> Result<(), ProgressWriterError> {
         self.0.message(phase, message)
+    }
+
+    pub fn notice(
+        &mut self,
+        phase: &'static str,
+        lines: &[&str],
+    ) -> Result<(), ProgressWriterError> {
+        self.0.notice(phase, lines)
     }
 
     pub fn source_refresh(&mut self, status: &RefreshStatus) -> Result<(), ProgressWriterError> {

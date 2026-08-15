@@ -14,6 +14,7 @@ anyhow.workspace = true
 anstream.workspace = true
 clap.workspace = true
 clap_mangen.workspace = true
+chrono.workspace = true
 serde_json.workspace = true
 unicode-width.workspace = true
 ctx-agent-application = { path = "../ctx-agent-application" }
