@@ -9,6 +9,7 @@ pub use ctx_daemon_service::{
     pin_active_verified_generation, published_explicit_source_relocation_authority,
     PinnedSourceBackedGeneration, RefreshStatus, SourceBackedRefreshDaemonUnavailable,
     SourceBackedRefreshMode, SourceBackedRefreshObservation, SourceBackedRefreshPendingPublication,
+    SourceBackedRefreshTerminalError,
 };
 #[cfg(test)]
 pub use ctx_history_refresh::{count_verified_index_opens, source_backed_index_root};
@@ -27,6 +28,19 @@ pub fn coordinate_source_backed_refresh_with_progress(
     report_progress: &mut dyn FnMut(&RefreshStatus) -> Result<()>,
 ) -> Result<SourceBackedRefreshObservation> {
     ctx_daemon_service::coordinate_source_backed_refresh_with_progress(
+        &AVAILABILITY,
+        data_root,
+        mode,
+        report_progress,
+    )
+}
+
+pub fn coordinate_setup_source_backed_refresh_with_progress(
+    data_root: &Path,
+    mode: SourceBackedRefreshMode,
+    report_progress: &mut dyn FnMut(&RefreshStatus) -> Result<()>,
+) -> Result<SourceBackedRefreshObservation> {
+    ctx_daemon_service::coordinate_setup_source_backed_refresh_with_progress(
         &AVAILABILITY,
         data_root,
         mode,

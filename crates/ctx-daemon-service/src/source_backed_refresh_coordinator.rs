@@ -39,6 +39,7 @@ pub fn recover_wait_refresh_request_for_test(
         data_root,
         request_id,
         SourceBackedRefreshOperation::Refresh,
+        request::SourceBackedRefreshTrigger::Search,
         None,
         false,
         true,
@@ -432,13 +433,16 @@ impl CoreRefreshEngine {
 
 #[allow(unused_imports)] // Stable typed terminal outcome for command/API integrations.
 pub use client::{
-    coordinate_import_source_backed_refresh_with_progress, coordinate_source_backed_refresh,
+    coordinate_import_source_backed_refresh_with_progress,
+    coordinate_setup_source_backed_refresh_with_progress, coordinate_source_backed_refresh,
     coordinate_source_backed_refresh_with_progress, SourceBackedRefreshDaemonUnavailable,
     SourceBackedRefreshObservation, SourceBackedRefreshPendingPublication,
     SourceBackedRefreshTerminalError,
 };
 pub use refresh_mode::SourceBackedRefreshMode;
-use request::{SourceBackedRefreshOperation, SourceBackedRefreshRequest};
+use request::{
+    SourceBackedRefreshOperation, SourceBackedRefreshRequest, SourceBackedRefreshTrigger,
+};
 
 const SOURCE_REFRESH_REQUEST_OP: &str = "source_refresh_request";
 const SOURCE_REFRESH_STATUS_OP: &str = "source_refresh_status";

@@ -503,8 +503,12 @@ fn recover_pending_attempt(
         .and_then(Value::as_str)
         .and_then(canonical_daemon_mode)
         .ok_or_else(|| anyhow!("durable source refresh {role} has invalid daemon mode"))?;
-    let trigger =
-        recover_static_job_field(job, role, "trigger", &["search", "periodic", "import"])?;
+    let trigger = recover_static_job_field(
+        job,
+        role,
+        "trigger",
+        &["setup", "search", "periodic", "import"],
+    )?;
     let trigger_provenance = recover_static_job_field(
         job,
         role,
@@ -512,6 +516,8 @@ fn recover_pending_attempt(
         &[
             "manual",
             "autostart",
+            "setup_command",
+            "import_command",
             "daemon_scheduler",
             "explicit_source_catalog",
         ],

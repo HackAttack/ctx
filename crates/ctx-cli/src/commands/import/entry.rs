@@ -47,6 +47,7 @@ pub(crate) fn run_import(
         Ok(report) => report,
         Err(err) => {
             insert_import_error_analytics(telemetry, &err);
+            record_terminal_import_failure(provider_refreshes, &err);
             return Err(err);
         }
     };
@@ -67,6 +68,23 @@ pub(crate) fn run_import(
         return Err(error);
     }
     Ok(())
+}
+
+fn record_terminal_import_failure(
+    provider_refreshes: &mut ProviderRefreshCollector,
+    error: &anyhow::Error,
+) -> bool {
+    let Some(terminal) = error.chain().find_map(|cause| {
+        cause.downcast_ref::<crate::semantic::SourceBackedRefreshTerminalError>()
+    }) else {
+        return false;
+    };
+    provider_refreshes.record_terminal_core_failure(
+        ProviderRefreshTrigger::Import,
+        terminal.code.parse().ok(),
+        terminal.retryable,
+    );
+    true
 }
 
 pub(crate) fn insert_import_report_analytics(
@@ -188,5 +206,108 @@ fn record_application_facts(
             facts.source_failure_total,
             facts.rejected_record_total,
         );
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::BTreeSet;
+
+    use ctx_history_refresh::{RefreshOutcomeClass, RefreshOutcomeCode, RefreshTerminalOutcome};
+
+    use crate::analytics::{
+        Outcome, ProviderCoreResult, ProviderRefreshContentEvidence, ProviderRefreshFailureScope,
+        ProviderRefreshFailureType, ProviderRefreshResult, PublicEventV1, Surface,
+    };
+
+    use super::*;
+
+    fn terminal_error(
+        code: RefreshOutcomeCode,
+        class: RefreshOutcomeClass,
+        retryable: bool,
+    ) -> anyhow::Error {
+        crate::semantic::SourceBackedRefreshTerminalError::from(RefreshTerminalOutcome {
+            code,
+            class,
+            retryable,
+            affected_routes: BTreeSet::new(),
+            retryable_routes: BTreeSet::new(),
+            blocked_routes: BTreeSet::new(),
+            physical_attempt_id: "physical-attempt".to_owned(),
+            retained_generation: None,
+            published_generation: None,
+            retry_advice: None,
+            detail: Some("content-bearing raw terminal detail".to_owned()),
+        })
+        .into()
+    }
+
+    fn terminal_refresh(
+        events: &[PublicEventV1],
+    ) -> &crate::analytics::ForegroundProviderRefreshV1 {
+        let [PublicEventV1::ProviderRefreshCompleted(event)] = events else {
+            panic!("terminal import must emit exactly one provider refresh event");
+        };
+        assert_eq!(event.surface, Surface::Cli);
+        assert_eq!(event.outcome, Outcome::Failure);
+        event.foreground.as_ref().expect("terminal import facts")
+    }
+
+    #[test]
+    fn explicit_import_terminal_failure_emits_one_cli_owned_bounded_event() {
+        let error = terminal_error(
+            RefreshOutcomeCode::MalformedSource,
+            RefreshOutcomeClass::Unreadable,
+            false,
+        );
+        let mut collector = ProviderRefreshCollector::default();
+
+        assert!(record_terminal_import_failure(&mut collector, &error));
+        let events = collector.finish();
+        let refresh = terminal_refresh(&events);
+
+        assert_eq!(refresh.trigger, ProviderRefreshTrigger::Import);
+        assert_eq!(refresh.provider, None);
+        assert_eq!(refresh.source_mode, None);
+        assert_eq!(refresh.refresh_result, ProviderRefreshResult::Failure);
+        assert_eq!(refresh.core_result, ProviderCoreResult::Failure);
+        assert_eq!(refresh.failure_scope, ProviderRefreshFailureScope::Source);
+        assert_eq!(
+            refresh.failure_type,
+            ProviderRefreshFailureType::MalformedSource
+        );
+        assert!(!refresh.work_remaining);
+        assert_eq!(refresh.counts, None);
+        assert_eq!(
+            refresh.content_evidence,
+            ProviderRefreshContentEvidence::Unknown
+        );
+        assert!(!format!("{events:?}").contains("content-bearing raw terminal detail"));
+    }
+
+    #[test]
+    fn automatic_import_terminal_failure_emits_one_retryable_unknown_source_event() {
+        let error = terminal_error(
+            RefreshOutcomeCode::SourceFailures,
+            RefreshOutcomeClass::Mixed,
+            true,
+        );
+        let mut collector = ProviderRefreshCollector::default();
+
+        assert!(record_terminal_import_failure(&mut collector, &error));
+        let events = collector.finish();
+        let refresh = terminal_refresh(&events);
+
+        assert_eq!(refresh.trigger, ProviderRefreshTrigger::Import);
+        assert_eq!(refresh.provider, None);
+        assert_eq!(refresh.source_mode, None);
+        assert_eq!(refresh.refresh_result, ProviderRefreshResult::Failure);
+        assert_eq!(refresh.core_result, ProviderCoreResult::Failure);
+        assert_eq!(refresh.failure_scope, ProviderRefreshFailureScope::Source);
+        assert_eq!(refresh.failure_type, ProviderRefreshFailureType::Unknown);
+        assert!(refresh.work_remaining);
+        assert_eq!(refresh.counts, None);
+        assert!(!format!("{events:?}").contains("content-bearing raw terminal detail"));
     }
 }

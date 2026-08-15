@@ -59,6 +59,7 @@ fn background_maintenance_wake_is_accepted_through_client_and_coordinator() -> R
         SourceBackedRefreshMode::Background,
         SourceBackedRefreshRequestPolicy {
             operation: SourceBackedRefreshOperation::Refresh,
+            trigger: SourceBackedRefreshTrigger::Search,
             explicit_source_catalog: None,
             fresh_after_admitted_snapshot: false,
             allow_daemon_autostart: false,
@@ -143,6 +144,7 @@ fn same_id_reenqueue_replays_the_exact_payload_after_a_lost_ack() -> Result<()> 
         data_root.path(),
         request_id,
         SourceBackedRefreshOperation::Refresh,
+        SourceBackedRefreshTrigger::Search,
         None,
         false,
     )?;
@@ -155,6 +157,35 @@ fn same_id_reenqueue_replays_the_exact_payload_after_a_lost_ack() -> Result<()> 
         assert_eq!(request["request_id"], request_id);
     }
     Ok(())
+}
+
+#[test]
+fn automatic_import_recovery_payload_keeps_import_trigger() -> Result<()> {
+    let data_root = short_data_root()?;
+    let request = wait_authority_request_json(
+        data_root.path(),
+        "019fcaaa-0000-7000-8000-000000000414",
+        SourceBackedRefreshMode::Wait,
+        SourceBackedRefreshOperation::Refresh,
+        SourceBackedRefreshTrigger::Import,
+        None,
+        true,
+    )?;
+
+    assert_eq!(request["operation"], "refresh");
+    assert_eq!(request["trigger"], "import");
+    assert!(request.get("explicit_source_catalog").is_none());
+    Ok(())
+}
+
+#[test]
+fn automatic_import_policy_is_refresh_work_with_import_trigger() {
+    let policy = SourceBackedRefreshRequestPolicy::import(None, true);
+
+    assert_eq!(policy.operation, SourceBackedRefreshOperation::Refresh);
+    assert_eq!(policy.trigger, SourceBackedRefreshTrigger::Import);
+    assert!(policy.explicit_source_catalog.is_none());
+    assert!(policy.fresh_after_admitted_snapshot);
 }
 
 #[test]
@@ -200,6 +231,7 @@ fn background_lost_ack_terminal_replay_is_not_reported_as_pending() -> Result<()
         SourceBackedRefreshMode::Background,
         SourceBackedRefreshRequestPolicy {
             operation: SourceBackedRefreshOperation::Refresh,
+            trigger: SourceBackedRefreshTrigger::Search,
             explicit_source_catalog: None,
             fresh_after_admitted_snapshot: false,
             allow_daemon_autostart: false,
@@ -246,6 +278,7 @@ fn exhausted_post_submission_disconnects_return_typed_ambiguous_admission() -> R
         data_root.path(),
         request_id,
         SourceBackedRefreshOperation::Refresh,
+        SourceBackedRefreshTrigger::Search,
         None,
         false,
     )
@@ -301,6 +334,7 @@ fn typed_unknown_readmission_preserves_lost_ack_retention_uncertainty() -> Resul
                 data_root.path(),
                 request_id,
                 SourceBackedRefreshOperation::Refresh,
+                SourceBackedRefreshTrigger::Search,
                 None,
                 false,
             )

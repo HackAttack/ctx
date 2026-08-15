@@ -3,6 +3,9 @@ use std::time::{Duration, Instant};
 use ctx_history_capture::{ProviderImportSummary, ProviderImportWorkResult};
 use ctx_history_core::CaptureProvider;
 use ctx_history_ingest_application::ImportTotals;
+use ctx_history_refresh::{
+    RefreshOutcomeCode, RefreshTerminalFailureScope, RefreshTerminalFailureType,
+};
 
 use crate::analytics::{
     count_bucket, duration_bucket, DurationBucket, ForegroundProviderRefreshV1, Outcome,
@@ -17,17 +20,25 @@ use super::SourceStats;
 #[derive(Debug, Default)]
 pub(crate) struct ProviderRefreshCollector {
     aggregates: Vec<ProviderRefreshAggregate>,
-    core_publication: Option<CoreRefreshAnalyticsFacts>,
+    core_refresh: Option<CoreRefreshAnalyticsFacts>,
     refresh_started: Option<Instant>,
     refresh_duration: Duration,
 }
 
 #[derive(Debug, Clone, Copy)]
-struct CoreRefreshAnalyticsFacts {
-    trigger: ProviderRefreshTrigger,
-    generation_changed: bool,
-    source_failure_total: usize,
-    rejected_record_total: u64,
+enum CoreRefreshAnalyticsFacts {
+    Published {
+        trigger: ProviderRefreshTrigger,
+        generation_changed: bool,
+        source_failure_total: usize,
+        rejected_record_total: u64,
+    },
+    Failed {
+        trigger: ProviderRefreshTrigger,
+        failure_scope: ProviderRefreshFailureScope,
+        failure_type: ProviderRefreshFailureType,
+        work_remaining: bool,
+    },
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -143,11 +154,55 @@ impl ProviderRefreshCollector {
         source_failure_total: usize,
         rejected_record_total: u64,
     ) {
-        self.core_publication = Some(CoreRefreshAnalyticsFacts {
+        self.core_refresh = Some(CoreRefreshAnalyticsFacts::Published {
             trigger,
             generation_changed,
             source_failure_total,
             rejected_record_total,
+        });
+    }
+
+    pub(crate) fn record_terminal_core_failure(
+        &mut self,
+        trigger: ProviderRefreshTrigger,
+        code: Option<RefreshOutcomeCode>,
+        work_remaining: bool,
+    ) {
+        // A terminal Core failure owns the command's one aggregate event. No
+        // partial foreground facts can be completed authoritatively afterward.
+        self.aggregates.clear();
+        let (failure_scope, failure_type) = code
+            .and_then(RefreshOutcomeCode::terminal_failure_classification)
+            .map(|(scope, failure_type)| {
+                (
+                    match scope {
+                        RefreshTerminalFailureScope::Source => ProviderRefreshFailureScope::Source,
+                        RefreshTerminalFailureScope::System => ProviderRefreshFailureScope::System,
+                        RefreshTerminalFailureScope::Unknown => {
+                            ProviderRefreshFailureScope::Unknown
+                        }
+                    },
+                    match failure_type {
+                        RefreshTerminalFailureType::UnsupportedSchema => {
+                            ProviderRefreshFailureType::UnsupportedSchema
+                        }
+                        RefreshTerminalFailureType::MalformedSource => {
+                            ProviderRefreshFailureType::MalformedSource
+                        }
+                        RefreshTerminalFailureType::System => ProviderRefreshFailureType::System,
+                        RefreshTerminalFailureType::Unknown => ProviderRefreshFailureType::Unknown,
+                    },
+                )
+            })
+            .unwrap_or((
+                ProviderRefreshFailureScope::Unknown,
+                ProviderRefreshFailureType::Unknown,
+            ));
+        self.core_refresh = Some(CoreRefreshAnalyticsFacts::Failed {
+            trigger,
+            failure_scope,
+            failure_type,
+            work_remaining,
         });
     }
 
@@ -264,56 +319,97 @@ impl ProviderRefreshCollector {
                 PublicEventV1::ProviderRefreshCompleted(event)
             })
             .collect::<Vec<_>>();
-        if let Some(facts) = self.core_publication {
-            let has_source_failures = facts.source_failure_total != 0;
-            let has_rejections = facts.rejected_record_total != 0;
-            let partial = has_source_failures || has_rejections;
-            let mut event = ProviderRefreshCompletedV1::foreground_bucketed(
-                Outcome::Success,
-                duration_bucket(single_provider_fallback_duration),
-                ForegroundProviderRefreshV1 {
-                    provider: None,
-                    trigger: facts.trigger,
-                    source_mode: None,
-                    change: if facts.generation_changed {
-                        ProviderRefreshChange::Changed
-                    } else {
-                        ProviderRefreshChange::NoOp
-                    },
-                    content_evidence: ProviderRefreshContentEvidence::Unknown,
-                    work_kind: (!facts.generation_changed).then_some(ProviderRefreshWorkKind::NoOp),
-                    refresh_result: if partial {
-                        ProviderRefreshResult::Partial
-                    } else {
-                        ProviderRefreshResult::Complete
-                    },
-                    core_result: if facts.generation_changed {
-                        ProviderCoreResult::Complete
-                    } else {
-                        ProviderCoreResult::NoOp
-                    },
-                    canonical_pro_result: ProviderProResult::Unknown,
-                    output_pro_result: ProviderProResult::Unknown,
-                    failure_scope: match (has_source_failures, has_rejections) {
-                        (false, false) => ProviderRefreshFailureScope::None,
-                        (false, true) => ProviderRefreshFailureScope::Record,
-                        (true, false) => ProviderRefreshFailureScope::Unknown,
-                        (true, true) => ProviderRefreshFailureScope::Mixed,
-                    },
-                    failure_type: match (has_source_failures, has_rejections) {
-                        (false, false) => ProviderRefreshFailureType::None,
-                        (false, true) => ProviderRefreshFailureType::RecordRejection,
-                        (true, false) => ProviderRefreshFailureType::Unknown,
-                        (true, true) => ProviderRefreshFailureType::Mixed,
-                    },
-                    work_remaining: false,
-                    retired_records: None,
-                    counts: None,
-                    performance: None,
-                },
-            );
-            event.surface = surface;
-            events.push(PublicEventV1::ProviderRefreshCompleted(event));
+        if let Some(facts) = self.core_refresh {
+            match facts {
+                CoreRefreshAnalyticsFacts::Failed {
+                    trigger,
+                    failure_scope,
+                    failure_type,
+                    work_remaining,
+                } => {
+                    let mut event = ProviderRefreshCompletedV1::foreground_bucketed(
+                        Outcome::Failure,
+                        duration_bucket(single_provider_fallback_duration),
+                        ForegroundProviderRefreshV1 {
+                            provider: None,
+                            trigger,
+                            source_mode: None,
+                            change: ProviderRefreshChange::NoOp,
+                            content_evidence: ProviderRefreshContentEvidence::Unknown,
+                            work_kind: None,
+                            refresh_result: ProviderRefreshResult::Failure,
+                            core_result: ProviderCoreResult::Failure,
+                            canonical_pro_result: ProviderProResult::Unknown,
+                            output_pro_result: ProviderProResult::Unknown,
+                            failure_scope,
+                            failure_type,
+                            work_remaining,
+                            retired_records: None,
+                            counts: None,
+                            performance: None,
+                        },
+                    );
+                    event.surface = surface;
+                    events.push(PublicEventV1::ProviderRefreshCompleted(event));
+                }
+                CoreRefreshAnalyticsFacts::Published {
+                    trigger,
+                    generation_changed,
+                    source_failure_total,
+                    rejected_record_total,
+                } => {
+                    let has_source_failures = source_failure_total != 0;
+                    let has_rejections = rejected_record_total != 0;
+                    let partial = has_source_failures || has_rejections;
+                    let mut event = ProviderRefreshCompletedV1::foreground_bucketed(
+                        Outcome::Success,
+                        duration_bucket(single_provider_fallback_duration),
+                        ForegroundProviderRefreshV1 {
+                            provider: None,
+                            trigger,
+                            source_mode: None,
+                            change: if generation_changed {
+                                ProviderRefreshChange::Changed
+                            } else {
+                                ProviderRefreshChange::NoOp
+                            },
+                            content_evidence: ProviderRefreshContentEvidence::Unknown,
+                            work_kind: (!generation_changed)
+                                .then_some(ProviderRefreshWorkKind::NoOp),
+                            refresh_result: if partial {
+                                ProviderRefreshResult::Partial
+                            } else {
+                                ProviderRefreshResult::Complete
+                            },
+                            core_result: if generation_changed {
+                                ProviderCoreResult::Complete
+                            } else {
+                                ProviderCoreResult::NoOp
+                            },
+                            canonical_pro_result: ProviderProResult::Unknown,
+                            output_pro_result: ProviderProResult::Unknown,
+                            failure_scope: match (has_source_failures, has_rejections) {
+                                (false, false) => ProviderRefreshFailureScope::None,
+                                (false, true) => ProviderRefreshFailureScope::Record,
+                                (true, false) => ProviderRefreshFailureScope::Unknown,
+                                (true, true) => ProviderRefreshFailureScope::Mixed,
+                            },
+                            failure_type: match (has_source_failures, has_rejections) {
+                                (false, false) => ProviderRefreshFailureType::None,
+                                (false, true) => ProviderRefreshFailureType::RecordRejection,
+                                (true, false) => ProviderRefreshFailureType::Unknown,
+                                (true, true) => ProviderRefreshFailureType::Mixed,
+                            },
+                            work_remaining: false,
+                            retired_records: None,
+                            counts: None,
+                            performance: None,
+                        },
+                    );
+                    event.surface = surface;
+                    events.push(PublicEventV1::ProviderRefreshCompleted(event));
+                }
+            }
         }
         events
     }

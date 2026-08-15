@@ -272,15 +272,15 @@ fn insert_provider_refresh_properties(
         refresh.retired_records,
     );
     if let Some(counts) = refresh.counts {
-        insert_optional_count(properties, "sources_bucket", Some(counts.sources));
-        insert_optional_count(properties, "source_files_bucket", Some(counts.source_files));
-        insert_optional_count(properties, "sessions_bucket", Some(counts.sessions));
-        insert_optional_count(properties, "events_bucket", Some(counts.events));
-        insert_optional_count(properties, "edges_bucket", Some(counts.edges));
-        insert_optional_count(properties, "skips_bucket", Some(counts.skips));
-        insert_optional_count(properties, "rejections_bucket", Some(counts.rejections));
-        insert_optional_count(properties, "failures_bucket", Some(counts.failures));
-        insert_optional_bytes(properties, "bytes_bucket", Some(counts.bytes));
+        insert_optional_count(properties, "sources_bucket", counts.sources);
+        insert_optional_count(properties, "source_files_bucket", counts.source_files);
+        insert_optional_count(properties, "sessions_bucket", counts.sessions);
+        insert_optional_count(properties, "events_bucket", counts.events);
+        insert_optional_count(properties, "edges_bucket", counts.edges);
+        insert_optional_count(properties, "skips_bucket", counts.skips);
+        insert_optional_count(properties, "rejections_bucket", counts.rejections);
+        insert_optional_count(properties, "failures_bucket", counts.failures);
+        insert_optional_bytes(properties, "bytes_bucket", counts.bytes);
     }
     if let Some(performance) = refresh.performance {
         insert_optional_duration(

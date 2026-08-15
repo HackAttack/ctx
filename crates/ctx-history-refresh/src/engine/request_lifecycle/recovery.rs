@@ -478,7 +478,7 @@ fn recover_terminal_attempt(
     let trigger = recover_static_field(
         job,
         "trigger",
-        &["search", "periodic", "import", "recovery"],
+        &["setup", "search", "periodic", "import", "recovery"],
     )?;
     let trigger_provenance = recover_static_field(
         job,
@@ -486,6 +486,8 @@ fn recover_terminal_attempt(
         &[
             "manual",
             "autostart",
+            "setup_command",
+            "import_command",
             "daemon_scheduler",
             "explicit_source_catalog",
             "commit_payload",

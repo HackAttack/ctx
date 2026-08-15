@@ -61,6 +61,59 @@ impl RefreshOutcomeCode {
                 | Self::CompletedWithRejectionsAndSourceFailures
         )
     }
+
+    /// Returns the bounded observability classification owned by the Core
+    /// terminal outcome. Successful outcomes do not carry failure facts.
+    pub const fn terminal_failure_classification(
+        self,
+    ) -> Option<(RefreshTerminalFailureScope, RefreshTerminalFailureType)> {
+        match self {
+            Self::UnsupportedSchema => Some((
+                RefreshTerminalFailureScope::Source,
+                RefreshTerminalFailureType::UnsupportedSchema,
+            )),
+            Self::MalformedSource => Some((
+                RefreshTerminalFailureScope::Source,
+                RefreshTerminalFailureType::MalformedSource,
+            )),
+            Self::SourceUnavailable
+            | Self::SourceChanged
+            | Self::SourceFailures
+            | Self::LogicalSourceFailures => Some((
+                RefreshTerminalFailureScope::Source,
+                RefreshTerminalFailureType::Unknown,
+            )),
+            Self::SourceRefreshFailed
+            | Self::SourceRefreshInternal
+            | Self::ResourceUnavailable
+            | Self::IndexIncompatible
+            | Self::IndexCorruption
+            | Self::SourceRefreshAdmissionFailed
+            | Self::AllProviderTerminalCoverageUnavailable => Some((
+                RefreshTerminalFailureScope::System,
+                RefreshTerminalFailureType::System,
+            )),
+            Self::Completed
+            | Self::CompletedWithRejections
+            | Self::CompletedWithSourceFailures
+            | Self::CompletedWithRejectionsAndSourceFailures => None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+pub enum RefreshTerminalFailureScope {
+    Source,
+    System,
+    Unknown,
+}
+
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+pub enum RefreshTerminalFailureType {
+    UnsupportedSchema,
+    MalformedSource,
+    System,
+    Unknown,
 }
 
 string_enum!(RefreshOutcomeClass, "class", {
@@ -209,6 +262,37 @@ impl RefreshStatusKind {
     }
 }
 
+/// Closed command trigger attached to an explicitly submitted refresh.
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+pub enum RefreshRequestTrigger {
+    Setup,
+    Search,
+    Import,
+}
+
+impl RefreshRequestTrigger {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Setup => "setup",
+            Self::Search => "search",
+            Self::Import => "import",
+        }
+    }
+}
+
+impl std::str::FromStr for RefreshRequestTrigger {
+    type Err = anyhow::Error;
+
+    fn from_str(value: &str) -> Result<Self> {
+        match value {
+            "setup" => Ok(Self::Setup),
+            "search" => Ok(Self::Search),
+            "import" => Ok(Self::Import),
+            _ => bail!("source refresh request has unknown trigger `{value}`"),
+        }
+    }
+}
+
 /// Process-neutral facts required to submit one logical refresh request.
 #[derive(Debug, Clone)]
 pub struct RefreshSubmission {
@@ -219,6 +303,7 @@ pub struct RefreshSubmission {
     pub(crate) refresh_scope: SourceBackedRefreshScope,
     pub(crate) fresh_after_admitted_snapshot: bool,
     pub(crate) maintenance_wake: bool,
+    pub(crate) trigger: Option<RefreshRequestTrigger>,
 }
 
 impl RefreshSubmission {
@@ -242,11 +327,17 @@ impl RefreshSubmission {
             refresh_scope,
             fresh_after_admitted_snapshot,
             maintenance_wake,
+            trigger: None,
         }
     }
 
     pub fn with_reconciliation_demand(mut self, demand: SourceBackedReconciliationDemand) -> Self {
         self.reconciliation_demand = demand;
+        self
+    }
+
+    pub fn with_trigger(mut self, trigger: RefreshRequestTrigger) -> Self {
+        self.trigger = Some(trigger);
         self
     }
 

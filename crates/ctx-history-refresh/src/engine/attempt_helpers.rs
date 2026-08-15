@@ -409,11 +409,33 @@ pub(super) fn coalesce_attempt(
     if metadata.operation == SourceBackedRefreshOperation::Import {
         attempt.operation = SourceBackedRefreshOperation::Import;
         attempt.whole_run_eta.disable();
+    }
+    merge_trigger_ownership(attempt, &metadata);
+    attempt.coalesced_requests = attempt.coalesced_requests.saturating_add(1);
+    attempt.to_json()
+}
+
+pub(super) fn merge_trigger_ownership(
+    attempt: &mut SourceBackedRefreshAttempt,
+    metadata: &SourceRefreshRuntimeMetadata,
+) {
+    let incoming_priority = trigger_ownership_priority(metadata.trigger);
+    let current_priority = trigger_ownership_priority(attempt.trigger);
+    let explicit_import_upgrade = metadata.operation == SourceBackedRefreshOperation::Import
+        && metadata.trigger == "import"
+        && attempt.trigger == "import";
+    if incoming_priority > current_priority || explicit_import_upgrade {
         attempt.trigger = metadata.trigger;
         attempt.trigger_provenance = metadata.trigger_provenance;
     }
-    attempt.coalesced_requests = attempt.coalesced_requests.saturating_add(1);
-    attempt.to_json()
+}
+
+fn trigger_ownership_priority(trigger: &str) -> u8 {
+    match trigger {
+        "import" => 2,
+        "setup" => 1,
+        _ => 0,
+    }
 }
 
 pub(super) fn new_refresh_attempt(

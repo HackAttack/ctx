@@ -88,13 +88,16 @@ fn aggregates_many_source_and_record_results_once_per_provider() {
     assert_eq!(refresh.work_kind, None);
     assert!(refresh.work_remaining);
     let counts = refresh.counts.as_ref().expect("explicit refresh counts");
-    assert_eq!(counts.sources, CountBucket::TwoToFive);
-    assert_eq!(counts.source_files, CountBucket::TwentyOneToOneHundred);
-    assert_eq!(counts.sessions, CountBucket::TwoToFive);
-    assert_eq!(counts.events, CountBucket::SixToTwenty);
-    assert_eq!(counts.edges, CountBucket::One);
-    assert_eq!(counts.skips, CountBucket::TwentyOneToOneHundred);
-    assert_eq!(counts.bytes, BytesBucket::UnderOneHundredKb);
+    assert_eq!(counts.sources, Some(CountBucket::TwoToFive));
+    assert_eq!(
+        counts.source_files,
+        Some(CountBucket::TwentyOneToOneHundred)
+    );
+    assert_eq!(counts.sessions, Some(CountBucket::TwoToFive));
+    assert_eq!(counts.events, Some(CountBucket::SixToTwenty));
+    assert_eq!(counts.edges, Some(CountBucket::One));
+    assert_eq!(counts.skips, Some(CountBucket::TwentyOneToOneHundred));
+    assert_eq!(counts.bytes, Some(BytesBucket::UnderOneHundredKb));
 }
 
 #[test]
@@ -122,7 +125,10 @@ fn distinguishes_no_op_from_changed() {
     assert_eq!(codex.work_kind, Some(ProviderRefreshWorkKind::NoOp));
     assert_eq!(codex.refresh_result, ProviderRefreshResult::Complete);
     assert_eq!(codex.core_result, ProviderCoreResult::NoOp);
-    assert_eq!(codex.counts.as_ref().unwrap().skips, CountBucket::TwoToFive);
+    assert_eq!(
+        codex.counts.as_ref().unwrap().skips,
+        Some(CountBucket::TwoToFive)
+    );
 }
 
 #[test]

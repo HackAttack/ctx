@@ -11,24 +11,18 @@ use super::{
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ProviderRefreshTrigger {
-    #[cfg(any(test, feature = "test-support"))]
     Setup,
     Import,
-    #[cfg(any(test, feature = "test-support"))]
     Search,
-    #[cfg(any(test, feature = "test-support"))]
     Daemon,
 }
 
 impl ProviderRefreshTrigger {
     pub fn as_str(self) -> &'static str {
         match self {
-            #[cfg(any(test, feature = "test-support"))]
             Self::Setup => "setup",
             Self::Import => "import",
-            #[cfg(any(test, feature = "test-support"))]
             Self::Search => "search",
-            #[cfg(any(test, feature = "test-support"))]
             Self::Daemon => "daemon",
         }
     }
@@ -36,7 +30,6 @@ impl ProviderRefreshTrigger {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ProviderRefreshSourceMode {
-    #[cfg(any(test, feature = "test-support"))]
     Discovered,
     ExplicitPath,
     ExplicitFormat,
@@ -46,7 +39,6 @@ pub enum ProviderRefreshSourceMode {
 impl ProviderRefreshSourceMode {
     pub fn as_str(self) -> &'static str {
         match self {
-            #[cfg(any(test, feature = "test-support"))]
             Self::Discovered => "discovered",
             Self::ExplicitPath => "explicit_path",
             Self::ExplicitFormat => "explicit_format",
@@ -92,7 +84,6 @@ impl ProviderRefreshContentEvidence {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ProviderRefreshWorkKind {
     NoOp,
-    #[cfg(any(test, feature = "test-support"))]
     Fresh,
     #[cfg(any(test, feature = "test-support"))]
     Append,
@@ -111,7 +102,6 @@ impl ProviderRefreshWorkKind {
     pub fn as_str(self) -> &'static str {
         match self {
             Self::NoOp => "no_op",
-            #[cfg(any(test, feature = "test-support"))]
             Self::Fresh => "fresh",
             #[cfg(any(test, feature = "test-support"))]
             Self::Append => "append",
@@ -201,9 +191,7 @@ impl ProviderProResult {
 pub enum ProviderRefreshFailureScope {
     None,
     Record,
-    #[cfg(any(test, feature = "test-support"))]
     Source,
-    #[cfg(any(test, feature = "test-support"))]
     System,
     Mixed,
     Unknown,
@@ -214,9 +202,7 @@ impl ProviderRefreshFailureScope {
         match self {
             Self::None => "none",
             Self::Record => "record",
-            #[cfg(any(test, feature = "test-support"))]
             Self::Source => "source",
-            #[cfg(any(test, feature = "test-support"))]
             Self::System => "system",
             Self::Mixed => "mixed",
             Self::Unknown => "unknown",
@@ -228,7 +214,6 @@ impl ProviderRefreshFailureScope {
 pub enum ProviderRefreshFailureType {
     None,
     RecordRejection,
-    #[cfg(any(test, feature = "test-support"))]
     UnsupportedSchema,
     #[cfg(any(test, feature = "test-support"))]
     NotFound,
@@ -236,7 +221,6 @@ pub enum ProviderRefreshFailureType {
     Permission,
     #[cfg(any(test, feature = "test-support"))]
     SourceDatabase,
-    #[cfg(any(test, feature = "test-support"))]
     MalformedSource,
     #[cfg(any(test, feature = "test-support"))]
     Store,
@@ -244,7 +228,6 @@ pub enum ProviderRefreshFailureType {
     WorkerPanic,
     #[cfg(any(test, feature = "test-support"))]
     SystemIo,
-    #[cfg(any(test, feature = "test-support"))]
     System,
     #[cfg(any(test, feature = "test-support"))]
     Other,
@@ -257,7 +240,6 @@ impl ProviderRefreshFailureType {
         match self {
             Self::None => "none",
             Self::RecordRejection => "record_rejection",
-            #[cfg(any(test, feature = "test-support"))]
             Self::UnsupportedSchema => "unsupported_schema",
             #[cfg(any(test, feature = "test-support"))]
             Self::NotFound => "not_found",
@@ -265,7 +247,6 @@ impl ProviderRefreshFailureType {
             Self::Permission => "permission",
             #[cfg(any(test, feature = "test-support"))]
             Self::SourceDatabase => "source_database",
-            #[cfg(any(test, feature = "test-support"))]
             Self::MalformedSource => "malformed_source",
             #[cfg(any(test, feature = "test-support"))]
             Self::Store => "store",
@@ -273,7 +254,6 @@ impl ProviderRefreshFailureType {
             Self::WorkerPanic => "worker_panic",
             #[cfg(any(test, feature = "test-support"))]
             Self::SystemIo => "system_io",
-            #[cfg(any(test, feature = "test-support"))]
             Self::System => "system",
             #[cfg(any(test, feature = "test-support"))]
             Self::Other => "other",
@@ -285,15 +265,15 @@ impl ProviderRefreshFailureType {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ProviderRefreshCountsV1 {
-    pub sources: CountBucket,
-    pub source_files: CountBucket,
-    pub sessions: CountBucket,
-    pub events: CountBucket,
-    pub edges: CountBucket,
-    pub skips: CountBucket,
-    pub rejections: CountBucket,
-    pub failures: CountBucket,
-    pub bytes: BytesBucket,
+    pub sources: Option<CountBucket>,
+    pub source_files: Option<CountBucket>,
+    pub sessions: Option<CountBucket>,
+    pub events: Option<CountBucket>,
+    pub edges: Option<CountBucket>,
+    pub skips: Option<CountBucket>,
+    pub rejections: Option<CountBucket>,
+    pub failures: Option<CountBucket>,
+    pub bytes: Option<BytesBucket>,
 }
 
 impl ProviderRefreshCountsV1 {
@@ -310,15 +290,59 @@ impl ProviderRefreshCountsV1 {
         bytes: u64,
     ) -> Self {
         Self {
-            sources: count_bucket(sources),
-            source_files: count_bucket(source_files),
-            sessions: count_bucket(sessions),
-            events: count_bucket(events),
-            edges: count_bucket(edges),
-            skips: count_bucket(skips),
-            rejections: count_bucket(rejections),
-            failures: count_bucket(failures),
-            bytes: bytes_bucket(bytes),
+            sources: Some(count_bucket(sources)),
+            source_files: Some(count_bucket(source_files)),
+            sessions: Some(count_bucket(sessions)),
+            events: Some(count_bucket(events)),
+            edges: Some(count_bucket(edges)),
+            skips: Some(count_bucket(skips)),
+            rejections: Some(count_bucket(rejections)),
+            failures: Some(count_bucket(failures)),
+            bytes: Some(bytes_bucket(bytes)),
+        }
+    }
+
+    /// Builds sparse per-run facts when the refresh receipt does not own all
+    /// foreground import counters.
+    pub fn from_refresh_receipt(
+        sources: u64,
+        sessions: u64,
+        rejections: u64,
+        failures: u64,
+        bytes: u64,
+    ) -> Self {
+        Self {
+            sources: Some(count_bucket(sources)),
+            source_files: None,
+            sessions: Some(count_bucket(sessions)),
+            events: None,
+            edges: None,
+            skips: None,
+            rejections: Some(count_bucket(rejections)),
+            failures: Some(count_bucket(failures)),
+            bytes: Some(bytes_bucket(bytes)),
+        }
+    }
+
+    /// Builds sparse daemon-run facts. Unknown values remain absent instead
+    /// of being projected from current-generation cardinalities.
+    pub fn sparse_refresh_receipt(
+        sources: Option<u64>,
+        sessions: Option<u64>,
+        rejections: Option<u64>,
+        failures: Option<u64>,
+        bytes: Option<u64>,
+    ) -> Self {
+        Self {
+            sources: sources.map(count_bucket),
+            source_files: None,
+            sessions: sessions.map(count_bucket),
+            events: None,
+            edges: None,
+            skips: None,
+            rejections: rejections.map(count_bucket),
+            failures: failures.map(count_bucket),
+            bytes: bytes.map(bytes_bucket),
         }
     }
 }
@@ -402,8 +426,17 @@ impl ProviderRefreshCompletedV1 {
         duration: DurationBucket,
         foreground: ForegroundProviderRefreshV1,
     ) -> Self {
+        Self::bucketed(Surface::Cli, outcome, duration, foreground)
+    }
+
+    pub fn bucketed(
+        surface: Surface,
+        outcome: Outcome,
+        duration: DurationBucket,
+        foreground: ForegroundProviderRefreshV1,
+    ) -> Self {
         Self {
-            surface: Surface::Cli,
+            surface,
             outcome,
             duration,
             foreground: Some(foreground),
@@ -506,6 +539,58 @@ mod tests {
             "observed_process_peak_rss_bytes",
         ] {
             assert!(!properties.contains_key(forbidden));
+        }
+    }
+
+    #[test]
+    fn daemon_setup_refresh_serializes_sparse_receipt_facts_without_cli_defaults() {
+        let event = PublicEventV1::ProviderRefreshCompleted(ProviderRefreshCompletedV1::bucketed(
+            Surface::Daemon,
+            Outcome::Success,
+            duration_bucket(Duration::from_secs(2)),
+            ForegroundProviderRefreshV1 {
+                provider: Some(CaptureProvider::Codex),
+                trigger: ProviderRefreshTrigger::Setup,
+                source_mode: Some(ProviderRefreshSourceMode::Discovered),
+                change: ProviderRefreshChange::Changed,
+                content_evidence: ProviderRefreshContentEvidence::Unknown,
+                work_kind: Some(ProviderRefreshWorkKind::Fresh),
+                refresh_result: ProviderRefreshResult::Complete,
+                core_result: ProviderCoreResult::Complete,
+                canonical_pro_result: ProviderProResult::Unknown,
+                output_pro_result: ProviderProResult::Unknown,
+                failure_scope: ProviderRefreshFailureScope::None,
+                failure_type: ProviderRefreshFailureType::None,
+                work_remaining: false,
+                retired_records: None,
+                counts: Some(ProviderRefreshCountsV1::from_refresh_receipt(
+                    2, 7, 0, 0, 4096,
+                )),
+                performance: None,
+            },
+        ));
+        let occurred_at = chrono::DateTime::parse_from_rfc3339("2026-07-22T12:34:00Z")
+            .unwrap()
+            .with_timezone(&chrono::Utc);
+        let serialized = serialize_event(&event, occurred_at, None, None);
+
+        assert_eq!(serialized["surface"], "daemon");
+        assert_eq!(serialized["properties"]["trigger"], "setup");
+        assert_eq!(serialized["properties"]["source_mode"], "discovered");
+        assert_eq!(serialized["properties"]["work_kind"], "fresh");
+        assert_eq!(serialized["properties"]["sessions_bucket"], "6-20");
+        assert_eq!(serialized["properties"]["bytes_bucket"], "lt_100kb");
+        let properties = serialized["properties"].as_object().unwrap();
+        for absent in [
+            "source_files_bucket",
+            "events_bucket",
+            "edges_bucket",
+            "skips_bucket",
+            "retired_records_bucket",
+            "cpu_duration_bucket",
+            "observed_process_peak_rss_bucket",
+        ] {
+            assert!(!properties.contains_key(absent));
         }
     }
 

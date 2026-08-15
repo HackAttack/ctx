@@ -2,20 +2,25 @@ use super::*;
 
 #[path = "client_observation_recovery.rs"]
 mod observation_recovery;
+#[path = "client_request_policy.rs"]
+mod request_policy;
 #[cfg(feature = "test-support")]
 pub use observation_recovery::SourceRefreshObservationRecoveryFailed;
-use observation_recovery::{
-    request_bound_status_with_recovery, retained_request_unobservable, DISCONNECT_POLICY,
+#[cfg(test)]
+use observation_recovery::DISCONNECT_POLICY;
+pub(super) use observation_recovery::{
+    recover_typed_unknown_coalesced_request_with, recover_typed_unknown_request_with,
+    TypedUnknownRequestRecovery,
 };
+use observation_recovery::{request_bound_status_with_recovery, retained_request_unobservable};
+#[cfg(test)]
+pub(super) use observation_recovery::{
+    SourceRefreshRequestRecoveryFailed, SourceRefreshRequestRecoveryFailureReason,
+    SourceRefreshRequestRetention,
+};
+use request_policy::SourceBackedRefreshRequestPolicy;
 
 type SourceBackedRefreshProgressReporter<'a> = &'a mut dyn FnMut(&RefreshStatus) -> Result<()>;
-
-struct SourceBackedRefreshRequestPolicy<'catalog> {
-    operation: SourceBackedRefreshOperation,
-    explicit_source_catalog: Option<&'catalog ExplicitSourceCatalogAuthority>,
-    fresh_after_admitted_snapshot: bool,
-    allow_daemon_autostart: bool,
-}
 
 const SOURCE_REFRESH_PROGRESS_HEARTBEAT: StdDuration = StdDuration::from_secs(5);
 
@@ -190,7 +195,6 @@ impl From<RefreshTerminalOutcome> for SourceBackedRefreshTerminalError {
 }
 
 const AMBIGUOUS_ADMISSION_RECOVERY_ATTEMPT_LIMIT: usize = 3;
-const TYPED_UNKNOWN_RECOVERY_ATTEMPT_LIMIT: usize = 3;
 
 #[derive(Debug)]
 struct SourceRefreshAdmissionRecoveryFailed {
@@ -209,155 +213,6 @@ impl fmt::Display for SourceRefreshAdmissionRecoveryFailed {
 }
 
 impl std::error::Error for SourceRefreshAdmissionRecoveryFailed {}
-
-#[derive(Debug, Clone, Copy, Eq, PartialEq)]
-pub(super) enum SourceRefreshRequestRecoveryFailureReason {
-    AttemptsExhausted,
-    RequestIdChanged,
-    ReenqueueFailed,
-}
-
-#[derive(Debug, Clone, Copy, Eq, PartialEq)]
-pub(super) enum SourceRefreshRequestRetention {
-    NotRetained,
-    MayBeRetained,
-}
-
-#[derive(Debug)]
-pub(super) struct SourceRefreshRequestRecoveryFailed {
-    pub(super) request_id: String,
-    pub(super) recovery_attempts: usize,
-    pub(super) reason: SourceRefreshRequestRecoveryFailureReason,
-    pub(super) retention: SourceRefreshRequestRetention,
-    pub(super) disconnect_policy: Option<&'static str>,
-    pub(super) detail: Option<String>,
-}
-
-impl fmt::Display for SourceRefreshRequestRecoveryFailed {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let reason = match self.reason {
-            SourceRefreshRequestRecoveryFailureReason::AttemptsExhausted => {
-                "typed unknown-request recovery attempts were exhausted"
-            }
-            SourceRefreshRequestRecoveryFailureReason::RequestIdChanged => {
-                "typed unknown-request recovery returned a different logical request ID"
-            }
-            SourceRefreshRequestRecoveryFailureReason::ReenqueueFailed => {
-                "same-ID recovery could not durably re-admit the logical request"
-            }
-        };
-        write!(
-            formatter,
-            "daemon source refresh request {} could not be conclusively recovered after {} recovery attempts: {reason}",
-            self.request_id, self.recovery_attempts
-        )?;
-        match self.retention {
-            SourceRefreshRequestRetention::NotRetained => {
-                formatter.write_str("; request_retained=false")?;
-            }
-            SourceRefreshRequestRetention::MayBeRetained => {
-                write!(
-                    formatter,
-                    "; request_retained=unknown; disconnect_policy={}",
-                    self.disconnect_policy.unwrap_or(DISCONNECT_POLICY)
-                )?;
-            }
-        }
-        if let Some(detail) = self.detail.as_deref() {
-            write!(formatter, ": {detail}")?;
-        }
-        Ok(())
-    }
-}
-
-impl std::error::Error for SourceRefreshRequestRecoveryFailed {}
-
-#[derive(Debug)]
-pub(super) struct TypedUnknownRequestRecovery {
-    attempts: usize,
-}
-
-impl TypedUnknownRequestRecovery {
-    pub(super) fn new(_initial_request_id: &str) -> Self {
-        Self { attempts: 0 }
-    }
-
-    fn begin_attempt(&mut self, request_id: &str) -> Result<StdDuration> {
-        if self.attempts >= TYPED_UNKNOWN_RECOVERY_ATTEMPT_LIMIT {
-            return Err(SourceRefreshRequestRecoveryFailed {
-                request_id: request_id.to_owned(),
-                recovery_attempts: self.attempts,
-                reason: SourceRefreshRequestRecoveryFailureReason::AttemptsExhausted,
-                retention: SourceRefreshRequestRetention::NotRetained,
-                disconnect_policy: None,
-                detail: None,
-            }
-            .into());
-        }
-        let backoff = match self.attempts {
-            0 => StdDuration::from_millis(25),
-            1 => StdDuration::from_millis(50),
-            _ => StdDuration::from_millis(100),
-        };
-        self.attempts = self.attempts.saturating_add(1);
-        Ok(backoff)
-    }
-
-    fn accept_recovered_request_id(
-        &mut self,
-        previous_request_id: &str,
-        recovered_request_id: String,
-    ) -> Result<String> {
-        if recovered_request_id != previous_request_id {
-            return Err(SourceRefreshRequestRecoveryFailed {
-                request_id: previous_request_id.to_owned(),
-                recovery_attempts: self.attempts,
-                reason: SourceRefreshRequestRecoveryFailureReason::RequestIdChanged,
-                retention: SourceRefreshRequestRetention::NotRetained,
-                disconnect_policy: None,
-                detail: Some(format!(
-                    "recovery response named logical request {recovered_request_id}"
-                )),
-            }
-            .into());
-        }
-        Ok(recovered_request_id)
-    }
-}
-
-pub(super) fn recover_typed_unknown_request_with<S, R>(
-    recovery: &mut TypedUnknownRequestRecovery,
-    request_id: &str,
-    sleep: S,
-    reenqueue: R,
-) -> Result<String>
-where
-    S: FnOnce(StdDuration),
-    R: FnOnce() -> Result<String>,
-{
-    let backoff = recovery.begin_attempt(request_id)?;
-    sleep(backoff);
-    let recovered_request_id = reenqueue().map_err(|error| {
-        let retention = if error
-            .downcast_ref::<SourceRefreshAdmissionRecoveryFailed>()
-            .is_some()
-        {
-            SourceRefreshRequestRetention::MayBeRetained
-        } else {
-            SourceRefreshRequestRetention::NotRetained
-        };
-        SourceRefreshRequestRecoveryFailed {
-            request_id: request_id.to_owned(),
-            recovery_attempts: recovery.attempts,
-            reason: SourceRefreshRequestRecoveryFailureReason::ReenqueueFailed,
-            retention,
-            disconnect_policy: (retention == SourceRefreshRequestRetention::MayBeRetained)
-                .then_some(DISCONNECT_POLICY),
-            detail: Some(format!("{error:#}")),
-        }
-    })?;
-    recovery.accept_recovered_request_id(request_id, recovered_request_id)
-}
 
 fn request_admission_with_recovery<S, R>(
     request_id: &str,
@@ -420,22 +275,48 @@ pub fn coordinate_source_backed_refresh_with_progress(
     coordinate_source_backed_refresh_inner(availability, data_root, mode, Some(report_progress))
 }
 
+pub fn coordinate_setup_source_backed_refresh_with_progress(
+    availability: &dyn crate::DaemonAvailabilityPort,
+    data_root: &Path,
+    mode: SourceBackedRefreshMode,
+    report_progress: &mut dyn FnMut(&RefreshStatus) -> Result<()>,
+) -> Result<SourceBackedRefreshObservation> {
+    coordinate_source_backed_refresh_inner_with_trigger(
+        availability,
+        data_root,
+        mode,
+        SourceBackedRefreshTrigger::Setup,
+        Some(report_progress),
+    )
+}
+
 fn coordinate_source_backed_refresh_inner(
     availability: &dyn crate::DaemonAvailabilityPort,
     data_root: &Path,
     mode: SourceBackedRefreshMode,
     report_progress: Option<SourceBackedRefreshProgressReporter<'_>>,
 ) -> Result<SourceBackedRefreshObservation> {
+    coordinate_source_backed_refresh_inner_with_trigger(
+        availability,
+        data_root,
+        mode,
+        SourceBackedRefreshTrigger::Search,
+        report_progress,
+    )
+}
+
+fn coordinate_source_backed_refresh_inner_with_trigger(
+    availability: &dyn crate::DaemonAvailabilityPort,
+    data_root: &Path,
+    mode: SourceBackedRefreshMode,
+    trigger: SourceBackedRefreshTrigger,
+    report_progress: Option<SourceBackedRefreshProgressReporter<'_>>,
+) -> Result<SourceBackedRefreshObservation> {
     coordinate_source_backed_refresh_with_catalog(
         availability,
         data_root,
         mode,
-        SourceBackedRefreshRequestPolicy {
-            operation: SourceBackedRefreshOperation::Refresh,
-            explicit_source_catalog: None,
-            fresh_after_admitted_snapshot: false,
-            allow_daemon_autostart: true,
-        },
+        SourceBackedRefreshRequestPolicy::refresh(trigger),
         report_progress,
     )
 }
@@ -470,16 +351,7 @@ fn coordinate_import_source_backed_refresh_inner(
         availability,
         data_root,
         mode,
-        SourceBackedRefreshRequestPolicy {
-            operation: if explicit_source_catalog.is_some() {
-                SourceBackedRefreshOperation::Import
-            } else {
-                SourceBackedRefreshOperation::Refresh
-            },
-            explicit_source_catalog,
-            fresh_after_admitted_snapshot: true,
-            allow_daemon_autostart,
-        },
+        SourceBackedRefreshRequestPolicy::import(explicit_source_catalog, allow_daemon_autostart),
         report_progress,
     )
 }
@@ -493,6 +365,7 @@ fn coordinate_source_backed_refresh_with_catalog(
 ) -> Result<SourceBackedRefreshObservation> {
     let SourceBackedRefreshRequestPolicy {
         operation,
+        trigger,
         explicit_source_catalog,
         fresh_after_admitted_snapshot,
         allow_daemon_autostart,
@@ -518,7 +391,7 @@ fn coordinate_source_backed_refresh_with_catalog(
 
     if allow_daemon_autostart {
         availability
-            .ensure_available(data_root, crate::DaemonTrigger::Search)
+            .ensure_available(data_root, trigger.daemon_trigger())
             .context("start or recover enabled daemon before source-backed refresh")?;
     }
 
@@ -528,6 +401,7 @@ fn coordinate_source_backed_refresh_with_catalog(
         &logical_request_id,
         mode,
         operation,
+        trigger,
         explicit_source_catalog,
         fresh_after_admitted_snapshot,
     )?;
@@ -615,6 +489,7 @@ fn coordinate_source_backed_refresh_with_catalog(
         PublishedGenerationWait {
             mode,
             operation,
+            trigger,
             expected_catalog: explicit_source_catalog,
             fresh_after_admitted_snapshot,
             allow_daemon_autostart,
@@ -639,6 +514,10 @@ pub(super) fn wait_for_published_generation(
         PublishedGenerationWait {
             mode,
             operation,
+            trigger: match operation {
+                SourceBackedRefreshOperation::Refresh => SourceBackedRefreshTrigger::Search,
+                SourceBackedRefreshOperation::Import => SourceBackedRefreshTrigger::Import,
+            },
             expected_catalog,
             fresh_after_admitted_snapshot: false,
             allow_daemon_autostart,
@@ -650,6 +529,7 @@ pub(super) fn wait_for_published_generation(
 struct PublishedGenerationWait<'catalog, 'progress> {
     mode: SourceBackedRefreshMode,
     operation: SourceBackedRefreshOperation,
+    trigger: SourceBackedRefreshTrigger,
     expected_catalog: Option<&'catalog ExplicitSourceCatalogAuthority>,
     fresh_after_admitted_snapshot: bool,
     allow_daemon_autostart: bool,
@@ -665,6 +545,7 @@ fn wait_for_published_generation_inner(
     let PublishedGenerationWait {
         mode,
         operation,
+        trigger,
         expected_catalog,
         fresh_after_admitted_snapshot,
         allow_daemon_autostart,
@@ -701,6 +582,7 @@ fn wait_for_published_generation_inner(
                     data_root,
                     &request_id,
                     operation,
+                    trigger,
                     expected_catalog,
                     fresh_after_admitted_snapshot,
                     allow_daemon_autostart,
@@ -723,6 +605,7 @@ fn wait_for_published_generation_inner(
                     data_root,
                     &request_id,
                     operation,
+                    trigger,
                     expected_catalog,
                     fresh_after_admitted_snapshot,
                     allow_daemon_autostart,
@@ -740,20 +623,31 @@ fn wait_for_published_generation_inner(
         };
         if source_refresh_request_is_unknown(&response, &request_id)? {
             let lost_request_id = request_id.clone();
-            request_id = recover_typed_unknown_request_with(
-                &mut unknown_request_recovery,
-                &lost_request_id,
-                std::thread::sleep,
-                || {
-                    enqueue_equivalent_wait_refresh_request(
-                        data_root,
-                        &lost_request_id,
-                        operation,
-                        expected_catalog,
-                        fresh_after_admitted_snapshot,
-                    )
-                },
-            )
+            let reenqueue = || {
+                enqueue_equivalent_wait_refresh_request(
+                    data_root,
+                    &lost_request_id,
+                    operation,
+                    trigger,
+                    expected_catalog,
+                    fresh_after_admitted_snapshot,
+                )
+            };
+            request_id = if fresh_after_admitted_snapshot {
+                recover_typed_unknown_request_with(
+                    &mut unknown_request_recovery,
+                    &lost_request_id,
+                    std::thread::sleep,
+                    reenqueue,
+                )
+            } else {
+                recover_typed_unknown_coalesced_request_with(
+                    &mut unknown_request_recovery,
+                    &lost_request_id,
+                    std::thread::sleep,
+                    reenqueue,
+                )
+            }
             .with_context(|| {
                 format!(
                     "reattach unknown daemon source refresh request {lost_request_id} using caller authority"
@@ -953,27 +847,27 @@ pub(super) fn recover_wait_refresh_request(
     availability: &dyn crate::DaemonAvailabilityPort,
     data_root: &Path,
     request_id: &str,
-    operation: SourceBackedRefreshOperation,
-    explicit_source_catalog: Option<&ExplicitSourceCatalogAuthority>,
-    fresh_after_admitted_snapshot: bool,
+    _operation: SourceBackedRefreshOperation,
+    trigger: SourceBackedRefreshTrigger,
+    _explicit_source_catalog: Option<&ExplicitSourceCatalogAuthority>,
+    _fresh_after_admitted_snapshot: bool,
     allow_daemon_autostart: bool,
 ) -> Result<String> {
     if !allow_daemon_autostart {
         return Err(retained_request_unobservable(request_id, 0));
     }
     let recovery = (|| {
-        if availability.ensure_available(data_root, crate::DaemonTrigger::Search)?
+        if availability.ensure_available(data_root, trigger.daemon_trigger())?
             == crate::DaemonAvailability::Disabled
         {
             bail!("daemon was disabled while waiting for source refresh");
         }
-        enqueue_equivalent_wait_refresh_request(
-            data_root,
-            request_id,
-            operation,
-            explicit_source_catalog,
-            fresh_after_admitted_snapshot,
-        )
+        // The acknowledged request may be a command waiter coalesced onto a
+        // periodic/search attempt. Restarting and immediately re-submitting
+        // the command payload under that physical ID would be a genuine
+        // idempotency conflict. Re-observe the durable ID first; only the
+        // typed unknown-request branch may re-admit it.
+        Ok(request_id.to_owned())
     })();
     recovery.map_err(|error| {
         retained_request_unobservable(request_id, 0).context(format!(
@@ -986,6 +880,7 @@ fn enqueue_equivalent_wait_refresh_request(
     data_root: &Path,
     request_id: &str,
     operation: SourceBackedRefreshOperation,
+    trigger: SourceBackedRefreshTrigger,
     explicit_source_catalog: Option<&ExplicitSourceCatalogAuthority>,
     fresh_after_admitted_snapshot: bool,
 ) -> Result<String> {
@@ -994,6 +889,7 @@ fn enqueue_equivalent_wait_refresh_request(
         request_id,
         SourceBackedRefreshMode::Wait,
         operation,
+        trigger,
         explicit_source_catalog,
         fresh_after_admitted_snapshot,
     )?;
@@ -1007,9 +903,16 @@ fn enqueue_equivalent_wait_refresh_request(
     })?
     .ok_or_else(|| retained_request_unobservable(request_id, 0))?;
     validate_daemon_refresh_response(&response)?;
-    validate_source_refresh_status_response_authority(&response, request_id)?;
+    let accepted_request_id = response_request_id(&response, "daemon source refresh response")?;
+    let request_id = if fresh_after_admitted_snapshot {
+        validate_source_refresh_status_response_authority(&response, request_id)?;
+        request_id.to_owned()
+    } else {
+        validate_source_refresh_status_response_authority(&response, &accepted_request_id)?;
+        accepted_request_id
+    };
     source_refresh_protocol_state(&response)?;
-    Ok(request_id.to_owned())
+    Ok(request_id)
 }
 
 fn wait_authority_request_json(
@@ -1017,6 +920,7 @@ fn wait_authority_request_json(
     request_id: &str,
     mode: SourceBackedRefreshMode,
     operation: SourceBackedRefreshOperation,
+    trigger: SourceBackedRefreshTrigger,
     explicit_source_catalog: Option<&ExplicitSourceCatalogAuthority>,
     fresh_after_admitted_snapshot: bool,
 ) -> Result<Value> {
@@ -1026,6 +930,7 @@ fn wait_authority_request_json(
         explicit_source_catalog,
         fresh_after_admitted_snapshot,
     )
+    .with_trigger(trigger)
     .with_request_id(request_id)
     .to_json(data_root)
 }

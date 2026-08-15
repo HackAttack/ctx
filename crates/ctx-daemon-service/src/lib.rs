@@ -24,6 +24,7 @@ use serde_json::{json, Value};
 
 mod browser_handoff_wake;
 mod daemon;
+mod daemon_provider_refresh;
 mod daemon_retry;
 mod daemon_scheduler;
 mod daemon_wakeup;
@@ -88,11 +89,13 @@ pub use source_backed_pro_catch_up::{
     wake_helper_recheck,
 };
 pub use source_backed_refresh_coordinator::{
-    coordinate_import_source_backed_refresh_with_progress, coordinate_source_backed_refresh,
+    coordinate_import_source_backed_refresh_with_progress,
+    coordinate_setup_source_backed_refresh_with_progress, coordinate_source_backed_refresh,
     coordinate_source_backed_refresh_with_progress, pin_active_verified_generation,
     published_explicit_source_relocation_authority, PinnedSourceBackedGeneration, RefreshStatus,
     SourceBackedCurrentSourceProgress, SourceBackedRefreshDaemonUnavailable,
     SourceBackedRefreshMode, SourceBackedRefreshObservation, SourceBackedRefreshPendingPublication,
+    SourceBackedRefreshTerminalError,
 };
 
 #[cfg(feature = "test-support")]

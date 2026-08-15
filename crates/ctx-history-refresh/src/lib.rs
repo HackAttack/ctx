@@ -99,7 +99,8 @@ pub use publication::{
 pub use request::{
     AdmissionResponseBarrier, RefreshAdmission, RefreshLogicalPhase, RefreshLogicalStatus,
     RefreshMaintenanceWakeStatus, RefreshOperation, RefreshOutcomeClass, RefreshOutcomeCode,
-    RefreshRequestState, RefreshRetryAdvice, RefreshStatus, RefreshStatusKind, RefreshSubmission,
+    RefreshRequestState, RefreshRequestTrigger, RefreshRetryAdvice, RefreshStatus,
+    RefreshStatusKind, RefreshSubmission, RefreshTerminalFailureScope, RefreshTerminalFailureType,
     RefreshTerminalOutcome,
 };
 pub use route_ledger::EventWatermark;

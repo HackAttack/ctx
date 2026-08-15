@@ -76,7 +76,45 @@ fn hot_route_failure_retries_exact_after_cooldown_while_blocked_route_stays_idle
             super::super::source_route_ledger_now_ms().saturating_sub(1_000),
         );
         let mut runtime = source_refresh_only_runtime();
-        assert!(run_source_refresh_cycle(&data_root, &mut runtime, &coordinator).failed);
+        let mut failed_iteration = run_source_refresh_cycle(&data_root, &mut runtime, &coordinator);
+        assert!(failed_iteration.failed);
+        let events = crate::daemon::daemon_iteration_events_without_telemetry(
+            &mut failed_iteration,
+            std::time::Duration::from_millis(1),
+        );
+        let [crate::analytics::PublicEventV1::ProviderRefreshCompleted(refresh)] =
+            events.as_slice()
+        else {
+            panic!("terminal scheduler failure must emit one provider refresh event");
+        };
+        let facts = refresh.foreground.expect("failed daemon refresh facts");
+        assert_eq!(refresh.surface, crate::analytics::Surface::Daemon);
+        assert_eq!(refresh.outcome, crate::analytics::Outcome::Failure);
+        assert_eq!(
+            facts.trigger,
+            crate::analytics::ProviderRefreshTrigger::Daemon
+        );
+        assert_eq!(
+            facts.refresh_result,
+            crate::analytics::ProviderRefreshResult::Failure
+        );
+        assert_eq!(
+            facts.core_result,
+            crate::analytics::ProviderCoreResult::Failure
+        );
+        assert_eq!(
+            facts.failure_scope,
+            crate::analytics::ProviderRefreshFailureScope::Source
+        );
+        assert_eq!(
+            facts.failure_type,
+            if kind == SourceBackedRouteErrorKind::InvalidSource {
+                crate::analytics::ProviderRefreshFailureType::MalformedSource
+            } else {
+                crate::analytics::ProviderRefreshFailureType::Unknown
+            }
+        );
+        assert_eq!(facts.work_remaining, retryable);
         assert_eq!(runtime.history_retry.consecutive_failures, 0);
         assert_eq!(
             scopes.lock().unwrap().as_slice(),
@@ -172,9 +210,31 @@ fn mixed_route_dispositions_schedule_only_retryable_routes() {
     );
     let mut runtime = source_refresh_only_runtime();
 
-    let completed = run_source_refresh_cycle(&data_root, &mut runtime, &coordinator);
+    let mut completed = run_source_refresh_cycle(&data_root, &mut runtime, &coordinator);
 
     assert!(!completed.failed);
+    let events = crate::daemon::daemon_iteration_events_without_telemetry(
+        &mut completed,
+        std::time::Duration::from_millis(1),
+    );
+    let [crate::analytics::PublicEventV1::ProviderRefreshCompleted(refresh)] = events.as_slice()
+    else {
+        panic!("completed scheduler refresh must emit one provider refresh event");
+    };
+    let facts = refresh.foreground.expect("daemon refresh facts");
+    assert_eq!(refresh.surface, crate::analytics::Surface::Daemon);
+    assert_eq!(
+        facts.trigger,
+        crate::analytics::ProviderRefreshTrigger::Daemon
+    );
+    assert_eq!(facts.provider, None);
+    assert_eq!(facts.source_mode, None);
+    assert_eq!(facts.counts, None);
+    assert_eq!(
+        facts.refresh_result,
+        crate::analytics::ProviderRefreshResult::Partial
+    );
+    assert!(facts.work_remaining);
     assert_eq!(runtime.history_retry.consecutive_failures, 0);
     let terminal = read_daemon_job_status(&daemon_core_refresh_job_path(&data_root)).unwrap();
     assert_eq!(
@@ -625,16 +685,25 @@ fn scheduler_retries_terminal_status_without_republishing_core() {
         .unwrap()
         .expect("first scheduler refresh");
     assert!(first.failed);
+    assert!(first.provider_refresh_events.is_empty());
     assert_eq!(executions.load(Ordering::SeqCst), 1);
     assert_eq!(
         read_daemon_job_status(&daemon_core_refresh_job_path(&data_root)).unwrap()["request_state"],
         "running"
     );
 
-    let retry = run_pending_core_refresh(&data_root, &mut runtime, Some(&coordinator))
+    let mut retry = run_pending_core_refresh(&data_root, &mut runtime, Some(&coordinator))
         .unwrap()
         .expect("terminal persistence retry");
     assert!(!retry.failed);
+    let events = crate::daemon::daemon_iteration_events_without_telemetry(
+        &mut retry,
+        std::time::Duration::from_millis(1),
+    );
+    assert!(matches!(
+        events.as_slice(),
+        [crate::analytics::PublicEventV1::ProviderRefreshCompleted(_)]
+    ));
     assert_eq!(executions.load(Ordering::SeqCst), 1);
     let terminal = read_daemon_job_status(&daemon_core_refresh_job_path(&data_root)).unwrap();
     assert_eq!(terminal["request_state"], "published");

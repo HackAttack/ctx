@@ -180,6 +180,14 @@ fn daemon_iteration_events(
     }
 }
 
+#[cfg(test)]
+pub(super) fn daemon_iteration_events_without_telemetry(
+    iteration: &mut DaemonIteration,
+    duration: StdDuration,
+) -> Vec<PublicEventV1> {
+    daemon_iteration_events(None, iteration, duration)
+}
+
 fn daemon_run_facts(args: &DaemonRunArgs) -> DaemonRunFactsV1 {
     let start_mode = match daemon_run_start_mode(args) {
         DaemonStartModeArg::Auto => DaemonStartModeV1::Auto,

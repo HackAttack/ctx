@@ -119,6 +119,29 @@ fn refresh_submission(request: &Value) -> Result<RefreshSubmission> {
         .and_then(Value::as_str)
         .ok_or_else(|| anyhow!("daemon source refresh request operation is missing"))
         .and_then(str::parse)?;
+    let trigger = request
+        .get("trigger")
+        .and_then(Value::as_str)
+        .map(str::parse::<ctx_history_refresh::RefreshRequestTrigger>)
+        .transpose()?
+        .unwrap_or(match operation {
+            RefreshOperation::Refresh => ctx_history_refresh::RefreshRequestTrigger::Search,
+            RefreshOperation::Import => ctx_history_refresh::RefreshRequestTrigger::Import,
+        });
+    if !matches!(
+        (operation, trigger),
+        (
+            RefreshOperation::Refresh,
+            ctx_history_refresh::RefreshRequestTrigger::Setup
+                | ctx_history_refresh::RefreshRequestTrigger::Search
+                | ctx_history_refresh::RefreshRequestTrigger::Import
+        ) | (
+            RefreshOperation::Import,
+            ctx_history_refresh::RefreshRequestTrigger::Import
+        )
+    ) {
+        bail!("daemon source refresh trigger does not match its operation");
+    }
     let explicit_catalog = request.get("explicit_source_catalog");
     match (operation, mode, explicit_catalog) {
         (RefreshOperation::Refresh, _, Some(_)) => {
@@ -170,7 +193,8 @@ fn refresh_submission(request: &Value) -> Result<RefreshSubmission> {
         refresh_scope,
         fresh_after_admitted_snapshot,
         operation == RefreshOperation::Refresh && mode == "background",
-    ))
+    )
+    .with_trigger(trigger))
 }
 
 fn refresh_scope_from_json(value: &Value) -> Result<RefreshScope> {
@@ -287,5 +311,57 @@ mod tests {
         assert_eq!(job["daemon_mode"], "source-refresh-only");
         assert_eq!(job["trigger"], "search");
         assert_eq!(job["trigger_provenance"], "autostart");
+    }
+
+    #[test]
+    fn setup_request_records_typed_setup_trigger_on_engine_job() {
+        let temp = tempfile::tempdir().unwrap();
+        let engine = super::super::refresh_engine(&crate::test_support::SOURCE_REFRESH_CONFIG);
+
+        let response = handle_ipc_request(
+            &engine,
+            temp.path(),
+            &json!({
+                "op": SOURCE_REFRESH_REQUEST_OP,
+                "mode": "wait",
+                "operation": "refresh",
+                "trigger": "setup",
+            }),
+        )
+        .unwrap()
+        .expect("source refresh response");
+        let job = crate::paths_status::read_daemon_job_status(
+            &crate::paths_status::daemon_source_backed_refresh_job_path(temp.path()),
+        )
+        .expect("persisted source refresh job");
+
+        assert_eq!(response.value["trigger"], "setup");
+        assert_eq!(response.value["trigger_provenance"], "setup_command");
+        assert_eq!(job["trigger"], "setup");
+        assert_eq!(job["trigger_provenance"], "setup_command");
+    }
+
+    #[test]
+    fn automatic_import_keeps_import_trigger_on_refresh_operation() {
+        let temp = tempfile::tempdir().unwrap();
+        let engine = super::super::refresh_engine(&crate::test_support::SOURCE_REFRESH_CONFIG);
+
+        let response = handle_ipc_request(
+            &engine,
+            temp.path(),
+            &json!({
+                "op": SOURCE_REFRESH_REQUEST_OP,
+                "mode": "wait",
+                "operation": "refresh",
+                "trigger": "import",
+                "fresh_after_admitted_snapshot": true,
+            }),
+        )
+        .unwrap()
+        .expect("automatic import refresh response");
+
+        assert_eq!(response.value["operation"], "refresh");
+        assert_eq!(response.value["trigger"], "import");
+        assert_eq!(response.value["trigger_provenance"], "import_command");
     }
 }

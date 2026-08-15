@@ -2,6 +2,158 @@
 
 use super::*;
 
+fn command_refresh_submission(
+    trigger: RefreshRequestTrigger,
+    fresh_after_admitted_snapshot: bool,
+) -> RefreshSubmission {
+    RefreshSubmission::new(
+        Uuid::now_v7().to_string(),
+        RefreshOperation::Refresh,
+        None,
+        SourceBackedRefreshScope::All,
+        fresh_after_admitted_snapshot,
+        false,
+    )
+    .with_trigger(trigger)
+}
+
+fn enqueue_ordinary_attempt(
+    coordinator: &CoreRefreshEngine,
+    data_root: &Path,
+    trigger: &str,
+) -> Value {
+    match trigger {
+        "periodic" => coordinator.enqueue_periodic(data_root).unwrap(),
+        "search" => coordinator.enqueue_for_test(None),
+        _ => panic!("unknown ordinary test trigger"),
+    }
+}
+
+#[test]
+fn setup_refresh_claims_periodic_and_search_attempts_without_ordinary_overwrite() {
+    for ordinary in ["periodic", "search"] {
+        let temp = tempfile::tempdir().unwrap();
+        let data_root = temp.path().join("data");
+        ctx_history_platform::platform_security::establish_private_data_root(&data_root).unwrap();
+        let coordinator = CoreRefreshEngine::new();
+        let initial = enqueue_ordinary_attempt(&coordinator, &data_root, ordinary);
+        let physical_request_id = request_id(&initial);
+
+        let claimed = coordinator
+            .submit(
+                &data_root,
+                command_refresh_submission(RefreshRequestTrigger::Setup, false),
+            )
+            .unwrap();
+        assert_eq!(claimed.status()["request_id"], physical_request_id);
+        let claimed = status_value(&coordinator, &physical_request_id);
+        assert_eq!(claimed["operation"], "refresh");
+        assert_eq!(claimed["trigger"], "setup");
+        assert_eq!(claimed["trigger_provenance"], "setup_command");
+
+        coordinator.enqueue_periodic(&data_root).unwrap();
+        coordinator
+            .submit(
+                &data_root,
+                command_refresh_submission(RefreshRequestTrigger::Search, false),
+            )
+            .unwrap();
+        let retained = status_value(&coordinator, &physical_request_id);
+        assert_eq!(retained["trigger"], "setup");
+        assert_eq!(retained["trigger_provenance"], "setup_command");
+    }
+}
+
+#[test]
+fn automatic_import_claims_periodic_and_search_attempts_and_dominates_setup() {
+    for ordinary in ["periodic", "search"] {
+        for initial_state in ["queued", "running"] {
+            let temp = tempfile::tempdir().unwrap();
+            let data_root = temp.path().join("data");
+            ctx_history_platform::platform_security::establish_private_data_root(&data_root)
+                .unwrap();
+            let coordinator = CoreRefreshEngine::new();
+            let initial = enqueue_ordinary_attempt(&coordinator, &data_root, ordinary);
+            let physical_request_id = request_id(&initial);
+            if initial_state == "running" {
+                let mut state = coordinator.lock_state();
+                let attempt = find_attempt_mut(&mut state, &physical_request_id).unwrap();
+                attempt.state = SourceBackedRefreshState::Running;
+                attempt.started_at_ms = Some(utc_now().timestamp_millis());
+                attempt.progress.phase = "refreshing".to_owned();
+            }
+
+            let automatic_import = coordinator
+                .submit(
+                    &data_root,
+                    command_refresh_submission(RefreshRequestTrigger::Import, true),
+                )
+                .unwrap();
+            assert_eq!(automatic_import.status()["trigger"], "import");
+            assert_eq!(
+                automatic_import.status()["trigger_provenance"],
+                "import_command"
+            );
+            let claimed = status_value(&coordinator, &physical_request_id);
+            assert_eq!(claimed["operation"], "refresh");
+            assert_eq!(claimed["trigger"], "import");
+            assert_eq!(claimed["trigger_provenance"], "import_command");
+
+            coordinator
+                .submit(
+                    &data_root,
+                    command_refresh_submission(RefreshRequestTrigger::Setup, false),
+                )
+                .unwrap();
+            coordinator.enqueue_periodic(&data_root).unwrap();
+            let retained = status_value(&coordinator, &physical_request_id);
+            assert_eq!(retained["trigger"], "import");
+            assert_eq!(retained["trigger_provenance"], "import_command");
+        }
+    }
+}
+
+#[test]
+fn explicit_import_operation_upgrades_automatic_import_without_losing_ownership() {
+    let mut attempt = new_refresh_attempt(
+        None,
+        SourceRefreshRuntimeMetadata::periodic(),
+        None,
+        SourceBackedRefreshScope::All,
+    );
+    let setup = SourceRefreshRuntimeMetadata {
+        operation: RefreshOperation::Refresh,
+        daemon_mode: "full".to_owned(),
+        trigger: "setup",
+        trigger_provenance: "setup_command",
+    };
+    let automatic_import = SourceRefreshRuntimeMetadata {
+        operation: RefreshOperation::Refresh,
+        daemon_mode: "full".to_owned(),
+        trigger: "import",
+        trigger_provenance: "import_command",
+    };
+    let explicit_import = SourceRefreshRuntimeMetadata {
+        operation: RefreshOperation::Import,
+        daemon_mode: "full".to_owned(),
+        trigger: "import",
+        trigger_provenance: "explicit_source_catalog",
+    };
+
+    coalesce_attempt(&mut attempt, setup.clone());
+    coalesce_attempt(&mut attempt, automatic_import.clone());
+    coalesce_attempt(&mut attempt, setup);
+    assert_eq!(attempt.operation, RefreshOperation::Refresh);
+    assert_eq!(attempt.trigger, "import");
+    assert_eq!(attempt.trigger_provenance, "import_command");
+
+    coalesce_attempt(&mut attempt, explicit_import);
+    coalesce_attempt(&mut attempt, automatic_import);
+    assert_eq!(attempt.operation, RefreshOperation::Import);
+    assert_eq!(attempt.trigger, "import");
+    assert_eq!(attempt.trigger_provenance, "explicit_source_catalog");
+}
+
 #[test]
 fn queued_exhaustive_route_request_subsumes_incremental_request() {
     let coordinator = CoreRefreshEngine::new();

@@ -82,6 +82,7 @@ fn no_daemon_post_ack_recovery_is_typed_retained_and_unobservable() {
         Path::new("unused-after-durable-ack"),
         request_id,
         SourceBackedRefreshOperation::Refresh,
+        SourceBackedRefreshTrigger::Search,
         None,
         false,
         false,
@@ -103,6 +104,25 @@ fn no_daemon_post_ack_recovery_is_typed_retained_and_unobservable() {
     assert!(!error
         .to_string()
         .contains("no foreground writer was started"));
+}
+
+#[test]
+fn post_ack_daemon_recovery_reobserves_coalesced_id_before_readmission() {
+    let request_id = "periodic-physical-request";
+
+    let recovered = recover_wait_refresh_request(
+        &crate::test_support::AVAILABILITY,
+        Path::new("no-endpoint-needed-before-reobservation"),
+        request_id,
+        SourceBackedRefreshOperation::Refresh,
+        SourceBackedRefreshTrigger::Setup,
+        None,
+        false,
+        true,
+    )
+    .unwrap();
+
+    assert_eq!(recovered, request_id);
 }
 
 #[test]

@@ -3,6 +3,7 @@ use sha2::{Digest as _, Sha256};
 
 fn request_fingerprint(
     operation: SourceBackedRefreshOperation,
+    trigger: RefreshRequestTrigger,
     reconciliation_demand: SourceBackedReconciliationDemand,
     requested_catalog: Option<&ExplicitSourceCatalogAuthority>,
     refresh_scope: &SourceBackedRefreshScope,
@@ -10,6 +11,7 @@ fn request_fingerprint(
 ) -> Result<String> {
     let authority = compact_json(json!({
         "operation": operation.as_str(),
+        "trigger": trigger.as_str(),
         "reconciliation_demand": reconciliation_demand.as_str(),
         "explicit_source_catalog": requested_catalog
             .map(ExplicitSourceCatalogAuthority::to_json),
@@ -52,15 +54,30 @@ impl CoreRefreshEngine {
                 None,
             ));
         }
+        let trigger = submission.trigger.unwrap_or(match submission.operation {
+            SourceBackedRefreshOperation::Refresh => RefreshRequestTrigger::Search,
+            SourceBackedRefreshOperation::Import => RefreshRequestTrigger::Import,
+        });
         let fingerprint = request_fingerprint(
             submission.operation,
+            trigger,
             submission.reconciliation_demand,
             submission.explicit_source_catalog.as_ref(),
             &submission.refresh_scope,
             admission,
         )?;
         let previous_generation = self.observed_published_generation(data_root)?;
-        let metadata = self.runtime.metadata(data_root, submission.operation);
+        let mut metadata = self.runtime.metadata(data_root, submission.operation);
+        metadata.trigger = trigger.as_str();
+        match trigger {
+            RefreshRequestTrigger::Setup => metadata.trigger_provenance = "setup_command",
+            RefreshRequestTrigger::Import
+                if submission.operation == SourceBackedRefreshOperation::Refresh =>
+            {
+                metadata.trigger_provenance = "import_command";
+            }
+            RefreshRequestTrigger::Search | RefreshRequestTrigger::Import => {}
+        }
         let response = self.reserve_ipc_request(SourceRefreshAdmissionReservation {
             data_root,
             previous_generation,

@@ -194,6 +194,10 @@ impl CoreRefreshEngine {
             if let Some(active) = find_attempt_mut(state, &active_request_id) {
                 if active.state.is_active() {
                     if is_manual_all {
+                        // Command ownership applies to the work a command is
+                        // waiting on even when a running attempt remains
+                        // physically immutable and needs a logical successor.
+                        merge_trigger_ownership(active, &metadata);
                         if queued_exhaustive_successor.is_none()
                             && (active.state == SourceBackedRefreshState::Queued
                                 || active.reconciliation_demand >= reconciliation_demand)
@@ -223,6 +227,7 @@ impl CoreRefreshEngine {
                         // A logical freshness demand attaches to the immutable
                         // physical attempt, then proves coverage after its
                         // publication instead of eagerly repeating the pass.
+                        merge_trigger_ownership(active, &metadata);
                     } else {
                         if let Some(requested_catalog) = requested_catalog.as_ref() {
                             let upgrades_queued_automatic =

@@ -312,6 +312,108 @@ fn stable_request_id_replay_requires_the_exact_same_payload() {
 }
 
 #[test]
+fn stable_request_id_replay_treats_trigger_as_request_identity() {
+    let (_temp, data_root) = private_data_root();
+    let coordinator = test_refresh_engine();
+    let request_id = "019fcaaa-0000-7000-8000-000000000411";
+
+    let search = test_refresh_submission(request_id).with_trigger(RefreshRequestTrigger::Search);
+    coordinator.submit(&data_root, search).unwrap();
+    let setup = test_refresh_submission(request_id).with_trigger(RefreshRequestTrigger::Setup);
+    let conflict = coordinator.submit(&data_root, setup).unwrap();
+    let conflict = conflict.status().schema_v1_fields();
+
+    assert_eq!(conflict["request_state"], "request_conflict");
+    assert_eq!(conflict["error_code"], "request_id_conflict");
+}
+
+#[test]
+fn restart_recovers_durable_setup_admission_metadata() {
+    let (_temp, data_root) = private_data_root();
+    let request_id = "019fcaaa-0000-7000-8000-000000000412";
+    let journal = Arc::new(TestRefreshJournal::default());
+    let first = CoreRefreshEngine::new(
+        Arc::clone(&journal) as Arc<dyn RefreshJournal>,
+        test_refresh_runtime(),
+    );
+    let admission = first
+        .submit(
+            &data_root,
+            test_refresh_submission(request_id).with_trigger(RefreshRequestTrigger::Setup),
+        )
+        .unwrap();
+    assert_eq!(
+        admission.status().schema_v1_fields()["request_state"],
+        "admission_pending"
+    );
+    drop(first);
+
+    let recovered =
+        CoreRefreshEngine::new(journal as Arc<dyn RefreshJournal>, test_refresh_runtime());
+    assert!(recovered
+        .recover_interrupted_publication(&data_root)
+        .unwrap());
+    let status = status_value(&recovered, request_id);
+    assert_eq!(status["trigger"], "setup");
+    assert_eq!(status["trigger_provenance"], "setup_command");
+}
+
+#[test]
+fn restart_recovers_terminal_setup_metadata() {
+    let (_temp, data_root) = private_data_root();
+    let request_id = "019fcaaa-0000-7000-8000-000000000413";
+    let journal = Arc::new(TestRefreshJournal::default());
+    let first = CoreRefreshEngine::new(
+        Arc::clone(&journal) as Arc<dyn RefreshJournal>,
+        test_refresh_runtime(),
+    );
+    let submission = RefreshSubmission::new(
+        request_id.to_owned(),
+        RefreshOperation::Refresh,
+        None,
+        SourceBackedRefreshScope::All,
+        false,
+        false,
+    )
+    .with_trigger(RefreshRequestTrigger::Setup);
+    first.submit(&data_root, submission).unwrap();
+    let failed = first
+        .run_next_with(
+            |_, _| {
+                Err(SourceBackedRouteError::new(
+                    SourceBackedRouteErrorKind::InvalidSource,
+                    "bounded setup refresh failure",
+                )
+                .into())
+            },
+            || Ok(None),
+            |_| Ok(()),
+            |_| Ok(()),
+        )
+        .expect("failed terminal setup run");
+    assert!(failed.failed);
+    journal.store(&data_root, &failed.job).unwrap();
+    let durable = journal
+        .load(&data_root)
+        .unwrap()
+        .expect("durable failed setup");
+    assert_eq!(durable["request_state"], "failed");
+    assert_eq!(durable["trigger"], "setup");
+    assert_eq!(durable["trigger_provenance"], "setup_command");
+    drop(first);
+
+    let recovered =
+        CoreRefreshEngine::new(journal as Arc<dyn RefreshJournal>, test_refresh_runtime());
+    let _recovered_work = recovered
+        .recover_interrupted_publication(&data_root)
+        .unwrap();
+    let status = status_value(&recovered, request_id);
+    assert_eq!(status["request_state"], "failed");
+    assert_eq!(status["trigger"], "setup");
+    assert_eq!(status["trigger_provenance"], "setup_command");
+}
+
+#[test]
 fn restart_recovers_and_resumes_a_durable_pending_admission() {
     let (_temp, data_root) = private_data_root();
     let request_id = "019fcaaa-0000-7000-8000-000000000297";

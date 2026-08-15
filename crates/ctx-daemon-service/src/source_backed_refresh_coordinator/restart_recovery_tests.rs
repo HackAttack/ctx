@@ -1,8 +1,9 @@
 use super::client::{
-    recover_typed_unknown_request_with, source_refresh_request_is_unknown,
-    validate_source_refresh_status_response_authority, wait_for_published_generation,
-    SourceRefreshRequestRecoveryFailed, SourceRefreshRequestRecoveryFailureReason,
-    SourceRefreshRequestRetention, TypedUnknownRequestRecovery,
+    recover_typed_unknown_coalesced_request_with, recover_typed_unknown_request_with,
+    source_refresh_request_is_unknown, validate_source_refresh_status_response_authority,
+    wait_for_published_generation, SourceRefreshRequestRecoveryFailed,
+    SourceRefreshRequestRecoveryFailureReason, SourceRefreshRequestRetention,
+    TypedUnknownRequestRecovery,
 };
 use super::*;
 
@@ -91,6 +92,42 @@ fn typed_unknown_response_requires_exact_request_identity_not_error_text() {
     }));
     assert!(source_refresh_request_is_unknown(&unknown, "lost-request").unwrap());
     assert!(source_refresh_request_is_unknown(&unknown, "different-request").is_err());
+}
+
+#[test]
+fn typed_unknown_coalesced_waiter_can_follow_replacement_physical_id() {
+    let mut recovery = TypedUnknownRequestRecovery::new("lost-periodic");
+
+    let recovered = recover_typed_unknown_coalesced_request_with(
+        &mut recovery,
+        "lost-periodic",
+        |_| {},
+        || Ok("replacement-periodic".to_owned()),
+    )
+    .unwrap();
+
+    assert_eq!(recovered, "replacement-periodic");
+}
+
+#[test]
+fn typed_unknown_fresh_request_still_rejects_changed_identity() {
+    let mut recovery = TypedUnknownRequestRecovery::new("fresh-request");
+
+    let error = recover_typed_unknown_request_with(
+        &mut recovery,
+        "fresh-request",
+        |_| {},
+        || Ok("different-request".to_owned()),
+    )
+    .unwrap_err();
+
+    let typed = error
+        .downcast_ref::<SourceRefreshRequestRecoveryFailed>()
+        .expect("fresh recovery identity mismatch remains typed");
+    assert_eq!(
+        typed.reason,
+        SourceRefreshRequestRecoveryFailureReason::RequestIdChanged
+    );
 }
 
 #[test]

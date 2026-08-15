@@ -8,7 +8,7 @@ use crate::history_config::CliHistoryConfigAdapter;
 use crate::output::print_json;
 use crate::progress::{ProgressReporter, ProgressWriterError};
 use crate::semantic::{
-    autostart_daemon_for_setup_and_wait, coordinate_source_backed_refresh_with_progress,
+    autostart_daemon_for_setup_and_wait, coordinate_setup_source_backed_refresh_with_progress,
     daemon_autostart_suppression_reason, semantic_query_service_supported,
     source_epoch_status_report, DaemonSetupHandoff, SourceBackedRefreshMode,
     SourceBackedRefreshPendingPublication,
@@ -267,7 +267,7 @@ fn request_source_refresh(
     };
     let mut effective_wait = wait;
     let mut result =
-        coordinate_source_backed_refresh_with_progress(data_root, mode, &mut report_progress);
+        coordinate_setup_source_backed_refresh_with_progress(data_root, mode, &mut report_progress);
     if result.as_ref().is_err_and(|error| {
         !wait
             && error
@@ -278,7 +278,7 @@ fn request_source_refresh(
         // Reattach through the same daemon/RefreshEngine and wait for its
         // verified empty publication instead of returning an uncertified Core.
         effective_wait = true;
-        result = coordinate_source_backed_refresh_with_progress(
+        result = coordinate_setup_source_backed_refresh_with_progress(
             data_root,
             SourceBackedRefreshMode::Wait,
             &mut report_progress,
