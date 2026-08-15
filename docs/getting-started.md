@@ -234,8 +234,11 @@ Git object ID; without that proof, membership is explicitly unproven. The
 helper uses the platform key store.
 
 Bare `ctx pro` runs the idempotent setup, resume, repair, and graph catch-up
-flow. `ctx pro setup` remains a supported explicit synonym. First use starts a
-14-day trial without an account or payment method. The official interactive
+flow. `ctx pro setup` remains a supported explicit synonym. First use normally
+starts a 14-day trial without an account or payment method. If no anonymous
+trial is available, the same command still prints and opens a browser handoff
+where an existing subscription can be linked or Pro can be purchased; no Pro
+graph work starts before access is established. The official interactive
 installer can offer that trial before the initial import so Core and Pro index
 in one pass; unattended installation remains Core-only unless Pro is explicitly
 requested. Paid conversion and billing management use the browser later.

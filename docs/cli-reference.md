@@ -376,8 +376,10 @@ ctx pro manage [--no-open] [--format json]
 ctx pro uninstall [--delete-data|--keep-data] [--format json]
 ```
 
-Bare `ctx pro` starts or resumes the anonymous trial when needed, activates access, transactionally
-installs or repairs a signed target-specific helper, and catches the graph up.
+Bare `ctx pro` tries to start or resume the anonymous trial, then prints and
+best-effort opens its `https://pro.ctx.rs/{opaque-code}` browser handoff. With
+trial or subscribed access it transactionally installs or repairs a signed
+target-specific helper and catches the graph up.
 It is idempotent across first setup, resume, repair, and later catch-up.
 `ctx pro setup` is a supported explicit synonym with the same setup JSON and
 operation. Use `ctx status` (or the existing MCP `pro_status` tool) for
@@ -412,8 +414,16 @@ in the selected credential store after activation. An existing nonreferred
 trial cannot attach a code later. `ctx pro setup`, `manage`, `uninstall`, Core
 commands, websites, and cookies do not accept or change referral attribution.
 
-Paid conversion uses browser-based WorkOS sign-in and Stripe Checkout. Pro is
-$20 USD per month; conversion does not add a second trial.
+An expired, consumed, or unavailable anonymous trial does not block browser
+setup. `ctx pro` creates a handoff without using that trial as authorization, so
+an existing subscriber can link the machine or a nonsubscriber can buy Pro.
+Until browser completion supplies access, setup reports
+`browser_handoff_pending` and does not install or materialize Pro. An expired
+trial record may remain locally for conversion attribution, but it never grants
+access or authorizes the new handoff.
+
+Paid conversion uses the same browser-handoff URL to create an account and add
+a card. Pro is $20 USD per month; conversion does not add a second trial.
 `manage --no-open` prints the hosted billing-portal URL instead of opening it.
 With `--format json`, `manage` also reports
 `access_state` plus any applicable
@@ -431,7 +441,8 @@ local graph explicitly reported as preserved. Paid
 action. Existing `next_action` remains separate, no browser opens from status,
 and blame citations never include conversion copy.
 
-The anonymous trial credential, optional WorkOS session material, the
+The anonymous trial credential, optional pending browser handoff, opaque account
+credential, the
 installation signing key, and the signed entitlement are kept only in the
 selected credential store. The platform-native store is preferred; on a
 pristine root, an exact native-unavailable result may instead select a sticky
@@ -647,7 +658,7 @@ ctx referral status [--format json]
 ctx referral payout [--no-open] [--country <CC>] [--format json]
 ```
 
-`create` lets any WorkOS-verified person claim one stable codename, or returns
+`create` lets any person with a verified ctx account claim one stable codename, or returns
 that same claim when the request is replayed. A Pro trial or subscription is
 not required. A codename is 3–32 bytes of lowercase ASCII letters, digits, or
 hyphens and must start and end with a letter or digit. The client checks that
@@ -692,13 +703,13 @@ needs a country, interactive human mode asks for a readable country name or
 two-letter code and sends the normalized ISO country code. Existing recipients
 are not asked for country again when the service already knows their onboarding
 state. `--country <CC>` is the advanced override for scripts and other
-noninteractive callers; ctx never collects bank or card data. Human mode may
-start WorkOS AuthKit when no usable session is cached, and payout may open the
-hosted onboarding page.
+noninteractive callers; ctx never collects bank or card data. Human mode
+requires browser setup to have completed through `ctx pro`; payout may open
+the hosted onboarding page.
 
 Every referral command using `--format json` is noninteractive and browser-free. It
-uses only a cached WorkOS session and returns the stable authentication-required
-failure when none is available; it never starts AuthKit or invokes a browser
+uses only a cached opaque account credential and returns the stable
+authentication-required failure when none is available; it never starts browser setup or invokes a browser
 opener. JSON contains only the requested deterministic command data, with no
 unsolicited referral slogan or promotional message. `payout --format json` returns
 the hosted URL without opening it. JSON and piped payout calls never prompt; if

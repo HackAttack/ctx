@@ -1086,6 +1086,13 @@ the codename only for the first anonymous-trial challenge and does not echo the
 raw codename or opaque claim in JSON. The resulting attribution is immutable.
 An accepted referral produces a 30-day trial; setup without one remains the
 ordinary 14-day trial.
+If anonymous-trial activation or refresh is authoritatively rejected as
+expired, consumed, or unavailable, the same payload remains successful and
+actionable with `account_state: "browser_handoff_pending"`, the one-use
+`action_url`, `helper_updated: false`, and `materialization_deferred: true`.
+That state has no trial deadline and does not claim Pro access; browser
+completion may link an existing subscription or purchase Pro. JSON mode never
+opens the action URL.
 `ctx pro manage --no-open --format json` and
 `ctx pro uninstall (--delete-data|--keep-data) --format json` return the `pro_manage`
 and `pro_uninstall` payload types respectively.
@@ -1279,9 +1286,9 @@ ctx referral status --format json
 ctx referral payout [--country <CC>] --format json
 ```
 
-All three commands return schema version 1. JSON referral commands use cached
-WorkOS authentication only. They never start device authorization or invoke a
-browser opener; a missing cached session fails with
+All three commands return schema version 1. JSON referral commands use the
+cached opaque account credential only. They never start browser setup or invoke
+a browser opener; a missing cached credential fails with
 `authentication_required`. The payloads contain no human referral slogan or
 promotional message. Any verified person can create a codename; a Pro trial or
 subscription is not required.

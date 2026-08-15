@@ -5,7 +5,7 @@ expected_onnxruntime_version="1.27.0"
 
 usage() {
   cat <<'USAGE'
-usage: scripts/dev-install-from-metadata.sh --metadata PATH_OR_URL [--artifact-dir DIR] [--platform PLATFORM] [--bin-dir DIR] [--runtime-dir DIR] [--no-runtime] [--no-modify-path] [--no-setup] [--no-daemon] [--no-skill] [--skill-agent AGENT] [--all-skill-agents] [--no-man]
+usage: scripts/dev-install-from-metadata.sh --metadata PATH_OR_URL [--artifact-dir DIR] [--platform PLATFORM] [--bin-dir DIR] [--runtime-dir DIR] [--no-runtime] [--no-modify-path] [--no-setup] [--no-pro-trial] [--no-daemon] [--no-skill] [--skill-agent AGENT] [--all-skill-agents] [--no-man]
 
 Development/CI installer for explicit ctx release metadata.
 
@@ -36,6 +36,8 @@ Options:
                          directory is not on PATH.
   --no-setup             Install only; do not install the skill or run ctx setup
                          unless a skill flag is also passed.
+  --no-pro-trial         Keep installer setup Core-only. The default starts the
+                         anonymous Pro trial. CTX_INSTALL_NO_PRO_TRIAL=1 is equivalent.
   --no-daemon            Run installer setup with ctx setup --no-daemon.
                          CTX_INSTALL_NO_DAEMON=1 is equivalent.
   --no-skill             Do not install the bundled ctx agent skill.
@@ -558,6 +560,7 @@ man_dir="${CTX_MAN_DIR:-${HOME:-}/.local/share/man/man1}"
 dry_run=0
 modify_path=1
 run_setup=1
+setup_pro_trial=1
 setup_no_daemon=0
 run_skill=1
 install_runtime=1
@@ -597,6 +600,9 @@ while (($# > 0)); do
       ;;
     --no-setup)
       run_setup=0
+      ;;
+    --no-pro-trial)
+      setup_pro_trial=0
       ;;
     --no-daemon)
       setup_no_daemon=1
@@ -714,6 +720,10 @@ fi
 
 if [[ "${CTX_INSTALL_NO_DAEMON:-0}" == "1" ]]; then
   setup_no_daemon=1
+fi
+
+if [[ "${CTX_INSTALL_NO_PRO_TRIAL:-0}" == "1" ]]; then
+  setup_pro_trial=0
 fi
 
 if [[ "${CTX_INSTALL_NO_RUNTIME:-0}" == "1" ]]; then
@@ -834,7 +844,13 @@ fi
 
 if ((run_setup)); then
   setup_progress="${CTX_SETUP_PROGRESS:-auto}"
-  setup_args=(setup --progress "${setup_progress}")
+  setup_args=(setup)
+  retry_pro=""
+  if ((setup_pro_trial && ! setup_no_daemon)); then
+    setup_args+=(--pro)
+    retry_pro=" --pro"
+  fi
+  setup_args+=(--progress "${setup_progress}")
   if ((setup_no_daemon)); then
     setup_args+=(--no-daemon)
   fi
@@ -845,9 +861,9 @@ if ((run_setup)); then
   else
     setup_status=$?
     if ((setup_no_daemon)); then
-      printf 'warning: ctx setup failed after install; run %s setup --progress %s --no-daemon to retry\n' "${install_path}" "${setup_progress}" >&2
+      printf 'warning: ctx setup failed after install; run %s setup%s --progress %s --no-daemon to retry\n' "${install_path}" "${retry_pro}" "${setup_progress}" >&2
     else
-      printf 'warning: ctx setup failed after install; run %s setup --progress %s to retry\n' "${install_path}" "${setup_progress}" >&2
+      printf 'warning: ctx setup failed after install; run %s setup%s --progress %s to retry\n' "${install_path}" "${retry_pro}" "${setup_progress}" >&2
     fi
   fi
 else
