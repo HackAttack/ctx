@@ -725,7 +725,7 @@ fn format_duration_millis(millis: u64) -> String {
 }
 
 fn format_eta_duration_millis(millis: u64) -> String {
-    format_duration_seconds(millis / 1_000 + u64::from(millis % 1_000 != 0))
+    format_duration_seconds(millis / 1_000 + u64::from(!millis.is_multiple_of(1_000)))
 }
 
 fn format_duration_seconds(seconds: u64) -> String {
