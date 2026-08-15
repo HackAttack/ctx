@@ -918,7 +918,7 @@ fn due_dirty_route_wakes_the_scheduler_immediately() {
 }
 
 #[test]
-fn pending_source_refresh_wait_respects_retry_backoff() {
+fn pending_source_refresh_wait_ignores_unreachable_work_until_retry() {
     let coordinator =
         CoreRefreshEngine::with_executor(Arc::new(|_: SourceBackedRefreshExecution<'_>| {
             anyhow::bail!("executor must remain backed off")
@@ -932,6 +932,12 @@ fn pending_source_refresh_wait_respects_retry_backoff() {
     runtime.history_retry.consecutive_failures = 1;
     runtime.history_retry.retry_not_before = Some(now + StdDuration::from_secs(5));
     runtime.history_retry.retry_not_before_at_ms = Some(utc_now().timestamp_millis() + 5_000);
+    runtime.browser_handoff_next_due = Some(now);
+    runtime.semantic_retry.consecutive_failures = 1;
+    runtime.semantic_retry.retry_not_before = Some(now);
+    runtime.pro_retry.consecutive_failures = 1;
+    runtime.pro_retry.retry_not_before = Some(now);
+    runtime.consumer_retry_deferral.retry_at = Some(now + StdDuration::from_millis(1));
 
     let wait_for = daemon_wait_duration(
         &runtime,

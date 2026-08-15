@@ -880,10 +880,20 @@ pub(super) fn daemon_wait_duration(
     now: Instant,
 ) -> StdDuration {
     let pending_source_refresh = source_refresh.is_some_and(CoreRefreshEngine::has_pending_request);
-    if runtime.history_retry.ready() && pending_source_refresh {
-        return StdDuration::ZERO;
-    }
     let mut wait_for = next_safety_reconcile.saturating_duration_since(now);
+    if pending_source_refresh {
+        if runtime.history_retry.ready() {
+            return StdDuration::ZERO;
+        }
+        // A retained Core request owns the scheduler while its control-plane
+        // retry is backed off. The scheduler returns before dirty routes and
+        // every optional consumer/sidecar, so only the owning retry deadline
+        // can usefully wake it in this state.
+        if let Some(retry_after_ms) = runtime.history_retry.retry_after_ms() {
+            wait_for = wait_for.min(StdDuration::from_millis(retry_after_ms));
+        }
+        return wait_for;
+    }
     if let Some(next_due) = runtime.browser_handoff_next_due {
         wait_for = wait_for.min(next_due.saturating_duration_since(now));
     }
@@ -900,17 +910,11 @@ pub(super) fn daemon_wait_duration(
             wait_for = wait_for.min(StdDuration::from_millis(retry_after_ms));
         }
     }
-    // A retained pending request owns source-refresh admission while its
-    // control-plane retry is backed off. Newly dirty routes coalesce behind
-    // that request; letting their deadline shorten this wait to zero would
-    // spin the daemon while the scheduler correctly refuses to run it.
-    if !pending_source_refresh || runtime.history_retry.ready() {
-        if let Some(route_due_ms) = source_refresh
-            .and_then(|refresh| refresh.next_dirty_route_due_in_ms(source_route_ledger_now_ms()))
-        {
-            let route_wait = StdDuration::from_millis(route_due_ms);
-            wait_for = wait_for.min(route_wait);
-        }
+    if let Some(route_due_ms) = source_refresh
+        .and_then(|refresh| refresh.next_dirty_route_due_in_ms(source_route_ledger_now_ms()))
+    {
+        let route_wait = StdDuration::from_millis(route_due_ms);
+        wait_for = wait_for.min(route_wait);
     }
     wait_for
 }
