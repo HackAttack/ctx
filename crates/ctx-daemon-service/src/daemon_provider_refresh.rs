@@ -8,7 +8,7 @@ use ctx_history_refresh::{
 };
 use serde_json::Value;
 
-use crate::analytics::{
+use ctx_client_observability::analytics::{
     duration_bucket, DurationBucket, ForegroundProviderRefreshV1, Outcome, ProviderCoreResult,
     ProviderProResult, ProviderRefreshChange, ProviderRefreshCompletedV1,
     ProviderRefreshContentEvidence, ProviderRefreshCountsV1, ProviderRefreshFailureScope,
@@ -309,7 +309,7 @@ mod tests {
     use serde_json::json;
 
     use super::*;
-    use crate::analytics::{bytes_bucket, count_bucket};
+    use ctx_client_observability::analytics::{bytes_bucket, count_bucket};
 
     fn completed_job(
         trigger: &str,

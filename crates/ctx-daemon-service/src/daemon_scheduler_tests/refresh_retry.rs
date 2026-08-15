@@ -1,4 +1,8 @@
 use super::*;
+use ctx_client_observability::analytics::{
+    Outcome, ProviderCoreResult, ProviderRefreshFailureScope, ProviderRefreshFailureType,
+    ProviderRefreshResult, ProviderRefreshTrigger, PublicEventV1, Surface,
+};
 
 fn enqueue_synthetic_refresh_successor(
     coordinator: &CoreRefreshEngine,
@@ -82,36 +86,22 @@ fn hot_route_failure_retries_exact_after_cooldown_while_blocked_route_stays_idle
             &mut failed_iteration,
             std::time::Duration::from_millis(1),
         );
-        let [crate::analytics::PublicEventV1::ProviderRefreshCompleted(refresh)] =
-            events.as_slice()
-        else {
+        let [PublicEventV1::ProviderRefreshCompleted(refresh)] = events.as_slice() else {
             panic!("terminal scheduler failure must emit one provider refresh event");
         };
         let facts = refresh.foreground.expect("failed daemon refresh facts");
-        assert_eq!(refresh.surface, crate::analytics::Surface::Daemon);
-        assert_eq!(refresh.outcome, crate::analytics::Outcome::Failure);
-        assert_eq!(
-            facts.trigger,
-            crate::analytics::ProviderRefreshTrigger::Daemon
-        );
-        assert_eq!(
-            facts.refresh_result,
-            crate::analytics::ProviderRefreshResult::Failure
-        );
-        assert_eq!(
-            facts.core_result,
-            crate::analytics::ProviderCoreResult::Failure
-        );
-        assert_eq!(
-            facts.failure_scope,
-            crate::analytics::ProviderRefreshFailureScope::Source
-        );
+        assert_eq!(refresh.surface, Surface::Daemon);
+        assert_eq!(refresh.outcome, Outcome::Failure);
+        assert_eq!(facts.trigger, ProviderRefreshTrigger::Daemon);
+        assert_eq!(facts.refresh_result, ProviderRefreshResult::Failure);
+        assert_eq!(facts.core_result, ProviderCoreResult::Failure);
+        assert_eq!(facts.failure_scope, ProviderRefreshFailureScope::Source);
         assert_eq!(
             facts.failure_type,
             if kind == SourceBackedRouteErrorKind::InvalidSource {
-                crate::analytics::ProviderRefreshFailureType::MalformedSource
+                ProviderRefreshFailureType::MalformedSource
             } else {
-                crate::analytics::ProviderRefreshFailureType::Unknown
+                ProviderRefreshFailureType::Unknown
             }
         );
         assert_eq!(facts.work_remaining, retryable);
@@ -217,23 +207,16 @@ fn mixed_route_dispositions_schedule_only_retryable_routes() {
         &mut completed,
         std::time::Duration::from_millis(1),
     );
-    let [crate::analytics::PublicEventV1::ProviderRefreshCompleted(refresh)] = events.as_slice()
-    else {
+    let [PublicEventV1::ProviderRefreshCompleted(refresh)] = events.as_slice() else {
         panic!("completed scheduler refresh must emit one provider refresh event");
     };
     let facts = refresh.foreground.expect("daemon refresh facts");
-    assert_eq!(refresh.surface, crate::analytics::Surface::Daemon);
-    assert_eq!(
-        facts.trigger,
-        crate::analytics::ProviderRefreshTrigger::Daemon
-    );
+    assert_eq!(refresh.surface, Surface::Daemon);
+    assert_eq!(facts.trigger, ProviderRefreshTrigger::Daemon);
     assert_eq!(facts.provider, None);
     assert_eq!(facts.source_mode, None);
     assert_eq!(facts.counts, None);
-    assert_eq!(
-        facts.refresh_result,
-        crate::analytics::ProviderRefreshResult::Partial
-    );
+    assert_eq!(facts.refresh_result, ProviderRefreshResult::Partial);
     assert!(facts.work_remaining);
     assert_eq!(runtime.history_retry.consecutive_failures, 0);
     let terminal = read_daemon_job_status(&daemon_core_refresh_job_path(&data_root)).unwrap();
@@ -702,7 +685,7 @@ fn scheduler_retries_terminal_status_without_republishing_core() {
     );
     assert!(matches!(
         events.as_slice(),
-        [crate::analytics::PublicEventV1::ProviderRefreshCompleted(_)]
+        [PublicEventV1::ProviderRefreshCompleted(_)]
     ));
     assert_eq!(executions.load(Ordering::SeqCst), 1);
     let terminal = read_daemon_job_status(&daemon_core_refresh_job_path(&data_root)).unwrap();
