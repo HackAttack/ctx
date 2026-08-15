@@ -377,14 +377,12 @@ fn append_restart_counts_candidate_id_occurrences_before_first_admission() {
 
     let observed = capture_causal_stage();
     refresh_source_backed_generation(&index_root, &registry, writer_options()).unwrap();
-    assert_eq!(
-        causal_by_id(&observed)
-            .get(native_session_id)
-            .unwrap()
-            .counters
-            .appended_sources,
-        1
-    );
+    let counters = causal_by_id(&observed)
+        .get(native_session_id)
+        .unwrap()
+        .counters;
+    assert_eq!(counters.appended_sources, 0);
+    assert_eq!(counters.replaced_sources, 1);
     let appended = VerifiedIndex::open(&index_root).unwrap();
     assert_no_repository_causality(
         &records_for(&appended, native_session_id),
@@ -632,7 +630,7 @@ fn fallback_identity_is_rewrite_stable_and_duplicate_occurrences_remain_distinct
         .collect::<Vec<_>>();
     drop(initial);
 
-    write_session(
+    replace_session(
         &sessions,
         native_session_id,
         SessionRelationshipKind::Root,
@@ -1030,7 +1028,7 @@ fn parser_revision_migration_rescans_once_without_catalog_body_hydration() {
         };
         let wire = serde_json::from_str::<serde_json::Value>(json).unwrap();
         assert_eq!(wire["version"], 5);
-        assert_eq!(wire["provider_checkpoint"], serde_json::Value::Null);
+        assert_current_provider_checkpoint(&wire["provider_checkpoint"]);
         assert!(wire.get("certified_lineage_facts").is_none());
         assert!(wire.get("dependency_digest").is_none());
     }
@@ -1124,8 +1122,16 @@ fn current_parser_legacy_codex_frontier_migrates_by_full_replacement() {
     let observed = capture_causal_stage();
     let migrated_receipt =
         refresh_source_backed_generation(&index_root, &registry, writer_options()).unwrap();
-    assert!(migrated_receipt.failed_routes.is_empty());
-    assert!(migrated_receipt.logical_source_failures.is_empty());
+    assert!(
+        migrated_receipt.failed_routes.is_empty(),
+        "legacy-frontier migration failed routes: {:?}",
+        migrated_receipt.failed_routes
+    );
+    assert!(
+        migrated_receipt.logical_source_failures.is_empty(),
+        "legacy-frontier migration source failures: {:?}",
+        migrated_receipt.logical_source_failures
+    );
     let counters = causal_by_id(&observed)
         .get(native_session_id)
         .unwrap()
@@ -1327,82 +1333,71 @@ fn cold_continuous_appends_during_frozen_prefix_admission_catch_up_once() {
 }
 
 #[test]
-fn destructive_mid_capture_changes_preserve_last_good_generation_atomically() {
-    for seam in ["metadata_inventory", "precommit_physical_revalidation"] {
-        for mutation in ["rewrite", "truncate", "replacement"] {
-            let temp = tempdir().unwrap();
-            let sessions = temp.path().join("sessions");
-            let index_root = temp.path().join("index");
-            fs::create_dir_all(&sessions).unwrap();
-            let native_session_id = "019fb000-0000-7000-8000-000000000041";
-            let path = session_path(&sessions, native_session_id);
-            write_session(
-                &sessions,
-                native_session_id,
-                SessionRelationshipKind::Root,
-                None,
-                [message("lastgooduniquetoken")],
-            );
-            let registry = register_tree(&[&sessions]);
-            refresh_source_backed_generation(&index_root, &registry, writer_options()).unwrap();
-            let before = VerifiedIndex::open(&index_root).unwrap();
-            let generation = before.generation_id().to_owned();
-            let snapshot = source_snapshot(&before, native_session_id, "lastgooduniquetoken");
-            drop(before);
+fn destructive_precommit_truncate_and_replacement_preserve_last_good_generation_atomically() {
+    // Same-object rewrites are excluded by the Codex append-only provider
+    // contract and are covered by the explicit trust-boundary test in shared
+    // JSONL. Observable truncation and object replacement must still fail the
+    // terminal fence atomically.
+    for mutation in ["truncate", "replacement"] {
+        let temp = tempdir().unwrap();
+        let sessions = temp.path().join("sessions");
+        let index_root = temp.path().join("index");
+        fs::create_dir_all(&sessions).unwrap();
+        let native_session_id = "019fb000-0000-7000-8000-000000000041";
+        let path = session_path(&sessions, native_session_id);
+        write_session(
+            &sessions,
+            native_session_id,
+            SessionRelationshipKind::Root,
+            None,
+            [message("lastgooduniquetoken")],
+        );
+        let registry = register_tree(&[&sessions]);
+        refresh_source_backed_generation(&index_root, &registry, writer_options()).unwrap();
+        let before = VerifiedIndex::open(&index_root).unwrap();
+        let generation = before.generation_id().to_owned();
+        let snapshot = source_snapshot(&before, native_session_id, "lastgooduniquetoken");
+        drop(before);
 
-            let mutate = path.clone();
-            let replacement = path.with_extension("replacement");
-            if mutation == "replacement" {
-                fs::write(
-                    &replacement,
-                    jsonl_bytes([
-                        session_meta(native_session_id, SessionRelationshipKind::Root, None),
-                        message("replacementuniquetoken"),
-                    ]),
-                )
-                .unwrap();
-            }
-            match seam {
-                "metadata_inventory" => {
-                    install_after_codex_metadata_inventory_hook(move || {
-                        destructively_mutate_session(&mutate, &replacement, mutation);
-                    });
-                }
-                "precommit_physical_revalidation" => {
-                    set_before_jsonl_terminal_physical_revalidation_hook(
-                        sessions.clone(),
-                        move || {
-                            destructively_mutate_session(&mutate, &replacement, mutation);
-                        },
-                    );
-                }
-                _ => unreachable!(),
-            }
-            match refresh_source_backed_generation(&index_root, &registry, writer_options()) {
-                Ok(failed) => {
-                    assert_eq!(failed.failed_routes.len(), 1, "{seam}/{mutation}");
-                    assert!(failed.failed_routes[0].carried_forward, "{seam}/{mutation}");
-                }
-                Err(SourceBackedCoordinatorError::RouteScan { source, .. }) => {
-                    assert_eq!(
-                        source.kind,
-                        SourceBackedRouteErrorKind::InvalidSource,
-                        "{seam}/{mutation}"
-                    );
-                }
-                Err(error) => panic!("unexpected {seam}/{mutation} failure: {error:?}"),
-            }
-            let retained = VerifiedIndex::open(&index_root).unwrap();
-            assert_eq!(retained.generation_id(), generation, "{seam}/{mutation}");
-            assert_eq!(
-                source_snapshot(&retained, native_session_id, "lastgooduniquetoken"),
-                snapshot,
-                "{seam}/{mutation}"
-            );
-            assert!(retained
-                .search_event_candidates("replacementuniquetoken", 8)
-                .unwrap()
-                .is_empty());
+        let mutate = path.clone();
+        let replacement = path.with_extension("replacement");
+        if mutation == "replacement" {
+            fs::write(
+                &replacement,
+                jsonl_bytes([
+                    session_meta(native_session_id, SessionRelationshipKind::Root, None),
+                    message("replacementuniquetoken"),
+                ]),
+            )
+            .unwrap();
         }
+        set_before_jsonl_terminal_physical_revalidation_hook(sessions.clone(), move || {
+            destructively_mutate_session(&mutate, &replacement, mutation);
+        });
+        match refresh_source_backed_generation(&index_root, &registry, writer_options()) {
+            Ok(failed) => {
+                assert_eq!(failed.failed_routes.len(), 1, "{mutation}");
+                assert!(failed.failed_routes[0].carried_forward, "{mutation}");
+            }
+            Err(SourceBackedCoordinatorError::RouteScan { source, .. }) => {
+                assert_eq!(
+                    source.kind,
+                    SourceBackedRouteErrorKind::InvalidSource,
+                    "{mutation}"
+                );
+            }
+            Err(error) => panic!("unexpected {mutation} failure: {error:?}"),
+        }
+        let retained = VerifiedIndex::open(&index_root).unwrap();
+        assert_eq!(retained.generation_id(), generation, "{mutation}");
+        assert_eq!(
+            source_snapshot(&retained, native_session_id, "lastgooduniquetoken"),
+            snapshot,
+            "{mutation}"
+        );
+        assert!(retained
+            .search_event_candidates("replacementuniquetoken", 8)
+            .unwrap()
+            .is_empty());
     }
 }

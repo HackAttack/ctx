@@ -643,5 +643,4 @@ impl<B: ProviderRuntimeBinding> JsonlFamilyAdapter for CodexSessionJsonlFamilyAd
             mode,
         )?)))
     }
-
 }

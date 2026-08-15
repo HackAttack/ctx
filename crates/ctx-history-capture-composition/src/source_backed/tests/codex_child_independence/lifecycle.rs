@@ -1,7 +1,7 @@
 use super::*;
 
 #[test]
-fn provider_checkpoint_stays_absent_across_terminal_authority_lifecycles() {
+fn provider_checkpoint_stays_bounded_across_terminal_authority_lifecycles() {
     const MAX_AUTHORITY_ENTRIES: usize = 256;
     const MAX_FRONTIER_ENVELOPE_BYTES: usize = 64 * 1024;
 
@@ -32,8 +32,8 @@ fn provider_checkpoint_stays_absent_across_terminal_authority_lifecycles() {
         provider_checkpoint_envelope(&exact, exact_owner);
     assert!(exact_family_bytes + 5 <= MAX_FRONTIER_ENVELOPE_BYTES);
     assert!(exact_frontier_bytes <= MAX_FRONTIER_ENVELOPE_BYTES);
-    assert_eq!(exact_semantic_bytes, 0);
-    assert_provider_checkpoint_absent(&exact_checkpoint);
+    assert!(exact_semantic_bytes > 0);
+    assert_current_provider_checkpoint(&exact_checkpoint);
     let exact_checkpoint_json = serde_json::to_string(&exact_checkpoint).unwrap();
     assert!(!exact_checkpoint_json.contains("event-body-secret-must-not-reach-checkpoint"));
     drop(exact);
@@ -53,7 +53,7 @@ fn provider_checkpoint_stays_absent_across_terminal_authority_lifecycles() {
     let suffix_exhausted = VerifiedIndex::open(&exact_index).unwrap();
     let (_, _, _, suffix_exhausted_checkpoint) =
         provider_checkpoint_envelope(&suffix_exhausted, exact_owner);
-    assert_provider_checkpoint_absent(&suffix_exhausted_checkpoint);
+    assert_current_provider_checkpoint(&suffix_exhausted_checkpoint);
     drop(suffix_exhausted);
 
     let exhausted_sessions = temp.path().join("exhausted-sessions");
@@ -86,8 +86,8 @@ fn provider_checkpoint_stays_absent_across_terminal_authority_lifecycles() {
     ) = provider_checkpoint_envelope(&exhausted, exhausted_owner);
     assert!(exhausted_family_bytes + 5 <= MAX_FRONTIER_ENVELOPE_BYTES);
     assert!(exhausted_frontier_bytes <= MAX_FRONTIER_ENVELOPE_BYTES);
-    assert_eq!(exhausted_semantic_bytes, 0);
-    assert_provider_checkpoint_absent(&exhausted_checkpoint);
+    assert!(exhausted_semantic_bytes > 0);
+    assert_current_provider_checkpoint(&exhausted_checkpoint);
     drop(exhausted);
 
     append_event(
@@ -115,8 +115,8 @@ fn provider_checkpoint_stays_absent_across_terminal_authority_lifecycles() {
     ) = provider_checkpoint_envelope(&appended, exhausted_owner);
     assert!(appended_family_bytes + 5 <= MAX_FRONTIER_ENVELOPE_BYTES);
     assert!(appended_frontier_bytes <= MAX_FRONTIER_ENVELOPE_BYTES);
-    assert_eq!(appended_semantic_bytes, 0);
-    assert_provider_checkpoint_absent(&appended_checkpoint);
+    assert!(appended_semantic_bytes > 0);
+    assert_current_provider_checkpoint(&appended_checkpoint);
     eprintln!(
         "Codex checkpoint envelopes: exact256 semantic={exact_semantic_bytes} family={exact_family_bytes} frontier={exact_frontier_bytes}; exhausted257 semantic={exhausted_semantic_bytes} family={exhausted_family_bytes} frontier={exhausted_frontier_bytes}; exhausted_append semantic={appended_semantic_bytes} family={appended_family_bytes} frontier={appended_frontier_bytes}"
     );
@@ -207,7 +207,7 @@ fn parent_lifecycle_never_opens_scans_or_replaces_unchanged_descendants() {
     assert_eq!(parent_append.appended_sources, 1);
     assert_eq!(parent_append.scanner_sources_started, 1);
 
-    write_session(
+    replace_session(
         &sessions,
         parent,
         SessionRelationshipKind::Root,
@@ -314,7 +314,7 @@ fn nested_payload_session_id_is_ignored_and_changed_child_processes_only_itself(
     }));
     drop(initial);
 
-    write_session_with_payload_session_id(
+    replace_session_with_payload_session_id(
         &sessions,
         child,
         SessionRelationshipKind::Delegated,
@@ -393,7 +393,7 @@ fn append_after_large_terminal_authority_prefix_replays_combined_authority_once(
     refresh_source_backed_generation(&index_root, &registry, writer_options()).unwrap();
     let initial = VerifiedIndex::open(&index_root).unwrap();
     let (_, _, _, initial_checkpoint) = provider_checkpoint_envelope(&initial, native_session_id);
-    assert_provider_checkpoint_absent(&initial_checkpoint);
+    assert_current_provider_checkpoint(&initial_checkpoint);
     drop(initial);
 
     append_event(&path, message("largeprefixappenduniquetoken"));
@@ -407,10 +407,7 @@ fn append_after_large_terminal_authority_prefix_replays_combined_authority_once(
     assert_eq!(counters.complete_records_scanned, 1);
     assert_eq!(counters.retained_records_scanned, 1);
     assert_eq!(counters.staged_documents, 1);
-    assert_eq!(
-        counters.mcp_terminal_authority_bytes_read,
-        fs::metadata(&path).unwrap().len()
-    );
+    assert!(counters.mcp_terminal_authority_bytes_read < 4 * 1024);
     assert!(counters.scanner_bytes_read < 4 * 1024);
     let appended = VerifiedIndex::open(&index_root).unwrap();
     let appended_certificate =
@@ -507,7 +504,7 @@ fn replayed_source_state_is_exact_across_cold_unchanged_and_child_mcp_append() {
     let cold = VerifiedIndex::open(&index_root).unwrap();
     let cold_snapshot = source_snapshot(&cold, child, "replayed-child-mcp-call");
     let (_, _, _, cold_checkpoint) = provider_checkpoint_envelope(&cold, child);
-    assert_provider_checkpoint_absent(&cold_checkpoint);
+    assert_current_provider_checkpoint(&cold_checkpoint);
     drop(cold);
 
     let unchanged_observed = capture_causal_stage();
@@ -576,7 +573,7 @@ fn replayed_source_state_is_exact_across_cold_unchanged_and_child_mcp_append() {
     );
     let appended_snapshot = source_snapshot(&appended, child, "replayedchildmcpattributiontoken");
     let (_, _, _, appended_checkpoint) = provider_checkpoint_envelope(&appended, child);
-    assert_provider_checkpoint_absent(&appended_checkpoint);
+    assert_current_provider_checkpoint(&appended_checkpoint);
     drop(appended);
 
     let cold_final_root = temp.path().join("cold-final-index");
@@ -607,7 +604,7 @@ fn suffix_completes_last_of_twenty_four_replayed_pending_calls() {
     refresh_source_backed_generation(&index_root, &registry, writer_options()).unwrap();
     let initial = VerifiedIndex::open(&index_root).unwrap();
     let (_, _, _, initial_checkpoint) = provider_checkpoint_envelope(&initial, native_session_id);
-    assert_provider_checkpoint_absent(&initial_checkpoint);
+    assert_current_provider_checkpoint(&initial_checkpoint);
     drop(initial);
 
     append_event(
@@ -640,7 +637,7 @@ fn suffix_completes_last_of_twenty_four_replayed_pending_calls() {
         .unwrap();
     assert_eq!(result.event_type, "command_output");
     let (_, _, _, checkpoint) = provider_checkpoint_envelope(&appended, native_session_id);
-    assert_provider_checkpoint_absent(&checkpoint);
+    assert_current_provider_checkpoint(&checkpoint);
     drop(appended);
 
     let cold_root = temp.path().join("cold-final-index");

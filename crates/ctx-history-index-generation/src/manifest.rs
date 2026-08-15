@@ -107,9 +107,7 @@ pub fn reclaim_unreferenced_manifests(
     Ok(())
 }
 
-const MANIFEST_DELTA_PREFIX: &[u8] = br#"{"storage_format":"ctx-manifest-delta-v1","#;
 const MANIFEST_FLAT_DELTA_PREFIX: &[u8] = br#"{"storage_format":"ctx-manifest-flat-delta-v1","#;
-const MAX_MANIFEST_ANCESTORS: usize = 128;
 
 #[derive(Deserialize)]
 struct ManifestDeltaReference {
@@ -126,18 +124,13 @@ fn retained_manifest_closure(
         if !is_generation_id(generation_id) {
             return Err(GenerationError::InvalidGenerationId);
         }
-        let mut next = Some(generation_id.clone());
-        for _ in 0..=MAX_MANIFEST_ANCESTORS {
-            let Some(generation_id) = next.take() else {
-                break;
-            };
-            if !retained.insert(generation_id.clone()) {
-                break;
+        if retained.insert(generation_id.clone()) {
+            if let Some(base_generation_id) = referenced_base_generation_id(root, generation_id)? {
+                if referenced_base_generation_id(root, &base_generation_id)?.is_some() {
+                    return Err(GenerationError::InvalidGenerationId);
+                }
+                retained.insert(base_generation_id);
             }
-            next = referenced_base_generation_id(root, &generation_id)?;
-        }
-        if next.is_some() {
-            return Err(GenerationError::InvalidGenerationId);
         }
     }
     Ok(retained)
@@ -152,16 +145,13 @@ fn referenced_base_generation_id(root: &Path, generation_id: &str) -> Result<Opt
     let mut prefix = [0_u8; 64];
     let prefix_bytes = file.read(&mut prefix)?;
     let prefix = &prefix[..prefix_bytes];
-    if !prefix.starts_with(MANIFEST_DELTA_PREFIX) && !prefix.starts_with(MANIFEST_FLAT_DELTA_PREFIX)
-    {
+    if !prefix.starts_with(MANIFEST_FLAT_DELTA_PREFIX) {
         return Ok(None);
     }
     let bytes = load_manifest_bytes(root, generation_id)?;
     let reference: ManifestDeltaReference = serde_json::from_slice(&bytes)?;
-    if !matches!(
-        reference.storage_format.as_str(),
-        "ctx-manifest-delta-v1" | "ctx-manifest-flat-delta-v1"
-    ) || !is_generation_id(&reference.base_generation_id)
+    if reference.storage_format != "ctx-manifest-flat-delta-v1"
+        || !is_generation_id(&reference.base_generation_id)
     {
         return Err(GenerationError::InvalidGenerationId);
     }
@@ -242,13 +232,13 @@ mod tests {
     }
 
     #[test]
-    fn reclamation_retains_delta_ancestors_without_reading_legacy_body() {
+    fn reclamation_retains_flat_delta_anchor_without_reading_anchor_body() {
         let root = tempfile::tempdir().unwrap();
         let base_bytes = vec![b'x'; 2 * 1024 * 1024];
         let base = sha256_hex(&base_bytes);
         write_manifest_bytes(root.path(), &base, &base_bytes).unwrap();
         let delta_bytes = format!(
-            "{{\"storage_format\":\"ctx-manifest-delta-v1\",\"base_generation_id\":\"{base}\",\"other\":true}}"
+            "{{\"storage_format\":\"ctx-manifest-flat-delta-v1\",\"base_generation_id\":\"{base}\",\"other\":true}}"
         )
         .into_bytes();
         let delta = sha256_hex(&delta_bytes);

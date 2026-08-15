@@ -364,6 +364,47 @@ fn write_session_with_payload_session_id(
     fs::write(session_path(root, native_session_id), jsonl_bytes(records)).unwrap();
 }
 
+fn replace_session(
+    root: &Path,
+    native_session_id: &str,
+    relationship: SessionRelationshipKind,
+    parent_native_session_id: Option<&str>,
+    events: impl IntoIterator<Item = serde_json::Value>,
+) {
+    let records = std::iter::once(session_meta(
+        native_session_id,
+        relationship,
+        parent_native_session_id,
+    ))
+    .chain(events);
+    replace_session_bytes(root, native_session_id, jsonl_bytes(records));
+}
+
+fn replace_session_with_payload_session_id(
+    root: &Path,
+    native_session_id: &str,
+    relationship: SessionRelationshipKind,
+    parent_native_session_id: Option<&str>,
+    payload_session_id: &str,
+    events: impl IntoIterator<Item = serde_json::Value>,
+) {
+    let mut meta = session_meta(native_session_id, relationship, parent_native_session_id);
+    meta["payload"]["session_id"] = serde_json::json!(payload_session_id);
+    replace_session_bytes(
+        root,
+        native_session_id,
+        jsonl_bytes(std::iter::once(meta).chain(events)),
+    );
+}
+
+fn replace_session_bytes(root: &Path, native_session_id: &str, bytes: Vec<u8>) {
+    let path = session_path(root, native_session_id);
+    let replacement = path.with_extension("replacement");
+    fs::write(&replacement, bytes).unwrap();
+    fs::remove_file(&path).unwrap();
+    fs::rename(replacement, path).unwrap();
+}
+
 fn append_event(path: &Path, event: serde_json::Value) {
     let mut file = OpenOptions::new().append(true).open(path).unwrap();
     file.write_all(&jsonl_bytes([event])).unwrap();
@@ -372,16 +413,6 @@ fn append_event(path: &Path, event: serde_json::Value) {
 
 fn destructively_mutate_session(path: &Path, replacement: &Path, mutation: &str) {
     match mutation {
-        "rewrite" => {
-            let mut contents = fs::read(path).unwrap();
-            let marker = b"lastgooduniquetoken";
-            let start = contents
-                .windows(marker.len())
-                .position(|window| window == marker)
-                .expect("rewrite marker is present");
-            contents[start] = b'L';
-            fs::write(path, contents).unwrap();
-        }
         "truncate" => {
             let file = OpenOptions::new().write(true).open(path).unwrap();
             file.set_len(fs::metadata(path).unwrap().len() / 2).unwrap();
@@ -685,8 +716,8 @@ fn assert_legacy_provider_checkpoint_is_inert(
         .get(native_session_id)
         .unwrap()
         .counters;
-    assert_eq!(counters.appended_sources, 1);
-    assert_eq!(counters.replaced_sources, 0);
+    assert_eq!(counters.appended_sources, 0);
+    assert_eq!(counters.replaced_sources, 1);
     assert_eq!(counters.scanner_sources_started, 1);
     assert_eq!(counters.scanner_sources_completed, 1);
     assert_eq!(counters.writer_mutated_sources, 1);
@@ -694,7 +725,7 @@ fn assert_legacy_provider_checkpoint_is_inert(
     let rebuilt = VerifiedIndex::open(&index_root).unwrap();
     let rebuilt_snapshot = source_snapshot(&rebuilt, native_session_id, &marker);
     let (_, _, _, rebuilt_checkpoint) = provider_checkpoint_envelope(&rebuilt, native_session_id);
-    assert_provider_checkpoint_absent(&rebuilt_checkpoint);
+    assert_current_provider_checkpoint(&rebuilt_checkpoint);
     assert_eq!(
         certificate_for(&rebuilt, native_session_id)
             .frontier()
@@ -717,8 +748,14 @@ fn assert_legacy_provider_checkpoint_is_inert(
     );
 }
 
-fn assert_provider_checkpoint_absent(checkpoint: &serde_json::Value) {
-    assert_eq!(checkpoint, &serde_json::Value::Null);
+fn assert_current_provider_checkpoint(checkpoint: &serde_json::Value) {
+    const MAX_PROVIDER_CHECKPOINT_BYTES: usize = 64 * 1024 - 5;
+    let encoded = checkpoint
+        .get("Utf8")
+        .and_then(serde_json::Value::as_str)
+        .expect("Codex provider checkpoint must be compact UTF-8");
+    assert!(encoded.starts_with("zstd-json-v1:"));
+    assert!(encoded.len() <= MAX_PROVIDER_CHECKPOINT_BYTES);
 }
 
 fn terminal_authority_events(entries: usize) -> Vec<serde_json::Value> {

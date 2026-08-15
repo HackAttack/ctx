@@ -700,6 +700,41 @@ fn append_only_terminal_growth_commits_admitted_suffix_and_successor_drains_late
 }
 
 #[test]
+fn append_only_contract_reads_the_suffix_without_reauthenticating_old_bytes() {
+    let temp = crate::test_support_paths::tempdir().unwrap();
+    let root = temp.path().join("sessions");
+    let index = temp.path().join("index");
+    fs::create_dir_all(&root).unwrap();
+    let source_path = root.join("trusted-append-only.jsonl");
+    fs::write(&source_path, TEST_RECORD).unwrap();
+    let adapter = DirectAppendTestAdapter::default();
+    capture_parallel_test_generation(&adapter, &root, &index, 1);
+
+    let mut rewritten_prefix = TEST_RECORD.to_vec();
+    rewritten_prefix[1] ^= 1;
+    assert_eq!(rewritten_prefix.len(), TEST_RECORD.len());
+    let mut rewritten_and_appended = rewritten_prefix;
+    rewritten_and_appended.extend_from_slice(TEST_RECORD);
+    fs::write(&source_path, rewritten_and_appended).unwrap();
+
+    let prefix_hash = track_jsonl_prefix_hash_bytes(source_path);
+    let (appended, activity) = capture_parallel_test_generation(&adapter, &root, &index, 1);
+    assert_eq!(prefix_hash.bytes(), 0);
+    assert_eq!(activity.sources_started, 1);
+    assert_eq!(appended.manifest().sources[0].counts().complete_records, 2);
+    assert_eq!(
+        *adapter.observations.lock().unwrap().last().unwrap(),
+        DirectAppendPassObservation {
+            mode: JsonlFamilyProjectionMode::CertifiedAppend,
+            direct_append: true,
+            preflight_bytes: TEST_RECORD.len() as u64,
+            projection_bytes: TEST_RECORD.len() as u64,
+            projected_records: 1,
+        }
+    );
+}
+
+#[test]
 fn unchanged_terminal_proof_fails_closed_on_prepublication_source_races() {
     let append_adapter = ParallelTestAdapter;
     let replacement_adapter = ReplacementParallelTestAdapter;

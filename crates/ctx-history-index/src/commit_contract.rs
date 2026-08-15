@@ -52,7 +52,13 @@ impl CommitReceipt {
         }
     }
 
-    /// Returns the exact immutable manifest snapshot published by this commit.
+    /// Returns the exact immutable logical manifest snapshot published by this
+    /// commit.
+    ///
+    /// [`Self::generation_id`] names the persisted manifest descriptor. A
+    /// compact descriptor may materialize to this full logical snapshot, so
+    /// recomputing [`GenerationManifest::generation_id`] from the returned
+    /// value need not reproduce the descriptor ID.
     pub fn manifest(&self) -> &GenerationManifest {
         &self.manifest
     }
@@ -94,7 +100,9 @@ pub enum PublicationDisposition {
 
 /// Final logical publication facts available to an opaque metadata factory.
 ///
-/// The manifest and its generation ID are complete and deterministic. Core
+/// The logical manifest and persisted descriptor generation ID are complete
+/// and deterministic. A compact descriptor's ID need not equal the canonical
+/// full-manifest ID obtained from [`GenerationManifest::generation_id`]. Core
 /// invokes the factory inside the publication fence, then terminally
 /// revalidates every source and inventory before binding the returned bytes to
 /// a pointer-advancing commit.

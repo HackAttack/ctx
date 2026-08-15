@@ -47,7 +47,7 @@ type JsonlOptimizedLeafResult<R> = JsonlResult<
     JsonlRuntimeError<R>,
 >;
 mod leaf;
-#[cfg(feature = "test-support")]
+#[cfg(any(test, feature = "test-support"))]
 pub use leaf::checkpoint_admitted_revision_for_test;
 #[cfg(test)]
 use leaf::family_scanner_worker_count_policy;
@@ -64,7 +64,7 @@ use ownership::base_sources_for_root;
 mod projector;
 pub use projector::JsonlFamilyProjector;
 mod revalidation;
-#[cfg(feature = "test-support")]
+#[cfg(any(test, feature = "test-support"))]
 pub use revalidation::set_before_jsonl_terminal_physical_revalidation_hook;
 use revalidation::{
     binding_digest, inventory_observation, reset_terminal, revalidate_complete_inventory,
@@ -1402,11 +1402,11 @@ fn default_base_source_path<R: JsonlFamilyRuntime>(
     let frontier = certificate.frontier().ok_or_else(|| {
         JsonlRuntimeError::<R>::invalid_payload("JSONL base frontier is absent".to_owned())
     })?;
-    if frontier.checkpoint_kind() != FAMILY_FRONTIER_KIND {
-        return Err(JsonlRuntimeError::<R>::invalid_payload(
-            "JSONL base frontier kind changed".to_owned(),
-        ));
-    }
+    // This lookup recovers ownership only; it does not authorize continuation.
+    // Decode a structurally current checkpoint even when its outer kind is a
+    // retired value so the source can be selected for a conservative full
+    // replacement. `decode_checkpoint` separately requires the current kind
+    // before granting no-op or suffix authority.
     let checkpoint =
         FamilyCheckpoint::decode_frontier_key::<JsonlRuntimeError<R>>(frontier.checkpoint())?;
     if checkpoint.physical.identity().source_descriptor_digest()
@@ -1560,14 +1560,7 @@ fn capture<R: JsonlFamilyRuntime>(
     sink: &mut SourceBackedGenerationSink<'_, R::Lifecycle>,
 ) -> SourceBackedRouteResult<()> {
     if let Some(members) = sink.member_workset().cloned() {
-        #[cfg(feature = "test-support")]
-        let partial_started = std::time::Instant::now();
         let partial_captured = capture_partial_members(adapter, root, resident, sink, &members)?;
-        #[cfg(feature = "test-support")]
-        crate::bench_timings::record(
-            crate::bench_timings::JsonlPartialBenchPhase::Total,
-            partial_started.elapsed(),
-        );
         if partial_captured {
             return Ok(());
         }
@@ -1786,17 +1779,9 @@ fn capture_partial_members<R: JsonlFamilyRuntime>(
     {
         return Ok(false);
     }
-    #[cfg(feature = "test-support")]
-    let open_started = std::time::Instant::now();
-    let opened = open_partial_members(adapter, root, members)
-        .map_err(|error| route_scan(adapter, error))?;
-    #[cfg(feature = "test-support")]
-    crate::bench_timings::record(
-        crate::bench_timings::JsonlPartialBenchPhase::OpenMembers,
-        open_started.elapsed(),
-    );
-    let Some(mut leaves) = opened
-    else {
+    let opened =
+        open_partial_members(adapter, root, members).map_err(|error| route_scan(adapter, error))?;
+    let Some(mut leaves) = opened else {
         return Ok(false);
     };
     if leaves.len() != members.len() {
@@ -1805,22 +1790,13 @@ fn capture_partial_members<R: JsonlFamilyRuntime>(
     adapter
         .order_leaf_scans(&mut leaves)
         .map_err(|error| route_scan(adapter, error))?;
-    #[cfg(feature = "test-support")]
-    let ownership_started = std::time::Instant::now();
     let owned_elsewhere = leaves
         .iter()
         .any(|leaf| sink.source_owned_by_other_route(leaf.source()));
-    #[cfg(feature = "test-support")]
-    crate::bench_timings::record(
-        crate::bench_timings::JsonlPartialBenchPhase::Ownership,
-        ownership_started.elapsed(),
-    );
     if owned_elsewhere {
         return Ok(false);
     }
 
-    #[cfg(feature = "test-support")]
-    let base_lookup_started = std::time::Instant::now();
     let mut bases = Vec::with_capacity(leaves.len());
     let mut owned_sources = HashMap::with_capacity(leaves.len());
     for leaf in &leaves {
@@ -1832,43 +1808,22 @@ fn capture_partial_members<R: JsonlFamilyRuntime>(
             return Ok(false);
         }
         let Some(base) = sink.base_route_source(leaf.source()).cloned() else {
-            #[cfg(feature = "test-support")]
-            crate::bench_timings::reject(1);
             return Ok(false);
         };
         match adapter.base_source_path(&base) {
             Ok(path) if path == leaf.source_path() => {}
             Ok(_) => {
-                #[cfg(feature = "test-support")]
-                crate::bench_timings::reject(2);
                 return Ok(false);
             }
             Err(_) => {
-                #[cfg(feature = "test-support")]
-                crate::bench_timings::reject(3);
                 return Ok(false);
             }
         }
         bases.push(base);
     }
-    #[cfg(feature = "test-support")]
-    crate::bench_timings::record(
-        crate::bench_timings::JsonlPartialBenchPhase::BaseLookup,
-        base_lookup_started.elapsed(),
-    );
-
-    #[cfg(feature = "test-support")]
-    let reset_started = std::time::Instant::now();
     reset_terminal(resident)?;
     let bases_by_descriptor = bases_by_descriptor(&bases)?;
     let base_event_lookup = sink.base_event_lookup();
-    #[cfg(feature = "test-support")]
-    crate::bench_timings::record(
-        crate::bench_timings::JsonlPartialBenchPhase::Reset,
-        reset_started.elapsed(),
-    );
-    #[cfg(feature = "test-support")]
-    let scan_started = std::time::Instant::now();
     let terminal_sources = scan_leaves(
         adapter,
         &leaves,
@@ -1881,28 +1836,13 @@ fn capture_partial_members<R: JsonlFamilyRuntime>(
         .map_err(|error| route_scan(adapter, error));
     let terminal_sources = terminal_sources?;
     finish_leaf_scans?;
-    #[cfg(feature = "test-support")]
-    crate::bench_timings::record(
-        crate::bench_timings::JsonlPartialBenchPhase::Scan,
-        scan_started.elapsed(),
-    );
     if terminal_sources.len() != leaves.len() {
         return Err(route_internal(
             "partial JSONL scan did not produce one terminal proof per selected member",
         ));
     }
-    #[cfg(feature = "test-support")]
-    let retain_started = std::time::Instant::now();
     sink.retain_unstaged_base_route_sources()
         .map_err(route_internal)?;
-    #[cfg(feature = "test-support")]
-    crate::bench_timings::record(
-        crate::bench_timings::JsonlPartialBenchPhase::Retain,
-        retain_started.elapsed(),
-    );
-
-    #[cfg(feature = "test-support")]
-    let finish_started = std::time::Instant::now();
     let mut resident = resident
         .lock()
         .map_err(|_| route_internal("JSONL resident catalog lock was poisoned"))?;
@@ -1915,11 +1855,6 @@ fn capture_partial_members<R: JsonlFamilyRuntime>(
     resident.opening_membership = None;
     resident.certified_inventory = None;
     resident.opening_inventory = None;
-    #[cfg(feature = "test-support")]
-    crate::bench_timings::record(
-        crate::bench_timings::JsonlPartialBenchPhase::Finish,
-        finish_started.elapsed(),
-    );
     Ok(true)
 }
 

@@ -11,10 +11,7 @@ publish = false
 
 [features]
 default = []
-test-support = [
-    "ctx-history-capture/test-support",
-    "ctx-history-index/test-support",
-]
+test-support = []
 
 [dependencies]
 anyhow.workspace = true

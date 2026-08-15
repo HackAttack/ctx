@@ -89,9 +89,9 @@ impl JsonlFileObservation {
         self.stable_identity.is_some() && self.change_identity.is_some()
     }
 
-    /// Whether `current` can still contain the exact frozen bytes represented
-    /// by this observation. Content is not trusted until the caller separately
-    /// verifies its certified prefix digest.
+    /// Whether `current` is physically eligible to contain the frozen prefix.
+    /// Strict callers must still authenticate that prefix. A caller using an
+    /// explicit append-only provider contract may instead trust that contract.
     pub fn admits_frozen_prefix_in(&self, current: &Self) -> bool {
         self == current
             || (current.length >= self.length

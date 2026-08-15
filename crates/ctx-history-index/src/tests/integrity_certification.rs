@@ -33,6 +33,13 @@ fn published_fixture(name: &str) -> (TempDir, SourceKey, CommitReceipt) {
     assert_certification_is_bounded(
         &crate::publication::certification_file_for_active(temp.path()).unwrap(),
     );
+    assert!(
+        fs::metadata(active_store_path(temp.path()))
+            .unwrap()
+            .permissions()
+            .readonly(),
+        "certified immutable segment artifacts must be sealed read-only"
+    );
     (temp, source, receipt)
 }
 
@@ -62,6 +69,12 @@ fn mismatched_same_size_managed_bytes(path: &Path) -> Vec<u8> {
         .position(|window| window == b"meta.json")
         .expect("managed topology must contain meta.json");
     bytes[offset] = b'n';
+    bytes
+}
+
+fn mismatched_same_size_bytes(path: &Path) -> Vec<u8> {
+    let mut bytes = fs::read(path).unwrap();
+    bytes[0] ^= 0x5a;
     bytes
 }
 
@@ -208,12 +221,11 @@ fn append_reports_nonreflink_fallback_without_faking_hardlink_availability() {
     let metrics = crate::publication::candidate_clone_metrics();
     drop(guard);
     assert_eq!(metrics.retained_reflinked_files, 0);
-    if metrics.retained_full_hash_fallback_files > 0 {
-        assert!(metrics.retained_full_hash_fallback_bytes > 0);
+    if metrics.retained_hardlinked_files > 0 {
         assert_eq!(metrics.retained_copied_files, 0);
         assert_eq!(metrics.retained_copied_bytes, 0);
     } else {
-        assert_eq!(metrics.retained_full_hash_fallback_bytes, 0);
+        assert_eq!(metrics.retained_hardlinked_files, 0);
         assert!(metrics.retained_copied_files > 0);
         assert!(metrics.retained_copied_bytes > 0);
     }
@@ -237,10 +249,53 @@ fn append_reports_copy_fallback_when_reflink_and_hardlink_are_forced_off() {
     let metrics = crate::publication::candidate_clone_metrics();
     drop(guard);
     assert_eq!(metrics.retained_reflinked_files, 0);
-    assert_eq!(metrics.retained_full_hash_fallback_files, 0);
-    assert_eq!(metrics.retained_full_hash_fallback_bytes, 0);
+    assert_eq!(metrics.retained_hardlinked_files, 0);
     assert!(metrics.retained_copied_files > 0);
     assert!(metrics.retained_copied_bytes > 0);
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn hardlink_fallback_rejects_same_size_restored_mtime_mutation_before_link() {
+    let (temp, source, _) = published_fixture("hardlink-prelink-mutation.jsonl");
+    let pointer_before = fs::read(temp.path().join("active-generation.json")).unwrap();
+    let source_file = active_store_path(temp.path());
+    let source_name = source_file.file_name().unwrap().to_owned();
+    let mutation = mismatched_same_size_bytes(&source_file);
+    let source_for_hook = source_file.clone();
+    let mut mutated = false;
+    let guard = CloneTestHookGuard::set(
+        CloneTestOptions {
+            force_reflink_fallback: true,
+            ..CloneTestOptions::default()
+        },
+        move |stage, relative| {
+            if stage == CloneStage::BeforeHardlink
+                && relative == Path::new(&source_name)
+                && !mutated
+            {
+                with_temporarily_writable(&source_for_hook, || {
+                    overwrite_same_size_and_restore_mtime(&source_for_hook, &mutation)
+                })?;
+                mutated = true;
+            }
+            Ok(())
+        },
+    );
+
+    let error = append_one_record(temp.path(), &source).unwrap_err();
+    drop(guard);
+    assert!(
+        matches!(
+            error,
+            IndexError::ConcurrentGenerationChange | IndexError::ChecksumMismatch
+        ),
+        "{error:?}"
+    );
+    assert_eq!(
+        fs::read(temp.path().join("active-generation.json")).unwrap(),
+        pointer_before
+    );
 }
 
 #[cfg(any(target_os = "linux", target_os = "macos"))]
@@ -472,29 +527,36 @@ fn append_copy_fallback_rejects_source_growth_after_authenticated_open() {
         move |stage, relative| {
             if stage == CloneStage::AfterSourceOpen && relative == Path::new(&source_name) && !grew
             {
-                std::fs::OpenOptions::new()
-                    .append(true)
-                    .open(&source_for_hook)?
-                    .write_all(b"growth-after-authenticated-open")?;
+                with_temporarily_writable(&source_for_hook, || {
+                    std::fs::OpenOptions::new()
+                        .append(true)
+                        .open(&source_for_hook)?
+                        .write_all(b"growth-after-authenticated-open")
+                })?;
                 grew = true;
             }
             Ok(())
         },
     );
 
-    assert!(matches!(
-        append_one_record(temp.path(), &source),
-        Err(IndexError::CurrentRepublishSourceTopology(
-            "source file grew while cloning"
-        ))
-    ));
+    let error = append_one_record(temp.path(), &source).unwrap_err();
+    assert!(
+        matches!(
+            error,
+            IndexError::CurrentRepublishSourceTopology("source file grew while cloning")
+                | IndexError::ConcurrentGenerationChange
+                | IndexError::ChecksumMismatch
+        ),
+        "{error:?}"
+    );
     drop(guard);
-    std::fs::OpenOptions::new()
-        .write(true)
-        .open(&source_file)
-        .unwrap()
-        .set_len(original_bytes)
-        .unwrap();
+    with_temporarily_writable(&source_file, || {
+        std::fs::OpenOptions::new()
+            .write(true)
+            .open(&source_file)?
+            .set_len(original_bytes)
+    })
+    .unwrap();
 }
 
 #[test]
@@ -624,21 +686,20 @@ fn same_size_restored_mtime_mutation_and_symlink_fail_closed() {
     let before = fs::metadata(&store_path).unwrap();
     let before_ctime = (before.ctime(), before.ctime_nsec());
     let modified = before.modified().unwrap();
-    let mut store = OpenOptions::new()
-        .read(true)
-        .write(true)
-        .open(&store_path)
-        .unwrap();
-    let mut byte = [0_u8; 1];
-    store.read_exact(&mut byte).unwrap();
-    store.seek(std::io::SeekFrom::Start(0)).unwrap();
-    byte[0] ^= 0x5a;
-    store.write_all(&byte).unwrap();
-    store
-        .set_times(FileTimes::new().set_modified(modified))
-        .unwrap();
-    store.sync_all().unwrap();
-    drop(store);
+    with_temporarily_writable(&store_path, || {
+        let mut store = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(&store_path)?;
+        let mut byte = [0_u8; 1];
+        store.read_exact(&mut byte)?;
+        store.seek(std::io::SeekFrom::Start(0))?;
+        byte[0] ^= 0x5a;
+        store.write_all(&byte)?;
+        store.set_times(FileTimes::new().set_modified(modified))?;
+        store.sync_all()
+    })
+    .unwrap();
     let after = fs::metadata(&store_path).unwrap();
     assert_eq!(after.len(), before.len());
     assert_eq!(after.modified().unwrap(), modified);
@@ -741,8 +802,11 @@ fn rewrite_active_store_with_valid_crc(root: &Path) -> PathBuf {
     bytes.extend_from_slice(&footer);
     bytes.extend_from_slice(&u32::try_from(footer.len()).unwrap().to_le_bytes());
     bytes.extend_from_slice(&FOOTER_MAGIC.to_le_bytes());
-    fs::write(&path, bytes).unwrap();
-    File::open(&path).unwrap().sync_all().unwrap();
+    with_temporarily_writable(&path, || {
+        fs::write(&path, bytes)?;
+        File::open(&path)?.sync_all()
+    })
+    .unwrap();
     path
 }
 

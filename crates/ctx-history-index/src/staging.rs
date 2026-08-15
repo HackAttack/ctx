@@ -332,5 +332,5 @@ fn staged_manifest_matches_base(
     }) {
         return Ok(false);
     }
-    Ok(manifest.generation_id()? == base.generation_id()?)
+    Ok(manifest.exact_snapshot_eq(base))
 }

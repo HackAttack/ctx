@@ -192,9 +192,3 @@ pub use provider::source_backed::{
     MAX_SOURCE_BACKED_FAILURE_DETAIL_BYTES, MAX_SOURCE_BACKED_FAILURE_SELECTOR_BYTES,
     MAX_SOURCE_BACKED_ROUTE_CONTROL_BYTES,
 };
-#[cfg(feature = "test-support")]
-#[doc(hidden)]
-pub use provider::source_backed::{
-    jsonl_partial_bench_phase_timings, reset_jsonl_partial_bench_phase_timings,
-    reset_source_backed_bench_phase_timings, source_backed_bench_phase_timings,
-};

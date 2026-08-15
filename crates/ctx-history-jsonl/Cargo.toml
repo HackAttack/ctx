@@ -27,7 +27,3 @@ zstd.workspace = true
 [dev-dependencies]
 tempfile.workspace = true
 uuid.workspace = true
-
-[[bench]]
-name = "resumable_sha256_throughput"
-harness = false

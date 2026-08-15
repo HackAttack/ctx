@@ -1,6 +1,6 @@
 use std::{
     collections::BTreeMap,
-    fs::File,
+    fs::{self, File, Metadata},
     io::Read,
     path::{Path, PathBuf},
     sync::{Arc, Mutex, OnceLock, Weak},
@@ -26,27 +26,40 @@ use ctx_history_core::CertifiedSource;
 const MAX_PUBLICATION_METADATA_ENCODED_BYTES: usize =
     MAX_PUBLICATION_METADATA_BYTES.div_ceil(3) * 4;
 const MAX_COMMIT_PAYLOAD_BYTES: usize = MAX_PUBLICATION_METADATA_ENCODED_BYTES + 256;
-const MANIFEST_DELTA_STORAGE: &str = "ctx-manifest-delta-v1";
 const MANIFEST_FLAT_DELTA_STORAGE: &str = "ctx-manifest-flat-delta-v1";
-const MANIFEST_DELTA_PREFIX: &[u8] = br#"{"storage_format":"ctx-manifest-delta-v1","#;
 const MANIFEST_FLAT_DELTA_PREFIX: &[u8] = br#"{"storage_format":"ctx-manifest-flat-delta-v1","#;
 const MAX_MANIFEST_DELTA_CHANGES: usize = 64;
 const MAX_MANIFEST_DELTA_BYTES: usize = 1024 * 1024;
-const MAX_MANIFEST_DELTA_ANCESTORS: usize = 128;
 
 type ManifestCacheKey = (PathBuf, String);
-static MANIFEST_CACHE: OnceLock<Mutex<BTreeMap<ManifestCacheKey, Weak<GenerationManifest>>>> =
+static MANIFEST_CACHE: OnceLock<Mutex<BTreeMap<ManifestCacheKey, ManifestCacheEntry>>> =
     OnceLock::new();
 
-#[derive(Debug, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct StoredManifestDeltaV1 {
-    storage_format: String,
-    base_generation_id: String,
-    indexed_documents: u64,
-    certified_source_bytes: u64,
-    source_count: usize,
-    changes: Vec<StoredManifestSourceChangeV1>,
+#[derive(Clone)]
+struct ManifestCacheEntry {
+    manifest: Weak<GenerationManifest>,
+    identity: ManifestFileIdentity,
+}
+
+#[derive(Clone, PartialEq, Eq)]
+struct ManifestFileIdentity {
+    length: u64,
+    readonly: bool,
+    modified: std::time::SystemTime,
+    #[cfg(unix)]
+    device: u64,
+    #[cfg(unix)]
+    inode: u64,
+    #[cfg(unix)]
+    changed_seconds: i64,
+    #[cfg(unix)]
+    changed_nanoseconds: i64,
+    #[cfg(windows)]
+    creation_time: u64,
+    #[cfg(windows)]
+    last_write_time: u64,
+    #[cfg(windows)]
+    attributes: u32,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -72,11 +85,24 @@ pub struct PreparedManifest {
     generation_id: String,
     bytes: Vec<u8>,
     materialized: Arc<GenerationManifest>,
+    base_fence: Option<(String, ManifestFileIdentity)>,
 }
 
 impl PreparedManifest {
     pub fn generation_id(&self) -> &str {
         &self.generation_id
+    }
+
+    pub fn verify_persisted(&self, root: &Path) -> Result<()> {
+        if load_manifest_bytes(root, &self.generation_id)? != self.bytes {
+            return Err(IndexError::NonCanonicalManifest);
+        }
+        if let Some((generation_id, expected)) = &self.base_fence {
+            if capture_manifest_identity(root, generation_id)? != *expected {
+                return Err(IndexError::NonCanonicalManifest);
+            }
+        }
+        Ok(())
     }
 }
 
@@ -160,25 +186,7 @@ fn load_materialized_manifest(
     if let Some(manifest) = cached_manifest(&key)? {
         return Ok(manifest);
     }
-    let manifest = if bytes.starts_with(MANIFEST_DELTA_PREFIX) {
-        let delta: StoredManifestDeltaV1 = serde_json::from_slice(&bytes)?;
-        if serde_json::to_vec(&delta)? != bytes
-            || delta.storage_format != MANIFEST_DELTA_STORAGE
-            || !is_generation_id(&delta.base_generation_id)
-            || delta.changes.is_empty()
-            || delta.changes.len() > MAX_MANIFEST_DELTA_CHANGES
-        {
-            return Err(IndexError::NonCanonicalManifest);
-        }
-        let base = load_materialized_manifest(root, &delta.base_generation_id, depth + 1)?;
-        materialize_delta(
-            base.as_ref(),
-            delta.indexed_documents,
-            delta.certified_source_bytes,
-            delta.source_count,
-            delta.changes,
-        )?
-    } else if bytes.starts_with(MANIFEST_FLAT_DELTA_PREFIX) {
+    let manifest = if bytes.starts_with(MANIFEST_FLAT_DELTA_PREFIX) {
         let delta: StoredManifestFlatDeltaV1 = serde_json::from_slice(&bytes)?;
         if serde_json::to_vec(&delta)? != bytes
             || delta.storage_format != MANIFEST_FLAT_DELTA_STORAGE
@@ -209,18 +217,76 @@ fn load_materialized_manifest(
         .get_or_init(|| Mutex::new(BTreeMap::new()))
         .lock()
         .map_err(|_| IndexError::NonCanonicalManifest)?;
-    cache.retain(|_, manifest| manifest.strong_count() != 0);
-    cache.insert(key, Arc::downgrade(&manifest));
+    cache.retain(|_, entry| entry.manifest.strong_count() != 0);
+    cache.insert(
+        key,
+        ManifestCacheEntry {
+            manifest: Arc::downgrade(&manifest),
+            identity: capture_manifest_identity(root, generation_id)?,
+        },
+    );
     Ok(manifest)
 }
 
 fn cached_manifest(key: &ManifestCacheKey) -> Result<Option<Arc<GenerationManifest>>> {
-    Ok(MANIFEST_CACHE
+    let entry = MANIFEST_CACHE
         .get_or_init(|| Mutex::new(BTreeMap::new()))
         .lock()
         .map_err(|_| IndexError::NonCanonicalManifest)?
         .get(key)
-        .and_then(Weak::upgrade))
+        .cloned();
+    let Some(entry) = entry else {
+        return Ok(None);
+    };
+    let Some(manifest) = entry.manifest.upgrade() else {
+        return Ok(None);
+    };
+    if capture_manifest_identity(&key.0, &key.1)? != entry.identity {
+        return Err(IndexError::NonCanonicalManifest);
+    }
+    Ok(Some(manifest))
+}
+
+fn capture_manifest_identity(root: &Path, generation_id: &str) -> Result<ManifestFileIdentity> {
+    let path = manifest_path(root, generation_id);
+    let metadata = fs::symlink_metadata(&path).map_err(|error| {
+        if error.kind() == std::io::ErrorKind::NotFound {
+            IndexError::MissingManifest(generation_id.to_owned())
+        } else {
+            IndexError::Io(error)
+        }
+    })?;
+    if !metadata.file_type().is_file() {
+        return Err(IndexError::NonCanonicalManifest);
+    }
+    manifest_identity_from_metadata(&metadata)
+}
+
+fn manifest_identity_from_metadata(metadata: &Metadata) -> Result<ManifestFileIdentity> {
+    #[cfg(unix)]
+    use std::os::unix::fs::MetadataExt as _;
+    #[cfg(windows)]
+    use std::os::windows::fs::MetadataExt as _;
+
+    Ok(ManifestFileIdentity {
+        length: metadata.len(),
+        readonly: metadata.permissions().readonly(),
+        modified: metadata.modified()?,
+        #[cfg(unix)]
+        device: metadata.dev(),
+        #[cfg(unix)]
+        inode: metadata.ino(),
+        #[cfg(unix)]
+        changed_seconds: metadata.ctime(),
+        #[cfg(unix)]
+        changed_nanoseconds: metadata.ctime_nsec(),
+        #[cfg(windows)]
+        creation_time: metadata.creation_time(),
+        #[cfg(windows)]
+        last_write_time: metadata.last_write_time(),
+        #[cfg(windows)]
+        attributes: metadata.file_attributes(),
+    })
 }
 
 fn materialize_delta(
@@ -472,11 +538,20 @@ pub fn prepare_successor_manifest(
             generation_id: sha256_hex(&bytes),
             bytes,
             materialized: Arc::clone(&manifest),
+            base_fence: None,
         })
     };
     let Some((base_generation_id, base)) = base else {
         return full();
     };
+    if manifest.exact_snapshot_eq(base) {
+        return Ok(PreparedManifest {
+            generation_id: base_generation_id.to_owned(),
+            bytes: load_manifest_bytes(root, base_generation_id)?,
+            materialized: manifest,
+            base_fence: None,
+        });
+    }
     if !is_generation_id(base_generation_id)
         || base.sources.len() != manifest.sources.len()
         || base.core_record_aggregates.len() != manifest.core_record_aggregates.len()
@@ -525,13 +600,17 @@ pub fn prepare_successor_manifest(
         return full();
     }
     let (base_generation_id, mut accumulated) =
-        accumulated_manifest_changes(root, base_generation_id, 0)?;
+        accumulated_manifest_changes(root, base_generation_id)?;
     for change in changes {
         accumulated.insert(change.source_identity, change);
     }
     if accumulated.len() > MAX_MANIFEST_DELTA_CHANGES {
         return full();
     }
+    let base_fence = Some((
+        base_generation_id.clone(),
+        capture_manifest_identity(root, &base_generation_id)?,
+    ));
     let delta = StoredManifestFlatDeltaV1 {
         storage_format: MANIFEST_FLAT_DELTA_STORAGE.to_owned(),
         base_generation_id,
@@ -548,17 +627,14 @@ pub fn prepare_successor_manifest(
         generation_id: sha256_hex(&bytes),
         bytes,
         materialized: manifest,
+        base_fence,
     })
 }
 
 fn accumulated_manifest_changes(
     root: &Path,
     generation_id: &str,
-    depth: usize,
 ) -> Result<(String, BTreeMap<[u8; 32], StoredManifestSourceChangeV1>)> {
-    if depth > MAX_MANIFEST_DELTA_ANCESTORS {
-        return Err(IndexError::NonCanonicalManifest);
-    }
     let mut prefix = [0_u8; 64];
     let mut file = File::open(manifest_path(root, generation_id)).map_err(|error| {
         if error.kind() == std::io::ErrorKind::NotFound {
@@ -569,8 +645,7 @@ fn accumulated_manifest_changes(
     })?;
     let prefix_len = file.read(&mut prefix)?;
     let prefix = &prefix[..prefix_len];
-    if !prefix.starts_with(MANIFEST_DELTA_PREFIX) && !prefix.starts_with(MANIFEST_FLAT_DELTA_PREFIX)
-    {
+    if !prefix.starts_with(MANIFEST_FLAT_DELTA_PREFIX) {
         // `base` was materialized through the authenticated loader before this
         // helper was called, so reaching its non-delta anchor does not require
         // reading and hashing the potentially corpus-sized full manifest again.
@@ -597,23 +672,6 @@ fn accumulated_manifest_changes(
                 .collect(),
         ));
     }
-    if bytes.starts_with(MANIFEST_DELTA_PREFIX) {
-        let delta: StoredManifestDeltaV1 = serde_json::from_slice(&bytes)?;
-        if serde_json::to_vec(&delta)? != bytes
-            || delta.storage_format != MANIFEST_DELTA_STORAGE
-            || !is_generation_id(&delta.base_generation_id)
-            || delta.changes.is_empty()
-            || delta.changes.len() > MAX_MANIFEST_DELTA_CHANGES
-        {
-            return Err(IndexError::NonCanonicalManifest);
-        }
-        let (base_generation_id, mut accumulated) =
-            accumulated_manifest_changes(root, &delta.base_generation_id, depth + 1)?;
-        for change in delta.changes {
-            accumulated.insert(change.source_identity, change);
-        }
-        return Ok((base_generation_id, accumulated));
-    }
     Err(IndexError::NonCanonicalManifest)
 }
 
@@ -624,8 +682,14 @@ pub fn write_prepared_manifest(root: &Path, manifest: &PreparedManifest) -> Resu
         .get_or_init(|| Mutex::new(BTreeMap::new()))
         .lock()
         .map_err(|_| IndexError::NonCanonicalManifest)?;
-    cache.retain(|_, manifest| manifest.strong_count() != 0);
-    cache.insert(key, Arc::downgrade(&manifest.materialized));
+    cache.retain(|_, entry| entry.manifest.strong_count() != 0);
+    cache.insert(
+        key,
+        ManifestCacheEntry {
+            manifest: Arc::downgrade(&manifest.materialized),
+            identity: capture_manifest_identity(root, &manifest.generation_id)?,
+        },
+    );
     Ok(())
 }
 

@@ -9,10 +9,6 @@ homepage.workspace = true
 rust-version.workspace = true
 publish = false
 
-[features]
-default = []
-test-support = ["ctx-history-capture-composition/test-support"]
-
 [dependencies]
 base64.workspace = true
 chrono.workspace = true

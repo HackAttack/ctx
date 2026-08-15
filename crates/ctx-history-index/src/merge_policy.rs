@@ -128,9 +128,8 @@ mod tests {
             .map(|_| segment(&index, 1, 0))
             .collect::<Vec<_>>();
 
-        let candidates = LexicalMergePolicy::default().compute_merge_candidates(
-            &[vec![base.clone()], deltas.clone()].concat(),
-        );
+        let candidates = LexicalMergePolicy::default()
+            .compute_merge_candidates(&[vec![base.clone()], deltas.clone()].concat());
         assert_eq!(candidates.len(), 1);
         assert_eq!(
             candidates[0].0,
@@ -147,9 +146,8 @@ mod tests {
             .map(|_| segment(&index, 1, 0))
             .collect::<Vec<_>>();
 
-        let candidates = LexicalMergePolicy::default().compute_merge_candidates(
-            &[vec![base], one_doc_deltas].concat(),
-        );
+        let candidates = LexicalMergePolicy::default()
+            .compute_merge_candidates(&[vec![base], one_doc_deltas].concat());
         assert!(
             candidates.is_empty(),
             "seven one-doc deltas must stay below the merge threshold even when a larger packed base exists"

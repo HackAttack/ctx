@@ -993,31 +993,40 @@ fn native_copy_detects_growth_without_writing_past_authenticated_length() {
         },
         move |stage, relative| {
             if stage == CloneStage::BeforeCopy && relative == Path::new(&source_name) && !grew {
-                std::fs::OpenOptions::new()
-                    .append(true)
-                    .open(&source_for_hook)?
-                    .write_all(b"growth-after-authentication")?;
+                with_temporarily_writable(&source_for_hook, || {
+                    std::fs::OpenOptions::new()
+                        .append(true)
+                        .open(&source_for_hook)?
+                        .write_all(b"growth-after-authentication")
+                })?;
                 grew = true;
             }
             Ok(())
         },
     );
 
-    assert!(matches!(
-        open_writer_error(predecessor.root()),
-        IndexError::CurrentRepublishSourceTopology("source file grew while cloning")
-    ));
+    let error = open_writer_error(predecessor.root());
+    assert!(
+        matches!(
+            error,
+            IndexError::CurrentRepublishSourceTopology("source file grew while cloning")
+                | IndexError::ConcurrentGenerationChange
+                | IndexError::ChecksumMismatch
+        ),
+        "{error:?}"
+    );
     assert_eq!(
         fs::read(predecessor.root().join("active-generation.json")).unwrap(),
         pointer_before
     );
     drop(guard);
-    std::fs::OpenOptions::new()
-        .write(true)
-        .open(&source_file)
-        .unwrap()
-        .set_len(original_bytes)
-        .unwrap();
+    with_temporarily_writable(&source_file, || {
+        std::fs::OpenOptions::new()
+            .write(true)
+            .open(&source_file)?
+            .set_len(original_bytes)
+    })
+    .unwrap();
     assert_eq!(
         VerifiedIndex::open(predecessor.root())
             .unwrap()

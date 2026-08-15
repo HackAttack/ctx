@@ -910,6 +910,29 @@ impl GenerationManifest {
         Ok(sha256_hex(&serde_json::to_vec(self)?))
     }
 
+    /// Compares the complete logical snapshot independently of its persisted
+    /// descriptor encoding. A compact manifest descriptor may materialize to
+    /// the same snapshot while having a different descriptor generation ID.
+    pub fn exact_snapshot_eq(&self, other: &Self) -> bool {
+        self.manifest_version == other.manifest_version
+            && self.identity_version == other.identity_version
+            && self.core_record_version == other.core_record_version
+            && self.core_record_contract_fingerprint == other.core_record_contract_fingerprint
+            && self.lexical_schema_version == other.lexical_schema_version
+            && self.lexical_analyzer_version == other.lexical_analyzer_version
+            && self.policy_schema_hash == other.policy_schema_hash
+            && self.indexed_documents == other.indexed_documents
+            && self.certified_source_bytes == other.certified_source_bytes
+            && self.sources == other.sources
+            && self.core_record_aggregates == other.core_record_aggregates
+            && self.source_routes.len() == other.source_routes.len()
+            && self
+                .source_routes
+                .iter()
+                .zip(&other.source_routes)
+                .all(|(left, right)| left.exact_snapshot_eq(right))
+    }
+
     pub(crate) fn apply_validated_source_replacements(
         &self,
         mut replacements: Vec<(CertifiedSource, SourceCoreRecordAggregate)>,

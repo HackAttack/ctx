@@ -70,13 +70,6 @@ pub use runtime_adapter::{
 pub use {discovery::*, driver::*, watch::*};
 pub use {inventory::*, publication::*, registration::*};
 
-#[cfg(feature = "test-support")]
-#[doc(hidden)]
-pub use ctx_history_jsonl::{
-    jsonl_partial_bench_phase_timings, reset_jsonl_partial_bench_phase_timings,
-    JsonlPartialBenchPhaseTimings,
-};
-
 #[cfg(test)]
 const _: Option<FallbackEventIdentityMode> = None;
 const _: Option<FallbackEventIdentityState> = None;

@@ -589,6 +589,9 @@ impl GenerationWriter {
         let expected_audit = verified.publication.physical_integrity_audit();
         match publish_active_generation_pointer_validated(&root, &next_pointer, || {
             activation_fence.validate_binding()?;
+            prepared_manifest
+                .verify_persisted(&root)
+                .map_err(|_| ctx_history_index_generation::GenerationError::ChecksumMismatch)?;
             validate_candidate_managed_files(
                 terminal_index,
                 &candidate_path,

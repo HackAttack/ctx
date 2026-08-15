@@ -125,8 +125,7 @@ pub(crate) fn bind_candidate_activation_fence(
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct CandidateCloneMetrics {
     pub retained_reflinked_files: usize,
-    pub retained_full_hash_fallback_files: usize,
-    pub retained_full_hash_fallback_bytes: u64,
+    pub retained_hardlinked_files: usize,
     pub retained_copied_files: usize,
     pub retained_copied_bytes: u64,
 }
@@ -135,8 +134,7 @@ pub struct CandidateCloneMetrics {
 #[derive(Debug, Clone, Copy, Default)]
 pub(crate) struct CandidateCloneMetrics {
     retained_reflinked_files: usize,
-    retained_full_hash_fallback_files: usize,
-    retained_full_hash_fallback_bytes: u64,
+    retained_hardlinked_files: usize,
     retained_copied_files: usize,
     retained_copied_bytes: u64,
 }
@@ -146,8 +144,7 @@ thread_local! {
     static CANDIDATE_CLONE_METRICS: std::cell::Cell<CandidateCloneMetrics> = const {
         std::cell::Cell::new(CandidateCloneMetrics {
             retained_reflinked_files: 0,
-            retained_full_hash_fallback_files: 0,
-            retained_full_hash_fallback_bytes: 0,
+            retained_hardlinked_files: 0,
             retained_copied_files: 0,
             retained_copied_bytes: 0,
         })
@@ -870,7 +867,7 @@ mod unix {
                 continue;
             }
 
-            let (expected_artifact, expected_sha256) = certified
+            let (expected_artifact, expected_sha256, sealed) = certified
                 .certified_artifact(&planned.path)
                 .ok_or(IndexError::ChecksumMismatch)?;
             let (mut source_file, source_before) = open_authenticated_artifact(
@@ -887,7 +884,8 @@ mod unix {
                 };
             }
             clone_checkpoint(CloneStage::AfterSourceOpen, &planned.path)?;
-            if !planned.copy_required
+            if sealed
+                && !planned.copy_required
                 && !force_reflink_fallback()
                 && try_clone_reflink_at(&source_file, &destination.file, &planned.path)?
             {
@@ -921,8 +919,23 @@ mod unix {
             }
 
             clone_checkpoint(CloneStage::BeforeHardlink, &planned.path)?;
+            let source_prelink = recapture_authenticated_artifact(
+                root,
+                source_path,
+                &planned.path,
+                &source_file,
+                Some(predecessor_pointer),
+            )?;
+            if source_prelink != expected_artifact {
+                return if expected_artifact.same_payload_identity_changed(&source_prelink) {
+                    Err(IndexError::ConcurrentGenerationChange)
+                } else {
+                    Err(IndexError::ChecksumMismatch)
+                };
+            }
             let before = FileIdentity::from_metadata(&source_file.metadata()?);
-            let linked = !planned.copy_required
+            let linked = sealed
+                && !planned.copy_required
                 && !force_hardlink_fallback()
                 && !force_copy_fallback()
                 && match hard_link_authenticated_source(
@@ -943,13 +956,15 @@ mod unix {
                     ));
                 }
                 validate_file_binding(&source.file, &planned.path, before)?;
-                metrics.retained_full_hash_fallback_files = metrics
-                    .retained_full_hash_fallback_files
+                let destination_artifact =
+                    capture_artifact_identity(root, destination_path, &planned.path, None)?;
+                physical_proof.insert(PhysicalFileDigest {
+                    artifact: destination_artifact,
+                    sha256: expected_sha256,
+                });
+                metrics.retained_hardlinked_files = metrics
+                    .retained_hardlinked_files
                     .checked_add(1)
-                    .ok_or(IndexError::CountOverflow)?;
-                metrics.retained_full_hash_fallback_bytes = metrics
-                    .retained_full_hash_fallback_bytes
-                    .checked_add(source_before.identity.length())
                     .ok_or(IndexError::CountOverflow)?;
                 validate_child_binding(&generations.file, source_name, source.identity)?;
                 clone_checkpoint(CloneStage::AfterFile, &planned.path)?;

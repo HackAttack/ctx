@@ -680,7 +680,7 @@ fn clone_candidate_files(
             continue;
         }
 
-        let (expected_artifact, expected_sha256) = certified
+        let (expected_artifact, expected_sha256, _sealed) = certified
             .certified_artifact(&planned.path)
             .ok_or(IndexError::ChecksumMismatch)?;
         let (mut source_file, source_before) = open_authenticated_artifact(
