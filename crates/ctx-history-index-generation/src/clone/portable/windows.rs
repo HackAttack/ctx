@@ -148,6 +148,11 @@ fn nt_open_at(
     };
     let mut status_block = IO_STATUS_BLOCK::default();
     let mut handle: HANDLE = std::ptr::null_mut();
+    let recall_option = if kind == FILE_DIRECTORY_FILE {
+        0
+    } else {
+        FILE_OPEN_NO_RECALL
+    };
     // SAFETY: all structures and the relative UTF-16 name remain live for
     // the call, and a successful handle is transferred into `File` once.
     let status = unsafe {
@@ -160,7 +165,7 @@ fn nt_open_at(
             file_attributes,
             FILE_SHARE_READ | FILE_SHARE_WRITE,
             disposition,
-            kind | FILE_OPEN_REPARSE_POINT | FILE_OPEN_NO_RECALL | FILE_SYNCHRONOUS_IO_NONALERT,
+            kind | FILE_OPEN_REPARSE_POINT | recall_option | FILE_SYNCHRONOUS_IO_NONALERT,
             std::ptr::null(),
             0,
         )

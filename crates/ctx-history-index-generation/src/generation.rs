@@ -509,10 +509,11 @@ mod tests {
     }
 
     #[test]
-    fn candidate_settings_roundtrip_exactly() {
+    fn fresh_candidate_activation_fence_binds_and_settings_roundtrip_exactly() {
         let root = tempfile::tempdir().unwrap();
         let candidate =
             create_candidate_generation(root.path(), None, Schema::builder().build(), 0).unwrap();
+        candidate.activation_fence.validate_binding().unwrap();
         let slot = GenerationSlot::new(
             "0".repeat(64),
             candidate.directory_name.clone(),
