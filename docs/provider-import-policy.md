@@ -230,8 +230,10 @@ contract for that source family:
   not necessarily by the next append event. Ambiguous watcher events, retries,
   truncation, path replacement, parser/checkpoint uncertainty, and explicit
   exhaustive refreshes disable that shortcut and authenticate the retained
-  prefix. Ctx publishes only complete records ending at or before the frozen
-  EOF; a partial final record is deferred until a later refresh completes it.
+  prefix. Daemon startup and watcher replacement are exhaustive safety
+  boundaries as well. Only complete records ending at or before the frozen EOF
+  are published; a partial final record is deferred until a later refresh
+  completes it.
 - SQLite is observed as one short read-only logical snapshot. WAL size,
   checkpointing, and physical database-file size are not ingestion states.
   Concurrent committed rows belong to a subsequent certified snapshot unless

@@ -455,19 +455,16 @@ fn generation_id(search: &Value) -> &str {
 }
 
 fn generation_manifest(temp: &TempDir, generation: &str) -> (GenerationManifest, Value) {
-    let path = search_refresh_data_root(temp)
-        .join("search/lexical/ctx-generations")
-        .join(format!("{generation}.json"));
-    let bytes = fs::read(&path)
-        .unwrap_or_else(|error| panic!("read generation manifest {}: {error}", path.display()));
-    let manifest: GenerationManifest = serde_json::from_slice(&bytes)
-        .unwrap_or_else(|error| panic!("parse generation manifest {}: {error}", path.display()));
-    assert_eq!(
-        manifest.generation_id().unwrap(),
-        generation,
-        "manifest digest must be the published generation ID"
-    );
-    let value: Value = serde_json::from_slice(&bytes).unwrap();
+    let root = search_refresh_data_root(temp).join("search/lexical");
+    let index = ctx_history_index::VerifiedIndex::open_pinned(&root).unwrap_or_else(|error| {
+        panic!(
+            "open generation {generation} at {}: {error}",
+            root.display()
+        )
+    });
+    assert_eq!(index.generation_id(), generation);
+    let manifest = index.manifest().clone();
+    let value = serde_json::to_value(&manifest).unwrap();
     (manifest, value)
 }
 

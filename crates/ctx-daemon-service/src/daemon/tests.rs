@@ -924,6 +924,9 @@ fn pending_source_refresh_wait_respects_retry_backoff() {
             anyhow::bail!("executor must remain backed off")
         }));
     coordinator.enqueue_for_test(None);
+    let route = ctx_history_index::SourceRouteIdentity::from_sha256("cd".repeat(32))
+        .expect("route identity");
+    coordinator.reconcile_watch_routes([route], EventWatermark::new(1, 0), 0);
     let now = Instant::now();
     let mut runtime = DaemonRuntime::default();
     runtime.history_retry.consecutive_failures = 1;
@@ -939,6 +942,7 @@ fn pending_source_refresh_wait_respects_retry_backoff() {
 
     assert!(wait_for > StdDuration::from_secs(4));
     assert!(wait_for <= StdDuration::from_secs(5));
+    assert!(daemon_scheduled_refresh_due(Some(&coordinator), 1_000));
 }
 
 #[test]

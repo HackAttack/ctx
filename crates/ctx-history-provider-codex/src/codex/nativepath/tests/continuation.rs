@@ -105,7 +105,7 @@ fn observe_next_source_backed_stage(
 }
 
 #[test]
-fn large_prefix_tiny_suffix_reads_only_suffix_and_matches_cold_scan() {
+fn large_prefix_full_route_reconciles_authority_but_projects_only_suffix() {
     let fixture_started = std::time::Instant::now();
     let temp = TempDir::new().unwrap();
     let native_session_id = "019fb000-0000-7000-8000-000000000009";
@@ -227,13 +227,22 @@ fn large_prefix_tiny_suffix_reads_only_suffix_and_matches_cold_scan() {
         cold_scan_elapsed.as_millis(),
     );
     assert_eq!(append_metrics.len(), append_counters.len());
-    for ((marker, catalog_elapsed, scan_elapsed, prefix_hash_bytes), counters) in
-        append_metrics.into_iter().zip(append_counters)
+    for (append_index, ((marker, catalog_elapsed, scan_elapsed, prefix_hash_bytes), counters)) in
+        append_metrics.into_iter().zip(append_counters).enumerate()
     {
         assert_eq!(counters.catalog_source_metadata_read_upper_bound_bytes, 0);
         assert_eq!(counters.catalog_session_meta_parses, 0);
-        assert_eq!(counters.mcp_terminal_authority_bytes_read, 254);
-        assert_eq!(counters.repository_candidate_authority_bytes_read, 254);
+        // This harness deliberately enters through complete route discovery,
+        // not exact watcher/member admission. Reconciliation therefore replays
+        // semantic authority from byte zero, while physical projection still
+        // resumes at the certified frontier and reads only the new record.
+        let reconciled_bytes = REPRESENTATIVE_PREFIX_BYTES
+            + u64::try_from(append_index + 1).unwrap() * TINY_APPEND_BYTES as u64;
+        assert_eq!(counters.mcp_terminal_authority_bytes_read, reconciled_bytes);
+        assert_eq!(
+            counters.repository_candidate_authority_bytes_read,
+            reconciled_bytes
+        );
         assert_eq!(counters.scanner_bytes_read, 254);
         assert_eq!(counters.complete_records_scanned, 1);
         assert_eq!(counters.retained_records_scanned, 1);

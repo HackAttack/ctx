@@ -15,6 +15,7 @@ compile_error!("predecessor republish clone is only qualified on ctx release tar
 mod candidate;
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 mod exact_copy;
+mod metrics;
 #[cfg(any(
     test,
     feature = "test-support",
@@ -22,8 +23,15 @@ mod exact_copy;
     target_os = "freebsd"
 ))]
 mod portable;
+mod resource;
 
 pub use candidate::{CandidateActivationFence, RepublishCandidate};
+use metrics::record_candidate_clone_metrics;
+#[cfg(not(any(test, feature = "test-support")))]
+pub(crate) use metrics::CandidateCloneMetrics;
+#[cfg(any(test, feature = "test-support"))]
+pub use metrics::{candidate_clone_metrics, reset_candidate_clone_metrics, CandidateCloneMetrics};
+use resource::{admit_clone_resource, validate_single_component};
 
 pub(super) const MAX_REPUBLISH_CLONE_FILES: usize = 4_096;
 pub(super) const MAX_REPUBLISH_CLONE_BYTES: u64 = 1024 * 1024 * 1024 * 1024;
@@ -119,92 +127,6 @@ pub(crate) fn bind_candidate_activation_fence(
     {
         portable::CandidateGuard::bind(root, directory_name).map(CandidateActivationFence::portable)
     }
-}
-
-#[cfg(any(test, feature = "test-support"))]
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub struct CandidateCloneMetrics {
-    pub retained_reflinked_files: usize,
-    pub retained_hardlinked_files: usize,
-    pub retained_copied_files: usize,
-    pub retained_copied_bytes: u64,
-}
-
-#[cfg(not(any(test, feature = "test-support")))]
-#[derive(Debug, Clone, Copy, Default)]
-pub(crate) struct CandidateCloneMetrics {
-    retained_reflinked_files: usize,
-    retained_hardlinked_files: usize,
-    retained_copied_files: usize,
-    retained_copied_bytes: u64,
-}
-
-#[cfg(any(test, feature = "test-support"))]
-thread_local! {
-    static CANDIDATE_CLONE_METRICS: std::cell::Cell<CandidateCloneMetrics> = const {
-        std::cell::Cell::new(CandidateCloneMetrics {
-            retained_reflinked_files: 0,
-            retained_hardlinked_files: 0,
-            retained_copied_files: 0,
-            retained_copied_bytes: 0,
-        })
-    };
-}
-
-#[cfg(any(test, feature = "test-support"))]
-fn record_candidate_clone_metrics(metrics: CandidateCloneMetrics) {
-    CANDIDATE_CLONE_METRICS.with(|slot| slot.set(metrics));
-}
-
-#[cfg(not(any(test, feature = "test-support")))]
-fn record_candidate_clone_metrics(_metrics: CandidateCloneMetrics) {}
-
-#[cfg(any(test, feature = "test-support"))]
-pub fn reset_candidate_clone_metrics() {
-    CANDIDATE_CLONE_METRICS.with(|slot| slot.set(CandidateCloneMetrics::default()));
-}
-
-#[cfg(any(test, feature = "test-support"))]
-pub fn candidate_clone_metrics() -> CandidateCloneMetrics {
-    CANDIDATE_CLONE_METRICS.with(std::cell::Cell::get)
-}
-
-fn validate_single_component(path: &Path) -> Result<()> {
-    let mut components = path.components();
-    if !matches!(components.next(), Some(std::path::Component::Normal(_)))
-        || components.next().is_some()
-    {
-        return Err(IndexError::CurrentRepublishSourceTopology(
-            "managed path escapes generation directory",
-        ));
-    }
-    Ok(())
-}
-
-fn admit_clone_resource(
-    files: &mut usize,
-    bytes: &mut u64,
-    next_bytes: u64,
-    maximum_files: usize,
-    maximum_bytes: u64,
-) -> Result<()> {
-    *files = files.checked_add(1).ok_or(IndexError::CountOverflow)?;
-    if *files > maximum_files {
-        return Err(IndexError::CurrentRepublishFileLimit {
-            actual: *files,
-            maximum: maximum_files,
-        });
-    }
-    *bytes = bytes
-        .checked_add(next_bytes)
-        .ok_or(IndexError::CountOverflow)?;
-    if *bytes > maximum_bytes {
-        return Err(IndexError::CurrentRepublishByteLimit {
-            actual: *bytes,
-            maximum: maximum_bytes,
-        });
-    }
-    Ok(())
 }
 
 #[cfg(any(target_os = "linux", target_os = "macos"))]
