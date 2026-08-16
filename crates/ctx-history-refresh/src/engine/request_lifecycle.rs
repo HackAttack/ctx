@@ -726,6 +726,7 @@ impl CoreRefreshEngine {
         };
 
         let execution = execute(&request_id, self);
+        self.runtime.refresh_execution_finished();
         let attempted_routes = {
             let state = self.lock_state();
             state

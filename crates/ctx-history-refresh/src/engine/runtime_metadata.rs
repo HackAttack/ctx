@@ -36,6 +36,11 @@ pub trait RefreshRuntime: Send + Sync {
     fn metadata(&self, data_root: &Path, operation: RefreshOperation) -> RefreshRuntimeMetadata;
 
     fn discovery_context(&self, data_root: &Path) -> Result<DiscoveryContext>;
+
+    /// Notifies the process host after refresh execution has returned and its
+    /// scoped workers have dropped, but before publication verification and
+    /// terminal completion are recorded.
+    fn refresh_execution_finished(&self) {}
 }
 
 pub(super) type SourceRefreshRuntimeMetadata = RefreshRuntimeMetadata;

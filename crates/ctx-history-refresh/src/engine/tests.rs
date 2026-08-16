@@ -161,6 +161,114 @@ fn test_publication(generation_id: impl Into<String>) -> SourceBackedRefreshPubl
     }
 }
 
+#[derive(Debug)]
+struct RecordingRefreshRuntime {
+    events: Arc<Mutex<Vec<&'static str>>>,
+}
+
+impl RefreshRuntime for RecordingRefreshRuntime {
+    fn metadata(&self, _data_root: &Path, operation: RefreshOperation) -> RefreshRuntimeMetadata {
+        RefreshRuntimeMetadata {
+            operation,
+            ..RefreshRuntimeMetadata::default()
+        }
+    }
+
+    fn discovery_context(&self, data_root: &Path) -> Result<DiscoveryContext> {
+        Ok(DiscoveryContext::from_process(data_root.join("test-home")))
+    }
+
+    fn refresh_execution_finished(&self) {
+        self.events.lock().unwrap().push("execution-finished");
+    }
+}
+
+struct RecordingExecutionDrop(Arc<Mutex<Vec<&'static str>>>);
+
+impl Drop for RecordingExecutionDrop {
+    fn drop(&mut self) {
+        self.0.lock().unwrap().push("execution-locals-dropped");
+    }
+}
+
+#[test]
+fn runtime_hook_follows_execution_drop_and_precedes_terminal_status() {
+    fn run(success: bool) -> Vec<&'static str> {
+        let events = Arc::new(Mutex::new(Vec::new()));
+        let runtime = Arc::new(RecordingRefreshRuntime {
+            events: Arc::clone(&events),
+        });
+        let coordinator = CoreRefreshEngine(super::CoreRefreshEngine::with_journal_for_test(
+            Arc::new(TestRefreshJournal::default()),
+            runtime,
+            Arc::new(TestExecutor {
+                calls: Arc::new(AtomicUsize::new(0)),
+                generation_id: "unused".to_owned(),
+                failure: None,
+            }),
+        ));
+        coordinator.enqueue(Some("previous".to_owned()));
+
+        let execute_events = Arc::clone(&events);
+        let probe_events = Arc::clone(&events);
+        let terminal_events = Arc::clone(&events);
+        let failure_events = Arc::clone(&events);
+        let run = coordinator
+            .run_next_with(
+                move |_, _| {
+                    execute_events.lock().unwrap().push("execute");
+                    let _drop = RecordingExecutionDrop(Arc::clone(&execute_events));
+                    if success {
+                        Ok(test_publication("published"))
+                    } else {
+                        Err(anyhow!("injected execution failure"))
+                    }
+                },
+                move || {
+                    probe_events.lock().unwrap().push("probe");
+                    Ok(Some(
+                        if success { "published" } else { "previous" }.to_owned(),
+                    ))
+                },
+                move |_| {
+                    terminal_events.lock().unwrap().push("terminal-status");
+                    Ok(())
+                },
+                move |_| {
+                    failure_events.lock().unwrap().push("record-failure");
+                    Ok(())
+                },
+            )
+            .expect("queued refresh");
+        assert_eq!(run.failed, !success);
+        drop(coordinator);
+
+        Arc::try_unwrap(events).unwrap().into_inner().unwrap()
+    }
+
+    assert_eq!(
+        run(true),
+        [
+            "execute",
+            "execution-locals-dropped",
+            "execution-finished",
+            "probe",
+            "terminal-status",
+        ]
+    );
+    assert_eq!(
+        run(false),
+        [
+            "execute",
+            "execution-locals-dropped",
+            "execution-finished",
+            "probe",
+            "record-failure",
+            "terminal-status",
+        ]
+    );
+}
+
 fn empty_test_publication(generation_id: impl Into<String>) -> SourceBackedRefreshPublication {
     let mut publication = test_publication(generation_id);
     publication.certified_source_count = 0;

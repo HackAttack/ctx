@@ -62,4 +62,20 @@ impl RefreshRuntime for DaemonRefreshRuntime {
             .discovery_context(_data_root)
             .context("resolve source-backed provider discovery context")
     }
+
+    fn refresh_execution_finished(&self) {
+        release_unused_allocator_pages();
+    }
 }
+
+#[cfg(all(target_os = "linux", target_env = "gnu"))]
+fn release_unused_allocator_pages() {
+    // SAFETY: malloc_trim has no caller-owned pointer or buffer contract and
+    // glibc serializes allocator maintenance across process threads.
+    unsafe {
+        libc::malloc_trim(0);
+    }
+}
+
+#[cfg(not(all(target_os = "linux", target_env = "gnu")))]
+fn release_unused_allocator_pages() {}
