@@ -11,9 +11,6 @@ use anyhow::{anyhow, bail, Context, Result};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest as _, Sha256};
 
-#[cfg(windows)]
-use std::fs::OpenOptions;
-
 use super::{
     ManagedPairComponentIdentity, MANAGED_PAIR_ENVELOPE_RELATIVE_PATH,
     MANAGED_PAIR_STATE_RELATIVE_PATH,

@@ -6,7 +6,11 @@ use std::{
 
 use anyhow::{anyhow, bail, Context as _, Result};
 
+#[cfg(windows)]
+use super::windows_file_information;
 use super::{file_information, validate_absolute_root};
+#[cfg(windows)]
+use std::fs::OpenOptions;
 
 #[derive(Debug)]
 pub(super) struct SecureDirectory {
