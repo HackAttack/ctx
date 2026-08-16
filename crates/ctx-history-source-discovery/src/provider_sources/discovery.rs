@@ -14,7 +14,7 @@ use thiserror::Error;
 
 use super::{
     context::DiscoveryContext,
-    resolvers::{dedupe_report, resolve, SourceAdmission},
+    resolvers::{dedupe_report, resolve},
     specs::PROVIDER_SPECS,
     types::{DiscoveryReport, ProviderSource},
     StaticProviderProbeCatalog,
@@ -75,7 +75,7 @@ pub fn discover_provider_sources_with_context(
 ) -> DiscoveryReport {
     let mut report = DiscoveryReport::default();
     for spec in PROVIDER_SPECS {
-        let mut provider_report = resolve(probes, context, spec, SourceAdmission::ReconcileAll);
+        let mut provider_report = resolve(probes, context, spec);
         report.sources.append(&mut provider_report.sources);
         report.issues.append(&mut provider_report.issues);
     }
@@ -89,10 +89,9 @@ pub fn discover_provider_sources_with_context_and_work_budget(
     probes: &StaticProviderProbeCatalog,
     context: &DiscoveryContext,
     worker_limit: usize,
-    admission: SourceAdmission,
 ) -> DiscoveryReport {
     let reports = bounded_ordered_map(PROVIDER_SPECS.len(), worker_limit, |index| {
-        resolve(probes, context, &PROVIDER_SPECS[index], admission)
+        resolve(probes, context, &PROVIDER_SPECS[index])
     });
     let mut report = DiscoveryReport::default();
     for mut provider_report in reports {
@@ -223,7 +222,7 @@ pub fn discover_provider_sources_for_provider_with_context(
         .iter()
         .find(|spec| spec.provider == provider)
         .map_or_else(DiscoveryReport::default, |spec| {
-            resolve(probes, context, spec, SourceAdmission::ReconcileAll)
+            resolve(probes, context, spec)
         });
     dedupe_report(report)
 }

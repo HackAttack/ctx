@@ -133,13 +133,29 @@ class FamilyCorpus:
     fixture_bytes: int
     independent_leaves: bool
     _replace_leaf: Callable[[], None]
+    _continuous_mutation: Callable[[int], "FamilyMutation"]
     _close: Callable[[], None]
 
     def replace_leaf(self) -> None:
         self._replace_leaf()
 
+    def continuous_mutation(self, iteration: int) -> "FamilyMutation":
+        return self._continuous_mutation(iteration)
+
     def close(self) -> None:
         self._close()
+
+
+@dataclass(frozen=True)
+class FamilyMutation:
+    query: str
+    body: str
+    previous_query: str | None
+    indexed_documents_delta: int
+    complete_records_delta: int
+    retained_records_delta: int
+    certified_source_bytes_delta: int
+    storage_payload_bytes: int
 
 
 class SourceFamilyTaxonomyTest(unittest.TestCase):
@@ -244,6 +260,22 @@ def deepseek_harness_session(
     )
 
 
+def deepseek_harness_message(session_id: str, sequence: int, body: str) -> bytes:
+    return compact_json(
+        {
+            "type": "user/message",
+            "seq": sequence,
+            "time": 1785412800001 + sequence,
+            "data": {
+                "content": [{"type": "text", "text": body}],
+                "source": {"kind": "user"},
+                "role": "user",
+                "id": f"{session_id}-message-{sequence:02d}",
+            },
+        }
+    ) + b"\n"
+
+
 def write_deepseek_harness_jsonl_corpus(home: Path) -> FamilyCorpus:
     # This deliberately uses DeepSeek Harness's configured raw layout. The
     # provider's separate qualification fixture owns the default Zstandard
@@ -283,6 +315,25 @@ def write_deepseek_harness_jsonl_corpus(home: Path) -> FamilyCorpus:
             deepseek_harness_session("deepseek-family-session-000", replacement_body),
         )
 
+    def continuous_mutation(iteration: int) -> FamilyMutation:
+        query = family_query(JSONL_FAMILY, 0, f"watch{iteration:02d}")
+        body = fixed_family_text(query)
+        appended = deepseek_harness_message(
+            "deepseek-family-session-000", iteration, body
+        )
+        with first_session.open("ab") as output:
+            output.write(appended)
+        return FamilyMutation(
+            query=query,
+            body=body,
+            previous_query=None,
+            indexed_documents_delta=1,
+            complete_records_delta=1,
+            retained_records_delta=1,
+            certified_source_bytes_delta=len(appended),
+            storage_payload_bytes=len(body.encode("ascii")),
+        )
+
     fixture_bytes = directory_file_bytes(root)
     return FamilyCorpus(
         family=JSONL_FAMILY,
@@ -306,6 +357,7 @@ def write_deepseek_harness_jsonl_corpus(home: Path) -> FamilyCorpus:
         fixture_bytes=fixture_bytes,
         independent_leaves=True,
         _replace_leaf=replace_leaf,
+        _continuous_mutation=continuous_mutation,
         _close=lambda: None,
     )
 
@@ -399,6 +451,30 @@ def write_lingma_sqlite_wal_corpus(home: Path) -> FamilyCorpus:
         )
         connections[0].commit()
 
+    previous_query = cold_query
+
+    def continuous_mutation(iteration: int) -> FamilyMutation:
+        nonlocal previous_query
+        query = family_query(SQLITE_WAL_FAMILY, 0, f"watch{iteration:02d}")
+        body = fixed_family_text(query)
+        connections[0].execute(
+            "update chat_record set chat_prompt = ? where request_id = ?",
+            (body, "lingma-request-000"),
+        )
+        connections[0].commit()
+        mutation = FamilyMutation(
+            query=query,
+            body=body,
+            previous_query=previous_query,
+            indexed_documents_delta=0,
+            complete_records_delta=0,
+            retained_records_delta=0,
+            certified_source_bytes_delta=0,
+            storage_payload_bytes=len(body.encode("ascii")),
+        )
+        previous_query = query
+        return mutation
+
     def close() -> None:
         for connection in connections:
             connection.close()
@@ -423,6 +499,7 @@ def write_lingma_sqlite_wal_corpus(home: Path) -> FamilyCorpus:
         fixture_bytes=directory_file_bytes(home),
         independent_leaves=True,
         _replace_leaf=replace_leaf,
+        _continuous_mutation=continuous_mutation,
         _close=close,
     )
 
@@ -499,6 +576,26 @@ def write_cline_document_tree_corpus(home: Path) -> FamilyCorpus:
             cline_api_messages(0, replacement_body),
         )
 
+    previous_query = cold_query
+
+    def continuous_mutation(iteration: int) -> FamilyMutation:
+        nonlocal previous_query
+        query = family_query(DOCUMENT_TREE_FAMILY, 0, f"watch{iteration:02d}")
+        body = fixed_family_text(query, CLINE_ITEM_TEXT_BYTES)
+        replace_bytes(first_api, cline_api_messages(0, body))
+        mutation = FamilyMutation(
+            query=query,
+            body=body,
+            previous_query=previous_query,
+            indexed_documents_delta=0,
+            complete_records_delta=0,
+            retained_records_delta=0,
+            certified_source_bytes_delta=0,
+            storage_payload_bytes=len(body.encode("ascii")),
+        )
+        previous_query = query
+        return mutation
+
     return FamilyCorpus(
         family=DOCUMENT_TREE_FAMILY,
         provider="cline",
@@ -519,6 +616,7 @@ def write_cline_document_tree_corpus(home: Path) -> FamilyCorpus:
         fixture_bytes=directory_file_bytes(root),
         independent_leaves=True,
         _replace_leaf=replace_leaf,
+        _continuous_mutation=continuous_mutation,
         _close=lambda: None,
     )
 
@@ -572,6 +670,29 @@ def write_openhands_event_file_corpus(home: Path) -> FamilyCorpus:
             openhands_message("family-openhands-event-000", replacement_body),
         )
 
+    previous_query = cold_query
+
+    def continuous_mutation(iteration: int) -> FamilyMutation:
+        nonlocal previous_query
+        query = family_query(EVENT_FILE_FAMILY, 0, f"watch{iteration:02d}")
+        body = fixed_family_text(query)
+        replace_bytes(
+            first_event,
+            openhands_message("family-openhands-event-000", body),
+        )
+        mutation = FamilyMutation(
+            query=query,
+            body=body,
+            previous_query=previous_query,
+            indexed_documents_delta=0,
+            complete_records_delta=0,
+            retained_records_delta=0,
+            certified_source_bytes_delta=0,
+            storage_payload_bytes=len(body.encode("ascii")),
+        )
+        previous_query = query
+        return mutation
+
     return FamilyCorpus(
         family=EVENT_FILE_FAMILY,
         provider="openhands",
@@ -592,6 +713,7 @@ def write_openhands_event_file_corpus(home: Path) -> FamilyCorpus:
         fixture_bytes=directory_file_bytes(root),
         independent_leaves=True,
         _replace_leaf=replace_leaf,
+        _continuous_mutation=continuous_mutation,
         _close=lambda: None,
     )
 

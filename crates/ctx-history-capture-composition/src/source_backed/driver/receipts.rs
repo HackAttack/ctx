@@ -74,6 +74,10 @@ pub(in super::super) struct ControlledRouteRetirement {
 #[derive(Debug, Clone)]
 pub struct SourceBackedRoute {
     pub(in super::super) metadata: SourceBackedRouteMetadata,
+    /// Exact bounded discovery inputs from which this executable route was
+    /// registered. The watch catalog retains these inputs for provider-neutral
+    /// exact refresh reconstruction; grouped routes may retain multiple roots.
+    pub(in super::super) registration_sources: Vec<ProviderSource>,
     pub(in super::super) driver: Option<SourceBackedRouteDriver>,
     pub(in super::super) certified_missing_paths: Vec<PathBuf>,
     pub(in super::super) retire_after_success: Vec<SourceRouteIdentity>,
@@ -95,7 +99,7 @@ impl SourceBackedRoute {
         let route_identity = automatic_source_backed_route_identity(&source)?;
         Ok(Self {
             metadata: SourceBackedRouteMetadata {
-                source,
+                source: source.clone(),
                 certified_source_format: known.certified_source_format,
                 selection: Some(SourceBackedRouteSelection::Automatic),
                 selector_authority,
@@ -103,6 +107,7 @@ impl SourceBackedRoute {
                 route_identity: Some(route_identity),
                 watch_target_kind: known.watch_target_kind,
             },
+            registration_sources: vec![source],
             driver: Some(driver),
             certified_missing_paths: Vec::new(),
             retire_after_success: Vec::new(),
@@ -129,7 +134,7 @@ impl SourceBackedRoute {
         )?;
         Ok(Self {
             metadata: SourceBackedRouteMetadata {
-                source,
+                source: source.clone(),
                 certified_source_format: known.certified_source_format,
                 selection: Some(SourceBackedRouteSelection::ExplicitManual),
                 selector_authority,
@@ -137,6 +142,7 @@ impl SourceBackedRoute {
                 route_identity: Some(route_identity),
                 watch_target_kind: known.watch_target_kind,
             },
+            registration_sources: vec![source],
             driver: Some(driver),
             certified_missing_paths: Vec::new(),
             retire_after_success: Vec::new(),
@@ -158,7 +164,7 @@ impl SourceBackedRoute {
         let path = source.path.clone();
         Ok(Self {
             metadata: SourceBackedRouteMetadata {
-                source,
+                source: source.clone(),
                 certified_source_format: known.certified_source_format,
                 selection: Some(SourceBackedRouteSelection::Automatic),
                 selector_authority,
@@ -166,6 +172,7 @@ impl SourceBackedRoute {
                 route_identity: Some(route_identity),
                 watch_target_kind: known.watch_target_kind,
             },
+            registration_sources: vec![source],
             driver: None,
             certified_missing_paths: vec![path],
             retire_after_success: Vec::new(),
@@ -187,6 +194,7 @@ impl SourceBackedRoute {
                 route_identity: None,
                 watch_target_kind: SourceBackedWatchTargetKind::Path,
             },
+            registration_sources: Vec::new(),
             driver: None,
             certified_missing_paths: Vec::new(),
             retire_after_success: Vec::new(),

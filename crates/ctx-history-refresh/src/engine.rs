@@ -125,6 +125,7 @@ pub(super) struct CoreRefreshEngineState {
     current_published_generation: Option<String>,
     dirty_routes: DirtySourceRoutes,
     known_route_ids: BTreeSet<SourceRouteIdentity>,
+    watch_catalog: Option<SourceBackedWatchCatalog>,
     hermes_routes_requiring_exhaustive_recovery: BTreeSet<SourceRouteIdentity>,
     routes_requiring_exhaustive_reconciliation: BTreeSet<SourceRouteIdentity>,
     route_event_watermarks: BTreeMap<SourceRouteIdentity, EventWatermark>,
@@ -338,6 +339,7 @@ impl CoreRefreshEngine {
                 current_published_generation: None,
                 dirty_routes: DirtySourceRoutes::default(),
                 known_route_ids: BTreeSet::new(),
+                watch_catalog: None,
                 hermes_routes_requiring_exhaustive_recovery: BTreeSet::new(),
                 routes_requiring_exhaustive_reconciliation: BTreeSet::new(),
                 route_event_watermarks: BTreeMap::new(),
@@ -429,6 +431,33 @@ impl CoreRefreshEngine {
             }
         }
         state.known_route_ids = routes;
+        state.watch_routes_initialized = true;
+    }
+
+    /// Atomically installs the watcher snapshot used to authorize exact
+    /// member work. Replacing a snapshot never carries member paths from the
+    /// preceding registration authority into the new catalog.
+    pub fn install_watch_catalog(&self, catalog: SourceBackedWatchCatalog) {
+        let routes = catalog.route_ids().cloned().collect::<BTreeSet<_>>();
+        let mut state = self.lock_state();
+        state.dirty_routes.retain_exact_routes(&routes);
+        state
+            .hermes_routes_requiring_exhaustive_recovery
+            .retain(|route| routes.contains(route));
+        state
+            .routes_requiring_exhaustive_reconciliation
+            .retain(|route| routes.contains(route));
+        state
+            .route_event_watermarks
+            .retain(|route, _| routes.contains(route));
+        state.route_worksets.clear();
+        for continuation in state.manual_all_continuations.values_mut() {
+            for route in &routes {
+                continuation.invalidate_route(route);
+            }
+        }
+        state.known_route_ids = routes;
+        state.watch_catalog = Some(catalog);
         state.watch_routes_initialized = true;
     }
 

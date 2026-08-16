@@ -2,6 +2,13 @@ use super::*;
 mod recovery;
 mod resolution;
 
+struct AdmittedRefreshScope {
+    covered_route_ids: BTreeSet<SourceRouteIdentity>,
+    covered_publication: SourceBackedRefreshCoveredPublication,
+    route_worksets: BTreeMap<SourceRouteIdentity, SourceBackedRefreshWorkset>,
+    watch_catalog: Option<SourceBackedWatchCatalog>,
+}
+
 impl CoreRefreshEngine {
     pub fn enqueue_periodic(&self, data_root: &Path) -> Result<Value> {
         let observed_generation = self.observed_published_generation(data_root)?;
@@ -422,11 +429,7 @@ impl CoreRefreshEngine {
         &self,
         request_id: &str,
         scope: &SourceBackedRefreshScope,
-    ) -> Result<(
-        BTreeSet<SourceRouteIdentity>,
-        SourceBackedRefreshCoveredPublication,
-        BTreeMap<SourceRouteIdentity, SourceBackedRefreshWorkset>,
-    )> {
+    ) -> Result<AdmittedRefreshScope> {
         let now_ms = source_route_ledger_now_ms();
         let mut state = self.lock_state();
         if state.route_admissions.contains_key(request_id) {
@@ -553,7 +556,12 @@ impl CoreRefreshEngine {
                 }
             }
         }
-        Ok((covered_route_ids, covered_publication, route_worksets))
+        Ok(AdmittedRefreshScope {
+            covered_route_ids,
+            covered_publication,
+            route_worksets,
+            watch_catalog: state.watch_catalog.clone(),
+        })
     }
 
     #[cfg(any(test, feature = "test-support"))]
@@ -563,7 +571,7 @@ impl CoreRefreshEngine {
         scope: &SourceBackedRefreshScope,
     ) -> Result<BTreeSet<SourceRouteIdentity>> {
         self.admit_refresh_scope(request_id, scope)
-            .map(|(routes, _, _)| routes)
+            .map(|admitted| admitted.covered_route_ids)
     }
 
     fn run_next_with_terminal_success<Execute, Probe, Terminal, Published, Failed>(

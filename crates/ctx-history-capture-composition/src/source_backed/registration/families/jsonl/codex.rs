@@ -67,6 +67,7 @@ pub(in crate::source_backed) fn register_codex_session_tree_routes(
         SourceBackedSelectorAuthority::DiscoveredWinner,
         driver,
     )?;
+    route.registration_sources = sources;
     route.codex_generation_participant = Some(participant);
     registry.register(route);
     Ok(())

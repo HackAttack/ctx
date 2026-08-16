@@ -19,6 +19,19 @@ struct RouteWatchTargets {
     kind: Option<SourceBackedWatchTargetKind>,
     control: Option<SourceBackedRouteControlExpectation>,
     targets: BTreeSet<PathBuf>,
+    registration_sources: Option<Vec<RegisteredSource>>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RegisteredPathKind {
+    File,
+    Directory,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct RegisteredSource {
+    source: ProviderSource,
+    path_kind: RegisteredPathKind,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -88,23 +101,96 @@ impl SourceBackedWatchCatalog {
         event: &Path,
     ) -> Option<PathBuf> {
         let targets = self.routes.get(route)?;
-        if targets.kind != Some(SourceBackedWatchTargetKind::Path)
-            || targets.targets.len() != 1
-            || !targets.targets.contains(&targets.primary)
-        {
+        if targets.kind != Some(SourceBackedWatchTargetKind::Path) {
             return None;
         }
         let event_metadata = fs::symlink_metadata(event).ok()?;
         if !event_metadata.file_type().is_file() {
             return None;
         }
-        if event == targets.primary
-            || (targets.primary.is_dir() && event.starts_with(&targets.primary))
-        {
-            Some(event.to_path_buf())
-        } else {
-            None
+        let registrations = targets.registration_sources.as_ref()?;
+        (registrations
+            .iter()
+            .filter(|source| member_belongs_to_root(event, &source.source.path))
+            .count()
+            == 1)
+            .then(|| event.to_path_buf())
+    }
+
+    /// Reconstructs the bounded discovery inputs for exact registered routes.
+    /// This skips unrelated provider discovery without weakening the selected
+    /// route's own exhaustive inventory or terminal revalidation.
+    pub fn route_discovery_report(
+        &self,
+        routes: &BTreeSet<SourceRouteIdentity>,
+    ) -> Option<DiscoveryReport> {
+        if routes.is_empty() {
+            return None;
         }
+        let mut sources = Vec::new();
+        for route in routes {
+            let registrations = self.routes.get(route)?.registration_sources.as_ref()?;
+            if registrations
+                .iter()
+                .any(|source| !registration_source_is_available(source))
+            {
+                return None;
+            }
+            sources.extend(
+                registrations
+                    .iter()
+                    .map(|registration| registration.source.clone()),
+            );
+        }
+        sources.sort_by(|left, right| {
+            left.provider
+                .as_str()
+                .cmp(right.provider.as_str())
+                .then_with(|| left.source_format.cmp(right.source_format))
+                .then_with(|| left.path.cmp(&right.path))
+        });
+        sources.dedup();
+        Some(DiscoveryReport {
+            sources,
+            issues: Vec::new(),
+        })
+    }
+
+    /// Reconstructs one exact-member discovery report from this immutable
+    /// catalog snapshot. Every member is revalidated against exactly one
+    /// retained ordinary-file registration root before any source is returned.
+    /// `None` is a fail-closed abstention; callers retain route-local exhaustive
+    /// work when possible and otherwise use normal global discovery.
+    pub fn exact_member_discovery_report(
+        &self,
+        routes: &BTreeSet<SourceRouteIdentity>,
+        worksets: &BTreeMap<SourceRouteIdentity, BTreeSet<PathBuf>>,
+    ) -> Option<DiscoveryReport> {
+        if routes.is_empty() || routes.len() != worksets.len() {
+            return None;
+        }
+        for route in routes {
+            let targets = self.routes.get(route)?;
+            if targets.kind != Some(SourceBackedWatchTargetKind::Path) {
+                return None;
+            }
+            let registrations = targets.registration_sources.as_ref()?;
+            let members = worksets.get(route)?;
+            if members.is_empty()
+                || members.iter().any(|member| {
+                    !fs::symlink_metadata(member)
+                        .is_ok_and(|metadata| metadata.file_type().is_file())
+                        || registrations
+                            .iter()
+                            .filter(|source| member_belongs_to_root(member, &source.source.path))
+                            .count()
+                            != 1
+                })
+            {
+                return None;
+            }
+        }
+        self.route_discovery_report(routes)
     }
 
     /// Returns the current content-free certification token for one exact
@@ -203,6 +289,7 @@ impl SourceBackedProviderRegistry {
                         .as_ref()
                         .and_then(|driver| driver.route_control_expectation),
                     targets: BTreeSet::new(),
+                    registration_sources: automatic_executable_registration_sources(route),
                 });
             if targets.primary != route.metadata.source.path
                 || targets.kind != Some(route.metadata.watch_target_kind)
@@ -215,12 +302,23 @@ impl SourceBackedProviderRegistry {
                 .and_then(|driver| driver.route_control_expectation.as_ref());
             if targets.control.as_ref() != route_control {
                 targets.control = None;
+                targets.registration_sources = None;
+            }
+            if targets.registration_sources != automatic_executable_registration_sources(route) {
+                targets.registration_sources = None;
             }
             insert_route_watch_targets(
                 &mut targets.targets,
                 &route.metadata.source.path,
                 route.metadata.watch_target_kind,
             );
+            for source in &route.registration_sources {
+                insert_route_watch_targets(
+                    &mut targets.targets,
+                    &source.path,
+                    route.metadata.watch_target_kind,
+                );
+            }
             for missing in &route.certified_missing_paths {
                 insert_route_watch_targets(
                     &mut targets.targets,
@@ -253,6 +351,54 @@ impl SourceBackedProviderRegistry {
         }
         catalog
     }
+}
+
+fn automatic_executable_registration_sources(
+    route: &SourceBackedRoute,
+) -> Option<Vec<RegisteredSource>> {
+    (route.metadata.selection == Some(SourceBackedRouteSelection::Automatic)
+        && route.driver.is_some()
+        && route.certified_missing_paths.is_empty()
+        && !route.registration_sources.is_empty())
+    .then(|| {
+        route
+            .registration_sources
+            .iter()
+            .map(|source| {
+                Some(RegisteredSource {
+                    path_kind: registered_path_kind(&source.path)?,
+                    source: source.clone(),
+                })
+            })
+            .collect::<Option<Vec<_>>>()
+    })
+    .flatten()
+}
+
+fn member_belongs_to_root(member: &Path, root: &Path) -> bool {
+    member == root
+        || fs::symlink_metadata(root)
+            .ok()
+            .is_some_and(|metadata| metadata.file_type().is_dir() && member.starts_with(root))
+}
+
+fn registered_path_kind(path: &Path) -> Option<RegisteredPathKind> {
+    fs::symlink_metadata(path).ok().and_then(|metadata| {
+        let kind = metadata.file_type();
+        if kind.is_symlink() {
+            None
+        } else if kind.is_file() {
+            Some(RegisteredPathKind::File)
+        } else if kind.is_dir() {
+            Some(RegisteredPathKind::Directory)
+        } else {
+            None
+        }
+    })
+}
+
+fn registration_source_is_available(source: &RegisteredSource) -> bool {
+    source.source.exists && registered_path_kind(&source.source.path) == Some(source.path_kind)
 }
 
 fn sample_ordinary_file(route: &RouteWatchTargets) -> RouteTargetSample {
@@ -390,24 +536,34 @@ mod tests {
         SourceBackedRouteDriver::new(|_| Ok(()), |_| false, |_| true)
     }
 
-    #[test]
-    fn sqlite_route_authorizes_only_its_exact_database_family() {
-        let database = PathBuf::from("/provider/state.db");
-        let route = SourceBackedRoute::automatic(
-            source(
-                CaptureProvider::OpenCode,
-                database.clone(),
-                "opencode_sqlite",
-            ),
+    fn automatic_route(
+        provider: CaptureProvider,
+        path: PathBuf,
+        source_format: &'static str,
+    ) -> SourceBackedRoute {
+        SourceBackedRoute::automatic(
+            source(provider, path, source_format),
             SourceBackedSelectorAuthority::DiscoveredWinner,
             driver(),
         )
-        .unwrap();
+        .unwrap()
+    }
+
+    fn catalog_for(route: SourceBackedRoute) -> (SourceBackedWatchCatalog, SourceRouteIdentity) {
         let identity = route.metadata.route_identity.clone().unwrap();
         let mut registry = SourceBackedProviderRegistry::new();
         registry.register(route);
+        (registry.watch_catalog(), identity)
+    }
 
-        let catalog = registry.watch_catalog();
+    #[test]
+    fn sqlite_route_authorizes_only_its_exact_database_family() {
+        let database = PathBuf::from("/provider/state.db");
+        let (catalog, identity) = catalog_for(automatic_route(
+            CaptureProvider::OpenCode,
+            database.clone(),
+            "opencode_sqlite",
+        ));
         let targets = catalog.route_targets().next().unwrap().1;
         assert_eq!(targets.len(), 4);
         assert!(targets.contains(&database));
@@ -424,22 +580,56 @@ mod tests {
     }
 
     #[test]
-    fn ordinary_file_route_does_not_invent_sqlite_companions_or_match_siblings() {
-        let source_path = PathBuf::from("/provider/history.jsonl");
+    fn dynamic_sqlite_inventory_keeps_route_local_discovery_authority() {
+        let temp = tempfile::tempdir().unwrap();
+        let database = temp.path().join("profiles/active/state.db");
+        fs::create_dir_all(database.parent().unwrap()).unwrap();
+        fs::write(&database, b"sqlite").unwrap();
+        let source = source(
+            CaptureProvider::OpenCode,
+            database.clone(),
+            "opencode_sqlite",
+        );
         let route = SourceBackedRoute::automatic(
-            source(
-                CaptureProvider::Codex,
-                source_path.clone(),
-                "codex_history_jsonl",
-            ),
+            source.clone(),
             SourceBackedSelectorAuthority::DiscoveredWinner,
             driver(),
         )
         .unwrap();
+        let identity = route.metadata.route_identity.clone().unwrap();
         let mut registry = SourceBackedProviderRegistry::new();
         registry.register(route);
+        let observed_database = database.clone();
+        registry
+            .attach_route_watch_targets(&source, move || {
+                Some(SourceBackedRouteWatchTargets {
+                    sqlite_databases: BTreeSet::from([observed_database.clone()]),
+                    authority_paths: BTreeSet::from([observed_database
+                        .parent()
+                        .unwrap()
+                        .to_path_buf()]),
+                })
+            })
+            .unwrap();
 
         let catalog = registry.watch_catalog();
+        assert!(catalog
+            .exact_member_for_event(&identity, &database)
+            .is_none());
+        let report = catalog
+            .route_discovery_report(&BTreeSet::from([identity]))
+            .expect("dynamic SQLite inventory retains its registered route input");
+        assert_eq!(report.sources, vec![source]);
+    }
+
+    #[test]
+    fn ordinary_file_route_does_not_invent_sqlite_companions_or_match_siblings() {
+        let source_path = PathBuf::from("/provider/history.jsonl");
+        let (catalog, _) = catalog_for(automatic_route(
+            CaptureProvider::Codex,
+            source_path.clone(),
+            "codex_history_jsonl",
+        ));
         let targets = catalog.route_targets().next().unwrap().1;
         assert_eq!(targets, &BTreeSet::from([source_path]));
         assert!(catalog
@@ -451,24 +641,163 @@ mod tests {
     }
 
     #[test]
-    fn ordinary_file_observation_catches_append_rewrite_and_delete() {
+    fn exact_catalog_reuses_one_direct_claude_registration_without_global_discovery() {
         let temp = tempfile::tempdir().unwrap();
-        let source_path = temp.path().join("history.jsonl");
-        fs::write(&source_path, b"one\n").unwrap();
-        let route = SourceBackedRoute::automatic(
-            source(
-                CaptureProvider::Codex,
-                source_path.clone(),
-                "codex_history_jsonl",
-            ),
+        let member = temp.path().join("session.jsonl");
+        fs::write(&member, b"{}\n").unwrap();
+        let (catalog, identity) = catalog_for(automatic_route(
+            CaptureProvider::Claude,
+            member.clone(),
+            "claude_projects_jsonl_tree",
+        ));
+        let worksets = BTreeMap::from([(identity.clone(), BTreeSet::from([member.clone()]))]);
+
+        assert_eq!(
+            catalog.exact_member_for_event(&identity, &member),
+            Some(member)
+        );
+        let report = catalog
+            .exact_member_discovery_report(&BTreeSet::from([identity.clone()]), &worksets)
+            .expect("direct ordinary route remains catalog-authorized");
+        assert_eq!(report.sources.len(), 1);
+        assert_eq!(report.sources[0].provider, CaptureProvider::Claude);
+
+        let directory_member = temp.path().join("not-a-member");
+        fs::create_dir_all(&directory_member).unwrap();
+        assert!(catalog
+            .exact_member_discovery_report(
+                &BTreeSet::from([identity.clone()]),
+                &BTreeMap::from([(identity.clone(), BTreeSet::from([directory_member]))]),
+            )
+            .is_none());
+    }
+
+    #[test]
+    fn exact_catalog_reconstructs_compound_codex_roots_and_rejects_uncertainty() {
+        let temp = tempfile::tempdir().unwrap();
+        let sessions = temp.path().join("sessions");
+        let archived = temp.path().join("archived_sessions");
+        let active_member = sessions.join("2026/08/rollout.jsonl");
+        let archived_member = archived.join("2026/08/rollout.jsonl");
+        fs::create_dir_all(active_member.parent().unwrap()).unwrap();
+        fs::create_dir_all(archived_member.parent().unwrap()).unwrap();
+        fs::write(&active_member, b"{}\n").unwrap();
+        fs::write(&archived_member, b"{}\n").unwrap();
+        let active = source(
+            CaptureProvider::Codex,
+            sessions.clone(),
+            "codex_session_jsonl_tree",
+        );
+        let archived_source = source(
+            CaptureProvider::Codex,
+            archived.clone(),
+            "codex_session_jsonl_tree",
+        );
+        let mut route = SourceBackedRoute::automatic(
+            active.clone(),
             SourceBackedSelectorAuthority::DiscoveredWinner,
             driver(),
         )
         .unwrap();
-        let identity = route.metadata.route_identity.clone().unwrap();
-        let mut registry = SourceBackedProviderRegistry::new();
-        registry.register(route);
-        let catalog = registry.watch_catalog();
+        route.registration_sources = vec![active.clone(), archived_source.clone()];
+        let (catalog, identity) = catalog_for(route);
+        let worksets = BTreeMap::from([(
+            identity.clone(),
+            BTreeSet::from([active_member.clone(), archived_member.clone()]),
+        )]);
+
+        assert_eq!(
+            catalog.exact_member_for_event(&identity, &active_member),
+            Some(active_member.clone())
+        );
+        assert_eq!(
+            catalog.exact_member_for_event(&identity, &archived_member),
+            Some(archived_member.clone())
+        );
+        let report = catalog
+            .exact_member_discovery_report(&BTreeSet::from([identity.clone()]), &worksets)
+            .expect("each Codex member has exactly one retained root");
+        assert_eq!(
+            report.sources,
+            vec![archived_source.clone(), active.clone()]
+        );
+
+        fs::remove_file(&archived_member).unwrap();
+        assert!(catalog
+            .exact_member_discovery_report(&BTreeSet::from([identity.clone()]), &worksets)
+            .is_none());
+        fs::remove_dir_all(&sessions).unwrap();
+        fs::write(&sessions, b"not a directory").unwrap();
+        assert!(catalog
+            .route_discovery_report(&BTreeSet::from([identity]))
+            .is_none());
+    }
+
+    #[test]
+    fn exact_catalog_abstains_for_ambiguous_roots_non_files_and_sqlite() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("sessions");
+        let nested = root.join("nested");
+        let member = nested.join("rollout.jsonl");
+        fs::create_dir_all(&nested).unwrap();
+        fs::write(&member, b"{}\n").unwrap();
+        let primary = source(CaptureProvider::Codex, root, "codex_session_jsonl_tree");
+        let nested_source = source(
+            CaptureProvider::Codex,
+            nested.clone(),
+            "codex_session_jsonl_tree",
+        );
+        let mut route = SourceBackedRoute::automatic(
+            primary.clone(),
+            SourceBackedSelectorAuthority::DiscoveredWinner,
+            driver(),
+        )
+        .unwrap();
+        route.registration_sources = vec![primary, nested_source];
+        let (catalog, identity) = catalog_for(route);
+        let worksets = BTreeMap::from([(identity.clone(), BTreeSet::from([member.clone()]))]);
+        assert!(catalog.exact_member_for_event(&identity, &member).is_none());
+        assert!(catalog
+            .exact_member_discovery_report(&BTreeSet::from([identity]), &worksets)
+            .is_none());
+
+        let sqlite = temp.path().join("history.sqlite");
+        fs::write(&sqlite, b"sqlite").unwrap();
+        let (catalog, identity) = catalog_for(automatic_route(
+            CaptureProvider::OpenCode,
+            sqlite.clone(),
+            "opencode_sqlite",
+        ));
+        let worksets = BTreeMap::from([(identity.clone(), BTreeSet::from([sqlite.clone()]))]);
+        assert!(catalog.exact_member_for_event(&identity, &sqlite).is_none());
+        assert!(catalog
+            .exact_member_discovery_report(&BTreeSet::from([identity.clone()]), &worksets)
+            .is_none());
+        let report = catalog
+            .route_discovery_report(&BTreeSet::from([identity.clone()]))
+            .expect("SQLite keeps its registered route while abstaining from member work");
+        assert_eq!(report.sources.len(), 1);
+        assert_eq!(report.sources[0].provider, CaptureProvider::OpenCode);
+        fs::remove_file(&sqlite).unwrap();
+        assert!(catalog
+            .route_discovery_report(&BTreeSet::from([identity.clone()]))
+            .is_none());
+        fs::create_dir(&sqlite).unwrap();
+        assert!(catalog
+            .route_discovery_report(&BTreeSet::from([identity]))
+            .is_none());
+    }
+
+    #[test]
+    fn ordinary_file_observation_catches_append_rewrite_and_delete() {
+        let temp = tempfile::tempdir().unwrap();
+        let source_path = temp.path().join("history.jsonl");
+        fs::write(&source_path, b"one\n").unwrap();
+        let (catalog, identity) = catalog_for(automatic_route(
+            CaptureProvider::Codex,
+            source_path.clone(),
+            "codex_history_jsonl",
+        ));
         let certified = catalog.certify_route_observation(&identity).unwrap();
 
         assert_eq!(
@@ -499,20 +828,11 @@ mod tests {
         let temp = tempfile::tempdir().unwrap();
         let database = temp.path().join("state.db");
         fs::write(&database, b"sqlite-main").unwrap();
-        let route = SourceBackedRoute::automatic(
-            source(
-                CaptureProvider::OpenCode,
-                database.clone(),
-                "opencode_sqlite",
-            ),
-            SourceBackedSelectorAuthority::DiscoveredWinner,
-            driver(),
-        )
-        .unwrap();
-        let identity = route.metadata.route_identity.clone().unwrap();
-        let mut registry = SourceBackedProviderRegistry::new();
-        registry.register(route);
-        let catalog = registry.watch_catalog();
+        let (catalog, identity) = catalog_for(automatic_route(
+            CaptureProvider::OpenCode,
+            database.clone(),
+            "opencode_sqlite",
+        ));
         let certified = catalog.certify_route_observation(&identity).unwrap();
 
         let mut wal = database.as_os_str().to_os_string();
@@ -532,20 +852,11 @@ mod tests {
     #[test]
     fn directories_and_missing_certificates_are_indeterminate() {
         let temp = tempfile::tempdir().unwrap();
-        let route = SourceBackedRoute::automatic(
-            source(
-                CaptureProvider::Codex,
-                temp.path().to_path_buf(),
-                "codex_history_jsonl",
-            ),
-            SourceBackedSelectorAuthority::DiscoveredWinner,
-            driver(),
-        )
-        .unwrap();
-        let identity = route.metadata.route_identity.clone().unwrap();
-        let mut registry = SourceBackedProviderRegistry::new();
-        registry.register(route);
-        let catalog = registry.watch_catalog();
+        let (catalog, identity) = catalog_for(automatic_route(
+            CaptureProvider::Codex,
+            temp.path().to_path_buf(),
+            "codex_history_jsonl",
+        ));
 
         assert_eq!(
             catalog.observe_route(&identity, Some(&"00".repeat(32))),

@@ -193,7 +193,7 @@ impl DaemonWatchRuntime {
         if must_initialize_authority {
             if let (Some(catalog), Some(source_refresh)) = (self.catalog.snapshot(), source_refresh)
             {
-                source_refresh.initialize_watch_route_authority(catalog.route_ids().cloned());
+                source_refresh.install_watch_catalog(catalog.clone());
                 let watermark = self
                     .file_watcher
                     .as_ref()

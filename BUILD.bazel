@@ -161,6 +161,24 @@ sh_test(
 )
 
 py_test(
+    name = "provider_family_continuous_refresh_tests",
+    srcs = [
+        "scripts/tests/performance_family_fixtures.py",
+        "scripts/tests/performance_sanity_support.py",
+        "scripts/tests/provider_family_continuous_refresh_test.py",
+    ],
+    args = ["$(rootpath //crates/ctx-cli:ctx)"],
+    data = [
+        "//crates/ctx-cli:ctx",
+    ],
+    imports = ["scripts/tests"],
+    main = "scripts/tests/provider_family_continuous_refresh_test.py",
+    tags = ["release-gate"],
+    target_compatible_with = ["@platforms//os:linux"],
+    timeout = "long",
+)
+
+py_test(
     name = "cli_ux_observer_tests",
     srcs = [
         "scripts/cli-ux/_observe_processes.py",

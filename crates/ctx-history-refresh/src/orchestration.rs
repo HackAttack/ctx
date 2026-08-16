@@ -9,6 +9,7 @@ pub(super) struct SourceBackedRefreshPlan<'a> {
     pub(super) reconciliation_demand: SourceBackedReconciliationDemand,
     pub(super) scope: SourceBackedRefreshScope,
     pub(super) route_worksets: BTreeMap<SourceRouteIdentity, SourceBackedRefreshWorkset>,
+    pub(super) watch_catalog: Option<SourceBackedWatchCatalog>,
     pub(super) covered_route_ids: BTreeSet<SourceRouteIdentity>,
     pub(super) covered_publication: SourceBackedRefreshCoveredPublication,
 }
@@ -86,7 +87,8 @@ pub(super) fn execute_source_backed_refresh(
             &report_progress,
         )
         .with_reconciliation_demand(plan.reconciliation_demand)
-        .with_route_worksets(plan.route_worksets),
+        .with_route_worksets(plan.route_worksets)
+        .with_watch_catalog_opt(plan.watch_catalog),
     )
 }
 
@@ -208,11 +210,7 @@ fn source_backed_route_observation_fence(
     let work_budget =
         source_backed_refresh_work_budget(source_backed_refresh_writer_options().indexer_threads);
     let discovery_started = StdInstant::now();
-    let report = discover_provider_sources_with_context_and_work_budget(
-        &discovery,
-        work_budget,
-        ctx_history_capture::SourceAdmission::ReconcileAll,
-    );
+    let report = discover_provider_sources_with_context_and_work_budget(&discovery, work_budget);
     let discovery_duration = discovery_started.elapsed();
     validate_provider_source_roots_outside_data_root(data_root, report.sources.iter())
         .context("validate provider roots before admitting source refresh demand")?;
