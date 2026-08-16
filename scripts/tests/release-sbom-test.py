@@ -102,6 +102,7 @@ WORKSPACE_PACKAGES = (
     ),
     ("ctx-history-refresh-execution", "crates/ctx-history-refresh-execution"),
     ("ctx-history-read-application", "crates/ctx-history-read-application"),
+    ("ctx-managed-pair-engine", "crates/ctx-managed-pair-engine"),
     ("ctx-semantic-index", "crates/ctx-semantic-index"),
     ("ctx-semantic-model", "crates/ctx-semantic-model"),
     ("ctx-terminal", "crates/ctx-terminal"),
@@ -268,6 +269,7 @@ members = [
   "crates/ctx-history-providers-jsonl-shared",
   "crates/ctx-history-refresh-execution",
   "crates/ctx-history-read-application",
+  "crates/ctx-managed-pair-engine",
   "crates/ctx-semantic-index",
   "crates/ctx-semantic-model",
   "crates/ctx-terminal",
@@ -615,8 +617,12 @@ uuid = "1.0.0"
                 "ctx-semantic-model": (
                     "ctx-history-core = { path = \"../ctx-history-core\" }"
                 ),
+                "ctx-managed-pair-engine": (
+                    "ctx-history-platform = { path = \"../ctx-history-platform\" }"
+                ),
                 "ctx-upgrade-engine": (
-                    "ctx-history-core = { path = \"../ctx-history-core\" }"
+                    "ctx-history-core = { path = \"../ctx-history-core\" }\n"
+                    "ctx-managed-pair-engine = { path = \"../ctx-managed-pair-engine\" }"
                 ),
             }.get(name)
             dependencies = (
@@ -714,6 +720,7 @@ repository = "https://example.invalid/{name}"
             "@@//crates/ctx-history-providers-jsonl-shared:ctx_history_providers_jsonl_shared",
             "@@//crates/ctx-history-refresh-execution:ctx_history_refresh_execution",
             "@@//crates/ctx-history-read-application:ctx_history_read_application",
+            "@@//crates/ctx-managed-pair-engine:ctx_managed_pair_engine",
             "@@//crates/ctx-semantic-index:ctx_semantic_index",
             "@@//crates/ctx-semantic-model:ctx_semantic_model",
             "@@//crates/ctx-terminal:ctx_terminal",
@@ -1231,6 +1238,11 @@ repository = "https://example.invalid/{name}"
                 ),
             ),
             self.package(
+                "ctx-managed-pair-engine",
+                "0.26.0",
+                ("ctx-history-platform",),
+            ),
+            self.package(
                 "ctx-semantic-index",
                 "0.26.0",
                 (
@@ -1249,7 +1261,7 @@ repository = "https://example.invalid/{name}"
             self.package(
                 "ctx-upgrade-engine",
                 "0.26.0",
-                ("ctx-history-core",),
+                ("ctx-history-core", "ctx-managed-pair-engine"),
             ),
             self.package("chrono", "0.4.0", external=True),
             self.package("base64", "0.22.0", external=True),

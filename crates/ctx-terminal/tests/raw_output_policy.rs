@@ -1367,6 +1367,7 @@ fn production_source_paths(root: &Path) -> Vec<PathBuf> {
     let integrations_root = workspace_root.join("crates/ctx-agent-integrations");
     let daemon_runtime_root = workspace_root.join("crates/ctx-daemon-runtime");
     let engine_root = workspace_root.join("crates/ctx-upgrade-engine");
+    let managed_pair_root = workspace_root.join("crates/ctx-managed-pair-engine");
     let history_cli_root = workspace_root.join("crates/ctx-history-cli");
     let presentation_root = workspace_root.join("crates/ctx-cli-presentation");
     let terminal_root = workspace_root.join("crates/ctx-terminal");
@@ -1382,6 +1383,7 @@ fn production_source_paths(root: &Path) -> Vec<PathBuf> {
     visit_production_source_files(&presentation_root.join("src"), &mut paths);
     visit_production_source_files(&terminal_root.join("src"), &mut paths);
     visit_production_source_files(&daemon_runtime_root.join("src"), &mut paths);
+    visit_production_source_files(&managed_pair_root.join("src"), &mut paths);
     visit_production_source_files(&engine_root.join("src"), &mut paths);
     paths.sort();
     paths
@@ -1414,6 +1416,7 @@ fn scan_package() -> Vec<Site> {
     let integrations_root = workspace_root.join("crates/ctx-agent-integrations");
     let daemon_runtime_root = workspace_root.join("crates/ctx-daemon-runtime");
     let engine_root = workspace_root.join("crates/ctx-upgrade-engine");
+    let managed_pair_root = workspace_root.join("crates/ctx-managed-pair-engine");
     let history_cli_root = workspace_root.join("crates/ctx-history-cli");
     let presentation_root = workspace_root.join("crates/ctx-cli-presentation");
     let terminal_root = workspace_root.join("crates/ctx-terminal");
@@ -1434,6 +1437,11 @@ fn scan_package() -> Vec<Site> {
         } else if let Ok(relative) = path.strip_prefix(&daemon_runtime_root) {
             format!(
                 "crates/ctx-daemon-runtime/{}",
+                relative.to_string_lossy().replace('\\', "/")
+            )
+        } else if let Ok(relative) = path.strip_prefix(&managed_pair_root) {
+            format!(
+                "crates/ctx-managed-pair-engine/{}",
                 relative.to_string_lossy().replace('\\', "/")
             )
         } else if let Ok(relative) = path.strip_prefix(&engine_root) {

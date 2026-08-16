@@ -11,6 +11,7 @@ members = [
     "crates/ctx-daemon-application",
     "crates/ctx-daemon-service",
     "crates/ctx-daemon-runtime",
+    "crates/ctx-managed-pair-engine",
     "crates/ctx-upgrade-engine",
     "crates/ctx-history-capture",
     "crates/ctx-history-capture-composition",

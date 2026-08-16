@@ -35,6 +35,7 @@ PROD_SRCS = glob(
 CTX_UPGRADE_ENGINE_DEPS = [
     "//crates/ctx-history-core:lib",
     "//crates/ctx-history-platform:lib",
+    "//crates/ctx-managed-pair-engine:lib",
 ]
 
 CTX_UPGRADE_ENGINE_RUSTC_FLAGS = [

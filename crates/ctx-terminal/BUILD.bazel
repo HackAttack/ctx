@@ -62,6 +62,7 @@ ctx_rust_test(
         "//crates/ctx-agent-integrations:cargo_package_data",
         "//crates/ctx-client-observability:cargo_package_data",
         "//crates/ctx-daemon-runtime:cargo_package_data",
+        "//crates/ctx-managed-pair-engine:cargo_package_data",
         "//crates/ctx-semantic-model:build.rs",
         "//crates/ctx-upgrade-engine:cargo_package_data",
     ],

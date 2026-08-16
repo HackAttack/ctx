@@ -31,6 +31,7 @@ _CARGO_WORKSPACE_BUILD_DATA = [
     "//crates/ctx-history-source-discovery:BUILD.bazel",
     "//crates/ctx-history-source-io:BUILD.bazel",
     "//crates/ctx-history-source-sqlite:BUILD.bazel",
+    "//crates/ctx-managed-pair-engine:BUILD.bazel",
     "//crates/ctx-protocol:BUILD.bazel",
     "//crates/ctx-sdk:BUILD.bazel",
     "//crates/ctx-semantic-index:BUILD.bazel",
