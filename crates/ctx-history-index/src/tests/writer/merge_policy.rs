@@ -208,7 +208,14 @@ fn production_merge_policy_bounds_repeated_substantial_replacements() {
     let temp = tempdir().unwrap();
     let replaced = source("large-replaced-source.sqlite");
     let stable = source("stable-source.jsonl");
-    let mut initial = GenerationWriter::open(temp.path(), WriterOptions::default())
+    // Exact post-merge topology depends on deterministic segment flush order;
+    // the production contract permits below-threshold late deletions from a
+    // multi-threaded flush, while this test deliberately asserts none remain.
+    let options = WriterOptions {
+        indexer_threads: 1,
+        memory_bytes: INDEX_MEMORY_MIN_PER_THREAD,
+    };
+    let mut initial = GenerationWriter::open(temp.path(), options.clone())
         .unwrap()
         .into_writer()
         .unwrap();
@@ -270,7 +277,7 @@ fn production_merge_policy_bounds_repeated_substantial_replacements() {
     let mut peak_segments = 0;
     let mut latest_generation = String::new();
     for revision in 2..=REPLACEMENTS + 1 {
-        let mut replacement = GenerationWriter::open(temp.path(), WriterOptions::default())
+        let mut replacement = GenerationWriter::open(temp.path(), options.clone())
             .unwrap()
             .into_writer()
             .unwrap();
@@ -332,7 +339,7 @@ fn production_merge_policy_bounds_repeated_substantial_replacements() {
         REPLACEMENTS + 2,
         vec![replaced.clone(), stable.clone()],
     );
-    let mut replay = GenerationWriter::open(temp.path(), WriterOptions::default())
+    let mut replay = GenerationWriter::open(temp.path(), options)
         .unwrap()
         .into_writer()
         .unwrap();
