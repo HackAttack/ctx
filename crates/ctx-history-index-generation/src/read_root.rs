@@ -56,6 +56,7 @@ impl GenerationReadRoot {
             OpenedDirectory::open_absolute(&data_root).map_err(map_unavailable_generation_root)?;
         data.verify_private()
             .map_err(|_| GenerationError::InvalidGenerationRetentionLease)?;
+        #[cfg(any(test, feature = "test-support"))]
         run_traversal_hook(GenerationRootTraversalStage::DataRootOpened);
 
         let search = data
@@ -64,6 +65,7 @@ impl GenerationReadRoot {
         search
             .verify_private()
             .map_err(|_| GenerationError::InvalidGenerationRetentionLease)?;
+        #[cfg(any(test, feature = "test-support"))]
         run_traversal_hook(GenerationRootTraversalStage::SearchOpened);
 
         let lexical = search
@@ -72,6 +74,7 @@ impl GenerationReadRoot {
         lexical
             .verify_private()
             .map_err(|_| GenerationError::InvalidGenerationRetentionLease)?;
+        #[cfg(any(test, feature = "test-support"))]
         run_traversal_hook(GenerationRootTraversalStage::LexicalOpened);
 
         Self::register(data_root.join("search").join("lexical"), lexical)
@@ -282,8 +285,11 @@ pub enum GenerationRootTraversalStage {
 }
 
 #[cfg(any(test, feature = "test-support"))]
+type GenerationRootTraversalHook = Box<dyn FnMut(GenerationRootTraversalStage)>;
+
+#[cfg(any(test, feature = "test-support"))]
 thread_local! {
-    static TRAVERSAL_HOOK: std::cell::RefCell<Option<Box<dyn FnMut(GenerationRootTraversalStage)>>> =
+    static TRAVERSAL_HOOK: std::cell::RefCell<Option<GenerationRootTraversalHook>> =
         const { std::cell::RefCell::new(None) };
 }
 
@@ -317,14 +323,3 @@ fn run_traversal_hook(stage: GenerationRootTraversalStage) {
         }
     });
 }
-
-#[cfg(not(any(test, feature = "test-support")))]
-#[derive(Clone, Copy)]
-enum GenerationRootTraversalStage {
-    DataRootOpened,
-    SearchOpened,
-    LexicalOpened,
-}
-
-#[cfg(not(any(test, feature = "test-support")))]
-fn run_traversal_hook(_stage: GenerationRootTraversalStage) {}
