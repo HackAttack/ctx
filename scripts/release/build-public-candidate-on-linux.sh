@@ -358,6 +358,7 @@ version="$(cargo metadata --no-deps --format-version 1 | python3 -c 'import json
 
 build_target() {
   local target_id="$1" platform triple build_triple binary raw target_dir
+  local encoded_flags
   local CTX_PUBLIC_TARGET_PLATFORM CTX_PUBLIC_TARGET_TRIPLE CTX_PUBLIC_TARGET_BINARY
   local -a build_env
   eval "$(python3 "${repo_root}/scripts/public-cli-release-targets.py" shell "${target_id}")"
@@ -369,6 +370,13 @@ build_target() {
   raw="ctx"
   [[ "${target_id}" != "windows-x64" ]] || raw="ctx.exe"
   target_dir="${repo_root}/target/linux-release-factory/${target_id}"
+  encoded_flags=""
+  if [[ "${target_id}" == macos-* ]]; then
+    # Leave deterministic load-command space for the Developer ID signature.
+    # Without this, the x86_64 Mach-O can place __text immediately after the
+    # existing commands, leaving rcodesign nowhere to add LC_CODE_SIGNATURE.
+    encoded_flags="-Clink-arg=-Wl,-headerpad,0x1000"
+  fi
   build_env=(
     "CARGO_TARGET_DIR=${target_dir}"
     "CTX_RELEASE_BUILD_SOURCE_COMMIT=${source_commit}"
@@ -377,6 +385,7 @@ build_target() {
   )
   if [[ "${target_id}" == macos-* ]]; then
     build_env+=("SDKROOT=${macos_sdk_root}" "MACOSX_DEPLOYMENT_TARGET=13.0")
+    build_env+=("CARGO_ENCODED_RUSTFLAGS=${encoded_flags}")
   fi
   env "${build_env[@]}" \
     "${cargo_zigbuild_bin}" zigbuild --manifest-path "${repo_root}/Cargo.toml" \

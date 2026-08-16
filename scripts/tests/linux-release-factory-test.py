@@ -481,6 +481,14 @@ class LinuxReleaseFactoryTest(unittest.TestCase):
             self.assertNotIn(name, build_body)
         self.assertNotIn("CTX_MACOS_SIGNING_SECRET_SOURCE=injected", source)
 
+    def test_factory_reserves_macos_developer_id_signature_header_space(self) -> None:
+        source = (ROOT / "scripts" / "release" / "build-public-candidate-on-linux.sh").read_text()
+        build_start = source.index("build_target()")
+        build_body = source[build_start : source.index("for target_id in", build_start)]
+        self.assertIn('if [[ "${target_id}" == macos-* ]]; then', build_body)
+        self.assertIn("-Clink-arg=-Wl,-headerpad,0x1000", build_body)
+        self.assertIn('"CARGO_ENCODED_RUSTFLAGS=${encoded_flags}"', build_body)
+
     def test_native_linux_validator_requires_ubuntu_24(self) -> None:
         source = (
             ROOT / "scripts" / "validate-public-cli-factory-artifact.sh"
