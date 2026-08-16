@@ -339,6 +339,88 @@ function New-UniqueRunRoot {
     throw "Could not create a unique semantic smoke run root under $Parent"
 }
 
+function New-UniqueFixtureRoot {
+    param(
+        [string]$Parent,
+        [string]$DataRoot
+    )
+
+    if ([string]::IsNullOrWhiteSpace($Parent)) {
+        throw "Fixture root requires a parent outside DataRoot"
+    }
+    $resolvedParent = (Resolve-Path -LiteralPath $Parent).Path
+    $resolvedDataRoot = (Resolve-Path -LiteralPath $DataRoot).Path
+    $dataRootPrefix = $resolvedDataRoot
+    $directorySeparator = [string][System.IO.Path]::DirectorySeparatorChar
+    if (-not $dataRootPrefix.EndsWith($directorySeparator, [System.StringComparison]::Ordinal)) {
+        $dataRootPrefix += $directorySeparator
+    }
+
+    for ($attempt = 0; $attempt -lt 20; $attempt++) {
+        $suffix = [System.Guid]::NewGuid().ToString("n").Substring(0, 12)
+        $candidate = [System.IO.Path]::GetFullPath((Join-Path $resolvedParent ("f-" + $suffix)))
+        if (
+            $candidate.Equals($resolvedDataRoot, [System.StringComparison]::OrdinalIgnoreCase) -or
+            $candidate.StartsWith($dataRootPrefix, [System.StringComparison]::OrdinalIgnoreCase)
+        ) {
+            throw "Fixture root must be outside ctx DataRoot: $resolvedDataRoot"
+        }
+        try {
+            return (New-Item -ItemType Directory -Path $candidate -ErrorAction Stop).FullName
+        } catch {
+            if (Test-Path -LiteralPath $candidate) {
+                continue
+            }
+            throw
+        }
+    }
+    throw "Could not create a unique fixture root under $resolvedParent"
+}
+
+function Complete-SmokeTeardown {
+    [CmdletBinding()]
+    param(
+        [AllowNull()][System.Management.Automation.ErrorRecord]$PrimaryError,
+        [AllowNull()][System.Exception]$TeardownError,
+        [AllowNull()][System.Exception]$FixtureCleanupError,
+        [AllowNull()][System.Exception]$EnvironmentCleanupError,
+        [string]$RunRoot,
+        [string]$FixtureRoot
+    )
+
+    if ($null -ne $PrimaryError) {
+        if ($null -ne $TeardownError) {
+            Write-Error `
+                "ctx semantic smoke cleanup also failed to stop the daemon; retained isolated root $RunRoot`: $($TeardownError.Message)" `
+                -ErrorAction Continue
+        }
+        if ($null -ne $FixtureCleanupError) {
+            Write-Error `
+                "ctx semantic smoke cleanup also failed to remove task-owned fixture root $FixtureRoot`: $($FixtureCleanupError.Message)" `
+                -ErrorAction Continue
+        }
+        if ($null -ne $EnvironmentCleanupError) {
+            Write-Error `
+                "ctx semantic smoke cleanup also failed to restore the process environment: $($EnvironmentCleanupError.Message)" `
+                -ErrorAction Continue
+        }
+        $PSCmdlet.ThrowTerminatingError($PrimaryError)
+    }
+
+    if ($null -ne $TeardownError) {
+        Write-Error `
+            "ctx semantic smoke retained isolated root for survivor diagnosis: $RunRoot" `
+            -ErrorAction Continue
+        throw $TeardownError
+    }
+    if ($null -ne $FixtureCleanupError) {
+        throw "ctx semantic smoke failed to remove task-owned fixture root $FixtureRoot`: $($FixtureCleanupError.Message)"
+    }
+    if ($null -ne $EnvironmentCleanupError) {
+        throw "ctx semantic smoke failed to restore the process environment: $($EnvironmentCleanupError.Message)"
+    }
+}
+
 $environmentVariableNames = @(
     "USERPROFILE", "HOME", "LOCALAPPDATA", "APPDATA", "XDG_CACHE_HOME", "XDG_CONFIG_HOME",
     "CTX_DATA_ROOT",
@@ -383,7 +465,10 @@ function Set-ProcessEnvironmentVariable {
 
 $runRoot = ""
 $ownsRunRoot = $false
+$fixtureRoot = ""
+$ownsFixtureRoot = $false
 $daemon = $null
+$primaryError = $null
 
 function Invoke-Ctx {
     param([string[]]$CommandArgs)
@@ -487,6 +572,7 @@ try {
         }
         $DataRoot = (Resolve-Path -LiteralPath $DataRoot).Path
         $runRoot = $DataRoot
+        $fixtureParent = Split-Path -Parent $DataRoot
     } else {
         if ([string]::IsNullOrWhiteSpace($DataRoot)) {
             $dataRootParent = [System.IO.Path]::GetTempPath()
@@ -502,10 +588,12 @@ try {
         $DataRoot = Join-Path $runRoot "data"
         New-Item -ItemType Directory -Path $DataRoot | Out-Null
         $DataRoot = [System.IO.Path]::GetFullPath($DataRoot)
+        $fixtureParent = $dataRootParent
     }
 
-    $fixtureDir = Join-Path $DataRoot "smoke-fixture"
-    $fixturePath = Join-Path $fixtureDir "history.jsonl"
+    $fixtureRoot = New-UniqueFixtureRoot -Parent $fixtureParent -DataRoot $DataRoot
+    $ownsFixtureRoot = $true
+    $fixturePath = Join-Path $fixtureRoot "history.jsonl"
     $smokeHome = Join-Path $DataRoot "home"
     $smokeCache = Join-Path $DataRoot "cache"
     $smokeConfig = Join-Path $DataRoot "config-home"
@@ -516,7 +604,6 @@ try {
     } else {
         Join-Path $DataRoot "semantic-cache"
     }
-    New-Item -ItemType Directory -Path $fixtureDir -Force | Out-Null
     New-Item -ItemType Directory -Path $smokeHome -Force | Out-Null
     New-Item -ItemType Directory -Path $smokeCache -Force | Out-Null
     New-Item -ItemType Directory -Path $smokeConfig -Force | Out-Null
@@ -532,6 +619,7 @@ try {
 
     Write-Host "ctx semantic smoke: run_root=$runRoot"
     Write-Host "ctx semantic smoke: data_root=$DataRoot"
+    Write-Host "ctx semantic smoke: fixture_root=$fixtureRoot"
 
     $runtimeRoot = Join-Path $DataRoot "runtime"
     $runtimeInstallDir = Join-Path $runtimeRoot ("onnxruntime\" + $runtimeVersion + "\" + $RuntimePlatform)
@@ -903,12 +991,27 @@ $daemonOutput
 Daemon stderr:
 $daemonError
 "@
+} catch {
+    $primaryError = $_
 } finally {
     $teardownError = $null
+    $fixtureCleanupError = $null
+    $environmentCleanupError = $null
     try {
         Stop-OwnedDaemon -Process $daemon
     } catch {
         $teardownError = $_.Exception
+    }
+    try {
+        if (
+            $ownsFixtureRoot -and
+            -not [string]::IsNullOrWhiteSpace($fixtureRoot) -and
+            (Test-Path -LiteralPath $fixtureRoot)
+        ) {
+            Remove-Item -LiteralPath $fixtureRoot -Recurse -Force -ErrorAction Stop
+        }
+    } catch {
+        $fixtureCleanupError = $_.Exception
     }
     if (
         $null -eq $teardownError -and
@@ -919,10 +1022,19 @@ $daemonError
         Remove-Item -LiteralPath $runRoot -Recurse -Force -ErrorAction SilentlyContinue
     }
     foreach ($name in $environmentVariableNames) {
-        Set-ProcessEnvironmentVariable -Name $name -Value $savedEnvironment[$name]
+        try {
+            Set-ProcessEnvironmentVariable -Name $name -Value $savedEnvironment[$name]
+        } catch {
+            if ($null -eq $environmentCleanupError) {
+                $environmentCleanupError = $_.Exception
+            }
+        }
     }
-    if ($null -ne $teardownError) {
-        Write-Error "ctx semantic smoke retained isolated root for survivor diagnosis: $runRoot"
-        throw $teardownError
-    }
+    Complete-SmokeTeardown `
+        -PrimaryError $primaryError `
+        -TeardownError $teardownError `
+        -FixtureCleanupError $fixtureCleanupError `
+        -EnvironmentCleanupError $environmentCleanupError `
+        -RunRoot $runRoot `
+        -FixtureRoot $fixtureRoot
 }
