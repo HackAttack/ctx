@@ -14,6 +14,11 @@ import zipfile
 
 
 SCRIPT = Path(__file__).resolve().parents[1] / "release-sbom.py"
+SCHEMA = (
+    Path(__file__).resolve().parents[2]
+    / "contracts"
+    / "release-candidate-manifest-v1.schema.json"
+)
 COMMIT = "0123456789abcdef0123456789abcdef01234567"
 SOURCE = "registry+https://github.com/rust-lang/crates.io-index"
 CRATE_REPOSITORY_PREFIX = "rules_rust++crate+"
@@ -117,8 +122,7 @@ class ReleaseSbomTest(unittest.TestCase):
         self.module_file.write_text('module(name = "ctx")\n', encoding="utf-8")
         self.module_lock = self.root / "MODULE.bazel.lock"
         self.module_lock.write_text('{"lockFileVersion":21}\n', encoding="utf-8")
-        self.candidate_schema = self.root / "candidate.schema.json"
-        self.candidate_schema.write_text('{"type":"object"}\n', encoding="utf-8")
+        self.candidate_schema = SCHEMA
         self.target_matrix = self.root / "release-targets-v1.json"
         self.target_matrix.write_text(
             json.dumps(
@@ -870,6 +874,31 @@ repository = "https://example.invalid/{name}"
         )
 
         candidate = json.loads(self.candidate.read_bytes())
+        expected_evidence = {
+            "binary_size_report",
+            "build_info",
+            "candidate_schema",
+            "cargo_lock",
+            "ctx_history_index_manifest",
+            "ctx_history_index_format_manifest",
+            "ctx_history_index_query_manifest",
+            "cyclonedx_sbom",
+            "license_materials_inventory",
+            "module_file",
+            "module_lock",
+            "target_dependency_inventory",
+            "target_matrix",
+            "third_party_notices",
+            "workspace_manifest",
+        }
+        evidence_schema = json.loads(
+            self.candidate_schema.read_text(encoding="utf-8")
+        )["properties"]["evidence"]
+        self.assertEqual(set(candidate["evidence"]), expected_evidence)
+        self.assertEqual(set(evidence_schema["required"]), expected_evidence)
+        self.assertEqual(
+            set(evidence_schema["propertyNames"]["enum"]), expected_evidence
+        )
         self.assertEqual(
             candidate["construction"],
             {
