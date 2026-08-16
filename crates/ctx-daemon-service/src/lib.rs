@@ -24,7 +24,6 @@ use serde_json::{json, Value};
 
 mod browser_handoff_wake;
 mod daemon;
-mod daemon_provider_refresh;
 mod daemon_retry;
 mod daemon_scheduler;
 mod daemon_wakeup;
