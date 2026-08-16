@@ -43,7 +43,7 @@ use super::{
 };
 
 #[cfg(test)]
-pub(crate) use mcp::{mcp_show_event, mcp_show_event_with_compact, mcp_show_session};
+pub(crate) use mcp::{mcp_show_event, mcp_show_session};
 pub use mcp::{mcp_show_event_application, mcp_show_session_application};
 #[cfg(test)]
 pub(super) use render::{event_window_value, render_event_values};

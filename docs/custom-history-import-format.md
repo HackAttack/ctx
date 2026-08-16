@@ -117,22 +117,22 @@ Optional fields:
 - `native_session_id`
 - `cwd`
 - `ended_at`
-- `agent_type`
+- `agent_scope`: `primary` or `subagent`.
 - `role_hint`
-- `is_primary`
 - `status`
 - `metadata`
 
 With `lineage_contract: provider_native_v1`, use `session_relationship` with
 `parent_session_id` and `root_session_id` to state the provider's typed
 relationship. `root` has no parent. Every other relationship requires a
-parent. ctx derives primary/subagent filtering from the typed relationship;
-legacy `is_primary` is not relationship authority.
+parent. Use `agent_scope` to state the exporter-known primary/subagent scope;
+when omitted, scope remains unknown. `session_relationship` is independent
+lineage authority and does not imply an agent scope.
 
 Example:
 
 ```json
-{"record_type":"session","source_id":"laptop-main","session_id":"run-1","native_session_id":"abc123","cwd":"/workspace/app","started_at":"2026-06-23T12:00:00Z","agent_type":"primary","role_hint":"developer","is_primary":true,"status":"completed"}
+{"record_type":"session","source_id":"laptop-main","session_id":"run-1","native_session_id":"abc123","cwd":"/workspace/app","started_at":"2026-06-23T12:00:00Z","agent_scope":"primary","role_hint":"developer","status":"completed"}
 ```
 
 ## Event
@@ -273,7 +273,7 @@ JSONL route performs another idempotent scan of the provider-owned source.
 ```jsonl
 {"record_type":"manifest","schema_version":"ctx-history-jsonl-v1"}
 {"record_type":"source","source_id":"demo-source","provider_key":"demo-agent","source_format":"demo-jsonl","raw_source_path":"/tmp/demo-history.jsonl","cursor":{"after":{"stream":"demo-agent:demo-source","cursor":"3","observed_at":"2026-06-23T12:00:00Z"}}}
-{"record_type":"session","source_id":"demo-source","session_id":"demo-session","cwd":"/workspace/demo","started_at":"2026-06-23T12:00:00Z","agent_type":"primary","role_hint":"developer","is_primary":true,"status":"completed"}
+{"record_type":"session","source_id":"demo-source","session_id":"demo-session","cwd":"/workspace/demo","started_at":"2026-06-23T12:00:00Z","agent_scope":"primary","role_hint":"developer","status":"completed"}
 {"record_type":"event","source_id":"demo-source","session_id":"demo-session","event_index":0,"event_type":"message","role":"user","occurred_at":"2026-06-23T12:00:01Z","payload":{"text":"Add a parser test."},"preview":"Add a parser test.","native_cursor":"line:1"}
 {"record_type":"file_touch","source_id":"demo-source","session_id":"demo-session","touch_index":0,"event_index":0,"path":"tests/parser.rs","change_kind":"modified","confidence":"high","occurred_at":"2026-06-23T12:00:02Z"}
 ```
