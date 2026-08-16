@@ -207,6 +207,14 @@ impl<'a> DaemonApplication<'a> {
         lifecycle::start_daemon_and_wait(self.host, data_root, config, trigger)
     }
 
+    pub fn observe_daemon_and_wait(
+        &self,
+        data_root: &Path,
+        config: &DaemonConfigSnapshot,
+    ) -> Result<DaemonHandoff> {
+        lifecycle::observe_daemon_and_wait(self.host, data_root, config)
+    }
+
     pub fn daemon_start_is_fenced(&self) -> bool {
         lifecycle::daemon_start_is_fenced(self.host)
     }

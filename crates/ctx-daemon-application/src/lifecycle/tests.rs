@@ -418,6 +418,35 @@ fn owner_replacement_during_probe_rejects_readiness() {
 }
 
 #[test]
+fn observation_only_handoff_waits_through_owner_turnover() -> Result<()> {
+    let replacement = DaemonHandoff {
+        pid: 46,
+        heartbeat_at_ms: 61_000,
+    };
+    let mut observations = [
+        DaemonHandoffObservation::Pending,
+        DaemonHandoffObservation::Running(replacement),
+    ]
+    .into_iter();
+    let mut observation_count = 0;
+    let mut pause_count = 0;
+
+    let observed = wait_for_observed_daemon_handoff_with(
+        2,
+        || {
+            observation_count += 1;
+            observations.next().expect("bounded turnover observation")
+        },
+        || pause_count += 1,
+    )?;
+
+    assert_eq!(observed, replacement);
+    assert_eq!(observation_count, 2);
+    assert_eq!(pause_count, 1);
+    Ok(())
+}
+
+#[test]
 fn fresh_spawned_failure_requires_the_full_active_owner_identity() {
     let expected = test_config();
     let now_ms = 70_000;

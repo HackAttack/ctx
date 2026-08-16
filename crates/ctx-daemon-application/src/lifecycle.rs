@@ -469,6 +469,37 @@ pub fn start_daemon_and_wait(
     }
 }
 
+/// Observes an identity-stable ready daemon owner without changing lifecycle
+/// state. This path never ensures supervision, requests startup, terminates an
+/// owner, or spawns a child.
+pub fn observe_daemon_and_wait(
+    host: &dyn DaemonApplicationHost,
+    data_root: &Path,
+    config: &DaemonConfigSnapshot,
+) -> Result<DaemonHandoff> {
+    let deadline = Instant::now() + DAEMON_SETUP_HANDOFF_TIMEOUT;
+    wait_for_observed_daemon_handoff_with(
+        DAEMON_SETUP_HANDOFF_POLL_ATTEMPTS,
+        || {
+            daemon_handoff_observation(
+                host,
+                data_root,
+                None,
+                config,
+                deadline
+                    .saturating_duration_since(Instant::now())
+                    .min(DAEMON_HEALTH_TIMEOUT),
+            )
+        },
+        || {
+            std::thread::sleep(
+                DAEMON_UPGRADE_POLL_INTERVAL
+                    .min(deadline.saturating_duration_since(Instant::now())),
+            )
+        },
+    )
+}
+
 pub fn handoff_mismatched_daemon_owner(
     host: &dyn DaemonApplicationHost,
     data_root: &Path,
@@ -782,6 +813,14 @@ fn wait_for_daemon_handoff_with(
         }
     }
     Err(DaemonHandoffTimeout.into())
+}
+
+fn wait_for_observed_daemon_handoff_with(
+    attempts: usize,
+    observe: impl FnMut() -> DaemonHandoffObservation,
+    pause: impl FnMut(),
+) -> Result<DaemonHandoff> {
+    wait_for_daemon_handoff_with(attempts, observe, || Ok(None), pause)
 }
 
 pub fn daemon_autostart_command(
