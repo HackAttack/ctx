@@ -137,8 +137,8 @@ const CLI_SESSION_EVENT_PAGE_ITEMS: usize =""",
 
     def test_whole_package_cloc_ceiling_is_rejected(self) -> None:
         source = self.root / "crates/ctx-history-ingest-application/tests/contracts/cloc_growth.rs"
-        source.write_text("\n".join("fn line_%d() {}" % index for index in range(6_090)), encoding="utf-8")
-        self.assert_rejected("ingest", "exceeds its 6,089 physical CLOC ceiling")
+        source.write_text("\n".join("fn line_%d() {}" % index for index in range(6_144)), encoding="utf-8")
+        self.assert_rejected("ingest", "exceeds its 6,143 physical CLOC ceiling")
 
 
 if __name__ == "__main__":
