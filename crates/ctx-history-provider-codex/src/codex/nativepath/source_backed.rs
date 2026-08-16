@@ -18,7 +18,10 @@ use super::{
         opened_file_prefix_sha256, reopen_codex_source_capability,
         revalidate_codex_catalog_source_capability,
     },
-    rows::{CodexCoreRecordDraft, CodexProviderEventIdentityV0},
+    rows::{
+        CodexCoreRecordDraft, CodexProviderEventIdentityKindV0, CodexProviderEventIdentityV0,
+        CodexProviderNativeEventCopyV0,
+    },
     source::{CodexCatalogSource, CodexFileObservation},
     CodexNativeScanner, CodexSessionRow,
 };
@@ -39,7 +42,7 @@ const CODEX_NATIVE_SESSION_NAMESPACE: &str = "codex.session";
 const CODEX_LOGICAL_SESSION_KIND: &str = "codex-session";
 const CODEX_LOGICAL_EVENT_KIND: &str = "codex-event";
 const CODEX_SOURCE_SCHEMA_VARIANT: &str = "codex-nativepath-jsonl-v0";
-const CODEX_PARSER_REVISION: &str = "codex-nativepath-core-activity-v1";
+const CODEX_PARSER_REVISION: &str = "codex-nativepath-core-activity-v2-event-copy";
 
 type CodexSessionPlanV0 = (CodexCatalogSource, SourceKey, String);
 

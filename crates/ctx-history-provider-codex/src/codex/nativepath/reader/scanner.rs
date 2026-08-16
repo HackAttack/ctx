@@ -28,6 +28,7 @@ impl CodexNativeScanner {
         Ok(Self {
             source,
             owner: None,
+            pending_calls: BTreeMap::new(),
             counters: CodexScanCounters::default(),
             local_turn_started: false,
             core_source,
@@ -44,13 +45,17 @@ impl CodexNativeScanner {
         &mut self,
         checkpoint: &super::super::checkpoint::CodexSemanticCheckpoint,
     ) -> Result<()> {
-        if !checkpoint.direct_append_safe() || self.owner.is_some() {
+        if !checkpoint.direct_append_safe()
+            || self.owner.is_some()
+            || !self.pending_calls.is_empty()
+        {
             return Err(CaptureError::InvalidPayload(
                 "Codex semantic checkpoint cannot resume this scanner".to_owned(),
             ));
         }
         self.owner = checkpoint.owner().cloned();
         self.local_turn_started = checkpoint.local_turn_started();
+        self.pending_calls.clone_from(checkpoint.pending_calls());
         Ok(())
     }
 

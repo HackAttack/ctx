@@ -5,7 +5,7 @@ use crate::provider::source_backed::family::jsonl::set_before_jsonl_terminal_phy
 use ctx_history_core::{CertifiedSource, ProviderNativeSessionRelationship, SourceFrontier};
 use ctx_history_index::{GenerationWriter, RevalidationTarget, WriterOptions};
 
-const CURRENT_PARSER_REVISION: &str = "codex-nativepath-core-activity-v1";
+const CURRENT_PARSER_REVISION: &str = "codex-nativepath-core-activity-v2-event-copy";
 
 fn writer_options() -> WriterOptions {
     WriterOptions {
@@ -478,7 +478,7 @@ fn assert_current_provider_checkpoint(checkpoint: &serde_json::Value) {
         .get("Utf8")
         .and_then(serde_json::Value::as_str)
         .expect("Codex provider checkpoint must be compact UTF-8");
-    assert!(encoded.starts_with("codex.projector-checkpoint.v4:"));
+    assert!(encoded.starts_with("codex.projector-checkpoint.v5:"));
     assert!(encoded.len() <= MAX_PROVIDER_CHECKPOINT_BYTES);
 }
 

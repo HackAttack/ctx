@@ -217,16 +217,16 @@ pub(in crate::codex::nativepath) fn codex_core_record(
         .root_native_session_id
         .as_deref()
         .map(codex_session_id_for_native_id)
-        .transpose()?
-        .unwrap_or(session_id);
+        .transpose()?;
     let is_primary = owner.session_relationship.is_none()
         || owner.session_relationship
             == Some(ctx_history_core::ProviderNativeSessionRelationship::Root);
-    let (event_id, native_event_id, _provider_occurrence) =
+    let (event_id, native_event_id, provider_occurrence) =
         event_identity_state.next_identity(source, session_id, &row)?;
     let CodexCoreRecordDraft {
         raw_ordinal,
-        provider_event_identity: _,
+        provider_event_identity,
+        provider_event_copy,
         occurred_at,
         event_type,
         role,
@@ -300,9 +300,23 @@ pub(in crate::codex::nativepath) fn codex_core_record(
     )?;
     if let Some(parent_session_id) = parent_session_id {
         record.parent_session_id = Some(parent_session_id);
-        record.root_session_id = Some(root_session_id);
+        record.root_session_id = root_session_id;
         record.session_relationship = owner.session_relationship;
     }
+    record.event_copy = provider_event_copy
+        .as_ref()
+        .zip(provider_event_identity.as_ref())
+        .map(|(copy, provider_identity)| {
+            copied_result_event_copy(
+                copy,
+                provider_identity,
+                event_type.as_str(),
+                role.map(|role| role.as_str()),
+                provider_occurrence,
+            )
+        })
+        .transpose()?
+        .flatten();
     record.provider_session_id = Some(native_session_id.to_owned());
     record.native_event_id = Some(native_event_id);
     record.occurred_at_unix_ms = Some(occurred_at.timestamp_millis());
@@ -351,3 +365,35 @@ fn codex_session_id_for_native_id(
     let source = codex_source_key(native_session_id)?;
     codex_session_identity(&source, native_session_id)
 }
+
+fn copied_result_event_copy(
+    copy: &CodexProviderNativeEventCopyV0,
+    provider_identity: &CodexProviderEventIdentityV0,
+    event_type: &str,
+    role: Option<&str>,
+    provider_occurrence: u64,
+) -> CodexSourceBackedResultV0<Option<ctx_history_core::ProviderNativeEventCopy>> {
+    if provider_identity.kind != CodexProviderEventIdentityKindV0::CallId
+        || provider_identity.value != copy.result_call_id
+    {
+        return Ok(None);
+    }
+    let ancestor_source = codex_source_key(&copy.ancestor_native_session_id)?;
+    let ancestor_session_id =
+        codex_session_identity(&ancestor_source, &copy.ancestor_native_session_id)?;
+    let (_, parts) = provider_event_key_parts(event_type, role, provider_identity)?;
+    let (ancestor_event_id, _) = event_identity_for_occurrence(
+        &ancestor_source,
+        ancestor_session_id,
+        &parts,
+        provider_occurrence,
+    )?;
+    Ok(Some(ctx_history_core::ProviderNativeEventCopy {
+        ancestor_session_id,
+        ancestor_event_id,
+        proof: ctx_history_core::ProviderNativeCopyProof::NativeCallResultIdentity,
+    }))
+}
+
+#[cfg(test)]
+mod tests;

@@ -78,6 +78,7 @@ pub(crate) struct CodexSessionGitMetadata {
 pub(crate) struct CodexCoreRecordDraft {
     pub(crate) raw_ordinal: u64,
     pub(crate) provider_event_identity: Option<CodexProviderEventIdentityV0>,
+    pub(crate) provider_event_copy: Option<CodexProviderNativeEventCopyV0>,
     pub(crate) occurred_at: DateTime<Utc>,
     pub(crate) event_type: EventType,
     pub(crate) role: Option<EventRole>,
@@ -94,6 +95,11 @@ impl CodexCoreRecordDraft {
             self.provider_event_identity
                 .as_ref()
                 .map_or(0, |identity| identity.value.capacity()),
+            self.provider_event_copy.as_ref().map_or(0, |copy| {
+                copy.ancestor_native_session_id
+                    .capacity()
+                    .saturating_add(copy.result_call_id.capacity())
+            }),
             self.lexical_body.capacity(),
             self.structured_content
                 .as_ref()
@@ -104,7 +110,7 @@ impl CodexCoreRecordDraft {
                 .and_then(encoded_json_len)
                 .unwrap_or(0),
             self.session_cwd.as_ref().map_or(0, String::capacity),
-            OWNED_ALLOCATION_OVERHEAD_BYTES.checked_mul(3)?,
+            OWNED_ALLOCATION_OVERHEAD_BYTES.checked_mul(5)?,
         ]
         .into_iter()
         .try_fold(0_usize, usize::checked_add)
@@ -130,6 +136,15 @@ impl CodexProviderEventIdentityKindV0 {
 pub(crate) struct CodexProviderEventIdentityV0 {
     pub(crate) kind: CodexProviderEventIdentityKindV0,
     pub(crate) value: String,
+}
+
+/// Parser-local provider-native copy candidate. This is not a Core semantic
+/// classification: identity projection still has to prove the exact result
+/// call identity and matching ancestor event occurrence before publication.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct CodexProviderNativeEventCopyV0 {
+    pub(crate) ancestor_native_session_id: String,
+    pub(crate) result_call_id: String,
 }
 
 pub(super) struct CodexSourceBackedBuiltRowV0 {
@@ -168,6 +183,7 @@ pub(super) fn build_source_backed_event_row(
             provider_event_identity: (!audit.selector_ambiguous(SelectorGroup::CallId))
                 .then(|| provider_event_identity(&retained.payload))
                 .flatten(),
+            provider_event_copy: None,
             occurred_at: retained.occurred_at,
             event_type: semantic.event_type,
             role: semantic.role,
@@ -183,6 +199,7 @@ pub(super) fn build_source_backed_event_row(
 pub(super) fn build_source_backed_sparse_output_row(
     raw_ordinal: u64,
     provider_event_identity: Option<CodexProviderEventIdentityV0>,
+    provider_event_copy: Option<CodexProviderNativeEventCopyV0>,
     provider_call_id: Option<&str>,
     occurred_at: DateTime<Utc>,
     _result_kind: CodexResultKind,
@@ -212,6 +229,7 @@ pub(super) fn build_source_backed_sparse_output_row(
         provider_event_identity: (!audit.selector_ambiguous(SelectorGroup::CallId))
             .then_some(provider_event_identity)
             .flatten(),
+        provider_event_copy,
         occurred_at,
         event_type,
         role: Some(EventRole::Tool),

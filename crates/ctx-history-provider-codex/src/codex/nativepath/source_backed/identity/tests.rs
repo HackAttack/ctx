@@ -1,55 +1,42 @@
 use super::*;
 
 #[test]
-fn copied_origin_targets_the_exact_duplicate_provider_occurrence() {
-    let ancestor = "019fb100-0000-7000-8000-000000000001";
+fn copied_result_targets_the_exact_duplicate_provider_occurrence() {
+    let copy = CodexProviderNativeEventCopyV0 {
+        ancestor_native_session_id: "019fb100-0000-7000-8000-000000000001".to_owned(),
+        result_call_id: "duplicate-provider-call".to_owned(),
+    };
     let provider_identity = CodexProviderEventIdentityV0 {
         kind: CodexProviderEventIdentityKindV0::CallId,
         value: "duplicate-provider-call".to_owned(),
     };
-    let first = copied_result_event_origin(
-        ancestor,
-        "duplicate-provider-call",
-        &provider_identity,
-        "tool_output",
-        Some("tool"),
-        0,
-    )
-    .unwrap()
-    .unwrap();
-    let second = copied_result_event_origin(
-        ancestor,
-        "duplicate-provider-call",
-        &provider_identity,
-        "tool_output",
-        Some("tool"),
-        1,
-    )
-    .unwrap()
-    .unwrap();
-    let event_id = |origin: ctx_history_core::EventOrigin| match origin {
-        ctx_history_core::EventOrigin::CopiedFromAncestor {
-            ancestor_event_id, ..
-        } => *ancestor_event_id,
-        origin => panic!("unexpected copied origin {origin:?}"),
-    };
-    assert_ne!(event_id(first), event_id(second));
+    let first = copied_result_event_copy(&copy, &provider_identity, "tool_output", Some("tool"), 0)
+        .unwrap()
+        .unwrap();
+    let second =
+        copied_result_event_copy(&copy, &provider_identity, "tool_output", Some("tool"), 1)
+            .unwrap()
+            .unwrap();
+    assert_eq!(
+        first.proof,
+        ctx_history_core::ProviderNativeCopyProof::NativeCallResultIdentity
+    );
+    assert_ne!(first.ancestor_event_id, second.ancestor_event_id);
 }
 
 #[test]
-fn copied_origin_abstains_without_an_exact_call_identity() {
+fn copied_result_abstains_without_an_exact_call_identity() {
+    let copy = CodexProviderNativeEventCopyV0 {
+        ancestor_native_session_id: "019fb100-0000-7000-8000-000000000002".to_owned(),
+        result_call_id: "duplicate-provider-call".to_owned(),
+    };
     let provider_identity = CodexProviderEventIdentityV0 {
         kind: CodexProviderEventIdentityKindV0::Id,
         value: "duplicate-provider-call".to_owned(),
     };
-    assert!(copied_result_event_origin(
-        "019fb100-0000-7000-8000-000000000002",
-        "duplicate-provider-call",
-        &provider_identity,
-        "tool_output",
-        Some("tool"),
-        0,
-    )
-    .unwrap()
-    .is_none());
+    assert!(
+        copied_result_event_copy(&copy, &provider_identity, "tool_output", Some("tool"), 0,)
+            .unwrap()
+            .is_none()
+    );
 }

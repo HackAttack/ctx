@@ -100,35 +100,31 @@ fn map_ordinary_file_observation_error(error: SourceIoError) -> CaptureError {
 
 pub(super) fn validate_catalog_owner(
     source: &CodexCatalogSource,
-    mut scanned_owner: CodexSessionRow,
+    scanned_owner: CodexSessionRow,
 ) -> Result<CodexSessionRow> {
     let catalog_owner = source.catalog_native_session_id.as_deref();
-    let root_native_session_id = match (
+    match (
         scanned_owner.session_relationship,
         scanned_owner.parent_native_session_id.as_ref(),
     ) {
-        (Some(ProviderNativeSessionRelationship::Root), None) => {
-            scanned_owner.native_session_id.clone()
-        }
+        (Some(ProviderNativeSessionRelationship::Root), None) | (None, None) => {}
         (Some(ProviderNativeSessionRelationship::Root), Some(_)) => {
             return Err(CaptureError::InvalidPayload(
                 "Codex normalized catalog owner changed before NativePath admission".to_owned(),
             ));
         }
-        (_, Some(parent)) => parent.clone(),
-        (None, None) => scanned_owner.native_session_id.clone(),
-        (Some(_), None) => {
+        (Some(_), Some(_)) => {}
+        (None, Some(_)) | (Some(_), None) => {
             return Err(CaptureError::InvalidPayload(
                 "Codex normalized catalog owner changed before NativePath admission".to_owned(),
             ));
         }
-    };
+    }
     if catalog_owner != Some(scanned_owner.native_session_id.as_str()) {
         return Err(CaptureError::InvalidPayload(
             "Codex normalized catalog owner changed before NativePath admission".to_owned(),
         ));
     }
-    scanned_owner.root_native_session_id = Some(root_native_session_id);
     Ok(scanned_owner)
 }
 

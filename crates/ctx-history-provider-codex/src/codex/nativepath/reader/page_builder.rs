@@ -54,6 +54,7 @@ impl CodexNativeScanner {
             super::super::checkpoint::CodexSemanticCheckpointState {
                 owner: self.owner.as_ref(),
                 local_turn_started: self.local_turn_started,
+                pending_calls: &self.pending_calls,
             },
         )?;
         Ok(CodexSemanticScan {

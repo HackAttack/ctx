@@ -1,4 +1,4 @@
-use std::{fs::File, path::Path, sync::Arc};
+use std::{collections::BTreeMap, fs::File, path::Path, sync::Arc};
 
 use chrono::{DateTime, Utc};
 use ctx_history_core::{CoreRecord, SourceKey, StableEntityId};
@@ -6,6 +6,7 @@ use serde_json::Value;
 
 use super::raw_json::SelectorGroup;
 use super::{
+    checkpoint::CodexPendingCallV0,
     record::{
         classify_after_selector_ambiguity, classify_codex_record, parse_decoded_record,
         parse_session_meta, parse_turn_context, prefilter_codex_record, CodexRecordAdmission,
@@ -83,6 +84,7 @@ pub(super) struct CodexSemanticScan {
 pub(crate) struct CodexNativeScanner {
     source: CodexCatalogSource,
     owner: Option<CodexSessionRow>,
+    pending_calls: BTreeMap<String, CodexPendingCallV0>,
     counters: CodexScanCounters,
     local_turn_started: bool,
     core_source: SourceKey,
@@ -118,6 +120,8 @@ enum CodexContextMutation {
     SourceBackedRow {
         row: CodexCoreRecordDraft,
         estimated_bytes: usize,
+        insert_pending_call: Option<(String, CodexPendingCallV0)>,
+        remove_pending_call_id: Option<String>,
     },
 }
 
