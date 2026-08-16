@@ -166,6 +166,24 @@ native = {
         "windows-x64", "windows-x64", "windows", "x86_64"
     ),
 }
+
+
+def require_core_validator_call(key: str, platform: str, command: str) -> None:
+    logical_command = re.sub(r"\\\n[ \t]*", " ", command)
+    calls = []
+    for line in logical_command.splitlines():
+        normalized = " ".join(line.split())
+        if "validate-public-cli-factory-artifact.sh" in normalized:
+            calls.append(normalized)
+    expected = (
+        "scripts/validate-public-cli-factory-artifact.sh "
+        f"{platform} target/public-cli-artifacts "
+        f"target/public-cli-native-smoke/{platform}"
+    )
+    if calls != [expected]:
+        fail(f"{key} must use the exact three-argument Core-only validator call")
+
+
 for key, (platform, queue, os_name, arch) in native.items():
     step = keyed[key]
     if key == "public-cli-macos-arm64-native-smoke":
@@ -189,10 +207,26 @@ for key, (platform, queue, os_name, arch) in native.items():
     command = step.get("command", "")
     if "download-linux-factory-artifacts.sh" not in command:
         fail(f"{key} must download factory artifacts")
-    if "validate-public-cli-factory-artifact.sh" not in command or platform not in command:
-        fail(f"{key} must run exact-byte native validation")
+    require_core_validator_call(key, platform, command)
     if re.search(r"cargo (?:build|zigbuild)|bazelw run //:ctx_release", command):
         fail(f"{key} must never rebuild the candidate")
+
+for key, (platform, _queue, _os_name, _arch) in native.items():
+    command = keyed[key].get("command", "")
+    output = f"target/public-cli-native-smoke/{platform}"
+    mutated = command.replace(
+        output,
+        f"{output} companion-artifact managed-pair-envelope",
+        1,
+    )
+    if mutated == command:
+        fail(f"{key} validator arity mutation could not be constructed")
+    try:
+        require_core_validator_call(key, platform, mutated)
+    except SystemExit:
+        pass
+    else:
+        fail(f"{key} accepted a companion/pair-envelope validator mutation")
 
 coreml_archive = (
     "target/public-cli-artifacts/"
@@ -275,8 +309,8 @@ for step in steps:
         fail(f"{step.get('key')} exposes {match.group(0)} to Buildkite interpolation")
 
 print(
-    "Buildkite release pipeline: one Linux factory, five exact-byte native "
-    "validators, strict staging"
+    "Buildkite release pipeline: one Linux factory, five exact-byte "
+    "three-argument Core validators, strict staging"
 )
 PY
 

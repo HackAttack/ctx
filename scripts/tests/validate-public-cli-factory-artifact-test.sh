@@ -46,11 +46,6 @@ artifact="${artifact_dir}/ctx"
 printf '#!/bin/sh\nexit 1\n' >"${artifact}"
 chmod 600 "${artifact}"
 sha256_file "${artifact}" >"${artifact}.sha256"
-companion="${artifact_dir}/ctx-pro-linux-x64"
-printf '#!/bin/sh\nexit 1\n' >"${companion}"
-chmod 600 "${companion}"
-pair_envelope="${artifact_dir}/ctx-managed-pair-linux-x64.json"
-printf '{}\n' >"${pair_envelope}"
 
 ARTIFACT="${artifact}" REPO_ROOT="${repo_root}" python3 - <<'PY'
 import hashlib
@@ -205,7 +200,6 @@ PATH="${command_dir}:/usr/bin:/bin" \
   CTX_TEST_CHMOD_LOG="${chmod_log}" \
   CTX_TEST_CARGO_MARKER="${cargo_marker}" \
   bash "${validator}" linux-x64 -artifacts "${output_dir}" \
-    "${companion}" "${pair_envelope}" \
   >"${test_root}/stdout" 2>"${test_root}/stderr"
 status=$?
 set -e
@@ -215,7 +209,6 @@ if grep -Fq "factory artifact directory is unavailable" "${test_root}/stderr"; t
   fail "validator parsed a leading-dash artifact directory as an option"
 fi
 [[ -x "${artifact}" ]] || fail "validator did not restore owner execute permission"
-[[ -x "${companion}" ]] || fail "validator did not restore companion execute permission"
 [[ -f "${chmod_log}" ]] || fail "BSD-compatible chmod shim was not invoked"
 [[ ! -e "${cargo_marker}" ]] || fail "validator invoked Cargo"
 [[ "$(cat "${artifact}.sha256")" == "$(sha256_file "${artifact}")" ]] || \
@@ -225,15 +218,24 @@ fi
 expected_artifact="$(cd "${artifact_dir}" && pwd -P)/ctx"
 [[ "$(sed -n '2p' "${chmod_log}")" == "${expected_artifact}" ]] || \
   fail "validator did not pass the canonical artifact path to chmod"
-[[ "$(sed -n '3p' "${chmod_log}")" == u+x ]] || \
-  fail "validator passed a non-portable companion chmod mode"
-[[ "$(sed -n '4p' "${chmod_log}")" == "${companion}" ]] || \
-  fail "validator did not pass the exact companion path to chmod"
-[[ "$(wc -l <"${chmod_log}" | tr -d '[:space:]')" == 4 ]] || \
-  fail "validator passed an unexpected chmod operand"
+[[ "$(wc -l <"${chmod_log}" | tr -d '[:space:]')" == 2 ]] || \
+  fail "validator passed an extra chmod operand"
 if grep -Fq "could not establish factory artifact executable mode" \
   "${test_root}/stderr"; then
   fail "validator rejected the BSD-compatible chmod path"
 fi
 
-printf 'PASS: immutable factory identity and BSD/GNU mode restoration\n'
+set +e
+bash "${validator}" linux-x64 -artifacts "${output_dir}" \
+  companion-artifact managed-pair-envelope \
+  >"${test_root}/pair-mutation-stdout" 2>"${test_root}/pair-mutation-stderr"
+pair_mutation_status=$?
+set -e
+[[ ${pair_mutation_status} -eq 2 ]] || \
+  fail "validator did not reject a companion/pair-envelope arity mutation"
+grep -Fxq \
+  'Usage: scripts/validate-public-cli-factory-artifact.sh PLATFORM ARTIFACT_DIR OUTPUT_DIR' \
+  "${test_root}/pair-mutation-stderr" || \
+  fail "validator did not preserve the exact Core-only three-argument usage"
+
+printf 'PASS: immutable Core factory identity, exact arity, and BSD/GNU mode restoration\n'
