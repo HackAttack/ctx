@@ -479,6 +479,137 @@ fn persistent_daemon_passively_publishes_appended_source_without_foreground_comm
 }
 
 #[test]
+fn automatic_codex_append_after_targeted_import_preserves_and_extends_generation() {
+    let temp = tempdir();
+    let native_session_id = "019c08d7-0000-7000-8000-000000000002";
+    let sessions = temp.path().join(".codex").join("sessions");
+    let source = sessions
+        .join("2026")
+        .join("07")
+        .join("29")
+        .join(format!("rollout-{native_session_id}.jsonl"));
+    write_codex_session(
+        &source,
+        native_session_id,
+        &[(
+            "2026-07-29T12:00:00Z",
+            "user",
+            "targeted import automatic append initial oracle",
+        )],
+    );
+    let _daemon = start_source_refresh_daemon(&temp);
+
+    let initial = json_output(ctx(&temp).args([
+        "search",
+        "targeted import automatic append initial oracle",
+        "--provider",
+        "codex",
+        "--refresh",
+        "wait",
+        "--format=json",
+    ]));
+    let _initial_generation = assert_published_generation(&initial, "wait");
+
+    let _targeted = json_output(ctx(&temp).args([
+        "import",
+        "--provider",
+        "codex",
+        "--path",
+        sessions.to_str().unwrap(),
+        "--no-daemon",
+        "--format=json",
+        "--progress=none",
+    ]));
+    let status = json_output(ctx(&temp).args(["status", "--format=json"]));
+    let targeted_generation = status["lexical"]["generation_id"]
+        .as_str()
+        .expect("targeted import should leave a published generation active")
+        .to_owned();
+    assert_eq!(
+        status["lexical"]["indexed_documents"], 1,
+        "targeted import must preserve the initial document: {status:#}"
+    );
+
+    append_codex_message(
+        &source,
+        "2026-07-29T12:01:00Z",
+        "assistant",
+        "targeted import automatic append new oracle",
+    );
+
+    // The mutation belongs to the normal automatic Codex watch route even
+    // though the same source was most recently refreshed through an explicit
+    // request overlay. A failed refresh must leave the targeted generation
+    // active; a successful refresh must retain the old event and add the new
+    // one rather than publishing authoritative empty state.
+    let job_path = search_refresh_data_root(&temp).join("daemon/jobs/core-refresh.json");
+    let deadline = Instant::now() + Duration::from_secs(10);
+    let (automatic_generation, automatic_job) = loop {
+        let job = fs::read(&job_path)
+            .ok()
+            .and_then(|bytes| serde_json::from_slice::<Value>(&bytes).ok());
+        if let Some(job) = job {
+            assert_ne!(
+                job["request_state"], "failed",
+                "automatic Codex append failed after targeted import; retained={targeted_generation}: {job:#}"
+            );
+            if let Some(generation) = (job["request_state"] == "published")
+                .then(|| job["published_generation"].as_str())
+                .flatten()
+                .filter(|generation| *generation != targeted_generation)
+            {
+                break (generation.to_owned(), job);
+            }
+        }
+        assert!(
+            Instant::now() < deadline,
+            "daemon did not publish automatic Codex append after targeted import"
+        );
+        std::thread::sleep(Duration::from_millis(25));
+    };
+    assert_eq!(
+        automatic_job["trigger_provenance"], "daemon_scheduler",
+        "{automatic_job:#}"
+    );
+    assert_eq!(
+        automatic_job["refresh_scope"]["kind"], "exact",
+        "{automatic_job:#}"
+    );
+    assert_eq!(
+        automatic_job["receipt"]["current"]["current_source_count"], 1,
+        "{automatic_job:#}"
+    );
+    assert_eq!(
+        automatic_job["receipt"]["current"]["current_indexed_documents"], 2,
+        "{automatic_job:#}"
+    );
+
+    for (query, expected) in [
+        ("targeted import automatic append initial oracle", 1),
+        ("targeted import automatic append new oracle", 1),
+    ] {
+        let search = json_output(ctx(&temp).args([
+            "search",
+            query,
+            "--provider",
+            "codex",
+            "--refresh",
+            "off",
+            "--format=json",
+        ]));
+        assert_eq!(
+            search["retrieval"]["generation_id"], automatic_generation,
+            "{search:#}"
+        );
+        assert_eq!(
+            search["results"].as_array().map(Vec::len),
+            Some(expected),
+            "{search:#}"
+        );
+    }
+}
+
+#[test]
 fn live_daemon_prepare_uninstall_disables_stops_and_removes_coordination() {
     let temp = tempdir();
     let mut daemon = start_source_refresh_daemon(&temp);
