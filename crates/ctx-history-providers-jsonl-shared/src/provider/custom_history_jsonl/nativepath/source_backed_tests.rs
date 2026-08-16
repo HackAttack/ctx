@@ -79,6 +79,23 @@ fn file_reference(index: u64, event_index: u64, value: &str) -> Value {
     })
 }
 
+fn v1_file_touch(index: u64, event_index: u64, path: &str) -> Value {
+    json!({
+        "record_type": "file_touch",
+        "source_id": "source-a",
+        "session_id": "child",
+        "touch_index": index,
+        "event_index": event_index,
+        "path": path,
+        "change_kind": "modified",
+        "old_path": "tests/old_parser.rs",
+        "line_count_delta": 12,
+        "confidence": "high",
+        "occurred_at": "2026-07-28T12:00:02Z",
+        "metadata": {"origin": "released-v1"},
+    })
+}
+
 fn write_records(path: &Path, records: &[Value]) {
     let mut bytes = Vec::new();
     for record in records {
@@ -205,6 +222,50 @@ fn v2_projects_exact_activity_payload_and_ordered_duplicate_facts() {
             ProviderDeclaredFact {
                 kind: LiteralFactKind::File,
                 value: "./src/../src/lib.rs".to_owned(),
+            },
+        ]
+    );
+}
+
+#[test]
+fn v1_file_touch_normalizes_to_neutral_file_reference_fact() {
+    let temp = tempdir().unwrap();
+    let path = temp.path().join("v1-file-touch.jsonl");
+    write_records(
+        &path,
+        &[
+            manifest(false),
+            source(),
+            session(
+                "child",
+                "native-child",
+                None,
+                ProviderNativeSessionRelationship::Root,
+                AgentScope::Primary,
+            ),
+            event(0, "event-0", "child", json!({"text": "update parser"})),
+            v1_file_touch(0, 0, "tests/parser.rs"),
+        ],
+    );
+
+    let (records, certificate) =
+        collect_with_certificate(&CustomHistorySourceBackedInput::explicit(&path, [14; 32]));
+    assert_eq!(records.len(), 1);
+    assert_eq!(certificate.counts().complete_records, 5);
+    assert_eq!(certificate.counts().retained_records, 1);
+    assert_eq!(certificate.counts().rejected_records, 0);
+    assert_eq!(certificate.counts().ignored_records, 4);
+    assert_eq!(certificate.counts().indexed_documents, 1);
+    assert_eq!(
+        records[0].content.activity.as_ref().unwrap().facts,
+        vec![
+            ProviderDeclaredFact {
+                kind: LiteralFactKind::SessionCwd,
+                value: "/work/./literal".to_owned(),
+            },
+            ProviderDeclaredFact {
+                kind: LiteralFactKind::File,
+                value: "tests/parser.rs".to_owned(),
             },
         ]
     );

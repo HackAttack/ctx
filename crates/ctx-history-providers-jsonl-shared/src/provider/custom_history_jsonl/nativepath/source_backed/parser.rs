@@ -1,6 +1,59 @@
 use super::*;
 use crate::provider::custom_history_jsonl::CUSTOM_HISTORY_IDENTIFIER_MAX_BYTES;
 
+#[derive(Debug, Deserialize)]
+#[serde(tag = "record_type", rename_all = "snake_case")]
+enum V1CompatibilityRecord {
+    FileTouch(V1FileTouchRecord),
+}
+
+#[derive(Debug, Deserialize)]
+struct V1FileTouchRecord {
+    source_id: String,
+    session_id: String,
+    touch_index: u64,
+    #[serde(default)]
+    event_index: Option<u64>,
+    path: String,
+    #[serde(default, rename = "change_kind")]
+    _change_kind: Option<V1FileChangeKind>,
+    #[serde(default, rename = "old_path")]
+    _old_path: Option<String>,
+    #[serde(default, rename = "line_count_delta")]
+    _line_count_delta: Option<i64>,
+    #[serde(default, rename = "confidence")]
+    _confidence: V1Confidence,
+    occurred_at: DateTime<Utc>,
+    #[serde(default = "empty_metadata")]
+    metadata: serde_json::Value,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum V1FileChangeKind {
+    Read,
+    Created,
+    Modified,
+    Deleted,
+    Renamed,
+    Unknown,
+}
+
+#[derive(Debug, Default, Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum V1Confidence {
+    Explicit,
+    High,
+    Medium,
+    Low,
+    #[default]
+    Unknown,
+}
+
+fn empty_metadata() -> serde_json::Value {
+    serde_json::Value::Object(serde_json::Map::new())
+}
+
 #[derive(Debug)]
 struct FileReferenceCandidate {
     line_number: usize,
@@ -175,10 +228,10 @@ fn visit_record(
     record_custom_history_work(|work| {
         work.provider_records_parsed = work.provider_records_parsed.saturating_add(1);
     });
-    let record = match serde_json::from_slice::<CtxHistoryJsonlRecord>(bytes) {
+    let record = match parse_record(bytes) {
         Ok(record) => record,
         Err(error) => {
-            push_provider_import_failure(&mut catalog.summary, line.line_number, error.to_string());
+            push_provider_import_failure(&mut catalog.summary, line.line_number, error);
             return Ok(());
         }
     };
@@ -526,6 +579,52 @@ fn visit_record(
         }
     }
     Ok(())
+}
+
+fn parse_record(bytes: &[u8]) -> Result<CtxHistoryJsonlRecord, String> {
+    match serde_json::from_slice::<CtxHistoryJsonlRecord>(bytes) {
+        Ok(record) => Ok(record),
+        Err(current_error) => {
+            let is_v1_file_touch = serde_json::from_slice::<serde_json::Value>(bytes)
+                .ok()
+                .and_then(|record| {
+                    record
+                        .get("record_type")
+                        .and_then(serde_json::Value::as_str)
+                        .map(|record_type| record_type == "file_touch")
+                })
+                .unwrap_or(false);
+            if !is_v1_file_touch {
+                return Err(current_error.to_string());
+            }
+
+            let V1CompatibilityRecord::FileTouch(touch) = serde_json::from_slice::<
+                V1CompatibilityRecord,
+            >(bytes)
+            .map_err(|error| format!("invalid ctx-history-jsonl-v1 file_touch record: {error}"))?;
+            let V1FileTouchRecord {
+                source_id,
+                session_id,
+                touch_index,
+                event_index,
+                path,
+                occurred_at,
+                metadata,
+                ..
+            } = touch;
+            Ok(CtxHistoryJsonlRecord::FileReference(
+                CtxHistoryJsonlFileReferenceRecord {
+                    source_id,
+                    session_id,
+                    reference_index: touch_index,
+                    event_index,
+                    value: path,
+                    occurred_at,
+                    metadata,
+                },
+            ))
+        }
+    }
 }
 
 fn retained_metadata_bytes(lengths: &[usize]) -> usize {
@@ -1144,4 +1243,23 @@ fn finish_prefix_digest(hasher: &Sha256, prefix_bytes: u64) -> [u8; 32] {
     let mut digest = hasher.clone();
     digest.update(prefix_bytes.to_be_bytes());
     digest.finalize().into()
+}
+
+#[cfg(test)]
+mod compatibility_tests {
+    use super::*;
+
+    #[test]
+    fn malformed_v1_file_touch_diagnostic_names_the_released_shape() {
+        let error = parse_record(
+            br#"{"record_type":"file_touch","source_id":"source-a","session_id":"child","touch_index":0,"occurred_at":"2026-07-28T12:00:02Z"}"#,
+        )
+        .unwrap_err();
+
+        assert!(
+            error.contains("invalid ctx-history-jsonl-v1 file_touch record"),
+            "{error}"
+        );
+        assert!(error.contains("missing field `path`"), "{error}");
+    }
 }

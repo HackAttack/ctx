@@ -23,11 +23,11 @@ use ctx_history_core::{
     derive_session_id, AgentScope, CaptureProvider, CertifiedSource, CertifiedSourceAppend,
     CertifiedSourceDeletion, CertifiedSourceInventory, CoreActivity, CoreRecord,
     CtxHistoryJsonlCopiedFromSelector, CtxHistoryJsonlCopyProofKind, CtxHistoryJsonlEventRecord,
-    CtxHistoryJsonlLineageContract, CtxHistoryJsonlRecord, NativeSessionKey,
-    ProjectionContractError, ProviderDeclaredFact, ProviderNativeCopyProof,
+    CtxHistoryJsonlFileReferenceRecord, CtxHistoryJsonlLineageContract, CtxHistoryJsonlRecord,
+    NativeSessionKey, ProjectionContractError, ProviderDeclaredFact, ProviderNativeCopyProof,
     ProviderNativeSessionRelationship, ScannedSourceCounts, SessionIdentityInput, SourceAnchor,
-    SourceFrontier, SourceKey, StableEntityId, TypedKey,
-    MAX_CORE_CONTENT_BYTES, MAX_PROVIDER_DECLARED_FACTS,
+    SourceFrontier, SourceKey, StableEntityId, TypedKey, MAX_CORE_CONTENT_BYTES,
+    MAX_PROVIDER_DECLARED_FACTS,
 };
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -64,7 +64,7 @@ const CUSTOM_HISTORY_PUBLIC_SCHEMA_VERSION: &str = "ctx-history-jsonl-v1";
 const CUSTOM_ROUTE_SOURCE_FORMAT: &str = "ctx_history_jsonl_v1";
 const CUSTOM_SOURCE_SCHEMA_VARIANT: &str = "ctx-history-jsonl-v1-source-backed-v1";
 pub(super) const CUSTOM_SOURCE_BACKED_PARSER_REVISION: &str =
-    "custom-history-jsonl-source-backed-v6-core-activity";
+    "custom-history-jsonl-source-backed-v7-v1-file-touch";
 const CUSTOM_SOURCE_FRONTIER_KIND: &str = "custom-history-jsonl-frontier-v2";
 pub(super) const CUSTOM_SESSION_KEY_NAMESPACE: &str = "custom-history.session";
 pub(super) const CUSTOM_EVENT_KEY_NAMESPACE: &str = "custom-history.event";

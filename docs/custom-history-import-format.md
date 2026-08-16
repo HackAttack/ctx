@@ -201,6 +201,12 @@ Example:
 A file touch records a path that the session read, wrote, created, deleted, or
 renamed.
 
+`file_touch` is the released v1 compatibility spelling. During import, ctx
+normalizes `touch_index` to the active file-reference index and preserves
+`path` as the exact provider-declared file value. When `event_index` is
+present, the resulting file reference is attached to that event as a literal
+file fact.
+
 Required fields:
 
 - `source_id`
@@ -220,7 +226,9 @@ Optional fields:
 
 `event_index` links the touch to an event when known. Use `old_path` for
 renames, `line_count_delta` for approximate net line changes, and `confidence`
-when a touch is inferred from text rather than structured tool output.
+when a touch is inferred from text rather than structured tool output. These
+v1 change-detail fields remain accepted for compatibility, but the neutral
+Core model does not promote them to canonical change or operation claims.
 
 Example:
 
