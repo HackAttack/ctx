@@ -125,6 +125,13 @@ pub(crate) fn autostart_daemon_for_setup_and_wait(
     )
 }
 
+pub(crate) fn observe_daemon_for_setup_and_wait(
+    data_root: &Path,
+    config: &crate::config::AppConfig,
+) -> Result<DaemonSetupHandoff> {
+    ctx_daemon_cli::observe_daemon_for_setup_and_wait(data_root, &daemon_cli_config(config))
+}
+
 pub(crate) fn maybe_autostart_daemon(
     data_root: &Path,
     config: &crate::config::AppConfig,

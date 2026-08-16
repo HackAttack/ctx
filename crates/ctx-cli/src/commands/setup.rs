@@ -10,8 +10,8 @@ use crate::progress::{ProgressReporter, ProgressWriterError};
 use crate::semantic::{
     DaemonSetupHandoff, SourceBackedRefreshMode, SourceBackedRefreshPendingPublication,
     autostart_daemon_for_setup_and_wait, coordinate_setup_source_backed_refresh_with_progress,
-    daemon_autostart_suppression_reason, semantic_query_service_supported,
-    source_epoch_status_report,
+    daemon_autostart_suppression_reason, observe_daemon_for_setup_and_wait,
+    semantic_query_service_supported, source_epoch_status_report,
 };
 use crate::ui::Ui;
 use crate::{SetupArgs, config};
@@ -19,6 +19,7 @@ use ctx_cli_presentation::commands::{SetupDaemonState, render_setup_human};
 use ctx_history_cli::HistoryConfigPort;
 
 const HOSTED_INSTALLER_SETUP_ENV: &str = "CTX_HOSTED_INSTALLER_SETUP";
+const SETUP_OUTPUT_DAEMON_BIND_ATTEMPTS: usize = 2;
 
 pub(crate) fn run_setup(
     args: SetupArgs,
@@ -79,16 +80,15 @@ pub(crate) fn run_setup(
             &mut progress,
         )?
     };
-    let source = source_epoch_status_report(&data_root, config)?;
-    // Refresh admission can outlive the owner from the initial ready handoff
-    // and recover through a replacement daemon. Re-run the same live handoff
-    // at the output boundary so the setup contract reports that final owner.
+    let mut source = source_epoch_status_report(&data_root, config)?;
+    // Refresh admission can outlive the owner from the initial ready handoff.
+    // Observe the final owner without re-entering supervisor/startup mutation,
+    // then replace only the daemon report so unrelated source fields retain
+    // their original admission boundary.
     if daemon_autostart_requested {
-        daemon_handoff = Some(autostart_daemon_for_setup_and_wait(
-            &data_root,
-            config,
-            crate::DaemonTriggerCommandArg::Setup,
-        )?);
+        let (observed_source, observed_handoff) = observe_setup_output_daemon(&data_root, config)?;
+        source.report["daemon"] = observed_source.report["daemon"].clone();
+        daemon_handoff = Some(observed_handoff);
     }
     let supervisor = source.report["daemon"]["supervisor"].clone();
     let lexical_status = source.report["lexical"]["status"]
@@ -151,6 +151,43 @@ pub(crate) fn run_setup(
         ui.write_stdout(&document)?;
     }
     Ok(())
+}
+
+fn observe_setup_output_daemon(
+    data_root: &std::path::Path,
+    config: &crate::config::AppConfig,
+) -> Result<(ctx_daemon_cli::SourceEpochStatus, DaemonSetupHandoff)> {
+    observe_setup_output_daemon_with(
+        SETUP_OUTPUT_DAEMON_BIND_ATTEMPTS,
+        || observe_daemon_for_setup_and_wait(data_root, config),
+        || source_epoch_status_report(data_root, config),
+        |source, handoff| setup_daemon_report_matches_handoff(&source.report, handoff),
+    )
+}
+
+fn observe_setup_output_daemon_with<T>(
+    attempts: usize,
+    mut observe: impl FnMut() -> Result<DaemonSetupHandoff>,
+    mut report: impl FnMut() -> Result<T>,
+    report_matches_handoff: impl Fn(&T, &DaemonSetupHandoff) -> bool,
+) -> Result<(T, DaemonSetupHandoff)> {
+    for _ in 0..attempts {
+        let handoff = observe()?;
+        let report = report()?;
+        if report_matches_handoff(&report, &handoff) {
+            return Ok((report, handoff));
+        }
+    }
+    bail!("ctx daemon owner changed repeatedly while setup prepared final output")
+}
+
+fn setup_daemon_report_matches_handoff(report: &Value, handoff: &DaemonSetupHandoff) -> bool {
+    let daemon = &report["daemon"];
+    let pid = u64::from(handoff.handoff.pid);
+    daemon["status"] == "running"
+        && daemon["running"] == true
+        && daemon["pid"].as_u64() == Some(pid)
+        && daemon["live_pid"].as_u64() == Some(pid)
 }
 
 fn setup_progress_reporter<'a>(
@@ -506,6 +543,75 @@ mod tests {
         assert_eq!(autostart["status"], "degraded");
         assert_eq!(autostart["persistent"], true);
         assert!(autostart["limitation"].is_null());
+    }
+
+    #[test]
+    fn output_daemon_binding_adopts_turnover_without_second_launch_or_ensure() -> Result<()> {
+        let handoff = |pid| DaemonSetupHandoff {
+            handoff: DaemonHandoff {
+                pid,
+                heartbeat_at_ms: 2,
+            },
+        };
+        let report = |pid| {
+            json!({
+                "daemon": {
+                    "status": "running",
+                    "running": true,
+                    "pid": pid,
+                    "live_pid": pid,
+                },
+            })
+        };
+        let launch_or_ensure_count = std::cell::Cell::new(0);
+        let initial = {
+            launch_or_ensure_count.set(launch_or_ensure_count.get() + 1);
+            handoff(51)
+        };
+        let mut observations = [handoff(52), handoff(52)].into_iter();
+        let mut reports = [report(51), report(52)].into_iter();
+
+        let (bound_report, bound_handoff) = observe_setup_output_daemon_with(
+            2,
+            || {
+                assert_eq!(launch_or_ensure_count.get(), 1);
+                Ok(observations.next().expect("bounded owner observation"))
+            },
+            || Ok(reports.next().expect("bounded daemon report")),
+            setup_daemon_report_matches_handoff,
+        )?;
+
+        assert_eq!(initial.handoff.pid, 51);
+        assert_eq!(bound_handoff.handoff.pid, 52);
+        assert!(setup_daemon_report_matches_handoff(
+            &bound_report,
+            &bound_handoff
+        ));
+        assert_eq!(launch_or_ensure_count.get(), 1);
+        assert!(observations.next().is_none());
+        assert!(reports.next().is_none());
+        Ok(())
+    }
+
+    #[test]
+    fn setup_has_one_mutating_launch_ensure_and_one_output_observation() {
+        let source = include_str!("setup.rs");
+        let runtime = source.split("#[cfg(test)]").next().unwrap();
+
+        assert_eq!(
+            runtime
+                .matches("autostart_daemon_for_setup_and_wait(")
+                .count(),
+            1,
+            "setup must enter the mutating supervisor/start path exactly once"
+        );
+        assert_eq!(
+            runtime
+                .matches("observe_daemon_for_setup_and_wait(")
+                .count(),
+            1,
+            "setup output must use one observation-only readiness handoff"
+        );
     }
 
     #[test]

@@ -171,7 +171,7 @@ pub use daemon_autostart::{
     begin_current_daemon_upgrade_handoff, begin_daemon_upgrade_handoff,
     begin_legacy_daemon_upgrade_handoff, complete_replacement_daemon_handoff,
     daemon_autostart_suppression_reason, finish_replacement_daemon_handoff,
-    mark_replacement_helper_handoff, maybe_autostart_daemon,
+    mark_replacement_helper_handoff, maybe_autostart_daemon, observe_daemon_for_setup_and_wait,
     replacement_helper_owns_daemon_handoff, DaemonHandoff, DaemonSetupHandoff,
     DaemonUpgradeHandoff,
 };
