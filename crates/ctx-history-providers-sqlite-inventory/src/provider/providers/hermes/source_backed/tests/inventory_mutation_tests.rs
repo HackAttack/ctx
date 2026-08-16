@@ -415,10 +415,10 @@ fn parent_mutation_keeps_related_child_session_byte_identical() {
     let parent = event_containing(&cold[PARENT], "parent stable needle");
     let child = event_containing(&cold[CHILD], "child stable needle");
     assert_eq!(child.parent_session_id, Some(parent.session_id));
-    assert_eq!(child.root_session_id, parent.session_id);
+    assert_eq!(child.root_session_id, None);
     assert_eq!(
         child.session_relationship,
-        SessionRelationshipKind::Delegated
+        Some(ctx_history_core::ProviderNativeSessionRelationship::Delegated)
     );
 
     Connection::open(&database)

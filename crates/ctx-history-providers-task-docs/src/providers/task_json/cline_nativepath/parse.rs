@@ -1,5 +1,5 @@
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, BTreeSet},
     fmt,
     fs::File,
     io::{BufRead, BufReader, Seek, SeekFrom},
@@ -7,13 +7,8 @@ use std::{
 };
 
 use chrono::DateTime;
-use ctx_history_capture_model::{
-    file_touches::{
-        visit_provider_file_touch_drafts_with_limit, MAX_PROVIDER_FILE_TOUCHES_PER_EVENT,
-        PROVIDER_FILE_TOUCH_LIMIT_REJECTION,
-    },
-    normalization::provider_normalized_result_value,
-};
+use ctx_history_capture_model::normalization::provider_normalized_result_value;
+use ctx_history_core::ActivityJsonCapture;
 use serde::{
     de::{IgnoredAny, MapAccess, SeqAccess, Visitor},
     Deserialize, Deserializer,
@@ -21,16 +16,13 @@ use serde::{
 use serde_json::{value::RawValue, Value};
 use sha2::{Digest, Sha256};
 
-use crate::{
-    common::io::OpenedProviderSourceFile, OutputObservationKind, OutputOutcome,
-    OutputOutcomeMetadata,
-};
+use crate::{common::io::OpenedProviderSourceFile, OutputObservationKind};
 
 use super::{
     bounded::BoundedString,
     normalize::{
         estimated_event_bytes, ClineEventComponent, ClineEventContext, ClineEventKind,
-        ClineEventRole, ClineEventRow, ClineFileTouch, ClineItemCheckpoint, ClineItemRejection,
+        ClineEventRole, ClineEventRow, ClineItemCheckpoint, ClineItemRejection,
         ClineItemRejectionKind, ClineMetadataCheckpoint, ClineNativeItemKey, ClinePublicationStats,
         ClineSessionRow, ClineSourceRecordEvidence, ClineSparseOutputDiagnostic, ClineTaskIdentity,
         ClineTaskIdentityOrigin, CLINE_NATIVE_CORE_PAGE_MAX_BYTES,
@@ -515,36 +507,6 @@ fn role_from_discriminators(values: &[String]) -> ClineEventRole {
         ClineEventRole::System
     } else {
         ClineEventRole::Unknown
-    }
-}
-
-fn status_is_failure(value: &str) -> bool {
-    matches!(
-        value,
-        "error" | "failed" | "failure" | "cancelled" | "canceled"
-    )
-}
-
-fn status_is_success(value: &str) -> bool {
-    matches!(
-        value,
-        "ok" | "success" | "succeeded" | "complete" | "completed"
-    )
-}
-
-struct LooseBool(Option<bool>);
-
-impl<'de> Deserialize<'de> for LooseBool {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: Deserializer<'de>,
-    {
-        let raw = <&RawValue>::deserialize(deserializer)?;
-        Ok(LooseBool(match raw.get().trim() {
-            "true" | "\"true\"" => Some(true),
-            "false" | "\"false\"" => Some(false),
-            _ => None,
-        }))
     }
 }
 

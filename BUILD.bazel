@@ -1,4 +1,56 @@
-CTX_GATE_DATA = glob([
+load("@rules_shell//shell:sh_binary.bzl", "sh_binary")
+load("@rules_shell//shell:sh_test.bzl", "sh_test")
+load("@rules_java//java:defs.bzl", "java_binary")
+load("@rules_python//python:defs.bzl", "py_binary", "py_test")
+load("@rules_rust//rust:defs.bzl", "rustfmt_test")
+load(
+    "//tools/bazel:gates.bzl",
+    "loc_check_inputs",
+    "loc_check_manifest",
+    "non_rust_gate",
+    "real_harness_gate",
+)
+load("//tools/bazel:history_cli_boundary.bzl", "history_cli_boundary")
+load("//tools/bazel:history_source_boundaries.bzl", "history_source_boundaries")
+load("//tools/bazel:history_provider_docproj_boundary.bzl", "history_provider_docproj_boundary_checks")
+load(
+    "//tools/bazel:history_provider_sqlite_logical_boundary.bzl",
+    "history_provider_sqlite_logical_boundary_checks",
+)
+load("//tools/bazel:loc_check_data.bzl", "LOC_CHECK_SOURCE_DATA")
+load("//tools/bazel:release_package_audit_data.bzl", "RELEASE_PACKAGE_AUDIT_PACKAGE_DATA")
+load("//tools/bazel:release_surface_tests.bzl", "release_surface_tests")
+load("//tools/bazel:root_build_settings.bzl", "root_build_settings")
+load(
+    "//tools/bazel:test_tiers.bzl",
+    "CI_TESTS",
+    "NIGHTLY_TESTS",
+    "RUST_FORMAT_TARGETS",
+)
+
+exports_files([
+    ".bazelrc",
+    "contracts/ctx-managed-pair-release-authority-v1.json",
+    "contracts/ctx-managed-pair-state-v1.schema.json",
+    "scripts/check.sh",
+])
+
+root_build_settings()
+history_source_boundaries()
+
+java_binary(
+    name = "bazel-diff",
+    main_class = "com.bazel_diff.Main",
+    runtime_deps = ["@ctx_bazel_diff//jar"],
+    tags = ["manual", "tool"],
+)
+
+loc_check_inputs(name = "loc_check_inputs")
+
+# These inputs belong to repository-policy, packaging, documentation, and real
+# harness actions. Rust compilation and Rust tests are deliberately absent:
+# those are represented by rules_rust targets below.
+NON_RUST_GATE_DATA = glob([
     ".bazelignore",
     ".bazelrc",
     ".bazelversion",
@@ -7,36 +59,147 @@ CTX_GATE_DATA = glob([
     "BUILD.bazel",
     "Cargo.lock",
     "Cargo.toml",
-    "Cross.toml",
     "LICENSE",
     "MODULE.bazel",
     "README.md",
     "SECURITY.md",
-    "crates/**",
     "contracts/**",
     "docs/**",
     "plugins/**",
+    "protocol/**",
     "scripts/**",
     "sdks/**",
     "skills/**",
     "tests/**",
-]) + [
+], allow_empty = True) + [
+    "//sdks/go:repository_gate_data",
+    "//sdks/go/examples/dogfood:repository_gate_data",
+]
+
+CARGO_WORKSPACE_PACKAGE_DATA = [
+    "//crates/ctx-agent-application:cargo_package_data",
+    "//crates/ctx-agent-integrations:cargo_package_data",
+    "//crates/ctx-companion-bridge:cargo_package_data",
     "//crates/ctx-cli:cargo_package_data",
+    "//crates/ctx-cli-contract-tests:cargo_package_data",
+    "//crates/ctx-cli-presentation:cargo_package_data",
+    "//crates/ctx-client-observability:cargo_package_data",
+    "//crates/ctx-daemon-cli:cargo_package_data",
+    "//crates/ctx-daemon-application:cargo_package_data",
+    "//crates/ctx-daemon-runtime:cargo_package_data",
+    "//crates/ctx-daemon-service:cargo_package_data",
     "//crates/ctx-history-capture:cargo_package_data",
+    "//crates/ctx-history-capture-composition:cargo_package_data",
+    "//crates/ctx-history-capture-model:cargo_package_data",
+    "//crates/ctx-history-provider-native-jsonl:cargo_package_data",
+    "//crates/ctx-history-providers-jsonl-shared:cargo_package_data",
+    "//crates/ctx-history-provider-gemini:cargo_package_data",
+    "//crates/ctx-history-providers-task-docs:cargo_package_data",
+    "//crates/ctx-history-cli:cargo_package_data",
+    "//crates/ctx-history-capture-runtime:cargo_package_data",
+    "//crates/ctx-history-provider-docproj:cargo_package_data",
+    "//crates/ctx-history-provider-runtime:cargo_package_data",
+    "//crates/ctx-history-provider-claude-cursor:cargo_package_data",
+    "//crates/ctx-history-provider-codex:cargo_package_data",
+    "//crates/ctx-history-provider-mistral-mux:cargo_package_data",
+    "//crates/ctx-history-provider-trae:cargo_package_data",
+    "//crates/ctx-history-providers-sqlite-selected:cargo_package_data",
+    "//crates/ctx-history-providers-sqlite-logical:cargo_package_data",
     "//crates/ctx-history-core:cargo_package_data",
-    "//crates/ctx-history-search:cargo_package_data",
-    "//crates/ctx-history-store:cargo_package_data",
+    "//crates/ctx-history-platform:cargo_package_data",
+    "//crates/ctx-history-ingest-application:cargo_package_data",
+    "//crates/ctx-history-index-format:cargo_package_data",
+    "//crates/ctx-history-index:cargo_package_data",
+    "//crates/ctx-history-index-generation:cargo_package_data",
+    "//crates/ctx-history-index-query:cargo_package_data",
+    "//crates/ctx-history-snapshot-reader:cargo_package_data",
+    "//crates/ctx-history-jsonl:cargo_package_data",
+    "//crates/ctx-history-native-jsonl-parsers:cargo_package_data",
+    "//crates/ctx-deepseek-harness-qualification:cargo_package_data",
+    "//crates/ctx-grok-build-qualification:cargo_package_data",
+    "//crates/ctx-history-providers-sqlite-inventory:cargo_package_data",
+    "//crates/ctx-history-read-application:cargo_package_data",
+    "//crates/ctx-history-refresh:cargo_package_data",
+    "//crates/ctx-history-refresh-execution:cargo_package_data",
+    "//crates/ctx-history-source-discovery:cargo_package_data",
+    "//crates/ctx-history-source-io:cargo_package_data",
+    "//crates/ctx-history-source-sqlite:cargo_package_data",
+    "//crates/ctx-semantic-index:cargo_package_data",
+    "//crates/ctx-semantic-model:cargo_package_data",
+    "//crates/ctx-terminal:cargo_package_data",
+    "//crates/ctx-upgrade-engine:cargo_package_data",
     "//crates/ctx-protocol:cargo_package_data",
     "//crates/ctx-sdk:cargo_package_data",
 ]
 
-REAL_HARNESS_DATA = CTX_GATE_DATA + [
-    "//crates/ctx-cli:ctx",
+# The provider-pack checker reads every Cargo and Bazel manifest to prove both
+# directions of the pack boundary. Keep that closure explicit so its live
+# shell test and mutation test remain valid under Bazel sandboxing.
+filegroup(
+    name = "history_provider_pack_boundary_root_build",
+    srcs = ["BUILD.bazel"],
+)
+
+filegroup(
+    name = "history_provider_pack_boundary_inputs",
+    srcs = [
+        "scripts/bazelw",
+        "//tools/bazel:test_tiers.bzl",
+    ] + CARGO_WORKSPACE_PACKAGE_DATA + LOC_CHECK_SOURCE_DATA,
+    visibility = ["//visibility:public"],
+)
+
+sh_test(
+    name = "history_provider_pack_boundary_check",
+    srcs = ["//tools/bazel:check-history-provider-pack-boundary.sh"],
+    args = ["$(rootpath :history_provider_pack_boundary_root_build)"],
+    data = [
+        ":history_provider_pack_boundary_root_build",
+        ":history_provider_pack_boundary_inputs",
+    ],
+    tags = [
+        "build-graph",
+        "exclusive",
+        "no-cache",
+    ],
+)
+
+history_cli_boundary(
+    cargo_package_data = CARGO_WORKSPACE_PACKAGE_DATA,
+    history_build_label = "//crates/ctx-history-cli:BUILD.bazel",
+)
+
+loc_check_manifest(
+    name = "loc_check_source_manifest",
+    srcs = LOC_CHECK_SOURCE_DATA,
+)
+
+LOC_CHECK_DATA = LOC_CHECK_SOURCE_DATA + [
+    ":loc_check_source_manifest",
+    "scripts/check-loc-policy-v2.json",
+    "@ctx_scc_linux_x86_64//:scc",
 ]
+
+# Keep the direct-checkout and Bazel package audits on the exact same source
+# surface. The checker owns the path list; these filegroups make those paths
+# available in the sandboxed runfiles tree.
+RELEASE_PACKAGE_AUDIT_DATA = NON_RUST_GATE_DATA + RELEASE_PACKAGE_AUDIT_PACKAGE_DATA
+
+REAL_HARNESS_DATA = NON_RUST_GATE_DATA + ["//crates/ctx-cli:ctx"]
 
 filegroup(
     name = "agent_history_contract_fixtures",
-    srcs = glob(["contracts/agent-history-v1/fixtures/*.json"]),
+    srcs = glob(["contracts/agent-history-v1/fixtures/**/*.json"]),
+    visibility = ["//visibility:public"],
+)
+
+filegroup(
+    name = "telemetry_contract_fixtures",
+    srcs = glob([
+        "contracts/telemetry-v1/*.json",
+        "contracts/telemetry-v1/*.md",
+        "contracts/telemetry-v1/fixtures/*.json",
+    ]),
     visibility = ["//visibility:public"],
 )
 
@@ -59,105 +222,275 @@ filegroup(
 )
 
 filegroup(
+    name = "provider_import_policy",
+    srcs = ["docs/provider-import-policy.md"],
+    visibility = ["//visibility:public"],
+)
+
+filegroup(
+    name = "release_contracts",
+    srcs = [
+        "contracts/public-control-surface-v1.json",
+        "contracts/release-candidate-manifest-v1.schema.json",
+        "contracts/release-targets-v1.json",
+        "contracts/release-version-v1.json",
+        "contracts/windows-authenticode-v1.json",
+    ],
+    visibility = ["//visibility:public"],
+)
+
+filegroup(
+    name = "release_cargo_lock",
+    srcs = ["Cargo.lock"],
+    visibility = ["//visibility:public"],
+)
+
+filegroup(
+    name = "release_advisory_policy",
+    srcs = ["security/release-advisory-policy-v1.json"],
+    visibility = ["//visibility:public"],
+)
+
+filegroup(
+    name = "release_advisory_exceptions",
+    srcs = ["security/release-advisory-exceptions-v1.json"],
+    visibility = ["//visibility:public"],
+)
+
+filegroup(
+    name = "release_target_matrix",
+    srcs = ["contracts/release-targets-v1.json"],
+    visibility = ["//visibility:public"],
+)
+
+filegroup(
     name = "public_test_fixtures",
     srcs = glob(["tests/fixtures/**"]),
     visibility = ["//visibility:public"],
 )
 
-sh_test(
-    name = "cargo_fmt_check",
-    srcs = ["scripts/bazel-test.sh"],
-    args = ["cargo_fmt_check"],
-    data = CTX_GATE_DATA,
+filegroup(
+    name = "upgrade_extractor_contract",
+    srcs = ["scripts/test-windows-runtime-upgrade-extractor.ps1"],
+    visibility = ["//visibility:public"],
 )
 
-sh_test(
-    name = "cargo_check",
-    srcs = ["scripts/bazel-test.sh"],
-    args = ["cargo_check"],
-    data = CTX_GATE_DATA,
+rustfmt_test(
+    name = "rustfmt_check",
+    targets = RUST_FORMAT_TARGETS,
 )
 
-sh_test(
-    name = "cargo_clippy",
-    srcs = ["scripts/bazel-test.sh"],
-    args = ["cargo_clippy"],
-    data = CTX_GATE_DATA,
-)
-
-sh_test(
-    name = "cargo_test_default",
-    srcs = ["scripts/bazel-test.sh"],
-    args = ["cargo_test_default"],
-    data = CTX_GATE_DATA,
-)
-
-sh_test(
-    name = "cli_contract_tests",
-    srcs = ["scripts/bazel-test.sh"],
-    args = ["cli_contract_tests"],
-    data = CTX_GATE_DATA,
-)
-
-sh_test(
-    name = "slash_command_e2e",
-    srcs = ["scripts/bazel-test.sh"],
-    args = ["slash_command_e2e"],
-    data = CTX_GATE_DATA,
-)
-
-sh_test(
-    name = "real_harness_codex_skill_e2e",
-    srcs = ["scripts/bazel-test.sh"],
+py_test(
+    name = "rust_target_inventory_check",
+    srcs = ["//tools/bazel:check_rust_target_inventory.py"],
+    main = "//tools/bazel:check_rust_target_inventory.py",
     args = [
-        "real_harness_codex_skill_e2e",
-        "$(rootpath //crates/ctx-cli:ctx)",
+        "$(rootpath //tools/bazel:rust-target-inventory.json)",
+        "$(rootpath Cargo.toml)",
     ],
-    data = REAL_HARNESS_DATA,
+    data = [
+        "Cargo.toml",
+        "//tools/bazel:rust-target-inventory.json",
+    ] + CARGO_WORKSPACE_PACKAGE_DATA,
 )
 
-sh_test(
-    name = "real_harness_gemini_slash_e2e",
-    srcs = ["scripts/bazel-test.sh"],
+py_test(
+    name = "rust_crate_size_unit_tests",
+    srcs = [
+        "scripts/check-rust-crate-size.py",
+        "scripts/tests/check_rust_crate_size_test.py",
+    ],
+    data = ["scripts/check-rust-crate-size-policy-v1.json"],
+    deps = ["@ctx_tomli//:lib"],
+    main = "scripts/tests/check_rust_crate_size_test.py",
+)
+
+py_binary(
+    name = "rust_crate_size_preflight",
+    srcs = ["scripts/check-rust-crate-size.py"],
+    deps = ["@ctx_tomli//:lib"],
+    main = "scripts/check-rust-crate-size.py",
+)
+
+py_test(
+    name = "agent_application_dependency_boundary_check",
+    srcs = ["//tools/bazel:check_agent_application_boundary.py"],
+    main = "//tools/bazel:check_agent_application_boundary.py",
     args = [
-        "real_harness_gemini_slash_e2e",
-        "$(rootpath //crates/ctx-cli:ctx)",
+        "$(rootpath Cargo.toml)",
+        "$(rootpath //crates/ctx-agent-application:Cargo.toml)",
+        "$(rootpath //crates/ctx-agent-application:BUILD.bazel)",
     ],
-    data = REAL_HARNESS_DATA,
+    data = [
+        "Cargo.toml",
+        "//crates/ctx-agent-application:BUILD.bazel",
+        "//crates/ctx-agent-application:Cargo.toml",
+    ] + CARGO_WORKSPACE_PACKAGE_DATA,
 )
 
-sh_test(
-    name = "real_harness_qwen_slash_e2e",
-    srcs = ["scripts/bazel-test.sh"],
+py_test(
+    name = "sqlite_inventory_provider_boundary_check",
+    srcs = ["//tools/bazel:check_sqlite_inventory_provider_boundary.py"],
+    main = "//tools/bazel:check_sqlite_inventory_provider_boundary.py",
     args = [
-        "real_harness_qwen_slash_e2e",
-        "$(rootpath //crates/ctx-cli:ctx)",
+        "$(rootpath //crates/ctx-history-providers-sqlite-inventory:Cargo.toml)",
+        "$(rootpath //crates/ctx-history-providers-sqlite-inventory:BUILD.bazel)",
+        "$(rootpath //crates/ctx-history-providers-sqlite-inventory:src/lib.rs)",
+        "$(rootpath //crates/ctx-history-capture-composition:src/lib.rs)",
+        "$(rootpath //crates/ctx-history-capture:src/lib.rs)",
     ],
-    data = REAL_HARNESS_DATA,
+    data = [
+        "//crates/ctx-history-capture-composition:cargo_package_data",
+        "//crates/ctx-history-capture-composition:src/lib.rs",
+        "//crates/ctx-history-capture:cargo_package_data",
+        "//crates/ctx-history-capture:src/lib.rs",
+        "//crates/ctx-history-providers-sqlite-inventory:BUILD.bazel",
+        "//crates/ctx-history-providers-sqlite-inventory:Cargo.toml",
+        "//crates/ctx-history-providers-sqlite-inventory:cargo_package_data",
+        "//crates/ctx-history-providers-sqlite-inventory:src/lib.rs",
+    ],
 )
 
-sh_test(
-    name = "docs_check",
-    srcs = ["scripts/bazel-test.sh"],
-    args = ["docs_check"],
-    data = CTX_GATE_DATA,
-)
-
-sh_test(
-    name = "mcp_integration_e2e",
-    srcs = ["scripts/bazel-test.sh"],
-    args = ["mcp_integration_e2e"],
-    data = CTX_GATE_DATA,
-)
-
-sh_test(
-    name = "real_harness_codex_mcp_e2e",
-    srcs = ["scripts/bazel-test.sh"],
+py_test(
+    name = "agent_integrations_dependency_boundary_check",
+    srcs = ["//tools/bazel:check_agent_integrations_boundary.py"],
+    main = "//tools/bazel:check_agent_integrations_boundary.py",
     args = [
-        "real_harness_codex_mcp_e2e",
-        "$(rootpath //crates/ctx-cli:ctx)",
+        "$(rootpath Cargo.toml)",
+        "$(rootpath //crates/ctx-agent-integrations:Cargo.toml)",
+        "$(rootpath //crates/ctx-agent-integrations:BUILD.bazel)",
     ],
-    data = REAL_HARNESS_DATA,
+    data = [
+        "Cargo.toml",
+        "//crates/ctx-agent-integrations:BUILD.bazel",
+        "//crates/ctx-agent-integrations:Cargo.toml",
+    ] + CARGO_WORKSPACE_PACKAGE_DATA,
+)
+
+py_test(
+    name = "history_application_contract_boundary_mutation_tests",
+    srcs = ["//tools/bazel:check_history_application_contract_boundaries_test.py"],
+    args = [
+        "$(rootpath BUILD.bazel)",
+        "$(rootpath @ctx_bazelisk_linux_x86_64//file)",
+    ],
+    data = [
+        "BUILD.bazel",
+        "MODULE.bazel",
+        "MODULE.bazel.lock",
+        "@ctx_bazelisk_linux_x86_64//file",
+        "scripts/bazelw",
+        "//tools/bazel:check-history-ingest-application-boundary.sh",
+        "//tools/bazel:check-history-read-application-dependency-boundary.sh",
+    ] + CARGO_WORKSPACE_PACKAGE_DATA + LOC_CHECK_SOURCE_DATA,
+    main = "//tools/bazel:check_history_application_contract_boundaries_test.py",
+)
+
+history_provider_sqlite_logical_boundary_checks()
+
+history_provider_docproj_boundary_checks()
+
+py_test(
+    name = "semantic_index_boundary_mutation_tests",
+    srcs = [
+        "//tools/bazel:check_semantic_index_boundary.py",
+        "//tools/bazel:check_semantic_index_boundary_test.py",
+    ],
+    imports = ["tools/bazel"],
+    main = "//tools/bazel:check_semantic_index_boundary_test.py",
+)
+
+py_test(
+    name = "rust_toolchain_pin_check",
+    srcs = ["//tools/bazel:check_rust_toolchain_pins.py"],
+    main = "//tools/bazel:check_rust_toolchain_pins.py",
+    args = [
+        "$(rootpath MODULE.bazel)",
+        "$(rootpath contracts/release-targets-v1.json)",
+        "$(rootpath //tools/bazel/patches:rules-rust-windows-gnu-dlltool-path.patch)",
+        "$(rootpath //tools/bazel/patches:rules-rust-windows-cargo-runfiles.patch)",
+    ],
+    data = [
+        "MODULE.bazel",
+        "contracts/release-targets-v1.json",
+        "//tools/bazel/patches:rules-rust-windows-cargo-runfiles.patch",
+        "//tools/bazel/patches:rules-rust-windows-gnu-dlltool-path.patch",
+    ],
+)
+
+py_test(
+    name = "rust_toolchain_pin_mutation_tests",
+    srcs = [
+        "//tools/bazel:check_rust_toolchain_pins.py",
+        "//tools/bazel:check_rust_toolchain_pins_test.py",
+    ],
+    data = [
+        "MODULE.bazel",
+        "contracts/release-targets-v1.json",
+        "//tools/bazel/patches:rules-rust-windows-cargo-runfiles.patch",
+        "//tools/bazel/patches:rules-rust-windows-gnu-dlltool-path.patch",
+    ],
+    imports = ["tools/bazel"],
+    main = "//tools/bazel:check_rust_toolchain_pins_test.py",
+)
+
+py_test(
+    name = "freebsd_ort_exit_contract",
+    srcs = ["//tools/bazel:check_freebsd_ort_exit_contract.py"],
+    main = "//tools/bazel:check_freebsd_ort_exit_contract.py",
+    args = [
+        "$(rootpath MODULE.bazel)",
+        "$(rootpath Cargo.toml)",
+        "$(rootpath //tools/bazel/patches:ort-freebsd-release-env-order.patch)",
+    ],
+    data = [
+        "Cargo.toml",
+        "MODULE.bazel",
+        "//tools/bazel/patches:ort-freebsd-release-env-order.patch",
+    ],
+)
+
+py_test(
+    name = "freebsd_ort_exit_contract_mutation_tests",
+    srcs = [
+        "//tools/bazel:check_freebsd_ort_exit_contract.py",
+        "//tools/bazel:check_freebsd_ort_exit_contract_test.py",
+    ],
+    data = [
+        "Cargo.toml",
+        "MODULE.bazel",
+        "//tools/bazel/patches:ort-freebsd-release-env-order.patch",
+    ],
+    imports = ["tools/bazel"],
+    main = "//tools/bazel:check_freebsd_ort_exit_contract_test.py",
+)
+
+py_test(
+    name = "bazel_affected_mutation_tests",
+    srcs = [
+        "//tools/bazel:select_affected_tests.py",
+        "//tools/bazel:select_affected_tests_test.py",
+    ],
+    imports = ["tools/bazel"],
+    main = "//tools/bazel:select_affected_tests_test.py",
+)
+
+py_test(
+    name = "performance_sanity_tests",
+    srcs = [
+        "scripts/tests/performance_family_fixtures.py",
+        "scripts/tests/performance_family_runtime_test.py",
+        "scripts/tests/performance_sanity_test.py",
+        "scripts/tests/performance_sanity_support.py",
+    ],
+    args = ["$(rootpath //crates/ctx-cli:ctx)"],
+    data = [
+        ":provider_support_matrix",
+        "//crates/ctx-cli:ctx",
+    ],
+    imports = ["scripts/tests"],
+    main = "scripts/tests/performance_sanity_test.py",
+    tags = ["release-gate"],
 )
 
 py_test(
@@ -192,260 +525,813 @@ py_test(
 )
 
 sh_test(
-    name = "real_harness_qwen_mcp_e2e",
-    srcs = ["scripts/bazel-test.sh"],
-    args = [
-        "real_harness_qwen_mcp_e2e",
-        "$(rootpath //crates/ctx-cli:ctx)",
+    name = "bazel_wrapper_tests",
+    srcs = ["scripts/tests/bazelw-test.sh"],
+    data = [
+        ".bazelrc",
+        ".bazelversion",
+        "scripts/bazelw",
+        "scripts/ci-common.sh",
+        "scripts/tests/fixtures/fake-bazel.sh",
+        "scripts/tests/fixtures/fake-build-governor.sh",
+        "scripts/tests/fixtures/fake-df.sh",
     ],
-    data = REAL_HARNESS_DATA,
 )
 
 sh_test(
-    name = "real_harness_claude_mcp_e2e",
-    srcs = ["scripts/bazel-test.sh"],
-    args = [
-        "real_harness_claude_mcp_e2e",
-        "$(rootpath //crates/ctx-cli:ctx)",
+    name = "cli_ux_capture_cleanup_tests",
+    srcs = ["scripts/tests/capture-cli-ux-frame-test.sh"],
+    data = [
+        "scripts/capture-cli-ux-frame.sh",
+        "scripts/tests/fixtures/cli-ux-capture-fake-ctx.sh",
     ],
-    data = REAL_HARNESS_DATA,
+    target_compatible_with = ["@platforms//os:linux"],
 )
 
 sh_test(
-    name = "real_harness_gemini_mcp_e2e",
-    srcs = ["scripts/bazel-test.sh"],
-    args = [
-        "real_harness_gemini_mcp_e2e",
-        "$(rootpath //crates/ctx-cli:ctx)",
+    name = "bazel_affected_script_tests",
+    srcs = ["scripts/tests/bazel-affected-test.sh"],
+    data = [
+        ".bazelversion",
+        "scripts/bazel-affected.sh",
+        "scripts/bazelw",
+        "scripts/ci-common.sh",
+        "scripts/tests/fixtures/fake-bazel.sh",
+        "//tools/bazel:select_affected_tests.py",
     ],
-    data = REAL_HARNESS_DATA,
 )
 
 sh_test(
-    name = "real_harness_opencode_mcp_e2e",
-    srcs = ["scripts/bazel-test.sh"],
-    args = [
-        "real_harness_opencode_mcp_e2e",
-        "$(rootpath //crates/ctx-cli:ctx)",
+    name = "cargo_diagnostic_tests",
+    srcs = ["scripts/tests/cargo-diagnostic-bazel-test.sh"],
+    data = [
+        "scripts/cargo-diagnostic.sh",
+        "scripts/tests/cargo-diagnostic-test.sh",
+        "scripts/tests/fixtures/fake-cargo.sh",
     ],
-    data = REAL_HARNESS_DATA,
 )
 
 sh_test(
-    name = "installer_path_smoke",
-    srcs = ["scripts/bazel-test.sh"],
-    args = ["installer_path_smoke"],
-    data = CTX_GATE_DATA,
+    name = "check_force_rerun_tests",
+    srcs = ["scripts/tests/check-force-rerun-test.sh"],
+    data = [
+        ".bazelrc",
+        "scripts/check.sh",
+        "scripts/tests/fixtures/fake-bazel.sh",
+    ],
 )
 
 sh_test(
-    name = "buildkite_pipeline_check",
-    srcs = ["scripts/bazel-test.sh"],
-    args = ["buildkite_pipeline_check"],
-    data = CTX_GATE_DATA,
+    name = "stage_github_release_assets_tests",
+    srcs = ["scripts/tests/stage-github-release-assets-test.sh"],
+    data = [
+        "contracts/release-targets-v1.json",
+        "scripts/apple-developer-id-g2-ca.pem",
+        "scripts/build-onnxruntime-sidecar.sh",
+        "scripts/verify-macos-runtime-builder-output.sh",
+        "scripts/check-macos-release-signing.sh",
+        "scripts/check-public-cli-build-info.py",
+        "scripts/macos-release-signing-evidence.py",
+        "scripts/macos-release-publisher-policy.sh",
+        "scripts/native-execution-proof.py",
+        "scripts/release/release_bundle.py",
+        "scripts/release-sbom.py",
+        "scripts/release_sbom/__init__.py",
+        "scripts/release_sbom/dependency_materials.py",
+        "scripts/stage-github-release-assets.sh",
+        "scripts/verify-macos-release-attestation.sh",
+    ],
+    tags = ["release-gate"],
+)
+
+py_test(
+    name = "native_execution_proof_tests",
+    srcs = [
+        "scripts/native-execution-proof.py",
+        "scripts/tests/native-execution-proof-test.py",
+    ],
+    main = "scripts/tests/native-execution-proof-test.py",
+    tags = ["release-gate"],
 )
 
 sh_test(
-    name = "release_binary_compat_tests",
-    srcs = ["scripts/bazel-test.sh"],
-    args = ["release_binary_compat_tests"],
-    data = CTX_GATE_DATA,
+    name = "stage_semantic_release_handoff_tests",
+    srcs = ["scripts/tests/stage-semantic-release-handoff-test.sh"],
+    data = [
+        "scripts/construct-semantic-release-catalog.sh",
+        "scripts/release/release_bundle.py",
+        "scripts/stage-semantic-release-handoff.sh",
+    ],
+    tags = [
+        "release-gate",
+        "security",
+    ],
+    target_compatible_with = ["@platforms//os:linux"],
 )
 
 sh_test(
-    name = "native_candidate_smoke_tests",
-    srcs = ["scripts/bazel-test.sh"],
-    args = ["native_candidate_smoke_tests"],
-    data = CTX_GATE_DATA,
+    name = "semantic_release_smoke_tests",
+    srcs = ["scripts/tests/smoke-daemon-semantic-release-test.sh"],
+    data = [
+        "contracts/release-targets-v1.json",
+        "contracts/release-factory-inputs-v1.json",
+        "scripts/check-public-cli-build-info.py",
+        "scripts/dev-install-from-metadata.sh",
+        "scripts/public-cli-host-runtime-evidence.sh",
+        "scripts/public-cli-runtime-authority.sh",
+        "scripts/release/release_bundle.py",
+        "scripts/release/build-public-candidate-on-linux.sh",
+        "scripts/semantic-release-assets.py",
+        "scripts/smoke-daemon-semantic-release.sh",
+        "scripts/write-public-cli-build-info.py",
+    ],
+    tags = ["release-gate"],
+    target_compatible_with = ["@platforms//os:linux"],
 )
 
 sh_test(
-    name = "linux_release_construction_tests",
-    srcs = ["scripts/bazel-test.sh"],
-    args = ["linux_release_construction_tests"],
-    data = CTX_GATE_DATA,
+    name = "semantic_coreml_toolchain_tests",
+    srcs = ["scripts/tests/semantic-coreml-toolchain-test.sh"],
+    data = [
+        ".buildkite/pipeline.yml",
+        "scripts/semantic-model-bundle/requirements.lock",
+        "scripts/semantic-model-bundle/run-pinned-producer.sh",
+        "scripts/semantic-model-bundle/toolchain.lock.json",
+    ],
+    tags = ["release-gate"],
+    target_compatible_with = ["@platforms//os:linux"],
 )
 
-sh_test(
-    name = "macos_release_signing_tests",
-    srcs = ["scripts/bazel-test.sh"],
-    args = ["macos_release_signing_tests"],
-    data = CTX_GATE_DATA,
+py_test(
+    name = "release_target_matrix_check",
+    srcs = ["scripts/check-release-target-matrix.py"],
+    main = "scripts/check-release-target-matrix.py",
+    data = [
+        ":release_advisory_policy",
+        ":release_contracts",
+    ],
+    tags = ["release-gate"],
 )
 
-sh_test(
-    name = "loc_check",
-    srcs = ["scripts/bazel-test.sh"],
-    args = ["loc_check"],
-    data = CTX_GATE_DATA,
+py_test(
+    name = "release_target_matrix_tests",
+    srcs = [
+        "scripts/check-release-target-matrix.py",
+        "scripts/tests/check-release-target-matrix-test.py",
+    ],
+    main = "scripts/tests/check-release-target-matrix-test.py",
+    data = [
+        ":release_advisory_policy",
+        ":release_contracts",
+    ],
+    tags = ["release-gate"],
 )
 
-sh_test(
-    name = "source_diff_check",
-    srcs = ["scripts/bazel-test.sh"],
-    args = ["source_diff_check"],
-    data = CTX_GATE_DATA,
+py_test(
+    name = "fixed_companion_contract_tests",
+    srcs = [
+        "scripts/check-managed-pair-contracts.py",
+        "scripts/tests/check-managed-pair-contracts-test.py",
+    ],
+    main = "scripts/tests/check-managed-pair-contracts-test.py",
+    data = [
+        "contracts/ctx-managed-pair-manifest-v1.schema.json",
+        "contracts/ctx-managed-pair-release-authority-v1.json",
+        "contracts/ctx-managed-pair-release-set-v1.schema.json",
+        "contracts/ctx-managed-pair-signed-envelope-v1.schema.json",
+        "contracts/ctx-managed-pair-state-v1.schema.json",
+        "contracts/release-targets-v1.json",
+    ],
+    tags = ["release-gate"],
 )
 
-sh_test(
-    name = "package_audit_fast",
-    srcs = ["scripts/bazel-test.sh"],
-    args = ["package_audit_fast"],
-    data = CTX_GATE_DATA,
+py_test(
+    name = "managed_pair_installer_tests",
+    srcs = [
+        "scripts/check-managed-pair-contracts.py",
+        "scripts/install-managed-pair.py",
+        "scripts/tests/check-managed-pair-contracts-test.py",
+        "scripts/tests/install-managed-pair-test.py",
+    ],
+    main = "scripts/tests/install-managed-pair-test.py",
+    data = [
+        "contracts/ctx-managed-pair-manifest-v1.schema.json",
+        "contracts/ctx-managed-pair-release-authority-v1.json",
+        "contracts/ctx-managed-pair-release-set-v1.schema.json",
+        "contracts/ctx-managed-pair-signed-envelope-v1.schema.json",
+        "contracts/ctx-managed-pair-state-v1.schema.json",
+        "contracts/release-targets-v1.json",
+        "scripts/check-release-target-matrix.py",
+    ],
+    tags = ["release-gate"],
 )
 
-sh_test(
-    name = "sdk_contract_checks",
-    srcs = ["scripts/bazel-test.sh"],
-    args = ["sdk_contract_checks"],
-    data = CTX_GATE_DATA,
+py_test(
+    name = "provider_support_matrix_tests",
+    srcs = [
+        "scripts/check-provider-support-matrix.py",
+        "scripts/tests/check-provider-support-matrix-test.py",
+    ],
+    main = "scripts/tests/check-provider-support-matrix-test.py",
+    data = [
+        ":provider_support_matrix",
+        "README.md",
+        "//crates/ctx-cli-contract-tests:cargo_package_data",
+        "//crates/ctx-history-capture:cargo_package_data",
+        "//crates/ctx-history-capture-composition:cargo_package_data",
+        "//crates/ctx-history-read-application:cargo_package_data",
+        "//crates/ctx-history-source-discovery:cargo_package_data",
+    ] + glob(["docs/**"]),
 )
 
-sh_test(
-    name = "sdk_package_dry_run",
-    srcs = ["scripts/bazel-test.sh"],
-    args = ["sdk_package_dry_run"],
-    data = CTX_GATE_DATA,
+py_test(
+    name = "release_sbom_tests",
+    srcs = [
+        "scripts/release-sbom.py",
+        "scripts/release_sbom/__init__.py",
+        "scripts/release_sbom/dependency_materials.py",
+        "scripts/tests/release-sbom-test.py",
+    ],
+    data = ["contracts/release-candidate-manifest-v1.schema.json"],
+    deps = ["@ctx_tomli//:lib"],
+    main = "scripts/tests/release-sbom-test.py",
+    tags = ["release-gate"],
 )
 
-sh_test(
-    name = "package_audit_release",
-    srcs = ["scripts/bazel-test.sh"],
-    args = ["package_audit_release"],
-    data = CTX_GATE_DATA,
-)
-
-sh_test(
-    name = "fresh_home_e2e",
-    srcs = ["scripts/bazel-test.sh"],
-    args = ["fresh_home_e2e"],
-    data = CTX_GATE_DATA,
-)
-
-sh_test(
-    name = "provider_fixture_e2e",
-    srcs = ["scripts/bazel-test.sh"],
-    args = ["provider_fixture_e2e"],
-    data = CTX_GATE_DATA,
-)
-
-sh_test(
-    name = "local_transcript_oracle",
-    srcs = ["scripts/bazel-test.sh"],
-    args = ["local_transcript_oracle"],
-    data = CTX_GATE_DATA,
-)
-
-sh_test(
-    name = "search_determinism_tests",
-    srcs = ["scripts/bazel-test.sh"],
-    args = ["search_determinism_tests"],
-    data = CTX_GATE_DATA,
-)
-
-sh_test(
-    name = "native_ctx_binary_smoke",
-    srcs = ["scripts/bazel-native-ctx-smoke.sh"],
-    args = [
-        "$(rootpath //crates/ctx-cli:ctx)",
-        "$(rootpath //crates/ctx-cli:Cargo.toml)",
+py_test(
+    name = "linux_release_factory_tests",
+    srcs = [
+        "scripts/check-public-cli-build-info.py",
+        "scripts/release/cargo-release-inventory.py",
+        "scripts/release/linux-factory-build-info.py",
+        "scripts/release/resolve-cargo-zigbuild.py",
+        "scripts/release/release_bundle.py",
+        "scripts/release/seal-linux-factory-candidate.py",
+        "scripts/tests/linux-release-factory-test.py",
     ],
     data = [
-        "//crates/ctx-cli:Cargo.toml",
-        "//crates/ctx-cli:ctx",
+        "Cargo.lock",
+        "Cargo.toml",
+        "contracts/release-targets-v1.json",
+        "contracts/windows-authenticode-v1.json",
+        "contracts/release-factory-inputs-v1.json",
+        "scripts/release/build-public-candidate-on-linux.sh",
+        "scripts/release/WindowsAuthenticodeInspect.java",
+        "scripts/release/resolve-cargo-zigbuild.py",
+        "scripts/run-windows-release-signing.sh",
+    ],
+    main = "scripts/tests/linux-release-factory-test.py",
+    tags = ["release-gate"],
+    target_compatible_with = ["@platforms//os:linux"],
+)
+
+sh_test(
+    name = "validate_public_cli_factory_artifact_tests",
+    srcs = ["scripts/tests/validate-public-cli-factory-artifact-test.sh"],
+    data = [
+        "Cargo.lock",
+        "contracts/release-factory-inputs-v1.json",
+        "contracts/release-targets-v1.json",
+        "scripts/check-public-cli-build-info.py",
+        "scripts/verify-windows-authenticode.ps1",
+        "scripts/validate-public-cli-factory-artifact.sh",
+    ],
+    tags = ["release-gate"],
+)
+
+py_binary(
+    name = "release_sbom",
+    srcs = [
+        "scripts/release-sbom.py",
+        "scripts/release_sbom/__init__.py",
+        "scripts/release_sbom/dependency_materials.py",
+    ],
+    deps = ["@ctx_tomli//:lib"],
+    main = "scripts/release-sbom.py",
+    tags = ["release-gate", "release-tool"],
+)
+
+py_test(
+    name = "dependency_advisory_gate_tests",
+    args = ["$(rootpath :dependency_advisory_gate)"],
+    srcs = [
+        "scripts/dependency-advisory-gate.py",
+        "scripts/tests/dependency-advisory-gate-test.py",
+    ],
+    data = glob(["scripts/tests/fixtures/dependency-advisory/**"]) + [
+        ":dependency_advisory_gate",
+    ],
+    deps = ["@ctx_tomli//:lib"],
+    main = "scripts/tests/dependency-advisory-gate-test.py",
+    tags = ["release-gate", "security"],
+)
+
+py_binary(
+    name = "dependency_advisory_gate",
+    srcs = ["scripts/dependency-advisory-gate.py"],
+    deps = ["@ctx_tomli//:lib"],
+    main = "scripts/dependency-advisory-gate.py",
+    tags = ["release-gate", "release-tool", "security"],
+)
+
+py_binary(
+    name = "release_advisory_database_update",
+    srcs = ["scripts/update-release-advisory-db.py"],
+    main = "scripts/update-release-advisory-db.py",
+    tags = [
+        "manual",
+        "release-tool",
+        "requires-network",
+        "security",
     ],
 )
 
-test_suite(
-    name = "native_rust_smoke",
-    tests = [
-        ":native_ctx_binary_smoke",
-        "//crates/ctx-history-core:unit_tests",
-        "//crates/ctx-protocol:unit_tests",
-        "//crates/ctx-sdk:unit_tests",
+py_test(
+    name = "release_advisory_input_tests",
+    srcs = [
+        "scripts/update-release-advisory-db.py",
+        "scripts/release/run-with-release-advisory-inputs.py",
+        "scripts/tests/run-with-release-advisory-inputs-test.py",
+    ],
+    main = "scripts/tests/run-with-release-advisory-inputs-test.py",
+    tags = [
+        "release-gate",
+        "security",
     ],
 )
 
-test_suite(
-    name = "native_rust",
-    tests = [
-        ":native_ctx_binary_smoke",
-        "//crates/ctx-cli:unit_tests",
-        "//crates/ctx-history-capture:cursor_native_tests",
-        "//crates/ctx-history-capture:unit_tests",
-        "//crates/ctx-history-core:unit_tests",
-        "//crates/ctx-history-search:unit_tests",
-        "//crates/ctx-history-store:unit_tests",
-        "//crates/ctx-protocol:unit_tests",
-        "//crates/ctx-sdk:unit_tests",
+py_test(
+    name = "public_cli_release_targets_tests",
+    srcs = [
+        "scripts/check-release-target-matrix.py",
+        "scripts/public-cli-release-targets.py",
+        "scripts/tests/public-cli-release-targets-test.py",
+    ],
+    main = "scripts/tests/public-cli-release-targets-test.py",
+    data = [":release_contracts"],
+    tags = ["release-gate"],
+)
+
+py_test(
+    name = "release_bundle_tests",
+    srcs = [
+        "scripts/release/release_bundle.py",
+        "scripts/tests/release-bundle-test.py",
+    ],
+    main = "scripts/tests/release-bundle-test.py",
+    tags = [
+        "release-gate",
+        "security",
+    ],
+    target_compatible_with = ["@platforms//os:linux"],
+)
+
+py_test(
+    name = "macos_llvm_authority_tests",
+    srcs = [
+        "scripts/release/macos_llvm_authority.py",
+        "scripts/tests/macos-llvm-authority-test.py",
+    ],
+    main = "scripts/tests/macos-llvm-authority-test.py",
+    tags = [
+        "release-gate",
+        "security",
     ],
 )
 
-test_suite(
-    name = "real_harness",
-    tests = [
-        ":real_harness_codex_mcp_e2e",
-        ":real_harness_codex_skill_e2e",
-        ":real_harness_gemini_slash_e2e",
-        ":real_harness_qwen_slash_e2e",
-        ":real_harness_qwen_mcp_e2e",
-        ":real_harness_claude_mcp_e2e",
-        ":real_harness_gemini_mcp_e2e",
-        ":real_harness_opencode_mcp_e2e",
+py_test(
+    name = "onnxruntime_sidecar_tools_tests",
+    srcs = ["scripts/tests/onnxruntime-sidecar-tools-test.py"],
+    data = [
+        "scripts/build-onnxruntime-sidecar.sh",
+        "scripts/onnxruntime-sidecar/archive_tool.py",
+        "scripts/onnxruntime-sidecar/build_freebsd_x64.sh",
+        "scripts/onnxruntime-sidecar/build_macos_x64.sh",
+        "scripts/onnxruntime-sidecar/release_manifest.sh",
+        "scripts/onnxruntime-sidecar/source_inputs.sh",
+        "scripts/onnxruntime-sidecar/stage_official.sh",
+        "scripts/onnxruntime-sidecar/validate_runtime.py",
+        "scripts/onnxruntime-sidecar/validate_sidecar.sh",
+        "scripts/semantic-release-assets.py",
+        "scripts/verify-macos-runtime-builder-output.sh",
+    ],
+    main = "scripts/tests/onnxruntime-sidecar-tools-test.py",
+    tags = [
+        "release-gate",
+        "requires-zstd",
     ],
 )
 
-test_suite(
-    name = "fast",
-    tests = [
-        ":cargo_fmt_check",
-        ":cargo_check",
-        ":cli_contract_tests",
-        ":slash_command_e2e",
-        ":docs_check",
-        ":mcp_integration_e2e",
-        ":installer_path_smoke",
-        ":buildkite_pipeline_check",
-        ":release_binary_compat_tests",
-        ":native_candidate_smoke_tests",
-        ":linux_release_construction_tests",
-        ":loc_check",
-        ":macos_release_signing_tests",
-        ":native_rust_smoke",
-        ":source_diff_check",
-        ":package_audit_fast",
-        ":sdk_contract_checks",
+# This test intentionally queries the complete live workspace graph. The
+# no-cache/no-sandbox execution requirements keep undeclared package additions
+# from being hidden by a stale test result.
+sh_test(
+    name = "test_tier_inventory_check",
+    srcs = ["scripts/tests/test-tier-inventory-test.sh"],
+    args = [
+        "$(rootpath BUILD.bazel)",
+        "$(rootpath //tools/bazel:check_test_tier_inventory.py)",
+    ],
+    data = [
+        "BUILD.bazel",
+        "scripts/bazelw",
+        "//tools/bazel:check_test_tier_inventory.py",
+    ],
+    tags = [
+        "build-graph",
+        "exclusive",
+        "no-cache",
+        "no-sandbox",
     ],
 )
 
-test_suite(
-    name = "presubmit",
-    tests = [
-        ":fast",
-        ":cargo_clippy",
-        ":cargo_test_default",
-        ":native_rust",
-        ":fresh_home_e2e",
-        ":provider_fixture_e2e",
-        ":local_transcript_oracle",
-        ":search_determinism_tests",
+sh_test(
+    name = "cli_build_cfg_parity_check",
+    srcs = ["//tools/bazel:check-cli-build-cfg.sh"],
+    data = [
+        "//crates/ctx-cli:BUILD.bazel",
+        "//crates/ctx-cli:build.rs",
+        "//crates/ctx-cli-contract-tests:test_targets.bzl",
+        "//tools/bazel:binary_contracts.bzl",
     ],
 )
 
-test_suite(
-    name = "ci",
-    tests = [
-        ":presubmit",
-        ":sdk_package_dry_run",
-        ":package_audit_release",
+sh_test(
+    name = "history_capture_build_cfg_parity_check",
+    srcs = ["//tools/bazel:check-history-capture-build-cfg.sh"],
+    data = [
+        "//crates/ctx-history-capture:BUILD.bazel",
+        "//crates/ctx-history-capture:build.rs",
+        "//crates/ctx-history-capture:qualification_lib",
     ],
 )
 
-test_suite(
-    name = "smoke",
-    tests = [
-        ":fast",
-        ":fresh_home_e2e",
-        ":provider_fixture_e2e",
+sh_test(
+    name = "semantic_model_build_cfg_parity_check",
+    srcs = ["//tools/bazel:check-semantic-model-build-cfg.sh"],
+    data = [
+        "//crates/ctx-cli:build.rs",
+        "//crates/ctx-cli-contract-tests:test_targets.bzl",
+        "//crates/ctx-cli:test_targets.bzl",
+        "//crates/ctx-semantic-model:BUILD.bazel",
+        "//crates/ctx-semantic-model:Cargo.toml",
+        "//crates/ctx-semantic-model:build.rs",
     ],
+)
+
+sh_test(
+    name = "upgrade_engine_build_cfg_parity_check",
+    srcs = ["//tools/bazel:check-upgrade-engine-build-cfg.sh"],
+    data = [
+        "//crates/ctx-cli:BUILD.bazel",
+        "//crates/ctx-upgrade-engine:BUILD.bazel",
+        "//crates/ctx-upgrade-engine:Cargo.toml",
+        "//crates/ctx-upgrade-engine:build.rs",
+        "//crates/ctx-upgrade-engine:cargo_package_data",
+    ],
+)
+
+sh_test(
+    name = "daemon_cli_dependency_boundary_check",
+    srcs = ["//tools/bazel:check-daemon-cli-dependency-boundary.sh"],
+    args = ["$(rootpath BUILD.bazel)"],
+    data = [
+        "BUILD.bazel",
+        "scripts/bazelw",
+        "scripts/check-rust-crate-size.py",
+    ] + CARGO_WORKSPACE_PACKAGE_DATA + LOC_CHECK_SOURCE_DATA,
+    tags = [
+        "build-graph",
+        "exclusive",
+        "no-cache",
+        "no-sandbox",
+    ],
+)
+
+sh_test(
+    name = "daemon_application_dependency_boundary_check",
+    srcs = ["//tools/bazel:check-daemon-application-dependency-boundary.sh"],
+    args = ["$(rootpath BUILD.bazel)"],
+    data = [
+        "BUILD.bazel",
+        "scripts/bazelw",
+        "scripts/check-rust-crate-size.py",
+    ] + CARGO_WORKSPACE_PACKAGE_DATA + LOC_CHECK_SOURCE_DATA,
+    tags = [
+        "build-graph",
+        "exclusive",
+        "no-cache",
+        "no-sandbox",
+    ],
+)
+
+sh_test(
+    name = "history_ingest_application_dependency_boundary_check",
+    srcs = ["//tools/bazel:check-history-ingest-application-boundary.sh"],
+    args = ["$(rootpath BUILD.bazel)"],
+    data = [
+        "BUILD.bazel",
+        "scripts/bazelw",
+    ] + CARGO_WORKSPACE_PACKAGE_DATA + LOC_CHECK_SOURCE_DATA,
+    tags = [
+        "build-graph",
+        "exclusive",
+        "no-cache",
+        "no-sandbox",
+    ],
+)
+
+sh_test(
+    name = "daemon_service_dependency_boundary_check",
+    srcs = ["//tools/bazel:check-daemon-service-dependency-boundary.sh"],
+    args = ["$(rootpath BUILD.bazel)"],
+    data = [
+        "BUILD.bazel",
+        "scripts/bazelw",
+        "scripts/check-rust-crate-size.py",
+    ] + CARGO_WORKSPACE_PACKAGE_DATA + LOC_CHECK_SOURCE_DATA,
+    tags = [
+        "build-graph",
+        "exclusive",
+        "no-cache",
+        "no-sandbox",
+    ],
+)
+
+sh_test(
+    name = "daemon_runtime_dependency_boundary_check",
+    srcs = ["//tools/bazel:check-daemon-runtime-dependency-boundary.sh"],
+    args = ["$(rootpath BUILD.bazel)"],
+    data = [
+        "BUILD.bazel",
+        "scripts/bazelw",
+    ] + CARGO_WORKSPACE_PACKAGE_DATA + LOC_CHECK_SOURCE_DATA,
+    tags = [
+        "build-graph",
+        "exclusive",
+        "no-cache",
+        "no-sandbox",
+    ],
+)
+
+sh_test(
+    name = "upgrade_engine_dependency_boundary_check",
+    srcs = ["//tools/bazel:check-upgrade-engine-dependency-boundary.sh"],
+    args = ["$(rootpath BUILD.bazel)"],
+    data = [
+        "BUILD.bazel",
+        "scripts/bazelw",
+        "//crates/ctx-cli:BUILD.bazel",
+        "//crates/ctx-cli:cargo_package_data",
+        "//crates/ctx-history-core:BUILD.bazel",
+        "//crates/ctx-history-core:cargo_package_data",
+        "//crates/ctx-upgrade-engine:BUILD.bazel",
+        "//crates/ctx-upgrade-engine:cargo_package_data",
+    ],
+    tags = [
+        "build-graph",
+        "exclusive",
+        "no-cache",
+        "no-sandbox",
+    ],
+)
+
+sh_test(
+    name = "terminal_dependency_boundary_check",
+    srcs = ["//tools/bazel:check-terminal-dependency-boundary.sh"],
+    args = ["$(rootpath //crates/ctx-terminal:Cargo.toml)"],
+    data = [
+        "Cargo.toml",
+        "//crates/ctx-terminal:Cargo.toml",
+        "//crates/ctx-terminal:boundary_sources",
+    ],
+    tags = ["build-graph", "exclusive", "no-cache", "no-sandbox"],
+)
+
+sh_test(
+    name = "client_observability_dependency_boundary_check",
+    srcs = ["//tools/bazel:check-client-observability-boundary.sh"],
+    args = ["$(rootpath BUILD.bazel)"],
+    data = [
+        "BUILD.bazel",
+        "Cargo.toml",
+        "scripts/bazelw",
+        "scripts/check-rust-crate-size.py",
+        "//crates/ctx-cli:BUILD.bazel",
+        "//crates/ctx-cli:cargo_package_data",
+        "//crates/ctx-client-observability:BUILD.bazel",
+        "//crates/ctx-client-observability:cargo_package_data",
+        "//crates/ctx-daemon-service:BUILD.bazel",
+        "//crates/ctx-daemon-service:cargo_package_data",
+        "//crates/ctx-history-core:BUILD.bazel",
+        "//crates/ctx-history-core:cargo_package_data",
+    ],
+    tags = [
+        "build-graph",
+        "exclusive",
+        "no-cache",
+        "no-sandbox",
+    ],
+)
+
+sh_test(
+    name = "history_read_application_dependency_boundary_check",
+    srcs = ["//tools/bazel:check-history-read-application-dependency-boundary.sh"],
+    args = ["$(rootpath BUILD.bazel)"],
+    data = [
+        "BUILD.bazel",
+        "Cargo.toml",
+        "scripts/bazelw",
+        "//crates/ctx-cli:BUILD.bazel",
+        "//crates/ctx-cli:cargo_package_data",
+        "//crates/ctx-history-cli:BUILD.bazel",
+        "//crates/ctx-history-cli:cargo_package_data",
+        "//crates/ctx-history-read-application:BUILD.bazel",
+        "//crates/ctx-history-read-application:cargo_package_data",
+    ],
+    tags = [
+        "build-graph",
+        "exclusive",
+        "no-cache",
+        "no-sandbox",
+    ],
+)
+
+sh_test(
+    name = "semantic_model_dependency_boundary_check",
+    srcs = ["//tools/bazel:check-semantic-model-dependency-boundary-test.sh"],
+    args = [
+        "$(rootpath //tools/bazel:check-semantic-model-dependency-boundary.sh)",
+        "$(rootpath BUILD.bazel)",
+    ],
+    data = [
+        "BUILD.bazel",
+        "scripts/bazelw",
+        "//tools/bazel:check-semantic-model-dependency-boundary.sh",
+        "//crates/ctx-cli:BUILD.bazel",
+        "//crates/ctx-cli:cargo_package_data",
+        "//crates/ctx-daemon-cli:BUILD.bazel",
+        "//crates/ctx-daemon-cli:cargo_package_data",
+        "//crates/ctx-daemon-service:BUILD.bazel",
+        "//crates/ctx-daemon-service:cargo_package_data",
+        "//crates/ctx-history-index:BUILD.bazel",
+        "//crates/ctx-history-index:cargo_package_data",
+        "//crates/ctx-history-index-format:BUILD.bazel",
+        "//crates/ctx-history-index-format:cargo_package_data",
+        "//crates/ctx-history-index-query:BUILD.bazel",
+        "//crates/ctx-history-index-query:cargo_package_data",
+        "//crates/ctx-history-read-application:BUILD.bazel",
+        "//crates/ctx-history-read-application:cargo_package_data",
+        "//crates/ctx-semantic-model:BUILD.bazel",
+        "//crates/ctx-semantic-model:cargo_package_data",
+    ],
+    tags = [
+        "build-graph",
+        "exclusive",
+        "no-cache",
+        "no-sandbox",
+    ],
+)
+
+sh_test(
+    name = "semantic_index_dependency_boundary_check",
+    srcs = ["//tools/bazel:check-semantic-index-dependency-boundary.sh"],
+    args = ["$(rootpath BUILD.bazel)"],
+    data = [
+        "BUILD.bazel",
+        "scripts/bazelw",
+        "//crates/ctx-cli:BUILD.bazel",
+        "//crates/ctx-cli:cargo_package_data",
+        "//crates/ctx-daemon-service:BUILD.bazel",
+        "//crates/ctx-daemon-service:cargo_package_data",
+        "//crates/ctx-history-index-generation:BUILD.bazel",
+        "//crates/ctx-history-index-generation:cargo_package_data",
+        "//crates/ctx-history-index-format:BUILD.bazel",
+        "//crates/ctx-history-index-format:cargo_package_data",
+        "//crates/ctx-history-index-query:BUILD.bazel",
+        "//crates/ctx-history-index-query:cargo_package_data",
+        "//crates/ctx-history-read-application:BUILD.bazel",
+        "//crates/ctx-history-read-application:cargo_package_data",
+        "//crates/ctx-history-index:BUILD.bazel",
+        "//crates/ctx-history-index:cargo_package_data",
+        "//crates/ctx-semantic-index:BUILD.bazel",
+        "//crates/ctx-semantic-index:cargo_package_data",
+        "//crates/ctx-semantic-model:BUILD.bazel",
+        "//crates/ctx-semantic-model:cargo_package_data",
+        "//tools/bazel:check_semantic_index_boundary.py",
+    ],
+    tags = [
+        "build-graph",
+        "exclusive",
+        "no-cache",
+        "no-sandbox",
+    ],
+)
+
+non_rust_gate(
+    name = "docs_check",
+    data = NON_RUST_GATE_DATA + [
+        "//crates/ctx-history-capture:BUILD.bazel",
+        "//crates/ctx-history-capture:Cargo.toml",
+        "//crates/ctx-history-capture:provider_architecture_sources",
+        "//crates/ctx-history-capture:tests/codex_direct_result.rs",
+        "//tools/bazel:rust-target-inventory.json",
+    ],
+)
+non_rust_gate(name = "installer_path_smoke", mode = "installer_path_smoke", data = NON_RUST_GATE_DATA)
+non_rust_gate(name = "buildkite_pipeline_check", mode = "buildkite_pipeline_check", data = NON_RUST_GATE_DATA)
+non_rust_gate(name = "release_binary_compat_tests", mode = "release_binary_compat_tests", data = NON_RUST_GATE_DATA)
+non_rust_gate(
+    name = "native_candidate_smoke_tests",
+    data = NON_RUST_GATE_DATA,
+)
+non_rust_gate(name = "macos_release_signing_tests", mode = "macos_release_signing_tests", data = NON_RUST_GATE_DATA)
+non_rust_gate(
+    name = "loc_check",
+    args = [
+        "$(rootpath @ctx_scc_linux_x86_64//:scc)",
+        "$(rootpath :loc_check_source_manifest)",
+    ],
+    data = LOC_CHECK_DATA,
+)
+non_rust_gate(
+    name = "public_control_surface_check",
+    data = NON_RUST_GATE_DATA + [
+        "//crates/ctx-agent-application:cargo_package_data",
+        "//crates/ctx-agent-integrations:cargo_package_data",
+        "//crates/ctx-cli:cargo_package_data",
+        "//crates/ctx-client-observability:cargo_package_data",
+        "//crates/ctx-daemon-cli:cargo_package_data",
+        "//crates/ctx-daemon-application:cargo_package_data",
+        "//crates/ctx-daemon-runtime:cargo_package_data",
+        "//crates/ctx-daemon-service:cargo_package_data",
+        "//crates/ctx-upgrade-engine:cargo_package_data",
+    ],
+)
+non_rust_gate(name = "source_diff_check", mode = "source_diff_check", data = NON_RUST_GATE_DATA)
+non_rust_gate(
+    name = "package_audit_fast",
+    args = ["$(rootpath //crates/ctx-cli:ctx)"],
+    data = RELEASE_PACKAGE_AUDIT_DATA + ["//crates/ctx-cli:ctx"],
+)
+non_rust_gate(
+    name = "public_core_contract_checks",
+    mode = "sdk_contract_checks",
+    data = NON_RUST_GATE_DATA + [
+        "//crates/ctx-protocol:cargo_package_data",
+        "//crates/ctx-sdk:cargo_package_data",
+    ],
+)
+sh_test(
+    name = "sdk_no_publish_policy_tests",
+    srcs = ["scripts/tests/check-sdk-no-publish-test.sh"],
+    data = ["scripts/check-sdk-no-publish.sh"],
+)
+non_rust_gate(
+    name = "sdk_package_dry_run",
+    args = [
+        "$(rootpath //tools/bazel:pinned_cargo)",
+        "$(rootpath //tools/bazel:pinned_rustc)",
+        "$(rootpath //tools/bazel:sdk_cargo_vendor_sources)",
+    ],
+    data = NON_RUST_GATE_DATA + CARGO_WORKSPACE_PACKAGE_DATA + [
+        "//tools/bazel:pinned_cargo",
+        "//tools/bazel:pinned_rustc",
+        "//tools/bazel:sdk_cargo_vendor_sources",
+    ],
+    tags = ["release-gate"],
+)
+non_rust_gate(
+    name = "package_audit_release",
+    args = ["$(rootpath //crates/ctx-cli:ctx)"],
+    data = RELEASE_PACKAGE_AUDIT_DATA + ["//crates/ctx-cli:ctx"],
+    tags = ["release-gate"],
+)
+
+real_harness_gate(name = "real_harness_codex_skill_e2e", script_mode = "real_harness_codex_skill_e2e", binary = "//crates/ctx-cli:ctx", data = REAL_HARNESS_DATA)
+real_harness_gate(name = "real_harness_gemini_slash_e2e", script_mode = "real_harness_gemini_slash_e2e", binary = "//crates/ctx-cli:ctx", data = REAL_HARNESS_DATA)
+real_harness_gate(name = "real_harness_qwen_slash_e2e", script_mode = "real_harness_qwen_slash_e2e", binary = "//crates/ctx-cli:ctx", data = REAL_HARNESS_DATA)
+real_harness_gate(name = "real_harness_codex_mcp_e2e", script_mode = "real_harness_codex_mcp_e2e", binary = "//crates/ctx-cli:ctx", data = REAL_HARNESS_DATA)
+real_harness_gate(name = "real_harness_qwen_mcp_e2e", script_mode = "real_harness_qwen_mcp_e2e", binary = "//crates/ctx-cli:ctx", data = REAL_HARNESS_DATA)
+real_harness_gate(name = "real_harness_claude_mcp_e2e", script_mode = "real_harness_claude_mcp_e2e", binary = "//crates/ctx-cli:ctx", data = REAL_HARNESS_DATA)
+real_harness_gate(name = "real_harness_gemini_mcp_e2e", script_mode = "real_harness_gemini_mcp_e2e", binary = "//crates/ctx-cli:ctx", data = REAL_HARNESS_DATA)
+real_harness_gate(name = "real_harness_opencode_mcp_e2e", script_mode = "real_harness_opencode_mcp_e2e", binary = "//crates/ctx-cli:ctx", data = REAL_HARNESS_DATA)
+
+release_surface_tests()
+
+test_suite(
+    name = "ci_tests",
+    tests = CI_TESTS,
+)
+
+test_suite(
+    name = "nightly_tests",
+    tests = [
+        ":ci_tests",
+    ] + NIGHTLY_TESTS,
+)
+
+test_suite(
+    name = "release_tests",
+    tests = [":nightly_tests"],
 )

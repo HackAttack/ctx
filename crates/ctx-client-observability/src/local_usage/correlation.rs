@@ -18,10 +18,8 @@ struct ContextRecordState {
 
 /// Bounded, process-local search-to-open correlation.
 ///
-/// The keys never cross the persistence boundary. Definition 2 has no open or
-/// citation-credit counter, so this state is observational only and is cleared
-/// on a local-usage control revision. Citation correlation is intentionally
-/// unsupported until a production citation event exists.
+/// The keys never cross the persistence boundary. This state is observational
+/// only and is cleared on a local-usage control revision.
 #[derive(Debug, Clone)]
 struct EphemeralContextCorrelation<K> {
     records: HashMap<K, ContextRecordState>,
@@ -90,15 +88,16 @@ impl McpUsageRecorder {
 
     pub fn record_delivered(
         &mut self,
-        invocation: McpInvocation,
         duration: Duration,
-        facts: impl FnOnce() -> McpCompletionFacts,
+        complete: impl FnOnce() -> Option<(McpInvocation, McpCompletionFacts)>,
     ) {
         self.refresh_control();
         if !self.enabled {
             return;
         }
-        let facts = facts();
+        let Some((invocation, facts)) = complete() else {
+            return;
+        };
         let operation = invocation.completed(&facts, duration);
         let mut next_context = self.context.clone();
         if operation.outcome == Outcome::Success {

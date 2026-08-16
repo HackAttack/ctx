@@ -1,7 +1,6 @@
 use std::borrow::Cow;
 
 use chrono::{DateTime, Utc};
-use ctx_history_capture_model::{OutputOutcome, OutputOutcomeMetadata};
 use ctx_history_core::{EventRole, EventType};
 use serde_json::{json, Value};
 
@@ -11,7 +10,6 @@ pub struct GrokBuildResultSubrecord<'a> {
     pub content: Option<Cow<'a, str>>,
     pub call_id: Option<&'a str>,
     pub tool_name: Option<&'a str>,
-    pub outcome: OutputOutcomeMetadata,
 }
 
 fn update(value: &Value) -> &Value {
@@ -121,9 +119,9 @@ pub fn enumerate_results(value: &Value) -> Vec<GrokBuildResultSubrecord<'_>> {
     if update_kind(value) != Some("tool_call_update") {
         return Vec::new();
     }
-    let Some(status) = terminal_status(value) else {
+    if terminal_status(value).is_none() {
         return Vec::new();
-    };
+    }
     let update = update(value);
     let content = grok_build_result_content(update)
         .filter(|text| !text.trim().is_empty())
@@ -137,11 +135,6 @@ pub fn enumerate_results(value: &Value) -> Vec<GrokBuildResultSubrecord<'_>> {
         content,
         call_id,
         tool_name: update.get("title").and_then(Value::as_str),
-        outcome: OutputOutcomeMetadata {
-            outcome: terminal_outcome(update, status),
-            exit_code: terminal_exit_code(update),
-            duration_ms: None,
-        },
     }]
 }
 
@@ -164,49 +157,6 @@ fn grok_build_tool_kind(value: &Value) -> Option<&str> {
                 == Some("Bash"))
             .then_some("execute")
         })
-}
-
-fn terminal_exit_code(update: &Value) -> Option<i32> {
-    update
-        .pointer("/rawOutput/exit_code")
-        .and_then(Value::as_i64)
-        .and_then(|code| i32::try_from(code).ok())
-}
-
-fn terminal_outcome(update: &Value, status: &str) -> OutputOutcome {
-    let raw_output = update.get("rawOutput");
-    let timed_out = raw_output
-        .and_then(|raw| raw.get("timed_out"))
-        .and_then(Value::as_bool)
-        == Some(true)
-        || raw_output
-            .and_then(|raw| raw.get("is_timeout"))
-            .and_then(Value::as_bool)
-            == Some(true);
-    if timed_out {
-        return OutputOutcome::Timeout;
-    }
-    let raw_type = raw_output
-        .and_then(|raw| raw.get("type"))
-        .and_then(Value::as_str);
-    let nonzero_bash_exit = raw_type == Some("Bash")
-        && terminal_exit_code(update).is_some_and(|exit_code| exit_code != 0);
-    let fatal_bash_signal = raw_type == Some("Bash")
-        && raw_output
-            .and_then(|raw| raw.get("signal"))
-            .and_then(Value::as_str)
-            .is_some_and(|signal| signal != "backgrounded");
-    let explicit_error = raw_output
-        .and_then(|raw| raw.get("is_error"))
-        .and_then(Value::as_bool)
-        == Some(true);
-    if nonzero_bash_exit || fatal_bash_signal || explicit_error || status == "failed" {
-        OutputOutcome::Failure
-    } else if status == "completed" {
-        OutputOutcome::Success
-    } else {
-        OutputOutcome::Unknown
-    }
 }
 
 fn grok_build_result_content(update: &Value) -> Option<String> {
@@ -280,10 +230,10 @@ mod tests {
 
     #[test]
     fn sanitized_real_fixture_preserves_audited_projection_shapes() {
-        let fixture = std::path::Path::new(
-            "tests/fixtures/provider-history/grok-build/v1.0.3/sessions/synthetic-workspace/01990000-0000-7000-8000-000000000001/updates.jsonl",
+        let fixture = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(
+            "../../tests/fixtures/provider-history/grok-build/v1.0.3/sessions/synthetic-workspace/01990000-0000-7000-8000-000000000001/updates.jsonl",
         );
-        let values = std::fs::read_to_string(fixture)
+        let values = std::fs::read_to_string(&fixture)
             .unwrap_or_else(|error| panic!("read {}: {error}", fixture.display()))
             .lines()
             .map(|line| serde_json::from_str::<Value>(line).expect("valid sanitized Grok JSONL"))
@@ -313,11 +263,10 @@ mod tests {
             .collect::<Vec<_>>();
         assert_eq!(results.len(), 6);
         assert!(results.iter().any(|result| {
-            result.outcome.outcome == OutputOutcome::Failure
-                && result
-                    .content
-                    .as_deref()
-                    .is_some_and(|text| text.contains("string to replace was not found"))
+            result
+                .content
+                .as_deref()
+                .is_some_and(|text| text.contains("string to replace was not found"))
         }));
         assert!(results.iter().any(|result| {
             result
@@ -356,7 +305,6 @@ mod tests {
         assert_eq!(event_type(&value), EventType::ToolOutput);
         let results = enumerate_results(&value);
         assert_eq!(results[0].content.as_deref(), Some("failed safely"));
-        assert_eq!(results[0].outcome.outcome, OutputOutcome::Failure);
     }
 
     #[test]
@@ -393,7 +341,7 @@ mod tests {
     }
 
     #[test]
-    fn native_bash_timeout_and_nonzero_exit_override_status() {
+    fn native_bash_results_preserve_literal_content_without_inferred_outcome() {
         let value = json!({
             "params": {
                 "sessionId": "session",
@@ -407,7 +355,7 @@ mod tests {
             }
         });
         let results = enumerate_results(&value);
-        assert_eq!(results[0].outcome.outcome, OutputOutcome::Timeout);
+        assert_eq!(results[0].content.as_deref(), Some("timed out"));
 
         let nonzero = json!({
             "params": {
@@ -422,8 +370,7 @@ mod tests {
             }
         });
         let results = enumerate_results(&nonzero);
-        assert_eq!(results[0].outcome.outcome, OutputOutcome::Failure);
-        assert_eq!(results[0].outcome.exit_code, Some(17));
+        assert_eq!(results[0].content.as_deref(), Some("command failed"));
     }
 
     #[test]

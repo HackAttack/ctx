@@ -1,7 +1,7 @@
 use ctx_history_core::{
-    derive_event_id, derive_session_id, CertifiedSource, CoreRecord, EventIdentityInput,
-    NativeItemKey, NativeSessionKey, ScannedSourceCounts, SessionIdentityInput, SourceAnchor,
-    SourceKey, SourceObservation, TypedKey,
+    derive_event_id, derive_session_id, AgentScope, CertifiedSource, CoreRecord,
+    EventIdentityInput, NativeItemKey, NativeSessionKey, ScannedSourceCounts, SessionIdentityInput,
+    SourceAnchor, SourceKey, SourceObservation, TypedKey,
 };
 use ctx_history_index::{GenerationWriter, WriterOptions};
 use ctx_semantic_index::source_backed_semantic_vector_path;
@@ -262,12 +262,9 @@ impl CoreFixture {
         let mut record = CoreRecord::new_selected(
             event_id,
             session_id,
-            session_id,
             self.source.clone(),
             sequence,
             EventType::Message.as_str(),
-            AgentType::Primary.as_str(),
-            true,
             "semantic-daemon-test-v1",
             body,
         )
@@ -276,8 +273,7 @@ impl CoreFixture {
         record.native_event_id = Some(TypedKey::U64(sequence));
         record.occurred_at_unix_ms = Some(sequence as i64);
         record.role = Some(role.as_str().to_owned());
-        record.workspace = Some("/workspace".to_owned());
-        record.cwd = Some("/workspace".to_owned());
+        record.agent_scope = Some(AgentScope::Primary);
         record.validate_contract().unwrap();
         record
     }

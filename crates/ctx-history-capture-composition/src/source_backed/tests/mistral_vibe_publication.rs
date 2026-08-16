@@ -1,9 +1,9 @@
 use std::{fs, path::Path};
 
 use ctx_history_core::{
-    derive_event_id, derive_native_session_id, AgentType, CaptureProvider, CoreRecord,
-    EventIdentityInput, EventOrigin, EventType, NativeItemKey, PositionStability,
-    SessionRelationshipKind, SourceKey, StableEntityId, SubrecordSelector, TypedKey,
+    derive_event_id, derive_native_session_id, CaptureProvider, CoreRecord, EventIdentityInput,
+    EventType, NativeItemKey, PositionStability, SourceKey, StableEntityId, SubrecordSelector,
+    TypedKey,
 };
 use ctx_history_index::{VerifiedIndex, WriterOptions};
 use serde_json::Value;
@@ -27,7 +27,7 @@ const NATIVE_EVENT_REUSED_TOOL_CALL_POSITION_KIND: &str =
     "mistral-vibe-duplicate-tool-call-id-ordinal";
 const LOGICAL_SESSION_KIND: &str = "mistral-vibe-session";
 const LOGICAL_EVENT_KIND: &str = "mistral-vibe-event";
-const PARSER_REVISION: &str = "mistral-vibe-source-backed-v11";
+const PARSER_REVISION: &str = "mistral-vibe-source-backed-v12-core-activity";
 
 fn source_key(native_session_id: &str) -> SourceKey {
     SourceKey::derive_provider_native(
@@ -159,7 +159,7 @@ fn published_session(index: &Path, provider_session_id: &str) -> Vec<CoreRecord>
 }
 
 #[test]
-fn exact_parent_metadata_publishes_forked_relationship_with_unknown_copy_origin() {
+fn exact_parent_metadata_publishes_literal_parent_identity() {
     let parent_messages = serde_json::json!({
         "role": "user",
         "message_id": "copied-message",
@@ -203,14 +203,18 @@ fn exact_parent_metadata_publishes_forked_relationship_with_unknown_copy_origin(
 
     let parent = published_session(&index, "mistral-parent").remove(0);
     let child = published_session(&index, "mistral-child").remove(0);
-    assert_eq!(parent.session_relationship, SessionRelationshipKind::Root);
-    assert_eq!(parent.event_origin, EventOrigin::Unknown);
-    assert_eq!(child.session_relationship, SessionRelationshipKind::Forked);
     assert_eq!(child.parent_session_id, Some(parent.session_id));
-    assert_eq!(child.root_session_id, parent.session_id);
-    assert!(child.is_primary);
-    assert_eq!(child.agent_type, AgentType::Primary.as_str());
-    assert_eq!(child.event_origin, EventOrigin::Unknown);
+    assert_eq!(child.root_session_id, Some(parent.session_id));
+    assert!(super::has_literal_fact(
+        &parent,
+        ctx_history_core::LiteralFactKind::SessionCwd,
+        "/tmp/mistral"
+    ));
+    assert!(super::has_literal_fact(
+        &child,
+        ctx_history_core::LiteralFactKind::SessionCwd,
+        "/tmp/mistral"
+    ));
     assert_eq!(parent.native_event_id, child.native_event_id);
     assert_ne!(parent.event_id, child.event_id);
 }
@@ -254,8 +258,6 @@ fn url_and_stdio_transport_metadata_publish_terminal_content_without_mcp_identit
             .map(|record| record.event_id)
             .collect::<Vec<_>>()
     );
-    assert!(first.iter().all(|record| record.mcp_tool_call.is_none()));
-
     let source = source_key(SESSION_ID);
     let session_id = session_identity(&source, SESSION_ID);
     for (call_id, composite_name, expected_content) in [
@@ -276,23 +278,29 @@ fn url_and_stdio_transport_metadata_publish_terminal_content_without_mcp_identit
             .unwrap();
         assert_eq!(terminal.event_type, EventType::ToolOutput.as_str());
         assert_eq!(terminal.parser_revision, PARSER_REVISION);
-        let linkage = terminal.content.structured_content.as_ref().unwrap();
+        let activity = terminal
+            .content
+            .activity
+            .as_ref()
+            .expect("terminal activity");
         assert_eq!(
-            linkage
-                .pointer("/provider_native_tool_result/call_id")
-                .and_then(Value::as_str),
+            activity.provider_call_id.as_ref(),
+            Some(&TypedKey::utf8(call_id).unwrap()),
+            "{call_id}: {activity:?}"
+        );
+        assert!(activity.result.is_some());
+        let linkage = terminal.content.structured_content.as_ref().unwrap();
+        assert!(linkage.get("provider_native_tool_result").is_none());
+        assert_eq!(
+            linkage.get("tool_call_id").and_then(Value::as_str),
             Some(call_id)
         );
         assert_eq!(
-            linkage
-                .pointer("/provider_native_tool_result/tool_name")
-                .and_then(Value::as_str),
+            linkage.get("name").and_then(Value::as_str),
             Some(composite_name)
         );
         assert_eq!(
-            linkage
-                .pointer("/provider_native_tool_result/outcome")
-                .and_then(Value::as_str),
+            linkage.get("status").and_then(Value::as_str),
             Some("success")
         );
 
@@ -349,8 +357,6 @@ fn reused_tool_result_ids_keep_existing_native_and_collision_identities() {
             .map(|record| record.event_id)
             .collect::<Vec<_>>()
     );
-    assert!(first.iter().all(|record| record.mcp_tool_call.is_none()));
-
     let first_terminal = first
         .iter()
         .find(|record| record.content.meaningful_text() == "first terminal result")

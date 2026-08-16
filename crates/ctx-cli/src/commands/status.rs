@@ -1,16 +1,15 @@
 use std::path::Path;
 
 use anyhow::Result;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
-use crate::analytics::{count_bucket, StatusTelemetry};
+use crate::StatusArgs;
+use crate::analytics::{StatusTelemetry, count_bucket};
 use crate::config::{self, CONFIG_FILE};
 use crate::local_usage;
 use crate::output::print_json;
-use crate::pro::PRO_MONTHLY_PRICE_DISPLAY;
 use crate::semantic::source_epoch_status_report;
 use crate::ui::Ui;
-use crate::StatusArgs;
 use ctx_cli_presentation::commands::compact_usage_health_json;
 
 mod usage;
@@ -38,21 +37,12 @@ pub(crate) fn status_read_model_authorized(
     control: &local_usage::UsageControlSnapshot,
 ) -> Result<StatusReadModel> {
     let source = source_epoch_status_report(data_root, config)?;
-    let mut pro = source.pro;
-    if let Some(object) = pro.as_object_mut() {
-        object.insert(
-            "conversion_action".to_owned(),
-            local_usage::pro_conversion_action(object.get("access_state").and_then(Value::as_str))
-                .unwrap_or(Value::Null),
-        );
-    }
     let upgrade = upgrade_report(config);
     let local_usage = local_usage::read_report_authorized(storage, control, false);
     let mut report = source.report;
     if let Some(object) = report.as_object_mut() {
         object.remove("catalog");
         object.insert("upgrade".to_owned(), upgrade);
-        object.insert("pro".to_owned(), pro);
         object.insert(
             "local_usage".to_owned(),
             compact_usage_health_json(&local_usage),
@@ -103,9 +93,7 @@ pub(crate) fn run_status_authorized(
             data_root,
             &config_path,
             &status.report["upgrade"],
-            &status.report["pro"],
             &status.local_usage,
-            PRO_MONTHLY_PRICE_DISPLAY,
         );
         ui.write_stdout(&document)?;
     }

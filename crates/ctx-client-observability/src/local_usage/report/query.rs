@@ -2,10 +2,7 @@ use rusqlite::{Connection, Transaction, TransactionBehavior};
 
 use super::super::{EstimateFacts, UsageStoreError, DEFINITION_VERSION};
 use super::validation::{checked_count, reconcile_definition};
-use super::{
-    DurationSummary, OperationSummary, ProBlameSummary, ProBlameTargetSummary, UsageDefinition,
-    UsageSummary,
-};
+use super::{DurationSummary, OperationSummary, UsageDefinition, UsageSummary};
 
 pub(super) fn query_report(
     conn: &mut Connection,
@@ -86,7 +83,6 @@ fn query_definition(
             COALESCE(SUM(CASE WHEN value_class = 'empty' THEN calls ELSE 0 END), 0),
             COALESCE(SUM(CASE WHEN value_class = 'not_applicable' THEN calls ELSE 0 END), 0),
             COALESCE(SUM(result_count), 0),
-            COALESCE(SUM(citation_count), 0),
             COALESCE(SUM(delivered_output_bytes), 0),
             COALESCE(SUM(delivered_context_bytes), 0),
             COALESCE(SUM(matched_normalized_session_bytes), 0),
@@ -110,7 +106,6 @@ fn query_definition(
                 row.get::<_, i64>(9)?,
                 row.get::<_, i64>(10)?,
                 row.get::<_, i64>(11)?,
-                row.get::<_, i64>(12)?,
             ))
         },
     )?;
@@ -122,13 +117,11 @@ fn query_definition(
         empty_calls: checked_count(raw.4)?,
         not_applicable_calls: checked_count(raw.5)?,
         result_count: checked_count(raw.6)?,
-        citation_count: checked_count(raw.7)?,
-        delivered_output_bytes: checked_count(raw.8)?,
-        delivered_context_bytes: checked_count(raw.9)?,
-        matched_normalized_session_bytes: checked_count(raw.10)?,
-        complete_context_eligible_calls: checked_count(raw.11)?,
-        unavailable_context_eligible_calls: checked_count(raw.12)?,
-        pro_blame: query_pro_blame(conn, definition_version)?,
+        delivered_output_bytes: checked_count(raw.7)?,
+        delivered_context_bytes: checked_count(raw.8)?,
+        matched_normalized_session_bytes: checked_count(raw.9)?,
+        complete_context_eligible_calls: checked_count(raw.10)?,
+        unavailable_context_eligible_calls: checked_count(raw.11)?,
     };
     let (by_operation, duration_buckets) = if detailed {
         (
@@ -152,80 +145,6 @@ fn query_definition(
     Ok(definition)
 }
 
-fn query_pro_blame(
-    conn: &Transaction<'_>,
-    definition_version: i64,
-) -> Result<ProBlameSummary, UsageStoreError> {
-    let raw = conn.query_row(
-        r#"
-        SELECT
-            COALESCE(SUM(calls), 0),
-            COALESCE(SUM(CASE WHEN pro_outcome = 'produced' THEN calls ELSE 0 END), 0),
-            COALESCE(SUM(CASE WHEN pro_outcome = 'possible' THEN calls ELSE 0 END), 0),
-            COALESCE(SUM(CASE WHEN pro_outcome = 'none' THEN calls ELSE 0 END), 0),
-            COALESCE(SUM(CASE WHEN pro_outcome = 'error' THEN calls ELSE 0 END), 0),
-            COALESCE(SUM(CASE
-                WHEN target_type = 'not_applicable' AND pro_outcome = 'error'
-                THEN calls ELSE 0 END
-            ), 0)
-        FROM daily_usage
-        WHERE definition_version = ?1 AND operation = 'blame'
-        "#,
-        [definition_version],
-        |row| {
-            Ok((
-                row.get::<_, i64>(0)?,
-                row.get::<_, i64>(1)?,
-                row.get::<_, i64>(2)?,
-                row.get::<_, i64>(3)?,
-                row.get::<_, i64>(4)?,
-                row.get::<_, i64>(5)?,
-            ))
-        },
-    )?;
-    let mut result = ProBlameSummary {
-        requests: checked_count(raw.0)?,
-        produced_attribution_requests: checked_count(raw.1)?,
-        possible_only_requests: checked_count(raw.2)?,
-        none_requests: checked_count(raw.3)?,
-        error_requests: checked_count(raw.4)?,
-        by_target: Vec::new(),
-        not_applicable_target_errors: checked_count(raw.5)?,
-    };
-    let mut statement = conn.prepare(
-        r#"
-        SELECT
-            target_type,
-            SUM(calls),
-            SUM(CASE WHEN pro_outcome = 'produced' THEN calls ELSE 0 END),
-            SUM(CASE WHEN pro_outcome = 'possible' THEN calls ELSE 0 END),
-            SUM(CASE WHEN pro_outcome = 'none' THEN calls ELSE 0 END),
-            SUM(CASE WHEN pro_outcome = 'error' THEN calls ELSE 0 END)
-        FROM daily_usage
-        WHERE definition_version = ?1
-          AND operation = 'blame'
-          AND target_type IN ('file', 'commit', 'pull_request')
-        GROUP BY target_type
-        ORDER BY CASE target_type
-            WHEN 'file' THEN 1 WHEN 'commit' THEN 2 ELSE 3 END
-        "#,
-    )?;
-    let rows = statement.query_map([definition_version], |row| {
-        Ok(ProBlameTargetSummary {
-            target_type: row.get(0)?,
-            requests: row.get(1)?,
-            produced: row.get(2)?,
-            possible: row.get(3)?,
-            none: row.get(4)?,
-            error: row.get(5)?,
-        })
-    })?;
-    for row in rows {
-        result.by_target.push(row?);
-    }
-    Ok(result)
-}
-
 fn query_operations(
     conn: &Transaction<'_>,
     definition_version: i64,
@@ -240,7 +159,7 @@ fn query_operations(
             SUM(CASE WHEN value_class = 'result_bearing' THEN calls ELSE 0 END),
             SUM(CASE WHEN value_class = 'empty' THEN calls ELSE 0 END),
             SUM(CASE WHEN value_class = 'not_applicable' THEN calls ELSE 0 END),
-            SUM(result_count), SUM(citation_count), SUM(delivered_output_bytes),
+            SUM(result_count), SUM(delivered_output_bytes),
             SUM(delivered_context_bytes), SUM(matched_normalized_session_bytes),
             SUM(CASE WHEN context_coverage = 'complete' THEN calls ELSE 0 END),
             SUM(CASE WHEN context_coverage = 'unavailable' THEN calls ELSE 0 END)
@@ -262,12 +181,11 @@ fn query_operations(
             empty_calls: row.get(7)?,
             not_applicable_calls: row.get(8)?,
             result_count: row.get(9)?,
-            citation_count: row.get(10)?,
-            delivered_output_bytes: row.get(11)?,
-            delivered_context_bytes: row.get(12)?,
-            matched_normalized_session_bytes: row.get(13)?,
-            complete_context_eligible_calls: row.get(14)?,
-            unavailable_context_eligible_calls: row.get(15)?,
+            delivered_output_bytes: row.get(10)?,
+            delivered_context_bytes: row.get(11)?,
+            matched_normalized_session_bytes: row.get(12)?,
+            complete_context_eligible_calls: row.get(13)?,
+            unavailable_context_eligible_calls: row.get(14)?,
         })
     })?;
     rows.collect::<Result<Vec<_>, _>>()

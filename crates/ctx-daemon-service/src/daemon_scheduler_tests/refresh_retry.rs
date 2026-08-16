@@ -643,6 +643,7 @@ fn scheduler_retries_terminal_status_without_republishing_core() {
         &data_root,
         &mut runtime,
         Some(&coordinator),
+        &crate::test_support::GENERATION_PUBLISHED,
         &crate::test_support::OBSERVATION,
     )
     .unwrap()
@@ -659,6 +660,7 @@ fn scheduler_retries_terminal_status_without_republishing_core() {
         &data_root,
         &mut runtime,
         Some(&coordinator),
+        &crate::test_support::GENERATION_PUBLISHED,
         &crate::test_support::OBSERVATION,
     )
     .unwrap()
@@ -708,6 +710,7 @@ fn scheduler_failed_terminal_retry_preserves_successor_across_restart() {
         &data_root,
         &mut runtime,
         Some(&coordinator),
+        &crate::test_support::GENERATION_PUBLISHED,
         &crate::test_support::OBSERVATION,
     )
     .unwrap()
@@ -826,6 +829,7 @@ fn blocked_retry_writer_serializes_concurrent_admission_and_restart() {
         &data_root,
         &mut runtime,
         Some(&coordinator),
+        &crate::test_support::GENERATION_PUBLISHED,
         &crate::test_support::OBSERVATION,
     )
     .unwrap()
@@ -938,6 +942,7 @@ fn failed_terminal_root_keeps_capacity_through_successful_retry_and_restart() {
             &data_root,
             &mut runtime,
             Some(&coordinator),
+            &crate::test_support::GENERATION_PUBLISHED,
             &crate::test_support::OBSERVATION,
         )
         .unwrap()

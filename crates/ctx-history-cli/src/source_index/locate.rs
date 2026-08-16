@@ -70,7 +70,7 @@ pub fn run_locate(
         ui.write_stdout(&document)?;
         output_bytes
     };
-    local_usage.set_result_observation(ResultObservationAction::Locate, 1, 0, content_bytes);
+    local_usage.set_result_observation(ResultObservationAction::Locate, 1, content_bytes);
     local_usage.set_measured_output_bytes(output_bytes);
     Ok(())
 }

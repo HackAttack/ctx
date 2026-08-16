@@ -3,18 +3,19 @@
 use std::path::PathBuf;
 
 use ctx_history_core::{
-    derive_event_id, derive_session_id, AgentType, CaptureProvider, CoreRecord, CoreRecordError,
-    EventIdentityInput, EventType, NativeItemKey, NativeSessionKey, ProjectionContractError,
-    ScannedSourceCounts, SessionIdentityInput, SourceAnchor, SourceKey, SourceObservation,
-    StableEntityId, TypedKey,
+    derive_event_id, derive_session_id, ActivityInvocation, CaptureProvider, CoreActivity,
+    CoreRecord, CoreRecordError, EventIdentityInput, EventType, LiteralFactKind, NativeItemKey,
+    NativeSessionKey, ProjectionContractError, ProviderDeclaredFact, ScannedSourceCounts,
+    SessionIdentityInput, SourceAnchor, SourceKey, SourceObservation, StableEntityId, TypedKey,
+    CORE_ACTIVITY_REVISION,
 };
 use serde::Serialize;
 use thiserror::Error;
 
 use super::{
     normalize::{
-        ContinuePreparedPage, ContinuePreparedSource, CONTINUE_NATIVE_MAX_PAGE_BYTES,
-        CONTINUE_NATIVE_MAX_PAGE_ROWS,
+        ContinueCallRelationship, ContinuePreparedPage, ContinuePreparedSource,
+        CONTINUE_NATIVE_MAX_PAGE_BYTES, CONTINUE_NATIVE_MAX_PAGE_ROWS,
     },
     parse::{parse_continue_source, ContinueParseOutcome, ContinueSourcePageStream},
     source::{discover_continue_root, ContinueDocumentLeaf, ContinueTreeAuthority},
@@ -37,8 +38,7 @@ const CONTINUE_LOGICAL_EVENT_KIND: &str = "continue-event";
 const CONTINUE_SOURCE_SCHEMA_VARIANT: &str = "continue-nativepath-document-v0";
 const CONTINUE_SOURCE_REVISION_KIND: &str = "continue-whole-document-observation-v0";
 pub(crate) const CONTINUE_SOURCE_BACKED_PARSER_REVISION: &str =
-    "continue-nativepath-source-backed-v0";
-const MAX_CONTINUE_LEXICAL_METADATA_CHARS: usize = 8 * 1024;
+    "continue-nativepath-source-backed-v1-neutral-activity";
 
 #[derive(Debug, Error)]
 pub(crate) enum ContinueSourceBackedError {
@@ -365,10 +365,7 @@ fn project_bound_event(
         .occurred_at
         .or(session.started_at)
         .map(|timestamp| timestamp.timestamp_millis());
-    let workspace = session
-        .workspace_directory
-        .as_deref()
-        .map(|value| bounded_chars(value, MAX_CONTINUE_LEXICAL_METADATA_CHARS));
+    let workspace = session.workspace_directory.clone();
     let event_type = match event.kind {
         ContinueEventKind::Message => EventType::Message.as_str(),
         ContinueEventKind::ToolCall => EventType::ToolCall.as_str(),
@@ -380,18 +377,12 @@ fn project_bound_event(
         ContinueEventRole::Tool => "tool",
         ContinueEventRole::Unknown => "unknown",
     };
-    let native_file_touches = (!event.file_touches.is_empty())
-        .then(|| serde_json::to_value(&event.file_touches))
-        .transpose()?;
     let mut record = CoreRecord::new_selected(
         event_id,
-        session_id,
         session_id,
         source.clone(),
         event.identity.history_ordinal,
         event_type,
-        AgentType::Primary.as_str(),
-        true,
         CONTINUE_SOURCE_BACKED_PARSER_REVISION,
         body,
     )?;
@@ -399,16 +390,55 @@ fn project_bound_event(
     record.native_event_id = Some(native_event_id);
     record.occurred_at_unix_ms = occurred_at_unix_ms;
     record.role = Some(role.to_owned());
-    record.workspace = workspace.clone();
-    record.cwd = workspace;
-    if let Some(native_file_touches) = native_file_touches {
-        record.metadata.insert(
-            "provider_native_file_touches".to_owned(),
-            native_file_touches,
-        );
+    record.content.structured_content = Some(serde_json::json!({
+        "calls": &event.calls,
+        "native_item_id": &event.native_item_id,
+    }));
+    let mut facts = Vec::new();
+    if let Some(workspace) = workspace {
+        facts.push(ProviderDeclaredFact {
+            kind: LiteralFactKind::SessionCwd,
+            value: workspace,
+        });
     }
+    let (provider_call_id, invocation) = if event.calls.len() == 1 {
+        let call = &event.calls[0];
+        let call_id = exact_continue_call_id(call);
+        let invocation = call_id
+            .zip(call.tool_name.as_ref())
+            .map(|(_, tool)| ActivityInvocation {
+                protocol: None,
+                server: None,
+                tool: tool.clone(),
+                arguments: call.arguments.clone(),
+                started_at_unix_ms: occurred_at_unix_ms,
+            });
+        (call_id.map(TypedKey::utf8).transpose()?, invocation)
+    } else {
+        (None, None)
+    };
+    if invocation.is_some() || !facts.is_empty() {
+        record.content.activity = Some(CoreActivity {
+            revision: CORE_ACTIVITY_REVISION,
+            provider_call_id,
+            invocation,
+            result: None,
+            facts,
+        });
+    }
+    record
+        .content
+        .omit_structured_content_if_aggregate_exceeds_limit()?;
     record.validate_contract()?;
     Ok(record)
+}
+
+fn exact_continue_call_id(call: &ContinueCallRelationship) -> Option<&str> {
+    match (call.call_id.as_deref(), call.nested_call_id.as_deref()) {
+        (Some(left), Some(right)) if left != right => None,
+        (Some(value), _) | (_, Some(value)) => Some(value),
+        (None, None) => None,
+    }
 }
 
 fn finish_source(
@@ -522,10 +552,6 @@ fn continue_lexical_body(event: &ContinueEventRow) -> String {
         ContinueEventKind::Message => "Continue message".to_owned(),
         ContinueEventKind::ToolCall => "Continue tool call".to_owned(),
     }
-}
-
-fn bounded_chars(value: &str, maximum: usize) -> String {
-    value.chars().take(maximum).collect()
 }
 
 fn decode_hex_digest(value: &str) -> Option<[u8; 32]> {

@@ -1,6 +1,8 @@
 param(
     [Parameter(Mandatory = $true)]
     [string]$Binary,
+    [string]$Companion = "",
+    [string]$PairEnvelope = "",
     [Parameter(Mandatory = $true)]
     [string]$Fixture,
     [string]$ExpectedVersion,
@@ -476,6 +478,18 @@ function ConvertTo-NativeArgument([string]$Value) {
 }
 
 $Binary = [System.IO.Path]::GetFullPath($Binary)
+$pairMode = -not [string]::IsNullOrWhiteSpace($Companion) -or
+    -not [string]::IsNullOrWhiteSpace($PairEnvelope)
+if ($pairMode -and (
+    [string]::IsNullOrWhiteSpace($Companion) -or
+    [string]::IsNullOrWhiteSpace($PairEnvelope)
+)) {
+    Fail "Companion and PairEnvelope must be provided together"
+}
+if ($pairMode) {
+    $Companion = [System.IO.Path]::GetFullPath($Companion)
+    $PairEnvelope = [System.IO.Path]::GetFullPath($PairEnvelope)
+}
 $Fixture = [System.IO.Path]::GetFullPath($Fixture)
 $ResultPath = [System.IO.Path]::GetFullPath($ResultPath)
 
@@ -496,6 +510,12 @@ if (-not (Test-Path -LiteralPath $Binary -PathType Leaf)) {
 }
 if (-not (Test-Path -LiteralPath $Fixture -PathType Leaf)) {
     Fail "fixture is missing: $Fixture"
+}
+if ($pairMode -and -not (Test-Path -LiteralPath $Companion -PathType Leaf)) {
+    Fail "companion is missing: $Companion"
+}
+if ($pairMode -and -not (Test-Path -LiteralPath $PairEnvelope -PathType Leaf)) {
+    Fail "signed pair envelope is missing: $PairEnvelope"
 }
 if ($ExpectedVersion -notmatch '^[0-9]+\.[0-9]+\.[0-9]+([+-][0-9A-Za-z.-]+)?$') {
     Fail "expected version is invalid: $ExpectedVersion"
@@ -521,6 +541,24 @@ $tmpRoot = Join-Path $root "tmp"
 $workRoot = Join-Path $root "work"
 foreach ($path in @($profile, $dataRoot, $configRoot, $cacheRoot, $stateRoot, $tmpRoot, $workRoot)) {
     New-Item -ItemType Directory -Path $path -Force | Out-Null
+}
+if ($pairMode) {
+    $helper = Join-Path $PSScriptRoot "install-managed-pair.py"
+    $python = Get-Command python3 -ErrorAction SilentlyContinue
+    if ($null -eq $python) {
+        $python = Get-Command python -ErrorAction SilentlyContinue
+    }
+    if ($null -eq $python -or -not (Test-Path -LiteralPath $helper -PathType Leaf)) {
+        Fail "Python 3 and install-managed-pair.py are required for signed-pair qualification"
+    }
+    $installRoot = Join-Path $root "installation"
+    & $python.Source -I $helper install `
+        --envelope $PairEnvelope --core $Binary --companion $Companion `
+        --install-root $installRoot --target windows-x64 | Out-Null
+    if ($LASTEXITCODE -ne 0) {
+        Fail "signed managed-pair installation failed"
+    }
+    $Binary = Join-Path $installRoot "bin\ctx.exe"
 }
 
 $savedLocation = (Get-Location).Path
@@ -763,6 +801,9 @@ try {
     if ($version.Trim() -ne "ctx $ExpectedVersion") {
         Fail "version mismatch: expected ctx $ExpectedVersion, got $version"
     }
+    if ($pairMode) {
+        [void](Invoke-Ctx @("pro", "--help"))
+    }
 
     [void](Invoke-Ctx @("setup", "--catalog-only", "--no-daemon", "--progress", "none"))
     $importArguments = @(
@@ -883,11 +924,18 @@ try {
         }
     }
 
-    $result = [ordered]@{
-        schema_version = 1
-        kind = "ctx-native-candidate-smoke"
-        status = "passed"
-        steps = [ordered]@{
+    $resultSteps = [ordered]@{
+        version = "passed"
+        setup = "passed"
+        import = "passed"
+        search = "passed"
+        read_only = "passed"
+        semantic_offline_fail_closed = "passed"
+    }
+    if ($pairMode) {
+        $resultSteps = [ordered]@{
+            signed_pair_install = "passed"
+            companion_selection = "passed"
             version = "passed"
             setup = "passed"
             import = "passed"
@@ -895,6 +943,13 @@ try {
             read_only = "passed"
             semantic_offline_fail_closed = "passed"
         }
+    }
+
+    $result = [ordered]@{
+        schema_version = 1
+        kind = "ctx-native-candidate-smoke"
+        status = "passed"
+        steps = $resultSteps
     }
     $resultJson = $result | ConvertTo-Json -Compress -Depth 3
     [System.IO.File]::WriteAllText($resultTemp, $resultJson, (New-Object System.Text.UTF8Encoding($false)))

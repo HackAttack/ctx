@@ -1,6 +1,7 @@
 use std::{
     collections::HashSet,
     fs::{self, File, OpenOptions},
+    io::Read as _,
     path::{Path, PathBuf},
 };
 
@@ -25,12 +26,13 @@ use uuid::Uuid;
 
 use crate::clone::{bind_candidate_activation_fence, create_authenticated_candidate_generation};
 use crate::is_generation_id;
-use crate::retention::live_generation_read_lease_targets;
+use crate::retention::{
+    ensure_generation_read_lease_coordinator, try_generation_directory_reclaim_authority,
+};
 use crate::{
-    acquire_generation_ownership_fence, CandidateActivationFence, CandidatePhysicalProof,
-    DurableAtomicWriteOutcome, DurableMmapDirectory, GenerationError as IndexError,
-    GenerationOwnershipFence, GenerationRetentionLease, Result, ACTIVE_GENERATION_POINTER_FILE,
-    INDEX_GENERATIONS_DIRECTORY,
+    CandidateActivationFence, CandidatePhysicalProof, DurableAtomicWriteOutcome,
+    DurableMmapDirectory, GenerationError as IndexError, GenerationRetentionLease, Result,
+    ACTIVE_GENERATION_POINTER_FILE, INDEX_GENERATIONS_DIRECTORY,
 };
 const ACTIVE_GENERATION_POINTER_VERSION: u32 = 2;
 const GENERATION_DIRECTORY_PREFIX: &str = "generation-";
@@ -146,7 +148,6 @@ pub struct CandidateGeneration {
     pub index: Index,
     pub physical_proof: CandidatePhysicalProof,
     pub activation_fence: CandidateActivationFence,
-    pub ownership_fence: Option<crate::CandidateOwnershipFence>,
 }
 
 #[derive(Debug)]
@@ -156,12 +157,36 @@ pub enum PointerPublicationOutcome {
 }
 
 pub fn load_active_generation_pointer(root: &Path) -> Result<Option<ActiveGenerationPointer>> {
-    let path = root.join(ACTIVE_GENERATION_POINTER_FILE);
-    let bytes = match fs::read(path) {
-        Ok(bytes) => bytes,
+    let bytes = match crate::read_root::read_registered_file(
+        root,
+        Path::new(ACTIVE_GENERATION_POINTER_FILE),
+    ) {
+        Ok(Some(bytes)) => bytes,
+        Ok(None) => match fs::read(root.join(ACTIVE_GENERATION_POINTER_FILE)) {
+            Ok(bytes) => bytes,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+            Err(error) => return Err(error.into()),
+        },
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
         Err(error) => return Err(error.into()),
     };
+    parse_active_generation_pointer(bytes).map(Some)
+}
+
+pub(crate) fn load_active_generation_pointer_from_read_root(
+    root: &crate::GenerationReadRoot,
+) -> Result<Option<ActiveGenerationPointer>> {
+    let mut file = match root.open_file(Path::new(ACTIVE_GENERATION_POINTER_FILE)) {
+        Ok(file) => file,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(error.into()),
+    };
+    let mut bytes = Vec::new();
+    file.read_to_end(&mut bytes)?;
+    parse_active_generation_pointer(bytes).map(Some)
+}
+
+fn parse_active_generation_pointer(bytes: Vec<u8>) -> Result<ActiveGenerationPointer> {
     #[derive(Deserialize)]
     struct PointerVersion {
         version: u32,
@@ -177,7 +202,7 @@ pub fn load_active_generation_pointer(root: &Path) -> Result<Option<ActiveGenera
         return Err(IndexError::InvalidActiveGenerationPointer);
     }
     pointer.validate()?;
-    Ok(Some(pointer))
+    Ok(pointer)
 }
 
 pub fn slot_path(root: &Path, slot: &GenerationSlot) -> PathBuf {
@@ -229,7 +254,6 @@ pub fn create_candidate_generation(
         index,
         physical_proof: CandidatePhysicalProof::default(),
         activation_fence,
-        ownership_fence: None,
     })
 }
 
@@ -249,6 +273,7 @@ where
     F: FnOnce() -> Result<T>,
 {
     pointer.validate()?;
+    ensure_generation_read_lease_coordinator(root)?;
     let bytes = serde_json::to_vec(pointer)?;
     let directory = DurableMmapDirectory::open(root).map_err(tantivy::TantivyError::from)?;
     let mut retained_validation = None;
@@ -314,17 +339,7 @@ pub fn reclaim_inactive_generation_directories(
     pointer: Option<&ActiveGenerationPointer>,
     lease: Option<&GenerationRetentionLease>,
 ) -> Result<()> {
-    let ownership_fence = acquire_generation_ownership_fence(root)?;
-    reclaim_inactive_generation_directories_with_fence(root, pointer, lease, &ownership_fence)
-}
-
-#[doc(hidden)]
-pub fn reclaim_inactive_generation_directories_with_fence(
-    root: &Path,
-    pointer: Option<&ActiveGenerationPointer>,
-    lease: Option<&GenerationRetentionLease>,
-    _ownership_fence: &GenerationOwnershipFence,
-) -> Result<()> {
+    ensure_generation_read_lease_coordinator(root)?;
     let generations = root.join(INDEX_GENERATIONS_DIRECTORY);
     fs::create_dir_all(&generations)?;
     let retained = pointer
@@ -332,11 +347,6 @@ pub fn reclaim_inactive_generation_directories_with_fence(
         .flat_map(|pointer| std::iter::once(pointer.active()).chain(pointer.previous()))
         .map(|slot| slot.directory().to_owned())
         .chain(lease.map(|lease| lease.target().directory().to_owned()))
-        .chain(
-            live_generation_read_lease_targets(root)?
-                .into_iter()
-                .map(|target| target.directory().to_owned()),
-        )
         .collect::<HashSet<_>>();
     let mut removed = false;
     for entry in fs::read_dir(&generations)? {
@@ -348,6 +358,10 @@ pub fn reclaim_inactive_generation_directories_with_fence(
             continue;
         };
         if is_generation_directory_name(&name) && !retained.contains(&name) {
+            let Some(_reclaim_authority) = try_generation_directory_reclaim_authority(root, &name)?
+            else {
+                continue;
+            };
             let candidate = RetainedGenerationDirectory::open(entry.path())?;
             reclamation_checkpoint(ReclamationStage::AfterCandidateRetained, candidate.path())?;
             candidate.validate_binding()?;

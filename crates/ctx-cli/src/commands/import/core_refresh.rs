@@ -1,15 +1,15 @@
 use std::path::Path;
 
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 
 use crate::{
+    DaemonTriggerCommandArg,
     config::AppConfig,
     progress::ProgressReporter,
     semantic::{
-        autostart_daemon_and_wait, coordinate_import_source_backed_refresh_with_progress,
-        SourceBackedRefreshMode, SourceBackedRefreshObservation,
+        SourceBackedRefreshMode, SourceBackedRefreshObservation, autostart_daemon_and_wait,
+        coordinate_import_source_backed_refresh_with_progress,
     },
-    DaemonTriggerCommandArg,
 };
 
 use super::ExplicitSourceCatalogAuthority;
@@ -22,7 +22,6 @@ pub(super) enum ImportCoreRefreshRequest<'a> {
 /// Applies import-specific policy around the one Core refresh control path.
 ///
 /// Import may start the daemon and waits only for authoritative Core publication.
-/// Pro and semantic derived consumers follow independently under daemon scheduling.
 pub(super) fn wait_for_import_core_refresh(
     data_root: &Path,
     config: &AppConfig,

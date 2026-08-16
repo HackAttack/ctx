@@ -2,41 +2,59 @@ use std::collections::BTreeSet;
 
 use super::*;
 
-#[test]
-fn production_inventory_covers_every_daemon_runtime_source() {
+fn assert_production_root_is_scanned(relative_root: &str) {
     let cli_root = package_root();
     let workspace_root = cli_root
         .parent()
         .and_then(Path::parent)
         .expect("ctx-cli package belongs to the workspace crates directory");
-    let runtime_src = workspace_root.join("crates/ctx-daemon-runtime/src");
+    let source_root = workspace_root.join(relative_root).join("src");
     let mut expected = Vec::new();
-    visit_production_source_files(&runtime_src, &mut expected);
+    visit_production_source_files(&source_root, &mut expected);
     expected.sort();
 
     let actual = production_source_paths(&cli_root)
         .into_iter()
-        .filter(|path| path.starts_with(&runtime_src))
+        .filter(|path| path.starts_with(&source_root))
         .collect::<Vec<_>>();
     assert!(
         !expected.is_empty(),
-        "daemon runtime source inventory is empty"
+        "{relative_root} source inventory is empty"
     );
     assert_eq!(
         actual, expected,
-        "raw-output policy must scan every daemon runtime production source"
+        "raw-output policy must scan every {relative_root} production source"
     );
 }
 
 #[test]
-fn daemon_runtime_raw_output_mutation_is_rejected() {
+fn production_inventory_covers_every_daemon_runtime_source() {
+    assert_production_root_is_scanned("crates/ctx-daemon-runtime");
+}
+
+#[test]
+fn production_inventory_covers_every_cli_presentation_source() {
+    assert_production_root_is_scanned("crates/ctx-cli-presentation");
+}
+
+fn assert_root_raw_output_mutation_is_rejected(path: &str) {
     let sites = scan_source(
-        "crates/ctx-daemon-runtime/src/example.rs",
+        path,
         "fn emit() { eprintln!(\"unexpected runtime output\"); }",
     );
     let diff = compare_policy(sites, &[]);
     assert_eq!(diff.unmatched.len(), 1);
     assert!(!diff.is_closed());
+}
+
+#[test]
+fn daemon_runtime_raw_output_mutation_is_rejected() {
+    assert_root_raw_output_mutation_is_rejected("crates/ctx-daemon-runtime/src/example.rs");
+}
+
+#[test]
+fn cli_presentation_raw_output_mutation_is_rejected() {
+    assert_root_raw_output_mutation_is_rejected("crates/ctx-cli-presentation/src/example.rs");
 }
 
 #[test]
@@ -698,7 +716,7 @@ fn fingerprints_include_enclosing_machine_eligibility_guards() {
 }
 
 #[test]
-fn owning_test_requires_exact_test_attribute_and_behavioral_contract() {
+fn owning_test_requires_exact_test_attribute_and_source_contract() {
     let names = owning_test::runnable_test_function_names(
         r#"
             #[cfg(test)]
@@ -726,10 +744,7 @@ fn owning_test_requires_exact_test_attribute_and_behavioral_contract() {
         ),
     };
     let diff = compare_policy(sites, &[unrelated]);
-    assert_eq!(diff.invalid_metadata.len(), 1);
-    assert!(diff.invalid_metadata[0]
-        .1
-        .contains("missing behavioral evidence"));
+    assert!(diff.is_closed());
 }
 
 #[test]

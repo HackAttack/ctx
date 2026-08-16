@@ -1,9 +1,6 @@
-use std::collections::BTreeSet;
-
 use chrono::{DateTime, Utc};
-use ctx_history_core::{Confidence, FileChangeKind};
+use ctx_history_core::ActivityJsonCapture;
 use serde::Serialize;
-use serde_json::Value;
 use sha2::{Digest, Sha256};
 
 use crate::MAX_PROVIDER_JSONL_LINE_BYTES;
@@ -27,8 +24,6 @@ pub(crate) const CONTINUE_NATIVE_MAX_RETAINED_ITEM_BYTES: usize = MAX_PROVIDER_J
 // Reserve four units for the page's source/session/route/cursor mechanics so
 // the family consumer can publish a page without exceeding either bound.
 pub(crate) const CONTINUE_NATIVE_MAX_PAGE_ROWS: usize = 60;
-pub(crate) const CONTINUE_NATIVE_MAX_FILE_TOUCHES_PER_EVENT: usize =
-    CONTINUE_NATIVE_MAX_PAGE_ROWS - 1;
 pub(crate) const CONTINUE_NATIVE_MAX_PAGE_BYTES: usize = 8 * 1024 * 1024;
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
@@ -55,22 +50,14 @@ pub(crate) enum ContinueEventRole {
     Unknown,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub(crate) struct ContinueCallRelationship {
     pub(crate) state_ordinal: u32,
     pub(crate) call_id: Option<String>,
     pub(crate) nested_call_id: Option<String>,
     pub(crate) tool_name: Option<String>,
     pub(crate) status: Option<String>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-pub(crate) struct ContinueFileTouch {
-    pub(crate) path: String,
-    pub(crate) old_path: Option<String>,
-    pub(crate) change_kind: Option<FileChangeKind>,
-    pub(crate) confidence: Confidence,
-    pub(crate) metadata: Value,
+    pub(crate) arguments: ActivityJsonCapture,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -103,7 +90,6 @@ pub(crate) struct ContinueEventRow {
     pub(crate) occurred_at: Option<DateTime<Utc>>,
     pub(crate) search_text: String,
     pub(crate) calls: Box<[ContinueCallRelationship]>,
-    pub(crate) file_touches: Box<[ContinueFileTouch]>,
 }
 
 #[derive(Debug, PartialEq)]
@@ -290,7 +276,6 @@ fn normalize_session(
 
 pub(super) enum NormalizeEventError {
     RetainedItemTooLarge { observed: usize },
-    FileTouchLimitExceeded,
 }
 
 pub(super) fn normalize_event(
@@ -304,7 +289,6 @@ pub(super) fn normalize_event(
             observed: search_text.len(),
         });
     }
-    let file_touches = event_file_touches(item)?;
     Ok(ContinueEventRow {
         identity: ContinueEventIdentity {
             session: session.clone(),
@@ -338,13 +322,12 @@ pub(super) fn normalize_event(
             .and_then(parse_timestamp),
         search_text,
         calls: event_call_relationships(item),
-        file_touches,
     })
 }
 
 impl ContinueEventRow {
     pub(super) fn logical_units(&self) -> usize {
-        1_usize.saturating_add(self.file_touches.len())
+        1
     }
 
     pub(super) fn estimated_bytes(&self) -> usize {
@@ -361,49 +344,13 @@ impl ContinueEventRow {
                     .saturating_add(option_string_bytes(&call.nested_call_id))
                     .saturating_add(option_string_bytes(&call.tool_name))
                     .saturating_add(option_string_bytes(&call.status))
+                    .saturating_add(
+                        serde_json::to_vec(&call.arguments).map_or(0, |encoded| encoded.len()),
+                    )
             },
         );
-        self.file_touches.iter().fold(event_bytes, |bytes, touch| {
-            bytes
-                .saturating_add(128)
-                .saturating_add(touch.path.len())
-                .saturating_add(option_string_bytes(&touch.old_path))
-                .saturating_add(touch.metadata.to_string().len())
-        })
+        event_bytes
     }
-}
-
-fn event_file_touches(
-    item: &RawContinueHistoryItem,
-) -> Result<Box<[ContinueFileTouch]>, NormalizeEventError> {
-    let candidates = item
-        .message
-        .iter()
-        .flat_map(|message| message.calls.iter())
-        .flat_map(|call| call.file_touches.iter())
-        .chain(
-            item.tool_call_states
-                .iter()
-                .filter_map(|state| state.tool_call.as_ref())
-                .flat_map(|call| call.file_touches.iter()),
-        );
-    let mut seen = BTreeSet::new();
-    let mut touches = Vec::new();
-    for touch in candidates {
-        let key = (
-            touch.path.clone(),
-            touch.old_path.clone(),
-            touch.change_kind.map(|kind| kind.as_str().to_owned()),
-        );
-        if !seen.insert(key) {
-            continue;
-        }
-        if touches.len() == CONTINUE_NATIVE_MAX_FILE_TOUCHES_PER_EVENT {
-            return Err(NormalizeEventError::FileTouchLimitExceeded);
-        }
-        touches.push(touch.clone());
-    }
-    Ok(touches.into_boxed_slice())
 }
 
 fn call_relationship(ordinal: usize, state: &RawContinueToolCallState) -> ContinueCallRelationship {
@@ -416,6 +363,10 @@ fn call_relationship(ordinal: usize, state: &RawContinueToolCallState) -> Contin
             .as_ref()
             .and_then(|call| call.function_name.clone().or_else(|| call.name.clone())),
         status: state.status.clone(),
+        arguments: state
+            .tool_call
+            .as_ref()
+            .map_or(ActivityJsonCapture::Absent, |call| call.arguments.clone()),
     }
 }
 
@@ -432,6 +383,7 @@ fn event_call_relationships(item: &RawContinueHistoryItem) -> Box<[ContinueCallR
             nested_call_id: None,
             tool_name: call.name.clone(),
             status: None,
+            arguments: call.arguments.clone(),
         })
         .collect::<Vec<_>>();
     let message_call_count = calls.len();

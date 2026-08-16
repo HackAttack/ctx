@@ -11,15 +11,16 @@ use std::{
 use crate::{provider::source_backed::IndexBaseEventLookup, JsonlProviderRuntime};
 use chrono::{DateTime, Utc};
 use ctx_history_core::{
-    derive_event_id, derive_native_session_id, AgentType, CaptureProvider, CoreRecord,
-    EventIdentityInput, EventType, NativeItemKey, SessionRelationshipKind, SourceKey,
-    StableEntityId, TypedKey,
+    derive_event_id, derive_native_session_id, ActivityInvocation, ActivityJsonCapture,
+    ActivityResult, ActivityTextCapture, CaptureProvider, CoreActivity, CoreRecord,
+    EventIdentityInput, EventType, LiteralFactKind, NativeItemKey, ProviderDeclaredFact, SourceKey,
+    StableEntityId, TypedKey, CORE_ACTIVITY_REVISION, MAX_CORE_CONTENT_BYTES,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 
-use ctx_history_capture_model::file_touches::visit_provider_file_touch_drafts_with_limit;
+use ctx_history_capture_model::file_references::visit_provider_file_reference_drafts_with_limit;
 
 use crate::{
     common::io::{OpenedProviderSourceFile, ProviderSourceRoot},
@@ -50,7 +51,7 @@ const NATIVE_EVENT_NAMESPACE: &str = "pi.entry";
 const LOGICAL_SESSION_KIND: &str = "pi-session";
 const LOGICAL_EVENT_KIND: &str = "pi-event";
 const SOURCE_SCHEMA_VARIANT: &str = "pi-nativepath-jsonl-v1";
-const PARSER_REVISION: &str = "pi-shared-jsonl-v4-lineage-resolution";
+const PARSER_REVISION: &str = "pi-shared-jsonl-v5-core-activity";
 const EVENT_IDENTITY_REVISION: &str = "pi-content-occurrence-v1";
 const FALLBACK_FINGERPRINT_DOMAIN: &[u8] = b"ctx.pi.fallback-event-fingerprint.v1\0";
 const MAX_TOUCHES_PER_RECORD: usize = 63;
@@ -399,10 +400,7 @@ impl<R: JsonlProviderRuntime> JsonlFamilyProjector for PiProjector<R> {
         let Some(body) = projected_body(&value, event_type) else {
             return Ok(());
         };
-        let touched_files = match touched_files(&value)? {
-            Some(paths) => paths,
-            None => return Ok(()),
-        };
+        let mut facts = literal_facts(&value)?;
         let ordinal = evidence.physical_ordinal();
         let native_id = value
             .get("id")
@@ -436,44 +434,29 @@ impl<R: JsonlProviderRuntime> JsonlFamilyProjector for PiProjector<R> {
         })
         .map_err(contract)?;
         let message = value.get("message").unwrap_or(&value);
-        let tool_name = message
-            .get("toolName")
-            .or_else(|| message.get("tool_name"))
-            .or_else(|| message.get("name"))
-            .cloned();
-        let call_id = message
-            .get("toolCallId")
-            .or_else(|| message.get("tool_call_id"))
-            .or_else(|| message.get("callId"))
-            .cloned();
-        let structured_content =
-            (!touched_files.is_empty() || tool_name.is_some() || call_id.is_some()).then(|| {
-                serde_json::json!({
-                    "tool_name": tool_name,
-                    "call_id": call_id,
-                    "file_touches": touched_files,
-                })
-            });
+        if let Some(cwd) = &self.binding.cwd {
+            facts.insert(
+                0,
+                ProviderDeclaredFact {
+                    kind: LiteralFactKind::SessionCwd,
+                    value: cwd.clone(),
+                },
+            );
+        }
+        let activity = pi_activity(message, event_type, &body, facts)?;
         let mut core = CoreRecord::new_selected(
             event_id,
-            self.session_id,
             self.session_id,
             self.source.clone(),
             ordinal,
             event_type.as_str(),
-            AgentType::Primary.as_str(),
-            true,
             PARSER_REVISION,
-            body,
+            body.clone(),
         )
         .map_err(contract)?;
         if let Some(parent_session_id) = self.parent_session_id {
-            core.set_session_relationship(
-                SessionRelationshipKind::Forked,
-                Some(parent_session_id),
-                self.root_session_id,
-            )
-            .map_err(contract)?;
+            core.parent_session_id = Some(parent_session_id);
+            core.root_session_id = Some(self.root_session_id);
         }
         core.provider_session_id = Some(self.binding.native_session_id.clone());
         core.native_event_id = Some(native_event_id);
@@ -484,8 +467,18 @@ impl<R: JsonlProviderRuntime> JsonlFamilyProjector for PiProjector<R> {
             .and_then(Value::as_str)
             .map(pi_event_role)
             .map(|role| role.as_str().to_owned());
-        core.cwd = self.binding.cwd.clone();
-        core.content.structured_content = structured_content;
+        core.content.structured_content = Some(value);
+        core.content.activity = activity;
+        ctx_history_jsonl::fit_jsonl_activity(
+            &body,
+            core.content.structured_content.as_ref(),
+            &mut core.content.activity,
+            ctx_history_jsonl::JsonlActivityObservedBytes::infer_from_present(),
+            MAX_CORE_CONTENT_BYTES,
+        );
+        core.content
+            .omit_structured_content_if_aggregate_exceeds_limit()
+            .map_err(contract)?;
         core.validate_contract().map_err(contract)?;
         emit(core)
     }
@@ -600,14 +593,6 @@ fn resolve_pi_lineage(discovered: &mut [DiscoveredPiSource]) -> Result<()> {
 
 fn projected_body(value: &Value, event_type: EventType) -> Option<String> {
     let is_output = matches!(event_type, EventType::ToolOutput | EventType::CommandOutput);
-    if is_output {
-        let outcome = result_outcome(value, event_type);
-        if !matches!(outcome, ResultOutcome::Failure | ResultOutcome::Timeout)
-            || event_type == EventType::CommandOutput && !command_output_is_supported(value)
-        {
-            return None;
-        }
-    }
     let text = if is_output {
         pi_result_content(value).or_else(|| pi_entry_text(value, value.get("message")))
     } else {
@@ -621,66 +606,88 @@ fn projected_body(value: &Value, event_type: EventType) -> Option<String> {
     })
 }
 
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum ResultOutcome {
-    Success,
-    Failure,
-    Timeout,
-    Unknown,
-}
-
-fn result_outcome(value: &Value, event_type: EventType) -> ResultOutcome {
-    let message = value.get("message").unwrap_or(value);
-    let timed_out = ["timedOut", "timed_out", "timeout"]
-        .into_iter()
-        .any(|key| message.get(key).and_then(Value::as_bool).unwrap_or(false))
-        || message
-            .get("status")
-            .and_then(Value::as_str)
-            .is_some_and(|status| {
-                matches!(
-                    status.trim().to_ascii_lowercase().as_str(),
-                    "timeout" | "timed_out" | "timedout"
-                )
-            });
-    if timed_out {
-        return ResultOutcome::Timeout;
-    }
-    match ctx_history_capture_model::normalization::provider_result_outcome_evidence(
-        event_type, value,
-    )
-    .as_str()
-    {
-        Some("success") => ResultOutcome::Success,
-        Some("failure") => ResultOutcome::Failure,
-        _ => ResultOutcome::Unknown,
-    }
-}
-
-fn command_output_is_supported(value: &Value) -> bool {
-    let Some(message) = value.get("message") else {
-        return false;
-    };
-    message.get("role").and_then(Value::as_str) == Some("bashExecution")
-        && message
-            .get("command")
-            .and_then(Value::as_str)
-            .filter(|command| !command.is_empty() && command.len() <= 64 * 1024)
-            .is_some_and(|command| !command.contains('\0'))
-}
-
-fn touched_files(value: &Value) -> Result<Option<Vec<String>>> {
-    let mut paths = Vec::new();
-    let outcome = visit_provider_file_touch_drafts_with_limit(
+fn literal_facts(value: &Value) -> Result<Vec<ProviderDeclaredFact>> {
+    let mut facts = Vec::new();
+    let outcome = visit_provider_file_reference_drafts_with_limit(
         value,
-        false,
         MAX_TOUCHES_PER_RECORD,
-        |(_, touch)| {
-            paths.push(touch.path);
+        |(_, reference)| {
+            facts.push(ProviderDeclaredFact {
+                kind: reference.kind,
+                value: reference.value,
+            });
             Ok::<(), CaptureError>(())
         },
     )?;
-    Ok((!outcome.limit_exceeded()).then_some(paths))
+    Ok(if outcome.limit_exceeded() {
+        Vec::new()
+    } else {
+        facts
+    })
+}
+
+fn pi_activity(
+    message: &Value,
+    event_type: EventType,
+    body: &str,
+    facts: Vec<ProviderDeclaredFact>,
+) -> Result<Option<CoreActivity>> {
+    let call_ids = ["toolCallId", "tool_call_id", "callId"]
+        .into_iter()
+        .filter_map(|field| message.get(field).and_then(Value::as_str))
+        .collect::<Vec<_>>();
+    let provider_call_id = match call_ids.as_slice() {
+        [id] if !id.is_empty() => Some(TypedKey::utf8(*id).map_err(contract)?),
+        _ => None,
+    };
+    let tools = ["toolName", "tool_name", "name"]
+        .into_iter()
+        .filter_map(|field| message.get(field).and_then(Value::as_str))
+        .collect::<Vec<_>>();
+    let invocation = if event_type == EventType::ToolCall {
+        match tools.as_slice() {
+            [tool] if !tool.is_empty() => Some(ActivityInvocation {
+                protocol: None,
+                server: None,
+                tool: (*tool).to_owned(),
+                arguments: message
+                    .get("arguments")
+                    .map_or(ActivityJsonCapture::Absent, |value| {
+                        ActivityJsonCapture::Present {
+                            value: value.clone(),
+                        }
+                    }),
+                started_at_unix_ms: None,
+            }),
+            _ => None,
+        }
+    } else {
+        None
+    };
+    let result =
+        matches!(event_type, EventType::ToolOutput | EventType::CommandOutput).then(|| {
+            ActivityResult {
+                status: None,
+                completed_at_unix_ms: None,
+                duration_ns: None,
+                text: ActivityTextCapture::Present {
+                    value: body.to_owned(),
+                },
+                structured_content: ActivityJsonCapture::Present {
+                    value: message.clone(),
+                },
+            }
+        });
+    if provider_call_id.is_none() && invocation.is_none() && result.is_none() && facts.is_empty() {
+        return Ok(None);
+    }
+    Ok(Some(CoreActivity {
+        revision: CORE_ACTIVITY_REVISION,
+        provider_call_id,
+        invocation,
+        result,
+        facts,
+    }))
 }
 
 fn event_timestamp(value: &Value) -> Option<DateTime<Utc>> {

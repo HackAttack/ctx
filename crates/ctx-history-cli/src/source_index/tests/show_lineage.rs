@@ -6,10 +6,9 @@ fn machine_show_contract_keeps_lineage_in_existing_nested_fields() {
     let parent = fixture_event(CaptureProvider::Codex, "codex_session_jsonl", 52, 1);
     let root = fixture_event(CaptureProvider::Codex, "codex_session_jsonl", 53, 1);
     direct.parent_session_id = Some(parent.session_id);
-    direct.root_session_id = root.session_id;
-    direct.agent_type = "subagent".to_owned();
-    direct.is_primary = false;
-    direct.session_relationship = SessionRelationshipKind::Delegated;
+    direct.root_session_id = Some(root.session_id);
+    direct.agent_scope = Some(CoreAgentScope::Subagent);
+    direct.session_relationship = Some(ProviderNativeSessionRelationship::Delegated);
     let event = fixture_core_event(&direct, "nested lineage event");
     let session = SessionRecord::from(&direct);
 
@@ -77,7 +76,7 @@ fn machine_show_contract_keeps_lineage_in_existing_nested_fields() {
         root.session_id.as_uuid().to_string()
     );
     assert_eq!(event_value["event"]["session_relationship"], "delegated");
-    assert_eq!(event_value["event"]["event_origin"]["kind"], "unknown");
+    assert!(event_value["event"].get("event_copy").is_none());
 }
 
 #[test]
@@ -94,20 +93,22 @@ fn copied_event_show_list_and_search_models_share_typed_lineage() {
 
     for value in [&shown, &listed] {
         assert_eq!(value["session_relationship"], "forked");
-        assert_eq!(value["event_origin"]["kind"], "copied_from_ancestor");
+        assert_eq!(value["event_copy"]["proof"], "native_event_identity");
         assert_eq!(
-            value["event_origin"]["ancestor_event_id"],
+            value["event_copy"]["ancestor_ctx_event_id"],
             ancestor.event_id.as_uuid().to_string()
         );
         assert_eq!(
-            value["event_origin"]["ancestor_session_id"],
+            value["event_copy"]["ancestor_ctx_session_id"],
             ancestor.session_id.as_uuid().to_string()
         );
-        assert_eq!(value["event_origin"]["proof"], "native_event_identity");
         assert_eq!(value["text"], "copied body remains directly visible");
     }
-    assert_eq!(search.session_relationship, SessionRelationshipKind::Forked);
-    assert_eq!(search.event_origin, copied.event_origin);
+    assert_eq!(
+        search.session_relationship,
+        Some(ProviderNativeSessionRelationship::Forked)
+    );
+    assert_eq!(search.event_copy, copied.event_copy);
 
     let rendered = render_show_document(
         &event_window_value(&copied, OutputFormat::Json, vec![shown]).unwrap(),
@@ -118,7 +119,8 @@ fn copied_event_show_list_and_search_models_share_typed_lineage() {
     )));
     assert!(rendered.contains("Relationship"));
     assert!(rendered.contains("forked"));
-    assert!(rendered.contains("Original event"));
+    assert!(rendered.contains("Copied from event"));
+    assert!(!rendered.contains("Original event"));
     assert!(rendered.contains(&ancestor.event_id.as_uuid().to_string()));
     assert!(rendered.contains("copied body remains directly visible"));
 }

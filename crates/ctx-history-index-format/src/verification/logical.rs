@@ -71,6 +71,7 @@ fn verify_searcher_with_options_and_budget(
     let mut total_documents = 0_u64;
     let mut expected_body_tokens = 0_u64;
     let mut parent_session_documents = 0_u64;
+    let mut root_session_documents = 0_u64;
     let mut source_aggregates = BTreeMap::<String, SourceAggregate>::new();
     let source_ordinals = manifest
         .core_record_aggregates
@@ -137,6 +138,9 @@ fn verify_searcher_with_options_and_budget(
             parent_session_documents = parent_session_documents
                 .checked_add(segment.parent_session_documents)
                 .ok_or(IndexError::CountOverflow)?;
+            root_session_documents = root_session_documents
+                .checked_add(segment.root_session_documents)
+                .ok_or(IndexError::CountOverflow)?;
             merge_source_aggregates(&mut source_aggregates, segment.source_aggregates)?;
         }
     }
@@ -170,7 +174,11 @@ fn verify_searcher_with_options_and_budget(
             (fields.parent_session_id, IdentityFieldRole::ParentSession),
             (fields.root_session_id, IdentityFieldRole::RootSession),
         ],
-        [total_documents, parent_session_documents, total_documents],
+        [
+            total_documents,
+            parent_session_documents,
+            root_session_documents,
+        ],
         &verification_spill,
         &mut projection_deltas,
     )?;
@@ -203,6 +211,7 @@ fn verify_segment(
     let mut stored_core_bytes = 0_u64;
     let mut body_tokens = 0_u64;
     let mut parent_session_documents = 0_u64;
+    let mut root_session_documents = 0_u64;
     let mut identity_writer = verification_spill.segment_range_writer(
         task.segment_ord,
         task.start_doc_id,
@@ -245,10 +254,11 @@ fn verify_segment(
         parent_session_documents = parent_session_documents
             .checked_add(u64::from(record.identities.parent_session.is_some()))
             .ok_or(IndexError::CountOverflow)?;
-        let body_projection = crate::index_document::project_indexed_body_search(
-            &record.core_record.event_origin,
-            record.core_record.content,
-        )?;
+        root_session_documents = root_session_documents
+            .checked_add(u64::from(record.identities.root_session.is_some()))
+            .ok_or(IndexError::CountOverflow)?;
+        let body_projection =
+            crate::index_document::project_indexed_body_search(record.core_record.content)?;
         body_tokens = body_tokens
             .checked_add(verify_body_projection(
                 &body_search,
@@ -265,8 +275,6 @@ fn verify_segment(
                 session: record.identities.session,
                 parent_session: record.identities.parent_session,
                 root_session: record.identities.root_session,
-                session_relationship: record.identities.session_relationship,
-                event_origin: record.identities.event_origin,
                 session_source_ordinal: source_ordinal,
             },
             projection_delta,
@@ -280,6 +288,7 @@ fn verify_segment(
         body_tokens,
         source_aggregates,
         parent_session_documents,
+        root_session_documents,
     })
 }
 
@@ -422,25 +431,30 @@ fn expected_query_projection_delta(
             &parent_session_id.to_string(),
         ));
     }
-    add(Term::from_field_text(
-        fields.root_session_id,
-        &core.root_session_id.to_string(),
-    ));
-    add(Term::from_field_text(
-        fields.session_relationship_kind,
-        core.session_relationship.as_str(),
-    ));
-    add(Term::from_field_text(
-        fields.event_origin_kind,
-        core.event_origin.kind_str(),
-    ));
-    if let ctx_history_core::EventOrigin::CopiedFromAncestor {
-        ancestor_event_id, ..
-    } = &core.event_origin
-    {
+    if let Some(root_session_id) = core.root_session_id {
         add(Term::from_field_text(
-            fields.origin_event_id,
-            &ancestor_event_id.to_string(),
+            fields.root_session_id,
+            &root_session_id.to_string(),
+        ));
+    }
+    if let Some(relationship) = core.session_relationship {
+        add(Term::from_field_text(
+            fields.provider_native_session_relationship,
+            relationship.as_str(),
+        ));
+    }
+    if let Some(copy) = &core.event_copy {
+        add(Term::from_field_text(
+            fields.event_copy_ancestor_session_id,
+            &copy.ancestor_session_id.to_string(),
+        ));
+        add(Term::from_field_text(
+            fields.event_copy_ancestor_event_id,
+            &copy.ancestor_event_id.to_string(),
+        ));
+        add(Term::from_field_text(
+            fields.event_copy_proof,
+            crate::index_document::event_copy_proof_str(copy.proof),
         ));
     }
     add(Term::from_field_text(
@@ -474,14 +488,12 @@ fn expected_query_projection_delta(
             provider_session_id,
         ));
     }
-    if let Some(branch) = &core.branch {
-        add(Term::from_field_text(fields.branch, branch));
+    if let Some(agent_scope) = core.agent_scope {
+        add(Term::from_field_text(
+            fields.agent_scope,
+            agent_scope.as_str(),
+        ));
     }
-    add(Term::from_field_text(fields.agent_type, &core.agent_type));
-    add(Term::from_field_u64(
-        fields.is_primary,
-        u64::from(core.is_primary),
-    ));
     add(Term::from_field_u64(
         fields.event_sequence,
         core.event_sequence,
@@ -496,48 +508,12 @@ fn expected_query_projection_delta(
     if let Some(role) = &core.role {
         add(Term::from_field_text(fields.role, role));
     }
-    let repository_attribution_eligible = matches!(
-        &core.event_origin,
-        ctx_history_core::EventOrigin::UniqueToSession
-    );
-    if repository_attribution_eligible {
-        for observation in &core.repository_vcs_observations {
-            if let ctx_history_core::RepositoryVcsObservationKind::Outcome(outcome) =
-                &observation.kind
-            {
-                for object_id in &outcome.produced_object_ids {
-                    add(Term::from_field_text(
-                        fields.repository_produced_object_id,
-                        &object_id.hex,
-                    ));
-                }
-            }
-        }
-    }
-    if let Some(workspace) = &core.workspace {
-        add(Term::from_field_text(
-            fields.workspace_filter,
-            &workspace.to_lowercase(),
-        ));
-    }
-    if let Some(cwd) = &core.cwd {
-        add(Term::from_field_text(
-            fields.workspace_filter,
-            &cwd.to_lowercase(),
-        ));
-    }
-    if repository_attribution_eligible {
-        for observation in &core.repository_file_observations {
+    if let Some(activity) = &core.content.activity {
+        for fact in &activity.facts {
             add(Term::from_field_text(
-                fields.touched_file_filter,
-                &observation.relative_path.to_lowercase(),
+                fields.literal_fact(fact.kind),
+                &fact.value,
             ));
-            if let Some(prior_relative_path) = &observation.prior_relative_path {
-                add(Term::from_field_text(
-                    fields.touched_file_filter,
-                    &prior_relative_path.to_lowercase(),
-                ));
-            }
         }
     }
     add(Term::from_field_bytes(
@@ -610,10 +586,8 @@ impl IncrementalProjectionVerifier {
         verify_query_fast_fields(segment, address.doc_id, &record)?;
         let delta = expected_query_projection_delta(fields, &record)?;
         let body_search = segment.inverted_index(fields.body_search)?;
-        let body_projection = crate::index_document::project_indexed_body_search(
-            &record.core_record.event_origin,
-            record.core_record.content,
-        )?;
+        let body_projection =
+            crate::index_document::project_indexed_body_search(record.core_record.content)?;
         self.expected_body_tokens = self
             .expected_body_tokens
             .checked_add(verify_body_projection(
@@ -684,9 +658,9 @@ impl IncrementalProjectionVerifier {
     }
 }
 
-fn incremental_query_projection_fields(fields: crate::Fields) -> [Field; 29] {
+fn incremental_query_projection_fields(fields: crate::Fields) -> [Field; 38] {
     let remaining = remaining_query_projection_fields(fields);
-    let mut all = [fields.event_id; 29];
+    let mut all = [fields.event_id; 38];
     all[..4].copy_from_slice(&[
         fields.event_id,
         fields.session_id,
@@ -786,28 +760,37 @@ fn verify_remaining_query_projections(
     Ok(())
 }
 
-fn remaining_query_projection_fields(fields: crate::Fields) -> [Field; 25] {
+fn remaining_query_projection_fields(fields: crate::Fields) -> [Field; 34] {
     [
         fields.event_identity_digest,
-        fields.session_relationship_kind,
-        fields.event_origin_kind,
-        fields.origin_event_id,
+        fields.provider_native_session_relationship,
+        fields.event_copy_ancestor_session_id,
+        fields.event_copy_ancestor_event_id,
+        fields.event_copy_proof,
         fields.source_key,
         fields.provider,
         fields.source_format,
         fields.custom_provider_key,
         fields.custom_source_id,
         fields.provider_session_id,
-        fields.branch,
-        fields.agent_type,
-        fields.is_primary,
+        fields.agent_scope,
         fields.event_sequence,
         fields.occurred_at_unix_ms,
         fields.event_type,
         fields.role,
-        fields.repository_produced_object_id,
-        fields.workspace_filter,
-        fields.touched_file_filter,
+        fields.fact_session_cwd,
+        fields.fact_tool_workdir,
+        fields.fact_file,
+        fields.fact_url,
+        fields.fact_forge,
+        fields.fact_project,
+        fields.fact_vcs,
+        fields.fact_commit,
+        fields.fact_pull_request,
+        fields.fact_command,
+        fields.fact_branch,
+        fields.fact_workspace,
+        fields.fact_provider_disposition,
         fields.source_event_order,
         fields.session_event_order,
         fields.semantic_event_order,
@@ -1039,7 +1022,6 @@ fn verify_session_identities(
         let uuid = canonical_uuid_term(merged.key(), "session_id")?;
         let mut digest = None;
         let mut owner = None::<u32>;
-        let mut relationship = None::<SessionRelationship>;
         for (stream_index, term_info) in merged.current_segment_ords_and_term_infos() {
             let (segment_ord, role_index, role, field) = mappings[stream_index];
             let projection_digest = query_projection_digest(field, merged.key());
@@ -1079,20 +1061,6 @@ fn verify_session_identities(
                             _ => {}
                         }
                     }
-                    if matches!(role, IdentityFieldRole::Session) {
-                        let identities =
-                            verification_spill.record(address, "session_relationship")?;
-                        let candidate = lineage::relationship_for(identities);
-                        match relationship {
-                            None => relationship = Some(candidate),
-                            Some(existing) if existing == candidate => {}
-                            Some(_) => {
-                                return Err(IndexError::InvalidSessionRelationshipGraph(
-                                    "one session has contradictory relationship fields",
-                                ));
-                            }
-                        }
-                    }
                     Ok(())
                 },
             )?;
@@ -1120,7 +1088,12 @@ fn identity_for_role(
                 .ok_or(IndexError::InvalidStoredDocumentField("parent_session_id"))?,
             None,
         )),
-        IdentityFieldRole::RootSession => Ok((identities.root_session, None)),
+        IdentityFieldRole::RootSession => Ok((
+            identities
+                .root_session
+                .ok_or(IndexError::InvalidStoredDocumentField("root_session_id"))?,
+            None,
+        )),
     }
 }
 
@@ -1156,8 +1129,8 @@ fn canonical_uuid_term(term: &[u8], field: &'static str) -> Result<Uuid> {
 #[cfg(test)]
 mod body_projection_tests {
     use ctx_history_core::{
-        CoreContent, CoreContentPolicyStatus, McpExchangeContent, McpInvocationContent,
-        McpJsonCapture,
+        ActivityInvocation, ActivityJsonCapture, CoreActivity, CoreContent,
+        CoreContentPolicyStatus, CORE_ACTIVITY_REVISION, CORE_CONTENT_POLICY_REVISION,
     };
     use tantivy::TantivyDocument;
 
@@ -1165,23 +1138,27 @@ mod body_projection_tests {
 
     fn expected_invocation_projection() -> String {
         crate::project_body_search(CoreContent {
-            policy_revision: 1,
+            policy_revision: CORE_CONTENT_POLICY_REVISION,
             policy_status: CoreContentPolicyStatus::Selected,
             normalized_body: Some("normalized body".to_owned()),
             structured_content: None,
             discovery_exclusion: None,
-            mcp_exchange: Some(McpExchangeContent {
-                provider_call_id: "excluded-call-id".to_owned(),
-                invocation: Some(McpInvocationContent {
-                    server: "verificationservercanary".to_owned(),
+            activity: Some(CoreActivity {
+                revision: CORE_ACTIVITY_REVISION,
+                provider_call_id: Some(ctx_history_core::TypedKey::U64(1)),
+                invocation: Some(ActivityInvocation {
+                    protocol: None,
+                    server: Some("verificationservercanary".to_owned()),
                     tool: "verificationtoolcanary".to_owned(),
-                    arguments: McpJsonCapture::Present {
+                    arguments: ActivityJsonCapture::Present {
                         value: serde_json::json!({
                             "verificationargumentkey": "verificationargumentvalue"
                         }),
                     },
+                    started_at_unix_ms: None,
                 }),
-                response: None,
+                result: None,
+                facts: Vec::new(),
             }),
         })
         .unwrap()

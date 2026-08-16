@@ -49,19 +49,15 @@ pub(super) fn run_daemon_status(
 ) -> Result<()> {
     let daemon =
         super::super::paths_status::daemon_report_with_application(application, &data_root, true);
-    let pro = crate::pro::lifecycle_status_json(&data_root);
     if args.format.is_json() {
         print_json(json!({
             "schema_version": 1,
             "daemon": daemon,
-            "pro": pro,
             "local_only": true,
         }))?;
     } else {
-        let document = render_daemon_status_human(
-            ui.stdout_context(),
-            DaemonStatusView::from_reports(&daemon, &pro),
-        );
+        let document =
+            render_daemon_status_human(ui.stdout_context(), DaemonStatusView::daemon_only(&daemon));
         ui.write_stdout(&document)?;
     }
     Ok(())

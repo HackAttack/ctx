@@ -1,12 +1,12 @@
 use ctx_history_capture_model::{
-    file_touches::{
-        visit_provider_file_touch_drafts_with_limit, MAX_PROVIDER_FILE_TOUCHES_PER_EVENT,
+    file_references::{
+        visit_provider_file_reference_drafts_with_limit, MAX_PROVIDER_FILE_REFERENCES_PER_EVENT,
     },
     raw_object_keys_are_unique,
 };
 use ctx_history_core::{
-    derive_native_session_id, AgentType, CaptureProvider, EventRole, EventType, SourceKey,
-    StableEntityId, TypedKey,
+    derive_native_session_id, AgentScope, CaptureProvider, EventRole, EventType,
+    ProviderDeclaredFact, SourceKey, StableEntityId, TypedKey,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
@@ -97,14 +97,11 @@ pub fn session_identity(
     .map_err(|error| error.to_string())
 }
 
-pub fn agent_type(header: &SessionHeader) -> AgentType {
-    if header.parent_session.is_some()
-        || header.origin.as_deref() == Some("subagent")
-        || header.delegation_depth > 0
-    {
-        AgentType::Subagent
+pub fn agent_scope(header: &SessionHeader) -> AgentScope {
+    if header.origin.as_deref() == Some("subagent") || header.delegation_depth > 0 {
+        AgentScope::Subagent
     } else {
-        AgentType::Primary
+        AgentScope::Primary
     }
 }
 
@@ -226,34 +223,32 @@ pub fn sequence_span(bytes: &[u8]) -> Option<SequenceSpan> {
     }
 }
 
-pub fn exact_file_touches(value: &Value) -> Result<Vec<Value>, String> {
-    let mut touches = Vec::new();
+pub fn exact_file_references(value: &Value) -> Result<Vec<ProviderDeclaredFact>, String> {
+    let mut facts = Vec::new();
     let arguments = value
         .pointer("/data/arguments")
         .and_then(Value::as_str)
         .and_then(|arguments| serde_json::from_str::<Value>(arguments).ok());
     for candidate in std::iter::once(value).chain(arguments.as_ref()) {
-        let outcome = visit_provider_file_touch_drafts_with_limit(
+        let outcome = visit_provider_file_reference_drafts_with_limit(
             candidate,
-            true,
-            MAX_PROVIDER_FILE_TOUCHES_PER_EVENT.saturating_sub(touches.len()),
+            MAX_PROVIDER_FILE_REFERENCES_PER_EVENT.saturating_sub(facts.len()),
             |(_, draft)| -> Result<(), String> {
-                touches.push(serde_json::json!({
-                    "path": draft.path,
-                    "old_path": draft.old_path,
-                    "change_kind": draft.change_kind.map(|kind| kind.as_str()),
-                    "confidence": draft.confidence.as_str(),
-                    "metadata": draft.metadata,
-                }));
+                facts.push(ProviderDeclaredFact {
+                    kind: draft.kind,
+                    value: draft.value,
+                });
                 Ok(())
             },
         )
         .map_err(|error| error.to_string())?;
         if outcome.limit_exceeded() {
-            return Err("DeepSeek Harness event exceeds the exact file-touch bound".to_owned());
+            return Err(
+                "DeepSeek Harness event exceeds the literal file-reference bound".to_owned(),
+            );
         }
     }
-    Ok(touches)
+    Ok(facts)
 }
 
 fn parse_chunk_row(object: &Map<String, Value>, kind: &str) -> Result<SequenceSpan, String> {

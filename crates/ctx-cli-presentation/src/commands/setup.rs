@@ -26,11 +26,6 @@ pub struct SetupArgs {
     pub no_daemon: bool,
     #[arg(
         long,
-        help = "Set up the anonymous ctx Pro trial while Core indexing begins"
-    )]
-    pub pro: bool,
-    #[arg(
-        long,
         help = "Wait for the daemon-owned lexical refresh to publish before returning"
     )]
     pub wait: bool,
@@ -54,7 +49,6 @@ pub fn render_setup_human(
     source: &Value,
     refresh_request: &Value,
     daemon: SetupDaemonState<'_>,
-    pro: &Value,
 ) -> Document {
     let refresh_status = refresh_request["status"].as_str().unwrap_or("unavailable");
     let queued = mode == "pending"
@@ -131,8 +125,6 @@ pub fn render_setup_human(
         ));
     }
 
-    append_pro_setup(&mut document, pro);
-
     let next_command = if mode == "ready" {
         "ctx search \"test failure\""
     } else if queued {
@@ -154,57 +146,6 @@ pub fn render_setup_human(
         ),
     ));
     document
-}
-
-fn append_pro_setup(document: &mut Document, pro: &Value) {
-    match pro["status"].as_str() {
-        Some("ready") if pro["trial_started"].as_bool() == Some(true) => {
-            if let Some(lines) = pro_trial_disclosure_lines(pro) {
-                document.push_blank();
-                for line in lines {
-                    document.push_line(Line::text(line));
-                }
-            }
-        }
-        Some("ready") if pro["account_state"].as_str() == Some("browser_handoff_pending") => {
-            if let Some(action_url) = pro["action_url"].as_str() {
-                document.push_blank();
-                document.push_line(Line::text("Finish ctx Pro setup in your browser:"));
-                document.push_line(Line::text(action_url));
-                document.push_line(Line::text(
-                    "Link an existing subscription or buy ctx Pro there.",
-                ));
-            }
-        }
-        Some("unavailable") => {
-            document.push_blank();
-            document.push_line(Line::text(
-                "ctx pro could not be activated; Core history setup continues normally.",
-            ));
-            document.push_line(
-                Line::new()
-                    .with(Span::text("Retry: "))
-                    .with(Span::new("ctx pro", Token::Command)),
-            );
-        }
-        _ => {}
-    }
-}
-
-pub fn pro_trial_disclosure_lines(pro: &Value) -> Option<Vec<String>> {
-    if pro["status"].as_str() != Some("ready") || pro["trial_started"].as_bool() != Some(true) {
-        return None;
-    }
-    let deadline =
-        chrono::NaiveDate::parse_from_str(pro["trial_ends_on"].as_str()?, "%Y-%m-%d").ok()?;
-    let date = deadline.format("%B %-d");
-    let action_url = pro["action_url"].as_str()?;
-    Some(vec![
-        "ctx pro is a US$20/mo paid add-on for “git blame, but for agent sessions.”".to_owned(),
-        "Not a cloud service — all your agent history stays local.".to_owned(),
-        "You get a 14-day free trial — no account or card required.".to_owned(),
-        format!("To keep it after {date}: create an account and add a card → {action_url}"),
-    ])
 }
 
 fn component_status(component: &Value) -> &str {
@@ -288,10 +229,6 @@ mod tests {
         })
     }
 
-    fn skipped_pro() -> Value {
-        json!({"status": "skipped", "trial_started": false})
-    }
-
     fn render_ready(context: &RenderContext) -> Document {
         render_setup_human(
             context,
@@ -305,7 +242,6 @@ mod tests {
                 started: false,
                 persistent_supervisor_verified: true,
             },
-            &skipped_pro(),
         )
     }
 
@@ -354,7 +290,6 @@ mod tests {
                 started: false,
                 persistent_supervisor_verified: true,
             },
-            &skipped_pro(),
         );
         let rendered = document.render_plain();
         assert!(rendered.contains("Events    1 searchable event\n"));
@@ -383,7 +318,6 @@ mod tests {
                     started: true,
                     persistent_supervisor_verified: true,
                 },
-                &skipped_pro(),
             );
             let rendered = document.render_plain();
             assert!(rendered.starts_with("History indexing is queued\n"));
@@ -423,7 +357,6 @@ mod tests {
                     started: false,
                     persistent_supervisor_verified: false,
                 },
-                &skipped_pro(),
             );
             let rendered = document.render_plain();
             assert!(rendered.starts_with("! History is not ready\n"));
@@ -451,7 +384,6 @@ mod tests {
                     started: true,
                     persistent_supervisor_verified: false,
                 },
-                &skipped_pro(),
             );
             let rendered = document.render_plain();
             let normalized = rendered.split_whitespace().collect::<Vec<_>>().join(" ");
@@ -480,7 +412,6 @@ mod tests {
                     started: true,
                     persistent_supervisor_verified: false,
                 },
-                &skipped_pro(),
             );
             let normalized = document
                 .render_plain()
@@ -502,79 +433,6 @@ mod tests {
         assert_eq!(
             strip_ansi(&document.render(&context)),
             document.render_plain()
-        );
-    }
-
-    #[test]
-    fn setup_pro_trial_disclosure_is_exact_and_includes_the_action_url() {
-        let context = context(80, ColorMode::Never);
-        let document = render_setup_human(
-            &context,
-            Path::new("/tmp/ctx"),
-            "ready",
-            &ready_source(),
-            &json!({"status": "published"}),
-            SetupDaemonState {
-                requested: true,
-                reason: None,
-                started: true,
-                persistent_supervisor_verified: true,
-            },
-            &json!({
-                "status": "ready",
-                "trial_started": true,
-                "trial_ends_on": "2026-08-28",
-                "action_url": "https://pro.ctx.rs/opaque-code",
-            }),
-        );
-        let rendered = document.render_plain();
-        assert!(rendered.contains("ctx pro is a US$20/mo paid add-on"));
-        assert!(rendered.contains(
-            "ctx pro is a US$20/mo paid add-on for “git blame, but for agent sessions.”\n\
-             Not a cloud service — all your agent history stays local.\n\
-             You get a 14-day free trial — no account or card required.\n\
-             To keep it after August 28: create an account and add a card → https://pro.ctx.rs/opaque-code\n"
-        ));
-    }
-
-    #[test]
-    fn setup_no_trial_handoff_prints_the_action_without_trial_disclosure() {
-        let document = render_setup_human(
-            &context(100, ColorMode::Never),
-            Path::new("/tmp/ctx"),
-            "pending",
-            &json!({
-                "lexical": {"status": "pending"},
-                "refresh": {"status": "pending"},
-                "semantic": {"status": "disabled"},
-            }),
-            &json!({"status": "pending"}),
-            SetupDaemonState {
-                requested: true,
-                reason: None,
-                started: true,
-                persistent_supervisor_verified: true,
-            },
-            &json!({
-                "status": "ready",
-                "account_state": "browser_handoff_pending",
-                "trial_started": false,
-                "trial_ends_on": Value::Null,
-                "action_url": "https://pro.ctx.rs/no-trial-action",
-            }),
-        );
-        let rendered = document.render_plain();
-        assert!(rendered.contains(
-            "Finish ctx Pro setup in your browser:\n\
-             https://pro.ctx.rs/no-trial-action\n\
-             Link an existing subscription or buy ctx Pro there.\n"
-        ));
-        assert!(!rendered.contains("14-day free trial"));
-        assert_eq!(
-            rendered
-                .matches("https://pro.ctx.rs/no-trial-action")
-                .count(),
-            1
         );
     }
 }

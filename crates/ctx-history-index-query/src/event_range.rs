@@ -122,7 +122,6 @@ pub struct CoreEventRangeFilters {
     pub workspace: Option<String>,
     pub event_type: Option<String>,
     pub role: Option<String>,
-    pub agent_type: Option<String>,
     pub scope: CoreEventRangeScope,
     pub file: Option<String>,
     pub direction: CoreEventRangeDirection,
@@ -770,7 +769,6 @@ impl CoreEventRangeSelection {
             || self.filters.workspace.is_some()
             || self.filters.event_type.is_some()
             || self.filters.role.is_some()
-            || self.filters.agent_type.is_some()
             || self.filters.scope != CoreEventRangeScope::All
             || self.filters.file.is_some()
     }
@@ -834,18 +832,17 @@ fn event_range_filter_query(
             "provider_session_id",
             selection.filters.provider_session_id.as_deref(),
         ),
-        (fields.branch, "branch", selection.filters.branch.as_deref()),
+        (
+            fields.fact_branch,
+            "branch",
+            selection.filters.branch.as_deref(),
+        ),
         (
             fields.event_type,
             "event_type",
             selection.filters.event_type.as_deref(),
         ),
         (fields.role, "role", selection.filters.role.as_deref()),
-        (
-            fields.agent_type,
-            "agent_type",
-            selection.filters.agent_type.as_deref(),
-        ),
         (
             fields.custom_provider_key,
             "provider_key",
@@ -889,11 +886,15 @@ fn event_range_filter_query(
         )?;
     }
     if selection.filters.scope != CoreEventRangeScope::All {
-        let expected = u64::from(selection.filters.scope == CoreEventRangeScope::Primary);
+        let expected = match selection.filters.scope {
+            CoreEventRangeScope::All => unreachable!(),
+            CoreEventRangeScope::Primary => CoreAgentScope::Primary,
+            CoreEventRangeScope::Subagent => CoreAgentScope::Subagent,
+        };
         add_filter_clause(
             &mut clauses,
             Box::new(TermQuery::new(
-                Term::from_field_u64(fields.is_primary, expected),
+                Term::from_field_text(fields.agent_scope, expected.as_str()),
                 IndexRecordOption::Basic,
             )),
         );
@@ -901,21 +902,26 @@ fn event_range_filter_query(
     if let Some(workspace) = selection.filters.workspace.as_deref() {
         add_filter_clause(
             &mut clauses,
-            Box::new(metadata_contains_query(
-                fields.workspace_filter,
-                "workspace",
-                workspace,
-            )?),
+            Box::new(BooleanQuery::union(
+                [
+                    fields.fact_workspace,
+                    fields.fact_session_cwd,
+                    fields.fact_tool_workdir,
+                    fields.fact_project,
+                ]
+                .into_iter()
+                .map(|field| {
+                    metadata_contains_query(field, "workspace", workspace)
+                        .map(|query| Box::new(query) as Box<dyn Query>)
+                })
+                .collect::<Result<Vec<_>>>()?,
+            )),
         );
     }
     if let Some(file) = selection.filters.file.as_deref() {
         add_filter_clause(
             &mut clauses,
-            Box::new(metadata_contains_query(
-                fields.touched_file_filter,
-                "file",
-                file,
-            )?),
+            Box::new(metadata_contains_query(fields.fact_file, "file", file)?),
         );
     }
     if clauses.is_empty() {

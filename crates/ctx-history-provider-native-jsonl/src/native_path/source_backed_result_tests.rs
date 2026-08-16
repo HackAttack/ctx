@@ -2,7 +2,7 @@ use std::{collections::BTreeMap, path::Path};
 
 use chrono::{DateTime, Utc};
 use ctx_history_core::{
-    compute_payload_hash as core_compute_payload_hash, core_record_leaf_sha256, AgentType,
+    compute_payload_hash as core_compute_payload_hash, core_record_leaf_sha256, AgentScope,
     CaptureProvider, CoreRecord, EventType, SessionStatus, TypedKey, MAX_ENCODED_CORE_RECORD_BYTES,
 };
 use serde_json::{json, Value};
@@ -48,9 +48,8 @@ fn session(provider: CaptureProvider) -> DirectJsonlSession {
         parent_provider_session_id: None,
         root_provider_session_id: None,
         external_agent_id: None,
-        agent_type: AgentType::Primary,
-        role_hint: None,
-        is_primary: true,
+        agent_scope: Some(AgentScope::Primary),
+        session_relationship: None,
         status: SessionStatus::Imported,
         started_at: DateTime::<Utc>::UNIX_EPOCH,
         ended_at: None,
@@ -230,6 +229,7 @@ fn tabnine_fallback_ids_ignore_earlier_position_changes() {
 
 #[test]
 fn tabnine_extracted_payload_hash_matches_core_fnv_authority() {
+    let native_value = json!({"type": "user", "content": "hash parity body"});
     let extracted_payload = json!({
         "event_type": EventType::Message.as_str(),
         "role": ctx_history_core::EventRole::User.as_str(),
@@ -237,14 +237,13 @@ fn tabnine_extracted_payload_hash_matches_core_fnv_authority() {
         "stable_retry_discriminator": Value::Null,
         "sub_ordinal": 0,
         "lexical_text": "hash parity body",
-        "tool_result": Value::Null,
-        "touches": [],
+        "native_value": native_value,
     });
     let expected = core_compute_payload_hash(&extracted_payload).unwrap();
     let actual = crate::compute_payload_hash(&extracted_payload).unwrap();
 
     assert_eq!(actual, expected);
-    assert_eq!(actual, "fnv1a64:8b6eff8fc2a36709");
+    assert_eq!(actual, "fnv1a64:835cd5ad54c53eab");
 }
 
 #[test]
@@ -260,19 +259,115 @@ fn tabnine_no_native_id_fixture_keeps_exact_fallback_event_ids() {
     let expected = BTreeMap::from([
         (
             "anchor".to_owned(),
-            "d29e227c-d7ae-8905-af52-5aaf16f4b0b4".to_owned(),
+            "63877b48-f871-876c-8cd0-9157329f5741".to_owned(),
         ),
         (
             "target".to_owned(),
-            "58f55c34-d379-8693-8552-62ce13faef12".to_owned(),
+            "934c46b5-fde3-850d-9fea-6da6775a5bf5".to_owned(),
         ),
         (
             "suffix".to_owned(),
-            "12c6de0b-3150-8d1c-9110-046134dbfe8b".to_owned(),
+            "5b2d45cf-a35d-8a4c-8ef2-19deeff44e04".to_owned(),
         ),
     ]);
 
     assert_eq!(actual, expected);
+}
+
+#[test]
+fn direct_provider_revision_matrix_matches_the_neutral_projection_and_identity_inputs() {
+    let parser_cases = [
+        (
+            CaptureProvider::Antigravity,
+            "direct-native-jsonl-parser-v5-core-activity",
+        ),
+        (
+            CaptureProvider::CopilotCli,
+            super::copilot::COPILOT_DIRECT_NATIVE_JSONL_PARSER_REVISION,
+        ),
+        (
+            CaptureProvider::FactoryAiDroid,
+            "direct-native-jsonl-parser-v5-core-activity",
+        ),
+        (
+            CaptureProvider::GrokBuild,
+            "direct-native-jsonl-parser-v6-core-activity",
+        ),
+        (
+            CaptureProvider::Qoder,
+            "direct-native-jsonl-parser-v5-core-activity",
+        ),
+        (
+            CaptureProvider::QwenCode,
+            "direct-native-jsonl-parser-v5-core-activity",
+        ),
+        (
+            CaptureProvider::Tabnine,
+            "direct-native-jsonl-parser-v5-core-activity",
+        ),
+        (
+            CaptureProvider::Windsurf,
+            "direct-native-jsonl-parser-v5-core-activity",
+        ),
+    ];
+    for (provider, parser_revision) in parser_cases {
+        let adapter = adapter(provider);
+        assert_eq!(adapter.parser_revision(), parser_revision, "{provider:?}");
+        assert_eq!(
+            adapter.event_identity_revision(),
+            "direct-jsonl-content-occurrence-v2",
+            "{provider:?}"
+        );
+    }
+}
+
+#[test]
+fn copilot_no_native_id_fixture_keeps_exact_v2_fallback_event_ids() {
+    let start_without_id = |call_id: &str| {
+        json!({
+            "type": "tool.execution_start",
+            "timestamp": "2026-08-03T12:00:01Z",
+            "data": {
+                "toolCallId": call_id,
+                "mcpServerName": "fallback-server",
+                "mcpToolName": "identical-fallback-tool",
+                "arguments": {"query": "identical-fallback-argument"},
+            },
+        })
+    };
+    let first = start_without_id("fallback-call-one");
+    let second = start_without_id("fallback-call-two");
+    let ids_by_call = |values: &[Value]| {
+        let (records, rejected) = project_all(CaptureProvider::CopilotCli, values);
+        assert_eq!(rejected, 0);
+        records
+            .into_iter()
+            .filter_map(|record| {
+                let activity = record.content.activity?;
+                activity.invocation.as_ref()?;
+                let TypedKey::Utf8(call_id) = activity.provider_call_id? else {
+                    return None;
+                };
+                Some((call_id, record.event_id.to_string()))
+            })
+            .collect::<BTreeMap<_, _>>()
+    };
+
+    let actual = ids_by_call(&[first.clone(), second.clone()]);
+    assert_eq!(actual, ids_by_call(&[second, first]));
+    assert_eq!(
+        actual,
+        BTreeMap::from([
+            (
+                "fallback-call-one".to_owned(),
+                "5ec57ba4-b568-841b-bb21-d632652ab537".to_owned(),
+            ),
+            (
+                "fallback-call-two".to_owned(),
+                "f9d1c72a-9243-8799-bc2b-86d9f0e3c5e0".to_owned(),
+            ),
+        ])
+    );
 }
 
 #[test]
@@ -289,7 +384,7 @@ fn copilot_and_windsurf_replay_preserve_current_revision_ids_and_records() {
             "ac4f77cb-6658-8c1d-89fe-6d23fbf96fd0",
             "6c78de65-0cee-8b0c-841f-56d0004e2af8",
             "cb5a35bb-fb49-8701-8739-101eb01c524f",
-            "aa91de3edb59adf3e206dbc414ebdffa49980f6505e306315a9d97d3815c987b",
+            "c03a0ec6949bdfdc9d618552aaedfe4aa750f7b8e66e4e1747bae007fa52defe",
         ),
         (
             CaptureProvider::CopilotCli,
@@ -302,7 +397,7 @@ fn copilot_and_windsurf_replay_preserve_current_revision_ids_and_records() {
             "c1ebd99c-7338-859b-891d-1c7e04d9ae9d",
             "5ff93a01-4aa3-82f8-8d9e-784490016567",
             "8d4627ce-c12c-8d64-af2d-d85ac722121f",
-            "535ee3308d3cf7da743d0a995482ef25a2efb898019343d80e10c0b9505bd51b",
+            "631b3e2b8f8fc5bac93918763764653e77f0737e29fd3bc9bd0486aa00ffab7e",
         ),
     ];
 
@@ -312,7 +407,8 @@ fn copilot_and_windsurf_replay_preserve_current_revision_ids_and_records() {
             CaptureProvider::CopilotCli => {
                 super::copilot::COPILOT_DIRECT_NATIVE_JSONL_PARSER_REVISION
             }
-            _ => "direct-native-jsonl-parser-v4",
+            CaptureProvider::GrokBuild => "direct-native-jsonl-parser-v6-core-activity",
+            _ => "direct-native-jsonl-parser-v5-core-activity",
         };
         assert_eq!(
             JsonlFamilyAdapter::parser_revision(&adapter),
@@ -333,6 +429,7 @@ fn copilot_and_windsurf_replay_preserve_current_revision_ids_and_records() {
             source_id,
             "{provider:?}"
         );
+        assert!(record.native_event_id.is_some(), "{provider:?}");
         assert_eq!(
             core_record_leaf_sha256(record).unwrap(),
             record_leaf,
@@ -643,20 +740,22 @@ fn supported_family_members_retain_complete_result_bodies_in_core() {
             Some(expected_body),
             "{provider:?}"
         );
-        let linkage = &record.content.structured_content.as_ref().unwrap()["tool_result"];
-        assert_eq!(linkage["call_id"], expected_call_id, "{provider:?}");
-        assert_eq!(linkage["outcome"], "success", "{provider:?}");
-        assert!(
-            !serde_json::to_string(linkage)
-                .unwrap()
-                .contains(expected_body),
-            "{provider:?} duplicated its result body in structured content"
+        let activity = record.content.activity.as_ref().unwrap();
+        assert_eq!(
+            activity.provider_call_id,
+            Some(TypedKey::utf8(expected_call_id).unwrap()),
+            "{provider:?}"
+        );
+        assert_eq!(
+            activity.result.as_ref().unwrap().status,
+            None,
+            "{provider:?}"
         );
     }
 }
 
 #[test]
-fn success_failure_and_unknown_results_keep_native_content_and_indices() {
+fn native_status_variants_keep_content_indices_and_statusless_activity() {
     let value = json!({
         "type": "tabnine",
         "toolCalls": [
@@ -706,18 +805,17 @@ fn success_failure_and_unknown_results_keep_native_content_and_indices() {
             .unwrap(),
         json!(["unknown native body", {"detail": 7}])
     );
-    assert_eq!(
-        records[0].content.structured_content.as_ref().unwrap()["tool_result"]["outcome"],
-        "success"
-    );
-    assert_eq!(
-        records[1].content.structured_content.as_ref().unwrap()["tool_result"]["outcome"],
-        "failure"
-    );
-    assert_eq!(
-        records[2].content.structured_content.as_ref().unwrap()["tool_result"]["outcome"],
-        "unknown"
-    );
+    for record in &records {
+        assert_eq!(
+            record
+                .content
+                .activity
+                .as_ref()
+                .and_then(|activity| activity.result.as_ref())
+                .and_then(|result| result.status.as_deref()),
+            None
+        );
+    }
 }
 
 #[test]

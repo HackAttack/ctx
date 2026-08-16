@@ -39,7 +39,7 @@ use super::super::{
         TraeSessionSelection, TraeStreamSession,
     },
     trae_sqlite_value_fits_parser_bound,
-    workspace::{trae_workspace_folder, trae_workspace_id},
+    workspace::{trae_workspace_id, TraeWorkspaceFolderAuthority},
     TRAE_CHAT_KEYS, TRAE_CHAT_ROWS_QUERY, TRAE_SQLITE_VALUE_OVERHEAD_BYTES,
 };
 
@@ -72,7 +72,7 @@ impl TraeFrontier {
 pub(super) struct TraeSourceAuthority {
     pub(super) database: TraeSqliteDatabase,
     pub(super) workspace_id: String,
-    pub(super) workspace_folder: Option<String>,
+    pub(super) workspace_folder: TraeWorkspaceFolderAuthority,
     pub(super) schema_evidence: Vec<u8>,
     pub(super) logical_fingerprint: [u8; 32],
     observed_keys: Vec<Option<TraeObservedKey>>,
@@ -316,20 +316,25 @@ pub(super) fn acquire_source(
             conn.pragma_query_value(None, "user_version", |row| row.get::<_, i64>(0))?,
         ))
     })?;
+    let workspace_folder = TraeWorkspaceFolderAuthority::observe(&database.parent);
     let schema_evidence = format!(
         "trae-logical-schema-v1;parser={TRAE_SOURCE_PARSER_REVISION};\
          policy={TRAE_SOURCE_POLICY_REVISION};user_version={user_version};schema={schema}"
     )
     .into_bytes();
-    let (logical_fingerprint, observed_keys) = database.read_provider(path, |conn| {
+    let (database_fingerprint, observed_keys) = database.read_provider(path, |conn| {
         trae_logical_observation(conn, &schema_evidence)
     })?;
+    let mut logical_fingerprint = Sha256::new();
+    logical_fingerprint.update(b"ctx-trae-source-projection-v1\0");
+    logical_fingerprint.update(database_fingerprint);
+    logical_fingerprint.update(workspace_folder.projection_fingerprint());
     Ok(TraeSourceAuthority {
         database,
         workspace_id: trae_workspace_id(path),
-        workspace_folder: trae_workspace_folder(path),
+        workspace_folder,
         schema_evidence,
-        logical_fingerprint,
+        logical_fingerprint: logical_fingerprint.finalize().into(),
         observed_keys,
         observed_at,
     })
@@ -432,12 +437,15 @@ pub(super) fn validate_schema(conn: &Connection, path: &Path) -> Result<()> {
 
 impl<'a> TraeScanner<'a> {
     pub(super) fn new(authority: &'a TraeSourceAuthority, frontier: TraeFrontier) -> Self {
+        let mut source_content_hasher = Sha256::new();
+        source_content_hasher.update(b"ctx-trae-source-content-v1\0");
+        source_content_hasher.update(authority.workspace_folder.projection_fingerprint());
         Self {
             authority,
             frontier,
             active: None,
-            source_content_hasher: Sha256::new(),
-            certified_source_bytes: 0,
+            source_content_hasher,
+            certified_source_bytes: authority.workspace_folder.certified_bytes(),
             decoded_rows: 0,
         }
     }

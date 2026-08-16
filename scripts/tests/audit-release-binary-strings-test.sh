@@ -23,10 +23,6 @@ while IFS= read -r signature; do
   fi
 done <"${fixture_dir}/removed-cloud-history.txt"
 
-if ! bash "${checker}" "${fixture_dir}/protocol-v1-local-runtime.txt"; then
-  fail 'Protocol V1 and retained local-runtime strings were rejected'
-fi
-
 if (( failures > 0 )); then
   exit 1
 fi

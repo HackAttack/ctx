@@ -6,14 +6,21 @@
 
 mod claude;
 pub mod cursor;
-#[cfg(test)]
-#[path = "tests/runtime.rs"]
-pub(crate) mod test_runtime;
-
+mod raw_json;
 use std::sync::Arc;
 
 use ctx_history_jsonl::JsonlFamilyAdapter;
 use ctx_history_provider_runtime::{ProviderJsonlRuntime, ProviderRuntimeBinding};
+
+fn consume_neutral_preflight<E: ctx_history_jsonl::JsonlFamilyError>(
+    reader: &mut ctx_history_jsonl::JsonlReader<E>,
+) -> Result<(), E> {
+    while reader
+        .visit_page(&mut |_record| -> Result<(), E> { Ok(()) })?
+        .is_some()
+    {}
+    Ok(())
+}
 
 #[cfg(feature = "test-support")]
 #[doc(hidden)]
@@ -71,4 +78,35 @@ where
     B: ProviderRuntimeBinding,
 {
     cursor::cursor_jsonl_adapter::<B>()
+}
+
+#[cfg(test)]
+mod neutral_preflight_tests {
+    use super::*;
+    use ctx_history_jsonl::{JsonlReader, JsonlSourceIdentity};
+    use ctx_history_provider_runtime::source_io::OpenedProviderSourceFile;
+
+    #[test]
+    fn neutral_preflight_consumes_complete_framing_without_semantic_output() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("neutral-preflight.jsonl");
+        let bytes = b"{\"message\":\"first\"}\nnot-json\n{\"message\":\"last\"}\n";
+        std::fs::write(&path, bytes).unwrap();
+        let source = Arc::new(OpenedProviderSourceFile::open(&path).unwrap());
+        let identity = JsonlSourceIdentity::new(
+            "neutral-test",
+            "neutral-preflight-v1",
+            "physical-only-v1",
+            [1; 32],
+            path,
+        );
+        let mut reader = JsonlReader::open(identity, source, None, None).unwrap();
+
+        consume_neutral_preflight(&mut reader).unwrap();
+
+        let checkpoint = reader.outcome().unwrap().checkpoint();
+        assert!(checkpoint.terminal());
+        assert_eq!(checkpoint.next_physical_ordinal(), 3);
+        assert_eq!(checkpoint.complete_prefix_end(), bytes.len() as u64);
+    }
 }

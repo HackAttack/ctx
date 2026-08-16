@@ -135,10 +135,13 @@ impl ctx_daemon_application::DaemonApplicationHost for CliDaemonApplicationHost<
 
     fn cancel_core_finalization_generation_lease(
         &self,
-        data_root: &Path,
-        reason: &str,
+        _data_root: &Path,
+        _reason: &str,
     ) -> Result<()> {
-        super::cancel_core_finalization_generation_lease(data_root, reason).map(|_| ())
+        // Retained only until the out-of-scope daemon-application lifecycle
+        // trait drops its former projection cleanup callback. The public
+        // daemon no longer owns or manipulates any such lease.
+        Ok(())
     }
 
     fn observe_source_refresh_endpoint(

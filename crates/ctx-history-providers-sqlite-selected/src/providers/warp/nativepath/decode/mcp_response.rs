@@ -1,20 +1,24 @@
-use ctx_history_core::{
-    McpFailureKind, McpJsonCapture, McpTerminalResponseContent, McpTerminalStatus, McpTextCapture,
-};
+use ctx_history_core::{ActivityJsonCapture, ActivityTextCapture};
 use serde_json::{json, Value};
 
 use super::protobuf::{decode_last_nested_text_occurrences, validate_string_fields_occurrences};
 use super::{
     select_message_oneof, validate_message_payload, WarpSelectedMessage, WarpValidatedString,
 };
-use crate::{CaptureError, OutputOutcome, Result};
+use crate::{CaptureError, Result};
 
 use super::super::super::wire::{WarpWireCursor, WarpWireValue};
 
 pub(super) struct WarpDecodedMcpToolResult {
-    pub(super) outcome: OutputOutcome,
     pub(super) body: Option<String>,
-    pub(super) response: McpTerminalResponseContent,
+    pub(super) response: WarpMcpResultCapture,
+}
+
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+pub(in super::super::super) struct WarpMcpResultCapture {
+    pub(in super::super::super) status: Option<String>,
+    pub(in super::super::super) text: ActivityTextCapture,
+    pub(in super::super::super) structured_content: ActivityJsonCapture,
 }
 
 pub(super) fn decode_mcp_tool_result_response(
@@ -37,26 +41,14 @@ pub(super) fn decode_mcp_tool_result_response(
     let Some(selected) = selected else {
         return Ok(None);
     };
-    let (outcome, body, status, failure_kind, mut payload) = match selected.field {
+    let (body, mut payload) = match selected.field {
         1 => {
             let body = decode_mcp_success_text_occurrences(&selected.payloads)?;
-            (
-                OutputOutcome::Success,
-                body,
-                McpTerminalStatus::Succeeded,
-                None,
-                decode_success_payload(&selected.payloads)?,
-            )
+            (body, decode_success_payload(&selected.payloads)?)
         }
         2 => {
             let body = decode_last_nested_text_occurrences(&selected.payloads, 1)?;
-            (
-                OutputOutcome::Failure,
-                body,
-                McpTerminalStatus::Failed,
-                Some(McpFailureKind::Unknown),
-                decode_error_payload(&selected.payloads)?,
-            )
+            (body, decode_error_payload(&selected.payloads)?)
         }
         _ => {
             return Err(CaptureError::SystemInvariant(
@@ -66,30 +58,27 @@ pub(super) fn decode_mcp_tool_result_response(
     };
     let text = retained_text_capture(body.as_deref());
     if !payload_complete {
-        payload = McpJsonCapture::Unavailable;
+        payload = ActivityJsonCapture::Unavailable;
     }
     Ok(Some(WarpDecodedMcpToolResult {
-        outcome,
         body,
-        response: McpTerminalResponseContent {
-            status,
-            failure_kind,
-            duration_ns: None,
+        response: WarpMcpResultCapture {
+            status: None,
             text,
-            payload,
+            structured_content: payload,
         },
     }))
 }
 
-fn retained_text_capture(body: Option<&str>) -> McpTextCapture {
+fn retained_text_capture(body: Option<&str>) -> ActivityTextCapture {
     if body.is_some_and(|body| !body.trim().is_empty()) {
-        McpTextCapture::NormalizedBody
+        ActivityTextCapture::NormalizedBody
     } else {
-        McpTextCapture::Absent
+        ActivityTextCapture::Absent
     }
 }
 
-fn decode_success_payload(payloads: &[Vec<u8>]) -> Result<McpJsonCapture> {
+fn decode_success_payload(payloads: &[Vec<u8>]) -> Result<ActivityJsonCapture> {
     let mut results = Vec::new();
     let mut complete = true;
     for payload in payloads {
@@ -108,15 +97,15 @@ fn decode_success_payload(payloads: &[Vec<u8>]) -> Result<McpJsonCapture> {
         }
     }
     Ok(if complete {
-        McpJsonCapture::Present {
+        ActivityJsonCapture::Present {
             value: json!({"success": {"results": results}}),
         }
     } else {
-        McpJsonCapture::Unavailable
+        ActivityJsonCapture::Unavailable
     })
 }
 
-fn decode_error_payload(payloads: &[Vec<u8>]) -> Result<McpJsonCapture> {
+fn decode_error_payload(payloads: &[Vec<u8>]) -> Result<ActivityJsonCapture> {
     let mut message = WarpValidatedString::default();
     let mut complete = true;
     for payload in payloads {
@@ -132,11 +121,11 @@ fn decode_error_payload(payloads: &[Vec<u8>]) -> Result<McpJsonCapture> {
         .into_optional("CallMCPToolResult.Error.message")?
         .unwrap_or_default();
     Ok(if complete {
-        McpJsonCapture::Present {
+        ActivityJsonCapture::Present {
             value: json!({"error": {"message": message}}),
         }
     } else {
-        McpJsonCapture::Unavailable
+        ActivityJsonCapture::Unavailable
     })
 }
 

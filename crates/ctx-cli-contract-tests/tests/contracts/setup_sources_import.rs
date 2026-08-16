@@ -1,6 +1,6 @@
 mod support;
 
-use support::{data_root, fs, json, json_output, Command, Duration, Instant, TempDir, Value};
+use support::{fs, json, json_output, Command, Duration, Instant, TempDir, Value};
 
 fn ctx(temp: &TempDir) -> Command {
     let binary = support::copied_ctx_binary(temp);
@@ -46,24 +46,6 @@ fn assert_daemon_process_running(pid: u32) {
             0,
             "daemon pid {pid} was not an active process"
         );
-    }
-}
-
-fn assert_daemon_process_running_with_status(temp: &TempDir, pid: u32) {
-    assert!(pid > 0, "daemon status must report a positive process id");
-    #[cfg(unix)]
-    {
-        unsafe extern "C" {
-            fn kill(pid: i32, signal: i32) -> i32;
-        }
-        if unsafe { kill(pid as i32, 0) } != 0 {
-            let daemon_root = data_root(temp).join("daemon");
-            let status = fs::read_to_string(daemon_root.join("status.json"))
-                .unwrap_or_else(|error| format!("<unavailable: {error}>"));
-            let lock = fs::read_to_string(daemon_root.join("daemon.lock"))
-                .unwrap_or_else(|error| format!("<unavailable: {error}>"));
-            panic!("daemon pid {pid} was not an active process; status={status}; lock={lock}");
-        }
     }
 }
 

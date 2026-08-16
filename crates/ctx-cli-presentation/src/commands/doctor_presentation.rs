@@ -5,11 +5,7 @@ use crate::ui::{
     Outcome, OutcomeState, RenderContext,
 };
 
-pub fn source_epoch_findings(
-    report: &Value,
-    semantic_required: bool,
-    pro_projection_required: bool,
-) -> Vec<String> {
+pub fn source_epoch_findings(report: &Value, semantic_required: bool) -> Vec<String> {
     let mut findings = Vec::new();
     for (name, required) in [
         ("history_epoch", true),
@@ -17,7 +13,6 @@ pub fn source_epoch_findings(
         ("catalog", true),
         ("refresh", true),
         ("semantic", semantic_required),
-        ("pro_projection", pro_projection_required),
     ] {
         if !required {
             continue;
@@ -152,7 +147,6 @@ fn humanize_doctor_finding(finding: &str) -> HumanDoctorFinding {
         "catalog" => "History source catalog",
         "refresh" => "History refresh",
         "semantic" => "Semantic search",
-        "pro_projection" => "ctx Pro index",
         _ => {
             return HumanDoctorFinding {
                 summary: finding.to_owned(),
@@ -227,7 +221,6 @@ mod ui_tests {
             "lexical": {"status": "ready"},
             "catalog": {"status": "ready"},
             "semantic": {"status": "disabled"},
-            "pro_projection": {"status": "unavailable"},
         });
         let mut rejections = base.clone();
         rejections["refresh"] = json!({
@@ -235,7 +228,7 @@ mod ui_tests {
             "outcome": "completed_with_rejections",
             "current": {"current_rejected_records": 1},
         });
-        assert!(source_epoch_findings(&rejections, false, false).is_empty());
+        assert!(source_epoch_findings(&rejections, false).is_empty());
 
         for outcome in [
             "completed_with_source_failures",
@@ -244,7 +237,7 @@ mod ui_tests {
             let mut failures = base.clone();
             failures["refresh"] = json!({"status": "partial", "reason": outcome});
             assert_eq!(
-                source_epoch_findings(&failures, false, false),
+                source_epoch_findings(&failures, false),
                 vec![format!("refresh is partial ({outcome})")],
             );
         }
@@ -252,7 +245,7 @@ mod ui_tests {
 
     #[test]
     fn findings_are_numbered_wrapped_and_actionable() {
-        let finding = "ctx Pro key store is unavailable; unlock or repair the already selected secure key store, then run `ctx pro`".to_owned();
+        let finding = "history configuration is unavailable; repair the local configuration, then run `ctx doctor`".to_owned();
         for width in [32, 48, 80, 120] {
             let context = context(width);
             let document = render_doctor_human(&context, "off", std::slice::from_ref(&finding), 0);

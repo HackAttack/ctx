@@ -2,7 +2,7 @@
 
 use ctx_history_capture_model::normalization::provider_local_preview;
 
-use super::{normalization, openclaw_output_metadata};
+use super::normalization;
 
 mod routes;
 mod source_backed;

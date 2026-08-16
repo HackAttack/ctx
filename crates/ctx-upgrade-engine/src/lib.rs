@@ -1,10 +1,17 @@
 //! Release upgrade mechanics shared by ctx command and daemon composition.
 
 mod install_marker;
+mod managed_pair;
 mod upgrade;
 
 pub use install_marker::{
     current_exe_install_marker, current_exe_is_staging_dogfood, ActiveInstallAttribution,
+};
+pub use managed_pair::{
+    ManagedPairActivation, ManagedPairAttempt, ManagedPairComponentIdentity, ManagedPairEngine,
+    ManagedPairPrepared, ManagedPairRecovery, ManagedPairTarget, ManagedPairTransactionStatus,
+    ManagedPairUninstallAttempt, ManagedPairVerifier, VerifiedManagedPairIdentity,
+    MANAGED_PAIR_ENVELOPE_RELATIVE_PATH, MANAGED_PAIR_STATE_RELATIVE_PATH,
 };
 pub use upgrade::{
     active_installation_upgrade_attempt_id, current_install_path,

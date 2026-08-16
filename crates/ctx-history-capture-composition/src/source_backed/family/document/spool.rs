@@ -325,12 +325,9 @@ mod tests {
         let mut record = CoreRecord::new_selected(
             event_id,
             session_id,
-            session_id,
             source,
             sequence,
             "message",
-            "primary",
-            true,
             "synthetic-core-record-v1",
             body,
         )
@@ -339,6 +336,7 @@ mod tests {
         record.native_event_id = Some(TypedKey::U64(sequence));
         record.occurred_at_unix_ms = Some(sequence as i64);
         record.role = Some("user".to_owned());
+        record.agent_scope = Some(ctx_history_core::AgentScope::Primary);
         record
     }
 

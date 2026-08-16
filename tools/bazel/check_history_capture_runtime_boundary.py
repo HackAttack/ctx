@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Static dependency boundary for ctx-history-capture-runtime and JSONL."""
+"""Static dependency boundary for history runtime, JSONL, and native JSONL."""
 
 from __future__ import annotations
 
@@ -28,11 +28,75 @@ RUNTIME_DIRECT_BAZEL_DEPENDENCIES = (
     "//crates/ctx-history-capture-model:lib",
     "//crates/ctx-history-core:lib",
 )
-JSONL_FORBIDDEN_CARGO = {"ctx-history-index", "ctx-history-index-format"}
+JSONL_FORBIDDEN_CARGO = {
+    "ctx-history-capture",
+    "ctx-history-index",
+    "ctx-history-index-format",
+    "ctx-history-index-generation",
+    "ctx-history-index-query",
+    "ctx-history-source-sqlite",
+}
 JSONL_DIRECT_BAZEL_DEPENDENCIES = (
     "//crates/ctx-history-capture-model:lib",
     "//crates/ctx-history-capture-runtime:lib",
     "//crates/ctx-history-core:lib",
+    "//crates/ctx-history-source-io:lib",
+)
+JSONL_TEST_DIRECT_BAZEL_DEPENDENCIES = (
+    "//crates/ctx-history-capture-model:lib",
+    "//crates/ctx-history-capture-runtime:lib",
+    "//crates/ctx-history-core:lib",
+    "//crates/ctx-history-source-io:test_support_lib",
+)
+EXPECTED_PROVIDER_DEPENDENCIES = {
+    "chrono": {"workspace": True},
+    "ctx-history-capture-model": {"path": "../ctx-history-capture-model"},
+    "ctx-history-capture-runtime": {"path": "../ctx-history-capture-runtime"},
+    "ctx-history-core": {"path": "../ctx-history-core"},
+    "ctx-history-jsonl": {"path": "../ctx-history-jsonl"},
+    "ctx-history-native-jsonl-parsers": {
+        "path": "../ctx-history-native-jsonl-parsers"
+    },
+    "ctx-history-source-io": {"path": "../ctx-history-source-io"},
+    "serde": {"workspace": True},
+    "serde_json": {"workspace": True},
+    "sha2": {"workspace": True},
+    "thiserror": {"workspace": True},
+}
+EXPECTED_PROVIDER_DEV_DEPENDENCIES = {
+    "ctx-history-jsonl": {
+        "path": "../ctx-history-jsonl",
+        "features": ["test-support"],
+    },
+    "ctx-history-source-io": {
+        "path": "../ctx-history-source-io",
+        "features": ["test-support"],
+    },
+    "tempfile": {"workspace": True},
+    "uuid": {"workspace": True},
+}
+PROVIDER_FORBIDDEN_CARGO = {
+    "ctx-history-capture",
+    "ctx-history-index",
+    "ctx-history-index-format",
+    "ctx-history-index-generation",
+    "ctx-history-index-query",
+}
+PROVIDER_DIRECT_BAZEL_DEPENDENCIES = (
+    "//crates/ctx-history-capture-model:lib",
+    "//crates/ctx-history-capture-runtime:lib",
+    "//crates/ctx-history-core:lib",
+    "//crates/ctx-history-jsonl:lib",
+    "//crates/ctx-history-native-jsonl-parsers:lib",
+    "//crates/ctx-history-source-io:lib",
+)
+PROVIDER_TEST_DIRECT_BAZEL_DEPENDENCIES = (
+    "//crates/ctx-history-capture-model:lib",
+    "//crates/ctx-history-capture-runtime:lib",
+    "//crates/ctx-history-core:lib",
+    "//crates/ctx-history-jsonl:test_support_lib",
+    "//crates/ctx-history-native-jsonl-parsers:lib",
+    "//crates/ctx-history-source-io:test_support_lib",
 )
 DEPENDENCY_TABLE_NAMES = {"dependencies", "dev-dependencies", "build-dependencies"}
 CANONICAL_LOAD_BINDINGS = {
@@ -540,14 +604,21 @@ def _validate_rule_dependencies(
 
 def _validate_package_bazel(build_path: Path, package: str, *, jsonl: bool) -> None:
     tokens = _tokenize_starlark(build_path.read_text(encoding="utf-8"), package)
+    dependency_variables = (
+        {"JSONL_DEPS", "JSONL_TEST_DEPS"} if jsonl else {"RUNTIME_DEPS"}
+    )
     _validate_canonical_loads(
-        tokens, package, {"JSONL_DEPS"} if jsonl else {"RUNTIME_DEPS"}
+        tokens, package, dependency_variables
     )
     _validate_call_surface(tokens, package)
 
     rust_libraries = _find_calls(tokens, "rust_library", package)
-    if len(rust_libraries) != 1:
-        raise BoundaryError(f"{package} Bazel must define exactly one rust_library target")
+    expected_library_count = 2 if jsonl else 1
+    if len(rust_libraries) != expected_library_count:
+        raise BoundaryError(
+            f"{package} Bazel must define exactly {expected_library_count} "
+            "rust_library target(s)"
+        )
     direct_dependencies = "JSONL_DEPS" if jsonl else "RUNTIME_DEPS"
     library_arguments = _validate_rule_dependencies(
         rust_libraries[0],
@@ -560,6 +631,36 @@ def _validate_package_bazel(build_path: Path, package: str, *, jsonl: bool) -> N
     if library_arguments["name"][0].value != "lib":
         raise BoundaryError(f"{package} Bazel rust_library must be named lib")
 
+    if jsonl:
+        test_support_arguments = _validate_rule_dependencies(
+            rust_libraries[1],
+            package,
+            "test-support rust_library",
+            {"normal": "True"},
+            {"proc_macro": "True"},
+            "JSONL_TEST_DEPS",
+        )
+        if test_support_arguments["name"][0].value != "test_support_lib":
+            raise BoundaryError(
+                f"{package} Bazel test-support rust_library must be named "
+                "test_support_lib"
+            )
+        if [token.value for token in test_support_arguments.get("testonly", [])] != [
+            "True"
+        ]:
+            raise BoundaryError(
+                f"{package} Bazel test-support rust_library must be testonly"
+            )
+        if _literal_string_list(
+            test_support_arguments.get("rustc_flags", []),
+            package,
+            "test-support rustc_flags",
+        ) != ('--cfg=feature="test-support"',):
+            raise BoundaryError(
+                f"{package} Bazel test-support rust_library must enable only "
+                "the test-support feature"
+            )
+
     rust_tests = _find_calls(tokens, "ctx_rust_test", package)
     if not rust_tests:
         raise BoundaryError(f"{package} Bazel must define at least one ctx_rust_test")
@@ -570,35 +671,51 @@ def _validate_package_bazel(build_path: Path, package: str, *, jsonl: bool) -> N
             f"ctx_rust_test #{index}",
             {"normal": "True", "normal_dev": "True"},
             {"proc_macro": "True", "proc_macro_dev": "True"},
-            direct_dependencies,
+            "JSONL_TEST_DEPS" if jsonl else direct_dependencies,
         )
 
-    dependency_variable = "JSONL_DEPS" if jsonl else "RUNTIME_DEPS"
-    expected_dependencies = (
-        JSONL_DIRECT_BAZEL_DEPENDENCIES
+    dependency_inventory = (
+        (
+            ("JSONL_DEPS", JSONL_DIRECT_BAZEL_DEPENDENCIES, 2),
+            (
+                "JSONL_TEST_DEPS",
+                JSONL_TEST_DIRECT_BAZEL_DEPENDENCIES,
+                2 + len(rust_tests),
+            ),
+        )
         if jsonl
-        else RUNTIME_DIRECT_BAZEL_DEPENDENCIES
-    )
-    assignments = _assignments(tokens, dependency_variable)
-    if len(assignments) != 1 or assignments[0][0] != "=":
-        raise BoundaryError(
-            f"{package} Bazel must define exactly one unaugmented {dependency_variable}"
+        else (
+            (
+                "RUNTIME_DEPS",
+                RUNTIME_DIRECT_BAZEL_DEPENDENCIES,
+                1 + len(rust_libraries) + len(rust_tests),
+            ),
         )
-    if (
-        _literal_string_list(assignments[0][1], package, dependency_variable)
-        != expected_dependencies
-    ):
-        raise BoundaryError(f"{package} Bazel direct dependency inventory drifted")
-    expected_uses = 1 + len(rust_libraries) + len(rust_tests)
-    actual_uses = sum(
-        token.kind == "identifier" and token.value == dependency_variable
-        for token in tokens
     )
-    if actual_uses != expected_uses:
-        raise BoundaryError(
-            f"{package} Bazel {dependency_variable} may only be assigned once and used "
-            "directly by dependency attributes"
+    for dependency_variable, expected_dependencies, expected_uses in dependency_inventory:
+        assignments = _assignments(tokens, dependency_variable)
+        if len(assignments) != 1 or assignments[0][0] != "=":
+            raise BoundaryError(
+                f"{package} Bazel must define exactly one unaugmented "
+                f"{dependency_variable}"
+            )
+        if (
+            _literal_string_list(assignments[0][1], package, dependency_variable)
+            != expected_dependencies
+        ):
+            raise BoundaryError(
+                f"{package} Bazel {dependency_variable} direct dependency inventory "
+                "drifted"
+            )
+        actual_uses = sum(
+            token.kind == "identifier" and token.value == dependency_variable
+            for token in tokens
         )
+        if actual_uses != expected_uses:
+            raise BoundaryError(
+                f"{package} Bazel {dependency_variable} may only be assigned once and "
+                "used directly by dependency attributes"
+            )
 
 
 def _validate_runtime_bazel(build_path: Path) -> None:
@@ -609,6 +726,91 @@ def _validate_runtime_bazel(build_path: Path) -> None:
 
 def _validate_jsonl_bazel(build_path: Path) -> None:
     _validate_package_bazel(build_path, "ctx-history-jsonl", jsonl=True)
+
+
+def _validate_provider_bazel(build_path: Path) -> None:
+    package = "ctx-history-provider-native-jsonl"
+    tokens = _tokenize_starlark(build_path.read_text(encoding="utf-8"), package)
+    _validate_canonical_loads(tokens, package, {"NATIVE_JSONL_DEPS", "NATIVE_JSONL_TEST_DEPS"})
+    _validate_call_surface(tokens, package)
+
+    rust_libraries = _find_calls(tokens, "rust_library", package)
+    if len(rust_libraries) != 2:
+        raise BoundaryError(
+            f"{package} Bazel must define exactly 2 rust_library target(s)"
+        )
+    library_arguments = _validate_rule_dependencies(
+        rust_libraries[0],
+        package,
+        "rust_library",
+        {"normal": "True"},
+        {"proc_macro": "True"},
+        "NATIVE_JSONL_DEPS",
+    )
+    if library_arguments["name"][0].value != "lib":
+        raise BoundaryError(f"{package} Bazel rust_library must be named lib")
+
+    test_support_arguments = _validate_rule_dependencies(
+        rust_libraries[1],
+        package,
+        "test-support rust_library",
+        {"normal": "True", "normal_dev": "True"},
+        {"proc_macro": "True", "proc_macro_dev": "True"},
+        "NATIVE_JSONL_TEST_DEPS",
+    )
+    if test_support_arguments["name"][0].value != "test_support_lib":
+        raise BoundaryError(
+            f"{package} Bazel test-support rust_library must be named test_support_lib"
+        )
+    if [token.value for token in test_support_arguments.get("testonly", [])] != ["True"]:
+        raise BoundaryError(
+            f"{package} Bazel test-support rust_library must be testonly"
+        )
+
+    rust_tests = _find_calls(tokens, "ctx_rust_test", package)
+    if not rust_tests:
+        raise BoundaryError(f"{package} Bazel must define at least one ctx_rust_test")
+    for index, rust_test in enumerate(rust_tests, start=1):
+        _validate_rule_dependencies(
+            rust_test,
+            package,
+            f"ctx_rust_test #{index}",
+            {"normal": "True", "normal_dev": "True"},
+            {"proc_macro": "True", "proc_macro_dev": "True"},
+            "NATIVE_JSONL_TEST_DEPS",
+        )
+
+    dependency_inventory = (
+        ("NATIVE_JSONL_DEPS", PROVIDER_DIRECT_BAZEL_DEPENDENCIES, 2),
+        (
+            "NATIVE_JSONL_TEST_DEPS",
+            PROVIDER_TEST_DIRECT_BAZEL_DEPENDENCIES,
+            2 + len(rust_tests),
+        ),
+    )
+    for dependency_variable, expected_dependencies, expected_uses in dependency_inventory:
+        assignments = _assignments(tokens, dependency_variable)
+        if len(assignments) != 1 or assignments[0][0] != "=":
+            raise BoundaryError(
+                f"{package} Bazel must define exactly one unaugmented "
+                f"{dependency_variable}"
+            )
+        if (
+            _literal_string_list(assignments[0][1], package, dependency_variable)
+            != expected_dependencies
+        ):
+            raise BoundaryError(
+                f"{package} Bazel {dependency_variable} direct dependency inventory drifted"
+            )
+        actual_uses = sum(
+            token.kind == "identifier" and token.value == dependency_variable
+            for token in tokens
+        )
+        if actual_uses != expected_uses:
+            raise BoundaryError(
+                f"{package} Bazel {dependency_variable} may only be assigned once and "
+                "used directly by dependency attributes"
+            )
 
 
 def _is_all_crate_deps(tokens: Sequence[Token], **expected: str) -> bool:
@@ -665,12 +867,51 @@ def _validate_runtime_manifest(manifest_path: Path, workspace_manifest: dict[str
         )
 
 
+def _validate_provider_manifest(
+    manifest_path: Path, workspace_manifest: dict[str, Any]
+) -> None:
+    package = "ctx-history-provider-native-jsonl"
+    manifest = _read_manifest(manifest_path)
+    _validate_no_forbidden_cargo_dependencies(
+        manifest, package, PROVIDER_FORBIDDEN_CARGO, workspace_manifest
+    )
+    dependencies = manifest.get("dependencies", {})
+    if dependencies != EXPECTED_PROVIDER_DEPENDENCIES:
+        raise BoundaryError(
+            "ctx-history-provider-native-jsonl Cargo production dependencies drifted: "
+            f"expected={sorted(EXPECTED_PROVIDER_DEPENDENCIES)} actual={sorted(dependencies)}"
+        )
+    if manifest.get("dev-dependencies", {}) != EXPECTED_PROVIDER_DEV_DEPENDENCIES:
+        raise BoundaryError(
+            "ctx-history-provider-native-jsonl Cargo dev dependencies drifted"
+        )
+    build_dependencies = manifest.get("build-dependencies", {})
+    if build_dependencies:
+        raise BoundaryError(
+            "ctx-history-provider-native-jsonl Cargo build dependencies drifted: "
+            f"expected=[] actual={sorted(build_dependencies)}"
+        )
+    target_dependency_tables = [
+        table_name
+        for table_name, _ in _dependency_tables(manifest, package)
+        if table_name.startswith("target.")
+    ]
+    if target_dependency_tables:
+        raise BoundaryError(
+            "ctx-history-provider-native-jsonl Cargo target-specific dependency-table "
+            "bypass: "
+            + ", ".join(target_dependency_tables)
+        )
+
+
 def validate(
     workspace_manifest_path: Path,
     runtime_manifest_path: Path,
     runtime_build_path: Path,
     jsonl_manifest_path: Path,
     jsonl_build_path: Path,
+    provider_manifest_path: Path,
+    provider_build_path: Path,
 ) -> None:
     workspace_manifest = _read_manifest(workspace_manifest_path)
     _validate_runtime_manifest(runtime_manifest_path, workspace_manifest)
@@ -683,13 +924,16 @@ def validate(
         workspace_manifest,
     )
     _validate_jsonl_bazel(jsonl_build_path)
+    _validate_provider_manifest(provider_manifest_path, workspace_manifest)
+    _validate_provider_bazel(provider_build_path)
 
 
 def main() -> int:
-    if len(sys.argv) != 6:
+    if len(sys.argv) != 8:
         raise SystemExit(
             "usage: check_history_capture_runtime_boundary.py "
-            "WORKSPACE_CARGO RUNTIME_CARGO RUNTIME_BUILD JSONL_CARGO JSONL_BUILD"
+            "WORKSPACE_CARGO RUNTIME_CARGO RUNTIME_BUILD JSONL_CARGO JSONL_BUILD "
+            "PROVIDER_CARGO PROVIDER_BUILD"
         )
     try:
         validate(
@@ -698,11 +942,13 @@ def main() -> int:
             Path(sys.argv[3]),
             Path(sys.argv[4]),
             Path(sys.argv[5]),
+            Path(sys.argv[6]),
+            Path(sys.argv[7]),
         )
     except (BoundaryError, OSError, tomllib.TOMLDecodeError) as error:
         print(error, file=sys.stderr)
         return 1
-    print("ctx-history-capture-runtime/JSONL static dependency boundary ok")
+    print("history runtime/JSONL/provider static dependency boundary ok")
     return 0
 
 

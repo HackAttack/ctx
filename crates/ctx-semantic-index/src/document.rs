@@ -1,4 +1,4 @@
-use ctx_history_core::{AgentType, CaptureProvider, EventRole, EventType};
+use ctx_history_core::{AgentScope, CaptureProvider, EventRole, EventType, ProviderDeclaredFact};
 use uuid::Uuid;
 
 /// Exact source-backed event content prepared for semantic indexing.
@@ -14,12 +14,8 @@ pub struct SemanticEventDocument {
     pub(crate) rank_bucket: String,
     pub(crate) provider: Option<CaptureProvider>,
     pub(crate) source_format: Option<String>,
-    pub(crate) agent_type: Option<AgentType>,
-    pub(crate) session_is_primary: Option<bool>,
-    pub(crate) cwd: Option<String>,
-    pub(crate) record_title: Option<String>,
-    pub(crate) record_kind: Option<String>,
-    pub(crate) record_workspace: Option<String>,
+    pub(crate) agent_scope: Option<AgentScope>,
+    pub(crate) literal_facts: Vec<ProviderDeclaredFact>,
     pub(crate) text: String,
 }
 
@@ -35,12 +31,8 @@ impl SemanticEventDocument {
         rank_bucket: String,
         provider: Option<CaptureProvider>,
         source_format: Option<String>,
-        agent_type: Option<AgentType>,
-        session_is_primary: Option<bool>,
-        cwd: Option<String>,
-        record_title: Option<String>,
-        record_kind: Option<String>,
-        record_workspace: Option<String>,
+        agent_scope: Option<AgentScope>,
+        literal_facts: Vec<ProviderDeclaredFact>,
         text: String,
     ) -> Self {
         Self {
@@ -53,12 +45,8 @@ impl SemanticEventDocument {
             rank_bucket,
             provider,
             source_format,
-            agent_type,
-            session_is_primary,
-            cwd,
-            record_title,
-            record_kind,
-            record_workspace,
+            agent_scope,
+            literal_facts,
             text,
         }
     }

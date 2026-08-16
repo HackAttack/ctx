@@ -1,10 +1,12 @@
 use std::{collections::HashSet, fs, path::PathBuf, time::Instant};
 
 use ctx_history_core::{
-    derive_event_id, derive_session_id, CaptureProvider, CertifiedSource, CoreDiscoveryExclusion,
-    CoreRecord, EventCopyProofKind, EventIdentityInput, EventOrigin, EventRole, EventType,
-    NativeItemKey, NativeSessionKey, ScannedSourceCounts, SessionIdentityInput,
-    SessionRelationshipKind, SourceAnchor, SourceKey, SourceObservation, StableEntityId, TypedKey,
+    derive_event_id, derive_session_id, AgentScope, CaptureProvider, CertifiedSource, CoreActivity,
+    CoreDiscoveryExclusion, CoreRecord, EventIdentityInput, EventRole, EventType, LiteralFactKind,
+    NativeItemKey, NativeSessionKey, ProviderDeclaredFact, ProviderNativeCopyProof,
+    ProviderNativeEventCopy, ProviderNativeSessionRelationship, ScannedSourceCounts,
+    SessionIdentityInput, SourceAnchor, SourceKey, SourceObservation, StableEntityId, TypedKey,
+    CORE_ACTIVITY_REVISION,
 };
 use ctx_history_index::{
     current_semantic_generation_policy, CoreEventRecord, GenerationWriter, SourceEventRole,
@@ -42,7 +44,8 @@ impl SemanticDocumentBuilder for CoreBuilder {
         {
             return Err(anyhow!("forced Core projection interruption"));
         }
-        let text = record.core_record.content.meaningful_text().to_owned();
+        let text = ctx_history_index::project_body_search(record.core_record.content.clone())?
+            .unwrap_or_default();
         if text.is_empty() {
             return Ok(None);
         }
@@ -56,12 +59,13 @@ impl SemanticDocumentBuilder for CoreBuilder {
             rank_bucket: "core_event".to_owned(),
             provider: Some(CaptureProvider::Codex),
             source_format: Some(record.source_format.clone()),
-            agent_type: None,
-            session_is_primary: Some(record.is_primary),
-            cwd: record.cwd.clone(),
-            record_title: None,
-            record_kind: Some("message".to_owned()),
-            record_workspace: record.workspace.clone(),
+            agent_scope: record.core_record.agent_scope,
+            literal_facts: record
+                .core_record
+                .content
+                .activity
+                .as_ref()
+                .map_or_else(Vec::new, |activity| activity.facts.clone()),
             text,
         }))
     }
@@ -173,12 +177,9 @@ impl Fixture {
         let mut record = CoreRecord::new_selected(
             event_id,
             fixture_source.session_id,
-            fixture_source.session_id,
             fixture_source.source.clone(),
             event_sequence,
             "message",
-            "primary",
-            true,
             "semantic-source-projection-test-v1",
             body,
         )?;
@@ -186,8 +187,23 @@ impl Fixture {
         record.native_event_id = Some(TypedKey::U64(identity_sequence));
         record.role = Some("user".to_owned());
         record.occurred_at_unix_ms = Some(event_sequence as i64);
-        record.workspace = Some("/workspace".to_owned());
-        record.cwd = Some("/workspace".to_owned());
+        record.agent_scope = Some(AgentScope::Primary);
+        record.content.activity = Some(CoreActivity {
+            revision: CORE_ACTIVITY_REVISION,
+            provider_call_id: None,
+            invocation: None,
+            result: None,
+            facts: vec![
+                ProviderDeclaredFact {
+                    kind: LiteralFactKind::Workspace,
+                    value: "/workspace".to_owned(),
+                },
+                ProviderDeclaredFact {
+                    kind: LiteralFactKind::SessionCwd,
+                    value: "/workspace".to_owned(),
+                },
+            ],
+        });
         record.validate_contract()?;
         Ok(record)
     }
@@ -465,8 +481,8 @@ fn semantic_generation_uses_exact_per_source_core_aggregates_without_candidate_t
         &[(0, bodies("stable", 3)), (1, bodies("changed", 2))],
     )?;
     let generation = SourceBackedSemanticGeneration::from_verified_index(&index)?;
-    assert_eq!(SOURCE_CONTRACT_VERSION, 11);
-    assert_eq!(SOURCE_INPUT_LEXICAL_SCHEMA_VERSION, 20);
+    assert_eq!(SOURCE_CONTRACT_VERSION, 12);
+    assert_eq!(SOURCE_INPUT_LEXICAL_SCHEMA_VERSION, 21);
     assert_eq!(index.semantic_eligible_event_count()?, 5);
     assert_eq!(generation.core_generation_id, index.generation_id());
     assert_eq!(generation.sources.len(), 2);
@@ -486,16 +502,14 @@ fn copied_events_never_enter_the_source_backed_semantic_projection() -> Result<(
     let fixture = Fixture::new(2)?;
     let original = fixture.record(0, 1, "semantic copy canary")?;
     let mut copied = fixture.record(1, 1, "semantic copy canary")?;
-    copied.set_session_relationship(
-        SessionRelationshipKind::Forked,
-        Some(original.session_id),
-        original.session_id,
-    )?;
-    copied.event_origin = EventOrigin::CopiedFromAncestor {
-        ancestor_session_id: Box::new(original.session_id),
-        ancestor_event_id: Box::new(original.event_id),
-        proof: EventCopyProofKind::NativeEventIdentity,
-    };
+    copied.parent_session_id = Some(original.session_id);
+    copied.root_session_id = Some(original.session_id);
+    copied.session_relationship = Some(ProviderNativeSessionRelationship::Forked);
+    copied.event_copy = Some(ProviderNativeEventCopy {
+        ancestor_session_id: original.session_id,
+        ancestor_event_id: original.event_id,
+        proof: ProviderNativeCopyProof::NativeEventIdentity,
+    });
     copied.validate_contract()?;
 
     let root = fixture.data_root.join("index-copied-semantic-exclusion");
@@ -529,16 +543,12 @@ fn copied_events_never_enter_the_source_backed_semantic_projection() -> Result<(
     let index = VerifiedIndex::open(root)?;
 
     assert_eq!(index.manifest().indexed_documents, 2);
-    assert_eq!(index.semantic_eligible_event_count()?, 1);
-    let semantic = index.core_semantic_event_page(None, 2)?;
-    assert_eq!(semantic.items.len(), 1);
-    assert_eq!(semantic.items[0].event_id, original.event_id);
     assert_eq!(
         index
             .core_source_event_page(&fixture.sources[1].source, None, 1)?
             .items[0]
-            .event_origin,
-        copied.event_origin
+            .event_copy,
+        copied.event_copy
     );
 
     let mut store = SemanticVectorStore::open(&fixture.semantic_path)?;

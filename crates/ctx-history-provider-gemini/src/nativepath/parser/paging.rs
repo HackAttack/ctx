@@ -83,14 +83,6 @@ pub(super) fn derive_page_identity(
         hasher.update(event.body_sha256);
         hash_page_text(&mut hasher, &event.preview);
         hash_page_text(&mut hasher, &event.searchable_text);
-        hasher.update(
-            u64::try_from(event.safe_file_touches.len())
-                .unwrap_or(u64::MAX)
-                .to_le_bytes(),
-        );
-        for touch in &event.safe_file_touches {
-            hash_page_text(&mut hasher, touch);
-        }
     }
     hasher.update(
         u64::try_from(rejections.len())
@@ -126,7 +118,7 @@ pub(super) fn hash_page_frontier(hasher: &mut Sha256, frontier: &GeminiPageFront
         hasher.update([1]);
         hash_page_text(hasher, &session.native_session_id);
         hash_page_optional_text(hasher, session.parent_native_session_id.as_deref());
-        hash_page_text(hasher, session.agent_type.as_str());
+        hash_page_text(hasher, session.agent_scope.as_str());
         hash_page_optional_i64(
             hasher,
             session.started_at.map(|value| value.timestamp_millis()),
@@ -154,6 +146,7 @@ pub(super) fn hash_page_optional_text(hasher: &mut Sha256, value: Option<&str>) 
     }
 }
 
+#[cfg(test)]
 pub(super) fn hash_page_optional_u64(hasher: &mut Sha256, value: Option<u64>) {
     hasher.update([u8::from(value.is_some())]);
     if let Some(value) = value {
@@ -161,6 +154,7 @@ pub(super) fn hash_page_optional_u64(hasher: &mut Sha256, value: Option<u64>) {
     }
 }
 
+#[cfg(test)]
 pub(super) fn hash_page_optional_i64(hasher: &mut Sha256, value: Option<i64>) {
     hasher.update([u8::from(value.is_some())]);
     if let Some(value) = value {

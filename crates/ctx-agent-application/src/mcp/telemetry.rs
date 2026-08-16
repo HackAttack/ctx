@@ -1,15 +1,10 @@
 use std::time::Duration;
 
-use ctx_agent_integrations::{
-    mcp::{McpToolKind, RequestDescriptor},
-    tool_backend::{ToolBlameTargetKind, ToolIntegrationReceipt, ToolTransportFacts},
-};
+use ctx_agent_integrations::mcp::{McpToolKind, RequestDescriptor};
 use ctx_client_observability::{
     analytics::{
-        pro_helper_connection_outcome, pro_operation_event, McpErrorClassV1, McpResponseBoundV1,
-        McpResultMetadataV1, McpStopReasonV1, Outcome, ProAccessStateV1, ProBlameTargetV1,
-        ProBlameTelemetryV1, ProHelperConnectionOutcomeV1, ProHostOperationV1,
-        ProStatusTelemetryV1, ProSurfaceV1, PublicEventV1,
+        McpErrorClassV1, McpResponseBoundV1, McpResultMetadataV1, McpStopReasonV1, Outcome,
+        PublicEventV1,
     },
     mcp_observation::{
         McpDeliveredResponse, McpObservation, McpObservedTool, McpRequestObservation,
@@ -26,8 +21,7 @@ fn observed_operation(kind: McpToolKind) -> Option<ObservedMcpProductOperation> 
         McpToolKind::ShowSession => Some(ObservedMcpProductOperation::ShowSession),
         McpToolKind::ShowEvent => Some(ObservedMcpProductOperation::ShowEvent),
         McpToolKind::QueryEvents => Some(ObservedMcpProductOperation::QueryEvents),
-        McpToolKind::Blame => Some(ObservedMcpProductOperation::Blame),
-        McpToolKind::ProStatus => Some(ObservedMcpProductOperation::ProStatus),
+        McpToolKind::Blame | McpToolKind::ProStatus => None,
         McpToolKind::Unknown | McpToolKind::Missing => None,
     }
 }
@@ -40,7 +34,9 @@ fn request_observation(descriptor: RequestDescriptor) -> McpRequestObservation {
         RequestDescriptor::ToolCall { operation } => {
             McpRequestObservation::ToolCall(match observed_operation(operation) {
                 Some(operation) => McpObservedTool::Product(operation),
-                None if operation == McpToolKind::Unknown => McpObservedTool::Unknown,
+                None if operation == McpToolKind::Unknown || operation.is_companion_owned() => {
+                    McpObservedTool::Unknown
+                }
                 None => McpObservedTool::Missing,
             })
         }
@@ -93,12 +89,6 @@ impl McpTelemetry {
     ) {
         if let Some(observation) = &mut self.observation {
             observation.record_response_failure(request_observation(descriptor), duration, class);
-        }
-    }
-
-    pub fn submit_backend_receipt(&self, receipt: ToolIntegrationReceipt) {
-        if let Some(observation) = &self.observation {
-            observation.submit_post_flush_event(backend_receipt_event(receipt));
         }
     }
 
@@ -232,58 +222,6 @@ fn result_metadata(operation: McpToolKind, response: &Value) -> McpResultMetadat
         | McpToolKind::Missing => {}
     }
     metadata
-}
-
-fn backend_receipt_event(receipt: ToolIntegrationReceipt) -> PublicEventV1 {
-    let operation = match receipt.facts {
-        ToolTransportFacts::ProStatus {
-            access_state,
-            helper_connected,
-            error_code,
-        } => {
-            let mut telemetry = ProStatusTelemetryV1::new(ProSurfaceV1::Mcp);
-            telemetry.access_state = access_state
-                .as_deref()
-                .and_then(ProAccessStateV1::from_safe_name);
-            telemetry.helper_connection = if helper_connected {
-                ProHelperConnectionOutcomeV1::Connected
-            } else {
-                pro_helper_connection_outcome(error_code.as_deref())
-            };
-            if error_code.is_some() {
-                telemetry.fail(error_code.as_deref());
-            }
-            ProHostOperationV1::Status(telemetry)
-        }
-        ToolTransportFacts::Blame {
-            target,
-            result_count,
-            has_more,
-            failure_code,
-        } => {
-            let target = target.map(|target| match target {
-                ToolBlameTargetKind::File => ProBlameTargetV1::File,
-                ToolBlameTargetKind::Commit => ProBlameTargetV1::Commit,
-                ToolBlameTargetKind::PullRequest => ProBlameTargetV1::PullRequest,
-            });
-            let mut telemetry = ProBlameTelemetryV1::new(target, ProSurfaceV1::Mcp);
-            if receipt.success {
-                telemetry.complete(result_count.unwrap_or(0), has_more.unwrap_or(false));
-            } else {
-                telemetry.fail(failure_code);
-            }
-            ProHostOperationV1::Blame(telemetry)
-        }
-    };
-    pro_operation_event(
-        operation,
-        if receipt.success {
-            Outcome::Success
-        } else {
-            Outcome::Failure
-        },
-        receipt.duration,
-    )
 }
 
 #[cfg(test)]

@@ -168,8 +168,8 @@ new MCP arguments, tools, selectors, or search behavior for attribution.
 ## Storage and historical rows
 
 The optional pair is stored only on the qualifying normalized Core event. It is
-not added to lexical terms, semantic text, usage aggregates, or the Local Pro
-graph. Reimport recomputes the field from provider history; query paths never
+not added to lexical terms, semantic text, usage aggregates, or other derived
+state. Reimport recomputes the field from provider history; query paths never
 reparse provider-specific structured content or consult current MCP config.
 
 The separate optional `mcp_exchange` is stored as content on selected Core
@@ -179,7 +179,7 @@ type. Other argument capture states add no terms. Its provider call ID and
 response status/failure/timing/payload remain unsearchable, and response text
 with a `normalized_body` disposition retains existing body search exactly once.
 The exchange adds no semantic text, selector, filter, search result field, SQL
-column, usage aggregate, or Local Pro fact.
+column, usage aggregate, or other derived fact.
 
 During the one allowlisted transition from the immediately preceding
 self-contained Core contract, ctx republishes verified records with

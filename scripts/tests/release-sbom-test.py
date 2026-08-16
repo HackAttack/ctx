@@ -33,34 +33,113 @@ TANTIVY_FEATURES = (
     "zstd",
     "zstd-compression",
 )
+SYNTHETIC_WORKSPACE_VERSION = "0.26.0"
 WORKSPACE_PACKAGES = (
     ("ctx", "crates/ctx-cli"),
     ("ctx-agent-application", "crates/ctx-agent-application"),
     ("ctx-agent-integrations", "crates/ctx-agent-integrations"),
+    ("ctx-companion-bridge", "crates/ctx-companion-bridge"),
+    ("ctx-cli-presentation", "crates/ctx-cli-presentation"),
     ("ctx-client-observability", "crates/ctx-client-observability"),
     ("ctx-daemon-application", "crates/ctx-daemon-application"),
+    ("ctx-daemon-cli", "crates/ctx-daemon-cli"),
     ("ctx-daemon-runtime", "crates/ctx-daemon-runtime"),
     ("ctx-daemon-service", "crates/ctx-daemon-service"),
+    ("ctx-history-capture", "crates/ctx-history-capture"),
+    ("ctx-history-capture-composition", "crates/ctx-history-capture-composition"),
+    ("ctx-history-capture-model", "crates/ctx-history-capture-model"),
+    ("ctx-history-cli", "crates/ctx-history-cli"),
+    ("ctx-history-capture-runtime", "crates/ctx-history-capture-runtime"),
     ("ctx-history-core", "crates/ctx-history-core"),
     ("ctx-history-index-format", "crates/ctx-history-index-format"),
     ("ctx-history-index", "crates/ctx-history-index"),
     ("ctx-history-index-query", "crates/ctx-history-index-query"),
     ("ctx-history-jsonl", "crates/ctx-history-jsonl"),
+    ("ctx-history-platform", "crates/ctx-history-platform"),
+    (
+        "ctx-history-provider-claude-cursor",
+        "crates/ctx-history-provider-claude-cursor",
+    ),
+    (
+        "ctx-history-provider-docproj",
+        "crates/ctx-history-provider-docproj",
+    ),
+    ("ctx-history-provider-gemini", "crates/ctx-history-provider-gemini"),
+    (
+        "ctx-history-provider-mistral-mux",
+        "crates/ctx-history-provider-mistral-mux",
+    ),
+    (
+        "ctx-history-provider-native-jsonl",
+        "crates/ctx-history-provider-native-jsonl",
+    ),
+    ("ctx-history-provider-runtime", "crates/ctx-history-provider-runtime"),
+    ("ctx-history-provider-codex", "crates/ctx-history-provider-codex"),
+    ("ctx-history-provider-trae", "crates/ctx-history-provider-trae"),
+    (
+        "ctx-history-providers-sqlite-selected",
+        "crates/ctx-history-providers-sqlite-selected",
+    ),
+    (
+        "ctx-history-providers-sqlite-inventory",
+        "crates/ctx-history-providers-sqlite-inventory",
+    ),
+    (
+        "ctx-history-providers-sqlite-logical",
+        "crates/ctx-history-providers-sqlite-logical",
+    ),
+    (
+        "ctx-history-providers-task-docs",
+        "crates/ctx-history-providers-task-docs",
+    ),
+    ("ctx-history-source-io", "crates/ctx-history-source-io"),
+    ("ctx-history-source-discovery", "crates/ctx-history-source-discovery"),
+    ("ctx-history-source-sqlite", "crates/ctx-history-source-sqlite"),
+    ("ctx-history-refresh", "crates/ctx-history-refresh"),
+    (
+        "ctx-history-providers-jsonl-shared",
+        "crates/ctx-history-providers-jsonl-shared",
+    ),
     ("ctx-history-refresh-execution", "crates/ctx-history-refresh-execution"),
-    ("ctx-history-query", "crates/ctx-history-query"),
+    ("ctx-history-read-application", "crates/ctx-history-read-application"),
     ("ctx-semantic-index", "crates/ctx-semantic-index"),
     ("ctx-semantic-model", "crates/ctx-semantic-model"),
     ("ctx-terminal", "crates/ctx-terminal"),
     ("ctx-upgrade-engine", "crates/ctx-upgrade-engine"),
 )
 EXTERNAL_PACKAGES = (
+    ("base64", "0.22.0"),
+    ("chrono", "0.4.0"),
     ("fs4", "0.1.0"),
+    ("libc", "0.2.0"),
     ("lz4_flex", "0.11.0"),
     ("memmap2", "0.9.0"),
+    ("regex", "1.0.0"),
+    ("rusqlite", "0.32.1"),
+    ("serde", "1.0.0"),
+    ("serde_json", "1.0.0"),
+    ("sha2", "0.10.9"),
     ("tantivy", "0.26.1"),
     ("tempfile", "3.0.0"),
+    ("thiserror", "1.0.0"),
+    ("uuid", "1.0.0"),
     ("zstd", "0.13.0"),
 )
+DOCUMENT_PROJECTION_DIRECT_DEPENDENCIES = {
+    "chrono",
+    "ctx-history-capture-model",
+    "ctx-history-capture-runtime",
+    "ctx-history-core",
+    "ctx-history-provider-runtime",
+    "ctx-history-source-discovery",
+    "ctx-history-source-io",
+    "ctx-history-source-sqlite",
+    "rusqlite",
+    "serde",
+    "serde_json",
+    "sha2",
+    "thiserror",
+}
 LEGACY_RELEASE_ASSETS = (
     "ctx-linux-x64",
     "ctx-linux-x64.cdx.json",
@@ -152,17 +231,43 @@ members = [
   "crates/ctx-cli",
   "crates/ctx-agent-application",
   "crates/ctx-agent-integrations",
+  "crates/ctx-companion-bridge",
+  "crates/ctx-cli-presentation",
   "crates/ctx-client-observability",
   "crates/ctx-daemon-application",
+  "crates/ctx-daemon-cli",
   "crates/ctx-daemon-runtime",
   "crates/ctx-daemon-service",
+  "crates/ctx-history-capture",
+  "crates/ctx-history-capture-composition",
+  "crates/ctx-history-capture-model",
+  "crates/ctx-history-cli",
+  "crates/ctx-history-capture-runtime",
   "crates/ctx-history-core",
   "crates/ctx-history-index-format",
   "crates/ctx-history-index",
   "crates/ctx-history-index-query",
   "crates/ctx-history-jsonl",
+  "crates/ctx-history-platform",
+  "crates/ctx-history-provider-claude-cursor",
+  "crates/ctx-history-provider-docproj",
+  "crates/ctx-history-provider-gemini",
+  "crates/ctx-history-provider-mistral-mux",
+  "crates/ctx-history-provider-native-jsonl",
+  "crates/ctx-history-provider-runtime",
+  "crates/ctx-history-provider-codex",
+  "crates/ctx-history-provider-trae",
+  "crates/ctx-history-providers-sqlite-selected",
+  "crates/ctx-history-providers-sqlite-inventory",
+  "crates/ctx-history-providers-sqlite-logical",
+  "crates/ctx-history-providers-task-docs",
+  "crates/ctx-history-source-io",
+  "crates/ctx-history-source-discovery",
+  "crates/ctx-history-source-sqlite",
+  "crates/ctx-history-refresh",
+  "crates/ctx-history-providers-jsonl-shared",
   "crates/ctx-history-refresh-execution",
-  "crates/ctx-history-query",
+  "crates/ctx-history-read-application",
   "crates/ctx-semantic-index",
   "crates/ctx-semantic-model",
   "crates/ctx-terminal",
@@ -175,7 +280,18 @@ license = "MIT"
 repository = "https://github.com/ctxrs/ctx"
 
 [workspace.dependencies]
+chrono = { version = "0.4.0", default-features = false, features = ["std", "serde"] }
+base64 = "0.22.0"
+libc = "0.2.0"
+regex = "1.0.0"
+rusqlite = "0.32.1"
+serde = { version = "1.0.0", features = ["derive", "rc"] }
+serde_json = { version = "1.0.0", features = ["raw_value"] }
+sha2 = "0.10.9"
+tempfile = "3.0.0"
 tantivy = { version = "0.26.1", default-features = false, features = ["mmap", "lz4-compression", "zstd-compression", "columnar-zstd-compression"] }
+thiserror = "1.0.0"
+uuid = "1.0.0"
 """,
             encoding="utf-8",
         )
@@ -189,23 +305,53 @@ tantivy = { version = "0.26.1", default-features = false, features = ["mmap", "l
                 "ctx": (
                     "ctx-agent-application = { path = \"../ctx-agent-application\" }\n"
                     "ctx-agent-integrations = { path = \"../ctx-agent-integrations\" }\n"
+                    "ctx-companion-bridge = { path = \"../ctx-companion-bridge\" }\n"
+                    "ctx-cli-presentation = { path = \"../ctx-cli-presentation\" }\n"
                     "ctx-client-observability = { path = \"../ctx-client-observability\" }\n"
-                    "ctx-daemon-application = { path = \"../ctx-daemon-application\" }\n"
-                    "ctx-daemon-runtime = { path = \"../ctx-daemon-runtime\" }\n"
-                    "ctx-daemon-service = { path = \"../ctx-daemon-service\" }\n"
+                    "ctx-daemon-cli = { path = \"../ctx-daemon-cli\" }\n"
+                    "ctx-history-capture = { path = \"../ctx-history-capture\" }\n"
+                    "ctx-history-capture-model = { path = \"../ctx-history-capture-model\" }\n"
+                    "ctx-history-cli = { path = \"../ctx-history-cli\" }\n"
                     "ctx-history-jsonl = { path = \"../ctx-history-jsonl\" }\n"
+                    "ctx-history-provider-codex = { path = \"../ctx-history-provider-codex\" }\n"
+                    "ctx-history-refresh = { path = \"../ctx-history-refresh\" }\n"
+                    "ctx-history-provider-docproj = { path = \"../ctx-history-provider-docproj\" }\n"
+                    "ctx-history-provider-gemini = { path = \"../ctx-history-provider-gemini\" }\n"
+                    "ctx-history-provider-native-jsonl = { path = \"../ctx-history-provider-native-jsonl\" }\n"
+                    "ctx-history-provider-runtime = { path = \"../ctx-history-provider-runtime\" }\n"
+                    "ctx-history-provider-trae = { path = \"../ctx-history-provider-trae\" }\n"
+                    "ctx-history-providers-sqlite-selected = { path = \"../ctx-history-providers-sqlite-selected\" }\n"
+                    "ctx-history-providers-sqlite-inventory = { path = \"../ctx-history-providers-sqlite-inventory\" }\n"
+                    "ctx-history-providers-sqlite-logical = { path = \"../ctx-history-providers-sqlite-logical\" }\n"
+                    "ctx-history-providers-jsonl-shared = { path = \"../ctx-history-providers-jsonl-shared\" }\n"
+                    "ctx-history-providers-task-docs = { path = \"../ctx-history-providers-task-docs\" }\n"
+                    "ctx-history-provider-mistral-mux = { path = \"../ctx-history-provider-mistral-mux\" }\n"
+                    "ctx-history-source-io = { path = \"../ctx-history-source-io\" }\n"
                     "ctx-history-refresh-execution = { path = \"../ctx-history-refresh-execution\" }\n"
-                    "ctx-history-query = { path = \"../ctx-history-query\" }\n"
-                    "ctx-semantic-model = { path = \"../ctx-semantic-model\" }\n"
+                    "ctx-history-read-application = { path = \"../ctx-history-read-application\" }\n"
                     "ctx-terminal = { path = \"../ctx-terminal\" }\n"
                     "ctx-upgrade-engine = { path = \"../ctx-upgrade-engine\" }"
                 ),
                 "ctx-agent-integrations": (
                     "ctx-history-core = { path = \"../ctx-history-core\" }"
                 ),
+                "ctx-companion-bridge": (
+                    "ctx-history-platform = { path = \"../ctx-history-platform\" }"
+                ),
                 "ctx-agent-application": (
                     "ctx-agent-integrations = { path = \"../ctx-agent-integrations\" }\n"
                     "ctx-client-observability = { path = \"../ctx-client-observability\" }"
+                ),
+                "ctx-cli-presentation": (
+                    "ctx-agent-application = { path = \"../ctx-agent-application\" }\n"
+                    "ctx-agent-integrations = { path = \"../ctx-agent-integrations\" }\n"
+                    "ctx-client-observability = { path = \"../ctx-client-observability\" }\n"
+                    "ctx-history-cli = { path = \"../ctx-history-cli\" }\n"
+                    "ctx-history-core = { path = \"../ctx-history-core\" }\n"
+                    "ctx-history-read-application = { path = \"../ctx-history-read-application\" }\n"
+                    "ctx-history-refresh = { path = \"../ctx-history-refresh\" }\n"
+                    "ctx-terminal = { path = \"../ctx-terminal\" }\n"
+                    "ctx-upgrade-engine = { path = \"../ctx-upgrade-engine\" }"
                 ),
                 "ctx-client-observability": (
                     "ctx-history-core = { path = \"../ctx-history-core\" }"
@@ -216,8 +362,58 @@ tantivy = { version = "0.26.1", default-features = false, features = ["mmap", "l
                     "ctx-daemon-service = { path = \"../ctx-daemon-service\" }\n"
                     "ctx-history-core = { path = \"../ctx-history-core\" }"
                 ),
+                "ctx-daemon-cli": (
+                    "ctx-client-observability = { path = \"../ctx-client-observability\" }\n"
+                    "ctx-daemon-application = { path = \"../ctx-daemon-application\" }\n"
+                    "ctx-daemon-runtime = { path = \"../ctx-daemon-runtime\" }\n"
+                    "ctx-daemon-service = { path = \"../ctx-daemon-service\" }\n"
+                    "ctx-history-core = { path = \"../ctx-history-core\" }\n"
+                    "ctx-history-index = { path = \"../ctx-history-index\" }\n"
+                    "ctx-history-read-application = { path = \"../ctx-history-read-application\" }\n"
+                    "ctx-semantic-index = { path = \"../ctx-semantic-index\" }\n"
+                    "ctx-semantic-model = { path = \"../ctx-semantic-model\" }\n"
+                    "ctx-terminal = { path = \"../ctx-terminal\" }\n"
+                    "ctx-upgrade-engine = { path = \"../ctx-upgrade-engine\" }"
+                ),
                 "ctx-daemon-runtime": (
                     "ctx-history-core = { path = \"../ctx-history-core\" }"
+                ),
+                "ctx-history-capture": (
+                    "ctx-history-capture-composition = { path = \"../ctx-history-capture-composition\" }\n"
+                    "ctx-history-capture-model = { path = \"../ctx-history-capture-model\" }\n"
+                    "ctx-history-capture-runtime = { path = \"../ctx-history-capture-runtime\" }\n"
+                    "ctx-history-core = { path = \"../ctx-history-core\" }\n"
+                    "ctx-history-jsonl = { path = \"../ctx-history-jsonl\" }\n"
+                    "ctx-history-provider-claude-cursor = { path = \"../ctx-history-provider-claude-cursor\" }\n"
+                    "ctx-history-provider-runtime = { path = \"../ctx-history-provider-runtime\" }"
+                ),
+                "ctx-history-capture-composition": (
+                    "chrono.workspace = true\n"
+                    "ctx-history-capture-model = { path = \"../ctx-history-capture-model\" }\n"
+                    "ctx-history-capture-runtime = { path = \"../ctx-history-capture-runtime\" }\n"
+                    "ctx-history-core = { path = \"../ctx-history-core\" }\n"
+                    "ctx-history-index = { path = \"../ctx-history-index\" }\n"
+                    "ctx-history-jsonl = { path = \"../ctx-history-jsonl\" }\n"
+                    "ctx-history-provider-claude-cursor = { path = \"../ctx-history-provider-claude-cursor\" }\n"
+                    "ctx-history-provider-codex = { path = \"../ctx-history-provider-codex\" }\n"
+                    "ctx-history-provider-docproj = { path = \"../ctx-history-provider-docproj\" }\n"
+                    "ctx-history-provider-gemini = { path = \"../ctx-history-provider-gemini\" }\n"
+                    "ctx-history-provider-mistral-mux = { path = \"../ctx-history-provider-mistral-mux\" }\n"
+                    "ctx-history-provider-native-jsonl = { path = \"../ctx-history-provider-native-jsonl\" }\n"
+                    "ctx-history-provider-runtime = { path = \"../ctx-history-provider-runtime\" }\n"
+                    "ctx-history-provider-trae = { path = \"../ctx-history-provider-trae\" }\n"
+                    "ctx-history-providers-jsonl-shared = { path = \"../ctx-history-providers-jsonl-shared\" }\n"
+                    "ctx-history-providers-sqlite-inventory = { path = \"../ctx-history-providers-sqlite-inventory\" }\n"
+                    "ctx-history-providers-sqlite-logical = { path = \"../ctx-history-providers-sqlite-logical\" }\n"
+                    "ctx-history-providers-sqlite-selected = { path = \"../ctx-history-providers-sqlite-selected\" }\n"
+                    "ctx-history-providers-task-docs = { path = \"../ctx-history-providers-task-docs\" }\n"
+                    "ctx-history-source-discovery = { path = \"../ctx-history-source-discovery\" }\n"
+                    "ctx-history-source-io = { path = \"../ctx-history-source-io\" }\n"
+                    "serde_json.workspace = true\n"
+                    "sha2.workspace = true\n"
+                    "tempfile.workspace = true\n"
+                    "thiserror.workspace = true\n"
+                    "uuid.workspace = true"
                 ),
                 "ctx-history-index": (
                     "ctx-history-index-format = { path = \"../ctx-history-index-format\" }\n"
@@ -231,8 +427,176 @@ tantivy = { version = "0.26.1", default-features = false, features = ["mmap", "l
                     "tantivy.workspace = true"
                 ),
                 "ctx-history-jsonl": (
+                    "ctx-history-capture-model = { path = \"../ctx-history-capture-model\" }\n"
+                    "ctx-history-capture-runtime = { path = \"../ctx-history-capture-runtime\" }\n"
                     "ctx-history-core = { path = \"../ctx-history-core\" }\n"
-                    "ctx-history-index = { path = \"../ctx-history-index\" }"
+                    "serde_json.workspace = true"
+                ),
+                "ctx-history-provider-claude-cursor": (
+                    "ctx-history-capture-model = { path = \"../ctx-history-capture-model\" }\n"
+                    "ctx-history-capture-runtime = { path = \"../ctx-history-capture-runtime\" }\n"
+                    "ctx-history-core = { path = \"../ctx-history-core\" }\n"
+                    "ctx-history-jsonl = { path = \"../ctx-history-jsonl\" }\n"
+                    "ctx-history-provider-runtime = { path = \"../ctx-history-provider-runtime\" }"
+                ),
+                "ctx-history-provider-gemini": (
+                    "ctx-history-capture-model = { path = \"../ctx-history-capture-model\" }\n"
+                    "ctx-history-core = { path = \"../ctx-history-core\" }\n"
+                    "ctx-history-jsonl = { path = \"../ctx-history-jsonl\" }\n"
+                    "ctx-history-source-io = { path = \"../ctx-history-source-io\" }\n"
+                    "chrono.workspace = true\n"
+                    "serde.workspace = true\n"
+                    "serde_json.workspace = true\n"
+                    "sha2.workspace = true\n"
+                    "thiserror.workspace = true"
+                ),
+                "ctx-history-provider-docproj": (
+                    "ctx-history-capture-model = { path = \"../ctx-history-capture-model\" }\n"
+                    "ctx-history-capture-runtime = { path = \"../ctx-history-capture-runtime\" }\n"
+                    "ctx-history-core = { path = \"../ctx-history-core\" }\n"
+                    "ctx-history-provider-runtime = { path = \"../ctx-history-provider-runtime\" }\n"
+                    "ctx-history-source-discovery = { path = \"../ctx-history-source-discovery\" }\n"
+                    "ctx-history-source-io = { path = \"../ctx-history-source-io\" }\n"
+                    "ctx-history-source-sqlite = { path = \"../ctx-history-source-sqlite\" }\n"
+                    "chrono.workspace = true\n"
+                    "rusqlite.workspace = true\n"
+                    "serde.workspace = true\n"
+                    "serde_json.workspace = true\n"
+                    "sha2.workspace = true\n"
+                    "thiserror.workspace = true"
+                ),
+                "ctx-history-provider-runtime": (
+                    "ctx-history-capture-model = { path = \"../ctx-history-capture-model\" }\n"
+                    "ctx-history-capture-runtime = { path = \"../ctx-history-capture-runtime\" }\n"
+                    "ctx-history-core = { path = \"../ctx-history-core\" }\n"
+                    "ctx-history-jsonl = { path = \"../ctx-history-jsonl\" }"
+                ),
+                "ctx-history-provider-native-jsonl": (
+                    "ctx-history-capture-model = { path = \"../ctx-history-capture-model\" }\n"
+                    "ctx-history-capture-runtime = { path = \"../ctx-history-capture-runtime\" }\n"
+                    "ctx-history-core = { path = \"../ctx-history-core\" }\n"
+                    "ctx-history-jsonl = { path = \"../ctx-history-jsonl\" }\n"
+                    "ctx-history-native-jsonl-parsers = { path = \"../ctx-history-native-jsonl-parsers\" }\n"
+                    "ctx-history-source-io = { path = \"../ctx-history-source-io\" }\n"
+                    "chrono.workspace = true\n"
+                    "serde.workspace = true\n"
+                    "serde_json.workspace = true\n"
+                    "sha2.workspace = true\n"
+                    "thiserror.workspace = true"
+                ),
+                "ctx-history-provider-codex": (
+                    "ctx-history-capture-model = { path = \"../ctx-history-capture-model\" }\n"
+                    "ctx-history-capture-runtime = { path = \"../ctx-history-capture-runtime\" }\n"
+                    "ctx-history-core = { path = \"../ctx-history-core\" }\n"
+                    "ctx-history-source-io = { path = \"../ctx-history-source-io\" }\n"
+                    "chrono.workspace = true\n"
+                    "serde.workspace = true\n"
+                    "serde_json.workspace = true\n"
+                    "sha2.workspace = true\n"
+                    "tempfile.workspace = true\n"
+                    "thiserror.workspace = true\n"
+                    "uuid.workspace = true"
+                ),
+                "ctx-history-provider-trae": (
+                    "ctx-history-capture-model = { path = \"../ctx-history-capture-model\" }\n"
+                    "ctx-history-capture-runtime = { path = \"../ctx-history-capture-runtime\" }\n"
+                    "ctx-history-core = { path = \"../ctx-history-core\" }\n"
+                    "ctx-history-provider-runtime = { path = \"../ctx-history-provider-runtime\" }\n"
+                    "ctx-history-source-io = { path = \"../ctx-history-source-io\" }\n"
+                    "ctx-history-source-sqlite = { path = \"../ctx-history-source-sqlite\" }\n"
+                    "chrono.workspace = true\n"
+                    "rusqlite.workspace = true\n"
+                    "serde.workspace = true\n"
+                    "serde_json.workspace = true\n"
+                    "sha2.workspace = true\n"
+                    "thiserror.workspace = true\n"
+                    "tempfile.workspace = true"
+                ),
+                "ctx-history-providers-task-docs": (
+                    "base64.workspace = true\n"
+                    "chrono.workspace = true\n"
+                    "libc.workspace = true\n"
+                    "regex.workspace = true\n"
+                    "serde.workspace = true\n"
+                    "serde_json.workspace = true\n"
+                    "sha2.workspace = true\n"
+                    "thiserror.workspace = true\n"
+                    "uuid.workspace = true\n"
+                    "ctx-history-capture-model = { path = \"../ctx-history-capture-model\" }\n"
+                    "ctx-history-capture-runtime = { path = \"../ctx-history-capture-runtime\" }\n"
+                    "ctx-history-core = { path = \"../ctx-history-core\" }\n"
+                    "ctx-history-source-io = { path = \"../ctx-history-source-io\" }"
+                ),
+                "ctx-history-source-io": "",
+                "ctx-history-source-discovery": "",
+                "ctx-history-source-sqlite": "",
+                "ctx-history-providers-jsonl-shared": (
+                    "ctx-history-capture-model = { path = \"../ctx-history-capture-model\" }\n"
+                    "ctx-history-capture-runtime = { path = \"../ctx-history-capture-runtime\" }\n"
+                    "ctx-history-core = { path = \"../ctx-history-core\" }\n"
+                    "ctx-history-jsonl = { path = \"../ctx-history-jsonl\" }\n"
+                    "ctx-history-provider-runtime = { path = \"../ctx-history-provider-runtime\" }"
+                ),
+                "ctx-history-provider-mistral-mux": (
+                    "ctx-history-capture-model = { path = \"../ctx-history-capture-model\" }\n"
+                    "ctx-history-capture-runtime = { path = \"../ctx-history-capture-runtime\" }\n"
+                    "ctx-history-core = { path = \"../ctx-history-core\" }\n"
+                    "ctx-history-jsonl = { path = \"../ctx-history-jsonl\" }\n"
+                    "ctx-history-provider-runtime = { path = \"../ctx-history-provider-runtime\" }\n"
+                    "ctx-history-source-io = { path = \"../ctx-history-source-io\" }\n"
+                    "chrono.workspace = true\n"
+                    "serde.workspace = true\n"
+                    "serde_json.workspace = true\n"
+                    "sha2.workspace = true\n"
+                    "tempfile.workspace = true\n"
+                    "uuid.workspace = true"
+                ),
+                "ctx-history-providers-sqlite-selected": (
+                    "ctx-history-capture-model = { path = \"../ctx-history-capture-model\" }\n"
+                    "ctx-history-capture-runtime = { path = \"../ctx-history-capture-runtime\" }\n"
+                    "ctx-history-core = { path = \"../ctx-history-core\" }\n"
+                    "ctx-history-source-io = { path = \"../ctx-history-source-io\" }\n"
+                    "ctx-history-source-sqlite = { path = \"../ctx-history-source-sqlite\" }"
+                ),
+                "ctx-history-providers-sqlite-inventory": (
+                    "ctx-history-capture-model = { path = \"../ctx-history-capture-model\" }\n"
+                    "ctx-history-capture-runtime = { path = \"../ctx-history-capture-runtime\" }\n"
+                    "ctx-history-core = { path = \"../ctx-history-core\" }\n"
+                    "ctx-history-provider-runtime = { path = \"../ctx-history-provider-runtime\" }\n"
+                    "ctx-history-source-io = { path = \"../ctx-history-source-io\" }\n"
+                    "ctx-history-source-sqlite = { path = \"../ctx-history-source-sqlite\" }"
+                ),
+                "ctx-history-providers-sqlite-logical": (
+                    "ctx-history-capture-model = { path = \"../ctx-history-capture-model\" }\n"
+                    "ctx-history-capture-runtime = { path = \"../ctx-history-capture-runtime\" }\n"
+                    "ctx-history-core = { path = \"../ctx-history-core\" }\n"
+                    "ctx-history-source-io = { path = \"../ctx-history-source-io\" }\n"
+                    "ctx-history-source-sqlite = { path = \"../ctx-history-source-sqlite\" }\n"
+                    "rmpv.workspace = true\n"
+                    "serde_json.workspace = true"
+                ),
+                "ctx-history-capture-model": (
+                    "ctx-history-core = { path = \"../ctx-history-core\" }\n"
+                    "serde_json.workspace = true"
+                ),
+                "ctx-history-cli": (
+                    "ctx-client-observability = { path = \"../ctx-client-observability\" }\n"
+                    "ctx-daemon-cli = { path = \"../ctx-daemon-cli\" }\n"
+                    "ctx-history-core = { path = \"../ctx-history-core\" }\n"
+                    "ctx-history-index = { path = \"../ctx-history-index\" }\n"
+                    "ctx-history-read-application = { path = \"../ctx-history-read-application\" }\n"
+                    "ctx-history-refresh = { path = \"../ctx-history-refresh\" }\n"
+                    "ctx-terminal = { path = \"../ctx-terminal\" }"
+                ),
+                "ctx-history-refresh": (
+                    "ctx-history-core = { path = \"../ctx-history-core\" }\n"
+                    "ctx-history-index = { path = \"../ctx-history-index\" }\n"
+                    "ctx-history-refresh-execution = { path = \"../ctx-history-refresh-execution\" }"
+                ),
+                "ctx-history-capture-runtime": (
+                    "ctx-history-capture-model = { path = \"../ctx-history-capture-model\" }\n"
+                    "ctx-history-core = { path = \"../ctx-history-core\" }\n"
+                    "uuid.workspace = true"
                 ),
                 "ctx-daemon-service": (
                     "ctx-client-observability = { path = \"../ctx-client-observability\" }\n"
@@ -243,7 +607,7 @@ tantivy = { version = "0.26.1", default-features = false, features = ["mmap", "l
                     "ctx-semantic-model = { path = \"../ctx-semantic-model\" }\n"
                     "ctx-upgrade-engine = { path = \"../ctx-upgrade-engine\" }"
                 ),
-                "ctx-history-query": (
+                "ctx-history-read-application": (
                     "ctx-history-core = { path = \"../ctx-history-core\" }\n"
                     "ctx-history-index-format = { path = \"../ctx-history-index-format\" }\n"
                     "ctx-history-index-query = { path = \"../ctx-history-index-query\" }"
@@ -261,9 +625,12 @@ tantivy = { version = "0.26.1", default-features = false, features = ["mmap", "l
             version = (
                 'version = "1.0.0"'
                 if name in {
+                    "ctx-cli-presentation",
                     "ctx-daemon-application",
+                    "ctx-daemon-cli",
                     "ctx-daemon-runtime",
                     "ctx-daemon-service",
+                    "ctx-history-cli",
                     "ctx-terminal",
                 }
                 else "version.workspace = true"
@@ -310,17 +677,43 @@ repository = "https://example.invalid/{name}"
             "@@//crates/ctx-cli:ctx",
             "@@//crates/ctx-agent-application:ctx_agent_application",
             "@@//crates/ctx-agent-integrations:ctx_agent_integrations",
+            "@@//crates/ctx-companion-bridge:ctx_companion_bridge",
+            "@@//crates/ctx-cli-presentation:ctx_cli_presentation",
             "@@//crates/ctx-client-observability:ctx_client_observability",
             "@@//crates/ctx-daemon-application:ctx_daemon_application",
+            "@@//crates/ctx-daemon-cli:ctx_daemon_cli",
             "@@//crates/ctx-daemon-runtime:ctx_daemon_runtime",
             "@@//crates/ctx-daemon-service:ctx_daemon_service",
+            "@@//crates/ctx-history-capture:ctx_history_capture",
+            "@@//crates/ctx-history-capture-composition:ctx_history_capture_composition",
+            "@@//crates/ctx-history-capture-model:ctx_history_capture_model",
+            "@@//crates/ctx-history-cli:ctx_history_cli",
+            "@@//crates/ctx-history-capture-runtime:ctx_history_capture_runtime",
             "@@//crates/ctx-history-core:ctx_history_core",
             "@@//crates/ctx-history-index-format:ctx_history_index_format",
             "@@//crates/ctx-history-index:ctx_history_index",
             "@@//crates/ctx-history-index-query:ctx_history_index_query",
             "@@//crates/ctx-history-jsonl:ctx_history_jsonl",
+            "@@//crates/ctx-history-platform:ctx_history_platform",
+            "@@//crates/ctx-history-provider-claude-cursor:ctx_history_provider_claude_cursor",
+            "@@//crates/ctx-history-provider-docproj:ctx_history_provider_docproj",
+            "@@//crates/ctx-history-provider-gemini:ctx_history_provider_gemini",
+            "@@//crates/ctx-history-provider-mistral-mux:ctx_history_provider_mistral_mux",
+            "@@//crates/ctx-history-provider-native-jsonl:ctx_history_provider_native_jsonl",
+            "@@//crates/ctx-history-provider-runtime:ctx_history_provider_runtime",
+            "@@//crates/ctx-history-provider-codex:ctx_history_provider_codex",
+            "@@//crates/ctx-history-provider-trae:ctx_history_provider_trae",
+            "@@//crates/ctx-history-providers-sqlite-selected:ctx_history_providers_sqlite_selected",
+            "@@//crates/ctx-history-providers-sqlite-inventory:ctx_history_providers_sqlite_inventory",
+            "@@//crates/ctx-history-providers-sqlite-logical:ctx_history_providers_sqlite_logical",
+            "@@//crates/ctx-history-providers-task-docs:ctx_history_providers_task_docs",
+            "@@//crates/ctx-history-source-io:ctx_history_source_io",
+            "@@//crates/ctx-history-source-discovery:ctx_history_source_discovery",
+            "@@//crates/ctx-history-source-sqlite:ctx_history_source_sqlite",
+            "@@//crates/ctx-history-refresh:ctx_history_refresh",
+            "@@//crates/ctx-history-providers-jsonl-shared:ctx_history_providers_jsonl_shared",
             "@@//crates/ctx-history-refresh-execution:ctx_history_refresh_execution",
-            "@@//crates/ctx-history-query:ctx_history_query",
+            "@@//crates/ctx-history-read-application:ctx_history_read_application",
             "@@//crates/ctx-semantic-index:ctx_semantic_index",
             "@@//crates/ctx-semantic-model:ctx_semantic_model",
             "@@//crates/ctx-terminal:ctx_terminal",
@@ -407,17 +800,33 @@ repository = "https://example.invalid/{name}"
                 (
                     "ctx-agent-application",
                     "ctx-agent-integrations",
+                    "ctx-companion-bridge",
+                    "ctx-cli-presentation 1.0.0",
                     "ctx-client-observability",
-                    "ctx-daemon-application 1.0.0",
+                    "ctx-daemon-cli 1.0.0",
+                    "ctx-history-cli 1.0.0",
                     "ctx-history-core",
-                    "ctx-daemon-runtime 1.0.0",
-                    "ctx-daemon-service 1.0.0",
+                    "ctx-history-refresh",
+                    "ctx-history-capture",
+                    "ctx-history-capture-model",
                     "ctx-history-index",
                     "ctx-history-jsonl",
+                    "ctx-history-provider-docproj",
+                    "ctx-history-source-io",
+                    "ctx-history-provider-gemini",
+                    "ctx-history-provider-native-jsonl",
+                    "ctx-history-provider-codex",
+                    "ctx-history-provider-claude-cursor",
+                    "ctx-history-provider-runtime",
+                    "ctx-history-provider-trae",
+                    "ctx-history-providers-jsonl-shared",
+                    "ctx-history-providers-task-docs",
+                    "ctx-history-provider-mistral-mux",
+                    "ctx-history-providers-sqlite-selected",
+                    "ctx-history-providers-sqlite-inventory",
+                    "ctx-history-providers-sqlite-logical",
                     "ctx-history-refresh-execution",
-                    "ctx-history-query",
-                    "ctx-semantic-index",
-                    "ctx-semantic-model",
+                    "ctx-history-read-application",
                     "ctx-terminal 1.0.0",
                     "ctx-upgrade-engine",
                 ),
@@ -431,6 +840,26 @@ repository = "https://example.invalid/{name}"
                 "ctx-agent-integrations",
                 "0.26.0",
                 ("ctx-history-core",),
+            ),
+            self.package(
+                "ctx-companion-bridge",
+                "0.26.0",
+                ("ctx-history-platform",),
+            ),
+            self.package(
+                "ctx-cli-presentation",
+                "1.0.0",
+                (
+                    "ctx-agent-application",
+                    "ctx-agent-integrations",
+                    "ctx-client-observability",
+                    "ctx-history-cli 1.0.0",
+                    "ctx-history-core",
+                    "ctx-history-read-application",
+                    "ctx-history-refresh",
+                    "ctx-terminal 1.0.0",
+                    "ctx-upgrade-engine",
+                ),
             ),
             self.package(
                 "ctx-client-observability",
@@ -447,7 +876,110 @@ repository = "https://example.invalid/{name}"
                     "ctx-history-core",
                 ),
             ),
+            self.package(
+                "ctx-daemon-cli",
+                "1.0.0",
+                (
+                    "ctx-client-observability",
+                    "ctx-daemon-application 1.0.0",
+                    "ctx-daemon-runtime 1.0.0",
+                    "ctx-daemon-service 1.0.0",
+                    "ctx-history-core",
+                    "ctx-history-index",
+                    "ctx-history-read-application",
+                    "ctx-semantic-index",
+                    "ctx-semantic-model",
+                    "ctx-terminal 1.0.0",
+                    "ctx-upgrade-engine",
+                ),
+            ),
             self.package("ctx-history-core", "0.26.0"),
+            self.package("ctx-history-platform", "0.26.0"),
+            self.package(
+                "ctx-history-capture",
+                "0.26.0",
+                (
+                    "ctx-history-capture-composition",
+                    "ctx-history-capture-model",
+                    "ctx-history-capture-runtime",
+                    "ctx-history-core",
+                    "ctx-history-jsonl",
+                    "ctx-history-provider-claude-cursor",
+                    "ctx-history-provider-runtime",
+                ),
+            ),
+            self.package(
+                "ctx-history-capture-composition",
+                "0.26.0",
+                (
+                    "chrono 0.4.0",
+                    "ctx-history-capture-model",
+                    "ctx-history-capture-runtime",
+                    "ctx-history-core",
+                    "ctx-history-index",
+                    "ctx-history-jsonl",
+                    "ctx-history-provider-claude-cursor",
+                    "ctx-history-provider-codex",
+                    "ctx-history-provider-docproj",
+                    "ctx-history-provider-gemini",
+                    "ctx-history-provider-mistral-mux",
+                    "ctx-history-provider-native-jsonl",
+                    "ctx-history-provider-runtime",
+                    "ctx-history-provider-trae",
+                    "ctx-history-providers-jsonl-shared",
+                    "ctx-history-providers-sqlite-inventory",
+                    "ctx-history-providers-sqlite-logical",
+                    "ctx-history-providers-sqlite-selected",
+                    "ctx-history-providers-task-docs",
+                    "ctx-history-source-discovery",
+                    "ctx-history-source-io",
+                    "serde_json 1.0.0",
+                    "sha2 0.10.9",
+                    "tempfile 3.0.0",
+                    "thiserror 1.0.0",
+                    "uuid 1.0.0",
+                ),
+            ),
+            self.package(
+                "ctx-history-provider-codex",
+                "0.26.0",
+                (
+                    "ctx-history-capture-model",
+                    "ctx-history-capture-runtime",
+                    "ctx-history-core",
+                    "ctx-history-provider-runtime",
+                    "ctx-history-source-io",
+                    "chrono 0.4.0",
+                    "serde_json 1.0.0",
+                    "sha2 0.10.9",
+                    "tempfile 3.0.0",
+                    "thiserror 1.0.0",
+                    "uuid 1.0.0",
+                ),
+            ),
+            self.package(
+                "ctx-history-cli",
+                "1.0.0",
+                (
+                    "ctx-client-observability",
+                    "ctx-daemon-cli 1.0.0",
+                    "ctx-history-core",
+                    "ctx-history-index",
+                    "ctx-history-read-application",
+                    "ctx-history-refresh",
+                    "ctx-terminal 1.0.0",
+                ),
+            ),
+            self.package(
+                "ctx-history-capture-model",
+                "0.26.0",
+                ("ctx-history-core", "serde_json 1.0.0"),
+            ),
+            self.package(
+                "ctx-history-capture-runtime",
+                "0.26.0",
+                ("ctx-history-capture-model", "ctx-history-core", "uuid 1.0.0"),
+            ),
             self.package(
                 "ctx-daemon-runtime",
                 "1.0.0",
@@ -493,11 +1025,204 @@ repository = "https://example.invalid/{name}"
             self.package(
                 "ctx-history-jsonl",
                 "0.26.0",
-                ("ctx-history-core", "ctx-history-index"),
+                (
+                    "ctx-history-capture-model",
+                    "ctx-history-capture-runtime",
+                    "ctx-history-core",
+                    "serde_json 1.0.0",
+                ),
             ),
-            self.package("ctx-history-refresh-execution", "0.26.0"),
             self.package(
-                "ctx-history-query",
+                "ctx-history-provider-claude-cursor",
+                "0.26.0",
+                (
+                    "ctx-history-capture-model",
+                    "ctx-history-capture-runtime",
+                    "ctx-history-core",
+                    "ctx-history-jsonl",
+                    "ctx-history-provider-runtime",
+                ),
+            ),
+            self.package(
+                "ctx-history-provider-docproj",
+                "0.26.0",
+                (
+                    "ctx-history-capture-model",
+                    "ctx-history-capture-runtime",
+                    "ctx-history-core",
+                    "ctx-history-provider-runtime",
+                    "ctx-history-source-discovery",
+                    "ctx-history-source-io",
+                    "ctx-history-source-sqlite",
+                    "chrono 0.4.0",
+                    "rusqlite 0.32.1",
+                    "serde 1.0.0",
+                    "serde_json 1.0.0",
+                    "sha2 0.10.9",
+                    "thiserror 1.0.0",
+                ),
+            ),
+            self.package(
+                "ctx-history-provider-gemini",
+                "0.26.0",
+                (
+                    "ctx-history-capture-model",
+                    "ctx-history-core",
+                    "ctx-history-jsonl",
+                    "ctx-history-source-io",
+                    "chrono 0.4.0",
+                    "serde 1.0.0",
+                    "serde_json 1.0.0",
+                    "sha2 0.10.9",
+                    "thiserror 1.0.0",
+                ),
+            ),
+            self.package(
+                "ctx-history-provider-mistral-mux",
+                "0.26.0",
+                (
+                    "ctx-history-capture-model",
+                    "ctx-history-capture-runtime",
+                    "ctx-history-core",
+                    "ctx-history-jsonl",
+                    "ctx-history-provider-runtime",
+                    "ctx-history-source-io",
+                    "chrono 0.4.0",
+                    "serde 1.0.0",
+                    "serde_json 1.0.0",
+                    "sha2 0.10.9",
+                ),
+            ),
+            self.package(
+                "ctx-history-provider-native-jsonl",
+                "0.26.0",
+                (
+                    "ctx-history-capture-model",
+                    "ctx-history-capture-runtime",
+                    "ctx-history-core",
+                    "ctx-history-jsonl",
+                    "serde_json 1.0.0",
+                ),
+            ),
+            self.package(
+                "ctx-history-provider-runtime",
+                "0.26.0",
+                (
+                    "ctx-history-capture-model",
+                    "ctx-history-capture-runtime",
+                    "ctx-history-core",
+                    "ctx-history-jsonl",
+                ),
+            ),
+            self.package(
+                "ctx-history-provider-trae",
+                "0.26.0",
+                (
+                    "ctx-history-capture-model",
+                    "ctx-history-capture-runtime",
+                    "ctx-history-core",
+                    "ctx-history-provider-runtime",
+                    "ctx-history-source-io",
+                    "ctx-history-source-sqlite",
+                    "chrono 0.4.0",
+                    "serde_json 1.0.0",
+                    "sha2 0.10.9",
+                    "tempfile 3.0.0",
+                    "thiserror 1.0.0",
+                ),
+            ),
+            self.package(
+                "ctx-history-providers-task-docs",
+                "0.26.0",
+                (
+                    "base64 0.22.0",
+                    "chrono 0.4.0",
+                    "libc 0.2.0",
+                    "regex 1.0.0",
+                    "serde 1.0.0",
+                    "serde_json 1.0.0",
+                    "sha2 0.10.9",
+                    "thiserror 1.0.0",
+                    "uuid 1.0.0",
+                    "ctx-history-capture-model",
+                    "ctx-history-capture-runtime",
+                    "ctx-history-core",
+                    "ctx-history-source-io",
+                ),
+            ),
+            self.package(
+                "ctx-history-source-io",
+                "0.26.0",
+            ),
+            self.package("ctx-history-source-discovery", "0.26.0"),
+            self.package(
+                "ctx-history-source-sqlite",
+                "0.26.0",
+                ("ctx-history-source-io",),
+            ),
+            self.package(
+                "ctx-history-providers-jsonl-shared",
+                "0.26.0",
+                (
+                    "ctx-history-capture-model",
+                    "ctx-history-capture-runtime",
+                    "ctx-history-core",
+                    "ctx-history-jsonl",
+                    "ctx-history-provider-runtime",
+                ),
+            ),
+            self.package(
+                "ctx-history-providers-sqlite-selected",
+                "0.26.0",
+                (
+                    "ctx-history-capture-model",
+                    "ctx-history-capture-runtime",
+                    "ctx-history-core",
+                    "ctx-history-source-io",
+                    "ctx-history-source-sqlite",
+                ),
+            ),
+            self.package(
+                "ctx-history-providers-sqlite-inventory",
+                SYNTHETIC_WORKSPACE_VERSION,
+                (
+                    "ctx-history-capture-model",
+                    "ctx-history-capture-runtime",
+                    "ctx-history-core",
+                    "ctx-history-provider-runtime",
+                    "ctx-history-source-io",
+                    "ctx-history-source-sqlite",
+                ),
+            ),
+            self.package(
+                "ctx-history-providers-sqlite-logical",
+                "0.26.0",
+                (
+                    "ctx-history-capture-model",
+                    "ctx-history-capture-runtime",
+                    "ctx-history-core",
+                    "ctx-history-source-io",
+                    "ctx-history-source-sqlite",
+                    "rmpv 1.0.0",
+                    "serde_json 1.0.0",
+                ),
+            ),
+            self.package(
+                "ctx-history-refresh-execution",
+                "0.26.0",
+                ("ctx-history-capture-runtime", "ctx-history-provider-runtime"),
+            ),
+            self.package(
+                "ctx-history-refresh",
+                "0.26.0",
+                (
+                    "ctx-history-core",
+                    "ctx-history-index",
+                    "ctx-history-refresh-execution",
+                ),
+            ),
+            self.package(
+                "ctx-history-read-application",
                 "0.26.0",
                 (
                     "ctx-history-core",
@@ -526,9 +1251,18 @@ repository = "https://example.invalid/{name}"
                 "0.26.0",
                 ("ctx-history-core",),
             ),
+            self.package("chrono", "0.4.0", external=True),
+            self.package("base64", "0.22.0", external=True),
             self.package("fs4", "0.1.0", external=True),
+            self.package("libc", "0.2.0", external=True),
             self.package("lz4_flex", "0.11.0", external=True),
             self.package("memmap2", "0.9.0", external=True),
+            self.package("rmpv", "1.0.0", external=True),
+            self.package("regex", "1.0.0", external=True),
+            self.package("rusqlite", "0.32.1", external=True),
+            self.package("serde", "1.0.0", external=True),
+            self.package("sha2", "0.10.9", external=True),
+            self.package("serde_json", "1.0.0", external=True),
             self.package(
                 "tantivy",
                 "0.26.1",
@@ -542,6 +1276,8 @@ repository = "https://example.invalid/{name}"
                 external=True,
             ),
             self.package("tempfile", "3.0.0", external=True),
+            self.package("thiserror", "1.0.0", external=True),
+            self.package("uuid", "1.0.0", external=True),
             self.package("zstd", "0.13.0", external=True),
         ]
         return "version = 4\n\n" + "\n\n".join(packages) + "\n"
@@ -854,8 +1590,43 @@ repository = "https://example.invalid/{name}"
         self.assertEqual(
             len(cargo_components), len(WORKSPACE_PACKAGES) + len(EXTERNAL_PACKAGES)
         )
+        self.assertEqual(
+            {component["name"] for component in cargo_components},
+            {name for name, _ in WORKSPACE_PACKAGES}
+            | {name for name, _ in EXTERNAL_PACKAGES},
+        )
         self.assertTrue(
             all(component.get("licenses") for component in cargo_components)
+        )
+        sqlite_inventory = next(
+            component
+            for component in cargo_components
+            if component["name"] == "ctx-history-providers-sqlite-inventory"
+        )
+        self.assertEqual(
+            sqlite_inventory["version"], SYNTHETIC_WORKSPACE_VERSION
+        )
+        cargo_components_by_ref = {
+            component["bom-ref"]: component for component in cargo_components
+        }
+        cargo_dependencies_by_ref = {
+            dependency["ref"]: dependency["dependsOn"]
+            for dependency in document["dependencies"]
+            if dependency["ref"] in cargo_components_by_ref
+        }
+        document_projection = next(
+            component
+            for component in cargo_components
+            if component["name"] == "ctx-history-provider-docproj"
+        )
+        self.assertEqual(
+            {
+                cargo_components_by_ref[dependency]["name"]
+                for dependency in cargo_dependencies_by_ref[
+                    document_projection["bom-ref"]
+                ]
+            },
+            DOCUMENT_PROJECTION_DIRECT_DEPENDENCIES,
         )
         tantivy = next(
             component
@@ -919,6 +1690,7 @@ repository = "https://example.invalid/{name}"
             <= closure_names
         )
         self.assertIn("tantivy 0.26.1", self.notices.read_text(encoding="utf-8"))
+        self.assertIn("thiserror 1.0.0", self.notices.read_text(encoding="utf-8"))
         self.assertIn(
             "Synthetic license text for tantivy.",
             self.notices.read_text(encoding="utf-8"),
@@ -941,6 +1713,54 @@ repository = "https://example.invalid/{name}"
             for component in json.loads(self.sbom.read_bytes())["components"]
         }
         self.assertNotIn("target-only", names)
+
+    def test_task_document_pack_omission_is_rejected(self) -> None:
+        pack_label = "@@//crates/ctx-history-providers-task-docs:ctx_history_providers_task_docs"
+        labels = self.target_inventory.read_text(encoding="utf-8").splitlines()
+        self.assertIn(pack_label, labels)
+        self.target_inventory.write_text(
+            "\n".join(label for label in labels if label != pack_label) + "\n",
+            encoding="utf-8",
+        )
+        rejected = self.run_command("generate", check=False)
+        self.assertNotEqual(rejected.returncode, 0)
+        self.assertIn(
+            "target dependency inventory omits release workspace packages: "
+            "ctx-history-providers-task-docs",
+            rejected.stderr,
+        )
+
+    def test_document_projection_release_package_omission_is_rejected(self) -> None:
+        omitted = "@@//crates/ctx-history-provider-docproj:ctx_history_provider_docproj"
+        labels = self.target_inventory.read_text(encoding="utf-8").splitlines()
+        self.assertIn(omitted, labels)
+        self.target_inventory.write_text(
+            "\n".join(label for label in labels if label != omitted) + "\n",
+            encoding="utf-8",
+        )
+        rejected = self.run_command("generate", check=False)
+        self.assertNotEqual(rejected.returncode, 0)
+        self.assertIn(
+            "target dependency inventory omits release workspace packages: "
+            "ctx-history-provider-docproj",
+            rejected.stderr,
+        )
+
+    def test_companion_bridge_release_package_omission_is_rejected(self) -> None:
+        omitted = "@@//crates/ctx-companion-bridge:ctx_companion_bridge"
+        labels = self.target_inventory.read_text(encoding="utf-8").splitlines()
+        self.assertIn(omitted, labels)
+        self.target_inventory.write_text(
+            "\n".join(label for label in labels if label != omitted) + "\n",
+            encoding="utf-8",
+        )
+        rejected = self.run_command("generate", check=False)
+        self.assertNotEqual(rejected.returncode, 0)
+        self.assertIn(
+            "target dependency inventory omits release workspace packages: "
+            "ctx-companion-bridge",
+            rejected.stderr,
+        )
 
     def test_missing_license_expression_is_rejected(self) -> None:
         manifest = (

@@ -6,7 +6,7 @@ use crate::providers::goose::{
     stream::{GooseMessageCellDisposition, GooseScannedMessage, GooseScannedSession},
 };
 
-const GOOSE_LOGICAL_DATABASE_DOMAIN: &[u8] = b"ctx.goose.logical-database.v2\0";
+const GOOSE_LOGICAL_DATABASE_DOMAIN: &[u8] = b"ctx.goose.logical-database.v3-neutral-activity\0";
 const GOOSE_LOGICAL_SESSION_DOMAIN: &[u8] = b"ctx.goose.logical-session.v1\0";
 const GOOSE_LOGICAL_MESSAGE_DOMAIN: &[u8] = b"ctx.goose.logical-message.v1\0";
 
@@ -125,10 +125,7 @@ fn goose_message_evidence(message: &GooseScannedMessage) -> [u8; 32] {
 fn message_disposition_code(disposition: GooseMessageCellDisposition) -> u8 {
     match disposition {
         GooseMessageCellDisposition::Retained => 0,
-        GooseMessageCellDisposition::OutputSuccess => 1,
-        GooseMessageCellDisposition::OutputFailure => 2,
-        GooseMessageCellDisposition::OutputTimeout => 3,
-        GooseMessageCellDisposition::OutputUnknown => 4,
+        GooseMessageCellDisposition::ToolOutput => 1,
         GooseMessageCellDisposition::MalformedJson => 5,
         GooseMessageCellDisposition::UnsupportedJsonRoot => 6,
         GooseMessageCellDisposition::NonObjectBlock => 7,

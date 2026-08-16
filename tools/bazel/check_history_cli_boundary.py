@@ -53,7 +53,6 @@ EVALUATED_REVERSE_BAZEL_CONSUMERS = {
         "//crates/ctx-cli:ctx",
         "//crates/ctx-cli:ctx_auto_upgrade_acceptance_fixture",
         "//crates/ctx-cli:ctx_hosted_uninstall_test_host",
-        "//crates/ctx-cli:ctx_pro_test_host",
         "//crates/ctx-cli:ctx_upgrade_test_harness",
         "//crates/ctx-history-cli:lib",
         "//crates/ctx-history-cli:request_parity_tests",
@@ -210,7 +209,7 @@ def _validate_cargo(workspace_path: Path, history_path: Path, final_path: Path, 
     if _package_name(final_manifest, final_path) != FINAL_PACKAGE:
         raise BoundaryError("final Cargo package identity drifted")
     history_dependencies = {name for _, name in _resolved_dependencies(history_manifest, HISTORY_PACKAGE, workspace)}
-    forbidden = sorted(name for name in history_dependencies if name in FORBIDDEN_HISTORY_CARGO or name.startswith("ctx-agent-") or name.startswith("ctx-pro-"))
+    forbidden = sorted(name for name in history_dependencies if name in FORBIDDEN_HISTORY_CARGO or name.startswith("ctx-agent-"))
     if forbidden:
         raise BoundaryError("ctx-history-cli has forbidden Cargo dependencies: " + ", ".join(forbidden))
 
@@ -518,12 +517,11 @@ def _validate_history_build(path: Path) -> None:
 def _validate_final_build(path: Path) -> None:
     package = "ctx-cli"
     tokens = _tokenize(path.read_text(encoding="utf-8"), package)
-    _validate_loads(tokens, package, FINAL_LOADS, {"CTX_CLI_DEPS", "CTX_CLI_TEST_DEPS", "CTX_CLI_PRO_TEST_HOST_DEPS", "CTX_CLI_QUALIFICATION_DEPS"})
+    _validate_loads(tokens, package, FINAL_LOADS, {"CTX_CLI_DEPS", "CTX_CLI_TEST_DEPS", "CTX_CLI_QUALIFICATION_DEPS"})
     _validate_call_surface(tokens, package, {"aliases", "all_crate_deps", "cargo_toml_env_vars", "crate_deps", "crate_edition", "ctx_cli_integration_test", "ctx_cli_test_data", "ctx_rust_binary", "ctx_rust_test", "dict", "exports_files", "filegroup", "glob", "load", "loc_check_inputs", "package", "select", "test_suite"})
     expected_labels = {
         "CTX_CLI_DEPS": (HISTORY_LABEL, 2),
         "CTX_CLI_TEST_DEPS": (HISTORY_TEST_SUPPORT_LABEL, 2),
-        "CTX_CLI_PRO_TEST_HOST_DEPS": (HISTORY_LABEL, 2),
         "CTX_CLI_QUALIFICATION_DEPS": (HISTORY_LABEL, 4),
     }
     for variable, (label, expected_uses) in expected_labels.items():
@@ -543,11 +541,10 @@ def _validate_final_build(path: Path) -> None:
                 "its reviewed Rust targets"
             )
     history_strings = [token.value for token in tokens if token.kind == "string" and "ctx-history-cli" in token.value]
-    if sorted(history_strings) != sorted([HISTORY_LABEL, HISTORY_LABEL, HISTORY_LABEL, HISTORY_TEST_SUPPORT_LABEL]):
+    if sorted(history_strings) != sorted([HISTORY_LABEL, HISTORY_LABEL, HISTORY_TEST_SUPPORT_LABEL]):
         raise BoundaryError(f"{package} Bazel reverse history-cli labels drifted")
     binary_expected = {
         "ctx": ("CTX_CLI_DEPS",),
-        "ctx_pro_test_host": ("CTX_CLI_PRO_TEST_HOST_DEPS",),
         "ctx_auto_upgrade_acceptance_fixture": ("CTX_CLI_QUALIFICATION_DEPS",),
         "ctx_hosted_uninstall_test_host": ("CTX_CLI_QUALIFICATION_DEPS",),
         "ctx_upgrade_test_harness": ("CTX_CLI_QUALIFICATION_DEPS",),
@@ -601,7 +598,6 @@ def _validate_reverse_build_inventory(
         final_build.resolve(): (
             HISTORY_LABEL,
             HISTORY_TEST_SUPPORT_LABEL,
-            HISTORY_LABEL,
             HISTORY_LABEL,
         ),
         presentation_build: (HISTORY_LABEL, HISTORY_TEST_SUPPORT_LABEL, HISTORY_LABEL),
@@ -792,7 +788,6 @@ def _validate_rust_sources(history_source_root: Path, provider_args: Path, provi
             for namespace, member in _qualified_rust_paths(tokens)
             if namespace in {"clap", "ctx_cli"}
             or namespace.startswith("ctx_agent_")
-            or namespace.startswith("ctx_pro_")
             or (namespace == "identity" and member == "home_dir")
             or (namespace == "CaptureProvider" and member == "Unknown")
         }

@@ -137,99 +137,24 @@ tool, SQL surface, or search behavior. See
 [`mcp-tool-call-attribution.md`](mcp-tool-call-attribution.md).
 
 The `status` tool returns the CLI JSON status read model unchanged in
-`structuredContent`: the Core history report plus `upgrade`, `pro`,
-compact `local_usage`, and `read_only: true`. The added facts remain
-machine-only and do not expand the MCP text fallback. The status read does not
-import, initialize, refresh, or mutate source, Pro, upgrade, or usage state;
-configured post-delivery local-usage accounting remains the independent server
-boundary described below.
-
-Optional Local Pro tools include:
-
-- `pro_status`, inspect helper availability, capabilities, nonsecret access
-  state, applicable refresh/access/grace deadlines, and compact local usage
-  aggregates without returning the helper or usage-store path;
-- `blame`, return typed, fully cited provenance for an exact `file`, `commit`,
-  or `pull_request` target.
-
-The `blame` target is exactly one of `file`, `commit`, or `pull_request`.
-`target.repository` is an optional logical identity such as
-`forge:github.com/ctxrs/ctx`, never a path; a numeric PR selector requires it.
-File `target.lines` contains positive inclusive `start` and `end` values.
-
-MCP blame defaults to and permits at most 8 complete matches per page. Its
-authenticated cursor is bound to the request and current graph state. Every
-returned match has all of its referenced entries in the deduplicated evidence
-table; the text fallback emits every match and every evidence entry without
-clipping. After adding both exact `structuredContent` and the text fallback,
-the final serialized JSON-RPC response is capped at 1 MiB. If a complete helper
-page exceeds that MCP-specific cap, the tool returns a small
-`invalid_response` error asking the caller to lower `limit` or use
-`ctx blame ... --format json`; it does not truncate a match or evidence entry and does
-not fabricate a continuation cursor.
-
-Successful `structuredContent` has the same semantics as CLI blame JSON,
-including `outcome.attribution` (`proven`, `possible`, `conflicting`, or `none`)
-and per-page evaluated coverage. File and PR coverage counts never perform a
-total-result scan and never uses a partial state. Conflicting producer evidence
-is a successful tool result, while target, repository, and commit-rewrite
-ambiguities are failures. The text fallback leads with the same outcome and page
-coverage.
-
-MCP and CLI JSON include the same `freshness` object. Routine `current`
-freshness stays out of human CLI
-output; `stale_committed` is warned. A stale miss fails rather than claiming
-`none`; mixed stale coverage also fails when any evaluated unit is `none`.
-
-`pro_status` is read-only. `blame` advertises `readOnlyHint: false` because its
-bounded maintenance wake can cause the daemon to advance the encrypted derived
-Pro graph. Ordinary blame reads the latest committed Pro generation while that
-catch-up proceeds; only an explicit wait policy waits for a requested frontier.
-It never writes provider history or repositories. The wake is nondestructive
-and idempotent.
-
-PR activity remains separate from code production. PR code membership appears
-only when structured captured forge evidence names the canonical PR and exact
-Git object ID in the same recognized record. When that proof is absent, the
-result explicitly contains no PR-commit relationship. MCP Pro failures set
-`isError: true` and put the exact CLI JSON diagnostic in `structuredContent`:
-matching stable `error`/`error_code`, closed `reason`, trusted `message`,
-`retryable`, and applicable freshness, one typed argv action, or at most five
-sanitized candidates. Text is rendered from that object. Helper prose and paths
-are never exposed. Core search is only an explicit advisory for current `none`,
-current `target_not_indexed`, or `operation_unavailable`; MCP never invokes it
-automatically.
-Helper/graph readiness and subscription access are separate fields. Access is
-`trial`, `active`, `canceling_paid`, `offline_grace`, `locked`, or null when it
-cannot be determined.
-
-`pro_status` may include a `$20/month` continuation action during a trial and a
-neutral, unpriced `pro_restore_access` action with `graph_preserved: true` when
-access is locked. It does not show a purchase action for paid active,
-`canceling_paid`, or `offline_grace` access and does not replace the existing
-`next_action`. Status never opens a browser.
-
-MCP has no referral tool, attribution input, commission status, or referral
-promotion. Referral attribution exists only through
-`ctx pro --referral <codename>`, and the private aggregate referrer status is
-available only through the explicit authenticated `ctx referral status`
-command.
+`structuredContent`: the Core history report plus `upgrade`, compact
+`local_usage`, and `read_only: true`. The added facts remain machine-only
+and do not expand the MCP text fallback. The status read does not import,
+initialize, refresh, or mutate source, upgrade, or usage state; configured
+post-delivery local-usage accounting remains the independent server boundary
+described below.
 
 Local usage aggregation counts only recognized `tools/call` requests after the
 complete JSON-RPC response has serialized, written, and flushed. Initialize,
 ping, tool listing, malformed or invalid-ID envelopes, notifications,
 pre-initialization protocol errors, unknown tools, and automatic daemon work
-are not counted. Recognized tool/argument failures may count; invalid blame
-targets use an N/A target class. MCP blame creates one local observation
-enriched with its Pro result even though generic MCP and Pro remote event
-reporting may independently observe the same boundary. The compact report’s
-`mcp_response_bytes` is factual serialized transport bytes, including the
-newline—not tokens or savings. Local recording has no network path, is
-independent of remote event reporting, and fails silently without changing MCP
-output; explicit `pro_status` reports stable content-free usage-store errors
-instead of raw paths or causes. The server re-resolves the dedicated local
-control for every delivered call; an explicit `false` takes effect before store
-I/O, while an unrelated config read/parse failure retains the last known state.
+are not counted. The compact report’s `mcp_response_bytes` is factual
+serialized transport bytes, including the newline—not tokens or savings. Local
+recording has no network path, is independent of remote event reporting, and
+fails silently without changing MCP output. The server re-resolves the
+dedicated local control for every delivered call; an explicit `false` takes
+effect before store I/O, while an unrelated config read/parse failure retains
+the last known state.
 
 MCP search sends the same bounded maintenance wake as CLI search and then
 queries committed generations. It follows the CLI lexical, semantic, and
@@ -258,16 +183,9 @@ MCP output as private local history: it may include absolute paths, source
 metadata, snippets, transcript text, MCP arguments, and response payloads, and
 the MCP host may log or forward tool output.
 
-Pro query text is selected by the authoritative `payload_type`, not merely by
-the presence of a `results` array. Each Pro view keeps its distinct heading and
-renders typed targets/resources, fact predicates and objects, confidence,
-state, actor/root sessions, canonical citation coordinates, staleness, and
-pagination. Unknown Pro query payload types fail closed in text instead of
-being presented as search results; callers can still inspect the accompanying
-`structuredContent` for the original bounded response.
 
 Like CLI JSON status, MCP `status` can include local source, semantic, daemon,
-upgrade, and Pro diagnostic path fields in `structuredContent`. They are local
+and upgrade diagnostic path fields in `structuredContent`. They are local
 troubleshooting hints for this machine, not portable contract IDs. Compact
 `local_usage` contains only enablement, state, definition/retention versions,
 and a stable content-free error when unavailable.

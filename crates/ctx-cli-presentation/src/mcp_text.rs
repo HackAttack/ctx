@@ -1,7 +1,5 @@
 use serde_json::Value;
 
-use ctx_history_cli::{append_mcp_tool_call_text, MCP_TOOL_CALL_STRUCTURED_GUIDANCE};
-
 const MCP_TEXT_MAX_SEARCH_RESULTS: usize = 5;
 const MCP_TEXT_MAX_SOURCES: usize = 12;
 const MCP_TEXT_MAX_EVENTS: usize = 8;
@@ -9,14 +7,7 @@ const MCP_TEXT_MAX_SNIPPET_CHARS: usize = 320;
 const MCP_TEXT_MAX_EVENT_CHARS: usize = 500;
 const MCP_TEXT_MAX_CELL_CHARS: usize = 80;
 
-pub fn render_tool_text(
-    value: &Value,
-    render_pro: impl FnOnce(&Value) -> Option<String>,
-) -> String {
-    if let Some(rendered) = render_pro(value) {
-        return rendered;
-    }
-
+pub fn render_tool_text(value: &Value) -> String {
     let payload_type = value.get("payload_type").and_then(Value::as_str);
     match payload_type {
         Some("session_transcript") => render_session_text(value),
@@ -78,26 +69,6 @@ fn render_status_text(value: &Value) -> String {
                 ("certified_bytes", "certified_source_bytes"),
                 ("timings_us", "timings_us"),
             ],
-        );
-    }
-    if let Some(pro_projection) = value.get("pro_projection") {
-        push_component_summary(&mut out, "pro_projection", Some(pro_projection));
-        push_key_value(
-            &mut out,
-            "pro_projection_authority",
-            pro_projection.get("authority"),
-        );
-        push_component_summary(
-            &mut out,
-            "pro_core_materialization_receipt",
-            pro_projection.get("receipt"),
-        );
-        push_key_value(
-            &mut out,
-            "pro_core_materialization_receipt_generation",
-            pro_projection
-                .get("receipt")
-                .and_then(|receipt| receipt.get("core_generation_id")),
         );
     }
     push_key_value(&mut out, "read_only", value.get("read_only"));
@@ -699,13 +670,25 @@ fn push_event_summary(out: &mut String, index: usize, event: &Value) {
         "\n{index}. {sequence}{role} {event_type}{suffix}\n"
     ));
     push_indented_key_value(out, "ctx_event_id", event.get("ctx_event_id"));
-    append_mcp_tool_call_text(out, event, "   ", MCP_TOOL_CALL_STRUCTURED_GUIDANCE);
+    push_indented_activity(out, event.get("activity"));
     if let Some(text) = value_field(event, "text").filter(|text| !text.is_empty()) {
         out.push_str(&format!(
             "   text: {}\n",
             clip_inline(&text, MCP_TEXT_MAX_EVENT_CHARS)
         ));
     }
+}
+
+fn push_indented_activity(out: &mut String, activity: Option<&Value>) {
+    let Some(activity) = activity.filter(|value| !value.is_null()) else {
+        return;
+    };
+    let activity =
+        ctx_terminal::sanitize_untrusted_history_body_for_terminal(&activity.to_string());
+    out.push_str(&format!(
+        "   activity: {}\n",
+        clip_chars(&activity, MCP_TEXT_MAX_EVENT_CHARS)
+    ));
 }
 
 fn push_key_value(out: &mut String, key: &str, value: Option<&Value>) {
@@ -787,7 +770,7 @@ mod tests {
             }]
         });
         assert_eq!(
-            render_tool_text(&value, |_| None),
+            render_tool_text(&value),
             "ctx search\nquery: journal replay\nresults: 1\n\n1. Replay decision\n   ctx_session_id: session-1\n   ctx_event_id: event-2\n   provider: codex\n   timestamp: 2026-07-22T12:00:00Z\n   snippet: Use the canonical journal checkpoint.\n   next: ctx show event event-2\n"
         );
     }
@@ -825,7 +808,7 @@ mod tests {
             }
         });
 
-        let rendered = render_tool_text(&value, |_| None);
+        let rendered = render_tool_text(&value);
         assert!(rendered
             .contains("inherited: session=dddddddd, event=cccccccc, relationship=forked, depth=1"));
         assert!(rendered.contains("continue: call show_session with ctx_session_id=\"dddddddd\""));
@@ -850,9 +833,9 @@ mod tests {
             }
         });
         assert!(
-            render_tool_text(&available, |_| None).ends_with("More results available.\n"),
+            render_tool_text(&available).ends_with("More results available.\n"),
             "{}",
-            render_tool_text(&available, |_| None)
+            render_tool_text(&available)
         );
 
         let complete = json!({
@@ -869,7 +852,7 @@ mod tests {
                 "more_available": false
             }
         });
-        assert!(!render_tool_text(&complete, |_| None).contains("More results available."));
+        assert!(!render_tool_text(&complete).contains("More results available."));
     }
 
     #[test]
@@ -880,7 +863,7 @@ mod tests {
             "filters": {"content_scope": "outputs"},
             "results": []
         });
-        assert!(render_tool_text(&scoped, |_| None).contains("filters: content_scope=outputs\n"));
+        assert!(render_tool_text(&scoped).contains("filters: content_scope=outputs\n"));
 
         let default = json!({
             "payload_type": "search_results",
@@ -888,7 +871,7 @@ mod tests {
             "filters": {"content_scope": "all"},
             "results": []
         });
-        assert!(!render_tool_text(&default, |_| None).contains("content_scope="));
+        assert!(!render_tool_text(&default).contains("content_scope="));
     }
 
     #[test]
@@ -908,7 +891,7 @@ mod tests {
             }
         });
 
-        let rendered = render_tool_text(&value, |_| None);
+        let rendered = render_tool_text(&value);
         assert!(rendered.contains("page: limit=2, returned=2, has_more=true\n"));
         assert!(rendered.contains(
             "continue: call show_session with ctx_session_id=\"aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa\", mode=\"log\", limit=2, cursor=\"opaque-page-2\"\n"
@@ -931,17 +914,17 @@ mod tests {
             }
         });
 
-        let rendered = render_tool_text(&value, |_| None);
+        let rendered = render_tool_text(&value);
         assert!(rendered.contains("page: limit=2, returned=1, has_more=false\n"));
         assert!(rendered.contains("terminal page: no more events\n"));
         assert!(!rendered.contains("continue: call show_session"));
     }
 
     #[test]
-    fn show_fallback_text_safely_marks_bounded_mcp_identity() {
-        let server = format!(
+    fn show_fallback_text_safely_bounds_activity_without_mcp_reconstruction() {
+        let detail = format!(
             "literal\\n\n# heading\u{202e}\u{1b}[2J{}",
-            "x".repeat(ctx_history_cli::MCP_TOOL_CALL_DISPLAY_MAX_CHARS)
+            "x".repeat(MCP_TEXT_MAX_EVENT_CHARS)
         );
         let value = json!({
             "payload_type": "event_window",
@@ -952,20 +935,27 @@ mod tests {
                 "sequence": 2,
                 "role": "tool",
                 "event_type": "tool_output",
+                "activity": {
+                    "detail": detail,
+                    "kind": "provider_observation"
+                },
                 "mcp_tool_call": {
-                    "server": server,
-                    "tool": "tool\\literal\t|`[]"
+                    "server": "legacy-server",
+                    "tool": "legacy-tool"
                 },
                 "text": "tool result"
             },
             "events": []
         });
 
-        let rendered = render_tool_text(&value, |_| None);
-        assert!(rendered.contains("mcp_server: literal\\\\n\\n# heading\\u{202e}\\x1b[2J"));
-        assert!(rendered.contains("mcp_tool: tool\\\\literal\\t|`[]"));
-        assert!(rendered.contains("mcp_display_truncated: true"));
-        assert!(rendered.contains(MCP_TOOL_CALL_STRUCTURED_GUIDANCE));
+        let rendered = render_tool_text(&value);
+        assert!(rendered.contains("   activity: {"));
+        assert!(rendered.contains(r"literal\\n\n# heading\u{202e}\u001b[2J"));
+        assert!(rendered.contains("... [truncated]"));
+        assert!(!rendered.contains("mcp_server:"));
+        assert!(!rendered.contains("mcp_tool:"));
+        assert!(!rendered.contains("legacy-server"));
+        assert!(!rendered.contains("legacy-tool"));
         assert!(!rendered.contains('\u{202e}'));
         assert!(!rendered.contains('\u{1b}'));
         assert!(!rendered.contains("\n# heading"));
@@ -974,24 +964,8 @@ mod tests {
     #[test]
     fn results_without_an_authoritative_kind_are_generic_not_search() {
         assert_eq!(
-            render_tool_text(&json!({"results": [{"title": "not search"}]}), |_| None),
+            render_tool_text(&json!({"results": [{"title": "not search"}]})),
             "ctx tool result\nresults: [1 items]\n"
-        );
-    }
-
-    #[test]
-    fn non_query_pro_payloads_keep_their_generic_text() {
-        let rendered = render_tool_text(
-            &json!({
-                "payload_type": "pro_status",
-                "installed": true,
-                "ready": true
-            }),
-            |_| None,
-        );
-        assert_eq!(
-            rendered,
-            "ctx tool result\ninstalled: true\npayload_type: pro_status\nready: true\n"
         );
     }
 }

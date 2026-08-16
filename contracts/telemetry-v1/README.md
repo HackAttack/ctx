@@ -29,7 +29,7 @@ recomputes every recorded hash from the compiled source.
 Every batch event has a UUIDv4 `event_id`, a minute-rounded `occurred_at`, a
 closed `surface`, a closed `outcome`, and a coarse `duration_bucket`.
 Identity-bearing batch events do not carry exact duration milliseconds.
-`surface` is one of `cli`, `mcp`, `pro_host`, or `daemon`.
+`surface` is one of `cli`, `mcp`, or `daemon`.
 `duration_bucket` is one of `unknown`, `lt_100ms`, `lt_1s`, `lt_5s`,
 `lt_30s`, `lt_2m`, `lt_10m`, `lt_1h`, or `gte_1h`.
 Official hosted installs may attach the install-attempt identifier to these
@@ -59,9 +59,6 @@ Its decision fields are closed:
   to classify changed work truthfully;
 - `refresh_result`: `complete`, `partial`, or `failure`;
 - `core_result`: `no_op`, `complete`, `partial`, `failure`, or `unknown`;
-- `canonical_pro_result` and `output_pro_result`: `not_requested`,
-  `unavailable`, `no_op`, `complete`, `partial`, `behind`, `failure`, or
-  `unknown`;
 - `failure_scope`: `none`, `record`, `source`, `system`, `mixed`, or `unknown`;
 - `failure_type`: `none`, `record_rejection`, `unsupported_schema`,
   `not_found`, `permission`, `source_database`, `malformed_source`, `store`,

@@ -74,28 +74,30 @@ fn core_projection_keeps_complete_success_failure_unknown_and_large_results_once
             &message,
         )
         .unwrap();
-        assert_eq!(
-            record.session_relationship,
-            ctx_history_core::SessionRelationshipKind::Root
-        );
-        assert_eq!(record.event_origin, ctx_history_core::EventOrigin::Unknown);
-        assert!(record.is_primary);
+        assert_eq!(record.session_relationship, None);
+        assert_eq!(record.root_session_id, None);
         assert_eq!(record.content.meaningful_text(), body);
+        let expected_call_id = format!("call-{index}");
+        if index == 0 {
+            assert!(record.content.structured_content.is_none());
+            assert!(matches!(
+                record
+                    .content
+                    .activity
+                    .as_ref()
+                    .and_then(|activity| activity.result.as_ref())
+                    .map(|result| &result.structured_content),
+                Some(ctx_history_core::ActivityJsonCapture::Omitted { .. })
+            ));
+            continue;
+        }
         let structured = record.content.structured_content.as_ref().unwrap();
         assert_eq!(
             structured
-                .pointer("/provider_native_result/result_outcome")
-                .and_then(serde_json::Value::as_str),
-            Some(expected)
-        );
-        let expected_call_id = format!("call-{index}");
-        assert_eq!(
-            structured
-                .pointer("/provider_native_result/call_id")
+                .pointer("/tool_call_id")
                 .and_then(serde_json::Value::as_str),
             Some(expected_call_id.as_str())
         );
-        assert!(!structured.to_string().contains("complete native result"));
-        assert!(!structured.to_string().contains("deepagents-large-head-"));
+        assert!(structured.to_string().contains(&body));
     }
 }

@@ -28,7 +28,6 @@ impl ClineNativeReader {
         let event_units = events.iter().fold(0_usize, |units, event| {
             units
                 .saturating_add(1)
-                .saturating_add(event.file_touches.len())
                 .saturating_add(usize::from(event.kind == ClineEventKind::CommandOutput))
         });
         let core_units = CLINE_NATIVE_FIXED_PAGE_UNITS

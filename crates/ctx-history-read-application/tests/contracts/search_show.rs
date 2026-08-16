@@ -228,12 +228,12 @@ fn codex_ctx_retrieval_echoes_are_hidden_from_search_but_remain_directly_retriev
     });
 
     assert_eq!(
-        exact_records[2]["mcp_exchange"]["invocation"]["server"], "ctx",
+        exact_records[2]["activity"]["invocation"]["server"], "ctx",
         "{:#}",
         exact_records[2]
     );
     assert_eq!(
-        exact_records[2]["mcp_exchange"]["invocation"]["tool"], "search",
+        exact_records[2]["activity"]["invocation"]["tool"], "search",
         "{:#}",
         exact_records[2]
     );
@@ -1024,12 +1024,23 @@ fn codex_cli_provider_oracle_covers_retrieval_and_claimed_fidelity() {
             .count(),
         2
     );
-    assert!(
-        records
-            .iter()
-            .all(|record| record.repository_file_observations.is_empty()),
-        "unscoped fixture paths must not cross the Core repository boundary"
-    );
+    for record in &records {
+        let value = serde_json::to_value(record).unwrap();
+        for removed in [
+            "repository_candidate_evidence",
+            "repository_bindings",
+            "repository_abstentions",
+            "repository_file_invocation_evidence",
+            "repository_file_observations",
+            "repository_vcs_observations",
+            "repository_outcome_observations",
+        ] {
+            assert!(
+                value.get(removed).is_none(),
+                "removed repository projection {removed} leaked into Core: {value:#}"
+            );
+        }
+    }
     assert!(
         !temp.path().join("work.sqlite").exists(),
         "Codex acceptance must use the Core generation"

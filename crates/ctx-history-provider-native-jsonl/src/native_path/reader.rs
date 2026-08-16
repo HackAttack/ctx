@@ -1,14 +1,14 @@
-use std::{
-    collections::BTreeSet,
-    path::{Path, PathBuf},
-};
+use std::path::{Path, PathBuf};
 
 use chrono::{DateTime, Utc};
-use ctx_history_core::{CaptureProvider, EventType};
+use ctx_history_core::{
+    ActivityJsonCapture, ActivityResult, ActivityTextCapture, CaptureProvider, CoreActivity,
+    EventType, TypedKey, CORE_ACTIVITY_REVISION,
+};
 use serde_json::{json, Value};
 
-use crate::{NativeJsonlError as CaptureError, OutputOutcome, Result};
-use ctx_history_capture_model::file_touches::visit_all_file_touch_drafts;
+use crate::{NativeJsonlError as CaptureError, Result};
+use ctx_history_capture_model::file_references::visit_literal_file_reference_drafts;
 use ctx_history_jsonl::JsonlRecordRef;
 
 use super::super::{
@@ -24,7 +24,7 @@ use super::super::{
     result_content,
     result_content::{
         enumerate_native_jsonl_result_subrecords, native_jsonl_result_content_profile,
-        NativeJsonlResultExtractionError,
+        NativeJsonlResultExtractionError, NativeJsonlResultSubrecord,
     },
 };
 use super::{
@@ -32,7 +32,7 @@ use super::{
     factory_droid_event_text, factory_droid_event_type, factory_droid_model,
     factory_droid_retry_discriminator, factory_droid_role, grok_build, qoder_parser, qwen_code,
     tabnine, windsurf, DirectJsonlEvent, DirectJsonlRejection, DirectJsonlSession,
-    DirectJsonlSourceRecord, DirectJsonlTouch,
+    DirectJsonlSourceRecord,
 };
 
 #[path = "reader_projection.rs"]
@@ -46,7 +46,6 @@ pub(crate) struct DirectJsonlProjector {
     pub(super) source_root: Option<PathBuf>,
     pub(super) imported_at: DateTime<Utc>,
     pub(super) session: Option<DirectJsonlSession>,
-    pub(super) copilot_mcp_tool_calls: copilot::CopilotMcpToolCallAttributions,
 }
 
 impl DirectJsonlProjector {
@@ -66,15 +65,7 @@ impl DirectJsonlProjector {
             source_root,
             imported_at,
             session,
-            copilot_mcp_tool_calls: copilot::CopilotMcpToolCallAttributions::new(),
         })
-    }
-
-    pub(super) fn set_copilot_mcp_tool_calls(
-        &mut self,
-        attributions: copilot::CopilotMcpToolCallAttributions,
-    ) {
-        self.copilot_mcp_tool_calls = attributions;
     }
 
     pub(crate) fn project_record(&mut self, record: JsonlRecordRef<'_>) -> Result<ProjectedLine> {
@@ -90,8 +81,6 @@ impl DirectJsonlProjector {
 
     fn project_record_inner(&mut self, record: JsonlRecordRef<'_>) -> Result<ProjectedLine> {
         let evidence = record.evidence();
-        self.copilot_mcp_tool_calls
-            .observe_projected_record(evidence.physical_ordinal(), evidence.record_digest());
         if record.oversized() {
             if self.provider != CaptureProvider::CopilotCli {
                 return Err(CaptureError::SystemInvariant(
@@ -120,9 +109,5 @@ impl DirectJsonlProjector {
 
     pub(crate) fn session(&self) -> Option<&DirectJsonlSession> {
         self.session.as_ref()
-    }
-
-    pub(super) fn copilot_attribution_projection_matches(&self) -> bool {
-        self.copilot_mcp_tool_calls.projected_records_match()
     }
 }

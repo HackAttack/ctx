@@ -63,7 +63,6 @@ pub(super) fn update_cli_session(session: &mut CodeBuddySessionState, value: &Va
         session.cwd = value
             .get("cwd")
             .and_then(Value::as_str)
-            .map(str::trim)
             .filter(|value| !value.is_empty() && value.len() <= 8 * 1024)
             .map(str::to_owned);
     }
@@ -105,6 +104,7 @@ pub(super) fn cli_core_row(
             role,
             occurred_at,
             text,
+            structured_content: value,
         },
     );
     Ok(CodeBuddyRecordClassification::AcceptedMessage(
@@ -175,6 +175,7 @@ pub(super) fn extension_core_row(
             role,
             occurred_at,
             text,
+            structured_content: raw_message,
         },
     );
     Ok(CodeBuddyRecordClassification::AcceptedMessage(

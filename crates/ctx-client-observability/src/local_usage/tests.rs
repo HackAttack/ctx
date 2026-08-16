@@ -1,10 +1,11 @@
-use std::time::Duration;
+use std::{cell::Cell, time::Duration};
 
 use ctx_history_platform::platform_security::restrict_private_directory;
 
 use super::{
-    read_report, CliUsage, CompletedOperation, ContextCoverage, McpCompletionFacts, McpInvocation,
-    ResultObservationAction, SearchContextObservation, ValueClass,
+    read_report, record_best_effort, CliUsage, CompletedOperation, ContextCoverage,
+    LocalUsageStorageAuthority, McpCompletionFacts, McpInvocation, ResultObservationAction,
+    SearchContextObservation, UsageControlSnapshot, ValueClass,
 };
 use crate::operation_descriptor::{LocalUsageOperation, ObservedMcpProductOperation};
 
@@ -34,13 +35,13 @@ pub(super) fn operation(name: &'static str) -> CompletedOperation {
 fn cli_definition_two_search_uses_only_dedicated_exact_context_observation() {
     let mut usage = CliUsage::excluded();
     usage.operation = Some(LocalUsageOperation::Search);
-    usage.set_result_observation(ResultObservationAction::Search, 3, 99, 8_000);
+    usage.set_result_observation(ResultObservationAction::Search, 3, 8_000);
     usage.set_search_context_observation(SearchContextObservation::complete(320, 1_000).unwrap());
     usage.set_measured_output_bytes(701);
     let completed = usage.completed(true, Duration::from_millis(17)).unwrap();
     assert_eq!(
         completed.result_metadata_for_test(),
-        (ValueClass::ResultBearing, 3, 0)
+        (ValueClass::ResultBearing, 3)
     );
     assert_eq!(
         completed.context_metadata_for_test(),
@@ -53,7 +54,7 @@ fn cli_definition_two_search_uses_only_dedicated_exact_context_observation() {
 fn search_without_complete_adapter_is_unavailable_and_failures_discard_counts() {
     let mut usage = CliUsage::excluded();
     usage.operation = Some(LocalUsageOperation::Search);
-    usage.set_result_observation(ResultObservationAction::Search, 2, 0, 400);
+    usage.set_result_observation(ResultObservationAction::Search, 2, 400);
     let completed = usage.completed(true, Duration::ZERO).unwrap();
     assert_eq!(
         completed.context_metadata_for_test(),
@@ -63,7 +64,7 @@ fn search_without_complete_adapter_is_unavailable_and_failures_discard_counts() 
     let failed = usage.completed(false, Duration::ZERO).unwrap();
     assert_eq!(
         failed.result_metadata_for_test(),
-        (ValueClass::NotApplicable, 0, 0)
+        (ValueClass::NotApplicable, 0)
     );
     assert_eq!(
         failed.context_metadata_for_test(),
@@ -105,14 +106,33 @@ fn cli_and_mcp_use_identical_duration_bucket_boundaries() {
 fn empty_and_disabled_reports_follow_state_dependent_json_contract() {
     let root = private_tempdir();
     let disabled = serde_json::to_value(read_report(root.path(), false, true)).unwrap();
+    assert_eq!(disabled["schema_version"], 3);
     assert_eq!(disabled["state"], "disabled");
     assert!(disabled.get("definitions").is_none());
     assert!(disabled.get("estimates").is_none());
 
     let empty = serde_json::to_value(read_report(root.path(), true, true)).unwrap();
+    assert_eq!(empty["schema_version"], 3);
     assert_eq!(empty["state"], "empty");
     assert_eq!(empty["definitions"].as_array().unwrap().len(), 0);
     assert!(empty.get("estimates").is_none());
     assert_eq!(empty["local_only"], true);
     assert_eq!(empty["read_only"], true);
+}
+
+#[test]
+fn disabled_cli_recording_never_invokes_completion_adapter_or_opens_sqlite() {
+    let root = private_tempdir();
+    let database = root.path().join("usage.sqlite");
+    let authority = LocalUsageStorageAuthority::new(database.clone(), "1.0.0");
+    let control = UsageControlSnapshot::unversioned(false);
+    let adapter_called = Cell::new(false);
+
+    record_best_effort(&authority, &control, || {
+        adapter_called.set(true);
+        Some(operation("doctor"))
+    });
+
+    assert!(!adapter_called.get());
+    assert!(!database.exists());
 }

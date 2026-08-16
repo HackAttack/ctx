@@ -59,7 +59,6 @@ fn buckets_cover_boundaries() {
 fn public_surfaces_are_exhaustive_and_stable() {
     assert_eq!(Surface::Cli.as_str(), "cli");
     assert_eq!(Surface::Mcp.as_str(), "mcp");
-    assert_eq!(Surface::ProHost.as_str(), "pro_host");
     assert_eq!(Surface::Daemon.as_str(), "daemon");
 }
 
@@ -198,8 +197,6 @@ fn durable_family_serialization_matches_public_goldens() {
                     work_kind: Some(ProviderRefreshWorkKind::Append),
                     refresh_result: ProviderRefreshResult::Complete,
                     core_result: ProviderCoreResult::Complete,
-                    canonical_pro_result: ProviderProResult::NoOp,
-                    output_pro_result: ProviderProResult::Complete,
                     failure_scope: ProviderRefreshFailureScope::None,
                     failure_type: ProviderRefreshFailureType::None,
                     work_remaining: false,

@@ -140,6 +140,11 @@ impl<B: ProviderRuntimeBinding> ReplacementDocumentTree for TraeReplacementTree<
             .database
             .seal_if_active(&tree.authority.canonical_path)
             .map_err(route_error)?;
+        tree.authority
+            .source
+            .workspace_folder
+            .revalidate()
+            .map_err(route_error)?;
         (tree.authority.terminal_revalidate)().map_err(route_error)?;
         Ok(tree.tree_fingerprint)
     }

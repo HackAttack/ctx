@@ -155,7 +155,6 @@ pub(crate) struct HermesSourceBackedSession {
     pub(crate) provider_parent_session_id: Option<String>,
     pub(crate) branch: Option<String>,
     pub(crate) source_path: String,
-    pub(crate) agent_type: String,
     pub(crate) workspace: Option<String>,
     pub(crate) cwd: Option<String>,
 }

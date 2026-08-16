@@ -1,4 +1,4 @@
-use std::{borrow::Cow, cmp::Ordering, fmt};
+use std::{borrow::Cow, fmt};
 
 use chrono::{DateTime, Utc};
 use serde::{
@@ -12,8 +12,6 @@ use super::rows::{
     MAX_CODEX_DURABLE_METADATA_BYTES, MAX_CODEX_DURABLE_SESSION_ID_BYTES,
 };
 use crate::provider::codex::catalog::{codex_session_relationship, codex_source_kind};
-use crate::provider::codex::events::{CodexExitCodeParser, CodexWallTimeParser};
-use crate::{OutputOutcome, OutputOutcomeMetadata};
 use ctx_history_capture_model::time::parse_rfc3339_utc;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -30,17 +28,6 @@ pub(super) enum CodexResultKind {
     CustomToolCallOutput,
     ToolSearchOutput,
     OtherResult,
-}
-
-impl CodexResultKind {
-    pub(super) const fn item_type(self) -> &'static str {
-        match self {
-            Self::FunctionCallOutput => "function_call_output",
-            Self::CustomToolCallOutput => "custom_tool_call_output",
-            Self::ToolSearchOutput => "tool_search_output",
-            Self::OtherResult => "tool_result",
-        }
-    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -475,28 +462,13 @@ pub(super) struct CodexRecordProbe<'a> {
     pub(super) class: CodexRecordClass,
     pub(super) timestamp: Option<Cow<'a, str>>,
     pub(super) call_id: Option<Cow<'a, str>>,
-    pub(super) output: Option<CodexStructuralOutput>,
     lineage_malformed: bool,
-}
-
-#[derive(Debug)]
-pub(super) struct CodexRepositoryOccurrenceProbe<'a> {
-    pub(super) class: CodexRecordClass,
-    pub(super) call_id: Option<Cow<'a, str>>,
-    pub(super) selector_malformed: bool,
 }
 
 impl CodexRecordProbe<'_> {
     pub(super) const fn lineage_malformed(&self) -> bool {
         self.lineage_malformed
     }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(super) struct CodexStructuralOutput {
-    pub(super) outcome: OutputOutcomeMetadata,
-    pub(super) output_bytes: Option<usize>,
-    pub(super) has_exact_display_field: bool,
 }
 
 pub(super) fn classify_codex_record(line: &[u8]) -> serde_json::Result<CodexRecordProbe<'_>> {
@@ -514,11 +486,6 @@ pub(super) fn classify_codex_record(line: &[u8]) -> serde_json::Result<CodexReco
         || envelope.payload.as_ref().is_some_and(|payload| {
             payload.lineage_malformed || (activity_record && payload.activity_lineage_malformed)
         });
-    let output = match (lineage_malformed, base_class) {
-        (true, _) => None,
-        (false, CodexRecordClass::ExcludedResult(_)) => Some(probe_structural_output(line)?),
-        (false, _) => None,
-    };
     let relationship_escaped = envelope.relationship_escaped
         || envelope.payload.as_ref().is_some_and(|payload| {
             payload.relationship_escaped
@@ -544,96 +511,33 @@ pub(super) fn classify_codex_record(line: &[u8]) -> serde_json::Result<CodexReco
         call_id: envelope
             .payload
             .and_then(|payload| payload.call_id.map(|call_id| call_id.value)),
-        output,
         lineage_malformed,
     })
 }
 
-/// Classifies only the exact selectors needed to count repository-capable
-/// call/result occurrences. Nested payload bodies are consumed without value
-/// construction, and duplicate envelope/payload lineage selectors remain
-/// explicitly fail-closed.
-pub(super) fn classify_codex_repository_occurrence(
-    line: &[u8],
-) -> serde_json::Result<CodexRepositoryOccurrenceProbe<'_>> {
-    let envelope = serde_json::from_slice::<CodexEnvelopeProbe<'_>>(line)?;
-    let item_type = envelope
-        .payload
-        .as_ref()
-        .and_then(|payload| payload.item_type.as_ref().map(CodexText::as_str));
-    let class = codex_record_class(
-        envelope.record_type.as_ref().map_or("", CodexText::as_str),
-        item_type,
-    );
-    let selector_malformed = envelope.lineage_malformed
-        || envelope
-            .payload
-            .as_ref()
-            .is_some_and(|payload| payload.lineage_malformed);
-    Ok(CodexRepositoryOccurrenceProbe {
-        class,
-        call_id: envelope
-            .payload
-            .and_then(|payload| payload.call_id.map(|call_id| call_id.value)),
-        selector_malformed,
-    })
-}
-
-#[cfg(test)]
-mod repository_occurrence_tests {
-    use super::*;
-
-    #[test]
-    fn repository_occurrence_ignores_nested_duplicates_but_rejects_selector_duplicates() {
-        let unrelated_nested_duplicate = br#"{"type":"response_item","payload":{"type":"function_call","call_id":"exact-call","unrelated":{"same":1,"same":2}}}"#;
-        let probe = classify_codex_repository_occurrence(unrelated_nested_duplicate).unwrap();
-        assert_eq!(
-            probe.class,
-            CodexRecordClass::Retained(CodexRetainedKind::ToolCall)
-        );
-        assert_eq!(probe.call_id.as_deref(), Some("exact-call"));
-        assert!(!probe.selector_malformed);
-
-        let duplicate_call_id = br#"{"type":"response_item","payload":{"type":"function_call","call_id":"first","call_id":"second"}}"#;
-        assert!(
-            classify_codex_repository_occurrence(duplicate_call_id)
-                .unwrap()
-                .selector_malformed
-        );
-    }
-}
-
-/// Recovers only the canonical MCP terminal shape when the strict selector
-/// probe rejected duplicate envelope or payload selectors. Ordinary result
-/// projection follows serde_json's existing last-value semantics, while the
-/// raw MCP evidence visitor independently marks every such row ambiguous for
-/// attribution.
-pub(super) fn classify_mcp_terminal_after_selector_ambiguity(
-    line: &[u8],
-) -> Option<CodexRecordProbe<'_>> {
+/// Retains a duplicate-selector record by its parseable provider shape. Raw
+/// auditing independently withholds every affected exact channel.
+pub(super) fn classify_after_selector_ambiguity(line: &[u8]) -> Option<CodexRecordProbe<'_>> {
     let envelope = serde_json::from_slice::<Value>(line).ok()?;
-    if envelope.get("type").and_then(Value::as_str) != Some("event_msg") {
-        return None;
-    }
+    let record_type = envelope.get("type").and_then(Value::as_str)?;
     let timestamp = match envelope.get("timestamp") {
         Some(Value::String(timestamp)) => Some(Cow::Owned(timestamp.clone())),
         Some(Value::Null) | None => None,
         Some(_) => return None,
     };
-    let payload = envelope.get("payload")?.as_object()?;
-    if payload.get("type").and_then(Value::as_str) != Some("mcp_tool_call_end") {
-        return None;
-    }
-    let call_id = match payload.get("call_id") {
+    let payload = envelope.get("payload").and_then(Value::as_object);
+    let item_type = payload
+        .and_then(|payload| payload.get("type"))
+        .and_then(Value::as_str);
+    let call_id = match payload.and_then(|payload| payload.get("call_id")) {
         Some(Value::String(call_id)) => Some(Cow::Owned(call_id.clone())),
         Some(Value::Null) | None => None,
         Some(_) => return None,
     };
     Some(CodexRecordProbe {
-        class: CodexRecordClass::ExcludedResult(CodexResultKind::OtherResult),
+        class: codex_record_class(record_type, item_type),
         timestamp,
         call_id,
-        output: Some(probe_structural_output(line).ok()?),
         lineage_malformed: false,
     })
 }
@@ -693,12 +597,9 @@ fn classify_event_message(item_type: Option<&str>) -> CodexRecordClass {
 }
 
 mod prefilter;
-mod structural;
-
 #[cfg(test)]
 pub(super) use prefilter::codex_skip_projection;
 pub(super) use prefilter::{prefilter_codex_record, CodexRecordAdmission, CodexSkipProjection};
-use structural::probe_structural_output;
 
 #[derive(Debug, Deserialize)]
 struct CodexSessionMetaEnvelope {
@@ -832,166 +733,6 @@ fn bounded_nonempty(value: String, max_bytes: usize) -> Option<String> {
         .and_then(nonempty)
 }
 
-#[cfg(test)]
-mod session_relationship_tests {
-    use super::*;
-    use ctx_history_core::SessionRelationshipKind;
-
-    fn parse(payload: Value) -> CodexSessionRow {
-        parse_session_meta(
-            serde_json::json!({
-                "timestamp": "2026-08-05T12:00:00Z",
-                "type": "session_meta",
-                "payload": payload,
-            })
-            .to_string()
-            .as_bytes(),
-        )
-        .expect("fixture session metadata must parse")
-    }
-
-    #[test]
-    fn explicit_subagent_parentage_wins_over_matching_fork_metadata() {
-        let parent = "019fa000-0000-7000-8000-000000000901";
-        let row = parse(serde_json::json!({
-            "id": "019fa000-0000-7000-8000-000000000902",
-            "timestamp": "2026-08-05T12:00:00Z",
-            "source": {"subagent": {"thread_spawn": {"parent_thread_id": parent}}},
-            "parent_thread_id": parent,
-            "forked_from_id": parent,
-        }));
-        assert_eq!(row.parent_native_session_id.as_deref(), Some(parent));
-        assert_eq!(row.session_relationship, SessionRelationshipKind::Delegated);
-    }
-
-    #[test]
-    fn payload_session_id_does_not_change_the_child_local_parent_claim() {
-        let parent = "019fa000-0000-7000-8000-000000000913";
-        let advisory = "019fa000-0000-7000-8000-000000000914";
-        let row = parse(serde_json::json!({
-            "id": "019fa000-0000-7000-8000-000000000915",
-            "session_id": advisory,
-            "timestamp": "2026-08-05T12:00:00Z",
-            "source": "cli",
-            "forked_from_id": parent,
-        }));
-        assert_eq!(row.parent_native_session_id.as_deref(), Some(parent));
-        assert_eq!(row.root_native_session_id, None);
-        assert_eq!(row.session_relationship, SessionRelationshipKind::Forked);
-    }
-
-    #[test]
-    fn fork_and_history_base_have_distinct_exact_relationships() {
-        let fork_parent = "019fa000-0000-7000-8000-000000000903";
-        let fork = parse(serde_json::json!({
-            "id": "019fa000-0000-7000-8000-000000000904",
-            "timestamp": "2026-08-05T12:00:00Z",
-            "source": "cli",
-            "forked_from_id": fork_parent,
-        }));
-        assert_eq!(fork.parent_native_session_id.as_deref(), Some(fork_parent));
-        assert_eq!(fork.session_relationship, SessionRelationshipKind::Forked);
-
-        let history_parent = "019fa000-0000-7000-8000-000000000905";
-        let resumed = parse(serde_json::json!({
-            "id": "019fa000-0000-7000-8000-000000000906",
-            "timestamp": "2026-08-05T12:00:00Z",
-            "source": "cli",
-            "history_base": {
-                "thread_id": history_parent,
-                "end_ordinal_exclusive": 7,
-                "end_byte_offset": 4096,
-            },
-        }));
-        assert_eq!(
-            resumed.parent_native_session_id.as_deref(),
-            Some(history_parent)
-        );
-        assert_eq!(
-            resumed.session_relationship,
-            SessionRelationshipKind::ResumedFrom
-        );
-    }
-
-    #[test]
-    fn conflicting_control_parent_authority_is_related_unknown() {
-        let source_parent = "019fa000-0000-7000-8000-000000000907";
-        let row = parse(serde_json::json!({
-            "id": "019fa000-0000-7000-8000-000000000908",
-            "timestamp": "2026-08-05T12:00:00Z",
-            "source": {"subagent": {"thread_spawn": {"parent_thread_id": source_parent}}},
-            "parent_thread_id": "019fa000-0000-7000-8000-000000000909",
-        }));
-        assert_eq!(row.parent_native_session_id.as_deref(), Some(source_parent));
-        assert_eq!(
-            row.session_relationship,
-            SessionRelationshipKind::RelatedUnknown
-        );
-    }
-
-    #[test]
-    fn conflicting_fork_and_history_authority_is_related_unknown() {
-        let fork_parent = "019fa000-0000-7000-8000-000000000910";
-        let row = parse(serde_json::json!({
-            "id": "019fa000-0000-7000-8000-000000000911",
-            "timestamp": "2026-08-05T12:00:00Z",
-            "source": "cli",
-            "forked_from_id": fork_parent,
-            "history_base": {
-                "thread_id": "019fa000-0000-7000-8000-000000000912",
-                "end_ordinal_exclusive": 7,
-                "end_byte_offset": 4096,
-            },
-        }));
-        assert_eq!(row.parent_native_session_id.as_deref(), Some(fork_parent));
-        assert_eq!(
-            row.session_relationship,
-            SessionRelationshipKind::RelatedUnknown
-        );
-    }
-
-    #[test]
-    fn oversized_advisory_metadata_is_dropped_without_truncation() {
-        let oversized = "m".repeat(MAX_CODEX_DURABLE_METADATA_BYTES + 1);
-        let row = parse(serde_json::json!({
-            "id": "019fa000-0000-7000-8000-000000000916",
-            "timestamp": "2026-08-05T12:00:00Z",
-            "source": "cli",
-            "originator": oversized,
-            "cli_version": "bounded-version",
-        }));
-        assert_eq!(row.originator, None);
-        assert_eq!(row.cli_version.as_deref(), Some("bounded-version"));
-    }
-
-    #[test]
-    fn oversized_required_native_or_parent_identity_rejects_session_owner() {
-        let oversized = "i".repeat(MAX_CODEX_DURABLE_SESSION_ID_BYTES + 1);
-        let native = serde_json::json!({
-            "timestamp": "2026-08-05T12:00:00Z",
-            "type": "session_meta",
-            "payload": {
-                "id": oversized,
-                "timestamp": "2026-08-05T12:00:00Z",
-                "source": "cli",
-            },
-        });
-        assert!(parse_session_meta(native.to_string().as_bytes()).is_none());
-
-        let parent = serde_json::json!({
-            "timestamp": "2026-08-05T12:00:00Z",
-            "type": "session_meta",
-            "payload": {
-                "id": "019fa000-0000-7000-8000-000000000917",
-                "timestamp": "2026-08-05T12:00:00Z",
-                "source": "cli",
-                "forked_from_id": "p".repeat(MAX_CODEX_DURABLE_SESSION_ID_BYTES + 1),
-            },
-        });
-        assert!(parse_session_meta(parent.to_string().as_bytes()).is_none());
-    }
-}
-
 #[derive(Debug, Deserialize)]
 struct CodexDecodedEnvelope {
     timestamp: Option<String>,
@@ -1010,7 +751,7 @@ pub(super) fn parse_decoded_record(
 ) -> Option<CodexDecodedRecord> {
     let envelope = match serde_json::from_slice::<CodexDecodedEnvelope>(line) {
         Ok(envelope) => envelope,
-        Err(_) => parse_mcp_terminal_after_selector_ambiguity(line)?,
+        Err(_) => parse_after_selector_ambiguity(line)?,
     };
     let occurred_at = match envelope.timestamp {
         Some(timestamp) => parse_rfc3339_utc(&timestamp)?,
@@ -1022,20 +763,15 @@ pub(super) fn parse_decoded_record(
     })
 }
 
-fn parse_mcp_terminal_after_selector_ambiguity(line: &[u8]) -> Option<CodexDecodedEnvelope> {
+fn parse_after_selector_ambiguity(line: &[u8]) -> Option<CodexDecodedEnvelope> {
     let mut envelope = serde_json::from_slice::<Value>(line).ok()?;
     let object = envelope.as_object_mut()?;
-    if object.get("type").and_then(Value::as_str) != Some("event_msg") {
-        return None;
-    }
+    object.get("type").and_then(Value::as_str)?;
     let timestamp = match object.remove("timestamp") {
         Some(Value::String(timestamp)) => Some(timestamp),
         Some(Value::Null) | None => None,
         Some(_) => return None,
     };
     let payload = object.remove("payload")?;
-    if payload.get("type").and_then(Value::as_str) != Some("mcp_tool_call_end") {
-        return None;
-    }
     Some(CodexDecodedEnvelope { timestamp, payload })
 }

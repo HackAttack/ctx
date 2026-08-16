@@ -47,7 +47,7 @@ impl TaskJsonNativeDialect {
         provider: CaptureProvider::Cline,
         source_format: CLINE_TASK_JSON_SOURCE_FORMAT,
         display_name: "Cline",
-        parser_revision: "task-json-source-backed-v3",
+        parser_revision: "task-json-source-backed-v5-closed-facts",
         metadata_files: &[(METADATA_FILE, ClineComponent::TaskMetadata)],
         message_files: &[
             (API_FILE, ClineComponent::ApiHistory),
@@ -60,7 +60,7 @@ impl TaskJsonNativeDialect {
         provider: CaptureProvider::RooCode,
         source_format: ROO_TASK_JSON_SOURCE_FORMAT,
         display_name: "Roo Code",
-        parser_revision: "task-json-source-backed-v3",
+        parser_revision: "task-json-source-backed-v5-closed-facts",
         // Roo's history item is the strongest identity/workspace authority.
         // `_index.json` fills metadata when the history item is absent.
         metadata_files: &[

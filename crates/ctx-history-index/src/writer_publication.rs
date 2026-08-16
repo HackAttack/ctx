@@ -99,8 +99,8 @@ impl GenerationWriter {
             &self.writer_options,
             publication_metadata.into(),
         )?;
-        match outcome {
-            CurrentRepublishOutcome::Published(_) => {}
+        let published_pointer = match outcome {
+            CurrentRepublishOutcome::Published(pointer) => pointer,
             CurrentRepublishOutcome::CommittedVisible { recovery, .. }
             | CurrentRepublishOutcome::CommittedRecoveryRequired { recovery } => {
                 return Err(IndexError::CommittedGenerationNeedsRecovery {
@@ -109,7 +109,8 @@ impl GenerationWriter {
                     detail: recovery.detail().to_owned(),
                 });
             }
-        }
+        };
+        best_effort_post_republish_cleanup(&self.root, &published_pointer);
         let verified = VerifiedIndex::open_pinned(&self.root)?;
         if verified.generation_id() != expected_generation_id {
             return Err(IndexError::ConcurrentGenerationChange);
@@ -141,7 +142,6 @@ impl GenerationWriter {
                     .as_ref()
                     .map(|_| candidate.physical_proof);
                 self.candidate_activation_fence = Some(candidate.activation_fence);
-                self.candidate_ownership_fence = candidate.ownership_fence;
             }
 
             let writer = construct_index_writer_with_retry(&self.index, &self.writer_options)?;
@@ -579,18 +579,14 @@ impl GenerationWriter {
             hook(&candidate_path);
         }
         report_progress(PublicationStage::Activation)?;
-        let terminal_index = verified.publication.publication().searcher().index();
-        let expected_audit = verified.publication.physical_integrity_audit();
-        let ownership_fence = match self.finish_candidate_ownership_fence()? {
-            Some(fence) => fence,
-            None => acquire_generation_ownership_fence(&root)?,
-        };
         let activation_fence =
             self.candidate_activation_fence
                 .as_ref()
                 .ok_or(IndexError::WriterInvariant(
                     "verified candidate has no activation fence",
                 ))?;
+        let terminal_index = verified.publication.publication().searcher().index();
+        let expected_audit = verified.publication.physical_integrity_audit();
         match publish_active_generation_pointer_validated(&root, &next_pointer, || {
             #[cfg(windows)]
             let terminal_guard = ctx_history_index_generation::acquire_terminal_publication_guard(
@@ -659,27 +655,18 @@ impl GenerationWriter {
                     .as_ref()
                     .map(|lease| lease.generation_id().to_owned()),
             );
-            let _ = reclaim_inactive_generation_directories_with_fence(
+            let _ = reclaim_inactive_generation_directories(
                 &root,
                 Some(&next_pointer),
                 retention_lease.as_ref(),
-                &ownership_fence,
             );
-            let _ = reclaim_unreferenced_manifests_with_fence(
-                &root,
-                &retained_generation_ids,
-                &ownership_fence,
-            );
-            let _ = reclaim_unreferenced_certifications_with_fence(
+            let _ = reclaim_unreferenced_manifests(&root, &retained_generation_ids);
+            let _ = reclaim_unreferenced_certifications(
                 &root,
                 Some(&next_pointer),
                 retention_lease.as_ref(),
-                &ownership_fence,
             );
         }
-        // Reclamation can unlink hard-link aliases and therefore change
-        // artifact identity metadata. Certify the active generation only
-        // after every such mutation, while readers are still fenced out.
         let _ = publication::certify_activated_generation(
             &root,
             &next_pointer,
@@ -687,7 +674,7 @@ impl GenerationWriter {
             verified.publication.publication().searcher().index(),
             verified.publication.physical_integrity_audit(),
         );
-        drop(ownership_fence);
+
         let receipt = CommitReceipt::from_verified_manifest(
             opstamp,
             generation_id.clone(),
@@ -868,25 +855,7 @@ impl GenerationWriter {
         activation_fence.validate_binding()?;
         fs::remove_dir_all(self.root.join(INDEX_GENERATIONS_DIRECTORY).join(directory))?;
         sync_directory(&self.root.join(INDEX_GENERATIONS_DIRECTORY))?;
-        drop(self.finish_candidate_ownership_fence()?);
         Ok(())
-    }
-
-    fn finish_candidate_ownership_fence(
-        &mut self,
-    ) -> Result<Option<ctx_history_index_generation::GenerationOwnershipFence>> {
-        let Some(fence) = self.candidate_ownership_fence.take() else {
-            return Ok(None);
-        };
-        fence.into_publication_fence().map(Some).map_err(|error| {
-            let error = IndexError::from(error);
-            match self.active_pointer.as_ref() {
-                Some(pointer) => {
-                    classify_active_integrity_failure(&self.root, pointer.active(), error)
-                }
-                None => error,
-            }
-        })
     }
 
     fn next_manifest(&self) -> Result<GenerationManifest> {

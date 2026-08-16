@@ -14,7 +14,7 @@ snippets and typed event/session presentation come from those stored records.
 Exact ctx history-retrieval invocations and their uniquely linked, successful,
 payload-only results are retained as complete Core records but excluded from
 ranked discovery. This prevents a later search from ranking an earlier `ctx
-search`, `show`, `list events`, `locate`, or `blame` payload as if it were the
+search`, `show`, `list events`, or `locate` payload as if it were the
 underlying agent history. Classification is syntax- and linkage-based, not a
 text regex: failed-result diagnostics, warnings, stderr, mixed records, unknown
 status, and ambiguous results remain searchable. Direct `show` and event
@@ -200,11 +200,10 @@ remains lexical-safe in those cases.
 
 `--refresh background` is the default. Search health-checks and, when needed,
 wakes or recovers the default-enabled persistent daemon, then serves the latest
-committed lexical generation without waiting for optional semantic indexing or
-independent Pro materialization. The daemon owns bounded provider discovery,
-source refresh, immutable candidate-generation construction, publication,
-opted-in semantic catch-up, and Pro catch-up. The query process never becomes a
-foreground history writer.
+committed lexical generation without waiting for optional semantic indexing.
+The daemon owns bounded provider discovery, source refresh, immutable
+candidate-generation construction, publication, and opted-in semantic catch-up.
+The query process never becomes a foreground history writer.
 
 On a fresh root, background mode asks the daemon to publish the first lexical
 generation. If daemon maintenance is disabled, search performs no hidden
@@ -216,7 +215,7 @@ an explicit import.
 `--refresh wait` wakes the daemon and waits for the requested source frontier
 and lexical-generation receipt. It fails with a typed source, lag, or system
 error when that receipt cannot publish; it does not fall back to a foreground
-importer or wait for complete semantic or Pro coverage.
+importer or wait for complete semantic coverage.
 
 `--refresh off` queries the currently published generations without provider
 discovery, plugin execution, refresh scheduling, semantic catch-up, or model
@@ -245,7 +244,7 @@ generation. `ctx show session` preserves provider event order.
 The top-level exact `mcp_tool_call: {server, tool}` attribution object remains
 metadata. That object is not indexed and adds no search input, filter, result
 field, selector, match, ranking signal, snippet, `why_matched` value, SQL column,
-or Local Pro fact. Use log-mode `ctx show session`, `ctx show event`, or
+or another derived fact. Use log-mode `ctx show session`, `ctx show event`, or
 `ctx list events` and filter JSON/JSONL rows client-side when exact attribution
 metadata is needed.
 
@@ -265,7 +264,7 @@ the `normalized_body` disposition retains the event's existing normalized-body
 search behavior exactly once; the exchange does not duplicate it.
 
 This projection adds no semantic text, filter, search result field, SQL column,
-Local Pro fact, or hidden network request. Sensitive invocation arguments can
+another derived fact, or hidden network request. Sensitive invocation arguments can
 therefore become searchable in the local lexical index, but ctx does not send
 them over the network. The lexical projector revision participates in
 generation identity, so an older generation must be rebuilt or pass the narrow

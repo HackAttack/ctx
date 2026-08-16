@@ -2,7 +2,7 @@ use ctx_history_core::{EventRole, EventType};
 use serde_json::Value;
 
 use crate::native_source::NativeSqliteValue;
-use crate::{CaptureError, OutputOutcome, OutputOutcomeMetadata, Result};
+use crate::{CaptureError, Result};
 use ctx_history_capture_model::normalization::{
     provider_normalized_result_value, provider_role, provider_value_text,
 };
@@ -54,10 +54,11 @@ pub(super) struct CrushMessageProjection {
 }
 
 pub(super) struct CrushOutputProjection {
-    pub(super) outcome: OutputOutcomeMetadata,
+    pub(super) status: Option<String>,
+    pub(super) exit_code: Option<i32>,
+    pub(super) duration_ms: Option<u64>,
     pub(super) call_id: Option<String>,
     pub(super) tool_name: Option<String>,
-    pub(super) linkage_exact: bool,
 }
 
 pub(super) struct CrushChildMessageRow {
@@ -241,7 +242,7 @@ fn parts_have_type(parts: &Value, expected: &str) -> bool {
 }
 
 fn crush_output_projection(parts: &Value) -> CrushOutputProjection {
-    let mut aggregate = CrushOutcomeAggregate::default();
+    let mut aggregate = CrushResultAggregate::default();
     let items = parts.as_array().map(Vec::as_slice).unwrap_or_default();
     for item in items {
         let kind = item.get("type").and_then(Value::as_str);
@@ -249,39 +250,28 @@ fn crush_output_projection(parts: &Value) -> CrushOutputProjection {
             continue;
         }
         let data = item.get("data").unwrap_or(item);
-        crush_collect_outcome_value(data, &mut aggregate);
+        crush_collect_result_literals(data, &mut aggregate);
         crush_collect_linkage(data, &mut aggregate);
     }
-    let linkage_exact = !aggregate.linkage_ambiguous && aggregate.call_id.is_some();
     CrushOutputProjection {
-        outcome: OutputOutcomeMetadata {
-            outcome: if aggregate.timeout {
-                OutputOutcome::Timeout
-            } else if aggregate.failure {
-                OutputOutcome::Failure
-            } else if aggregate.success {
-                OutputOutcome::Success
-            } else {
-                OutputOutcome::Unknown
-            },
-            exit_code: aggregate.exit_code,
-            duration_ms: aggregate.duration_ms,
-        },
+        status: (!aggregate.status_ambiguous)
+            .then_some(aggregate.status)
+            .flatten(),
+        exit_code: aggregate.exit_code,
+        duration_ms: aggregate.duration_ms,
         call_id: (!aggregate.linkage_ambiguous)
             .then_some(aggregate.call_id)
             .flatten(),
         tool_name: (!aggregate.linkage_ambiguous)
             .then_some(aggregate.tool_name)
             .flatten(),
-        linkage_exact,
     }
 }
 
 #[derive(Default)]
-struct CrushOutcomeAggregate {
-    timeout: bool,
-    failure: bool,
-    success: bool,
+struct CrushResultAggregate {
+    status: Option<String>,
+    status_ambiguous: bool,
     exit_code: Option<i32>,
     duration_ms: Option<u64>,
     call_id: Option<String>,
@@ -289,7 +279,7 @@ struct CrushOutcomeAggregate {
     linkage_ambiguous: bool,
 }
 
-fn crush_collect_linkage(value: &Value, aggregate: &mut CrushOutcomeAggregate) {
+fn crush_collect_linkage(value: &Value, aggregate: &mut CrushResultAggregate) {
     let Some(object) = value.as_object() else {
         aggregate.linkage_ambiguous = true;
         return;
@@ -319,7 +309,7 @@ fn collect_exact_linkage_string(
         let Some(value) = object.get(*key) else {
             continue;
         };
-        let Some(value) = value.as_str().map(str::trim) else {
+        let Some(value) = value.as_str() else {
             *ambiguous = true;
             continue;
         };
@@ -335,22 +325,10 @@ fn collect_exact_linkage_string(
     }
 }
 
-fn crush_collect_outcome_value(value: &Value, aggregate: &mut CrushOutcomeAggregate) {
+fn crush_collect_result_literals(value: &Value, aggregate: &mut CrushResultAggregate) {
     let Some(object) = value.as_object() else {
         return;
     };
-    aggregate.timeout |= ["timed_out", "timedOut", "timeout"]
-        .iter()
-        .any(|key| object.get(*key).and_then(Value::as_bool).unwrap_or(false));
-    if let Some(success) = object.get("success").and_then(Value::as_bool) {
-        aggregate.success |= success;
-        aggregate.failure |= !success;
-    }
-    aggregate.failure |= object
-        .get("isError")
-        .or_else(|| object.get("is_error"))
-        .and_then(Value::as_bool)
-        .unwrap_or(false);
     if let Some(code) = object
         .get("exit_code")
         .or_else(|| object.get("exitCode"))
@@ -358,8 +336,6 @@ fn crush_collect_outcome_value(value: &Value, aggregate: &mut CrushOutcomeAggreg
         .and_then(|code| i32::try_from(code).ok())
     {
         aggregate.exit_code = Some(code);
-        aggregate.success |= code == 0;
-        aggregate.failure |= code != 0;
     }
     if aggregate.duration_ms.is_none() {
         aggregate.duration_ms = ["duration_ms", "durationMs"]
@@ -368,16 +344,11 @@ fn crush_collect_outcome_value(value: &Value, aggregate: &mut CrushOutcomeAggreg
     }
     for key in ["status", "state", "outcome"] {
         if let Some(status) = object.get(key).and_then(Value::as_str) {
-            let status = status.trim().to_ascii_lowercase();
-            aggregate.timeout |= matches!(status.as_str(), "timeout" | "timed_out" | "timedout");
-            aggregate.failure |= matches!(
-                status.as_str(),
-                "failed" | "failure" | "error" | "errored" | "cancelled" | "canceled"
-            );
-            aggregate.success |= matches!(
-                status.as_str(),
-                "success" | "succeeded" | "complete" | "completed" | "ok" | "passed"
-            );
+            match aggregate.status.as_deref() {
+                Some(existing) if existing != status => aggregate.status_ambiguous = true,
+                Some(_) => {}
+                None => aggregate.status = Some(status.to_owned()),
+            }
         }
     }
 }

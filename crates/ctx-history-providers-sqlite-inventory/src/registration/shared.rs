@@ -302,7 +302,7 @@ where
 {
     type Lifecycle = L;
     type Spool = S;
-    type RouteControl = ctx_history_provider_runtime::ProviderRouteControlExpectation;
+    type RouteControl = crate::ProviderRouteControlExpectation;
     type Leaf = SqliteInventoryDocumentLeaf<A::Leaf>;
     type TreeAuthority = SqliteInventoryTreeAuthority;
 

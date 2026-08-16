@@ -1,23 +1,21 @@
 use std::sync::Arc;
 
 use chrono::{DateTime, Utc};
-use ctx_history_capture_model::{
-    file_touches::{
-        event_type_supports_structured_file_touches, visit_provider_file_touch_drafts_with_limit,
-    },
-    normalization::provider_value_text,
-};
+use ctx_history_capture_model::normalization::provider_value_text;
 use ctx_history_capture_runtime::BaseEventLookup;
 use ctx_history_core::{
-    derive_event_id, CoreContentPolicyStatus, CoreRecord, EventIdentityInput, EventOrigin,
-    NativeItemKey, SessionRelationshipKind, SourceKey, TypedKey,
+    derive_event_id, ActivityInvocation, ActivityJsonCapture, ActivityResult, ActivityTextCapture,
+    AgentScope, CoreActivity, CoreContentPolicyStatus, CoreRecord, EventIdentityInput,
+    LiteralFactKind, NativeItemKey, ProviderDeclaredFact, ProviderNativeSessionRelationship,
+    SourceKey, TypedKey, CORE_ACTIVITY_REVISION, MAX_CORE_CONTENT_BYTES,
 };
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 
 use ctx_history_jsonl::{
-    FallbackEventIdentityState, JsonlFamilyProjectionMode, JsonlFamilyProjector,
-    JsonlFamilyWorkerContext, JsonlReader, JsonlRecordRef, JsonlSourceIdentity,
+    fit_jsonl_activity, FallbackEventIdentityState, JsonlActivityObservedBytes,
+    JsonlFamilyProjectionMode, JsonlFamilyProjector, JsonlFamilyWorkerContext, JsonlReader,
+    JsonlRecordRef, JsonlSourceIdentity,
 };
 use ctx_history_provider_runtime::{
     source_io::ProviderSourceRoot, CaptureError, ProviderBaseEventLookup, ProviderJsonlRuntime,
@@ -38,7 +36,6 @@ use super::{
 const NATIVE_ITEM_NAMESPACE: &str = "mux.record";
 const FALLBACK_ITEM_NAMESPACE: &str = "mux.record.fallback";
 const FALLBACK_FINGERPRINT_DOMAIN: &[u8] = b"ctx.mux.fallback-event-fingerprint.v1\0";
-const MAX_FILE_TOUCHES: usize = 448;
 
 pub(super) struct MuxProjector<L: BaseEventLookup> {
     source: SourceKey,
@@ -166,94 +163,151 @@ where
                 "Mux source-backed event has no exact lexical body".to_owned(),
             ));
         }
-        let mut touched_files = Vec::new();
-        if event_type_supports_structured_file_touches(event.event_type) {
-            let _ = visit_provider_file_touch_drafts_with_limit(
-                &row.value,
-                true,
-                MAX_FILE_TOUCHES,
-                |(_, touch)| {
-                    touched_files.push(touch.path);
-                    Ok::<(), std::convert::Infallible>(())
-                },
-            );
+        let mut facts = Vec::new();
+        if let Some(cwd) = &self.binding.metadata.cwd {
+            facts.push(ProviderDeclaredFact {
+                kind: LiteralFactKind::SessionCwd,
+                value: cwd.clone(),
+            });
         }
-        let tools = row
-            .value
-            .get("parts")
-            .and_then(Value::as_array)
-            .into_iter()
-            .flatten()
-            .filter(|part| part.get("type").and_then(Value::as_str) == Some("dynamic-tool"))
-            .map(|part| {
-                serde_json::json!({
-                    "name": part.get("toolName").or_else(|| part.get("name")),
-                    "call_id": part.get("toolCallId").or_else(|| part.get("id")),
-                    "state": part.get("state"),
-                    "input": part.get("input"),
-                    "output": part.get("output"),
-                })
-            })
-            .collect::<Vec<_>>();
-        let structured_content = (!touched_files.is_empty() || !tools.is_empty())
-            .then(|| serde_json::json!({"tools": tools, "file_touches": touched_files}));
-        let relationship = if self.binding.metadata.lineage_ambiguous {
-            SessionRelationshipKind::RelatedUnknown
-        } else {
-            SessionRelationshipKind::Delegated
-        };
-        let agent_type = if self.binding.parent_session_id.is_some()
-            && relationship == SessionRelationshipKind::Delegated
-        {
-            "subagent"
-        } else {
-            "primary"
-        };
+        let activity = mux_activity(&row.value, facts).map_err(contract)?;
         let mut record = CoreRecord::new_selected(
             event_id,
-            self.binding.session_id,
             self.binding.session_id,
             self.source.clone(),
             event_sequence,
             event.event_type.as_str(),
-            agent_type,
-            true,
             PARSER_REVISION,
-            body,
+            body.clone(),
         )
         .map_err(contract)?;
-        if let Some(parent_session_id) = self.binding.parent_session_id {
-            record
-                .set_session_relationship(
-                    relationship,
-                    Some(parent_session_id),
-                    self.binding.root_session_id,
-                )
-                .map_err(contract)?;
-            if relationship == SessionRelationshipKind::Delegated {
-                record.event_origin = EventOrigin::UniqueToSession;
-            }
+        if let Some(parent_session_id) = self
+            .binding
+            .parent_session_id
+            .filter(|_| !self.binding.metadata.lineage_ambiguous)
+        {
+            record.parent_session_id = Some(parent_session_id);
+            record.root_session_id = Some(self.binding.root_session_id);
+            record.session_relationship = Some(ProviderNativeSessionRelationship::Delegated);
+            record.agent_scope = Some(AgentScope::Subagent);
         }
         record.provider_session_id = Some(self.binding.metadata.provider_session_id.clone());
         record.native_event_id = Some(native_event_id);
         record.occurred_at_unix_ms = Some(event.occurred_at.timestamp_millis());
         record.role = event.role.map(|role| role.as_str().to_owned());
-        record.cwd = self.binding.metadata.cwd.clone();
-        record.content.structured_content = structured_content;
+        record.content.structured_content = Some(row.value);
+        record.content.activity = activity;
         if let Some((kind, reason)) = content_omission {
             record.content.policy_status = CoreContentPolicyStatus::Omitted {
                 reason: reason.to_owned(),
             };
             record.content.normalized_body = None;
             record.content.structured_content = None;
-            record.metadata.insert(
-                "content_omission".to_owned(),
-                serde_json::json!({"kind": kind, "reason": reason}),
+            let _ = kind;
+        } else {
+            fit_jsonl_activity(
+                &body,
+                record.content.structured_content.as_ref(),
+                &mut record.content.activity,
+                JsonlActivityObservedBytes::infer_from_present(),
+                MAX_CORE_CONTENT_BYTES,
             );
+            record
+                .content
+                .omit_structured_content_if_aggregate_exceeds_limit()
+                .map_err(contract)?;
         }
         record.validate_contract().map_err(contract)?;
         emit(record)
     }
+}
+
+fn mux_activity(value: &Value, facts: Vec<ProviderDeclaredFact>) -> Result<Option<CoreActivity>> {
+    let dynamic_parts = value
+        .get("parts")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter(|part| part.get("type").and_then(Value::as_str) == Some("dynamic-tool"))
+        .collect::<Vec<_>>();
+    let [part] = dynamic_parts.as_slice() else {
+        return Ok((!facts.is_empty()).then_some(CoreActivity {
+            revision: CORE_ACTIVITY_REVISION,
+            provider_call_id: None,
+            invocation: None,
+            result: None,
+            facts,
+        }));
+    };
+    let call_ids = [
+        "toolCallId",
+        "tool_call_id",
+        "callId",
+        "call_id",
+        "toolUseId",
+        "tool_use_id",
+        "id",
+    ]
+    .into_iter()
+    .filter_map(|field| part.get(field).and_then(Value::as_str))
+    .collect::<Vec<_>>();
+    let provider_call_id = match call_ids.as_slice() {
+        [id] if !id.is_empty() => Some(TypedKey::utf8(*id).map_err(contract)?),
+        _ => None,
+    };
+    let tool = ["toolName", "tool_name", "name"]
+        .into_iter()
+        .filter_map(|field| part.get(field).and_then(Value::as_str))
+        .collect::<Vec<_>>();
+    let invocation = match tool.as_slice() {
+        [tool] if !tool.is_empty() => Some(ActivityInvocation {
+            protocol: None,
+            server: None,
+            tool: (*tool).to_owned(),
+            arguments: part
+                .get("input")
+                .map_or(ActivityJsonCapture::Absent, |value| {
+                    ActivityJsonCapture::Present {
+                        value: value.clone(),
+                    }
+                }),
+            started_at_unix_ms: None,
+        }),
+        _ => None,
+    };
+    let output_redacted = part.get("state").and_then(Value::as_str) == Some("output-redacted");
+    let result = if output_redacted {
+        Some(ActivityResult {
+            status: None,
+            completed_at_unix_ms: None,
+            duration_ns: None,
+            text: ActivityTextCapture::Unavailable,
+            structured_content: ActivityJsonCapture::Unavailable,
+        })
+    } else {
+        part.get("output").map(|output| ActivityResult {
+            status: None,
+            completed_at_unix_ms: None,
+            duration_ns: None,
+            text: output
+                .as_str()
+                .map_or(ActivityTextCapture::Absent, |value| {
+                    ActivityTextCapture::Present {
+                        value: value.to_owned(),
+                    }
+                }),
+            structured_content: ActivityJsonCapture::Present {
+                value: output.clone(),
+            },
+        })
+    };
+    Ok(Some(CoreActivity {
+        revision: CORE_ACTIVITY_REVISION,
+        provider_call_id,
+        invocation,
+        result,
+        facts,
+    }))
 }
 
 pub(super) struct MuxJsonlProjector<B: ProviderRuntimeBinding> {
@@ -567,10 +621,9 @@ mod tests {
         let child = project_relationship_fixture(Some("mux-parent"));
         assert_eq!(
             child.session_relationship,
-            SessionRelationshipKind::Delegated
+            Some(ProviderNativeSessionRelationship::Delegated)
         );
-        assert_eq!(child.event_origin, EventOrigin::UniqueToSession);
-        assert!(!child.is_primary);
+        assert_eq!(child.agent_scope, Some(AgentScope::Subagent));
         assert_eq!(
             child.content.meaningful_text(),
             "exact child-owned Mux event"
@@ -578,9 +631,8 @@ mod tests {
         assert!(child.native_event_id.is_some());
 
         let root = project_relationship_fixture(None);
-        assert_eq!(root.session_relationship, SessionRelationshipKind::Root);
-        assert_eq!(root.event_origin, EventOrigin::Unknown);
-        assert!(root.is_primary);
+        assert_eq!(root.session_relationship, None);
+        assert_eq!(root.agent_scope, None);
         assert_eq!(
             root.content.meaningful_text(),
             "exact child-owned Mux event"
@@ -589,7 +641,7 @@ mod tests {
     }
 
     #[test]
-    fn provider_p1_lineage_contradictory_aliases_are_related_unknown() {
+    fn contradictory_lineage_aliases_omit_relationship_claim() {
         let temp = tempfile::tempdir().unwrap();
         let native = crate::mux::source::MuxSessionSource {
             session_dir: temp.path().join("mux-child"),
@@ -670,17 +722,12 @@ mod tests {
             .unwrap();
 
         let record = emitted.pop().unwrap();
-        assert_eq!(
-            record.session_relationship,
-            SessionRelationshipKind::RelatedUnknown
-        );
-        assert_eq!(record.event_origin, EventOrigin::Unknown);
-        assert!(record.is_primary);
-        assert_eq!(record.agent_type, "primary");
+        assert_eq!(record.session_relationship, None);
+        assert_eq!(record.agent_scope, None);
     }
 
     #[test]
-    fn successful_textual_result_over_16k_is_complete() {
+    fn provider_textual_result_over_16k_is_complete() {
         let tail = "mux_success_result_tail_complete";
         let output = format!("{} {tail}", "successful mux output ".repeat(800));
         assert!(output.len() > 16_000);

@@ -24,7 +24,6 @@ fn definition(report: &Value, version: i64) -> &Value {
         .unwrap()
 }
 
-#[allow(clippy::too_many_arguments)]
 fn insert_row(
     connection: &Connection,
     definition_version: i64,
@@ -34,7 +33,6 @@ fn insert_row(
     context_coverage: &str,
     calls: i64,
     results: i64,
-    citations: i64,
     output_bytes: i64,
     context_bytes: i64,
     matched_bytes: i64,
@@ -43,14 +41,13 @@ fn insert_row(
         .execute(
             "INSERT INTO daily_usage (
                 day_utc, definition_version, ctx_version, surface, operation,
-                outcome, value_class, duration_bucket, target_type, pro_outcome,
-                context_coverage, calls, result_count, citation_count,
+                outcome, value_class, duration_bucket, context_coverage,
+                calls, result_count,
                 delivered_output_bytes, delivered_context_bytes,
                 matched_normalized_session_bytes
              ) VALUES (
                 '2026-07-25', ?1, '0.26.0', ?2, ?3, 'success', ?4,
-                '10_to_49_ms', 'not_applicable', 'not_applicable', ?5,
-                ?6, ?7, ?8, ?9, ?10, ?11
+                '10_to_49_ms', ?5, ?6, ?7, ?8, ?9, ?10
              )",
             rusqlite::params![
                 definition_version,
@@ -60,7 +57,6 @@ fn insert_row(
                 context_coverage,
                 calls,
                 results,
-                citations,
                 output_bytes,
                 context_bytes,
                 matched_bytes,
@@ -73,7 +69,7 @@ fn insert_row(
 fn pristine_disabled_and_malformed_stats_are_truthful_and_create_nothing() {
     let pristine = tempdir();
     let report = json_output(enabled(ctx(&pristine).args(["stats", "--format=json"])));
-    assert_eq!(report["schema_version"], 2);
+    assert_eq!(report["schema_version"], 3);
     assert_eq!(report["local_only"], true);
     assert_eq!(report["read_only"], true);
     assert_eq!(report["enabled"], true);
@@ -110,6 +106,7 @@ fn pristine_disabled_and_malformed_stats_are_truthful_and_create_nothing() {
     let encoded = String::from_utf8(output.stderr).unwrap();
     assert!(!encoded.as_bytes().contains(&0x1b));
     let report: Value = serde_json::from_str(&encoded).unwrap();
+    assert_eq!(report["schema_version"], 3);
     assert_eq!(report["state"], "error");
     assert_eq!(report["error"]["code"], "local_usage_config_unavailable");
     assert!(!encoded.contains(marker));
@@ -153,7 +150,6 @@ fn definition_two_math_uses_only_complete_search_context_and_spec_coefficients()
         "complete",
         1,
         2,
-        0,
         60,
         19,
         59,
@@ -167,7 +163,6 @@ fn definition_two_math_uses_only_complete_search_context_and_spec_coefficients()
         "unavailable",
         1,
         1,
-        0,
         700,
         0,
         0,
@@ -262,7 +257,6 @@ fn definitions_are_reported_separately_and_definition_one_never_drives_estimates
         "not_applicable",
         3,
         6,
-        0,
         1_500,
         0,
         0,
@@ -279,7 +273,6 @@ fn definitions_are_reported_separately_and_definition_one_never_drives_estimates
         0,
         0,
         0,
-        0,
     );
     insert_row(
         &connection,
@@ -289,7 +282,6 @@ fn definitions_are_reported_separately_and_definition_one_never_drives_estimates
         "not_applicable",
         "not_applicable",
         1,
-        0,
         0,
         1,
         0,
@@ -333,7 +325,6 @@ fn human_stats_label_measured_and_estimated_sections_without_time_claims() {
         "complete",
         1,
         1,
-        0,
         20,
         20,
         100,

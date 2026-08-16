@@ -264,7 +264,7 @@ fn gemini_nativepath_preserves_nested_parent_identity_without_a_header_event() {
         session.parent_native_session_id.as_deref(),
         Some("root-session")
     );
-    assert_eq!(session.agent_type, ctx_history_core::AgentType::Subagent);
+    assert_eq!(session.agent_scope, AgentScope::Subagent);
     assert_eq!(rows.len(), 1);
     assert_eq!(rows[0].native_order.raw_ordinal, 1);
     assert_eq!(outcome.metrics.header_records, 1);
@@ -272,10 +272,9 @@ fn gemini_nativepath_preserves_nested_parent_identity_without_a_header_event() {
     assert_eq!(records.len(), 1);
     assert_eq!(
         records[0].session_relationship,
-        SessionRelationshipKind::Delegated
+        Some(ProviderNativeSessionRelationship::Delegated)
     );
-    assert_eq!(records[0].event_origin, EventOrigin::UniqueToSession);
-    assert!(!records[0].is_primary);
+    assert_eq!(records[0].agent_scope, Some(AgentScope::Subagent));
     assert_eq!(records[0].content.meaningful_text(), "child request");
     assert_eq!(
         records[0].native_event_id,

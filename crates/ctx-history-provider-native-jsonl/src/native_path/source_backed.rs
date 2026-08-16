@@ -6,13 +6,11 @@ use std::{
 
 use chrono::{DateTime, Utc};
 use ctx_history_core::{
-    derive_event_id, derive_native_session_id, CaptureProvider, CoreRecord, CoreRecordError,
-    EventIdentityInput, NativeItemKey, PositionStability, ProjectionContractError,
-    SessionRelationshipKind, SourceKey, StableEntityId, SubrecordSelector, TypedKey,
-    MAX_CORE_CONTENT_BYTES,
+    derive_event_id, derive_native_session_id, CaptureProvider, CoreActivity, CoreRecord,
+    CoreRecordError, EventIdentityInput, LiteralFactKind, NativeItemKey, PositionStability,
+    ProjectionContractError, ProviderDeclaredFact, SourceKey, StableEntityId, SubrecordSelector,
+    TypedKey, CORE_ACTIVITY_REVISION, MAX_CORE_CONTENT_BYTES,
 };
-#[cfg(test)]
-use ctx_history_core::{McpJsonCapture, McpPayloadOmissionReason};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
@@ -25,11 +23,11 @@ use crate::{
 };
 use ctx_history_capture_model::ProviderSourceFailureKind;
 use ctx_history_jsonl::{
-    fit_jsonl_mcp_exchange, observe_opened_file, probe_first_record, FallbackEventIdentityState,
-    JsonlFamilyAdapter, JsonlFamilyAppendMode, JsonlFamilyError, JsonlFamilyInventory,
-    JsonlFamilyLeaf, JsonlFamilyProjectionMode, JsonlFamilyProjector, JsonlFamilyRejectedLeaf,
-    JsonlFamilyWorkerContext, JsonlMcpObservedEncodedBytes, JsonlOversizedRecordPolicy,
-    JsonlRecordRef, JsonlRuntimeLookup, OpenedProviderSourceFile, OpenedProviderSourcePath,
+    fit_jsonl_activity, observe_opened_file, probe_first_record, FallbackEventIdentityState,
+    JsonlActivityObservedBytes, JsonlFamilyAdapter, JsonlFamilyAppendMode, JsonlFamilyError,
+    JsonlFamilyInventory, JsonlFamilyLeaf, JsonlFamilyProjectionMode, JsonlFamilyProjector,
+    JsonlFamilyRejectedLeaf, JsonlFamilyWorkerContext, JsonlOversizedRecordPolicy, JsonlRecordRef,
+    JsonlRuntimeLookup, OpenedProviderSourceFile, OpenedProviderSourcePath,
     ProviderSourceDirectory, ProviderSourceRoot,
 };
 use ctx_history_source_io::{
@@ -40,7 +38,7 @@ use ctx_history_source_io::{
 
 const DIRECT_JSONL_SOURCE_IDENTITY_VERSION: u32 = 1;
 const DIRECT_JSONL_MAX_DIRECTORY_DEPTH: usize = 128;
-const DIRECT_JSONL_EVENT_IDENTITY_REVISION: &str = "direct-jsonl-content-occurrence-v1";
+const DIRECT_JSONL_EVENT_IDENTITY_REVISION: &str = "direct-jsonl-content-occurrence-v2";
 
 #[derive(Debug, Error)]
 enum DirectJsonlAdapterError {
@@ -555,7 +553,7 @@ impl<R: NativeJsonlRuntime> DirectJsonlFamilyProjector<R> {
     fn new(
         adapter: DirectJsonlFamilyAdapter<R>,
         leaf: &JsonlFamilyLeaf<CaptureError>,
-        source_file: &OpenedProviderSourceFile<CaptureError>,
+        _source_file: &OpenedProviderSourceFile<CaptureError>,
         imported_at: DateTime<Utc>,
         base_event_lookup: Option<JsonlRuntimeLookup<R>>,
         mode: JsonlFamilyProjectionMode,
@@ -563,7 +561,7 @@ impl<R: NativeJsonlRuntime> DirectJsonlFamilyProjector<R> {
         let binding = decode_binding(leaf)?;
         let (source, session_id) = adapter.session_identity(&binding.session.native_session_id)?;
         source.validate_exact_descriptor(leaf.source())?;
-        let mut projector = DirectJsonlProjector::new(
+        let projector = DirectJsonlProjector::new(
             adapter.provider,
             adapter.source_format,
             leaf.source_path(),
@@ -580,11 +578,6 @@ impl<R: NativeJsonlRuntime> DirectJsonlFamilyProjector<R> {
             mode.into(),
             base_event_lookup,
         )?;
-        if adapter.provider == CaptureProvider::CopilotCli {
-            projector.set_copilot_mcp_tool_calls(copilot::copilot_mcp_tool_call_attributions(
-                source_file,
-            )?);
-        }
         Ok(Self {
             adapter,
             source,
@@ -648,9 +641,6 @@ impl<R: NativeJsonlRuntime> JsonlFamilyProjector for DirectJsonlFamilyProjector<
     }
 
     fn finish(&mut self) -> Result<()> {
-        if !self.projector.copilot_attribution_projection_matches() {
-            return Err(CaptureError::SourceChangedDuringCapture);
-        }
         self.validate_session().map_err(capture_error)?;
         self.fallback_identities.finish()
     }
@@ -741,90 +731,78 @@ fn project_event<R: NativeJsonlRuntime>(
         .transpose()?;
     let root_session_id = match session.root_provider_session_id.as_deref() {
         Some(root) if root == session.native_session_id || root == session.provider_session_id => {
-            session_id
+            Some(session_id)
         }
-        Some(root) => adapter.session_identity(root)?.1,
-        None => session_id,
+        Some(root) => Some(adapter.session_identity(root)?.1),
+        None => None,
     };
-    let has_tool_result = event
-        .metadata
-        .get("tool_result")
-        .is_some_and(|value| !value.is_null());
-    let body = if event.lexical_text.trim().is_empty() && has_tool_result {
-        return Err(CaptureError::InvalidPayload(
-            "direct JSONL selected result has no meaningful native content".to_owned(),
-        )
-        .into());
-    } else if event.lexical_text.trim().is_empty() {
+    let body = if event.lexical_text.trim().is_empty() {
         event.event_type.as_str().to_owned()
     } else {
         event.lexical_text.clone()
     };
-    let touches = event.touches;
-    let entry_type = event.metadata.get("entry_type").cloned();
-    let status = event.metadata.get("status").cloned();
-    let model = event.metadata.get("model").cloned();
-    let tokens = event.metadata.get("tokens").cloned();
-    let tool_result = event.metadata.get("tool_result").cloned();
-    let structured_content = (!touches.is_empty()
-        || entry_type.as_ref().is_some_and(|value| !value.is_null())
-        || status.as_ref().is_some_and(|value| !value.is_null())
-        || model.as_ref().is_some_and(|value| !value.is_null())
-        || tokens.as_ref().is_some_and(|value| !value.is_null())
-        || tool_result.as_ref().is_some_and(|value| !value.is_null()))
-    .then(|| {
-        serde_json::json!({
-            "entry_type": entry_type,
-            "status": status,
-            "model": model,
-            "tokens": tokens,
-            "file_touches": touches,
-            "tool_result": tool_result,
-        })
-    });
     let mut record = CoreRecord::new_selected(
         event_id,
-        session_id,
         session_id,
         source.clone(),
         event.provider_event_sequence_index,
         event.event_type.as_str(),
-        session.agent_type.as_str(),
-        true,
         adapter.effective_parser_revision(),
         body,
     )?;
-    if let Some(parent_session_id) = parent_session_id {
-        let kind = if session.is_primary {
-            SessionRelationshipKind::RelatedUnknown
-        } else {
-            SessionRelationshipKind::Delegated
-        };
-        record.set_session_relationship(kind, Some(parent_session_id), root_session_id)?;
-    }
+    record.parent_session_id = parent_session_id;
+    record.root_session_id = root_session_id;
+    record.session_relationship = session.session_relationship;
     record.provider_session_id = Some(session.provider_session_id.clone());
     record.native_event_id = Some(native_event_key);
     record.occurred_at_unix_ms = Some(event.occurred_at.timestamp_millis());
     record.role = Some(event.role.as_str().to_owned());
-    record.cwd = session.cwd.clone();
-    record.mcp_tool_call = event.mcp_tool_call;
-    record.content.structured_content = structured_content;
-    record.content.mcp_exchange = event.mcp_exchange;
-    fit_mcp_exchange_to_content_budget(&mut record)?;
+    record.agent_scope = session.agent_scope;
+    record.content.structured_content = Some(event.native_value);
+    let mut activity = event.activity;
+    let mut facts = Vec::new();
+    if let Some(cwd) = &session.cwd {
+        facts.push(ProviderDeclaredFact {
+            kind: LiteralFactKind::SessionCwd,
+            value: cwd.clone(),
+        });
+    }
+    if let Some(activity) = activity.as_mut() {
+        facts.append(&mut activity.facts);
+    }
+    facts.extend(event.facts);
+    if !facts.is_empty() {
+        activity
+            .get_or_insert_with(|| CoreActivity {
+                revision: CORE_ACTIVITY_REVISION,
+                provider_call_id: None,
+                invocation: None,
+                result: None,
+                facts: Vec::new(),
+            })
+            .facts = facts;
+    }
+    record.content.activity = activity;
+    if event.lexical_text.trim().is_empty() {
+        record.content.normalized_body = None;
+    }
+    fit_activity_to_content_budget(&mut record)?;
+    record
+        .content
+        .omit_structured_content_if_aggregate_exceeds_limit()?;
     record.validate_contract()?;
     Ok(record)
 }
 
-fn fit_mcp_exchange_to_content_budget(record: &mut CoreRecord) -> DirectJsonlAdapterResult<()> {
-    fit_mcp_exchange_within_content_budget(record, MAX_CORE_CONTENT_BYTES)
+fn fit_activity_to_content_budget(record: &mut CoreRecord) -> DirectJsonlAdapterResult<()> {
+    fit_activity_within_content_budget(record, MAX_CORE_CONTENT_BYTES)
 }
 
-fn fit_mcp_exchange_within_content_budget(
+fn fit_activity_within_content_budget(
     record: &mut CoreRecord,
     maximum_bytes: usize,
 ) -> DirectJsonlAdapterResult<()> {
-    if record.content.mcp_exchange.is_none()
-        || record.content.encoded_content_bytes()? <= maximum_bytes
+    if record.content.activity.is_none() || record.content.encoded_content_bytes()? <= maximum_bytes
     {
         return Ok(());
     }
@@ -832,27 +810,14 @@ fn fit_mcp_exchange_within_content_budget(
     let content = &mut record.content;
     let body = content.normalized_body.as_deref().unwrap_or("");
     let structured_content = content.structured_content.as_ref();
-    fit_jsonl_mcp_exchange(
+    fit_jsonl_activity(
         body,
         structured_content,
-        &mut content.mcp_exchange,
-        JsonlMcpObservedEncodedBytes::infer_from_present(),
+        &mut content.activity,
+        JsonlActivityObservedBytes::infer_from_present(),
         maximum_bytes,
     );
     Ok(())
-}
-
-#[cfg(test)]
-fn omit_present_json(capture: &mut McpJsonCapture) -> DirectJsonlAdapterResult<bool> {
-    let McpJsonCapture::Present { value } = capture else {
-        return Ok(false);
-    };
-    let observed_encoded_bytes = u64::try_from(serde_json::to_vec(value)?.len()).ok();
-    *capture = McpJsonCapture::Omitted {
-        reason: McpPayloadOmissionReason::SizeLimit,
-        observed_encoded_bytes,
-    };
-    Ok(true)
 }
 
 fn relative_route_key(root: &Path, path: &Path) -> Vec<u8> {

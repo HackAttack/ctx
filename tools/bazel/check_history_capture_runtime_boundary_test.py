@@ -14,6 +14,8 @@ WORKSPACE_CARGO = """\
 [workspace]
 
 [workspace.dependencies]
+chrono = "0.4"
+tempfile = "3"
 uuid = "1"
 thiserror = "1"
 serde = "1"
@@ -106,6 +108,72 @@ ctx_rust_test(
 )
 """
 
+PROVIDER_CARGO = """\
+[dependencies]
+chrono.workspace = true
+ctx-history-capture-model = { path = "../ctx-history-capture-model" }
+ctx-history-capture-runtime = { path = "../ctx-history-capture-runtime" }
+ctx-history-core = { path = "../ctx-history-core" }
+ctx-history-jsonl = { path = "../ctx-history-jsonl" }
+ctx-history-native-jsonl-parsers = { path = "../ctx-history-native-jsonl-parsers" }
+ctx-history-source-io = { path = "../ctx-history-source-io" }
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+ctx-history-jsonl = { path = "../ctx-history-jsonl", features = ["test-support"] }
+ctx-history-source-io = { path = "../ctx-history-source-io", features = ["test-support"] }
+tempfile.workspace = true
+uuid.workspace = true
+"""
+
+PROVIDER_BUILD = """\
+load("@crates//:defs.bzl", "aliases", "all_crate_deps", "crate_edition")
+load("@rules_rust//rust:defs.bzl", "rust_library")
+load("//:rust_sources.bzl", "RUST_PROD_SRC_EXCLUDES")
+load("//tools/bazel:ctx_rust.bzl", "ctx_rust_test")
+load("//tools/bazel:gates.bzl", "loc_check_inputs")
+
+NATIVE_JSONL_DEPS = [
+    "//crates/ctx-history-capture-model:lib",
+    "//crates/ctx-history-capture-runtime:lib",
+    "//crates/ctx-history-core:lib",
+    "//crates/ctx-history-jsonl:lib",
+    "//crates/ctx-history-native-jsonl-parsers:lib",
+    "//crates/ctx-history-source-io:lib",
+]
+
+NATIVE_JSONL_TEST_DEPS = [
+    "//crates/ctx-history-capture-model:lib",
+    "//crates/ctx-history-capture-runtime:lib",
+    "//crates/ctx-history-core:lib",
+    "//crates/ctx-history-jsonl:test_support_lib",
+    "//crates/ctx-history-native-jsonl-parsers:lib",
+    "//crates/ctx-history-source-io:test_support_lib",
+]
+
+rust_library(
+    name = "lib",
+    deps = all_crate_deps(normal = True) + NATIVE_JSONL_DEPS,
+    proc_macro_deps = all_crate_deps(proc_macro = True),
+)
+
+rust_library(
+    name = "test_support_lib",
+    testonly = True,
+    deps = all_crate_deps(normal = True, normal_dev = True) + NATIVE_JSONL_TEST_DEPS,
+    proc_macro_deps = all_crate_deps(proc_macro = True, proc_macro_dev = True),
+)
+
+ctx_rust_test(
+    name = "unit_tests",
+    deps = all_crate_deps(normal = True, normal_dev = True) + NATIVE_JSONL_TEST_DEPS,
+    proc_macro_deps = all_crate_deps(proc_macro = True, proc_macro_dev = True),
+)
+"""
+
 
 class BoundaryMutationTests(unittest.TestCase):
     def setUp(self) -> None:
@@ -116,11 +184,15 @@ class BoundaryMutationTests(unittest.TestCase):
         self.runtime_build = root / "runtime-BUILD.bazel"
         self.jsonl_manifest = root / "jsonl-Cargo.toml"
         self.jsonl_build = root / "jsonl-BUILD.bazel"
+        self.provider_manifest = root / "provider-Cargo.toml"
+        self.provider_build = root / "provider-BUILD.bazel"
         self.workspace_manifest.write_text(WORKSPACE_CARGO, encoding="utf-8")
         self.runtime_manifest.write_text(RUNTIME_CARGO, encoding="utf-8")
         self.runtime_build.write_text(RUNTIME_BUILD, encoding="utf-8")
         self.jsonl_manifest.write_text(JSONL_CARGO, encoding="utf-8")
         self.jsonl_build.write_text(JSONL_BUILD, encoding="utf-8")
+        self.provider_manifest.write_text(PROVIDER_CARGO, encoding="utf-8")
+        self.provider_build.write_text(PROVIDER_BUILD, encoding="utf-8")
 
     def tearDown(self) -> None:
         self.temporary.cleanup()
@@ -132,6 +204,8 @@ class BoundaryMutationTests(unittest.TestCase):
             self.runtime_build,
             self.jsonl_manifest,
             self.jsonl_build,
+            self.provider_manifest,
+            self.provider_build,
         )
 
     def test_minimal_runtime_boundary_passes(self) -> None:
@@ -674,6 +748,40 @@ ctx_rust_test(
         with self.assertRaisesRegex(ValueError, "direct dependency inventory drifted"):
             self.validate()
 
+    def test_provider_forbidden_authorities_are_rejected(self) -> None:
+        for package in (
+            "ctx-history-capture",
+            "ctx-history-index",
+            "ctx-history-index-format",
+            "ctx-history-index-query",
+        ):
+            with self.subTest(package=package):
+                self.provider_manifest.write_text(
+                    PROVIDER_CARGO
+                    + f'\n[build-dependencies]\nforbidden = {{ package = "{package}", path = "../forbidden" }}\n',
+                    encoding="utf-8",
+                )
+                with self.assertRaisesRegex(ValueError, "forbidden Cargo dependencies"):
+                    self.validate()
+                self.provider_manifest.write_text(PROVIDER_CARGO, encoding="utf-8")
+
+    def test_provider_direct_bazel_dependencies_cannot_be_augmented_or_reassigned(self) -> None:
+        for mutation in (
+            'NATIVE_JSONL_DEPS += ["//crates/ctx-history-index:lib"]\n',
+            'NATIVE_JSONL_TEST_DEPS = NATIVE_JSONL_TEST_DEPS + ["//crates/ctx-history-capture:lib"]\n',
+            'COPIED_DEPS = NATIVE_JSONL_DEPS\n',
+        ):
+            with self.subTest(mutation=mutation):
+                self.provider_build.write_text(
+                    PROVIDER_BUILD.replace(
+                        "\nrust_library(", f"\n{mutation}\nrust_library("
+                    ),
+                    encoding="utf-8",
+                )
+                with self.assertRaisesRegex(ValueError, "NATIVE_JSONL_"):
+                    self.validate()
+                self.provider_build.write_text(PROVIDER_BUILD, encoding="utf-8")
+
     def test_cli_returns_nonzero_for_invalid_input(self) -> None:
         self.jsonl_manifest.write_text("[dependencies\n", encoding="utf-8")
         completed = subprocess.run(
@@ -685,6 +793,8 @@ ctx_rust_test(
                 str(self.runtime_build),
                 str(self.jsonl_manifest),
                 str(self.jsonl_build),
+                str(self.provider_manifest),
+                str(self.provider_build),
             ],
             check=False,
             capture_output=True,

@@ -1,13 +1,12 @@
 use chrono::{DateTime, Utc};
+use ctx_history_core::ProviderDeclaredFact;
 use ctx_history_core::{EventRole, EventType};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 use ctx_history_capture_model::time::parse_rfc3339_utc;
 
-use super::parser::{
-    CursorDiscoveryResultEvidence, CursorInputPathEvidence, CursorSafePart, CursorSanitizedRecord,
-};
+use super::parser::{CursorSafePart, CursorSanitizedRecord};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 pub(crate) struct CursorNativeOrder {
@@ -27,17 +26,24 @@ pub(crate) enum CursorEventBody {
         native_content: serde_json::Value,
         call_id: Option<String>,
         tool_name: Option<String>,
-        command: Option<String>,
-        declared_workdir: Option<String>,
-        input_paths: CursorInputPathEvidence,
-        ambiguous_native_fields: bool,
+        arguments: Option<serde_json::Value>,
+        protocol: Option<String>,
+        server: Option<String>,
+        explicit_tool: Option<String>,
+        call_id_unavailable: bool,
+        tool_name_unavailable: bool,
+        arguments_unavailable: bool,
+        mcp_identity_unavailable: bool,
+        native_content_unavailable: bool,
+        literal_facts: Vec<ProviderDeclaredFact>,
     },
     ToolOutput {
         native_content: serde_json::Value,
         call_id: Option<String>,
-        ambiguous_linkage: bool,
-        #[serde(skip)]
-        discovery_evidence: CursorDiscoveryResultEvidence,
+        call_id_unavailable: bool,
+        content_unavailable: bool,
+        native_content_unavailable: bool,
+        literal_facts: Vec<ProviderDeclaredFact>,
     },
 }
 
@@ -78,10 +84,16 @@ pub(super) fn project_cursor_record(
                     native_content,
                     call_id,
                     tool_name,
-                    command,
-                    declared_workdir,
-                    input_paths,
-                    ambiguous_native_fields,
+                    arguments,
+                    protocol,
+                    server,
+                    explicit_tool,
+                    call_id_unavailable,
+                    tool_name_unavailable,
+                    arguments_unavailable,
+                    mcp_identity_unavailable,
+                    native_content_unavailable,
+                    literal_facts,
                 } => (
                     EventType::ToolCall,
                     role,
@@ -89,26 +101,36 @@ pub(super) fn project_cursor_record(
                         native_content,
                         call_id,
                         tool_name,
-                        command,
-                        declared_workdir,
-                        input_paths,
-                        ambiguous_native_fields,
+                        arguments,
+                        protocol,
+                        server,
+                        explicit_tool,
+                        call_id_unavailable,
+                        tool_name_unavailable,
+                        arguments_unavailable,
+                        mcp_identity_unavailable,
+                        native_content_unavailable,
+                        literal_facts,
                     },
                 ),
                 CursorSafePart::ToolResult {
                     role,
                     native_content,
                     call_id,
-                    ambiguous_linkage,
-                    discovery_evidence,
+                    call_id_unavailable,
+                    content_unavailable,
+                    native_content_unavailable,
+                    literal_facts,
                 } => (
                     EventType::ToolOutput,
                     role,
                     CursorEventBody::ToolOutput {
                         native_content,
                         call_id,
-                        ambiguous_linkage,
-                        discovery_evidence,
+                        call_id_unavailable,
+                        content_unavailable,
+                        native_content_unavailable,
+                        literal_facts,
                     },
                 ),
             };

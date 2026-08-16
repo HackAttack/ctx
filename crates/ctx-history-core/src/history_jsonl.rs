@@ -3,17 +3,16 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::{
-    AgentType, Confidence, EventRole, EventType, Fidelity, FileChangeKind,
-    ProviderArtifactDescriptor, ProviderCursorRange, ProviderSourceTrust, SessionEdgeType,
-    SessionRelationshipKind, SessionStatus,
+    AgentScope, EventRole, EventType, Fidelity, ProviderArtifactDescriptor, ProviderCursorRange,
+    ProviderNativeSessionRelationship, ProviderSourceTrust, SessionStatus,
 };
 
-pub const CTX_HISTORY_JSONL_V1_SCHEMA_VERSION: &str = "ctx-history-jsonl-v1";
+pub const CTX_HISTORY_JSONL_SCHEMA_VERSION: &str = "ctx-history-jsonl-v2";
 
 /// Optional lineage extension carried by a provider-owned Custom History file.
 ///
-/// Absence is the legacy contract: parent/root fields are lineage hints only
-/// and event origin remains unknown.
+/// Absence means the producer declares no provider-native relationship or copy
+/// contract. Core does not synthesize one from ordering or equal content.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum CtxHistoryJsonlLineageContract {
@@ -22,8 +21,7 @@ pub enum CtxHistoryJsonlLineageContract {
 
 /// Exact proof kinds a generic Custom History producer may declare.
 ///
-/// Certified ordered-prefix proof remains provider-adapter-owned because the
-/// generic interchange parser cannot certify a provider's prefix algorithm.
+/// Prefix equality and content equality are deliberately not proof kinds.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum CtxHistoryJsonlCopyProofKind {
@@ -47,7 +45,7 @@ pub enum CtxHistoryJsonlRecord {
     Source(CtxHistoryJsonlSourceRecord),
     Session(CtxHistoryJsonlSessionRecord),
     Event(CtxHistoryJsonlEventRecord),
-    FileTouch(CtxHistoryJsonlFileTouchRecord),
+    FileReference(CtxHistoryJsonlFileReferenceRecord),
     Edge(CtxHistoryJsonlEdgeRecord),
 }
 
@@ -102,15 +100,13 @@ pub struct CtxHistoryJsonlSessionRecord {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub root_session_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub session_relationship: Option<SessionRelationshipKind>,
+    pub session_relationship: Option<ProviderNativeSessionRelationship>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub external_agent_id: Option<String>,
-    #[serde(default)]
-    pub agent_type: AgentType,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent_scope: Option<AgentScope>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub role_hint: Option<String>,
-    #[serde(default)]
-    pub is_primary: bool,
     #[serde(default = "default_imported_session_status")]
     pub status: SessionStatus,
     pub started_at: DateTime<Utc>,
@@ -161,21 +157,15 @@ pub struct CtxHistoryJsonlEventRecord {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct CtxHistoryJsonlFileTouchRecord {
+#[serde(deny_unknown_fields)]
+pub struct CtxHistoryJsonlFileReferenceRecord {
     pub source_id: String,
     pub session_id: String,
-    pub touch_index: u64,
+    pub reference_index: u64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub event_index: Option<u64>,
-    pub path: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub change_kind: Option<FileChangeKind>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub old_path: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub line_count_delta: Option<i64>,
-    #[serde(default)]
-    pub confidence: Confidence,
+    /// Exact provider-declared file string; no normalization is performed.
+    pub value: String,
     pub occurred_at: DateTime<Utc>,
     #[serde(default = "super::default_metadata")]
     pub metadata: Value,
@@ -188,9 +178,8 @@ pub struct CtxHistoryJsonlEdgeRecord {
     pub to_session_id: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub edge_id: Option<String>,
-    pub edge_type: SessionEdgeType,
-    #[serde(default)]
-    pub confidence: Confidence,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub relationship: Option<ProviderNativeSessionRelationship>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub occurred_at: Option<DateTime<Utc>>,
     #[serde(default = "default_imported_fidelity")]
@@ -232,13 +221,14 @@ mod tests {
     }
 
     #[test]
-    fn ctx_history_jsonl_edge_type_is_required() {
+    fn ctx_history_jsonl_edge_relationship_is_optional_without_a_fallback() {
         let raw = r#"{"record_type":"edge","source_id":"src-1","from_session_id":"root","to_session_id":"child"}"#;
-        let err = serde_json::from_str::<CtxHistoryJsonlRecord>(raw).unwrap_err();
-        assert!(
-            err.to_string().contains("missing field `edge_type`"),
-            "{err}"
-        );
+        let CtxHistoryJsonlRecord::Edge(edge) =
+            serde_json::from_str::<CtxHistoryJsonlRecord>(raw).unwrap()
+        else {
+            panic!("expected edge record");
+        };
+        assert!(edge.relationship.is_none());
     }
 
     #[test]
@@ -270,6 +260,23 @@ mod tests {
             r#"{"record_type":"event","source_id":"src-1","session_id":"fork","event_index":2,"event_id":"evt-2","copied_from":{"ancestor_native_session_id":"native-root","ancestor_event_id":"evt-1","proof":"certified_ordered_prefix"},"occurred_at":"2026-07-01T12:00:02Z"}"#,
         ] {
             assert!(serde_json::from_str::<CtxHistoryJsonlRecord>(raw).is_err());
+        }
+    }
+
+    #[test]
+    fn neutral_session_and_file_reference_reject_removed_semantics() {
+        let invented_relationship = r#"{"record_type":"session","source_id":"src-1","session_id":"child","session_relationship":"related_unknown","status":"imported","started_at":"2026-07-01T12:00:00Z"}"#;
+        assert!(serde_json::from_str::<CtxHistoryJsonlRecord>(invented_relationship).is_err());
+
+        let invented_scope = r#"{"record_type":"session","source_id":"src-1","session_id":"child","agent_scope":"reviewer","status":"imported","started_at":"2026-07-01T12:00:00Z"}"#;
+        assert!(serde_json::from_str::<CtxHistoryJsonlRecord>(invented_scope).is_err());
+
+        for removed in [
+            r#"{"record_type":"file_reference","source_id":"src-1","session_id":"sess-1","reference_index":0,"value":"src/lib.rs","change_kind":"modified","occurred_at":"2026-07-01T12:00:00Z"}"#,
+            r#"{"record_type":"file_reference","source_id":"src-1","session_id":"sess-1","reference_index":0,"value":"src/lib.rs","confidence":"high","occurred_at":"2026-07-01T12:00:00Z"}"#,
+            r#"{"record_type":"file_reference","source_id":"src-1","session_id":"sess-1","reference_index":0,"value":"src/lib.rs","repository_binding":"repo-1","occurred_at":"2026-07-01T12:00:00Z"}"#,
+        ] {
+            assert!(serde_json::from_str::<CtxHistoryJsonlRecord>(removed).is_err());
         }
     }
 }

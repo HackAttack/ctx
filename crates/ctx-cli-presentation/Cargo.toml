@@ -1,7 +1,7 @@
 [package]
 name = "ctx-cli-presentation"
 version = "1.0.0"
-description = "Non-Pro command adapters and CLI presentation for ctx"
+description = "Command adapters and CLI presentation for ctx Core"
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
@@ -14,7 +14,6 @@ anyhow.workspace = true
 anstream.workspace = true
 clap.workspace = true
 clap_mangen.workspace = true
-chrono.workspace = true
 serde_json.workspace = true
 unicode-width.workspace = true
 ctx-agent-application = { path = "../ctx-agent-application" }

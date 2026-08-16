@@ -41,9 +41,31 @@ source_paths=(
   crates/ctx-daemon-cli/src
   crates/ctx-daemon-application/src
   crates/ctx-daemon-runtime/src
+  crates/ctx-daemon-service/src
+  crates/ctx-terminal/src
   crates/ctx-upgrade-engine/src
   crates/ctx-history-capture/src
-  crates/ctx-history-query/src
+  crates/ctx-history-capture-composition/src
+  crates/ctx-history-provider-gemini/src
+  crates/ctx-history-provider-native-jsonl/src
+  crates/ctx-history-provider-docproj/src
+  crates/ctx-history-cli/src
+  crates/ctx-history-jsonl/src
+  crates/ctx-history-native-jsonl-parsers/src
+  crates/ctx-history-provider-runtime/src
+  crates/ctx-history-provider-claude-cursor/src
+  crates/ctx-history-providers-jsonl-shared/src
+  crates/ctx-history-providers-sqlite-selected/src
+  crates/ctx-history-providers-sqlite-inventory/Cargo.toml
+  crates/ctx-history-providers-sqlite-inventory/src
+  crates/ctx-history-providers-task-docs/src
+  crates/ctx-history-read-application/src
+  crates/ctx-history-capture-model/src
+  crates/ctx-history-capture-runtime/src
+  crates/ctx-history-provider-mistral-mux/src
+  crates/ctx-history-source-discovery/src
+  crates/ctx-history-source-io/src
+  crates/ctx-history-source-sqlite/src
   crates/ctx-history-search/src
 )
 
@@ -73,23 +95,41 @@ check_file() {
       ;;
   esac
 
+  case "${policy_path}" in
+    crates/ctx-history-providers-sqlite-inventory/Cargo.toml)
+      if ! LC_ALL=C grep -q -E '^[[:space:]]*version\.workspace[[:space:]]*=[[:space:]]*true[[:space:]]*$' "${path}" \
+        || LC_ALL=C grep -q -E '^[[:space:]]*version[[:space:]]*=' "${path}"; then
+        printf 'release product crate must inherit the workspace version: %s\n' "${path}" >&2
+        failures=$((failures + 1))
+      fi
+      ;;
+    crates/ctx-history-capture/src/pro_output.rs|crates/ctx-history-capture/src/repository_attribution/*)
+      printf 'release source contains retired capture authority: %s\n' "${path}" >&2
+      failures=$((failures + 1))
+      ;;
+  esac
+
+  if [[ "${policy_path}" != "crates/ctx-history-capture-model/src/exact_json.rs" ]] \
+    && LC_ALL=C grep -n -E 'fn (raw_object_keys_are_unique|exact_json_value)[(]' "${path}" >/dev/null 2>&1; then
+    printf 'release source defines exact JSON authority outside ctx-history-capture-model: %s\n' "${path}" >&2
+    failures=$((failures + 1))
+  fi
+
   if LC_ALL=C grep -n -E "${removed_surface_pattern}" "${path}" >/dev/null 2>&1; then
     printf 'release source contains a removed top-level/cloud surface: %s\n' "${path}" >&2
     failures=$((failures + 1))
   fi
 
-  # Local Pro intentionally retains this lifecycle implementation.
-  # The same symbol anywhere else remains a retired top-level uninstall path.
-  if [[ "${policy_path}" != "crates/ctx-cli/src/pro/lifecycle_commands.rs" ]] \
-    && [[ "${policy_path}" != "crates/ctx-cli/src/pro/lifecycle_commands/tests.rs" ]] \
-    && [[ "${policy_path}" != "crates/ctx-cli/src/pro/lifecycle_commands/uninstall.rs" ]] \
-    && LC_ALL=C grep -n -E '(^|[^[:alnum:]_])run_uninstall([^[:alnum:]_]|$)' "${path}" >/dev/null 2>&1; then
+  if LC_ALL=C grep -n -E '(^|[^[:alnum:]_])run_uninstall([^[:alnum:]_]|$)' "${path}" >/dev/null 2>&1; then
     printf 'release source contains a removed top-level uninstall implementation: %s\n' "${path}" >&2
     failures=$((failures + 1))
   fi
 }
 
 for source_path in "${source_paths[@]}"; do
+  if [[ ! -e "${source_path}" && -e "${source_path}.fixture" ]]; then
+    source_path="${source_path}.fixture"
+  fi
   [[ -e "${source_path}" ]] || continue
   if [[ -d "${source_path}" ]]; then
     # Bazel runfiles are symlink forests. Follow those declared inputs so the

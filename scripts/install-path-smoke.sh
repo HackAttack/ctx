@@ -34,14 +34,20 @@ require_cmd openssl
 require_cmd python3
 
 grep -F '[switch]$NoDaemon' "${repo_root}/scripts/install.ps1" >/dev/null
-grep -F '[switch]$NoProTrial' "${repo_root}/scripts/install.ps1" >/dev/null
 grep -F '$setupNoDaemon = [bool]$NoDaemon -or $env:CTX_INSTALL_NO_DAEMON -eq "1"' \
   "${repo_root}/scripts/install.ps1" >/dev/null
-grep -F '$setupProTrial = -not $NoProTrial -and $env:CTX_INSTALL_NO_PRO_TRIAL -ne "1" -and -not $setupNoDaemon' \
-  "${repo_root}/scripts/install.ps1" >/dev/null
-grep -F '$setupArgs += "--pro"' "${repo_root}/scripts/install.ps1" >/dev/null
 grep -F '$setupArgs += "--no-daemon"' "${repo_root}/scripts/install.ps1" >/dev/null
 grep -F '& $installPath @setupArgs' "${repo_root}/scripts/install.ps1" >/dev/null
+grep -F 'CTX_RELEASE_MANAGED_PAIR_ENVELOPE_' \
+  "${repo_root}/scripts/dev-install-from-metadata.sh" >/dev/null
+grep -F 'install-managed-pair.py' \
+  "${repo_root}/scripts/dev-install-from-metadata.sh" >/dev/null
+grep -F 'signed-managed-pair-v1' \
+  "${repo_root}/scripts/dev-install-from-metadata.sh" >/dev/null
+grep -F 'CTX_RELEASE_MANAGED_PAIR_ENVELOPE_' \
+  "${repo_root}/scripts/install.ps1" >/dev/null
+grep -F 'install-managed-pair.py' "${repo_root}/scripts/install.ps1" >/dev/null
+grep -F 'signed-managed-pair-v1' "${repo_root}/scripts/install.ps1" >/dev/null
 
 tmp_dir="$(mktemp -d "${TMPDIR:-/tmp}/ctx-install-path-smoke.XXXXXX")"
 server_pid=""
@@ -290,28 +296,7 @@ env -u GITHUB_PATH -u CI "${base_env[@]}" PATH="/usr/bin:/bin" \
   CTX_SETUP_PROGRESS=none CTX_FAKE_SETUP_ARGS_LOG="${daemon_default_log}" \
   "${installer[@]}" --no-skill --no-modify-path \
   > "${tmp_dir}/daemon-default.out"
-test "$(cat "${daemon_default_log}")" = $'setup\n--pro\n--progress\nnone'
-
-home_no_pro_trial="${tmp_dir}/home-no-pro-trial"
-no_pro_trial_log="${tmp_dir}/no-pro-trial-args.txt"
-mkdir -p "${home_no_pro_trial}"
-env -u GITHUB_PATH -u CI "${base_env[@]}" PATH="/usr/bin:/bin" \
-  HOME="${home_no_pro_trial}" SHELL="/bin/bash" \
-  CTX_SETUP_PROGRESS=none CTX_FAKE_SETUP_ARGS_LOG="${no_pro_trial_log}" \
-  "${installer[@]}" --no-pro-trial --no-skill --no-modify-path \
-  > "${tmp_dir}/no-pro-trial.out"
-test "$(cat "${no_pro_trial_log}")" = $'setup\n--progress\nnone'
-
-home_no_pro_trial_env="${tmp_dir}/home-no-pro-trial-env"
-no_pro_trial_env_log="${tmp_dir}/no-pro-trial-env-args.txt"
-mkdir -p "${home_no_pro_trial_env}"
-env -u GITHUB_PATH -u CI "${base_env[@]}" PATH="/usr/bin:/bin" \
-  HOME="${home_no_pro_trial_env}" SHELL="/bin/bash" \
-  CTX_INSTALL_NO_PRO_TRIAL=1 CTX_SETUP_PROGRESS=none \
-  CTX_FAKE_SETUP_ARGS_LOG="${no_pro_trial_env_log}" \
-  "${installer[@]}" --no-skill --no-modify-path \
-  > "${tmp_dir}/no-pro-trial-env.out"
-test "$(cat "${no_pro_trial_env_log}")" = $'setup\n--progress\nnone'
+test "$(cat "${daemon_default_log}")" = $'setup\n--progress\nnone'
 
 home_no_daemon_flag="${tmp_dir}/home-no-daemon-flag"
 no_daemon_flag_log="${tmp_dir}/no-daemon-flag-args.txt"

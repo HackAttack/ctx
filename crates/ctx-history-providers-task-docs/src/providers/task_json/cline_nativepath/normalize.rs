@@ -1,21 +1,17 @@
 use std::{path::PathBuf, sync::Arc};
 
 use ctx_history_core::{
-    Confidence, FileChangeKind, MAX_CORE_CONTENT_BYTES, MAX_ENCODED_CORE_RECORD_BYTES,
+    ActivityJsonCapture, MAX_CORE_CONTENT_BYTES, MAX_ENCODED_CORE_RECORD_BYTES,
 };
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
 use sha2::{Digest, Sha256};
-
-use crate::{OutputOutcome, OutputOutcomeMetadata};
 
 use super::source::{ClineComponent, ClineComponentObservation};
 
-const EVENT_HASH_DOMAIN: &[u8] = b"ctx-cline-nativepath-event-v2\0";
-const EVENT_FILE_TOUCH_HASH_DOMAIN: &[u8] = b"ctx-cline-nativepath-event-file-touches-v1\0";
-const ITEM_HASH_DOMAIN: &[u8] = b"ctx-cline-nativepath-item-v2\0";
-const ARRAY_HASH_DOMAIN: &[u8] = b"ctx-cline-nativepath-array-v2\0";
-const SESSION_HASH_DOMAIN: &[u8] = b"ctx-cline-nativepath-session-v2\0";
+const EVENT_HASH_DOMAIN: &[u8] = b"ctx-cline-nativepath-event-v3-neutral-activity\0";
+const ITEM_HASH_DOMAIN: &[u8] = b"ctx-cline-nativepath-item-v3-neutral-activity\0";
+const ARRAY_HASH_DOMAIN: &[u8] = b"ctx-cline-nativepath-array-v3-neutral-activity\0";
+const SESSION_HASH_DOMAIN: &[u8] = b"ctx-cline-nativepath-session-v3-neutral-activity\0";
 
 pub(crate) const CLINE_NATIVE_PAGE_MAX_UNITS: usize = 64;
 pub(crate) const CLINE_NATIVE_FIXED_PAGE_UNITS: usize = 4;
@@ -106,24 +102,17 @@ pub(crate) enum ClineEventRole {
 pub(crate) struct ClineToolCall {
     pub(crate) call_id: Option<Box<str>>,
     pub(crate) name: Option<Box<str>>,
+    pub(crate) arguments: ActivityJsonCapture,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct ClineSparseOutputDiagnostic {
-    pub(crate) outcome: OutputOutcome,
+    pub(crate) status: Option<Box<str>>,
     pub(crate) exit_code: Option<i32>,
     pub(crate) duration_ms: Option<u64>,
     pub(crate) output_bytes: usize,
     pub(crate) call_id: Option<Box<str>>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-pub(crate) struct ClineFileTouch {
-    pub(crate) path: Box<str>,
-    pub(crate) old_path: Option<Box<str>>,
-    pub(crate) change_kind: Option<FileChangeKind>,
-    pub(crate) confidence: Confidence,
-    pub(crate) metadata: Value,
+    pub(crate) structured_content: serde_json::Value,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -145,7 +134,7 @@ pub(crate) struct ClineEventRow {
     pub(crate) content_hash: [u8; 32],
     pub(crate) tool_call: Option<ClineToolCall>,
     pub(crate) sparse_output: Option<ClineSparseOutputDiagnostic>,
-    pub(crate) file_touches: Box<[ClineFileTouch]>,
+    pub(crate) structured_content: serde_json::Value,
     pub(crate) source_record: Option<ClineSourceRecordEvidence>,
 }
 
@@ -167,7 +156,7 @@ impl ClineEventRow {
             content_hash,
             tool_call: None,
             sparse_output: None,
-            file_touches: Box::default(),
+            structured_content: serde_json::Value::Null,
             source_record: None,
         }
     }
@@ -177,6 +166,7 @@ impl ClineEventRow {
         sub_index: u32,
         call_id: Option<String>,
         name: Option<String>,
+        arguments: ActivityJsonCapture,
     ) -> Self {
         let mut safe = Vec::new();
         if let Some(call_id) = call_id.as_deref() {
@@ -186,6 +176,8 @@ impl ClineEventRow {
         if let Some(name) = name.as_deref() {
             safe.extend_from_slice(name.as_bytes());
         }
+        safe.push(0);
+        safe.extend_from_slice(&serde_json::to_vec(&arguments).unwrap_or_default());
         Self {
             identity: event_identity(context, sub_index),
             native_order: native_order(context, sub_index),
@@ -203,9 +195,10 @@ impl ClineEventRow {
             tool_call: Some(ClineToolCall {
                 call_id: call_id.map(String::into_boxed_str),
                 name: name.map(String::into_boxed_str),
+                arguments,
             }),
             sparse_output: None,
-            file_touches: Box::default(),
+            structured_content: serde_json::Value::Null,
             source_record: None,
         }
     }
@@ -220,7 +213,10 @@ impl ClineEventRow {
         let mut safe = Vec::new();
         safe.extend_from_slice(body.as_bytes());
         safe.push(0);
-        safe.push(diagnostic.outcome as u8);
+        if let Some(status) = diagnostic.status.as_deref() {
+            safe.extend_from_slice(status.as_bytes());
+        }
+        safe.push(0);
         safe.extend_from_slice(&diagnostic.exit_code.unwrap_or_default().to_le_bytes());
         safe.extend_from_slice(&diagnostic.duration_ms.unwrap_or_default().to_le_bytes());
         safe.extend_from_slice(
@@ -241,42 +237,9 @@ impl ClineEventRow {
             content_hash: event_hash(context, sub_index, kind, ClineEventRole::Unknown, &safe),
             tool_call: None,
             sparse_output: Some(diagnostic),
-            file_touches: Box::default(),
+            structured_content: serde_json::Value::Null,
             source_record: None,
         }
-    }
-
-    pub(super) fn attach_file_touches(&mut self, file_touches: Vec<ClineFileTouch>) {
-        if file_touches.is_empty() {
-            return;
-        }
-        let mut hasher = Sha256::new();
-        hasher.update(EVENT_FILE_TOUCH_HASH_DOMAIN);
-        hasher.update(self.content_hash);
-        for touch in &file_touches {
-            hash_field(&mut hasher, touch.path.as_bytes());
-            hash_field(
-                &mut hasher,
-                touch.old_path.as_deref().unwrap_or_default().as_bytes(),
-            );
-            hash_field(
-                &mut hasher,
-                touch
-                    .change_kind
-                    .map(FileChangeKind::as_str)
-                    .unwrap_or_default()
-                    .as_bytes(),
-            );
-            hash_field(&mut hasher, touch.confidence.as_str().as_bytes());
-            hash_field(
-                &mut hasher,
-                serde_json::to_string(&touch.metadata)
-                    .expect("file-touch metadata should serialize")
-                    .as_bytes(),
-            );
-        }
-        self.content_hash = hasher.finalize().into();
-        self.file_touches = file_touches.into_boxed_slice();
     }
 }
 
@@ -344,14 +307,14 @@ pub(crate) struct ClineItemCheckpoint {
     pub(crate) native_key: ClineNativeItemKey,
     pub(crate) semantic_hash: [u8; 32],
     pub(crate) retained_rows: u32,
-    pub(crate) output_outcomes: u32,
+    pub(crate) outputs: u32,
 }
 
 impl ClineItemCheckpoint {
     pub(super) fn new(
         native_key: ClineNativeItemKey,
         rows: &[ClineEventRow],
-        output_outcomes: &[OutputOutcomeMetadata],
+        outputs: &[ClineSparseOutputDiagnostic],
         rejection: Option<&ClineItemRejection>,
     ) -> Self {
         let mut hasher = Sha256::new();
@@ -360,11 +323,15 @@ impl ClineItemCheckpoint {
         for row in rows {
             hasher.update(row.content_hash);
         }
-        for outcome in output_outcomes {
+        for output in outputs {
             hasher.update(b"output\0");
-            hasher.update([outcome.outcome as u8]);
-            hasher.update(outcome.exit_code.unwrap_or_default().to_le_bytes());
-            hasher.update(outcome.duration_ms.unwrap_or_default().to_le_bytes());
+            if let Some(status) = output.status.as_deref() {
+                hasher.update(status.as_bytes());
+            }
+            hasher.update(b"\0");
+            hasher.update(output.exit_code.unwrap_or_default().to_le_bytes());
+            hasher.update(output.duration_ms.unwrap_or_default().to_le_bytes());
+            hasher.update(output.output_bytes.to_le_bytes());
         }
         if let Some(rejection) = rejection {
             hasher.update(b"rejection\0");
@@ -374,7 +341,7 @@ impl ClineItemCheckpoint {
             native_key,
             semantic_hash: hasher.finalize().into(),
             retained_rows: u32::try_from(rows.len()).unwrap_or(u32::MAX),
-            output_outcomes: u32::try_from(output_outcomes.len()).unwrap_or(u32::MAX),
+            outputs: u32::try_from(outputs.len()).unwrap_or(u32::MAX),
         }
     }
 }
@@ -396,7 +363,7 @@ impl ClinePageFrontier {
         hasher.update(ARRAY_HASH_DOMAIN);
         hasher.update([component as u8]);
         Self {
-            version: 1,
+            version: 2,
             next_native_index: 0,
             prefix_semantic_sha256: hasher.finalize().into(),
         }
@@ -404,12 +371,12 @@ impl ClinePageFrontier {
 
     pub(super) fn advance(&self, item: &ClineItemCheckpoint) -> Self {
         let mut hasher = Sha256::new();
-        hasher.update(b"ctx-cline-nativepath-frontier-v1\0");
+        hasher.update(b"ctx-cline-nativepath-frontier-v2-neutral-activity\0");
         hasher.update(self.prefix_semantic_sha256);
         hash_native_key(&mut hasher, &item.native_key);
         hasher.update(item.semantic_hash);
         hasher.update(item.retained_rows.to_le_bytes());
-        hasher.update(item.output_outcomes.to_le_bytes());
+        hasher.update(item.outputs.to_le_bytes());
         Self {
             version: self.version,
             next_native_index: self.next_native_index.saturating_add(1),
@@ -597,10 +564,10 @@ pub(crate) struct ClinePublicationStats {
     pub(crate) pages_certified: usize,
     pub(crate) core_rows: usize,
     pub(crate) local_rejections: usize,
-    pub(crate) output_outcomes_observed: usize,
+    pub(crate) outputs_observed: usize,
 }
 
 mod metrics;
 
+use metrics::hash_native_key;
 pub(super) use metrics::*;
-use metrics::{hash_field, hash_native_key};

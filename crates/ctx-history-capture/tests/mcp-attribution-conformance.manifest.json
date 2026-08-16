@@ -20,7 +20,6 @@
     "max_plus_one",
     "privacy_sinks",
     "result_preservation",
-    "search_nonindexing",
     "stable_ids"
   ],
   "base_routes": [
@@ -1589,20 +1588,6 @@
           "scope": "provider_neutral"
         },
         {
-          "class": "search_nonindexing",
-          "kind": "rust_test",
-          "suite": "mcp_attribution_search",
-          "test": "mcp_invocation_projection_is_searchable_narrow_and_response_neutral",
-          "scope": "provider_neutral"
-        },
-        {
-          "class": "search_nonindexing",
-          "kind": "rust_test",
-          "suite": "mcp_attribution_search",
-          "test": "separate_calls_and_mixed_outputs_keep_their_existing_scope_and_weight",
-          "scope": "provider_neutral"
-        },
-        {
           "class": "ambiguity_duplicate_linkage",
           "kind": "rust_test",
           "suite": "codex_direct_result",
@@ -2218,20 +2203,6 @@
           "kind": "rust_test",
           "suite": "mcp_attribution_privacy",
           "test": "mcp_attribution_canaries_stay_out_of_search_analytics_usage_and_diagnostics",
-          "scope": "provider_neutral"
-        },
-        {
-          "class": "search_nonindexing",
-          "kind": "rust_test",
-          "suite": "mcp_attribution_search",
-          "test": "mcp_invocation_projection_is_searchable_narrow_and_response_neutral",
-          "scope": "provider_neutral"
-        },
-        {
-          "class": "search_nonindexing",
-          "kind": "rust_test",
-          "suite": "mcp_attribution_search",
-          "test": "separate_calls_and_mixed_outputs_keep_their_existing_scope_and_weight",
           "scope": "provider_neutral"
         }
       ],
@@ -2901,20 +2872,6 @@
           "kind": "rust_test",
           "suite": "mcp_attribution_privacy",
           "test": "mcp_attribution_canaries_stay_out_of_search_analytics_usage_and_diagnostics",
-          "scope": "provider_neutral"
-        },
-        {
-          "class": "search_nonindexing",
-          "kind": "rust_test",
-          "suite": "mcp_attribution_search",
-          "test": "mcp_invocation_projection_is_searchable_narrow_and_response_neutral",
-          "scope": "provider_neutral"
-        },
-        {
-          "class": "search_nonindexing",
-          "kind": "rust_test",
-          "suite": "mcp_attribution_search",
-          "test": "separate_calls_and_mixed_outputs_keep_their_existing_scope_and_weight",
           "scope": "provider_neutral"
         }
       ],

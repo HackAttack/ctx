@@ -41,14 +41,11 @@ fn identical_staging_revalidates_active_checksum_after_terminal_callback() {
         .unwrap_err();
 
     assert!(corrupted);
-    assert!(
-        matches!(
-            error,
-            IndexError::ActiveGenerationNeedsRebuild { ref generation_id, .. }
-                if generation_id == &baseline.generation_id
-        ),
-        "unexpected error: {error:?}"
-    );
+    assert!(matches!(
+        error,
+        IndexError::ActiveGenerationNeedsRebuild { generation_id, .. }
+            if generation_id == baseline.generation_id
+    ));
     assert_eq!(
         fs::read(temp.path().join("active-generation.json")).unwrap(),
         pointer_before
@@ -244,11 +241,11 @@ fn unrelated_append_does_not_replay_retained_copy_lineage() {
             original.session_id,
         )
         .unwrap();
-        copy.event_origin = EventOrigin::CopiedFromAncestor {
-            ancestor_session_id: Box::new(original.session_id),
-            ancestor_event_id: Box::new(original.event_id),
+        copy.event_copy = Some(ProviderNativeEventCopy {
+            ancestor_session_id: original.session_id,
+            ancestor_event_id: original.event_id,
             proof: EventCopyProofKind::NativeEventIdentity,
-        };
+        });
         initial.add_core_record(copy).unwrap();
     }
     initial

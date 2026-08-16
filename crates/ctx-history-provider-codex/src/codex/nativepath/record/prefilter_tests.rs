@@ -313,7 +313,6 @@ fn prefilter_ignores_unknown_result_like_discriminators_by_construction() {
             codex_skip_projection(probe.class),
             Some(CodexSkipProjection::Ignored)
         );
-        assert_eq!(probe.output, None);
         assert_eq!(
             prefilter_codex_record(raw.as_bytes()),
             CodexRecordAdmission::NoProjection(CodexSkipProjection::Ignored),

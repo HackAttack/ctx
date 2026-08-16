@@ -9,7 +9,7 @@ use ctx_history_index_query::{
 use serde_json::{json, Value};
 use uuid::Uuid;
 
-use crate::json::{compact_json, event_origin_json, insert_mcp_tool_call, timestamp_json};
+use crate::json::{compact_json, event_copy_json, timestamp_json};
 use crate::{copied_lineage_read_model, ShowSessionEvent};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -93,13 +93,9 @@ pub fn session_transcript_read_model(
             "provider_session_id": session.provider_session_id,
             "source_format": session.source_format,
             "parent_ctx_session_id": session.parent_session_id.map(|id| id.as_uuid()),
-            "root_ctx_session_id": session.root_session_id.as_uuid(),
+            "root_ctx_session_id": session.root_session_id.map(|id| id.as_uuid()),
             "session_relationship": session.session_relationship,
-            "branch": session.branch,
-            "agent_type": session.agent_type,
-            "is_primary": session.is_primary,
-            "workspace": session.workspace,
-            "cwd": session.cwd,
+            "agent_scope": session.agent_scope,
         },
         "truncated": truncated.then(|| json!({
             "events": true,
@@ -168,7 +164,7 @@ pub fn render_event_read_model_values(
         let content = &event.core_record.content;
         let content_bytes = serialized_json_bytes(&content.normalized_body)?
             .saturating_add(serialized_json_bytes(&content.structured_content)?)
-            .saturating_add(serialized_json_bytes(&content.mcp_exchange)?);
+            .saturating_add(serialized_json_bytes(&content.activity)?);
         enforce_read_model_limit(
             serialized_event_bytes.saturating_add(content_bytes),
             output_limit_bytes,
@@ -204,19 +200,14 @@ pub fn render_show_event_read_model(event: &CoreEventRecord) -> Value {
         "provider_session_id": event.provider_session_id,
         "source_format": event.source_format,
         "parent_ctx_session_id": event.parent_session_id.map(|id| id.as_uuid()),
-        "root_ctx_session_id": event.root_session_id.as_uuid(),
+        "root_ctx_session_id": event.root_session_id.map(|id| id.as_uuid()),
         "session_relationship": event.session_relationship,
-        "event_origin": event_origin_json(&event.event_origin),
-        "branch": event.branch,
-        "agent_type": event.agent_type,
-        "is_primary": event.is_primary,
+        "event_copy": event_copy_json(event.event_copy.as_ref()),
+        "agent_scope": event.agent_scope,
         "sequence": event.event_sequence,
         "event_type": event.event_type,
         "role": event.role,
         "occurred_at": timestamp_json(event.occurred_at_unix_ms),
-        "workspace": event.workspace,
-        "cwd": event.cwd,
-        "touched_files": event.touched_files,
         "text": content.normalized_body.as_deref(),
         "structured_content": content.structured_content.as_ref(),
         "content": {
@@ -225,10 +216,9 @@ pub fn render_show_event_read_model(event: &CoreEventRecord) -> Value {
             "policy_reason": policy_reason,
         },
     }));
-    if let Some(mcp_exchange) = &content.mcp_exchange {
-        rendered["mcp_exchange"] = json!(mcp_exchange);
+    if let Some(activity) = &content.activity {
+        rendered["activity"] = json!(activity);
     }
-    insert_mcp_tool_call(&mut rendered, &event.core_record);
     rendered
 }
 

@@ -193,7 +193,6 @@ pub struct ListEventsRequest {
     pub workspace: Option<String>,
     pub event_type: Option<String>,
     pub role: Option<String>,
-    pub agent_type: Option<String>,
     pub file: Option<String>,
     pub cursor: Option<String>,
     pub limit: u64,

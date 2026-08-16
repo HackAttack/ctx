@@ -1,4 +1,5 @@
 use std::{
+    collections::HashSet,
     fmt,
     fs::{self, File, Metadata, OpenOptions},
     io::Read,
@@ -11,14 +12,14 @@ use serde::{
 };
 use tantivy::directory::Directory as _;
 
-use crate::physical::{physical_integrity_audit_from_certified_files, PhysicalFileDigest};
-use crate::retention::live_generation_read_lease_targets;
+use crate::retention::{
+    ensure_generation_read_lease_coordinator, try_generation_directory_reclaim_authority,
+};
 use crate::{
-    acquire_generation_ownership_fence, active_index_files, load_active_generation_pointer,
-    manifest_path, physical_integrity_audit, slot_path, sync_directory, ActiveGenerationPointer,
-    DurableMmapDirectory, GenerationError as IndexError, GenerationOwnershipFence,
-    GenerationRetentionLease, GenerationSlot, PhysicalIntegrityAudit, Result,
-    INDEX_GENERATIONS_DIRECTORY, MANIFEST_DIRECTORY,
+    active_index_files, load_active_generation_pointer, manifest_path, physical_integrity_audit,
+    slot_path, sync_directory, ActiveGenerationPointer, DurableMmapDirectory,
+    GenerationError as IndexError, GenerationRetentionLease, GenerationSlot,
+    PhysicalIntegrityAudit, Result, INDEX_GENERATIONS_DIRECTORY, MANIFEST_DIRECTORY,
 };
 
 #[cfg(not(windows))]
@@ -258,30 +259,6 @@ impl FileIdentity {
         }
     }
 
-    fn follows_link_reclamation(&self, prior: &Self) -> bool {
-        if !self.same_native_file(prior) || self.link_count() >= prior.link_count() {
-            return false;
-        }
-        #[cfg(unix)]
-        {
-            self.length == prior.length
-                && self.mode == prior.mode
-                && self.modified_seconds == prior.modified_seconds
-                && self.modified_nanoseconds == prior.modified_nanoseconds
-        }
-        #[cfg(windows)]
-        {
-            self.length == prior.length
-                && self.creation_time == prior.creation_time
-                && self.last_write_time == prior.last_write_time
-                && self.attributes == prior.attributes
-        }
-        #[cfg(not(any(unix, windows)))]
-        {
-            false
-        }
-    }
-
     #[cfg(windows)]
     fn follows_readonly_seal(&self, prior: &Self) -> bool {
         self.same_native_file(prior)
@@ -301,8 +278,8 @@ pub fn verify_or_certify_physical_integrity(
     slot: &GenerationSlot,
     index: &tantivy::Index,
 ) -> Result<CertifiedPhysicalIntegrity> {
-    if let Some(certified) = load_certified_physical_integrity(root, pointer, slot, index)? {
-        return Ok(certified);
+    if let Some(certification) = matching_certification(root, pointer, slot, index)? {
+        return Ok(CertifiedPhysicalIntegrity { certification });
     }
 
     let generation_path = slot_path(root, slot);
@@ -313,16 +290,79 @@ pub fn verify_or_certify_physical_integrity(
     install_certification(root, pointer, slot, index, &audit, false)
 }
 
-/// Loads only an already-valid metadata certification. Unlike
-/// [`verify_or_certify_physical_integrity`], this never hashes artifact bodies.
-pub fn load_certified_physical_integrity(
+/// Verifies one immutable generation from its existing publication-time
+/// certification without hashing artifact bodies or changing durable state.
+///
+/// The certification remains bound to the exact slot, manifest file, artifact
+/// path set, and exact native files after the active pointer moves on. Any
+/// metadata transition invalidates the inherited SHA authority because a
+/// later link/unlink can mask an intervening same-size, restored-mtime write.
+/// Missing, malformed, stale, or otherwise unsupported certification fails
+/// closed without hashing artifact bodies.
+pub fn verify_physical_integrity_read_only(
     root: &Path,
-    pointer: &ActiveGenerationPointer,
     slot: &GenerationSlot,
     index: &tantivy::Index,
-) -> Result<Option<CertifiedPhysicalIntegrity>> {
-    Ok(matching_certification(root, pointer, slot, index)?
-        .map(|certification| CertifiedPhysicalIntegrity { certification }))
+) -> Result<()> {
+    ensure_real_directory(root)?;
+    ensure_real_directory(&root.join(MANIFEST_DIRECTORY))?;
+    ensure_real_directory(&root.join(INDEX_GENERATIONS_DIRECTORY))?;
+    let generation_path = slot_path(root, slot);
+    ensure_real_directory(&generation_path)?;
+    if crate::read_root::has_retained_read_authority(root, slot.generation_id()) {
+        return crate::verify_physical_integrity(
+            index,
+            &generation_path,
+            None,
+            slot.physical_integrity_digest(),
+        );
+    }
+    ensure_real_directory(&root.join(CERTIFICATION_DIRECTORY))?;
+
+    let bytes =
+        read_certification(&certification_path(root, slot)).ok_or(IndexError::ChecksumMismatch)?;
+    let certification = serde_json::from_slice::<GenerationIntegrityCertification>(&bytes)
+        .map_err(|_| IndexError::ChecksumMismatch)?;
+    if serde_json::to_vec(&certification)? != bytes
+        || certification.version != CERTIFICATION_VERSION
+        || certification.slot != *slot
+        || capture_single_link_control(&manifest_path(root, slot.generation_id()))?
+            != certification.manifest_identity
+    {
+        return Err(IndexError::ChecksumMismatch);
+    }
+
+    let expected_paths = expected_artifact_paths(index)?;
+    if certification
+        .artifacts
+        .iter()
+        .map(|artifact| artifact.artifact.path.clone())
+        .collect::<Vec<_>>()
+        != expected_paths
+    {
+        return Err(IndexError::ChecksumMismatch);
+    }
+    let current_pointer = load_current_pointer(root)?;
+    let retained_alias_directories = std::iter::once(current_pointer.active().directory())
+        .chain(current_pointer.previous().map(GenerationSlot::directory))
+        .chain(std::iter::once(slot.directory()))
+        .map(str::to_owned)
+        .collect::<HashSet<_>>();
+    for expected in &certification.artifacts {
+        let current = capture_artifact_with_retained_aliases(
+            root,
+            &generation_path,
+            Path::new(&expected.artifact.path),
+            &retained_alias_directories,
+        )?;
+        if current != expected.artifact {
+            return Err(IndexError::ChecksumMismatch);
+        }
+    }
+    if load_current_pointer(root)? != current_pointer {
+        return Err(IndexError::ConcurrentGenerationChange);
+    }
+    Ok(())
 }
 
 pub fn scrub_and_certify_physical_integrity(
@@ -340,9 +380,9 @@ pub fn scrub_and_certify_physical_integrity(
 }
 
 /// Installs the certification for a candidate that was fully hashed before
-/// pointer publication. Reclaiming the formerly retained previous generation
-/// can only reduce hard-link counts; every other identity field remains bound
-/// to the file that supplied the candidate hash.
+/// pointer publication. Every artifact identity must still match the audit.
+/// A hard-link transition invalidates the fast-path certification because it
+/// can mask a same-size, restored-mtime write.
 pub fn certify_activated_generation(
     root: &Path,
     pointer: &ActiveGenerationPointer,
@@ -359,7 +399,7 @@ fn install_certification(
     slot: &GenerationSlot,
     index: &tantivy::Index,
     audit: &PhysicalIntegrityAudit,
-    allow_link_reclamation: bool,
+    allow_readonly_seal: bool,
 ) -> Result<CertifiedPhysicalIntegrity> {
     if load_current_pointer(root)? != *pointer {
         return Err(IndexError::ConcurrentGenerationChange);
@@ -393,23 +433,19 @@ fn install_certification(
             Path::new(&prior.artifact.path),
             Some(pointer),
         )?;
-        let follows_allowed_transition = allow_link_reclamation
-            && (current
-                .identity
-                .follows_link_reclamation(&prior.artifact.identity)
-                || {
-                    #[cfg(windows)]
-                    {
-                        current
-                            .identity
-                            .follows_readonly_seal(&prior.artifact.identity)
-                    }
-                    #[cfg(not(windows))]
-                    {
-                        false
-                    }
-                });
-        if current.identity != prior.artifact.identity && !follows_allowed_transition {
+        let follows_allowed_seal = allow_readonly_seal && {
+            #[cfg(windows)]
+            {
+                current
+                    .identity
+                    .follows_readonly_seal(&prior.artifact.identity)
+            }
+            #[cfg(not(windows))]
+            {
+                false
+            }
+        };
+        if current.identity != prior.artifact.identity && !follows_allowed_seal {
             return if prior.artifact.same_payload_identity_changed(&current) {
                 Err(IndexError::ConcurrentGenerationChange)
             } else {
@@ -555,6 +591,8 @@ struct TerminalSealEntry {
     sealed: ArtifactIdentity,
 }
 
+/// Keeps every Windows candidate artifact open from its terminal read-only
+/// seal through the active-pointer replacement.
 #[cfg(windows)]
 pub struct TerminalPublicationGuard {
     root: PathBuf,
@@ -795,77 +833,6 @@ pub fn verify_certified_physical_integrity(
     certified: &CertifiedPhysicalIntegrity,
     candidate_audit: Option<&PhysicalIntegrityAudit>,
 ) -> Result<()> {
-    recapture_certified_physical_integrity(root, pointer, slot, certified, candidate_audit)
-        .map(|_| ())
-}
-
-/// Rebinds the active certification after an authenticated clone created
-/// managed hard-link aliases. Candidate SHA proofs authenticate every changed
-/// source identity, so no predecessor artifact body is read again.
-#[cfg(target_os = "linux")]
-pub fn refresh_certification_after_authenticated_clone(
-    root: &Path,
-    pointer: &ActiveGenerationPointer,
-    slot: &GenerationSlot,
-    index: &tantivy::Index,
-    certified: &CertifiedPhysicalIntegrity,
-    candidate_audit: &PhysicalIntegrityAudit,
-) -> Result<CertifiedPhysicalIntegrity> {
-    let certified_paths = certified
-        .certification
-        .artifacts
-        .iter()
-        .map(|artifact| artifact.artifact.path.clone())
-        .collect::<Vec<_>>();
-    if candidate_audit.artifact_paths() != certified_paths {
-        return Err(IndexError::ChecksumMismatch);
-    }
-    let audit = recapture_certified_physical_integrity(
-        root,
-        pointer,
-        slot,
-        certified,
-        Some(candidate_audit),
-    )?;
-    if audit.digest() != slot.physical_integrity_digest() {
-        return Err(IndexError::ChecksumMismatch);
-    }
-    install_certification(root, pointer, slot, index, &audit, false)
-}
-
-/// Rebinds an already-verified active certification after fenced reclamation
-/// removed only ctx-owned hard-link aliases. The certification's existing SHA
-/// authority remains valid because link removal cannot modify file bytes.
-pub fn refresh_certification_after_managed_reclamation(
-    root: &Path,
-    pointer: &ActiveGenerationPointer,
-    slot: &GenerationSlot,
-    index: &tantivy::Index,
-    certified: &CertifiedPhysicalIntegrity,
-) -> Result<()> {
-    let files = certified
-        .certification
-        .artifacts
-        .iter()
-        .map(|artifact| PhysicalFileDigest {
-            artifact: artifact.artifact.clone(),
-            sha256: artifact.sha256,
-        })
-        .collect::<Vec<_>>();
-    let audit = physical_integrity_audit_from_certified_files(files)?;
-    if audit.digest() != slot.physical_integrity_digest() {
-        return Err(IndexError::ChecksumMismatch);
-    }
-    install_certification(root, pointer, slot, index, &audit, true).map(|_| ())
-}
-
-fn recapture_certified_physical_integrity(
-    root: &Path,
-    pointer: &ActiveGenerationPointer,
-    slot: &GenerationSlot,
-    certified: &CertifiedPhysicalIntegrity,
-    candidate_audit: Option<&PhysicalIntegrityAudit>,
-) -> Result<PhysicalIntegrityAudit> {
     let certification = &certified.certification;
     if certification.pointer != *pointer || certification.slot != *slot {
         return Err(IndexError::ConcurrentGenerationChange);
@@ -892,7 +859,6 @@ fn recapture_certified_physical_integrity(
         return Err(IndexError::ConcurrentGenerationChange);
     }
 
-    let mut files = Vec::with_capacity(certification.artifacts.len());
     for expected in &certification.artifacts {
         let current = capture_artifact(
             root,
@@ -910,10 +876,6 @@ fn recapture_certified_physical_integrity(
             if current != expected.artifact {
                 return Err(IndexError::ChecksumMismatch);
             }
-            files.push(PhysicalFileDigest {
-                artifact: current,
-                sha256: expected.sha256,
-            });
             continue;
         }
         let Some(candidate_file) = candidate_file else {
@@ -930,15 +892,11 @@ fn recapture_certified_physical_integrity(
         {
             return Err(IndexError::ChecksumMismatch);
         }
-        files.push(PhysicalFileDigest {
-            artifact: current,
-            sha256: expected.sha256,
-        });
     }
     if load_current_pointer(root)? != *pointer {
         return Err(IndexError::ConcurrentGenerationChange);
     }
-    physical_integrity_audit_from_certified_files(files)
+    Ok(())
 }
 
 fn load_current_pointer(root: &Path) -> Result<ActiveGenerationPointer> {
@@ -984,6 +942,20 @@ pub(super) fn open_artifact(
     relative_path: &Path,
     pointer: Option<&ActiveGenerationPointer>,
 ) -> Result<(File, ArtifactIdentity)> {
+    open_artifact_with_alias_authority(
+        root,
+        generation_path,
+        relative_path,
+        ManagedAliasAuthority::Publication(pointer),
+    )
+}
+
+fn open_artifact_with_alias_authority(
+    root: &Path,
+    generation_path: &Path,
+    relative_path: &Path,
+    alias_authority: ManagedAliasAuthority<'_>,
+) -> Result<(File, ArtifactIdentity)> {
     if relative_path.components().count() != 1 {
         return Err(IndexError::ChecksumMismatch);
     }
@@ -1001,13 +973,13 @@ pub(super) fn open_artifact(
             std::thread::yield_now();
             continue;
         };
-        match stable_artifact_link_snapshot(
+        match stable_artifact_link_snapshot_with_alias_authority(
             root,
             &artifact_path,
             relative_path,
             &file,
             &identity,
-            pointer,
+            alias_authority,
         )? {
             ArtifactLinkSnapshot::Stable(identity) => {
                 return Ok((file, ArtifactIdentity { path, identity }));
@@ -1142,6 +1114,24 @@ fn stable_artifact_link_snapshot(
     identity: &FileIdentity,
     pointer: Option<&ActiveGenerationPointer>,
 ) -> Result<ArtifactLinkSnapshot> {
+    stable_artifact_link_snapshot_with_alias_authority(
+        root,
+        artifact_path,
+        relative_path,
+        file,
+        identity,
+        ManagedAliasAuthority::Publication(pointer),
+    )
+}
+
+fn stable_artifact_link_snapshot_with_alias_authority(
+    root: &Path,
+    artifact_path: &Path,
+    relative_path: &Path,
+    file: &File,
+    identity: &FileIdentity,
+    alias_authority: ManagedAliasAuthority<'_>,
+) -> Result<ArtifactLinkSnapshot> {
     let before = file_identity(file).map_err(|_| IndexError::ChecksumMismatch)?;
     if before != *identity {
         return if before.same_payload_identity(identity) {
@@ -1150,7 +1140,8 @@ fn stable_artifact_link_snapshot(
             Err(IndexError::ChecksumMismatch)
         };
     }
-    let Some(alias_snapshot) = managed_artifact_alias_count(root, relative_path, &before, pointer)?
+    let Some(alias_snapshot) =
+        managed_artifact_alias_count(root, relative_path, &before, alias_authority)?
     else {
         return Ok(ArtifactLinkSnapshot::Retry);
     };
@@ -1162,6 +1153,14 @@ fn stable_artifact_link_snapshot(
     let final_identity = file_identity(file).map_err(|_| IndexError::ChecksumMismatch)?;
 
     if before == after_scan && after_scan == named_identity && named_identity == final_identity {
+        if alias_authority.requires_accounted_aliases() && alias_snapshot.unaccounted_aliases != 0 {
+            return Ok(ArtifactLinkSnapshot::Unaccounted {
+                identity: final_identity,
+                aliases: alias_snapshot
+                    .aliases
+                    .saturating_sub(alias_snapshot.unaccounted_aliases),
+            });
+        }
         if alias_snapshot.aliases == 0 || alias_snapshot.aliases != final_identity.link_count() {
             if alias_snapshot.saw_unpublished_generation {
                 return Ok(ArtifactLinkSnapshot::Retry);
@@ -1207,6 +1206,22 @@ fn capture_artifact(
     pointer: Option<&ActiveGenerationPointer>,
 ) -> Result<ArtifactIdentity> {
     let (file, artifact) = open_artifact(root, generation_path, relative_path, pointer)?;
+    drop(file);
+    Ok(artifact)
+}
+
+fn capture_artifact_with_retained_aliases(
+    root: &Path,
+    generation_path: &Path,
+    relative_path: &Path,
+    retained_alias_directories: &HashSet<String>,
+) -> Result<ArtifactIdentity> {
+    let (file, artifact) = open_artifact_with_alias_authority(
+        root,
+        generation_path,
+        relative_path,
+        ManagedAliasAuthority::Retained(retained_alias_directories),
+    )?;
     drop(file);
     Ok(artifact)
 }
@@ -1438,14 +1453,44 @@ fn metadata_is_reparse_point(_metadata: &Metadata) -> bool {
     false
 }
 
+#[derive(Clone, Copy)]
+enum ManagedAliasAuthority<'a> {
+    Publication(Option<&'a ActiveGenerationPointer>),
+    Retained(&'a HashSet<String>),
+}
+
+impl ManagedAliasAuthority<'_> {
+    fn accounts_directory(&self, directory_name: &str) -> bool {
+        match self {
+            Self::Publication(None) => true,
+            Self::Publication(Some(pointer)) => {
+                pointer.active().directory() == directory_name
+                    || pointer
+                        .previous()
+                        .is_some_and(|slot| slot.directory() == directory_name)
+            }
+            Self::Retained(directories) => directories.contains(directory_name),
+        }
+    }
+
+    fn tracks_unpublished_generations(&self) -> bool {
+        matches!(self, Self::Publication(Some(_)))
+    }
+
+    fn requires_accounted_aliases(&self) -> bool {
+        matches!(self, Self::Retained(_))
+    }
+}
+
 fn managed_artifact_alias_count(
     root: &Path,
     relative_path: &Path,
     identity: &FileIdentity,
-    pointer: Option<&ActiveGenerationPointer>,
+    alias_authority: ManagedAliasAuthority<'_>,
 ) -> Result<Option<ManagedAliasSnapshot>> {
     let generations = root.join(INDEX_GENERATIONS_DIRECTORY);
     let mut aliases = 0_u64;
+    let mut unaccounted_aliases = 0_u64;
     let mut saw_unpublished_generation = false;
     for entry in fs::read_dir(generations).map_err(|_| IndexError::ChecksumMismatch)? {
         let entry = match entry {
@@ -1466,12 +1511,8 @@ fn managed_artifact_alias_count(
         if !file_type.is_dir() || !is_generation_directory_name(&directory_name) {
             continue;
         }
-        if pointer.is_some_and(|pointer| {
-            pointer.active().directory() != directory_name
-                && pointer
-                    .previous()
-                    .is_none_or(|slot| slot.directory() != directory_name)
-        }) {
+        let accounted_directory = alias_authority.accounts_directory(&directory_name);
+        if alias_authority.tracks_unpublished_generations() && !accounted_directory {
             saw_unpublished_generation = true;
         }
         let candidate = entry.path().join(relative_path);
@@ -1482,10 +1523,16 @@ fn managed_artifact_alias_count(
         drop(file);
         if candidate_identity.same_native_file(identity) {
             aliases = aliases.checked_add(1).ok_or(IndexError::CountOverflow)?;
+            if !accounted_directory {
+                unaccounted_aliases = unaccounted_aliases
+                    .checked_add(1)
+                    .ok_or(IndexError::CountOverflow)?;
+            }
         }
     }
     Ok(Some(ManagedAliasSnapshot {
         aliases,
+        unaccounted_aliases,
         saw_unpublished_generation,
     }))
 }
@@ -1493,6 +1540,7 @@ fn managed_artifact_alias_count(
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct ManagedAliasSnapshot {
     aliases: u64,
+    unaccounted_aliases: u64,
     saw_unpublished_generation: bool,
 }
 
@@ -1566,17 +1614,7 @@ pub fn reclaim_unreferenced_certifications(
     pointer: Option<&ActiveGenerationPointer>,
     lease: Option<&GenerationRetentionLease>,
 ) -> Result<()> {
-    let ownership_fence = acquire_generation_ownership_fence(root)?;
-    reclaim_unreferenced_certifications_with_fence(root, pointer, lease, &ownership_fence)
-}
-
-#[doc(hidden)]
-pub fn reclaim_unreferenced_certifications_with_fence(
-    root: &Path,
-    pointer: Option<&ActiveGenerationPointer>,
-    lease: Option<&GenerationRetentionLease>,
-    _ownership_fence: &GenerationOwnershipFence,
-) -> Result<()> {
+    ensure_generation_read_lease_coordinator(root)?;
     let directory = root.join(CERTIFICATION_DIRECTORY);
     fs::create_dir_all(&directory)?;
     let retained = pointer
@@ -1585,11 +1623,6 @@ pub fn reclaim_unreferenced_certifications_with_fence(
         .map(GenerationSlot::directory)
         .chain(lease.map(|lease| lease.target().directory()))
         .map(str::to_owned)
-        .chain(
-            live_generation_read_lease_targets(root)?
-                .into_iter()
-                .map(|target| target.directory().to_owned()),
-        )
         .collect::<std::collections::HashSet<_>>();
     let mut removed = false;
     for entry in fs::read_dir(&directory)? {
@@ -1603,6 +1636,11 @@ pub fn reclaim_unreferenced_certifications_with_fence(
         if is_generation_directory_name(generation_directory)
             && !retained.contains(generation_directory)
         {
+            let Some(_reclaim_authority) =
+                try_generation_directory_reclaim_authority(root, generation_directory)?
+            else {
+                continue;
+            };
             fs::remove_file(entry.path())?;
             removed = true;
         }
@@ -1620,4 +1658,442 @@ pub fn certification_file_for_active(root: &Path) -> Result<PathBuf> {
 }
 
 #[cfg(test)]
-mod tests;
+mod tests {
+    use super::*;
+
+    #[cfg(unix)]
+    struct ReadOnlyCertificationFixture {
+        temp: tempfile::TempDir,
+        slot: GenerationSlot,
+        index: tantivy::Index,
+        relative_artifact_path: PathBuf,
+        certified_artifact: ArtifactIdentity,
+    }
+
+    #[cfg(unix)]
+    impl ReadOnlyCertificationFixture {
+        fn root(&self) -> &Path {
+            self.temp.path()
+        }
+
+        fn artifact_path(&self) -> PathBuf {
+            slot_path(self.root(), &self.slot).join(&self.relative_artifact_path)
+        }
+    }
+
+    #[cfg(unix)]
+    fn read_only_certification_fixture() -> ReadOnlyCertificationFixture {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path();
+        let mut schema = tantivy::schema::Schema::builder();
+        let body = schema.add_text_field("body", tantivy::schema::TEXT | tantivy::schema::STORED);
+        let candidate =
+            crate::create_candidate_generation(root, None, schema.build(), 50_000_000).unwrap();
+        let directory_name = candidate.directory_name.clone();
+        let index = candidate.index;
+        let mut writer = index.writer(50_000_000).unwrap();
+        writer
+            .add_document(tantivy::doc!(body => "immutable payload"))
+            .unwrap();
+        writer.commit().unwrap();
+        writer.wait_merging_threads().unwrap();
+
+        let generation_path = root.join(INDEX_GENERATIONS_DIRECTORY).join(&directory_name);
+        let audit = physical_integrity_audit(&index, &generation_path, None).unwrap();
+        let slot =
+            GenerationSlot::new("1".repeat(64), directory_name, audit.digest().to_owned()).unwrap();
+        let pointer = ActiveGenerationPointer::new(slot.clone(), None).unwrap();
+        fs::create_dir_all(root.join(MANIFEST_DIRECTORY)).unwrap();
+        fs::write(manifest_path(root, slot.generation_id()), b"manifest").unwrap();
+        crate::publish_active_generation_pointer(root, &pointer).unwrap();
+        let certified =
+            install_certification(root, &pointer, &slot, &index, &audit, false).unwrap();
+        let relative_artifact_path = active_index_files(&index)
+            .unwrap()
+            .into_iter()
+            .find(|path| {
+                fs::metadata(generation_path.join(path)).is_ok_and(|metadata| metadata.len() > 0)
+            })
+            .unwrap();
+        let (certified_artifact, _, sealed) = certified
+            .certified_artifact(&relative_artifact_path)
+            .unwrap();
+        assert!(sealed);
+        assert!(certified_artifact.identity.is_readonly());
+
+        ReadOnlyCertificationFixture {
+            temp,
+            slot,
+            index,
+            relative_artifact_path,
+            certified_artifact,
+        }
+    }
+
+    #[cfg(unix)]
+    fn mutate_same_length_and_restore_metadata(path: &Path) -> (Metadata, Metadata) {
+        use std::{io::Write as _, os::unix::fs::PermissionsExt as _};
+
+        let before = fs::metadata(path).unwrap();
+        let original_permissions = before.permissions();
+        let modified = before.modified().unwrap();
+        let mut bytes = fs::read(path).unwrap();
+        bytes[0] ^= 0x5a;
+
+        let mut writable = original_permissions.clone();
+        writable.set_mode(writable.mode() | 0o200);
+        fs::set_permissions(path, writable).unwrap();
+        let mut file = OpenOptions::new().write(true).open(path).unwrap();
+        file.write_all(&bytes).unwrap();
+        file.set_times(std::fs::FileTimes::new().set_modified(modified))
+            .unwrap();
+        file.sync_all().unwrap();
+        drop(file);
+        fs::set_permissions(path, original_permissions).unwrap();
+
+        (before, fs::metadata(path).unwrap())
+    }
+
+    fn generation(root: &Path, digit: char) -> PathBuf {
+        root.join(INDEX_GENERATIONS_DIRECTORY)
+            .join(format!("generation-{}", digit.to_string().repeat(32)))
+    }
+
+    fn pointer(digit: char) -> ActiveGenerationPointer {
+        let digit = digit.to_string();
+        ActiveGenerationPointer::new(
+            GenerationSlot::new(
+                digit.repeat(64),
+                format!("generation-{}", digit.repeat(32)),
+                digit.repeat(64),
+            )
+            .unwrap(),
+            None,
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn managed_link_creation_and_cleanup_are_retryable_stable_snapshots() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path();
+        let active = generation(root, '1');
+        let candidate = generation(root, '2');
+        fs::create_dir_all(&active).unwrap();
+        fs::create_dir_all(&candidate).unwrap();
+        let relative = Path::new("payload.bin");
+        let active_path = active.join(relative);
+        let candidate_path = candidate.join(relative);
+        fs::write(&active_path, b"immutable payload").unwrap();
+
+        let (file, before_link) = open_artifact_file_snapshot(&active_path).unwrap().unwrap();
+        fs::hard_link(&active_path, &candidate_path).unwrap();
+        assert!(matches!(
+            stable_artifact_link_snapshot(root, &active_path, relative, &file, &before_link, None,)
+                .unwrap(),
+            ArtifactLinkSnapshot::Retry
+        ));
+        drop(file);
+
+        let (_, linked) = open_artifact(root, &active, relative, None).unwrap();
+        assert_eq!(linked.identity.link_count(), 2);
+        let (file, before_unlink) = open_artifact_file_snapshot(&active_path).unwrap().unwrap();
+        fs::remove_file(&candidate_path).unwrap();
+        assert!(matches!(
+            stable_artifact_link_snapshot(
+                root,
+                &active_path,
+                relative,
+                &file,
+                &before_unlink,
+                None,
+            )
+            .unwrap(),
+            ArtifactLinkSnapshot::Retry
+        ));
+        drop(file);
+
+        let (_, unlinked) = open_artifact(root, &active, relative, None).unwrap();
+        assert_eq!(unlinked.identity.link_count(), 1);
+        assert!(linked.same_payload_identity_changed(&unlinked));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn activation_certification_rejects_mutation_masked_by_link_reclamation() {
+        let fixture = read_only_certification_fixture();
+        let root = fixture.root();
+        let generation_path = slot_path(root, &fixture.slot);
+        let artifact_path = fixture.artifact_path();
+        let candidate_generation = generation(root, 'f');
+        let candidate_artifact = candidate_generation.join(&fixture.relative_artifact_path);
+        fs::create_dir_all(candidate_artifact.parent().unwrap()).unwrap();
+        fs::hard_link(&artifact_path, &candidate_artifact).unwrap();
+        let pointer = load_current_pointer(root).unwrap();
+        let audit =
+            physical_integrity_audit(&fixture.index, &generation_path, Some(&pointer)).unwrap();
+
+        let certified_bytes = fs::read(&artifact_path).unwrap();
+        mutate_same_length_and_restore_metadata(&artifact_path);
+        assert_ne!(fs::read(&artifact_path).unwrap(), certified_bytes);
+        fs::remove_file(&candidate_artifact).unwrap();
+        fs::remove_dir(&candidate_generation).unwrap();
+
+        crate::reset_physical_verification_activity();
+        assert!(matches!(
+            certify_activated_generation(root, &pointer, &fixture.slot, &fixture.index, &audit,),
+            Err(IndexError::ConcurrentGenerationChange)
+        ));
+        assert_eq!(crate::checksum_walks(), 0);
+        assert_eq!(crate::hashed_artifact_bytes(), 0);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn read_only_certification_rejects_restored_metadata_byte_mutation() {
+        use std::os::unix::fs::MetadataExt as _;
+
+        let fixture = read_only_certification_fixture();
+        let artifact_path = fixture.artifact_path();
+        let (before, after) = mutate_same_length_and_restore_metadata(&artifact_path);
+        assert_eq!(after.len(), before.len());
+        assert_eq!(after.modified().unwrap(), before.modified().unwrap());
+        assert_eq!(after.mode(), before.mode());
+        assert!(after.permissions().readonly());
+        assert_eq!(after.nlink(), before.nlink());
+
+        crate::reset_physical_verification_activity();
+        assert!(matches!(
+            verify_physical_integrity_read_only(fixture.root(), &fixture.slot, &fixture.index),
+            Err(IndexError::ChecksumMismatch)
+        ));
+        assert_eq!(crate::checksum_walks(), 0);
+        assert_eq!(crate::hashed_artifact_bytes(), 0);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn read_only_certification_rejects_unretained_alias_and_restored_metadata_mutation() {
+        use std::os::unix::fs::MetadataExt as _;
+
+        let fixture = read_only_certification_fixture();
+        let artifact_path = fixture.artifact_path();
+        let attacker_generation = generation(fixture.root(), 'd');
+        let external_alias = attacker_generation.join(&fixture.relative_artifact_path);
+        fs::create_dir_all(external_alias.parent().unwrap()).unwrap();
+        fs::hard_link(&artifact_path, &external_alias).unwrap();
+        assert_eq!(
+            fs::metadata(&artifact_path).unwrap().nlink(),
+            fixture.certified_artifact.identity.link_count() + 1
+        );
+
+        let (before, after) = mutate_same_length_and_restore_metadata(&artifact_path);
+        assert_eq!(after.len(), before.len());
+        assert_eq!(after.modified().unwrap(), before.modified().unwrap());
+        assert_eq!(after.mode(), before.mode());
+        assert!(after.permissions().readonly());
+        assert_eq!(after.nlink(), before.nlink());
+
+        crate::reset_physical_verification_activity();
+        assert!(matches!(
+            verify_physical_integrity_read_only(fixture.root(), &fixture.slot, &fixture.index),
+            Err(IndexError::ChecksumMismatch)
+        ));
+        assert_eq!(crate::checksum_walks(), 0);
+        assert_eq!(crate::hashed_artifact_bytes(), 0);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn read_only_certification_rejects_accounted_link_transition_without_hashing() {
+        use std::os::unix::fs::MetadataExt as _;
+
+        let fixture = read_only_certification_fixture();
+        let artifact_path = fixture.artifact_path();
+        let linked_generation = generation(fixture.root(), 'e');
+        let linked_artifact = linked_generation.join(&fixture.relative_artifact_path);
+        fs::create_dir_all(linked_artifact.parent().unwrap()).unwrap();
+        fs::hard_link(&artifact_path, &linked_artifact).unwrap();
+        let linked_slot = GenerationSlot::new(
+            "e".repeat(64),
+            format!("generation-{}", "e".repeat(32)),
+            "e".repeat(64),
+        )
+        .unwrap();
+        let pointer =
+            ActiveGenerationPointer::new(linked_slot, Some(fixture.slot.clone())).unwrap();
+        crate::publish_active_generation_pointer(fixture.root(), &pointer).unwrap();
+
+        let linked = fs::metadata(&artifact_path).unwrap();
+        assert_eq!(
+            linked.nlink(),
+            fixture.certified_artifact.identity.link_count() + 1
+        );
+        crate::reset_physical_verification_activity();
+        assert!(matches!(
+            verify_physical_integrity_read_only(fixture.root(), &fixture.slot, &fixture.index),
+            Err(IndexError::ChecksumMismatch)
+        ));
+        assert_eq!(crate::checksum_walks(), 0);
+        assert_eq!(crate::hashed_artifact_bytes(), 0);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn read_only_certification_rejects_mutation_masked_by_accounted_link_transition() {
+        use std::os::unix::fs::MetadataExt as _;
+
+        let fixture = read_only_certification_fixture();
+        let artifact_path = fixture.artifact_path();
+        let certified_bytes = fs::read(&artifact_path).unwrap();
+        let (before_mutation, after_mutation) =
+            mutate_same_length_and_restore_metadata(&artifact_path);
+        assert_ne!(fs::read(&artifact_path).unwrap(), certified_bytes);
+        assert_eq!(after_mutation.len(), before_mutation.len());
+        assert_eq!(
+            after_mutation.modified().unwrap(),
+            before_mutation.modified().unwrap()
+        );
+        assert_eq!(after_mutation.mode(), before_mutation.mode());
+        assert_eq!(after_mutation.nlink(), before_mutation.nlink());
+
+        let linked_generation = generation(fixture.root(), 'e');
+        let linked_artifact = linked_generation.join(&fixture.relative_artifact_path);
+        fs::create_dir_all(linked_artifact.parent().unwrap()).unwrap();
+        fs::hard_link(&artifact_path, &linked_artifact).unwrap();
+        let linked_slot = GenerationSlot::new(
+            "e".repeat(64),
+            format!("generation-{}", "e".repeat(32)),
+            "e".repeat(64),
+        )
+        .unwrap();
+        let pointer =
+            ActiveGenerationPointer::new(linked_slot, Some(fixture.slot.clone())).unwrap();
+        crate::publish_active_generation_pointer(fixture.root(), &pointer).unwrap();
+
+        let linked = fs::metadata(&artifact_path).unwrap();
+        assert_eq!(
+            linked.nlink(),
+            fixture.certified_artifact.identity.link_count() + 1
+        );
+        crate::reset_physical_verification_activity();
+        assert!(matches!(
+            verify_physical_integrity_read_only(fixture.root(), &fixture.slot, &fixture.index),
+            Err(IndexError::ChecksumMismatch)
+        ));
+        assert_eq!(crate::checksum_walks(), 0);
+        assert_eq!(crate::hashed_artifact_bytes(), 0);
+    }
+
+    #[test]
+    fn generation_disappearing_during_alias_scan_is_retryable() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path();
+        let active = generation(root, '1');
+        let candidate = generation(root, '2');
+        fs::create_dir_all(&active).unwrap();
+        fs::create_dir_all(&candidate).unwrap();
+        let relative = Path::new("payload.bin");
+        let active_path = active.join(relative);
+        let candidate_path = candidate.join(relative);
+        fs::write(&active_path, b"immutable payload").unwrap();
+        fs::hard_link(&active_path, &candidate_path).unwrap();
+        let (file, linked) = open_artifact_file_snapshot(&active_path).unwrap().unwrap();
+
+        let candidate_for_hook = candidate.clone();
+        let candidate_path_for_hook = candidate_path.clone();
+        let _hook = AliasEntryTestHookGuard::install(move |entry_path| {
+            if entry_path == candidate_for_hook {
+                fs::remove_file(&candidate_path_for_hook).unwrap();
+                fs::remove_dir(&candidate_for_hook).unwrap();
+            }
+        });
+
+        assert!(matches!(
+            stable_artifact_link_snapshot(root, &active_path, relative, &file, &linked, None,)
+                .unwrap(),
+            ArtifactLinkSnapshot::Retry
+        ));
+    }
+
+    #[test]
+    fn stale_directory_entry_errors_are_retryable_but_io_errors_are_not() {
+        assert!(retryable_alias_snapshot_error(&std::io::Error::from(
+            std::io::ErrorKind::NotFound,
+        )));
+        assert!(!retryable_alias_snapshot_error(&std::io::Error::from(
+            std::io::ErrorKind::PermissionDenied,
+        )));
+        #[cfg(unix)]
+        assert!(retryable_alias_snapshot_error(
+            &std::io::Error::from_raw_os_error(libc::ESTALE)
+        ));
+    }
+
+    #[test]
+    fn pointer_replacement_during_control_capture_is_concurrent_not_corruption() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path();
+        let first = pointer('1');
+        let second = pointer('2');
+        let target = root.join("active-generation.json");
+        fs::write(&target, serde_json::to_vec(&first).unwrap()).unwrap();
+        let directory = DurableMmapDirectory::open(root).unwrap();
+        let target_for_hook = target.clone();
+        let second_bytes = serde_json::to_vec(&second).unwrap();
+        let mut replaced = false;
+        let hook = RegularFileIdentityTestHookGuard::install(move |path| {
+            if path == target_for_hook && !replaced {
+                directory
+                    .atomic_write(Path::new("active-generation.json"), &second_bytes)
+                    .unwrap();
+                replaced = true;
+            }
+        });
+
+        assert!(matches!(
+            capture_pointer_bound_single_link_control(root, &first, &target),
+            Err(IndexError::ConcurrentGenerationChange)
+        ));
+        drop(hook);
+        assert_eq!(load_current_pointer(root).unwrap(), second);
+
+        let directory = DurableMmapDirectory::open(root).unwrap();
+        let target_for_hook = target.clone();
+        let second_bytes = serde_json::to_vec(&second).unwrap();
+        let mut rewritten = false;
+        let hook = RegularFileIdentityTestHookGuard::install(move |path| {
+            if path == target_for_hook && !rewritten {
+                directory
+                    .atomic_write(Path::new("active-generation.json"), &second_bytes)
+                    .unwrap();
+                rewritten = true;
+            }
+        });
+        assert!(capture_pointer_bound_single_link_control(root, &second, &target).is_ok());
+        drop(hook);
+
+        fs::hard_link(&target, root.join("unmanaged-pointer-hardlink")).unwrap();
+        assert!(matches!(
+            capture_pointer_bound_single_link_control(root, &second, &target),
+            Err(IndexError::ChecksumMismatch)
+        ));
+    }
+
+    #[test]
+    fn stable_unmanaged_hardlink_remains_checksum_mismatch() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path();
+        let active = generation(root, '1');
+        fs::create_dir_all(&active).unwrap();
+        let relative = Path::new("payload.bin");
+        let active_path = active.join(relative);
+        fs::write(&active_path, b"immutable payload").unwrap();
+        fs::hard_link(&active_path, root.join("unmanaged-hardlink")).unwrap();
+
+        assert!(matches!(
+            open_artifact(root, &active, relative, None),
+            Err(IndexError::ChecksumMismatch)
+        ));
+    }
+}

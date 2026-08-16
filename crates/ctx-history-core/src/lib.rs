@@ -2,12 +2,9 @@ use std::time::SystemTime;
 
 use chrono::{DateTime, Utc};
 use thiserror::Error;
-use uuid::Uuid;
 
 #[derive(Debug, Error)]
 pub enum CoreError {
-    #[error("could not determine a home directory for the default ctx data root")]
-    MissingHome,
     #[error("invalid {enum_name} value: {value}")]
     InvalidEnumValue {
         enum_name: &'static str,
@@ -110,43 +107,35 @@ macro_rules! text_enum {
     };
 }
 
-pub mod archive;
-mod content_ref;
+mod core_record;
 pub mod dtos;
 pub mod history_jsonl;
-pub mod paths;
-pub mod platform_security;
 pub mod projection;
 pub mod provider;
-mod result_compaction;
 pub mod source;
-pub mod source_resolver;
-pub mod sync;
 
-pub use archive::SessionHistoryArchive;
-pub use content_ref::ContentRef;
-pub use dtos::{
-    AgentType, Artifact, ArtifactKind, CitationReference, Confidence, ContextCitation,
-    ContextCitationType, ContextLinks, ContextPagination, ContextTruncation, Event, EventRole,
-    EventType, FileChangeKind, FileTouched, HistoryRecord, HistoryRecordLink,
-    HistoryRecordLinkTargetType, HistoryRecordLinkType, HistoryRecordMetadata, HistoryRecordStatus,
-    HistoryRecordTag, RecordEdge, RecordEdgeType, Run, RunStatus, RunType, Session, SessionEdge,
-    SessionEdgeType, SessionStatus, Summary, SummaryKind, Tag, TagKind, VcsChange, VcsChangeKind,
-    VcsHost, VcsKind, VcsWorkspace,
+pub use core_record::{
+    core_record_accumulator_leaf_digest, core_record_contract_fingerprint, core_record_leaf_digest,
+    core_record_leaf_sha256, ActivityInvocation, ActivityJsonCapture, ActivityResult,
+    ActivityTextCapture, AgentScope, CoreActivity, CoreContent, CoreContentPolicyStatus,
+    CoreDiscoveryExclusion, CoreRecord, CoreRecordAnnotation, CoreRecordError, CoreRecordResult,
+    LiteralFactKind, ProviderDeclaredFact, ProviderNativeCopyProof, ProviderNativeEventCopy,
+    ProviderNativeSessionRelationship, CORE_ACTIVITY_REVISION, CORE_CONTENT_POLICY_REVISION,
+    CORE_NORMALIZATION_REVISION, CORE_RECORD_ACCUMULATOR_IDENTITY, CORE_RECORD_LEAF_DOMAIN,
+    CORE_RECORD_VERSION, CORE_RELATIONSHIP_CONTRACT_REVISION, MAX_CORE_CONTENT_BYTES,
+    MAX_ENCODED_CORE_RECORD_BYTES, MAX_PROVIDER_DECLARED_FACTS,
 };
+pub use dtos::{ArtifactKind, EventRole, EventType, Fidelity, SessionStatus};
 pub use history_jsonl::{
-    CtxHistoryJsonlEdgeRecord, CtxHistoryJsonlEventRecord, CtxHistoryJsonlFileTouchRecord,
+    CtxHistoryJsonlCopiedFromSelector, CtxHistoryJsonlCopyProofKind, CtxHistoryJsonlEdgeRecord,
+    CtxHistoryJsonlEventRecord, CtxHistoryJsonlFileReferenceRecord, CtxHistoryJsonlLineageContract,
     CtxHistoryJsonlManifestRecord, CtxHistoryJsonlRecord, CtxHistoryJsonlSessionRecord,
-    CtxHistoryJsonlSourceRecord, CTX_HISTORY_JSONL_V1_SCHEMA_VERSION,
-};
-pub use paths::{
-    blob_dir, config_path, database_path, default_data_root, device_path, history_dir, logs_dir,
-    managed_data_root, object_dir,
+    CtxHistoryJsonlSourceRecord, CTX_HISTORY_JSONL_SCHEMA_VERSION,
 };
 pub use projection::{
-    derive_event_id, derive_session_id, CertifiedSource, CertifiedSourceAppend,
-    CertifiedSourceDeletion, CertifiedSourceInventory, EventIdentityInput, NativeItemKey,
-    NativeLocator, NativeSessionKey, PositionStability, ProjectionContractError,
+    derive_event_id, derive_native_session_id, derive_session_id, CertifiedSource,
+    CertifiedSourceAppend, CertifiedSourceDeletion, CertifiedSourceInventory, EventIdentityInput,
+    NativeItemKey, NativeSessionKey, PositionStability, ProjectionContractError,
     ScannedSourceCounts, SessionIdentityInput, SourceAnchor, SourceFrontier,
     SourceInventoryObservation, SourceKey, SourceObservation, StableEntityId, StableEntityKind,
     SubrecordSelector, TypedKey, IDENTITY_VERSION,
@@ -157,24 +146,9 @@ pub use provider::{
     ProviderSupportEntry, ProviderSupportMatrixDocument, ProviderSupportPath,
     ProviderSupportStatus, PROVIDER_SUPPORT_MATRIX_SCHEMA_VERSION,
 };
-pub use result_compaction::compact_result_payload;
-pub use source::{CaptureProvider, CaptureSource, CaptureSourceDescriptor, CaptureSourceKind};
-pub use source_resolver::{
-    BatchHydrationRequest, BatchHydrationResult, ContentSourceResolver, EventHydrationRequest,
-    HydratedProviderRecord, HydrationFailure, HydrationFailureKind, LocatorRevisionPolicy,
-    NativeRecordCoordinate, SessionHydrationRequest, SourceRecordLocator,
-    SourceResolverContractError, MAX_BATCH_HYDRATION_EVENTS, NATIVE_LOCATOR_VERSION,
-};
-pub use sync::{
-    AuditActorKind, AuditLogEntry, EntityTimestamps, Fidelity, RedactionState, SyncAlias,
-    SyncBatch, SyncBatchStatus, SyncCursor, SyncDirection, SyncMetadata, SyncOutboxItem,
-    SyncOutboxOperation, SyncState, Visibility,
-};
-
-pub(crate) use sync::default_metadata;
-
-pub fn new_id() -> Uuid {
-    Uuid::now_v7()
+pub use source::CaptureProvider;
+pub(crate) fn default_metadata() -> serde_json::Value {
+    serde_json::Value::Object(serde_json::Map::new())
 }
 
 #[cfg(test)]

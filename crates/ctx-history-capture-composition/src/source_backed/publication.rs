@@ -319,28 +319,6 @@ pub fn refresh_source_backed_generation(
 }
 
 #[cfg(test)]
-pub(crate) fn refresh_source_backed_generation_incremental_for_test(
-    index_root: impl AsRef<Path>,
-    registry: &SourceBackedProviderRegistry,
-    writer_options: WriterOptions,
-) -> SourceBackedCoordinatorResult<SourceBackedRefreshReceipt> {
-    let work_budget = source_backed_refresh_work_budget(writer_options.indexer_threads);
-    refresh_source_backed_generation_with_detailed_progress_and_discovery_timing(
-        index_root,
-        registry,
-        writer_options,
-        SourceBackedRefreshExecutionBudget::new(Duration::ZERO, work_budget),
-        (
-            SourceBackedRefreshPlan::isolate(SourceBackedRefreshScope::All)
-                .with_reconciliation_demand(SourceBackedReconciliationDemand::Incremental),
-            &BTreeMap::new(),
-        ),
-        |_| Ok(()),
-        None,
-    )
-}
-
-#[cfg(test)]
 pub(crate) fn refresh_source_backed_generation_with_work_budget_for_test(
     index_root: impl AsRef<Path>,
     registry: &SourceBackedProviderRegistry,

@@ -166,7 +166,7 @@ mod tests {
     use std::{fs, path::Path};
 
     #[test]
-    fn rovodev_parent_rewrite_preserves_unchanged_child_replay() {
+    fn rovodev_parent_rewrite_preserves_unchanged_child_identity() {
         let temp = crate::test_support_paths::tempdir().unwrap();
         let root = temp.path().join("sessions");
         write_rovodev_session(&root, "root-a", None);
@@ -178,22 +178,19 @@ mod tests {
 
         let cold =
             refresh_source_backed_generation(&index, &registry, WriterOptions::default()).unwrap();
-        let (cold_leaf_root, root_b_session) = leaf_and_root_b_ids(&index, &cold);
-        assert_ne!(cold_leaf_root, root_b_session);
+        let cold_leaf_identity = leaf_identity(&index, &cold);
 
         write_rovodev_session(&root, "middle", Some("root-b"));
         let refreshed =
             refresh_source_backed_generation(&index, &registry, WriterOptions::default()).unwrap();
-        let (refreshed_leaf_root, refreshed_root_b_session) =
-            leaf_and_root_b_ids(&index, &refreshed);
+        let refreshed_leaf_identity = leaf_identity(&index, &refreshed);
         assert_ne!(refreshed.commit.generation_id, cold.commit.generation_id);
-        assert_eq!(refreshed_leaf_root, cold_leaf_root);
-        assert_ne!(refreshed_leaf_root, refreshed_root_b_session);
+        assert_eq!(refreshed_leaf_identity, cold_leaf_identity);
 
         let replay =
             refresh_source_backed_generation(&index, &registry, WriterOptions::default()).unwrap();
         assert_eq!(replay.commit.generation_id, refreshed.commit.generation_id);
-        assert_eq!(leaf_and_root_b_ids(&index, &replay).0, refreshed_leaf_root);
+        assert_eq!(leaf_identity(&index, &replay), refreshed_leaf_identity);
     }
 
     #[test]
@@ -256,7 +253,7 @@ mod tests {
     }
 
     #[test]
-    fn rovodev_missing_parent_publishes_unresolved_and_preserves_child_identity() {
+    fn rovodev_missing_parent_preserves_literal_parent_and_child_identity() {
         let temp = crate::test_support_paths::tempdir().unwrap();
         let root = temp.path().join("sessions");
         write_rovodev_session(&root, "leaf", Some("middle"));
@@ -274,11 +271,6 @@ mod tests {
         let direct_parent_id = unresolved_leaf
             .parent_session_id
             .expect("direct parent claim");
-        assert_eq!(unresolved_leaf.root_session_id, direct_parent_id);
-        assert_eq!(
-            unresolved_leaf.session_relationship.as_str(),
-            "related_unknown"
-        );
 
         write_rovodev_session(&root, "root", None);
         write_rovodev_session(&root, "middle", Some("root"));
@@ -300,7 +292,6 @@ mod tests {
         assert_eq!(leaf.event_id, child_event_id);
         assert_eq!(leaf.session_id, child_session_id);
         assert_eq!(leaf.parent_session_id, Some(middle.session_id));
-        assert_eq!(leaf.root_session_id, middle.session_id);
         assert_eq!(middle.parent_session_id, Some(lineage_root.session_id));
 
         fs::remove_dir_all(root.join("middle")).unwrap();
@@ -315,7 +306,6 @@ mod tests {
         assert_eq!(deleted_leaf.event_id, child_event_id);
         assert_eq!(deleted_leaf.session_id, child_session_id);
         assert_eq!(deleted_leaf.parent_session_id, Some(direct_parent_id));
-        assert_eq!(deleted_leaf.root_session_id, direct_parent_id);
 
         let replay =
             refresh_source_backed_generation(&index, &registry, WriterOptions::default()).unwrap();
@@ -379,7 +369,7 @@ mod tests {
         );
     }
 
-    fn leaf_and_root_b_ids(
+    fn leaf_identity(
         index: &Path,
         receipt: &SourceBackedRefreshReceipt,
     ) -> (
@@ -401,11 +391,7 @@ mod tests {
             .iter()
             .find(|event| event.provider_session_id.as_deref() == Some("leaf"))
             .unwrap();
-        let root_b = events
-            .iter()
-            .find(|event| event.provider_session_id.as_deref() == Some("root-b"))
-            .unwrap();
-        (leaf.root_session_id, root_b.session_id)
+        (leaf.event_id, leaf.session_id)
     }
 
     fn rovodev_events(index: &Path, receipt: &SourceBackedRefreshReceipt) -> Vec<CoreEventRecord> {

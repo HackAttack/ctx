@@ -73,7 +73,6 @@ fn scanner_pages_messages_and_retains_complete_outputs() {
         .iter()
         .find(|event| event.event.payload.to_string().contains(FAILURE_SENTINEL))
         .unwrap();
-    assert_eq!(failure.event.payload["result_outcome"], "failure");
     assert!(failure.event.payload.to_string().contains(FAILURE_SENTINEL));
     assert!(pages.iter().flat_map(|page| &page.events).any(|event| event
         .event

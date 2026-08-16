@@ -1,7 +1,6 @@
-use std::collections::{HashMap, HashSet};
-
 use ctx_history_core::{
-    EventOrigin, SessionRelationshipKind, SourceKey, StableEntityId, StableEntityKind,
+    ProviderNativeCopyProof, ProviderNativeEventCopy, ProviderNativeSessionRelationship, SourceKey,
+    StableEntityId, StableEntityKind,
 };
 use serde::Deserialize;
 use tantivy::{
@@ -15,7 +14,6 @@ use crate::{fields_from_schema, hex, Fields, IndexError, Result, VerifiedIndex};
 use super::super::{
     CopiedEventLineage, CopiedEventLineageOccurrence, CopiedEventLineagePolicy,
     CopiedEventLineageRelationshipCount, CopiedEventLineageResolution,
-    MAX_COPIED_EVENT_LINEAGE_DEPTH,
     MAX_COPIED_EVENT_LINEAGE_EVENT_AND_SESSION_IDENTITY_POSTING_VISITS,
 };
 
@@ -24,33 +22,19 @@ struct LineageEvent {
     event_id: StableEntityId,
     session_id: StableEntityId,
     parent_session_id: Option<StableEntityId>,
-    claimed_root_session_id: StableEntityId,
-    session_relationship: SessionRelationshipKind,
-    event_origin: EventOrigin,
+    claimed_root_session_id: Option<StableEntityId>,
+    session_relationship: Option<ProviderNativeSessionRelationship>,
+    event_copy: Option<ProviderNativeEventCopy>,
     event_sequence: u64,
 }
 
 impl LineageEvent {
-    fn copied_from(&self) -> Option<(StableEntityId, StableEntityId)> {
-        self.event_origin
-            .copied_from_ancestor()
-            .map(|(session_id, event_id, _)| (session_id, event_id))
-    }
-
     fn order_key(&self) -> (Uuid, u64, Uuid) {
         (
             self.session_id.as_uuid(),
             self.event_sequence,
             self.event_id.as_uuid(),
         )
-    }
-
-    fn session_lineage(&self) -> SessionLineage {
-        SessionLineage {
-            parent_session_id: self.parent_session_id,
-            claimed_root_session_id: self.claimed_root_session_id,
-            session_relationship: self.session_relationship,
-        }
     }
 
     fn target(&self) -> LineageTarget {
@@ -94,20 +78,6 @@ impl LineageTarget {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct SessionLineage {
-    parent_session_id: Option<StableEntityId>,
-    claimed_root_session_id: StableEntityId,
-    session_relationship: SessionRelationshipKind,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum SessionAncestryResolution {
-    Resolved,
-    Unresolved,
-    Cyclic,
-}
-
 struct ForwardResolution {
     selected_session_id: Option<StableEntityId>,
     anchor: LineageTarget,
@@ -120,22 +90,21 @@ struct StoredLineageProjection {
     event_id: StableEntityId,
     session_id: StableEntityId,
     parent_session_id: Option<StableEntityId>,
-    root_session_id: StableEntityId,
-    session_relationship: SessionRelationshipKind,
-    event_origin: EventOrigin,
+    root_session_id: Option<StableEntityId>,
+    session_relationship: Option<ProviderNativeSessionRelationship>,
+    event_copy: Option<ProviderNativeEventCopy>,
     source: SourceKey,
     event_sequence: u64,
-    is_primary: bool,
 }
 
 impl VerifiedIndex {
-    /// Resolves one selected event's explicit copied-event chain, then walks
-    /// exact reverse copied-event claims breadth-first within the caller's
-    /// explicit work and retention ceilings.
+    /// Resolves one selected event's direct copied-event target, then returns
+    /// exact direct reverse copied-event claims within the caller's explicit
+    /// work and retention ceilings.
     ///
-    /// Missing selected events, missing targets, and cycles are ordinary
-    /// query results. Durable parent, root, and copied-from claims are never
-    /// treated as publication-time graph authority.
+    /// Missing selected events and targets are ordinary query results. Parent,
+    /// root, and copied-from claims are never treated as transitive graph
+    /// authority.
     pub fn copied_event_lineage(
         &self,
         selected_event_id: Uuid,
@@ -156,98 +125,44 @@ impl VerifiedIndex {
             &mut exact_identity_posting_visits,
         )?;
 
-        let mut visited_events = HashSet::new();
-        if let Some(event_id) = forward.anchor.exact_event_id {
-            visited_events.insert(event_id);
-        }
-        let mut visited_sessions = HashMap::new();
-        let mut frontier = vec![forward.anchor];
-        let mut frontier_depth = 0_usize;
         let mut posting_visits = 0_usize;
-        let mut observed_count = 0_u64;
         let mut relationship_counts = [0_u64; 6];
         let mut occurrences = Vec::with_capacity(policy.maximum_occurrences);
-        let mut truncated = false;
-
-        loop {
-            let child_depth = frontier_depth
-                .checked_add(1)
+        let mut children = Vec::new();
+        let inverse_complete = self.inverse_lineage_children(
+            forward.anchor,
+            fields,
+            policy.maximum_posting_visits,
+            &mut posting_visits,
+            &mut children,
+        )?;
+        children.sort_by_key(LineageEvent::order_key);
+        let observed_count =
+            u64::try_from(children.len()).map_err(|_| IndexError::CountOverflow)?;
+        for child in children {
+            let count = relationship_counts
+                .get_mut(relationship_index(child.session_relationship))
                 .ok_or(IndexError::CountOverflow)?;
-            let mut children = Vec::new();
-            let mut inverse_complete = true;
-            for target in &frontier {
-                if !self.inverse_lineage_children(
-                    *target,
-                    fields,
-                    policy.maximum_posting_visits,
-                    &mut posting_visits,
-                    &mut children,
-                )? {
-                    inverse_complete = false;
-                    truncated = true;
-                    break;
-                }
+            *count = count.checked_add(1).ok_or(IndexError::CountOverflow)?;
+            let copy = child
+                .event_copy
+                .as_ref()
+                .ok_or(IndexError::InvalidStoredDocumentField(
+                    "event_copy_ancestor_event_id",
+                ))?;
+            if occurrences.len() < policy.maximum_occurrences {
+                occurrences.push(CopiedEventLineageOccurrence {
+                    event_id: child.event_id,
+                    session_id: child.session_id,
+                    copied_from_event_id: copy.ancestor_event_id,
+                    copied_from_session_id: copy.ancestor_session_id,
+                    parent_session_id: child.parent_session_id,
+                    claimed_root_session_id: child.claimed_root_session_id,
+                    session_relationship: child.session_relationship,
+                    copy_proof: copy.proof,
+                    depth: 1,
+                });
             }
-            children.sort_by_key(LineageEvent::order_key);
-
-            if child_depth > MAX_COPIED_EVENT_LINEAGE_DEPTH {
-                if !children.is_empty() || !inverse_complete {
-                    truncated = true;
-                }
-                break;
-            }
-
-            let mut next_frontier = Vec::with_capacity(children.len());
-            for child in children {
-                if !visited_events.insert(child.event_id) {
-                    continue;
-                }
-
-                let session_lineage = child.session_lineage();
-                match visited_sessions.get(&child.session_id) {
-                    Some(existing) if *existing != session_lineage => {
-                        return Err(IndexError::InvalidSessionRelationshipGraph(
-                            "one session has inconsistent stored lineage claims",
-                        ));
-                    }
-                    Some(_) => {}
-                    None => {
-                        visited_sessions.insert(child.session_id, session_lineage);
-                        observed_count = observed_count
-                            .checked_add(1)
-                            .ok_or(IndexError::CountOverflow)?;
-                        let count = relationship_counts
-                            .get_mut(relationship_index(child.session_relationship))
-                            .ok_or(IndexError::CountOverflow)?;
-                        *count = count.checked_add(1).ok_or(IndexError::CountOverflow)?;
-
-                        let (copied_from_session_id, copied_from_event_id) = child
-                            .copied_from()
-                            .ok_or(IndexError::InvalidEventOriginGraph(
-                                "inverse posting does not identify a copied event",
-                            ))?;
-                        if occurrences.len() < policy.maximum_occurrences {
-                            occurrences.push(CopiedEventLineageOccurrence {
-                                event_id: child.event_id,
-                                session_id: child.session_id,
-                                copied_from_event_id,
-                                copied_from_session_id,
-                                parent_session_id: child.parent_session_id,
-                                claimed_root_session_id: child.claimed_root_session_id,
-                                session_relationship: child.session_relationship,
-                                depth: child_depth,
-                            });
-                        }
-                    }
-                }
-                next_frontier.push(child.target());
-            }
-
-            if !inverse_complete || next_frontier.is_empty() {
-                break;
-            }
-            frontier = next_frontier;
-            frontier_depth = child_depth;
         }
 
         let relationship_counts = relationship_counts
@@ -271,7 +186,7 @@ impl VerifiedIndex {
             returned,
             occurrences,
             relationship_counts,
-            truncated,
+            truncated: !inverse_complete,
         })
     }
 
@@ -282,7 +197,7 @@ impl VerifiedIndex {
         fields: Fields,
         exact_identity_posting_visits: &mut usize,
     ) -> Result<ForwardResolution> {
-        let Some(mut current) = selected else {
+        let Some(selected) = selected else {
             let anchor = LineageTarget::requested(selected_event_id);
             return Ok(ForwardResolution {
                 selected_session_id: None,
@@ -291,135 +206,41 @@ impl VerifiedIndex {
                 selected_depth: 0,
             });
         };
-        let selected_session_id = Some(current.session_id);
-        let mut depth = 0_usize;
-        let mut visited = HashSet::new();
-        visited.insert(current.event_id);
-
-        loop {
-            let Some((ancestor_session_id, ancestor_event_id)) = current.copied_from() else {
-                return Ok(ForwardResolution {
-                    selected_session_id,
-                    anchor: current.target(),
-                    resolution: CopiedEventLineageResolution::Resolved {
-                        event_id: current.event_id,
-                        session_id: current.session_id,
-                    },
-                    selected_depth: depth,
-                });
-            };
-            depth = depth.checked_add(1).ok_or(IndexError::CountOverflow)?;
-            let target = LineageTarget::claimed(ancestor_session_id, ancestor_event_id);
-            if depth > MAX_COPIED_EVENT_LINEAGE_DEPTH {
-                return Ok(ForwardResolution {
-                    selected_session_id,
-                    anchor: target,
-                    resolution: target.unresolved(),
-                    selected_depth: depth,
-                });
-            }
-
-            match self.session_ancestry_resolution(
-                &current,
-                ancestor_session_id,
-                fields,
-                exact_identity_posting_visits,
-            )? {
-                SessionAncestryResolution::Resolved => {}
-                SessionAncestryResolution::Unresolved => {
-                    return Ok(ForwardResolution {
-                        selected_session_id,
-                        anchor: target,
-                        resolution: target.unresolved(),
-                        selected_depth: depth,
-                    });
-                }
-                SessionAncestryResolution::Cyclic => {
-                    return Ok(ForwardResolution {
-                        selected_session_id,
-                        anchor: current.target(),
-                        resolution: CopiedEventLineageResolution::Cyclic {
-                            event_id: current.event_id,
-                            session_id: current.session_id,
-                        },
-                        selected_depth: depth,
-                    });
-                }
-            }
-
-            let Some(ancestor) = self.lineage_event_by_uuid(
-                ancestor_event_id.as_uuid(),
-                fields,
-                exact_identity_posting_visits,
-            )?
-            else {
-                return Ok(ForwardResolution {
-                    selected_session_id,
-                    anchor: target,
-                    resolution: target.unresolved(),
-                    selected_depth: depth,
-                });
-            };
-            if ancestor.event_id != ancestor_event_id || ancestor.session_id != ancestor_session_id
+        let anchor = selected.target();
+        let Some(copy) = selected.event_copy.as_ref() else {
+            return Ok(ForwardResolution {
+                selected_session_id: Some(selected.session_id),
+                anchor,
+                resolution: CopiedEventLineageResolution::Resolved {
+                    event_id: selected.event_id,
+                    session_id: selected.session_id,
+                },
+                selected_depth: 0,
+            });
+        };
+        let target = LineageTarget::claimed(copy.ancestor_session_id, copy.ancestor_event_id);
+        let resolution = match self.lineage_event_by_uuid(
+            copy.ancestor_event_id.as_uuid(),
+            fields,
+            exact_identity_posting_visits,
+        )? {
+            Some(ancestor)
+                if ancestor.event_id == copy.ancestor_event_id
+                    && ancestor.session_id == copy.ancestor_session_id =>
             {
-                return Ok(ForwardResolution {
-                    selected_session_id,
-                    anchor: target,
-                    resolution: target.unresolved(),
-                    selected_depth: depth,
-                });
+                CopiedEventLineageResolution::Resolved {
+                    event_id: ancestor.event_id,
+                    session_id: ancestor.session_id,
+                }
             }
-            if !visited.insert(ancestor.event_id) {
-                return Ok(ForwardResolution {
-                    selected_session_id,
-                    anchor: ancestor.target(),
-                    resolution: CopiedEventLineageResolution::Cyclic {
-                        event_id: ancestor.event_id,
-                        session_id: ancestor.session_id,
-                    },
-                    selected_depth: depth,
-                });
-            }
-            current = ancestor;
-        }
-    }
-
-    fn session_ancestry_resolution(
-        &self,
-        child: &LineageEvent,
-        ancestor_session_id: StableEntityId,
-        fields: Fields,
-        exact_identity_posting_visits: &mut usize,
-    ) -> Result<SessionAncestryResolution> {
-        let mut current_session_id = child.session_id;
-        let mut current_lineage = child.session_lineage();
-        let mut visited = HashSet::new();
-        visited.insert(current_session_id);
-
-        loop {
-            let Some(parent_session_id) = current_lineage.parent_session_id else {
-                return Ok(SessionAncestryResolution::Unresolved);
-            };
-            if parent_session_id == ancestor_session_id {
-                return Ok(SessionAncestryResolution::Resolved);
-            }
-            if !visited.insert(parent_session_id) {
-                return Ok(SessionAncestryResolution::Cyclic);
-            }
-            let Some(parent_lineage) = self.session_lineage_by_id(
-                parent_session_id,
-                fields,
-                exact_identity_posting_visits,
-            )?
-            else {
-                return Ok(SessionAncestryResolution::Unresolved);
-            };
-            current_session_id = parent_session_id;
-            current_lineage = parent_lineage;
-            if current_session_id == ancestor_session_id {
-                return Ok(SessionAncestryResolution::Resolved);
-            }
-        }
+            Some(_) | None => target.unresolved(),
+        };
+        Ok(ForwardResolution {
+            selected_session_id: Some(selected.session_id),
+            anchor,
+            resolution,
+            selected_depth: 1,
+        })
     }
 
     fn lineage_event_by_uuid(
@@ -462,41 +283,6 @@ impl VerifiedIndex {
         Ok(found)
     }
 
-    fn session_lineage_by_id(
-        &self,
-        session_id: StableEntityId,
-        fields: Fields,
-        exact_identity_posting_visits: &mut usize,
-    ) -> Result<Option<SessionLineage>> {
-        let term = Term::from_field_text(fields.session_id, &session_id.as_uuid().to_string());
-        for (segment_ord, segment) in self.searcher.segment_readers().iter().enumerate() {
-            let inverted = segment.inverted_index(fields.session_id)?;
-            let Some(term_info) = inverted.get_term_info(&term)? else {
-                continue;
-            };
-            let mut postings =
-                inverted.read_postings_from_terminfo(&term_info, IndexRecordOption::Basic)?;
-            let mut doc_id = postings.doc();
-            while doc_id != TERMINATED {
-                note_exact_identity_posting(exact_identity_posting_visits)?;
-                if !segment.is_deleted(doc_id) {
-                    let segment_ord =
-                        u32::try_from(segment_ord).map_err(|_| IndexError::CountOverflow)?;
-                    let record = stored_lineage_event(
-                        &self.searcher,
-                        DocAddress::new(segment_ord, doc_id),
-                        fields,
-                    )?;
-                    if record.session_id == session_id {
-                        return Ok(Some(record.session_lineage()));
-                    }
-                }
-                doc_id = postings.advance();
-            }
-        }
-        Ok(None)
-    }
-
     fn inverse_lineage_children(
         &self,
         target: LineageTarget,
@@ -505,9 +291,12 @@ impl VerifiedIndex {
         posting_visits: &mut usize,
         children: &mut Vec<LineageEvent>,
     ) -> Result<bool> {
-        let term = Term::from_field_text(fields.origin_event_id, &target.event_id.to_string());
+        let term = Term::from_field_text(
+            fields.event_copy_ancestor_event_id,
+            &target.event_id.to_string(),
+        );
         for (segment_ord, segment) in self.searcher.segment_readers().iter().enumerate() {
-            let inverted = segment.inverted_index(fields.origin_event_id)?;
+            let inverted = segment.inverted_index(fields.event_copy_ancestor_event_id)?;
             let Some(term_info) = inverted.get_term_info(&term)? else {
                 continue;
             };
@@ -529,23 +318,24 @@ impl VerifiedIndex {
                         DocAddress::new(segment_ord, doc_id),
                         fields,
                     )?;
-                    let Some((copied_from_session_id, copied_from_event_id)) = child.copied_from()
-                    else {
-                        return Err(IndexError::InvalidEventOriginGraph(
-                            "inverse posting does not identify a copied event",
-                        ));
-                    };
-                    if copied_from_event_id.as_uuid() != target.event_id {
-                        return Err(IndexError::InvalidEventOriginGraph(
-                            "inverse posting disagrees with the stored origin event",
+                    let copy =
+                        child
+                            .event_copy
+                            .as_ref()
+                            .ok_or(IndexError::InvalidStoredDocumentField(
+                                "event_copy_ancestor_event_id",
+                            ))?;
+                    if copy.ancestor_event_id.as_uuid() != target.event_id {
+                        return Err(IndexError::InvalidStoredDocumentField(
+                            "event_copy_ancestor_event_id",
                         ));
                     }
                     if target
                         .exact_event_id
-                        .is_some_and(|id| copied_from_event_id != id)
+                        .is_some_and(|id| copy.ancestor_event_id != id)
                         || target
                             .session_id
-                            .is_some_and(|id| copied_from_session_id != id)
+                            .is_some_and(|id| copy.ancestor_session_id != id)
                     {
                         doc_id = postings.advance();
                         continue;
@@ -591,7 +381,7 @@ fn stored_lineage_event(
         parent_session_id: projection.parent_session_id,
         claimed_root_session_id: projection.root_session_id,
         session_relationship: projection.session_relationship,
-        event_origin: projection.event_origin,
+        event_copy: projection.event_copy.clone(),
         event_sequence: projection.event_sequence,
     })
 }
@@ -608,44 +398,18 @@ fn validate_stored_lineage_projection(projection: &StoredLineageProjection) -> R
         StableEntityKind::Session,
         &projection.source,
     )?;
-    validate_related_session_identity(projection.root_session_id)?;
+    if let Some(root_session_id) = projection.root_session_id {
+        validate_related_session_identity(root_session_id)?;
+    }
     if let Some(parent_session_id) = projection.parent_session_id {
         validate_related_session_identity(parent_session_id)?;
     }
-    if projection.is_primary != projection.session_relationship.is_primary() {
-        return Err(IndexError::InvalidStoredDocumentField("core_record"));
-    }
-    match projection.session_relationship {
-        SessionRelationshipKind::Root => {
-            if projection.parent_session_id.is_some()
-                || projection.root_session_id != projection.session_id
-            {
-                return Err(IndexError::InvalidStoredDocumentField("core_record"));
-            }
-        }
-        SessionRelationshipKind::Delegated
-        | SessionRelationshipKind::Forked
-        | SessionRelationshipKind::ResumedFrom
-        | SessionRelationshipKind::WorkflowChild
-        | SessionRelationshipKind::RelatedUnknown => {
-            let Some(parent_session_id) = projection.parent_session_id else {
-                return Err(IndexError::InvalidStoredDocumentField("core_record"));
-            };
-            if parent_session_id == projection.session_id
-                || projection.root_session_id == projection.session_id
-            {
-                return Err(IndexError::InvalidStoredDocumentField("core_record"));
-            }
-        }
-    }
-    if let Some((ancestor_session_id, ancestor_event_id, _)) =
-        projection.event_origin.copied_from_ancestor()
-    {
-        validate_related_session_identity(ancestor_session_id)?;
-        ancestor_event_id.validate_contract()?;
-        if ancestor_event_id.entity_kind() != StableEntityKind::Event
-            || ancestor_session_id == projection.session_id
-            || ancestor_event_id == projection.event_id
+    if let Some(copy) = &projection.event_copy {
+        validate_related_session_identity(copy.ancestor_session_id)?;
+        copy.ancestor_event_id.validate_contract()?;
+        if copy.ancestor_event_id.entity_kind() != StableEntityKind::Event
+            || copy.ancestor_session_id == projection.session_id
+            || copy.ancestor_event_id == projection.event_id
         {
             return Err(IndexError::InvalidStoredDocumentField("core_record"));
         }
@@ -716,43 +480,47 @@ fn validate_indexed_lineage_projection(
             "parent_session_id",
         )?;
     }
-    validate_text_posting(
-        segment,
-        address.doc_id,
-        fields.root_session_id,
-        &projection.root_session_id.to_string(),
-        "root_session_id",
-    )?;
-    validate_text_posting(
-        segment,
-        address.doc_id,
-        fields.session_relationship_kind,
-        projection.session_relationship.as_str(),
-        "session_relationship_kind",
-    )?;
-    validate_text_posting(
-        segment,
-        address.doc_id,
-        fields.event_origin_kind,
-        projection.event_origin.kind_str(),
-        "event_origin_kind",
-    )?;
-    if let Some((_, ancestor_event_id, _)) = projection.event_origin.copied_from_ancestor() {
+    if let Some(root_session_id) = projection.root_session_id {
         validate_text_posting(
             segment,
             address.doc_id,
-            fields.origin_event_id,
-            &ancestor_event_id.as_uuid().to_string(),
-            "origin_event_id",
+            fields.root_session_id,
+            &root_session_id.to_string(),
+            "root_session_id",
         )?;
     }
-    validate_u64_posting(
-        segment,
-        address.doc_id,
-        fields.is_primary,
-        u64::from(projection.is_primary),
-        "is_primary",
-    )?;
+    if let Some(relationship) = projection.session_relationship {
+        validate_text_posting(
+            segment,
+            address.doc_id,
+            fields.provider_native_session_relationship,
+            relationship.as_str(),
+            "provider_native_session_relationship",
+        )?;
+    }
+    if let Some(copy) = &projection.event_copy {
+        validate_text_posting(
+            segment,
+            address.doc_id,
+            fields.event_copy_ancestor_session_id,
+            &copy.ancestor_session_id.to_string(),
+            "event_copy_ancestor_session_id",
+        )?;
+        validate_text_posting(
+            segment,
+            address.doc_id,
+            fields.event_copy_ancestor_event_id,
+            &copy.ancestor_event_id.to_string(),
+            "event_copy_ancestor_event_id",
+        )?;
+        validate_text_posting(
+            segment,
+            address.doc_id,
+            fields.event_copy_proof,
+            copy_proof_str(copy.proof),
+            "event_copy_proof",
+        )?;
+    }
     validate_u64_posting(
         segment,
         address.doc_id,
@@ -851,22 +619,30 @@ fn validate_fast_u64(
     Ok(())
 }
 
-fn relationship_index(relationship: SessionRelationshipKind) -> usize {
+fn relationship_index(relationship: Option<ProviderNativeSessionRelationship>) -> usize {
     match relationship {
-        SessionRelationshipKind::Root => 0,
-        SessionRelationshipKind::Delegated => 1,
-        SessionRelationshipKind::Forked => 2,
-        SessionRelationshipKind::ResumedFrom => 3,
-        SessionRelationshipKind::WorkflowChild => 4,
-        SessionRelationshipKind::RelatedUnknown => 5,
+        Some(ProviderNativeSessionRelationship::Root) => 0,
+        Some(ProviderNativeSessionRelationship::Delegated) => 1,
+        Some(ProviderNativeSessionRelationship::Forked) => 2,
+        Some(ProviderNativeSessionRelationship::ResumedFrom) => 3,
+        Some(ProviderNativeSessionRelationship::WorkflowChild) => 4,
+        None => 5,
     }
 }
 
-const RELATIONSHIP_ORDER: [SessionRelationshipKind; 6] = [
-    SessionRelationshipKind::Root,
-    SessionRelationshipKind::Delegated,
-    SessionRelationshipKind::Forked,
-    SessionRelationshipKind::ResumedFrom,
-    SessionRelationshipKind::WorkflowChild,
-    SessionRelationshipKind::RelatedUnknown,
+const RELATIONSHIP_ORDER: [Option<ProviderNativeSessionRelationship>; 6] = [
+    Some(ProviderNativeSessionRelationship::Root),
+    Some(ProviderNativeSessionRelationship::Delegated),
+    Some(ProviderNativeSessionRelationship::Forked),
+    Some(ProviderNativeSessionRelationship::ResumedFrom),
+    Some(ProviderNativeSessionRelationship::WorkflowChild),
+    None,
 ];
+
+fn copy_proof_str(proof: ProviderNativeCopyProof) -> &'static str {
+    match proof {
+        ProviderNativeCopyProof::NativeEventIdentity => "native_event_identity",
+        ProviderNativeCopyProof::NativeCopiedFromField => "native_copied_from_field",
+        ProviderNativeCopyProof::NativeCallResultIdentity => "native_call_result_identity",
+    }
+}

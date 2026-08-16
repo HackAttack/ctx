@@ -64,11 +64,6 @@ pub use ctx_history_index_format::{
 pub(crate) use ctx_history_index_generation::sha256_hex;
 pub(crate) use ctx_history_index_generation::{hex, is_generation_id, MANIFEST_DIRECTORY};
 pub use ctx_history_index_query::VerifiedIndex;
-#[cfg(any(test, feature = "test-support"))]
-#[doc(hidden)]
-pub use ctx_history_index_query::{
-    set_verified_index_after_publication_fence_hook, set_verified_index_before_peer_lease_hook,
-};
 pub use ctx_history_index_query::{
     AgentScope, CopiedEventLineage, CopiedEventLineageOccurrence, CopiedEventLineagePolicy,
     CopiedEventLineageRelationshipCount, CopiedEventLineageResolution, CoreEventBatch,
@@ -80,7 +75,7 @@ pub use ctx_history_index_query::{
     SemanticEligibility, SemanticEventCursor, SemanticEventPage, SemanticFilterProjection,
     SessionEventCoordinate, SessionEventCursor, SessionRecord, SourceEventCursor, SourceEventPage,
     StoredCoreEventRecord, StoredCoreRecordJson, StoredCoreSourceEventPage,
-    DEFAULT_CORE_EVENT_PAGE_BUDGET, LEXICAL_QUERY_LIMITS, MAX_COPIED_EVENT_LINEAGE_DEPTH,
+    DEFAULT_CORE_EVENT_PAGE_BUDGET, LEXICAL_QUERY_LIMITS,
     MAX_COPIED_EVENT_LINEAGE_EVENT_AND_SESSION_IDENTITY_POSTING_VISITS,
     MAX_COPIED_EVENT_LINEAGE_OCCURRENCES, MAX_COPIED_EVENT_LINEAGE_POSTING_VISITS,
     MAX_CORE_EVENT_RANGE_PAGE_ITEMS, MAX_LEXICAL_QUERY_RESULTS, MAX_SEMANTIC_EVENT_PAGE_ITEMS,
@@ -88,9 +83,7 @@ pub use ctx_history_index_query::{
     MAX_SESSION_EVENT_PAGE_ITEMS, MAX_SOURCE_EVENT_PAGE_ITEMS, SEARCH_COPIED_EVENT_LINEAGE_POLICY,
     SHOW_COPIED_EVENT_LINEAGE_POLICY,
 };
-pub(crate) use identity::{
-    prior_core_record, prior_session_identity_facts, register_compact_identity,
-};
+pub(crate) use identity::{prior_session_identity_facts, register_compact_identity};
 pub use preparation::{
     CoreRecordPreparer, PreparedCoreRecord, PreparedCoreRecordDraft,
     PreparedCoreRecordMaterialization,
@@ -104,13 +97,15 @@ pub(crate) use publication::verify_candidate_physical_fence;
 #[cfg(test)]
 pub(crate) use publication::verify_searcher;
 pub(crate) use publication::{
-    canonical_commit_payload, create_candidate_generation, load_active_generation_pointer,
-    meta_generation, open_slot_index, payload_generation_id, prepare_successor_manifest,
-    prime_candidate_physical_proof, publish_active_generation_pointer_validated,
-    reconcile_commit_error, republish_current_with_publication_metadata, searcher_generation,
-    sync_directory, sync_generation, validate_candidate_managed_files, verify_physical_integrity,
-    write_prepared_manifest, ActiveGenerationPointer, CandidateActivationFence,
-    CandidatePhysicalProof, CurrentRepublishOutcome, GenerationSlot, PointerPublicationOutcome,
+    best_effort_post_republish_cleanup, canonical_commit_payload, create_candidate_generation,
+    load_active_generation_pointer, meta_generation, open_slot_index, payload_generation_id,
+    prepare_successor_manifest, prime_candidate_physical_proof,
+    publish_active_generation_pointer_validated, reclaim_inactive_generation_directories,
+    reclaim_unreferenced_certifications, reclaim_unreferenced_manifests, reconcile_commit_error,
+    republish_current_with_publication_metadata, searcher_generation, sync_directory,
+    sync_generation, validate_candidate_managed_files, write_prepared_manifest,
+    ActiveGenerationPointer, CandidateActivationFence, CandidatePhysicalProof,
+    CurrentRepublishOutcome, GenerationSlot, PointerPublicationOutcome,
     GENERATION_WRITER_LOCK_FILE, INDEX_GENERATIONS_DIRECTORY,
 };
 #[cfg(test)]
@@ -123,9 +118,7 @@ pub use writer_options::WriterOptions;
 pub use writer_publication::{
     manifest_materialization_visits, reset_manifest_materialization_visits,
 };
-pub use writer_support::{
-    BaseEventIdentityLookup, CandidateEventOriginResolution, CandidateEventOriginResolver,
-};
+pub use writer_support::BaseEventIdentityLookup;
 
 use std::{
     collections::{BTreeMap, BTreeSet, HashMap, HashSet},
@@ -161,12 +154,7 @@ use ctx_history_index_format::{
     load_active_publication_authority, open_pinned_publication, ActivePublicationAuthority,
     IndexDocument, OpenedPinnedPublication, PinnedPublication,
 };
-use ctx_history_index_generation::{
-    acquire_generation_ownership_fence, load_certified_physical_integrity,
-    reclaim_abandoned_atomic_writes, reclaim_inactive_generation_directories_with_fence,
-    reclaim_unreferenced_certifications_with_fence, reclaim_unreferenced_manifests_with_fence,
-    refresh_certification_after_managed_reclamation, DurableMmapDirectory,
-};
+use ctx_history_index_generation::{reclaim_abandoned_atomic_writes, DurableMmapDirectory};
 use merge_policy::LexicalMergePolicy;
 use preparation::PreparedSessionIdentityFacts;
 use staging::{finish_identical_staging, PendingSource as StagedPendingSource, PendingSourceMode};
@@ -244,6 +232,7 @@ struct SourceRouteStageCheckpoint {
     partial_source_route_deltas: BTreeMap<SourceRouteIdentity, PartialSourceRouteDelta>,
     source_identities: HashMap<Uuid, [u8; 32]>,
     changed_session_insertions: Vec<Uuid>,
+    changed_session_updates: Vec<(Uuid, PreparedSessionIdentityFacts)>,
 }
 
 impl PendingDeletion {
@@ -364,9 +353,6 @@ pub struct GenerationWriter {
     candidate_activation_fence: Option<CandidateActivationFence>,
     preflight_lock: Option<DirectoryLock>,
     writer: Option<IndexWriter<IndexDocument>>,
-    // Declared after `writer` so error-path field destruction stops Tantivy
-    // mutation before the ownership guard refreshes and releases its fence.
-    candidate_ownership_fence: Option<ctx_history_index_generation::CandidateOwnershipFence>,
     writer_options: WriterOptions,
     fields: Fields,
     base_publication: Option<PinnedPublication>,
@@ -512,25 +498,11 @@ impl GenerationWriter {
                 .as_ref()
                 .map(ActivePublicationAuthority::pointer);
             let retention_lease = load_generation_retention_lease(&root)?;
-            let ownership_fence = acquire_generation_ownership_fence(&root)?;
-            let active_certification = active_pointer_ref
-                .map(|pointer| {
-                    let slot = pointer.active();
-                    let index = open_slot_index(&root, slot)?;
-                    let certified =
-                        load_certified_physical_integrity(&root, pointer, slot, &index)?;
-                    Ok::<_, IndexError>(certified.map(|certified| (index, certified)))
-                })
-                .transpose()?
-                .flatten();
-            if active_pointer_ref.is_none() || active_certification.is_some() {
-                reclaim_inactive_generation_directories_with_fence(
-                    &root,
-                    active_pointer_ref,
-                    retention_lease.as_ref(),
-                    &ownership_fence,
-                )?;
-            }
+            reclaim_inactive_generation_directories(
+                &root,
+                active_pointer_ref,
+                retention_lease.as_ref(),
+            )?;
             let mut retained_generation_ids = active_pointer_ref
                 .into_iter()
                 .flat_map(|pointer| std::iter::once(pointer.active()).chain(pointer.previous()))
@@ -541,29 +513,12 @@ impl GenerationWriter {
                     .as_ref()
                     .map(|lease| lease.generation_id().to_owned()),
             );
-            reclaim_unreferenced_manifests_with_fence(
-                &root,
-                &retained_generation_ids,
-                &ownership_fence,
-            )?;
-            reclaim_unreferenced_certifications_with_fence(
+            reclaim_unreferenced_manifests(&root, &retained_generation_ids)?;
+            reclaim_unreferenced_certifications(
                 &root,
                 active_pointer_ref,
                 retention_lease.as_ref(),
-                &ownership_fence,
             )?;
-            if let (Some(pointer), Some((index, certified))) =
-                (active_pointer_ref, active_certification.as_ref())
-            {
-                refresh_certification_after_managed_reclamation(
-                    &root,
-                    pointer,
-                    pointer.active(),
-                    index,
-                    certified,
-                )?;
-            }
-            drop(ownership_fence);
         }
 
         let writer = (|| -> Result<Self> {
@@ -617,27 +572,17 @@ impl GenerationWriter {
                 candidate_directory_name,
                 candidate_physical_proof,
                 candidate_activation_fence,
-                candidate_ownership_fence,
                 fields,
                 base_publication,
                 base_opstamp,
             ) = match reusable_generation {
                 Some(OpenedPinnedPublication::Published(publication)) => {
                     let (index, fields, opstamp, publication) = publication.into_writer_parts()?;
-                    (
-                        index,
-                        None,
-                        None,
-                        None,
-                        None,
-                        fields,
-                        Some(publication),
-                        opstamp,
-                    )
+                    (index, None, None, None, fields, Some(publication), opstamp)
                 }
                 Some(OpenedPinnedPublication::Empty(empty)) => {
                     let (index, fields, opstamp) = empty.into_parts();
-                    (index, None, None, None, None, fields, None, opstamp)
+                    (index, None, None, None, fields, None, opstamp)
                 }
                 None => {
                     // The active slot is absent, physically rejected, or belongs to
@@ -652,28 +597,17 @@ impl GenerationWriter {
                         Some(candidate.directory_name),
                         None,
                         Some(candidate.activation_fence),
-                        candidate.ownership_fence,
                         fields,
                         None,
                         metas.opstamp,
                     )
                 }
             };
-            let preparation_base = active_pointer.as_ref().and_then(|pointer| {
-                base_publication.as_ref().map(|publication| {
-                    (
-                        root.clone(),
-                        pointer.active().clone(),
-                        publication.searcher().clone(),
-                    )
-                })
-            });
             let core_record_preparer = CoreRecordPreparer::new(
                 fields,
                 active_pointer
                     .as_ref()
                     .map(|pointer| pointer.active().generation_id().to_owned()),
-                preparation_base,
             );
             let mut source_identities = HashMap::new();
             if let Some(manifest) = base_publication.as_ref().map(PinnedPublication::manifest) {
@@ -695,7 +629,6 @@ impl GenerationWriter {
                 candidate_activation_fence,
                 preflight_lock: Some(preflight_lock),
                 writer: None,
-                candidate_ownership_fence,
                 writer_options: options,
                 fields,
                 base_publication,
@@ -1116,42 +1049,58 @@ impl GenerationWriter {
             ));
         }
         let session_uuid = session_facts.session_id.as_uuid();
-        let first_insertion = if let Some(existing) = self.changed_sessions.get(&session_uuid) {
-            validate_session_identity_facts(*existing, session_facts)?;
-            false
-        } else {
-            self.ensure_changed_session_registry_capacity()?;
-            if let Some(base) = self.base_publication.as_ref() {
-                let base_facts = prior_session_identity_facts(
-                    base.searcher(),
-                    self.fields,
-                    session_facts.session_id,
+        let (merged_session_facts, first_insertion) =
+            if let Some(existing) = self.changed_sessions.get(&session_uuid).copied() {
+                (
+                    merge_session_identity_facts(existing, session_facts)?,
+                    false,
                 )
-                .map_err(|error| match self.active_pointer.as_ref() {
-                    Some(pointer) => {
-                        classify_active_integrity_failure(&self.root, pointer.active(), error)
-                    }
-                    None => error,
-                })?;
-                if let Some(existing) = base_facts {
-                    // Replacement deletes this source's old postings, so its old
-                    // claim is not candidate authority. A claim owned by any
-                    // other source remains live and must still agree. Append
-                    // preserves every base posting and therefore always agrees.
-                    if is_append || existing.source_owner != source_owner {
-                        validate_session_identity_facts(existing, session_facts)?;
+            } else {
+                self.ensure_changed_session_registry_capacity()?;
+                let mut merged = session_facts;
+                if let Some(base) = self.base_publication.as_ref() {
+                    let base_facts = prior_session_identity_facts(
+                        base.searcher(),
+                        self.fields,
+                        session_facts.session_id,
+                    )
+                    .map_err(|error| match self.active_pointer.as_ref() {
+                        Some(pointer) => {
+                            classify_active_integrity_failure(&self.root, pointer.active(), error)
+                        }
+                        None => error,
+                    })?;
+                    if let Some(existing) = base_facts {
+                        // Replacement deletes this source's old postings, so its old
+                        // claim is not candidate authority. A claim owned by any
+                        // other source remains live and must still agree. Append
+                        // preserves every base posting and therefore always agrees.
+                        if is_append || existing.source_owner != source_owner {
+                            merged = merge_session_identity_facts(existing, merged)?;
+                        }
                     }
                 }
-            }
-            true
-        };
+                (merged, true)
+            };
         self.writer_mut()?.add_document(document)?;
         if first_insertion {
             self.changed_sessions
                 .entry(session_uuid)
-                .or_insert(session_facts);
+                .or_insert(merged_session_facts);
             if let Some(checkpoint) = self.active_source_route_stage.as_mut() {
                 checkpoint.changed_session_insertions.push(session_uuid);
+            }
+        } else if self.changed_sessions.get(&session_uuid).copied() != Some(merged_session_facts) {
+            let prior = self
+                .changed_sessions
+                .insert(session_uuid, merged_session_facts)
+                .ok_or(IndexError::WriterInvariant(
+                    "changed-session merge lost its prior registry entry",
+                ))?;
+            if let Some(checkpoint) = self.active_source_route_stage.as_mut() {
+                checkpoint
+                    .changed_session_updates
+                    .push((session_uuid, prior));
             }
         }
         let pending = self
@@ -1251,10 +1200,10 @@ impl GenerationWriter {
     }
 }
 
-fn validate_session_identity_facts(
+pub(crate) fn merge_session_identity_facts(
     existing: PreparedSessionIdentityFacts,
     candidate: PreparedSessionIdentityFacts,
-) -> Result<()> {
+) -> Result<PreparedSessionIdentityFacts> {
     let uuid = candidate.session_id.as_uuid();
     if existing.session_id.digest() != candidate.session_id.digest() {
         return Err(IndexError::CompactIdentityCollision {
@@ -1269,29 +1218,46 @@ fn validate_session_identity_facts(
     {
         return Err(IndexError::DuplicateSessionIdentity(uuid.to_string()));
     }
-    if existing.relationship.kind != candidate.relationship.kind
-        || !same_optional_full_identity(
-            existing.relationship.parent_session_id,
-            candidate.relationship.parent_session_id,
-        )?
-        || existing.relationship.root_session_id.encode_canonical()?
-            != candidate.relationship.root_session_id.encode_canonical()?
-    {
-        return Err(IndexError::InvalidSessionRelationshipGraph(
-            "one session has contradictory relationship fields",
-        ));
-    }
-    Ok(())
+    Ok(PreparedSessionIdentityFacts {
+        relationship: preparation::PreparedSessionRelationship {
+            parent_session_id: merge_optional_full_identity(
+                existing.relationship.parent_session_id,
+                candidate.relationship.parent_session_id,
+            )?,
+            root_session_id: merge_optional_full_identity(
+                existing.relationship.root_session_id,
+                candidate.relationship.root_session_id,
+            )?,
+            kind: merge_optional_claim(existing.relationship.kind, candidate.relationship.kind)?,
+        },
+        ..existing
+    })
 }
 
-fn same_optional_full_identity(
+fn merge_optional_full_identity(
     left: Option<ctx_history_core::StableEntityId>,
     right: Option<ctx_history_core::StableEntityId>,
-) -> Result<bool> {
+) -> Result<Option<ctx_history_core::StableEntityId>> {
     match (left, right) {
-        (Some(left), Some(right)) => Ok(left.encode_canonical()? == right.encode_canonical()?),
-        (None, None) => Ok(true),
-        (Some(_), None) | (None, Some(_)) => Ok(false),
+        (Some(left), Some(right)) if left.encode_canonical()? == right.encode_canonical()? => {
+            Ok(Some(left))
+        }
+        (Some(_), Some(_)) => Err(IndexError::ConflictingProviderNativeSessionClaim(
+            "one session has contradictory relationship fields",
+        )),
+        (Some(value), None) | (None, Some(value)) => Ok(Some(value)),
+        (None, None) => Ok(None),
+    }
+}
+
+fn merge_optional_claim<T: Copy + Eq>(left: Option<T>, right: Option<T>) -> Result<Option<T>> {
+    match (left, right) {
+        (Some(left), Some(right)) if left == right => Ok(Some(left)),
+        (Some(_), Some(_)) => Err(IndexError::ConflictingProviderNativeSessionClaim(
+            "one session has contradictory relationship fields",
+        )),
+        (Some(value), None) | (None, Some(value)) => Ok(Some(value)),
+        (None, None) => Ok(None),
     }
 }
 

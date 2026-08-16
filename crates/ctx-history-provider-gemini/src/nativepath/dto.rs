@@ -1,16 +1,13 @@
 use std::{path::PathBuf, time::SystemTime};
 
 use chrono::{DateTime, Utc};
-use ctx_history_core::{AgentType, EventRole, EventType};
+use ctx_history_core::{AgentScope, EventRole, EventType, ProviderDeclaredFact};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use thiserror::Error;
 
 use crate::io::ProviderSourceRoot;
 use crate::GeminiError;
-use ctx_history_capture_model::ctx_retrieval::{
-    ContributionClass, ResultAtom, ResultTerminalStatus,
-};
 
 #[cfg(test)]
 pub(crate) const GEMINI_NATIVEPATH_PARSER_REVISION: u32 = 8;
@@ -70,7 +67,7 @@ pub(crate) struct GeminiDiscovery {
 pub(crate) struct GeminiSession {
     pub(crate) native_session_id: String,
     pub(crate) parent_native_session_id: Option<String>,
-    pub(crate) agent_type: AgentType,
+    pub(crate) agent_scope: AgentScope,
     pub(crate) started_at: Option<DateTime<Utc>>,
     pub(crate) cwd: Option<String>,
     pub(crate) cwd_ambiguous: bool,
@@ -107,18 +104,36 @@ pub(crate) enum GeminiEventBody {
     ToolCall {
         calls: Vec<GeminiToolCall>,
     },
-    OutputDiagnostic {
+    ToolResult {
+        native_content: Value,
+        #[serde(skip_serializing)]
         result: Option<Value>,
+        #[serde(skip_serializing)]
         call_id: Option<String>,
+        #[serde(skip_serializing)]
         tool_name: Option<String>,
-        command: Option<String>,
-        command_too_large: bool,
-        declared_workdir: Option<String>,
-        file_paths: Vec<String>,
-        ambiguous_native_fields: bool,
-        outcome: String,
-        exit_code: Option<i32>,
-        duration_ms: Option<u64>,
+        #[serde(skip_serializing)]
+        arguments: Option<Value>,
+        #[serde(skip_serializing)]
+        protocol: Option<String>,
+        #[serde(skip_serializing)]
+        server: Option<String>,
+        #[serde(skip_serializing)]
+        explicit_tool: Option<String>,
+        #[serde(skip_serializing)]
+        call_id_unavailable: bool,
+        #[serde(skip_serializing)]
+        tool_name_unavailable: bool,
+        #[serde(skip_serializing)]
+        arguments_unavailable: bool,
+        #[serde(skip_serializing)]
+        result_unavailable: bool,
+        #[serde(skip_serializing)]
+        mcp_identity_unavailable: bool,
+        #[serde(skip_serializing)]
+        native_content_unavailable: bool,
+        #[serde(skip_serializing)]
+        literal_facts: Vec<ProviderDeclaredFact>,
     },
     StateNotice {
         summary: Option<String>,
@@ -130,9 +145,31 @@ pub(crate) enum GeminiEventBody {
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub(crate) struct GeminiToolCall {
+    pub(crate) native_content: Value,
+    #[serde(skip_serializing)]
     pub(crate) id: Option<String>,
+    #[serde(skip_serializing)]
     pub(crate) name: Option<String>,
+    #[serde(skip_serializing)]
     pub(crate) args: Option<Value>,
+    #[serde(skip_serializing)]
+    pub(crate) protocol: Option<String>,
+    #[serde(skip_serializing)]
+    pub(crate) server: Option<String>,
+    #[serde(skip_serializing)]
+    pub(crate) explicit_tool: Option<String>,
+    #[serde(skip_serializing)]
+    pub(crate) call_id_unavailable: bool,
+    #[serde(skip_serializing)]
+    pub(crate) tool_name_unavailable: bool,
+    #[serde(skip_serializing)]
+    pub(crate) arguments_unavailable: bool,
+    #[serde(skip_serializing)]
+    pub(crate) mcp_identity_unavailable: bool,
+    #[serde(skip_serializing)]
+    pub(crate) native_content_unavailable: bool,
+    #[serde(skip_serializing)]
+    pub(crate) literal_facts: Vec<ProviderDeclaredFact>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -147,15 +184,6 @@ pub(crate) struct GeminiRetainedEvent {
     pub(crate) body_sha256: [u8; 32],
     pub(crate) preview: String,
     pub(crate) searchable_text: String,
-    pub(crate) safe_file_touches: Vec<String>,
-    /// Complete-body contributions used only while projecting this source
-    /// record. They are deliberately excluded from retained provider data.
-    #[serde(skip)]
-    pub(crate) extra_body_contributions: Vec<ContributionClass>,
-    #[serde(skip)]
-    pub(crate) result_terminal_status: Option<ResultTerminalStatus>,
-    #[serde(skip)]
-    pub(crate) result_atoms: Vec<ResultAtom>,
 }
 
 /// The certified scanner position immediately before or after a page. It only
@@ -188,27 +216,6 @@ pub(crate) struct GeminiPageIdentity(pub(crate) [u8; 32]);
 impl GeminiPageIdentity {
     pub(crate) const fn as_bytes(&self) -> &[u8; 32] {
         &self.0
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) enum GeminiTouchOverflow {
-    Count { limit: usize },
-    Bytes { limit: usize },
-}
-
-impl std::fmt::Display for GeminiTouchOverflow {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::Count { limit } => write!(
-                formatter,
-                "Gemini retained event exceeds the {limit} unique file-touch limit"
-            ),
-            Self::Bytes { limit } => write!(
-                formatter,
-                "Gemini retained event exceeds the {limit} file-touch byte limit"
-            ),
-        }
     }
 }
 

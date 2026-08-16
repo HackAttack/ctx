@@ -9,7 +9,7 @@ use crate::NativeJsonlRuntime;
 
 pub const GROK_BUILD_SOURCE_FORMAT: &str = "grok_build_session_updates_jsonl";
 
-const PARSER_REVISION: &str = "direct-native-jsonl-parser-v5";
+const PARSER_REVISION: &str = "direct-native-jsonl-parser-v6-core-activity";
 
 pub const fn grok_build_source_backed_adapter<R: NativeJsonlRuntime>(
 ) -> super::DirectJsonlFamilyAdapter<R> {
@@ -42,7 +42,6 @@ pub(super) fn enumerate_grok_build_results(
             content: record.content,
             call_id: record.call_id,
             tool_name: record.tool_name,
-            outcome: record.outcome,
         })
         .collect())
 }

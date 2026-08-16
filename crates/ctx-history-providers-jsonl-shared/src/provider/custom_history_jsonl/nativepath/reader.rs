@@ -3,9 +3,11 @@
 use std::io::{BufReader, Read, Seek, SeekFrom, Write};
 
 use ctx_history_core::{
-    derive_event_id, CoreRecord, EventIdentityInput, EventOrigin, NativeItemKey, SourceKey,
-    TypedKey,
+    derive_event_id, CoreActivity, CoreRecord, EventIdentityInput, LiteralFactKind, NativeItemKey,
+    ProviderDeclaredFact, ProviderNativeEventCopy, SourceKey, TypedKey, CORE_ACTIVITY_REVISION,
+    MAX_CORE_CONTENT_BYTES,
 };
+use ctx_history_jsonl::{fit_jsonl_activity, JsonlActivityObservedBytes};
 
 #[cfg(test)]
 use super::source_backed::record_custom_history_work;
@@ -34,14 +36,6 @@ impl CustomHistoryCatalogLimits {
         max_records: super::source_backed::CUSTOM_HISTORY_CATALOG_MAX_RECORDS,
         max_metadata_bytes: super::source_backed::CUSTOM_HISTORY_CATALOG_MAX_METADATA_BYTES,
     };
-
-    #[cfg(test)]
-    pub(super) const fn new(max_records: usize, max_metadata_bytes: usize) -> Self {
-        Self {
-            max_records,
-            max_metadata_bytes,
-        }
-    }
 }
 
 #[derive(Debug)]
@@ -134,6 +128,7 @@ pub(super) fn emit_projection_pages(
             source_record,
             session,
             projection.copied_origins.get(&key),
+            projection.file_references.get(&key).map(Vec::as_slice),
             &mut event,
         )?;
         let record_bytes = record
@@ -184,6 +179,7 @@ fn core_record(
     source_record: &CustomSourceCatalogEntry,
     session: &CustomSessionCatalogEntry,
     copied_from: Option<&ValidatedCopiedFrom>,
+    file_references: Option<&[ProviderDeclaredFact]>,
     event: &mut SpooledCustomEvent,
 ) -> CustomHistorySourceBackedResult<CoreRecord> {
     let session_id = custom_session_identity(
@@ -203,6 +199,13 @@ fn core_record(
                 &event.source_id,
                 parent,
             )
+        })
+        .transpose()?;
+    let root_session_id = session
+        .root_session_id
+        .as_deref()
+        .map(|root| {
+            custom_session_identity(source, &source_record.provider_key, &event.source_id, root)
         })
         .transpose()?;
     let event_key = custom_event_typed_key_parts(event.event_id.as_deref(), event.event_index)?;
@@ -226,24 +229,16 @@ fn core_record(
     let mut record = CoreRecord::new_selected(
         event_id,
         session_id,
-        session_id,
         source.clone(),
         event.event_index,
         event.event_type.clone(),
-        session.agent_type.clone(),
-        true,
         CUSTOM_SOURCE_BACKED_PARSER_REVISION,
         std::mem::take(&mut event.body),
     )
     .map_err(core_contract)?;
-    if let Some(parent_session_id) = parent_session_id {
-        let kind = session
-            .session_relationship
-            .unwrap_or(ctx_history_core::SessionRelationshipKind::RelatedUnknown);
-        record
-            .set_session_relationship(kind, Some(parent_session_id), parent_session_id)
-            .map_err(core_contract)?;
-    }
+    record.parent_session_id = parent_session_id;
+    record.root_session_id = root_session_id;
+    record.session_relationship = session.session_relationship;
     record.provider_session_id = Some(custom_history_internal_session_id(
         &source_record.provider_key,
         &event.source_id,
@@ -271,15 +266,53 @@ fn core_record(
             native_item_key: &ancestor_native_item_key,
             subrecord_selector: None,
         })?;
-        record.event_origin = EventOrigin::CopiedFromAncestor {
-            ancestor_session_id: Box::new(ancestor_session_id),
-            ancestor_event_id: Box::new(ancestor_event_id),
+        record.event_copy = Some(ProviderNativeEventCopy {
+            ancestor_session_id,
+            ancestor_event_id,
             proof: copied_from.proof,
-        };
+        });
     }
     record.occurred_at_unix_ms = Some(event.occurred_at_unix_ms);
     record.role = event.role.clone();
-    record.cwd = session.cwd.clone();
+    record.agent_scope = session.agent_scope;
+    record.content.structured_content = Some(std::mem::take(&mut event.payload));
+    let mut activity = event.activity.take();
+    let mut facts = Vec::new();
+    if let Some(cwd) = &session.cwd {
+        facts.push(ProviderDeclaredFact {
+            kind: LiteralFactKind::SessionCwd,
+            value: cwd.clone(),
+        });
+    }
+    if let Some(activity) = activity.as_mut() {
+        facts.append(&mut activity.facts);
+    }
+    if let Some(file_references) = file_references {
+        facts.extend(file_references.iter().cloned());
+    }
+    if !facts.is_empty() {
+        activity
+            .get_or_insert_with(|| CoreActivity {
+                revision: CORE_ACTIVITY_REVISION,
+                provider_call_id: None,
+                invocation: None,
+                result: None,
+                facts: Vec::new(),
+            })
+            .facts = facts;
+    }
+    record.content.activity = activity;
+    fit_jsonl_activity(
+        record.content.normalized_body.as_deref().unwrap_or(""),
+        record.content.structured_content.as_ref(),
+        &mut record.content.activity,
+        JsonlActivityObservedBytes::infer_from_present(),
+        MAX_CORE_CONTENT_BYTES,
+    );
+    record
+        .content
+        .omit_structured_content_if_aggregate_exceeds_limit()
+        .map_err(core_contract)?;
     record.validate_contract().map_err(core_contract)?;
     Ok(record)
 }
@@ -301,6 +334,13 @@ pub(super) fn write_spooled_event(
     write_optional_spool_string(writer, event.role.as_deref())?;
     writer.write_all(&event.occurred_at_unix_ms.to_be_bytes())?;
     write_spool_string(writer, &event.body)?;
+    write_spool_string(writer, &serde_json::to_string(&event.payload)?)?;
+    let activity = event
+        .activity
+        .as_ref()
+        .map(serde_json::to_string)
+        .transpose()?;
+    write_optional_spool_string(writer, activity.as_deref())?;
     Ok(())
 }
 
@@ -324,6 +364,10 @@ pub(super) fn read_spooled_event(
     let role = read_optional_spool_string(reader, 128)?;
     let occurred_at_unix_ms = read_spool_i64(reader)?;
     let body = read_spool_string(reader, MAX_PROVIDER_JSONL_LINE_BYTES)?;
+    let payload = serde_json::from_str(&read_spool_string(reader, MAX_PROVIDER_JSONL_LINE_BYTES)?)?;
+    let activity = read_optional_spool_string(reader, MAX_PROVIDER_JSONL_LINE_BYTES)?
+        .map(|activity| serde_json::from_str(&activity))
+        .transpose()?;
     Ok(Some(SpooledCustomEvent {
         source_id,
         session_id,
@@ -333,6 +377,8 @@ pub(super) fn read_spooled_event(
         role,
         occurred_at_unix_ms,
         body,
+        payload,
+        activity,
     }))
 }
 

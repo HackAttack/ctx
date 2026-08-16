@@ -6,7 +6,7 @@ use super::private_tempdir;
 use crate::{
     local_usage::{
         ContextCoverage, LocalUsageStorageAuthority, McpCompletionFacts, McpContextTarget,
-        McpCorrelationFact, McpInvocation, McpUsageRecorder, ProOutcome, SearchContextObservation,
+        McpCorrelationFact, McpInvocation, McpUsageRecorder, SearchContextObservation,
         UsageControlSnapshot, ValueClass,
     },
     operation_descriptor::ObservedMcpProductOperation,
@@ -30,28 +30,13 @@ fn mcp_search_records_transport_bytes_and_adapter_supplied_canonical_context() {
     );
     assert_eq!(
         completed.result_metadata_for_test(),
-        (ValueClass::ResultBearing, 1, 0)
+        (ValueClass::ResultBearing, 1)
     );
     assert_eq!(
         completed.context_metadata_for_test(),
         (ContextCoverage::Complete, 12, 40)
     );
     assert_eq!(completed.delivered_output_bytes, 777);
-}
-
-#[test]
-fn mcp_blame_uses_only_bounded_completion_facts() {
-    let completed = invocation(ObservedMcpProductOperation::Blame).completed(
-        &McpCompletionFacts {
-            result_count: Some(0),
-            citation_count: 2,
-            pro_outcome: Some(ProOutcome::Possible),
-            delivered_output_bytes: 200,
-            ..McpCompletionFacts::default()
-        },
-        Duration::ZERO,
-    );
-    assert_eq!(completed.citation_count, 2);
 }
 
 #[test]
@@ -81,15 +66,16 @@ fn recorder_counts_one_delivered_mcp_response_once() {
     let authority = LocalUsageStorageAuthority::new(root.path().join("usage.sqlite"), "1.0.0");
     let mut recorder =
         McpUsageRecorder::start(authority, || UsageControlSnapshot::unversioned(true));
-    recorder.record_delivered(
-        invocation(ObservedMcpProductOperation::Sources),
-        Duration::ZERO,
-        || McpCompletionFacts {
-            result_count: Some(0),
-            delivered_output_bytes: 123,
-            ..McpCompletionFacts::default()
-        },
-    );
+    recorder.record_delivered(Duration::ZERO, || {
+        Some((
+            invocation(ObservedMcpProductOperation::Sources),
+            McpCompletionFacts {
+                result_count: Some(0),
+                delivered_output_bytes: 123,
+                ..McpCompletionFacts::default()
+            },
+        ))
+    });
     let report = crate::local_usage::read_report(root.path(), true, true);
     let current = report.definitions.unwrap().remove(0);
     assert_eq!(current.ctx_versions, ["1.0.0"]);
@@ -104,18 +90,17 @@ fn disabled_recorder_never_invokes_the_completion_adapter_or_opens_sqlite() {
     let authority = LocalUsageStorageAuthority::new(database.clone(), "1.0.0");
     let mut recorder =
         McpUsageRecorder::start(authority, || UsageControlSnapshot::unversioned(false));
-    let completion_adapter_called = Cell::new(false);
+    let adapter_called = Cell::new(false);
 
-    recorder.record_delivered(
-        invocation(ObservedMcpProductOperation::Search),
-        Duration::ZERO,
-        || {
-            completion_adapter_called.set(true);
-            McpCompletionFacts::default()
-        },
-    );
+    recorder.record_delivered(Duration::ZERO, || {
+        adapter_called.set(true);
+        Some((
+            invocation(ObservedMcpProductOperation::Search),
+            McpCompletionFacts::default(),
+        ))
+    });
 
-    assert!(!completion_adapter_called.get());
+    assert!(!adapter_called.get());
     assert!(!database.exists());
 }
 

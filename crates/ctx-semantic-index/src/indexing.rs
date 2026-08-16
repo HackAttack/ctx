@@ -1,5 +1,3 @@
-use std::path::Path;
-
 use ctx_semantic_model::semantic_e5_passage_text;
 use sha2::{Digest, Sha256};
 
@@ -66,7 +64,7 @@ pub(super) fn semantic_embedded_chunk_text(doc: &SemanticEventDocument, body: &s
 
 pub(super) fn semantic_document_header(doc: &SemanticEventDocument) -> String {
     let mut lines = vec![
-        "semantic_document: v2".to_owned(),
+        "semantic_document: v3".to_owned(),
         format!("event_type: {}", doc.event_type.as_str()),
     ];
     if let Some(role) = doc.role {
@@ -87,29 +85,15 @@ pub(super) fn semantic_document_header(doc: &SemanticEventDocument) -> String {
             semantic_header_value(source_format, 120)
         ));
     }
-    if let Some(agent_type) = doc.agent_type {
-        lines.push(format!("agent_type: {}", agent_type.as_str()));
+    if let Some(agent_scope) = doc.agent_scope {
+        lines.push(format!("agent_scope: {}", agent_scope.as_str()));
     }
-    if let Some(is_primary) = doc.session_is_primary {
+    for fact in &doc.literal_facts {
         lines.push(format!(
-            "session_scope: {}",
-            if is_primary { "primary" } else { "subagent" }
+            "fact_{}: {}",
+            fact.kind.as_str(),
+            semantic_header_value(&fact.value, 240)
         ));
-    }
-    if let Some(workspace) = doc.record_workspace.as_deref() {
-        lines.push(format!(
-            "workspace_hint: {}",
-            semantic_header_value(workspace, 160)
-        ));
-    }
-    if let Some(cwd) = doc.cwd.as_deref().and_then(path_basename) {
-        lines.push(format!("cwd_hint: {}", semantic_header_value(cwd, 120)));
-    }
-    if let Some(title) = doc.record_title.as_deref() {
-        lines.push(format!("title_hint: {}", semantic_header_value(title, 180)));
-    }
-    if let Some(kind) = doc.record_kind.as_deref() {
-        lines.push(format!("record_kind: {}", semantic_header_value(kind, 80)));
     }
     lines.join("\n")
 }
@@ -121,10 +105,6 @@ pub(super) fn semantic_header_value(value: &str, max_chars: usize) -> String {
         output.push_str("...");
     }
     output
-}
-
-pub(super) fn path_basename(path: &str) -> Option<&str> {
-    Path::new(path).file_name().and_then(|value| value.to_str())
 }
 
 pub(super) fn semantic_text_chunks(text: &str) -> Vec<(usize, usize, String)> {
@@ -191,24 +171,20 @@ mod tests {
             rank_bucket: String::new(),
             provider: None,
             source_format: None,
-            agent_type: None,
-            session_is_primary: None,
-            cwd: None,
-            record_title: None,
-            record_kind: None,
-            record_workspace: None,
+            agent_scope: None,
+            literal_facts: Vec::new(),
             text: "daemon failed to restart".to_owned(),
         };
         let embedded = semantic_embedded_document_text(&document, &document.text);
 
         assert_eq!(
             embedded,
-            "passage: semantic_document: v2\nevent_type: message\nrole: user\n\ndaemon failed to restart"
+            "passage: semantic_document: v3\nevent_type: message\nrole: user\n\ndaemon failed to restart"
         );
         assert_eq!(embedded.matches("passage: ").count(), 1);
         assert_eq!(
             semantic_document_hash(&document, &document.text, "semantic-policy-fixture"),
-            "a8729176eca6ebc96f9e683d5528b81c740aef0248b0e5820f1f78e03a73cedb"
+            "759a8ad7af9c74ee56fe04157b610ad76537e48c83d224bc794f95e9f14f83bc"
         );
     }
 }

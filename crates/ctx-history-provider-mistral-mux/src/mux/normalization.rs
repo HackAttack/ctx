@@ -1,7 +1,6 @@
 use chrono::{DateTime, Utc};
 use ctx_history_capture_model::normalization::{
-    provider_local_preview, provider_policy_body, provider_policy_event_text,
-    provider_result_identifier_evidence, provider_result_outcome_evidence, provider_role,
+    provider_local_preview, provider_policy_body, provider_policy_event_text, provider_role,
     provider_value_text,
 };
 use ctx_history_core::{EventRole, EventType};
@@ -24,21 +23,11 @@ pub(super) struct MuxCoreEvent {
     pub(super) payload: Value,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(super) enum MuxOutputOutcome {
-    Success,
-    Failure,
-    Timeout,
-    Unknown,
-}
-
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) struct MuxOutputProjection {
     pub(super) body_available: bool,
     pub(super) call_ids: Vec<String>,
     pub(super) tool_names: Vec<String>,
-    pub(super) outcome: MuxOutputOutcome,
-    pub(super) exit_code: Option<i32>,
 }
 
 pub(super) fn mux_core_event(row: &MuxMessageRow, occurred_at: DateTime<Utc>) -> MuxCoreEvent {
@@ -52,8 +41,6 @@ pub(super) fn mux_core_event(row: &MuxMessageRow, occurred_at: DateTime<Utc>) ->
     let body = row.value.clone();
     let retained_text = provider_policy_event_text(event_type, &text, &body);
     let retained_body = provider_policy_body(event_type, &body);
-    let result_evidence = provider_result_identifier_evidence(event_type, &text, &body);
-    let result_outcome = provider_result_outcome_evidence(event_type, &body);
     MuxCoreEvent {
         event_type,
         role: Some(provider_role(Some(role))),
@@ -61,8 +48,6 @@ pub(super) fn mux_core_event(row: &MuxMessageRow, occurred_at: DateTime<Utc>) ->
         payload: json!({
             "text": retained_text.text,
             "text_retention": retained_text.retention.as_json(),
-            "result_evidence": result_evidence,
-            "result_outcome": result_outcome,
             "source_format": MUX_SOURCE_FORMAT,
             "body": retained_body,
         }),
@@ -266,7 +251,7 @@ pub(crate) fn mux_result_content(value: &Value) -> Option<String> {
     }
 }
 
-/// Cheap aggregate output classification performed before event identity and Core projection.
+/// Cheap aggregate output presence scan performed before event identity and Core projection.
 ///
 /// Mux stores several dynamic-tool parts in one message. Keep that message cardinality and retain
 /// every native call association in source order; the transient output contract must not force the
@@ -276,13 +261,8 @@ pub(super) fn mux_output_projection(value: &Value) -> Option<MuxOutputProjection
     let mut output_parts = 0_usize;
     let mut available_parts = 0_usize;
     let mut saw_redacted = false;
-    let mut saw_success = false;
-    let mut saw_failure = false;
-    let mut saw_timeout = false;
-    let mut saw_unknown = false;
     let mut call_ids = Vec::new();
     let mut tool_names = Vec::new();
-    let mut exit_codes = Vec::new();
 
     for part in parts {
         if part.get("type").and_then(Value::as_str) != Some("dynamic-tool")
@@ -309,41 +289,14 @@ pub(super) fn mux_output_projection(value: &Value) -> Option<MuxOutputProjection
             ],
         );
         push_mux_part_string(&mut tool_names, part, &["toolName", "tool_name", "name"]);
-
-        let (outcome, exit_code) = mux_part_outcome(part);
-        match outcome {
-            MuxOutputOutcome::Success => saw_success = true,
-            MuxOutputOutcome::Failure => saw_failure = true,
-            MuxOutputOutcome::Timeout => saw_timeout = true,
-            MuxOutputOutcome::Unknown => saw_unknown = true,
-        }
-        if let Some(exit_code) = exit_code {
-            exit_codes.push(exit_code);
-        }
     }
     if output_parts == 0 {
         return None;
     }
-    let outcome = if saw_redacted {
-        MuxOutputOutcome::Unknown
-    } else if saw_timeout {
-        MuxOutputOutcome::Timeout
-    } else if saw_failure {
-        MuxOutputOutcome::Failure
-    } else if saw_success && !saw_unknown {
-        MuxOutputOutcome::Success
-    } else {
-        MuxOutputOutcome::Unknown
-    };
-    let exit_code = (output_parts == 1)
-        .then(|| exit_codes.first().copied())
-        .flatten();
     Some(MuxOutputProjection {
         body_available: !saw_redacted && available_parts != 0,
         call_ids,
         tool_names,
-        outcome,
-        exit_code,
     })
 }
 
@@ -359,10 +312,6 @@ pub(super) fn apply_mux_core_output_diagnostic(
             event.payload["truncated"] = Value::Bool(truncated);
         }
     }
-    event.payload["exit_code"] = projection
-        .exit_code
-        .map_or(Value::Null, |code| Value::from(i64::from(code)));
-    event.payload["timed_out"] = Value::Bool(projection.outcome == MuxOutputOutcome::Timeout);
 }
 
 fn mux_part_is_output(part: &Value) -> bool {
@@ -378,78 +327,7 @@ fn push_mux_part_string(output: &mut Vec<String>, part: &Value, keys: &[&str]) {
         .find_map(|key| part.get(*key).and_then(Value::as_str))
         .filter(|value| !value.trim().is_empty());
     if let Some(value) = value {
-        let value = value.to_owned();
-        if !output.contains(&value) {
-            output.push(value);
-        }
-    }
-}
-
-fn mux_part_outcome(part: &Value) -> (MuxOutputOutcome, Option<i32>) {
-    let timeout = ["timedOut", "timed_out", "timeout"]
-        .iter()
-        .any(|key| part.get(*key).and_then(Value::as_bool).unwrap_or(false));
-    let exit_code = ["exitCode", "exit_code"]
-        .iter()
-        .find_map(|key| part.get(*key).and_then(Value::as_i64))
-        .and_then(|code| i32::try_from(code).ok());
-    let explicit_failure = part
-        .get("success")
-        .and_then(Value::as_bool)
-        .is_some_and(|success| !success)
-        || part
-            .get("ok")
-            .and_then(Value::as_bool)
-            .is_some_and(|success| !success)
-        || part
-            .get("isError")
-            .or_else(|| part.get("is_error"))
-            .and_then(Value::as_bool)
-            .unwrap_or(false)
-        || part.get("error").is_some_and(mux_error_is_nonempty)
-        || exit_code.is_some_and(|code| code != 0);
-    let explicit_success = part.get("success").and_then(Value::as_bool) == Some(true)
-        || part.get("ok").and_then(Value::as_bool) == Some(true)
-        || exit_code == Some(0);
-    let status = ["status", "outcome", "state"]
-        .iter()
-        .find_map(|key| part.get(*key).and_then(Value::as_str))
-        .map(str::trim)
-        .map(str::to_ascii_lowercase);
-    let status_timeout = status
-        .as_deref()
-        .is_some_and(|status| matches!(status, "timeout" | "timed_out" | "timedout"));
-    let status_failure = status.as_deref().is_some_and(|status| {
-        matches!(
-            status,
-            "failed" | "failure" | "error" | "errored" | "cancelled" | "canceled"
-        )
-    });
-    let status_success = status.as_deref().is_some_and(|status| {
-        matches!(
-            status,
-            "success" | "succeeded" | "complete" | "completed" | "ok" | "passed"
-        )
-    });
-    if timeout || status_timeout {
-        (MuxOutputOutcome::Timeout, exit_code)
-    } else if explicit_failure || status_failure {
-        (MuxOutputOutcome::Failure, exit_code)
-    } else if explicit_success || status_success {
-        (MuxOutputOutcome::Success, exit_code)
-    } else {
-        (MuxOutputOutcome::Unknown, exit_code)
-    }
-}
-
-fn mux_error_is_nonempty(value: &Value) -> bool {
-    match value {
-        Value::Null => false,
-        Value::Bool(value) => *value,
-        Value::String(value) => !value.trim().is_empty(),
-        Value::Number(value) => value.as_i64().is_some_and(|value| value != 0),
-        Value::Array(values) => !values.is_empty(),
-        Value::Object(values) => !values.is_empty(),
+        output.push(value.to_owned());
     }
 }
 

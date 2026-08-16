@@ -1,14 +1,14 @@
 use std::path::{Path, PathBuf};
 
 use anyhow::Result;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 use crate::{
     analytics::IndexTelemetry, config, output::compact_json, semantic::source_epoch_status_report,
     ui::Ui,
 };
 
-#[cfg(any(test, ctx_pro_test_helper))]
+#[cfg(test)]
 pub(crate) mod dashboard_fixture;
 
 pub(crate) use ctx_cli_presentation::commands::index::IndexArgs;

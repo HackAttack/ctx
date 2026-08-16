@@ -379,7 +379,6 @@ mod tests {
             object_identity(&generation)?,
             object_identity(&reopened_generation)?
         );
-
         let segment_name = Path::new("segment.store");
         let mut segment = create_regular_file_at(&generation, temporary.path(), segment_name)?;
         segment.write_all(b"authenticated")?;
@@ -415,7 +414,6 @@ mod tests {
         replacement_file.sync_all()?;
         drop(replacement_file);
         let error = crate::durable_atomic_replace_file(&replacement, &target).unwrap_err();
-        // MoveFileExW maps the target's denied delete sharing to access denied.
         assert_eq!(error.raw_os_error(), Some(5));
         assert_eq!(fs::read(&target)?, b"authenticated");
 

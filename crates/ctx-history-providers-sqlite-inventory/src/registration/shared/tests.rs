@@ -454,12 +454,9 @@ fn test_document(source: &SourceKey, id: i64, body: &str) -> CoreRecord {
     let mut record = CoreRecord::new_selected(
         event_id,
         session_id,
-        session_id,
         source.clone(),
         1,
         "message",
-        "primary",
-        true,
         TEST_PARSER_REVISION,
         body,
     )

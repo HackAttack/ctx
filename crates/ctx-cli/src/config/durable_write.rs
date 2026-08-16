@@ -51,7 +51,7 @@ fn replace_config_file(source: &Path, target: &Path) -> io::Result<()> {
 fn replace_config_file(source: &Path, target: &Path) -> io::Result<()> {
     use std::os::windows::ffi::OsStrExt as _;
     use windows_sys::Win32::Storage::FileSystem::{
-        MoveFileExW, MOVEFILE_REPLACE_EXISTING, MOVEFILE_WRITE_THROUGH,
+        MOVEFILE_REPLACE_EXISTING, MOVEFILE_WRITE_THROUGH, MoveFileExW,
     };
 
     let source = source

@@ -15,7 +15,6 @@ pub use providers::{
     warp_source_backed_driver, GooseSourceRoute,
 };
 
-pub use ctx_history_capture_model::{OutputOutcome, OutputOutcomeMetadata};
 pub use ctx_history_capture_runtime::{
     CaptureLifecycleSink, DocumentRecordSpool, SourceBackedRouteDriver,
 };

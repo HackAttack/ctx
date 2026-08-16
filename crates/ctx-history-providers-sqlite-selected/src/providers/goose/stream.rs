@@ -2,7 +2,7 @@ use rusqlite::{params_from_iter, types::Value, Connection};
 
 use crate::native_source::NativeSqliteValue;
 use crate::provider::sqlite::SqliteLengthPreflightGuard;
-use crate::{CaptureError, OutputOutcome, Result};
+use crate::{CaptureError, Result};
 
 use super::schema::{GooseNativeSchema, GooseSessionRow};
 
@@ -66,10 +66,7 @@ pub(super) struct GooseScannedSession {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum GooseMessageCellDisposition {
     Retained,
-    OutputSuccess,
-    OutputFailure,
-    OutputTimeout,
-    OutputUnknown,
+    ToolOutput,
     MalformedJson,
     UnsupportedJsonRoot,
     NonObjectBlock,
@@ -96,7 +93,6 @@ pub(super) struct GooseScannedMessage {
     pub(super) session_identity: String,
     pub(super) role: String,
     pub(super) disposition: GooseMessageCellDisposition,
-    pub(super) output_outcome: Option<OutputOutcome>,
     pub(super) retained_class: Option<GooseRetainedContentClass>,
     pub(super) content_json: Option<String>,
     pub(super) content_bytes: u64,
@@ -372,7 +368,6 @@ pub(super) fn goose_fetch_native_message_page(
     let accepted_sessions = goose_accepted_sessions_sql(schema, limits)?;
     let storage_class_supported = schema.message_storage_class_predicate("m");
     let content_disposition = goose_native_content_visitor_sql(max_content_parameter);
-    let output_outcome = goose_native_output_outcome_sql();
     let sql = format!(
         "with page_keys as materialized (
              select
@@ -456,17 +451,17 @@ pub(super) fn goose_fetch_native_message_page(
                  {content_disposition} as disposition
              from candidates
          ),
-         classified as (
+         selected as (
              select *,
-                 case when disposition = 1 then {output_outcome} else disposition end
-                     as classified_disposition
+                 case when disposition = 1 then 11 else disposition end
+                     as selected_disposition
              from structural
          ),
          measured as (
              select *,
                  sum(
                      case
-                         when classified_disposition in (0, 9, 11, 12, 13, 14)
+                         when selected_disposition in (0, 9, 11)
                               and content_bytes + auxiliary_bytes <= {max_content_parameter}
                               then content_bytes + auxiliary_bytes
                          else 512 + auxiliary_bytes
@@ -474,7 +469,7 @@ pub(super) fn goose_fetch_native_message_page(
                  )
                      over (order by native_order rows unbounded preceding) as running_bytes,
                  row_number() over (order by native_order) as page_ordinal
-             from classified
+             from selected
          )
          select
              sqlite_rowid,
@@ -483,9 +478,9 @@ pub(super) fn goose_fetch_native_message_page(
              message_id_uses,
              session_identity,
              role,
-             classified_disposition,
+             selected_disposition,
              case
-                 when classified_disposition in (0, 9, 11, 12, 13, 14)
+                 when selected_disposition in (0, 9, 11)
                       and content_bytes + auxiliary_bytes <= {max_content_parameter}
                  then content_json
                  else null
@@ -493,14 +488,14 @@ pub(super) fn goose_fetch_native_message_page(
              content_bytes,
              created_timestamp,
              native_timestamp,
-             case when classified_disposition in (0, 9, 11, 12, 13, 14)
+             case when selected_disposition in (0, 9, 11)
                   then cast(tokens_json as text) else null end,
-                 case when classified_disposition in (0, 9, 11, 12, 13, 14)
+                 case when selected_disposition in (0, 9, 11)
                   then cast(metadata_json as text) else null end
              ,
              parent_rowid,
              source_message_id,
-             case when classified_disposition in (0, 9, 11, 12, 13, 14)
+             case when selected_disposition in (0, 9, 11)
                   then digest_tokens_json else null end
          from measured
          where running_bytes <= {page_bytes_parameter} or page_ordinal = 1
@@ -524,53 +519,24 @@ pub(super) fn goose_fetch_native_message_page(
         let message_id_uses: i64 = row.get(3)?;
         let identity =
             goose_native_message_identity(native_message_id, message_id_uses, native_order);
-        let (disposition, retained_class, output_outcome) = match row.get::<_, i64>(6)? {
+        let (disposition, retained_class) = match row.get::<_, i64>(6)? {
             0 => (
                 GooseMessageCellDisposition::Retained,
                 Some(GooseRetainedContentClass::Message),
-                None,
             ),
-            2 => (GooseMessageCellDisposition::MalformedJson, None, None),
-            3 => (GooseMessageCellDisposition::UnsupportedJsonRoot, None, None),
-            4 => (GooseMessageCellDisposition::NonObjectBlock, None, None),
-            5 => (GooseMessageCellDisposition::UnknownBlockType, None, None),
-            6 => (
-                GooseMessageCellDisposition::OversizedRetainedContent,
-                None,
-                None,
-            ),
-            7 => (GooseMessageCellDisposition::MissingSession, None, None),
-            8 => (
-                GooseMessageCellDisposition::UnsupportedStorageClass,
-                None,
-                None,
-            ),
+            2 => (GooseMessageCellDisposition::MalformedJson, None),
+            3 => (GooseMessageCellDisposition::UnsupportedJsonRoot, None),
+            4 => (GooseMessageCellDisposition::NonObjectBlock, None),
+            5 => (GooseMessageCellDisposition::UnknownBlockType, None),
+            6 => (GooseMessageCellDisposition::OversizedRetainedContent, None),
+            7 => (GooseMessageCellDisposition::MissingSession, None),
+            8 => (GooseMessageCellDisposition::UnsupportedStorageClass, None),
             9 => (
                 GooseMessageCellDisposition::Retained,
                 Some(GooseRetainedContentClass::ToolCall),
-                None,
             ),
-            10 => (GooseMessageCellDisposition::DuplicateBlockType, None, None),
-            11 => (
-                GooseMessageCellDisposition::OutputFailure,
-                None,
-                Some(OutputOutcome::Failure),
-            ),
-            12 => (
-                GooseMessageCellDisposition::OutputTimeout,
-                None,
-                Some(OutputOutcome::Timeout),
-            ),
-            13 => (
-                GooseMessageCellDisposition::OutputUnknown,
-                None,
-                Some(OutputOutcome::Unknown),
-            ),
-            14 => (
-                GooseMessageCellDisposition::OutputSuccess,
-                None,
-                Some(OutputOutcome::Success),
-            ),
+            10 => (GooseMessageCellDisposition::DuplicateBlockType, None),
+            11 => (GooseMessageCellDisposition::ToolOutput, None),
             value => {
                 return Err(rusqlite::Error::FromSqlConversionFailure(
                     6,
@@ -635,7 +601,6 @@ pub(super) fn goose_fetch_native_message_page(
             session_identity,
             role,
             disposition,
-            output_outcome,
             retained_class,
             content_json,
             content_bytes,
@@ -739,15 +704,6 @@ fn goose_native_content_visitor_sql(max_content_parameter: &str) -> String {
          ) then 4
          when exists (
              select 1
-             from direct_item item,
-                  json_each(item.value) member
-             where item.storage_type = 'object'
-               and member.key = 'type'
-               and member.type = 'text'
-               and member.atom = 'toolResponse'
-         ) then 1
-         when exists (
-             select 1
              from direct_item item
              where item.storage_type = 'object'
                and (
@@ -756,6 +712,15 @@ fn goose_native_content_visitor_sql(max_content_parameter: &str) -> String {
                  where member.key = 'type'
              ) > 1
          ) then 10
+         when exists (
+             select 1
+             from direct_item item,
+                  json_each(item.value) member
+             where item.storage_type = 'object'
+               and member.key = 'type'
+               and member.type = 'text'
+               and member.atom = 'toolResponse'
+         ) then 1
          when exists (
              select 1
              from direct_item item
@@ -797,78 +762,4 @@ fn goose_native_content_visitor_sql(max_content_parameter: &str) -> String {
          else 0
          end)"
     )
-}
-
-fn goose_native_output_outcome_sql() -> &'static str {
-    // Outcome classification inspects only structural control fields. The
-    // canonical Rust extractor retains the selected result body for every
-    // outcome after this visitor has admitted the native toolResponse shape.
-    "case
-         when exists (
-             select 1
-             from json_each(content_json) item,
-                  json_tree(item.value) node
-             where node.key in ('timed_out', 'timedOut', 'timeout')
-               and node.type in ('true', 'integer')
-               and cast(node.atom as integer) != 0
-         ) or exists (
-             select 1
-             from json_each(content_json) item,
-                  json_tree(item.value) node
-             where node.key in ('status', 'state', 'outcome')
-               and node.type = 'text'
-               and lower(trim(cast(node.atom as text)))
-                   in ('timeout', 'timed_out', 'timedout')
-         ) then 12
-         when exists (
-             select 1
-             from json_each(content_json) item,
-                  json_tree(item.value) node
-             where (
-                    node.key = 'success'
-                    and node.type in ('false', 'integer')
-                    and cast(node.atom as integer) = 0
-                 ) or (
-                    node.key in ('isError', 'is_error')
-                    and node.type in ('true', 'integer')
-                    and cast(node.atom as integer) != 0
-                 ) or (
-                    node.key in ('exit_code', 'exitCode')
-                    and node.type in ('integer', 'real')
-                    and cast(node.atom as integer) != 0
-                 ) or (
-                    node.key in ('status', 'state', 'outcome')
-                    and node.type = 'text'
-                    and lower(trim(cast(node.atom as text)))
-                        in ('failed', 'failure', 'error', 'errored', 'cancelled', 'canceled')
-                 ) or (
-                    node.key = 'error'
-                    and node.type not in ('null', 'false')
-                    and (
-                        node.type in ('array', 'object')
-                        or trim(cast(node.atom as text)) not in ('', '0')
-                    )
-                 )
-         ) then 11
-         when exists (
-             select 1
-             from json_each(content_json) item,
-                  json_tree(item.value) node
-             where (
-                    node.key = 'success'
-                    and node.type in ('true', 'integer')
-                    and cast(node.atom as integer) != 0
-                 ) or (
-                    node.key in ('exit_code', 'exitCode')
-                    and node.type in ('integer', 'real')
-                    and cast(node.atom as integer) = 0
-                 ) or (
-                    node.key in ('status', 'state', 'outcome')
-                    and node.type = 'text'
-                    and lower(trim(cast(node.atom as text)))
-                        in ('success', 'succeeded', 'complete', 'completed', 'ok', 'passed')
-                 )
-         ) then 14
-         else 13
-     end"
 }

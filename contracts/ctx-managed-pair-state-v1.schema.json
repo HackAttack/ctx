@@ -1,0 +1,41 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://ctx.rs/contracts/ctx-managed-pair-state-v1.schema.json",
+  "title": "ctx managed pair installed state v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["contract", "schema_version", "identity", "envelope_sha256", "envelope_size_bytes"],
+  "properties": {
+    "contract": {"const": "ctx-managed-pair-state"},
+    "schema_version": {"const": 1},
+    "identity": {"$ref": "#/$defs/pair_identity"},
+    "envelope_sha256": {"$ref": "#/$defs/sha256"},
+    "envelope_size_bytes": {"type": "integer", "minimum": 1, "maximum": 2097152}
+  },
+  "$defs": {
+    "name": {"type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[A-Za-z0-9][A-Za-z0-9._+-]*$"},
+    "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "component_identity": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["sha256", "size_bytes"],
+      "properties": {
+        "sha256": {"$ref": "#/$defs/sha256"},
+        "size_bytes": {"type": "integer", "minimum": 1, "maximum": 268435456}
+      }
+    },
+    "pair_identity": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["release_name", "target", "rollback_generation", "manifest_sha256", "core", "companion"],
+      "properties": {
+        "release_name": {"$ref": "#/$defs/name"},
+        "target": {"enum": ["linux-arm64", "linux-x64", "macos-arm64", "macos-x64", "windows-x64"]},
+        "rollback_generation": {"type": "integer", "minimum": 1, "maximum": 9007199254740991},
+        "manifest_sha256": {"$ref": "#/$defs/sha256"},
+        "core": {"$ref": "#/$defs/component_identity"},
+        "companion": {"$ref": "#/$defs/component_identity"}
+      }
+    }
+  }
+}

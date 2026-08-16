@@ -20,14 +20,6 @@ impl OperationCompletedV1 {
         Self::for_non_cli(OperationDescriptor::Mcp(operation), outcome, duration)
     }
 
-    pub fn for_pro_host(
-        operation: ProHostOperationV1,
-        outcome: Outcome,
-        duration: Duration,
-    ) -> Self {
-        Self::for_non_cli(OperationDescriptor::ProHost(operation), outcome, duration)
-    }
-
     pub fn for_daemon(operation: DaemonOperationV1, outcome: Outcome, duration: Duration) -> Self {
         Self::for_non_cli(OperationDescriptor::Daemon(operation), outcome, duration)
     }

@@ -666,7 +666,11 @@ fn source_event_pages_bind_generation_descriptor_and_bounds() {
     );
 
     let mut rewritten_first = document(&source, 1, "rewritten first");
-    rewritten_first.workspace = Some("rewritten".to_owned());
+    replace_literal_fact(
+        &mut rewritten_first,
+        LiteralFactKind::Workspace,
+        "rewritten",
+    );
     let replacement = document(&source, 3, "replacement");
     let mut rewriting = GenerationWriter::open(temp.path(), WriterOptions::default())
         .unwrap()
@@ -687,10 +691,20 @@ fn source_event_pages_bind_generation_descriptor_and_bounds() {
     ));
     let rewritten = collect_source_pages(&rewritten_pin, &source, 1);
     assert_eq!(rewritten.len(), 2);
-    assert!(rewritten.iter().any(|event| {
-        event.event_id == rewritten_first.event_id
-            && event.workspace.as_deref() == Some("rewritten")
-    }));
+    assert!(rewritten
+        .iter()
+        .any(|event| event.event_id == rewritten_first.event_id));
+    assert!(rewritten_pin
+        .core_record_by_id(rewritten_first.event_id.as_uuid())
+        .unwrap()
+        .unwrap()
+        .content
+        .activity
+        .as_ref()
+        .unwrap()
+        .facts
+        .iter()
+        .any(|fact| fact.kind == LiteralFactKind::Workspace && fact.value == "rewritten"));
     assert!(rewritten
         .iter()
         .any(|event| event.event_id == replacement.event_id));

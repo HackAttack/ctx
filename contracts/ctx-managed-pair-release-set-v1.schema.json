@@ -1,0 +1,41 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://ctx.rs/contracts/ctx-managed-pair-release-set-v1.schema.json",
+  "title": "ctx managed pair release set v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["contract", "schema_version", "channel", "release_authority_key_id", "release_name", "target_matrix_sha256", "rollback_generation", "snapshot", "compatibility", "target_manifests"],
+  "properties": {
+    "contract": {"const": "ctx-managed-pair-release-set"},
+    "schema_version": {"const": 1},
+    "channel": {"enum": ["stable", "staging"]},
+    "release_authority_key_id": {"$ref": "#/$defs/name"},
+    "release_name": {"$ref": "#/$defs/name"},
+    "target_matrix_sha256": {"$ref": "#/$defs/sha256"},
+    "rollback_generation": {"type": "integer", "minimum": 1, "maximum": 9007199254740991, "description": "Monotonic non-decreasing generation; consumers reject a value below retained state."},
+    "snapshot": {"$ref": "#/$defs/snapshot"},
+    "compatibility": {"$ref": "#/$defs/compatibility"},
+    "target_manifests": {
+      "type": "array",
+      "minItems": 5,
+      "maxItems": 5,
+      "prefixItems": [
+        {"allOf": [{"$ref": "#/$defs/manifest_ref"}, {"properties": {"target_id": {"const": "linux-arm64"}}}]},
+        {"allOf": [{"$ref": "#/$defs/manifest_ref"}, {"properties": {"target_id": {"const": "linux-x64"}}}]},
+        {"allOf": [{"$ref": "#/$defs/manifest_ref"}, {"properties": {"target_id": {"const": "macos-arm64"}}}]},
+        {"allOf": [{"$ref": "#/$defs/manifest_ref"}, {"properties": {"target_id": {"const": "macos-x64"}}}]},
+        {"allOf": [{"$ref": "#/$defs/manifest_ref"}, {"properties": {"target_id": {"const": "windows-x64"}}}]}
+      ],
+      "items": false
+    }
+  },
+  "$defs": {
+    "name": {"type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[A-Za-z0-9][A-Za-z0-9._+-]*$"},
+    "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "size": {"type": "integer", "minimum": 1, "maximum": 1048576},
+    "object_key": {"type": "string", "minLength": 9, "maxLength": 512, "pattern": "^sha256/[0-9a-f]{64}/[A-Za-z0-9][A-Za-z0-9._+-]{0,127}$"},
+    "snapshot": {"type": "object", "additionalProperties": false, "required": ["contract", "fingerprint"], "properties": {"contract": {"const": "ctx-managed-pair-snapshot-v1"}, "fingerprint": {"$ref": "#/$defs/sha256"}}},
+    "compatibility": {"type": "object", "additionalProperties": false, "required": ["invocation_fingerprint", "core_capability_fingerprint"], "properties": {"invocation_fingerprint": {"$ref": "#/$defs/sha256"}, "core_capability_fingerprint": {"$ref": "#/$defs/sha256"}}},
+    "manifest_ref": {"type": "object", "additionalProperties": false, "required": ["target_id", "manifest_name", "manifest_object_key", "manifest_sha256", "manifest_size_bytes"], "properties": {"target_id": {"enum": ["linux-arm64", "linux-x64", "macos-arm64", "macos-x64", "windows-x64"]}, "manifest_name": {"$ref": "#/$defs/name"}, "manifest_object_key": {"$ref": "#/$defs/object_key"}, "manifest_sha256": {"$ref": "#/$defs/sha256"}, "manifest_size_bytes": {"$ref": "#/$defs/size"}}}
+  }
+}

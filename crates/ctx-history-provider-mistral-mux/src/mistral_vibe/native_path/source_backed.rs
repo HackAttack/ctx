@@ -10,9 +10,11 @@ use chrono::{DateTime, Utc};
 use ctx_history_capture_model::normalization::provider_explicit_result_value_text;
 use ctx_history_capture_runtime::BaseEventLookup;
 use ctx_history_core::{
-    derive_event_id, derive_native_session_id, CaptureProvider, CoreRecord, EventIdentityInput,
-    NativeItemKey, PositionStability, SessionRelationshipKind, SourceKey, StableEntityId,
-    SubrecordSelector, TypedKey,
+    derive_event_id, derive_native_session_id, ActivityInvocation, ActivityJsonCapture,
+    ActivityResult, ActivityTextCapture, CaptureProvider, CoreActivity, CoreRecord,
+    EventIdentityInput, EventType, LiteralFactKind, NativeItemKey, PositionStability,
+    ProviderDeclaredFact, ProviderNativeSessionRelationship, SourceKey, StableEntityId,
+    SubrecordSelector, TypedKey, CORE_ACTIVITY_REVISION, MAX_CORE_CONTENT_BYTES,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -20,9 +22,9 @@ use sha2::{Digest, Sha256};
 
 use super::*;
 use ctx_history_jsonl::{
-    FallbackEventIdentityState, JsonlFamilyAdapter, JsonlFamilyAppendMode, JsonlFamilyInventory,
-    JsonlFamilyLeaf, JsonlFamilyProjectionMode, JsonlFamilyProjector, JsonlFamilyWorkerContext,
-    JsonlRecordRef,
+    fit_jsonl_activity, FallbackEventIdentityState, JsonlActivityObservedBytes, JsonlFamilyAdapter,
+    JsonlFamilyAppendMode, JsonlFamilyInventory, JsonlFamilyLeaf, JsonlFamilyProjectionMode,
+    JsonlFamilyProjector, JsonlFamilyWorkerContext, JsonlRecordRef,
 };
 use ctx_history_provider_runtime::{
     source_io::{OpenedProviderSourceFile, ProviderSourceRoot},
@@ -38,7 +40,7 @@ const NATIVE_EVENT_REUSED_TOOL_CALL_POSITION_KIND: &str =
     "mistral-vibe-duplicate-tool-call-id-ordinal";
 const LOGICAL_SESSION_KIND: &str = "mistral-vibe-session";
 const LOGICAL_EVENT_KIND: &str = "mistral-vibe-event";
-const PARSER_REVISION: &str = "mistral-vibe-source-backed-v11";
+const PARSER_REVISION: &str = "mistral-vibe-source-backed-v12-core-activity";
 const EVENT_IDENTITY_REVISION: &str = "mistral-vibe-content-occurrence-v1";
 const FALLBACK_FINGERPRINT_DOMAIN: &[u8] = b"ctx.mistral-vibe.fallback-event-fingerprint.v1\0";
 const SOURCE_REVISION_DIGEST_DOMAIN: &[u8] = b"ctx.mistral-vibe.source-revision.v1\0";
@@ -312,12 +314,9 @@ where
     let Ok(role) = valid_mistral_vibe_record_role(&value) else {
         return Ok(None);
     };
-    let mut event_type = mistral_vibe_event_type(role, &value);
-    let output = (event_type == EventType::ToolOutput).then(|| output_classification(&value));
-    let body = if let Some(output) = &output {
-        if output.kind == OutputObservationKind::Command {
-            event_type = EventType::CommandOutput;
-        }
+    let event_type = mistral_vibe_event_type(role, &value);
+    let output = event_type == EventType::ToolOutput;
+    let body = if output {
         let Some(body) = mistral_vibe_output_text(&value)? else {
             return Ok(None);
         };
@@ -365,50 +364,35 @@ where
     })
     .map_err(contract)?;
     let role = ctx_history_capture_model::normalization::provider_role(Some(role));
-    let touched_files = collect_touched_paths(&value)?;
-    let linkage = output
-        .as_ref()
-        .map(|output| mistral_vibe_output_linkage(&value, *output))
-        .transpose()?;
-    // Result linkage is selected and bounded by `mistral_vibe_output_linkage`.
-    // Keep the legacy top-level tool metadata only for non-result records so a
-    // result cannot duplicate linkage or admit an unbounded auxiliary field.
-    let tool_name = output.is_none().then(|| {
-        value
-            .get("name")
-            .or_else(|| value.get("tool_name"))
-            .cloned()
-    });
-    let tool_name = tool_name.flatten();
-    let structured_content =
-        (!touched_files.is_empty() || tool_name.is_some() || linkage.is_some()).then(|| {
-            serde_json::json!({
-                "tool_name": tool_name,
-                "file_touches": touched_files,
-                "provider_native_tool_result": linkage,
-            })
+    let mut facts = Vec::new();
+    if let Some(cwd) = &binding.cwd {
+        facts.push(ProviderDeclaredFact {
+            kind: LiteralFactKind::SessionCwd,
+            value: cwd.clone(),
         });
+    }
+    if let Some(branch) = &binding.branch {
+        facts.push(ProviderDeclaredFact {
+            kind: LiteralFactKind::Branch,
+            value: branch.clone(),
+        });
+    }
+    facts.extend(collect_file_facts(&value));
+    let activity = mistral_vibe_activity(&value, event_type, &body, facts)?;
     let mut record = CoreRecord::new_selected(
         event_id,
-        binding.session_id,
         binding.session_id,
         source.clone(),
         ordinal,
         event_type.as_str(),
-        AgentType::Primary.as_str(),
-        true,
         PARSER_REVISION,
-        body,
+        body.clone(),
     )
     .map_err(contract)?;
     if let Some(parent_session_id) = binding.parent_session_id {
-        record
-            .set_session_relationship(
-                SessionRelationshipKind::Forked,
-                Some(parent_session_id),
-                binding.root_session_id,
-            )
-            .map_err(contract)?;
+        record.parent_session_id = Some(parent_session_id);
+        record.root_session_id = Some(binding.root_session_id);
+        record.session_relationship = Some(ProviderNativeSessionRelationship::Forked);
     }
     record.provider_session_id = Some(binding.provider_session_id.clone());
     record.native_event_id = Some(native_event_id);
@@ -418,9 +402,19 @@ where
             .unwrap_or(binding.started_at_unix_ms),
     );
     record.role = Some(role.as_str().to_owned());
-    record.branch = binding.branch.clone();
-    record.cwd = binding.cwd.clone();
-    record.content.structured_content = structured_content;
+    record.content.structured_content = Some(value);
+    record.content.activity = activity;
+    fit_jsonl_activity(
+        &body,
+        record.content.structured_content.as_ref(),
+        &mut record.content.activity,
+        JsonlActivityObservedBytes::infer_from_present(),
+        MAX_CORE_CONTENT_BYTES,
+    );
+    record
+        .content
+        .omit_structured_content_if_aggregate_exceeds_limit()
+        .map_err(contract)?;
     record.validate_contract().map_err(contract)?;
     Ok(Some(record))
 }
@@ -674,24 +668,70 @@ fn mistral_vibe_output_text(value: &Value) -> Result<Option<String>> {
     Ok(provider_explicit_result_value_text(selected).filter(|text| !text.trim().is_empty()))
 }
 
-fn mistral_vibe_output_linkage(value: &Value, output: OutputClassification) -> Result<Value> {
-    let bounded = |field: &'static str| -> Option<&str> {
+fn mistral_vibe_activity(
+    value: &Value,
+    event_type: EventType,
+    body: &str,
+    facts: Vec<ProviderDeclaredFact>,
+) -> Result<Option<CoreActivity>> {
+    let provider_call_id = value
+        .get("tool_call_id")
+        .and_then(Value::as_str)
+        .filter(|value| !value.is_empty())
+        .map(TypedKey::utf8)
+        .transpose()
+        .map_err(contract)?;
+    let invocation = if event_type == EventType::ToolCall {
         value
-            .get(field)
+            .get("name")
+            .or_else(|| value.get("tool_name"))
             .and_then(Value::as_str)
-            .filter(|value| value.len() <= super::super::MISTRAL_VIBE_MAX_ID_BYTES)
+            .filter(|value| !value.is_empty())
+            .map(|tool| ActivityInvocation {
+                protocol: None,
+                server: None,
+                tool: tool.to_owned(),
+                arguments: exact_json_capture(value, &["arguments", "input"]),
+                started_at_unix_ms: None,
+            })
+    } else {
+        None
     };
-    let outcome = match output.outcome {
-        OutputOutcome::Success => "success",
-        OutputOutcome::Failure => "failure",
-        OutputOutcome::Timeout => "timeout",
-        OutputOutcome::Unknown => "unknown",
-    };
-    Ok(serde_json::json!({
-        "call_id": bounded("tool_call_id"),
-        "tool_name": bounded("name").or_else(|| bounded("tool_name")),
-        "outcome": outcome,
+    let result = (event_type == EventType::ToolOutput).then(|| ActivityResult {
+        status: None,
+        completed_at_unix_ms: None,
+        duration_ns: None,
+        text: ActivityTextCapture::Present {
+            value: body.to_owned(),
+        },
+        structured_content: ActivityJsonCapture::Present {
+            value: value.clone(),
+        },
+    });
+    if provider_call_id.is_none() && invocation.is_none() && result.is_none() && facts.is_empty() {
+        return Ok(None);
+    }
+    Ok(Some(CoreActivity {
+        revision: CORE_ACTIVITY_REVISION,
+        provider_call_id,
+        invocation,
+        result,
+        facts,
     }))
+}
+
+fn exact_json_capture(value: &Value, fields: &[&str]) -> ActivityJsonCapture {
+    let candidates = fields
+        .iter()
+        .filter_map(|field| value.get(*field))
+        .collect::<Vec<_>>();
+    match candidates.as_slice() {
+        [] => ActivityJsonCapture::Absent,
+        [candidate] => ActivityJsonCapture::Present {
+            value: (*candidate).clone(),
+        },
+        _ => ActivityJsonCapture::Unavailable,
+    }
 }
 
 fn provider_native_event_id(value: &Value) -> Option<String> {
@@ -761,7 +801,7 @@ mod tests {
     }
 
     #[test]
-    fn tool_results_keep_all_outcomes_complete_linkage_and_large_content() {
+    fn tool_results_keep_native_statuses_statusless_activity_and_large_content() {
         let (source, binding) = binding();
         let mut fallback_identities = fallback_identities(&source, &binding);
         let mut native_identities = MistralNativeIdentityTracker::default();
@@ -798,9 +838,18 @@ mod tests {
                     .content
                     .structured_content
                     .as_ref()
-                    .and_then(|value| value.pointer("/provider_native_tool_result/call_id"))
+                    .and_then(|value| value.get("tool_call_id"))
                     .and_then(Value::as_str),
                 Some("call-1")
+            );
+            assert_eq!(
+                record
+                    .content
+                    .activity
+                    .as_ref()
+                    .and_then(|activity| activity.result.as_ref())
+                    .and_then(|result| result.status.as_deref()),
+                None
             );
         }
 
@@ -876,32 +925,37 @@ mod tests {
         let stdio = project("uvx mcp-server-filesystem /tmp");
 
         for record in [&url, &stdio] {
-            assert!(record.mcp_tool_call.is_none());
+            assert_eq!(
+                record
+                    .content
+                    .activity
+                    .as_ref()
+                    .and_then(|activity| activity.result.as_ref())
+                    .and_then(|result| result.status.as_deref()),
+                None
+            );
             assert_eq!(record.content.meaningful_text(), "terminal result");
             assert_eq!(record.event_type, EventType::ToolOutput.as_str());
             assert_eq!(record.parser_revision, PARSER_REVISION);
             let linkage = record.content.structured_content.as_ref().unwrap();
             assert_eq!(
-                linkage
-                    .pointer("/provider_native_tool_result/call_id")
-                    .and_then(Value::as_str),
+                linkage.get("tool_call_id").and_then(Value::as_str),
                 Some("call-exact")
             );
             assert_eq!(
-                linkage
-                    .pointer("/provider_native_tool_result/tool_name")
-                    .and_then(Value::as_str),
+                linkage.get("name").and_then(Value::as_str),
                 Some("docs_server_read_document")
             );
             assert_eq!(
-                linkage
-                    .pointer("/provider_native_tool_result/outcome")
-                    .and_then(Value::as_str),
+                linkage.get("status").and_then(Value::as_str),
                 Some("success")
             );
         }
 
         assert_eq!(url.event_id, stdio.event_id);
-        assert_eq!(url.content, stdio.content);
+        assert_ne!(
+            url.content.structured_content,
+            stdio.content.structured_content
+        );
     }
 }

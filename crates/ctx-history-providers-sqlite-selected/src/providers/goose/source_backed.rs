@@ -1,5 +1,5 @@
 use std::{
-    collections::{BTreeMap, BTreeSet},
+    collections::BTreeMap,
     ffi::OsString,
     io,
     path::{Path, PathBuf},
@@ -9,10 +9,12 @@ use std::{
 use chrono::{DateTime, Utc};
 use ctx_history_capture_model::normalization::{provider_role, provider_timestamp_seconds};
 use ctx_history_core::{
-    derive_event_id, derive_session_id, AgentType, CaptureProvider, CoreRecord, CoreRecordError,
-    EventIdentityInput, EventType, NativeItemKey, NativeSessionKey, ProjectionContractError,
-    ScannedSourceCounts, SessionIdentityInput, SessionRelationshipKind, SourceAnchor, SourceKey,
-    StableEntityId, TypedKey,
+    derive_event_id, derive_session_id, ActivityInvocation, ActivityJsonCapture, ActivityResult,
+    ActivityTextCapture, CaptureProvider, CoreActivity, CoreRecord, CoreRecordError,
+    EventIdentityInput, EventType, LiteralFactKind, NativeItemKey, NativeSessionKey,
+    ProjectionContractError, ProviderDeclaredFact, ProviderNativeSessionRelationship,
+    ScannedSourceCounts, SessionIdentityInput, SourceAnchor, SourceKey, StableEntityId, TypedKey,
+    CORE_ACTIVITY_REVISION,
 };
 use rusqlite::Connection;
 use sha2::{Digest, Sha256};
@@ -20,8 +22,8 @@ use thiserror::Error;
 
 use super::{
     normalization::{
-        goose_native_tool_call_ids, goose_timestamp, normalize_goose_native_message,
-        normalize_goose_native_output, GooseNativeEvent, GooseNativeEventKind,
+        goose_timestamp, normalize_goose_native_message, normalize_goose_native_output,
+        GooseNativeEvent, GooseNativeEventKind,
     },
     position::goose_message_locator,
     schema::GooseNativeSchema,
@@ -52,7 +54,7 @@ use fingerprint::GooseLogicalFingerprint;
 const GOOSE_SOURCE_ANCHOR_NAMESPACE: &str = "goose.installed-sessions";
 const GOOSE_SOURCE_ANCHOR_KEY: &str = "selected-platform-sessions-db";
 const GOOSE_SOURCE_SCHEMA_VARIANT: &str = "goose-sessions-sqlite-v0";
-const GOOSE_PARSER_REVISION: &str = "goose-logical-sqlite-v6";
+const GOOSE_PARSER_REVISION: &str = "goose-logical-sqlite-v8-closed-facts";
 const GOOSE_NATIVE_SESSION_NAMESPACE: &str = "goose.session";
 const GOOSE_NATIVE_EVENT_NAMESPACE: &str = "goose.message";
 const GOOSE_LOGICAL_SESSION_KIND: &str = "goose-session";
@@ -423,7 +425,6 @@ fn observe_goose_logical_fingerprint(
 struct GooseSessionProjection {
     session_id: StableEntityId,
     parent_session_id: Option<StableEntityId>,
-    root_session_id: StableEntityId,
     parent_provider_session_id: Option<String>,
     cwd: Option<String>,
 }
@@ -474,7 +475,6 @@ where
                 GooseSessionProjection {
                     session_id,
                     parent_session_id: None,
-                    root_session_id: session_id,
                     parent_provider_session_id: row.parent_session_id,
                     cwd: row.working_dir,
                 },
@@ -505,12 +505,7 @@ where
                         }
                     }
                 }
-                GooseMessageCellDisposition::OutputFailure
-                | GooseMessageCellDisposition::OutputTimeout
-                | GooseMessageCellDisposition::OutputSuccess
-                | GooseMessageCellDisposition::OutputUnknown => {
-                    normalize_goose_native_output(&scanned)?
-                }
+                GooseMessageCellDisposition::ToolOutput => normalize_goose_native_output(&scanned)?,
                 _ => {
                     rejected_records = checked_add(rejected_records, 1)?;
                     None
@@ -607,37 +602,12 @@ fn resolve_goose_session_lineage(
             .as_deref()
             .map(|parent| goose_session_id(source, parent))
             .transpose()?;
-        let mut current = session_identity.as_str();
-        let mut visited = BTreeSet::new();
-        loop {
-            if !visited.insert(current.to_owned()) {
-                return Err(CaptureError::InvalidPayload(
-                    "Goose delegated session lineage contains a cycle".to_owned(),
-                )
-                .into());
-            }
-            let Some(parent) = sessions
-                .get(current)
-                .and_then(|session| session.parent_provider_session_id.as_deref())
-            else {
-                break;
-            };
-            if !sessions.contains_key(parent) {
-                return Err(CaptureError::InvalidPayload(format!(
-                    "Goose delegated session {current} names missing parent {parent}"
-                ))
-                .into());
-            }
-            current = parent;
-        }
-        let root_session_id = goose_session_id(source, current)?;
         let session = sessions
             .get_mut(&session_identity)
             .ok_or(CaptureError::SystemInvariant(
                 "Goose session lineage lost a discovered session",
             ))?;
         session.parent_session_id = parent_session_id;
-        session.root_session_id = root_session_id;
     }
     Ok(())
 }
@@ -671,7 +641,7 @@ fn goose_core_record(
     let body = if event.searchable_text.is_empty() {
         format!("{} {}", normalized_event_type.as_str(), event.role)
     } else {
-        event.searchable_text
+        event.searchable_text.clone()
     };
     if body.is_empty() {
         return Err(GooseSourceBackedErrorV0::EmptyNormalizedContent);
@@ -689,57 +659,228 @@ fn goose_core_record(
             )
         },
     );
-    let native_file_touches =
-        (!event.file_touches.is_empty()).then(|| serde_json::json!(&event.file_touches));
-    let agent_type = if session.parent_session_id.is_some() {
-        AgentType::Subagent
-    } else {
-        AgentType::Primary
-    };
     let mut record = CoreRecord::new_selected(
         event_id,
-        session.session_id,
         session.session_id,
         source.clone(),
         event_sequence,
         normalized_event_type.as_str(),
-        agent_type.as_str(),
-        true,
         GOOSE_PARSER_REVISION,
         body,
     )?;
     if let Some(parent_session_id) = session.parent_session_id {
-        record.set_session_relationship(
-            SessionRelationshipKind::Delegated,
-            Some(parent_session_id),
-            session.root_session_id,
-        )?;
+        record.parent_session_id = Some(parent_session_id);
+        record.session_relationship = Some(ProviderNativeSessionRelationship::Delegated);
     }
-    record.provider_session_id = Some(event.session_identity);
+    record.provider_session_id = Some(event.session_identity.clone());
     record.native_event_id = native_event_id;
     record.occurred_at_unix_ms = occurred_at_unix_ms;
     record.role = Some(normalized_role.as_str().to_owned());
-    record.cwd = session.cwd.clone();
-    if let Some(native_file_touches) = native_file_touches {
-        record.metadata.insert(
-            "provider_native_file_touches".to_owned(),
-            native_file_touches,
-        );
+    let facts = session
+        .cwd
+        .as_ref()
+        .map(|cwd| ProviderDeclaredFact {
+            kind: LiteralFactKind::SessionCwd,
+            value: cwd.clone(),
+        })
+        .into_iter()
+        .collect::<Vec<_>>();
+    let (provider_call_id, invocation, result) = goose_activity(&event, occurred_at_unix_ms)?;
+    if !event.semantic_capture_ambiguous {
+        record.content.structured_content = Some(event.content);
     }
-    if event.kind == GooseNativeEventKind::ToolOutput {
-        record.content.structured_content = Some(serde_json::json!({
-            "provider_native_result": event.content,
-        }));
-    } else if event.kind == GooseNativeEventKind::ToolCall {
-        let tool_call_ids = goose_native_tool_call_ids(&event.content);
-        if !tool_call_ids.is_empty() {
-            record.content.structured_content = Some(serde_json::json!({
-                "provider_native_tool_call_ids": tool_call_ids,
-            }));
-        }
+    if invocation.is_some() || result.is_some() || !facts.is_empty() {
+        record.content.activity = Some(CoreActivity {
+            revision: CORE_ACTIVITY_REVISION,
+            provider_call_id,
+            invocation,
+            result,
+            facts,
+        });
     }
+    record
+        .content
+        .omit_structured_content_if_aggregate_exceeds_limit()?;
     record.validate_contract()?;
     Ok(record)
+}
+
+pub(super) fn goose_activity(
+    event: &GooseNativeEvent,
+    occurred_at_unix_ms: Option<i64>,
+) -> GooseSourceBackedResultV0<(
+    Option<TypedKey>,
+    Option<ActivityInvocation>,
+    Option<ActivityResult>,
+)> {
+    if event.semantic_capture_ambiguous {
+        return Ok((None, None, None));
+    }
+    let mut requests = Vec::new();
+    let mut responses = Vec::new();
+    visit_goose_objects(&event.content, &mut |object| match object
+        .get("type")
+        .and_then(serde_json::Value::as_str)
+    {
+        Some("toolRequest" | "frontendToolRequest") => requests.push(object.clone()),
+        Some("toolResponse") => responses.push(object.clone()),
+        _ => {}
+    });
+    let request = (requests.len() == 1).then(|| &requests[0]);
+    let response = (responses.len() == 1).then(|| &responses[0]);
+    let request_call_id = request.map_or(GooseAlias::Absent, goose_call_id);
+    let response_call_id = response.map_or(GooseAlias::Absent, goose_call_id);
+    let call_id = match (request_call_id, response_call_id) {
+        (GooseAlias::Conflict, _) | (_, GooseAlias::Conflict) => None,
+        (GooseAlias::Unique(left), GooseAlias::Unique(right)) if left != right => None,
+        (GooseAlias::Unique(value), _) | (_, GooseAlias::Unique(value)) => Some(value),
+        (GooseAlias::Absent, GooseAlias::Absent) => None,
+    };
+    let Some(call_id) = call_id else {
+        return Ok((None, None, None));
+    };
+    let invocation = request.and_then(|object| {
+        let call = object
+            .get("toolCall")
+            .and_then(serde_json::Value::as_object)
+            .unwrap_or(object);
+        let GooseAlias::Unique(tool) =
+            unique_goose_string_alias(call, &["name", "tool", "toolName"])
+        else {
+            return None;
+        };
+        if tool.is_empty() {
+            return None;
+        }
+        let arguments =
+            match unique_goose_json_alias(call, &["arguments", "args", "input", "parameters"]) {
+                GooseAlias::Absent => ActivityJsonCapture::Absent,
+                GooseAlias::Unique(value) => ActivityJsonCapture::Present {
+                    value: value.clone(),
+                },
+                GooseAlias::Conflict => ActivityJsonCapture::Unavailable,
+            };
+        Some(ActivityInvocation {
+            protocol: None,
+            server: None,
+            tool: tool.to_owned(),
+            arguments,
+            started_at_unix_ms: occurred_at_unix_ms,
+        })
+    });
+    let result = response.map(|object| ActivityResult {
+        status: unique_goose_string(object, &["status", "state", "outcome"]),
+        completed_at_unix_ms: occurred_at_unix_ms,
+        duration_ns: None,
+        text: ActivityTextCapture::NormalizedBody,
+        structured_content: ActivityJsonCapture::Omitted {
+            reason: "normalized_body_authoritative".to_owned(),
+            observed_encoded_bytes: serde_json::to_vec(object)
+                .ok()
+                .and_then(|encoded| u64::try_from(encoded.len()).ok()),
+        },
+    });
+    if invocation.is_none() && result.is_none() {
+        return Ok((None, None, None));
+    }
+    Ok((Some(TypedKey::utf8(call_id)?), invocation, result))
+}
+
+enum GooseAlias<T> {
+    Absent,
+    Unique(T),
+    Conflict,
+}
+
+fn goose_call_id(object: &serde_json::Map<String, serde_json::Value>) -> GooseAlias<String> {
+    let mut candidates = Vec::new();
+    if let Some(call) = object
+        .get("toolCall")
+        .and_then(serde_json::Value::as_object)
+    {
+        if let Some(value) = call.get("id") {
+            candidates.push(value);
+        }
+    }
+    for key in ["toolCallId", "tool_call_id", "id"] {
+        if let Some(value) = object.get(key) {
+            candidates.push(value);
+        }
+    }
+    unique_goose_string_values(candidates)
+}
+
+fn unique_goose_string_alias(
+    object: &serde_json::Map<String, serde_json::Value>,
+    keys: &[&str],
+) -> GooseAlias<String> {
+    unique_goose_string_values(keys.iter().filter_map(|key| object.get(*key)).collect())
+}
+
+fn unique_goose_string_values(values: Vec<&serde_json::Value>) -> GooseAlias<String> {
+    let mut selected = None;
+    for value in values.into_iter().filter(|value| !value.is_null()) {
+        let Some(candidate) = value.as_str() else {
+            return GooseAlias::Conflict;
+        };
+        if selected
+            .as_ref()
+            .is_some_and(|selected| selected != candidate)
+        {
+            return GooseAlias::Conflict;
+        }
+        selected = Some(candidate.to_owned());
+    }
+    selected.map_or(GooseAlias::Absent, GooseAlias::Unique)
+}
+
+fn unique_goose_json_alias<'a>(
+    object: &'a serde_json::Map<String, serde_json::Value>,
+    keys: &[&str],
+) -> GooseAlias<&'a serde_json::Value> {
+    let mut selected = None;
+    for key in keys {
+        let Some(candidate) = object.get(*key).filter(|value| !value.is_null()) else {
+            continue;
+        };
+        if selected.is_some_and(|selected| selected != candidate) {
+            return GooseAlias::Conflict;
+        }
+        selected = Some(candidate);
+    }
+    selected.map_or(GooseAlias::Absent, GooseAlias::Unique)
+}
+
+fn unique_goose_string(
+    object: &serde_json::Map<String, serde_json::Value>,
+    keys: &[&str],
+) -> Option<String> {
+    let mut selected = None::<&str>;
+    for key in keys {
+        let Some(candidate) = object.get(*key).and_then(serde_json::Value::as_str) else {
+            continue;
+        };
+        if selected.is_some_and(|selected| selected != candidate) {
+            return None;
+        }
+        selected = Some(candidate);
+    }
+    selected.map(str::to_owned)
+}
+
+fn visit_goose_objects(
+    value: &serde_json::Value,
+    visitor: &mut impl FnMut(&serde_json::Map<String, serde_json::Value>),
+) {
+    match value {
+        serde_json::Value::Array(values) => {
+            for value in values {
+                visit_goose_objects(value, visitor);
+            }
+        }
+        serde_json::Value::Object(object) => visitor(object),
+        _ => {}
+    }
 }
 
 fn goose_event_sequence(next: &mut u64) -> GooseSourceBackedResultV0<u64> {
@@ -804,13 +945,13 @@ mod timestamp_tests {
             role: "assistant".to_owned(),
             content: serde_json::json!([{"type": "text", "text": "timestamp parity"}]),
             searchable_text: "timestamp parity".to_owned(),
+            semantic_capture_ambiguous: false,
             created_timestamp: None,
             timestamp: Some(timestamp.to_owned()),
             tokens_json: None,
             metadata_json: None,
             retained_content_bytes: 16,
             logical_row_digest: Some([7; 32]),
-            file_touches: Vec::new(),
         }
     }
 
@@ -821,7 +962,6 @@ mod timestamp_tests {
         let session = GooseSessionProjection {
             session_id,
             parent_session_id: None,
-            root_session_id: session_id,
             parent_provider_session_id: None,
             cwd: None,
         };
@@ -841,5 +981,125 @@ mod timestamp_tests {
             assert_eq!(projected.event_id, rfc3339.event_id);
             assert_eq!(projected.native_event_id.as_ref(), Some(&native_event_id));
         }
+    }
+
+    #[test]
+    fn goose_changed_projection_replaces_the_same_native_event_identity() {
+        let source = goose_source_key().unwrap();
+        let session_id = goose_session_id(&source, "timestamp-session").unwrap();
+        let session = GooseSessionProjection {
+            session_id,
+            parent_session_id: None,
+            parent_provider_session_id: None,
+            cwd: None,
+        };
+        let project = |body: &str| {
+            let mut event = timestamp_event("2026-08-09T12:00:00Z");
+            event.searchable_text = body.to_owned();
+            event.content = serde_json::json!([{"type": "text", "text": body}]);
+            goose_core_record(&source, &session, event, 9).unwrap()
+        };
+        let initial = project("initial exact Goose body");
+        let replacement = project("replacement exact Goose body");
+        assert_eq!(initial.event_id, replacement.event_id);
+        assert_eq!(initial.session_id, replacement.session_id);
+        assert_eq!(initial.native_event_id, replacement.native_event_id);
+        assert_eq!(replacement.parser_revision, GOOSE_PARSER_REVISION);
+        assert_eq!(
+            replacement.content.meaningful_text(),
+            "replacement exact Goose body"
+        );
+        assert_ne!(
+            ctx_history_core::core_record_leaf_sha256(&initial).unwrap(),
+            ctx_history_core::core_record_leaf_sha256(&replacement).unwrap()
+        );
+    }
+
+    #[test]
+    fn nested_goose_metadata_keys_never_escape_into_facts() {
+        let source = goose_source_key().unwrap();
+        let session_id = goose_session_id(&source, "closed-facts-session").unwrap();
+        let session = GooseSessionProjection {
+            session_id,
+            parent_session_id: None,
+            parent_provider_session_id: None,
+            cwd: Some("/schema-known-cwd".to_owned()),
+        };
+        let mut event = timestamp_event("2026-08-16T00:00:00Z");
+        event.session_identity = "closed-facts-session".to_owned();
+        event.content = serde_json::json!([{
+            "type": "text",
+            "text": "exact Goose body",
+            "metadata": {
+                "path": "src/goose-decoy.rs",
+                "nested": {
+                    "branch": "decoy-branch",
+                    "commit": "decoy-commit",
+                    "command": "decoy-command"
+                }
+            }
+        }]);
+        event.searchable_text = "exact Goose body".to_owned();
+
+        let record = goose_core_record(&source, &session, event, 11).unwrap();
+        let facts = &record.content.activity.as_ref().unwrap().facts;
+        assert_eq!(facts.len(), 1);
+        assert_eq!(facts[0].kind, LiteralFactKind::SessionCwd);
+        assert_eq!(facts[0].value, "/schema-known-cwd");
+    }
+
+    #[test]
+    fn oversized_goose_result_is_retained_once_with_explicit_activity_omission() {
+        let source = goose_source_key().unwrap();
+        let session_id = goose_session_id(&source, "large-session").unwrap();
+        let session = GooseSessionProjection {
+            session_id,
+            parent_session_id: None,
+            parent_provider_session_id: None,
+            cwd: None,
+        };
+        let body = format!(
+            "goose-whole-result-head-{}-goose-whole-result-tail",
+            "x".repeat(9 * 1024 * 1024)
+        );
+        let event = GooseNativeEvent {
+            sqlite_rowid: 42,
+            native_order: 42,
+            native_identity: "goose-message-identity-v1:large-result".to_owned(),
+            provider_message_identity: Some("large-result".to_owned()),
+            identity_degraded: false,
+            session_identity: "large-session".to_owned(),
+            kind: GooseNativeEventKind::ToolOutput,
+            role: "tool".to_owned(),
+            content: serde_json::json!([{
+                "type": "toolResponse",
+                "toolCallId": "large-call",
+                "toolResult": body.clone(),
+            }]),
+            searchable_text: body.clone(),
+            semantic_capture_ambiguous: false,
+            created_timestamp: None,
+            timestamp: None,
+            tokens_json: None,
+            metadata_json: None,
+            retained_content_bytes: u64::try_from(body.len()).unwrap(),
+            logical_row_digest: Some([8; 32]),
+        };
+        let record = goose_core_record(&source, &session, event, 10).unwrap();
+        assert_eq!(record.content.meaningful_text(), body);
+        assert!(record.content.structured_content.is_none());
+        let activity = record.content.activity.as_ref().unwrap();
+        assert_eq!(
+            activity.provider_call_id,
+            Some(TypedKey::Utf8("large-call".to_owned()))
+        );
+        let result = activity.result.as_ref().unwrap();
+        assert_eq!(result.text, ActivityTextCapture::NormalizedBody);
+        assert!(matches!(
+            result.structured_content,
+            ActivityJsonCapture::Omitted { ref reason, .. }
+                if reason == "normalized_body_authoritative"
+        ));
+        record.validate_contract().unwrap();
     }
 }

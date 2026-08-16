@@ -44,7 +44,7 @@ fn body(record: &CoreRecord) -> &str {
 }
 
 #[test]
-fn cold_projection_preserves_complete_bodies_outcomes_and_core_semantics() {
+fn cold_projection_preserves_complete_bodies_and_core_semantics() {
     const TAIL: &str = "openhandspostsixteenkilobytesentinel";
     const LARGE_TAIL: &str = "openhands-post-eight-mib-tail";
 
@@ -112,19 +112,20 @@ fn cold_projection_preserves_complete_bodies_outcomes_and_core_semantics() {
     assert_eq!(body(&projection.records[2]), "failure output");
     assert_eq!(body(&projection.records[3]), "timeout output");
     assert_eq!(body(&projection.records[4]), "unknown output");
-    assert_eq!(
-        projection.records[1]
-            .content
-            .structured_content
+    let large_activity = projection.records[1].content.activity.as_ref().unwrap();
+    assert!(large_activity.provider_call_id.is_some());
+    assert!(matches!(
+        large_activity
+            .result
             .as_ref()
-            .and_then(|value| value.pointer("/provider_native_tool_result/call_id"))
-            .and_then(Value::as_str),
-        Some("call-event-success")
-    );
+            .map(|result| &result.structured_content),
+        Some(ctx_history_core::ActivityJsonCapture::Omitted { reason, .. })
+            if reason == "size_limit"
+    ));
 
     let first = &projection.records[0];
     assert_eq!(first.parent_session_id, None);
-    assert_eq!(first.root_session_id, first.session_id);
+    assert_eq!(first.root_session_id, None);
     assert_eq!(
         first.provider_session_id.as_deref(),
         Some("conversation-cold")
@@ -133,8 +134,6 @@ fn cold_projection_preserves_complete_bodies_outcomes_and_core_semantics() {
         first.native_event_id,
         Some(TypedKey::Utf8("event-message".to_owned()))
     );
-    assert_eq!(first.agent_type, "primary");
-    assert!(first.is_primary);
     assert_eq!(first.event_sequence, 0);
     assert_eq!(projection.records[1].event_sequence, 1);
     assert_eq!(projection.records[2].event_sequence, 2);
@@ -143,7 +142,7 @@ fn cold_projection_preserves_complete_bodies_outcomes_and_core_semantics() {
     assert_eq!(first.role.as_deref(), Some("assistant"));
     assert_eq!(
         projection.source.parser_revision(),
-        "openhands-source-backed-v4"
+        "openhands-source-backed-v6-closed-facts"
     );
 }
 
@@ -191,7 +190,7 @@ fn file_result_policy_retains_success_and_meaningful_failure() {
     assert_eq!(projection.source.counts().ignored_records, 0);
     assert_eq!(projection.source.counts().retained_records, 2);
     assert_eq!(projection.records.len(), 2);
-    assert_eq!(projection.records[0].event_type, "file_touched");
+    assert_eq!(projection.records[0].event_type, "tool_output");
     assert_eq!(
         body(&projection.records[0]),
         "successful editor output must not be searchable"
@@ -327,7 +326,7 @@ fn unchanged_plan_reads_zero_bodies_and_changed_group_reads_each_leaf_once() {
                 let plan = adapter.bind_group(group).unwrap();
                 let certified = base.get(group.group_key()).unwrap();
                 certified.observation() == &plan.opening
-                    && certified.parser_revision() == "openhands-source-backed-v4"
+                    && certified.parser_revision() == "openhands-source-backed-v6-closed-facts"
             })
             .collect::<Vec<_>>()
     });
@@ -347,7 +346,7 @@ fn unchanged_plan_reads_zero_bodies_and_changed_group_reads_each_leaf_once() {
             let plan = adapter.bind_group(group).unwrap();
             let certified = base.get(group.group_key()).unwrap();
             if certified.observation() == &plan.opening
-                && certified.parser_revision() == "openhands-source-backed-v4"
+                && certified.parser_revision() == "openhands-source-backed-v6-closed-facts"
             {
                 continue;
             }
@@ -449,6 +448,87 @@ fn duplicate_and_cross_conversation_native_ids_are_scoped_correctly() {
             event_id,
         }) if conversation_id == "conversation-duplicate" && event_id == "same-event"
     ));
+}
+
+#[test]
+fn conflicting_openhands_activity_aliases_retain_records_and_abstain_exactly() {
+    let temp = crate::test_support_paths::tempdir().unwrap();
+    let root = temp.path().join("profile");
+    let conflicting_identity = json!({
+        "id": "conflicting-identity",
+        "timestamp": "2026-07-28T12:00:00Z",
+        "kind": "ActionEvent",
+        "source": "agent",
+        "tool_call_id": "call-one",
+        "toolCallId": "call-two",
+        "action": {"kind": "first_tool", "name": "second_tool", "input": {"x": 1}}
+    });
+    write_event(
+        &root,
+        "conversation",
+        "0001.json",
+        conflicting_identity.clone(),
+    );
+    let conflicting_arguments = json!({
+        "id": "conflicting-arguments",
+        "timestamp": "2026-07-28T12:00:01Z",
+        "kind": "ActionEvent",
+        "source": "agent",
+        "tool_call_id": "call-args",
+        "action": {
+            "kind": "exact_tool",
+            "arguments": {"x": 1},
+            "input": {"x": 2}
+        }
+    });
+    write_event(
+        &root,
+        "conversation",
+        "0002.json",
+        conflicting_arguments.clone(),
+    );
+
+    let projection = project(&root).unwrap().remove(0);
+    assert_eq!(projection.records.len(), 2);
+    let identity = &projection.records[0];
+    assert_eq!(
+        identity.content.structured_content.as_ref(),
+        Some(&conflicting_identity)
+    );
+    assert!(identity.content.activity.is_none());
+
+    let arguments = &projection.records[1];
+    assert_eq!(
+        arguments.content.structured_content.as_ref(),
+        Some(&conflicting_arguments)
+    );
+    assert!(arguments.content.activity.is_none());
+}
+
+#[test]
+fn nested_openhands_metadata_keys_never_escape_into_facts() {
+    let temp = crate::test_support_paths::tempdir().unwrap();
+    let root = temp.path().join("profile");
+    let mut event = message("nested-metadata", "exact OpenHands body");
+    event["metadata"] = json!({
+        "path": "src/top-level-decoy.rs",
+        "nested": {
+            "branch": "nested-decoy",
+            "commit": "nested-commit",
+            "command": "nested-command"
+        }
+    });
+    event["llm_message"]["metadata"] = json!({
+        "file": "src/message-decoy.rs",
+        "workdir": "/message/decoy"
+    });
+    write_event(&root, "conversation", "0001.json", event.clone());
+
+    let projection = project(&root).unwrap().remove(0);
+    assert_eq!(projection.records.len(), 1);
+    let record = &projection.records[0];
+    assert_eq!(record.content.structured_content.as_ref(), Some(&event));
+    assert!(record.content.activity.is_none());
 }
 
 #[test]

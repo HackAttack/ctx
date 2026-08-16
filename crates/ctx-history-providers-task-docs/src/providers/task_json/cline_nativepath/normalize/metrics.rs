@@ -18,6 +18,9 @@ pub(in super::super) fn estimated_event_bytes(row: &ClineEventRow) -> usize {
             1_usize
                 .saturating_add(encoded_option_str(call.call_id.as_deref()))
                 .saturating_add(encoded_option_str(call.name.as_deref()))
+                .saturating_add(
+                    serde_json::to_vec(&call.arguments).map_or(0, |encoded| encoded.len()),
+                )
         }))
         .saturating_add(row.sparse_output.as_ref().map_or(1, |output| {
             1_usize
@@ -26,18 +29,6 @@ pub(in super::super) fn estimated_event_bytes(row: &ClineEventRow) -> usize {
                 .saturating_add(encoded_option_u64(output.duration_ms))
                 .saturating_add(8)
                 .saturating_add(encoded_option_str(output.call_id.as_deref()))
-        }))
-        .saturating_add(8)
-        .saturating_add(row.file_touches.iter().fold(0_usize, |bytes, touch| {
-            bytes
-                .saturating_add(encoded_str(&touch.path))
-                .saturating_add(encoded_option_str(touch.old_path.as_deref()))
-                .saturating_add(1)
-                .saturating_add(1)
-                .saturating_add(encoded_str(
-                    &serde_json::to_string(&touch.metadata)
-                        .expect("file-touch metadata should serialize"),
-                ))
         }))
 }
 
@@ -112,11 +103,6 @@ fn encoded_option_i64(value: Option<i64>) -> usize {
 
 fn encoded_option_u64(value: Option<u64>) -> usize {
     1 + usize::from(value.is_some()) * 8
-}
-
-pub(super) fn hash_field(hasher: &mut Sha256, bytes: &[u8]) {
-    hasher.update((bytes.len() as u64).to_le_bytes());
-    hasher.update(bytes);
 }
 
 pub(super) fn hash_native_key(hasher: &mut Sha256, key: &ClineNativeItemKey) {

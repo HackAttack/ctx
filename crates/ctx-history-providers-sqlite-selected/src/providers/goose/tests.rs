@@ -1,11 +1,10 @@
+use ctx_history_core::{ActivityJsonCapture, ActivityTextCapture, TypedKey};
 use serde_json::{json, Value};
 
 use rusqlite::Connection;
 
 use super::{
-    normalization::{
-        goose_normalized_result_content, goose_output_projection, normalize_goose_native_output,
-    },
+    normalization::{goose_normalized_result_content, normalize_goose_native_output},
     schema::GooseNativeSchema,
     stream::{
         goose_fetch_native_message_page, GooseMessageCellDisposition, GooseNativePageLimits,
@@ -18,7 +17,7 @@ fn goose_result_content_is_unbounded_ordered_and_does_not_search_wrappers() {
     let long = "x".repeat(16_037);
     let content = json!([
         {"type": "text", "output": "not a result"},
-        {"type": "toolResponse", "toolResult": long.clone(), "result": "lower priority"},
+        {"type": "toolResponse", "toolResult": long.clone()},
         [{"type": "toolResponse", "content": ["second", 2]}],
         {"type": "wrapper", "content": {"type": "toolResponse", "result": "not discovered"}}
     ]);
@@ -26,6 +25,14 @@ fn goose_result_content_is_unbounded_ordered_and_does_not_search_wrappers() {
     assert_eq!(
         goose_normalized_result_content(&content),
         Some(format!("{long}\nsecond\n2"))
+    );
+    assert_eq!(
+        goose_normalized_result_content(&json!([{
+            "type": "toolResponse",
+            "toolResult": "one",
+            "result": "two"
+        }])),
+        None
     );
     assert_eq!(
         goose_normalized_result_content(&json!({
@@ -37,37 +44,94 @@ fn goose_result_content_is_unbounded_ordered_and_does_not_search_wrappers() {
 
 #[test]
 fn goose_output_body_and_outcome_use_the_same_direct_tool_responses() {
-    let content = json!([
-        {
-            "type": "toolResponse",
-            "toolCallId": "call-1",
-            "toolResult": "exact failure body",
-            "exitCode": 9,
-            "durationMs": 42
-        },
-        {
-            "type": "wrapper",
-            "content": {
-                "type": "toolResponse",
-                "toolResult": "must not affect body or outcome",
-                "success": true
-            }
-        }
-    ]);
-
-    let output = goose_output_projection(&content);
-    assert_eq!(
-        goose_normalized_result_content(&content).as_deref(),
-        Some("exact failure body")
-    );
-    assert_eq!(output.call_id.as_deref(), Some("call-1"));
-    assert_eq!(output.outcome.outcome, crate::OutputOutcome::Failure);
-    assert_eq!(output.outcome.exit_code, Some(9));
-    assert_eq!(output.outcome.duration_ms, Some(42));
+    let scanned = scan_only_output(json!([{
+        "type": "toolResponse",
+        "toolCallId": "call-1",
+        "toolResult": "exact failure body",
+        "status": "provider-failure",
+        "exitCode": 9,
+        "durationMs": 42
+    }]));
+    let event = normalize_goose_native_output(&scanned)
+        .unwrap()
+        .expect("selected Goose result");
+    let (call_id, invocation, result) = super::source_backed::goose_activity(&event, None).unwrap();
+    assert_eq!(event.searchable_text, "exact failure body");
+    assert_eq!(call_id, Some(TypedKey::utf8("call-1").unwrap()));
+    assert!(invocation.is_none());
+    let result = result.unwrap();
+    assert_eq!(result.status.as_deref(), Some("provider-failure"));
+    assert_eq!(result.text, ActivityTextCapture::NormalizedBody);
+    assert!(matches!(
+        result.structured_content,
+        ActivityJsonCapture::Omitted { ref reason, .. }
+            if reason == "normalized_body_authoritative"
+    ));
 }
 
 #[test]
-fn source_parser_keeps_success_failure_unknown_and_large_result_bodies() {
+fn goose_conflicting_id_name_and_argument_aliases_never_choose_an_occurrence() {
+    let event = |request: Value| {
+        let scanned = scan_only_output(json!([
+            request,
+            {
+                "type": "toolResponse",
+                "toolCallId": "call-1",
+                "toolResult": "exact result"
+            }
+        ]));
+        normalize_goose_native_output(&scanned)
+            .unwrap()
+            .expect("ambiguous Goose record remains retained")
+    };
+
+    let conflicting_id = event(json!({
+        "type": "toolRequest",
+        "toolCallId": "call-1",
+        "id": "call-2",
+        "toolCall": {"id": "call-1", "name": "exact_tool", "arguments": {"x": 1}}
+    }));
+    assert_eq!(
+        super::source_backed::goose_activity(&conflicting_id, None).unwrap(),
+        (None, None, None)
+    );
+
+    let conflicting_name = event(json!({
+        "type": "toolRequest",
+        "toolCallId": "call-1",
+        "toolCall": {
+            "id": "call-1",
+            "name": "first_tool",
+            "tool": "second_tool",
+            "arguments": {"x": 1}
+        }
+    }));
+    let (call_id, invocation, result) =
+        super::source_backed::goose_activity(&conflicting_name, None).unwrap();
+    assert_eq!(call_id, Some(TypedKey::Utf8("call-1".to_owned())));
+    assert!(invocation.is_none());
+    assert!(result.is_some());
+
+    let conflicting_arguments = event(json!({
+        "type": "toolRequest",
+        "toolCallId": "call-1",
+        "toolCall": {
+            "id": "call-1",
+            "name": "exact_tool",
+            "arguments": {"x": 1},
+            "input": {"x": 2}
+        }
+    }));
+    let (_, invocation, _) =
+        super::source_backed::goose_activity(&conflicting_arguments, None).unwrap();
+    assert_eq!(
+        invocation.unwrap().arguments,
+        ActivityJsonCapture::Unavailable
+    );
+}
+
+#[test]
+fn source_parser_keeps_exact_statuses_and_large_result_bodies() {
     let ordered = scan_only_output(json!([
         {
             "type": "toolResponse",
@@ -85,41 +149,26 @@ fn source_parser_keeps_success_failure_unknown_and_large_result_bodies() {
         .expect("nested direct Goose results");
     assert_eq!(ordered.searchable_text, "first\nsecond");
 
-    for (status_field, status_value, expected_disposition, expected_outcome) in [
-        (
-            "status",
-            json!("success"),
-            GooseMessageCellDisposition::OutputSuccess,
-            "success",
-        ),
-        (
-            "isError",
-            json!(true),
-            GooseMessageCellDisposition::OutputFailure,
-            "failure",
-        ),
-        (
-            "status",
-            json!("future_state"),
-            GooseMessageCellDisposition::OutputUnknown,
-            "unknown",
-        ),
+    for (status_field, status_value) in [
+        ("status", json!("success")),
+        ("isError", json!(true)),
+        ("status", json!("future_state")),
     ] {
         let mut response = serde_json::Map::from_iter([
             ("type".to_owned(), json!("toolResponse")),
             ("toolCallId".to_owned(), json!("call-1")),
             ("toolResult".to_owned(), json!("complete native result")),
         ]);
-        response.insert(status_field.to_owned(), status_value);
+        response.insert(status_field.to_owned(), status_value.clone());
         let scanned = scan_only_output(Value::Array(vec![Value::Object(response)]));
-        assert_eq!(scanned.disposition, expected_disposition);
+        assert_eq!(scanned.disposition, GooseMessageCellDisposition::ToolOutput);
         let event = normalize_goose_native_output(&scanned)
             .unwrap()
             .expect("selected Goose result");
         assert_eq!(event.searchable_text, "complete native result");
-        assert_eq!(event.content["result_outcome"], expected_outcome);
-        assert_eq!(event.content["call_id"], "call-1");
-        assert!(!event.content.to_string().contains("complete native result"));
+        assert_eq!(event.content[0]["toolCallId"], "call-1");
+        assert_eq!(event.content[0][status_field], status_value);
+        assert_eq!(event.content[0]["toolResult"], "complete native result");
     }
 
     let large = format!(
@@ -148,7 +197,41 @@ fn source_parser_keeps_success_failure_unknown_and_large_result_bodies() {
         .is_none());
 }
 
+#[test]
+fn duplicate_goose_selectors_reject_or_retain_only_raw_lexical_evidence() {
+    let duplicate_type = scan_only_output_raw(
+        r#"[{"type":"text","type":"toolResponse","toolCallId":"call-1","toolResult":"body"}]"#,
+    );
+    assert_eq!(
+        duplicate_type.disposition,
+        GooseMessageCellDisposition::DuplicateBlockType
+    );
+    assert!(duplicate_type.content_json.is_none());
+
+    let duplicate_result = scan_only_output_raw(
+        r#"[{"type":"toolResponse","toolCallId":"call-1","toolResult":"first","toolResult":"second"}]"#,
+    );
+    assert_eq!(
+        duplicate_result.disposition,
+        GooseMessageCellDisposition::ToolOutput
+    );
+    let event = normalize_goose_native_output(&duplicate_result)
+        .unwrap()
+        .expect("duplicate payload remains bounded lexical evidence");
+    assert!(event.semantic_capture_ambiguous);
+    assert!(event.searchable_text.contains("\"toolResult\":\"first\""));
+    assert!(event.searchable_text.contains("\"toolResult\":\"second\""));
+    assert_eq!(
+        super::source_backed::goose_activity(&event, None).unwrap(),
+        (None, None, None)
+    );
+}
+
 fn scan_only_output(content: Value) -> super::stream::GooseScannedMessage {
+    scan_only_output_raw(&content.to_string())
+}
+
+fn scan_only_output_raw(content: &str) -> super::stream::GooseScannedMessage {
     let connection = Connection::open_in_memory().unwrap();
     connection
         .execute_batch(
@@ -169,7 +252,7 @@ fn scan_only_output(content: Value) -> super::stream::GooseScannedMessage {
         .execute(
             "insert into messages (id, message_id, session_id, role, content_json)
              values (1, 'message-1', 'session-1', 'tool', ?1)",
-            [content.to_string()],
+            [content],
         )
         .unwrap();
     let schema = GooseNativeSchema::probe(&connection).unwrap();

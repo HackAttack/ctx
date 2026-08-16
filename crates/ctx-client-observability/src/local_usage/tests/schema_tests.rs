@@ -7,6 +7,55 @@ use crate::{
 };
 use rusqlite::Connection;
 
+fn assert_schema_identity_rejected(schema_version: i64, mutation: &str, schema: &str) {
+    let result = store::verify_released_schema_text_for_test(schema_version, schema);
+    assert!(
+        matches!(result, Err(UsageStoreError::SchemaIdentity)),
+        "schema v{schema_version} did not reject {mutation} as an identity error: {result:?}"
+    );
+}
+
+#[test]
+fn released_predecessor_ddl_identities_are_exact_for_every_version() {
+    for schema_version in 1..=3 {
+        let schema = store::released_schema_for_test(schema_version).unwrap();
+        assert_eq!(
+            store::verify_released_schema_text_for_test(schema_version, &schema).unwrap(),
+            schema_version
+        );
+
+        let extra_column = schema.replacen(
+            "    calls INTEGER NOT NULL CHECK (calls > 0),",
+            "    unexpected INTEGER NOT NULL DEFAULT 0,\n    calls INTEGER NOT NULL CHECK (calls > 0),",
+            1,
+        );
+        assert_schema_identity_rejected(schema_version, "an extra column", &extra_column);
+
+        let altered_constraint = schema.replacen(
+            "calls INTEGER NOT NULL CHECK (calls > 0)",
+            "calls INTEGER NOT NULL CHECK (calls >= 0)",
+            1,
+        );
+        assert_schema_identity_rejected(
+            schema_version,
+            "an altered constraint",
+            &altered_constraint,
+        );
+
+        let without_strict = schema.replacen(") WITHOUT ROWID, STRICT;", ") WITHOUT ROWID;", 1);
+        assert_schema_identity_rejected(schema_version, "removal of STRICT", &without_strict);
+
+        let with_rowid = schema.replacen(") WITHOUT ROWID, STRICT;", ") STRICT;", 1);
+        assert_schema_identity_rejected(schema_version, "removal of WITHOUT ROWID", &with_rowid);
+    }
+
+    let initial_v1 = store::released_initial_v1_schema_for_test();
+    assert_eq!(
+        store::verify_released_schema_text_for_test(1, &initial_v1).unwrap(),
+        1
+    );
+}
+
 #[test]
 fn schema_has_only_spec_26_aggregate_fields_and_content_free_maintenance() {
     let root = private_tempdir();
@@ -31,12 +80,9 @@ fn schema_has_only_spec_26_aggregate_fields_and_content_free_maintenance() {
             "outcome",
             "value_class",
             "duration_bucket",
-            "target_type",
-            "pro_outcome",
             "context_coverage",
             "calls",
             "result_count",
-            "citation_count",
             "delivered_output_bytes",
             "delivered_context_bytes",
             "matched_normalized_session_bytes",
@@ -53,7 +99,7 @@ fn schema_has_only_spec_26_aggregate_fields_and_content_free_maintenance() {
 }
 
 #[test]
-fn schema_rejects_context_baseline_and_citation_misclassification() {
+fn schema_rejects_invalid_context_classification() {
     let root = private_tempdir();
     store::record(root.path(), operation("doctor")).unwrap();
     let path = store::usage_path(root.path());
@@ -72,9 +118,6 @@ fn schema_rejects_context_baseline_and_citation_misclassification() {
              context_coverage = 'complete'",
             [],
         )
-        .is_err());
-    assert!(conn
-        .execute("UPDATE daily_usage SET citation_count = 1", [])
         .is_err());
 }
 
@@ -188,7 +231,6 @@ fn sqlite_schema_and_report_contain_no_content_or_identity_dimensions() {
         "path_value",
         "session_id",
         "event_id",
-        "citation_id",
         "user_id",
         "machine_id",
         "telemetry_id",

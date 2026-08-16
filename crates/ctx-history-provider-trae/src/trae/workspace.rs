@@ -1,9 +1,103 @@
-use std::path::Path;
+use std::{ffi::OsStr, path::Path};
+
+use ctx_history_capture_model::{
+    exact_bounded_string_alias, raw_object_keys_are_unique, ExactJsonStringAlias,
+};
+use ctx_history_provider_runtime::{
+    source_io::{OpenedProviderSourceFile, OpenedProviderSourcePath, ProviderSourceDirectory},
+    Result,
+};
+use sha2::{Digest, Sha256};
 
 use crate::MAX_PROVIDER_JSONL_LINE_BYTES;
-use ctx_history_provider_runtime::source_io::read_json_file_limited;
 
-use super::normalization::trae_first_present_string_field;
+const TRAE_WORKSPACE_ALIASES: &[&str] = &["folder", "workspace", "path"];
+
+pub(super) struct TraeWorkspaceFolderAuthority {
+    literal: Option<String>,
+    source: Option<OpenedProviderSourceFile>,
+}
+
+impl TraeWorkspaceFolderAuthority {
+    pub(super) fn observe(parent: &ProviderSourceDirectory) -> Self {
+        let Ok(OpenedProviderSourcePath::File(source)) =
+            parent.open_child(OsStr::new("workspace.json"))
+        else {
+            return Self::unavailable();
+        };
+        let Ok(bytes) = source.read_all_bounded(MAX_PROVIDER_JSONL_LINE_BYTES) else {
+            return Self::unavailable_with_source(source);
+        };
+        if !raw_object_keys_are_unique(&bytes) {
+            return Self::unavailable_with_source(source);
+        }
+        let Ok(value) = serde_json::from_slice::<serde_json::Value>(&bytes) else {
+            return Self::unavailable_with_source(source);
+        };
+        let Some(object) = value.as_object() else {
+            return Self::unavailable_with_source(source);
+        };
+        let ExactJsonStringAlias::Exact(literal) = exact_bounded_string_alias(
+            object,
+            TRAE_WORKSPACE_ALIASES,
+            MAX_PROVIDER_JSONL_LINE_BYTES,
+        ) else {
+            return Self::unavailable_with_source(source);
+        };
+        if literal.trim().is_empty() {
+            return Self::unavailable_with_source(source);
+        }
+        Self {
+            literal: Some(literal.to_owned()),
+            source: Some(source),
+        }
+    }
+
+    fn unavailable() -> Self {
+        Self {
+            literal: None,
+            source: None,
+        }
+    }
+
+    fn unavailable_with_source(source: OpenedProviderSourceFile) -> Self {
+        Self {
+            literal: None,
+            source: Some(source),
+        }
+    }
+
+    pub(super) fn literal(&self) -> Option<&str> {
+        self.literal.as_deref()
+    }
+
+    pub(super) fn projection_fingerprint(&self) -> [u8; 32] {
+        let mut digest = Sha256::new();
+        digest.update(b"ctx-trae-workspace-folder-v1\0");
+        match self.literal() {
+            Some(literal) => {
+                digest.update([1]);
+                digest.update((literal.len() as u64).to_be_bytes());
+                digest.update(literal.as_bytes());
+            }
+            None => digest.update([0]),
+        }
+        digest.finalize().into()
+    }
+
+    pub(super) fn certified_bytes(&self) -> u64 {
+        self.literal()
+            .and_then(|literal| u64::try_from(literal.len()).ok())
+            .unwrap_or(0)
+    }
+
+    pub(super) fn revalidate(&self) -> Result<()> {
+        if let Some(source) = &self.source {
+            source.revalidate()?;
+        }
+        Ok(())
+    }
+}
 
 pub(super) fn trae_workspace_id(path: &Path) -> String {
     path.parent()
@@ -12,63 +106,4 @@ pub(super) fn trae_workspace_id(path: &Path) -> String {
         .filter(|name| !name.trim().is_empty())
         .unwrap_or("state-vscdb")
         .to_owned()
-}
-
-pub(super) fn trae_workspace_folder(path: &Path) -> Option<String> {
-    let workspace_json = path.parent()?.join("workspace.json");
-    let value = read_json_file_limited(
-        &workspace_json,
-        MAX_PROVIDER_JSONL_LINE_BYTES,
-        "Trae workspace.json",
-    )
-    .ok()?;
-    trae_first_present_string_field(&value, &["folder", "workspace", "path"])
-        .map(|folder| trae_workspace_folder_label(&folder))
-}
-
-fn trae_workspace_folder_label(folder: &str) -> String {
-    let Some(path) = folder.strip_prefix("file://") else {
-        return folder.to_owned();
-    };
-    percent_decode_uri_path(path)
-}
-
-fn percent_decode_uri_path(value: &str) -> String {
-    let bytes = value.as_bytes();
-    let mut out = Vec::with_capacity(bytes.len());
-    let mut index = 0usize;
-    while index < bytes.len() {
-        if bytes[index] == b'%' && index + 2 < bytes.len() {
-            let hi = (bytes[index + 1] as char).to_digit(16);
-            let lo = (bytes[index + 2] as char).to_digit(16);
-            if let (Some(hi), Some(lo)) = (hi, lo) {
-                out.push(((hi << 4) | lo) as u8);
-                index += 3;
-                continue;
-            }
-        }
-        out.push(bytes[index]);
-        index += 1;
-    }
-    String::from_utf8(out).unwrap_or_else(|_| value.to_owned())
-}
-
-#[cfg(test)]
-mod tests {
-    use std::fs;
-
-    use super::trae_workspace_folder;
-
-    #[test]
-    fn blank_folder_alias_suppresses_later_workspace_and_path_aliases() {
-        let temp = crate::test_support_paths::tempdir().unwrap();
-        let source = temp.path().join("state.vscdb");
-        fs::write(
-            temp.path().join("workspace.json"),
-            r#"{"folder":"  ","workspace":"file:///later/workspace","path":"/later/path"}"#,
-        )
-        .unwrap();
-
-        assert_eq!(trae_workspace_folder(&source), None);
-    }
 }

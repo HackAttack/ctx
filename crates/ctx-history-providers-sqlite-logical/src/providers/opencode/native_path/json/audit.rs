@@ -176,17 +176,13 @@ fn object_is_forbidden_output(object: &Map<String, Value>) -> bool {
         return false;
     }
     let state = object.get("state").and_then(Value::as_object);
-    let status = state
-        .and_then(|state| state.get("status").or_else(|| state.get("outcome")))
-        .or_else(|| object.get("status"))
-        .or_else(|| object.get("outcome"))
-        .and_then(Value::as_str);
-    if status.is_some_and(is_terminal_status) {
-        return true;
-    }
+    let has_input = object.contains_key("input")
+        || object.contains_key("arguments")
+        || object.contains_key("command")
+        || state.is_some_and(|state| state.contains_key("input"));
     let has_output = object.contains_key("content")
         || object.contains_key("structured")
         || state
             .is_some_and(|state| state.contains_key("content") || state.contains_key("structured"));
-    status.is_some_and(|status| normalize_token(status) == "running") && has_output
+    !has_input && has_output
 }

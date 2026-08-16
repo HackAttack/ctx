@@ -1,0 +1,20 @@
+{
+  "contract": "ctx-managed-pair-release-authority",
+  "schema_version": 1,
+  "channels": [
+    {
+      "id": "stable",
+      "key_id": "ctx-pro-release-stable-2026-07-27",
+      "signature_algorithm": "rsa-pkcs1v15-sha256",
+      "public_key_der_sha256": "6f767d5965e828bda3db814daed107ce47368b4edcbdba5eff48cec7038f42a6",
+      "public_key_pem": "-----BEGIN RSA PUBLIC KEY-----\nMIIBigKCAYEAq2vmUvoGcm0bAJhCdjzqzLF9SAALDA33KQOHWI3JeKFjxHTLs3hP\n88b3WfUfWgd/Bj6pVWpAI/S6MnrT5IQ8VMxPMe9VMM97F4TMN+ZMwo9y4sxefGwJ\n+GI/7SJP3hnRLMV2xme9RRMERuaAEL1ComPdqKwcAMzvZSpAHnDrWnjLrhBFyahl\n2n8JoxvNr4sNHGJBdK0voDBgHmgoJvL23zrRDoo+yA7M7F0gQJc0hwxXUeku7rxb\nhlPU7WPZGwDbaNEzoVJBinlXoLuFT3cR7ImwnfPOARSa7q7KZaIoaeljqM3d6lTa\nabVHhCI+EJy1XX4ydQxFbqccMzhsz5g6Wim8q7pKliKT97uwV3r80f3DpjBUiG3e\n+6QpMkxZqVaIgK85Za1stYKPfy9wOZyKkXthHeRbhKjozuogyK8cp03TjY6K6pw2\nVNd6soFZl6R0F8V4tNR5CXwlMjgFogl6t2sKIGHUhHC7y1U01lYlRJNqmvCClD2N\nuvdK7q5ndg1XAgMBAAE=\n-----END RSA PUBLIC KEY-----"
+    },
+    {
+      "id": "staging",
+      "key_id": "ctx-pro-release-staging-2026-07-30",
+      "signature_algorithm": "rsa-pkcs1v15-sha256",
+      "public_key_der_sha256": "e08a1534a6cbbf3ebbf4fdb40d44d55d34c9fe3e89eba83b5d095b1036f1086a",
+      "public_key_pem": "-----BEGIN RSA PUBLIC KEY-----\nMIIBigKCAYEArDw7seuvC1i9TddKQOiakTnChzaHfgycUAbZ4gz4E60FJX3t54l8\n7NILgkA5unkUsDr9mTXM+vtzWnKaa5mVzr5/xJgnTqcy/3OSB1iLnyKuGqfQN+vo\nvoHHiQ6EGtG7KpMWJq6dX/TG5lBrxyl7oCNQKcYH1wHsYfbxPE6HakaPXsoDT1Dx\nmLvjL7z77fCbGRVe4N+rFLO236tnqu4SYtG9ynsRSn/fdvDvZexeGClwXiCo+BGn\nXz6vW/NR3wQ4TxFIKAFGf6kCBJQTO/w4+fse/CaItVdGEqKYGsh5dcD4wljqLU4o\nKN27yQd1h6Hahcbsndy/U/mUBkhh+A+9NM0IoKhIDbt0MXwwG/6mvdpdgKQ7IIA2\nOqkJ827wDqVxKxW/9gdSJ/AsmfHvbdxKGy5y9rpurdk9bY86IYrjkFAKxUjuE08a\nNN7ajvCUtdk/O24cMGDn6+EBob2UflYbBWL05f627ptt9S8U94/tCmBTzCVn2YZG\nZBtC7rgoUXofAgMBAAE=\n-----END RSA PUBLIC KEY-----\n"
+    }
+  ]
+}

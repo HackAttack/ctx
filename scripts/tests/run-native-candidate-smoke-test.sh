@@ -3,7 +3,6 @@ set -euo pipefail
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 smoke="${repo_root}/scripts/run-native-candidate-smoke.sh"
-pro_status_fixtures="${repo_root}/scripts/tests/fixtures/native-candidate-pro-status"
 tmp="$(mktemp -d "${TMPDIR:-/tmp}/ctx-native-smoke-test.XXXXXX")"
 
 cleanup_survivor_fixture() {
@@ -29,8 +28,7 @@ trap cleanup_test EXIT
 fake_template="${tmp}/ctx.template"
 make_fake() {
   local destination="$1"
-  local pro_status_fixture="$2"
-  sed "s|__PRO_STATUS_FIXTURE__|${pro_status_fixture}|" "${fake_template}" > "${destination}"
+  cp "${fake_template}" "${destination}"
   chmod +x "${destination}"
 }
 
@@ -136,11 +134,7 @@ case " $* " in
     ;;
   *" status --format json "*)
     test -z "${CTX_SEARCH_SEMANTIC:-}"
-    if test -n "${CTX_PRO_HELPER:-}"; then
-      test "${CTX_ANALYTICS_ENABLED:-}" = false
-      test "${CTX_UPGRADE_AUTO:-}" = off
-      test "${CTX_DAEMON_ENABLED:-}" = false
-    elif test "${CTX_ANALYTICS_ENABLED+x}" != x; then
+    if test "${CTX_ANALYTICS_ENABLED+x}" != x; then
       test -z "${CTX_UPGRADE_AUTO:-}"
       test -z "${CTX_DAEMON_ENABLED:-}"
     else
@@ -191,11 +185,7 @@ case "${1:-}" in
     printf '%s\n' '{"retrieval":{"requested_mode":"lexical","effective_mode":"lexical"},"results":[{"text":"Add a parser test."}]}'
     ;;
   status)
-    if test -n "${CTX_PRO_HELPER:-}"; then
-      printf '%s' '{"read_only":true,"pro":'
-      cat "__PRO_STATUS_FIXTURE__"
-      printf '%s\n' '}'
-    elif test "${CTX_ANALYTICS_ENABLED+x}" != x; then
+    if test "${CTX_ANALYTICS_ENABLED+x}" != x; then
       analytics_path="${CTX_ANALYTICS_ENDPOINT#file://}"
       printf '%s\n' '{"events":[{"event_name":"operation_completed"}]}' > "${analytics_path}"
       cat <<'JSON'
@@ -262,36 +252,41 @@ esac
 EOF
 printf '%s\n' '{"record_type":"manifest","schema_version":"ctx-history-jsonl-v1"}' > "${tmp}/fixture.jsonl"
 
-expected='{"schema_version":1,"kind":"ctx-native-candidate-smoke","status":"passed","steps":{"version":"passed","setup":"passed","import":"passed","search":"passed","read_only":"passed","released_defaults":"passed","explicit_opt_outs":"passed","pro_helper_override_ignored":"passed","semantic_offline_fail_closed":"passed"}}'
-for access_case in absent-helper-trial absent-helper-locked absent-helper-unavailable; do
-  fake="${tmp}/ctx"
-  make_fake "${fake}" "${pro_status_fixtures}/${access_case}.json"
-  result="${tmp}/result-${access_case}.json"
-  "${smoke}" "${fake}" "${tmp}/fixture.jsonl" 0.25.0 "${result}" >/dev/null
-  [[ "$(tr -d '\r\n' < "${result}")" == "${expected}" ]] || {
-    printf 'candidate smoke result schema changed for %s\n' "${access_case}" >&2
-    cat "${result}" >&2
-    exit 1
-  }
-done
+assert_passed_result() {
+  local result_path="$1"
+  grep -Fq '"schema_version":1' "${result_path}"
+  grep -Fq '"kind":"ctx-native-candidate-smoke"' "${result_path}"
+  grep -Fq '"status":"passed"' "${result_path}"
+  for step in \
+    version setup import search read_only released_defaults explicit_opt_outs \
+    semantic_offline_fail_closed; do
+    grep -Fq "\"${step}\":\"passed\"" "${result_path}"
+  done
+}
+
+fake="${tmp}/ctx"
+make_fake "${fake}"
+result="${tmp}/result.json"
+"${smoke}" "${fake}" "${tmp}/fixture.jsonl" 0.25.0 "${result}" >/dev/null
+assert_passed_result "${result}"
 
 ctx_v1_parent="${tmp}/ctx-v1-parent"
 mkdir -p "${ctx_v1_parent}"
 ordinary_fake="${ctx_v1_parent}/ctx"
-make_fake "${ordinary_fake}" "${pro_status_fixtures}/absent-helper-trial.json"
+make_fake "${ordinary_fake}"
 ordinary_result="${tmp}/result-ordinary-under-ctx-v1-parent.json"
 "${smoke}" "${ordinary_fake}" "${tmp}/fixture.jsonl" 0.25.0 "${ordinary_result}" >/dev/null
-[[ "$(tr -d '\r\n' < "${ordinary_result}")" == "${expected}" ]] || {
+assert_passed_result "${ordinary_result}" || {
   printf 'candidate smoke fake matched an ancestor path instead of its basename\n' >&2
   cat "${ordinary_result}" >&2
   exit 1
 }
 
 v1_fake="${tmp}/ctx-v1"
-make_fake "${v1_fake}" "${pro_status_fixtures}/absent-helper-trial.json"
+make_fake "${v1_fake}"
 v1_result="${tmp}/result-v1.json"
 "${smoke}" "${v1_fake}" "${tmp}/fixture.jsonl" 1.0.0 "${v1_result}" >/dev/null
-[[ "$(tr -d '\r\n' < "${v1_result}")" == "${expected}" ]] || {
+assert_passed_result "${v1_result}" || {
   printf 'candidate smoke result schema changed for the fresh epoch\n' >&2
   cat "${v1_result}" >&2
   exit 1
@@ -303,7 +298,7 @@ lifecycle_tmpdir="${tmp}/lifecycle-smoke-tmp"
 mkdir -p "${lifecycle_parent}" "${lifecycle_tmpdir_real}"
 ln -s "${lifecycle_tmpdir_real}" "${lifecycle_tmpdir}"
 lifecycle_fake="${lifecycle_parent}/ctx-lifecycle"
-make_fake "${lifecycle_fake}" "${pro_status_fixtures}/absent-helper-trial.json"
+make_fake "${lifecycle_fake}"
 mkdir -p "${lifecycle_parent}/sealed-release-metadata"
 printf '%s\n' 'sealed release metadata' > "${lifecycle_parent}/sealed-release-metadata/manifest.txt"
 chmod 0750 "${lifecycle_parent}/sealed-release-metadata"
@@ -354,7 +349,7 @@ wait "${lifecycle_smoke_pid}" || {
   cat "${tmp}/lifecycle.err" >&2
   exit 1
 }
-[[ "$(tr -d '\r\n' < "${lifecycle_result}")" == "${expected}" ]]
+assert_passed_result "${lifecycle_result}"
 snapshot_tree "${lifecycle_parent}" > "${lifecycle_snapshot_after}"
 cmp -s "${lifecycle_snapshot_before}" "${lifecycle_snapshot_after}"
 [[ ! -e "${lifecycle_root}" ]] || {
@@ -363,7 +358,7 @@ cmp -s "${lifecycle_snapshot_before}" "${lifecycle_snapshot_after}"
 }
 
 failed_result="${tmp}/failed-result.json"
-make_fake "${tmp}/ctx-bad-version" "${pro_status_fixtures}/absent-helper-trial.json"
+make_fake "${tmp}/ctx-bad-version"
 if "${smoke}" \
   "${tmp}/ctx-bad-version" "${tmp}/fixture.jsonl" 0.25.0 "${failed_result}" \
   >"${tmp}/failure.out" 2>"${tmp}/failure.err"; then
@@ -377,7 +372,7 @@ fi
 grep -Fq 'candidate version mismatch' "${tmp}/failure.err"
 
 hung_result="${tmp}/hung-result.json"
-make_fake "${tmp}/ctx-hang" "${pro_status_fixtures}/absent-helper-trial.json"
+make_fake "${tmp}/ctx-hang"
 started="$(date +%s)"
 if CTX_NATIVE_CANDIDATE_COMMAND_TIMEOUT_SECONDS=1 "${smoke}" \
   "${tmp}/ctx-hang" "${tmp}/fixture.jsonl" 0.25.0 "${hung_result}" \
@@ -396,7 +391,7 @@ grep -Fq 'candidate command exceeded 1 seconds' "${tmp}/hung.err"
 survivor_tmpdir="${tmp}/survivor-smoke-tmp"
 mkdir -p "${survivor_tmpdir}"
 survivor_fake="${tmp}/ctx-survivor"
-make_fake "${survivor_fake}" "${pro_status_fixtures}/absent-helper-trial.json"
+make_fake "${survivor_fake}"
 survivor_result="${tmp}/survivor-result.json"
 TMPDIR="${survivor_tmpdir}" "${smoke}" \
   "${survivor_fake}" "${tmp}/fixture.jsonl" 0.25.0 "${survivor_result}" \

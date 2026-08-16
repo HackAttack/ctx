@@ -16,8 +16,6 @@
     "work_kind": "append",
     "refresh_result": "complete",
     "core_result": "complete",
-    "canonical_pro_result": "no_op",
-    "output_pro_result": "complete",
     "failure_scope": "none",
     "failure_type": "none",
     "work_remaining": false,

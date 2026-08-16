@@ -120,8 +120,6 @@ $requiredFunctions = @(
     "Get-WindowsRuntimeContract",
     "Assert-WindowsRuntimeArchive",
     "Get-BoundWindowsBuildInfoSha256",
-    "New-UniqueFixtureRoot",
-    "Complete-SmokeTeardown",
     "Invoke-Ctx",
     "Invoke-CtxChecked"
 )
@@ -199,30 +197,6 @@ foreach ($requiredSignedProvisioningContract in @(
 if ($smokeSource.Contains("Install-WindowsMlRuntime")) {
     throw "Windows ML proof must not directly extract or synthesize a signed runtime install"
 }
-if ($smokeSource.Contains('$fixtureDir = Join-Path $DataRoot "smoke-fixture"')) {
-    throw "Windows semantic smoke must not place fixture input under ctx DataRoot"
-}
-foreach ($requiredFixtureRootContract in @(
-    '$fixtureParent = Split-Path -Parent $DataRoot',
-    '$fixtureParent = $dataRootParent',
-    '$fixtureRoot = New-UniqueFixtureRoot -Parent $fixtureParent -DataRoot $DataRoot',
-    '$ownsFixtureRoot = $true',
-    '$fixturePath = Join-Path $fixtureRoot "history.jsonl"',
-    'Remove-Item -LiteralPath $fixtureRoot -Recurse -Force -ErrorAction Stop'
-)) {
-    if (-not $smokeSource.Contains($requiredFixtureRootContract)) {
-        throw "Windows semantic smoke is missing external fixture-root ownership: $requiredFixtureRootContract"
-    }
-}
-foreach ($requiredTeardownContract in @(
-    '$primaryError = $_',
-    '-PrimaryError $primaryError',
-    '-ErrorAction Continue'
-)) {
-    if (-not $smokeSource.Contains($requiredTeardownContract)) {
-        throw "Windows semantic smoke is missing primary-error-preserving teardown: $requiredTeardownContract"
-    }
-}
 $selectedBackendCheck = $smokeSource.IndexOf(
     '$embeddingRuntime.backend -cne $runtimeContract.StatusBackend',
     [System.StringComparison]::Ordinal
@@ -266,125 +240,6 @@ if (
 $root = Join-Path ([System.IO.Path]::GetTempPath()) ("ctx-windows-smoke-contract-" + [Guid]::NewGuid().ToString("n"))
 New-Item -ItemType Directory -Path $root | Out-Null
 try {
-    $primaryMessage = "synthetic primary lifecycle failure"
-    $primaryRecord = [System.Management.Automation.ErrorRecord]::new(
-        [System.TimeoutException]::new($primaryMessage),
-        "CtxSemanticSmoke.Primary",
-        [System.Management.Automation.ErrorCategory]::OperationTimeout,
-        $null
-    )
-    $cleanupException = [System.InvalidOperationException]::new(
-        "synthetic daemon teardown failure"
-    )
-    $script:dualFailure = $null
-    $dualFailureOutput = @(
-        & {
-            try {
-                Complete-SmokeTeardown `
-                    -PrimaryError $primaryRecord `
-                    -TeardownError $cleanupException `
-                    -FixtureCleanupError $null `
-                    -EnvironmentCleanupError $null `
-                    -RunRoot "C:\synthetic-run" `
-                    -FixtureRoot "C:\synthetic-fixture"
-            } catch {
-                $script:dualFailure = $_
-            }
-        } 2>&1
-    )
-    if (
-        $null -eq $dualFailure -or
-        $dualFailure.Exception.GetType() -ne [System.TimeoutException] -or
-        $dualFailure.Exception.Message -cne $primaryMessage -or
-        -not $dualFailure.FullyQualifiedErrorId.Contains("CtxSemanticSmoke.Primary")
-    ) {
-        throw "Cleanup failure replaced the primary semantic smoke failure"
-    }
-    if (-not ($dualFailureOutput | Out-String).Contains("cleanup also failed to stop the daemon")) {
-        throw "Secondary cleanup failure was not reported non-terminatingly"
-    }
-
-    $script:cleanupOnlyFailure = $null
-    & {
-        try {
-            Complete-SmokeTeardown `
-                -PrimaryError $null `
-                -TeardownError $cleanupException `
-                -FixtureCleanupError $null `
-                -EnvironmentCleanupError $null `
-                -RunRoot "C:\synthetic-run" `
-                -FixtureRoot "C:\synthetic-fixture"
-        } catch {
-            $script:cleanupOnlyFailure = $_
-        }
-    } 2>&1 | Out-Null
-    if (
-        $null -eq $cleanupOnlyFailure -or
-        $cleanupOnlyFailure.Exception.GetType() -ne [System.InvalidOperationException] -or
-        $cleanupOnlyFailure.Exception.Message -cne $cleanupException.Message
-    ) {
-        throw "Cleanup failure was not authoritative after an otherwise-successful smoke body"
-    }
-
-    $fixtureCases = @(
-        [PSCustomObject]@{
-            Name = "ordinary"
-            Parent = Join-Path $root "short-root"
-            DataRoot = Join-Path $root "short-root\run\data"
-        },
-        [PSCustomObject]@{
-            Name = "signed-provisioned"
-            Parent = Join-Path $root "signed"
-            DataRoot = Join-Path $root "signed\provisioned-data"
-        }
-    )
-    foreach ($fixtureCase in $fixtureCases) {
-        New-Item -ItemType Directory -Path $fixtureCase.DataRoot -Force | Out-Null
-        $ownedFixtureRoot = New-UniqueFixtureRoot `
-            -Parent $fixtureCase.Parent `
-            -DataRoot $fixtureCase.DataRoot
-        try {
-            $fixtureFullPath = [System.IO.Path]::GetFullPath($ownedFixtureRoot)
-            $dataFullPath = [System.IO.Path]::GetFullPath($fixtureCase.DataRoot)
-            $dataPrefix = $dataFullPath
-            $directorySeparator = [string][System.IO.Path]::DirectorySeparatorChar
-            if (-not $dataPrefix.EndsWith($directorySeparator, [System.StringComparison]::Ordinal)) {
-                $dataPrefix += $directorySeparator
-            }
-            if (
-                -not (Test-Path -LiteralPath $fixtureFullPath -PathType Container) -or
-                -not (Split-Path -Parent $fixtureFullPath).Equals(
-                    [System.IO.Path]::GetFullPath($fixtureCase.Parent),
-                    [System.StringComparison]::OrdinalIgnoreCase
-                ) -or
-                $fixtureFullPath.Equals($dataFullPath, [System.StringComparison]::OrdinalIgnoreCase) -or
-                $fixtureFullPath.StartsWith($dataPrefix, [System.StringComparison]::OrdinalIgnoreCase)
-            ) {
-                throw "$($fixtureCase.Name) fixture root overlaps ctx DataRoot or escaped its task parent"
-            }
-        } finally {
-            Remove-Item -LiteralPath $ownedFixtureRoot -Recurse -Force -ErrorAction Stop
-        }
-        if (Test-Path -LiteralPath $ownedFixtureRoot) {
-            throw "$($fixtureCase.Name) fixture root survived deterministic cleanup"
-        }
-    }
-
-    $overlapRoot = Join-Path $root "overlap\data"
-    New-Item -ItemType Directory -Path $overlapRoot -Force | Out-Null
-    $overlapFailure = $null
-    try {
-        New-UniqueFixtureRoot -Parent $overlapRoot -DataRoot $overlapRoot | Out-Null
-    } catch {
-        $overlapFailure = $_.Exception.Message
-    }
-    if (
-        [string]::IsNullOrEmpty($overlapFailure) -or
-        -not $overlapFailure.Contains("Fixture root must be outside ctx DataRoot")
-    ) {
-        throw "Fixture-root helper accepted a parent inside ctx DataRoot"
-    }
-
     $artifact = Join-Path $root "ctx.exe"
     [System.IO.File]::WriteAllText(
         $artifact,

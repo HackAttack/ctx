@@ -15,10 +15,10 @@ use crate::{
 
 pub(super) const SOURCE_FRONTIER_STATE: &str = "core_semantic_frontier_v1";
 pub(super) const SOURCE_ACKNOWLEDGEMENT_STATE: &str = "core_semantic_acknowledgement_v1";
-pub(super) const SOURCE_CONTRACT_VERSION: u16 = 11;
+pub(super) const SOURCE_CONTRACT_VERSION: u16 = 12;
 const SOURCE_CONTRACT_DOMAIN: &[u8] = b"ctx-source-backed-semantic-contract-v1\0";
 const SOURCE_BUILD_DOMAIN: &[u8] = b"ctx-source-backed-semantic-build-v1\0";
-pub(super) const SOURCE_INPUT_LEXICAL_SCHEMA_VERSION: u32 = 20;
+pub(super) const SOURCE_INPUT_LEXICAL_SCHEMA_VERSION: u32 = 21;
 const SHA256_HEX_BYTES: usize = 64;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -180,8 +180,16 @@ pub(super) fn validate_resolved_document(
     record: &CoreEventRecord,
     document: &SemanticEventDocument,
 ) -> Result<()> {
+    let literal_facts = record
+        .core_record
+        .content
+        .activity
+        .as_ref()
+        .map_or(&[][..], |activity| activity.facts.as_slice());
     if document.event_id != record.event_id.as_uuid()
         || document.seq != record.event_sequence
+        || document.agent_scope != record.core_record.agent_scope
+        || document.literal_facts.as_slice() != literal_facts
         || document.text.trim().is_empty()
     {
         return Err(anyhow!(

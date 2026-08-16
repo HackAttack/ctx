@@ -101,12 +101,8 @@ pub const MAX_COPIED_EVENT_LINEAGE_POSTING_VISITS: usize = 4_096;
 /// lineage query.
 ///
 /// This independent ceiling covers both live and deleted postings while the
-/// selected event, its forward copied-event chain, and session ancestry are
-/// resolved.
+/// selected event and its optional direct copied-event target are resolved.
 pub const MAX_COPIED_EVENT_LINEAGE_EVENT_AND_SESSION_IDENTITY_POSTING_VISITS: usize = 2_048;
-
-/// Maximum number of copied-event edges traversed from the canonical event.
-pub const MAX_COPIED_EVENT_LINEAGE_DEPTH: usize = 1_024;
 
 /// Bounded post-ranking lineage policy for one selected search result.
 pub const SEARCH_COPIED_EVENT_LINEAGE_POLICY: CopiedEventLineagePolicy =
@@ -118,10 +114,11 @@ pub const SHOW_COPIED_EVENT_LINEAGE_POLICY: CopiedEventLineagePolicy =
 
 /// Caller-selected work and preview-retention ceilings for copied-event lineage.
 ///
-/// The query always remains generation-pinned and depth-bounded. Search and
-/// show callers should pass their named policies above so presentation cannot
-/// accidentally widen either product surface. `maximum_occurrences` never
-/// stops traversal; it only caps retained preview rows.
+/// The direct-edge query always remains generation-pinned and posting-bounded.
+/// Search and show callers should pass their named policies above so
+/// presentation cannot accidentally widen either product surface.
+/// `maximum_occurrences` never stops counting direct claims; it only caps
+/// retained preview rows.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct CopiedEventLineagePolicy {
     pub maximum_occurrences: usize,
@@ -385,13 +382,10 @@ impl SemanticEligibility {
 
     pub fn includes(self, event: &EventRecord) -> bool {
         match self {
-            Self::UserMessageCandidateV4 => {
-                !matches!(event.event_origin, EventOrigin::CopiedFromAncestor { .. })
-                    && ctx_history_index_format::is_semantic_candidate(
-                        &event.event_type,
-                        event.role.as_deref(),
-                    )
-            }
+            Self::UserMessageCandidateV4 => ctx_history_index_format::is_semantic_candidate(
+                &event.event_type,
+                event.role.as_deref(),
+            ),
         }
     }
 }
@@ -515,7 +509,10 @@ pub enum AgentScope {
     #[default]
     All,
     Primary,
+    Subagent,
 }
+
+pub type SearchAgentScope = AgentScope;
 
 /// Event-content classes eligible for one search request.
 ///
@@ -566,8 +563,7 @@ pub struct EventSearchFilters {
     pub content_scope: SearchContentScope,
     pub event_type: Option<String>,
     pub role: Option<String>,
-    pub agent_type: Option<String>,
-    pub agent_scope: AgentScope,
+    pub agent_scope: SearchAgentScope,
     pub file: Option<String>,
     pub exclude_session_tree: Option<ExcludedSessionTree>,
 }
@@ -614,27 +610,22 @@ pub struct EventRecord {
     pub event_id: StableEntityId,
     pub session_id: StableEntityId,
     pub parent_session_id: Option<StableEntityId>,
-    pub root_session_id: StableEntityId,
-    pub session_relationship: SessionRelationshipKind,
-    pub event_origin: EventOrigin,
+    pub root_session_id: Option<StableEntityId>,
+    pub session_relationship: Option<ProviderNativeSessionRelationship>,
+    pub event_copy: Option<ProviderNativeEventCopy>,
     pub source: SourceKey,
     pub provider: String,
     pub source_format: String,
     pub provider_session_id: Option<String>,
     pub native_event_id: Option<TypedKey>,
-    pub branch: Option<String>,
-    pub agent_type: String,
-    pub is_primary: bool,
+    pub agent_scope: Option<CoreAgentScope>,
     pub event_sequence: u64,
     pub occurred_at_unix_ms: Option<i64>,
     pub event_type: String,
     pub role: Option<String>,
-    pub workspace: Option<String>,
-    pub cwd: Option<String>,
-    pub touched_files: Vec<String>,
 }
 
-/// One inherited-session claim reached from a copied-event target.
+/// One direct provider-native event-copy claim targeting the selected event.
 ///
 /// All identities are full stable IDs from the same stored Core record. The
 /// direct copied-from pair identifies the exact event edge, while the parent,
@@ -647,15 +638,16 @@ pub struct CopiedEventLineageOccurrence {
     pub copied_from_event_id: StableEntityId,
     pub copied_from_session_id: StableEntityId,
     pub parent_session_id: Option<StableEntityId>,
-    pub claimed_root_session_id: StableEntityId,
-    pub session_relationship: SessionRelationshipKind,
+    pub claimed_root_session_id: Option<StableEntityId>,
+    pub session_relationship: Option<ProviderNativeSessionRelationship>,
+    pub copy_proof: ProviderNativeCopyProof,
     pub depth: usize,
 }
 
-/// Query-time resolution of one selected copied-event chain.
+/// Query-time resolution of one selected event's direct copied-event target.
 ///
-/// Missing targets and cycles are ordinary lineage answers. They never imply
-/// that the containing immutable generation was invalid.
+/// A missing target is an ordinary lineage answer. Core does not infer or
+/// traverse a transitive ancestry chain.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CopiedEventLineageResolution {
     Resolved {
@@ -666,10 +658,6 @@ pub enum CopiedEventLineageResolution {
         event_id: Uuid,
         session_id: Option<StableEntityId>,
     },
-    Cyclic {
-        event_id: StableEntityId,
-        session_id: StableEntityId,
-    },
 }
 
 impl CopiedEventLineageResolution {
@@ -677,17 +665,16 @@ impl CopiedEventLineageResolution {
         match self {
             Self::Resolved { .. } => "resolved",
             Self::Unresolved { .. } => "unresolved",
-            Self::Cyclic { .. } => "cyclic",
         }
     }
 }
 
-/// Observed inherited-session count for one relationship kind.
+/// Observed direct-copy count for one optional relationship kind.
 ///
 /// Counts are exact only when the containing lineage result is not truncated.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct CopiedEventLineageRelationshipCount {
-    pub session_relationship: SessionRelationshipKind,
+    pub session_relationship: Option<ProviderNativeSessionRelationship>,
     pub observed_count: u64,
 }
 
@@ -702,19 +689,19 @@ pub struct CopiedEventLineage {
     /// Exact when `truncated` is false; otherwise a lower bound.
     pub observed_count: u64,
     /// Number of retained preview rows; this may be smaller than an exact
-    /// `observed_count` without making the traversal truncated.
+    /// `observed_count` without making the direct-edge query truncated.
     pub returned: usize,
     pub occurrences: Vec<CopiedEventLineageOccurrence>,
     pub relationship_counts: Vec<CopiedEventLineageRelationshipCount>,
-    /// True only when a traversal-work or depth ceiling prevented completion.
+    /// True only when a posting-work ceiling prevented completion.
     /// A full preview with additional exactly counted rows remains false.
     pub truncated: bool,
 }
 
 impl CopiedEventLineage {
-    /// Returns the total only when every reverse edge was traversed within all
-    /// posting, depth, byte, and other traversal-work ceilings. Preview
-    /// retention alone never makes a count inexact.
+    /// Returns the total only when every reverse direct edge was visited within
+    /// the posting-work ceiling. Preview retention alone never makes a count
+    /// inexact.
     pub fn exact_observed_count(&self) -> Option<u64> {
         (!self.truncated).then_some(self.observed_count)
     }
@@ -747,16 +734,12 @@ pub struct EventSearchCandidate {
 pub struct SessionRecord {
     pub session_id: StableEntityId,
     pub parent_session_id: Option<StableEntityId>,
-    pub root_session_id: StableEntityId,
-    pub session_relationship: SessionRelationshipKind,
+    pub root_session_id: Option<StableEntityId>,
+    pub session_relationship: Option<ProviderNativeSessionRelationship>,
     pub provider: String,
     pub source_format: String,
     pub provider_session_id: Option<String>,
-    pub branch: Option<String>,
-    pub agent_type: String,
-    pub is_primary: bool,
-    pub workspace: Option<String>,
-    pub cwd: Option<String>,
+    pub agent_scope: Option<CoreAgentScope>,
     pub first_event_sequence: u64,
     pub first_occurred_at_unix_ms: Option<i64>,
 }

@@ -168,7 +168,7 @@ pub fn crush_registration<I, L, S>(
     impl ReplacementDocumentTree<
         Lifecycle = L,
         Spool = S,
-        RouteControl = ctx_history_provider_runtime::ProviderRouteControlExpectation,
+        RouteControl = crate::ProviderRouteControlExpectation,
     >,
 >
 where

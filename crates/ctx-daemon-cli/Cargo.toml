@@ -1,0 +1,42 @@
+[package]
+name = "ctx-daemon-cli"
+version.workspace = true
+description = "Final-binary daemon and semantic adapters for ctx"
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+rust-version.workspace = true
+publish = false
+
+[dependencies]
+anyhow.workspace = true
+fs2 = "0.4.3"
+serde_json.workspace = true
+thiserror.workspace = true
+toml_edit = "0.22"
+uuid.workspace = true
+ctx-client-observability = { path = "../ctx-client-observability" }
+ctx-daemon-application = { path = "../ctx-daemon-application" }
+ctx-daemon-runtime = { path = "../ctx-daemon-runtime" }
+ctx-daemon-service = { path = "../ctx-daemon-service" }
+ctx-history-capture = { path = "../ctx-history-capture" }
+ctx-history-core = { path = "../ctx-history-core" }
+ctx-history-platform = { path = "../ctx-history-platform" }
+ctx-history-index = { path = "../ctx-history-index" }
+ctx-history-read-application = { path = "../ctx-history-read-application" }
+ctx-history-refresh = { path = "../ctx-history-refresh" }
+ctx-semantic-index = { path = "../ctx-semantic-index" }
+ctx-semantic-model = { path = "../ctx-semantic-model" }
+ctx-terminal = { path = "../ctx-terminal" }
+ctx-upgrade-engine = { path = "../ctx-upgrade-engine" }
+
+[dev-dependencies]
+tempfile.workspace = true
+unicode-width.workspace = true
+ctx-client-observability = { path = "../ctx-client-observability", features = ["test-support"] }
+ctx-daemon-service = { path = "../ctx-daemon-service", features = ["test-support"] }
+ctx-history-refresh = { path = "../ctx-history-refresh", features = ["test-support"] }
+ctx-semantic-index = { path = "../ctx-semantic-index", features = ["test-support"] }
+ctx-semantic-model = { path = "../ctx-semantic-model", features = ["test-support"] }
+ctx-upgrade-engine = { path = "../ctx-upgrade-engine", features = ["test-support"] }

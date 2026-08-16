@@ -25,8 +25,6 @@ mod history_plugins;
 mod mcp;
 #[cfg(any(all(test, not(ctx_cli_bazel_test)), ctx_cli_test_support_fixtures))]
 mod native_fixtures;
-#[cfg(any(all(test, not(ctx_cli_bazel_test)), ctx_cli_test_support_pro))]
-mod pro;
 mod runner;
 #[cfg(any(all(test, not(ctx_cli_bazel_test)), ctx_cli_test_support_upgrade))]
 mod upgrade;
@@ -41,8 +39,6 @@ pub(crate) use history_plugins::*;
 pub(crate) use mcp::*;
 #[cfg(any(all(test, not(ctx_cli_bazel_test)), ctx_cli_test_support_fixtures))]
 pub(crate) use native_fixtures::*;
-#[cfg(any(all(test, not(ctx_cli_bazel_test)), ctx_cli_test_support_pro))]
-pub(crate) use pro::*;
 pub(crate) use runner::*;
 #[cfg(any(all(test, not(ctx_cli_bazel_test)), ctx_cli_test_support_upgrade))]
 pub(crate) use upgrade::*;

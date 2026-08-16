@@ -46,16 +46,16 @@ pub fn recover_wait_refresh_request_for_test(
 #[cfg(not(test))]
 pub(crate) use ctx_history_refresh::RefreshEngine as CoreRefreshEngine;
 pub use ctx_history_refresh::{
-    explicit_catalog_request_is_accounted_for, nonzero_duration_micros, open_verified_index,
-    optional_generation, published_refresh_receipt_for_index, source_backed_index_root,
-    PinnedCorePublication, RefreshOutcomeClass, RefreshRequestState, RefreshStatus,
+    explicit_catalog_request_is_accounted_for, optional_generation,
+    published_refresh_receipt_for_index, RefreshOutcomeClass, RefreshRequestState, RefreshStatus,
     RefreshStatusKind, RefreshTerminalOutcome, SourceBackedCurrentSourceProgress,
     SourceBackedPublicationMetadata, SourceBackedRefreshReceipt,
 };
 
 #[cfg(test)]
 pub(crate) use ctx_history_refresh::{
-    EventWatermark, RefreshLogicalPhase, SourceBackedRefreshCurrent, SourceBackedRefreshExecution,
+    open_verified_index, source_backed_index_root, EventWatermark, PinnedCorePublication,
+    RefreshLogicalPhase, SourceBackedRefreshCurrent, SourceBackedRefreshExecution,
     SourceBackedRefreshExecutor, SourceBackedRefreshPublication, SourceBackedRefreshRouteResult,
     SourceBackedRefreshSourceFailure, SourceBackedRefreshTimings,
 };

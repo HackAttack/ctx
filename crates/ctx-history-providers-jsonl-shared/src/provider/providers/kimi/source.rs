@@ -4,7 +4,7 @@ use std::{
 };
 
 use chrono::{DateTime, Utc};
-use ctx_history_core::AgentType;
+use ctx_history_core::AgentScope;
 use serde_json::{json, Value};
 
 use crate::{fnv1a64, Result, PROVIDER_MAX_PREVIEW_CHARS};
@@ -23,7 +23,7 @@ pub(super) struct KimiWireSessionState {
     pub(super) parent_provider_session_id: Option<String>,
     pub(super) root_provider_session_id: Option<String>,
     pub(super) agent_id: String,
-    pub(super) is_primary: bool,
+    pub(super) agent_scope: Option<AgentScope>,
     pub(super) started_at: Option<DateTime<Utc>>,
     pub(super) ended_at: Option<DateTime<Utc>>,
     pub(super) cwd: Option<String>,
@@ -124,7 +124,11 @@ impl KimiWireObservation {
             parent_provider_session_id,
             root_provider_session_id,
             agent_id: agent_id.clone(),
-            is_primary: agent_id == "main",
+            agent_scope: Some(if agent_id == "main" {
+                AgentScope::Primary
+            } else {
+                AgentScope::Subagent
+            }),
             started_at,
             ended_at,
             cwd,
@@ -169,9 +173,9 @@ pub(crate) fn kimi_provider_session_ids(
     session_id: &str,
     agent_id: &str,
     agent_state: &Value,
-) -> (String, Option<String>, Option<String>, AgentType) {
+) -> (String, Option<String>, Option<String>, AgentScope) {
     if agent_id == "main" {
-        return (session_id.to_owned(), None, None, AgentType::Primary);
+        return (session_id.to_owned(), None, None, AgentScope::Primary);
     }
     let provider_session_id = format!("{session_id}/agents/{agent_id}");
     let parent = agent_state
@@ -185,13 +189,12 @@ pub(crate) fn kimi_provider_session_ids(
             } else {
                 format!("{session_id}/agents/{parent}")
             }
-        })
-        .or_else(|| Some(session_id.to_owned()));
+        });
     (
         provider_session_id,
         parent,
         Some(session_id.to_owned()),
-        AgentType::Subagent,
+        AgentScope::Subagent,
     )
 }
 

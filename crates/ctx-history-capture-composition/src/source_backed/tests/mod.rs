@@ -15,9 +15,9 @@ use std::{
 };
 
 use ctx_history_core::{
-    derive_event_id, derive_session_id, CoreRecord, EventIdentityInput, NativeItemKey,
-    NativeSessionKey, ScannedSourceCounts, SessionIdentityInput, SourceAnchor,
-    SourceInventoryObservation, SourceObservation, TypedKey,
+    derive_event_id, derive_session_id, AgentScope, CoreRecord, EventIdentityInput,
+    LiteralFactKind, NativeItemKey, NativeSessionKey, ScannedSourceCounts, SessionIdentityInput,
+    SourceAnchor, SourceInventoryObservation, SourceObservation, TypedKey,
 };
 use ctx_history_index::VerifiedIndex;
 use tempfile::tempdir;
@@ -117,12 +117,9 @@ fn fixture_route_with_body_and_rejections(
     let mut record = CoreRecord::new_selected(
         event_id,
         session_id,
-        session_id,
         source.clone(),
         1,
         "message",
-        "primary",
-        true,
         "coordinator-test-v1",
         body,
     )
@@ -131,6 +128,7 @@ fn fixture_route_with_body_and_rejections(
     record.native_event_id = Some(TypedKey::U64(1));
     record.occurred_at_unix_ms = Some(1);
     record.role = Some("user".to_owned());
+    record.agent_scope = Some(AgentScope::Primary);
     let revision_digest = [lineage.saturating_add(10); 32];
     let observation =
         SourceObservation::new(source.clone(), "fixture-revision", vec![lineage]).unwrap();
@@ -171,6 +169,20 @@ fn fixture_route_with_body_and_rejections(
         driver,
     )
     .unwrap()
+}
+
+fn literal_fact_values(record: &CoreRecord, kind: LiteralFactKind) -> impl Iterator<Item = &str> {
+    record
+        .content
+        .activity
+        .iter()
+        .flat_map(|activity| activity.facts.iter())
+        .filter(move |fact| fact.kind == kind)
+        .map(|fact| fact.value.as_str())
+}
+
+fn has_literal_fact(record: &CoreRecord, kind: LiteralFactKind, value: &str) -> bool {
+    literal_fact_values(record, kind).any(|candidate| candidate == value)
 }
 
 fn fixture_provider_source(

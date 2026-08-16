@@ -4,23 +4,6 @@ use rusqlite::Connection;
 use super::super::{store, UsageStoreError};
 use super::{UsageDefinition, UsageSummary};
 
-struct StoredRowV1 {
-    day: String,
-    definition_version: i64,
-    ctx_version: String,
-    surface: String,
-    operation: String,
-    outcome: String,
-    value_class: String,
-    duration_bucket: String,
-    target_type: String,
-    pro_outcome: String,
-    calls: i64,
-    result_count: i64,
-    citation_count: i64,
-    response_bytes: i64,
-}
-
 struct StoredRow {
     day: String,
     definition_version: i64,
@@ -30,12 +13,9 @@ struct StoredRow {
     outcome: String,
     value_class: String,
     duration_bucket: String,
-    target_type: String,
-    pro_outcome: String,
     context_coverage: String,
     calls: i64,
     result_count: i64,
-    citation_count: i64,
     delivered_output_bytes: i64,
     delivered_context_bytes: i64,
     matched_normalized_session_bytes: i64,
@@ -46,61 +26,40 @@ pub(in crate::local_usage) fn validate_rows_for_schema(
     schema_version: i64,
 ) -> Result<(), UsageStoreError> {
     match schema_version {
-        store::LEGACY_SCHEMA_VERSION => validate_rows_v1(conn),
-        store::PREVIOUS_SCHEMA_VERSION | store::SCHEMA_VERSION => validate_rows(conn),
+        store::LEGACY_SCHEMA_VERSION => validate_old_rows(conn, true),
+        store::PREVIOUS_SCHEMA_VERSION | store::RELEASED_SCHEMA_VERSION => {
+            validate_old_rows(conn, false)
+        }
+        store::SCHEMA_VERSION => validate_rows(conn),
         version => Err(UsageStoreError::SchemaVersion(version)),
     }
 }
 
-fn validate_rows_v1(conn: &Connection) -> Result<(), UsageStoreError> {
-    let normalize_legacy_blame = store::v1_uses_legacy_blame_schema(conn)?;
-    let mut statement = conn.prepare(
+fn validate_old_rows(conn: &Connection, first_version: bool) -> Result<(), UsageStoreError> {
+    let sql = if first_version {
+        r#"
+        SELECT day_utc, 1, ctx_version, surface, operation, outcome,
+            value_class, duration_bucket, 'not_applicable', calls, result_count,
+            CASE WHEN surface = 'mcp' THEN response_bytes ELSE 0 END, 0, 0
+        FROM daily_usage
+        "#
+    } else {
         r#"
         SELECT day_utc, definition_version, ctx_version, surface, operation,
-               outcome, value_class, duration_bucket, target_type, pro_outcome,
-               calls, result_count, citation_count, response_bytes
+            outcome, value_class, duration_bucket, context_coverage, calls,
+            result_count, delivered_output_bytes, delivered_context_bytes,
+            matched_normalized_session_bytes
         FROM daily_usage
-        "#,
-    )?;
-    let rows = statement.query_map([], |row| {
-        Ok(StoredRowV1 {
-            day: row.get(0)?,
-            definition_version: row.get(1)?,
-            ctx_version: row.get(2)?,
-            surface: row.get(3)?,
-            operation: row.get(4)?,
-            outcome: row.get(5)?,
-            value_class: row.get(6)?,
-            duration_bucket: row.get(7)?,
-            target_type: row.get(8)?,
-            pro_outcome: row.get(9)?,
-            calls: row.get(10)?,
-            result_count: row.get(11)?,
-            citation_count: row.get(12)?,
-            response_bytes: row.get(13)?,
-        })
-    })?;
+        "#
+    };
+    let mut statement = conn.prepare(sql)?;
+    let rows = statement.query_map([], stored_row)?;
     for row in rows {
         let row = row?;
-        if !common_row_is_valid(
-            &row.day,
-            row.definition_version,
-            &row.ctx_version,
-            &row.surface,
-            &row.operation,
-            &row.outcome,
-            &row.value_class,
-            &row.duration_bucket,
-            &row.target_type,
-            &row.pro_outcome,
-            row.calls,
-            row.result_count,
-            row.citation_count,
-            normalize_legacy_blame,
-        ) || row.definition_version != 1
-            || row.response_bytes < 0
-            || (row.surface == "cli" && row.response_bytes != 0)
-            || (row.surface == "mcp" && row.response_bytes <= 0)
+        // Older public schemas included additional operation families. They are
+        // intentionally omitted during migration; neutral rows remain strict.
+        if valid_operation(row.definition_version, &row.surface, &row.operation)
+            && !row_is_valid(&row)
         {
             return Err(UsageStoreError::Integrity);
         }
@@ -112,158 +71,102 @@ pub(in crate::local_usage) fn validate_rows(conn: &Connection) -> Result<(), Usa
     let mut statement = conn.prepare(
         r#"
         SELECT day_utc, definition_version, ctx_version, surface, operation,
-               outcome, value_class, duration_bucket, target_type, pro_outcome,
-               context_coverage, calls, result_count, citation_count,
-               delivered_output_bytes, delivered_context_bytes,
-               matched_normalized_session_bytes
+            outcome, value_class, duration_bucket, context_coverage, calls,
+            result_count, delivered_output_bytes, delivered_context_bytes,
+            matched_normalized_session_bytes
         FROM daily_usage
         "#,
     )?;
-    let rows = statement.query_map([], |row| {
-        Ok(StoredRow {
-            day: row.get(0)?,
-            definition_version: row.get(1)?,
-            ctx_version: row.get(2)?,
-            surface: row.get(3)?,
-            operation: row.get(4)?,
-            outcome: row.get(5)?,
-            value_class: row.get(6)?,
-            duration_bucket: row.get(7)?,
-            target_type: row.get(8)?,
-            pro_outcome: row.get(9)?,
-            context_coverage: row.get(10)?,
-            calls: row.get(11)?,
-            result_count: row.get(12)?,
-            citation_count: row.get(13)?,
-            delivered_output_bytes: row.get(14)?,
-            delivered_context_bytes: row.get(15)?,
-            matched_normalized_session_bytes: row.get(16)?,
-        })
-    })?;
+    let rows = statement.query_map([], stored_row)?;
     for row in rows {
-        let row = row?;
-        let complete = row.context_coverage == "complete"
-            && row.definition_version == 2
-            && row.operation == "search"
-            && row.outcome == "success"
-            && row.value_class == "result_bearing"
-            && row.delivered_context_bytes > 0
-            && row.matched_normalized_session_bytes > 0
-            && row.matched_normalized_session_bytes >= row.delivered_context_bytes;
-        let unavailable = row.context_coverage == "unavailable"
-            && row.definition_version == 2
-            && row.operation == "search"
-            && row.outcome == "success"
-            && row.value_class == "result_bearing"
-            && row.delivered_context_bytes == 0
-            && row.matched_normalized_session_bytes == 0;
-        let not_applicable = row.context_coverage == "not_applicable"
-            && row.delivered_context_bytes == 0
-            && row.matched_normalized_session_bytes == 0;
-        let delivered_output_valid = match row.definition_version {
-            1 => {
-                (row.surface == "cli" && row.delivered_output_bytes == 0)
-                    || (row.surface == "mcp" && row.delivered_output_bytes > 0)
-            }
-            2 => {
-                row.delivered_output_bytes > 0
-                    || (row.surface == "cli"
-                        && row.outcome == "failure"
-                        && row.delivered_output_bytes == 0)
-            }
-            _ => false,
-        };
-        if !common_row_is_valid(
-            &row.day,
-            row.definition_version,
-            &row.ctx_version,
-            &row.surface,
-            &row.operation,
-            &row.outcome,
-            &row.value_class,
-            &row.duration_bucket,
-            &row.target_type,
-            &row.pro_outcome,
-            row.calls,
-            row.result_count,
-            row.citation_count,
-            row.definition_version == 1,
-        ) || !matches!(row.definition_version, 1 | 2)
-            || !delivered_output_valid
-            || row.delivered_context_bytes < 0
-            || row.matched_normalized_session_bytes < 0
-            || !(complete || unavailable || not_applicable)
-        {
+        if !row_is_valid(&row?) {
             return Err(UsageStoreError::Integrity);
         }
     }
     validate_maintenance(conn)
 }
 
-#[allow(clippy::too_many_arguments)]
-fn common_row_is_valid(
-    day: &str,
-    definition_version: i64,
-    ctx_version: &str,
-    surface: &str,
-    operation: &str,
-    outcome: &str,
-    value_class: &str,
-    duration_bucket: &str,
-    target_type: &str,
-    pro_outcome: &str,
-    calls: i64,
-    result_count: i64,
-    citation_count: i64,
-    allow_legacy_blame_value: bool,
-) -> bool {
-    let failure_valid = if outcome == "failure" {
-        value_class == "not_applicable" && result_count == 0 && citation_count == 0
+fn stored_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<StoredRow> {
+    Ok(StoredRow {
+        day: row.get(0)?,
+        definition_version: row.get(1)?,
+        ctx_version: row.get(2)?,
+        surface: row.get(3)?,
+        operation: row.get(4)?,
+        outcome: row.get(5)?,
+        value_class: row.get(6)?,
+        duration_bucket: row.get(7)?,
+        context_coverage: row.get(8)?,
+        calls: row.get(9)?,
+        result_count: row.get(10)?,
+        delivered_output_bytes: row.get(11)?,
+        delivered_context_bytes: row.get(12)?,
+        matched_normalized_session_bytes: row.get(13)?,
+    })
+}
+
+fn row_is_valid(row: &StoredRow) -> bool {
+    let failure_valid = if row.outcome == "failure" {
+        row.value_class == "not_applicable" && row.result_count == 0
     } else {
-        outcome == "success"
+        row.outcome == "success"
     };
-    let value_valid = (value_class == "result_bearing" && result_count >= calls)
-        || (matches!(value_class, "empty" | "not_applicable")
-            && result_count == 0
-            && citation_count == 0);
-    let blame = operation == "blame";
-    let blame_dimensions = if blame {
-        ((outcome == "failure" && pro_outcome == "error")
-            || (outcome == "success" && matches!(pro_outcome, "produced" | "possible" | "none")))
-            && (matches!(target_type, "file" | "commit" | "pull_request")
-                || (outcome == "failure" && target_type == "not_applicable"))
-            && (allow_legacy_blame_value
-                || outcome == "failure"
-                || ((pro_outcome != "produced" && pro_outcome != "possible"
-                    || value_class == "result_bearing")
-                    && (value_class != "empty" || pro_outcome == "none")))
-    } else {
-        target_type == "not_applicable" && pro_outcome == "not_applicable" && citation_count == 0
-    };
-    let classification = if outcome == "failure" {
-        value_class == "not_applicable"
-    } else if surface == "cli" {
-        if blame || definition_version == 2 && operation == "search" {
-            matches!(value_class, "result_bearing" | "empty")
+    let value_valid = (row.value_class == "result_bearing" && row.result_count >= row.calls)
+        || (matches!(row.value_class.as_str(), "empty" | "not_applicable")
+            && row.result_count == 0);
+    let classification = if row.outcome == "failure" {
+        row.value_class == "not_applicable"
+    } else if row.surface == "cli" {
+        if row.definition_version == 2 && row.operation == "search" {
+            matches!(row.value_class.as_str(), "result_bearing" | "empty")
         } else {
-            value_class == "not_applicable"
+            row.value_class == "not_applicable"
         }
-    // `sql` is accepted only while reading usage rows emitted before the
-    // command/tool was removed; no current CLI or MCP producer emits it.
     } else if matches!(
-        operation,
-        "sources" | "search" | "sql" | "show_session" | "show_event" | "blame"
+        row.operation.as_str(),
+        "sources" | "search" | "sql" | "show_session" | "show_event"
     ) {
-        matches!(value_class, "result_bearing" | "empty")
+        matches!(row.value_class.as_str(), "result_bearing" | "empty")
     } else {
-        value_class == "not_applicable"
+        row.value_class == "not_applicable"
     };
-    NaiveDate::parse_from_str(day, "%Y-%m-%d").is_ok()
-        && matches!(definition_version, 1 | 2)
-        && valid_ctx_version(ctx_version)
-        && valid_operation(definition_version, surface, operation)
+    let complete = row.context_coverage == "complete"
+        && row.definition_version == 2
+        && row.operation == "search"
+        && row.outcome == "success"
+        && row.value_class == "result_bearing"
+        && row.delivered_context_bytes > 0
+        && row.matched_normalized_session_bytes >= row.delivered_context_bytes;
+    let unavailable = row.context_coverage == "unavailable"
+        && row.definition_version == 2
+        && row.operation == "search"
+        && row.outcome == "success"
+        && row.value_class == "result_bearing"
+        && row.delivered_context_bytes == 0
+        && row.matched_normalized_session_bytes == 0;
+    let not_applicable = row.context_coverage == "not_applicable"
+        && row.delivered_context_bytes == 0
+        && row.matched_normalized_session_bytes == 0;
+    let output_valid = match row.definition_version {
+        1 => {
+            (row.surface == "cli" && row.delivered_output_bytes == 0)
+                || (row.surface == "mcp" && row.delivered_output_bytes > 0)
+        }
+        2 => {
+            row.delivered_output_bytes > 0
+                || (row.surface == "cli"
+                    && row.outcome == "failure"
+                    && row.delivered_output_bytes == 0)
+        }
+        _ => false,
+    };
+
+    NaiveDate::parse_from_str(&row.day, "%Y-%m-%d").is_ok()
+        && matches!(row.definition_version, 1 | 2)
+        && valid_ctx_version(&row.ctx_version)
+        && valid_operation(row.definition_version, &row.surface, &row.operation)
         && matches!(
-            duration_bucket,
+            row.duration_bucket.as_str(),
             "under_10_ms"
                 | "10_to_49_ms"
                 | "50_to_249_ms"
@@ -272,14 +175,16 @@ fn common_row_is_valid(
                 | "5_to_29_s"
                 | "30_s_or_more"
         )
-        && calls > 0
-        && result_count >= 0
-        && citation_count >= 0
-        && (citation_count == 0 || blame && outcome == "success")
+        && row.calls > 0
+        && row.result_count >= 0
+        && row.delivered_output_bytes >= 0
+        && row.delivered_context_bytes >= 0
+        && row.matched_normalized_session_bytes >= 0
         && failure_valid
         && value_valid
-        && blame_dimensions
         && classification
+        && output_valid
+        && (complete || unavailable || not_applicable)
 }
 
 fn valid_ctx_version(value: &str) -> bool {
@@ -291,11 +196,9 @@ fn valid_ctx_version(value: &str) -> bool {
 }
 
 fn valid_operation(definition_version: i64, surface: &str, operation: &str) -> bool {
-    // Keep historical `sql` rows reportable in existing usage.sqlite files.
-    // This validator is not a command or tool inventory.
     match surface {
         "cli" => {
-            let common = matches!(
+            matches!(
                 operation,
                 "setup"
                     | "index"
@@ -303,10 +206,6 @@ fn valid_operation(definition_version: i64, surface: &str, operation: &str) -> b
                     | "import"
                     | "locate"
                     | "search"
-                    | "pro_setup"
-                    | "pro_manage"
-                    | "pro_uninstall"
-                    | "blame"
                     | "sql"
                     | "docs"
                     | "integrations"
@@ -315,21 +214,12 @@ fn valid_operation(definition_version: i64, surface: &str, operation: &str) -> b
                     | "daemon_disable"
                     | "upgrade"
                     | "doctor"
-            );
-            common
-                || (definition_version == 1 && operation == "show")
+            ) || (definition_version == 1 && operation == "show")
                 || (definition_version == 2 && matches!(operation, "show_session" | "show_event"))
         }
         "mcp" => matches!(
             operation,
-            "status"
-                | "sources"
-                | "search"
-                | "sql"
-                | "show_session"
-                | "show_event"
-                | "pro_status"
-                | "blame"
+            "status" | "sources" | "search" | "sql" | "show_session" | "show_event"
         ),
         _ => false,
     }
@@ -374,27 +264,6 @@ fn reconcile_summary(summary: &UsageSummary) -> Result<(), UsageStoreError> {
         ])? != summary.calls
     {
         return Err(UsageStoreError::Integrity);
-    }
-    let blame = &summary.pro_blame;
-    if checked_sum([
-        blame.produced_attribution_requests,
-        blame.possible_only_requests,
-        blame.none_requests,
-        blame.error_requests,
-    ])? != blame.requests
-    {
-        return Err(UsageStoreError::Integrity);
-    }
-    let concrete_requests = checked_sum(blame.by_target.iter().map(|target| target.requests))?;
-    if checked_sum([concrete_requests, blame.not_applicable_target_errors])? != blame.requests {
-        return Err(UsageStoreError::Integrity);
-    }
-    for target in &blame.by_target {
-        if checked_sum([target.produced, target.possible, target.none, target.error])?
-            != target.requests
-        {
-            return Err(UsageStoreError::Integrity);
-        }
     }
     Ok(())
 }

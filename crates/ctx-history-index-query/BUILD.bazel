@@ -79,10 +79,7 @@ ctx_rust_test(
 
 ctx_rust_test(
     name = "writer_integration_tests",
-    srcs = ["tests/writer_integration.rs"] + glob(
-        ["tests/writer_integration/**/*.rs"],
-        exclude = ["tests/writer_integration/mcp_attribution_search.rs"],
-    ),
+    srcs = ["tests/writer_integration.rs"] + glob(["tests/writer_integration/**/*.rs"]),
     crate_name = "ctx_history_index_query_writer_integration",
     crate_root = "tests/writer_integration.rs",
     edition = crate_edition(),
@@ -96,23 +93,4 @@ ctx_rust_test(
     ],
     proc_macro_deps = all_crate_deps(proc_macro = True, proc_macro_dev = True),
     rustc_env = COMMON_RUSTC_ENV,
-)
-
-ctx_rust_test(
-    name = "mcp_attribution_search_tests",
-    srcs = ["tests/writer_integration/mcp_attribution_search.rs"],
-    crate_name = "ctx_history_index_query_mcp_attribution_search",
-    crate_root = "tests/writer_integration/mcp_attribution_search.rs",
-    edition = crate_edition(),
-    aliases = aliases(normal_dev = True, proc_macro_dev = True),
-    deps = all_crate_deps(normal = True, normal_dev = True) + [
-        "//crates/ctx-history-core:lib",
-        "//crates/ctx-history-index:lib",
-    ],
-    proc_macro_deps = all_crate_deps(proc_macro = True, proc_macro_dev = True),
-    rustc_env = COMMON_RUSTC_ENV,
-    tags = [
-        "privacy",
-        "provider-conformance",
-    ],
 )

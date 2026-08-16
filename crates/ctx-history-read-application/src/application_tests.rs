@@ -7,9 +7,11 @@ use std::{
 };
 
 use ctx_history_core::{
-    derive_event_id, derive_session_id, CertifiedSource, CoreRecord, EventIdentityInput,
-    NativeItemKey, NativeSessionKey, ScannedSourceCounts, SessionIdentityInput, SourceAnchor,
-    SourceKey, SourceObservation, TypedKey,
+    derive_event_id, derive_session_id, ActivityInvocation, ActivityJsonCapture, ActivityResult,
+    ActivityTextCapture, CertifiedSource, CoreActivity, CoreRecord, EventIdentityInput,
+    LiteralFactKind, NativeItemKey, NativeSessionKey, ProviderDeclaredFact, ScannedSourceCounts,
+    SessionIdentityInput, SourceAnchor, SourceKey, SourceObservation, TypedKey,
+    CORE_ACTIVITY_REVISION,
 };
 use ctx_history_index::{GenerationWriter, WriterOptions};
 use ctx_history_index_query::{
@@ -103,12 +105,9 @@ fn record(source: &SourceKey, sequence: u64, role: &str, body: &str) -> CoreReco
     let mut record = CoreRecord::new_selected(
         event_id,
         session_id,
-        session_id,
         source.clone(),
         sequence,
         "message",
-        "primary",
-        true,
         "application-query-test-v1",
         body,
     )
@@ -116,6 +115,7 @@ fn record(source: &SourceKey, sequence: u64, role: &str, body: &str) -> CoreReco
     record.provider_session_id = Some("pinned-session".to_owned());
     record.occurred_at_unix_ms = Some(1_000 + sequence as i64);
     record.role = Some(role.to_owned());
+    record.agent_scope = Some(ctx_history_core::AgentScope::Primary);
     record
 }
 
@@ -139,11 +139,42 @@ fn certificate(source: &SourceKey, documents: usize) -> CertifiedSource {
 
 fn publish(root: &Path) -> (VerifiedIndex, Vec<CoreRecord>) {
     let source = source();
-    let records = vec![
+    let mut records = vec![
         record(&source, 1, "user", "needle first"),
         record(&source, 2, "assistant", "needle reply"),
         record(&source, 3, "user", "needle followup"),
     ];
+    records[0].content.activity = Some(CoreActivity {
+        revision: CORE_ACTIVITY_REVISION,
+        provider_call_id: Some(TypedKey::utf8("call-01").unwrap()),
+        invocation: Some(ActivityInvocation {
+            protocol: Some("native".to_owned()),
+            server: None,
+            tool: "lookup".to_owned(),
+            arguments: ActivityJsonCapture::Present {
+                value: json!({"exact": ["雪", null]}),
+            },
+            started_at_unix_ms: Some(900),
+        }),
+        result: Some(ActivityResult {
+            status: Some("provider::ok".to_owned()),
+            completed_at_unix_ms: Some(901),
+            duration_ns: Some(10),
+            text: ActivityTextCapture::NormalizedBody,
+            structured_content: ActivityJsonCapture::Absent,
+        }),
+        facts: [
+            (LiteralFactKind::File, "src/lib.rs"),
+            (LiteralFactKind::Branch, "main"),
+            (LiteralFactKind::File, "src/lib.rs"),
+        ]
+        .into_iter()
+        .map(|(kind, value)| ProviderDeclaredFact {
+            kind,
+            value: value.to_owned(),
+        })
+        .collect(),
+    });
     let mut writer = GenerationWriter::open(root, WriterOptions::default())
         .unwrap()
         .into_writer()
@@ -799,7 +830,7 @@ fn structured_read_models_are_composed_from_pinned_query_results() {
     .unwrap();
     assert_eq!(event_window["target"], "event");
     assert_eq!(event_window["event"]["text"], "needle reply");
-    assert_eq!(event_window["event"]["event_origin"]["kind"], "unknown");
+    assert!(event_window["event"].get("event_copy").is_none());
 
     let compact = CompactPresentationProjection::new(&index, None)
         .project(&event_window)
@@ -852,6 +883,17 @@ fn structured_read_models_are_composed_from_pinned_query_results() {
     assert!(listed_value
         .get("structured_content")
         .is_some_and(|value| value.is_null()));
+    assert!(listed_value.get("activity").is_none());
+    let full_value =
+        render_event_read_model(&listed.page.items[0], EventContentProjection::Full).unwrap();
+    assert_eq!(
+        full_value["activity"],
+        serde_json::to_value(records[0].content.activity.as_ref().unwrap()).unwrap()
+    );
+    assert_eq!(
+        full_value["activity"]["facts"][0],
+        full_value["activity"]["facts"][2]
+    );
     let record = event_query_event_read_model(index.generation_id(), 0, listed_value);
     assert_eq!(record["record_type"], "event_range_event");
     assert_eq!(record["ordinal"], 0);

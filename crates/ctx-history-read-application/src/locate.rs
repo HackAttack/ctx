@@ -173,7 +173,7 @@ fn locate_session_read_model(session: &SessionRecord, first_event: &EventRecord)
         "provider": session.provider,
         "provider_session_id": session.provider_session_id,
         "parent_ctx_session_id": session.parent_session_id.map(|id| id.as_uuid()),
-        "root_ctx_session_id": session.root_session_id.as_uuid(),
+        "root_ctx_session_id": session.root_session_id.map(|id| id.as_uuid()),
         "started_at": timestamp_json(session.first_occurred_at_unix_ms),
         "source": source_read_model(&first_event.source),
     }))

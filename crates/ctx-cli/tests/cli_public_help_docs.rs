@@ -120,6 +120,9 @@ fn help_exposes_session_retrieval_commands() {
         .unwrap_or(&help);
 
     for expected in [
+        "pro",
+        "blame",
+        "referral",
         "setup",
         "status",
         "stats",
@@ -265,234 +268,6 @@ fn show_event_help_states_the_event_window_bounds() {
         assert!(
             help.contains(expected),
             "show event help omitted {expected:?}:\n{help}"
-        );
-    }
-}
-
-#[test]
-fn pro_help_advertises_the_fixed_monthly_price() {
-    let temp = tempdir();
-    let output = ctx(&temp)
-        .args(["pro", "--help"])
-        .assert()
-        .success()
-        .get_output()
-        .stdout
-        .clone();
-    let help = String::from_utf8(output).unwrap();
-    assert!(help.contains("Price: $20/month"), "{help}");
-}
-
-#[test]
-fn pro_uninstall_help_uses_local_pro_data_terminology() {
-    let temp = tempdir();
-    let output = ctx(&temp)
-        .args(["pro", "uninstall", "--help"])
-        .assert()
-        .success()
-        .get_output()
-        .stdout
-        .clone();
-    let help = String::from_utf8(output).unwrap();
-    assert!(help.contains("Delete local Pro data"), "{help}");
-    assert!(
-        help.contains("Preserve local Pro data for later setup"),
-        "{help}"
-    );
-    assert!(!help.contains("encrypted graph"), "{help}");
-    assert!(!help.contains("credentials"), "{help}");
-}
-
-#[test]
-fn blame_help_explains_launch_targets_and_bounds() {
-    let temp = tempdir();
-    let output = ctx(&temp)
-        .args(["blame", "--help"])
-        .assert()
-        .success()
-        .get_output()
-        .stdout
-        .clone();
-    let help = String::from_utf8(output).unwrap();
-    assert!(help.contains("ctx blame [OPTIONS] <TARGET>"), "{help}");
-    assert!(help.contains("ctx blame <COMMAND>"), "{help}");
-    assert!(help.contains("--type <TYPE>"), "{help}");
-    assert!(!help.contains("--evidence-preview"), "{help}");
-    assert!(help.contains("possible values: file, commit, pr"), "{help}");
-    assert!(help.contains("overrides auto-detection"), "{help}");
-
-    for args in [
-        vec!["blame", "file", "--help"],
-        vec!["blame", "commit", "--help"],
-        vec!["blame", "pr", "--help"],
-    ] {
-        let output = ctx(&temp)
-            .args(&args)
-            .assert()
-            .success()
-            .get_output()
-            .stdout
-            .clone();
-        let help = String::from_utf8(output).unwrap();
-        assert!(
-            help.to_ascii_lowercase()
-                .contains("logical repository identity"),
-            "{args:?} help omitted repository semantics:\n{help}"
-        );
-        assert!(
-            help.contains("forge:github.com/ctxrs/ctx"),
-            "{args:?} help omitted a concrete logical identity:\n{help}"
-        );
-        assert!(
-            help.contains("Maximum complete matches to return, from 1 to 100"),
-            "{args:?} help omitted the limit contract:\n{help}"
-        );
-        assert!(help.contains("--cursor <CURSOR>"));
-        assert!(!help.contains("--evidence-preview"), "{args:?}:\n{help}");
-        for secret in ["generation", "project", "heuristic"] {
-            assert!(!help.contains(secret), "{args:?} leaked {secret}:\n{help}");
-        }
-        assert!(!help.contains("Codex"), "{args:?} leaked Codex:\n{help}");
-        if args.as_slice() == ["blame", "file", "--help"] {
-            assert!(
-                help.contains("--lines <START[:END]>"),
-                "{args:?} help omitted line-range semantics:\n{help}"
-            );
-        } else {
-            assert!(
-                !help.contains("--lines"),
-                "non-file blame help advertised --lines:\n{help}"
-            );
-        }
-    }
-}
-
-#[test]
-fn cli_rejects_invalid_blame_selectors_before_local_pro_access() {
-    let temp = tempdir();
-    let stderr = failure_stderr(ctx(&temp).args(["blame", "file", "src/lib.rs", "--lines", "0"]));
-    assert!(stderr.contains("line number must be positive"));
-    let stderr =
-        failure_stderr(ctx(&temp).args(["blame", "file", "src/lib.rs", "--lines", "60:42"]));
-    assert!(stderr.contains("END >= START"));
-    let stderr = failure_stderr(ctx(&temp).args(["blame", "pr", "0", "--repository", "ctxrs/ctx"]));
-    assert!(stderr.contains("positive decimal number"));
-    let stderr = failure_stderr(ctx(&temp).args(["blame", "42"]));
-    assert!(
-        stderr.contains("pull request number requires a repository selector"),
-        "{stderr}"
-    );
-    assert!(!stderr.contains("pro_not_installed"), "{stderr}");
-    for repository in ["", "   "] {
-        let stderr = failure_stderr(ctx(&temp).args([
-            "blame",
-            "commit",
-            "abc123",
-            "--repository",
-            repository,
-            "--format=json",
-        ]));
-        let diagnostic: serde_json::Value = serde_json::from_str(&stderr).unwrap();
-        assert_eq!(diagnostic["error"], "invalid_request");
-        assert_eq!(diagnostic["error_code"], "invalid_request");
-        assert_eq!(diagnostic["reason"], "request_invalid");
-        assert_eq!(diagnostic["retryable"], false);
-        assert!(!stderr.contains("repository selector"), "{stderr}");
-    }
-
-    for args in [
-        &["blame", "main"][..],
-        &["blame", "main", "--format=json"][..],
-    ] {
-        let stderr = failure_stderr(ctx(&temp).args(args));
-        assert!(stderr.contains("invalid_request"), "{stderr}");
-        if args.contains(&"--format=json") {
-            let diagnostic: serde_json::Value = serde_json::from_str(&stderr).unwrap();
-            assert_eq!(diagnostic["error"], "invalid_request");
-            assert_eq!(diagnostic["reason"], "request_invalid");
-            assert_eq!(diagnostic["retryable"], false);
-            assert!(!stderr.contains("target type is ambiguous"), "{stderr}");
-            continue;
-        }
-        assert!(stderr.contains("target type is ambiguous"), "{stderr}");
-        assert!(stderr.contains("--type file"), "{stderr}");
-        assert!(stderr.contains("--type commit"), "{stderr}");
-        assert!(stderr.contains("--type pr"), "{stderr}");
-        assert!(!stderr.contains("pro_not_installed"), "{stderr}");
-    }
-
-    let stderr = failure_stderr(ctx(&temp).args([
-        "blame",
-        "src/lib.rs",
-        "--type",
-        "unknown",
-        "--format=json",
-    ]));
-    let diagnostic: serde_json::Value = serde_json::from_str(&stderr).unwrap();
-    assert_eq!(diagnostic["error"], "invalid_request");
-    assert_eq!(diagnostic["reason"], "request_invalid");
-    assert!(!stderr.contains("unknown"), "{stderr}");
-    assert!(!stderr.contains("pro_not_installed"), "{stderr}");
-}
-
-#[test]
-fn blame_json_sanitizes_malformed_config_before_pro_access() {
-    let temp = tempdir();
-    fs::create_dir_all(data_root(&temp)).unwrap();
-    fs::write(
-        data_root(&temp).join("config.toml"),
-        "private malformed config at /home/alice/repository",
-    )
-    .unwrap();
-
-    let stderr = failure_stderr(ctx(&temp).args(["blame", "commit", "abc1234", "--format=json"]));
-    let diagnostic: serde_json::Value = serde_json::from_str(&stderr).unwrap();
-    assert_eq!(diagnostic["error"], "invalid_response");
-    assert_eq!(diagnostic["reason"], "helper_response_invalid");
-    assert_eq!(diagnostic["retryable"], false);
-    assert!(!stderr.contains("alice"), "{stderr}");
-    assert!(!stderr.contains("repository"), "{stderr}");
-    assert!(!stderr.contains('\u{1b}'), "{stderr}");
-}
-
-#[test]
-fn removed_evidence_preview_flag_is_unknown_before_pro_or_core_access() {
-    let temp = tempdir();
-    let root = data_root(&temp);
-    for args in [
-        &["blame", "src/lib.rs", "--evidence-preview"][..],
-        &["blame", "abc1234", "--evidence-preview"],
-        &[
-            "blame",
-            "42",
-            "--repository",
-            "forge:github.com/ctxrs/ctx",
-            "--evidence-preview",
-        ],
-        &["blame", "file", "src/lib.rs", "--evidence-preview"],
-        &["blame", "commit", "abc1234", "--evidence-preview"],
-        &[
-            "blame",
-            "pr",
-            "42",
-            "--repository",
-            "forge:github.com/ctxrs/ctx",
-            "--evidence-preview",
-        ],
-    ] {
-        let output = ctx(&temp).args(args).output().unwrap();
-        assert!(!output.status.success(), "{args:?}");
-        assert!(output.stdout.is_empty(), "{args:?}");
-        assert!(!output.stderr.contains(&0x1b), "{args:?}");
-        let stderr = String::from_utf8(output.stderr).unwrap();
-        assert!(
-            stderr.contains("unexpected argument '--evidence-preview'"),
-            "{args:?}: {stderr}"
-        );
-        assert!(
-            !root.exists(),
-            "rejected {args:?} created {}",
-            root.display()
         );
     }
 }
@@ -800,16 +575,6 @@ fn machine_readable_output_uses_format_without_a_json_alias() {
         &["show", "event", "--help"],
         &["list", "events", "--help"],
         &["search", "--help"],
-        &["pro", "--help"],
-        &["pro", "setup", "--help"],
-        &["pro", "manage", "--help"],
-        &["pro", "uninstall", "--help"],
-        &["referral", "create", "--help"],
-        &["referral", "status", "--help"],
-        &["referral", "payout", "--help"],
-        &["blame", "file", "--help"],
-        &["blame", "commit", "--help"],
-        &["blame", "pr", "--help"],
         &["docs", "list", "--help"],
         &["docs", "search", "--help"],
         &["docs", "show", "--help"],
@@ -1313,13 +1078,5 @@ fn removed_public_commands_are_rejected() {
             predicate::str::contains("unrecognized subcommand")
                 .and(predicate::str::contains(args[0])),
         );
-    }
-
-    for obsolete in ["status", "install", "update"] {
-        ctx(&temp)
-            .args(["pro", obsolete])
-            .assert()
-            .failure()
-            .stderr(predicate::str::contains("unrecognized subcommand"));
     }
 }

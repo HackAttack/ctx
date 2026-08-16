@@ -117,71 +117,6 @@ fn mcp_tool_input_validation_returns_stable_invalid_request_and_server_recovers(
             }),
             "custom history source filters can only be combined with --provider custom",
         ),
-        (
-            "bad-pro-target-kind",
-            "blame",
-            json!({"target": {"kind": "unknown", "oid": "abc123"}}),
-            "target.kind must be file, commit, or pull_request",
-        ),
-        (
-            "bad-pro-target-argument",
-            "blame",
-            json!({
-                "target": {"kind": "commit", "oid": "abc123", "unexpected": true}
-            }),
-            "unknown target argument unexpected",
-        ),
-        (
-            "bad-pro-argument",
-            "blame",
-            json!({
-                "target": {"kind": "commit", "oid": "abc123"},
-                "unexpected": true
-            }),
-            "unknown argument unexpected",
-        ),
-        (
-            "bad-pro-limit",
-            "blame",
-            json!({"target": {"kind": "commit", "oid": "abc123"}, "limit": 0}),
-            "limit must be between 1 and 8",
-        ),
-        (
-            "bad-pro-cursor",
-            "blame",
-            json!({"target": {"kind": "commit", "oid": "abc123"}, "cursor": ""}),
-            "cursor must contain 1 to",
-        ),
-        (
-            "bad-pro-cursor-encoding",
-            "blame",
-            json!({"target": {"kind": "commit", "oid": "abc123"}, "cursor": "é"}),
-            "cursor must contain 1 to",
-        ),
-        (
-            "bad-pro-selector",
-            "blame",
-            json!({"target": {"kind": "pull_request", "selector": "0", "repository": "ctxrs/ctx"}}),
-            "pull request selector must be a positive decimal number",
-        ),
-        (
-            "empty-pro-repository",
-            "blame",
-            json!({"target": {"kind": "commit", "oid": "abc123", "repository": ""}}),
-            "target.repository cannot be empty",
-        ),
-        (
-            "whitespace-pro-repository",
-            "blame",
-            json!({"target": {"kind": "commit", "oid": "abc123", "repository": "   "}}),
-            "target.repository cannot be empty",
-        ),
-        (
-            "bad-pro-lines",
-            "blame",
-            json!({"target": {"kind": "file", "path": "src/lib.rs", "lines": {"start": 4, "end": 2}}}),
-            "line range must be positive and inclusive",
-        ),
     ];
 
     let mut requests = vec![json!({
@@ -229,30 +164,11 @@ fn mcp_tool_input_validation_returns_stable_invalid_request_and_server_recovers(
 
     let responses = mcp_roundtrip(&temp, &requests);
 
-    for (offset, (id, name, _, detail)) in cases.iter().enumerate() {
+    for (offset, (id, _, _, detail)) in cases.iter().enumerate() {
         let result = &responses[offset + 1]["result"];
         assert_eq!(responses[offset + 1]["id"], *id);
         assert_eq!(result["isError"], true);
         assert_eq!(result["structuredContent"]["error_code"], "invalid_request");
-        if *name == "blame" {
-            assert_eq!(
-                result["structuredContent"],
-                json!({
-                    "error": "invalid_request",
-                    "error_code": "invalid_request",
-                    "reason": "request_invalid",
-                    "message": "The blame request is invalid.",
-                    "retryable": false,
-                }),
-                "{id}: {result:#?}"
-            );
-            assert_eq!(
-                mcp_content_text(result),
-                "The blame request is invalid.",
-                "{id}: {result:#?}"
-            );
-            continue;
-        }
         assert!(
             result["structuredContent"]["error"]
                 .as_str()

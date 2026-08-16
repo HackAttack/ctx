@@ -189,6 +189,7 @@ impl GenerationWriter {
             partial_source_route_deltas: self.partial_source_route_deltas.clone(),
             source_identities: self.source_identities.clone(),
             changed_session_insertions: Vec::new(),
+            changed_session_updates: Vec::new(),
         };
         self.active_source_route_stage = Some(checkpoint);
         Ok(())
@@ -296,6 +297,9 @@ impl GenerationWriter {
         self.partially_reconciled_routes = checkpoint.partially_reconciled_routes;
         self.partial_source_route_deltas = checkpoint.partial_source_route_deltas;
         self.source_identities = checkpoint.source_identities;
+        for (session_uuid, prior) in checkpoint.changed_session_updates.into_iter().rev() {
+            self.changed_sessions.insert(session_uuid, prior);
+        }
         for session_uuid in checkpoint.changed_session_insertions {
             if self.changed_sessions.remove(&session_uuid).is_none() {
                 return Err(IndexError::WriterInvariant(

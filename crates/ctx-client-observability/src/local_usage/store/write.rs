@@ -52,20 +52,19 @@ pub(super) fn record_at(
         r#"
         INSERT INTO daily_usage (
             day_utc, definition_version, ctx_version, surface, operation, outcome,
-            value_class, duration_bucket, target_type, pro_outcome, context_coverage,
-            calls, result_count, citation_count, delivered_output_bytes,
+            value_class, duration_bucket, context_coverage,
+            calls, result_count, delivered_output_bytes,
             delivered_context_bytes, matched_normalized_session_bytes
         ) VALUES (
-            ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11,
-            1, ?12, ?13, ?14, ?15, ?16
+            ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9,
+            1, ?10, ?11, ?12, ?13
         )
         ON CONFLICT (
             day_utc, definition_version, ctx_version, surface, operation, outcome,
-            value_class, duration_bucket, target_type, pro_outcome, context_coverage
+            value_class, duration_bucket, context_coverage
         ) DO UPDATE SET
             calls = calls + 1,
             result_count = result_count + excluded.result_count,
-            citation_count = citation_count + excluded.citation_count,
             delivered_output_bytes =
                 delivered_output_bytes + excluded.delivered_output_bytes,
             delivered_context_bytes =
@@ -83,11 +82,8 @@ pub(super) fn record_at(
             operation.outcome.as_str(),
             operation.value_class.as_str(),
             operation.duration.as_str(),
-            operation.target_type.as_str(),
-            operation.pro_outcome.as_str(),
             operation.context_coverage.as_str(),
             operation.result_count,
-            operation.citation_count,
             operation.delivered_output_bytes,
             operation.delivered_context_bytes,
             operation.matched_normalized_session_bytes,

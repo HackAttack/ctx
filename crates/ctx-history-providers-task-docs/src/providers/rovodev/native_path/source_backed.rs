@@ -11,24 +11,18 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use ctx_history_capture_model::{
-    file_touches::{
-        event_type_supports_structured_file_touches, visit_provider_file_touch_drafts_with_limit,
-        MAX_PROVIDER_FILE_TOUCHES_PER_EVENT,
-    },
-    normalization::{
-        provider_block_text, provider_explicit_result_value_text, provider_message_id,
-        provider_output_event_is_failure, provider_result_outcome_evidence,
-        provider_role_from_message, provider_string_field, provider_timestamp_from_fields,
-    },
-    tool_input,
+use ctx_history_capture_model::normalization::{
+    provider_block_text, provider_explicit_result_value_text, provider_role_from_message,
+    provider_timestamp_from_fields,
 };
 use ctx_history_core::{
-    derive_event_id, derive_session_id, AgentType, CaptureProvider, CoreRecord, CoreRecordError,
-    EventIdentityInput, EventRole, EventType, NativeItemKey, NativeSessionKey,
-    ProjectionContractError, ScannedSourceCounts, SessionIdentityInput, SourceAnchor, SourceKey,
-    SourceObservation, StableEntityId, TypedKey,
+    derive_event_id, derive_session_id, ActivityInvocation, ActivityJsonCapture, ActivityResult,
+    ActivityTextCapture, CaptureProvider, CoreActivity, CoreRecord, CoreRecordError,
+    EventIdentityInput, EventRole, EventType, LiteralFactKind, NativeItemKey, NativeSessionKey,
+    ProjectionContractError, ProviderDeclaredFact, ScannedSourceCounts, SessionIdentityInput,
+    SourceAnchor, SourceKey, SourceObservation, StableEntityId, TypedKey, CORE_ACTIVITY_REVISION,
 };
+use serde::de::{DeserializeSeed, MapAccess, SeqAccess, Visitor};
 use sha2::{Digest, Sha256};
 use thiserror::Error;
 
@@ -43,10 +37,9 @@ use crate::{
     common::io::{OpenedProviderSourceFile, ProviderSourceRoot},
     CaptureError, CaptureLifecycleSink, ChangedDocumentSink, CompleteDocumentTree,
     DocumentLeafExecutionPolicy, DocumentLeafFingerprint, DocumentRecordSpool,
-    DocumentSourceTerminal, ObservedDocumentLeaf, OutputObservationKind, OutputOutcome,
-    ProviderAdapterContext, ReplacementDocumentTree, SourceBackedRouteError,
-    SourceBackedRouteErrorKind, SourceBackedRouteResult, MAX_PROVIDER_JSONL_LINE_BYTES,
-    ROVODEV_SOURCE_FORMAT,
+    DocumentSourceTerminal, ObservedDocumentLeaf, ProviderAdapterContext, ReplacementDocumentTree,
+    SourceBackedRouteError, SourceBackedRouteErrorKind, SourceBackedRouteResult,
+    MAX_PROVIDER_JSONL_LINE_BYTES, ROVODEV_SOURCE_FORMAT,
 };
 
 #[path = "source_backed/document.rs"]
@@ -60,7 +53,7 @@ const LOGICAL_SESSION_KIND: &str = "rovodev-session";
 const LOGICAL_EVENT_KIND: &str = "rovodev-event";
 const SOURCE_SCHEMA_VARIANT: &str = "rovodev-session-json-tree-v1";
 const SOURCE_REVISION_KIND: &str = "rovodev-session-tree-revision-v1";
-const PARSER_REVISION: &str = "rovodev-source-backed-v4-direct-lineage";
+const PARSER_REVISION: &str = "rovodev-source-backed-v5-neutral-activity";
 const RELATIVE_CONTEXT_FILE: &str = "session_context.json";
 const MESSAGE_OBJECT_KIND: &str = "message_history";
 const FILE_HASH_BUFFER_BYTES: usize = 64 * 1024;
@@ -166,6 +159,13 @@ fn prepare_document(
     metadata_bytes: Option<&[u8]>,
     metadata_acquisition_failure: Option<String>,
 ) -> std::result::Result<PreparedDocument, String> {
+    if json_has_duplicate_key(context_bytes).map_err(|error| {
+        bounded_failure(format!("invalid Rovo Dev session_context.json: {error}"))
+    })? {
+        return Err(bounded_failure(
+            "Rovo Dev session_context.json has duplicate JSON fields",
+        ));
+    }
     let context_json =
         serde_json::from_slice::<serde_json::Value>(context_bytes).map_err(|error| {
             bounded_failure(format!("invalid Rovo Dev session_context.json: {error}"))
@@ -175,7 +175,7 @@ fn prepare_document(
     let messages = message_history(&context_json).cloned().ok_or_else(|| {
         bounded_failure("Rovo Dev session_context.json is missing message_history array")
     })?;
-    let context_branch = provider_string_field(
+    let context_branch = exact_provider_string_field(
         &context_json,
         &[
             "branch",
@@ -188,6 +188,10 @@ fn prepare_document(
 
     let mut initial_failure_count = u64::from(metadata_acquisition_failure.is_some());
     let metadata = match metadata_bytes {
+        Some(bytes) if json_has_duplicate_key(bytes).unwrap_or(true) => {
+            initial_failure_count = initial_failure_count.saturating_add(1);
+            serde_json::Value::Null
+        }
         Some(bytes) => match serde_json::from_slice::<serde_json::Value>(bytes) {
             Ok(value) => match validate_json_bounds(&value) {
                 Ok(()) => value,
@@ -203,10 +207,10 @@ fn prepare_document(
         },
         None => serde_json::Value::Null,
     };
-    let provider_session_id = provider_string_field(&metadata, &["session_id", "sessionId"])
-        .or_else(|| provider_string_field(&context_json, &["session_id", "sessionId"]))
+    let provider_session_id = exact_provider_string_field(&metadata, &["session_id", "sessionId"])
+        .or_else(|| exact_provider_string_field(&context_json, &["session_id", "sessionId"]))
         .unwrap_or_else(|| source.provider_session_id.clone());
-    let parent_provider_session_id = provider_string_field(
+    let parent_provider_session_id = exact_provider_string_field(
         &metadata,
         &[
             "parent_session_id",
@@ -216,13 +220,13 @@ fn prepare_document(
             "fork_parent_id",
         ],
     );
-    let started_at = provider_timestamp_from_fields(
+    let started_at = exact_provider_timestamp_from_fields(
         &metadata,
         &["created_at", "createdAt", "started_at", "startedAt"],
     )
     .or_else(|| messages.iter().find_map(message_timestamp))
     .unwrap_or(context.imported_at);
-    let cwd = provider_string_field(
+    let cwd = exact_provider_string_field(
         &metadata,
         &[
             "workspace_path",
@@ -245,16 +249,27 @@ fn prepare_document(
 }
 
 fn message_history(value: &serde_json::Value) -> Option<&Vec<serde_json::Value>> {
-    value
-        .get("message_history")
-        .or_else(|| value.pointer("/session_context/message_history"))
-        .or_else(|| value.get("messages"))
-        .or_else(|| value.pointer("/conversation/messages"))
-        .and_then(serde_json::Value::as_array)
+    let mut selected = None;
+    for candidate in [
+        value.get("message_history"),
+        value.pointer("/session_context/message_history"),
+        value.get("messages"),
+        value.pointer("/conversation/messages"),
+    ]
+    .into_iter()
+    .flatten()
+    {
+        let candidate = candidate.as_array()?;
+        if selected.is_some_and(|selected| selected != candidate) {
+            return None;
+        }
+        selected = Some(candidate);
+    }
+    selected
 }
 
 fn message_timestamp(value: &serde_json::Value) -> Option<chrono::DateTime<chrono::Utc>> {
-    provider_timestamp_from_fields(
+    exact_provider_timestamp_from_fields(
         value,
         &[
             "timestamp",
@@ -265,6 +280,130 @@ fn message_timestamp(value: &serde_json::Value) -> Option<chrono::DateTime<chron
             "user_sent_time",
         ],
     )
+}
+
+fn exact_provider_string_field(value: &serde_json::Value, fields: &[&str]) -> Option<String> {
+    let object = value.as_object()?;
+    let mut selected = None;
+    for field in fields {
+        let Some(candidate) = object.get(*field).and_then(serde_json::Value::as_str) else {
+            continue;
+        };
+        if selected.is_some_and(|selected| selected != candidate) {
+            return None;
+        }
+        selected = Some(candidate);
+    }
+    selected.map(str::to_owned)
+}
+
+fn exact_provider_timestamp_from_fields(
+    value: &serde_json::Value,
+    fields: &[&str],
+) -> Option<chrono::DateTime<chrono::Utc>> {
+    let object = value.as_object()?;
+    let mut selected = None;
+    let mut observed = false;
+    for field in fields {
+        if !object.contains_key(*field) {
+            continue;
+        }
+        let candidate = provider_timestamp_from_fields(value, &[*field]);
+        if observed && selected != candidate {
+            return None;
+        }
+        selected = candidate;
+        observed = true;
+    }
+    selected
+}
+
+fn json_has_duplicate_key(bytes: &[u8]) -> Result<bool, serde_json::Error> {
+    let mut duplicate = false;
+    let mut deserializer = serde_json::Deserializer::from_slice(bytes);
+    DuplicateJsonKeySeed(&mut duplicate).deserialize(&mut deserializer)?;
+    deserializer.end()?;
+    Ok(duplicate)
+}
+
+struct DuplicateJsonKeySeed<'a>(&'a mut bool);
+
+impl<'de> DeserializeSeed<'de> for DuplicateJsonKeySeed<'_> {
+    type Value = ();
+
+    fn deserialize<D>(self, deserializer: D) -> Result<(), D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        deserializer.deserialize_any(DuplicateJsonKeyVisitor(self.0))
+    }
+}
+
+struct DuplicateJsonKeyVisitor<'a>(&'a mut bool);
+
+impl<'de> Visitor<'de> for DuplicateJsonKeyVisitor<'_> {
+    type Value = ();
+
+    fn expecting(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("a JSON value")
+    }
+
+    fn visit_bool<E>(self, _: bool) -> Result<(), E> {
+        Ok(())
+    }
+
+    fn visit_i64<E>(self, _: i64) -> Result<(), E> {
+        Ok(())
+    }
+
+    fn visit_u64<E>(self, _: u64) -> Result<(), E> {
+        Ok(())
+    }
+
+    fn visit_f64<E>(self, _: f64) -> Result<(), E> {
+        Ok(())
+    }
+
+    fn visit_str<E>(self, _: &str) -> Result<(), E> {
+        Ok(())
+    }
+
+    fn visit_string<E>(self, _: String) -> Result<(), E> {
+        Ok(())
+    }
+
+    fn visit_none<E>(self) -> Result<(), E> {
+        Ok(())
+    }
+
+    fn visit_unit<E>(self) -> Result<(), E> {
+        Ok(())
+    }
+
+    fn visit_seq<A>(self, mut sequence: A) -> Result<(), A::Error>
+    where
+        A: SeqAccess<'de>,
+    {
+        while sequence
+            .next_element_seed(DuplicateJsonKeySeed(self.0))?
+            .is_some()
+        {}
+        Ok(())
+    }
+
+    fn visit_map<A>(self, mut map: A) -> Result<(), A::Error>
+    where
+        A: MapAccess<'de>,
+    {
+        let mut keys = HashSet::new();
+        while let Some(key) = map.next_key::<String>()? {
+            if !keys.insert(key) {
+                *self.0 = true;
+            }
+            map.next_value_seed(DuplicateJsonKeySeed(self.0))?;
+        }
+        Ok(())
+    }
 }
 
 fn validate_json_bounds(value: &serde_json::Value) -> std::result::Result<(), &'static str> {
@@ -766,11 +905,7 @@ fn apply_direct_session_relationship(
     parent_session_id: Option<StableEntityId>,
 ) -> RovoDevSourceBackedResult<()> {
     if let Some(parent_session_id) = parent_session_id {
-        record.set_session_relationship(
-            ctx_history_core::SessionRelationshipKind::RelatedUnknown,
-            Some(parent_session_id),
-            parent_session_id,
-        )?;
+        record.parent_session_id = Some(parent_session_id);
     }
     Ok(())
 }
@@ -894,10 +1029,22 @@ fn rovodev_route_error(error: RovoDevSourceBackedError) -> SourceBackedRouteErro
 }
 
 fn explicit_message_id(message: &serde_json::Value) -> Option<&str> {
-    ["id", "message_id", "messageId", "request_id", "requestId"]
-        .into_iter()
-        .find_map(|field| message.get(field).and_then(serde_json::Value::as_str))
-        .filter(|value| !value.trim().is_empty())
+    let object = message.as_object()?;
+    let mut selected = None;
+    for field in ["id", "message_id", "messageId", "request_id", "requestId"] {
+        let Some(candidate) = object
+            .get(field)
+            .and_then(serde_json::Value::as_str)
+            .filter(|value| !value.trim().is_empty())
+        else {
+            continue;
+        };
+        if selected.is_some_and(|selected| selected != candidate) {
+            return None;
+        }
+        selected = Some(candidate);
+    }
+    selected
 }
 
 #[cfg(test)]

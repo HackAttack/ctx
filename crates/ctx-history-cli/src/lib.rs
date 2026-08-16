@@ -15,7 +15,6 @@ mod import_presentation;
 mod import_report;
 mod list_events;
 mod local_usage;
-mod mcp_tool_call;
 mod output;
 mod ports;
 mod presentation_limit;
@@ -81,11 +80,6 @@ pub use history_source_plugins::{
     discover_history_source_plugins_with_diagnostics, prepare_source_backed_history_source,
     HistorySourcePluginManifestFailure, HistorySourcePluginRefresh, HistorySourcePluginSource,
     PreparedHistorySourcePluginRefresh,
-};
-pub use mcp_tool_call::{
-    append_mcp_tool_call_markdown, append_mcp_tool_call_text, escape_markdown_structure,
-    mcp_tool_call_display, McpToolCallDisplay, MCP_TOOL_CALL_DISPLAY_MAX_CHARS,
-    MCP_TOOL_CALL_JSON_GUIDANCE, MCP_TOOL_CALL_STRUCTURED_GUIDANCE,
 };
 pub use output::JsonOutputFormat;
 pub use ports::{OutputStream, SearchExecutionObservation, SearchRefreshStatus, TerminalPort};

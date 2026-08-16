@@ -2,8 +2,7 @@ mod mcp_response;
 mod protobuf;
 
 use mcp_response::decode_mcp_tool_result_response;
-#[cfg(test)]
-use protobuf::decode_protobuf_struct;
+pub(in super::super) use mcp_response::WarpMcpResultCapture;
 use protobuf::{
     bounded_exact_linkage_owned, bounded_linkage_owned, decode_last_nested_text_occurrences,
     decode_protobuf_struct_map, decode_received_messages_occurrences,
@@ -15,10 +14,7 @@ use protobuf::{
 use std::collections::HashMap;
 
 use chrono::{DateTime, Utc};
-use ctx_history_core::{
-    EventRole, EventType, McpJsonCapture, McpTerminalResponseContent, McpTerminalStatus,
-    McpTextCapture, MAX_MCP_TOOL_CALL_ATTRIBUTION_COMPONENT_BYTES,
-};
+use ctx_history_core::{ActivityJsonCapture, ActivityTextCapture, EventRole, EventType};
 use serde_json::{Map, Value};
 use uuid::Uuid;
 
@@ -26,7 +22,9 @@ use super::super::wire::{
     is_warp_tool_arm, is_warp_tool_result_arm, warp_message_arm, warp_tool_name,
     warp_tool_result_name, WarpMessageArm, WarpWireCursor, WarpWireValue,
 };
-use crate::{CaptureError, OutputOutcome, Result};
+use crate::{CaptureError, Result};
+
+const MAX_WARP_MCP_COMPONENT_BYTES: usize = 64 * 1024;
 
 #[derive(Clone, Debug)]
 pub(super) struct WarpDecodedTask {
@@ -67,10 +65,9 @@ pub(super) struct WarpRetainedMessage {
 pub(super) struct WarpDecodedOutput {
     pub(super) call_id: Option<String>,
     pub(super) tool_name: &'static str,
-    pub(super) outcome: OutputOutcome,
     pub(super) body: String,
     pub(super) mcp_invocation: Option<WarpMcpToolInvocation>,
-    pub(super) mcp_response: Option<McpTerminalResponseContent>,
+    pub(super) mcp_response: Option<WarpMcpResultCapture>,
     result_kind: WarpToolResultKind,
 }
 
@@ -95,10 +92,6 @@ pub(super) struct WarpDecodeCounters {
     pub(super) native_result_records: u64,
     pub(super) native_result_envelope_bytes: u64,
     pub(super) native_result_body_bytes_observed: u64,
-    pub(super) native_results_success: u64,
-    pub(super) native_results_failure: u64,
-    pub(super) native_results_timeout: u64,
-    pub(super) native_results_unknown: u64,
     pub(super) malformed_output_records: u64,
 }
 
@@ -113,10 +106,9 @@ enum WarpClassifiedBody {
 struct WarpToolResultClassification {
     call_id: Option<String>,
     tool_name: &'static str,
-    outcome: OutputOutcome,
     body: WarpClassifiedBody,
     result_kind: WarpToolResultKind,
-    mcp_response: Option<McpTerminalResponseContent>,
+    mcp_response: Option<WarpMcpResultCapture>,
 }
 
 #[derive(Debug)]
@@ -563,7 +555,7 @@ fn link_mcp_tool_results(messages: &mut [WarpDecodedMessage]) {
 fn qualifies_mcp_invocation(invocation: &WarpMcpToolInvocation) -> bool {
     Uuid::parse_str(&invocation.server_id).is_ok()
         && !invocation.tool_name.is_empty()
-        && invocation.tool_name.len() <= MAX_MCP_TOOL_CALL_ATTRIBUTION_COMPONENT_BYTES
+        && invocation.tool_name.len() <= MAX_WARP_MCP_COMPONENT_BYTES
 }
 
 fn decode_tool_result_call_id(payloads: &[Vec<u8>]) -> Option<String> {
@@ -642,20 +634,6 @@ fn decode_output(
     counters.native_result_body_bytes_observed = counters
         .native_result_body_bytes_observed
         .saturating_add(body_bytes);
-    match classification.outcome {
-        OutputOutcome::Success => {
-            counters.native_results_success = counters.native_results_success.saturating_add(1);
-        }
-        OutputOutcome::Failure => {
-            counters.native_results_failure = counters.native_results_failure.saturating_add(1);
-        }
-        OutputOutcome::Timeout => {
-            counters.native_results_timeout = counters.native_results_timeout.saturating_add(1);
-        }
-        OutputOutcome::Unknown => {
-            counters.native_results_unknown = counters.native_results_unknown.saturating_add(1);
-        }
-    }
     let terminal_without_text = matches!(
         classification.result_kind,
         WarpToolResultKind::Mcp | WarpToolResultKind::Cancellation
@@ -684,7 +662,6 @@ fn decode_output(
     Ok(WarpDecodedMessagePayload::Output(WarpDecodedOutput {
         call_id: classification.call_id,
         tool_name: classification.tool_name,
-        outcome: classification.outcome,
         body,
         mcp_invocation: None,
         mcp_response: classification.mcp_response,
@@ -720,7 +697,6 @@ fn classify_tool_result(payloads: &[Vec<u8>]) -> Result<WarpToolResultClassifica
         return Ok(WarpToolResultClassification {
             call_id,
             tool_name: warp_tool_result_name(0),
-            outcome: OutputOutcome::Unknown,
             body: WarpClassifiedBody::Bytes(None),
             result_kind: WarpToolResultKind::Other,
             mcp_response: None,
@@ -731,15 +707,12 @@ fn classify_tool_result(payloads: &[Vec<u8>]) -> Result<WarpToolResultClassifica
         return Ok(WarpToolResultClassification {
             call_id,
             tool_name: warp_tool_result_name(variant),
-            outcome: OutputOutcome::Unknown,
             body: WarpClassifiedBody::Bytes(None),
             result_kind: WarpToolResultKind::Cancellation,
-            mcp_response: Some(McpTerminalResponseContent {
-                status: McpTerminalStatus::Cancelled,
-                failure_kind: None,
-                duration_ns: None,
-                text: McpTextCapture::Absent,
-                payload: McpJsonCapture::Absent,
+            mcp_response: Some(WarpMcpResultCapture {
+                status: None,
+                text: ActivityTextCapture::Absent,
+                structured_content: ActivityJsonCapture::Absent,
             }),
         });
     }
@@ -748,7 +721,6 @@ fn classify_tool_result(payloads: &[Vec<u8>]) -> Result<WarpToolResultClassifica
             return Ok(WarpToolResultClassification {
                 call_id,
                 tool_name: warp_tool_result_name(variant),
-                outcome: OutputOutcome::Unknown,
                 body: WarpClassifiedBody::Bytes(None),
                 result_kind: WarpToolResultKind::Other,
                 mcp_response: None,
@@ -757,58 +729,33 @@ fn classify_tool_result(payloads: &[Vec<u8>]) -> Result<WarpToolResultClassifica
         return Ok(WarpToolResultClassification {
             call_id,
             tool_name: warp_tool_result_name(variant),
-            outcome: decoded.outcome,
             body: WarpClassifiedBody::Owned(decoded.body),
             result_kind: WarpToolResultKind::Mcp,
             mcp_response: Some(decoded.response),
         });
     }
     if variant == 2 {
-        let (outcome, body) = classify_run_shell_result_occurrences(&selected.payloads)?;
+        let body = decode_run_shell_result_occurrences(&selected.payloads)?;
         return Ok(WarpToolResultClassification {
             call_id,
             tool_name: warp_tool_result_name(variant),
-            outcome,
             body,
             result_kind: WarpToolResultKind::Other,
             mcp_response: None,
         });
     }
     let selected_field = last_length_delimited_field_occurrences(&selected.payloads)?;
-    let selected_field_number = selected_field.map_or(0, |(field, _)| field);
-    let outcome = match (variant, selected_field_number) {
-        (4 | 23, 1) => OutputOutcome::Success,
-        (
-            3 | 5 | 6 | 9 | 10 | 15 | 16 | 19 | 24 | 25 | 26 | 28 | 30 | 32 | 34 | 36 | 38 | 41
-            | 42,
-            1,
-        ) => OutputOutcome::Success,
-        (
-            3 | 5 | 6 | 9 | 10 | 15 | 16 | 19 | 24 | 25 | 26 | 28 | 30 | 32 | 34 | 36 | 38 | 41
-            | 42,
-            2,
-        ) => OutputOutcome::Failure,
-        (29 | 31, 1) => OutputOutcome::Success,
-        (29 | 31, 2 | 3) => OutputOutcome::Failure,
-        (17 | 35, 2) | (27, 3) => OutputOutcome::Success,
-        (39, 1) => OutputOutcome::Success,
-        (39, 2 | 3) => OutputOutcome::Failure,
-        _ => OutputOutcome::Unknown,
-    };
     let body = classified_result_body(variant, selected_field);
     Ok(WarpToolResultClassification {
         call_id,
         tool_name: warp_tool_result_name(variant),
-        outcome,
         body,
         result_kind: WarpToolResultKind::Other,
         mcp_response: None,
     })
 }
 
-fn classify_run_shell_result_occurrences(
-    payloads: &[Vec<u8>],
-) -> Result<(OutputOutcome, WarpClassifiedBody)> {
+fn decode_run_shell_result_occurrences(payloads: &[Vec<u8>]) -> Result<WarpClassifiedBody> {
     let mut deprecated_output = None;
     let mut terminal = None;
     for payload in payloads {
@@ -827,10 +774,7 @@ fn classify_run_shell_result_occurrences(
         }
     }
     let Some(terminal) = terminal else {
-        return Ok((
-            OutputOutcome::Unknown,
-            WarpClassifiedBody::Bytes(deprecated_output),
-        ));
+        return Ok(WarpClassifiedBody::Bytes(deprecated_output));
     };
     let body = match terminal.field {
         4 | 5 => classified_nested_text_occurrences(&terminal.payloads, 1),
@@ -840,12 +784,7 @@ fn classify_run_shell_result_occurrences(
         },
         _ => WarpClassifiedBody::Bytes(None),
     };
-    let outcome = match terminal.field {
-        5 => OutputOutcome::Success,
-        6 => OutputOutcome::Failure,
-        _ => OutputOutcome::Unknown,
-    };
-    Ok((outcome, body))
+    Ok(body)
 }
 
 fn classified_result_body(variant: u32, selected: Option<(u32, &[u8])>) -> WarpClassifiedBody {

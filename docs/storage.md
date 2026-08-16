@@ -30,8 +30,8 @@ The duplicate `upgrade.interval_seconds` config key is also removed. Use
 `CTX_UPGRADE_INTERVAL_SECONDS` for a process-level override.
 
 ctx stores immutable Core/Tantivy search generations, optional semantic data,
-content-free local usage aggregates, and optional encrypted Pro data locally.
-Treat the ctx data root like private source history.
+and content-free local usage aggregates locally. Treat the ctx data root like
+private source history.
 
 ## Local Layout
 
@@ -44,8 +44,6 @@ Default root:
     semantic/
   usage.sqlite
   config.toml
-  pro/
-    graph/  # encrypted Flat/FST artifacts when Local Pro is installed
   runtime/
     onnxruntime/
       <runtime-version>/
@@ -69,40 +67,30 @@ installed executable, not indexed provider history.
 ## Local Usage Product State
 
 `usage.sqlite` is an owner-private SQLite sidecar under the selected ctx data
-root. It is separate from provider history, Core/Tantivy and semantic search
-data, and the encrypted Local Pro graph.
-Local usage is product state, not telemetry: it has no network path or
+root. It is separate from provider history and Core/Tantivy and semantic search
+data. Local usage is product state, not telemetry: it has no network path or
 analytics identity and remains available when analytics are disabled.
 
 Version 1 stores daily UTC aggregate rows only. Its closed dimensions are UTC
 day, usage-definition version, ctx binary/client version, surface (`cli` or
-`mcp`), logical operation, technical outcome, result class, duration bucket,
-blame target type, and Pro blame outcome. Aggregate counters cover calls,
-content-free result/citation totals when a handler already has them, and
-serialized MCP response bytes. MCP response bytes are factual JSON-RPC
-transport bytes, including the delivered newline; they are not tokens, token
-savings, cost savings, or model context.
+`mcp`), logical operation, technical outcome, result class, and duration
+bucket. Aggregate counters cover calls, content-free result/citation totals
+when a handler already has them, and serialized MCP response bytes. MCP
+response bytes are factual JSON-RPC transport bytes, including the delivered
+newline; they are not tokens, token savings, cost savings, or model context.
 
 The sidecar never stores a query, path, repository, selector, argument, prompt,
 session/event/citation ID, exact timestamp, transcript-derived data, output
 body, machine identity, or analytics identity. Result class is explicitly
-`result_bearing`, `empty`, or `not_applicable`; unclassified operations are not
-reported as empty. Pro blame outcomes are `produced`, `possible`, `none`, or
-`error`, broken down across the exact typed `file`, `commit`, and `pull_request`
-targets. `produced` requires an asserted `ProducedBy` fact; ambiguous,
-contradicted, and superseded facts are handled conservatively.
-Successful CLI blame and result-returning MCP tools must classify as nonempty
-or empty; successful operations without a stable result collection must use
-N/A. Failures always use N/A with zero result and citation totals. CLI status
-report/control operations are excluded from both recording and the persisted
-operation vocabulary.
+`result_bearing`, `empty`, or `not_applicable`; unclassified operations are
+not reported as empty. Failures always use N/A with zero result and citation
+totals. CLI status report/control operations are excluded from both recording
+and the persisted operation vocabulary.
 
 Only one completed foreground CLI command or recognized MCP `tools/call` is
 counted. MCP records after the complete response has serialized, written, and
 flushed. Initialization, ping, tool listing, notifications, unknown tools,
-automatic daemon cycles, liveness, and materialization are excluded. MCP Pro
-blame is one local observation enriched from the Pro result, not separate MCP
-and Pro observations.
+automatic daemon cycles, and liveness checks are excluded.
 
 The sidecar uses WAL, `synchronous=NORMAL`, a short busy timeout, atomic
 upserts, a fixed application ID/schema version, and owner-only file behavior
@@ -165,18 +153,13 @@ never checkpoint or write provider data.
 - `search/semantic` contains generation-bound flat-F32 vectors, hashes, and
   offsets derived from eligible Core content; it does not persist separate
   plaintext transcript chunks.
-- `pro/graph`, when Local Pro is installed, contains the encrypted immutable
-  Flat/FST derived-facts graph advanced from a pinned Core generation through
-  the bounded Pro materialization protocol. Its authenticated manifest selects
-  the current publication. It is independent of semantic readiness and is not
-  Core search authority.
 - `usage.sqlite` contains only the bounded content-free aggregates documented
   above. It is product state, not history or search authority.
 
 A qualifying normalized event may carry
 `mcp_tool_call: {server, tool}` as event-local Core metadata. The pair is stored
 only with that Core event. The top-level pair is not copied into lexical terms,
-semantic text, `usage.sqlite`, or the Local Pro graph, and query paths do not
+semantic text or `usage.sqlite`, and query paths do not
 reconstruct it from provider-specific content or current MCP configuration.
 Presentation `--content none` retains already-stored metadata; Core `Redacted`
 or `Omitted` policy omits the sensitive pair by default.
@@ -204,13 +187,13 @@ the stored Core generation for show and enumeration, but their bodies do not
 enter ranked lexical or semantic discovery or term statistics. This policy is
 fail-open: errors, warnings, stderr, mixed content, unknown status, unsupported
 aliases, and ambiguous linkage remain discoverable. The marker is not
-redaction, omission, deletion, or a Local Pro fact.
+redaction, omission, or deletion.
 
 The provider call ID, response status/failure/timing, and structured response
 payload are not copied into search terms. Response text with a
 `normalized_body` disposition retains its existing body-search behavior exactly
 once. The exchange adds no semantic text, selector, filter, search result field,
-`usage.sqlite` value, SQL column, or Local Pro fact. See
+`usage.sqlite` value or SQL column. See
 [`mcp-exchange-capture.md`](mcp-exchange-capture.md).
 
 Search, show, list, locate, and MCP retrieval read verified Core/Tantivy
@@ -242,7 +225,7 @@ supports it. For threshold planning, let `F` be the physical footprint of the
 same live documents in a deletion-free generation. Assume stored bytes scale
 with physical document slots, the active and retained previous generations are
 distinct and each sits at exactly 25% deletions, and a worst-case compaction
-rewrites all active live documents; semantic and Pro storage are excluded.
+rewrites all active live documents; semantic storage is excluded.
 Under those assumptions, the active generation approaches `4/3 F` (about
 `1.33 F`), and active plus previous approach `8/3 F` (about `2.67 F`). A
 hard-linked candidate reuses the active segment bytes, so one deletion-free
@@ -260,94 +243,6 @@ or manifests.
 Pre-v0.26 history is never opened, migrated, used as fallback, or deleted by
 the new architecture. Old Store files are inert and may be removed explicitly
 by their owner.
-
-## Local Pro Storage
-
-Local Pro uses one public, exact root-relative layout: the root identity is
-`install.json`, the signed helper pair and transaction files are under
-`pro/bin`, downloads are staged under `pro/downloads`, the encrypted derived
-Flat/FST graph is under `pro/graph`, and the persistent installer coordination
-lock is `pro/.ctx-pro.lifecycle.lock`. The private, nonsecret
-`pro/.ctx-pro.initialized` marker is durably published before setup or account
-management may write credential-store records, so interrupted initialization
-remains deletable even when no helper or graph publication was created.
-Destructive uninstall durably publishes the bounded, nonsecret, installation-bound
-`pro/.ctx-pro.graph-key-cleanup.json` phase before deleting graph artifacts or
-any recorded graph key. It retains only the exact root identity and sorted
-public-key thumbprints, survives interrupted graph, graph-key, credential, or
-helper cleanup, and is removed only after those deletion phases verify. Setup
-and keep-data uninstall fail closed while that deletion phase remains. A
-separate nonsecret
-`pro/.ctx-pro.data-preserved` lifecycle marker distinguishes deliberate
-keep-data uninstall from first use, but it is created only when encrypted graph
-data actually exists. Provider history and Core generations remain separate
-and usable without Pro. The selected credential store holds an anonymous-trial
-credential, an optional pending browser handoff, an opaque account credential
-used for explicit hosted account and referral commands, an installation-scoped signing
-key, a signed entitlement, and, after accepted referral activation, an optional
-opaque referral claim. The platform-native store is preferred: Secret Service
-on Linux, Keychain Services on macOS, and Credential Manager on Windows. On a
-pristine root, an exact native-unavailable result may instead select a sticky
-owner-private local file store. That fallback persists the credential bytes
-with owner-only permissions or a protected current-user-only Windows ACL; it
-does not encrypt those bytes against the same OS user or root. Locked, denied,
-corrupt, ambiguous, canceled, and other native-store failures do not downgrade
-to files. Neither credential namespace accepts an environment-supplied key,
-universal key, or binary-embedded pepper, and the Pro graph never falls back to
-plaintext database mode. The raw referral code is never retained after
-activation. The claim is the immutable result of the sole attribution input,
-`ctx pro --referral <codename>`. The claim uses the same selected commercial
-credential boundary and is removed by Pro commercial-credential cleanup.
-A separate nonsecret marker under the selected data root records only that the
-one-time human Pro blame referral line has been shown. It contains no codename,
-claim, identity, payout data, or counts. JSON, JSONL, MCP, noninteractive,
-empty, failed, install, setup, and Core paths neither read nor create it.
-
-Key-store record identifiers are opaque hashes scoped to the root-local opaque
-installation UUID and commercial environment, never to an absolute path.
-Moving or renaming a complete ctx data root therefore preserves its credential,
-graph-key, and entitlement-clock identity. Copying only part of a data root is
-not an identity migration and fails closed when the identity is absent or
-inconsistent. The persistent lifecycle lock serializes installer recovery,
-staging, commit, cleanup, and final signed-pair verification across processes.
-
-`ctx pro uninstall --keep-data` is entirely local, removes only the helper, and
-records that local Pro data was deliberately preserved. It works even when
-commercial configuration, network access, or the selected credential store is
-unavailable. `ctx pro uninstall --delete-data` uses a public delete-only
-credential-store adapter to remove and verify the complete local Pro inventory.
-It does not need the helper and remains available after an earlier
-`--keep-data` uninstall. Initialization or helper evidence causes deletion to
-derive only this root identity's production/staging record IDs, collect the
-thumbprints recorded in its installation-key and entitlement records, and
-delete and verify those graph keys even when no graph publication was completed.
-Before any deletion, uninstall validates the complete `pro/graph` directory
-against the exact current manifest, materializer, segment, journal, pack, and
-scratch artifact families. An unexpected or near-miss entry fails closed before
-either graph or key deletion. It then deletes and verifies all graph artifacts
-and the graph directory before deleting and verifying the selected graph-key
-records. A corrupt credential record likewise makes the key inventory
-unverifiable before deletion. Once the cleanup phase is published, an
-interrupted retry uses its exact thumbprints instead of broad vault enumeration
-or now-deleted credential records.
-Interactive use asks whether to delete; noninteractive callers must explicitly
-choose `--delete-data` or `--keep-data`. Neither form deletes provider history
-or Core's derived search generations.
-On a root that has never contained Pro data, either explicit choice is an
-idempotent Pro-state no-op and reports `local_pro_data: "absent"` without
-creating a Pro directory, initialization or preservation marker, vault access,
-or restore action. The foreground `pro_uninstall` command remains eligible for
-independent default-on Core local usage reporting, so it may create or increment
-`usage.sqlite` unless local usage is disabled. `absent` classifies graph-file
-state; verified deletion can still remove interrupted setup credentials or a
-pre-database graph key before returning it.
-A small installation-bound anti-rollback watermark may remain in the native key
-store. It contains no graph key, transcript content, account token, or
-entitlement body and does not make `ctx pro` report Pro as installed.
-After successful deletion the initialization and cleanup-phase files are gone;
-after a failed deletion they may remain as truthful retry metadata until the
-same identity-aware `--delete-data` operation completes. The nonsecret
-`pro/.ctx-pro.lifecycle.lock` coordination file may remain after success.
 
 ## What ctx Avoids By Default
 
@@ -367,10 +262,9 @@ copy token values from `agent_conversations.conversation_data`.
 No session text, prompts, transcripts, or indexed snippets are sent by ctx by
 default.
 
-Search, show, and MCP presentation consume the verified Core/Tantivy generation,
-while eligible Pro materialization consumes a bounded feed from the same pinned
-Core generation. Output remains bounded, and content excluded by import policy
-is not reconstructed.
+Search, show, and MCP presentation consume the verified Core/Tantivy generation.
+Output remains bounded, and content excluded by import policy is not
+reconstructed.
 
 ## Provider-Owned Data
 
@@ -396,24 +290,19 @@ local upsert as described above.
 | Command | Reads | Writes |
 | --- | --- | --- |
 | `ctx setup` | provider transcript files and bounded path metadata for source discovery | data root, source catalog/epoch metadata, `search/lexical`, and optional daemon lock/status/job files when eligible human-readable daemon autostart runs; old Store artifacts are neither opened nor deleted |
-| `ctx status` | data root metadata, source epoch, lexical/semantic generation metadata, daemon state, compact local usage health, and Pro authorization state when installed | may advance nonsecret anti-clock-rollback security metadata during Pro entitlement authorization; does not mutate provider history, Core generations, usage aggregates, or local Pro graph data |
+| `ctx status` | data root metadata, source epoch, lexical/semantic generation metadata, daemon state, and compact local usage health | none; does not mutate provider history, Core generations, or usage aggregates |
 | `ctx stats` | owner-private aggregate `usage.sqlite` when present | none; does not create pristine usage state or count itself |
 | `ctx sources` | bounded provider path metadata, allowlisted persistent selector files, and local history-source plugin manifests | none |
-| `ctx import` | provider transcript files and path metadata, the explicit custom history JSONL file passed with `--input-format ctx-history-jsonl-v1 --path`, or a durable provider-owned custom history JSONL file declared by an explicit history-source plugin manifest | immutable candidate Core/Tantivy generation and atomic publication, catalog/epoch metadata, and optional daemon files; Pro and semantic work is daemon-owned and does not delay foreground completion |
+| `ctx import` | provider transcript files and path metadata, the explicit custom history JSONL file passed with `--input-format ctx-history-jsonl-v1 --path`, or a durable provider-owned custom history JSONL file declared by an explicit history-source plugin manifest | immutable candidate Core/Tantivy generation and atomic publication, catalog/epoch metadata, and optional daemon files; semantic work is daemon-owned and does not delay foreground completion |
 | `ctx show session` / `ctx show event` | complete policy-selected records in the active verified Core/Tantivy generation | selected `--out` path for `show session` when provided |
 | `ctx list events` | complete policy-selected records and existing index terms in one pinned verified Core/Tantivy generation | none; event enumeration is read-only |
 | `ctx search` | active verified Core/Tantivy generation and existing semantic generation; depending on refresh mode, bounded provider discovery/path metadata | candidate Core generation publication only when refresh runs; background mode may write daemon state, and semantic-enabled search may create query endpoint files |
-| `ctx pro` / `ctx pro setup` | selected credential store, commercial account state, signed release metadata/artifact, pinned Core materialization feed, and an optional first-challenge codename only for `ctx pro --referral <codename>` | selected credential store, signed helper installation, encrypted derived graph, and an optional opaque referral claim after accepted activation; the raw codename is not retained, and the explicit `setup` form is a synonym without referral attribution |
-| `ctx pro manage` | selected credential store and commercial account state | uses the opaque account credential with a fresh installation proof and may open a hosted billing-portal URL |
-| `ctx pro uninstall` | helper and local Pro paths | requires or prompts for a data choice; `--keep-data` removes only the helper and records preserved local Pro graph data when it exists, while `--delete-data` removes and verifies local Pro data; never-Pro roots leave Pro state unchanged, while independent default-on Core usage reporting may create or increment `usage.sqlite` |
-| `ctx referral create` / `status` / `payout` | selected-store opaque account credential and explicit hosted referral state; status reads only the authenticated referrer's aggregate summary | uses a fresh installation proof; payout may open a one-use Stripe-hosted onboarding URL, while JSON mode never opens a browser |
-| first successful nonempty interactive `ctx blame` | normal Pro blame inputs and whether the local shown-once marker already exists | may atomically create the private nonsecret shown-once marker after delivering the result; no referral network request or telemetry |
 | `ctx docs` | embedded documentation in the binary | selected topic `--out` path for `ctx docs show --out` or selected `--out` directory for `ctx docs man --out` |
 | `ctx upgrade` | signed release metadata and installed binary/sidecar metadata | installed binary for manual upgrade, install sidecar, and executable-adjacent `.ctx.upgrade-state.json`, `.ctx.install.lock`, and transaction journal |
 | `ctx doctor` | source epoch, lexical/semantic generation metadata, and ctx-owned daemon lock/status/job metadata | none |
 | `ctx daemon status` | lexical/semantic generation and ctx-owned daemon lock/status/job metadata | none |
 | `ctx daemon enable` / `ctx daemon disable` | `config.toml` | `config.toml` |
-| `ctx daemon run` | provider transcripts, active lexical and semantic generations, model-cache metadata, independent Pro source-generation state, and daemon state | candidate lexical generation publication, semantic and Pro catch-up, and daemon state |
+| `ctx daemon run` | provider transcripts, active lexical and semantic generations, model-cache metadata, and daemon state | candidate lexical generation publication, semantic catch-up, and daemon state |
 
 Setup, import, and default search do not require source repository writes, model
 APIs, API keys, or remote accounts. Without semantic opt-in they do not download
@@ -490,7 +379,7 @@ persistent disable wins over `CTX_LOCAL_USAGE_ENABLED=true`. Disabled commands
 do not create `usage.sqlite`. The equivalent durable controls are
 `ctx status --usage disable` and `ctx status --usage enable`; use
 `ctx status --usage reset` to clear all aggregates without deleting canonical
-history or the Pro graph. `ctx stats --detail` expands the read-only local
+history. `ctx stats --detail` expands the read-only local
 report with CLI/MCP operation and latency breakdowns.
 Reset is logical SQLite deletion followed by a best-effort truncate checkpoint;
 it is not a claim of forensic secure erasure on SSDs or other storage. The
@@ -534,8 +423,8 @@ The equivalent process override is
 profile. Autostart propagates the effective mode to its detached child. In
 source-refresh-only mode, the source refresh IPC endpoint, all-provider capture
 registry, atomic generation publication, status reporting, disable behavior,
-and persistent process lifecycle remain active. History refresh, semantic indexing and serving,
-canonical and Pro maintenance, and automatic upgrades do not run.
+and persistent process lifecycle remain active. History refresh, semantic
+indexing and serving, canonical maintenance, and automatic upgrades do not run.
 
 Local semantic search requires daemon maintenance and remains disabled by
 default. Its opt-in is:
@@ -586,9 +475,8 @@ and an opaque source identity derived from the configured source root.
 Refresh builds a private immutable Core/Tantivy candidate containing complete
 normalized stored records from current provider sources, verifies its manifest
 and policy identity, then atomically publishes it under `search/lexical`.
-Published generations are never opened writable. Semantic data and Pro
-materialization are advanced only against a verified pinned Core generation;
-each derived consumer maintains its own receipt and fails closed on generation
+Published generations are never opened writable. Semantic data advances only
+against a verified pinned Core generation and fails closed on generation
 mismatch.
 
 Custom history JSONL and history-source plugins follow the same import and Core
@@ -604,7 +492,7 @@ it as fallback. An old `work.sqlite` family is inert and remains an explicit
 owner-managed artifact.
 
 Setup discovers current provider sources and builds a new Core/Tantivy
-generation, then schedules optional semantic and independent Pro work.
+generation, then schedules optional semantic work.
 If a source needed for rebuilding no longer exists, ctx reports that source as
 unavailable; it does not recover content from prior-epoch rows.
 
@@ -653,7 +541,7 @@ ctx setup
 This removes the active Core/Tantivy generation and semantic sidecar, then
 imports complete policy-selected normalized records and stable provider/source
 identities from the available provider histories. It does not delete provider
-transcripts, `usage.sqlite`, or Local Pro data.
+transcripts or `usage.sqlite`.
 
 Inspect storage size:
 
@@ -663,27 +551,15 @@ du -sh ~/.ctx/search/lexical ~/.ctx/search/semantic
 ctx status --format json
 ```
 
-Delete all ctx data:
+Delete all ctx-owned data:
 
 ```bash
-ctx pro uninstall --delete-data
 rm -rf ~/.ctx
 ```
 
-Run the identity-aware Pro deletion command first, while the root-local
-`install.json` identity still exists. Only after it succeeds should you remove
-the Core root. For a custom root, pass the same root to both operations, for
-example `ctx --data-root /path/to/ctx pro uninstall --delete-data` before
-removing `/path/to/ctx`. Deleting the directory first can orphan Pro credentials
-or graph keys in the selected credential store because their opaque record IDs
-depend on that identity.
-
-The final directory removal deletes ctx's Core/Tantivy and semantic data,
-`usage.sqlite`, config, logs, lifecycle lock, and remaining root-local metadata.
-It does not remove provider-owned history such as
-`~/.codex/sessions`. The small installation-bound anti-rollback watermark
-described above may remain in the selected credential store after verified Pro
-deletion; it is security metadata outside the user-deletable Pro inventory.
+This deletes ctx Core/Tantivy and semantic data, `usage.sqlite`, config, logs,
+and root-local metadata. It does not remove provider-owned history such as
+`~/.codex/sessions`.
 
 ## Privacy Truth
 
@@ -704,7 +580,7 @@ rather than silently changing the machine value. See
 Recommended handling:
 
 - keep `~/.ctx` out of source repositories;
-- do not share provider transcripts, ctx search generations, Local Pro data, or
+- do not share provider transcripts, ctx search generations, or logs;
   logs;
 - review JSON output before sharing it outside the machine;
 - delete or rebuild local Core and derived data when working on shared machines;
@@ -718,50 +594,6 @@ indexing uses local flat-vector operations. The tools that
 originally produced provider transcripts may have used the network according to
 their own configuration; ctx indexing those transcripts does not repeat that
 behavior.
-
-Local Pro trial setup and renewal contact the ctx commercial API and signed
-artifact service without an account. Explicit browser handoff, account
-management, and referral operations contact the hosted commercial service. Trial
-setup sends challenge-bound,
-application-specific device-anchor digests produced by the signed helper; raw
-platform identifiers never leave it, and the service stores separately keyed
-anti-repeat tokens rather than the submitted evidence. An optional referral
-codename is sent only with the first anonymous-trial challenge. After accepted
-activation, attribution is immutable; only the returned opaque claim may remain
-in the selected credential store. Browser conversion resolves attribution from
-the authoritative anonymous-trial record, never from a client-supplied claim.
-No website or cookie is an
-attribution input. `ctx pro manage` creates a hosted Stripe portal session
-after browser setup. `ctx referral create`, `status`, and `payout` are explicit
-hosted-service operations; eligible payout can open Stripe-hosted onboarding.
-Referral JSON uses cached opaque account credentials only and never starts
-browser setup or opens a browser. These
-requests do not include transcript text, source content,
-repository paths, facts, graph rows, queries, or query results. Valid offline
-grants keep local graph operations usable when renewal is temporarily
-unavailable.
-
-The referral feature writes no state to Core search generations,
-`usage.sqlite`, the encrypted Pro graph, provider transcripts, Git data, local
-analytics, routine `ctx status`, MCP, or ordinary Core flows. It emits no
-referral telemetry. The hosted service is authoritative for distinct qualifying
-$20 monthly invoice reconciliation, 14-day holds, the invoice 2 gate for
-invoices 1 and 2, invoices 3 through 12, refunds, disputes, manual payability,
-paid-reversal debt and negative adjustments, and the $120-per-referral cap. The
-client stores no invoice-level or per-referral ledger and receives only the
-authenticated referrer's private aggregate status. That summary distinguishes
-earned, pending, manual-review, payable, sent-but-unsettled processing, settled
-historical paid, and debt amounts. Paid cash is not decremented after a
-reversal; debt records the negative adjustment, and the service never requests
-an external clawback. Pro commercial-credential cleanup deletes the optional
-opaque referral claim along with the other root-scoped commercial credentials.
-The separate shown-once marker is content-free local output state, not
-attribution, identity, or payout state.
-
-An expired trial or subscription locks graph operations without deleting
-provider history, Core search generations, encrypted graph data, or key
-material. Resubscription plus
-`ctx pro` refreshes the entitlement and restores the preserved graph.
 
 Official installer-managed binaries can contact the signed release metadata
 endpoint for an explicit `ctx upgrade` command. When the daemon and automatic
@@ -783,9 +615,6 @@ operations. Current CLI coverage includes setup, explicit import, status,
 index, sources, show, search, docs, integrations, upgrade, and doctor. Help,
 version output, and command-line parse errors are not
 observed. MCP and the daemon are first-class reporting surfaces rather than
-being labeled as CLI traffic. Pro reporting is limited to the public host
-surface; private Pro graph, entitlement, and query internals are not telemetry
-inputs.
 
 `provider_refresh_completed@1` carries only closed provider-refresh summaries
 that a producer already has safely available. Source sizes use coarse buckets
@@ -821,9 +650,6 @@ repository paths, target values, repository or branch names, native session
 IDs, command text or output, raw error strings, credentials, authorization
 headers, access tokens, secrets, usernames, hostnames, raw IP addresses, exact
 CPU or GPU names, serial numbers, hardware IDs, exact resource values, live
-utilization samples, or benchmark outputs. Referral codenames, opaque claims,
-identity, payout URLs, email, and
-identity-linked referral counts are also excluded.
 
 The data-root identifier lives in `install.json` and represents that local
 index even when analytics are disabled. The client-profile identifier is a

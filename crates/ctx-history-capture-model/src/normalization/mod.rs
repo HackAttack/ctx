@@ -1,18 +1,11 @@
 mod content_policy;
 mod result_content;
-mod result_evidence;
 mod value;
 
 pub use content_policy::{
     provider_policy_body, provider_policy_event_text, ProviderPolicyText, ProviderTextRetention,
 };
 pub use result_content::provider_normalized_result_value;
-pub use result_evidence::{
-    provider_output_event_is_failure, provider_result_identifier_evidence,
-    provider_result_outcome_evidence,
-};
-#[cfg(test)]
-use result_evidence::{MAX_RESULT_EVIDENCE_CALL_ID_CHARS, MAX_RESULT_EVIDENCE_IDENTIFIERS};
 pub use value::{
     capped_text, provider_block_event_type, provider_block_text, provider_capped_json,
     provider_capped_json_value, provider_explicit_result_value_text, provider_json_text,

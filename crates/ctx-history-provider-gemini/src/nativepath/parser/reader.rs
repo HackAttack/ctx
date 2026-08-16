@@ -553,58 +553,52 @@ impl<'a> GeminiNativePageReader<'a> {
                     });
                 } else {
                     match decode_retained_event(payload, class, self.raw_ordinal, source_record) {
-                        Ok(Some(mut decoded)) => {
-                            if decoded.event.occurred_at.is_none() {
-                                decoded.event.occurred_at = self
-                                    .state
-                                    .session
-                                    .as_ref()
-                                    .and_then(|session| session.started_at);
-                            }
-                            match retained_event_bytes(&decoded) {
-                                Err(reason) => {
-                                    return Ok(Some(self.reject_completed_record(
-                                        byte_start,
-                                        byte_end_exclusive,
-                                        reason,
-                                        record.terminated,
-                                    )));
-                                }
-                                Ok(event_bytes)
-                                    if event_bytes > MAX_GEMINI_SINGLE_RECORD_PAGE_BYTES =>
-                                {
-                                    return Ok(Some(self.reject_completed_record(
-                                        byte_start,
-                                        byte_end_exclusive,
-                                        format!(
-                                            "Gemini retained event exceeds the {MAX_GEMINI_SINGLE_RECORD_PAGE_BYTES} byte singleton limit"
-                                        ),
-                                        record.terminated,
-                                    )));
-                                }
-                                Ok(event_bytes) => {
-                                    self.state.count_retained(&decoded.event);
-                                    events.push((decoded.event, event_bytes));
-                                }
-                            }
-                        }
-                        Ok(None) => {
+                        Ok(decoded_events) if decoded_events.is_empty() => {
                             self.state.metrics.ignored_records =
                                 self.state.metrics.ignored_records.saturating_add(1);
+                        }
+                        Ok(decoded_events) => {
+                            for mut decoded in decoded_events {
+                                if decoded.event.occurred_at.is_none() {
+                                    decoded.event.occurred_at = self
+                                        .state
+                                        .session
+                                        .as_ref()
+                                        .and_then(|session| session.started_at);
+                                }
+                                match retained_event_bytes(&decoded) {
+                                    Err(reason) => {
+                                        return Ok(Some(self.reject_completed_record(
+                                            byte_start,
+                                            byte_end_exclusive,
+                                            reason,
+                                            record.terminated,
+                                        )));
+                                    }
+                                    Ok(event_bytes)
+                                        if event_bytes > MAX_GEMINI_SINGLE_RECORD_PAGE_BYTES =>
+                                    {
+                                        return Ok(Some(self.reject_completed_record(
+                                            byte_start,
+                                            byte_end_exclusive,
+                                            format!(
+                                                "Gemini retained event exceeds the {MAX_GEMINI_SINGLE_RECORD_PAGE_BYTES} byte singleton limit"
+                                            ),
+                                            record.terminated,
+                                        )));
+                                    }
+                                    Ok(event_bytes) => {
+                                        self.state.count_retained(&decoded.event);
+                                        events.push((decoded.event, event_bytes));
+                                    }
+                                }
+                            }
                         }
                         Err(GeminiDecodingError::Invalid(reason)) => {
                             return Ok(Some(self.reject_completed_record(
                                 byte_start,
                                 byte_end_exclusive,
                                 reason,
-                                record.terminated,
-                            )));
-                        }
-                        Err(GeminiDecodingError::TouchOverflow(error)) => {
-                            return Ok(Some(self.reject_completed_record(
-                                byte_start,
-                                byte_end_exclusive,
-                                error.to_string(),
                                 record.terminated,
                             )));
                         }

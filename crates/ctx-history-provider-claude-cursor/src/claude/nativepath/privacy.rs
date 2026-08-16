@@ -1,32 +1,16 @@
-use std::ops::Range;
-
 use ctx_history_core::MAX_CORE_CONTENT_BYTES;
 
-use ctx_history_capture_model::{OutputOutcome, OutputOutcomeMetadata};
-
 use super::rows::CLAUDE_MAX_RECORD_ROWS;
-
-mod outcome;
-
-use outcome::{combine_outcome_evidence, scan_direct_output_range, scan_outcome_range};
 
 const MAX_ESCAPED_LABEL_BYTES: usize = 256;
 const MAX_SCAN_DEPTH: usize = 128;
 const MAX_METADATA_BYTES: usize = 4 * 1024;
-const MAX_RESULT_OUTCOME_NODES: usize = 4_096;
-
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub(super) struct RawResultClassification {
-    pub(super) tagged_command_output: bool,
-    pub(super) result_block: bool,
-    pub(super) result_like_shape: bool,
-    pub(super) top_level_result: bool,
-}
+const MAX_PROVIDER_CALL_ID_BYTES: usize = 64 * 1024;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) struct RawRecordPreflight {
-    pub(super) result: RawResultClassification,
-    pub(super) outcome: OutputOutcomeMetadata,
+    pub(super) explicit_result: bool,
+    pub(super) duplicate_critical: bool,
     output_descriptors: Vec<RawOutputDescriptor>,
 }
 
@@ -59,22 +43,15 @@ impl RawOutputDescriptor {
         let range = self.call_id?;
         let raw = bytes.get(range.start..range.end)?;
         let inner = raw.strip_prefix(b"\"")?.strip_suffix(b"\"")?;
-        let mut decoded = String::with_capacity(inner.len().min(256));
+        let mut decoded = String::with_capacity(inner.len().min(MAX_PROVIDER_CALL_ID_BYTES));
         visit_decoded_chars(inner, |character| {
             decoded.push(character);
-            (decoded.len() <= 256).then_some(()).ok_or(())
+            (decoded.len() <= MAX_PROVIDER_CALL_ID_BYTES)
+                .then_some(())
+                .ok_or(())
         })
         .ok()?;
         Some(decoded)
-    }
-
-    pub(super) fn decode_outcome(
-        self,
-        bytes: &[u8],
-    ) -> Result<OutputOutcomeMetadata, serde_json::Error> {
-        let evidence =
-            scan_direct_output_range(bytes, self.value.map(|range| range.start..range.end))?;
-        Ok(combine_outcome_evidence(evidence, Default::default()))
     }
 
     pub(super) fn decode_value(
@@ -85,6 +62,11 @@ impl RawOutputDescriptor {
             .map(|range| serde_json::from_slice(&bytes[range.start..range.end]))
             .transpose()
     }
+
+    pub(super) fn value_bytes(self, bytes: &[u8]) -> Option<&[u8]> {
+        let range = self.value?;
+        bytes.get(range.start..range.end)
+    }
 }
 
 pub(super) fn preflight_record(bytes: &[u8]) -> Result<RawRecordPreflight, serde_json::Error> {
@@ -92,94 +74,18 @@ pub(super) fn preflight_record(bytes: &[u8]) -> Result<RawRecordPreflight, serde
     scanner
         .scan_record()
         .map_err(|()| structural_error("malformed or structurally unbounded Claude JSON record"))?;
-    if scanner.duplicate_critical {
-        return Err(structural_error("duplicate critical Claude JSON key"));
-    }
     if let Some(reason) = scanner.limit_violation {
         return Err(structural_error(reason));
     }
-    let content = if scanner.message_present {
-        scanner.message_content
-    } else {
-        scanner.record_content
-    };
-    let tool_use_result = scanner
-        .record_tool_use_result
-        .or(scanner.message_tool_use_result);
-    let content_evidence = scan_outcome_range(bytes, content, false)?;
-    let tool_evidence = scan_outcome_range(bytes, tool_use_result, true)?;
-    let outcome = combine_outcome_evidence(content_evidence, tool_evidence);
     Ok(RawRecordPreflight {
-        result: scanner.result,
-        outcome,
+        explicit_result: scanner.explicit_result,
+        duplicate_critical: scanner.duplicate_critical,
         output_descriptors: scanner.output_descriptors,
     })
 }
 
 fn structural_error(reason: &'static str) -> serde_json::Error {
     serde_json::Error::io(std::io::Error::new(std::io::ErrorKind::InvalidData, reason))
-}
-
-pub(super) fn is_native_command_output_tag(value: &str) -> bool {
-    value.eq_ignore_ascii_case("bash-stdout")
-        || value.eq_ignore_ascii_case("bash-stderr")
-        || value.eq_ignore_ascii_case("local-command-stdout")
-        || value.eq_ignore_ascii_case("local-command-stderr")
-        || value.eq_ignore_ascii_case("bash-exit-code")
-        || value.eq_ignore_ascii_case("local-command-caveat")
-}
-
-pub(super) fn is_result_label(value: &str) -> bool {
-    is_result_label_bytes(value.as_bytes())
-}
-
-fn is_result_shape_label_bytes(value: &[u8]) -> bool {
-    [
-        b"tool_use_id".as_slice(),
-        b"toolUseId",
-        b"toolCallId",
-        b"is_error",
-        b"isError",
-    ]
-    .into_iter()
-    .any(|expected| value.eq_ignore_ascii_case(expected))
-        || is_result_label_bytes(value)
-}
-
-fn is_result_label_bytes(value: &[u8]) -> bool {
-    [
-        b"tooluseresult".as_slice(),
-        b"tool_use_result",
-        b"tool-result",
-        b"toolresult",
-        b"stdout",
-        b"stderr",
-        b"exitcode",
-        b"exit_code",
-    ]
-    .into_iter()
-    .any(|expected| value.eq_ignore_ascii_case(expected))
-        || [b"result".as_slice(), b"results", b"output", b"outputs"]
-            .into_iter()
-            .any(|suffix| {
-                value
-                    .get(value.len().saturating_sub(suffix.len())..)
-                    .is_some_and(|tail| tail.eq_ignore_ascii_case(suffix))
-            })
-        || value
-            .split(|byte| !byte.is_ascii_alphanumeric())
-            .any(|token| {
-                [
-                    b"result".as_slice(),
-                    b"results",
-                    b"output",
-                    b"outputs",
-                    b"stdout",
-                    b"stderr",
-                ]
-                .into_iter()
-                .any(|expected| token.eq_ignore_ascii_case(expected))
-            })
 }
 
 #[derive(Clone, Copy)]
@@ -199,21 +105,15 @@ enum Field {
     Summary,
     ToolUseResult,
     Metadata,
-    ResultLike,
     Other,
 }
 
 struct ResultScanner<'a> {
     bytes: &'a [u8],
     index: usize,
-    result: RawResultClassification,
+    explicit_result: bool,
     duplicate_critical: bool,
     limit_violation: Option<&'static str>,
-    message_present: bool,
-    record_content: Option<Range<usize>>,
-    message_content: Option<Range<usize>>,
-    record_tool_use_result: Option<Range<usize>>,
-    message_tool_use_result: Option<Range<usize>>,
     output_descriptors: Vec<RawOutputDescriptor>,
 }
 
@@ -222,14 +122,9 @@ impl<'a> ResultScanner<'a> {
         Self {
             bytes,
             index: 0,
-            result: RawResultClassification::default(),
+            explicit_result: false,
             duplicate_critical: false,
             limit_violation: None,
-            message_present: false,
-            record_content: None,
-            message_content: None,
-            record_tool_use_result: None,
-            message_tool_use_result: None,
             output_descriptors: Vec::new(),
         }
     }
@@ -252,7 +147,6 @@ impl<'a> ResultScanner<'a> {
         let mut seen_critical = 0_u16;
         let mut block_primary_output = false;
         let mut block_call_id = None;
-        let mut block_result_values = Vec::new();
         loop {
             let key = self.string_range()?;
             self.whitespace();
@@ -267,23 +161,10 @@ impl<'a> ResultScanner<'a> {
             }
             let value_start = self.index;
             match (kind, field) {
-                (_, Field::ResultLike) => {
-                    self.result.result_like_shape = true;
-                    if matches!(kind, ObjectKind::Block) {
-                        if raw_label_is_result(&self.bytes[key.clone()]) {
-                            // The exact value span is captured after the value
-                            // has been structurally skipped.
-                        } else {
-                            block_primary_output = true;
-                        }
-                    }
-                    self.skip_value(depth + 1)?;
-                }
                 (_, Field::Type) => {
                     block_primary_output |= self.type_value(kind, depth + 1)?;
                 }
                 (ObjectKind::Record, Field::Message) => {
-                    self.message_present = true;
                     if self.peek() == Some(b'{') {
                         self.object(ObjectKind::Message, depth + 1)?;
                     } else if self.peek() == Some(b'n') {
@@ -303,7 +184,7 @@ impl<'a> ResultScanner<'a> {
                 }
                 (ObjectKind::Record, Field::ToolUseResult)
                 | (ObjectKind::Message, Field::ToolUseResult) => {
-                    self.result.result_like_shape = true;
+                    self.explicit_result = true;
                     self.skip_value(depth + 1)?;
                 }
                 (ObjectKind::Record, Field::Metadata)
@@ -312,47 +193,15 @@ impl<'a> ResultScanner<'a> {
                     let is_call_id = raw_label_eq(&self.bytes[key.clone()], b"tool_use_id")
                         || raw_label_eq(&self.bytes[key.clone()], b"toolUseId")
                         || raw_label_eq(&self.bytes[key.clone()], b"toolCallId");
-                    self.result.result_like_shape |= is_call_id;
                     if is_call_id {
                         self.skip_value(depth + 1)?;
                     } else {
                         self.metadata_value(depth + 1, MAX_METADATA_BYTES)?;
                     }
-                    if matches!(kind, ObjectKind::Block) && is_call_id {
-                        block_primary_output = true;
-                    }
                 }
                 _ => self.skip_value(depth + 1)?,
             }
             let value_range = value_start..self.index;
-            match (kind, field) {
-                (ObjectKind::Record, Field::Content) => {
-                    self.record_content = Some(value_range.clone());
-                }
-                (ObjectKind::Message, Field::Content) => {
-                    self.message_content = Some(value_range.clone());
-                }
-                (ObjectKind::Record, Field::ToolUseResult) => {
-                    self.record_tool_use_result = Some(value_range.clone());
-                }
-                (ObjectKind::Message, Field::ToolUseResult) => {
-                    self.message_tool_use_result = Some(value_range.clone());
-                }
-                (ObjectKind::Block, Field::ResultLike)
-                    if raw_label_is_result(&self.bytes[key.clone()]) =>
-                {
-                    if block_result_values.len() >= CLAUDE_MAX_RECORD_ROWS {
-                        self.limit_violation =
-                            Some("Claude result exceeds the representable row limit");
-                    } else {
-                        block_result_values.push(RawValueRange {
-                            start: value_range.start,
-                            end: value_range.end,
-                        });
-                    }
-                }
-                _ => {}
-            }
             if matches!(kind, ObjectKind::Block)
                 && matches!(field, Field::Metadata)
                 && (raw_label_eq(&self.bytes[key.clone()], b"tool_use_id")
@@ -367,19 +216,14 @@ impl<'a> ResultScanner<'a> {
             }
             self.whitespace();
             if self.consume(b'}') {
-                if matches!(kind, ObjectKind::Block) {
-                    if block_primary_output {
-                        self.push_output_descriptor(
-                            block_call_id,
-                            Some(RawValueRange {
-                                start: object_start,
-                                end: self.index,
-                            }),
-                        );
-                    }
-                    for value in block_result_values.iter().copied() {
-                        self.push_output_descriptor(None, Some(value));
-                    }
+                if matches!(kind, ObjectKind::Block) && block_primary_output {
+                    self.push_output_descriptor(
+                        block_call_id,
+                        Some(RawValueRange {
+                            start: object_start,
+                            end: self.index,
+                        }),
+                    );
                 }
                 return Ok(());
             }
@@ -402,10 +246,9 @@ impl<'a> ResultScanner<'a> {
         if value.len() > MAX_METADATA_BYTES {
             self.limit_violation = Some("Claude type metadata exceeds 4 KiB");
         }
-        let is_result = raw_label_is_result(&self.bytes[value]);
+        let is_result = raw_label_eq(&self.bytes[value], b"tool_result");
         if is_result {
-            self.result.result_block = true;
-            self.result.top_level_result |= matches!(kind, ObjectKind::Record);
+            self.explicit_result = true;
         }
         Ok(is_result && matches!(kind, ObjectKind::Block))
     }
@@ -450,7 +293,6 @@ impl<'a> ResultScanner<'a> {
         if value.len() > MAX_CORE_CONTENT_BYTES {
             self.limit_violation = Some("Claude summary exceeds the Core content limit");
         }
-        scan_tagged_string(&self.bytes[value], &mut self.result);
         Ok(())
     }
 
@@ -466,7 +308,6 @@ impl<'a> ResultScanner<'a> {
         if value.len() > MAX_CORE_CONTENT_BYTES {
             self.limit_violation = Some("Claude text block body exceeds the Core content limit");
         }
-        scan_tagged_string(&self.bytes[value], &mut self.result);
         Ok(())
     }
 
@@ -474,8 +315,7 @@ impl<'a> ResultScanner<'a> {
         self.check_depth(depth)?;
         match self.peek().ok_or(())? {
             b'"' => {
-                let value = self.string_range()?;
-                scan_tagged_string(&self.bytes[value], &mut self.result);
+                self.string_range()?;
                 Ok(())
             }
             b'{' => self.object(ObjectKind::Block, depth),
@@ -630,8 +470,6 @@ fn classify_field(raw: &[u8], kind: ObjectKind) -> Field {
         Field::Metadata
     } else if matches!(kind, ObjectKind::Block) && raw_label_eq(raw, b"text") {
         Field::BlockText
-    } else if raw_label_is_result_shape(raw) {
-        Field::ResultLike
     } else if matches!(kind, ObjectKind::Record) && raw_label_eq(raw, b"message") {
         Field::Message
     } else if raw_label_eq(raw, b"content") {
@@ -673,25 +511,9 @@ fn is_metadata_field(raw: &[u8], kind: ObjectKind) -> bool {
     }
 }
 
-fn raw_label_is_result_shape(raw: &[u8]) -> bool {
-    let mut decoded = [0_u8; MAX_ESCAPED_LABEL_BYTES];
-    match decode_label(raw, &mut decoded) {
-        Ok(value) => is_result_shape_label_bytes(value),
-        Err(()) => true,
-    }
-}
-
-fn raw_label_is_result(raw: &[u8]) -> bool {
-    let mut decoded = [0_u8; MAX_ESCAPED_LABEL_BYTES];
-    match decode_label(raw, &mut decoded) {
-        Ok(value) => is_result_label_bytes(value),
-        Err(()) => true,
-    }
-}
-
 fn raw_label_eq(raw: &[u8], expected: &[u8]) -> bool {
     let mut decoded = [0_u8; MAX_ESCAPED_LABEL_BYTES];
-    decode_label(raw, &mut decoded).is_ok_and(|value| value.eq_ignore_ascii_case(expected))
+    decode_label(raw, &mut decoded).is_ok_and(|value| value == expected)
 }
 
 fn decode_label<'a>(
@@ -710,15 +532,6 @@ fn decode_label<'a>(
         Ok(())
     })?;
     Ok(&decoded[..length])
-}
-
-fn scan_tagged_string(raw: &[u8], result: &mut RawResultClassification) {
-    let mut scanner = TagScanner::default();
-    let _ = visit_decoded_ascii(raw, |byte| {
-        scanner.feed(byte, result);
-        Ok(())
-    });
-    scanner.finish(result);
 }
 
 fn visit_decoded_ascii(
@@ -799,74 +612,40 @@ fn decode_hex_quad(digits: &[u8]) -> Result<u16, ()> {
     })
 }
 
-struct TagScanner {
-    name: [u8; MAX_ESCAPED_LABEL_BYTES],
-    length: usize,
-    in_tag: bool,
-    first: bool,
-    overlong: bool,
-}
+#[cfg(test)]
+mod tests {
+    use super::*;
 
-impl Default for TagScanner {
-    fn default() -> Self {
-        Self {
-            name: [0; MAX_ESCAPED_LABEL_BYTES],
-            length: 0,
-            in_tag: false,
-            first: false,
-            overlong: false,
-        }
-    }
-}
+    #[test]
+    fn tagged_text_is_not_inferred_to_be_a_result() {
+        let record = preflight_record(
+            br#"{"type":"user","message":{"content":"<bash-stdout>literal</bash-stdout>"}}"#,
+        )
+        .expect("preflight");
 
-impl TagScanner {
-    fn feed(&mut self, byte: Option<u8>, result: &mut RawResultClassification) {
-        let Some(byte) = byte else {
-            self.finish(result);
-            return;
-        };
-        if !self.in_tag {
-            if byte == b'<' {
-                self.in_tag = true;
-                self.first = true;
-            }
-            return;
-        }
-        if self.first && byte == b'/' {
-            self.first = false;
-            return;
-        }
-        self.first = false;
-        if byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b':' | b'.') {
-            if let Some(target) = self.name.get_mut(self.length) {
-                *target = byte;
-                self.length += 1;
-            } else {
-                self.overlong = true;
-            }
-            return;
-        }
-        self.finish(result);
-        if byte == b'<' {
-            self.in_tag = true;
-            self.first = true;
-        }
+        assert!(!record.explicit_result);
+        assert!(record.output_descriptors().is_empty());
     }
 
-    fn finish(&mut self, result: &mut RawResultClassification) {
-        if self.overlong {
-            result.result_like_shape = true;
-        } else if self.length > 0 {
-            let name = std::str::from_utf8(&self.name[..self.length]).unwrap_or_default();
-            if is_native_command_output_tag(name) {
-                result.tagged_command_output = true;
-            } else if is_result_label(name) {
-                result.result_like_shape = true;
-            }
-        }
-        self.length = 0;
-        self.in_tag = false;
-        self.first = false;
-        self.overlong = false;
+    #[test]
+    fn explicit_tool_result_preserves_native_id_and_value() {
+        let bytes = br#"{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":" call-1 ","content":[" exact ",{"ok":false}]}]}}"#;
+        let record = preflight_record(bytes).expect("preflight");
+
+        assert!(record.explicit_result);
+        assert_eq!(record.output_descriptors().len(), 1);
+        let descriptor = record.output_descriptors()[0];
+        assert_eq!(
+            descriptor.decode_call_id(bytes).as_deref(),
+            Some(" call-1 ")
+        );
+        assert_eq!(
+            descriptor.decode_value(bytes).expect("value"),
+            Some(serde_json::json!({
+                "type": "tool_result",
+                "tool_use_id": " call-1 ",
+                "content": [" exact ", {"ok": false}],
+            }))
+        );
     }
 }

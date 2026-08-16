@@ -17,10 +17,6 @@ fail() {
   printf 'release source surface audit test failed: %s\n' "$*" >&2
 }
 
-if ! bash "${checker}" "${fixture_root}/retained-pro-uninstall" >/dev/null; then
-  fail 'retained Local Pro lifecycle uninstall was rejected'
-fi
-
 if ! bash "${checker}" "${fixture_root}/retained-upgrade-status" >/dev/null; then
   fail 'retained upgrade availability status was rejected'
 fi
@@ -34,12 +30,6 @@ for retired_case in \
   retired-top-level-uninstall \
   retired-command-surfaces \
   retired-presentation-command-surfaces \
-  retired-pro-command-surfaces \
-  retired-capture-pro-output-authority \
-  retired-composition-exact-json-authority \
-  retired-capture-repository-authority \
-  retired-misplaced-pro-uninstall \
-  retired-repository-exact-json-authority \
   retired-task-documents-command-surface \
   retired-update-invocation \
   retired-update-route; do

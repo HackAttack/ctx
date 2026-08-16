@@ -4,16 +4,13 @@ use unicode_segmentation::UnicodeSegmentation as _;
 use unicode_width::UnicodeWidthStr as _;
 
 use super::{
-    render_locate_document, render_search_document, render_show_document, render_show_jsonl,
-    render_show_markdown, render_show_text, search_snippet_fragment, SEARCH_SNIPPET_MAX_BYTES,
-    SEARCH_SNIPPET_MAX_CHARS,
+    markdown_code_span, render_locate_document, render_search_document, render_show_document,
+    render_show_jsonl, render_show_markdown, render_show_text, safe_activity_json,
+    search_snippet_fragment, SEARCH_SNIPPET_MAX_BYTES, SEARCH_SNIPPET_MAX_CHARS,
 };
-use crate::{
-    ui::{
-        canonical_human_output_bytes, is_copyable_atom, ColorMode, Document, RenderContext,
-        StreamKind, TestContext, Token,
-    },
-    MCP_TOOL_CALL_DISPLAY_MAX_CHARS, MCP_TOOL_CALL_JSON_GUIDANCE,
+use crate::ui::{
+    canonical_human_output_bytes, is_copyable_atom, ColorMode, Document, RenderContext, StreamKind,
+    TestContext, Token,
 };
 
 const SESSION_ID: &str = "01900000-0000-7000-8000-000000000001";
@@ -220,11 +217,7 @@ fn search_value() -> Value {
             "source_format": "codex_session_jsonl",
             "parent_ctx_session_id": null,
             "root_ctx_session_id": SESSION_ID,
-            "branch": "main",
-            "agent_type": "primary",
-            "is_primary": true,
-            "workspace": "/workspace/ctx",
-            "cwd": "/workspace/ctx",
+            "agent_scope": "primary",
             "suggested_next_commands": [
                 format!("ctx show event {EVENT_ID} --window 10"),
                 format!("ctx show session {SESSION_ID}"),
@@ -545,34 +538,25 @@ fn search_event_row_uses_exact_milliseconds_and_quiet_missing_time() {
 fn verbose_search_exposes_context_without_redundant_values_or_citation() {
     let ordinary = render_search_document(&search_value(), false, &context(120, ColorMode::Never))
         .render_plain();
-    for verbose_only in ["/workspace/ctx", "main", "Sequence", "Agent"] {
+    for verbose_only in ["Sequence", "Agent"] {
         assert!(!ordinary.contains(verbose_only), "{ordinary}");
     }
 
     let verbose = render_search_document(&search_value(), true, &context(120, ColorMode::Never))
         .render_plain();
     assert!(verbose.contains("Sequence          17"), "{verbose}");
-    assert!(
-        verbose.contains("Workspace         /workspace/ctx"),
-        "{verbose}"
-    );
-    assert!(!verbose.contains("CWD"), "{verbose}");
-    assert!(verbose.contains("Branch            main"), "{verbose}");
     assert!(verbose.contains("Agent             primary"), "{verbose}");
     assert!(!verbose.contains("Citation"), "{verbose}");
     assert_eq!(verbose.matches("primary").count(), 2, "{verbose}");
 
     let mut nested = search_value();
-    nested["results"][0]["cwd"] = json!("/workspace/ctx/subdir");
-    nested["results"][0]["is_primary"] = json!(false);
-    nested["results"][0]["agent_type"] = json!("reviewer");
+    nested["results"][0]["agent_scope"] = json!("subagent");
     nested["results"][0]["parent_ctx_session_id"] = json!(PARENT_SESSION_ID);
     nested["results"][0]["root_ctx_session_id"] = json!(ROOT_SESSION_ID);
     let nested =
         render_search_document(&nested, true, &context(120, ColorMode::Never)).render_plain();
     for expected in [
-        "CWD               /workspace/ctx/subdir",
-        "Agent             subagent · reviewer",
+        "Agent             subagent",
         PARENT_SESSION_ID,
         ROOT_SESSION_ID,
     ] {
@@ -1036,60 +1020,78 @@ fn compatibility_string_and_raw_format_renderers_keep_their_existing_bytes() {
 }
 
 #[test]
-fn mcp_attribution_is_machine_exact_and_human_safe_with_visible_truncation() {
-    let exact_server = format!(
-        "literal\\n\n# heading\u{202e}\u{1b}[2J|`[]{}",
-        "x".repeat(MCP_TOOL_CALL_DISPLAY_MAX_CHARS)
-    );
-    let exact_tool = "tool\\literal\t*#_{}<>";
-    let attribution = json!({
-        "server": exact_server,
-        "tool": exact_tool,
+fn activity_is_machine_exact_and_human_control_safe() {
+    let activity = json!({
+        "revision": 1,
+        "provider_call_id": {"utf8": "literal\\n\n# heading\u{202e}\u{2066}\u{1b}[2J|` then `` then ``` preserved"},
+        "invocation": {
+            "protocol": "mcp",
+            "server": "source-server",
+            "tool": "tool\\literal\t*#_{}<>",
+            "arguments": {"capture_status": "present", "value": {"key": "雪"}}
+        },
+        "facts": [
+            {"kind": "file", "value": "src/lib.rs"},
+            {"kind": "file", "value": "src/lib.rs"}
+        ]
     });
     let mut session = show_value();
-    session["events"][0]["mcp_tool_call"] = attribution.clone();
+    session["events"][0]["activity"] = activity.clone();
     let mut event = event_show_value(None, SESSION_ID);
-    event["events"][0]["mcp_tool_call"] = attribution.clone();
+    event["events"][0]["activity"] = activity.clone();
 
     for value in [&session, &event] {
         let jsonl = render_show_jsonl(value).unwrap();
         let first: Value = serde_json::from_str(jsonl.lines().next().unwrap()).unwrap();
         let machine_event = first.get("event").unwrap_or(&first);
-        assert_eq!(machine_event["mcp_tool_call"], attribution);
-        assert!(machine_event["mcp_tool_call"]["server"]
+        assert_eq!(machine_event["activity"], activity);
+        assert!(machine_event["activity"]["provider_call_id"]["utf8"]
             .as_str()
             .unwrap()
             .contains('\u{202e}'));
-        assert!(!jsonl.contains("display truncated"));
         let lines = jsonl.lines().collect::<Vec<_>>();
         let absent: Value = serde_json::from_str(lines[1]).unwrap();
         let absent_event = absent.get("event").unwrap_or(&absent);
-        assert!(absent_event.get("mcp_tool_call").is_none());
+        assert!(absent_event.get("activity").is_none());
     }
 
     let terminal = render_show_document(&session, &context(200, ColorMode::Never)).render_plain();
     let text = render_show_text(&session);
+    let safe_activity = safe_activity_json(&activity);
+    assert!(safe_activity.contains("\\u{202e}"), "{safe_activity:?}");
+    assert!(safe_activity.contains("\\u{2066}"), "{safe_activity:?}");
+    assert!(safe_activity.contains("` then `` then ``` preserved"));
+    assert!(!safe_activity.contains('\u{202e}'));
+    assert!(!safe_activity.contains('\u{2066}'));
     for rendered in [&terminal, &text] {
         assert_control_safe(rendered);
         assert!(!rendered.contains('\u{202e}'));
+        assert!(!rendered.contains('\u{2066}'));
         assert!(!rendered.contains('\u{1b}'));
-        assert!(rendered.contains("literal\\\\n\\n#"), "{rendered:?}");
-        assert!(
-            rendered.contains("heading\\u{202e}\\x1b[2J"),
-            "{rendered:?}"
-        );
-        assert!(rendered.contains("… [display truncated]"));
-        assert!(rendered.contains(MCP_TOOL_CALL_JSON_GUIDANCE));
+        assert!(rendered.contains("\\u{202e}"), "{rendered:?}");
+        assert!(rendered.contains("\\u{2066}"), "{rendered:?}");
+        assert!(rendered.contains("src/lib.rs"), "{rendered:?}");
     }
+    assert!(terminal.contains("Activity"), "{terminal:?}");
+    assert!(text.contains("activity:"), "{text:?}");
 
     let markdown = render_show_markdown(&session);
     assert_control_safe(&markdown);
     assert!(!markdown.contains('\u{202e}'));
+    assert!(!markdown.contains('\u{2066}'));
     assert!(!markdown.contains('\u{1b}'));
     assert!(!markdown.contains("\n# heading"));
-    assert!(markdown.contains("- MCP server:"));
-    assert!(markdown.contains("\\# heading"));
-    assert!(markdown.contains("\\|\\`\\[\\]"));
-    assert!(markdown.contains("… \\[display truncated\\]"));
-    assert!(markdown.contains(MCP_TOOL_CALL_JSON_GUIDANCE));
+    assert!(markdown.contains(&format!("activity: ````{safe_activity}````\n\n")));
+    assert!(markdown.contains("src/lib.rs"));
+}
+
+#[test]
+fn markdown_activity_code_span_uses_a_longer_backtick_delimiter_without_rewriting_content() {
+    let content = r#"{"single":"`","double":"``","triple":"```"}"#;
+
+    assert_eq!(markdown_code_span(content), format!("````{content}````"));
+    assert_eq!(
+        markdown_code_span(r#"{"plain":true}"#),
+        r#"`{"plain":true}`"#
+    );
 }

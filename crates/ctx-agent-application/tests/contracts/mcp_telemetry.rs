@@ -271,15 +271,6 @@ fn mcp_opt_out_creates_no_identity_or_sink_output() {
             "params": {"name": "status", "arguments": {}}
         }),
     );
-    push_message(
-        &mut stdin,
-        json!({
-            "jsonrpc": "2.0",
-            "id": 3,
-            "method": "tools/call",
-            "params": {"name": "pro_status", "arguments": {}}
-        }),
-    );
 
     let output = ctx(&temp)
         .args(["mcp", "serve"])
@@ -295,70 +286,7 @@ fn mcp_opt_out_creates_no_identity_or_sink_output() {
         .get_output()
         .stdout
         .clone();
-    assert_eq!(String::from_utf8(output).unwrap().lines().count(), 3);
+    assert_eq!(String::from_utf8(output).unwrap().lines().count(), 2);
     assert!(!events_path.exists());
     assert!(!expected_device_path(&home, &state).exists());
-}
-
-#[test]
-fn mcp_pro_status_splits_transport_from_one_pro_product_event() {
-    let temp = tempdir();
-    let data_root = temp.path().join("data");
-    let home = temp.path().join("home");
-    let state = temp.path().join("state");
-    let events_path = temp.path().join("pro-status-analytics.jsonl");
-    fs::create_dir_all(&data_root).unwrap();
-    fs::create_dir_all(&home).unwrap();
-
-    let mut stdin = Vec::new();
-    push_message(
-        &mut stdin,
-        json!({
-            "jsonrpc": "2.0",
-            "id": 1,
-            "method": "initialize",
-            "params": {"protocolVersion": "2025-11-25", "capabilities": {}}
-        }),
-    );
-    push_message(
-        &mut stdin,
-        json!({
-            "jsonrpc": "2.0",
-            "id": 2,
-            "method": "tools/call",
-            "params": {"name": "pro_status", "arguments": {}}
-        }),
-    );
-
-    ctx(&temp)
-        .args(["mcp", "serve"])
-        .env("CTX_DATA_ROOT", &data_root)
-        .env("HOME", &home)
-        .env("XDG_STATE_HOME", &state)
-        .env("LOCALAPPDATA", &state)
-        .env("CTX_ANALYTICS_ENABLED", "true")
-        .env("CTX_ANALYTICS_ENDPOINT", file_url(&events_path))
-        .write_stdin(stdin)
-        .assert()
-        .success();
-
-    let payloads = read_analytics_events(&events_path);
-    let events = payloads
-        .iter()
-        .flat_map(|payload| payload["events"].as_array().unwrap())
-        .collect::<Vec<_>>();
-    let mcp = events
-        .iter()
-        .find(|event| event["surface"] == "mcp" && event["operation"] == "pro_status")
-        .expect("MCP transport event");
-    for duplicate in ["result_count_bucket", "zero_result", "result_truncated"] {
-        assert!(mcp["properties"].get(duplicate).is_none());
-    }
-    let pro = events
-        .iter()
-        .filter(|event| event["surface"] == "pro_host" && event["operation"] == "status")
-        .collect::<Vec<_>>();
-    assert_eq!(pro.len(), 1, "expected one Pro status event: {events:#?}");
-    assert_eq!(pro[0]["properties"]["status_surface"], "mcp");
-    assert!(pro[0]["properties"].get("query_kind").is_none());
 }

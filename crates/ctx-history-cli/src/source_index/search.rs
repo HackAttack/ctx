@@ -418,7 +418,7 @@ fn run_search_inner<P: HistorySemanticPort>(
         output_bytes
     };
     observation.render_duration = Some(render_started.elapsed());
-    local_usage.set_result_observation(ResultObservationAction::Search, result_count, 0, 0);
+    local_usage.set_result_observation(ResultObservationAction::Search, result_count, 0);
     local_usage.set_search_context_observation(search_context);
     local_usage.set_measured_output_bytes(output_bytes);
     Ok(observation)

@@ -157,37 +157,6 @@ impl ProviderCoreResult {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[allow(
-    dead_code,
-    reason = "the public telemetry vocabulary retains Pro lifecycle outcomes used by released event consumers"
-)]
-pub enum ProviderProResult {
-    NotRequested,
-    Unavailable,
-    NoOp,
-    Complete,
-    Partial,
-    Behind,
-    Failure,
-    Unknown,
-}
-
-impl ProviderProResult {
-    pub fn as_str(self) -> &'static str {
-        match self {
-            Self::NotRequested => "not_requested",
-            Self::Unavailable => "unavailable",
-            Self::NoOp => "no_op",
-            Self::Complete => "complete",
-            Self::Partial => "partial",
-            Self::Behind => "behind",
-            Self::Failure => "failure",
-            Self::Unknown => "unknown",
-        }
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ProviderRefreshFailureScope {
     None,
     Record,
@@ -376,8 +345,6 @@ pub struct ForegroundProviderRefreshV1 {
     pub work_kind: Option<ProviderRefreshWorkKind>,
     pub refresh_result: ProviderRefreshResult,
     pub core_result: ProviderCoreResult,
-    pub canonical_pro_result: ProviderProResult,
-    pub output_pro_result: ProviderProResult,
     pub failure_scope: ProviderRefreshFailureScope,
     pub failure_type: ProviderRefreshFailureType,
     pub work_remaining: bool,
@@ -466,8 +433,6 @@ mod tests {
                     work_kind: Some(ProviderRefreshWorkKind::Append),
                     refresh_result: ProviderRefreshResult::Partial,
                     core_result: ProviderCoreResult::Partial,
-                    canonical_pro_result: ProviderProResult::Complete,
-                    output_pro_result: ProviderProResult::Behind,
                     failure_scope: ProviderRefreshFailureScope::Record,
                     failure_type: ProviderRefreshFailureType::RecordRejection,
                     work_remaining: true,
@@ -498,8 +463,6 @@ mod tests {
                 "work_kind": "append",
                 "refresh_result": "partial",
                 "core_result": "partial",
-                "canonical_pro_result": "complete",
-                "output_pro_result": "behind",
                 "failure_scope": "record",
                 "failure_type": "record_rejection",
                 "work_remaining": true,
@@ -557,8 +520,6 @@ mod tests {
                 work_kind: Some(ProviderRefreshWorkKind::Fresh),
                 refresh_result: ProviderRefreshResult::Complete,
                 core_result: ProviderCoreResult::Complete,
-                canonical_pro_result: ProviderProResult::Unknown,
-                output_pro_result: ProviderProResult::Unknown,
                 failure_scope: ProviderRefreshFailureScope::None,
                 failure_type: ProviderRefreshFailureType::None,
                 work_remaining: false,
@@ -673,29 +634,6 @@ mod tests {
             ]
             .map(ProviderCoreResult::as_str),
             ["no_op", "complete", "partial", "failure", "unknown"]
-        );
-        assert_eq!(
-            [
-                ProviderProResult::NotRequested,
-                ProviderProResult::Unavailable,
-                ProviderProResult::NoOp,
-                ProviderProResult::Complete,
-                ProviderProResult::Partial,
-                ProviderProResult::Behind,
-                ProviderProResult::Failure,
-                ProviderProResult::Unknown,
-            ]
-            .map(ProviderProResult::as_str),
-            [
-                "not_requested",
-                "unavailable",
-                "no_op",
-                "complete",
-                "partial",
-                "behind",
-                "failure",
-                "unknown",
-            ]
         );
         assert_eq!(
             [

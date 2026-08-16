@@ -13,7 +13,6 @@ import unittest
 
 from performance_family_fixtures import (
     FAMILY_CORPUS_WRITERS,
-    SQLITE_WAL_FAMILY,
     FamilyCorpus,
     FamilyMutation,
 )
@@ -38,7 +37,6 @@ DEFAULT_CONTINUOUS_MUTATIONS = 5
 MAX_OPEN_FD_DELTA = 96
 MAX_INCREMENTAL_SEGMENT_OVERHEAD_BYTES = 256 * 1024
 MUTATION_CADENCE_SECONDS = 0.1
-STARTUP_REFRESH_QUIET_SECONDS = 2.5
 
 
 def continuous_mutation_count() -> int:
@@ -121,71 +119,6 @@ class ProviderFamilyContinuousRefreshTest(unittest.TestCase):
             "watcher did not publish a refresh-off-searchable mutation before "
             f"the deadline for provider={corpus.provider} query={query!r}; "
             f"last_error={last_error}"
-        )
-
-    def wait_for_isolated_continuous_baseline(
-        self,
-        corpus: FamilyCorpus,
-        env: dict[str, str],
-        root: Path,
-        daemon_pid: int,
-        resources: dict[str, int],
-    ) -> tuple[dict[str, object], RefreshSnapshot]:
-        """Drain cold-start watcher work before asserting mutation causality."""
-        deadline = time.monotonic() + COMMAND_TIMEOUT_SECONDS
-        stable_signature: tuple[object, ...] | None = None
-        stable_since: float | None = None
-        last_job: object = None
-        while time.monotonic() < deadline:
-            resources["peak_open_fds"] = max(
-                resources["peak_open_fds"], linux_open_fd_count(daemon_pid)
-            )
-            resources["peak_rss_bytes"] = max(
-                resources["peak_rss_bytes"], linux_peak_rss_bytes(daemon_pid)
-            )
-            status = run_json(["status", "--format=json"], env, root)
-            daemon = status["daemon"]
-            job = daemon["jobs"]["core_refresh"]
-            last_job = job
-            if job["status"] in {"failed", "retry_backoff"}:
-                raise RuntimeError(
-                    f"cold-start refresh failed before quiescence: {job!r}"
-                )
-            wakeup = daemon.get("wakeup", {})
-            signature = (
-                job.get("request_id"),
-                job.get("request_state"),
-                job.get("published_generation"),
-                wakeup.get("raw_events"),
-                wakeup.get("coalesced_wakeups"),
-                wakeup.get("ingress_overflows"),
-                wakeup.get("ingress_disconnects"),
-                wakeup.get("rescan_notifications"),
-            )
-            terminal = (
-                job["status"] == "completed"
-                and job["request_state"] == "published"
-            )
-            now = time.monotonic()
-            if terminal and signature == stable_signature:
-                if (
-                    stable_since is not None
-                    and now - stable_since >= STARTUP_REFRESH_QUIET_SECONDS
-                ):
-                    search = self.search_off(corpus.cold_query, corpus, env, root)
-                    snapshot = refresh_snapshot(search, root, env)
-                    if snapshot.request_id == job["request_id"]:
-                        return search, snapshot
-                    stable_signature = None
-                    stable_since = None
-                    continue
-            else:
-                stable_signature = signature if terminal else None
-                stable_since = now if terminal else None
-            time.sleep(0.025)
-        raise AssertionError(
-            "cold-start watcher work did not become quiescent before the "
-            f"controlled continuous phase: {last_job!r}"
         )
 
     def assert_counts(self, snapshot: RefreshSnapshot, corpus: FamilyCorpus, mutations: list[FamilyMutation]) -> None:
@@ -282,18 +215,6 @@ class ProviderFamilyContinuousRefreshTest(unittest.TestCase):
                             corpus.cold_query, corpus, env, root, daemon.pid, resources
                         )
                         cold = refresh_snapshot(cold_search, root, env)
-                        if corpus.family == SQLITE_WAL_FAMILY:
-                            # SQLite online backup can produce delayed native
-                            # watcher observations. A valid scheduler batch for
-                            # those routes is unrelated to the next controlled
-                            # fixture mutation, so establish a quiet terminal
-                            # baseline before making the exact one-route causal
-                            # assertion below.
-                            cold_search, cold = (
-                                self.wait_for_isolated_continuous_baseline(
-                                    corpus, env, root, daemon.pid, resources
-                                )
-                            )
                         self.assert_counts(cold, corpus, [])
                         self.assert_result(cold_search, corpus, corpus.cold_body, env, root)
                         mutations: list[FamilyMutation] = []

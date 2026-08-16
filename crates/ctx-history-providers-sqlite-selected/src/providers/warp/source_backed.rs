@@ -7,18 +7,16 @@ use std::{
 };
 
 use ctx_history_core::{
-    derive_event_id, derive_session_id, AgentType, CaptureProvider, CoreRecord, CoreRecordError,
-    EventIdentityInput, McpExchangeContent, McpInvocationContent, McpJsonCapture,
-    McpPayloadOmissionReason, McpToolCallAttribution, NativeItemKey, NativeSessionKey,
-    ProjectionContractError, ScannedSourceCounts, SessionIdentityInput, SourceAnchor, SourceKey,
-    StableEntityId, TypedKey, MAX_CORE_CONTENT_BYTES,
+    derive_event_id, derive_session_id, ActivityInvocation, ActivityJsonCapture, ActivityResult,
+    CaptureProvider, CoreActivity, CoreRecord, CoreRecordError, EventIdentityInput, NativeItemKey,
+    NativeSessionKey, ProjectionContractError, ProviderNativeSessionRelationship,
+    ScannedSourceCounts, SessionIdentityInput, SourceAnchor, SourceKey, StableEntityId, TypedKey,
+    CORE_ACTIVITY_REVISION, MAX_CORE_CONTENT_BYTES,
 };
 use rusqlite::{limits::Limit, Connection};
 use sha2::{Digest, Sha256};
 use thiserror::Error;
 
-#[cfg(test)]
-use super::nativepath::{WarpNativeEventIdentity, WarpNativeOrder};
 use super::{
     nativepath::{
         scan_warp_source_backed_connection, WarpNativeEvent, WarpNativeMessageIdentity,
@@ -47,7 +45,7 @@ const WARP_NATIVE_ITEM_NAMESPACE: &str = "warp.task-message";
 const WARP_LOGICAL_SESSION_KIND: &str = "warp-conversation";
 const WARP_LOGICAL_ITEM_KIND: &str = "warp-task-message";
 const WARP_SOURCE_SCHEMA_VARIANT: &str = "warp-agent-task-protobuf-v1";
-const WARP_SOURCE_BACKED_PARSER_REVISION: &str = "warp-source-backed-logical-v5";
+const WARP_SOURCE_BACKED_PARSER_REVISION: &str = "warp-source-backed-logical-v6-neutral-activity";
 const WARP_SCHEMA_EVIDENCE: &[u8] = b"agent_conversations+agent_tasks+unique-task-id-v1";
 const WARP_MISSING_TREE_DOMAIN: &[u8] = b"ctx.warp.missing-logical-tree.v1\0";
 const WARP_LOGICAL_LEAF_DOMAIN: &[u8] = b"ctx.warp.logical-leaf.v1\0";
@@ -553,7 +551,6 @@ where
 
 struct WarpSessionLineage {
     parent_conversation_id: Option<String>,
-    root_conversation_id: String,
 }
 
 impl<'failure, 'changed, 'sink, 'writer, L, S>
@@ -652,7 +649,6 @@ impl From<WarpNativeSession> for WarpSessionLineage {
     fn from(session: WarpNativeSession) -> Self {
         Self {
             parent_conversation_id: session.parent_conversation_id,
-            root_conversation_id: session.root_conversation_id,
         }
     }
 }
@@ -668,8 +664,6 @@ fn core_record(
         .as_deref()
         .map(|parent| warp_session_id(source, parent))
         .transpose()?;
-    let root_session_id = warp_session_id(source, &lineage.root_conversation_id)?;
-    let is_primary = parent_session_id.is_none();
     let message_key = match &event.identity.message {
         WarpNativeMessageIdentity::ProviderId(message_id) => TypedKey::composite(vec![
             TypedKey::utf8("provider-id")?,
@@ -695,7 +689,7 @@ fn core_record(
         TypedKey::utf8(event.identity.task_id.clone())?,
         TypedKey::U64(u64::from(event.native_order.message_ordinal)),
     ])?;
-    let mcp_exchange = warp_mcp_exchange(&event)?;
+    let activity = warp_activity(&event)?;
     let body = if event.lexical_body.is_empty() {
         event.kind.to_owned()
     } else {
@@ -710,80 +704,40 @@ fn core_record(
             | ctx_history_core::EventType::ToolOutput
             | ctx_history_core::EventType::CommandOutput
     );
-    let result_outcome = event.result_outcome.map(|outcome| match outcome {
-        crate::OutputOutcome::Success => "success",
-        crate::OutputOutcome::Failure => "failure",
-        crate::OutputOutcome::Timeout => "timeout",
-        crate::OutputOutcome::Unknown => "unknown",
-    });
     let native_tool = is_tool.then(|| {
         serde_json::json!({
             "kind": event.kind,
             "request_id": event.request_id,
             "call_id": event.call_id,
-            "linkage_exact": event.call_id.is_some(),
-            "result_outcome": result_outcome,
         })
     });
-    let agent_type = if is_primary {
-        AgentType::Primary
-    } else {
-        AgentType::Subagent
-    };
     let mut record = CoreRecord::new_selected(
         event_id,
-        session_id,
         session_id,
         source.clone(),
         event.native_order.provider_event_index,
         event.event_type.as_str(),
-        agent_type.as_str(),
-        true,
         WARP_SOURCE_BACKED_PARSER_REVISION,
         body,
     )?;
     if let Some(parent_session_id) = parent_session_id {
-        let kind = if is_primary {
-            ctx_history_core::SessionRelationshipKind::RelatedUnknown
-        } else {
-            ctx_history_core::SessionRelationshipKind::Delegated
-        };
-        record.set_session_relationship(kind, Some(parent_session_id), root_session_id)?;
+        record.parent_session_id = Some(parent_session_id);
+        record.session_relationship = Some(ProviderNativeSessionRelationship::Delegated);
     }
     record.provider_session_id = Some(event.identity.conversation_id);
     record.native_event_id = Some(native_event_id);
     record.occurred_at_unix_ms = event.occurred_at.map(|value| value.timestamp_millis());
     record.role = event.role.map(|role| role.as_str().to_owned());
-    if event.mcp_attribution {
-        let invocation = event
-            .mcp_invocation
-            .as_ref()
-            .ok_or(CaptureError::SystemInvariant(
-                "Warp MCP attribution omitted its qualified invocation",
-            ))?;
-        record.mcp_tool_call = Some(McpToolCallAttribution {
-            server: invocation.server_id.clone(),
-            tool: invocation.tool_name.clone(),
-        });
-    }
     if let Some(native_tool) = native_tool {
-        let key = if event.result_outcome.is_some() {
-            "provider_native_result"
-        } else {
-            "provider_native_tool"
-        };
-        record.content.structured_content = Some(serde_json::json!({(key): native_tool}));
+        record.content.structured_content = Some(native_tool);
     }
-    if let Some(exchange) = mcp_exchange {
-        attach_bounded_mcp_exchange(&mut record, exchange)?;
-    }
+    record.content.activity = activity;
+    fit_warp_activity(&mut record)?;
     record.validate_contract()?;
     Ok(record)
 }
 
-fn warp_mcp_exchange(
-    event: &WarpNativeEvent,
-) -> WarpSourceBackedResultV0<Option<McpExchangeContent>> {
+fn warp_activity(event: &WarpNativeEvent) -> WarpSourceBackedResultV0<Option<CoreActivity>> {
     if event.event_type == ctx_history_core::EventType::ToolCall {
         let Some(invocation) = event.mcp_invocation.as_ref() else {
             return Ok(None);
@@ -791,16 +745,20 @@ fn warp_mcp_exchange(
         let call_id = event.call_id.as_ref().ok_or(CaptureError::SystemInvariant(
             "qualified Warp MCP invocation omitted its call ID",
         ))?;
-        return Ok(Some(McpExchangeContent {
-            provider_call_id: call_id.clone(),
-            invocation: Some(McpInvocationContent {
-                server: invocation.server_id.clone(),
+        return Ok(Some(CoreActivity {
+            revision: CORE_ACTIVITY_REVISION,
+            provider_call_id: Some(TypedKey::utf8(call_id)?),
+            invocation: Some(ActivityInvocation {
+                protocol: Some("mcp".to_owned()),
+                server: Some(invocation.server_id.clone()),
                 tool: invocation.tool_name.clone(),
-                arguments: McpJsonCapture::Present {
+                arguments: ActivityJsonCapture::Present {
                     value: invocation.args.clone(),
                 },
+                started_at_unix_ms: event.occurred_at.map(|value| value.timestamp_millis()),
             }),
-            response: None,
+            result: None,
+            facts: Vec::new(),
         }));
     }
     let Some(response) = event.mcp_response.as_ref() else {
@@ -814,64 +772,84 @@ fn warp_mcp_exchange(
     let call_id = event.call_id.as_ref().ok_or(CaptureError::SystemInvariant(
         "qualified Warp MCP response omitted its call ID",
     ))?;
-    Ok(Some(McpExchangeContent {
-        provider_call_id: call_id.clone(),
-        invocation: None,
-        response: Some(response.clone()),
+    let invocation = event
+        .mcp_invocation
+        .as_ref()
+        .map(|invocation| ActivityInvocation {
+            protocol: Some("mcp".to_owned()),
+            server: Some(invocation.server_id.clone()),
+            tool: invocation.tool_name.clone(),
+            arguments: ActivityJsonCapture::Present {
+                value: invocation.args.clone(),
+            },
+            started_at_unix_ms: None,
+        });
+    Ok(Some(CoreActivity {
+        revision: CORE_ACTIVITY_REVISION,
+        provider_call_id: Some(TypedKey::utf8(call_id)?),
+        invocation,
+        result: Some(ActivityResult {
+            status: response.status.clone(),
+            completed_at_unix_ms: event.occurred_at.map(|value| value.timestamp_millis()),
+            duration_ns: None,
+            text: response.text.clone(),
+            structured_content: response.structured_content.clone(),
+        }),
+        facts: Vec::new(),
     }))
 }
 
-fn attach_bounded_mcp_exchange(
-    record: &mut CoreRecord,
-    exchange: McpExchangeContent,
-) -> WarpSourceBackedResultV0<()> {
-    record.content.mcp_exchange = Some(exchange);
+fn fit_warp_activity(record: &mut CoreRecord) -> WarpSourceBackedResultV0<()> {
     if record.content.encoded_content_bytes()? <= MAX_CORE_CONTENT_BYTES {
         return Ok(());
     }
-    let Some(exchange) = record.content.mcp_exchange.as_mut() else {
+    let Some(activity) = record.content.activity.as_mut() else {
         return Err(CaptureError::SystemInvariant(
-            "Warp MCP exchange disappeared during size admission",
+            "Warp activity disappeared during size admission",
         )
         .into());
     };
-    let capture = if let Some(invocation) = exchange.invocation.as_mut() {
-        &mut invocation.arguments
-    } else if let Some(response) = exchange.response.as_mut() {
-        &mut response.payload
-    } else {
+    if activity.invocation.is_none() && activity.result.is_none() {
         return Err(CaptureError::SystemInvariant(
             "Warp MCP exchange omitted both invocation and response",
         )
         .into());
-    };
-    let McpJsonCapture::Present { value } = capture else {
-        record.content.mcp_exchange = None;
-        if record.content.encoded_content_bytes()? > MAX_CORE_CONTENT_BYTES {
-            return Err(CaptureError::SystemInvariant(
-                "Warp ordinary content exceeded the Core content budget",
-            )
-            .into());
-        }
-        return Ok(());
-    };
-    let observed_encoded_bytes = serde_json::to_vec(value)
-        .ok()
-        .and_then(|encoded| u64::try_from(encoded.len()).ok());
-    *capture = McpJsonCapture::Omitted {
-        reason: McpPayloadOmissionReason::SizeLimit,
-        observed_encoded_bytes,
-    };
-    if record.content.encoded_content_bytes()? > MAX_CORE_CONTENT_BYTES {
-        record.content.mcp_exchange = None;
+    }
+    if let Some(result) = activity.result.as_mut() {
+        omit_warp_json_capture_for_size(&mut result.structured_content);
     }
     if record.content.encoded_content_bytes()? > MAX_CORE_CONTENT_BYTES {
+        if let Some(invocation) = record
+            .content
+            .activity
+            .as_mut()
+            .and_then(|activity| activity.invocation.as_mut())
+        {
+            omit_warp_json_capture_for_size(&mut invocation.arguments);
+        }
+    }
+    record
+        .content
+        .omit_structured_content_if_aggregate_exceeds_limit()?;
+    if record.content.encoded_content_bytes()? > MAX_CORE_CONTENT_BYTES {
         return Err(CaptureError::SystemInvariant(
-            "Warp ordinary content exceeded the Core content budget",
+            "Warp non-capture content exceeded the Core content budget",
         )
         .into());
     }
     Ok(())
+}
+
+fn omit_warp_json_capture_for_size(capture: &mut ActivityJsonCapture) {
+    if let ActivityJsonCapture::Present { value } = capture {
+        let observed_encoded_bytes = serde_json::to_vec(value)
+            .ok()
+            .and_then(|encoded| u64::try_from(encoded.len()).ok());
+        *capture = ActivityJsonCapture::Omitted {
+            reason: "size_limit".to_owned(),
+            observed_encoded_bytes,
+        };
+    }
 }
 
 fn warp_session_id(

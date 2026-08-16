@@ -7,15 +7,13 @@ a user reviews it.
 Command result JSON uses `schema_version: 1` except for
 `ctx setup --format json`, `ctx stats --format json`, and
 `ctx import --format json`.
-The Pro status object embedded by `ctx status --format json` and exposed through MCP
-uses its own version 2 contract, described below. Progress-event JSON is stderr
-progress output and does not include `schema_version`.
+Progress-event JSON is stderr progress output and does not include
+`schema_version`.
 
 ## Setup
 
 ```bash
 ctx setup --format json
-ctx setup --pro --format json
 ctx setup --format json --no-daemon
 ```
 
@@ -31,22 +29,10 @@ Writes local storage and returns schema version 2:
 - `refresh`;
 - `refresh_request`;
 - `semantic`;
-- `pro_projection`;
 - `daemon`;
 - `daemon_autostart`;
 - `deprecated_catalog_only_ignored`;
 - `source_rebuild_required`;
-- `network_required`, `false` for Core-only setup and `true` when `--pro`
-  requests anonymous-trial enrollment and helper delivery;
-- `repo_writes: false`.
-
-Every setup receipt includes a top-level `pro` object; Core-only setup reports
-`status: "skipped"`, while `--pro` reports `ready` or `unavailable`. The object
-also includes `trial_started`, nullable ISO-date
-`trial_ends_on`, nullable HTTPS `action_url`, and `next_command: "ctx pro"`.
-Core readiness and command exit remain authoritative if this additive Pro
-operation is unavailable. The flag requires daemon maintenance so the verified
-helper can consume the committed Core generation in the background.
 
 When daemon maintenance is enabled, human and machine-readable setup both
 health-check and recover the persistent daemon before returning.
@@ -101,24 +87,19 @@ Reads local storage state and returns:
 - `lexical`;
 - `refresh`;
 - `semantic`;
-- `pro_projection`;
 - `daemon`;
 - `indexed_items`;
 - `indexed_sessions`;
 - `indexed_events`;
 - `indexed_sources`;
 - `upgrade`;
-- `pro`, using the path-safe Local Pro status shape;
 - compact `local_usage` health (`enabled`, state, and a content-free error when
   unavailable), without aggregates, estimates, or operation details;
 - `local_only: true`;
 - `read_only: true`.
 
 For status, `read_only: true` means the command does not mutate canonical
-history or local Pro graph data. When Pro is installed, entitlement
-authorization may advance nonsecret anti-clock-rollback security metadata in
-the operating-system key store; that metadata is outside both data stores and
-does not change this stable field. Usage control modes return a separate
+history or Core search generations. Usage control modes return a separate
 action-focused JSON shape with `read_only: false` and do not read Core status.
 
 `history_epoch` and `lexical` identify the verified searchable Core generation.
@@ -815,7 +796,7 @@ by search. It never means that the query process became a foreground writer:
 
 Background mode health-checks and may recover the default-enabled persistent
 daemon, then returns the latest committed generation without waiting for
-semantic or Pro catch-up. Wait mode waits for the requested source
+semantic catch-up. Wait mode waits for the requested source
 frontier and lexical receipt or fails; it never falls back to a foreground
 importer. Off mode sends no maintenance wake.
 
@@ -889,11 +870,10 @@ that filter.
 ## MCP Tool Results
 
 `ctx mcp serve` exposes MCP tools over stdio for status, sources, search,
-showing sessions and events, and Pro status/blame. Startup health-checks and may
-recover the default-enabled persistent daemon. Search and blame can send
-bounded, content-free maintenance wakes; the MCP process never becomes an
-importer or derived-state writer and never writes provider history or
-repositories. Tool results include
+and showing sessions and events. Startup health-checks may recover the
+default-enabled persistent daemon. Search can send a bounded, content-free
+maintenance wake; the MCP process never becomes an importer or derived-state
+writer and never writes provider history. Tool results include
 `structuredContent` JSON carrying the same typed data as CLI JSON, with
 contract-owned event keys in camelCase. MCP output may include absolute paths,
 source metadata, snippets, transcript text, MCP arguments, and response
@@ -1051,324 +1031,6 @@ Citations can include:
 - `session_id`;
 - `event_seq`.
 
-## Local Pro
-
-The `pro` object in `ctx status --format json` has `schema_version: 2`,
-`payload_type: "pro_status"`,
-`state`, `installed`, `ready`, `materialized`, `helper_version`,
-`protocol_version`, `capabilities`, `error_code`, `access_state`,
-`refresh_after_unix`, `access_deadline_unix`, `grace_deadline_unix`, and a typed
-`next_action`. `ctx status` adds nullable `conversion_action`. Access fields are
-null when access cannot be determined. The
-generic `state` remains helper/graph readiness; `access_state` is independently
-`trial`, `active`, `canceling_paid`, `offline_grace`, or `locked`.
-After an uninstall that deliberately preserves local Pro data, `state` is
-`uninstalled_data_preserved` and `next_action.reason` is
-`restore_preserved_pro_data`; a first-use installation remains `not_setup` with
-`helper_missing`.
-The same base path-safe shape is returned by the MCP `pro_status` tool and
-embedded by `ctx doctor --format json` under `pro`. MCP `pro_status` also adds
-`conversion_action` and `local_usage`; doctor does not.
-
-`conversion_action` is `pro_monthly_conversion` at `"$20/month"` for `trial`
-or an unpriced `pro_restore_access` for `locked`, both pointing to
-`ctx pro manage`. The restore action includes `graph_preserved: true` and
-`reason: "access_locked"`. It is null for paid `active`,
-`canceling_paid`, and `offline_grace` states and does not replace `next_action`.
-MCP `pro_status` also embeds the compact `local_usage` report; neither field is
-added to blame results or citations.
-
-`ctx pro --format json` and its explicit synonym `ctx pro setup --format json` both run the
-idempotent setup path, report operation `setup`, and return the
-`schema_version: 1`, `payload_type: "pro_setup"` contract.
-`ctx pro --referral <codename> --format json` uses that same setup payload. It accepts
-the codename only for the first anonymous-trial challenge and does not echo the
-raw codename or opaque claim in JSON. The resulting attribution is immutable.
-An accepted referral produces a 30-day trial; setup without one remains the
-ordinary 14-day trial.
-If anonymous-trial activation or refresh is authoritatively rejected as
-expired, consumed, or unavailable, the same payload remains successful and
-actionable with `account_state: "browser_handoff_pending"`, the one-use
-`action_url`, `helper_updated: false`, and `materialization_deferred: true`.
-That state has no trial deadline and does not claim Pro access; browser
-completion may link an existing subscription or purchase Pro. JSON mode never
-opens the action URL.
-`ctx pro manage --no-open --format json` and
-`ctx pro uninstall (--delete-data|--keep-data) --format json` return the `pro_manage`
-and `pro_uninstall` payload types respectively.
-Materialization is an internal, idempotent daemon-owned activity requested by
-setup and maintenance wakes.
-The `pro_manage` payload includes `portal_url`, `browser_opened`, the compact
-`local_usage` report, `conversion_action`, and the same nonsecret access
-state/deadline fields. A locked account preserves canonical history, encrypted
-derived data, and keys; successful resubscription followed by `ctx pro`
-restores access. JSON mode never invokes a browser opener and always reports
-`browser_opened: false`.
-`pro_uninstall` reports `helper_removed`, `local_pro_data` (`preserved`,
-`deleted`, or `absent`), `canonical_history_preserved`, and `next_action`.
-Explicit `--delete-data` reports `local_pro_data: "deleted"` only after the
-authoritative local Pro inventory has been verified absent. JSON callers must
-provide one of the two data-choice flags and are never prompted. Missing,
-never-Pro, and already-empty roots report `absent` with `next_action: null` and
-do not create a Pro root or preservation marker. This is a Pro-state-only no-op
-contract: the eligible foreground `pro_uninstall` operation may still create or
-increment default-on Core `usage.sqlite`. `absent` means no graph-family file
-existed at deletion time; an initialized or helper-present root can still
-delete and verify root-scoped credentials and graph-key records before
-returning that classification. Corrupt credential inventory fails before any
-deletion and emits no success payload. An interrupted deletion retains
-root-local retry metadata; setup and `--keep-data` fail until a later
-`--delete-data` verifies and completes the same installation-scoped cleanup.
-
-Successful `ctx blame <target> [--type file|commit|pr] --format json`, the
-explicit `ctx blame file|commit|pr --format json` compatibility forms, and MCP
-`blame` return one host-extended result object with the protocol `BlameResult`
-fields at top level plus host-owned context. There is no enclosing payload
-wrapper or prose summary:
-
-- `snapshot`, the exact Core materialization receipt used by the helper query;
-- `target`, a resolved tagged `file`, `commit`, or `pull_request` target;
-- `git_snapshot`, required for file results and null for commit/PR results;
-- `outcome`, with `attribution` (`proven`, `possible`, `conflicting`, or `none`)
-  and per-page `coverage`;
-- `matches`, typed `file`, `commit`, or `pull_request` matches corresponding to
-  the resolved target;
-- `evidence`, a complete deduplicated table numbered contiguously from one;
-- `next`, null or an opaque cursor plus `more_matches` or
-  `more_committed_lines` reason;
-- `evidence_context`, a host-owned object added after the helper response is
-  validated, with `status` and `items` fields.
-
-`outcome.coverage` contains `unit`, `evaluated`, `proven`, `possible`,
-`conflicting`, and `none`. The unit is `committed_line`, `commit_fact`, or
-`pull_request_relationship`; the four state counts sum exactly to `evaluated`.
-These are counts for the returned page, not a total-result scan, and pagination
-does not create a `partial` attribution state. Producer conflict is useful
-successful output with `attribution: "conflicting"`; target, repository, and
-commit-rewrite ambiguity remain failures.
-
-CLI JSON and MCP `structuredContent` both include the same top-level
-`freshness` object with `state` (`current` or `stale_committed`). Human output
-hides routine `current` freshness and warns for `stale_committed`. A stale
-result may succeed only when every evaluated unit is `proven`, `possible`, or
-`conflicting`. Any stale page with a `none` unit fails as `stale_source`
-because even one missing attribution would be inconclusive.
-
-CLI JSON and MCP serialize the identical `evidence_context` object without
-changing the private helper `BlameResult` or protocol version:
-
-```json
-{
-  "evidence_context": {
-    "status": "available",
-    "items": [
-      {
-        "citation_numbers": [1],
-        "operation": "modify",
-        "path": "src/lib.rs",
-        "tool_name": "apply_patch",
-        "event_occurred_at_ms": 1721000000123,
-        "excerpt": "*** Begin Patch\n*** Update File: src/lib.rs\n@@\n-old_value\n+new_value\n*** End Patch"
-      }
-    ]
-  }
-}
-```
-
-`status` is `available` when file blame has at least one verified, admitted
-item; `unavailable` when file hydration or projection yields none; and
-`not_applicable` for commit and PR blame. `items` is always an array and is
-empty for `unavailable` and `not_applicable`. File blame reads at most the first
-three exact cited Core records under the fixed evidence and 4 KiB admission
-budgets. Each item describes provider-neutral requested file-operation intent,
-its target (and prior path for a rename), the provider-native tool name, and an
-exact excerpt. `event_occurred_at_ms`, when present, is the exact timestamp
-carried by that authenticated supporting Core event. It is not Git author or
-committer time, PR creation or merge time, materialization time, or proof that
-the requested operation completed. Grouped replay evidence omits the timestamp
-unless every grouped event carries the same exact value. The item does not
-independently assert a successful filesystem effect.
-Hydration failure never changes attribution, the helper result, exit
-status, or the evidence table. Commit and PR blame perform no Core evidence
-read. Human output renders the same admitted item list under
-`Evidence context (local history content)` only when status is `available`; it
-emits no unavailable or not-applicable banner. Machine output remains
-ANSI-free.
-
-Ordinary CLI and MCP blame send a bounded maintenance wake, read the latest
-committed Pro generation, and report its frontier or typed stale state while
-catch-up proceeds. Only an explicit wait policy waits for a requested frontier;
-the query process never performs foreground materialization.
-
-File matches contain an inclusive committed line range, commit reference,
-line-level evidence numbers, and zero or more typed production attributions.
-Commit matches use a closed fact type and predicate vocabulary and preserve
-confidence and state. Production attributions and PR commit-membership
-relationships include nullable `fact_occurred_at_ms` alongside the existing
-commit and PR-activity field. A present value is the exact millisecond
-timestamp carried by that supporting provenance fact; absence remains JSON
-`null` on helper-protocol DTOs and is not replaced with a guess. It is not Git
-author or committer time, PR creation or merge time, materialization time, or
-proof of completion. Fact occurrence never changes relationship ordering,
-ranking, cursors, or page boundaries. Human and MCP text render present values
-as RFC 3339 UTC with milliseconds under the semantic label `Observed` and omit
-the line when no exact value exists.
-
-Human rendering groups commit matches as `Produced by`,
-`Possible producers`, and `Also recorded`, so inspection and reference facts
-cannot be mistaken for production.
-
-MCP `structuredContent` is byte-for-byte the same JSON value as CLI JSON. Its
-bounded text fallback includes the Core snapshot, current citation field names,
-the admitted `evidence_context`, and ISO UTC timestamps; it never substitutes
-raw epoch milliseconds. Generic `query_events` text remains page metadata only.
-
-PR matches contain exactly one activity or commit-membership relationship.
-Activity actions are typed and remain separate from production. A PR commit
-relationship is present only when recognized structured captured forge evidence
-binds the canonical PR identity and exact Git object ID in the same record.
-Co-occurring standalone URL/OID identifiers or prose are insufficient; when no
-structured proof exists, associated commits are explicitly unproven.
-
-Each evidence-number list is nonempty, sorted, unique, and resolves into the
-page's evidence table. Every table entry is referenced by at least one returned
-match. MCP returns at most 8 complete matches per page; CLI defaults to 20 and
-permits at most 100. MCP additionally caps the final serialized blame JSON-RPC
-response at 1 MiB after adding exact `structuredContent` and its text fallback.
-An over-cap helper page fails with `invalid_response` and guidance to lower
-`limit` or use CLI JSON; MCP does not truncate matches or evidence and does not
-invent a continuation cursor. Under the cap, typed structured content is exact.
-Neither surface clips evidence for a returned match.
-Continuation cursors are authenticated and bound to the request and graph
-state. Tampering returns `invalid_request`; a changed snapshot returns
-`stale_snapshot`.
-
-Core `show` JSON remains the session/event retrieval contract. There are no Pro
-`show`, `timeline`, `facts`, or `related` payloads or compatibility aliases.
-
-Human CLI failures exit nonzero with an outcome-first diagnostic, one trusted
-detail, and at most one action. `ctx blame --format json` writes the canonical
-typed diagnostic object to stderr rather than raw `Error` text. Its `error` and
-`error_code` are equal stable codes; `reason` is closed; `message` is trusted
-host prose; `retryable` is a boolean; and `freshness`, `next_action`,
-`candidates`, and `candidates_truncated` appear only when applicable.
-`next_action` contains one closed `kind` and a complete argument-safe `argv`
-beginning with `ctx`, never a shell command string. Candidates are typed,
-sorted, deduplicated, sanitized, and capped at five. Helper messages, error
-chains, executable paths, checkout paths, graph identifiers, and credential
-details never enter the public object.
-
-MCP failures set `isError: true`, place that same diagnostic object in
-`structuredContent`, and render text from its trusted `message` and optional
-single action. A successful `conflicting` attribution does not set `isError`.
-Stable codes include `pro_not_installed`, `commercial_unavailable`,
-`entitlement_required`, `entitlement_expired`, `entitlement_invalid`,
-`helper_upgrade_required`, `key_store_unavailable`,
-`key_store_locked`, `not_materialized`, `protocol_mismatch`,
-`source_unavailable`, `repository_unavailable`, `resource_not_found`,
-`operation_unavailable`, `line_out_of_range`,
-`stale_snapshot`, `stale_fact`, `ambiguous`, `corrupt_graph`,
-`invalid_request`, `invalid_response`, `cancelled`,
-`helper_crashed`, and `helper_timeout`.
-Native key-store failures use only `key_store_unavailable` and
-`key_store_locked`. Unshipped `credential_vault_*` spellings are not aliases.
-
-Core search is advisory only for a current `none` result, current
-`target_not_indexed`, or `operation_unavailable`. The action is never executed
-automatically and is not suggested for stale/catching-up state, invalid input,
-ambiguity, repository access, entitlement, repair, or transport failures.
-
-## Referrals
-
-```bash
-ctx referral create <codename> --format json
-ctx referral status --format json
-ctx referral payout [--country <CC>] --format json
-```
-
-All three commands return schema version 1. JSON referral commands use the
-cached opaque account credential only. They never start browser setup or invoke
-a browser opener; a missing cached credential fails with
-`authentication_required`. The payloads contain no human referral slogan or
-promotional message. Any verified person can create a codename; a Pro trial or
-subscription is not required.
-
-`ctx referral create <codename> --format json` returns:
-
-- `schema_version`;
-- `payload_type: "referral_create"`;
-- `codename`;
-- `share_command`, exactly `ctx pro --referral <codename>`;
-- `disposition`, either `created` or `existing`.
-
-`ctx referral status --format json` returns:
-
-- `schema_version`;
-- `payload_type: "referral_status"`;
-- `codename`;
-- `share_command`, exactly `ctx pro --referral <codename>`;
-- `attributed`;
-- `subscribed`;
-- `earned_cents`;
-- `pending_cents`;
-- `manual_review_cents`;
-- `payable_cents`;
-- `processing_cents`;
-- `paid_cents`;
-- `debt_cents`;
-- `currency: "usd"`;
-- `payout_state`.
-
-Counts and cent amounts are nonnegative integers. The requested status payload
-is the complete machine-readable referrer summary. It is private to the
-authenticated referrer and aggregate only: it contains no referred identity,
-invoice, or per-referral ledger, and no referral fields are added to ordinary
-status or MCP output. `payout_state` is one of
-`not_eligible`, `eligible`, `onboarding_pending`, `ready`, or `paused`.
-
-`manual_review_cents` is accrued cash awaiting an explicit review outcome.
-`processing_cents` is cash sent for payout but not yet settled. `paid_cents`
-is historical cash actually settled and never decreases after a reversal;
-post-paid reversals increase `debt_cents`. Every status payload satisfies:
-
-```text
-earned_cents + debt_cents
-  = pending_cents + manual_review_cents + payable_cents
-    + processing_cents + paid_cents
-```
-
-The amounts summarize a $10 cash commission for each distinct qualifying $20
-monthly Pro invoice, invoices 1 through 12, capped at $120 per direct referral.
-Invoice 1 and invoice 2 commissions remain pending until invoice 2 settles, the
-required 14-day hold elapses, authoritative reconciliation completes, and
-manual review makes them payable. Each invoice 3 through 12 commission has its
-own 14-day hold, reconciliation, and manual-review gate. A refund or dispute
-voids an unpaid commission. Reversal of a paid commission becomes debt, a
-negative adjustment against future earnings subject to manual review, never an
-external clawback.
-
-`ctx referral payout --format json` returns:
-
-- `schema_version`;
-- `payload_type: "referral_payout"`;
-- `payout_state`;
-- `onboarding_url`, a one-use Stripe-hosted URL;
-- `expires_at_unix`;
-- `browser_opened: false`.
-
-`--no-open` is optional and redundant in JSON mode. Referral payouts support
-individual recipients at launch. `--country` accepts a two-letter uppercase ISO
-country code as an advanced noninteractive override. JSON mode never prompts;
-when country is required and absent, the stable error is
-`referral_payout_country_required`, and the caller should supply
-`--country <CC>`. No payout command accepts bank or card details.
-
-Stable hosted referral failures include `authentication_required`,
-`referral_codename_conflict`, `referral_not_eligible`, `referral_not_found`,
-`referral_payout_country_required`, `referral_payout_unavailable`, and
-`referral_self_referral`. Malformed or out-of-bounds hosted results fail with
-`invalid_response`.
-
 ## Doctor
 
 ```bash
@@ -1383,12 +1045,11 @@ Reads local storage and returns findings:
 - `findings`.
 
 Doctor checks Core/Tantivy generation health, read-only semantic sidecar health,
-source/daemon state, compact local-usage health, and an installed Pro helper.
-Its JSON includes `daemon` and `pro` status. It does not initialize embedding
-models or write sidecar data. Semantic or hybrid
-search may ask the daemon query service to embed the query from an
-already-cached local model; search does not download models or write sidecar
-data from the search path.
+source/daemon state, and compact local-usage health. Its JSON includes daemon
+status. It does not initialize embedding models or write sidecar data.
+Semantic or hybrid search may ask the daemon query service to embed the query
+from an already-cached local model; search does not download models or write
+sidecar data from the search path.
 
 ## Provider Smoke
 

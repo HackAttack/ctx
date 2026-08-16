@@ -159,7 +159,6 @@ pub(crate) fn apply_hermetic_env(command: &mut Command, temp: &TempDir) {
         ] {
             fs::create_dir_all(path).unwrap();
         }
-        command.env("CTX_PRO_DATA_ROOT", temp.path().join("pro"));
         command.env("USERPROFILE", temp.path());
         command.env("XDG_CONFIG_HOME", &xdg_config);
         command.env("XDG_DATA_HOME", &xdg_data);
@@ -210,7 +209,6 @@ pub(crate) fn apply_hermetic_env(command: &mut Command, temp: &TempDir) {
             "VIBE_SESSION_LOGGING__SAVE_DIR",
             "ZED_STATELESS",
             "CTX_HISTORY_PLUGIN_PATH",
-            "CTX_PRO_HELPER",
             "CTX_RUNTIME_DIR",
             "CTX_SEARCH_SEMANTIC",
             "CTX_SEMANTIC_MODEL_ONNX",

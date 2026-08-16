@@ -5,17 +5,16 @@
   "provenance_kind": "content_addressed_candidate",
   "scope": "selected_typed_telemetry_contract_inventory",
   "files": {
-    "crates/ctx-client-observability/src/analytics/operation.rs": "0b7d34aa52a06816a9c8a086ca56efc78da610c332c11c5d1f02364a4ea56fbe",
+    "crates/ctx-client-observability/src/analytics/operation.rs": "a73f25105280872ab999742b5994911bdf096887a02a2a99b6ef840092e02c24",
     "crates/ctx-client-observability/src/analytics/daemon.rs": "62009d30132d21a51de29ecf7c257a6524d1dd2ad939de4cafc3388a616bd6b6",
     "crates/ctx-client-observability/src/analytics/mcp.rs": "66d95252fe028e45d9df9769cd9b9eccc2282c6957e3fc2286e8c36623bebe86",
     "crates/ctx-client-observability/src/analytics/runtime.rs": "b48a7abde2457c047f843e808214685a50d324881a7d8b7b7315c5615213e2c4",
-    "crates/ctx-client-observability/src/analytics/pro.rs": "70e6276d8bf7948cd89a6defdac088fb893b36d221a2e06255de98dad3ab69b7",
     "crates/ctx-client-observability/src/analytics/buckets.rs": "09fe640f4ccf24ab0a816616ca78561119a497cc9acacb152612c78ae32d1a99",
-    "crates/ctx-client-observability/src/analytics/provider.rs": "bc68aeec7ae4739374ad022ab57f5d043be721dad951b00e7532e214bd971ceb",
+    "crates/ctx-client-observability/src/analytics/provider.rs": "8b65ef79bd396db9ec6c3ad7a89cd5ea96123b0ec2fbef5a70173b1c82b06168",
     "crates/ctx-client-observability/src/analytics/product.rs": "b484e53d7ca99d788f6cfdee93b595f527363c41ac6855c07f7855e09b5cc577",
-    "crates/ctx-client-observability/src/analytics/sender.rs": "4f50ba047ef1c16949916955d2b7d6353031ee4c49f8f5fc82e21e230fc47572",
-    "crates/ctx-cli/src/upgrade/command.rs": "0e0929c0cc854bf3d79637b293159dde3a6bd09fe06d5067e6506d2e036a5e10",
-    "crates/ctx-cli/src/upgrade/ports.rs": "08e16fd1d1ad294cad261d0355d0a63ae24c0c9420b127d9739505fbb5696650",
+    "crates/ctx-client-observability/src/analytics/sender.rs": "cfad5ab1a8b855fb2e24e019c52fc2372209deacfea82c19e78c05ae6c2f46e6",
+    "crates/ctx-cli/src/upgrade/command.rs": "65a98938011fb1a2f9f0eeb82fade49ab79394103b3bcd1ae49d66779a1f2844",
+    "crates/ctx-cli/src/upgrade/ports.rs": "ef3de4004ea1b30fc8f0593d07ea753c2d9b27a4da1700bbf139d8604be2cac8",
     "crates/ctx-upgrade-engine/src/upgrade/command/daemon.rs": "294ee5c5b425747ecdc01648476c1686fabc1e221d927b640b56e8f5eaea2386",
     "crates/ctx-upgrade-engine/src/upgrade/state.rs": "c1d3569ab954d05a46618a0f1671627dcd5b204cf6683e2936a17134b16f9fb2"
   }

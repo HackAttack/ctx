@@ -29,7 +29,7 @@ pub(crate) fn assert_mcp_typed_error(
 
 pub(crate) fn assert_status_facts_stay_machine_only(result: &Value) {
     let text = mcp_content_text(result);
-    for machine_only in ["local_usage", "pro_status", "automatic_upgrades"] {
+    for machine_only in ["local_usage", "automatic_upgrades"] {
         assert!(
             !text.contains(machine_only),
             "MCP status machine fact {machine_only:?} leaked into text content:\n{text}"

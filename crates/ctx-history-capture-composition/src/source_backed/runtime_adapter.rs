@@ -929,15 +929,16 @@ mod tests {
         let record = CoreRecord::new_selected(
             event_id,
             session_id,
-            session_id,
             source.clone(),
             1,
             "message",
-            "primary",
-            true,
             "runtime-adapter-parser-v1".to_owned(),
             "runtime adapter Core record".to_owned(),
         )
+        .map(|mut record| {
+            record.agent_scope = Some(ctx_history_core::AgentScope::Primary);
+            record
+        })
         .unwrap();
         (record, source)
     }

@@ -25,7 +25,7 @@ pub(crate) use factory_ai_droid::{
 pub use grok_build::grok_build_source_backed_adapter;
 pub(crate) use model::{
     DirectJsonlEvent, DirectJsonlRejection, DirectJsonlRetryDiscriminator, DirectJsonlSession,
-    DirectJsonlSourceRecord, DirectJsonlTouch,
+    DirectJsonlSourceRecord,
 };
 pub use qoder::qoder_source_backed_adapter;
 pub(crate) use qwen_code::qwen_code_file_is_selected;

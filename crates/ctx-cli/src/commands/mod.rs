@@ -1,4 +1,3 @@
-pub(crate) mod blame;
 pub(crate) mod doctor;
 pub(crate) mod import;
 pub(crate) mod index;
@@ -11,10 +10,10 @@ pub(crate) mod show;
 /// execution itself lives in `ctx-history-cli`.
 pub(crate) mod source_index {
     pub(crate) use ctx_history_cli::{
+        McpSearchError, ShowApplicationError, SourceSearchRequest,
         generation_query_authority_error_json, mcp_search_with_compact, mcp_show_event_application,
         mcp_show_session_application, normalize_mcp_search_request,
-        validate_explicit_semantic_scope, McpSearchError, ShowApplicationError,
-        SourceSearchRequest,
+        validate_explicit_semantic_scope,
     };
 }
 pub(crate) mod sources;

@@ -1,23 +1,18 @@
 use std::{
     fmt,
     io::{self, Write},
-    path::PathBuf,
-    sync::{Arc, Mutex},
 };
 
 #[cfg(test)]
 use std::cell::Cell;
 
 use ctx_history_core::{
-    CoreRecord, SessionRelationshipKind, SourceKey, StableEntityId, CORE_CONTENT_POLICY_REVISION,
-    CORE_NORMALIZATION_REVISION, MAX_ENCODED_CORE_RECORD_BYTES,
+    CoreRecord, ProviderNativeSessionRelationship, SourceKey, StableEntityId,
+    CORE_CONTENT_POLICY_REVISION, CORE_NORMALIZATION_REVISION, MAX_ENCODED_CORE_RECORD_BYTES,
 };
-use tantivy::Searcher;
 
 use crate::{
-    core_record_accumulator_leaf, core_record_leaf, load_active_generation_pointer,
-    prior_core_record, verify_physical_integrity, Fields, GenerationSlot, IndexDocument,
-    IndexError, Result, INDEX_GENERATIONS_DIRECTORY,
+    core_record_accumulator_leaf, core_record_leaf, Fields, IndexDocument, IndexError, Result,
 };
 
 #[cfg(test)]
@@ -27,48 +22,25 @@ thread_local! {
 
 /// Immutable authority for canonical Core-record preparation.
 ///
-/// Clones may run concurrently. They can consult only the pinned immutable
-/// base generation for repository-certificate reuse and cannot mutate source
-/// lifecycle or publication state.
+/// Clones may run concurrently and cannot mutate source lifecycle or
+/// publication state.
 #[derive(Clone)]
 pub struct CoreRecordPreparer {
     fields: Fields,
     context_generation_id: Option<String>,
-    base: Option<Arc<PreparationBase>>,
-}
-
-struct PreparationBase {
-    root: PathBuf,
-    slot: GenerationSlot,
-    searcher: Searcher,
-    physical_integrity_verified: Mutex<bool>,
 }
 
 impl CoreRecordPreparer {
-    pub(crate) fn new(
-        fields: Fields,
-        context_generation_id: Option<String>,
-        base: Option<(PathBuf, GenerationSlot, Searcher)>,
-    ) -> Self {
+    pub(crate) fn new(fields: Fields, context_generation_id: Option<String>) -> Self {
         Self {
             fields,
             context_generation_id,
-            base: base.map(|(root, slot, searcher)| {
-                Arc::new(PreparationBase {
-                    root,
-                    slot,
-                    searcher,
-                    physical_integrity_verified: Mutex::new(false),
-                })
-            }),
         }
     }
 
-    /// Reuses any matching immutable repository certificate, then performs
-    /// exactly one final canonical encoding and derives every lexical
-    /// projection and aggregate leaf from those same bytes. Corrupt base
-    /// authority is returned as a rebuild-required error; preparation never
-    /// persists publication state.
+    /// Performs exactly one final canonical encoding and derives every lexical
+    /// projection and aggregate leaf from those same bytes. Preparation never
+    /// imports semantics from a prior generation or persists publication state.
     pub fn prepare(&self, record: CoreRecord) -> Result<PreparedCoreRecord> {
         match self
             .prepare_draft(record)?
@@ -85,11 +57,10 @@ impl CoreRecordPreparer {
         }
     }
 
-    /// Resolves immutable base authority and validates one record without
-    /// allocating its canonical stored encoding or lexical document. Callers
-    /// that govern cross-thread memory can therefore acquire a permit before
-    /// materialization begins.
-    pub fn prepare_draft(&self, mut record: CoreRecord) -> Result<PreparedCoreRecordDraft> {
+    /// Validates one record without allocating its canonical stored encoding or
+    /// lexical document. Callers that govern cross-thread memory can therefore
+    /// acquire a permit before materialization begins.
+    pub fn prepare_draft(&self, record: CoreRecord) -> Result<PreparedCoreRecordDraft> {
         if record.normalization_revision != CORE_NORMALIZATION_REVISION
             || record.content.policy_revision != CORE_CONTENT_POLICY_REVISION
         {
@@ -100,18 +71,6 @@ impl CoreRecordPreparer {
                 expected_content: CORE_CONTENT_POLICY_REVISION,
             });
         }
-        if record.needs_prior_repository_certificate() {
-            if let Some(base) = &self.base {
-                base.validate_physical_integrity()?;
-                let prior =
-                    prior_core_record(&base.searcher, self.fields, record.event_id, &record.source)
-                        .map_err(|error| base.rebuild_required(error))?;
-                if let Some(prior) = prior {
-                    let _ = record.reuse_prior_repository_certificate(&prior);
-                }
-            }
-        }
-
         let core_content_bytes = record.validate_contract_and_content_bytes()?;
         let source = record.source.clone();
         let source_token = crate::source_token(&source);
@@ -270,42 +229,6 @@ impl Write for BoundedJsonBuffer {
     }
 }
 
-impl PreparationBase {
-    fn validate_physical_integrity(&self) -> Result<()> {
-        let mut verified = self.physical_integrity_verified.lock().map_err(|_| {
-            IndexError::WriterInvariant("base physical-integrity validation lock poisoned")
-        })?;
-        if *verified {
-            return Ok(());
-        }
-        let pointer = load_active_generation_pointer(&self.root)?
-            .ok_or(IndexError::ConcurrentGenerationChange)?;
-        if pointer.active() != &self.slot {
-            return Err(IndexError::ConcurrentGenerationChange);
-        }
-        let generation_path = self
-            .root
-            .join(INDEX_GENERATIONS_DIRECTORY)
-            .join(self.slot.directory());
-        verify_physical_integrity(
-            self.searcher.index(),
-            &generation_path,
-            Some(&pointer),
-            self.slot.physical_integrity_digest(),
-        )
-        .map_err(|error| self.rebuild_required(error.into()))?;
-        *verified = true;
-        Ok(())
-    }
-
-    fn rebuild_required(&self, error: IndexError) -> IndexError {
-        IndexError::ActiveGenerationNeedsRebuild {
-            generation_id: self.slot.generation_id().to_owned(),
-            detail: error.to_string(),
-        }
-    }
-}
-
 /// Opaque immutable result of canonical Core preparation.
 pub struct PreparedCoreRecord {
     base_generation_id: Option<String>,
@@ -349,8 +272,8 @@ impl PreparedSessionIdentityFacts {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct PreparedSessionRelationship {
     pub(crate) parent_session_id: Option<StableEntityId>,
-    pub(crate) root_session_id: StableEntityId,
-    pub(crate) kind: SessionRelationshipKind,
+    pub(crate) root_session_id: Option<StableEntityId>,
+    pub(crate) kind: Option<ProviderNativeSessionRelationship>,
 }
 
 impl PreparedCoreRecord {

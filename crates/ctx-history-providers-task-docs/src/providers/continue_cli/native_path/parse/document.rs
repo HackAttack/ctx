@@ -10,6 +10,13 @@ pub(super) fn parse_document(
     let mut session_id = None;
     let mut saw_session_id = false;
     let mut session_id_conflict = false;
+    let mut saw_title = false;
+    let mut saw_created_at = false;
+    let mut saw_started_at = false;
+    let mut saw_workspace_directory = false;
+    let mut saw_mode = false;
+    let mut saw_chat_model_title = false;
+    let mut saw_usage = false;
     let mut title = None;
     let mut created_at = None;
     let mut started_at = None;
@@ -23,26 +30,47 @@ pub(super) fn parse_document(
         if key.is("sessionId") {
             let observed =
                 retained_bounded_string(value, MAX_CONTINUE_SESSION_ID_BYTES, &mut stats)?;
-            if saw_session_id && session_id != observed {
+            if saw_session_id {
                 session_id_conflict = true;
-            } else if !saw_session_id {
+            } else {
                 session_id = observed;
             }
             saw_session_id = true;
         } else if key.is("title") {
+            if std::mem::replace(&mut saw_title, true) {
+                return Err("Continue document has duplicate title fields".to_owned());
+            }
             title = retained_bounded_string(value, MAX_SESSION_METADATA_STRING_BYTES, &mut stats)?;
         } else if key.is("createdAt") {
+            if std::mem::replace(&mut saw_created_at, true) {
+                return Err("Continue document has duplicate createdAt fields".to_owned());
+            }
             created_at = parse_timestamp(value, &mut stats)?;
         } else if key.is("startedAt") {
+            if std::mem::replace(&mut saw_started_at, true) {
+                return Err("Continue document has duplicate startedAt fields".to_owned());
+            }
             started_at = parse_timestamp(value, &mut stats)?;
         } else if key.is("workspaceDirectory") {
+            if std::mem::replace(&mut saw_workspace_directory, true) {
+                return Err("Continue document has duplicate workspaceDirectory fields".to_owned());
+            }
             workspace_directory =
                 retained_bounded_string(value, MAX_SESSION_METADATA_STRING_BYTES, &mut stats)?;
         } else if key.is("mode") {
+            if std::mem::replace(&mut saw_mode, true) {
+                return Err("Continue document has duplicate mode fields".to_owned());
+            }
             mode = retained_bounded_string(value, 128, &mut stats)?;
         } else if key.is("chatModelTitle") {
+            if std::mem::replace(&mut saw_chat_model_title, true) {
+                return Err("Continue document has duplicate chatModelTitle fields".to_owned());
+            }
             chat_model_title = retained_bounded_string(value, 512, &mut stats)?;
         } else if key.is("usage") {
+            if std::mem::replace(&mut saw_usage, true) {
+                return Err("Continue document has duplicate usage fields".to_owned());
+            }
             usage = parse_usage(value)?;
         } else if key.is("history") {
             if history.is_some() {
@@ -82,13 +110,25 @@ pub(super) fn parse_usage(value: JsonSpan<'_>) -> Result<Option<RawContinueUsage
         completion_tokens: None,
         total_tokens: None,
     };
+    let mut saw_prompt_tokens = false;
+    let mut saw_completion_tokens = false;
+    let mut saw_total_tokens = false;
     for field in value.as_object().map_err(scan_error)? {
         let (key, value) = field.map_err(scan_error)?;
         if key.is("promptTokens") {
+            if std::mem::replace(&mut saw_prompt_tokens, true) {
+                return Ok(None);
+            }
             usage.prompt_tokens = super::super::decode::decode_u64(value);
         } else if key.is("completionTokens") {
+            if std::mem::replace(&mut saw_completion_tokens, true) {
+                return Ok(None);
+            }
             usage.completion_tokens = super::super::decode::decode_u64(value);
         } else if key.is("totalTokens") {
+            if std::mem::replace(&mut saw_total_tokens, true) {
+                return Ok(None);
+            }
             usage.total_tokens = super::super::decode::decode_u64(value);
         }
     }
@@ -108,6 +148,9 @@ pub(super) fn parse_history_item(
     let mut saw_tool_call_states = false;
     let mut saw_conversation_summary = false;
     let mut saw_result_field = false;
+    let mut saw_id = false;
+    let mut saw_timestamp = false;
+    let mut saw_created_at = false;
     let mut duplicate_body_field = false;
     for field in item.as_object().map_err(scan_error)? {
         let (key, value) = field.map_err(scan_error)?;
@@ -134,6 +177,15 @@ pub(super) fn parse_history_item(
         } else if key.is("conversationSummary") {
             duplicate_body_field |= saw_conversation_summary;
             saw_conversation_summary = true;
+        } else if key.is("id") {
+            duplicate_body_field |= saw_id;
+            saw_id = true;
+        } else if key.is("timestamp") {
+            duplicate_body_field |= saw_timestamp;
+            saw_timestamp = true;
+        } else if key.is("createdAt") {
+            duplicate_body_field |= saw_created_at;
+            saw_created_at = true;
         } else if key.is_result_like() {
             duplicate_body_field |= saw_result_field;
             saw_result_field = true;
@@ -306,4 +358,33 @@ pub(super) fn parse_message(
         calls: content.calls,
         timestamp,
     }))
+}
+
+#[cfg(test)]
+mod duplicate_tests {
+    use super::*;
+
+    #[test]
+    fn duplicate_continue_document_and_history_selectors_fail_closed() {
+        let root =
+            validate_and_root(br#"{"sessionId":"same","sessionId":"same","history":[]}"#).unwrap();
+        let (document, _) = parse_document(root).unwrap();
+        assert!(document.session_id_conflict);
+
+        let root = validate_and_root(
+            br#"{"sessionId":"session","title":"first","title":"second","history":[]}"#,
+        )
+        .unwrap();
+        assert!(parse_document(root)
+            .unwrap_err()
+            .contains("duplicate title"));
+
+        let item = validate_and_root(
+            br#"{"type":"message","id":"same","id":"same","message":{"role":"user","content":"retained only as unproven"}}"#,
+        )
+        .unwrap();
+        let mut stats = ContinueOutputExclusionStats::default();
+        assert!(parse_history_item(item, &mut stats).unwrap().is_none());
+        assert_eq!(stats.unproven_payloads_skipped, 1);
+    }
 }

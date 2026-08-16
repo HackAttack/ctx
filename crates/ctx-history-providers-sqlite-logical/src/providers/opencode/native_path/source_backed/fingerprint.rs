@@ -17,7 +17,6 @@ pub(super) fn hash_session(hasher: &mut Sha256, session: &SourceSession) {
     hasher.update(b"session\0");
     hash_str(hasher, &session.native_identity);
     hash_optional_str(hasher, session.parent_native_identity.as_deref());
-    hash_str(hasher, &session.root_native_identity);
     hash_optional_str(hasher, session.directory.as_deref());
     hash_optional_str(hasher, session.branch.as_deref());
     hash_optional_str(hasher, session.agent_identity.as_deref());
@@ -59,7 +58,6 @@ fn hash_projection(hasher: &mut Sha256, projection: &OpenCodeJsonProjection) {
                 hasher.update([0]);
             }
         }
-        OpenCodeJsonProjection::ExcludedOutput => hasher.update([3]),
         OpenCodeJsonProjection::Rejected(kind) => {
             hasher.update([4, rejection_kind_tag(*kind)]);
         }
@@ -132,9 +130,7 @@ pub(super) fn projection_disposition(projection: &OpenCodeJsonProjection) -> Pro
         OpenCodeJsonProjection::Rejected(_) | OpenCodeJsonProjection::RejectedWithReason(_, _) => {
             ProjectionDisposition::Rejected
         }
-        OpenCodeJsonProjection::Output(_) | OpenCodeJsonProjection::ExcludedOutput => {
-            ProjectionDisposition::Ignored
-        }
+        OpenCodeJsonProjection::Output(_) => ProjectionDisposition::Ignored,
     }
 }
 

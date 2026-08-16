@@ -9,11 +9,6 @@ use crate::{CaptureError, Result};
 
 const WARP_PROTOBUF_VALUE_MAX_DEPTH: usize = 64;
 
-#[cfg(test)]
-pub(super) fn decode_protobuf_struct(data: &[u8], depth: usize) -> Result<Value> {
-    Ok(Value::Object(decode_protobuf_struct_map(data, depth)?))
-}
-
 pub(super) fn decode_protobuf_struct_map(data: &[u8], depth: usize) -> Result<Map<String, Value>> {
     ensure_value_depth(depth)?;
     let mut cursor = WarpWireCursor::new(data);

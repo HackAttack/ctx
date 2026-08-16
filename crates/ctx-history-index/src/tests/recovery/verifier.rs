@@ -1,6 +1,6 @@
 const COMPACT_IDENTITY_DIGEST_BYTES: u64 = 32;
-const VERIFICATION_IDENTITY_SLOTS: u64 = 6;
-const VERIFICATION_IDENTITY_TAG_BYTES: u64 = 3;
+const VERIFICATION_IDENTITY_SLOTS: u64 = 4;
+const VERIFICATION_IDENTITY_TAG_BYTES: u64 = 2;
 const VERIFICATION_SOURCE_ORDINAL_BYTES: u64 = 4;
 const VERIFICATION_QUERY_PROJECTION_BYTES: u64 = 32;
 const VERIFICATION_SCRATCH_BYTES_PER_DOCUMENT: u64 = COMPACT_IDENTITY_DIGEST_BYTES
@@ -203,11 +203,11 @@ fn complete_verifier_rejects_injected_copied_body_postings() {
             original.session_id,
         )
         .unwrap();
-    copied.event_origin = EventOrigin::CopiedFromAncestor {
-        ancestor_session_id: Box::new(original.session_id),
-        ancestor_event_id: Box::new(original.event_id),
+    copied.event_copy = Some(ProviderNativeEventCopy {
+        ancestor_session_id: original.session_id,
+        ancestor_event_id: original.event_id,
         proof: EventCopyProofKind::NativeCopiedFromField,
-    };
+    });
     copied.validate_contract().unwrap();
 
     let mut writer = GenerationWriter::open(temp.path(), WriterOptions::default())

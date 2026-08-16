@@ -1,21 +1,19 @@
 use std::path::Path;
 
-use ctx_history_core::{AgentType, CaptureProvider, EventRole, EventType};
+use ctx_history_core::{
+    AgentScope, CaptureProvider, EventRole, EventType, ProviderNativeSessionRelationship,
+};
 use serde_json::Value;
 
-use ctx_history_capture_model::normalization::{
-    provider_output_event_is_failure, provider_role, provider_value_text,
-};
+use ctx_history_capture_model::normalization::{provider_role, provider_value_text};
 
-use crate::{
-    NativeJsonlRuntime, OutputOutcome, OutputOutcomeMetadata, FACTORY_DROID_SOURCE_FORMAT,
-};
+use crate::{NativeJsonlRuntime, FACTORY_DROID_SOURCE_FORMAT};
 
 use super::super::result_content::{
     extract_direct_result_content, NativeJsonlResultExtractionError, NativeJsonlResultSubrecord,
 };
 
-const PARSER_REVISION: &str = "direct-native-jsonl-parser-v4";
+const PARSER_REVISION: &str = "direct-native-jsonl-parser-v5-core-activity";
 
 pub const fn factory_droid_source_backed_adapter<R: NativeJsonlRuntime>(
 ) -> super::DirectJsonlFamilyAdapter<R> {

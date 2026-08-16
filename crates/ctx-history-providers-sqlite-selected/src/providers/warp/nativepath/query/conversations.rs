@@ -59,8 +59,6 @@ pub(super) fn scan_conversations(
         counters.peak_session_metadata_rows = counters.peak_session_metadata_rows.max(1);
         let node = WarpHierarchyNode {
             parent_conversation_id,
-            root_conversation_id: conversation_id.clone(),
-            root_resolved: false,
             parent_present: false,
             title,
             modified_at,
@@ -77,7 +75,7 @@ pub(super) fn scan_conversations(
             source_digest: evidence_digest,
         });
     }
-    resolve_hierarchy(&mut hierarchy)?;
+    resolve_direct_parents(&mut hierarchy)?;
     Ok((hierarchy, emissions))
 }
 
@@ -176,7 +174,6 @@ pub(super) fn emit_sessions_and_hierarchy(
                 unit.push_session(WarpNativeSession {
                     conversation_id: conversation_id.clone(),
                     parent_conversation_id: node.parent_conversation_id.clone(),
-                    root_conversation_id: node.root_conversation_id.clone(),
                     parent_present: node.parent_present,
                     title: node.title.clone(),
                     modified_at: node.modified_at,
@@ -326,11 +323,8 @@ fn parse_optional_conversation_timestamp(
     }
 }
 
-fn resolve_hierarchy(hierarchy: &mut BTreeMap<String, WarpHierarchyNode>) -> Result<()> {
+fn resolve_direct_parents(hierarchy: &mut BTreeMap<String, WarpHierarchyNode>) -> Result<()> {
     let conversation_ids = hierarchy.keys().cloned().collect::<Vec<_>>();
-    for conversation_id in &conversation_ids {
-        resolve_hierarchy_root(conversation_id, hierarchy)?;
-    }
     for conversation_id in conversation_ids {
         let parent_present = hierarchy
             .get(&conversation_id)
@@ -342,43 +336,6 @@ fn resolve_hierarchy(hierarchy: &mut BTreeMap<String, WarpHierarchyNode>) -> Res
                 "Warp hierarchy node disappeared during resolution",
             ))?;
         node.parent_present = parent_present;
-    }
-    Ok(())
-}
-
-fn resolve_hierarchy_root(
-    conversation_id: &str,
-    hierarchy: &mut BTreeMap<String, WarpHierarchyNode>,
-) -> Result<()> {
-    let mut seen = BTreeSet::new();
-    let mut path = Vec::new();
-    let mut current = conversation_id.to_owned();
-    let root_conversation_id = loop {
-        if !seen.insert(current.clone()) {
-            return Err(CaptureError::InvalidPayload(format!(
-                "Warp conversation hierarchy contains a cycle at {current:?}"
-            )));
-        }
-        let Some(node) = hierarchy.get(&current) else {
-            break current;
-        };
-        if node.root_resolved {
-            break node.root_conversation_id.clone();
-        }
-        path.push(current.clone());
-        let Some(parent) = node.parent_conversation_id.as_deref() else {
-            break current;
-        };
-        current = parent.to_owned();
-    };
-    for conversation_id in path {
-        let node = hierarchy
-            .get_mut(&conversation_id)
-            .ok_or(CaptureError::SystemInvariant(
-                "Warp hierarchy node disappeared during root caching",
-            ))?;
-        node.root_conversation_id.clone_from(&root_conversation_id);
-        node.root_resolved = true;
     }
     Ok(())
 }

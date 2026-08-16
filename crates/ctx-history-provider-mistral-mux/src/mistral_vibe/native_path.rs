@@ -1,17 +1,12 @@
 use std::{
-    collections::BTreeSet,
     fs::Metadata,
     path::PathBuf,
     time::{SystemTime, UNIX_EPOCH},
 };
 
 use chrono::{DateTime, Utc};
-use ctx_history_capture_model::{
-    file_touches::visit_all_file_touch_drafts,
-    normalization::{provider_output_event_is_failure, provider_result_outcome_evidence},
-    tool_input, OutputObservationKind, OutputOutcome,
-};
-use ctx_history_core::{AgentType, EventType};
+use ctx_history_capture_model::file_references::visit_literal_file_reference_drafts;
+use ctx_history_core::{ProviderDeclaredFact, MAX_PROVIDER_DECLARED_FACTS};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
@@ -28,8 +23,6 @@ use super::{
 };
 
 pub(crate) mod source_backed;
-
-const MAX_TOUCHES_PER_RECORD: usize = 60;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct SessionFact {
@@ -167,76 +160,18 @@ fn valid_mistral_vibe_record_role(value: &Value) -> std::result::Result<&str, &'
     Ok(role)
 }
 
-fn collect_touched_paths(value: &Value) -> Result<Vec<String>> {
-    let mut seen = BTreeSet::new();
-    let mut paths = Vec::new();
-    let _ = visit_all_file_touch_drafts(value, |draft| {
-        let key = (
-            draft.path.clone(),
-            draft.old_path.clone(),
-            draft.change_kind.map(|kind| format!("{kind:?}")),
-        );
-        if !seen.insert(key) {
-            return Ok(());
-        }
-        if paths.len() >= MAX_TOUCHES_PER_RECORD {
-            return Err(());
-        }
-        paths.push(draft.path);
-        Ok(())
+fn collect_file_facts(value: &Value) -> Vec<ProviderDeclaredFact> {
+    let mut facts = Vec::new();
+    let _ = visit_literal_file_reference_drafts(value, |draft| {
+        facts.push(ProviderDeclaredFact {
+            kind: draft.kind,
+            value: draft.value,
+        });
+        Ok::<(), std::convert::Infallible>(())
     });
-    Ok(paths)
-}
-
-#[derive(Debug, Clone, Copy)]
-struct OutputClassification {
-    kind: OutputObservationKind,
-    outcome: OutputOutcome,
-}
-
-fn output_classification(value: &Value) -> OutputClassification {
-    let tool_name = value
-        .get("name")
-        .or_else(|| value.get("tool_name"))
-        .or_else(|| value.get("tool"))
-        .and_then(Value::as_str)
-        .filter(|value| !value.trim().is_empty())
-        .unwrap_or("tool");
-    let kind = if tool_input::is_command_tool(&tool_name.to_ascii_lowercase()) {
-        OutputObservationKind::Command
+    if facts.len() > MAX_PROVIDER_DECLARED_FACTS {
+        Vec::new()
     } else {
-        OutputObservationKind::Tool
-    };
-    let outcome = if value_timed_out(value) {
-        OutputOutcome::Timeout
-    } else if provider_output_event_is_failure(value) {
-        OutputOutcome::Failure
-    } else if provider_result_outcome_evidence(EventType::ToolOutput, value).as_str()
-        == Some("success")
-    {
-        OutputOutcome::Success
-    } else {
-        OutputOutcome::Unknown
-    };
-    OutputClassification { kind, outcome }
-}
-
-fn value_timed_out(value: &Value) -> bool {
-    match value {
-        Value::Array(values) => values.iter().any(value_timed_out),
-        Value::Object(values) => {
-            values.iter().any(|(key, value)| {
-                matches!(key.as_str(), "timed_out" | "timedOut" | "timeout")
-                    && value.as_bool().unwrap_or(false)
-                    || matches!(key.as_str(), "status" | "state" | "outcome")
-                        && value.as_str().is_some_and(|value| {
-                            matches!(
-                                value.trim().to_ascii_lowercase().as_str(),
-                                "timeout" | "timed_out" | "timedout"
-                            )
-                        })
-            }) || values.values().any(value_timed_out)
-        }
-        Value::Null | Value::Bool(_) | Value::Number(_) | Value::String(_) => false,
+        facts
     }
 }

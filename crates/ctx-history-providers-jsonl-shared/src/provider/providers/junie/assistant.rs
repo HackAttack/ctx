@@ -5,7 +5,6 @@ use serde_json::Value;
 
 #[derive(Debug, Clone)]
 pub(super) struct JunieStepAgg {
-    pub(super) order: usize,
     pub(super) provider_step_id: String,
     pub(super) label: Option<String>,
     pub(super) command: Option<String>,
@@ -15,16 +14,7 @@ pub(super) struct JunieStepAgg {
     pub(super) status: Option<String>,
     pub(super) exit_code: Option<i32>,
     pub(super) duration_ms: Option<u64>,
-    pub(super) timed_out: bool,
     pub(super) invalid_output_shape: bool,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(super) enum JunieOutputOutcome {
-    Success,
-    Failure,
-    Timeout,
-    Unknown,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -33,7 +23,6 @@ pub(super) struct JunieStepOutputProjection<'a> {
     pub(super) call_id: String,
     pub(super) tool_name: &'static str,
     pub(super) command: Option<&'a str>,
-    pub(super) outcome: JunieOutputOutcome,
     pub(super) exit_code: Option<i32>,
     pub(super) duration_ms: Option<u64>,
 }
@@ -147,42 +136,9 @@ pub(super) fn junie_step_output_projection(
         .details
         .as_deref()
         .filter(|details| !details.trim().is_empty())?;
-    let status = step
-        .status
-        .as_deref()
-        .map(str::trim)
-        .map(str::to_ascii_lowercase);
-    let outcome = if step.timed_out
-        || status
-            .as_deref()
-            .is_some_and(|status| matches!(status, "timeout" | "timed_out" | "timedout"))
-    {
-        JunieOutputOutcome::Timeout
-    } else if step.exit_code.is_some_and(|code| code != 0)
-        || status.as_deref().is_some_and(|status| {
-            matches!(
-                status,
-                "failed" | "failure" | "error" | "errored" | "cancelled" | "canceled"
-            )
-        })
-    {
-        JunieOutputOutcome::Failure
-    } else if step.exit_code == Some(0)
-        || status.as_deref().is_some_and(|status| {
-            matches!(
-                status,
-                "success" | "succeeded" | "complete" | "completed" | "ok" | "passed"
-            )
-        })
-    {
-        JunieOutputOutcome::Success
-    } else {
-        JunieOutputOutcome::Unknown
-    };
     Some(JunieStepOutputProjection {
         details,
-        // Associate output with the first-seen step order rather than a mutable provider update ID.
-        call_id: format!("step:{}", step.order),
+        call_id: step.provider_step_id.clone(),
         tool_name: if step.command.is_some() {
             "Bash"
         } else if step.files.is_some() {
@@ -191,7 +147,6 @@ pub(super) fn junie_step_output_projection(
             "tool"
         },
         command: step.command.as_deref(),
-        outcome,
         exit_code: step.exit_code,
         duration_ms: step.duration_ms,
     })
@@ -256,7 +211,6 @@ pub(super) fn junie_merge_step(
         return;
     };
     junie_ensure_assistant(buffer, occurred_at);
-    let next_order = buffer.steps.len();
     if !buffer.steps.contains_key(step_id) {
         buffer.step_ids_in_order.push(step_id.to_owned());
     }
@@ -264,7 +218,6 @@ pub(super) fn junie_merge_step(
         .steps
         .entry(step_id.to_owned())
         .or_insert_with(|| JunieStepAgg {
-            order: next_order,
             provider_step_id: step_id.to_owned(),
             label: None,
             command: None,
@@ -274,7 +227,6 @@ pub(super) fn junie_merge_step(
             status: None,
             exit_code: None,
             duration_ms: None,
-            timed_out: false,
             invalid_output_shape: false,
         });
     if let Some(text) = agent_event.get("text").and_then(Value::as_str) {
@@ -353,10 +305,4 @@ pub(super) fn junie_merge_step(
     } else if let Some(duration) = durations.into_iter().flatten().next() {
         step.duration_ms = Some(duration);
     }
-    step.timed_out |= ["timedOut", "timed_out", "timeout"].iter().any(|key| {
-        agent_event
-            .get(*key)
-            .and_then(Value::as_bool)
-            .unwrap_or(false)
-    });
 }

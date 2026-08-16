@@ -25,7 +25,7 @@ mod metrics;
 mod portable;
 mod resource;
 
-pub use candidate::{CandidateActivationFence, CandidateOwnershipFence, RepublishCandidate};
+pub use candidate::{CandidateActivationFence, RepublishCandidate};
 use metrics::record_candidate_clone_metrics;
 #[cfg(not(any(test, feature = "test-support")))]
 pub(crate) use metrics::CandidateCloneMetrics;
@@ -132,7 +132,6 @@ pub(crate) fn bind_candidate_activation_fence(
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 mod unix {
     mod guard;
-    mod qualification;
 
     use std::{
         collections::{BTreeMap, BTreeSet},
@@ -158,8 +157,6 @@ mod unix {
         MAX_REPUBLISH_CLONE_FILES, MAX_REPUBLISH_DIRECTORY_ENTRIES,
         REPUBLISH_HEADROOM_RESERVE_BYTES, TANTIVY_LOCK_FILES,
     };
-    #[cfg(target_os = "linux")]
-    use crate::certification::refresh_certification_after_authenticated_clone;
     use crate::{
         active_index_files,
         certification::{
@@ -168,23 +165,11 @@ mod unix {
         },
         lexical_index_settings,
         physical::{PhysicalFileDigest, MAX_MANAGED_METADATA_BYTES},
-        physical_integrity_audit, verify_or_certify_physical_integrity, ActiveGenerationPointer,
+        physical_integrity_digest, verify_or_certify_physical_integrity, ActiveGenerationPointer,
         CandidateGeneration, CandidatePhysicalProof, CertifiedPhysicalIntegrity,
         DurableMmapDirectory, GenerationError as IndexError, Result, INDEX_GENERATIONS_DIRECTORY,
     };
-    #[cfg(target_os = "linux")]
-    use crate::{
-        scrub_and_certify_physical_integrity, CandidateOwnershipFence, GenerationOwnershipFence,
-    };
     pub(super) use guard::CandidateGuard;
-    #[cfg(not(any(test, feature = "test-support")))]
-    use qualification::CloneStage;
-    use qualification::{
-        clone_checkpoint, force_copy_fallback, force_hardlink_fallback, force_reflink_fallback,
-        record_clone_metrics, record_plan_metrics, record_plan_metrics_with_required,
-    };
-    #[cfg(any(test, feature = "test-support"))]
-    pub use qualification::{CloneMetrics, CloneStage, CloneTestHookGuard, CloneTestOptions};
 
     #[derive(Debug, Clone, Copy, PartialEq, Eq)]
     struct FileIdentity {
@@ -316,13 +301,6 @@ mod unix {
         predecessor_index: &Index,
     ) -> Result<CandidateGeneration> {
         let base = predecessor_pointer.active();
-        #[cfg(target_os = "linux")]
-        let certified = verify_or_certify_physical_integrity(
-            root,
-            predecessor_pointer,
-            base,
-            predecessor_index,
-        )?;
         let root_path = root.to_path_buf();
         let root_directory = BoundDirectory::open_path(root)?;
         validate_path_binding(root, root_directory.identity)?;
@@ -365,8 +343,6 @@ mod unix {
             destination_name,
             destination,
         };
-        #[cfg(target_os = "linux")]
-        let ownership_fence = crate::acquire_generation_ownership_fence(root)?;
         let clone_result = (|| {
             clone_files(
                 &guard.generations,
@@ -385,9 +361,9 @@ mod unix {
             if index.settings() != &lexical_index_settings() {
                 return Err(IndexError::IndexSettingsMismatch);
             }
-            let candidate_audit =
-                physical_integrity_audit(&index, &destination_path, Some(predecessor_pointer))?;
-            if candidate_audit.digest() != base.physical_integrity_digest() {
+            let cloned_digest =
+                physical_integrity_digest(&index, &destination_path, Some(predecessor_pointer))?;
+            if cloned_digest != base.physical_integrity_digest() {
                 return Err(IndexError::ChecksumMismatch);
             }
             guard.validate_binding()?;
@@ -395,67 +371,17 @@ mod unix {
                 directory_name.clone(),
                 index,
                 CandidatePhysicalProof::default(),
-                candidate_audit,
             ))
         })();
         match clone_result {
-            Ok((directory_name, index, physical_proof, candidate_audit)) => {
-                #[cfg(target_os = "macos")]
-                let _ = candidate_audit;
-                #[cfg(target_os = "linux")]
-                let ownership_fence = match refresh_certification_after_authenticated_clone(
-                    root,
-                    predecessor_pointer,
-                    base,
-                    predecessor_index,
-                    &certified,
-                    &candidate_audit,
-                ) {
-                    Ok(certified_after_clone) => Some(
-                        CandidateOwnershipFence::new(
-                            root.to_path_buf(),
-                            predecessor_pointer.clone(),
-                            base.clone(),
-                            predecessor_index.clone(),
-                            certified_after_clone,
-                            ownership_fence,
-                        )
-                        .release_stable_alias_fence(),
-                    ),
-                    Err(error) => {
-                        return fail_hardlink_clone(
-                            root,
-                            predecessor_pointer,
-                            predecessor_index,
-                            guard,
-                            ownership_fence,
-                            error,
-                        );
-                    }
-                };
-                #[cfg(not(target_os = "linux"))]
-                let ownership_fence = None;
-                Ok(CandidateGeneration {
-                    directory_name,
-                    index,
-                    physical_proof,
-                    activation_fence: CandidateActivationFence::descriptor_clone(guard),
-                    ownership_fence,
-                })
-            }
+            Ok((directory_name, index, physical_proof)) => Ok(CandidateGeneration {
+                directory_name,
+                index,
+                physical_proof,
+                activation_fence: CandidateActivationFence::descriptor_clone(guard),
+            }),
             Err(error) => {
-                #[cfg(target_os = "linux")]
-                return fail_hardlink_clone(
-                    root,
-                    predecessor_pointer,
-                    predecessor_index,
-                    guard,
-                    ownership_fence,
-                    error,
-                );
-                #[cfg(not(target_os = "linux"))]
                 guard.discard();
-                #[cfg(not(target_os = "linux"))]
                 Err(error)
             }
         }
@@ -520,8 +446,6 @@ mod unix {
             destination_name,
             destination,
         };
-        #[cfg(target_os = "linux")]
-        let ownership_fence = crate::acquire_generation_ownership_fence(root)?;
         let clone_result = (|| {
             let mut physical_proof = CandidatePhysicalProof::default();
             let mut metrics = CandidateCloneMetrics::default();
@@ -554,85 +478,17 @@ mod unix {
             Ok((directory_name, index, physical_proof))
         })();
         match clone_result {
-            Ok((directory_name, index, physical_proof)) => {
-                #[cfg(target_os = "linux")]
-                let ownership_fence =
-                    match physical_proof
-                        .authenticated_audit()
-                        .and_then(|candidate_audit| {
-                            refresh_certification_after_authenticated_clone(
-                                root,
-                                predecessor_pointer,
-                                base,
-                                predecessor_index,
-                                &certified,
-                                &candidate_audit,
-                            )
-                        }) {
-                        Ok(certified_after_clone) => Some(CandidateOwnershipFence::new(
-                            root.to_path_buf(),
-                            predecessor_pointer.clone(),
-                            base.clone(),
-                            predecessor_index.clone(),
-                            certified_after_clone,
-                            ownership_fence,
-                        )),
-                        Err(error) => {
-                            return fail_hardlink_clone(
-                                root,
-                                predecessor_pointer,
-                                predecessor_index,
-                                guard,
-                                ownership_fence,
-                                error,
-                            );
-                        }
-                    };
-                #[cfg(not(target_os = "linux"))]
-                let ownership_fence = None;
-                Ok(CandidateGeneration {
-                    directory_name,
-                    index,
-                    physical_proof,
-                    activation_fence: CandidateActivationFence::descriptor_clone(guard),
-                    ownership_fence,
-                })
-            }
+            Ok((directory_name, index, physical_proof)) => Ok(CandidateGeneration {
+                directory_name,
+                index,
+                physical_proof,
+                activation_fence: CandidateActivationFence::descriptor_clone(guard),
+            }),
             Err(error) => {
-                #[cfg(target_os = "linux")]
-                return fail_hardlink_clone(
-                    root,
-                    predecessor_pointer,
-                    predecessor_index,
-                    guard,
-                    ownership_fence,
-                    error,
-                );
-                #[cfg(not(target_os = "linux"))]
                 guard.discard();
-                #[cfg(not(target_os = "linux"))]
                 Err(error)
             }
         }
-    }
-
-    #[cfg(target_os = "linux")]
-    fn fail_hardlink_clone<T>(
-        root: &Path,
-        predecessor_pointer: &ActiveGenerationPointer,
-        predecessor_index: &Index,
-        guard: CandidateGuard,
-        _ownership_fence: GenerationOwnershipFence,
-        error: IndexError,
-    ) -> Result<T> {
-        guard.discard();
-        let _ = scrub_and_certify_physical_integrity(
-            root,
-            predecessor_pointer,
-            predecessor_pointer.active(),
-            predecessor_index,
-        );
-        Err(error)
     }
 
     fn authenticated_clone_plan(source: &BoundDirectory, index: &Index) -> Result<ClonePlan> {
@@ -781,10 +637,6 @@ mod unix {
         plan: &ClonePlan,
     ) -> Result<()> {
         let mut actual_copied_bytes = 0_u64;
-        #[cfg(target_os = "macos")]
-        let mut reflinked_files = 0_usize;
-        #[cfg(target_os = "linux")]
-        let reflinked_files = 0_usize;
         let mut linked_files = 0_usize;
         let mut copied_files = 0_usize;
         for planned in &plan.files {
@@ -818,38 +670,15 @@ mod unix {
             validate_file_binding(&source.file, &planned.path, before)?;
 
             let force_copy = planned.copy_required || force_copy_fallback();
-            #[cfg(target_os = "macos")]
-            if !force_copy
-                && !force_reflink_fallback()
-                && try_clone_reflink_at(&source_file, &destination.file, &planned.path)?
-            {
-                reflinked_files = reflinked_files
-                    .checked_add(1)
-                    .ok_or(IndexError::CountOverflow)?;
-                let after = FileIdentity::from_metadata(&source_file.metadata()?);
-                if after != before {
-                    return Err(IndexError::CurrentRepublishSourceTopology(
-                        "source file changed while cloning",
-                    ));
-                }
-                validate_file_binding(&source.file, &planned.path, after)?;
-                validate_child_binding(&generations.file, source_name, source.identity)?;
-                clone_checkpoint(CloneStage::AfterFile, &planned.path)?;
-                continue;
-            }
-            #[cfg(target_os = "linux")]
             if !force_copy {
                 clone_checkpoint(CloneStage::BeforeHardlink, &planned.path)?;
             }
-            #[cfg(target_os = "linux")]
             let linked = !force_copy
                 && match hard_link_at(&source.file, &planned.path, &destination.file) {
                     Ok(()) => true,
                     Err(error) if hardlink_copy_fallback_error(&error) => false,
                     Err(error) => return Err(error.into()),
                 };
-            #[cfg(target_os = "macos")]
-            let linked = false;
             if linked {
                 let linked_file = open_regular_file_at(&destination.file, &planned.path)?;
                 let linked_identity = FileIdentity::from_metadata(&linked_file.metadata()?);
@@ -912,12 +741,7 @@ mod unix {
             validate_child_binding(&generations.file, source_name, source.identity)?;
             clone_checkpoint(CloneStage::AfterFile, &planned.path)?;
         }
-        record_clone_metrics(
-            actual_copied_bytes,
-            reflinked_files,
-            linked_files,
-            copied_files,
-        );
+        record_clone_metrics(actual_copied_bytes, linked_files, copied_files);
         Ok(())
     }
 
@@ -1275,7 +1099,6 @@ mod unix {
         }
     }
 
-    #[cfg(target_os = "linux")]
     fn hard_link_at(source: &File, path: &Path, destination: &File) -> io::Result<()> {
         let path = path_cstring(path)?;
         // SAFETY: both descriptors and both NUL-terminated path pointers stay
@@ -1518,7 +1341,16 @@ mod unix {
 
     fn available_bytes(directory: &File, recheck: bool) -> Result<u64> {
         #[cfg(any(test, feature = "test-support"))]
-        if let Some(available) = qualification::test_available_bytes(recheck) {
+        if let Some(available) = TEST_CLONE_OPTIONS.with(|options| {
+            let options = options.borrow();
+            if recheck {
+                options
+                    .rechecked_available_bytes
+                    .or(options.available_bytes)
+            } else {
+                options.available_bytes
+            }
+        }) {
             return Ok(available);
         }
         #[cfg(not(any(test, feature = "test-support")))]
@@ -1543,6 +1375,204 @@ mod unix {
             IndexError::Io(error)
         }
     }
+
+    #[cfg(any(test, feature = "test-support"))]
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub enum CloneStage {
+        BeforeFile,
+        AfterSourceOpen,
+        BeforeHardlink,
+        BeforeCopy,
+        AfterFile,
+        BeforeCleanup,
+    }
+
+    #[cfg(not(any(test, feature = "test-support")))]
+    #[derive(Debug, Clone, Copy)]
+    enum CloneStage {
+        BeforeFile,
+        AfterSourceOpen,
+        BeforeHardlink,
+        BeforeCopy,
+        AfterFile,
+        BeforeCleanup,
+    }
+
+    #[cfg(any(test, feature = "test-support"))]
+    #[derive(Debug, Clone, Copy, Default)]
+    pub struct CloneTestOptions {
+        pub force_copy: bool,
+        pub force_reflink_fallback: bool,
+        pub force_hardlink_fallback: bool,
+        pub available_bytes: Option<u64>,
+        pub rechecked_available_bytes: Option<u64>,
+    }
+
+    #[cfg(any(test, feature = "test-support"))]
+    #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+    pub struct CloneMetrics {
+        pub planned_files: usize,
+        pub logical_bytes: u64,
+        pub required_headroom: u64,
+        pub available_bytes: u64,
+        pub copied_bytes: u64,
+        pub linked_files: usize,
+        pub copied_files: usize,
+    }
+
+    #[cfg(any(test, feature = "test-support"))]
+    type CloneTestHook = Box<dyn for<'a> FnMut(CloneStage, &'a Path) -> Result<()>>;
+
+    #[cfg(any(test, feature = "test-support"))]
+    thread_local! {
+        static TEST_CLONE_OPTIONS: std::cell::RefCell<CloneTestOptions> = const {
+            std::cell::RefCell::new(CloneTestOptions {
+                force_copy: false,
+                force_reflink_fallback: false,
+                force_hardlink_fallback: false,
+                available_bytes: None,
+                rechecked_available_bytes: None,
+            })
+        };
+        static TEST_CLONE_HOOK: std::cell::RefCell<Option<CloneTestHook>> =
+            std::cell::RefCell::new(None);
+        static TEST_CLONE_METRICS: std::cell::Cell<CloneMetrics> = const {
+            std::cell::Cell::new(CloneMetrics {
+                planned_files: 0,
+                logical_bytes: 0,
+                required_headroom: 0,
+                available_bytes: 0,
+                copied_bytes: 0,
+                linked_files: 0,
+                copied_files: 0,
+            })
+        };
+    }
+
+    #[cfg(any(test, feature = "test-support"))]
+    pub struct CloneTestHookGuard {
+        previous_options: CloneTestOptions,
+        previous_hook: Option<CloneTestHook>,
+        previous_metrics: CloneMetrics,
+    }
+
+    #[cfg(any(test, feature = "test-support"))]
+    impl CloneTestHookGuard {
+        pub fn set<F>(options: CloneTestOptions, hook: F) -> Self
+        where
+            F: for<'a> FnMut(CloneStage, &'a Path) -> Result<()> + 'static,
+        {
+            let previous_options = TEST_CLONE_OPTIONS.with(|slot| slot.replace(options));
+            let previous_hook = TEST_CLONE_HOOK.with(|slot| slot.replace(Some(Box::new(hook))));
+            let previous_metrics =
+                TEST_CLONE_METRICS.with(|slot| slot.replace(CloneMetrics::default()));
+            Self {
+                previous_options,
+                previous_hook,
+                previous_metrics,
+            }
+        }
+
+        pub fn metrics(&self) -> CloneMetrics {
+            TEST_CLONE_METRICS.with(std::cell::Cell::get)
+        }
+    }
+
+    #[cfg(any(test, feature = "test-support"))]
+    impl Drop for CloneTestHookGuard {
+        fn drop(&mut self) {
+            TEST_CLONE_OPTIONS.with(|slot| slot.replace(self.previous_options));
+            TEST_CLONE_HOOK.with(|slot| slot.replace(self.previous_hook.take()));
+            TEST_CLONE_METRICS.with(|slot| slot.set(self.previous_metrics));
+        }
+    }
+
+    #[cfg(any(test, feature = "test-support"))]
+    fn force_copy_fallback() -> bool {
+        TEST_CLONE_OPTIONS.with(|options| options.borrow().force_copy)
+    }
+
+    #[cfg(not(any(test, feature = "test-support")))]
+    fn force_copy_fallback() -> bool {
+        false
+    }
+
+    #[cfg(any(test, feature = "test-support"))]
+    fn force_reflink_fallback() -> bool {
+        TEST_CLONE_OPTIONS.with(|options| options.borrow().force_reflink_fallback)
+    }
+
+    #[cfg(not(any(test, feature = "test-support")))]
+    fn force_reflink_fallback() -> bool {
+        false
+    }
+
+    #[cfg(any(test, feature = "test-support"))]
+    fn force_hardlink_fallback() -> bool {
+        TEST_CLONE_OPTIONS.with(|options| options.borrow().force_hardlink_fallback)
+    }
+
+    #[cfg(not(any(test, feature = "test-support")))]
+    fn force_hardlink_fallback() -> bool {
+        false
+    }
+
+    #[cfg(any(test, feature = "test-support"))]
+    fn clone_checkpoint(stage: CloneStage, path: &Path) -> Result<()> {
+        TEST_CLONE_HOOK.with(|hook| match hook.borrow_mut().as_mut() {
+            Some(hook) => hook(stage, path),
+            None => Ok(()),
+        })
+    }
+
+    #[cfg(not(any(test, feature = "test-support")))]
+    fn clone_checkpoint(_stage: CloneStage, _path: &Path) -> Result<()> {
+        Ok(())
+    }
+
+    #[cfg(any(test, feature = "test-support"))]
+    fn record_plan_metrics(plan: &ClonePlan, available: u64) {
+        record_plan_metrics_with_required(plan, available, plan.required_headroom);
+    }
+
+    #[cfg(any(test, feature = "test-support"))]
+    fn record_plan_metrics_with_required(plan: &ClonePlan, available: u64, required_headroom: u64) {
+        TEST_CLONE_METRICS.with(|metrics| {
+            metrics.set(CloneMetrics {
+                planned_files: plan.files.len(),
+                logical_bytes: plan.logical_bytes,
+                required_headroom,
+                available_bytes: available,
+                ..metrics.get()
+            });
+        });
+    }
+
+    #[cfg(not(any(test, feature = "test-support")))]
+    fn record_plan_metrics(_plan: &ClonePlan, _available: u64) {}
+
+    #[cfg(not(any(test, feature = "test-support")))]
+    fn record_plan_metrics_with_required(
+        _plan: &ClonePlan,
+        _available: u64,
+        _required_headroom: u64,
+    ) {
+    }
+
+    #[cfg(any(test, feature = "test-support"))]
+    fn record_clone_metrics(copied_bytes: u64, linked_files: usize, copied_files: usize) {
+        TEST_CLONE_METRICS.with(|metrics| {
+            metrics.set(CloneMetrics {
+                copied_bytes,
+                linked_files,
+                copied_files,
+                ..metrics.get()
+            });
+        });
+    }
+
+    #[cfg(not(any(test, feature = "test-support")))]
+    fn record_clone_metrics(_copied_bytes: u64, _linked_files: usize, _copied_files: usize) {}
 }
 
 #[cfg(all(

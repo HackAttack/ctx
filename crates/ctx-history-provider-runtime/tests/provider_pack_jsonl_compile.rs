@@ -387,6 +387,7 @@ impl JsonlFamilyAdapter for FakeAdapter {
 
 #[test]
 fn provider_pack_shaped_generic_jsonl_driver_compiles_with_lower_only_deps() {
+    let _: <ProviderJsonlRuntime<FakeBinding> as ctx_history_jsonl::JsonlFamilyRuntime>::WorkerServices = ();
     let driver: ProviderJsonlRouteDriver<FakeBinding> = provider_jsonl_family_driver::<FakeBinding>(
         Arc::new(FakeAdapter),
         PathBuf::from("/tmp/provider-pack-shaped-jsonl"),

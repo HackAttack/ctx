@@ -1,0 +1,25 @@
+[package]
+name = "ctx-history-provider-gemini"
+version = "0.26.0"
+description = "Gemini CLI history provider for ctx"
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+rust-version.workspace = true
+publish = false
+
+[dependencies]
+chrono.workspace = true
+ctx-history-capture-model = { path = "../ctx-history-capture-model" }
+ctx-history-core = { path = "../ctx-history-core" }
+ctx-history-jsonl = { path = "../ctx-history-jsonl" }
+ctx-history-source-io = { path = "../ctx-history-source-io" }
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+ctx-history-source-io = { path = "../ctx-history-source-io", features = ["test-support"] }
+tempfile.workspace = true

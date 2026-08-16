@@ -4,11 +4,12 @@ use std::{
     path::{Component, Path, PathBuf},
 };
 
-use ctx_history_capture_model::normalization::provider_result_outcome_evidence;
 use ctx_history_core::{
-    derive_event_id, derive_session_id, CaptureProvider, CertifiedSource, CoreRecord,
-    EventIdentityInput, NativeItemKey, NativeSessionKey, ScannedSourceCounts, SessionIdentityInput,
-    SourceAnchor, SourceKey, SourceObservation, StableEntityId, TypedKey,
+    derive_event_id, derive_session_id, ActivityInvocation, ActivityJsonCapture, ActivityResult,
+    ActivityTextCapture, CaptureProvider, CertifiedSource, CoreActivity, CoreRecord,
+    EventIdentityInput, EventType, NativeItemKey, NativeSessionKey, ScannedSourceCounts,
+    SessionIdentityInput, SourceAnchor, SourceKey, SourceObservation, StableEntityId, TypedKey,
+    CORE_ACTIVITY_REVISION,
 };
 use sha2::{Digest, Sha256};
 use thiserror::Error;
@@ -27,8 +28,7 @@ use crate::{
         EventFileCoordinates, EventFileGroup, EventFileInventory, EventFileInventoryError,
         EventFileLimits,
     },
-    CaptureError, OutputOutcome, MAX_PROVIDER_JSONL_LINE_BYTES,
-    OPENHANDS_FILE_EVENTS_SOURCE_FORMAT,
+    CaptureError, MAX_PROVIDER_JSONL_LINE_BYTES, OPENHANDS_FILE_EVENTS_SOURCE_FORMAT,
 };
 
 use crate::provider::providers::openhands::{
@@ -50,7 +50,7 @@ const OPENHANDS_LOGICAL_SESSION_KIND: &str = "openhands-conversation";
 const OPENHANDS_LOGICAL_EVENT_KIND: &str = "openhands-event";
 const OPENHANDS_SOURCE_SCHEMA_VARIANT: &str = "openhands-v1-conversation-tree-v1";
 const OPENHANDS_SOURCE_REVISION_KIND: &str = "openhands-v1-conversation-leaves-v2";
-const OPENHANDS_PARSER_REVISION: &str = "openhands-source-backed-v4";
+const OPENHANDS_PARSER_REVISION: &str = "openhands-source-backed-v6-closed-facts";
 const OPENHANDS_CONVERSATION_CONTENT_DOMAIN: &[u8] = b"ctx.openhands.conversation-content.v1\0";
 const OPENHANDS_DOCUMENT_LEAF_DOMAIN: &[u8] = b"ctx.openhands.document-leaf.v1\0";
 const OPENHANDS_DISCOVERY_MAX_DEPTH: usize = 16;
@@ -85,8 +85,6 @@ pub(crate) enum OpenHandsSourceBackedErrorV2 {
     InvalidRelativeEventKey { path: PathBuf },
     #[error("OpenHands source-backed count overflow")]
     CountOverflow,
-    #[error("OpenHands event record was rejected: {0}")]
-    RecordRejected(String),
 }
 
 pub(crate) type OpenHandsSourceBackedResultV2<T> = Result<T, OpenHandsSourceBackedErrorV2>;
@@ -206,11 +204,11 @@ impl<B> OpenHandsEventFileAdapterV2<B> {
 
 impl<B> ReplacementDocumentTree for OpenHandsEventFileAdapterV2<B>
 where
-    B: ctx_history_provider_runtime::ProviderRuntimeBinding,
+    B: crate::ProviderRuntimeBinding,
 {
     type Lifecycle = B::CaptureLifecycleSink;
     type Spool = B::DocumentRecordSpool;
-    type RouteControl = ctx_history_provider_runtime::ProviderRouteControlExpectation;
+    type RouteControl = crate::ProviderRouteControlExpectation;
     type Leaf = OpenHandsEventFileSourcePlan;
     type TreeAuthority = std::sync::Arc<EventFileInventory>;
 
@@ -605,13 +603,10 @@ pub(crate) fn project_leaf_job(
             let mut record = CoreRecord::new_selected(
                 event_identity(&plan.source, plan.session_id, decoded.event_id())?,
                 plan.session_id,
-                plan.session_id,
                 plan.source.clone(),
                 u64::try_from(job.leaf_ordinal)
                     .map_err(|_| OpenHandsSourceBackedErrorV2::CountOverflow)?,
                 decoded.event_type().as_str(),
-                ctx_history_core::AgentType::Primary.as_str(),
-                true,
                 OPENHANDS_PARSER_REVISION,
                 body,
             )
@@ -620,14 +615,11 @@ pub(crate) fn project_leaf_job(
             record.native_event_id = Some(TypedKey::utf8(decoded.event_id())?);
             record.occurred_at_unix_ms = Some(decoded.timestamp().timestamp_millis());
             record.role = Some(decoded.role().as_str().to_owned());
-            if matches!(
-                decoded.event_type(),
-                ctx_history_core::EventType::ToolOutput
-                    | ctx_history_core::EventType::CommandOutput
-                    | ctx_history_core::EventType::FileTouched
-            ) {
-                record.content.structured_content = Some(openhands_output_linkage(&decoded)?);
+            if !decoded.capture_audit().duplicate_key {
+                record.content.structured_content = Some(decoded.value().clone());
             }
+            record.content.activity = openhands_activity(&decoded)?;
+            fit_openhands_content(&mut record)?;
             record.validate_contract().map_err(core_contract)?;
             Ok::<CoreRecord, OpenHandsSourceBackedErrorV2>(record)
         })
@@ -658,132 +650,170 @@ pub(crate) fn project_leaf_job(
     })
 }
 
+fn openhands_activity(
+    decoded: &OpenHandsDecodedEvent,
+) -> OpenHandsSourceBackedResultV2<Option<CoreActivity>> {
+    let value = decoded.value();
+    let audit = decoded.capture_audit();
+    if audit.duplicate_key
+        || audit.discriminator_alias_conflict
+        || audit.call_id_alias_conflict
+        || audit.tool_name_alias_conflict
+        || audit.arguments_alias_conflict
+        || audit.result_alias_conflict
+        || audit.status_alias_conflict
+    {
+        return Ok(None);
+    }
+    let provider_call_id = (!audit.call_id_alias_conflict)
+        .then(|| {
+            unique_openhands_string(
+                value,
+                &["tool_call_id", "toolCallId", "tool_use_id", "toolUseId"],
+            )
+        })
+        .flatten()
+        .map(TypedKey::utf8)
+        .transpose()?;
+    let invocation = if decoded.event_type() == EventType::ToolCall && provider_call_id.is_some() {
+        value.get("action").and_then(|action| {
+            (!audit.tool_name_alias_conflict)
+                .then(|| {
+                    unique_openhands_string(
+                        action,
+                        &["kind", "name", "tool", "tool_name", "toolName"],
+                    )
+                })
+                .flatten()
+                .map(|tool| ActivityInvocation {
+                    protocol: None,
+                    server: None,
+                    tool: tool.to_owned(),
+                    arguments: unique_openhands_json(
+                        action,
+                        &["arguments", "args", "input", "parameters"],
+                    )
+                    .cloned()
+                    .map(|value| ActivityJsonCapture::Present { value })
+                    .unwrap_or(ActivityJsonCapture::Absent),
+                    started_at_unix_ms: Some(decoded.timestamp().timestamp_millis()),
+                })
+        })
+    } else {
+        None
+    };
+    let result = if matches!(
+        decoded.event_type(),
+        EventType::ToolOutput | EventType::CommandOutput
+    ) && provider_call_id.is_some()
+    {
+        Some(ActivityResult {
+            status: (!audit.status_alias_conflict)
+                .then(|| {
+                    value.get("observation").and_then(|observation| {
+                        unique_openhands_string(observation, &["status", "state", "outcome"])
+                    })
+                })
+                .flatten()
+                .map(str::to_owned),
+            completed_at_unix_ms: Some(decoded.timestamp().timestamp_millis()),
+            duration_ns: None,
+            text: ActivityTextCapture::NormalizedBody,
+            structured_content: value
+                .get("observation")
+                .cloned()
+                .map(|value| ActivityJsonCapture::Present { value })
+                .unwrap_or(ActivityJsonCapture::Absent),
+        })
+    } else {
+        None
+    };
+    Ok(
+        (invocation.is_some() || result.is_some()).then_some(CoreActivity {
+            revision: CORE_ACTIVITY_REVISION,
+            provider_call_id,
+            invocation,
+            result,
+            facts: Vec::new(),
+        }),
+    )
+}
+
+fn unique_openhands_json<'a>(
+    value: &'a serde_json::Value,
+    keys: &[&str],
+) -> Option<&'a serde_json::Value> {
+    let object = value.as_object()?;
+    let mut selected = None;
+    for key in keys {
+        let Some(candidate) = object.get(*key).filter(|value| !value.is_null()) else {
+            continue;
+        };
+        if selected.is_some_and(|selected| selected != candidate) {
+            return None;
+        }
+        selected = Some(candidate);
+    }
+    selected
+}
+
+fn unique_openhands_string<'a>(value: &'a serde_json::Value, keys: &[&str]) -> Option<&'a str> {
+    let object = value.as_object()?;
+    let mut selected = None;
+    for key in keys {
+        let Some(candidate) = object.get(*key).and_then(serde_json::Value::as_str) else {
+            continue;
+        };
+        if selected.is_some_and(|selected| selected != candidate) {
+            return None;
+        }
+        selected = Some(candidate);
+    }
+    selected
+}
+
+fn fit_openhands_content(record: &mut CoreRecord) -> OpenHandsSourceBackedResultV2<()> {
+    if record
+        .content
+        .encoded_content_bytes()
+        .map_err(core_contract)?
+        > ctx_history_core::MAX_CORE_CONTENT_BYTES
+    {
+        let capture = record.content.activity.as_mut().and_then(|activity| {
+            activity
+                .invocation
+                .as_mut()
+                .map(|invocation| &mut invocation.arguments)
+                .or_else(|| {
+                    activity
+                        .result
+                        .as_mut()
+                        .map(|result| &mut result.structured_content)
+                })
+        });
+        if let Some(capture @ ActivityJsonCapture::Present { .. }) = capture {
+            let observed_encoded_bytes = match capture {
+                ActivityJsonCapture::Present { value } => serde_json::to_vec(value)
+                    .ok()
+                    .and_then(|encoded| u64::try_from(encoded.len()).ok()),
+                _ => None,
+            };
+            *capture = ActivityJsonCapture::Omitted {
+                reason: "size_limit".to_owned(),
+                observed_encoded_bytes,
+            };
+        }
+    }
+    record
+        .content
+        .omit_structured_content_if_aggregate_exceeds_limit()
+        .map_err(core_contract)?;
+    Ok(())
+}
+
 fn lexical_body(decoded: &OpenHandsDecodedEvent) -> Option<String> {
     let text = decoded.text().to_owned();
     (!text.trim().is_empty()).then_some(text)
-}
-
-fn openhands_output_linkage(
-    decoded: &OpenHandsDecodedEvent,
-) -> OpenHandsSourceBackedResultV2<serde_json::Value> {
-    let value = decoded.value();
-    let observation = value
-        .get("observation")
-        .and_then(serde_json::Value::as_object);
-    let unique_text = |fields: &[&str]| -> OpenHandsSourceBackedResultV2<Option<String>> {
-        let mut selected = None;
-        for field in fields {
-            let candidate = value
-                .get(*field)
-                .or_else(|| observation.and_then(|object| object.get(*field)))
-                .and_then(serde_json::Value::as_str)
-                .filter(|value| !value.trim().is_empty());
-            let Some(candidate) = candidate else {
-                continue;
-            };
-            if candidate.len() > 16 * 1024 {
-                return Err(OpenHandsSourceBackedErrorV2::RecordRejected(format!(
-                    "OpenHands {field} exceeds the bounded linkage limit"
-                )));
-            }
-            if selected
-                .as_deref()
-                .is_some_and(|existing| existing != candidate)
-            {
-                return Err(OpenHandsSourceBackedErrorV2::RecordRejected(format!(
-                    "OpenHands result exposes conflicting {field} linkage"
-                )));
-            }
-            selected = Some(candidate.to_owned());
-        }
-        Ok(selected)
-    };
-    let outcome = match openhands_output_outcome(decoded) {
-        OutputOutcome::Success => "success",
-        OutputOutcome::Failure => "failure",
-        OutputOutcome::Timeout => "timeout",
-        OutputOutcome::Unknown => "unknown",
-    };
-    let observation_kind = observation
-        .and_then(|object| object.get("kind"))
-        .and_then(serde_json::Value::as_str)
-        .filter(|value| !value.trim().is_empty())
-        .map(str::to_owned);
-    if observation_kind
-        .as_ref()
-        .is_some_and(|value| value.len() > 16 * 1024)
-    {
-        return Err(OpenHandsSourceBackedErrorV2::RecordRejected(
-            "OpenHands observation kind exceeds the bounded linkage limit".to_owned(),
-        ));
-    }
-    let tool_name = unique_text(&["tool_name", "name"])?.or(observation_kind);
-    Ok(serde_json::json!({
-        "provider_native_tool_result": {
-            "call_id": unique_text(&["tool_call_id", "call_id"] )?,
-            "action_id": unique_text(&["action_id"] )?,
-            "tool_name": tool_name,
-            "outcome": outcome,
-        }
-    }))
-}
-
-fn openhands_output_outcome(decoded: &OpenHandsDecodedEvent) -> OutputOutcome {
-    if openhands_value_indicates_timeout(decoded.value()) {
-        return OutputOutcome::Timeout;
-    }
-    // File-editor observations are result records even though their structured
-    // path evidence gives them the more specific FileTouched event type.
-    let result_event_type = if decoded.event_type() == ctx_history_core::EventType::FileTouched {
-        ctx_history_core::EventType::ToolOutput
-    } else {
-        decoded.event_type()
-    };
-    match provider_result_outcome_evidence(result_event_type, decoded.value()).as_str() {
-        Some("success") => OutputOutcome::Success,
-        Some("failure") => OutputOutcome::Failure,
-        _ => OutputOutcome::Unknown,
-    }
-}
-
-fn openhands_value_indicates_timeout(value: &serde_json::Value) -> bool {
-    const MAX_NODES: usize = 4_096;
-
-    fn visit(value: &serde_json::Value, remaining: &mut usize) -> bool {
-        if *remaining == 0 {
-            return false;
-        }
-        *remaining -= 1;
-        match value {
-            serde_json::Value::Array(values) => values.iter().any(|value| visit(value, remaining)),
-            serde_json::Value::Object(values) => values.iter().any(|(key, value)| {
-                let normalized = key
-                    .chars()
-                    .filter(|character| character.is_ascii_alphanumeric())
-                    .flat_map(char::to_lowercase)
-                    .collect::<String>();
-                let direct = matches!(normalized.as_str(), "timeout" | "timedout" | "istimeout")
-                    && (value.as_bool().unwrap_or(false)
-                        || value.as_str().is_some_and(|value| {
-                            matches!(
-                                value.trim().to_ascii_lowercase().as_str(),
-                                "timeout" | "timed_out" | "timedout"
-                            )
-                        }));
-                direct || visit(value, remaining)
-            }),
-            serde_json::Value::String(value) => matches!(
-                value.trim().to_ascii_lowercase().as_str(),
-                "timeout" | "timed_out" | "timedout"
-            ),
-            serde_json::Value::Null | serde_json::Value::Bool(_) | serde_json::Value::Number(_) => {
-                false
-            }
-        }
-    }
-
-    let mut remaining = MAX_NODES;
-    visit(value, &mut remaining)
 }
 
 pub(super) fn source_key(conversation_id: &str) -> OpenHandsSourceBackedResultV2<SourceKey> {

@@ -247,34 +247,6 @@ fn service_status_configuration_and_details_share_one_value_column() {
 }
 
 #[test]
-fn status_preserves_installed_pro_state_and_omits_only_absent_pro() {
-    let daemon = running_report();
-    let installed = json!({"installed": true, "state": "ready"});
-    let rendered = render_daemon_status_human(
-        &context(80),
-        DaemonStatusView::from_reports(&daemon, &installed),
-    )
-    .render_plain();
-    assert!(rendered.contains("\nPro\nStatus  ready\n"));
-
-    let installed_without_state = json!({"installed": true});
-    let rendered = render_daemon_status_human(
-        &context(80),
-        DaemonStatusView::from_reports(&daemon, &installed_without_state),
-    )
-    .render_plain();
-    assert!(rendered.contains("\nPro\nStatus  unavailable\n"));
-
-    let absent = json!({"installed": false, "state": "ready"});
-    let rendered = render_daemon_status_human(
-        &context(80),
-        DaemonStatusView::from_reports(&daemon, &absent),
-    )
-    .render_plain();
-    assert!(!rendered.contains("\nPro\n"));
-}
-
-#[test]
 fn disabled_status_is_clear_and_enable_is_the_only_action() {
     let report = json!({
         "enabled": false,

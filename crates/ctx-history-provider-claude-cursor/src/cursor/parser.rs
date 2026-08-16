@@ -2,27 +2,17 @@ use std::fmt;
 
 use ctx_history_core::{EventRole, EventType};
 use serde::de::{self, DeserializeSeed, Deserializer, IgnoredAny, MapAccess, SeqAccess, Visitor};
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
 use serde_json::{value::RawValue, Value};
 use sha2::{Digest, Sha256};
 
+use crate::raw_json::{audit_json, SelectorGroup};
 use ctx_history_provider_runtime::Result;
-
-pub(super) const MAX_CURSOR_INPUT_PATHS: usize = 32;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum CursorRejectionKind {
     MalformedJson,
     UnsupportedShape,
-}
-
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub(super) enum CursorDiscoveryResultEvidence {
-    SuccessfulPayloadOnly,
-    Failed,
-    Diagnostic,
-    #[default]
-    Unknown,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -41,32 +31,25 @@ pub(super) enum CursorSafePart {
         native_content: Value,
         call_id: Option<String>,
         tool_name: Option<String>,
-        command: Option<String>,
-        declared_workdir: Option<String>,
-        input_paths: CursorInputPathEvidence,
-        ambiguous_native_fields: bool,
+        arguments: Option<Value>,
+        protocol: Option<String>,
+        server: Option<String>,
+        explicit_tool: Option<String>,
+        call_id_unavailable: bool,
+        tool_name_unavailable: bool,
+        arguments_unavailable: bool,
+        mcp_identity_unavailable: bool,
+        native_content_unavailable: bool,
+        literal_facts: Vec<ctx_history_core::ProviderDeclaredFact>,
     },
     ToolResult {
         role: EventRole,
         native_content: Value,
         call_id: Option<String>,
-        ambiguous_linkage: bool,
-        discovery_evidence: CursorDiscoveryResultEvidence,
-    },
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub(super) enum CursorInputPathEvidence {
-    Exact(Vec<String>),
-    Inexact {
-        candidate_limit_exceeded: bool,
-        invalid_shape: bool,
-        // Kept only for the legacy ordinary-observation path. Strict request
-        // inference remains fail-closed, and checkpoint serialization retains
-        // its pre-existing v2 shape.
-        #[serde(skip)]
-        retained_paths: Vec<String>,
+        call_id_unavailable: bool,
+        content_unavailable: bool,
+        native_content_unavailable: bool,
+        literal_facts: Vec<ctx_history_core::ProviderDeclaredFact>,
     },
 }
 
@@ -84,9 +67,7 @@ pub(super) struct CursorSanitizedRecord {
 mod bounded_strings;
 mod classification;
 
-use bounded_strings::{
-    CursorPathStringSeed, ExactBoundedStringSeed, MAX_CURSOR_ATOM_CHARS, MAX_CURSOR_PATH_CHARS,
-};
+use bounded_strings::MAX_CURSOR_ATOM_BYTES;
 use classification::{
     classify_cursor_line, CursorBlockKind, CursorContentLocation, CursorLineClassification,
     CursorRecordAdmission,
@@ -128,6 +109,12 @@ fn decode_sanitized_record(
     byte_end_exclusive: u64,
     classification: &CursorLineClassification,
 ) -> serde_json::Result<CursorSanitizedRecord> {
+    let record_audit = audit_json(
+        bytes,
+        cursor_record_selector_group,
+        cursor_literal_kind_for_key,
+    )?;
+    let critical_selectors_unavailable = record_audit.selector_ambiguous(SelectorGroup::Invocation);
     let record_sha256 = Sha256::digest(bytes).into();
     if classification.admission == CursorRecordAdmission::Excluded {
         return Ok(CursorSanitizedRecord {
@@ -148,7 +135,11 @@ fn decode_sanitized_record(
     });
     let mut parts = if has_retained_blocks {
         let mut deserializer = serde_json::Deserializer::from_slice(bytes);
-        let parts = CursorRetainedSeed { classification }.deserialize(&mut deserializer)?;
+        let parts = CursorRetainedSeed {
+            classification,
+            critical_selectors_unavailable,
+        }
+        .deserialize(&mut deserializer)?;
         deserializer.end()?;
         parts
     } else {
@@ -194,6 +185,7 @@ fn cursor_role(role: Option<&str>) -> EventRole {
 
 struct CursorRetainedSeed<'a> {
     classification: &'a CursorLineClassification,
+    critical_selectors_unavailable: bool,
 }
 
 impl<'de> DeserializeSeed<'de> for CursorRetainedSeed<'_> {
@@ -205,12 +197,14 @@ impl<'de> DeserializeSeed<'de> for CursorRetainedSeed<'_> {
     {
         deserializer.deserialize_map(CursorRetainedVisitor {
             classification: self.classification,
+            critical_selectors_unavailable: self.critical_selectors_unavailable,
         })
     }
 }
 
 struct CursorRetainedVisitor<'a> {
     classification: &'a CursorLineClassification,
+    critical_selectors_unavailable: bool,
 }
 
 impl<'de> Visitor<'de> for CursorRetainedVisitor<'_> {
@@ -231,12 +225,14 @@ impl<'de> Visitor<'de> for CursorRetainedVisitor<'_> {
                     parts = map.next_value_seed(CursorMessageRetainedSeed {
                         kinds: &self.classification.block_kinds,
                         classification: self.classification,
+                        critical_selectors_unavailable: self.critical_selectors_unavailable,
                     })?;
                 }
                 ("content", CursorContentLocation::TopLevel) => {
                     parts = map.next_value_seed(CursorContentRetainedSeed {
                         kinds: &self.classification.block_kinds,
                         classification: self.classification,
+                        critical_selectors_unavailable: self.critical_selectors_unavailable,
                     })?;
                 }
                 _ => {
@@ -251,6 +247,7 @@ impl<'de> Visitor<'de> for CursorRetainedVisitor<'_> {
 struct CursorMessageRetainedSeed<'a> {
     kinds: &'a [CursorBlockKind],
     classification: &'a CursorLineClassification,
+    critical_selectors_unavailable: bool,
 }
 
 impl<'de> DeserializeSeed<'de> for CursorMessageRetainedSeed<'_> {
@@ -263,6 +260,7 @@ impl<'de> DeserializeSeed<'de> for CursorMessageRetainedSeed<'_> {
         deserializer.deserialize_map(CursorMessageRetainedVisitor {
             kinds: self.kinds,
             classification: self.classification,
+            critical_selectors_unavailable: self.critical_selectors_unavailable,
         })
     }
 }
@@ -270,6 +268,7 @@ impl<'de> DeserializeSeed<'de> for CursorMessageRetainedSeed<'_> {
 struct CursorMessageRetainedVisitor<'a> {
     kinds: &'a [CursorBlockKind],
     classification: &'a CursorLineClassification,
+    critical_selectors_unavailable: bool,
 }
 
 impl<'de> Visitor<'de> for CursorMessageRetainedVisitor<'_> {
@@ -289,6 +288,7 @@ impl<'de> Visitor<'de> for CursorMessageRetainedVisitor<'_> {
                 parts = map.next_value_seed(CursorContentRetainedSeed {
                     kinds: self.kinds,
                     classification: self.classification,
+                    critical_selectors_unavailable: self.critical_selectors_unavailable,
                 })?;
             } else {
                 map.next_value::<IgnoredAny>()?;
@@ -301,6 +301,7 @@ impl<'de> Visitor<'de> for CursorMessageRetainedVisitor<'_> {
 struct CursorContentRetainedSeed<'a> {
     kinds: &'a [CursorBlockKind],
     classification: &'a CursorLineClassification,
+    critical_selectors_unavailable: bool,
 }
 
 impl<'de> DeserializeSeed<'de> for CursorContentRetainedSeed<'_> {
@@ -313,6 +314,7 @@ impl<'de> DeserializeSeed<'de> for CursorContentRetainedSeed<'_> {
         deserializer.deserialize_seq(CursorContentRetainedVisitor {
             kinds: self.kinds,
             classification: self.classification,
+            critical_selectors_unavailable: self.critical_selectors_unavailable,
         })
     }
 }
@@ -320,6 +322,7 @@ impl<'de> DeserializeSeed<'de> for CursorContentRetainedSeed<'_> {
 struct CursorContentRetainedVisitor<'a> {
     kinds: &'a [CursorBlockKind],
     classification: &'a CursorLineClassification,
+    critical_selectors_unavailable: bool,
 }
 
 impl<'de> Visitor<'de> for CursorContentRetainedVisitor<'_> {
@@ -338,6 +341,7 @@ impl<'de> Visitor<'de> for CursorContentRetainedVisitor<'_> {
             let Some(part) = sequence.next_element_seed(CursorBlockRetainedSeed {
                 kind: *kind,
                 classification: self.classification,
+                critical_selectors_unavailable: self.critical_selectors_unavailable,
             })?
             else {
                 return Err(de::Error::custom(
@@ -356,6 +360,7 @@ impl<'de> Visitor<'de> for CursorContentRetainedVisitor<'_> {
 struct CursorBlockRetainedSeed<'a> {
     kind: CursorBlockKind,
     classification: &'a CursorLineClassification,
+    critical_selectors_unavailable: bool,
 }
 
 impl<'de> DeserializeSeed<'de> for CursorBlockRetainedSeed<'_> {
@@ -369,10 +374,16 @@ impl<'de> DeserializeSeed<'de> for CursorBlockRetainedSeed<'_> {
             CursorBlockKind::Text => deserializer.deserialize_map(CursorTextBlockVisitor {
                 classification: self.classification,
             }),
-            CursorBlockKind::ToolUse => decode_tool_use_block(deserializer, self.classification),
-            CursorBlockKind::ToolResult => {
-                decode_tool_result_block(deserializer, self.classification)
-            }
+            CursorBlockKind::ToolUse => decode_tool_use_block(
+                deserializer,
+                self.classification,
+                self.critical_selectors_unavailable,
+            ),
+            CursorBlockKind::ToolResult => decode_tool_result_block(
+                deserializer,
+                self.classification,
+                self.critical_selectors_unavailable,
+            ),
             CursorBlockKind::Excluded => {
                 IgnoredAny::deserialize(deserializer)?;
                 Ok(None)
@@ -384,61 +395,122 @@ impl<'de> DeserializeSeed<'de> for CursorBlockRetainedSeed<'_> {
 fn decode_tool_use_block<'de, D>(
     deserializer: D,
     classification: &CursorLineClassification,
+    record_selectors_unavailable: bool,
 ) -> std::result::Result<Option<CursorSafePart>, D::Error>
 where
     D: Deserializer<'de>,
 {
     let raw = Box::<RawValue>::deserialize(deserializer)?;
-    let native_content = serde_json::from_str(raw.get()).map_err(de::Error::custom)?;
-    let mut evidence_deserializer = serde_json::Deserializer::from_str(raw.get());
-    let evidence = evidence_deserializer
-        .deserialize_map(CursorToolUseBlockVisitor)
-        .map_err(de::Error::custom)?;
-    evidence_deserializer.end().map_err(de::Error::custom)?;
-    let CursorToolInput {
-        command,
-        declared_workdir,
-        paths,
-        ..
-    } = evidence.input;
+    let audit = audit_json(
+        raw.get().as_bytes(),
+        cursor_selector_group,
+        cursor_literal_kind_for_key,
+    )
+    .map_err(de::Error::custom)?;
+    let native_content: Value = serde_json::from_str(raw.get()).map_err(de::Error::custom)?;
+    let object = native_content
+        .as_object()
+        .ok_or_else(|| de::Error::custom("Cursor tool-use block must be an object"))?;
+    let (call_id, call_id_invalid) = bounded_cursor_string(object.get("id"));
+    let (tool_name, tool_name_invalid) = bounded_cursor_string(object.get("name"));
+    let (protocol, protocol_invalid) = bounded_cursor_string(object.get("protocol"));
+    let (server, server_invalid) = bounded_cursor_string(object.get("server"));
+    let (explicit_tool, explicit_tool_invalid) = bounded_cursor_string(object.get("tool"));
+    let call_id_unavailable = record_selectors_unavailable
+        || audit.selector_ambiguous(SelectorGroup::CallId)
+        || call_id_invalid;
+    let tool_name_unavailable = record_selectors_unavailable
+        || audit.selector_ambiguous(SelectorGroup::ToolName)
+        || tool_name_invalid;
+    let arguments_unavailable =
+        record_selectors_unavailable || audit.selector_ambiguous(SelectorGroup::Arguments);
+    let mcp_identity_unavailable = record_selectors_unavailable
+        || audit.selector_ambiguous(SelectorGroup::Protocol)
+        || audit.selector_ambiguous(SelectorGroup::Server)
+        || audit.selector_ambiguous(SelectorGroup::McpTool)
+        || protocol_invalid
+        || server_invalid
+        || explicit_tool_invalid;
+    let arguments = (!arguments_unavailable)
+        .then(|| {
+            object
+                .get("input")
+                .or_else(|| object.get("arguments"))
+                .cloned()
+        })
+        .flatten();
     Ok(Some(CursorSafePart::ToolUse {
         role: match cursor_role(classification.role.as_deref()) {
             EventRole::Unknown => EventRole::Assistant,
             role => role,
         },
         native_content,
-        call_id: evidence.call_id,
-        tool_name: evidence.tool_name,
-        command,
-        declared_workdir,
-        input_paths: paths.into_evidence(),
-        ambiguous_native_fields: evidence.ambiguous_native_fields,
+        call_id: (!call_id_unavailable).then_some(call_id).flatten(),
+        tool_name: (!tool_name_unavailable).then_some(tool_name).flatten(),
+        arguments,
+        protocol: (!mcp_identity_unavailable).then_some(protocol).flatten(),
+        server: (!mcp_identity_unavailable).then_some(server).flatten(),
+        explicit_tool: (!mcp_identity_unavailable)
+            .then_some(explicit_tool)
+            .flatten(),
+        call_id_unavailable,
+        tool_name_unavailable,
+        arguments_unavailable,
+        mcp_identity_unavailable,
+        native_content_unavailable: record_selectors_unavailable
+            || audit.any_selector_ambiguous()
+            || call_id_invalid
+            || tool_name_invalid
+            || protocol_invalid
+            || server_invalid
+            || explicit_tool_invalid,
+        literal_facts: audit.facts().to_vec(),
     }))
 }
 
 fn decode_tool_result_block<'de, D>(
     deserializer: D,
     classification: &CursorLineClassification,
+    record_selectors_unavailable: bool,
 ) -> std::result::Result<Option<CursorSafePart>, D::Error>
 where
     D: Deserializer<'de>,
 {
     let raw = Box::<RawValue>::deserialize(deserializer)?;
-    let native_content = serde_json::from_str(raw.get()).map_err(de::Error::custom)?;
-    let mut evidence_deserializer = serde_json::Deserializer::from_str(raw.get());
-    let evidence = evidence_deserializer
-        .deserialize_map(CursorToolResultBlockVisitor)
-        .map_err(de::Error::custom)?;
-    evidence_deserializer.end().map_err(de::Error::custom)?;
+    let audit = audit_json(
+        raw.get().as_bytes(),
+        cursor_selector_group,
+        cursor_literal_kind_for_key,
+    )
+    .map_err(de::Error::custom)?;
+    let native_content: Value = serde_json::from_str(raw.get()).map_err(de::Error::custom)?;
+    let object = native_content
+        .as_object()
+        .ok_or_else(|| de::Error::custom("Cursor tool-result block must be an object"))?;
+    let (call_id, call_id_invalid) = bounded_cursor_string(
+        object
+            .get("tool_use_id")
+            .or_else(|| object.get("toolUseId"))
+            .or_else(|| object.get("toolCallId")),
+    );
+    let call_id_unavailable = record_selectors_unavailable
+        || audit.selector_ambiguous(SelectorGroup::CallId)
+        || call_id_invalid;
+    let content_unavailable =
+        record_selectors_unavailable || audit.selector_ambiguous(SelectorGroup::Content);
     Ok(Some(CursorSafePart::ToolResult {
         role: match cursor_role(classification.role.as_deref()) {
             EventRole::Unknown | EventRole::User => EventRole::Tool,
             role => role,
         },
         native_content,
-        call_id: evidence.call_id,
-        ambiguous_linkage: evidence.ambiguous_linkage,
-        discovery_evidence: evidence.discovery_evidence,
+        call_id: (!call_id_unavailable).then_some(call_id).flatten(),
+        call_id_unavailable,
+        content_unavailable,
+        native_content_unavailable: record_selectors_unavailable
+            || audit.any_selector_ambiguous()
+            || call_id_invalid,
+        literal_facts: audit.facts().to_vec(),
     }))
 }
 
@@ -519,445 +591,147 @@ impl Visitor<'_> for CursorMessageTextVisitor {
     }
 }
 
-#[derive(Debug)]
-struct CursorToolUseEvidence {
-    call_id: Option<String>,
-    tool_name: Option<String>,
-    input: CursorToolInput,
-    ambiguous_native_fields: bool,
-}
-
-struct CursorToolUseBlockVisitor;
-
-impl<'de> Visitor<'de> for CursorToolUseBlockVisitor {
-    type Value = CursorToolUseEvidence;
-
-    fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter.write_str("a Cursor tool_use content block")
-    }
-
-    fn visit_map<A>(self, mut map: A) -> std::result::Result<Self::Value, A::Error>
-    where
-        A: MapAccess<'de>,
-    {
-        let mut call_id = None;
-        let mut tool_name = None;
-        let mut call_id_seen = false;
-        let mut tool_name_seen = false;
-        let mut input_seen = false;
-        let mut ambiguous_native_fields = false;
-        let mut input = CursorToolInput::default();
-        while let Some(field) = map.next_key::<String>()? {
-            match field.as_str() {
-                "id" => {
-                    let value = map.next_value_seed(ExactBoundedStringSeed {
-                        max_chars: MAX_CURSOR_ATOM_CHARS,
-                    })?;
-                    ambiguous_native_fields |= call_id_seen || value.is_none();
-                    call_id_seen = true;
-                    call_id = value;
-                }
-                "name" => {
-                    let value = map.next_value_seed(ExactBoundedStringSeed {
-                        max_chars: MAX_CURSOR_ATOM_CHARS,
-                    })?;
-                    ambiguous_native_fields |= tool_name_seen || value.is_none();
-                    tool_name_seen = true;
-                    tool_name = value;
-                }
-                "input" => {
-                    ambiguous_native_fields |= input_seen;
-                    input_seen = true;
-                    let decoded = map.next_value_seed(CursorToolInputSeed)?;
-                    ambiguous_native_fields |= input.merge(decoded);
-                }
-                _ => {
-                    map.next_value::<IgnoredAny>()?;
-                }
-            }
-        }
-        Ok(CursorToolUseEvidence {
-            call_id,
-            tool_name,
-            input,
-            ambiguous_native_fields,
-        })
-    }
-}
-
-#[derive(Debug)]
-struct CursorToolResultEvidence {
-    call_id: Option<String>,
-    ambiguous_linkage: bool,
-    discovery_evidence: CursorDiscoveryResultEvidence,
-}
-
-struct CursorToolResultBlockVisitor;
-
-impl<'de> Visitor<'de> for CursorToolResultBlockVisitor {
-    type Value = CursorToolResultEvidence;
-
-    fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter.write_str("a Cursor tool_result content block")
-    }
-
-    fn visit_map<A>(self, mut map: A) -> std::result::Result<Self::Value, A::Error>
-    where
-        A: MapAccess<'de>,
-    {
-        let mut call_id = None;
-        let mut call_id_seen = false;
-        let mut ambiguous_linkage = false;
-        let mut type_seen = false;
-        let mut type_exact = false;
-        let mut content_seen = false;
-        let mut payload_present = false;
-        let mut is_error_seen = false;
-        let mut is_error = None;
-        let mut diagnostic_member = false;
-        let mut unknown_member = false;
-        while let Some(field) = map.next_key::<String>()? {
-            match field.as_str() {
-                "type" => {
-                    let value = map.next_value_seed(ExactBoundedStringSeed {
-                        max_chars: MAX_CURSOR_ATOM_CHARS,
-                    })?;
-                    unknown_member |= type_seen || value.as_deref() != Some("tool_result");
-                    type_seen = true;
-                    type_exact = value.as_deref() == Some("tool_result");
-                }
-                "tool_use_id" => {
-                    let value = map.next_value_seed(ExactBoundedStringSeed {
-                        max_chars: MAX_CURSOR_ATOM_CHARS,
-                    })?;
-                    ambiguous_linkage |= call_id_seen || value.is_none();
-                    unknown_member |= call_id_seen || value.is_none();
-                    call_id_seen = true;
-                    call_id = value;
-                }
-                "content" => {
-                    let value = map.next_value::<Value>()?;
-                    unknown_member |= content_seen;
-                    content_seen = true;
-                    payload_present = cursor_payload_is_present(&value);
-                }
-                "is_error" => {
-                    let value = map.next_value::<Value>()?;
-                    unknown_member |= is_error_seen || !value.is_boolean();
-                    is_error_seen = true;
-                    is_error = value.as_bool();
-                }
-                "stderr" | "warning" | "warnings" | "error" | "errors" | "diagnostic"
-                | "diagnostics" => {
-                    diagnostic_member = true;
-                    map.next_value::<IgnoredAny>()?;
-                }
-                _ => {
-                    unknown_member = true;
-                    map.next_value::<IgnoredAny>()?;
-                }
-            }
-        }
-        let discovery_evidence = if diagnostic_member {
-            CursorDiscoveryResultEvidence::Diagnostic
-        } else if unknown_member || !type_seen || !type_exact || !call_id_seen || !content_seen {
-            CursorDiscoveryResultEvidence::Unknown
-        } else {
-            match (is_error, payload_present) {
-                (Some(true), _) => CursorDiscoveryResultEvidence::Failed,
-                (Some(false), true) => CursorDiscoveryResultEvidence::SuccessfulPayloadOnly,
-                _ => CursorDiscoveryResultEvidence::Unknown,
-            }
-        };
-        Ok(CursorToolResultEvidence {
-            call_id,
-            ambiguous_linkage,
-            discovery_evidence,
-        })
-    }
-}
-
-fn cursor_payload_is_present(value: &Value) -> bool {
+fn bounded_cursor_string(value: Option<&Value>) -> (Option<String>, bool) {
     match value {
-        Value::Null => false,
-        Value::String(value) => !value.is_empty(),
-        Value::Array(values) => !values.is_empty(),
-        Value::Object(values) => !values.is_empty(),
-        Value::Bool(_) | Value::Number(_) => true,
-    }
-}
-
-#[derive(Debug, Default)]
-struct CursorToolInput {
-    command: Option<String>,
-    declared_workdir: Option<String>,
-    paths: CursorToolInputPaths,
-    command_seen: bool,
-    workdir_seen: bool,
-    invalid_field: bool,
-}
-
-impl CursorToolInput {
-    fn merge(&mut self, incoming: Self) -> bool {
-        let mut ambiguous = self.invalid_field || incoming.invalid_field;
-        if incoming.command_seen {
-            ambiguous |= self.command_seen || incoming.command.is_none();
-            self.command_seen = true;
-            self.command = incoming.command;
+        None | Some(Value::Null) => (None, false),
+        Some(Value::String(value)) if !value.is_empty() && value.len() <= MAX_CURSOR_ATOM_BYTES => {
+            (Some(value.clone()), false)
         }
-        if incoming.workdir_seen {
-            ambiguous |= self.workdir_seen || incoming.declared_workdir.is_none();
-            self.workdir_seen = true;
-            self.declared_workdir = incoming.declared_workdir;
+        Some(_) => (None, true),
+    }
+}
+
+fn cursor_selector_group(key: &str) -> Option<SelectorGroup> {
+    match key {
+        "type" => Some(SelectorGroup::Type),
+        "id" | "tool_use_id" | "toolUseId" | "toolCallId" => Some(SelectorGroup::CallId),
+        "name" => Some(SelectorGroup::ToolName),
+        "input" | "arguments" | "args" => Some(SelectorGroup::Arguments),
+        "result" | "output" => Some(SelectorGroup::Result),
+        "protocol" => Some(SelectorGroup::Protocol),
+        "server" => Some(SelectorGroup::Server),
+        "tool" => Some(SelectorGroup::McpTool),
+        "content" => Some(SelectorGroup::Content),
+        "message" => Some(SelectorGroup::Invocation),
+        _ => None,
+    }
+}
+
+fn cursor_record_selector_group(key: &str) -> Option<SelectorGroup> {
+    (key == "message").then_some(SelectorGroup::Invocation)
+}
+
+fn cursor_literal_kind_for_key(key: &str) -> Option<ctx_history_core::LiteralFactKind> {
+    use ctx_history_core::LiteralFactKind;
+    match key {
+        "cwd" | "workdir" | "working_directory" => Some(LiteralFactKind::ToolWorkdir),
+        "file" | "file_path" | "filePath" | "path" | "paths" | "old_path" | "new_path" => {
+            Some(LiteralFactKind::File)
         }
-        self.paths.merge(incoming.paths);
-        self.invalid_field |= incoming.invalid_field;
-        ambiguous
+        "url" | "uri" | "repository_url" | "repositoryUrl" | "remote_url" => {
+            Some(LiteralFactKind::Url)
+        }
+        "forge" | "forge_url" => Some(LiteralFactKind::Forge),
+        "project" | "project_id" | "repository" | "repo" => Some(LiteralFactKind::Project),
+        "vcs" | "git" => Some(LiteralFactKind::Vcs),
+        "commit" | "commit_id" | "commit_sha" | "sha" => Some(LiteralFactKind::Commit),
+        "pull_request" | "pullRequest" | "pr" | "pr_id" => Some(LiteralFactKind::PullRequest),
+        "command" | "cmd" => Some(LiteralFactKind::Command),
+        "branch" | "branch_name" => Some(LiteralFactKind::Branch),
+        "workspace" | "workspace_id" => Some(LiteralFactKind::Workspace),
+        _ => None,
     }
 }
 
-#[derive(Debug, Default)]
-struct CursorToolInputPaths {
-    paths: Vec<String>,
-    observed_items: usize,
-    candidate_limit_exceeded: bool,
-    invalid_shape: bool,
-}
+#[cfg(test)]
+mod tests {
+    use super::project_cursor_jsonl_record;
 
-impl CursorToolInputPaths {
-    fn observe(&mut self, path: Option<String>) {
-        if self.observed_items < MAX_CURSOR_INPUT_PATHS {
-            self.observed_items += 1;
-            if let Some(path) = path {
-                self.paths.push(path);
-            } else {
-                self.invalid_shape = true;
-            }
-        } else {
-            self.candidate_limit_exceeded = true;
-            self.invalid_shape |= path.is_none();
+    fn assert_rejected(label: &str, record: &[u8]) {
+        assert!(
+            project_cursor_jsonl_record(record, 0, 0, 0, record.len() as u64)
+                .unwrap()
+                .is_none(),
+            "duplicate Cursor selector was retained: {label}"
+        );
+    }
+
+    #[test]
+    fn cursor_conflicting_duplicate_critical_selectors_are_rejected_before_retention() {
+        let baseline = br#"{"type":"message","role":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"baseline"}]}}"#;
+        assert!(
+            project_cursor_jsonl_record(baseline, 0, 0, 0, baseline.len() as u64)
+                .unwrap()
+                .is_some()
+        );
+
+        for (label, record) in [
+            (
+                "message",
+                br#"{"type":"message","role":"assistant","message":{"role":"user","content":[{"type":"text","text":"first"}]},"message":{"role":"assistant","content":[{"type":"text","text":"MUST_NOT_EMIT"}]}}"#.as_slice(),
+            ),
+            (
+                "role",
+                br#"{"type":"message","role":"user","role":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"MUST_NOT_EMIT"}]}}"#.as_slice(),
+            ),
+            (
+                "type",
+                br#"{"type":"summary","type":"message","role":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"MUST_NOT_EMIT"}]}}"#.as_slice(),
+            ),
+            (
+                "event",
+                br#"{"event":"turn_ended","event":"summary","message":{"content":[{"type":"text","text":"MUST_NOT_EMIT"}]}}"#.as_slice(),
+            ),
+            (
+                "status",
+                br#"{"event":"summary","status":"running","status":"completed","message":{"content":[{"type":"text","text":"MUST_NOT_EMIT"}]}}"#.as_slice(),
+            ),
+            (
+                "message.role",
+                br#"{"type":"message","role":"assistant","message":{"role":"user","role":"assistant","content":[{"type":"text","text":"MUST_NOT_EMIT"}]}}"#.as_slice(),
+            ),
+            (
+                "content block type",
+                br#"{"type":"message","role":"assistant","message":{"role":"assistant","content":[{"type":"tool_result","type":"text","text":"MUST_NOT_EMIT"}]}}"#.as_slice(),
+            ),
+        ] {
+            assert_rejected(label, record);
         }
     }
 
-    fn merge(&mut self, incoming: Self) {
-        let combined_items = self.observed_items.saturating_add(incoming.observed_items);
-        self.candidate_limit_exceeded |=
-            incoming.candidate_limit_exceeded || combined_items > MAX_CURSOR_INPUT_PATHS;
-        self.observed_items = combined_items.min(MAX_CURSOR_INPUT_PATHS);
-        let remaining = MAX_CURSOR_INPUT_PATHS.saturating_sub(self.paths.len());
-        self.paths
-            .extend(incoming.paths.into_iter().take(remaining));
-        self.invalid_shape |= incoming.invalid_shape;
-    }
-
-    fn into_evidence(self) -> CursorInputPathEvidence {
-        if self.candidate_limit_exceeded || self.invalid_shape {
-            CursorInputPathEvidence::Inexact {
-                candidate_limit_exceeded: self.candidate_limit_exceeded,
-                invalid_shape: self.invalid_shape,
-                retained_paths: self.paths,
-            }
-        } else {
-            CursorInputPathEvidence::Exact(self.paths)
+    #[test]
+    fn cursor_identical_duplicate_critical_selectors_are_also_rejected() {
+        for (label, record) in [
+            (
+                "message",
+                br#"{"type":"message","role":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"MUST_NOT_EMIT"}]},"message":{"role":"assistant","content":[{"type":"text","text":"MUST_NOT_EMIT"}]}}"#.as_slice(),
+            ),
+            (
+                "role",
+                br#"{"type":"message","role":"assistant","role":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"MUST_NOT_EMIT"}]}}"#.as_slice(),
+            ),
+            (
+                "type",
+                br#"{"type":"message","type":"message","role":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"MUST_NOT_EMIT"}]}}"#.as_slice(),
+            ),
+            (
+                "event",
+                br#"{"event":"summary","event":"summary","message":{"content":[{"type":"text","text":"MUST_NOT_EMIT"}]}}"#.as_slice(),
+            ),
+            (
+                "status",
+                br#"{"event":"summary","status":"completed","status":"completed","message":{"content":[{"type":"text","text":"MUST_NOT_EMIT"}]}}"#.as_slice(),
+            ),
+            (
+                "message.role",
+                br#"{"type":"message","role":"assistant","message":{"role":"assistant","role":"assistant","content":[{"type":"text","text":"MUST_NOT_EMIT"}]}}"#.as_slice(),
+            ),
+            (
+                "content block type",
+                br#"{"type":"message","role":"assistant","message":{"role":"assistant","content":[{"type":"text","type":"text","text":"MUST_NOT_EMIT"}]}}"#.as_slice(),
+            ),
+        ] {
+            assert_rejected(label, record);
         }
     }
-}
-
-struct CursorToolInputSeed;
-
-impl<'de> DeserializeSeed<'de> for CursorToolInputSeed {
-    type Value = CursorToolInput;
-
-    fn deserialize<D>(self, deserializer: D) -> std::result::Result<Self::Value, D::Error>
-    where
-        D: Deserializer<'de>,
-    {
-        deserializer.deserialize_any(CursorToolInputVisitor)
-    }
-}
-
-struct CursorToolInputVisitor;
-
-impl<'de> Visitor<'de> for CursorToolInputVisitor {
-    type Value = CursorToolInput;
-
-    fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter.write_str("a Cursor tool input object")
-    }
-
-    fn visit_map<A>(self, mut map: A) -> std::result::Result<Self::Value, A::Error>
-    where
-        A: MapAccess<'de>,
-    {
-        let mut input = CursorToolInput::default();
-        let mut path_fields_seen = 0_u8;
-        while let Some(field) = map.next_key::<String>()? {
-            match field.as_str() {
-                "command" => {
-                    let value = map.next_value_seed(ExactBoundedStringSeed {
-                        max_chars: MAX_CURSOR_PATH_CHARS,
-                    })?;
-                    input.invalid_field |= input.command_seen || value.is_none();
-                    input.command_seen = true;
-                    input.command = value;
-                }
-                "workdir" => {
-                    let value = map.next_value_seed(ExactBoundedStringSeed {
-                        max_chars: MAX_CURSOR_PATH_CHARS,
-                    })?;
-                    input.invalid_field |= input.workdir_seen || value.is_none();
-                    input.workdir_seen = true;
-                    input.declared_workdir = value;
-                }
-                "path" | "file_path" | "filePath" => {
-                    let field_bit = match field.as_str() {
-                        "path" => 1,
-                        "file_path" => 2,
-                        "filePath" => 4,
-                        _ => 0,
-                    };
-                    let conflicting_alias = path_fields_seen != 0;
-                    input.invalid_field |= conflicting_alias;
-                    input.paths.invalid_shape |= conflicting_alias;
-                    path_fields_seen |= field_bit;
-                    let path = map.next_value_seed(CursorPathStringSeed {
-                        max_chars: MAX_CURSOR_PATH_CHARS,
-                    })?;
-                    input.paths.observe(path);
-                }
-                "paths" => {
-                    let conflicting_alias = path_fields_seen != 0;
-                    input.invalid_field |= conflicting_alias;
-                    input.paths.invalid_shape |= conflicting_alias;
-                    path_fields_seen |= 8;
-                    let decoded = map.next_value_seed(CursorPathsSeed)?;
-                    input.paths.merge(decoded);
-                }
-                _ => {
-                    map.next_value::<IgnoredAny>()?;
-                }
-            }
-        }
-        Ok(input)
-    }
-
-    fn visit_none<E>(self) -> std::result::Result<Self::Value, E>
-    where
-        E: de::Error,
-    {
-        Ok(CursorToolInput::default())
-    }
-
-    fn visit_unit<E>(self) -> std::result::Result<Self::Value, E>
-    where
-        E: de::Error,
-    {
-        Ok(CursorToolInput::default())
-    }
-}
-
-struct CursorPathsSeed;
-
-impl<'de> DeserializeSeed<'de> for CursorPathsSeed {
-    type Value = CursorToolInputPaths;
-
-    fn deserialize<D>(self, deserializer: D) -> std::result::Result<Self::Value, D::Error>
-    where
-        D: Deserializer<'de>,
-    {
-        deserializer.deserialize_any(CursorPathsVisitor)
-    }
-}
-
-struct CursorPathsVisitor;
-
-impl<'de> Visitor<'de> for CursorPathsVisitor {
-    type Value = CursorToolInputPaths;
-
-    fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter.write_str("a bounded array of Cursor input paths")
-    }
-
-    fn visit_seq<A>(self, mut sequence: A) -> std::result::Result<Self::Value, A::Error>
-    where
-        A: SeqAccess<'de>,
-    {
-        let mut paths = CursorToolInputPaths::default();
-        while let Some(path) = sequence.next_element_seed(CursorPathStringSeed {
-            max_chars: MAX_CURSOR_PATH_CHARS,
-        })? {
-            paths.observe(path);
-        }
-        Ok(paths)
-    }
-
-    fn visit_bool<E>(self, _value: bool) -> std::result::Result<Self::Value, E>
-    where
-        E: de::Error,
-    {
-        Ok(invalid_cursor_paths())
-    }
-
-    fn visit_i64<E>(self, _value: i64) -> std::result::Result<Self::Value, E>
-    where
-        E: de::Error,
-    {
-        Ok(invalid_cursor_paths())
-    }
-
-    fn visit_u64<E>(self, _value: u64) -> std::result::Result<Self::Value, E>
-    where
-        E: de::Error,
-    {
-        Ok(invalid_cursor_paths())
-    }
-
-    fn visit_f64<E>(self, _value: f64) -> std::result::Result<Self::Value, E>
-    where
-        E: de::Error,
-    {
-        Ok(invalid_cursor_paths())
-    }
-
-    fn visit_str<E>(self, _value: &str) -> std::result::Result<Self::Value, E>
-    where
-        E: de::Error,
-    {
-        Ok(invalid_cursor_paths())
-    }
-
-    fn visit_string<E>(self, _value: String) -> std::result::Result<Self::Value, E>
-    where
-        E: de::Error,
-    {
-        Ok(invalid_cursor_paths())
-    }
-
-    fn visit_none<E>(self) -> std::result::Result<Self::Value, E>
-    where
-        E: de::Error,
-    {
-        Ok(invalid_cursor_paths())
-    }
-
-    fn visit_unit<E>(self) -> std::result::Result<Self::Value, E>
-    where
-        E: de::Error,
-    {
-        Ok(invalid_cursor_paths())
-    }
-
-    fn visit_map<A>(self, mut map: A) -> std::result::Result<Self::Value, A::Error>
-    where
-        A: MapAccess<'de>,
-    {
-        while map.next_entry::<IgnoredAny, IgnoredAny>()?.is_some() {}
-        Ok(invalid_cursor_paths())
-    }
-}
-
-fn invalid_cursor_paths() -> CursorToolInputPaths {
-    let mut paths = CursorToolInputPaths::default();
-    paths.observe(None);
-    paths
 }

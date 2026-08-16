@@ -14,16 +14,13 @@ use crate::ui::{
 
 use super::status_health::*;
 
-#[allow(clippy::too_many_arguments)]
 pub fn render_status_human(
     context: &RenderContext,
     report: &Value,
     data_root: &Path,
     config_path: &Path,
     upgrade: &Value,
-    pro: &Value,
     local_usage: &local_usage::UsageReport,
-    pro_monthly_price_display: &str,
 ) -> Document {
     let history_health = history_health(report);
     let service_issues = actionable_service_issue_count(report, upgrade, local_usage);
@@ -175,48 +172,6 @@ pub fn render_status_human(
     document.push_blank();
     document.append(section("Services", fields(context, &service_fields)));
 
-    if pro["installed"].as_bool() == Some(true) {
-        let mut pro_values = vec![(
-            "Status",
-            pro["state"].as_str().unwrap_or("unavailable").to_owned(),
-        )];
-        if let Some(access) = pro["access_state"].as_str() {
-            pro_values.push(("Access", humanize_code(access)));
-        }
-        if let Some(action) = pro["conversion_action"].as_object() {
-            if action.get("kind").and_then(Value::as_str) == Some("pro_restore_access") {
-                pro_values.push(("Data", "graph preserved".to_owned()));
-            } else {
-                pro_values.push((
-                    "Upgrade",
-                    action
-                        .get("price")
-                        .and_then(Value::as_str)
-                        .unwrap_or(pro_monthly_price_display)
-                        .to_owned(),
-                ));
-            }
-            pro_values.push((
-                "Next",
-                action
-                    .get("command")
-                    .and_then(Value::as_str)
-                    .unwrap_or("ctx pro manage")
-                    .to_owned(),
-            ));
-        } else if pro["state"].as_str() != Some("ready") {
-            if let Some(command) = pro["next_action"]["command"].as_str() {
-                pro_values.push(("Next", command.to_owned()));
-            }
-        }
-        let pro_fields = pro_values
-            .iter()
-            .map(|(label, value)| Field::new(label, value.as_str()))
-            .collect::<Vec<_>>();
-        document.push_blank();
-        document.append(section("Pro", fields(context, &pro_fields)));
-    }
-
     if health == StatusHealth::Failed {
         let data_root = data_root.display().to_string();
         let config_path = config_path.display().to_string();
@@ -323,7 +278,7 @@ mod tests {
 
     fn usage_report() -> local_usage::UsageReport {
         local_usage::UsageReport {
-            schema_version: 2,
+            schema_version: 3,
             local_only: true,
             read_only: true,
             enabled: true,
@@ -334,10 +289,6 @@ mod tests {
             estimates: None,
             error: None,
         }
-    }
-
-    fn no_pro() -> Value {
-        json!({"installed": false})
     }
 
     fn healthy_upgrade() -> Value {
@@ -357,9 +308,7 @@ mod tests {
             std::path::Path::new("/tmp/ctx"),
             std::path::Path::new("/tmp/ctx/config.toml"),
             &healthy_upgrade(),
-            &no_pro(),
             &usage_report(),
-            "$20/month",
         )
     }
 
@@ -433,9 +382,7 @@ mod tests {
             std::path::Path::new("/tmp/ctx"),
             std::path::Path::new("/tmp/ctx/config.toml"),
             &upgrade,
-            &no_pro(),
             &usage,
-            "$20/month",
         );
         let rendered = document.render_plain();
         let normalized = rendered.split_whitespace().collect::<Vec<_>>().join(" ");
@@ -512,9 +459,7 @@ mod tests {
                 std::path::Path::new("/tmp/ctx"),
                 std::path::Path::new("/tmp/ctx/config.toml"),
                 &healthy_upgrade(),
-                &no_pro(),
                 &usage,
-                "$20/month",
             )
             .render_plain();
             assert!(rendered.contains(expected), "{rendered}");
@@ -593,45 +538,6 @@ mod tests {
         let context = context(80, ColorMode::Never);
         let rendered = render_report(&context, &report).render_plain();
         assert!(rendered.contains("Next\n  ctx setup\n"));
-    }
-
-    #[test]
-    fn installed_pro_status_is_grouped_without_internal_deadlines() {
-        let report = status_report(true, "ready", "ready");
-        let pro = json!({
-            "installed": true,
-            "state": "ready",
-            "access_state": "trial",
-            "refresh_after_unix": 100,
-            "access_deadline_unix": 200,
-            "conversion_action": {
-                "kind": "pro_monthly_conversion",
-                "price": "$20/month",
-                "command": "ctx pro manage",
-            },
-        });
-
-        for width in [32, 80] {
-            let context = context(width, ColorMode::Never);
-            let document = render_status_human(
-                &context,
-                &report,
-                std::path::Path::new("/tmp/ctx"),
-                std::path::Path::new("/tmp/ctx/config.toml"),
-                &healthy_upgrade(),
-                &pro,
-                &usage_report(),
-                "$20/month",
-            );
-            let rendered = document.render_plain();
-            assert!(rendered.contains("\nPro\n"));
-            assert!(rendered.contains("$20/month"));
-            assert!(rendered.contains("ctx pro manage"));
-            assert!(!rendered.contains("100"));
-            assert!(!rendered.contains("200"));
-            assert!(!rendered.contains("deadline"));
-            assert_fits(&document, &context);
-        }
     }
 
     #[test]

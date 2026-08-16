@@ -32,10 +32,11 @@ pub use policy::{
     current_semantic_generation_policy, current_semantic_generation_policy_hash,
     current_source_generation_policy, current_source_generation_policy_hash,
     EmbeddingGenerationPolicy, LexicalBodySelection, LexicalGenerationPolicy,
-    LexicalIndexedBodyLimit, SemanticCoreContentFilter, SemanticGenerationPolicy, SourceEventClass,
-    SourceEventRole, SourceGenerationPolicy, StoredSourceContent, LEXICAL_INDEXED_BODY_LIMIT,
-    LEXICAL_SCHEMA_REVISION, LEXICAL_TOKENIZER_REVISION, SEMANTIC_CHUNK_OVERLAP_CHARS,
-    SEMANTIC_CHUNK_TARGET_CHARS, SEMANTIC_SOURCE_MAX_CHARS,
+    LexicalIndexedBodyLimit, SemanticCoreContentFilter, SemanticEventCopyFilter,
+    SemanticGenerationPolicy, SourceEventClass, SourceEventRole, SourceGenerationPolicy,
+    StoredSourceContent, LEXICAL_INDEXED_BODY_LIMIT, LEXICAL_SCHEMA_REVISION,
+    LEXICAL_TOKENIZER_REVISION, SEMANTIC_CHUNK_OVERLAP_CHARS, SEMANTIC_CHUNK_TARGET_CHARS,
+    SEMANTIC_SOURCE_MAX_CHARS,
 };
 pub use search_projection::project_body_search;
 
@@ -90,9 +91,8 @@ pub use verification::{
 };
 #[doc(hidden)]
 pub use verification_record::{
-    stored_verification_identities, stored_verification_record, validate_verification_projection,
-    CompactEventOrigin, CompactIdentity, CompactVerificationIdentities, IdentityFieldRole,
-    VerificationRecord,
+    stored_verification_record, validate_verification_projection, CompactIdentity,
+    CompactVerificationIdentities, IdentityFieldRole, VerificationRecord,
 };
 
 #[doc(hidden)]

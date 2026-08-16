@@ -17,10 +17,6 @@ pub(super) struct JsonSpan<'a> {
 }
 
 impl<'a> JsonSpan<'a> {
-    pub(super) fn raw(self) -> &'a [u8] {
-        self.raw
-    }
-
     pub(super) fn kind(self) -> JsonKind {
         self.kind
     }
@@ -140,6 +136,10 @@ pub(super) fn decode_string(
     }
     let value = serde_json::from_slice::<String>(span.raw)?;
     Ok((value.len() <= maximum_bytes).then_some(value))
+}
+
+pub(super) fn decode_value(span: JsonSpan<'_>) -> Result<serde_json::Value, serde_json::Error> {
+    serde_json::from_slice(span.raw)
 }
 
 pub(super) fn decode_unbounded_string(

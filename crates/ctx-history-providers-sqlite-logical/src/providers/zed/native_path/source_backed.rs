@@ -1,10 +1,12 @@
-use std::path::Path;
+use std::{collections::BTreeSet, path::Path};
 
 use ctx_history_core::{
-    derive_event_id, derive_session_id, AgentType, CaptureProvider, CoreRecord, CoreRecordError,
-    EventIdentityInput, EventOrigin, NativeItemKey, NativeSessionKey, PositionStability,
-    ProjectionContractError, SessionIdentityInput, SessionRelationshipKind, SourceAnchor,
-    SourceObservation, StableEntityId, TypedKey,
+    derive_event_id, derive_session_id, ActivityInvocation, ActivityJsonCapture, ActivityResult,
+    ActivityTextCapture, CaptureProvider, CoreActivity, CoreRecord, CoreRecordError,
+    EventIdentityInput, LiteralFactKind, NativeItemKey, NativeSessionKey, PositionStability,
+    ProjectionContractError, ProviderDeclaredFact, ProviderNativeSessionRelationship,
+    SessionIdentityInput, SourceAnchor, SourceObservation, StableEntityId, TypedKey,
+    CORE_ACTIVITY_REVISION,
 };
 use serde_json::json;
 use sha2::{Digest, Sha256};
@@ -18,7 +20,6 @@ use super::{
     dto::{
         ZedNativeEvent, ZedNativeMessageIdentity, ZedNativePage, ZedNativeSession, ZedNativeSink,
     },
-    query::{ZedThreadLineage, ZedThreadLineageResolver},
     ZedNativePathError, ZedNativeResult, ZedSnapshotAcquisition,
 };
 use crate::{CaptureError, ZED_THREADS_SQLITE_SOURCE_FORMAT};
@@ -32,8 +33,7 @@ const ZED_LOGICAL_SESSION_KIND: &str = "zed-thread";
 const ZED_LOGICAL_EVENT_KIND: &str = "zed-thread-event";
 const ZED_SOURCE_SCHEMA_VARIANT: &str = "zed-nativepath-sqlite-v0";
 const ZED_SOURCE_REVISION_KIND: &str = "zed-logical-rows-v1";
-pub(crate) const ZED_PARSER_REVISION: &str =
-    "zed-nativepath-source-backed-v2-complete-session-lineage";
+pub(crate) const ZED_PARSER_REVISION: &str = "zed-nativepath-source-backed-v3-neutral-core";
 
 #[derive(Debug, Error)]
 pub(crate) enum ZedSourceBackedErrorV0 {
@@ -45,14 +45,14 @@ pub(crate) enum ZedSourceBackedErrorV0 {
     CoreRecord(#[from] CoreRecordError),
     #[error(transparent)]
     Native(#[from] ZedNativePathError),
+    #[error(transparent)]
+    Sqlite(#[from] rusqlite::Error),
     #[error("Zed immutable SQLite snapshot could not be acquired")]
     SnapshotAcquisitionRace,
     #[error("Zed source-backed count overflow")]
     CountOverflow,
     #[error("Zed event {0:?} was emitted without its bounded session context")]
     MissingSessionContext(String),
-    #[error("Zed retained thread {0:?} disappeared while resolving its native lineage")]
-    MissingLineageThread(String),
     #[error("Zed source-backed parser emitted an empty normalized body")]
     MissingNormalizedBody,
     #[error("Zed source-backed parser emitted an invalid SHA-256 digest")]
@@ -63,8 +63,8 @@ pub(crate) type ZedSourceBackedResultV0<T> = Result<T, ZedSourceBackedErrorV0>;
 
 pub(crate) struct ZedSourceBackedSinkV0<'writer> {
     emit_core_record: Box<dyn FnMut(CoreRecord) -> ZedSourceBackedResultV0<()> + 'writer>,
-    lineage: ZedThreadLineageResolver,
     source: ctx_history_core::SourceKey,
+    known_thread_ids: BTreeSet<String>,
     last_session: Option<ZedSessionProjectionContextV0>,
     staged_core_records: u64,
     failure: Option<ZedSourceBackedErrorV0>,
@@ -75,8 +75,6 @@ struct ZedSessionProjectionContextV0 {
     session: ZedNativeSession,
     session_id: StableEntityId,
     parent_session_id: Option<StableEntityId>,
-    root_session_id: StableEntityId,
-    root_thread_id: String,
 }
 
 impl<'writer> ZedSourceBackedSinkV0<'writer> {
@@ -85,10 +83,14 @@ impl<'writer> ZedSourceBackedSinkV0<'writer> {
         source: ctx_history_core::SourceKey,
         emit_core_record: impl FnMut(CoreRecord) -> ZedSourceBackedResultV0<()> + 'writer,
     ) -> ZedSourceBackedResultV0<Self> {
+        let mut statement = connection.prepare("SELECT id FROM threads")?;
+        let known_thread_ids = statement
+            .query_map([], |row| row.get::<_, String>(0))?
+            .collect::<Result<BTreeSet<_>, _>>()?;
         Ok(Self {
             emit_core_record: Box::new(emit_core_record),
-            lineage: ZedThreadLineageResolver::new(connection)?,
             source,
+            known_thread_ids,
             last_session: None,
             staged_core_records: 0,
             failure: None,
@@ -107,21 +109,14 @@ impl<'writer> ZedSourceBackedSinkV0<'writer> {
         &mut self,
         session: ZedNativeSession,
     ) -> ZedSourceBackedResultV0<ZedSessionProjectionContextV0> {
-        let ZedThreadLineage {
-            parent_thread_id,
-            root_thread_id,
-        } = self.lineage.resolve(&session.thread_id)?.ok_or_else(|| {
-            ZedSourceBackedErrorV0::MissingLineageThread(session.thread_id.clone())
-        })?;
-        let root_session_id = zed_session_identity(&self.source, &root_thread_id)?;
         Ok(ZedSessionProjectionContextV0 {
             session_id: zed_session_identity(&self.source, &session.thread_id)?,
-            parent_session_id: parent_thread_id
+            parent_session_id: session
+                .parent_thread_id
                 .as_deref()
+                .filter(|thread_id| self.known_thread_ids.contains(*thread_id))
                 .map(|thread_id| zed_session_identity(&self.source, thread_id))
                 .transpose()?,
-            root_session_id,
-            root_thread_id,
             session,
         })
     }
@@ -223,11 +218,6 @@ fn zed_core_record(
         .checked_mul(2)
         .and_then(|value| value.checked_add(u64::from(event.native_order.sub_ordinal)))
         .ok_or(ZedSourceBackedErrorV0::CountOverflow)?;
-    let agent_type = if context.parent_session_id.is_some() {
-        AgentType::Subagent
-    } else {
-        AgentType::Primary
-    };
     let native_event_id = native_event_typed_key(&event)?;
     let structured_content = json!({
         "native_message": {
@@ -241,13 +231,11 @@ fn zed_core_record(
             "kind": &event.kind,
             "call_ids": &event.call_ids,
             "content": &event.native_content,
-            "file_touches": &event.safe_file_touches,
         },
         "native_session": {
             "sqlite_rowid": session.sqlite_rowid,
             "thread_id": &session.thread_id,
             "parent_thread_id": &session.parent_thread_id,
-            "root_thread_id": &context.root_thread_id,
             "title": &session.title,
             "payload_title": &session.payload_title,
             "summary": &session.summary,
@@ -265,32 +253,208 @@ fn zed_core_record(
     let mut record = CoreRecord::new_selected(
         event_id,
         session_id,
-        session_id,
         source.clone(),
         event_sequence,
         event.event_type.as_str(),
-        agent_type.as_str(),
-        true,
         ZED_PARSER_REVISION,
-        event.normalized_body,
+        event.normalized_body.clone(),
     )?;
     if let Some(parent_session_id) = context.parent_session_id {
-        record.set_session_relationship(
-            SessionRelationshipKind::Delegated,
-            Some(parent_session_id),
-            context.root_session_id,
-        )?;
-        record.event_origin = EventOrigin::UniqueToSession;
+        record.parent_session_id = Some(parent_session_id);
+        record.session_relationship = Some(ProviderNativeSessionRelationship::Delegated);
     }
     record.provider_session_id = Some(session.thread_id.clone());
     record.native_event_id = Some(native_event_id);
     record.occurred_at_unix_ms = Some(event.occurred_at.timestamp_millis());
     record.role = Some(event.role.as_str().to_owned());
-    record.workspace = session.folder_paths.first().cloned();
-    record.cwd = session.cwd.clone();
     record.content.structured_content = Some(structured_content);
+    let mut facts = Vec::new();
+    if let Some(cwd) = session.cwd.clone() {
+        facts.push(ProviderDeclaredFact {
+            kind: LiteralFactKind::SessionCwd,
+            value: cwd,
+        });
+    }
+    for folder_path in &session.folder_paths {
+        facts.push(ProviderDeclaredFact {
+            kind: LiteralFactKind::Workspace,
+            value: folder_path.clone(),
+        });
+    }
+    collect_zed_facts(&event.native_content, &mut facts);
+    let (provider_call_id, invocation, result) =
+        zed_activity(&event, event.occurred_at.timestamp_millis())?;
+    if invocation.is_some() || result.is_some() || !facts.is_empty() {
+        record.content.activity = Some(CoreActivity {
+            revision: CORE_ACTIVITY_REVISION,
+            provider_call_id,
+            invocation,
+            result,
+            facts,
+        });
+    }
+    record
+        .content
+        .omit_structured_content_if_aggregate_exceeds_limit()?;
     record.validate_contract()?;
     Ok(record)
+}
+
+fn collect_zed_facts(value: &serde_json::Value, facts: &mut Vec<ProviderDeclaredFact>) {
+    const MAX_EXPLICIT_TOOL_FACTS: usize = 64;
+    let maximum = facts.len().saturating_add(MAX_EXPLICIT_TOOL_FACTS);
+    let Some(content) = value.get("content").and_then(serde_json::Value::as_array) else {
+        return;
+    };
+    for tool_use in content
+        .iter()
+        .filter(|item| item.get("type").and_then(serde_json::Value::as_str) == Some("tool_use"))
+    {
+        for (kind, pointers) in [
+            (
+                LiteralFactKind::File,
+                &["/input/path", "/input/file", "/input/file_path"][..],
+            ),
+            (
+                LiteralFactKind::ToolWorkdir,
+                &["/input/cwd", "/input/workdir", "/input/working_directory"][..],
+            ),
+            (
+                LiteralFactKind::Command,
+                &["/input/command", "/input/cmd"][..],
+            ),
+            (LiteralFactKind::Url, &["/input/url", "/input/uri"][..]),
+        ] {
+            for pointer in pointers {
+                if let Some(value) = tool_use.pointer(pointer) {
+                    collect_zed_fact_values(kind, value, facts, maximum);
+                    if facts.len() >= maximum {
+                        return;
+                    }
+                }
+            }
+        }
+    }
+}
+
+fn collect_zed_fact_values(
+    kind: LiteralFactKind,
+    value: &serde_json::Value,
+    facts: &mut Vec<ProviderDeclaredFact>,
+    maximum: usize,
+) {
+    if facts.len() >= maximum {
+        return;
+    }
+    match value {
+        serde_json::Value::String(value) => facts.push(ProviderDeclaredFact {
+            kind,
+            value: value.clone(),
+        }),
+        serde_json::Value::Array(values) => {
+            for value in values {
+                collect_zed_fact_values(kind, value, facts, maximum);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn zed_activity(
+    event: &ZedNativeEvent,
+    occurred_at_unix_ms: i64,
+) -> ZedSourceBackedResultV0<(
+    Option<TypedKey>,
+    Option<ActivityInvocation>,
+    Option<ActivityResult>,
+)> {
+    let Some(first_call_id) = event.call_ids.first() else {
+        return Ok((None, None, None));
+    };
+    if event
+        .call_ids
+        .iter()
+        .any(|call_id| call_id != first_call_id)
+    {
+        return Ok((None, None, None));
+    }
+    let provider_call_id = Some(TypedKey::utf8(first_call_id)?);
+    let invocation = event
+        .native_content
+        .get("content")
+        .and_then(serde_json::Value::as_array)
+        .and_then(|content| {
+            let mut matching = content.iter().filter(|item| {
+                item.get("type").and_then(serde_json::Value::as_str) == Some("tool_use")
+                    && item.get("id").and_then(serde_json::Value::as_str)
+                        == Some(first_call_id.as_str())
+            });
+            let selected = matching.next()?;
+            matching.next().is_none().then_some(selected)
+        })
+        .and_then(|tool_use| {
+            let tool = tool_use.get("name")?.as_str()?.to_owned();
+            if tool.is_empty() {
+                return None;
+            }
+            let arguments = match (tool_use.get("input"), tool_use.get("raw_input")) {
+                (Some(input), Some(raw_input)) if !input.is_null() && !raw_input.is_null() => {
+                    ActivityJsonCapture::Unavailable
+                }
+                (Some(value), _) if !value.is_null() => ActivityJsonCapture::Present {
+                    value: value.clone(),
+                },
+                (_, Some(value)) if !value.is_null() => ActivityJsonCapture::Present {
+                    value: value.clone(),
+                },
+                _ => ActivityJsonCapture::Absent,
+            };
+            Some(ActivityInvocation {
+                protocol: None,
+                server: None,
+                tool,
+                arguments,
+                started_at_unix_ms: Some(occurred_at_unix_ms),
+            })
+        });
+    let result_value = event
+        .native_content
+        .get("tool_results")
+        .and_then(serde_json::Value::as_object)
+        .and_then(|results| results.get(first_call_id));
+    let result = result_value.map(|value| ActivityResult {
+        status: unique_zed_string(value, &["/status", "/output/status"]),
+        completed_at_unix_ms: Some(occurred_at_unix_ms),
+        duration_ns: None,
+        text: value
+            .get("content")
+            .and_then(serde_json::Value::as_str)
+            .map(|value| ActivityTextCapture::Present {
+                value: value.to_owned(),
+            })
+            .unwrap_or(ActivityTextCapture::Absent),
+        structured_content: ActivityJsonCapture::Present {
+            value: value.clone(),
+        },
+    });
+    if invocation.is_none() && result.is_none() {
+        return Ok((None, None, None));
+    }
+    Ok((provider_call_id, invocation, result))
+}
+
+fn unique_zed_string(value: &serde_json::Value, pointers: &[&str]) -> Option<String> {
+    let mut selected = None::<&str>;
+    for pointer in pointers {
+        let Some(candidate) = value.pointer(pointer).and_then(serde_json::Value::as_str) else {
+            continue;
+        };
+        if selected.is_some_and(|selected| selected != candidate) {
+            return None;
+        }
+        selected = Some(candidate);
+    }
+    selected.map(str::to_owned)
 }
 
 fn native_event_key(event: &ZedNativeEvent) -> ZedSourceBackedResultV0<NativeItemKey> {
@@ -386,8 +550,10 @@ mod semantic_tests;
 #[cfg(test)]
 mod tests {
     use std::{
+        cell::RefCell,
         fs,
         io::{Read, Seek, SeekFrom, Write},
+        rc::Rc,
     };
 
     use rusqlite::{params, Connection};
@@ -409,12 +575,9 @@ mod tests {
         let cold_session_id = event.session_id;
         let cold_native_event_id = event.native_event_id.clone();
         assert_eq!(event.parent_session_id, None);
-        assert_eq!(event.root_session_id, event.session_id);
+        assert_eq!(event.root_session_id, None);
         assert_eq!(event.provider_session_id.as_deref(), Some("thread-1"));
         assert!(event.native_event_id.is_some());
-        assert_eq!(event.branch, None);
-        assert_eq!(event.agent_type, "primary");
-        assert!(event.is_primary);
         assert_eq!(
             event.event_type,
             ctx_history_core::EventType::Message.as_str()
@@ -475,26 +638,30 @@ mod tests {
     #[test]
     fn source_backed_zed_resolves_native_thread_lineage() {
         let temp = tempfile::tempdir().unwrap();
-        let source = temp.path().join("source");
-        fs::create_dir(&source).unwrap();
-        let database = source.join("threads.db");
+        let database = temp.path().join("threads.db");
         create_database(&database, "root lineage sentinel");
         insert_child_thread(&database, "child lineage sentinel");
 
-        let snapshot =
-            acquire_snapshot(crate::test_provider_sqlite_data_root(), &database).unwrap();
-        let mut lineage = ZedThreadLineageResolver::new(snapshot.connection().unwrap()).unwrap();
-        let child = lineage.resolve("a-child").unwrap().unwrap();
-        assert_eq!(child.parent_thread_id.as_deref(), Some("thread-1"));
-        assert_eq!(child.root_thread_id, "thread-1");
+        let records = project_records_through_sink(&database);
+        let child = records
+            .iter()
+            .find(|record| record.provider_session_id.as_deref() == Some("a-child"))
+            .unwrap();
+        let root = records
+            .iter()
+            .find(|record| record.provider_session_id.as_deref() == Some("thread-1"))
+            .unwrap();
+        assert_eq!(child.parent_session_id, Some(root.session_id));
+        assert_eq!(
+            child.session_relationship,
+            Some(ProviderNativeSessionRelationship::Delegated)
+        );
     }
 
     #[test]
     fn provider_p1_lineage_rejects_a_missing_referenced_parent() {
         let temp = tempfile::tempdir().unwrap();
-        let source = temp.path().join("source");
-        fs::create_dir(&source).unwrap();
-        let database = source.join("threads.db");
+        let database = temp.path().join("threads.db");
         create_database(&database, "missing parent lineage sentinel");
         Connection::open(&database)
             .unwrap()
@@ -504,17 +671,10 @@ mod tests {
             )
             .unwrap();
 
-        let snapshot =
-            acquire_snapshot(crate::test_provider_sqlite_data_root(), &database).unwrap();
-        let mut lineage = ZedThreadLineageResolver::new(snapshot.connection().unwrap()).unwrap();
-        let error = match lineage.resolve("thread-1") {
-            Err(error) => error,
-            Ok(_) => panic!("missing Zed parent must fail closed"),
-        };
-
-        assert!(error
-            .to_string()
-            .contains("references missing parent \"missing-parent\""));
+        let records = project_records_through_sink(&database);
+        assert_eq!(records.len(), 1);
+        assert_eq!(records[0].parent_session_id, None);
+        assert_eq!(records[0].session_relationship, None);
     }
 
     #[test]
@@ -611,13 +771,34 @@ mod tests {
             session,
             session_id,
             parent_session_id: None,
-            root_session_id: session_id,
-            root_thread_id: "thread-1".to_owned(),
         };
         let mut events = sink.pages.into_iter().flat_map(|page| page.events);
         let event = events.next().unwrap();
         assert!(events.next().is_none());
         zed_core_record(&source, &context, event).unwrap()
+    }
+
+    fn project_records_through_sink(path: &Path) -> Vec<CoreRecord> {
+        let mut snapshot = acquire_snapshot(crate::test_provider_sqlite_data_root(), path).unwrap();
+        let revision = snapshot.snapshot_revision.clone();
+        let records = Rc::new(RefCell::new(Vec::new()));
+        {
+            let emitted = Rc::clone(&records);
+            let connection = snapshot.connection().unwrap();
+            let mut sink = ZedSourceBackedSinkV0::with_emitter(
+                connection,
+                zed_source_key().unwrap(),
+                move |record| {
+                    emitted.borrow_mut().push(record);
+                    Ok(())
+                },
+            )
+            .unwrap();
+            scan_zed_native_snapshot(connection, &revision, &mut sink).unwrap();
+            assert!(sink.take_failure().is_none());
+        }
+        snapshot.finish().unwrap();
+        Rc::try_unwrap(records).unwrap().into_inner()
     }
 
     pub(super) fn create_database(path: &Path, text: &str) {
@@ -685,6 +866,35 @@ mod tests {
             .unwrap();
     }
 
+    fn insert_child_thread(path: &Path, text: &str) {
+        let connection = Connection::open(path).unwrap();
+        let payload = serde_json::to_vec(&json!({
+            "version": "0.3.0",
+            "title": "Source-backed Zed child thread",
+            "updated_at": "2026-07-28T12:00:12Z",
+            "messages": [{
+                "User": {
+                    "id": "message-child",
+                    "content": [{"Text": text}]
+                }
+            }]
+        }))
+        .unwrap();
+        connection
+            .execute(
+                "INSERT INTO threads (
+                     id, summary, updated_at, data_type, data, parent_id,
+                     folder_paths, folder_paths_order, created_at
+                 ) VALUES (
+                     'a-child', 'source-backed child fixture', '2026-07-28T12:00:12Z',
+                     'json', ?1, 'thread-1', '/workspace/zed', '0',
+                     '2026-07-28T12:00:01Z'
+                 )",
+                params![payload],
+            )
+            .unwrap();
+    }
+
     fn rewrite_same_database_bytes(path: &Path) {
         let mut file = fs::OpenOptions::new()
             .read(true)
@@ -720,35 +930,6 @@ mod tests {
                 "UPDATE threads
                  SET data = ?1, updated_at = '2026-07-28T12:00:11Z'
                  WHERE id = 'thread-1'",
-                params![payload],
-            )
-            .unwrap();
-    }
-
-    fn insert_child_thread(path: &Path, text: &str) {
-        let connection = Connection::open(path).unwrap();
-        let payload = serde_json::to_vec(&json!({
-            "version": "0.3.0",
-            "title": "Source-backed Zed child thread",
-            "updated_at": "2026-07-28T12:00:12Z",
-            "messages": [{
-                "User": {
-                    "id": "message-child",
-                    "content": [{"Text": text}]
-                }
-            }]
-        }))
-        .unwrap();
-        connection
-            .execute(
-                "INSERT INTO threads (
-                     id, summary, updated_at, data_type, data, parent_id,
-                     folder_paths, folder_paths_order, created_at
-                 ) VALUES (
-                     'a-child', 'source-backed child fixture', '2026-07-28T12:00:12Z',
-                     'json', ?1, 'thread-1', '/workspace/zed', '0',
-                     '2026-07-28T12:00:01Z'
-                 )",
                 params![payload],
             )
             .unwrap();

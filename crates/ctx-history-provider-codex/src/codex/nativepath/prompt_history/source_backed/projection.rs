@@ -1,5 +1,5 @@
 use ctx_history_core::{
-    derive_event_id, derive_native_session_id, AgentType, CoreRecord, EventIdentityInput,
+    derive_event_id, derive_native_session_id, AgentScope, CoreRecord, EventIdentityInput,
     NativeItemKey, PositionStability, SourceKey, StableEntityId, TypedKey,
 };
 
@@ -32,12 +32,9 @@ pub(super) fn core_record(
     let mut record = CoreRecord::new_selected(
         event_id,
         session_id,
-        session_id,
         source.clone(),
         physical_ordinal,
         "message",
-        AgentType::Primary.as_str(),
-        true,
         PARSER_REVISION,
         body,
     )?;
@@ -45,6 +42,7 @@ pub(super) fn core_record(
     record.native_event_id = Some(TypedKey::U64(physical_ordinal));
     record.occurred_at_unix_ms = occurred_at_unix_ms;
     record.role = Some("user".to_owned());
+    record.agent_scope = Some(AgentScope::Primary);
     record.validate_contract()?;
     Ok(record)
 }

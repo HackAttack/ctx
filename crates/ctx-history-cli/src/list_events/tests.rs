@@ -7,11 +7,11 @@ use std::{
 };
 
 use ctx_history_core::{
-    derive_event_id, derive_session_id, CertifiedSource, CoreRecord, EventIdentityInput,
-    McpExchangeContent, McpFailureKind, McpInvocationContent, McpJsonCapture,
-    McpPayloadOmissionReason, McpTerminalResponseContent, McpTerminalStatus, McpTextCapture,
-    McpToolCallAttribution, NativeItemKey, NativeSessionKey, ScannedSourceCounts,
+    derive_event_id, derive_session_id, ActivityInvocation, ActivityJsonCapture, ActivityResult,
+    ActivityTextCapture, AgentScope, CertifiedSource, CoreActivity, CoreRecord, EventIdentityInput,
+    LiteralFactKind, NativeItemKey, NativeSessionKey, ProviderDeclaredFact, ScannedSourceCounts,
     SessionIdentityInput, SourceAnchor, SourceKey, SourceObservation, TypedKey,
+    CORE_ACTIVITY_REVISION,
 };
 use ctx_history_index::{GenerationWriter, WriterOptions};
 use serde_json::{json, Value};
@@ -216,7 +216,6 @@ fn test_record(source: &SourceKey, nonce: u64, body: &str) -> CoreRecord {
     let mut record = CoreRecord::new_selected(
         event_id,
         session_id,
-        session_id,
         source.clone(),
         nonce,
         if nonce == 1 {
@@ -224,8 +223,6 @@ fn test_record(source: &SourceKey, nonce: u64, body: &str) -> CoreRecord {
         } else {
             "message"
         },
-        "codex",
-        true,
         "event-query-test-v1",
         body,
     )
@@ -234,39 +231,49 @@ fn test_record(source: &SourceKey, nonce: u64, body: &str) -> CoreRecord {
     record.provider_session_id = Some("provider-session".to_owned());
     record.native_event_id = Some(TypedKey::U64(nonce));
     record.role = Some("assistant".to_owned());
-    record.workspace = Some("/workspace/ctx".to_owned());
-    record.branch = Some("main".to_owned());
-    record.cwd = Some("/workspace/ctx".to_owned());
-    record
-        .metadata
-        .insert("future_payload".to_owned(), json!({ "kept": nonce }));
+    record.agent_scope = Some(AgentScope::Primary);
+    record.content.structured_content = Some(json!({"future_payload": {"kept": nonce}}));
     record.validate_contract().unwrap();
     record
 }
 
-fn test_mcp_exchange(payload: Value) -> McpExchangeContent {
-    McpExchangeContent {
-        provider_call_id: "native-call-呼び出し-🦀".to_owned(),
-        invocation: Some(McpInvocationContent {
-            server: "mcp-サーバー".to_owned(),
+fn test_activity(payload: Value) -> CoreActivity {
+    CoreActivity {
+        revision: CORE_ACTIVITY_REVISION,
+        provider_call_id: Some(TypedKey::utf8("native-call-呼び出し-🦀").unwrap()),
+        invocation: Some(ActivityInvocation {
+            protocol: Some("mcp".to_owned()),
+            server: Some("mcp-サーバー".to_owned()),
             tool: "検索-tool".to_owned(),
-            arguments: McpJsonCapture::Present {
+            arguments: ActivityJsonCapture::Present {
                 value: json!({
                     "snake_key": ["雪", null, {"camelKey": true}],
                     "nested": {"deep_null": null},
                 }),
             },
+            started_at_unix_ms: Some(11),
         }),
-        response: Some(McpTerminalResponseContent {
-            status: McpTerminalStatus::Failed,
-            failure_kind: Some(McpFailureKind::ToolReported),
+        result: Some(ActivityResult {
+            status: Some("provider::failed".to_owned()),
+            completed_at_unix_ms: Some(22),
             duration_ns: Some(42),
-            text: McpTextCapture::Omitted {
-                reason: McpPayloadOmissionReason::SizeLimit,
-                observed_encoded_bytes: Some(70_000),
+            text: ActivityTextCapture::Omitted {
+                reason: "provider_size_limit".to_owned(),
+                observed_bytes: Some(70_000),
             },
-            payload: McpJsonCapture::Present { value: payload },
+            structured_content: ActivityJsonCapture::Present { value: payload },
         }),
+        facts: [
+            (LiteralFactKind::Workspace, "/workspace/ctx"),
+            (LiteralFactKind::Branch, "main"),
+            (LiteralFactKind::SessionCwd, "/workspace/ctx"),
+        ]
+        .into_iter()
+        .map(|(kind, value)| ProviderDeclaredFact {
+            kind,
+            value: value.to_owned(),
+        })
+        .collect(),
     }
 }
 
@@ -434,8 +441,9 @@ fn event_projection_is_canonical_complete_and_not_duplicated() {
     assert!(event["source"].is_object());
     assert_eq!(event["parser_revision"], "event-query-test-v1");
     assert!(event["normalization_revision"].is_number());
-    assert_eq!(event["metadata"]["future_payload"]["kept"], 1);
+    assert_eq!(event["structured_content"]["future_payload"]["kept"], 1);
     for field in [
+        "metadata",
         "repository_candidate_evidence",
         "repository_bindings",
         "repository_abstentions",
@@ -443,7 +451,7 @@ fn event_projection_is_canonical_complete_and_not_duplicated() {
         "repository_file_observations",
         "repository_vcs_observations",
     ] {
-        assert!(event.get(field).is_some(), "missing {field}");
+        assert!(event.get(field).is_none(), "retired field leaked: {field}");
     }
     assert_eq!(event["citations"].as_array().unwrap().len(), 1);
     assert!(event.get("citation").is_none());
@@ -469,81 +477,17 @@ fn event_projection_is_canonical_complete_and_not_duplicated() {
 }
 
 #[test]
-fn mcp_tool_call_is_exact_omitted_when_absent_and_projection_independent() {
-    let temp = tempfile::tempdir().unwrap();
-    let source = test_source();
-    let exact = McpToolCallAttribution {
-        server: "server\n\u{202e}|`[]".to_owned(),
-        tool: "tool\\literal\t*#".to_owned(),
-    };
-    let exact_value = serde_json::to_value(&exact).unwrap();
-    let mut attributed = test_record(&source, 0, "attributed");
-    attributed.mcp_tool_call = Some(exact.clone());
-    attributed.validate_contract().unwrap();
-    let absent = test_record(&source, 1, "absent");
-    publish_records(temp.path(), source, vec![attributed, absent]);
-
-    let selection = all_selection(CoreEventRangeDirection::Ascending);
-    for projection in [
-        EventContentProjection::Full,
-        EventContentProjection::Text,
-        EventContentProjection::None,
-    ] {
-        let request = request(CoreEventRangeDirection::Ascending, 10, projection);
-        let json_page = page(temp.path(), &selection, None, &request);
-        assert_eq!(json_page["events"][0]["mcp_tool_call"], exact_value);
-        assert!(json_page["events"][1].get("mcp_tool_call").is_none());
-        if projection == EventContentProjection::None {
-            assert!(json_page["events"][0]["text"].is_null());
-            assert!(json_page["events"][0]["structured_content"].is_null());
-            assert_eq!(json_page["events"][0]["mcp_tool_call"], exact_value);
-        }
-        assert_eq!(
-            json_page["usage"]["bytes"].as_u64().unwrap() as usize,
-            serde_json::to_vec(&json_page).unwrap().len() + 1
-        );
-
-        let mut jsonl = Vec::new();
-        write_jsonl_pages(
-            temp.path(),
-            selection.clone(),
-            None,
-            &request,
-            &mut jsonl,
-            || {},
-        )
-        .unwrap();
-        let lines = jsonl
-            .split(|byte| *byte == b'\n')
-            .filter(|line| !line.is_empty())
-            .map(|line| serde_json::from_slice::<Value>(line).unwrap())
-            .collect::<Vec<_>>();
-        assert_eq!(lines[0]["event"]["mcp_tool_call"], exact_value);
-        assert!(lines[1]["event"].get("mcp_tool_call").is_none());
-        assert_eq!(
-            lines.last().unwrap()["usage"]["bytes"].as_u64().unwrap() as usize,
-            jsonl.len()
-        );
-    }
-}
-
-#[test]
-fn mcp_exchange_is_lossless_and_full_projection_only_across_cli_and_mcp() {
+fn activity_is_lossless_ordered_and_full_projection_only_across_json_and_jsonl() {
     let temp = tempfile::tempdir().unwrap();
     let source = test_source();
     let payload = json!({
         "result_key": ["完了", null, {"mixedCase": [false, 3]}],
         "nested_object": {"snake_key": null},
     });
-    let exchange = test_mcp_exchange(payload.clone());
-    let exact_exchange = serde_json::to_value(&exchange).unwrap();
-    let attribution = McpToolCallAttribution {
-        server: "mcp-サーバー".to_owned(),
-        tool: "検索-tool".to_owned(),
-    };
+    let activity = test_activity(payload.clone());
+    let exact_activity = serde_json::to_value(&activity).unwrap();
     let mut captured = test_record(&source, 0, "response body remains unchanged");
-    captured.mcp_tool_call = Some(attribution.clone());
-    captured.content.mcp_exchange = Some(exchange);
+    captured.content.activity = Some(activity);
     captured.validate_contract().unwrap();
     let absent = test_record(&source, 1, "no exchange");
     publish_records(temp.path(), source, vec![captured, absent]);
@@ -556,24 +500,20 @@ fn mcp_exchange_is_lossless_and_full_projection_only_across_cli_and_mcp() {
     ] {
         let request = request(CoreEventRangeDirection::Ascending, 10, projection);
         let json_page = page(temp.path(), &selection, None, &request);
-        assert_eq!(
-            json_page["events"][0]["mcp_tool_call"],
-            serde_json::to_value(&attribution).unwrap()
-        );
-        assert!(json_page["events"][1].get("mcp_exchange").is_none());
+        assert!(json_page["events"][1].get("activity").is_none());
         if projection == EventContentProjection::Full {
-            assert_eq!(json_page["events"][0]["mcp_exchange"], exact_exchange);
+            assert_eq!(json_page["events"][0]["activity"], exact_activity);
             assert_eq!(
-                json_page["events"][0]["mcp_exchange"]["response"]["payload"]["value"],
+                json_page["events"][0]["activity"]["result"]["structured_content"]["value"],
                 payload
             );
             assert!(
-                json_page["events"][0]["mcp_exchange"]["response"]["payload"]["value"]
+                json_page["events"][0]["activity"]["result"]["structured_content"]["value"]
                     ["result_key"][1]
                     .is_null()
             );
         } else {
-            assert!(json_page["events"][0].get("mcp_exchange").is_none());
+            assert!(json_page["events"][0].get("activity").is_none());
         }
 
         let mut jsonl = Vec::new();
@@ -589,8 +529,8 @@ fn mcp_exchange_is_lossless_and_full_projection_only_across_cli_and_mcp() {
         let first_line: Value =
             serde_json::from_slice(jsonl.split(|byte| *byte == b'\n').next().unwrap()).unwrap();
         assert_eq!(
-            first_line["event"].get("mcp_exchange"),
-            (projection == EventContentProjection::Full).then_some(&exact_exchange)
+            first_line["event"].get("activity"),
+            (projection == EventContentProjection::Full).then_some(&exact_activity)
         );
     }
 }

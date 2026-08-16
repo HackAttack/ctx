@@ -2,12 +2,15 @@
 set -euo pipefail
 
 expected_onnxruntime_version="1.27.0"
+script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 usage() {
   cat <<'USAGE'
-usage: scripts/dev-install-from-metadata.sh --metadata PATH_OR_URL [--artifact-dir DIR] [--platform PLATFORM] [--bin-dir DIR] [--runtime-dir DIR] [--no-runtime] [--no-modify-path] [--no-setup] [--no-pro-trial] [--no-daemon] [--no-skill] [--skill-agent AGENT] [--all-skill-agents] [--no-man]
+usage: scripts/dev-install-from-metadata.sh --metadata PATH_OR_URL [--artifact-dir DIR] [--platform PLATFORM] [--bin-dir DIR] [--runtime-dir DIR] [--no-runtime] [--no-modify-path] [--no-setup] [--no-daemon] [--no-skill] [--skill-agent AGENT] [--all-skill-agents] [--no-man]
 
-Development/CI installer for explicit ctx release metadata.
+Development/CI installer for explicit ctx release metadata. When metadata names
+a signed managed-pair envelope, that envelope is the authority for both fixed
+components and the four-slot installation transaction.
 
 For normal user installs, use:
   curl -fsSL https://ctx.rs/install | sh
@@ -36,8 +39,6 @@ Options:
                          directory is not on PATH.
   --no-setup             Install only; do not install the skill or run ctx setup
                          unless a skill flag is also passed.
-  --no-pro-trial         Keep installer setup Core-only. The default starts the
-                         anonymous Pro trial. CTX_INSTALL_NO_PRO_TRIAL=1 is equivalent.
   --no-daemon            Run installer setup with ctx setup --no-daemon.
                          CTX_INSTALL_NO_DAEMON=1 is equivalent.
   --no-skill             Do not install the bundled ctx agent skill.
@@ -123,6 +124,35 @@ fetch_artifact() {
   [[ -f "${source}" && ! -L "${source}" ]] || \
     fail "local artifact is missing or not a regular non-symlink file: ${source}"
   cp "${source}" "${dest}"
+}
+
+fetch_managed_object() {
+  local object_key="$1"
+  local dest="$2"
+  local source
+
+  [[ "${object_key}" =~ ^sha256/[0-9a-f]{64}/[A-Za-z0-9][A-Za-z0-9._+-]{0,127}$ ]] || \
+    fail "unsafe managed-pair object key: ${object_key}"
+  if [[ -z "${artifact_dir}" ]]; then
+    download_file "${base_url%/}/${object_key}" "${dest}"
+    return
+  fi
+  source="${artifact_dir%/}/${object_key}"
+  [[ -f "${source}" && ! -L "${source}" ]] || \
+    fail "local managed-pair object is missing or not a regular non-symlink file: ${source}"
+  cp "${source}" "${dest}"
+}
+
+json_value() {
+  python3 -I - "$1" "$2" <<'PY'
+import json, sys
+value = json.load(open(sys.argv[1], encoding="utf-8"))
+for component in sys.argv[2].split("."):
+    value = value[component]
+if not isinstance(value, (str, int)):
+    raise SystemExit("managed-pair plan field is not scalar")
+print(value)
+PY
 }
 
 read_metadata_source() {
@@ -410,7 +440,7 @@ write_install_marker() {
 {
   "schema_version": 1,
   "manager": "ctx-explicit-metadata-installer",
-  "metadata_trust": "explicit-unsigned",
+  "metadata_trust": "$(json_escape "${metadata_trust}")",
   "install_path": "$(json_escape "${install_path}")",
   "platform": "$(json_escape "${platform}")",
   "channel": "$(json_escape "${channel}")",
@@ -560,7 +590,6 @@ man_dir="${CTX_MAN_DIR:-${HOME:-}/.local/share/man/man1}"
 dry_run=0
 modify_path=1
 run_setup=1
-setup_pro_trial=1
 setup_no_daemon=0
 run_skill=1
 install_runtime=1
@@ -600,9 +629,6 @@ while (($# > 0)); do
       ;;
     --no-setup)
       run_setup=0
-      ;;
-    --no-pro-trial)
-      setup_pro_trial=0
       ;;
     --no-daemon)
       setup_no_daemon=1
@@ -671,8 +697,10 @@ schema_version="$(metadata_value "${metadata_file}" CTX_RELEASE_SCHEMA_VERSION)"
 version="$(metadata_value "${metadata_file}" CTX_RELEASE_VERSION)" || fail "metadata missing CTX_RELEASE_VERSION"
 base_url="$(metadata_value "${metadata_file}" CTX_RELEASE_BASE_URL)" || fail "metadata missing CTX_RELEASE_BASE_URL"
 platform_key="${platform//-/_}"
-artifact="$(metadata_value "${metadata_file}" "CTX_RELEASE_ARTIFACT_${platform_key}")" || fail "metadata missing artifact for ${platform}"
-checksum="$(metadata_value "${metadata_file}" "CTX_RELEASE_SHA256_${platform_key}")" || fail "metadata missing checksum for ${platform}"
+pair_envelope_artifact="$(metadata_value_optional "${metadata_file}" "CTX_RELEASE_MANAGED_PAIR_ENVELOPE_${platform_key}")"
+metadata_trust="explicit-unsigned"
+artifact="$(metadata_value_optional "${metadata_file}" "CTX_RELEASE_ARTIFACT_${platform_key}")"
+checksum="$(metadata_value_optional "${metadata_file}" "CTX_RELEASE_SHA256_${platform_key}")"
 runtime_artifact="$(metadata_value_optional "${metadata_file}" "CTX_RELEASE_ONNXRUNTIME_ARTIFACT_${platform_key}")"
 runtime_checksum="$(metadata_value_optional "${metadata_file}" "CTX_RELEASE_ONNXRUNTIME_SHA256_${platform_key}")"
 runtime_version="$(metadata_value_optional "${metadata_file}" CTX_RELEASE_ONNXRUNTIME_VERSION)"
@@ -684,9 +712,16 @@ if [[ -z "${channel}" ]]; then
 fi
 [[ "${schema_version}" == "1" ]] || fail "unsupported metadata schema: ${schema_version}"
 [[ "${base_url}" == https://* ]] || fail "metadata base URL must be HTTPS"
-[[ "${checksum}" =~ ^[0-9a-fA-F]{64}$ ]] || fail "checksum for ${platform} is not a SHA-256 hex digest"
-[[ "${checksum}" != "0000000000000000000000000000000000000000000000000000000000000000" ]] || fail "checksum for ${platform} is a placeholder"
-validate_safe_value "artifact name" "${artifact}"
+if [[ -z "${pair_envelope_artifact}" ]]; then
+  [[ -n "${artifact}" ]] || fail "metadata missing artifact for ${platform}"
+  [[ "${checksum}" =~ ^[0-9a-fA-F]{64}$ ]] || fail "checksum for ${platform} is not a SHA-256 hex digest"
+  [[ "${checksum}" != "0000000000000000000000000000000000000000000000000000000000000000" ]] || fail "checksum for ${platform} is a placeholder"
+  validate_safe_value "artifact name" "${artifact}"
+else
+  metadata_trust="signed-managed-pair-v1"
+  validate_safe_value "managed-pair envelope name" "${pair_envelope_artifact}"
+  command -v python3 >/dev/null 2>&1 || fail "python3 is required to verify signed managed-pair metadata"
+fi
 if [[ -n "${runtime_artifact}" || -n "${runtime_checksum}" ]]; then
   [[ -n "${runtime_artifact}" ]] || fail "metadata missing ONNX Runtime artifact for ${platform}"
   [[ -n "${runtime_checksum}" ]] || fail "metadata missing ONNX Runtime checksum for ${platform}"
@@ -696,15 +731,41 @@ if [[ -n "${runtime_artifact}" || -n "${runtime_checksum}" ]]; then
   validate_safe_value "ONNX Runtime artifact name" "${runtime_artifact}"
 fi
 
-artifact_url="${base_url%/}/${artifact}"
-download_path="${tmp_dir}/${artifact}"
+artifact_url=""
+download_path=""
+companion_download_path=""
+pair_envelope_path=""
+pair_plan=""
+pair_target=""
 install_name="ctx"
-case "${artifact}" in
+case "${platform}" in
+  linux-aarch64) pair_target="linux-arm64" ;;
+  *) pair_target="${platform}" ;;
+esac
+case "${artifact:-}" in
   *.exe)
     install_name="ctx.exe"
     ;;
 esac
 install_path="${bin_dir%/}/${install_name}"
+install_root="$(dirname "${bin_dir%/}")"
+if [[ -n "${pair_envelope_artifact}" ]]; then
+  [[ "$(basename "${bin_dir%/}")" == "bin" ]] || \
+    fail "signed managed-pair installation requires --bin-dir to name <install-root>/bin"
+  pair_envelope_path="${tmp_dir}/${pair_envelope_artifact}"
+  pair_plan="${tmp_dir}/managed-pair-plan.json"
+  fetch_artifact "${base_url%/}/${pair_envelope_artifact}" "${pair_envelope_artifact}" "${pair_envelope_path}"
+  python3 -I "${script_dir}/install-managed-pair.py" inspect \
+    --envelope "${pair_envelope_path}" --target "${pair_target}" --output "${pair_plan}"
+  artifact="$(json_value "${pair_plan}" core.artifact_name)"
+  checksum="$(json_value "${pair_plan}" core.sha256)"
+  core_object_key="$(json_value "${pair_plan}" core.object_key)"
+  companion_artifact="$(json_value "${pair_plan}" companion.artifact_name)"
+  companion_object_key="$(json_value "${pair_plan}" companion.object_key)"
+  artifact_url="${base_url%/}/${core_object_key}"
+  download_path="${tmp_dir}/${artifact}"
+  companion_download_path="${tmp_dir}/${companion_artifact}"
+fi
 
 if [[ "${CTX_INSTALL_NO_MAN:-0}" == "1" ]]; then
   install_man=0
@@ -720,10 +781,6 @@ fi
 
 if [[ "${CTX_INSTALL_NO_DAEMON:-0}" == "1" ]]; then
   setup_no_daemon=1
-fi
-
-if [[ "${CTX_INSTALL_NO_PRO_TRIAL:-0}" == "1" ]]; then
-  setup_pro_trial=0
 fi
 
 if [[ "${CTX_INSTALL_NO_RUNTIME:-0}" == "1" ]]; then
@@ -771,6 +828,10 @@ else
   printf 'Installing ctx %s (%s)\n' "${version}" "${platform}"
 fi
 printf '  binary: %s\n' "${install_path}"
+if [[ -n "${pair_envelope_artifact}" ]]; then
+  printf '  companion: %s/libexec/ctx-pro%s\n' "${install_root}" "$([[ "${platform}" == windows-* ]] && printf .exe || true)"
+  printf '  pair metadata: signed target envelope\n'
+fi
 if ((install_runtime)) && [[ -n "${runtime_artifact}" ]]; then
   printf '  onnxruntime: %s\n' "${runtime_dir%/}/onnxruntime/${runtime_version}/${platform}"
 elif [[ -n "${runtime_artifact}" ]]; then
@@ -800,14 +861,27 @@ if ((dry_run)); then
   exit 0
 fi
 
-fetch_artifact "${artifact_url}" "${artifact}" "${download_path}"
-actual_checksum="$(sha256_file "${download_path}")"
-if [[ "$(lowercase "${actual_checksum}")" != "$(lowercase "${checksum}")" ]]; then
-  fail "checksum mismatch for ${artifact}: expected ${checksum}, got ${actual_checksum}"
+if [[ -n "${pair_envelope_artifact}" ]]; then
+  fetch_managed_object "${core_object_key}" "${download_path}"
+  fetch_managed_object "${companion_object_key}" "${companion_download_path}"
+  python3 -I "${script_dir}/install-managed-pair.py" install \
+    --envelope "${pair_envelope_path}" \
+    --core "${download_path}" \
+    --companion "${companion_download_path}" \
+    --install-root "${install_root}" \
+    --target "${pair_target}" >/dev/null
+  actual_checksum="$(sha256_file "${install_path}")"
+else
+  artifact_url="${base_url%/}/${artifact}"
+  download_path="${tmp_dir}/${artifact}"
+  fetch_artifact "${artifact_url}" "${artifact}" "${download_path}"
+  actual_checksum="$(sha256_file "${download_path}")"
+  if [[ "$(lowercase "${actual_checksum}")" != "$(lowercase "${checksum}")" ]]; then
+    fail "checksum mismatch for ${artifact}: expected ${checksum}, got ${actual_checksum}"
+  fi
+  mkdir -p "${bin_dir}"
+  install -m 0755 "${download_path}" "${install_path}"
 fi
-
-mkdir -p "${bin_dir}"
-install -m 0755 "${download_path}" "${install_path}"
 
 write_install_marker "${install_path}.install.json" "${metadata_source}" "${source_commit}" "${published_at}"
 
@@ -845,11 +919,6 @@ fi
 if ((run_setup)); then
   setup_progress="${CTX_SETUP_PROGRESS:-auto}"
   setup_args=(setup)
-  retry_pro=""
-  if ((setup_pro_trial && ! setup_no_daemon)); then
-    setup_args+=(--pro)
-    retry_pro=" --pro"
-  fi
   setup_args+=(--progress "${setup_progress}")
   if ((setup_no_daemon)); then
     setup_args+=(--no-daemon)
@@ -861,9 +930,9 @@ if ((run_setup)); then
   else
     setup_status=$?
     if ((setup_no_daemon)); then
-      printf 'warning: ctx setup failed after install; run %s setup%s --progress %s --no-daemon to retry\n' "${install_path}" "${retry_pro}" "${setup_progress}" >&2
+      printf 'warning: ctx setup failed after install; run %s setup --progress %s --no-daemon to retry\n' "${install_path}" "${setup_progress}" >&2
     else
-      printf 'warning: ctx setup failed after install; run %s setup%s --progress %s to retry\n' "${install_path}" "${retry_pro}" "${setup_progress}" >&2
+      printf 'warning: ctx setup failed after install; run %s setup --progress %s to retry\n' "${install_path}" "${setup_progress}" >&2
     fi
   fi
 else

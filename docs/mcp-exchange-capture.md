@@ -185,7 +185,7 @@ The provider call ID, response status, failure kind, timing, and structured
 response payload remain stored and retrievable but unsearchable. Response text
 with the `normalized_body` disposition retains the event's existing body-search
 behavior exactly once; capture does not append a duplicate. The projection adds
-no semantic text, selector, filter, search result field, SQL column, Local Pro
+no semantic text, selector, filter, search result field, SQL column, derived
 fact, or hidden network request.
 
 Full show/list/MCP/SDK output remains exact stored-content retrieval. Search

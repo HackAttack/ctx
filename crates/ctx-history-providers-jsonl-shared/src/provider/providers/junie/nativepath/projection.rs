@@ -11,7 +11,7 @@ use crate::{
 use super::super::{
     assistant::{
         junie_buffer_result_text, junie_merge_buffered_agent_event, junie_step_output_projection,
-        JunieAssistantBuffer, JunieOutputOutcome, JunieStepAgg, JunieStepOutputProjection,
+        JunieAssistantBuffer, JunieStepAgg, JunieStepOutputProjection,
     },
     session_tree::JunieIndexMeta,
     MAX_JUNIE_TRANSIENT_TURN_BYTES,
@@ -19,7 +19,7 @@ use super::super::{
 
 #[derive(Debug, Clone)]
 pub(super) struct FileChangeDraft {
-    pub(super) path: String,
+    pub(super) paths: Vec<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -340,12 +340,6 @@ fn output_event(
     step: &JunieStepAgg,
     projected: JunieStepOutputProjection<'_>,
 ) -> EventDraft {
-    let outcome = match projected.outcome {
-        JunieOutputOutcome::Success => "success",
-        JunieOutputOutcome::Failure => "failure",
-        JunieOutputOutcome::Timeout => "timeout",
-        JunieOutputOutcome::Unknown => "unknown",
-    };
     EventDraft {
         event_index,
         event_type: if step.command.is_some() {
@@ -364,8 +358,6 @@ fn output_event(
                 "provider_step_id": bounded_linkage(Some(&step.provider_step_id)),
                 "exit_code": projected.exit_code,
                 "duration_ms": projected.duration_ms,
-                "timed_out": projected.outcome == JunieOutputOutcome::Timeout,
-                "outcome": outcome,
             },
         }),
         file_change: None,
@@ -387,12 +379,6 @@ fn file_change_event(
     let path = after_path
         .or(before_path)
         .filter(|path| !path.trim().is_empty())?;
-    let change_kind = match (before_path, after_path) {
-        (None, Some(_)) => "created",
-        (Some(_), None) => "deleted",
-        (Some(before), Some(after)) if before != after => "renamed",
-        _ => "modified",
-    };
     Some(EventDraft {
         event_index,
         event_type: EventType::ToolCall,
@@ -406,11 +392,14 @@ fn file_change_event(
             "new_string": file_content_text(change.get("afterContent")),
             "before_relative_path": before_path,
             "after_relative_path": after_path,
-            "change_kind": change_kind,
             "status": step.status,
         }),
         file_change: Some(FileChangeDraft {
-            path: path.to_owned(),
+            paths: before_path
+                .into_iter()
+                .chain(after_path)
+                .map(str::to_owned)
+                .collect(),
         }),
     })
 }
@@ -468,7 +457,7 @@ mod result_tests {
     }
 
     #[test]
-    fn retains_complete_success_failure_unknown_and_abstains_on_malformed_output() {
+    fn retains_complete_native_status_variants_and_abstains_on_malformed_output() {
         let meta = JunieIndexMeta {
             session_id: "session-result-test".to_owned(),
             ..JunieIndexMeta::default()
@@ -528,18 +517,19 @@ mod result_tests {
                 .map(|row| {
                     row.body
                         .pointer("/provider_native_tool_result/outcome")
+                        .or_else(|| row.body.pointer("/provider_native_tool_result/status"))
                         .and_then(Value::as_str)
-                        .unwrap()
+                        .unwrap_or("unknown")
                 })
                 .collect::<Vec<_>>(),
-            ["success", "failure", "unknown"]
+            ["success", "failed", "unknown"]
         );
         assert_eq!(
             outputs[0]
                 .body
                 .pointer("/provider_native_tool_result/call_id")
                 .and_then(Value::as_str),
-            Some("step:0")
+            Some("success-step")
         );
         assert!(!outputs[0].body.to_string().contains("junie-oversized-tail"));
     }

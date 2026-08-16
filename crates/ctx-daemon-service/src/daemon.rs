@@ -19,9 +19,9 @@ use crate::{
         DaemonTriggerV1, PublicEventV1,
     },
     config::{AppConfig, DaemonMode},
-    DaemonAvailabilityPort, DaemonConfigPort, DaemonInstallationLease, DaemonInstallationPort,
-    DaemonObservationPort, DaemonRunArgs, DaemonServicePorts, DaemonStartModeArg,
-    DaemonTriggerCommandArg, DaemonUpgradePorts, ProCatchUpPort,
+    CoreGenerationPublishedPort, DaemonAvailabilityPort, DaemonConfigPort, DaemonInstallationLease,
+    DaemonInstallationPort, DaemonObservationPort, DaemonRunArgs, DaemonServicePorts,
+    DaemonStartModeArg, DaemonTriggerCommandArg, DaemonUpgradePorts,
 };
 
 use super::source_backed_refresh_coordinator::CoreRefreshEngine;
@@ -100,14 +100,10 @@ pub(super) struct DaemonRuntime {
     pub(super) semantic_runtime: SharedSemanticRuntime,
     pub(super) source_refresh_coordinator: Option<Arc<CoreRefreshEngine>>,
     pub(super) history_retry: DaemonRetryBackoff,
-    pub(super) pro_retry: DaemonRetryBackoff,
     pub(super) semantic_retry: DaemonRetryBackoff,
     pub(super) semantic_blocked_job: Option<Value>,
     pub(super) sidecar_drain: DaemonSidecarDrain,
     pub(super) consumer_retry_deferral: DaemonConsumerRetryDeferral,
-    pub(super) browser_handoff_marker_revision:
-        Option<crate::browser_handoff_wake::BrowserHandoffMarkerRevision>,
-    pub(super) browser_handoff_next_due: Option<Instant>,
     pub(super) config: AppConfig,
 }
 
@@ -205,7 +201,7 @@ fn daemon_run_facts(args: &DaemonRunArgs) -> DaemonRunFactsV1 {
     DaemonRunFactsV1::new(start_mode, supervisor, trigger)
 }
 
-pub fn run_daemon<I, P, D, AP, UO>(
+pub fn run_daemon<I, N, D, AP, UO>(
     args: DaemonRunArgs,
     data_root: &Path,
     config: AppConfig,
@@ -214,14 +210,14 @@ pub fn run_daemon<I, P, D, AP, UO>(
         dyn DaemonConfigPort,
         dyn DaemonAvailabilityPort,
         I,
-        P,
+        N,
         dyn DaemonObservationPort,
     >,
     upgrade: &DaemonUpgradePorts<'_, D, AP, UO>,
 ) -> Result<()>
 where
     I: DaemonInstallationPort,
-    P: ProCatchUpPort + ?Sized,
+    N: CoreGenerationPublishedPort + ?Sized,
     D: DaemonUpgradePort + ?Sized,
     AP: ctx_upgrade_engine::AutomaticUpgradePolicyProvider<Snapshot = AppConfig>,
     UO: ctx_upgrade_engine::UpgradeObserver<AppConfig>,
@@ -267,7 +263,7 @@ fn publish_daemon_fatal_status_while_owned(
     );
 }
 
-fn run_daemon_inner<I, P, D, AP, UO>(
+fn run_daemon_inner<I, N, D, AP, UO>(
     args: DaemonRunArgs,
     data_root: &Path,
     config: AppConfig,
@@ -276,14 +272,14 @@ fn run_daemon_inner<I, P, D, AP, UO>(
         dyn DaemonConfigPort,
         dyn DaemonAvailabilityPort,
         I,
-        P,
+        N,
         dyn DaemonObservationPort,
     >,
     upgrade: &DaemonUpgradePorts<'_, D, AP, UO>,
 ) -> Result<()>
 where
     I: DaemonInstallationPort,
-    P: ProCatchUpPort + ?Sized,
+    N: CoreGenerationPublishedPort + ?Sized,
     D: DaemonUpgradePort + ?Sized,
     AP: ctx_upgrade_engine::AutomaticUpgradePolicyProvider<Snapshot = AppConfig>,
     UO: ctx_upgrade_engine::UpgradeObserver<AppConfig>,
@@ -627,7 +623,7 @@ where
                     source_refresh,
                 },
                 DaemonSchedulerPorts {
-                    pro: ports.pro_catch_up,
+                    generation_published: ports.generation_published,
                     semantic: DaemonSemanticJobPorts {
                         artifact_fetcher: ports.artifact_fetcher,
                         config: ports.config,
@@ -903,9 +899,6 @@ pub(super) fn daemon_wait_duration(
         }
         return wait_for;
     }
-    if let Some(next_due) = runtime.browser_handoff_next_due {
-        wait_for = wait_for.min(next_due.saturating_duration_since(now));
-    }
     if let Some(remaining) = runtime.consumer_retry_deferral.remaining(now) {
         wait_for = wait_for.min(remaining);
     } else {
@@ -913,9 +906,6 @@ pub(super) fn daemon_wait_duration(
             wait_for = wait_for.min(StdDuration::from_millis(retry_after_ms));
         }
         if let Some(retry_after_ms) = runtime.semantic_retry.retry_after_ms() {
-            wait_for = wait_for.min(StdDuration::from_millis(retry_after_ms));
-        }
-        if let Some(retry_after_ms) = runtime.pro_retry.retry_after_ms() {
             wait_for = wait_for.min(StdDuration::from_millis(retry_after_ms));
         }
     }

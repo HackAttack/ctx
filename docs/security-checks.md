@@ -11,18 +11,17 @@ the local retrieval product.
   runs.
 - `ctx sources` writes nothing in local-only security mode.
 - `ctx import` writes only under the configured ctx data root: Core generations,
-  optional semantic and Pro-derived state, config data, and optional daemon
-  lock/status/job state when daemon autostart runs.
+  optional semantic data, config data, and optional daemon lock/status/job
+  state when daemon autostart runs.
 - `ctx search` may request a bounded daemon-owned refresh of discovered native
   provider history before querying the active Core generation. The query process
   does not write Core generations or projections. Without semantic opt-in,
   default search must not download embedding models or start semantic indexing.
 - `ctx show` writes nothing in local-only security mode, except
   `ctx show session --out` writes only the explicit path when one is provided.
-- `ctx status` does not mutate canonical history or local Pro graph data:
-  missing stores stay missing, and existing stores are not migrated, repaired,
-  or used to create search generations. Pro entitlement authorization may
-  advance nonsecret anti-clock-rollback security metadata.
+- `ctx status` does not mutate canonical history: missing stores stay missing,
+  and existing stores are not migrated, repaired, or used to create search
+  generations.
 - In local-only security mode, setup/import/default search do not use network
   access or API keys. Explicit semantic use still must not call hosted model
   APIs, and search must not download the local embedding model when the required
@@ -128,46 +127,3 @@ repository mutation, or API keys.
 - Security docs do not promise default local sanitization.
 - Public docs do not make strict no-network claims except when describing
   local-only security mode.
-
-## No-Native-Store Combined-Candidate Gate
-
-The public and private release candidates must be qualified together at their
-reviewed commit SHAs. A mixed candidate is not evidence for this contract.
-Run the following sequence natively on every available Linux, macOS, and
-Windows release platform with the native credential adapter made genuinely
-unavailable:
-
-1. On a fresh canonical root, verify read-only credential and graph-key
-   inspection creates nothing; then start an anonymous trial and verify the
-   public credential and private graph-key namespaces independently select
-   their sticky owner-private file backends.
-2. Import canonical NativePath history, materialize Core plus Pro, restart the daemon,
-   and run `ctx blame`; verify Core Tantivy retrieval never depends on either
-   credential namespace and the encrypted Flat/FST graph remains derived-facts,
-   source-rebuildable state.
-3. Upgrade the same root to the candidate pair, restart the daemon and helper,
-   and repeat materialization and blame. Verify neither namespace changes its
-   selected backend when a native vault later becomes available.
-4. Run verified `ctx pro uninstall --delete-data`, including an interrupted
-   deletion retry. Verify public records and public-owned empty backend state
-   are absent, and verify the selected private graph-key record and graph data
-   are absent without changing the private selector's existing sticky
-   lifecycle or crossing either namespace's ownership boundary.
-5. Repeat mutation attempts with native selections already durable while the
-   vault is locked, denied, corrupt, ambiguous, canceled, missing access or
-   entitlement, or unavailable. Every case must fail closed without creating a
-   file-backend selector or record. macOS fallback eligibility is limited to
-   `errSecNotAvailable` and no default keychain; Windows eligibility is limited
-   to `ERROR_NO_SUCH_LOGON_SESSION`.
-
-Linux additionally reruns the existing no-session-bus, process/thread race,
-owner-mode, symlink, hardlink, bounded-record, corruption, sticky-selection,
-and verified-deletion regression suite. macOS qualification checks owner-only
-mode, rejects extended ACLs, and checks file-and-directory sync behavior where
-supported. Windows qualification checks a protected current-user-only DACL,
-not POSIX mode, and rejects reparse points and unexpected links.
-
-Cross-compilation and hermetic mocked-adapter tests are required supporting
-evidence, but never replace a native platform pass. If a native runner is
-unavailable, the release record names the infrastructure blocker and leaves
-that platform gate open.

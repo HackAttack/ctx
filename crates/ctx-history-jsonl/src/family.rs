@@ -26,14 +26,14 @@ mod single_file;
     reason = "shared family modules consume this compatibility prelude"
 )]
 pub(crate) use crate::{
-    fit_jsonl_mcp_exchange, jsonl_prefix_digest as prefix_digest, jsonl_terminal_call_id_digest,
+    fit_jsonl_activity, jsonl_prefix_digest as prefix_digest, jsonl_terminal_call_id_digest,
     new_jsonl_prefix_hasher as new_prefix_hasher, ordered_pending_exchange_entries,
     remember_pending_exchange, restore_hash_pending_exchange_entries,
     restore_ordered_pending_exchange_entries, selected_content_fits as jsonl_selected_content_fits,
-    sorted_pending_exchange_entries, take_pending_exchange, JsonlAppendOccurrenceState,
-    JsonlCheckpoint, JsonlCheckpointedTerminalAuthority, JsonlFileObservation,
-    JsonlMcpObservedEncodedBytes, JsonlOrderedAppendOccurrenceState, JsonlOversizedRecordPolicy,
-    JsonlPage, JsonlPendingExchangeLookup, JsonlPendingExchangeRemember, JsonlPendingExchangeState,
+    sorted_pending_exchange_entries, take_pending_exchange, JsonlActivityObservedBytes,
+    JsonlAppendOccurrenceState, JsonlCheckpoint, JsonlCheckpointedTerminalAuthority,
+    JsonlFileObservation, JsonlOrderedAppendOccurrenceState, JsonlOversizedRecordPolicy, JsonlPage,
+    JsonlPendingExchangeLookup, JsonlPendingExchangeRemember, JsonlPendingExchangeState,
     JsonlRecordEvidence, JsonlRecordRef, JsonlResumableSha256, JsonlScanOutcome, JsonlSourceChange,
     JsonlSourceIdentity, JsonlTerminalAuthority, JsonlTerminalObservationRegion,
 };

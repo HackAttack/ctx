@@ -1912,12 +1912,9 @@ fn emission_test_typed_record(
     let mut projected = CoreRecord::new_selected(
         event_id,
         session_id,
-        session_id,
         source.clone(),
         ordinal,
         event_type,
-        "primary",
-        true,
         "jsonl-emission-test-v1",
         "bounded",
     )

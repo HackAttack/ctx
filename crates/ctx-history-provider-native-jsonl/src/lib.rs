@@ -138,7 +138,6 @@ impl JsonlFamilyError for NativeJsonlError {
 }
 
 pub type Result<T> = std::result::Result<T, NativeJsonlError>;
-pub use ctx_history_capture_model::{OutputOutcome, OutputOutcomeMetadata};
 pub use NativeJsonlError as CaptureError;
 
 pub fn compute_payload_hash(value: &serde_json::Value) -> Result<String> {

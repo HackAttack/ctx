@@ -8,10 +8,11 @@ use std::{
 
 use crate::{provider::source_backed::IndexBaseEventLookup, JsonlProviderRuntime};
 use chrono::{DateTime, Utc};
-use ctx_history_capture_model::normalization::provider_local_preview;
 use ctx_history_core::{
-    derive_event_id, derive_native_session_id, AgentType, CaptureProvider, CoreRecord,
-    EventIdentityInput, EventType, NativeItemKey, SourceKey, StableEntityId, TypedKey,
+    derive_event_id, derive_native_session_id, ActivityInvocation, ActivityJsonCapture,
+    ActivityResult, ActivityTextCapture, CaptureProvider, CoreActivity, CoreRecord,
+    EventIdentityInput, EventType, LiteralFactKind, NativeItemKey, ProviderDeclaredFact, SourceKey,
+    StableEntityId, TypedKey, CORE_ACTIVITY_REVISION, MAX_CORE_CONTENT_BYTES,
 };
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -40,10 +41,9 @@ const NATIVE_SESSION_NAMESPACE: &str = "junie.session";
 const LOGICAL_SESSION_KIND: &str = "junie-session";
 const LOGICAL_EVENT_KIND: &str = "junie-event";
 const SOURCE_SCHEMA_VARIANT: &str = "junie-session-events-v2";
-const PARSER_REVISION: &str = "junie-source-backed-v5";
-const EVENT_IDENTITY_REVISION: &str = "junie-content-occurrence-v1";
+const PARSER_REVISION: &str = "junie-source-backed-v6-core-activity";
+const EVENT_IDENTITY_REVISION: &str = "junie-content-occurrence-v2";
 const FALLBACK_FINGERPRINT_DOMAIN: &[u8] = b"ctx.junie.fallback-event-fingerprint.v1\0";
-const METADATA_TEXT_MAX_CHARS: usize = 2_048;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -181,11 +181,7 @@ impl<R: JsonlProviderRuntime> JsonlFamilyAdapter for JunieJsonlAdapter<R> {
             ));
         }
         let binding = decode_binding(leaf)?;
-        let workspace = binding
-            .meta
-            .project_dir
-            .as_deref()
-            .map(|value| provider_local_preview(value, METADATA_TEXT_MAX_CHARS).0);
+        let workspace = binding.meta.project_dir.clone();
         let projection = JunieProjection::new(&binding.meta, imported_at);
         let fallback_identities = FallbackEventIdentityState::<R>::new(
             leaf.source().clone(),
@@ -247,7 +243,7 @@ impl<R: JsonlProviderRuntime> JunieProjector<R> {
         let cwd = self
             .projection
             .cwd()
-            .map(|value| provider_local_preview(value, METADATA_TEXT_MAX_CHARS).0)
+            .map(str::to_owned)
             .or_else(|| self.workspace.clone());
         for row in rows {
             let assignment = self
@@ -312,48 +308,66 @@ fn core_record(
             "Junie source-backed event has no exact lexical text".to_owned(),
         ));
     }
-    let structured_content = if row.event_type == EventType::Message {
-        let model = row.body.get("model").cloned();
-        let usage = row.body.get("usage").cloned();
-        (model.is_some() || usage.is_some()).then(|| {
-            serde_json::json!({
-                "model": model,
-                "usage": usage,
-            })
-        })
-    } else {
-        Some(serde_json::json!({
-            "provider_native_event": row.body,
-            "file_path": row.file_change.map(|change| change.path),
-        }))
-    };
+    let mut facts = Vec::new();
+    if let Some(workspace) = workspace {
+        facts.push(ProviderDeclaredFact {
+            kind: LiteralFactKind::Workspace,
+            value: workspace.to_owned(),
+        });
+    }
+    if let Some(cwd) = cwd {
+        facts.push(ProviderDeclaredFact {
+            kind: LiteralFactKind::SessionCwd,
+            value: cwd.to_owned(),
+        });
+    }
+    if let Some(change) = &row.file_change {
+        facts.extend(
+            change
+                .paths
+                .iter()
+                .cloned()
+                .map(|value| ProviderDeclaredFact {
+                    kind: LiteralFactKind::File,
+                    value,
+                }),
+        );
+    }
+    let activity = junie_activity(&row, facts)?;
     let mut record = CoreRecord::new_selected(
         event_id,
-        binding.session_id,
         binding.session_id,
         source.clone(),
         row.event_index,
         row.event_type.as_str(),
-        AgentType::Primary.as_str(),
-        true,
         PARSER_REVISION,
-        body,
+        body.clone(),
     )
     .map_err(contract)?;
     record.provider_session_id = Some(binding.provider_session_id.clone());
     record.native_event_id = Some(native_event_id);
     record.occurred_at_unix_ms = Some(row.occurred_at.timestamp_millis());
     record.role = row.role.map(|role| role.as_str().to_owned());
-    record.workspace = workspace.map(str::to_owned);
-    record.cwd = cwd.map(str::to_owned);
-    record.content.structured_content = structured_content;
+    record.content.structured_content = Some(row.body);
+    record.content.activity = activity;
+    ctx_history_jsonl::fit_jsonl_activity(
+        &body,
+        record.content.structured_content.as_ref(),
+        &mut record.content.activity,
+        ctx_history_jsonl::JsonlActivityObservedBytes::infer_from_present(),
+        MAX_CORE_CONTENT_BYTES,
+    );
+    record
+        .content
+        .omit_structured_content_if_aggregate_exceeds_limit()
+        .map_err(contract)?;
     record.validate_contract().map_err(contract)?;
     Ok(record)
 }
 
 fn event_fingerprint(row: &EventDraft) -> Result<TypedKey> {
     let role = row.role.map(|role| role.as_str());
-    let file_change = row.file_change.as_ref().map(|change| change.path.as_str());
+    let file_change = row.file_change.as_ref().map(|change| &change.paths);
     let canonical = serde_json::to_vec(&serde_json::json!({
         "event_type": row.event_type.as_str(),
         "role": role,
@@ -366,6 +380,61 @@ fn event_fingerprint(row: &EventDraft) -> Result<TypedKey> {
     digest.update((canonical.len() as u64).to_be_bytes());
     digest.update(canonical);
     TypedKey::bytes(digest.finalize().to_vec()).map_err(contract)
+}
+
+fn junie_activity(
+    row: &EventDraft,
+    facts: Vec<ProviderDeclaredFact>,
+) -> Result<Option<CoreActivity>> {
+    let provider_call_id = row
+        .body
+        .pointer("/provider_native_tool_result/call_id")
+        .or_else(|| row.body.get("provider_step_id"))
+        .and_then(serde_json::Value::as_str)
+        .filter(|value| !value.is_empty())
+        .map(TypedKey::utf8)
+        .transpose()
+        .map_err(contract)?;
+    let invocation = (row.event_type == EventType::ToolCall)
+        .then(|| {
+            row.body
+                .get("tool_name")
+                .and_then(serde_json::Value::as_str)
+        })
+        .flatten()
+        .filter(|tool| !tool.is_empty())
+        .map(|tool| ActivityInvocation {
+            protocol: None,
+            server: None,
+            tool: tool.to_owned(),
+            arguments: ActivityJsonCapture::Present {
+                value: row.body.clone(),
+            },
+            started_at_unix_ms: None,
+        });
+    let result = matches!(
+        row.event_type,
+        EventType::ToolOutput | EventType::CommandOutput
+    )
+    .then(|| ActivityResult {
+        status: None,
+        completed_at_unix_ms: None,
+        duration_ns: None,
+        text: ActivityTextCapture::NormalizedBody,
+        structured_content: ActivityJsonCapture::Present {
+            value: row.body.clone(),
+        },
+    });
+    if provider_call_id.is_none() && invocation.is_none() && result.is_none() && facts.is_empty() {
+        return Ok(None);
+    }
+    Ok(Some(CoreActivity {
+        revision: CORE_ACTIVITY_REVISION,
+        provider_call_id,
+        invocation,
+        result,
+        facts,
+    }))
 }
 
 fn decode_binding(leaf: &JsonlFamilyLeaf) -> Result<JunieBinding> {

@@ -1,6 +1,6 @@
 use super::{
-    assert_daemon_process_running, assert_daemon_process_running_with_status,
-    assert_no_daemon_autostart_mutation, ctx, support, support::*, write_codex_setup_session,
+    assert_daemon_process_running, assert_no_daemon_autostart_mutation, ctx, support, support::*,
+    write_codex_setup_session,
 };
 
 #[path = "../support/setup_sources_import/lifecycle_helpers.rs"]
@@ -1093,9 +1093,7 @@ fn machine_readable_setup_uses_v2_top_level_persistent_daemon_contract() {
         "{setup:#}"
     );
     let pid = setup["daemon_autostart"]["pid"].as_u64().unwrap() as u32;
-    assert_eq!(setup["daemon"]["running"], true, "{setup:#}");
-    assert_eq!(setup["daemon"]["pid"], pid, "{setup:#}");
-    assert_daemon_process_running_with_status(&temp, pid);
+    assert_daemon_process_running(pid);
 
     let running = json_output(ctx(&temp).args(["daemon", "status", "--format=json"]));
     assert_eq!(running["daemon"]["running"], true, "{running:#}");

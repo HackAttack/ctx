@@ -16,6 +16,7 @@ pub(super) struct CodeBuddyEventInput {
     pub(super) role: Option<String>,
     pub(super) occurred_at: DateTime<Utc>,
     pub(super) text: String,
+    pub(super) structured_content: Value,
 }
 
 pub(crate) fn codebuddy_decoded_message(raw_message: &Value) -> Value {
@@ -123,6 +124,7 @@ pub(super) struct CodeBuddyEventDraft {
     pub(super) role: EventRole,
     pub(super) occurred_at: DateTime<Utc>,
     pub(super) text: String,
+    pub(super) structured_content: Value,
 }
 
 pub(super) fn codebuddy_normalized_rows(
@@ -150,5 +152,6 @@ fn codebuddy_event(provider_session_id: &str, event: CodeBuddyEventInput) -> Cod
         role,
         occurred_at: event.occurred_at,
         text: event.text,
+        structured_content: event.structured_content,
     }
 }

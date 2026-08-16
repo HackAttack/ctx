@@ -1,4 +1,4 @@
-use ctx_history_core::{CtxHistoryJsonlSourceRecord, CTX_HISTORY_JSONL_V1_SCHEMA_VERSION};
+use ctx_history_core::{CtxHistoryJsonlSourceRecord, CTX_HISTORY_JSONL_SCHEMA_VERSION};
 use serde_json::{json, Value};
 
 use crate::stable_capture_uuid;
@@ -72,14 +72,14 @@ pub(crate) fn custom_history_internal_session_id(
     session_id: &str,
 ) -> String {
     let key = custom_history_key(json!({
-        "schema": CTX_HISTORY_JSONL_V1_SCHEMA_VERSION,
+        "schema": CTX_HISTORY_JSONL_SCHEMA_VERSION,
         "kind": "session",
         "provider_key": provider_key,
         "source_id": source_id,
         "session_id": session_id,
     }));
     let id = stable_capture_uuid(&key, "custom-provider-session-id");
-    format!("ctx-history-jsonl-v1-{id}")
+    format!("ctx-history-jsonl-v2-{id}")
 }
 
 pub(crate) fn custom_history_key(value: Value) -> String {

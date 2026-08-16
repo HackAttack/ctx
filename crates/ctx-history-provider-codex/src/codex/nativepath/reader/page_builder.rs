@@ -50,25 +50,10 @@ impl CodexNativeScanner {
                 "Codex semantic scan must drain every owned page before finishing".to_owned(),
             ));
         }
-        let repository_authority = super::super::checkpoint::CodexRepositoryAuthorityCheckpoint {
-            candidates: self.repository_candidate_authority.checkpoint_entries(),
-            occurrence_negative_authority: self.repository_occurrences.negative_authority(),
-            candidate_cells: if self.repository_candidate_authority.is_exhausted() {
-                std::collections::BTreeSet::new()
-            } else {
-                self.repository_candidate_cells
-            },
-            candidate_exhausted: self.repository_candidate_authority.is_exhausted(),
-        };
         let checkpoint = super::super::checkpoint::CodexSemanticCheckpoint::from_state(
             super::super::checkpoint::CodexSemanticCheckpointState {
                 owner: self.owner.as_ref(),
                 local_turn_started: self.local_turn_started,
-                tool_contexts: &self.tool_contexts,
-                tool_authorities: &self.tool_authorities,
-                continuations: &self.continuations,
-                mcp_terminal_authority: self.mcp_terminal_authority.checkpoint(),
-                repository_authority,
             },
         )?;
         Ok(CodexSemanticScan {

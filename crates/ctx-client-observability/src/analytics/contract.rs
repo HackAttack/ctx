@@ -4,7 +4,6 @@ use super::{OperationCompletedV1, ProviderRefreshCompletedV1, RuntimeObservation
 pub enum Surface {
     Cli,
     Mcp,
-    ProHost,
     Daemon,
 }
 
@@ -13,7 +12,6 @@ impl Surface {
         match self {
             Self::Cli => "cli",
             Self::Mcp => "mcp",
-            Self::ProHost => "pro_host",
             Self::Daemon => "daemon",
         }
     }

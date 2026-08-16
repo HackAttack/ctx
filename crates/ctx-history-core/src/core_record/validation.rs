@@ -1,11 +1,6 @@
-use std::collections::BTreeMap;
-
 use crate::{SourceKey, StableEntityId, StableEntityKind};
 
-use super::{
-    CoreRecordError, CoreRecordResult, MAX_METADATA_BYTES, MAX_REPOSITORY_RELATIVE_PATH_BYTES,
-    MAX_TEXT_METADATA_BYTES,
-};
+use super::{CoreRecordError, CoreRecordResult};
 
 pub(super) fn validate_owned_identity(
     identity: StableEntityId,
@@ -30,51 +25,6 @@ pub(super) fn validate_related_session_identity(identity: StableEntityId) -> Cor
         .map_err(|_| CoreRecordError::InvalidIdentityRelationship)?;
     if identity.entity_kind() != StableEntityKind::Session {
         return Err(CoreRecordError::InvalidIdentityRelationship);
-    }
-    Ok(())
-}
-
-pub(super) fn validate_json_map(
-    metadata: &BTreeMap<String, serde_json::Value>,
-) -> CoreRecordResult<()> {
-    for key in metadata.keys() {
-        validate_text("metadata_key", key, MAX_TEXT_METADATA_BYTES)?;
-    }
-    let encoded = serde_json::to_vec(metadata)?;
-    validate_size("metadata", encoded.len(), MAX_METADATA_BYTES)
-        .map_err(|_| CoreRecordError::InvalidMetadata)
-}
-
-pub(super) fn validate_repository_alias_component(value: &str) -> CoreRecordResult<()> {
-    if value.is_empty()
-        || value.len() > MAX_TEXT_METADATA_BYTES
-        || matches!(value, "." | "..")
-        || value
-            .bytes()
-            .any(|byte| byte.is_ascii_control() || matches!(byte, b'/' | b'\\' | b'@' | b':'))
-    {
-        return Err(CoreRecordError::InvalidRepositoryAlias);
-    }
-    Ok(())
-}
-
-pub(super) fn validate_repository_relative_path(path: &str) -> CoreRecordResult<()> {
-    if path.is_empty()
-        || path.len() > MAX_REPOSITORY_RELATIVE_PATH_BYTES
-        || path.starts_with('/')
-        || path.starts_with('\\')
-        || path.contains('\\')
-        || path
-            .bytes()
-            .any(|byte| byte == 0 || byte.is_ascii_control())
-        || path
-            .split('/')
-            .any(|part| part.is_empty() || matches!(part, "." | ".."))
-        || path.as_bytes().get(1).is_some_and(|second| *second == b':')
-    {
-        return Err(CoreRecordError::InvalidRepositoryRelativePath(
-            path.to_owned(),
-        ));
     }
     Ok(())
 }

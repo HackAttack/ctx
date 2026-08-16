@@ -167,7 +167,7 @@ where
 {
     type Lifecycle = L;
     type Spool = S;
-    type RouteControl = ctx_history_provider_runtime::ProviderRouteControlExpectation;
+    type RouteControl = crate::ProviderRouteControlExpectation;
     type Leaf = HermesSessionLeaf<L>;
     type TreeAuthority = HermesTreeAuthority;
 
@@ -176,14 +176,12 @@ where
     }
 
     fn route_control_expectation(&self) -> Option<Self::RouteControl> {
-        Some(
-            ctx_history_provider_runtime::ProviderRouteControlExpectation::new(
-                HERMES_ROUTE_CONTROL_KIND,
-                self.source.exact_descriptor_digest(),
-                hermes_route_control_exact_due_for_profile,
-                Some(hermes_route_control_database_identity),
-            ),
-        )
+        Some(crate::ProviderRouteControlExpectation::new(
+            HERMES_ROUTE_CONTROL_KIND,
+            self.source.exact_descriptor_digest(),
+            hermes_route_control_exact_due_for_profile,
+            Some(hermes_route_control_database_identity),
+        ))
     }
 
     fn owns_source(&self, source: &SourceKey) -> bool {

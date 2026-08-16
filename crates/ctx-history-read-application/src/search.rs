@@ -1,10 +1,14 @@
 use std::{collections::BTreeMap, fmt, path::PathBuf, str::FromStr};
 
 use anyhow::{anyhow, Result};
-use ctx_history_core::{CaptureProvider, EventOrigin, EventType, SessionRelationshipKind};
+use ctx_history_core::{
+    AgentScope, CaptureProvider, EventType, ProviderNativeEventCopy,
+    ProviderNativeSessionRelationship,
+};
 use ctx_history_index_query::{
-    AgentScope, EventRecord, EventSearchCandidate, EventSearchFilters, ExcludedSessionTree,
-    IndexError, SearchContentScope, VerifiedIndex, LEXICAL_QUERY_LIMITS, MAX_LEXICAL_QUERY_RESULTS,
+    EventRecord, EventSearchCandidate, EventSearchFilters, ExcludedSessionTree, IndexError,
+    SearchAgentScope, SearchContentScope, VerifiedIndex, LEXICAL_QUERY_LIMITS,
+    MAX_LEXICAL_QUERY_RESULTS,
 };
 use serde_json::{json, Value};
 use thiserror::Error;
@@ -375,9 +379,9 @@ pub fn search_filters_with_refs(
         content_scope: request.content_scope,
         event_type,
         agent_scope: if request.primary_only || !request.include_subagents {
-            AgentScope::Primary
+            SearchAgentScope::Primary
         } else {
-            AgentScope::All
+            SearchAgentScope::All
         },
         file: request
             .file
@@ -404,9 +408,9 @@ fn excluded_active_session_tree(
         Some(&active_session.provider),
     )?;
     let session_id = match sessions.as_slice() {
-        [session] => Some(session.root_session_id.as_uuid()),
+        [session] => session.root_session_id.map(|id| id.as_uuid()),
         [first, second] if first.root_session_id == second.root_session_id => {
-            Some(first.root_session_id.as_uuid())
+            first.root_session_id.map(|id| id.as_uuid())
         }
         _ => None,
     };
@@ -467,21 +471,17 @@ pub struct SearchEventMetadata {
     pub event_id: Uuid,
     pub session_id: Uuid,
     pub parent_session_id: Option<Uuid>,
-    pub root_session_id: Uuid,
-    pub session_relationship: SessionRelationshipKind,
-    pub event_origin: EventOrigin,
+    pub root_session_id: Option<Uuid>,
+    pub session_relationship: Option<ProviderNativeSessionRelationship>,
+    pub event_copy: Option<ProviderNativeEventCopy>,
     pub provider: String,
     pub source_format: String,
     pub provider_session_id: Option<String>,
-    pub branch: Option<String>,
-    pub agent_type: String,
-    pub is_primary: bool,
+    pub agent_scope: Option<AgentScope>,
     pub event_sequence: u64,
     pub occurred_at_unix_ms: Option<i64>,
     pub event_type: String,
     pub role: Option<String>,
-    pub workspace: Option<String>,
-    pub cwd: Option<String>,
 }
 
 impl From<&EventRecord> for SearchEventMetadata {
@@ -490,21 +490,17 @@ impl From<&EventRecord> for SearchEventMetadata {
             event_id: event.event_id.as_uuid(),
             session_id: event.session_id.as_uuid(),
             parent_session_id: event.parent_session_id.map(|id| id.as_uuid()),
-            root_session_id: event.root_session_id.as_uuid(),
+            root_session_id: event.root_session_id.map(|id| id.as_uuid()),
             session_relationship: event.session_relationship,
-            event_origin: event.event_origin.clone(),
+            event_copy: event.event_copy.clone(),
             provider: event.provider.clone(),
             source_format: event.source_format.clone(),
             provider_session_id: event.provider_session_id.clone(),
-            branch: event.branch.clone(),
-            agent_type: event.agent_type.clone(),
-            is_primary: event.is_primary,
+            agent_scope: event.agent_scope,
             event_sequence: event.event_sequence,
             occurred_at_unix_ms: event.occurred_at_unix_ms,
             event_type: event.event_type.clone(),
             role: event.role.clone(),
-            workspace: event.workspace.clone(),
-            cwd: event.cwd.clone(),
         }
     }
 }

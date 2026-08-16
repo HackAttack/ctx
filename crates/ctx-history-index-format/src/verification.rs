@@ -41,10 +41,8 @@ use ctx_history_core::CertifiedSource;
 
 use super::{physical_integrity_audit_with_candidate_proof, verify_physical_integrity};
 
-mod lineage;
 mod spill;
 
-use lineage::SessionRelationship;
 use spill::{
     reserve_verification_scratch, with_verification_scratch_budget, ProjectionAccumulator,
     ProjectionDeltas, ScratchReservation, SpillVerificationIdentities, VerificationSpill,
@@ -64,6 +62,7 @@ struct SegmentVerification {
     body_tokens: u64,
     source_aggregates: BTreeMap<String, SourceAggregate>,
     parent_session_documents: u64,
+    root_session_documents: u64,
 }
 
 #[derive(Clone, Copy)]

@@ -14,7 +14,10 @@ use std::{
 
 use chrono::{DateTime, Utc};
 use ctx_history_capture_model::normalization::{provider_role, provider_value_text};
-use ctx_history_core::{AgentType, CaptureProvider, EventRole, EventType, SourceKey};
+use ctx_history_core::{
+    CaptureProvider, CoreActivity, EventRole, EventType, LiteralFactKind, ProviderDeclaredFact,
+    SourceKey, CORE_ACTIVITY_REVISION,
+};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 

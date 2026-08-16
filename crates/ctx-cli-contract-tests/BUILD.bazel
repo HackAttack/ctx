@@ -45,11 +45,6 @@ filegroup(
 )
 
 filegroup(
-    name = "contract_support_pro",
-    srcs = ["tests/contracts/support/pro.rs"],
-)
-
-filegroup(
     name = "contract_support_upgrade",
     srcs = ["tests/contracts/support/upgrade.rs"],
 )
@@ -112,7 +107,6 @@ ctx_cli_contract_test(
     test_support = [
         "base",
         "fixtures",
-        "pro",
         "upgrade",
     ],
 )

@@ -5,10 +5,10 @@ use std::{
 };
 
 use ctx_history_core::{
-    derive_event_id, derive_session_id, AgentType, CaptureProvider, CertifiedSource, CoreRecord,
-    CoreRecordError, EventIdentityInput, NativeItemKey, NativeSessionKey, ProjectionContractError,
-    ScannedSourceCounts, SessionIdentityInput, SourceAnchor, SourceKey, SourceObservation,
-    TypedKey,
+    derive_event_id, derive_session_id, CaptureProvider, CertifiedSource, CoreActivity, CoreRecord,
+    CoreRecordError, EventIdentityInput, LiteralFactKind, NativeItemKey, NativeSessionKey,
+    ProjectionContractError, ProviderDeclaredFact, ScannedSourceCounts, SessionIdentityInput,
+    SourceAnchor, SourceKey, SourceObservation, TypedKey, CORE_ACTIVITY_REVISION,
 };
 use sha2::{Digest, Sha256};
 use thiserror::Error;
@@ -36,7 +36,7 @@ use crate::{
 
 const NANOCLAW_SOURCE_SCHEMA_VARIANT: &str = "nanoclaw-compound-project-v1";
 const NANOCLAW_SOURCE_REVISION_KIND: &str = "nanoclaw-compound-project-snapshot-v1";
-const NANOCLAW_SOURCE_BACKED_PARSER_REVISION: &str = "nanoclaw-source-backed-v3";
+const NANOCLAW_SOURCE_BACKED_PARSER_REVISION: &str = "nanoclaw-source-backed-v4-neutral-core";
 const NANOCLAW_LOGICAL_SESSION_KIND: &str = "nanoclaw-session";
 const NANOCLAW_NATIVE_SESSION_NAMESPACE: &str = "nanoclaw.project-session";
 const NANOCLAW_LOGICAL_EVENT_KIND: &str = "nanoclaw-message";
@@ -106,11 +106,11 @@ struct NanoClawPreparedProjection {
 
 impl<B> ReplacementDocumentTree for NanoClawDocumentTreeAdapter<B>
 where
-    B: ctx_history_provider_runtime::ProviderRuntimeBinding,
+    B: crate::ProviderRuntimeBinding,
 {
     type Lifecycle = B::CaptureLifecycleSink;
     type Spool = B::DocumentRecordSpool;
-    type RouteControl = ctx_history_provider_runtime::ProviderRouteControlExpectation;
+    type RouteControl = crate::ProviderRouteControlExpectation;
     type Leaf = NanoClawDocumentLeaf;
     type TreeAuthority = NanoClawDocumentTreeAuthority;
 
@@ -409,7 +409,7 @@ fn project_nanoclaw_prepared<B>(
     sink: &mut ChangedDocumentSink<'_, '_, B>,
 ) -> SourceBackedRouteResult<DocumentSourceTerminal>
 where
-    B: ctx_history_provider_runtime::ProviderRuntimeBinding,
+    B: crate::ProviderRuntimeBinding,
 {
     rewind_nanoclaw_staging(&mut prepared.spool)?;
     let mut reader = prepared.spool.reader();
@@ -605,12 +605,9 @@ fn nanoclaw_core_record(
     let mut record = CoreRecord::new_selected(
         event_id,
         session_id,
-        session_id,
         source.clone(),
         ordinal,
         event.event_type.as_str(),
-        AgentType::Primary.as_str(),
-        true,
         NANOCLAW_SOURCE_BACKED_PARSER_REVISION,
         body,
     )?;
@@ -618,8 +615,19 @@ fn nanoclaw_core_record(
     record.native_event_id = Some(native_event_id);
     record.occurred_at_unix_ms = Some(event.occurred_at.timestamp_millis());
     record.role = event.role.map(|role| role.as_str().to_owned());
-    record.workspace = session.agent_group_folder.clone();
-    record.cwd = session.agent_group_folder.clone();
+    record.content.activity = session
+        .agent_group_folder
+        .as_ref()
+        .map(|project| CoreActivity {
+            revision: CORE_ACTIVITY_REVISION,
+            provider_call_id: None,
+            invocation: None,
+            result: None,
+            facts: vec![ProviderDeclaredFact {
+                kind: LiteralFactKind::Project,
+                value: project.clone(),
+            }],
+        });
     record.validate_contract()?;
     Ok(record)
 }

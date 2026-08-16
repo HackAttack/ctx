@@ -5,7 +5,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use ctx_history_core::{CoreRecord, EventOrigin, EventRole, EventType, SessionRelationshipKind};
+use ctx_history_core::{CoreRecord, EventRole, EventType, ProviderNativeSessionRelationship};
 use rusqlite::Connection;
 
 use super::*;
@@ -64,11 +64,9 @@ fn source_backed_zed_two_threads_project_distinct_sessions_with_complete_core() 
         .collect::<Vec<_>>();
     assert!(!child_records.is_empty());
     assert!(child_records.iter().all(|record| {
-        record.session_relationship == SessionRelationshipKind::Delegated
-            && record.event_origin == EventOrigin::UniqueToSession
-            && !record.is_primary
+        record.session_relationship == Some(ProviderNativeSessionRelationship::Delegated)
             && record.parent_session_id == Some(sessions["zed-root"])
-            && record.root_session_id == sessions["zed-root"]
+            && record.root_session_id.is_none()
     }));
     let root_records = records
         .iter()
@@ -76,11 +74,9 @@ fn source_backed_zed_two_threads_project_distinct_sessions_with_complete_core() 
         .collect::<Vec<_>>();
     assert!(!root_records.is_empty());
     assert!(root_records.iter().all(|record| {
-        record.session_relationship == SessionRelationshipKind::Root
-            && record.event_origin == EventOrigin::Unknown
-            && record.is_primary
+        record.session_relationship.is_none()
             && record.parent_session_id.is_none()
-            && record.root_session_id == sessions["zed-root"]
+            && record.root_session_id.is_none()
     }));
 
     let event_ids = records
@@ -126,7 +122,14 @@ fn source_backed_zed_two_threads_project_distinct_sessions_with_complete_core() 
             "zed child oracle answer".to_owned(),
             "zed child oracle prompt".to_owned(),
             "zed compacted summary oracle".to_owned(),
-            "zed sqlite oracle answer\ntool call: write_file\ntool input: present".to_owned(),
+            concat!(
+                "zed sqlite oracle answer\ntool call: write_file\ntool input: present\n",
+                "{\"content\":[{\"Text\":\"wrote src/zed_oracle.txt\"}],",
+                "\"is_error\":false,\"output\":{\"path\":\"src/zed_oracle.txt\",",
+                "\"status\":\"ok\"},\"tool_name\":\"write_file\",",
+                "\"tool_use_id\":\"tool-root-1\"}"
+            )
+            .to_owned(),
             "zed sqlite oracle prompt".to_owned(),
         ])
     );
@@ -187,7 +190,6 @@ fn zed_core_record_retains_full_tail_beyond_sixteen_kibibytes() {
                 "content": [{"type": "text"}],
             }),
             body: full_body.clone(),
-            safe_file_touches: Vec::new(),
         },
         RecordDigest::from_text(&full_body),
     )
@@ -404,7 +406,6 @@ fn assert_same_semantic_projection(expected: &CoreRecord, actual: &CoreRecord) {
     assert_eq!(actual.event_type, expected.event_type);
     assert_eq!(actual.role, expected.role);
     assert_eq!(actual.session_relationship, expected.session_relationship);
-    assert_eq!(actual.event_origin, expected.event_origin);
     assert_eq!(
         actual.content.meaningful_text(),
         expected.content.meaningful_text()
@@ -437,8 +438,6 @@ fn root_context(
         },
         session_id,
         parent_session_id: None,
-        root_session_id: session_id,
-        root_thread_id: thread_id.to_owned(),
     }
 }
 
@@ -473,4 +472,81 @@ fn rewrite_same_shm_bytes(path: &Path) {
     file.seek(SeekFrom::Start(0)).unwrap();
     file.write_all(&byte).unwrap();
     file.sync_all().unwrap();
+}
+
+// Neutral Core v3 migration regressions.
+#[test]
+fn source_backed_zed_root_keeps_exact_native_content_without_synthetic_lineage() {
+    let temp = tempfile::tempdir().unwrap();
+    let database = temp.path().join("threads.db");
+    super::tests::create_database(&database, "exact Zed content");
+
+    let record = super::tests::project_root_record(&database);
+    assert_eq!(record.parent_session_id, None);
+    assert_eq!(record.root_session_id, None);
+    assert_eq!(record.session_relationship, None);
+    assert_eq!(record.provider_session_id.as_deref(), Some("thread-1"));
+    assert_eq!(record.content.meaningful_text(), "exact Zed content");
+    assert_eq!(
+        record
+            .content
+            .structured_content
+            .as_ref()
+            .and_then(|value| value.pointer("/native_message/content/content/0/text"))
+            .and_then(serde_json::Value::as_str),
+        Some("exact Zed content")
+    );
+    record.validate_contract().unwrap();
+}
+
+#[test]
+fn zed_conflicting_input_aliases_abstain_and_metadata_paths_do_not_escape() {
+    let native_content = serde_json::json!({
+        "kind": "agent",
+        "content": [{
+            "type": "tool_use",
+            "id": "call-1",
+            "name": "write_file",
+            "input": {"path": "src/exact.rs"},
+            "raw_input": "{\"path\":\"src/other.rs\"}",
+            "metadata": {"path": "src/metadata-decoy.rs"}
+        }],
+        "tool_results": {}
+    });
+    let event = ZedNativeEvent::from_draft(
+        1,
+        "thread-activity",
+        super::super::model::ZedDecodedCoreEvent {
+            provider_message_id: None,
+            thread_ordinal: 0,
+            message_ordinal: 0,
+            event_type: EventType::ToolCall,
+            role: EventRole::Assistant,
+            occurred_at: "2026-08-16T00:00:00Z".parse().unwrap(),
+            kind: "agent_tool_call",
+            call_ids: vec!["call-1".to_owned()],
+            native_content: native_content.clone(),
+            body: "tool call: write_file\ntool input: present".to_owned(),
+        },
+        RecordDigest::from_text("zed activity aliases"),
+    )
+    .unwrap();
+    let (call_id, invocation, result) = zed_activity(&event, 0).unwrap();
+    assert_eq!(call_id, Some(TypedKey::Utf8("call-1".to_owned())));
+    assert_eq!(
+        invocation.unwrap().arguments,
+        ActivityJsonCapture::Unavailable
+    );
+    assert!(result.is_none());
+
+    let mut facts = Vec::new();
+    collect_zed_facts(&native_content, &mut facts);
+    assert_eq!(
+        facts
+            .iter()
+            .filter(|fact| fact.kind == LiteralFactKind::File)
+            .map(|fact| fact.value.as_str())
+            .collect::<Vec<_>>(),
+        vec!["src/exact.rs"]
+    );
 }

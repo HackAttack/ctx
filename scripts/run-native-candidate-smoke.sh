@@ -5,14 +5,17 @@ umask 077
 usage() {
   cat >&2 <<'USAGE'
 Usage: scripts/run-native-candidate-smoke.sh BINARY FIXTURE EXPECTED_VERSION RESULT_PATH
+       scripts/run-native-candidate-smoke.sh CORE COMPANION PAIR_ENVELOPE FIXTURE EXPECTED_VERSION RESULT_PATH
 
 Runs a bounded exact-byte ctx candidate smoke on native Linux, macOS, or
-FreeBSD. The fixture must be ctx-history-jsonl-v1. RESULT_PATH is written only
-after every step passes.
+FreeBSD. The six-argument release form verifies and installs the signed pair in
+the fixed layout, then proves that Core selects that companion. The four-
+argument form remains for bounded Core-only unit fixtures. The history fixture
+must be ctx-history-jsonl-v1. RESULT_PATH is written only after every step passes.
 USAGE
 }
 
-if [ "$#" -ne 4 ] || [ "${1:-}" = "-h" ] || [ "${1:-}" = "--help" ]; then
+if { [ "$#" -ne 4 ] && [ "$#" -ne 6 ]; } || [ "${1:-}" = "-h" ] || [ "${1:-}" = "--help" ]; then
   usage
   exit 2
 fi
@@ -24,10 +27,22 @@ absolute_path() {
   esac
 }
 
+pair_mode=false
 binary="$(absolute_path "$1")"
-fixture="$(absolute_path "$2")"
-expected_version="$3"
-result_path="$(absolute_path "$4")"
+if [ "$#" -eq 6 ]; then
+  pair_mode=true
+  companion="$(absolute_path "$2")"
+  pair_envelope="$(absolute_path "$3")"
+  fixture="$(absolute_path "$4")"
+  expected_version="$5"
+  result_path="$(absolute_path "$6")"
+else
+  companion=""
+  pair_envelope=""
+  fixture="$(absolute_path "$2")"
+  expected_version="$3"
+  result_path="$(absolute_path "$4")"
+fi
 command_timeout_seconds="${CTX_NATIVE_CANDIDATE_COMMAND_TIMEOUT_SECONDS:-60}"
 script_dir="$(CDPATH= cd -- "$(dirname "$0")" && pwd)"
 control_inventory="${script_dir}/../contracts/public-control-surface-v1.json"
@@ -50,6 +65,16 @@ fi
 if [ ! -f "${fixture}" ]; then
   printf 'candidate smoke fixture is missing: %s\n' "${fixture}" >&2
   exit 1
+fi
+if [ "${pair_mode}" = true ]; then
+  if [ ! -f "${companion}" ] || [ ! -x "${companion}" ] || [ -L "${companion}" ]; then
+    printf 'candidate smoke companion is missing or not an executable regular file: %s\n' "${companion}" >&2
+    exit 1
+  fi
+  if [ ! -f "${pair_envelope}" ] || [ -L "${pair_envelope}" ]; then
+    printf 'candidate smoke signed pair envelope is missing or not a regular file: %s\n' "${pair_envelope}" >&2
+    exit 1
+  fi
 fi
 if [ ! -f "${control_inventory}" ]; then
   printf 'candidate smoke control inventory is missing: %s\n' \
@@ -140,16 +165,35 @@ work_root="${root}/work"
 mkdir -p "${profile}" "${data_root}" "${config_root}" "${cache_root}" \
   "${state_root}" "${tmp_root}" "${work_root}"
 candidate_dir="${root}/candidate"
-candidate_binary="${candidate_dir}/${binary##*/}"
-mkdir -p "${candidate_dir}"
-chmod 0700 "${root}" "${candidate_dir}"
-if ! cp "${binary}" "${candidate_binary}" \
-  || [ ! -f "${candidate_binary}" ] \
-  || [ -L "${candidate_binary}" ]; then
-  printf 'candidate smoke could not create a regular private candidate copy\n' >&2
-  exit 1
+if [ "${pair_mode}" = true ]; then
+  case "$(uname -s):$(uname -m)" in
+    Linux:x86_64|Linux:amd64) pair_target=linux-x64 ;;
+    Linux:aarch64|Linux:arm64) pair_target=linux-arm64 ;;
+    Darwin:x86_64|Darwin:amd64) pair_target=macos-x64 ;;
+    Darwin:aarch64|Darwin:arm64) pair_target=macos-arm64 ;;
+    *) printf 'candidate smoke signed pairs are unsupported on this host\n' >&2; exit 1 ;;
+  esac
+  command -v python3 >/dev/null 2>&1 || {
+    printf 'candidate smoke requires Python 3 for signed-pair verification\n' >&2
+    exit 127
+  }
+  candidate_dir="${root}/installation/bin"
+  python3 -I "${script_dir}/install-managed-pair.py" install \
+    --envelope "${pair_envelope}" --core "${binary}" --companion "${companion}" \
+    --install-root "${root}/installation" --target "${pair_target}" >/dev/null
+  candidate_binary="${root}/installation/bin/ctx"
+else
+  candidate_binary="${candidate_dir}/${binary##*/}"
+  mkdir -p "${candidate_dir}"
+  chmod 0700 "${root}" "${candidate_dir}"
+  if ! cp "${binary}" "${candidate_binary}" \
+    || [ ! -f "${candidate_binary}" ] \
+    || [ -L "${candidate_binary}" ]; then
+    printf 'candidate smoke could not create a regular private candidate copy\n' >&2
+    exit 1
+  fi
+  chmod 0700 "${candidate_binary}"
 fi
-chmod 0700 "${candidate_binary}"
 if ! cmp -s "${binary}" "${candidate_binary}"; then
   printf 'candidate smoke private candidate copy does not match the supplied binary\n' >&2
   exit 1
@@ -267,34 +311,6 @@ run_bounded() {
   return "${bounded_status}"
 }
 
-pro_status_reports_absent_local_runtime() {
-  status_file="$1"
-  status_compact="$(tr '\r\n' '  ' < "${status_file}")"
-
-  for expected in \
-    '"schema_version"[[:space:]]*:[[:space:]]*2' \
-    '"payload_type"[[:space:]]*:[[:space:]]*"pro_status"' \
-    '"state"[[:space:]]*:[[:space:]]*"not_setup"' \
-    '"installed"[[:space:]]*:[[:space:]]*false' \
-    '"ready"[[:space:]]*:[[:space:]]*false' \
-    '"materialized"[[:space:]]*:[[:space:]]*false' \
-    '"helper_version"[[:space:]]*:[[:space:]]*null' \
-    '"protocol_version"[[:space:]]*:[[:space:]]*3' \
-    '"capabilities"[[:space:]]*:[[:space:]]*\[[[:space:]]*\]' \
-    '"command"[[:space:]]*:[[:space:]]*"ctx pro"' \
-    '"reason"[[:space:]]*:[[:space:]]*"helper_missing"'
-  do
-    if ! printf '%s\n' "${status_compact}" | grep -Eq "${expected}"; then
-      return 1
-    fi
-  done
-
-  # The public status shape is path-safe. Commercial access/error fields are
-  # intentionally independent of whether the signed helper and graph exist.
-  ! printf '%s\n' "${status_compact}" \
-    | grep -Eq '"helper_path"[[:space:]]*:'
-}
-
 process_ids_for_binary() {
   ps -axo pid=,command= 2>/dev/null \
     | awk -v executable="${candidate_binary}" \
@@ -318,6 +334,15 @@ if [ "${version_output}" != "ctx ${expected_version}" ]; then
   printf 'candidate version mismatch: expected ctx %s, got %s\n' \
     "${expected_version}" "${version_output}" >&2
   exit 1
+fi
+
+if [ "${pair_mode}" = true ]; then
+  run_bounded "${root}/companion-selection.out" "${root}/companion-selection.err" \
+    ctx pro --help || {
+    cat "${root}/companion-selection.err" >&2
+    printf 'candidate Core did not select its verified fixed companion\n' >&2
+    exit 1
+  }
 fi
 
 run_bounded "${root}/setup.out" "${root}/setup.err" \
@@ -468,44 +493,6 @@ if [ -e "${analytics_opt_out_events}" ]; then
   exit 1
 fi
 
-# A distributable ctx must select only the signed helper pair installed below
-# its data root. Prove that an ambient developer override cannot execute an
-# arbitrary helper in the exact candidate artifact.
-untrusted_helper="${root}/untrusted-ctx-pro"
-override_marker="${root}/untrusted-helper-executed"
-cat > "${untrusted_helper}" <<EOF
-#!/bin/sh
-: > "${override_marker}"
-exit 99
-EOF
-chmod 0700 "${untrusted_helper}"
-run_bounded "${root}/pro-status.json" "${root}/pro-status.err" \
-  clean_env CTX_ANALYTICS_ENABLED=false CTX_UPGRADE_AUTO=off \
-  CTX_DAEMON_ENABLED=false \
-  CTX_PRO_HELPER="${untrusted_helper}" \
-  "${candidate_binary}" status --format json || {
-  cat "${root}/pro-status.err" >&2
-  printf 'candidate Pro status query failed while testing helper selection\n' >&2
-  exit 1
-}
-if [ -e "${override_marker}" ]; then
-  printf 'candidate executed CTX_PRO_HELPER in a distributable build\n' >&2
-  exit 1
-fi
-if ! pro_status_reports_absent_local_runtime "${root}/pro-status.json"; then
-  printf 'candidate Pro status did not report an absent helper and graph\n' >&2
-  exit 1
-fi
-if [ -e "${data_root}/ctx-pro.db" ]; then
-  printf 'candidate Pro status created a graph while reporting no local runtime\n' >&2
-  exit 1
-fi
-if grep -Fq "${untrusted_helper}" "${root}/pro-status.json" \
-  || grep -Fq "${untrusted_helper}" "${root}/pro-status.err"; then
-  printf 'candidate exposed the rejected Pro helper override path\n' >&2
-  exit 1
-fi
-
 # Semantic search is supported but opt-in on every public release target. Prove
 # that the default remains disabled, then that an explicit offline request with
 # no provisioned model fails closed without fallback, state, or download.
@@ -558,7 +545,12 @@ if [ -n "${survivors}" ]; then
   exit 1
 fi
 
-printf '%s\n' '{"schema_version":1,"kind":"ctx-native-candidate-smoke","status":"passed","steps":{"version":"passed","setup":"passed","import":"passed","search":"passed","read_only":"passed","released_defaults":"passed","explicit_opt_outs":"passed","pro_helper_override_ignored":"passed","semantic_offline_fail_closed":"passed"}}' \
-  > "${result_tmp}"
+if [ "${pair_mode}" = true ]; then
+  printf '%s\n' '{"schema_version":1,"kind":"ctx-native-candidate-smoke","status":"passed","steps":{"signed_pair_install":"passed","companion_selection":"passed","version":"passed","setup":"passed","import":"passed","search":"passed","read_only":"passed","released_defaults":"passed","explicit_opt_outs":"passed","semantic_offline_fail_closed":"passed"}}' \
+    > "${result_tmp}"
+else
+  printf '%s\n' '{"schema_version":1,"kind":"ctx-native-candidate-smoke","status":"passed","steps":{"version":"passed","setup":"passed","import":"passed","search":"passed","read_only":"passed","released_defaults":"passed","explicit_opt_outs":"passed","semantic_offline_fail_closed":"passed"}}' \
+    > "${result_tmp}"
+fi
 mv "${result_tmp}" "${result_path}"
 printf 'native candidate smoke passed: %s %s\n' "$(uname -s)" "$(uname -m)"

@@ -1,14 +1,14 @@
 # Threat Model
 
 The current CLI protects provider-owned source history, ctx-owned search state,
-local usage aggregates, and optional Local Pro data.
+and local usage aggregates.
 
 ## Assets
 
 - provider transcripts in provider-owned homes;
 - ctx-owned Core/Tantivy lexical generations and optional flat-F32 semantic
   generations;
-- the content-free `usage.sqlite` sidecar and optional encrypted Local Pro graph;
+- the content-free `usage.sqlite` sidecar;
 - configuration and import cursors;
 - logs and diagnostic output;
 - JSON and Markdown command output.
@@ -28,10 +28,7 @@ write Core generations and derived state only under the configured ctx data
 root. Search and MCP may send a bounded, content-free daemon wake, but query
 processes do not become foreground history writers. Show, locate, sources, and
 doctor do not write provider data or repositories. `ctx status` does not mutate
-Core history or local Pro graph data and does not initialize or migrate local
-storage; Pro entitlement authorization may advance nonsecret
-anti-clock-rollback security metadata. `ctx show session --out` writes only the
-explicit output path requested by the user.
+Core history and does not initialize or migrate local storage.
 
 Show reads complete policy-selected normalized records from the active verified
 Core/Tantivy generation. It does not reopen provider history, scan for
@@ -40,30 +37,6 @@ replacement transcripts, or use a network fallback.
 Source repositories and provider homes remain outside ctx ownership. Provider
 files are read as import sources, not modified.
 
-Local Pro deletion is owned by the native CLI. Hosted uninstallers delegate to
-`ctx pro uninstall` before removing the CLI binary and never delete the ctx data
-root themselves. Noninteractive deletion requires an explicit `--delete-data`
-or `--keep-data` choice, and `local_pro_data: "deleted"` is emitted only after
-the authoritative local inventory verifies deletion. The installation's
-small anti-rollback watermark may remain after deletion; it contains no graph
-key, transcript content, account token, or entitlement body and is ignored by
-the installed/not-installed status decision.
-Pro initialization evidence is persisted before the first commercial vault
-write. Deletion uses only opaque record IDs derived from that root's
-installation identity and its recorded production/staging thumbprints; it does
-not broadly enumerate another installation's credentials. This also covers
-graph keys created before the first graph publication. Corrupt thumbprint or
-unexpected graph-artifact inventory fails before deletion. A bounded nonsecret
-root-local cleanup phase is durably published before graph-artifact deletion.
-The exact current Flat/FST artifacts are deleted and verified absent before the
-selected graph key; the phase is retained through graph-key, credential, and
-helper verification, so retry does not depend on credential records that a
-prior attempt already removed. Setup and preservation are blocked while this
-phase remains; successful deletion removes it.
-Users deleting the Core data root must run the identity-aware
-`ctx pro uninstall --delete-data` operation first. Removing `install.json`
-before native deletion can make the opaque vault records impossible to locate
-and orphan credentials or graph keys.
 
 ## Risks
 

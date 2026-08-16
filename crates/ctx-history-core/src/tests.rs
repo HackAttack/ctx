@@ -1,4 +1,4 @@
-use crate::{CaptureProvider, Confidence, Fidelity};
+use crate::{CaptureProvider, Fidelity};
 
 #[test]
 fn obsolete_content_reference_surface_is_absent() {
@@ -11,7 +11,6 @@ fn obsolete_content_reference_surface_is_absent() {
 #[test]
 fn enum_string_roundtrips_and_defaults() {
     assert_eq!(Fidelity::default(), Fidelity::Partial);
-    assert_eq!(Confidence::default(), Confidence::Unknown);
     assert_eq!(
         serde_json::from_str::<CaptureProvider>("\"copilot_cli\"").unwrap(),
         CaptureProvider::CopilotCli

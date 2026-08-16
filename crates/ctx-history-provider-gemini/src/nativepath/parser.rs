@@ -1,7 +1,6 @@
 #[cfg(test)]
 use std::io::BufRead;
 use std::{
-    collections::{BTreeMap, BTreeSet},
     fmt,
     io::{BufReader, Seek, SeekFrom},
 };
@@ -9,7 +8,7 @@ use std::{
 use std::{fs::File, io::Read};
 
 use chrono::{DateTime, Utc};
-use ctx_history_core::{AgentType, EventRole, EventType};
+use ctx_history_core::{AgentScope, EventRole, EventType};
 use serde::{
     de::{IgnoredAny, MapAccess, SeqAccess, Visitor},
     Deserialize, Deserializer,
@@ -23,10 +22,6 @@ use std::cell::Cell;
 #[cfg(test)]
 use crate::GeminiResult;
 use crate::{GeminiError, PROVIDER_MAX_PREVIEW_CHARS};
-use ctx_history_capture_model::ctx_retrieval::{
-    ContributionClass, ResultAtom, ResultTerminalStatus,
-};
-use ctx_history_capture_model::{OutputOutcome, OutputOutcomeMetadata};
 use ctx_history_jsonl::{read_bounded_record_unhashed, JsonlRecordFraming};
 use ctx_history_source_io::MAX_PROVIDER_JSONL_LINE_BYTES;
 
@@ -40,8 +35,7 @@ use super::dto::{
 use super::dto::{
     GeminiEventBody, GeminiEventIdentity, GeminiFileObservation, GeminiNativeOrder,
     GeminiRetainedEvent, GeminiScanError, GeminiScanResult, GeminiSession,
-    GeminiSourceRecordEvidence, GeminiToolCall, GeminiTouchOverflow, GeminiTranscriptLayout,
-    GeminiTranscriptSource,
+    GeminiSourceRecordEvidence, GeminiToolCall, GeminiTranscriptLayout, GeminiTranscriptSource,
 };
 
 mod identity;
@@ -68,8 +62,6 @@ pub(crate) use resume::read_gemini_transcript_pages;
 pub(crate) use resume::read_gemini_transcript_pages_from_frontier;
 
 const BODY_HASH_DOMAIN: &[u8] = b"ctx-gemini-nativepath-retained-body-v1\0";
-const RESULT_STRING_HASH_DOMAIN: &[u8] = b"ctx-gemini-nativepath-result-string-v1\0";
-const RESULT_STRUCTURED_HASH_DOMAIN: &[u8] = b"ctx-gemini-nativepath-result-structured-v1\0";
 const RESULT_FALLBACK_ID_DOMAIN: &[u8] = b"ctx-gemini-nativepath-result-fallback-id-v1\0";
 #[cfg(test)]
 const PREFIX_HASH_DOMAIN: &[u8] = b"ctx-gemini-nativepath-complete-prefix-v1\0";
@@ -84,8 +76,6 @@ const EVENT_ENVELOPE_FIXED_BYTES: usize = 1024;
 const REJECTION_ENVELOPE_FIXED_BYTES: usize = 512;
 #[cfg(test)]
 const MAX_REJECTION_DETAILS: usize = 32;
-pub(super) const MAX_GEMINI_FILE_TOUCHES_PER_EVENT: usize = 256;
-pub(super) const MAX_GEMINI_FILE_TOUCH_BYTES_PER_EVENT: usize = 64 * 1024;
 pub(super) const MAX_GEMINI_NATIVE_PAGE_RECORDS: usize = 64;
 pub(super) const MAX_GEMINI_NATIVE_PAGE_BYTES: usize = 8 * 1024 * 1024;
 pub(super) const MAX_GEMINI_SINGLE_RECORD_PAGE_BYTES: usize =
@@ -228,12 +218,7 @@ impl GeminiBorrowedRecordParser {
             byte_length: byte_end_exclusive.saturating_sub(byte_start),
             record_digest,
         };
-        let exact_json_authority =
-            !matches!(
-                class,
-                GeminiRecordClass::ToolCall | GeminiRecordClass::Result
-            ) || ctx_history_capture_model::raw_object_keys_are_unique(payload);
-        let mut events = match class {
+        let events = match class {
             GeminiRecordClass::Result => {
                 let decoded = match decode_result_record(payload, raw_ordinal, source_record) {
                     Ok(decoded) => decoded,
@@ -254,52 +239,30 @@ impl GeminiBorrowedRecordParser {
             | GeminiRecordClass::RewindNotice => {
                 let decoded =
                     match decode_retained_event(payload, class, raw_ordinal, source_record) {
-                        Ok(Some(decoded)) => decoded,
-                        Ok(None) => {
-                            if let Some(native_event_id) = native_event_id {
-                                self.page_native_event_ids
-                                    .commit_at(native_event_id, raw_ordinal);
-                            }
-                            return Ok(Vec::new());
-                        }
+                        Ok(decoded) => decoded,
                         Err(GeminiDecodingError::Invalid(reason)) => {
                             drop(reason);
                             return Ok(Vec::new());
                         }
-                        Err(GeminiDecodingError::TouchOverflow(error)) => {
-                            drop(error.to_string());
-                            return Ok(Vec::new());
-                        }
                     };
-                let Ok(event_bytes) = retained_event_bytes(&decoded) else {
-                    return Ok(Vec::new());
-                };
-                if event_bytes > MAX_GEMINI_SINGLE_RECORD_PAGE_BYTES {
-                    return Ok(Vec::new());
+                let mut events = Vec::with_capacity(decoded.len());
+                for decoded in decoded {
+                    let Ok(event_bytes) = retained_event_bytes(&decoded) else {
+                        return Ok(Vec::new());
+                    };
+                    if event_bytes > MAX_GEMINI_SINGLE_RECORD_PAGE_BYTES {
+                        return Ok(Vec::new());
+                    }
+                    let mut event = decoded.event;
+                    if event.occurred_at.is_none() {
+                        event.occurred_at = self.session.started_at;
+                    }
+                    events.push(event);
                 }
-                let mut event = decoded.event;
-                if event.occurred_at.is_none() {
-                    event.occurred_at = self.session.started_at;
-                }
-                vec![event]
+                events
             }
             GeminiRecordClass::Ignored | GeminiRecordClass::Header => Vec::new(),
         };
-        if !exact_json_authority {
-            for event in &mut events {
-                match class {
-                    GeminiRecordClass::ToolCall => event
-                        .extra_body_contributions
-                        .push(ContributionClass::Unknown),
-                    GeminiRecordClass::Result => event.result_atoms.push(ResultAtom::Unknown),
-                    GeminiRecordClass::Header
-                    | GeminiRecordClass::Message
-                    | GeminiRecordClass::StateNotice
-                    | GeminiRecordClass::RewindNotice
-                    | GeminiRecordClass::Ignored => {}
-                }
-            }
-        }
         if let Some(native_event_id) = native_event_id {
             self.page_native_event_ids
                 .commit_at(native_event_id, raw_ordinal);
@@ -319,14 +282,6 @@ impl GeminiBorrowedRecordParser {
             })
         }
     }
-}
-
-pub(crate) fn gemini_result_terminal_authority_is_ambiguous(payload: &[u8]) -> bool {
-    if ctx_history_capture_model::raw_object_keys_are_unique(payload) {
-        return false;
-    }
-    serde_json::from_slice::<GeminiRecordProbe>(payload)
-        .map_or(true, |probe| probe.classify() == GeminiRecordClass::Result)
 }
 
 /// Reads only through the first importable header. This is the bounded

@@ -6,22 +6,23 @@ use digest::{
 };
 
 use chrono::{DateTime, Utc};
-use ctx_history_core::{EventRole, EventType, McpTerminalResponseContent};
+use ctx_history_core::{EventRole, EventType};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 
-use crate::{record_evidence::RecordDigest, CaptureError, OutputOutcome, Result};
+use crate::{record_evidence::RecordDigest, CaptureError, Result};
 
-use super::decode::WarpMcpToolInvocation;
+use super::decode::{WarpMcpResultCapture, WarpMcpToolInvocation};
 
 pub(in super::super) const WARP_NATIVE_PAGE_MAX_ROWS: usize = 64;
 pub(in super::super) const WARP_NATIVE_PAGE_MAX_BYTES: usize = 8 * 1024 * 1024;
 const WARP_NATIVE_REJECTION_KEY_MAX_CHARS: usize = 512;
 const WARP_NATIVE_REJECTION_REASON_MAX_CHARS: usize = 1_024;
 const WARP_NATIVE_REJECTION_RESERVE_BYTES: usize = 40 * 1024;
-pub(super) const WARP_SOURCE_DIGEST_DOMAIN: &[u8] = b"ctx-warp-source-integrity-v5\0";
+pub(super) const WARP_SOURCE_DIGEST_DOMAIN: &[u8] =
+    b"ctx-warp-source-integrity-v6-neutral-activity\0";
 const WARP_DIGEST_CHAIN_DOMAIN: &[u8] = b"ctx-warp-native-digest-chain-v1\0";
-const WARP_PAGE_IDENTITY_DOMAIN: &[u8] = b"ctx-warp-native-safe-page-v2\0";
+const WARP_PAGE_IDENTITY_DOMAIN: &[u8] = b"ctx-warp-native-safe-page-v3-neutral-activity\0";
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
 pub(in super::super) struct WarpNativePageIdentity(pub(in super::super) [u8; 32]);
@@ -30,7 +31,6 @@ pub(in super::super) struct WarpNativePageIdentity(pub(in super::super) [u8; 32]
 pub(in super::super) struct WarpNativeSession {
     pub(in super::super) conversation_id: String,
     pub(in super::super) parent_conversation_id: Option<String>,
-    pub(in super::super) root_conversation_id: String,
     pub(in super::super) parent_present: bool,
     pub(in super::super) title: String,
     pub(in super::super) modified_at: Option<DateTime<Utc>>,
@@ -74,10 +74,9 @@ pub(in super::super) struct WarpNativeEvent {
     pub(in super::super) role: Option<EventRole>,
     pub(in super::super) kind: &'static str,
     pub(in super::super) request_id: Option<String>,
-    pub(in super::super) result_outcome: Option<OutputOutcome>,
     pub(in super::super) call_id: Option<String>,
     pub(in super::super) mcp_invocation: Option<WarpMcpToolInvocation>,
-    pub(in super::super) mcp_response: Option<McpTerminalResponseContent>,
+    pub(in super::super) mcp_response: Option<WarpMcpResultCapture>,
     pub(in super::super) mcp_attribution: bool,
     pub(in super::super) occurred_at: Option<DateTime<Utc>>,
     pub(in super::super) lexical_body: String,
@@ -96,10 +95,9 @@ pub(in super::super) struct WarpNativeEventDraft {
     pub(in super::super) role: Option<EventRole>,
     pub(in super::super) kind: &'static str,
     pub(in super::super) request_id: Option<String>,
-    pub(in super::super) result_outcome: Option<OutputOutcome>,
     pub(in super::super) call_id: Option<String>,
     pub(in super::super) mcp_invocation: Option<WarpMcpToolInvocation>,
-    pub(in super::super) mcp_response: Option<McpTerminalResponseContent>,
+    pub(in super::super) mcp_response: Option<WarpMcpResultCapture>,
     pub(in super::super) mcp_attribution: bool,
     pub(in super::super) occurred_at: Option<DateTime<Utc>>,
     pub(in super::super) body: String,
@@ -130,7 +128,6 @@ impl WarpNativeEvent {
             role: draft.role,
             kind: draft.kind,
             request_id: draft.request_id,
-            result_outcome: draft.result_outcome,
             call_id: draft.call_id,
             mcp_invocation: draft.mcp_invocation,
             mcp_response: draft.mcp_response,
@@ -209,10 +206,6 @@ pub(in super::super) struct WarpNativeCounters {
     pub(in super::super) native_result_records: u64,
     pub(in super::super) native_result_envelope_bytes: u64,
     pub(in super::super) native_result_body_bytes_observed: u64,
-    pub(in super::super) native_results_success: u64,
-    pub(in super::super) native_results_failure: u64,
-    pub(in super::super) native_results_timeout: u64,
-    pub(in super::super) native_results_unknown: u64,
     pub(in super::super) result_events_created: u64,
 }
 
@@ -446,7 +439,6 @@ mod tests {
             role: Some(EventRole::Tool),
             kind: "run_shell_command",
             request_id: None,
-            result_outcome: Some(OutputOutcome::Success),
             call_id: Some("call".to_owned()),
             mcp_invocation: None,
             mcp_response: None,

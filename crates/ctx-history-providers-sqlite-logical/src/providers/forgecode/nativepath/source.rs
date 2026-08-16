@@ -9,12 +9,8 @@ use std::{
 };
 
 use chrono::Duration;
-use ctx_history_capture_model::{
-    file_touches::{
-        event_type_supports_structured_file_touches, visit_provider_file_touch_drafts_with_limit,
-        MAX_PACKED_PROVIDER_EVENT_INDEX, PROVIDER_FILE_TOUCH_LIMIT_REJECTION,
-    },
-    normalization::{provider_capped_json_value, provider_line_from_index},
+use ctx_history_capture_model::normalization::{
+    provider_capped_json_value, provider_line_from_index,
 };
 use rusqlite::Connection;
 use serde_json::Value;
@@ -35,21 +31,16 @@ use crate::{
     MAX_PROVIDER_SQLITE_VALUE_BYTES, PROVIDER_MAX_PREVIEW_CHARS,
 };
 
-use super::super::event::{
-    forgecode_event, forgecode_event_type, forgecode_for_each_metric_file_touch_with_limit,
-    forgecode_message_parts, forgecode_timestamp, ForgeCodeFileTouch, ForgeCodeNativeEvent,
-};
+use super::super::event::{forgecode_event, forgecode_timestamp, ForgeCodeNativeEvent};
 use super::super::record_evidence::ForgeCodeRecordEvidence;
 
-pub(super) const FORGECODE_NATIVE_PARSER_REVISION: u32 = 1;
+pub(super) const FORGECODE_NATIVE_PARSER_REVISION: u32 = 2;
 pub(super) const FORGECODE_NATIVE_POLICY_REVISION: u32 = 7;
 pub(super) const FORGECODE_NATIVE_PAGE_MAX_BYTES: usize = 6 * 1024 * 1024;
 const FORGECODE_NATIVE_PAGE_REJECTION_RESERVE_BYTES: usize = 4 * 1024;
 const FORGECODE_NATIVE_PAGE_CONTENT_MAX_BYTES: usize =
     FORGECODE_NATIVE_PAGE_MAX_BYTES - FORGECODE_NATIVE_PAGE_REJECTION_RESERVE_BYTES;
 const FORGECODE_NATIVE_MAX_MESSAGES_PER_PAGE: usize = 16;
-const FORGECODE_NATIVE_MAX_TOUCHES_PER_MESSAGE: usize = 64;
-const FORGECODE_NATIVE_MAX_METRIC_TOUCHES: usize = 64;
 const FORGECODE_NATIVE_MAX_EVENT_BYTES: usize = 2 * 1024 * 1024;
 const FORGECODE_SQLITE_VALUE_OVERHEAD_BYTES: u64 = 64 * 8;
 
@@ -424,7 +415,6 @@ pub(in crate::providers::forgecode) struct ForgeCodeScanner {
     source: ForgeCodeSourceObservation,
     frontier: ForgeCodeFrontier,
     context: ProviderAdapterContext,
-    source_root: Option<String>,
     exhausted: bool,
     active_decoded: Option<ForgeCodeDecodedRow>,
     active_terminal: bool,
@@ -442,7 +432,6 @@ pub(in crate::providers::forgecode) struct ForgeCodePage {
     pub(in crate::providers::forgecode) terminal: bool,
     pub(in crate::providers::forgecode) row: Option<ForgeCodeConversationRow>,
     pub(in crate::providers::forgecode) events: Vec<ForgeCodeRetainedEvent>,
-    pub(in crate::providers::forgecode) touches: Vec<ForgeCodeFileTouch>,
     pub(in crate::providers::forgecode) rejections: Vec<ProviderImportFailure>,
     pub(in crate::providers::forgecode) retained_bytes: usize,
 }
@@ -685,12 +674,6 @@ fn estimated_retained_event_bytes(event: &ForgeCodeRetainedEvent) -> usize {
                 .unwrap_or(usize::MAX),
         )
         .saturating_add(512)
-}
-
-fn estimated_touch_bytes(touch: &ForgeCodeFileTouch) -> usize {
-    serde_json::to_vec(touch)
-        .map(|bytes| bytes.len().saturating_add(128))
-        .unwrap_or(usize::MAX)
 }
 
 fn estimated_rejection_bytes(rejection: &ProviderImportFailure) -> usize {

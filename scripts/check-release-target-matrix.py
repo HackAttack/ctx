@@ -30,8 +30,10 @@ HELPER_FACTORY_RUST_TARGETS = {
 STRING_FIELDS = set(
     """
     arch archive bazel_platform helper_artifact helper_factory_rust_target
-    helper_rust_target id os platform_signature public_artifact public_construction_authority
-    public_construction_label public_rust_target runtime_authority vault
+    helper_rust_target id managed_pair_bin_dir managed_pair_companion_slot
+    managed_pair_core_slot official_companion_rust_target os platform_signature
+    public_artifact public_construction_authority public_construction_label
+    public_rust_target runtime_authority vault
     """.split()
 )
 TARGET_FIELDS = STRING_FIELDS | {"diagnostic_authorities", "linux_build"}
@@ -98,6 +100,10 @@ def validate_target(target: dict[str, Any]) -> None:
         raise ValueError(
             f"unexpected helper factory target for {target['id']}"
         )
+    if target["official_companion_rust_target"] != target["helper_rust_target"]:
+        raise ValueError(
+            f"official companion target must match native helper target for {target['id']}"
+        )
     suffix = ".exe" if target["os"] == "windows" else ""
     expected_public = f"ctx-{target['id']}{suffix}"
     if target["id"] == "linux-arm64":
@@ -107,6 +113,12 @@ def validate_target(target: dict[str, Any]) -> None:
         or target["helper_artifact"] != f"ctx-pro-{target['id']}{suffix}"
     ):
         raise ValueError(f"unexpected release contract for {target['id']}")
+    if (
+        target["managed_pair_bin_dir"] != "bin"
+        or target["managed_pair_core_slot"] != f"bin/ctx{suffix}"
+        or target["managed_pair_companion_slot"] != f"libexec/ctx-pro{suffix}"
+    ):
+        raise ValueError(f"unexpected managed pair installation geometry for {target['id']}")
     if (
         target["platform_signature"]
         not in {"authenticode", "developer-id-notarized", "release-manifest", "unsigned"}

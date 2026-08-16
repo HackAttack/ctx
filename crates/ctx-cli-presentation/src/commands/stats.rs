@@ -152,10 +152,7 @@ fn render_stats_human(context: &RenderContext, report: &UsageReport, detailed: b
                     "calls"
                 }
             );
-            let results = format!(
-                "{} results · {} unique blame citations",
-                summary.result_count, summary.citation_count
-            );
+            let results = format!("{} results", summary.result_count);
             let output = format!("{} bytes", summary.delivered_output_bytes);
             let covered_context = format!("{} bytes", summary.delivered_context_bytes);
             let matched_history = format!("{} bytes", summary.matched_normalized_session_bytes);
@@ -163,7 +160,7 @@ fn render_stats_human(context: &RenderContext, report: &UsageReport, detailed: b
                 "{} complete · {} unavailable",
                 summary.complete_context_eligible_calls, summary.unavailable_context_eligible_calls
             );
-            let mut values = vec![
+            let values = vec![
                 Field::new("Period", &period),
                 Field::new("ctx versions", &versions),
                 Field::new("Calls", &calls),
@@ -175,19 +172,6 @@ fn render_stats_human(context: &RenderContext, report: &UsageReport, detailed: b
                 Field::new("Matched history", &matched_history),
                 Field::new("Search coverage", &coverage),
             ];
-            let blame = &summary.pro_blame;
-            let blame_outcomes = (blame.requests > 0).then(|| {
-                format!(
-                    "{} produced-attribution · {} possible-only · {} none · {} error",
-                    blame.produced_attribution_requests,
-                    blame.possible_only_requests,
-                    blame.none_requests,
-                    blame.error_requests
-                )
-            });
-            if let Some(blame_outcomes) = blame_outcomes.as_deref() {
-                values.push(Field::new("Blame outcomes", blame_outcomes));
-            }
             document.push_blank();
             document.append(section(&heading, fields(context, &values)));
 
@@ -307,7 +291,7 @@ mod ui_tests {
 
     fn report(enabled: bool, state: &'static str) -> UsageReport {
         UsageReport {
-            schema_version: 2,
+            schema_version: 3,
             local_only: true,
             read_only: true,
             enabled,
@@ -376,9 +360,18 @@ mod ui_tests {
         assert!(rendered.contains("1 nonempty, 2 empty"));
         assert!(rendered.contains("No result-set classification"));
         assert!(rendered.contains("1 call"));
-        assert!(rendered.contains("1 produced-attribution · 1 possible-only"));
+        assert!(rendered.contains("Results"));
         assert!(!rendered.contains("1 UTC days"));
         assert!(!rendered.contains("unclassified"));
+    }
+
+    #[test]
+    fn stats_json_uses_replacement_schema_without_removed_aliases() {
+        let report = serde_json::to_value(UsageReport::ui_test_ready()).unwrap();
+        assert_eq!(report["schema_version"], 3);
+        let summary = &report["definitions"][0]["summary"];
+        assert!(summary.get("citation_count").is_none());
+        assert!(summary.get("pro_blame").is_none());
     }
 
     #[test]

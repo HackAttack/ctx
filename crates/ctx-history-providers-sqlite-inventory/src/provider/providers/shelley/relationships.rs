@@ -625,7 +625,7 @@ pub(super) fn shelley_event_role(entry_type: &str) -> Option<EventRole> {
 pub(super) fn shelley_event_type(message: &ShelleyMessageRow, body: &Value) -> EventType {
     match message.entry_type.as_str() {
         "tool" => EventType::ToolOutput,
-        "gitinfo" => EventType::VcsChange,
+        "gitinfo" => EventType::Notice,
         "system" | "error" | "warning" | "modelchange" => EventType::Notice,
         "agent" | "assistant" if shelley_value_has_tool_use(body) => EventType::ToolCall,
         "user" | "agent" | "assistant" if shelley_value_has_tool_result(body) => {

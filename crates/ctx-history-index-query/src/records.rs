@@ -85,17 +85,6 @@ fn note_core_record_decode() {
     CORE_RECORD_DECODES.set(CORE_RECORD_DECODES.get().saturating_add(1));
 }
 
-fn touched_files(core_record: &CoreRecord) -> Vec<String> {
-    let mut touched_files = BTreeSet::new();
-    for observation in &core_record.repository_file_observations {
-        touched_files.insert(observation.relative_path.clone());
-        if let Some(prior_relative_path) = &observation.prior_relative_path {
-            touched_files.insert(prior_relative_path.clone());
-        }
-    }
-    touched_files.into_iter().collect()
-}
-
 fn event_record_from_core(core_record: &CoreRecord) -> EventRecord {
     EventRecord {
         event_id: core_record.event_id,
@@ -103,29 +92,23 @@ fn event_record_from_core(core_record: &CoreRecord) -> EventRecord {
         parent_session_id: core_record.parent_session_id,
         root_session_id: core_record.root_session_id,
         session_relationship: core_record.session_relationship,
-        event_origin: core_record.event_origin.clone(),
+        event_copy: core_record.event_copy.clone(),
         source: core_record.source.clone(),
         provider: core_record.source.provider().to_owned(),
         source_format: core_record.source.source_format().to_owned(),
         provider_session_id: core_record.provider_session_id.clone(),
         native_event_id: core_record.native_event_id.clone(),
-        branch: core_record.branch.clone(),
-        agent_type: core_record.agent_type.clone(),
-        is_primary: core_record.is_primary,
+        agent_scope: core_record.agent_scope,
         event_sequence: core_record.event_sequence,
         occurred_at_unix_ms: core_record.occurred_at_unix_ms,
         event_type: core_record.event_type.clone(),
         role: core_record.role.clone(),
-        workspace: core_record.workspace.clone(),
-        cwd: core_record.cwd.clone(),
-        touched_files: touched_files(core_record),
     }
 }
 
 fn event_record_from_owned_core(core_record: CoreRecord) -> EventRecord {
     let provider = core_record.source.provider().to_owned();
     let source_format = core_record.source.source_format().to_owned();
-    let touched_files = touched_files(&core_record);
 
     EventRecord {
         event_id: core_record.event_id,
@@ -133,22 +116,17 @@ fn event_record_from_owned_core(core_record: CoreRecord) -> EventRecord {
         parent_session_id: core_record.parent_session_id,
         root_session_id: core_record.root_session_id,
         session_relationship: core_record.session_relationship,
-        event_origin: core_record.event_origin,
+        event_copy: core_record.event_copy,
         source: core_record.source,
         provider,
         source_format,
         provider_session_id: core_record.provider_session_id,
         native_event_id: core_record.native_event_id,
-        branch: core_record.branch,
-        agent_type: core_record.agent_type,
-        is_primary: core_record.is_primary,
+        agent_scope: core_record.agent_scope,
         event_sequence: core_record.event_sequence,
         occurred_at_unix_ms: core_record.occurred_at_unix_ms,
         event_type: core_record.event_type,
         role: core_record.role,
-        workspace: core_record.workspace,
-        cwd: core_record.cwd,
-        touched_files,
     }
 }
 
@@ -175,11 +153,7 @@ impl From<&EventRecord> for SessionRecord {
             provider: event.provider.clone(),
             source_format: event.source_format.clone(),
             provider_session_id: event.provider_session_id.clone(),
-            branch: event.branch.clone(),
-            agent_type: event.agent_type.clone(),
-            is_primary: event.is_primary,
-            workspace: event.workspace.clone(),
-            cwd: event.cwd.clone(),
+            agent_scope: event.agent_scope,
             first_event_sequence: event.event_sequence,
             first_occurred_at_unix_ms: event.occurred_at_unix_ms,
         }

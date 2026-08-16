@@ -2,11 +2,12 @@ use super::*;
 use crate::provider::custom_history_jsonl::CUSTOM_HISTORY_IDENTIFIER_MAX_BYTES;
 
 #[derive(Debug)]
-struct TouchCandidate {
+struct FileReferenceCandidate {
     line_number: usize,
     source_id: String,
     session_id: String,
     event_index: Option<u64>,
+    value: String,
 }
 
 #[derive(Debug)]
@@ -15,7 +16,7 @@ struct EdgeCandidate {
     source_id: String,
     from_session_id: String,
     to_session_id: String,
-    edge_type: SessionEdgeType,
+    relationship: Option<ProviderNativeSessionRelationship>,
 }
 
 #[derive(Debug)]
@@ -27,8 +28,8 @@ struct ProjectionCatalog {
     sources: BTreeMap<String, CustomSourceCatalogEntry>,
     sessions: BTreeMap<CustomSessionKey, CustomSessionCatalogEntry>,
     events: BTreeMap<CustomEventKey, CustomEventCatalogEntry>,
-    touch_keys: BTreeSet<(String, String, u64)>,
-    touches: Vec<TouchCandidate>,
+    reference_keys: BTreeSet<(String, String, u64)>,
+    file_references: Vec<FileReferenceCandidate>,
     edge_keys: BTreeSet<(String, String, String, String)>,
     edges: Vec<EdgeCandidate>,
     oversized_lines: BTreeSet<usize>,
@@ -45,8 +46,8 @@ impl ProjectionCatalog {
             sources: BTreeMap::new(),
             sessions: BTreeMap::new(),
             events: BTreeMap::new(),
-            touch_keys: BTreeSet::new(),
-            touches: Vec::new(),
+            reference_keys: BTreeSet::new(),
+            file_references: Vec::new(),
             edge_keys: BTreeSet::new(),
             edges: Vec::new(),
             oversized_lines: BTreeSet::new(),
@@ -114,8 +115,11 @@ pub(super) fn parse_projection_with_limits(
             };
             catalog.budget.admit_record()?;
             if record.oversized {
-                catalog.summary.skipped = catalog.summary.skipped.saturating_add(1);
-                catalog.summary.skipped_events = catalog.summary.skipped_events.saturating_add(1);
+                push_provider_import_failure(
+                    &mut catalog.summary,
+                    line_number,
+                    "custom history JSONL line exceeds the bounded record limit".to_owned(),
+                );
                 catalog.oversized_lines.insert(line_number);
             } else {
                 visit_record(
@@ -180,7 +184,7 @@ fn visit_record(
     };
     match record {
         CtxHistoryJsonlRecord::Manifest(manifest) => {
-            if manifest.schema_version != CTX_HISTORY_JSONL_V1_SCHEMA_VERSION {
+            if manifest.schema_version != CTX_HISTORY_JSONL_SCHEMA_VERSION {
                 catalog.manifest_failure.get_or_insert_with(|| {
                     (
                         ProviderSourceFailureKind::SchemaIncompatible,
@@ -257,15 +261,15 @@ fn visit_record(
                 );
             }
             if catalog.summary.failed == failures_before {
-                let agent_type = session.agent_type.as_str().to_owned();
-                let cwd = session.cwd.as_deref().and_then(bounded_metadata);
+                let agent_scope = session.agent_scope;
+                let cwd = session.cwd;
                 catalog.budget.admit_metadata(retained_metadata_bytes(&[
                     session.source_id.len().saturating_mul(2),
                     session.session_id.len().saturating_mul(2),
                     session.native_session_id.as_ref().map_or(0, String::len),
                     session.parent_session_id.as_ref().map_or(0, String::len),
                     session.root_session_id.as_ref().map_or(0, String::len),
-                    agent_type.len(),
+                    agent_scope.map_or(0, |scope| scope.as_str().len()),
                     cwd.as_ref().map_or(0, String::len),
                 ]))?;
                 catalog.sessions.insert(
@@ -278,7 +282,7 @@ fn visit_record(
                         parent_session_id: session.parent_session_id,
                         root_session_id: session.root_session_id,
                         session_relationship: session.session_relationship,
-                        agent_type,
+                        agent_scope,
                         cwd,
                     },
                 );
@@ -327,6 +331,34 @@ fn visit_record(
             if catalog.summary.failed == failures_before {
                 let event_id = event.event_id.clone();
                 let copied_from = event.copied_from.clone();
+                let body = lexical_body(&event);
+                let activity = match event.payload.get("activity") {
+                    Some(activity) => {
+                        match serde_json::from_value::<CoreActivity>(activity.clone()) {
+                            Ok(activity) => {
+                                if let Err(error) = validate_unmerged_activity(&activity, &body) {
+                                    push_provider_import_failure(
+                                        &mut catalog.summary,
+                                        line.line_number,
+                                        error.to_owned(),
+                                    );
+                                    return Ok(());
+                                }
+                                Some(activity)
+                            }
+                            Err(_) => {
+                                push_provider_import_failure(
+                                    &mut catalog.summary,
+                                    line.line_number,
+                                    "neutral activity JSON does not match the Core contract"
+                                        .to_owned(),
+                                );
+                                return Ok(());
+                            }
+                        }
+                    }
+                    None => None,
+                };
                 catalog.budget.admit_metadata(retained_metadata_bytes(&[
                     event.source_id.len(),
                     event.session_id.len(),
@@ -338,7 +370,7 @@ fn visit_record(
                             .saturating_add(selector.ancestor_event_id.len())
                     }),
                 ]))?;
-                let body = lexical_body(&event);
+                let payload = event.payload;
                 #[cfg(test)]
                 record_custom_history_work(|work| {
                     work.spooled_event_body_bytes =
@@ -358,6 +390,8 @@ fn visit_record(
                         role: event.role.map(|role| role.as_str().to_owned()),
                         occurred_at_unix_ms: event.occurred_at.timestamp_millis(),
                         body,
+                        payload,
+                        activity: activity.clone(),
                     },
                 )?;
                 #[cfg(test)]
@@ -371,54 +405,59 @@ fn visit_record(
                         line,
                         event_id,
                         copied_from,
+                        activity_fact_count: activity
+                            .as_ref()
+                            .map_or(0, |activity| activity.facts.len()),
                     },
                 );
             }
         }
-        CtxHistoryJsonlRecord::FileTouch(touch) => {
+        CtxHistoryJsonlRecord::FileReference(reference) => {
             let failures_before = catalog.summary.failed;
             validate_custom_history_identifier(
                 &mut catalog.summary,
                 line.line_number,
                 "source_id",
-                &touch.source_id,
+                &reference.source_id,
             );
             validate_custom_history_identifier(
                 &mut catalog.summary,
                 line.line_number,
                 "session_id",
-                &touch.session_id,
+                &reference.session_id,
             );
-            if touch.path.trim().is_empty() {
+            if reference.value.is_empty() {
                 push_provider_import_failure(
                     &mut catalog.summary,
                     line.line_number,
-                    "file_touch path must not be empty".to_owned(),
+                    "file_reference value must not be empty".to_owned(),
                 );
             }
             let key = (
-                touch.source_id.clone(),
-                touch.session_id.clone(),
-                touch.touch_index,
+                reference.source_id.clone(),
+                reference.session_id.clone(),
+                reference.reference_index,
             );
-            if catalog.touch_keys.contains(&key) {
+            if catalog.reference_keys.contains(&key) {
                 push_provider_import_failure(
                     &mut catalog.summary,
                     line.line_number,
-                    "duplicate touch_index for session".to_owned(),
+                    "duplicate reference_index for session".to_owned(),
                 );
             }
             if catalog.summary.failed == failures_before {
                 catalog.budget.admit_metadata(retained_metadata_bytes(&[
-                    touch.source_id.len().saturating_mul(2),
-                    touch.session_id.len().saturating_mul(2),
+                    reference.source_id.len().saturating_mul(2),
+                    reference.session_id.len().saturating_mul(2),
+                    reference.value.len(),
                 ]))?;
-                catalog.touch_keys.insert(key);
-                catalog.touches.push(TouchCandidate {
+                catalog.reference_keys.insert(key);
+                catalog.file_references.push(FileReferenceCandidate {
                     line_number: line.line_number,
-                    source_id: touch.source_id,
-                    session_id: touch.session_id,
-                    event_index: touch.event_index,
+                    source_id: reference.source_id,
+                    session_id: reference.session_id,
+                    event_index: reference.event_index,
+                    value: reference.value,
                 });
             }
         }
@@ -451,7 +490,8 @@ fn visit_record(
                     "{}:{}:{}",
                     edge.from_session_id,
                     edge.to_session_id,
-                    edge.edge_type.as_str()
+                    edge.relationship
+                        .map_or("none", |relationship| relationship.as_str())
                 )
             });
             let key = (
@@ -480,7 +520,7 @@ fn visit_record(
                     source_id: edge.source_id,
                     from_session_id: edge.from_session_id,
                     to_session_id: edge.to_session_id,
-                    edge_type: edge.edge_type,
+                    relationship: edge.relationship,
                 });
             }
         }
@@ -493,6 +533,102 @@ fn retained_metadata_bytes(lengths: &[usize]) -> usize {
         CUSTOM_HISTORY_CATALOG_ENTRY_OVERHEAD_BYTES,
         |total, length| total.saturating_add(*length),
     )
+}
+
+const CORE_ACTIVITY_TEXT_METADATA_MAX_BYTES: usize = 64 * 1024;
+
+fn validate_unmerged_activity(
+    activity: &CoreActivity,
+    normalized_body: &str,
+) -> std::result::Result<(), &'static str> {
+    if activity.revision != ctx_history_core::CORE_ACTIVITY_REVISION {
+        return Err("neutral activity revision is unsupported");
+    }
+    if activity.invocation.is_none() && activity.result.is_none() && activity.facts.is_empty() {
+        return Err("neutral activity must contain an invocation, result, or literal fact");
+    }
+    if activity
+        .provider_call_id
+        .as_ref()
+        .is_some_and(|call_id| call_id.validate_contract().is_err())
+    {
+        return Err("neutral activity call identity is invalid");
+    }
+    if (activity.invocation.is_some() || activity.result.is_some())
+        && activity.provider_call_id.is_none()
+    {
+        return Err("neutral activity invocation or result requires an exact call identity");
+    }
+    if activity.facts.len() > MAX_PROVIDER_DECLARED_FACTS {
+        return Err("neutral activity fact count exceeds the Core bound");
+    }
+    if activity
+        .facts
+        .iter()
+        .any(|fact| !valid_core_text(&fact.value, MAX_CORE_CONTENT_BYTES))
+    {
+        return Err("neutral activity fact value exceeds the Core bound");
+    }
+    if let Some(invocation) = &activity.invocation {
+        if !valid_optional_core_text(
+            invocation.protocol.as_deref(),
+            CORE_ACTIVITY_TEXT_METADATA_MAX_BYTES,
+        ) || !valid_optional_core_text(
+            invocation.server.as_deref(),
+            CORE_ACTIVITY_TEXT_METADATA_MAX_BYTES,
+        ) || !valid_core_text(&invocation.tool, CORE_ACTIVITY_TEXT_METADATA_MAX_BYTES)
+            || !valid_json_capture(&invocation.arguments)
+        {
+            return Err("neutral activity invocation exceeds the Core contract");
+        }
+    }
+    if let Some(result) = &activity.result {
+        if !valid_optional_core_text(
+            result.status.as_deref(),
+            CORE_ACTIVITY_TEXT_METADATA_MAX_BYTES,
+        ) || !valid_text_capture(&result.text, normalized_body)
+            || !valid_json_capture(&result.structured_content)
+        {
+            return Err("neutral activity result exceeds the Core contract");
+        }
+    }
+    Ok(())
+}
+
+fn valid_core_text(value: &str, maximum: usize) -> bool {
+    !value.is_empty() && value.len() <= maximum
+}
+
+fn valid_optional_core_text(value: Option<&str>, maximum: usize) -> bool {
+    value.is_none_or(|value| valid_core_text(value, maximum))
+}
+
+fn valid_json_capture(capture: &ctx_history_core::ActivityJsonCapture) -> bool {
+    match capture {
+        ctx_history_core::ActivityJsonCapture::Omitted { reason, .. } => {
+            valid_core_text(reason, CORE_ACTIVITY_TEXT_METADATA_MAX_BYTES)
+        }
+        ctx_history_core::ActivityJsonCapture::Present { .. }
+        | ctx_history_core::ActivityJsonCapture::Absent
+        | ctx_history_core::ActivityJsonCapture::Unavailable => true,
+    }
+}
+
+fn valid_text_capture(
+    capture: &ctx_history_core::ActivityTextCapture,
+    normalized_body: &str,
+) -> bool {
+    match capture {
+        ctx_history_core::ActivityTextCapture::Present { value } => {
+            valid_core_text(value, MAX_CORE_CONTENT_BYTES)
+        }
+        ctx_history_core::ActivityTextCapture::NormalizedBody => !normalized_body.is_empty(),
+        ctx_history_core::ActivityTextCapture::Omitted { reason, .. } => {
+            valid_core_text(reason, CORE_ACTIVITY_TEXT_METADATA_MAX_BYTES)
+        }
+        ctx_history_core::ActivityTextCapture::Absent
+        | ctx_history_core::ActivityTextCapture::Unavailable => true,
+    }
 }
 
 fn ensure_retained_key_bound(
@@ -526,17 +662,17 @@ fn finish_projection(
     if catalog.manifest_line.is_none() {
         catalog.manifest_failure = Some((
             ProviderSourceFailureKind::InvalidSource,
-            "missing manifest record for ctx-history-jsonl-v1".to_owned(),
+            "missing manifest record for ctx-history-jsonl-v2".to_owned(),
         ));
     }
     if let Some((kind, detail)) = catalog.manifest_failure {
         return Err(CustomHistorySourceBackedError::StructuralManifest { kind, detail });
     }
     apply_session_lineage_contract(&mut catalog);
-    catalog.touch_keys.clear();
+    catalog.reference_keys.clear();
     catalog.edge_keys.clear();
 
-    let copied_origins;
+    let mut file_references = BTreeMap::<CustomEventKey, Vec<ProviderDeclaredFact>>::new();
     {
         let valid_sessions =
             session_catalog(&catalog.sources, &catalog.sessions, &mut catalog.summary);
@@ -564,40 +700,58 @@ fn finish_projection(
             push_provider_import_failure(&mut catalog.summary, line_number, error);
         }
 
-        copied_origins = validate_copied_origins(
-            catalog.lineage_contract,
-            &catalog.sessions,
-            &catalog.events,
-            &mut catalog.summary,
-        );
-
-        let mut valid_touches = Vec::with_capacity(catalog.touches.len());
-        for touch in catalog.touches.drain(..) {
-            let session_key = (touch.source_id.clone(), touch.session_id.clone());
+        for reference in catalog.file_references.drain(..) {
+            let session_key = (reference.source_id.clone(), reference.session_id.clone());
             let error = if !catalog.sessions.contains_key(&session_key) {
                 Some(format!(
-                    "file_touch references unknown session `{}` in source `{}`",
-                    touch.session_id, touch.source_id
+                    "file_reference references unknown session `{}` in source `{}`",
+                    reference.session_id, reference.source_id
                 ))
-            } else if let Some(event_index) = touch.event_index {
+            } else if let Some(event_index) = reference.event_index {
                 let event_key = (
-                    touch.source_id.clone(),
-                    touch.session_id.clone(),
+                    reference.source_id.clone(),
+                    reference.session_id.clone(),
                     event_index,
                 );
-                (!catalog.events.contains_key(&event_key))
-                    .then(|| format!("file_touch references unknown event_index `{event_index}`"))
+                (!catalog.events.contains_key(&event_key)).then(|| {
+                    format!("file_reference references unknown event_index `{event_index}`")
+                })
             } else {
-                None
+                Some("file_reference requires event_index for neutral Core activity".to_owned())
             };
             if let Some(error) = error {
-                push_provider_import_failure(&mut catalog.summary, touch.line_number, error);
-            } else {
-                valid_touches.push(touch);
+                push_provider_import_failure(&mut catalog.summary, reference.line_number, error);
+            } else if let Some(event_index) = reference.event_index {
+                file_references
+                    .entry((reference.source_id, reference.session_id, event_index))
+                    .or_default()
+                    .push(ProviderDeclaredFact {
+                        kind: ctx_history_core::LiteralFactKind::File,
+                        value: reference.value,
+                    });
             }
         }
 
-        let mut valid_edges = Vec::with_capacity(catalog.edges.len());
+        let mut invalid_activities = Vec::new();
+        catalog.events.retain(|key, event| {
+            let session = catalog
+                .sessions
+                .get(&(key.0.clone(), key.1.clone()))
+                .expect("event sessions were retained above");
+            let references = file_references.get(key).map(Vec::as_slice).unwrap_or(&[]);
+            let error = validate_merged_activity(event, session, references).err();
+            if let Some(error) = error {
+                invalid_activities.push((key.clone(), event.line_number, error));
+                false
+            } else {
+                true
+            }
+        });
+        for (key, line_number, error) in invalid_activities {
+            file_references.remove(&key);
+            push_provider_import_failure(&mut catalog.summary, line_number, error.to_owned());
+        }
+
         for edge in catalog.edges.drain(..) {
             let from_key = (edge.source_id.clone(), edge.from_session_id.clone());
             let to_key = (edge.source_id.clone(), edge.to_session_id.clone());
@@ -611,12 +765,12 @@ fn finish_projection(
                     "edge references unknown to_session_id `{}`",
                     edge.to_session_id
                 ))
-            } else if edge.edge_type == SessionEdgeType::ParentChild {
+            } else if edge.relationship.is_some() {
                 catalog.sessions.get(&to_key).and_then(|child| {
                     child.parent_session_id.as_ref().and_then(|parent| {
                         (parent != &edge.from_session_id).then(|| {
                             format!(
-                                "parent_child edge from_session_id `{}` conflicts with session parent_session_id `{parent}`",
+                                "edge from_session_id `{}` conflicts with session parent_session_id `{parent}`",
                                 edge.from_session_id
                             )
                         })
@@ -627,29 +781,29 @@ fn finish_projection(
             };
             if let Some(error) = error {
                 push_provider_import_failure(&mut catalog.summary, edge.line_number, error);
-            } else {
-                valid_edges.push(edge);
+            } else if let Some(relationship) = edge.relationship {
+                if let Some(child) = catalog.sessions.get_mut(&to_key) {
+                    child.parent_session_id = Some(edge.from_session_id.clone());
+                    child.session_relationship = Some(relationship);
+                }
             }
         }
+
+        apply_session_lineage_contract(&mut catalog);
 
         let required = catalog
             .events
             .keys()
             .map(|key| (key.0.clone(), key.1.clone()))
-            .chain(
-                valid_touches
-                    .iter()
-                    .map(|touch| (touch.source_id.clone(), touch.session_id.clone())),
-            )
-            .chain(valid_edges.iter().flat_map(|edge| {
-                [
-                    (edge.source_id.clone(), edge.from_session_id.clone()),
-                    (edge.source_id.clone(), edge.to_session_id.clone()),
-                ]
-            }))
             .collect::<BTreeSet<_>>();
         catalog.sessions.retain(|key, _| required.contains(key));
     }
+    let copied_origins = validate_copied_origins(
+        catalog.lineage_contract,
+        &catalog.sessions,
+        &catalog.events,
+        &mut catalog.summary,
+    );
 
     let mut rejected_lines = catalog
         .summary
@@ -709,6 +863,7 @@ fn finish_projection(
         sessions: catalog.sessions,
         events: catalog.events,
         copied_origins,
+        file_references,
         event_spool,
         observed_prior_prefix_digest,
         retained_records_before_prior_prefix,
@@ -721,6 +876,32 @@ fn finish_projection(
         },
         content_digest,
     })
+}
+
+fn validate_merged_activity(
+    event: &CustomEventCatalogEntry,
+    session: &CustomSessionCatalogEntry,
+    file_references: &[ProviderDeclaredFact],
+) -> std::result::Result<(), &'static str> {
+    let fact_count = event
+        .activity_fact_count
+        .checked_add(usize::from(session.cwd.is_some()))
+        .and_then(|count| count.checked_add(file_references.len()))
+        .ok_or("merged neutral activity fact count exceeds the Core bound")?;
+    if fact_count > MAX_PROVIDER_DECLARED_FACTS {
+        return Err("merged neutral activity fact count exceeds the Core bound");
+    }
+    if session
+        .cwd
+        .as_deref()
+        .is_some_and(|cwd| !valid_core_text(cwd, MAX_CORE_CONTENT_BYTES))
+        || file_references
+            .iter()
+            .any(|fact| !valid_core_text(&fact.value, MAX_CORE_CONTENT_BYTES))
+    {
+        return Err("merged neutral activity fact value exceeds the Core bound");
+    }
+    Ok(())
 }
 
 fn apply_session_lineage_contract(catalog: &mut ProjectionCatalog) {
@@ -739,18 +920,17 @@ fn apply_session_lineage_contract(catalog: &mut ProjectionCatalog) {
             continue;
         };
         let valid = match kind {
-            SessionRelationshipKind::Root => {
+            ProviderNativeSessionRelationship::Root => {
                 session.parent_session_id.is_none()
                     && session
                         .root_session_id
                         .as_deref()
                         .is_none_or(|root| root == session.session_id)
             }
-            SessionRelationshipKind::Delegated
-            | SessionRelationshipKind::Forked
-            | SessionRelationshipKind::ResumedFrom
-            | SessionRelationshipKind::WorkflowChild
-            | SessionRelationshipKind::RelatedUnknown => {
+            ProviderNativeSessionRelationship::Delegated
+            | ProviderNativeSessionRelationship::Forked
+            | ProviderNativeSessionRelationship::ResumedFrom
+            | ProviderNativeSessionRelationship::WorkflowChild => {
                 session.parent_session_id.as_deref().is_some_and(|parent| {
                     parent != session.session_id
                         && session
@@ -847,11 +1027,10 @@ fn validate_copied_origins(
             matches!(
                 session.session_relationship,
                 Some(
-                    SessionRelationshipKind::Delegated
-                        | SessionRelationshipKind::Forked
-                        | SessionRelationshipKind::ResumedFrom
-                        | SessionRelationshipKind::WorkflowChild
-                        | SessionRelationshipKind::RelatedUnknown
+                    ProviderNativeSessionRelationship::Delegated
+                        | ProviderNativeSessionRelationship::Forked
+                        | ProviderNativeSessionRelationship::ResumedFrom
+                        | ProviderNativeSessionRelationship::WorkflowChild
                 )
             )
             .then_some(session.parent_session_id.as_deref())
@@ -885,13 +1064,13 @@ fn validate_copied_origins(
         };
         let proof = match selector.proof {
             CtxHistoryJsonlCopyProofKind::NativeEventIdentity => {
-                EventCopyProofKind::NativeEventIdentity
+                ProviderNativeCopyProof::NativeEventIdentity
             }
             CtxHistoryJsonlCopyProofKind::NativeCopiedFromField => {
-                EventCopyProofKind::NativeCopiedFromField
+                ProviderNativeCopyProof::NativeCopiedFromField
             }
             CtxHistoryJsonlCopyProofKind::NativeCallResultIdentity => {
-                EventCopyProofKind::NativeCallResultIdentity
+                ProviderNativeCopyProof::NativeCallResultIdentity
             }
         };
         admitted.insert(

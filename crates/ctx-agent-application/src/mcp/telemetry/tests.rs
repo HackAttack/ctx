@@ -20,6 +20,10 @@ fn protocol_classification_maps_to_content_free_product_facts() {
             json!({"jsonrpc":"2.0", "id":2, "method":"tools/call", "params":{"name":"private-tool-never-retained"}}),
             McpRequestObservation::ToolCall(McpObservedTool::Unknown),
         ),
+        (
+            json!({"jsonrpc":"2.0", "id":3, "method":"tools/call", "params":{"name":"blame"}}),
+            McpRequestObservation::ToolCall(McpObservedTool::Unknown),
+        ),
     ] {
         assert_eq!(
             request_observation(RequestDescriptor::from_message(&message)),

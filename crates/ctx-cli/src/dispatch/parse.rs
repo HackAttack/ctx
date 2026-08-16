@@ -2,16 +2,16 @@ use std::{error::Error as _, ffi::OsString};
 
 use anyhow::{Context, Result};
 use clap::{
-    error::{ContextKind as ClapContextKind, ContextValue as ClapContextValue, ErrorKind},
     Command, CommandFactory, Parser,
+    error::{ContextKind as ClapContextKind, ContextValue as ClapContextValue, ErrorKind},
 };
 
 use super::RenderedClapError;
 use crate::{
     cli::Cli,
     ui::{
-        diagnostic, scan_color_mode, scan_machine_output_hint, Action, ColorMode, Diagnostic,
-        DiagnosticLevel, Document, Field, RenderContext, Ui,
+        Action, ColorMode, Diagnostic, DiagnosticLevel, Document, Field, Line, RenderContext, Ui,
+        diagnostic, scan_color_mode, scan_machine_output_hint,
     },
 };
 

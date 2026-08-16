@@ -422,7 +422,7 @@ mod tests {
         assert_ne!(migrated.commit.generation_id, seeded.generation_id);
         assert_eq!(
             migrated.sources[0].parser_revision(),
-            "openhands-source-backed-v4"
+            "openhands-source-backed-v6-closed-facts"
         );
         let migrated_events = indexed_events(&migration_index, &migrated);
         assert_eq!(

@@ -1,6 +1,6 @@
 //! Captured MessagePack decoding and privacy-preserving message interpretation.
 
-use crate::{CaptureError, OutputOutcome, OutputOutcomeMetadata, Result};
+use crate::{CaptureError, Result};
 use ctx_history_core::{EventRole, EventType};
 use rmpv::{decode::read_value as read_msgpack_value, Value as MsgpackValue};
 
@@ -31,48 +31,6 @@ pub(super) fn deepagents_event_type(message: &DeepAgentsMessage) -> EventType {
 pub(super) fn core_eligible(message: &DeepAgentsMessage) -> bool {
     let _ = message;
     true
-}
-
-pub(super) fn deepagents_output_outcome(message: &DeepAgentsMessage) -> OutputOutcomeMetadata {
-    let status = message
-        .status
-        .as_deref()
-        .map(str::trim)
-        .map(str::to_ascii_lowercase);
-    let timeout = message.timed_out
-        || status
-            .as_deref()
-            .is_some_and(|status| matches!(status, "timeout" | "timed_out" | "timedout"));
-    let failure = message.is_error == Some(true)
-        || message.success == Some(false)
-        || message.exit_code.is_some_and(|code| code != 0)
-        || status.as_deref().is_some_and(|status| {
-            matches!(
-                status,
-                "failed" | "failure" | "error" | "errored" | "cancelled" | "canceled"
-            )
-        });
-    let success = message.success == Some(true)
-        || message.exit_code == Some(0)
-        || status.as_deref().is_some_and(|status| {
-            matches!(
-                status,
-                "success" | "succeeded" | "complete" | "completed" | "ok" | "passed"
-            )
-        });
-    OutputOutcomeMetadata {
-        outcome: if timeout {
-            OutputOutcome::Timeout
-        } else if failure {
-            OutputOutcome::Failure
-        } else if success {
-            OutputOutcome::Success
-        } else {
-            OutputOutcome::Unknown
-        },
-        exit_code: message.exit_code,
-        duration_ms: message.duration_ms,
-    }
 }
 
 #[derive(Debug, Clone, Default)]

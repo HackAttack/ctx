@@ -92,7 +92,7 @@ fn fresh_home_search_mvp_flow() {
     assert_eq!(first_result["result_type"], "session_result");
     assert_eq!(first_result["result_scope"], "session");
     assert_eq!(first_result["session_relationship"], "root");
-    assert_eq!(first_result["event_origin"]["kind"], "unknown");
+    assert!(first_result.get("event_copy").is_none());
     let ctx_event_id = first_result["ctx_event_id"].as_str().unwrap().to_owned();
     let ctx_session_id = first_result["ctx_session_id"].as_str().unwrap().to_owned();
     let provider_session_id = first_result["provider_session_id"]

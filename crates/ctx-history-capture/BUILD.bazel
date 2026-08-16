@@ -1,9 +1,9 @@
-load("@crates//:defs.bzl", "aliases", "all_crate_deps", "crate_edition")
+load("@crates//:defs.bzl", "aliases", "all_crate_deps", "crate_deps", "crate_edition")
 load("@rules_python//python:defs.bzl", "py_binary", "py_test")
 load("@rules_shell//shell:sh_test.bzl", "sh_test")
 load("@rules_rust//rust:defs.bzl", "rust_library")
 load("//:rust_sources.bzl", "RUST_PROD_SRC_EXCLUDES")
-load("//tools/bazel:ctx_rust.bzl", "ctx_rust_binary", "ctx_rust_test")
+load("//tools/bazel:ctx_rust.bzl", "ctx_rust_test")
 load("//tools/bazel:gates.bzl", "loc_check_inputs")
 load(
     "//crates/ctx-history-capture:tests/mcp_attribution_suites.bzl",
@@ -25,10 +25,17 @@ filegroup(
     srcs = glob(
         [
             "src/provider/**/*.rs",
-            "src/provider_sources/**/*.rs",
+            "src/provider_sources.rs",
         ],
         exclude = RUST_PROD_SRC_EXCLUDES,
     ),
+)
+
+filegroup(
+    name = "test_fixtures",
+    srcs = glob([
+        "tests/fixtures/**",
+    ]),
 )
 
 COMMON_RUSTC_ENV = {
@@ -51,9 +58,14 @@ PROD_SRCS = glob(
 )
 
 CTX_HISTORY_CAPTURE_DEPS = [
+    "//crates/ctx-history-capture-composition:lib",
+    "//crates/ctx-history-capture-model:lib",
     "//crates/ctx-history-core:lib",
-    "//crates/ctx-history-index:lib",
-    "//crates/ctx-history-store:lib",
+    "//crates/ctx-history-provider-runtime:lib",
+    "//crates/ctx-history-provider-claude-cursor:lib",
+    "//crates/ctx-history-provider-trae:lib",
+    "//crates/ctx-history-source-discovery:lib",
+    "//crates/ctx-history-source-io:lib",
 ]
 
 rust_library(
@@ -70,6 +82,7 @@ rust_library(
 
 rust_library(
     name = "qualification_lib",
+    testonly = True,
     srcs = PROD_SRCS,
     crate_name = "ctx_history_capture",
     crate_root = "src/lib.rs",
@@ -78,64 +91,11 @@ rust_library(
     deps = all_crate_deps(normal = True) + CTX_HISTORY_CAPTURE_DEPS,
     proc_macro_deps = all_crate_deps(proc_macro = True),
     rustc_env = COMMON_RUSTC_ENV,
-    rustc_env_files = ["qualification-stamp.env"],
-    rustc_flags = ["--cfg=codex_nativepath_qualification"],
-    stamp = 1,
-    tags = [
-        "local",
-        "manual",
-        "qualification",
+    rustc_flags = [
+        "--check-cfg=cfg(ctx_codex_causal_qualification)",
+        "--check-cfg=cfg(test)",
+        "--cfg=ctx_codex_causal_qualification",
     ],
-    visibility = ["//visibility:private"],
-)
-
-ctx_rust_binary(
-    name = "codex_nativepath_qualification",
-    srcs = ["qualification/codex_nativepath.rs"],
-    crate_name = "codex_nativepath_qualification",
-    crate_root = "qualification/codex_nativepath.rs",
-    edition = crate_edition(),
-    aliases = aliases(),
-    deps = all_crate_deps(normal = True) + [
-        ":qualification_lib",
-        "//crates/ctx-history-store:lib",
-    ],
-    proc_macro_deps = all_crate_deps(proc_macro = True),
-    tags = [
-        "local",
-        "manual",
-        "qualification",
-    ],
-    visibility = ["//visibility:private"],
-)
-
-ctx_rust_test(
-    name = "codex_nativepath_qualification_tests",
-    srcs = ["qualification/codex_nativepath.rs"],
-    crate_name = "codex_nativepath_qualification_tests",
-    crate_root = "qualification/codex_nativepath.rs",
-    edition = crate_edition(),
-    aliases = aliases(
-        normal_dev = True,
-        proc_macro_dev = True,
-    ),
-    deps = all_crate_deps(
-        normal = True,
-        normal_dev = True,
-    ) + [
-        ":qualification_lib",
-        "//crates/ctx-history-store:lib",
-    ],
-    proc_macro_deps = all_crate_deps(
-        proc_macro = True,
-        proc_macro_dev = True,
-    ),
-    tags = [
-        "local",
-        "manual",
-        "qualification",
-    ],
-    visibility = ["//:__pkg__"],
 )
 
 ctx_rust_test(
@@ -147,6 +107,8 @@ ctx_rust_test(
         "//:provider_import_policy",
         "//:provider_support_matrix",
         "//:public_test_fixtures",
+        ":test_fixtures",
+        "//crates/ctx-history-provider-codex:test_fixtures",
     ],
     edition = crate_edition(),
     aliases = aliases(
@@ -157,6 +119,7 @@ ctx_rust_test(
         "//:provider_support_matrix",
         "//:public_test_fixtures",
         ":provider_architecture_sources",
+        "//crates/ctx-history-providers-sqlite-logical:provider_architecture_sources",
         "//crates/ctx-cli:provider_import_architecture_sources",
     ],
     deps = all_crate_deps(
@@ -171,47 +134,44 @@ ctx_rust_test(
 )
 
 ctx_rust_test(
-    name = "crush_identity_storage_tests",
-    srcs = ["tests/crush_identity_storage.rs"],
-    crate_name = "crush_identity_storage",
-    crate_root = "tests/crush_identity_storage.rs",
-    edition = crate_edition(),
-    aliases = aliases(
-        normal_dev = True,
-        proc_macro_dev = True,
-    ),
-    deps = all_crate_deps(
-        normal = True,
-        normal_dev = True,
-    ) + [
-        ":lib",
-        "//crates/ctx-history-core:lib",
-        "//crates/ctx-history-store:lib",
+    name = "self_contained_core_final_locator_removal_tests",
+    srcs = [
+        "tests/self_contained_core_final_locator_removal.rs",
+    ] + PROD_SRCS,
+    crate_name = "self_contained_core_final_locator_removal",
+    crate_root = "tests/self_contained_core_final_locator_removal.rs",
+    compile_data = [
+        "//crates/ctx-history-core:src/lib.rs",
+        "//crates/ctx-history-provider-claude-cursor:cargo_package_data",
+        "//crates/ctx-history-source-sqlite:src/value.rs",
+        "//crates/ctx-history-provider-docproj:src/providers/nanoclaw/native_path/source_backed.rs",
+        "//crates/ctx-history-provider-docproj:src/providers/nanoclaw/position.rs",
+        "//crates/ctx-history-provider-docproj:src/providers/nanoclaw/source.rs",
     ],
-    proc_macro_deps = all_crate_deps(
-        proc_macro = True,
-        proc_macro_dev = True,
-    ),
-    rustc_env = COMMON_RUSTC_ENV,
+    edition = crate_edition(),
 )
 
 ctx_rust_test(
-    name = "opencode_nativepath_release_blockers_tests",
-    srcs = ["tests/opencode_nativepath_release_blockers.rs"],
-    crate_name = "opencode_nativepath_release_blockers",
-    crate_root = "tests/opencode_nativepath_release_blockers.rs",
+    name = "codex_direct_result_tests",
+    srcs = ["tests/codex_direct_result.rs"],
+    crate_name = "codex_direct_result",
+    crate_root = "tests/codex_direct_result.rs",
+    compile_data = [
+        ":test_fixtures",
+        "//crates/ctx-history-provider-codex:test_fixtures",
+    ],
     edition = crate_edition(),
     aliases = aliases(
         normal_dev = True,
         proc_macro_dev = True,
     ),
-    deps = all_crate_deps(
-        normal = True,
-        normal_dev = True,
-    ) + [
+    deps = crate_deps([
+        "serde_json",
+        "tempfile",
+    ]) + [
         ":lib",
         "//crates/ctx-history-core:lib",
-        "//crates/ctx-history-store:lib",
+        "//crates/ctx-history-index:lib",
     ],
     proc_macro_deps = all_crate_deps(
         proc_macro = True,
@@ -274,143 +234,25 @@ py_test(
     tags = ["provider-conformance"],
 )
 
-ctx_rust_test(
-    name = "cursor_native_tests",
-    srcs = ["tests/cursor_native.rs"],
-    crate_root = "tests/cursor_native.rs",
-    edition = crate_edition(),
-    aliases = aliases(
-        normal_dev = True,
-        proc_macro_dev = True,
-    ),
-    data = [
-        "//:public_test_fixtures",
-    ],
-    deps = all_crate_deps(
-        normal = True,
-        normal_dev = True,
-    ) + [
-        ":lib",
-        "//crates/ctx-history-core:lib",
-        "//crates/ctx-history-store:lib",
-    ],
-    proc_macro_deps = all_crate_deps(
-        proc_macro = True,
-        proc_macro_dev = True,
-    ),
-    rustc_env = COMMON_RUSTC_ENV,
-)
-
-ctx_rust_test(
-    name = "codex_tail_nativepath_tests",
-    srcs = ["tests/codex_tail_nativepath.rs"],
-    crate_name = "codex_tail_nativepath",
-    crate_root = "tests/codex_tail_nativepath.rs",
-    edition = crate_edition(),
-    aliases = aliases(
-        normal_dev = True,
-        proc_macro_dev = True,
-    ),
-    data = ["//:public_test_fixtures"] + glob(["tests/fixtures/**"]),
-    deps = all_crate_deps(
-        normal = True,
-        normal_dev = True,
-    ) + [
-        ":lib",
-        "//crates/ctx-history-core:lib",
-        "//crates/ctx-history-store:lib",
-    ],
-    proc_macro_deps = all_crate_deps(
-        proc_macro = True,
-        proc_macro_dev = True,
-    ),
-    rustc_env = COMMON_RUSTC_ENV,
-)
-
-ctx_rust_test(
-    name = "complete_content_jsonl_tests",
-    srcs = ["tests/complete_content_jsonl.rs"],
-    compile_data = ["//:complete_content_provider_capabilities"],
-    crate_root = "tests/complete_content_jsonl.rs",
-    edition = crate_edition(),
-    aliases = aliases(
-        normal_dev = True,
-        proc_macro_dev = True,
-    ),
-    deps = all_crate_deps(
-        normal = True,
-        normal_dev = True,
-    ) + [
-        ":lib",
-        "//crates/ctx-history-core:lib",
-        "//crates/ctx-history-store:lib",
-    ],
-    proc_macro_deps = all_crate_deps(
-        proc_macro = True,
-        proc_macro_dev = True,
-    ),
-    rustc_env = COMMON_RUSTC_ENV,
-)
-
-ctx_rust_test(
-    name = "structured_complete_content_tests",
-    srcs = ["tests/structured_complete_content.rs"],
-    compile_data = [
-        "//:complete_content_provider_capabilities",
-        "//:provider_support_matrix",
-    ],
-    crate_root = "tests/structured_complete_content.rs",
-    edition = crate_edition(),
-    aliases = aliases(
-        normal_dev = True,
-        proc_macro_dev = True,
-    ),
-    deps = all_crate_deps(
-        normal = True,
-        normal_dev = True,
-    ) + [
-        ":lib",
-        "//crates/ctx-history-core:lib",
-    ],
-    proc_macro_deps = all_crate_deps(
-        proc_macro = True,
-        proc_macro_dev = True,
-    ),
-    rustc_env = COMMON_RUSTC_ENV,
-)
-
-ctx_rust_test(
-    name = "complete_content_sqlite_tests",
-    srcs = ["tests/complete_content_sqlite.rs"],
-    crate_root = "tests/complete_content_sqlite.rs",
-    edition = crate_edition(),
-    aliases = aliases(
-        normal_dev = True,
-        proc_macro_dev = True,
-    ),
-    deps = all_crate_deps(
-        normal = True,
-        normal_dev = True,
-    ) + [
-        ":lib",
-        "//crates/ctx-history-core:lib",
-    ],
-    proc_macro_deps = all_crate_deps(
-        proc_macro = True,
-        proc_macro_dev = True,
-    ),
-    rustc_env = COMMON_RUSTC_ENV,
-)
-
 sh_test(
     name = "active_source_family_contract_tests",
     srcs = ["tests/run-active-source-family-contracts.sh"],
     args = [
         "$(rootpath :unit_tests)",
+        "$(rootpath //crates/ctx-history-capture-composition:unit_tests)",
+        "$(rootpath //crates/ctx-history-provider-codex:unit_tests)",
+        "$(rootpath //crates/ctx-history-jsonl:unit_tests)",
+        "$(rootpath //crates/ctx-history-source-io:unit_tests)",
+        "$(rootpath //crates/ctx-history-source-sqlite:unit_tests)",
         "$(rootpath tests/active-source-family-contract-tests.txt)",
     ],
     data = [
         ":unit_tests",
+        "//crates/ctx-history-capture-composition:unit_tests",
+        "//crates/ctx-history-provider-codex:unit_tests",
+        "//crates/ctx-history-jsonl:unit_tests",
+        "//crates/ctx-history-source-io:unit_tests",
+        "//crates/ctx-history-source-sqlite:unit_tests",
         "tests/active-source-family-contract-tests.txt",
     ],
     size = "small",
@@ -418,15 +260,5 @@ sh_test(
         "safe-presubmit",
         "source-backed",
         "source-family-contract",
-    ],
-)
-
-test_suite(
-    name = "complete_content_tests",
-    tests = [
-        ":complete_content_jsonl_tests",
-        ":complete_content_sqlite_tests",
-        ":structured_complete_content_tests",
-        ":unit_tests",
     ],
 )

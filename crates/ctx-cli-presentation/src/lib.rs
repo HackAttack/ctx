@@ -1,7 +1,7 @@
-//! Non-Pro Clap adapters, command presentation, and terminal-facing workflows.
+//! Core Clap adapters, command presentation, and terminal-facing workflows.
 //!
 //! The final `ctx` binary owns process startup, persisted configuration,
-//! installation identity, daemon composition, release provenance, and Pro.
+//! installation identity, daemon composition, and release provenance.
 //! This crate receives those authorities through explicit per-call values and
 //! ports; it never depends on the final binary.
 

@@ -51,11 +51,11 @@ fn copied_event_claims_publish_with_their_exact_declared_target() {
         original.session_id,
     )
     .unwrap();
-    copy.event_origin = EventOrigin::CopiedFromAncestor {
-        ancestor_session_id: Box::new(original.session_id),
-        ancestor_event_id: Box::new(original.event_id),
+    copy.event_copy = Some(ProviderNativeEventCopy {
+        ancestor_session_id: original.session_id,
+        ancestor_event_id: original.event_id,
         proof: EventCopyProofKind::NativeEventIdentity,
-    };
+    });
 
     let mut writer = GenerationWriter::open(temp.path(), WriterOptions::default())
         .unwrap()
@@ -80,11 +80,11 @@ fn copied_event_with_a_missing_target_publishes_as_an_unresolved_reference() {
         missing.session_id,
     )
     .unwrap();
-    copy.event_origin = EventOrigin::CopiedFromAncestor {
-        ancestor_session_id: Box::new(missing.session_id),
-        ancestor_event_id: Box::new(missing.event_id),
+    copy.event_copy = Some(ProviderNativeEventCopy {
+        ancestor_session_id: missing.session_id,
+        ancestor_event_id: missing.event_id,
         proof: EventCopyProofKind::NativeEventIdentity,
-    };
+    });
 
     let mut writer = GenerationWriter::open(temp.path(), WriterOptions::default())
         .unwrap()
@@ -184,11 +184,11 @@ fn direct_copy_chain_claims_publish_without_graph_resolution() {
             original.session_id,
         )
         .unwrap();
-    middle.event_origin = EventOrigin::CopiedFromAncestor {
-        ancestor_session_id: Box::new(original.session_id),
-        ancestor_event_id: Box::new(original.event_id),
+    middle.event_copy = Some(ProviderNativeEventCopy {
+        ancestor_session_id: original.session_id,
+        ancestor_event_id: original.event_id,
         proof: EventCopyProofKind::NativeEventIdentity,
-    };
+    });
     let mut leaf = document_for_session(&source, "leaf", 3, "leaf copy");
     leaf.set_session_relationship(
         SessionRelationshipKind::Forked,
@@ -196,11 +196,11 @@ fn direct_copy_chain_claims_publish_without_graph_resolution() {
         original.session_id,
     )
     .unwrap();
-    leaf.event_origin = EventOrigin::CopiedFromAncestor {
-        ancestor_session_id: Box::new(middle.session_id),
-        ancestor_event_id: Box::new(middle.event_id),
+    leaf.event_copy = Some(ProviderNativeEventCopy {
+        ancestor_session_id: middle.session_id,
+        ancestor_event_id: middle.event_id,
         proof: EventCopyProofKind::NativeEventIdentity,
-    };
+    });
 
     let mut writer = GenerationWriter::open(temp.path(), WriterOptions::default())
         .unwrap()
@@ -223,14 +223,14 @@ fn cyclic_session_relationship_claims_publish_without_graph_resolution() {
     let mut second = document_for_session(&source, "second", 3, "second");
     first
         .set_session_relationship(
-            SessionRelationshipKind::RelatedUnknown,
+            SessionRelationshipKind::Forked,
             Some(second.session_id),
             root.session_id,
         )
         .unwrap();
     second
         .set_session_relationship(
-            SessionRelationshipKind::RelatedUnknown,
+            SessionRelationshipKind::Forked,
             Some(first.session_id),
             root.session_id,
         )
@@ -252,8 +252,113 @@ fn cyclic_session_relationship_claims_publish_without_graph_resolution() {
     );
 }
 
+fn claimed_child_event(
+    source: &SourceKey,
+    sequence: u64,
+    body: &str,
+    parent: Option<StableEntityId>,
+) -> CoreRecord {
+    let mut event = document_for_session(source, "child", sequence, body);
+    if let Some(parent) = parent {
+        event
+            .set_session_relationship(SessionRelationshipKind::Forked, Some(parent), parent)
+            .unwrap();
+    }
+    event
+}
+
+fn publish_fresh_claims(
+    source: &SourceKey,
+    claims: &[Option<StableEntityId>],
+) -> std::result::Result<(), IndexError> {
+    let temp = tempdir().unwrap();
+    let mut writer = GenerationWriter::open(temp.path(), WriterOptions::default())
+        .unwrap()
+        .into_writer()
+        .unwrap();
+    writer.begin_source(source.clone()).unwrap();
+    for (offset, claim) in claims.iter().copied().enumerate() {
+        writer.add_core_record(claimed_child_event(
+            source,
+            u64::try_from(offset + 1).unwrap(),
+            "fresh claim",
+            claim,
+        ))?;
+    }
+    writer
+        .certify_source(certificate(source, 1, claims.len() as u64))
+        .unwrap();
+    writer.commit(|_| true).map(|_| ())
+}
+
+fn append_claim(
+    root: &Path,
+    source: &SourceKey,
+    revision: u8,
+    sequence: u64,
+    claim: Option<StableEntityId>,
+) -> std::result::Result<(), IndexError> {
+    let mut writer = GenerationWriter::open(root, WriterOptions::default())
+        .unwrap()
+        .into_writer()
+        .unwrap();
+    let base = writer.begin_source_append(source.clone())?.clone();
+    writer.add_core_record(claimed_child_event(source, sequence, "append claim", claim))?;
+    writer.certify_source_append(CertifiedSourceAppend::certify(
+        &base,
+        appendable_certificate(source, revision, sequence, sequence * 10),
+        (sequence - 1) * 10,
+        [revision - 1; 32],
+    )?)?;
+    writer.commit(|_| true).map(|_| ())
+}
+
 #[test]
-fn contradictory_child_owned_claims_within_one_session_cannot_publish() {
+fn fresh_session_claim_merge_accepts_absent_then_positive_and_propagates_it() {
+    let source = source("fresh-absent-positive.jsonl");
+    let parent = document_for_session(&source, "parent", 10, "not published").session_id;
+    let conflicting = document_for_session(&source, "other-parent", 11, "not published").session_id;
+    let temp = tempdir().unwrap();
+    let mut writer = GenerationWriter::open(temp.path(), WriterOptions::default())
+        .unwrap()
+        .into_writer()
+        .unwrap();
+    writer.begin_source(source.clone()).unwrap();
+    writer
+        .add_core_record(claimed_child_event(&source, 1, "unknown", None))
+        .unwrap();
+    writer
+        .add_core_record(claimed_child_event(&source, 2, "positive", Some(parent)))
+        .unwrap();
+    assert!(matches!(
+        writer.add_core_record(claimed_child_event(
+            &source,
+            3,
+            "conflicting positive",
+            Some(conflicting),
+        )),
+        Err(IndexError::ConflictingProviderNativeSessionClaim(_))
+    ));
+    writer.certify_source(certificate(&source, 1, 2)).unwrap();
+    writer.commit(|_| true).unwrap();
+}
+
+#[test]
+fn fresh_session_claim_merge_accepts_positive_then_absent() {
+    let source = source("fresh-positive-absent.jsonl");
+    let parent = document_for_session(&source, "parent", 10, "not published").session_id;
+    publish_fresh_claims(&source, &[Some(parent), None]).unwrap();
+}
+
+#[test]
+fn fresh_session_claim_merge_accepts_equal_positive_claims() {
+    let source = source("fresh-equal-positive.jsonl");
+    let parent = document_for_session(&source, "parent", 10, "not published").session_id;
+    publish_fresh_claims(&source, &[Some(parent), Some(parent)]).unwrap();
+}
+
+#[test]
+fn fresh_session_claim_merge_rejects_conflicting_positive_claims() {
     let temp = tempdir().unwrap();
     let source = source("contradictory-session-claims.jsonl");
     let first_parent = document_for_session(&source, "first-parent", 1, "not published");
@@ -284,7 +389,7 @@ fn contradictory_child_owned_claims_within_one_session_cannot_publish() {
     let error = writer.add_core_record(second).unwrap_err();
     assert!(matches!(
         error,
-        IndexError::InvalidSessionRelationshipGraph(
+        IndexError::ConflictingProviderNativeSessionClaim(
             "one session has contradictory relationship fields"
         )
     ));
@@ -293,7 +398,84 @@ fn contradictory_child_owned_claims_within_one_session_cannot_publish() {
 }
 
 #[test]
-fn append_session_claim_must_match_the_pinned_base_claim() {
+fn append_recovery_claim_merge_accepts_absent_then_positive_and_propagates_it() {
+    let temp = tempdir().unwrap();
+    let source = source("append-absent-positive.jsonl");
+    let parent = document_for_session(&source, "parent", 10, "not published").session_id;
+    let conflicting = document_for_session(&source, "other-parent", 11, "not published").session_id;
+
+    let mut initial = GenerationWriter::open(temp.path(), WriterOptions::default())
+        .unwrap()
+        .into_writer()
+        .unwrap();
+    initial.begin_source(source.clone()).unwrap();
+    initial
+        .add_core_record(claimed_child_event(&source, 1, "unknown base", None))
+        .unwrap();
+    initial
+        .certify_source(appendable_certificate(&source, 1, 1, 10))
+        .unwrap();
+    initial.commit(|_| true).unwrap();
+
+    append_claim(temp.path(), &source, 2, 2, Some(parent)).unwrap();
+    assert!(matches!(
+        append_claim(temp.path(), &source, 3, 3, Some(conflicting)),
+        Err(IndexError::ConflictingProviderNativeSessionClaim(_))
+    ));
+}
+
+#[test]
+fn append_recovery_claim_merge_accepts_positive_then_absent() {
+    let temp = tempdir().unwrap();
+    let source = source("append-positive-absent.jsonl");
+    let parent = document_for_session(&source, "parent", 10, "not published").session_id;
+    let mut initial = GenerationWriter::open(temp.path(), WriterOptions::default())
+        .unwrap()
+        .into_writer()
+        .unwrap();
+    initial.begin_source(source.clone()).unwrap();
+    initial
+        .add_core_record(claimed_child_event(
+            &source,
+            1,
+            "positive base",
+            Some(parent),
+        ))
+        .unwrap();
+    initial
+        .certify_source(appendable_certificate(&source, 1, 1, 10))
+        .unwrap();
+    initial.commit(|_| true).unwrap();
+    append_claim(temp.path(), &source, 2, 2, None).unwrap();
+}
+
+#[test]
+fn append_recovery_claim_merge_accepts_equal_positive_claims() {
+    let temp = tempdir().unwrap();
+    let source = source("append-equal-positive.jsonl");
+    let parent = document_for_session(&source, "parent", 10, "not published").session_id;
+    let mut initial = GenerationWriter::open(temp.path(), WriterOptions::default())
+        .unwrap()
+        .into_writer()
+        .unwrap();
+    initial.begin_source(source.clone()).unwrap();
+    initial
+        .add_core_record(claimed_child_event(
+            &source,
+            1,
+            "positive base",
+            Some(parent),
+        ))
+        .unwrap();
+    initial
+        .certify_source(appendable_certificate(&source, 1, 1, 10))
+        .unwrap();
+    initial.commit(|_| true).unwrap();
+    append_claim(temp.path(), &source, 2, 2, Some(parent)).unwrap();
+}
+
+#[test]
+fn append_recovery_claim_merge_rejects_conflicting_positive_claims() {
     let temp = tempdir().unwrap();
     let source = source("append-session-claim.jsonl");
     let first_parent = document_for_session(&source, "first-parent", 10, "not published");
@@ -333,7 +515,7 @@ fn append_session_claim_must_match_the_pinned_base_claim() {
         .unwrap();
     assert!(matches!(
         append.add_core_record(contradictory),
-        Err(IndexError::InvalidSessionRelationshipGraph(
+        Err(IndexError::ConflictingProviderNativeSessionClaim(
             "one session has contradictory relationship fields"
         ))
     ));
@@ -640,7 +822,7 @@ fn document_identities_must_belong_to_the_document_source() {
 }
 
 #[test]
-fn empty_core_body_is_rejected_by_the_canonical_writer_validation() {
+fn literal_facts_keep_an_empty_normalized_body_useful() {
     let temp = tempdir().unwrap();
     let source = source("session.jsonl");
     let mut writer = GenerationWriter::open(temp.path(), WriterOptions::default())
@@ -650,8 +832,11 @@ fn empty_core_body_is_rejected_by_the_canonical_writer_validation() {
     writer.begin_source(source.clone()).unwrap();
     let mut invalid = document(&source, 1, "body");
     invalid.content.normalized_body = Some(String::new());
-    let error = writer.add_core_record(invalid).unwrap_err();
-    assert!(matches!(error, IndexError::CoreRecord(_)));
+    writer.add_core_record(invalid).unwrap();
+    writer.certify_source(certificate(&source, 1, 1)).unwrap();
+    writer.commit(|_| true).unwrap();
+    let index = VerifiedIndex::open(temp.path()).unwrap();
+    assert_eq!(index.count_term("main").unwrap(), 1);
 }
 
 #[test]

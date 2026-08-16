@@ -4,7 +4,7 @@ use anyhow::{anyhow, Result};
 use ctx_history_index_query::{EventSearchFilters, VerifiedIndex};
 use serde_json::{json, Value};
 
-use crate::json::{compact_json, event_origin_json, timestamp_json};
+use crate::json::{compact_json, event_copy_json, timestamp_json};
 use crate::{
     NormalizedSearchQuery, SearchCollection, SearchHit, SearchPresentation, SearchRequest,
     SEARCH_SNIPPET_MAX_CHARS,
@@ -232,14 +232,10 @@ pub fn search_result_json(
         "parent_ctx_session_id": event.parent_session_id,
         "root_ctx_session_id": event.root_session_id,
         "session_relationship": event.session_relationship,
-        "event_origin": event_origin_json(&event.event_origin),
+        "event_copy": event_copy_json(event.event_copy.as_ref()),
         "copied_lineage": copied_lineage,
-        "branch": event.branch,
-        "agent_type": event.agent_type,
-        "is_primary": event.is_primary,
+        "agent_scope": event.agent_scope,
         "timestamp": timestamp_json(event.occurred_at_unix_ms),
-        "workspace": event.workspace,
-        "cwd": event.cwd,
         "suggested_next_commands": commands.suggested_next_commands,
         "citations": [{
             "item_id": event_id,

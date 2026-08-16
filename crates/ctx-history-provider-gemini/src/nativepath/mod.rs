@@ -1,7 +1,7 @@
 mod discovery;
 mod dto;
-mod file_invocation;
 mod parser;
+mod raw_json;
 mod source_backed;
 
 pub(crate) use discovery::discover_gemini_transcripts;

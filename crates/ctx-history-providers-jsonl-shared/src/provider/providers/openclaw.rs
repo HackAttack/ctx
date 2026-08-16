@@ -4,20 +4,10 @@ use std::{
     time::SystemTime,
 };
 
-use ctx_history_capture_model::{
-    normalization::{
-        provider_capped_json_value, provider_output_event_is_failure,
-        provider_result_outcome_evidence,
-    },
-    tool_input,
-};
-use ctx_history_core::EventType;
+use ctx_history_capture_model::normalization::provider_capped_json_value;
 use serde_json::Value;
 
-use crate::{
-    fnv1a64, OutputObservationKind, OutputOutcome, OutputOutcomeMetadata, Result,
-    PROVIDER_MAX_PREVIEW_CHARS,
-};
+use crate::{fnv1a64, Result, PROVIDER_MAX_PREVIEW_CHARS};
 
 pub(crate) mod native_path;
 mod normalization;
@@ -159,106 +149,4 @@ fn openclaw_index_value_matches(
 
 pub(super) fn openclaw_index_revision(value: &Value) -> Result<u64> {
     Ok(fnv1a64(&serde_json::to_vec(value)?))
-}
-
-pub(super) struct OpenClawOutputMetadata {
-    pub(super) kind: OutputObservationKind,
-    pub(super) outcome: OutputOutcomeMetadata,
-}
-
-pub(super) fn openclaw_output_metadata(value: &Value) -> Option<OpenClawOutputMetadata> {
-    if value
-        .get("type")
-        .and_then(Value::as_str)
-        .unwrap_or("message")
-        != "message"
-    {
-        return None;
-    }
-    let message = value.get("message").unwrap_or(value);
-    let role = message
-        .get("role")
-        .or_else(|| value.get("role"))
-        .and_then(Value::as_str)?;
-    if !matches!(role, "tool" | "toolResult") {
-        return None;
-    }
-    let tool_name = message
-        .get("toolName")
-        .or_else(|| message.get("name"))
-        .or_else(|| message.get("tool_name"))
-        .or_else(|| message.get("tool"))
-        .and_then(Value::as_str)
-        .filter(|value| !value.trim().is_empty())
-        .unwrap_or("tool")
-        .to_owned();
-    let kind = if tool_input::is_command_tool(&tool_name.to_ascii_lowercase()) {
-        OutputObservationKind::Command
-    } else {
-        OutputObservationKind::Tool
-    };
-    let details = message.get("details").unwrap_or(message);
-    let timed_out = openclaw_value_timed_out(details);
-    let exit_code = openclaw_i64_field(details, &["exit_code", "exitCode", "exit_code"])
-        .and_then(|value| i32::try_from(value).ok());
-    let duration_ms = openclaw_i64_field(details, &["duration_ms", "durationMs"])
-        .and_then(|value| u64::try_from(value).ok());
-    let outcome = if timed_out {
-        OutputOutcome::Timeout
-    } else if provider_output_event_is_failure(details) {
-        OutputOutcome::Failure
-    } else if provider_result_outcome_evidence(EventType::ToolOutput, details).as_str()
-        == Some("success")
-        || details.get("status").and_then(Value::as_str) == Some("completed")
-        || exit_code == Some(0)
-    {
-        OutputOutcome::Success
-    } else {
-        OutputOutcome::Unknown
-    };
-    Some(OpenClawOutputMetadata {
-        kind,
-        outcome: OutputOutcomeMetadata {
-            outcome,
-            exit_code,
-            duration_ms,
-        },
-    })
-}
-
-fn openclaw_value_timed_out(value: &Value) -> bool {
-    match value {
-        Value::Array(values) => values.iter().any(openclaw_value_timed_out),
-        Value::Object(values) => {
-            values.iter().any(|(key, value)| {
-                matches!(key.as_str(), "timed_out" | "timedOut" | "timeout")
-                    && value.as_bool().unwrap_or(false)
-                    || matches!(key.as_str(), "status" | "state" | "outcome")
-                        && value.as_str().is_some_and(|value| {
-                            matches!(
-                                value.trim().to_ascii_lowercase().as_str(),
-                                "timeout" | "timed_out" | "timedout"
-                            )
-                        })
-            }) || values.values().any(openclaw_value_timed_out)
-        }
-        Value::Null | Value::Bool(_) | Value::Number(_) | Value::String(_) => false,
-    }
-}
-
-fn openclaw_i64_field(value: &Value, fields: &[&str]) -> Option<i64> {
-    match value {
-        Value::Array(values) => values
-            .iter()
-            .find_map(|value| openclaw_i64_field(value, fields)),
-        Value::Object(values) => fields
-            .iter()
-            .find_map(|field| values.get(*field).and_then(Value::as_i64))
-            .or_else(|| {
-                values
-                    .values()
-                    .find_map(|value| openclaw_i64_field(value, fields))
-            }),
-        Value::Null | Value::Bool(_) | Value::Number(_) | Value::String(_) => None,
-    }
 }

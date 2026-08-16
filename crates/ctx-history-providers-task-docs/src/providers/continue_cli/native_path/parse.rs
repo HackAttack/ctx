@@ -1,22 +1,19 @@
 use std::{ops::Range, path::PathBuf};
 
-use serde::Serialize;
-use serde_json::Value;
-
-use ctx_history_capture_model::file_touches::visit_provider_file_touch_drafts_with_limit;
-
 use crate::MAX_PROVIDER_JSONL_LINE_BYTES;
+use ctx_history_core::ActivityJsonCapture;
+use serde::Serialize;
 
 use super::{
     decode::{
-        decode_f64, decode_string, decode_unbounded_string, validate_and_root, JsonArrayCursor,
-        JsonKind, JsonSpan,
+        decode_f64, decode_string, decode_unbounded_string, decode_value, validate_and_root,
+        JsonArrayCursor, JsonKind, JsonSpan,
     },
     normalize::{
-        normalize_continue_document, normalize_event, ContinueEventRow, ContinueFileTouch,
+        normalize_continue_document, normalize_event, ContinueEventRow,
         ContinueGenerationAuthority, ContinuePreparedPage, ContinuePreparedSource,
-        ContinueSessionIdentity, NormalizeEventError, CONTINUE_NATIVE_MAX_FILE_TOUCHES_PER_EVENT,
-        CONTINUE_NATIVE_MAX_PAGE_BYTES, CONTINUE_NATIVE_MAX_PAGE_ROWS,
+        ContinueSessionIdentity, NormalizeEventError, CONTINUE_NATIVE_MAX_PAGE_BYTES,
+        CONTINUE_NATIVE_MAX_PAGE_ROWS,
     },
     source::{ContinueIndexSnapshot, ContinueSourceObservation, ContinueSourceSnapshot},
 };
@@ -187,7 +184,7 @@ pub(super) struct RawContinueMessage {
 pub(super) struct RawContinueMessageCall {
     pub(super) id: Option<String>,
     pub(super) name: Option<String>,
-    pub(super) file_touches: Vec<ContinueFileTouch>,
+    pub(super) arguments: ctx_history_core::ActivityJsonCapture,
 }
 
 #[derive(Debug, Serialize)]
@@ -210,7 +207,7 @@ pub(super) struct RawContinueToolCall {
     pub(super) id: Option<String>,
     pub(super) name: Option<String>,
     pub(super) function_name: Option<String>,
-    pub(super) file_touches: Vec<ContinueFileTouch>,
+    pub(super) arguments: ctx_history_core::ActivityJsonCapture,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -453,13 +450,6 @@ fn normalization_failure(
             format!(
                 "Continue history item {history_ordinal} retains {observed} lexical bytes, \
                  exceeding the {MAX_PROVIDER_JSONL_LINE_BYTES} byte product bound"
-            ),
-        ),
-        NormalizeEventError::FileTouchLimitExceeded => (
-            ContinueSourceFailureKind::Normalization,
-            format!(
-                "Continue history item exceeds the {CONTINUE_NATIVE_MAX_FILE_TOUCHES_PER_EVENT} \
-                 unique file-touch transaction bound"
             ),
         ),
     };

@@ -4,87 +4,61 @@ use std::{
     path::Path,
 };
 
-use ctx_history_core::CoreDiscoveryExclusion;
+use ctx_history_core::{CaptureProvider, CoreRecord};
+use ctx_history_index::{VerifiedIndex, WriterOptions};
 use serde_json::{json, Value};
-use tempfile::TempDir;
 
-use crate::provider::source_backed::{
-    family::jsonl::set_after_jsonl_semantic_preflight_hook, SourceBackedSourceFailureClass,
+use crate::{
+    provider::source_backed::family::jsonl::set_after_jsonl_semantic_preflight_hook,
+    refresh_source_backed_generation, register_landed_source_backed_route, ProviderCatalogSupport,
+    ProviderImportSupport, ProviderSource, ProviderSourceKind, ProviderSourceStatus,
+    SourceBackedProviderRegistry, SourceBackedRouteSelection, SourceBackedSourceFailureClass,
 };
 
-fn projected(values: &[Value]) -> Vec<ctx_history_core::CoreRecord> {
-    let temp = TempDir::new().unwrap();
-    let root = temp.path().join(".gemini");
-    let mut transcript = vec![header("retrieval-session", "main")];
-    transcript.extend_from_slice(values);
-    write_transcript(&root, &transcript);
-    let registry = registry(&root);
-    let index = temp.path().join("index");
-    crate::provider::source_backed::refresh_source_backed_generation(
-        &index,
-        &registry,
-        ctx_history_index::WriterOptions {
-            indexer_threads: 1,
-            memory_bytes: 15_000_000,
-        },
-    )
-    .unwrap();
-    indexed_records(&index)
-}
-
 fn transcript_path(root: &Path) -> std::path::PathBuf {
-    root.join("tmp/project/chats/session-root.jsonl")
+    root.join("tmp/project/chats/neutral-session.jsonl")
 }
 
-fn fixture_root(temp: &TempDir) -> std::path::PathBuf {
-    temp.path().join(".gemini")
-}
-
-fn header(session_id: &str, kind: &str) -> Value {
+fn header() -> Value {
     json!({
-        "sessionId": session_id,
-        "startTime": "2026-01-01T00:00:00.000Z",
-        "lastUpdated": "2026-01-01T00:00:00.000Z",
-        "kind": kind,
-        "directories": ["/workspace/project"]
+        "sessionId": "neutral-gemini-session",
+        "startTime": "2026-08-16T00:00:00Z",
+        "kind": "main"
     })
 }
 
-fn jsonl(values: &[Value]) -> Vec<u8> {
+fn message(id: &str, timestamp: &str, role: &str, text: &str) -> Value {
+    json!({
+        "id": id,
+        "timestamp": timestamp,
+        "type": role,
+        "content": text
+    })
+}
+
+fn write_transcript(path: &Path, rows: &[Value]) {
+    fs::create_dir_all(path.parent().unwrap()).unwrap();
     let mut bytes = Vec::new();
-    for value in values {
-        serde_json::to_writer(&mut bytes, value).unwrap();
+    for row in rows {
+        serde_json::to_writer(&mut bytes, row).unwrap();
         bytes.push(b'\n');
     }
-    bytes
+    fs::write(path, bytes).unwrap();
 }
 
-fn write_transcript(root: &Path, values: &[Value]) -> std::path::PathBuf {
-    let path = transcript_path(root);
-    fs::create_dir_all(path.parent().unwrap()).unwrap();
-    fs::write(&path, jsonl(values)).unwrap();
-    path
+fn append_transcript(path: &Path, row: &Value) {
+    let mut file = OpenOptions::new().append(true).open(path).unwrap();
+    serde_json::to_writer(&mut file, row).unwrap();
+    file.write_all(b"\n").unwrap();
+    file.sync_all().unwrap();
 }
 
-fn excluded(record: &ctx_history_core::CoreRecord) -> bool {
-    record.content.discovery_exclusion == Some(CoreDiscoveryExclusion::CtxRetrievalDerived)
-}
-
-fn registry(root: &Path) -> crate::provider::source_backed::SourceBackedProviderRegistry {
-    use crate::provider::source_backed::{
-        register_landed_source_backed_route, SourceBackedProviderRegistry,
-        SourceBackedRouteSelection,
-    };
-    use crate::{
-        ProviderCatalogSupport, ProviderImportSupport, ProviderSource, ProviderSourceKind,
-        ProviderSourceStatus,
-    };
-
+fn registry(root: &Path) -> SourceBackedProviderRegistry {
     let mut registry = SourceBackedProviderRegistry::new();
     register_landed_source_backed_route(
         &mut registry,
         ProviderSource {
-            provider: ctx_history_core::CaptureProvider::Gemini,
+            provider: CaptureProvider::Gemini,
             path: root.to_path_buf(),
             exists: true,
             source_format: ctx_history_provider_gemini::GEMINI_CLI_SOURCE_FORMAT,
@@ -97,444 +71,146 @@ fn registry(root: &Path) -> crate::provider::source_backed::SourceBackedProvider
         SourceBackedRouteSelection::Automatic,
     )
     .unwrap();
+    assert_eq!(registry.routes().len(), 1);
     registry
 }
 
-fn indexed_records(index: &Path) -> Vec<ctx_history_core::CoreRecord> {
-    let verified = ctx_history_index::VerifiedIndex::open(index).unwrap();
-    let source = verified.manifest().sources[0]
+fn indexed_records(index: &Path) -> Vec<CoreRecord> {
+    let verified = VerifiedIndex::open(index).unwrap();
+    let source = verified
+        .manifest()
+        .sources
+        .iter()
+        .find(|source| source.observation().source().provider() == CaptureProvider::Gemini.as_str())
+        .unwrap()
         .observation()
         .source()
         .clone();
-    verified
+    let mut records = verified
         .core_source_event_page(&source, None, 64)
         .unwrap()
         .items
         .into_iter()
-        .map(|item| {
-            verified
-                .core_record_by_id(item.event_id.as_uuid())
-                .unwrap()
-                .unwrap()
-        })
-        .collect()
-}
-
-#[test]
-fn exact_cli_call_and_structural_success_envelope_are_excluded() {
-    let records = projected(&[
-        json!({
-            "id": "call-record",
-            "timestamp": "2026-01-01T00:00:01Z",
-            "type": "gemini",
-            "toolCalls": [{
-                "id": "call-1",
-                "name": "run_shell_command",
-                "args": {"command": "ctx search needle"}
-            }]
-        }),
-        json!({
-            "id": "result-record",
-            "timestamp": "2026-01-01T00:00:02Z",
-            "type": "gemini",
-            "toolCalls": [{
-                "id": "call-1",
-                "name": "run_shell_command",
-                "result": {"content": "exact payload", "exitCode": 0}
-            }]
-        }),
-    ]);
-
-    assert_eq!(records.len(), 2);
-    assert!(records.iter().all(excluded));
-    assert_eq!(
-        records
-            .iter()
-            .find(|record| record.content.normalized_body.as_deref() == Some("exact payload"))
-            .and_then(|record| record.content.normalized_body.as_deref()),
-        Some("exact payload")
-    );
-}
-
-#[test]
-fn duplicate_result_terminals_fail_open_including_the_earlier_result() {
-    let records = projected(&[
-        json!({
-            "id": "call-record",
-            "timestamp": "2026-01-01T00:00:01Z",
-            "type": "gemini",
-            "toolCalls": [{
-                "id": "duplicate-result",
-                "name": "run_shell_command",
-                "args": {"command": "ctx search duplicate-result"}
-            }]
-        }),
-        json!({
-            "id": "first-result-record",
-            "timestamp": "2026-01-01T00:00:02Z",
-            "type": "gemini",
-            "toolCalls": [{
-                "id": "duplicate-result",
-                "name": "run_shell_command",
-                "result": {"content": "first duplicate Gemini payload", "exitCode": 0}
-            }]
-        }),
-        json!({
-            "id": "second-result-record",
-            "timestamp": "2026-01-01T00:00:03Z",
-            "type": "gemini",
-            "toolCalls": [{
-                "id": "duplicate-result",
-                "name": "run_shell_command",
-                "result": {"content": "second duplicate Gemini payload", "exitCode": 0}
-            }]
-        }),
-    ]);
-
-    assert_eq!(records.len(), 3);
-    let record_with_body = |body| {
-        records
-            .iter()
-            .find(|record| record.content.normalized_body.as_deref() == Some(body))
-            .unwrap()
-    };
-    assert!(excluded(record_with_body(
-        "run_shell_command\n{\"command\":\"ctx search duplicate-result\"}"
-    )));
-    assert!(!excluded(record_with_body(
-        "first duplicate Gemini payload"
-    )));
-    assert!(!excluded(record_with_body(
-        "second duplicate Gemini payload"
-    )));
-}
-
-#[test]
-fn malformed_duplicate_result_terminal_invalidates_source_wide_uniqueness() {
-    use crate::provider::source_backed::refresh_source_backed_generation;
-
-    let temp = TempDir::new().unwrap();
-    let root = fixture_root(&temp);
-    let path = transcript_path(&root);
-    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
-    let mut bytes = jsonl(&[
-        header("gemini-malformed-duplicate-terminal", "main"),
-        json!({
-            "id": "call-record",
-            "timestamp": "2026-01-01T00:00:01Z",
-            "type": "gemini",
-            "toolCalls": [{
-                "id": "duplicate-terminal-call",
-                "name": "run_shell_command",
-                "args": {"command": "ctx search malformed-duplicate-terminal"}
-            }]
-        }),
-        json!({
-            "id": "first-result-record",
-            "timestamp": "2026-01-01T00:00:02Z",
-            "type": "gemini",
-            "toolCalls": [{
-                "id": "duplicate-terminal-call",
-                "name": "run_shell_command",
-                "result": {"content": "first authoritative payload", "exitCode": 0}
-            }]
-        }),
-    ]);
-    bytes.extend_from_slice(
-        br#"{"id":"malformed-result-record","timestamp":"2026-01-01T00:00:03Z","type":"gemini","toolCalls":[{"id":"other-call","id":"duplicate-terminal-call","name":"run_shell_command","result":{"content":"ambiguous duplicate terminal payload","exitCode":0}}]}"#,
-    );
-    bytes.push(b'\n');
-    std::fs::write(&path, bytes).unwrap();
-
-    let registry = registry(&root);
-    let index = temp.path().join("index");
-    refresh_source_backed_generation(
-        &index,
-        &registry,
-        ctx_history_index::WriterOptions {
-            indexer_threads: 1,
-            memory_bytes: 15_000_000,
-        },
-    )
-    .unwrap();
-    let records = indexed_records(&index);
-
-    assert_eq!(records.len(), 3);
-    let record_with_body = |needle: &str| {
-        records
-            .iter()
-            .find(|record| {
-                record
-                    .content
-                    .normalized_body
-                    .as_deref()
-                    .is_some_and(|body| body.contains(needle))
-            })
-            .unwrap()
-    };
-    assert!(excluded(record_with_body(
-        "ctx search malformed-duplicate-terminal"
-    )));
-    assert!(!excluded(record_with_body("first authoritative payload")));
-    assert!(!excluded(record_with_body(
-        "ambiguous duplicate terminal payload"
-    )));
-}
-
-#[test]
-fn late_duplicate_result_replacement_corrects_the_earlier_result() {
-    use crate::provider::source_backed::refresh_source_backed_generation;
-
-    let temp = TempDir::new().unwrap();
-    let root = fixture_root(&temp);
-    let native_session_id = "gemini-late-duplicate";
-    let call_id = "late-duplicate-result";
-    let path = write_transcript(
-        &root,
-        &[
-            header(native_session_id, "main"),
-            json!({
-                "id": "call-record",
-                "timestamp": "2026-01-01T00:00:01Z",
-                "type": "gemini",
-                "toolCalls": [{
-                    "id": call_id,
-                    "name": "run_shell_command",
-                    "args": {"command": "ctx search late-duplicate"}
-                }]
-            }),
-            json!({
-                "id": "first-result-record",
-                "timestamp": "2026-01-01T00:00:02Z",
-                "type": "gemini",
-                "toolCalls": [{
-                    "id": call_id,
-                    "name": "run_shell_command",
-                    "result": {"content": "first late duplicate Gemini payload", "exitCode": 0}
-                }]
-            }),
-        ],
-    );
-    let registry = registry(&root);
-    let index = temp.path().join("index");
-    let writer_options = ctx_history_index::WriterOptions {
-        indexer_threads: 1,
-        memory_bytes: 15_000_000,
-    };
-
-    refresh_source_backed_generation(&index, &registry, writer_options.clone()).unwrap();
-    let initial = indexed_records(&index);
-    assert_eq!(initial.len(), 2);
-    assert!(initial.iter().all(excluded));
-    let initial_ids = initial
-        .iter()
-        .map(|record| record.event_id)
+        .map(|item| item.core_record)
         .collect::<Vec<_>>();
-
-    let mut file = OpenOptions::new().append(true).open(&path).unwrap();
-    serde_json::to_writer(
-        &mut file,
-        &json!({
-            "id": "second-result-record",
-            "timestamp": "2026-01-01T00:00:03Z",
-            "type": "gemini",
-            "toolCalls": [{
-                "id": call_id,
-                "name": "run_shell_command",
-                "result": {"content": "second late duplicate Gemini payload", "exitCode": 0}
-            }]
-        }),
-    )
-    .unwrap();
-    file.write_all(b"\n").unwrap();
-    file.sync_all().unwrap();
-    drop(file);
-
-    refresh_source_backed_generation(&index, &registry, writer_options).unwrap();
-    let corrected = indexed_records(&index);
-    assert_eq!(corrected.len(), 3);
-    assert!(initial_ids
-        .iter()
-        .all(|event_id| corrected.iter().any(|record| record.event_id == *event_id)));
-    assert_eq!(
-        corrected.iter().filter(|record| excluded(record)).count(),
-        1
-    );
-    for result_body in [
-        "first late duplicate Gemini payload",
-        "second late duplicate Gemini payload",
-    ] {
-        let result = corrected
-            .iter()
-            .find(|record| record.content.normalized_body.as_deref() == Some(result_body))
-            .unwrap();
-        assert!(!excluded(result));
-    }
+    records.sort_by_key(|record| record.event_sequence);
+    records
 }
 
-#[cfg(unix)]
-#[test]
-fn gemini_retained_root_replacement_is_route_fatal_without_partial_publication() {
-    use crate::provider::source_backed::refresh_source_backed_generation;
+fn certified_prefix_bytes(index: &Path) -> u64 {
+    let verified = VerifiedIndex::open(index).unwrap();
+    verified
+        .manifest()
+        .sources
+        .iter()
+        .find(|source| source.observation().source().provider() == CaptureProvider::Gemini.as_str())
+        .unwrap()
+        .frontier()
+        .expect("Gemini publication must persist a checkpoint frontier")
+        .certified_prefix_bytes()
+}
 
-    let temp = TempDir::new().unwrap();
-    let root = fixture_root(&temp);
-    let path = write_transcript(
-        &root,
+fn assert_literal_bodies(records: &[CoreRecord], expected: &[&str]) {
+    assert_eq!(
+        records
+            .iter()
+            .map(|record| record.content.normalized_body.as_deref().unwrap())
+            .collect::<Vec<_>>(),
+        expected
+    );
+}
+
+#[test]
+fn gemini_route_publishes_cold_append_and_recovers_from_carried_checkpoint() {
+    let temp = crate::test_support_paths::tempdir().unwrap();
+    let root = temp.path().join(".gemini");
+    let transcript = transcript_path(&root);
+    let index = temp.path().join("gemini-index");
+    write_transcript(
+        &transcript,
         &[
-            header("gemini-retained-root", "main"),
-            json!({
-                "id": "stable-record",
-                "timestamp": "2026-01-01T00:00:01Z",
-                "type": "user",
-                "content": "stable baseline"
-            }),
+            header(),
+            message(
+                "literal-first",
+                "2026-08-16T00:00:01Z",
+                "user",
+                "literal first",
+            ),
         ],
     );
     let registry = registry(&root);
-    let index = temp.path().join("index");
-    let writer_options = ctx_history_index::WriterOptions {
+    let options = || WriterOptions {
         indexer_threads: 1,
         memory_bytes: 15_000_000,
     };
-    let initial =
-        refresh_source_backed_generation(&index, &registry, writer_options.clone()).unwrap();
-    assert!(initial.failed_routes.is_empty());
 
-    let mut file = OpenOptions::new().append(true).open(&path).unwrap();
-    serde_json::to_writer(
-        &mut file,
-        &json!({
-            "id": "uncommitted-record",
-            "timestamp": "2026-01-01T00:00:02Z",
-            "type": "gemini",
-            "content": "must not publish after retained root replacement"
-        }),
-    )
-    .unwrap();
-    file.write_all(b"\n").unwrap();
-    drop(file);
-    let hook_path = fs::canonicalize(&path).unwrap();
-    let replacement_root = root.clone();
-    set_after_jsonl_semantic_preflight_hook(hook_path, move || {
-        fs::rename(
-            &replacement_root,
-            replacement_root.with_file_name(".gemini-displaced"),
-        )
-        .unwrap();
-        fs::create_dir(&replacement_root).unwrap();
+    let cold = refresh_source_backed_generation(&index, &registry, options()).unwrap();
+    assert!(cold.failed_routes.is_empty());
+    assert_eq!(cold.successful_route_ids.len(), 1);
+    let cold_records = indexed_records(&index);
+    assert_literal_bodies(&cold_records, &["literal first"]);
+    let cold_checkpoint = certified_prefix_bytes(&index);
+    assert_eq!(cold_checkpoint, fs::metadata(&transcript).unwrap().len());
+
+    append_transcript(
+        &transcript,
+        &message(
+            "literal-second",
+            "2026-08-16T00:00:02Z",
+            "gemini",
+            "literal second",
+        ),
+    );
+    let appended = refresh_source_backed_generation(&index, &registry, options()).unwrap();
+    assert!(appended.failed_routes.is_empty());
+    let appended_records = indexed_records(&index);
+    assert_literal_bodies(&appended_records, &["literal first", "literal second"]);
+    assert_eq!(appended_records[0].event_id, cold_records[0].event_id);
+    let appended_checkpoint = certified_prefix_bytes(&index);
+    assert!(appended_checkpoint > cold_checkpoint);
+    assert_eq!(
+        appended_checkpoint,
+        fs::metadata(&transcript).unwrap().len()
+    );
+
+    append_transcript(
+        &transcript,
+        &message(
+            "literal-racing",
+            "2026-08-16T00:00:03Z",
+            "gemini",
+            "race-before",
+        ),
+    );
+    let hook_path = fs::canonicalize(&transcript).unwrap();
+    set_after_jsonl_semantic_preflight_hook(hook_path.clone(), move || {
+        let before = fs::read_to_string(&hook_path).unwrap();
+        let after = before.replace("race-before", "race-after!");
+        assert_eq!(before.len(), after.len());
+        assert_ne!(before, after);
+        fs::write(&hook_path, after).unwrap();
     });
 
-    let failed = refresh_source_backed_generation(&index, &registry, writer_options).unwrap();
-    assert!(transcript_path(&root.with_file_name(".gemini-displaced")).is_file());
+    let failed = refresh_source_backed_generation(&index, &registry, options()).unwrap();
     assert!(matches!(
         failed.failed_routes.as_slice(),
         [failure]
             if failure.class == SourceBackedSourceFailureClass::SourceChanged
                 && failure.carried_forward
     ));
-    let retained = indexed_records(&index);
-    assert!(matches!(retained.as_slice(), [record]
-        if record.content.normalized_body.as_deref() == Some("stable baseline")));
-}
+    assert_eq!(certified_prefix_bytes(&index), appended_checkpoint);
+    assert_eq!(indexed_records(&index), appended_records);
 
-#[test]
-fn generic_foreign_shell_aliases_are_not_provider_attested() {
-    for tool_name in ["command", "bash", "shell", "exec", "exec_command"] {
-        let records = projected(&[
-            json!({
-                "id": "call-record",
-                "timestamp": "2026-01-01T00:00:01Z",
-                "type": "gemini",
-                "toolCalls": [{
-                    "id": "foreign-call",
-                    "name": tool_name,
-                    "args": {"command": "ctx search needle"}
-                }]
-            }),
-            json!({
-                "id": "result-record",
-                "timestamp": "2026-01-01T00:00:02Z",
-                "type": "gemini",
-                "toolCalls": [{
-                    "id": "foreign-call",
-                    "name": tool_name,
-                    "result": {"content": "foreign payload", "exitCode": 0}
-                }]
-            }),
-        ]);
-        assert_eq!(records.len(), 2, "{tool_name}");
-        assert!(
-            records.iter().all(|record| !excluded(record)),
-            "{tool_name}"
-        );
-    }
-}
-
-#[test]
-fn aggregate_and_result_ambiguities_fail_open_without_losing_bodies() {
-    let records = projected(&[
-        json!({
-            "id": "mixed-call-record",
-            "timestamp": "2026-01-01T00:00:01Z",
-            "type": "gemini",
-            "toolCalls": [
-                {"id": "derived", "name": "run_shell_command", "args": {"command": "ctx search needle"}},
-                {"id": "ordinary", "name": "run_shell_command", "args": {"command": "ctx status"}}
-            ]
-        }),
-        json!({
-            "id": "mixed-result-record",
-            "timestamp": "2026-01-01T00:00:02Z",
-            "type": "gemini",
-            "toolCalls": [
-                {"id": "derived", "result": {"content": "derived payload", "exitCode": 0}},
-                {"id": "ordinary", "result": {"content": "ordinary payload", "exitCode": 0}}
-            ]
-        }),
-        json!({
-            "id": "diagnostic-call-record",
-            "timestamp": "2026-01-01T00:00:03Z",
-            "type": "gemini",
-            "toolCalls": [{"id": "diagnostic", "name": "run_shell_command", "args": {"command": "ctx show event deadbeef"}}]
-        }),
-        json!({
-            "id": "diagnostic-result-record",
-            "timestamp": "2026-01-01T00:00:04Z",
-            "type": "gemini",
-            "toolCalls": [{"id": "diagnostic", "result": {"content": "kept diagnostic payload", "stderr": "warning", "exitCode": 0}}]
-        }),
-        json!({
-            "id": "unknown-call-record",
-            "timestamp": "2026-01-01T00:00:05Z",
-            "type": "gemini",
-            "toolCalls": [{"id": "unknown", "name": "run_shell_command", "args": {"command": "ctx search another"}}]
-        }),
-        json!({
-            "id": "unknown-result-record",
-            "timestamp": "2026-01-01T00:00:06Z",
-            "type": "gemini",
-            "toolCalls": [{"id": "unknown", "result": {"content": "kept unknown payload", "mystery": true, "exitCode": 0}}]
-        }),
-    ]);
-
-    assert_eq!(records.len(), 7);
-    let contains = |needle| {
-        records
-            .iter()
-            .find(|record| {
-                record
-                    .content
-                    .normalized_body
-                    .as_deref()
-                    .is_some_and(|body| body.contains(needle))
-            })
-            .unwrap()
-    };
-    assert!(!excluded(contains("ctx status")));
-    assert!(!excluded(contains("derived payload")));
-    assert!(excluded(contains("ctx show event deadbeef")));
-    assert!(!excluded(contains("kept diagnostic payload")));
-    assert!(excluded(contains("ctx search another")));
-    assert!(!excluded(contains("kept unknown payload")));
+    let recovered = refresh_source_backed_generation(&index, &registry, options()).unwrap();
+    assert!(recovered.failed_routes.is_empty());
+    let recovered_records = indexed_records(&index);
+    assert_literal_bodies(
+        &recovered_records,
+        &["literal first", "literal second", "race-after!"],
+    );
+    assert_eq!(recovered_records[0].event_id, cold_records[0].event_id);
+    assert_eq!(
+        certified_prefix_bytes(&index),
+        fs::metadata(&transcript).unwrap().len()
+    );
 }

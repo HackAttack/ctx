@@ -7,15 +7,16 @@ use std::{
 };
 
 use ctx_history_core::{
-    derive_event_id, AgentType, CaptureProvider, CoreContentPolicyStatus, CoreRecord,
-    EventIdentityInput, NativeItemKey, SourceKey, StableEntityId, TypedKey,
+    derive_event_id, AgentScope, CaptureProvider, CoreActivity, CoreContentPolicyStatus,
+    CoreRecord, EventIdentityInput, LiteralFactKind, NativeItemKey, ProviderDeclaredFact,
+    SourceKey, StableEntityId, TypedKey, CORE_ACTIVITY_REVISION,
 };
 use ctx_history_native_jsonl_parsers::deepseek_harness::{
-    agent_type, exact_file_touches, is_session_leaf, is_zstd_session_leaf, parse_row,
+    agent_scope, exact_file_references, is_session_leaf, is_zstd_session_leaf, parse_row,
     sequence_span, session_identity, source_key, visit_storage_rows, ParsedRow, SemanticEvent,
     SequenceSpan, SessionHeader, StorageRowsError, SOURCE_SCHEMA_VARIANT,
 };
-use serde_json::{json, Value};
+use serde_json::Value;
 use sha2::{Digest, Sha256};
 
 use crate::{
@@ -45,7 +46,7 @@ use ctx_history_jsonl::{JsonlFamilyExecutionIo, JsonlPhysicalEncoding};
 pub(crate) const TREE_SOURCE_FORMAT: &str = "deepseek_harness_session_jsonl_tree";
 pub(crate) const EXPLICIT_SOURCE_FORMAT: &str = "deepseek_harness_session_jsonl";
 
-const PARSER_REVISION: &str = "deepseek-harness-native-jsonl-v1";
+const PARSER_REVISION: &str = "deepseek-harness-native-jsonl-v2-core-activity";
 const EVENT_IDENTITY_REVISION: &str = "deepseek-harness-sequence-v1";
 
 #[derive(Debug, Clone, Copy)]
@@ -200,7 +201,7 @@ struct DeepSeekHarnessSemanticExecutor<R> {
     binding: SessionHeader,
     encoding: JsonlPhysicalEncoding,
     session_id: StableEntityId,
-    agent_type: AgentType,
+    agent_scope: Option<AgentScope>,
     expected_sequence: u64,
     represented_frames: u64,
     rejected_physical_frames: u64,
@@ -226,14 +227,14 @@ impl<R: JsonlProviderRuntime> DeepSeekHarnessSemanticExecutor<R> {
         expected_sequence: u64,
     ) -> Result<Self> {
         let session_id = session_identity(&source, &binding.id).map_err(contract)?;
-        let agent_type = agent_type(&binding);
+        let agent_scope = Some(agent_scope(&binding));
         Ok(Self {
             source,
             source_selector,
             binding,
             encoding,
             session_id,
-            agent_type,
+            agent_scope,
             expected_sequence,
             represented_frames: 0,
             rejected_physical_frames: 0,
@@ -381,12 +382,9 @@ impl<R: JsonlProviderRuntime> DeepSeekHarnessSemanticExecutor<R> {
         let mut record = CoreRecord::new_selected(
             event_id,
             self.session_id,
-            self.session_id,
             self.source.clone(),
             event.seq,
             event.event_type.as_str(),
-            self.agent_type.as_str(),
-            true,
             PARSER_REVISION,
             constructor_body,
         )
@@ -395,11 +393,27 @@ impl<R: JsonlProviderRuntime> DeepSeekHarnessSemanticExecutor<R> {
         record.native_event_id = Some(native_key);
         record.occurred_at_unix_ms = Some(event.time_ms);
         record.role = Some(event.role.as_str().to_owned());
-        record.cwd = self.binding.cwd.clone();
-        let mut structured = event.structured;
-        let touches = exact_file_touches(&event.value).map_err(contract)?;
-        if !touches.is_empty() {
-            structured = json!({ "native": structured, "file_touches": touches });
+        record.agent_scope = self.agent_scope;
+        if let Some(parent) = self.binding.parent_session.as_deref() {
+            record.parent_session_id =
+                Some(session_identity(&self.source, parent).map_err(contract)?);
+        }
+        let mut facts = Vec::new();
+        if let Some(cwd) = &self.binding.cwd {
+            facts.push(ProviderDeclaredFact {
+                kind: LiteralFactKind::SessionCwd,
+                value: cwd.clone(),
+            });
+        }
+        facts.extend(exact_file_references(&event.value).map_err(contract)?);
+        if !facts.is_empty() {
+            record.content.activity = Some(CoreActivity {
+                revision: CORE_ACTIVITY_REVISION,
+                provider_call_id: None,
+                invocation: None,
+                result: None,
+                facts,
+            });
         }
         if let Some(reason) = event.content_omission_reason {
             record.content.policy_status = CoreContentPolicyStatus::Omitted {
@@ -407,55 +421,13 @@ impl<R: JsonlProviderRuntime> DeepSeekHarnessSemanticExecutor<R> {
             };
             record.content.normalized_body = None;
             record.content.structured_content = None;
-            record.metadata.insert(
-                "content_omission".to_owned(),
-                json!({"kind":"provider_private_or_image_content","reason":reason}),
-            );
         } else {
-            record.content.structured_content = Some(structured);
+            record.content.structured_content = Some(event.value);
             record
                 .content
                 .omit_structured_content_if_aggregate_exceeds_limit()
                 .map_err(contract)?;
         }
-        record.metadata.insert(
-            "deepseek_harness_session_created_at_ms".to_owned(),
-            Value::from(self.binding.created_at_ms),
-        );
-        record.metadata.insert(
-            "deepseek_harness_delegation_depth".to_owned(),
-            Value::from(self.binding.delegation_depth),
-        );
-        for (key, value) in [
-            (
-                "deepseek_harness_parent_session",
-                self.binding.parent_session.as_ref(),
-            ),
-            ("deepseek_harness_origin", self.binding.origin.as_ref()),
-            (
-                "deepseek_harness_agent_preset",
-                self.binding.agent_preset.as_ref(),
-            ),
-            ("model_provider", event.model_provider.as_ref()),
-            ("model", event.model.as_ref()),
-            ("tool_call_id", event.call_id.as_ref()),
-            ("tool_name", event.tool_name.as_ref()),
-            ("native_message_id", event.native_message_id.as_ref()),
-        ] {
-            if let Some(value) = value {
-                record
-                    .metadata
-                    .insert(key.to_owned(), Value::String(value.clone()));
-            }
-        }
-        if let Some(seed_length) = self.binding.seed_length {
-            record.metadata.insert(
-                "deepseek_harness_seed_length".to_owned(),
-                Value::from(seed_length),
-            );
-        }
-        // Durable MCP names in this source can be lossy. Intentionally leave
-        // Core's exact MCP attribution unset.
         record.validate_contract().map_err(contract)?;
         Ok(Some(record))
     }

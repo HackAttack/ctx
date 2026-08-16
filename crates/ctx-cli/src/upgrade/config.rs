@@ -119,7 +119,7 @@ fn replace_config_file(temporary: &Path, target: &Path) -> Result<()> {
 fn replace_config_file(temporary: &Path, target: &Path) -> Result<()> {
     use std::os::windows::ffi::OsStrExt as _;
     use windows_sys::Win32::Storage::FileSystem::{
-        MoveFileExW, MOVEFILE_REPLACE_EXISTING, MOVEFILE_WRITE_THROUGH,
+        MOVEFILE_REPLACE_EXISTING, MOVEFILE_WRITE_THROUGH, MoveFileExW,
     };
 
     let temporary_wide = temporary

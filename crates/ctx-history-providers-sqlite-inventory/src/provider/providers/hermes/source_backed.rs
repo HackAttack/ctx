@@ -12,10 +12,12 @@ use std::{
 };
 
 use ctx_history_core::{
-    derive_event_id, derive_session_id, AgentType, CaptureProvider, CertifiedSource, CoreRecord,
-    CoreRecordError, EventIdentityInput, NativeItemKey, NativeSessionKey, ProjectionContractError,
-    ScannedSourceCounts, SessionIdentityInput, SessionRelationshipKind, SourceAnchor, SourceKey,
-    SourceObservation, StableEntityId, TypedKey,
+    derive_event_id, derive_session_id, ActivityInvocation, ActivityJsonCapture, ActivityResult,
+    ActivityTextCapture, CaptureProvider, CertifiedSource, CoreActivity, CoreRecord,
+    CoreRecordError, EventIdentityInput, LiteralFactKind, NativeItemKey, NativeSessionKey,
+    ProjectionContractError, ProviderDeclaredFact, ProviderNativeSessionRelationship,
+    ScannedSourceCounts, SessionIdentityInput, SourceAnchor, SourceKey, SourceObservation,
+    StableEntityId, TypedKey, CORE_ACTIVITY_REVISION,
 };
 use sha2::{Digest, Sha256};
 use thiserror::Error;
@@ -51,7 +53,7 @@ use super::{
         hermes_session_identity_page, HermesExactMessageSpool, HermesMessageSpoolRange,
         HermesNativeRecord, HermesNativeRow, HermesPhase, HermesRowReader,
     },
-    HERMES_CAPTURE_REVISION, HERMES_POLICY_REVISION,
+    HermesNativeEvent, HERMES_CAPTURE_REVISION, HERMES_POLICY_REVISION,
 };
 
 const HERMES_SOURCE_ANCHOR_NAMESPACE: &str = "hermes.profile";
@@ -64,7 +66,7 @@ const HERMES_PROFILE_SOURCE_SCHEMA_VARIANT: &str = "hermes-state-db-v1";
 const HERMES_SESSION_SOURCE_SCHEMA_VARIANT: &str = "hermes-state-session-v1";
 const SQLITE_SOURCE_INVALID_REASON: &str =
     "Hermes SQLite source must have an authorized parent and database leaf";
-const HERMES_SOURCE_PARSER_REVISION: &str = "hermes-source-backed-v3";
+const HERMES_SOURCE_PARSER_REVISION: &str = "hermes-source-backed-v4-neutral-core";
 const HERMES_SOURCE_DIGEST_DOMAIN: &[u8] = b"ctx-hermes-session-content-v1\0";
 const HERMES_TREE_FINGERPRINT_DOMAIN: &[u8] = b"ctx-hermes-source-inventory-v1\0";
 const HERMES_LEAF_FINGERPRINT_DOMAIN: &[u8] = b"ctx-hermes-session-leaf-v1\0";
@@ -106,10 +108,7 @@ const HERMES_SESSION_KEY_MAX_BYTES: usize = 64 * 1024;
 struct HermesSessionContext {
     session_id: StableEntityId,
     parent_session_id: Option<StableEntityId>,
-    root_session_id: StableEntityId,
     branch: Option<String>,
-    agent_type: String,
-    is_primary: bool,
     workspace: Option<String>,
     cwd: Option<String>,
 }
@@ -142,22 +141,10 @@ fn direct_session_context(
             hermes_session_id(&parent_source, parent)
         })
         .transpose()?;
-    let is_primary = parent_session_id.is_none();
-    let root_session_id = parent_session_id.unwrap_or(session_id);
-
     Ok(HermesSessionContext {
         session_id,
         parent_session_id,
-        root_session_id,
         branch: row.git_branch.clone(),
-        agent_type: if is_primary {
-            AgentType::Primary
-        } else {
-            AgentType::Subagent
-        }
-        .as_str()
-        .to_owned(),
-        is_primary,
         workspace: row.git_repo_root.clone(),
         cwd: row.cwd.clone(),
     })
@@ -1154,7 +1141,6 @@ fn project_session(
         provider_parent_session_id: row.parent_session_id,
         branch: context.branch.clone(),
         source_path: source_path.to_owned(),
-        agent_type: context.agent_type.clone(),
         workspace: context.workspace.clone(),
         cwd: context.cwd.clone(),
     })
@@ -1168,6 +1154,7 @@ fn project_message(
 ) -> HermesSourceBackedResult<CoreRecord> {
     let native = hermes_native_event(&row, ordinal)?;
     let _provider_owned_evidence = (&native.cursor, &native.payload, &native.metadata);
+    let activity = hermes_activity(&row, &native)?;
     let body = native.complete_text;
     let native_item_key = NativeItemKey::composite(
         HERMES_MESSAGE_NAMESPACE,
@@ -1184,50 +1171,119 @@ fn project_message(
         TypedKey::utf8(&row.session_id)?,
         TypedKey::I64(row.id),
     ])?;
-    let native_tool = (row.tool_name.is_some()
-        || row.tool_call_id.is_some()
-        || row.tool_calls.is_some())
-    .then(|| {
-        serde_json::json!({
-            "name": row.tool_name,
-            "call_id": row.tool_call_id,
-            "calls": row.tool_calls,
-        })
-    });
     let mut record = CoreRecord::new_selected(
         event_id,
-        session.session_id,
         session.session_id,
         source.clone(),
         native.provider_event_index,
         native.event_type.as_str(),
-        session.agent_type.clone(),
-        true,
         HERMES_SOURCE_PARSER_REVISION,
         body,
     )?;
     if let Some(parent_session_id) = session.parent_session_id {
-        let kind = if session.is_primary {
-            SessionRelationshipKind::RelatedUnknown
-        } else {
-            SessionRelationshipKind::Delegated
-        };
-        record.set_session_relationship(kind, Some(parent_session_id), session.root_session_id)?;
+        record.parent_session_id = Some(parent_session_id);
+        record.session_relationship = Some(ProviderNativeSessionRelationship::Delegated);
     }
     record.provider_session_id = Some(row.session_id);
     record.native_event_id = Some(native_event_id);
     record.occurred_at_unix_ms = Some(native.occurred_at.timestamp_millis());
     record.role = native.role.map(|role| role.as_str().to_owned());
-    record.branch = session.branch.clone();
-    record.workspace = session.workspace.clone();
-    record.cwd = session.cwd.clone();
-    if let Some(native_tool) = native_tool {
-        record.content.structured_content = Some(serde_json::json!({
-            "provider_native_tool": native_tool,
-        }));
-    }
+    record.content.structured_content = native.payload.get("body").cloned();
+    record.content.activity = merge_hermes_facts(activity, session);
+    record
+        .content
+        .omit_structured_content_if_aggregate_exceeds_limit()?;
     record.validate_contract()?;
     Ok(record)
+}
+
+fn hermes_activity(
+    row: &HermesMessageRow,
+    native: &HermesNativeEvent,
+) -> HermesSourceBackedResult<Option<CoreActivity>> {
+    let provider_call_id = row
+        .tool_call_id
+        .as_deref()
+        .map(TypedKey::utf8)
+        .transpose()?;
+    let invocation = if native.event_type == ctx_history_core::EventType::ToolCall
+        && provider_call_id.is_some()
+    {
+        row.tool_name.as_ref().map(|tool| ActivityInvocation {
+            protocol: None,
+            server: None,
+            tool: tool.clone(),
+            arguments: row
+                .tool_calls
+                .as_deref()
+                .map(ctx_history_capture_model::normalization::provider_json_text)
+                .map(|value| ActivityJsonCapture::Present { value })
+                .unwrap_or(ActivityJsonCapture::Unavailable),
+            started_at_unix_ms: Some(native.occurred_at.timestamp_millis()),
+        })
+    } else {
+        None
+    };
+    let result = (native.event_type == ctx_history_core::EventType::ToolOutput
+        && provider_call_id.is_some())
+    .then(|| ActivityResult {
+        status: row.finish_reason.clone(),
+        completed_at_unix_ms: Some(native.occurred_at.timestamp_millis()),
+        duration_ns: None,
+        text: ActivityTextCapture::NormalizedBody,
+        structured_content: ActivityJsonCapture::Present {
+            value: super::hermes_decode_content(row.content.as_deref()),
+        },
+    });
+    if invocation.is_none() && result.is_none() {
+        return Ok(None);
+    }
+    Ok(Some(CoreActivity {
+        revision: CORE_ACTIVITY_REVISION,
+        provider_call_id,
+        invocation,
+        result,
+        facts: Vec::new(),
+    }))
+}
+
+fn merge_hermes_facts(
+    activity: Option<CoreActivity>,
+    session: &HermesSessionContext,
+) -> Option<CoreActivity> {
+    let mut facts = Vec::new();
+    if let Some(branch) = session.branch.clone() {
+        facts.push(ProviderDeclaredFact {
+            kind: LiteralFactKind::Branch,
+            value: branch,
+        });
+    }
+    if let Some(workspace) = session.workspace.clone() {
+        facts.push(ProviderDeclaredFact {
+            kind: LiteralFactKind::Workspace,
+            value: workspace,
+        });
+    }
+    if let Some(cwd) = session.cwd.clone() {
+        facts.push(ProviderDeclaredFact {
+            kind: LiteralFactKind::SessionCwd,
+            value: cwd,
+        });
+    }
+    match (activity, facts.is_empty()) {
+        (Some(mut activity), _) => {
+            activity.facts = facts;
+            Some(activity)
+        }
+        (None, false) => Some(CoreActivity {
+            revision: CORE_ACTIVITY_REVISION,
+            provider_call_id: None,
+            invocation: None,
+            result: None,
+            facts,
+        }),
+        (None, true) => None,
+    }
 }
 
 fn bound_projected_record(
@@ -1259,7 +1315,6 @@ fn projected_owned_bytes(record: &HermesSourceBackedRecord) -> Result<usize, ser
             )
             .saturating_add(session.branch.as_deref().map(str::len).unwrap_or(0))
             .saturating_add(session.source_path.len())
-            .saturating_add(session.agent_type.len())
             .saturating_add(session.workspace.as_deref().map(str::len).unwrap_or(0))
             .saturating_add(session.cwd.as_deref().map(str::len).unwrap_or(0))),
         HermesSourceBackedRecord::Event(event) => {

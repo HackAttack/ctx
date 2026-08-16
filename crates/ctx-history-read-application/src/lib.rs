@@ -51,7 +51,7 @@ pub use generation::{
     GenerationRead, GenerationReadAuthorityError, GenerationReadError, GenerationReadPort,
     GenerationReadReceipt, GenerationReadRequest, GenerationReadTarget, RetainedPeerRead,
 };
-pub use json::{event_origin_json, timestamp_json};
+pub use json::{event_copy_json, timestamp_json};
 pub use lineage::{
     copied_lineage_read_model, copied_lineage_relationship_summary, copied_lineage_summary,
 };

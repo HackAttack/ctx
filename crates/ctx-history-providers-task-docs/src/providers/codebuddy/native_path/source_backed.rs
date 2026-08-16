@@ -15,7 +15,7 @@ use crate::{
 use super::*;
 
 const IDENTITY_VERSION: u32 = 1;
-const PARSER_REVISION: &str = "codebuddy-source-backed-v1";
+const PARSER_REVISION: &str = "codebuddy-source-backed-v2-neutral-core";
 const SOURCE_ANCHOR_NAMESPACE: &str = "codebuddy-native-source-v1";
 const SESSION_KEY_NAMESPACE: &str = "codebuddy-native-session-v1";
 const EVENT_KEY_NAMESPACE: &str = "codebuddy-native-event-v1";
@@ -398,12 +398,9 @@ fn codebuddy_core_record(
         CoreRecord::new_selected(
             event_id,
             session_id,
-            session_id,
             source_key.clone(),
             record.native_ordinal,
             core.event.event_type.as_str(),
-            AgentType::Primary.as_str(),
-            true,
             PARSER_REVISION,
             body,
         ),
@@ -413,7 +410,25 @@ fn codebuddy_core_record(
     projected.native_event_id = Some(native_event_id);
     projected.occurred_at_unix_ms = Some(core.event.occurred_at.timestamp_millis());
     projected.role = Some(core.event.role.as_str().to_owned());
-    projected.cwd = core.session.cwd.clone();
+    projected.content.structured_content = Some(core.event.structured_content.clone());
+    if let Some(cwd) = core.session.cwd.clone() {
+        projected.content.activity = Some(CoreActivity {
+            revision: CORE_ACTIVITY_REVISION,
+            provider_call_id: None,
+            invocation: None,
+            result: None,
+            facts: vec![ProviderDeclaredFact {
+                kind: LiteralFactKind::SessionCwd,
+                value: cwd,
+            }],
+        });
+    }
+    contract(
+        projected
+            .content
+            .omit_structured_content_if_aggregate_exceeds_limit(),
+        "bounded Core record",
+    )?;
     contract(projected.validate_contract(), "completed Core record")?;
     Ok(projected)
 }

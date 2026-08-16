@@ -31,7 +31,9 @@ macro_rules! eprintln {
 mod analytics;
 mod cli;
 mod commands;
+mod companion;
 mod config;
+mod core_capability;
 mod deprecated_controls;
 mod dispatch;
 mod docs;
@@ -50,7 +52,6 @@ mod output;
 mod presentation_limit {
     pub(crate) use ctx_terminal::presentation_limit::*;
 }
-mod pro;
 mod process_environment;
 mod progress;
 mod provider_args;
@@ -84,7 +85,14 @@ pub(crate) use transcript::TranscriptMode;
 pub(crate) use value_parsers::parse_event_window_limit;
 
 fn main() -> ExitCode {
-    ui::bootstrap_color_choice(std::env::args_os());
+    let arguments = std::env::args_os().collect::<Vec<_>>();
+    if let Some(exit) = core_capability::intercept(&arguments) {
+        return exit;
+    }
+    if let Some(exit) = companion::forward_paid_cli_if_selected(arguments.clone()) {
+        return exit;
+    }
+    ui::bootstrap_color_choice(arguments);
     if release_build_identity::print_if_requested() {
         return ExitCode::SUCCESS;
     }

@@ -1,22 +1,24 @@
 use std::path::PathBuf;
 
-use anyhow::{bail, Result};
-use serde_json::{json, Value};
+use anyhow::{Result, bail};
+use serde_json::{Value, json};
 
 use crate::analytics::{self, SetupMode, SetupTelemetry};
 use crate::history_config::CliHistoryConfigAdapter;
 use crate::output::print_json;
 use crate::progress::{ProgressReporter, ProgressWriterError};
 use crate::semantic::{
+    DaemonSetupHandoff, SourceBackedRefreshMode, SourceBackedRefreshPendingPublication,
     autostart_daemon_for_setup_and_wait, coordinate_setup_source_backed_refresh_with_progress,
     daemon_autostart_suppression_reason, semantic_query_service_supported,
-    source_epoch_status_report, DaemonSetupHandoff, SourceBackedRefreshMode,
-    SourceBackedRefreshPendingPublication,
+    source_epoch_status_report,
 };
 use crate::ui::Ui;
-use crate::{config, SetupArgs};
-use ctx_cli_presentation::commands::{render_setup_human, SetupDaemonState};
+use crate::{SetupArgs, config};
+use ctx_cli_presentation::commands::{SetupDaemonState, render_setup_human};
 use ctx_history_cli::HistoryConfigPort;
+
+const HOSTED_INSTALLER_SETUP_ENV: &str = "CTX_HOSTED_INSTALLER_SETUP";
 
 pub(crate) fn run_setup(
     args: SetupArgs,
@@ -29,11 +31,6 @@ pub(crate) fn run_setup(
 ) -> Result<()> {
     let semantic_supported = semantic_query_service_supported();
     let suppression_reason = daemon_autostart_suppression_reason();
-    if args.pro && (!config.daemon.enabled || args.no_daemon) {
-        bail!(
-            "`ctx setup --pro` requires daemon maintenance. Enable [daemon] enabled = true and rerun without --no-daemon"
-        );
-    }
     if args.semantic && (!config.daemon.enabled || args.no_daemon) {
         bail!(
             "`ctx setup --semantic` requires daemon maintenance. Enable [daemon] enabled = true and rerun without --no-daemon"
@@ -70,25 +67,19 @@ pub(crate) fn run_setup(
     } else {
         None
     };
-    let refresh_wait = args.wait;
     let refresh_request = {
-        let mut progress = ProgressReporter::new(ui, args.progress.into(), json_output, "setup", 0);
+        let mut progress = setup_progress_reporter(ui, args.progress, json_output, quiet);
         request_source_refresh(
             &data_root,
             config.daemon.enabled,
             args.no_daemon,
-            refresh_wait,
+            args.wait,
+            false,
             daemon_autostart_reason,
             &mut progress,
         )?
     };
     let source = source_epoch_status_report(&data_root, config)?;
-    let pro_setup = setup_pro(
-        args.pro,
-        core_admitted_for_pro(source.initialized, &refresh_request),
-        &data_root,
-        ui,
-    );
     let supervisor = source.report["daemon"]["supervisor"].clone();
     let lexical_status = source.report["lexical"]["status"]
         .as_str()
@@ -129,8 +120,6 @@ pub(crate) fn run_setup(
         "deprecated_catalog_only_ignored".to_owned(),
         json!(args.catalog_only),
     );
-    output_fields.insert("pro".to_owned(), pro_setup.clone());
-    output_fields.insert("network_required".to_owned(), json!(args.pro));
     output_fields.insert("repo_writes".to_owned(), json!(false));
 
     if json_output {
@@ -148,79 +137,42 @@ pub(crate) fn run_setup(
                 started: daemon_handoff.is_some(),
                 persistent_supervisor_verified: supervisor_persistently_verified(&supervisor),
             },
-            &pro_setup,
         );
         ui.write_stdout(&document)?;
     }
     Ok(())
 }
 
-fn core_admitted_for_pro(initialized: bool, refresh_request: &Value) -> bool {
-    initialized
-        || matches!(
-            refresh_request["status"].as_str(),
-            Some("accepted" | "pending" | "published" | "queued" | "running")
-        )
+fn setup_progress_reporter<'a>(
+    ui: &'a mut Ui,
+    mode: crate::progress::ProgressArg,
+    json_output: bool,
+    quiet: bool,
+) -> ProgressReporter<'a> {
+    ProgressReporter::new_with_live_json_stderr(
+        ui,
+        mode.into(),
+        json_output,
+        "setup",
+        0,
+        hosted_installer_live_json_progress(json_output, quiet),
+    )
 }
 
-fn setup_pro(
-    requested: bool,
-    core_admitted: bool,
-    data_root: &std::path::Path,
-    ui: &mut Ui,
-) -> Value {
-    if !requested {
-        return json!({
-            "requested": false,
-            "status": "skipped",
-            "trial_started": false,
-            "trial_ends_on": Value::Null,
-            "action_url": Value::Null,
-            "next_command": "ctx pro",
-        });
-    }
-    if !core_admitted {
-        return json!({
-            "requested": true,
-            "status": "unavailable",
-            "error_code": "core_setup_unavailable",
-            "trial_started": false,
-            "trial_ends_on": Value::Null,
-            "action_url": Value::Null,
-            "next_command": "ctx pro",
-        });
-    }
-    match crate::pro::run_deferred_trial_setup(data_root, ui) {
-        Ok(outcome) => {
-            let trial_started = outcome.account_state == "trial";
-            let trial_ends_on = outcome.status["access_deadline_unix"]
-                .as_i64()
-                .and_then(|unix| chrono::DateTime::from_timestamp(unix, 0))
-                .map(|deadline| deadline.format("%Y-%m-%d").to_string());
-            json!({
-                "requested": true,
-                "status": "ready",
-                "account_state": outcome.account_state,
-                "helper_updated": outcome.helper_updated,
-                "materialization": if outcome.materialization_deferred { "pending" } else { "ready" },
-                "trial_started": trial_started,
-                "trial_ends_on": trial_ends_on,
-                // No secure browser conversion route exists yet. Keep this
-                // null rather than presenting a generic marketing URL.
-                "action_url": Value::Null,
-                "next_command": "ctx pro",
-            })
-        }
-        Err(error) => json!({
-            "requested": true,
-            "status": "unavailable",
-            "error_code": crate::pro::stable_error_code(&error).unwrap_or("pro_setup_failed"),
-            "trial_started": false,
-            "trial_ends_on": Value::Null,
-            "action_url": Value::Null,
-            "next_command": "ctx pro",
-        }),
-    }
+fn hosted_installer_live_json_progress(json_output: bool, quiet: bool) -> bool {
+    hosted_installer_live_json_progress_for(
+        json_output,
+        quiet,
+        std::env::var_os(HOSTED_INSTALLER_SETUP_ENV).as_deref(),
+    )
+}
+
+fn hosted_installer_live_json_progress_for(
+    json_output: bool,
+    quiet: bool,
+    hosted_installer: Option<&std::ffi::OsStr>,
+) -> bool {
+    json_output && quiet && hosted_installer == Some(std::ffi::OsStr::new("1"))
 }
 
 fn setup_mode(
@@ -242,6 +194,7 @@ fn request_source_refresh(
     daemon_enabled: bool,
     no_daemon: bool,
     wait: bool,
+    defer_fresh_empty_wait: bool,
     daemon_unavailable_reason: Option<&str>,
     progress: &mut ProgressReporter<'_>,
 ) -> Result<Value> {
@@ -269,14 +222,8 @@ fn request_source_refresh(
     let mut result =
         coordinate_setup_source_backed_refresh_with_progress(data_root, mode, &mut report_progress);
     if result.as_ref().is_err_and(|error| {
-        !wait
-            && error
-                .downcast_ref::<SourceBackedRefreshPendingPublication>()
-                .is_some_and(|pending| pending.source_count() == 0)
+        should_wait_for_fresh_empty_publication(wait, defer_fresh_empty_wait, error)
     }) {
-        // A fresh empty catalog has no meaningful background work to defer.
-        // Reattach through the same daemon/RefreshEngine and wait for its
-        // verified empty publication instead of returning an uncertified Core.
         effective_wait = true;
         result = coordinate_setup_source_backed_refresh_with_progress(
             data_root,
@@ -315,6 +262,18 @@ fn request_source_refresh(
             ))
         }
     }
+}
+
+fn should_wait_for_fresh_empty_publication(
+    wait: bool,
+    defer_fresh_empty_wait: bool,
+    error: &anyhow::Error,
+) -> bool {
+    !wait
+        && !defer_fresh_empty_wait
+        && error
+            .downcast_ref::<SourceBackedRefreshPendingPublication>()
+            .is_some_and(|pending| pending.source_count() == 0)
 }
 
 fn refresh_request_failure(
@@ -447,23 +406,48 @@ mod tests {
             0,
         )
         .into();
-        assert!(empty
-            .downcast_ref::<SourceBackedRefreshPendingPublication>()
-            .is_some_and(|pending| pending.source_count() == 0));
+        assert!(
+            empty
+                .downcast_ref::<SourceBackedRefreshPendingPublication>()
+                .is_some_and(|pending| pending.source_count() == 0)
+        );
     }
 
     #[test]
-    fn pro_activation_requires_existing_core_or_durable_core_admission() {
-        assert!(core_admitted_for_pro(
-            true,
-            &json!({"status": "unavailable"})
+    fn core_only_fresh_empty_setup_keeps_the_verified_publication_wait() {
+        let pending: anyhow::Error = SourceBackedRefreshPendingPublication::new(
+            "fresh-core-request".to_owned(),
+            "queued".to_owned(),
+            0,
+        )
+        .into();
+        assert!(should_wait_for_fresh_empty_publication(
+            false, false, &pending
         ));
-        for status in ["accepted", "pending", "published", "queued", "running"] {
-            assert!(core_admitted_for_pro(false, &json!({"status": status})));
-        }
-        for status in ["unavailable", "failed", "unknown"] {
-            assert!(!core_admitted_for_pro(false, &json!({"status": status})));
-        }
+        assert!(!should_wait_for_fresh_empty_publication(
+            false, true, &pending
+        ));
+        assert!(!should_wait_for_fresh_empty_publication(
+            true, false, &pending
+        ));
+    }
+
+    #[test]
+    fn only_quiet_hosted_installer_json_enables_live_json_stderr() {
+        let hosted = Some(std::ffi::OsStr::new("1"));
+        assert!(hosted_installer_live_json_progress_for(true, true, hosted));
+        assert!(!hosted_installer_live_json_progress_for(
+            false, true, hosted
+        ));
+        assert!(!hosted_installer_live_json_progress_for(
+            true, false, hosted
+        ));
+        assert!(!hosted_installer_live_json_progress_for(
+            true,
+            true,
+            Some(std::ffi::OsStr::new("0"))
+        ));
+        assert!(!hosted_installer_live_json_progress_for(true, true, None));
     }
 
     #[test]
@@ -486,9 +470,11 @@ mod tests {
         assert_eq!(autostart["persistent"], true);
         assert!(autostart["limitation"].is_null());
         assert_eq!(autostart["reason"], "native_supervisor_unavailable");
-        assert!(autostart["supervisor"]["limitation"]
-            .as_str()
-            .is_some_and(|message| message.contains("automatic restart")));
+        assert!(
+            autostart["supervisor"]["limitation"]
+                .as_str()
+                .is_some_and(|message| message.contains("automatic restart"))
+        );
     }
 
     #[test]
@@ -528,21 +514,5 @@ mod tests {
                 "setup retained forbidden legacy dependency {forbidden}"
             );
         }
-    }
-
-    #[test]
-    fn setup_admits_and_inspects_core_before_irreversible_pro_activation() {
-        let source = include_str!("setup.rs");
-        let runtime = source.split("#[cfg(test)]").next().unwrap();
-        let refresh = runtime
-            .find("let refresh_request =")
-            .expect("Core refresh admission");
-        let inspection = runtime
-            .find("let source = source_epoch_status_report")
-            .expect("Core status inspection");
-        let pro = runtime
-            .find("let pro_setup = setup_pro(")
-            .expect("Pro activation");
-        assert!(refresh < inspection && inspection < pro);
     }
 }

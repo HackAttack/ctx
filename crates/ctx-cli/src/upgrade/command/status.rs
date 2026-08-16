@@ -2,15 +2,15 @@ use std::path::Path;
 
 use anyhow::Result;
 use ctx_upgrade_engine::{
-    managed_install_marker_for_current_exe, read_state_json, ManagedInstallMarker,
-    STATE_SCHEMA_VERSION,
+    ManagedInstallMarker, STATE_SCHEMA_VERSION, managed_install_marker_for_current_exe,
+    read_state_json,
 };
 use serde_json::json;
 
 use crate::{config::AppConfig, ui::Ui};
 
 pub(super) fn render_status(
-    data_root: &Path,
+    _data_root: &Path,
     config: &AppConfig,
     json_output: bool,
     ui: &mut Ui,
@@ -55,7 +55,6 @@ pub(super) fn render_status(
             "reason": format!("{error:#}"),
         }),
     };
-    let pro = crate::pro::lifecycle_status_json(data_root);
     let auto_mode = config.auto_upgrade_mode();
     ctx_cli_presentation::upgrade::render_status(
         ctx_cli_presentation::upgrade::UpgradeStatusView {
@@ -64,7 +63,6 @@ pub(super) fn render_status(
             auto_enabled: config.auto_upgrade_enabled(),
             state: &state,
             install: &install,
-            pro: &pro,
         },
         json_output,
         ui,

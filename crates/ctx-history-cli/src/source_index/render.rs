@@ -13,14 +13,12 @@ use serde_json::{json, Value};
 use uuid::Uuid;
 
 use crate::{
-    append_mcp_tool_call_markdown, append_mcp_tool_call_text,
     output::{compact_json, OutputFormat},
     presentation_limit::{
         enforce_presentation_cli_output_limit, enforce_presentation_output_limit,
         CLI_PRESENTATION_MAX_OUTPUT_BYTES,
     },
     transcript::{shell_quote_arg, write_output},
-    MCP_TOOL_CALL_JSON_GUIDANCE,
 };
 
 use super::search::{
@@ -29,11 +27,13 @@ use super::search::{
 };
 use crate::RefreshMode as RefreshArg;
 
+mod activity;
 mod human;
 mod locate;
 mod search;
 mod show;
 
+pub(super) use activity::{markdown_code_span, safe_activity_json};
 pub(super) use locate::render_locate_document;
 pub(super) use search::{render_search_document, render_search_not_ready_document};
 pub(super) use show::render_show_document;
@@ -323,7 +323,7 @@ fn render_show_text(value: &Value) -> String {
             event["event_type"].as_str().unwrap_or("event"),
             event["ctx_event_id"].as_str().unwrap_or("unknown"),
         ));
-        append_mcp_tool_call_text(&mut output, event, "", MCP_TOOL_CALL_JSON_GUIDANCE);
+        append_activity_text(&mut output, event);
         output.push_str(event["text"].as_str().unwrap_or_default());
         output.push_str("\n\n");
     }
@@ -359,13 +359,27 @@ fn render_show_markdown(value: &Value) -> String {
             event["occurred_at"].as_str().unwrap_or("-"),
             event["ctx_event_id"].as_str().unwrap_or("unknown"),
         ));
-        if append_mcp_tool_call_markdown(&mut output, event) {
-            output.push('\n');
-        }
+        append_activity_markdown(&mut output, event);
         output.push_str(event["text"].as_str().unwrap_or_default());
         output.push('\n');
     }
     output
+}
+
+fn append_activity_text(output: &mut String, event: &Value) {
+    if let Some(activity) = event.get("activity").filter(|value| !value.is_null()) {
+        output.push_str("activity: ");
+        output.push_str(&safe_activity_json(activity));
+        output.push('\n');
+    }
+}
+
+fn append_activity_markdown(output: &mut String, event: &Value) {
+    if let Some(activity) = event.get("activity").filter(|value| !value.is_null()) {
+        output.push_str("activity: ");
+        output.push_str(&markdown_code_span(&safe_activity_json(activity)));
+        output.push_str("\n\n");
+    }
 }
 
 fn append_copied_lineage_text(output: &mut String, value: &Value) {
@@ -401,10 +415,10 @@ fn append_copied_lineage_text(output: &mut String, value: &Value) {
         let event = occurrence["ctx_event_id"].as_str().unwrap_or("unknown");
         let relationship = occurrence["session_relationship"]
             .as_str()
-            .unwrap_or("inherited");
+            .unwrap_or("unspecified");
         let depth = occurrence["depth"].as_u64().unwrap_or(0);
         output.push_str(&format!(
-            "inherited: session={session} event={event} relationship={relationship} depth={depth}\n"
+            "copied_by: session={session} event={event} relationship={relationship} depth={depth}\n"
         ));
         output.push_str(&format!("next: {command_prefix} show session {session}\n"));
     }
@@ -434,7 +448,7 @@ fn append_copied_lineage_markdown(output: &mut String, value: &Value) {
     } else {
         observed.to_string()
     };
-    output.push_str(&format!("\n### Inherited by {count} sessions\n"));
+    output.push_str(&format!("\n### Copied by {count} sessions\n"));
     let command_prefix = value["_command_prefix"].as_str().unwrap_or("ctx");
     for occurrence in lineage["occurrences"]
         .as_array()
@@ -447,7 +461,7 @@ fn append_copied_lineage_markdown(output: &mut String, value: &Value) {
         let event = occurrence["ctx_event_id"].as_str().unwrap_or("unknown");
         let relationship = occurrence["session_relationship"]
             .as_str()
-            .unwrap_or("inherited");
+            .unwrap_or("unspecified");
         let depth = occurrence["depth"].as_u64().unwrap_or(0);
         output.push_str(&format!(
             "\n- `{relationship}` session `{session}`, event `{event}`, depth {depth}\n"

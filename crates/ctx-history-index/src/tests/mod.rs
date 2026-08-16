@@ -1,20 +1,75 @@
-use std::sync::atomic::Ordering;
+use std::{
+    collections::HashSet,
+    sync::{atomic::Ordering, Arc},
+};
 
 use ctx_history_core::{
-    derive_event_id, derive_session_id, CertifiedSourceInventory, EventIdentityInput,
-    LocatorRevisionPolicy, NativeItemKey, NativeRecordCoordinate, NativeSessionKey,
-    ScannedSourceCounts, SessionIdentityInput, SourceAnchor, SourceFrontier,
-    SourceInventoryObservation, SourceObservation, TypedKey,
+    derive_event_id, derive_session_id, AgentScope, CertifiedSourceInventory, CoreActivity,
+    CoreDiscoveryExclusion, CoreRecord, EventIdentityInput, LiteralFactKind, NativeItemKey,
+    NativeSessionKey, ProviderDeclaredFact, ProviderNativeCopyProof, ProviderNativeEventCopy,
+    ProviderNativeSessionRelationship, ScannedSourceCounts, SessionIdentityInput, SourceAnchor,
+    SourceFrontier, SourceInventoryObservation, SourceObservation, StableEntityId, TypedKey,
+    CORE_ACTIVITY_REVISION,
 };
 use tantivy::{
-    collector::DocSetCollector, indexer::NoMergePolicy, query::AllQuery,
-    schema::Value as TantivyValue,
+    collector::DocSetCollector,
+    indexer::NoMergePolicy,
+    query::AllQuery,
+    schema::{Document as TantivyDocumentTrait, Value as TantivyValue},
 };
 use tempfile::{tempdir, TempDir};
 
 use super::*;
 
-fn source(name: &str) -> SourceKey {
+type SessionRelationshipKind = ProviderNativeSessionRelationship;
+type EventCopyProofKind = ProviderNativeCopyProof;
+
+trait CoreRecordTestExt {
+    fn set_session_relationship(
+        &mut self,
+        kind: ProviderNativeSessionRelationship,
+        parent_session_id: Option<StableEntityId>,
+        root_session_id: StableEntityId,
+    ) -> std::result::Result<(), &'static str>;
+}
+
+impl CoreRecordTestExt for CoreRecord {
+    fn set_session_relationship(
+        &mut self,
+        kind: ProviderNativeSessionRelationship,
+        parent_session_id: Option<StableEntityId>,
+        root_session_id: StableEntityId,
+    ) -> std::result::Result<(), &'static str> {
+        self.parent_session_id = parent_session_id;
+        self.root_session_id = Some(root_session_id);
+        self.session_relationship = Some(kind);
+        Ok(())
+    }
+}
+
+pub(crate) fn with_temporarily_writable<T>(
+    path: &Path,
+    operation: impl FnOnce() -> std::io::Result<T>,
+) -> std::io::Result<T> {
+    let original = fs::metadata(path)?.permissions();
+    let mut writable = original.clone();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt as _;
+        writable.set_mode(writable.mode() | 0o200);
+    }
+    #[cfg(not(unix))]
+    writable.set_readonly(false);
+    fs::set_permissions(path, writable)?;
+    let result = operation();
+    let restore = fs::set_permissions(path, original);
+    match (result, restore) {
+        (Ok(value), Ok(())) => Ok(value),
+        (Err(error), _) | (Ok(_), Err(error)) => Err(error),
+    }
+}
+
+pub(crate) fn source(name: &str) -> SourceKey {
     source_for_provider("codex", "codex_session_jsonl", name)
 }
 
@@ -129,8 +184,14 @@ fn stage_exact_replay(writer: &mut GenerationWriter, source: &SourceKey) -> Cert
     base
 }
 
-fn document(source: &SourceKey, sequence: u64, body: &str) -> LexicalDocument {
+pub(crate) fn document(source: &SourceKey, sequence: u64, body: &str) -> CoreRecord {
     document_for_session(source, "session", sequence, body)
+}
+
+pub(crate) fn retrieval_excluded(mut record: CoreRecord) -> CoreRecord {
+    record.content.discovery_exclusion = Some(CoreDiscoveryExclusion::CtxRetrievalDerived);
+    record.validate_contract().unwrap();
+    record
 }
 
 fn document_for_session(
@@ -138,7 +199,7 @@ fn document_for_session(
     native_session_id: &str,
     sequence: u64,
     body: &str,
-) -> LexicalDocument {
+) -> CoreRecord {
     let native_session_coordinate = TypedKey::utf8(native_session_id).unwrap();
     let session_key =
         NativeSessionKey::native_id("session", native_session_coordinate.clone()).unwrap();
@@ -161,76 +222,75 @@ fn document_for_session(
         subrecord_selector: None,
     })
     .unwrap();
-    LexicalDocument {
+    let mut record = CoreRecord::new_selected(
         event_id,
         session_id,
-        parent_session_id: None,
-        root_session_id: session_id,
-        source: source.clone(),
-        locator: SourceRecordLocator::new(
-            source.clone(),
-            NativeRecordCoordinate::Jsonl {
-                byte_offset: sequence * 100,
-                byte_length: 100,
-                physical_ordinal: sequence,
-                native_session_key: Some(native_session_coordinate),
-                native_event_key: Some(TypedKey::U64(sequence)),
-            },
-            LocatorRevisionPolicy::StableRecordEvidence,
-            None,
-            [sequence as u8; 32],
-        )
-        .unwrap(),
-        provider_session_id: Some(native_session_id.to_owned()),
-        branch: Some("main".to_owned()),
-        source_path: Some(format!("/history/{native_session_id}.jsonl")),
-        agent_type: "primary".to_owned(),
-        is_primary: true,
-        event_sequence: sequence,
-        occurred_at_unix_ms: Some(1_700_000_000_000 + sequence as i64),
-        event_type: "message".to_owned(),
-        role: Some("user".to_owned()),
-        body: body.to_owned(),
-        workspace: Some("ctx".to_owned()),
-        cwd: Some("/work/ctx".to_owned()),
-        touched_files: vec!["src/lib.rs".to_owned()],
-    }
-}
-
-fn filtered_session_ids(index: &VerifiedIndex, filters: EventSearchFilters) -> Vec<Uuid> {
-    sorted_uuids(
-        index
-            .search_event_candidates_with_filters("shared needle", &filters, 10)
-            .unwrap()
-            .into_iter()
-            .map(|candidate| candidate.event.session_id.as_uuid())
-            .collect(),
+        source.clone(),
+        sequence,
+        "message",
+        "index-test-core-record-v1",
+        body,
     )
+    .unwrap();
+    record.provider_session_id = Some(native_session_id.to_owned());
+    record.native_event_id = Some(TypedKey::U64(sequence));
+    record.occurred_at_unix_ms = Some(1_700_000_000_000 + sequence as i64);
+    record.role = Some("user".to_owned());
+    record.agent_scope = Some(AgentScope::Primary);
+    record.content.activity = Some(CoreActivity {
+        revision: CORE_ACTIVITY_REVISION,
+        provider_call_id: None,
+        invocation: None,
+        result: None,
+        facts: vec![
+            ProviderDeclaredFact {
+                kind: LiteralFactKind::Branch,
+                value: "main".to_owned(),
+            },
+            ProviderDeclaredFact {
+                kind: LiteralFactKind::Workspace,
+                value: "ctx".to_owned(),
+            },
+            ProviderDeclaredFact {
+                kind: LiteralFactKind::SessionCwd,
+                value: "/work/ctx".to_owned(),
+            },
+        ],
+    });
+    record
 }
 
-fn sorted_uuids(mut ids: Vec<Uuid>) -> Vec<Uuid> {
-    ids.sort();
-    ids
-}
-
-fn collect_source_pages(
-    index: &VerifiedIndex,
-    source: &SourceKey,
-    limit: usize,
-) -> Vec<EventRecord> {
-    let mut cursor = None;
-    let mut records = Vec::new();
-    loop {
-        let page = index
-            .source_event_page(source, cursor.as_ref(), limit)
-            .unwrap();
-        records.extend(page.items);
-        if page.terminal {
-            assert!(page.next_cursor.is_none());
-            return records;
+fn indexed_document(record: CoreRecord) -> TantivyDocument {
+    let schema = lexical_schema();
+    let fields = fields_from_schema(&schema).unwrap();
+    let encoded = record.encode_stored().unwrap();
+    let content_bytes = core_content_bytes(&record.content).unwrap();
+    let projected = IndexDocument::from_core(fields, record, encoded, content_bytes).unwrap();
+    let mut document = TantivyDocument::default();
+    for (field, value) in projected.iter_fields_and_values() {
+        if let Some(value) = value.as_str() {
+            document.add_text(field, value);
+        } else if let Some(value) = value.as_bytes() {
+            document.add_bytes(field, value);
+        } else if let Some(value) = value.as_u64() {
+            document.add_u64(field, value);
+        } else if let Some(value) = value.as_i64() {
+            document.add_i64(field, value);
+        } else {
+            panic!("canonical test projection contained an unsupported Tantivy value");
         }
-        cursor = Some(page.next_cursor.unwrap());
     }
+    document
+}
+
+fn decoded_stored_core(searcher: &Searcher, address: tantivy::DocAddress) -> CoreRecord {
+    let fields = fields_from_schema(searcher.schema()).unwrap();
+    let document: TantivyDocument = searcher.doc(address).unwrap();
+    let encoded = document
+        .get_first(fields.core_record)
+        .and_then(|value| value.as_bytes())
+        .unwrap();
+    CoreRecord::decode_stored(encoded).unwrap()
 }
 
 fn publish_unchecked_generation(
@@ -250,32 +310,179 @@ fn publish_unchecked_generation(
     for document in documents {
         writer.add_document(document).unwrap();
     }
+    writer.commit().unwrap();
+    writer.wait_merging_threads().unwrap();
+    let pointer = load_active_generation_pointer(root).unwrap().unwrap();
+    let generation_path = active_generation_path(root);
     let generation_id = manifest.generation_id().unwrap();
     write_manifest(root, &generation_id, &manifest).unwrap();
-    let mut prepared = writer.prepare_commit().unwrap();
+    let mut payload_writer = index
+        .writer_with_num_threads::<TantivyDocument>(1, INDEX_MEMORY_MIN_PER_THREAD)
+        .unwrap();
+    payload_writer.set_merge_policy(Box::<NoMergePolicy>::default());
+    let mut prepared = payload_writer.prepare_commit().unwrap();
     prepared.set_payload(
         &serde_json::to_string(&CommitPayload {
             version: COMMIT_PAYLOAD_VERSION,
-            generation_id,
+            generation_id: generation_id.clone(),
+            publication_metadata: None,
         })
         .unwrap(),
     );
     prepared.commit().unwrap();
-    writer.wait_merging_threads().unwrap();
-    sync_directory(root).unwrap();
+    payload_writer.wait_merging_threads().unwrap();
+    let physical_integrity_digest =
+        physical_integrity_digest(index, &generation_path, Some(&pointer)).unwrap();
+    let active = GenerationSlot::new(
+        generation_id,
+        pointer.active().directory().to_owned(),
+        physical_integrity_digest,
+    )
+    .unwrap();
+    publish_active_generation_pointer(root, &ActiveGenerationPointer::new(active, None).unwrap())
+        .unwrap();
 }
 
 fn open_unverified_generation(root: &Path) -> (Searcher, GenerationManifest) {
-    let directory = DurableMmapDirectory::open(root).unwrap();
+    let directory = DurableMmapDirectory::open(active_generation_path(root)).unwrap();
     let index = Index::open(directory).unwrap();
     let metas = index.load_metas().unwrap();
-    let manifest = load_manifest_for_metas(root, &metas).unwrap();
+    let manifest = load_publication_for_metas(root, &metas)
+        .unwrap()
+        .into_parts()
+        .1;
     let reader = index
         .reader_builder()
         .reload_policy(ReloadPolicy::Manual)
         .try_into()
         .unwrap();
-    (reader.searcher(), manifest)
+    (reader.searcher(), Arc::unwrap_or_clone(manifest))
+}
+
+fn active_generation_path(root: &Path) -> PathBuf {
+    let pointer = load_active_generation_pointer(root).unwrap().unwrap();
+    root.join(INDEX_GENERATIONS_DIRECTORY)
+        .join(pointer.active().directory())
+}
+
+fn omit_managed_and_corrupt_body_projection(generation_path: &Path) -> PathBuf {
+    use std::{
+        collections::HashSet,
+        io::{Read, Seek, Write},
+    };
+
+    let managed_path = generation_path.join(".managed.json");
+    let mut managed = serde_json::from_slice::<HashSet<PathBuf>>(
+        &fs::read(&managed_path).expect("managed topology must be readable"),
+    )
+    .expect("managed topology must be valid");
+    let projection_path = fs::read_dir(generation_path)
+        .unwrap()
+        .filter_map(std::result::Result::ok)
+        .map(|entry| entry.path())
+        .find(|path| {
+            path.extension()
+                .and_then(std::ffi::OsStr::to_str)
+                .is_some_and(|extension| extension == "pos")
+        })
+        .or_else(|| {
+            fs::read_dir(generation_path)
+                .unwrap()
+                .filter_map(std::result::Result::ok)
+                .map(|entry| entry.path())
+                .find(|path| {
+                    path.extension()
+                        .and_then(std::ffi::OsStr::to_str)
+                        .is_some_and(|extension| extension == "idx")
+                })
+        })
+        .expect("generation must contain a body-search projection file");
+    let relative = projection_path
+        .strip_prefix(generation_path)
+        .unwrap()
+        .to_path_buf();
+    assert!(
+        managed.remove(&relative),
+        "active body-search projection must begin in the managed topology"
+    );
+    fs::write(&managed_path, serde_json::to_vec(&managed).unwrap()).unwrap();
+
+    with_temporarily_writable(&projection_path, || {
+        let mut projection = fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(&projection_path)?;
+        let offset = projection.metadata()?.len() / 2;
+        projection.seek(std::io::SeekFrom::Start(offset))?;
+        let mut byte = [0_u8; 1];
+        projection.read_exact(&mut byte)?;
+        byte[0] ^= 0x5a;
+        projection.seek(std::io::SeekFrom::Start(offset))?;
+        projection.write_all(&byte)?;
+        projection.sync_all()
+    })
+    .unwrap();
+    projection_path
+}
+
+fn corrupt_candidate_segment_store(
+    generation_path: &Path,
+    base_segment_ids: &HashSet<String>,
+    corrupt_retained_segment: bool,
+) -> PathBuf {
+    use std::io::{Read, Seek, Write};
+
+    let directory = DurableMmapDirectory::open(generation_path).unwrap();
+    let index = Index::open(directory).unwrap();
+    let metas = index.load_metas().unwrap();
+    let segment = metas
+        .segments
+        .iter()
+        .find(|segment| {
+            base_segment_ids.contains(&segment.id().uuid_string()) == corrupt_retained_segment
+        })
+        .unwrap_or_else(|| {
+            panic!(
+                "candidate must contain a {} segment",
+                if corrupt_retained_segment {
+                    "retained"
+                } else {
+                    "changed"
+                }
+            )
+        });
+    let store_path =
+        generation_path.join(segment.relative_path(tantivy::index::SegmentComponent::Store));
+    drop(index);
+
+    if corrupt_retained_segment {
+        let private_copy = store_path.with_extension("store.ctx-corruption-copy");
+        fs::copy(&store_path, &private_copy).unwrap();
+        fs::remove_file(&store_path).unwrap();
+        fs::rename(private_copy, &store_path).unwrap();
+    }
+
+    with_temporarily_writable(&store_path, || {
+        let mut store = fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(&store_path)?;
+        let length = store.metadata()?.len();
+        assert!(
+            length > 0,
+            "segment store must contain a CRC-protected file"
+        );
+        let offset = length / 2;
+        store.seek(std::io::SeekFrom::Start(offset))?;
+        let mut byte = [0_u8; 1];
+        store.read_exact(&mut byte)?;
+        byte[0] ^= 0x5a;
+        store.seek(std::io::SeekFrom::Start(offset))?;
+        store.write_all(&byte)?;
+        store.sync_all()
+    })
+    .unwrap();
+    store_path
 }
 
 fn multisegment_fixture(
@@ -291,11 +498,14 @@ fn multisegment_fixture(
     let mut sources = Vec::with_capacity(source_count);
     for source_index in 0..source_count {
         let current = source(&format!("verification-{source_index}.jsonl"));
-        let mut writer = GenerationWriter::open(temp.path(), options.clone()).unwrap();
+        let mut writer = GenerationWriter::open(temp.path(), options.clone())
+            .unwrap()
+            .into_writer()
+            .unwrap();
         writer.begin_source(current.clone()).unwrap();
         for sequence in 1..=documents_per_source {
             writer
-                .add_document(document_for_session(
+                .add_core_record(document_for_session(
                     &current,
                     &format!("session-{source_index}"),
                     sequence,
@@ -316,7 +526,10 @@ fn multisegment_fixture(
     (temp, sources)
 }
 
-mod pinned_generation;
-mod query;
+mod integrity_certification;
+mod publication_metadata;
 mod recovery;
+mod republish;
+#[cfg(target_os = "linux")]
+mod republish_qualification;
 mod writer;

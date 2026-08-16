@@ -61,7 +61,7 @@ fn mcp_status_exactly_matches_cli_json_for_pristine_unavailable_state() {
     assert!(cli["upgrade"].is_object(), "{cli:#}");
     assert_eq!(cli["upgrade"]["auto"], "apply", "{cli:#}");
     assert_eq!(cli["upgrade"]["install"]["marker"], "absent", "{cli:#}");
-    assert_eq!(cli["pro"]["installed"], false, "{cli:#}");
+    assert!(cli.get("pro").is_none(), "{cli:#}");
     assert_eq!(
         cli["local_usage"],
         json!({

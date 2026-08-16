@@ -1,8 +1,8 @@
 use chrono::{DateTime, Duration, Utc};
 use ctx_history_core::{
-    derive_event_id, derive_session_id, AgentType, CoreRecord, EventIdentityInput, EventRole,
-    EventType, NativeItemKey, NativeSessionKey, ProjectionContractError, SessionIdentityInput,
-    SourceKey, StableEntityId, SubrecordSelector, TypedKey, MAX_CORE_CONTENT_BYTES,
+    derive_event_id, derive_session_id, CoreRecord, EventIdentityInput, EventRole, EventType,
+    NativeItemKey, NativeSessionKey, ProjectionContractError, SessionIdentityInput, SourceKey,
+    StableEntityId, SubrecordSelector, TypedKey,
 };
 use serde_json::Value;
 
@@ -170,12 +170,9 @@ fn project_event(
     let mut record = CoreRecord::new_selected(
         event_id,
         session_id,
-        session_id,
         source.clone(),
         event_sequence,
         event.event_type.as_str(),
-        AgentType::Primary.as_str(),
-        true,
         PARSER_REVISION,
         logical_text,
     )?;
@@ -183,19 +180,10 @@ fn project_event(
     record.native_event_id = Some(native_event_id);
     record.occurred_at_unix_ms = Some(event.occurred_at.timestamp_millis());
     record.role = Some(event.role.as_str().to_owned());
-    record.content.structured_content = structured_content(logical_text, provider_content);
+    record.content.structured_content = serde_json::from_str::<Value>(provider_content).ok();
+    record
+        .content
+        .omit_structured_content_if_aggregate_exceeds_limit()?;
     record.validate_contract()?;
     Ok(record)
-}
-
-fn structured_content(body: &str, provider_content: &str) -> Option<Value> {
-    let value = serde_json::from_str::<Value>(provider_content).ok()?;
-    if !matches!(value, Value::Array(_) | Value::Object(_)) {
-        return None;
-    }
-    let encoded = serde_json::to_vec(&value).ok()?;
-    body.len()
-        .checked_add(encoded.len())
-        .filter(|bytes| *bytes <= MAX_CORE_CONTENT_BYTES)
-        .map(|_| value)
 }

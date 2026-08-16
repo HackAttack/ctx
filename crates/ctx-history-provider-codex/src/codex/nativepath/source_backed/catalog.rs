@@ -28,14 +28,6 @@ fn run_after_codex_metadata_inventory_hook() {
     }
 }
 
-#[cfg(any(test, feature = "test-support", ctx_codex_causal_qualification))]
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub(crate) struct CodexCatalogWorkV0 {
-    pub(crate) source_metadata_opens: u64,
-    pub(crate) source_metadata_read_upper_bound_bytes: u64,
-    pub(crate) session_meta_parses: u64,
-}
-
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CodexExplicitSessionSourceBackedInputV0 {
     path: PathBuf,

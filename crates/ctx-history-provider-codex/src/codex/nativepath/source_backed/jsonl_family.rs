@@ -1,7 +1,5 @@
 use std::{collections::BTreeMap, marker::PhantomData, sync::Mutex};
 
-#[cfg(any(test, feature = "test-support", ctx_codex_causal_qualification))]
-use super::causal::CodexCausalLedgerV1;
 use super::*;
 use crate::provider::source_backed::{ProviderBaseEventLookup, ProviderRuntimeBinding};
 use crate::{
@@ -45,23 +43,13 @@ fn carried_or_observe_generation_source_capability_v0(
 #[derive(Default)]
 struct CodexSessionJsonlFamilyStateV0 {
     plans: HashMap<SourceKey, CodexSessionPlanV0>,
-    #[cfg(any(test, feature = "test-support", ctx_codex_causal_qualification))]
-    causal: CodexCausalLedgerV1,
-    #[cfg(any(test, feature = "test-support", ctx_codex_causal_qualification))]
-    stage_pending: bool,
 }
 
 struct CodexSessionSemanticExecutorV0<B: ProviderRuntimeBinding> {
     binding: PhantomData<fn() -> B>,
-    #[cfg(any(test, feature = "test-support", ctx_codex_causal_qualification))]
-    state: Arc<Mutex<CodexSessionJsonlFamilyStateV0>>,
     scanner: Option<CodexNativeScanner>,
     checkpoint: Option<super::super::checkpoint::CodexSemanticCheckpoint>,
     append_checkpoint_required: bool,
-    #[cfg(any(test, feature = "test-support", ctx_codex_causal_qualification))]
-    native_session_id: String,
-    #[cfg(any(test, feature = "test-support", ctx_codex_causal_qualification))]
-    projection_mode: JsonlFamilyProjectionMode,
 }
 
 impl<B: ProviderRuntimeBinding> CodexSessionSemanticExecutorV0<B> {
@@ -101,15 +89,9 @@ impl<B: ProviderRuntimeBinding> CodexSessionSemanticExecutorV0<B> {
         let scanner = CodexNativeScanner::new_semantic(plan.0, base_event_lookup)?;
         Ok(Self {
             binding: PhantomData,
-            #[cfg(any(test, feature = "test-support", ctx_codex_causal_qualification))]
-            state,
             scanner: Some(scanner),
             checkpoint,
             append_checkpoint_required,
-            #[cfg(any(test, feature = "test-support", ctx_codex_causal_qualification))]
-            native_session_id: plan.2,
-            #[cfg(any(test, feature = "test-support", ctx_codex_causal_qualification))]
-            projection_mode,
         })
     }
 }
@@ -154,7 +136,7 @@ impl<B: ProviderRuntimeBinding> JsonlFamilySemanticExecutor for CodexSessionSema
     fn next_page(
         &mut self,
         input: &mut JsonlFamilyExecutionIo<B>,
-        worker: &mut JsonlFamilyWorkerContext<B>,
+        _worker: &mut JsonlFamilyWorkerContext<B>,
     ) -> Result<Option<JsonlFamilySemanticPage>> {
         let Some(page) = self
             .scanner
@@ -162,7 +144,7 @@ impl<B: ProviderRuntimeBinding> JsonlFamilySemanticExecutor for CodexSessionSema
             .ok_or(CaptureError::SystemInvariant(
                 "Codex semantic executor lost its scanner",
             ))?
-            .next_semantic_page(input, worker.services())?
+            .next_semantic_page(input)?
         else {
             return Ok(None);
         };
@@ -177,28 +159,6 @@ impl<B: ProviderRuntimeBinding> JsonlFamilySemanticExecutor for CodexSessionSema
                 "Codex semantic executor lost its scanner",
             ))?
             .finish_semantic()?;
-        #[cfg(any(test, feature = "test-support", ctx_codex_causal_qualification))]
-        {
-            let mut counters = CodexSourceBackedCountersV0 {
-                cold_sources: u64::from(self.projection_mode == JsonlFamilyProjectionMode::Cold),
-                appended_sources: u64::from(
-                    self.projection_mode == JsonlFamilyProjectionMode::CertifiedAppend,
-                ),
-                replaced_sources: u64::from(
-                    self.projection_mode == JsonlFamilyProjectionMode::Replacement,
-                ),
-                writer_mutated_sources: 1,
-                scanner_source_opens: 1,
-                scanner_sources_started: 1,
-                scanner_sources_completed: 1,
-                staged_documents: scan.counters.retained_records,
-                ..CodexSourceBackedCountersV0::default()
-            };
-            counters.add_scan(scan.counters);
-            let mut state = self.state.lock().map_err(|_| codex_family_state_error())?;
-            state.causal.observe_scan(&self.native_session_id, counters);
-            state.stage_pending = true;
-        }
         let provider_checkpoint = scan
             .checkpoint
             .map(|checkpoint| checkpoint.encode_key().map_err(CaptureError::from))
@@ -216,16 +176,14 @@ fn codex_family_state_error() -> CaptureError {
 }
 
 fn prepare_codex_session_jsonl_scans_v0<B: ProviderRuntimeBinding>(
-    adapter: &dyn JsonlFamilyAdapter<
+    _adapter: &dyn JsonlFamilyAdapter<
         Runtime = crate::provider::source_backed::family::jsonl::JsonlFamilyRuntime<B>,
     >,
     state: &Mutex<CodexSessionJsonlFamilyStateV0>,
     leaves: &[JsonlFamilyLeaf],
-    bases: &HashMap<[u8; 32], &CertifiedSource>,
+    _bases: &HashMap<[u8; 32], &CertifiedSource>,
 ) -> Result<Option<usize>> {
     let state = state.lock().map_err(|_| codex_family_state_error())?;
-    #[cfg(any(test, feature = "test-support", ctx_codex_causal_qualification))]
-    let mut state = state;
     for leaf in leaves {
         if !state.plans.contains_key(leaf.source()) {
             return Err(CaptureError::InvalidPayload(
@@ -233,33 +191,6 @@ fn prepare_codex_session_jsonl_scans_v0<B: ProviderRuntimeBinding>(
             ));
         }
     }
-    #[cfg(any(test, feature = "test-support", ctx_codex_causal_qualification))]
-    {
-        let observations = state
-            .plans
-            .values()
-            .map(|plan| {
-                let exact_replay =
-                    bases
-                        .get(&plan.1.exact_descriptor_digest())
-                        .is_some_and(|base| {
-                            base.parser_revision() == adapter.parser_revision()
-                                && base.observation().source().exact_descriptor_eq(&plan.1)
-                        });
-                (plan.2.clone(), exact_replay)
-            })
-            .collect::<Vec<_>>();
-        for (native_session_id, exact_replay) in observations {
-            state.causal.observe_catalog(
-                &native_session_id,
-                super::catalog::CodexCatalogWorkV0::default(),
-                exact_replay,
-            );
-        }
-        state.stage_pending = true;
-    }
-    #[cfg(not(any(test, feature = "test-support", ctx_codex_causal_qualification)))]
-    let _ = (adapter, bases);
     Ok(None)
 }
 
@@ -274,14 +205,6 @@ fn install_prepared_state_v0(
         .cloned()
         .map(|plan| (plan.1.clone(), plan))
         .collect();
-    #[cfg(any(test, feature = "test-support", ctx_codex_causal_qualification))]
-    {
-        state.causal = CodexCausalLedgerV1::default();
-    }
-    #[cfg(any(test, feature = "test-support"))]
-    if plans.is_empty() && !_completed_stage {
-        state.stage_pending = true;
-    }
     Ok(())
 }
 
@@ -292,14 +215,6 @@ fn missing_codex_inventory_v0(
 ) -> Result<JsonlFamilyInventory> {
     let mut state = state.lock().map_err(|_| codex_family_state_error())?;
     state.plans.clear();
-    #[cfg(any(test, feature = "test-support", ctx_codex_causal_qualification))]
-    {
-        state.causal = CodexCausalLedgerV1::default();
-    }
-    #[cfg(any(test, feature = "test-support"))]
-    if !_completed_stage {
-        state.stage_pending = true;
-    }
     JsonlFamilyInventory::missing(CaptureProvider::Codex, route_path)
 }
 
@@ -427,23 +342,6 @@ impl<B: ProviderRuntimeBinding> CodexSessionJsonlFamilyAdapterV0<B> {
         Ok(inventory)
     }
 
-    #[cfg(any(test, feature = "test-support", ctx_codex_causal_qualification))]
-    fn run_pending_stage_observer(&self) -> Result<bool> {
-        let causal = {
-            let mut state = self.state.lock().map_err(|_| codex_family_state_error())?;
-            if !state.stage_pending {
-                return Ok(false);
-            }
-            state.stage_pending = false;
-            std::mem::take(&mut state.causal)
-        };
-        #[cfg(any(test, feature = "test-support"))]
-        causal.run_test_observer();
-        causal.write_qualification_receipt()?;
-        Ok(true)
-    }
-
-    #[cfg(not(any(test, feature = "test-support", ctx_codex_causal_qualification)))]
     fn run_pending_stage_observer(&self) -> Result<bool> {
         Ok(false)
     }

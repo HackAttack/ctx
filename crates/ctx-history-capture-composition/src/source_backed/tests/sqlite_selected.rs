@@ -1,6 +1,6 @@
 use std::{fs, path::Path};
 
-use ctx_history_core::{CaptureProvider, EventOrigin, SessionRelationshipKind, TypedKey};
+use ctx_history_core::{CaptureProvider, TypedKey};
 use ctx_history_index::{VerifiedIndex, WriterOptions};
 use rusqlite::Connection;
 
@@ -12,7 +12,7 @@ use super::super::{
 use crate::{provider_sources::provider_source_for_path, test_support_paths};
 
 #[test]
-fn goose_v15_delegated_parent_and_native_identities_publish_consistently() {
+fn goose_v15_literal_parent_and_native_identities_publish_consistently() {
     let temp = test_support_paths::tempdir().unwrap();
     let database = temp.path().join("sessions.db");
     let connection = Connection::open(&database).unwrap();
@@ -99,16 +99,18 @@ fn goose_v15_delegated_parent_and_native_identities_publish_consistently() {
         .find(|record| record.native_event_id == Some(TypedKey::utf8("tool-message").unwrap()))
         .unwrap();
 
-    assert_eq!(parent.session_relationship, SessionRelationshipKind::Root);
-    assert_eq!(parent.event_origin, EventOrigin::Unknown);
-    assert_eq!(
-        child.session_relationship,
-        SessionRelationshipKind::Delegated
-    );
     assert_eq!(child.parent_session_id, Some(parent.session_id));
-    assert_eq!(child.root_session_id, parent.session_id);
-    assert!(!child.is_primary);
-    assert_eq!(child.event_origin, EventOrigin::Unknown);
+    assert_eq!(child.root_session_id, None);
+    assert!(super::has_literal_fact(
+        parent,
+        ctx_history_core::LiteralFactKind::SessionCwd,
+        "/tmp/goose"
+    ));
+    assert!(super::has_literal_fact(
+        child,
+        ctx_history_core::LiteralFactKind::SessionCwd,
+        "/tmp/goose"
+    ));
     assert_eq!(
         parent.native_event_id,
         Some(TypedKey::utf8("copied-message").unwrap())
@@ -118,15 +120,13 @@ fn goose_v15_delegated_parent_and_native_identities_publish_consistently() {
         Some(TypedKey::utf8("copied-message").unwrap())
     );
     assert_ne!(parent.event_id, child.event_id);
-    assert_eq!(
-        tool.content
-            .structured_content
-            .as_ref()
-            .and_then(|value| value.pointer("/provider_native_tool_call_ids/0"))
-            .and_then(serde_json::Value::as_str),
-        Some("tool-call-exact")
-    );
-    assert_eq!(tool.event_origin, EventOrigin::Unknown);
+    assert!(tool
+        .content
+        .structured_content
+        .as_ref()
+        .and_then(|value| value.pointer("/provider_native_tool_call_ids/0"))
+        .and_then(serde_json::Value::as_str)
+        .is_none());
 }
 
 #[test]

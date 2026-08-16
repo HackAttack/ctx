@@ -73,7 +73,6 @@ pub(crate) struct ZedNativeEvent {
     pub(super) native_content: serde_json::Value,
     #[serde(skip)]
     pub(super) normalized_body: String,
-    pub(super) safe_file_touches: Vec<String>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -109,11 +108,7 @@ impl ZedNativePage {
         self.sessions
             .len()
             .saturating_add(self.rejections.len())
-            .saturating_add(self.events.iter().fold(0_usize, |units, event| {
-                units
-                    .saturating_add(1)
-                    .saturating_add(event.safe_file_touches.len())
-            }))
+            .saturating_add(self.events.len())
     }
 
     pub(super) fn row_count(&self) -> usize {
@@ -146,6 +141,5 @@ pub(crate) struct ZedNativeCounters {
     pub(super) retained_summaries: u64,
     pub(super) retained_notices: u64,
     pub(super) retained_body_bytes: u64,
-    pub(super) retained_file_touches: u64,
     pub(crate) rejected_threads: u64,
 }

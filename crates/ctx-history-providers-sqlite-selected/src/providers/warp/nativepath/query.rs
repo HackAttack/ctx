@@ -4,7 +4,7 @@ mod tasks;
 use conversations::{emit_sessions_and_hierarchy, scan_conversations};
 use tasks::scan_tasks;
 
-use std::collections::{BTreeMap, BTreeSet, HashSet};
+use std::collections::{BTreeMap, HashSet};
 
 use chrono::{DateTime, NaiveDateTime, Utc};
 use rusqlite::{types::ValueRef, Connection, Statement};
@@ -32,8 +32,6 @@ const WARP_NATIVE_SQLITE_ROW_OVERHEAD_BYTES: u64 = 64 * 5;
 #[derive(Debug)]
 struct WarpHierarchyNode {
     parent_conversation_id: Option<String>,
-    root_conversation_id: String,
-    root_resolved: bool,
     parent_present: bool,
     title: String,
     modified_at: Option<DateTime<Utc>>,
@@ -296,18 +294,6 @@ fn merge_decode_counters(counters: &mut WarpNativeCounters, decoded: WarpDecodeC
     counters.native_result_body_bytes_observed = counters
         .native_result_body_bytes_observed
         .saturating_add(decoded.native_result_body_bytes_observed);
-    counters.native_results_success = counters
-        .native_results_success
-        .saturating_add(decoded.native_results_success);
-    counters.native_results_failure = counters
-        .native_results_failure
-        .saturating_add(decoded.native_results_failure);
-    counters.native_results_timeout = counters
-        .native_results_timeout
-        .saturating_add(decoded.native_results_timeout);
-    counters.native_results_unknown = counters
-        .native_results_unknown
-        .saturating_add(decoded.native_results_unknown);
     counters.malformed_output_records = counters
         .malformed_output_records
         .saturating_add(decoded.malformed_output_records);

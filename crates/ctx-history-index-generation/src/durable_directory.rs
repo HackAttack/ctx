@@ -5,7 +5,7 @@ use std::{
     ffi::OsStr,
     fmt,
     fs::{self, File, OpenOptions},
-    io::{self, Write},
+    io::{self, Read as _, Write},
     path::{Path, PathBuf},
     sync::Arc,
 };
@@ -15,6 +15,7 @@ use tantivy::directory::{
     Directory, DirectoryLock, FileHandle, FileSlice, Lock, MmapDirectory, WatchCallback,
     WatchHandle, WritePtr,
 };
+use tantivy::HasLen;
 use uuid::Uuid;
 
 const TEMPORARY_FILE_PREFIX: &str = ".ctx-tantivy-atomic-";
@@ -36,8 +37,14 @@ const TEMPORARY_FILE_ATTEMPTS: usize = 16;
 /// predecessor migration exposes that case as a committed recovery outcome.
 #[derive(Clone)]
 pub struct DurableMmapDirectory {
-    inner: MmapDirectory,
+    inner: DurableDirectoryBackend,
     root_path: Arc<PathBuf>,
+}
+
+#[derive(Clone)]
+enum DurableDirectoryBackend {
+    Mmap(MmapDirectory),
+    Anchored(Arc<crate::read_root::OpenedDirectory>),
 }
 
 #[derive(Debug)]
@@ -58,7 +65,17 @@ impl DurableAtomicWriteOutcome {
 impl DurableMmapDirectory {
     pub fn open(directory_path: impl AsRef<Path>) -> Result<Self, OpenDirectoryError> {
         let directory_path = directory_path.as_ref();
-        let inner = MmapDirectory::open(directory_path)?;
+        if let Some(opened) =
+            crate::read_root::registered_read_directory(directory_path).map_err(|error| {
+                OpenDirectoryError::wrap_io_error(error, directory_path.to_path_buf())
+            })?
+        {
+            return Ok(Self {
+                inner: DurableDirectoryBackend::Anchored(opened),
+                root_path: Arc::new(directory_path.to_path_buf()),
+            });
+        }
+        let inner = DurableDirectoryBackend::Mmap(MmapDirectory::open(directory_path)?);
         let root_path = canonical_root_path(directory_path)?;
         Ok(Self {
             inner,
@@ -75,6 +92,9 @@ impl DurableMmapDirectory {
         path: &Path,
         data: &[u8],
     ) -> io::Result<DurableAtomicWriteOutcome> {
+        if matches!(&self.inner, DurableDirectoryBackend::Anchored(_)) {
+            return Err(read_only_directory_error());
+        }
         match self.atomic_write_with_outcome_validated(path, data, || Ok(())) {
             Ok(outcome) => Ok(outcome),
             Err(crate::GenerationError::Io(error)) => Err(error),
@@ -202,27 +222,78 @@ impl fmt::Debug for DurableMmapDirectory {
 
 impl Directory for DurableMmapDirectory {
     fn get_file_handle(&self, path: &Path) -> Result<Arc<dyn FileHandle>, OpenReadError> {
-        self.inner.get_file_handle(path)
+        match &self.inner {
+            DurableDirectoryBackend::Mmap(inner) => inner.get_file_handle(path),
+            DurableDirectoryBackend::Anchored(inner) => {
+                let file = inner.open_file(path).map_err(|error| {
+                    if error.kind() == io::ErrorKind::NotFound {
+                        OpenReadError::FileDoesNotExist(path.to_path_buf())
+                    } else {
+                        OpenReadError::wrap_io_error(error, path.to_path_buf())
+                    }
+                })?;
+                AnchoredFileHandle::new(file)
+                    .map(|handle| Arc::new(handle) as Arc<dyn FileHandle>)
+                    .map_err(|error| OpenReadError::wrap_io_error(error, path.to_path_buf()))
+            }
+        }
     }
 
     fn open_read(&self, path: &Path) -> Result<FileSlice, OpenReadError> {
-        self.inner.open_read(path)
+        match &self.inner {
+            DurableDirectoryBackend::Mmap(inner) => inner.open_read(path),
+            DurableDirectoryBackend::Anchored(_) => self.get_file_handle(path).map(FileSlice::new),
+        }
     }
 
     fn delete(&self, path: &Path) -> Result<(), DeleteError> {
-        self.inner.delete(path)
+        match &self.inner {
+            DurableDirectoryBackend::Mmap(inner) => inner.delete(path),
+            DurableDirectoryBackend::Anchored(_) => Err(DeleteError::IoError {
+                io_error: Arc::new(read_only_directory_error()),
+                filepath: path.to_path_buf(),
+            }),
+        }
     }
 
     fn exists(&self, path: &Path) -> Result<bool, OpenReadError> {
-        self.inner.exists(path)
+        match &self.inner {
+            DurableDirectoryBackend::Mmap(inner) => inner.exists(path),
+            DurableDirectoryBackend::Anchored(inner) => match inner.open_file(path) {
+                Ok(_) => Ok(true),
+                Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(false),
+                Err(error) => Err(OpenReadError::wrap_io_error(error, path.to_path_buf())),
+            },
+        }
     }
 
     fn open_write(&self, path: &Path) -> Result<WritePtr, OpenWriteError> {
-        self.inner.open_write(path)
+        match &self.inner {
+            DurableDirectoryBackend::Mmap(inner) => inner.open_write(path),
+            DurableDirectoryBackend::Anchored(_) => Err(OpenWriteError::wrap_io_error(
+                read_only_directory_error(),
+                path.to_path_buf(),
+            )),
+        }
     }
 
     fn atomic_read(&self, path: &Path) -> Result<Vec<u8>, OpenReadError> {
-        self.inner.atomic_read(path)
+        match &self.inner {
+            DurableDirectoryBackend::Mmap(inner) => inner.atomic_read(path),
+            DurableDirectoryBackend::Anchored(inner) => {
+                let mut file = inner.open_file(path).map_err(|error| {
+                    if error.kind() == io::ErrorKind::NotFound {
+                        OpenReadError::FileDoesNotExist(path.to_path_buf())
+                    } else {
+                        OpenReadError::wrap_io_error(error, path.to_path_buf())
+                    }
+                })?;
+                let mut bytes = Vec::new();
+                file.read_to_end(&mut bytes)
+                    .map_err(|error| OpenReadError::wrap_io_error(error, path.to_path_buf()))?;
+                Ok(bytes)
+            }
+        }
     }
 
     fn atomic_write(&self, path: &Path, data: &[u8]) -> io::Result<()> {
@@ -230,16 +301,98 @@ impl Directory for DurableMmapDirectory {
     }
 
     fn sync_directory(&self) -> io::Result<()> {
-        self.inner.sync_directory()
+        match &self.inner {
+            DurableDirectoryBackend::Mmap(inner) => inner.sync_directory(),
+            DurableDirectoryBackend::Anchored(inner) => inner.sync(),
+        }
     }
 
     fn acquire_lock(&self, lock: &Lock) -> Result<DirectoryLock, LockError> {
-        self.inner.acquire_lock(lock)
+        match &self.inner {
+            DurableDirectoryBackend::Mmap(inner) => inner.acquire_lock(lock),
+            // Immutable generations are protected from outer reclamation by
+            // GenerationReadLease. Tantivy's meta lock only coordinates its
+            // own mutable-directory GC, which cannot run through this
+            // read-only capability.
+            DurableDirectoryBackend::Anchored(_) => {
+                let _ = lock;
+                Ok(Box::new(()).into())
+            }
+        }
     }
 
     fn watch(&self, watch_callback: WatchCallback) -> tantivy::Result<WatchHandle> {
-        self.inner.watch(watch_callback)
+        match &self.inner {
+            DurableDirectoryBackend::Mmap(inner) => inner.watch(watch_callback),
+            DurableDirectoryBackend::Anchored(_) => {
+                let _ = watch_callback;
+                Ok(WatchHandle::empty())
+            }
+        }
     }
+}
+
+#[derive(Debug)]
+struct AnchoredFileHandle {
+    file: File,
+    len: usize,
+}
+
+impl AnchoredFileHandle {
+    fn new(file: File) -> io::Result<Self> {
+        let len = usize::try_from(file.metadata()?.len())
+            .map_err(|_| io::Error::other("anchored generation file is too large"))?;
+        Ok(Self { file, len })
+    }
+}
+
+impl HasLen for AnchoredFileHandle {
+    fn len(&self) -> usize {
+        self.len
+    }
+}
+
+impl FileHandle for AnchoredFileHandle {
+    fn read_bytes(
+        &self,
+        range: std::ops::Range<usize>,
+    ) -> io::Result<tantivy::directory::OwnedBytes> {
+        if range.start > range.end || range.end > self.len {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "anchored generation read is outside the file",
+            ));
+        }
+        let mut bytes = vec![0_u8; range.len()];
+        #[cfg(unix)]
+        std::os::unix::fs::FileExt::read_exact_at(&self.file, &mut bytes, range.start as u64)?;
+        #[cfg(windows)]
+        {
+            let mut read = 0_usize;
+            while read < bytes.len() {
+                let count = std::os::windows::fs::FileExt::seek_read(
+                    &self.file,
+                    &mut bytes[read..],
+                    (range.start + read) as u64,
+                )?;
+                if count == 0 {
+                    return Err(io::Error::new(
+                        io::ErrorKind::UnexpectedEof,
+                        "anchored generation read",
+                    ));
+                }
+                read += count;
+            }
+        }
+        Ok(tantivy::directory::OwnedBytes::new(bytes))
+    }
+}
+
+fn read_only_directory_error() -> io::Error {
+    io::Error::new(
+        io::ErrorKind::PermissionDenied,
+        "anchored generation directories are read-only",
+    )
 }
 
 fn canonical_root_path(directory_path: &Path) -> Result<PathBuf, OpenDirectoryError> {

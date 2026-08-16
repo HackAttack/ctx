@@ -1,0 +1,13 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://ctx.rs/contracts/ctx-managed-pair-signed-envelope-v1.schema.json",
+  "title": "ctx managed pair detached signed envelope v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "manifest_base64", "signature_base64"],
+  "properties": {
+    "schema_version": {"const": 1},
+    "manifest_base64": {"type": "string", "minLength": 4, "maxLength": 1398104, "pattern": "^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$"},
+    "signature_base64": {"type": "string", "minLength": 4, "maxLength": 24576, "pattern": "^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$"}
+  }
+}

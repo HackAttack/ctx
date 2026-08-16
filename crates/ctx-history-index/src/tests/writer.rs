@@ -1,15 +1,64 @@
 use super::*;
-use std::{io::Write as _, sync::Arc};
-use tantivy::directory::TerminatingWrite as _;
+
+#[test]
+fn cached_source_descriptor_preserves_core_record_and_active_source_faults() {
+    fn descriptor(source_format: &str) -> SourceKey {
+        SourceKey::derive(
+            "codex",
+            source_format,
+            "session",
+            1,
+            SourceAnchor::provider_native(
+                "session-file",
+                TypedKey::utf8("move-backed-document-test").unwrap(),
+            )
+            .unwrap(),
+        )
+        .unwrap()
+    }
+
+    let active = descriptor("codex_session_jsonl");
+    let descriptor_alias = descriptor("codex_prompt_history_jsonl");
+    assert_eq!(active, descriptor_alias);
+    assert!(!active.exact_descriptor_eq(&descriptor_alias));
+
+    let directory = tempdir().unwrap();
+    let mut writer = GenerationWriter::open(directory.path(), WriterOptions::default())
+        .unwrap()
+        .into_writer()
+        .unwrap();
+    writer.begin_source(active.clone()).unwrap();
+
+    let mut mismatched_identity = document(&active, 1, "body");
+    mismatched_identity.event_id = mismatched_identity.session_id;
+    assert!(matches!(
+        writer.add_core_record(mismatched_identity),
+        Err(IndexError::CoreRecord(_))
+    ));
+    assert!(matches!(
+        writer.add_core_record(document(&descriptor_alias, 1, "body")),
+        Err(IndexError::DocumentSourceNotActive)
+    ));
+}
+use ctx_history_core::MAX_ENCODED_CORE_RECORD_BYTES;
+use std::{path::Path, sync::Arc};
+
+mod complexity_contract;
+mod merge_policy;
+mod routes;
+mod verification;
 
 #[test]
 fn commit_binds_manifest_and_searchable_documents() {
     let temp = tempdir().unwrap();
     let source = source("session.jsonl");
-    let mut writer = GenerationWriter::open(temp.path(), WriterOptions::default()).unwrap();
+    let mut writer = GenerationWriter::open(temp.path(), WriterOptions::default())
+        .unwrap()
+        .into_writer()
+        .unwrap();
     writer.begin_source(source.clone()).unwrap();
     writer
-        .add_document(document(&source, 1, "atomic generation"))
+        .add_core_record(document(&source, 1, "atomic generation"))
         .unwrap();
     writer.certify_source(certificate(&source, 1, 1)).unwrap();
     let receipt = writer.commit(|_| true).unwrap();
@@ -21,27 +70,300 @@ fn commit_binds_manifest_and_searchable_documents() {
         receipt.generation_id
     );
     assert_eq!(receipt.manifest().sources, index.manifest().sources);
-    assert_eq!(receipt.manifest().removals, index.manifest().removals);
+    assert_eq!(
+        receipt.manifest().source_routes(),
+        index.manifest().source_routes()
+    );
     assert_eq!(index.manifest().indexed_documents, 1);
     assert_eq!(index.count_term("atomic").unwrap(), 1);
+}
+
+#[test]
+fn prepared_core_draft_retries_final_encoding_under_a_caller_permit() {
+    let temp = tempdir().unwrap();
+    let source = source("bounded-materialization.jsonl");
+    let record = document(&source, 1, "bounded materialization");
+    let writer = GenerationWriter::open(temp.path(), WriterOptions::default())
+        .unwrap()
+        .into_writer()
+        .unwrap();
+    let preparer = writer.core_record_preparer();
+
+    crate::preparation::reset_final_encoding_count();
+    let draft = preparer.prepare_draft(record.clone()).unwrap();
+    let draft = match draft.materialize(1).unwrap() {
+        PreparedCoreRecordMaterialization::CapacityExceeded(draft) => *draft,
+        PreparedCoreRecordMaterialization::Prepared(_) => {
+            panic!("one byte unexpectedly admitted a complete Core record")
+        }
+    };
+    assert_eq!(
+        crate::preparation::final_encoding_count(),
+        0,
+        "a failed bounded attempt is not a completed canonical encoding"
+    );
+
+    let prepared = match draft.materialize(MAX_ENCODED_CORE_RECORD_BYTES).unwrap() {
+        PreparedCoreRecordMaterialization::Prepared(prepared) => prepared,
+        PreparedCoreRecordMaterialization::CapacityExceeded(_) => {
+            panic!("a valid Core record exceeded the contract maximum")
+        }
+    };
+    assert_eq!(crate::preparation::final_encoding_count(), 1);
+
+    let reference = preparer.prepare(record).unwrap();
+    assert_eq!(
+        prepared.encoded_core_bytes(),
+        reference.encoded_core_bytes(),
+        "retrying under a sufficient permit must preserve canonical encoding"
+    );
+    assert_eq!(crate::preparation::final_encoding_count(), 2);
+}
+
+#[test]
+fn prepared_core_record_keeps_identity_authority_with_its_document_and_aggregate() {
+    let temp = tempdir().unwrap();
+    let source = source("prepared-identity-authority.jsonl");
+    let parent = document_for_session(&source, "parent", 10, "not published");
+    let mut record = document_for_session(&source, "child", 1, "prepared child");
+    record.parent_session_id = Some(parent.session_id);
+    record.root_session_id = Some(parent.session_id);
+    record.session_relationship = Some(ctx_history_core::ProviderNativeSessionRelationship::Forked);
+    record.validate_contract().unwrap();
+    let expected_event = record.event_id;
+    let expected_session = record.session_id;
+    let writer = GenerationWriter::open(temp.path(), WriterOptions::default())
+        .unwrap()
+        .into_writer()
+        .unwrap();
+
+    let prepared = writer.core_record_preparer().prepare(record).unwrap();
+    let parts = prepared.into_parts();
+    assert_eq!(parts.identity_facts.event_id, expected_event);
+    assert_eq!(parts.identity_facts.session.session_id, expected_session);
+    assert_eq!(
+        parts.identity_facts.session.source_owner,
+        source.identity().digest()
+    );
+    assert_eq!(
+        parts.identity_facts.session.relationship.parent_session_id,
+        Some(parent.session_id)
+    );
+    assert_eq!(
+        parts.identity_facts.session.relationship.root_session_id,
+        Some(parent.session_id)
+    );
+    assert_eq!(
+        parts.identity_facts.session.relationship.kind,
+        Some(ctx_history_core::ProviderNativeSessionRelationship::Forked)
+    );
+    let _document_and_aggregate = (parts.document, parts.record_accumulator_leaf);
+}
+
+#[test]
+fn manifest_accumulator_uses_the_fingerprinted_event_binding() {
+    use sha2::{Digest, Sha256};
+
+    let temp = tempdir().unwrap();
+    let source = source("event-binding-accumulator.jsonl");
+    let record = document(&source, 1, "bound accumulator record");
+    let event_id = record.event_id;
+    let encoded_record = record.encode_stored().unwrap();
+    let record_leaf = ctx_history_core::core_record_leaf_digest(event_id, &encoded_record).unwrap();
+    let canonical_event_id = event_id.encode_canonical().unwrap();
+    let mut expected = Sha256::new();
+    expected.update(ctx_history_core::CORE_RECORD_ACCUMULATOR_IDENTITY);
+    expected.update((canonical_event_id.len() as u64).to_be_bytes());
+    expected.update(canonical_event_id);
+    expected.update(record_leaf);
+    let expected: [u8; 32] = expected.finalize().into();
+
+    let mut writer = GenerationWriter::open(temp.path(), WriterOptions::default())
+        .unwrap()
+        .into_writer()
+        .unwrap();
+    writer.begin_source(source.clone()).unwrap();
+    writer.add_core_record(record).unwrap();
+    writer.certify_source(certificate(&source, 1, 1)).unwrap();
+    let receipt = writer.commit(|_| true).unwrap();
+    let aggregate = receipt.manifest().core_record_aggregates.first().unwrap();
+
+    assert_eq!(aggregate.accumulator_bytes().unwrap(), expected);
+    assert_ne!(
+        expected, record_leaf,
+        "raw Core leaves are not accumulator addends"
+    );
+}
+
+#[test]
+fn logical_generation_identity_excludes_physical_index_topology() {
+    let source = source("independent-logical-generation.jsonl");
+    let publish = |root: &Path| {
+        let mut writer = GenerationWriter::open(root, WriterOptions::default())
+            .unwrap()
+            .into_writer()
+            .unwrap();
+        writer.begin_source(source.clone()).unwrap();
+        writer
+            .add_core_record(document(&source, 1, "same logical publication"))
+            .unwrap();
+        writer.certify_source(certificate(&source, 1, 1)).unwrap();
+        let receipt = writer.commit(|_| true).unwrap();
+        let pointer = load_active_generation_pointer(root).unwrap().unwrap();
+        (receipt, pointer.active().clone())
+    };
+
+    let first = tempdir().unwrap();
+    let second = tempdir().unwrap();
+    let (first_receipt, first_slot) = publish(first.path());
+    let (second_receipt, second_slot) = publish(second.path());
+
+    assert_eq!(first_receipt.generation_id, second_receipt.generation_id);
+    assert_eq!(
+        serde_json::to_vec(first_receipt.manifest()).unwrap(),
+        serde_json::to_vec(second_receipt.manifest()).unwrap()
+    );
+    assert_ne!(first_slot.directory(), second_slot.directory());
+    assert_ne!(
+        first_slot.physical_integrity_digest(),
+        second_slot.physical_integrity_digest(),
+        "independent Tantivy segment names must remain outside logical generation identity"
+    );
+}
+
+#[test]
+fn replacement_preparation_never_imports_prior_generation_semantics() {
+    let temp = tempdir().unwrap();
+    let source = source("neutral-replacement.jsonl");
+    let mut prior = document(&source, 1, "same event body");
+    prior
+        .content
+        .activity
+        .as_mut()
+        .unwrap()
+        .facts
+        .push(ctx_history_core::ProviderDeclaredFact {
+            kind: ctx_history_core::LiteralFactKind::ProviderDisposition,
+            value: "prior-only".to_owned(),
+        });
+
+    let mut initial = GenerationWriter::open(temp.path(), WriterOptions::default())
+        .unwrap()
+        .into_writer()
+        .unwrap();
+    initial.begin_source(source.clone()).unwrap();
+    initial.add_core_record(prior).unwrap();
+    initial.certify_source(certificate(&source, 1, 1)).unwrap();
+    initial.commit(|_| true).unwrap();
+
+    let mut current = document(&source, 1, "same event body");
+    current
+        .content
+        .activity
+        .as_mut()
+        .unwrap()
+        .facts
+        .push(ctx_history_core::ProviderDeclaredFact {
+            kind: ctx_history_core::LiteralFactKind::ProviderDisposition,
+            value: "current-only".to_owned(),
+        });
+    let event_id = current.event_id;
+    let expected = current.content.activity.as_ref().unwrap().facts.clone();
+    let mut replacement = GenerationWriter::open(temp.path(), WriterOptions::default())
+        .unwrap()
+        .into_writer()
+        .unwrap();
+    replacement.begin_source(source.clone()).unwrap();
+    replacement.add_core_record(current).unwrap();
+    replacement
+        .certify_source(certificate(&source, 2, 1))
+        .unwrap();
+    replacement.commit(|_| true).unwrap();
+
+    let stored = VerifiedIndex::open(temp.path())
+        .unwrap()
+        .core_record_by_id(event_id.as_uuid())
+        .unwrap()
+        .unwrap();
+    assert_eq!(stored.content.activity.unwrap().facts, expected);
+}
+
+#[test]
+fn prepared_record_requires_matching_active_source_state() {
+    let temp = tempdir().unwrap();
+    let active_source = source("prepared-source-state.jsonl");
+    let other = source("prepared-other-source.jsonl");
+    let mut writer = GenerationWriter::open(temp.path(), WriterOptions::default())
+        .unwrap()
+        .into_writer()
+        .unwrap();
+
+    let inactive = writer
+        .core_record_preparer()
+        .prepare(document(&active_source, 1, "inactive prepared body"))
+        .unwrap();
+    assert!(matches!(
+        writer.add_prepared_core_record(inactive),
+        Err(IndexError::DocumentSourceNotActive)
+    ));
+
+    writer.begin_source(active_source.clone()).unwrap();
+    let wrong_source = writer
+        .core_record_preparer()
+        .prepare(document(&other, 1, "wrong source prepared body"))
+        .unwrap();
+    assert!(matches!(
+        writer.add_prepared_core_record(wrong_source),
+        Err(IndexError::DocumentSourceNotActive)
+    ));
+
+    let active = writer
+        .core_record_preparer()
+        .prepare(document(&active_source, 1, "active prepared body"))
+        .unwrap();
+    writer.add_prepared_core_record(active).unwrap();
+    writer
+        .certify_source(certificate(&active_source, 1, 1))
+        .unwrap();
+    writer.commit(|_| true).unwrap();
+
+    let mut retained = GenerationWriter::open(temp.path(), WriterOptions::default())
+        .unwrap()
+        .into_writer()
+        .unwrap();
+    retained
+        .retain_source(certificate(&active_source, 1, 1))
+        .unwrap();
+    let retained_record = retained
+        .core_record_preparer()
+        .prepare(document(&active_source, 2, "retained source prepared body"))
+        .unwrap();
+    assert!(matches!(
+        retained.add_prepared_core_record(retained_record),
+        Err(IndexError::DocumentSourceNotActive)
+    ));
 }
 
 #[test]
 fn unchanged_commit_returns_the_verified_base_without_republication() {
     let temp = tempdir().unwrap();
     let source = source("session.jsonl");
-    let mut initial = GenerationWriter::open(temp.path(), WriterOptions::default()).unwrap();
+    let mut initial = GenerationWriter::open(temp.path(), WriterOptions::default())
+        .unwrap()
+        .into_writer()
+        .unwrap();
     initial.begin_source(source.clone()).unwrap();
     initial
-        .add_document(document(&source, 1, "stable generation"))
+        .add_core_record(document(&source, 1, "stable generation"))
         .unwrap();
     initial
         .certify_source(appendable_certificate(&source, 1, 1, 10))
         .unwrap();
     let initial_receipt = initial.commit(|_| true).unwrap();
 
-    let meta_path = temp.path().join("meta.json");
-    let managed_path = temp.path().join(".managed.json");
+    let active_path = active_generation_path(temp.path());
+    let meta_path = active_path.join("meta.json");
+    let managed_path = active_path.join(".managed.json");
     let manifest_path = manifest_path(temp.path(), &initial_receipt.generation_id);
     let meta_before = fs::read(&meta_path).unwrap();
     let meta_metadata_before = fs::metadata(&meta_path).unwrap();
@@ -50,8 +372,10 @@ fn unchanged_commit_returns_the_verified_base_without_republication() {
     let manifest_before = fs::read(&manifest_path).unwrap();
     let manifest_metadata_before = fs::metadata(&manifest_path).unwrap();
 
-    let mut unchanged_writer =
-        GenerationWriter::open(temp.path(), WriterOptions::default()).unwrap();
+    let mut unchanged_writer = GenerationWriter::open(temp.path(), WriterOptions::default())
+        .unwrap()
+        .into_writer()
+        .unwrap();
     assert!(
         unchanged_writer.writer.is_none(),
         "opening a generation must not construct Tantivy's IndexWriter"
@@ -117,8 +441,8 @@ fn unchanged_commit_returns_the_verified_base_without_republication() {
         initial_receipt.manifest().sources
     );
     assert_eq!(
-        unchanged.manifest().removals,
-        initial_receipt.manifest().removals
+        unchanged.manifest().source_routes(),
+        initial_receipt.manifest().source_routes()
     );
     assert_eq!(fs::read(&meta_path).unwrap(), meta_before);
     assert_eq!(
@@ -163,16 +487,20 @@ fn unchanged_commit_returns_the_verified_base_without_republication() {
 fn logical_rescan_retains_nonappendable_source_without_tantivy_artifacts() {
     let temp = tempdir().unwrap();
     let source = source("logical.sqlite");
-    let mut initial = GenerationWriter::open(temp.path(), WriterOptions::default()).unwrap();
+    let mut initial = GenerationWriter::open(temp.path(), WriterOptions::default())
+        .unwrap()
+        .into_writer()
+        .unwrap();
     initial.begin_source(source.clone()).unwrap();
     initial
-        .add_document(document(&source, 1, "logical snapshot"))
+        .add_core_record(document(&source, 1, "logical snapshot"))
         .unwrap();
     let certificate = certificate(&source, 1, 1);
     initial.certify_source(certificate.clone()).unwrap();
     let initial_receipt = initial.commit(|_| true).unwrap();
 
-    let root_files_before = fs::read_dir(temp.path())
+    let active_path = active_generation_path(temp.path());
+    let root_files_before = fs::read_dir(&active_path)
         .unwrap()
         .filter_map(|entry| entry.ok())
         .filter(|entry| entry.path().is_file())
@@ -181,9 +509,12 @@ fn logical_rescan_retains_nonappendable_source_without_tantivy_artifacts() {
             (entry.file_name(), fs::read(path).unwrap())
         })
         .collect::<std::collections::BTreeMap<_, _>>();
-    let managed_metadata_before = fs::metadata(temp.path().join(".managed.json")).unwrap();
+    let managed_metadata_before = fs::metadata(active_path.join(".managed.json")).unwrap();
 
-    let mut retained = GenerationWriter::open(temp.path(), WriterOptions::default()).unwrap();
+    let mut retained = GenerationWriter::open(temp.path(), WriterOptions::default())
+        .unwrap()
+        .into_writer()
+        .unwrap();
     let constructions = Arc::clone(&retained.index_writer_constructions);
     let inventory = complete_inventory(&source, 1, vec![source.clone()]);
     retained
@@ -202,7 +533,7 @@ fn logical_rescan_retains_nonappendable_source_without_tantivy_artifacts() {
         )
         .unwrap();
 
-    let root_files_after = fs::read_dir(temp.path())
+    let root_files_after = fs::read_dir(&active_path)
         .unwrap()
         .filter_map(|entry| entry.ok())
         .filter(|entry| entry.path().is_file())
@@ -211,7 +542,7 @@ fn logical_rescan_retains_nonappendable_source_without_tantivy_artifacts() {
             (entry.file_name(), fs::read(path).unwrap())
         })
         .collect::<std::collections::BTreeMap<_, _>>();
-    let managed_metadata_after = fs::metadata(temp.path().join(".managed.json")).unwrap();
+    let managed_metadata_after = fs::metadata(active_path.join(".managed.json")).unwrap();
     assert_eq!(constructions.load(Ordering::SeqCst), 0);
     assert_eq!(receipt.generation_id, initial_receipt.generation_id);
     assert_eq!(receipt.opstamp, initial_receipt.opstamp);
@@ -223,30 +554,95 @@ fn logical_rescan_retains_nonappendable_source_without_tantivy_artifacts() {
 }
 
 #[test]
+fn logical_rescan_advances_only_replay_frontier_without_rewriting_documents() {
+    let temp = tempdir().unwrap();
+    let source = source("logical-frontier.sqlite");
+    let base = appendable_certificate(&source, 1, 1, 10);
+    let mut initial = GenerationWriter::open(temp.path(), WriterOptions::default())
+        .unwrap()
+        .into_writer()
+        .unwrap();
+    initial.begin_source(source.clone()).unwrap();
+    initial
+        .add_core_record(document(&source, 1, "retained logical row"))
+        .unwrap();
+    initial.certify_source(base.clone()).unwrap();
+    let initial_receipt = initial.commit(|_| true).unwrap();
+    let initial_path = active_generation_path(temp.path());
+
+    let observation = base.observation().clone();
+    let current = CertifiedSource::certify_with_frontier(
+        observation.clone(),
+        observation,
+        base.parser_revision(),
+        *base.content_digest(),
+        base.counts(),
+        Some(
+            SourceFrontier::new(
+                "jsonl-byte-offset",
+                TypedKey::U64(11),
+                base.counts().certified_bytes,
+                *base.content_digest(),
+            )
+            .unwrap(),
+        ),
+    )
+    .unwrap();
+    let mut retained = GenerationWriter::open(temp.path(), WriterOptions::default())
+        .unwrap()
+        .into_writer()
+        .unwrap();
+    let constructions = Arc::clone(&retained.index_writer_constructions);
+    retained.retain_source(current.clone()).unwrap();
+    let receipt = retained
+        .commit(|target| matches!(target, RevalidationTarget::Source(source) if source == &current))
+        .unwrap();
+
+    assert_eq!(constructions.load(Ordering::SeqCst), 1);
+    assert_ne!(receipt.generation_id, initial_receipt.generation_id);
+    assert_eq!(receipt.manifest().sources, vec![current]);
+    assert_eq!(
+        receipt.manifest().core_record_aggregates,
+        initial_receipt.manifest().core_record_aggregates
+    );
+    let published_path = active_generation_path(temp.path());
+    assert_ne!(published_path, initial_path);
+    let verified = VerifiedIndex::open(temp.path()).unwrap();
+    assert_eq!(verified.document_count(), 1);
+    assert_eq!(verified.count_term("retained").unwrap(), 1);
+}
+
+#[test]
 fn logically_identical_one_pass_replacement_is_discarded_without_publication() {
     let temp = tempdir().unwrap();
     let source = source("logical-snapshot.sqlite");
     let certificate = certificate(&source, 1, 1);
-    let mut initial = GenerationWriter::open(temp.path(), WriterOptions::default()).unwrap();
+    let mut initial = GenerationWriter::open(temp.path(), WriterOptions::default())
+        .unwrap()
+        .into_writer()
+        .unwrap();
     initial.begin_source(source.clone()).unwrap();
     initial
-        .add_document(document(&source, 1, "stable logical row"))
+        .add_core_record(document(&source, 1, "stable logical row"))
         .unwrap();
     initial.certify_source(certificate.clone()).unwrap();
     let initial_receipt = initial.commit(|_| true).unwrap();
 
-    let meta_path = temp.path().join("meta.json");
+    let meta_path = active_generation_path(temp.path()).join("meta.json");
     let meta_before = fs::read(&meta_path).unwrap();
     let meta_metadata_before = fs::metadata(&meta_path).unwrap();
     let manifests_before = fs::read_dir(temp.path().join(MANIFEST_DIRECTORY))
         .unwrap()
         .count();
 
-    let mut staged = GenerationWriter::open(temp.path(), WriterOptions::default()).unwrap();
+    let mut staged = GenerationWriter::open(temp.path(), WriterOptions::default())
+        .unwrap()
+        .into_writer()
+        .unwrap();
     let constructions = Arc::clone(&staged.index_writer_constructions);
     staged.begin_source(source.clone()).unwrap();
     staged
-        .add_document(document(&source, 1, "stable logical row"))
+        .add_core_record(document(&source, 1, "stable logical row"))
         .unwrap();
     staged.certify_source(certificate.clone()).unwrap();
     let inventory = complete_inventory(&source, 1, vec![source.clone()]);
@@ -309,28 +705,74 @@ fn logically_identical_one_pass_replacement_is_discarded_without_publication() {
 }
 
 #[test]
+fn record_only_change_with_identical_source_certificate_publishes_a_new_generation() {
+    let temp = tempdir().unwrap();
+    let source = source("record-only-change.sqlite");
+    let certificate = certificate(&source, 1, 1);
+    let mut initial = GenerationWriter::open(temp.path(), WriterOptions::default())
+        .unwrap()
+        .into_writer()
+        .unwrap();
+    initial.begin_source(source.clone()).unwrap();
+    initial
+        .add_core_record(document(&source, 1, "old exact Core record"))
+        .unwrap();
+    initial.certify_source(certificate.clone()).unwrap();
+    let initial_receipt = initial.commit(|_| true).unwrap();
+
+    let mut replacement = GenerationWriter::open(temp.path(), WriterOptions::default())
+        .unwrap()
+        .into_writer()
+        .unwrap();
+    replacement.begin_source(source.clone()).unwrap();
+    replacement
+        .add_core_record(document(&source, 1, "changed exact Core record"))
+        .unwrap();
+    replacement.certify_source(certificate).unwrap();
+    let replacement_receipt = replacement.commit(|_| true).unwrap();
+
+    assert_ne!(
+        replacement_receipt.generation_id,
+        initial_receipt.generation_id
+    );
+    assert_ne!(
+        replacement_receipt.manifest().core_record_aggregates,
+        initial_receipt.manifest().core_record_aggregates
+    );
+    let verified = VerifiedIndex::open(temp.path()).unwrap();
+    assert_eq!(verified.count_term("changed").unwrap(), 1);
+    assert_eq!(verified.count_term("old").unwrap(), 0);
+}
+
+#[test]
 fn exact_replay_omission_fails_with_typed_incomplete_coverage() {
     let temp = tempdir().unwrap();
     let replayed_source = source("replayed.jsonl");
     let omitted_source = source("omitted.jsonl");
-    let mut initial = GenerationWriter::open(temp.path(), WriterOptions::default()).unwrap();
+    let mut initial = GenerationWriter::open(temp.path(), WriterOptions::default())
+        .unwrap()
+        .into_writer()
+        .unwrap();
     initial.begin_source(replayed_source.clone()).unwrap();
     initial
-        .add_document(document(&replayed_source, 1, "replayed source"))
+        .add_core_record(document(&replayed_source, 1, "replayed source"))
         .unwrap();
     initial
         .certify_source(appendable_certificate(&replayed_source, 1, 1, 10))
         .unwrap();
     initial.begin_source(omitted_source.clone()).unwrap();
     initial
-        .add_document(document(&omitted_source, 1, "omitted source"))
+        .add_core_record(document(&omitted_source, 1, "omitted source"))
         .unwrap();
     initial
         .certify_source(appendable_certificate(&omitted_source, 1, 1, 10))
         .unwrap();
     let initial_receipt = initial.commit(|_| true).unwrap();
 
-    let mut incomplete = GenerationWriter::open(temp.path(), WriterOptions::default()).unwrap();
+    let mut incomplete = GenerationWriter::open(temp.path(), WriterOptions::default())
+        .unwrap()
+        .into_writer()
+        .unwrap();
     let base = incomplete
         .begin_source_append(replayed_source.clone())
         .unwrap()
@@ -382,7 +824,10 @@ fn exact_replay_accepts_independent_source_coverage_beside_complete_inventory() 
     let temp = tempdir().unwrap();
     let inventoried_source = source("inventoried.jsonl");
     let independent_source = source("independent.jsonl");
-    let mut initial = GenerationWriter::open(temp.path(), WriterOptions::default()).unwrap();
+    let mut initial = GenerationWriter::open(temp.path(), WriterOptions::default())
+        .unwrap()
+        .into_writer()
+        .unwrap();
     for (source, body) in [
         (&inventoried_source, "inventoried source"),
         (&independent_source, "independent source"),
@@ -395,7 +840,10 @@ fn exact_replay_accepts_independent_source_coverage_beside_complete_inventory() 
     }
     let initial_receipt = initial.commit(|_| true).unwrap();
 
-    let mut replay = GenerationWriter::open(temp.path(), WriterOptions::default()).unwrap();
+    let mut replay = GenerationWriter::open(temp.path(), WriterOptions::default())
+        .unwrap()
+        .into_writer()
+        .unwrap();
     let inventoried_certificate = stage_exact_replay(&mut replay, &inventoried_source);
     let independent_certificate = stage_exact_replay(&mut replay, &independent_source);
     let inventory = complete_inventory(&inventoried_source, 1, vec![inventoried_source.clone()]);
@@ -426,17 +874,20 @@ fn exact_replay_witness_covers_retained_sources_and_carried_removals() {
     let retained = source("retained.jsonl");
     let removed = source("removed.jsonl");
 
-    let mut initial = GenerationWriter::open(temp.path(), WriterOptions::default()).unwrap();
+    let mut initial = GenerationWriter::open(temp.path(), WriterOptions::default())
+        .unwrap()
+        .into_writer()
+        .unwrap();
     initial.begin_source(retained.clone()).unwrap();
     initial
-        .add_document(document(&retained, 1, "retained source"))
+        .add_core_record(document(&retained, 1, "retained source"))
         .unwrap();
     initial
         .certify_source(appendable_certificate(&retained, 1, 1, 10))
         .unwrap();
     initial.begin_source(removed.clone()).unwrap();
     initial
-        .add_document(document(&removed, 1, "removed source"))
+        .add_core_record(document(&removed, 1, "removed source"))
         .unwrap();
     initial
         .certify_source(appendable_certificate(&removed, 1, 1, 10))
@@ -446,11 +897,17 @@ fn exact_replay_witness_covers_retained_sources_and_carried_removals() {
     let (deletion, inventory) =
         deletion_evidence_with_retained(&removed, 2, vec![retained.clone()]);
     let current_inventory = inventory.clone();
-    let mut deleting = GenerationWriter::open(temp.path(), WriterOptions::default()).unwrap();
+    let mut deleting = GenerationWriter::open(temp.path(), WriterOptions::default())
+        .unwrap()
+        .into_writer()
+        .unwrap();
     deleting.delete_source(deletion, inventory).unwrap();
     let deleted = deleting.commit(|_| true).unwrap();
 
-    let mut replay = GenerationWriter::open(temp.path(), WriterOptions::default()).unwrap();
+    let mut replay = GenerationWriter::open(temp.path(), WriterOptions::default())
+        .unwrap()
+        .into_writer()
+        .unwrap();
     let replayed_source = stage_exact_replay(&mut replay, &retained);
     replay
         .certify_complete_inventory(current_inventory.clone())
@@ -485,10 +942,13 @@ fn exact_replay_witness_covers_retained_sources_and_carried_removals() {
 fn exact_replay_witness_covers_removal_only_and_rejects_stale_inventory() {
     let temp = tempdir().unwrap();
     let removed = source("removed.jsonl");
-    let mut initial = GenerationWriter::open(temp.path(), WriterOptions::default()).unwrap();
+    let mut initial = GenerationWriter::open(temp.path(), WriterOptions::default())
+        .unwrap()
+        .into_writer()
+        .unwrap();
     initial.begin_source(removed.clone()).unwrap();
     initial
-        .add_document(document(&removed, 1, "removed source"))
+        .add_core_record(document(&removed, 1, "removed source"))
         .unwrap();
     initial
         .certify_source(appendable_certificate(&removed, 1, 1, 10))
@@ -497,11 +957,17 @@ fn exact_replay_witness_covers_removal_only_and_rejects_stale_inventory() {
 
     let (deletion, inventory) = deletion_evidence(&removed, 2);
     let current_inventory = inventory.clone();
-    let mut deleting = GenerationWriter::open(temp.path(), WriterOptions::default()).unwrap();
+    let mut deleting = GenerationWriter::open(temp.path(), WriterOptions::default())
+        .unwrap()
+        .into_writer()
+        .unwrap();
     deleting.delete_source(deletion, inventory).unwrap();
     let deleted = deleting.commit(|_| true).unwrap();
 
-    let mut replay = GenerationWriter::open(temp.path(), WriterOptions::default()).unwrap();
+    let mut replay = GenerationWriter::open(temp.path(), WriterOptions::default())
+        .unwrap()
+        .into_writer()
+        .unwrap();
     replay
         .certify_complete_inventory(current_inventory.clone())
         .unwrap();
@@ -516,7 +982,10 @@ fn exact_replay_witness_covers_removal_only_and_rejects_stale_inventory() {
     assert_eq!(receipt.generation_id, deleted.generation_id);
     assert_eq!(receipt.opstamp, deleted.opstamp);
 
-    let mut stale = GenerationWriter::open(temp.path(), WriterOptions::default()).unwrap();
+    let mut stale = GenerationWriter::open(temp.path(), WriterOptions::default())
+        .unwrap()
+        .into_writer()
+        .unwrap();
     stale
         .certify_complete_inventory(current_inventory.clone())
         .unwrap();
@@ -547,16 +1016,23 @@ fn exact_replay_witness_covers_removal_only_and_rejects_stale_inventory() {
     );
 }
 
+include!("writer/missing_route.rs");
+
 #[test]
 fn empty_inventory_requires_terminal_witness_and_rejects_discovered_source_race() {
     let temp = tempdir().unwrap();
     let discovered = source("discovered-after-opening.jsonl");
     let initial = GenerationWriter::open(temp.path(), WriterOptions::default())
         .unwrap()
+        .into_writer()
+        .unwrap()
         .commit(|_| true)
         .unwrap();
 
-    let unwitnessed = GenerationWriter::open(temp.path(), WriterOptions::default()).unwrap();
+    let unwitnessed = GenerationWriter::open(temp.path(), WriterOptions::default())
+        .unwrap()
+        .into_writer()
+        .unwrap();
     let unwitnessed_constructions = std::sync::Arc::clone(&unwitnessed.index_writer_constructions);
     let unwitnessed_receipt = unwitnessed.commit(|_| true).unwrap();
     assert_eq!(unwitnessed_receipt.generation_id, initial.generation_id);
@@ -567,7 +1043,10 @@ fn empty_inventory_requires_terminal_witness_and_rejects_discovered_source_race(
     );
 
     let opening_empty = complete_inventory(&discovered, 1, Vec::new());
-    let mut empty = GenerationWriter::open(temp.path(), WriterOptions::default()).unwrap();
+    let mut empty = GenerationWriter::open(temp.path(), WriterOptions::default())
+        .unwrap()
+        .into_writer()
+        .unwrap();
     empty
         .certify_complete_inventory(opening_empty.clone())
         .unwrap();
@@ -590,7 +1069,10 @@ fn empty_inventory_requires_terminal_witness_and_rejects_discovered_source_race(
     assert_eq!(replay.indexed_documents, 0);
     assert_eq!(replay.certified_sources, 0);
 
-    let mut raced = GenerationWriter::open(temp.path(), WriterOptions::default()).unwrap();
+    let mut raced = GenerationWriter::open(temp.path(), WriterOptions::default())
+        .unwrap()
+        .into_writer()
+        .unwrap();
     raced
         .certify_complete_inventory(opening_empty.clone())
         .unwrap();
@@ -621,326 +1103,6 @@ fn empty_inventory_requires_terminal_witness_and_rejects_discovered_source_race(
     );
 }
 
-#[test]
-fn production_merge_policy_bounds_repeated_tiny_appends_amortized() {
-    let temp = tempdir().unwrap();
-    let source = source("tiny-appends.jsonl");
-    let mut initial = GenerationWriter::open(temp.path(), WriterOptions::default()).unwrap();
-    initial.begin_source(source.clone()).unwrap();
-    initial
-        .add_document(document(&source, 1, "tiny append 1"))
-        .unwrap();
-    initial
-        .certify_source(appendable_certificate(&source, 1, 1, 10))
-        .unwrap();
-    initial.commit(|_| true).unwrap();
+include!("writer/reclamation.rs");
 
-    let initial_segments = VerifiedIndex::open(temp.path())
-        .unwrap()
-        .searcher
-        .segment_readers()
-        .len();
-    let append_count = LEXICAL_SEGMENT_MERGE_FAN_IN * 2 + 1;
-    let mut previous_segments = initial_segments;
-    let mut peak_segments = initial_segments;
-    let mut saw_coalescing = false;
-
-    for append_ordinal in 1..=append_count {
-        let sequence = append_ordinal as u64 + 1;
-        let mut append = GenerationWriter::open(temp.path(), WriterOptions::default()).unwrap();
-        let base = append.begin_source_append(source.clone()).unwrap().clone();
-        append
-            .add_document(document(
-                &source,
-                sequence,
-                &format!("tiny append {sequence}"),
-            ))
-            .unwrap();
-        let frontier = base.frontier().unwrap();
-        let current = appendable_certificate(&source, sequence as u8, sequence, sequence * 10);
-        append
-            .certify_source_append(
-                CertifiedSourceAppend::certify(
-                    &base,
-                    current,
-                    frontier.certified_prefix_bytes(),
-                    *frontier.certified_prefix_digest(),
-                )
-                .unwrap(),
-            )
-            .unwrap();
-        append.commit(|_| true).unwrap();
-
-        let current_segments = VerifiedIndex::open(temp.path())
-            .unwrap()
-            .searcher
-            .segment_readers()
-            .len();
-        assert!(
-            current_segments <= previous_segments + 1,
-            "one tiny append exposed more than one additional active segment: \
-             before={previous_segments}, after={current_segments}"
-        );
-        saw_coalescing |= current_segments <= previous_segments;
-        peak_segments = peak_segments.max(current_segments);
-        previous_segments = current_segments;
-    }
-
-    assert!(
-        saw_coalescing,
-        "the repeated append run crossed fan-in {LEXICAL_SEGMENT_MERGE_FAN_IN} \
-         without an observable coalescing publication"
-    );
-    assert!(
-        peak_segments < initial_segments + LEXICAL_SEGMENT_MERGE_FAN_IN,
-        "same-tier tiny segments exceeded the configured fan-in bound: \
-         initial={initial_segments}, peak={peak_segments}"
-    );
-    let index = VerifiedIndex::open(temp.path()).unwrap();
-    assert_eq!(index.document_count(), append_count as u64 + 1);
-    assert_eq!(
-        fs::read_dir(temp.path().join(MANIFEST_DIRECTORY))
-            .unwrap()
-            .count(),
-        append_count + 1,
-        "each changed append should publish exactly one logical generation"
-    );
-}
-
-#[test]
-fn writer_exposes_the_base_manifest_captured_under_its_lock() {
-    let temp = tempdir().unwrap();
-    let source = source("session.jsonl");
-    let mut first = GenerationWriter::open(temp.path(), WriterOptions::default()).unwrap();
-    assert!(first.base_manifest().is_none());
-    first.begin_source(source.clone()).unwrap();
-    first.add_document(document(&source, 1, "base")).unwrap();
-    first.certify_source(certificate(&source, 1, 1)).unwrap();
-    let receipt = first.commit(|_| true).unwrap();
-
-    let writer = GenerationWriter::open(temp.path(), WriterOptions::default()).unwrap();
-    let base = writer.base_manifest().unwrap();
-    assert_eq!(base.generation_id().unwrap(), receipt.generation_id);
-    assert_eq!(base.sources.len(), 1);
-    assert_eq!(base.sources[0].observation().source(), &source);
-
-    let error = match GenerationWriter::open(temp.path(), WriterOptions::default()) {
-        Ok(_) => panic!("competing writer unexpectedly acquired the writer lock"),
-        Err(error) => error,
-    };
-    assert!(matches!(
-        error,
-        IndexError::Tantivy(tantivy::TantivyError::LockFailure(_, _))
-    ));
-    assert_eq!(
-        writer.base_manifest().unwrap().generation_id().unwrap(),
-        receipt.generation_id
-    );
-}
-
-#[test]
-fn orphaned_managed_files_are_reclaimed_before_exact_noop_without_index_writer() {
-    let temp = tempdir().unwrap();
-    let source = source("session.jsonl");
-    let mut initial = GenerationWriter::open(temp.path(), WriterOptions::default()).unwrap();
-    initial.begin_source(source.clone()).unwrap();
-    initial
-        .add_document(document(&source, 1, "stable generation"))
-        .unwrap();
-    initial
-        .certify_source(appendable_certificate(&source, 1, 1, 10))
-        .unwrap();
-    let initial_receipt = initial.commit(|_| true).unwrap();
-    let pinned = VerifiedIndex::open(temp.path()).unwrap();
-
-    let orphan_relative =
-        Path::new("0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef.store");
-    let orphan_path = temp.path().join(orphan_relative);
-    let directory = DurableMmapDirectory::open(temp.path()).unwrap();
-    let index = Index::open(directory).unwrap();
-    let mut orphan = index.directory().open_write(orphan_relative).unwrap();
-    orphan.write_all(b"abandoned candidate segment").unwrap();
-    orphan.terminate().unwrap();
-    drop(index);
-    assert!(orphan_path.is_file());
-
-    let mut replay = GenerationWriter::open(temp.path(), WriterOptions::default()).unwrap();
-    assert!(
-        !orphan_path.exists(),
-        "preflight recovery left an orphaned managed file"
-    );
-    let constructions = std::sync::Arc::clone(&replay.index_writer_constructions);
-    let inventory = complete_inventory(&source, 1, vec![source.clone()]);
-    replay
-        .certify_complete_inventory(inventory.clone())
-        .unwrap();
-    stage_exact_replay(&mut replay, &source);
-    let receipt = replay
-        .commit_with_complete_inventory_revalidation(|_| true, |current| current == &inventory)
-        .unwrap();
-
-    assert_eq!(
-        constructions.load(Ordering::SeqCst),
-        0,
-        "orphan recovery plus exact replay must not construct IndexWriter"
-    );
-    assert_eq!(receipt.generation_id, initial_receipt.generation_id);
-    assert_eq!(receipt.opstamp, initial_receipt.opstamp);
-    assert_eq!(pinned.generation_id(), initial_receipt.generation_id);
-    assert_eq!(pinned.count_term("stable").unwrap(), 1);
-}
-
-#[test]
-fn abandoned_publication_reclamation_does_not_construct_index_writer() {
-    let temp = tempdir().unwrap();
-    let source = source("session.jsonl");
-    let mut initial = GenerationWriter::open(temp.path(), WriterOptions::default()).unwrap();
-    initial.begin_source(source.clone()).unwrap();
-    initial.add_document(document(&source, 1, "base")).unwrap();
-    initial
-        .certify_source(appendable_certificate(&source, 1, 1, 10))
-        .unwrap();
-    initial.commit(|_| true).unwrap();
-
-    let root_abandoned = temp
-        .path()
-        .join(".ctx-tantivy-atomic-0123456789abcdef0123456789abcdef.tmp");
-    let manifest_abandoned = temp
-        .path()
-        .join(MANIFEST_DIRECTORY)
-        .join(".ctx-tantivy-atomic-fedcba9876543210fedcba9876543210.tmp");
-    fs::write(&root_abandoned, b"abandoned root publication").unwrap();
-    fs::write(&manifest_abandoned, b"abandoned manifest publication").unwrap();
-
-    let mut replay = GenerationWriter::open(temp.path(), WriterOptions::default()).unwrap();
-    assert!(!root_abandoned.exists());
-    assert!(!manifest_abandoned.exists());
-    let constructions = std::sync::Arc::clone(&replay.index_writer_constructions);
-    let inventory = complete_inventory(&source, 1, vec![source.clone()]);
-    replay
-        .certify_complete_inventory(inventory.clone())
-        .unwrap();
-    stage_exact_replay(&mut replay, &source);
-    replay
-        .commit_with_complete_inventory_revalidation(|_| true, |current| current == &inventory)
-        .unwrap();
-    assert_eq!(
-        constructions.load(Ordering::SeqCst),
-        0,
-        "preflight reclamation must not construct Tantivy IndexWriter"
-    );
-}
-
-#[test]
-fn lazy_writer_handoff_rejects_a_generation_published_in_the_lock_gap() {
-    let temp = tempdir().unwrap();
-    let source = source("session.jsonl");
-    let mut initial = GenerationWriter::open(temp.path(), WriterOptions::default()).unwrap();
-    initial.begin_source(source.clone()).unwrap();
-    initial.add_document(document(&source, 1, "base")).unwrap();
-    initial
-        .certify_source(appendable_certificate(&source, 1, 1, 10))
-        .unwrap();
-    initial.commit(|_| true).unwrap();
-
-    let mut stale = GenerationWriter::open(temp.path(), WriterOptions::default()).unwrap();
-    stale.begin_source_append(source.clone()).unwrap();
-    let competing_root = temp.path().to_path_buf();
-    let competing_source = source.clone();
-    stale.before_writer_handoff = Some(Box::new(move || {
-        let mut competing =
-            GenerationWriter::open(&competing_root, WriterOptions::default()).unwrap();
-        competing.begin_source(competing_source.clone()).unwrap();
-        competing
-            .add_document(document(&competing_source, 1, "competing generation"))
-            .unwrap();
-        competing
-            .certify_source(appendable_certificate(&competing_source, 2, 1, 10))
-            .unwrap();
-        competing.commit(|_| true).unwrap();
-    }));
-
-    let error = stale
-        .add_document(document(&source, 2, "stale delta"))
-        .unwrap_err();
-    assert!(matches!(error, IndexError::ConcurrentGenerationChange));
-
-    let current = VerifiedIndex::open(temp.path()).unwrap();
-    assert_eq!(current.count_term("competing").unwrap(), 1);
-    assert_eq!(current.count_term("stale").unwrap(), 0);
-}
-
-#[test]
-fn writer_rejects_a_nonempty_payloadless_index() {
-    let temp = tempdir().unwrap();
-    let source = source("session.jsonl");
-    let mut first = GenerationWriter::open(temp.path(), WriterOptions::default()).unwrap();
-    first.begin_source(source.clone()).unwrap();
-    first.add_document(document(&source, 1, "body")).unwrap();
-    first.certify_source(certificate(&source, 1, 1)).unwrap();
-    first.commit(|_| true).unwrap();
-
-    let directory = DurableMmapDirectory::open(temp.path()).unwrap();
-    let index = Index::open(directory.clone()).unwrap();
-    let mut metas = index.load_metas().unwrap();
-    metas.payload = None;
-    directory
-        .atomic_write(Path::new("meta.json"), &serde_json::to_vec(&metas).unwrap())
-        .unwrap();
-
-    let error = match GenerationWriter::open(temp.path(), WriterOptions::default()) {
-        Ok(_) => panic!("nonempty payloadless index unexpectedly opened for writing"),
-        Err(error) => error,
-    };
-    assert!(matches!(error, IndexError::UnboundIndexState));
-}
-
-#[test]
-fn stored_document_identities_use_canonical_fixed_bytes() {
-    let temp = tempdir().unwrap();
-    let source = source("session.jsonl");
-    let expected = document(&source, 1, "body");
-    let mut writer = GenerationWriter::open(temp.path(), WriterOptions::default()).unwrap();
-    writer.begin_source(source.clone()).unwrap();
-    writer.add_document(expected.clone()).unwrap();
-    writer.certify_source(certificate(&source, 1, 1)).unwrap();
-    writer.commit(|_| true).unwrap();
-
-    let index = VerifiedIndex::open(temp.path()).unwrap();
-    let fields = fields_from_schema(index.searcher.schema()).unwrap();
-    let address = index
-        .searcher
-        .search(&AllQuery, &DocSetCollector)
-        .unwrap()
-        .into_iter()
-        .next()
-        .unwrap();
-    let stored: TantivyDocument = index.searcher.doc(address).unwrap();
-    let event_bytes = stored
-        .get_first(fields.event_identity)
-        .and_then(|value| value.as_bytes())
-        .unwrap();
-    let session_bytes = stored
-        .get_first(fields.session_identity)
-        .and_then(|value| value.as_bytes())
-        .unwrap();
-
-    assert_eq!(event_bytes.len(), StableEntityId::CANONICAL_LEN);
-    assert_eq!(
-        event_bytes,
-        expected.event_id.encode_canonical().unwrap().as_slice()
-    );
-    assert_eq!(session_bytes.len(), StableEntityId::CANONICAL_LEN);
-    assert_eq!(
-        session_bytes,
-        expected.session_id.encode_canonical().unwrap().as_slice()
-    );
-    assert_eq!(
-        index
-            .event_by_id(expected.event_id.as_uuid())
-            .unwrap()
-            .unwrap()
-            .event_id,
-        expected.event_id
-    );
-}
+include!("writer/core_records.rs");

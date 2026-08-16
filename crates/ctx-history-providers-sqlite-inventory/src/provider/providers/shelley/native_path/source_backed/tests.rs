@@ -3,7 +3,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use ctx_history_core::{AgentType, CoreRecord, ScannedSourceCounts};
+use ctx_history_core::{CoreRecord, ScannedSourceCounts};
 use rusqlite::{params, Connection};
 use serde_json::{json, Value};
 
@@ -247,16 +247,16 @@ fn shelley_retains_complete_result_statuses_and_oversized_indivisible_rows() {
     assert!(body(outputs[0]).ends_with("shelley-oversized-tail"));
     assert_eq!(body(outputs[1]), "failure body");
     assert_eq!(body(outputs[2]), "unknown body");
-    assert_eq!(
-        outputs[0]
-            .content
-            .structured_content
+    let activity = outputs[0].content.activity.as_ref().unwrap();
+    assert!(activity.provider_call_id.is_some());
+    assert!(matches!(
+        activity
+            .result
             .as_ref()
-            .unwrap()
-            .pointer("/provider_native_tool_result/call_ids/0")
-            .and_then(Value::as_str),
-        Some("call-success")
-    );
+            .map(|result| &result.structured_content),
+        Some(ctx_history_core::ActivityJsonCapture::Omitted { reason, .. })
+            if reason == "size_limit"
+    ));
 }
 
 fn sqlite_persistent_bytes(path: &Path) -> Vec<Vec<u8>> {
@@ -416,9 +416,8 @@ fn shelley_source_backed_cold_exact_and_replacement_keep_identity() {
     );
     assert_eq!(cold.provider_session_id.as_deref(), Some("conversation-1"));
     assert_eq!(cold.parent_session_id, None);
-    assert_eq!(cold.root_session_id, cold.session_id);
-    assert_eq!(cold.agent_type, AgentType::Primary.as_str());
-    assert!(cold.is_primary);
+    assert_eq!(cold.root_session_id, None);
+    assert_eq!(cold.session_relationship, None);
     assert!(cold.native_event_id.is_some());
     assert_eq!(
         cold_receipt.certificate.counts(),
@@ -510,10 +509,6 @@ fn shelley_source_backed_lineage_uses_native_parent_and_root_threads() {
     .unwrap()
     .unwrap();
     let (documents, _) = drain(&adapter);
-    let root = documents
-        .iter()
-        .find(|document| document.provider_session_id.as_deref() == Some("conversation-1"))
-        .unwrap();
     let nested = documents
         .iter()
         .find(|document| document.provider_session_id.as_deref() == Some("conversation-grandchild"))
@@ -522,9 +517,11 @@ fn shelley_source_backed_lineage_uses_native_parent_and_root_threads() {
         shelley_session_identity(adapter.source(), "conversation-child").unwrap();
 
     assert_eq!(nested.parent_session_id, Some(child_session_id));
-    assert_eq!(nested.root_session_id, root.session_id);
-    assert_eq!(nested.agent_type, AgentType::Subagent.as_str());
-    assert!(!nested.is_primary);
+    assert_eq!(nested.root_session_id, None);
+    assert_eq!(
+        nested.session_relationship,
+        Some(ctx_history_core::ProviderNativeSessionRelationship::Delegated)
+    );
     assert!(nested.native_event_id.is_some());
 }
 

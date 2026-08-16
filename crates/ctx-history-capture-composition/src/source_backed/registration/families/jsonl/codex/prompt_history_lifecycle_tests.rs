@@ -387,7 +387,7 @@ fn projector_preserves_prompt_identity_and_rejections() {
     assert!(record.validate_contract().is_ok());
     assert_eq!(
         format!("{:x}", Sha256::digest(record.encode_stored().unwrap())),
-        "e61abb0a9fb05665359e6c27c5b5ec5c82f6794cd826d2956f3253407a52e563"
+        "cf0c1b68ee1596cbb20215b77fed1bbb59c1ec8259cd723008523e7c57f0cdde"
     );
 
     for invalid in [

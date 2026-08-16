@@ -7,8 +7,8 @@
 mod error;
 
 pub use ctx_history_capture_model::{
-    OutputObservationKind, OutputOutcome, OutputOutcomeMetadata, ProviderAdapterContext,
-    ProviderSource, ProviderSourceKind, ProviderSourceStatus,
+    OutputObservationKind, ProviderAdapterContext, ProviderSource, ProviderSourceKind,
+    ProviderSourceStatus,
 };
 pub use ctx_history_capture_runtime::{
     CaptureLifecycleSink, ChangedDocumentSink, CompleteDocumentTree, DocumentLeafExecutionPolicy,

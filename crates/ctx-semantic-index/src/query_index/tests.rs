@@ -1,9 +1,10 @@
 use super::*;
 
 use ctx_history_core::{
-    derive_event_id, derive_session_id, CertifiedSource, CoreRecord, EventIdentityInput,
-    NativeItemKey, NativeSessionKey, ScannedSourceCounts, SessionIdentityInput, SourceAnchor,
-    SourceKey, SourceObservation, TypedKey,
+    derive_event_id, derive_session_id, CertifiedSource, CoreActivity, CoreRecord,
+    EventIdentityInput, LiteralFactKind, NativeItemKey, NativeSessionKey, ProviderDeclaredFact,
+    ScannedSourceCounts, SessionIdentityInput, SourceAnchor, SourceKey, SourceObservation,
+    TypedKey, CORE_ACTIVITY_REVISION,
 };
 use ctx_history_index::{GenerationWriter, WriterOptions};
 use ctx_semantic_model::SEMANTIC_DIMENSIONS;
@@ -112,23 +113,30 @@ fn semantic_filter_is_applied_before_top_k_across_more_than_4096_candidates() ->
         let mut record = CoreRecord::new_selected(
             event_id,
             session_id,
-            session_id,
             source.clone(),
             sequence,
             "message",
-            "primary",
-            true,
             "semantic-filter-adversarial-v1",
             if is_target { "target" } else { "unrelated" },
         )?;
         record.provider_session_id = Some("adversarial-session".to_owned());
         record.native_event_id = Some(TypedKey::U64(sequence));
         record.role = Some("user".to_owned());
-        record.workspace = Some(if is_target {
+        let workspace = if is_target {
             target_event_id = Some(event_id.as_uuid());
             "only-target".to_owned()
         } else {
             "unrelated".to_owned()
+        };
+        record.content.activity = Some(CoreActivity {
+            revision: CORE_ACTIVITY_REVISION,
+            provider_call_id: None,
+            invocation: None,
+            result: None,
+            facts: vec![ProviderDeclaredFact {
+                kind: LiteralFactKind::Workspace,
+                value: workspace,
+            }],
         });
         record.validate_contract()?;
         writer.add_core_record(record)?;

@@ -1,6 +1,5 @@
 use super::{parse_event_window_limit, Cli};
 use crate::cli::parse_search_limit;
-use crate::pro::parse_referral_codename;
 use crate::search_filters::parse_since_filter;
 use crate::transcript::{normalize_uuid_prefix, shell_quote_arg};
 use clap::{error::ErrorKind, Command, CommandFactory, Parser};
@@ -68,10 +67,6 @@ fn cli_value_parsers_do_not_panic_on_adversarial_inputs() {
             panic::catch_unwind(|| normalize_uuid_prefix(input, "test")).is_ok(),
             "normalize_uuid_prefix panicked for {input:?}"
         );
-        assert!(
-            panic::catch_unwind(|| parse_referral_codename(input)).is_ok(),
-            "parse_referral_codename panicked for {input:?}"
-        );
     }
 }
 
@@ -106,9 +101,6 @@ fn foreground_analytics_eligibility_is_closed_and_remote_safe() {
     for args in [
         vec!["ctx", "daemon", "disable", "--format=json"],
         vec!["ctx", "mcp", "serve"],
-        vec!["ctx", "pro", "--format=json"],
-        vec!["ctx", "referral", "status", "--format=json"],
-        vec!["ctx", "blame", "commit", "deadbeef"],
     ] {
         let cli = Cli::try_parse_from(args).unwrap();
         assert!(
@@ -120,16 +112,6 @@ fn foreground_analytics_eligibility_is_closed_and_remote_safe() {
             "follow-on surface must not use the foreground CLI producer: {cli:?}"
         );
     }
-}
-
-#[test]
-fn bare_pro_accepts_referral_and_json_as_independent_output_and_attribution_flags() {
-    let cli =
-        Cli::try_parse_from(["ctx", "pro", "--referral", "agent-smith", "--format=json"]).unwrap();
-    let crate::cli::CommandRoot::Pro(args) = cli.command else {
-        panic!("expected Pro command");
-    };
-    assert!(args.json_output());
 }
 
 #[test]
@@ -175,9 +157,12 @@ fn complete_cli_grammar_renders_and_parses_help_recursively() {
     let command = Cli::command();
     let mut paths = Vec::new();
     collect_paths(&command, &[], &mut paths);
-    assert!(
-        paths.len() > 50,
-        "unexpectedly shallow CLI grammar: {paths:?}"
+    // Private semantic leaves now live behind the opaque companion gate, so
+    // the public grammar is intentionally smaller than the pre-split tree.
+    assert_eq!(
+        paths.len(),
+        47,
+        "unexpected public CLI grammar depth: {paths:?}"
     );
 
     for path in paths {

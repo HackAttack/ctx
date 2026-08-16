@@ -133,7 +133,6 @@ def main() -> None:
         "ctx_history_index::",
         "ctx_history_query::",
         "ctx_history_read_application",
-        "ctx_pro_",
         "ctx_semantic",
         "LocalToolBackend",
     ]

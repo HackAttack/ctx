@@ -80,8 +80,6 @@ pub mod events {
         pub event_type: Option<String>,
         #[arg(long, help = "Filter by exact role")]
         pub role: Option<String>,
-        #[arg(long = "agent-type", help = "Filter by exact agent type")]
-        pub agent_type: Option<String>,
         #[arg(long, value_enum, default_value_t = EventQueryScope::All)]
         pub scope: EventQueryScope,
         #[arg(long, help = "Filter by case-insensitive touched-file substring")]
@@ -163,7 +161,6 @@ fn adapt(args: ListEventsArgs) -> ctx_history_cli::ListEventsArgs {
         workspace: args.workspace,
         event_type: args.event_type,
         role: args.role,
-        agent_type: args.agent_type,
         scope: match args.scope {
             events::EventQueryScope::All => ctx_history_cli::EventQueryScope::All,
             events::EventQueryScope::Primary => ctx_history_cli::EventQueryScope::Primary,
@@ -281,6 +278,11 @@ mod tests {
     }
 
     #[test]
+    fn removed_agent_type_filter_is_rejected() {
+        assert!(TestCli::try_parse_from(["ctx", "events", "--agent-type", "subagent"]).is_err());
+    }
+
+    #[test]
     fn every_core_filter_and_canonical_relationship_flag_maps_to_selection() {
         let id = "01234567-89ab-4def-8123-456789abcdef";
         let args = adapt(parse_events(&[
@@ -317,8 +319,6 @@ mod tests {
             "future-event",
             "--role",
             "assistant",
-            "--agent-type",
-            "future-agent",
             "--scope",
             "subagent",
             "--file",
@@ -354,6 +354,7 @@ mod tests {
             "--page-items",
             "--max-bytes",
             "--byte-budget",
+            "--agent-type",
         ] {
             assert!(!help.contains(removed), "unexpected {removed} in help");
         }

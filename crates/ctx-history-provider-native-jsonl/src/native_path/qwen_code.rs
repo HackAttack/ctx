@@ -3,17 +3,15 @@ use std::path::Path;
 use ctx_history_core::{CaptureProvider, EventRole, EventType};
 use serde_json::Value;
 
-use ctx_history_capture_model::normalization::{
-    provider_output_event_is_failure, provider_role, provider_value_text,
-};
+use ctx_history_capture_model::normalization::{provider_role, provider_value_text};
 
-use crate::{NativeJsonlRuntime, OutputOutcome, OutputOutcomeMetadata, QWEN_CODE_SOURCE_FORMAT};
+use crate::{NativeJsonlRuntime, QWEN_CODE_SOURCE_FORMAT};
 
 use super::super::result_content::{
     extract_direct_result_content, NativeJsonlResultExtractionError, NativeJsonlResultSubrecord,
 };
 
-const PARSER_REVISION: &str = "direct-native-jsonl-parser-v4";
+const PARSER_REVISION: &str = "direct-native-jsonl-parser-v5-core-activity";
 
 pub const fn qwen_code_source_backed_adapter<R: NativeJsonlRuntime>(
 ) -> super::DirectJsonlFamilyAdapter<R> {

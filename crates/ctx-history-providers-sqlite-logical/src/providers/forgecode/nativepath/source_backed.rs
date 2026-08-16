@@ -6,17 +6,18 @@
 //! without retaining publication state.
 
 use std::{
-    collections::BTreeMap,
     marker::PhantomData,
     path::{Path, PathBuf},
 };
 
 use chrono::{DateTime, Utc};
 use ctx_history_core::{
-    derive_event_id, derive_session_id, AgentType, CaptureProvider, CertifiedSource, CoreRecord,
-    CoreRecordError, EventIdentityInput, NativeItemKey, NativeSessionKey, PositionStability,
-    ProjectionContractError, ScannedSourceCounts, SessionIdentityInput, SourceAnchor, SourceKey,
-    StableEntityId, TypedKey,
+    derive_event_id, derive_session_id, ActivityInvocation, ActivityJsonCapture, ActivityResult,
+    ActivityTextCapture, CaptureProvider, CertifiedSource, CoreActivity, CoreRecord,
+    CoreRecordError, EventIdentityInput, LiteralFactKind, NativeItemKey, NativeSessionKey,
+    PositionStability, ProjectionContractError, ProviderDeclaredFact, ScannedSourceCounts,
+    SessionIdentityInput, SourceAnchor, SourceKey, StableEntityId, TypedKey,
+    CORE_ACTIVITY_REVISION,
 };
 use sha2::{Digest, Sha256};
 use thiserror::Error;
@@ -33,6 +34,7 @@ use crate::{
     CaptureError, ProviderAdapterContext, FORGECODE_SQLITE_SOURCE_FORMAT,
 };
 
+use super::super::event::forgecode_message_parts;
 use super::source::{
     discover_forgecode_source, ForgeCodeConversationRow, ForgeCodeDiscovery, ForgeCodeFrontier,
     ForgeCodePage, ForgeCodeScanner, ForgeCodeSourceObservation, FORGECODE_NATIVE_PAGE_MAX_BYTES,
@@ -49,7 +51,7 @@ const FORGECODE_LOGICAL_EVENT_KIND: &str = "forgecode-message";
 const FORGECODE_NATIVE_EVENT_POSITION_KIND: &str = "forgecode-message-index-v1";
 const FORGECODE_RECORD_DIGEST_DOMAIN: &[u8] = b"ctx.forgecode.source-backed-scan-v0\0";
 const FORGECODE_SOURCE_BACKED_PARSER_REVISION: &str =
-    "forgecode-nativepath-source-backed-v0:parser=1;policy=7";
+    "forgecode-nativepath-source-backed-v1-neutral-core:parser=2;policy=7";
 
 #[derive(Debug, Error)]
 pub(crate) enum ForgeCodeSourceBackedErrorV0 {
@@ -156,7 +158,6 @@ fn project_source_backed_page(
         .into());
     }
     let ignored_records = 0;
-    let direct_touches = direct_touches(&page);
     let row = page.row.as_ref();
     let mut documents = Vec::with_capacity(page.events.len());
     let provider_rejections = u64::try_from(page.rejections.len())
@@ -166,7 +167,7 @@ fn project_source_backed_page(
         let Some(row) = row else {
             return Err(ForgeCodeSourceBackedErrorV0::MissingConversationRow);
         };
-        match core_record(source, row, retained, &direct_touches) {
+        match core_record(source, row, retained) {
             Ok(document) => documents.push(document),
             Err(_) => {
                 projection_rejections = checked_add(projection_rejections, 1)?;
@@ -232,7 +233,6 @@ fn core_record(
     source: &ForgeCodeSourceBackedSourceV0,
     row: &ForgeCodeConversationRow,
     retained: super::source::ForgeCodeRetainedEvent,
-    direct_touches: &BTreeMap<u64, Vec<String>>,
 ) -> ForgeCodeSourceBackedResultV0<CoreRecord> {
     let session_id = forgecode_session_id(&source.source, &row.conversation_id)?;
     let subrecord_index = retained
@@ -252,20 +252,13 @@ fn core_record(
         .filter(|text| !text.trim().is_empty())
         .map(str::to_owned)
         .unwrap_or_else(|| retained.event.event_type.as_str().replace('_', " "));
-    let native_file_touches = direct_touches
-        .get(&retained.provider_event_index)
-        .filter(|touches| !touches.is_empty())
-        .map(|touches| serde_json::json!(touches));
     let structured_content = retained.event.payload.get("body").cloned();
     let mut record = CoreRecord::new_selected(
         event_id,
         session_id,
-        session_id,
         source.source.clone(),
         subrecord_index,
         retained.event.event_type.as_str(),
-        AgentType::Primary.as_str(),
-        true,
         FORGECODE_SOURCE_BACKED_PARSER_REVISION,
         lexical_text,
     )?;
@@ -273,49 +266,113 @@ fn core_record(
     record.native_event_id = Some(primary_key);
     record.occurred_at_unix_ms = Some(retained.event.occurred_at.timestamp_millis());
     record.role = retained.event.role.map(|role| role.as_str().to_owned());
-    record.branch = forgecode_branch(row);
-    record.workspace = Some(row.workspace_id.to_string());
     record.content.structured_content = structured_content;
-    if let Some(native_file_touches) = native_file_touches {
-        record.metadata.insert(
-            "provider_native_file_touches".to_owned(),
-            native_file_touches,
-        );
+    let facts = vec![ProviderDeclaredFact {
+        kind: LiteralFactKind::Workspace,
+        value: row.workspace_id.to_string(),
+    }];
+    let native_entry = record
+        .content
+        .structured_content
+        .as_ref()
+        .and_then(|body| body.get("message"));
+    let (provider_call_id, invocation, result) = native_entry
+        .map(|entry| {
+            forgecode_activity(
+                entry,
+                retained.event.event_type,
+                retained.event.occurred_at.timestamp_millis(),
+            )
+        })
+        .transpose()?
+        .unwrap_or((None, None, None));
+    if invocation.is_some() || result.is_some() || !facts.is_empty() {
+        record.content.activity = Some(CoreActivity {
+            revision: CORE_ACTIVITY_REVISION,
+            provider_call_id,
+            invocation,
+            result,
+            facts,
+        });
     }
+    record
+        .content
+        .omit_structured_content_if_aggregate_exceeds_limit()?;
     record.validate_contract()?;
     Ok(record)
 }
 
-fn forgecode_branch(row: &ForgeCodeConversationRow) -> Option<String> {
-    [
-        "/branch",
-        "/git_branch",
-        "/gitBranch",
-        "/repository/branch",
-        "/workspace/branch",
-    ]
-    .into_iter()
-    .find_map(|pointer| {
-        row.context_metadata
-            .pointer(pointer)
-            .and_then(serde_json::Value::as_str)
-            .map(str::trim)
-            .filter(|branch| !branch.is_empty())
-            .map(str::to_owned)
-    })
-}
-
-fn direct_touches(page: &ForgeCodePage) -> BTreeMap<u64, Vec<String>> {
-    let mut touches = BTreeMap::<u64, Vec<String>>::new();
-    for touch in &page.touches {
-        if let Some(event_index) = touch.provider_event_index {
-            touches
-                .entry(event_index)
-                .or_default()
-                .push(touch.path.clone());
-        }
+fn forgecode_activity(
+    entry: &serde_json::Value,
+    event_type: ctx_history_core::EventType,
+    occurred_at_unix_ms: i64,
+) -> ForgeCodeSourceBackedResultV0<(
+    Option<TypedKey>,
+    Option<ActivityInvocation>,
+    Option<ActivityResult>,
+)> {
+    let parts = forgecode_message_parts(entry);
+    if event_type == ctx_history_core::EventType::ToolCall {
+        let Some(calls) = parts
+            .body
+            .get("tool_calls")
+            .or_else(|| parts.body.get("toolCalls"))
+            .and_then(serde_json::Value::as_array)
+        else {
+            return Ok((None, None, None));
+        };
+        let [call] = calls.as_slice() else {
+            return Ok((None, None, None));
+        };
+        let call_id = call.get("call_id").and_then(serde_json::Value::as_str);
+        let tool = call.get("name").and_then(serde_json::Value::as_str);
+        let (Some(call_id), Some(tool)) = (call_id, tool) else {
+            return Ok((None, None, None));
+        };
+        let arguments = call
+            .get("arguments")
+            .cloned()
+            .map(|value| ActivityJsonCapture::Present { value })
+            .unwrap_or(ActivityJsonCapture::Absent);
+        return Ok((
+            Some(TypedKey::utf8(call_id)?),
+            Some(ActivityInvocation {
+                protocol: None,
+                server: None,
+                tool: tool.to_owned(),
+                arguments,
+                started_at_unix_ms: Some(occurred_at_unix_ms),
+            }),
+            None,
+        ));
     }
-    touches
+    if event_type != ctx_history_core::EventType::ToolOutput {
+        return Ok((None, None, None));
+    }
+    let call_id = parts
+        .body
+        .get("call_id")
+        .and_then(serde_json::Value::as_str);
+    let Some(call_id) = call_id else {
+        return Ok((None, None, None));
+    };
+    Ok((
+        Some(TypedKey::utf8(call_id)?),
+        None,
+        Some(ActivityResult {
+            status: parts
+                .body
+                .get("status")
+                .and_then(serde_json::Value::as_str)
+                .map(str::to_owned),
+            completed_at_unix_ms: Some(occurred_at_unix_ms),
+            duration_ns: None,
+            text: ActivityTextCapture::NormalizedBody,
+            structured_content: ActivityJsonCapture::Present {
+                value: parts.body.clone(),
+            },
+        }),
+    ))
 }
 
 fn forgecode_session_id(

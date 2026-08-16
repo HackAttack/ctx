@@ -1,6 +1,7 @@
 //! Newline-delimited MCP application delivery, independent of process setup.
 
 use std::{
+    collections::HashSet,
     io::{BufRead, Write},
     time::{Duration, Instant},
 };
@@ -10,9 +11,9 @@ use ctx_agent_integrations::{
     mcp::{
         encode_response_line, error_response, handle_protocol_message, read_mcp_input_line,
         McpInputLine, McpServerIdentity, McpToolKind, McpUsage, RequestDescriptor,
-        MCP_MAX_LINE_BYTES,
+        MCP_MAX_LINE_BYTES, MCP_PRESENTATION_MAX_OUTPUT_BYTES,
     },
-    tool_backend::{ToolBackend, ToolUsageFacts},
+    tool_backend::{OpaqueMcpProxyError, ToolBackend, ToolUsageFacts},
 };
 use ctx_client_observability::analytics::{McpErrorClassV1, McpStopReasonV1, Outcome};
 use serde_json::{json, Value};
@@ -138,27 +139,67 @@ where
         let request_started = Instant::now();
         let (handled, descriptor) = match input {
             McpInputLine::Line(line) => {
-                let line = line.trim();
-                if line.is_empty() {
+                let trimmed = line.trim();
+                if trimmed.is_empty() {
                     continue;
                 }
-                match serde_json::from_str::<Value>(line) {
+                match serde_json::from_str::<Value>(trimmed) {
                     Ok(message) => {
                         let descriptor = RequestDescriptor::from_message(&message);
-                        (
-                            handle_protocol_message(
-                                message,
+                        if *initialized
+                            && matches!(
                                 descriptor,
-                                initialized,
-                                McpServerIdentity {
-                                    name: identity.name,
-                                    version: identity.version,
-                                },
-                                backend,
-                                |value| text.render_tool_text(value),
-                            ),
+                                RequestDescriptor::ToolCall { operation }
+                                    if operation.is_companion_owned()
+                            )
+                        {
+                            let encoded =
+                                match backend.proxy_companion_mcp(line.as_bytes()) {
+                                    Ok(response) => response,
+                                    Err(error) => encode_response_line(
+                                        &companion_proxy_error_response(&message, error),
+                                    )
+                                    .map(String::into_bytes)
+                                    .map_err(|error| McpServeFailure {
+                                        reason: McpStopReasonV1::ResponseSerializeError,
+                                        error: error.into(),
+                                    })?,
+                                };
+                            stdout
+                                .write_all(&encoded)
+                                .map_err(|error| McpServeFailure {
+                                    reason: McpStopReasonV1::StdoutWriteError,
+                                    error: error.into(),
+                                })?;
+                            stdout.flush().map_err(|error| McpServeFailure {
+                                reason: McpStopReasonV1::StdoutFlushError,
+                                error: error.into(),
+                            })?;
+                            telemetry.record_delivered(descriptor, None, request_started.elapsed());
+                            continue;
+                        }
+                        let mut handled = handle_protocol_message(
+                            message.clone(),
                             descriptor,
-                        )
+                            initialized,
+                            McpServerIdentity {
+                                name: identity.name,
+                                version: identity.version,
+                            },
+                            backend,
+                            |value| text.render_tool_text(value),
+                        );
+                        if *initialized && descriptor == RequestDescriptor::ToolsList {
+                            if let Some(response) = handled.value.as_mut() {
+                                append_companion_tool_definitions(
+                                    &message,
+                                    line.as_bytes(),
+                                    response,
+                                    backend,
+                                );
+                            }
+                        }
+                        (handled, descriptor)
                     }
                     Err(error) => (
                         ctx_agent_integrations::mcp::McpHandled::plain(Some(error_response(
@@ -232,13 +273,122 @@ where
                 usage_port.record_delivered(operation, facts, &response, encoded.len(), duration);
             }
             telemetry.record_delivered(descriptor, Some(&response), duration);
-            if let Some(receipt) = handled.integration_receipt {
-                telemetry.submit_backend_receipt(receipt);
-            }
         } else {
             telemetry.record_delivered(descriptor, None, request_started.elapsed());
         }
     }
+}
+
+fn append_companion_tool_definitions<B: ToolBackend>(
+    message: &Value,
+    raw_request: &[u8],
+    response: &mut Value,
+    backend: &B,
+) {
+    let Some(core_tools) = response.pointer("/result/tools").and_then(Value::as_array) else {
+        return;
+    };
+    let Some(mut merged_tools) = validated_core_tools(core_tools) else {
+        return;
+    };
+    let Ok(companion_response) = backend.proxy_companion_mcp(raw_request) else {
+        return;
+    };
+    let Some(companion_tools) =
+        validated_companion_tools(&companion_response, message.get("id"), &merged_tools)
+    else {
+        return;
+    };
+    merged_tools.extend(companion_tools);
+
+    let mut merged_response = response.clone();
+    let Some(tools) = merged_response
+        .pointer_mut("/result/tools")
+        .and_then(Value::as_array_mut)
+    else {
+        return;
+    };
+    *tools = merged_tools;
+    let within_bound = serde_json::to_vec(&merged_response)
+        .is_ok_and(|encoded| encoded.len().saturating_add(1) <= MCP_PRESENTATION_MAX_OUTPUT_BYTES);
+    if within_bound {
+        *response = merged_response;
+    }
+}
+
+fn validated_core_tools(tools: &[Value]) -> Option<Vec<Value>> {
+    let mut names = HashSet::new();
+    for tool in tools {
+        let name = tool.as_object()?.get("name")?.as_str()?;
+        if name.is_empty() || !names.insert(name.to_owned()) {
+            return None;
+        }
+    }
+    Some(tools.to_vec())
+}
+
+fn validated_companion_tools(
+    encoded: &[u8],
+    expected_id: Option<&Value>,
+    core_tools: &[Value],
+) -> Option<Vec<Value>> {
+    if encoded.is_empty() || encoded.len() > MCP_MAX_LINE_BYTES {
+        return None;
+    }
+    let frame = encoded.strip_suffix(b"\n")?;
+    if frame.is_empty() || frame.contains(&b'\n') || frame.ends_with(b"\r") {
+        return None;
+    }
+    let response: Value = serde_json::from_slice(frame).ok()?;
+    let object = response.as_object()?;
+    if object.get("jsonrpc").and_then(Value::as_str) != Some("2.0")
+        || object.get("id") != expected_id
+        || object.contains_key("error")
+    {
+        return None;
+    }
+    let tools = object
+        .get("result")?
+        .as_object()?
+        .get("tools")?
+        .as_array()?;
+    let mut names = core_tools
+        .iter()
+        .map(|tool| tool.get("name")?.as_str().map(ToOwned::to_owned))
+        .collect::<Option<HashSet<_>>>()?;
+    let mut validated = Vec::with_capacity(tools.len());
+    for tool in tools {
+        let name = tool.as_object()?.get("name")?.as_str()?;
+        if name.is_empty()
+            || !McpToolKind::from_tool_name(Some(name)).is_companion_owned()
+            || !names.insert(name.to_owned())
+        {
+            return None;
+        }
+        validated.push(tool.clone());
+    }
+    Some(validated)
+}
+
+fn companion_proxy_error_response(message: &Value, error: OpaqueMcpProxyError) -> Value {
+    let (code, retryable) = match error {
+        OpaqueMcpProxyError::CompanionUnavailable => ("companion_unavailable", true),
+        OpaqueMcpProxyError::CompanionIncompatible => ("companion_incompatible", false),
+    };
+    let result = json!({
+        "isError": true,
+        "content": [{"type": "text", "text": code}],
+        "structuredContent": {
+            "error": code,
+            "error_code": code,
+            "retryable": retryable,
+        },
+    });
+    json!({
+        "jsonrpc": "2.0",
+        "id": message.get("id").cloned().unwrap_or(Value::Null),
+        "result": result,
+    })
 }
 
 #[cfg(test)]

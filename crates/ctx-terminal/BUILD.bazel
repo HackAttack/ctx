@@ -1,0 +1,70 @@
+load("@crates//:defs.bzl", "aliases", "all_crate_deps", "crate_edition")
+load("@rules_rust//rust:defs.bzl", "rust_library")
+load("//:rust_sources.bzl", "RUST_PROD_SRC_EXCLUDES")
+load("//tools/bazel:ctx_rust.bzl", "ctx_rust_test")
+load("//tools/bazel:gates.bzl", "loc_check_inputs")
+
+package(default_visibility = ["//visibility:public"])
+
+exports_files(["Cargo.toml"])
+
+loc_check_inputs(name = "loc_check_inputs")
+
+filegroup(
+    name = "cargo_package_data",
+    srcs = glob(["**"], exclude = ["BUILD.bazel"]),
+)
+
+filegroup(
+    name = "boundary_sources",
+    srcs = glob(["src/**/*.rs"]),
+)
+
+COMMON_RUSTC_ENV = {"CARGO_MANIFEST_DIR": "crates/ctx-terminal"}
+
+RUST_SRCS = glob(["src/**/*.rs"])
+PROD_SRCS = glob(["src/**/*.rs"], exclude = RUST_PROD_SRC_EXCLUDES)
+
+rust_library(
+    name = "lib",
+    srcs = PROD_SRCS,
+    crate_name = "ctx_terminal",
+    crate_root = "src/lib.rs",
+    edition = crate_edition(),
+    aliases = aliases(),
+    deps = all_crate_deps(normal = True),
+    proc_macro_deps = all_crate_deps(proc_macro = True),
+    rustc_env = COMMON_RUSTC_ENV,
+)
+
+ctx_rust_test(
+    name = "unit_tests",
+    srcs = RUST_SRCS,
+    crate_name = "ctx_terminal",
+    crate_root = "src/lib.rs",
+    edition = crate_edition(),
+    aliases = aliases(normal_dev = True, proc_macro_dev = True),
+    deps = all_crate_deps(normal = True, normal_dev = True),
+    proc_macro_deps = all_crate_deps(proc_macro = True, proc_macro_dev = True),
+    rustc_env = COMMON_RUSTC_ENV,
+)
+
+ctx_rust_test(
+    name = "raw_output_policy_tests",
+    srcs = glob(["tests/**/*.rs"]),
+    crate_name = "raw_output_policy_tests",
+    crate_root = "tests/raw_output_policy.rs",
+    data = glob(["src/**/*.rs"]) + [
+        "//crates/ctx-cli:cargo_package_data",
+        "//crates/ctx-cli-presentation:cargo_package_data",
+        "//crates/ctx-history-cli:cargo_package_data",
+        "//crates/ctx-agent-application:cargo_package_data",
+        "//crates/ctx-agent-integrations:cargo_package_data",
+        "//crates/ctx-client-observability:cargo_package_data",
+        "//crates/ctx-daemon-runtime:cargo_package_data",
+        "//crates/ctx-semantic-model:build.rs",
+        "//crates/ctx-upgrade-engine:cargo_package_data",
+    ],
+    edition = crate_edition(),
+    rustc_env = COMMON_RUSTC_ENV,
+)

@@ -5,7 +5,7 @@ use std::{
     time::Duration,
 };
 
-use anyhow::{anyhow, Result};
+use anyhow::{Result, anyhow};
 use ctx_upgrade_engine::{
     AutomaticUpgradeObservation, AutomaticUpgradePolicyProvider, DaemonRestart, DaemonUpgradeLease,
     DaemonUpgradePort, ProductBuildIdentity, ReleaseProcessPort, ReleaseTransport,
@@ -15,8 +15,8 @@ use ctx_upgrade_engine::{
 
 use crate::{
     analytics::{
-        count_bucket, OperationCompletedV1, Outcome, PublicEventV1, UpgradeChannel,
-        UpgradeFailureKind, UpgradeMode, UpgradeOperation, UpgradeStatus, UpgradeTelemetry,
+        OperationCompletedV1, Outcome, PublicEventV1, UpgradeChannel, UpgradeFailureKind,
+        UpgradeMode, UpgradeOperation, UpgradeStatus, UpgradeTelemetry, count_bucket,
     },
     config::AppConfig,
 };

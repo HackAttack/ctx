@@ -349,7 +349,7 @@ fn multisession_missing_index_fallback_is_equivalent_bounded_and_read_only() {
     assert_eq!(indexed_scan.bounds.session_rows_scanned, SESSIONS);
     assert_eq!(indexed_scan.bounds.session_metadata_loads, SESSIONS);
     assert_eq!(indexed_scan.bounds.max_buffered_session_metadata, 1);
-    assert_eq!(indexed_scan.bounds.max_session_ancestry_depth, 16);
+    assert_eq!(indexed_scan.bounds.max_session_ancestry_depth, 1);
     assert_batched_ordering(&indexed_scan, SESSIONS);
 
     drop_message_part_stream_indexes(&database);
@@ -417,7 +417,7 @@ fn multisession_missing_index_fallback_is_equivalent_bounded_and_read_only() {
     assert_eq!(fallback_scan.bounds.session_rows_scanned, SESSIONS);
     assert_eq!(fallback_scan.bounds.session_metadata_loads, SESSIONS);
     assert_eq!(fallback_scan.bounds.max_buffered_session_metadata, 1);
-    assert_eq!(fallback_scan.bounds.max_session_ancestry_depth, 16);
+    assert_eq!(fallback_scan.bounds.max_session_ancestry_depth, 1);
     assert_batched_ordering(&fallback_scan, SESSIONS);
     assert!(fallback_scan.bounds.fallback_scratch_bytes > 0);
     assert_eq!(fs::read(&database).unwrap(), before_database);

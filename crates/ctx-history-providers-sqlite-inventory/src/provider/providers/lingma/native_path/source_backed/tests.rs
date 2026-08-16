@@ -1,6 +1,6 @@
 use std::path::Path;
 
-use ctx_history_core::{AgentType, CoreRecord, TypedKey};
+use ctx_history_core::{CoreRecord, TypedKey};
 use rusqlite::{config::DbConfig, params, Connection};
 
 use super::{
@@ -226,13 +226,10 @@ fn finite_inventory_certifies_complete_bodies_and_order_independent_ids() {
     );
     assert!(all_records(&scan).iter().all(|record| {
         record.parent_session_id.is_none()
-            && record.root_session_id == record.session_id
+            && record.root_session_id.is_none()
             && record.provider_session_id.is_some()
-            && record.branch.is_none()
-            && record.agent_type == AgentType::Primary.as_str()
-            && record.is_primary
             && record.native_event_id.is_some()
-            && record.repository_bindings.is_empty()
+            && record.session_relationship.is_none()
     }));
     assert!(scan.databases().iter().all(|database| {
         database.certificate.counts().indexed_documents == 2

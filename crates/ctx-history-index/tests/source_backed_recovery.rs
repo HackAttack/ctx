@@ -15,10 +15,11 @@ use std::{
 };
 
 use ctx_history_core::{
-    derive_event_id, derive_session_id, CertifiedSource, CertifiedSourceAppend,
-    CertifiedSourceInventory, CoreRecord, EventIdentityInput, NativeItemKey, NativeSessionKey,
-    ScannedSourceCounts, SessionIdentityInput, SourceAnchor, SourceFrontier,
-    SourceInventoryObservation, SourceKey, SourceObservation, TypedKey,
+    derive_event_id, derive_session_id, AgentScope, CertifiedSource, CertifiedSourceAppend,
+    CertifiedSourceInventory, CoreActivity, CoreRecord, EventIdentityInput, LiteralFactKind,
+    NativeItemKey, NativeSessionKey, ProviderDeclaredFact, ScannedSourceCounts,
+    SessionIdentityInput, SourceAnchor, SourceFrontier, SourceInventoryObservation, SourceKey,
+    SourceObservation, TypedKey, CORE_ACTIVITY_REVISION,
 };
 use ctx_history_index::{
     CommitReceipt, GenerationWriter, IndexError, VerifiedIndex, WriterOptions,
@@ -1199,23 +1200,38 @@ fn document(source: &SourceKey, body: &str) -> CoreRecord {
     let mut record = CoreRecord::new_selected(
         event_id,
         session_id,
-        session_id,
         source.clone(),
         1,
         "message",
-        "primary",
-        true,
         "codex-parser-v1",
         body,
     )
     .unwrap();
     record.provider_session_id = Some("session".to_owned());
     record.native_event_id = Some(TypedKey::U64(1));
-    record.branch = Some("main".to_owned());
     record.occurred_at_unix_ms = Some(1_700_000_000_001);
     record.role = Some("user".to_owned());
-    record.workspace = Some("ctx".to_owned());
-    record.cwd = Some("/work/ctx".to_owned());
+    record.agent_scope = Some(AgentScope::Primary);
+    record.content.activity = Some(CoreActivity {
+        revision: CORE_ACTIVITY_REVISION,
+        provider_call_id: None,
+        invocation: None,
+        result: None,
+        facts: vec![
+            ProviderDeclaredFact {
+                kind: LiteralFactKind::Branch,
+                value: "main".to_owned(),
+            },
+            ProviderDeclaredFact {
+                kind: LiteralFactKind::Workspace,
+                value: "ctx".to_owned(),
+            },
+            ProviderDeclaredFact {
+                kind: LiteralFactKind::SessionCwd,
+                value: "/work/ctx".to_owned(),
+            },
+        ],
+    });
     record
 }
 

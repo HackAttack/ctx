@@ -62,7 +62,7 @@ EXCLUDED_REASONS = {
     "no_local_history",
     "provider_boundary_prohibits_local_capture",
 }
-REQUIRED_EVIDENCE_CLASSES = {
+ALLOWED_EVIDENCE_CLASSES = {
     "exact_positive_pair",
     "canonical_terminal_outcomes",
     "malformed_identity",
@@ -74,11 +74,11 @@ REQUIRED_EVIDENCE_CLASSES = {
     "search_nonindexing",
     "privacy_sinks",
 }
+REQUIRED_EVIDENCE_CLASSES = ALLOWED_EVIDENCE_CLASSES - {"search_nonindexing"}
 EVIDENCE_SCOPES = {"tuple", "provider_neutral"}
 PROVIDER_NEUTRAL_EVIDENCE_CLASSES = {
     "max_plus_one",
     "privacy_sinks",
-    "search_nonindexing",
 }
 SEMVER_RE = re.compile(r"(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)")
 DATE_RE = re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2}")

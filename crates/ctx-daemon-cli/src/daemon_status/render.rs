@@ -21,24 +21,11 @@ enum DaemonPresentation {
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct DaemonStatusView<'a> {
     daemon: &'a Value,
-    pro_status: Option<&'a str>,
 }
 
 impl<'a> DaemonStatusView<'a> {
     pub(crate) fn daemon_only(daemon: &'a Value) -> Self {
-        Self {
-            daemon,
-            pro_status: None,
-        }
-    }
-
-    pub(crate) fn from_reports(daemon: &'a Value, pro: &'a Value) -> Self {
-        let pro_status = (pro.get("installed").and_then(Value::as_bool) == Some(true)).then(|| {
-            pro.get("state")
-                .and_then(Value::as_str)
-                .unwrap_or("unavailable")
-        });
-        Self { daemon, pro_status }
+        Self { daemon }
     }
 }
 
@@ -48,7 +35,7 @@ pub(crate) fn render_daemon_status_human(
     context: &RenderContext,
     view: DaemonStatusView<'_>,
 ) -> Document {
-    let DaemonStatusView { daemon, pro_status } = view;
+    let DaemonStatusView { daemon } = view;
     let enabled = daemon
         .get("enabled")
         .and_then(Value::as_bool)
@@ -344,14 +331,6 @@ pub(crate) fn render_daemon_status_human(
         append_details(&mut semantic_fields, &semantic_details);
         document.push_blank();
         document.append(section("Semantic", fields(context, &semantic_fields)));
-    }
-
-    if let Some(pro_status) = pro_status {
-        document.push_blank();
-        document.append(section(
-            "Pro",
-            fields(context, &[state_field("Status", pro_status, Token::Text)]),
-        ));
     }
 
     if let Some((message, command)) = recovery_action(

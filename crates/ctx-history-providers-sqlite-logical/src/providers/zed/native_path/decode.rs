@@ -1,4 +1,4 @@
-use std::{borrow::Cow, collections::BTreeSet, fmt, io::Read};
+use std::{borrow::Cow, fmt, io::Read};
 
 use chrono::{DateTime, Utc};
 use ctx_history_core::{EventRole, EventType};
@@ -24,8 +24,6 @@ use wire::*;
 
 const ZED_THREAD_VERSION: &str = "0.3.0";
 const ZED_MAX_MESSAGES_PER_THREAD: usize = 65_536;
-const ZED_MAX_SAFE_TOUCHES_PER_EVENT: usize = 256;
-const ZED_MAX_SAFE_TOUCH_BYTES: usize = 4_096;
 const ZED_ENCODING_DIAGNOSTIC_MAX_CHARS: usize = 128;
 
 /// Validated thread metadata plus the bounded source bytes needed for a second,
@@ -337,17 +335,16 @@ fn decode_message(
                 call_ids: Vec::new(),
                 native_content,
                 body,
-                safe_file_touches: Vec::new(),
             })
         }
         ZedMessageWire::Agent(agent) => {
             let native_content = json!({
                 "kind": "agent",
                 "content": structured_content(&agent.content),
+                "tool_results": &agent.tool_results,
             });
             let mut parts = Vec::new();
             let mut call_ids = Vec::new();
-            let mut touches = BTreeSet::new();
             for content in agent.content {
                 match content {
                     ZedContentWire::Text(text) => push_nonempty(&mut parts, text),
@@ -375,11 +372,10 @@ fn decode_message(
                         if let Some(id) = nonempty_owned(tool.id) {
                             call_ids.push(id);
                         }
-                        if let Some(input) = tool.input.as_ref() {
-                            collect_safe_touches(input, &mut touches);
-                        }
                     }
-                    ZedContentWire::ToolResult => {}
+                    ZedContentWire::ToolResult(result) => {
+                        parts.push(serde_json::to_string(&result).unwrap_or_default());
+                    }
                     ZedContentWire::Mention(content) => {
                         if let Some(content) = content {
                             push_nonempty(&mut parts, content);
@@ -389,6 +385,15 @@ fn decode_message(
                     ZedContentWire::Unknown(kind) => {
                         parts.push(format!("[zed content: {kind}]"));
                     }
+                }
+            }
+            if let Value::Object(results) = &agent.tool_results {
+                for (call_id, result) in results {
+                    call_ids.push(call_id.clone());
+                    push_nonempty(
+                        &mut parts,
+                        serde_json::to_string(result).unwrap_or_default(),
+                    );
                 }
             }
             if parts.is_empty() {
@@ -414,7 +419,6 @@ fn decode_message(
                 call_ids,
                 native_content,
                 body: parts.join("\n"),
-                safe_file_touches: touches.into_iter().collect(),
             })
         }
         ZedMessageWire::Compaction(summary) => {
@@ -432,7 +436,6 @@ fn decode_message(
                 body: summary
                     .filter(|value| !value.trim().is_empty())
                     .unwrap_or_else(|| "Zed compaction".to_owned()),
-                safe_file_touches: Vec::new(),
             })
         }
         ZedMessageWire::Resume => Some(ZedDecodedCoreEvent {
@@ -446,7 +449,6 @@ fn decode_message(
             call_ids: Vec::new(),
             native_content: json!({"kind": "resume"}),
             body: "[resume]".to_owned(),
-            safe_file_touches: Vec::new(),
         }),
         ZedMessageWire::Unknown(kind) => {
             let native_content = json!({"kind": "unknown", "native_kind": &kind});
@@ -461,7 +463,6 @@ fn decode_message(
                 call_ids: Vec::new(),
                 native_content,
                 body: format!("[zed message: {kind}]"),
-                safe_file_touches: Vec::new(),
             })
         }
     }
@@ -471,8 +472,8 @@ fn structured_content(content: &[ZedContentWire]) -> Vec<Value> {
     content
         .iter()
         .map(|item| match item {
-            ZedContentWire::Text(_) => json!({"type": "text"}),
-            ZedContentWire::Thinking(_) => json!({"type": "thinking"}),
+            ZedContentWire::Text(text) => json!({"type": "text", "text": text}),
+            ZedContentWire::Thinking(text) => json!({"type": "thinking", "text": text}),
             ZedContentWire::RedactedThinking => json!({"type": "redacted_thinking"}),
             ZedContentWire::ToolUse(tool) => json!({
                 "type": "tool_use",
@@ -481,8 +482,12 @@ fn structured_content(content: &[ZedContentWire]) -> Vec<Value> {
                 "input": &tool.input,
                 "raw_input": &tool.raw_input,
             }),
-            ZedContentWire::ToolResult => json!({"type": "tool_result"}),
-            ZedContentWire::Mention(_) => json!({"type": "mention"}),
+            ZedContentWire::ToolResult(result) => {
+                json!({"type": "tool_result", "result": result})
+            }
+            ZedContentWire::Mention(content) => {
+                json!({"type": "mention", "content": content})
+            }
             ZedContentWire::Image => json!({"type": "image"}),
             ZedContentWire::Unknown(kind) => {
                 json!({"type": "unknown", "native_kind": kind})
@@ -502,7 +507,12 @@ fn retained_content_text(content: &[ZedContentWire]) -> Option<String> {
             ZedContentWire::RedactedThinking => {
                 parts.push("<redacted_thinking />".to_owned());
             }
-            ZedContentWire::ToolResult => {}
+            ZedContentWire::ToolResult(result) => {
+                push_nonempty(
+                    &mut parts,
+                    serde_json::to_string(result).unwrap_or_default(),
+                );
+            }
             ZedContentWire::Mention(Some(content)) => {
                 push_nonempty(&mut parts, content.clone());
             }

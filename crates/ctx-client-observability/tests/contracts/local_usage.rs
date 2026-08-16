@@ -34,7 +34,7 @@ fn definition(report: &Value, version: i64) -> &Value {
 }
 
 #[test]
-fn default_on_usage_is_independent_of_commercial_telemetry_and_reports_definition_two() {
+fn default_on_usage_is_independent_of_remote_telemetry_and_reports_definition_two() {
     let temp = tempdir();
     let output = enabled(ctx(&temp).args(["doctor"]))
         .env("CTX_ANALYTICS_ENABLED", "false")
@@ -52,7 +52,7 @@ fn default_on_usage_is_independent_of_commercial_telemetry_and_reports_definitio
         "--detail",
         "--format=json",
     ])));
-    assert_eq!(report["schema_version"], 2);
+    assert_eq!(report["schema_version"], 3);
     assert_eq!(report["local_only"], true);
     assert_eq!(report["read_only"], true);
     assert_eq!(report["enabled"], true);
@@ -126,7 +126,7 @@ fn failed_cli_records_the_exact_rendered_stderr_bytes() {
 }
 
 #[test]
-fn report_is_content_free_and_stats_emit_no_commercial_analytics() {
+fn report_is_content_free_and_stats_emit_no_remote_analytics() {
     let temp = tempdir();
     let path_marker = "PRIVATE_USAGE_PATH_7d31";
     let content_marker = "PRIVATE_USAGE_CONTENT_62af";
@@ -183,6 +183,8 @@ fn report_is_content_free_and_stats_emit_no_commercial_analytics() {
         "session_id",
         "event_id",
         "citation_id",
+        "citation_count",
+        "pro_blame",
         "client_profile_id",
         "data_root_id",
     ] {
@@ -232,7 +234,7 @@ fn stats_are_literal_read_only_and_do_not_count_themselves() {
 fn parsed_cli_failure_records_once_and_recording_failure_is_best_effort() {
     let temp = tempdir();
     create_owner_private_data_root(&data_root(&temp));
-    enabled(ctx(&temp).args(["pro", "--referral", "agent-smith", "setup", "--format=json"]))
+    enabled(ctx(&temp).args(["docs", "show", "missing-topic"]))
         .assert()
         .failure();
     let report = json_output(enabled(ctx(&temp).args([
@@ -244,7 +246,7 @@ fn parsed_cli_failure_records_once_and_recording_failure_is_best_effort() {
     let current = definition(&report, 2);
     assert_eq!(current["summary"]["calls"], 1);
     assert_eq!(current["summary"]["failed_calls"], 1);
-    assert_eq!(current["by_operation"][0]["operation"], "pro_setup");
+    assert_eq!(current["by_operation"][0]["operation"], "docs");
 
     let unavailable = tempdir();
     create_owner_private_data_root(&data_root(&unavailable));

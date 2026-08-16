@@ -28,7 +28,6 @@ pub(super) struct OpenCodeOutputJson {
 pub(super) enum OpenCodeJsonProjection {
     Retained(OpenCodeRetainedJson),
     Output(OpenCodeOutputJson),
-    ExcludedOutput,
     Rejected(OpenCodeNativeRejectionKind),
     RejectedWithReason(OpenCodeNativeRejectionKind, String),
 }
@@ -96,7 +95,7 @@ pub(super) fn project_json(
         if tool_call_is_retained(&body.value) {
             // Continue below and retain the input-side projection.
         } else {
-            return OpenCodeJsonProjection::ExcludedOutput;
+            return project_output(&body.value, &effective_type);
         }
     } else if !is_retained_type(Some(family), &effective_type) {
         return OpenCodeJsonProjection::Rejected(OpenCodeNativeRejectionKind::UnknownRecordType);
@@ -164,17 +163,21 @@ mod tests {
     }
 
     #[test]
-    fn direct_projection_excludes_success_and_retains_failure_diagnostic() {
+    fn direct_projection_retains_all_exact_output_bodies() {
         let (success, _) = project(
             r#"{"type":"tool_result","success":true,"output":"ok"}"#,
             "result",
             None,
             OpenCodeNativeSchemaFamily::SessionMessageSeq,
         );
-        assert!(matches!(
-            success,
-            OpenCodeJsonProjection::Output(OpenCodeOutputJson { diagnostic: None })
-        ));
+        let OpenCodeJsonProjection::Output(OpenCodeOutputJson {
+            diagnostic: Some(success),
+        }) = success
+        else {
+            panic!("output was not retained");
+        };
+        assert_eq!(success.body["success"], true);
+        assert_eq!(success.body["output"], "ok");
 
         let (failure, _) = project(
             r#"{"type":"tool_result","exit_code":7,"command":"false"}"#,
@@ -188,7 +191,6 @@ mod tests {
         else {
             panic!("failed output did not retain a diagnostic");
         };
-        assert_eq!(diagnostic.body["result_outcome"], "failure");
         assert_eq!(diagnostic.body["exit_code"], 7);
         assert_eq!(diagnostic.body["command"], "false");
     }

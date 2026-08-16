@@ -61,7 +61,6 @@ pub fn run_sources(
     local_usage.set_result_observation(
         ResultObservationAction::Sources,
         observation.result_count,
-        0,
         observation.content_bytes,
     );
     local_usage.set_measured_output_bytes(observation.output_bytes);

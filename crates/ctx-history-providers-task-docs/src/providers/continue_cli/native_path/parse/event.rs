@@ -76,11 +76,22 @@ pub(super) fn parse_proven_content_block(
     stats: &mut ContinueOutputExclusionStats,
 ) -> Result<Option<ParsedContentBlock>, String> {
     let mut admission = TagAdmission::Missing;
+    let mut saw_type = false;
+    let mut saw_kind = false;
+    let mut duplicate_selector = false;
     for field in block.as_object().map_err(scan_error)? {
         let (key, value) = field.map_err(scan_error)?;
-        if key.is("type") || key.is("kind") {
+        if key.is("type") {
+            duplicate_selector |= std::mem::replace(&mut saw_type, true);
+            admission = admission.observe(value);
+        } else if key.is("kind") {
+            duplicate_selector |= std::mem::replace(&mut saw_kind, true);
             admission = admission.observe(value);
         }
+    }
+    if duplicate_selector {
+        record_unproven(stats, block);
+        return Ok(None);
     }
     match admission {
         TagAdmission::Text => {
@@ -138,6 +149,9 @@ pub(super) fn parse_message_call_block(
     let mut saw_id = false;
     let mut saw_name = false;
     let mut saw_function = false;
+    let mut saw_arguments = false;
+    let mut saw_input = false;
+    let mut saw_parameters = false;
     for field in block.as_object().map_err(scan_error)? {
         let (key, value) = field.map_err(scan_error)?;
         if key.is("type")
@@ -158,6 +172,15 @@ pub(super) fn parse_message_call_block(
             } else if key.is("function") {
                 structurally_safe &= !saw_function;
                 saw_function = true;
+            } else if key.is("arguments") {
+                structurally_safe &= !saw_arguments;
+                saw_arguments = true;
+            } else if key.is("input") {
+                structurally_safe &= !saw_input;
+                saw_input = true;
+            } else if key.is("parameters") {
+                structurally_safe &= !saw_parameters;
+                saw_parameters = true;
             }
             if (key.is("id") || key.is("name"))
                 && !matches!(value.kind(), JsonKind::String | JsonKind::Null)
@@ -183,7 +206,8 @@ pub(super) fn parse_message_call_block(
     let mut id = None;
     let mut direct_name = None;
     let mut function_name = None;
-    let mut file_touches = Vec::new();
+    let mut direct_arguments = Vec::new();
+    let mut function_arguments = ActivityJsonCapture::Absent;
     for field in block.as_object().map_err(scan_error)? {
         let (key, value) = field.map_err(scan_error)?;
         if key.is("id") {
@@ -192,17 +216,17 @@ pub(super) fn parse_message_call_block(
         } else if key.is("name") {
             direct_name = retained_bounded_string(value, MAX_TOOL_NAME_BYTES, stats)?;
         } else if key.is("function") {
-            function_name = parse_tool_function(value, stats)?;
-            file_touches.extend(extract_continue_file_touches(value)?);
+            (function_name, function_arguments) = parse_tool_function(value, stats)?;
         } else if key.is("arguments") || key.is("input") || key.is("parameters") {
             record_call_body(stats, value);
-            file_touches.extend(extract_continue_file_touches(value)?);
+            direct_arguments.push(value);
         }
     }
+    let direct_arguments = exact_json_alias_capture(&direct_arguments)?;
     Ok(Some(RawContinueMessageCall {
         id,
-        name: function_name.or(direct_name),
-        file_touches,
+        name: exact_string_alias(direct_name, function_name),
+        arguments: merge_json_alias_capture(direct_arguments, function_arguments),
     }))
 }
 
@@ -241,9 +265,15 @@ pub(super) fn parse_context_item(
     let mut content = None;
     let mut description = None;
     let mut structurally_safe = true;
+    let mut saw_type = false;
+    let mut saw_kind = false;
     for field in context.as_object().map_err(scan_error)? {
         let (key, value) = field.map_err(scan_error)?;
-        if key.is("type") || key.is("kind") {
+        if key.is("type") {
+            structurally_safe &= !std::mem::replace(&mut saw_type, true);
+            admission = admission.observe(value);
+        } else if key.is("kind") {
+            structurally_safe &= !std::mem::replace(&mut saw_kind, true);
             admission = admission.observe(value);
         } else if key.is("name") {
             if value.kind() == JsonKind::String && name.is_none() {
@@ -423,15 +453,24 @@ pub(super) fn parse_tool_call(
     let mut admission = TagAdmission::Missing;
     let mut has_request_identity = false;
     let mut saw_id = false;
+    let mut saw_type = false;
+    let mut saw_kind = false;
     let mut saw_name = false;
     let mut saw_function = false;
+    let mut saw_arguments = false;
+    let mut saw_input = false;
+    let mut saw_parameters = false;
     for field in value.as_object().map_err(scan_error)? {
         let (key, field_value) = field.map_err(scan_error)?;
         if key.is_result_like() {
             record_result(stats, field_value);
             continue;
         }
-        if key.is("type") || key.is("kind") {
+        if key.is("type") {
+            structurally_safe &= !std::mem::replace(&mut saw_type, true);
+            admission = admission.observe(field_value);
+        } else if key.is("kind") {
+            structurally_safe &= !std::mem::replace(&mut saw_kind, true);
             admission = admission.observe(field_value);
         }
         let known = key.is("id")
@@ -453,6 +492,18 @@ pub(super) fn parse_tool_call(
         } else if key.is("function") {
             let duplicate = saw_function;
             saw_function = true;
+            duplicate
+        } else if key.is("arguments") {
+            let duplicate = saw_arguments;
+            saw_arguments = true;
+            duplicate
+        } else if key.is("input") {
+            let duplicate = saw_input;
+            saw_input = true;
+            duplicate
+        } else if key.is("parameters") {
+            let duplicate = saw_parameters;
+            saw_parameters = true;
             duplicate
         } else {
             false
@@ -481,7 +532,8 @@ pub(super) fn parse_tool_call(
     let mut id = None;
     let mut name = None;
     let mut function_name = None;
-    let mut file_touches = Vec::new();
+    let mut direct_arguments = Vec::new();
+    let mut function_arguments = ActivityJsonCapture::Absent;
     for field in value.as_object().map_err(scan_error)? {
         let (key, value) = field.map_err(scan_error)?;
         if key.is("id") {
@@ -489,63 +541,38 @@ pub(super) fn parse_tool_call(
         } else if key.is("name") {
             name = retained_bounded_string(value, MAX_TOOL_NAME_BYTES, stats)?;
         } else if key.is("function") {
-            function_name = parse_tool_function(value, stats)?;
-            file_touches.extend(extract_continue_file_touches(value)?);
+            (function_name, function_arguments) = parse_tool_function(value, stats)?;
         } else if key.is("arguments") || key.is("input") || key.is("parameters") {
             record_call_body(stats, value);
-            file_touches.extend(extract_continue_file_touches(value)?);
+            direct_arguments.push(value);
         }
     }
-    let retained_request_identity = id.is_some() || name.is_some() || function_name.is_some();
+    let direct_arguments = exact_json_alias_capture(&direct_arguments)?;
+    let merged_name = exact_string_alias(name, function_name);
+    let retained_request_identity = id.is_some() || merged_name.is_some();
     Ok(retained_request_identity.then_some(RawContinueToolCall {
         id,
-        name,
-        function_name,
-        file_touches,
+        name: merged_name,
+        function_name: None,
+        arguments: merge_json_alias_capture(direct_arguments, function_arguments),
     }))
-}
-
-pub(super) fn extract_continue_file_touches(
-    value: JsonSpan<'_>,
-) -> Result<Vec<ContinueFileTouch>, String> {
-    let value = serde_json::from_slice::<Value>(value.raw())
-        .map_err(|error| format!("invalid Continue tool request body: {error}"))?;
-    let mut touches = Vec::new();
-    let outcome = visit_provider_file_touch_drafts_with_limit(
-        &value,
-        true,
-        CONTINUE_NATIVE_MAX_FILE_TOUCHES_PER_EVENT,
-        |(_, touch)| {
-            touches.push(ContinueFileTouch {
-                path: touch.path,
-                old_path: touch.old_path,
-                change_kind: touch.change_kind,
-                confidence: touch.confidence,
-                metadata: touch.metadata,
-            });
-            Ok::<(), String>(())
-        },
-    )?;
-    if outcome.limit_exceeded() {
-        return Err(format!(
-            "Continue tool request exceeds the {CONTINUE_NATIVE_MAX_FILE_TOUCHES_PER_EVENT} \
-             unique file-touch transaction bound"
-        ));
-    }
-    Ok(touches)
 }
 
 pub(super) fn parse_tool_function(
     value: JsonSpan<'_>,
     stats: &mut ContinueOutputExclusionStats,
-) -> Result<Option<String>, String> {
+) -> Result<(Option<String>, ActivityJsonCapture), String> {
     if value.kind() != JsonKind::Object {
         if value.kind() != JsonKind::Null {
             record_unproven(stats, value);
         }
-        return Ok(None);
+        return Ok((None, ActivityJsonCapture::Unavailable));
     }
     let mut structurally_safe = true;
+    let mut saw_name = false;
+    let mut saw_arguments = false;
+    let mut saw_input = false;
+    let mut saw_parameters = false;
     for field in value.as_object().map_err(scan_error)? {
         let (key, field_value) = field.map_err(scan_error)?;
         if !(key.is("name")
@@ -559,24 +586,97 @@ pub(super) fn parse_tool_function(
         if key.is("name") && !matches!(field_value.kind(), JsonKind::String | JsonKind::Null) {
             structurally_safe = false;
         }
+        let duplicate = if key.is("name") {
+            std::mem::replace(&mut saw_name, true)
+        } else if key.is("arguments") {
+            std::mem::replace(&mut saw_arguments, true)
+        } else if key.is("input") {
+            std::mem::replace(&mut saw_input, true)
+        } else if key.is("parameters") {
+            std::mem::replace(&mut saw_parameters, true)
+        } else {
+            false
+        };
+        structurally_safe &= !duplicate;
     }
     if !structurally_safe {
         record_unproven(stats, value);
-        return Ok(None);
+        return Ok((None, ActivityJsonCapture::Unavailable));
     }
 
     let mut name = None;
+    let mut name_conflict = false;
+    let mut arguments = Vec::new();
     for field in value.as_object().map_err(scan_error)? {
         let (key, value) = field.map_err(scan_error)?;
         if key.is("name") {
-            name = retained_bounded_string(value, MAX_TOOL_NAME_BYTES, stats)?;
+            let candidate = retained_bounded_string(value, MAX_TOOL_NAME_BYTES, stats)?;
+            if name
+                .as_ref()
+                .zip(candidate.as_ref())
+                .is_some_and(|(left, right)| left != right)
+            {
+                name_conflict = true;
+            } else if name.is_none() {
+                name = candidate;
+            }
         } else if key.is("arguments") || key.is("input") || key.is("parameters") {
             record_call_body(stats, value);
+            arguments.push(value);
         } else if key.is_result_like() {
             record_result(stats, value);
         }
     }
-    Ok(name)
+    Ok((
+        (!name_conflict).then_some(name).flatten(),
+        exact_json_alias_capture(&arguments)?,
+    ))
+}
+
+fn exact_string_alias(left: Option<String>, right: Option<String>) -> Option<String> {
+    match (left, right) {
+        (Some(left), Some(right)) if left != right => None,
+        (Some(value), _) | (_, Some(value)) => Some(value),
+        (None, None) => None,
+    }
+}
+
+fn exact_json_alias_capture(values: &[JsonSpan<'_>]) -> Result<ActivityJsonCapture, String> {
+    let mut selected = None;
+    for value in values {
+        let candidate = decode_value(*value).map_err(|error| error.to_string())?;
+        if selected
+            .as_ref()
+            .is_some_and(|selected| selected != &candidate)
+        {
+            return Ok(ActivityJsonCapture::Unavailable);
+        }
+        selected = Some(candidate);
+    }
+    Ok(selected.map_or(ActivityJsonCapture::Absent, |value| {
+        ActivityJsonCapture::Present { value }
+    }))
+}
+
+fn merge_json_alias_capture(
+    left: ActivityJsonCapture,
+    right: ActivityJsonCapture,
+) -> ActivityJsonCapture {
+    match (left, right) {
+        (ActivityJsonCapture::Unavailable, _) | (_, ActivityJsonCapture::Unavailable) => {
+            ActivityJsonCapture::Unavailable
+        }
+        (
+            ActivityJsonCapture::Present { value: left },
+            ActivityJsonCapture::Present { value: right },
+        ) if left != right => ActivityJsonCapture::Unavailable,
+        (ActivityJsonCapture::Present { value }, _)
+        | (_, ActivityJsonCapture::Present { value }) => ActivityJsonCapture::Present { value },
+        (ActivityJsonCapture::Absent, ActivityJsonCapture::Absent) => ActivityJsonCapture::Absent,
+        (ActivityJsonCapture::Omitted { .. }, _) | (_, ActivityJsonCapture::Omitted { .. }) => {
+            ActivityJsonCapture::Unavailable
+        }
+    }
 }
 
 pub(super) fn parse_timestamp(
@@ -791,4 +891,53 @@ pub(super) fn is_result_role(role: JsonSpan<'_>) -> bool {
 
 pub(super) fn scan_error(error: impl std::fmt::Display) -> String {
     format!("invalid Continue JSON structure: {error}")
+}
+
+#[cfg(test)]
+mod alias_tests {
+    use ctx_history_core::ActivityJsonCapture;
+
+    use super::*;
+    use crate::providers::continue_cli::native_path::decode::validate_and_root;
+
+    fn parse(raw: &[u8]) -> Option<RawContinueMessageCall> {
+        let value = validate_and_root(raw).unwrap();
+        parse_message_call_block(value, &mut ContinueOutputExclusionStats::default()).unwrap()
+    }
+
+    #[test]
+    fn continue_call_alias_ambiguity_abstains_without_selecting_first_or_last() {
+        let duplicate_id = parse(br#"{"id":"first","id":"second","name":"tool"}"#);
+        assert!(duplicate_id.is_none());
+
+        let conflicting_name =
+            parse(br#"{"id":"call","name":"first_tool","function":{"name":"second_tool"}}"#)
+                .unwrap();
+        assert_eq!(conflicting_name.id.as_deref(), Some("call"));
+        assert!(conflicting_name.name.is_none());
+
+        let conflicting_arguments =
+            parse(br#"{"id":"call","name":"tool","arguments":{"x":1},"input":{"x":2}}"#).unwrap();
+        assert_eq!(
+            conflicting_arguments.arguments,
+            ActivityJsonCapture::Unavailable
+        );
+
+        assert!(
+            parse(br#"{"id":"call","name":"tool","arguments":{"x":1},"arguments":{"x":1}}"#)
+                .is_none()
+        );
+        assert!(parse(br#"{"id":"call","name":"tool","name":"tool"}"#).is_none());
+
+        let duplicate_selector = validate_and_root(
+            br#"{"type":"tool_use","type":"tool_use","id":"call","name":"tool"}"#,
+        )
+        .unwrap();
+        assert!(parse_proven_content_block(
+            duplicate_selector,
+            &mut ContinueOutputExclusionStats::default()
+        )
+        .unwrap()
+        .is_none());
+    }
 }

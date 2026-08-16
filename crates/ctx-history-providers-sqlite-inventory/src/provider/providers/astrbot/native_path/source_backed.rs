@@ -26,7 +26,7 @@ const INVENTORY_AUTHORITY_KEY: &str = "winner-and-launcher-instances-v0";
 const INVENTORY_REVISION_KIND: &str = "astrbot-bounded-discovery-v0";
 #[cfg(test)]
 const INVENTORY_DISCOVERY_REVISION: &str = "astrbot-winner-launcher-inventory-v0";
-pub(crate) const PARSER_REVISION: &str = "astrbot-source-backed-core-v1";
+pub(crate) const PARSER_REVISION: &str = "astrbot-source-backed-core-v2-neutral-core";
 const SELECTED_SOURCE_NAMESPACE: &str = "astrbot.selected-core";
 const LAUNCHER_SOURCE_NAMESPACE: &str = "astrbot.launcher-instance";
 const SESSION_NAMESPACE: &str = "astrbot.session";

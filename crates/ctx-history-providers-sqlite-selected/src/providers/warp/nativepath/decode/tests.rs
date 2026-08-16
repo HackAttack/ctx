@@ -1,5 +1,5 @@
 use super::*;
-use ctx_history_core::McpFailureKind;
+use ctx_history_core::{ActivityJsonCapture, ActivityTextCapture};
 
 const SERVER_A: &str = "11111111-1111-4111-8111-111111111111";
 const SERVER_B: &str = "22222222-2222-4222-8222-222222222222";
@@ -32,56 +32,29 @@ fn qualified_mcp_success_error_cancellation_and_nontext_results_link_exactly() {
     ];
     let decoded = decode_warp_native_task(&task_messages(messages)).unwrap();
 
-    for (index, server, tool, outcome, body, status, failure_kind, text) in [
+    for (index, server, tool, body, text) in [
         (
             1,
             SERVER_A,
             "shared_tool",
-            OutputOutcome::Success,
             "first\nresource text\nlast",
-            McpTerminalStatus::Succeeded,
-            None,
-            McpTextCapture::NormalizedBody,
+            ActivityTextCapture::NormalizedBody,
         ),
         (
             3,
             SERVER_B,
             "shared_tool",
-            OutputOutcome::Failure,
             "sanitized tool error",
-            McpTerminalStatus::Failed,
-            Some(McpFailureKind::Unknown),
-            McpTextCapture::NormalizedBody,
+            ActivityTextCapture::NormalizedBody,
         ),
-        (
-            5,
-            SERVER_A,
-            "cancel_tool",
-            OutputOutcome::Unknown,
-            "",
-            McpTerminalStatus::Cancelled,
-            None,
-            McpTextCapture::Absent,
-        ),
-        (
-            7,
-            SERVER_B,
-            "binary_tool",
-            OutputOutcome::Success,
-            "",
-            McpTerminalStatus::Succeeded,
-            None,
-            McpTextCapture::Absent,
-        ),
+        (5, SERVER_A, "cancel_tool", "", ActivityTextCapture::Absent),
+        (7, SERVER_B, "binary_tool", "", ActivityTextCapture::Absent),
         (
             9,
             SERVER_A,
             "bodyless_tool",
-            OutputOutcome::Success,
             "",
-            McpTerminalStatus::Succeeded,
-            None,
-            McpTextCapture::Absent,
+            ActivityTextCapture::Absent,
         ),
     ] {
         let WarpDecodedMessagePayload::Output(output) = &decoded.messages[index].payload else {
@@ -90,12 +63,9 @@ fn qualified_mcp_success_error_cancellation_and_nontext_results_link_exactly() {
         let invocation = output.mcp_invocation.as_ref().unwrap();
         assert_eq!(invocation.server_id, server);
         assert_eq!(invocation.tool_name, tool);
-        assert_eq!(output.outcome, outcome);
         assert_eq!(output.body, body);
         let response = output.mcp_response.as_ref().unwrap();
-        assert_eq!(response.status, status);
-        assert_eq!(response.failure_kind, failure_kind);
-        assert_eq!(response.duration_ns, None);
+        assert_eq!(response.status, None);
         assert_eq!(response.text, text);
     }
     let WarpDecodedMessagePayload::Retained(call) = &decoded.messages[0].payload else {
@@ -107,7 +77,9 @@ fn qualified_mcp_success_error_cancellation_and_nontext_results_link_exactly() {
     let WarpDecodedMessagePayload::Output(success) = &decoded.messages[1].payload else {
         unreachable!();
     };
-    let McpJsonCapture::Present { value } = &success.mcp_response.as_ref().unwrap().payload else {
+    let ActivityJsonCapture::Present { value } =
+        &success.mcp_response.as_ref().unwrap().structured_content
+    else {
         panic!("complete textual response payload was not retained");
     };
     assert_eq!(
@@ -119,22 +91,22 @@ fn qualified_mcp_success_error_cancellation_and_nontext_results_link_exactly() {
         unreachable!();
     };
     assert_eq!(
-        cancelled.mcp_response.as_ref().unwrap().payload,
-        McpJsonCapture::Absent
+        cancelled.mcp_response.as_ref().unwrap().structured_content,
+        ActivityJsonCapture::Absent
     );
     let WarpDecodedMessagePayload::Output(binary) = &decoded.messages[7].payload else {
         unreachable!();
     };
     assert_eq!(
-        binary.mcp_response.as_ref().unwrap().payload,
-        McpJsonCapture::Unavailable
+        binary.mcp_response.as_ref().unwrap().structured_content,
+        ActivityJsonCapture::Unavailable
     );
     let WarpDecodedMessagePayload::Output(bodyless) = &decoded.messages[9].payload else {
         unreachable!();
     };
     assert_eq!(
-        bodyless.mcp_response.as_ref().unwrap().payload,
-        McpJsonCapture::Present {
+        bodyless.mcp_response.as_ref().unwrap().structured_content,
+        ActivityJsonCapture::Present {
             value: serde_json::json!({"success": {"results": []}}),
         }
     );
@@ -162,12 +134,12 @@ fn image_and_binary_resource_bytes_make_payload_unavailable_without_losing_mixed
     .unwrap();
 
     for (index, expected_body, expected_text) in [
-        (1, "", McpTextCapture::Absent),
-        (3, "", McpTextCapture::Absent),
+        (1, "", ActivityTextCapture::Absent),
+        (3, "", ActivityTextCapture::Absent),
         (
             5,
             "before\nresource text\nafter",
-            McpTextCapture::NormalizedBody,
+            ActivityTextCapture::NormalizedBody,
         ),
     ] {
         let WarpDecodedMessagePayload::Output(output) = &decoded.messages[index].payload else {
@@ -175,9 +147,12 @@ fn image_and_binary_resource_bytes_make_payload_unavailable_without_losing_mixed
         };
         assert_eq!(output.body, expected_body);
         let response = output.mcp_response.as_ref().unwrap();
-        assert_eq!(response.status, McpTerminalStatus::Succeeded);
+        assert_eq!(response.status, None);
         assert_eq!(response.text, expected_text);
-        assert_eq!(response.payload, McpJsonCapture::Unavailable);
+        assert_eq!(
+            response.structured_content,
+            ActivityJsonCapture::Unavailable
+        );
         assert!(!serde_json::to_string(response)
             .unwrap()
             .contains("c2FuaXRpemVk"));
@@ -245,9 +220,12 @@ fn unknown_mcp_response_fields_preserve_text_and_mark_payload_unavailable() {
     };
     assert_eq!(output.body, "retained response text");
     let response = output.mcp_response.as_ref().unwrap();
-    assert_eq!(response.status, McpTerminalStatus::Succeeded);
-    assert_eq!(response.text, McpTextCapture::NormalizedBody);
-    assert_eq!(response.payload, McpJsonCapture::Unavailable);
+    assert_eq!(response.status, None);
+    assert_eq!(response.text, ActivityTextCapture::NormalizedBody);
+    assert_eq!(
+        response.structured_content,
+        ActivityJsonCapture::Unavailable
+    );
 }
 
 #[test]
@@ -509,7 +487,6 @@ fn reordered_repeated_unknown_and_last_oneof_fields_follow_protobuf_semantics() 
         panic!("final result arm was not retained");
     };
     assert_eq!(output.call_id.as_deref(), Some("final-id"));
-    assert_eq!(output.outcome, OutputOutcome::Success);
     assert_eq!(output.body, "first result\nsecond result");
     assert_eq!(
         output.mcp_invocation.as_ref().unwrap().tool_name,
@@ -548,7 +525,7 @@ fn protobuf_struct_args_preserve_json_types_and_map_last_value_semantics() {
     ]
     .concat();
     assert_eq!(
-        decode_protobuf_struct(&args, 0).unwrap(),
+        decode_protobuf_struct_map(&args, 0).unwrap(),
         serde_json::json!({
             "number": 42.5,
             "null": Value::Null,
@@ -556,33 +533,29 @@ fn protobuf_struct_args_preserve_json_types_and_map_last_value_semantics() {
             "list": ["item", false],
             "nested": {"key": "value"},
         })
+        .as_object()
+        .unwrap()
+        .clone()
     );
 }
 
 #[test]
 fn textual_success_failure_and_unknown_results_are_complete() {
-    for (tool_result, expected_outcome, expected_body) in [
+    for (tool_result, expected_body) in [
         (
             shell_result(Some((5, nested_text("shell success"))), None),
-            OutputOutcome::Success,
             "shell success",
         ),
         (
             shell_result(Some((6, nested_text("shell failure"))), None),
-            OutputOutcome::Failure,
             "shell failure",
         ),
-        (
-            shell_result(None, Some(b"shell unknown")),
-            OutputOutcome::Unknown,
-            "shell unknown",
-        ),
+        (shell_result(None, Some(b"shell unknown")), "shell unknown"),
     ] {
         let decoded = decode_warp_native_task(&task_with_tool_result(tool_result)).unwrap();
         let WarpDecodedMessagePayload::Output(output) = &decoded.messages[0].payload else {
             panic!("textual Warp result was not retained");
         };
-        assert_eq!(output.outcome, expected_outcome);
         assert_eq!(output.body, expected_body);
         assert_eq!(output.call_id.as_deref(), Some("call-1"));
     }
@@ -825,4 +798,16 @@ fn push_varint(target: &mut Vec<u8>, mut value: u64) {
         value >>= 7;
     }
     target.push(value as u8);
+}
+
+#[test]
+fn qualified_mcp_invocation_keeps_exact_server_and_tool_strings() {
+    let invocation = WarpMcpToolInvocation {
+        server_id: "550e8400-e29b-41d4-a716-446655440000".to_owned(),
+        tool_name: "provider/tool".to_owned(),
+        args: serde_json::json!({"path": "./literal/../path"}),
+    };
+    assert!(qualifies_mcp_invocation(&invocation));
+    assert_eq!(invocation.tool_name, "provider/tool");
+    assert_eq!(invocation.args["path"], "./literal/../path");
 }

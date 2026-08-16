@@ -50,32 +50,23 @@ ctx daemon enable
 ```
 
 - `setup` creates the data root, discovers known provider history locations,
-  scans current sources, builds and atomically publishes the
-  Core/Tantivy generation, schedules optional semantic and independent Pro work,
-  and prints next steps. It never opens, migrates, or deletes pre-v0.26 history. Old Store
-  files are ignored and may be removed explicitly by their owner.
-  Setup does not write `config.toml` for implicit defaults or execute
-  history-source plugin commands. When `[daemon].enabled` is true, setup may
-  opportunistically start the ctx-owned background daemon after foreground
-  work completes. Use `setup --no-daemon` for a one-run opt-out.
+  scans current sources, builds and atomically publishes the Core/Tantivy
+  generation, and prints next steps. It never opens, migrates, or deletes
+  pre-v0.26 history. Old Store files are ignored and may be removed explicitly
+  by their owner. Setup does not write `config.toml` for implicit defaults or
+  execute history-source plugin commands. When `[daemon].enabled` is true,
+  setup may opportunistically start the ctx-owned background daemon after
+  foreground work completes. Use `setup --no-daemon` for a one-run opt-out.
 - `setup --quiet` performs setup without printing success status lines, import
   summaries, data-root details, or get-started tips. It still exits nonzero and
   prints errors on failure.
-- `setup --pro` also starts an anonymous ctx Pro trial and durably schedules
-  Pro materialization from the daemon-owned committed Core generation. Pro
-  enrollment failure is reported independently and does not make successful
-  Core setup fail. This mode requires daemon maintenance and may use the
-  network; Core-only `setup` remains local and is the default for scripts and
-  CI.
 - `setup --catalog-only` remains accepted only for command-line compatibility.
   It is deprecated and ignored; setup follows the same refresh lifecycle as
   when the flag is omitted.
 - `status` reports the ctx root, source epoch, lexical and refresh readiness,
-  semantic generation and coverage, daemon state,
-  initialization state, compact
-  local usage health, local-only marker, and read-only marker. It does not
-  include usage counts or estimates, initialize or repair Core generations or
-  semantic or Pro state, or open old history.
+  semantic generation and coverage, daemon state, initialization state,
+  compact local usage health, local-only marker, and read-only marker. It does
+  not initialize or repair Core or semantic state or open old history.
 - `stats` is the read-only, local, offline report for History retrieval, Code
   provenance, Measured delivery, and Estimated savings. Measured facts and
   model-based estimates are separate in JSON; the estimate model and
@@ -330,10 +321,9 @@ provider/path. It creates the data root if needed, reads provider transcript
 files, builds a private immutable Core/Tantivy candidate containing complete
 normalized stored records plus lexical fields, identities, and filter metadata,
 verifies it, and atomically publishes it under `search/lexical`. Before
-returning, it waits only for that Core publication. Pro materialization and
-optional semantic indexing advance independently and do not extend the
-foreground import boundary. It does not write `config.toml` for implicit
-defaults.
+returning, it waits only for that Core publication. Optional semantic indexing
+advances independently and does not extend the foreground import boundary. It
+does not write `config.toml` for implicit defaults.
 
 History-source plugin import is explicit and single-source in 1.0. A selected
 manifest declares a durable provider-owned `ctx-history-jsonl-v1` path; the
@@ -360,378 +350,18 @@ to the same stable event identities.
 
 When `[daemon].enabled` is true, `import` may opportunistically start the
 ctx-owned persistent daemon and uses its source-refresh endpoint for foreground
-Core publication. Pro and semantic work
-continue independently; semantic indexing may acquire the local embedding
-model. Explicit custom JSONL and history-source imports use the same
-daemon-owned endpoint and may start it unless `import --no-daemon` is set. With
-`--no-daemon`, an already-running full daemon is required; import never falls
-back to a foreground writer.
+Core publication. Optional semantic work continues independently. Explicit
+custom JSONL and history-source imports use the same daemon-owned endpoint and
+may start it unless `import --no-daemon` is set. With `--no-daemon`, an
+already-running full daemon is required; import never falls back to a
+foreground writer.
 
-## Local Pro
+## Paid Companion Routes
 
-Local Pro is a separately installed native helper and encrypted derived graph:
-
-```bash
-ctx pro [--format json]
-ctx pro --referral <codename> [--format json]
-ctx pro setup [--format json]
-ctx pro manage [--no-open] [--format json]
-ctx pro uninstall [--delete-data|--keep-data] [--format json]
-```
-
-Bare `ctx pro` tries to start or resume the anonymous trial, then prints and
-best-effort opens its `https://pro.ctx.rs/{opaque-code}` browser handoff. With
-trial or subscribed access it transactionally installs or repairs a signed
-target-specific helper and catches the graph up.
-It is idempotent across first setup, resume, repair, and later catch-up.
-`ctx pro setup` is a supported explicit synonym with the same setup JSON and
-operation. Use `ctx status` (or the existing MCP `pro_status` tool) for
-Pro state without mutating provider history, Core search generations, or graph
-data. Entitlement
-authorization may advance nonsecret anti-clock-rollback metadata. `manage`
-opens hosted account and billing management.
-Interactive `uninstall` asks exactly `Delete
-all local Pro data? It can be rebuilt if you set up Pro again. [Y/n]`; Enter
-chooses deletion and `n` preserves local Pro data.
-Noninteractive and JSON callers must choose `--delete-data` or `--keep-data`.
-Provider history and Core search generations are always preserved. If the
-selected root has never held
-Pro data, either explicit choice succeeds as an idempotent Pro-state no-op and
-does not create a Pro directory or preservation marker. The foreground
-`pro_uninstall` command remains eligible for independent default-on Core local
-usage reporting, so it may create or increment `usage.sqlite` unless local usage
-is disabled.
-
-Automatic first-install activation through `ctx setup --pro` does not open a
-browser or request an account or payment method. An explicit human `ctx pro`
-(including its `ctx pro setup` synonym) prints and best-effort opens the browser
-handoff URL; JSON mode returns the URL without opening it.
-It downloads a release-signed helper with a short-lived bootstrap credential,
-uses that helper to produce bounded challenge-bound device evidence, obtains an
-installation-bound signed entitlement, and installs the same verified helper.
-The service uses the evidence only to prevent repeated trials. Raw platform
-identifiers never leave the helper; the signal is not hardware attestation.
-The ordinary anonymous trial remains 14 days. A first setup using exactly
-`ctx pro --referral <codename>` receives a 30-day trial when the service
-accepts the bounded ASCII codename. This is the sole attribution input: the
-codename is sent only with the first trial challenge, the resulting attribution
-is immutable, and only the service-issued opaque referral claim may be stored
-in the selected credential store after activation. An existing nonreferred
-trial cannot attach a code later. `ctx pro setup`, `manage`, `uninstall`, Core
-commands, websites, and cookies do not accept or change referral attribution.
-
-An expired, consumed, or unavailable anonymous trial does not block browser
-setup. `ctx pro` creates a handoff without using that trial as authorization, so
-an existing subscriber can link the machine or a nonsubscriber can buy Pro.
-Until browser completion supplies access, setup reports
-`browser_handoff_pending` and does not install or materialize Pro. An expired
-trial record may remain locally for conversion attribution, but it never grants
-access or authorizes the new handoff.
-
-Paid conversion uses the same browser-handoff URL to create an account and add
-a card. Pro is $20 USD per month; conversion does not add a second trial.
-`manage --no-open` prints the hosted billing-portal URL instead of opening it.
-With `--format json`, `manage` also reports
-`access_state` plus any applicable
-`refresh_after_unix`, `access_deadline_unix`, and `grace_deadline_unix` values.
-The access state is one of `trial`, `active`, `canceling_paid`, `offline_grace`,
-or `locked`; it is separate from helper and graph readiness.
-A locked commercial state may retain an applicable deadline for recovery
-diagnostics, but that deadline never grants access.
-
-On explicit `ctx status`, MCP `pro_status`, and `ctx pro manage` surfaces, a
-trial state may include a `$20/month` continuation action and a locked state may
-include an unpriced `pro_restore_access` action using `ctx pro manage`, with the
-local graph explicitly reported as preserved. Paid
-`active`, `canceling_paid`, and `offline_grace` states do not show a purchase
-action. Existing `next_action` remains separate, no browser opens from status,
-and blame citations never include conversion copy.
-
-The anonymous trial credential, optional pending browser handoff, opaque account
-credential, the
-installation signing key, and the signed entitlement are kept only in the
-selected credential store. The platform-native store is preferred; on a
-pristine root, an exact native-unavailable result may instead select a sticky
-owner-private local file store. Those local bytes are protected from other OS
-users but are not encrypted against the same OS user or root. Locked, denied,
-corrupt, ambiguous, canceled, and other native-store failures do not downgrade
-to files. Neither credential namespace accepts an environment-supplied key,
-universal key, or binary-embedded pepper, and the Pro graph has no plaintext
-database mode. Entitlements renew quietly before their seven-day grant expires;
-a failed refresh does not block a still-valid offline grant and is retried with
-a bounded backoff.
-
-`--keep-data` is a local helper removal that preserves local Pro data so setup
-can restore access later. It does not require commercial configuration,
-network access, or credential-store access. `--delete-data` removes and verifies
-local Pro data through the public delete-only adapter. It works after an earlier
-plain uninstall and does not evaluate subscription or entitlement expiry. It
-reports `local_pro_data: "deleted"` only after the authoritative local inventory
-is absent and fails closed before removing the helper if that inventory cannot
-be verified. A successful operation prints or returns `ctx pro` as the next
-action only when graph data was actually preserved or deleted. A never-Pro or
-already-empty root instead reports
-`local_pro_data: "absent"` and has no next action. Setup records root-scoped
-initialization before its first credential-store write, so `--delete-data` also
-cleans and verifies credentials and recorded graph keys after an interrupted
-artifact fetch or helper start, even if no graph publication exists. The `absent`
-result describes that filesystem graph state, not whether credential-store
-cleanup work was required. Before deleting a graph key, uninstall durably
-records the exact installation identity and bounded thumbprints in a nonsecret
-local cleanup phase. Uninstall validates the complete current Flat/FST graph
-artifact inventory, fails closed on unexpected or near-miss entries, deletes
-and verifies graph artifacts before the selected graph key, and retains the
-phase after late failures so the next `--delete-data` can verify already-absent
-graph data, keys, and credentials without enumerating another installation.
-Setup and `--keep-data` refuse to proceed until an interrupted deletion is
-completed.
-
-Subscription lock does not delete `ctx.db`, the encrypted graph, or its key.
-After renewal or resubscription, `ctx pro` refreshes authorization and restores
-access to the preserved graph. Only explicit
-`ctx pro uninstall --delete-data` removes Pro data and key material.
-Run it before manually deleting the ctx data root so the root-local installation
-identity remains available for selected credential-store cleanup. A small
-installation-bound anti-rollback watermark may remain afterward; it contains no
-graph key, transcript content, account token, or entitlement body. A failed
-deletion may also leave root-local initialization and cleanup-phase metadata;
-successful `--delete-data` removes both. The nonsecret lifecycle-lock file may
-remain as local coordination metadata, in addition to the disclosed
-selected-store watermark.
-
-Materialization is internal and idempotent. Setup, daemon freshness, and blame
-invoke it as needed. Repository and worktree roots come from canonical
-activity; there is no `setup --repo` option.
-
-Each root-local installation identity and production/staging environment is an
-independent Local Pro credential-store namespace. Moving or renaming a complete
-ctx data root preserves that identity and its selected backend; copying
-`pro/graph` alone does not.
-
-The public Pro query surface is:
-
-```bash
-ctx blame <target> [--type file|commit|pr] [--lines <start[:end]>] [--repository <logical-repository>] [--limit N] [--cursor <cursor>] [--format json]
-
-# Explicit compatibility forms
-ctx blame file <path> [--lines <start[:end]>] [--repository <logical-repository>] [--limit N] [--cursor <cursor>] [--format json]
-ctx blame commit <sha> [--repository <logical-repository>] [--limit N] [--cursor <cursor>] [--format json]
-ctx blame pr <positive-number-or-canonical-url> [--repository <logical-repository>] [--limit N] [--cursor <cursor>] [--format json]
-```
-
-Without `--type`, shorthand classification is deterministic and conservative:
-positive PR numbers and canonical supported PR/MR URLs select PR blame; 4-64
-character hexadecimal Git object IDs select commit blame; and path-shaped
-targets containing `/`, `\`, or a filename extension select file blame. Other
-targets fail with `invalid_request` and direct the caller to `--type`. Explicit
-`--type file|commit|pr` is authoritative. Use it for bare filenames, a
-hexadecimal filename, or any target whose intended kind is otherwise ambiguous.
-The selected value remains subject to that target kind's existing validation
-contract.
-
-The `file`, `commit`, and `pr` subcommands remain supported compatibility forms
-with their existing arguments and output behavior. Those three words therefore
-retain subcommand precedence as the first token; for example, use
-`ctx blame file file` to query a file literally named `file`.
-
-File blame automatically attempts one bounded read of up to the first three
-exact cited Core records. Human output adds an
-`Evidence context (local history content)` section only when at least one
-record verifies and projects safely; otherwise the entire section is omitted.
-Each rendered item keeps the typed path separate from its exact excerpt, shows
-`old → new` for a rename, and shows `Event time` only when the authenticated
-Core event carries an exact timestamp.
-JSON and MCP always include the same status-bearing
-`evidence_context` object described in the JSON contract. Missing, stale,
-unsupported, oversized, or ambiguous evidence does not change attribution,
-the underlying helper result, or command success. Commit and PR blame mark
-evidence context as not applicable and do not read Core evidence. Continuation
-commands use the ordinary blame syntax and require no evidence option.
-
-There are no Pro `show`, `timeline`, `facts`, or `related` compatibility
-aliases. OSS `ctx show session|event` remains unchanged. The CLI blame limit defaults to 20
-and is bounded from 1 through 100.
-
-Query `--repository` is an optional logical repository identity, such as
-`forge:github.com/ctxrs/ctx`, recorded in the graph. It is never a local
-checkout path or a raw credential-bearing remote URL. Omitting it leaves the
-query unscoped; an explicitly empty or whitespace-only identity is an invalid
-request. It is required for a numeric PR selector and optional with a canonical
-GitHub, GitLab (including canonical self-hosted
-`/-/merge_requests/<positive>`), or Codeberg URL.
-
-`--lines` is a positive 1-based committed line or inclusive `start:end` range
-and exists only for file blame. File blame binds the result to a Git HEAD
-snapshot and may report that the worktree differs; returned ranges still refer
-to committed HEAD lines. Only file blame negotiates the helper's Git-read
-capability.
-
-Every successful response is the typed protocol `BlameResult`: a resolved
-file, commit, or PR target; an `outcome` whose attribution is `proven`,
-`possible`, `conflicting`, or `none`; typed matches; one complete deduplicated,
-contiguously numbered evidence table; and an optional continuation. Human output
-leads with `Producer proven`, `Possible producer found`, `Producer evidence
-conflicts`, or `No producer proven`. Producer conflict remains successful;
-target, repository, and commit-rewrite ambiguity fail.
-
-File and PR output reports per-page evaluated coverage counts for all four
-states. Counts describe the returned committed lines, commit facts, or PR
-relationships and never trigger a total-result scan or a `partial` state. A page
-never clips evidence for a returned match. Continuation cursors are opaque and
-bound to the request and graph state.
-
-JSON and MCP always include freshness. Human output hides routine currentness
-and warns when the result uses stale committed
-history. A stale positive attribution may succeed; a stale no-attribution result
-fails because the miss would not be definitive. Mixed stale coverage also fails
-when even one evaluated unit is `none`.
-
-Commit output groups assertions as `Produced by`, `Possible producers`, and
-`Also recorded`; inspection or reference evidence never appears as production.
-PR activity is separate from code production. A PR-to-commit relationship is
-shown only when structured forge evidence binds the canonical PR identity and
-exact Git object ID; otherwise output says `associated commits not proven`.
-When a returned relationship or production attribution carries an exact
-supporting-fact timestamp, human output labels it `Observed` and renders RFC
-3339 UTC milliseconds. This is history/provenance fact time, not Git author or
-committer time, PR creation or merge time, materialization time, or proof of
-completion. Missing fact times remain quiet, and timestamps never change the
-existing semantic ordering, cursors, or pagination.
-
-`ctx blame --format json` failures are compact typed JSON, never raw Rust error
-text. MCP uses the identical object as `structuredContent` and sets
-`isError: true`; human errors lead with the outcome, one trusted detail, and at
-most one action. The object preserves matching `error` and `error_code`, plus a
-closed `reason`, trusted `message`, `retryable`, and applicable freshness,
-single argv action, or bounded candidates.
-
-Stable Pro failure codes include `pro_not_installed`, `commercial_unavailable`,
-`entitlement_required`, `entitlement_expired`, `entitlement_invalid`,
-`helper_upgrade_required`, `key_store_unavailable`,
-`key_store_locked`, `not_materialized`, `protocol_mismatch`, `repository_unavailable`,
-`resource_not_found`, `operation_unavailable`,
-`line_out_of_range`, `stale_snapshot`, `stale_fact`, `ambiguous`,
-`corrupt_graph`, `invalid_request`, `invalid_response`,
-`helper_crashed`, and `helper_timeout`.
-
-Core search is an explicit advisory only for a current result with no producer,
-a current target that is not indexed, or an unavailable blame operation. Blame
-never performs Core search automatically.
-
-`key_store_locked` and `key_store_unavailable` are the only stable public names
-for selected credential-store failures. Pre-release `credential_vault_*`
-spellings were never shipped and have no compatibility alias.
-
-The helper materializes deterministic repository/worktree/branch/remote,
-commit, file, command/check, forge-reference/action, and agent relationship
-facts. Public blame exposes only file, commit, and PR targets. It does not claim
-universal shell-wrapper, forge, or provider accuracy; unknown or contradictory
-evidence remains referenced, attempted, or ambiguous.
-Deployments and ask/brief generation are outside this local work-graph surface.
-Credential material is held by the selected credential store.
-
-Materialization uses a frozen canonical `(mutation_epoch,
-event_seq_high_water)` frontier. A pure tail append raises only the high-water
-mark, so the next completed run reads and commits only the new observations:
-work is O(delta), not a rescan of prior rows. A non-tail insertion, a relevant
-event/session/run/source update or deletion, or a parser/policy projection
-revision advances the mutation epoch. Repository authorization or observed
-HEAD/ref semantics also participate in derived-graph compatibility.
-
-The helper reports explicit graph states. `NotMaterialized` starts the first
-build; `Ready` is fully current; `Partial` continues an interrupted finite walk;
-`NeedsResume` consumes a newer canonical tail; and `NeedsRebuild` means the
-epoch, schema/detector contract, repository set, or repository semantics cannot
-safely continue. Rebuild uses a state-token-checked reset before replay. Legacy
-derived graphs that predate the required immutable digests and epochs are reset
-instead of being treated as a valid resume point. Canonical `ctx` history is
-never deleted by this process.
-
-## Referrals
-
-The shipped referral surface is default-disabled on both staging and stable
-until commercial credential and isolated-payout qualification is complete.
-While disabled, every explicit referral command and `ctx pro --referral`
-returns `referral_unavailable` before identity, authentication, or browser
-side effects, and the one-time `ctx blame` referral CTA is not written or
-marked as shown.
-
-The referrer management surface is entirely in the CLI:
-
-```bash
-ctx referral create <codename> [--format json]
-ctx referral status [--format json]
-ctx referral payout [--no-open] [--country <CC>] [--format json]
-```
-
-`create` lets any person with a verified ctx account claim one stable codename, or returns
-that same claim when the request is replayed. A Pro trial or subscription is
-not required. A codename is 3–32 bytes of lowercase ASCII letters, digits, or
-hyphens and must start and end with a letter or digit. The client checks that
-syntax before sending it, while the hosted service remains authoritative.
-Human referral-command output leads with
-`Refer a developer. Earn $10/month toward your agent bill.` and may follow with
-`Up to $120 per friend.` Create and status also print the exact share command
-`ctx pro --referral <codename>`.
-
-The commission is $10 cash for each distinct qualifying $20 monthly Pro
-invoice, covering subscription invoices 1 through 12 for each direct referral.
-The maximum is $120 per direct referral. Invoice 1 and invoice 2 commissions
-accrue as pending; neither can become payable until invoice 2 has settled, the
-required 14-day hold has elapsed, authoritative reconciliation has completed,
-and the earnings pass manual review. Each invoice 3 through 12 commission has
-its own 14-day hold and authoritative reconciliation before manual review and
-payability.
-
-A refund or dispute voids an unpaid commission. If the corresponding
-commission was already paid, its reversal becomes referral debt, a negative
-adjustment against future earnings, and enters manual review; ctx does not
-initiate an external clawback. Earnings are cash commissions, not Pro credits.
-There is no creator-affiliate program, website or cookie attribution, annual
-plan qualification, or compatibility attribution path.
-
-`status` is the complete referrer summary. It reports the codename, exact share
-command, attributed and subscribed totals, earned, pending, manual-review,
-payable, processing, paid, and debt amounts, and payout state. `processing` is
-cash sent for payout but not yet settled. `paid` remains the historical cash
-actually settled and is never reduced by a later reversal; such a reversal
-increases debt instead. The aggregate accounting identity is
-`earned + debt = pending + manual review + payable + processing + paid`.
-Status is private to the authenticated referrer and aggregate only: it exposes
-no referred identity, invoice, or per-referral ledger. It does not add referral
-copy or status to ordinary `ctx status`, MCP, setup, search, or other Core
-flows.
-
-`payout` requests a one-use hosted payout-onboarding URL when the account is
-eligible. Referral payouts support individual recipients at launch. Human mode
-opens the URL by default; `--no-open` prints it instead. When first-time setup
-needs a country, interactive human mode asks for a readable country name or
-two-letter code and sends the normalized ISO country code. Existing recipients
-are not asked for country again when the service already knows their onboarding
-state. `--country <CC>` is the advanced override for scripts and other
-noninteractive callers; ctx never collects bank or card data. Human mode
-requires browser setup to have completed through `ctx pro`; payout may open
-the hosted onboarding page.
-
-Every referral command using `--format json` is noninteractive and browser-free. It
-uses only a cached opaque account credential and returns the stable
-authentication-required failure when none is available; it never starts browser setup or invokes a browser
-opener. JSON contains only the requested deterministic command data, with no
-unsolicited referral slogan or promotional message. `payout --format json` returns
-the hosted URL without opening it. JSON and piped payout calls never prompt; if
-the service requires a country and none was supplied, they return
-`referral_payout_country_required` and the caller should rerun with
-`--country <CC>`.
-
-The sole automatic referral mention is human-only and shown once. After the
-first successful, nonempty, interactive `ctx blame` result, ctx may write
-`Refer a developer. Earn $10/month toward your agent bill.` followed by
-`Up to $120 per friend.` and `ctx referral create <codename>` to stderr, then
-record a nonsecret shown-once marker under the data root. It is suppressed for
-JSON and JSONL, MCP, noninteractive output, empty or failed results, install and
-setup, Core commands, and later blame results. Showing the copy makes no network
-request and is not reported remotely.
-
+Official managed distributions may install a separately signed private
+companion alongside Core. Core-only channels retain the OSS commands. Paid
+routes return a typed companion-unavailable failure when the companion is
+absent. See [ctx Pro](managed-companion.md).
 ## Show
 
 ```bash
@@ -1044,15 +674,9 @@ ctx mcp serve
 ctx integrations install mcp
 ```
 
-`mcp serve` starts a local MCP server over newline-delimited stdio JSON-RPC. It
-exposes Core tools (`status`, `sources`, `search`, `show_session`, `show_event`,
-and `query_events`) plus two Pro tools (`pro_status` and `blame`).
-`pro_status` remains read-only. Pro blame advertises `readOnlyHint: false`
-because bounded local catch-up consumes a feed from the pinned Core generation,
-writes the encrypted derived Pro graph, and advances its generation receipt. It
-never writes provider history or repositories. Its final serialized response,
-including exact structured content plus text fallback, is capped at 1 MiB; an
-over-cap page fails intact with guidance to lower `limit` or use CLI JSON.
+`mcp serve` starts a local MCP server over newline-delimited stdio JSON-RPC.
+It exposes the Core tools `status`, `sources`, `search`, `show_session`,
+`show_event`, and `query_events`.
 
 MCP `search` queries the active Core/Tantivy generation and can use a compatible
 semantic generation under the normal search contract. It does not become an
@@ -1174,18 +798,6 @@ ctx sources --format json
 ctx import --format json
 ctx show session <ctx-session-id> --format json
 ctx show event <ctx-event-id> --format json
-ctx pro --format json
-ctx pro --referral <codename> --format json
-ctx pro setup --format json
-ctx pro manage --no-open --format json
-ctx pro uninstall (--delete-data|--keep-data) --format json
-ctx referral create <codename> --format json
-ctx referral status --format json
-ctx referral payout [--no-open] [--country <CC>] --format json
-ctx blame <target> [--type file|commit|pr] --format json
-ctx blame file <path> --format json
-ctx blame commit <sha> --format json
-ctx blame pr <number-or-url> [--repository <logical-repository>] --format json
 ctx search <query>|--term <term>|--file <path> --format json
 ctx docs list --format json
 ctx docs search <query> --format json

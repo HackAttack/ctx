@@ -66,7 +66,7 @@ pub fn run(
     match execute(args, &data_root, ui.stdout_writer()) {
         Ok(events) => {
             telemetry.events_returned = Some(count_bucket(events as u64));
-            local_usage.set_result_observation(ResultObservationAction::OpenEvent, events, 0, 0);
+            local_usage.set_result_observation(ResultObservationAction::OpenEvent, events, 0);
             Ok(())
         }
         Err(error) => {
@@ -161,7 +161,6 @@ pub fn selection_from_request(
         workspace,
         event_type,
         role,
-        agent_type,
         file,
         scope,
         direction,
@@ -185,7 +184,6 @@ pub fn selection_from_request(
             workspace,
             event_type,
             role,
-            agent_type,
             scope: match scope {
                 crate::ListEventsScope::All => CoreEventRangeScope::All,
                 crate::ListEventsScope::Primary => CoreEventRangeScope::Primary,

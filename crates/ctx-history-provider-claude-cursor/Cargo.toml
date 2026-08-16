@@ -1,0 +1,33 @@
+[package]
+name = "ctx-history-provider-claude-cursor"
+version = "0.26.0"
+description = "Claude Code and Cursor provider adapters for ctx agent history"
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+rust-version.workspace = true
+publish = false
+
+[features]
+default = []
+test-support = ["ctx-history-provider-runtime/test-support"]
+
+[dependencies]
+chrono.workspace = true
+ctx-history-capture-model = { path = "../ctx-history-capture-model" }
+ctx-history-capture-runtime = { path = "../ctx-history-capture-runtime" }
+ctx-history-core = { path = "../ctx-history-core" }
+ctx-history-jsonl = { path = "../ctx-history-jsonl" }
+ctx-history-provider-runtime = { path = "../ctx-history-provider-runtime" }
+ctx-history-source-io = { path = "../ctx-history-source-io" }
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+uuid.workspace = true
+
+[dev-dependencies]
+ctx-history-jsonl = { path = "../ctx-history-jsonl", features = ["test-support"] }
+ctx-history-provider-runtime = { path = "../ctx-history-provider-runtime", features = ["test-support"] }
+libc.workspace = true
+tempfile.workspace = true

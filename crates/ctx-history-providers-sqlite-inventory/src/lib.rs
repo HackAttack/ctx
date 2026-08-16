@@ -13,10 +13,9 @@ pub mod provider;
 pub mod registration;
 
 pub use ctx_history_capture_model::{
-    fnv1a64, DiscoveryReport, OutputOutcome, OutputOutcomeMetadata, ProviderSource,
-    ProviderSourceStatus,
+    fnv1a64, DiscoveryReport, ProviderSource, ProviderSourceStatus,
 };
-pub use ctx_history_provider_runtime::{CaptureError, Result};
+pub use ctx_history_provider_runtime::{CaptureError, ProviderRouteControlExpectation, Result};
 pub use ctx_history_source_discovery::DiscoveryContext;
 
 pub(crate) fn discover_provider_sources_for_provider_with_context(

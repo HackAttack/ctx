@@ -58,7 +58,9 @@ pub(super) fn parse_api_projection<'a>(
                 kind: OutputObservationKind::Tool,
                 base_sub_index: 0,
                 call_id: envelope.call_id.clone(),
-                outcome: envelope.outcome(),
+                status: envelope.status.clone(),
+                exit_code: envelope.exit_code,
+                duration_ms: envelope.duration_ms,
             },
             &mut projection.outputs,
         )?;
@@ -166,33 +168,30 @@ pub(super) fn parse_api_block<'a>(
         .iter()
         .any(|value| matches!(value.as_str(), "tooluse" | "functioncall" | "toolcall"));
     if is_result {
-        let block_outcome = block.outcome();
-        let outcome = if block_outcome.outcome == OutputOutcome::Unknown
-            && block_outcome.exit_code.is_none()
-            && block_outcome.duration_ms.is_none()
-        {
-            outer.outcome()
-        } else {
-            block_outcome
-        };
         push_explicit_outputs(
             block.unique_result_body()?,
             OutputCandidateContext {
                 kind: OutputObservationKind::Tool,
                 base_sub_index: sub_index.saturating_mul(1_024),
-                call_id: block.call_id.clone().or_else(|| outer.call_id.clone()),
-                outcome,
+                call_id: exact_optional_string_alias(&block.call_id, &outer.call_id),
+                status: exact_optional_string_alias(&block.status, &outer.status),
+                exit_code: exact_optional_copy_alias(block.exit_code, outer.exit_code),
+                duration_ms: exact_optional_copy_alias(block.duration_ms, outer.duration_ms),
             },
             &mut projection.outputs,
         )?;
     } else if is_call {
-        let file_touches = extract_file_touches(raw_block)?;
-        let mut row = ClineEventRow::tool_call(context, row_sub_index, block.call_id, block.name);
-        row.attach_file_touches(file_touches);
-        projection.rows.push(row);
+        let arguments = block.argument_capture();
+        projection.rows.push(ClineEventRow::tool_call(
+            context,
+            row_sub_index,
+            block.call_id,
+            block.name,
+            arguments,
+        ));
     } else if is_text && retain_text {
         if let Some(body) = block
-            .retained_body()
+            .unique_retained_body()?
             .map(decode_retained_text)
             .transpose()?
         {
@@ -207,37 +206,6 @@ pub(super) fn parse_api_block<'a>(
         }
     }
     Ok(())
-}
-
-pub(super) fn extract_file_touches(
-    raw_call: &RawValue,
-) -> Result<Vec<ClineFileTouch>, (ClineItemRejectionKind, String)> {
-    let raw_value = serde_json::from_str::<Value>(raw_call.get())
-        .map_err(|error| (ClineItemRejectionKind::MalformedRecord, error.to_string()))?;
-    let mut file_touches = Vec::new();
-    let outcome = visit_provider_file_touch_drafts_with_limit(
-        &raw_value,
-        true,
-        MAX_PROVIDER_FILE_TOUCHES_PER_EVENT,
-        |(_, touch)| -> std::result::Result<(), ()> {
-            file_touches.push(ClineFileTouch {
-                path: touch.path.into_boxed_str(),
-                old_path: touch.old_path.map(String::into_boxed_str),
-                change_kind: touch.change_kind,
-                confidence: touch.confidence,
-                metadata: touch.metadata,
-            });
-            Ok(())
-        },
-    )
-    .unwrap_or_else(|()| unreachable!("the file-touch collector is infallible"));
-    if outcome.limit_exceeded() {
-        return Err((
-            ClineItemRejectionKind::UnsupportedShape,
-            PROVIDER_FILE_TOUCH_LIMIT_REJECTION.to_owned(),
-        ));
-    }
-    Ok(file_touches)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -284,7 +252,9 @@ pub(super) fn parse_ui_projection<'a>(
                     kind: OutputObservationKind::Command,
                     base_sub_index: 0,
                     call_id: envelope.call_id.clone(),
-                    outcome: envelope.outcome(),
+                    status: envelope.status.clone(),
+                    exit_code: envelope.exit_code,
+                    duration_ms: envelope.duration_ms,
                 },
                 &mut projection.outputs,
             )?;
@@ -300,7 +270,7 @@ pub(super) fn parse_ui_projection<'a>(
         return Ok(projection);
     };
     if let Some(body) = envelope
-        .retained_body()
+        .unique_retained_body()?
         .map(decode_retained_text)
         .transpose()?
         .flatten()

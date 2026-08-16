@@ -2,6 +2,7 @@
 members = [
     "crates/ctx-agent-application",
     "crates/ctx-agent-integrations",
+    "crates/ctx-companion-bridge",
     "crates/ctx-cli",
     "crates/ctx-cli-contract-tests",
     "crates/ctx-cli-presentation",
@@ -12,11 +13,44 @@ members = [
     "crates/ctx-daemon-runtime",
     "crates/ctx-upgrade-engine",
     "crates/ctx-history-capture",
+    "crates/ctx-history-capture-composition",
+    "crates/ctx-history-provider-gemini",
+    "crates/ctx-history-provider-native-jsonl",
+    "crates/ctx-history-capture-model",
+    "crates/ctx-history-capture-runtime",
+    "crates/ctx-history-provider-docproj",
+    "crates/ctx-history-provider-runtime",
+    "crates/ctx-history-provider-claude-cursor",
+    "crates/ctx-history-provider-codex",
+    "crates/ctx-history-provider-mistral-mux",
+    "crates/ctx-history-provider-trae",
+    "crates/ctx-history-providers-sqlite-inventory",
+    "crates/ctx-history-providers-sqlite-logical",
+    "crates/ctx-history-ingest-application",
     "crates/ctx-history-core",
     "crates/ctx-history-platform",
     "crates/ctx-history-cli",
     "crates/ctx-history-index",
-    "crates/ctx-history-store",
+    "crates/ctx-history-index-format",
+    "crates/ctx-history-index-generation",
+    "crates/ctx-history-index-query",
+    "crates/ctx-history-snapshot-reader",
+    "crates/ctx-history-jsonl",
+    "crates/ctx-history-providers-jsonl-shared",
+    "crates/ctx-history-providers-task-docs",
+    "crates/ctx-history-native-jsonl-parsers",
+    "crates/ctx-deepseek-harness-qualification",
+    "crates/ctx-grok-build-qualification",
+    "crates/ctx-history-read-application",
+    "crates/ctx-history-refresh",
+    "crates/ctx-history-refresh-execution",
+    "crates/ctx-history-providers-sqlite-selected",
+    "crates/ctx-history-source-io",
+    "crates/ctx-history-source-sqlite",
+    "crates/ctx-history-source-discovery",
+    "crates/ctx-semantic-index",
+    "crates/ctx-semantic-model",
+    "crates/ctx-terminal",
     "crates/ctx-protocol",
     "crates/ctx-sdk",
 ]
@@ -32,6 +66,8 @@ rust-version = "1.88"
 
 [workspace.dependencies]
 anyhow = "1.0"
+anstream = "1.0"
+anstyle = "1.0"
 assert_cmd = "2.0"
 base64 = "0.22"
 chrono = { version = "0.4", default-features = false, features = ["std", "serde"] }
@@ -40,6 +76,8 @@ clap_mangen = "0.2"
 ctrlc = { version = "3.5.2", features = ["termination"] }
 directories = "5.0"
 ed25519-dalek = "2.1"
+json5 = { version = "0.4", default-features = false }
+jsonc-parser = { version = "0.33", default-features = false, features = ["serde", "serde_json"] }
 libc = "0.2"
 memmap2 = "0.9"
 notify = "8.2.0"
@@ -48,17 +86,27 @@ proptest = "1"
 regex = "1.10"
 ring = "0.17"
 rmpv = "1.3"
-rusqlite = { version = "0.32", features = ["bundled", "hooks", "limits"] }
-serde = { version = "1.0", features = ["derive"] }
-serde_json = "1.0"
+rusqlite = { version = "0.32", features = ["bundled", "functions", "hooks", "limits", "serialize"] }
+quick-xml = { version = "0.41.0", default-features = false }
+serde = { version = "1.0", features = ["derive", "rc"] }
+serde_json = { version = "1.0", features = ["raw_value"] }
+serde_yaml = { version = "0.9", default-features = false }
+semver = "1.0"
 sha2 = "0.10"
-tantivy = { version = "0.26.1", default-features = false, features = ["mmap", "lz4-compression", "columnar-zstd-compression"] }
+supports-unicode = "3.0"
+tantivy = { version = "0.26.1", default-features = false, features = ["mmap", "lz4-compression", "zstd-compression", "columnar-zstd-compression"] }
 tempfile = "3.10"
+terminal_size = "0.4"
 thiserror = "1.0"
+toml_edit = { version = "0.22", default-features = false, features = ["parse", "serde"] }
 tar = "0.4"
 url = "2.5"
 uuid = { version = "1.10", features = ["serde", "v4", "v7"] }
+ureq = { version = "2.10", default-features = true }
+unicode-width = "0.2"
+unicode-segmentation = "1.12"
 xz2 = "0.1"
+zeroize = "1.8"
 zstd = "0.13"
 
 [patch.crates-io]

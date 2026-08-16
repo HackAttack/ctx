@@ -1,6 +1,5 @@
 //! Provider-owned Cursor discovery, parsing, and complete Core projection.
 
-mod invocation_evidence;
 mod layout;
 mod parser;
 mod projection;

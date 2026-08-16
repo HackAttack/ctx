@@ -4,10 +4,10 @@ use std::{
 };
 
 use ctx_history_core::{
-    derive_event_id, derive_session_id, AgentType, CaptureProvider, CertifiedSource, CoreRecord,
-    CoreRecordError, EventIdentityInput, NativeItemKey, NativeSessionKey, ProjectionContractError,
-    ScannedSourceCounts, SessionIdentityInput, SourceAnchor, SourceKey, SubrecordSelector,
-    TypedKey,
+    derive_event_id, derive_session_id, CaptureProvider, CertifiedSource, CoreActivity, CoreRecord,
+    CoreRecordError, EventIdentityInput, LiteralFactKind, NativeItemKey, NativeSessionKey,
+    ProjectionContractError, ProviderDeclaredFact, ScannedSourceCounts, SessionIdentityInput,
+    SourceAnchor, SourceKey, SubrecordSelector, TypedKey, CORE_ACTIVITY_REVISION,
 };
 use thiserror::Error;
 
@@ -29,7 +29,7 @@ pub use replacement::TraeReplacementTree;
 
 const TRAE_SOURCE_ANCHOR_NAMESPACE: &str = "trae.workspace-storage";
 const TRAE_SOURCE_SCHEMA_VARIANT: &str = "trae-itemtable-json-v1";
-const TRAE_SOURCE_BACKED_PARSER_REVISION: &str = "trae-itemtable-source-backed-v1";
+const TRAE_SOURCE_BACKED_PARSER_REVISION: &str = "trae-itemtable-source-backed-v2-core-activity";
 const TRAE_NATIVE_SESSION_NAMESPACE: &str = "trae.itemtable-session-v1";
 const TRAE_SESSION_POSITION_KIND: &str = "trae.itemtable-session-position-v1";
 const TRAE_NATIVE_ITEM_NAMESPACE: &str = "trae.itemtable-key-v1";
@@ -121,6 +121,7 @@ pub(super) fn scan_trae_authority(
     }
 
     let terminal_evidence = authority.database.seal(canonical_path)?;
+    authority.workspace_folder.revalidate()?;
     counts.certified_bytes = scanner.certified_source_bytes();
     let decoded_rows = scanner.decoded_rows();
     let source = SqliteLogicalSnapshot::new(
@@ -216,12 +217,9 @@ fn core_record(
     let mut projected = CoreRecord::new_selected(
         event_id,
         session_id,
-        session_id,
         source.clone(),
         event_sequence,
         record.event_type.as_str(),
-        AgentType::Primary.as_str(),
-        true,
         TRAE_SOURCE_BACKED_PARSER_REVISION,
         body,
     )?;
@@ -229,11 +227,33 @@ fn core_record(
     projected.native_event_id = Some(native_event_id);
     projected.occurred_at_unix_ms = Some(record.occurred_at.timestamp_millis());
     projected.role = record.role.map(|role| role.as_str().to_owned());
-    projected.workspace = authority
-        .workspace_folder
-        .clone()
-        .or_else(|| Some(authority.workspace_id.clone()));
-    projected.cwd = authority.workspace_folder.clone();
+    let facts = authority.workspace_folder.literal().map_or_else(
+        || {
+            vec![ProviderDeclaredFact {
+                kind: LiteralFactKind::Workspace,
+                value: authority.workspace_id.clone(),
+            }]
+        },
+        |folder| {
+            vec![
+                ProviderDeclaredFact {
+                    kind: LiteralFactKind::Workspace,
+                    value: folder.to_owned(),
+                },
+                ProviderDeclaredFact {
+                    kind: LiteralFactKind::SessionCwd,
+                    value: folder.to_owned(),
+                },
+            ]
+        },
+    );
+    projected.content.activity = Some(CoreActivity {
+        revision: CORE_ACTIVITY_REVISION,
+        provider_call_id: None,
+        invocation: None,
+        result: None,
+        facts,
+    });
     projected.validate_contract()?;
     Ok(Some(projected))
 }
@@ -398,8 +418,130 @@ mod tests {
         assert_eq!(record.event_id, expected_event_id);
         assert_ne!(record.event_id, later_alias_event_id);
         assert_eq!(record.role.as_deref(), Some("unknown"));
-        assert_eq!(record.workspace.as_deref(), Some("blank-first-workspace"));
-        assert_eq!(record.cwd, None);
-        assert_eq!(record.parser_revision, "trae-itemtable-source-backed-v1");
+        assert_eq!(
+            record.content.activity.as_ref().unwrap().facts,
+            vec![ctx_history_core::ProviderDeclaredFact {
+                kind: ctx_history_core::LiteralFactKind::Workspace,
+                value: "blank-first-workspace".to_owned(),
+            }]
+        );
+        assert_eq!(
+            record.parser_revision,
+            "trae-itemtable-source-backed-v2-core-activity"
+        );
+    }
+
+    #[test]
+    fn exact_workspace_folder_is_preserved_verbatim_as_workspace_and_cwd_facts() {
+        let temp = crate::test_support_paths::tempdir().unwrap();
+        let data_root = crate::test_support_paths::tempdir().unwrap();
+        let workspace_root = temp.path().join("exact-workspace");
+        fs::create_dir(&workspace_root).unwrap();
+        let source_path = workspace_root.join("state.vscdb");
+        let literal = "file:///Users/Case%20Sensitive/./repo";
+        fs::write(
+            workspace_root.join("workspace.json"),
+            serde_json::to_vec(&serde_json::json!({"folder": literal})).unwrap(),
+        )
+        .unwrap();
+        let payload = r#"{"list":[{"id":"native-session","messages":[{"id":"native-message","role":"assistant","content":"literal workspace"}]}]}"#;
+        let connection = Connection::open(&source_path).unwrap();
+        connection
+            .execute(
+                "CREATE TABLE ItemTable ([key] TEXT PRIMARY KEY, value TEXT)",
+                [],
+            )
+            .unwrap();
+        connection
+            .execute(
+                "INSERT INTO ItemTable ([key], value) VALUES (?1, ?2)",
+                params![crate::TRAE_CHAT_KEYS[0], payload],
+            )
+            .unwrap();
+        drop(connection);
+
+        let authority = acquire_source(
+            data_root.path(),
+            &source_path,
+            chrono::DateTime::<chrono::Utc>::UNIX_EPOCH,
+        )
+        .unwrap();
+        let mut documents = Vec::new();
+        scan_trae_authority(&source_path, &authority, &mut |page| {
+            documents.extend(page.documents);
+            Ok(())
+        })
+        .unwrap();
+
+        assert_eq!(documents.len(), 1);
+        let record = &documents[0];
+        assert_eq!(
+            record.content.activity.as_ref().unwrap().facts,
+            vec![
+                ctx_history_core::ProviderDeclaredFact {
+                    kind: ctx_history_core::LiteralFactKind::Workspace,
+                    value: literal.to_owned(),
+                },
+                ctx_history_core::ProviderDeclaredFact {
+                    kind: ctx_history_core::LiteralFactKind::SessionCwd,
+                    value: literal.to_owned(),
+                },
+            ]
+        );
+        assert_eq!(
+            record.source,
+            super::source_key_for_workspace("exact-workspace").unwrap()
+        );
+    }
+
+    #[test]
+    fn oversized_workspace_metadata_abstains_without_deriving_location_semantics() {
+        let temp = crate::test_support_paths::tempdir().unwrap();
+        let data_root = crate::test_support_paths::tempdir().unwrap();
+        let workspace_root = temp.path().join("bounded-workspace");
+        fs::create_dir(&workspace_root).unwrap();
+        let source_path = workspace_root.join("state.vscdb");
+        fs::write(
+            workspace_root.join("workspace.json"),
+            vec![b'x'; crate::MAX_PROVIDER_JSONL_LINE_BYTES + 1],
+        )
+        .unwrap();
+        let payload = r#"{"list":[{"id":"native-session","messages":[{"id":"native-message","role":"assistant","content":"bounded workspace"}]}]}"#;
+        let connection = Connection::open(&source_path).unwrap();
+        connection
+            .execute(
+                "CREATE TABLE ItemTable ([key] TEXT PRIMARY KEY, value TEXT)",
+                [],
+            )
+            .unwrap();
+        connection
+            .execute(
+                "INSERT INTO ItemTable ([key], value) VALUES (?1, ?2)",
+                params![crate::TRAE_CHAT_KEYS[0], payload],
+            )
+            .unwrap();
+        drop(connection);
+
+        let authority = acquire_source(
+            data_root.path(),
+            &source_path,
+            chrono::DateTime::<chrono::Utc>::UNIX_EPOCH,
+        )
+        .unwrap();
+        let mut documents = Vec::new();
+        scan_trae_authority(&source_path, &authority, &mut |page| {
+            documents.extend(page.documents);
+            Ok(())
+        })
+        .unwrap();
+
+        assert_eq!(documents.len(), 1);
+        assert_eq!(
+            documents[0].content.activity.as_ref().unwrap().facts,
+            vec![ctx_history_core::ProviderDeclaredFact {
+                kind: ctx_history_core::LiteralFactKind::Workspace,
+                value: "bounded-workspace".to_owned(),
+            }]
+        );
     }
 }

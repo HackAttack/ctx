@@ -273,10 +273,8 @@ pub enum IndexError {
     },
     #[error("stored lexical document field {0} is missing, malformed, or inconsistent")]
     InvalidStoredDocumentField(&'static str),
-    #[error("session relationship graph is invalid: {0}")]
-    InvalidSessionRelationshipGraph(&'static str),
-    #[error("copied-event origin graph is invalid: {0}")]
-    InvalidEventOriginGraph(&'static str),
+    #[error("one session has conflicting provider-native lineage claims: {0}")]
+    ConflictingProviderNativeSessionClaim(&'static str),
     #[error("lexical index checksum verification failed for one or more active files")]
     ChecksumMismatch,
     #[error("ID prefix must contain 1 to 32 hexadecimal digits, with optional hyphens")]
@@ -1171,11 +1169,11 @@ mod tests {
         let manifest = GenerationManifest::from_parts(Vec::new(), vec![snapshot]).unwrap();
         assert_eq!(
             serde_json::to_string(&manifest).unwrap(),
-            "{\"manifest_version\":8,\"identity_version\":1,\"core_record_version\":2,\"core_record_contract_fingerprint\":\"1d0a6cea575cf79eb8dbad9bebed1e54cccce2fd7a59944a4c2ff448cc34ecf3\",\"lexical_schema_version\":20,\"lexical_analyzer_version\":2,\"policy_schema_hash\":\"65f9bd00ef5a66f05782d57ccc6fe55130f6cff63f234b6f9da214b4e5a07e99\",\"indexed_documents\":0,\"certified_source_bytes\":0,\"sources\":[],\"core_record_aggregates\":[],\"source_routes\":[{\"route_identity\":\"abababababababababababababababababababababababababababababababab\",\"sources\":[],\"missing\":null}]}",
+            "{\"manifest_version\":8,\"identity_version\":1,\"core_record_version\":3,\"core_record_contract_fingerprint\":\"ebb5c9b638de184824a6ce141ebf9b70941fb293fc113d29e2851565bad4371e\",\"lexical_schema_version\":21,\"lexical_analyzer_version\":2,\"policy_schema_hash\":\"fa91524af6c806f43e1203db44bb068d5c3dc1e22c1829703d54a03ed5cb8788\",\"indexed_documents\":0,\"certified_source_bytes\":0,\"sources\":[],\"core_record_aggregates\":[],\"source_routes\":[{\"route_identity\":\"abababababababababababababababababababababababababababababababab\",\"sources\":[],\"missing\":null}]}",
         );
         assert_eq!(
             manifest.generation_id().unwrap(),
-            "10fdaf1900b510144c5e4333fed1fba496367e32ddf0a07343565ab839620150"
+            "348e8629b8db4b15f3445b916a7eb8e87ddaeb3a3cd1be3696d9d99b24ce6bed"
         );
     }
 

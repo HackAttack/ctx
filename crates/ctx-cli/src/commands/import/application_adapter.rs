@@ -1,7 +1,7 @@
 use std::path::Path;
 
 use anyhow::Result;
-use ctx_history_capture::{source_backed_source_failure_identity, ProviderSource};
+use ctx_history_capture::{ProviderSource, source_backed_source_failure_identity};
 use ctx_history_core::CaptureProvider;
 use ctx_history_ingest_application::{HistorySourcePluginSource, IngestPublication};
 use ctx_history_platform::platform_security::establish_private_data_root;
@@ -12,7 +12,7 @@ use crate::{
 };
 
 use super::{
-    core_refresh::{wait_for_import_core_refresh, ImportCoreRefreshRequest},
+    core_refresh::{ImportCoreRefreshRequest, wait_for_import_core_refresh},
     explicit_source_catalog::{
         explicit_source_for_admission, relocate_explicit_source, relocation_authority_for_import,
         upsert_explicit_source,

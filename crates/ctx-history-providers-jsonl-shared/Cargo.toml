@@ -1,0 +1,29 @@
+[package]
+name = "ctx-history-providers-jsonl-shared"
+version = "0.26.0"
+description = "Shared JSONL history provider adapters for ctx"
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+rust-version.workspace = true
+publish = false
+
+[dependencies]
+chrono.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+tempfile.workspace = true
+thiserror.workspace = true
+ctx-history-capture-model = { path = "../ctx-history-capture-model" }
+ctx-history-capture-runtime = { path = "../ctx-history-capture-runtime" }
+ctx-history-core = { path = "../ctx-history-core" }
+ctx-history-jsonl = { path = "../ctx-history-jsonl" }
+ctx-history-native-jsonl-parsers = { path = "../ctx-history-native-jsonl-parsers" }
+ctx-history-provider-runtime = { path = "../ctx-history-provider-runtime" }
+ctx-history-source-io = { path = "../ctx-history-source-io" }
+
+[dev-dependencies]
+ctx-history-source-io = { path = "../ctx-history-source-io", features = ["test-support"] }
+uuid.workspace = true

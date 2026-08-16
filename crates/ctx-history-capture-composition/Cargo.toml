@@ -1,0 +1,47 @@
+[package]
+name = "ctx-history-capture-composition"
+version.workspace = true
+description = "Index-backed provider capture composition for ctx history"
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+rust-version.workspace = true
+publish = false
+
+[dependencies]
+chrono.workspace = true
+ctx-history-capture-model = { path = "../ctx-history-capture-model" }
+ctx-history-capture-runtime = { path = "../ctx-history-capture-runtime" }
+ctx-history-core = { path = "../ctx-history-core" }
+ctx-history-index = { path = "../ctx-history-index" }
+ctx-history-jsonl = { path = "../ctx-history-jsonl" }
+ctx-history-provider-claude-cursor = { path = "../ctx-history-provider-claude-cursor" }
+ctx-history-provider-codex = { path = "../ctx-history-provider-codex" }
+ctx-history-provider-docproj = { path = "../ctx-history-provider-docproj" }
+ctx-history-provider-gemini = { path = "../ctx-history-provider-gemini" }
+ctx-history-provider-mistral-mux = { path = "../ctx-history-provider-mistral-mux" }
+ctx-history-provider-native-jsonl = { path = "../ctx-history-provider-native-jsonl" }
+ctx-history-provider-runtime = { path = "../ctx-history-provider-runtime" }
+ctx-history-provider-trae = { path = "../ctx-history-provider-trae" }
+ctx-history-providers-jsonl-shared = { path = "../ctx-history-providers-jsonl-shared" }
+ctx-history-providers-sqlite-inventory = { path = "../ctx-history-providers-sqlite-inventory" }
+ctx-history-providers-sqlite-logical = { path = "../ctx-history-providers-sqlite-logical" }
+ctx-history-providers-sqlite-selected = { path = "../ctx-history-providers-sqlite-selected" }
+ctx-history-providers-task-docs = { path = "../ctx-history-providers-task-docs" }
+ctx-history-source-discovery = { path = "../ctx-history-source-discovery" }
+ctx-history-source-io = { path = "../ctx-history-source-io" }
+serde_json.workspace = true
+sha2.workspace = true
+tempfile.workspace = true
+thiserror.workspace = true
+uuid.workspace = true
+
+[dev-dependencies]
+ctx-history-jsonl = { path = "../ctx-history-jsonl", features = ["test-support"] }
+ctx-history-provider-claude-cursor = { path = "../ctx-history-provider-claude-cursor", features = ["test-support"] }
+ctx-history-provider-codex = { path = "../ctx-history-provider-codex", features = ["test-support"] }
+ctx-history-providers-sqlite-inventory = { path = "../ctx-history-providers-sqlite-inventory", features = ["test-support"] }
+ctx-history-providers-sqlite-selected = { path = "../ctx-history-providers-sqlite-selected", features = ["test-support"] }
+ctx-history-source-io = { path = "../ctx-history-source-io", features = ["test-support"] }
+rusqlite.workspace = true

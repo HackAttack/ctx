@@ -17,6 +17,8 @@ pub(super) struct RawEnvelope<'a> {
     pub(super) ask: Option<String>,
     pub(super) name: Option<String>,
     pub(super) call_id: Option<String>,
+    pub(super) arguments: Option<Value>,
+    pub(super) conflicting_argument_alias: bool,
     pub(super) occurred_at_millis: Option<i64>,
     pub(super) content: Option<&'a RawValue>,
     pub(super) text: Option<&'a RawValue>,
@@ -24,14 +26,13 @@ pub(super) struct RawEnvelope<'a> {
     pub(super) output: Option<&'a RawValue>,
     pub(super) result: Option<&'a RawValue>,
     pub(super) response: Option<&'a RawValue>,
-    pub(super) timed_out: bool,
     pub(super) exit_code: Option<i32>,
     pub(super) duration_ms: Option<u64>,
-    pub(super) explicit_failure: bool,
-    pub(super) explicit_success: bool,
     pub(super) status: Option<String>,
     pub(super) conflicting_discriminator: bool,
     pub(super) oversized_discriminator: bool,
+    pub(super) conflicting_name_alias: bool,
+    pub(super) conflicting_call_id_alias: bool,
 }
 
 impl<'a> RawEnvelope<'a> {
@@ -59,8 +60,33 @@ impl<'a> RawEnvelope<'a> {
         }
     }
 
-    pub(super) fn retained_body(&self) -> Option<&'a RawValue> {
-        self.text.or(self.message).or(self.content)
+    pub(super) fn unique_retained_body(
+        &self,
+    ) -> Result<Option<&'a RawValue>, (ClineItemRejectionKind, String)> {
+        let candidates = [self.text, self.message, self.content]
+            .into_iter()
+            .flatten()
+            .collect::<Vec<_>>();
+        match candidates.as_slice() {
+            [] => Ok(None),
+            [selected] => Ok(Some(*selected)),
+            _ => Err((
+                ClineItemRejectionKind::ConflictingDiscriminator,
+                "Cline message exposes more than one candidate body field".to_owned(),
+            )),
+        }
+    }
+
+    pub(super) fn argument_capture(&self) -> ActivityJsonCapture {
+        if self.conflicting_argument_alias {
+            ActivityJsonCapture::Unavailable
+        } else {
+            self.arguments
+                .clone()
+                .map_or(ActivityJsonCapture::Absent, |value| {
+                    ActivityJsonCapture::Present { value }
+                })
+        }
     }
 
     pub(super) fn normalized_discriminators(&self) -> impl Iterator<Item = String> + '_ {
@@ -74,34 +100,6 @@ impl<'a> RawEnvelope<'a> {
         .into_iter()
         .flatten()
         .map(normalize_discriminator)
-    }
-
-    pub(super) fn outcome(&self) -> OutputOutcomeMetadata {
-        let status = self.status.as_deref().map(normalize_discriminator);
-        let outcome = if self.timed_out
-            || status
-                .as_deref()
-                .is_some_and(|value| matches!(value, "timeout" | "timedout"))
-        {
-            OutputOutcome::Timeout
-        } else if self.exit_code.is_some_and(|code| code != 0)
-            || self.explicit_failure
-            || status.as_deref().is_some_and(status_is_failure)
-        {
-            OutputOutcome::Failure
-        } else if self.exit_code == Some(0)
-            || self.explicit_success
-            || status.as_deref().is_some_and(status_is_success)
-        {
-            OutputOutcome::Success
-        } else {
-            OutputOutcome::Unknown
-        };
-        OutputOutcomeMetadata {
-            outcome,
-            exit_code: self.exit_code,
-            duration_ms: self.duration_ms,
-        }
     }
 }
 
@@ -128,12 +126,29 @@ impl<'de> Visitor<'de> for RawEnvelopeVisitor {
         A: MapAccess<'de>,
     {
         let mut envelope = RawEnvelope::default();
-        let mut seen_id = false;
+        let mut seen_id_fields = BTreeSet::new();
+        let mut native_id_observed = false;
+        let mut native_id_conflict = false;
         let mut seen_role = false;
         let mut seen_type = false;
         let mut seen_kind = false;
         let mut seen_say = false;
         let mut seen_ask = false;
+        let mut seen_name_fields = BTreeSet::new();
+        let mut seen_call_id_fields = BTreeSet::new();
+        let mut seen_argument_fields = BTreeSet::new();
+        let mut seen_timestamp_fields = BTreeSet::new();
+        let mut timestamp_observed = false;
+        let mut timestamp_conflict = false;
+        let mut seen_status_fields = BTreeSet::new();
+        let mut status_observed = false;
+        let mut status_conflict = false;
+        let mut seen_exit_code_fields = BTreeSet::new();
+        let mut exit_code_observed = false;
+        let mut exit_code_conflict = false;
+        let mut seen_duration_fields = BTreeSet::new();
+        let mut duration_observed = false;
+        let mut duration_conflict = false;
         while let Some(BoundedString(field, _)) =
             map.next_key::<BoundedString<MAX_JSON_KEY_BYTES>>()?
         {
@@ -146,12 +161,15 @@ impl<'de> Visitor<'de> for RawEnvelopeVisitor {
                     let value = map.next_value::<BoundedString<MAX_NATIVE_ID_BYTES>>()?;
                     envelope.oversized_discriminator |= value.1;
                     let value = value.0;
-                    if seen_id && envelope.native_id != value {
+                    let duplicate_field = !seen_id_fields.insert(field);
+                    envelope.conflicting_discriminator |= duplicate_field;
+                    if duplicate_field || native_id_observed && envelope.native_id != value {
+                        native_id_conflict = true;
                         envelope.native_id = None;
-                    } else if !seen_id {
+                    } else if !native_id_conflict && !native_id_observed {
                         envelope.native_id = value;
                     }
-                    seen_id = true;
+                    native_id_observed = true;
                 }
                 "role" => {
                     let value = map.next_value::<BoundedString<MAX_SMALL_FIELD_BYTES>>()?;
@@ -191,19 +209,74 @@ impl<'de> Visitor<'de> for RawEnvelopeVisitor {
                 "name" | "tool" | "tool_name" => {
                     let value = map.next_value::<BoundedString<MAX_SMALL_FIELD_BYTES>>()?;
                     envelope.oversized_discriminator |= value.1;
-                    if envelope.name.is_none() {
+                    let duplicate_field = !seen_name_fields.insert(field);
+                    envelope.conflicting_discriminator |= duplicate_field;
+                    if duplicate_field
+                        || envelope
+                            .name
+                            .as_ref()
+                            .zip(value.0.as_ref())
+                            .is_some_and(|(left, right)| left != right)
+                    {
+                        envelope.conflicting_name_alias = true;
+                        envelope.name = None;
+                    } else if !envelope.conflicting_name_alias && envelope.name.is_none() {
                         envelope.name = value.0;
                     }
                 }
                 "tool_use_id" | "toolUseId" | "call_id" | "callId" => {
                     let value = map.next_value::<BoundedString<MAX_SMALL_FIELD_BYTES>>()?;
                     envelope.oversized_discriminator |= value.1;
-                    if envelope.call_id.is_none() {
+                    let duplicate_field = !seen_call_id_fields.insert(field);
+                    envelope.conflicting_discriminator |= duplicate_field;
+                    if duplicate_field
+                        || envelope
+                            .call_id
+                            .as_ref()
+                            .zip(value.0.as_ref())
+                            .is_some_and(|(left, right)| left != right)
+                    {
+                        envelope.conflicting_call_id_alias = true;
+                        envelope.call_id = None;
+                    } else if !envelope.conflicting_call_id_alias && envelope.call_id.is_none() {
                         envelope.call_id = value.0;
                     }
                 }
+                "arguments" | "args" | "input" | "parameters" => {
+                    let value = map.next_value::<Value>()?;
+                    let duplicate_field = !seen_argument_fields.insert(field);
+                    envelope.conflicting_discriminator |= duplicate_field;
+                    if duplicate_field {
+                        envelope.conflicting_argument_alias = true;
+                        envelope.arguments = None;
+                        continue;
+                    }
+                    if value.is_null() {
+                        continue;
+                    }
+                    if envelope
+                        .arguments
+                        .as_ref()
+                        .is_some_and(|selected| selected != &value)
+                    {
+                        envelope.conflicting_argument_alias = true;
+                        envelope.arguments = None;
+                    } else if !envelope.conflicting_argument_alias && envelope.arguments.is_none() {
+                        envelope.arguments = Some(value);
+                    }
+                }
                 "ts" | "timestamp" | "createdAt" => {
-                    envelope.occurred_at_millis = map.next_value::<LooseTimestamp>()?.0;
+                    let value = map.next_value::<LooseTimestamp>()?.0;
+                    let duplicate_field = !seen_timestamp_fields.insert(field);
+                    envelope.conflicting_discriminator |= duplicate_field;
+                    if duplicate_field || timestamp_observed && envelope.occurred_at_millis != value
+                    {
+                        timestamp_conflict = true;
+                        envelope.occurred_at_millis = None;
+                    } else if !timestamp_conflict && !timestamp_observed {
+                        envelope.occurred_at_millis = value;
+                    }
+                    timestamp_observed = true;
                 }
                 "content" => set_raw_once(
                     &mut envelope.content,
@@ -236,26 +309,51 @@ impl<'de> Visitor<'de> for RawEnvelopeVisitor {
                     &mut envelope.conflicting_discriminator,
                 ),
                 "timed_out" | "timedOut" | "timeout" => {
-                    envelope.timed_out |= map.next_value::<LooseBool>()?.0.unwrap_or(false);
+                    map.next_value::<IgnoredAny>()?;
                 }
                 "exit_code" | "exitCode" => {
-                    envelope.exit_code = map.next_value::<LooseI32>()?.0;
+                    let value = map.next_value::<LooseI32>()?.0;
+                    let duplicate_field = !seen_exit_code_fields.insert(field);
+                    envelope.conflicting_discriminator |= duplicate_field;
+                    if duplicate_field || exit_code_observed && envelope.exit_code != value {
+                        exit_code_conflict = true;
+                        envelope.exit_code = None;
+                    } else if !exit_code_conflict && !exit_code_observed {
+                        envelope.exit_code = value;
+                    }
+                    exit_code_observed = true;
                 }
                 "duration_ms" | "durationMs" => {
-                    envelope.duration_ms = map.next_value::<LooseU64>()?.0;
+                    let value = map.next_value::<LooseU64>()?.0;
+                    let duplicate_field = !seen_duration_fields.insert(field);
+                    envelope.conflicting_discriminator |= duplicate_field;
+                    if duplicate_field || duration_observed && envelope.duration_ms != value {
+                        duration_conflict = true;
+                        envelope.duration_ms = None;
+                    } else if !duration_conflict && !duration_observed {
+                        envelope.duration_ms = value;
+                    }
+                    duration_observed = true;
                 }
-                "success" | "ok" => match map.next_value::<LooseBool>()?.0 {
-                    Some(true) => envelope.explicit_success = true,
-                    Some(false) => envelope.explicit_failure = true,
-                    None => {}
-                },
+                "success" | "ok" => {
+                    map.next_value::<IgnoredAny>()?;
+                }
                 "isError" | "is_error" | "failed" => {
-                    envelope.explicit_failure |= map.next_value::<LooseBool>()?.0.unwrap_or(false);
+                    map.next_value::<IgnoredAny>()?;
                 }
                 "status" | "state" | "outcome" => {
                     let value = map.next_value::<BoundedString<MAX_SMALL_FIELD_BYTES>>()?;
                     envelope.oversized_discriminator |= value.1;
-                    envelope.status = value.0;
+                    let value = value.0;
+                    let duplicate_field = !seen_status_fields.insert(field);
+                    envelope.conflicting_discriminator |= duplicate_field;
+                    if duplicate_field || status_observed && envelope.status != value {
+                        status_conflict = true;
+                        envelope.status = None;
+                    } else if !status_conflict && !status_observed {
+                        envelope.status = value;
+                    }
+                    status_observed = true;
                 }
                 _ => {
                     map.next_value::<IgnoredAny>()?;
@@ -280,7 +378,9 @@ pub(super) struct OutputCandidate<'a> {
     pub(super) kind: OutputObservationKind,
     pub(super) sub_index: u32,
     pub(super) call_id: Option<String>,
-    pub(super) outcome: OutputOutcomeMetadata,
+    pub(super) status: Option<String>,
+    pub(super) exit_code: Option<i32>,
+    pub(super) duration_ms: Option<u64>,
     pub(super) body: Option<&'a RawValue>,
 }
 
@@ -288,7 +388,9 @@ pub(super) struct OutputCandidateContext {
     pub(super) kind: OutputObservationKind,
     pub(super) base_sub_index: u32,
     pub(super) call_id: Option<String>,
-    pub(super) outcome: OutputOutcomeMetadata,
+    pub(super) status: Option<String>,
+    pub(super) exit_code: Option<i32>,
+    pub(super) duration_ms: Option<u64>,
 }
 
 pub(super) fn push_explicit_outputs<'a>(
@@ -299,6 +401,18 @@ pub(super) fn push_explicit_outputs<'a>(
     let mut leaves = Vec::new();
     if let Some(selected) = selected {
         collect_explicit_output_leaves(selected, &mut leaves, 0)?;
+    }
+    if leaves.is_empty() {
+        outputs.push(OutputCandidate {
+            kind: context.kind,
+            sub_index: context.base_sub_index,
+            call_id: context.call_id,
+            status: context.status,
+            exit_code: context.exit_code,
+            duration_ms: context.duration_ms,
+            body: None,
+        });
+        return Ok(());
     }
     for (inner_index, leaf) in leaves.into_iter().enumerate() {
         if inner_index >= CLINE_NATIVE_PAGE_MAX_UNITS {
@@ -313,7 +427,9 @@ pub(super) fn push_explicit_outputs<'a>(
                 .base_sub_index
                 .saturating_add(u32::try_from(inner_index).unwrap_or(u32::MAX)),
             call_id: context.call_id.clone(),
-            outcome: context.outcome.clone(),
+            status: context.status.clone(),
+            exit_code: context.exit_code,
+            duration_ms: context.duration_ms,
             body: Some(leaf),
         });
     }
@@ -350,15 +466,6 @@ pub(super) fn push_explicit_result_blocks<'a>(
         {
             continue;
         }
-        let block_outcome = block.outcome();
-        let outcome = if block_outcome.outcome == OutputOutcome::Unknown
-            && block_outcome.exit_code.is_none()
-            && block_outcome.duration_ms.is_none()
-        {
-            outer.outcome()
-        } else {
-            block_outcome
-        };
         push_explicit_outputs(
             block.unique_result_body()?,
             OutputCandidateContext {
@@ -366,13 +473,37 @@ pub(super) fn push_explicit_result_blocks<'a>(
                 base_sub_index: u32::try_from(index)
                     .unwrap_or(u32::MAX)
                     .saturating_mul(1_024),
-                call_id: block.call_id.clone().or_else(|| outer.call_id.clone()),
-                outcome,
+                call_id: exact_optional_string_alias(&block.call_id, &outer.call_id),
+                status: exact_optional_string_alias(&block.status, &outer.status),
+                exit_code: exact_optional_copy_alias(block.exit_code, outer.exit_code),
+                duration_ms: exact_optional_copy_alias(block.duration_ms, outer.duration_ms),
             },
             outputs,
         )?;
     }
     Ok(())
+}
+
+pub(super) fn exact_optional_string_alias(
+    left: &Option<String>,
+    right: &Option<String>,
+) -> Option<String> {
+    match (left.as_deref(), right.as_deref()) {
+        (Some(left), Some(right)) if left != right => None,
+        (Some(value), _) | (_, Some(value)) => Some(value.to_owned()),
+        (None, None) => None,
+    }
+}
+
+pub(super) fn exact_optional_copy_alias<T: Copy + Eq>(
+    left: Option<T>,
+    right: Option<T>,
+) -> Option<T> {
+    match (left, right) {
+        (Some(left), Some(right)) if left != right => None,
+        (Some(value), _) | (_, Some(value)) => Some(value),
+        (None, None) => None,
+    }
 }
 
 pub(super) fn collect_explicit_output_leaves<'a>(
@@ -643,13 +774,7 @@ pub(super) fn parse_item(
         }
     };
     let output_rows = projection.outputs.len();
-    let retained_units = projection
-        .rows
-        .len()
-        .saturating_add(output_rows)
-        .saturating_add(projection.rows.iter().fold(0_usize, |count, row| {
-            count.saturating_add(row.file_touches.len())
-        }));
+    let retained_units = projection.rows.len().saturating_add(output_rows);
     if retained_units > max_item_units {
         return rejected_item_with_key(
             component,
@@ -662,13 +787,27 @@ pub(super) fn parse_item(
             stats,
         );
     }
-    let mut output_outcomes = Vec::with_capacity(projection.outputs.len());
+    let native_content = match serde_json::from_str::<Value>(raw.get()) {
+        Ok(value) => value,
+        Err(error) => {
+            return rejected_item_with_key(
+                component,
+                native_index,
+                envelope.native_id,
+                observed_bytes,
+                ClineItemRejectionKind::MalformedRecord,
+                &error.to_string(),
+                native_key,
+                stats,
+            );
+        }
+    };
+    let mut output_details = Vec::with_capacity(projection.outputs.len());
     for output in projection.outputs {
-        stats.output_outcomes_observed = stats.output_outcomes_observed.saturating_add(1);
-        output_outcomes.push(output.outcome.clone());
+        stats.outputs_observed = stats.outputs_observed.saturating_add(1);
         let body = match output.body.map(decode_explicit_output_text).transpose() {
             Ok(Some(body)) if !body.trim().is_empty() => body,
-            Ok(_) => continue,
+            Ok(_) => serde_json::to_string(&native_content).unwrap_or_else(|_| "null".to_owned()),
             Err((kind, detail)) => {
                 return rejected_item_with_key(
                     component,
@@ -683,6 +822,19 @@ pub(super) fn parse_item(
             }
         };
         let output_bytes = body.len();
+        let output_structured_content = output
+            .body
+            .and_then(|raw| serde_json::from_str::<Value>(raw.get()).ok())
+            .unwrap_or_else(|| native_content.clone());
+        let diagnostic = ClineSparseOutputDiagnostic {
+            status: output.status.map(String::into_boxed_str),
+            exit_code: output.exit_code,
+            duration_ms: output.duration_ms,
+            output_bytes,
+            call_id: output.call_id.map(String::into_boxed_str),
+            structured_content: output_structured_content,
+        };
+        output_details.push(diagnostic.clone());
         projection.rows.push(ClineEventRow::output(
             ClineEventContext {
                 task: identity,
@@ -698,14 +850,11 @@ pub(super) fn parse_item(
                 OutputObservationKind::Tool => ClineEventKind::ToolOutput,
             },
             body,
-            ClineSparseOutputDiagnostic {
-                outcome: output.outcome.outcome,
-                exit_code: output.outcome.exit_code,
-                duration_ms: output.outcome.duration_ms,
-                output_bytes,
-                call_id: output.call_id.map(String::into_boxed_str),
-            },
+            diagnostic,
         ));
+    }
+    for row in &mut projection.rows {
+        row.structured_content = native_content.clone();
     }
     let retained_body_bytes = projection
         .rows
@@ -744,7 +893,7 @@ pub(super) fn parse_item(
             stats,
         );
     }
-    let checkpoint = ClineItemCheckpoint::new(native_key, &projection.rows, &output_outcomes, None);
+    let checkpoint = ClineItemCheckpoint::new(native_key, &projection.rows, &output_details, None);
     stats.core_rows = stats.core_rows.saturating_add(projection.rows.len());
     ParsedItem {
         checkpoint,
@@ -787,16 +936,26 @@ mod result_tests {
                 &mut ClinePublicationStats::default(),
             )
         };
+        let parse_raw = |value: &str| {
+            let raw = RawValue::from_string(value.to_owned()).unwrap();
+            parse_item(
+                &raw,
+                ItemParseContext {
+                    identity: &identity,
+                    component: ClineEventComponent::ApiHistory,
+                    max_item_units: 60,
+                },
+                0,
+                &mut BTreeMap::new(),
+                &mut ClinePublicationStats::default(),
+            )
+        };
 
-        for (status, expected) in [
-            (Some("success"), OutputOutcome::Success),
-            (Some("failure"), OutputOutcome::Failure),
-            (None, OutputOutcome::Unknown),
-        ] {
+        for status in [Some("success"), Some("failure"), None] {
             let mut value = json!({
                 "role": "tool",
                 "tool_use_id": "call-1",
-                "content": format!("complete-{expected:?}"),
+                "content": format!("complete-{}", status.unwrap_or("absent")),
             });
             if let Some(status) = status {
                 value["status"] = json!(status);
@@ -804,10 +963,10 @@ mod result_tests {
             let item = parse(value);
             assert!(item.rejection.is_none());
             assert_eq!(item.rows.len(), 1);
-            let expected_body = format!("complete-{expected:?}");
+            let expected_body = format!("complete-{}", status.unwrap_or("absent"));
             assert_eq!(item.rows[0].body.as_deref(), Some(expected_body.as_str()));
             let output = item.rows[0].sparse_output.as_ref().unwrap();
-            assert_eq!(output.outcome, expected);
+            assert_eq!(output.status.as_deref(), status);
             assert_eq!(output.call_id.as_deref(), Some("call-1"));
         }
 
@@ -834,5 +993,56 @@ mod result_tests {
             ambiguous.rejection.as_ref().map(|value| value.kind),
             Some(ClineItemRejectionKind::ConflictingDiscriminator)
         );
+
+        let aliases = parse(json!({
+            "role": "assistant",
+            "content": {
+                "type": "tool_use",
+                "tool_use_id": "first-call",
+                "call_id": "second-call",
+                "name": "first_tool",
+                "tool": "second_tool",
+                "input": {"x": 1},
+                "arguments": {"x": 2}
+            }
+        }));
+        assert!(aliases.rejection.is_none());
+        assert_eq!(aliases.rows.len(), 1);
+        let call = aliases.rows[0].tool_call.as_ref().unwrap();
+        assert!(call.call_id.is_none());
+        assert!(call.name.is_none());
+        assert_eq!(call.arguments, ActivityJsonCapture::Unavailable);
+        assert_eq!(
+            aliases.rows[0].structured_content["content"]["tool_use_id"],
+            "first-call"
+        );
+        assert_eq!(
+            aliases.rows[0].structured_content["content"]["call_id"],
+            "second-call"
+        );
+
+        let duplicate_call_fields = parse_raw(
+            r#"{"role":"assistant","content":{"type":"tool_use","tool_use_id":"call-1","name":"tool","name":"tool","arguments":{"x":1},"arguments":{"x":1}}}"#,
+        );
+        assert_eq!(
+            duplicate_call_fields
+                .rejection
+                .as_ref()
+                .map(|value| value.kind),
+            Some(ClineItemRejectionKind::ConflictingDiscriminator)
+        );
+
+        let duplicate_status = parse_raw(
+            r#"{"role":"tool","tool_use_id":"call-1","status":"success","status":"success","content":"exact body"}"#,
+        );
+        assert_eq!(
+            duplicate_status.rejection.as_ref().map(|value| value.kind),
+            Some(ClineItemRejectionKind::ConflictingDiscriminator)
+        );
+
+        let ambiguous_message =
+            parse_raw(r#"{"role":"assistant","text":"first","message":"second"}"#);
+        assert!(ambiguous_message.rejection.is_none());
+        assert!(ambiguous_message.rows.is_empty());
     }
 }

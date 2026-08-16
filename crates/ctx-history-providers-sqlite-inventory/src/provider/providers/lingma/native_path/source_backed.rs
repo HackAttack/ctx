@@ -18,7 +18,7 @@ const INVENTORY_AUTHORITY_NAMESPACE: &str = "lingma.installed-client-profile-ver
 const INVENTORY_REVISION_KIND: &str = "lingma-finite-database-inventory-v0";
 #[cfg(test)]
 const INVENTORY_DISCOVERY_REVISION: &str = "lingma-installed-database-discovery-v0";
-pub(crate) const PARSER_REVISION: &str = "lingma-source-backed-core-v1";
+pub(crate) const PARSER_REVISION: &str = "lingma-source-backed-core-v2-neutral-core";
 const NATIVE_SESSION_NAMESPACE: &str = "lingma.session";
 const NATIVE_REQUEST_NAMESPACE: &str = "lingma.chat-record.request";
 const NATIVE_POSITION_KIND: &str = "lingma.chat-record.scan-ordinal";

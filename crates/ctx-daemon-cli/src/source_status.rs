@@ -12,40 +12,25 @@ use serde_json::{json, Value};
 use crate::{compact_json, config::AppConfig};
 
 use super::paths_status::{
-    daemon_core_refresh_job_path, daemon_jobs_path, daemon_report_with_config,
-    daemon_semantic_job_path, read_daemon_job_status,
+    daemon_core_refresh_job_path, daemon_report_with_config, daemon_semantic_job_path,
+    read_daemon_job_status,
 };
 use super::source_backed_refresh_coordinator::verified_generation_is_query_ready;
 
 const SEARCH_DIRECTORY: &str = "search";
 const LEXICAL_DIRECTORY: &str = "lexical";
-const PRO_CATCH_UP_STATUS_FILE: &str = "pro-catch-up.json";
-
 pub struct SourceEpochStatus {
     pub initialized: bool,
     pub indexed_items: Option<u64>,
     pub indexed_sessions: Option<u64>,
     pub indexed_events: Option<u64>,
     pub indexed_sources: Option<u64>,
-    pub pro: Value,
     pub report: Value,
 }
 
 pub fn source_epoch_status_report(
     data_root: &Path,
     config: &AppConfig<'_>,
-) -> Result<SourceEpochStatus> {
-    source_epoch_status_report_with_pro_query(
-        data_root,
-        config,
-        crate::pro::lifecycle_status_json_for_core,
-    )
-}
-
-fn source_epoch_status_report_with_pro_query(
-    data_root: &Path,
-    config: &AppConfig<'_>,
-    query_pro: impl FnOnce(&Path, Option<&VerifiedIndex>) -> Value,
 ) -> Result<SourceEpochStatus> {
     let current_policy = current_source_generation_policy();
     let current_policy_hash = current_source_generation_policy_hash()?;
@@ -73,8 +58,6 @@ fn source_epoch_status_report_with_pro_query(
         &mut semantic,
         read_daemon_job_status(&daemon_semantic_job_path(data_root)),
     );
-    let pro = query_pro(data_root, admitted_index);
-    let pro_projection = pro_projection_report(data_root, admitted_generation_id.as_deref(), &pro);
     let refresh = refresh_report(refresh_job.as_ref(), generation_id.as_deref(), &daemon);
 
     let indexed_items = admitted_index.map(VerifiedIndex::document_count);
@@ -90,7 +73,6 @@ fn source_epoch_status_report_with_pro_query(
         indexed_sessions,
         indexed_events,
         indexed_sources,
-        pro,
         report: compact_json(json!({
             "schema_version": 2,
             "initialized": initialized,
@@ -101,7 +83,6 @@ fn source_epoch_status_report_with_pro_query(
             "catalog": catalog,
             "refresh": refresh,
             "semantic": semantic,
-            "pro_projection": pro_projection,
             "daemon": daemon,
             "indexed_items": indexed_items,
             "indexed_sessions": indexed_sessions,
@@ -474,114 +455,6 @@ fn semantic_report(
         "enabled": enabled,
         "config_source": config.semantic_search_source(),
         "flat_f32": flat_f32,
-    }))
-}
-
-fn pro_projection_report(
-    data_root: &Path,
-    generation_id: Option<&str>,
-    lifecycle: &Value,
-) -> Value {
-    let helper_generation_matches = lifecycle
-        .get("projection_currentness")
-        .and_then(Value::as_str)
-        == Some("current")
-        && lifecycle.get("materialized").and_then(Value::as_bool) == Some(true)
-        && generation_id.is_some();
-    let path = daemon_jobs_path(data_root).join(PRO_CATCH_UP_STATUS_FILE);
-    let catch_up = read_daemon_job_status(&path);
-    pro_projection_report_from_status(
-        generation_id,
-        helper_generation_matches,
-        lifecycle,
-        catch_up.as_ref(),
-        path,
-    )
-}
-
-fn pro_projection_report_from_status(
-    generation_id: Option<&str>,
-    helper_generation_matches: bool,
-    lifecycle: &Value,
-    catch_up: Option<&Value>,
-    status_path: impl AsRef<Path>,
-) -> Value {
-    let installed = lifecycle.get("installed").and_then(Value::as_bool) == Some(true);
-    let currentness = lifecycle
-        .get("projection_currentness")
-        .and_then(Value::as_str);
-    let materialized = lifecycle.get("materialized").and_then(Value::as_bool) == Some(true);
-    let (status, reason) = if !installed {
-        ("unavailable", json!("pro_not_installed"))
-    } else if generation_id.is_none() {
-        ("unavailable", json!("lexical_generation_unavailable"))
-    } else if currentness == Some("current") && materialized {
-        if helper_generation_matches {
-            ("ready", Value::Null)
-        } else {
-            ("stale", json!("stale_source"))
-        }
-    } else {
-        match currentness {
-            Some("stale") => ("stale", json!("stale_source")),
-            Some("not_materialized" | "partial" | "finalizing") => (
-                "pending",
-                lifecycle
-                    .get("error_code")
-                    .cloned()
-                    .unwrap_or_else(|| json!("core_receipt_pending")),
-            ),
-            Some("needs_rebuild") => ("unavailable", json!("needs_rebuild")),
-            Some("current") => ("unavailable", json!("invalid_response")),
-            Some(_) | None => (
-                "unavailable",
-                lifecycle
-                    .get("error_code")
-                    .cloned()
-                    .unwrap_or_else(|| json!("pro_status_unavailable")),
-            ),
-        }
-    };
-    let receipt_matches = status == "ready";
-    let catch_up = catch_up.map(|job| {
-        compact_json(json!({
-            "status": job.get("status"),
-            "pending": job.get("pending"),
-            "reason": job.get("reason"),
-            "error_code": job.get("error_code"),
-            "core_generation_id": job.get("core_generation_id"),
-            "receipt_core_generation_id": job.get("receipt_core_generation_id"),
-            "attempts": job.get("attempts"),
-            "retryable": job.get("retryable"),
-            "consecutive_failures": job.get("consecutive_failures"),
-            "retry_after_ms": job.get("retry_after_ms"),
-            "retry_not_before_at_ms": job.get("retry_not_before_at_ms"),
-            "last_attempt_at_ms": job.get("last_attempt_at_ms"),
-            "last_attempt_duration_us": job.get("last_attempt_duration_us"),
-            "last_error": job.get("last_error"),
-        }))
-    });
-    compact_json(json!({
-        "status": status,
-        "reason": reason,
-        "core_generation_id": generation_id,
-        "authority": "pro_helper_status",
-        "projection_currentness": lifecycle.get("projection_currentness"),
-        "materialized_coverage": lifecycle.get("materialized_coverage"),
-        "repository_coverage": lifecycle.get("repository_coverage"),
-        "ready": lifecycle.get("ready"),
-        "materialized": lifecycle.get("materialized"),
-        "access_state": lifecycle.get("access_state"),
-        "supported_operations": lifecycle.get("supported_operations"),
-        "available_operations": lifecycle.get("available_operations"),
-        "receipt": {
-            "status": status,
-            "reason": reason,
-            "core_generation_id": if receipt_matches { generation_id } else { None },
-            "generation_matches": receipt_matches,
-        },
-        "catch_up": catch_up,
-        "status_path": status_path.as_ref(),
     }))
 }
 

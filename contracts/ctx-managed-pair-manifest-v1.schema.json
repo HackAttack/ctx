@@ -1,0 +1,96 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://ctx.rs/contracts/ctx-managed-pair-manifest-v1.schema.json",
+  "title": "ctx managed pair manifest v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["contract", "schema_version", "channel", "release_authority_key_id", "release_name", "target", "install_geometry", "target_matrix_sha256", "rollback_generation", "snapshot", "compatibility", "components"],
+  "properties": {
+    "contract": {"const": "ctx-managed-pair-manifest"},
+    "schema_version": {"const": 1},
+    "channel": {"enum": ["stable", "staging"]},
+    "release_authority_key_id": {"$ref": "#/$defs/name"},
+    "release_name": {"$ref": "#/$defs/name"},
+    "target": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "os", "arch", "core_rust_target", "companion_rust_target"],
+      "properties": {
+        "id": {"enum": ["linux-arm64", "linux-x64", "macos-arm64", "macos-x64", "windows-x64"]},
+        "os": {"enum": ["linux", "macos", "windows"]},
+        "arch": {"enum": ["aarch64", "x86_64"]},
+        "core_rust_target": {"$ref": "#/$defs/rust_target"},
+        "companion_rust_target": {"$ref": "#/$defs/rust_target"}
+      }
+    },
+    "install_geometry": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["install_root", "managed_bin_dir", "core_slot", "companion_slot"],
+      "properties": {
+        "install_root": {"const": "<install-root>"},
+        "managed_bin_dir": {"const": "<install-root>/bin"},
+        "core_slot": {"enum": ["<install-root>/bin/ctx", "<install-root>/bin/ctx.exe"]},
+        "companion_slot": {"enum": ["<install-root>/libexec/ctx-pro", "<install-root>/libexec/ctx-pro.exe"]}
+      }
+    },
+    "target_matrix_sha256": {"$ref": "#/$defs/sha256"},
+    "rollback_generation": {"type": "integer", "minimum": 1, "maximum": 9007199254740991, "description": "Monotonic non-decreasing generation; consumers reject a value below retained state."},
+    "snapshot": {"$ref": "#/$defs/snapshot"},
+    "compatibility": {"$ref": "#/$defs/compatibility"},
+    "components": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["core", "companion"],
+      "properties": {
+        "core": {"$ref": "#/$defs/core_component"},
+        "companion": {"$ref": "#/$defs/companion_component"}
+      }
+    }
+  },
+  "$defs": {
+    "name": {"type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[A-Za-z0-9][A-Za-z0-9._+-]*$"},
+    "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "rust_target": {"type": "string", "minLength": 3, "maxLength": 96, "pattern": "^[a-z0-9_]+(?:-[a-z0-9_]+){2,5}$"},
+    "size": {"type": "integer", "minimum": 1, "maximum": 268435456},
+    "object_key": {"type": "string", "minLength": 9, "maxLength": 512, "pattern": "^sha256/[0-9a-f]{64}/[A-Za-z0-9][A-Za-z0-9._+-]{0,127}$"},
+    "build_identity": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["component", "rust_target", "source_revision", "build_fingerprint"],
+      "properties": {
+        "component": {"enum": ["core", "companion"]},
+        "rust_target": {"$ref": "#/$defs/rust_target"},
+        "source_revision": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
+        "build_fingerprint": {"$ref": "#/$defs/sha256"}
+      }
+    },
+    "component": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["artifact_name", "object_key", "sha256", "size_bytes", "install_slot", "build_identity"],
+      "properties": {
+        "artifact_name": {"$ref": "#/$defs/name"},
+        "object_key": {"$ref": "#/$defs/object_key"},
+        "sha256": {"$ref": "#/$defs/sha256"},
+        "size_bytes": {"$ref": "#/$defs/size"},
+        "install_slot": {"enum": ["<install-root>/bin/ctx", "<install-root>/bin/ctx.exe", "<install-root>/libexec/ctx-pro", "<install-root>/libexec/ctx-pro.exe"]},
+        "build_identity": {"$ref": "#/$defs/build_identity"}
+      }
+    },
+    "core_component": {"allOf": [{"$ref": "#/$defs/component"}, {"properties": {"build_identity": {"properties": {"component": {"const": "core"}}}}}]},
+    "companion_component": {"allOf": [{"$ref": "#/$defs/component"}, {"properties": {"build_identity": {"properties": {"component": {"const": "companion"}}}}}]},
+    "snapshot": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["contract", "fingerprint"],
+      "properties": {"contract": {"const": "ctx-managed-pair-snapshot-v1"}, "fingerprint": {"$ref": "#/$defs/sha256"}}
+    },
+    "compatibility": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["invocation_fingerprint", "core_capability_fingerprint"],
+      "properties": {"invocation_fingerprint": {"$ref": "#/$defs/sha256"}, "core_capability_fingerprint": {"$ref": "#/$defs/sha256"}}
+    }
+  }
+}

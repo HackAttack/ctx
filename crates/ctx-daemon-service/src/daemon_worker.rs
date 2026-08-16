@@ -1,7 +1,7 @@
 use std::{path::Path, process, time::Instant};
 
 use anyhow::{anyhow, Result};
-use ctx_history_core::{utc_now, AgentType, CaptureProvider, EventRole, EventType};
+use ctx_history_core::{utc_now, CaptureProvider, EventRole, EventType};
 use ctx_history_index::{CoreEventPageBudget, CoreEventRecord, VerifiedIndex};
 use ctx_semantic_index::{
     semantic_core_content_is_control, source_backed_semantic_vector_path, SemanticBatchEmbedder,
@@ -342,6 +342,12 @@ impl SemanticDocumentBuilder for CoreSemanticDocumentBuilder<'_> {
                 occurred_at_ms = occurred_at_ms.max(assistant_at_ms);
             }
         }
+        let literal_facts = record
+            .core_record
+            .content
+            .activity
+            .as_ref()
+            .map_or_else(Vec::new, |activity| activity.facts.clone());
         Ok(Some(SemanticEventDocument::new(
             record.event_id.as_uuid(),
             Some(record.session_id.as_uuid()),
@@ -356,12 +362,8 @@ impl SemanticDocumentBuilder for CoreSemanticDocumentBuilder<'_> {
             "lite_turn".to_owned(),
             Some(parse_core_provider(&record.provider)?),
             Some(record.source_format.clone()),
-            Some(parse_core_agent_type(&record.agent_type)?),
-            Some(record.is_primary),
-            record.cwd.clone(),
-            None,
-            Some(record.event_type.clone()),
-            record.workspace.clone(),
+            record.core_record.agent_scope,
+            literal_facts,
             sections.join("\n\n"),
         )))
     }
@@ -436,12 +438,6 @@ fn parse_core_provider(value: &str) -> Result<CaptureProvider> {
     value
         .parse()
         .map_err(|error| anyhow!("invalid Core provider {value:?}: {error}"))
-}
-
-fn parse_core_agent_type(value: &str) -> Result<AgentType> {
-    value
-        .parse()
-        .map_err(|error| anyhow!("invalid Core agent type {value:?}: {error}"))
 }
 
 pub(super) fn daemon_semantic_skipped_job(

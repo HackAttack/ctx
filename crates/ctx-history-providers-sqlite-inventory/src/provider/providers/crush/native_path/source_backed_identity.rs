@@ -14,55 +14,22 @@ pub(super) fn crush_source_key(project_key: TypedKey) -> CrushSourceBackedResult
 #[derive(Debug, Clone, Copy)]
 pub(super) struct SessionLineage {
     pub(super) parent_session_id: Option<StableEntityId>,
-    pub(super) root_session_id: StableEntityId,
-    pub(super) agent_type: AgentType,
-    pub(super) is_primary: bool,
 }
 
 pub(super) fn session_lineage(
     source: &OpenedSource,
-    session_parents: &HashMap<String, Option<String>>,
     session: &CrushSessionRow,
-    session_id: StableEntityId,
 ) -> CrushSourceBackedResultV0<SessionLineage> {
     let Some(parent_provider_session_id) = session.parent_session_id.as_deref() else {
         return Ok(SessionLineage {
             parent_session_id: None,
-            root_session_id: session_id,
-            agent_type: AgentType::Primary,
-            is_primary: true,
         });
     };
     let parent_session_id =
         crush_session_id(&source.database.source_key, parent_provider_session_id)?;
-    let mut seen = HashSet::from([session.id.clone()]);
-    let mut root_provider_session_id = parent_provider_session_id.to_owned();
-    for depth in 0..MAX_CRUSH_SESSION_LINEAGE_DEPTH {
-        if !seen.insert(root_provider_session_id.clone()) {
-            return Err(CrushSourceBackedErrorV0::SessionLineageCycle(
-                root_provider_session_id,
-            ));
-        }
-        let next_parent = session_parents
-            .get(&root_provider_session_id)
-            .cloned()
-            .flatten();
-        let Some(next_parent) = next_parent else {
-            let root_session_id =
-                crush_session_id(&source.database.source_key, &root_provider_session_id)?;
-            return Ok(SessionLineage {
-                parent_session_id: Some(parent_session_id),
-                root_session_id,
-                agent_type: AgentType::Subagent,
-                is_primary: false,
-            });
-        };
-        root_provider_session_id = next_parent;
-        if depth + 1 == MAX_CRUSH_SESSION_LINEAGE_DEPTH {
-            return Err(CrushSourceBackedErrorV0::SessionLineageTooDeep);
-        }
-    }
-    Err(CrushSourceBackedErrorV0::SessionLineageTooDeep)
+    Ok(SessionLineage {
+        parent_session_id: Some(parent_session_id),
+    })
 }
 
 pub(super) fn crush_session_id(

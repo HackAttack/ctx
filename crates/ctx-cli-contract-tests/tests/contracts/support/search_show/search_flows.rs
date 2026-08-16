@@ -348,7 +348,6 @@ fn fresh_home_search_mvp_flow() {
     assert_eq!(doctor["ok"], findings.is_empty());
     assert_eq!(doctor["daemon"]["enabled"], true);
     assert_eq!(doctor["source_epoch"]["lexical"]["status"], "ready");
-    assert_eq!(doctor["pro"]["error_code"], "pro_not_installed");
     assert_eq!(
         fs::read(&obsolete_relational).unwrap(),
         obsolete_relational_bytes,

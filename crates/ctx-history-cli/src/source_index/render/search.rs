@@ -334,7 +334,7 @@ fn render_copied_lineage(document: &mut Document, context: &RenderContext, resul
         };
         let relationship = occurrence["session_relationship"]
             .as_str()
-            .unwrap_or("inherited");
+            .unwrap_or("unspecified");
         push_action(
             document,
             context,
@@ -447,43 +447,6 @@ fn render_verbose_fields(document: &mut Document, context: &RenderContext, resul
             Token::Text,
         );
     }
-    let workspace = result["workspace"]
-        .as_str()
-        .filter(|value| !value.is_empty());
-    let cwd = result["cwd"].as_str().filter(|value| !value.is_empty());
-    if let Some(workspace) = workspace {
-        push_field(
-            document,
-            context,
-            CARD_INDENT,
-            "Workspace",
-            VERBOSE_LABEL_WIDTH,
-            workspace,
-            Token::Text,
-        );
-    }
-    if let Some(cwd) = cwd.filter(|cwd| Some(*cwd) != workspace) {
-        push_field(
-            document,
-            context,
-            CARD_INDENT,
-            "CWD",
-            VERBOSE_LABEL_WIDTH,
-            cwd,
-            Token::Text,
-        );
-    }
-    if let Some(branch) = result["branch"].as_str().filter(|value| !value.is_empty()) {
-        push_field(
-            document,
-            context,
-            CARD_INDENT,
-            "Branch",
-            VERBOSE_LABEL_WIDTH,
-            branch,
-            Token::Text,
-        );
-    }
     render_agent_field(document, context, result);
     render_lineage_fields(document, context, result);
     if let Some(rank) = result["rank"].as_u64() {
@@ -511,21 +474,11 @@ fn render_verbose_fields(document: &mut Document, context: &RenderContext, resul
 }
 
 fn render_agent_field(document: &mut Document, context: &RenderContext, result: &Value) {
-    let scope = result["is_primary"]
-        .as_bool()
-        .map(|is_primary| if is_primary { "primary" } else { "subagent" });
-    let agent_type = result["agent_type"]
+    let Some(agent) = result["agent_scope"]
         .as_str()
         .filter(|value| !value.is_empty())
-        .filter(|agent_type| Some(*agent_type) != scope);
-    let agent = match (scope, agent_type) {
-        (Some(scope), Some(agent_type)) => {
-            let separator = if context.unicode() { " · " } else { " | " };
-            format!("{scope}{separator}{agent_type}")
-        }
-        (Some(scope), None) => scope.to_owned(),
-        (None, Some(agent_type)) => agent_type.to_owned(),
-        (None, None) => return,
+    else {
+        return;
     };
     push_field(
         document,
@@ -533,7 +486,7 @@ fn render_agent_field(document: &mut Document, context: &RenderContext, result: 
         CARD_INDENT,
         "Agent",
         VERBOSE_LABEL_WIDTH,
-        &agent,
+        agent,
         Token::Text,
     );
 }

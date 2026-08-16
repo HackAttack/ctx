@@ -10,14 +10,12 @@ use std::{
 use memmap2::{MmapMut, MmapOptions};
 use tantivy::DocAddress;
 
-use ctx_history_core::SessionRelationshipKind;
-
-use crate::{CompactEventOrigin, CompactIdentity, IndexError, Result};
+use crate::{CompactIdentity, IndexError, Result};
 
 pub(super) const VERIFICATION_SPILL_BUFFER_BYTES: usize = 8 * 1024;
 const COMPACT_IDENTITY_BYTES: usize = 32;
 const SOURCE_ORDINAL_BYTES: usize = std::mem::size_of::<u32>();
-const IDENTITY_SPILL_RECORD_BYTES: usize = COMPACT_IDENTITY_BYTES * 6 + SOURCE_ORDINAL_BYTES + 3;
+const IDENTITY_SPILL_RECORD_BYTES: usize = COMPACT_IDENTITY_BYTES * 4 + SOURCE_ORDINAL_BYTES + 2;
 const QUERY_PROJECTION_ACCUMULATOR_BYTES: usize = 32;
 pub(super) const VERIFICATION_SPILL_RECORD_BYTES: usize =
     IDENTITY_SPILL_RECORD_BYTES + QUERY_PROJECTION_ACCUMULATOR_BYTES;
@@ -212,9 +210,7 @@ pub(super) struct SpillVerificationIdentities {
     pub(super) event: CompactIdentity,
     pub(super) session: CompactIdentity,
     pub(super) parent_session: Option<CompactIdentity>,
-    pub(super) root_session: CompactIdentity,
-    pub(super) session_relationship: SessionRelationshipKind,
-    pub(super) event_origin: CompactEventOrigin,
+    pub(super) root_session: Option<CompactIdentity>,
     pub(super) session_source_ordinal: u32,
 }
 
@@ -819,28 +815,14 @@ fn encode_record(identities: SpillVerificationIdentities) -> [u8; IDENTITY_SPILL
             .parent_session
             .unwrap_or(CompactIdentity { digest: [0; 32] }),
     );
-    encode_identity(&mut encoded, &mut cursor, identities.root_session);
-    encoded[cursor] = encode_relationship_kind(identities.session_relationship);
-    cursor += 1;
-    let (origin_kind, ancestor_session, ancestor_event) = match identities.event_origin {
-        CompactEventOrigin::Unknown => (0, None, None),
-        CompactEventOrigin::UniqueToSession => (1, None, None),
-        CompactEventOrigin::CopiedFromAncestor {
-            ancestor_session,
-            ancestor_event,
-        } => (2, Some(ancestor_session), Some(ancestor_event)),
-    };
-    encoded[cursor] = origin_kind;
+    encoded[cursor] = u8::from(identities.root_session.is_some());
     cursor += 1;
     encode_identity(
         &mut encoded,
         &mut cursor,
-        ancestor_session.unwrap_or(CompactIdentity { digest: [0; 32] }),
-    );
-    encode_identity(
-        &mut encoded,
-        &mut cursor,
-        ancestor_event.unwrap_or(CompactIdentity { digest: [0; 32] }),
+        identities
+            .root_session
+            .unwrap_or(CompactIdentity { digest: [0; 32] }),
     );
     encoded[cursor..cursor + SOURCE_ORDINAL_BYTES]
         .copy_from_slice(&identities.session_source_ordinal.to_be_bytes());
@@ -870,68 +852,28 @@ fn decode_record(
     };
     cursor += 1;
     let parent = decode_identity(encoded, &mut cursor);
-    let root_session = decode_identity(encoded, &mut cursor);
-    let session_relationship = decode_relationship_kind(encoded[cursor], field)?;
+    let has_root = match encoded[cursor] {
+        0 => false,
+        1 => true,
+        _ => return Err(IndexError::InvalidStoredDocumentField(field)),
+    };
     cursor += 1;
-    let origin_kind = encoded[cursor];
-    cursor += 1;
-    let ancestor_session = decode_identity(encoded, &mut cursor);
-    let ancestor_event = decode_identity(encoded, &mut cursor);
+    let root = decode_identity(encoded, &mut cursor);
     let session_source_ordinal = u32::from_be_bytes(
         encoded[cursor..cursor + SOURCE_ORDINAL_BYTES]
             .try_into()
             .expect("fixed source ordinal layout"),
     );
-    if !has_parent && parent.digest != [0; 32] {
+    if (!has_parent && parent.digest != [0; 32]) || (!has_root && root.digest != [0; 32]) {
         return Err(IndexError::InvalidStoredDocumentField(field));
     }
-    let event_origin = match origin_kind {
-        0 if ancestor_session.digest == [0; 32] && ancestor_event.digest == [0; 32] => {
-            CompactEventOrigin::Unknown
-        }
-        1 if ancestor_session.digest == [0; 32] && ancestor_event.digest == [0; 32] => {
-            CompactEventOrigin::UniqueToSession
-        }
-        2 if ancestor_session.digest != [0; 32] && ancestor_event.digest != [0; 32] => {
-            CompactEventOrigin::CopiedFromAncestor {
-                ancestor_session,
-                ancestor_event,
-            }
-        }
-        _ => return Err(IndexError::InvalidStoredDocumentField(field)),
-    };
     Ok(SpillVerificationIdentities {
         event,
         session,
         parent_session: has_parent.then_some(parent),
-        root_session,
-        session_relationship,
-        event_origin,
+        root_session: has_root.then_some(root),
         session_source_ordinal,
     })
-}
-
-fn encode_relationship_kind(kind: SessionRelationshipKind) -> u8 {
-    match kind {
-        SessionRelationshipKind::Root => 0,
-        SessionRelationshipKind::Delegated => 1,
-        SessionRelationshipKind::Forked => 2,
-        SessionRelationshipKind::ResumedFrom => 3,
-        SessionRelationshipKind::WorkflowChild => 4,
-        SessionRelationshipKind::RelatedUnknown => 5,
-    }
-}
-
-fn decode_relationship_kind(encoded: u8, field: &'static str) -> Result<SessionRelationshipKind> {
-    match encoded {
-        0 => Ok(SessionRelationshipKind::Root),
-        1 => Ok(SessionRelationshipKind::Delegated),
-        2 => Ok(SessionRelationshipKind::Forked),
-        3 => Ok(SessionRelationshipKind::ResumedFrom),
-        4 => Ok(SessionRelationshipKind::WorkflowChild),
-        5 => Ok(SessionRelationshipKind::RelatedUnknown),
-        _ => Err(IndexError::InvalidStoredDocumentField(field)),
-    }
 }
 
 fn decode_identity(
@@ -1009,12 +951,7 @@ mod tests {
             event: CompactIdentity { digest: [7; 32] },
             session: CompactIdentity { digest: [1; 32] },
             parent_session: Some(CompactIdentity { digest: [2; 32] }),
-            root_session: CompactIdentity { digest: [3; 32] },
-            session_relationship: SessionRelationshipKind::Forked,
-            event_origin: CompactEventOrigin::CopiedFromAncestor {
-                ancestor_session: CompactIdentity { digest: [5; 32] },
-                ancestor_event: CompactIdentity { digest: [6; 32] },
-            },
+            root_session: Some(CompactIdentity { digest: [3; 32] }),
             session_source_ordinal: 4,
         }
     }
@@ -1222,6 +1159,7 @@ mod tests {
                 .record(DocAddress::new(0, 3), "test")
                 .unwrap()
                 .root_session
+                .unwrap()
                 .digest,
             [3; 32]
         );

@@ -6,7 +6,7 @@ use serde::Serialize;
 use super::store::{open_read_only, usage_store_exists};
 use super::{
     estimate_usage, LocalUsageStorageAuthority, UsageControlSnapshot, UsageEstimates,
-    DEFINITION_VERSION, RETENTION_DAYS,
+    DEFINITION_VERSION, RETENTION_DAYS, USAGE_REPORT_SCHEMA_VERSION,
 };
 
 mod query;
@@ -56,35 +56,11 @@ pub struct UsageSummary {
     pub empty_calls: u64,
     pub not_applicable_calls: u64,
     pub result_count: u64,
-    pub citation_count: u64,
     pub delivered_output_bytes: u64,
     pub delivered_context_bytes: u64,
     pub matched_normalized_session_bytes: u64,
     pub complete_context_eligible_calls: u64,
     pub unavailable_context_eligible_calls: u64,
-    pub pro_blame: ProBlameSummary,
-}
-
-#[derive(Debug, Clone, Default, Serialize)]
-pub struct ProBlameSummary {
-    pub requests: u64,
-    pub produced_attribution_requests: u64,
-    pub possible_only_requests: u64,
-    pub none_requests: u64,
-    pub error_requests: u64,
-    pub by_target: Vec<ProBlameTargetSummary>,
-    #[serde(skip)]
-    pub(super) not_applicable_target_errors: u64,
-}
-
-#[derive(Debug, Clone, Serialize)]
-pub struct ProBlameTargetSummary {
-    pub target_type: String,
-    pub requests: u64,
-    pub produced: u64,
-    pub possible: u64,
-    pub none: u64,
-    pub error: u64,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -99,7 +75,6 @@ pub struct OperationSummary {
     pub empty_calls: u64,
     pub not_applicable_calls: u64,
     pub result_count: u64,
-    pub citation_count: u64,
     pub delivered_output_bytes: u64,
     pub delivered_context_bytes: u64,
     pub matched_normalized_session_bytes: u64,
@@ -130,12 +105,6 @@ impl UsageReport {
 
     #[cfg(any(test, feature = "test-support"))]
     pub fn ui_test_ready() -> Self {
-        let pro_blame = ProBlameSummary {
-            requests: 2,
-            produced_attribution_requests: 1,
-            possible_only_requests: 1,
-            ..ProBlameSummary::default()
-        };
         base_report(
             true,
             "ready",
@@ -153,8 +122,6 @@ impl UsageReport {
                     empty_calls: 2,
                     not_applicable_calls: 1,
                     result_count: 3,
-                    citation_count: 2,
-                    pro_blame,
                     ..UsageSummary::default()
                 },
                 by_operation: Vec::new(),
@@ -223,7 +190,7 @@ fn base_report(
     error: Option<UsageReportError>,
 ) -> UsageReport {
     UsageReport {
-        schema_version: 2,
+        schema_version: USAGE_REPORT_SCHEMA_VERSION,
         local_only: true,
         read_only: true,
         enabled,

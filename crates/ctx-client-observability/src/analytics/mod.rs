@@ -6,8 +6,6 @@ mod daemon;
 pub use daemon::*;
 mod mcp;
 pub use mcp::*;
-mod pro;
-pub use pro::*;
 mod provider;
 pub use provider::*;
 mod runtime;

@@ -37,12 +37,6 @@ pub(super) fn is_show_tool_call(message: &Value) -> bool {
 }
 
 #[cfg(test)]
-pub(super) fn is_blame_tool_call(message: &Value) -> bool {
-    message.get("method").and_then(Value::as_str) == Some("tools/call")
-        && message.pointer("/params/name").and_then(Value::as_str) == Some("blame")
-}
-
-#[cfg(test)]
 pub(super) fn is_query_events_tool_call(message: &Value) -> bool {
     message.get("method").and_then(Value::as_str) == Some("tools/call")
         && message.pointer("/params/name").and_then(Value::as_str) == Some("query_events")
@@ -85,46 +79,6 @@ pub(super) fn bound_query_events_mcp_response(
             -32603,
             "query_events response too large",
             json!({ "error": "output_limit_exceeded" }),
-        )
-    }
-}
-
-pub(super) fn bound_blame_mcp_response(
-    response: Value,
-    response_id: Value,
-    output_limit_bytes: usize,
-) -> Value {
-    if serialized_json_line_bytes(&response).is_ok_and(|bytes| bytes <= output_limit_bytes) {
-        return response;
-    }
-
-    let message = "blame response exceeds the MCP output limit; lower `limit` or use the CLI with `ctx blame ... --format json`";
-    let result = json!({
-        "isError": true,
-        "content": [{
-            "type": "text",
-            "text": message,
-        }],
-        "structuredContent": {
-            "error": message,
-            "error_code": "invalid_response",
-            "retryable": true,
-        },
-    });
-    let mut bounded = success_response(response_id, result);
-    if serialized_json_line_bytes(&bounded).is_ok_and(|bytes| bytes <= output_limit_bytes) {
-        bounded
-    } else {
-        let response_id = bounded
-            .get_mut("id")
-            .map(Value::take)
-            .unwrap_or(Value::Null);
-        bounded_protocol_error(
-            response_id,
-            output_limit_bytes,
-            -32603,
-            "Blame response too large",
-            json!({ "error": "invalid_response" }),
         )
     }
 }
@@ -192,9 +146,8 @@ fn bounded_protocol_error(
         .and_then(Value::as_object_mut)
         .and_then(|error| error.remove("data"));
     // Every accepted request ID is capped so this smallest correlated error
-    // fits the production blame bound (and therefore the larger show/query
-    // bounds). Correlation is never discarded to satisfy an ad hoc lower
-    // internal limit.
+    // fits the production response bounds. Correlation is never discarded to
+    // satisfy an ad hoc lower internal limit.
     bounded
 }
 

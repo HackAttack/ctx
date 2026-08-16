@@ -79,13 +79,6 @@ rust_doc_test(
     crate = ":test_support_lib",
 )
 
-# Compatibility label for the capture conformance macro. The executable and
-# inventory authority live in the query package.
-alias(
-    name = "mcp_attribution_search_tests",
-    actual = "//crates/ctx-history-index-query:mcp_attribution_search_tests",
-)
-
 ctx_rust_test(
     name = "unit_tests",
     srcs = RUST_TEST_SRCS,

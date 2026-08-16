@@ -92,7 +92,11 @@ fn mixed_small_and_content_oversized_record_declines_before_any_stored_read_or_d
 fn small_body_large_metadata_record_is_declined_before_materialization_or_decode() {
     let source = source("strict-per-record-encoded.jsonl");
     let mut encoded_heavy = document(&source, 1, "small");
-    encoded_heavy.branch = Some("\u{0001}".repeat(16 * 1_024));
+    replace_literal_fact(
+        &mut encoded_heavy,
+        LiteralFactKind::Branch,
+        "\u{0001}".repeat(16 * 1_024),
+    );
     encoded_heavy.validate_contract().unwrap();
     let ordinary = document(&source, 2, "small");
     let encoded_bytes = encoded_heavy.encode_stored().unwrap().len();

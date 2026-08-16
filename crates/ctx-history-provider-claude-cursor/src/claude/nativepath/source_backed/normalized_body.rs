@@ -1,23 +1,29 @@
-use super::claude_tool_result_body;
-use crate::claude::nativepath::{
-    invocation_evidence::normalized_tool_call_body,
-    rows::{ClaudeEventKind, ClaudeRetainedRow},
-};
+use crate::claude::nativepath::rows::{ClaudeEventKind, ClaudeRetainedRow};
 
 pub(super) fn lexical_body(row: &ClaudeRetainedRow) -> String {
     let text = row
         .body
         .clone()
         .or_else(|| {
-            row.tool_call.as_ref().and_then(|call| {
-                normalized_tool_call_body(
-                    call.call_id.as_deref(),
-                    call.tool_name.as_deref(),
-                    &call.input,
-                )
-            })
+            row.tool_call
+                .as_ref()
+                .and_then(|call| call.input.as_ref())
+                .and_then(|input| serde_json::to_string(input).ok())
+                .filter(|text| text.len() <= ctx_history_core::MAX_CORE_CONTENT_BYTES)
         })
-        .or_else(|| row.tool_result.as_ref().map(claude_tool_result_body))
+        .or_else(|| {
+            row.tool_result
+                .as_ref()
+                .and_then(|result| result.native_content.get("content"))
+                .and_then(|content| match content {
+                    serde_json::Value::String(value)
+                        if value.len() <= ctx_history_core::MAX_CORE_CONTENT_BYTES =>
+                    {
+                        Some(value.clone())
+                    }
+                    _ => None,
+                })
+        })
         .unwrap_or_else(|| event_kind(row.kind).to_owned());
     if text.trim().is_empty() {
         event_kind(row.kind).to_owned()

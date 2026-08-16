@@ -295,7 +295,6 @@ fn hydrate_task_candidate(
                     role: message.role,
                     kind: message.kind,
                     request_id,
-                    result_outcome: None,
                     call_id: message.call_id,
                     mcp_invocation: message.mcp_invocation,
                     mcp_response: None,
@@ -311,7 +310,6 @@ fn hydrate_task_candidate(
                 unit.push_event(event)?;
             }
             WarpDecodedMessagePayload::Output(output) => {
-                let outcome = output.outcome;
                 let call_id = output.call_id;
                 let tool_name = output.tool_name;
                 let mcp_attribution = output.mcp_invocation.is_some();
@@ -327,7 +325,6 @@ fn hydrate_task_candidate(
                     role: Some(ctx_history_core::EventRole::Tool),
                     kind: tool_name,
                     request_id,
-                    result_outcome: Some(outcome),
                     call_id,
                     mcp_invocation: output.mcp_invocation,
                     mcp_response: output.mcp_response,

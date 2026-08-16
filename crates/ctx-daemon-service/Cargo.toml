@@ -1,0 +1,48 @@
+[package]
+name = "ctx-daemon-service"
+version.workspace = true
+description = "Product daemon service orchestration for ctx"
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+rust-version.workspace = true
+publish = false
+
+[features]
+test-support = []
+
+[dependencies]
+anyhow.workspace = true
+ctrlc.workspace = true
+fs2 = "0.4.3"
+rusqlite.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+uuid.workspace = true
+ctx-client-observability = { path = "../ctx-client-observability" }
+ctx-daemon-runtime = { path = "../ctx-daemon-runtime" }
+ctx-history-capture = { path = "../ctx-history-capture" }
+ctx-history-core = { path = "../ctx-history-core" }
+ctx-history-index = { path = "../ctx-history-index" }
+ctx-history-refresh = { path = "../ctx-history-refresh" }
+ctx-semantic-index = { path = "../ctx-semantic-index" }
+ctx-semantic-model = { path = "../ctx-semantic-model" }
+ctx-upgrade-engine = { path = "../ctx-upgrade-engine" }
+
+[target.'cfg(unix)'.dependencies]
+libc.workspace = true
+
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2-foundation = { version = "0.3.2", default-features = false, features = ["NSProcessInfo", "alloc"] }
+
+[dev-dependencies]
+ctx-history-platform = { path = "../ctx-history-platform" }
+tempfile.workspace = true
+ctx-client-observability = { path = "../ctx-client-observability", features = ["test-support"] }
+ctx-history-capture-model = { path = "../ctx-history-capture-model" }
+ctx-history-refresh = { path = "../ctx-history-refresh", features = ["test-support"] }
+ctx-semantic-index = { path = "../ctx-semantic-index", features = ["test-support"] }
+ctx-semantic-model = { path = "../ctx-semantic-model", features = ["test-support"] }
+ctx-upgrade-engine = { path = "../ctx-upgrade-engine", features = ["test-support"] }

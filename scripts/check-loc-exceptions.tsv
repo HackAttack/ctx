@@ -1,2 +1,0 @@
-path	kind	ceiling	disposition	owner	rationale	exit_or_review	review_by
-crates/ctx-cli/tests/native_providers.rs	test	1814	cohesive	component:cli-native-provider-contracts	Splitting the public native-provider end-to-end contract matrix would duplicate shared process fixtures and obscure cross-provider CLI parity.	Re-review when the shared process-fixture contract gains an independent owner.	2026-10-01

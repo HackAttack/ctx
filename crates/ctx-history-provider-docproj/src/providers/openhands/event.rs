@@ -1,4 +1,4 @@
-use std::{fmt, path::Path};
+use std::{collections::BTreeSet, fmt, path::Path};
 
 use chrono::{DateTime, Utc};
 use ctx_history_capture_model::{
@@ -6,6 +6,7 @@ use ctx_history_capture_model::{
     time::parse_rfc3339_utc,
 };
 use ctx_history_core::{EventRole, EventType};
+use serde::de::{DeserializeSeed, MapAccess, SeqAccess, Visitor};
 use serde_json::Value;
 
 use crate::MAX_PROVIDER_JSONL_LINE_BYTES;
@@ -18,6 +19,18 @@ pub(crate) struct OpenHandsDecodedEvent {
     role: EventRole,
     text: String,
     value: Value,
+    capture_audit: OpenHandsCaptureAudit,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(crate) struct OpenHandsCaptureAudit {
+    pub(crate) duplicate_key: bool,
+    pub(crate) discriminator_alias_conflict: bool,
+    pub(crate) call_id_alias_conflict: bool,
+    pub(crate) tool_name_alias_conflict: bool,
+    pub(crate) arguments_alias_conflict: bool,
+    pub(crate) result_alias_conflict: bool,
+    pub(crate) status_alias_conflict: bool,
 }
 
 impl OpenHandsDecodedEvent {
@@ -43,6 +56,10 @@ impl OpenHandsDecodedEvent {
 
     pub(crate) fn value(&self) -> &Value {
         &self.value
+    }
+
+    pub(crate) fn capture_audit(&self) -> OpenHandsCaptureAudit {
+        self.capture_audit
     }
 }
 
@@ -98,7 +115,41 @@ pub(crate) fn decode_openhands_event(
     let value = serde_json::from_slice::<Value>(bytes).map_err(|error| {
         OpenHandsEventDecodeError::invalid(format!("invalid OpenHands event JSON: {error}"))
     })?;
-    decode_openhands_event_value(path, value)
+    let duplicate_keys = openhands_duplicate_json_keys(bytes).map_err(|error| {
+        OpenHandsEventDecodeError::invalid(format!("invalid OpenHands event JSON: {error}"))
+    })?;
+    if let Some(key) = duplicate_keys.iter().find(|key| {
+        matches!(
+            key.as_str(),
+            "id" | "timestamp"
+                | "kind"
+                | "type"
+                | "source"
+                | "role"
+                | "action"
+                | "observation"
+                | "llm_message"
+                | "tool_call_id"
+                | "toolCallId"
+                | "tool_use_id"
+                | "toolUseId"
+                | "name"
+                | "tool"
+                | "tool_name"
+                | "toolName"
+                | "status"
+                | "state"
+                | "outcome"
+        )
+    }) {
+        return Err(OpenHandsEventDecodeError::invalid(format!(
+            "OpenHands event has duplicate critical selector {key:?}"
+        )));
+    }
+    let raw_json = std::str::from_utf8(bytes)
+        .map_err(|error| OpenHandsEventDecodeError::invalid(error.to_string()))?
+        .to_owned();
+    decode_openhands_event_value_with_raw(path, value, raw_json, !duplicate_keys.is_empty())
 }
 
 /// Applies the authoritative OpenHands semantics to an already parsed event.
@@ -106,10 +157,18 @@ pub(crate) fn decode_openhands_event(
 /// Complete-content recovery parses through its stricter shared JSON budget
 /// before calling this entry point. Live import retains its existing byte-only
 /// admission contract through [`decode_openhands_event`].
-pub(crate) fn decode_openhands_event_value(
+fn decode_openhands_event_value_with_raw(
     path: &Path,
     value: Value,
+    raw_json: String,
+    duplicate_key: bool,
 ) -> Result<OpenHandsDecodedEvent, OpenHandsEventDecodeError> {
+    let capture_audit = openhands_capture_audit(&value, duplicate_key);
+    if capture_audit.discriminator_alias_conflict {
+        return Err(OpenHandsEventDecodeError::invalid(
+            "OpenHands event has conflicting kind/type selectors".to_owned(),
+        ));
+    }
     let event_id =
         super::openhands_bounded_derived_text(openhands_event_id(path, &value), "event id")
             .map_err(|error| OpenHandsEventDecodeError::invalid(error.to_string()))?;
@@ -121,7 +180,18 @@ pub(crate) fn decode_openhands_event_value(
     let entry_type = openhands_entry_type(&value);
     let event_type = openhands_event_type(&value, &entry_type);
     let role = openhands_role(&value, &entry_type);
-    let text = openhands_event_text(&value, &entry_type, event_type)?;
+    let text = if capture_audit.duplicate_key
+        || capture_audit.discriminator_alias_conflict
+        || capture_audit.call_id_alias_conflict
+        || capture_audit.tool_name_alias_conflict
+        || capture_audit.arguments_alias_conflict
+        || capture_audit.result_alias_conflict
+        || capture_audit.status_alias_conflict
+    {
+        raw_json.clone()
+    } else {
+        openhands_event_text(&value, &entry_type, event_type)?
+    };
     Ok(OpenHandsDecodedEvent {
         event_id,
         timestamp,
@@ -129,7 +199,134 @@ pub(crate) fn decode_openhands_event_value(
         role,
         text,
         value,
+        capture_audit,
     })
+}
+
+fn openhands_capture_audit(value: &Value, duplicate_key: bool) -> OpenHandsCaptureAudit {
+    let action = value.get("action").and_then(Value::as_object);
+    let observation = value.get("observation").and_then(Value::as_object);
+    OpenHandsCaptureAudit {
+        duplicate_key,
+        discriminator_alias_conflict: json_aliases_conflict(value, &["kind", "type"]),
+        call_id_alias_conflict: json_aliases_conflict(
+            value,
+            &["tool_call_id", "toolCallId", "tool_use_id", "toolUseId"],
+        ),
+        tool_name_alias_conflict: action.is_some_and(|action| {
+            json_aliases_conflict_map(action, &["kind", "name", "tool", "tool_name", "toolName"])
+        }),
+        arguments_alias_conflict: action.is_some_and(|action| {
+            json_aliases_conflict_map(action, &["arguments", "args", "input", "parameters"])
+        }),
+        result_alias_conflict: observation.is_some_and(|observation| {
+            json_aliases_conflict_map(observation, &["content", "output", "result"])
+        }),
+        status_alias_conflict: observation.is_some_and(|observation| {
+            json_aliases_conflict_map(observation, &["status", "state", "outcome"])
+        }),
+    }
+}
+
+fn json_aliases_conflict(value: &Value, keys: &[&str]) -> bool {
+    value
+        .as_object()
+        .is_some_and(|object| json_aliases_conflict_map(object, keys))
+}
+
+fn json_aliases_conflict_map(object: &serde_json::Map<String, Value>, keys: &[&str]) -> bool {
+    let mut selected = None;
+    for key in keys {
+        let Some(candidate) = object.get(*key).filter(|value| !value.is_null()) else {
+            continue;
+        };
+        if selected.is_some_and(|selected| selected != candidate) {
+            return true;
+        }
+        selected = Some(candidate);
+    }
+    false
+}
+
+fn openhands_duplicate_json_keys(bytes: &[u8]) -> Result<BTreeSet<String>, serde_json::Error> {
+    let mut duplicates = BTreeSet::new();
+    let mut deserializer = serde_json::Deserializer::from_slice(bytes);
+    DuplicateKeySeed(&mut duplicates).deserialize(&mut deserializer)?;
+    deserializer.end()?;
+    Ok(duplicates)
+}
+
+struct DuplicateKeySeed<'a>(&'a mut BTreeSet<String>);
+
+impl<'de> DeserializeSeed<'de> for DuplicateKeySeed<'_> {
+    type Value = ();
+
+    fn deserialize<D>(self, deserializer: D) -> Result<(), D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        deserializer.deserialize_any(DuplicateKeyVisitor(self.0))
+    }
+}
+
+struct DuplicateKeyVisitor<'a>(&'a mut BTreeSet<String>);
+
+impl<'de> Visitor<'de> for DuplicateKeyVisitor<'_> {
+    type Value = ();
+
+    fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("a JSON value")
+    }
+
+    fn visit_bool<E>(self, _: bool) -> Result<(), E> {
+        Ok(())
+    }
+    fn visit_i64<E>(self, _: i64) -> Result<(), E> {
+        Ok(())
+    }
+    fn visit_u64<E>(self, _: u64) -> Result<(), E> {
+        Ok(())
+    }
+    fn visit_f64<E>(self, _: f64) -> Result<(), E> {
+        Ok(())
+    }
+    fn visit_str<E>(self, _: &str) -> Result<(), E> {
+        Ok(())
+    }
+    fn visit_string<E>(self, _: String) -> Result<(), E> {
+        Ok(())
+    }
+    fn visit_none<E>(self) -> Result<(), E> {
+        Ok(())
+    }
+    fn visit_unit<E>(self) -> Result<(), E> {
+        Ok(())
+    }
+
+    fn visit_seq<A>(self, mut sequence: A) -> Result<(), A::Error>
+    where
+        A: SeqAccess<'de>,
+    {
+        while sequence
+            .next_element_seed(DuplicateKeySeed(self.0))?
+            .is_some()
+        {}
+        Ok(())
+    }
+
+    fn visit_map<A>(self, mut map: A) -> Result<(), A::Error>
+    where
+        A: MapAccess<'de>,
+    {
+        let mut keys = BTreeSet::new();
+        while let Some(key) = map.next_key::<String>()? {
+            if !keys.insert(key.clone()) {
+                self.0.insert(key);
+            }
+            map.next_value_seed(DuplicateKeySeed(self.0))?;
+        }
+        Ok(())
+    }
 }
 
 fn openhands_event_id(path: &Path, value: &Value) -> String {
@@ -184,7 +381,7 @@ fn openhands_event_type(value: &Value, entry_type: &str) -> EventType {
                 "FileEditorObservation"
                 | "StrReplaceEditorObservation"
                 | "PlanningFileEditorObservation",
-            ) => EventType::FileTouched,
+            ) => EventType::ToolOutput,
             Some("ExecuteBashObservation" | "TerminalObservation") => EventType::CommandOutput,
             _ => EventType::ToolOutput,
         };
@@ -230,10 +427,7 @@ fn openhands_event_text(
     entry_type: &str,
     event_type: EventType,
 ) -> Result<String, OpenHandsEventDecodeError> {
-    if matches!(
-        event_type,
-        EventType::ToolOutput | EventType::CommandOutput | EventType::FileTouched
-    ) {
+    if matches!(event_type, EventType::ToolOutput | EventType::CommandOutput) {
         let candidates = ["content", "output", "result"]
             .into_iter()
             .filter_map(|field| value.pointer(&format!("/observation/{field}")))
@@ -384,11 +578,33 @@ mod tests {
             }
         }))
         .unwrap();
-        assert_eq!(
-            decode_openhands_event(path, &ambiguous)
-                .unwrap_err()
-                .to_string(),
-            "OpenHands observation exposes more than one candidate result body field"
-        );
+        let ambiguous = decode_openhands_event(path, &ambiguous).unwrap();
+        assert!(ambiguous.capture_audit().result_alias_conflict);
+        assert!(ambiguous.text().contains("\"content\":\"one\""));
+        assert!(ambiguous.text().contains("\"output\":\"two\""));
+
+        let raw_duplicate = br#"{
+            "id":"duplicate-key",
+            "timestamp":"2026-07-22T12:00:01Z",
+            "kind":"ActionEvent",
+            "source":"agent",
+            "tool_call_id":"call-1",
+            "action":{"kind":"first_tool","kind":"second_tool","input":{"x":1}}
+        }"#;
+        let duplicate = decode_openhands_event(path, raw_duplicate).unwrap_err();
+        assert!(duplicate
+            .to_string()
+            .contains("duplicate critical selector \"kind\""));
+
+        let duplicate_payload = br#"{
+            "id":"duplicate-payload",
+            "timestamp":"2026-07-22T12:00:01Z",
+            "kind":"ObservationEvent",
+            "source":"environment",
+            "observation":{"kind":"TerminalObservation","content":"one","content":"two"}
+        }"#;
+        let duplicate = decode_openhands_event(path, duplicate_payload).unwrap();
+        assert!(duplicate.capture_audit().duplicate_key);
+        assert_eq!(duplicate.text(), String::from_utf8_lossy(duplicate_payload));
     }
 }

@@ -8,6 +8,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import re
 import subprocess
 import tempfile
 import textwrap
@@ -21,6 +22,7 @@ from mcp_attribution_contract_registry import (
 )
 import mcp_attribution_conformance as conformance
 from mcp_attribution_conformance import (
+    ALLOWED_EVIDENCE_CLASSES,
     CAPABILITY_REVISION,
     ConformanceError,
     MANIFEST_SCHEMA_VERSION,
@@ -558,7 +560,7 @@ class ConformanceRunnerTests(unittest.TestCase):
         self.assertEqual(inventory.base_route_count, 1)
         self.assertEqual(inventory.schema_generation_count, 1)
         self.assertEqual(inventory.capability_lane_count, 1)
-        self.assertEqual(inventory.public_executable_count, 10)
+        self.assertEqual(inventory.public_executable_count, 9)
 
     def test_unknown_mode_is_rejected(self) -> None:
         manifest = minimal_manifest()
@@ -573,10 +575,10 @@ class ConformanceRunnerTests(unittest.TestCase):
                     "unsupported-mode",
                 )
 
-    def test_runner_exposes_only_public_modes_and_evidence_classes(self) -> None:
+    def test_runner_separates_allowed_from_required_evidence_classes(self) -> None:
         self.assertEqual(conformance.CONFORMANCE_MODES, {PUBLIC_VALIDATION_MODE})
         self.assertEqual(
-            REQUIRED_EVIDENCE_CLASSES,
+            ALLOWED_EVIDENCE_CLASSES,
             {
                 "ambiguity_duplicate_linkage",
                 "canonical_terminal_outcomes",
@@ -589,6 +591,10 @@ class ConformanceRunnerTests(unittest.TestCase):
                 "search_nonindexing",
                 "stable_ids",
             },
+        )
+        self.assertEqual(
+            REQUIRED_EVIDENCE_CLASSES,
+            ALLOWED_EVIDENCE_CLASSES - {"search_nonindexing"},
         )
 
     def test_unknown_manifest_extensions_are_rejected(self) -> None:
@@ -619,6 +625,45 @@ class ConformanceRunnerTests(unittest.TestCase):
             exported_helpers,
             {"mcp_attribution_suite_args", "mcp_attribution_suite_data"},
         )
+
+    def test_live_manifest_exactly_matches_current_suite_registry(self) -> None:
+        root = repository_root()
+        manifest = json.loads(
+            (
+                root
+                / "crates/ctx-history-capture/tests/mcp-attribution-conformance.manifest.json"
+            ).read_text(encoding="utf-8")
+        )
+        registry = (
+            root / "crates/ctx-history-capture/tests/mcp_attribution_suites.bzl"
+        ).read_text(encoding="utf-8")
+        suite_starts = list(
+            re.finditer(r'^    "([^"]+)": struct\($', registry, re.MULTILINE)
+        )
+        registry_claims: dict[str, dict[str, str]] = {}
+        for index, suite_start in enumerate(suite_starts):
+            block_end = (
+                suite_starts[index + 1].start()
+                if index + 1 < len(suite_starts)
+                else registry.index("\n}\n", suite_start.end())
+            )
+            block = registry[suite_start.end() : block_end]
+            registry_claims[suite_start.group(1)] = {
+                test: evidence_class
+                for test, evidence_class in re.findall(
+                    r'^            "([^"]+)": \["([^"]+)"\],$',
+                    block,
+                    re.MULTILINE,
+                )
+            }
+
+        manifest_claims: dict[str, dict[str, str]] = {}
+        for lane in manifest["capability_lanes"]:
+            for evidence in lane["evidence"]:
+                suite = manifest_claims.setdefault(evidence["suite"], {})
+                prior = suite.setdefault(evidence["test"], evidence["class"])
+                self.assertEqual(prior, evidence["class"])
+        self.assertEqual(manifest_claims, registry_claims)
 
     def test_capability_audit_projection_rejects_lane_drift(self) -> None:
         manifest = minimal_manifest()
@@ -1019,7 +1064,7 @@ class ConformanceRunnerTests(unittest.TestCase):
         with self.assertRaisesRegex(ConformanceError, "keys differ"):
             validate_fixture_manifest(manifest, minimal_matrix())
 
-    def test_pi_cannot_overclaim_with_provider_neutral_index_test(self) -> None:
+    def test_pi_cannot_overclaim_with_one_provider_neutral_test(self) -> None:
         manifest = minimal_manifest()
         for collection in ["base_routes", "schema_generations", "capability_lanes"]:
             manifest[collection][0].update(
@@ -1033,10 +1078,10 @@ class ConformanceRunnerTests(unittest.TestCase):
         lane["status"] = {"kind": "supported"}
         lane["evidence"] = [
             {
-                "class": "search_nonindexing",
+                "class": "privacy_sinks",
                 "kind": "rust_test",
                 "suite": "index_only",
-                "test": "provider_neutral_index_canary",
+                "test": "provider_neutral_privacy_canary",
                 "scope": "provider_neutral",
             }
         ]
@@ -1120,7 +1165,7 @@ class ConformanceRunnerTests(unittest.TestCase):
         first = manifest["capability_lanes"][0]
         first["evidence"] = [
             {
-                "class": "search_nonindexing",
+                "class": "max_plus_one",
                 "kind": "rust_test",
                 "suite": "shared",
                 "test": "same_test",

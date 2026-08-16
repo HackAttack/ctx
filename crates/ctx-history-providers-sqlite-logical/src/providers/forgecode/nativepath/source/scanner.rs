@@ -6,17 +6,10 @@ impl ForgeCodeScanner {
         frontier: ForgeCodeFrontier,
         context: ProviderAdapterContext,
     ) -> Result<Self> {
-        let source_root = context.source_root_display().or_else(|| {
-            source
-                .canonical_path
-                .parent()
-                .map(|path| path.display().to_string())
-        });
         Ok(Self {
             source,
             frontier,
             context,
-            source_root,
             exhausted: false,
             active_decoded: None,
             active_terminal: false,
@@ -88,7 +81,6 @@ impl ForgeCodeScanner {
                 terminal: true,
                 row: None,
                 events: Vec::new(),
-                touches: Vec::new(),
                 rejections: Vec::new(),
                 retained_bytes: 512,
             };
@@ -259,7 +251,6 @@ impl ForgeCodeScanner {
             next_frontier,
             row: None,
             events: Vec::new(),
-            touches: Vec::new(),
             rejections: vec![ProviderImportFailure { line, error }],
             retained_bytes: 1024,
         })
@@ -330,9 +321,6 @@ impl ForgeCodeScanner {
             ));
         }
         let started_at = forgecode_timestamp(Some(&created_at), self.context.imported_at);
-        let ended_at = updated_at
-            .as_deref()
-            .map(|raw| forgecode_timestamp(Some(raw), started_at));
         let context_metadata = context_value
             .as_ref()
             .map(context_without_messages)
@@ -362,7 +350,6 @@ impl ForgeCodeScanner {
                 .map(|value| provider_capped_json_value(value, PROVIDER_MAX_PREVIEW_CHARS)),
         };
         let mut events = Vec::new();
-        let mut touches = Vec::new();
         let mut retained_core_bytes = 2_048_usize
             .saturating_add(estimated_row_bytes(&row))
             .saturating_add(rejections.iter().fold(0_usize, |bytes, rejection| {
@@ -385,15 +372,12 @@ impl ForgeCodeScanner {
         {
             let entry = &messages[next_index];
             let entry_bytes = serde_json::to_vec(entry)?.len();
-            let parts = forgecode_message_parts(entry);
-            let event_type = forgecode_event_type(parts);
             let provider_event_index = u64::try_from(next_index)
                 .unwrap_or(u64::MAX)
                 .saturating_add(1);
             let occurred_at =
                 started_at + Duration::milliseconds(i64::try_from(next_index).unwrap_or(i64::MAX));
             let mut message_event = None;
-            let mut message_touches = Vec::new();
             let mut message_rejections = Vec::new();
             if entry_bytes > FORGECODE_NATIVE_MAX_EVENT_BYTES {
                 message_rejections.push(ProviderImportFailure {
@@ -428,46 +412,10 @@ impl ForgeCodeScanner {
                     provider_event_index,
                 });
             }
-            let touch_outcome = visit_provider_file_touch_drafts_with_limit(
-                entry,
-                event_type_supports_structured_file_touches(event_type),
-                FORGECODE_NATIVE_MAX_TOUCHES_PER_MESSAGE,
-                |(touch_ordinal, touch)| {
-                    let provider_touch_index =
-                        if provider_event_index > MAX_PACKED_PROVIDER_EVENT_INDEX {
-                            touch_ordinal
-                        } else {
-                            (provider_event_index << 16) | touch_ordinal
-                        };
-                    message_touches.push(ForgeCodeFileTouch {
-                        provider_touch_index,
-                        provider_event_index: Some(provider_event_index),
-                        raw_source_path: Some(self.source.canonical_path.display().to_string()),
-                        source_root: self.source_root.clone(),
-                        path: touch.path,
-                        change_kind: touch.change_kind,
-                        old_path: touch.old_path,
-                        line_count_delta: None,
-                        confidence: touch.confidence,
-                        occurred_at,
-                        metadata: touch.metadata,
-                    });
-                    Ok::<(), CaptureError>(())
-                },
-            )?;
-            if touch_outcome.limit_exceeded() {
-                message_rejections.push(ProviderImportFailure {
-                    line: provider_line_from_index(provider_event_index),
-                    error: PROVIDER_FILE_TOUCH_LIMIT_REJECTION.to_owned(),
-                });
-            }
             let message_core_bytes = message_event
                 .as_ref()
                 .map(estimated_retained_event_bytes)
                 .unwrap_or_default()
-                .saturating_add(message_touches.iter().fold(0_usize, |bytes, touch| {
-                    bytes.saturating_add(estimated_touch_bytes(touch))
-                }))
                 .saturating_add(message_rejections.iter().fold(0_usize, |bytes, rejection| {
                     bytes.saturating_add(estimated_rejection_bytes(rejection))
                 }));
@@ -491,58 +439,11 @@ impl ForgeCodeScanner {
             if let Some(event) = message_event {
                 events.push(event);
             }
-            touches.extend(message_touches);
             rejections.extend(message_rejections);
             retained_core_bytes = retained_core_bytes.saturating_add(message_core_bytes);
             next_index = next_index.saturating_add(1);
         }
         let row_complete = next_index == messages.len();
-        if row_complete {
-            if let Some(metrics) = metrics_value.as_ref() {
-                let mut metric_touches = Vec::new();
-                let limit_exceeded = forgecode_for_each_metric_file_touch_with_limit(
-                    metrics,
-                    &self.source.canonical_path.display().to_string(),
-                    ended_at.unwrap_or(started_at),
-                    FORGECODE_NATIVE_MAX_METRIC_TOUCHES,
-                    |(_, mut touch)| {
-                        touch.source_root.clone_from(&self.source_root);
-                        metric_touches.push(touch);
-                        Ok::<(), CaptureError>(())
-                    },
-                )?;
-                let metric_bytes = metric_touches.iter().fold(0_usize, |bytes, touch| {
-                    bytes.saturating_add(estimated_touch_bytes(touch))
-                });
-                let limit_rejection = limit_exceeded.then(|| ProviderImportFailure {
-                    line: row_line,
-                    error: PROVIDER_FILE_TOUCH_LIMIT_REJECTION.to_owned(),
-                });
-                let metric_total_bytes = metric_bytes.saturating_add(
-                    limit_rejection
-                        .as_ref()
-                        .map(estimated_rejection_bytes)
-                        .unwrap_or_default(),
-                );
-                if retained_core_bytes.saturating_add(metric_total_bytes)
-                    > FORGECODE_NATIVE_PAGE_MAX_BYTES
-                {
-                    let rejection = ProviderImportFailure {
-                        line: row_line,
-                        error: format!(
-                            "ForgeCode metrics exceed the {FORGECODE_NATIVE_PAGE_MAX_BYTES}-byte retained-page limit"
-                        ),
-                    };
-                    retained_core_bytes =
-                        retained_core_bytes.saturating_add(estimated_rejection_bytes(&rejection));
-                    rejections.push(rejection);
-                } else {
-                    retained_core_bytes = retained_core_bytes.saturating_add(metric_total_bytes);
-                    touches.extend(metric_touches);
-                    rejections.extend(limit_rejection);
-                }
-            }
-        }
         let retained_bytes = retained_core_bytes;
         if retained_bytes > FORGECODE_NATIVE_PAGE_MAX_BYTES {
             return Err(CaptureError::InvalidPayload(
@@ -562,7 +463,6 @@ impl ForgeCodeScanner {
             next_frontier,
             row: Some(row),
             events,
-            touches,
             rejections,
             retained_bytes,
         })

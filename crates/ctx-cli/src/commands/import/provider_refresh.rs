@@ -8,11 +8,11 @@ use ctx_history_refresh::{
 };
 
 use crate::analytics::{
-    count_bucket, duration_bucket, DurationBucket, ForegroundProviderRefreshV1, Outcome,
-    ProviderCoreResult, ProviderProResult, ProviderRefreshChange, ProviderRefreshCompletedV1,
-    ProviderRefreshContentEvidence, ProviderRefreshCountsV1, ProviderRefreshFailureScope,
-    ProviderRefreshFailureType, ProviderRefreshResult, ProviderRefreshSourceMode,
-    ProviderRefreshTrigger, ProviderRefreshWorkKind, PublicEventV1,
+    DurationBucket, ForegroundProviderRefreshV1, Outcome, ProviderCoreResult,
+    ProviderRefreshChange, ProviderRefreshCompletedV1, ProviderRefreshContentEvidence,
+    ProviderRefreshCountsV1, ProviderRefreshFailureScope, ProviderRefreshFailureType,
+    ProviderRefreshResult, ProviderRefreshSourceMode, ProviderRefreshTrigger,
+    ProviderRefreshWorkKind, PublicEventV1, count_bucket, duration_bucket,
 };
 
 use super::SourceStats;
@@ -46,8 +46,6 @@ pub(crate) struct ProviderRefreshRuntimeFacts {
     duration: Duration,
     work_kind: Option<ProviderRefreshWorkKind>,
     core_result: ProviderCoreResult,
-    canonical_pro_result: ProviderProResult,
-    output_pro_result: ProviderProResult,
     retired_records: Option<u64>,
 }
 
@@ -62,27 +60,20 @@ impl ProviderRefreshRuntimeFacts {
             } else {
                 ProviderCoreResult::Complete
             },
-            ProviderProResult::Unknown,
-            ProviderProResult::Unknown,
             no_op.then_some(0),
         )
     }
 
-    #[allow(clippy::too_many_arguments)]
     pub(crate) fn success(
         duration: Duration,
         work_kind: Option<ProviderRefreshWorkKind>,
         core_result: ProviderCoreResult,
-        canonical_pro_result: ProviderProResult,
-        output_pro_result: ProviderProResult,
         retired_records: Option<u64>,
     ) -> Self {
         Self {
             duration,
             work_kind,
             core_result,
-            canonical_pro_result,
-            output_pro_result,
             retired_records,
         }
     }
@@ -101,8 +92,6 @@ struct ProviderRefreshAggregate {
     work_kind_complete: bool,
     content_evidence: Option<ProviderRefreshContentEvidence>,
     core_result: Option<ProviderCoreResult>,
-    canonical_pro_result: Option<ProviderProResult>,
-    output_pro_result: Option<ProviderProResult>,
     retired_records: u64,
     retired_records_complete: bool,
     failure_scope: Option<ProviderRefreshFailureScope>,
@@ -235,18 +224,7 @@ impl ProviderRefreshCollector {
                     .imported_sources
                     .saturating_add(totals.failed_sources);
                 let core_result = aggregate.core_result.unwrap_or(ProviderCoreResult::Unknown);
-                let canonical_pro_result = aggregate
-                    .canonical_pro_result
-                    .unwrap_or(ProviderProResult::Unknown);
-                let output_pro_result = aggregate
-                    .output_pro_result
-                    .unwrap_or(ProviderProResult::Unknown);
-                let refresh_result = refresh_result(
-                    &totals,
-                    core_result,
-                    canonical_pro_result,
-                    output_pro_result,
-                );
+                let refresh_result = refresh_result(&totals, core_result);
                 let outcome = if refresh_result == ProviderRefreshResult::Failure {
                     Outcome::Failure
                 } else {
@@ -281,8 +259,6 @@ impl ProviderRefreshCollector {
                             .flatten(),
                         refresh_result,
                         core_result,
-                        canonical_pro_result,
-                        output_pro_result,
                         failure_scope: if has_failures {
                             aggregate
                                 .failure_scope
@@ -339,8 +315,6 @@ impl ProviderRefreshCollector {
                             work_kind: None,
                             refresh_result: ProviderRefreshResult::Failure,
                             core_result: ProviderCoreResult::Failure,
-                            canonical_pro_result: ProviderProResult::Unknown,
-                            output_pro_result: ProviderProResult::Unknown,
                             failure_scope,
                             failure_type,
                             work_remaining,
@@ -385,8 +359,6 @@ impl ProviderRefreshCollector {
                             } else {
                                 ProviderCoreResult::NoOp
                             },
-                            canonical_pro_result: ProviderProResult::Unknown,
-                            output_pro_result: ProviderProResult::Unknown,
                             failure_scope: match (has_source_failures, has_rejections) {
                                 (false, false) => ProviderRefreshFailureScope::None,
                                 (false, true) => ProviderRefreshFailureScope::Record,
@@ -438,8 +410,6 @@ impl ProviderRefreshCollector {
             work_kind_complete: true,
             content_evidence: None,
             core_result: None,
-            canonical_pro_result: None,
-            output_pro_result: None,
             retired_records: 0,
             retired_records_complete: true,
             failure_scope: None,
@@ -460,9 +430,6 @@ impl ProviderRefreshAggregate {
             self.work_kind_complete = false;
         }
         self.core_result = merge_core_result(self.core_result, facts.core_result);
-        self.canonical_pro_result =
-            merge_pro_result(self.canonical_pro_result, facts.canonical_pro_result);
-        self.output_pro_result = merge_pro_result(self.output_pro_result, facts.output_pro_result);
         if let Some(retired_records) = facts.retired_records {
             self.retired_records = self.retired_records.saturating_add(retired_records);
         } else {
@@ -528,45 +495,6 @@ fn merge_core_result(
     Some(ProviderCoreResult::Complete)
 }
 
-fn merge_pro_result(
-    current: Option<ProviderProResult>,
-    next: ProviderProResult,
-) -> Option<ProviderProResult> {
-    let Some(current) = current else {
-        return Some(next);
-    };
-    if current == next {
-        return Some(current);
-    }
-    if current == ProviderProResult::Unknown || next == ProviderProResult::Unknown {
-        return Some(ProviderProResult::Unknown);
-    }
-    if current == ProviderProResult::Partial || next == ProviderProResult::Partial {
-        return Some(ProviderProResult::Partial);
-    }
-    if current == ProviderProResult::Failure || next == ProviderProResult::Failure {
-        return Some(ProviderProResult::Partial);
-    }
-    if current == ProviderProResult::Behind || next == ProviderProResult::Behind {
-        return Some(ProviderProResult::Behind);
-    }
-    match (current, next) {
-        (ProviderProResult::NoOp, ProviderProResult::Complete)
-        | (ProviderProResult::Complete, ProviderProResult::NoOp)
-        | (ProviderProResult::NotRequested, ProviderProResult::Complete)
-        | (ProviderProResult::Complete, ProviderProResult::NotRequested) => {
-            Some(ProviderProResult::Complete)
-        }
-        (ProviderProResult::Unavailable, ProviderProResult::Complete)
-        | (ProviderProResult::Complete, ProviderProResult::Unavailable)
-        | (ProviderProResult::Unavailable, ProviderProResult::NoOp)
-        | (ProviderProResult::NoOp, ProviderProResult::Unavailable) => {
-            Some(ProviderProResult::Partial)
-        }
-        _ => Some(ProviderProResult::Unknown),
-    }
-}
-
 fn merge_failure_scope(
     current: Option<ProviderRefreshFailureScope>,
     next: ProviderRefreshFailureScope,
@@ -605,12 +533,7 @@ fn merge_failure_type(
     })
 }
 
-fn refresh_result(
-    totals: &ImportTotals,
-    core_result: ProviderCoreResult,
-    canonical_pro_result: ProviderProResult,
-    output_pro_result: ProviderProResult,
-) -> ProviderRefreshResult {
+fn refresh_result(totals: &ImportTotals, core_result: ProviderCoreResult) -> ProviderRefreshResult {
     if totals.outcome().0 == ctx_history_ingest_application::ImportOutcome::Failure {
         ProviderRefreshResult::Failure
     } else if totals.failed_sources > 0
@@ -618,16 +541,6 @@ fn refresh_result(
             core_result,
             ProviderCoreResult::Partial | ProviderCoreResult::Failure
         )
-        || [canonical_pro_result, output_pro_result]
-            .into_iter()
-            .any(|result| {
-                matches!(
-                    result,
-                    ProviderProResult::Partial
-                        | ProviderProResult::Behind
-                        | ProviderProResult::Failure
-                )
-            })
     {
         ProviderRefreshResult::Partial
     } else {

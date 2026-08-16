@@ -3,17 +3,15 @@ use std::path::Path;
 use chrono::{DateTime, Utc};
 use ctx_history_capture_model::normalization::provider_timestamp_millis;
 use ctx_history_core::{
-    derive_event_id, derive_session_id, CaptureProvider, CoreRecord, CoreRecordError,
-    EventIdentityInput, EventType, NativeItemKey, NativeSessionKey, PositionStability,
-    ProjectionContractError, SessionIdentityInput, SourceAnchor, SourceKey, StableEntityId,
-    TypedKey,
+    derive_event_id, derive_session_id, ActivityInvocation, ActivityJsonCapture, ActivityResult,
+    ActivityTextCapture, CaptureProvider, CoreActivity, CoreRecord, CoreRecordError,
+    EventIdentityInput, EventType, LiteralFactKind, NativeItemKey, NativeSessionKey,
+    PositionStability, ProjectionContractError, ProviderDeclaredFact, SessionIdentityInput,
+    SourceAnchor, SourceKey, StableEntityId, TypedKey, CORE_ACTIVITY_REVISION,
 };
 use thiserror::Error;
 
-use super::super::{
-    firebender_event_parts, firebender_message_time, firebender_output_evidence,
-    firebender_result_content, FirebenderOutputEvidence,
-};
+use super::super::{firebender_event_parts, firebender_message_time, firebender_result_content};
 use super::FirebenderRow;
 use crate::{native_source::NativeSqliteValue, CaptureError, FIREBENDER_SQLITE_SOURCE_FORMAT};
 
@@ -101,20 +99,14 @@ pub(super) fn firebender_core_record(
         firebender_message_occurred_at(row, message_index, message),
     );
     let output = if event.event_type == EventType::ToolOutput {
-        let evidence = firebender_output_evidence(message);
         let Some(body) = firebender_result_content(message) else {
             return Ok(None);
         };
-        let Some(linkage) = firebender_result_linkage(message, &evidence) else {
-            return Ok(None);
-        };
-        Some((body, linkage))
+        Some(body)
     } else {
         None
     };
-    let body = output
-        .as_ref()
-        .map_or_else(|| event.text.clone(), |(body, _)| body.clone());
+    let body = output.clone().unwrap_or_else(|| event.text.clone());
     let body = if body.is_empty() {
         format!("Firebender {}", event.event_type.as_str())
     } else {
@@ -131,12 +123,9 @@ pub(super) fn firebender_core_record(
     let mut record = CoreRecord::new_selected(
         event_id,
         session_id,
-        session_id,
         source.clone(),
         message_index_u64,
         event.event_type.as_str(),
-        ctx_history_core::AgentType::Primary.as_str(),
-        true,
         direct::DIRECT_PARSER_REVISION,
         body,
     )?;
@@ -147,14 +136,64 @@ pub(super) fn firebender_core_record(
     ])?);
     record.occurred_at_unix_ms = Some(event.occurred_at.timestamp_millis());
     record.role = event.role.map(|role| role.as_str().to_owned());
-    record.workspace = workspace.map(str::to_owned);
-    if let Some((_, linkage)) = output {
-        record.content.structured_content = Some(serde_json::json!({
-            "provider_native_result": linkage,
-        }));
+    let facts = workspace
+        .map(|workspace| ProviderDeclaredFact {
+            kind: LiteralFactKind::Workspace,
+            value: workspace.to_owned(),
+        })
+        .into_iter()
+        .collect::<Vec<_>>();
+    let (provider_call_id, invocation, result) = firebender_activity(
+        message,
+        event.event_type,
+        event.occurred_at.timestamp_millis(),
+    )?;
+    record.content.structured_content = Some(message.clone());
+    if invocation.is_some() || result.is_some() || !facts.is_empty() {
+        record.content.activity = Some(CoreActivity {
+            revision: CORE_ACTIVITY_REVISION,
+            provider_call_id,
+            invocation,
+            result,
+            facts,
+        });
     }
+    fit_firebender_content(&mut record)?;
     record.validate_contract()?;
     Ok(Some(record))
+}
+
+fn fit_firebender_content(record: &mut CoreRecord) -> FirebenderSourceBackedResult<()> {
+    if record.content.encoded_content_bytes()? > ctx_history_core::MAX_CORE_CONTENT_BYTES {
+        let capture = record.content.activity.as_mut().and_then(|activity| {
+            activity
+                .invocation
+                .as_mut()
+                .map(|invocation| &mut invocation.arguments)
+                .or_else(|| {
+                    activity
+                        .result
+                        .as_mut()
+                        .map(|result| &mut result.structured_content)
+                })
+        });
+        if let Some(capture @ ActivityJsonCapture::Present { .. }) = capture {
+            let observed_encoded_bytes = match capture {
+                ActivityJsonCapture::Present { value } => serde_json::to_vec(value)
+                    .ok()
+                    .and_then(|encoded| u64::try_from(encoded.len()).ok()),
+                _ => None,
+            };
+            *capture = ActivityJsonCapture::Omitted {
+                reason: "size_limit".to_owned(),
+                observed_encoded_bytes,
+            };
+        }
+    }
+    record
+        .content
+        .omit_structured_content_if_aggregate_exceeds_limit()?;
+    Ok(())
 }
 
 pub(super) fn firebender_workspace(database_path: &Path) -> Option<String> {
@@ -204,39 +243,75 @@ fn firebender_message_occurred_at(
     firebender_message_time(message, started_at + chrono::Duration::milliseconds(offset))
 }
 
-fn firebender_result_linkage(
+fn firebender_activity(
     message: &serde_json::Value,
-    evidence: &FirebenderOutputEvidence,
-) -> Option<serde_json::Value> {
+    event_type: EventType,
+    occurred_at_unix_ms: i64,
+) -> FirebenderSourceBackedResult<(
+    Option<TypedKey>,
+    Option<ActivityInvocation>,
+    Option<ActivityResult>,
+)> {
     let call_id = exact_direct_string(
         message,
         &["tool_call_id", "toolCallId", "call_id", "callId"],
-    )?;
-    let tool_name = exact_direct_string(message, &["name", "tool_name", "toolName"])?;
-    let linkage_exact = call_id.is_some_and(|value| value.len() <= MAX_LINKAGE_BYTES);
-    let call_id = call_id
-        .filter(|value| value.len() <= MAX_LINKAGE_BYTES)
-        .map(str::to_owned);
-    let tool_name = tool_name
-        .filter(|value| value.len() <= MAX_LINKAGE_BYTES)
-        .map(str::to_owned);
-    let result_outcome = if evidence.timeout {
-        "timeout"
-    } else if evidence.failure {
-        "failure"
-    } else if evidence.success {
-        "success"
-    } else {
-        "unknown"
+    )
+    .flatten()
+    .filter(|value| value.len() <= MAX_LINKAGE_BYTES);
+    let Some(call_id) = call_id else {
+        return Ok((None, None, None));
     };
-    Some(serde_json::json!({
-        "call_id": call_id,
-        "tool_name": tool_name,
-        "linkage_exact": linkage_exact,
-        "result_outcome": result_outcome,
-        "exit_code": evidence.exit_code,
-        "duration_ms": evidence.duration_ms,
-    }))
+    let provider_call_id = Some(TypedKey::utf8(call_id)?);
+    if event_type == EventType::ToolCall {
+        let tool = exact_direct_string(message, &["name", "tool_name", "toolName"])
+            .flatten()
+            .filter(|value| !value.is_empty() && value.len() <= MAX_LINKAGE_BYTES);
+        let Some(tool) = tool else {
+            return Ok((None, None, None));
+        };
+        // Firebender treats multiple aliases with the same decoded JSON value
+        // as one exact selector. Conflicting or malformed aliases abstain.
+        let arguments = match exact_direct_json(message, &["arguments", "args", "input"]) {
+            Some(Some(value)) => ActivityJsonCapture::Present {
+                value: value.clone(),
+            },
+            Some(None) => ActivityJsonCapture::Absent,
+            None => ActivityJsonCapture::Unavailable,
+        };
+        return Ok((
+            provider_call_id,
+            Some(ActivityInvocation {
+                protocol: None,
+                server: None,
+                tool: tool.to_owned(),
+                arguments,
+                started_at_unix_ms: Some(occurred_at_unix_ms),
+            }),
+            None,
+        ));
+    }
+    if event_type != EventType::ToolOutput {
+        return Ok((None, None, None));
+    }
+    Ok((
+        provider_call_id,
+        None,
+        Some(ActivityResult {
+            status: exact_direct_string(message, &["status", "state", "outcome"])
+                .flatten()
+                .map(str::to_owned),
+            completed_at_unix_ms: Some(occurred_at_unix_ms),
+            duration_ns: message
+                .get("duration_ms")
+                .or_else(|| message.get("durationMs"))
+                .and_then(serde_json::Value::as_u64)
+                .and_then(|value| value.checked_mul(1_000_000)),
+            text: ActivityTextCapture::NormalizedBody,
+            structured_content: ActivityJsonCapture::Present {
+                value: message.clone(),
+            },
+        }),
+    ))
 }
 
 /// `Some(None)` means absent, `Some(Some(_))` means one exact value, and
@@ -253,10 +328,31 @@ fn exact_direct_string<'a>(
         let Some(value) = object.get(*key) else {
             continue;
         };
-        let value = value.as_str()?.trim();
+        let value = value.as_str()?;
         if value.is_empty() {
             return None;
         }
+        match selected {
+            Some(existing) if existing != value => return None,
+            Some(_) => {}
+            None => selected = Some(value),
+        }
+    }
+    Some(selected)
+}
+
+/// `Some(None)` means absent, `Some(Some(_))` means one exact decoded value,
+/// and `None` means conflicting or malformed aliases.
+fn exact_direct_json<'a>(
+    message: &'a serde_json::Value,
+    keys: &[&str],
+) -> Option<Option<&'a serde_json::Value>> {
+    let object = message.as_object()?;
+    let mut selected = None;
+    for key in keys {
+        let Some(value) = object.get(*key).filter(|value| !value.is_null()) else {
+            continue;
+        };
         match selected {
             Some(existing) if existing != value => return None,
             Some(_) => {}

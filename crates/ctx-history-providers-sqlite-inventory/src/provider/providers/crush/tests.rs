@@ -4,7 +4,7 @@ use super::projection::{
     crush_normalized_result_content, project_message, CrushMessageRow, CrushRecordProjection,
     CrushSessionRow,
 };
-use crate::{OutputOutcome, Result};
+use crate::Result;
 
 #[test]
 fn result_content_uses_only_ordered_schema_owned_fields() {
@@ -27,13 +27,9 @@ fn result_content_uses_only_ordered_schema_owned_fields() {
 }
 
 #[test]
-fn projection_keeps_complete_success_failure_and_unknown_results() -> Result<()> {
-    for (status, expected) in [
-        (Some("success"), OutputOutcome::Success),
-        (Some("failed"), OutputOutcome::Failure),
-        (None, OutputOutcome::Unknown),
-    ] {
-        let body = format!("{expected:?} native result body");
+fn projection_keeps_complete_results_and_exact_statuses() -> Result<()> {
+    for status in [Some("success"), Some("failed"), None] {
+        let body = format!("{} native result body", status.unwrap_or("absent"));
         let mut data = json!({
             "content": body,
             "tool_call_id": "call-1",
@@ -49,10 +45,9 @@ fn projection_keeps_complete_success_failure_and_unknown_results() -> Result<()>
         };
         let output = projection.output.expect("tool output projection");
         assert_eq!(projection.complete_text.as_deref(), Some(body.as_str()));
-        assert_eq!(output.outcome.outcome, expected);
+        assert_eq!(output.status.as_deref(), status);
         assert_eq!(output.call_id.as_deref(), Some("call-1"));
         assert_eq!(output.tool_name.as_deref(), Some("shell"));
-        assert!(output.linkage_exact);
     }
 
     let status_only = crush_message(json!([{

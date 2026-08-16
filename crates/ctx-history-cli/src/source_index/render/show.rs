@@ -1,4 +1,3 @@
-use crate::{mcp_tool_call_display, MCP_TOOL_CALL_JSON_GUIDANCE};
 use serde_json::Value;
 
 use crate::ui::{Document, Line, RenderContext, Span, Token};
@@ -8,7 +7,6 @@ use super::human::{display_width, push_field, push_heading, push_prefixed, push_
 const HEADER_LABEL_WIDTH: usize = 16;
 const EVENT_INDENT: usize = 3;
 const EVENT_LABEL_WIDTH: usize = 5;
-const MCP_EVENT_LABEL_WIDTH: usize = 10;
 const LINEAGE_EVENT_LABEL_WIDTH: usize = 16;
 
 pub(in crate::source_index) fn render_show_document(
@@ -115,7 +113,7 @@ fn render_copied_lineage(document: &mut Document, context: &RenderContext, value
     for (position, occurrence) in occurrences.iter().take(20).enumerate() {
         let relationship = occurrence["session_relationship"]
             .as_str()
-            .unwrap_or("inherited");
+            .unwrap_or("unspecified");
         document.push_blank();
         push_prefixed(
             document,
@@ -295,7 +293,7 @@ fn render_event_header(document: &mut Document, context: &RenderContext, value: 
         selected["session_relationship"].as_str(),
         Token::Accent,
     );
-    push_event_origin(document, context, selected, 0);
+    push_event_copy(document, context, selected, 0);
     push_optional_field(
         document,
         context,
@@ -393,35 +391,15 @@ fn render_event(document: &mut Document, context: &RenderContext, position: usiz
         time_token,
     );
     render_event_identity(document, context, event);
-    push_event_origin(document, context, event, EVENT_INDENT);
-    if let Some(attribution) = mcp_tool_call_display(event) {
-        push_field(
+    push_event_copy(document, context, event, EVENT_INDENT);
+    if let Some(activity) = event.get("activity").filter(|value| !value.is_null()) {
+        push_wrapped(
             document,
             context,
             EVENT_INDENT,
-            "MCP server",
-            MCP_EVENT_LABEL_WIDTH,
-            &attribution.server,
-            Token::Reference,
+            &format!("Activity {}", super::safe_activity_json(activity)),
+            Token::Text,
         );
-        push_field(
-            document,
-            context,
-            EVENT_INDENT,
-            "MCP tool",
-            MCP_EVENT_LABEL_WIDTH,
-            &attribution.tool,
-            Token::Accent,
-        );
-        if attribution.truncated {
-            push_wrapped(
-                document,
-                context,
-                EVENT_INDENT,
-                MCP_TOOL_CALL_JSON_GUIDANCE,
-                Token::Warning,
-            );
-        }
     }
 
     document.push_blank();
@@ -493,38 +471,25 @@ fn render_event_identity(document: &mut Document, context: &RenderContext, event
     }
 }
 
-fn push_event_origin(
-    document: &mut Document,
-    context: &RenderContext,
-    event: &Value,
-    indent: usize,
-) {
-    let origin = &event["event_origin"];
-    let Some(kind) = origin["kind"].as_str() else {
+fn push_event_copy(document: &mut Document, context: &RenderContext, event: &Value, indent: usize) {
+    let copy = &event["event_copy"];
+    let Some(ancestor_event_id) = copy["ancestor_ctx_event_id"].as_str() else {
         return;
     };
     push_field(
         document,
         context,
         indent,
-        "Origin",
+        "Copied from event",
         LINEAGE_EVENT_LABEL_WIDTH,
-        kind,
-        if kind == "copied_from_ancestor" {
-            Token::Warning
-        } else {
-            Token::Text
-        },
+        ancestor_event_id,
+        Token::Warning,
     );
-    if kind != "copied_from_ancestor" {
-        return;
-    }
     for (label, key) in [
-        ("Original event", "ancestor_event_id"),
-        ("Original session", "ancestor_session_id"),
+        ("Original session", "ancestor_ctx_session_id"),
         ("Copy proof", "proof"),
     ] {
-        if let Some(value) = origin[key].as_str() {
+        if let Some(value) = copy[key].as_str() {
             push_field(
                 document,
                 context,

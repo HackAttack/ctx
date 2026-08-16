@@ -104,7 +104,7 @@ pub fn hermes_automatic_registration<L, S>(
         impl ReplacementDocumentTree<
             Lifecycle = L,
             Spool = S,
-            RouteControl = ctx_history_provider_runtime::ProviderRouteControlExpectation,
+            RouteControl = crate::ProviderRouteControlExpectation,
         >,
     >,
 >
@@ -144,7 +144,7 @@ pub fn hermes_explicit_registration<L, S>(
         impl ReplacementDocumentTree<
             Lifecycle = L,
             Spool = S,
-            RouteControl = ctx_history_provider_runtime::ProviderRouteControlExpectation,
+            RouteControl = crate::ProviderRouteControlExpectation,
         >,
     >,
 >
@@ -195,7 +195,7 @@ pub fn astrbot_registration<L, S>(
     impl ReplacementDocumentTree<
         Lifecycle = L,
         Spool = S,
-        RouteControl = ctx_history_provider_runtime::ProviderRouteControlExpectation,
+        RouteControl = crate::ProviderRouteControlExpectation,
     >,
 >
 where
@@ -354,7 +354,7 @@ pub fn shelley_registration<L, S>(
         impl ReplacementDocumentTree<
             Lifecycle = L,
             Spool = S,
-            RouteControl = ctx_history_provider_runtime::ProviderRouteControlExpectation,
+            RouteControl = crate::ProviderRouteControlExpectation,
         >,
     >,
 >
@@ -473,7 +473,7 @@ pub fn lingma_registration<L, S>(
         impl ReplacementDocumentTree<
             Lifecycle = L,
             Spool = S,
-            RouteControl = ctx_history_provider_runtime::ProviderRouteControlExpectation,
+            RouteControl = crate::ProviderRouteControlExpectation,
         >,
     >,
 >
@@ -537,7 +537,7 @@ fn lingma_inventory_registration<L, S>(
     impl ReplacementDocumentTree<
         Lifecycle = L,
         Spool = S,
-        RouteControl = ctx_history_provider_runtime::ProviderRouteControlExpectation,
+        RouteControl = crate::ProviderRouteControlExpectation,
     >,
 >
 where
@@ -709,7 +709,7 @@ pub fn discovered_lingma_registration<L, S, F>(
         impl ReplacementDocumentTree<
             Lifecycle = L,
             Spool = S,
-            RouteControl = ctx_history_provider_runtime::ProviderRouteControlExpectation,
+            RouteControl = crate::ProviderRouteControlExpectation,
         >,
     >,
     LingmaRegistrationError,

@@ -21,11 +21,6 @@ pub use show::{
 };
 
 #[cfg(test)]
-pub(crate) fn event_origin_json(origin: &ctx_history_core::EventOrigin) -> serde_json::Value {
-    ctx_history_read_application::event_origin_json(origin)
-}
-
-#[cfg(test)]
 use std::path::{Path, PathBuf};
 
 #[cfg(test)]

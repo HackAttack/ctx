@@ -69,12 +69,6 @@ pub(super) enum OpenCodeNativeEventKind {
     Notice,
     ToolCall,
     ToolOutput,
-    CommandOutput,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub(super) struct OpenCodeNativeFileTouch {
-    pub(super) path: String,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]

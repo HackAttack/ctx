@@ -199,7 +199,6 @@ fn operation_properties(event: &OperationCompletedV1) -> Map<String, Value> {
             insert_client_operation_properties(&mut properties, operation)
         }
         OperationDescriptor::Mcp(operation) => operation.insert_properties(&mut properties),
-        OperationDescriptor::ProHost(operation) => operation.insert_properties(&mut properties),
         OperationDescriptor::Daemon(operation) => operation.insert_properties(&mut properties),
     }
     properties
@@ -209,7 +208,6 @@ fn descriptor_surface(descriptor: &OperationDescriptor) -> Surface {
     match descriptor {
         OperationDescriptor::Cli(_) => Surface::Cli,
         OperationDescriptor::Mcp(_) => Surface::Mcp,
-        OperationDescriptor::ProHost(_) => Surface::ProHost,
         OperationDescriptor::Daemon(_) => Surface::Daemon,
     }
 }
@@ -218,7 +216,6 @@ fn descriptor_name(descriptor: &OperationDescriptor) -> &'static str {
     match descriptor {
         OperationDescriptor::Cli(operation) => operation.analytics_name(),
         OperationDescriptor::Mcp(operation) => operation.name(),
-        OperationDescriptor::ProHost(operation) => operation.name(),
         OperationDescriptor::Daemon(operation) => operation.name(),
     }
 }
@@ -253,16 +250,6 @@ fn insert_provider_refresh_properties(
         refresh.refresh_result.as_str(),
     );
     insert_str(properties, "core_result", refresh.core_result.as_str());
-    insert_str(
-        properties,
-        "canonical_pro_result",
-        refresh.canonical_pro_result.as_str(),
-    );
-    insert_str(
-        properties,
-        "output_pro_result",
-        refresh.output_pro_result.as_str(),
-    );
     insert_str(properties, "failure_scope", refresh.failure_scope.as_str());
     insert_str(properties, "failure_type", refresh.failure_type.as_str());
     insert_bool(properties, "work_remaining", refresh.work_remaining);
@@ -451,11 +438,6 @@ fn insert_client_operation_properties(
             insert_optional_bool(properties, "healthy", value.healthy);
         }
         CliOperation::Stats
-        | CliOperation::ProSetup
-        | CliOperation::ProManage
-        | CliOperation::ProUninstall
-        | CliOperation::Referral
-        | CliOperation::Blame
         | CliOperation::McpServe
         | CliOperation::DaemonRun
         | CliOperation::DaemonStatus

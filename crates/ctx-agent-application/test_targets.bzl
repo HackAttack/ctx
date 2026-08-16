@@ -24,6 +24,7 @@ _CONTRACT_FIXTURE_CRATES = [
 def agent_application_binary_contract(
         name,
         src,
+        binary = "//crates/ctx-cli:ctx",
         extra_crates = [],
         extra_deps = [],
         extra_srcs = [],
@@ -32,7 +33,7 @@ def agent_application_binary_contract(
     ctx_binary_contract_test(
         name = name,
         src = src,
-        binary = "//crates/ctx-cli:ctx",
+        binary = binary,
         cargo_manifest_dir = "crates/ctx-agent-application",
         support_deps = crate_deps(_CONTRACT_SUPPORT_CRATES + (_CONTRACT_FIXTURE_CRATES if fixtures else [])) + (["//crates/ctx-history-index:lib"] if fixtures else []),
         support_srcs = _CONTRACT_SUPPORT_SRCS,

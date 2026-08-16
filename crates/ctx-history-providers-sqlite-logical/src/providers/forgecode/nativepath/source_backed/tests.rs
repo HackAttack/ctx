@@ -38,7 +38,12 @@ fn supported_conversations_remain_root_unknown_with_exact_native_content() {
         workspace_id: 7,
         created_at: "2026-08-05T12:00:00Z".to_owned(),
         updated_at: Some("2026-08-05T12:00:01Z".to_owned()),
-        context_metadata: serde_json::json!({}),
+        context_metadata: serde_json::json!({
+            "metadata": {
+                "path": "src/context-decoy.rs",
+                "branch": "context-decoy"
+            }
+        }),
         metrics_metadata: None,
     };
     let retained = super::super::source::ForgeCodeRetainedEvent {
@@ -48,7 +53,11 @@ fn supported_conversations_remain_root_unknown_with_exact_native_content() {
                 "message": {
                     "text": {
                         "role": "user",
-                        "content": "exact persisted ForgeCode event"
+                        "content": "exact persisted ForgeCode event",
+                        "metadata": {
+                            "path": "src/body-decoy.rs",
+                            "commit": "body-decoy"
+                        }
                     }
                 }
             }),
@@ -57,18 +66,17 @@ fn supported_conversations_remain_root_unknown_with_exact_native_content() {
         ),
         provider_event_index: 1,
     };
-    let record =
-        super::core_record(&source, &row, retained, &std::collections::BTreeMap::new()).unwrap();
+    let record = super::core_record(&source, &row, retained).unwrap();
 
-    assert_eq!(
-        record.session_relationship,
-        ctx_history_core::SessionRelationshipKind::Root
-    );
-    assert_eq!(record.event_origin, ctx_history_core::EventOrigin::Unknown);
-    assert!(record.is_primary);
+    assert_eq!(record.session_relationship, None);
+    assert_eq!(record.root_session_id, None);
     assert_eq!(
         record.content.meaningful_text(),
         "exact persisted ForgeCode event"
     );
     assert!(record.native_event_id.is_some());
+    let facts = &record.content.activity.as_ref().unwrap().facts;
+    assert_eq!(facts.len(), 1);
+    assert_eq!(facts[0].kind, ctx_history_core::LiteralFactKind::Workspace);
+    assert_eq!(facts[0].value, "7");
 }

@@ -36,20 +36,29 @@ pub(crate) fn factory_droid_header_cwd(value: &Value) -> Option<String> {
 pub(crate) fn factory_droid_session_relationships(
     header: &Value,
     native_session_id: &str,
-) -> (String, Option<String>, Option<String>, AgentType) {
+) -> (
+    String,
+    Option<String>,
+    Option<String>,
+    Option<AgentScope>,
+    Option<ProviderNativeSessionRelationship>,
+) {
     let parent = header
         .get("parent")
         .or_else(|| header.get("callingSessionId"))
         .and_then(Value::as_str)
         .filter(|session_id| !session_id.trim().is_empty())
         .map(str::to_owned);
-    let agent_type = if parent.is_some()
+    let agent_scope = if parent.is_some()
         || header.get("decompSessionType").and_then(Value::as_str) == Some("worker")
     {
-        AgentType::Subagent
+        Some(AgentScope::Subagent)
     } else {
-        AgentType::Primary
+        None
     };
+    let relationship = parent
+        .as_ref()
+        .map(|_| ProviderNativeSessionRelationship::Delegated);
     (
         native_session_id.to_owned(),
         parent,
@@ -58,7 +67,8 @@ pub(crate) fn factory_droid_session_relationships(
             .and_then(Value::as_str)
             .filter(|mission_id| !mission_id.trim().is_empty())
             .map(str::to_owned),
-        agent_type,
+        agent_scope,
+        relationship,
     )
 }
 
@@ -117,7 +127,7 @@ pub(crate) fn enumerate_factory_droid_results(
     let results = if reject_redacted(value).is_err() {
         placeholder_results(content)?
     } else {
-        enumerate_content_results(content, value)?
+        enumerate_content_results(content)?
     };
     for result in &results {
         factory_droid_retry_discriminator(value, result.subrecord_index)?;
@@ -203,7 +213,6 @@ fn placeholder_results(
                 content: None,
                 call_id: None,
                 tool_name: None,
-                outcome: unknown_result_outcome(),
             })
         })
         .collect()
@@ -211,7 +220,6 @@ fn placeholder_results(
 
 fn enumerate_content_results<'a>(
     content: Option<&'a Value>,
-    record: &'a Value,
 ) -> std::result::Result<Vec<NativeJsonlResultSubrecord<'a>>, NativeJsonlResultExtractionError> {
     let Some(content) = content else {
         return Ok(Vec::new());
@@ -237,11 +245,6 @@ fn enumerate_content_results<'a>(
                 tool_name: (!redacted)
                     .then(|| native_result_tool_name(block))
                     .flatten(),
-                outcome: if redacted {
-                    unknown_result_outcome()
-                } else {
-                    native_result_outcome_with_record(block, record)
-                },
             })
         })
         .collect()
@@ -272,140 +275,6 @@ fn native_result_tool_name(value: &Value) -> Option<&str> {
     ["tool_name", "toolName", "name", "tool"]
         .into_iter()
         .find_map(|key| value.get(key).and_then(Value::as_str))
-}
-
-fn native_result_outcome_with_record(subrecord: &Value, record: &Value) -> OutputOutcomeMetadata {
-    let mut outcome = native_result_outcome(subrecord);
-    if outcome.outcome == OutputOutcome::Unknown {
-        outcome = native_result_outcome(record);
-    }
-    outcome
-}
-
-fn native_result_outcome(value: &Value) -> OutputOutcomeMetadata {
-    let timeout = native_result_has_timeout(value);
-    let failure = provider_output_event_is_failure(value);
-    let success = native_result_has_success(value);
-    OutputOutcomeMetadata {
-        outcome: if timeout {
-            OutputOutcome::Timeout
-        } else if failure {
-            OutputOutcome::Failure
-        } else if success {
-            OutputOutcome::Success
-        } else {
-            OutputOutcome::Unknown
-        },
-        exit_code: native_result_i64(value, &["exit_code", "exitCode"])
-            .and_then(|code| i32::try_from(code).ok()),
-        duration_ms: native_result_u64(value, &["duration_ms", "durationMs", "duration"]),
-    }
-}
-
-fn unknown_result_outcome() -> OutputOutcomeMetadata {
-    OutputOutcomeMetadata {
-        outcome: OutputOutcome::Unknown,
-        exit_code: None,
-        duration_ms: None,
-    }
-}
-
-fn native_result_has_timeout(value: &Value) -> bool {
-    match value {
-        Value::Array(values) => values.iter().any(native_result_has_timeout),
-        Value::Object(values) => {
-            values.iter().any(|(key, value)| {
-                matches!(normalized_result_key(key).as_str(), "timeout" | "timedout")
-                    && value.as_bool().unwrap_or(false)
-            }) || values.values().any(native_result_has_timeout)
-        }
-        Value::Null | Value::Bool(_) | Value::Number(_) | Value::String(_) => false,
-    }
-}
-
-fn native_result_has_success(value: &Value) -> bool {
-    match value {
-        Value::Array(values) => values.iter().any(native_result_has_success),
-        Value::Object(values) => {
-            values.iter().any(|(key, value)| {
-                let key = normalized_result_key(key);
-                (matches!(key.as_str(), "success" | "ok") && value.as_bool() == Some(true))
-                    || (key == "exitcode" && value.as_i64() == Some(0))
-                    || (key == "statuscode"
-                        && value
-                            .as_i64()
-                            .is_some_and(|code| (200..400).contains(&code)))
-                    || (matches!(key.as_str(), "iserror" | "timedout" | "timeout")
-                        && value.as_bool() == Some(false))
-                    || (matches!(key.as_str(), "status" | "state" | "outcome")
-                        && value.as_str().is_some_and(|status| {
-                            matches!(
-                                status.trim().to_ascii_lowercase().as_str(),
-                                "success"
-                                    | "succeeded"
-                                    | "complete"
-                                    | "completed"
-                                    | "ok"
-                                    | "passed"
-                            )
-                        }))
-            }) || values.values().any(native_result_has_success)
-        }
-        Value::Null | Value::Bool(_) | Value::Number(_) | Value::String(_) => false,
-    }
-}
-
-fn native_result_i64(value: &Value, expected_keys: &[&str]) -> Option<i64> {
-    match value {
-        Value::Array(values) => values
-            .iter()
-            .find_map(|value| native_result_i64(value, expected_keys)),
-        Value::Object(values) => values
-            .iter()
-            .find_map(|(key, value)| {
-                expected_keys
-                    .iter()
-                    .any(|expected| key == expected)
-                    .then(|| value.as_i64())
-                    .flatten()
-            })
-            .or_else(|| {
-                values
-                    .values()
-                    .find_map(|value| native_result_i64(value, expected_keys))
-            }),
-        Value::Null | Value::Bool(_) | Value::Number(_) | Value::String(_) => None,
-    }
-}
-
-fn native_result_u64(value: &Value, expected_keys: &[&str]) -> Option<u64> {
-    match value {
-        Value::Array(values) => values
-            .iter()
-            .find_map(|value| native_result_u64(value, expected_keys)),
-        Value::Object(values) => values
-            .iter()
-            .find_map(|(key, value)| {
-                expected_keys
-                    .iter()
-                    .any(|expected| key == expected)
-                    .then(|| value.as_u64())
-                    .flatten()
-            })
-            .or_else(|| {
-                values
-                    .values()
-                    .find_map(|value| native_result_u64(value, expected_keys))
-            }),
-        Value::Null | Value::Bool(_) | Value::Number(_) | Value::String(_) => None,
-    }
-}
-
-fn normalized_result_key(key: &str) -> String {
-    key.chars()
-        .filter(|character| character.is_ascii_alphanumeric())
-        .flat_map(char::to_lowercase)
-        .collect()
 }
 
 fn reject_redacted(value: &Value) -> std::result::Result<(), NativeJsonlResultExtractionError> {

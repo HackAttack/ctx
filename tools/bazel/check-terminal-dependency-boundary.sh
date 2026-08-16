@@ -18,7 +18,7 @@ if [[ "$actual" != "$allowed" ]]; then
   echo "ctx-terminal dependency inventory differs: $actual" >&2
   exit 1
 fi
-if rg -n '(^|[^[:alnum:]_])(clap|ureq|ring|ed25519_dalek|sha2|zeroize|url)::|ctx_(cli|history|daemon|semantic|agent)($|[^[:alnum:]_])|ctx_pro($|[^[:alnum:]_])' "${root}/crates/ctx-terminal/src"; then
+if rg -n '(^|[^[:alnum:]_])(clap|ureq|ring|ed25519_dalek|sha2|zeroize|url)::|ctx_(cli|history|daemon|semantic|agent)($|[^[:alnum:]_])' "${root}/crates/ctx-terminal/src"; then
   echo 'ctx-terminal production source contains a forbidden dependency backedge' >&2
   exit 1
 fi

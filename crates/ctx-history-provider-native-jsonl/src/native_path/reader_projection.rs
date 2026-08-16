@@ -149,21 +149,21 @@ impl DirectJsonlProjector {
             );
         }
 
-        let touches = direct_jsonl_touches(&value, event_type, false);
+        let facts = direct_jsonl_facts(&value);
         let generic_tool_call_body = self.provider == CaptureProvider::CopilotCli
             && event_type == EventType::ToolCall
             && super::copilot::copilot_start_requires_generic_body(bytes);
-        let mcp_exchange = (self.provider == CaptureProvider::CopilotCli)
-            .then(|| super::copilot::copilot_mcp_exchange(bytes, None))
+        let activity = (self.provider == CaptureProvider::CopilotCli)
+            .then(|| super::copilot::copilot_activity(bytes))
             .flatten();
-        let fallback_identity_discriminator = mcp_exchange
+        let fallback_identity_discriminator = activity
             .as_ref()
-            .filter(|exchange| exchange.invocation.is_some())
-            .map(|exchange| {
+            .filter(|activity| activity.invocation.is_some())
+            .map(|activity| {
                 crate::compute_payload_hash(&json!({
-                    "domain": "ctx.copilot-mcp-invocation-fallback-v1",
-                    "provider_call_id": exchange.provider_call_id,
-                    "invocation": exchange.invocation,
+                    "domain": "ctx.copilot-activity-invocation-fallback-v1",
+                    "provider_call_id": activity.provider_call_id,
+                    "invocation": activity.invocation,
                 }))
             })
             .transpose()?;
@@ -176,11 +176,11 @@ impl DirectJsonlProjector {
             line_number,
             occurred_at,
             None,
-            touches,
+            facts,
             generic_tool_call_body,
             fallback_identity_discriminator.as_deref(),
         )?;
-        event.mcp_exchange = mcp_exchange;
+        event.activity = activity;
         event.source_record = DirectJsonlSourceRecord {
             byte_start,
             byte_end_exclusive,
@@ -240,21 +240,6 @@ impl DirectJsonlProjector {
             }
         };
         let mut projected = ProjectedLine::default();
-        let has_retained_failure = subrecords.iter().any(|subrecord| {
-            subrecord
-                .content
-                .as_deref()
-                .is_some_and(|content| !content.trim().is_empty())
-                && matches!(
-                    subrecord.outcome.outcome,
-                    OutputOutcome::Failure | OutputOutcome::Timeout
-                )
-        });
-        let retained_failure_touches = if has_retained_failure {
-            direct_jsonl_touches(value, direct_jsonl_event_type(self.provider, value), true)
-        } else {
-            Vec::new()
-        };
         for subrecord in subrecords {
             let content = subrecord
                 .content
@@ -268,14 +253,7 @@ impl DirectJsonlProjector {
                 continue;
             }
             let sub_ordinal = subrecord.subrecord_index;
-            let touches = if matches!(
-                subrecord.outcome.outcome,
-                OutputOutcome::Failure | OutputOutcome::Timeout
-            ) {
-                retained_failure_touches.clone()
-            } else {
-                Vec::new()
-            };
+            let facts = direct_jsonl_facts(value);
             debug_assert!(content.is_some() || retain_contentless_completion);
             let mut event = direct_event(
                 self.provider,
@@ -286,19 +264,16 @@ impl DirectJsonlProjector {
                 line_number,
                 occurred_at,
                 Some(&subrecord),
-                touches,
+                facts,
                 false,
                 None,
             )?;
-            if self.provider == CaptureProvider::CopilotCli {
-                event.mcp_tool_call = self
-                    .copilot_mcp_tool_calls
-                    .attribution_for_projected_completion(ordinal, record_digest);
-                event.mcp_exchange = super::copilot::copilot_mcp_exchange(
-                    record_bytes,
-                    event.mcp_tool_call.as_ref(),
-                );
-            }
+            event.activity = if self.provider == CaptureProvider::CopilotCli {
+                super::copilot::copilot_activity(record_bytes)
+                    .or(native_result_activity(&subrecord, value)?)
+            } else {
+                native_result_activity(&subrecord, value)?
+            };
             event.source_record = DirectJsonlSourceRecord {
                 byte_start,
                 byte_end_exclusive,
@@ -308,6 +283,37 @@ impl DirectJsonlProjector {
         }
         Ok(projected)
     }
+}
+
+fn native_result_activity(
+    subrecord: &NativeJsonlResultSubrecord<'_>,
+    native_value: &Value,
+) -> Result<Option<CoreActivity>> {
+    let provider_call_id = subrecord
+        .call_id
+        .map(TypedKey::utf8)
+        .transpose()
+        .map_err(|error| CaptureError::InvalidPayload(error.to_string()))?;
+    let text = if subrecord.content.is_some() {
+        ActivityTextCapture::NormalizedBody
+    } else {
+        ActivityTextCapture::Absent
+    };
+    Ok(Some(CoreActivity {
+        revision: CORE_ACTIVITY_REVISION,
+        provider_call_id,
+        invocation: None,
+        result: Some(ActivityResult {
+            status: None,
+            completed_at_unix_ms: None,
+            duration_ns: None,
+            text,
+            structured_content: ActivityJsonCapture::Present {
+                value: native_value.clone(),
+            },
+        }),
+        facts: Vec::new(),
+    }))
 }
 
 fn direct_jsonl_event_type(provider: CaptureProvider, value: &Value) -> EventType {
@@ -444,7 +450,7 @@ fn direct_event(
     line_number: usize,
     occurred_at: DateTime<Utc>,
     result: Option<&super::result_content::NativeJsonlResultSubrecord<'_>>,
-    touches: Vec<DirectJsonlTouch>,
+    facts: Vec<ctx_history_core::ProviderDeclaredFact>,
     generic_tool_call_body: bool,
     fallback_identity_discriminator: Option<&str>,
 ) -> Result<DirectJsonlEvent> {
@@ -472,16 +478,6 @@ fn direct_event(
             "direct JSONL result record has no meaningful selected content".to_owned(),
         ));
     }
-    let tool_result = result.map(|result| {
-        json!({
-            "call_id": result.call_id,
-            "tool_name": result.tool_name,
-            "outcome": direct_jsonl_outcome(result.outcome.outcome),
-            "exit_code": result.outcome.exit_code,
-            "duration_ms": result.outcome.duration_ms,
-        })
-    });
-
     let positional_event_index = direct_jsonl_event_sequence(raw_ordinal, sub_ordinal)?;
     let native_record_id = direct_jsonl_native_event_identity(provider, value);
     let stable_retry_discriminator = match provider {
@@ -502,8 +498,7 @@ fn direct_event(
         "stable_retry_discriminator": stable_retry_discriminator,
         "sub_ordinal": sub_ordinal,
         "lexical_text": lexical_text,
-        "tool_result": tool_result.clone(),
-        "touches": touches,
+        "native_value": value,
     });
     if native_record_id.is_none() {
         if let Some(discriminator) = fallback_identity_discriminator {
@@ -529,8 +524,7 @@ fn direct_event(
         event_type,
         role,
         occurred_at,
-        mcp_tool_call: None,
-        mcp_exchange: None,
+        activity: None,
         lexical_text,
         metadata: json!({
             "source": source_format,
@@ -542,20 +536,11 @@ fn direct_event(
             "tokens": native_jsonl_tokens(provider, value),
             "source_record_ordinal": raw_ordinal,
             "source_record_subrecord_index": sub_ordinal,
-            "tool_result": tool_result,
         }),
-        touches,
+        facts,
+        native_value: value.clone(),
         source_record: DirectJsonlSourceRecord::default(),
     })
-}
-
-fn direct_jsonl_outcome(outcome: OutputOutcome) -> &'static str {
-    match outcome {
-        OutputOutcome::Success => "success",
-        OutputOutcome::Failure => "failure",
-        OutputOutcome::Timeout => "timeout",
-        OutputOutcome::Unknown => "unknown",
-    }
 }
 
 fn direct_jsonl_event_sequence(raw_ordinal: u64, sub_ordinal: u32) -> Result<u64> {
@@ -585,33 +570,17 @@ fn direct_jsonl_event_sequence(raw_ordinal: u64, sub_ordinal: u32) -> Result<u64
         ))
 }
 
-fn direct_jsonl_touches(
-    value: &Value,
-    event_type: EventType,
-    retained_failure: bool,
-) -> Vec<DirectJsonlTouch> {
-    if matches!(event_type, EventType::ToolOutput | EventType::CommandOutput) && !retained_failure {
-        return Vec::new();
-    }
-    let mut touches = Vec::new();
-    let mut seen = BTreeSet::new();
-    visit_all_file_touch_drafts(value, |draft| {
-        let key = (
-            draft.path.clone(),
-            draft.old_path.clone(),
-            draft.change_kind.map(|kind| kind.as_str().to_owned()),
-        );
-        if seen.insert(key) {
-            touches.push(DirectJsonlTouch {
-                path: draft.path,
-                old_path: draft.old_path,
-                change_kind: draft.change_kind,
-            });
-        }
+fn direct_jsonl_facts(value: &Value) -> Vec<ctx_history_core::ProviderDeclaredFact> {
+    let mut facts = Vec::new();
+    visit_literal_file_reference_drafts(value, |draft| {
+        facts.push(ctx_history_core::ProviderDeclaredFact {
+            kind: draft.kind,
+            value: draft.value,
+        });
         Ok::<_, std::convert::Infallible>(())
     })
-    .expect("direct JSONL file-touch collection is infallible");
-    touches
+    .expect("direct JSONL file-reference collection is infallible");
+    facts
 }
 
 fn direct_jsonl_native_event_identity(provider: CaptureProvider, value: &Value) -> Option<String> {
@@ -676,8 +645,13 @@ fn session_from_header(
         _ => native_jsonl_header_session_id(provider, header)
             .unwrap_or_else(|| "unknown-session".to_owned()),
     };
-    let (provider_session_id, parent_provider_session_id, external_agent_id, agent_type) =
-        native_jsonl_path_session(provider, path, header, &native_session_id);
+    let (
+        provider_session_id,
+        parent_provider_session_id,
+        external_agent_id,
+        agent_scope,
+        session_relationship,
+    ) = native_jsonl_path_session(provider, path, header, &native_session_id);
     let started_at = match provider {
         CaptureProvider::GrokBuild => super::grok_build::grok_build_timestamp(header),
         _ => native_jsonl_timestamp(header),
@@ -695,17 +669,14 @@ fn session_from_header(
         &super::normalization::native_jsonl_normalized_header_metadata(header),
         path,
     );
-    let is_subagent =
-        parent_provider_session_id.is_some() || agent_type == ctx_history_core::AgentType::Subagent;
     DirectJsonlSession {
         native_session_id,
         provider_session_id,
-        root_provider_session_id: parent_provider_session_id.clone(),
+        root_provider_session_id: None,
         parent_provider_session_id,
         external_agent_id,
-        agent_type,
-        role_hint: Some(if is_subagent { "subagent" } else { "primary" }.to_owned()),
-        is_primary: !is_subagent,
+        agent_scope,
+        session_relationship,
         status: native_jsonl_session_status(provider, header),
         started_at,
         ended_at: None,

@@ -6,7 +6,7 @@ use serde::{
 };
 
 use super::{
-    bounded_strings::{BoundedStringVisitor, MAX_CURSOR_ATOM_CHARS},
+    bounded_strings::{BoundedStringVisitor, MAX_CURSOR_ATOM_BYTES},
     CursorRejectionKind,
 };
 
@@ -89,49 +89,49 @@ impl<'de> Visitor<'de> for CursorClassificationVisitor {
         let mut status = None;
         let mut message = None;
         let mut top_level = None;
-        let mut role_seen = false;
-        let mut event_seen = false;
-        let mut type_seen = false;
-        let mut status_seen = false;
         let mut message_seen = false;
         let mut top_level_seen = false;
+        let mut timestamp_seen = false;
+        let mut role_seen = false;
+        let mut event_seen = false;
+        let mut record_type_seen = false;
+        let mut status_seen = false;
         let mut shape_safe = true;
         while let Some(field) = map.next_key::<String>()? {
             match field.as_str() {
-                "timestamp" => timestamp = Some(map.next_value::<BoundedAtom>()?.0),
+                "timestamp" => {
+                    reject_duplicate(&mut timestamp_seen, "timestamp")?;
+                    timestamp = Some(map.next_value::<BoundedAtom>()?.0);
+                }
                 "role" => {
-                    shape_safe &= !role_seen;
-                    role_seen = true;
+                    reject_duplicate(&mut role_seen, "role")?;
                     let value = map.next_value::<BoundedAtom>()?.0;
                     shape_safe &= matches!(value.as_str(), "user" | "assistant");
                     role = Some(value);
                 }
                 "event" => {
-                    shape_safe &= !event_seen;
-                    event_seen = true;
+                    reject_duplicate(&mut event_seen, "event")?;
                     let value = map.next_value::<BoundedAtom>()?.0;
                     shape_safe &= matches!(value.as_str(), "turn_ended" | "summary");
                     event = Some(value);
                 }
                 "type" => {
-                    shape_safe &= !type_seen;
-                    type_seen = true;
+                    reject_duplicate(&mut record_type_seen, "type")?;
                     let value = map.next_value::<BoundedAtom>()?.0;
                     shape_safe &= matches!(value.as_str(), "message" | "turn_ended" | "summary");
                     record_type = Some(value);
                 }
                 "status" => {
-                    shape_safe &= !status_seen;
-                    status_seen = true;
+                    reject_duplicate(&mut status_seen, "status")?;
                     status = Some(map.next_value::<BoundedAtom>()?.0);
                 }
                 "message" => {
-                    shape_safe &= !message_seen;
+                    reject_duplicate(&mut message_seen, "message")?;
                     message_seen = true;
                     message = Some(map.next_value::<ClassifiedMessage>()?);
                 }
                 "content" => {
-                    shape_safe &= !top_level_seen;
+                    reject_duplicate(&mut top_level_seen, "content")?;
                     top_level_seen = true;
                     top_level = Some(map.next_value::<ClassifiedContent>()?);
                 }
@@ -314,7 +314,7 @@ where
     D: Deserializer<'de>,
 {
     deserializer.deserialize_string(BoundedStringVisitor {
-        max_chars: MAX_CURSOR_ATOM_CHARS,
+        max_bytes: MAX_CURSOR_ATOM_BYTES,
     })
 }
 
@@ -425,15 +425,10 @@ impl<'de> Visitor<'de> for ClassifiedBlockVisitor {
         A: MapAccess<'de>,
     {
         let mut kind = None;
-        let mut type_seen = false;
+        let mut kind_seen = false;
         while let Some(field) = map.next_key::<String>()? {
             if field == "type" {
-                if type_seen {
-                    map.next_value::<IgnoredAny>()?;
-                    kind = Some(CursorBlockKind::Excluded);
-                    continue;
-                }
-                type_seen = true;
+                reject_duplicate(&mut kind_seen, "type")?;
                 kind = Some(match map.next_value::<BoundedAtom>()?.0.as_str() {
                     "text" => CursorBlockKind::Text,
                     "tool_use" => CursorBlockKind::ToolUse,
@@ -452,5 +447,17 @@ impl<'de> Visitor<'de> for ClassifiedBlockVisitor {
         E: de::Error,
     {
         Ok(ClassifiedBlock(CursorBlockKind::Excluded))
+    }
+}
+
+fn reject_duplicate<E: de::Error>(
+    seen: &mut bool,
+    field: &'static str,
+) -> std::result::Result<(), E> {
+    if *seen {
+        Err(E::duplicate_field(field))
+    } else {
+        *seen = true;
+        Ok(())
     }
 }

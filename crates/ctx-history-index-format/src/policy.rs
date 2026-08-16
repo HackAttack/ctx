@@ -8,15 +8,15 @@
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
-pub const SOURCE_GENERATION_POLICY_VERSION: u32 = 12;
+pub const SOURCE_GENERATION_POLICY_VERSION: u32 = 13;
 pub const SOURCE_ROUTE_SNAPSHOT_REVISION: u32 = 1;
 pub const AUTOMATIC_ROUTE_DELETION_GRACE_OBSERVATIONS: u32 = 3;
-pub const LEXICAL_SCHEMA_REVISION: u32 = 20;
+pub const LEXICAL_SCHEMA_REVISION: u32 = 21;
 pub const LEXICAL_TOKENIZER_REVISION: u32 = 2;
-pub const SOURCE_EVENT_PROJECTOR_REVISION: u32 = 7;
+pub const SOURCE_EVENT_PROJECTOR_REVISION: u32 = 8;
 pub const LEXICAL_INDEXED_BODY_LIMIT: LexicalIndexedBodyLimit =
     LexicalIndexedBodyLimit::ProviderValidatedFullText;
-pub const SEMANTIC_ELIGIBILITY_REVISION: u32 = 4;
+pub const SEMANTIC_ELIGIBILITY_REVISION: u32 = 5;
 pub const SEMANTIC_CHUNKING_REVISION: u32 = 1;
 pub const SEMANTIC_CHUNK_TARGET_CHARS: usize = 1_200;
 pub const SEMANTIC_CHUNK_OVERLAP_CHARS: usize = 200;
@@ -77,6 +77,12 @@ impl SemanticGenerationPolicy {
         };
         self.candidate_event_classes.contains(&event_class) && self.candidate_roles.contains(&role)
     }
+
+    pub fn includes_provider_native_event_copy(&self, is_provider_native_copy: bool) -> bool {
+        match self.provider_native_event_copy {
+            SemanticEventCopyFilter::ExcludeExactProviderNativeCopiesV1 => !is_provider_native_copy,
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -86,12 +92,8 @@ pub struct LexicalGenerationPolicy {
     pub core_record_version: u32,
     pub core_normalization_revision: u32,
     pub core_content_policy_revision: u32,
-    pub core_repository_contract_revision: u32,
-    pub core_repository_observation_revision: u32,
-    pub core_bounded_shell_subset_revision: u32,
-    pub core_repository_association_policy_revision: u32,
-    pub core_repository_outcome_capture_revision: u32,
-    pub core_repository_local_root_authorization_fingerprint_revision: u32,
+    pub core_activity_revision: u32,
+    pub core_relationship_contract_revision: u32,
     pub included_event_classes: [SourceEventClass; 11],
     pub body_selection: LexicalBodySelection,
     pub indexed_body_limit: LexicalIndexedBodyLimit,
@@ -109,6 +111,7 @@ pub struct SemanticGenerationPolicy {
     pub candidate_roles: [SourceEventRole; 1],
     /// Filter applied after complete content is read from stored Core.
     pub core_content_filter: SemanticCoreContentFilter,
+    pub provider_native_event_copy: SemanticEventCopyFilter,
     pub chunking_revision: u32,
     pub chunk_target_chars: u32,
     pub chunk_overlap_chars: u32,
@@ -129,7 +132,7 @@ pub struct EmbeddingGenerationPolicy {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum LexicalBodySelection {
-    DiscoveryEligibleFullPolicySelectedMeaningfulText,
+    DiscoveryEligibleSelectedCoreContentAndLiteralFactsV1,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -143,13 +146,19 @@ pub enum LexicalIndexedBodyLimit {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum StoredSourceContent {
-    CompleteCoreRecordV1,
+    CompleteCoreRecordV3,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum SemanticCoreContentFilter {
-    PolicySelectedMeaningfulTextV1,
+    PolicySelectedCompleteContentAndLiteralFactsV2,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SemanticEventCopyFilter {
+    ExcludeExactProviderNativeCopiesV1,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -188,17 +197,9 @@ pub fn current_source_generation_policy() -> SourceGenerationPolicy {
             core_record_version: ctx_history_core::CORE_RECORD_VERSION,
             core_normalization_revision: ctx_history_core::CORE_NORMALIZATION_REVISION,
             core_content_policy_revision: ctx_history_core::CORE_CONTENT_POLICY_REVISION,
-            core_repository_contract_revision: ctx_history_core::CORE_REPOSITORY_CONTRACT_REVISION,
-            core_repository_observation_revision:
-                ctx_history_core::CORE_REPOSITORY_OBSERVATION_REVISION,
-            core_bounded_shell_subset_revision:
-                ctx_history_core::CORE_BOUNDED_SHELL_SUBSET_REVISION,
-            core_repository_association_policy_revision:
-                ctx_history_core::CORE_REPOSITORY_ASSOCIATION_POLICY_REVISION,
-            core_repository_outcome_capture_revision:
-                ctx_history_core::CORE_REPOSITORY_OUTCOME_CAPTURE_REVISION,
-            core_repository_local_root_authorization_fingerprint_revision:
-                ctx_history_core::CORE_REPOSITORY_LOCAL_ROOT_AUTHORIZATION_FINGERPRINT_REVISION,
+            core_activity_revision: ctx_history_core::CORE_ACTIVITY_REVISION,
+            core_relationship_contract_revision:
+                ctx_history_core::CORE_RELATIONSHIP_CONTRACT_REVISION,
             included_event_classes: [
                 SourceEventClass::Message,
                 SourceEventClass::ToolCall,
@@ -212,9 +213,10 @@ pub fn current_source_generation_policy() -> SourceGenerationPolicy {
                 SourceEventClass::Summary,
                 SourceEventClass::Notice,
             ],
-            body_selection: LexicalBodySelection::DiscoveryEligibleFullPolicySelectedMeaningfulText,
+            body_selection:
+                LexicalBodySelection::DiscoveryEligibleSelectedCoreContentAndLiteralFactsV1,
             indexed_body_limit: LEXICAL_INDEXED_BODY_LIMIT,
-            stored_content: StoredSourceContent::CompleteCoreRecordV1,
+            stored_content: StoredSourceContent::CompleteCoreRecordV3,
             schema_revision: LEXICAL_SCHEMA_REVISION,
             tokenizer_revision: LEXICAL_TOKENIZER_REVISION,
         },
@@ -231,7 +233,9 @@ pub fn current_semantic_generation_policy() -> SemanticGenerationPolicy {
         eligibility_revision: SEMANTIC_ELIGIBILITY_REVISION,
         candidate_event_classes: [SourceEventClass::Message],
         candidate_roles: [SourceEventRole::User],
-        core_content_filter: SemanticCoreContentFilter::PolicySelectedMeaningfulTextV1,
+        core_content_filter:
+            SemanticCoreContentFilter::PolicySelectedCompleteContentAndLiteralFactsV2,
+        provider_native_event_copy: SemanticEventCopyFilter::ExcludeExactProviderNativeCopiesV1,
         chunking_revision: SEMANTIC_CHUNKING_REVISION,
         chunk_target_chars: SEMANTIC_CHUNK_TARGET_CHARS as u32,
         chunk_overlap_chars: SEMANTIC_CHUNK_OVERLAP_CHARS as u32,
@@ -271,21 +275,20 @@ mod tests {
             first.canonical_sha256().unwrap(),
             second.canonical_sha256().unwrap()
         );
-        assert!(serde_json::to_value(&first).unwrap()["lexical"]
+        let lexical = serde_json::to_value(&first).unwrap()["lexical"]
             .as_object()
             .unwrap()
-            .contains_key("core_repository_local_root_authorization_fingerprint_revision"));
-        assert!(serde_json::to_value(&first).unwrap()["lexical"]
-            .as_object()
-            .unwrap()
-            .contains_key("core_repository_association_policy_revision"));
-        assert_eq!(first.policy_version, 12);
-        assert_eq!(first.lexical.event_projector_revision, 7);
-        assert_eq!(first.lexical.schema_revision, 20);
+            .clone();
+        assert!(lexical.contains_key("core_activity_revision"));
+        assert!(lexical.contains_key("core_relationship_contract_revision"));
+        assert!(!lexical.keys().any(|key| key.contains("repository")));
+        assert_eq!(first.policy_version, 13);
+        assert_eq!(first.lexical.event_projector_revision, 8);
+        assert_eq!(first.lexical.schema_revision, 21);
         assert_eq!(first.lexical.tokenizer_revision, 2);
         assert_eq!(
             first.canonical_sha256().unwrap(),
-            "65f9bd00ef5a66f05782d57ccc6fe55130f6cff63f234b6f9da214b4e5a07e99"
+            "fa91524af6c806f43e1203db44bb068d5c3dc1e22c1829703d54a03ed5cb8788"
         );
     }
 
@@ -293,7 +296,7 @@ mod tests {
     fn generation_affecting_field_changes_policy_hash() {
         let current = current_source_generation_policy();
         let mut changed = current.clone();
-        changed.lexical.core_repository_association_policy_revision += 1;
+        changed.lexical.core_activity_revision += 1;
 
         assert_ne!(
             current.canonical_sha256().unwrap(),
@@ -327,16 +330,16 @@ mod tests {
 
     #[test]
     fn semantic_policy_persisted_bytes_and_model_authority_are_frozen() {
-        const EXPECTED: &str = "{\"eligibility_revision\":4,\"candidate_event_classes\":[\"message\"],\"candidate_roles\":[\"user\"],\"core_content_filter\":\"policy_selected_meaningful_text_v1\",\"chunking_revision\":1,\"chunk_target_chars\":1200,\"chunk_overlap_chars\":200,\"source_max_chars\":65536,\"embedding\":{\"contract_revision\":2,\"model\":\"intfloat/multilingual-e5-small\",\"model_revision\":\"614241f622f53c4eeff9890bdc4f31cfecc418b3\",\"dimensions\":384,\"normalization\":\"l2\"}}";
+        const EXPECTED: &str = "{\"eligibility_revision\":5,\"candidate_event_classes\":[\"message\"],\"candidate_roles\":[\"user\"],\"core_content_filter\":\"policy_selected_complete_content_and_literal_facts_v2\",\"provider_native_event_copy\":\"exclude_exact_provider_native_copies_v1\",\"chunking_revision\":1,\"chunk_target_chars\":1200,\"chunk_overlap_chars\":200,\"source_max_chars\":65536,\"embedding\":{\"contract_revision\":2,\"model\":\"intfloat/multilingual-e5-small\",\"model_revision\":\"614241f622f53c4eeff9890bdc4f31cfecc418b3\",\"dimensions\":384,\"normalization\":\"l2\"}}";
         let policy = current_semantic_generation_policy();
         let contract = ctx_semantic_model::semantic_model_contract();
         let persisted = serde_json::to_string(&policy).unwrap();
-        assert_eq!(EXPECTED.len(), 424);
-        assert_eq!(persisted.len(), 424);
+        assert_eq!(EXPECTED.len(), 514);
+        assert_eq!(persisted.len(), 514);
         assert_eq!(persisted, EXPECTED);
         assert_eq!(
             policy.canonical_sha256().unwrap(),
-            "e812b772f4c302189259acddb0b177ce341ac1f971a9f08fc3a77d3e624b2f21"
+            "7344423c77612cd733fd09226c07df21d4d9e8ba0440ea0058f04c05eb07a628"
         );
         assert_eq!(
             policy.embedding.contract_revision,

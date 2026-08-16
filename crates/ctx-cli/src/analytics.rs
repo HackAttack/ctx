@@ -35,19 +35,3 @@ pub(crate) fn send_batch(
         }
     }
 }
-
-pub(crate) fn send_pro_operation(
-    data_root: &std::path::Path,
-    operation: ProHostOperationV1,
-    outcome: Outcome,
-    duration: std::time::Duration,
-) {
-    send_batch(
-        data_root,
-        &match crate::config::AppConfig::load(data_root) {
-            Ok(config) => config,
-            Err(_) => return,
-        },
-        &[pro_operation_event(operation, outcome, duration)],
-    );
-}

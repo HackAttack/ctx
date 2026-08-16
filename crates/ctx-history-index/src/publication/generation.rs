@@ -69,6 +69,18 @@ pub(crate) fn sync_generation(path: &Path) -> Result<()> {
     Ok(ctx_history_index_generation::sync_generation(path)?)
 }
 
+pub(crate) fn reclaim_inactive_generation_directories(
+    root: &Path,
+    pointer: Option<&ActiveGenerationPointer>,
+    lease: Option<&ctx_history_index_generation::GenerationRetentionLease>,
+) -> Result<()> {
+    Ok(
+        ctx_history_index_generation::reclaim_inactive_generation_directories(
+            root, pointer, lease,
+        )?,
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

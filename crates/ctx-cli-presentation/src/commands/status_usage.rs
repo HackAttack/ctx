@@ -316,7 +316,7 @@ mod tests {
             json!({
                 "schema_version": 1,
                 "local_usage": {
-                    "schema_version": 2,
+                    "schema_version": 3,
                     "enabled": false,
                     "state": "error",
                     "definition_version": 2,

@@ -2,19 +2,14 @@
 
 use std::{
     collections::{BTreeMap, HashSet},
-    convert::Infallible,
     fs,
     io::{Read, Seek, SeekFrom},
     path::Path,
 };
 
 use chrono::{DateTime, Utc};
-use ctx_history_capture_model::file_touches::{
-    event_type_supports_structured_file_touches, visit_provider_file_touch_drafts_with_limit,
-    MAX_PROVIDER_FILE_TOUCHES_PER_EVENT,
-};
 use ctx_history_core::{
-    derive_event_id, derive_session_id, AgentType, CaptureProvider, CertifiedSource, CoreRecord,
+    derive_event_id, derive_session_id, CaptureProvider, CertifiedSource, CoreRecord,
     CoreRecordError, EventIdentityInput, NativeItemKey, NativeSessionKey, ProjectionContractError,
     ScannedSourceCounts, SessionIdentityInput, SourceAnchor, SourceKey, StableEntityId, TypedKey,
 };
@@ -44,17 +39,16 @@ use super::{
 const KIRO_SOURCE_ANCHOR_NAMESPACE: &str = "kiro.legacy-sqlite";
 const KIRO_SOURCE_ANCHOR_KEY: &str = "default-history";
 const KIRO_SOURCE_SCHEMA_VARIANT: &str = "kiro-legacy-conversations-sqlite-v1";
-const KIRO_SOURCE_BACKED_PARSER_REVISION: &str = "kiro-source-backed-logical-v2";
+const KIRO_SOURCE_BACKED_PARSER_REVISION: &str = "kiro-source-backed-logical-v3-neutral-core";
 const KIRO_NATIVE_SESSION_NAMESPACE: &str = "kiro.conversation";
 const KIRO_NATIVE_EVENT_NAMESPACE: &str = "kiro.history-event";
 const KIRO_LOGICAL_SESSION_KIND: &str = "kiro-conversation";
 const KIRO_LOGICAL_EVENT_KIND: &str = "kiro-history-event";
-const KIRO_SNAPSHOT_DIGEST_DOMAIN: &[u8] = b"ctx.kiro.logical-snapshot.v2\0";
+const KIRO_SNAPSHOT_DIGEST_DOMAIN: &[u8] = b"ctx.kiro.logical-snapshot.v3-neutral-core\0";
 const KIRO_LOGICAL_FINGERPRINT_DOMAIN: &[u8] = b"ctx.kiro.logical-fingerprint.v1\0";
 const KIRO_ROW_DIGEST_DOMAIN: &[u8] = b"ctx.kiro.conversation-row.v1\0";
 const KIRO_SCHEMA_DIGEST_DOMAIN: &[u8] = b"ctx.kiro.relevant-schema.v1\0";
 const SQLITE_HEADER: &[u8; 16] = b"SQLite format 3\0";
-const MAX_LEXICAL_METADATA_BYTES: usize = 64 * 1024;
 pub(super) const SOURCE_BACKED_PAGE_ROWS: usize = 64;
 
 #[derive(Debug, Error)]
@@ -576,7 +570,6 @@ fn kiro_core_record(
         TypedKey::utf8(row.key.clone())?,
         TypedKey::utf8(event.cursor)?,
     ])?;
-    let touched_files = projected_touched_files(event.event_type, entry)?;
     let body = complete_text;
     if body.is_empty() {
         return Err(KiroSourceBackedErrorV0::UncertifiableRow {
@@ -588,12 +581,9 @@ fn kiro_core_record(
     let mut record = CoreRecord::new_selected(
         event_id,
         session_id,
-        session_id,
         source.clone(),
         event.provider_event_index,
         event.event_type.as_str(),
-        AgentType::Primary.as_str(),
-        true,
         KIRO_SOURCE_BACKED_PARSER_REVISION,
         body,
     )?;
@@ -601,47 +591,12 @@ fn kiro_core_record(
     record.native_event_id = Some(primary_key);
     record.occurred_at_unix_ms = Some(event.occurred_at.timestamp_millis());
     record.role = event.role.map(|role| role.as_str().to_owned());
-    record.cwd = (!row.key.trim().is_empty()).then(|| row.key.clone());
-    if !touched_files.is_empty() {
-        record.metadata.insert(
-            "provider_native_file_touches".to_owned(),
-            serde_json::json!(touched_files),
-        );
-    }
+    record.content.structured_content = Some(entry.clone());
+    record
+        .content
+        .omit_structured_content_if_aggregate_exceeds_limit()?;
     record.validate_contract()?;
     Ok(record)
-}
-
-fn projected_touched_files(
-    event_type: ctx_history_core::EventType,
-    entry: &Value,
-) -> KiroSourceBackedResultV0<Vec<String>> {
-    if !matches!(
-        event_type,
-        ctx_history_core::EventType::ToolCall
-            | ctx_history_core::EventType::ToolOutput
-            | ctx_history_core::EventType::CommandOutput
-            | ctx_history_core::EventType::FileTouched
-    ) {
-        return Ok(Vec::new());
-    }
-    let mut paths = Vec::new();
-    let outcome = visit_provider_file_touch_drafts_with_limit(
-        entry,
-        event_type_supports_structured_file_touches(event_type),
-        MAX_PROVIDER_FILE_TOUCHES_PER_EVENT,
-        |(_, touch)| {
-            if touch.path.len() <= MAX_LEXICAL_METADATA_BYTES {
-                paths.push(touch.path);
-            }
-            Ok::<(), Infallible>(())
-        },
-    )
-    .unwrap_or_else(|never| match never {});
-    if outcome.limit_exceeded() {
-        return Err(KiroSourceBackedErrorV0::CountOverflow);
-    }
-    Ok(paths)
 }
 
 pub(super) fn phase_is_present(tables: KiroTables, phase: KiroPhase) -> bool {
@@ -696,9 +651,8 @@ fn hash_projected_document(digest: &mut Sha256, document: &CoreRecord) {
             .as_deref()
             .unwrap_or_default(),
     );
-    hash_unchecked(digest, document.cwd.as_deref().unwrap_or_default());
-    if let Some(paths) = document.metadata.get("provider_native_file_touches") {
-        hash_unchecked(digest, &paths.to_string());
+    if let Some(structured) = &document.content.structured_content {
+        hash_unchecked(digest, &structured.to_string());
     }
 }
 

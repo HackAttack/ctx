@@ -1,7 +1,10 @@
 use std::path::Path;
 
 use chrono::{DateTime, Utc};
-use ctx_history_core::{AgentType, CaptureProvider, EventRole, EventType, SessionStatus};
+use ctx_history_core::{
+    AgentScope, CaptureProvider, EventRole, EventType, ProviderNativeSessionRelationship,
+    SessionStatus,
+};
 use serde_json::{json, Value};
 
 use crate::PROVIDER_MAX_PREVIEW_CHARS;
@@ -85,7 +88,13 @@ pub(crate) fn native_jsonl_path_session(
     path: &Path,
     header: &Value,
     native_session_id: &str,
-) -> (String, Option<String>, Option<String>, AgentType) {
+) -> (
+    String,
+    Option<String>,
+    Option<String>,
+    Option<AgentScope>,
+    Option<ProviderNativeSessionRelationship>,
+) {
     match provider {
         CaptureProvider::Tabnine => {
             let parent = path
@@ -97,15 +106,16 @@ pub(crate) fn native_jsonl_path_session(
                     native_session_id.to_owned(),
                     parent.map(str::to_owned),
                     None,
-                    AgentType::Subagent,
+                    Some(AgentScope::Subagent),
+                    Some(ProviderNativeSessionRelationship::Delegated),
                 );
             }
-            (native_session_id.to_owned(), None, None, AgentType::Primary)
+            (native_session_id.to_owned(), None, None, None, None)
         }
         CaptureProvider::FactoryAiDroid => {
             factory_droid_session_relationships(header, native_session_id)
         }
-        _ => (native_session_id.to_owned(), None, None, AgentType::Primary),
+        _ => (native_session_id.to_owned(), None, None, None, None),
     }
 }
 

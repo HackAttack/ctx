@@ -6,8 +6,8 @@ use tantivy::schema::{
 };
 
 use ctx_history_core::{
-    CoreContent, CoreRecord, EventOrigin, RepositoryVcsObservationKind, SourceKey, StableEntityId,
-    StableEntityKind, TypedKey, MAX_CORE_CONTENT_BYTES, MAX_ENCODED_CORE_RECORD_BYTES,
+    CoreContent, CoreRecord, ProviderNativeCopyProof, SourceKey, StableEntityId, StableEntityKind,
+    TypedKey, MAX_CORE_CONTENT_BYTES, MAX_ENCODED_CORE_RECORD_BYTES,
 };
 
 use crate::{Fields, IndexError, Result};
@@ -505,18 +505,18 @@ pub fn core_content_bytes(content: &CoreContent) -> Result<usize> {
 
 /// Derives the lexical body projection for one complete Core record.
 ///
-/// Proven ancestor copies and content carrying an independent discovery
-/// exclusion remain complete stored Core records, but their bodies must not
-/// create full-text postings. Unknown and positively unique event origins do
-/// not alter the content-owned discovery policy.
-pub fn project_indexed_body_search(
-    event_origin: &EventOrigin,
-    content: CoreContent,
-) -> Result<Option<String>> {
-    if matches!(event_origin, EventOrigin::CopiedFromAncestor { .. }) {
-        return Ok(None);
-    }
+/// Provider-native copy claims do not imply a derived origin classification or
+/// alter discovery. Only the content-owned discovery policy controls postings.
+pub fn project_indexed_body_search(content: CoreContent) -> Result<Option<String>> {
     crate::project_body_search(content)
+}
+
+pub(crate) fn event_copy_proof_str(proof: ProviderNativeCopyProof) -> &'static str {
+    match proof {
+        ProviderNativeCopyProof::NativeEventIdentity => "native_event_identity",
+        ProviderNativeCopyProof::NativeCopiedFromField => "native_copied_from_field",
+        ProviderNativeCopyProof::NativeCallResultIdentity => "native_call_result_identity",
+    }
 }
 #[cfg(test)]
 pub struct SourceToken([u8; 64]);
@@ -664,33 +664,12 @@ impl IndexDocument {
             core_record_encoded_bytes,
             core_content_bytes,
         )?;
-        let repository_attribution_eligible =
-            matches!(&record.event_origin, EventOrigin::UniqueToSession);
-        let repository_path_values = if repository_attribution_eligible {
-            record
-                .repository_file_observations
-                .iter()
-                .map(|observation| 1 + usize::from(observation.prior_relative_path.is_some()))
-                .sum::<usize>()
-        } else {
-            0
-        };
-        let produced_object_values = if repository_attribution_eligible {
-            record
-                .repository_vcs_observations
-                .iter()
-                .filter_map(|observation| match &observation.kind {
-                    RepositoryVcsObservationKind::Outcome(outcome) => Some(outcome),
-                    _ => None,
-                })
-                .map(|outcome| outcome.produced_object_ids.len())
-                .sum::<usize>()
-        } else {
-            0
-        };
-        let mut target = Self::with_capacity(
-            BASE_FIELD_VALUES + repository_path_values + produced_object_values,
-        );
+        let literal_fact_values = record
+            .content
+            .activity
+            .as_ref()
+            .map_or(0, |activity| activity.facts.len());
+        let mut target = Self::with_capacity(BASE_FIELD_VALUES + literal_fact_values);
         target.add_text(fields.event_id, record.event_id.to_string());
         target.add_text(
             fields.event_identity_digest,
@@ -706,20 +685,28 @@ impl IndexDocument {
         if let Some(parent_session_id) = record.parent_session_id {
             target.add_text(fields.parent_session_id, parent_session_id.to_string());
         }
-        target.add_text(fields.root_session_id, record.root_session_id.to_string());
-        target.add_text(
-            fields.session_relationship_kind,
-            record.session_relationship.as_str().to_owned(),
-        );
-        target.add_text(
-            fields.event_origin_kind,
-            record.event_origin.kind_str().to_owned(),
-        );
-        if let EventOrigin::CopiedFromAncestor {
-            ancestor_event_id, ..
-        } = &record.event_origin
-        {
-            target.add_text(fields.origin_event_id, ancestor_event_id.to_string());
+        if let Some(root_session_id) = record.root_session_id {
+            target.add_text(fields.root_session_id, root_session_id.to_string());
+        }
+        if let Some(relationship) = record.session_relationship {
+            target.add_text(
+                fields.provider_native_session_relationship,
+                relationship.as_str().to_owned(),
+            );
+        }
+        if let Some(copy) = record.event_copy {
+            target.add_text(
+                fields.event_copy_ancestor_session_id,
+                copy.ancestor_session_id.to_string(),
+            );
+            target.add_text(
+                fields.event_copy_ancestor_event_id,
+                copy.ancestor_event_id.to_string(),
+            );
+            target.add_text(
+                fields.event_copy_proof,
+                event_copy_proof_str(copy.proof).to_owned(),
+            );
         }
         target.add_shared_text(fields.source_key, source.token);
         target.add_shared_text(fields.provider, source.provider);
@@ -737,11 +724,9 @@ impl IndexDocument {
         if let Some(provider_session_id) = record.provider_session_id {
             target.add_text(fields.provider_session_id, provider_session_id);
         }
-        if let Some(branch) = record.branch {
-            target.add_text(fields.branch, branch);
+        if let Some(agent_scope) = record.agent_scope {
+            target.add_text(fields.agent_scope, agent_scope.as_str().to_owned());
         }
-        target.add_text(fields.agent_type, record.agent_type);
-        target.add_u64(fields.is_primary, u64::from(record.is_primary));
         target.add_u64(fields.event_sequence, record.event_sequence);
         if let Some(occurred_at_unix_ms) = record.occurred_at_unix_ms {
             target.add_i64(fields.occurred_at_unix_ms, occurred_at_unix_ms);
@@ -750,37 +735,13 @@ impl IndexDocument {
         if let Some(role) = record.role {
             target.add_text(fields.role, role);
         }
-        if let Some(body) = project_indexed_body_search(&record.event_origin, record.content)? {
+        if let Some(activity) = record.content.activity.as_ref() {
+            for fact in &activity.facts {
+                target.add_text(fields.literal_fact(fact.kind), fact.value.clone());
+            }
+        }
+        if let Some(body) = project_indexed_body_search(record.content)? {
             target.add_text(fields.body_search, body);
-        }
-        if repository_attribution_eligible {
-            for observation in record.repository_vcs_observations {
-                if let RepositoryVcsObservationKind::Outcome(outcome) = observation.kind {
-                    for object_id in outcome.produced_object_ids {
-                        target.add_text(fields.repository_produced_object_id, object_id.hex);
-                    }
-                }
-            }
-        }
-        if let Some(workspace) = record.workspace {
-            target.add_text(fields.workspace_filter, workspace.to_lowercase());
-        }
-        if let Some(cwd) = record.cwd {
-            target.add_text(fields.workspace_filter, cwd.to_lowercase());
-        }
-        if repository_attribution_eligible {
-            for observation in record.repository_file_observations {
-                target.add_text(
-                    fields.touched_file_filter,
-                    observation.relative_path.to_lowercase(),
-                );
-                if let Some(prior_relative_path) = observation.prior_relative_path {
-                    target.add_text(
-                        fields.touched_file_filter,
-                        prior_relative_path.to_lowercase(),
-                    );
-                }
-            }
         }
         target.add_u64(
             fields.core_content_bytes,
@@ -833,8 +794,9 @@ mod tests {
     use super::*;
     use crate::{fields_from_schema, lexical_schema, IndexError};
     use ctx_history_core::{
-        derive_event_id, derive_session_id, CoreRecord, EventCopyProofKind, EventIdentityInput,
-        NativeItemKey, NativeSessionKey, SessionIdentityInput, SourceAnchor, SourceKey, TypedKey,
+        derive_event_id, derive_session_id, CoreRecord, EventIdentityInput, NativeItemKey,
+        NativeSessionKey, ProviderNativeCopyProof, ProviderNativeEventCopy, SessionIdentityInput,
+        SourceAnchor, SourceKey, TypedKey,
     };
     use tantivy::schema::{Document, TantivyDocument};
 
@@ -874,12 +836,9 @@ mod tests {
         let mut record = CoreRecord::new_selected(
             event_id,
             session_id,
-            session_id,
             source.clone(),
             1,
             "message",
-            "primary",
-            true,
             "index-document-test-v1",
             "body",
         )
@@ -905,8 +864,8 @@ mod tests {
         actual.add_bytes(fields.core_record, bytes);
         actual.add_u64(fields.event_sequence, 42);
         actual.add_i64(fields.occurred_at_unix_ms, -9);
-        actual.add_text(fields.touched_file_filter, "first.rs".to_owned());
-        actual.add_text(fields.touched_file_filter, "second.rs".to_owned());
+        actual.add_text(fields.fact_file, "first.rs".to_owned());
+        actual.add_text(fields.fact_file, "second.rs".to_owned());
 
         assert!(actual.fields.iter().any(|(field, value)| {
             *field == fields.body_search
@@ -927,8 +886,8 @@ mod tests {
         expected.add_bytes(fields.core_record, &[7_u8; 113]);
         expected.add_u64(fields.event_sequence, 42);
         expected.add_i64(fields.occurred_at_unix_ms, -9);
-        expected.add_text(fields.touched_file_filter, "first.rs");
-        expected.add_text(fields.touched_file_filter, "second.rs");
+        expected.add_text(fields.fact_file, "first.rs");
+        expected.add_text(fields.fact_file, "second.rs");
 
         assert_eq!(
             serde_json::to_value(actual.to_named_doc(&schema)).unwrap(),
@@ -960,7 +919,7 @@ mod tests {
     }
 
     #[test]
-    fn copied_core_keeps_exact_fields_and_stored_body_without_body_search() {
+    fn provider_native_copy_keeps_exact_fields_and_remains_discoverable() {
         let schema = lexical_schema();
         let fields = fields_from_schema(&schema).unwrap();
         let source = source("codex_session_jsonl");
@@ -983,11 +942,11 @@ mod tests {
             subrecord_selector: None,
         })
         .unwrap();
-        record.event_origin = EventOrigin::CopiedFromAncestor {
-            ancestor_session_id: Box::new(ancestor_session_id),
-            ancestor_event_id: Box::new(ancestor_event_id),
-            proof: EventCopyProofKind::NativeCopiedFromField,
-        };
+        record.event_copy = Some(ProviderNativeEventCopy {
+            ancestor_session_id,
+            ancestor_event_id,
+            proof: ProviderNativeCopyProof::NativeCopiedFromField,
+        });
         let expected_event_id = record.event_id.to_string();
         let expected_session_id = record.session_id.to_string();
         let expected_body = record.content.normalized_body.clone();
@@ -997,7 +956,12 @@ mod tests {
             .unwrap()
             .into_tantivy_document();
 
-        assert!(document.get_first(fields.body_search).is_none());
+        assert_eq!(
+            document
+                .get_first(fields.body_search)
+                .and_then(|value| value.as_str()),
+            Some("body")
+        );
         assert_eq!(
             document
                 .get_first(fields.event_id)
@@ -1012,9 +976,15 @@ mod tests {
         );
         assert_eq!(
             document
-                .get_first(fields.event_origin_kind)
+                .get_first(fields.event_copy_ancestor_event_id)
                 .and_then(|value| value.as_str()),
-            Some("copied_from_ancestor")
+            Some(ancestor_event_id.to_string().as_str())
+        );
+        assert_eq!(
+            document
+                .get_first(fields.event_copy_proof)
+                .and_then(|value| value.as_str()),
+            Some("native_copied_from_field")
         );
         assert_eq!(
             document

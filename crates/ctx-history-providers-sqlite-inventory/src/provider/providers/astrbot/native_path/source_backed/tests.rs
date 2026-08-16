@@ -3,7 +3,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use ctx_history_core::{AgentType, CoreRecord, TypedKey};
+use ctx_history_core::{CoreRecord, TypedKey};
 use rusqlite::{params, Connection};
 use serde_json::json;
 
@@ -375,15 +375,11 @@ fn complete_native_structure_and_event_fields_survive_direct_core_projection() {
         vec![0, 1, 2]
     );
     for record in &records {
-        assert_eq!(record.agent_type, AgentType::Primary.as_str());
-        assert!(record.is_primary);
+        assert_eq!(record.root_session_id, None);
         assert!(record.occurred_at_unix_ms.is_some());
         assert!(record.provider_session_id.is_some());
         assert!(record.native_event_id.is_some());
         assert!(record.content.structured_content.is_some());
-        assert!(record.repository_bindings.is_empty());
-        assert!(record.repository_file_observations.is_empty());
-        assert!(record.repository_vcs_observations.is_empty());
     }
 }
 

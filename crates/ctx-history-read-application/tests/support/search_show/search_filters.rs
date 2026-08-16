@@ -84,7 +84,7 @@ fn search_refresh_off_requires_existing_core_generation_without_creating_one() {
 }
 
 #[test]
-fn file_only_search_does_not_grant_unknown_origin_file_attribution() {
+fn file_only_search_does_not_infer_a_file_fact_from_activity_text() {
     let temp = tempdir();
     let fixture = repository_backed_rich_fixture(&temp);
     json_output(ctx(&temp).args([
@@ -97,11 +97,20 @@ fn file_only_search_does_not_grant_unknown_origin_file_attribution() {
     ]));
 
     let broad = json_output(ctx(&temp).args(["search", "new_fixture", "--format=json"]));
-    assert_eq!(broad["results"][0]["event_origin"]["kind"], "unknown");
+    assert!(broad["results"][0].get("event_copy").is_none());
     let event_id = broad["results"][0]["ctx_event_id"].as_str().unwrap();
     let shown = json_output(ctx(&temp).args(["show", "event", event_id, "--format=json"]));
-    assert_eq!(shown["event"]["event_origin"]["kind"], "unknown");
-    assert_eq!(shown["event"]["touched_files"][0], "src/main.rs");
+    assert!(shown["event"].get("event_copy").is_none());
+    assert!(shown["event"].get("touched_files").is_none());
+    assert!(
+        shown["event"]["activity"]["invocation"]["arguments"]["value"]
+            .as_str()
+            .is_some_and(|arguments| arguments.contains("src/main.rs")),
+        "complete provider activity was not preserved: {shown:#}"
+    );
+    assert!(shown["event"]["activity"]["facts"]
+        .as_array()
+        .is_none_or(|facts| facts.iter().all(|fact| fact["kind"] != "file")));
 
     let filtered =
         json_output(ctx(&temp).args(["search", "--file", "src/main.rs", "--format=json"]));

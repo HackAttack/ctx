@@ -15,18 +15,18 @@ use std::{
 
 use chrono::{DateTime, Utc};
 use ctx_history_core::{
-    derive_event_id, derive_session_id, AgentType, CaptureProvider, CertifiedSource, CoreRecord,
-    CoreRecordError, EventIdentityInput, NativeItemKey, NativeSessionKey, PositionStability,
-    ProjectionContractError, ScannedSourceCounts, SessionIdentityInput, SourceAnchor, SourceKey,
-    StableEntityId, SubrecordSelector, TypedKey,
+    derive_event_id, derive_session_id, ActivityJsonCapture, ActivityResult, ActivityTextCapture,
+    CaptureProvider, CertifiedSource, CoreActivity, CoreRecord, CoreRecordError,
+    EventIdentityInput, LiteralFactKind, NativeItemKey, NativeSessionKey, PositionStability,
+    ProjectionContractError, ProviderDeclaredFact, ScannedSourceCounts, SessionIdentityInput,
+    SourceAnchor, SourceKey, StableEntityId, SubrecordSelector, TypedKey, CORE_ACTIVITY_REVISION,
 };
 use sha2::{Digest, Sha256};
 use thiserror::Error;
 
 use super::super::{
     message::{
-        core_eligible, deepagents_event_type, deepagents_messages_from_blob,
-        deepagents_output_outcome, DeepAgentsMessage,
+        core_eligible, deepagents_event_type, deepagents_messages_from_blob, DeepAgentsMessage,
     },
     record_evidence::deepagents_write_record_digest,
     source::{
@@ -50,7 +50,7 @@ use crate::{
 const DEEPAGENTS_SOURCE_ANCHOR_NAMESPACE: &str = "deepagents.sessions";
 const DEEPAGENTS_SOURCE_ANCHOR_KEY: &str = "selected-sessions-db";
 const DEEPAGENTS_SOURCE_SCHEMA_VARIANT: &str = "deepagents-sqlite-write-messages-v0";
-const DEEPAGENTS_SOURCE_PARSER_REVISION: &str = "deepagents-source-backed-v1";
+const DEEPAGENTS_SOURCE_PARSER_REVISION: &str = "deepagents-source-backed-v2-neutral-core";
 const DEEPAGENTS_NATIVE_SESSION_NAMESPACE: &str = "deepagents.thread";
 const DEEPAGENTS_NATIVE_MESSAGE_NAMESPACE: &str = "deepagents.message";
 const DEEPAGENTS_NATIVE_WRITE_NAMESPACE: &str = "deepagents.write";
@@ -617,12 +617,9 @@ fn deepagents_core_record(
     let mut record = CoreRecord::new_selected(
         event_id,
         session_id,
-        session_id,
         source.clone(),
         event_sequence,
         event_type.as_str(),
-        AgentType::Primary.as_str(),
-        true,
         DEEPAGENTS_SOURCE_PARSER_REVISION,
         body,
     )?;
@@ -630,55 +627,98 @@ fn deepagents_core_record(
     record.native_event_id = Some(primary_key);
     record.occurred_at_unix_ms = Some(occurred_at.timestamp_millis());
     record.role = Some(message.role.as_str().to_owned());
-    record.branch = branch.map(str::to_owned);
-    record.cwd = cwd.map(str::to_owned);
-    record.content.structured_content = if message.role == ctx_history_core::EventRole::Tool {
-        let outcome = deepagents_output_outcome(message);
-        let call_id = bounded_linkage(message.tool_call_id.as_deref());
-        Some(serde_json::json!({
-            "provider_native_result": {
-                "call_id": call_id,
-                "linkage_exact": call_id.is_some(),
-                "result_outcome": output_outcome_label(outcome.outcome),
-                "status": bounded_status(message.status.as_deref()),
-                "exit_code": outcome.exit_code,
-                "duration_ms": outcome.duration_ms,
+    record.content.structured_content = Some(serde_json::json!({
+        "message_type": message.message_type,
+        "message_class": message.message_class,
+        "message_id": message.message_id,
+        "tool_call_id": message.tool_call_id,
+        "status": message.status,
+        "exit_code": message.exit_code,
+        "duration_ms": message.duration_ms,
+        "timed_out": message.timed_out,
+        "is_error": message.is_error,
+        "success": message.success,
+        "text": message.text,
+    }));
+    let mut facts = Vec::new();
+    if let Some(branch) = branch {
+        facts.push(ProviderDeclaredFact {
+            kind: LiteralFactKind::Branch,
+            value: branch.to_owned(),
+        });
+    }
+    if let Some(cwd) = cwd {
+        facts.push(ProviderDeclaredFact {
+            kind: LiteralFactKind::SessionCwd,
+            value: cwd.to_owned(),
+        });
+    }
+    let call_id = bounded_linkage(message.tool_call_id.as_deref());
+    let result =
+        (message.role == ctx_history_core::EventRole::Tool && call_id.is_some()).then(|| {
+            ActivityResult {
+                status: bounded_status(message.status.as_deref()).map(str::to_owned),
+                completed_at_unix_ms: Some(occurred_at.timestamp_millis()),
+                duration_ns: message
+                    .duration_ms
+                    .and_then(|value| value.checked_mul(1_000_000)),
+                text: ActivityTextCapture::NormalizedBody,
+                structured_content: ActivityJsonCapture::Present {
+                    value: record
+                        .content
+                        .structured_content
+                        .clone()
+                        .unwrap_or_default(),
+                },
             }
-        }))
-    } else {
-        Some(serde_json::json!({
-            "provider_native_message": {
-                "message_type": bounded_status(Some(&message.message_type)),
-                "message_class": bounded_status(message.message_class.as_deref()),
-                "message_id": bounded_linkage(message.message_id.as_deref()),
-            }
-        }))
-    };
+        });
+    if result.is_some() || !facts.is_empty() {
+        record.content.activity = Some(CoreActivity {
+            revision: CORE_ACTIVITY_REVISION,
+            provider_call_id: call_id.map(TypedKey::utf8).transpose()?,
+            invocation: None,
+            result,
+            facts,
+        });
+    }
+    if record.content.encoded_content_bytes()? > ctx_history_core::MAX_CORE_CONTENT_BYTES {
+        if let Some(ActivityJsonCapture::Present { value }) = record
+            .content
+            .activity
+            .as_mut()
+            .and_then(|activity| activity.result.as_mut())
+            .map(|result| &mut result.structured_content)
+        {
+            let observed_encoded_bytes = serde_json::to_vec(value)
+                .ok()
+                .and_then(|encoded| u64::try_from(encoded.len()).ok());
+            record
+                .content
+                .activity
+                .as_mut()
+                .and_then(|activity| activity.result.as_mut())
+                .expect("Deep Agents result capture remained present")
+                .structured_content = ActivityJsonCapture::Omitted {
+                reason: "size_limit".to_owned(),
+                observed_encoded_bytes,
+            };
+        }
+    }
+    record
+        .content
+        .omit_structured_content_if_aggregate_exceeds_limit()?;
     record.validate_contract()?;
     Ok(record)
 }
 
 fn bounded_linkage(value: Option<&str>) -> Option<&str> {
     const MAX_LINKAGE_BYTES: usize = 16 * 1024;
-    value
-        .map(str::trim)
-        .filter(|value| !value.is_empty() && value.len() <= MAX_LINKAGE_BYTES)
+    value.filter(|value| !value.is_empty() && value.len() <= MAX_LINKAGE_BYTES)
 }
 
 fn bounded_status(value: Option<&str>) -> Option<&str> {
     const MAX_STATUS_BYTES: usize = 4 * 1024;
-    value
-        .map(str::trim)
-        .filter(|value| !value.is_empty() && value.len() <= MAX_STATUS_BYTES)
-}
-
-fn output_outcome_label(outcome: crate::OutputOutcome) -> &'static str {
-    match outcome {
-        crate::OutputOutcome::Success => "success",
-        crate::OutputOutcome::Failure => "failure",
-        crate::OutputOutcome::Timeout => "timeout",
-        crate::OutputOutcome::Unknown => "unknown",
-    }
+    value.filter(|value| !value.is_empty() && value.len() <= MAX_STATUS_BYTES)
 }
 
 fn digest_bytes(digest: &crate::record_evidence::RecordDigest) -> Option<[u8; 32]> {

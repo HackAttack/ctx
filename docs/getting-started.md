@@ -205,47 +205,12 @@ supported machine-readable retrieval API for scripts and exact field
 extraction. It contains cited snippets and source metadata, but it is retrieved
 source material rather than generated analysis.
 
-## 7. Optional Local Pro Work Graph
+## 7. Optional Paid Companion
 
-Local Pro is a separately installed paid helper that derives an encrypted work
-graph from canonical local history. Source code, transcripts, and graph facts
-remain local.
-
-```bash
-ctx pro
-ctx blame src/lib.rs --lines 42
-ctx blame <sha> --type commit --format json
-ctx blame 42 --repository forge:github.com/ctxrs/ctx
-```
-
-Repositories and worktrees are detected from indexed activity; setup does not
-need a repository path. Query `--repository` accepts a logical repository
-identity such as `forge:github.com/ctxrs/ctx`, rather than a filesystem path.
-Numeric PR selectors require it; canonical supported PR/MR URLs do not.
-Use `--type file|commit|pr` when a target is ambiguous. The explicit
-`ctx blame file`, `ctx blame commit`, and `ctx blame pr` forms remain supported.
-
-Setup, daemon freshness, and blame can catch the derived graph up. Canonical
-history is never changed by that work. Blame returns typed file, commit, or PR
-matches with complete deduplicated evidence and optional continuation cursors.
-PR activity remains separate from code production. Associated commits appear
-only when a recognized structured forge record names the canonical PR and exact
-Git object ID; without that proof, membership is explicitly unproven. The
-helper uses the platform key store.
-
-Bare `ctx pro` runs the idempotent setup, resume, repair, and graph catch-up
-flow. `ctx pro setup` remains a supported explicit synonym. First use normally
-starts a 14-day trial without an account or payment method. If no anonymous
-trial is available, the same command still prints and opens a browser handoff
-where an existing subscription can be linked or ctx pro can be purchased; no
-ctx pro graph work starts before access is established. The official interactive
-installer starts that trial by default before the initial import so Core and
-ctx pro index in one pass; unattended installation remains Core-only unless
-ctx pro is explicitly requested. Paid conversion and billing management use the
-browser later.
-`ctx status` does not mutate canonical history or graph data;
-entitlement authorization may advance nonsecret anti-clock-rollback metadata.
-
+Official managed ctx installations may include a separately signed private
+companion. Core-only installation channels retain all OSS setup, import, search,
+and show commands. Paid routes return a typed companion-unavailable failure when
+the companion is absent. See [ctx Pro](managed-companion.md).
 ## 8. Built-In Docs And Upgrades
 
 ```bash

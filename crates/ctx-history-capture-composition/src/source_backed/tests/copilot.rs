@@ -4,7 +4,6 @@ use std::{
     path::Path,
 };
 
-use ctx_history_core::{McpToolCallAttribution, MAX_MCP_TOOL_CALL_ATTRIBUTION_COMPONENT_BYTES};
 use ctx_history_source_io::MAX_PROVIDER_JSONL_LINE_BYTES;
 
 use super::*;
@@ -129,11 +128,14 @@ fn record_by_native_id<'a>(records: &'a [CoreRecord], expected: &str) -> &'a Cor
         .unwrap_or_else(|| panic!("missing published Copilot record {expected}"))
 }
 
-fn attribution(server: &str, tool: &str) -> Option<McpToolCallAttribution> {
-    Some(McpToolCallAttribution {
-        server: server.to_owned(),
-        tool: tool.to_owned(),
-    })
+fn invocation_identity(record: &CoreRecord) -> Option<(&str, &str)> {
+    record
+        .content
+        .activity
+        .as_ref()?
+        .invocation
+        .as_ref()
+        .and_then(|invocation| Some((invocation.server.as_deref()?, invocation.tool.as_str())))
 }
 
 #[test]
@@ -236,19 +238,17 @@ fn copilot_route_discards_physical_line_above_shared_ceiling_and_publishes_neigh
     assert!(!records
         .iter()
         .any(|record| native_id(record) == "oversized-start"));
-    assert!(records.iter().all(|record| record.mcp_tool_call.is_none()));
 }
 
 #[test]
 fn copilot_route_enforces_independent_exact_identity_component_boundaries() {
+    const MAX_ACTIVITY_IDENTITY_COMPONENT_BYTES: usize = 64 * 1024;
     let temp = tempdir().unwrap();
     let root = temp.path().join("sessions");
-    let exact_server = "s".repeat(MAX_MCP_TOOL_CALL_ATTRIBUTION_COMPONENT_BYTES);
-    let oversized_server =
-        "s".repeat(MAX_MCP_TOOL_CALL_ATTRIBUTION_COMPONENT_BYTES.saturating_add(1));
-    let exact_tool = "t".repeat(MAX_MCP_TOOL_CALL_ATTRIBUTION_COMPONENT_BYTES);
-    let oversized_tool =
-        "t".repeat(MAX_MCP_TOOL_CALL_ATTRIBUTION_COMPONENT_BYTES.saturating_add(1));
+    let exact_server = "s".repeat(MAX_ACTIVITY_IDENTITY_COMPONENT_BYTES);
+    let oversized_server = "s".repeat(MAX_ACTIVITY_IDENTITY_COMPONENT_BYTES.saturating_add(1));
+    let exact_tool = "t".repeat(MAX_ACTIVITY_IDENTITY_COMPONENT_BYTES);
+    let oversized_tool = "t".repeat(MAX_ACTIVITY_IDENTITY_COMPONENT_BYTES.saturating_add(1));
 
     write_session(
         &root,
@@ -309,21 +309,33 @@ fn copilot_route_enforces_independent_exact_identity_component_boundaries() {
     let records = core_records(&VerifiedIndex::open(&index_path).unwrap());
     assert_eq!(records.len(), 12);
     assert_eq!(
-        record_by_native_id(&records, "server-exact-complete").mcp_tool_call,
-        attribution(&exact_server, "lookup")
+        invocation_identity(record_by_native_id(&records, "server-exact-start")),
+        Some((exact_server.as_str(), "lookup"))
     );
     assert_eq!(
-        record_by_native_id(&records, "tool-exact-complete").mcp_tool_call,
-        attribution("server", &exact_tool)
+        invocation_identity(record_by_native_id(&records, "tool-exact-start")),
+        Some(("server", exact_tool.as_str()))
     );
     assert_eq!(
-        record_by_native_id(&records, "server-over-complete").mcp_tool_call,
+        invocation_identity(record_by_native_id(&records, "server-over-start")),
         None
     );
     assert_eq!(
-        record_by_native_id(&records, "tool-over-complete").mcp_tool_call,
+        invocation_identity(record_by_native_id(&records, "tool-over-start")),
         None
     );
+    for native_id in [
+        "server-exact-complete",
+        "tool-exact-complete",
+        "server-over-complete",
+        "tool-over-complete",
+    ] {
+        assert!(record_by_native_id(&records, native_id)
+            .content
+            .activity
+            .as_ref()
+            .is_some_and(|activity| activity.result.is_some()));
+    }
     assert!(records
         .iter()
         .all(|record| record.validate_contract().is_ok()));

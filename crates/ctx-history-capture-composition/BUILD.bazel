@@ -1,0 +1,87 @@
+load("@crates//:defs.bzl", "aliases", "all_crate_deps", "crate_edition")
+load("@rules_rust//rust:defs.bzl", "rust_library")
+load("//:rust_sources.bzl", "RUST_PROD_SRC_EXCLUDES")
+load("//tools/bazel:ctx_rust.bzl", "ctx_rust_test")
+load("//tools/bazel:gates.bzl", "loc_check_inputs")
+
+package(default_visibility = ["//visibility:public"])
+
+loc_check_inputs(name = "loc_check_inputs")
+filegroup(name = "cargo_package_data", srcs = glob(["**"], exclude = ["BUILD.bazel"]))
+filegroup(name = "provider_architecture_sources", srcs = glob(["src/**/*.rs"], exclude = RUST_PROD_SRC_EXCLUDES))
+
+COMMON_RUSTC_ENV = {"CARGO_MANIFEST_DIR": "crates/ctx-history-capture-composition"}
+RUST_SRCS = glob(["src/**/*.rs"])
+PROD_SRCS = glob(["src/**/*.rs"], exclude = RUST_PROD_SRC_EXCLUDES)
+
+COMPOSITION_DEPS = [
+    "//crates/ctx-history-capture-model:lib",
+    "//crates/ctx-history-capture-runtime:lib",
+    "//crates/ctx-history-core:lib",
+    "//crates/ctx-history-index:lib",
+    "//crates/ctx-history-jsonl:lib",
+    "//crates/ctx-history-provider-claude-cursor:lib",
+    "//crates/ctx-history-provider-codex:lib",
+    "//crates/ctx-history-provider-docproj:lib",
+    "//crates/ctx-history-provider-gemini:lib",
+    "//crates/ctx-history-provider-mistral-mux:lib",
+    "//crates/ctx-history-provider-native-jsonl:lib",
+    "//crates/ctx-history-provider-runtime:lib",
+    "//crates/ctx-history-provider-trae:lib",
+    "//crates/ctx-history-providers-jsonl-shared:lib",
+    "//crates/ctx-history-providers-sqlite-inventory:lib",
+    "//crates/ctx-history-providers-sqlite-logical:lib",
+    "//crates/ctx-history-providers-sqlite-selected:lib",
+    "//crates/ctx-history-providers-task-docs:lib",
+    "//crates/ctx-history-source-discovery:lib",
+    "//crates/ctx-history-source-io:lib",
+]
+
+COMPOSITION_TEST_DEPS = [
+    "//crates/ctx-history-capture-model:lib",
+    "//crates/ctx-history-capture-runtime:lib",
+    "//crates/ctx-history-core:lib",
+    "//crates/ctx-history-index:lib",
+    "//crates/ctx-history-jsonl:test_support_lib",
+    "//crates/ctx-history-provider-claude-cursor:test_support_lib",
+    "//crates/ctx-history-provider-codex:test_support_lib",
+    "//crates/ctx-history-provider-docproj:test_support_lib",
+    "//crates/ctx-history-provider-gemini:test_support_lib",
+    "//crates/ctx-history-provider-mistral-mux:test_support_lib",
+    "//crates/ctx-history-provider-native-jsonl:test_support_lib",
+    "//crates/ctx-history-provider-runtime:test_support_lib",
+    "//crates/ctx-history-provider-trae:test_support_lib",
+    "//crates/ctx-history-providers-jsonl-shared:test_support_lib",
+    "//crates/ctx-history-providers-sqlite-inventory:test_support_lib",
+    "//crates/ctx-history-providers-sqlite-logical:lib",
+    "//crates/ctx-history-providers-sqlite-selected:test_support_lib",
+    "//crates/ctx-history-providers-task-docs:lib",
+    "//crates/ctx-history-source-discovery:lib",
+    "//crates/ctx-history-source-io:test_support_lib",
+]
+
+rust_library(
+    name = "lib",
+    srcs = PROD_SRCS,
+    crate_name = "ctx_history_capture_composition",
+    crate_root = "src/lib.rs",
+    edition = crate_edition(),
+    aliases = aliases(),
+    deps = all_crate_deps(normal = True) + COMPOSITION_DEPS,
+    proc_macro_deps = all_crate_deps(proc_macro = True),
+    rustc_env = COMMON_RUSTC_ENV,
+)
+
+ctx_rust_test(
+    name = "unit_tests",
+    srcs = RUST_SRCS,
+    crate_name = "ctx_history_capture_composition",
+    crate_root = "src/lib.rs",
+    compile_data = ["//:provider_import_policy", "//:provider_support_matrix"],
+    edition = crate_edition(),
+    aliases = aliases(normal_dev = True, proc_macro_dev = True),
+    data = ["//:provider_support_matrix", ":provider_architecture_sources"],
+    deps = all_crate_deps(normal = True, normal_dev = True) + COMPOSITION_TEST_DEPS,
+    proc_macro_deps = all_crate_deps(proc_macro = True, proc_macro_dev = True),
+    rustc_env = COMMON_RUSTC_ENV,
+)

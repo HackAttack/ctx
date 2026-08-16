@@ -22,7 +22,6 @@ use ctx_semantic_model::SharedSemanticRuntime;
 #[cfg(test)]
 use serde_json::{json, Value};
 
-mod browser_handoff_wake;
 mod daemon;
 mod daemon_retry;
 mod daemon_scheduler;
@@ -33,7 +32,6 @@ mod ports;
 mod query_service;
 mod resource_policy;
 mod runtime_limits;
-mod source_backed_pro_catch_up;
 mod source_backed_refresh_adapter;
 mod source_backed_refresh_coordinator;
 #[cfg(test)]
@@ -66,7 +64,6 @@ use source_backed_refresh_coordinator::SourceBackedRefreshPublication;
 #[cfg(test)]
 mod query_service_transport_tests;
 
-pub use browser_handoff_wake::publish_browser_handoff_pending;
 pub use daemon::run_daemon;
 pub use daemon_wakeup::daemon_wakeup_report;
 pub use paths_status::{
@@ -82,11 +79,6 @@ pub use query_service::{
     DaemonQueryServiceUnavailable, DaemonSourceRefreshServiceUnavailable,
 };
 pub use runtime_limits::SEMANTIC_WORKER_BATCH_MAX;
-pub use source_backed_pro_catch_up::{
-    cancel_core_finalization_generation_lease, helper_recheck_targets,
-    publish_helper_recheck_intent, rearm_helper_recheck_intent, wait_for_completed_generation,
-    wake_helper_recheck,
-};
 pub use source_backed_refresh_coordinator::{
     coordinate_import_source_backed_refresh_with_progress,
     coordinate_setup_source_backed_refresh_with_progress, coordinate_source_backed_refresh,
@@ -99,21 +91,9 @@ pub use source_backed_refresh_coordinator::{
 
 #[cfg(feature = "test-support")]
 pub mod testing {
-    pub use crate::source_backed_pro_catch_up::testing::*;
     pub use crate::source_backed_refresh_coordinator::{
         recover_wait_refresh_request_for_test, SourceRefreshObservationRecoveryFailed,
     };
-
-    pub fn pro_catch_up_production_source() -> String {
-        [
-            include_str!("source_backed_pro_catch_up.rs"),
-            include_str!("source_backed_pro_catch_up/finalization.rs"),
-            include_str!("source_backed_pro_catch_up/lease_reconciliation.rs"),
-            include_str!("source_backed_pro_catch_up/recheck.rs"),
-            include_str!("source_backed_pro_catch_up/status.rs"),
-        ]
-        .join("\n")
-    }
 
     pub fn write_daemon_lifecycle_status(
         data_root: &std::path::Path,

@@ -90,14 +90,6 @@ MCP_ATTRIBUTION_PUBLIC_SUITES = {
             "mcp_attribution_canaries_stay_out_of_search_analytics_usage_and_diagnostics": ["privacy_sinks"],
         },
     ),
-    "mcp_attribution_search": struct(
-        target = "//crates/ctx-history-index:mcp_attribution_search_tests",
-        selected_inventory = False,
-        tests = {
-            "mcp_invocation_projection_is_searchable_narrow_and_response_neutral": ["search_nonindexing"],
-            "separate_calls_and_mixed_outputs_keep_their_existing_scope_and_weight": ["search_nonindexing"],
-        },
-    ),
 }
 
 def _checked_public_suite(suite_id):

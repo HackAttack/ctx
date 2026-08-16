@@ -41,7 +41,6 @@ pub(super) fn session_estimated_bytes(session: &WarpNativeSession) -> Result<usi
                 .as_ref()
                 .map_or(0, String::len),
         )
-        .saturating_add(session.root_conversation_id.len())
         .saturating_add(session.title.len())
         .saturating_add(metadata_bytes);
     Ok(conservative_text_bytes(text, 384))
@@ -89,7 +88,6 @@ fn hash_session(hasher: &mut Sha256, session: &WarpNativeSession) -> Result<()> 
     hasher.update(b"session\0");
     hash_text(hasher, &session.conversation_id)?;
     hash_optional_text(hasher, session.parent_conversation_id.as_deref())?;
-    hash_text(hasher, &session.root_conversation_id)?;
     hasher.update([u8::from(session.parent_present)]);
     hash_text(hasher, &session.title)?;
     hash_optional_i64(
@@ -130,7 +128,6 @@ fn hash_event(hasher: &mut Sha256, event: &WarpNativeEvent) -> Result<()> {
     hash_optional_text(hasher, event.role.map(EventRole::as_str))?;
     hash_text(hasher, event.kind)?;
     hash_optional_text(hasher, event.request_id.as_deref())?;
-    hash_optional_outcome(hasher, event.result_outcome);
     hash_optional_text(hasher, event.call_id.as_deref())?;
     hasher.update([u8::from(event.mcp_attribution)]);
     hasher.update([u8::from(event.mcp_invocation.is_some())]);
@@ -207,16 +204,6 @@ fn hash_usize(hasher: &mut Sha256, value: usize, message: &'static str) -> Resul
     let value = u64::try_from(value).map_err(|_| CaptureError::SystemInvariant(message))?;
     hasher.update(value.to_le_bytes());
     Ok(())
-}
-
-fn hash_optional_outcome(hasher: &mut Sha256, outcome: Option<OutputOutcome>) {
-    hasher.update([match outcome {
-        None => 0,
-        Some(OutputOutcome::Success) => 1,
-        Some(OutputOutcome::Failure) => 2,
-        Some(OutputOutcome::Timeout) => 3,
-        Some(OutputOutcome::Unknown) => 4,
-    }]);
 }
 
 pub(super) fn bound_rejection_text(native_key: &mut String, reason: &mut String) {

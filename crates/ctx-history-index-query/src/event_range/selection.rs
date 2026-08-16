@@ -62,7 +62,6 @@ impl CoreEventRangeSelection {
         canonicalize_optional_filter("workspace", &mut filters.workspace, true)?;
         canonicalize_optional_filter("event_type", &mut filters.event_type, false)?;
         canonicalize_optional_filter("role", &mut filters.role, false)?;
-        canonicalize_optional_filter("agent_type", &mut filters.agent_type, false)?;
         canonicalize_optional_filter("file", &mut filters.file, true)?;
         let history_source_parts = filters
             .history_source
@@ -168,13 +167,12 @@ impl CoreEventRangeSelection {
             || filters.parent_session_id.is_some_and(|expected| {
                 event.parent_session_id.map(|id| id.as_uuid()) != Some(expected)
             })
-            || filters
-                .root_session_id
-                .is_some_and(|expected| event.root_session_id.as_uuid() != expected)
-            || filters
-                .branch
-                .as_deref()
-                .is_some_and(|expected| event.branch.as_deref() != Some(expected))
+            || filters.root_session_id.is_some_and(|expected| {
+                event.root_session_id.map(|id| id.as_uuid()) != Some(expected)
+            })
+            || filters.branch.as_deref().is_some_and(|expected| {
+                !has_literal_fact(record, LiteralFactKind::Branch, |value| value == expected)
+            })
             || filters
                 .event_type
                 .as_deref()
@@ -183,33 +181,33 @@ impl CoreEventRangeSelection {
                 .role
                 .as_deref()
                 .is_some_and(|expected| event.role.as_deref() != Some(expected))
-            || filters
-                .agent_type
-                .as_deref()
-                .is_some_and(|expected| event.agent_type != expected)
         {
             return false;
         }
-        if (filters.scope == CoreEventRangeScope::Primary && !event.is_primary)
-            || (filters.scope == CoreEventRangeScope::Subagent && event.is_primary)
+        if (filters.scope == CoreEventRangeScope::Primary
+            && event.agent_scope != Some(CoreAgentScope::Primary))
+            || (filters.scope == CoreEventRangeScope::Subagent
+                && event.agent_scope != Some(CoreAgentScope::Subagent))
         {
             return false;
         }
         if filters.workspace.as_deref().is_some_and(|expected| {
-            !event
-                .workspace
-                .as_deref()
-                .into_iter()
-                .chain(event.cwd.as_deref())
-                .any(|value| value.to_lowercase().contains(expected))
+            !has_literal_fact(record, LiteralFactKind::Workspace, |value| {
+                value.to_lowercase().contains(expected)
+            }) && !has_literal_fact(record, LiteralFactKind::SessionCwd, |value| {
+                value.to_lowercase().contains(expected)
+            }) && !has_literal_fact(record, LiteralFactKind::ToolWorkdir, |value| {
+                value.to_lowercase().contains(expected)
+            }) && !has_literal_fact(record, LiteralFactKind::Project, |value| {
+                value.to_lowercase().contains(expected)
+            })
         }) {
             return false;
         }
         if filters.file.as_deref().is_some_and(|expected| {
-            !event
-                .touched_files
-                .iter()
-                .any(|value| value.to_lowercase().contains(expected))
+            !has_literal_fact(record, LiteralFactKind::File, |value| {
+                value.to_lowercase().contains(expected)
+            })
         }) {
             return false;
         }
@@ -322,7 +320,6 @@ fn selection_digest(domain: CoreEventRangeDomain, filters: &CoreEventRangeFilter
         filters.workspace.as_deref(),
         filters.event_type.as_deref(),
         filters.role.as_deref(),
-        filters.agent_type.as_deref(),
         filters.file.as_deref(),
     ] {
         digest_option(&mut digest, value);
@@ -337,6 +334,20 @@ fn selection_digest(domain: CoreEventRangeDomain, filters: &CoreEventRangeFilter
         CoreEventRangeDirection::Descending => 1,
     }]);
     digest.finalize().into()
+}
+
+fn has_literal_fact(
+    record: &CoreRecord,
+    kind: LiteralFactKind,
+    mut matches: impl FnMut(&str) -> bool,
+) -> bool {
+    record
+        .content
+        .activity
+        .as_ref()
+        .into_iter()
+        .flat_map(|activity| &activity.facts)
+        .any(|fact| fact.kind == kind && matches(&fact.value))
 }
 
 fn digest_strings(digest: &mut Sha256, values: &[String]) {

@@ -33,7 +33,3 @@ tempfile.workspace = true
 [[test]]
 name = "writer_integration"
 path = "tests/writer_integration.rs"
-
-[[test]]
-name = "mcp_attribution_search"
-path = "tests/writer_integration/mcp_attribution_search.rs"

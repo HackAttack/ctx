@@ -1,15 +1,42 @@
 load("@crates//:defs.bzl", "aliases", "all_crate_deps", "crate_deps", "crate_edition")
 load("@rules_rust//cargo:defs.bzl", "cargo_toml_env_vars")
-load("@rules_rust//rust:defs.bzl", "rust_binary", "rust_test")
 load("//:rust_sources.bzl", "RUST_PROD_SRC_EXCLUDES")
+load("//tools/bazel:ctx_rust.bzl", "ctx_rust_binary", "ctx_rust_test")
+load("//tools/bazel:gates.bzl", "loc_check_inputs")
+load(":test_targets.bzl", "CTX_CLI_RUSTC_FLAGS", "ctx_cli_integration_test", "ctx_cli_test_data")
 
 package(default_visibility = ["//visibility:public"])
 
-exports_files(["Cargo.toml"])
+loc_check_inputs(name = "loc_check_inputs")
+
+exports_files([
+    "BUILD.bazel",
+    "Cargo.toml",
+    "build.rs",
+    "test_targets.bzl",
+])
 
 filegroup(
     name = "cargo_package_data",
     srcs = glob(["**"], exclude = ["BUILD.bazel"]),
+)
+
+filegroup(
+    name = "integration_test_compile_data",
+    srcs = glob(["tests/fixtures/**"], allow_empty = True),
+)
+
+filegroup(
+    name = "integration_test_data",
+    srcs = glob(["tests/fixtures/**"], allow_empty = True),
+)
+
+filegroup(
+    name = "provider_import_architecture_sources",
+    srcs = glob(
+        ["src/commands/import/**/*.rs"],
+        exclude = RUST_PROD_SRC_EXCLUDES,
+    ),
 )
 
 cargo_toml_env_vars(
@@ -22,11 +49,94 @@ COMMON_RUSTC_ENV = {
     "CARGO_MANIFEST_DIR": "crates/ctx-cli",
 }
 
+RELEASE_BUILD_RUSTC_ENV = select({
+    "//tools/bazel/platforms:aarch64-apple-darwin": dict(
+        COMMON_RUSTC_ENV,
+        CTX_RELEASE_BUILD_TARGET = "aarch64-apple-darwin",
+    ),
+    "//tools/bazel/platforms:aarch64-unknown-linux-gnu": dict(
+        COMMON_RUSTC_ENV,
+        CTX_RELEASE_BUILD_TARGET = "aarch64-unknown-linux-gnu",
+    ),
+    "//tools/bazel/platforms:x86_64-apple-darwin": dict(
+        COMMON_RUSTC_ENV,
+        CTX_RELEASE_BUILD_TARGET = "x86_64-apple-darwin",
+    ),
+    "//tools/bazel/platforms:x86_64-pc-windows-gnu": dict(
+        COMMON_RUSTC_ENV,
+        CTX_RELEASE_BUILD_TARGET = "x86_64-pc-windows-gnu",
+    ),
+    "//tools/bazel/platforms:x86_64-unknown-freebsd": dict(
+        COMMON_RUSTC_ENV,
+        CTX_RELEASE_BUILD_TARGET = "x86_64-unknown-freebsd",
+    ),
+    "//tools/bazel/platforms:x86_64-unknown-linux-gnu": dict(
+        COMMON_RUSTC_ENV,
+        CTX_RELEASE_BUILD_TARGET = "x86_64-unknown-linux-gnu",
+    ),
+    "//conditions:default": dict(
+        COMMON_RUSTC_ENV,
+        CTX_RELEASE_BUILD_TARGET = "unselected",
+    ),
+})
+
 CTX_CLI_DEPS = [
+    "//crates/ctx-agent-application:lib",
+    "//crates/ctx-agent-integrations:lib",
+    "//crates/ctx-client-observability:lib",
+    "//crates/ctx-companion-bridge:lib",
+    "//crates/ctx-cli-presentation:lib",
+    "//crates/ctx-daemon-cli:lib",
     "//crates/ctx-history-capture:lib",
+    "//crates/ctx-history-cli:lib",
     "//crates/ctx-history-core:lib",
+    "//crates/ctx-history-platform:lib",
+    "//crates/ctx-history-ingest-application:lib",
     "//crates/ctx-history-index:lib",
-    "//crates/ctx-history-store:lib",
+    "//crates/ctx-history-read-application:lib",
+    "//crates/ctx-history-refresh:lib",
+    "//crates/ctx-terminal:lib",
+    "//crates/ctx-upgrade-engine:lib",
+]
+
+CTX_CLI_TEST_DEPS = [
+    "//crates/ctx-agent-application:test_support_lib",
+    "//crates/ctx-agent-integrations:lib",
+    "//crates/ctx-client-observability:test_support_lib",
+    "//crates/ctx-companion-bridge:lib",
+    "//crates/ctx-cli-presentation:test_support_lib",
+    "//crates/ctx-daemon-cli:test_support_lib",
+    "//crates/ctx-history-capture:lib",
+    "//crates/ctx-history-cli:test_support_lib",
+    "//crates/ctx-history-core:lib",
+    "//crates/ctx-history-platform:lib",
+    "//crates/ctx-history-ingest-application:test_support_lib",
+    "//crates/ctx-history-index:lib",
+    "//crates/ctx-history-read-application:lib",
+    "//crates/ctx-history-refresh:test_support_lib",
+    "//crates/ctx-semantic-index:test_support_lib",
+    "//crates/ctx-semantic-model:test_support_lib",
+    "//crates/ctx-terminal:lib",
+    "//crates/ctx-upgrade-engine:test_support_lib",
+]
+
+CTX_CLI_QUALIFICATION_DEPS = [
+    "//crates/ctx-agent-application:lib",
+    "//crates/ctx-agent-integrations:lib",
+    "//crates/ctx-client-observability:lib",
+    "//crates/ctx-companion-bridge:lib",
+    "//crates/ctx-cli-presentation:qualification_lib",
+    "//crates/ctx-daemon-cli:qualification_lib",
+    "//crates/ctx-history-capture:lib",
+    "//crates/ctx-history-cli:lib",
+    "//crates/ctx-history-core:lib",
+    "//crates/ctx-history-platform:lib",
+    "//crates/ctx-history-ingest-application:lib",
+    "//crates/ctx-history-index:lib",
+    "//crates/ctx-history-read-application:lib",
+    "//crates/ctx-history-refresh:lib",
+    "//crates/ctx-terminal:lib",
+    "//crates/ctx-upgrade-engine:qualification_lib",
 ]
 
 CTX_CLI_COMPILE_DATA = [
@@ -34,52 +144,21 @@ CTX_CLI_COMPILE_DATA = [
     "//:ctx_embedded_docs",
 ]
 
-# Cargo build.rs enables these cfgs on platforms supported by the public
-# semantic runtime. Mirror that decision for platforms represented by the
-# native Bazel graph while preserving the fallback on unsupported targets.
-CTX_CLI_RUSTC_FLAGS = [
-    "--check-cfg=cfg(ctx_semantic_fastembed)",
-    "--check-cfg=cfg(ctx_sqlite_vec)",
-    "--check-cfg=cfg(test)",
-] + select({
-    "@rules_rust//rust/platform:aarch64-apple-darwin": [
-        "--cfg=ctx_semantic_fastembed",
-        "--cfg=ctx_sqlite_vec",
-    ],
-    "@rules_rust//rust/platform:aarch64-unknown-linux-gnu": [
-        "--cfg=ctx_semantic_fastembed",
-        "--cfg=ctx_sqlite_vec",
-    ],
-    "@rules_rust//rust/platform:x86_64-pc-windows-msvc": [
-        "--cfg=ctx_semantic_fastembed",
-        "--cfg=ctx_sqlite_vec",
-    ],
-    "@rules_rust//rust/platform:x86_64-unknown-linux-gnu": [
-        "--cfg=ctx_semantic_fastembed",
-        "--cfg=ctx_sqlite_vec",
-    ],
-    "@rules_rust//rust/platform:x86_64-unknown-nixos-gnu": [
-        "--cfg=ctx_semantic_fastembed",
-        "--cfg=ctx_sqlite_vec",
-    ],
-    "//conditions:default": [],
-})
+CTX_CLI_TEST_COMPILE_DATA = CTX_CLI_COMPILE_DATA + [
+    "//:release_contracts",
+    "//:telemetry_contract_fixtures",
+    "//crates/ctx-client-observability:cargo_package_data",
+    "//crates/ctx-daemon-runtime:cargo_package_data",
+]
 
 RUST_SRCS = glob(["src/**/*.rs"])
-
-# These files are test-only after parsing, but their parent modules reach them
-# through unconditional include! calls, so production rustc actions need them.
-PROD_INCLUDE_SRCS = [
-    "src/commands/import/explicit_source_catalog/tests.rs",
-    "src/commands/source_index/tests.rs",
-]
 
 PROD_SRCS = glob(
     ["src/**/*.rs"],
     exclude = RUST_PROD_SRC_EXCLUDES,
-) + PROD_INCLUDE_SRCS
+)
 
-rust_binary(
+ctx_rust_binary(
     name = "ctx",
     srcs = PROD_SRCS,
     crate_name = "ctx",
@@ -89,12 +168,88 @@ rust_binary(
     compile_data = CTX_CLI_COMPILE_DATA,
     deps = all_crate_deps(normal = True) + CTX_CLI_DEPS,
     proc_macro_deps = all_crate_deps(proc_macro = True),
-    rustc_env = COMMON_RUSTC_ENV,
-    rustc_env_files = [":cargo_toml_env_vars"],
+    rustc_env = RELEASE_BUILD_RUSTC_ENV,
+    rustc_env_files = [
+        ":cargo_toml_env_vars",
+        "release-stamp.env",
+    ],
     rustc_flags = CTX_CLI_RUSTC_FLAGS,
+    stamp = -1,
 )
 
-rust_test(
+# The auto-upgrade acceptance harness needs its deterministic crash and pause
+# seams even when the surrounding release gate uses optimized compilation.
+# Keep that authority in a test-only executable rather than enabling test hooks
+# in the published release binary.
+ctx_rust_binary(
+    name = "ctx_auto_upgrade_acceptance_fixture",
+    testonly = True,
+    srcs = PROD_SRCS,
+    crate_name = "ctx_auto_upgrade_acceptance_fixture",
+    crate_root = "src/main.rs",
+    edition = crate_edition(),
+    aliases = aliases(),
+    compile_data = CTX_CLI_COMPILE_DATA,
+    deps = all_crate_deps(normal = True) + CTX_CLI_QUALIFICATION_DEPS,
+    proc_macro_deps = all_crate_deps(proc_macro = True),
+    rustc_env = RELEASE_BUILD_RUSTC_ENV,
+    rustc_env_files = [
+        ":cargo_toml_env_vars",
+        "release-stamp.env",
+    ],
+    rustc_flags = CTX_CLI_RUSTC_FLAGS + [
+        "--cfg=ctx_release_qualification",
+        "-Cdebug-assertions=yes",
+    ],
+    stamp = -1,
+)
+
+# Hosted-uninstall release tests need a synchronization marker that remains
+# absent from the published binary. Compile that authority into this optimized
+# test-only host instead of depending on debug assertions.
+ctx_rust_binary(
+    name = "ctx_hosted_uninstall_test_host",
+    testonly = True,
+    srcs = PROD_SRCS,
+    crate_name = "ctx_hosted_uninstall_test_host",
+    crate_root = "src/main.rs",
+    edition = crate_edition(),
+    aliases = aliases(),
+    compile_data = CTX_CLI_COMPILE_DATA,
+    deps = all_crate_deps(normal = True) + CTX_CLI_QUALIFICATION_DEPS,
+    proc_macro_deps = all_crate_deps(proc_macro = True),
+    rustc_env = RELEASE_BUILD_RUSTC_ENV,
+    rustc_env_files = [
+        ":cargo_toml_env_vars",
+        "release-stamp.env",
+    ],
+    rustc_flags = CTX_CLI_RUSTC_FLAGS + ["--cfg=ctx_release_qualification"],
+    stamp = -1,
+)
+
+ctx_rust_binary(
+    name = "ctx_upgrade_test_harness",
+    testonly = True,
+    srcs = PROD_SRCS,
+    crate_name = "ctx",
+    crate_root = "src/main.rs",
+    edition = crate_edition(),
+    aliases = aliases(),
+    compile_data = CTX_CLI_COMPILE_DATA,
+    deps = all_crate_deps(normal = True) + CTX_CLI_QUALIFICATION_DEPS,
+    proc_macro_deps = all_crate_deps(proc_macro = True),
+    rustc_env = RELEASE_BUILD_RUSTC_ENV,
+    rustc_env_files = [
+        ":cargo_toml_env_vars",
+        "release-stamp.env",
+    ],
+    # Local metadata/signature/key injection exists only in this test-only
+    # build capability. The published :ctx target cannot select it.
+    rustc_flags = CTX_CLI_RUSTC_FLAGS + ["--cfg=ctx_release_qualification"],
+    stamp = -1,
+)
+
+ctx_rust_test(
     name = "unit_tests",
     srcs = RUST_SRCS,
     crate_name = "ctx",
@@ -104,11 +259,14 @@ rust_test(
         normal_dev = True,
         proc_macro_dev = True,
     ),
-    compile_data = CTX_CLI_COMPILE_DATA,
+    compile_data = CTX_CLI_TEST_COMPILE_DATA + [
+        "//crates/ctx-upgrade-engine:cargo_package_data",
+    ],
+    data = ctx_cli_test_data() + [":ctx"],
     deps = all_crate_deps(
         normal = True,
         normal_dev = True,
-    ) + CTX_CLI_DEPS + crate_deps(["xz2"]),
+    ) + CTX_CLI_TEST_DEPS,
     proc_macro_deps = all_crate_deps(
         proc_macro = True,
         proc_macro_dev = True,
@@ -116,4 +274,95 @@ rust_test(
     rustc_env = COMMON_RUSTC_ENV,
     rustc_env_files = [":cargo_toml_env_vars"],
     rustc_flags = CTX_CLI_RUSTC_FLAGS,
+    env = {
+        "CARGO_BIN_EXE_ctx": "$(rootpath :ctx)",
+    },
+    tags = ["exclusive"],
+)
+
+test_suite(
+    name = "test_targets_minimal_fixture",
+    tests = ["//crates/ctx-cli-contract-tests:test_targets_minimal_fixture"],
+    tags = ["manual"],
+)
+
+test_suite(
+    name = "test_targets_capabilities_fixture",
+    tests = ["//crates/ctx-cli-contract-tests:test_targets_capabilities_fixture"],
+    tags = ["manual"],
+)
+
+ctx_cli_integration_test(
+    name = "cli_public_help_docs_tests",
+    src = "tests/cli_public_help_docs.rs",
+    tags = ["cli-contract"],
+    test_support = [
+        "base",
+        "fixtures",
+    ],
+)
+
+ctx_cli_integration_test(
+    name = "cloud_removed_tests",
+    src = "tests/cloud_removed.rs",
+    extra_data = ["//:cloud_removed_build_inputs"],
+    tags = ["privacy", "security"],
+)
+
+ctx_cli_integration_test(
+    name = "hosted_uninstall_fence_tests",
+    src = "tests/hosted_uninstall_fence.rs",
+    binary = ":ctx_hosted_uninstall_test_host",
+    extra_crates = [
+        "fs2",
+        "sha2",
+    ],
+)
+
+ctx_cli_integration_test(
+    name = "index_tests",
+    src = "tests/index.rs",
+    extra_crates = ["anstream"],
+    test_support = [
+        "base",
+        "fixtures",
+    ],
+)
+
+test_suite(
+    name = "native_provider_real_shapes_tests",
+    tests = ["//crates/ctx-cli-contract-tests:native_provider_real_shapes_tests"],
+)
+
+test_suite(
+    name = "native_provider_rejections_tests",
+    tests = ["//crates/ctx-cli-contract-tests:native_provider_rejections_tests"],
+)
+
+test_suite(
+    name = "native_providers_tests",
+    tests = ["//crates/ctx-cli-contract-tests:native_providers_tests"],
+)
+
+ctx_cli_integration_test(
+    name = "offline_default_tests",
+    src = "tests/offline_default.rs",
+    tags = ["privacy", "security"],
+)
+
+ctx_cli_integration_test(
+    name = "status_store_cutover_tests",
+    src = "tests/status_store_cutover.rs",
+)
+
+ctx_cli_integration_test(
+    name = "stats_tests",
+    src = "tests/stats.rs",
+    extra_crates = ["rusqlite"],
+    tags = ["cli-contract", "privacy"],
+)
+
+test_suite(
+    name = "setup_sources_import_tests",
+    tests = ["//crates/ctx-cli-contract-tests:setup_sources_import_tests"],
 )

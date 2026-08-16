@@ -1176,8 +1176,6 @@ fn foreground_provider_refreshes_batch_once_per_source_backed_import() {
         assert_eq!(refresh["content_evidence"], "none");
         assert_eq!(refresh["refresh_result"], "complete");
         assert_eq!(refresh["core_result"], expected_core_result);
-        assert_eq!(refresh["canonical_pro_result"], "unknown");
-        assert_eq!(refresh["output_pro_result"], "unknown");
         assert_eq!(refresh["failure_scope"], "none");
         assert_eq!(refresh["failure_type"], "none");
         if expected_change == "changed" {
@@ -1240,8 +1238,6 @@ fn foreground_provider_refreshes_batch_once_per_source_backed_import() {
         assert_eq!(global["content_evidence"], "unknown");
         assert_eq!(global["refresh_result"], "complete");
         assert_eq!(global["core_result"], expected_core_result);
-        assert_eq!(global["canonical_pro_result"], "unknown");
-        assert_eq!(global["output_pro_result"], "unknown");
         assert_eq!(global["failure_scope"], "none");
         assert_eq!(global["failure_type"], "none");
         assert_eq!(global["work_remaining"], false);

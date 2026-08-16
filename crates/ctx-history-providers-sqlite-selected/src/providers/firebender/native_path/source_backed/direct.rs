@@ -40,7 +40,7 @@ const DIRECT_PAGE_DOCUMENTS: usize = 64;
 const CONTENT_DIGEST_DOMAIN: &[u8] = b"ctx-firebender-logical-content-v2\0";
 const LOGICAL_FINGERPRINT_DOMAIN: &[u8] = b"ctx-firebender-logical-fingerprint-v1\0";
 const OVERSIZE_DIGEST_DOMAIN: &[u8] = b"ctx-firebender-oversize-row-v1\0";
-pub(super) const DIRECT_PARSER_REVISION: &str = "firebender-source-backed-v3";
+pub(super) const DIRECT_PARSER_REVISION: &str = "firebender-source-backed-v5-closed-facts";
 
 #[derive(Debug)]
 pub(crate) struct FirebenderDirectScan {

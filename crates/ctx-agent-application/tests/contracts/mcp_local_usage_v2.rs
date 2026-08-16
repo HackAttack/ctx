@@ -195,28 +195,19 @@ fn delivered_search_and_prefix_open_record_once_with_exact_transport_and_context
         .unwrap();
     assert_eq!(recorded_output, delivered_wire_bytes as i64);
 
-    let search_row: (String, i64, i64, i64, i64) = connection
+    let search_row: (String, i64, i64, i64) = connection
         .query_row(
             "SELECT context_coverage, result_count, delivered_context_bytes, \
-                    matched_normalized_session_bytes, citation_count \
+                    matched_normalized_session_bytes \
              FROM daily_usage WHERE surface = 'mcp' AND operation = 'search'",
             [],
-            |row| {
-                Ok((
-                    row.get(0)?,
-                    row.get(1)?,
-                    row.get(2)?,
-                    row.get(3)?,
-                    row.get(4)?,
-                ))
-            },
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
         )
         .unwrap();
     assert_eq!(search_row.0, "complete");
     assert_eq!(search_row.1, 1);
     assert_eq!(search_row.2, expected_context_bytes as i64);
     assert!(search_row.3 >= search_row.2);
-    assert_eq!(search_row.4, 0, "search results are never citations");
 
     let columns = connection
         .prepare("PRAGMA table_info(daily_usage)")
@@ -234,6 +225,9 @@ fn delivered_search_and_prefix_open_record_once_with_exact_transport_and_context
         "context_opened",
         "context_cited",
         "validated_discoveries",
+        "target_type",
+        "pro_outcome",
+        "citation_count",
     ] {
         assert!(!columns.iter().any(|column| column == forbidden));
     }
@@ -271,28 +265,22 @@ fn delivered_recognized_failures_record_once_but_protocol_control_does_not() {
     assert!(listed.value["result"]["tools"].is_array());
     let invalid_search = client.request(tool_call("invalid-search", "search", json!({})));
     assert_eq!(invalid_search.value["result"]["isError"], true);
-    let invalid_blame = client.request(tool_call(
-        "invalid-blame",
-        "blame",
-        json!({"target": {"kind": "commit", "oid": ""}}),
-    ));
-    assert_eq!(invalid_blame.value["result"]["isError"], true);
     client.finish();
 
     let connection = Connection::open(usage_db_path(&temp)).unwrap();
     assert_eq!(
         operation_calls(&connection),
-        BTreeMap::from([("blame".to_owned(), 1), ("search".to_owned(), 1)])
+        BTreeMap::from([("search".to_owned(), 1)])
     );
-    let failures: (i64, i64, i64) = connection
+    let failures: (i64, i64) = connection
         .query_row(
-            "SELECT SUM(calls), SUM(result_count), SUM(citation_count) \
+            "SELECT SUM(calls), SUM(result_count) \
              FROM daily_usage WHERE outcome = 'failure'",
             [],
-            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            |row| Ok((row.get(0)?, row.get(1)?)),
         )
         .unwrap();
-    assert_eq!(failures, (2, 0, 0));
+    assert_eq!(failures, (1, 0));
     let output_bytes: i64 = connection
         .query_row(
             "SELECT SUM(delivered_output_bytes) FROM daily_usage",
@@ -300,10 +288,7 @@ fn delivered_recognized_failures_record_once_but_protocol_control_does_not() {
             |row| row.get(0),
         )
         .unwrap();
-    assert_eq!(
-        output_bytes,
-        (invalid_search.wire_bytes + invalid_blame.wire_bytes) as i64
-    );
+    assert_eq!(output_bytes, invalid_search.wire_bytes as i64);
 }
 
 #[test]

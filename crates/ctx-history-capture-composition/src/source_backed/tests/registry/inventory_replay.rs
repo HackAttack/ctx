@@ -16,12 +16,9 @@ pub(super) fn revisioned_receipt_route(revision: u8) -> (SourceBackedRoute, Cert
     let mut document = CoreRecord::new_selected(
         event_id,
         session_id,
-        session_id,
         source.clone(),
         1,
         "message",
-        "primary",
-        true,
         "coordinator-test-v1",
         format!("receipt revision {revision}"),
     )
@@ -30,6 +27,7 @@ pub(super) fn revisioned_receipt_route(revision: u8) -> (SourceBackedRoute, Cert
     document.native_event_id = Some(TypedKey::U64(1));
     document.occurred_at_unix_ms = Some(i64::from(revision));
     document.role = Some("user".to_owned());
+    document.agent_scope = Some(AgentScope::Primary);
     let observation =
         SourceObservation::new(source.clone(), "fixture-revision", vec![revision]).unwrap();
     let certificate = CertifiedSource::certify(

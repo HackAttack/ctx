@@ -20,7 +20,6 @@ use uuid::Uuid;
 
 use crate::{
     analytics::{count_bucket, ShowTelemetry},
-    append_mcp_tool_call_markdown, append_mcp_tool_call_text,
     cli::{ShowArgs, ShowTarget},
     local_usage::{CliUsage, ResultObservationAction},
     output::{compact_json, OutputFormat},
@@ -31,7 +30,7 @@ use crate::{
     provider_args::ProviderArg,
     transcript::TranscriptOutput,
     ui::{canonical_human_output_bytes, RenderContext, Ui},
-    TranscriptMode, MCP_TOOL_CALL_JSON_GUIDANCE,
+    TranscriptMode,
 };
 
 use super::{
@@ -270,7 +269,6 @@ fn run_show_inner(
             local_usage.set_result_observation(
                 ResultObservationAction::OpenEvent,
                 result_count,
-                0,
                 content_bytes,
             );
             local_usage.set_measured_output_bytes(output_bytes);
@@ -299,7 +297,6 @@ fn run_show_inner(
             local_usage.set_result_observation(
                 ResultObservationAction::OpenSession,
                 result.events_returned,
-                0,
                 result.content_bytes,
             );
             local_usage.set_measured_output_bytes(result.output_bytes);
@@ -762,8 +759,8 @@ fn render_stream_text_event(event: &Value) -> String {
         event["event_type"].as_str().unwrap_or("event"),
         event["ctx_event_id"].as_str().unwrap_or("unknown"),
     );
-    append_stream_event_origin(&mut output, event, "");
-    append_mcp_tool_call_text(&mut output, event, "", MCP_TOOL_CALL_JSON_GUIDANCE);
+    append_stream_event_copy(&mut output, event, "");
+    append_stream_activity_text(&mut output, event, "");
     output.push_str(event["text"].as_str().unwrap_or_default());
     output.push_str("\n\n");
     output
@@ -796,32 +793,46 @@ fn render_stream_markdown_event(event: &Value) -> String {
         event["occurred_at"].as_str().unwrap_or("-"),
         event["ctx_event_id"].as_str().unwrap_or("unknown"),
     );
-    append_stream_event_origin(&mut output, event, "- ");
-    if append_mcp_tool_call_markdown(&mut output, event) {
-        output.push('\n');
-    }
+    append_stream_event_copy(&mut output, event, "- ");
+    append_stream_activity_markdown(&mut output, event, "- ");
     output.push_str(event["text"].as_str().unwrap_or_default());
     output.push('\n');
     output
 }
 
-fn append_stream_event_origin(output: &mut String, event: &Value, prefix: &str) {
-    let origin = &event["event_origin"];
-    let Some(kind) = origin["kind"].as_str() else {
+fn append_stream_event_copy(output: &mut String, event: &Value, prefix: &str) {
+    let copy = &event["event_copy"];
+    let Some(ancestor_event_id) = copy["ancestor_ctx_event_id"].as_str() else {
         return;
     };
-    output.push_str(&format!("{prefix}event_origin: {kind}\n"));
-    if kind != "copied_from_ancestor" {
-        return;
-    }
     for (label, key) in [
-        ("ancestor_event_id", "ancestor_event_id"),
-        ("ancestor_session_id", "ancestor_session_id"),
+        ("ancestor_event_id", "ancestor_ctx_event_id"),
+        ("ancestor_session_id", "ancestor_ctx_session_id"),
         ("copy_proof", "proof"),
     ] {
-        if let Some(value) = origin[key].as_str() {
+        if let Some(value) = copy[key].as_str() {
             output.push_str(&format!("{prefix}{label}: {value}\n"));
         }
+    }
+    debug_assert!(!ancestor_event_id.is_empty());
+}
+
+fn append_stream_activity_text(output: &mut String, event: &Value, prefix: &str) {
+    if let Some(activity) = event.get("activity").filter(|value| !value.is_null()) {
+        output.push_str(&format!(
+            "{prefix}activity: {}\n",
+            super::render::safe_activity_json(activity)
+        ));
+    }
+}
+
+fn append_stream_activity_markdown(output: &mut String, event: &Value, prefix: &str) {
+    if let Some(activity) = event.get("activity").filter(|value| !value.is_null()) {
+        let activity = super::render::safe_activity_json(activity);
+        output.push_str(&format!(
+            "{prefix}activity: {}\n",
+            super::render::markdown_code_span(&activity)
+        ));
     }
 }
 

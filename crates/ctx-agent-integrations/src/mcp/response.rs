@@ -19,71 +19,7 @@ pub(super) fn tool_result_with_text(structured: Value, text: String) -> Value {
     })
 }
 
-fn structured_error_result(structured: Value) -> Value {
-    let text = render_diagnostic_text(&structured);
-    json!({
-        "isError": true,
-        "content": [
-            {
-                "type": "text",
-                "text": text,
-            }
-        ],
-        "structuredContent": structured,
-    })
-}
-
-fn render_diagnostic_text(structured: &Value) -> String {
-    let message = structured
-        .get("message")
-        .and_then(Value::as_str)
-        .or_else(|| structured.get("error").and_then(Value::as_str))
-        .unwrap_or("ctx blame failed");
-    let mut text = single_line(message);
-    if let Some(argv) = structured
-        .pointer("/next_action/argv")
-        .and_then(Value::as_array)
-        .filter(|argv| !argv.is_empty())
-    {
-        text.push_str("\nNext:");
-        for argument in argv.iter().filter_map(Value::as_str) {
-            text.push(' ');
-            text.push_str(&display_argument(argument));
-        }
-    }
-    text
-}
-
-fn single_line(value: &str) -> String {
-    value
-        .chars()
-        .map(|character| {
-            if character.is_control() {
-                ' '
-            } else {
-                character
-            }
-        })
-        .collect()
-}
-
-fn display_argument(argument: &str) -> String {
-    if !argument.is_empty()
-        && argument
-            .bytes()
-            .all(|byte| byte.is_ascii_alphanumeric() || b"_@%+=:,./-".contains(&byte))
-    {
-        argument.to_owned()
-    } else {
-        serde_json::to_string(argument).unwrap_or_else(|_| "\"<invalid argument>\"".to_owned())
-    }
-}
-
 pub(super) fn tool_error_result(error: ToolBackendError) -> Value {
-    let error = match error {
-        ToolBackendError::Pro { structured, .. } => return structured_error_result(structured),
-        error => error,
-    };
     let text = error.to_string();
     let structured = match error {
         ToolBackendError::InvalidRequest { detail } => json!({
@@ -137,7 +73,6 @@ pub(super) fn tool_error_result(error: ToolBackendError) -> Value {
             "retryable": retryable,
         }),
         ToolBackendError::Internal { detail } => json!({ "error": detail }),
-        ToolBackendError::Pro { .. } => unreachable!("Pro failures return above"),
     };
     json!({
         "isError": true,
@@ -192,12 +127,11 @@ pub(super) fn json_rpc_error(code: i64, message: &str, data: Option<Value>) -> V
 
 #[cfg(test)]
 mod tests {
-    use serde_json::{json, Value};
+    use serde_json::json;
     use uuid::Uuid;
 
     use super::{
-        error_response, invalid_request_response, invalid_tool_request, structured_error_result,
-        tool_error_result, tool_result_with_text,
+        error_response, invalid_request_response, invalid_tool_request, tool_error_result,
     };
     use crate::tool_backend::{CursorFailureKind, ToolBackendError};
 
@@ -264,83 +198,6 @@ mod tests {
         );
         assert_eq!(result["structuredContent"]["error_code"], "invalid_request");
         assert_eq!(result["content"][0]["text"], "limit must be an integer");
-    }
-
-    #[test]
-    fn pro_error_structured_content_is_the_cli_json_diagnostic() {
-        let expected = json!({
-            "error": "resource_not_found",
-            "error_code": "resource_not_found",
-            "message": "The requested resource was not found.",
-        });
-
-        let result = tool_error_result(ToolBackendError::Pro {
-            code: "resource_not_found",
-            diagnostic: "resource_not_found".to_owned(),
-            structured: expected.clone(),
-        });
-        assert_eq!(result["isError"], true);
-        assert_eq!(result["structuredContent"], expected);
-        let expected_text = result["structuredContent"]
-            .get("message")
-            .and_then(Value::as_str)
-            .or_else(|| result["structuredContent"]["error"].as_str())
-            .unwrap();
-        assert!(result["content"][0]["text"]
-            .as_str()
-            .is_some_and(|text| text.starts_with(expected_text)));
-    }
-
-    #[test]
-    fn diagnostic_text_is_rendered_from_message_and_one_typed_argv_action() {
-        let structured = json!({
-            "error": "resource_not_found",
-            "error_code": "resource_not_found",
-            "reason": "target_not_indexed",
-            "message": "The current Pro graph does not contain this blame target.",
-            "retryable": false,
-            "next_action": {
-                "kind": "search_core",
-                "argv": ["ctx", "search", "src/file with spaces.rs", "--refresh", "off"]
-            }
-        });
-        let result = structured_error_result(structured.clone());
-
-        assert_eq!(result["structuredContent"], structured);
-        assert_eq!(result["isError"], true);
-        assert_eq!(
-            result["content"][0]["text"],
-            "The current Pro graph does not contain this blame target.\nNext: ctx search \"src/file with spaces.rs\" --refresh off"
-        );
-    }
-
-    #[test]
-    fn conflicting_attribution_remains_a_successful_tool_result() {
-        let structured = json!({
-            "target": {"kind": "commit"},
-            "outcome": {
-                "attribution": "conflicting",
-                "coverage": {
-                    "unit": "commit_fact",
-                    "evaluated": 1,
-                    "proven": 0,
-                    "possible": 0,
-                    "conflicting": 1,
-                    "none": 0
-                }
-            },
-            "freshness": {"state": "current"},
-            "matches": [],
-            "evidence": []
-        });
-        let result =
-            tool_result_with_text(structured.clone(), "Producer evidence conflicts".to_owned());
-
-        assert!(result.get("isError").is_none());
-        assert_eq!(result["structuredContent"], structured);
-        assert!(result["content"][0]["text"]
-            .as_str()
-            .is_some_and(|text| text.contains("Producer evidence conflicts")));
     }
 
     #[test]

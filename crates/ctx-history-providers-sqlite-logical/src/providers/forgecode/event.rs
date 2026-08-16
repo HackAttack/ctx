@@ -1,16 +1,11 @@
-use std::collections::BTreeSet;
-
 use chrono::{DateTime, NaiveDateTime, Utc};
-use ctx_history_core::{Confidence, EventRole, EventType, FileChangeKind};
-use serde::Serialize;
+use ctx_history_core::{EventRole, EventType};
 use serde_json::{json, Value};
 
 use crate::{compute_payload_hash, FORGECODE_SQLITE_SOURCE_FORMAT, PROVIDER_MAX_PREVIEW_CHARS};
-use ctx_history_capture_model::file_touches::normalized_key;
 use ctx_history_capture_model::normalization::{
-    provider_capped_json_value, provider_line_from_index, provider_normalized_result_value,
-    provider_policy_body, provider_policy_event_text, provider_result_identifier_evidence,
-    provider_result_outcome_evidence, provider_role, provider_timestamp_value, provider_value_text,
+    provider_capped_json_value, provider_normalized_result_value, provider_role,
+    provider_timestamp_value, provider_value_text,
 };
 #[derive(Debug, Clone, Copy)]
 pub(super) struct ForgeCodeMessageParts<'a> {
@@ -40,14 +35,12 @@ fn forgecode_message_variant(value: &Value) -> Option<(&'static str, &Value)> {
     let Value::Object(object) = value else {
         return None;
     };
-    object
-        .iter()
-        .find_map(|(key, value)| match normalized_key(key).as_str() {
-            "text" => Some(("text", value)),
-            "tool" => Some(("tool", value)),
-            "image" => Some(("image", value)),
-            _ => None,
-        })
+    for key in ["text", "tool", "image"] {
+        if let Some(value) = object.get(key) {
+            return Some((key, value));
+        }
+    }
+    None
 }
 
 pub(super) fn forgecode_event_type(parts: ForgeCodeMessageParts<'_>) -> EventType {
@@ -114,8 +107,6 @@ pub(super) fn forgecode_event(
         "message": entry,
         "usage": parts.usage,
     });
-    let retained_body = provider_policy_body(event_type, &body);
-    let retained_text = provider_policy_event_text(event_type, &text, &body);
     ForgeCodeNativeEvent {
         provider_event_index,
         provider_event_hash: compute_payload_hash(entry).ok(),
@@ -124,12 +115,9 @@ pub(super) fn forgecode_event(
         role: forgecode_event_role(parts),
         occurred_at,
         payload: json!({
-            "text": retained_text.text,
-            "text_retention": retained_text.retention.as_json(),
-            "result_evidence": provider_result_identifier_evidence(event_type, &text, &body),
-            "result_outcome": provider_result_outcome_evidence(event_type, &body),
+            "text": text,
             "source_format": FORGECODE_SQLITE_SOURCE_FORMAT,
-            "body": retained_body,
+            "body": body,
         }),
         metadata: json!({
             "source": "forgecode_conversations",
@@ -158,21 +146,6 @@ pub(super) struct ForgeCodeNativeEvent {
     pub(super) role: Option<EventRole>,
     pub(super) occurred_at: DateTime<Utc>,
     pub(super) payload: Value,
-    pub(super) metadata: Value,
-}
-
-#[derive(Debug, Clone, Serialize)]
-pub(super) struct ForgeCodeFileTouch {
-    pub(super) provider_touch_index: u64,
-    pub(super) provider_event_index: Option<u64>,
-    pub(super) raw_source_path: Option<String>,
-    pub(super) source_root: Option<String>,
-    pub(super) path: String,
-    pub(super) change_kind: Option<FileChangeKind>,
-    pub(super) old_path: Option<String>,
-    pub(super) line_count_delta: Option<i64>,
-    pub(super) confidence: Confidence,
-    pub(super) occurred_at: DateTime<Utc>,
     pub(super) metadata: Value,
 }
 
@@ -232,13 +205,6 @@ fn forgecode_tool_result_text(body: &Value) -> String {
     if let Some(call_id) = body.get("call_id").and_then(forgecode_scalar_text) {
         parts.push(format!("tool call id: {call_id}"));
     }
-    if body
-        .pointer("/output/is_error")
-        .and_then(Value::as_bool)
-        .unwrap_or(false)
-    {
-        parts.push("tool error".to_owned());
-    }
     if let Some(content) = forgecode_normalized_result_content(body) {
         parts.push(content);
     }
@@ -263,22 +229,22 @@ fn forgecode_tool_value_text(value: &Value) -> Option<String> {
     match value {
         Value::String(text) => Some(text.clone()),
         Value::Object(object) => {
-            if let Some(child) = object_value_by_normalized_key(object, "text")
-                .or_else(|| object_value_by_normalized_key(object, "markdown"))
+            if let Some(child) = object_value_by_exact_variant_key(object, "text")
+                .or_else(|| object_value_by_exact_variant_key(object, "markdown"))
             {
                 return child.as_str().map(str::to_owned);
             }
-            if let Some(child) = object_value_by_normalized_key(object, "ai") {
+            if let Some(child) = object_value_by_exact_variant_key(object, "ai") {
                 return child
                     .get("value")
                     .and_then(Value::as_str)
                     .map(str::to_owned)
                     .or_else(|| Some(provider_normalized_result_value(child)));
             }
-            if let Some(child) = object_value_by_normalized_key(object, "image") {
+            if let Some(child) = object_value_by_exact_variant_key(object, "image") {
                 return Some(forgecode_image_text(child));
             }
-            if let Some(child) = object_value_by_normalized_key(object, "filediff") {
+            if let Some(child) = object_value_by_exact_variant_key(object, "filediff") {
                 let path = child
                     .get("path")
                     .and_then(Value::as_str)
@@ -286,11 +252,11 @@ fn forgecode_tool_value_text(value: &Value) -> Option<String> {
                 return Some(format!("[File diff: {path}]"));
             }
             if let Some(items) =
-                object_value_by_normalized_key(object, "pair").and_then(Value::as_array)
+                object_value_by_exact_variant_key(object, "pair").and_then(Value::as_array)
             {
                 return items.first().and_then(forgecode_tool_value_text);
             }
-            if object_value_by_normalized_key(object, "empty").is_some() {
+            if object_value_by_exact_variant_key(object, "empty").is_some() {
                 return None;
             }
             Some(provider_normalized_result_value(value))
@@ -307,14 +273,23 @@ fn forgecode_tool_value_text(value: &Value) -> Option<String> {
     }
 }
 
-fn object_value_by_normalized_key<'a>(
+fn object_value_by_exact_variant_key<'a>(
     object: &'a serde_json::Map<String, Value>,
     expected: &str,
 ) -> Option<&'a Value> {
-    object
-        .iter()
-        .find(|(key, _)| normalized_key(key) == expected)
-        .map(|(_, value)| value)
+    object.get(expected).or_else(|| {
+        let alias = match expected {
+            "text" => "Text",
+            "markdown" => "Markdown",
+            "ai" => "Ai",
+            "image" => "Image",
+            "filediff" => "FileDiff",
+            "pair" => "Pair",
+            "empty" => "Empty",
+            _ => return None,
+        };
+        object.get(alias)
+    })
 }
 
 fn forgecode_image_text(body: &Value) -> String {
@@ -338,138 +313,6 @@ fn forgecode_scalar_text(value: &Value) -> Option<String> {
         .as_str()
         .map(str::to_owned)
         .or_else(|| provider_value_text(value))
-}
-
-pub(super) fn forgecode_for_each_metric_file_touch_with_limit<E>(
-    metrics: &Value,
-    raw_source_path: &str,
-    fallback: DateTime<Utc>,
-    touch_limit: usize,
-    mut emit: impl FnMut((usize, ForgeCodeFileTouch)) -> std::result::Result<(), E>,
-) -> std::result::Result<bool, E> {
-    let touch_limit = u64::try_from(touch_limit).unwrap_or(u64::MAX);
-    let occurred_at = metrics
-        .get("started_at")
-        .map(|value| provider_timestamp_value(Some(value), fallback))
-        .unwrap_or(fallback);
-    let mut emitted_count = 0_u64;
-    let mut seen = BTreeSet::<(String, &'static str)>::new();
-
-    if let Some(files_changed) = metrics.get("files_changed").and_then(Value::as_object) {
-        for (path, operation_value) in files_changed {
-            let Some(operation) = forgecode_metric_operation(operation_value) else {
-                continue;
-            };
-            let tool = operation
-                .get("tool")
-                .and_then(Value::as_str)
-                .unwrap_or("write");
-            let change_kind = forgecode_metric_change_kind(tool);
-            let key = (path.clone(), change_kind.as_str());
-            if seen.contains(&key) {
-                continue;
-            }
-            if emitted_count == touch_limit {
-                return Ok(true);
-            }
-            seen.insert(key);
-            let lines_added = operation.get("lines_added").and_then(forgecode_json_i64);
-            let lines_removed = operation.get("lines_removed").and_then(forgecode_json_i64);
-            let line_count_delta = match (lines_added, lines_removed) {
-                (Some(added), Some(removed)) => Some(added.saturating_sub(removed)),
-                (Some(added), None) => Some(added),
-                (None, Some(removed)) => Some(removed.saturating_neg()),
-                _ => None,
-            };
-            let touch_index = 0x0400_0000_0000_u64.saturating_add(emitted_count);
-            emit((
-                provider_line_from_index(touch_index),
-                ForgeCodeFileTouch {
-                    provider_touch_index: touch_index,
-                    provider_event_index: None,
-                    raw_source_path: Some(raw_source_path.to_owned()),
-                    source_root: Some(raw_source_path.to_owned()),
-                    path: path.clone(),
-                    change_kind: Some(change_kind),
-                    old_path: None,
-                    line_count_delta,
-                    confidence: Confidence::Explicit,
-                    occurred_at,
-                    metadata: json!({
-                        "source": "forgecode_metrics_files_changed",
-                        "tool": tool,
-                        "lines_added": lines_added,
-                        "lines_removed": lines_removed,
-                        "content_hash": operation.get("content_hash").and_then(Value::as_str),
-                    }),
-                },
-            ))?;
-            emitted_count = emitted_count.saturating_add(1);
-        }
-    }
-
-    if let Some(files_accessed) = metrics.get("files_accessed").and_then(Value::as_array) {
-        for path in files_accessed
-            .iter()
-            .filter_map(Value::as_str)
-            .filter(|path| !path.trim().is_empty())
-        {
-            let key = (path.to_owned(), FileChangeKind::Read.as_str());
-            if seen.contains(&key) {
-                continue;
-            }
-            if emitted_count == touch_limit {
-                return Ok(true);
-            }
-            seen.insert(key);
-            let touch_index = 0x0500_0000_0000_u64.saturating_add(emitted_count);
-            emit((
-                provider_line_from_index(touch_index),
-                ForgeCodeFileTouch {
-                    provider_touch_index: touch_index,
-                    provider_event_index: None,
-                    raw_source_path: Some(raw_source_path.to_owned()),
-                    source_root: Some(raw_source_path.to_owned()),
-                    path: path.to_owned(),
-                    change_kind: Some(FileChangeKind::Read),
-                    old_path: None,
-                    line_count_delta: None,
-                    confidence: Confidence::Explicit,
-                    occurred_at,
-                    metadata: json!({
-                        "source": "forgecode_metrics_files_accessed",
-                    }),
-                },
-            ))?;
-            emitted_count = emitted_count.saturating_add(1);
-        }
-    }
-
-    Ok(false)
-}
-
-fn forgecode_metric_operation(value: &Value) -> Option<&Value> {
-    match value {
-        Value::Object(_) => Some(value),
-        Value::Array(items) => items.iter().rev().find(|item| item.is_object()),
-        _ => None,
-    }
-}
-
-fn forgecode_metric_change_kind(tool: &str) -> FileChangeKind {
-    match tool.to_ascii_lowercase().as_str() {
-        "read" => FileChangeKind::Read,
-        "patch" | "edit" | "update" | "write" => FileChangeKind::Modified,
-        "delete" | "remove" => FileChangeKind::Deleted,
-        "create" | "add" => FileChangeKind::Created,
-        _ => FileChangeKind::Unknown,
-    }
-}
-
-fn forgecode_json_i64(value: &Value) -> Option<i64> {
-    value
-        .as_i64()
-        .or_else(|| value.as_u64().and_then(|value| i64::try_from(value).ok()))
 }
 
 pub(super) fn forgecode_timestamp(raw: Option<&str>, fallback: DateTime<Utc>) -> DateTime<Utc> {

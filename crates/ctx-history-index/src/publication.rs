@@ -9,7 +9,6 @@ pub(crate) use ctx_history_index_format::{
 };
 #[cfg(test)]
 pub(crate) use ctx_history_index_format::{verify_publication_candidate, verify_searcher};
-pub(crate) use ctx_history_index_generation::certify_activated_generation;
 #[cfg(test)]
 pub(crate) use ctx_history_index_generation::manifest_path;
 #[cfg(test)]
@@ -17,6 +16,10 @@ pub(crate) use ctx_history_index_generation::physical_integrity_digest;
 pub(crate) use ctx_history_index_generation::sync_directory;
 #[cfg(not(windows))]
 pub(crate) use ctx_history_index_generation::verify_candidate_physical_fence;
+pub(crate) use ctx_history_index_generation::{
+    certify_activated_generation, reclaim_unreferenced_certifications,
+    reclaim_unreferenced_manifests,
+};
 pub(crate) use ctx_history_index_generation::{
     physical_integrity_audit, validate_candidate_managed_files, verify_physical_integrity,
     PhysicalIntegrityAudit,
@@ -27,18 +30,21 @@ pub(crate) use ctx_history_index_generation::{
 pub(crate) use generation::{
     create_candidate_generation, lexical_index_settings, load_active_generation_pointer,
     open_slot_index, publish_active_generation_pointer,
-    publish_active_generation_pointer_validated, slot_path, sync_generation,
-    ActiveGenerationPointer, GenerationSlot, PointerPublicationOutcome,
+    publish_active_generation_pointer_validated, reclaim_inactive_generation_directories,
+    slot_path, sync_generation, ActiveGenerationPointer, GenerationSlot, PointerPublicationOutcome,
     INDEX_GENERATIONS_DIRECTORY,
 };
 #[cfg(test)]
 pub(crate) use generation::{ReclamationStage, ReclamationTestHookGuard};
+pub(crate) use republish::{
+    best_effort_post_republish_cleanup, republish_current_with_publication_metadata,
+    CurrentRepublishOutcome,
+};
 #[cfg(test)]
 pub(crate) use republish::{
     republish_current_for_qualification, PointerReconciliationTestHookGuard, RepublishRecovery,
     RepublishStage, RepublishTestHookGuard,
 };
-pub(crate) use republish::{republish_current_with_publication_metadata, CurrentRepublishOutcome};
 #[cfg(all(test, any(target_os = "linux", target_os = "macos")))]
 pub(crate) use republish::{CloneMetrics, CloneStage, CloneTestHookGuard, CloneTestOptions};
 #[cfg(test)]

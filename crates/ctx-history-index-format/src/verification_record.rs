@@ -1,6 +1,4 @@
-use ctx_history_core::{
-    EventOrigin, SessionRelationshipKind, SourceKey, StableEntityId, StableEntityKind,
-};
+use ctx_history_core::{StableEntityId, StableEntityKind};
 use tantivy::{DocAddress, TantivyDocument};
 
 use crate::{
@@ -10,11 +8,10 @@ use crate::{
         SourceEventOrderKey, EVENT_RANGE_ORDER_KEY_LEN, SEMANTIC_EVENT_ORDER_KEY_LEN,
         SESSION_EVENT_ORDER_KEY_LEN, SOURCE_EVENT_ORDER_KEY_LEN,
     },
-    source_token, unique_required_bytes, validate_core_record_encoded_bytes, Fields, IndexError,
-    Result, LEXICAL_SCHEMA_VERSION,
+    source_token, unique_required_bytes, Fields, IndexError, Result, LEXICAL_SCHEMA_VERSION,
 };
 
-const VERIFY_CORE_RECORD: u32 = 31;
+const VERIFY_CORE_RECORD: u32 = 40;
 
 pub struct VerificationRecord {
     pub core_record: ctx_history_core::CoreRecord,
@@ -58,48 +55,8 @@ pub struct CompactVerificationIdentities {
     pub event: CompactIdentity,
     pub session: CompactIdentity,
     pub parent_session: Option<CompactIdentity>,
-    pub root_session: CompactIdentity,
-    pub session_relationship: SessionRelationshipKind,
-    pub event_origin: CompactEventOrigin,
+    pub root_session: Option<CompactIdentity>,
     pub session_source_owner: [u8; 32],
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum CompactEventOrigin {
-    Unknown,
-    UniqueToSession,
-    CopiedFromAncestor {
-        ancestor_session: CompactIdentity,
-        ancestor_event: CompactIdentity,
-    },
-}
-
-impl From<&EventOrigin> for CompactEventOrigin {
-    fn from(origin: &EventOrigin) -> Self {
-        match origin {
-            EventOrigin::Unknown => Self::Unknown,
-            EventOrigin::UniqueToSession => Self::UniqueToSession,
-            EventOrigin::CopiedFromAncestor {
-                ancestor_session_id,
-                ancestor_event_id,
-                ..
-            } => Self::CopiedFromAncestor {
-                ancestor_session: (**ancestor_session_id).into(),
-                ancestor_event: (**ancestor_event_id).into(),
-            },
-        }
-    }
-}
-
-#[derive(serde::Deserialize)]
-struct CoreIdentityProjection {
-    event_id: StableEntityId,
-    session_id: StableEntityId,
-    parent_session_id: Option<StableEntityId>,
-    root_session_id: StableEntityId,
-    session_relationship: SessionRelationshipKind,
-    event_origin: EventOrigin,
-    source: SourceKey,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -125,6 +82,11 @@ pub fn stored_verification_record(
     let encoded = unique_required_bytes(&document, fields.core_record, "core_record")?;
     let stored_core_bytes = encoded.len();
     let core = decode_core_record_bytes(searcher, address, encoded)?;
+    if core.event_id.entity_kind() != StableEntityKind::Event
+        || core.session_id.entity_kind() != StableEntityKind::Session
+    {
+        return Err(IndexError::InvalidStoredDocumentField("core_record"));
+    }
     let core_record_leaf = core_record_leaf(core.event_id, encoded)?;
     let source_owner = source_token(&core.source);
     let source_event_order =
@@ -141,9 +103,7 @@ pub fn stored_verification_record(
         event: core.event_id.into(),
         session: core.session_id.into(),
         parent_session: core.parent_session_id.map(CompactIdentity::from),
-        root_session: core.root_session_id.into(),
-        session_relationship: core.session_relationship,
-        event_origin: (&core.event_origin).into(),
+        root_session: core.root_session_id.map(CompactIdentity::from),
         session_source_owner: core.source.identity().digest(),
     };
     Ok(VerificationRecord {
@@ -157,91 +117,4 @@ pub fn stored_verification_record(
         identities,
         stored_core_bytes,
     })
-}
-
-pub fn stored_verification_identities(
-    searcher: &tantivy::Searcher,
-    address: DocAddress,
-    fields: Fields,
-) -> Result<CompactVerificationIdentities> {
-    let document: TantivyDocument = searcher.doc(address)?;
-    let encoded = unique_required_bytes(&document, fields.core_record, "core_record")?;
-    validate_core_record_encoded_bytes(searcher, address, encoded.len())?;
-    let projection: CoreIdentityProjection = serde_json::from_slice(encoded)?;
-    projection.source.validate_contract()?;
-    validate_owned_identity(
-        projection.event_id,
-        StableEntityKind::Event,
-        &projection.source,
-    )?;
-    validate_owned_identity(
-        projection.session_id,
-        StableEntityKind::Session,
-        &projection.source,
-    )?;
-    validate_related_session_identity(projection.root_session_id)?;
-    if let Some(parent_session_id) = projection.parent_session_id {
-        validate_related_session_identity(parent_session_id)?;
-    }
-    validate_event_origin_projection(
-        projection.event_id,
-        projection.session_id,
-        &projection.event_origin,
-    )?;
-    Ok(CompactVerificationIdentities {
-        event: projection.event_id.into(),
-        session: projection.session_id.into(),
-        parent_session: projection.parent_session_id.map(CompactIdentity::from),
-        root_session: projection.root_session_id.into(),
-        session_relationship: projection.session_relationship,
-        event_origin: (&projection.event_origin).into(),
-        session_source_owner: projection.source.identity().digest(),
-    })
-}
-
-fn validate_event_origin_projection(
-    event_id: StableEntityId,
-    session_id: StableEntityId,
-    origin: &EventOrigin,
-) -> Result<()> {
-    let EventOrigin::CopiedFromAncestor {
-        ancestor_session_id,
-        ancestor_event_id,
-        ..
-    } = origin
-    else {
-        return Ok(());
-    };
-    validate_related_session_identity(**ancestor_session_id)?;
-    ancestor_event_id.validate_contract()?;
-    if ancestor_event_id.entity_kind() != StableEntityKind::Event
-        || **ancestor_session_id == session_id
-        || **ancestor_event_id == event_id
-    {
-        return Err(IndexError::InvalidStoredDocumentField("core_record"));
-    }
-    Ok(())
-}
-
-fn validate_owned_identity(
-    identity: StableEntityId,
-    expected_kind: StableEntityKind,
-    source: &SourceKey,
-) -> Result<()> {
-    identity.validate_contract()?;
-    if identity.entity_kind() != expected_kind
-        || identity.source_digest() != source.identity().digest()
-        || identity.source_descriptor_digest() != source.exact_descriptor_digest()
-    {
-        return Err(IndexError::InvalidStoredDocumentField("core_record"));
-    }
-    Ok(())
-}
-
-fn validate_related_session_identity(identity: StableEntityId) -> Result<()> {
-    identity.validate_contract()?;
-    if identity.entity_kind() != StableEntityKind::Session {
-        return Err(IndexError::InvalidStoredDocumentField("core_record"));
-    }
-    Ok(())
 }

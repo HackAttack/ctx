@@ -20,13 +20,14 @@ use crate::{provider::source_backed::IndexBaseEventLookup, JsonlProviderRuntime}
 use chrono::{DateTime, Utc};
 use ctx_history_capture_model::normalization::{provider_policy_event_text, provider_value_text};
 use ctx_history_core::{
-    derive_session_id, CaptureProvider, CertifiedSource, CertifiedSourceAppend,
-    CertifiedSourceDeletion, CertifiedSourceInventory, CoreRecord,
+    derive_session_id, AgentScope, CaptureProvider, CertifiedSource, CertifiedSourceAppend,
+    CertifiedSourceDeletion, CertifiedSourceInventory, CoreActivity, CoreRecord,
     CtxHistoryJsonlCopiedFromSelector, CtxHistoryJsonlCopyProofKind, CtxHistoryJsonlEventRecord,
-    CtxHistoryJsonlLineageContract, CtxHistoryJsonlRecord, EventCopyProofKind, NativeSessionKey,
-    ProjectionContractError, ScannedSourceCounts, SessionEdgeType, SessionIdentityInput,
-    SessionRelationshipKind, SourceAnchor, SourceFrontier, SourceKey, StableEntityId, TypedKey,
-    CTX_HISTORY_JSONL_V1_SCHEMA_VERSION,
+    CtxHistoryJsonlLineageContract, CtxHistoryJsonlRecord, NativeSessionKey,
+    ProjectionContractError, ProviderDeclaredFact, ProviderNativeCopyProof,
+    ProviderNativeSessionRelationship, ScannedSourceCounts, SessionIdentityInput, SourceAnchor,
+    SourceFrontier, SourceKey, StableEntityId, TypedKey, CTX_HISTORY_JSONL_SCHEMA_VERSION,
+    MAX_CORE_CONTENT_BYTES, MAX_PROVIDER_DECLARED_FACTS,
 };
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -54,17 +55,15 @@ use ctx_history_capture_model::push_provider_import_failure;
 
 mod inventory;
 mod parser;
-#[cfg(test)]
-use inventory::open_explicit_source;
 pub(crate) use inventory::CustomHistorySourceBackedInventory;
 use inventory::{custom_history_jsonl_family_inventory, source_observation};
 use parser::parse_projection;
 
 const CUSTOM_SOURCE_IDENTITY_VERSION: u32 = 1;
-const CUSTOM_ROUTE_SOURCE_FORMAT: &str = "ctx_history_jsonl_v1";
-const CUSTOM_SOURCE_SCHEMA_VARIANT: &str = "ctx-history-jsonl-v1-source-backed-v1";
+const CUSTOM_ROUTE_SOURCE_FORMAT: &str = "ctx_history_jsonl_v2";
+const CUSTOM_SOURCE_SCHEMA_VARIANT: &str = "ctx-history-jsonl-v2-source-backed-v1";
 pub(super) const CUSTOM_SOURCE_BACKED_PARSER_REVISION: &str =
-    "custom-history-jsonl-source-backed-v5-unresolved-copy-lineage";
+    "custom-history-jsonl-source-backed-v6-core-activity";
 const CUSTOM_SOURCE_FRONTIER_KIND: &str = "custom-history-jsonl-frontier-v2";
 pub(super) const CUSTOM_SESSION_KEY_NAMESPACE: &str = "custom-history.session";
 pub(super) const CUSTOM_EVENT_KEY_NAMESPACE: &str = "custom-history.event";
@@ -73,7 +72,6 @@ pub(super) const CUSTOM_LOGICAL_EVENT_KIND: &str = "custom-history-event";
 const CUSTOM_CHECKPOINT_VERSION: u32 = 2;
 pub(super) const CUSTOM_PAGE_MAX_DOCUMENTS: usize = 64;
 pub(super) const CUSTOM_PAGE_MAX_RETAINED_BYTES: usize = 1024 * 1024;
-pub(super) const CUSTOM_DOCUMENT_METADATA_MAX_BYTES: usize = 64 * 1024;
 pub(super) const CUSTOM_HISTORY_CATALOG_MAX_RECORDS: usize = 1_000_000;
 pub(super) const CUSTOM_HISTORY_CATALOG_MAX_METADATA_BYTES: usize = 256 * 1024 * 1024;
 
@@ -111,16 +109,6 @@ thread_local! {
             catalog_records: 0,
             catalog_metadata_bytes: 0,
         }) };
-}
-
-#[cfg(test)]
-pub(crate) fn reset_custom_history_source_backed_work() {
-    CUSTOM_HISTORY_WORK.set(CustomHistorySourceBackedWork::default());
-}
-
-#[cfg(test)]
-pub(crate) fn custom_history_source_backed_work() -> CustomHistorySourceBackedWork {
-    CUSTOM_HISTORY_WORK.get()
 }
 
 #[cfg(test)]
@@ -489,8 +477,8 @@ pub(super) struct CustomSessionCatalogEntry {
     pub(super) native_session_id: Option<String>,
     pub(super) parent_session_id: Option<String>,
     pub(super) root_session_id: Option<String>,
-    pub(super) session_relationship: Option<SessionRelationshipKind>,
-    pub(super) agent_type: String,
+    pub(super) session_relationship: Option<ProviderNativeSessionRelationship>,
+    pub(super) agent_scope: Option<AgentScope>,
     pub(super) cwd: Option<String>,
 }
 
@@ -500,13 +488,14 @@ pub(super) struct CustomEventCatalogEntry {
     pub(super) line: CompleteLine,
     pub(super) event_id: Option<String>,
     pub(super) copied_from: Option<CtxHistoryJsonlCopiedFromSelector>,
+    pub(super) activity_fact_count: usize,
 }
 
 #[derive(Debug, Clone)]
 pub(super) struct ValidatedCopiedFrom {
     pub(super) ancestor_session_id: String,
     pub(super) ancestor_event_id: String,
-    pub(super) proof: EventCopyProofKind,
+    pub(super) proof: ProviderNativeCopyProof,
 }
 
 #[derive(Debug)]
@@ -519,6 +508,8 @@ pub(super) struct SpooledCustomEvent {
     pub(super) role: Option<String>,
     pub(super) occurred_at_unix_ms: i64,
     pub(super) body: String,
+    pub(super) payload: serde_json::Value,
+    pub(super) activity: Option<CoreActivity>,
 }
 
 impl SpooledCustomEvent {
@@ -537,6 +528,7 @@ pub(super) struct ParsedProjection {
     pub(super) sessions: BTreeMap<CustomSessionKey, CustomSessionCatalogEntry>,
     pub(super) events: BTreeMap<CustomEventKey, CustomEventCatalogEntry>,
     pub(super) copied_origins: BTreeMap<CustomEventKey, ValidatedCopiedFrom>,
+    pub(super) file_references: BTreeMap<CustomEventKey, Vec<ProviderDeclaredFact>>,
     pub(super) event_spool: File,
     observed_prior_prefix_digest: Option<[u8; 32]>,
     retained_records_before_prior_prefix: Option<u64>,
@@ -711,41 +703,6 @@ fn stage_custom_history_source_backed_explicit(
     )))
 }
 
-#[cfg(test)]
-pub(crate) fn revalidate_custom_history_source_backed(
-    input: &CustomHistorySourceBackedInput,
-    certificate: &CertifiedSource,
-) -> CustomHistorySourceBackedResult<bool> {
-    if certificate.parser_revision() != CUSTOM_SOURCE_BACKED_PARSER_REVISION {
-        return Ok(false);
-    }
-    let source = input.source_key()?;
-    if !source.exact_descriptor_eq(certificate.observation().source()) {
-        return Ok(false);
-    }
-    let inventory = observe_custom_history_source_backed_explicit(input)?;
-    let Some(ordinary) = inventory.ordinary() else {
-        return Ok(false);
-    };
-    Ok(source_observation(source, ordinary)? == *certificate.observation())
-}
-
-#[cfg(test)]
-pub(super) fn validate_custom_history_catalog_bounds(
-    input: &CustomHistorySourceBackedInput,
-    max_records: usize,
-    max_metadata_bytes: usize,
-) -> CustomHistorySourceBackedResult<ScannedSourceCounts> {
-    let opened = open_explicit_source(input.path())?;
-    let projection = parser::parse_projection_with_limits(
-        &opened,
-        None,
-        CustomHistoryCatalogLimits::new(max_records, max_metadata_bytes),
-    )?;
-    opened.revalidate()?;
-    Ok(projection.counts)
-}
-
 fn classify_projection(
     prior: Option<&CertifiedSource>,
     projection: &ParsedProjection,
@@ -841,11 +798,6 @@ fn lexical_body(event: &CtxHistoryJsonlEventRecord) -> String {
     } else {
         retained.text
     }
-}
-
-pub(super) fn bounded_metadata(value: &str) -> Option<String> {
-    (!value.is_empty() && value.len() <= CUSTOM_DOCUMENT_METADATA_MAX_BYTES)
-        .then(|| value.to_owned())
 }
 
 fn decode_checkpoint(

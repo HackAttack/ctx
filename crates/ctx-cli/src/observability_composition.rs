@@ -206,10 +206,6 @@ mod tests {
                     .as_slice(),
             ),
             (
-                "crates/ctx-client-observability/src/analytics/pro.rs",
-                include_bytes!("../../ctx-client-observability/src/analytics/pro.rs").as_slice(),
-            ),
-            (
                 "crates/ctx-client-observability/src/analytics/buckets.rs",
                 include_bytes!("../../ctx-client-observability/src/analytics/buckets.rs")
                     .as_slice(),

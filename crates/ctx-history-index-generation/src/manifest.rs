@@ -9,20 +9,30 @@ use serde::Deserialize;
 use tantivy::directory::Directory as _;
 use uuid::Uuid;
 
-use crate::retention::live_generation_read_lease_targets;
+use crate::retention::{
+    ensure_generation_read_lease_coordinator, try_generation_id_reclaim_authority,
+};
 use crate::{
-    acquire_generation_ownership_fence, is_generation_id, manifest_path, sha256_hex,
-    sync_directory, DurableMmapDirectory, GenerationError, GenerationOwnershipFence, Result,
-    MANIFEST_DIRECTORY,
+    is_generation_id, manifest_path, sha256_hex, sync_directory, DurableMmapDirectory,
+    GenerationError, Result, MANIFEST_DIRECTORY,
 };
 
 /// Loads the exact immutable bytes named by a generation manifest digest.
 pub fn load_manifest_bytes(root: &Path, generation_id: &str) -> Result<Vec<u8>> {
-    let path = manifest_path(root, generation_id);
-    let bytes = fs::read(&path).map_err(|error| match error.kind() {
-        std::io::ErrorKind::NotFound => GenerationError::MissingManifest(generation_id.to_owned()),
-        _ => GenerationError::Io(error),
-    })?;
+    let relative_path = Path::new(MANIFEST_DIRECTORY).join(format!("{generation_id}.json"));
+    let bytes = match crate::read_root::read_registered_file(root, &relative_path) {
+        Ok(Some(bytes)) => bytes,
+        Ok(None) => fs::read(root.join(&relative_path)).map_err(|error| match error.kind() {
+            std::io::ErrorKind::NotFound => {
+                GenerationError::MissingManifest(generation_id.to_owned())
+            }
+            _ => GenerationError::Io(error),
+        })?,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            return Err(GenerationError::MissingManifest(generation_id.to_owned()));
+        }
+        Err(error) => return Err(GenerationError::Io(error)),
+    };
     let actual = sha256_hex(&bytes);
     if actual != generation_id {
         return Err(GenerationError::ManifestDigestMismatch {
@@ -71,25 +81,10 @@ pub fn reclaim_unreferenced_manifests(
     root: &Path,
     retained_generation_ids: &[String],
 ) -> Result<()> {
-    let ownership_fence = acquire_generation_ownership_fence(root)?;
-    reclaim_unreferenced_manifests_with_fence(root, retained_generation_ids, &ownership_fence)
-}
-
-#[doc(hidden)]
-pub fn reclaim_unreferenced_manifests_with_fence(
-    root: &Path,
-    retained_generation_ids: &[String],
-    _ownership_fence: &GenerationOwnershipFence,
-) -> Result<()> {
+    ensure_generation_read_lease_coordinator(root)?;
     let directory = root.join(MANIFEST_DIRECTORY);
     fs::create_dir_all(&directory)?;
-    let mut retained_generation_ids = retained_generation_ids.to_vec();
-    retained_generation_ids.extend(
-        live_generation_read_lease_targets(root)?
-            .into_iter()
-            .map(|target| target.generation_id().to_owned()),
-    );
-    let retained_generation_ids = retained_manifest_closure(root, &retained_generation_ids)?;
+    let retained_generation_ids = retained_manifest_closure(root, retained_generation_ids)?;
     let mut removed = false;
     for entry in fs::read_dir(&directory)? {
         let entry = entry?;
@@ -110,11 +105,20 @@ pub fn reclaim_unreferenced_manifests_with_fence(
                 is_generation_id(generation_id) && !suffix.is_empty()
             });
         let obsolete_integrity_sidecar = is_legacy_generation_integrity_sidecar(file_name);
-        let should_remove = immutable_generation
-            .is_some_and(|generation_id| !retained_generation_ids.contains(generation_id))
-            || corrupt_quarantine
-            || obsolete_integrity_sidecar;
+        let unretained_generation = immutable_generation
+            .filter(|generation_id| !retained_generation_ids.contains(*generation_id));
+        let should_remove =
+            unretained_generation.is_some() || corrupt_quarantine || obsolete_integrity_sidecar;
         if should_remove {
+            let _reclaim_authority = if let Some(generation_id) = unretained_generation {
+                let Some(authority) = try_generation_id_reclaim_authority(root, generation_id)?
+                else {
+                    continue;
+                };
+                Some(authority)
+            } else {
+                None
+            };
             fs::remove_file(entry.path())?;
             removed = true;
         }
@@ -154,7 +158,10 @@ fn retained_manifest_closure(
     Ok(retained)
 }
 
-fn referenced_base_generation_id(root: &Path, generation_id: &str) -> Result<Option<String>> {
+pub(crate) fn referenced_base_generation_id(
+    root: &Path,
+    generation_id: &str,
+) -> Result<Option<String>> {
     let path = manifest_path(root, generation_id);
     let mut file = File::open(&path).map_err(|error| match error.kind() {
         std::io::ErrorKind::NotFound => GenerationError::MissingManifest(generation_id.to_owned()),

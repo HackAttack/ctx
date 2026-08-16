@@ -75,11 +75,11 @@ mod tests {
     fn generic_text_is_bounded_without_a_json_round_trip() {
         assert_eq!(
             render_generic_tool_text(&json!({
-                "payload_type": "pro_status",
-                "installed": true,
+                "payload_type": "status",
+                "generation": 7,
                 "ready": true
             })),
-            "ctx tool result\ninstalled: true\npayload_type: pro_status\nready: true\n"
+            "ctx tool result\ngeneration: 7\npayload_type: status\nready: true\n"
         );
     }
 }

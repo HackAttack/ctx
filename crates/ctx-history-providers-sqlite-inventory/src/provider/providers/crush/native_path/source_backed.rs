@@ -11,14 +11,12 @@ use std::{
     sync::Arc,
 };
 
-use ctx_history_capture_model::file_touches::{
-    event_type_supports_structured_file_touches, visit_provider_file_touch_drafts_with_limit,
-};
 use ctx_history_core::{
-    derive_event_id, derive_session_id, AgentType, CaptureProvider, CertifiedSource, CoreRecord,
-    CoreRecordError, EventIdentityInput, EventOrigin, NativeItemKey, NativeSessionKey,
-    ProjectionContractError, ScannedSourceCounts, SessionIdentityInput, SessionRelationshipKind,
-    SourceAnchor, SourceInventoryObservation, SourceKey, StableEntityId, TypedKey,
+    derive_event_id, derive_session_id, ActivityInvocation, ActivityJsonCapture, ActivityResult,
+    ActivityTextCapture, CaptureProvider, CertifiedSource, CoreActivity, CoreRecord,
+    CoreRecordError, EventIdentityInput, NativeItemKey, NativeSessionKey, ProjectionContractError,
+    ProviderNativeSessionRelationship, ScannedSourceCounts, SessionIdentityInput, SourceAnchor,
+    SourceInventoryObservation, SourceKey, StableEntityId, TypedKey, CORE_ACTIVITY_REVISION,
 };
 use rusqlite::{limits::Limit, Connection};
 use serde_json::json;
@@ -26,12 +24,8 @@ use sha2::{Digest, Sha256};
 use thiserror::Error;
 
 use super::{
-    query::{
-        load_message_batch, load_session_parents, next_candidate_batch, row_decode_error_is_local,
-        CrushCandidate,
-    },
+    query::{load_message_batch, next_candidate_batch, row_decode_error_is_local, CrushCandidate},
     read_native_schema, CrushLoadedRow, CrushNativeFrontier, CrushNativeSchema,
-    CRUSH_NATIVE_MAX_EVENT_TOUCHES,
 };
 use crate::{
     common::io::{OpenedProviderSourceFile, ProviderSourceRoot},
@@ -63,7 +57,7 @@ const CRUSH_SOURCE_ANCHOR_NAMESPACE: &str = "crush.project-database";
 const CRUSH_INVENTORY_AUTHORITY_NAMESPACE: &str = "crush.project-inventory";
 const CRUSH_INVENTORY_REVISION_KIND: &str = "crush-selected-registered-projects-v0";
 pub(crate) const CRUSH_SOURCE_SCHEMA_VARIANT: &str = "crush-project-sqlite-v0";
-pub(crate) const CRUSH_PARSER_REVISION: &str = "crush-sqlite-source-backed-v2-session-lineage";
+pub(crate) const CRUSH_PARSER_REVISION: &str = "crush-sqlite-source-backed-v3-neutral-core";
 const CRUSH_NATIVE_SESSION_NAMESPACE: &str = "crush.session";
 const CRUSH_NATIVE_MESSAGE_NAMESPACE: &str = "crush.message";
 const CRUSH_LOGICAL_SESSION_KIND: &str = "crush-session";
@@ -535,8 +529,6 @@ where
     let mut digest = Sha256::new();
     digest.update(CRUSH_MESSAGE_DIGEST_DOMAIN);
     let mut counts = ScannedSourceCounts::default();
-    let session_parents =
-        load_session_parents(source.connection()?, &source.schema.session_columns)?;
     loop {
         let observed = next_candidate_batch(
             source.connection()?,
@@ -594,13 +586,7 @@ where
                     let session = session
                         .as_ref()
                         .ok_or(CrushSourceBackedErrorV0::UnexpectedNativeRow)?;
-                    sink.emit_core_record(core_record(
-                        source,
-                        &session_parents,
-                        &row,
-                        session,
-                        &projection,
-                    )?)?;
+                    sink.emit_core_record(core_record(source, &row, session, &projection)?)?;
                     counts.retained_records = checked_add(counts.retained_records, 1)?;
                     counts.indexed_documents = checked_add(counts.indexed_documents, 1)?;
                 }
@@ -618,13 +604,12 @@ where
 
 fn core_record(
     source: &OpenedSource,
-    session_parents: &HashMap<String, Option<String>>,
     row: &super::super::projection::CrushMessageRow,
     session: &CrushSessionRow,
     projection: &CrushMessageProjection,
 ) -> CrushSourceBackedResultV0<CoreRecord> {
     let session_id = crush_session_id(&source.database.source_key, &row.session_id)?;
-    let lineage = session_lineage(source, session_parents, session, session_id)?;
+    let lineage = session_lineage(source, session)?;
     let item_key = NativeItemKey::native_id(
         CRUSH_NATIVE_MESSAGE_NAMESPACE,
         TypedKey::utf8(row.id.clone())?,
@@ -640,48 +625,24 @@ fn core_record(
         .event
         .as_ref()
         .ok_or(CrushSourceBackedErrorV0::UnexpectedNativeRow)?;
-    let touched_files = touched_paths(projection)?;
     let mut record = CoreRecord::new_selected(
         event_id,
-        session_id,
         session_id,
         source.database.source_key.clone(),
         fnv1a64(row.id.as_bytes()),
         event.event_type.as_str(),
-        lineage.agent_type.as_str(),
-        true,
         CRUSH_PARSER_REVISION,
         policy_selected_body(row, projection),
     )?;
     if let Some(parent_session_id) = lineage.parent_session_id {
-        let kind = if lineage.is_primary {
-            SessionRelationshipKind::RelatedUnknown
-        } else {
-            SessionRelationshipKind::Delegated
-        };
-        record.set_session_relationship(kind, Some(parent_session_id), lineage.root_session_id)?;
-        if kind == SessionRelationshipKind::Delegated {
-            record.event_origin = EventOrigin::UniqueToSession;
-        }
+        record.parent_session_id = Some(parent_session_id);
+        record.session_relationship = Some(ProviderNativeSessionRelationship::Delegated);
     }
     record.provider_session_id = Some(row.session_id.clone());
     record.native_event_id = Some(TypedKey::utf8(row.id.clone())?);
     record.occurred_at_unix_ms = event.occurred_at_unix_ms;
     record.role = event.role.map(|role| role.as_str().to_owned());
-    record.content.structured_content = if let Some(output) = projection.output.as_ref() {
-        Some(json!({
-            "provider_native_result": {
-                "call_id": output.call_id,
-                "tool_name": output.tool_name,
-                "linkage_exact": output.linkage_exact,
-                "result_outcome": output_outcome_label(output.outcome.outcome),
-                "exit_code": output.outcome.exit_code,
-                "duration_ms": output.outcome.duration_ms,
-            },
-            "file_touches": touched_files,
-        }))
-    } else {
-        Some(json!({
+    record.content.structured_content = Some(json!({
             "native_message": {
                 "rowid": row.rowid,
                 "id": row.id,
@@ -704,10 +665,38 @@ fn core_record(
                 "completion_tokens": session.completion_tokens,
                 "cost": session.cost,
                 "summary_message_id": session.summary_message_id,
-            },
-            "file_touches": touched_files,
-        }))
-    };
+            }
+    }));
+    record.content.activity = crush_activity(projection, event.occurred_at_unix_ms)?;
+    if record.content.encoded_content_bytes()? > ctx_history_core::MAX_CORE_CONTENT_BYTES {
+        let capture = record.content.activity.as_mut().and_then(|activity| {
+            activity
+                .invocation
+                .as_mut()
+                .map(|invocation| &mut invocation.arguments)
+                .or_else(|| {
+                    activity
+                        .result
+                        .as_mut()
+                        .map(|result| &mut result.structured_content)
+                })
+        });
+        if let Some(capture @ ActivityJsonCapture::Present { .. }) = capture {
+            let observed_encoded_bytes = match capture {
+                ActivityJsonCapture::Present { value } => serde_json::to_vec(value)
+                    .ok()
+                    .and_then(|encoded| u64::try_from(encoded.len()).ok()),
+                _ => None,
+            };
+            *capture = ActivityJsonCapture::Omitted {
+                reason: "size_limit".to_owned(),
+                observed_encoded_bytes,
+            };
+        }
+    }
+    record
+        .content
+        .omit_structured_content_if_aggregate_exceeds_limit()?;
     record.validate_contract()?;
     Ok(record)
 }
@@ -722,29 +711,71 @@ fn policy_selected_body(
         .unwrap_or_else(|| row.parts.clone())
 }
 
-fn output_outcome_label(outcome: crate::OutputOutcome) -> &'static str {
-    match outcome {
-        crate::OutputOutcome::Success => "success",
-        crate::OutputOutcome::Failure => "failure",
-        crate::OutputOutcome::Timeout => "timeout",
-        crate::OutputOutcome::Unknown => "unknown",
+fn crush_activity(
+    projection: &CrushMessageProjection,
+    occurred_at_unix_ms: Option<i64>,
+) -> CrushSourceBackedResultV0<Option<CoreActivity>> {
+    if let Some(output) = projection.output.as_ref() {
+        let Some(call_id) = output.call_id.as_deref() else {
+            return Ok(None);
+        };
+        return Ok(Some(CoreActivity {
+            revision: CORE_ACTIVITY_REVISION,
+            provider_call_id: Some(TypedKey::utf8(call_id)?),
+            invocation: None,
+            result: Some(ActivityResult {
+                status: output.status.clone(),
+                completed_at_unix_ms: occurred_at_unix_ms,
+                duration_ns: output
+                    .duration_ms
+                    .and_then(|value| value.checked_mul(1_000_000)),
+                text: ActivityTextCapture::NormalizedBody,
+                structured_content: ActivityJsonCapture::Present {
+                    value: projection.raw_parts.clone(),
+                },
+            }),
+            facts: Vec::new(),
+        }));
     }
-}
-
-fn touched_paths(projection: &CrushMessageProjection) -> CrushSourceBackedResultV0<Vec<String>> {
-    let mut paths = HashSet::new();
-    visit_provider_file_touch_drafts_with_limit(
-        &projection.raw_parts,
-        event_type_supports_structured_file_touches(projection.event_type),
-        CRUSH_NATIVE_MAX_EVENT_TOUCHES,
-        |(_, touch)| {
-            paths.insert(touch.path);
-            Ok::<(), CaptureError>(())
-        },
-    )?;
-    let mut paths = paths.into_iter().collect::<Vec<_>>();
-    paths.sort();
-    Ok(paths)
+    if projection.event_type != ctx_history_core::EventType::ToolCall {
+        return Ok(None);
+    }
+    let Some(call) = projection.raw_parts.as_array().and_then(|parts| {
+        parts
+            .iter()
+            .find(|part| part.get("type").and_then(serde_json::Value::as_str) == Some("tool_call"))
+    }) else {
+        return Ok(None);
+    };
+    let data = call.get("data").unwrap_or(call);
+    let call_id = ["tool_call_id", "toolCallId", "call_id", "callId"]
+        .into_iter()
+        .find_map(|key| data.get(key).and_then(serde_json::Value::as_str));
+    let tool = ["name", "tool_name", "toolName"]
+        .into_iter()
+        .find_map(|key| data.get(key).and_then(serde_json::Value::as_str));
+    let (Some(call_id), Some(tool)) = (call_id, tool) else {
+        return Ok(None);
+    };
+    let arguments = data
+        .get("arguments")
+        .or_else(|| data.get("input"))
+        .cloned()
+        .map(|value| ActivityJsonCapture::Present { value })
+        .unwrap_or(ActivityJsonCapture::Absent);
+    Ok(Some(CoreActivity {
+        revision: CORE_ACTIVITY_REVISION,
+        provider_call_id: Some(TypedKey::utf8(call_id)?),
+        invocation: Some(ActivityInvocation {
+            protocol: None,
+            server: None,
+            tool: tool.to_owned(),
+            arguments,
+            started_at_unix_ms: occurred_at_unix_ms,
+        }),
+        result: None,
+        facts: Vec::new(),
+    }))
 }
 
 fn hash_rejected_candidate(digest: &mut Sha256, candidate: &CrushCandidate, reason: &[u8]) {

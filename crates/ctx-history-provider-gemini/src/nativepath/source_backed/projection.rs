@@ -1,26 +1,26 @@
 use ctx_history_core::{
-    derive_event_id, derive_native_session_id, AgentType, CaptureProvider, CoreRecord,
-    EventIdentityInput, EventOrigin, NativeItemKey, SourceKey, StableEntityId, TypedKey,
+    derive_event_id, derive_native_session_id, AgentScope, CaptureProvider, CoreRecord,
+    EventIdentityInput, NativeItemKey, ProviderNativeSessionRelationship, SourceKey,
+    StableEntityId, TypedKey, MAX_CORE_CONTENT_BYTES,
 };
+use ctx_history_jsonl::{fit_jsonl_activity, selected_content_fits, JsonlActivityObservedBytes};
 
 use super::{
     GeminiSourceBackedError, GeminiSourceBackedResult, GEMINI_LOGICAL_EVENT_KIND,
     GEMINI_LOGICAL_SESSION_KIND, GEMINI_NATIVE_EVENT_NAMESPACE, GEMINI_NATIVE_SESSION_NAMESPACE,
     GEMINI_SOURCE_ANCHOR_NAMESPACE, GEMINI_SOURCE_BACKED_PARSER_REVISION,
-    GEMINI_SOURCE_SCHEMA_VARIANT, MAX_GEMINI_LEXICAL_METADATA_CHARS,
+    GEMINI_SOURCE_SCHEMA_VARIANT,
 };
 use crate::{GeminiError, GEMINI_CLI_SOURCE_FORMAT};
 
 pub(super) struct GeminiProjectedContent {
     pub(super) annotation: ctx_history_core::CoreRecordAnnotation,
-    pub(super) discovery_exclusion: Option<ctx_history_core::CoreDiscoveryExclusion>,
 }
 
 pub(super) fn project_event(
     source: &SourceKey,
     session_id: StableEntityId,
     parent_session_id: Option<StableEntityId>,
-    root_session_id: StableEntityId,
     session: &super::super::GeminiSession,
     event: super::super::GeminiRetainedEvent,
     content: GeminiProjectedContent,
@@ -45,29 +45,19 @@ pub(super) fn project_event(
         )
         .into());
     }
-    let is_primary =
-        session.parent_native_session_id.is_none() && session.agent_type != AgentType::Subagent;
     let mut record = CoreRecord::new_selected(
         event_id,
-        session_id,
         session_id,
         source.clone(),
         event_sequence,
         event.event_type.as_str(),
-        session.agent_type.as_str(),
-        true,
         GEMINI_SOURCE_BACKED_PARSER_REVISION,
         body,
     )?;
     if let Some(parent_session_id) = parent_session_id {
-        let kind = if is_primary {
-            ctx_history_core::SessionRelationshipKind::RelatedUnknown
-        } else {
-            ctx_history_core::SessionRelationshipKind::Delegated
-        };
-        record.set_session_relationship(kind, Some(parent_session_id), root_session_id)?;
-        if kind == ctx_history_core::SessionRelationshipKind::Delegated {
-            record.event_origin = EventOrigin::UniqueToSession;
+        record.parent_session_id = Some(parent_session_id);
+        if session.agent_scope == AgentScope::Subagent {
+            record.session_relationship = Some(ProviderNativeSessionRelationship::Delegated);
         }
     }
     record.provider_session_id = Some(session.native_session_id.clone());
@@ -77,24 +67,37 @@ pub(super) fn project_event(
         .or(session.started_at)
         .map(|timestamp| timestamp.timestamp_millis());
     record.role = Some(event.role.as_str().to_owned());
-    record.cwd = session
-        .cwd
-        .as_deref()
-        .map(|cwd| bounded_chars(cwd, MAX_GEMINI_LEXICAL_METADATA_CHARS));
-    record.content.structured_content = content.annotation.structured_content;
-    record.content.discovery_exclusion = content.discovery_exclusion;
+    record.agent_scope = Some(session.agent_scope);
+    let mut structured_content = content.annotation.structured_content;
+    let mut activity = content.annotation.activity;
+    if !selected_content_fits(
+        record
+            .content
+            .normalized_body
+            .as_deref()
+            .unwrap_or_default(),
+        structured_content.as_ref(),
+        activity.as_ref(),
+        ctx_history_core::MAX_CORE_CONTENT_BYTES,
+    ) {
+        structured_content = None;
+    }
+    fit_jsonl_activity(
+        record
+            .content
+            .normalized_body
+            .as_deref()
+            .unwrap_or_default(),
+        structured_content.as_ref(),
+        &mut activity,
+        JsonlActivityObservedBytes::infer_from_present(),
+        ctx_history_core::MAX_CORE_CONTENT_BYTES,
+    );
+    record.content.structured_content = structured_content;
+    record.content.activity = activity;
     record
         .content
         .omit_structured_content_if_aggregate_exceeds_limit()?;
-    record.metadata = content.annotation.metadata;
-    record.repository_candidate_evidence = content.annotation.repository_candidate_evidence;
-    record.repository_bindings = content.annotation.repository_bindings;
-    record.repository_abstentions = content.annotation.repository_abstentions;
-    record.repository_file_invocation_evidence =
-        content.annotation.repository_file_invocation_evidence;
-    record.repository_file_observations = content.annotation.repository_file_observations;
-    record.repository_vcs_observations = content.annotation.repository_vcs_observations;
-    record.bind_repository_commit_operation_identities()?;
     record.validate_contract()?;
     Ok(record)
 }
@@ -125,38 +128,11 @@ fn lexical_body(event: &super::super::GeminiRetainedEvent) -> String {
     match &event.body {
         super::super::dto::GeminiEventBody::Message { text, .. } => text.clone(),
         super::super::dto::GeminiEventBody::ToolCall { .. } => "Gemini tool call".to_owned(),
-        super::super::dto::GeminiEventBody::OutputDiagnostic {
-            result,
-            call_id,
-            tool_name,
-            outcome,
-            exit_code,
-            duration_ms,
+        super::super::dto::GeminiEventBody::ToolResult {
+            result: Some(serde_json::Value::String(text)),
             ..
-        } => result
-            .as_ref()
-            .and_then(|value| match value {
-                serde_json::Value::String(text) if !text.is_empty() => Some(text.clone()),
-                serde_json::Value::String(_) => None,
-                value => serde_json::to_string(value).ok(),
-            })
-            .unwrap_or_else(|| {
-                format!(
-                    "Gemini {} output {}{}{}{}",
-                    tool_name.as_deref().unwrap_or("tool"),
-                    outcome,
-                    call_id
-                        .as_deref()
-                        .map(|call| format!(", call {call}"))
-                        .unwrap_or_default(),
-                    exit_code
-                        .map(|code| format!(", exit code {code}"))
-                        .unwrap_or_default(),
-                    duration_ms
-                        .map(|duration| format!(", duration {duration} ms"))
-                        .unwrap_or_default(),
-                )
-            }),
+        } if text.len() <= MAX_CORE_CONTENT_BYTES => text.clone(),
+        super::super::dto::GeminiEventBody::ToolResult { .. } => "Gemini tool result".to_owned(),
         super::super::dto::GeminiEventBody::StateNotice { summary } => summary
             .as_deref()
             .filter(|summary| !summary.is_empty())
@@ -166,10 +142,6 @@ fn lexical_body(event: &super::super::GeminiRetainedEvent) -> String {
             target_native_record_id,
         } => format!("Gemini rewind to {target_native_record_id}"),
     }
-}
-
-fn bounded_chars(value: &str, maximum: usize) -> String {
-    value.chars().take(maximum).collect()
 }
 
 pub(super) fn gemini_source_key(native_session_id: &str) -> GeminiSourceBackedResult<SourceKey> {

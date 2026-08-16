@@ -20,6 +20,7 @@ from mcp_attribution_contract_registry import (
     RouteSchemaContract,
 )
 from mcp_attribution_conformance_schema import (
+    ALLOWED_EVIDENCE_CLASSES,
     ALLOWED_STATUSES,
     AUDIT_STATUS_TO_MANIFEST,
     AuditLaneKey,
@@ -897,7 +898,7 @@ def validate_manifest(
         status_rows[status] += 1
 
         evidence_by_class: dict[str, list[dict[str, Any]]] = {
-            evidence_class: [] for evidence_class in REQUIRED_EVIDENCE_CLASSES
+            evidence_class: [] for evidence_class in ALLOWED_EVIDENCE_CLASSES
         }
         seen_evidence: set[tuple[tuple[str, str, str], str, str]] = set()
         for evidence_index, raw_evidence in enumerate(
@@ -922,7 +923,7 @@ def validate_manifest(
             evidence_class = _nonempty_string(
                 evidence["class"], f"{evidence_label}.class"
             )
-            if evidence_class not in REQUIRED_EVIDENCE_CLASSES:
+            if evidence_class not in ALLOWED_EVIDENCE_CLASSES:
                 raise ConformanceError(
                     f"{evidence_label} has unknown evidence class {evidence_class!r}"
                 )
@@ -1301,7 +1302,7 @@ def _parse_capability_bindings(values: list[str], flag: str) -> CapabilityClaims
             raise ConformanceError(
                 f"{flag} binding {value!r} must claim exactly one evidence class"
             )
-        unknown = set(classes) - REQUIRED_EVIDENCE_CLASSES
+        unknown = set(classes) - ALLOWED_EVIDENCE_CLASSES
         if unknown:
             raise ConformanceError(
                 f"{flag} binding {value!r} has unknown evidence classes {sorted(unknown)}"

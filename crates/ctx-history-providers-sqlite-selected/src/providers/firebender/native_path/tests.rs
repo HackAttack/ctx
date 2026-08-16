@@ -1,4 +1,4 @@
-use ctx_history_core::{EventType, SourceAnchor};
+use ctx_history_core::{ActivityJsonCapture, EventType, LiteralFactKind, SourceAnchor};
 use serde_json::json;
 
 use super::{
@@ -94,10 +94,10 @@ fn tool_results_keep_complete_success_failure_and_unknown_content_once() {
         messages: Vec::new(),
     };
     let session_id = firebender_session_id(&source, &row.id).unwrap();
-    for (index, (status, body, outcome)) in [
-        (Some("completed"), "complete success body", "success"),
-        (Some("failed"), "complete failure body", "failure"),
-        (None, "complete unknown body", "unknown"),
+    for (index, (status, body)) in [
+        (Some("completed"), "complete success body"),
+        (Some("failed"), "complete failure body"),
+        (None, "complete status-absent body"),
     ]
     .into_iter()
     .enumerate()
@@ -115,16 +115,16 @@ fn tool_results_keep_complete_success_failure_and_unknown_content_once() {
             .unwrap();
         assert_eq!(record.event_type, EventType::ToolOutput.as_str());
         assert_eq!(record.content.meaningful_text(), body);
-        let linkage = record
+        assert_eq!(record.content.structured_content.as_ref(), Some(&message));
+        let result = record
             .content
-            .structured_content
+            .activity
             .as_ref()
             .unwrap()
-            .get("provider_native_result")
+            .result
+            .as_ref()
             .unwrap();
-        assert_eq!(linkage["result_outcome"], outcome);
-        assert_eq!(linkage["call_id"], format!("call-{index}"));
-        assert!(!linkage.to_string().contains(body));
+        assert_eq!(result.status.as_deref(), status);
     }
 
     let status_only = json!({
@@ -136,5 +136,116 @@ fn tool_results_keep_complete_success_failure_and_unknown_content_once() {
         firebender_core_record(&source, session_id, None, &row, 4, &status_only)
             .unwrap()
             .is_none()
+    );
+}
+
+#[test]
+fn firebender_argument_aliases_are_exact_and_nested_metadata_never_becomes_facts() {
+    let (_, source) = firebender_database_path_and_source(
+        "/tmp/firebender-alias-neutrality/chat_history.db".as_ref(),
+    )
+    .unwrap();
+    let row = FirebenderRow {
+        rowid: 9,
+        id: "session-aliases".to_owned(),
+        name: "aliases".to_owned(),
+        created_at: 1_700_000_000_000,
+        updated_at: 1_700_000_000_001,
+        messages_json: "[]".to_owned(),
+        metadata_json: "{}".to_owned(),
+        messages: Vec::new(),
+    };
+    let session_id = firebender_session_id(&source, &row.id).unwrap();
+
+    let equivalent = json!({
+        "id": "equivalent-aliases",
+        "role": "assistant",
+        "tool_calls": [{}],
+        "tool_call_id": "call-equivalent",
+        "name": "exact_tool",
+        "arguments": {"x": 1},
+        "args": {"x": 1},
+        "metadata": {
+            "path": "src/firebender-decoy.rs",
+            "nested": {
+                "branch": "decoy-branch",
+                "commit": "decoy-commit",
+                "command": "decoy-command"
+            }
+        }
+    });
+    let equivalent = firebender_core_record(
+        &source,
+        session_id,
+        Some("/schema-known-workspace"),
+        &row,
+        0,
+        &equivalent,
+    )
+    .unwrap()
+    .unwrap();
+    let equivalent_activity = equivalent.content.activity.as_ref().unwrap();
+    assert_eq!(equivalent_activity.facts.len(), 1);
+    assert_eq!(
+        equivalent_activity.facts[0].kind,
+        LiteralFactKind::Workspace
+    );
+    assert_eq!(
+        equivalent_activity.facts[0].value,
+        "/schema-known-workspace"
+    );
+    assert_eq!(
+        equivalent_activity.invocation.as_ref().unwrap().arguments,
+        ActivityJsonCapture::Present {
+            value: json!({"x": 1}),
+        }
+    );
+
+    let conflicting = json!({
+        "id": "conflicting-aliases",
+        "role": "assistant",
+        "tool_calls": [{}],
+        "tool_call_id": "call-conflicting",
+        "name": "exact_tool",
+        "arguments": {"selected": "first"},
+        "input": {"selected": "last"}
+    });
+    let conflicting = firebender_core_record(&source, session_id, None, &row, 1, &conflicting)
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        conflicting
+            .content
+            .activity
+            .as_ref()
+            .unwrap()
+            .invocation
+            .as_ref()
+            .unwrap()
+            .arguments,
+        ActivityJsonCapture::Unavailable
+    );
+
+    let absent = json!({
+        "id": "absent-aliases",
+        "role": "assistant",
+        "tool_calls": [{}],
+        "tool_call_id": "call-absent",
+        "name": "exact_tool"
+    });
+    let absent = firebender_core_record(&source, session_id, None, &row, 2, &absent)
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        absent
+            .content
+            .activity
+            .as_ref()
+            .unwrap()
+            .invocation
+            .as_ref()
+            .unwrap()
+            .arguments,
+        ActivityJsonCapture::Absent
     );
 }

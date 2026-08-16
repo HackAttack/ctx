@@ -10,33 +10,17 @@ rust-version.workspace = true
 publish = false
 
 [dependencies]
-base64.workspace = true
-chrono.workspace = true
-directories.workspace = true
-json5.workspace = true
-jsonc-parser.workspace = true
-libc.workspace = true
-quick-xml.workspace = true
-regex.workspace = true
-rmpv.workspace = true
-rusqlite.workspace = true
-serde.workspace = true
 serde_json.workspace = true
-serde_yaml.workspace = true
-sha2.workspace = true
-tempfile.workspace = true
-thiserror.workspace = true
-toml_edit.workspace = true
-url.workspace = true
-uuid.workspace = true
-zstd.workspace = true
+ctx-history-capture-model = { path = "../ctx-history-capture-model" }
+ctx-history-capture-composition = { path = "../ctx-history-capture-composition" }
 ctx-history-core = { path = "../ctx-history-core" }
-ctx-history-index = { path = "../ctx-history-index" }
-ctx-history-store = { path = "../ctx-history-store" }
+ctx-history-provider-runtime = { path = "../ctx-history-provider-runtime" }
+ctx-history-provider-claude-cursor = { path = "../ctx-history-provider-claude-cursor" }
+ctx-history-provider-trae = { path = "../ctx-history-provider-trae" }
+ctx-history-source-io = { path = "../ctx-history-source-io" }
+ctx-history-source-discovery = { path = "../ctx-history-source-discovery" }
 
-[target.'cfg(windows)'.dependencies]
-windows-sys = { version = "0.61", features = [
-    "Win32_Storage_FileSystem",
-    "Win32_System_IO",
-    "Win32_System_LibraryLoader",
-] }
+[dev-dependencies]
+ctx-history-index = { path = "../ctx-history-index" }
+rusqlite.workspace = true
+tempfile.workspace = true

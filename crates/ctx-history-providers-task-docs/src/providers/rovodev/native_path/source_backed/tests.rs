@@ -44,12 +44,9 @@ fn direct_parent_claim_is_conservative_and_does_not_require_a_present_target() {
     let mut record = CoreRecord::new_selected(
         event_id,
         child,
-        child,
         source,
         0,
         "message",
-        AgentType::Primary.as_str(),
-        true,
         PARSER_REVISION,
         "body",
     )
@@ -57,13 +54,9 @@ fn direct_parent_claim_is_conservative_and_does_not_require_a_present_target() {
 
     apply_direct_session_relationship(&mut record, Some(parent)).unwrap();
 
-    assert_eq!(
-        record.session_relationship,
-        ctx_history_core::SessionRelationshipKind::RelatedUnknown
-    );
+    assert_eq!(record.session_relationship, None);
     assert_eq!(record.parent_session_id, Some(parent));
-    assert_eq!(record.root_session_id, parent);
-    assert!(record.is_primary);
+    assert_eq!(record.root_session_id, None);
     record.validate_contract().unwrap();
 }
 
@@ -155,4 +148,33 @@ fn write_session(root: &std::path::Path, session: &str, parent: Option<&str>) {
         .unwrap(),
     )
     .unwrap();
+}
+
+#[test]
+fn duplicate_and_conflicting_rovodev_selectors_fail_closed() {
+    assert!(json_has_duplicate_key(
+        br#"{"session_id":"same","session_id":"same","message_history":[]}"#
+    )
+    .unwrap());
+    assert!(json_has_duplicate_key(
+        br#"{"message_history":[{"role":"assistant","role":"assistant","content":"body"}]}"#
+    )
+    .unwrap());
+
+    let document = PreparedDocument {
+        metadata: serde_json::Value::Null,
+        context_branch: None,
+        messages: Vec::new(),
+        provider_session_id: "session".to_owned(),
+        parent_provider_session_id: None,
+        started_at: chrono::DateTime::<chrono::Utc>::UNIX_EPOCH,
+        cwd: None,
+        initial_failure_count: 0,
+    };
+    let ambiguous = serde_json::json!({
+        "kind": "assistant",
+        "type": "tool_result",
+        "content": "must not acquire a selected kind"
+    });
+    assert!(document::project_message(&ambiguous, 0, &document).is_err());
 }

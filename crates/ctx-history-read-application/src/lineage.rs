@@ -10,7 +10,11 @@ pub fn copied_lineage_read_model(lineage: &CopiedEventLineage) -> Result<Value> 
         .iter()
         .map(|count| {
             (
-                count.session_relationship.as_str().to_owned(),
+                count
+                    .session_relationship
+                    .map(|relationship| relationship.as_str())
+                    .unwrap_or("unspecified")
+                    .to_owned(),
                 Value::from(count.observed_count),
             )
         })
@@ -25,18 +29,15 @@ pub fn copied_lineage_read_model(lineage: &CopiedEventLineage) -> Result<Value> 
                 "copied_from_ctx_event_id": occurrence.copied_from_event_id.as_uuid(),
                 "copied_from_ctx_session_id": occurrence.copied_from_session_id.as_uuid(),
                 "parent_ctx_session_id": occurrence.parent_session_id.map(|id| id.as_uuid()),
-                "claimed_root_ctx_session_id": occurrence.claimed_root_session_id.as_uuid(),
+                "claimed_root_ctx_session_id": occurrence.claimed_root_session_id.map(|id| id.as_uuid()),
                 "session_relationship": occurrence.session_relationship,
+                "copy_proof": occurrence.copy_proof,
                 "depth": occurrence.depth,
             })
         })
         .collect::<Vec<_>>();
     let (resolution_event, resolution_session) = match lineage.resolution {
         CopiedEventLineageResolution::Resolved {
-            event_id,
-            session_id,
-        }
-        | CopiedEventLineageResolution::Cyclic {
             event_id,
             session_id,
         } => (json!(event_id.as_uuid()), json!(session_id.as_uuid())),

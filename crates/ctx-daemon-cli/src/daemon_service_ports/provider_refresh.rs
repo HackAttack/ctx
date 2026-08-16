@@ -10,10 +10,10 @@ use serde_json::Value;
 
 use ctx_client_observability::analytics::{
     duration_bucket, DurationBucket, ForegroundProviderRefreshV1, Outcome, ProviderCoreResult,
-    ProviderProResult, ProviderRefreshChange, ProviderRefreshCompletedV1,
-    ProviderRefreshContentEvidence, ProviderRefreshCountsV1, ProviderRefreshFailureScope,
-    ProviderRefreshFailureType, ProviderRefreshResult, ProviderRefreshSourceMode,
-    ProviderRefreshTrigger, ProviderRefreshWorkKind, PublicEventV1, Surface,
+    ProviderRefreshChange, ProviderRefreshCompletedV1, ProviderRefreshContentEvidence,
+    ProviderRefreshCountsV1, ProviderRefreshFailureScope, ProviderRefreshFailureType,
+    ProviderRefreshResult, ProviderRefreshSourceMode, ProviderRefreshTrigger,
+    ProviderRefreshWorkKind, PublicEventV1, Surface,
 };
 
 pub(super) fn provider_refresh_event(
@@ -105,8 +105,6 @@ pub(super) fn provider_refresh_event(
             } else {
                 ProviderCoreResult::NoOp
             },
-            canonical_pro_result: ProviderProResult::Unknown,
-            output_pro_result: ProviderProResult::Unknown,
             failure_scope,
             failure_type,
             work_remaining: successor_pending || structured_retryable,
@@ -163,8 +161,6 @@ fn failed_provider_refresh_event(
                 work_kind: None,
                 refresh_result: ProviderRefreshResult::Failure,
                 core_result: ProviderCoreResult::Failure,
-                canonical_pro_result: ProviderProResult::Unknown,
-                output_pro_result: ProviderProResult::Unknown,
                 failure_scope,
                 failure_type,
                 work_remaining: successor_pending || outcome.retryable,

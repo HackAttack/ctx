@@ -1,10 +1,10 @@
 use std::process::ExitCode;
 
-use anyhow::{bail, Context as _, Result};
+use anyhow::{Context as _, Result, bail};
 use clap::ValueEnum;
 use ctx_cli_presentation::commands::index::IndexWatchOutput;
 use serde::Serialize;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 use crate::{
     cli::IndexDashboardFixtureArgs,

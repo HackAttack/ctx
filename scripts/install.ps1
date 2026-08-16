@@ -8,7 +8,6 @@ param(
     [switch]$NoRuntime,
     [switch]$NoModifyPath,
     [switch]$NoSetup,
-    [switch]$NoProTrial,
     [switch]$NoDaemon,
     [switch]$NoSkill,
     [string[]]$SkillAgent = @(),
@@ -96,6 +95,24 @@ function Get-ReleaseArtifact(
         Fail "local artifact must not be a symlink or reparse point: $source"
     }
     Copy-Item -LiteralPath $source -Destination $Destination -Force
+}
+
+function Invoke-ManagedPairHelper([string[]]$Arguments) {
+    $helper = Join-Path $PSScriptRoot "install-managed-pair.py"
+    if (-not (Test-Path -LiteralPath $helper -PathType Leaf)) {
+        Fail "managed-pair installer helper is unavailable: $helper"
+    }
+    $python = Get-Command python3 -ErrorAction SilentlyContinue
+    if ($null -eq $python) {
+        $python = Get-Command python -ErrorAction SilentlyContinue
+    }
+    if ($null -eq $python) {
+        Fail "Python 3 is required to verify signed managed-pair metadata"
+    }
+    & $python.Source -I $helper @Arguments
+    if ($LASTEXITCODE -ne 0) {
+        Fail "signed managed-pair verification or installation failed"
+    }
 }
 
 function Expand-WindowsRuntimeArchive(
@@ -398,8 +415,9 @@ try {
     $schemaVersion = Get-MetadataValue $metadataValues "CTX_RELEASE_SCHEMA_VERSION"
     $version = Get-MetadataValue $metadataValues "CTX_RELEASE_VERSION"
     $baseUrl = Get-MetadataValue $metadataValues "CTX_RELEASE_BASE_URL"
-    $artifact = Get-MetadataValue $metadataValues "CTX_RELEASE_ARTIFACT_windows_x64"
-    $checksum = Get-MetadataValue $metadataValues "CTX_RELEASE_SHA256_windows_x64"
+    $pairEnvelopeArtifact = Get-MetadataValueOrDefault $metadataValues "CTX_RELEASE_MANAGED_PAIR_ENVELOPE_windows_x64" ""
+    $artifact = Get-MetadataValueOrDefault $metadataValues "CTX_RELEASE_ARTIFACT_windows_x64" ""
+    $checksum = Get-MetadataValueOrDefault $metadataValues "CTX_RELEASE_SHA256_windows_x64" ""
     $runtimeArtifact = Get-MetadataValueOrDefault $metadataValues "CTX_RELEASE_ONNXRUNTIME_ARTIFACT_windows_x64" ""
     $runtimeChecksum = Get-MetadataValueOrDefault $metadataValues "CTX_RELEASE_ONNXRUNTIME_SHA256_windows_x64" ""
     $runtimeVersion = Get-MetadataValueOrDefault $metadataValues "CTX_RELEASE_ONNXRUNTIME_VERSION" ""
@@ -413,13 +431,22 @@ try {
     if ($baseUrl -notmatch '^https://') {
         Fail "metadata base URL must be HTTPS"
     }
-    if ($checksum -notmatch '^[0-9a-fA-F]{64}$') {
-        Fail "checksum for windows-x64 is not a SHA-256 hex digest"
+    $metadataTrust = "explicit-unsigned"
+    if ([string]::IsNullOrWhiteSpace($pairEnvelopeArtifact)) {
+        if ([string]::IsNullOrWhiteSpace($artifact)) {
+            Fail "metadata missing artifact for windows-x64"
+        }
+        if ($checksum -notmatch '^[0-9a-fA-F]{64}$') {
+            Fail "checksum for windows-x64 is not a SHA-256 hex digest"
+        }
+        if ($checksum -eq "0000000000000000000000000000000000000000000000000000000000000000") {
+            Fail "checksum for windows-x64 is a placeholder"
+        }
+        Assert-SafeArtifactName $artifact
+    } else {
+        Assert-SafeArtifactName $pairEnvelopeArtifact
+        $metadataTrust = "signed-managed-pair-v1"
     }
-    if ($checksum -eq "0000000000000000000000000000000000000000000000000000000000000000") {
-        Fail "checksum for windows-x64 is a placeholder"
-    }
-    Assert-SafeArtifactName $artifact
     if (-not [string]::IsNullOrWhiteSpace($runtimeArtifact) -or -not [string]::IsNullOrWhiteSpace($runtimeChecksum)) {
         if ([string]::IsNullOrWhiteSpace($runtimeArtifact)) {
             Fail "metadata missing ONNX Runtime artifact for windows-x64"
@@ -436,9 +463,45 @@ try {
         Assert-SafeArtifactName $runtimeArtifact
     }
 
-    $artifactUrl = $baseUrl.TrimEnd("/") + "/" + $artifact
-    $downloadPath = Join-Path $tempRoot $artifact
+    $artifactUrl = ""
+    $downloadPath = ""
     $installPath = Join-Path $BinDir "ctx.exe"
+    $installRoot = Split-Path -Parent ([System.IO.Path]::GetFullPath($BinDir))
+    $companionPath = Join-Path $installRoot "libexec\ctx-pro.exe"
+    $pairEnvelopePath = ""
+    $companionDownloadPath = ""
+    if (-not [string]::IsNullOrWhiteSpace($pairEnvelopeArtifact)) {
+        if ((Split-Path -Leaf ([System.IO.Path]::GetFullPath($BinDir))) -ine "bin") {
+            Fail "signed managed-pair installation requires -BinDir to name <install-root>\bin"
+        }
+        $pairEnvelopePath = Join-Path $tempRoot $pairEnvelopeArtifact
+        $pairPlanPath = Join-Path $tempRoot "managed-pair-plan.json"
+        Get-ReleaseArtifact `
+            -Url ($baseUrl.TrimEnd("/") + "/" + $pairEnvelopeArtifact) `
+            -Name $pairEnvelopeArtifact `
+            -Destination $pairEnvelopePath
+        Invoke-ManagedPairHelper @(
+            "inspect", "--envelope", $pairEnvelopePath,
+            "--target", "windows-x64", "--output", $pairPlanPath
+        )
+        $pairPlan = Get-Content -LiteralPath $pairPlanPath -Raw | ConvertFrom-Json
+        $artifact = [string]$pairPlan.core.artifact_name
+        $checksum = [string]$pairPlan.core.sha256
+        $coreObjectKey = [string]$pairPlan.core.object_key
+        $companionArtifact = [string]$pairPlan.companion.artifact_name
+        $companionObjectKey = [string]$pairPlan.companion.object_key
+        foreach ($objectKey in @($coreObjectKey, $companionObjectKey)) {
+            if ($objectKey -notmatch '^sha256/[0-9a-f]{64}/[A-Za-z0-9][A-Za-z0-9._+-]{0,127}$') {
+                Fail "signed managed-pair object key is malformed: $objectKey"
+            }
+        }
+        $artifactUrl = $baseUrl.TrimEnd("/") + "/" + $coreObjectKey
+        $downloadPath = Join-Path $tempRoot $artifact
+        $companionDownloadPath = Join-Path $tempRoot $companionArtifact
+    } else {
+        $artifactUrl = $baseUrl.TrimEnd("/") + "/" + $artifact
+        $downloadPath = Join-Path $tempRoot $artifact
+    }
 
     $skillAgents = @()
     foreach ($agent in $SkillAgent) {
@@ -474,7 +537,6 @@ try {
 
     $runSetup = -not $NoSetup -and $env:CTX_INSTALL_NO_SETUP -ne "1"
     $setupNoDaemon = [bool]$NoDaemon -or $env:CTX_INSTALL_NO_DAEMON -eq "1"
-    $setupProTrial = -not $NoProTrial -and $env:CTX_INSTALL_NO_PRO_TRIAL -ne "1" -and -not $setupNoDaemon
     $runSkill = -not $noSkillRequested
     $installRuntime = -not $NoRuntime -and $env:CTX_INSTALL_NO_RUNTIME -ne "1"
     if (-not $runSetup -and -not $explicitSkillRequest) {
@@ -488,6 +550,10 @@ try {
         Write-Host "Installing ctx $version ($Platform)"
     }
     Write-Host "  binary: $installPath"
+    if (-not [string]::IsNullOrWhiteSpace($pairEnvelopeArtifact)) {
+        Write-Host "  companion: $companionPath"
+        Write-Host "  pair metadata: signed target envelope"
+    }
     if ($installRuntime -and -not [string]::IsNullOrWhiteSpace($runtimeArtifact)) {
         Write-Host "  onnxruntime: $(Join-Path $RuntimeDir ("onnxruntime\" + $runtimeVersion + "\" + $Platform))"
     } elseif (-not [string]::IsNullOrWhiteSpace($runtimeArtifact)) {
@@ -515,21 +581,33 @@ try {
         exit 0
     }
 
-    Get-ReleaseArtifact -Url $artifactUrl -Name $artifact -Destination $downloadPath
-
-    $actualChecksum = Get-Sha256 $downloadPath
-    if ($actualChecksum -ne $checksum.ToLowerInvariant()) {
-        Fail "checksum mismatch for $artifact`: expected $checksum, got $actualChecksum"
+    if (-not [string]::IsNullOrWhiteSpace($pairEnvelopeArtifact)) {
+        Get-ReleaseArtifact -Url $artifactUrl -Name $coreObjectKey -Destination $downloadPath
+        Get-ReleaseArtifact `
+            -Url ($baseUrl.TrimEnd("/") + "/" + $companionObjectKey) `
+            -Name $companionObjectKey `
+            -Destination $companionDownloadPath
+        Invoke-ManagedPairHelper @(
+            "install", "--envelope", $pairEnvelopePath,
+            "--core", $downloadPath, "--companion", $companionDownloadPath,
+            "--install-root", $installRoot, "--target", "windows-x64"
+        ) | Out-Null
+        $actualChecksum = Get-Sha256 $installPath
+    } else {
+        Get-ReleaseArtifact -Url $artifactUrl -Name $artifact -Destination $downloadPath
+        $actualChecksum = Get-Sha256 $downloadPath
+        if ($actualChecksum -ne $checksum.ToLowerInvariant()) {
+            Fail "checksum mismatch for $artifact`: expected $checksum, got $actualChecksum"
+        }
+        New-Item -ItemType Directory -Path $BinDir -Force | Out-Null
+        Copy-Item -LiteralPath $downloadPath -Destination $installPath -Force
     }
-
-    New-Item -ItemType Directory -Path $BinDir -Force | Out-Null
-    Copy-Item -LiteralPath $downloadPath -Destination $installPath -Force
 
     $markerPath = "$installPath.install.json"
     $marker = [ordered]@{
         schema_version = 1
         manager = "ctx-explicit-metadata-installer"
-        metadata_trust = "explicit-unsigned"
+        metadata_trust = $metadataTrust
         install_path = $installPath
         platform = $Platform
         channel = $channel
@@ -588,11 +666,6 @@ try {
         Write-Host ""
         Write-Host "Indexing local agent history..."
         $setupArgs = @("setup")
-        $retryPro = ""
-        if ($setupProTrial) {
-            $setupArgs += "--pro"
-            $retryPro = " --pro"
-        }
         $setupArgs += @("--progress", $SetupProgress)
         if ($setupNoDaemon) {
             $setupArgs += "--no-daemon"
@@ -601,7 +674,7 @@ try {
         if ($LASTEXITCODE -ne 0) {
             $setupStatus = $LASTEXITCODE
             $retryNoDaemon = if ($setupNoDaemon) { " --no-daemon" } else { "" }
-            Write-Warning "ctx setup failed after install; run $installPath setup$retryPro --progress $SetupProgress$retryNoDaemon to retry"
+            Write-Warning "ctx setup failed after install; run $installPath setup --progress $SetupProgress$retryNoDaemon to retry"
         }
     } else {
         Write-Host ""

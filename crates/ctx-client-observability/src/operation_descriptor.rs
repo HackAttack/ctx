@@ -1,8 +1,8 @@
 use crate::analytics::{
     DaemonOperationV1, DocsTelemetry, DoctorTelemetry, ImportTelemetry, IndexTelemetry,
     IntegrationTelemetry, LocateTelemetry, McpErrorClassV1, McpErrorLayerV1, McpMethodV1,
-    McpResultMetadataV1, ProHostOperationV1, SearchTelemetry, SetupTelemetry, ShowTelemetry,
-    SourcesTelemetry, StatusTelemetry, UpgradeTelemetry,
+    McpResultMetadataV1, SearchTelemetry, SetupTelemetry, ShowTelemetry, SourcesTelemetry,
+    StatusTelemetry, UpgradeTelemetry,
 };
 
 /// Closed, transport-neutral identity and telemetry facts for one product operation.
@@ -14,7 +14,6 @@ use crate::analytics::{
 pub enum OperationDescriptor {
     Cli(CliOperation),
     Mcp(McpOperation),
-    ProHost(ProHostOperationV1),
     Daemon(DaemonOperationV1),
 }
 
@@ -30,11 +29,6 @@ pub enum CliOperation {
     ShowEvent(ShowTelemetry),
     Locate(LocateTelemetry),
     Search(SearchTelemetry),
-    ProSetup,
-    ProManage,
-    ProUninstall,
-    Referral,
-    Blame,
     Docs(DocsTelemetry),
     Integrations(IntegrationTelemetry),
     McpServe,
@@ -61,11 +55,6 @@ impl CliOperation {
             Self::ShowSession(_) | Self::ShowEvent(_) => "show",
             Self::Locate(_) => "locate",
             Self::Search(_) => "search",
-            Self::ProSetup => "pro_setup",
-            Self::ProManage => "pro_manage",
-            Self::ProUninstall => "pro_uninstall",
-            Self::Referral => "referral",
-            Self::Blame => "blame",
             Self::Docs(_) => "docs",
             Self::Integrations(_) => "integration",
             Self::McpServe => "serve",
@@ -108,11 +97,6 @@ impl CliOperation {
             Self::ShowEvent(_) => Some(LocalUsageOperation::ShowEvent),
             Self::Locate(_) => Some(LocalUsageOperation::Locate),
             Self::Search(_) => Some(LocalUsageOperation::Search),
-            Self::ProSetup => Some(LocalUsageOperation::ProSetup),
-            Self::ProManage => Some(LocalUsageOperation::ProManage),
-            Self::ProUninstall => Some(LocalUsageOperation::ProUninstall),
-            Self::Referral => None,
-            Self::Blame => Some(LocalUsageOperation::Blame),
             Self::Docs(_) => Some(LocalUsageOperation::Docs),
             Self::Integrations(_) => Some(LocalUsageOperation::Integrations),
             Self::McpServe | Self::DaemonRun => None,
@@ -142,8 +126,6 @@ pub enum ObservedMcpProductOperation {
     ShowSession,
     ShowEvent,
     QueryEvents,
-    Blame,
-    ProStatus,
 }
 
 impl ObservedMcpProductOperation {
@@ -155,8 +137,6 @@ impl ObservedMcpProductOperation {
             Self::ShowSession => "show_session",
             Self::ShowEvent => "show_event",
             Self::QueryEvents => "query_events",
-            Self::Blame => "blame",
-            Self::ProStatus => "pro_status",
         }
     }
 
@@ -167,8 +147,6 @@ impl ObservedMcpProductOperation {
             Self::Search => LocalUsageOperation::Search,
             Self::ShowSession => LocalUsageOperation::ShowSession,
             Self::ShowEvent | Self::QueryEvents => LocalUsageOperation::ShowEvent,
-            Self::Blame => LocalUsageOperation::Blame,
-            Self::ProStatus => LocalUsageOperation::ProStatus,
         }
     }
 }
@@ -286,11 +264,6 @@ pub enum LocalUsageOperation {
     ShowEvent,
     Locate,
     Search,
-    ProSetup,
-    ProManage,
-    ProUninstall,
-    ProStatus,
-    Blame,
     Docs,
     Integrations,
     DaemonStatus,
@@ -312,11 +285,6 @@ impl LocalUsageOperation {
             Self::ShowEvent => "show_event",
             Self::Locate => "locate",
             Self::Search => "search",
-            Self::ProSetup => "pro_setup",
-            Self::ProManage => "pro_manage",
-            Self::ProUninstall => "pro_uninstall",
-            Self::ProStatus => "pro_status",
-            Self::Blame => "blame",
             Self::Docs => "docs",
             Self::Integrations => "integrations",
             Self::DaemonStatus => "daemon_status",
@@ -335,7 +303,6 @@ pub enum ResultObservationAction {
     OpenEvent,
     Locate,
     Sources,
-    Blame,
 }
 
 #[cfg(test)]

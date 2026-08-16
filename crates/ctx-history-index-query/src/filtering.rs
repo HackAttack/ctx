@@ -18,13 +18,6 @@ pub(super) fn filtered_event_query(
             IndexRecordOption::Basic,
         )),
     );
-    clauses.push((
-        Occur::MustNot,
-        Box::new(TermQuery::new(
-            Term::from_field_text(fields.event_origin_kind, "copied_from_ancestor"),
-            IndexRecordOption::Basic,
-        )),
-    ));
     if let Some(query) = source_identity_query {
         add_filter_clause(&mut clauses, query);
     }
@@ -59,7 +52,7 @@ pub(super) fn filtered_event_query(
     );
     add_optional_text_filter(
         &mut clauses,
-        fields.branch,
+        fields.fact_branch,
         "branch",
         filters.branch.as_deref(),
     )?;
@@ -76,30 +69,25 @@ pub(super) fn filtered_event_query(
         );
     }
     add_optional_text_filter(&mut clauses, fields.role, "role", filters.role.as_deref())?;
-    add_optional_text_filter(
-        &mut clauses,
-        fields.agent_type,
-        "agent_type",
-        filters.agent_type.as_deref(),
-    )?;
     if let Some(workspace) = filters.workspace.as_deref() {
         add_filter_clause(
             &mut clauses,
-            Box::new(metadata_contains_query(
-                fields.workspace_filter,
+            literal_fact_union_contains_query(
+                [
+                    fields.fact_workspace,
+                    fields.fact_session_cwd,
+                    fields.fact_tool_workdir,
+                    fields.fact_project,
+                ],
                 "workspace",
                 workspace,
-            )?),
+            )?,
         );
     }
     if let Some(file) = filters.file.as_deref() {
         add_filter_clause(
             &mut clauses,
-            Box::new(metadata_contains_query(
-                fields.touched_file_filter,
-                "file",
-                file,
-            )?),
+            Box::new(metadata_contains_query(fields.fact_file, "file", file)?),
         );
     }
     if let Some(since_unix_ms) = filters.since_unix_ms {
@@ -114,11 +102,16 @@ pub(super) fn filtered_event_query(
             )),
         );
     }
-    if filters.agent_scope == AgentScope::Primary && filters.session_id.is_none() {
+    if filters.agent_scope != SearchAgentScope::All {
+        let expected = match filters.agent_scope {
+            SearchAgentScope::All => unreachable!(),
+            SearchAgentScope::Primary => CoreAgentScope::Primary,
+            SearchAgentScope::Subagent => CoreAgentScope::Subagent,
+        };
         add_filter_clause(
             &mut clauses,
             Box::new(TermQuery::new(
-                Term::from_field_u64(fields.is_primary, 1),
+                Term::from_field_text(fields.agent_scope, expected.as_str()),
                 IndexRecordOption::Basic,
             )),
         );
@@ -249,9 +242,27 @@ pub(super) fn metadata_contains_query(
     field_name: &'static str,
     value: &str,
 ) -> Result<RegexQuery> {
-    let value = validated_filter_text(field_name, value)?.to_lowercase();
-    RegexQuery::from_pattern(&format!(".*{}.*", escape_regex_literal(&value)), field)
-        .map_err(IndexError::from)
+    let value = validated_filter_text(field_name, value)?;
+    RegexQuery::from_pattern(
+        &format!(".*{}.*", ascii_case_insensitive_regex_literal(value)),
+        field,
+    )
+    .map_err(IndexError::from)
+}
+
+fn literal_fact_union_contains_query<const N: usize>(
+    fields: [tantivy::schema::Field; N],
+    field_name: &'static str,
+    value: &str,
+) -> Result<Box<dyn Query>> {
+    let queries = fields
+        .into_iter()
+        .map(|field| {
+            metadata_contains_query(field, field_name, value)
+                .map(|query| Box::new(query) as Box<dyn Query>)
+        })
+        .collect::<Result<Vec<_>>>()?;
+    Ok(Box::new(BooleanQuery::union(queries)))
 }
 
 pub(super) fn excluded_session_tree_query(
@@ -306,16 +317,23 @@ pub(super) fn validated_filter_text<'a>(field: &'static str, value: &'a str) -> 
     Ok(value)
 }
 
-pub(super) fn escape_regex_literal(value: &str) -> String {
+fn ascii_case_insensitive_regex_literal(value: &str) -> String {
     let mut escaped = String::with_capacity(value.len());
     for character in value.chars() {
-        if matches!(
-            character,
-            '\\' | '.' | '+' | '*' | '?' | '(' | ')' | '|' | '[' | ']' | '{' | '}' | '^' | '$'
-        ) {
-            escaped.push('\\');
+        if character.is_ascii_alphabetic() {
+            escaped.push('[');
+            escaped.push(character.to_ascii_lowercase());
+            escaped.push(character.to_ascii_uppercase());
+            escaped.push(']');
+        } else {
+            if matches!(
+                character,
+                '\\' | '.' | '+' | '*' | '?' | '(' | ')' | '|' | '[' | ']' | '{' | '}' | '^' | '$'
+            ) {
+                escaped.push('\\');
+            }
+            escaped.push(character);
         }
-        escaped.push(character);
     }
     escaped
 }

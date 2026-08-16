@@ -7,11 +7,9 @@ ctx is a local search CLI for existing agent history.
 Given local provider histories that ctx supports, the CLI treats those native
 records as the acquisition authority for import and refresh, publishes an
 immutable local Core/Tantivy search generation, and returns deterministic
-retrieval results with citations and stable provider/source identities. The
-paid Local Pro helper adds an encrypted local work graph with deterministic,
-evidence-backed fact materialization from a pinned Core generation through its
-bounded materialization protocol. Neither path generates an LLM interpretation,
-uploads transcript or repository content, or requires a hosted research agent.
+retrieval results with citations and stable provider/source identities. Core
+does not generate an LLM interpretation, upload transcript content, or require
+a hosted research agent.
 
 ## In Scope
 
@@ -51,120 +49,10 @@ uploads transcript or repository content, or requires a hosted research agent.
   These commands do not reopen provider history at query time.
   `ctx show session --out` writes transcript artifacts. Search/show expose the
   provider-owned session ID when known; for Codex, it is the resume UUID.
-- `ctx pro` tries to start or resume an anonymous 14-day trial without an
-  account, authentication, or payment method, installs or repairs the signed
-  target-specific helper when access is available, and catches the encrypted
-  graph up. If the trial is expired, consumed, or unavailable, it still returns
-  an actionable browser handoff without using the trial as access authority;
-  browser completion can link an existing subscription or purchase Pro. The
-  official installer starts the same trial by default after durably admitting Core work;
-  `--no-pro-trial` keeps installer setup Core-only. Trial activation failure
-  never changes Core setup success or daemon startup. Account creation,
-  payment, account management, and referrals use explicit hosted browser flows.
-  `ctx pro setup` is a supported explicit synonym.
-  `ctx status` reports Pro state and the next useful action without mutating
-  canonical history or graph data. Entitlement authorization may advance
-  nonsecret anti-clock-rollback metadata.
-  `ctx pro manage` opens hosted account and billing
-  management. Interactive `ctx pro uninstall` asks whether to delete local Pro
-  data; noninteractive callers must explicitly pass `--delete-data` or
-  `--keep-data`. The keep path is local-only and preserves local Pro data;
-  verified `--delete-data` remains idempotently available after the helper is
-  gone. Missing and never-Pro roots leave Pro state unchanged and report that
-  Pro data is absent rather than preserved or deleted. This no-op statement is
-  Pro-state-only: `pro_uninstall` remains an eligible Core foreground operation,
-  so default-on local usage reporting may create or increment `usage.sqlite`.
-  Interrupted initialization remains identity-aware and deletable before a
-  helper or graph publication exists. Destructive uninstall fails before
-  deletion on corrupt credential inventory or an unexpected current Flat/FST
-  artifact, persists an exact-root cleanup phase, and verifies graph absence
-  before deleting the selected key. Retries remain verifiable after graph data,
-  graph-key records, or credential records are already absent.
-- Local Pro credentials prefer the platform vault: Secret Service on Linux,
-  Keychain Services on macOS, and Credential Manager on Windows. A pristine
-  canonical root may durably select the supported owner-private file backend
-  only when the native adapter reports its platform's exact unavailable
-  condition. Locked, denied, corrupt, ambiguous, canceled, access-control, and
-  entitlement failures never select the file backend. A durable native
-  selection never downgrades after a later outage, and read-only inspection of
-  an unselected pristine root creates no selector, lock, directory, or record.
-  Markerless public file-vault or interrupted-selector state is corrupt and is
-  never reinterpreted as pristine. Public fallback selection also refuses a
-  root that already contains private graph-store or graph-database state; the
-  private graph selector remains independently owned and may be selected after
-  public activation during the ordered fresh-trial flow.
-  The public selector is `<data-root>/pro/.ctx-pro.credential-backend-v1` with
-  exactly one of
-  `ctx-pro-credential-backend-v1:{file,secret-service,keychain,credential-manager}\n`.
-  Its owner-private records remain in the separate
-  `<data-root>/pro/.ctx-pro.credentials-v1` namespace. Private graph-key
-  records retain their own selector, namespace, and deletion lifecycle.
-  Neither namespace permits an environment key, universal key, binary pepper,
-  plaintext database key, or legacy Store fallback.
-- `ctx pro --referral <codename>` is the sole referral-attribution input. The
-  ordinary anonymous trial is 14 days; a code accepted with the first
-  activation produces a 30-day referred trial. Attribution is immutable after
-  that first accepted activation, the raw code is not retained after activation,
-  and an existing nonreferred trial cannot attach one later. There is no
-  website, cookie, creator-affiliate, annual-plan, or compatibility attribution
-  path.
-- Referral availability is a reviewed per-channel build decision and is
-  disabled for both shipped channel configurations. Unavailable referral
-  commands and `ctx pro --referral` fail before local identity creation,
-  authentication, or browser side effects. The human-only `ctx blame` CTA is
-  suppressed and does not consume its once-only marker while unavailable.
-- Any person with a verified ctx account can use `ctx referral create` to claim one stable
-  codename without a Pro trial or subscription.
-  `ctx referral create|status|payout` are explicit hosted-service commands and
-  form the complete referrer management surface. Browser setup must first be
-  completed through `ctx pro`; payout may open Stripe-hosted onboarding. JSON
-  mode uses the cached opaque account credential only and never starts
-  authentication or opens a browser.
-  Referrer status is authenticated, private, and aggregate; it exposes no
-  referred identity, invoice, or per-referral ledger. Its cash buckets are
-  earned, pending, manual review, payable, processing, paid, and debt.
-  Processing is sent but unsettled; paid remains historical cash actually
-  settled, and a post-paid reversal increases debt rather than reducing paid.
-  The aggregate identity is `earned + debt = pending + manual review + payable
-  + processing + paid`.
-- The referral commission is $10 cash for each distinct qualifying $20 monthly
-  Pro invoice, invoices 1 through 12, with a $120 maximum per direct referral.
-  Invoice 1 and invoice 2 commissions accrue pending and require invoice 2 to
-  settle, the required 14-day hold, authoritative reconciliation, and manual
-  review before payability. Invoices 3 through 12 each require their own 14-day
-  hold, reconciliation, and manual review. Refunds and disputes void unpaid
-  commissions. A paid commission reversal becomes debt, a negative adjustment
-  against future earnings subject to manual review; ctx does not attempt an
-  external clawback.
-- Referral copy leads with
-  `Refer a developer. Earn $10/month toward your agent bill.` and may follow
-  with `Up to $120 per friend.` Routine status, MCP, and Core flows do not
-  surface referral prompts. The only automatic mention is a
-  nonsecret-marker-backed, shown-once line after a successful, nonempty,
-  interactive human Pro blame result; machine-readable, noninteractive, empty,
-  failed, install, setup, Core, and subsequent blame paths suppress it.
-- Pro materialization is an internal idempotent capability invoked by setup,
-  daemon freshness, and blame. It consumes a bounded feed from a pinned Core
-  generation and does not depend on semantic readiness. Repository roots are inferred from
-  canonical activity rather than accepted as setup flags.
-- The only public Pro query is `ctx blame <target> [--type file|commit|pr]`.
-  The explicit `ctx blame file|commit|pr` forms remain compatible. Shorthand
-  auto-detection is conservative and ambiguous targets fail with an actionable
-  `invalid_request`; explicit `--type` is authoritative. Blame returns typed,
-  bounded matches with complete deduplicated canonical evidence. OSS
-  `ctx show session|event` remains available; there are no Pro show, timeline,
-  facts, or related aliases. Blame may
-  catch stale derived state up;
-  that changes only the encrypted graph. Pure canonical tail appends
-  resume from the durable frontier; incompatible mutation epochs, legacy
-  derived state, or repository semantics trigger a token-checked derived reset
-  and replay without changing canonical history. Materialization reports
-  `NotMaterialized`, `Partial`, `NeedsResume`, `NeedsRebuild`, or `Ready`.
-  Blame continuation cursors are opaque and graph-state-bound.
-- PR activity is not code production. A PR-to-commit relationship is present
-  only when a recognized structured forge record binds the canonical PR
-  identity and exact Git object ID. Without that proof, associated commits are
-  explicitly unproven.
+- Official managed distributions may pair Apache-licensed Core with a
+  separately signed private companion. Core-only distributions retain the OSS
+  commands, and paid routes return a typed companion-unavailable failure when
+  that companion is absent.
 - `ctx doctor` reports local storage health.
 - `ctx docs` exposes embedded public documentation and generated man pages.
 - `ctx upgrade` checks and applies signed CLI releases for official
@@ -189,37 +77,6 @@ uploads transcript or repository content, or requires a hosted research agent.
   daemon-nudge side effects. A daemon already running independently continues
   its own maintenance and automatic-upgrade cadence.
 
-## Local Pro Access States
-
-| State | Meaning | Local Pro graph access |
-| --- | --- | --- |
-| trial | anonymous 14-day trial; no account or payment method | allowed |
-| active | paid monthly subscription | allowed |
-| canceling_paid | canceled at period end, but the current period is paid | allowed through the paid deadline |
-| offline_grace | the bounded signed offline grant remains valid | allowed through the final grace deadline |
-| locked | no active access or valid grace remains | denied; encrypted graph is preserved for recovery |
-
-`ctx pro manage` handles cancellation, payment recovery, and resubscription.
-Pro is $20 USD per month.
-Core OSS setup, search, and show remain available in every state. Pro
-uninstall and explicit Pro data deletion also remain available.
-Explicit status, MCP `pro_status`, and Pro management may show the
-`$20/month` continuation action for trial access or a neutral
-unpriced `pro_restore_access` action for locked access that confirms the local
-graph is preserved. They do not show a purchase action for paid active,
-`canceling_paid`, or `offline_grace` access, do not replace the existing next
-action, do not open a browser from status, and never add marketing text to
-blame citations.
-Hosted traffic is limited to anonymous-trial challenge/evidence tokens,
-optional first-challenge referral attribution and its opaque claim, explicit
-referrer commands, identity and billing after conversion, entitlements, signed
-release metadata, and anonymous signed artifact delivery. Trial evidence consists
-only of challenge-bound application-specific digests; raw platform identifiers
-are discarded inside the signed helper, and the service stores independently
-keyed lookup tokens. The signal is best-effort abuse detection, not hardware
-attestation. Hosted traffic excludes transcript text, source code, repository
-paths or URLs, Git objects, graph facts, citations, and queries.
-
 ## Out Of Scope
 
 - hosted model inference, hidden LLM calls, or API-key-dependent inference by
@@ -227,10 +84,10 @@ paths or URLs, Git objects, graph facts, citations, and queries.
 - team and enterprise seats, invitations, SSO, SCIM, or organization
   administration;
 - annual plans, device caps, and device-management UI;
-- hosted transcript storage, hosted work graphs, or remote repository analysis;
+- hosted transcript storage or remote repository analysis;
 - ask/brief agents, cloud research agents, or universal deterministic detector
   accuracy;
-- a ctx history or work-graph browser UI;
+- a ctx history browser UI;
 - source repository modification;
 - shell startup-file modification;
 - API-key requirements for core setup/import/search;
@@ -265,8 +122,6 @@ refresh publish provider-file changes into a new search generation.
 
 ## Privacy Contract
 
-Core/Tantivy generations, semantic sidecars, `usage.sqlite`, the encrypted Pro
-graph, and JSON output are private by default.
-Identity, billing, entitlement, and signed-artifact requests do not carry
-history, repository, graph, citation, or query content. A user must review
-copied output before sharing it outside the machine.
+Core/Tantivy generations, semantic sidecars, `usage.sqlite`, and JSON output
+are private by default. A user must review copied output before sharing it
+outside the machine.

@@ -15,7 +15,6 @@ pub struct UpgradeStatusView<'a> {
     pub auto_enabled: bool,
     pub state: &'a Value,
     pub install: &'a Value,
-    pub pro: &'a Value,
 }
 
 pub fn render_status(view: UpgradeStatusView<'_>, json_output: bool, ui: &mut Ui) -> Result<()> {
@@ -30,7 +29,6 @@ pub fn render_status(view: UpgradeStatusView<'_>, json_output: bool, ui: &mut Ui
         "state": view.state,
         "install": view.install,
         "warnings": [],
-        "pro": view.pro,
     });
     if json_output {
         let output = format!("{}\n", serde_json::to_string_pretty(&value)?);
@@ -44,7 +42,6 @@ pub fn render_status(view: UpgradeStatusView<'_>, json_output: bool, ui: &mut Ui
         view.auto_upgrade,
         view.state,
         view.install,
-        view.pro,
     );
     ui.write_stdout(&document)?;
     Ok(())
@@ -56,7 +53,6 @@ fn render_upgrade_status_human(
     auto_upgrade: &str,
     state: &Value,
     install: &Value,
-    pro: &Value,
 ) -> Document {
     let managed = install.get("managed").and_then(Value::as_bool) == Some(true);
     let status = state
@@ -126,25 +122,6 @@ fn render_upgrade_status_human(
                 fields(context, &[Field::new("Reason", reason)]),
             ));
         }
-    }
-
-    if pro.get("installed").and_then(Value::as_bool) == Some(true) {
-        document.push_blank();
-        document.append(section(
-            "Pro",
-            fields(
-                context,
-                &[
-                    Field::new(
-                        "State",
-                        pro.get("state")
-                            .and_then(Value::as_str)
-                            .unwrap_or("unavailable"),
-                    ),
-                    Field::new("Updates", "managed by ctx pro"),
-                ],
-            ),
-        ));
     }
 
     let action = if upgrade_error {
@@ -243,9 +220,8 @@ mod ui_tests {
             "managed": true,
             "install_path": "/opt/ctx/bin/ctx"
         });
-        let pro = json!({"installed": false});
         let document =
-            render_upgrade_status_human(&context(80), "1.0.0", "apply", &state, &install, &pro);
+            render_upgrade_status_human(&context(80), "1.0.0", "apply", &state, &install);
         let rendered = document.render_plain();
         assert!(rendered.starts_with("✓ ctx is up to date\n"));
         assert!(
@@ -267,7 +243,6 @@ mod ui_tests {
                 "off",
                 &json!({"status": "error", "error": "replacement verification failed"}),
                 &json!({"managed": true}),
-                &json!({"installed": true, "state": "ready"}),
             );
             let error_text = error.render_plain();
             assert!(error_text.starts_with("✗ Upgrade needs attention\n"));
@@ -283,7 +258,6 @@ mod ui_tests {
                     "managed": false,
                     "reason": "ctx was not installed by the hosted installer"
                 }),
-                &json!({"installed": false}),
             );
             let unmanaged_text = unmanaged.render_plain();
             assert!(unmanaged_text.starts_with("! ctx is not managed"));

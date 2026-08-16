@@ -68,10 +68,11 @@ fi
 
 expected_reverse="${tmp}/expected-reverse.txt"
 printf '%s\n' \
+  '//crates/ctx-cli-presentation:lib' \
+  '//crates/ctx-cli-presentation:qualification_lib' \
   '//crates/ctx-cli:ctx' \
   '//crates/ctx-cli:ctx_auto_upgrade_acceptance_fixture' \
   '//crates/ctx-cli:ctx_hosted_uninstall_test_host' \
-  '//crates/ctx-cli:ctx_pro_test_host' \
   '//crates/ctx-cli:ctx_upgrade_test_harness' \
   '//crates/ctx-daemon-application:lib' \
   '//crates/ctx-daemon-cli:lib' \
@@ -100,6 +101,8 @@ fi
 
 expected_reverse_test_support="${tmp}/expected-reverse-test-support.txt"
 printf '%s\n' \
+  '//crates/ctx-cli-presentation:test_support_lib' \
+  '//crates/ctx-cli-presentation:unit_tests' \
   '//crates/ctx-cli:unit_tests' \
   '//crates/ctx-daemon-application:test_support_lib' \
   '//crates/ctx-daemon-cli:test_support_lib' \
@@ -198,13 +201,13 @@ if find "${application_root}" -name '*.rs' ! -path "${application_root}/src/*" -
   echo 'ctx-daemon-application Rust sources must remain package-local under src' >&2
   exit 1
 fi
-if grep -En 'ctx-(agent-integrations|cli|history-capture|history-index|history-query|history-refresh|pro-host|pro-lifecycle|protocol|semantic-index|semantic-model|upgrade-engine)([^[:alnum:]_-]|$)|(^|[^[:alnum:]_-])(clap|ureq)([^[:alnum:]_-]|$)' \
+if grep -En 'ctx-(agent-integrations|cli|history-capture|history-index|history-query|history-refresh|protocol|semantic-index|semantic-model|upgrade-engine)([^[:alnum:]_-]|$)|(^|[^[:alnum:]_-])(clap|ureq)([^[:alnum:]_-]|$)' \
   "${application_root}/Cargo.toml"; then
   echo 'excluded product, presentation, network, semantic, or upgrade authority leaked into ctx-daemon-application' >&2
   exit 1
 fi
 if grep -REn --include='*.rs' \
-  'ctx_(agent_integrations|history_capture|history_index|history_query|history_refresh|pro_host|pro_lifecycle|protocol|semantic_index|semantic_model|upgrade_engine)::|(^|[^[:alnum:]_])(clap|ureq)::|crate::(commands|config|net|output|pro|semantic|ui|upgrade)::|\b(AppConfig|Ui)\b' \
+  'ctx_(agent_integrations|history_capture|history_index|history_query|history_refresh|protocol|semantic_index|semantic_model|upgrade_engine)::|(^|[^[:alnum:]_])(clap|ureq)::|crate::(commands|config|net|output|semantic|ui|upgrade)::|\b(AppConfig|Ui)\b' \
   "${application_root}/src"; then
   echo 'excluded implementation authority leaked into ctx-daemon-application source' >&2
   exit 1

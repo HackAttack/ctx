@@ -148,8 +148,6 @@ fn exact_provider_durations_are_independent_in_multi_provider_batches() {
             Duration::from_millis(40),
             Some(ProviderRefreshWorkKind::Fresh),
             ProviderCoreResult::Complete,
-            ProviderProResult::Complete,
-            ProviderProResult::NotRequested,
             Some(0),
         ),
     );
@@ -167,8 +165,6 @@ fn exact_provider_durations_are_independent_in_multi_provider_batches() {
             Duration::from_secs(7),
             Some(ProviderRefreshWorkKind::Append),
             ProviderCoreResult::Complete,
-            ProviderProResult::NoOp,
-            ProviderProResult::Complete,
             Some(9),
         ),
     );
@@ -212,46 +208,7 @@ fn observed_fact_seam_keeps_unavailable_dimensions_unknown() {
     assert_eq!(success.duration, Duration::from_secs(3));
     assert_eq!(success.work_kind, None);
     assert_eq!(success.core_result, ProviderCoreResult::Complete);
-    assert_eq!(success.canonical_pro_result, ProviderProResult::Unknown);
-    assert_eq!(success.output_pro_result, ProviderProResult::Unknown);
     assert_eq!(success.retired_records, None);
-}
-
-#[test]
-fn pro_lag_makes_refresh_partial_without_falsifying_core_result() {
-    let mut collector = ProviderRefreshCollector::default();
-    let summary = ProviderImportSummary {
-        imported_events: 1,
-        ..ProviderImportSummary::default()
-    };
-    collector.record_success_with_facts(
-        CaptureProvider::Codex,
-        ProviderRefreshTrigger::Search,
-        ProviderRefreshSourceMode::Discovered,
-        &summary,
-        &SourceStats::default(),
-        ProviderRefreshRuntimeFacts::success(
-            Duration::from_secs(1),
-            None,
-            ProviderCoreResult::Complete,
-            ProviderProResult::Complete,
-            ProviderProResult::Behind,
-            None,
-        ),
-    );
-
-    let events = collector.finish();
-    let refresh = foreground(&events[0]);
-    let PublicEventV1::ProviderRefreshCompleted(event) = &events[0] else {
-        unreachable!();
-    };
-    assert_eq!(event.outcome, Outcome::Success);
-    assert_eq!(event.duration, DurationBucket::UnderFiveSeconds);
-    assert_eq!(refresh.refresh_result, ProviderRefreshResult::Partial);
-    assert_eq!(refresh.core_result, ProviderCoreResult::Complete);
-    assert_eq!(refresh.output_pro_result, ProviderProResult::Behind);
-    assert_eq!(refresh.work_kind, None);
-    assert_eq!(refresh.retired_records, None);
 }
 
 #[test]
@@ -321,9 +278,11 @@ fn every_capture_provider_emits_without_usage_suppression() {
 
     assert_eq!(events.len(), providers.len());
     for provider in providers {
-        assert!(events
-            .iter()
-            .any(|event| foreground(event).provider == Some(provider)));
+        assert!(
+            events
+                .iter()
+                .any(|event| foreground(event).provider == Some(provider))
+        );
     }
 }
 

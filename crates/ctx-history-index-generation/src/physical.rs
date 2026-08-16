@@ -77,13 +77,6 @@ impl CandidatePhysicalProof {
     pub(crate) fn insert(&mut self, file: PhysicalFileDigest) {
         self.files.insert(file.artifact.path.clone(), file);
     }
-
-    /// Canonicalizes the per-file identities and SHA proofs already captured
-    /// by the authenticated clone without repeating an artifact walk.
-    #[cfg(target_os = "linux")]
-    pub(crate) fn authenticated_audit(&self) -> Result<PhysicalIntegrityAudit> {
-        physical_integrity_audit_from_certified_files(self.files.values().cloned().collect())
-    }
 }
 
 impl PhysicalIntegrityAudit {
@@ -101,24 +94,6 @@ impl PhysicalIntegrityAudit {
             .map(|file| file.artifact.path.clone())
             .collect()
     }
-}
-
-pub(crate) fn physical_integrity_audit_from_certified_files(
-    mut files: Vec<PhysicalFileDigest>,
-) -> Result<PhysicalIntegrityAudit> {
-    files.sort_by(|left, right| left.artifact.path.cmp(&right.artifact.path));
-    let parts = files
-        .iter()
-        .map(|entry| PhysicalDigestPart {
-            path: entry.artifact.path.clone(),
-            length: entry.artifact.identity.length(),
-            sha256: entry.sha256,
-        })
-        .collect::<Vec<_>>();
-    Ok(PhysicalIntegrityAudit {
-        digest: canonical_physical_integrity_digest(&parts)?,
-        files,
-    })
 }
 
 /// Computes one physical generation's canonical integrity digest.

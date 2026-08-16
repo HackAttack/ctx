@@ -1,9 +1,9 @@
 pub use ctx_history_capture_model::{
-    OutputOutcome, ProviderSource, ProviderSourceFailureKind, ProviderSourceKind,
-    ProviderSourceStatus,
+    ProviderSource, ProviderSourceFailureKind, ProviderSourceKind, ProviderSourceStatus,
 };
 pub use ctx_history_provider_runtime::{
-    invalid_route_error, CaptureError, ProviderAdapterContext, ProviderJsonlInventoryLimit, Result,
+    invalid_route_error, CaptureError, ProviderAdapterContext, ProviderJsonlInventoryLimit,
+    ProviderRouteControlExpectation, ProviderRuntimeBinding, Result,
 };
 pub use ctx_history_source_io::{
     ProviderJsonlInventory, ProviderJsonlInventoryLimits, PROVIDER_JSONL_INVENTORY_MAX_DEPTH,

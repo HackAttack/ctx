@@ -6,7 +6,7 @@ use ctx_history_index_query::{
 use serde::Serialize;
 use serde_json::{json, Map, Value};
 
-use crate::json::{event_origin_json, insert_mcp_tool_call, timestamp_json};
+use crate::json::{event_copy_json, timestamp_json};
 
 pub const EVENT_QUERY_SCHEMA_VERSION: u8 = 1;
 pub const EVENT_QUERY_PAGE_ITEMS: usize = 100;
@@ -181,7 +181,6 @@ pub fn event_query_wire_request(
         ("workspace", selected.workspace.as_deref()),
         ("event_type", selected.event_type.as_deref()),
         ("role", selected.role.as_deref()),
-        ("agent_type", selected.agent_type.as_deref()),
         ("file", selected.file.as_deref()),
     ] {
         if let Some(value) = value {
@@ -352,8 +351,8 @@ pub fn render_event_read_model(
     let structured_content = (projection == EventContentProjection::Full)
         .then_some(content.structured_content.as_ref())
         .flatten();
-    let mcp_exchange = (projection == EventContentProjection::Full)
-        .then_some(content.mcp_exchange.as_ref())
+    let activity = (projection == EventContentProjection::Full)
+        .then_some(content.activity.as_ref())
         .flatten();
     let occurred_at = timestamp_json(event.occurred_at_unix_ms);
     let mut rendered = json!({
@@ -363,9 +362,9 @@ pub fn render_event_read_model(
         "ctx_source_id": event.source.identity().as_uuid(),
         "ctx_session_id": event.session_id.as_uuid(),
         "parent_ctx_session_id": event.parent_session_id.map(|id| id.as_uuid()),
-        "root_ctx_session_id": event.root_session_id.as_uuid(),
+        "root_ctx_session_id": event.root_session_id.map(|id| id.as_uuid()),
         "session_relationship": event.session_relationship,
-        "event_origin": event_origin_json(&event.event_origin),
+        "event_copy": event_copy_json(event.event_copy.as_ref()),
         "occurred_at": occurred_at,
         "occurred_at_ms": event.occurred_at_unix_ms,
         "sequence": event.event_sequence,
@@ -374,15 +373,9 @@ pub fn render_event_read_model(
         "source": event.source,
         "provider_session_id": event.provider_session_id,
         "native_event_id": event.native_event_id,
-        "branch": event.branch,
-        "agent_type": event.agent_type,
-        "agent_scope": if event.is_primary { "primary" } else { "subagent" },
-        "is_primary": event.is_primary,
+        "agent_scope": event.agent_scope,
         "event_type": event.event_type,
         "role": event.role,
-        "workspace": event.workspace,
-        "cwd": event.cwd,
-        "touched_files": event.touched_files,
         "parser_revision": record.parser_revision,
         "normalization_revision": record.normalization_revision,
         "text": text,
@@ -403,18 +396,10 @@ pub fn render_event_read_model(
             "session_id": event.provider_session_id,
             "event_seq": event.event_sequence,
         }],
-        "metadata": record.metadata,
-        "repository_candidate_evidence": record.repository_candidate_evidence,
-        "repository_bindings": record.repository_bindings,
-        "repository_abstentions": record.repository_abstentions,
-        "repository_file_invocation_evidence": record.repository_file_invocation_evidence,
-        "repository_file_observations": record.repository_file_observations,
-        "repository_vcs_observations": record.repository_vcs_observations,
         "content_projection": projection.as_str(),
     });
-    if let Some(mcp_exchange) = mcp_exchange {
-        rendered["mcp_exchange"] = serde_json::to_value(mcp_exchange)?;
+    if let Some(activity) = activity {
+        rendered["activity"] = serde_json::to_value(activity)?;
     }
-    insert_mcp_tool_call(&mut rendered, record);
     Ok(rendered)
 }

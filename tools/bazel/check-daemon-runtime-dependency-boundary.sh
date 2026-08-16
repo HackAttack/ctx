@@ -72,7 +72,6 @@ printf '%s\n' \
   '//crates/ctx-cli:ctx' \
   '//crates/ctx-cli:ctx_auto_upgrade_acceptance_fixture' \
   '//crates/ctx-cli:ctx_hosted_uninstall_test_host' \
-  '//crates/ctx-cli:ctx_pro_test_host' \
   '//crates/ctx-cli:ctx_upgrade_test_harness' \
   '//crates/ctx-daemon-application:lib' \
   '//crates/ctx-daemon-application:test_support_lib' \

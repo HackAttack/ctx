@@ -1,5 +1,5 @@
 use super::*;
-use ctx_history_core::SessionRelationshipKind;
+use ctx_history_core::ProviderNativeSessionRelationship;
 use ctx_history_source_io::SourceIoError;
 
 pub(super) fn trim_jsonl_terminator(mut record: &[u8]) -> &[u8] {
@@ -103,23 +103,25 @@ pub(super) fn validate_catalog_owner(
     mut scanned_owner: CodexSessionRow,
 ) -> Result<CodexSessionRow> {
     let catalog_owner = source.catalog_native_session_id.as_deref();
-    let root_native_session_id = match scanned_owner.session_relationship {
-        SessionRelationshipKind::Root if scanned_owner.parent_native_session_id.is_none() => {
+    let root_native_session_id = match (
+        scanned_owner.session_relationship,
+        scanned_owner.parent_native_session_id.as_ref(),
+    ) {
+        (Some(ProviderNativeSessionRelationship::Root), None) => {
             scanned_owner.native_session_id.clone()
         }
-        SessionRelationshipKind::RelatedUnknown | SessionRelationshipKind::Root => {
+        (Some(ProviderNativeSessionRelationship::Root), Some(_)) => {
             return Err(CaptureError::InvalidPayload(
                 "Codex normalized catalog owner changed before NativePath admission".to_owned(),
             ));
         }
-        _ => scanned_owner
-            .parent_native_session_id
-            .clone()
-            .ok_or_else(|| {
-                CaptureError::InvalidPayload(
-                    "Codex normalized catalog owner changed before NativePath admission".to_owned(),
-                )
-            })?,
+        (_, Some(parent)) => parent.clone(),
+        (None, None) => scanned_owner.native_session_id.clone(),
+        (Some(_), None) => {
+            return Err(CaptureError::InvalidPayload(
+                "Codex normalized catalog owner changed before NativePath admission".to_owned(),
+            ));
+        }
     };
     if catalog_owner != Some(scanned_owner.native_session_id.as_str()) {
         return Err(CaptureError::InvalidPayload(

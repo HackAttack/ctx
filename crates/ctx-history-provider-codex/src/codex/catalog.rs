@@ -4,7 +4,7 @@ use std::{
     time::SystemTime,
 };
 
-use ctx_history_core::{AgentType, CaptureProvider, SessionRelationshipKind};
+use ctx_history_core::{AgentScope, CaptureProvider, ProviderNativeSessionRelationship};
 use serde_json::{json, Value};
 
 use crate::common::io::{
@@ -25,7 +25,7 @@ pub(crate) struct CatalogSession {
     pub(crate) source_root: String,
     pub(crate) source_path: String,
     pub(crate) external_session_id: Option<String>,
-    pub(crate) agent_type: AgentType,
+    pub(crate) agent_type: AgentScope,
     pub(crate) role_hint: Option<String>,
     pub(crate) external_agent_id: Option<String>,
     pub(crate) cwd: Option<String>,
@@ -93,12 +93,6 @@ fn catalog_codex_session_opened(
     let history_base_thread_id = payload
         .and_then(|payload| payload.pointer("/history_base/thread_id"))
         .and_then(Value::as_str);
-    let (_, session_relationship) = codex_session_relationship(
-        &source,
-        parent_thread_id,
-        forked_from_id,
-        history_base_thread_id,
-    );
     let external_session_id = payload
         .and_then(|payload| payload.get("id"))
         .and_then(Value::as_str)
@@ -116,10 +110,13 @@ fn catalog_codex_session_opened(
         })
         .and_then(parse_rfc3339_utc)
         .map(|timestamp| timestamp.timestamp_millis());
-    let agent_type = if session_relationship.is_primary() {
-        AgentType::Primary
+    let agent_type = if parent_thread_id.is_none()
+        && forked_from_id.is_none()
+        && history_base_thread_id.is_none()
+    {
+        AgentScope::Primary
     } else {
-        AgentType::Subagent
+        AgentScope::Subagent
     };
     let role_hint = payload
         .and_then(|payload| payload.get("agent_role"))
@@ -237,7 +234,7 @@ pub(crate) fn codex_session_relationship(
     parent_thread_id: Option<&str>,
     forked_from_id: Option<&str>,
     history_base_thread_id: Option<&str>,
-) -> (Option<String>, SessionRelationshipKind) {
+) -> (Option<String>, Option<ProviderNativeSessionRelationship>) {
     let source_parent = codex_parent_session_id(source);
     let direct_parent = parent_thread_id
         .filter(|id| !id.trim().is_empty())
@@ -250,7 +247,7 @@ pub(crate) fn codex_session_relationship(
         .map(str::to_owned);
     let delegated_parent = match (source_parent, direct_parent) {
         (Some(source_parent), Some(direct_parent)) if source_parent != direct_parent => {
-            return (Some(source_parent), SessionRelationshipKind::RelatedUnknown);
+            return (Some(source_parent), None);
         }
         (Some(source_parent), _) => Some(source_parent),
         (None, direct_parent) => direct_parent,
@@ -261,26 +258,32 @@ pub(crate) fn codex_session_relationship(
             .chain(history_parent.iter())
             .any(|metadata_parent| metadata_parent != &parent)
         {
-            return (Some(parent), SessionRelationshipKind::RelatedUnknown);
+            return (Some(parent), None);
         }
-        return (Some(parent), SessionRelationshipKind::Delegated);
+        return (
+            Some(parent),
+            Some(ProviderNativeSessionRelationship::Delegated),
+        );
     }
 
     if let (Some(forked_parent), Some(history_parent)) = (&forked_parent, &history_parent) {
         if forked_parent != history_parent {
-            return (
-                Some(forked_parent.clone()),
-                SessionRelationshipKind::RelatedUnknown,
-            );
+            return (Some(forked_parent.clone()), None);
         }
     }
     if let Some(parent) = forked_parent {
-        return (Some(parent), SessionRelationshipKind::Forked);
+        return (
+            Some(parent),
+            Some(ProviderNativeSessionRelationship::Forked),
+        );
     }
     if let Some(parent) = history_parent {
-        return (Some(parent), SessionRelationshipKind::ResumedFrom);
+        return (
+            Some(parent),
+            Some(ProviderNativeSessionRelationship::ResumedFrom),
+        );
     }
-    (None, SessionRelationshipKind::Root)
+    (None, Some(ProviderNativeSessionRelationship::Root))
 }
 pub(crate) fn codex_source_kind(source: &Value) -> Option<String> {
     if let Some(value) = source.as_str().filter(|value| !value.trim().is_empty()) {

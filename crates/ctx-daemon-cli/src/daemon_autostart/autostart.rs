@@ -97,23 +97,6 @@ pub fn autostart_daemon_for_setup_and_wait(
     })
 }
 
-pub fn observe_daemon_for_setup_and_wait(
-    data_root: &Path,
-    config: &AppConfig<'_>,
-) -> Result<DaemonSetupHandoff> {
-    super::super::daemon_supervisor::with_daemon_application(|application| {
-        let handoff = application
-            .observe_daemon_and_wait(data_root, &application_config(config))
-            .context("observe ready ctx daemon at setup output boundary")?;
-        Ok(DaemonSetupHandoff {
-            handoff: DaemonHandoff {
-                pid: handoff.pid,
-                heartbeat_at_ms: handoff.heartbeat_at_ms,
-            },
-        })
-    })
-}
-
 #[cfg(test)]
 pub(super) fn handoff_mismatched_daemon_owner(data_root: &Path, executable: &Path) -> Result<()> {
     super::super::daemon_supervisor::with_daemon_application(|application| {

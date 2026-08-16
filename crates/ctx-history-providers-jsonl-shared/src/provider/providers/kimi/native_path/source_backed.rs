@@ -15,17 +15,15 @@ use std::{
 
 use crate::{provider::source_backed::IndexBaseEventLookup, JsonlProviderRuntime};
 use chrono::{DateTime, Utc};
-use ctx_history_capture_model::{
-    file_touches::{
-        event_type_supports_structured_file_touches, visit_provider_file_touch_drafts_with_limit,
-        MAX_PROVIDER_FILE_TOUCHES_PER_EVENT,
-    },
-    tool_input,
+use ctx_history_capture_model::file_references::{
+    visit_provider_file_reference_drafts_with_limit, MAX_PROVIDER_FILE_REFERENCES_PER_EVENT,
 };
 use ctx_history_core::{
-    derive_event_id, derive_native_session_id, AgentType, CaptureProvider, CoreRecord,
-    CoreRecordError, EventIdentityInput, EventType, ProjectionContractError, SourceKey,
-    StableEntityId, TypedKey,
+    derive_event_id, derive_native_session_id, ActivityInvocation, ActivityJsonCapture,
+    ActivityResult, ActivityTextCapture, CaptureProvider, CoreActivity, CoreRecord,
+    CoreRecordError, EventIdentityInput, EventType, LiteralFactKind, ProjectionContractError,
+    ProviderDeclaredFact, ProviderNativeSessionRelationship, SourceKey, StableEntityId, TypedKey,
+    CORE_ACTIVITY_REVISION, MAX_CORE_CONTENT_BYTES,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -42,7 +40,7 @@ use crate::{
         },
         FallbackEventIdentityState,
     },
-    CaptureError, OutputObservationKind, KIMI_CODE_CLI_SOURCE_FORMAT,
+    CaptureError, KIMI_CODE_CLI_SOURCE_FORMAT,
 };
 
 use super::super::{
@@ -63,7 +61,7 @@ const KIMI_NATIVE_SESSION_NAMESPACE: &str = "kimi-code-cli-session-v1";
 const KIMI_LOGICAL_SESSION_KIND: &str = "agent-session";
 const KIMI_LOGICAL_EVENT_KIND: &str = "wire-event";
 // v3 reclassifies content parts and normalizes toolCallId; the bump re-projects v2.
-const KIMI_SOURCE_PARSER_REVISION: &str = "kimi-code-cli-source-backed-v3";
+const KIMI_SOURCE_PARSER_REVISION: &str = "kimi-code-cli-source-backed-v4-core-activity";
 const KIMI_EVENT_IDENTITY_REVISION: &str = "kimi-code-cli-content-occurrence-v1";
 const KIMI_FALLBACK_FINGERPRINT_DOMAIN: &[u8] =
     b"ctx.kimi-code-cli.fallback-event-fingerprint.v1\0";

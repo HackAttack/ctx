@@ -24,7 +24,6 @@ pub(super) struct ZedDecodedCoreEvent {
     pub(super) call_ids: Vec<String>,
     pub(super) native_content: Value,
     pub(super) body: String,
-    pub(super) safe_file_touches: Vec<String>,
 }
 
 impl ZedNativeEvent {
@@ -55,7 +54,6 @@ impl ZedNativeEvent {
             call_ids: draft.call_ids,
             native_content: draft.native_content,
             normalized_body: draft.body,
-            safe_file_touches: draft.safe_file_touches,
         })
     }
 
@@ -87,8 +85,7 @@ impl<'a> ZedNativePageBuilder<'a> {
     }
 
     pub(super) fn push_event(&mut self, event: ZedNativeEvent) -> ZedNativeResult<()> {
-        let units = 1_usize.saturating_add(event.safe_file_touches.len());
-        let bytes = self.reserve(units, event.estimated_bytes())?;
+        let bytes = self.reserve(1, event.estimated_bytes())?;
         self.page.estimated_bytes = self.page.estimated_bytes.saturating_add(bytes);
         self.page.events.push(event);
         Ok(())

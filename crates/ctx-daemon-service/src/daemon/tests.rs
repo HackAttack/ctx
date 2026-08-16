@@ -279,12 +279,9 @@ fn observation_fixture_record(source: &SourceKey, body: String) -> CoreRecord {
     let mut record = CoreRecord::new_selected(
         event_id,
         session_id,
-        session_id,
         source.clone(),
         0,
         "message",
-        "primary",
-        true,
         "durable-frontier-test-v1",
         body,
     )
@@ -828,73 +825,6 @@ fn only_enabled_long_lived_daemon_uses_upgrade_scheduler() {
 }
 
 #[test]
-fn due_consumer_retry_wait_loop_blocks_and_wakes_when_query_becomes_idle() -> Result<()> {
-    let temp = tempfile::tempdir()?;
-    let generation =
-        crate::source_backed_refresh_coordinator::publish_authoritative_empty_generation_for_test(
-            &super::super::source_backed_refresh_coordinator::source_backed_index_root(temp.path()),
-            "daemon-consumer-retry-idle-fixture",
-            ctx_history_refresh::RefreshOperation::Refresh,
-            ctx_history_capture::SourceBackedRefreshScope::All,
-            None,
-        )?
-        .generation_id;
-    let wakeup = Arc::new(super::super::daemon_wakeup::DaemonWakeup::default());
-    let activity = Arc::new(
-        super::super::query_service::DaemonQueryActivity::with_idle_wakeup(Arc::clone(&wakeup)),
-    );
-    let request = activity.begin_request().expect("foreground query");
-    let mut runtime = DaemonRuntime::default();
-    runtime.pro_retry.consecutive_failures = 1;
-    runtime.pro_retry.retry_not_before = Some(Instant::now() - StdDuration::from_secs(1));
-    runtime.pro_retry.retry_not_before_at_ms = Some(utc_now().timestamp_millis() - 1);
-    runtime.history_retry.consecutive_failures = 1;
-    runtime.history_retry.retry_not_before = Some(Instant::now() - StdDuration::from_secs(1));
-    runtime.history_retry.retry_not_before_at_ms = Some(utc_now().timestamp_millis() - 1);
-
-    let deferred = run_daemon_scheduler_cycle_with_activity(
-        &test_daemon_run_args(),
-        temp.path(),
-        &mut runtime,
-        None,
-        false,
-        Some(activity.as_ref()),
-        None,
-    )?;
-    assert!(!deferred.did_work);
-    assert_eq!(runtime.pro_retry.retry_after_ms(), Some(0));
-
-    let now = Instant::now();
-    let wait_for = daemon_wait_duration(&runtime, None, now + StdDuration::from_secs(30), now);
-    assert!(wait_for > StdDuration::ZERO);
-    assert!(wait_for <= super::super::daemon_scheduler::DAEMON_CONSUMER_RETRY_QUERY_GRACE);
-
-    drop(request);
-    let wake = wakeup.wait(wait_for);
-    assert!(
-        !wake.timed_out,
-        "query-idle transition must wake the daemon"
-    );
-
-    let retried = run_daemon_scheduler_cycle_with_activity(
-        &test_daemon_run_args(),
-        temp.path(),
-        &mut runtime,
-        None,
-        false,
-        Some(activity.as_ref()),
-        None,
-    )?;
-    assert!(!retried.failed);
-    assert!(runtime.consumer_retry_deferral.retry_at.is_none());
-    let status = super::super::source_backed_pro_catch_up::read_status_json(temp.path())
-        .expect("Pro retry attempt");
-    assert_eq!(status["core_generation_id"], generation);
-    assert_eq!(status["attempts"], 1);
-    Ok(())
-}
-
-#[test]
 fn due_dirty_route_wakes_the_scheduler_immediately() {
     let coordinator =
         CoreRefreshEngine::with_executor(Arc::new(|_: SourceBackedRefreshExecution<'_>| {
@@ -932,11 +862,8 @@ fn pending_source_refresh_wait_ignores_unreachable_work_until_retry() {
     runtime.history_retry.consecutive_failures = 1;
     runtime.history_retry.retry_not_before = Some(now + StdDuration::from_secs(5));
     runtime.history_retry.retry_not_before_at_ms = Some(utc_now().timestamp_millis() + 5_000);
-    runtime.browser_handoff_next_due = Some(now);
     runtime.semantic_retry.consecutive_failures = 1;
     runtime.semantic_retry.retry_not_before = Some(now);
-    runtime.pro_retry.consecutive_failures = 1;
-    runtime.pro_retry.retry_not_before = Some(now);
     runtime.consumer_retry_deferral.retry_at = Some(now + StdDuration::from_millis(1));
 
     let wait_for = daemon_wait_duration(
@@ -949,90 +876,6 @@ fn pending_source_refresh_wait_ignores_unreachable_work_until_retry() {
     assert!(wait_for > StdDuration::from_secs(4));
     assert!(wait_for <= StdDuration::from_secs(5));
     assert!(daemon_scheduled_refresh_due(Some(&coordinator), 1_000));
-}
-
-#[test]
-fn browser_handoff_deadline_shortens_wait_without_a_periodic_vault_tick() {
-    let now = Instant::now();
-    let safety = now + StdDuration::from_secs(30);
-    let runtime = DaemonRuntime::default();
-    assert_eq!(
-        daemon_wait_duration(&runtime, None, safety, now),
-        StdDuration::from_secs(30),
-        "no handoff must not manufacture a short periodic wake"
-    );
-
-    let runtime = DaemonRuntime {
-        browser_handoff_next_due: Some(now + StdDuration::from_secs(2)),
-        ..DaemonRuntime::default()
-    };
-    assert_eq!(
-        daemon_wait_duration(&runtime, None, safety, now),
-        StdDuration::from_secs(2)
-    );
-}
-
-#[test]
-fn continuous_query_wait_loop_reaches_consumer_retry_fairness_deadline() -> Result<()> {
-    let temp = tempfile::tempdir()?;
-    let generation =
-        crate::source_backed_refresh_coordinator::publish_authoritative_empty_generation_for_test(
-            &super::super::source_backed_refresh_coordinator::source_backed_index_root(temp.path()),
-            "daemon-consumer-retry-fairness-fixture",
-            ctx_history_refresh::RefreshOperation::Refresh,
-            ctx_history_capture::SourceBackedRefreshScope::All,
-            None,
-        )?
-        .generation_id;
-    let wakeup = Arc::new(super::super::daemon_wakeup::DaemonWakeup::default());
-    let activity = Arc::new(
-        super::super::query_service::DaemonQueryActivity::with_idle_wakeup(Arc::clone(&wakeup)),
-    );
-    let _request = activity.begin_request().expect("continuous query");
-    let mut runtime = DaemonRuntime::default();
-    runtime.pro_retry.consecutive_failures = 1;
-    runtime.pro_retry.retry_not_before = Some(Instant::now() - StdDuration::from_secs(1));
-    runtime.pro_retry.retry_not_before_at_ms = Some(utc_now().timestamp_millis() - 1);
-
-    let deferred = run_daemon_scheduler_cycle_with_activity(
-        &test_daemon_run_args(),
-        temp.path(),
-        &mut runtime,
-        None,
-        false,
-        Some(activity.as_ref()),
-        None,
-    )?;
-    assert!(!deferred.did_work);
-    assert!(runtime.consumer_retry_deferral.retry_at.is_some());
-
-    let deadline = Instant::now();
-    runtime.consumer_retry_deferral.retry_at = Some(deadline);
-    let wait_for = daemon_wait_duration(
-        &runtime,
-        None,
-        deadline + StdDuration::from_secs(30),
-        deadline,
-    );
-    assert_eq!(wait_for, StdDuration::ZERO);
-    assert!(wakeup.wait(wait_for).timed_out);
-
-    let fair = run_daemon_scheduler_cycle_with_activity(
-        &test_daemon_run_args(),
-        temp.path(),
-        &mut runtime,
-        None,
-        false,
-        Some(activity.as_ref()),
-        None,
-    )?;
-    assert!(!fair.failed);
-    assert!(runtime.consumer_retry_deferral.retry_at.is_none());
-    let status = super::super::source_backed_pro_catch_up::read_status_json(temp.path())
-        .expect("fair Pro retry attempt");
-    assert_eq!(status["core_generation_id"], generation);
-    assert_eq!(status["attempts"], 1);
-    Ok(())
 }
 
 fn test_daemon_run_args() -> DaemonRunArgs {
@@ -1067,7 +910,7 @@ fn run_daemon_scheduler_cycle_with_activity(
             source_refresh,
         },
         super::super::daemon_scheduler::DaemonSchedulerPorts {
-            pro: &crate::test_support::PRO,
+            generation_published: &crate::test_support::GENERATION_PUBLISHED,
             semantic: super::super::daemon_scheduler::DaemonSemanticJobPorts {
                 artifact_fetcher: &crate::test_support::ARTIFACT,
                 config: &crate::test_support::CONFIG,
@@ -1352,7 +1195,6 @@ fn one_scheduler_cycle_publishes_core_before_consumer_jobs() -> Result<()> {
     assert!(job["receipt"]
         .get("published_explicit_source_catalog")
         .is_none());
-    assert!(job.get("pro_projection").is_none());
     assert!(job.get("semantic_projection").is_none());
     assert!(!super::super::paths_status::daemon_semantic_job_path(temp.path()).exists());
     let published_generation = job["published_generation"]

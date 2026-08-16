@@ -1,8 +1,7 @@
 use chrono::{DateTime, Utc};
 use ctx_history_core::{
-    derive_event_id, derive_session_id, AgentType, CoreRecord, EventIdentityInput, EventRole,
-    EventType, NativeItemKey, NativeSessionKey, SessionIdentityInput, SourceKey, StableEntityId,
-    TypedKey, MAX_CORE_CONTENT_BYTES,
+    derive_event_id, derive_session_id, CoreRecord, EventIdentityInput, EventRole, EventType,
+    NativeItemKey, NativeSessionKey, SessionIdentityInput, SourceKey, StableEntityId, TypedKey,
 };
 use serde_json::Value;
 use sha2::{Digest, Sha256};
@@ -120,12 +119,9 @@ pub(super) fn conversation_document(
     let mut record = CoreRecord::new_selected(
         event_id,
         session_id,
-        session_id,
         source.source_key.clone(),
         event.source_record_ordinal,
         event.event_type.as_str(),
-        AgentType::Primary.as_str(),
-        true,
         PARSER_REVISION,
         complete_text,
     )?;
@@ -133,8 +129,10 @@ pub(super) fn conversation_document(
     record.native_event_id = Some(native_event_id);
     record.occurred_at_unix_ms = Some(event.occurred_at.timestamp_millis());
     record.role = event.role.map(|role| role.as_str().to_owned());
-    record.content.structured_content =
-        item.and_then(|value| structured_content(complete_text, value));
+    record.content.structured_content = item.cloned();
+    record
+        .content
+        .omit_structured_content_if_aggregate_exceeds_limit()?;
     record.validate_contract()?;
     Ok(record)
 }
@@ -162,12 +160,9 @@ pub(super) fn platform_document(
     let mut record = CoreRecord::new_selected(
         event_id,
         session_id,
-        session_id,
         source.source_key.clone(),
         event.source_record_ordinal,
         event.event_type.as_str(),
-        AgentType::Primary.as_str(),
-        true,
         PARSER_REVISION,
         complete_text,
     )?;
@@ -175,20 +170,12 @@ pub(super) fn platform_document(
     record.native_event_id = Some(native_event_id);
     record.occurred_at_unix_ms = Some(event.occurred_at.timestamp_millis());
     record.role = event.role.map(|role| role.as_str().to_owned());
-    record.content.structured_content = structured_content(complete_text, provider_content);
+    record.content.structured_content = Some(provider_content.clone());
+    record
+        .content
+        .omit_structured_content_if_aggregate_exceeds_limit()?;
     record.validate_contract()?;
     Ok(record)
-}
-
-fn structured_content(body: &str, value: &Value) -> Option<Value> {
-    if !matches!(value, Value::Array(_) | Value::Object(_)) {
-        return None;
-    }
-    let encoded = serde_json::to_vec(value).ok()?;
-    body.len()
-        .checked_add(encoded.len())
-        .filter(|bytes| *bytes <= MAX_CORE_CONTENT_BYTES)
-        .map(|_| value.clone())
 }
 
 pub(super) fn stable_session_id(

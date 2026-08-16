@@ -1,35 +1,26 @@
-use std::{
-    fs::{self, OpenOptions},
-    io::Write,
-    path::Path,
-};
+use std::{fs, path::Path};
 
 use ctx_history_core::{
-    CaptureProvider, CoreRecord, EventCopyProofKind, EventOrigin, SessionRelationshipKind, TypedKey,
+    ActivityInvocation, ActivityJsonCapture, AgentScope, CaptureProvider, CoreActivity, CoreRecord,
+    LiteralFactKind, ProviderDeclaredFact, ProviderNativeCopyProof,
+    ProviderNativeSessionRelationship, TypedKey, CORE_ACTIVITY_REVISION, MAX_CORE_CONTENT_BYTES,
+    MAX_PROVIDER_DECLARED_FACTS,
 };
 use serde_json::{json, Value};
 
 use super::source_backed::*;
-use crate::{
-    test_support_paths::tempdir, CaptureError, ProviderSourceFailureKind,
-    MAX_PROVIDER_JSONL_LINE_BYTES,
-};
+use crate::{test_support_paths::tempdir, CaptureError, ProviderSourceFailureKind};
 
-fn manifest() -> Value {
-    json!({
+fn manifest(lineage: bool) -> Value {
+    let mut record = json!({
         "record_type": "manifest",
-        "schema_version": "ctx-history-jsonl-v1",
-        "producer": "source-backed-test",
-    })
-}
-
-fn lineage_manifest() -> Value {
-    json!({
-        "record_type": "manifest",
-        "schema_version": "ctx-history-jsonl-v1",
-        "lineage_contract": "provider_native_v1",
-        "producer": "source-backed-test",
-    })
+        "schema_version": "ctx-history-jsonl-v2",
+        "producer": "source-backed-v2-test",
+    });
+    if lineage {
+        record["lineage_contract"] = json!("provider_native_v1");
+    }
+    record
 }
 
 fn source() -> Value {
@@ -38,24 +29,31 @@ fn source() -> Value {
         "source_id": "source-a",
         "provider_key": "demo-agent",
         "source_format": "demo-jsonl",
-        "raw_source_path": "/provider/demo/session.jsonl",
     })
 }
 
-fn session(id: &str, parent: Option<&str>, is_primary: bool) -> Value {
+fn session(
+    id: &str,
+    native_id: &str,
+    parent: Option<&str>,
+    relationship: ProviderNativeSessionRelationship,
+    scope: AgentScope,
+) -> Value {
     json!({
         "record_type": "session",
         "source_id": "source-a",
         "session_id": id,
+        "native_session_id": native_id,
         "parent_session_id": parent,
-        "agent_type": if is_primary { "primary" } else { "subagent" },
-        "is_primary": is_primary,
+        "root_session_id": if parent.is_some() { "root" } else { id },
+        "session_relationship": relationship,
+        "agent_scope": scope,
         "started_at": "2026-07-28T12:00:00Z",
-        "cwd": "/work/custom-history",
+        "cwd": "/work/./literal",
     })
 }
 
-fn event(index: u64, id: &str, session_id: &str, text: &str) -> Value {
+fn event(index: u64, id: &str, session_id: &str, payload: Value) -> Value {
     json!({
         "record_type": "event",
         "source_id": "source-a",
@@ -63,975 +61,389 @@ fn event(index: u64, id: &str, session_id: &str, text: &str) -> Value {
         "event_index": index,
         "event_id": id,
         "event_type": "message",
-        "role": if index.is_multiple_of(2) { "user" } else { "assistant" },
-        "occurred_at": format!("2026-07-28T12:00:{:02}Z", index.min(59)),
-        "payload": {"text": text},
+        "role": "assistant",
+        "occurred_at": "2026-07-28T12:00:01Z",
+        "payload": payload,
     })
 }
 
-fn touch(index: u64, event_index: u64, path: &str) -> Value {
+fn file_reference(index: u64, event_index: u64, value: &str) -> Value {
     json!({
-        "record_type": "file_touch",
+        "record_type": "file_reference",
         "source_id": "source-a",
         "session_id": "child",
-        "touch_index": index,
+        "reference_index": index,
         "event_index": event_index,
-        "path": path,
-        "occurred_at": "2026-07-28T12:01:00Z",
+        "value": value,
+        "occurred_at": "2026-07-28T12:00:02Z",
     })
 }
 
-fn edge(edge_id: &str) -> Value {
-    json!({
-        "record_type": "edge",
-        "source_id": "source-a",
-        "from_session_id": "root",
-        "to_session_id": "child",
-        "edge_id": edge_id,
-        "edge_type": "parent_child",
-    })
-}
-
-fn write_records(path: &Path, records: &[Value]) -> Vec<Vec<u8>> {
-    let lines = records
-        .iter()
-        .map(|record| {
-            let mut line = serde_json::to_vec(record).unwrap();
-            line.push(b'\n');
-            line
-        })
-        .collect::<Vec<_>>();
-    let bytes = lines.iter().flatten().copied().collect::<Vec<_>>();
+fn write_records(path: &Path, records: &[Value]) {
+    let mut bytes = Vec::new();
+    for record in records {
+        serde_json::to_writer(&mut bytes, record).unwrap();
+        bytes.push(b'\n');
+    }
     fs::write(path, bytes).unwrap();
-    lines
 }
 
-fn append_record(path: &Path, record: &Value) -> Vec<u8> {
-    let mut line = serde_json::to_vec(record).unwrap();
-    line.push(b'\n');
-    let mut file = OpenOptions::new().append(true).open(path).unwrap();
-    file.write_all(&line).unwrap();
-    file.sync_all().unwrap();
-    line
-}
-
-fn collect(
-    input: &CustomHistorySourceBackedInput,
-    prior: Option<&ctx_history_core::CertifiedSource>,
-) -> (
-    CustomHistorySourceBackedOutcome,
-    Vec<CoreRecord>,
-    Vec<usize>,
-) {
-    let mut documents = Vec::new();
-    let mut page_bounds = Vec::new();
-    let outcome = scan_custom_history_source_backed_explicit(input, prior, |_, page| {
-        page_bounds.push(page.records.len());
-        documents.extend(page.records);
+fn collect(input: &CustomHistorySourceBackedInput) -> Vec<CoreRecord> {
+    let mut records = Vec::new();
+    let outcome = scan_custom_history_source_backed_explicit(input, None, |_, page| {
+        records.extend(page.records);
         Ok(())
     })
     .unwrap();
-    (outcome, documents, page_bounds)
+    assert!(matches!(
+        outcome,
+        CustomHistorySourceBackedOutcome::Present(_)
+    ));
+    records
 }
 
-fn body(record: &CoreRecord) -> &str {
-    record.content.normalized_body.as_deref().unwrap()
+fn collect_with_certificate(
+    input: &CustomHistorySourceBackedInput,
+) -> (Vec<CoreRecord>, ctx_history_core::CertifiedSource) {
+    let mut records = Vec::new();
+    let outcome = scan_custom_history_source_backed_explicit(input, None, |_, page| {
+        records.extend(page.records);
+        Ok(())
+    })
+    .unwrap();
+    let CustomHistorySourceBackedOutcome::Present(receipt) = outcome else {
+        panic!("expected present custom history source");
+    };
+    (records, receipt.certificate)
 }
 
-fn present(outcome: CustomHistorySourceBackedOutcome) -> CustomHistorySourceBackedReceipt {
-    match outcome {
-        CustomHistorySourceBackedOutcome::Present(receipt) => *receipt,
-        CustomHistorySourceBackedOutcome::Missing { .. } => panic!("expected present source"),
-    }
-}
-
-fn structural_manifest_failure(
-    path: &Path,
-    lineage: [u8; 32],
-) -> (ProviderSourceFailureKind, String) {
-    let input = CustomHistorySourceBackedInput::explicit(path, lineage);
-    let error = scan_custom_history_source_backed_explicit(&input, None, |_, _| Ok(()))
-        .expect_err("structurally invalid manifest must fail its source");
-    match error {
-        CustomHistorySourceBackedError::Capture(CaptureError::ProviderSource {
-            provider,
-            path: failed_path,
-            kind,
-            detail,
-        }) => {
-            assert_eq!(provider, CaptureProvider::Custom.as_str());
-            assert_eq!(failed_path, path);
-            (kind, detail)
-        }
-        error => panic!("expected a typed provider source failure, got {error:?}"),
-    }
-}
-
-#[test]
-fn missing_manifest_is_a_malformed_source_failure() {
-    let temp = tempdir().unwrap();
-    let path = temp.path().join("missing-manifest.jsonl");
-    fs::write(&path, []).unwrap();
-
-    let (kind, detail) = structural_manifest_failure(&path, [20; 32]);
-    assert_eq!(kind, ProviderSourceFailureKind::InvalidSource);
-    assert!(detail.contains("missing manifest record"), "{detail}");
+fn assert_single_event_line_rejected(
+    records: &[CoreRecord],
+    certificate: &ctx_history_core::CertifiedSource,
+) {
+    assert!(records.is_empty());
+    assert_eq!(certificate.counts().complete_records, 4);
+    assert_eq!(certificate.counts().retained_records, 0);
+    assert_eq!(certificate.counts().rejected_records, 1);
+    assert_eq!(certificate.counts().ignored_records, 3);
+    assert_eq!(certificate.counts().indexed_documents, 0);
 }
 
 #[test]
-fn unsupported_manifest_is_an_unsupported_schema_failure() {
+fn v2_projects_exact_activity_payload_and_ordered_duplicate_facts() {
     let temp = tempdir().unwrap();
-    let path = temp.path().join("unsupported-manifest.jsonl");
+    let path = temp.path().join("neutral.jsonl");
+    let native_activity = CoreActivity {
+        revision: CORE_ACTIVITY_REVISION,
+        provider_call_id: Some(TypedKey::Utf8("call/01".to_owned())),
+        invocation: Some(ActivityInvocation {
+            protocol: Some("native/protocol".to_owned()),
+            server: None,
+            tool: "Read File".to_owned(),
+            arguments: ActivityJsonCapture::Present {
+                value: json!({"path": "./src/../src/lib.rs"}),
+            },
+            started_at_unix_ms: None,
+        }),
+        result: None,
+        facts: vec![ProviderDeclaredFact {
+            kind: LiteralFactKind::Command,
+            value: "cat  ./src/lib.rs".to_owned(),
+        }],
+    };
+    let payload = json!({
+        "text": "literal body",
+        "activity": serde_json::to_value(&native_activity).unwrap(),
+        "provider_extra": {"preserve": [2, 1, 2]},
+    });
+    write_records(
+        &path,
+        &[
+            manifest(false),
+            source(),
+            session(
+                "child",
+                "native-child",
+                None,
+                ProviderNativeSessionRelationship::Root,
+                AgentScope::Subagent,
+            ),
+            event(0, "event-0", "child", payload.clone()),
+            file_reference(0, 0, "./src/../src/lib.rs"),
+            file_reference(1, 0, "./src/../src/lib.rs"),
+        ],
+    );
+
+    let records = collect(&CustomHistorySourceBackedInput::explicit(&path, [7; 32]));
+    assert_eq!(records.len(), 1);
+    let record = &records[0];
+    assert_eq!(
+        record.content.normalized_body.as_deref(),
+        Some("literal body")
+    );
+    assert_eq!(record.content.structured_content.as_ref(), Some(&payload));
+    assert_eq!(record.agent_scope, Some(AgentScope::Subagent));
+    assert_eq!(record.session_relationship, None);
+    let activity = record.content.activity.as_ref().unwrap();
+    assert_eq!(activity.provider_call_id, native_activity.provider_call_id);
+    assert_eq!(activity.invocation, native_activity.invocation);
+    assert_eq!(
+        activity.facts,
+        vec![
+            ProviderDeclaredFact {
+                kind: LiteralFactKind::SessionCwd,
+                value: "/work/./literal".to_owned(),
+            },
+            ProviderDeclaredFact {
+                kind: LiteralFactKind::Command,
+                value: "cat  ./src/lib.rs".to_owned(),
+            },
+            ProviderDeclaredFact {
+                kind: LiteralFactKind::File,
+                value: "./src/../src/lib.rs".to_owned(),
+            },
+            ProviderDeclaredFact {
+                kind: LiteralFactKind::File,
+                value: "./src/../src/lib.rs".to_owned(),
+            },
+        ]
+    );
+}
+
+#[test]
+fn v2_rejects_wrong_activity_revision_at_the_event_line() {
+    let temp = tempdir().unwrap();
+    let path = temp.path().join("wrong-activity-revision.jsonl");
+    write_records(
+        &path,
+        &[
+            manifest(false),
+            source(),
+            session(
+                "child",
+                "native-child",
+                None,
+                ProviderNativeSessionRelationship::Root,
+                AgentScope::Primary,
+            ),
+            event(
+                0,
+                "event-0",
+                "child",
+                json!({
+                    "text": "literal body",
+                    "activity": {
+                        "revision": CORE_ACTIVITY_REVISION + 1,
+                        "facts": [{"kind": "command", "value": "literal"}],
+                    },
+                }),
+            ),
+        ],
+    );
+
+    let (records, certificate) =
+        collect_with_certificate(&CustomHistorySourceBackedInput::explicit(&path, [11; 32]));
+    assert_single_event_line_rejected(&records, &certificate);
+}
+
+#[test]
+fn v2_rejects_complete_merged_activity_fact_overflow_at_the_event_line() {
+    let temp = tempdir().unwrap();
+    let path = temp.path().join("merged-activity-overflow.jsonl");
+    let facts = vec![
+        ProviderDeclaredFact {
+            kind: LiteralFactKind::Command,
+            value: "literal".to_owned(),
+        };
+        MAX_PROVIDER_DECLARED_FACTS
+    ];
+    write_records(
+        &path,
+        &[
+            manifest(false),
+            source(),
+            session(
+                "child",
+                "native-child",
+                None,
+                ProviderNativeSessionRelationship::Root,
+                AgentScope::Primary,
+            ),
+            event(
+                0,
+                "event-0",
+                "child",
+                json!({
+                    "text": "literal body",
+                    "activity": CoreActivity {
+                        revision: CORE_ACTIVITY_REVISION,
+                        provider_call_id: None,
+                        invocation: None,
+                        result: None,
+                        facts,
+                    },
+                }),
+            ),
+        ],
+    );
+
+    let (records, certificate) =
+        collect_with_certificate(&CustomHistorySourceBackedInput::explicit(&path, [12; 32]));
+    assert_single_event_line_rejected(&records, &certificate);
+}
+
+#[test]
+fn v2_rejects_an_oversized_activity_fact_as_one_bounded_line() {
+    let temp = tempdir().unwrap();
+    let path = temp.path().join("oversized-activity-fact.jsonl");
+    write_records(
+        &path,
+        &[
+            manifest(false),
+            source(),
+            session(
+                "child",
+                "native-child",
+                None,
+                ProviderNativeSessionRelationship::Root,
+                AgentScope::Primary,
+            ),
+            event(
+                0,
+                "event-0",
+                "child",
+                json!({
+                    "text": "literal body",
+                    "activity": {
+                        "revision": CORE_ACTIVITY_REVISION,
+                        "facts": [{
+                            "kind": "command",
+                            "value": "x".repeat(MAX_CORE_CONTENT_BYTES + 1),
+                        }],
+                    },
+                }),
+            ),
+        ],
+    );
+
+    let (records, certificate) =
+        collect_with_certificate(&CustomHistorySourceBackedInput::explicit(&path, [13; 32]));
+    assert_single_event_line_rejected(&records, &certificate);
+}
+
+#[test]
+fn v2_retains_only_explicit_provider_native_lineage_and_copy_claims() {
+    let temp = tempdir().unwrap();
+    let path = temp.path().join("lineage.jsonl");
+    let mut copied = event(1, "child-event", "child", json!({"text": "copied"}));
+    copied["copied_from"] = json!({
+        "ancestor_native_session_id": "native-root",
+        "ancestor_event_id": "root-event",
+        "proof": "native_copied_from_field",
+    });
+    write_records(
+        &path,
+        &[
+            manifest(true),
+            source(),
+            session(
+                "root",
+                "native-root",
+                None,
+                ProviderNativeSessionRelationship::Root,
+                AgentScope::Primary,
+            ),
+            session(
+                "child",
+                "native-child",
+                Some("root"),
+                ProviderNativeSessionRelationship::Delegated,
+                AgentScope::Subagent,
+            ),
+            event(0, "root-event", "root", json!({"text": "root"})),
+            copied,
+        ],
+    );
+
+    let records = collect(&CustomHistorySourceBackedInput::explicit(&path, [8; 32]));
+    let root = &records[0];
+    let child = &records[1];
+    assert_eq!(child.parent_session_id, Some(root.session_id));
+    assert_eq!(child.root_session_id, Some(root.session_id));
+    assert_eq!(
+        child.session_relationship,
+        Some(ProviderNativeSessionRelationship::Delegated)
+    );
+    let copy = child.event_copy.as_ref().unwrap();
+    assert_eq!(copy.ancestor_session_id, root.session_id);
+    assert_eq!(copy.ancestor_event_id, root.event_id);
+    assert_eq!(copy.proof, ProviderNativeCopyProof::NativeCopiedFromField);
+}
+
+#[test]
+fn absent_lineage_contract_omits_relationship_and_copy_claims() {
+    let temp = tempdir().unwrap();
+    let path = temp.path().join("unclaimed-lineage.jsonl");
+    let mut copied = event(1, "child-event", "child", json!({"text": "copied"}));
+    copied["copied_from"] = json!({
+        "ancestor_native_session_id": "native-root",
+        "ancestor_event_id": "root-event",
+        "proof": "native_copied_from_field",
+    });
+    write_records(
+        &path,
+        &[
+            manifest(false),
+            source(),
+            session(
+                "root",
+                "native-root",
+                None,
+                ProviderNativeSessionRelationship::Root,
+                AgentScope::Primary,
+            ),
+            session(
+                "child",
+                "native-child",
+                Some("root"),
+                ProviderNativeSessionRelationship::Delegated,
+                AgentScope::Subagent,
+            ),
+            event(0, "root-event", "root", json!({"text": "root"})),
+            copied,
+        ],
+    );
+
+    let records = collect(&CustomHistorySourceBackedInput::explicit(&path, [9; 32]));
+    assert_eq!(records[1].parent_session_id, Some(records[0].session_id));
+    assert_eq!(records[1].session_relationship, None);
+    assert_eq!(records[1].event_copy, None);
+}
+
+#[test]
+fn v1_manifest_is_a_schema_incompatible_source_failure() {
+    let temp = tempdir().unwrap();
+    let path = temp.path().join("legacy.jsonl");
     write_records(
         &path,
         &[json!({
             "record_type": "manifest",
-            "schema_version": "ctx-history-jsonl-v999",
+            "schema_version": "ctx-history-jsonl-v1",
         })],
     );
-
-    let (kind, detail) = structural_manifest_failure(&path, [21; 32]);
-    assert_eq!(kind, ProviderSourceFailureKind::SchemaIncompatible);
-    assert!(detail.contains("ctx-history-jsonl-v999"), "{detail}");
-}
-
-#[test]
-fn duplicate_manifest_is_a_malformed_source_failure() {
-    let temp = tempdir().unwrap();
-    let path = temp.path().join("duplicate-manifest.jsonl");
-    write_records(&path, &[manifest(), manifest()]);
-
-    let (kind, detail) = structural_manifest_failure(&path, [22; 32]);
-    assert_eq!(kind, ProviderSourceFailureKind::InvalidSource);
-    assert!(
-        detail.contains("duplicate manifest record at line 2"),
-        "{detail}"
-    );
-}
-
-#[test]
-fn cold_noop_and_append_emit_stable_ids_in_bounded_pages() {
-    let temp = tempdir().unwrap();
-    let path = temp.path().join("explicit.jsonl");
-    let long = format!(
-        "full-body-sentinel-{}-custom-tail-sentinel",
-        "x".repeat(8_192)
-    );
-    let mut records = vec![
-        manifest(),
-        source(),
-        session("root", None, true),
-        session("child", Some("root"), false),
-    ];
-    for index in 0..70 {
-        records.push(event(
-            index,
-            &format!("event-{index}"),
-            "child",
-            if index == 0 { &long } else { "ordinary" },
-        ));
-    }
-    write_records(&path, &records);
-    let input = CustomHistorySourceBackedInput::explicit(&path, [7; 32]);
-
-    let (cold_outcome, cold_documents, cold_pages) = collect(&input, None);
-    let cold = present(cold_outcome);
-    assert!(matches!(
-        cold.disposition,
-        CustomHistorySourceBackedDisposition::Cold
-    ));
-    assert_eq!(cold_documents.len(), 70);
-    assert_eq!(
-        cold.certificate.counts().certified_bytes,
-        fs::metadata(&path).unwrap().len()
-    );
-    assert!(cold_pages.len() >= 2);
-    assert!(cold_pages.iter().all(|documents| *documents <= 64));
-    assert_eq!(body(&cold_documents[0]), long);
-    assert!(body(&cold_documents[0]).ends_with("custom-tail-sentinel"));
-    assert_eq!(cold_documents[0].agent_type, "subagent");
-    assert!(cold_documents[0].is_primary);
-    assert_eq!(
-        cold_documents[0].session_relationship,
-        SessionRelationshipKind::RelatedUnknown
-    );
-    assert_eq!(cold_documents[0].event_origin, EventOrigin::Unknown);
-    assert!(!serde_json::to_string(&cold_documents[0])
-        .unwrap()
-        .contains("/provider/demo/session.jsonl"));
-    assert_eq!(
-        cold_documents[0].parent_session_id,
-        Some(cold_documents[0].root_session_id)
-    );
-    assert_ne!(
-        cold_documents[0].root_session_id,
-        cold_documents[0].session_id
-    );
-    let cold_ids = cold_documents
-        .iter()
-        .map(|document| (document.session_id, document.event_id))
-        .collect::<Vec<_>>();
-    let TypedKey::Bytes(checkpoint) = cold.certificate.frontier().unwrap().checkpoint() else {
-        panic!("custom checkpoint must be typed bytes");
-    };
-    assert!(!String::from_utf8_lossy(checkpoint).contains("bounded-preview-sentinel"));
-
-    let (rebuilt_outcome, rebuilt_documents, _) = collect(&input, None);
-    present(rebuilt_outcome);
-    assert_eq!(
-        rebuilt_documents
-            .iter()
-            .map(|document| (document.session_id, document.event_id))
-            .collect::<Vec<_>>(),
-        cold_ids
-    );
-    assert_eq!(rebuilt_documents[0].source, cold_documents[0].source);
-
-    #[cfg(unix)]
-    let _forbid_open = ctx_history_source_io::forbid_ordinary_file_content_open(&path);
-    let (noop_outcome, noop_documents, noop_pages) = collect(&input, Some(&cold.certificate));
-    let noop = present(noop_outcome);
-    assert!(matches!(
-        noop.disposition,
-        CustomHistorySourceBackedDisposition::Unchanged
-    ));
-    assert!(noop_documents.is_empty());
-    assert!(noop_pages.is_empty());
-
-    #[cfg(unix)]
-    drop(_forbid_open);
-    append_record(&path, &event(70, "event-70", "child", "appended event"));
-    append_record(&path, &touch(0, 70, "src/appended.rs"));
-    let (append_outcome, append_documents, _) = collect(&input, Some(&noop.certificate));
-    let append = present(append_outcome);
-    assert!(matches!(
-        append.disposition,
-        CustomHistorySourceBackedDisposition::Append
-    ));
-    assert_eq!(append_documents.len(), 1);
-    assert_eq!(body(&append_documents[0]), "appended event");
-    assert!(append_documents[0].repository_file_observations.is_empty());
-    assert!(revalidate_custom_history_source_backed(&input, &append.certificate).unwrap());
-}
-
-#[test]
-fn provider_native_lineage_contract_projects_exact_relationship_and_copy() {
-    let temp = tempdir().unwrap();
-    let path = temp.path().join("lineage.jsonl");
-    let mut root = session("root", None, true);
-    root["native_session_id"] = json!("native-root");
-    root["session_relationship"] = json!("root");
-    let mut child = session("fork", Some("root"), true);
-    child["native_session_id"] = json!("native-fork");
-    child["root_session_id"] = json!("root");
-    child["session_relationship"] = json!("forked");
-    let root_event = event(0, "native-event-0", "root", "original");
-    let mut copied = event(0, "native-fork-event-0", "fork", "copied");
-    copied["copied_from"] = json!({
-        "ancestor_native_session_id": "native-root",
-        "ancestor_event_id": "native-event-0",
-        "proof": "native_copied_from_field",
-    });
-    write_records(
-        &path,
-        &[
-            lineage_manifest(),
-            source(),
-            root,
-            child,
-            root_event,
-            copied,
-        ],
-    );
-
-    let input = CustomHistorySourceBackedInput::explicit(&path, [31; 32]);
-    let (outcome, documents, _) = collect(&input, None);
-    present(outcome);
-    assert_eq!(documents.len(), 2);
-    let original = &documents[0];
-    let copy = &documents[1];
-    assert_eq!(copy.session_relationship, SessionRelationshipKind::Forked);
-    assert!(copy.is_primary);
-    assert_eq!(copy.parent_session_id, Some(original.session_id));
-    assert_eq!(copy.root_session_id, original.session_id);
-    assert_eq!(
-        copy.event_origin,
-        EventOrigin::CopiedFromAncestor {
-            ancestor_session_id: Box::new(original.session_id),
-            ancestor_event_id: Box::new(original.event_id),
-            proof: EventCopyProofKind::NativeCopiedFromField,
-        }
-    );
-}
-
-#[test]
-fn legacy_or_unstable_copy_claims_remain_unknown() {
-    for (manifest, remove_stable_child_ids, typed_relationship_expected) in [
-        (manifest(), false, false),
-        (lineage_manifest(), true, true),
-        (lineage_manifest(), false, true),
-    ] {
-        let temp = tempdir().unwrap();
-        let path = temp.path().join("unknown.jsonl");
-        let mut root = session("root", None, true);
-        root["native_session_id"] = json!("native-root");
-        root["session_relationship"] = json!("root");
-        let mut child = session("fork", Some("root"), true);
-        child["native_session_id"] = json!("native-fork");
-        child["root_session_id"] = json!("root");
-        child["session_relationship"] = json!("forked");
-        let root_event = event(0, "native-event-0", "root", "original");
-        let mut copied = event(0, "native-fork-event-0", "fork", "copied");
-        copied["copied_from"] = json!({
-            "ancestor_native_session_id": "native-root",
-            "ancestor_event_id": "native-event-0",
-            "proof": "native_event_identity",
-        });
-        if remove_stable_child_ids {
-            child.as_object_mut().unwrap().remove("native_session_id");
-            copied.as_object_mut().unwrap().remove("event_id");
-        }
-        write_records(
-            &path,
-            &[manifest, source(), root, child, root_event, copied],
-        );
-
-        let input = CustomHistorySourceBackedInput::explicit(&path, [32; 32]);
-        let (outcome, documents, _) = collect(&input, None);
-        present(outcome);
-        let copy = &documents[1];
-        assert_eq!(copy.event_origin, EventOrigin::Unknown);
-        assert_eq!(
-            copy.session_relationship,
-            if typed_relationship_expected {
-                SessionRelationshipKind::Forked
-            } else {
-                SessionRelationshipKind::RelatedUnknown
-            }
-        );
-    }
-}
-
-#[test]
-fn copy_claim_does_not_walk_beyond_the_direct_parent() {
-    let temp = tempdir().unwrap();
-    let path = temp.path().join("partially-typed-chain.jsonl");
-    let mut root = session("root", None, true);
-    root["native_session_id"] = json!("native-root");
-    root["session_relationship"] = json!("root");
-    let mut middle = session("middle", Some("root"), true);
-    middle["native_session_id"] = json!("native-middle");
-    middle["root_session_id"] = json!("root");
-    let mut child = session("fork", Some("middle"), true);
-    child["native_session_id"] = json!("native-fork");
-    child["root_session_id"] = json!("root");
-    child["session_relationship"] = json!("forked");
-    let root_event = event(0, "native-event-0", "root", "original");
-    let mut copied = event(0, "native-fork-event-0", "fork", "copied");
-    copied["copied_from"] = json!({
-        "ancestor_native_session_id": "native-root",
-        "ancestor_event_id": "native-event-0",
-        "proof": "native_copied_from_field",
-    });
-    write_records(
-        &path,
-        &[
-            lineage_manifest(),
-            source(),
-            root,
-            middle,
-            child,
-            root_event,
-            copied,
-        ],
-    );
-
-    let input = CustomHistorySourceBackedInput::explicit(&path, [33; 32]);
-    let (outcome, documents, _) = collect(&input, None);
-    present(outcome);
-    assert_eq!(documents.len(), 2);
-    assert_eq!(documents[1].event_origin, EventOrigin::Unknown);
-    assert_eq!(
-        documents[1].session_relationship,
-        SessionRelationshipKind::RelatedUnknown
-    );
-    assert_eq!(
-        documents[1].parent_session_id,
-        Some(documents[1].root_session_id)
-    );
-    assert_ne!(documents[1].root_session_id, documents[0].session_id);
-}
-
-#[test]
-fn missing_direct_copy_target_preserves_proven_origin_and_resolves_later() {
-    let temp = tempdir().unwrap();
-    let path = temp.path().join("absent-copy-target.jsonl");
-    let mut child = session("child", Some("missing-parent"), true);
-    child["native_session_id"] = json!("native-child");
-    child["session_relationship"] = json!("forked");
-    let mut copied = event(0, "native-child-event", "child", "preserved child");
-    copied["copied_from"] = json!({
-        "ancestor_native_session_id": "native-missing-parent",
-        "ancestor_event_id": "native-missing-event",
-        "proof": "native_copied_from_field",
-    });
-    write_records(
-        &path,
-        &[lineage_manifest(), source(), child.clone(), copied.clone()],
-    );
-
-    let input = CustomHistorySourceBackedInput::explicit(&path, [34; 32]);
-    let (outcome, missing_documents, _) = collect(&input, None);
-    present(outcome);
-    assert_eq!(missing_documents.len(), 1);
-    let missing_child = &missing_documents[0];
-    assert_eq!(body(missing_child), "preserved child");
-    assert_eq!(
-        missing_child.session_relationship,
-        SessionRelationshipKind::Forked
-    );
-    assert_eq!(
-        missing_child.parent_session_id,
-        Some(missing_child.root_session_id)
-    );
-    let unresolved_origin = missing_child.event_origin.clone();
-    let EventOrigin::CopiedFromAncestor {
-        ancestor_session_id,
-        ancestor_event_id,
-        proof,
-    } = &unresolved_origin
-    else {
-        panic!("durably proven missing-target copy must retain its origin claim");
-    };
-    assert_eq!(**ancestor_session_id, missing_child.root_session_id);
-    assert_ne!(**ancestor_event_id, missing_child.event_id);
-    assert_eq!(*proof, EventCopyProofKind::NativeCopiedFromField);
-    missing_child.validate_contract().unwrap();
-
-    let mut parent = session("missing-parent", None, true);
-    parent["native_session_id"] = json!("native-missing-parent");
-    parent["session_relationship"] = json!("root");
-    let target = event(
-        0,
-        "native-missing-event",
-        "missing-parent",
-        "reappeared target",
-    );
-    write_records(
-        &path,
-        &[lineage_manifest(), source(), parent, child, target, copied],
-    );
-
-    let (outcome, resolved_documents, _) = collect(&input, None);
-    present(outcome);
-    assert_eq!(resolved_documents.len(), 2);
-    let resolved_child = resolved_documents
-        .iter()
-        .find(|record| body(record) == "preserved child")
-        .unwrap();
-    let resolved_target = resolved_documents
-        .iter()
-        .find(|record| body(record) == "reappeared target")
-        .unwrap();
-    assert_eq!(resolved_child.event_origin, unresolved_origin);
-    assert_eq!(
-        resolved_child.event_origin,
-        EventOrigin::CopiedFromAncestor {
-            ancestor_session_id: Box::new(resolved_target.session_id),
-            ancestor_event_id: Box::new(resolved_target.event_id),
-            proof: EventCopyProofKind::NativeCopiedFromField,
-        }
-    );
-}
-
-#[test]
-fn append_that_closes_an_old_forward_reference_is_a_replacement() {
-    let temp = tempdir().unwrap();
-    let path = temp.path().join("forward-reference.jsonl");
-    write_records(
-        &path,
-        &[
-            manifest(),
-            source(),
-            event(0, "forward-event", "late-session", "now retained"),
-        ],
-    );
-    let input = CustomHistorySourceBackedInput::explicit(&path, [17; 32]);
-
-    let (cold_outcome, cold_documents, _) = collect(&input, None);
-    let cold = present(cold_outcome);
-    assert!(cold_documents.is_empty());
-    assert_eq!(cold.certificate.counts().indexed_documents, 0);
-
-    append_record(&path, &session("late-session", None, true));
-    reset_custom_history_source_backed_work();
-    let (closure_outcome, closure_documents, _) = collect(&input, Some(&cold.certificate));
-    let closure = present(closure_outcome);
-    assert!(matches!(
-        closure.disposition,
-        CustomHistorySourceBackedDisposition::Replacement
-    ));
-    assert_eq!(closure_documents.len(), 1);
-    assert_eq!(body(&closure_documents[0]), "now retained");
-    assert_eq!(
-        custom_history_source_backed_work().retained_events_before_prior_prefix,
-        1
-    );
-
-    append_record(
-        &path,
-        &event(1, "ordinary-append", "late-session", "ordinary append"),
-    );
-    let (append_outcome, append_documents, _) = collect(&input, Some(&closure.certificate));
-    let append = present(append_outcome);
-    assert!(matches!(
-        append.disposition,
-        CustomHistorySourceBackedDisposition::Append
-    ));
-    assert_eq!(append_documents.len(), 1);
-    assert_eq!(body(&append_documents[0]), "ordinary append");
-}
-
-#[test]
-fn rewrite_and_truncate_are_replacements_but_keep_native_ids_stable() {
-    let temp = tempdir().unwrap();
-    let path = temp.path().join("rewrite.jsonl");
-    let base = vec![
-        manifest(),
-        source(),
-        session("root", None, true),
-        event(0, "stable-event", "root", "original body"),
-    ];
-    write_records(&path, &base);
-    let input = CustomHistorySourceBackedInput::explicit(&path, [8; 32]);
-    let (cold_outcome, cold_documents, _) = collect(&input, None);
-    let cold = present(cold_outcome);
-
-    let rewritten = vec![
-        manifest(),
-        source(),
-        session("root", None, true),
-        event(0, "stable-event", "root", "rewritten body"),
-    ];
-    write_records(&path, &rewritten);
-    let (rewrite_outcome, rewrite_documents, _) = collect(&input, Some(&cold.certificate));
-    let rewrite = present(rewrite_outcome);
-    assert!(matches!(
-        rewrite.disposition,
-        CustomHistorySourceBackedDisposition::Replacement
-    ));
-    assert_eq!(rewrite_documents[0].event_id, cold_documents[0].event_id);
-    assert_eq!(
-        rewrite_documents[0].session_id,
-        cold_documents[0].session_id
-    );
-    assert_eq!(body(&rewrite_documents[0]), "rewritten body");
-
-    write_records(&path, &[manifest(), source(), session("root", None, true)]);
-    let (truncate_outcome, truncate_documents, _) = collect(&input, Some(&rewrite.certificate));
-    let truncate = present(truncate_outcome);
-    assert!(matches!(
-        truncate.disposition,
-        CustomHistorySourceBackedDisposition::Replacement
-    ));
-    assert!(truncate_documents.is_empty());
-    assert_eq!(truncate.certificate.counts().indexed_documents, 0);
-}
-
-#[test]
-fn malformed_complete_record_is_rejected_and_incomplete_tail_waits_for_append() {
-    let temp = tempdir().unwrap();
-    let path = temp.path().join("tail.jsonl");
-    let complete_records = vec![
-        manifest(),
-        source(),
-        session("root", None, true),
-        event(0, "complete", "root", "complete event"),
-    ];
-    let mut bytes = write_records(&path, &complete_records)
-        .into_iter()
-        .flatten()
-        .collect::<Vec<_>>();
-    bytes.extend_from_slice(b"{malformed-json}\n");
-    let tail = serde_json::to_vec(&event(1, "tail", "root", "completed after append")).unwrap();
-    bytes.extend_from_slice(&tail[..tail.len() - 1]);
-    fs::write(&path, &bytes).unwrap();
-    let input = CustomHistorySourceBackedInput::explicit(&path, [9; 32]);
-
-    let (cold_outcome, cold_documents, _) = collect(&input, None);
-    let cold = present(cold_outcome);
-    assert_eq!(cold_documents.len(), 1);
-    assert_eq!(cold.certificate.counts().rejected_records, 1);
-    assert!(cold.certificate.counts().certified_bytes < fs::metadata(&path).unwrap().len());
-
-    let mut file = OpenOptions::new().append(true).open(&path).unwrap();
-    file.write_all(b"}\n").unwrap();
-    file.sync_all().unwrap();
-    drop(file);
-    let (append_outcome, append_documents, _) = collect(&input, Some(&cold.certificate));
-    let append = present(append_outcome);
-    assert_eq!(
-        append.certificate.counts().certified_bytes,
-        fs::metadata(&path).unwrap().len()
-    );
-    assert!(matches!(
-        append.disposition,
-        CustomHistorySourceBackedDisposition::Append
-    ));
-    assert_eq!(append_documents.len(), 1);
-    assert_eq!(body(&append_documents[0]), "completed after append");
-    assert_eq!(append.certificate.counts().rejected_records, 1);
-}
-
-#[test]
-fn projected_records_are_complete_and_locator_free() {
-    let temp = tempdir().unwrap();
-    let path = temp.path().join("hydrate.jsonl");
-    let records = vec![
-        manifest(),
-        source(),
-        session("root", None, true),
-        event(0, "event-a", "root", "alpha exact"),
-        event(1, "event-b", "root", "beta exact"),
-    ];
-    write_records(&path, &records);
     let input = CustomHistorySourceBackedInput::explicit(&path, [10; 32]);
-    let (outcome, records, _) = collect(&input, None);
-    present(outcome);
-    assert_eq!(
-        records.iter().map(body).collect::<Vec<_>>(),
-        vec!["alpha exact", "beta exact"]
-    );
-    assert!(records
-        .iter()
-        .all(|record| record.native_event_id.is_some()));
-    let Some(TypedKey::Composite(identity)) = records[0].native_event_id.as_ref() else {
-        panic!("custom Core event identity must retain source selector parts");
-    };
-    assert_eq!(
-        &identity[..2],
-        &[
-            TypedKey::utf8("demo-agent").unwrap(),
-            TypedKey::utf8("source-a").unwrap(),
-        ]
-    );
-    assert_eq!(identity[2], TypedKey::utf8("event_id:event-a").unwrap());
-    let encoded = serde_json::to_string(&records).unwrap();
-    assert!(!encoded.contains("source_path"));
-    assert!(!encoded.contains("locator"));
-
-    let rewritten = vec![
-        manifest(),
-        source(),
-        session("root", None, true),
-        event(0, "event-a", "root", "omega stale"),
-        event(1, "event-b", "root", "beta exact"),
-    ];
-    write_records(&path, &rewritten);
-    assert_eq!(body(&records[0]), "alpha exact");
-}
-
-#[test]
-fn deep_chain_session_catalog_projects_only_direct_relationships() {
-    const SESSIONS: usize = 1_000;
-    const EVENTS: usize = 1_000;
-
-    let temp = tempdir().unwrap();
-    let path = temp.path().join("deep-chain.jsonl");
-    let mut records = Vec::with_capacity(2 + SESSIONS + EVENTS);
-    records.push(manifest());
-    records.push(source());
-    for index in 0..SESSIONS {
-        let session_id = format!("session-{index:04}");
-        let parent = (index != 0).then(|| format!("session-{:04}", index - 1));
-        records.push(session(&session_id, parent.as_deref(), index == 0));
-    }
-    for index in 0..EVENTS {
-        records.push(event(
-            u64::try_from(index).unwrap(),
-            &format!("event-{index:04}"),
-            "session-0999",
-            "deep event",
-        ));
-    }
-    write_records(&path, &records);
-    let input = CustomHistorySourceBackedInput::explicit(&path, [15; 32]);
-
-    reset_custom_history_source_backed_work();
-    let (_, documents, _) = collect(&input, None);
-    assert_eq!(documents.len(), EVENTS);
-    assert!(documents
-        .iter()
-        .all(|document| document.root_session_id == documents[0].root_session_id));
-    let work = custom_history_source_backed_work();
-    assert_eq!(work.projection_parses, 1);
-    assert_eq!(work.source_read_passes, 1);
-    assert_eq!(work.provider_records_parsed, 2 + SESSIONS + EVENTS);
-    assert_eq!(work.session_nodes, SESSIONS);
-    assert_eq!(work.resident_event_body_bytes, 0);
-}
-
-#[test]
-fn event_bodies_live_in_the_spool_or_one_bounded_emission_page() {
-    const EVENTS: usize = 512;
-    const BODY_BYTES: usize = 8 * 1024;
-
-    let temp = tempdir().unwrap();
-    let path = temp.path().join("bounded-spool.jsonl");
-    let expected_body = "b".repeat(BODY_BYTES);
-    let mut records = Vec::with_capacity(3 + EVENTS);
-    records.extend([manifest(), source(), session("root", None, true)]);
-    for index in 0..EVENTS {
-        records.push(event(
-            u64::try_from(index).unwrap(),
-            &format!("event-{index:03}"),
-            "root",
-            &expected_body,
-        ));
-    }
-    write_records(&path, &records);
-    let input = CustomHistorySourceBackedInput::explicit(&path, [16; 32]);
-
-    reset_custom_history_source_backed_work();
-    let (_, documents, pages) = collect(&input, None);
-    let work = custom_history_source_backed_work();
-
-    assert_eq!(documents.len(), EVENTS);
-    assert!(documents
-        .iter()
-        .all(|document| body(document) == expected_body));
-    assert!(pages.len() > 1);
-    assert_eq!(work.projection_parses, 1);
-    assert_eq!(work.source_read_passes, 1);
-    assert_eq!(work.provider_records_parsed, 3 + EVENTS);
-    assert_eq!(work.catalog_records, 3 + EVENTS);
-    assert!(work.catalog_metadata_bytes <= CUSTOM_HISTORY_CATALOG_MAX_METADATA_BYTES);
-    assert_eq!(
-        work.spooled_event_body_bytes,
-        EVENTS.saturating_mul(BODY_BYTES)
-    );
-    assert_eq!(work.resident_event_body_bytes, 0);
-    assert!(
-        work.peak_resident_event_body_bytes
-            <= CUSTOM_PAGE_MAX_RETAINED_BYTES.saturating_add(BODY_BYTES)
-    );
-    assert!(work.peak_resident_event_body_bytes < work.spooled_event_body_bytes);
-    assert!(work.peak_provider_record_bytes <= MAX_PROVIDER_JSONL_LINE_BYTES);
-}
-
-#[test]
-fn catalog_record_and_metadata_bounds_accept_n_and_reject_n_plus_one() {
-    const RECORDS: usize = 8;
-
-    let temp = tempdir().unwrap();
-    let path = temp.path().join("catalog-bounds.jsonl");
-    let mut records = vec![manifest(), source(), session("root", None, true)];
-    for index in 0..RECORDS - records.len() {
-        records.push(event(
-            u64::try_from(index).unwrap(),
-            &format!("event-{index}"),
-            "root",
-            "bounded",
-        ));
-    }
-    write_records(&path, &records);
-    let input = CustomHistorySourceBackedInput::explicit(&path, [18; 32]);
-
-    reset_custom_history_source_backed_work();
-    let counts = validate_custom_history_catalog_bounds(
-        &input,
-        RECORDS,
-        CUSTOM_HISTORY_CATALOG_MAX_METADATA_BYTES,
-    )
-    .unwrap();
-    assert_eq!(counts.complete_records, RECORDS as u64);
-    let exact_work = custom_history_source_backed_work();
-    assert_eq!(exact_work.source_read_passes, 1);
-    assert_eq!(exact_work.catalog_records, RECORDS);
-    assert!(exact_work.catalog_metadata_bytes > 0);
-    assert_eq!(exact_work.resident_event_body_bytes, 0);
-
-    reset_custom_history_source_backed_work();
-    validate_custom_history_catalog_bounds(&input, RECORDS, exact_work.catalog_metadata_bytes)
-        .unwrap();
-    assert_eq!(
-        custom_history_source_backed_work().catalog_metadata_bytes,
-        exact_work.catalog_metadata_bytes
-    );
-
-    reset_custom_history_source_backed_work();
-    let metadata_error = validate_custom_history_catalog_bounds(
-        &input,
-        RECORDS,
-        exact_work.catalog_metadata_bytes - 1,
-    )
-    .unwrap_err();
-    assert!(matches!(
-        metadata_error,
-        CustomHistorySourceBackedError::Bounds {
-            limit: CustomHistorySourceBackedBound::CatalogMetadataBytes,
-            maximum,
-            observed,
-        } if maximum == exact_work.catalog_metadata_bytes - 1
-            && observed == exact_work.catalog_metadata_bytes
-    ));
-    assert!(
-        custom_history_source_backed_work().catalog_metadata_bytes
-            < exact_work.catalog_metadata_bytes
-    );
-
-    records.push(event(99, "event-over-bound", "root", "not admitted"));
-    write_records(&path, &records);
-    reset_custom_history_source_backed_work();
-    let record_error = validate_custom_history_catalog_bounds(
-        &input,
-        RECORDS,
-        CUSTOM_HISTORY_CATALOG_MAX_METADATA_BYTES,
-    )
-    .unwrap_err();
-    assert!(matches!(
-        record_error,
-        CustomHistorySourceBackedError::Bounds {
-            limit: CustomHistorySourceBackedBound::CatalogRecords,
-            maximum: RECORDS,
-            observed,
-        } if observed == RECORDS + 1
-    ));
-    let rejected_work = custom_history_source_backed_work();
-    assert_eq!(rejected_work.source_read_passes, 1);
-    assert_eq!(rejected_work.catalog_records, RECORDS);
-    assert_eq!(rejected_work.provider_records_parsed, RECORDS);
-    assert_eq!(rejected_work.resident_event_body_bytes, 0);
-}
-
-#[test]
-fn oversized_edge_id_fails_typed_bounds_before_catalog_retention() {
-    let temp = tempdir().unwrap();
-    let path = temp.path().join("edge-bound.jsonl");
-    write_records(
-        &path,
-        &[
-            manifest(),
-            source(),
-            session("root", None, true),
-            session("child", Some("root"), false),
-            edge(&"e".repeat(
-                crate::provider::custom_history_jsonl::CUSTOM_HISTORY_IDENTIFIER_MAX_BYTES + 1,
-            )),
-        ],
-    );
-    let input = CustomHistorySourceBackedInput::explicit(&path, [19; 32]);
-
-    reset_custom_history_source_backed_work();
-    let error = validate_custom_history_catalog_bounds(
-        &input,
-        CUSTOM_HISTORY_CATALOG_MAX_RECORDS,
-        CUSTOM_HISTORY_CATALOG_MAX_METADATA_BYTES,
-    )
-    .unwrap_err();
-    assert!(matches!(
-        error,
-        CustomHistorySourceBackedError::Bounds {
-            limit: CustomHistorySourceBackedBound::EdgeIdBytes,
-            maximum,
-            observed,
-        } if maximum
-            == crate::provider::custom_history_jsonl::CUSTOM_HISTORY_IDENTIFIER_MAX_BYTES
-            && observed == maximum + 1
-    ));
-    let work = custom_history_source_backed_work();
-    assert_eq!(work.source_read_passes, 1);
-    assert_eq!(work.catalog_records, 5);
-    assert_eq!(work.provider_records_parsed, 5);
-    assert_eq!(work.resident_event_body_bytes, 0);
-}
-
-#[test]
-fn core_body_prefers_full_payload_over_native_preview() {
-    let temp = tempdir().unwrap();
-    let path = temp.path().join("preview.jsonl");
-    let full = format!("custom-full-{}-custom-preview-tail", "p".repeat(16_512));
-    assert!(full.len() > 16_000);
-    let mut record = event(0, "event-full", "root", &full);
-    record["preview"] = Value::String("native preview only".to_owned());
-    write_records(
-        &path,
-        &[manifest(), source(), session("root", None, true), record],
-    );
-    let input = CustomHistorySourceBackedInput::explicit(&path, [13; 32]);
-    let (outcome, documents, _) = collect(&input, None);
-    present(outcome);
-    assert_eq!(body(&documents[0]), full);
-    assert!(body(&documents[0]).ends_with("custom-preview-tail"));
-}
-
-#[test]
-fn source_backed_custom_adapter_has_no_preview_or_store_body_fallback() {
-    let source = [
-        include_str!("source_backed.rs"),
-        include_str!("source_backed/parser.rs"),
-    ]
-    .concat();
-    assert!(!source.contains("MAX_BODY_PREVIEW_CHARS"));
-    assert!(!source.contains("ctx_history_store"));
-    assert!(!source.contains("SourceRecordLocator"));
-    assert!(!source.contains("hydrate_"));
-    assert!(source.contains("scan_optimized_leaf"));
-    assert!(source.contains("base_source_path"));
-    assert!(source.contains("JsonlFamilyTerminalProof::exact_file"));
-    assert!(!source.contains("fn revalidate_leaf"));
-}
-
-#[test]
-fn explicit_inventory_ignores_siblings_and_certifies_deletion() {
-    let temp = tempdir().unwrap();
-    let selected = temp.path().join("selected.jsonl");
-    let sibling = temp.path().join("sibling.jsonl");
-    write_records(
-        &selected,
-        &[
-            manifest(),
-            source(),
-            session("root", None, true),
-            event(0, "selected", "root", "selected-only"),
-        ],
-    );
-    write_records(
-        &sibling,
-        &[
-            manifest(),
-            source(),
-            session("root", None, true),
-            event(0, "sibling", "root", "must-not-be-discovered"),
-        ],
-    );
-    let input = CustomHistorySourceBackedInput::explicit(&selected, [11; 32]);
-    let (outcome, documents, _) = collect(&input, None);
-    let receipt = present(outcome);
-    assert_eq!(documents.len(), 1);
-    assert_eq!(body(&documents[0]), "selected-only");
-
-    fs::remove_file(&selected).unwrap();
-    let (missing, emitted, pages) = collect(&input, Some(&receipt.certificate));
-    assert!(emitted.is_empty());
-    assert!(pages.is_empty());
-    let CustomHistorySourceBackedOutcome::Missing {
-        inventory,
-        deletion: Some(deletion),
-    } = missing
+    let error = scan_custom_history_source_backed_explicit(&input, None, |_, _| Ok(()))
+        .expect_err("v1 must not be translated");
+    let CustomHistorySourceBackedError::Capture(CaptureError::ProviderSource {
+        provider,
+        kind,
+        detail,
+        ..
+    }) = error
     else {
-        panic!("explicit deletion must carry finite inventory evidence");
+        panic!("expected typed source error, got {error:?}");
     };
-    assert!(deletion.verifies(&inventory));
-    assert_eq!(inventory.observed_sources(), 0);
-
-    let directory_input =
-        CustomHistorySourceBackedInput::explicit(temp.path().to_path_buf(), [12; 32]);
-    assert!(observe_custom_history_source_backed_explicit(&directory_input).is_err());
-}
-
-#[test]
-fn test_fixture_records_stay_within_the_production_line_bound() {
-    let encoded = serde_json::to_vec(&event(0, "bounded", "root", "fixture")).unwrap();
-    assert!(encoded.len() < MAX_PROVIDER_JSONL_LINE_BYTES);
+    assert_eq!(provider, CaptureProvider::Custom.as_str());
+    assert_eq!(kind, ProviderSourceFailureKind::SchemaIncompatible);
+    assert!(detail.contains("ctx-history-jsonl-v1"), "{detail}");
 }

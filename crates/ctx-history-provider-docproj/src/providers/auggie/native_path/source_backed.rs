@@ -9,9 +9,11 @@ use std::{
 };
 
 use ctx_history_core::{
-    derive_event_id, derive_session_id, CoreRecord, CoreRecordError, EventIdentityInput,
-    NativeItemKey, NativeSessionKey, ProjectionContractError, ScannedSourceCounts,
+    derive_event_id, derive_session_id, CoreActivity, CoreRecord, CoreRecordError,
+    EventIdentityInput, LiteralFactKind, NativeItemKey, NativeSessionKey, ProjectionContractError,
+    ProviderDeclaredFact, ProviderNativeSessionRelationship, ScannedSourceCounts,
     SessionIdentityInput, SourceAnchor, SourceKey, SourceObservation, StableEntityId, TypedKey,
+    CORE_ACTIVITY_REVISION,
 };
 use sha2::{Digest, Sha256};
 use thiserror::Error;
@@ -423,11 +425,11 @@ impl<B> AuggieDocumentTreeAdapter<B> {
 
 impl<B> ReplacementDocumentTree for AuggieDocumentTreeAdapter<B>
 where
-    B: ctx_history_provider_runtime::ProviderRuntimeBinding,
+    B: crate::ProviderRuntimeBinding,
 {
     type Lifecycle = B::CaptureLifecycleSink;
     type Spool = B::DocumentRecordSpool;
-    type RouteControl = ctx_history_provider_runtime::ProviderRouteControlExpectation;
+    type RouteControl = crate::ProviderRouteControlExpectation;
     type Leaf = AuggieDocumentLeaf;
     type TreeAuthority = AuggieTreeAuthority;
 
@@ -474,7 +476,7 @@ fn scan_changed_auggie_document<B>(
     sink: &mut ChangedDocumentSink<'_, '_, B>,
 ) -> SourceBackedRouteResult<DocumentSourceTerminal>
 where
-    B: ctx_history_provider_runtime::ProviderRuntimeBinding,
+    B: crate::ProviderRuntimeBinding,
 {
     let stamp = authority.open_leaf(leaf).map_err(route_error)?;
     let parsed = parse_opened_auggie_source(stamp, context).map_err(route_error)?;
@@ -585,9 +587,7 @@ fn auggie_core_record(
         .root_provider_session_id
         .as_deref()
         .map(related_auggie_session_id)
-        .transpose()?
-        .or(parent_session_id)
-        .unwrap_or(session_id);
+        .transpose()?;
     let native_item_key = if let Some(native_event_id) = parsed.native_event_id.as_deref() {
         NativeItemKey::native_id(
             AUGGIE_NATIVE_EVENT_NAMESPACE,
@@ -626,28 +626,31 @@ fn auggie_core_record(
     let mut record = CoreRecord::new_selected(
         event_id,
         session_id,
-        session_id,
         source.clone(),
         parsed.provider_event_index,
         parsed.event_type.as_str(),
-        ctx_history_core::AgentType::Primary.as_str(),
-        true,
         AUGGIE_PARSER_REVISION,
         body,
     )?;
-    if let Some(parent_session_id) = parent_session_id {
-        record.set_session_relationship(
-            ctx_history_core::SessionRelationshipKind::RelatedUnknown,
-            Some(parent_session_id),
-            root_session_id,
-        )?;
+    record.parent_session_id = parent_session_id;
+    record.root_session_id = root_session_id;
+    if record.parent_session_id.is_some() {
+        record.session_relationship = Some(ProviderNativeSessionRelationship::Delegated);
     }
     record.provider_session_id = Some(session.provider_session_id.clone());
     record.native_event_id = Some(object_key);
     record.occurred_at_unix_ms = Some(parsed.occurred_at.timestamp_millis());
     record.role = Some(parsed.role.as_str().to_owned());
-    record.workspace = session.cwd.clone();
-    record.cwd = session.cwd.clone();
+    record.content.activity = session.cwd.as_ref().map(|cwd| CoreActivity {
+        revision: CORE_ACTIVITY_REVISION,
+        provider_call_id: None,
+        invocation: None,
+        result: None,
+        facts: vec![ProviderDeclaredFact {
+            kind: LiteralFactKind::SessionCwd,
+            value: cwd.clone(),
+        }],
+    });
     record.validate_contract()?;
     Ok(record)
 }

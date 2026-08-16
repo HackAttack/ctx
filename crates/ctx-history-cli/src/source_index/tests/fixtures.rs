@@ -72,24 +72,19 @@ fn fixture_event(
         event_id,
         session_id,
         parent_session_id: None,
-        root_session_id: session_id,
-        session_relationship: SessionRelationshipKind::Root,
-        event_origin: EventOrigin::Unknown,
+        root_session_id: None,
+        session_relationship: None,
+        event_copy: None,
         source,
         provider: provider.as_str().to_owned(),
         source_format: source_format.to_owned(),
         provider_session_id: Some(format!("fixture-session-{lineage}")),
         native_event_id: Some(TypedKey::U64(sequence)),
-        branch: None,
-        agent_type: "primary".to_owned(),
-        is_primary: true,
+        agent_scope: Some(CoreAgentScope::Primary),
         event_sequence: sequence,
         occurred_at_unix_ms: None,
         event_type: "message".to_owned(),
         role: Some("assistant".to_owned()),
-        workspace: None,
-        cwd: None,
-        touched_files: Vec::new(),
     }
 }
 
@@ -100,13 +95,13 @@ fn fixture_copied_event(
 ) -> EventRecord {
     let mut event = fixture_event(CaptureProvider::Codex, "codex_session_jsonl", lineage, 1);
     event.parent_session_id = Some(ancestor.session_id);
-    event.root_session_id = claimed_root.session_id;
-    event.session_relationship = SessionRelationshipKind::Forked;
-    event.event_origin = EventOrigin::CopiedFromAncestor {
-        ancestor_session_id: Box::new(ancestor.session_id),
-        ancestor_event_id: Box::new(ancestor.event_id),
-        proof: EventCopyProofKind::NativeEventIdentity,
-    };
+    event.root_session_id = Some(claimed_root.session_id);
+    event.session_relationship = Some(ProviderNativeSessionRelationship::Forked);
+    event.event_copy = Some(ProviderNativeEventCopy {
+        ancestor_session_id: ancestor.session_id,
+        ancestor_event_id: ancestor.event_id,
+        proof: ProviderNativeCopyProof::NativeEventIdentity,
+    });
     event
 }
 
@@ -114,37 +109,26 @@ fn fixture_core_event(event: &EventRecord, body: impl Into<String>) -> CoreEvent
     let mut core_record = CoreRecord::new_selected(
         event.event_id,
         event.session_id,
-        event.session_id,
         event.source.clone(),
         event.event_sequence,
         event.event_type.clone(),
-        event.agent_type.clone(),
-        true,
         "source-index-test-v1",
         body,
     )
     .unwrap();
-    if let Some(parent_session_id) = event.parent_session_id {
-        core_record
-            .set_session_relationship(
-                event.session_relationship,
-                Some(parent_session_id),
-                event.root_session_id,
-            )
-            .unwrap();
-    }
-    core_record.event_origin = event.event_origin.clone();
+    core_record.parent_session_id = event.parent_session_id;
+    core_record.root_session_id = event.root_session_id;
+    core_record.session_relationship = event.session_relationship;
+    core_record.event_copy = event.event_copy.clone();
     core_record.provider_session_id = event.provider_session_id.clone();
     core_record.native_event_id = event.native_event_id.clone();
     core_record.occurred_at_unix_ms = event.occurred_at_unix_ms;
     core_record.role = event.role.clone();
-    core_record.workspace = event.workspace.clone();
-    core_record.branch = event.branch.clone();
-    core_record.cwd = event.cwd.clone();
+    core_record.agent_scope = event.agent_scope;
     core_record.validate_contract().unwrap();
     let mut projected_event = event.clone();
     projected_event.session_relationship = core_record.session_relationship;
-    projected_event.event_origin = core_record.event_origin.clone();
+    projected_event.event_copy = core_record.event_copy.clone();
     CoreEventRecord {
         event: projected_event,
         core_record,

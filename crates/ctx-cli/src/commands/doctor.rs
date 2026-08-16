@@ -17,55 +17,21 @@ pub(crate) fn run_doctor(
     ui: &mut Ui,
 ) -> Result<()> {
     let json_output = args.format.is_json();
-    let mut findings = Vec::new();
-    if !data_root.exists() {
-        findings.push(format!("data root does not exist: {}", data_root.display()));
-    }
+    let facts = doctor_facts(&data_root)?;
+    let findings = facts["findings"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(Value::as_str)
+        .map(str::to_owned)
+        .collect::<Vec<_>>();
+    let source_report = facts["source_epoch"].clone();
+    let rejected_records = current_rejected_record_count(&source_report);
     let config = AppConfig::load(&data_root)?;
-    let source = source_epoch_status_report(&data_root, &config)?;
-    let pro = crate::pro::lifecycle_status_json(&data_root);
-    findings.extend(ctx_cli_presentation::commands::source_epoch_findings(
-        &source.report,
-        config.semantic_search_enabled(),
-        pro.get("installed").and_then(Value::as_bool) == Some(true),
-    ));
-    let rejected_records = current_rejected_record_count(&source.report);
-    let daemon = source.report["daemon"].clone();
-    let upgrade_diagnostics = crate::upgrade::upgrade_diagnostics(&config);
-    findings.extend(upgrade_diagnostics.findings);
-    let upgrade = upgrade_diagnostics.report;
-    if pro["installed"].as_bool() == Some(true) {
-        if let Some(code @ ("helper_upgrade_required" | "protocol_mismatch")) =
-            pro["error_code"].as_str()
-        {
-            findings.push(format!(
-                "ctx Pro helper is incompatible ({code}); run `ctx pro`"
-            ));
-        } else if let Some(code @ ("key_store_unavailable" | "key_store_locked")) =
-            pro["error_code"].as_str()
-        {
-            findings.push(format!(
-                "ctx Pro key store is unavailable ({code}); unlock or repair the already selected secure key store, then run `ctx pro`; a fresh installation can select the owner-private local vault only when the native store is genuinely unavailable, and ctx never downgrades existing state"
-            ));
-        } else if pro["error_code"].as_str() == Some("corrupt_graph") {
-            findings.push(
-                "ctx Pro graph needs repair; run `ctx pro` or reinstall with `ctx pro uninstall --delete-data`"
-                    .to_owned(),
-            );
-        }
-    }
     telemetry.finding_count = Some(count_bucket(findings.len() as u64));
     telemetry.healthy = Some(findings.is_empty());
     if json_output {
-        print_json(json!({
-            "schema_version": 1,
-            "ok": findings.is_empty(),
-            "findings": findings,
-            "source_epoch": source.report,
-            "daemon": daemon,
-            "upgrade": upgrade,
-            "pro": pro,
-        }))?;
+        print_json(facts)?;
     } else {
         let document = ctx_cli_presentation::commands::render_doctor_human(
             ui.stdout_context(),
@@ -76,4 +42,29 @@ pub(crate) fn run_doctor(
         ui.write_stdout(&document)?;
     }
     Ok(())
+}
+
+pub(crate) fn doctor_facts(data_root: &std::path::Path) -> Result<Value> {
+    let mut findings = Vec::new();
+    if !data_root.exists() {
+        findings.push(format!("data root does not exist: {}", data_root.display()));
+    }
+    let config = AppConfig::load(&data_root)?;
+    let source = source_epoch_status_report(&data_root, &config)?;
+    findings.extend(ctx_cli_presentation::commands::source_epoch_findings(
+        &source.report,
+        config.semantic_search_enabled(),
+    ));
+    let daemon = source.report["daemon"].clone();
+    let upgrade_diagnostics = crate::upgrade::upgrade_diagnostics(&config);
+    findings.extend(upgrade_diagnostics.findings);
+    let upgrade = upgrade_diagnostics.report;
+    Ok(json!({
+        "schema_version": 1,
+        "ok": findings.is_empty(),
+        "findings": findings,
+        "source_epoch": source.report,
+        "daemon": daemon,
+        "upgrade": upgrade,
+    }))
 }
