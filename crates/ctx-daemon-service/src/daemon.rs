@@ -632,6 +632,7 @@ where
                         artifact_fetcher: ports.artifact_fetcher,
                         config: ports.config,
                     },
+                    observation: ports.observation,
                 },
             )?;
             let continue_immediately = iteration.continue_immediately;

@@ -1072,6 +1072,7 @@ fn run_daemon_scheduler_cycle_with_activity(
                 artifact_fetcher: &crate::test_support::ARTIFACT,
                 config: &crate::test_support::CONFIG,
             },
+            observation: &crate::test_support::OBSERVATION,
         },
     )
 }

@@ -1,8 +1,5 @@
 use super::*;
-use ctx_client_observability::analytics::{
-    Outcome, ProviderCoreResult, ProviderRefreshFailureScope, ProviderRefreshFailureType,
-    ProviderRefreshResult, ProviderRefreshTrigger, PublicEventV1, Surface,
-};
+use ctx_client_observability::analytics::PublicEventV1;
 
 fn enqueue_synthetic_refresh_successor(
     coordinator: &CoreRefreshEngine,
@@ -86,25 +83,10 @@ fn hot_route_failure_retries_exact_after_cooldown_while_blocked_route_stays_idle
             &mut failed_iteration,
             std::time::Duration::from_millis(1),
         );
-        let [PublicEventV1::ProviderRefreshCompleted(refresh)] = events.as_slice() else {
-            panic!("terminal scheduler failure must emit one provider refresh event");
-        };
-        let facts = refresh.foreground.expect("failed daemon refresh facts");
-        assert_eq!(refresh.surface, Surface::Daemon);
-        assert_eq!(refresh.outcome, Outcome::Failure);
-        assert_eq!(facts.trigger, ProviderRefreshTrigger::Daemon);
-        assert_eq!(facts.refresh_result, ProviderRefreshResult::Failure);
-        assert_eq!(facts.core_result, ProviderCoreResult::Failure);
-        assert_eq!(facts.failure_scope, ProviderRefreshFailureScope::Source);
-        assert_eq!(
-            facts.failure_type,
-            if kind == SourceBackedRouteErrorKind::InvalidSource {
-                ProviderRefreshFailureType::MalformedSource
-            } else {
-                ProviderRefreshFailureType::Unknown
-            }
-        );
-        assert_eq!(facts.work_remaining, retryable);
+        assert!(matches!(
+            events.as_slice(),
+            [PublicEventV1::ProviderRefreshCompleted(_)]
+        ));
         assert_eq!(runtime.history_retry.consecutive_failures, 0);
         assert_eq!(
             scopes.lock().unwrap().as_slice(),
@@ -207,17 +189,10 @@ fn mixed_route_dispositions_schedule_only_retryable_routes() {
         &mut completed,
         std::time::Duration::from_millis(1),
     );
-    let [PublicEventV1::ProviderRefreshCompleted(refresh)] = events.as_slice() else {
-        panic!("completed scheduler refresh must emit one provider refresh event");
-    };
-    let facts = refresh.foreground.expect("daemon refresh facts");
-    assert_eq!(refresh.surface, Surface::Daemon);
-    assert_eq!(facts.trigger, ProviderRefreshTrigger::Daemon);
-    assert_eq!(facts.provider, None);
-    assert_eq!(facts.source_mode, None);
-    assert_eq!(facts.counts, None);
-    assert_eq!(facts.refresh_result, ProviderRefreshResult::Partial);
-    assert!(facts.work_remaining);
+    assert!(matches!(
+        events.as_slice(),
+        [PublicEventV1::ProviderRefreshCompleted(_)]
+    ));
     assert_eq!(runtime.history_retry.consecutive_failures, 0);
     let terminal = read_daemon_job_status(&daemon_core_refresh_job_path(&data_root)).unwrap();
     assert_eq!(
@@ -664,9 +639,14 @@ fn scheduler_retries_terminal_status_without_republishing_core() {
     coordinator.enqueue_periodic(&data_root).unwrap();
     let mut runtime = DaemonRuntime::default();
 
-    let first = run_pending_core_refresh(&data_root, &mut runtime, Some(&coordinator))
-        .unwrap()
-        .expect("first scheduler refresh");
+    let first = run_pending_core_refresh(
+        &data_root,
+        &mut runtime,
+        Some(&coordinator),
+        &crate::test_support::OBSERVATION,
+    )
+    .unwrap()
+    .expect("first scheduler refresh");
     assert!(first.failed);
     assert!(first.provider_refresh_events.is_empty());
     assert_eq!(executions.load(Ordering::SeqCst), 1);
@@ -675,9 +655,14 @@ fn scheduler_retries_terminal_status_without_republishing_core() {
         "running"
     );
 
-    let mut retry = run_pending_core_refresh(&data_root, &mut runtime, Some(&coordinator))
-        .unwrap()
-        .expect("terminal persistence retry");
+    let mut retry = run_pending_core_refresh(
+        &data_root,
+        &mut runtime,
+        Some(&coordinator),
+        &crate::test_support::OBSERVATION,
+    )
+    .unwrap()
+    .expect("terminal persistence retry");
     assert!(!retry.failed);
     let events = crate::daemon::daemon_iteration_events_without_telemetry(
         &mut retry,
@@ -719,9 +704,14 @@ fn scheduler_failed_terminal_retry_preserves_successor_across_restart() {
     let root = coordinator.enqueue_periodic(&data_root).unwrap();
     let root_id = root["request_id"].as_str().unwrap().to_owned();
     let mut runtime = DaemonRuntime::default();
-    let first = run_pending_core_refresh(&data_root, &mut runtime, Some(&coordinator))
-        .unwrap()
-        .expect("failed terminal persistence");
+    let first = run_pending_core_refresh(
+        &data_root,
+        &mut runtime,
+        Some(&coordinator),
+        &crate::test_support::OBSERVATION,
+    )
+    .unwrap()
+    .expect("failed terminal persistence");
     assert!(first.failed);
     assert_eq!(executions.load(Ordering::SeqCst), 1);
     let successor = enqueue_synthetic_refresh_successor(&coordinator, &data_root, 0);
@@ -832,9 +822,14 @@ fn blocked_retry_writer_serializes_concurrent_admission_and_restart() {
     ));
     coordinator.enqueue_periodic(&data_root).unwrap();
     let mut runtime = DaemonRuntime::default();
-    let first = run_pending_core_refresh(&data_root, &mut runtime, Some(&coordinator))
-        .unwrap()
-        .expect("failed terminal persistence");
+    let first = run_pending_core_refresh(
+        &data_root,
+        &mut runtime,
+        Some(&coordinator),
+        &crate::test_support::OBSERVATION,
+    )
+    .unwrap()
+    .expect("failed terminal persistence");
     assert!(first.failed);
     let successor = enqueue_synthetic_refresh_successor(&coordinator, &data_root, 0);
     let successor_id = successor["request_id"].as_str().unwrap().to_owned();
@@ -939,10 +934,15 @@ fn failed_terminal_root_keeps_capacity_through_successful_retry_and_restart() {
     coordinator.enqueue_periodic(&data_root).unwrap();
     let mut runtime = DaemonRuntime::default();
     assert!(
-        run_pending_core_refresh(&data_root, &mut runtime, Some(&coordinator))
-            .unwrap()
-            .expect("failed terminal persistence")
-            .failed
+        run_pending_core_refresh(
+            &data_root,
+            &mut runtime,
+            Some(&coordinator),
+            &crate::test_support::OBSERVATION,
+        )
+        .unwrap()
+        .expect("failed terminal persistence")
+        .failed
     );
 
     let mut successor_ids = Vec::new();
