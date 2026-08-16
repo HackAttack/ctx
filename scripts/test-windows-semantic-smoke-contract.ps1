@@ -121,6 +121,7 @@ $requiredFunctions = @(
     "Assert-WindowsRuntimeArchive",
     "Get-BoundWindowsBuildInfoSha256",
     "New-UniqueFixtureRoot",
+    "Complete-SmokeTeardown",
     "Invoke-Ctx",
     "Invoke-CtxChecked"
 )
@@ -213,6 +214,15 @@ foreach ($requiredFixtureRootContract in @(
         throw "Windows semantic smoke is missing external fixture-root ownership: $requiredFixtureRootContract"
     }
 }
+foreach ($requiredTeardownContract in @(
+    '$primaryError = $_',
+    '-PrimaryError $primaryError',
+    '-ErrorAction Continue'
+)) {
+    if (-not $smokeSource.Contains($requiredTeardownContract)) {
+        throw "Windows semantic smoke is missing primary-error-preserving teardown: $requiredTeardownContract"
+    }
+}
 $selectedBackendCheck = $smokeSource.IndexOf(
     '$embeddingRuntime.backend -cne $runtimeContract.StatusBackend',
     [System.StringComparison]::Ordinal
@@ -256,6 +266,66 @@ if (
 $root = Join-Path ([System.IO.Path]::GetTempPath()) ("ctx-windows-smoke-contract-" + [Guid]::NewGuid().ToString("n"))
 New-Item -ItemType Directory -Path $root | Out-Null
 try {
+    $primaryMessage = "synthetic primary lifecycle failure"
+    $primaryRecord = [System.Management.Automation.ErrorRecord]::new(
+        [System.TimeoutException]::new($primaryMessage),
+        "CtxSemanticSmoke.Primary",
+        [System.Management.Automation.ErrorCategory]::OperationTimeout,
+        $null
+    )
+    $cleanupException = [System.InvalidOperationException]::new(
+        "synthetic daemon teardown failure"
+    )
+    $script:dualFailure = $null
+    $dualFailureOutput = @(
+        & {
+            try {
+                Complete-SmokeTeardown `
+                    -PrimaryError $primaryRecord `
+                    -TeardownError $cleanupException `
+                    -FixtureCleanupError $null `
+                    -EnvironmentCleanupError $null `
+                    -RunRoot "C:\synthetic-run" `
+                    -FixtureRoot "C:\synthetic-fixture"
+            } catch {
+                $script:dualFailure = $_
+            }
+        } 2>&1
+    )
+    if (
+        $null -eq $dualFailure -or
+        $dualFailure.Exception.GetType() -ne [System.TimeoutException] -or
+        $dualFailure.Exception.Message -cne $primaryMessage -or
+        -not $dualFailure.FullyQualifiedErrorId.Contains("CtxSemanticSmoke.Primary")
+    ) {
+        throw "Cleanup failure replaced the primary semantic smoke failure"
+    }
+    if (-not ($dualFailureOutput | Out-String).Contains("cleanup also failed to stop the daemon")) {
+        throw "Secondary cleanup failure was not reported non-terminatingly"
+    }
+
+    $script:cleanupOnlyFailure = $null
+    & {
+        try {
+            Complete-SmokeTeardown `
+                -PrimaryError $null `
+                -TeardownError $cleanupException `
+                -FixtureCleanupError $null `
+                -EnvironmentCleanupError $null `
+                -RunRoot "C:\synthetic-run" `
+                -FixtureRoot "C:\synthetic-fixture"
+        } catch {
+            $script:cleanupOnlyFailure = $_
+        }
+    } 2>&1 | Out-Null
+    if (
+        $null -eq $cleanupOnlyFailure -or
+        $cleanupOnlyFailure.Exception.GetType() -ne [System.InvalidOperationException] -or
+        $cleanupOnlyFailure.Exception.Message -cne $cleanupException.Message
+    ) {
+        throw "Cleanup failure was not authoritative after an otherwise-successful smoke body"
+    }
+
     $fixtureCases = @(
         [PSCustomObject]@{
             Name = "ordinary"

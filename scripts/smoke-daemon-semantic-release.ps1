@@ -377,6 +377,50 @@ function New-UniqueFixtureRoot {
     throw "Could not create a unique fixture root under $resolvedParent"
 }
 
+function Complete-SmokeTeardown {
+    [CmdletBinding()]
+    param(
+        [AllowNull()][System.Management.Automation.ErrorRecord]$PrimaryError,
+        [AllowNull()][System.Exception]$TeardownError,
+        [AllowNull()][System.Exception]$FixtureCleanupError,
+        [AllowNull()][System.Exception]$EnvironmentCleanupError,
+        [string]$RunRoot,
+        [string]$FixtureRoot
+    )
+
+    if ($null -ne $PrimaryError) {
+        if ($null -ne $TeardownError) {
+            Write-Error `
+                "ctx semantic smoke cleanup also failed to stop the daemon; retained isolated root $RunRoot`: $($TeardownError.Message)" `
+                -ErrorAction Continue
+        }
+        if ($null -ne $FixtureCleanupError) {
+            Write-Error `
+                "ctx semantic smoke cleanup also failed to remove task-owned fixture root $FixtureRoot`: $($FixtureCleanupError.Message)" `
+                -ErrorAction Continue
+        }
+        if ($null -ne $EnvironmentCleanupError) {
+            Write-Error `
+                "ctx semantic smoke cleanup also failed to restore the process environment: $($EnvironmentCleanupError.Message)" `
+                -ErrorAction Continue
+        }
+        $PSCmdlet.ThrowTerminatingError($PrimaryError)
+    }
+
+    if ($null -ne $TeardownError) {
+        Write-Error `
+            "ctx semantic smoke retained isolated root for survivor diagnosis: $RunRoot" `
+            -ErrorAction Continue
+        throw $TeardownError
+    }
+    if ($null -ne $FixtureCleanupError) {
+        throw "ctx semantic smoke failed to remove task-owned fixture root $FixtureRoot`: $($FixtureCleanupError.Message)"
+    }
+    if ($null -ne $EnvironmentCleanupError) {
+        throw "ctx semantic smoke failed to restore the process environment: $($EnvironmentCleanupError.Message)"
+    }
+}
+
 $environmentVariableNames = @(
     "USERPROFILE", "HOME", "LOCALAPPDATA", "APPDATA", "XDG_CACHE_HOME", "XDG_CONFIG_HOME",
     "CTX_DATA_ROOT",
@@ -424,6 +468,7 @@ $ownsRunRoot = $false
 $fixtureRoot = ""
 $ownsFixtureRoot = $false
 $daemon = $null
+$primaryError = $null
 
 function Invoke-Ctx {
     param([string[]]$CommandArgs)
@@ -946,24 +991,27 @@ $daemonOutput
 Daemon stderr:
 $daemonError
 "@
+} catch {
+    $primaryError = $_
 } finally {
     $teardownError = $null
     $fixtureCleanupError = $null
+    $environmentCleanupError = $null
     try {
         Stop-OwnedDaemon -Process $daemon
     } catch {
         $teardownError = $_.Exception
     }
-    if (
-        $ownsFixtureRoot -and
-        -not [string]::IsNullOrWhiteSpace($fixtureRoot) -and
-        (Test-Path -LiteralPath $fixtureRoot)
-    ) {
-        try {
+    try {
+        if (
+            $ownsFixtureRoot -and
+            -not [string]::IsNullOrWhiteSpace($fixtureRoot) -and
+            (Test-Path -LiteralPath $fixtureRoot)
+        ) {
             Remove-Item -LiteralPath $fixtureRoot -Recurse -Force -ErrorAction Stop
-        } catch {
-            $fixtureCleanupError = $_.Exception
         }
+    } catch {
+        $fixtureCleanupError = $_.Exception
     }
     if (
         $null -eq $teardownError -and
@@ -974,13 +1022,19 @@ $daemonError
         Remove-Item -LiteralPath $runRoot -Recurse -Force -ErrorAction SilentlyContinue
     }
     foreach ($name in $environmentVariableNames) {
-        Set-ProcessEnvironmentVariable -Name $name -Value $savedEnvironment[$name]
+        try {
+            Set-ProcessEnvironmentVariable -Name $name -Value $savedEnvironment[$name]
+        } catch {
+            if ($null -eq $environmentCleanupError) {
+                $environmentCleanupError = $_.Exception
+            }
+        }
     }
-    if ($null -ne $teardownError) {
-        Write-Error "ctx semantic smoke retained isolated root for survivor diagnosis: $runRoot"
-        throw $teardownError
-    }
-    if ($null -ne $fixtureCleanupError) {
-        throw "ctx semantic smoke failed to remove task-owned fixture root $fixtureRoot`: $($fixtureCleanupError.Message)"
-    }
+    Complete-SmokeTeardown `
+        -PrimaryError $primaryError `
+        -TeardownError $teardownError `
+        -FixtureCleanupError $fixtureCleanupError `
+        -EnvironmentCleanupError $environmentCleanupError `
+        -RunRoot $runRoot `
+        -FixtureRoot $fixtureRoot
 }
