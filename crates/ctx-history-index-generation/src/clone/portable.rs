@@ -595,7 +595,7 @@ fn clone_files(
             remaining_allowance,
         )?;
         destination_file.flush()?;
-        destination_file.set_permissions(planned.permissions.clone())?;
+        destination_file.set_permissions(candidate_permissions(&planned.permissions))?;
         destination_file.sync_all()?;
         if copied != planned.identity.bytes {
             return Err(IndexError::CurrentRepublishSourceTopology(
@@ -615,7 +615,8 @@ fn clone_files(
         validate_open_and_named_file(source, planned, &source_file)?;
         let destination_opened = open_bound_file(destination, &planned.path)?;
         if destination_opened.identity.bytes != planned.identity.bytes
-            || destination_opened.identity.permissions != planned.identity.permissions
+            || destination_opened.identity.permissions
+                != candidate_permission_identity(planned.identity.permissions)
         {
             return Err(IndexError::CurrentRepublishSourceTopology(
                 "copied file metadata does not match authenticated source",
@@ -631,6 +632,7 @@ fn clone_files(
             return Err(IndexError::ChecksumMismatch);
         }
         clone_checkpoint(PortableCloneStage::AfterCopy, &planned.path)?;
+        drop(destination_file);
     }
     record_clone_metrics(copied_bytes, plan.files.len());
     Ok(())
@@ -716,7 +718,7 @@ fn clone_candidate_files(
             return Err(IndexError::ChecksumMismatch);
         }
         destination_file.flush()?;
-        destination_file.set_permissions(planned.permissions.clone())?;
+        destination_file.set_permissions(candidate_permissions(&planned.permissions))?;
         destination_file.sync_all()?;
         if copied != source_before.identity.length() {
             return Err(IndexError::CurrentRepublishSourceTopology(
@@ -749,7 +751,8 @@ fn clone_candidate_files(
         }
         let destination_opened = open_bound_file(destination, &planned.path)?;
         if destination_opened.identity.bytes != planned.identity.bytes
-            || destination_opened.identity.permissions != planned.identity.permissions
+            || destination_opened.identity.permissions
+                != candidate_permission_identity(planned.identity.permissions)
         {
             return Err(IndexError::CurrentRepublishSourceTopology(
                 "copied file metadata does not match authenticated source",
@@ -770,6 +773,7 @@ fn clone_candidate_files(
             .checked_add(copied)
             .ok_or(IndexError::CountOverflow)?;
         clone_checkpoint(PortableCloneStage::AfterCopy, &planned.path)?;
+        drop(destination_file);
     }
     admit_available_bytes(generations, writer_output_headroom, true)?;
     Ok(())
@@ -784,18 +788,41 @@ fn write_authenticated_plan_bytes(
         platform::create_regular_file_at(&destination.file, &destination.path, &planned.path)?;
     destination_file.write_all(bytes)?;
     destination_file.flush()?;
-    destination_file.set_permissions(planned.permissions.clone())?;
+    destination_file.set_permissions(candidate_permissions(&planned.permissions))?;
     destination_file.sync_all()?;
     let copied = u64::try_from(bytes.len()).map_err(|_| IndexError::CountOverflow)?;
     let destination_opened = open_bound_file(destination, &planned.path)?;
     if destination_opened.identity.bytes != copied
-        || destination_opened.identity.permissions != planned.identity.permissions
+        || destination_opened.identity.permissions
+            != candidate_permission_identity(planned.identity.permissions)
     {
         return Err(IndexError::CurrentRepublishSourceTopology(
             "plan byte count does not match copied control file",
         ));
     }
     Ok(copied)
+}
+
+#[cfg(windows)]
+fn candidate_permissions(source: &Permissions) -> Permissions {
+    let mut candidate = source.clone();
+    candidate.set_readonly(false);
+    candidate
+}
+
+#[cfg(not(windows))]
+fn candidate_permissions(source: &Permissions) -> Permissions {
+    source.clone()
+}
+
+#[cfg(windows)]
+fn candidate_permission_identity(_source: PermissionIdentity) -> PermissionIdentity {
+    false
+}
+
+#[cfg(not(windows))]
+fn candidate_permission_identity(source: PermissionIdentity) -> PermissionIdentity {
+    source
 }
 
 fn copy_with_digest<R: Read, W: Write>(

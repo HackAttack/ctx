@@ -15,6 +15,8 @@ mod manifest;
 mod physical;
 mod retention;
 
+#[cfg(windows)]
+pub use certification::{acquire_terminal_publication_guard, TerminalPublicationGuard};
 #[cfg(any(test, feature = "test-support"))]
 pub use certification::{
     certification_file_for_active, MAX_CERTIFICATION_BYTES, MAX_CERTIFIED_ARTIFACTS,

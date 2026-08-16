@@ -236,22 +236,28 @@ pub fn publish_active_generation_pointer(
     publish_active_generation_pointer_validated(root, pointer, || Ok(()))
 }
 
-pub fn publish_active_generation_pointer_validated<F>(
+pub fn publish_active_generation_pointer_validated<F, T>(
     root: &Path,
     pointer: &ActiveGenerationPointer,
     validate_before_replace: F,
 ) -> Result<PointerPublicationOutcome>
 where
-    F: FnOnce() -> Result<()>,
+    F: FnOnce() -> Result<T>,
 {
     pointer.validate()?;
     let bytes = serde_json::to_vec(pointer)?;
     let directory = DurableMmapDirectory::open(root).map_err(tantivy::TantivyError::from)?;
-    match directory.atomic_write_with_outcome_validated(
+    let mut retained_validation = None;
+    let outcome = directory.atomic_write_with_outcome_validated(
         Path::new(ACTIVE_GENERATION_POINTER_FILE),
         &bytes,
-        validate_before_replace,
-    )? {
+        || {
+            retained_validation = Some(validate_before_replace()?);
+            Ok(())
+        },
+    )?;
+    drop(retained_validation);
+    match outcome {
         DurableAtomicWriteOutcome::Durable => Ok(PointerPublicationOutcome::Durable),
         DurableAtomicWriteOutcome::VisibleButDurabilityUncertain(error) => {
             Ok(PointerPublicationOutcome::CommittedVisible {
@@ -265,7 +271,7 @@ pub fn sync_generation(path: &Path) -> Result<()> {
     for entry in fs::read_dir(path)? {
         let entry = entry?;
         if entry.file_type()?.is_file() {
-            File::open(entry.path())?.sync_all()?;
+            sync_generation_file(&entry.path())?;
         }
     }
     sync_directory(path)?;
@@ -273,6 +279,20 @@ pub fn sync_generation(path: &Path) -> Result<()> {
         sync_directory(parent)?;
     }
     Ok(())
+}
+
+#[cfg(not(windows))]
+fn sync_generation_file(path: &Path) -> std::io::Result<()> {
+    File::open(path)?.sync_all()
+}
+
+#[cfg(windows)]
+fn sync_generation_file(path: &Path) -> std::io::Result<()> {
+    OpenOptions::new()
+        .write(true)
+        .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE)
+        .open(path)?
+        .sync_all()
 }
 
 #[cfg(not(windows))]
@@ -525,6 +545,33 @@ mod tests {
 
         let reopened = open_slot_index(root.path(), &slot).unwrap();
         assert_eq!(reopened.settings(), &lexical_index_settings());
+    }
+
+    #[test]
+    fn completed_generation_syncs_before_validated_pointer_publication() {
+        let root = tempfile::tempdir().unwrap();
+        let candidate =
+            create_candidate_generation(root.path(), None, Schema::builder().build(), 0).unwrap();
+        let slot = GenerationSlot::new(
+            "0".repeat(64),
+            candidate.directory_name.clone(),
+            "0".repeat(64),
+        )
+        .unwrap();
+        let pointer = ActiveGenerationPointer::new(slot.clone(), None).unwrap();
+
+        sync_generation(&slot_path(root.path(), &slot)).unwrap();
+        assert!(matches!(
+            publish_active_generation_pointer_validated(root.path(), &pointer, || {
+                candidate.activation_fence.validate_binding()
+            })
+            .unwrap(),
+            PointerPublicationOutcome::Durable
+        ));
+        assert_eq!(
+            load_active_generation_pointer(root.path()).unwrap(),
+            Some(pointer)
+        );
     }
 
     #[test]

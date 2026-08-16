@@ -48,13 +48,13 @@ pub(crate) fn publish_active_generation_pointer(
     Ok(ctx_history_index_generation::publish_active_generation_pointer(root, pointer)?)
 }
 
-pub(crate) fn publish_active_generation_pointer_validated<F>(
+pub(crate) fn publish_active_generation_pointer_validated<F, T>(
     root: &Path,
     pointer: &ActiveGenerationPointer,
     validate_before_replace: F,
 ) -> Result<PointerPublicationOutcome>
 where
-    F: FnOnce() -> ctx_history_index_generation::Result<()>,
+    F: FnOnce() -> ctx_history_index_generation::Result<T>,
 {
     Ok(
         ctx_history_index_generation::publish_active_generation_pointer_validated(

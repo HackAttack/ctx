@@ -588,6 +588,13 @@ impl GenerationWriter {
         let terminal_index = verified.publication.publication().searcher().index();
         let expected_audit = verified.publication.physical_integrity_audit();
         match publish_active_generation_pointer_validated(&root, &next_pointer, || {
+            #[cfg(windows)]
+            let terminal_guard = ctx_history_index_generation::acquire_terminal_publication_guard(
+                &root,
+                &candidate_path,
+                terminal_index,
+                self.active_pointer.as_ref(),
+            )?;
             activation_fence.validate_binding()?;
             prepared_manifest
                 .verify_persisted(&root)
@@ -597,13 +604,23 @@ impl GenerationWriter {
                 &candidate_path,
                 self.active_pointer.as_ref(),
             )?;
+            #[cfg(not(windows))]
             verify_candidate_physical_fence(
                 terminal_index,
                 &candidate_path,
                 self.active_pointer.as_ref(),
                 expected_audit,
             )?;
-            activation_fence.validate_binding()
+            #[cfg(windows)]
+            terminal_guard.verify_physical_fence(expected_audit)?;
+            activation_fence.validate_binding()?;
+            #[cfg(windows)]
+            {
+                terminal_guard.verify_identities()?;
+                Ok(terminal_guard)
+            }
+            #[cfg(not(windows))]
+            Ok(())
         }) {
             Ok(PointerPublicationOutcome::Durable) => {}
             Ok(PointerPublicationOutcome::CommittedVisible { detail }) => {

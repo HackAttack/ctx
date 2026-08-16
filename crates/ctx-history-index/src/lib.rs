@@ -92,8 +92,10 @@ pub use preparation::{
 };
 #[cfg(test)]
 pub(crate) use publication::publish_active_generation_pointer;
-#[cfg(test)]
+#[cfg(all(test, target_os = "linux"))]
 pub(crate) use publication::republish_current_for_qualification;
+#[cfg(not(windows))]
+pub(crate) use publication::verify_candidate_physical_fence;
 #[cfg(test)]
 pub(crate) use publication::verify_searcher;
 pub(crate) use publication::{
@@ -103,10 +105,10 @@ pub(crate) use publication::{
     publish_active_generation_pointer_validated, reclaim_inactive_generation_directories,
     reclaim_unreferenced_certifications, reclaim_unreferenced_manifests, reconcile_commit_error,
     republish_current_with_publication_metadata, searcher_generation, sync_directory,
-    sync_generation, validate_candidate_managed_files, verify_candidate_physical_fence,
-    verify_physical_integrity, write_prepared_manifest, ActiveGenerationPointer,
-    CandidateActivationFence, CandidatePhysicalProof, CurrentRepublishOutcome, GenerationSlot,
-    PointerPublicationOutcome, GENERATION_WRITER_LOCK_FILE, INDEX_GENERATIONS_DIRECTORY,
+    sync_generation, validate_candidate_managed_files, verify_physical_integrity,
+    write_prepared_manifest, ActiveGenerationPointer, CandidateActivationFence,
+    CandidatePhysicalProof, CurrentRepublishOutcome, GenerationSlot, PointerPublicationOutcome,
+    GENERATION_WRITER_LOCK_FILE, INDEX_GENERATIONS_DIRECTORY,
 };
 #[cfg(test)]
 pub(crate) use publication::{

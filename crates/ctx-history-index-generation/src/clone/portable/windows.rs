@@ -41,7 +41,8 @@ use super::{entry_kind, require_regular, ObjectIdentity};
 use crate::{GenerationError as IndexError, Result};
 
 const DIRECTORY_SHARE_MODE: u32 = FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE;
-const REGULAR_FILE_SHARE_MODE: u32 = FILE_SHARE_READ | FILE_SHARE_WRITE;
+const REGULAR_FILE_SHARE_MODE: u32 = FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE;
+const DESTINATION_FILE_SHARE_MODE: u32 = FILE_SHARE_READ;
 
 pub(super) fn open_directory_path(path: &Path) -> io::Result<File> {
     OpenOptions::new()
@@ -104,7 +105,7 @@ pub(super) fn create_regular_file_at(
     nt_open_at(
         parent,
         name,
-        FILE_GENERIC_READ | FILE_GENERIC_WRITE | DELETE | SYNCHRONIZE,
+        FILE_GENERIC_READ | FILE_GENERIC_WRITE | SYNCHRONIZE,
         FILE_CREATE,
         FILE_ATTRIBUTE_NORMAL,
         FILE_NON_DIRECTORY_FILE,
@@ -158,6 +159,8 @@ fn nt_open_at(
     };
     let share_mode = if kind == FILE_DIRECTORY_FILE {
         DIRECTORY_SHARE_MODE
+    } else if disposition == FILE_CREATE {
+        DESTINATION_FILE_SHARE_MODE
     } else {
         REGULAR_FILE_SHARE_MODE
     };
@@ -359,7 +362,9 @@ mod tests {
     use super::*;
 
     #[test]
-    fn delete_capable_directory_handles_can_reopen_for_validation() -> io::Result<()> {
+    fn proof_capture_handle_blocks_destination_substitution() -> io::Result<()> {
+        use std::io::Write as _;
+
         let temporary = tempfile::tempdir()?;
         let generation_name = Path::new("generation-test");
         fs::create_dir(temporary.path().join(generation_name))?;
@@ -374,7 +379,49 @@ mod tests {
             object_identity(&generation)?,
             object_identity(&reopened_generation)?
         );
-        assert_eq!(REGULAR_FILE_SHARE_MODE & FILE_SHARE_DELETE, 0);
+
+        let segment_name = Path::new("segment.store");
+        let mut segment = create_regular_file_at(&generation, temporary.path(), segment_name)?;
+        segment.write_all(b"authenticated")?;
+        segment.sync_all()?;
+        let reopened_segment = open_regular_file_at(&generation, temporary.path(), segment_name)?;
+        assert_eq!(
+            object_identity(&segment)?,
+            object_identity(&reopened_segment)?
+        );
+        assert_eq!(DESTINATION_FILE_SHARE_MODE & FILE_SHARE_WRITE, 0);
+        assert_eq!(DESTINATION_FILE_SHARE_MODE & FILE_SHARE_DELETE, 0);
+        assert_ne!(REGULAR_FILE_SHARE_MODE & FILE_SHARE_DELETE, 0);
+
+        let target = temporary.path().join(generation_name).join(segment_name);
+        let writer_error = OpenOptions::new()
+            .write(true)
+            .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE)
+            .open(&target)
+            .unwrap_err();
+        assert_eq!(writer_error.raw_os_error(), Some(32));
+        let delete_error = OpenOptions::new()
+            .access_mode(DELETE)
+            .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE)
+            .open(&target)
+            .unwrap_err();
+        assert_eq!(delete_error.raw_os_error(), Some(32));
+        let replacement = temporary
+            .path()
+            .join(generation_name)
+            .join("replacement.store");
+        let mut replacement_file = File::create(&replacement)?;
+        replacement_file.write_all(b"substituted!!")?;
+        replacement_file.sync_all()?;
+        drop(replacement_file);
+        let error = crate::durable_atomic_replace_file(&replacement, &target).unwrap_err();
+        // MoveFileExW maps the target's denied delete sharing to access denied.
+        assert_eq!(error.raw_os_error(), Some(5));
+        assert_eq!(fs::read(&target)?, b"authenticated");
+
+        drop(reopened_segment);
+        drop(segment);
+        fs::remove_file(replacement)?;
         Ok(())
     }
 
