@@ -1,15 +1,15 @@
 {
   "schema_version": 3,
   "capability": "exact_mcp_tool_call_attribution",
-  "capability_revision": 3,
+  "capability_revision": 4,
   "scope": "Exact event-local MCP dispatch server alias and advertised tool identity only; general provider import support is defined separately.",
   "conformance_authority": {
     "manifest": "crates/ctx-history-capture/tests/mcp-attribution-conformance.manifest.json",
     "suite_registry": "crates/ctx-history-capture/tests/mcp_attribution_suites.bzl",
-    "manifest_sha256": "91ce8d2c28a071d99e2095ddb77f058c60c8adf52e50d4a2c91551947ae0b8c9",
-    "suite_registry_sha256": "e7cec1aa3bff1110ebe66013b47db655a8dce52e813c3e55b9c24051fbcf1a6a",
-    "manifest_schema_version": 6,
-    "capability_revision": 5,
+    "manifest_sha256": "1c298d485915d124bd2edc6a986cd11a6955559edefcf649488b1c9508f5c9d9",
+    "suite_registry_sha256": "bb1d80c4ddb4077e3264a82eb5a07f63af68b1a8b0373a7813bb359a2efa94ef",
+    "manifest_schema_version": 7,
+    "capability_revision": 6,
     "status_mapping": {
       "exact": "supported",
       "not-qualified": "not_qualified",
@@ -91,7 +91,7 @@
     }
   },
   "status_definitions": {
-    "exact": "ctx may publish mcp_tool_call only for a uniquely linked canonical terminal record carrying the authoritative raw server alias and advertised tool name within this exact tuple.",
+    "exact": "ctx may publish a CoreActivity invocation with protocol mcp, the authoritative raw server alias, the advertised tool name, and exact provider call linkage within this tuple.",
     "not-qualified": "The tuple was evaluated and fails the exact-attribution evidence rule; general local history import may still be Supported.",
     "excluded": "The candidate route is outside ctx's local-only history import boundary."
   },
@@ -449,39 +449,39 @@
       "provider_id": "codex", "route": "native_import", "source_format": "codex_session_jsonl_tree", "source_schema": "codex-nativepath-jsonl-v0",
       "producer_bound": {"kind": "unversioned", "generation": 1, "unknown_generations": "not-qualified"},
       "implementation_source": "crates/ctx-history-provider-codex/src/codex/nativepath/source_backed.rs",
-      "parser_revision": "codex-nativepath-core-record-v32-current-exec-repository-evidence",
-      "suite_id": "ctx-history-capture::test:codex_direct_result",
-      "conformance_suite": "codex_direct_result",
+      "parser_revision": "codex-nativepath-core-activity-v3-empty-result-text",
+      "suite_id": "ctx-history-provider-codex::native_unit",
+      "conformance_suite": "mcp_attribution_codex_provider_units",
       "tests": [
-        {"id": "exact_error_attribution_and_ambiguous_pair_abstention_survive_publication", "source": "crates/ctx-history-capture/tests/codex_direct_result.rs"},
-        {"id": "invalid_attribution_preserves_terminal_content_and_all_stable_identities", "source": "crates/ctx-history-capture/tests/codex_direct_result.rs"},
-        {"id": "appended_duplicate_terminal_retracts_prior_attribution_and_preserves_ids", "source": "crates/ctx-history-capture/tests/codex_direct_result.rs"}
+        {"id": "codex::nativepath::rows::tests::mcp_terminal_activity_preserves_exact_server_tool_and_linkage", "source": "crates/ctx-history-provider-codex/src/codex/nativepath/rows.rs"},
+        {"id": "codex::nativepath::rows::tests::duplicate_selectors_withhold_linkage_and_preserve_raw_fact_order", "source": "crates/ctx-history-provider-codex/src/codex/nativepath/rows.rs"},
+        {"id": "codex::nativepath::rows::tests::empty_result_string_is_absent_text_with_exact_structured_capture", "source": "crates/ctx-history-provider-codex/src/codex/nativepath/rows.rs"}
       ]
     },
     {
       "provider_id": "warp", "route": "native_import", "source_format": "warp_sqlite", "source_schema": "warp-agent-task-protobuf-v1",
       "producer_bound": {"kind": "unversioned", "generation": 1, "unknown_generations": "not-qualified"},
       "implementation_source": "crates/ctx-history-providers-sqlite-selected/src/providers/warp/source_backed.rs",
-      "parser_revision": "warp-source-backed-logical-v5",
+      "parser_revision": "warp-source-backed-logical-v6-neutral-activity",
       "suite_id": "ctx-history-providers-sqlite-selected::native_unit",
       "conformance_suite": "mcp_attribution_selected_sqlite_provider_units",
       "tests": [
         {"id": "providers::warp::nativepath::decode::tests::qualified_mcp_success_error_cancellation_and_nontext_results_link_exactly", "source": "crates/ctx-history-providers-sqlite-selected/src/providers/warp/nativepath/decode/tests.rs"},
         {"id": "providers::warp::nativepath::decode::tests::invalid_duplicate_orphan_and_ambiguous_mcp_relations_abstain", "source": "crates/ctx-history-providers-sqlite-selected/src/providers/warp/nativepath/decode/tests.rs"},
-        {"id": "providers::warp::source_backed::result_tests::sanitized_mcp_fixture_projects_only_unique_qualified_terminal_pairs", "source": "crates/ctx-history-providers-sqlite-selected/src/providers/warp/source_backed/result_tests.rs"}
+        {"id": "providers::warp::source_backed::result_tests::core_projection_keeps_success_failure_unknown_and_large_result_bodies_once", "source": "crates/ctx-history-providers-sqlite-selected/src/providers/warp/source_backed/result_tests.rs"}
       ]
     },
     {
       "provider_id": "copilot_cli", "route": "native_import", "source_format": "copilot_cli_session_events_jsonl", "source_schema": "copilot-cli-direct-native-jsonl-v1",
       "producer_bound": {"kind": "unversioned", "generation": 1, "unknown_generations": "not-qualified"},
       "implementation_source": "crates/ctx-history-provider-native-jsonl/src/native_path/copilot.rs",
-      "parser_revision": "copilot-cli-direct-native-jsonl-v6-mcp-start-generic-body",
+      "parser_revision": "copilot-cli-direct-native-jsonl-v7-core-activity",
       "suite_id": "ctx-history-provider-native-jsonl::native_unit",
       "conformance_suite": "mcp_attribution_native_jsonl_provider_units",
       "tests": [
-        {"id": "native_path::source_backed::copilot_tests::copilot_attributes_only_unique_exact_terminal_completions", "source": "crates/ctx-history-provider-native-jsonl/src/native_path/source_backed_copilot_tests.rs"},
-        {"id": "native_path::source_backed::copilot_tests::copilot_malformed_ambiguous_or_orphan_linkage_abstains", "source": "crates/ctx-history-provider-native-jsonl/src/native_path/source_backed_copilot_tests.rs"},
-        {"id": "native_path::source_backed::copilot_tests::copilot_attribution_does_not_change_stable_event_ids", "source": "crates/ctx-history-provider-native-jsonl/src/native_path/source_backed_copilot_tests.rs"}
+        {"id": "native_path::source_backed::copilot_tests::invocation_preserves_exact_native_identity_and_arguments", "source": "crates/ctx-history-provider-native-jsonl/src/native_path/source_backed_copilot_tests.rs"},
+        {"id": "native_path::source_backed::copilot_tests::absent_and_ambiguous_capture_states_are_explicit", "source": "crates/ctx-history-provider-native-jsonl/src/native_path/source_backed_copilot_tests.rs"},
+        {"id": "native_path::source_backed::copilot_tests::completion_preserves_literal_result_without_inferred_status", "source": "crates/ctx-history-provider-native-jsonl/src/native_path/source_backed_copilot_tests.rs"}
       ]
     }
   ]

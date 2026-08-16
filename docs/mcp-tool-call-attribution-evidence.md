@@ -1,87 +1,83 @@
-# MCP attribution evidence runbook
+# MCP activity attribution evidence runbook
 
-This runbook governs additions to
+This runbook governs exact rows in
 [`mcp-tool-call-attribution-capabilities.json`](mcp-tool-call-attribution-capabilities.json).
-It is an evidence contract for exact MCP tool-call attribution, not another
+It is an evidence contract for provider-native MCP activity, not another
 provider-support table. General local history support remains authoritative in
 [`provider-support-matrix.json`](provider-support-matrix.json).
 
 ## Qualification bar
 
-Runtime knowledge alone is insufficient. An `exact` tuple must prove all of
-the following at the imported durable boundary:
+An `exact` tuple must prove all of the following at the imported durable
+boundary:
 
-1. The authoritative raw dispatch server alias and MCP-advertised tool name.
-2. A durable, unique call identity linking that invocation to one canonical
-   success, error, cancellation, or other terminal result.
-3. A producer, route, source format, and schema/version boundary. An
-   unversioned observation qualifies only the recorded pin; unknown generations
-   remain `not-qualified`.
-4. Executable positive, ambiguity/duplicate, and stable-identity test IDs in
-   `exact_checks` that resolve through the public conformance authority.
+1. The source stores an authoritative MCP protocol marker, raw dispatch server
+   alias, and advertised tool name without reconstruction.
+2. The source stores exact provider call identity that can bind invocation and
+   result activity without FIFO, order, or timing inference.
+3. The producer, route, source format, schema, and version/generation boundary
+   are explicit. Unknown generations remain `not-qualified`.
+4. Current executable provider tests cover an exact activity pair,
+   duplicate/ambiguous abstention, and result preservation.
+
+Configuration, current server lists, record order, punctuation splitting, and
+time proximity are never identity evidence. Malformed, partial, oversized,
+duplicate, or ambiguous identity evidence must not become a qualifying
+`activity.invocation`.
 
 The machine authority is
 `crates/ctx-history-capture/tests/mcp-attribution-conformance.manifest.json`.
-Its only executable suite registry is
-`crates/ctx-history-capture/tests/mcp_attribution_suites.bzl`, which binds suite
-aliases to Bazel targets, named tests, and evidence classes. The capabilities
-JSON is the user-facing projection: its `exact`, `not-qualified`, and
-`excluded` states map to the manifest's `supported`, `not_qualified`, and
-`excluded` states. It does not define an independent suite table.
+Its executable suite registry is
+`crates/ctx-history-capture/tests/mcp_attribution_suites.bzl`. Manifest
+capability revision 6 freezes 43 providers, 45 base routes, 44 imported schema
+generations, and 48 capability lanes: three `supported`, 44 `not_qualified`,
+and one `excluded`. Supported rows require exactly the current public evidence
+roles `exact_positive_pair`, `ambiguity_duplicate_linkage`, and
+`result_preservation`.
 
-Manifest capability revision 5 freezes 43 providers, 45 base routes, 44 imported
-schema generations, and 48 capability lanes: three `supported`, 44 `not_qualified`,
-and one `excluded`. For Codex's session-tree route, only unversioned generation
-1 is supported. Producer versions 0.200.0, 0.201.0, and 0.202.0 are distinct
+For Codex's session-tree route, only unversioned generation 1 is supported.
+Producer versions 0.200.0, 0.201.0, and 0.202.0 are distinct
 `not_qualified` lanes, and the prompt-history route remains `not_qualified`.
-
-Configuration, current server lists, record order, names split on punctuation,
-and FIFO or time proximity are never identity evidence. A malformed, partial,
-oversized, duplicate, or ambiguous pair must retain the ordinary event and omit
-`mcp_tool_call`.
 
 ## Typed failure reasons
 
-- `lossy_composite`: persistence sanitizes, normalizes, truncates, flattens, or
-  non-injectively combines the pair.
-- `exact_pair_transient_or_config`: the pair exists only in runtime,
+- `lossy_composite`: persistence normalizes, truncates, flattens, or
+  non-injectively combines required identity.
+- `exact_pair_transient_or_config`: required identity exists only in runtime,
   configuration, discovery, or provider-overridable state.
 - `no_server_field`: durable call evidence has no authoritative server alias.
-- `no_unique_terminal_link`: linking requires order, FIFO, timing, or name
-  inference rather than a durable unique key.
+- `no_unique_terminal_link`: linking would require order, FIFO, timing, or name
+  inference instead of an exact key.
 - `route_mismatch`: a richer producer route is not the route ctx imports, or
-  identity is lost before the admitted boundary.
+  required identity is lost before the admitted boundary.
 - `writer_version_unproven`: no public first-party writer/version contract
-  proves the admitted durable fields and lifecycle.
+  proves the admitted durable shape.
 
-`excluded` is separate from those failures. It is used here only for a hosted
-remote trace outside ctx's local-only history boundary.
+`excluded` is separate from those failures and is used only for a hosted remote
+trace outside ctx's local-history boundary.
 
 ## Public evidence hygiene
 
 Evidence entries use public first-party source, release, artifact, or product
-links and record only version bounds that were actually observed. Static binary
-inspection may support a row when the official artifact and version are public,
-but local extraction paths, credentials, user transcripts, and private reports
-must never appear in this contract.
+links and record only observed version bounds. Static binary inspection may
+support a row when the official artifact and version are public, but local
+paths, credentials, user transcripts, and nonpublic reports must never appear
+in this contract.
 
-Provider history and exact server/tool names are private and not share-safe by
-default. Sanitized fixtures must preserve the structural ambiguity or exactness
-being tested without copying arguments, results, paths, tokens, customer names,
-or unrelated metadata.
+Provider history and activity values are private and not share-safe by default.
+Sanitized fixtures must preserve the structural ambiguity or exactness being
+tested without copying arguments, results, paths, tokens, customer names, or
+unrelated metadata.
 
 ## Change checklist
 
-When adding or changing a tuple:
-
 1. Add a new route/schema/producer row instead of broadening an older row by
    implication.
-2. Record public evidence, observed pins, and the fail-closed treatment of
-   unknown generations.
-3. For `exact`, add the executable test IDs. For `not-qualified`, choose one
-   primary typed reason and explain secondary defects in `detail`.
-4. Run `python3 scripts/check-mcp-tool-call-attribution-capabilities.py` and the
-   normal docs checks. The checker freezes 43 providers, 45 base routes, 48
-   tuple rows, three exact tuples, 44 not-qualified tuples, and one excluded
-   tuple. When the conformance files are present, it also cross-checks the
-   manifest arithmetic, Codex partition, and suite/test references.
+2. Record public evidence, observed pins, and fail-closed treatment of unknown
+   generations.
+3. For `exact`, bind current parser revision plus one executable provider test
+   for each required evidence role. For `not-qualified`, choose one primary
+   typed reason and explain secondary defects in `detail`.
+4. Run `python3 scripts/check-mcp-tool-call-attribution-capabilities.py`, its
+   mutation tests, the three focused provider suites, and the normal docs
+   check.

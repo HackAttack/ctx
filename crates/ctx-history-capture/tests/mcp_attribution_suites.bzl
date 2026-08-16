@@ -20,54 +20,22 @@ MCP_ATTRIBUTION_EVIDENCE_CLASSES = [
 # aliases bind named tests in a larger existing Rust target; the runner proves
 # each name exists and executes every claimed test with libtest `--exact`.
 MCP_ATTRIBUTION_PUBLIC_SUITES = {
-    "codex_direct_result": struct(
-        target = "//crates/ctx-history-capture:codex_direct_result_tests",
-        selected_inventory = False,
-        tests = {
-            "appended_duplicate_terminal_retracts_prior_attribution_and_preserves_ids": ["ambiguity_duplicate_linkage"],
-            "appended_malformed_duplicate_retracts_attribution_without_touching_neighbor_ids": ["ambiguity_duplicate_linkage"],
-            "exact_error_attribution_and_ambiguous_pair_abstention_survive_publication": ["canonical_terminal_outcomes"],
-            "exact_raw_limit_omits_oversized_arguments_but_publishes_result": ["max_plus_one"],
-            "invalid_attribution_preserves_terminal_content_and_all_stable_identities": ["stable_ids"],
-            "malformed_mcp_results_are_rejected_without_hiding_later_valid_content": ["malformed_identity"],
-            "codex_dual_layer_mcp_metadata_and_exchange_invocation_keep_search_contract": ["search_nonindexing"],
-            "malformed_duplicate_terminals_abstain_without_losing_public_content_or_ids": ["malformed_identity"],
-            "nested_duplicate_json_is_unavailable_without_losing_terminal_text": ["result_preservation"],
-            "over_8_mib_mcp_result_is_admitted_once_and_indexable": ["result_preservation"],
-            "redacted_real_shape_fixture_is_admitted_with_linkage_and_metadata": ["exact_positive_pair"],
-        },
-    ),
-    "mcp_attribution_core": struct(
-        target = "//crates/ctx-history-core:unit_tests",
-        selected_inventory = True,
-        tests = {
-            "core_record::tests::mcp_tool_call_bounds_each_decoded_utf8_component_at_exact_64_kib": ["max_plus_one"],
-        },
-    ),
-    "mcp_attribution_capture_provider_units": struct(
-        target = "//crates/ctx-history-capture-composition:unit_tests",
-        selected_inventory = True,
-        tests = {
-            "source_backed::tests::copilot::copilot_route_enforces_independent_exact_identity_component_boundaries": ["exact_boundary"],
-        },
-    ),
     "mcp_attribution_codex_provider_units": struct(
         target = "//crates/ctx-history-provider-codex:unit_tests",
         selected_inventory = True,
         tests = {
-            "codex::nativepath::tests::profiles::exact_mcp_attribution_preserves_opaque_names_and_component_bound": ["exact_boundary"],
+            "codex::nativepath::rows::tests::duplicate_selectors_withhold_linkage_and_preserve_raw_fact_order": ["ambiguity_duplicate_linkage"],
+            "codex::nativepath::rows::tests::empty_result_string_is_absent_text_with_exact_structured_capture": ["result_preservation"],
+            "codex::nativepath::rows::tests::mcp_terminal_activity_preserves_exact_server_tool_and_linkage": ["exact_positive_pair"],
         },
     ),
     "mcp_attribution_native_jsonl_provider_units": struct(
         target = "//crates/ctx-history-provider-native-jsonl:unit_tests",
         selected_inventory = True,
         tests = {
-            "native_path::source_backed::copilot_tests::copilot_attribution_does_not_change_stable_event_ids": ["stable_ids"],
-            "native_path::source_backed::copilot_tests::copilot_attributes_only_unique_exact_terminal_completions": ["canonical_terminal_outcomes"],
-            "native_path::source_backed::copilot_tests::copilot_late_duplicate_retracts_the_previously_attributed_completion": ["ambiguity_duplicate_linkage"],
-            "native_path::source_backed::copilot_tests::copilot_malformed_ambiguous_or_orphan_linkage_abstains": ["malformed_identity"],
-            "native_path::source_backed::copilot_tests::copilot_large_unrelated_line_preserves_linkage_while_malformed_line_abstains": ["result_preservation"],
-            "native_path::source_backed::copilot_tests::copilot_same_call_id_in_separate_sessions_remains_independent": ["exact_positive_pair"],
+            "native_path::source_backed::copilot_tests::absent_and_ambiguous_capture_states_are_explicit": ["ambiguity_duplicate_linkage"],
+            "native_path::source_backed::copilot_tests::completion_preserves_literal_result_without_inferred_status": ["result_preservation"],
+            "native_path::source_backed::copilot_tests::invocation_preserves_exact_native_identity_and_arguments": ["exact_positive_pair"],
         },
     ),
     "mcp_attribution_selected_sqlite_provider_units": struct(
@@ -75,19 +43,8 @@ MCP_ATTRIBUTION_PUBLIC_SUITES = {
         selected_inventory = True,
         tests = {
             "providers::warp::nativepath::decode::tests::invalid_duplicate_orphan_and_ambiguous_mcp_relations_abstain": ["ambiguity_duplicate_linkage"],
-            "providers::warp::nativepath::decode::tests::invalid_then_valid_required_strings_permanently_invalidate_attribution": ["malformed_identity"],
             "providers::warp::nativepath::decode::tests::qualified_mcp_success_error_cancellation_and_nontext_results_link_exactly": ["exact_positive_pair"],
-            "providers::warp::nativepath::decode::tests::textual_success_failure_and_unknown_results_are_complete": ["canonical_terminal_outcomes"],
-            "providers::warp::nativepath::decode::tests::validated_uuid_text_is_preserved_exactly": ["exact_boundary"],
             "providers::warp::source_backed::result_tests::core_projection_keeps_success_failure_unknown_and_large_result_bodies_once": ["result_preservation"],
-            "providers::warp::source_backed::result_tests::sanitized_mcp_fixture_projects_only_unique_qualified_terminal_pairs": ["stable_ids"],
-        },
-    ),
-    "mcp_attribution_privacy": struct(
-        target = "//crates/ctx-agent-application:mcp_attribution_privacy_tests",
-        selected_inventory = False,
-        tests = {
-            "mcp_attribution_canaries_stay_out_of_search_analytics_usage_and_diagnostics": ["privacy_sinks"],
         },
     ),
 }

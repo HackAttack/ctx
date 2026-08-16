@@ -45,13 +45,18 @@ CAPABILITY_PATH = REPO_ROOT / "docs/mcp-tool-call-attribution-capabilities.json"
 TARGET_INVENTORY_PATH = REPO_ROOT / "tools/bazel/rust-target-inventory.json"
 PUBLIC_DOC_PATHS = (
     "docs/mcp-tool-call-attribution.md",
+    "docs/mcp-tool-call-attribution-evidence.md",
+    "docs/mcp-exchange-capture.md",
     "docs/provider-support.md",
     "docs/providers.md",
     "docs/cli-reference.md",
     "docs/contracts/json.md",
+    "docs/event-queries.md",
     "docs/mcp.md",
-    "docs/mcp-tool-call-attribution-evidence.md",
     "docs/privacy-storage.md",
+    "docs/search.md",
+    "docs/sdks.md",
+    "docs/storage.md",
 )
 PUBLIC_AUTHORITY_SOURCE_PATHS = (
     Path(CONFORMANCE_MANIFEST),
@@ -774,7 +779,7 @@ def validate_exact_checks(
             check.get("conformance_suite"), f"{label}.conformance_suite"
         )
         expected_conformance_suite = {
-            "codex": "codex_direct_result",
+            "codex": "mcp_attribution_codex_provider_units",
             "copilot_cli": "mcp_attribution_native_jsonl_provider_units",
             "warp": "mcp_attribution_selected_sqlite_provider_units",
         }.get(base[0], "mcp_attribution_provider_units")
@@ -782,7 +787,7 @@ def validate_exact_checks(
             fail(f"{label}.conformance_suite does not name the authoritative suite")
         tests = expect_list(check.get("tests"), f"{label}.tests")
         if len(tests) < 3:
-            fail(f"{label} must name positive, ambiguity, and stability tests")
+            fail(f"{label} must name exact activity, ambiguity, and result tests")
         for test_index, raw_test in enumerate(tests):
             test = expect_dict(raw_test, f"{label}.tests[{test_index}]")
             test_id = validate_test_source(
@@ -822,12 +827,15 @@ def validate_public_docs(
         violation = public_boundary_violation(docs[path])
         if violation is not None:
             fail(f"{path} crosses the public documentation boundary: {violation}")
+        for removed in ("mcp_tool_call", "mcpToolCall", "mcp_exchange", "mcpExchange"):
+            if removed in docs[path]:
+                fail(f"{path} still claims removed Core attribution field {removed}")
     validate_public_checker_sources(source_overrides=checker_source_overrides)
-    fixed = "Capability revision 3 exact providers are Codex, Warp, and Copilot CLI."
+    fixed = "Capability revision 4 exact providers are Codex, Warp, and Copilot CLI."
     for path in ("docs/provider-support.md", "docs/providers.md"):
         normalized_provider_doc = " ".join(docs[path].split())
         if fixed not in normalized_provider_doc:
-            fail(f"{path} contradicts or omits the three-provider revision-3 contract")
+            fail(f"{path} contradicts or omits the three-provider revision-4 contract")
         if "capability revision 1" in docs[path].lower():
             fail(f"{path} still claims capability revision 1")
     main = docs["docs/mcp-tool-call-attribution.md"]
@@ -835,21 +843,25 @@ def validate_public_docs(
     required = (
         "Codex `codex_session_jsonl_tree` / `codex-nativepath-jsonl-v0`",
         "48 capability lanes: three `exact`, 44 `not-qualified`, and one `excluded`",
-        "for unversioned producer generation 1 only",
+        "`codex-nativepath-core-activity-v3-empty-result-text`",
+        "`warp-source-backed-logical-v6-neutral-activity`",
+        "`copilot-cli-direct-native-jsonl-v7-core-activity`",
+        "`activity.invocation`",
+        "`provider_call_id`",
+        "`protocol` equal to `mcp`",
+        "an empty provider result string is `absent` in the text channel and remains an exact empty string in the structured-content channel",
+        "`--content text` and `--content none` omit `activity`",
         "versions 0.200.0, 0.201.0, and 0.202.0 are separate explicit `not-qualified` lanes",
         "Warp `warp_sqlite` / `warp-agent-task-protobuf-v1`",
         "Copilot CLI `copilot_cli_session_events_jsonl` / `copilot-cli-direct-native-jsonl-v1`",
-        "first 256 Unicode scalar values from each component independently",
-        "… [display truncated]",
-        "MCP identity display truncated; use --format json or --format jsonl for exact values.",
-        "MCP identity display truncated; inspect structuredContent for exact JSON values.",
-        "Machine JSON, JSONL, and MCP `structuredContent` preserve the full exact values",
-        "no server/tool filter, no search, no query selector, and no SQL access",
-        "--content none",
+        "Machine JSON/JSONL and MCP `structuredContent` preserve the admitted activity value exactly",
+        "no server/tool filter, search, query selector, SQL column, ranking signal",
+        "content-governed Core activity, not a dedicated top-level attribution object",
+        "--content full",
         "--mode log",
         "client-side",
-        "Deep Agents hosted trace",
-        "private and not share-safe",
+        "Deep Agents contributes its local SQLite import plus a separately excluded hosted trace",
+        "private local data",
         "Reported by [@j2h4u]",
     )
     for snippet in required:
@@ -861,6 +873,7 @@ def validate_public_docs(
         CONFORMANCE_SUITES,
         "three `supported`, 44 `not_qualified`, and one `excluded`",
         "only unversioned generation 1 is supported",
+        "`exact_positive_pair`, `ambiguity_duplicate_linkage`, and `result_preservation`",
     ):
         if snippet not in runbook:
             fail(f"public evidence runbook is missing authority text: {snippet}")
@@ -878,8 +891,8 @@ def validate_contract(
 ) -> dict[str, Any]:
     if support.get("schema_version") != 2:
         fail("provider support matrix schema_version must be 2")
-    if capability.get("schema_version") != 3 or capability.get("capability_revision") != 3:
-        fail("capability schema_version and capability_revision must both be 3")
+    if capability.get("schema_version") != 3 or capability.get("capability_revision") != 4:
+        fail("capability schema_version must be 3 and capability_revision must be 4")
     if capability.get("capability") != "exact_mcp_tool_call_attribution":
         fail("unexpected capability name")
     if capability.get("key_fields") != [

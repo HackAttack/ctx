@@ -315,7 +315,7 @@ fn codex_result_activity(
         ActivityTextCapture::Unavailable
     } else {
         match value.as_ref() {
-            Some(Value::String(value)) => ActivityTextCapture::Present {
+            Some(Value::String(value)) if !value.is_empty() => ActivityTextCapture::Present {
                 value: value.clone(),
             },
             Some(_) | None => ActivityTextCapture::Absent,
@@ -645,6 +645,57 @@ mod tests {
     use super::*;
 
     #[test]
+    fn mcp_terminal_activity_preserves_exact_server_tool_and_linkage() {
+        let occurred_at = DateTime::parse_from_rfc3339("2026-08-16T12:00:00Z")
+            .unwrap()
+            .with_timezone(&Utc);
+        let payload = serde_json::json!({
+            "type": "mcp_tool_call_end",
+            "call_id": "call-terminal",
+            "invocation": {
+                "server": "source-server",
+                "tool": "source-tool",
+                "arguments": {"path": "A/../B", "items": [1, 1]}
+            },
+            "status": "provider::failed",
+            "result": {"error": "native failure"}
+        });
+        let raw = serde_json::to_vec(&payload).unwrap();
+        let audit = audit_codex_record(&raw).unwrap();
+        let activity = codex_result_activity(
+            payload.get("call_id").and_then(Value::as_str),
+            payload.get("result"),
+            &payload,
+            &audit,
+            occurred_at,
+        )
+        .unwrap();
+
+        assert_eq!(
+            activity.provider_call_id,
+            Some(TypedKey::utf8("call-terminal").unwrap())
+        );
+        let invocation = activity.invocation.unwrap();
+        assert_eq!(invocation.protocol.as_deref(), Some("mcp"));
+        assert_eq!(invocation.server.as_deref(), Some("source-server"));
+        assert_eq!(invocation.tool, "source-tool");
+        assert_eq!(
+            invocation.arguments,
+            ActivityJsonCapture::Present {
+                value: serde_json::json!({"path": "A/../B", "items": [1, 1]})
+            }
+        );
+        let result = activity.result.unwrap();
+        assert_eq!(result.status.as_deref(), Some("provider::failed"));
+        assert_eq!(
+            result.structured_content,
+            ActivityJsonCapture::Present {
+                value: serde_json::json!({"error": "native failure"})
+            }
+        );
+    }
+
+    #[test]
     fn activity_preserves_exact_mcp_invocation_and_result_channels() {
         let occurred_at = DateTime::parse_from_rfc3339("2026-08-16T12:00:00Z")
             .unwrap()
@@ -703,6 +754,37 @@ mod tests {
             result.structured_content,
             ActivityJsonCapture::Present {
                 value: payload.get("result").unwrap().clone()
+            }
+        );
+    }
+
+    #[test]
+    fn empty_result_string_is_absent_text_with_exact_structured_capture() {
+        let occurred_at = DateTime::parse_from_rfc3339("2026-08-16T12:00:00Z")
+            .unwrap()
+            .with_timezone(&Utc);
+        let payload = serde_json::json!({
+            "type": "function_call_output",
+            "call_id": "call-empty",
+            "output": ""
+        });
+        let raw = serde_json::to_vec(&payload).unwrap();
+        let audit = audit_codex_record(&raw).unwrap();
+        let activity = codex_result_activity(
+            Some("call-empty"),
+            payload.get("output"),
+            &payload,
+            &audit,
+            occurred_at,
+        )
+        .unwrap();
+
+        let result = activity.result.unwrap();
+        assert_eq!(result.text, ActivityTextCapture::Absent);
+        assert_eq!(
+            result.structured_content,
+            ActivityJsonCapture::Present {
+                value: Value::String(String::new())
             }
         );
     }

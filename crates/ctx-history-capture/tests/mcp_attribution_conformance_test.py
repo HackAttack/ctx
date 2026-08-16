@@ -560,7 +560,7 @@ class ConformanceRunnerTests(unittest.TestCase):
         self.assertEqual(inventory.base_route_count, 1)
         self.assertEqual(inventory.schema_generation_count, 1)
         self.assertEqual(inventory.capability_lane_count, 1)
-        self.assertEqual(inventory.public_executable_count, 9)
+        self.assertEqual(inventory.public_executable_count, 3)
 
     def test_unknown_mode_is_rejected(self) -> None:
         manifest = minimal_manifest()
@@ -594,7 +594,11 @@ class ConformanceRunnerTests(unittest.TestCase):
         )
         self.assertEqual(
             REQUIRED_EVIDENCE_CLASSES,
-            ALLOWED_EVIDENCE_CLASSES - {"search_nonindexing"},
+            {
+                "ambiguity_duplicate_linkage",
+                "exact_positive_pair",
+                "result_preservation",
+            },
         )
 
     def test_unknown_manifest_extensions_are_rejected(self) -> None:
@@ -1103,9 +1107,9 @@ class ConformanceRunnerTests(unittest.TestCase):
         lane["evidence"] = [
             evidence
             for evidence in lane["evidence"]
-            if evidence["class"] != "exact_boundary"
+            if evidence["class"] != "exact_positive_pair"
         ]
-        with self.assertRaisesRegex(ConformanceError, "exact_boundary"):
+        with self.assertRaisesRegex(ConformanceError, "exact_positive_pair"):
             validate_fixture_manifest(manifest, minimal_matrix())
 
     def test_nonpublic_evidence_class_is_rejected(self) -> None:

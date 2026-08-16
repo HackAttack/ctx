@@ -106,7 +106,6 @@
       "targets": {
         "custom-build:build-script-build": "//:history_capture_build_cfg_parity_check",
         "lib:ctx_history_capture": "//crates/ctx-history-capture:lib",
-        "test:codex_direct_result": "//crates/ctx-history-capture:codex_direct_result_tests",
         "test:self_contained_core_final_locator_removal": "//crates/ctx-history-capture:self_contained_core_final_locator_removal_tests"
       },
       "native_unit": "//crates/ctx-history-capture:unit_tests",

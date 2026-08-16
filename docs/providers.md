@@ -37,15 +37,14 @@ Supported provider import does not automatically qualify it. The complete
 [`mcp-tool-call-attribution.md`](mcp-tool-call-attribution.md) and its
 machine-readable
 [`capability contract`](mcp-tool-call-attribution-capabilities.json).
-Capability revision 3 exact providers are Codex, Warp, and Copilot CLI. Deep
+Capability revision 4 exact providers are Codex, Warp, and Copilot CLI. Deep
 Agents remains generally supported through its local SQLite import, which is
 not qualified for exact attribution; its hosted trace is separately excluded
 from this local-only capability boundary.
 
-Typed MCP invocation/response capture is content rather than attribution
-metadata. It currently covers only Codex session JSONL, Warp SQLite, and
-Copilot CLI JSONL and preserves each provider's native combined or split event
-shape. See [`mcp-exchange-capture.md`](mcp-exchange-capture.md).
+Provider activity is policy-selected content. For qualified tuples it preserves
+each provider's native combined or split invocation/result event shape. See
+[`mcp-exchange-capture.md`](mcp-exchange-capture.md).
 
 ## Location Selection
 

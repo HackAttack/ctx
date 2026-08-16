@@ -32,11 +32,11 @@ Custom History has a separate opt-in described in
 event selectors. Legacy files, unstable IDs, command-only plugins, and generic
 ordered-prefix claims remain unknown.
 
-General history support does not imply exact MCP tool-call attribution. That
-event-local capability has its own provider + route + source format + format
-version authority in
+General history support does not imply exact MCP activity attribution. That
+event-local Core capability has its own provider + route + source format +
+format version authority in
 [`mcp-tool-call-attribution-capabilities.json`](mcp-tool-call-attribution-capabilities.json).
-Capability revision 3 exact providers are Codex, Warp, and Copilot CLI. The
+Capability revision 4 exact providers are Codex, Warp, and Copilot CLI. The
 complete evidence matrix contains 45 base routes and 48 capability lanes:
 three exact, 44 not-qualified, and one excluded. The Deep Agents hosted trace
 is excluded from the local-only boundary, while its local SQLite history import
@@ -44,10 +44,9 @@ remains Supported but not qualified for exact attribution. See
 [`mcp-tool-call-attribution.md`](mcp-tool-call-attribution.md) for absence,
 privacy, migration, and retrieval semantics.
 
-Typed MCP invocation/response capture is another separate event-content
-capability. It currently covers only Codex session JSONL, Warp SQLite, and
-Copilot CLI JSONL at their documented native event granularities; it does not
-change general provider support or the exact-attribution qualification counts.
+Current provider activity capture retains invocation/result channels at native
+event granularity for the qualified tuples; it does not change general provider
+support or the exact-attribution qualification counts.
 See [`mcp-exchange-capture.md`](mcp-exchange-capture.md).
 
 The public
