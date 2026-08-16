@@ -289,7 +289,7 @@ fn copilot_and_windsurf_replay_preserve_current_revision_ids_and_records() {
             "ac4f77cb-6658-8c1d-89fe-6d23fbf96fd0",
             "6c78de65-0cee-8b0c-841f-56d0004e2af8",
             "cb5a35bb-fb49-8701-8739-101eb01c524f",
-            "8152a7241eea4a683d5b9efa9d58c51b09b83823abe0f12357748a29d47ea109",
+            "aa91de3edb59adf3e206dbc414ebdffa49980f6505e306315a9d97d3815c987b",
         ),
         (
             CaptureProvider::CopilotCli,
@@ -302,7 +302,7 @@ fn copilot_and_windsurf_replay_preserve_current_revision_ids_and_records() {
             "c1ebd99c-7338-859b-891d-1c7e04d9ae9d",
             "5ff93a01-4aa3-82f8-8d9e-784490016567",
             "8d4627ce-c12c-8d64-af2d-d85ac722121f",
-            "3b9f9b3aa863110cf8c8de2a134c6f3d006547e2bbafc9ab50f96b25905dc25b",
+            "535ee3308d3cf7da743d0a995482ef25a2efb898019343d80e10c0b9505bd51b",
         ),
     ];
 
