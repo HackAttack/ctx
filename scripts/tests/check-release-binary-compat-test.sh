@@ -299,9 +299,6 @@ Load command 8
      name /System/Library/Frameworks/Metal.framework/Versions/A/Metal (offset 24)
 Load command 9
       cmd LC_LOAD_DYLIB
-     name /System/Library/Frameworks/Security.framework/Versions/A/Security (offset 24)
-Load command 10
-      cmd LC_LOAD_DYLIB
      name /usr/lib/libSystem.B.dylib (offset 24)
 Load command 11
       cmd LC_LOAD_DYLIB
@@ -399,8 +396,8 @@ EOF
 
 expect_pass linux_x64 run_check linux-x64 "${linux_x64}"
 expect_pass linux_arm64 run_check linux-aarch64 "${linux_arm64}"
-expect_pass mac_arm64_security_framework run_check macos-arm64 "${mac_arm_readobj}" "${mac_objdump}"
-expect_pass mac_x64_security_framework run_check macos-x64 "${mac_x64_readobj}" "${mac_objdump}"
+expect_pass mac_arm64_frameworks run_check macos-arm64 "${mac_arm_readobj}" "${mac_objdump}"
+expect_pass mac_x64_frameworks run_check macos-x64 "${mac_x64_readobj}" "${mac_objdump}"
 expect_pass windows run_check windows-x64 "${windows}"
 expect_pass windows_declared_tool run_declared_windows_check "${windows}"
 expect_fail malformed run_check linux-x64 "${tmp}/empty"
@@ -553,19 +550,23 @@ bad_mac_dylib="${tmp}/bad-mac-dylib.txt"
 sed 's#/System/Library/Frameworks/CoreML.framework/Versions/A/CoreML#/opt/local/libCoreML.dylib#' "${mac_objdump}" > "${bad_mac_dylib}"
 expect_fail mac_dylib run_check macos-arm64 "${mac_arm_readobj}" "${bad_mac_dylib}"
 bad_mac_framework="${tmp}/bad-mac-framework.txt"
-sed 's#/System/Library/Frameworks/Security.framework/Versions/A/Security#/System/Library/Frameworks/Contacts.framework/Versions/A/Contacts#' \
+sed 's#/System/Library/Frameworks/CoreServices.framework/Versions/A/CoreServices#/System/Library/Frameworks/Contacts.framework/Versions/A/Contacts#' \
   "${mac_objdump}" > "${bad_mac_framework}"
 expect_fail mac_arbitrary_framework run_check macos-arm64 "${mac_arm_readobj}" "${bad_mac_framework}"
 expect_fail mac_x64_arbitrary_framework run_check macos-x64 "${mac_x64_readobj}" "${bad_mac_framework}"
 bad_mac_framework_path="${tmp}/bad-mac-framework-path.txt"
-sed 's#/System/Library/Frameworks/Security.framework/Versions/A/Security#/opt/ctx/Security.framework/Versions/A/Security#' \
+sed 's#/System/Library/Frameworks/CoreServices.framework/Versions/A/CoreServices#/opt/ctx/CoreServices.framework/Versions/A/CoreServices#' \
   "${mac_objdump}" > "${bad_mac_framework_path}"
 expect_fail mac_arbitrary_framework_path run_check macos-arm64 "${mac_arm_readobj}" "${bad_mac_framework_path}"
 expect_fail mac_x64_arbitrary_framework_path run_check macos-x64 "${mac_x64_readobj}" "${bad_mac_framework_path}"
-missing_mac_security="${tmp}/missing-mac-security.txt"
-sed '/Security.framework\/Versions\/A\/Security/d' "${mac_objdump}" > "${missing_mac_security}"
-expect_fail mac_missing_security_framework run_check macos-arm64 "${mac_arm_readobj}" "${missing_mac_security}"
-expect_fail mac_x64_missing_security_framework run_check macos-x64 "${mac_x64_readobj}" "${missing_mac_security}"
+unexpected_mac_security="${tmp}/unexpected-mac-security.txt"
+sed '/name \/usr\/lib\/libobjc.A.dylib/a\
+Load command 15\
+      cmd LC_LOAD_DYLIB\
+     name /System/Library/Frameworks/Security.framework/Versions/A/Security (offset 24)' \
+  "${mac_objdump}" > "${unexpected_mac_security}"
+expect_fail mac_unexpected_security_framework run_check macos-arm64 "${mac_arm_readobj}" "${unexpected_mac_security}"
+expect_fail mac_x64_unexpected_security_framework run_check macos-x64 "${mac_x64_readobj}" "${unexpected_mac_security}"
 missing_mac_core_services="${tmp}/missing-mac-core-services.txt"
 sed '/CoreServices.framework\/Versions\/A\/CoreServices/d' "${mac_objdump}" > "${missing_mac_core_services}"
 expect_fail mac_missing_core_services_framework run_check macos-arm64 "${mac_arm_readobj}" "${missing_mac_core_services}"
