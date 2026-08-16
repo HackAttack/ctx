@@ -1,16 +1,16 @@
 use std::path::PathBuf;
 
-use anyhow::{Result, anyhow};
+use anyhow::{anyhow, Result};
 use ctx_cli_presentation::upgrade::{
-    UpgradeArgs, UpgradeCommand, render_auto_mode, render_error, render_outcome,
+    render_auto_mode, render_error, render_outcome, UpgradeArgs, UpgradeCommand,
 };
 use ctx_upgrade_engine::{
-    HostedTransactionArgs, UpgradeOutcome, UpgradePolicy, run_hosted_transaction,
+    run_hosted_transaction, HostedTransactionArgs, UpgradeOutcome, UpgradePolicy,
 };
 
 use crate::{
     analytics::{
-        UpgradeChannel, UpgradeFailureKind, UpgradeStatus, UpgradeTelemetry, count_bucket,
+        count_bucket, UpgradeChannel, UpgradeFailureKind, UpgradeStatus, UpgradeTelemetry,
     },
     config::AppConfig,
     output::JsonOutputFormat,

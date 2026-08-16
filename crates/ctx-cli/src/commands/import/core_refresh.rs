@@ -1,15 +1,15 @@
 use std::path::Path;
 
-use anyhow::{Context, Result, bail};
+use anyhow::{bail, Context, Result};
 
 use crate::{
-    DaemonTriggerCommandArg,
     config::AppConfig,
     progress::ProgressReporter,
     semantic::{
-        SourceBackedRefreshMode, SourceBackedRefreshObservation, autostart_daemon_and_wait,
-        coordinate_import_source_backed_refresh_with_progress,
+        autostart_daemon_and_wait, coordinate_import_source_backed_refresh_with_progress,
+        SourceBackedRefreshMode, SourceBackedRefreshObservation,
     },
+    DaemonTriggerCommandArg,
 };
 
 use super::ExplicitSourceCatalogAuthority;

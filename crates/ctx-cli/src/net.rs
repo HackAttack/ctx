@@ -7,7 +7,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-use anyhow::{Context, Result, anyhow};
+use anyhow::{anyhow, Context, Result};
 use sha2::{Digest, Sha256};
 use url::{Host, Url};
 
@@ -536,13 +536,11 @@ mod tests {
                 "{endpoint} should be rejected"
             );
         }
-        assert!(
-            validate_artifact_redirect(
-                &Url::parse("https://releases.example.com/file").unwrap(),
-                &Url::parse("http://releases.example.com/file").unwrap(),
-            )
-            .is_err()
-        );
+        assert!(validate_artifact_redirect(
+            &Url::parse("https://releases.example.com/file").unwrap(),
+            &Url::parse("http://releases.example.com/file").unwrap(),
+        )
+        .is_err());
     }
 
     #[test]

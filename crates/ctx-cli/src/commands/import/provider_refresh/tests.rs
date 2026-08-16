@@ -278,11 +278,9 @@ fn every_capture_provider_emits_without_usage_suppression() {
 
     assert_eq!(events.len(), providers.len());
     for provider in providers {
-        assert!(
-            events
-                .iter()
-                .any(|event| foreground(event).provider == Some(provider))
-        );
+        assert!(events
+            .iter()
+            .any(|event| foreground(event).provider == Some(provider)));
     }
 }
 

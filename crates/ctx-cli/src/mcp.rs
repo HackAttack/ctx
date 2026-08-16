@@ -3,7 +3,7 @@ use std::{io, path::PathBuf};
 use anyhow::Result;
 use clap::{Args, Subcommand};
 use ctx_agent_application::mcp::{
-    McpTelemetry, McpUsagePort, ProductIdentity, serve_stdio as serve_mcp_stdio,
+    serve_stdio as serve_mcp_stdio, McpTelemetry, McpUsagePort, ProductIdentity,
 };
 use ctx_agent_integrations::{mcp::McpToolKind, tool_backend::ToolUsageFacts};
 use ctx_client_observability::local_usage::{McpInvocation, McpUsageRecorder};
@@ -12,7 +12,7 @@ use serde_json::Value;
 #[cfg(test)]
 use {
     ctx_agent_integrations::mcp::{
-        McpHandled, McpServerIdentity, McpUsage, RequestDescriptor, handle_protocol_message,
+        handle_protocol_message, McpHandled, McpServerIdentity, McpUsage, RequestDescriptor,
     },
     serde_json::json,
     std::path::Path,
@@ -198,8 +198,9 @@ pub(crate) fn render_tool_text_for_test(value: &Value) -> String {
 mod tests {
     use super::{query_events_for_test, render_tool_text_for_test};
     use ctx_history_capture::{
-        SourceBackedProviderRegistry, SourceBackedRouteSelection, provider_source_for_path,
-        refresh_source_backed_generation, register_landed_source_backed_route,
+        provider_source_for_path, refresh_source_backed_generation,
+        register_landed_source_backed_route, SourceBackedProviderRegistry,
+        SourceBackedRouteSelection,
     };
     use ctx_history_core::CaptureProvider;
     use ctx_history_index::WriterOptions;

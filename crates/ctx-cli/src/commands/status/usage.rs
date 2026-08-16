@@ -1,9 +1,9 @@
 use std::path::Path;
 
 use anyhow::Result;
-use serde_json::{Value, json};
+use serde_json::{json, Value};
 
-use crate::{UsageStatusMode, config, local_usage, output::print_json, ui::Ui};
+use crate::{config, local_usage, output::print_json, ui::Ui, UsageStatusMode};
 use ctx_cli_presentation::commands::{
     malformed_status_config_json, removed_cloud_config_json,
     render_malformed_status_config_failure, render_removed_cloud_config_failure,

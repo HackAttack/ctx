@@ -4,7 +4,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use anyhow::{Context, Result, bail};
+use anyhow::{bail, Context, Result};
 use ctx_history_core::utc_now;
 use ctx_history_platform::platform_security::{
     establish_private_data_root, restrict_private_file, verify_private_directory,

@@ -1,4 +1,4 @@
-use crate::cli::{MAX_EVENT_WINDOW, MAX_SEARCH_LIMIT, parse_search_limit};
+use crate::cli::{parse_search_limit, MAX_EVENT_WINDOW, MAX_SEARCH_LIMIT};
 use crate::search_filters::parse_since_filter;
 use crate::transcript::normalize_uuid_prefix;
 use crate::value_parsers::parse_event_window_limit;

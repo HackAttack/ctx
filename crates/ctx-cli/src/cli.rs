@@ -13,7 +13,7 @@ use crate::{
     docs, integrations, mcp,
     output::JsonOutputFormat,
     progress::ProgressArg,
-    provider_args::{ImportFormatArg, NativeProviderArg, parse_native_provider_arg},
+    provider_args::{parse_native_provider_arg, ImportFormatArg, NativeProviderArg},
     semantic,
     ui::ColorMode,
     upgrade,
@@ -26,7 +26,7 @@ pub(crate) const MAX_EVENT_WINDOW: usize = 50;
 #[cfg(test)]
 use crate::commands::search::ContentScopeArg;
 #[cfg(test)]
-pub(crate) use crate::commands::search::{MAX_SEARCH_LIMIT, parse_search_limit};
+pub(crate) use crate::commands::search::{parse_search_limit, MAX_SEARCH_LIMIT};
 
 pub(crate) const CLAP_STYLES: clap::builder::styling::Styles =
     clap::builder::styling::Styles::styled()

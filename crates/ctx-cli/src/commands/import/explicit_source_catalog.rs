@@ -6,8 +6,8 @@ use ctx_history_capture::{ProviderSource, SourceBackedRouteError, SourceBackedRo
 use ctx_history_core::CaptureProvider;
 
 pub(crate) use ctx_history_refresh::{
-    ExplicitSourceCatalogAuthority, ExplicitSourceRelocationAuthority, relocate_explicit_source,
-    upsert_explicit_source,
+    relocate_explicit_source, upsert_explicit_source, ExplicitSourceCatalogAuthority,
+    ExplicitSourceRelocationAuthority,
 };
 
 pub(crate) fn explicit_source_for_admission(

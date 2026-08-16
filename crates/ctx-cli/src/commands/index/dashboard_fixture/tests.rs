@@ -1,4 +1,4 @@
-use clap::{Parser as _, ValueEnum as _, error::ErrorKind};
+use clap::{error::ErrorKind, Parser as _, ValueEnum as _};
 use sha2::{Digest as _, Sha256};
 
 use super::*;
@@ -6,7 +6,7 @@ use crate::{
     cli::CliColorMode,
     ui::{ColorMode, StreamKind, TestContext},
 };
-use ctx_cli_presentation::commands::index::{IndexWatchOutput, render_dashboard_for_fixture};
+use ctx_cli_presentation::commands::index::{render_dashboard_for_fixture, IndexWatchOutput};
 
 fn args(case: FixtureCase, columns: usize) -> IndexDashboardFixtureArgs {
     IndexDashboardFixtureArgs {

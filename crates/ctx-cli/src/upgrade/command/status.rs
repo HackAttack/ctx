@@ -2,8 +2,8 @@ use std::path::Path;
 
 use anyhow::Result;
 use ctx_upgrade_engine::{
-    ManagedInstallMarker, STATE_SCHEMA_VERSION, managed_install_marker_for_current_exe,
-    read_state_json,
+    managed_install_marker_for_current_exe, read_state_json, ManagedInstallMarker,
+    STATE_SCHEMA_VERSION,
 };
 use serde_json::json;
 
