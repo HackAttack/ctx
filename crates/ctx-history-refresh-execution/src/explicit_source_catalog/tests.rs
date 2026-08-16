@@ -96,6 +96,34 @@ mod tests {
     }
 
     #[test]
+    fn exact_automatic_route_can_reclaim_a_retained_explicit_owner() {
+        let temp = tempfile::tempdir().unwrap();
+        let data_root = temp.path().join("data");
+        let sessions = temp.path().join("codex-sessions");
+        fs::create_dir_all(&sessions).unwrap();
+        let source = provider_source_for_path(CaptureProvider::Codex, sessions);
+        let automatic_route = automatic_source_backed_route_identity(&source).unwrap();
+        let retained = upsert_explicit_source(&data_root, &source)
+            .unwrap()
+            .authority;
+        let mut report = DiscoveryReport {
+            sources: vec![source],
+            issues: Vec::new(),
+        };
+
+        retained
+            .prepare_retained_discovery_report_with_automatic_routes(
+                None,
+                &mut report,
+                &BTreeSet::from([automatic_route]),
+            )
+            .unwrap();
+
+        assert_eq!(report.sources.len(), 1);
+        assert_eq!(report.sources[0].provider, CaptureProvider::Codex);
+    }
+
+    #[test]
     fn request_overlay_cannot_encode_deletion_authority() {
         let temp = tempfile::tempdir().unwrap();
         let path = temp.path().join("history.jsonl");

@@ -415,17 +415,22 @@ fn validate_explicit_source_catalog_snapshot_roots(
 fn remove_automatic_routes_shadowed_by_snapshot(
     report: &mut DiscoveryReport,
     snapshot: &ExplicitSourceCatalogSnapshot,
+    reactivated_automatic_routes: &BTreeSet<ctx_history_index::SourceRouteIdentity>,
 ) {
     report.sources.retain(|source| {
-        !snapshot.entries.iter().any(|entry| {
-            entry.enabled
-                && entry.provider().ok() == Some(source.provider)
-                && entry.path == source.path
-                && entry.certified_source_format().ok()
-                    == route_metadata(source.provider, source.source_format)
-                        .ok()
-                        .map(|metadata| metadata.certified_source_format)
-        })
+        let explicitly_reactivated = automatic_source_backed_route_identity(source)
+            .ok()
+            .is_some_and(|route| reactivated_automatic_routes.contains(&route));
+        explicitly_reactivated
+            || !snapshot.entries.iter().any(|entry| {
+                entry.enabled
+                    && entry.provider().ok() == Some(source.provider)
+                    && entry.path == source.path
+                    && entry.certified_source_format().ok()
+                        == route_metadata(source.provider, source.source_format)
+                            .ok()
+                            .map(|metadata| metadata.certified_source_format)
+            })
     });
 }
 

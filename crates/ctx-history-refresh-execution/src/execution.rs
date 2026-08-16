@@ -2,6 +2,7 @@ use super::*;
 
 pub(super) struct MergedSourceBackedRegistry {
     pub(super) build: ctx_history_capture::SourceBackedAutomaticRegistryBuild,
+    reactivated_automatic_routes: BTreeSet<SourceRouteIdentity>,
     previous_explicit_source_catalog: Option<ExplicitSourceCatalogAuthority>,
     previous_catalog_route_bindings: Vec<ExplicitSourceCatalogRouteBinding>,
     requested_explicit_source_catalog: Option<ExplicitSourceCatalogAuthority>,
@@ -371,22 +372,38 @@ fn refresh_all_provider_sources_route_local_with_reconciliation(
         CaptureSourceBackedDetailedRefreshProgress,
     ) -> SourceBackedRouteResult<()>,
 ) -> Result<SourceBackedRefreshPublication> {
+    let no_admitted_automatic_routes = BTreeSet::new();
+    let admitted_automatic_routes = match (&scope, operation, explicit_source_catalog) {
+        (SourceBackedRefreshScope::Exact(routes), RefreshOperation::Refresh, None) => routes,
+        _ => &no_admitted_automatic_routes,
+    };
     let MergedSourceBackedRegistry {
         mut build,
+        reactivated_automatic_routes,
         previous_explicit_source_catalog,
         previous_catalog_route_bindings,
         requested_explicit_source_catalog,
         retained_generation,
         requested_catalog_route_bindings,
         previous_route_controls,
-    } = build_merged_source_backed_registry(
+    } = build_merged_source_backed_registry_with_automatic_routes(
         discovery,
         report,
         discovery_duration,
         data_root,
         explicit_source_catalog,
+        admitted_automatic_routes,
         published_state,
     )?;
+    // A newly reactivated automatic identity has no same-route base state
+    // from which an incremental member scan could carry the unvisited source
+    // family. Promote only those ownership transitions to exhaustive route
+    // work; ordinary watcher appends retain their member worksets.
+    let route_worksets = route_worksets
+        .iter()
+        .filter(|(route, _)| !reactivated_automatic_routes.contains(*route))
+        .map(|(route, members)| (route.clone(), members.clone()))
+        .collect::<BTreeMap<_, _>>();
     if scope == SourceBackedRefreshScope::All
         && reconciliation_demand == SourceBackedReconciliationDemand::Exhaustive
     {
@@ -506,7 +523,7 @@ fn refresh_all_provider_sources_route_local_with_reconciliation(
                     .collect::<BTreeSet<_>>();
                 if exact_catalog_members
                     && exact_member_family_fallback_required(
-                        route_worksets,
+                        &route_worksets,
                         &complete_inventory_route_ids,
                         successful_route_outcomes,
                         &failed_routes,
@@ -1240,10 +1257,30 @@ fn committed_route_rejected_records(
 
 pub(super) fn build_merged_source_backed_registry(
     discovery: &DiscoveryContext,
+    report: DiscoveryReport,
+    discovery_duration: StdDuration,
+    data_root: &Path,
+    explicit_source_catalog: Option<&ExplicitSourceCatalogAuthority>,
+    published_state: &dyn PublishedSourceBackedStatePort,
+) -> Result<MergedSourceBackedRegistry> {
+    build_merged_source_backed_registry_with_automatic_routes(
+        discovery,
+        report,
+        discovery_duration,
+        data_root,
+        explicit_source_catalog,
+        &BTreeSet::new(),
+        published_state,
+    )
+}
+
+fn build_merged_source_backed_registry_with_automatic_routes(
+    discovery: &DiscoveryContext,
     mut report: DiscoveryReport,
     discovery_duration: StdDuration,
     data_root: &Path,
     explicit_source_catalog: Option<&ExplicitSourceCatalogAuthority>,
+    admitted_automatic_routes: &BTreeSet<SourceRouteIdentity>,
     published_state: &dyn PublishedSourceBackedStatePort,
 ) -> Result<MergedSourceBackedRegistry> {
     let PublishedSourceBackedState {
@@ -1255,10 +1292,16 @@ pub(super) fn build_merged_source_backed_registry(
     // A request overlay is not the whole durable explicit catalog. Keep every
     // unmatched retained explicit owner out of automatic discovery so those
     // base routes remain carried rather than being re-scanned under a new
-    // automatic identity. Deduplicate only exact provider/format/path keys:
+    // automatic identity. An exact automatic watcher admission is the one
+    // exception: it may reclaim the same provider/format/path after a one-shot
+    // explicit import. Deduplicate only exact provider/format/path keys;
     // relocation deliberately preserves lineage while changing the path.
     if let Some(catalog) = previous_explicit_source_catalog.as_ref() {
-        catalog.prepare_retained_discovery_report(explicit_source_catalog, &mut report)?;
+        catalog.prepare_retained_discovery_report_with_automatic_routes(
+            explicit_source_catalog,
+            &mut report,
+            admitted_automatic_routes,
+        )?;
     }
     if let Some(catalog) = explicit_source_catalog {
         catalog.prepare_discovery_report(data_root, &mut report)?;
@@ -1276,6 +1319,26 @@ pub(super) fn build_merged_source_backed_registry(
         })
         .transpose()?
         .unwrap_or_default();
+    let automatic_reactivation_retirements = previous_explicit_source_catalog
+        .as_ref()
+        .map(|catalog| {
+            catalog.automatic_reactivation_retirements(
+                &previous_catalog_route_bindings,
+                &build,
+                admitted_automatic_routes,
+            )
+        })
+        .transpose()?
+        .unwrap_or_default();
+    let reactivated_automatic_routes = automatic_reactivation_retirements
+        .keys()
+        .cloned()
+        .collect::<BTreeSet<_>>();
+    for (replacement, retired) in automatic_reactivation_retirements {
+        build
+            .registry
+            .retire_routes_after_success(&replacement, retired)?;
+    }
     let route_retirements = ExplicitSourceCatalogAuthority::replacement_route_retirements(
         previous_explicit_source_catalog
             .as_ref()
@@ -1290,6 +1353,7 @@ pub(super) fn build_merged_source_backed_registry(
     }
     Ok(MergedSourceBackedRegistry {
         build,
+        reactivated_automatic_routes,
         previous_explicit_source_catalog,
         previous_catalog_route_bindings,
         requested_explicit_source_catalog: explicit_source_catalog.cloned(),

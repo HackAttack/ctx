@@ -1,10 +1,25 @@
 use super::*;
+use std::collections::BTreeMap;
 
 impl ExplicitSourceCatalogAuthority {
+    #[cfg(test)]
     pub(crate) fn prepare_retained_discovery_report(
         &self,
         requested: Option<&Self>,
         report: &mut DiscoveryReport,
+    ) -> Result<()> {
+        self.prepare_retained_discovery_report_with_automatic_routes(
+            requested,
+            report,
+            &BTreeSet::new(),
+        )
+    }
+
+    pub(crate) fn prepare_retained_discovery_report_with_automatic_routes(
+        &self,
+        requested: Option<&Self>,
+        report: &mut DiscoveryReport,
+        reactivated_automatic_routes: &BTreeSet<ctx_history_index::SourceRouteIdentity>,
     ) -> Result<()> {
         let requested_keys = requested
             .map(Self::exact_route_keys)
@@ -21,6 +36,7 @@ impl ExplicitSourceCatalogAuthority {
         remove_automatic_routes_shadowed_by_snapshot(
             report,
             &ExplicitSourceCatalogSnapshot { entries },
+            reactivated_automatic_routes,
         );
         Ok(())
     }
@@ -31,8 +47,51 @@ impl ExplicitSourceCatalogAuthority {
         report: &mut DiscoveryReport,
     ) -> Result<()> {
         let snapshot = self.snapshot();
-        remove_automatic_routes_shadowed_by_snapshot(report, &snapshot);
+        remove_automatic_routes_shadowed_by_snapshot(report, &snapshot, &BTreeSet::new());
         Ok(())
+    }
+
+    pub(crate) fn automatic_reactivation_retirements(
+        &self,
+        bindings: &[ExplicitSourceCatalogRouteBinding],
+        build: &SourceBackedAutomaticRegistryBuild,
+        reactivated_automatic_routes: &BTreeSet<ctx_history_index::SourceRouteIdentity>,
+    ) -> Result<
+        BTreeMap<
+            ctx_history_index::SourceRouteIdentity,
+            Vec<ctx_history_index::SourceRouteIdentity>,
+        >,
+    > {
+        let bound_routes = self.bound_routes(bindings)?;
+        let mut retirements = BTreeMap::new();
+        for route in build.registry.routes().filter(|route| {
+            route.selection == Some(SourceBackedRouteSelection::Automatic)
+                && route
+                    .route_identity
+                    .as_ref()
+                    .is_some_and(|identity| reactivated_automatic_routes.contains(identity))
+        }) {
+            let route_identity = route
+                .route_identity
+                .as_ref()
+                .expect("reactivated automatic routes carry identities")
+                .clone();
+            let mut retired = Vec::new();
+            for (entry, previous_route) in &bound_routes {
+                if entry.enabled
+                    && entry.provider()? == route.source.provider
+                    && entry.path == route.source.path
+                    && entry.certified_source_format()? == route.certified_source_format
+                    && previous_route != &route_identity
+                {
+                    retired.push(previous_route.clone());
+                }
+            }
+            if !retired.is_empty() && retirements.insert(route_identity, retired).is_some() {
+                bail!("reactivated automatic catalog contains duplicate route identities");
+            }
+        }
+        Ok(retirements)
     }
 
     pub(crate) fn register_routes_after_discovery_merge(

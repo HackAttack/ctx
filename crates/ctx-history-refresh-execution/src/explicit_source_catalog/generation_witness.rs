@@ -120,7 +120,7 @@ impl ExplicitSourceCatalogAuthority {
         Ok(retirements)
     }
 
-    fn bound_routes<'a>(
+    pub(super) fn bound_routes<'a>(
         &'a self,
         bindings: &[ExplicitSourceCatalogRouteBinding],
     ) -> Result<Vec<(&'a CatalogEntry, ctx_history_index::SourceRouteIdentity)>> {
