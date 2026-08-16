@@ -69,11 +69,13 @@ scripts/validate-public-cli-factory-artifact.sh \
   PLATFORM target/public-cli-artifacts target/public-cli-native-smoke/PLATFORM
 ```
 
-The validator checks the factory checksum, executes the native candidate, and
-checks that validation did not mutate it. macOS additionally performs strict
-native codesign verification. Windows requires `Get-AuthenticodeSignature` to
-accept the exact factory bytes and match the factory certificate evidence.
-Semantic runtime smokes use the same CLI bytes.
+This is an exact three-argument, Core-only interface. Companion binaries and
+managed-pair envelopes are not inputs to the public factory validator or its
+five native lanes. The validator checks the factory checksum, executes the
+native candidate, and checks that validation did not mutate it. macOS
+additionally performs strict native codesign verification. Windows requires
+`Get-AuthenticodeSignature` to accept the exact factory bytes and match the
+factory certificate evidence. Semantic runtime smokes use the same CLI bytes.
 Only after all five jobs pass does the staging job assemble GitHub assets.
 
 Bazel remains available for hermetic development and qualification checks. It

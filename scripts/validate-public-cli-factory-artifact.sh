@@ -3,10 +3,10 @@ set -euo pipefail
 
 usage() {
   cat >&2 <<'USAGE'
-Usage: scripts/validate-public-cli-factory-artifact.sh PLATFORM ARTIFACT_DIR OUTPUT_DIR COMPANION PAIR_ENVELOPE
+Usage: scripts/validate-public-cli-factory-artifact.sh PLATFORM ARTIFACT_DIR OUTPUT_DIR
 
-Validates one exact signed Core/companion pair on its native platform. This
-command never compiles or replaces the candidate bytes.
+Validates one exact Core artifact downloaded from the Linux release factory on
+its native platform. This command never compiles or replaces the candidate bytes.
 USAGE
 }
 
@@ -23,12 +23,10 @@ sha256_file() {
   fi
 }
 
-[[ $# -eq 5 ]] || { usage; exit 2; }
+[[ $# -eq 3 ]] || { usage; exit 2; }
 platform="$1"
 artifact_dir="$2"
 output_dir="$3"
-companion="$4"
-pair_envelope="$5"
 case "${platform}" in
   linux-x64) binary="ctx" ;;
   linux-aarch64) binary="ctx-linux-aarch64" ;;
@@ -49,12 +47,8 @@ artifact_dir="$(CDPATH= cd "${artifact_dir_operand}" 2>/dev/null && pwd -P)" || 
   die "factory artifact directory is unavailable"
 artifact="${artifact_dir}/${binary}"
 [[ -f "${artifact}" && ! -L "${artifact}" ]] || die "factory artifact is missing"
-[[ -f "${companion}" && ! -L "${companion}" ]] || die "signed companion artifact is missing"
-[[ -f "${pair_envelope}" && ! -L "${pair_envelope}" ]] || die "signed pair envelope is missing"
 [[ -s "${artifact}.sha256" ]] || die "factory checksum is missing"
 before="$(sha256_file "${artifact}")"
-companion_before="$(sha256_file "${companion}")"
-envelope_before="$(sha256_file "${pair_envelope}")"
 expected_sha256="$(tr -d '[:space:]' <"${artifact}.sha256")"
 [[ "${expected_sha256}" =~ ^[0-9a-f]{64}$ ]] || die "factory checksum is malformed"
 [[ "${before}" == "${expected_sha256}" ]] || \
@@ -79,7 +73,6 @@ if [[ "${platform}" != windows-x64 ]]; then
   # BSD chmod rejects the GNU-only extra option terminator. The canonical
   # absolute path above cannot be mistaken for an option.
   chmod u+x "${artifact}" || die "could not establish factory artifact executable mode"
-  chmod u+x "${companion}" || die "could not establish companion artifact executable mode"
   [[ -f "${artifact}" && ! -L "${artifact}" && -x "${artifact}" ]] || \
     die "factory artifact is not an executable regular file"
 fi
@@ -107,8 +100,7 @@ case "${platform}" in
     scripts/check-macos-release-signing.sh "${platform}" cli "${artifact}"
     mkdir -p "${output_dir%/}"
     scripts/run-native-candidate-smoke.sh \
-      "${artifact}" "${companion}" "${pair_envelope}" \
-      tests/fixtures/custom-history-jsonl/basic.jsonl "${version}" \
+      "${artifact}" tests/fixtures/custom-history-jsonl/basic.jsonl "${version}" \
       "${output_dir%/}/candidate-smoke.json"
     ;;
   windows-x64)
@@ -122,8 +114,6 @@ case "${platform}" in
     powershell.exe -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass \
       -File scripts/run-native-candidate-smoke.ps1 \
       -Binary "${artifact}" \
-      -Companion "${companion}" \
-      -PairEnvelope "${pair_envelope}" \
       -Fixture tests/fixtures/custom-history-jsonl/basic.jsonl \
       -ExpectedVersion "${version}" \
       -ResultPath "${output_dir%/}/candidate-smoke.json"
@@ -131,18 +121,13 @@ case "${platform}" in
   *)
     mkdir -p "${output_dir}"
     scripts/run-native-candidate-smoke.sh \
-      "${artifact}" "${companion}" "${pair_envelope}" \
-      tests/fixtures/custom-history-jsonl/basic.jsonl "${version}" \
+      "${artifact}" tests/fixtures/custom-history-jsonl/basic.jsonl "${version}" \
       "${output_dir%/}/candidate-smoke.json"
     ;;
 esac
 
 after="$(sha256_file "${artifact}")"
 [[ "${after}" == "${before}" ]] || die "native validation mutated candidate bytes"
-[[ "$(sha256_file "${companion}")" == "${companion_before}" ]] || \
-  die "native validation mutated companion bytes"
-[[ "$(sha256_file "${pair_envelope}")" == "${envelope_before}" ]] || \
-  die "native validation mutated signed pair metadata"
 python3 -I scripts/native-execution-proof.py create \
   --platform "${platform}" \
   --artifact "${artifact}" \

@@ -505,6 +505,27 @@ class LinuxReleaseFactoryTest(unittest.TestCase):
         self.assertIn('--candidate-manifest "${artifact}.candidate.json"', source)
         self.assertIn('--version-file "${artifact}.version"', source)
 
+    def test_native_validator_is_exactly_three_argument_and_core_only(self) -> None:
+        source = (
+            ROOT / "scripts" / "validate-public-cli-factory-artifact.sh"
+        ).read_text()
+        self.assertIn(
+            "Usage: scripts/validate-public-cli-factory-artifact.sh "
+            "PLATFORM ARTIFACT_DIR OUTPUT_DIR\n",
+            source,
+        )
+        self.assertIn('[[ $# -eq 3 ]]', source)
+        for paired_artifact_surface in (
+            "COMPANION",
+            "PAIR_ENVELOPE",
+            '"${companion}"',
+            '"${pair_envelope}"',
+            "-Companion",
+            "-PairEnvelope",
+            "install-managed-pair.py",
+        ):
+            self.assertNotIn(paired_artifact_surface, source)
+
     def test_candidate_version_binds_artifact_build_info_and_sidecar(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
