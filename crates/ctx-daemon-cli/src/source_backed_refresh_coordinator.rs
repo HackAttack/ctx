@@ -11,8 +11,6 @@ pub use ctx_daemon_service::{
     SourceBackedRefreshMode, SourceBackedRefreshObservation, SourceBackedRefreshPendingPublication,
     SourceBackedRefreshTerminalError,
 };
-#[cfg(test)]
-pub use ctx_history_refresh::{count_verified_index_opens, source_backed_index_root};
 pub use ctx_history_refresh::{open_verified_index, verified_generation_is_query_ready};
 
 pub fn coordinate_source_backed_refresh(

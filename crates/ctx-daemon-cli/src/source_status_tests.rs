@@ -1,11 +1,6 @@
 use super::*;
 use std::fs;
 
-use ctx_history_core::{
-    derive_event_id, derive_session_id, CertifiedSource, CoreRecord, EventIdentityInput,
-    NativeItemKey, NativeSessionKey, ScannedSourceCounts, SessionIdentityInput, SourceAnchor,
-    SourceObservation, TypedKey,
-};
 use ctx_history_index::{GenerationWriter, WriterOptions};
 
 fn core_publication_fixture() -> (tempfile::TempDir, std::path::PathBuf, String) {
@@ -108,92 +103,6 @@ fn core_publication_fixture() -> (tempfile::TempDir, std::path::PathBuf, String)
     )
     .unwrap();
     (temp, data_root, generation_id)
-}
-
-fn publish_changed_core_generation(data_root: &Path) -> String {
-    let source = ctx_history_core::SourceKey::derive(
-        "codex",
-        "codex_session_jsonl",
-        "session",
-        1,
-        SourceAnchor::provider_native(
-            "session-file",
-            TypedKey::utf8("status-snapshot-race.jsonl").unwrap(),
-        )
-        .unwrap(),
-    )
-    .unwrap();
-    let native_session = TypedKey::utf8("status-snapshot-race-session").unwrap();
-    let session_key = NativeSessionKey::native_id("session", native_session).unwrap();
-    let session_id = derive_session_id(SessionIdentityInput {
-        source: &source,
-        logical_session_kind: "thread",
-        native_session_key: &session_key,
-    })
-    .unwrap();
-    let native_item = NativeItemKey::native_id(
-        "message",
-        TypedKey::utf8("status-snapshot-race-event").unwrap(),
-    )
-    .unwrap();
-    let event_id = derive_event_id(EventIdentityInput {
-        source: &source,
-        session_id,
-        logical_item_kind: "message",
-        native_item_key: &native_item,
-        subrecord_selector: None,
-    })
-    .unwrap();
-    let mut record = CoreRecord::new_selected(
-        event_id,
-        session_id,
-        session_id,
-        source.clone(),
-        1,
-        "message",
-        "primary",
-        true,
-        "status-snapshot-race-v1",
-        "new generation published during status assembly",
-    )
-    .unwrap();
-    record.provider_session_id = Some("status-snapshot-race-session".to_owned());
-    record.native_event_id = Some(TypedKey::U64(1));
-    record.role = Some("assistant".to_owned());
-    record.validate_contract().unwrap();
-
-    let mut writer = GenerationWriter::open(
-        data_root.join("search/lexical"),
-        WriterOptions {
-            indexer_threads: 1,
-            memory_bytes: 32 * 1024 * 1024,
-        },
-    )
-    .unwrap()
-    .into_writer()
-    .unwrap();
-    writer.begin_source(source.clone()).unwrap();
-    writer.add_core_record(record).unwrap();
-    let observation = SourceObservation::new(source, "status-snapshot-race-v1", vec![2]).unwrap();
-    writer
-        .certify_source(
-            CertifiedSource::certify(
-                observation.clone(),
-                observation,
-                "status-snapshot-race-v1",
-                [2; 32],
-                ScannedSourceCounts {
-                    complete_records: 1,
-                    retained_records: 1,
-                    indexed_documents: 1,
-                    certified_bytes: 128,
-                    ..ScannedSourceCounts::default()
-                },
-            )
-            .unwrap(),
-        )
-        .unwrap();
-    writer.commit(|_| true).unwrap().generation_id
 }
 
 #[test]
