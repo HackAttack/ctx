@@ -161,12 +161,9 @@ fn publication_pin_record(source: &SourceKey) -> CoreRecord {
     let mut record = CoreRecord::new_selected(
         event_id,
         session_id,
-        session_id,
         source.clone(),
         0,
         "message",
-        "primary",
-        true,
         "publication-pin-test-v1",
         "exact publication pin fixture",
     )
