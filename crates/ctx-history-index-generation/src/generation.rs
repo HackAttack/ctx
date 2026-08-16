@@ -25,10 +25,12 @@ use uuid::Uuid;
 
 use crate::clone::{bind_candidate_activation_fence, create_authenticated_candidate_generation};
 use crate::is_generation_id;
+use crate::retention::live_generation_read_lease_targets;
 use crate::{
-    CandidateActivationFence, CandidatePhysicalProof, DurableAtomicWriteOutcome,
-    DurableMmapDirectory, GenerationError as IndexError, GenerationRetentionLease, Result,
-    ACTIVE_GENERATION_POINTER_FILE, INDEX_GENERATIONS_DIRECTORY,
+    acquire_generation_ownership_fence, CandidateActivationFence, CandidatePhysicalProof,
+    DurableAtomicWriteOutcome, DurableMmapDirectory, GenerationError as IndexError,
+    GenerationOwnershipFence, GenerationRetentionLease, Result, ACTIVE_GENERATION_POINTER_FILE,
+    INDEX_GENERATIONS_DIRECTORY,
 };
 const ACTIVE_GENERATION_POINTER_VERSION: u32 = 2;
 const GENERATION_DIRECTORY_PREFIX: &str = "generation-";
@@ -144,6 +146,7 @@ pub struct CandidateGeneration {
     pub index: Index,
     pub physical_proof: CandidatePhysicalProof,
     pub activation_fence: CandidateActivationFence,
+    pub ownership_fence: Option<crate::CandidateOwnershipFence>,
 }
 
 #[derive(Debug)]
@@ -226,6 +229,7 @@ pub fn create_candidate_generation(
         index,
         physical_proof: CandidatePhysicalProof::default(),
         activation_fence,
+        ownership_fence: None,
     })
 }
 
@@ -310,6 +314,17 @@ pub fn reclaim_inactive_generation_directories(
     pointer: Option<&ActiveGenerationPointer>,
     lease: Option<&GenerationRetentionLease>,
 ) -> Result<()> {
+    let ownership_fence = acquire_generation_ownership_fence(root)?;
+    reclaim_inactive_generation_directories_with_fence(root, pointer, lease, &ownership_fence)
+}
+
+#[doc(hidden)]
+pub fn reclaim_inactive_generation_directories_with_fence(
+    root: &Path,
+    pointer: Option<&ActiveGenerationPointer>,
+    lease: Option<&GenerationRetentionLease>,
+    _ownership_fence: &GenerationOwnershipFence,
+) -> Result<()> {
     let generations = root.join(INDEX_GENERATIONS_DIRECTORY);
     fs::create_dir_all(&generations)?;
     let retained = pointer
@@ -317,6 +332,11 @@ pub fn reclaim_inactive_generation_directories(
         .flat_map(|pointer| std::iter::once(pointer.active()).chain(pointer.previous()))
         .map(|slot| slot.directory().to_owned())
         .chain(lease.map(|lease| lease.target().directory().to_owned()))
+        .chain(
+            live_generation_read_lease_targets(root)?
+                .into_iter()
+                .map(|target| target.directory().to_owned()),
+        )
         .collect::<HashSet<_>>();
     let mut removed = false;
     for entry in fs::read_dir(&generations)? {

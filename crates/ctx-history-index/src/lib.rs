@@ -64,6 +64,11 @@ pub use ctx_history_index_format::{
 pub(crate) use ctx_history_index_generation::sha256_hex;
 pub(crate) use ctx_history_index_generation::{hex, is_generation_id, MANIFEST_DIRECTORY};
 pub use ctx_history_index_query::VerifiedIndex;
+#[cfg(any(test, feature = "test-support"))]
+#[doc(hidden)]
+pub use ctx_history_index_query::{
+    set_verified_index_after_publication_fence_hook, set_verified_index_before_peer_lease_hook,
+};
 pub use ctx_history_index_query::{
     AgentScope, CopiedEventLineage, CopiedEventLineageOccurrence, CopiedEventLineagePolicy,
     CopiedEventLineageRelationshipCount, CopiedEventLineageResolution, CoreEventBatch,
@@ -99,13 +104,11 @@ pub(crate) use publication::verify_candidate_physical_fence;
 #[cfg(test)]
 pub(crate) use publication::verify_searcher;
 pub(crate) use publication::{
-    best_effort_post_republish_cleanup, canonical_commit_payload, create_candidate_generation,
-    load_active_generation_pointer, meta_generation, open_slot_index, payload_generation_id,
-    prepare_successor_manifest, prime_candidate_physical_proof,
-    publish_active_generation_pointer_validated, reclaim_inactive_generation_directories,
-    reclaim_unreferenced_certifications, reclaim_unreferenced_manifests, reconcile_commit_error,
-    republish_current_with_publication_metadata, searcher_generation, sync_directory,
-    sync_generation, validate_candidate_managed_files, verify_physical_integrity,
+    canonical_commit_payload, create_candidate_generation, load_active_generation_pointer,
+    meta_generation, open_slot_index, payload_generation_id, prepare_successor_manifest,
+    prime_candidate_physical_proof, publish_active_generation_pointer_validated,
+    reconcile_commit_error, republish_current_with_publication_metadata, searcher_generation,
+    sync_directory, sync_generation, validate_candidate_managed_files, verify_physical_integrity,
     write_prepared_manifest, ActiveGenerationPointer, CandidateActivationFence,
     CandidatePhysicalProof, CurrentRepublishOutcome, GenerationSlot, PointerPublicationOutcome,
     GENERATION_WRITER_LOCK_FILE, INDEX_GENERATIONS_DIRECTORY,
@@ -158,7 +161,12 @@ use ctx_history_index_format::{
     load_active_publication_authority, open_pinned_publication, ActivePublicationAuthority,
     IndexDocument, OpenedPinnedPublication, PinnedPublication,
 };
-use ctx_history_index_generation::{reclaim_abandoned_atomic_writes, DurableMmapDirectory};
+use ctx_history_index_generation::{
+    acquire_generation_ownership_fence, load_certified_physical_integrity,
+    reclaim_abandoned_atomic_writes, reclaim_inactive_generation_directories_with_fence,
+    reclaim_unreferenced_certifications_with_fence, reclaim_unreferenced_manifests_with_fence,
+    refresh_certification_after_managed_reclamation, DurableMmapDirectory,
+};
 use merge_policy::LexicalMergePolicy;
 use preparation::PreparedSessionIdentityFacts;
 use staging::{finish_identical_staging, PendingSource as StagedPendingSource, PendingSourceMode};
@@ -356,6 +364,9 @@ pub struct GenerationWriter {
     candidate_activation_fence: Option<CandidateActivationFence>,
     preflight_lock: Option<DirectoryLock>,
     writer: Option<IndexWriter<IndexDocument>>,
+    // Declared after `writer` so error-path field destruction stops Tantivy
+    // mutation before the ownership guard refreshes and releases its fence.
+    candidate_ownership_fence: Option<ctx_history_index_generation::CandidateOwnershipFence>,
     writer_options: WriterOptions,
     fields: Fields,
     base_publication: Option<PinnedPublication>,
@@ -501,11 +512,25 @@ impl GenerationWriter {
                 .as_ref()
                 .map(ActivePublicationAuthority::pointer);
             let retention_lease = load_generation_retention_lease(&root)?;
-            reclaim_inactive_generation_directories(
-                &root,
-                active_pointer_ref,
-                retention_lease.as_ref(),
-            )?;
+            let ownership_fence = acquire_generation_ownership_fence(&root)?;
+            let active_certification = active_pointer_ref
+                .map(|pointer| {
+                    let slot = pointer.active();
+                    let index = open_slot_index(&root, slot)?;
+                    let certified =
+                        load_certified_physical_integrity(&root, pointer, slot, &index)?;
+                    Ok::<_, IndexError>(certified.map(|certified| (index, certified)))
+                })
+                .transpose()?
+                .flatten();
+            if active_pointer_ref.is_none() || active_certification.is_some() {
+                reclaim_inactive_generation_directories_with_fence(
+                    &root,
+                    active_pointer_ref,
+                    retention_lease.as_ref(),
+                    &ownership_fence,
+                )?;
+            }
             let mut retained_generation_ids = active_pointer_ref
                 .into_iter()
                 .flat_map(|pointer| std::iter::once(pointer.active()).chain(pointer.previous()))
@@ -516,12 +541,29 @@ impl GenerationWriter {
                     .as_ref()
                     .map(|lease| lease.generation_id().to_owned()),
             );
-            reclaim_unreferenced_manifests(&root, &retained_generation_ids)?;
-            reclaim_unreferenced_certifications(
+            reclaim_unreferenced_manifests_with_fence(
+                &root,
+                &retained_generation_ids,
+                &ownership_fence,
+            )?;
+            reclaim_unreferenced_certifications_with_fence(
                 &root,
                 active_pointer_ref,
                 retention_lease.as_ref(),
+                &ownership_fence,
             )?;
+            if let (Some(pointer), Some((index, certified))) =
+                (active_pointer_ref, active_certification.as_ref())
+            {
+                refresh_certification_after_managed_reclamation(
+                    &root,
+                    pointer,
+                    pointer.active(),
+                    index,
+                    certified,
+                )?;
+            }
+            drop(ownership_fence);
         }
 
         let writer = (|| -> Result<Self> {
@@ -575,17 +617,27 @@ impl GenerationWriter {
                 candidate_directory_name,
                 candidate_physical_proof,
                 candidate_activation_fence,
+                candidate_ownership_fence,
                 fields,
                 base_publication,
                 base_opstamp,
             ) = match reusable_generation {
                 Some(OpenedPinnedPublication::Published(publication)) => {
                     let (index, fields, opstamp, publication) = publication.into_writer_parts()?;
-                    (index, None, None, None, fields, Some(publication), opstamp)
+                    (
+                        index,
+                        None,
+                        None,
+                        None,
+                        None,
+                        fields,
+                        Some(publication),
+                        opstamp,
+                    )
                 }
                 Some(OpenedPinnedPublication::Empty(empty)) => {
                     let (index, fields, opstamp) = empty.into_parts();
-                    (index, None, None, None, fields, None, opstamp)
+                    (index, None, None, None, None, fields, None, opstamp)
                 }
                 None => {
                     // The active slot is absent, physically rejected, or belongs to
@@ -600,6 +652,7 @@ impl GenerationWriter {
                         Some(candidate.directory_name),
                         None,
                         Some(candidate.activation_fence),
+                        candidate.ownership_fence,
                         fields,
                         None,
                         metas.opstamp,
@@ -642,6 +695,7 @@ impl GenerationWriter {
                 candidate_activation_fence,
                 preflight_lock: Some(preflight_lock),
                 writer: None,
+                candidate_ownership_fence,
                 writer_options: options,
                 fields,
                 base_publication,

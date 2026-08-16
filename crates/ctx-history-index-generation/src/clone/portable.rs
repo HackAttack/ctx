@@ -282,6 +282,7 @@ pub(super) fn create_authenticated_republish_candidate(
             index,
             physical_proof,
             activation_fence: CandidateActivationFence::portable(guard),
+            ownership_fence: None,
         }),
         Err(error) => {
             guard.discard();
@@ -370,6 +371,7 @@ pub(super) fn create_authenticated_candidate_generation(
             index,
             physical_proof,
             activation_fence: CandidateActivationFence::portable(guard),
+            ownership_fence: None,
         }),
         Err(error) => {
             guard.discard();

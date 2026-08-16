@@ -11,11 +11,14 @@ use serde::{
 };
 use tantivy::directory::Directory as _;
 
+use crate::physical::{physical_integrity_audit_from_certified_files, PhysicalFileDigest};
+use crate::retention::live_generation_read_lease_targets;
 use crate::{
-    active_index_files, load_active_generation_pointer, manifest_path, physical_integrity_audit,
-    slot_path, sync_directory, ActiveGenerationPointer, DurableMmapDirectory,
-    GenerationError as IndexError, GenerationRetentionLease, GenerationSlot,
-    PhysicalIntegrityAudit, Result, INDEX_GENERATIONS_DIRECTORY, MANIFEST_DIRECTORY,
+    acquire_generation_ownership_fence, active_index_files, load_active_generation_pointer,
+    manifest_path, physical_integrity_audit, slot_path, sync_directory, ActiveGenerationPointer,
+    DurableMmapDirectory, GenerationError as IndexError, GenerationOwnershipFence,
+    GenerationRetentionLease, GenerationSlot, PhysicalIntegrityAudit, Result,
+    INDEX_GENERATIONS_DIRECTORY, MANIFEST_DIRECTORY,
 };
 
 #[cfg(not(windows))]
@@ -298,8 +301,8 @@ pub fn verify_or_certify_physical_integrity(
     slot: &GenerationSlot,
     index: &tantivy::Index,
 ) -> Result<CertifiedPhysicalIntegrity> {
-    if let Some(certification) = matching_certification(root, pointer, slot, index)? {
-        return Ok(CertifiedPhysicalIntegrity { certification });
+    if let Some(certified) = load_certified_physical_integrity(root, pointer, slot, index)? {
+        return Ok(certified);
     }
 
     let generation_path = slot_path(root, slot);
@@ -308,6 +311,18 @@ pub fn verify_or_certify_physical_integrity(
         return Err(IndexError::ChecksumMismatch);
     }
     install_certification(root, pointer, slot, index, &audit, false)
+}
+
+/// Loads only an already-valid metadata certification. Unlike
+/// [`verify_or_certify_physical_integrity`], this never hashes artifact bodies.
+pub fn load_certified_physical_integrity(
+    root: &Path,
+    pointer: &ActiveGenerationPointer,
+    slot: &GenerationSlot,
+    index: &tantivy::Index,
+) -> Result<Option<CertifiedPhysicalIntegrity>> {
+    Ok(matching_certification(root, pointer, slot, index)?
+        .map(|certification| CertifiedPhysicalIntegrity { certification }))
 }
 
 pub fn scrub_and_certify_physical_integrity(
@@ -780,6 +795,77 @@ pub fn verify_certified_physical_integrity(
     certified: &CertifiedPhysicalIntegrity,
     candidate_audit: Option<&PhysicalIntegrityAudit>,
 ) -> Result<()> {
+    recapture_certified_physical_integrity(root, pointer, slot, certified, candidate_audit)
+        .map(|_| ())
+}
+
+/// Rebinds the active certification after an authenticated clone created
+/// managed hard-link aliases. Candidate SHA proofs authenticate every changed
+/// source identity, so no predecessor artifact body is read again.
+#[cfg(target_os = "linux")]
+pub fn refresh_certification_after_authenticated_clone(
+    root: &Path,
+    pointer: &ActiveGenerationPointer,
+    slot: &GenerationSlot,
+    index: &tantivy::Index,
+    certified: &CertifiedPhysicalIntegrity,
+    candidate_audit: &PhysicalIntegrityAudit,
+) -> Result<CertifiedPhysicalIntegrity> {
+    let certified_paths = certified
+        .certification
+        .artifacts
+        .iter()
+        .map(|artifact| artifact.artifact.path.clone())
+        .collect::<Vec<_>>();
+    if candidate_audit.artifact_paths() != certified_paths {
+        return Err(IndexError::ChecksumMismatch);
+    }
+    let audit = recapture_certified_physical_integrity(
+        root,
+        pointer,
+        slot,
+        certified,
+        Some(candidate_audit),
+    )?;
+    if audit.digest() != slot.physical_integrity_digest() {
+        return Err(IndexError::ChecksumMismatch);
+    }
+    install_certification(root, pointer, slot, index, &audit, false)
+}
+
+/// Rebinds an already-verified active certification after fenced reclamation
+/// removed only ctx-owned hard-link aliases. The certification's existing SHA
+/// authority remains valid because link removal cannot modify file bytes.
+pub fn refresh_certification_after_managed_reclamation(
+    root: &Path,
+    pointer: &ActiveGenerationPointer,
+    slot: &GenerationSlot,
+    index: &tantivy::Index,
+    certified: &CertifiedPhysicalIntegrity,
+) -> Result<()> {
+    let files = certified
+        .certification
+        .artifacts
+        .iter()
+        .map(|artifact| PhysicalFileDigest {
+            artifact: artifact.artifact.clone(),
+            sha256: artifact.sha256,
+        })
+        .collect::<Vec<_>>();
+    let audit = physical_integrity_audit_from_certified_files(files)?;
+    if audit.digest() != slot.physical_integrity_digest() {
+        return Err(IndexError::ChecksumMismatch);
+    }
+    install_certification(root, pointer, slot, index, &audit, true).map(|_| ())
+}
+
+fn recapture_certified_physical_integrity(
+    root: &Path,
+    pointer: &ActiveGenerationPointer,
+    slot: &GenerationSlot,
+    certified: &CertifiedPhysicalIntegrity,
+    candidate_audit: Option<&PhysicalIntegrityAudit>,
+) -> Result<PhysicalIntegrityAudit> {
     let certification = &certified.certification;
     if certification.pointer != *pointer || certification.slot != *slot {
         return Err(IndexError::ConcurrentGenerationChange);
@@ -806,6 +892,7 @@ pub fn verify_certified_physical_integrity(
         return Err(IndexError::ConcurrentGenerationChange);
     }
 
+    let mut files = Vec::with_capacity(certification.artifacts.len());
     for expected in &certification.artifacts {
         let current = capture_artifact(
             root,
@@ -823,6 +910,10 @@ pub fn verify_certified_physical_integrity(
             if current != expected.artifact {
                 return Err(IndexError::ChecksumMismatch);
             }
+            files.push(PhysicalFileDigest {
+                artifact: current,
+                sha256: expected.sha256,
+            });
             continue;
         }
         let Some(candidate_file) = candidate_file else {
@@ -839,11 +930,15 @@ pub fn verify_certified_physical_integrity(
         {
             return Err(IndexError::ChecksumMismatch);
         }
+        files.push(PhysicalFileDigest {
+            artifact: current,
+            sha256: expected.sha256,
+        });
     }
     if load_current_pointer(root)? != *pointer {
         return Err(IndexError::ConcurrentGenerationChange);
     }
-    Ok(())
+    physical_integrity_audit_from_certified_files(files)
 }
 
 fn load_current_pointer(root: &Path) -> Result<ActiveGenerationPointer> {
@@ -1471,6 +1566,17 @@ pub fn reclaim_unreferenced_certifications(
     pointer: Option<&ActiveGenerationPointer>,
     lease: Option<&GenerationRetentionLease>,
 ) -> Result<()> {
+    let ownership_fence = acquire_generation_ownership_fence(root)?;
+    reclaim_unreferenced_certifications_with_fence(root, pointer, lease, &ownership_fence)
+}
+
+#[doc(hidden)]
+pub fn reclaim_unreferenced_certifications_with_fence(
+    root: &Path,
+    pointer: Option<&ActiveGenerationPointer>,
+    lease: Option<&GenerationRetentionLease>,
+    _ownership_fence: &GenerationOwnershipFence,
+) -> Result<()> {
     let directory = root.join(CERTIFICATION_DIRECTORY);
     fs::create_dir_all(&directory)?;
     let retained = pointer
@@ -1478,6 +1584,12 @@ pub fn reclaim_unreferenced_certifications(
         .flat_map(|pointer| std::iter::once(pointer.active()).chain(pointer.previous()))
         .map(GenerationSlot::directory)
         .chain(lease.map(|lease| lease.target().directory()))
+        .map(str::to_owned)
+        .chain(
+            live_generation_read_lease_targets(root)?
+                .into_iter()
+                .map(|target| target.directory().to_owned()),
+        )
         .collect::<std::collections::HashSet<_>>();
     let mut removed = false;
     for entry in fs::read_dir(&directory)? {
