@@ -9,9 +9,11 @@ use serde::Deserialize;
 use tantivy::directory::Directory as _;
 use uuid::Uuid;
 
+use crate::retention::live_generation_read_lease_targets;
 use crate::{
-    is_generation_id, manifest_path, sha256_hex, sync_directory, DurableMmapDirectory,
-    GenerationError, Result, MANIFEST_DIRECTORY,
+    acquire_generation_ownership_fence, is_generation_id, manifest_path, sha256_hex,
+    sync_directory, DurableMmapDirectory, GenerationError, GenerationOwnershipFence, Result,
+    MANIFEST_DIRECTORY,
 };
 
 /// Loads the exact immutable bytes named by a generation manifest digest.
@@ -69,9 +71,25 @@ pub fn reclaim_unreferenced_manifests(
     root: &Path,
     retained_generation_ids: &[String],
 ) -> Result<()> {
+    let ownership_fence = acquire_generation_ownership_fence(root)?;
+    reclaim_unreferenced_manifests_with_fence(root, retained_generation_ids, &ownership_fence)
+}
+
+#[doc(hidden)]
+pub fn reclaim_unreferenced_manifests_with_fence(
+    root: &Path,
+    retained_generation_ids: &[String],
+    _ownership_fence: &GenerationOwnershipFence,
+) -> Result<()> {
     let directory = root.join(MANIFEST_DIRECTORY);
     fs::create_dir_all(&directory)?;
-    let retained_generation_ids = retained_manifest_closure(root, retained_generation_ids)?;
+    let mut retained_generation_ids = retained_generation_ids.to_vec();
+    retained_generation_ids.extend(
+        live_generation_read_lease_targets(root)?
+            .into_iter()
+            .map(|target| target.generation_id().to_owned()),
+    );
+    let retained_generation_ids = retained_manifest_closure(root, &retained_generation_ids)?;
     let mut removed = false;
     for entry in fs::read_dir(&directory)? {
         let entry = entry?;

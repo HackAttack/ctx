@@ -14,6 +14,7 @@ pub use reader::VerifiedIndex;
 #[doc(hidden)]
 pub use reader::{
     reset_verified_index_publication_construction_count, reset_verified_index_reopen_count,
+    set_verified_index_after_publication_fence_hook, set_verified_index_before_peer_lease_hook,
     verified_index_publication_construction_count, verified_index_reopen_count,
 };
 pub(crate) use records::stored_event_record;

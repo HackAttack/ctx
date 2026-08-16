@@ -668,8 +668,7 @@ fn execute_qualification_operation(case: QualificationCase, root: &Path) {
             let outcome =
                 republish_current_for_qualification(root, &pointer, &WriterOptions::default())
                     .unwrap();
-            let current = completed_pointer(outcome);
-            best_effort_post_republish_cleanup(root, &current);
+            let _current = completed_pointer(outcome);
             drop(lease);
         }
     }

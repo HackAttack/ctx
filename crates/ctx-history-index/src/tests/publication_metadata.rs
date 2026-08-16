@@ -458,6 +458,69 @@ fn retained_generation_peer_is_limited_to_the_current_pointer_pair() {
 }
 
 #[test]
+fn retained_generation_peer_rechecks_the_current_pair_after_pointer_rotation() {
+    let temp = tempdir().unwrap();
+    let source = source("retained-generation-peer-rotation.jsonl");
+    let first = publish_with_metadata(temp.path(), &source, 1, "first peer", b"first");
+    let second = publish_with_metadata(temp.path(), &source, 2, "second peer", b"second");
+    let _lease = acquire_generation_retention_lease(
+        temp.path(),
+        &first.receipt().generation_id,
+        "peer_rotation_test",
+        &"a".repeat(64),
+    )
+    .unwrap();
+
+    let root = temp.path().to_path_buf();
+    let hook_source = source.clone();
+    set_verified_index_before_peer_lease_hook(move |_| {
+        publish_with_metadata(&root, &hook_source, 3, "third peer", b"third");
+    });
+
+    let peer =
+        VerifiedIndex::open_retained_generation_peer(temp.path(), &second.receipt().generation_id)
+            .unwrap()
+            .unwrap();
+    assert_eq!(peer.count_term("third").unwrap(), 1);
+    assert_eq!(peer.count_term("first").unwrap(), 0);
+}
+
+#[test]
+fn retained_generation_peer_reports_concurrent_change_after_two_pointer_rotations() {
+    let temp = tempdir().unwrap();
+    let source = source("retained-generation-peer-double-rotation.jsonl");
+    let first = publish_with_metadata(temp.path(), &source, 1, "first peer", b"first");
+    let second = publish_with_metadata(temp.path(), &source, 2, "second peer", b"second");
+    let _lease = acquire_generation_retention_lease(
+        temp.path(),
+        &first.receipt().generation_id,
+        "peer_double_rotation_test",
+        &"a".repeat(64),
+    )
+    .unwrap();
+
+    let root = temp.path().to_path_buf();
+    let hook_source = source.clone();
+    set_verified_index_before_peer_lease_hook(move |attempt| {
+        if attempt == 0 {
+            publish_with_metadata(&root, &hook_source, 3, "third peer", b"third");
+        } else {
+            publish_with_metadata(&root, &hook_source, 4, "fourth peer", b"fourth");
+            publish_with_metadata(&root, &hook_source, 5, "fifth peer", b"fifth");
+        }
+    });
+
+    let error = match VerifiedIndex::open_retained_generation_peer(
+        temp.path(),
+        &second.receipt().generation_id,
+    ) {
+        Ok(_) => panic!("doubly rotated peer unexpectedly opened"),
+        Err(error) => error,
+    };
+    assert!(matches!(error, IndexError::ConcurrentGenerationChange));
+}
+
+#[test]
 fn one_durable_lease_retains_an_exact_old_generation_without_changing_peer_slots() {
     let temp = tempdir().unwrap();
     let source = source("generation-retention-lease.jsonl");

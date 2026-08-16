@@ -966,6 +966,83 @@ fn forced_copy_write_failures_preserve_base_pointer_and_queries() {
     }
 }
 
+#[cfg(target_os = "linux")]
+#[test]
+fn failed_republish_hardlink_clone_keeps_readers_fenced_through_cleanup() {
+    use std::sync::mpsc;
+
+    let predecessor = GoldenPredecessor::copy();
+    let root = predecessor.root().to_path_buf();
+    let pointer_before = fs::read(root.join("active-generation.json")).unwrap();
+    let (cleanup_tx, cleanup_rx) = mpsc::channel();
+    let (release_tx, release_rx) = mpsc::channel();
+    let writer_root = root.clone();
+    let writer = thread::spawn(move || {
+        let mut failed_after_hardlink = false;
+        let _fault =
+            CloneTestHookGuard::set(CloneTestOptions::default(), move |stage, relative| {
+                if stage == CloneStage::AfterFile
+                    && relative != Path::new(".managed.json")
+                    && relative != Path::new("meta.json")
+                    && !failed_after_hardlink
+                {
+                    failed_after_hardlink = true;
+                    return Err(io::Error::from_raw_os_error(libc::EIO).into());
+                }
+                if stage == CloneStage::BeforeCleanup {
+                    cleanup_tx.send(()).unwrap();
+                    release_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+                }
+                Ok(())
+            });
+        open_writer_error(&writer_root)
+    });
+    cleanup_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+
+    let reader_root = root.clone();
+    let (reader_tx, reader_rx) = mpsc::channel();
+    let reader = thread::spawn(move || {
+        crate::publication::reset_verification_activity();
+        let reopened = VerifiedIndex::open_pinned(&reader_root).unwrap();
+        reader_tx
+            .send((
+                reopened,
+                crate::publication::verification_activity().0,
+                crate::publication::hashed_artifact_bytes(),
+            ))
+            .unwrap();
+    });
+    assert!(
+        reader_rx.recv_timeout(Duration::from_millis(250)).is_err(),
+        "reader crossed failed republish cleanup"
+    );
+    release_tx.send(()).unwrap();
+
+    let error = writer.join().unwrap();
+    assert!(matches!(
+        error,
+        IndexError::Io(ref error) if error.raw_os_error() == Some(libc::EIO)
+    ));
+    let (reopened, checksum_walks, hashed_bytes) =
+        reader_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+    reader.join().unwrap();
+    assert_eq!(reopened.count_term("evidence").unwrap(), 3);
+    assert_eq!(checksum_walks, 0);
+    assert_eq!(hashed_bytes, 0);
+    assert_eq!(
+        fs::read(root.join("active-generation.json")).unwrap(),
+        pointer_before
+    );
+    assert_eq!(
+        fs::read_dir(root.join(INDEX_GENERATIONS_DIRECTORY))
+            .unwrap()
+            .filter_map(std::result::Result::ok)
+            .filter(|entry| entry.file_type().unwrap().is_dir())
+            .count(),
+        1
+    );
+}
+
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 #[test]
 fn native_copy_detects_growth_without_writing_past_authenticated_length() {
@@ -1070,12 +1147,16 @@ fn native_candidate_replacement_is_rejected_and_cleanup_preserves_replacement() 
             Ok(())
         });
 
-        assert!(matches!(
-            open_writer_error(predecessor.root()),
-            IndexError::CurrentRepublishSourceTopology(
-                "active generation directory changed during republish"
-            )
-        ));
+        let error = open_writer_error(predecessor.root());
+        assert!(
+            matches!(
+                &error,
+                IndexError::CurrentRepublishSourceTopology(
+                    "active generation directory changed during republish"
+                )
+            ),
+            "unexpected error at {replacement_stage:?}: {error:?}"
+        );
         assert_eq!(
             fs::read(predecessor.root().join("active-generation.json")).unwrap(),
             pointer_before,

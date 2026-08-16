@@ -149,6 +149,190 @@ fn repeated_open_and_exact_noop_read_zero_artifact_bodies() {
     assert_eq!(crate::publication::hashed_artifact_bytes(), 0);
 }
 
+#[cfg(target_os = "linux")]
+#[test]
+fn authenticated_hardlink_clone_refreshes_reader_certification_without_rehash() {
+    use std::{os::unix::fs::MetadataExt as _, sync::mpsc, thread, time::Duration};
+
+    let (temp, source, baseline) = published_fixture("clone-refreshes-reader-certification.jsonl");
+    let mut candidate = GenerationWriter::open(temp.path(), WriterOptions::default())
+        .unwrap()
+        .into_writer()
+        .unwrap();
+    candidate.begin_source(source).unwrap();
+
+    let pointer = load_active_generation_pointer(temp.path())
+        .unwrap()
+        .unwrap();
+    let generations = temp.path().join(INDEX_GENERATIONS_DIRECTORY);
+    let candidate_path = fs::read_dir(&generations)
+        .unwrap()
+        .map(|entry| entry.unwrap().path())
+        .find(|path| {
+            path.file_name().and_then(|name| name.to_str()) != Some(pointer.active().directory())
+        })
+        .expect("lazy writer did not create a candidate generation");
+    let removed_hardlink = fs::read_dir(&candidate_path)
+        .unwrap()
+        .map(|entry| entry.unwrap())
+        .find(|entry| {
+            entry.file_type().unwrap().is_file()
+                && entry.metadata().unwrap().nlink() > 1
+                && entry.file_name() != "meta.json"
+        })
+        .expect("candidate did not inherit a hardlinked artifact");
+    fs::remove_file(removed_hardlink.path()).unwrap();
+
+    let root = temp.path().to_path_buf();
+    let (result_tx, result_rx) = mpsc::channel();
+    let reader = thread::spawn(move || {
+        crate::publication::reset_verification_activity();
+        let reopened = VerifiedIndex::open_pinned(root).unwrap();
+        result_tx
+            .send((
+                reopened,
+                crate::publication::verification_activity().0,
+                crate::publication::hashed_artifact_bytes(),
+            ))
+            .unwrap();
+    });
+    assert!(
+        result_rx.recv_timeout(Duration::from_millis(250)).is_err(),
+        "reader crossed a mutable candidate hardlink topology"
+    );
+    drop(candidate);
+    let (reopened, checksum_walks, hashed_bytes) =
+        result_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+    reader.join().unwrap();
+    assert_eq!(reopened.generation_id(), baseline.generation_id);
+    assert_eq!(checksum_walks, 0);
+    assert_eq!(hashed_bytes, 0);
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn failed_hardlink_clone_keeps_readers_fenced_through_cleanup_and_recertification() {
+    use std::{sync::mpsc, thread, time::Duration};
+
+    let (temp, source, baseline) = published_fixture("failed-hardlink-clone-fence.jsonl");
+    let root = temp.path().to_path_buf();
+    let append_root = root.clone();
+    let (cleanup_tx, cleanup_rx) = mpsc::channel();
+    let (release_tx, release_rx) = mpsc::channel();
+    let append = thread::spawn(move || {
+        let mut failed_after_hardlink = false;
+        let _hook = CloneTestHookGuard::set(
+            CloneTestOptions {
+                force_reflink_fallback: true,
+                ..CloneTestOptions::default()
+            },
+            move |stage, relative| {
+                if stage == CloneStage::AfterFile
+                    && relative != Path::new(".managed.json")
+                    && relative != Path::new("meta.json")
+                    && !failed_after_hardlink
+                {
+                    failed_after_hardlink = true;
+                    return Err(std::io::Error::from_raw_os_error(libc::EIO).into());
+                }
+                if stage == CloneStage::BeforeCleanup {
+                    cleanup_tx.send(()).unwrap();
+                    release_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+                }
+                Ok(())
+            },
+        );
+        append_one_record(&append_root, &source).unwrap_err()
+    });
+    cleanup_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+
+    let reader_root = root.clone();
+    let (reader_tx, reader_rx) = mpsc::channel();
+    let reader = thread::spawn(move || {
+        crate::publication::reset_verification_activity();
+        let reopened = VerifiedIndex::open_pinned(&reader_root).unwrap();
+        reader_tx
+            .send((
+                reopened,
+                crate::publication::verification_activity().0,
+                crate::publication::hashed_artifact_bytes(),
+            ))
+            .unwrap();
+    });
+    assert!(
+        reader_rx.recv_timeout(Duration::from_millis(250)).is_err(),
+        "reader crossed failed hardlink cleanup"
+    );
+    release_tx.send(()).unwrap();
+
+    let error = append.join().unwrap();
+    assert!(matches!(
+        error,
+        IndexError::Io(ref error) if error.raw_os_error() == Some(libc::EIO)
+    ));
+    let (reopened, checksum_walks, hashed_bytes) =
+        reader_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+    reader.join().unwrap();
+    assert_eq!(reopened.generation_id(), baseline.generation_id);
+    assert_eq!(checksum_walks, 0);
+    assert_eq!(hashed_bytes, 0);
+    assert_eq!(
+        fs::read_dir(root.join(INDEX_GENERATIONS_DIRECTORY))
+            .unwrap()
+            .filter_map(std::result::Result::ok)
+            .filter(|entry| entry.file_type().unwrap().is_dir())
+            .count(),
+        1
+    );
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn managed_reclamation_refreshes_reader_certification_without_rehash() {
+    let (temp, source, baseline) = published_fixture("reclamation-refreshes-certification.jsonl");
+    let retention = acquire_generation_retention_lease(
+        temp.path(),
+        &baseline.generation_id,
+        "integrity_test",
+        &"a".repeat(64),
+    )
+    .unwrap();
+    let _second = append_one_record(temp.path(), &source).unwrap();
+
+    let mut third = GenerationWriter::open(temp.path(), WriterOptions::default())
+        .unwrap()
+        .into_writer()
+        .unwrap();
+    let base = third.begin_source_append(source.clone()).unwrap().clone();
+    third
+        .add_core_record(document(&source, 3, "third generation body"))
+        .unwrap();
+    third
+        .certify_source_append(
+            CertifiedSourceAppend::certify(
+                &base,
+                appendable_certificate(&source, 3, 3, 30),
+                20,
+                [2; 32],
+            )
+            .unwrap(),
+        )
+        .unwrap();
+    let third = third.commit(|_| true).unwrap();
+    assert!(release_generation_retention_lease(temp.path(), &retention).unwrap());
+
+    crate::publication::reset_verification_activity();
+    let candidate = GenerationWriter::open(temp.path(), WriterOptions::default())
+        .unwrap()
+        .into_writer()
+        .unwrap();
+    assert_eq!(crate::publication::hashed_artifact_bytes(), 0);
+    let reopened = VerifiedIndex::open_pinned(temp.path()).unwrap();
+    assert_eq!(reopened.generation_id(), third.generation_id);
+    assert_eq!(crate::publication::hashed_artifact_bytes(), 0);
+    drop(candidate);
+}
+
 #[test]
 fn explicit_scrub_forces_one_full_hash_and_refreshes_reusable_authority() {
     let (temp, _, _) = published_fixture("explicit-integrity-scrub.jsonl");

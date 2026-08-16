@@ -41,11 +41,14 @@ fn identical_staging_revalidates_active_checksum_after_terminal_callback() {
         .unwrap_err();
 
     assert!(corrupted);
-    assert!(matches!(
-        error,
-        IndexError::ActiveGenerationNeedsRebuild { generation_id, .. }
-            if generation_id == baseline.generation_id
-    ));
+    assert!(
+        matches!(
+            error,
+            IndexError::ActiveGenerationNeedsRebuild { ref generation_id, .. }
+                if generation_id == &baseline.generation_id
+        ),
+        "unexpected error: {error:?}"
+    );
     assert_eq!(
         fs::read(temp.path().join("active-generation.json")).unwrap(),
         pointer_before

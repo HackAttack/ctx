@@ -165,231 +165,75 @@ fn pinned_generation_preserves_manifest_corruption_errors() {
 }
 
 #[test]
-fn pinned_generation_retries_once_when_the_publication_pointer_changes() {
+fn leased_open_survives_two_publications_without_blocking_the_writer() {
+    use std::{sync::mpsc, thread, time::Duration};
+
     let temp = tempdir().unwrap();
-    let source = source("pinned-pointer-race.jsonl");
-    publish_pinned_test_generation(temp.path(), &source, 1, "previous evidence");
-    let before_publication = load_active_generation_pointer(temp.path())
-        .unwrap()
-        .unwrap();
-    let expected = publish_pinned_test_generation(temp.path(), &source, 2, "published evidence");
-    let after_publication = load_active_generation_pointer(temp.path())
-        .unwrap()
-        .unwrap();
-    let mut pointer_reads = 0;
-
-    let index = VerifiedIndex::open_pinned_generation_with_pointer_loader(
-        temp.path(),
-        &expected.generation_id,
-        |_| {
-            pointer_reads += 1;
-            Ok(Some(if pointer_reads == 1 {
-                before_publication.clone()
-            } else {
-                after_publication.clone()
-            }))
-        },
-    )
-    .unwrap();
-
-    assert_eq!(
-        pointer_reads, 3,
-        "resolution did not perform one bounded retry"
-    );
-    assert_eq!(index.generation_id(), expected.generation_id);
-    assert_eq!(index.count_term("published").unwrap(), 1);
-}
-
-#[test]
-fn retained_peer_retry_pairs_a_pinned_generation_with_the_new_active_generation() {
-    let temp = tempdir().unwrap();
-    let source = source("retained-peer-pointer-race.jsonl");
-    let pinned = publish_pinned_test_generation(temp.path(), &source, 1, "pinned evidence");
-    let before_publication = load_active_generation_pointer(temp.path())
-        .unwrap()
-        .unwrap();
-    let published =
-        publish_pinned_test_generation(temp.path(), &source, 2, "published peer evidence");
-    let after_publication = load_active_generation_pointer(temp.path())
-        .unwrap()
-        .unwrap();
-    let mut pointer_reads = 0;
-
-    let peer = VerifiedIndex::open_retained_generation_peer_with_pointer_loader(
-        temp.path(),
-        &pinned.generation_id,
-        |_| {
-            pointer_reads += 1;
-            Ok(Some(if pointer_reads == 1 {
-                before_publication.clone()
-            } else {
-                after_publication.clone()
-            }))
-        },
-    )
-    .unwrap()
-    .unwrap();
-
-    assert_eq!(pointer_reads, 3, "peer resolution did not retry once");
-    assert_eq!(peer.generation_id(), published.generation_id);
-    assert_eq!(peer.count_term("published").unwrap(), 1);
-    assert_eq!(peer.count_term("pinned").unwrap(), 0);
-}
-
-#[test]
-fn pinned_generation_fails_closed_after_a_second_pointer_change() {
-    let temp = tempdir().unwrap();
-    let source = source("pinned-second-pointer-race.jsonl");
-    publish_pinned_test_generation(temp.path(), &source, 1, "first evidence");
-    let first_pointer = load_active_generation_pointer(temp.path())
-        .unwrap()
-        .unwrap();
-    let expected = publish_pinned_test_generation(temp.path(), &source, 2, "second evidence");
-    let second_pointer = load_active_generation_pointer(temp.path())
-        .unwrap()
-        .unwrap();
-    publish_pinned_test_generation(temp.path(), &source, 3, "third evidence");
-    let third_pointer = load_active_generation_pointer(temp.path())
-        .unwrap()
-        .unwrap();
-    let mut pointer_reads = 0;
-
-    let result = VerifiedIndex::open_pinned_generation_with_pointer_loader(
-        temp.path(),
-        &expected.generation_id,
-        |_| {
-            pointer_reads += 1;
-            Ok(Some(match pointer_reads {
-                1 => first_pointer.clone(),
-                2 => second_pointer.clone(),
-                _ => third_pointer.clone(),
-            }))
-        },
-    );
-
-    assert!(matches!(
-        result,
-        Err(IndexError::ConcurrentGenerationChange)
-    ));
-    assert_eq!(
-        pointer_reads, 3,
-        "resolution chased more than one publication change"
-    );
-}
-
-#[test]
-fn pinned_generation_real_publication_moves_active_to_previous_and_keeps_reads_valid() {
-    let temp = tempdir().unwrap();
-    let source = source("pinned-real-active-race.jsonl");
-    let expected = publish_pinned_test_generation(temp.path(), &source, 1, "first evidence");
-    let first_reader =
-        VerifiedIndex::open_pinned_generation(temp.path(), &expected.generation_id).unwrap();
-    let mut pointer_reads = 0;
-    let mut replacement = None;
-    let mut first_reader_valid_during_publication = false;
-
-    let resolved = VerifiedIndex::open_pinned_generation_with_pointer_loader(
-        temp.path(),
-        &expected.generation_id,
-        |root| {
-            pointer_reads += 1;
-            if pointer_reads == 2 {
-                replacement = Some(publish_pinned_test_generation(
-                    root,
-                    &source,
-                    2,
-                    "second evidence",
-                ));
-                first_reader_valid_during_publication =
-                    first_reader.count_term("first").unwrap() == 1;
-            }
-            load_active_generation_pointer(root)
-        },
-    )
-    .unwrap();
-
-    let replacement = replacement.expect("the publication hook did not commit a replacement");
-    let pointer = load_active_generation_pointer(temp.path())
-        .unwrap()
-        .unwrap();
-    assert_eq!(
-        pointer_reads, 3,
-        "the real publication was not retried once"
-    );
-    assert_eq!(pointer.active().generation_id(), replacement.generation_id);
-    assert_eq!(
-        pointer.previous().unwrap().generation_id(),
-        expected.generation_id
-    );
-    assert!(first_reader_valid_during_publication);
-    assert_eq!(first_reader.count_term("first").unwrap(), 1);
-    assert_eq!(first_reader.count_term("second").unwrap(), 0);
-    assert_eq!(resolved.generation_id(), expected.generation_id);
-    assert_eq!(resolved.count_term("first").unwrap(), 1);
-    assert_eq!(resolved.count_term("second").unwrap(), 0);
-}
-
-#[test]
-fn pinned_generation_real_publication_evicts_previous_and_fails_closed_with_valid_read() {
-    let temp = tempdir().unwrap();
-    let source = source("pinned-real-eviction-race.jsonl");
-    let expected = publish_pinned_test_generation(temp.path(), &source, 1, "first evidence");
+    let root = temp.path().to_path_buf();
+    let source = source("leased-open-publication-race.jsonl");
+    let first = publish_pinned_test_generation(&root, &source, 1, "first evidence");
     #[cfg(not(windows))]
-    let expected_path = active_generation_path(temp.path());
-    let first_reader =
-        VerifiedIndex::open_pinned_generation(temp.path(), &expected.generation_id).unwrap();
-    let previous = publish_pinned_test_generation(temp.path(), &source, 2, "second evidence");
-    let mut pointer_reads = 0;
-    let mut replacement = None;
-    let mut first_reader_valid_during_reclamation = false;
+    let first_path = active_generation_path(&root);
 
-    let result = VerifiedIndex::open_pinned_generation_with_pointer_loader(
-        temp.path(),
-        &expected.generation_id,
-        |root| {
-            pointer_reads += 1;
-            if pointer_reads == 2 {
-                replacement = Some(publish_pinned_test_generation(
-                    root,
-                    &source,
-                    3,
-                    "third evidence",
-                ));
-                first_reader_valid_during_reclamation =
-                    first_reader.count_term("first").unwrap() == 1;
-            }
-            load_active_generation_pointer(root)
-        },
-    );
+    let (lease_ready_tx, lease_ready_rx) = mpsc::channel();
+    let (resume_tx, resume_rx) = mpsc::channel();
+    let reader_root = root.clone();
+    let reader = thread::spawn(move || {
+        set_verified_index_after_publication_fence_hook(move || {
+            lease_ready_tx.send(()).unwrap();
+            resume_rx.recv().unwrap();
+        });
+        VerifiedIndex::open_pinned(&reader_root)
+    });
+    lease_ready_rx
+        .recv_timeout(Duration::from_secs(10))
+        .unwrap();
 
-    let replacement = replacement.expect("the publication hook did not commit a replacement");
-    let error = match result {
-        Ok(_) => panic!("the evicted previous generation unexpectedly opened"),
-        Err(error) => error,
-    };
-    assert!(matches!(
-        error,
-        IndexError::PinnedGenerationNotRetained {
-            expected_generation_id,
-            active_generation_id,
-            previous_generation_id: Some(previous_generation_id),
-        } if expected_generation_id == expected.generation_id
-            && active_generation_id == replacement.generation_id
-            && previous_generation_id == previous.generation_id
-    ));
-    assert_eq!(
-        pointer_reads, 3,
-        "the eviction race did not stop after one retry"
-    );
+    let (published_tx, published_rx) = mpsc::channel();
+    let publisher_root = root.clone();
+    let publisher_source = source.clone();
+    let publisher = thread::spawn(move || {
+        let second = publish_pinned_test_generation(
+            &publisher_root,
+            &publisher_source,
+            2,
+            "second evidence",
+        );
+        let third =
+            publish_pinned_test_generation(&publisher_root, &publisher_source, 3, "third evidence");
+        published_tx.send((second, third)).unwrap();
+    });
+    let (_second, third) = published_rx
+        .recv_timeout(Duration::from_secs(10))
+        .expect("publication remained coupled to post-fence reader construction");
     #[cfg(not(windows))]
     assert!(
-        !expected_path.exists(),
-        "the evicted generation directory was not reclaimed"
+        first_path.exists(),
+        "live reader lease did not retain the evicted generation"
     );
-    assert!(first_reader_valid_during_reclamation);
-    assert_eq!(first_reader.count_term("first").unwrap(), 1);
-    assert_eq!(first_reader.count_term("second").unwrap(), 0);
-    assert_eq!(first_reader.count_term("third").unwrap(), 0);
+
+    resume_tx.send(()).unwrap();
+    let index = reader.join().unwrap().unwrap();
+    publisher.join().unwrap();
+    assert_eq!(index.generation_id(), first.generation_id);
+    assert_eq!(index.count_term("first").unwrap(), 1);
+    assert_eq!(index.count_term("third").unwrap(), 0);
+    assert_eq!(
+        load_active_generation_pointer(&root)
+            .unwrap()
+            .unwrap()
+            .active()
+            .generation_id(),
+        third.generation_id
+    );
+
+    drop(index);
+    publish_pinned_test_generation(&root, &source, 4, "fourth evidence");
+    #[cfg(not(windows))]
+    assert!(
+        !first_path.exists(),
+        "released reader generation was not reclaimed"
+    );
 }
 
 #[test]

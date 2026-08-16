@@ -7,17 +7,19 @@ use crate::{
     GenerationManifest, IndexError, Result, WriterOptions,
 };
 use ctx_history_index_format::{register_body_analyzer, verify_searcher_structure};
-use ctx_history_index_generation::DurableMmapDirectory;
+use ctx_history_index_generation::{
+    acquire_generation_ownership_fence, reclaim_inactive_generation_directories_with_fence,
+    reclaim_unreferenced_certifications_with_fence, reclaim_unreferenced_manifests_with_fence,
+    DurableMmapDirectory, GenerationOwnershipFence,
+};
 
 use super::{
     canonical_commit_payload, certify_activated_generation, lexical_index_settings,
     load_active_generation_pointer, load_generation_retention_lease, load_publication_for_metas,
     meta_generation, open_slot_index, payload_generation_id, physical_integrity_audit,
-    publish_active_generation_pointer, reclaim_inactive_generation_directories,
-    reclaim_unreferenced_certifications, reclaim_unreferenced_manifests, reconcile_commit_error,
-    searcher_generation, slot_path, sync_generation, verify_physical_integrity, write_manifest,
-    ActiveGenerationPointer, GenerationSlot, PhysicalIntegrityAudit, PointerPublicationOutcome,
-    INDEX_GENERATIONS_DIRECTORY,
+    publish_active_generation_pointer, reconcile_commit_error, searcher_generation, slot_path,
+    sync_generation, verify_physical_integrity, write_manifest, ActiveGenerationPointer,
+    GenerationSlot, PhysicalIntegrityAudit, PointerPublicationOutcome, INDEX_GENERATIONS_DIRECTORY,
 };
 
 #[cfg(windows)]
@@ -138,7 +140,7 @@ fn republish_current(
         current_publication.into_parts();
 
     republish_checkpoint(RepublishStage::BeforeCandidateCreation, None)?;
-    let candidate = create_authenticated_republish_candidate(root, pointer, &current_index)?;
+    let mut candidate = create_authenticated_republish_candidate(root, pointer, &current_index)?;
     register_body_analyzer(candidate.index());
     let candidate_path = root
         .join(INDEX_GENERATIONS_DIRECTORY)
@@ -148,7 +150,7 @@ fn republish_current(
         root,
         pointer,
         options,
-        &candidate,
+        &mut candidate,
         &candidate_path,
         &candidate_directory_name,
         &current_metas,
@@ -159,7 +161,7 @@ fn republish_current(
     if republish.is_err()
         && load_active_generation_pointer(root).ok().flatten().as_ref() == Some(pointer)
     {
-        candidate.discard();
+        let _ = candidate.discard();
     }
     republish
 }
@@ -169,7 +171,7 @@ fn republish_candidate(
     root: &Path,
     base_pointer: &ActiveGenerationPointer,
     options: &WriterOptions,
-    candidate: &clone::RepublishCandidate,
+    candidate: &mut clone::RepublishCandidate,
     candidate_path: &Path,
     candidate_directory_name: &str,
     base_metas: &tantivy::IndexMeta,
@@ -267,6 +269,14 @@ fn republish_candidate(
         Some(candidate_path),
     )?;
     candidate.validate_binding()?;
+    let acquired_ownership_fence;
+    let ownership_fence = match candidate.publication_fence()? {
+        Some(fence) => fence,
+        None => {
+            acquired_ownership_fence = acquire_generation_ownership_fence(root)?;
+            &acquired_ownership_fence
+        }
+    };
     #[cfg(windows)]
     let publication_result =
         publish_active_generation_pointer_validated(root, &next_pointer, || {
@@ -317,6 +327,7 @@ fn republish_candidate(
         | CurrentRepublishOutcome::CommittedVisible { pointer, .. },
     ) = &outcome
     {
+        best_effort_post_republish_cleanup_with_fence(root, pointer, ownership_fence);
         let _ = certify_activated_generation(
             root,
             pointer,
@@ -493,17 +504,23 @@ fn load_pointer_for_republish_reconciliation(
     load_active_generation_pointer(root)
 }
 
-/// Cleanup after a visible republish is opportunistic. Query authority already
-/// changed atomically, so reclamation failures must never be reported as a
-/// failed republish.
-pub(crate) fn best_effort_post_republish_cleanup(root: &Path, pointer: &ActiveGenerationPointer) {
+fn best_effort_post_republish_cleanup_with_fence(
+    root: &Path,
+    pointer: &ActiveGenerationPointer,
+    ownership_fence: &GenerationOwnershipFence,
+) {
     if republish_checkpoint(RepublishStage::PostPublicationCleanup, Some(root)).is_err() {
         return;
     }
     let Ok(retention_lease) = load_generation_retention_lease(root) else {
         return;
     };
-    let _ = reclaim_inactive_generation_directories(root, Some(pointer), retention_lease.as_ref());
+    let _ = reclaim_inactive_generation_directories_with_fence(
+        root,
+        Some(pointer),
+        retention_lease.as_ref(),
+        ownership_fence,
+    );
     let mut retained_generation_ids = std::iter::once(pointer.active())
         .chain(pointer.previous())
         .map(|slot| slot.generation_id().to_owned())
@@ -513,8 +530,14 @@ pub(crate) fn best_effort_post_republish_cleanup(root: &Path, pointer: &ActiveGe
             .as_ref()
             .map(|lease| lease.generation_id().to_owned()),
     );
-    let _ = reclaim_unreferenced_manifests(root, &retained_generation_ids);
-    let _ = reclaim_unreferenced_certifications(root, Some(pointer), retention_lease.as_ref());
+    let _ =
+        reclaim_unreferenced_manifests_with_fence(root, &retained_generation_ids, ownership_fence);
+    let _ = reclaim_unreferenced_certifications_with_fence(
+        root,
+        Some(pointer),
+        retention_lease.as_ref(),
+        ownership_fence,
+    );
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
