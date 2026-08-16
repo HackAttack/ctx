@@ -6,7 +6,6 @@ load("@rules_rust//rust:defs.bzl", "rustfmt_test")
 load(
     "//tools/bazel:gates.bzl",
     "loc_check_inputs",
-    "loc_check_manifest",
     "non_rust_gate",
     "real_harness_gate",
 )
@@ -170,17 +169,6 @@ history_cli_boundary(
     history_build_label = "//crates/ctx-history-cli:BUILD.bazel",
 )
 
-loc_check_manifest(
-    name = "loc_check_source_manifest",
-    srcs = LOC_CHECK_SOURCE_DATA,
-)
-
-LOC_CHECK_DATA = LOC_CHECK_SOURCE_DATA + [
-    ":loc_check_source_manifest",
-    "scripts/check-loc-policy-v2.json",
-    "@ctx_scc_linux_x86_64//:scc",
-]
-
 # Keep the direct-checkout and Bazel package audits on the exact same source
 # surface. The checker owns the path list; these filegroups make those paths
 # available in the sandboxed runfiles tree.
@@ -285,14 +273,11 @@ py_test(
     name = "rust_target_inventory_check",
     srcs = ["//tools/bazel:check_rust_target_inventory.py"],
     main = "//tools/bazel:check_rust_target_inventory.py",
-    args = [
-        "$(rootpath //tools/bazel:rust-target-inventory.json)",
-        "$(rootpath Cargo.toml)",
+    tags = [
+        "external",
+        "local",
+        "no-cache",
     ],
-    data = [
-        "Cargo.toml",
-        "//tools/bazel:rust-target-inventory.json",
-    ] + CARGO_WORKSPACE_PACKAGE_DATA,
 )
 
 py_test(
@@ -1237,7 +1222,11 @@ non_rust_gate(
         "//crates/ctx-history-capture:BUILD.bazel",
         "//crates/ctx-history-capture:Cargo.toml",
         "//crates/ctx-history-capture:provider_architecture_sources",
-        "//tools/bazel:rust-target-inventory.json",
+        "//crates/ctx-history-capture:tests/codex_direct_result.rs",
+        "//crates/ctx-history-provider-native-jsonl:BUILD.bazel",
+        "//crates/ctx-history-provider-native-jsonl:Cargo.toml",
+        "//crates/ctx-history-providers-sqlite-selected:BUILD.bazel",
+        "//crates/ctx-history-providers-sqlite-selected:Cargo.toml",
     ],
 )
 non_rust_gate(name = "installer_path_smoke", mode = "installer_path_smoke", data = NON_RUST_GATE_DATA)
@@ -1250,11 +1239,29 @@ non_rust_gate(
 non_rust_gate(name = "macos_release_signing_tests", mode = "macos_release_signing_tests", data = NON_RUST_GATE_DATA)
 non_rust_gate(
     name = "loc_check",
-    args = [
-        "$(rootpath @ctx_scc_linux_x86_64//:scc)",
-        "$(rootpath :loc_check_source_manifest)",
+    data = [
+        "scripts/check-loc.py",
+        "scripts/check-loc.sh",
+        "scripts/tests/check_loc_test.sh",
     ],
-    data = LOC_CHECK_DATA,
+    tags = [
+        "external",
+        "local",
+        "no-cache",
+    ],
+)
+sh_test(
+    name = "repository_policy_check",
+    srcs = ["scripts/check-repository-policy.sh"],
+    data = [
+        "scripts/check-loc.py",
+        "//tools/bazel:check_rust_target_inventory.py",
+    ],
+    tags = [
+        "external",
+        "local",
+        "no-cache",
+    ],
 )
 non_rust_gate(
     name = "public_control_surface_check",

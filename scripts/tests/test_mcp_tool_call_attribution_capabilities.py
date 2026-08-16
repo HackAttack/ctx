@@ -175,7 +175,7 @@ class CapabilityMutationTests(unittest.TestCase):
         self.capability["exact_checks"][0]["suite_id"] = (
             "ctx-history-capture::test:nonexistent"
         )
-        self.assert_invalid("does not resolve through the Rust target inventory")
+        self.assert_invalid("does not resolve through live Cargo/Bazel ownership")
 
     def test_nonexistent_test_is_rejected(self) -> None:
         self.capability["exact_checks"][0]["tests"][0]["id"] = "nonexistent_exact_test"

@@ -181,9 +181,11 @@ both graphs. BUILD, `.bzl`, module, lock, and configuration changes select the f
 test also fails closed to `//:ci_tests`. Non-routine external, manual, network,
 platform, stress, and release targets stay outside affected execution.
 
-`tools/bazel/rust-target-inventory.json` records native ownership for every
-Cargo production, binary, example, build-script, and integration-test target.
-Its test fails whenever a manifest target is added without a Bazel label.
+`//:repository_policy_check` reads the live Git and Cargo workspaces on every
+invocation. It enforces fixed physical-line limits and discovers every Cargo
+package, target, local dependency, and Bazel owner without a copied package
+inventory. The target is intentionally uncached so a newly added package or
+source file cannot be hidden by an incomplete declared-input list.
 
 Bazel automatically reuses successful results when their declared inputs,
 configuration, toolchain, platform, and target are unchanged. Use

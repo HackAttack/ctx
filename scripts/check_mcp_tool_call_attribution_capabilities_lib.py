@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import re
+import tomllib
 from collections import Counter, defaultdict
 from collections.abc import Mapping
 from pathlib import Path
@@ -42,7 +43,6 @@ except ImportError:
 REPO_ROOT = Path(__file__).resolve().parents[1]
 SUPPORT_MATRIX_PATH = REPO_ROOT / "docs/provider-support-matrix.json"
 CAPABILITY_PATH = REPO_ROOT / "docs/mcp-tool-call-attribution-capabilities.json"
-TARGET_INVENTORY_PATH = REPO_ROOT / "tools/bazel/rust-target-inventory.json"
 PUBLIC_DOC_PATHS = (
     "docs/mcp-tool-call-attribution.md",
     "docs/mcp-tool-call-attribution-evidence.md",
@@ -644,29 +644,42 @@ def target_block(build_text: str, target_name: str) -> str:
 
 def resolve_suite(suite_id: str) -> tuple[str, Path, str, Path]:
     if "::" not in suite_id:
-        fail(f"suite_id is not package::inventory-binding: {suite_id!r}")
+        fail(f"suite_id is not package::Cargo-target-binding: {suite_id!r}")
     package, binding = suite_id.split("::", 1)
-    inventory = load_json(TARGET_INVENTORY_PATH, "Rust target inventory")
-    package_data = expect_dict(
-        expect_dict(inventory.get("packages"), "target packages").get(package),
-        f"target package {package}",
-    )
-    target = (
-        package_data.get("native_unit")
-        if binding == "native_unit"
-        else expect_dict(package_data.get("targets"), "package targets").get(binding)
-    )
-    if target is None:
-        fail(f"suite_id does not resolve through the Rust target inventory: {suite_id}")
-    target = require_string(target, f"suite target {suite_id}")
-    match = re.fullmatch(r"//([^:]*):([^:]+)", target)
-    if match is None:
-        fail(f"suite target is not a repository Bazel label: {target}")
-    package_dir = REPO_ROOT / match.group(1)
-    block = target_block(
-        (package_dir / "BUILD.bazel").read_text(encoding="utf-8"), match.group(2)
-    )
-    manifest = relative_file(package_data.get("manifest"), f"{suite_id} manifest")
+    workspace = tomllib.loads((REPO_ROOT / "Cargo.toml").read_text(encoding="utf-8"))
+    matches: list[tuple[Path, dict[str, Any]]] = []
+    for member in expect_list(
+        expect_dict(workspace.get("workspace"), "Cargo workspace").get("members"),
+        "Cargo workspace members",
+    ):
+        member_text = require_string(member, "Cargo workspace member")
+        relative = Path(member_text)
+        if relative.is_absolute() or ".." in relative.parts:
+            fail(f"Cargo workspace member must be a repository-relative path: {member_text}")
+        manifest = REPO_ROOT / relative / "Cargo.toml"
+        if not manifest.is_file():
+            fail(f"Cargo workspace member manifest is missing: {member_text}")
+        package_data = tomllib.loads(manifest.read_text(encoding="utf-8"))
+        cargo_package = expect_dict(package_data.get("package"), f"{relative} package")
+        if cargo_package.get("name") == package:
+            matches.append((relative, package_data))
+    if len(matches) != 1:
+        fail(f"suite_id package does not resolve through live Cargo membership: {suite_id}")
+    package_relative, _package_data = matches[0]
+    package_dir = REPO_ROOT / package_relative
+    if binding == "native_unit":
+        target_name = "unit_tests"
+    elif binding.startswith("test:") and len(binding) > len("test:"):
+        target_name = f"{binding.removeprefix('test:')}_tests"
+    else:
+        fail(f"suite_id binding is not a supported Cargo test binding: {suite_id}")
+    try:
+        block = target_block(
+            (package_dir / "BUILD.bazel").read_text(encoding="utf-8"), target_name
+        )
+    except CapabilityError:
+        fail(f"suite_id does not resolve through live Cargo/Bazel ownership: {suite_id}")
+    manifest = package_dir / "Cargo.toml"
     return binding, package_dir, block, manifest
 
 
