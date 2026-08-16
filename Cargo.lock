@@ -781,8 +781,6 @@ dependencies = [
  "rusqlite",
  "same-file",
  "secret-service",
- "security-framework",
- "security-framework-sys",
  "semver",
  "serde",
  "serde_json",
