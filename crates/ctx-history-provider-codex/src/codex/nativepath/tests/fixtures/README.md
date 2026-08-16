@@ -9,3 +9,8 @@ captured producer transcript.
 derived from a producer transcript. It retains only the fields needed to test
 direct terminal-result linkage; unrelated events and payload values are
 omitted or replaced.
+
+`current_exec_repository_evidence.jsonl` is a sanitized structural fixture
+derived from current Codex commit-producing orchestration. It covers the exact
+nullish-template continuation and JSON-stringified direct-result shapes while
+using placeholders for the temporary repository and commit receipt.

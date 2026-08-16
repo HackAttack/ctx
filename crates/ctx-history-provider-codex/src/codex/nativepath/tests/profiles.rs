@@ -1,6 +1,84 @@
 use super::*;
 
 #[test]
+fn current_exec_commit_fixture_publishes_exact_typed_commit_evidence() {
+    let repository_root = tempfile::tempdir().unwrap();
+    let repository = repository_root.path().join("repository");
+    fs::create_dir_all(&repository).unwrap();
+    for arguments in [
+        &["init", "--quiet"][..],
+        &["config", "user.name", "ctx test"][..],
+        &["config", "user.email", "ctx@example.invalid"][..],
+        &[
+            "remote",
+            "add",
+            "origin",
+            "https://github.com/acme/current-exec-fixture.git",
+        ][..],
+    ] {
+        assert!(std::process::Command::new("git")
+            .args(arguments)
+            .current_dir(&repository)
+            .status()
+            .unwrap()
+            .success());
+    }
+    fs::write(repository.join("tracked.txt"), "tracked\n").unwrap();
+    for arguments in [
+        &["add", "tracked.txt"][..],
+        &["commit", "-qm", "fixture"][..],
+    ] {
+        assert!(std::process::Command::new("git")
+            .args(arguments)
+            .current_dir(&repository)
+            .status()
+            .unwrap()
+            .success());
+    }
+    let head = std::process::Command::new("git")
+        .args(["rev-parse", "HEAD"])
+        .current_dir(&repository)
+        .output()
+        .unwrap();
+    assert!(head.status.success());
+    let oid = String::from_utf8(head.stdout).unwrap().trim().to_owned();
+    let fixture = include_str!("fixtures/current_exec_repository_evidence.jsonl")
+        .replace("__WORKDIR__", &repository.to_string_lossy())
+        .replace("__OID_PREFIX__", &oid[..9]);
+    let (_source_root, path) = write_source(&fixture);
+    let (scan, sink) = scan_collect(discover_one(&path, "019fb000-0000-7000-8000-00000000c001"));
+
+    assert_eq!(scan.counters.rejected_complete_records, 0);
+    for marker in [
+        "current-nullish-governed-output",
+        "current-json-stringified-output",
+    ] {
+        let record = sink
+            .rows
+            .iter()
+            .find(|record| {
+                record
+                    .content
+                    .normalized_body
+                    .as_deref()
+                    .is_some_and(|body| body.contains(marker))
+            })
+            .unwrap_or_else(|| panic!("missing current exec fixture marker {marker}"));
+        assert!(record
+            .repository_vcs_observations
+            .iter()
+            .any(|observation| {
+                matches!(
+                    &observation.kind,
+                    ctx_history_core::RepositoryVcsObservationKind::Outcome(outcome)
+                        if outcome.kind == ctx_history_core::RepositoryOutcomeKind::Commit
+                            && outcome.produced_object_ids.iter().any(|object| object.hex == oid)
+                )
+            }));
+    }
+}
+
+#[test]
 fn catalog_discovery_is_deterministic_and_rejects_bad_exact_observations() {
     let (_temp, path) = write_source(&session_meta("catalog-owner"));
     let valid = catalog_session(&path, "catalog-owner");

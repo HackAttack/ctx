@@ -1171,11 +1171,11 @@ mod tests {
         let manifest = GenerationManifest::from_parts(Vec::new(), vec![snapshot]).unwrap();
         assert_eq!(
             serde_json::to_string(&manifest).unwrap(),
-            "{\"manifest_version\":8,\"identity_version\":1,\"core_record_version\":2,\"core_record_contract_fingerprint\":\"22b962275535fd0cc54944023976b9e2b18bcdb065c0105c77531dba7dd63ca5\",\"lexical_schema_version\":20,\"lexical_analyzer_version\":2,\"policy_schema_hash\":\"4b40caf3bb25bb9f373632b416d6b04058f17a626d10cabf1af36acf4eff18e4\",\"indexed_documents\":0,\"certified_source_bytes\":0,\"sources\":[],\"core_record_aggregates\":[],\"source_routes\":[{\"route_identity\":\"abababababababababababababababababababababababababababababababab\",\"sources\":[],\"missing\":null}]}",
+            "{\"manifest_version\":8,\"identity_version\":1,\"core_record_version\":2,\"core_record_contract_fingerprint\":\"1d0a6cea575cf79eb8dbad9bebed1e54cccce2fd7a59944a4c2ff448cc34ecf3\",\"lexical_schema_version\":20,\"lexical_analyzer_version\":2,\"policy_schema_hash\":\"65f9bd00ef5a66f05782d57ccc6fe55130f6cff63f234b6f9da214b4e5a07e99\",\"indexed_documents\":0,\"certified_source_bytes\":0,\"sources\":[],\"core_record_aggregates\":[],\"source_routes\":[{\"route_identity\":\"abababababababababababababababababababababababababababababababab\",\"sources\":[],\"missing\":null}]}",
         );
         assert_eq!(
             manifest.generation_id().unwrap(),
-            "5d87ae9b6b405f4284fe4f8dc71ad60a8ab689b760b13a23cc629ac22ea64d0d"
+            "10fdaf1900b510144c5e4333fed1fba496367e32ddf0a07343565ab839620150"
         );
     }
 

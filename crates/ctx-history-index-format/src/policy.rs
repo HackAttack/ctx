@@ -285,7 +285,7 @@ mod tests {
         assert_eq!(first.lexical.tokenizer_revision, 2);
         assert_eq!(
             first.canonical_sha256().unwrap(),
-            "4b40caf3bb25bb9f373632b416d6b04058f17a626d10cabf1af36acf4eff18e4"
+            "65f9bd00ef5a66f05782d57ccc6fe55130f6cff63f234b6f9da214b4e5a07e99"
         );
     }
 

@@ -47,7 +47,7 @@ const CODEX_LOGICAL_SESSION_KIND: &str = "codex-session";
 const CODEX_LOGICAL_EVENT_KIND: &str = "codex-event";
 const CODEX_SOURCE_SCHEMA_VARIANT: &str = "codex-nativepath-jsonl-v0";
 const CODEX_PARSER_REVISION: &str =
-    "codex-nativepath-core-record-v31-repository-positive-exact-authority";
+    "codex-nativepath-core-record-v32-current-exec-repository-evidence";
 
 type CodexSessionPlanV0 = (CodexCatalogSource, SourceKey, String);
 

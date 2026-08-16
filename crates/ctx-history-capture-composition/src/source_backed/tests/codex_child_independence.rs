@@ -23,7 +23,7 @@ use crate::provider::source_backed::family::jsonl::{
 };
 
 const CURRENT_PARSER_REVISION: &str =
-    "codex-nativepath-core-record-v31-repository-positive-exact-authority";
+    "codex-nativepath-core-record-v32-current-exec-repository-evidence";
 const CURRENT_FRONTIER_KIND: &str = "borrowed-jsonl-family-checkpoint-v1";
 const LEGACY_CODEX_FRONTIER_KIND: &str = "codex-nativepath-checkpoint-v18";
 

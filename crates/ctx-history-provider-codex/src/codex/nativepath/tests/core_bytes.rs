@@ -226,31 +226,31 @@ fn legacy_bridge_and_direct_core_record_bytes_match_edge_fixture_oracles() {
     let expected = [
         (
             4,
-            "9c698ad8ec75dd9097a4c97f34ce7bb2711263402e9ebe20f713a169834f3228",
+            "3ff2f71ecf18aa374759e447f0fdd14f4dd06c681c9c3f62eb4fe41a2f979f78",
         ),
         (
             2,
-            "e51fcd5262ae8641d32cbc508a0a1053cd1372442769a3e0195cae14e3a4b262",
+            "b739771ba40436f8b74a39d56b06488a3ffd3d0f376101380048c2c8c700305b",
         ),
         (
             3,
-            "81ed0c7880191e75d3c950918869c2d607dd8921d03aae0d85bcbe1ea0c5ad46",
+            "873c252882b00c3a7ac4e47229b2b90962d310c16a7098cf9a669f0f1784ce3c",
         ),
         (
             1,
-            "2d6037b5e9991de578648b92dc7c774268e272648c064e2571ef0dcd1decbeb6",
+            "afe3664bfe6fb141f32b2d2bcd0987d5fb856070986dc6d8d305fe5d84b7a20d",
         ),
         (
             2,
-            "461ed1e416554bba32fa19fc2f7b528513d5b5d1ecd027802c7be3cfc86911b5",
+            "ad00eb55c01d283c5bc0866ce35fc15176aeef6fd318e8eab6d95b26c72a2532",
         ),
         (
             2,
-            "40e0ef126c997bc485ea44e65d4757048518e85fdfc0a17ce2139ac5fb3d0aac",
+            "10bc3cf5b9c5416cefadeb583e0ea6661f8b7800213ee0e3ec0a37de0754828e",
         ),
         (
             65,
-            "5247a5095e412551ca778daad1b3309ee2baeb70b016b8786609a42fb1c7b449",
+            "dd5e7dd95e30fe6263023c2e38683a67c2e5c6a8a0c70b35a44746e6bc65c77d",
         ),
     ];
     for (case, expected) in cases.iter().zip(expected) {
@@ -310,19 +310,19 @@ fn source_authoritative_lineage_preserves_exact_core_record_bytes() {
     let expected = [
         (
             1,
-            "477ab0d044267e464cea7569e672f22395a2d9288acdf9e8388fe0277f18d649",
+            "05322cb315fb4d66e28209d80305d86bf7f18f5bd7de2a0d313644941b3aa9a7",
         ),
         (
             1,
-            "207d283c827f87b525548fd27ba0391992b12707694d5efd9b1d1de1fea6c5fe",
+            "d6c22cd6047fb1f1c69b15a9bdcb46b65c25eeab7c53341ab16a976be4f82f1c",
         ),
         (
             1,
-            "99c7efa4a3a244e0272d4f5cab5e05f93ffc1d619667d9530dd020a4e1cfb3d4",
+            "2feefec21f71fbf5bc8d390e11be5a102f9391b9718f2d3e0c6d84553ef46bba",
         ),
         (
             1,
-            "1ee313d3747a3356c0196b517572d65a483082dc73e9ab94027ea2d0bd80d3e7",
+            "752f135a1a42788bee0f4bfe931a5a55fb8917028f46a3599f48281f303a3450",
         ),
     ];
     for (case, expected) in cases.iter().zip(expected) {

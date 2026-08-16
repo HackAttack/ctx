@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use serde_json::{Map, Value};
 
@@ -16,6 +16,7 @@ pub(super) struct StaticJsParser<'a> {
     source: &'a [u8],
     cursor: usize,
     static_strings: HashMap<String, String>,
+    tool_bindings: HashSet<String>,
 }
 
 impl<'a> StaticJsParser<'a> {
@@ -24,6 +25,7 @@ impl<'a> StaticJsParser<'a> {
             source: source.as_bytes(),
             cursor: 0,
             static_strings: HashMap::new(),
+            tool_bindings: HashSet::new(),
         }
     }
 
@@ -37,7 +39,8 @@ impl<'a> StaticJsParser<'a> {
             }
             if terminal_output_statements == 0 {
                 if let Some((name, value)) = self.parse_static_string_declaration() {
-                    if self.static_strings.len() >= MAX_STATIC_BINDINGS
+                    if self.static_strings.len() + self.tool_bindings.len() >= MAX_STATIC_BINDINGS
+                        || self.tool_bindings.contains(&name)
                         || self.static_strings.insert(name, value).is_some()
                     {
                         return None;
@@ -108,7 +111,7 @@ impl<'a> StaticJsParser<'a> {
         } else if self.source.get(self.cursor) == Some(&b'"') {
             self.parse_json_string().is_some()
         } else {
-            self.parse_member_reference()
+            self.parse_json_stringify_output() || self.parse_bound_tool_reference()
         };
         if !argument_ok {
             self.cursor = checkpoint;
@@ -150,10 +153,17 @@ impl<'a> StaticJsParser<'a> {
                 {
                     self.cursor += 2;
                     self.skip_whitespace();
-                    if !self.parse_member_reference() {
+                    if !self.parse_bound_tool_reference() {
                         return false;
                     }
                     self.skip_whitespace();
+                    if self.consume_bytes(b"??") {
+                        self.skip_whitespace();
+                        if self.parse_json_string().is_none() {
+                            return false;
+                        }
+                        self.skip_whitespace();
+                    }
                     if !self.consume_byte(b'}') {
                         return false;
                     }
@@ -164,8 +174,11 @@ impl<'a> StaticJsParser<'a> {
         false
     }
 
-    fn parse_member_reference(&mut self) -> bool {
-        if self.parse_identifier().is_none() {
+    fn parse_bound_tool_reference(&mut self) -> bool {
+        let Some(binding) = self.parse_identifier() else {
+            return false;
+        };
+        if !self.tool_bindings.contains(&binding) {
             return false;
         }
         loop {
@@ -176,6 +189,46 @@ impl<'a> StaticJsParser<'a> {
                 return false;
             }
         }
+    }
+
+    fn parse_json_stringify_output(&mut self) -> bool {
+        let checkpoint = self.cursor;
+        let parsed = self.parse_json_stringify_output_inner();
+        if !parsed {
+            self.cursor = checkpoint;
+        }
+        parsed
+    }
+
+    fn parse_json_stringify_output_inner(&mut self) -> bool {
+        if !self.consume_bytes(b"JSON.stringify") {
+            return false;
+        }
+        self.skip_whitespace();
+        if !self.consume_byte(b'(') {
+            return false;
+        }
+        self.skip_whitespace();
+        if !self.parse_bound_tool_reference() {
+            return false;
+        }
+        self.skip_whitespace();
+        if self.consume_byte(b',') {
+            self.skip_whitespace();
+            if !self.consume_keyword("null") {
+                return false;
+            }
+            self.skip_whitespace();
+            if !self.consume_byte(b',') {
+                return false;
+            }
+            self.skip_whitespace();
+            if self.parse_number().and_then(|value| value.as_u64()) != Some(2) {
+                return false;
+            }
+            self.skip_whitespace();
+        }
+        self.consume_byte(b')')
     }
 
     fn consume_statement_terminator(&mut self) -> bool {
@@ -203,15 +256,26 @@ impl<'a> StaticJsParser<'a> {
     }
 
     fn parse_tool_statement_inner(&mut self) -> Option<StaticNestedToolCall> {
-        if self.consume_keyword("const") {
+        let binding = if self.consume_keyword("const") {
             self.skip_whitespace();
-            self.parse_identifier()?;
+            let binding = self.parse_identifier()?;
             self.skip_whitespace();
             self.consume_byte(b'=').then_some(())?;
             self.skip_whitespace();
-        }
+            Some(binding)
+        } else {
+            None
+        };
         let call = self.parse_tool_invocation()?;
         self.consume_statement_terminator().then_some(())?;
+        if let Some(binding) = binding {
+            if self.static_strings.len() + self.tool_bindings.len() >= MAX_STATIC_BINDINGS
+                || self.static_strings.contains_key(&binding)
+                || !self.tool_bindings.insert(binding)
+            {
+                return None;
+            }
+        }
         Some(call)
     }
 
