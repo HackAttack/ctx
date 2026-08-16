@@ -82,10 +82,12 @@ fn no_daemon_post_ack_recovery_is_typed_retained_and_unobservable() {
         Path::new("unused-after-durable-ack"),
         request_id,
         SourceBackedRefreshOperation::Refresh,
-        SourceBackedRefreshTrigger::Search,
         None,
         false,
-        false,
+        WaitRefreshRecoveryPolicy {
+            trigger: SourceBackedRefreshTrigger::Search,
+            allow_daemon_autostart: false,
+        },
     )
     .unwrap_err();
 
@@ -115,10 +117,12 @@ fn post_ack_daemon_recovery_reobserves_coalesced_id_before_readmission() {
         Path::new("no-endpoint-needed-before-reobservation"),
         request_id,
         SourceBackedRefreshOperation::Refresh,
-        SourceBackedRefreshTrigger::Setup,
         None,
         false,
-        true,
+        WaitRefreshRecoveryPolicy {
+            trigger: SourceBackedRefreshTrigger::Setup,
+            allow_daemon_autostart: true,
+        },
     )
     .unwrap();
 
