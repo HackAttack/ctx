@@ -3,13 +3,13 @@ use std::path::PathBuf;
 use anyhow::Result;
 use ctx_history_ingest_application::{IngestReport, ProviderRefreshModeFact};
 
-use crate::ImportArgs;
 use crate::analytics::{
-    ImportFailureScope as AnalyticsImportFailureScope,
+    bytes_bucket, count_bucket, ImportFailureScope as AnalyticsImportFailureScope,
     ImportFailureType as AnalyticsImportFailureType, ImportOutcome as AnalyticsImportOutcome,
-    ImportTelemetry, ProviderRefreshSourceMode, ProviderRefreshTrigger, bytes_bucket, count_bucket,
+    ImportTelemetry, ProviderRefreshSourceMode, ProviderRefreshTrigger,
 };
 use crate::ui::Ui;
+use crate::ImportArgs;
 
 use super::{
     application_adapter::CliImportHost,

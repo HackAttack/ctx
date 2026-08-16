@@ -1,7 +1,7 @@
 use std::path::{Path, PathBuf};
 
 use anyhow::Result;
-use serde_json::{Value, json};
+use serde_json::{json, Value};
 
 use crate::{
     analytics::IndexTelemetry, config, output::compact_json, semantic::source_epoch_status_report,

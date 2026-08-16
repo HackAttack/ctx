@@ -6,21 +6,21 @@ use ctx_history_platform::default_data_root;
 
 use crate::{
     analytics::{
-        self, ClientOperationDraft, DocsTelemetry, DoctorTelemetry, IndexTelemetry,
+        self, count_bucket, ClientOperationDraft, DocsTelemetry, DoctorTelemetry, IndexTelemetry,
         IntegrationTelemetry, LocateTelemetry, RenderFormat, SearchTelemetry, SetupTelemetry,
         ShowTelemetry, SourcesTelemetry, StatusTelemetry, TargetKind, UpgradeMode,
-        UpgradeOperation, UpgradeTelemetry, count_bucket,
+        UpgradeOperation, UpgradeTelemetry,
     },
     cli::{CommandRoot, DaemonCommand, DaemonTriggerCommandArg, ImportArgs},
     commands::{
         doctor::run_doctor,
-        import::{ProviderRefreshCollector, run_import},
+        import::{run_import, ProviderRefreshCollector},
         index::run_index,
         list::run_list,
         locate::run_locate,
         search::run_search,
         setup::run_setup,
-        show::{ShowArgs, ShowTarget, run_show},
+        show::{run_show, ShowArgs, ShowTarget},
         sources::run_sources,
         stats::{malformed_config_failure as malformed_stats_config_failure, run as run_stats},
         status::{
@@ -35,8 +35,8 @@ use crate::{
     output::{OutputFormat, OutputMeasurement},
     presentation_limit, semantic,
     ui::{
-        ColorMode, Diagnostic, DiagnosticLevel, Outcome, OutcomeState, Ui, diagnostic, outcome,
-        scan_color_mode, scan_machine_output_hint,
+        diagnostic, outcome, scan_color_mode, scan_machine_output_hint, ColorMode, Diagnostic,
+        DiagnosticLevel, Outcome, OutcomeState, Ui,
     },
     upgrade,
 };
@@ -1067,10 +1067,8 @@ mod tests {
 
             let machine_stderr = styled_stderr_copy.bytes();
             assert!(!machine_stderr.contains(&0x1b), "{args:?}");
-            assert!(
-                String::from_utf8_lossy(&machine_stderr)
-                    .starts_with("Error: representative command failure")
-            );
+            assert!(String::from_utf8_lossy(&machine_stderr)
+                .starts_with("Error: representative command failure"));
         }
     }
 

@@ -8,11 +8,11 @@ use ctx_history_refresh::{
 };
 
 use crate::analytics::{
-    DurationBucket, ForegroundProviderRefreshV1, Outcome, ProviderCoreResult,
-    ProviderRefreshChange, ProviderRefreshCompletedV1, ProviderRefreshContentEvidence,
-    ProviderRefreshCountsV1, ProviderRefreshFailureScope, ProviderRefreshFailureType,
-    ProviderRefreshResult, ProviderRefreshSourceMode, ProviderRefreshTrigger,
-    ProviderRefreshWorkKind, PublicEventV1, count_bucket, duration_bucket,
+    count_bucket, duration_bucket, DurationBucket, ForegroundProviderRefreshV1, Outcome,
+    ProviderCoreResult, ProviderRefreshChange, ProviderRefreshCompletedV1,
+    ProviderRefreshContentEvidence, ProviderRefreshCountsV1, ProviderRefreshFailureScope,
+    ProviderRefreshFailureType, ProviderRefreshResult, ProviderRefreshSourceMode,
+    ProviderRefreshTrigger, ProviderRefreshWorkKind, PublicEventV1,
 };
 
 use super::SourceStats;

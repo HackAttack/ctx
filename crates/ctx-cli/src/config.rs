@@ -5,7 +5,7 @@ use std::{
     time::Duration,
 };
 
-use anyhow::{Context, Result, bail};
+use anyhow::{bail, Context, Result};
 use ctx_history_platform::platform_security::establish_private_data_root;
 
 mod durable_write;

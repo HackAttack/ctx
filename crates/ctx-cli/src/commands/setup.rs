@@ -1,21 +1,21 @@
 use std::path::PathBuf;
 
-use anyhow::{Result, bail};
-use serde_json::{Value, json};
+use anyhow::{bail, Result};
+use serde_json::{json, Value};
 
 use crate::analytics::{self, SetupMode, SetupTelemetry};
 use crate::history_config::CliHistoryConfigAdapter;
 use crate::output::print_json;
 use crate::progress::{ProgressReporter, ProgressWriterError};
 use crate::semantic::{
-    DaemonSetupHandoff, SourceBackedRefreshMode, SourceBackedRefreshPendingPublication,
     autostart_daemon_for_setup_and_wait, coordinate_setup_source_backed_refresh_with_progress,
     daemon_autostart_suppression_reason, observe_daemon_for_setup_and_wait,
-    semantic_query_service_supported, source_epoch_status_report,
+    semantic_query_service_supported, source_epoch_status_report, DaemonSetupHandoff,
+    SourceBackedRefreshMode, SourceBackedRefreshPendingPublication,
 };
 use crate::ui::Ui;
-use crate::{SetupArgs, config};
-use ctx_cli_presentation::commands::{SetupDaemonState, render_setup_human};
+use crate::{config, SetupArgs};
+use ctx_cli_presentation::commands::{render_setup_human, SetupDaemonState};
 use ctx_history_cli::HistoryConfigPort;
 
 const HOSTED_INSTALLER_SETUP_ENV: &str = "CTX_HOSTED_INSTALLER_SETUP";
@@ -453,11 +453,9 @@ mod tests {
             0,
         )
         .into();
-        assert!(
-            empty
-                .downcast_ref::<SourceBackedRefreshPendingPublication>()
-                .is_some_and(|pending| pending.source_count() == 0)
-        );
+        assert!(empty
+            .downcast_ref::<SourceBackedRefreshPendingPublication>()
+            .is_some_and(|pending| pending.source_count() == 0));
     }
 
     #[test]
@@ -517,11 +515,9 @@ mod tests {
         assert_eq!(autostart["persistent"], true);
         assert!(autostart["limitation"].is_null());
         assert_eq!(autostart["reason"], "native_supervisor_unavailable");
-        assert!(
-            autostart["supervisor"]["limitation"]
-                .as_str()
-                .is_some_and(|message| message.contains("automatic restart"))
-        );
+        assert!(autostart["supervisor"]["limitation"]
+            .as_str()
+            .is_some_and(|message| message.contains("automatic restart")));
     }
 
     #[test]

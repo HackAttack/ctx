@@ -135,12 +135,10 @@ mod tests {
             .env("CTX_UPGRADE_AUTO", "off");
         sanitize_release_authority_env(&mut command);
 
-        assert!(
-            command
-                .status()
-                .expect("run sanitized child process")
-                .success()
-        );
+        assert!(command
+            .status()
+            .expect("run sanitized child process")
+            .success());
         assert_eq!(
             fs::read_to_string(probe).expect("read detached descendant probe"),
             "sanitized:stable:off"
@@ -168,14 +166,12 @@ mod tests {
                 .stdin(Stdio::null())
                 .stdout(Stdio::null())
                 .stderr(Stdio::null());
-            assert!(
-                descendant
-                    .spawn()
-                    .expect("spawn detached descendant")
-                    .wait()
-                    .expect("wait for detached descendant")
-                    .success()
-            );
+            assert!(descendant
+                .spawn()
+                .expect("spawn detached descendant")
+                .wait()
+                .expect("wait for detached descendant")
+                .success());
             return;
         }
 

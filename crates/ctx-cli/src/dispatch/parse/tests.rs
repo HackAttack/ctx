@@ -276,12 +276,10 @@ fn clap_help_has_no_authored_trailing_cells_at_supported_widths() {
     for width in [32, 80, 100, 120] {
         for path in [&[][..], &["search"][..], &["sources"][..]] {
             let (plain, styled) = rendered_help(path, width);
-            assert!(
-                plain
-                    .split_whitespace()
-                    .collect::<String>()
-                    .contains("Usage:ctx")
-            );
+            assert!(plain
+                .split_whitespace()
+                .collect::<String>()
+                .contains("Usage:ctx"));
             assert!(
                 plain
                     .lines()
