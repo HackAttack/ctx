@@ -38,10 +38,18 @@ def load_scanner_spec(policy_path: Path, target_id: str) -> tuple[str, str, str]
         policy = json.loads(policy_path.read_bytes())
         scanner = policy["scanner"]
         version = scanner["version"]
-        expected_sha256 = scanner["sha256_by_target"][target_id]
         asset = SCANNER_ASSETS[target_id]
     except (KeyError, OSError, TypeError, json.JSONDecodeError) as error:
         raise InputError("release advisory scanner policy is incomplete") from error
+    hashes = scanner.get("sha256_by_target")
+    if hashes is None:
+        if scanner.get("platform") != target_id:
+            raise InputError("release advisory scanner policy does not cover target")
+        expected_sha256 = scanner.get("sha256")
+    else:
+        if not isinstance(hashes, dict):
+            raise InputError("release advisory scanner policy is invalid")
+        expected_sha256 = hashes.get(target_id)
     if (
         policy.get("schema_version") != 1
         or scanner.get("name") != "osv-scanner"

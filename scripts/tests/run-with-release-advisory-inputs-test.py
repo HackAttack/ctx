@@ -113,6 +113,46 @@ class ReleaseAdvisoryInputsTest(unittest.TestCase):
             },
         )
 
+    def test_loads_single_platform_policy_for_its_exact_target(self) -> None:
+        policy = self.root / "single-platform-policy.json"
+        policy.write_text(
+            json.dumps(
+                {
+                    "schema_version": 1,
+                    "scanner": {
+                        "name": "osv-scanner",
+                        "version": "2.4.0",
+                        "platform": "linux-x64",
+                        "sha256": self.scanner_sha256,
+                    },
+                }
+            ),
+            encoding="utf-8",
+        )
+        self.assertEqual(
+            MODULE.load_scanner_spec(policy, "linux-x64"),
+            ("2.4.0", self.scanner_sha256, "osv-scanner_linux_amd64"),
+        )
+
+    def test_single_platform_policy_rejects_other_target(self) -> None:
+        policy = self.root / "single-platform-policy.json"
+        policy.write_text(
+            json.dumps(
+                {
+                    "schema_version": 1,
+                    "scanner": {
+                        "name": "osv-scanner",
+                        "version": "2.4.0",
+                        "platform": "linux-x64",
+                        "sha256": self.scanner_sha256,
+                    },
+                }
+            ),
+            encoding="utf-8",
+        )
+        with self.assertRaisesRegex(MODULE.InputError, "does not cover target"):
+            MODULE.load_scanner_spec(policy, "macos-x64")
+
     def test_prepares_checked_scanner_and_offline_database(self) -> None:
         task_root = self.root / "task"
         task_root.mkdir()
