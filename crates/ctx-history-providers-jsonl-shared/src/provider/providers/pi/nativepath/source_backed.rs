@@ -12,7 +12,7 @@ use crate::{provider::source_backed::IndexBaseEventLookup, JsonlProviderRuntime}
 use chrono::{DateTime, Utc};
 use ctx_history_core::{
     derive_event_id, derive_native_session_id, ActivityInvocation, ActivityJsonCapture,
-    ActivityResult, ActivityTextCapture, CaptureProvider, CoreActivity, CoreRecord,
+    ActivityResult, ActivityTextCapture, AgentScope, CaptureProvider, CoreActivity, CoreRecord,
     EventIdentityInput, EventType, LiteralFactKind, NativeItemKey, ProviderDeclaredFact, SourceKey,
     StableEntityId, TypedKey, CORE_ACTIVITY_REVISION, MAX_CORE_CONTENT_BYTES,
 };
@@ -454,6 +454,7 @@ impl<R: JsonlProviderRuntime> JsonlFamilyProjector for PiProjector<R> {
             body.clone(),
         )
         .map_err(contract)?;
+        core.agent_scope = Some(AgentScope::Primary);
         if let Some(parent_session_id) = self.parent_session_id {
             core.parent_session_id = Some(parent_session_id);
             core.root_session_id = Some(self.root_session_id);

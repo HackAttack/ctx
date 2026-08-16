@@ -184,7 +184,7 @@ fn visit_record(
     };
     match record {
         CtxHistoryJsonlRecord::Manifest(manifest) => {
-            if manifest.schema_version != CTX_HISTORY_JSONL_SCHEMA_VERSION {
+            if manifest.schema_version != CUSTOM_HISTORY_PUBLIC_SCHEMA_VERSION {
                 catalog.manifest_failure.get_or_insert_with(|| {
                     (
                         ProviderSourceFailureKind::SchemaIncompatible,
@@ -662,7 +662,7 @@ fn finish_projection(
     if catalog.manifest_line.is_none() {
         catalog.manifest_failure = Some((
             ProviderSourceFailureKind::InvalidSource,
-            "missing manifest record for ctx-history-jsonl-v2".to_owned(),
+            format!("missing manifest record for {CUSTOM_HISTORY_PUBLIC_SCHEMA_VERSION}"),
         ));
     }
     if let Some((kind, detail)) = catalog.manifest_failure {

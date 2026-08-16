@@ -26,7 +26,7 @@ use ctx_history_core::{
     CtxHistoryJsonlLineageContract, CtxHistoryJsonlRecord, NativeSessionKey,
     ProjectionContractError, ProviderDeclaredFact, ProviderNativeCopyProof,
     ProviderNativeSessionRelationship, ScannedSourceCounts, SessionIdentityInput, SourceAnchor,
-    SourceFrontier, SourceKey, StableEntityId, TypedKey, CTX_HISTORY_JSONL_SCHEMA_VERSION,
+    SourceFrontier, SourceKey, StableEntityId, TypedKey,
     MAX_CORE_CONTENT_BYTES, MAX_PROVIDER_DECLARED_FACTS,
 };
 use serde::{Deserialize, Serialize};
@@ -60,8 +60,9 @@ use inventory::{custom_history_jsonl_family_inventory, source_observation};
 use parser::parse_projection;
 
 const CUSTOM_SOURCE_IDENTITY_VERSION: u32 = 1;
-const CUSTOM_ROUTE_SOURCE_FORMAT: &str = "ctx_history_jsonl_v2";
-const CUSTOM_SOURCE_SCHEMA_VARIANT: &str = "ctx-history-jsonl-v2-source-backed-v1";
+const CUSTOM_HISTORY_PUBLIC_SCHEMA_VERSION: &str = "ctx-history-jsonl-v1";
+const CUSTOM_ROUTE_SOURCE_FORMAT: &str = "ctx_history_jsonl_v1";
+const CUSTOM_SOURCE_SCHEMA_VARIANT: &str = "ctx-history-jsonl-v1-source-backed-v1";
 pub(super) const CUSTOM_SOURCE_BACKED_PARSER_REVISION: &str =
     "custom-history-jsonl-source-backed-v6-core-activity";
 const CUSTOM_SOURCE_FRONTIER_KIND: &str = "custom-history-jsonl-frontier-v2";

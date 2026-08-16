@@ -79,7 +79,7 @@ pub(crate) fn custom_history_internal_session_id(
         "session_id": session_id,
     }));
     let id = stable_capture_uuid(&key, "custom-provider-session-id");
-    format!("ctx-history-jsonl-v2-{id}")
+    format!("ctx-history-jsonl-v1-{id}")
 }
 
 pub(crate) fn custom_history_key(value: Value) -> String {

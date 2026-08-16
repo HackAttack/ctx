@@ -14,8 +14,8 @@ use crate::{test_support_paths::tempdir, CaptureError, ProviderSourceFailureKind
 fn manifest(lineage: bool) -> Value {
     let mut record = json!({
         "record_type": "manifest",
-        "schema_version": "ctx-history-jsonl-v2",
-        "producer": "source-backed-v2-test",
+        "schema_version": "ctx-history-jsonl-v1",
+        "producer": "source-backed-v1-test",
     });
     if lineage {
         record["lineage_contract"] = json!("provider_native_v1");
@@ -421,19 +421,19 @@ fn absent_lineage_contract_omits_relationship_and_copy_claims() {
 }
 
 #[test]
-fn v1_manifest_is_a_schema_incompatible_source_failure() {
+fn v2_manifest_is_a_schema_incompatible_source_failure() {
     let temp = tempdir().unwrap();
     let path = temp.path().join("legacy.jsonl");
     write_records(
         &path,
         &[json!({
             "record_type": "manifest",
-            "schema_version": "ctx-history-jsonl-v1",
+            "schema_version": "ctx-history-jsonl-v2",
         })],
     );
     let input = CustomHistorySourceBackedInput::explicit(&path, [10; 32]);
     let error = scan_custom_history_source_backed_explicit(&input, None, |_, _| Ok(()))
-        .expect_err("v1 must not be translated");
+        .expect_err("v2 must not be translated");
     let CustomHistorySourceBackedError::Capture(CaptureError::ProviderSource {
         provider,
         kind,
@@ -445,5 +445,5 @@ fn v1_manifest_is_a_schema_incompatible_source_failure() {
     };
     assert_eq!(provider, CaptureProvider::Custom.as_str());
     assert_eq!(kind, ProviderSourceFailureKind::SchemaIncompatible);
-    assert!(detail.contains("ctx-history-jsonl-v1"), "{detail}");
+    assert!(detail.contains("ctx-history-jsonl-v2"), "{detail}");
 }

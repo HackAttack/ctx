@@ -99,7 +99,7 @@ fn retrieval_excluded(record: &CoreRecord) -> bool {
 fn custom_manifest() -> Value {
     json!({
         "record_type": "manifest",
-        "schema_version": "ctx-history-jsonl-v2",
+        "schema_version": "ctx-history-jsonl-v1",
         "producer": "source-backed-test",
     })
 }
@@ -114,14 +114,13 @@ fn custom_source() -> Value {
     })
 }
 
-fn custom_session(id: &str, parent: Option<&str>, is_primary: bool) -> Value {
+fn custom_session(id: &str, parent: Option<&str>, primary: bool) -> Value {
     json!({
         "record_type": "session",
         "source_id": "source-a",
         "session_id": id,
         "parent_session_id": parent,
-        "agent_type": if is_primary { "primary" } else { "subagent" },
-        "is_primary": is_primary,
+        "agent_scope": if primary { "primary" } else { "subagent" },
         "started_at": "2026-07-28T12:00:00Z",
         "cwd": "/work/custom-history",
     })
@@ -405,7 +404,7 @@ fn custom_history_structural_manifest_failures_retain_generation_and_restore() {
     assert_eq!(initial.commit.indexed_documents, 1);
 
     let mut incompatible_manifest = custom_manifest();
-    incompatible_manifest["schema_version"] = json!("ctx-history-jsonl-v1");
+    incompatible_manifest["schema_version"] = json!("ctx-history-jsonl-v2");
     write_custom_records(
         &path,
         &[

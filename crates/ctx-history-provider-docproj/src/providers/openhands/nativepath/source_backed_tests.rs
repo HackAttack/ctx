@@ -141,6 +141,10 @@ fn cold_projection_preserves_complete_bodies_and_core_semantics() {
     assert_eq!(first.event_type, "message");
     assert_eq!(first.role.as_deref(), Some("assistant"));
     assert_eq!(
+        first.agent_scope,
+        Some(ctx_history_core::AgentScope::Primary)
+    );
+    assert_eq!(
         projection.source.parser_revision(),
         "openhands-source-backed-v6-closed-facts"
     );

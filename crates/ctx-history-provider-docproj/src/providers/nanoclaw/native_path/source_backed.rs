@@ -5,10 +5,11 @@ use std::{
 };
 
 use ctx_history_core::{
-    derive_event_id, derive_session_id, CaptureProvider, CertifiedSource, CoreActivity, CoreRecord,
-    CoreRecordError, EventIdentityInput, LiteralFactKind, NativeItemKey, NativeSessionKey,
-    ProjectionContractError, ProviderDeclaredFact, ScannedSourceCounts, SessionIdentityInput,
-    SourceAnchor, SourceKey, SourceObservation, TypedKey, CORE_ACTIVITY_REVISION,
+    derive_event_id, derive_session_id, AgentScope, CaptureProvider, CertifiedSource, CoreActivity,
+    CoreRecord, CoreRecordError, EventIdentityInput, LiteralFactKind, NativeItemKey,
+    NativeSessionKey, ProjectionContractError, ProviderDeclaredFact, ScannedSourceCounts,
+    SessionIdentityInput, SourceAnchor, SourceKey, SourceObservation, TypedKey,
+    CORE_ACTIVITY_REVISION,
 };
 use sha2::{Digest, Sha256};
 use thiserror::Error;
@@ -611,6 +612,7 @@ fn nanoclaw_core_record(
         NANOCLAW_SOURCE_BACKED_PARSER_REVISION,
         body,
     )?;
+    record.agent_scope = Some(AgentScope::Primary);
     record.provider_session_id = Some(provider_session_id);
     record.native_event_id = Some(native_event_id);
     record.occurred_at_unix_ms = Some(event.occurred_at.timestamp_millis());

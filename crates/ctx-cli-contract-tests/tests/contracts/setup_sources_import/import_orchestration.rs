@@ -582,8 +582,7 @@ fn one_event_native_and_explicit_imports_publish_core_generations() {
             "source_id": "one-event-source",
             "session_id": "one-event-session",
             "started_at": "2026-07-26T12:00:00Z",
-            "agent_type": "primary",
-            "is_primary": true,
+            "agent_scope": "primary",
             "status": "completed"
         }),
         json!({
@@ -756,7 +755,7 @@ fn custom_history_structural_manifest_failures_fail_closed_and_recover() {
         concat!(
             "{\"record_type\":\"manifest\",\"schema_version\":\"ctx-history-jsonl-v1\"}\n",
             "{\"record_type\":\"source\",\"source_id\":\"recovered-source\",\"provider_key\":\"recovered-agent\",\"source_format\":\"recovered-jsonl\"}\n",
-            "{\"record_type\":\"session\",\"source_id\":\"recovered-source\",\"session_id\":\"recovered-session\",\"started_at\":\"2026-07-31T12:00:00Z\",\"agent_type\":\"primary\",\"is_primary\":true}\n",
+            "{\"record_type\":\"session\",\"source_id\":\"recovered-source\",\"session_id\":\"recovered-session\",\"started_at\":\"2026-07-31T12:00:00Z\",\"agent_scope\":\"primary\"}\n",
             "{malformed-json}\n",
             "{\"record_type\":\"event\",\"source_id\":\"recovered-source\",\"session_id\":\"recovered-session\",\"event_index\":0,\"event_type\":\"message\",\"role\":\"user\",\"occurred_at\":\"2026-07-31T12:00:01Z\",\"payload\":{\"text\":\"structural manifest recovery oracle\"}}\n",
         ),
@@ -794,7 +793,7 @@ fn write_valid_explicit_custom_source(path: &Path, text: &str) {
             concat!(
                 "{{\"record_type\":\"manifest\",\"schema_version\":\"ctx-history-jsonl-v1\"}}\n",
                 "{{\"record_type\":\"source\",\"source_id\":\"explicit-receipt-source\",\"provider_key\":\"explicit-receipt-agent\",\"source_format\":\"explicit-receipt-jsonl\"}}\n",
-                "{{\"record_type\":\"session\",\"source_id\":\"explicit-receipt-source\",\"session_id\":\"explicit-receipt-session\",\"started_at\":\"2026-08-01T12:00:00Z\",\"agent_type\":\"primary\",\"is_primary\":true}}\n",
+                "{{\"record_type\":\"session\",\"source_id\":\"explicit-receipt-source\",\"session_id\":\"explicit-receipt-session\",\"started_at\":\"2026-08-01T12:00:00Z\",\"agent_scope\":\"primary\"}}\n",
                 "{{\"record_type\":\"event\",\"source_id\":\"explicit-receipt-source\",\"session_id\":\"explicit-receipt-session\",\"event_index\":0,\"event_type\":\"message\",\"role\":\"user\",\"occurred_at\":\"2026-08-01T12:00:01Z\",\"payload\":{{\"text\":{text:?}}}}}\n",
             ),
             text = text,
@@ -946,7 +945,7 @@ fn all_invalid_custom_source_fails_with_unrelated_history_then_refreshes_after_f
     let records = |event_index: &str| {
         r#"{"record_type":"manifest","schema_version":"ctx-history-jsonl-v1"}
 {"record_type":"source","source_id":"retry-source","provider_key":"retry-agent","source_format":"retry-jsonl","cursor":{"after":{"stream":"retry-agent:retry-source","cursor":"1","observed_at":"2026-07-13T12:00:00Z"}}}
-{"record_type":"session","source_id":"retry-source","session_id":"retry-session","started_at":"2026-07-13T12:00:00Z","agent_type":"primary","is_primary":true,"status":"completed"}
+{"record_type":"session","source_id":"retry-source","session_id":"retry-session","started_at":"2026-07-13T12:00:00Z","agent_scope":"primary","status":"completed"}
 {"record_type":"event","source_id":"retry-source","session_id":"retry-session","event_index":EVENT_INDEX,"event_id":"retry-event","event_type":"message","role":"user","occurred_at":"2026-07-13T12:00:01Z","payload":{"text":"retry oracle"},"preview":"retry oracle"}
 "#
         .replace("EVENT_INDEX", event_index)
