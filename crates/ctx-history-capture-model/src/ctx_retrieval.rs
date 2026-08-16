@@ -285,12 +285,6 @@ impl ParsedTail<'_> {
         self.options.iter().any(|(seen, _)| *seen == name)
     }
 
-    fn value(&self, name: &str) -> Option<&str> {
-        self.options
-            .iter()
-            .find_map(|(seen, value)| (*seen == name).then_some(*value).flatten())
-    }
-
     fn has_nonempty_value(&self, name: &str) -> bool {
         self.options
             .iter()
@@ -398,7 +392,7 @@ fn ctx_cli_route(command: &str, tail: &[&str], mut root: RootOptions) -> Option<
                 _ => None,
             }
         }
-        "blame" => valid_blame(tail, root).then_some(CtxRetrievalRoute::Blame),
+        "blame" => Some(CtxRetrievalRoute::Blame),
         _ => None,
     }
 }
@@ -435,20 +429,6 @@ fn valid_session(args: &[&str], specs: &[OptionSpec], root: RootOptions) -> bool
     })
 }
 
-fn valid_blame(args: &[&str], mut root: RootOptions) -> bool {
-    let Some(args) = after_leading_root(args, &mut root) else {
-        return false;
-    };
-    match args {
-        ["file", tail @ ..] => one_positional(tail, BLAME_FILE_OPTIONS, root),
-        ["commit" | "pr", tail @ ..] => one_positional(tail, BLAME_OPTIONS, root),
-        _ => parse_tail(args, BLAME_LEGACY_OPTIONS, root).is_some_and(|tail| {
-            matches!(tail.positionals.as_slice(), [value] if !value.is_empty())
-                && !(tail.has("--lines") && matches!(tail.value("--type"), Some("commit" | "pr")))
-        }),
-    }
-}
-
 macro_rules! unsigned_range {
     ($name:ident, $minimum:literal, $maximum:literal) => {
         fn $name(value: &str) -> bool {
@@ -462,7 +442,6 @@ macro_rules! unsigned_range {
 unsigned_range!(search_limit, 1, 200);
 unsigned_range!(event_window, 0, 50);
 unsigned_range!(event_limit, 1, 10_000_000);
-unsigned_range!(blame_limit, 1, 100);
 
 fn usize_value(value: &str) -> bool {
     value.parse::<usize>().is_ok()
@@ -472,16 +451,6 @@ fn semantic_weight(value: &str) -> bool {
     value
         .parse::<f32>()
         .is_ok_and(|value| value.is_finite() && (0.0..=1.0).contains(&value))
-}
-
-fn line_range(value: &str) -> bool {
-    let mut parts = value.split(':');
-    let positive = |value: &str| value.parse::<u32>().ok().filter(|value| *value > 0);
-    let Some(start) = parts.next().and_then(positive) else {
-        return false;
-    };
-    let end = parts.next().map_or(Some(start), positive);
-    parts.next().is_none() && end.is_some_and(|end| end >= start)
 }
 
 macro_rules! one_of {
@@ -502,7 +471,6 @@ one_of!(event_scope: "all" | "primary" | "subagent");
 one_of!(event_direction: "ascending" | "descending");
 one_of!(event_content: "full" | "text" | "none");
 one_of!(event_format: "json" | "jsonl");
-one_of!(blame_type: "file" | "commit" | "pr");
 
 const SEARCH_OPTIONS: &[OptionSpec] = &[
     OptionSpec::repeated("--term"),
@@ -573,26 +541,5 @@ const LOCATE_EVENT_OPTIONS: &[OptionSpec] = &[OptionSpec::checked("--format", js
 const LOCATE_SESSION_OPTIONS: &[OptionSpec] = &[
     OptionSpec::value("--provider"),
     OptionSpec::value("--provider-session"),
-    OptionSpec::checked("--format", json_format),
-];
-const BLAME_OPTIONS: &[OptionSpec] = &[
-    OptionSpec::value("--repository"),
-    OptionSpec::checked("--limit", blame_limit),
-    OptionSpec::value("--cursor"),
-    OptionSpec::checked("--format", json_format),
-];
-const BLAME_FILE_OPTIONS: &[OptionSpec] = &[
-    OptionSpec::checked("--lines", line_range),
-    OptionSpec::value("--repository"),
-    OptionSpec::checked("--limit", blame_limit),
-    OptionSpec::value("--cursor"),
-    OptionSpec::checked("--format", json_format),
-];
-const BLAME_LEGACY_OPTIONS: &[OptionSpec] = &[
-    OptionSpec::checked("--type", blame_type),
-    OptionSpec::checked("--lines", line_range),
-    OptionSpec::value("--repository"),
-    OptionSpec::checked("--limit", blame_limit),
-    OptionSpec::value("--cursor"),
     OptionSpec::checked("--format", json_format),
 ];
