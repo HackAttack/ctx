@@ -58,7 +58,7 @@ pub(crate) fn run_setup(
     } else {
         suppression_reason
     };
-    let daemon_handoff = if daemon_autostart_requested {
+    let mut daemon_handoff = if daemon_autostart_requested {
         Some(autostart_daemon_for_setup_and_wait(
             &data_root,
             config,
@@ -80,6 +80,16 @@ pub(crate) fn run_setup(
         )?
     };
     let source = source_epoch_status_report(&data_root, config)?;
+    // Refresh admission can outlive the owner from the initial ready handoff
+    // and recover through a replacement daemon. Re-run the same live handoff
+    // at the output boundary so the setup contract reports that final owner.
+    if daemon_autostart_requested {
+        daemon_handoff = Some(autostart_daemon_for_setup_and_wait(
+            &data_root,
+            config,
+            crate::DaemonTriggerCommandArg::Setup,
+        )?);
+    }
     let supervisor = source.report["daemon"]["supervisor"].clone();
     let lexical_status = source.report["lexical"]["status"]
         .as_str()
