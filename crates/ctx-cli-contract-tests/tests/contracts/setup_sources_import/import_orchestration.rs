@@ -443,7 +443,7 @@ fn import_custom_history_jsonl_format_is_searchable_and_idempotent() {
     let fixture = temp.path().join("basic.jsonl");
     fs::write(
         &fixture,
-        fs::read(custom_history_fixture("basic.jsonl")).unwrap(),
+        fs::read(custom_history_fixture("released-v1-basic.jsonl")).unwrap(),
     )
     .unwrap();
     let fixture = fixture.to_str().unwrap().to_owned();
@@ -475,6 +475,11 @@ fn import_custom_history_jsonl_format_is_searchable_and_idempotent() {
     assert!(
         !search["results"].as_array().unwrap().is_empty(),
         "custom import was not searchable: {search:#}"
+    );
+    assert_eq!(search["results"][0]["agent_scope"], "primary");
+    assert_eq!(
+        search["results"][0]["provider_session_id"],
+        "ctx-history-jsonl-v1-6227fe54-46fa-715c-a51f-c56eb45e432f"
     );
 
     let second = json_output(ctx(&temp).args([

@@ -129,6 +129,12 @@ parent. Use `agent_scope` to state the exporter-known primary/subagent scope;
 when omitted, scope remains unknown. `session_relationship` is independent
 lineage authority and does not imply an agent scope.
 
+Released v1 files may instead contain `agent_type` and `is_primary`. ctx maps
+an explicit `is_primary` value to `primary` or `subagent`; when it is absent,
+`agent_type: primary` maps to `primary`, the released non-primary agent types
+map to `subagent`, and `unknown` remains unknown. `agent_scope` takes
+precedence when both spellings are present.
+
 Example:
 
 ```json

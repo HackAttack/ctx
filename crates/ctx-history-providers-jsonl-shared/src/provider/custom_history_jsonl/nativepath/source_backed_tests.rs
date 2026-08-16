@@ -96,6 +96,19 @@ fn v1_file_touch(index: u64, event_index: u64, path: &str) -> Value {
     })
 }
 
+fn v1_session(id: &str, agent_type: &str, is_primary: bool) -> Value {
+    json!({
+        "record_type": "session",
+        "source_id": "source-a",
+        "session_id": id,
+        "native_session_id": format!("native-{id}"),
+        "agent_type": agent_type,
+        "is_primary": is_primary,
+        "started_at": "2026-07-28T12:00:00Z",
+        "cwd": "/work/./literal",
+    })
+}
+
 fn write_records(path: &Path, records: &[Value]) {
     let mut bytes = Vec::new();
     for record in records {
@@ -236,13 +249,7 @@ fn v1_file_touch_normalizes_to_neutral_file_reference_fact() {
         &[
             manifest(false),
             source(),
-            session(
-                "child",
-                "native-child",
-                None,
-                ProviderNativeSessionRelationship::Root,
-                AgentScope::Primary,
-            ),
+            v1_session("child", "primary", true),
             event(0, "event-0", "child", json!({"text": "update parser"})),
             v1_file_touch(0, 0, "tests/parser.rs"),
         ],
@@ -256,6 +263,11 @@ fn v1_file_touch_normalizes_to_neutral_file_reference_fact() {
     assert_eq!(certificate.counts().rejected_records, 0);
     assert_eq!(certificate.counts().ignored_records, 4);
     assert_eq!(certificate.counts().indexed_documents, 1);
+    assert_eq!(records[0].agent_scope, Some(AgentScope::Primary));
+    assert_eq!(
+        records[0].provider_session_id.as_deref(),
+        Some("ctx-history-jsonl-v1-65ce2567-9c43-7f16-885e-7a1c5fe01c05")
+    );
     assert_eq!(
         records[0].content.activity.as_ref().unwrap().facts,
         vec![

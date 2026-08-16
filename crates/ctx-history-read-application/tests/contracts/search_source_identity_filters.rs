@@ -21,10 +21,16 @@ fn assert_result_count(value: &Value, expected: usize) {
 #[test]
 fn cli_source_identity_filters_are_exact_conjunctive_and_fail_closed() {
     let temp = tempdir();
-    let (_daemon, _) = import_custom_history_fixture_source_backed(&temp, "basic.jsonl");
+    let (_daemon, _) =
+        import_custom_history_fixture_source_backed(&temp, "released-v1-basic.jsonl");
 
     let history_source = source_search(&temp, &["--history-source", "demo-agent/demo-source"]);
     assert_result_count(&history_source, 1);
+    assert_eq!(history_source["results"][0]["agent_scope"], "primary");
+    assert_eq!(
+        history_source["results"][0]["provider_session_id"],
+        "ctx-history-jsonl-v1-6227fe54-46fa-715c-a51f-c56eb45e432f"
+    );
     assert_eq!(history_source["filters"]["provider"], "custom");
     assert_eq!(
         history_source["filters"]["history_source"],

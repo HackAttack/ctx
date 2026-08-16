@@ -8,6 +8,44 @@ enum V1CompatibilityRecord {
 }
 
 #[derive(Debug, Deserialize)]
+struct V1SessionScopeFields {
+    #[serde(default)]
+    agent_type: Option<V1AgentType>,
+    #[serde(default)]
+    is_primary: Option<bool>,
+}
+
+impl V1SessionScopeFields {
+    fn agent_scope(self) -> Option<AgentScope> {
+        match self.is_primary {
+            Some(true) => Some(AgentScope::Primary),
+            Some(false) => Some(AgentScope::Subagent),
+            None => match self.agent_type {
+                Some(V1AgentType::Primary) => Some(AgentScope::Primary),
+                Some(
+                    V1AgentType::Subagent
+                    | V1AgentType::AgentTeamMember
+                    | V1AgentType::Reviewer
+                    | V1AgentType::Implementer,
+                ) => Some(AgentScope::Subagent),
+                Some(V1AgentType::Unknown) | None => None,
+            },
+        }
+    }
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum V1AgentType {
+    Primary,
+    Subagent,
+    AgentTeamMember,
+    Reviewer,
+    Implementer,
+    Unknown,
+}
+
+#[derive(Debug, Deserialize)]
 struct V1FileTouchRecord {
     source_id: String,
     session_id: String,
@@ -583,6 +621,16 @@ fn visit_record(
 
 fn parse_record(bytes: &[u8]) -> Result<CtxHistoryJsonlRecord, String> {
     match serde_json::from_slice::<CtxHistoryJsonlRecord>(bytes) {
+        Ok(CtxHistoryJsonlRecord::Session(mut session)) => {
+            if session.agent_scope.is_none() {
+                let v1 =
+                    serde_json::from_slice::<V1SessionScopeFields>(bytes).map_err(|error| {
+                        format!("invalid ctx-history-jsonl-v1 session record: {error}")
+                    })?;
+                session.agent_scope = v1.agent_scope();
+            }
+            Ok(CtxHistoryJsonlRecord::Session(session))
+        }
         Ok(record) => Ok(record),
         Err(current_error) => {
             let is_v1_file_touch = serde_json::from_slice::<serde_json::Value>(bytes)
@@ -1248,6 +1296,41 @@ fn finish_prefix_digest(hasher: &Sha256, prefix_bytes: u64) -> [u8; 32] {
 #[cfg(test)]
 mod compatibility_tests {
     use super::*;
+
+    fn session_scope(raw: &[u8]) -> Option<AgentScope> {
+        let CtxHistoryJsonlRecord::Session(session) = parse_record(raw).unwrap() else {
+            panic!("expected session record");
+        };
+        session.agent_scope
+    }
+
+    #[test]
+    fn released_v1_session_scope_preserves_primary_search_eligibility() {
+        assert_eq!(
+            session_scope(
+                br#"{"record_type":"session","source_id":"source-a","session_id":"primary","agent_type":"primary","is_primary":true,"started_at":"2026-07-28T12:00:00Z"}"#,
+            ),
+            Some(AgentScope::Primary)
+        );
+        assert_eq!(
+            session_scope(
+                br#"{"record_type":"session","source_id":"source-a","session_id":"primary-fallback","agent_type":"primary","started_at":"2026-07-28T12:00:00Z"}"#,
+            ),
+            Some(AgentScope::Primary)
+        );
+        assert_eq!(
+            session_scope(
+                br#"{"record_type":"session","source_id":"source-a","session_id":"reviewer","agent_type":"reviewer","started_at":"2026-07-28T12:00:00Z"}"#,
+            ),
+            Some(AgentScope::Subagent)
+        );
+        assert_eq!(
+            session_scope(
+                br#"{"record_type":"session","source_id":"source-a","session_id":"explicit-current","agent_type":"subagent","is_primary":false,"agent_scope":"primary","started_at":"2026-07-28T12:00:00Z"}"#,
+            ),
+            Some(AgentScope::Primary)
+        );
+    }
 
     #[test]
     fn malformed_v1_file_touch_diagnostic_names_the_released_shape() {
