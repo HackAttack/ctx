@@ -20,12 +20,25 @@ mod unix {
         fs,
         path::{Path, PathBuf},
         process::{Child, Command, Stdio},
+        sync::{Mutex, MutexGuard},
         time::{Duration, Instant},
     };
 
     use serde_json::Value;
 
     use super::support::*;
+
+    // These contracts deliberately exercise the production five-second handoff
+    // and recovery budget. Parallel daemon/setup fixtures can exhaust that
+    // budget through test-only host contention and legitimately trigger a PID
+    // replacement, invalidating the same-owner assertions below.
+    static DAEMON_CONFIG_RELOAD_TEST_LOCK: Mutex<()> = Mutex::new(());
+
+    fn serial_daemon_test() -> MutexGuard<'static, ()> {
+        DAEMON_CONFIG_RELOAD_TEST_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
 
     struct DaemonGuard {
         child: Option<Child>,
@@ -250,6 +263,7 @@ mod unix {
 
     #[test]
     fn semantic_opt_in_live_activates_the_existing_daemon() {
+        let _serial = serial_daemon_test();
         let temp = tempdir();
         let binary = copied_ctx_binary(&temp);
         write_config(&temp, false);
@@ -314,6 +328,7 @@ mod unix {
 
     #[test]
     fn daemon_mode_switch_updates_query_endpoint_before_setup_handoff_returns() {
+        let _serial = serial_daemon_test();
         let temp = tempdir();
         let binary = copied_ctx_binary(&temp);
         write_mode_config(&temp, "source-refresh-only", true);
@@ -372,6 +387,7 @@ mod unix {
 
     #[test]
     fn setup_handoff_observes_event_driven_live_activation() {
+        let _serial = serial_daemon_test();
         let temp = tempdir();
         let binary = copied_ctx_binary(&temp);
         write_config(&temp, false);
@@ -403,6 +419,7 @@ mod unix {
 
     #[test]
     fn malformed_reload_is_failed_and_retried_without_changing_live_state() {
+        let _serial = serial_daemon_test();
         let temp = tempdir();
         let binary = copied_ctx_binary(&temp);
         write_config(&temp, false);
@@ -471,6 +488,7 @@ mod unix {
 
     #[test]
     fn malformed_reload_preserves_active_semantic_job_status() {
+        let _serial = serial_daemon_test();
         let temp = tempdir();
         let binary = copied_ctx_binary(&temp);
         write_config(&temp, true);
@@ -530,6 +548,7 @@ mod unix {
 
     #[test]
     fn semantic_activation_failure_never_reports_success() {
+        let _serial = serial_daemon_test();
         let temp = tempdir();
         let binary = copied_ctx_binary(&temp);
         write_config(&temp, false);
@@ -580,6 +599,7 @@ mod unix {
 
     #[test]
     fn initial_semantic_activation_failure_fails_daemon_startup_truthfully() {
+        let _serial = serial_daemon_test();
         let temp = tempdir();
         let binary = copied_ctx_binary(&temp);
         write_config(&temp, true);
