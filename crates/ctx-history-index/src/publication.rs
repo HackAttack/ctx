@@ -14,13 +14,15 @@ pub(crate) use ctx_history_index_generation::manifest_path;
 #[cfg(test)]
 pub(crate) use ctx_history_index_generation::physical_integrity_digest;
 pub(crate) use ctx_history_index_generation::sync_directory;
+#[cfg(not(windows))]
+pub(crate) use ctx_history_index_generation::verify_candidate_physical_fence;
 pub(crate) use ctx_history_index_generation::{
     certify_activated_generation, reclaim_unreferenced_certifications,
     reclaim_unreferenced_manifests,
 };
 pub(crate) use ctx_history_index_generation::{
-    physical_integrity_audit, validate_candidate_managed_files, verify_candidate_physical_fence,
-    verify_physical_integrity, PhysicalIntegrityAudit,
+    physical_integrity_audit, validate_candidate_managed_files, verify_physical_integrity,
+    PhysicalIntegrityAudit,
 };
 pub(crate) use ctx_history_index_generation::{
     prime_candidate_physical_proof, CandidateActivationFence, CandidatePhysicalProof,

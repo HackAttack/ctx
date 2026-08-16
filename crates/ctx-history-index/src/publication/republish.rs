@@ -20,6 +20,9 @@ use super::{
     INDEX_GENERATIONS_DIRECTORY,
 };
 
+#[cfg(windows)]
+use super::{publish_active_generation_pointer_validated, validate_candidate_managed_files};
+
 mod clone {
     pub(crate) use ctx_history_index_generation::{
         create_authenticated_republish_candidate, RepublishCandidate,
@@ -264,7 +267,41 @@ fn republish_candidate(
         Some(candidate_path),
     )?;
     candidate.validate_binding()?;
-    let outcome = match publish_active_generation_pointer(root, &next_pointer) {
+    #[cfg(windows)]
+    let publication_result =
+        publish_active_generation_pointer_validated(root, &next_pointer, || {
+            let terminal_guard = ctx_history_index_generation::acquire_terminal_publication_guard(
+                root,
+                candidate_path,
+                &verified.index,
+                Some(base_pointer),
+            )?;
+            candidate.validate_binding()?;
+            validate_candidate_managed_files(&verified.index, candidate_path, Some(base_pointer))?;
+            let terminal_verified = verify_candidate(
+                root,
+                base_pointer,
+                candidate_path,
+                candidate_directory_name,
+                base_metas,
+                publication_metadata.as_deref(),
+                &current_manifest,
+                &current_generation_id,
+            )
+            .map_err(|_| ctx_history_index_generation::GenerationError::ChecksumMismatch)?;
+            if terminal_verified.slot != verified.slot {
+                return Err(
+                    ctx_history_index_generation::GenerationError::ConcurrentGenerationChange,
+                );
+            }
+            terminal_guard.verify_physical_fence(&verified.physical_integrity_audit)?;
+            candidate.validate_binding()?;
+            terminal_guard.verify_identities()?;
+            Ok(terminal_guard)
+        });
+    #[cfg(not(windows))]
+    let publication_result = publish_active_generation_pointer(root, &next_pointer);
+    let outcome = match publication_result {
         Ok(PointerPublicationOutcome::Durable) => {
             Ok(CurrentRepublishOutcome::Published(next_pointer))
         }

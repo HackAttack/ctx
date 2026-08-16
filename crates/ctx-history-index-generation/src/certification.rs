@@ -18,10 +18,15 @@ use crate::{
     PhysicalIntegrityAudit, Result, INDEX_GENERATIONS_DIRECTORY, MANIFEST_DIRECTORY,
 };
 
+#[cfg(not(windows))]
 const CERTIFICATION_VERSION: u32 = 3;
+#[cfg(windows)]
+const CERTIFICATION_VERSION: u32 = 4;
 const CERTIFICATION_SUFFIX: &str = ".physical-certification.json";
 const CERTIFICATION_DIRECTORY: &str = "integrity-certifications";
 const TANTIVY_META_FILE: &str = "meta.json";
+#[cfg(windows)]
+const MANAGED_FILE: &str = ".managed.json";
 const ARTIFACT_STABLE_SNAPSHOT_ATTEMPTS: usize = 4;
 pub const MAX_CERTIFICATION_BYTES: usize = 1024 * 1024;
 pub const MAX_CERTIFIED_ARTIFACTS: usize = 1024;
@@ -273,6 +278,18 @@ impl FileIdentity {
             false
         }
     }
+
+    #[cfg(windows)]
+    fn follows_readonly_seal(&self, prior: &Self) -> bool {
+        self.same_native_file(prior)
+            && !prior.is_readonly()
+            && self.is_readonly()
+            && self.length == prior.length
+            && self.creation_time == prior.creation_time
+            && self.last_write_time == prior.last_write_time
+            && self.links == prior.links
+            && (self.attributes & !0x1) == (prior.attributes & !0x1)
+    }
 }
 
 pub fn verify_or_certify_physical_integrity(
@@ -361,25 +378,36 @@ fn install_certification(
             Path::new(&prior.artifact.path),
             Some(pointer),
         )?;
-        if current.identity != prior.artifact.identity
-            && !(allow_link_reclamation
-                && current
-                    .identity
-                    .follows_link_reclamation(&prior.artifact.identity))
-        {
+        let follows_allowed_transition = allow_link_reclamation
+            && (current
+                .identity
+                .follows_link_reclamation(&prior.artifact.identity)
+                || {
+                    #[cfg(windows)]
+                    {
+                        current
+                            .identity
+                            .follows_readonly_seal(&prior.artifact.identity)
+                    }
+                    #[cfg(not(windows))]
+                    {
+                        false
+                    }
+                });
+        if current.identity != prior.artifact.identity && !follows_allowed_transition {
             return if prior.artifact.same_payload_identity_changed(&current) {
                 Err(IndexError::ConcurrentGenerationChange)
             } else {
                 Err(IndexError::ChecksumMismatch)
             };
         }
-        let sealed = prior.artifact.path != TANTIVY_META_FILE;
+        let sealed = artifact_should_be_sealed(&prior.artifact.path);
         if sealed {
             current = seal_artifact(
                 root,
                 &generation_path,
                 Path::new(&prior.artifact.path),
-                pointer,
+                Some(pointer),
                 &current,
             )?;
         }
@@ -423,20 +451,36 @@ fn seal_artifact(
     root: &Path,
     generation_path: &Path,
     relative_path: &Path,
-    pointer: &ActiveGenerationPointer,
+    pointer: Option<&ActiveGenerationPointer>,
     expected: &ArtifactIdentity,
 ) -> Result<ArtifactIdentity> {
-    let (file, observed) = open_artifact(root, generation_path, relative_path, Some(pointer))?;
+    let (file, observed) = open_artifact(root, generation_path, relative_path, pointer)?;
+    #[cfg(windows)]
+    let _ = &file;
     if observed != *expected {
         return Err(IndexError::ConcurrentGenerationChange);
     }
+    #[cfg(windows)]
+    let expected_sealed_identity = if observed.identity.is_readonly() {
+        observed.identity.clone()
+    } else {
+        seal_unsealed_artifact(&generation_path.join(relative_path), &observed)?
+    };
     if !observed.identity.is_readonly() {
+        #[cfg(not(windows))]
         let mut permissions = file.metadata()?.permissions();
+        #[cfg(not(windows))]
         permissions.set_readonly(true);
+        #[cfg(not(windows))]
         file.set_permissions(permissions)?;
+        #[cfg(not(windows))]
         file.sync_all()?;
     }
-    let sealed = recapture_artifact(root, generation_path, relative_path, Some(pointer))?;
+    let sealed = recapture_artifact(root, generation_path, relative_path, pointer)?;
+    #[cfg(windows)]
+    if sealed.identity != expected_sealed_identity {
+        return Err(IndexError::ConcurrentGenerationChange);
+    }
     if !sealed.identity.is_readonly()
         || !sealed.identity.same_native_file(&observed.identity)
         || sealed.identity.length() != observed.identity.length()
@@ -444,6 +488,211 @@ fn seal_artifact(
         return Err(IndexError::ConcurrentGenerationChange);
     }
     Ok(sealed)
+}
+
+#[cfg(windows)]
+fn seal_unsealed_artifact(path: &Path, expected: &ArtifactIdentity) -> Result<FileIdentity> {
+    use std::os::windows::fs::OpenOptionsExt as _;
+    use windows_sys::Win32::Storage::FileSystem::{
+        FILE_FLAG_OPEN_REPARSE_POINT, FILE_GENERIC_READ, FILE_GENERIC_WRITE, FILE_SHARE_READ,
+    };
+
+    validate_named_regular_file(path)?;
+    let file = OpenOptions::new()
+        .access_mode(FILE_GENERIC_READ | FILE_GENERIC_WRITE)
+        .share_mode(FILE_SHARE_READ)
+        .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT)
+        .open(path)?;
+    if file_identity(&file)? != expected.identity {
+        return Err(IndexError::ConcurrentGenerationChange);
+    }
+    validate_named_regular_file(path)?;
+    let named = open_nofollow(path).map_err(|_| IndexError::ConcurrentGenerationChange)?;
+    if file_identity(&named)? != expected.identity {
+        return Err(IndexError::ConcurrentGenerationChange);
+    }
+    let mut permissions = file.metadata()?.permissions();
+    permissions.set_readonly(true);
+    file.set_permissions(permissions)?;
+    file.sync_all()?;
+    let sealed = file_identity(&file)?;
+    if !sealed.follows_readonly_seal(&expected.identity) {
+        return Err(IndexError::ConcurrentGenerationChange);
+    }
+    Ok(sealed)
+}
+
+#[cfg(windows)]
+fn artifact_should_be_sealed(_path: &str) -> bool {
+    true
+}
+
+#[cfg(not(windows))]
+fn artifact_should_be_sealed(path: &str) -> bool {
+    path != TANTIVY_META_FILE
+}
+
+#[cfg(windows)]
+struct TerminalSealEntry {
+    relative_path: PathBuf,
+    file: File,
+    before: ArtifactIdentity,
+    sealed: ArtifactIdentity,
+}
+
+#[cfg(windows)]
+pub struct TerminalPublicationGuard {
+    root: PathBuf,
+    generation_path: PathBuf,
+    topology_authority: Option<ActiveGenerationPointer>,
+    entries: Vec<TerminalSealEntry>,
+}
+
+#[cfg(windows)]
+pub fn acquire_terminal_publication_guard(
+    root: &Path,
+    generation_path: &Path,
+    index: &tantivy::Index,
+    topology_authority: Option<&ActiveGenerationPointer>,
+) -> Result<TerminalPublicationGuard> {
+    ensure_real_directory(root)?;
+    ensure_real_directory(&root.join(INDEX_GENERATIONS_DIRECTORY))?;
+    ensure_real_directory(generation_path)?;
+
+    let mut allowlist = active_index_files(index)?;
+    allowlist.insert(PathBuf::from(TANTIVY_META_FILE));
+    allowlist.insert(PathBuf::from(MANAGED_FILE));
+    if allowlist.len() > MAX_CERTIFIED_ARTIFACTS.saturating_add(1) {
+        return Err(IndexError::ChecksumMismatch);
+    }
+
+    let mut entries = allowlist
+        .into_iter()
+        .map(|relative_path| {
+            open_terminal_seal_entry(root, generation_path, relative_path, topology_authority)
+        })
+        .collect::<Result<Vec<_>>>()?;
+
+    for entry in &mut entries {
+        let mut permissions = entry.file.metadata()?.permissions();
+        permissions.set_readonly(true);
+        entry.file.set_permissions(permissions)?;
+        entry.file.sync_all()?;
+        let sealed_identity = file_identity(&entry.file)?;
+        if !sealed_identity.follows_readonly_seal(&entry.before.identity) {
+            return Err(IndexError::ConcurrentGenerationChange);
+        }
+        let sealed = recapture_authenticated_artifact(
+            root,
+            generation_path,
+            &entry.relative_path,
+            &entry.file,
+            topology_authority,
+        )?;
+        if sealed.identity != sealed_identity {
+            return Err(IndexError::ConcurrentGenerationChange);
+        }
+        entry.sealed = sealed;
+    }
+
+    Ok(TerminalPublicationGuard {
+        root: root.to_owned(),
+        generation_path: generation_path.to_owned(),
+        topology_authority: topology_authority.cloned(),
+        entries,
+    })
+}
+
+#[cfg(windows)]
+fn open_terminal_seal_entry(
+    root: &Path,
+    generation_path: &Path,
+    relative_path: PathBuf,
+    topology_authority: Option<&ActiveGenerationPointer>,
+) -> Result<TerminalSealEntry> {
+    use std::os::windows::fs::OpenOptionsExt as _;
+    use windows_sys::Win32::Storage::FileSystem::{
+        FILE_FLAG_OPEN_REPARSE_POINT, FILE_GENERIC_READ, FILE_GENERIC_WRITE, FILE_SHARE_READ,
+    };
+
+    if relative_path.components().count() != 1 {
+        return Err(IndexError::ChecksumMismatch);
+    }
+    let path = generation_path.join(&relative_path);
+    validate_named_regular_file(&path)?;
+    let file = OpenOptions::new()
+        .access_mode(FILE_GENERIC_READ | FILE_GENERIC_WRITE)
+        .share_mode(FILE_SHARE_READ)
+        .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT)
+        .open(&path)?;
+    let opened = file_identity(&file)?;
+    if opened.is_readonly() {
+        return Err(IndexError::ConcurrentGenerationChange);
+    }
+    validate_named_regular_file(&path)?;
+    let named = open_nofollow(&path).map_err(|_| IndexError::ConcurrentGenerationChange)?;
+    if file_identity(&named)? != opened || file_identity(&file)? != opened {
+        return Err(IndexError::ConcurrentGenerationChange);
+    }
+    let before = recapture_authenticated_artifact(
+        root,
+        generation_path,
+        &relative_path,
+        &file,
+        topology_authority,
+    )?;
+    if before.identity != opened {
+        return Err(IndexError::ConcurrentGenerationChange);
+    }
+    Ok(TerminalSealEntry {
+        relative_path,
+        file,
+        sealed: before.clone(),
+        before,
+    })
+}
+
+#[cfg(windows)]
+impl TerminalPublicationGuard {
+    pub fn verify_physical_fence(&self, expected: &PhysicalIntegrityAudit) -> Result<()> {
+        if self.entries.len() != expected.files().len().saturating_add(1) {
+            return Err(IndexError::ChecksumMismatch);
+        }
+        for expected_file in expected.files() {
+            let Some(entry) = self
+                .entries
+                .iter()
+                .find(|entry| entry.before.path == expected_file.artifact.path)
+            else {
+                return Err(IndexError::ChecksumMismatch);
+            };
+            if entry.before != expected_file.artifact
+                || !entry
+                    .sealed
+                    .identity
+                    .follows_readonly_seal(&entry.before.identity)
+            {
+                return Err(IndexError::ConcurrentGenerationChange);
+            }
+        }
+        Ok(())
+    }
+
+    pub fn verify_identities(&self) -> Result<()> {
+        for entry in &self.entries {
+            let current = recapture_authenticated_artifact(
+                &self.root,
+                &self.generation_path,
+                &entry.relative_path,
+                &entry.file,
+                self.topology_authority.as_ref(),
+            )?;
+            if current != entry.sealed {
+                return Err(IndexError::ConcurrentGenerationChange);
+            }
+        }
+        Ok(())
+    }
 }
 
 fn matching_certification(

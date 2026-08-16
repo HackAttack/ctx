@@ -236,22 +236,28 @@ pub fn publish_active_generation_pointer(
     publish_active_generation_pointer_validated(root, pointer, || Ok(()))
 }
 
-pub fn publish_active_generation_pointer_validated<F>(
+pub fn publish_active_generation_pointer_validated<F, T>(
     root: &Path,
     pointer: &ActiveGenerationPointer,
     validate_before_replace: F,
 ) -> Result<PointerPublicationOutcome>
 where
-    F: FnOnce() -> Result<()>,
+    F: FnOnce() -> Result<T>,
 {
     pointer.validate()?;
     let bytes = serde_json::to_vec(pointer)?;
     let directory = DurableMmapDirectory::open(root).map_err(tantivy::TantivyError::from)?;
-    match directory.atomic_write_with_outcome_validated(
+    let mut retained_validation = None;
+    let outcome = directory.atomic_write_with_outcome_validated(
         Path::new(ACTIVE_GENERATION_POINTER_FILE),
         &bytes,
-        validate_before_replace,
-    )? {
+        || {
+            retained_validation = Some(validate_before_replace()?);
+            Ok(())
+        },
+    )?;
+    drop(retained_validation);
+    match outcome {
         DurableAtomicWriteOutcome::Durable => Ok(PointerPublicationOutcome::Durable),
         DurableAtomicWriteOutcome::VisibleButDurabilityUncertain(error) => {
             Ok(PointerPublicationOutcome::CommittedVisible {
