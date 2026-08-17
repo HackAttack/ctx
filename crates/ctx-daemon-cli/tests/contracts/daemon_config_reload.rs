@@ -637,6 +637,86 @@ mod unix {
     }
 
     #[test]
+    fn historical_activation_failure_yields_to_current_nonpersistent_policy() {
+        let _serial = serial_daemon_test();
+        let temp = tempdir();
+        let binary = copied_ctx_binary(&temp);
+        let root = data_root(&temp);
+        fs::create_dir_all(root.join("daemon")).unwrap();
+        fs::write(
+            root.join("daemon/status.json"),
+            serde_json::to_vec(&serde_json::json!({
+                "schema_version": 1,
+                "status": "failed",
+                "semantic_runtime_active": false,
+                "config_reload": {
+                    "status": "activation_failed",
+                    "out_of_sync": true,
+                    "applied": {
+                        "daemon_lifecycle": "persistent",
+                        "daemon_enabled": true,
+                        "daemon_mode": "full",
+                        "semantic_enabled": true
+                    },
+                    "last_error": "historical semantic activation failure"
+                }
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+
+        for (configured, environment, expected_reason) in [
+            ("on-demand", None, "daemon_nonpersistent"),
+            ("disabled", None, "daemon_disabled"),
+            (
+                "persistent",
+                Some(("CTX_DAEMON_LIFECYCLE", "on-demand")),
+                "daemon_nonpersistent",
+            ),
+            (
+                "persistent",
+                Some(("CTX_DAEMON_ENABLED", "false")),
+                "daemon_disabled",
+            ),
+            (
+                "persistent",
+                Some(("CTX_DAEMON_OFF", "1")),
+                "daemon_disabled",
+            ),
+        ] {
+            fs::write(
+                root.join("config.toml"),
+                format!(
+                    "[analytics]\nenabled = false\n\n[upgrade]\nauto = \"off\"\n\n[daemon]\nlifecycle = \"{configured}\"\nmode = \"full\"\n\n[search]\nsemantic = true\n"
+                ),
+            )
+            .unwrap();
+            let mut command = ctx_from_binary(&temp, &binary);
+            command.args(["daemon", "status", "--format=json"]);
+            if let Some((name, value)) = environment {
+                command.env(name, value);
+            }
+            let status = json_output(&mut command)["daemon"].clone();
+
+            assert_eq!(status["config_reload"]["status"], "activation_failed");
+            assert_eq!(
+                status["config_reload"]["last_error"],
+                "historical semantic activation failure"
+            );
+            assert_eq!(status["jobs"]["semantic_index"]["enabled"], false);
+            assert_eq!(status["jobs"]["semantic_index"]["status"], "disabled");
+            assert_eq!(
+                status["jobs"]["semantic_index"]["reason"], expected_reason,
+                "configured={configured} environment={environment:?}: {status:#}"
+            );
+            assert_eq!(
+                status["jobs"]["semantic_index"]["config_reload_status"],
+                "activation_failed"
+            );
+        }
+    }
+
+    #[test]
     fn initial_semantic_activation_failure_fails_daemon_startup_truthfully() {
         let _serial = serial_daemon_test();
         let temp = tempdir();
