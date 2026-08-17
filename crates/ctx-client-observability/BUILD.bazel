@@ -29,7 +29,8 @@ CTX_CLIENT_OBSERVABILITY_DEPS = [
 ]
 CTX_CLIENT_OBSERVABILITY_RUSTC_FLAGS = [
     "--check-cfg=cfg(test)",
-    '--check-cfg=cfg(feature, values("test-support"))',
+    '--check-cfg=cfg(feature, values("local-usage", "test-support"))',
+    '--cfg=feature="local-usage"',
 ]
 
 rust_library(

@@ -27,15 +27,16 @@ const POST_EXIT_UNINSTALL_INVOCATION: &str = "--ctx-core-managed-pair-uninstall-
 const MAX_FRAME_BYTES: usize = 64 * 1024;
 const MAX_RESPONSE_BYTES: usize = 48 * 1024;
 #[cfg(test)]
-const API_INVENTORY: &str = r#"{"operations":{"CoreDoctor":{"request_keys":[],"response_keys":["facts"]},"CoreSetup":{"request_keys":["catalog_only","no_daemon","semantic","wait"],"response_keys":["facts","generation_id"]},"CoreStatus":{"request_keys":["usage"],"response_keys":["facts"]},"ManagedPairAbort":{"request_keys":["attempt_id"],"response_keys":["aborted"]},"ManagedPairBegin":{"request_keys":[],"response_keys":["attempt_id","candidate_root"]},"ManagedPairStage":{"request_keys":["attempt_id"],"response_keys":["attempt_id","release_name","rollback_generation","status"]},"ManagedPairStatus":{"request_keys":["attempt_id"],"response_keys":["status"]},"ManagedPairUninstall":{"request_keys":[],"response_keys":["attempt_id","cleanup_mode","status"]},"RefreshAndWait":{"request_keys":[],"response_keys":["facts","generation_id"]},"WakeCompanionMaintenance":{"request_keys":[],"response_keys":["accepted"]},"WakeRefresh":{"request_keys":[],"response_keys":["accepted"]}},"protocol":"ctx-core-capability","schema_version":1}"#;
+const API_INVENTORY: &str = r#"{"operations":{"CoreDoctor":{"request_keys":[],"response_keys":["facts"]},"CoreSetup":{"request_keys":["catalog_only","no_daemon","semantic","wait"],"response_keys":["facts","generation_id"]},"CoreStatus":{"request_keys":["usage"],"response_keys":["facts"]},"LocalUsageSummary":{"request_keys":[],"response_keys":["facts"]},"ManagedPairAbort":{"request_keys":["attempt_id"],"response_keys":["aborted"]},"ManagedPairBegin":{"request_keys":[],"response_keys":["attempt_id","candidate_root"]},"ManagedPairStage":{"request_keys":["attempt_id"],"response_keys":["attempt_id","release_name","rollback_generation","status"]},"ManagedPairStatus":{"request_keys":["attempt_id"],"response_keys":["status"]},"ManagedPairUninstall":{"request_keys":[],"response_keys":["attempt_id","cleanup_mode","status"]},"RefreshAndWait":{"request_keys":[],"response_keys":["facts","generation_id"]},"WakeCompanionMaintenance":{"request_keys":[],"response_keys":["accepted"]},"WakeRefresh":{"request_keys":[],"response_keys":["accepted"]}},"protocol":"ctx-core-capability","schema_version":1}"#;
 pub(crate) const API_FINGERPRINT: &str =
-    "0ec3905fe361d7ac231ea15389c0fec604fbe4193dd2fb894dbf2e798890bf7d";
+    "e9338bb0508f3a506655b58df5cfe75a561fe73db14a633b15d2df8635acc860";
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum Operation {
     CoreSetup,
     CoreStatus,
     CoreDoctor,
+    LocalUsageSummary,
     RefreshAndWait,
     WakeRefresh,
     WakeCompanionMaintenance,
@@ -52,6 +53,7 @@ impl Operation {
             "CoreSetup" => Ok(Self::CoreSetup),
             "CoreStatus" => Ok(Self::CoreStatus),
             "CoreDoctor" => Ok(Self::CoreDoctor),
+            "LocalUsageSummary" => Ok(Self::LocalUsageSummary),
             "RefreshAndWait" => Ok(Self::RefreshAndWait),
             "WakeRefresh" => Ok(Self::WakeRefresh),
             "WakeCompanionMaintenance" => Ok(Self::WakeCompanionMaintenance),
@@ -69,6 +71,7 @@ impl Operation {
             Self::CoreSetup => "CoreSetup",
             Self::CoreStatus => "CoreStatus",
             Self::CoreDoctor => "CoreDoctor",
+            Self::LocalUsageSummary => "LocalUsageSummary",
             Self::RefreshAndWait => "RefreshAndWait",
             Self::WakeRefresh => "WakeRefresh",
             Self::WakeCompanionMaintenance => "WakeCompanionMaintenance",
@@ -214,7 +217,8 @@ fn parse_frame(bytes: Vec<u8>) -> Result<Request> {
 fn execute(request: Request) -> Result<Value> {
     if !matches!(
         request.operation,
-        Operation::ManagedPairBegin
+        Operation::LocalUsageSummary
+            | Operation::ManagedPairBegin
             | Operation::ManagedPairStage
             | Operation::ManagedPairAbort
             | Operation::ManagedPairStatus
@@ -237,6 +241,9 @@ fn execute(request: Request) -> Result<Value> {
         }
         (Operation::CoreDoctor, Options::Empty) => {
             crate::commands::doctor::doctor_facts(&request.data_root)?
+        }
+        (Operation::LocalUsageSummary, Options::Empty) => {
+            local_usage_summary_facts(&request.data_root)?
         }
         (Operation::RefreshAndWait, Options::Empty) => refresh_and_facts(&request.data_root)?,
         (Operation::WakeRefresh, Options::Empty) => {
@@ -307,10 +314,22 @@ fn status_facts(data_root: &Path) -> Result<Value> {
     let storage = crate::observability_composition::local_usage_storage_authority(data_root);
     let control =
         crate::observability_composition::usage_control_snapshot(config.local_usage.enabled);
-    let status = crate::commands::status::status_read_model_authorized(
-        data_root, &config, &storage, &control,
-    )?;
-    bounded_value(status.report)
+    bounded_value(
+        crate::commands::status::status_read_model_authorized(
+            data_root, &config, &storage, &control,
+        )?
+        .report,
+    )
+}
+
+fn local_usage_summary_facts(data_root: &Path) -> Result<Value> {
+    let config = crate::config::AppConfig::load(data_root)?;
+    let storage = crate::observability_composition::local_usage_storage_authority(data_root);
+    let control =
+        crate::observability_composition::usage_control_snapshot(config.local_usage.enabled);
+    bounded_value(serde_json::to_value(
+        crate::local_usage::read_report_authorized(&storage, &control, false),
+    )?)
 }
 
 fn core_status_facts(data_root: &Path, usage: Option<UsageAction>) -> Result<Value> {
@@ -519,6 +538,7 @@ fn parse_options(operation: Operation, value: &Value) -> Result<Options> {
         Operation::CoreSetup => &["catalog_only", "no_daemon", "semantic", "wait"],
         Operation::CoreStatus => &["usage"],
         Operation::CoreDoctor
+        | Operation::LocalUsageSummary
         | Operation::RefreshAndWait
         | Operation::WakeRefresh
         | Operation::WakeCompanionMaintenance

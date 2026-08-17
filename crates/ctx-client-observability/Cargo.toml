@@ -10,6 +10,8 @@ rust-version.workspace = true
 publish = false
 
 [features]
+default = ["local-usage"]
+local-usage = ["dep:rusqlite"]
 test-support = []
 
 [dependencies]
@@ -18,7 +20,7 @@ chrono.workspace = true
 ctx-history-core = { path = "../ctx-history-core" }
 ctx-history-platform = { path = "../ctx-history-platform" }
 libc.workspace = true
-rusqlite.workspace = true
+rusqlite = { workspace = true, optional = true }
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
