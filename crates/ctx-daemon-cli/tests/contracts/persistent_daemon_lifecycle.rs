@@ -585,7 +585,7 @@ mod native {
         assert_single_daemon_process(&harness, dedup_pid);
     }
 
-    #[path = "persistent_daemon_lifecycle/lifecycle_regressions.rs"]
+    #[path = "../persistent_daemon_lifecycle/lifecycle_regressions.rs"]
     mod lifecycle_regressions;
 
     #[test]
