@@ -175,7 +175,6 @@ def main() -> None:
             "HistoryReadPort",
             "SearchReadinessPort",
             "SourceCatalogPort",
-            "ExtensionToolPort",
         ],
     }
     for relative, symbols in required_authorities.items():

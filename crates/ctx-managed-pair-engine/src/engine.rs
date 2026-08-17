@@ -390,7 +390,7 @@ impl ManagedPairEngine {
         validate_active(&layout, verifier)
     }
 
-    fn stage_with_fault(
+    pub(super) fn stage_with_fault(
         &self,
         candidate_root: &Path,
         verifier: &dyn ManagedPairVerifier,
@@ -511,7 +511,7 @@ impl ManagedPairEngine {
         })
     }
 
-    fn commit(
+    pub(super) fn commit(
         &self,
         layout: &Layout,
         expected_attempt_id: &str,

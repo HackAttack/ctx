@@ -1239,7 +1239,6 @@ non_rust_gate(
         "//crates/ctx-history-capture:BUILD.bazel",
         "//crates/ctx-history-capture:Cargo.toml",
         "//crates/ctx-history-capture:provider_architecture_sources",
-        "//crates/ctx-history-capture:tests/codex_direct_result.rs",
         "//crates/ctx-history-provider-native-jsonl:BUILD.bazel",
         "//crates/ctx-history-provider-native-jsonl:Cargo.toml",
         "//crates/ctx-history-providers-sqlite-selected:BUILD.bazel",
