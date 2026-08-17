@@ -156,10 +156,7 @@ fn slash_commands_install_gemini_project_writes_toml() {
         json!(project.join(".gemini/commands/ctx.toml"))
     );
 
-    let command_path = project
-        .join(".gemini")
-        .join("commands")
-        .join("ctx.toml");
+    let command_path = project.join(".gemini").join("commands").join("ctx.toml");
     let body = fs::read_to_string(command_path).unwrap();
     assert!(body.contains("description ="));
     assert!(body.contains("prompt = '''"));
@@ -186,10 +183,7 @@ fn slash_commands_install_qwen_project_writes_markdown() {
     assert_eq!(output["scope"], "project");
     assert_eq!(output["results"][0]["agent"], "qwen-code");
 
-    let command_path = project
-        .join(".qwen")
-        .join("commands")
-        .join("ctx.md");
+    let command_path = project.join(".qwen").join("commands").join("ctx.md");
     let body = fs::read_to_string(command_path).unwrap();
     assert!(body.contains("---\ndescription:"));
     assert!(body.contains("{{args}}"));

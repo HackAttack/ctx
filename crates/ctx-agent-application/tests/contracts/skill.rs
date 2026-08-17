@@ -3,8 +3,7 @@ mod support;
 use sha2::{Digest, Sha256};
 use support::*;
 
-const CURRENT_BUNDLED_SKILL_BODY: &str =
-    include_str!("../../../../skills/ctx/SKILL.md");
+const CURRENT_BUNDLED_SKILL_BODY: &str = include_str!("../../../../skills/ctx/SKILL.md");
 
 fn human_stdout(command: &mut assert_cmd::Command) -> String {
     let output = command.assert().success().get_output().clone();
@@ -88,11 +87,7 @@ fn skill_install_defaults_to_global_canonical_agents_dir_and_is_idempotent() {
     assert_eq!(first["results"][0]["status"], "current");
     assert_eq!(first["results"][0]["already_installed"], false);
 
-    let skill_dir = temp
-        .path()
-        .join(".agents")
-        .join("skills")
-        .join("ctx");
+    let skill_dir = temp.path().join(".agents").join("skills").join("ctx");
     assert!(skill_dir.join("SKILL.md").exists());
     assert!(skill_dir.join(".ctx-skill.json").exists());
 
@@ -341,21 +336,13 @@ fn skill_install_detected_mimocode_uses_universal_skill_location() {
         .join("ctx")
         .join("SKILL.md")
         .exists());
-    assert!(!xdg
-        .join("mimocode")
-        .join("skills")
-        .join("ctx")
-        .exists());
+    assert!(!xdg.join("mimocode").join("skills").join("ctx").exists());
 }
 
 #[test]
 fn skill_install_refreshes_stale_bundled_copy() {
     let temp = tempdir();
-    let skill_dir = temp
-        .path()
-        .join(".agents")
-        .join("skills")
-        .join("ctx");
+    let skill_dir = temp.path().join(".agents").join("skills").join("ctx");
     fs::create_dir_all(&skill_dir).unwrap();
     fs::write(skill_dir.join("SKILL.md"), "old instructions\n").unwrap();
     let old_hash = format!("sha256:{:x}", Sha256::digest(b"old instructions\n"));
@@ -401,11 +388,7 @@ fn skill_install_refreshes_stale_bundled_copy() {
 #[test]
 fn skill_install_backfills_current_metadata_without_rewriting_body() {
     let temp = tempdir();
-    let skill_dir = temp
-        .path()
-        .join(".agents")
-        .join("skills")
-        .join("ctx");
+    let skill_dir = temp.path().join(".agents").join("skills").join("ctx");
     fs::create_dir_all(&skill_dir).unwrap();
     fs::write(skill_dir.join("SKILL.md"), CURRENT_BUNDLED_SKILL_BODY).unwrap();
     fs::write(
@@ -448,11 +431,7 @@ fn skill_install_backfills_current_metadata_without_rewriting_body() {
 #[test]
 fn skill_install_default_fallback_preserves_custom_copy_without_failing() {
     let temp = tempdir();
-    let skill_dir = temp
-        .path()
-        .join(".agents")
-        .join("skills")
-        .join("ctx");
+    let skill_dir = temp.path().join(".agents").join("skills").join("ctx");
     fs::create_dir_all(&skill_dir).unwrap();
     fs::write(skill_dir.join("SKILL.md"), "local custom instructions\n").unwrap();
 
@@ -478,11 +457,7 @@ fn skill_install_default_fallback_preserves_custom_copy_without_failing() {
 #[test]
 fn skill_install_preserves_modified_copy_unless_forced() {
     let temp = tempdir();
-    let skill_dir = temp
-        .path()
-        .join(".agents")
-        .join("skills")
-        .join("ctx");
+    let skill_dir = temp.path().join(".agents").join("skills").join("ctx");
     fs::create_dir_all(&skill_dir).unwrap();
     fs::write(skill_dir.join("SKILL.md"), "local custom instructions\n").unwrap();
 
@@ -636,11 +611,7 @@ fn skill_install_agent_paths_respect_env_xdg_and_project_scope() {
         .join("ctx")
         .join("SKILL.md")
         .exists());
-    assert!(!home
-        .join(".codex")
-        .join("skills")
-        .join("ctx")
-        .exists());
+    assert!(!home.join(".codex").join("skills").join("ctx").exists());
 }
 
 #[test]

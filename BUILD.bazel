@@ -46,10 +46,13 @@ java_binary(
 # harness actions. Rust compilation and Rust tests are deliberately absent:
 # those are represented by rules_rust targets below.
 NON_RUST_GATE_DATA = glob([
+    ".agents/plugins/**",
     ".bazelignore",
     ".bazelrc",
     ".bazelversion",
     ".buildkite/**",
+    ".claude-plugin/**",
+    ".cursor-plugin/**",
     ".gitignore",
     "BUILD.bazel",
     "Cargo.lock",
