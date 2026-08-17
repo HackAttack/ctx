@@ -9,7 +9,7 @@ use std::{
 };
 
 use ctx_history_core::{
-    derive_event_id, derive_session_id, CoreActivity, CoreRecord, CoreRecordError,
+    derive_event_id, derive_session_id, AgentScope, CoreActivity, CoreRecord, CoreRecordError,
     EventIdentityInput, LiteralFactKind, NativeItemKey, NativeSessionKey, ProjectionContractError,
     ProviderDeclaredFact, ProviderNativeSessionRelationship, ScannedSourceCounts,
     SessionIdentityInput, SourceAnchor, SourceKey, SourceObservation, StableEntityId, TypedKey,
@@ -578,16 +578,17 @@ fn auggie_core_record(
     content_digest: [u8; 32],
     parsed: ParsedAuggieEvent,
 ) -> AuggieSourceBackedResult<CoreRecord> {
-    let parent_session_id = session
-        .parent_provider_session_id
-        .as_deref()
-        .map(related_auggie_session_id)
-        .transpose()?;
-    let root_session_id = session
-        .root_provider_session_id
-        .as_deref()
-        .map(related_auggie_session_id)
-        .transpose()?;
+    let (agent_scope, parent_session_id, root_session_id, session_relationship) =
+        match auggie_lineage_evidence(session) {
+            AuggieLineageEvidence::Root => (Some(AgentScope::Primary), None, None, None),
+            AuggieLineageEvidence::Child { parent, root } => (
+                Some(AgentScope::Subagent),
+                Some(related_auggie_session_id(parent)?),
+                root.map(related_auggie_session_id).transpose()?,
+                Some(ProviderNativeSessionRelationship::Delegated),
+            ),
+            AuggieLineageEvidence::Unknown => (None, None, None, None),
+        };
     let native_item_key = if let Some(native_event_id) = parsed.native_event_id.as_deref() {
         NativeItemKey::native_id(
             AUGGIE_NATIVE_EVENT_NAMESPACE,
@@ -632,11 +633,10 @@ fn auggie_core_record(
         AUGGIE_PARSER_REVISION,
         body,
     )?;
+    record.agent_scope = agent_scope;
     record.parent_session_id = parent_session_id;
     record.root_session_id = root_session_id;
-    if record.parent_session_id.is_some() {
-        record.session_relationship = Some(ProviderNativeSessionRelationship::Delegated);
-    }
+    record.session_relationship = session_relationship;
     record.provider_session_id = Some(session.provider_session_id.clone());
     record.native_event_id = Some(object_key);
     record.occurred_at_unix_ms = Some(parsed.occurred_at.timestamp_millis());
@@ -653,6 +653,31 @@ fn auggie_core_record(
     });
     record.validate_contract()?;
     Ok(record)
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum AuggieLineageEvidence<'a> {
+    Root,
+    Child {
+        parent: &'a str,
+        root: Option<&'a str>,
+    },
+    Unknown,
+}
+
+fn auggie_lineage_evidence(session: &ParsedAuggieSession) -> AuggieLineageEvidence<'_> {
+    let native_session_id = session.provider_session_id.as_str();
+    let parent = session.parent_provider_session_id.as_deref();
+    let root = session.root_provider_session_id.as_deref();
+    match (parent, root) {
+        (None, None) => AuggieLineageEvidence::Root,
+        (None, Some(root)) if root == native_session_id => AuggieLineageEvidence::Root,
+        (None, Some(_)) => AuggieLineageEvidence::Unknown,
+        (Some(parent), root) if parent == native_session_id || root == Some(native_session_id) => {
+            AuggieLineageEvidence::Unknown
+        }
+        (Some(parent), root) => AuggieLineageEvidence::Child { parent, root },
+    }
 }
 
 fn related_auggie_session_id(native_session_id: &str) -> AuggieSourceBackedResult<StableEntityId> {
