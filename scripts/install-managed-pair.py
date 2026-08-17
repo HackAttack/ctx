@@ -244,6 +244,29 @@ def ensure_child_directory(parent: Path, name: str) -> Path:
     return child
 
 
+def secure_managed_directory(path: Path) -> None:
+    if os.name == "nt":
+        return
+    flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0)
+    try:
+        descriptor = _open_nofollow(path, flags)
+    except OSError as error:
+        raise InstallError(f"cannot secure managed-pair directory: {path}") from error
+    try:
+        metadata = os.fstat(descriptor)
+        if metadata.st_uid != os.geteuid():
+            raise InstallError(f"managed-pair directory is not owned by the current user: {path}")
+        mode = stat.S_IMODE(metadata.st_mode)
+        if mode & 0o022:
+            os.fchmod(descriptor, mode & ~0o022)
+            os.fsync(descriptor)
+        named = path.lstat()
+        if (named.st_dev, named.st_ino) != (metadata.st_dev, metadata.st_ino):
+            raise InstallError(f"managed-pair directory identity changed: {path}")
+    finally:
+        os.close(descriptor)
+
+
 class ManagedLayout:
     def __init__(
         self,
@@ -285,6 +308,9 @@ def layout(install_root: Path, target: str) -> ManagedLayout:
     libexec_dir = ensure_child_directory(install_root, "libexec")
     share_dir = ensure_child_directory(install_root, "share")
     control = ensure_child_directory(share_dir, "ctx")
+    directories = (install_root, bin_dir, libexec_dir, share_dir, control)
+    for directory in directories:
+        secure_managed_directory(directory)
     suffix = ".exe" if target == "windows-x64" else ""
     paths = {
         "core": bin_dir / f"ctx{suffix}",
@@ -292,7 +318,6 @@ def layout(install_root: Path, target: str) -> ManagedLayout:
         "envelope": control / "managed-pair-envelope.json",
         "state": control / "managed-pair-state.json",
     }
-    directories = (install_root, bin_dir, libexec_dir, share_dir, control)
     identities = {
         directory: (directory.lstat().st_dev, directory.lstat().st_ino)
         for directory in directories

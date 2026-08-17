@@ -208,6 +208,19 @@ class ManagedPairInstallerTest(unittest.TestCase):
         )
         self.assertEqual(completed.stdout, "fixed companion selected\n")
 
+    @unittest.skipIf(os.name == "nt", "POSIX directory mode contract")
+    def test_install_secures_existing_managed_directories_for_bridge_launch(self) -> None:
+        for relative in (".", "bin", "libexec", "share", "share/ctx"):
+            directory = self.install_root / relative
+            directory.mkdir(parents=True, exist_ok=True)
+            os.chmod(directory, 0o777)
+
+        self.install()
+
+        for relative in (".", "bin", "libexec", "share", "share/ctx"):
+            mode = stat.S_IMODE((self.install_root / relative).stat().st_mode)
+            self.assertEqual(mode & 0o022, 0, f"unsafe directory mode for {relative}: {mode:o}")
+
     def test_failed_replacement_rolls_back_all_four_active_slots(self) -> None:
         self.install()
         before = {
