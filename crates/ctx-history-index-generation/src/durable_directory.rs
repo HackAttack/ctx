@@ -24,7 +24,9 @@ use tantivy::directory::{
 use tantivy::HasLen;
 use uuid::Uuid;
 
-use ctx_history_platform::platform_security::restrict_private_file_handle;
+use ctx_history_platform::platform_security::{
+    restrict_private_file_handle, verify_private_file_handle,
+};
 
 #[cfg(windows)]
 use windows_sys::Win32::Storage::FileSystem::{
@@ -362,8 +364,28 @@ struct PrivateFileLock {
 }
 
 fn open_private_lock_file(path: &Path) -> io::Result<File> {
+    let mut create_options = private_lock_file_options();
+    create_options.create_new(true);
+    let (file, created) = match create_options.open(path) {
+        Ok(file) => (file, true),
+        Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {
+            (private_lock_file_options().open(path)?, false)
+        }
+        Err(error) => return Err(error),
+    };
+
+    // A new file must always be normalized because Unix umask can remove
+    // owner bits and Windows can inherit a permissive ACL. Existing secure
+    // locks stay untouched so acquiring them cannot advance their ctime.
+    if created || verify_private_file_handle(&file).is_err() {
+        restrict_private_file_handle(&file)?;
+    }
+    Ok(file)
+}
+
+fn private_lock_file_options() -> OpenOptions {
     let mut options = OpenOptions::new();
-    options.write(true).create(true).truncate(false);
+    options.write(true).truncate(false);
     #[cfg(unix)]
     options
         .mode(0o600)
@@ -372,9 +394,7 @@ fn open_private_lock_file(path: &Path) -> io::Result<File> {
     options
         .access_mode(FILE_GENERIC_WRITE | READ_CONTROL | WRITE_DAC)
         .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT);
-    let file = options.open(path)?;
-    restrict_private_file_handle(&file)?;
-    Ok(file)
+    options
 }
 
 #[derive(Debug)]
@@ -795,6 +815,61 @@ mod tests {
         ));
         drop(held);
         directory.acquire_lock(&lock).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn private_lock_preserves_ctime_when_existing_file_is_already_private() {
+        use std::{
+            os::unix::fs::{MetadataExt as _, PermissionsExt as _},
+            time::Duration,
+        };
+
+        let temporary_directory = tempdir().unwrap();
+        let lock_path = temporary_directory.path().join("writer.lock");
+        fs::write(&lock_path, b"").unwrap();
+        fs::set_permissions(&lock_path, fs::Permissions::from_mode(0o600)).unwrap();
+        let before = fs::metadata(&lock_path).unwrap();
+        std::thread::sleep(Duration::from_millis(1_100));
+
+        let directory = DurableMmapDirectory::open(temporary_directory.path()).unwrap();
+        let _held = directory
+            .acquire_lock(&Lock {
+                filepath: PathBuf::from("writer.lock"),
+                is_blocking: false,
+            })
+            .unwrap();
+
+        let after = fs::metadata(&lock_path).unwrap();
+        assert_eq!(
+            (after.ctime(), after.ctime_nsec()),
+            (before.ctime(), before.ctime_nsec())
+        );
+        assert_eq!(after.permissions().mode() & 0o777, 0o600);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn private_lock_repairs_permissive_existing_file() {
+        use std::os::unix::fs::PermissionsExt as _;
+
+        let temporary_directory = tempdir().unwrap();
+        let lock_path = temporary_directory.path().join("writer.lock");
+        fs::write(&lock_path, b"").unwrap();
+        fs::set_permissions(&lock_path, fs::Permissions::from_mode(0o664)).unwrap();
+
+        let directory = DurableMmapDirectory::open(temporary_directory.path()).unwrap();
+        let _held = directory
+            .acquire_lock(&Lock {
+                filepath: PathBuf::from("writer.lock"),
+                is_blocking: false,
+            })
+            .unwrap();
+
+        assert_eq!(
+            fs::metadata(lock_path).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
     }
 
     #[test]
