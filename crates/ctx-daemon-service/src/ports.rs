@@ -13,36 +13,6 @@ pub enum DaemonMode {
     SourceRefreshOnly,
 }
 
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub enum DaemonLifecycle {
-    #[default]
-    Persistent,
-    OnDemand,
-    Disabled,
-}
-
-impl DaemonLifecycle {
-    pub const fn as_str(self) -> &'static str {
-        match self {
-            Self::Persistent => "persistent",
-            Self::OnDemand => "on-demand",
-            Self::Disabled => "disabled",
-        }
-    }
-
-    pub const fn starts_implicitly(self) -> bool {
-        !matches!(self, Self::Disabled)
-    }
-
-    pub const fn is_persistent(self) -> bool {
-        matches!(self, Self::Persistent)
-    }
-
-    pub const fn is_on_demand(self) -> bool {
-        matches!(self, Self::OnDemand)
-    }
-}
-
 impl DaemonMode {
     pub const fn as_str(self) -> &'static str {
         match self {
@@ -126,7 +96,7 @@ pub struct DaemonConfigSnapshot {
 
 #[derive(Debug, Clone, Copy, Default)]
 pub struct DaemonProductConfig {
-    pub lifecycle: DaemonLifecycle,
+    pub enabled: bool,
     pub mode: DaemonMode,
 }
 
@@ -138,7 +108,7 @@ impl DaemonConfigSnapshot {
 
 impl ctx_upgrade_engine::AutomaticUpgradePolicySnapshot for DaemonConfigSnapshot {
     fn daemon_enabled(&self) -> bool {
-        self.daemon.lifecycle.is_persistent()
+        self.daemon.enabled
     }
 
     fn automatic_upgrade_enabled(&self) -> bool {
@@ -175,7 +145,6 @@ pub trait DaemonAvailabilityPort: Sync {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DaemonAvailability {
     Available,
-    OnDemand,
     Disabled,
 }
 
@@ -403,7 +372,7 @@ mod tests {
     fn service_snapshot_is_the_single_borrowed_upgrade_policy() {
         let snapshot = DaemonConfigSnapshot {
             daemon: DaemonProductConfig {
-                lifecycle: DaemonLifecycle::Persistent,
+                enabled: true,
                 mode: DaemonMode::Full,
             },
             semantic_enabled: true,

@@ -161,7 +161,7 @@ fn complete_cli_grammar_renders_and_parses_help_recursively() {
     // the public grammar is intentionally smaller than the pre-split tree.
     assert_eq!(
         paths.len(),
-        48,
+        47,
         "unexpected public CLI grammar depth: {paths:?}"
     );
 

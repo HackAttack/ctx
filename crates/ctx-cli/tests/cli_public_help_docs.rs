@@ -644,18 +644,6 @@ fn daemon_help_exposes_readable_status_and_run_controls() {
             ],
         ),
         (
-            vec!["daemon", "lifecycle", "--help"],
-            vec![
-                "Usage: ctx daemon lifecycle",
-                "<LIFECYCLE>",
-                "persistent",
-                "on-demand",
-                "disabled",
-                "--format <FORMAT>",
-                "Choose when ctx background maintenance runs",
-            ],
-        ),
-        (
             vec!["daemon", "enable", "--help"],
             vec![
                 "Usage: ctx daemon enable",

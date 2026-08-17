@@ -1,10 +1,10 @@
 use std::{path::Path, time::Duration};
 
 use anyhow::{anyhow, Context};
-use ctx_daemon_runtime::{daemon_lock_is_active, DaemonLifecycleControlLock};
+use ctx_daemon_runtime::daemon_lock_is_active;
 
 use crate::{
-    lifecycle, supervisor, DaemonApplicationHost, DaemonHandoff, DaemonLifecycle, DaemonStartError,
+    lifecycle, supervisor, DaemonApplicationHost, DaemonHandoff, DaemonStartError,
     DaemonSupervisorReport, DaemonTrigger,
 };
 
@@ -15,7 +15,7 @@ const CONTROL_TIMEOUT: Duration = Duration::from_millis(500);
 const CONTROL_RESPONSE_MAX_BYTES: u64 = 16 * 1024;
 
 #[derive(Debug)]
-pub enum DaemonLifecycleUpdateError {
+pub enum DaemonEnabledUpdateError {
     Operation(anyhow::Error),
     StartSuppressed,
     Supervisor(anyhow::Error),
@@ -23,125 +23,56 @@ pub enum DaemonLifecycleUpdateError {
 }
 
 #[derive(Debug)]
-pub struct DaemonLifecycleUpdate {
-    pub lifecycle: DaemonLifecycle,
+pub struct DaemonEnabledUpdate {
+    pub enabled: bool,
     pub running: bool,
     pub pid: Option<u32>,
     pub persistent: bool,
     pub supervisor: DaemonSupervisorReport,
 }
 
-pub(super) fn update_daemon_lifecycle(
+pub(super) fn update_daemon_enabled(
     host: &dyn DaemonApplicationHost,
     data_root: &Path,
-    lifecycle: DaemonLifecycle,
-) -> Result<DaemonLifecycleUpdate, DaemonLifecycleUpdateError> {
-    reject_hosted_uninstall(host)?;
-    let _control = DaemonLifecycleControlLock::acquire(data_root)
-        .map_err(DaemonLifecycleUpdateError::Operation)?;
-    reject_hosted_uninstall(host)?;
-    let previous_lifecycle = host
-        .persisted_daemon_lifecycle(data_root)
-        .map_err(DaemonLifecycleUpdateError::Operation)?;
-    persist_and_apply_lifecycle_with_rollback(
-        previous_lifecycle,
-        lifecycle,
-        |lifecycle| host.set_daemon_lifecycle(data_root, lifecycle),
-        |lifecycle| {
-            ctx_daemon_runtime::block_daemon_lifecycle_after_config_for_test(
-                data_root,
-                lifecycle.as_str(),
-            )
-            .map_err(DaemonLifecycleUpdateError::Operation)?;
-            apply_configured_lifecycle(host, data_root)
-        },
-    )
-}
-
-fn reject_hosted_uninstall(
-    host: &dyn DaemonApplicationHost,
-) -> Result<(), DaemonLifecycleUpdateError> {
-    match host.hosted_uninstall_active() {
-        Ok(false) => Ok(()),
-        Ok(true) => Err(DaemonLifecycleUpdateError::StartSuppressed),
-        Err(error) => Err(DaemonLifecycleUpdateError::Operation(error)),
-    }
-}
-
-fn apply_configured_lifecycle(
-    host: &dyn DaemonApplicationHost,
-    data_root: &Path,
-) -> Result<DaemonLifecycleUpdate, DaemonLifecycleUpdateError> {
-    let config = host
-        .daemon_config(data_root)
-        .map_err(DaemonLifecycleUpdateError::Operation)?;
-    let lifecycle = config.lifecycle;
-    let handoff = if lifecycle.is_persistent() {
+    enabled: bool,
+) -> Result<DaemonEnabledUpdate, DaemonEnabledUpdateError> {
+    host.set_daemon_enabled(data_root, enabled)
+        .map_err(DaemonEnabledUpdateError::Operation)?;
+    let handoff = if enabled {
+        let config = host
+            .daemon_config(data_root)
+            .map_err(DaemonEnabledUpdateError::Operation)?;
         if lifecycle::daemon_start_is_fenced(host) {
-            return Err(DaemonLifecycleUpdateError::StartSuppressed);
+            return Err(DaemonEnabledUpdateError::StartSuppressed);
         }
         if lifecycle::daemon_autostart_suppression_reason().is_none() {
             supervisor::ensure_daemon_supervisor(host, data_root)
-                .map_err(DaemonLifecycleUpdateError::Supervisor)?;
+                .map_err(DaemonEnabledUpdateError::Supervisor)?;
         }
         Some(
             lifecycle::start_daemon_and_wait(host, data_root, &config, DaemonTrigger::Setup)
-                .map_err(DaemonLifecycleUpdateError::Start)?,
+                .map_err(DaemonEnabledUpdateError::Start)?,
         )
     } else {
         request_daemon_shutdown_and_wait(host, data_root)
-            .map_err(DaemonLifecycleUpdateError::Operation)?;
+            .map_err(DaemonEnabledUpdateError::Operation)?;
         supervisor::disable_daemon_supervisor(host, data_root)
-            .map_err(DaemonLifecycleUpdateError::Operation)?;
-        host.cancel_core_finalization_generation_lease(
-            data_root,
-            if lifecycle.is_on_demand() {
-                "daemon changed to on-demand"
-            } else {
-                "daemon was disabled"
-            },
-        )
-        .map_err(DaemonLifecycleUpdateError::Operation)?;
+            .map_err(DaemonEnabledUpdateError::Operation)?;
+        host.cancel_core_finalization_generation_lease(data_root, "daemon was disabled")
+            .map_err(DaemonEnabledUpdateError::Operation)?;
         None
     };
     let supervisor =
         DaemonSupervisorReport::new(supervisor::daemon_supervisor_report(host, data_root));
     let running = handoff.is_some();
-    let persistent = lifecycle.is_persistent() && running;
-    Ok(DaemonLifecycleUpdate {
-        lifecycle,
+    let persistent = enabled && running;
+    Ok(DaemonEnabledUpdate {
+        enabled,
         running,
         pid: handoff.map(|handoff: DaemonHandoff| handoff.pid),
         persistent,
         supervisor,
     })
-}
-
-fn persist_and_apply_lifecycle_with_rollback<T>(
-    previous_lifecycle: DaemonLifecycle,
-    requested_lifecycle: DaemonLifecycle,
-    mut persist: impl FnMut(DaemonLifecycle) -> anyhow::Result<()>,
-    mut apply: impl FnMut(DaemonLifecycle) -> Result<T, DaemonLifecycleUpdateError>,
-) -> Result<T, DaemonLifecycleUpdateError> {
-    persist(requested_lifecycle).map_err(DaemonLifecycleUpdateError::Operation)?;
-    match apply(requested_lifecycle) {
-        Ok(update) => Ok(update),
-        Err(update_error) => {
-            let rollback = persist(previous_lifecycle)
-                .context("restore previous daemon lifecycle configuration")
-                .and_then(|()| {
-                    apply(previous_lifecycle)
-                        .map(drop)
-                        .map_err(|error| anyhow!("reconcile previous daemon lifecycle: {error:?}"))
-                });
-            match rollback {
-                Ok(()) => Err(update_error),
-                Err(rollback_error) => Err(DaemonLifecycleUpdateError::Operation(anyhow!(
-                    "daemon lifecycle update failed ({update_error:?}) and rollback failed: {rollback_error:#}"
-                ))),
-            }
-        }
-    }
 }
 
 fn request_daemon_shutdown_and_wait(
@@ -198,7 +129,7 @@ fn request_daemon_shutdown_and_wait_with(
 
 #[cfg(test)]
 mod tests {
-    use std::cell::{Cell, RefCell};
+    use std::cell::Cell;
 
     use super::*;
 
@@ -398,38 +329,5 @@ mod tests {
         );
         assert_eq!(error.root_cause().to_string(), "identity mismatch");
         assert_eq!(cleanups.get(), 0);
-    }
-
-    #[test]
-    fn supervisor_failure_restores_previous_lifecycle_and_reconciles_it() {
-        let persisted = Cell::new(DaemonLifecycle::OnDemand);
-        let applications = RefCell::new(Vec::new());
-
-        let error = persist_and_apply_lifecycle_with_rollback(
-            DaemonLifecycle::OnDemand,
-            DaemonLifecycle::Persistent,
-            |lifecycle| {
-                persisted.set(lifecycle);
-                Ok(())
-            },
-            |lifecycle| {
-                applications.borrow_mut().push(lifecycle);
-                if lifecycle.is_persistent() {
-                    Err(DaemonLifecycleUpdateError::Supervisor(anyhow!(
-                        "injected supervisor failure"
-                    )))
-                } else {
-                    Ok(())
-                }
-            },
-        )
-        .unwrap_err();
-
-        assert!(matches!(error, DaemonLifecycleUpdateError::Supervisor(_)));
-        assert_eq!(persisted.get(), DaemonLifecycle::OnDemand);
-        assert_eq!(
-            *applications.borrow(),
-            vec![DaemonLifecycle::Persistent, DaemonLifecycle::OnDemand]
-        );
     }
 }

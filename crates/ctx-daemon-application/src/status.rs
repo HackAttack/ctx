@@ -8,15 +8,11 @@ use ctx_daemon_runtime::{
 use ctx_daemon_service::{daemon_core_refresh_job_path, daemon_wakeup_report};
 use serde_json::{json, Value};
 
-use crate::{
-    compact_json, supervisor, DaemonApplicationHost, DaemonConfigSnapshot, DaemonLifecycle,
-    DaemonMode,
-};
+use crate::{compact_json, supervisor, DaemonApplicationHost, DaemonConfigSnapshot, DaemonMode};
 
 pub struct DaemonStatusPreparation<'a> {
     host: &'a dyn DaemonApplicationHost,
     data_root: &'a Path,
-    lifecycle: DaemonLifecycle,
     enabled: bool,
     mode: DaemonMode,
     status_value: Option<Value>,
@@ -43,10 +39,8 @@ pub struct DaemonStatusPreparation<'a> {
 pub struct DaemonConfigReloadContext<'a> {
     pub status: &'a str,
     pub out_of_sync: bool,
-    pub requested_daemon_lifecycle: Option<&'a str>,
     pub requested_daemon_enabled: Option<bool>,
     pub requested_semantic_enabled: Option<bool>,
-    pub applied_daemon_lifecycle: Option<&'a str>,
     pub applied_daemon_enabled: Option<bool>,
     pub applied_semantic_enabled: Option<bool>,
     pub last_error: Option<&'a str>,
@@ -79,21 +73,9 @@ pub(super) fn prepare_daemon_status<'a>(
     default_daemon_enabled: bool,
 ) -> DaemonStatusPreparation<'a> {
     let status_value = read_daemon_status(data_root);
-    let lifecycle = current_config
-        .map(|config| config.lifecycle)
-        .or_else(|| {
-            status_value
-                .as_ref()
-                .and_then(|status| status.pointer("/config_reload/applied/daemon_lifecycle"))
-                .and_then(Value::as_str)
-                .and_then(DaemonLifecycle::parse)
-        })
-        .unwrap_or(if default_daemon_enabled {
-            DaemonLifecycle::Persistent
-        } else {
-            DaemonLifecycle::Disabled
-        });
-    let enabled = lifecycle.starts_implicitly();
+    let enabled = current_config
+        .map(|config| config.enabled)
+        .unwrap_or(default_daemon_enabled);
     let mode = current_config
         .map(|config| config.mode)
         .or_else(|| {
@@ -172,13 +154,12 @@ pub(super) fn prepare_daemon_status<'a>(
         data_root,
         disabled_overrides_lifecycle,
         current_config
-            .map(|config| config.lifecycle.starts_implicitly())
+            .map(|config| config.enabled)
             .unwrap_or(default_daemon_enabled),
     );
     DaemonStatusPreparation {
         host,
         data_root,
-        lifecycle,
         enabled,
         mode,
         status_value,
@@ -218,18 +199,12 @@ impl DaemonStatusPreparation<'_> {
                     .get("out_of_sync")
                     .and_then(Value::as_bool)
                     .unwrap_or(false),
-                requested_daemon_lifecycle: reload
-                    .pointer("/requested/daemon_lifecycle")
-                    .and_then(Value::as_str),
                 requested_daemon_enabled: reload
                     .pointer("/requested/daemon_enabled")
                     .and_then(Value::as_bool),
                 requested_semantic_enabled: reload
                     .pointer("/requested/semantic_enabled")
                     .and_then(Value::as_bool),
-                applied_daemon_lifecycle: reload
-                    .pointer("/applied/daemon_lifecycle")
-                    .and_then(Value::as_str),
                 applied_daemon_enabled: reload
                     .pointer("/applied/daemon_enabled")
                     .and_then(Value::as_bool),
@@ -270,7 +245,6 @@ impl DaemonStatusPreparation<'_> {
         DaemonStatusSnapshot {
             value: compact_json(json!({
                 "status": self.status,
-                "lifecycle": self.lifecycle.as_str(),
                 "enabled": self.enabled,
                 "mode": self.mode.as_str(),
                 "running": self.running,
@@ -387,9 +361,6 @@ fn daemon_config_reload_report(
         .and_then(|value| value.get("config_reload"))
         .cloned()
         .unwrap_or_else(|| json!({}));
-    let applied_daemon_lifecycle = persisted
-        .pointer("/applied/daemon_lifecycle")
-        .and_then(Value::as_str);
     let applied_daemon_enabled = persisted
         .get("applied")
         .and_then(|value| value.get("daemon_enabled"))
@@ -402,19 +373,11 @@ fn daemon_config_reload_report(
         .get("applied")
         .and_then(|value| value.get("semantic_enabled"))
         .and_then(Value::as_bool);
-    let requested_daemon_lifecycle = current_config.map(|config| config.lifecycle.as_str());
-    let requested_daemon_enabled =
-        current_config.map(|config| config.lifecycle.starts_implicitly());
+    let requested_daemon_enabled = current_config.map(|config| config.enabled);
     let requested_daemon_mode = current_config.map(|config| config.mode.as_str());
     let requested_semantic_enabled = current_config.map(|config| config.semantic_enabled);
-    let lifecycle_out_of_sync = requested_daemon_lifecycle.is_some_and(|requested| {
-        applied_daemon_lifecycle.map_or_else(
-            || applied_daemon_enabled != requested_daemon_enabled,
-            |applied| applied != requested,
-        )
-    });
     let out_of_sync = running
-        && (lifecycle_out_of_sync
+        && (requested_daemon_enabled != applied_daemon_enabled
             || requested_daemon_mode != applied_daemon_mode
             || requested_semantic_enabled != applied_semantic_enabled);
     let persisted_status = persisted
@@ -439,13 +402,11 @@ fn daemon_config_reload_report(
         "last_attempt_at_ms": persisted.get("last_attempt_at_ms").cloned(),
         "last_applied_at_ms": persisted.get("last_applied_at_ms").cloned(),
         "requested": {
-            "daemon_lifecycle": requested_daemon_lifecycle,
             "daemon_enabled": requested_daemon_enabled,
             "daemon_mode": requested_daemon_mode,
             "semantic_enabled": requested_semantic_enabled,
         },
         "applied": {
-            "daemon_lifecycle": applied_daemon_lifecycle,
             "daemon_enabled": applied_daemon_enabled,
             "daemon_mode": applied_daemon_mode,
             "semantic_enabled": applied_semantic_enabled,
@@ -569,7 +530,7 @@ mod tests {
     fn unknown_disabled_lifecycle_is_disabled_while_job_override_remains_explicit() {
         let temp = tempfile::tempdir().unwrap();
         let config = DaemonConfigSnapshot {
-            lifecycle: DaemonLifecycle::Disabled,
+            enabled: false,
             mode: DaemonMode::Full,
             semantic_enabled: false,
         };
@@ -608,7 +569,7 @@ mod tests {
             }),
         )?;
         let config = DaemonConfigSnapshot {
-            lifecycle: DaemonLifecycle::Disabled,
+            enabled: false,
             mode: DaemonMode::SourceRefreshOnly,
             semantic_enabled: true,
         };
@@ -660,7 +621,7 @@ mod tests {
             }),
         )?;
         let config = DaemonConfigSnapshot {
-            lifecycle: DaemonLifecycle::Persistent,
+            enabled: true,
             mode: DaemonMode::Full,
             semantic_enabled: true,
         };
@@ -727,7 +688,7 @@ mod tests {
             }),
         )?;
         let config = DaemonConfigSnapshot {
-            lifecycle: DaemonLifecycle::Persistent,
+            enabled: true,
             mode: DaemonMode::Full,
             semantic_enabled: true,
         };
@@ -906,7 +867,7 @@ mod tests {
         let host = TestHost;
         let application = DaemonApplication::new(&host);
         let config = DaemonConfigSnapshot {
-            lifecycle: DaemonLifecycle::Persistent,
+            enabled: true,
             mode: DaemonMode::SourceRefreshOnly,
             semantic_enabled: false,
         };

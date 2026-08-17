@@ -641,7 +641,6 @@ fn startup_seeded_manual_all_successor_reuses_exhaustively_reconciled_routes() {
             &runtime,
             Some(&coordinator),
             wait_started + std::time::Duration::from_secs(30),
-            None,
             wait_started,
         ),
         std::time::Duration::ZERO,

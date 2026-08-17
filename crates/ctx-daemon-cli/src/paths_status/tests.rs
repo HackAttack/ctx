@@ -10,18 +10,6 @@ fn durable_state_path_is_purpose_based() {
 }
 
 #[test]
-fn semantic_status_distinguishes_nonpersistent_from_disabled_daemon() {
-    assert_eq!(
-        semantic_disabled_reason("on-demand", true, true, true),
-        "daemon_nonpersistent"
-    );
-    assert_eq!(
-        semantic_disabled_reason("disabled", true, true, true),
-        "daemon_disabled"
-    );
-}
-
-#[test]
 fn concurrent_status_writers_use_distinct_atomic_staging_files() {
     let temp = tempfile::tempdir().unwrap();
     let path = Arc::new(temp.path().join("daemon/jobs/core-refresh.json"));

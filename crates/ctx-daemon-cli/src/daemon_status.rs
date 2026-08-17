@@ -3,7 +3,7 @@ use serde_json::Value;
 mod render;
 
 pub(super) use render::{
-    render_daemon_disable_receipt, render_daemon_enable_receipt, render_daemon_on_demand_receipt,
+    render_daemon_disable_receipt, render_daemon_enable_receipt,
     render_daemon_prepare_uninstall_receipt, render_daemon_status_human, DaemonStatusView,
 };
 

@@ -3,14 +3,8 @@ use super::*;
 pub(super) use ctx_daemon_runtime::terminate_identity_verified_residual_daemon;
 use ctx_daemon_runtime::{
     daemon_upgrade_handoff_path, daemon_upgrade_restart_request_root,
-    terminate_identity_verified_legacy_daemon, DaemonLifecycleControlLock,
-    DaemonLifecycleTransitionLock,
+    terminate_identity_verified_legacy_daemon, DaemonLifecycleTransitionLock,
 };
-
-struct LockedDaemonRoot {
-    data_root: PathBuf,
-    control: DaemonLifecycleControlLock,
-}
 
 struct CurrentHandoffSupervisorFence<'a> {
     handoff: &'a mut DaemonUpgradeHandoff,
@@ -504,8 +498,8 @@ pub fn prepare_daemon_uninstall(data_root: &Path) -> Result<Value> {
     let canonical_root =
         ctx_history_platform::managed_data_root().context("resolve canonical ctx data root")?;
     let mut roots = BTreeSet::from([data_root.to_path_buf(), canonical_root.clone()]);
-    let lifecycle_controls = lock_discovered_installation_roots(&mut roots)?;
-    disable_installation_roots(&roots)?;
+    let mut disabled_roots = BTreeSet::new();
+    discover_and_disable_installation_roots(&mut roots, &mut disabled_roots)?;
     if cfg!(debug_assertions) && env::var_os(DAEMON_UNINSTALL_ABORT_AFTER_DISABLE_ENV).is_some() {
         process::exit(89);
     }
@@ -515,7 +509,7 @@ pub fn prepare_daemon_uninstall(data_root: &Path) -> Result<Value> {
 
     let installation_deadline = Instant::now() + DAEMON_INSTALLATION_QUIESCE_TIMEOUT;
     let installation_quiescence = loop {
-        reject_undiscovered_installation_roots(&roots)?;
+        discover_and_disable_installation_roots(&mut roots, &mut disabled_roots)?;
         quiesce_daemon_roots(&roots, &expected_executable)?;
         if let Some(quiescence) = super::installation::try_acquire_installation_daemon_quiescence()?
         {
@@ -529,7 +523,7 @@ pub fn prepare_daemon_uninstall(data_root: &Path) -> Result<Value> {
         std::thread::sleep(DAEMON_UPGRADE_POLL_INTERVAL);
     };
 
-    reject_undiscovered_installation_roots(&roots)?;
+    discover_and_disable_installation_roots(&mut roots, &mut disabled_roots)?;
     for root in &roots {
         if daemon_lock_is_active(root) {
             return Err(anyhow!(
@@ -540,15 +534,8 @@ pub fn prepare_daemon_uninstall(data_root: &Path) -> Result<Value> {
     }
     super::installation::remove_installation_daemon_coordination()
         .context("remove installation-wide ctx daemon coordination before uninstall")?;
-    for locked in lifecycle_controls {
-        remove_daemon_lifecycle_coordination(&locked.data_root)?;
-        locked.control.remove_after_quiescence()?;
-    }
-    let coordination_state_removed = daemon_coordination_state_is_removed(&roots)?;
-    if !coordination_state_removed {
-        return Err(anyhow!(
-            "ctx daemon coordination state remained after installation quiescence"
-        ));
+    for root in &roots {
+        remove_daemon_lifecycle_coordination(root)?;
     }
     drop(installation_quiescence);
     let quiesced_roots = roots.into_iter().collect::<Vec<_>>();
@@ -568,96 +555,29 @@ pub fn prepare_daemon_uninstall(data_root: &Path) -> Result<Value> {
         "owner_lock_released": true,
         "endpoint_released": true,
         "supervisor_removed": true,
-        "coordination_state_removed": coordination_state_removed,
+        "coordination_state_removed": true,
         "binary_retained": true,
         "retry_safe": true,
         "local_only": true,
     })))
 }
 
-fn lock_discovered_installation_roots(
+fn discover_and_disable_installation_roots(
     roots: &mut BTreeSet<PathBuf>,
-) -> Result<Vec<LockedDaemonRoot>> {
-    // The caller's uninstall fence is outermost. Acquire every per-root
-    // control in lexical order before config, supervisor, daemon, or
-    // transition work; transition locks are taken only after daemon and
-    // installation-wide quiescence below.
-    let deadline = Instant::now() + DAEMON_INSTALLATION_QUIESCE_TIMEOUT;
-    loop {
-        roots.extend(super::installation::registered_installation_daemon_roots()?);
-        let locked = roots
-            .iter()
-            .map(|data_root| {
-                DaemonLifecycleControlLock::acquire(data_root).map(|control| LockedDaemonRoot {
-                    data_root: data_root.clone(),
-                    control,
-                })
-            })
-            .collect::<Result<Vec<_>>>()?;
-        let discovered = super::installation::registered_installation_daemon_roots()?;
-        if discovered.iter().all(|root| roots.contains(root)) {
-            return Ok(locked);
-        }
-        drop(locked);
-        roots.extend(discovered);
-        if Instant::now() >= deadline {
-            return Err(anyhow!(
-                "timed out stabilizing registered ctx daemon roots before uninstall"
-            ));
-        }
-    }
-}
-
-fn reject_undiscovered_installation_roots(roots: &BTreeSet<PathBuf>) -> Result<()> {
-    let undiscovered = super::installation::registered_installation_daemon_roots()?
-        .into_iter()
-        .filter(|root| !roots.contains(root))
-        .collect::<Vec<_>>();
-    if undiscovered.is_empty() {
-        return Ok(());
-    }
-    Err(anyhow!(
-        "ctx daemon roots appeared after lifecycle-control acquisition: {}; keep the ctx binary and retry `ctx daemon disable --prepare-uninstall`",
-        undiscovered
-            .iter()
-            .map(|root| root.display().to_string())
-            .collect::<Vec<_>>()
-            .join(", ")
-    ))
-}
-
-fn disable_installation_roots(roots: &BTreeSet<PathBuf>) -> Result<()> {
-    for root in roots {
-        crate::config::set_daemon_lifecycle(root, crate::config::DaemonLifecycle::Disabled)
-            .with_context(|| {
+    disabled_roots: &mut BTreeSet<PathBuf>,
+) -> Result<()> {
+    roots.extend(super::installation::registered_installation_daemon_roots()?);
+    for root in roots.iter() {
+        if disabled_roots.insert(root.clone()) {
+            crate::config::set_daemon_enabled(root, false).with_context(|| {
                 format!(
                     "durably disable ctx daemon root {} before uninstall",
                     root.display()
                 )
             })?;
+        }
     }
     Ok(())
-}
-
-fn daemon_coordination_state_is_removed(roots: &BTreeSet<PathBuf>) -> Result<bool> {
-    let (_, registrations) = ctx_upgrade_engine::installation_daemon_coordination_paths()?;
-    let registrations_removed = match fs::read_dir(&registrations) {
-        Ok(mut entries) => entries.next().is_none(),
-        Err(error) if error.kind() == io::ErrorKind::NotFound => true,
-        Err(error) => {
-            return Err(error).with_context(|| {
-                format!(
-                    "inspect ctx daemon installation coordination {}",
-                    registrations.display()
-                )
-            })
-        }
-    };
-    Ok(registrations_removed
-        && roots.iter().all(|root| {
-            !ctx_daemon_runtime::daemon_lifecycle_control_lock_path(root).exists()
-                && !ctx_daemon_runtime::daemon_lifecycle_transition_lock_path(root).exists()
-        }))
 }
 
 fn quiesce_daemon_roots(roots: &BTreeSet<PathBuf>, expected_executable: &Path) -> Result<()> {

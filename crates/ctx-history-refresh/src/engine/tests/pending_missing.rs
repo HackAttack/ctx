@@ -4,7 +4,7 @@ use std::sync::{
 };
 
 use ctx_history_core::{
-    derive_event_id, derive_session_id, AgentScope, CoreRecord, EventIdentityInput, NativeItemKey,
+    derive_event_id, derive_session_id, CoreRecord, EventIdentityInput, NativeItemKey,
     NativeSessionKey, SessionIdentityInput, SourceAnchor, SourceKey, SourceObservation, TypedKey,
 };
 use ctx_history_index::{
@@ -60,15 +60,17 @@ fn fixture_record(fixture: &MissingRouteFixture) -> CoreRecord {
     let mut record = CoreRecord::new_selected(
         event_id,
         session_id,
+        session_id,
         fixture.source.clone(),
         0,
         "message",
+        "primary",
+        true,
         "pending-missing-test-v1",
         format!("searchable route {}", fixture.route.as_str()),
     )
     .unwrap();
     record.role = Some("user".to_owned());
-    record.agent_scope = Some(AgentScope::Primary);
     record.validate_contract().unwrap();
     record
 }

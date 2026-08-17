@@ -10,9 +10,7 @@ fn committed_generation_recovery_error(
 }
 
 mod composition;
-pub use composition::{
-    install_host, AppConfig, DaemonCliHost, DaemonConfig, DaemonLifecycle, DaemonMode,
-};
+pub use composition::{install_host, AppConfig, DaemonCliHost, DaemonConfig, DaemonMode};
 pub use ctx_daemon_application::DaemonHostRunRequest;
 pub use ctx_daemon_service::{CoreGenerationPublished, DaemonConfigSnapshot, DaemonUpgradePorts};
 
@@ -20,8 +18,7 @@ mod config {
     #[cfg(test)]
     pub use crate::composition::DAEMON_MODE_ENV;
     pub use crate::composition::{
-        persisted_daemon_lifecycle, set_daemon_lifecycle, AppConfig, DaemonLifecycle, DaemonMode,
-        CONFIG_FILE, DAEMON_DEFAULT_LIFECYCLE,
+        set_daemon_enabled, AppConfig, DaemonMode, CONFIG_FILE, DAEMON_DEFAULT_ENABLED,
     };
 
     #[cfg(test)]
@@ -97,15 +94,8 @@ pub struct DaemonArgs {
 pub enum DaemonCommand {
     Run(DaemonRunArgs),
     Status(FormatArgs),
-    Lifecycle(DaemonLifecycleArgs),
     Enable(FormatArgs),
     Disable(DaemonDisableArgs),
-}
-
-#[derive(Debug, Clone)]
-pub struct DaemonLifecycleArgs {
-    pub lifecycle: DaemonLifecycle,
-    pub format: ctx_terminal::JsonOutputFormat,
 }
 
 #[derive(Debug, Clone)]

@@ -21,7 +21,7 @@ pub(super) fn daemon_semantic_job_path(data_root: &Path) -> PathBuf {
 
 fn application_config(config: &AppConfig<'_>) -> ctx_daemon_application::DaemonConfigSnapshot {
     ctx_daemon_application::DaemonConfigSnapshot {
-        lifecycle: super::daemon_supervisor::daemon_lifecycle(config.daemon.lifecycle),
+        enabled: config.daemon.enabled,
         mode: super::daemon_supervisor::daemon_mode(config.daemon.mode),
         semantic_enabled: config.semantic_search_enabled(),
     }
@@ -81,7 +81,7 @@ fn daemon_report_with_config_and_application(
         data_root,
         disabled_overrides_lifecycle,
         current_application_config.as_ref(),
-        crate::config::DAEMON_DEFAULT_LIFECYCLE.starts_implicitly(),
+        crate::config::DAEMON_DEFAULT_ENABLED,
     );
     let semantic_job = daemon_semantic_job_report(
         data_root,
@@ -103,24 +103,22 @@ fn daemon_semantic_job_report(
     current_config: Option<&AppConfig<'_>>,
 ) -> Value {
     let reload = context.config_reload;
-    let daemon_lifecycle = reload
-        .requested_daemon_lifecycle
-        .or(reload.applied_daemon_lifecycle)
+    let daemon_enabled = reload
+        .requested_daemon_enabled
+        .or(reload.applied_daemon_enabled)
         .unwrap_or_else(|| {
             current_config
-                .map(|config| config.daemon.lifecycle.as_str())
-                .unwrap_or_else(|| AppConfig::default().daemon.lifecycle.as_str())
+                .map(|config| config.daemon.enabled)
+                .unwrap_or_else(|| AppConfig::default().daemon.enabled)
         });
-    let daemon_persistent = daemon_lifecycle == "persistent";
     let semantic_enabled = reload
         .requested_semantic_enabled
         .or(reload.applied_semantic_enabled)
         .unwrap_or_else(|| current_config.is_some_and(AppConfig::semantic_search_enabled));
     let semantic_supported = super::semantic_query_service_supported();
     let mode_allows_semantic = !context.daemon_mode.runs_only_source_refresh();
-    let enabled =
-        daemon_persistent && semantic_enabled && semantic_supported && mode_allows_semantic;
-    let activation_failed = reload.status == "activation_failed" && enabled;
+    let enabled = daemon_enabled && semantic_enabled && semantic_supported && mode_allows_semantic;
+    let activation_failed = reload.status == "activation_failed" && semantic_enabled;
     let reload_pending = context.daemon_running && reload.status == "pending" && reload.out_of_sync;
     let disabled = !enabled && disabled_overrides_lifecycle && !context.semantic_runtime_active;
     let status_value = read_daemon_job_status(&daemon_semantic_job_path(data_root));
@@ -148,15 +146,15 @@ fn daemon_semantic_job_report(
     } else if context.daemon_running && enabled && !context.semantic_runtime_active {
         Some("semantic_runtime_inactive".to_owned())
     } else if disabled {
-        Some(
-            semantic_disabled_reason(
-                daemon_lifecycle,
-                semantic_enabled,
-                semantic_supported,
-                mode_allows_semantic,
-            )
-            .to_owned(),
-        )
+        Some(if context.daemon_mode.runs_only_source_refresh() {
+            "daemon_mode_source_refresh_only".to_owned()
+        } else if !semantic_enabled {
+            "semantic_disabled".to_owned()
+        } else if !semantic_supported {
+            "unsupported_platform".to_owned()
+        } else {
+            "daemon_disabled".to_owned()
+        })
     } else {
         last_run_reason.clone()
     };
@@ -165,7 +163,6 @@ fn daemon_semantic_job_report(
         "enabled": enabled,
         "semantic_enabled": semantic_enabled,
         "daemon_configured": reload.applied_daemon_enabled,
-        "daemon_lifecycle": reload.applied_daemon_lifecycle,
         "semantic_configured": reload.applied_semantic_enabled,
         "runtime_active": context.semantic_runtime_active,
         "config_reload_status": reload.status,
@@ -197,25 +194,6 @@ fn daemon_semantic_job_report(
             .and_then(|value| json_string(value, "model_key")),
         "daemon_mode": context.daemon_mode.as_str(),
     }))
-}
-
-fn semantic_disabled_reason(
-    daemon_lifecycle: &str,
-    semantic_enabled: bool,
-    semantic_supported: bool,
-    mode_allows_semantic: bool,
-) -> &'static str {
-    if !mode_allows_semantic {
-        "daemon_mode_source_refresh_only"
-    } else if !semantic_enabled {
-        "semantic_disabled"
-    } else if !semantic_supported {
-        "unsupported_platform"
-    } else if daemon_lifecycle == "on-demand" {
-        "daemon_nonpersistent"
-    } else {
-        "daemon_disabled"
-    }
 }
 
 #[cfg(test)]

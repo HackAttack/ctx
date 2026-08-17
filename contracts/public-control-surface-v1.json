@@ -59,11 +59,11 @@
       "environment_variable": "CTX_UPGRADE_INTERVAL_SECONDS"
     },
     {
-      "behavior": "daemon lifecycle",
-      "config_key": "daemon.lifecycle",
-      "environment_variable": "CTX_DAEMON_LIFECYCLE",
+      "behavior": "daemon maintenance",
+      "config_key": "daemon.enabled",
+      "environment_variable": "CTX_DAEMON_ENABLED",
       "released_default": {
-        "value": "persistent",
+        "value": true,
         "state": "on",
         "scope": "all_cli_installations"
       },
@@ -97,15 +97,6 @@
         "value": false,
         "state": "off"
       }
-    }
-  ],
-  "compatibility_controls": [
-    {
-      "behavior": "legacy daemon enable boolean",
-      "config_key": "daemon.enabled",
-      "environment_variable": "CTX_DAEMON_ENABLED",
-      "replacement_config_key": "daemon.lifecycle",
-      "replacement_environment_variable": "CTX_DAEMON_LIFECYCLE"
     }
   ],
   "rejected_config_keys": [

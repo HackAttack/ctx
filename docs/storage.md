@@ -296,7 +296,7 @@ local upsert as described above.
 | `ctx upgrade` | signed release metadata and installed binary/sidecar metadata | installed binary for manual upgrade, install sidecar, and executable-adjacent `.ctx.upgrade-state.json`, `.ctx.install.lock`, and transaction journal |
 | `ctx doctor` | source epoch, lexical/semantic generation metadata, and ctx-owned daemon lock/status/job metadata | none |
 | `ctx daemon status` | lexical/semantic generation and ctx-owned daemon lock/status/job metadata | none |
-| `ctx daemon lifecycle` / `ctx daemon enable` / `ctx daemon disable` | `config.toml` | `config.toml` |
+| `ctx daemon enable` / `ctx daemon disable` | `config.toml` | `config.toml` |
 | `ctx daemon run` | provider transcripts, active lexical and semantic generations, model-cache metadata, and daemon state | candidate lexical generation publication, semantic catch-up, and daemon state |
 
 Setup, import, and default search do not require source repository writes, model
@@ -304,9 +304,9 @@ APIs, API keys, or remote accounts. Without semantic opt-in they do not download
 models or runtime assets; with semantic enabled, installer/runtime acquisition
 and daemon maintenance may acquire the local ONNX Runtime asset and embedding
 model when the installed build supports that path. Setup and native provider
-setup may start the ctx-owned daemon coordinator with lifecycle `persistent` or
-`on-demand`, regardless of output format. Explicit custom JSONL and
-history-source imports may start the required
+setup may opportunistically start the default-on ctx-owned background daemon
+maintenance profile when `[daemon].enabled` is true, regardless of output
+format. Explicit custom JSONL and history-source imports may start the required
 source-refresh endpoint even for machine-readable output. Use
 `ctx setup --no-daemon` or `ctx import --no-daemon` for a one-run opt-out; an
 explicit provider-source import with that opt-out requires an existing endpoint.
@@ -390,28 +390,20 @@ Qualification on every supported filesystem/platform remains release evidence;
 the repository tests do not claim that cross-platform qualification has already
 been completed.
 
-The daemon lifecycle defaults to `persistent`. To run refresh only when a
-command asks for it, configure:
+Daemon maintenance is enabled by default. Disable it durably with:
 
 ```toml
 [daemon]
-lifecycle = "on-demand"
+enabled = false
 ```
 
-`persistent` installs or recovers an always-on daemon and owns watchers,
-semantic catch-up, and automatic upgrades. `on-demand` starts the same daemon
-coordinator for explicit Core refresh, then exits without retaining watchers or
-running adjacent maintenance. `disabled` forbids implicit starts. Setup output
-format does not change this behavior.
+`daemon.enabled = true` allows setup and eligible native provider imports to
+opportunistically start the ctx-owned background daemon maintenance profile.
+Setup output format does not change this behavior.
 Use `ctx setup --no-daemon` or `ctx import --no-daemon` for a one-run opt-out.
-Use `ctx daemon lifecycle persistent|on-demand|disabled`; `ctx daemon enable`
-and `ctx daemon disable` are compatibility aliases. The legacy
-`daemon.enabled` boolean is still read and is replaced the next time lifecycle
-is written. An explicit disabled lifecycle continues to win after CLI upgrades
-and over environment attempts to elevate it.
-`CTX_DAEMON_LIFECYCLE=persistent|on-demand|disabled` is the process override;
-it may reduce the persisted lifecycle for that process tree but cannot elevate
-`on-demand` or `disabled` persisted policy.
+`ctx daemon enable` and `ctx daemon disable` write only the `[daemon] enabled`
+override. An explicit disabled override continues to win after CLI upgrades and
+over `CTX_DAEMON_ENABLED=true`.
 
 For a daemon that serves and serializes only atomic Core refreshes,
 set:
@@ -426,7 +418,7 @@ The equivalent process override is
 profile. Autostart propagates the effective mode to its detached child. In
 source-refresh-only mode, the source refresh IPC endpoint, all-provider capture
 registry, atomic generation publication, status reporting, disable behavior,
-and selected daemon lifecycle remain active. History refresh, semantic
+and persistent process lifecycle remain active. History refresh, semantic
 indexing and serving, canonical maintenance, and automatic upgrades do not run.
 
 Local semantic search requires daemon maintenance and remains disabled by
@@ -440,7 +432,7 @@ semantic = true
 If daemon maintenance was previously disabled, re-enable it before enabling
 semantic search.
 
-The persistent daemon is the sole automatic-upgrade authority and uses
+The enabled daemon is the sole automatic-upgrade authority and uses
 `upgrade.auto = "apply"` by default for official installer-managed binaries
 with a valid install sidecar. With the daemon disabled, no automatic upgrade
 network or filesystem work occurs. `ctx upgrade disable` writes an explicit

@@ -4,7 +4,7 @@ use super::*;
 
 fn application_config(config: &AppConfig<'_>) -> ctx_daemon_application::DaemonConfigSnapshot {
     ctx_daemon_application::DaemonConfigSnapshot {
-        lifecycle: super::super::daemon_supervisor::daemon_lifecycle(config.daemon.lifecycle),
+        enabled: config.daemon.enabled,
         mode: super::super::daemon_supervisor::daemon_mode(config.daemon.mode),
         semantic_enabled: config.semantic_search_enabled(),
     }
@@ -32,9 +32,7 @@ pub fn maybe_autostart_daemon(
         if application.daemon_start_is_fenced() {
             return;
         }
-        if config.daemon.lifecycle.is_persistent()
-            && daemon_autostart_suppression_reason().is_none()
-        {
+        if daemon_autostart_suppression_reason().is_none() {
             match super::super::daemon_supervisor::ensure_daemon_supervisor(application, data_root)
             {
                 Ok(_) => {}
@@ -68,9 +66,7 @@ pub fn autostart_daemon_for_setup_and_wait(
                 "ctx daemon start was suppressed (hosted_uninstall_active); retry after it clears or run `ctx setup --no-daemon`"
             ));
         }
-        if config.daemon.lifecycle.is_persistent()
-            && daemon_autostart_suppression_reason().is_none()
-        {
+        if daemon_autostart_suppression_reason().is_none() {
             super::super::daemon_supervisor::ensure_daemon_supervisor(application, data_root)
                 .context("establish ctx daemon supervision")?;
         }
@@ -97,15 +93,6 @@ pub fn autostart_daemon_for_setup_and_wait(
                 pid: handoff.pid,
                 heartbeat_at_ms: handoff.heartbeat_at_ms,
             },
-            start_mode: match handoff.start_mode {
-                ctx_daemon_application::DaemonHostStartMode::Auto => {
-                    crate::DaemonStartModeArg::Auto
-                }
-                ctx_daemon_application::DaemonHostStartMode::Manual => {
-                    crate::DaemonStartModeArg::Manual
-                }
-            },
-            persistent: handoff.persistent,
         })
     })
 }
@@ -123,15 +110,6 @@ pub fn observe_daemon_for_setup_and_wait(
                 pid: handoff.pid,
                 heartbeat_at_ms: handoff.heartbeat_at_ms,
             },
-            start_mode: match handoff.start_mode {
-                ctx_daemon_application::DaemonHostStartMode::Auto => {
-                    crate::DaemonStartModeArg::Auto
-                }
-                ctx_daemon_application::DaemonHostStartMode::Manual => {
-                    crate::DaemonStartModeArg::Manual
-                }
-            },
-            persistent: handoff.persistent,
         })
     })
 }

@@ -31,10 +31,9 @@ RELEASED_DEFAULT_SCOPES = {
     "analytics.enabled": "all_cli_installations",
     "local_usage.enabled": "all_cli_installations",
     "upgrade.auto": "official_installer_managed",
-    "daemon.lifecycle": "all_cli_installations",
+    "daemon.enabled": "all_cli_installations",
     "search.semantic": "all_cli_installations",
 }
-PREVIOUS_STABLE_CONFIG_ALIASES = {"daemon.lifecycle": "daemon.enabled"}
 PINNED_STABLE_SNAPSHOTS = {
     "v0.25.0": {
         "path": "contracts/stable-defaults/v0.25.0.json",
@@ -98,15 +97,6 @@ def scalar_value(token: str, constants: dict[str, object]) -> object:
         return token == "true"
     if token.startswith('"') and token.endswith('"'):
         return json.loads(token)
-    lifecycle = token.removeprefix("DaemonLifecycle::")
-    if lifecycle != token:
-        return {
-            "Persistent": "persistent",
-            "OnDemand": "on-demand",
-            "Disabled": "disabled",
-        }.get(lifecycle) or fail(
-            f"could not resolve empty-config daemon lifecycle {token!r}"
-        )
     fail(f"could not resolve empty-config default expression {token!r}")
 
 
@@ -114,7 +104,7 @@ def extract_empty_config_defaults(config_source: str) -> dict[str, object]:
     constants = {
         name: scalar_value(value, {})
         for name, value in re.findall(
-            r'^pub const ([A-Z][A-Z0-9_]+):\s*(?:&str|bool|DaemonLifecycle)\s*=\s*(".*?"|true|false|DaemonLifecycle::[A-Za-z]+);',
+            r'^pub const ([A-Z][A-Z0-9_]+):\s*(?:&str|bool)\s*=\s*(".*?"|true|false);',
             config_source,
             re.MULTILINE,
         )
@@ -138,20 +128,6 @@ def extract_empty_config_defaults(config_source: str) -> dict[str, object]:
     )
     if not semantic:
         fail("could not locate empty-config semantic search default")
-    daemon_lifecycle = re.search(
-        r"daemon:\s*DaemonConfig\s*\{.*?lifecycle:\s*([^,\n]+),",
-        default_source,
-        re.DOTALL,
-    )
-    daemon_key = "daemon.lifecycle" if daemon_lifecycle else "daemon.enabled"
-    daemon_value = (
-        scalar_value(daemon_lifecycle.group(1), constants)
-        if daemon_lifecycle
-        else default_field(
-            r"daemon:\s*DaemonConfig\s*\{.*?enabled:\s*([^,\n]+),",
-            "daemon",
-        )
-    )
     defaults = {
         "analytics.enabled": default_field(
             r"analytics:\s*AnalyticsConfig\s*\{.*?enabled:\s*([^,\n]+),",
@@ -161,7 +137,10 @@ def extract_empty_config_defaults(config_source: str) -> dict[str, object]:
             r"upgrade:\s*UpgradeConfig\s*\{.*?auto:\s*([^,\n]+),",
             "automatic upgrade",
         ),
-        daemon_key: daemon_value,
+        "daemon.enabled": default_field(
+            r"daemon:\s*DaemonConfig\s*\{.*?enabled:\s*([^,\n]+),",
+            "daemon",
+        ),
         "search.semantic": scalar_value(semantic.group(1), constants),
     }
     if "LocalUsageConfig" in default_source:
@@ -173,7 +152,7 @@ def extract_empty_config_defaults(config_source: str) -> dict[str, object]:
 
 
 def default_state(value: object) -> str:
-    return "on" if value is True or value in {"apply", "persistent", "on-demand"} else "off"
+    return "on" if value is True or value == "apply" else "off"
 
 
 def previous_stable_defaults(
@@ -271,8 +250,7 @@ def validate_released_defaults(
                 f"{behavior} released default differs from empty-config runtime: "
                 f"declared={released!r} runtime={expected_value!r}"
             )
-        previous_key = PREVIOUS_STABLE_CONFIG_ALIASES.get(config_key, config_key)
-        if previous_key not in previous_defaults:
+        if config_key not in previous_defaults:
             if previous is not None:
                 fail(f"{behavior} declares a previous default before it existed")
             if control.get("introduced_after") != previous_tag:
@@ -281,7 +259,7 @@ def validate_released_defaults(
                 fail(f"{behavior} has change approval despite being newly introduced")
             continue
 
-        expected_previous = previous_defaults[previous_key]
+        expected_previous = previous_defaults[config_key]
         if not isinstance(previous, dict) or previous != {
             "value": expected_previous,
             "state": default_state(expected_previous),
@@ -343,21 +321,6 @@ def main() -> None:
     unique(behaviors, "behaviors")
     unique(config_keys, "config keys")
     unique(env_vars, "environment variables")
-    compatibility = contract.get("compatibility_controls")
-    if not isinstance(compatibility, list):
-        fail("compatibility_controls must be a list")
-    compatibility_keys = [control["config_key"] for control in compatibility]
-    compatibility_env = [control["environment_variable"] for control in compatibility]
-    unique(compatibility_keys, "compatibility config keys")
-    unique(compatibility_env, "compatibility environment variables")
-    for control in compatibility:
-        if (
-            control.get("replacement_config_key") not in config_keys
-            or control.get("replacement_environment_variable") not in env_vars
-            or control.get("config_key") in config_keys
-            or control.get("environment_variable") in env_vars
-        ):
-            fail(f"invalid compatibility control: {control!r}")
     rejected_config_keys = contract.get("rejected_config_keys")
     if (
         not isinstance(rejected_config_keys, list)
@@ -394,17 +357,16 @@ def main() -> None:
     # apply_env. Scan the complete production config module so helper-owned
     # variables are inventoried while any undocumented literal still fails.
     implemented_env = set(re.findall(r'"(CTX_[A-Z0-9_]+)"', config_source))
-    contract_keys = set(config_keys).union(compatibility_keys, rejected_config_keys)
+    contract_keys = set(config_keys).union(rejected_config_keys)
     if implemented_keys != contract_keys:
         fail(
             "config keys differ from contract: "
             f"implemented={sorted(implemented_keys)} contract={sorted(contract_keys)}"
         )
-    contract_env = set(env_vars).union(compatibility_env)
-    if implemented_env != contract_env:
+    if implemented_env != set(env_vars):
         fail(
             "config environment variables differ from contract: "
-            f"implemented={sorted(implemented_env)} contract={sorted(contract_env)}"
+            f"implemented={sorted(implemented_env)} contract={sorted(env_vars)}"
         )
 
     retired = contract.get("retired_controls")

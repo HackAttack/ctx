@@ -8,75 +8,11 @@ use std::{
 use anyhow::{Context, Result};
 
 use crate::{
-    create_private_dir_all, daemon_lifecycle_control_lock_path,
-    daemon_lifecycle_transition_lock_path, daemon_root_path, daemon_upgrade_handoff_path,
-    daemon_upgrade_restart_request_root, handoff_marker_state_at, open_or_create_pid_lock_file,
-    remove_restart_requests_at, secure_private_file_permissions, write_handoff_marker_at,
-    write_restart_request_at, DurableHandoffFence, HandoffMarkerState,
+    create_private_dir_all, daemon_lifecycle_transition_lock_path, daemon_root_path,
+    daemon_upgrade_handoff_path, daemon_upgrade_restart_request_root, handoff_marker_state_at,
+    open_or_create_pid_lock_file, remove_restart_requests_at, secure_private_file_permissions,
+    write_handoff_marker_at, write_restart_request_at, DurableHandoffFence, HandoffMarkerState,
 };
-
-/// Serializes one complete user-visible lifecycle policy transaction for a data
-/// root. This lock is intentionally distinct from
-/// [`DaemonLifecycleTransitionLock`]: lifecycle commands wait for daemon
-/// readiness, whose publication acquires the transition lock.
-pub struct DaemonLifecycleControlLock {
-    file: Option<fs::File>,
-    path: PathBuf,
-}
-
-impl DaemonLifecycleControlLock {
-    pub fn acquire(data_root: &Path) -> Result<Self> {
-        ctx_history_platform::platform_security::establish_private_data_root(data_root)?;
-        create_private_dir_all(&daemon_root_path(data_root))?;
-        let path = daemon_lifecycle_control_lock_path(data_root);
-        let (file, _) = open_or_create_pid_lock_file(&path).with_context(|| {
-            format!("open ctx daemon lifecycle control lock {}", path.display())
-        })?;
-        secure_private_file_permissions(&path)?;
-        fs2::FileExt::lock_exclusive(&file).with_context(|| {
-            format!(
-                "acquire ctx daemon lifecycle control lock {}",
-                path.display()
-            )
-        })?;
-        Ok(Self {
-            file: Some(file),
-            path,
-        })
-    }
-
-    /// Remove the persistent guard only after an external quiescence fence has
-    /// excluded every current and future lifecycle-control participant.
-    pub fn remove_after_quiescence(mut self) -> Result<()> {
-        if let Some(file) = self.file.take() {
-            fs2::FileExt::unlock(&file).with_context(|| {
-                format!(
-                    "release ctx daemon lifecycle control lock {}",
-                    self.path.display()
-                )
-            })?;
-            drop(file);
-        }
-        match fs::remove_file(&self.path) {
-            Ok(()) => Ok(()),
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
-            Err(error) => Err(error).with_context(|| {
-                format!(
-                    "remove quiesced ctx daemon lifecycle control lock {}",
-                    self.path.display()
-                )
-            }),
-        }
-    }
-}
-
-impl Drop for DaemonLifecycleControlLock {
-    fn drop(&mut self) {
-        if let Some(file) = self.file.as_ref() {
-            let _ = fs2::FileExt::unlock(file);
-        }
-    }
-}
 
 /// Serializes durable handoff fencing with daemon readiness publication for one
 /// data root. The guard file is persistent so concurrent openers always contend
@@ -218,76 +154,6 @@ pub fn block_daemon_main_after_ready_for_test(data_root: &Path) -> Result<()> {
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
         Err(error) => Err(error)
             .with_context(|| format!("remove daemon test block marker {}", blocked.display())),
-    }
-}
-
-/// Deterministically pauses a lifecycle command after its requested policy is
-/// durable but before any daemon or supervisor side effect. Debug builds only.
-pub fn block_daemon_lifecycle_after_config_for_test(
-    data_root: &Path,
-    lifecycle: &str,
-) -> Result<()> {
-    let block = data_root.join(format!(
-        ".block-daemon-{lifecycle}-lifecycle-after-config-for-test"
-    ));
-    let blocked = data_root.join(format!(
-        ".daemon-{lifecycle}-lifecycle-blocked-after-config-for-test"
-    ));
-    block_on_debug_test_gate(&block, &blocked, "daemon lifecycle after config")?;
-    let fail = data_root.join(format!(
-        ".fail-daemon-{lifecycle}-lifecycle-after-config-for-test"
-    ));
-    if cfg!(debug_assertions) && fail.exists() {
-        fs::remove_file(&fail).with_context(|| {
-            format!(
-                "consume daemon lifecycle failure injection {}",
-                fail.display()
-            )
-        })?;
-        anyhow::bail!("injected daemon lifecycle failure after durable config");
-    }
-    Ok(())
-}
-
-/// Makes independently spawned daemon children meet immediately before the
-/// singleton owner lock. Each child publishes a PID-specific marker. Debug
-/// builds only.
-pub fn synchronize_daemon_before_owner_lock_for_test(data_root: &Path) -> Result<()> {
-    let block = data_root.join(".block-daemon-before-owner-lock-for-test");
-    let blocked = data_root.join(format!(
-        ".daemon-before-owner-lock-{}-for-test",
-        std::process::id()
-    ));
-    block_on_debug_test_gate(&block, &blocked, "daemon before owner lock")
-}
-
-/// Pauses the winning cold-start child after singleton ownership but before
-/// status and authenticated readiness publication. Debug builds only.
-pub fn block_daemon_owner_after_lock_for_test(data_root: &Path) -> Result<()> {
-    let block = data_root.join(".block-daemon-owner-after-lock-for-test");
-    let blocked = data_root.join(".daemon-owner-blocked-after-lock-for-test");
-    block_on_debug_test_gate(&block, &blocked, "daemon owner after lock")
-}
-
-fn block_on_debug_test_gate(block: &Path, blocked: &Path, label: &str) -> Result<()> {
-    if !cfg!(debug_assertions) || !block.exists() {
-        return Ok(());
-    }
-    fs::write(blocked, format!("{}\n", std::process::id()))
-        .with_context(|| format!("publish {label} test marker {}", blocked.display()))?;
-    let deadline = Instant::now() + Duration::from_secs(30);
-    while block.exists() && Instant::now() < deadline {
-        std::thread::sleep(Duration::from_millis(10));
-    }
-    if block.exists() {
-        anyhow::bail!("timed out at {label} test gate");
-    }
-    match fs::remove_file(blocked) {
-        Ok(()) => Ok(()),
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
-        Err(error) => {
-            Err(error).with_context(|| format!("remove {label} test marker {}", blocked.display()))
-        }
     }
 }
 
@@ -474,22 +340,6 @@ mod tests {
             .read(true)
             .write(true)
             .open(daemon_lifecycle_transition_lock_path(temp.path()))?;
-
-        assert!(fs2::FileExt::try_lock_exclusive(&contender).is_err());
-        drop(owner);
-        fs2::FileExt::try_lock_exclusive(&contender)?;
-        fs2::FileExt::unlock(&contender)?;
-        Ok(())
-    }
-
-    #[test]
-    fn control_lock_serializes_independent_openers() -> Result<()> {
-        let temp = tempfile::tempdir()?;
-        let owner = DaemonLifecycleControlLock::acquire(temp.path())?;
-        let contender = fs::OpenOptions::new()
-            .read(true)
-            .write(true)
-            .open(daemon_lifecycle_control_lock_path(temp.path()))?;
 
         assert!(fs2::FileExt::try_lock_exclusive(&contender).is_err());
         drop(owner);

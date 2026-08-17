@@ -14,9 +14,9 @@ a hosted research agent.
 ## In Scope
 
 - `ctx setup` initializes local storage, publishes discovered supported local
-  transcript formats, and can start the default `persistent` or configured
-  `on-demand` ctx-owned daemon coordinator. An explicit lifecycle `disabled`
-  remains a durable opt-out; legacy `[daemon] enabled = false` maps to it.
+  transcript formats, and can opportunistically start the default-on ctx-owned
+  background daemon maintenance profile. An explicit `[daemon] enabled = false`
+  remains a durable opt-out.
   `ctx setup --no-daemon` is the one-run daemon-autostart opt-out. Output format
   does not change setup autostart behavior. The deprecated `--catalog-only` flag
   is ignored and does not change setup behavior.
@@ -24,8 +24,8 @@ a hosted research agent.
   native source is currently importable.
 - `ctx import` publishes supported local transcript formats and selected local
   history-source plugins as complete normalized Core records, and can
-  opportunistically start the same ctx-owned coordinator with lifecycle
-  `persistent` or `on-demand`.
+  opportunistically start the same short one-pass ctx-owned maintenance profile
+  when `[daemon].enabled` is true.
   Explicit custom JSONL and history-source imports use its required
   daemon-owned source-refresh endpoint. `ctx import --no-daemon` never starts
   it and therefore requires an already-running endpoint for those explicit

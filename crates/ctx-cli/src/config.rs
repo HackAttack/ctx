@@ -15,8 +15,7 @@ use durable_write::write_config_durably;
 
 pub const CONFIG_FILE: &str = "config.toml";
 pub const AUTO_UPGRADE_DEFAULT_MODE: &str = "apply";
-pub const DAEMON_DEFAULT_LIFECYCLE: DaemonLifecycle = DaemonLifecycle::Persistent;
-pub const DAEMON_LIFECYCLE_ENV: &str = "CTX_DAEMON_LIFECYCLE";
+pub const DAEMON_DEFAULT_ENABLED: bool = true;
 pub const DAEMON_MODE_ENV: &str = "CTX_DAEMON_MODE";
 pub const LOCAL_USAGE_DEFAULT_ENABLED: bool = true;
 pub const SEMANTIC_SEARCH_DEFAULT_ENABLED: bool = false;
@@ -65,43 +64,11 @@ pub enum DaemonMode {
     SourceRefreshOnly,
 }
 
-/// Selects when the daemon process exists.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord)]
-pub enum DaemonLifecycle {
-    Disabled,
-    OnDemand,
-    #[default]
-    Persistent,
-}
-
-impl DaemonLifecycle {
-    pub const fn as_str(self) -> &'static str {
-        match self {
-            Self::Persistent => "persistent",
-            Self::OnDemand => "on-demand",
-            Self::Disabled => "disabled",
-        }
-    }
-
-    pub const fn starts_implicitly(self) -> bool {
-        !matches!(self, Self::Disabled)
-    }
-
-    pub const fn is_persistent(self) -> bool {
-        matches!(self, Self::Persistent)
-    }
-
-    pub(crate) fn parse(value: &str) -> Option<Self> {
-        match value.to_ascii_lowercase().as_str() {
-            "persistent" => Some(Self::Persistent),
-            "on-demand" => Some(Self::OnDemand),
-            "disabled" => Some(Self::Disabled),
-            _ => None,
-        }
-    }
-}
-
 impl DaemonMode {
+    pub const fn runs_only_source_refresh(self) -> bool {
+        matches!(self, Self::SourceRefreshOnly)
+    }
+
     pub(crate) fn parse(value: &str) -> Option<Self> {
         match value.to_ascii_lowercase().as_str() {
             "full" => Some(Self::Full),
@@ -268,18 +235,8 @@ pub struct UpgradeConfig {
 
 #[derive(Debug, Clone)]
 pub struct DaemonConfig {
-    pub lifecycle: DaemonLifecycle,
+    pub enabled: bool,
     pub mode: DaemonMode,
-}
-
-impl DaemonConfig {
-    pub const fn starts_implicitly(&self) -> bool {
-        self.lifecycle.starts_implicitly()
-    }
-
-    pub const fn is_persistent(&self) -> bool {
-        self.lifecycle.is_persistent()
-    }
 }
 
 #[derive(Debug, Clone)]
@@ -306,7 +263,7 @@ impl Default for AppConfig {
                 interval: Duration::from_secs(24 * 60 * 60),
             },
             daemon: DaemonConfig {
-                lifecycle: DAEMON_DEFAULT_LIFECYCLE,
+                enabled: DAEMON_DEFAULT_ENABLED,
                 mode: DaemonMode::Full,
             },
             search: SearchConfig { semantic: None },
@@ -350,15 +307,6 @@ impl AppConfig {
         data_root: &Path,
         deprecated_controls: &DeprecatedControls,
     ) -> Result<Self> {
-        let mut config = Self::load_persisted(data_root)?;
-        config.apply_env(deprecated_controls)?;
-        if ctx_upgrade_engine::current_exe_is_staging_dogfood() {
-            config.upgrade.auto = AutoUpgradeMode::Off.as_str().to_owned();
-        }
-        Ok(config)
-    }
-
-    fn load_persisted(data_root: &Path) -> Result<Self> {
         observe_app_config_load();
         let mut config = Self::default();
         let path = data_root.join(CONFIG_FILE);
@@ -373,15 +321,14 @@ impl AppConfig {
             Err(err) if err.kind() == io::ErrorKind::NotFound => {}
             Err(err) => return Err(err).with_context(|| format!("read {}", path.display())),
         }
+        config.apply_env(deprecated_controls)?;
+        if ctx_upgrade_engine::current_exe_is_staging_dogfood() {
+            config.upgrade.auto = AutoUpgradeMode::Off.as_str().to_owned();
+        }
         Ok(config)
     }
 
     fn apply_values(&mut self, values: &BTreeMap<String, ConfigValue>) -> Result<()> {
-        if values.contains_key("daemon.lifecycle") && values.contains_key("daemon.enabled") {
-            bail!(
-                "config cannot set both `daemon.lifecycle` and legacy `daemon.enabled`; keep only `daemon.lifecycle`"
-            );
-        }
         for (key, value) in values {
             match key.as_str() {
                 "analytics.enabled" => {
@@ -404,14 +351,7 @@ impl AppConfig {
                     self.upgrade.interval = Duration::from_secs(hours.saturating_mul(60 * 60));
                 }
                 "daemon.enabled" => {
-                    self.daemon.lifecycle = if parse_config_bool(key, value)? {
-                        DaemonLifecycle::Persistent
-                    } else {
-                        DaemonLifecycle::Disabled
-                    };
-                }
-                "daemon.lifecycle" => {
-                    self.daemon.lifecycle = parse_daemon_lifecycle(value)?;
+                    self.daemon.enabled = parse_config_bool(key, value)?;
                 }
                 "daemon.mode" => {
                     self.daemon.mode = parse_daemon_mode(value)?;
@@ -471,22 +411,17 @@ impl AppConfig {
                 self.upgrade.interval = Duration::from_secs(seconds);
             }
         }
-        let daemon_lifecycle_override = match env::var(DAEMON_LIFECYCLE_ENV) {
-            Ok(lifecycle) if !lifecycle.trim().is_empty() => Some(parse_daemon_lifecycle_text(
-                DAEMON_LIFECYCLE_ENV,
-                lifecycle.trim(),
-            )?),
-            _ => None,
-        };
+        let daemon_config_disabled = !self.daemon.enabled;
         let daemon_enabled_override = env::var("CTX_DAEMON_ENABLED")
             .ok()
             .and_then(|value| parse_bool_value(&value));
-        if daemon_enabled_override == Some(false) || deprecated_controls.disables_daemon() {
-            self.daemon.lifecycle = DaemonLifecycle::Disabled;
-        } else if let Some(override_lifecycle) = daemon_lifecycle_override {
-            // Environment controls may reduce a persisted lifecycle but never
-            // silently elevate a durable resource opt-out.
-            self.daemon.lifecycle = self.daemon.lifecycle.min(override_lifecycle);
+        let daemon_disabled = daemon_config_disabled
+            || daemon_enabled_override == Some(false)
+            || deprecated_controls.disables_daemon();
+        if daemon_disabled {
+            self.daemon.enabled = false;
+        } else if daemon_enabled_override == Some(true) {
+            self.daemon.enabled = true;
         }
         if let Ok(mode) = env::var(DAEMON_MODE_ENV) {
             if !mode.trim().is_empty() {
@@ -541,18 +476,8 @@ pub fn write_default_config(data_root: &Path) -> Result<()> {
     Ok(())
 }
 
-pub fn set_daemon_lifecycle(data_root: &Path, lifecycle: DaemonLifecycle) -> Result<()> {
-    set_config_string_replacing(
-        data_root,
-        "daemon",
-        "lifecycle",
-        lifecycle.as_str(),
-        Some("enabled"),
-    )
-}
-
-pub fn persisted_daemon_lifecycle(data_root: &Path) -> Result<DaemonLifecycle> {
-    Ok(AppConfig::load_persisted(data_root)?.daemon.lifecycle)
+pub fn set_daemon_enabled(data_root: &Path, enabled: bool) -> Result<()> {
+    set_config_bool(data_root, "daemon", "enabled", enabled)
 }
 
 pub fn set_semantic_search_enabled(data_root: &Path, enabled: bool) -> Result<()> {
@@ -818,47 +743,8 @@ fn set_config_bool(data_root: &Path, section: &str, key: &str, enabled: bool) ->
     Ok(())
 }
 
-fn set_config_string_replacing(
-    data_root: &Path,
-    section: &str,
-    key: &str,
-    value: &str,
-    replaced_key: Option<&str>,
-) -> Result<()> {
-    establish_private_data_root(data_root)?;
-    let path = AppConfig::config_path(data_root);
-    let text = match fs::read_to_string(&path) {
-        Ok(text) => text,
-        Err(err) if err.kind() == io::ErrorKind::NotFound => String::new(),
-        Err(err) => return Err(err).with_context(|| format!("read {}", path.display())),
-    };
-    let parsed = parse_toml_subset(&text).with_context(|| format!("parse {}", path.display()))?;
-    let mut config = AppConfig::default();
-    config
-        .apply_values(&parsed)
-        .with_context(|| format!("load {}", path.display()))?;
-    let without_replaced = replaced_key
-        .map(|replaced| remove_toml_key(&text, section, replaced))
-        .unwrap_or_else(|| text.clone());
-    let rendered = format!("{key} = \"{value}\"");
-    let updated = set_toml_value(&without_replaced, section, key, rendered);
-    let parsed =
-        parse_toml_subset(&updated).with_context(|| format!("parse updated {}", path.display()))?;
-    let mut config = AppConfig::default();
-    config
-        .apply_values(&parsed)
-        .with_context(|| format!("load updated {}", path.display()))?;
-    if updated != text {
-        write_config_durably(&path, updated.as_bytes())?;
-    }
-    Ok(())
-}
-
 fn set_toml_bool(text: &str, section: &str, key: &str, enabled: bool) -> String {
-    set_toml_value(text, section, key, format!("{key} = {enabled}"))
-}
-
-fn set_toml_value(text: &str, section: &str, key: &str, rendered: String) -> String {
+    let rendered = format!("{key} = {enabled}");
     let mut lines = text.lines().map(str::to_owned).collect::<Vec<_>>();
     let mut current_section = String::new();
     let mut section_start = None;
@@ -900,26 +786,6 @@ fn set_toml_value(text: &str, section: &str, key: &str, rendered: String) -> Str
         }
     }
     ensure_trailing_newline(lines.join("\n"))
-}
-
-fn remove_toml_key(text: &str, section: &str, key: &str) -> String {
-    let mut current_section = String::new();
-    let lines = text
-        .lines()
-        .filter(|raw_line| {
-            let line = strip_comment(raw_line).trim();
-            if line.starts_with('[') && line.ends_with(']') {
-                current_section = line[1..line.len() - 1].trim().to_owned();
-                return true;
-            }
-            !(current_section == section
-                && line
-                    .split_once('=')
-                    .is_some_and(|(candidate, _)| candidate.trim() == key))
-        })
-        .collect::<Vec<_>>()
-        .join("\n");
-    ensure_trailing_newline(lines)
 }
 
 fn ensure_trailing_newline(mut text: String) -> String {
@@ -1067,18 +933,6 @@ fn parse_daemon_mode(value: &ConfigValue) -> Result<DaemonMode> {
     let mode = parse_non_empty_string("daemon.mode", value)?;
     parse_daemon_mode_text("daemon.mode", &mode)
         .with_context(|| format!("daemon.mode at line {}", value.line))
-}
-
-fn parse_daemon_lifecycle(value: &ConfigValue) -> Result<DaemonLifecycle> {
-    let lifecycle = parse_non_empty_string("daemon.lifecycle", value)?;
-    parse_daemon_lifecycle_text("daemon.lifecycle", &lifecycle)
-        .with_context(|| format!("daemon.lifecycle at line {}", value.line))
-}
-
-fn parse_daemon_lifecycle_text(key: &str, value: &str) -> Result<DaemonLifecycle> {
-    DaemonLifecycle::parse(value).ok_or_else(|| {
-        anyhow::anyhow!("{key} must be \"persistent\", \"on-demand\", or \"disabled\"")
-    })
 }
 
 fn parse_daemon_mode_text(key: &str, value: &str) -> Result<DaemonMode> {

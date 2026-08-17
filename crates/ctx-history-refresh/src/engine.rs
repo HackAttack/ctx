@@ -1,6 +1,5 @@
 use super::*;
 use crate::route_ledger::{DirtySourceRouteAdmission, DirtySourceRoutes, EventWatermark};
-use std::sync::atomic::{AtomicU64, Ordering};
 
 mod admission;
 #[cfg(test)]
@@ -206,7 +205,6 @@ type SourceRefreshAdmissionFence = dyn Fn(
 
 pub struct CoreRefreshEngine {
     state: Mutex<CoreRefreshEngineState>,
-    request_activity_generation: AtomicU64,
     pub(super) executor: Arc<dyn SourceBackedRefreshExecutor>,
     admission_fence: Arc<SourceRefreshAdmissionFence>,
     pub(super) journal: Arc<dyn RefreshJournal>,
@@ -355,7 +353,6 @@ impl CoreRefreshEngine {
                 admission_resolutions_in_flight: BTreeSet::new(),
                 watch_routes_initialized: false,
             }),
-            request_activity_generation: AtomicU64::new(0),
             executor,
             admission_fence,
             journal,
@@ -407,10 +404,6 @@ impl CoreRefreshEngine {
             || state.pending_request_ids.iter().any(|request_id| {
                 find_attempt(&state, request_id).is_some_and(|attempt| attempt.state.is_active())
             })
-    }
-
-    pub fn request_activity_generation(&self) -> u64 {
-        self.request_activity_generation.load(Ordering::Acquire)
     }
 
     pub fn initialize_watch_route_authority(

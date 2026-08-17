@@ -42,7 +42,7 @@ pub(crate) mod analytics {
 }
 
 pub(crate) mod config {
-    pub(crate) use crate::{DaemonConfigSnapshot as AppConfig, DaemonLifecycle, DaemonMode};
+    pub(crate) use crate::{DaemonConfigSnapshot as AppConfig, DaemonMode};
     pub(crate) const CONFIG_FILE: &str = crate::CONFIG_FILE;
 }
 

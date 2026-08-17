@@ -239,37 +239,10 @@ pub(crate) enum DaemonCommand {
     Run(DaemonRunArgs),
     #[command(about = "Show ctx daemon status")]
     Status(FormatArgs),
-    #[command(about = "Choose when ctx background maintenance runs")]
-    Lifecycle(DaemonLifecycleArgs),
     #[command(about = "Enable ctx daemon maintenance")]
     Enable(FormatArgs),
     #[command(about = "Disable ctx daemon maintenance")]
     Disable(DaemonDisableArgs),
-}
-
-#[derive(Debug, Args, Clone)]
-pub(crate) struct DaemonLifecycleArgs {
-    #[arg(value_enum)]
-    pub(crate) lifecycle: DaemonLifecycleArg,
-    #[arg(long, value_enum, default_value_t = JsonOutputFormat::Text)]
-    pub(crate) format: JsonOutputFormat,
-}
-
-#[derive(Debug, Clone, Copy, ValueEnum)]
-pub(crate) enum DaemonLifecycleArg {
-    Persistent,
-    OnDemand,
-    Disabled,
-}
-
-impl From<DaemonLifecycleArg> for crate::config::DaemonLifecycle {
-    fn from(value: DaemonLifecycleArg) -> Self {
-        match value {
-            DaemonLifecycleArg::Persistent => Self::Persistent,
-            DaemonLifecycleArg::OnDemand => Self::OnDemand,
-            DaemonLifecycleArg::Disabled => Self::Disabled,
-        }
-    }
 }
 
 #[derive(Debug, Args, Clone)]
@@ -296,7 +269,7 @@ pub(crate) struct DaemonRunArgs {
         help = "Process at most this many semantic chunks per pass"
     )]
     pub(crate) max_chunks: Option<usize>,
-    #[arg(long, help = "Run even when daemon lifecycle is disabled")]
+    #[arg(long, help = "Run even when daemon.enabled is false")]
     pub(crate) force: bool,
     #[arg(long, value_enum, hide = true)]
     pub(crate) start_mode: Option<DaemonStartModeArg>,

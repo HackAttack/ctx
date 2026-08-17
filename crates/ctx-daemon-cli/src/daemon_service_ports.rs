@@ -54,17 +54,7 @@ fn config_snapshot_with_channel(
 ) -> DaemonConfigSnapshot {
     DaemonConfigSnapshot {
         daemon: DaemonProductConfig {
-            lifecycle: match config.daemon.lifecycle {
-                crate::config::DaemonLifecycle::Persistent => {
-                    ctx_daemon_service::DaemonLifecycle::Persistent
-                }
-                crate::config::DaemonLifecycle::OnDemand => {
-                    ctx_daemon_service::DaemonLifecycle::OnDemand
-                }
-                crate::config::DaemonLifecycle::Disabled => {
-                    ctx_daemon_service::DaemonLifecycle::Disabled
-                }
-            },
+            enabled: config.daemon.enabled,
             mode: match config.daemon.mode {
                 crate::config::DaemonMode::Full => DaemonMode::Full,
                 crate::config::DaemonMode::SourceRefreshOnly => DaemonMode::SourceRefreshOnly,
@@ -152,7 +142,7 @@ impl DaemonAvailabilityPort for CliDaemonAvailabilityPort {
     ) -> Result<DaemonAvailability> {
         let config = AppConfig::load(data_root)
             .context("load daemon configuration before availability check")?;
-        if !config.daemon.lifecycle.starts_implicitly() {
+        if !config.daemon.enabled {
             return Ok(DaemonAvailability::Disabled);
         }
         super::daemon_autostart::autostart_daemon_and_wait(
@@ -160,11 +150,7 @@ impl DaemonAvailabilityPort for CliDaemonAvailabilityPort {
             &config,
             cli_trigger(trigger),
         )?;
-        Ok(if config.daemon.lifecycle.is_on_demand() {
-            DaemonAvailability::OnDemand
-        } else {
-            DaemonAvailability::Available
-        })
+        Ok(DaemonAvailability::Available)
     }
 }
 

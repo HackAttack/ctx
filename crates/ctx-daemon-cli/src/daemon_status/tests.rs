@@ -185,25 +185,6 @@ fn running_status_is_outcome_first_and_omits_internal_details() {
 }
 
 #[test]
-fn stopped_on_demand_status_is_healthy_idle_not_a_failure() {
-    let report = json!({
-        "lifecycle": "on-demand",
-        "enabled": true,
-        "status": "unknown",
-        "running": false,
-        "recoverable": false
-    });
-
-    let rendered = render_status(&context(80), &report).render_plain();
-
-    assert!(rendered.starts_with("Daemon is idle\n"), "{rendered}");
-    assert!(rendered.contains("It starts when a command requests refresh work.\n"));
-    assert!(rendered.contains("Status     idle\n"));
-    assert!(rendered.contains("Lifecycle  on-demand\n"));
-    assert!(!rendered.contains("failed"));
-}
-
-#[test]
 fn changed_installed_supervisor_environment_is_a_restart_caveat() {
     let mut report = running_report();
     report["supervisor"]["environment_snapshot"] = json!({

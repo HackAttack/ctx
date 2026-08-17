@@ -11,7 +11,7 @@ use crate::{
     cli::Cli,
     ui::{
         diagnostic, scan_color_mode, scan_machine_output_hint, Action, ColorMode, Diagnostic,
-        DiagnosticLevel, Document, Field, RenderContext, Ui,
+        DiagnosticLevel, Document, Field, Line, RenderContext, Ui,
     },
 };
 

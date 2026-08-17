@@ -302,27 +302,28 @@ fn clap_help_has_no_authored_trailing_cells_at_supported_widths() {
 
 #[test]
 fn affected_help_paths_trim_line_ends_in_the_human_clap_pipeline() {
-    let arguments = &["ctx", "sources", "--help"][..];
-    let (error, os_arguments) = error_and_arguments(arguments);
-    let stdout = SharedBytes::default();
-    let stdout_copy = stdout.clone();
-    let mut ui = Ui::with_writers(
-        stdout,
-        RenderContext::for_test(TestContext::pipe(StreamKind::Stdout).color(ColorMode::Always)),
-        SharedBytes::default(),
-        RenderContext::for_test(TestContext::pipe(StreamKind::Stderr).color(ColorMode::Always)),
-    );
-    write_adapted_clap_output(&error, &os_arguments, false, &mut ui).unwrap();
-    ui.flush().unwrap();
+    for arguments in [&["ctx", "sources", "--help"][..]] {
+        let (error, os_arguments) = error_and_arguments(arguments);
+        let stdout = SharedBytes::default();
+        let stdout_copy = stdout.clone();
+        let mut ui = Ui::with_writers(
+            stdout,
+            RenderContext::for_test(TestContext::pipe(StreamKind::Stdout).color(ColorMode::Always)),
+            SharedBytes::default(),
+            RenderContext::for_test(TestContext::pipe(StreamKind::Stderr).color(ColorMode::Always)),
+        );
+        write_adapted_clap_output(&error, &os_arguments, false, &mut ui).unwrap();
+        ui.flush().unwrap();
 
-    let styled = String::from_utf8(stdout_copy.bytes()).unwrap();
-    let plain = anstream::adapter::strip_str(&styled).to_string();
-    assert!(styled.contains('\u{1b}'), "{arguments:?}");
-    assert!(plain.contains("Usage: ctx"), "{arguments:?}:\n{plain}");
-    assert!(
-        plain
-            .lines()
-            .all(|line| !line.ends_with([' ', '\t']) && line.width() <= 100),
-        "{arguments:?}:\n{plain}"
-    );
+        let styled = String::from_utf8(stdout_copy.bytes()).unwrap();
+        let plain = anstream::adapter::strip_str(&styled).to_string();
+        assert!(styled.contains('\u{1b}'), "{arguments:?}");
+        assert!(plain.contains("Usage: ctx"), "{arguments:?}:\n{plain}");
+        assert!(
+            plain
+                .lines()
+                .all(|line| !line.ends_with([' ', '\t']) && line.width() <= 100),
+            "{arguments:?}:\n{plain}"
+        );
+    }
 }

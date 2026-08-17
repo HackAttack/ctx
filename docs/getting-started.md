@@ -70,13 +70,12 @@ ctx status
 
 Setup creates the configured ctx data root, prepares an immutable Core/Tantivy
 generation with complete policy-selected records and source identities, starts or health-checks the
-configured daemon lifecycle, requests a provider-source refresh, and prints next
+enabled persistent daemon, requests a provider-source refresh, and prints next
 steps. It does not write `config.toml`
 for implicit defaults and does not execute history-source plugin commands. The
-default data root is `~/.ctx`. Use `ctx daemon lifecycle on-demand` for refresh
-only when a command asks, `ctx daemon disable` for a durable opt-out, or `ctx
-setup --no-daemon` for a one-run opt-out. Existing configurations that already
-set `[daemon] enabled = false` remain disabled after upgrade.
+default data root is `~/.ctx`. Use `ctx daemon disable` for a durable opt-out or
+`ctx setup --no-daemon` for a one-run opt-out. Existing configurations that
+already set `[daemon] enabled = false` remain disabled after upgrade.
 Machine-readable setup follows the same lifecycle and reports schema version 2
 with top-level `daemon_autostart` and `refresh_request` objects. The deprecated
 `--catalog-only` flag no longer disables daemon maintenance.
@@ -174,8 +173,7 @@ lineage automatically. Search also accepts filters such as `--provider`,
 `--limit` is capped at `200`.
 Search defaults to `--refresh background`, which serves the active Core
 generation while daemon maintenance requests a Core refresh and semantic
-catch-up when enabled. With lifecycle `on-demand`, the daemon exits after that
-Core request completes. Use `--refresh wait` to wait for Core refresh, or
+catch-up when enabled. Use `--refresh wait` for foreground Core refresh, or
 `ctx import --all` for an explicit import catch-up.
 
 When ctx runs inside Codex, search excludes the active Codex session tree by

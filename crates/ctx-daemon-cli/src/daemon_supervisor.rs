@@ -55,17 +55,10 @@ impl ctx_daemon_application::DaemonApplicationHost for CliDaemonApplicationHost<
     ) -> Result<ctx_daemon_application::DaemonConfigSnapshot> {
         let config = crate::config::AppConfig::load(data_root)?;
         Ok(ctx_daemon_application::DaemonConfigSnapshot {
-            lifecycle: daemon_lifecycle(config.daemon.lifecycle),
+            enabled: config.daemon.enabled,
             mode: daemon_mode(config.daemon.mode),
             semantic_enabled: config.semantic_search_enabled(),
         })
-    }
-
-    fn persisted_daemon_lifecycle(
-        &self,
-        data_root: &Path,
-    ) -> Result<ctx_daemon_application::DaemonLifecycle> {
-        crate::config::persisted_daemon_lifecycle(data_root).map(daemon_lifecycle)
     }
 
     fn defer_restart_for_upgrade_handoff(
@@ -110,25 +103,8 @@ impl ctx_daemon_application::DaemonApplicationHost for CliDaemonApplicationHost<
         crate::composition::host().run_daemon_service(data_root, request, config)
     }
 
-    fn set_daemon_lifecycle(
-        &self,
-        data_root: &Path,
-        lifecycle: ctx_daemon_application::DaemonLifecycle,
-    ) -> Result<()> {
-        crate::config::set_daemon_lifecycle(
-            data_root,
-            match lifecycle {
-                ctx_daemon_application::DaemonLifecycle::Persistent => {
-                    crate::config::DaemonLifecycle::Persistent
-                }
-                ctx_daemon_application::DaemonLifecycle::OnDemand => {
-                    crate::config::DaemonLifecycle::OnDemand
-                }
-                ctx_daemon_application::DaemonLifecycle::Disabled => {
-                    crate::config::DaemonLifecycle::Disabled
-                }
-            },
-        )
+    fn set_daemon_enabled(&self, data_root: &Path, enabled: bool) -> Result<()> {
+        crate::config::set_daemon_enabled(data_root, enabled)
     }
 
     fn request_daemon_shutdown(
@@ -230,22 +206,6 @@ pub(super) const fn daemon_mode(
         crate::config::DaemonMode::Full => ctx_daemon_application::DaemonMode::Full,
         crate::config::DaemonMode::SourceRefreshOnly => {
             ctx_daemon_application::DaemonMode::SourceRefreshOnly
-        }
-    }
-}
-
-pub(super) const fn daemon_lifecycle(
-    lifecycle: crate::config::DaemonLifecycle,
-) -> ctx_daemon_application::DaemonLifecycle {
-    match lifecycle {
-        crate::config::DaemonLifecycle::Persistent => {
-            ctx_daemon_application::DaemonLifecycle::Persistent
-        }
-        crate::config::DaemonLifecycle::OnDemand => {
-            ctx_daemon_application::DaemonLifecycle::OnDemand
-        }
-        crate::config::DaemonLifecycle::Disabled => {
-            ctx_daemon_application::DaemonLifecycle::Disabled
         }
     }
 }

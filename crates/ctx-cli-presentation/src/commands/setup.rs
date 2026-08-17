@@ -39,7 +39,6 @@ pub struct SetupDaemonState<'a> {
     pub requested: bool,
     pub reason: Option<&'a str>,
     pub started: bool,
-    pub persistent: bool,
     pub persistent_supervisor_verified: bool,
 }
 
@@ -157,22 +156,17 @@ fn component_status(component: &Value) -> &str {
 }
 
 fn daemon_human_status(daemon: &SetupDaemonState<'_>) -> Option<String> {
-    match (
-        daemon.started,
-        daemon.persistent,
-        daemon.persistent_supervisor_verified,
-    ) {
-        (true, false, _) => Some("on-demand daemon (exits after refresh)".to_owned()),
-        (true, true, true) => None,
-        (true, true, false) => Some("persistent daemon (automatic restart unavailable)".to_owned()),
-        (false, _, _) if daemon.requested => {
+    match (daemon.started, daemon.persistent_supervisor_verified) {
+        (true, true) => None,
+        (true, false) => Some("persistent daemon (automatic restart unavailable)".to_owned()),
+        (false, _) if daemon.requested => {
             Some("startup was not verified; run ctx daemon status".to_owned())
         }
-        (false, _, _) if daemon.reason == Some("explicit_opt_out") => {
+        (false, _) if daemon.reason == Some("explicit_opt_out") => {
             Some("skipped because --no-daemon was used".to_owned())
         }
-        (false, _, _) if daemon.reason == Some("daemon_disabled") => Some("disabled".to_owned()),
-        (false, _, _) => None,
+        (false, _) if daemon.reason == Some("daemon_disabled") => Some("disabled".to_owned()),
+        (false, _) => None,
     }
 }
 
@@ -246,7 +240,6 @@ mod tests {
                 requested: false,
                 reason: None,
                 started: false,
-                persistent: true,
                 persistent_supervisor_verified: true,
             },
         )
@@ -295,7 +288,6 @@ mod tests {
                 requested: false,
                 reason: None,
                 started: false,
-                persistent: true,
                 persistent_supervisor_verified: true,
             },
         );
@@ -324,7 +316,6 @@ mod tests {
                     requested: true,
                     reason: None,
                     started: true,
-                    persistent: true,
                     persistent_supervisor_verified: true,
                 },
             );
@@ -364,7 +355,6 @@ mod tests {
                     requested: false,
                     reason: Some("daemon_disabled"),
                     started: false,
-                    persistent: false,
                     persistent_supervisor_verified: false,
                 },
             );
@@ -392,7 +382,6 @@ mod tests {
                     requested: true,
                     reason: None,
                     started: true,
-                    persistent: true,
                     persistent_supervisor_verified: false,
                 },
             );
@@ -421,7 +410,6 @@ mod tests {
                     requested: true,
                     reason: None,
                     started: true,
-                    persistent: true,
                     persistent_supervisor_verified: false,
                 },
             );
@@ -436,27 +424,6 @@ mod tests {
             assert!(!normalized.contains("Continuous refresh is unavailable"));
             assert_fits(&document, &context);
         }
-    }
-
-    #[test]
-    fn setup_on_demand_reports_a_finite_daemon_without_degradation() {
-        let document = render_setup_human(
-            &context(80, ColorMode::Never),
-            Path::new("/tmp/ctx"),
-            "ready",
-            &ready_source(),
-            &json!({"status": "published"}),
-            SetupDaemonState {
-                requested: true,
-                reason: None,
-                started: true,
-                persistent: false,
-                persistent_supervisor_verified: false,
-            },
-        );
-        let rendered = document.render_plain();
-        assert!(rendered.contains("Background  on-demand daemon (exits after refresh)\n"));
-        assert!(!rendered.contains("automatic restart unavailable"));
     }
 
     #[test]

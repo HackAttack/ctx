@@ -45,14 +45,14 @@ the local retrieval product.
   checksum file, runtime archive, and runtime DLL. The public verifier accepts
   that exact handoff plus an independently supplied expected manifest digest;
   it does not sign, attest, or treat a matching handoff sidecar as authority.
-- Automatic upgrade defaults on for managed installs, but the persistent daemon
-  is its only scheduler. On-demand and disabled lifecycles perform no automatic
-  check, download, or apply. Signed policy and explicit opt-outs remain mandatory, and upgrade
+- Automatic upgrade defaults on for managed installs, but the enabled daemon is
+  its only scheduler. A disabled daemon performs no automatic check, download,
+  or apply. Signed policy and explicit opt-outs remain mandatory, and upgrade
   work must not collect provider history or pollute command stdout/stderr.
 
 - A ctx-owned background coordinator, when launched by `ctx daemon run` or
   setup/import autostart, must write only under the configured ctx data root,
-  respect `daemon.lifecycle` unless explicitly forced, and may run only bounded
+  respect `[daemon].enabled` unless explicitly forced, and may run only bounded
   native local provider-history refresh and bounded semantic catch-up. It must
   not run history-source plugins.
   Network model acquisition is allowed only for the local embedding model when

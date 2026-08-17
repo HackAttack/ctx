@@ -367,7 +367,7 @@ fn coordinate_source_backed_refresh_with_catalog(
         operation,
         trigger,
         explicit_source_catalog,
-        mut fresh_after_admitted_snapshot,
+        fresh_after_admitted_snapshot,
         allow_daemon_autostart,
     } = policy;
     if mode == SourceBackedRefreshMode::Off {
@@ -389,27 +389,17 @@ fn coordinate_source_backed_refresh_with_catalog(
         });
     }
 
-    let mut admission_mode = mode;
     if allow_daemon_autostart {
-        let daemon_availability = availability
+        availability
             .ensure_available(data_root, trigger.daemon_trigger())
             .context("start or recover enabled daemon before source-backed refresh")?;
-        if daemon_availability == crate::DaemonAvailability::OnDemand {
-            fresh_after_admitted_snapshot = true;
-            if mode == SourceBackedRefreshMode::Background {
-                // Background controls whether this command waits. An on-demand
-                // daemon still needs one bounded logical request to keep it
-                // alive through publication instead of a maintenance wake.
-                admission_mode = SourceBackedRefreshMode::Wait;
-            }
-        }
     }
 
     let logical_request_id = Uuid::now_v7().to_string();
     let admission_request = wait_authority_request_json(
         data_root,
         &logical_request_id,
-        admission_mode,
+        mode,
         operation,
         trigger,
         explicit_source_catalog,
