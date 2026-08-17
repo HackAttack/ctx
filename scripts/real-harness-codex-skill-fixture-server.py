@@ -44,10 +44,10 @@ class Handler(http.server.BaseHTTPRequestHandler):
         entry = {
             "request": self.state.request_count,
             "model": payload.get("model"),
-            "has_ctx_skill": "ctx-agent-history-search" in text,
-            "has_ctx_skill_description": "Use ctx to search local coding-agent history"
+            "has_ctx_skill": "ctx" in text,
+            "has_ctx_skill_description": "Use ctx as working memory for prior agent work."
             in text,
-            "has_ctx_skill_path": "/skills/ctx-agent-history-search/SKILL.md" in text,
+            "has_ctx_skill_path": "/skills/ctx/SKILL.md" in text,
             "tool_names": [
                 tool.get("name") or tool.get("type")
                 for tool in tools

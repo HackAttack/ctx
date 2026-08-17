@@ -18,11 +18,12 @@ pub use selection::{
 };
 pub use target::{resolve_targets_for_agents, single_target, SkillScope, SkillTarget};
 
-pub const BUNDLED_SKILL_NAME: &str = "ctx-agent-history-search";
-pub const BUNDLED_SKILL_BODY: &str =
-    include_str!("../../../../skills/ctx-agent-history-search/SKILL.md");
+pub const BUNDLED_SKILL_NAME: &str = "ctx";
+pub const BUNDLED_SKILL_BODY: &str = include_str!("../../../../skills/ctx/SKILL.md");
+const LEGACY_BUNDLED_SKILL_NAME: &str = "ctx-agent-history-search";
 const METADATA_FILE: &str = ".ctx-skill.json";
 const LEGACY_BUNDLED_SKILL_HASHES: &[&str] = &[
+    "sha256:e0c0088162ed194d4961d856d441c3f46387609be41c5df625d546ddd4550946",
     "sha256:9c2ddb5ed64da0471050af225addd5823ef7fc2b9bbcea27e72a3c8553234774",
     "sha256:b4210c5e3c4fd8a8e62335ca61879bb88d026c092b4b663a9ae3ad15f34ee2ba",
     "sha256:59623e2cabd7857a518da19f995ca86e65fe67e6337fa334a0c86bef78891c6f",

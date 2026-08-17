@@ -201,7 +201,7 @@ mod prompt_tests {
         assert!(rendered.contains("Select where to install"));
         assert!(rendered.contains("Press Enter for the marked defaults"));
         assert!(rendered.contains("[*] Universal"));
-        assert!(rendered.contains(".agents/skills/ctx-agent-history-search"));
+        assert!(rendered.contains(".agents/skills/ctx"));
         assert!(!rendered.contains('\u{1b}'));
     }
 

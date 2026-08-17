@@ -16,7 +16,7 @@ const PRODUCT: ProductIdentity<'static> = ProductIdentity {
 fn modified_copy_is_preserved_and_has_a_neutral_force_action() {
     let temp = tempfile::tempdir().unwrap();
     let context = PathContext::for_tests(temp.path().to_owned(), temp.path().to_owned());
-    let command_path = temp.path().join(".gemini/commands/ctx-history.toml");
+    let command_path = temp.path().join(".gemini/commands/ctx.toml");
     fs::create_dir_all(command_path.parent().unwrap()).unwrap();
     fs::write(&command_path, "prompt = 'local'\n").unwrap();
 

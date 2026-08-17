@@ -130,7 +130,7 @@ main() {
   stderr_file="${run_root}/qwen.stderr"
   port_file="${run_root}/fixture.port"
   log_file="${run_root}/fixture-requests.jsonl"
-  command_path="${project}/.qwen/commands/ctx-history.md"
+  command_path="${project}/.qwen/commands/ctx.md"
 
   (
     cd "${project}"
@@ -165,14 +165,14 @@ main() {
       run "${qwen_bin}" \
         --auth-type openai \
         --model "${MODEL}" \
-        --prompt "/ctx-history ${QUERY}" \
+        --prompt "/ctx ${QUERY}" \
         --output-format text \
         --sandbox=false
   ) > "${stdout_file}" 2> "${stderr_file}"
 
   require_contains "${stdout_file}" 'fixture-qwen-slash-ok'
   require_contains "${log_file}" '"provider":"qwen"'
-  require_contains "${log_file}" '"has_ctx_history_expansion":true'
+  require_contains "${log_file}" '"has_ctx_expansion":true'
   require_contains "${log_file}" '"has_expected_user_request":true'
   require_contains "${log_file}" '"has_ctx_citations_instruction":true'
   require_not_contains "${log_file}" '"has_raw_slash_invocation":true'

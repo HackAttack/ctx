@@ -2,7 +2,7 @@ mod support;
 
 use support::*;
 
-const COMMAND_NAME: &str = "ctx-history";
+const COMMAND_NAME: &str = "ctx";
 const QUERY: &str = "needle topic with spaces";
 const ALL_SLASH_COMMAND_AGENTS: &[&str] = &[
     "codex",
@@ -89,10 +89,10 @@ fn slash_command_e2e_detected_global_harnesses_discover_and_invoke() {
     assert_result_path(&output, "windsurf", &windsurf.command_path(COMMAND_NAME));
     assert_result_paths_under(&output, &[temp.path(), &xdg]);
 
-    assert_ctx_history_prompt(&opencode.invoke(COMMAND_NAME, QUERY), QUERY);
-    assert_ctx_history_prompt(&mimocode.invoke(COMMAND_NAME, QUERY), QUERY);
-    assert_ctx_history_prompt(&gemini.invoke(COMMAND_NAME, QUERY), QUERY);
-    assert_ctx_history_prompt(&qwen.invoke(COMMAND_NAME, QUERY), QUERY);
+    assert_ctx_prompt(&opencode.invoke(COMMAND_NAME, QUERY), QUERY);
+    assert_ctx_prompt(&mimocode.invoke(COMMAND_NAME, QUERY), QUERY);
+    assert_ctx_prompt(&gemini.invoke(COMMAND_NAME, QUERY), QUERY);
+    assert_ctx_prompt(&qwen.invoke(COMMAND_NAME, QUERY), QUERY);
     windsurf.assert_workflow_ready(COMMAND_NAME);
 }
 
@@ -112,7 +112,7 @@ fn slash_command_e2e_mimocode_honors_config_dir_env() {
 
     let mimocode = MiMoCodeHarness::global_config_dir(&config_dir);
     assert_result_path(&output, "mimocode", &mimocode.command_path(COMMAND_NAME));
-    assert_ctx_history_prompt(&mimocode.invoke(COMMAND_NAME, QUERY), QUERY);
+    assert_ctx_prompt(&mimocode.invoke(COMMAND_NAME, QUERY), QUERY);
     assert!(!temp
         .path()
         .join(".config")
@@ -136,7 +136,7 @@ fn slash_command_e2e_mimocode_default_detection_honors_config_dir_env() {
     assert_eq!(output_agents(&output), vec!["mimocode"]);
     let mimocode = MiMoCodeHarness::global_config_dir(&config_dir);
     assert_result_path(&output, "mimocode", &mimocode.command_path(COMMAND_NAME));
-    assert_ctx_history_prompt(&mimocode.invoke(COMMAND_NAME, QUERY), QUERY);
+    assert_ctx_prompt(&mimocode.invoke(COMMAND_NAME, QUERY), QUERY);
 }
 
 #[test]
@@ -210,10 +210,10 @@ fn slash_command_e2e_project_harnesses_discover_and_invoke() {
     assert_result_path(&output, "windsurf", &windsurf.command_path(COMMAND_NAME));
     assert_result_paths_under(&output, &[&project]);
 
-    assert_ctx_history_prompt(&opencode.invoke(COMMAND_NAME, QUERY), QUERY);
-    assert_ctx_history_prompt(&mimocode.invoke(COMMAND_NAME, QUERY), QUERY);
-    assert_ctx_history_prompt(&gemini.invoke(COMMAND_NAME, QUERY), QUERY);
-    assert_ctx_history_prompt(&qwen.invoke(COMMAND_NAME, QUERY), QUERY);
+    assert_ctx_prompt(&opencode.invoke(COMMAND_NAME, QUERY), QUERY);
+    assert_ctx_prompt(&mimocode.invoke(COMMAND_NAME, QUERY), QUERY);
+    assert_ctx_prompt(&gemini.invoke(COMMAND_NAME, QUERY), QUERY);
+    assert_ctx_prompt(&qwen.invoke(COMMAND_NAME, QUERY), QUERY);
     windsurf.assert_workflow_ready(COMMAND_NAME);
 }
 
@@ -341,10 +341,10 @@ fn slash_command_e2e_project_all_agents_json_covers_the_complete_accepted_matrix
     let qwen = QwenHarness::project(&project);
     let windsurf = WindsurfHarness::project(&project);
 
-    assert_ctx_history_prompt(&opencode.invoke(COMMAND_NAME, QUERY), QUERY);
-    assert_ctx_history_prompt(&mimocode.invoke(COMMAND_NAME, QUERY), QUERY);
-    assert_ctx_history_prompt(&gemini.invoke(COMMAND_NAME, QUERY), QUERY);
-    assert_ctx_history_prompt(&qwen.invoke(COMMAND_NAME, QUERY), QUERY);
+    assert_ctx_prompt(&opencode.invoke(COMMAND_NAME, QUERY), QUERY);
+    assert_ctx_prompt(&mimocode.invoke(COMMAND_NAME, QUERY), QUERY);
+    assert_ctx_prompt(&gemini.invoke(COMMAND_NAME, QUERY), QUERY);
+    assert_ctx_prompt(&qwen.invoke(COMMAND_NAME, QUERY), QUERY);
     windsurf.assert_workflow_ready(COMMAND_NAME);
 }
 
@@ -368,10 +368,13 @@ impl OpenCodeHarness {
     fn invoke(&self, command_name: &str, args: &str) -> String {
         assert_ctx_metadata(&self.command_dir, &format!("{command_name}.md"));
         let markdown = parse_frontmatter_markdown(&self.command_path(command_name));
-        assert_eq!(markdown.description, "Search local agent history with ctx");
+        assert_eq!(
+            markdown.description,
+            "Search agent history or trace code with ctx"
+        );
         assert!(markdown
             .frontmatter
-            .contains("argument-hint: [question or topic]"));
+            .contains("argument-hint: [question, topic, file, line, commit, or PR]"));
         assert!(
             markdown.body.contains("$ARGUMENTS"),
             "OpenCode needs $ARGUMENTS so multi-word ctx queries survive"
@@ -410,10 +413,13 @@ impl MiMoCodeHarness {
     fn invoke(&self, command_name: &str, args: &str) -> String {
         assert_ctx_metadata(&self.command_dir, &format!("{command_name}.md"));
         let markdown = parse_frontmatter_markdown(&self.command_path(command_name));
-        assert_eq!(markdown.description, "Search local agent history with ctx");
+        assert_eq!(
+            markdown.description,
+            "Search agent history or trace code with ctx"
+        );
         assert!(markdown
             .frontmatter
-            .contains("argument-hint: [question or topic]"));
+            .contains("argument-hint: [question, topic, file, line, commit, or PR]"));
         assert!(
             markdown.body.contains("$ARGUMENTS"),
             "MiMo Code needs $ARGUMENTS so multi-word ctx queries survive"
@@ -446,7 +452,10 @@ impl GeminiHarness {
     fn invoke(&self, command_name: &str, args: &str) -> String {
         assert_ctx_metadata(&self.command_dir, &format!("{command_name}.toml"));
         let command = parse_gemini_toml_command(&self.command_path(command_name));
-        assert_eq!(command.description, "Search local agent history with ctx");
+        assert_eq!(
+            command.description,
+            "Search agent history or trace code with ctx"
+        );
         assert!(
             command.prompt.contains("{{args}}"),
             "Gemini commands use {{args}} for the full invocation tail"
@@ -479,7 +488,10 @@ impl QwenHarness {
     fn invoke(&self, command_name: &str, args: &str) -> String {
         assert_ctx_metadata(&self.command_dir, &format!("{command_name}.md"));
         let markdown = parse_frontmatter_markdown(&self.command_path(command_name));
-        assert_eq!(markdown.description, "Search local agent history with ctx");
+        assert_eq!(
+            markdown.description,
+            "Search agent history or trace code with ctx"
+        );
         assert!(
             markdown.body.contains("{{args}}"),
             "Qwen markdown commands use {{args}} for the full invocation tail"
@@ -515,8 +527,8 @@ impl WindsurfHarness {
     fn assert_workflow_ready(&self, command_name: &str) {
         assert_ctx_metadata(&self.workflow_dir, &format!("{command_name}.md"));
         let body = read_command(&self.command_path(command_name));
-        assert!(body.starts_with("# ctx History\n"));
-        assert!(body.contains("text after `/ctx-history`"));
+        assert!(body.starts_with("# ctx\n"));
+        assert!(body.contains("text after `/ctx`"));
         assert!(body.contains("ctx search \"<query>\""));
         assert!(body.contains("ctx show event <id> --window 5"));
         assert!(
@@ -686,8 +698,8 @@ fn parse_basic_toml_string(value: &str) -> Option<String> {
     Some(parsed)
 }
 
-fn assert_ctx_history_prompt(rendered: &str, query: &str) {
-    assert!(rendered.contains("Use ctx to search local coding-agent history"));
+fn assert_ctx_prompt(rendered: &str, query: &str) {
+    assert!(rendered.contains("Use ctx to search coding-agent history or trace code"));
     assert!(rendered.contains(&format!("User request: {query}")));
     assert!(rendered.contains("ctx citations"));
     assert!(!rendered.contains("$ARGUMENTS"));

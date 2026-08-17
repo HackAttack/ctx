@@ -9,32 +9,36 @@ use ctx_history_core::utc_now;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest as _, Sha256};
 
-use crate::filesystem::atomic_update;
+use crate::filesystem::{atomic_remove_if_unchanged, atomic_update};
 
-pub const COMMAND_NAME: &str = "ctx-history";
+pub const COMMAND_NAME: &str = "ctx";
+const LEGACY_COMMAND_NAME: &str = "ctx-history";
 const METADATA_FILE: &str = ".ctx-slash-commands.json";
 
-const COMMAND_INSTRUCTIONS: &str = r#"# ctx History
+const COMMAND_INSTRUCTIONS: &str = r#"# ctx
 
-Use ctx to search local coding-agent history for this request.
+Use ctx to search coding-agent history or trace code to its original agent
+session for this request.
 
 User request: $ARGUMENTS
 
-Search local agent history with `ctx`, prefer default text output for agent
-reading, inspect cited events or sessions before making claims, and return a
-concise answer with ctx citations. Use `--format json` only when piping to a script,
-`jq`, or extracting exact machine fields.
+Choose local history search or ctx pro blame based on the request. Inspect cited
+events or sessions before making claims, preserve the distinction between Core
+and paid pro capabilities, and return a concise answer grounded in ctx citations.
+Prefer default text output for agent reading; use `--format json` only for
+scripts or exact machine-readable fields.
 "#;
 
-const WINDSURF_WORKFLOW: &str = r#"# ctx History
+const WINDSURF_WORKFLOW: &str = r#"# ctx
 
-Search local coding-agent history with ctx.
+Search coding-agent history or trace code to its original agent session with ctx.
 
-1. Treat any text after `/ctx-history` as the user request.
-2. Search with `ctx search "<query>"` using default text output.
-3. Inspect relevant citations with `ctx show event <id> --window 5` or `ctx show session <id>`.
-4. Answer concisely and include ctx citations for claims based on local history.
-5. Use `--format json` only when piping to a script, `jq`, or extracting exact machine fields.
+1. Treat any text after `/ctx` as the user request.
+2. Choose `ctx search "<query>"` for history or a `ctx blame` command for code provenance.
+3. Remember that ctx pro is a paid add-on; do not imply that the plugin enables it.
+4. Inspect relevant citations with `ctx show event <id> --window 5` or `ctx show session <id>`.
+5. Answer concisely and include ctx citations for claims based on local evidence.
+6. Use `--format json` only for scripts or exact machine-readable fields.
 "#;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -344,6 +348,8 @@ pub struct SlashCommandInstallResult {
     pub status: SlashCommandInstallStatus,
     pub already_installed: bool,
     pub updated: bool,
+    pub migrated: bool,
+    pub legacy_path: Option<PathBuf>,
     pub error: Option<String>,
     pub note: Option<String>,
 }
@@ -439,6 +445,18 @@ impl CommandFileTarget {
     fn bundled_hash(&self) -> String {
         sha256_hex(self.body.as_bytes())
     }
+
+    fn legacy_filename(&self) -> String {
+        let suffix = self
+            .filename
+            .strip_prefix(COMMAND_NAME)
+            .expect("managed command filename starts with the command name");
+        format!("{LEGACY_COMMAND_NAME}{suffix}")
+    }
+
+    fn legacy_command_path(&self) -> PathBuf {
+        self.base_dir.join(self.legacy_filename())
+    }
 }
 
 #[derive(Debug)]
@@ -446,6 +464,14 @@ struct StatusResult {
     status: SlashCommandInstallStatus,
     metadata: Option<SlashCommandMetadata>,
     installed_hash: Option<String>,
+    installed_body: Option<Vec<u8>>,
+}
+
+#[derive(Debug)]
+struct LegacyStatusResult {
+    path: PathBuf,
+    status: SlashCommandInstallStatus,
+    body: Option<Vec<u8>>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -487,6 +513,8 @@ fn install_plan(
             status: SlashCommandInstallStatus::SkillOnly,
             already_installed: true,
             updated: false,
+            migrated: false,
+            legacy_path: None,
             error: None,
             note: Some(note.replace("<agent>", agent.id())),
         }),
@@ -499,6 +527,8 @@ fn install_plan(
             status: SlashCommandInstallStatus::ManualOnly,
             already_installed: true,
             updated: false,
+            migrated: false,
+            legacy_path: None,
             error: None,
             note: Some(note.to_owned()),
         }),
@@ -511,8 +541,45 @@ fn install_file_target(
     product_version: &str,
 ) -> Result<SlashCommandInstallResult> {
     let previous = status_file_target(target)?;
+    let legacy = status_legacy_file_target(target)?;
+    let effective_previous_status = if previous.status == SlashCommandInstallStatus::Missing {
+        legacy
+            .as_ref()
+            .map_or(previous.status, |legacy| legacy.status)
+    } else {
+        previous.status
+    };
+    if legacy
+        .as_ref()
+        .is_some_and(|legacy| legacy.status == SlashCommandInstallStatus::Modified)
+        && !force
+    {
+        return Ok(SlashCommandInstallResult {
+            agent: target.agent,
+            scope: Some(target.scope),
+            path: Some(target.command_path()),
+            success: false,
+            previous_status: effective_previous_status,
+            status: SlashCommandInstallStatus::Modified,
+            already_installed: false,
+            updated: false,
+            migrated: false,
+            legacy_path: legacy.map(|legacy| legacy.path),
+            error: Some(
+                "local edits detected in the legacy /ctx-history command; rerun with --force to replace it with /ctx"
+                    .to_owned(),
+            ),
+            note: None,
+        });
+    }
     let bundled_hash = target.bundled_hash();
     if previous.installed_hash.as_deref() == Some(bundled_hash.as_str()) {
+        let migrated = if let Some(legacy) = &legacy {
+            remove_legacy_command_file(target, legacy)?;
+            true
+        } else {
+            false
+        };
         if !metadata_is_current(target, previous.metadata.as_ref()) {
             write_metadata(target, product_version)?;
         }
@@ -521,10 +588,12 @@ fn install_file_target(
             scope: Some(target.scope),
             path: Some(target.command_path()),
             success: true,
-            previous_status: previous.status,
+            previous_status: effective_previous_status,
             status: SlashCommandInstallStatus::Current,
-            already_installed: true,
-            updated: false,
+            already_installed: !migrated,
+            updated: migrated,
+            migrated,
+            legacy_path: legacy.map(|legacy| legacy.path),
             error: None,
             note: None,
         });
@@ -539,44 +608,111 @@ fn install_file_target(
             status: previous.status,
             already_installed: false,
             updated: false,
+            migrated: false,
+            legacy_path: legacy.map(|legacy| legacy.path),
             error: Some("local command edits detected; rerun with --force to overwrite".to_owned()),
             note: None,
         });
     }
-    write_command_file(target, product_version)?;
+    let migrated = if let Some(legacy) = &legacy {
+        write_command_body(target)?;
+        if let Err(cleanup) = remove_legacy_command_file(target, legacy) {
+            if let Err(rollback) = rollback_command_body(target, previous.installed_body.as_deref())
+            {
+                return Err(anyhow!(
+                    "{cleanup:#}; failed to roll back {} after migration cleanup failed: {rollback:#}",
+                    target.command_path().display()
+                ));
+            }
+            return Err(cleanup);
+        }
+        write_metadata(target, product_version)?;
+        true
+    } else {
+        write_command_file(target, product_version)?;
+        false
+    };
     Ok(SlashCommandInstallResult {
         agent: target.agent,
         scope: Some(target.scope),
         path: Some(target.command_path()),
         success: true,
-        previous_status: previous.status,
+        previous_status: effective_previous_status,
         status: SlashCommandInstallStatus::Current,
         already_installed: false,
-        updated: matches!(
-            previous.status,
-            SlashCommandInstallStatus::Stale | SlashCommandInstallStatus::Modified
-        ),
+        updated: migrated
+            || matches!(
+                effective_previous_status,
+                SlashCommandInstallStatus::Stale | SlashCommandInstallStatus::Modified
+            ),
+        migrated,
+        legacy_path: legacy.map(|legacy| legacy.path),
         error: None,
         note: None,
     })
+}
+
+fn status_legacy_file_target(target: &CommandFileTarget) -> Result<Option<LegacyStatusResult>> {
+    let path = target.legacy_command_path();
+    ensure_path_inside(&target.base_dir, &path)?;
+    let file_metadata = match fs::symlink_metadata(&path) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(error).with_context(|| format!("read {}", path.display())),
+    };
+    if file_metadata.file_type().is_symlink() || file_metadata.is_dir() {
+        return Ok(Some(LegacyStatusResult {
+            path,
+            status: SlashCommandInstallStatus::Modified,
+            body: None,
+        }));
+    }
+    let body = fs::read(&path).with_context(|| format!("read {}", path.display()))?;
+    let hash = sha256_hex(&body);
+    let metadata = read_metadata(&target.base_dir);
+    let status = if legacy_metadata_manages_hash(target, metadata.as_ref(), &hash) {
+        SlashCommandInstallStatus::Stale
+    } else {
+        SlashCommandInstallStatus::Modified
+    };
+    Ok(Some(LegacyStatusResult {
+        path,
+        status,
+        body: Some(body),
+    }))
+}
+
+fn remove_legacy_command_file(
+    target: &CommandFileTarget,
+    legacy: &LegacyStatusResult,
+) -> Result<()> {
+    ensure_path_inside(&target.base_dir, &legacy.path)?;
+    let Some(body) = &legacy.body else {
+        return Err(anyhow!(
+            "legacy command path is not a regular file and was not removed: {}",
+            legacy.path.display()
+        ));
+    };
+    atomic_remove_if_unchanged(&legacy.path, body)
+        .with_context(|| format!("remove legacy command {}", legacy.path.display()))?;
+    Ok(())
 }
 
 fn status_file_target(target: &CommandFileTarget) -> Result<StatusResult> {
     ensure_path_inside(&target.base_dir, &target.command_path())?;
     let command_path = target.command_path();
     let metadata = read_metadata(&target.base_dir);
-    let installed_hash = match fs::symlink_metadata(&command_path) {
+    let installed_body = match fs::symlink_metadata(&command_path) {
         Ok(metadata) if metadata.file_type().is_symlink() || metadata.is_dir() => None,
-        Ok(_) => {
-            Some(sha256_hex(&fs::read(&command_path).with_context(|| {
-                format!("read {}", command_path.display())
-            })?))
-        }
+        Ok(_) => Some(
+            fs::read(&command_path).with_context(|| format!("read {}", command_path.display()))?,
+        ),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
         Err(error) => {
             return Err(error).with_context(|| format!("read {}", command_path.display()))
         }
     };
+    let installed_hash = installed_body.as_deref().map(sha256_hex);
     let status = match installed_hash.as_deref() {
         None if command_path.exists() => SlashCommandInstallStatus::Modified,
         None => SlashCommandInstallStatus::Missing,
@@ -599,16 +735,37 @@ fn status_file_target(target: &CommandFileTarget) -> Result<StatusResult> {
         status,
         metadata,
         installed_hash,
+        installed_body,
     })
 }
 
 fn write_command_file(target: &CommandFileTarget, product_version: &str) -> Result<()> {
+    write_command_body(target)?;
+    write_metadata(target, product_version)
+}
+
+fn write_command_body(target: &CommandFileTarget) -> Result<()> {
     ensure_path_inside(&target.base_dir, &target.command_path())?;
     atomic_update(&target.command_path(), |_| {
         Ok(target.body.as_bytes().to_vec())
     })
-    .with_context(|| format!("write {}", target.command_path().display()))?;
-    write_metadata(target, product_version)
+    .with_context(|| format!("write {}", target.command_path().display()))
+}
+
+fn rollback_command_body(target: &CommandFileTarget, prior_body: Option<&[u8]>) -> Result<()> {
+    let path = target.command_path();
+    match prior_body {
+        Some(prior_body) => atomic_update(&path, |existing| {
+            if existing != Some(target.body.as_bytes()) {
+                return Err(anyhow!(
+                    "refusing to overwrite concurrently changed target {}",
+                    path.display()
+                ));
+            }
+            Ok(prior_body.to_vec())
+        }),
+        None => atomic_remove_if_unchanged(&path, target.body.as_bytes()).map(|_| ()),
+    }
 }
 
 fn write_metadata(target: &CommandFileTarget, product_version: &str) -> Result<()> {
@@ -647,6 +804,23 @@ fn metadata_manages_hash(
     })
 }
 
+fn legacy_metadata_manages_hash(
+    target: &CommandFileTarget,
+    metadata: Option<&SlashCommandMetadata>,
+    hash: &str,
+) -> bool {
+    let legacy_filename = target.legacy_filename();
+    metadata.is_some_and(|metadata| {
+        metadata.schema_version == 1
+            && metadata.installer == "ctx-cli"
+            && metadata.command_name == LEGACY_COMMAND_NAME
+            && metadata
+                .files
+                .get(&legacy_filename)
+                .is_some_and(|metadata_hash| metadata_hash == hash)
+    })
+}
+
 fn scope(project: bool) -> SlashCommandScope {
     if project {
         SlashCommandScope::Project
@@ -680,7 +854,7 @@ fn non_empty_absolute_env_path(key: &str) -> Result<Option<PathBuf>> {
 
 fn opencode_command_body() -> String {
     format!(
-        "---\ndescription: Search local agent history with ctx\nargument-hint: [question or topic]\n---\n\n{COMMAND_INSTRUCTIONS}"
+        "---\ndescription: Search agent history or trace code with ctx\nargument-hint: [question, topic, file, line, commit, or PR]\n---\n\n{COMMAND_INSTRUCTIONS}"
     )
 }
 
@@ -688,14 +862,14 @@ fn gemini_command_body() -> String {
     let prompt = COMMAND_INSTRUCTIONS.replace("$ARGUMENTS", "{{args}}");
     format!(
         "description = \"{}\"\nprompt = '''\n{}'''\n",
-        toml_basic_string("Search local agent history with ctx"),
+        toml_basic_string("Search agent history or trace code with ctx"),
         prompt
     )
 }
 
 fn qwen_command_body() -> String {
     let prompt = COMMAND_INSTRUCTIONS.replace("$ARGUMENTS", "{{args}}");
-    format!("---\ndescription: Search local agent history with ctx\n---\n\n{prompt}")
+    format!("---\ndescription: Search agent history or trace code with ctx\n---\n\n{prompt}")
 }
 
 fn toml_basic_string(value: &str) -> String {
@@ -734,188 +908,4 @@ fn sha256_hex(body: &[u8]) -> String {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    const PRODUCT_VERSION: &str = "1.0.0-test";
-
-    fn request(agent: SlashCommandAgent) -> SlashCommandInstallRequest {
-        SlashCommandInstallRequest {
-            agents: vec![agent],
-            all_agents: false,
-            project: true,
-            force: false,
-            product_version: PRODUCT_VERSION.to_owned(),
-        }
-    }
-
-    #[test]
-    fn detected_file_targets_are_selected_once_and_in_order() {
-        let root = tempfile::tempdir().unwrap();
-        let xdg = root.path().join("xdg");
-        fs::create_dir_all(xdg.join("opencode")).unwrap();
-        fs::create_dir_all(xdg.join("mimocode")).unwrap();
-        let context = PathContext::for_tests(root.path().to_owned(), root.path().to_owned())
-            .with_xdg_config_home(xdg);
-        let request = SlashCommandInstallRequest {
-            agents: Vec::new(),
-            all_agents: false,
-            project: false,
-            force: false,
-            product_version: PRODUCT_VERSION.to_owned(),
-        };
-
-        assert_eq!(
-            selected_agents(&request, &context),
-            vec![SlashCommandAgent::OpenCode, SlashCommandAgent::MiMoCode]
-        );
-    }
-
-    #[cfg(any(target_os = "linux", target_os = "macos", windows))]
-    #[test]
-    fn managed_file_is_idempotent_and_refreshes_stale_content() {
-        let root = tempfile::tempdir().unwrap();
-        let context = PathContext::for_tests(root.path().to_owned(), root.path().to_owned());
-        let request = request(SlashCommandAgent::OpenCode);
-        let first = execute_install(request.clone(), &context).unwrap();
-        assert_eq!(
-            first.results[0].previous_status,
-            SlashCommandInstallStatus::Missing
-        );
-        assert!(!first.results[0].already_installed);
-
-        let second = execute_install(request.clone(), &context).unwrap();
-        assert!(second.results[0].already_installed);
-
-        let target = match SlashCommandAgent::OpenCode.install_plan(true, &context) {
-            SlashCommandPlan::File(target) => target,
-            _ => unreachable!(),
-        };
-        let old_body = "---\ndescription: old\n---\n\nold\n";
-        fs::write(target.command_path(), old_body).unwrap();
-        let mut metadata = SlashCommandMetadata::current(&target, PRODUCT_VERSION);
-        metadata
-            .files
-            .insert(target.filename.clone(), sha256_hex(old_body.as_bytes()));
-        fs::write(
-            target.base_dir.join(METADATA_FILE),
-            serde_json::to_vec_pretty(&metadata).unwrap(),
-        )
-        .unwrap();
-
-        let refreshed = execute_install(request, &context).unwrap();
-        assert_eq!(
-            refreshed.results[0].previous_status,
-            SlashCommandInstallStatus::Stale
-        );
-        assert!(refreshed.results[0].updated);
-    }
-
-    #[cfg(any(target_os = "linux", target_os = "macos", windows))]
-    #[test]
-    fn local_command_edits_require_force_and_unrelated_files_survive() {
-        let root = tempfile::tempdir().unwrap();
-        let context = PathContext::for_tests(root.path().to_owned(), root.path().to_owned());
-        let mut request = request(SlashCommandAgent::GeminiCli);
-        let target = match SlashCommandAgent::GeminiCli.install_plan(true, &context) {
-            SlashCommandPlan::File(target) => target,
-            _ => unreachable!(),
-        };
-        fs::create_dir_all(&target.base_dir).unwrap();
-        fs::write(target.command_path(), "prompt = 'local'\n").unwrap();
-        fs::write(target.base_dir.join("keep.txt"), "keep").unwrap();
-
-        let skipped = execute_install(request.clone(), &context).unwrap();
-        assert!(!skipped.results[0].success);
-        assert_eq!(
-            skipped.results[0].status,
-            SlashCommandInstallStatus::Modified
-        );
-
-        request.force = true;
-        let forced = execute_install(request, &context).unwrap();
-        assert!(forced.results[0].success);
-        assert_eq!(
-            fs::read_to_string(target.base_dir.join("keep.txt")).unwrap(),
-            "keep"
-        );
-    }
-
-    #[test]
-    fn generated_command_bytes_match_the_public_contract() {
-        assert_eq!(
-            opencode_command_body(),
-            format!(
-                "---\ndescription: Search local agent history with ctx\nargument-hint: [question or topic]\n---\n\n{COMMAND_INSTRUCTIONS}"
-            )
-        );
-        assert!(gemini_command_body().contains("User request: {{args}}"));
-        assert!(qwen_command_body().ends_with(
-            COMMAND_INSTRUCTIONS
-                .replace("$ARGUMENTS", "{{args}}")
-                .as_str()
-        ));
-        assert!(WINDSURF_WORKFLOW.ends_with("machine fields.\n"));
-    }
-
-    #[test]
-    fn skill_only_agents_do_not_write_legacy_prompts() {
-        let root = tempfile::tempdir().unwrap();
-        let context = PathContext::for_tests(root.path().to_owned(), root.path().to_owned());
-        let receipt = execute_install(request(SlashCommandAgent::Codex), &context).unwrap();
-        assert_eq!(
-            receipt.results[0].status,
-            SlashCommandInstallStatus::SkillOnly
-        );
-        assert!(!root.path().join(".codex").join("prompts").exists());
-    }
-
-    #[test]
-    fn grok_build_is_skill_only_and_writes_no_command_file() {
-        let root = tempfile::tempdir().unwrap();
-        let context = PathContext::for_tests(root.path().to_owned(), root.path().to_owned());
-        let receipt = execute_install(request(SlashCommandAgent::GrokBuild), &context).unwrap();
-
-        assert_eq!(receipt.results[0].agent.id(), "grok-build");
-        assert_eq!(receipt.results[0].agent.display_name(), "Grok Build");
-        assert_eq!(
-            receipt.results[0].status,
-            SlashCommandInstallStatus::SkillOnly
-        );
-        assert!(receipt.results[0].path.is_none());
-        assert!(!root.path().join(".grok").exists());
-    }
-
-    #[test]
-    fn interrupted_content_then_metadata_publication_is_stale_and_recoverable() {
-        let root = tempfile::tempdir().unwrap();
-        let context = PathContext::for_tests(root.path().to_owned(), root.path().to_owned());
-        let request = request(SlashCommandAgent::OpenCode);
-        let target = match SlashCommandAgent::OpenCode.install_plan(true, &context) {
-            SlashCommandPlan::File(target) => target,
-            _ => unreachable!(),
-        };
-        fs::create_dir_all(&target.base_dir).unwrap();
-        fs::create_dir(target.base_dir.join(METADATA_FILE)).unwrap();
-
-        let error = execute_install(request.clone(), &context).unwrap_err();
-        assert!(format!("{error:#}").contains("non-regular file"));
-        assert_eq!(
-            fs::read(target.command_path()).unwrap(),
-            target.body.as_bytes()
-        );
-        assert_eq!(
-            status_file_target(&target).unwrap().status,
-            SlashCommandInstallStatus::Stale
-        );
-
-        fs::remove_dir(target.base_dir.join(METADATA_FILE)).unwrap();
-        let repaired = execute_install(request, &context).unwrap();
-        assert!(repaired.results[0].already_installed);
-        assert!(!repaired.results[0].updated);
-        assert_eq!(
-            status_file_target(&target).unwrap().status,
-            SlashCommandInstallStatus::Current
-        );
-    }
-}
+mod tests;

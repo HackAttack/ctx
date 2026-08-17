@@ -1,32 +1,35 @@
 {
   "name": "ctx",
   "owner": {
-    "name": "ctxrs"
+    "name": "ctx engineering inc"
   },
   "plugins": [
     {
-      "name": "ctx-agent-history-search",
-      "displayName": "ctx Agent History Search",
-      "source": "./plugins/ctx-agent-history-search",
-      "description": "Use ctx to search local coding-agent history and retrieve cited session context before working.",
-      "version": "0.1.0",
+      "name": "ctx",
+      "displayName": "ctx",
+      "source": "./plugins/ctx",
+      "description": "Fast local search and 'git blame' for agent sessions.",
+      "version": "1.0.0",
       "author": {
-        "name": "ctxrs"
+        "name": "ctx engineering inc"
       },
-      "homepage": "https://github.com/ctxrs/ctx",
+      "homepage": "https://ctx.rs",
       "repository": "https://github.com/ctxrs/ctx",
       "license": "Apache-2.0",
       "keywords": [
         "ctx",
+        "agent-sessions",
         "agent-history",
-        "search",
-        "sessions"
+        "transcripts",
+        "local-search",
+        "code-provenance"
       ],
       "category": "developer-tools",
       "tags": [
         "ctx",
         "agent-history",
-        "search",
+        "local-search",
+        "code-provenance",
         "developer-tools"
       ]
     }

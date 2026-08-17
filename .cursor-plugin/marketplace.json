@@ -1,16 +1,16 @@
 {
   "name": "ctx-plugins",
   "owner": {
-    "name": "ctxrs"
+    "name": "ctx engineering inc"
   },
   "metadata": {
-    "description": "ctx plugins for local agent history search."
+    "description": "Fast local search and 'git blame' for agent sessions."
   },
   "plugins": [
     {
-      "name": "ctx-agent-history-search",
-      "source": "plugins/ctx-agent-history-search",
-      "description": "Use ctx to search local coding-agent history and retrieve cited session context before working."
+      "name": "ctx",
+      "source": "plugins/ctx",
+      "description": "Fast local search and 'git blame' for agent sessions."
     }
   ]
 }

@@ -48,8 +48,8 @@ public_user_docs=(
   SECURITY.md
   docs/*.md
   docs/contracts/*.md
-  skills/ctx-agent-history-search/SKILL.md
-  plugins/ctx-agent-history-search/skills/ctx-agent-history-search/SKILL.md
+  skills/ctx/SKILL.md
+  plugins/ctx/skills/ctx/SKILL.md
 )
 
 if tracked_files | grep -E '^apps/ctx-dashboard(/|$)' >/dev/null; then
@@ -86,7 +86,7 @@ if grep_files '/home/[d]addy|/home/[^[:space:]]+/(code|Documents|Desktop)|/Users
   fail 'public package surface contains private host or workspace paths'
 fi
 
-if ! diff -u skills/ctx-agent-history-search/SKILL.md plugins/ctx-agent-history-search/skills/ctx-agent-history-search/SKILL.md >/dev/null; then
+if ! diff -u skills/ctx/SKILL.md plugins/ctx/skills/ctx/SKILL.md >/dev/null; then
   fail 'plugin skill copy differs from public skill source'
 fi
 
