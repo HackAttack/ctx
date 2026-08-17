@@ -236,6 +236,36 @@ mod native {
         wakeup: FileSnapshot,
     }
 
+    struct TestGate {
+        path: Option<PathBuf>,
+    }
+
+    impl TestGate {
+        fn create(path: PathBuf) -> Self {
+            fs::write(&path, b"block\n")
+                .unwrap_or_else(|error| panic!("create test gate {}: {error}", path.display()));
+            Self { path: Some(path) }
+        }
+
+        fn release(&mut self) {
+            if let Some(path) = self.path.take() {
+                match fs::remove_file(&path) {
+                    Ok(()) => {}
+                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                    Err(error) => panic!("release test gate {}: {error}", path.display()),
+                }
+            }
+        }
+    }
+
+    impl Drop for TestGate {
+        fn drop(&mut self) {
+            if let Some(path) = self.path.take() {
+                let _ = fs::remove_file(path);
+            }
+        }
+    }
+
     #[test]
     fn persistent_daemon_release_lifecycle_is_event_driven_and_self_healing() {
         let _serial = TEST_SERIAL
@@ -777,6 +807,195 @@ mod native {
                 .is_none_or(|pid| !process_is_running(pid)),
             "RefreshArg::Off MCP search started an on-demand daemon"
         );
+
+        let config_path = harness.root().join("config.toml");
+        let semantic_on = fs::read_to_string(&config_path)
+            .unwrap()
+            .replace("semantic = false", "semantic = true");
+        fs::write(&config_path, &semantic_on).unwrap();
+        let semantic_status = harness.daemon_status();
+        assert_eq!(
+            semantic_status["jobs"]["semantic_index"]["reason"],
+            "daemon_nonpersistent",
+            "{semantic_status:#}"
+        );
+        fs::write(
+            &config_path,
+            semantic_on.replace("semantic = true", "semantic = false"),
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn lifecycle_control_lock_serializes_opposite_policy_processes() {
+        let _serial = TEST_SERIAL
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let harness = Harness::new();
+        harness.json(&["daemon", "lifecycle", "on-demand", "--format=json"]);
+
+        let blocked = harness
+            .root()
+            .join(".daemon-persistent-lifecycle-blocked-after-config-for-test");
+        let mut gate = TestGate::create(
+            harness
+                .root()
+                .join(".block-daemon-persistent-lifecycle-after-config-for-test"),
+        );
+        let persistent_args = ["daemon", "lifecycle", "persistent", "--format=json"];
+        let on_demand_args = ["daemon", "lifecycle", "on-demand", "--format=json"];
+        let persistent = harness.spawn(&persistent_args, None);
+        wait_for_path(&blocked, "persistent lifecycle config barrier");
+
+        let mut on_demand = harness.spawn(&on_demand_args, None);
+        thread::sleep(Duration::from_millis(250));
+        assert!(
+            on_demand.try_wait().unwrap().is_none(),
+            "opposite lifecycle process bypassed lifecycle-control ownership"
+        );
+        let in_flight_config = fs::read_to_string(harness.root().join("config.toml")).unwrap();
+        assert!(
+            in_flight_config.contains("lifecycle = \"persistent\""),
+            "waiting process changed policy inside the active transaction: {in_flight_config}"
+        );
+
+        gate.release();
+        let persistent = success_json(
+            wait_for_output(persistent, COMMAND_TIMEOUT, &persistent_args),
+            &persistent_args,
+        );
+        let on_demand = success_json(
+            wait_for_output(on_demand, COMMAND_TIMEOUT, &on_demand_args),
+            &on_demand_args,
+        );
+        assert_eq!(persistent["daemon_lifecycle"], "persistent", "{persistent:#}");
+        assert_eq!(on_demand["daemon_lifecycle"], "on-demand", "{on_demand:#}");
+        wait_for_no_daemon(&harness);
+        let final_status = harness.daemon_status();
+        assert_eq!(final_status["lifecycle"], "on-demand", "{final_status:#}");
+        assert_eq!(final_status["running"], false, "{final_status:#}");
+        let final_config = fs::read_to_string(harness.root().join("config.toml")).unwrap();
+        assert!(
+            final_config.contains("lifecycle = \"on-demand\""),
+            "{final_config}"
+        );
+    }
+
+    #[test]
+    fn simultaneous_cold_on_demand_callers_join_the_authenticated_owner() {
+        let _serial = TEST_SERIAL
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let harness = Harness::new();
+        harness.json(&["daemon", "lifecycle", "on-demand", "--format=json"]);
+        write_codex_session(harness.home(), "cold start authenticated join oracle");
+
+        let mut before_lock = TestGate::create(
+            harness
+                .root()
+                .join(".block-daemon-before-owner-lock-for-test"),
+        );
+        let mut after_lock = TestGate::create(
+            harness
+                .root()
+                .join(".block-daemon-owner-after-lock-for-test"),
+        );
+        let args = [
+            "search",
+            "cold start authenticated join oracle",
+            "--provider",
+            "codex",
+            "--refresh",
+            "wait",
+            "--format=json",
+        ];
+        let mut first = harness.spawn(&args, None);
+        let mut second = harness.spawn(&args, None);
+        let contenders = wait_for_daemon_owner_lock_contenders(harness.root(), 2);
+        before_lock.release();
+
+        let owner_marker = harness
+            .root()
+            .join(".daemon-owner-blocked-after-lock-for-test");
+        wait_for_path(&owner_marker, "cold-start winning owner barrier");
+        let owner_pid = fs::read_to_string(&owner_marker)
+            .unwrap()
+            .trim()
+            .parse::<u32>()
+            .unwrap();
+        let loser_pid = contenders
+            .iter()
+            .copied()
+            .find(|pid| *pid != owner_pid)
+            .expect("one cold-start child must lose the owner lock");
+        wait_for_process_state(loser_pid, false, OBSERVATION_TIMEOUT)
+            .expect("losing same-binary daemon child should exit cleanly");
+        assert!(
+            first.try_wait().unwrap().is_none(),
+            "first caller abandoned authenticated owner handoff"
+        );
+        assert!(
+            second.try_wait().unwrap().is_none(),
+            "second caller abandoned authenticated owner handoff"
+        );
+
+        after_lock.release();
+        for output in [
+            wait_for_output(first, COMMAND_TIMEOUT, &args),
+            wait_for_output(second, COMMAND_TIMEOUT, &args),
+        ] {
+            let result = success_json(output, &args);
+            let generation = result["retrieval"]["generation_id"]
+                .as_str()
+                .expect("joined caller generation");
+            assert_search_result(&result, "cold start authenticated join oracle", generation);
+        }
+        wait_for_no_daemon(&harness);
+    }
+
+    #[test]
+    fn on_demand_setup_reports_an_observed_manual_owner_as_persistent() {
+        let _serial = TEST_SERIAL
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let harness = Harness::new();
+        harness.json(&["daemon", "lifecycle", "on-demand", "--format=json"]);
+        write_codex_session(harness.home(), "manual owner setup lifetime oracle");
+        harness.setup_wait();
+        wait_for_no_daemon(&harness);
+
+        let manual_args = ["daemon", "run", "--format=json"];
+        let manual_owner = harness.spawn(&manual_args, None);
+        let manual_pid = manual_owner.id();
+        let running = wait_for_daemon(&harness, None);
+        let owner_pid = live_pid(&running);
+        assert_eq!(owner_pid, manual_pid, "{running:#}");
+        assert_eq!(running["lifecycle"], "on-demand", "{running:#}");
+
+        let setup_args = ["setup", "--wait", "--format=json", "--progress", "none"];
+        let setup = harness.json(&setup_args);
+        assert_eq!(setup["daemon_autostart"]["pid"], owner_pid, "{setup:#}");
+        assert_eq!(setup["daemon_autostart"]["persistent"], true, "{setup:#}");
+        assert_eq!(setup["daemon_autostart"]["status"], "degraded", "{setup:#}");
+        assert_eq!(
+            setup["daemon_autostart"]["reason"],
+            "native_supervisor_unavailable",
+            "{setup:#}"
+        );
+
+        let human_args = ["setup", "--wait", "--progress", "none"];
+        let human = harness.output(&human_args);
+        assert!(human.status.success(), "{}", String::from_utf8_lossy(&human.stderr));
+        let rendered = String::from_utf8_lossy(&human.stdout);
+        assert!(
+            rendered.contains("Background  persistent daemon (automatic restart unavailable)"),
+            "{rendered}"
+        );
+        assert!(process_is_running(owner_pid));
+
+        harness.json(&["daemon", "disable", "--format=json"]);
+        let manual = wait_for_output(manual_owner, COMMAND_TIMEOUT, &manual_args);
+        assert!(manual.status.success(), "{}", String::from_utf8_lossy(&manual.stderr));
     }
 
     #[test]
@@ -1268,6 +1487,45 @@ mod native {
                 }
                 Err(_) => return None,
             }
+        }
+    }
+
+    fn wait_for_path(path: &Path, description: &str) {
+        let deadline = Instant::now() + OBSERVATION_TIMEOUT;
+        while !path.exists() {
+            assert!(
+                Instant::now() < deadline,
+                "timed out waiting for {description}: {}",
+                path.display()
+            );
+            thread::sleep(Duration::from_millis(10));
+        }
+    }
+
+    fn wait_for_daemon_owner_lock_contenders(root: &Path, expected: usize) -> Vec<u32> {
+        let deadline = Instant::now() + OBSERVATION_TIMEOUT;
+        loop {
+            let mut pids = fs::read_dir(root)
+                .unwrap()
+                .filter_map(Result::ok)
+                .filter_map(|entry| entry.file_name().into_string().ok())
+                .filter_map(|name| {
+                    name.strip_prefix(".daemon-before-owner-lock-")
+                        .and_then(|value| value.strip_suffix("-for-test"))
+                        .and_then(|value| value.parse::<u32>().ok())
+                })
+                .collect::<Vec<_>>();
+            pids.sort_unstable();
+            pids.dedup();
+            if pids.len() >= expected {
+                return pids;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "only observed {} of {expected} cold-start lock contenders: {pids:?}",
+                pids.len()
+            );
+            thread::sleep(Duration::from_millis(10));
         }
     }
 

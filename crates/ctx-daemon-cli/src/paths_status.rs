@@ -103,15 +103,15 @@ fn daemon_semantic_job_report(
     current_config: Option<&AppConfig<'_>>,
 ) -> Value {
     let reload = context.config_reload;
-    let daemon_persistent = reload
+    let daemon_lifecycle = reload
         .requested_daemon_lifecycle
         .or(reload.applied_daemon_lifecycle)
-        .map(|lifecycle| lifecycle == "persistent")
         .unwrap_or_else(|| {
             current_config
-                .map(|config| config.daemon.lifecycle.is_persistent())
-                .unwrap_or_else(|| AppConfig::default().daemon.lifecycle.is_persistent())
+                .map(|config| config.daemon.lifecycle.as_str())
+                .unwrap_or_else(|| AppConfig::default().daemon.lifecycle.as_str())
         });
+    let daemon_persistent = daemon_lifecycle == "persistent";
     let semantic_enabled = reload
         .requested_semantic_enabled
         .or(reload.applied_semantic_enabled)
@@ -148,15 +148,15 @@ fn daemon_semantic_job_report(
     } else if context.daemon_running && enabled && !context.semantic_runtime_active {
         Some("semantic_runtime_inactive".to_owned())
     } else if disabled {
-        Some(if context.daemon_mode.runs_only_source_refresh() {
-            "daemon_mode_source_refresh_only".to_owned()
-        } else if !semantic_enabled {
-            "semantic_disabled".to_owned()
-        } else if !semantic_supported {
-            "unsupported_platform".to_owned()
-        } else {
-            "daemon_disabled".to_owned()
-        })
+        Some(
+            semantic_disabled_reason(
+                daemon_lifecycle,
+                semantic_enabled,
+                semantic_supported,
+                mode_allows_semantic,
+            )
+            .to_owned(),
+        )
     } else {
         last_run_reason.clone()
     };
@@ -197,6 +197,25 @@ fn daemon_semantic_job_report(
             .and_then(|value| json_string(value, "model_key")),
         "daemon_mode": context.daemon_mode.as_str(),
     }))
+}
+
+fn semantic_disabled_reason(
+    daemon_lifecycle: &str,
+    semantic_enabled: bool,
+    semantic_supported: bool,
+    mode_allows_semantic: bool,
+) -> &'static str {
+    if !mode_allows_semantic {
+        "daemon_mode_source_refresh_only"
+    } else if !semantic_enabled {
+        "semantic_disabled"
+    } else if !semantic_supported {
+        "unsupported_platform"
+    } else if daemon_lifecycle == "on-demand" {
+        "daemon_nonpersistent"
+    } else {
+        "daemon_disabled"
+    }
 }
 
 #[cfg(test)]

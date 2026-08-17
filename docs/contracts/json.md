@@ -39,8 +39,10 @@ recover the persistent daemon before returning. With `on-demand`, setup starts
 the same coordinator for its bounded Core request and the process exits after
 completion. `daemon_autostart.status: "verified"` includes the live PID.
 On-demand startup reports `persistent: false` and is not degraded merely because
-no native restart supervisor is installed. A one-run `--no-daemon` opt-out
-reports `status: "not_requested"` and reason
+no native restart supervisor is installed. `persistent` describes the observed
+joined process lifetime and start mode, not only configured policy, so setup
+joining a manually started owner reports `persistent: true`. A one-run
+`--no-daemon` opt-out reports `status: "not_requested"` and reason
 `explicit_opt_out`; a durable disabled configuration uses reason
 `daemon_disabled`. `refresh_request` separately reports whether setup queued
 or waited for daemon-owned Core publication. A completed `--wait` request
@@ -212,6 +214,8 @@ parse/read failure remains in `config_reload` and does not replace the retained
 semantic runtime's job `status`, `reason`, or `last_error`. When the daemon is
 disabled for ordinary status reporting, the semantic job reports
 `enabled: false`, `status: "disabled"`, and `reason: "daemon_disabled"`.
+On-demand lifecycle instead reports `reason: "daemon_nonpersistent"`,
+distinguishing finite Core refresh ownership from a fully disabled daemon.
 
 `daemon.jobs.history_refresh.rejection_diagnostics` preserves aggregate
 `rejected_records` and `sources_completed_with_rejections` from the latest

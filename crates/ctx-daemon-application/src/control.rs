@@ -1,7 +1,7 @@
 use std::{path::Path, time::Duration};
 
 use anyhow::{anyhow, Context};
-use ctx_daemon_runtime::daemon_lock_is_active;
+use ctx_daemon_runtime::{daemon_lock_is_active, DaemonLifecycleControlLock};
 
 use crate::{
     lifecycle, supervisor, DaemonApplicationHost, DaemonHandoff, DaemonLifecycle, DaemonStartError,
@@ -36,8 +36,31 @@ pub(super) fn update_daemon_lifecycle(
     data_root: &Path,
     lifecycle: DaemonLifecycle,
 ) -> Result<DaemonLifecycleUpdate, DaemonLifecycleUpdateError> {
-    host.set_daemon_lifecycle(data_root, lifecycle)
+    let _control = DaemonLifecycleControlLock::acquire(data_root)
         .map_err(DaemonLifecycleUpdateError::Operation)?;
+    let previous_lifecycle = host
+        .daemon_config(data_root)
+        .map_err(DaemonLifecycleUpdateError::Operation)?
+        .lifecycle;
+    persist_and_apply_lifecycle_with_rollback(
+        previous_lifecycle,
+        lifecycle,
+        |lifecycle| host.set_daemon_lifecycle(data_root, lifecycle),
+        |lifecycle| {
+            ctx_daemon_runtime::block_daemon_lifecycle_after_config_for_test(
+                data_root,
+                lifecycle.as_str(),
+            )
+            .map_err(DaemonLifecycleUpdateError::Operation)?;
+            apply_configured_lifecycle(host, data_root)
+        },
+    )
+}
+
+fn apply_configured_lifecycle(
+    host: &dyn DaemonApplicationHost,
+    data_root: &Path,
+) -> Result<DaemonLifecycleUpdate, DaemonLifecycleUpdateError> {
     let config = host
         .daemon_config(data_root)
         .map_err(DaemonLifecycleUpdateError::Operation)?;
@@ -81,6 +104,33 @@ pub(super) fn update_daemon_lifecycle(
         persistent,
         supervisor,
     })
+}
+
+fn persist_and_apply_lifecycle_with_rollback<T>(
+    previous_lifecycle: DaemonLifecycle,
+    requested_lifecycle: DaemonLifecycle,
+    mut persist: impl FnMut(DaemonLifecycle) -> anyhow::Result<()>,
+    mut apply: impl FnMut(DaemonLifecycle) -> Result<T, DaemonLifecycleUpdateError>,
+) -> Result<T, DaemonLifecycleUpdateError> {
+    persist(requested_lifecycle).map_err(DaemonLifecycleUpdateError::Operation)?;
+    match apply(requested_lifecycle) {
+        Ok(update) => Ok(update),
+        Err(update_error) => {
+            let rollback = persist(previous_lifecycle)
+                .context("restore previous daemon lifecycle configuration")
+                .and_then(|()| {
+                    apply(previous_lifecycle)
+                        .map(drop)
+                        .map_err(|error| anyhow!("reconcile previous daemon lifecycle: {error:?}"))
+                });
+            match rollback {
+                Ok(()) => Err(update_error),
+                Err(rollback_error) => Err(DaemonLifecycleUpdateError::Operation(anyhow!(
+                    "daemon lifecycle update failed ({update_error:?}) and rollback failed: {rollback_error:#}"
+                ))),
+            }
+        }
+    }
 }
 
 fn request_daemon_shutdown_and_wait(
@@ -137,7 +187,7 @@ fn request_daemon_shutdown_and_wait_with(
 
 #[cfg(test)]
 mod tests {
-    use std::cell::Cell;
+    use std::cell::{Cell, RefCell};
 
     use super::*;
 
@@ -337,5 +387,38 @@ mod tests {
         );
         assert_eq!(error.root_cause().to_string(), "identity mismatch");
         assert_eq!(cleanups.get(), 0);
+    }
+
+    #[test]
+    fn supervisor_failure_restores_previous_lifecycle_and_reconciles_it() {
+        let persisted = Cell::new(DaemonLifecycle::OnDemand);
+        let applications = RefCell::new(Vec::new());
+
+        let error = persist_and_apply_lifecycle_with_rollback(
+            DaemonLifecycle::OnDemand,
+            DaemonLifecycle::Persistent,
+            |lifecycle| {
+                persisted.set(lifecycle);
+                Ok(())
+            },
+            |lifecycle| {
+                applications.borrow_mut().push(lifecycle);
+                if lifecycle.is_persistent() {
+                    Err(DaemonLifecycleUpdateError::Supervisor(anyhow!(
+                        "injected supervisor failure"
+                    )))
+                } else {
+                    Ok(())
+                }
+            },
+        )
+        .unwrap_err();
+
+        assert!(matches!(error, DaemonLifecycleUpdateError::Supervisor(_)));
+        assert_eq!(persisted.get(), DaemonLifecycle::OnDemand);
+        assert_eq!(
+            *applications.borrow(),
+            vec![DaemonLifecycle::Persistent, DaemonLifecycle::OnDemand]
+        );
     }
 }

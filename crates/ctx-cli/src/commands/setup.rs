@@ -86,7 +86,11 @@ pub(crate) fn run_setup(
     // Observe the final owner without re-entering supervisor/startup mutation,
     // then replace only the daemon report so unrelated source fields retain
     // their original admission boundary.
-    if daemon_autostart_requested && config.daemon.is_persistent() {
+    if daemon_autostart_requested
+        && daemon_handoff
+            .as_ref()
+            .is_some_and(|handoff| handoff.persistent)
+    {
         let (observed_source, observed_handoff) = observe_setup_output_daemon(&data_root, config)?;
         source.report["daemon"] = observed_source.report["daemon"].clone();
         daemon_handoff = Some(observed_handoff);
@@ -123,7 +127,6 @@ pub(crate) fn run_setup(
         daemon_autostart_json(
             daemon_autostart_requested,
             daemon_autostart_reason,
-            config.daemon.is_persistent(),
             daemon_handoff.as_ref(),
             &supervisor,
         ),
@@ -148,7 +151,9 @@ pub(crate) fn run_setup(
                 requested: daemon_autostart_requested,
                 reason: daemon_autostart_reason,
                 started: daemon_handoff.is_some(),
-                persistent: config.daemon.is_persistent(),
+                persistent: daemon_handoff
+                    .as_ref()
+                    .is_some_and(|handoff| handoff.persistent),
                 persistent_supervisor_verified: supervisor_persistently_verified(&supervisor),
             },
         );
@@ -359,13 +364,13 @@ fn refresh_request_failure(
 fn daemon_autostart_json(
     requested: bool,
     reason: Option<&str>,
-    persistent: bool,
     startup: Option<&DaemonSetupHandoff>,
     supervisor: &Value,
 ) -> Value {
     let persistently_supervised = supervisor_persistently_verified(supervisor);
     match startup {
         Some(startup) => {
+            let persistent = startup.persistent;
             json!({
                 "status": if !persistent || persistently_supervised { "verified" } else { "degraded" },
                 "reason": if !persistent || persistently_supervised {
@@ -514,8 +519,10 @@ mod tests {
                 pid: 42,
                 heartbeat_at_ms: 1,
             },
+            start_mode: ctx_daemon_cli::DaemonStartModeArg::Auto,
+            persistent: true,
         };
-        let autostart = daemon_autostart_json(true, None, true, Some(&startup), &supervisor);
+        let autostart = daemon_autostart_json(true, None, Some(&startup), &supervisor);
         assert_eq!(autostart["status"], "degraded");
         assert_eq!(autostart["persistent"], true);
         assert!(autostart["limitation"].is_null());
@@ -539,8 +546,10 @@ mod tests {
                 pid: 42,
                 heartbeat_at_ms: 1,
             },
+            start_mode: ctx_daemon_cli::DaemonStartModeArg::Auto,
+            persistent: true,
         };
-        let autostart = daemon_autostart_json(true, None, true, Some(&startup), &supervisor);
+        let autostart = daemon_autostart_json(true, None, Some(&startup), &supervisor);
         assert_eq!(autostart["status"], "degraded");
         assert_eq!(autostart["persistent"], true);
         assert!(autostart["limitation"].is_null());
@@ -559,8 +568,10 @@ mod tests {
                 pid: 42,
                 heartbeat_at_ms: 1,
             },
+            start_mode: ctx_daemon_cli::DaemonStartModeArg::Auto,
+            persistent: false,
         };
-        let autostart = daemon_autostart_json(true, None, false, Some(&startup), &supervisor);
+        let autostart = daemon_autostart_json(true, None, Some(&startup), &supervisor);
         assert_eq!(autostart["status"], "verified");
         assert!(autostart["reason"].is_null());
         assert_eq!(autostart["persistent"], false);
@@ -574,6 +585,8 @@ mod tests {
                 pid,
                 heartbeat_at_ms: 2,
             },
+            start_mode: ctx_daemon_cli::DaemonStartModeArg::Auto,
+            persistent: true,
         };
         let report = |pid| {
             json!({

@@ -43,6 +43,8 @@ const DAEMON_MODE_ENV: &str = "CTX_DAEMON_MODE";
 pub struct DaemonHandoff {
     pub pid: u32,
     pub heartbeat_at_ms: i64,
+    pub start_mode: DaemonHostStartMode,
+    pub persistent: bool,
 }
 
 #[derive(Debug)]
@@ -428,6 +430,16 @@ pub fn start_daemon_and_wait(
                 let Some(exit) = child.try_wait()? else {
                     return Ok(None);
                 };
+                if exit.success() && daemon_lock_is_active(data_root) {
+                    let executable = daemon_autostart_exe()?;
+                    if daemon_lock_matches_executable(data_root, &executable)? {
+                        // Another same-binary cold-start child won the owner
+                        // lock. Keep this caller in the authenticated readiness
+                        // handoff instead of treating the losing child's clean
+                        // singleton exit as startup failure.
+                        return Ok(None);
+                    }
+                }
                 let detail = read_daemon_status(data_root)
                     .and_then(|status| {
                         (status.get("pid").and_then(Value::as_u64) == Some(u64::from(child.id())))
@@ -743,9 +755,31 @@ fn daemon_handoff_status_observation_from(
         .and_then(Value::as_i64)
         .filter(|heartbeat| *heartbeat > 0)
         .unwrap_or_default();
+    let start_mode = match status.get("start_mode").and_then(Value::as_str) {
+        Some("manual") => DaemonHostStartMode::Manual,
+        Some("auto") => DaemonHostStartMode::Auto,
+        _ => return DaemonHandoffObservation::Pending,
+    };
+    let applied = status
+        .get("config_reload")
+        .and_then(|reload| reload.get("applied"));
+    let applied_persistent = applied
+        .and_then(|value| value.get("daemon_lifecycle"))
+        .and_then(Value::as_str)
+        .map_or_else(
+            || {
+                applied
+                    .and_then(|value| value.get("daemon_enabled"))
+                    .and_then(Value::as_bool)
+                    == Some(true)
+            },
+            |lifecycle| lifecycle == DaemonLifecycle::Persistent.as_str(),
+        );
     DaemonHandoffObservation::Running(DaemonHandoff {
         pid: owner.pid,
         heartbeat_at_ms,
+        start_mode,
+        persistent: start_mode == DaemonHostStartMode::Manual || applied_persistent,
     })
 }
 

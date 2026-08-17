@@ -101,6 +101,8 @@ pub struct DaemonHandoff {
 
 pub struct DaemonSetupHandoff {
     pub handoff: DaemonHandoff,
+    pub start_mode: crate::DaemonStartModeArg,
+    pub persistent: bool,
 }
 
 #[cfg(test)]

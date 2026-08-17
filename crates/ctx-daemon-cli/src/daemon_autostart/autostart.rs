@@ -97,6 +97,15 @@ pub fn autostart_daemon_for_setup_and_wait(
                 pid: handoff.pid,
                 heartbeat_at_ms: handoff.heartbeat_at_ms,
             },
+            start_mode: match handoff.start_mode {
+                ctx_daemon_application::DaemonHostStartMode::Auto => {
+                    crate::DaemonStartModeArg::Auto
+                }
+                ctx_daemon_application::DaemonHostStartMode::Manual => {
+                    crate::DaemonStartModeArg::Manual
+                }
+            },
+            persistent: handoff.persistent,
         })
     })
 }
@@ -114,6 +123,15 @@ pub fn observe_daemon_for_setup_and_wait(
                 pid: handoff.pid,
                 heartbeat_at_ms: handoff.heartbeat_at_ms,
             },
+            start_mode: match handoff.start_mode {
+                ctx_daemon_application::DaemonHostStartMode::Auto => {
+                    crate::DaemonStartModeArg::Auto
+                }
+                ctx_daemon_application::DaemonHostStartMode::Manual => {
+                    crate::DaemonStartModeArg::Manual
+                }
+            },
+            persistent: handoff.persistent,
         })
     })
 }

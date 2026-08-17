@@ -338,7 +338,10 @@ pub(crate) fn render_daemon_status_human(
             .filter(|reason| {
                 !matches!(
                     *reason,
-                    "semantic_disabled" | "daemon_disabled" | "daemon_mode_source_refresh_only"
+                    "semantic_disabled"
+                        | "daemon_disabled"
+                        | "daemon_nonpersistent"
+                        | "daemon_mode_source_refresh_only"
                 )
             })
         {

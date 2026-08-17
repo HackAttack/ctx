@@ -185,6 +185,7 @@ fn running_status(
         "pid": owner.pid,
         "started_at_ms": owner.started_at_ms,
         "heartbeat_at_ms": heartbeat_at_ms,
+        "start_mode": "auto",
         "config_reload": {
             "status": "applied",
             "applied": {
@@ -271,6 +272,36 @@ fn live_ready_endpoint_with_stale_heartbeat_can_succeed() {
         DaemonHandoffObservation::Running(DaemonHandoff {
             pid: owner.pid,
             heartbeat_at_ms: stale_heartbeat,
+            start_mode: DaemonHostStartMode::Auto,
+            persistent: true,
+        })
+    );
+}
+
+#[test]
+fn manual_owner_is_observed_as_persistent_under_on_demand_policy() {
+    let owner = test_daemon_owner("manual-owner", 43);
+    let expected = DaemonConfigSnapshot {
+        lifecycle: DaemonLifecycle::OnDemand,
+        mode: DaemonMode::Full,
+        semantic_enabled: false,
+    };
+    let mut status = running_status(&owner, &expected, 100_000);
+    status["start_mode"] = json!("manual");
+
+    assert_eq!(
+        daemon_handoff_status_observation_from(
+            Some(&status),
+            Some(&owner),
+            None,
+            &expected,
+            100_000,
+        ),
+        DaemonHandoffObservation::Running(DaemonHandoff {
+            pid: owner.pid,
+            heartbeat_at_ms: 100_000,
+            start_mode: DaemonHostStartMode::Manual,
+            persistent: true,
         })
     );
 }
@@ -423,6 +454,8 @@ fn observation_only_handoff_waits_through_owner_turnover() -> Result<()> {
     let replacement = DaemonHandoff {
         pid: 46,
         heartbeat_at_ms: 61_000,
+        start_mode: DaemonHostStartMode::Auto,
+        persistent: true,
     };
     let mut observations = [
         DaemonHandoffObservation::Pending,

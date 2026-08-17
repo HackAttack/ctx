@@ -310,9 +310,11 @@ where
     {
         return Ok(());
     }
+    ctx_daemon_runtime::synchronize_daemon_before_owner_lock_for_test(data_root)?;
     let Some(lock) = DaemonLock::acquire(data_root)? else {
         return Ok(());
     };
+    ctx_daemon_runtime::block_daemon_owner_after_lock_for_test(data_root)?;
     // Close the check/acquire race with an installation lifecycle owner that
     // fenced daemon starts after the first observation but before this process
     // acquired ownership.
