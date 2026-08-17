@@ -322,11 +322,12 @@ fn native_non_utf8_argument_round_trips_without_loss() {
 #[test]
 fn environment_is_stripped_to_allowlist_and_cwd_is_managed_root() {
     let fixture = Fixture::new(
-        b"#!/usr/bin/python3\nimport os\nvalues=[os.getenv('PATH','<missing>'),os.getenv('LANG','<missing>'),os.getcwd(),os.getenv('CTX_DATA_ROOT','<missing>'),os.getenv('CTX_PRO_DATA_ROOT','<missing>'),os.getenv('CTX_LOCAL_USAGE_ENABLED','<missing>')]\nos.write(1, '\\0'.join(values).encode())\n",
+        b"#!/usr/bin/python3\nimport os\nvalues=[os.getenv('PATH','<missing>'),os.getenv('LANG','<missing>'),os.getenv('HOME','<missing>'),os.getcwd(),os.getenv('CTX_DATA_ROOT','<missing>'),os.getenv('CTX_PRO_DATA_ROOT','<missing>'),os.getenv('CTX_LOCAL_USAGE_ENABLED','<missing>')]\nos.write(1, '\\0'.join(values).encode())\n",
     );
     let mut request = request(&fixture);
     request
         .environment_mut()
+        .set(EnvironmentKey::Home, OsStr::new("/home/tester"))
         .set(EnvironmentKey::Lang, OsStr::new("C.UTF-8"))
         .set(EnvironmentKey::LocalUsageEnabled, OsStr::new("false"));
     let output = launch_with(
@@ -339,17 +340,18 @@ fn environment_is_stripped_to_allowlist_and_cwd_is_managed_root() {
     let fields: Vec<_> = output.stdout().split(|byte| *byte == 0).collect();
     assert_eq!(fields[0], b"<missing>");
     assert_eq!(fields[1], b"C.UTF-8");
-    assert_eq!(fields[2], fixture.root.as_os_str().as_encoded_bytes());
-    assert_eq!(
-        fields[3],
-        fixture.root.join("data").as_os_str().as_encoded_bytes()
-    );
+    assert_eq!(fields[2], b"/home/tester");
+    assert_eq!(fields[3], fixture.root.as_os_str().as_encoded_bytes());
     assert_eq!(
         fields[4],
         fixture.root.join("data").as_os_str().as_encoded_bytes()
     );
-    assert_eq!(fields[5], b"false");
-    assert_eq!(MAX_ENVIRONMENT_ENTRIES, 6);
+    assert_eq!(
+        fields[5],
+        fixture.root.join("data").as_os_str().as_encoded_bytes()
+    );
+    assert_eq!(fields[6], b"false");
+    assert_eq!(MAX_ENVIRONMENT_ENTRIES, 7);
 }
 
 #[test]

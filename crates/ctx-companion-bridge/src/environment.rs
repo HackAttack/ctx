@@ -2,6 +2,7 @@ use std::{collections::BTreeMap, ffi::OsString};
 
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
 pub enum EnvironmentKey {
+    Home,
     Lang,
     LcAll,
     TimeZone,
@@ -13,6 +14,7 @@ pub enum EnvironmentKey {
 impl EnvironmentKey {
     pub const fn as_str(self) -> &'static str {
         match self {
+            Self::Home => "HOME",
             Self::Lang => "LANG",
             Self::LcAll => "LC_ALL",
             Self::TimeZone => "TZ",

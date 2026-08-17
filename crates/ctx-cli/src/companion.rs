@@ -20,7 +20,8 @@ const MCP_PROXY_ARGUMENTS: [&str; 2] = ["mcp", "serve"];
 const MAINTENANCE_ARGUMENT: &str = "--ctx-pro-maintenance-v1";
 const MAINTENANCE_RECEIPT: &[u8] = b"{\"accepted\":true,\"schema_version\":1}\n";
 const MCP_PROXY_MAX_BYTES: usize = 1024 * 1024;
-const FORWARDED_ENVIRONMENT: [(EnvironmentKey, &str); 6] = [
+const FORWARDED_ENVIRONMENT: [(EnvironmentKey, &str); 7] = [
+    (EnvironmentKey::Home, "HOME"),
     (EnvironmentKey::Lang, "LANG"),
     (EnvironmentKey::LcAll, "LC_ALL"),
     (EnvironmentKey::TimeZone, "TZ"),
@@ -162,10 +163,16 @@ fn companion_request(arguments: Vec<OsString>, data_root: PathBuf) -> CompanionR
     }
     for (key, name) in FORWARDED_ENVIRONMENT {
         if let Some(value) = std::env::var_os(name) {
-            request.environment_mut().set(key, value);
+            if environment_value_is_forwardable(key, value.as_os_str()) {
+                request.environment_mut().set(key, value);
+            }
         }
     }
     request
+}
+
+fn environment_value_is_forwardable(key: EnvironmentKey, value: &OsStr) -> bool {
+    key != EnvironmentKey::Home || !value.is_empty()
 }
 
 fn companion_cancellation() -> Result<&'static CancellationToken, CompanionRouteError> {
@@ -567,6 +574,15 @@ mod tests {
         assert_eq!(FORWARDED_ENVIRONMENT.len(), MAX_ENVIRONMENT_ENTRIES);
         assert!(FORWARDED_ENVIRONMENT
             .contains(&(EnvironmentKey::LocalUsageEnabled, "CTX_LOCAL_USAGE_ENABLED")));
+        assert!(FORWARDED_ENVIRONMENT.contains(&(EnvironmentKey::Home, "HOME")));
+        assert!(environment_value_is_forwardable(
+            EnvironmentKey::Home,
+            OsStr::new("/home/tester")
+        ));
+        assert!(!environment_value_is_forwardable(
+            EnvironmentKey::Home,
+            OsStr::new("")
+        ));
     }
 
     #[test]
