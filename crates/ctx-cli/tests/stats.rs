@@ -31,12 +31,9 @@ fn insert_row(
     operation: &str,
     value_class: &str,
     context_coverage: &str,
-    calls: i64,
-    results: i64,
-    output_bytes: i64,
-    context_bytes: i64,
-    matched_bytes: i64,
+    metrics: [i64; 5],
 ) {
+    let [calls, results, output_bytes, context_bytes, matched_bytes] = metrics;
     connection
         .execute(
             "INSERT INTO daily_usage (
@@ -148,11 +145,7 @@ fn definition_two_math_uses_only_complete_search_context_and_spec_coefficients()
         "search",
         "result_bearing",
         "complete",
-        1,
-        2,
-        60,
-        19,
-        59,
+        [1, 2, 60, 19, 59],
     );
     insert_row(
         &connection,
@@ -161,11 +154,7 @@ fn definition_two_math_uses_only_complete_search_context_and_spec_coefficients()
         "search",
         "result_bearing",
         "unavailable",
-        1,
-        1,
-        700,
-        0,
-        0,
+        [1, 1, 700, 0, 0],
     );
     drop(connection);
 
@@ -255,11 +244,7 @@ fn definitions_are_reported_separately_and_definition_one_never_drives_estimates
         "search",
         "result_bearing",
         "not_applicable",
-        3,
-        6,
-        1_500,
-        0,
-        0,
+        [3, 6, 1_500, 0, 0],
     );
     insert_row(
         &connection,
@@ -268,11 +253,7 @@ fn definitions_are_reported_separately_and_definition_one_never_drives_estimates
         "doctor",
         "not_applicable",
         "not_applicable",
-        1,
-        0,
-        0,
-        0,
-        0,
+        [1, 0, 0, 0, 0],
     );
     insert_row(
         &connection,
@@ -281,11 +262,7 @@ fn definitions_are_reported_separately_and_definition_one_never_drives_estimates
         "doctor",
         "not_applicable",
         "not_applicable",
-        1,
-        0,
-        1,
-        0,
-        0,
+        [1, 0, 1, 0, 0],
     );
     drop(connection);
 
@@ -323,11 +300,7 @@ fn human_stats_label_measured_and_estimated_sections_without_time_claims() {
         "search",
         "result_bearing",
         "complete",
-        1,
-        1,
-        20,
-        20,
-        100,
+        [1, 1, 20, 20, 100],
     );
     drop(connection);
 
