@@ -24,7 +24,6 @@ def release_surface_tests():
         srcs = ["scripts/tests/audit-release-binary-strings-test.sh"],
         data = [
             "scripts/check-release-binary-strings.sh",
-            "scripts/tests/fixtures/release-binary-strings/protocol-v1-local-runtime.txt",
             "scripts/tests/fixtures/release-binary-strings/removed-cloud-history.txt",
         ],
         tags = ["non-rust-action"],
