@@ -58,7 +58,12 @@ pub(crate) fn classify_claude_path(
         .components()
         .map(|component| component.as_os_str())
         .collect::<Vec<_>>();
-    let projects_container = projects_root.file_name() == Some(OsStr::new("projects"));
+    // Explicit roots may name either one project or an arbitrarily named projects
+    // container. The supported layouts have disjoint component-count parity, so
+    // retain direct-project handling while recognizing containers without relying
+    // on a literal `projects` directory name.
+    let projects_container = projects_root.file_name() == Some(OsStr::new("projects"))
+        || matches!(components.len(), 2 | 4 | 6);
     let (project_dir, inner) = if projects_container {
         let Some(project) = components.first() else {
             return Ok(None);
@@ -142,4 +147,34 @@ fn is_subagent_jsonl(path: &Path) -> bool {
             .file_stem()
             .and_then(OsStr::to_str)
             .is_some_and(|name| name.starts_with("agent-") && name.len() > "agent-".len())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn arbitrary_projects_container_discovers_primary_session() {
+        let root = Path::new("/tmp/claude-projects");
+        let path = root.join("project-a/session-1.jsonl");
+
+        let (project, layout, key) = classify_claude_path(root, &path).unwrap().unwrap();
+
+        assert_eq!(project, root.join("project-a"));
+        assert_eq!(layout, SessionLayout::Primary);
+        assert_eq!(key.root_session_id, "session-1");
+    }
+
+    #[test]
+    fn arbitrary_direct_project_retains_subagent_layout() {
+        let root = Path::new("/tmp/project-a");
+        let path = root.join("session-1/subagents/agent-worker.jsonl");
+
+        let (project, layout, key) = classify_claude_path(root, &path).unwrap().unwrap();
+
+        assert_eq!(project, root);
+        assert_eq!(layout, SessionLayout::Subagent);
+        assert_eq!(key.root_session_id, "session-1");
+        assert_eq!(key.agent_id.as_deref(), Some("agent-worker"));
+    }
 }

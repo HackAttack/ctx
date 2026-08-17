@@ -110,12 +110,24 @@ pub(crate) fn native_jsonl_path_session(
                     Some(ProviderNativeSessionRelationship::Delegated),
                 );
             }
-            (native_session_id.to_owned(), None, None, None, None)
+            (
+                native_session_id.to_owned(),
+                None,
+                None,
+                Some(AgentScope::Primary),
+                None,
+            )
         }
         CaptureProvider::FactoryAiDroid => {
             factory_droid_session_relationships(header, native_session_id)
         }
-        _ => (native_session_id.to_owned(), None, None, None, None),
+        _ => (
+            native_session_id.to_owned(),
+            None,
+            None,
+            Some(AgentScope::Primary),
+            None,
+        ),
     }
 }
 

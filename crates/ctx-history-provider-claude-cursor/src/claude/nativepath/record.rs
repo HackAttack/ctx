@@ -681,3 +681,26 @@ fn output_descriptors(
     }
     Ok(outputs)
 }
+
+#[cfg(test)]
+mod ordinary_message_tests {
+    use std::path::PathBuf;
+
+    use super::*;
+
+    #[test]
+    fn string_message_content_is_retained_as_literal_core_body() {
+        let bytes = br#"{"type":"user","uuid":"literal-first","sessionId":"neutral-claude-session","message":{"role":"user","content":"literal first"}}"#;
+        let locator = ClaudePhysicalLocator {
+            path: PathBuf::from("neutral-claude-session.jsonl"),
+            byte_start: 0,
+            byte_end_exclusive: bytes.len() as u64,
+            line_number: 1,
+            record_sha256: Sha256::digest(bytes).into(),
+        };
+        let parsed = parse_native_record(bytes, 0, &locator).unwrap();
+        assert_eq!(parsed.session_id.as_deref(), Some("neutral-claude-session"));
+        assert_eq!(parsed.rows.len(), 1);
+        assert_eq!(parsed.rows[0].body.as_deref(), Some("literal first"));
+    }
+}

@@ -1,7 +1,7 @@
 use super::*;
 use ctx_history_core::{
-    ActivityInvocation, ActivityJsonCapture, ActivityResult, ActivityTextCapture, CoreActivity,
-    LiteralFactKind, ProviderDeclaredFact, ProviderNativeSessionRelationship,
+    ActivityInvocation, ActivityJsonCapture, ActivityResult, ActivityTextCapture, AgentScope,
+    CoreActivity, LiteralFactKind, ProviderDeclaredFact, ProviderNativeSessionRelationship,
     CORE_ACTIVITY_REVISION,
 };
 
@@ -388,6 +388,9 @@ pub(super) fn core_record(
     if let Some(parent_session_id) = session.parent_session_id {
         record.parent_session_id = Some(parent_session_id);
         record.session_relationship = Some(ProviderNativeSessionRelationship::Delegated);
+        record.agent_scope = Some(AgentScope::Subagent);
+    } else {
+        record.agent_scope = Some(AgentScope::Primary);
     }
     record.provider_session_id = Some(session.native_identity.clone());
     record.native_event_id = Some(native_event_id);

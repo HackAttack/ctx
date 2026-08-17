@@ -3,11 +3,11 @@
 use std::path::PathBuf;
 
 use ctx_history_core::{
-    derive_event_id, derive_session_id, ActivityInvocation, CaptureProvider, CoreActivity,
-    CoreRecord, CoreRecordError, EventIdentityInput, EventType, LiteralFactKind, NativeItemKey,
-    NativeSessionKey, ProjectionContractError, ProviderDeclaredFact, ScannedSourceCounts,
-    SessionIdentityInput, SourceAnchor, SourceKey, SourceObservation, StableEntityId, TypedKey,
-    CORE_ACTIVITY_REVISION,
+    derive_event_id, derive_session_id, ActivityInvocation, AgentScope, CaptureProvider,
+    CoreActivity, CoreRecord, CoreRecordError, EventIdentityInput, EventType, LiteralFactKind,
+    NativeItemKey, NativeSessionKey, ProjectionContractError, ProviderDeclaredFact,
+    ScannedSourceCounts, SessionIdentityInput, SourceAnchor, SourceKey, SourceObservation,
+    StableEntityId, TypedKey, CORE_ACTIVITY_REVISION,
 };
 use serde::Serialize;
 use thiserror::Error;
@@ -386,6 +386,7 @@ fn project_bound_event(
         CONTINUE_SOURCE_BACKED_PARSER_REVISION,
         body,
     )?;
+    record.agent_scope = Some(AgentScope::Primary);
     record.provider_session_id = Some(session.identity.0.clone());
     record.native_event_id = Some(native_event_id);
     record.occurred_at_unix_ms = occurred_at_unix_ms;

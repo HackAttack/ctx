@@ -458,6 +458,9 @@ impl<R: JsonlProviderRuntime> JsonlFamilyProjector for PiProjector<R> {
         if let Some(parent_session_id) = self.parent_session_id {
             core.parent_session_id = Some(parent_session_id);
             core.root_session_id = Some(self.root_session_id);
+            core.agent_scope = Some(AgentScope::Subagent);
+        } else {
+            core.agent_scope = Some(AgentScope::Primary);
         }
         core.provider_session_id = Some(self.binding.native_session_id.clone());
         core.native_event_id = Some(native_event_id);

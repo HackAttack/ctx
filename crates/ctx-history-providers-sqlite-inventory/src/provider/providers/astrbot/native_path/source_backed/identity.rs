@@ -1,7 +1,8 @@
 use chrono::{DateTime, Utc};
 use ctx_history_core::{
-    derive_event_id, derive_session_id, CoreRecord, EventIdentityInput, EventRole, EventType,
-    NativeItemKey, NativeSessionKey, SessionIdentityInput, SourceKey, StableEntityId, TypedKey,
+    derive_event_id, derive_session_id, AgentScope, CoreRecord, EventIdentityInput, EventRole,
+    EventType, NativeItemKey, NativeSessionKey, SessionIdentityInput, SourceKey, StableEntityId,
+    TypedKey,
 };
 use serde_json::Value;
 use sha2::{Digest, Sha256};
@@ -125,6 +126,7 @@ pub(super) fn conversation_document(
         PARSER_REVISION,
         complete_text,
     )?;
+    record.agent_scope = Some(AgentScope::Primary);
     record.provider_session_id = Some(session.provider_session_id.clone());
     record.native_event_id = Some(native_event_id);
     record.occurred_at_unix_ms = Some(event.occurred_at.timestamp_millis());
@@ -166,6 +168,7 @@ pub(super) fn platform_document(
         PARSER_REVISION,
         complete_text,
     )?;
+    record.agent_scope = Some(AgentScope::Primary);
     record.provider_session_id = Some(session.provider_session_id.clone());
     record.native_event_id = Some(native_event_id);
     record.occurred_at_unix_ms = Some(event.occurred_at.timestamp_millis());

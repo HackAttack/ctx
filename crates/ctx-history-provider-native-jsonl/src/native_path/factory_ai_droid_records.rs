@@ -54,7 +54,7 @@ pub(crate) fn factory_droid_session_relationships(
     {
         Some(AgentScope::Subagent)
     } else {
-        None
+        Some(AgentScope::Primary)
     };
     let relationship = parent
         .as_ref()

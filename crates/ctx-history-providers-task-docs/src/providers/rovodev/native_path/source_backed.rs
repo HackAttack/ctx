@@ -17,7 +17,7 @@ use ctx_history_capture_model::normalization::{
 };
 use ctx_history_core::{
     derive_event_id, derive_session_id, ActivityInvocation, ActivityJsonCapture, ActivityResult,
-    ActivityTextCapture, CaptureProvider, CoreActivity, CoreRecord, CoreRecordError,
+    ActivityTextCapture, AgentScope, CaptureProvider, CoreActivity, CoreRecord, CoreRecordError,
     EventIdentityInput, EventRole, EventType, LiteralFactKind, NativeItemKey, NativeSessionKey,
     ProjectionContractError, ProviderDeclaredFact, ScannedSourceCounts, SessionIdentityInput,
     SourceAnchor, SourceKey, SourceObservation, StableEntityId, TypedKey, CORE_ACTIVITY_REVISION,
@@ -906,6 +906,9 @@ fn apply_direct_session_relationship(
 ) -> RovoDevSourceBackedResult<()> {
     if let Some(parent_session_id) = parent_session_id {
         record.parent_session_id = Some(parent_session_id);
+        record.agent_scope = Some(AgentScope::Subagent);
+    } else {
+        record.agent_scope = Some(AgentScope::Primary);
     }
     Ok(())
 }

@@ -1,8 +1,8 @@
 use std::{fs, path::Path};
 
 use ctx_history_core::{
-    ActivityJsonCapture, EventRole, EventType, LiteralFactKind, ProviderNativeSessionRelationship,
-    TypedKey,
+    ActivityJsonCapture, AgentScope, EventRole, EventType, LiteralFactKind,
+    ProviderNativeSessionRelationship, TypedKey,
 };
 use rusqlite::{params, Connection};
 use serde_json::json;
@@ -318,6 +318,7 @@ fn metadata_only_session_message_yields_message_part_events_through_production_r
     );
     assert_eq!(records.len(), 2);
     for record in &records {
+        assert_eq!(record.agent_scope, Some(AgentScope::Primary));
         assert_eq!(
             record.event_type.parse::<EventType>().unwrap(),
             EventType::Message

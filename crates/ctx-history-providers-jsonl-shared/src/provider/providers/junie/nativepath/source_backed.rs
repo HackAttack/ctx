@@ -10,7 +10,7 @@ use crate::{provider::source_backed::IndexBaseEventLookup, JsonlProviderRuntime}
 use chrono::{DateTime, Utc};
 use ctx_history_core::{
     derive_event_id, derive_native_session_id, ActivityInvocation, ActivityJsonCapture,
-    ActivityResult, ActivityTextCapture, CaptureProvider, CoreActivity, CoreRecord,
+    ActivityResult, ActivityTextCapture, AgentScope, CaptureProvider, CoreActivity, CoreRecord,
     EventIdentityInput, EventType, LiteralFactKind, NativeItemKey, ProviderDeclaredFact, SourceKey,
     StableEntityId, TypedKey, CORE_ACTIVITY_REVISION, MAX_CORE_CONTENT_BYTES,
 };
@@ -344,6 +344,7 @@ fn core_record(
         body.clone(),
     )
     .map_err(contract)?;
+    record.agent_scope = Some(AgentScope::Primary);
     record.provider_session_id = Some(binding.provider_session_id.clone());
     record.native_event_id = Some(native_event_id);
     record.occurred_at_unix_ms = Some(row.occurred_at.timestamp_millis());
