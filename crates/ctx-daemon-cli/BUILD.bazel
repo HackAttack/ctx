@@ -204,5 +204,6 @@ daemon_cli_binary_contract(
     extra_env = {
         "RUST_TEST_THREADS": "1",
     },
+    extra_srcs = ["tests/contracts/native/process_control.rs"],
     tags = ["exclusive", "release-gate"],
 )

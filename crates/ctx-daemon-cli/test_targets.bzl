@@ -31,6 +31,7 @@ def daemon_cli_binary_contract(
         extra_deps = [],
         extra_env = {},
         extra_data = [],
+        extra_srcs = [],
         fixtures = False,
         tags = [],
         upgrade = False):
@@ -68,6 +69,7 @@ def daemon_cli_binary_contract(
             "//crates/ctx-cli:integration_test_data",
         ] + extra_data,
         extra_env = extra_env,
+        extra_srcs = extra_srcs,
         rustc_env_files = ["//crates/ctx-daemon-cli:cargo_toml_env_vars"],
         tags = tags,
     )
