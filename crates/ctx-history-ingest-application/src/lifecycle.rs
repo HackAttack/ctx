@@ -16,10 +16,10 @@ use crate::{
     validate_ingest_request, AutomaticPublicationOutcome, CaptureAdmissionPort,
     CorePublicationFacts, ExactPublicationOutcome, HistorySourcePluginSource, ImportTotals,
     IngestChange, IngestFailureScope, IngestFailureType, IngestProgressPort, IngestPublication,
-    IngestRefreshPort, IngestReport, IngestRequest, IngestRoute, IngestSourceOutcome, IngestStatus,
-    IngestTelemetryFacts, IngestTerminalOutcome, PluginPublicationOutcome, ProviderRefreshFacts,
-    ProviderRefreshModeFact, RecordRejectionOutcome, SourceDiscoveryPort, SourceFailureOutcome,
-    SourceStats,
+    IngestRefreshPort, IngestRefreshSelection, IngestReport, IngestRequest, IngestRoute,
+    IngestSourceOutcome, IngestStatus, IngestTelemetryFacts, IngestTerminalOutcome,
+    PluginPublicationOutcome, ProviderRefreshFacts, ProviderRefreshModeFact,
+    RecordRejectionOutcome, SourceDiscoveryPort, SourceFailureOutcome, SourceStats,
 };
 
 const MAX_REPORTED_SOURCE_FAILURES: usize = 3;
@@ -43,16 +43,25 @@ fn run_automatic<H>(request: &IngestRequest, data_root: &Path, host: &mut H) -> 
 where
     H: SourceDiscoveryPort + CaptureAdmissionPort + IngestRefreshPort + IngestProgressPort,
 {
-    if let Some(provider) = request.provider {
-        validate_selected_provider(host, provider)?;
-    }
     host.begin(0)?;
-    automatic_source_preflight(host, data_root)
+    let selection = if let Some(provider) = request.provider {
+        let report = host.discover_provider(provider)?;
+        validate_selected_provider(host, provider, &report)?;
+        ctx_history_source_discovery::validate_provider_source_roots_outside_data_root(
+            data_root,
+            report.sources.iter(),
+        )
         .context("validate provider roots before initializing ctx state")?;
+        IngestRefreshSelection::AutomaticProvider(provider)
+    } else {
+        automatic_source_preflight(host, data_root)
+            .context("validate provider roots before initializing ctx state")?;
+        IngestRefreshSelection::AllAutomatic
+    };
 
     host.protect_data_root(data_root)
         .context("protect ctx data root before provider refresh")?;
-    let publication = host.refresh(data_root, None, request.no_daemon)?;
+    let publication = host.refresh(data_root, selection, request.no_daemon)?;
     let (publication, receipt) = verified_publication(
         publication,
         "daemon source refresh published without an authoritative terminal receipt",
@@ -171,7 +180,11 @@ where
 
     let started = Instant::now();
     let upsert = host.admit_exact(data_root, &source, request.relocate_from.as_deref())?;
-    let publication = host.refresh(data_root, Some(&upsert.authority), request.no_daemon)?;
+    let publication = host.refresh(
+        data_root,
+        IngestRefreshSelection::ExplicitCatalog(&upsert.authority),
+        request.no_daemon,
+    )?;
     let duration = started.elapsed();
     let (publication, receipt) = verified_publication(
         publication,
@@ -339,7 +352,11 @@ where
         )
     })?;
     let upsert = host.admit_exact(data_root, &route_source, None)?;
-    let publication = host.refresh(data_root, Some(&upsert.authority), request.no_daemon)?;
+    let publication = host.refresh(
+        data_root,
+        IngestRefreshSelection::ExplicitCatalog(&upsert.authority),
+        request.no_daemon,
+    )?;
     let duration = started.elapsed();
     let (publication, receipt) = verified_publication(
         publication,

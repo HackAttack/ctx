@@ -5,7 +5,8 @@ use ctx_history_capture::{DiscoveryReport, ProviderSource};
 use ctx_history_core::CaptureProvider;
 use ctx_history_ingest_application::{
     CaptureAdmissionPort, HistorySourcePluginSource, IngestProgressPort, IngestPublication,
-    IngestRefreshPort, IngestReport, IngestRequest, SourceDiscoveryPort, SourceStats,
+    IngestRefreshPort, IngestRefreshSelection, IngestReport, IngestRequest, SourceDiscoveryPort,
+    SourceStats,
 };
 use ctx_history_refresh::ExplicitSourceCatalogUpsert;
 use ctx_terminal::Ui;
@@ -48,7 +49,7 @@ pub trait ImportApplicationPort {
         &mut self,
         data_root: &Path,
         config: HistoryCliConfig,
-        admission: Option<&ctx_history_refresh::ExplicitSourceCatalogAuthority>,
+        selection: IngestRefreshSelection<'_>,
         no_daemon: bool,
         progress: &mut ProgressReporter<'_>,
     ) -> Result<IngestPublication>;
@@ -210,7 +211,7 @@ impl<P: ImportApplicationPort> IngestRefreshPort for HistoryImportHost<'_, P> {
     fn refresh(
         &mut self,
         data_root: &Path,
-        admission: Option<&ctx_history_refresh::ExplicitSourceCatalogAuthority>,
+        selection: IngestRefreshSelection<'_>,
         no_daemon: bool,
     ) -> Result<IngestPublication> {
         let progress = self
@@ -218,7 +219,7 @@ impl<P: ImportApplicationPort> IngestRefreshPort for HistoryImportHost<'_, P> {
             .as_mut()
             .context("ingest refresh requested before progress initialization")?;
         self.port
-            .refresh(data_root, self.config, admission, no_daemon, progress)
+            .refresh(data_root, self.config, selection, no_daemon, progress)
     }
 }
 

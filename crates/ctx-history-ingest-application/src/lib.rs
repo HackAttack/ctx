@@ -35,7 +35,7 @@ pub use plugins::{
 };
 pub use routing::{
     automatic_source_preflight, validate_ingest_request, AutomaticSourcePreflight,
-    CaptureAdmissionPort, IngestProgressPort, IngestRefreshPort, IngestRequest, IngestRoute,
-    ProviderSelectionGuidance, SourceDiscoveryPort,
+    CaptureAdmissionPort, IngestProgressPort, IngestRefreshPort, IngestRefreshSelection,
+    IngestRequest, IngestRoute, ProviderSelectionGuidance, SourceDiscoveryPort,
 };
 pub use totals::{ImportFailureScope, ImportFailureType, ImportOutcome, ImportTotals};

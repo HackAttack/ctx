@@ -528,6 +528,20 @@ fn foreground_import_returns_at_ready_core_generation() {
         .success();
 
     let core_daemon = start_core_only_source_refresh_daemon(&temp);
+    let initial_refresh_deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        let status = json_output(ctx_from_binary(&temp, &binary).args(["status", "--format=json"]));
+        if status["refresh"]["status"] == "ready"
+            && status["refresh"]["published_generation"].is_string()
+        {
+            break;
+        }
+        assert!(
+            Instant::now() < initial_refresh_deadline,
+            "timed out waiting for the daemon's initial Core refresh: {status:#}"
+        );
+        std::thread::sleep(Duration::from_millis(25));
+    }
     let import = json_output(
         ctx_from_binary(&temp, &binary)
             .args([

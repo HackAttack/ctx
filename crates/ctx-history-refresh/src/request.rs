@@ -293,6 +293,137 @@ impl std::str::FromStr for RefreshRequestTrigger {
     }
 }
 
+/// Logical source selection owned by one refresh request.
+///
+/// This remains distinct from [`SourceBackedRefreshScope`]: provider and
+/// explicit-catalog selections are resolved by daemon admission into an exact
+/// physical route set before capture execution begins.
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+pub enum SourceBackedRefreshSelector {
+    AllAutomatic,
+    AutomaticProvider(CaptureProvider),
+    ExplicitCatalog,
+}
+
+impl SourceBackedRefreshSelector {
+    #[doc(hidden)]
+    pub fn to_json(self) -> Value {
+        match self {
+            Self::AllAutomatic => json!({ "kind": "all_automatic" }),
+            Self::AutomaticProvider(provider) => json!({
+                "kind": "automatic_provider",
+                "provider": provider.as_str(),
+            }),
+            Self::ExplicitCatalog => json!({ "kind": "explicit_catalog" }),
+        }
+    }
+
+    #[doc(hidden)]
+    pub fn from_json(value: &Value) -> Result<Self> {
+        let fields = value
+            .as_object()
+            .ok_or_else(|| anyhow!("source refresh selector is not an object"))?;
+        match fields.get("kind").and_then(Value::as_str) {
+            Some("all_automatic") if fields.len() == 1 => Ok(Self::AllAutomatic),
+            Some("automatic_provider") if fields.len() == 2 => {
+                let provider = fields
+                    .get("provider")
+                    .and_then(Value::as_str)
+                    .ok_or_else(|| anyhow!("automatic provider selector has no provider"))?
+                    .parse()
+                    .context("parse automatic provider selector")?;
+                if provider == CaptureProvider::Unknown {
+                    bail!("automatic provider selector has an unknown provider");
+                }
+                Ok(Self::AutomaticProvider(provider))
+            }
+            Some("explicit_catalog") if fields.len() == 1 => Ok(Self::ExplicitCatalog),
+            Some(kind) => bail!("source refresh selector `{kind}` is malformed"),
+            None => bail!("source refresh selector kind is missing"),
+        }
+    }
+
+    pub const fn is_scoped(self) -> bool {
+        !matches!(self, Self::AllAutomatic)
+    }
+}
+
+#[cfg(test)]
+mod source_backed_refresh_selector_tests {
+    use super::*;
+
+    #[test]
+    fn selector_json_round_trips_and_rejects_malformed_scoped_values() {
+        for selector in [
+            SourceBackedRefreshSelector::AllAutomatic,
+            SourceBackedRefreshSelector::AutomaticProvider(CaptureProvider::Codex),
+            SourceBackedRefreshSelector::ExplicitCatalog,
+        ] {
+            assert_eq!(
+                SourceBackedRefreshSelector::from_json(&selector.to_json()).unwrap(),
+                selector
+            );
+        }
+
+        for malformed in [
+            json!({ "kind": "automatic_provider" }),
+            json!({ "kind": "automatic_provider", "provider": 7 }),
+            json!({ "kind": "automatic_provider", "provider": "unknown" }),
+            json!({
+                "kind": "automatic_provider",
+                "provider": "codex",
+                "unexpected": true,
+            }),
+            json!({ "kind": "explicit_catalog", "provider": "codex" }),
+        ] {
+            assert!(SourceBackedRefreshSelector::from_json(&malformed).is_err());
+        }
+    }
+
+    #[test]
+    fn submission_constructor_defaults_to_legacy_all_and_allows_typed_override() {
+        let automatic = RefreshSubmission::new(
+            "automatic".to_owned(),
+            RefreshOperation::Refresh,
+            None,
+            SourceBackedRefreshScope::All,
+            false,
+            false,
+        );
+        assert_eq!(
+            automatic.selector(),
+            SourceBackedRefreshSelector::AllAutomatic
+        );
+        assert_eq!(
+            automatic
+                .with_selector(SourceBackedRefreshSelector::AutomaticProvider(
+                    CaptureProvider::Codex,
+                ))
+                .selector(),
+            SourceBackedRefreshSelector::AutomaticProvider(CaptureProvider::Codex)
+        );
+
+        let explicit = RefreshSubmission::new(
+            "explicit".to_owned(),
+            RefreshOperation::Import,
+            Some(crate::explicit_source_catalog_authority_for_test(1)),
+            SourceBackedRefreshScope::All,
+            true,
+            false,
+        );
+        assert_eq!(
+            explicit.selector(),
+            SourceBackedRefreshSelector::AllAutomatic
+        );
+        assert_eq!(
+            explicit
+                .with_selector(SourceBackedRefreshSelector::ExplicitCatalog)
+                .selector(),
+            SourceBackedRefreshSelector::ExplicitCatalog
+        );
+    }
+}
+
 /// Process-neutral facts required to submit one logical refresh request.
 #[derive(Debug, Clone)]
 pub struct RefreshSubmission {
@@ -300,6 +431,7 @@ pub struct RefreshSubmission {
     pub(crate) operation: RefreshOperation,
     pub(crate) reconciliation_demand: SourceBackedReconciliationDemand,
     pub(crate) explicit_source_catalog: Option<ExplicitSourceCatalogAuthority>,
+    pub(crate) selector: SourceBackedRefreshSelector,
     pub(crate) refresh_scope: SourceBackedRefreshScope,
     pub(crate) fresh_after_admitted_snapshot: bool,
     pub(crate) maintenance_wake: bool,
@@ -324,6 +456,10 @@ impl RefreshSubmission {
             operation,
             reconciliation_demand,
             explicit_source_catalog,
+            // The constructor preserves the pre-selector meaning of an
+            // explicit catalog: an overlay on an all-route import. New typed
+            // scoped callers opt in with `with_selector`.
+            selector: SourceBackedRefreshSelector::AllAutomatic,
             refresh_scope,
             fresh_after_admitted_snapshot,
             maintenance_wake,
@@ -339,6 +475,15 @@ impl RefreshSubmission {
     pub fn with_trigger(mut self, trigger: RefreshRequestTrigger) -> Self {
         self.trigger = Some(trigger);
         self
+    }
+
+    pub fn with_selector(mut self, selector: SourceBackedRefreshSelector) -> Self {
+        self.selector = selector;
+        self
+    }
+
+    pub fn selector(&self) -> SourceBackedRefreshSelector {
+        self.selector
     }
 
     pub fn request_id(&self) -> &str {

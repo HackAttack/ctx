@@ -219,6 +219,7 @@ pub fn coordinate_import_source_backed_refresh_with_progress(
     availability: &dyn crate::DaemonAvailabilityPort,
     data_root: &Path,
     mode: SourceBackedRefreshMode,
+    selector: SourceBackedRefreshSelector,
     explicit_source_catalog: Option<&ExplicitSourceCatalogAuthority>,
     allow_daemon_autostart: bool,
     report_progress: &mut dyn FnMut(&RefreshStatus) -> Result<()>,
@@ -227,6 +228,7 @@ pub fn coordinate_import_source_backed_refresh_with_progress(
         availability,
         data_root,
         mode,
+        selector,
         explicit_source_catalog,
         allow_daemon_autostart,
         Some(report_progress),
@@ -237,6 +239,7 @@ fn coordinate_import_source_backed_refresh_inner(
     availability: &dyn crate::DaemonAvailabilityPort,
     data_root: &Path,
     mode: SourceBackedRefreshMode,
+    selector: SourceBackedRefreshSelector,
     explicit_source_catalog: Option<&ExplicitSourceCatalogAuthority>,
     allow_daemon_autostart: bool,
     report_progress: Option<SourceBackedRefreshProgressReporter<'_>>,
@@ -245,7 +248,11 @@ fn coordinate_import_source_backed_refresh_inner(
         availability,
         data_root,
         mode,
-        SourceBackedRefreshRequestPolicy::import(explicit_source_catalog, allow_daemon_autostart),
+        SourceBackedRefreshRequestPolicy::import(
+            selector,
+            explicit_source_catalog,
+            allow_daemon_autostart,
+        ),
         report_progress,
     )
 }
@@ -260,6 +267,7 @@ fn coordinate_source_backed_refresh_with_catalog(
     let SourceBackedRefreshRequestPolicy {
         operation,
         trigger,
+        selector,
         explicit_source_catalog,
         fresh_after_admitted_snapshot,
         allow_daemon_autostart,
@@ -309,11 +317,11 @@ fn coordinate_source_backed_refresh_with_catalog(
 
     let logical_request_id = Uuid::now_v7().to_string();
     let admission_request = wait_authority_request_json(
-        data_root,
         &logical_request_id,
         mode,
         operation,
         trigger,
+        selector,
         explicit_source_catalog,
         fresh_after_admitted_snapshot,
     )?;
@@ -434,6 +442,7 @@ fn coordinate_source_backed_refresh_with_catalog(
             mode,
             operation,
             trigger,
+            selector,
             expected_catalog: explicit_source_catalog,
             fresh_after_admitted_snapshot,
             allow_daemon_autostart,
@@ -462,6 +471,11 @@ pub(super) fn wait_for_published_generation(
                 SourceBackedRefreshOperation::Refresh => SourceBackedRefreshTrigger::Search,
                 SourceBackedRefreshOperation::Import => SourceBackedRefreshTrigger::Import,
             },
+            selector: if expected_catalog.is_some() {
+                SourceBackedRefreshSelector::ExplicitCatalog
+            } else {
+                SourceBackedRefreshSelector::AllAutomatic
+            },
             expected_catalog,
             fresh_after_admitted_snapshot: false,
             allow_daemon_autostart,
@@ -474,6 +488,7 @@ struct PublishedGenerationWait<'catalog, 'progress> {
     mode: SourceBackedRefreshMode,
     operation: SourceBackedRefreshOperation,
     trigger: SourceBackedRefreshTrigger,
+    selector: SourceBackedRefreshSelector,
     expected_catalog: Option<&'catalog ExplicitSourceCatalogAuthority>,
     fresh_after_admitted_snapshot: bool,
     allow_daemon_autostart: bool,
@@ -490,6 +505,7 @@ fn wait_for_published_generation_inner(
         mode,
         operation,
         trigger,
+        selector,
         expected_catalog,
         fresh_after_admitted_snapshot,
         allow_daemon_autostart,
@@ -567,6 +583,7 @@ fn wait_for_published_generation_inner(
                     &lost_request_id,
                     operation,
                     trigger,
+                    selector,
                     expected_catalog,
                     fresh_after_admitted_snapshot,
                 )
@@ -789,15 +806,16 @@ fn enqueue_equivalent_wait_refresh_request(
     request_id: &str,
     operation: SourceBackedRefreshOperation,
     trigger: SourceBackedRefreshTrigger,
+    selector: SourceBackedRefreshSelector,
     explicit_source_catalog: Option<&ExplicitSourceCatalogAuthority>,
     fresh_after_admitted_snapshot: bool,
 ) -> Result<String> {
     let request = wait_authority_request_json(
-        data_root,
         request_id,
         SourceBackedRefreshMode::Wait,
         operation,
         trigger,
+        selector,
         explicit_source_catalog,
         fresh_after_admitted_snapshot,
     )?;
@@ -824,23 +842,24 @@ fn enqueue_equivalent_wait_refresh_request(
 }
 
 fn wait_authority_request_json(
-    data_root: &Path,
     request_id: &str,
     mode: SourceBackedRefreshMode,
     operation: SourceBackedRefreshOperation,
     trigger: SourceBackedRefreshTrigger,
+    selector: SourceBackedRefreshSelector,
     explicit_source_catalog: Option<&ExplicitSourceCatalogAuthority>,
     fresh_after_admitted_snapshot: bool,
 ) -> Result<Value> {
     SourceBackedRefreshRequest::new(
         mode,
         operation,
+        selector,
         explicit_source_catalog,
         fresh_after_admitted_snapshot,
     )
     .with_trigger(trigger)
     .with_request_id(request_id)
-    .to_json(data_root)
+    .to_json()
 }
 
 fn response_request_id(response: &Value, label: &str) -> Result<String> {

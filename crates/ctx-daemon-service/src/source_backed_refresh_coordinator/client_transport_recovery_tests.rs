@@ -5,6 +5,8 @@ use std::{
     os::unix::net::UnixListener,
 };
 
+use ctx_history_core::CaptureProvider;
+
 use crate::query_service::{
     ctx_authenticated_request_handler, start_daemon_source_refresh_service_with_request_timeout,
     write_daemon_service_endpoint, DaemonIpcService, DaemonQueryEndpoint,
@@ -60,6 +62,7 @@ fn background_maintenance_wake_is_accepted_through_client_and_coordinator() -> R
         SourceBackedRefreshRequestPolicy {
             operation: SourceBackedRefreshOperation::Refresh,
             trigger: SourceBackedRefreshTrigger::Search,
+            selector: SourceBackedRefreshSelector::AllAutomatic,
             explicit_source_catalog: None,
             fresh_after_admitted_snapshot: false,
             allow_daemon_autostart: false,
@@ -143,10 +146,11 @@ fn same_id_reenqueue_replays_the_exact_payload_after_a_lost_ack() -> Result<()> 
     let recovered = enqueue_equivalent_wait_refresh_request(
         data_root.path(),
         request_id,
-        SourceBackedRefreshOperation::Refresh,
-        SourceBackedRefreshTrigger::Search,
+        SourceBackedRefreshOperation::Import,
+        SourceBackedRefreshTrigger::Import,
+        SourceBackedRefreshSelector::AutomaticProvider(CaptureProvider::Codex),
         None,
-        false,
+        true,
     )?;
     let requests = server.join().expect("lost-ack test server panicked")?;
 
@@ -155,37 +159,67 @@ fn same_id_reenqueue_replays_the_exact_payload_after_a_lost_ack() -> Result<()> 
     for request in requests {
         let request: Value = serde_json::from_slice(&request)?;
         assert_eq!(request["request_id"], request_id);
+        assert_eq!(request["operation"], "import");
+        assert_eq!(request["trigger"], "import");
+        assert_eq!(
+            request["refresh_selector"],
+            json!({"kind": "automatic_provider", "provider": "codex"})
+        );
     }
     Ok(())
 }
 
 #[test]
-fn automatic_import_recovery_payload_keeps_import_trigger() -> Result<()> {
-    let data_root = short_data_root()?;
+fn provider_import_recovery_payload_keeps_selector_and_import_identity() -> Result<()> {
     let request = wait_authority_request_json(
-        data_root.path(),
         "019fcaaa-0000-7000-8000-000000000414",
         SourceBackedRefreshMode::Wait,
-        SourceBackedRefreshOperation::Refresh,
+        SourceBackedRefreshOperation::Import,
         SourceBackedRefreshTrigger::Import,
+        SourceBackedRefreshSelector::AutomaticProvider(CaptureProvider::Codex),
         None,
         true,
     )?;
 
-    assert_eq!(request["operation"], "refresh");
+    assert_eq!(request["operation"], "import");
     assert_eq!(request["trigger"], "import");
+    assert_eq!(
+        request["refresh_selector"],
+        json!({"kind": "automatic_provider", "provider": "codex"})
+    );
     assert!(request.get("explicit_source_catalog").is_none());
     Ok(())
 }
 
 #[test]
-fn automatic_import_policy_is_refresh_work_with_import_trigger() {
-    let policy = SourceBackedRefreshRequestPolicy::import(None, true);
+fn automatic_provider_import_policy_keeps_selector_and_import_identity() {
+    let policy = SourceBackedRefreshRequestPolicy::import(
+        SourceBackedRefreshSelector::AutomaticProvider(CaptureProvider::Codex),
+        None,
+        true,
+    );
+
+    assert_eq!(policy.operation, SourceBackedRefreshOperation::Import);
+    assert_eq!(policy.trigger, SourceBackedRefreshTrigger::Import);
+    assert_eq!(
+        policy.selector,
+        SourceBackedRefreshSelector::AutomaticProvider(CaptureProvider::Codex)
+    );
+    assert!(policy.explicit_source_catalog.is_none());
+    assert!(policy.fresh_after_admitted_snapshot);
+}
+
+#[test]
+fn all_automatic_import_policy_preserves_legacy_refresh_operation() {
+    let policy = SourceBackedRefreshRequestPolicy::import(
+        SourceBackedRefreshSelector::AllAutomatic,
+        None,
+        true,
+    );
 
     assert_eq!(policy.operation, SourceBackedRefreshOperation::Refresh);
     assert_eq!(policy.trigger, SourceBackedRefreshTrigger::Import);
-    assert!(policy.explicit_source_catalog.is_none());
-    assert!(policy.fresh_after_admitted_snapshot);
+    assert_eq!(policy.selector, SourceBackedRefreshSelector::AllAutomatic);
 }
 
 #[test]
@@ -232,6 +266,7 @@ fn background_lost_ack_terminal_replay_is_not_reported_as_pending() -> Result<()
         SourceBackedRefreshRequestPolicy {
             operation: SourceBackedRefreshOperation::Refresh,
             trigger: SourceBackedRefreshTrigger::Search,
+            selector: SourceBackedRefreshSelector::AllAutomatic,
             explicit_source_catalog: None,
             fresh_after_admitted_snapshot: false,
             allow_daemon_autostart: false,
@@ -279,6 +314,7 @@ fn exhausted_post_submission_disconnects_return_typed_ambiguous_admission() -> R
         request_id,
         SourceBackedRefreshOperation::Refresh,
         SourceBackedRefreshTrigger::Search,
+        SourceBackedRefreshSelector::AllAutomatic,
         None,
         false,
     )
@@ -335,6 +371,7 @@ fn typed_unknown_readmission_preserves_lost_ack_retention_uncertainty() -> Resul
                 request_id,
                 SourceBackedRefreshOperation::Refresh,
                 SourceBackedRefreshTrigger::Search,
+                SourceBackedRefreshSelector::AllAutomatic,
                 None,
                 false,
             )

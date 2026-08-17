@@ -248,3 +248,179 @@ fn provider_wide_execution_discovers_once_and_preserves_progress_order() {
         ]
     );
 }
+
+#[test]
+fn exact_execution_without_admitted_authority_cannot_fall_back_to_global_discovery() {
+    let temp = tempfile::tempdir().unwrap();
+    let data_root = temp.path().join("data");
+    let index_root = source_backed_index_root(&data_root);
+    ctx_history_platform::platform_security::establish_private_data_root(&data_root).unwrap();
+    let (home, cwd, discovery) = discovery_fixture(temp.path());
+    fs::create_dir_all(&home).unwrap();
+    fs::create_dir_all(&cwd).unwrap();
+    let route = SourceRouteIdentity::from_sha256("ac".repeat(32)).unwrap();
+    let progress = |_: SourceBackedRefreshProgressUpdate| Ok(());
+    let execution = SourceBackedRefreshExecution::new(
+        &data_root,
+        &index_root,
+        "missing-scoped-authority",
+        RefreshOperation::Refresh,
+        None,
+        SourceBackedRefreshScope::exact([route]),
+        BTreeSet::new(),
+        SourceBackedRefreshCoveredPublication::default(),
+        &discovery,
+        &TestPublishedState,
+        &progress,
+    )
+    .with_admitted_discovery_requirement(true);
+
+    let error = execute_capture_owned_refresh_with(
+        execution,
+        &discovery,
+        None,
+        |_, _, _, _, _, _, _, _, _, _, _, _, _| {
+            panic!("exact execution reached refresh after global fallback")
+        },
+    )
+    .unwrap_err();
+    assert!(format!("{error:#}")
+        .contains("selected source refresh has no admitted discovery authority"));
+}
+
+#[test]
+fn warm_exact_carries_unselected_routes_while_receipt_stays_selected() {
+    let temp = tempfile::tempdir().unwrap();
+    let data_root = temp.path().join("data");
+    let index_root = source_backed_index_root(&data_root);
+    ctx_history_platform::platform_security::establish_private_data_root(&data_root).unwrap();
+    let (_, _, discovery) = discovery_fixture(temp.path());
+
+    let codex_root = temp.path().join("codex-sessions");
+    fs::create_dir_all(&codex_root).unwrap();
+    let codex_session = codex_root.join("rollout.jsonl");
+    fs::write(
+        &codex_session,
+        format!(
+            "{}\n{}\n",
+            json!({
+                "timestamp": "2026-08-17T00:00:00Z",
+                "type": "session_meta",
+                "payload": {
+                    "id": "019fb700-0000-7000-8000-000000000701",
+                    "timestamp": "2026-08-17T00:00:00Z",
+                    "cwd": "/repo/exact-carry",
+                    "originator": "codex_cli_rs",
+                    "cli_version": "1.0.0",
+                    "source": "cli",
+                    "model_provider": "openai"
+                }
+            }),
+            json!({
+                "timestamp": "2026-08-17T00:00:01Z",
+                "type": "response_item",
+                "payload": {
+                    "type": "message",
+                    "role": "user",
+                    "content": [{"type": "input_text", "text": "codex warm"}]
+                }
+            })
+        ),
+    )
+    .unwrap();
+    let claude_root = temp.path().join("claude-projects");
+    let claude_session = claude_root.join("project/session.jsonl");
+    fs::create_dir_all(claude_session.parent().unwrap()).unwrap();
+    fs::write(
+        &claude_session,
+        format!(
+            "{}\n",
+            json!({
+                "type": "user",
+                "uuid": "literal-claude-warm",
+                "sessionId": "019fb700-0000-7000-8000-000000000702",
+                "message": {"role": "user", "content": "claude warm"}
+            })
+        ),
+    )
+    .unwrap();
+    let codex_source = provider_source_for_path(CaptureProvider::Codex, codex_root);
+    let claude_source = provider_source_for_path(CaptureProvider::Claude, claude_root);
+    let codex_route = automatic_source_backed_route_identity(&codex_source).unwrap();
+    let claude_route = automatic_source_backed_route_identity(&claude_source).unwrap();
+    let report = DiscoveryReport {
+        sources: vec![codex_source.clone(), claude_source],
+        issues: Vec::new(),
+    };
+    let mut progress = |_: CaptureSourceBackedDetailedRefreshProgress| Ok(());
+    let cold = refresh_all_provider_sources(
+        &discovery,
+        report,
+        StdDuration::ZERO,
+        &data_root,
+        &index_root,
+        None,
+        SourceBackedRefreshScope::All,
+        &BTreeSet::new(),
+        &mut progress,
+    )
+    .unwrap();
+    assert_eq!(cold.route_results.len(), 2);
+
+    fs::write(
+        &codex_session,
+        format!(
+            "{}\n{}\n",
+            json!({
+                "timestamp": "2026-08-17T00:00:00Z",
+                "type": "session_meta",
+                "payload": {
+                    "id": "019fb700-0000-7000-8000-000000000701",
+                    "timestamp": "2026-08-17T00:00:00Z",
+                    "cwd": "/repo/exact-carry",
+                    "originator": "codex_cli_rs",
+                    "cli_version": "1.0.0",
+                    "source": "cli",
+                    "model_provider": "openai"
+                }
+            }),
+            json!({
+                "timestamp": "2026-08-17T00:00:02Z",
+                "type": "response_item",
+                "payload": {
+                    "type": "message",
+                    "role": "user",
+                    "content": [{"type": "input_text", "text": "codex exact"}]
+                }
+            })
+        ),
+    )
+    .unwrap();
+    let exact_routes = BTreeSet::from([codex_route.clone()]);
+    let mut exact_progress = |_: CaptureSourceBackedDetailedRefreshProgress| Ok(());
+    let exact = refresh_all_provider_sources_route_local(
+        &discovery,
+        DiscoveryReport {
+            sources: vec![codex_source],
+            issues: Vec::new(),
+        },
+        StdDuration::ZERO,
+        "warm-exact-carry",
+        RefreshOperation::Refresh,
+        &data_root,
+        &index_root,
+        None,
+        SourceBackedRefreshScope::Exact(exact_routes.clone()),
+        &BTreeSet::new(),
+        &SourceBackedRefreshCoveredPublication::default(),
+        &TestPublishedState,
+        &mut exact_progress,
+    )
+    .unwrap();
+
+    assert_eq!(exact.route_results.len(), 1);
+    assert_eq!(exact.route_results[0].route_identity, codex_route.as_str());
+    let published = VerifiedIndex::open(&index_root).unwrap();
+    assert!(published.manifest().source_route(&codex_route).is_some());
+    assert!(published.manifest().source_route(&claude_route).is_some());
+}

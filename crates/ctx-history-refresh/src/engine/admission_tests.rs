@@ -8,6 +8,353 @@ fn private_data_root() -> (tempfile::TempDir, PathBuf) {
     (temp, data_root)
 }
 
+#[derive(Debug, Clone)]
+struct ScopedAdmissionRuntime {
+    home: PathBuf,
+    cwd: PathBuf,
+}
+
+impl RefreshRuntime for ScopedAdmissionRuntime {
+    fn metadata(&self, _data_root: &Path, operation: RefreshOperation) -> RefreshRuntimeMetadata {
+        RefreshRuntimeMetadata {
+            operation,
+            ..RefreshRuntimeMetadata::default()
+        }
+    }
+
+    fn discovery_context(&self, _data_root: &Path) -> Result<DiscoveryContext> {
+        Ok(DiscoveryContext::new(
+            &self.home,
+            &self.cwd,
+            ctx_history_capture::DiscoveryPlatform::Linux,
+            ctx_history_capture::DiscoveryPlatformDirs::default(),
+        ))
+    }
+}
+
+fn scoped_runtime(root: &Path) -> Arc<dyn RefreshRuntime> {
+    let home = root.join("home");
+    let cwd = root.join("cwd");
+    fs::create_dir_all(&home).unwrap();
+    fs::create_dir_all(&cwd).unwrap();
+    Arc::new(ScopedAdmissionRuntime { home, cwd })
+}
+
+fn release_pending_admission(
+    coordinator: &CoreRefreshEngine,
+    admission: RefreshAdmission,
+) -> Value {
+    let (status, barrier) = admission.into_parts();
+    barrier
+        .expect("scoped request should retain a pending-admission barrier")
+        .release(coordinator);
+    status.schema_v1_fields().clone()
+}
+
+fn provider_submission(request_id: &str, provider: CaptureProvider) -> RefreshSubmission {
+    RefreshSubmission::new(
+        request_id.to_owned(),
+        RefreshOperation::Refresh,
+        None,
+        SourceBackedRefreshScope::All,
+        false,
+        false,
+    )
+    .with_selector(SourceBackedRefreshSelector::AutomaticProvider(provider))
+}
+
+#[test]
+fn automatic_provider_admission_is_exact_on_a_fresh_root_without_global_discovery() {
+    let (temp, data_root) = private_data_root();
+    let runtime = scoped_runtime(temp.path());
+    let sessions = temp.path().join("home/.codex/sessions");
+    fs::create_dir_all(&sessions).unwrap();
+    fs::write(sessions.join("session.jsonl"), "{}\n").unwrap();
+    let unrelated = temp.path().join("home/.claude/projects/unrelated");
+    fs::create_dir_all(&unrelated).unwrap();
+    fs::write(unrelated.join("broken.jsonl"), "not-json\n").unwrap();
+    // If provider selection widens to the all-provider fence, this test fails.
+    let coordinator = CoreRefreshEngine::with_admission_fence_for_test(
+        Arc::new(TestRefreshJournal::default()),
+        runtime,
+        Arc::new(|_, _, _, _| panic!("provider selection invoked global discovery")),
+    );
+    let request_id = "019fcaaa-0000-7000-8000-000000000501";
+    let admission = coordinator
+        .submit(
+            &data_root,
+            provider_submission(request_id, CaptureProvider::Codex),
+        )
+        .unwrap();
+    assert_eq!(
+        release_pending_admission(&coordinator, admission)["request_state"],
+        "admission_pending"
+    );
+
+    assert!(coordinator
+        .prepare_next_pending_admission(&data_root)
+        .unwrap());
+    let status = status_value(&coordinator, request_id);
+    assert_eq!(status["request_state"], "queued");
+    let scope = refresh_scope_from_json(status.get("refresh_scope")).unwrap();
+    let SourceBackedRefreshScope::Exact(routes) = scope else {
+        panic!("provider selection did not resolve to an exact scope");
+    };
+    assert!(!routes.is_empty());
+    // Fresh-root exact execution is seeded from request-local authority, not
+    // from global known routes or a previously installed watch catalog.
+    let run = coordinator
+        .run_next(&data_root)
+        .expect("admitted provider request should execute");
+    assert!(!run.failed, "{}", run.job);
+    assert_eq!(run.scope, SourceBackedRefreshScope::Exact(routes.clone()));
+    let receipt_routes = run.job["receipt"]["route_results"]
+        .as_object()
+        .expect("scoped publication receipt routes");
+    assert_eq!(receipt_routes.len(), routes.len());
+    assert!(routes
+        .iter()
+        .all(|route| receipt_routes.contains_key(route.as_str())));
+}
+
+#[test]
+fn unavailable_provider_admission_fails_without_widening() {
+    let (temp, data_root) = private_data_root();
+    let runtime = scoped_runtime(temp.path());
+    let coordinator = CoreRefreshEngine::with_admission_fence_for_test(
+        Arc::new(TestRefreshJournal::default()),
+        runtime,
+        Arc::new(|_, _, _, _| panic!("empty provider selection invoked global discovery")),
+    );
+    let request_id = "019fcaaa-0000-7000-8000-000000000502";
+    let admission = coordinator
+        .submit(
+            &data_root,
+            provider_submission(request_id, CaptureProvider::Claude),
+        )
+        .unwrap();
+    release_pending_admission(&coordinator, admission);
+
+    assert!(coordinator
+        .prepare_next_pending_admission(&data_root)
+        .unwrap());
+    let status = status_value(&coordinator, request_id);
+    assert_eq!(status["request_state"], "failed");
+    assert!(
+        status["last_error"]
+            .as_str()
+            .is_some_and(|error| error.contains("automatic provider `claude`")
+                && error.contains("no executable source routes")),
+        "{status:#}"
+    );
+    assert_eq!(status["refresh_scope"], json!({ "kind": "all" }));
+}
+
+#[test]
+fn explicit_catalog_admission_uses_only_its_exact_path_authority() {
+    let (temp, data_root) = private_data_root();
+    let runtime = scoped_runtime(temp.path());
+    let source_path = temp.path().join("requested-history.jsonl");
+    fs::write(&source_path, "{}\n").unwrap();
+    let source = crate::explicit_source_for_path(&source_path, None, true).unwrap();
+    let authority = crate::upsert_explicit_source(&data_root, &source)
+        .unwrap()
+        .authority;
+    let coordinator = CoreRefreshEngine::with_admission_fence_for_test(
+        Arc::new(TestRefreshJournal::default()),
+        runtime,
+        Arc::new(|_, _, _, _| panic!("explicit path invoked all-provider discovery")),
+    );
+    let request_id = "019fcaaa-0000-7000-8000-000000000503";
+    let admission = coordinator
+        .submit(
+            &data_root,
+            RefreshSubmission::new(
+                request_id.to_owned(),
+                RefreshOperation::Import,
+                Some(authority),
+                SourceBackedRefreshScope::All,
+                true,
+                false,
+            )
+            .with_selector(SourceBackedRefreshSelector::ExplicitCatalog),
+        )
+        .unwrap();
+    release_pending_admission(&coordinator, admission);
+
+    assert!(coordinator
+        .prepare_next_pending_admission(&data_root)
+        .unwrap());
+    let status = status_value(&coordinator, request_id);
+    assert_eq!(status["request_state"], "queued");
+    let scope = refresh_scope_from_json(status.get("refresh_scope")).unwrap();
+    assert!(matches!(scope, SourceBackedRefreshScope::Exact(ref routes) if routes.len() == 1));
+}
+
+#[test]
+fn explicit_catalog_admission_does_not_inherit_running_all_route_work() {
+    let (temp, data_root) = private_data_root();
+    let runtime = scoped_runtime(temp.path());
+    let source_path = temp.path().join("requested-history.jsonl");
+    fs::write(&source_path, "{}\n").unwrap();
+    let source = crate::explicit_source_for_path(&source_path, None, true).unwrap();
+    let authority = crate::upsert_explicit_source(&data_root, &source)
+        .unwrap()
+        .authority;
+    let coordinator = CoreRefreshEngine::with_admission_fence_for_test(
+        Arc::new(TestRefreshJournal::default()),
+        runtime,
+        Arc::new(|_, _, _, _| panic!("explicit path invoked all-provider discovery")),
+    );
+    let predecessor = coordinator.enqueue_periodic(&data_root).unwrap();
+    let predecessor_id = predecessor["request_id"].as_str().unwrap().to_owned();
+    {
+        let mut state = coordinator.lock_state();
+        let predecessor = find_attempt_mut(&mut state, &predecessor_id).unwrap();
+        predecessor.state = SourceBackedRefreshState::Running;
+        predecessor.started_at_ms = Some(utc_now().timestamp_millis());
+        predecessor.progress.phase = "refreshing".to_owned();
+    }
+    let request_id = "019fcaaa-0000-7000-8000-000000000505";
+    let admission = coordinator
+        .submit(
+            &data_root,
+            RefreshSubmission::new(
+                request_id.to_owned(),
+                RefreshOperation::Import,
+                Some(authority),
+                SourceBackedRefreshScope::All,
+                true,
+                false,
+            )
+            .with_selector(SourceBackedRefreshSelector::ExplicitCatalog),
+        )
+        .unwrap();
+    release_pending_admission(&coordinator, admission);
+
+    let state = coordinator.lock_state();
+    assert!(!state.manual_all_continuations.contains_key(request_id));
+    drop(state);
+    let pending = status_value(&coordinator, request_id);
+    assert_eq!(pending["request_state"], "admission_pending");
+    assert_eq!(pending["physical_attempt_id"], request_id);
+    assert!(pending["coalesced_into_request_id"].is_null());
+}
+
+#[test]
+fn recovered_provider_scope_is_rehydrated_and_cannot_widen() {
+    let (temp, data_root) = private_data_root();
+    let runtime = scoped_runtime(temp.path());
+    let sessions = temp.path().join("home/.codex/sessions");
+    fs::create_dir_all(&sessions).unwrap();
+    fs::write(sessions.join("session.jsonl"), "{}\n").unwrap();
+    let journal = Arc::new(TestRefreshJournal::default());
+    let request_id = "019fcaaa-0000-7000-8000-000000000504";
+    let first = CoreRefreshEngine::with_admission_fence_for_test(
+        Arc::clone(&journal) as Arc<dyn RefreshJournal>,
+        Arc::clone(&runtime),
+        Arc::new(|_, _, _, _| panic!("provider selection invoked global discovery")),
+    );
+    let admission = first
+        .submit(
+            &data_root,
+            provider_submission(request_id, CaptureProvider::Codex),
+        )
+        .unwrap();
+    release_pending_admission(&first, admission);
+    assert!(first.prepare_next_pending_admission(&data_root).unwrap());
+    let admitted_scope = status_value(&first, request_id)["refresh_scope"].clone();
+    let persisted_scope = refresh_scope_from_json(Some(&admitted_scope)).unwrap();
+    assert_eq!(admitted_scope["kind"], "exact");
+    drop(first);
+
+    // A newly available route for the same provider must not widen the exact
+    // request that was already persisted before the restart.
+    fs::write(
+        temp.path().join("home/.codex/history.jsonl"),
+        r#"{"session_id":"new-route","ts":1,"text":"later"}"#,
+    )
+    .unwrap();
+    let recovered = CoreRefreshEngine::with_admission_fence_for_test(
+        journal as Arc<dyn RefreshJournal>,
+        runtime,
+        Arc::new(|_, _, _, _| panic!("recovery invoked global discovery")),
+    );
+    assert!(recovered
+        .recover_interrupted_publication(&data_root)
+        .unwrap());
+    let pending = status_value(&recovered, request_id);
+    assert_eq!(pending["request_state"], "admission_pending");
+    assert_eq!(pending["refresh_scope"], admitted_scope);
+    assert!(recovered
+        .prepare_next_pending_admission(&data_root)
+        .unwrap());
+    let admitted = status_value(&recovered, request_id);
+    assert_eq!(admitted["request_state"], "queued");
+    assert_eq!(admitted["refresh_scope"], admitted_scope);
+    let run = recovered
+        .run_next(&data_root)
+        .expect("recovered exact provider request should execute");
+    assert!(!run.failed, "{}", run.job);
+    assert_eq!(run.scope, persisted_scope);
+    assert_eq!(run.job["request_state"], "published");
+}
+
+#[test]
+fn recovered_provider_scope_fails_when_a_persisted_route_disappears() {
+    let (temp, data_root) = private_data_root();
+    let runtime = scoped_runtime(temp.path());
+    let sessions = temp.path().join("home/.codex/sessions");
+    fs::create_dir_all(&sessions).unwrap();
+    fs::write(sessions.join("session.jsonl"), "{}\n").unwrap();
+    let journal = Arc::new(TestRefreshJournal::default());
+    let request_id = "019fcaaa-0000-7000-8000-000000000507";
+    let first = CoreRefreshEngine::with_admission_fence_for_test(
+        Arc::clone(&journal) as Arc<dyn RefreshJournal>,
+        Arc::clone(&runtime),
+        Arc::new(|_, _, _, _| panic!("provider selection invoked global discovery")),
+    );
+    let admission = first
+        .submit(
+            &data_root,
+            provider_submission(request_id, CaptureProvider::Codex),
+        )
+        .unwrap();
+    release_pending_admission(&first, admission);
+    assert!(first.prepare_next_pending_admission(&data_root).unwrap());
+    let admitted_scope = status_value(&first, request_id)["refresh_scope"].clone();
+    assert_eq!(admitted_scope["kind"], "exact");
+    drop(first);
+
+    // Keep the provider available under a different route so recovery must
+    // compare exact authority, rather than merely fail because it found no
+    // executable provider routes.
+    fs::remove_dir_all(&sessions).unwrap();
+    fs::write(
+        temp.path().join("home/.codex/history.jsonl"),
+        r#"{"session_id":"replacement-route","ts":1,"text":"later"}"#,
+    )
+    .unwrap();
+    let recovered = CoreRefreshEngine::with_admission_fence_for_test(
+        journal as Arc<dyn RefreshJournal>,
+        runtime,
+        Arc::new(|_, _, _, _| panic!("recovery invoked global discovery")),
+    );
+    assert!(recovered
+        .recover_interrupted_publication(&data_root)
+        .unwrap());
+    assert!(recovered
+        .prepare_next_pending_admission(&data_root)
+        .unwrap());
+    let failed = status_value(&recovered, request_id);
+    assert_eq!(failed["request_state"], "failed");
+    assert_eq!(failed["refresh_scope"], admitted_scope);
+    assert!(failed["last_error"]
+        .as_str()
+        .is_some_and(|error| error.contains("missing persisted exact routes")));
+    assert!(recovered.run_next(&data_root).is_none());
+}
+
 fn assert_retained_acknowledgement(response: &Value, request_id: &str) {
     assert_eq!(response["ok"], true);
     assert_eq!(response["request_id"], request_id);
@@ -309,6 +656,191 @@ fn stable_request_id_replay_requires_the_exact_same_payload() {
     assert_eq!(conflict["request_state"], "request_conflict");
     assert_eq!(conflict["error_code"], "request_id_conflict");
     assert_eq!(conflict["retryable"], false);
+}
+
+#[test]
+fn stable_request_id_distinguishes_exact_catalog_from_legacy_all_overlay() {
+    let (_temp, data_root) = private_data_root();
+    let coordinator = test_refresh_engine();
+    let request_id = "019fcaaa-0000-7000-8000-000000000506";
+    let authority = crate::explicit_source_catalog_authority_for_test(1);
+    let submission = |selector| {
+        RefreshSubmission::new(
+            request_id.to_owned(),
+            RefreshOperation::Import,
+            Some(authority.clone()),
+            SourceBackedRefreshScope::All,
+            true,
+            false,
+        )
+        .with_selector(selector)
+    };
+
+    let legacy = coordinator
+        .submit(
+            &data_root,
+            submission(SourceBackedRefreshSelector::AllAutomatic),
+        )
+        .unwrap();
+    release_pending_admission(&coordinator, legacy);
+    let conflict = coordinator
+        .submit(
+            &data_root,
+            submission(SourceBackedRefreshSelector::ExplicitCatalog),
+        )
+        .unwrap();
+    let conflict = conflict.status().schema_v1_fields();
+    assert_eq!(conflict["request_state"], "request_conflict");
+    assert_eq!(conflict["error_code"], "request_id_conflict");
+}
+
+#[test]
+fn stable_request_id_replays_the_same_provider_and_conflicts_on_provider_change() {
+    let (_temp, data_root) = private_data_root();
+    let coordinator = test_refresh_engine();
+    let request_id = "019fcaaa-0000-7000-8000-000000000414";
+    let submission = |provider| {
+        RefreshSubmission::new(
+            request_id.to_owned(),
+            RefreshOperation::Refresh,
+            None,
+            SourceBackedRefreshScope::All,
+            false,
+            false,
+        )
+        .with_selector(SourceBackedRefreshSelector::AutomaticProvider(provider))
+    };
+
+    let first = coordinator
+        .submit(&data_root, submission(CaptureProvider::Codex))
+        .unwrap();
+    let replay = coordinator
+        .submit(&data_root, submission(CaptureProvider::Codex))
+        .unwrap();
+    assert_eq!(replay.status(), first.status());
+
+    let conflict = coordinator
+        .submit(&data_root, submission(CaptureProvider::Claude))
+        .unwrap();
+    let conflict = conflict.status().schema_v1_fields();
+    assert_eq!(conflict["request_state"], "request_conflict");
+    assert_eq!(conflict["error_code"], "request_id_conflict");
+}
+
+#[test]
+fn provider_selection_does_not_coalesce_with_all_automatic() {
+    let (_temp, data_root) = private_data_root();
+    let coordinator = test_refresh_engine();
+    let all_request_id = "019fcaaa-0000-7000-8000-000000000415";
+    let provider_request_id = "019fcaaa-0000-7000-8000-000000000416";
+    let submission = |request_id: &str| {
+        RefreshSubmission::new(
+            request_id.to_owned(),
+            RefreshOperation::Refresh,
+            None,
+            SourceBackedRefreshScope::All,
+            false,
+            false,
+        )
+    };
+
+    let all = coordinator
+        .submit(&data_root, submission(all_request_id))
+        .unwrap();
+    let provider = coordinator
+        .submit(
+            &data_root,
+            submission(provider_request_id).with_selector(
+                SourceBackedRefreshSelector::AutomaticProvider(CaptureProvider::Codex),
+            ),
+        )
+        .unwrap();
+
+    assert_eq!(all.status()["request_id"], all_request_id);
+    assert_eq!(provider.status()["request_id"], provider_request_id);
+    assert_eq!(
+        status_value(&coordinator, all_request_id)["refresh_selector"],
+        json!({ "kind": "all_automatic" })
+    );
+    assert_eq!(
+        status_value(&coordinator, provider_request_id)["refresh_selector"],
+        json!({ "kind": "automatic_provider", "provider": "codex" })
+    );
+}
+
+#[test]
+fn durable_recovery_preserves_selector_separately_from_physical_scope() {
+    let routes = BTreeSet::from([
+        SourceRouteIdentity::from_sha256("41".repeat(32)).unwrap(),
+        SourceRouteIdentity::from_sha256("42".repeat(32)).unwrap(),
+    ]);
+    let scope = SourceBackedRefreshScope::Exact(routes);
+    let mut attempt = new_refresh_attempt(
+        None,
+        SourceRefreshRuntimeMetadata::default(),
+        None,
+        scope.clone(),
+    );
+    attempt.selector = SourceBackedRefreshSelector::AutomaticProvider(CaptureProvider::Codex);
+    let job = attempt.job_json();
+
+    assert_eq!(
+        job["refresh_selector"],
+        json!({ "kind": "automatic_provider", "provider": "codex" })
+    );
+    let recovered = recover_queued_root(&job, None).unwrap();
+    assert_eq!(recovered.selector, attempt.selector);
+    assert_eq!(recovered.refresh_scope, scope);
+
+    let mut legacy = job.clone();
+    legacy.as_object_mut().unwrap().remove("refresh_selector");
+    let recovered_legacy = recover_queued_root(&legacy, None).unwrap();
+    assert_eq!(
+        recovered_legacy.selector,
+        SourceBackedRefreshSelector::AllAutomatic
+    );
+    assert_eq!(recovered_legacy.refresh_scope, attempt.refresh_scope);
+
+    let mut legacy_explicit = new_refresh_attempt(
+        None,
+        SourceRefreshRuntimeMetadata {
+            operation: SourceBackedRefreshOperation::Import,
+            daemon_mode: "full".to_owned(),
+            trigger: "import",
+            trigger_provenance: "explicit_source_catalog",
+        },
+        Some(crate::explicit_source_catalog_authority_for_test(1)),
+        SourceBackedRefreshScope::All,
+    )
+    .job_json();
+    legacy_explicit
+        .as_object_mut()
+        .unwrap()
+        .remove("refresh_selector");
+    let recovered_explicit = recover_queued_root(&legacy_explicit, None).unwrap();
+    assert_eq!(
+        recovered_explicit.selector,
+        SourceBackedRefreshSelector::AllAutomatic
+    );
+
+    let mut malformed = job.clone();
+    malformed["refresh_selector"] = json!({
+        "kind": "automatic_provider",
+        "provider": "codex",
+        "unexpected": true,
+    });
+    assert!(recover_queued_root(&malformed, None).is_err());
+
+    let mut unknown_provider = job.clone();
+    unknown_provider["refresh_selector"] = json!({
+        "kind": "automatic_provider",
+        "provider": "unknown",
+    });
+    assert!(recover_queued_root(&unknown_provider, None).is_err());
+
+    let mut missing_authority = job;
+    missing_authority["refresh_selector"] = json!({ "kind": "explicit_catalog" });
+    assert!(recover_queued_root(&missing_authority, None).is_err());
 }
 
 #[test]

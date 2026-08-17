@@ -126,14 +126,9 @@ fn failed_explicit_replacement_preserves_retained_relocation_witness() {
         failed["outcome"], "completed_with_source_failures",
         "{failed:#}"
     );
-    assert!(
-        failed["sources"][0]["successful_routes"]
-            .as_u64()
-            .is_some_and(|routes| routes > 0),
-        "{failed:#}"
-    );
+    assert_eq!(failed["sources"][0]["successful_routes"], 0, "{failed:#}");
     assert_eq!(failed["sources"][0]["carried_forward"], false, "{failed:#}");
-    assert_ne!(published_generation(&failed), first_generation);
+    assert_eq!(published_generation(&failed), first_generation);
 
     let retained =
         ctx_history_index::VerifiedIndex::open(data_root(&temp).join("search").join("lexical"))

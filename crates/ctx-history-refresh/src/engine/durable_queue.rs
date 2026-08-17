@@ -480,7 +480,10 @@ fn recover_pending_attempt(
     // Pre-overlay periodic roots can carry obsolete catalog-shaped data. It
     // was never request authority for refresh operations, so retain that
     // compatibility without weakening import or successor validation.
-    let requested_catalog = if is_root && operation == SourceBackedRefreshOperation::Refresh {
+    let requested_catalog = if is_root
+        && operation == SourceBackedRefreshOperation::Refresh
+        && job.get("refresh_selector").is_none()
+    {
         None
     } else {
         job.get("requested_explicit_source_catalog")
@@ -489,15 +492,8 @@ fn recover_pending_attempt(
             .transpose()
             .with_context(|| format!("recover durable source refresh {role} explicit authority"))?
     };
-    match (operation, requested_catalog.is_some()) {
-        (SourceBackedRefreshOperation::Import, false) => {
-            bail!("durable import {role} has no explicit source authority")
-        }
-        (SourceBackedRefreshOperation::Refresh, true) => {
-            bail!("durable refresh {role} carries explicit source authority")
-        }
-        _ => {}
-    }
+    let selector = recover_refresh_selector(job, operation, requested_catalog.is_some(), false)
+        .with_context(|| format!("recover durable source refresh {role} selector"))?;
     let daemon_mode = job
         .get("daemon_mode")
         .and_then(Value::as_str)
@@ -537,6 +533,7 @@ fn recover_pending_attempt(
         refresh_scope,
     );
     attempt.request_id = request_id.to_owned();
+    attempt.selector = selector;
     attempt.reconciliation_demand = recover_reconciliation_demand(job, operation)?;
     attempt.physical_attempt_id = optional_pending_string(job, "physical_attempt_id")?;
     attempt.state = if request_state == Some("admission_pending") {
@@ -593,6 +590,7 @@ fn recover_pending_attempt(
     }
     if attempt.state == SourceBackedRefreshState::AdmissionPending
         && !attempt.fresh_after_admitted_snapshot
+        && matches!(attempt.selector, SourceBackedRefreshSelector::AllAutomatic)
     {
         bail!("durable admission-pending source refresh has no freshness requirement");
     }

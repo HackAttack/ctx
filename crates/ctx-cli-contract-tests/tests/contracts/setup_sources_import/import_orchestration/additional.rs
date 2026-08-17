@@ -20,6 +20,7 @@ fn explicit_import_reports_warm_carried_route_failure() {
     ]));
     assert_eq!(first["outcome"], "success", "{first:#}");
     assert_eq!(provider_core_counts(&data_root(&temp), "custom"), (1, 1));
+    let first_generation = published_generation(&first);
 
     fs::write(&fixture, b"").unwrap();
     let carried = json_output(ctx(&temp).args([
@@ -54,12 +55,8 @@ fn explicit_import_reports_warm_carried_route_failure() {
     assert_eq!(source["source_failure_total"], 1, "{source:#}");
     assert_eq!(source["source_failure_class"], "unreadable", "{source:#}");
     assert_eq!(source["carried_forward"], true, "{source:#}");
-    assert!(
-        source["successful_routes"]
-            .as_u64()
-            .is_some_and(|routes| routes > 0),
-        "{source:#}"
-    );
+    assert_eq!(source["successful_routes"], 0, "{source:#}");
+    assert_eq!(published_generation(&carried), first_generation);
     assert!(source["source_identity"].is_string(), "{source:#}");
     assert_eq!(provider_core_counts(&data_root(&temp), "custom"), (1, 1));
 }
@@ -89,13 +86,14 @@ fn all_invalid_custom_source_fails_with_unrelated_history_then_refreshes_after_f
         "none",
     ]));
     assert_eq!(retained["outcome"], "success", "{retained:#}");
+    let retained_generation = published_generation(&retained);
     let retained_documents = retained["totals"]["current_indexed_documents"]
         .as_u64()
         .filter(|count| *count > 0)
         .expect("retained Codex fixture documents");
     fs::write(&fixture, records(r#""invalid""#)).unwrap();
 
-    let empty = failure_json_output(ctx(&temp).args([
+    let failure = failure_stderr(ctx(&temp).args([
         "import",
         "--input-format",
         "ctx-history-jsonl-v1",
@@ -106,25 +104,13 @@ fn all_invalid_custom_source_fails_with_unrelated_history_then_refreshes_after_f
         "--progress",
         "none",
     ]));
-    assert_eq!(empty["outcome"], "failure", "{empty:#}");
-    assert_eq!(empty["failure_scope"], "record", "{empty:#}");
-    assert_eq!(empty["failure_type"], "record_rejection", "{empty:#}");
-    assert_eq!(empty["sources"][0]["status"], "partial", "{empty:#}");
-    assert_eq!(
-        empty["sources"][0]["current_indexed_documents"], retained_documents,
-        "{empty:#}"
-    );
     assert!(
-        empty["sources"][0]["current_retained_records"]
-            .as_u64()
-            .is_some_and(|records| records > 0),
-        "generation-wide retained history must not mask this failed request: {empty:#}"
+        failure.contains("No usable history was imported"),
+        "{failure}"
     );
-    let empty_generation = published_generation(&empty);
-    let empty_status = wait_for_core_generation(&temp, &empty_generation);
     assert_eq!(
-        empty_status["lexical"]["indexed_documents"], retained_documents,
-        "{empty_status:#}"
+        provider_core_counts(&data_root(&temp), "codex").1,
+        retained_documents as usize
     );
     assert_eq!(provider_core_counts(&data_root(&temp), "custom"), (0, 0));
 
@@ -142,7 +128,7 @@ fn all_invalid_custom_source_fails_with_unrelated_history_then_refreshes_after_f
     ]));
     assert_eq!(retry["outcome"], "success", "{retry:#}");
     let generation = published_generation(&retry);
-    assert_ne!(generation, empty_generation);
+    assert_ne!(generation, retained_generation);
     let status = wait_for_core_generation(&temp, &generation);
     assert_eq!(
         status["lexical"]["indexed_documents"],
@@ -227,6 +213,68 @@ fn import_all_discovers_and_imports_providers_together() {
     let stderr = String::from_utf8(output.stderr).unwrap();
     assert!(stderr.contains(r#""type":"ctx_progress""#), "{stderr}");
     assert!(stderr.contains(r#""phase":"published""#), "{stderr}");
+}
+
+#[test]
+fn selected_provider_and_exact_path_ignore_unrelated_discoverable_sources() {
+    for exact_path in [false, true] {
+        let temp = tempdir();
+        let daemon = start_full_source_refresh_daemon(&temp);
+        wait_for_initial_source_refresh(&temp);
+        write_codex_setup_session(&temp);
+        install_default_pi_fixture(&temp, "unselected pi import scope oracle");
+        let opencode_dir = temp.path().join(".local/share/opencode");
+        fs::create_dir_all(&opencode_dir).unwrap();
+        fs::write(opencode_dir.join("opencode.db"), b"not sqlite").unwrap();
+        let codex_path = temp.path().join(".codex/sessions");
+        let discovered = json_output(ctx(&temp).args(["sources", "--format=json"]));
+        for provider in ["codex", "pi", "opencode"] {
+            let source = discovered["sources"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|source| source["provider"] == provider)
+                .unwrap_or_else(|| {
+                    panic!("missing discoverable {provider} source: {discovered:#}")
+                });
+            assert_eq!(source["status"], "available", "{provider}: {discovered:#}");
+            assert_eq!(source["importable"], true, "{provider}: {discovered:#}");
+        }
+        for provider in ["codex", "pi", "opencode"] {
+            assert_eq!(
+                provider_core_counts(&data_root(&temp), provider),
+                (0, 0),
+                "the daemon's initial generation must predate the selected-import fixtures"
+            );
+        }
+
+        let mut command = ctx(&temp);
+        command.args(["import", "--provider", "codex"]);
+        if exact_path {
+            command.args(["--path", codex_path.to_str().unwrap()]);
+        }
+        let imported = json_output(command.args(["--format=json", "--progress", "none"]));
+        let source = if exact_path {
+            let source =
+                assert_explicit_source_publication(&imported, "codex", "codex_session_jsonl_tree");
+            assert_eq!(source["path"], codex_path.to_str().unwrap(), "{imported:#}");
+            assert!(source["route_identity"].is_string(), "{imported:#}");
+            source
+        } else {
+            assert_authoritative_provider_publication(&imported)
+        };
+
+        assert_eq!(source["scanned_routes"], 1, "{imported:#}");
+        assert_eq!(source["successful_routes"], 1, "{imported:#}");
+        assert_eq!(source["source_failure_total"], 0, "{imported:#}");
+        assert_eq!(
+            imported["totals"]["current_sources_with_rejections"], 0,
+            "{imported:#}"
+        );
+
+        assert!(!published_generation(&imported).is_empty(), "{imported:#}");
+        drop(daemon);
+    }
 }
 
 #[test]

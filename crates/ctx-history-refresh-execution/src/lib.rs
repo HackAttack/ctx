@@ -98,11 +98,12 @@ pub use route_result::{
 };
 pub use types::{
     nonzero_duration_micros, PublishedSourceBackedState, PublishedSourceBackedStatePort,
-    RefreshOperation, SourceBackedCurrentSourceProgress, SourceBackedCurrentSourceProgressStage,
-    SourceBackedExactScanProgress, SourceBackedRefreshCoveredPublication,
-    SourceBackedRefreshExecution, SourceBackedRefreshProgressUpdate,
-    SourceBackedRefreshPublication, SourceBackedRefreshTimings, SourceBackedRefreshWorkset,
-    SourceBackedZeroSourceAuthority, SourceBackedZeroSourceAuthorityKind,
+    RefreshOperation, SourceBackedAdmittedDiscovery, SourceBackedCurrentSourceProgress,
+    SourceBackedCurrentSourceProgressStage, SourceBackedExactScanProgress,
+    SourceBackedRefreshCoveredPublication, SourceBackedRefreshExecution,
+    SourceBackedRefreshProgressUpdate, SourceBackedRefreshPublication, SourceBackedRefreshTimings,
+    SourceBackedRefreshWorkset, SourceBackedZeroSourceAuthority,
+    SourceBackedZeroSourceAuthorityKind,
 };
 
 const SEARCH_DIRECTORY: &str = "search";
@@ -263,4 +264,67 @@ pub fn source_backed_watch_catalog_from_report(
         published_state,
     )?;
     Ok(merged.build.registry.watch_catalog())
+}
+
+/// Builds exact, provider-neutral execution authority from one already-bounded
+/// discovery report. The returned routes are derived from that same report;
+/// this helper performs no discovery of its own.
+#[doc(hidden)]
+pub fn source_backed_admitted_discovery_from_report(
+    discovery: &DiscoveryContext,
+    report: DiscoveryReport,
+    discovery_duration: StdDuration,
+    data_root: &Path,
+    explicit_source_catalog: Option<&ExplicitSourceCatalogAuthority>,
+    published_state: &dyn PublishedSourceBackedStatePort,
+) -> Result<(SourceBackedAdmittedDiscovery, BTreeSet<SourceRouteIdentity>)> {
+    // Explicit-catalog discovery is already reconstructed from the catalog
+    // authority itself. Unlike automatic routes, explicit routes deliberately
+    // do not expose replayable registration sources through the watch catalog.
+    let explicit_admitted_report = explicit_source_catalog.is_some().then(|| report.clone());
+    let merged = execution::build_merged_source_backed_registry(
+        discovery,
+        report,
+        discovery_duration,
+        data_root,
+        explicit_source_catalog,
+        published_state,
+    )?;
+    reject_blocking_automatic_registry_issues(&merged.build.issues)?;
+    let watch_catalog = merged.build.registry.watch_catalog();
+    let selected_routes = if explicit_source_catalog.is_some() {
+        merged
+            .requested_catalog_route_bindings
+            .iter()
+            .map(|binding| {
+                SourceRouteIdentity::from_sha256(binding.route_identity.clone()).map_err(Into::into)
+            })
+            .collect::<Result<BTreeSet<_>>>()?
+    } else {
+        watch_catalog
+            .route_ids()
+            .filter(|route| {
+                watch_catalog
+                    .route_discovery_report(&BTreeSet::from([(*route).clone()]))
+                    .is_some()
+            })
+            .cloned()
+            .collect()
+    };
+    let admitted_report = match explicit_admitted_report {
+        Some(report) => report,
+        None if selected_routes.is_empty() => DiscoveryReport {
+            sources: Vec::new(),
+            issues: Vec::new(),
+        },
+        None => watch_catalog
+            .route_discovery_report(&selected_routes)
+            .ok_or_else(|| {
+                anyhow!("selected source routes have no provider-neutral discovery report")
+            })?,
+    };
+    Ok((
+        SourceBackedAdmittedDiscovery::new(admitted_report, discovery_duration, watch_catalog),
+        selected_routes,
+    ))
 }

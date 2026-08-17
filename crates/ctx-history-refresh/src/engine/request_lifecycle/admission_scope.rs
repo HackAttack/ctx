@@ -53,6 +53,20 @@ impl CoreRefreshEngine {
         if state.route_admissions.contains_key(request_id) {
             bail!("source refresh request `{request_id}` already has retained route admissions");
         }
+        let (admitted_authority, requires_admitted_discovery) = find_attempt(&state, request_id)
+            .map(|attempt| {
+                (
+                    attempt.admitted_authority.clone(),
+                    attempt.selector.is_scoped()
+                        && matches!(scope, SourceBackedRefreshScope::Exact(_)),
+                )
+            })
+            .unwrap_or((None, false));
+        if let Some(authority) = admitted_authority.as_ref() {
+            if &authority.scope != scope {
+                bail!("scoped source refresh execution does not match its admitted exact scope");
+            }
+        }
         let known_route_ids = state.known_route_ids.clone();
         let mut covered_route_ids = if let Some(continuation) =
             state.manual_all_continuations.get_mut(request_id)
@@ -118,6 +132,23 @@ impl CoreRefreshEngine {
                         "daemon exact source refresh must admit between one and {SOURCE_REFRESH_TERMINAL_ROUTE_LIMIT} routes"
                     );
                 }
+                if admitted_authority.is_some() {
+                    let watermark = state.dirty_routes.seed_watermark();
+                    for route in routes {
+                        state
+                            .route_event_watermarks
+                            .entry(route.clone())
+                            .and_modify(|current| *current = (*current).max(watermark))
+                            .or_insert(watermark);
+                    }
+                    state.dirty_routes.seed_exact_routes(
+                        routes.iter().cloned(),
+                        watermark,
+                        // A logical request is explicit admission, so its
+                        // first exact attempt bypasses watcher debounce.
+                        now_ms.saturating_sub(1_000),
+                    );
+                }
                 state
                     .dirty_routes
                     .admit_exact_routes(routes, now_ms)
@@ -178,7 +209,12 @@ impl CoreRefreshEngine {
             covered_route_ids,
             covered_publication,
             route_worksets,
-            watch_catalog: state.watch_catalog.clone(),
+            watch_catalog: admitted_authority
+                .as_ref()
+                .map(|authority| authority.discovery.watch_catalog().clone())
+                .or_else(|| state.watch_catalog.clone()),
+            admitted_discovery: admitted_authority.map(|authority| authority.discovery),
+            requires_admitted_discovery,
         })
     }
 

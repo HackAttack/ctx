@@ -462,7 +462,11 @@ pub(super) fn new_refresh_attempt(
             SourceBackedRefreshOperation::Refresh => SourceBackedReconciliationDemand::Incremental,
             SourceBackedRefreshOperation::Import => SourceBackedReconciliationDemand::Exhaustive,
         },
+        // Callers that own a typed scoped request replace this legacy
+        // all-route default after construction.
+        selector: SourceBackedRefreshSelector::AllAutomatic,
         requested_explicit_source_catalog: requested_catalog,
+        admitted_authority: None,
         fresh_after_admitted_snapshot: false,
         request_fingerprint: None,
         admission_durability_indeterminate: false,
@@ -504,6 +508,45 @@ pub(super) fn recover_reconciliation_demand(
             SourceBackedRefreshOperation::Refresh => SourceBackedReconciliationDemand::Incremental,
             SourceBackedRefreshOperation::Import => SourceBackedReconciliationDemand::Exhaustive,
         }),
+    }
+}
+
+pub(super) fn recover_refresh_selector(
+    job: &Value,
+    operation: SourceBackedRefreshOperation,
+    has_explicit_catalog: bool,
+    allow_legacy_terminal_catalog_omission: bool,
+) -> Result<SourceBackedRefreshSelector> {
+    let legacy = job.get("refresh_selector").is_none();
+    let selector = match job.get("refresh_selector") {
+        Some(value) => SourceBackedRefreshSelector::from_json(value)?,
+        None => SourceBackedRefreshSelector::AllAutomatic,
+    };
+    if legacy {
+        match (
+            operation,
+            has_explicit_catalog,
+            allow_legacy_terminal_catalog_omission,
+        ) {
+            (SourceBackedRefreshOperation::Import, false, false) => {
+                bail!("durable import source refresh has no explicit source authority")
+            }
+            (SourceBackedRefreshOperation::Refresh, true, _) => {
+                bail!("durable refresh carries legacy explicit source authority")
+            }
+            _ => {}
+        }
+    }
+    match (selector, has_explicit_catalog) {
+        (SourceBackedRefreshSelector::AllAutomatic, _)
+        | (SourceBackedRefreshSelector::AutomaticProvider(_), false)
+        | (SourceBackedRefreshSelector::ExplicitCatalog, true) => Ok(selector),
+        (SourceBackedRefreshSelector::ExplicitCatalog, false) => {
+            bail!("durable explicit-catalog source refresh has no catalog authority")
+        }
+        (SourceBackedRefreshSelector::AutomaticProvider(_), true) => {
+            bail!("durable automatic provider source refresh carries explicit catalog authority")
+        }
     }
 }
 

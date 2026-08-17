@@ -11,20 +11,27 @@ use ctx_history_capture_model::{
 };
 use ctx_history_core::CaptureProvider;
 use ctx_history_refresh::{
-    explicit_source_catalog_authority_for_test, ExplicitSourceCatalogAuthority,
-    ExplicitSourceCatalogRouteBinding, ExplicitSourceCatalogUpsert, SourceBackedRefreshCurrent,
-    SourceBackedRefreshReceipt, SourceBackedRefreshRecordRejection, SourceBackedRefreshRouteResult,
+    explicit_source_catalog_authority_for_test, ExplicitSourceCatalogRouteBinding,
+    ExplicitSourceCatalogUpsert, SourceBackedRefreshCurrent, SourceBackedRefreshReceipt,
+    SourceBackedRefreshRecordRejection, SourceBackedRefreshRouteResult,
     SourceBackedRefreshSourceFailure,
 };
 
 use crate::{
     run_ingest, CaptureAdmissionPort, HistorySourcePluginSource, IngestProgressPort,
-    IngestPublication, IngestRefreshPort, IngestRequest, IngestSourceOutcome,
-    ProviderSelectionGuidance, SourceDiscoveryPort, SourceStats,
+    IngestPublication, IngestRefreshPort, IngestRefreshSelection, IngestRequest,
+    IngestSourceOutcome, ProviderSelectionGuidance, SourceDiscoveryPort, SourceStats,
 };
 
 const ROUTE: &str = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
 const SOURCE_ID: &str = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum RecordedRefreshSelection {
+    AllAutomatic,
+    AutomaticProvider(CaptureProvider),
+    ExplicitCatalog(String),
+}
 
 struct FakeHost {
     events: RefCell<Vec<String>>,
@@ -42,6 +49,7 @@ struct FakeHost {
     provider_discovery_calls: Cell<usize>,
     source_identity_calls: Cell<usize>,
     relocate_from: RefCell<Option<PathBuf>>,
+    refresh_selections: RefCell<Vec<RecordedRefreshSelection>>,
 }
 
 impl FakeHost {
@@ -62,6 +70,7 @@ impl FakeHost {
             provider_discovery_calls: Cell::new(0),
             source_identity_calls: Cell::new(0),
             relocate_from: RefCell::new(None),
+            refresh_selections: RefCell::new(Vec::new()),
         }
     }
 
@@ -181,14 +190,25 @@ impl IngestRefreshPort for FakeHost {
     fn refresh(
         &mut self,
         _: &Path,
-        admission: Option<&ExplicitSourceCatalogAuthority>,
+        selection: IngestRefreshSelection<'_>,
         _: bool,
     ) -> Result<IngestPublication> {
-        self.push(if admission.is_some() {
-            "refresh:exact"
-        } else {
-            "refresh:automatic"
-        });
+        let (event, recorded) = match selection {
+            IngestRefreshSelection::AllAutomatic => (
+                "refresh:all_automatic",
+                RecordedRefreshSelection::AllAutomatic,
+            ),
+            IngestRefreshSelection::AutomaticProvider(provider) => (
+                "refresh:automatic_provider",
+                RecordedRefreshSelection::AutomaticProvider(provider),
+            ),
+            IngestRefreshSelection::ExplicitCatalog(authority) => (
+                "refresh:explicit_catalog",
+                RecordedRefreshSelection::ExplicitCatalog(authority.integrity_hex()),
+            ),
+        };
+        self.push(event);
+        self.refresh_selections.borrow_mut().push(recorded);
         self.refresh_calls.set(self.refresh_calls.get() + 1);
         if let Some(error) = self.refresh_error {
             return Err(anyhow!(error));
@@ -329,8 +349,12 @@ fn automatic_safety_snapshot_precedes_root_admission_and_one_refresh() {
             "begin:0",
             "discover_all",
             "protect_data_root",
-            "refresh:automatic"
+            "refresh:all_automatic"
         ]
+    );
+    assert_eq!(
+        host.refresh_selections.borrow().as_slice(),
+        [RecordedRefreshSelection::AllAutomatic]
     );
 }
 
@@ -388,8 +412,14 @@ fn exact_route_admits_and_refreshes_exactly_once() {
             "begin:8",
             "catalog_exact",
             "admit_exact",
-            "refresh:exact"
+            "refresh:explicit_catalog"
         ]
+    );
+    assert_eq!(
+        host.refresh_selections.borrow().as_slice(),
+        [RecordedRefreshSelection::ExplicitCatalog(
+            explicit_source_catalog_authority_for_test(1).integrity_hex()
+        )]
     );
 }
 
@@ -701,7 +731,7 @@ fn admission_and_progress_errors_propagate_without_publication() {
 }
 
 #[test]
-fn selected_automatic_provider_uses_one_provider_snapshot_and_one_safety_snapshot() {
+fn selected_automatic_provider_uses_only_its_provider_snapshot_and_forwards_selection() {
     let temp = tempfile::tempdir().unwrap();
     let source_path = write_source(&temp);
     let source = provider_source(source_path.clone(), ProviderSourceStatus::Available);
@@ -712,8 +742,7 @@ fn selected_automatic_provider_uses_one_provider_snapshot_and_one_safety_snapsho
             SourceBackedRefreshRouteResult::succeeded(ROUTE.into(), true),
         )),
     );
-    host.provider_discovery.sources = vec![source.clone()];
-    host.all_discovery.sources = vec![source];
+    host.provider_discovery.sources = vec![source];
     let request = IngestRequest {
         provider: Some(CaptureProvider::Codex),
         ..IngestRequest::default()
@@ -722,8 +751,14 @@ fn selected_automatic_provider_uses_one_provider_snapshot_and_one_safety_snapsho
     run_ingest(&request, &temp.path().join("ctx"), &mut host).unwrap();
 
     assert_eq!(host.provider_discovery_calls.get(), 1);
-    assert_eq!(host.all_discovery_calls.get(), 1);
+    assert_eq!(host.all_discovery_calls.get(), 0);
     assert_eq!(host.refresh_calls.get(), 1);
+    assert_eq!(
+        host.refresh_selections.borrow().as_slice(),
+        [RecordedRefreshSelection::AutomaticProvider(
+            CaptureProvider::Codex
+        )]
+    );
 }
 
 #[test]

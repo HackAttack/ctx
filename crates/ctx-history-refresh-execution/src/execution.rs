@@ -2,9 +2,11 @@ use super::*;
 
 #[cfg(test)]
 mod catalog_refresh_admission_tests;
+mod family_fallback;
 mod publication;
 mod registry_merge;
 
+use family_fallback::{exact_member_family_fallback_required, ExactMemberFallbackRequired};
 pub use publication::exclusive_scan_stage_duration;
 use publication::{
     encode_publication_metadata, provider_route_results, publication_from_verified_metadata,
@@ -20,7 +22,7 @@ pub(super) struct MergedSourceBackedRegistry {
     previous_catalog_route_bindings: Vec<ExplicitSourceCatalogRouteBinding>,
     requested_explicit_source_catalog: Option<ExplicitSourceCatalogAuthority>,
     retained_generation: Option<VerifiedIndex>,
-    requested_catalog_route_bindings: Vec<ExplicitSourceCatalogRouteBinding>,
+    pub(super) requested_catalog_route_bindings: Vec<ExplicitSourceCatalogRouteBinding>,
     previous_route_controls: BTreeMap<SourceRouteIdentity, Vec<u8>>,
 }
 
@@ -30,20 +32,10 @@ enum SourceBackedInventoryDisposition {
     UnsupportedOrUnavailable(ZeroSourcePublicationBlocked),
 }
 
-#[derive(Debug)]
-struct ExactMemberFallbackRequired;
-
-impl std::fmt::Display for ExactMemberFallbackRequired {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        formatter.write_str("exact member requires registered-route family reconciliation")
-    }
-}
-
-impl std::error::Error for ExactMemberFallbackRequired {}
-
 #[derive(Clone)]
 struct CatalogRefreshAdmission {
     report: DiscoveryReport,
+    discovery_duration: StdDuration,
     exact_members: bool,
 }
 
@@ -62,6 +54,11 @@ impl PublishedSourceBackedStatePort for PreopenedPublishedState {
 pub(super) fn execute_capture_owned_refresh(
     execution: SourceBackedRefreshExecution<'_>,
 ) -> Result<SourceBackedRefreshPublication> {
+    if execution.admitted_discovery.is_some()
+        && !matches!(execution.scope, SourceBackedRefreshScope::Exact(_))
+    {
+        bail!("admitted scoped discovery requires an exact source refresh scope");
+    }
     let catalog_admission = catalog_refresh_admission(&execution);
     let mut family_fallback = execution.clone();
     match execute_capture_owned_refresh_once(execution, catalog_admission.clone()) {
@@ -106,7 +103,7 @@ fn execute_capture_owned_refresh_once(
         discovery_context,
         catalog_admission
             .as_ref()
-            .map(|admission| admission.report.clone()),
+            .map(|admission| (admission.report.clone(), admission.discovery_duration)),
         move |discovery,
               report,
               discovery_duration,
@@ -148,7 +145,7 @@ fn execute_capture_owned_refresh_once(
 pub fn execute_capture_owned_refresh_with<Refresh>(
     execution: SourceBackedRefreshExecution<'_>,
     discovery: &DiscoveryContext,
-    catalog_report: Option<DiscoveryReport>,
+    admitted_report: Option<(DiscoveryReport, StdDuration)>,
     refresh_all: Refresh,
 ) -> Result<SourceBackedRefreshPublication>
 where
@@ -176,13 +173,21 @@ where
         .published_state
         .open_published_state(execution.data_root)?;
     let published_state = PreopenedPublishedState(Mutex::new(Some(published_state)));
-    let work_budget =
-        source_backed_refresh_work_budget(source_backed_refresh_writer_options().indexer_threads);
-    let discovery_started = StdInstant::now();
-    let report = catalog_report.unwrap_or_else(|| {
-        discover_provider_sources_with_context_and_work_budget(&discovery, work_budget)
-    });
-    let discovery_duration = discovery_started.elapsed();
+    let (report, discovery_duration) = match admitted_report {
+        Some(admitted) => admitted,
+        None if execution.requires_admitted_discovery => {
+            bail!("selected source refresh has no admitted discovery authority")
+        }
+        None => {
+            let work_budget = source_backed_refresh_work_budget(
+                source_backed_refresh_writer_options().indexer_threads,
+            );
+            let discovery_started = StdInstant::now();
+            let report =
+                discover_provider_sources_with_context_and_work_budget(&discovery, work_budget);
+            (report, discovery_started.elapsed())
+        }
+    };
     validate_provider_source_roots_outside_data_root(execution.data_root, report.sources.iter())
         .context("validate provider roots before source-refresh state writes")?;
     if let Some(authority) = execution.explicit_source_catalog {
@@ -275,6 +280,38 @@ fn establish_source_backed_index_privacy(data_root: &Path, index_root: &Path) ->
 fn catalog_refresh_admission(
     execution: &SourceBackedRefreshExecution<'_>,
 ) -> Option<CatalogRefreshAdmission> {
+    if let Some(admitted) = execution.admitted_discovery.as_ref() {
+        let SourceBackedRefreshScope::Exact(routes) = &execution.scope else {
+            return None;
+        };
+        let exact_member_report = (execution.reconciliation_demand
+            == SourceBackedReconciliationDemand::Incremental)
+            .then(|| {
+                execution
+                    .route_worksets
+                    .iter()
+                    .map(|(route, workset)| match workset {
+                        SourceBackedRefreshWorkset::Members(members) => {
+                            Some((route.clone(), members.clone()))
+                        }
+                        SourceBackedRefreshWorkset::Exhaustive => None,
+                    })
+                    .collect::<Option<BTreeMap<_, _>>>()
+                    .and_then(|worksets| {
+                        admitted
+                            .watch_catalog()
+                            .exact_member_discovery_report(routes, &worksets)
+                    })
+            })
+            .flatten();
+        return Some(CatalogRefreshAdmission {
+            report: exact_member_report
+                .clone()
+                .unwrap_or_else(|| admitted.report().clone()),
+            discovery_duration: admitted.discovery_duration(),
+            exact_members: exact_member_report.is_some(),
+        });
+    }
     if execution.operation != RefreshOperation::Refresh
         || execution.explicit_source_catalog.is_some()
     {
@@ -303,11 +340,13 @@ fn catalog_refresh_admission(
     if let Some(report) = exact_member_report {
         return Some(CatalogRefreshAdmission {
             report,
+            discovery_duration: StdDuration::ZERO,
             exact_members: true,
         });
     }
     Some(CatalogRefreshAdmission {
         report: catalog.route_discovery_report(routes)?,
+        discovery_duration: StdDuration::ZERO,
         exact_members: false,
     })
 }
@@ -814,25 +853,6 @@ fn refresh_all_provider_sources_route_local_with_reconciliation(
         publication.verified_index = Some(recertified);
     }
     Ok(publication)
-}
-
-fn exact_member_family_fallback_required(
-    route_worksets: &BTreeMap<SourceRouteIdentity, BTreeSet<PathBuf>>,
-    complete_inventory_routes: &BTreeSet<SourceRouteIdentity>,
-    successful_routes: &[SourceBackedSuccessfulRouteOutcome],
-    failed_routes: &[SourceBackedFailedRouteOutcome],
-) -> bool {
-    let exact_routes = route_worksets.keys().collect::<BTreeSet<_>>();
-    complete_inventory_routes
-        .iter()
-        .any(|route| exact_routes.contains(route))
-        || successful_routes.iter().any(|outcome| {
-            exact_routes.contains(&outcome.route_identity)
-                && outcome.logical_source_failure_total != 0
-        })
-        || failed_routes
-            .iter()
-            .any(|outcome| exact_routes.contains(&outcome.route_identity))
 }
 
 fn register_automatic_hermes_profile_rename_retirements(

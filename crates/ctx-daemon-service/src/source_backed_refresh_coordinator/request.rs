@@ -48,6 +48,7 @@ pub(super) struct SourceBackedRefreshRequest<'a> {
     request_id: String,
     mode: SourceBackedRefreshMode,
     operation: SourceBackedRefreshOperation,
+    selector: SourceBackedRefreshSelector,
     explicit_source_catalog: Option<&'a ExplicitSourceCatalogAuthority>,
     fresh_after_admitted_snapshot: bool,
     trigger: SourceBackedRefreshTrigger,
@@ -57,6 +58,7 @@ impl<'a> SourceBackedRefreshRequest<'a> {
     pub(super) fn new(
         mode: SourceBackedRefreshMode,
         operation: SourceBackedRefreshOperation,
+        selector: SourceBackedRefreshSelector,
         explicit_source_catalog: Option<&'a ExplicitSourceCatalogAuthority>,
         fresh_after_admitted_snapshot: bool,
     ) -> Self {
@@ -64,6 +66,7 @@ impl<'a> SourceBackedRefreshRequest<'a> {
             request_id: Uuid::now_v7().to_string(),
             mode,
             operation,
+            selector,
             explicit_source_catalog,
             fresh_after_admitted_snapshot,
             trigger: match operation {
@@ -83,7 +86,7 @@ impl<'a> SourceBackedRefreshRequest<'a> {
         self
     }
 
-    pub(super) fn to_json(&self, _data_root: &Path) -> Result<Value> {
+    pub(super) fn to_json(&self) -> Result<Value> {
         Ok(compact_json(json!({
             "schema_version": 1,
             "op": SOURCE_REFRESH_REQUEST_OP,
@@ -91,6 +94,7 @@ impl<'a> SourceBackedRefreshRequest<'a> {
             "mode": self.mode.as_str(),
             "operation": self.operation.as_str(),
             "trigger": self.trigger.as_str(),
+            "refresh_selector": self.selector.to_json(),
             "explicit_source_catalog": self.explicit_source_catalog
                 .map(ExplicitSourceCatalogAuthority::to_json),
             "fresh_after_admitted_snapshot": self.fresh_after_admitted_snapshot,

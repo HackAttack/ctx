@@ -8,6 +8,8 @@ struct AdmittedRefreshScope {
     covered_publication: SourceBackedRefreshCoveredPublication,
     route_worksets: BTreeMap<SourceRouteIdentity, SourceBackedRefreshWorkset>,
     watch_catalog: Option<SourceBackedWatchCatalog>,
+    admitted_discovery: Option<ctx_history_refresh_execution::SourceBackedAdmittedDiscovery>,
+    requires_admitted_discovery: bool,
 }
 
 impl CoreRefreshEngine {
@@ -136,6 +138,9 @@ impl CoreRefreshEngine {
         refresh_scope: SourceBackedRefreshScope,
         logical_demand: SourceRefreshLogicalDemand,
     ) -> Result<Value> {
+        // This compatibility entry point predates typed selectors. Its
+        // explicit catalog is an all-route overlay.
+        let selector = SourceBackedRefreshSelector::AllAutomatic;
         let mut state = self.lock_state();
         let response = Self::enqueue_with_catalog_metadata_locked(
             &mut state,
@@ -144,6 +149,7 @@ impl CoreRefreshEngine {
             requested_catalog,
             refresh_scope,
             logical_demand,
+            selector,
         )?;
         trim_terminal_attempt_history(&mut state);
         Ok(response)
@@ -156,6 +162,7 @@ impl CoreRefreshEngine {
         requested_catalog: Option<ExplicitSourceCatalogAuthority>,
         refresh_scope: SourceBackedRefreshScope,
         logical_demand: SourceRefreshLogicalDemand,
+        selector: SourceBackedRefreshSelector,
     ) -> Result<Value> {
         let SourceRefreshLogicalDemand {
             admission,
@@ -178,9 +185,14 @@ impl CoreRefreshEngine {
             return projected_status_json(state, &existing.request_id)
                 .ok_or_else(|| anyhow!("existing source refresh request disappeared"));
         }
+        // Only a genuinely all-automatic request may enter the all-route
+        // continuation path. Typed provider and explicit-catalog selections
+        // begin at the legacy wire scope of All, but scoped admission must
+        // resolve them to Exact without inheriting unrelated predecessor work.
         let is_manual_all = admission
             == SourceRefreshAdmissionRequirement::FreshAfterAdmittedSnapshot
-            && refresh_scope == SourceBackedRefreshScope::All;
+            && refresh_scope == SourceBackedRefreshScope::All
+            && matches!(selector, SourceBackedRefreshSelector::AllAutomatic);
         // A later manual exhaustive demand is a logical waiter on the one
         // already-queued exhaustive successor. It receives its own durable
         // request identity but cannot manufacture another physical scan.
@@ -190,6 +202,10 @@ impl CoreRefreshEngine {
                     find_attempt(state, request_id)
                         .filter(|attempt| {
                             attempt.state == SourceBackedRefreshState::Queued
+                                && !matches!(
+                                    attempt.selector,
+                                    SourceBackedRefreshSelector::AutomaticProvider(_)
+                                )
                                 && attempt.refresh_scope == SourceBackedRefreshScope::All
                                 && attempt.reconciliation_demand >= reconciliation_demand
                         })
@@ -201,7 +217,12 @@ impl CoreRefreshEngine {
         if let Some(active_request_id) = state.active_request_id.clone() {
             if let Some(active) = find_attempt_mut(state, &active_request_id) {
                 if active.state.is_active() {
-                    if is_manual_all {
+                    if is_manual_all
+                        && !matches!(
+                            active.selector,
+                            SourceBackedRefreshSelector::AutomaticProvider(_)
+                        )
+                    {
                         // Command ownership applies to the work a command is
                         // waiting on even when a running attempt remains
                         // physically immutable and needs a logical successor.
@@ -237,13 +258,15 @@ impl CoreRefreshEngine {
                         // publication instead of eagerly repeating the pass.
                         merge_trigger_ownership(active, &metadata);
                     } else {
-                        if let Some(requested_catalog) = requested_catalog.as_ref() {
-                            let upgrades_queued_automatic =
-                                active.requested_explicit_source_catalog.is_none()
-                                    && active.state == SourceBackedRefreshState::Queued;
-                            if upgrades_queued_automatic {
-                                active.requested_explicit_source_catalog =
-                                    Some(requested_catalog.clone());
+                        if active.selector == selector {
+                            if let Some(requested_catalog) = requested_catalog.as_ref() {
+                                let upgrades_queued_automatic =
+                                    active.requested_explicit_source_catalog.is_none()
+                                        && active.state == SourceBackedRefreshState::Queued;
+                                if upgrades_queued_automatic {
+                                    active.requested_explicit_source_catalog =
+                                        Some(requested_catalog.clone());
+                                }
                             }
                         }
                         let automatic_exact = active.trigger == "periodic"
@@ -261,6 +284,7 @@ impl CoreRefreshEngine {
                             && reconciliation_demand > active.reconciliation_demand;
                         if active.requested_explicit_source_catalog.as_ref()
                             == requested_catalog.as_ref()
+                            && active.selector == selector
                             && active.refresh_scope == refresh_scope
                             && !stronger_running_demand
                         {
@@ -284,6 +308,7 @@ impl CoreRefreshEngine {
                         attempt.state.is_active()
                             && attempt.requested_explicit_source_catalog.as_ref()
                                 == requested_catalog.as_ref()
+                            && attempt.selector == selector
                             && attempt.refresh_scope == refresh_scope
                             && attempt.reconciliation_demand >= reconciliation_demand
                     })
@@ -315,6 +340,7 @@ impl CoreRefreshEngine {
             attempt.physical_attempt_id = Some(attempt.request_id.clone());
         }
         attempt.request_fingerprint = request_fingerprint;
+        attempt.selector = selector;
         attempt.fresh_after_admitted_snapshot =
             admission == SourceRefreshAdmissionRequirement::FreshAfterAdmittedSnapshot;
         attempt.reconciliation_demand = reconciliation_demand;
@@ -606,22 +632,25 @@ impl CoreRefreshEngine {
         };
         let verified = match verified {
             Ok((observed, publication)) => {
-                let exact_scope_matches = match &refresh_scope {
-                    SourceBackedRefreshScope::All => true,
+                let exact_scope_mismatch = match &refresh_scope {
+                    SourceBackedRefreshScope::All => None,
                     SourceBackedRefreshScope::Exact(routes) => {
-                        publication
+                        let actual = publication
                             .route_results
                             .iter()
                             .filter_map(|result| {
                                 SourceRouteIdentity::from_sha256(result.route_identity.clone()).ok()
                             })
-                            .collect::<BTreeSet<_>>()
-                            == *routes
-                            && publication.route_results.len() == routes.len()
+                            .collect::<BTreeSet<_>>();
+                        (actual != *routes || publication.route_results.len() != routes.len())
+                            .then_some((routes, actual))
                     }
                 };
-                if !exact_scope_matches {
-                    Err("validate terminal Core publication: exact refresh omitted or added a selected route outcome".to_owned())
+                if let Some((expected, actual)) = exact_scope_mismatch {
+                    Err(format!(
+                        "validate terminal Core publication: exact refresh omitted or added a selected route outcome (expected={expected:?}, actual={actual:?}, result_count={})",
+                        publication.route_results.len()
+                    ))
                 } else {
                     SourceBackedRefreshReceipt::from_verified_publication(
                         previous_generation.clone(),

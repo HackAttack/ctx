@@ -73,6 +73,22 @@ impl ExplicitSourceCatalogAuthority {
         validate_explicit_source_catalog_snapshot_roots(data_root, &snapshot)
     }
 
+    /// Derives only the provider inputs named by this request authority.
+    /// No provider-wide discovery is performed here.
+    #[doc(hidden)]
+    pub fn admission_discovery_report(&self) -> Result<DiscoveryReport> {
+        let sources = self
+            .entries
+            .iter()
+            .filter(|entry| entry.enabled)
+            .map(|entry| source_from_catalog_entry(entry, true))
+            .collect::<Result<Vec<_>>>()?;
+        Ok(DiscoveryReport {
+            sources,
+            issues: Vec::new(),
+        })
+    }
+
     pub fn route_lineages(&self) -> BTreeSet<String> {
         self.entries
             .iter()

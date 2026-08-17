@@ -121,6 +121,23 @@ fn wait_for_core_generation(temp: &TempDir, generation: &str) -> Value {
     }
 }
 
+fn wait_for_initial_source_refresh(temp: &TempDir) -> Value {
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        let status = json_output(ctx(temp).args(["status", "--format=json"]));
+        if status["refresh"]["status"] == "ready"
+            && status["refresh"]["published_generation"].is_string()
+        {
+            return status;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "timed out waiting for the daemon's initial source refresh: {status:#}"
+        );
+        std::thread::sleep(Duration::from_millis(25));
+    }
+}
+
 fn published_generation(report: &Value) -> String {
     report["sources"][0]["published_generation"]
         .as_str()
@@ -1141,10 +1158,11 @@ fn write_valid_explicit_custom_source(path: &Path, text: &str) {
 }
 
 #[test]
-fn explicit_import_reports_requested_route_failure_when_another_cold_route_publishes() {
+fn explicit_import_failure_does_not_refresh_an_unrelated_cold_route() {
     let temp = tempdir();
-    write_codex_setup_session(&temp);
     let _daemon = start_full_source_refresh_daemon(&temp);
+    wait_for_initial_source_refresh(&temp);
+    write_codex_setup_session(&temp);
     let fixture = temp.path().join("cold-explicit-failure.jsonl");
     fs::write(&fixture, b"").unwrap();
 
@@ -1161,41 +1179,11 @@ fn explicit_import_reports_requested_route_failure_when_another_cold_route_publi
             "json",
         ])
         .assert()
-        .success()
+        .failure()
         .get_output()
         .clone();
-    let report: Value = serde_json::from_slice(&output.stdout).unwrap();
-    assert_eq!(
-        report["outcome"], "completed_with_source_failures",
-        "{report:#}"
-    );
-    assert_eq!(report["failure_scope"], "source", "{report:#}");
-    assert_eq!(report["failure_type"], "source_failure", "{report:#}");
-    assert!(
-        report["totals"].get("imported_sources").is_none(),
-        "{report:#}"
-    );
-    assert_eq!(report["totals"]["failed_sources"], 1, "{report:#}");
-    assert!(report["totals"]["current_indexed_documents"]
-        .as_u64()
-        .is_some_and(|count| count >= 1));
-
-    let source = &report["sources"][0];
-    assert_eq!(source["status"], "failure", "{source:#}");
-    assert_eq!(source["failure_scope"], "source", "{source:#}");
-    assert_eq!(source["failure_type"], "other", "{source:#}");
-    assert_eq!(source["source_failure_class"], "unreadable", "{source:#}");
-    assert_eq!(source["carried_forward"], false, "{source:#}");
-    assert_eq!(
-        source["daemon_request_metadata"]["operation"], "import",
-        "{source:#}"
-    );
-    assert_eq!(source["source_failure_total"], 1, "{source:#}");
-    assert!(source["successful_routes"]
-        .as_u64()
-        .is_some_and(|routes| routes >= 1));
-    assert!(source["source_identity"].is_string(), "{source:#}");
-    assert_eq!(source["detail"], source["error"], "{source:#}");
+    assert!(output.stdout.is_empty());
+    assert_eq!(provider_core_counts(&data_root(&temp), "codex"), (0, 0));
 
     let stderr = String::from_utf8(output.stderr).unwrap();
     let terminal_progress = stderr
@@ -1204,11 +1192,12 @@ fn explicit_import_reports_requested_route_failure_when_another_cold_route_publi
         .find(|event| event["done"] == true)
         .expect("terminal explicit-import progress event");
     assert_eq!(terminal_progress["operation"], "import", "{stderr}");
-    assert_eq!(terminal_progress["phase"], "published", "{stderr}");
+    assert_eq!(terminal_progress["phase"], "failed", "{stderr}");
     assert_eq!(
-        terminal_progress["structured_outcome"]["code"], "completed_with_source_failures",
+        terminal_progress["structured_outcome"]["code"], "malformed_source",
         "{stderr}"
     );
+    assert!(stderr.contains(fixture.to_str().unwrap()), "{stderr}");
 }
 
 #[path = "import_orchestration/additional.rs"]

@@ -22,7 +22,10 @@ impl CoreRefreshEngine {
         let active_generation = verified
             .as_ref()
             .map(|verified| verified.generation_id().to_owned());
-        let queued_successors = recover_queued_successors(&job)?;
+        let mut queued_successors = recover_queued_successors(&job)?;
+        for successor in &mut queued_successors {
+            require_scoped_rehydration(successor)?;
+        }
         let recovered_continuations = recover_logical_demand_continuations(&job)?;
         let request_state = job
             .get("request_state")
@@ -243,7 +246,8 @@ impl CoreRefreshEngine {
         } else {
             active_generation.clone()
         };
-        let root = recover_queued_root(&job, recovered_previous_generation)?;
+        let mut root = recover_queued_root(&job, recovered_previous_generation)?;
+        require_scoped_rehydration(&mut root)?;
         let request_id = root.request_id.clone();
         {
             let mut state = self.lock_state();
@@ -323,7 +327,8 @@ impl CoreRefreshEngine {
             object.remove(field);
         }
 
-        let root = recover_queued_root(&rebuild_job, None)?;
+        let mut root = recover_queued_root(&rebuild_job, None)?;
+        require_scoped_rehydration(&mut root)?;
         let request_id = root.request_id.clone();
         let mut state = self.lock_state();
         if state.active_request_id.is_some() || !state.pending_request_ids.is_empty() {
@@ -376,6 +381,21 @@ impl CoreRefreshEngine {
         self.persist_job_status(data_root, &durable_request_id)?;
         Ok(true)
     }
+}
+
+fn require_scoped_rehydration(attempt: &mut SourceBackedRefreshAttempt) -> Result<()> {
+    if matches!(attempt.selector, SourceBackedRefreshSelector::AllAutomatic) {
+        return Ok(());
+    }
+    if attempt.state == SourceBackedRefreshState::Queued
+        && !matches!(attempt.refresh_scope, SourceBackedRefreshScope::Exact(_))
+    {
+        bail!("durable resolved scoped source refresh has no exact physical scope");
+    }
+    attempt.admitted_authority = None;
+    attempt.state = SourceBackedRefreshState::AdmissionPending;
+    attempt.progress.phase = "admission_pending".to_owned();
+    Ok(())
 }
 
 fn recover_exact_published_attempt(
@@ -499,6 +519,8 @@ fn recover_terminal_attempt(
         .filter(|value| !value.is_null())
         .map(ExplicitSourceCatalogAuthority::from_json)
         .transpose()?;
+    let selector = recover_refresh_selector(job, operation, requested_catalog.is_some(), true)
+        .context("recover durable terminal source refresh selector")?;
     let previous_generation = optional_generation(job.get("previous_generation"))?;
     let mut attempt = new_refresh_attempt(
         previous_generation,
@@ -513,6 +535,7 @@ fn recover_terminal_attempt(
     );
     attempt.request_id =
         required_nonempty_string(job, "request_id", "terminal source refresh")?.to_owned();
+    attempt.selector = selector;
     attempt.physical_attempt_id = optional_string(job, "physical_attempt_id")?;
     attempt.reconciliation_demand = recover_reconciliation_demand(job, operation)?;
     attempt.state = state;

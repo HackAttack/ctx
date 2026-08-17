@@ -3,9 +3,11 @@ use std::path::Path;
 use anyhow::Result;
 use ctx_history_capture::{source_backed_source_failure_identity, ProviderSource};
 use ctx_history_core::CaptureProvider;
-use ctx_history_ingest_application::{HistorySourcePluginSource, IngestPublication};
+use ctx_history_ingest_application::{
+    HistorySourcePluginSource, IngestPublication, IngestRefreshSelection,
+};
 use ctx_history_platform::platform_security::establish_private_data_root;
-use ctx_history_refresh::{ExplicitSourceCatalogAuthority, ExplicitSourceCatalogUpsert};
+use ctx_history_refresh::ExplicitSourceCatalogUpsert;
 
 use crate::{
     history_source_plugins::prepare_source_backed_history_source, progress::ProgressReporter,
@@ -77,25 +79,32 @@ impl ctx_history_cli::ImportApplicationPort for CliImportHost {
         &mut self,
         data_root: &Path,
         _config: ctx_history_cli::HistoryCliConfig,
-        admission: Option<&ExplicitSourceCatalogAuthority>,
+        selection: IngestRefreshSelection<'_>,
         no_daemon: bool,
         progress: &mut ProgressReporter<'_>,
     ) -> Result<IngestPublication> {
-        let request = admission.map_or(ImportCoreRefreshRequest::Automatic, |authority| {
-            ImportCoreRefreshRequest::ExplicitCatalog(authority)
-        });
+        let request = match selection {
+            IngestRefreshSelection::AllAutomatic => ImportCoreRefreshRequest::Automatic,
+            IngestRefreshSelection::AutomaticProvider(provider) => {
+                ImportCoreRefreshRequest::AutomaticProvider(provider)
+            }
+            IngestRefreshSelection::ExplicitCatalog(authority) => {
+                ImportCoreRefreshRequest::ExplicitCatalog(authority)
+            }
+        };
         let refresh = wait_for_import_core_refresh(data_root, no_daemon, request, progress)?;
         let pinned_generation = refresh.pin.generation_id().to_owned();
-        let policy_schema_hash = admission.is_none().then(|| {
-            refresh
-                .pin
-                .verified_index()
-                .manifest()
-                .policy_schema_hash
-                .clone()
-        });
-        let catalog_content = match (admission, refresh.receipt.as_ref()) {
-            (Some(authority), Some(receipt)) => authority
+        let policy_schema_hash = (!matches!(selection, IngestRefreshSelection::ExplicitCatalog(_)))
+            .then(|| {
+                refresh
+                    .pin
+                    .verified_index()
+                    .manifest()
+                    .policy_schema_hash
+                    .clone()
+            });
+        let catalog_content = match (selection, refresh.receipt.as_ref()) {
+            (IngestRefreshSelection::ExplicitCatalog(authority), Some(receipt)) => authority
                 .route_lineages()
                 .into_iter()
                 .map(|lineage| {

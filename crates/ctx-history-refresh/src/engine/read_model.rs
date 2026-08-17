@@ -95,7 +95,12 @@ pub(super) struct SourceBackedRefreshAttempt {
     pub(super) refresh_scope: SourceBackedRefreshScope,
     pub(super) operation: SourceBackedRefreshOperation,
     pub(super) reconciliation_demand: SourceBackedReconciliationDemand,
+    pub(super) selector: SourceBackedRefreshSelector,
     pub(super) requested_explicit_source_catalog: Option<ExplicitSourceCatalogAuthority>,
+    /// Attempt-local authority resolved from the logical selector. Durable
+    /// state persists only the selector and exact scope; recovery rehydrates
+    /// and verifies this provider-neutral input before execution.
+    pub(super) admitted_authority: Option<AdmittedSourceBackedRefreshAuthority>,
     pub(super) fresh_after_admitted_snapshot: bool,
     pub(super) request_fingerprint: Option<String>,
     pub(super) admission_durability_indeterminate: bool,
@@ -125,6 +130,13 @@ pub(super) struct SourceBackedRefreshAttempt {
     pub(super) failure_type: Option<&'static str>,
     pub(super) failure_outcome: Option<SourceBackedRefreshFailureOutcome>,
     pub(super) last_error: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+pub(super) struct AdmittedSourceBackedRefreshAuthority {
+    pub(super) scope: SourceBackedRefreshScope,
+    pub(super) route_observations: BTreeMap<SourceRouteIdentity, Option<String>>,
+    pub(super) discovery: ctx_history_refresh_execution::SourceBackedAdmittedDiscovery,
 }
 
 impl SourceBackedRefreshAttempt {
@@ -258,6 +270,7 @@ impl SourceBackedRefreshAttempt {
             "reconciliation_demand".to_owned(),
             json!(self.reconciliation_demand.as_str()),
         );
+        fields.insert("refresh_selector".to_owned(), self.selector.to_json());
         if let Some(outcome) = self.structured_outcome_json() {
             fields.insert("structured_outcome".to_owned(), outcome);
         }
@@ -279,11 +292,9 @@ impl SourceBackedRefreshAttempt {
             "previous_generation": self.previous_generation,
             "published_generation": self.published_generation,
             "refresh_scope": refresh_scope_json(&self.refresh_scope),
-            "requested_explicit_source_catalog": self.receipt.is_none().then(|| {
-                self.requested_explicit_source_catalog
-                    .as_ref()
-                    .map(ExplicitSourceCatalogAuthority::to_json)
-            }).flatten(),
+            "requested_explicit_source_catalog": self.requested_explicit_source_catalog
+                .as_ref()
+                .map(ExplicitSourceCatalogAuthority::to_json),
             "fresh_after_admitted_snapshot": self.fresh_after_admitted_snapshot,
             "request_fingerprint": self.request_fingerprint,
             "admission_acknowledgement": self.admission_durability_indeterminate
@@ -343,11 +354,9 @@ impl SourceBackedRefreshAttempt {
             "previous_generation": self.previous_generation,
             "published_generation": self.published_generation,
             "refresh_scope": refresh_scope_json(&self.refresh_scope),
-            "requested_explicit_source_catalog": self.receipt.is_none().then(|| {
-                self.requested_explicit_source_catalog
-                    .as_ref()
-                    .map(ExplicitSourceCatalogAuthority::to_json)
-            }).flatten(),
+            "requested_explicit_source_catalog": self.requested_explicit_source_catalog
+                .as_ref()
+                .map(ExplicitSourceCatalogAuthority::to_json),
             "fresh_after_admitted_snapshot": self.fresh_after_admitted_snapshot,
             "request_fingerprint": self.request_fingerprint,
             "admission_acknowledgement": self.admission_durability_indeterminate

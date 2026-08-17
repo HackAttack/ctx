@@ -386,6 +386,11 @@ pub struct SourceBackedRefreshExecution<'a> {
     /// Immutable authenticated watch-catalog snapshot admitted with this
     /// request. It is absent for manual and uncertainty fallbacks.
     pub watch_catalog: Option<SourceBackedWatchCatalog>,
+    /// Provider-neutral discovery authority resolved before exact execution.
+    /// Logical provider selection is deliberately absent from this boundary.
+    pub admitted_discovery: Option<SourceBackedAdmittedDiscovery>,
+    /// Whether this request is forbidden from using provider-wide discovery.
+    pub requires_admitted_discovery: bool,
     pub covered_route_ids: BTreeSet<SourceRouteIdentity>,
     pub covered_publication: SourceBackedRefreshCoveredPublication,
     pub discovery_context: &'a DiscoveryContext,
@@ -424,6 +429,8 @@ impl<'a> SourceBackedRefreshExecution<'a> {
             scope,
             route_worksets: BTreeMap::new(),
             watch_catalog: None,
+            admitted_discovery: None,
+            requires_admitted_discovery: false,
             covered_route_ids,
             covered_publication,
             discovery_context,
@@ -447,6 +454,21 @@ impl<'a> SourceBackedRefreshExecution<'a> {
 
     pub fn with_watch_catalog_opt(mut self, catalog: Option<SourceBackedWatchCatalog>) -> Self {
         self.watch_catalog = catalog;
+        self
+    }
+
+    #[doc(hidden)]
+    pub fn with_admitted_discovery_opt(
+        mut self,
+        admitted: Option<SourceBackedAdmittedDiscovery>,
+    ) -> Self {
+        self.admitted_discovery = admitted;
+        self
+    }
+
+    #[doc(hidden)]
+    pub fn with_admitted_discovery_requirement(mut self, required: bool) -> Self {
+        self.requires_admitted_discovery = required;
         self
     }
 
@@ -560,6 +582,45 @@ impl<'a> SourceBackedRefreshExecution<'a> {
             completed_bytes,
             None,
         )
+    }
+}
+
+/// Provider-neutral, request-local discovery authority for exact execution.
+///
+/// This value is intentionally transient. Durable jobs retain the logical
+/// selector and exact physical scope, then recovery reconstructs and verifies
+/// this authority before execution resumes.
+#[doc(hidden)]
+#[derive(Debug, Clone)]
+pub struct SourceBackedAdmittedDiscovery {
+    report: DiscoveryReport,
+    discovery_duration: StdDuration,
+    watch_catalog: SourceBackedWatchCatalog,
+}
+
+impl SourceBackedAdmittedDiscovery {
+    pub fn new(
+        report: DiscoveryReport,
+        discovery_duration: StdDuration,
+        watch_catalog: SourceBackedWatchCatalog,
+    ) -> Self {
+        Self {
+            report,
+            discovery_duration,
+            watch_catalog,
+        }
+    }
+
+    pub fn report(&self) -> &DiscoveryReport {
+        &self.report
+    }
+
+    pub fn discovery_duration(&self) -> StdDuration {
+        self.discovery_duration
+    }
+
+    pub fn watch_catalog(&self) -> &SourceBackedWatchCatalog {
+        &self.watch_catalog
     }
 }
 

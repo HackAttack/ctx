@@ -10,6 +10,9 @@ pub(super) struct SourceBackedRefreshPlan<'a> {
     pub(super) scope: SourceBackedRefreshScope,
     pub(super) route_worksets: BTreeMap<SourceRouteIdentity, SourceBackedRefreshWorkset>,
     pub(super) watch_catalog: Option<SourceBackedWatchCatalog>,
+    pub(super) admitted_discovery:
+        Option<ctx_history_refresh_execution::SourceBackedAdmittedDiscovery>,
+    pub(super) requires_admitted_discovery: bool,
     pub(super) covered_route_ids: BTreeSet<SourceRouteIdentity>,
     pub(super) covered_publication: SourceBackedRefreshCoveredPublication,
 }
@@ -88,7 +91,9 @@ pub(super) fn execute_source_backed_refresh(
         )
         .with_reconciliation_demand(plan.reconciliation_demand)
         .with_route_worksets(plan.route_worksets)
-        .with_watch_catalog_opt(plan.watch_catalog),
+        .with_watch_catalog_opt(plan.watch_catalog)
+        .with_admitted_discovery_opt(plan.admitted_discovery)
+        .with_admitted_discovery_requirement(plan.requires_admitted_discovery),
     )
 }
 

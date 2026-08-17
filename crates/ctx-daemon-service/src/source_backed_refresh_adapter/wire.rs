@@ -4,7 +4,7 @@ use anyhow::{anyhow, bail, Context, Result};
 use ctx_history_index::SourceRouteIdentity;
 use ctx_history_refresh::{
     AdmissionResponseBarrier, ExplicitSourceCatalogAuthority, RefreshEngine, RefreshOperation,
-    RefreshScope, RefreshStatus, RefreshSubmission,
+    RefreshScope, RefreshStatus, RefreshSubmission, SourceBackedRefreshSelector,
 };
 use serde_json::{json, Value};
 use uuid::Uuid;
@@ -143,17 +143,41 @@ fn refresh_submission(request: &Value) -> Result<RefreshSubmission> {
         bail!("daemon source refresh trigger does not match its operation");
     }
     let explicit_catalog = request.get("explicit_source_catalog");
-    match (operation, mode, explicit_catalog) {
-        (RefreshOperation::Refresh, _, Some(_)) => {
-            bail!("refresh operation cannot carry explicit source catalog authority")
+    let has_typed_selector = request.get("refresh_selector").is_some();
+    let selector = match request.get("refresh_selector") {
+        Some(value) => SourceBackedRefreshSelector::from_json(value)
+            .context("parse daemon source refresh selector")?,
+        None => match (operation, explicit_catalog.is_some()) {
+            (RefreshOperation::Refresh, false) => SourceBackedRefreshSelector::AllAutomatic,
+            // Legacy explicit catalogs were all-route import overlays, not
+            // exact-path selectors. Only the typed selector opts into scoped
+            // admission.
+            (RefreshOperation::Import, true) => SourceBackedRefreshSelector::AllAutomatic,
+            _ => bail!("daemon source refresh selector is missing"),
+        },
+    };
+    if operation == RefreshOperation::Import && mode == "background" {
+        bail!("import operation requires daemon refresh mode `wait`");
+    }
+    if operation == RefreshOperation::Refresh
+        && selector != SourceBackedRefreshSelector::AllAutomatic
+    {
+        bail!("refresh operation requires the all-automatic source selector");
+    }
+    match (selector, explicit_catalog.is_some()) {
+        (SourceBackedRefreshSelector::AllAutomatic, true) if !has_typed_selector => {}
+        (SourceBackedRefreshSelector::AllAutomatic, false)
+        | (SourceBackedRefreshSelector::AutomaticProvider(_), false)
+        | (SourceBackedRefreshSelector::ExplicitCatalog, true) => {}
+        (SourceBackedRefreshSelector::ExplicitCatalog, false) => {
+            bail!("explicit-catalog source refresh selector has no catalog authority")
         }
-        (RefreshOperation::Import, "background", _) => {
-            bail!("import operation requires daemon refresh mode `wait`")
+        (SourceBackedRefreshSelector::AutomaticProvider(_), true) => {
+            bail!("automatic provider source refresh selector carries explicit catalog authority")
         }
-        (RefreshOperation::Import, _, None) => {
-            bail!("import operation requires explicit source catalog authority")
+        (SourceBackedRefreshSelector::AllAutomatic, true) => {
+            bail!("all-automatic source refresh selector carries explicit catalog authority")
         }
-        _ => {}
     }
     let request_id = match request.get("request_id") {
         Some(Value::String(request_id)) if !request_id.is_empty() => {
@@ -177,12 +201,19 @@ fn refresh_submission(request: &Value) -> Result<RefreshSubmission> {
     {
         bail!("background source refresh cannot require a fresh admission snapshot");
     }
+    if has_typed_selector && selector.is_scoped() && !fresh_after_admitted_snapshot {
+        bail!("scoped source refresh selector requires a fresh admission snapshot");
+    }
     let requested_catalog = explicit_catalog
         .map(ExplicitSourceCatalogAuthority::from_json)
         .transpose()?;
-    let refresh_scope = request
+    let requested_refresh_scope = request
         .get("refresh_scope")
-        .filter(|value| !value.is_null())
+        .filter(|value| !value.is_null());
+    if selector.is_scoped() && requested_refresh_scope.is_some() {
+        bail!("scoped source refresh selector cannot carry a physical refresh scope");
+    }
+    let refresh_scope = requested_refresh_scope
         .map(refresh_scope_from_json)
         .transpose()?
         .unwrap_or(RefreshScope::All);
@@ -194,7 +225,8 @@ fn refresh_submission(request: &Value) -> Result<RefreshSubmission> {
         fresh_after_admitted_snapshot,
         operation == RefreshOperation::Refresh && mode == "background",
     )
-    .with_trigger(trigger))
+    .with_trigger(trigger)
+    .with_selector(selector))
 }
 
 fn refresh_scope_from_json(value: &Value) -> Result<RefreshScope> {
@@ -247,6 +279,18 @@ fn unknown_refresh_request_response(request_id: &str) -> Value {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn admitted_job(request: Value) -> Value {
+        let temp = tempfile::tempdir().unwrap();
+        let engine = super::super::refresh_engine(&crate::test_support::SOURCE_REFRESH_CONFIG);
+        handle_ipc_request(&engine, temp.path(), &request)
+            .unwrap()
+            .expect("source refresh response");
+        crate::paths_status::read_daemon_job_status(
+            &crate::paths_status::daemon_source_backed_refresh_job_path(temp.path()),
+        )
+        .expect("persisted source refresh job")
+    }
 
     #[test]
     fn refresh_request_requires_a_typed_operation() {
@@ -342,7 +386,7 @@ mod tests {
     }
 
     #[test]
-    fn automatic_import_keeps_import_trigger_on_refresh_operation() {
+    fn legacy_automatic_import_keeps_import_trigger_on_refresh_operation() {
         let temp = tempfile::tempdir().unwrap();
         let engine = super::super::refresh_engine(&crate::test_support::SOURCE_REFRESH_CONFIG);
 
@@ -363,5 +407,190 @@ mod tests {
         assert_eq!(response.value["operation"], "refresh");
         assert_eq!(response.value["trigger"], "import");
         assert_eq!(response.value["trigger_provenance"], "import_command");
+    }
+
+    #[test]
+    fn typed_import_selectors_remain_distinct_after_wire_admission() {
+        let all = admitted_job(json!({
+            "op": SOURCE_REFRESH_REQUEST_OP,
+            "mode": "wait",
+            "operation": "refresh",
+            "trigger": "import",
+            "refresh_selector": {"kind": "all_automatic"},
+            "fresh_after_admitted_snapshot": true,
+        }));
+        let provider = admitted_job(json!({
+            "op": SOURCE_REFRESH_REQUEST_OP,
+            "mode": "wait",
+            "operation": "import",
+            "trigger": "import",
+            "refresh_selector": {
+                "kind": "automatic_provider",
+                "provider": "codex",
+            },
+            "fresh_after_admitted_snapshot": true,
+        }));
+        let authority = ctx_history_refresh::explicit_source_catalog_authority_for_test(0);
+        let catalog = admitted_job(json!({
+            "op": SOURCE_REFRESH_REQUEST_OP,
+            "mode": "wait",
+            "operation": "import",
+            "trigger": "import",
+            "refresh_selector": {"kind": "explicit_catalog"},
+            "explicit_source_catalog": authority.to_json(),
+            "fresh_after_admitted_snapshot": true,
+        }));
+
+        assert_eq!(all["refresh_selector"], json!({"kind": "all_automatic"}));
+        assert_eq!(
+            provider["refresh_selector"],
+            json!({"kind": "automatic_provider", "provider": "codex"})
+        );
+        assert_ne!(provider["refresh_selector"], all["refresh_selector"]);
+        assert_eq!(
+            catalog["refresh_selector"],
+            json!({"kind": "explicit_catalog"})
+        );
+    }
+
+    #[test]
+    fn selector_wire_validation_fails_closed() {
+        let authority = ctx_history_refresh::explicit_source_catalog_authority_for_test(0);
+        let invalid = [
+            json!({
+                "op": SOURCE_REFRESH_REQUEST_OP,
+                "mode": "wait",
+                "operation": "import",
+                "trigger": "import",
+                "refresh_selector": {"kind": "provider"},
+            }),
+            json!({
+                "op": SOURCE_REFRESH_REQUEST_OP,
+                "mode": "wait",
+                "operation": "import",
+                "trigger": "import",
+                "refresh_selector": {"kind": "automatic_provider"},
+            }),
+            json!({
+                "op": SOURCE_REFRESH_REQUEST_OP,
+                "mode": "wait",
+                "operation": "import",
+                "trigger": "import",
+                "refresh_selector": {
+                    "kind": "automatic_provider",
+                    "provider": "unknown",
+                },
+            }),
+            json!({
+                "op": SOURCE_REFRESH_REQUEST_OP,
+                "mode": "wait",
+                "operation": "refresh",
+                "trigger": "search",
+                "refresh_selector": {
+                    "kind": "automatic_provider",
+                    "provider": "codex",
+                },
+            }),
+            json!({
+                "op": SOURCE_REFRESH_REQUEST_OP,
+                "mode": "background",
+                "operation": "import",
+                "trigger": "import",
+                "refresh_selector": {
+                    "kind": "automatic_provider",
+                    "provider": "codex",
+                },
+            }),
+            json!({
+                "op": SOURCE_REFRESH_REQUEST_OP,
+                "mode": "wait",
+                "operation": "import",
+                "trigger": "import",
+                "refresh_selector": {"kind": "all_automatic"},
+                "explicit_source_catalog": authority.to_json(),
+            }),
+            json!({
+                "op": SOURCE_REFRESH_REQUEST_OP,
+                "mode": "wait",
+                "operation": "import",
+                "trigger": "import",
+                "refresh_selector": {"kind": "explicit_catalog"},
+            }),
+            json!({
+                "op": SOURCE_REFRESH_REQUEST_OP,
+                "mode": "wait",
+                "operation": "import",
+                "trigger": "import",
+                "refresh_selector": {
+                    "kind": "automatic_provider",
+                    "provider": "codex",
+                },
+            }),
+            json!({
+                "op": SOURCE_REFRESH_REQUEST_OP,
+                "mode": "wait",
+                "operation": "import",
+                "trigger": "import",
+                "refresh_selector": {"kind": "explicit_catalog"},
+                "explicit_source_catalog": authority.to_json(),
+                "fresh_after_admitted_snapshot": false,
+            }),
+            json!({
+                "op": SOURCE_REFRESH_REQUEST_OP,
+                "mode": "wait",
+                "operation": "import",
+                "trigger": "import",
+                "refresh_selector": {
+                    "kind": "automatic_provider",
+                    "provider": "codex",
+                },
+                "refresh_scope": {"kind": "all"},
+            }),
+            json!({
+                "op": SOURCE_REFRESH_REQUEST_OP,
+                "mode": "wait",
+                "operation": "import",
+                "trigger": "import",
+            }),
+        ];
+
+        for (index, request) in invalid.into_iter().enumerate() {
+            let temp = tempfile::tempdir().unwrap();
+            let engine = super::super::refresh_engine(&crate::test_support::SOURCE_REFRESH_CONFIG);
+            assert!(
+                handle_ipc_request(&engine, temp.path(), &request).is_err(),
+                "invalid selector request {index} was accepted"
+            );
+            assert!(!engine.has_pending_request());
+        }
+    }
+
+    #[test]
+    fn omitted_selector_is_accepted_only_for_legacy_request_shapes() {
+        let legacy_all = admitted_job(json!({
+            "op": SOURCE_REFRESH_REQUEST_OP,
+            "mode": "wait",
+            "operation": "refresh",
+            "trigger": "import",
+            "fresh_after_admitted_snapshot": true,
+        }));
+        let authority = ctx_history_refresh::explicit_source_catalog_authority_for_test(0);
+        let legacy_catalog = admitted_job(json!({
+            "op": SOURCE_REFRESH_REQUEST_OP,
+            "mode": "wait",
+            "operation": "import",
+            "trigger": "import",
+            "explicit_source_catalog": authority.to_json(),
+            "fresh_after_admitted_snapshot": true,
+        }));
+
+        assert_eq!(
+            legacy_all["refresh_selector"],
+            json!({"kind": "all_automatic"})
+        );
+        assert_eq!(
+            legacy_catalog["refresh_selector"],
+            json!({"kind": "all_automatic"})
+        );
     }
 }

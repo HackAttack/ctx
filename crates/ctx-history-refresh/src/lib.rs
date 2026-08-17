@@ -34,9 +34,7 @@ use ctx_history_capture::{
 };
 #[cfg(test)]
 use ctx_history_capture_model::{DiscoveryReport, ProviderSourceStatus};
-use ctx_history_core::utc_now;
-#[cfg(test)]
-use ctx_history_core::CaptureProvider;
+use ctx_history_core::{utc_now, CaptureProvider};
 #[cfg(test)]
 use ctx_history_index::WriterOptions;
 use ctx_history_index::{
@@ -101,7 +99,7 @@ pub use request::{
     RefreshMaintenanceWakeStatus, RefreshOperation, RefreshOutcomeClass, RefreshOutcomeCode,
     RefreshRequestState, RefreshRequestTrigger, RefreshRetryAdvice, RefreshStatus,
     RefreshStatusKind, RefreshSubmission, RefreshTerminalFailureScope, RefreshTerminalFailureType,
-    RefreshTerminalOutcome,
+    RefreshTerminalOutcome, SourceBackedRefreshSelector,
 };
 pub use route_ledger::EventWatermark;
 

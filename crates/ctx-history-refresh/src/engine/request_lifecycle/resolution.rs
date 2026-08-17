@@ -75,7 +75,7 @@ impl CoreRefreshEngine {
             &BTreeSet<SourceRouteIdentity>,
         ) -> Result<BTreeMap<SourceRouteIdentity, Option<String>>>,
     {
-        let (sample_request_id, sample_routes) = {
+        let (sample_request_id, sample_routes, scoped_catalog) = {
             let state = self.lock_state();
             let request_id = state.active_request_id.clone()?;
             let continuation = state.manual_all_continuations.get(&request_id)?;
@@ -100,13 +100,26 @@ impl CoreRefreshEngine {
                 .filter(|route| !continuation.ledger_eligible_routes.contains(*route))
                 .cloned()
                 .collect();
-            (request_id, routes)
+            let scoped_catalog = requested
+                .admitted_authority
+                .as_ref()
+                .map(|authority| authority.discovery.watch_catalog().clone());
+            (request_id, routes, scoped_catalog)
         };
-        let post_publication_fence = self.post_publication_route_coverage_fence_with(
-            &sample_request_id,
-            sample_routes,
-            sample,
-        );
+        let post_publication_fence = match scoped_catalog {
+            Some(catalog) => self.post_publication_route_coverage_fence_with(
+                &sample_request_id,
+                sample_routes,
+                move |_authority, routes| {
+                    Ok(source_backed_requested_route_observations(&catalog, routes))
+                },
+            ),
+            None => self.post_publication_route_coverage_fence_with(
+                &sample_request_id,
+                sample_routes,
+                sample,
+            ),
+        };
 
         let mut state = self.lock_state();
         let request_id = state.active_request_id.clone()?;
@@ -384,6 +397,8 @@ impl CoreRefreshEngine {
                         scope: refresh_scope.clone(),
                         route_worksets: admitted.route_worksets,
                         watch_catalog: admitted.watch_catalog,
+                        admitted_discovery: admitted.admitted_discovery,
+                        requires_admitted_discovery: admitted.requires_admitted_discovery,
                         covered_route_ids: admitted.covered_route_ids,
                         covered_publication: admitted.covered_publication,
                     },
@@ -494,6 +509,20 @@ impl CoreRefreshEngine {
         data_root: &Path,
         request_id: &str,
     ) -> PostPublicationRouteCoverageFence {
+        let scoped_catalog = {
+            let state = self.lock_state();
+            find_attempt(&state, request_id)
+                .and_then(|attempt| attempt.admitted_authority.as_ref())
+                .map(|authority| authority.discovery.watch_catalog().clone())
+        };
+        if let Some(catalog) = scoped_catalog {
+            return self.regular_post_publication_route_coverage_fence_with(
+                request_id,
+                move |_authority, routes| {
+                    Ok(source_backed_requested_route_observations(&catalog, routes))
+                },
+            );
+        }
         self.regular_post_publication_route_coverage_fence_with(request_id, |catalog, routes| {
             let discovery = self.runtime.discovery_context(data_root)?;
             source_backed_requested_route_observation_fence(

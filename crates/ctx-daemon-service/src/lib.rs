@@ -86,7 +86,7 @@ pub use source_backed_refresh_coordinator::{
     published_explicit_source_relocation_authority, PinnedSourceBackedGeneration, RefreshStatus,
     SourceBackedCurrentSourceProgress, SourceBackedRefreshDaemonUnavailable,
     SourceBackedRefreshMode, SourceBackedRefreshObservation, SourceBackedRefreshPendingPublication,
-    SourceBackedRefreshTerminalError,
+    SourceBackedRefreshSelector, SourceBackedRefreshTerminalError,
 };
 
 #[cfg(feature = "test-support")]

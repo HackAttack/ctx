@@ -1,6 +1,8 @@
 use std::path::Path;
 
 use anyhow::{bail, Context, Result};
+use ctx_history_core::CaptureProvider;
+use ctx_history_refresh::SourceBackedRefreshSelector;
 
 use crate::{
     progress::ProgressReporter,
@@ -14,6 +16,7 @@ use super::ExplicitSourceCatalogAuthority;
 
 pub(super) enum ImportCoreRefreshRequest<'a> {
     Automatic,
+    AutomaticProvider(CaptureProvider),
     ExplicitCatalog(&'a ExplicitSourceCatalogAuthority),
 }
 
@@ -29,26 +32,25 @@ pub(super) fn wait_for_import_core_refresh(
     let mut report_progress = |update: &crate::semantic::RefreshStatus| {
         progress.source_refresh(update).map_err(anyhow::Error::new)
     };
-    let refresh = match request {
-        ImportCoreRefreshRequest::Automatic => {
-            coordinate_import_source_backed_refresh_with_progress(
-                data_root,
-                SourceBackedRefreshMode::Wait,
-                None,
-                !no_daemon,
-                &mut report_progress,
-            )
-        }
-        ImportCoreRefreshRequest::ExplicitCatalog(authority) => {
-            coordinate_import_source_backed_refresh_with_progress(
-                data_root,
-                SourceBackedRefreshMode::Wait,
-                Some(authority),
-                !no_daemon,
-                &mut report_progress,
-            )
-        }
-    }
+    let (selector, explicit_source_catalog) = match request {
+        ImportCoreRefreshRequest::Automatic => (SourceBackedRefreshSelector::AllAutomatic, None),
+        ImportCoreRefreshRequest::AutomaticProvider(provider) => (
+            SourceBackedRefreshSelector::AutomaticProvider(provider),
+            None,
+        ),
+        ImportCoreRefreshRequest::ExplicitCatalog(authority) => (
+            SourceBackedRefreshSelector::ExplicitCatalog,
+            Some(authority),
+        ),
+    };
+    let refresh = coordinate_import_source_backed_refresh_with_progress(
+        data_root,
+        SourceBackedRefreshMode::Wait,
+        selector,
+        explicit_source_catalog,
+        !no_daemon,
+        &mut report_progress,
+    )
     .context("publish provider inputs through the Core refresh engine")?;
 
     let receipt = refresh

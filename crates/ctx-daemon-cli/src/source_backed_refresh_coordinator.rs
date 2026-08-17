@@ -9,7 +9,7 @@ pub use ctx_daemon_service::{
     pin_active_verified_generation, published_explicit_source_relocation_authority,
     PinnedSourceBackedGeneration, RefreshStatus, SourceBackedRefreshDaemonUnavailable,
     SourceBackedRefreshMode, SourceBackedRefreshObservation, SourceBackedRefreshPendingPublication,
-    SourceBackedRefreshTerminalError,
+    SourceBackedRefreshSelector, SourceBackedRefreshTerminalError,
 };
 pub use ctx_history_refresh::{open_verified_index, verified_generation_is_query_ready};
 
@@ -49,6 +49,7 @@ pub fn coordinate_setup_source_backed_refresh_with_progress(
 pub fn coordinate_import_source_backed_refresh_with_progress(
     data_root: &Path,
     mode: SourceBackedRefreshMode,
+    selector: SourceBackedRefreshSelector,
     explicit_source_catalog: Option<&ExplicitSourceCatalogAuthority>,
     allow_daemon_autostart: bool,
     report_progress: &mut dyn FnMut(&RefreshStatus) -> Result<()>,
@@ -57,6 +58,7 @@ pub fn coordinate_import_source_backed_refresh_with_progress(
         &AVAILABILITY,
         data_root,
         mode,
+        selector,
         explicit_source_catalog,
         allow_daemon_autostart,
         report_progress,

@@ -49,7 +49,7 @@ pub use ctx_history_refresh::{
     explicit_catalog_request_is_accounted_for, optional_generation,
     published_refresh_receipt_for_index, RefreshOutcomeClass, RefreshRequestState, RefreshStatus,
     RefreshStatusKind, RefreshTerminalOutcome, SourceBackedCurrentSourceProgress,
-    SourceBackedPublicationMetadata, SourceBackedRefreshReceipt,
+    SourceBackedPublicationMetadata, SourceBackedRefreshReceipt, SourceBackedRefreshSelector,
 };
 
 #[cfg(test)]

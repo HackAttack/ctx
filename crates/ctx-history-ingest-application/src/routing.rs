@@ -55,9 +55,18 @@ pub trait IngestRefreshPort {
     fn refresh(
         &mut self,
         data_root: &Path,
-        admission: Option<&ExplicitSourceCatalogAuthority>,
+        selection: IngestRefreshSelection<'_>,
         no_daemon: bool,
     ) -> Result<IngestPublication>;
+}
+
+/// Logical source selection for one import request. This is intentionally
+/// independent from the daemon's later physical route scope.
+#[derive(Debug, Clone, Copy)]
+pub enum IngestRefreshSelection<'a> {
+    AllAutomatic,
+    AutomaticProvider(CaptureProvider),
+    ExplicitCatalog(&'a ExplicitSourceCatalogAuthority),
 }
 
 /// Bounded operation-level progress boundary; no source record is permitted to
@@ -133,8 +142,8 @@ pub fn validate_ingest_request(request: &IngestRequest) -> Result<IngestRoute> {
 pub(crate) fn validate_selected_provider(
     discovery: &dyn SourceDiscoveryPort,
     provider: CaptureProvider,
+    report: &DiscoveryReport,
 ) -> Result<()> {
-    let report = discovery.discover_provider(provider)?;
     if report.sources.iter().any(|source| {
         source.status == ProviderSourceStatus::Available && source.import_support.is_importable()
     }) {
