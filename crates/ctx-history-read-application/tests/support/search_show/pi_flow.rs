@@ -1,3 +1,90 @@
+const PI_V6_PARSER_REVISION: &str = "pi-shared-jsonl-v6-linked-core-activity";
+const PI_V7_PARSER_REVISION: &str = "pi-shared-jsonl-v7-provider-native-outputs";
+
+fn pi_parser_revision(data_root: &Path) -> String {
+    let index = ctx_history_index::VerifiedIndex::open(data_root.join("search/lexical")).unwrap();
+    index
+        .manifest()
+        .sources
+        .iter()
+        .find(|certificate| certificate.observation().source().provider() == "pi")
+        .expect("published generation must contain the Pi source")
+        .parser_revision()
+        .to_owned()
+}
+
+fn publish_pi_v6_predecessor(data_root: &Path) -> String {
+    let index_root = data_root.join("search/lexical");
+    let (source, routes, mut certificate, counts) = {
+        let index = ctx_history_index::VerifiedIndex::open(&index_root).unwrap();
+        let current = index
+            .manifest()
+            .sources
+            .iter()
+            .find(|certificate| certificate.observation().source().provider() == "pi")
+            .expect("published generation must contain the Pi source");
+        assert_eq!(current.parser_revision(), PI_V7_PARSER_REVISION);
+        (
+            current.observation().source().clone(),
+            index.manifest().source_routes().to_vec(),
+            serde_json::to_value(current).unwrap(),
+            current.counts(),
+        )
+    };
+
+    let mut records = provider_core_records(data_root, "pi");
+    let current_record_count = records.len();
+    records.retain(|record| {
+        !matches!(
+            record.event_type.as_str(),
+            "tool_output" | "command_output"
+        )
+    });
+    let removed_outputs = u64::try_from(current_record_count - records.len()).unwrap();
+    assert_eq!(removed_outputs, 2);
+    for record in &mut records {
+        record.parser_revision = PI_V6_PARSER_REVISION.to_owned();
+    }
+
+    certificate["parser_revision"] = json!(PI_V6_PARSER_REVISION);
+    certificate["counts"]["retained_records"] =
+        json!(counts.retained_records.checked_sub(removed_outputs).unwrap());
+    certificate["counts"]["ignored_records"] =
+        json!(counts.ignored_records.checked_add(removed_outputs).unwrap());
+    certificate["counts"]["indexed_documents"] = json!(records.len());
+    let legacy_certificate = serde_json::from_value(certificate).unwrap();
+
+    let mut writer = ctx_history_index::GenerationWriter::open(
+        &index_root,
+        ctx_history_index::WriterOptions {
+            indexer_threads: 1,
+            memory_bytes: 32 * 1024 * 1024,
+        },
+    )
+    .unwrap()
+    .into_writer()
+    .unwrap();
+    writer.set_present_source_routes(routes).unwrap();
+    writer.begin_source(source).unwrap();
+    for record in records {
+        writer.add_core_record(record).unwrap();
+    }
+    writer.certify_source(legacy_certificate).unwrap();
+    let legacy_generation = writer.commit(|_| true).unwrap().generation_id;
+
+    let legacy = ctx_history_index::VerifiedIndex::open(&index_root).unwrap();
+    assert_eq!(legacy.generation_id(), legacy_generation);
+    assert!(legacy.publication_metadata().is_none());
+    assert_eq!(pi_parser_revision(data_root), PI_V6_PARSER_REVISION);
+
+    let job_path = data_root.join("daemon/jobs/core-refresh.json");
+    let mut job: Value = serde_json::from_slice(&fs::read(&job_path).unwrap()).unwrap();
+    job["previous_generation"] = Value::Null;
+    job["published_generation"] = json!(legacy_generation.clone());
+    fs::write(job_path, serde_json::to_vec(&job).unwrap()).unwrap();
+    legacy_generation
+}
+
 #[test]
 fn pi_cli_import_search_flow() {
     let temp = tempdir();
@@ -6,7 +93,7 @@ fn pi_cli_import_search_flow() {
         .join(".pi/agent/sessions/--workspace--/pi-session.jsonl");
     fs::create_dir_all(fixture.parent().unwrap()).unwrap();
     fs::copy(provider_history_fixture("pi-session.jsonl"), &fixture).unwrap();
-    let _daemon = start_source_refresh_daemon(&temp);
+    let daemon = start_source_refresh_daemon(&temp);
 
     let imported = json_output(ctx(&temp).args([
         "import",
@@ -32,6 +119,12 @@ fn pi_cli_import_search_flow() {
     ]));
     assert_source_backed_search(&search, "pi", "provider metadata");
 
+    drop(daemon);
+    let legacy_generation = publish_pi_v6_predecessor(&data_root(&temp));
+    assert_ne!(legacy_generation, first_generation);
+    assert_eq!(provider_core_counts(&data_root(&temp), "pi"), (1, 4));
+    let _daemon = start_source_refresh_daemon(&temp);
+
     let second = json_output(ctx(&temp).args([
         "import",
         "--provider",
@@ -44,10 +137,11 @@ fn pi_cli_import_search_flow() {
     assert_eq!(second["resume_mode"], "idempotent_rescan");
     assert_authoritative_provider_publication(&second);
     assert_eq!(second["totals"]["current_rejected_records"], 0);
-    assert_eq!(
-        second["sources"][0]["published_generation"], first_generation,
-        "{second:#}"
+    assert_ne!(
+        second["sources"][0]["published_generation"], legacy_generation,
+        "an unchanged Pi source must not reuse a v6 projection: {second:#}"
     );
+    assert_eq!(pi_parser_revision(&data_root(&temp)), PI_V7_PARSER_REVISION);
 
     let records = provider_core_records(&data_root(&temp), "pi");
     assert_eq!(provider_core_counts(&data_root(&temp), "pi"), (1, 6));
