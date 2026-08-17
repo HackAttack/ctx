@@ -60,8 +60,8 @@ const KIMI_SOURCE_ANCHOR_NAMESPACE: &str = "kimi-code-cli-wire-lineage-v1";
 const KIMI_NATIVE_SESSION_NAMESPACE: &str = "kimi-code-cli-session-v1";
 const KIMI_LOGICAL_SESSION_KIND: &str = "agent-session";
 const KIMI_LOGICAL_EVENT_KIND: &str = "wire-event";
-// v3 reclassifies content parts and normalizes toolCallId; the bump re-projects v2.
-const KIMI_SOURCE_PARSER_REVISION: &str = "kimi-code-cli-source-backed-v4-core-activity";
+// v5 withholds invocation/result activity when Kimi did not emit an exact call ID.
+const KIMI_SOURCE_PARSER_REVISION: &str = "kimi-code-cli-source-backed-v5-exact-activity-linkage";
 const KIMI_EVENT_IDENTITY_REVISION: &str = "kimi-code-cli-content-occurrence-v1";
 const KIMI_FALLBACK_FINGERPRINT_DOMAIN: &[u8] =
     b"ctx.kimi-code-cli.fallback-event-fingerprint.v1\0";

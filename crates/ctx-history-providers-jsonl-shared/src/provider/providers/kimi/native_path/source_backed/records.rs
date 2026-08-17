@@ -110,7 +110,7 @@ fn kimi_activity(
         .into_iter()
         .filter_map(|field| event.get(field).and_then(Value::as_str))
         .collect::<Vec<_>>();
-    let invocation = if event_type == EventType::ToolCall {
+    let invocation = if provider_call_id.is_some() && event_type == EventType::ToolCall {
         match tools.as_slice() {
             [tool] if !tool.is_empty() => Some(ActivityInvocation {
                 protocol: None,
@@ -129,21 +129,20 @@ fn kimi_activity(
     } else {
         None
     };
-    let result =
-        matches!(event_type, EventType::ToolOutput | EventType::CommandOutput).then(|| {
-            ActivityResult {
-                status: None,
-                completed_at_unix_ms: None,
-                duration_ns: None,
-                text: ActivityTextCapture::Present {
-                    value: body.to_owned(),
-                },
-                structured_content: ActivityJsonCapture::Present {
-                    value: event.clone(),
-                },
-            }
-        });
-    if provider_call_id.is_none() && invocation.is_none() && result.is_none() && facts.is_empty() {
+    let result = (provider_call_id.is_some()
+        && matches!(event_type, EventType::ToolOutput | EventType::CommandOutput))
+    .then(|| ActivityResult {
+        status: None,
+        completed_at_unix_ms: None,
+        duration_ns: None,
+        text: ActivityTextCapture::Present {
+            value: body.to_owned(),
+        },
+        structured_content: ActivityJsonCapture::Present {
+            value: event.clone(),
+        },
+    });
+    if invocation.is_none() && result.is_none() && facts.is_empty() {
         return Ok(None);
     }
     Ok(Some(CoreActivity {
@@ -201,7 +200,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn official_tool_call_id_is_published_for_call_and_result() {
+    fn official_tool_call_id_publishes_exact_call_and_result_activity() {
         let call = serde_json::json!({
             "type": "tool.call",
             "toolCallId": "call_1",
@@ -214,25 +213,125 @@ mod tests {
             "result": {"output": "spline data", "isError": false}
         });
 
-        for (event, event_type) in [
-            (&call, EventType::ToolCall),
-            (&result, EventType::ToolOutput),
-        ] {
-            let activity = kimi_activity(event, event_type, "body", Vec::new())
+        let call_activity =
+            kimi_activity(&call, EventType::ToolCall, "tool call: Read", Vec::new())
                 .unwrap()
                 .unwrap();
-            assert_eq!(
-                activity.provider_call_id,
-                Some(TypedKey::utf8("call_1").unwrap())
-            );
-            assert_eq!(
-                activity
-                    .result
-                    .as_ref()
-                    .and_then(|result| result.status.as_deref()),
-                None
-            );
+        assert_eq!(
+            call_activity.provider_call_id,
+            Some(TypedKey::utf8("call_1").unwrap())
+        );
+        assert_eq!(
+            call_activity.invocation,
+            Some(ActivityInvocation {
+                protocol: None,
+                server: None,
+                tool: "Read".to_owned(),
+                arguments: ActivityJsonCapture::Present {
+                    value: serde_json::json!({"path": "/tmp/splines.txt"}),
+                },
+                started_at_unix_ms: None,
+            })
+        );
+        assert_eq!(call_activity.result, None);
+
+        let result_activity =
+            kimi_activity(&result, EventType::ToolOutput, "spline data", Vec::new())
+                .unwrap()
+                .unwrap();
+        assert_eq!(
+            result_activity.provider_call_id,
+            Some(TypedKey::utf8("call_1").unwrap())
+        );
+        assert_eq!(result_activity.invocation, None);
+        assert_eq!(
+            result_activity.result,
+            Some(ActivityResult {
+                status: None,
+                completed_at_unix_ms: None,
+                duration_ns: None,
+                text: ActivityTextCapture::Present {
+                    value: "spline data".to_owned(),
+                },
+                structured_content: ActivityJsonCapture::Present { value: result },
+            })
+        );
+    }
+
+    #[test]
+    fn missing_tool_call_id_withholds_linkage_and_preserves_content_and_fact_order() {
+        let call = serde_json::json!({
+            "type": "context.append_loop_event",
+            "event": {
+                "type": "tool.call",
+                "toolName": "Write",
+                "input": {"path": "src/kimi_cli_native.txt", "content": "proof"}
+            }
+        });
+        let result = serde_json::json!({
+            "type": "context.append_loop_event",
+            "event": {
+                "type": "tool.result",
+                "toolName": "Write",
+                "output": "wrote src/kimi_cli_native.txt"
+            }
+        });
+        let cwd_fact = ProviderDeclaredFact {
+            kind: LiteralFactKind::SessionCwd,
+            value: "/workspace/kimi".to_owned(),
+        };
+        let file_fact = ProviderDeclaredFact {
+            kind: LiteralFactKind::File,
+            value: "src/kimi_cli_native.txt".to_owned(),
+        };
+
+        for (record, expected_event_type, expected_body, expected_facts) in [
+            (
+                &call,
+                EventType::ToolCall,
+                "tool call: Write",
+                vec![cwd_fact.clone(), file_fact],
+            ),
+            (
+                &result,
+                EventType::ToolOutput,
+                "wrote src/kimi_cli_native.txt",
+                vec![cwd_fact.clone()],
+            ),
+        ] {
+            let original = record.clone();
+            let (event_type, body) = kimi_lexical_body(record, 0, None).unwrap().unwrap();
+            assert_eq!(event_type, expected_event_type);
+            assert_eq!(body, expected_body);
+            let mut facts = kimi_literal_facts(record).unwrap();
+            facts.insert(0, cwd_fact.clone());
+            assert_eq!(facts, expected_facts);
+
+            let activity = kimi_activity(
+                record.get("event").unwrap(),
+                event_type,
+                &body,
+                facts.clone(),
+            )
+            .unwrap()
+            .unwrap();
+            assert_eq!(activity.provider_call_id, None);
+            assert_eq!(activity.invocation, None);
+            assert_eq!(activity.result, None);
+            assert_eq!(activity.facts, expected_facts);
+            assert_eq!(record, &original);
         }
+
+        assert_eq!(
+            kimi_activity(
+                result.get("event").unwrap(),
+                EventType::ToolOutput,
+                "wrote src/kimi_cli_native.txt",
+                Vec::new(),
+            )
+            .unwrap(),
+            None
+        );
     }
 
     #[test]
