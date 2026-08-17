@@ -18,40 +18,7 @@ if ([System.Environment]::OSVersion.Platform -ne [System.PlatformID]::Win32NT) {
     throw "This smoke must run on Windows"
 }
 
-Add-Type -TypeDefinition @"
-using System;
-using System.Runtime.InteropServices;
-
-public static class CtxWindowsNativeArchitecture
-{
-    [DllImport("kernel32.dll", SetLastError = true)]
-    private static extern bool IsWow64Process2(
-        IntPtr process,
-        out ushort processMachine,
-        out ushort nativeMachine);
-
-    [DllImport("kernel32.dll")]
-    private static extern IntPtr GetCurrentProcess();
-
-    public static string Probe()
-    {
-        try
-        {
-            ushort processMachine;
-            ushort nativeMachine;
-            if (!IsWow64Process2(GetCurrentProcess(), out processMachine, out nativeMachine))
-            {
-                return "error";
-            }
-            return processMachine.ToString("X4") + ":" + nativeMachine.ToString("X4");
-        }
-        catch (EntryPointNotFoundException)
-        {
-            return "unavailable";
-        }
-    }
-}
-"@
+. (Join-Path $PSScriptRoot "smoke-daemon-semantic-release-support.ps1")
 
 if ($TimeoutSeconds -lt 30) {
     throw "TimeoutSeconds must be at least 30"
@@ -321,23 +288,6 @@ $ctxBuildInfoPath = if ([string]::IsNullOrWhiteSpace($BuildInfo)) {
     (Resolve-Path -LiteralPath $BuildInfo).Path
 }
 $releaseTargetMatrix = Join-Path (Split-Path -Parent $PSScriptRoot) "contracts\release-targets-v1.json"
-
-function New-UniqueRunRoot {
-    param([string]$Parent)
-
-    for ($attempt = 0; $attempt -lt 20; $attempt++) {
-        $candidate = Join-Path $Parent ("ctx-semantic-smoke-" + [System.Guid]::NewGuid().ToString("n"))
-        try {
-            return (New-Item -ItemType Directory -Path $candidate -ErrorAction Stop).FullName
-        } catch {
-            if (Test-Path -LiteralPath $candidate) {
-                continue
-            }
-            throw
-        }
-    }
-    throw "Could not create a unique semantic smoke run root under $Parent"
-}
 
 function New-UniqueFixtureRoot {
     param(
