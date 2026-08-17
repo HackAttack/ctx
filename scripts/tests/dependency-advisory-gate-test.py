@@ -54,7 +54,6 @@ class AdvisoryGateTest(unittest.TestCase):
                         "platform": "linux-x64",
                         "version": "2.4.0",
                         "sha256": hashlib.sha256(self.scanner.read_bytes()).hexdigest(),
-                        "max_database_age_hours": 48,
                     },
                     "lockfiles": [
                         {
@@ -79,16 +78,20 @@ class AdvisoryGateTest(unittest.TestCase):
         self.metadata.write_text(
             json.dumps(
                 {
-                    "schema_version": 1,
-                    "fetched_at": NOW,
+                    "schema_version": 2,
+                    "sealed_at": NOW,
                     "databases": [
                         {
                             "ecosystem": "crates.io",
                             "path": "osv-scanner/crates.io/all.zip",
                             "sha256": hashlib.sha256(database.read_bytes()).hexdigest(),
                             "size": database.stat().st_size,
-                            "source_generation": "fixture",
+                            "source_generation": "123456789",
                             "source_last_modified": "2026-07-29T16:00:00Z",
+                            "source_url": (
+                                "https://osv-vulnerabilities.storage.googleapis.com/"
+                                "crates.io/all.zip"
+                            ),
                         }
                     ],
                 }
@@ -271,13 +274,38 @@ class AdvisoryGateTest(unittest.TestCase):
             "advisory scanner policy is invalid",
         )
 
-    def test_stale_database(self) -> None:
+    def test_latest_official_generation_is_accepted_regardless_of_age(self) -> None:
         metadata = json.loads(self.metadata.read_text(encoding="utf-8"))
-        metadata["databases"][0]["source_last_modified"] = "2026-07-20T00:00:00Z"
+        metadata["databases"][0]["source_last_modified"] = "2020-01-01T00:00:00Z"
         self.metadata.write_text(json.dumps(metadata), encoding="utf-8")
         result, receipt = self.run_gate("osv-clean.json")
-        self.assertEqual(result.returncode, 20)
-        self.assertEqual(receipt["status"], "stale_database")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(receipt["status"], "clean")
+
+    def test_unofficial_database_source_is_rejected(self) -> None:
+        metadata = json.loads(self.metadata.read_text(encoding="utf-8"))
+        metadata["databases"][0]["source_url"] = "https://example.com/all.zip"
+        self.metadata.write_text(json.dumps(metadata), encoding="utf-8")
+        result, receipt = self.run_gate("osv-clean.json")
+        self.assertEqual(result.returncode, 21)
+        self.assertEqual(receipt["status"], "tool_failure")
+        self.assertEqual(
+            receipt["failure_reason"],
+            "OSV database source is invalid: crates.io",
+        )
+
+    def test_legacy_unsealed_database_metadata_is_rejected(self) -> None:
+        metadata = json.loads(self.metadata.read_text(encoding="utf-8"))
+        metadata["schema_version"] = 1
+        metadata.pop("sealed_at")
+        self.metadata.write_text(json.dumps(metadata), encoding="utf-8")
+        result, receipt = self.run_gate("osv-clean.json")
+        self.assertEqual(result.returncode, 21)
+        self.assertEqual(receipt["status"], "tool_failure")
+        self.assertEqual(
+            receipt["failure_reason"],
+            "OSV database metadata schema is unsupported",
+        )
 
     def test_unknown_lockfile(self) -> None:
         (self.repo / "package-lock.json").write_text("{}\n", encoding="utf-8")

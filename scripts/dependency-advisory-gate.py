@@ -47,8 +47,11 @@ STATUS_EXIT = {
     "advisory": 10,
     "expired_exception": 11,
     "unknown_exception": 12,
-    "stale_database": 20,
     "tool_failure": 21,
+}
+OSV_SOURCE_URLS = {
+    "crates.io": "https://osv-vulnerabilities.storage.googleapis.com/crates.io/all.zip",
+    "npm": "https://osv-vulnerabilities.storage.googleapis.com/npm/all.zip",
 }
 
 # The scanner processes untrusted dependency metadata while release credentials
@@ -177,8 +180,6 @@ def validate_policy(
         or scanner.get("platform") != "linux-x64"
         or not isinstance(scanner.get("version"), str)
         or HEX_64.fullmatch(scanner_hash or "") is None
-        or not isinstance(scanner.get("max_database_age_hours"), int)
-        or scanner["max_database_age_hours"] < 1
     ):
         raise GateError("tool_failure", "advisory scanner policy is invalid")
     scanner = {**scanner, "selected_sha256": scanner_hash}
@@ -225,13 +226,15 @@ def validate_database(
     metadata_path: Path,
     database_root: Path,
     ecosystems: set[str],
-    scanner_policy: dict[str, Any],
     now: datetime,
 ) -> dict[str, Any]:
     metadata = read_json(metadata_path, "OSV database metadata")
     records = metadata.get("databases")
-    if metadata.get("schema_version") != 1 or not isinstance(records, list):
+    if metadata.get("schema_version") != 2 or not isinstance(records, list):
         raise GateError("tool_failure", "OSV database metadata schema is unsupported")
+    sealed_at = parse_time(metadata.get("sealed_at"), "OSV database sealed_at")
+    if sealed_at > now + timedelta(minutes=5):
+        raise GateError("tool_failure", "OSV database sealed_at is in the future")
     by_ecosystem = {
         record.get("ecosystem"): record
         for record in records
@@ -246,10 +249,16 @@ def validate_database(
         relative = safe_relative(record.get("path"), f"{ecosystem} database path")
         expected_hash = record.get("sha256")
         expected_size = record.get("size")
-        if HEX_64.fullmatch(expected_hash or "") is None or not isinstance(
-            expected_size, int
+        source_generation = record.get("source_generation")
+        if (
+            HEX_64.fullmatch(expected_hash or "") is None
+            or not isinstance(expected_size, int)
+            or not isinstance(source_generation, str)
+            or re.fullmatch(r"[0-9]+", source_generation) is None
         ):
             raise GateError("tool_failure", f"OSV database metadata is invalid: {ecosystem}")
+        if record.get("source_url") != OSV_SOURCE_URLS[ecosystem]:
+            raise GateError("tool_failure", f"OSV database source is invalid: {ecosystem}")
         path = database_root / relative
         try:
             actual_size = path.stat().st_size
@@ -271,15 +280,13 @@ def validate_database(
                 "ecosystem": ecosystem,
                 "sha256": expected_hash,
                 "size": expected_size,
-                "source_generation": record.get("source_generation"),
+                "source_generation": source_generation,
                 "source_last_modified": modified.isoformat().replace("+00:00", "Z"),
             }
         )
-    max_age = timedelta(hours=scanner_policy["max_database_age_hours"])
-    if now - oldest > max_age:
-        raise GateError("stale_database", "OSV advisory database is stale")
     return {
         "metadata_sha256": sha256_file(metadata_path),
+        "sealed_at": sealed_at.isoformat().replace("+00:00", "Z"),
         "oldest_source_timestamp": oldest.isoformat().replace("+00:00", "Z"),
         "records": validated,
     }
@@ -580,7 +587,6 @@ def evaluate(
         args.database_metadata,
         args.database_root,
         ecosystems,
-        scanner_policy,
         now,
     )
     receipt["scanner"] = scanner_version(

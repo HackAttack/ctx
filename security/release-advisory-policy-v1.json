@@ -5,8 +5,7 @@
     "name": "osv-scanner",
     "platform": "linux-x64",
     "version": "2.4.0",
-    "sha256": "15314940c10d26af9c6649f150b8a47c1262e8fc7e17b1d1029b0e479e8ed8a0",
-    "max_database_age_hours": 48
+    "sha256": "15314940c10d26af9c6649f150b8a47c1262e8fc7e17b1d1029b0e479e8ed8a0"
   },
   "lockfiles": [
     {

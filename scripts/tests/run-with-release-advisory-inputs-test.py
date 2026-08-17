@@ -10,9 +10,11 @@ import json
 import os
 from pathlib import Path
 import subprocess
+import sys
 import tempfile
 import unittest
 from unittest import mock
+import zipfile
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -22,9 +24,19 @@ SPEC = importlib.util.spec_from_file_location("release_advisory_inputs", SCRIPT)
 assert SPEC is not None and SPEC.loader is not None
 MODULE = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(MODULE)
+UPDATE_SPEC = importlib.util.spec_from_file_location(
+    "release_advisory_database_update", UPDATE_SCRIPT
+)
+assert UPDATE_SPEC is not None and UPDATE_SPEC.loader is not None
+UPDATE_MODULE = importlib.util.module_from_spec(UPDATE_SPEC)
+UPDATE_SPEC.loader.exec_module(UPDATE_MODULE)
 
 
 class Response(io.BytesIO):
+    def __init__(self, payload: bytes, headers: dict[str, str] | None = None):
+        super().__init__(payload)
+        self.headers = headers or {}
+
     def __enter__(self):
         return self
 
@@ -33,6 +45,43 @@ class Response(io.BytesIO):
 
 
 class ReleaseAdvisoryInputsTest(unittest.TestCase):
+    @staticmethod
+    def database_archive() -> bytes:
+        payload = io.BytesIO()
+        with zipfile.ZipFile(payload, "w") as archive:
+            archive.writestr("GO-TEST-0001.json", "{}\n")
+        return payload.getvalue()
+
+    @staticmethod
+    def source_headers(generation: str, last_modified: str) -> dict[str, str]:
+        return {
+            "x-goog-generation": generation,
+            "Last-Modified": last_modified,
+        }
+
+    def update_database(self, responses: list[Response]):
+        database = self.root / "database"
+        metadata = self.root / "metadata.json"
+        with mock.patch.object(
+            UPDATE_MODULE.urllib.request,
+            "urlopen",
+            side_effect=responses,
+        ) as urlopen, mock.patch.object(
+            sys,
+            "argv",
+            [
+                str(UPDATE_SCRIPT),
+                "--database-root",
+                str(database),
+                "--metadata",
+                str(metadata),
+                "--ecosystem",
+                "crates.io",
+            ],
+        ):
+            result = UPDATE_MODULE.main()
+        return result, metadata, urlopen
+
     def test_database_updater_uses_python_3_9_datetime_api(self) -> None:
         source = UPDATE_SCRIPT.read_text(encoding="utf-8")
         tree = ast.parse(
@@ -180,6 +229,41 @@ class ReleaseAdvisoryInputsTest(unittest.TestCase):
             "https://github.com/google/osv-scanner/releases/download/"
             "v2.4.0/osv-scanner_linux_arm64",
         )
+
+    def test_database_seal_rejects_generation_superseded_upstream(self) -> None:
+        metadata = self.root / "metadata.json"
+        metadata.write_text(
+            "preexisting metadata must be invalidated\n",
+            encoding="utf-8",
+        )
+        old_headers = self.source_headers("100", "Wed, 01 Jan 2020 00:00:00 GMT")
+        new_headers = self.source_headers("101", "Thu, 02 Jan 2020 00:00:00 GMT")
+        with self.assertRaisesRegex(SystemExit, "no longer current: crates.io"):
+            self.update_database(
+                [
+                    Response(self.database_archive(), old_headers),
+                    Response(b"", new_headers),
+                ]
+            )
+        self.assertFalse(metadata.exists())
+
+    def test_database_seal_accepts_latest_generation_regardless_of_age(self) -> None:
+        headers = self.source_headers("100", "Wed, 01 Jan 2020 00:00:00 GMT")
+        result, metadata, urlopen = self.update_database(
+            [
+                Response(self.database_archive(), headers),
+                Response(b"", headers),
+            ]
+        )
+        self.assertEqual(result, 0)
+        sealed = json.loads(metadata.read_text(encoding="utf-8"))
+        self.assertEqual(sealed["schema_version"], 2)
+        self.assertEqual(sealed["databases"][0]["source_generation"], "100")
+        self.assertEqual(
+            sealed["databases"][0]["source_last_modified"],
+            "2020-01-01T00:00:00Z",
+        )
+        self.assertEqual(urlopen.call_args_list[1].args[0].get_method(), "HEAD")
 
     def test_rejects_scanner_before_database_update_on_digest_mismatch(self) -> None:
         task_root = self.root / "bad-task"
