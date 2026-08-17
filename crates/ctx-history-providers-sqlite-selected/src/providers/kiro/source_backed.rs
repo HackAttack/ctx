@@ -9,7 +9,7 @@ use std::{
 
 use chrono::{DateTime, Utc};
 use ctx_history_core::{
-    derive_event_id, derive_session_id, CaptureProvider, CertifiedSource, CoreRecord,
+    derive_event_id, derive_session_id, AgentScope, CaptureProvider, CertifiedSource, CoreRecord,
     CoreRecordError, EventIdentityInput, NativeItemKey, NativeSessionKey, ProjectionContractError,
     ScannedSourceCounts, SessionIdentityInput, SourceAnchor, SourceKey, StableEntityId, TypedKey,
 };
@@ -587,6 +587,7 @@ fn kiro_core_record(
         KIRO_SOURCE_BACKED_PARSER_REVISION,
         body,
     )?;
+    record.agent_scope = Some(AgentScope::Primary);
     record.provider_session_id = Some(provider_session_id.to_owned());
     record.native_event_id = Some(primary_key);
     record.occurred_at_unix_ms = Some(event.occurred_at.timestamp_millis());

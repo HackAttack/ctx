@@ -125,6 +125,7 @@ fn source_backed_multi_db_root_guards_and_complete_core() {
         Some("session-a")
     );
     assert!(alpha_event.parent_session_id.is_some());
+    assert_eq!(alpha_event.agent_scope, Some(AgentScope::Subagent));
     assert_eq!(alpha_event.root_session_id, None);
     assert_eq!(
         alpha_event.session_relationship,
@@ -150,6 +151,7 @@ fn source_backed_multi_db_root_guards_and_complete_core() {
     let second_source = open_source(second_database).unwrap();
     let beta_event = record_for_only_message(&second_source);
     assert_eq!(beta_event.parent_session_id, None);
+    assert_eq!(beta_event.agent_scope, Some(AgentScope::Primary));
     assert_eq!(beta_event.root_session_id, None);
     assert_eq!(beta_event.session_relationship, None);
     assert_eq!(beta_event.content.meaningful_text(), "beta exact body");

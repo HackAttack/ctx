@@ -1,4 +1,4 @@
-use ctx_history_core::{ActivityJsonCapture, EventType, LiteralFactKind, SourceAnchor};
+use ctx_history_core::{ActivityJsonCapture, AgentScope, EventType, LiteralFactKind, SourceAnchor};
 use serde_json::json;
 
 use super::{
@@ -61,6 +61,7 @@ fn serialized_current_core_record_does_not_disclose_firebender_database_path() {
     let record = firebender_core_record(&source, session_id, None, &row, 0, &message)
         .unwrap()
         .unwrap();
+    assert_eq!(record.agent_scope, Some(AgentScope::Primary));
     let core_wire = serde_json::to_string(&record).unwrap();
 
     let stored_wire = String::from_utf8(record.encode_stored().unwrap()).unwrap();

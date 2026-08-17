@@ -2,7 +2,7 @@ use std::{collections::BTreeSet, path::Path};
 
 use ctx_history_core::{
     derive_event_id, derive_session_id, ActivityInvocation, ActivityJsonCapture, ActivityResult,
-    ActivityTextCapture, CaptureProvider, CoreActivity, CoreRecord, CoreRecordError,
+    ActivityTextCapture, AgentScope, CaptureProvider, CoreActivity, CoreRecord, CoreRecordError,
     EventIdentityInput, LiteralFactKind, NativeItemKey, NativeSessionKey, PositionStability,
     ProjectionContractError, ProviderDeclaredFact, ProviderNativeSessionRelationship,
     SessionIdentityInput, SourceAnchor, SourceObservation, StableEntityId, TypedKey,
@@ -259,6 +259,11 @@ fn zed_core_record(
         ZED_PARSER_REVISION,
         event.normalized_body.clone(),
     )?;
+    record.agent_scope = Some(if context.session.parent_thread_id.is_some() {
+        AgentScope::Subagent
+    } else {
+        AgentScope::Primary
+    });
     if let Some(parent_session_id) = context.parent_session_id {
         record.parent_session_id = Some(parent_session_id);
         record.session_relationship = Some(ProviderNativeSessionRelationship::Delegated);
@@ -652,6 +657,8 @@ mod tests {
             .find(|record| record.provider_session_id.as_deref() == Some("thread-1"))
             .unwrap();
         assert_eq!(child.parent_session_id, Some(root.session_id));
+        assert_eq!(child.agent_scope, Some(AgentScope::Subagent));
+        assert_eq!(root.agent_scope, Some(AgentScope::Primary));
         assert_eq!(
             child.session_relationship,
             Some(ProviderNativeSessionRelationship::Delegated)
@@ -675,6 +682,7 @@ mod tests {
         assert_eq!(records.len(), 1);
         assert_eq!(records[0].parent_session_id, None);
         assert_eq!(records[0].session_relationship, None);
+        assert_eq!(records[0].agent_scope, Some(AgentScope::Subagent));
     }
 
     #[test]

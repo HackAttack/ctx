@@ -65,6 +65,7 @@ fn source_backed_zed_two_threads_project_distinct_sessions_with_complete_core() 
     assert!(!child_records.is_empty());
     assert!(child_records.iter().all(|record| {
         record.session_relationship == Some(ProviderNativeSessionRelationship::Delegated)
+            && record.agent_scope == Some(AgentScope::Subagent)
             && record.parent_session_id == Some(sessions["zed-root"])
             && record.root_session_id.is_none()
     }));
@@ -75,6 +76,7 @@ fn source_backed_zed_two_threads_project_distinct_sessions_with_complete_core() 
     assert!(!root_records.is_empty());
     assert!(root_records.iter().all(|record| {
         record.session_relationship.is_none()
+            && record.agent_scope == Some(AgentScope::Primary)
             && record.parent_session_id.is_none()
             && record.root_session_id.is_none()
     }));
@@ -405,6 +407,7 @@ fn assert_same_semantic_projection(expected: &CoreRecord, actual: &CoreRecord) {
     assert_eq!(actual.event_sequence, expected.event_sequence);
     assert_eq!(actual.event_type, expected.event_type);
     assert_eq!(actual.role, expected.role);
+    assert_eq!(actual.agent_scope, expected.agent_scope);
     assert_eq!(actual.session_relationship, expected.session_relationship);
     assert_eq!(
         actual.content.meaningful_text(),

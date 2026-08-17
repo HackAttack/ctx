@@ -12,8 +12,8 @@ use std::{
 
 use ctx_history_core::{
     derive_event_id, derive_session_id, ActivityJsonCapture, ActivityResult, ActivityTextCapture,
-    CertifiedSource, CoreActivity, CoreRecord, EventIdentityInput, LiteralFactKind, NativeItemKey,
-    NativeSessionKey, ProjectionContractError, ProviderDeclaredFact,
+    AgentScope, CertifiedSource, CoreActivity, CoreRecord, EventIdentityInput, LiteralFactKind,
+    NativeItemKey, NativeSessionKey, ProjectionContractError, ProviderDeclaredFact,
     ProviderNativeSessionRelationship, ScannedSourceCounts, SessionIdentityInput, SourceAnchor,
     SourceKey, StableEntityId, TypedKey, CORE_ACTIVITY_REVISION,
 };
@@ -663,6 +663,11 @@ fn build_record(
     .map_err(|error| {
         ShelleySourceBackedError::Capture(CaptureError::InvalidPayload(error.to_string()))
     })?;
+    record.agent_scope = Some(if lineage.parent_session_id.is_some() {
+        AgentScope::Subagent
+    } else {
+        AgentScope::Primary
+    });
     if let Some(parent_session_id) = lineage.parent_session_id {
         record.parent_session_id = Some(parent_session_id);
         record.session_relationship = Some(ProviderNativeSessionRelationship::Delegated);

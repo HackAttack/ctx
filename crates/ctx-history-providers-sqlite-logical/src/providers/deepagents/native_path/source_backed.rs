@@ -16,7 +16,7 @@ use std::{
 use chrono::{DateTime, Utc};
 use ctx_history_core::{
     derive_event_id, derive_session_id, ActivityJsonCapture, ActivityResult, ActivityTextCapture,
-    CaptureProvider, CertifiedSource, CoreActivity, CoreRecord, CoreRecordError,
+    AgentScope, CaptureProvider, CertifiedSource, CoreActivity, CoreRecord, CoreRecordError,
     EventIdentityInput, LiteralFactKind, NativeItemKey, NativeSessionKey, PositionStability,
     ProjectionContractError, ProviderDeclaredFact, ScannedSourceCounts, SessionIdentityInput,
     SourceAnchor, SourceKey, StableEntityId, SubrecordSelector, TypedKey, CORE_ACTIVITY_REVISION,
@@ -623,6 +623,7 @@ fn deepagents_core_record(
         DEEPAGENTS_SOURCE_PARSER_REVISION,
         body,
     )?;
+    record.agent_scope = Some(AgentScope::Primary);
     record.provider_session_id = Some(key.thread_id.clone());
     record.native_event_id = Some(primary_key);
     record.occurred_at_unix_ms = Some(occurred_at.timestamp_millis());

@@ -11,7 +11,7 @@ use ctx_history_capture_model::normalization::provider_explicit_result_value_tex
 use ctx_history_capture_runtime::BaseEventLookup;
 use ctx_history_core::{
     derive_event_id, derive_native_session_id, ActivityInvocation, ActivityJsonCapture,
-    ActivityResult, ActivityTextCapture, CaptureProvider, CoreActivity, CoreRecord,
+    ActivityResult, ActivityTextCapture, AgentScope, CaptureProvider, CoreActivity, CoreRecord,
     EventIdentityInput, EventType, LiteralFactKind, NativeItemKey, PositionStability,
     ProviderDeclaredFact, ProviderNativeSessionRelationship, SourceKey, StableEntityId,
     SubrecordSelector, TypedKey, CORE_ACTIVITY_REVISION, MAX_CORE_CONTENT_BYTES,
@@ -389,6 +389,11 @@ where
         body.clone(),
     )
     .map_err(contract)?;
+    record.agent_scope = Some(if binding.parent_session_id.is_some() {
+        AgentScope::Subagent
+    } else {
+        AgentScope::Primary
+    });
     if let Some(parent_session_id) = binding.parent_session_id {
         record.parent_session_id = Some(parent_session_id);
         record.root_session_id = Some(binding.root_session_id);
@@ -798,6 +803,37 @@ mod tests {
             None,
         )
         .unwrap()
+    }
+
+    #[test]
+    fn native_parent_metadata_classifies_child_and_root_scope() {
+        let (source, root_binding) = binding();
+        let project = |binding: &Binding| {
+            let mut fallback_identities = fallback_identities(&source, binding);
+            let mut native_identities = MistralNativeIdentityTracker::default();
+            let bytes = br#"{"role":"user","content":"Mistral scope fixture"}"#;
+            core_record(
+                &source,
+                binding,
+                &mut fallback_identities,
+                &mut native_identities,
+                JsonlRecordRef::for_test(bytes, 0),
+            )
+            .unwrap()
+            .unwrap()
+        };
+
+        let root = project(&root_binding);
+        assert_eq!(root.agent_scope, Some(AgentScope::Primary));
+
+        let parent_session_id = session_identity(&source, "parent").unwrap();
+        let child_binding = Binding {
+            parent_session_id: Some(parent_session_id),
+            root_session_id: parent_session_id,
+            ..root_binding
+        };
+        let child = project(&child_binding);
+        assert_eq!(child.agent_scope, Some(AgentScope::Subagent));
     }
 
     #[test]

@@ -4,10 +4,11 @@ use std::{
 };
 
 use ctx_history_core::{
-    derive_event_id, derive_session_id, CaptureProvider, CertifiedSource, CoreActivity, CoreRecord,
-    CoreRecordError, EventIdentityInput, LiteralFactKind, NativeItemKey, NativeSessionKey,
-    ProjectionContractError, ProviderDeclaredFact, ScannedSourceCounts, SessionIdentityInput,
-    SourceAnchor, SourceKey, SubrecordSelector, TypedKey, CORE_ACTIVITY_REVISION,
+    derive_event_id, derive_session_id, AgentScope, CaptureProvider, CertifiedSource, CoreActivity,
+    CoreRecord, CoreRecordError, EventIdentityInput, LiteralFactKind, NativeItemKey,
+    NativeSessionKey, ProjectionContractError, ProviderDeclaredFact, ScannedSourceCounts,
+    SessionIdentityInput, SourceAnchor, SourceKey, SubrecordSelector, TypedKey,
+    CORE_ACTIVITY_REVISION,
 };
 use thiserror::Error;
 
@@ -223,6 +224,7 @@ fn core_record(
         TRAE_SOURCE_BACKED_PARSER_REVISION,
         body,
     )?;
+    projected.agent_scope = Some(AgentScope::Primary);
     projected.provider_session_id = Some(record.provider_session_id);
     projected.native_event_id = Some(native_event_id);
     projected.occurred_at_unix_ms = Some(record.occurred_at.timestamp_millis());
@@ -379,6 +381,10 @@ mod tests {
         assert_eq!(scan.source.counts().ignored_records, 1);
         assert_eq!(documents.len(), 1);
         let record = &documents[0];
+        assert_eq!(
+            record.agent_scope,
+            Some(ctx_history_core::AgentScope::Primary)
+        );
         let item_key = NativeItemKey::native_id(
             TRAE_NATIVE_ITEM_NAMESPACE,
             TypedKey::utf8(crate::TRAE_CHAT_KEYS[0]).unwrap(),

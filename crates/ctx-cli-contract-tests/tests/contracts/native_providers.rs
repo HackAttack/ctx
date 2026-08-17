@@ -1335,9 +1335,14 @@ fn task_json_cli_imports_cline_and_roo_and_searches() {
         &search,
         "roo_code",
         "fallback claude_messages",
-        1,
+        2,
         "message",
     );
+    assert!(search["results"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .all(|result| result["agent_scope"] == "primary"));
 }
 
 #[test]

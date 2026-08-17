@@ -1,7 +1,7 @@
 //! Thin CodeBuddy adapter for the shared replacement-document lifecycle.
 
 use ctx_history_core::{
-    derive_event_id, derive_session_id, CoreRecord, EventIdentityInput, NativeItemKey,
+    derive_event_id, derive_session_id, AgentScope, CoreRecord, EventIdentityInput, NativeItemKey,
     NativeSessionKey, ScannedSourceCounts, SessionIdentityInput, SourceAnchor, SourceKey,
     SourceObservation, TypedKey,
 };
@@ -406,6 +406,7 @@ fn codebuddy_core_record(
         ),
         "Core record",
     )?;
+    projected.agent_scope = Some(AgentScope::Primary);
     projected.provider_session_id = Some(provider_session_id);
     projected.native_event_id = Some(native_event_id);
     projected.occurred_at_unix_ms = Some(core.event.occurred_at.timestamp_millis());

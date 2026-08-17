@@ -22,7 +22,7 @@ fn direct_core_projection_is_complete_and_self_contained() {
 #[test]
 fn core_projection_keeps_complete_success_failure_unknown_and_large_results_once() {
     use chrono::{TimeZone, Utc};
-    use ctx_history_core::EventRole;
+    use ctx_history_core::{AgentScope, EventRole};
 
     let source = super::deepagents_source_key().unwrap();
     let key = super::DeepAgentsWriteKey {
@@ -74,6 +74,7 @@ fn core_projection_keeps_complete_success_failure_unknown_and_large_results_once
             &message,
         )
         .unwrap();
+        assert_eq!(record.agent_scope, Some(AgentScope::Primary));
         assert_eq!(record.session_relationship, None);
         assert_eq!(record.root_session_id, None);
         assert_eq!(record.content.meaningful_text(), body);

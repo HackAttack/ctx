@@ -190,6 +190,15 @@ where
             record.root_session_id = Some(self.binding.root_session_id);
             record.session_relationship = Some(ProviderNativeSessionRelationship::Delegated);
             record.agent_scope = Some(AgentScope::Subagent);
+        } else if !self.binding.metadata.lineage_ambiguous
+            && self
+                .binding
+                .metadata
+                .root_provider_session_id
+                .as_deref()
+                .is_none_or(|root| root == self.binding.metadata.provider_session_id)
+        {
+            record.agent_scope = Some(AgentScope::Primary);
         }
         record.provider_session_id = Some(self.binding.metadata.provider_session_id.clone());
         record.native_event_id = Some(native_event_id);
@@ -551,9 +560,13 @@ mod tests {
     }
 
     fn project_relationship_fixture(parent: Option<&str>) -> CoreRecord {
+        project_lineage_fixture(parent, parent)
+    }
+
+    fn project_lineage_fixture(parent: Option<&str>, root: Option<&str>) -> CoreRecord {
         let temp = tempfile::tempdir().unwrap();
         let authority = Arc::new(ProviderSourceRoot::open(temp.path()).unwrap());
-        let provider_session_id = if parent.is_some() {
+        let provider_session_id = if parent.is_some() || root.is_some() {
             "mux-child"
         } else {
             "mux-root"
@@ -568,7 +581,7 @@ mod tests {
             metadata: crate::mux::metadata::MuxBoundedSessionMetadata {
                 provider_session_id: provider_session_id.to_owned(),
                 parent_provider_session_id: parent.map(str::to_owned),
-                root_provider_session_id: parent.map(str::to_owned),
+                root_provider_session_id: root.map(str::to_owned),
                 lineage_ambiguous: false,
                 started_at: "2026-08-05T12:00:00Z".to_owned(),
                 cwd: Some("/workspace/mux".to_owned()),
@@ -578,7 +591,12 @@ mod tests {
             },
             session_id,
             parent_session_id,
-            root_session_id: parent_session_id.unwrap_or(session_id),
+            root_session_id: root
+                .map(super::super::related_session_identity)
+                .transpose()
+                .unwrap()
+                .or(parent_session_id)
+                .unwrap_or(session_id),
             primary_stream: MuxStreamKind::Chat,
             chat: None,
             partial: None,
@@ -617,7 +635,7 @@ mod tests {
     }
 
     #[test]
-    fn delegated_tasks_are_unique_while_root_events_stay_unknown() {
+    fn delegated_tasks_are_unique_while_root_events_are_primary() {
         let child = project_relationship_fixture(Some("mux-parent"));
         assert_eq!(
             child.session_relationship,
@@ -632,12 +650,16 @@ mod tests {
 
         let root = project_relationship_fixture(None);
         assert_eq!(root.session_relationship, None);
-        assert_eq!(root.agent_scope, None);
+        assert_eq!(root.agent_scope, Some(AgentScope::Primary));
         assert_eq!(
             root.content.meaningful_text(),
             "exact child-owned Mux event"
         );
         assert!(root.native_event_id.is_some());
+
+        let unresolved_child = project_lineage_fixture(None, Some("mux-foreign-root"));
+        assert_eq!(unresolved_child.session_relationship, None);
+        assert_eq!(unresolved_child.agent_scope, None);
     }
 
     #[test]

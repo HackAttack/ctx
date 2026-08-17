@@ -20,7 +20,7 @@ fn direct_core_projection_is_complete_and_self_contained() {
 }
 
 #[test]
-fn supported_conversations_remain_root_unknown_with_exact_native_content() {
+fn supported_conversations_are_primary_with_exact_native_content() {
     let selection = super::ForgeCodeSourceSelectionV0::selected(
         std::path::Path::new("/tmp/forgecode-test-data"),
         "/tmp/forgecode-test-data/.forge.db",
@@ -68,6 +68,10 @@ fn supported_conversations_remain_root_unknown_with_exact_native_content() {
     };
     let record = super::core_record(&source, &row, retained).unwrap();
 
+    assert_eq!(
+        record.agent_scope,
+        Some(ctx_history_core::AgentScope::Primary)
+    );
     assert_eq!(record.session_relationship, None);
     assert_eq!(record.root_session_id, None);
     assert_eq!(

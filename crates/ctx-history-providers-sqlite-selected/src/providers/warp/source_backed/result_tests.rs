@@ -142,6 +142,7 @@ fn core_projection_keeps_success_failure_unknown_and_large_result_bodies_once() 
             source_record_digest: RecordDigest::from_text("warp source row"),
         };
         let record = core_record(&source, &lineage, event).unwrap();
+        assert_eq!(record.agent_scope, Some(AgentScope::Primary));
         assert_eq!(record.content.meaningful_text(), body);
         assert_eq!(
             record
@@ -161,6 +162,21 @@ fn core_projection_keeps_success_failure_unknown_and_large_result_bodies_once() 
             .contains("complete Warp result"));
         record.validate_contract().unwrap();
     }
+}
+
+#[test]
+fn native_parent_conversation_classifies_subagent_scope() {
+    let (source, _) = fixture_source_and_lineage();
+    let event = fixture_events().into_iter().next().unwrap();
+    let parent_provider_session_id = "warp-parent";
+    let parent_session_id = warp_session_id(&source, parent_provider_session_id).unwrap();
+    let lineage = WarpSessionLineage {
+        parent_conversation_id: Some(parent_provider_session_id.to_owned()),
+    };
+
+    let record = core_record(&source, &lineage, event).unwrap();
+    assert_eq!(record.agent_scope, Some(AgentScope::Subagent));
+    assert_eq!(record.parent_session_id, Some(parent_session_id));
 }
 
 #[test]

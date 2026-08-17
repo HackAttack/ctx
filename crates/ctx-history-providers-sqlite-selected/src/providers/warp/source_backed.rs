@@ -8,8 +8,8 @@ use std::{
 
 use ctx_history_core::{
     derive_event_id, derive_session_id, ActivityInvocation, ActivityJsonCapture, ActivityResult,
-    CaptureProvider, CoreActivity, CoreRecord, CoreRecordError, EventIdentityInput, NativeItemKey,
-    NativeSessionKey, ProjectionContractError, ProviderNativeSessionRelationship,
+    AgentScope, CaptureProvider, CoreActivity, CoreRecord, CoreRecordError, EventIdentityInput,
+    NativeItemKey, NativeSessionKey, ProjectionContractError, ProviderNativeSessionRelationship,
     ScannedSourceCounts, SessionIdentityInput, SourceAnchor, SourceKey, StableEntityId, TypedKey,
     CORE_ACTIVITY_REVISION, MAX_CORE_CONTENT_BYTES,
 };
@@ -720,6 +720,11 @@ fn core_record(
         WARP_SOURCE_BACKED_PARSER_REVISION,
         body,
     )?;
+    record.agent_scope = Some(if parent_session_id.is_some() {
+        AgentScope::Subagent
+    } else {
+        AgentScope::Primary
+    });
     if let Some(parent_session_id) = parent_session_id {
         record.parent_session_id = Some(parent_session_id);
         record.session_relationship = Some(ProviderNativeSessionRelationship::Delegated);

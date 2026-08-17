@@ -10,7 +10,7 @@ use chrono::{DateTime, Utc};
 use ctx_history_capture_model::normalization::{provider_role, provider_timestamp_seconds};
 use ctx_history_core::{
     derive_event_id, derive_session_id, ActivityInvocation, ActivityJsonCapture, ActivityResult,
-    ActivityTextCapture, CaptureProvider, CoreActivity, CoreRecord, CoreRecordError,
+    ActivityTextCapture, AgentScope, CaptureProvider, CoreActivity, CoreRecord, CoreRecordError,
     EventIdentityInput, EventType, LiteralFactKind, NativeItemKey, NativeSessionKey,
     ProjectionContractError, ProviderDeclaredFact, ProviderNativeSessionRelationship,
     ScannedSourceCounts, SessionIdentityInput, SourceAnchor, SourceKey, StableEntityId, TypedKey,
@@ -668,6 +668,11 @@ fn goose_core_record(
         GOOSE_PARSER_REVISION,
         body,
     )?;
+    record.agent_scope = Some(if session.parent_session_id.is_some() {
+        AgentScope::Subagent
+    } else {
+        AgentScope::Primary
+    });
     if let Some(parent_session_id) = session.parent_session_id {
         record.parent_session_id = Some(parent_session_id);
         record.session_relationship = Some(ProviderNativeSessionRelationship::Delegated);
@@ -976,11 +981,30 @@ mod timestamp_tests {
         let native_event_id = TypedKey::utf8("timestamp-parity").unwrap();
 
         for projected in [&rfc3339, &naive, &numeric_seconds, &numeric_millis] {
+            assert_eq!(projected.agent_scope, Some(AgentScope::Primary));
             assert_eq!(projected.occurred_at_unix_ms, Some(1_782_302_400_123));
             assert_eq!(projected.event_sequence, 9);
             assert_eq!(projected.event_id, rfc3339.event_id);
             assert_eq!(projected.native_event_id.as_ref(), Some(&native_event_id));
         }
+    }
+
+    #[test]
+    fn native_parent_session_classifies_subagent_scope() {
+        let source = goose_source_key().unwrap();
+        let session_id = goose_session_id(&source, "timestamp-session").unwrap();
+        let parent_session_id = goose_session_id(&source, "parent-session").unwrap();
+        let session = GooseSessionProjection {
+            session_id,
+            parent_session_id: Some(parent_session_id),
+            parent_provider_session_id: Some("parent-session".to_owned()),
+            cwd: None,
+        };
+
+        let record =
+            goose_core_record(&source, &session, timestamp_event("1782302400"), 9).unwrap();
+        assert_eq!(record.agent_scope, Some(AgentScope::Subagent));
+        assert_eq!(record.parent_session_id, Some(parent_session_id));
     }
 
     #[test]

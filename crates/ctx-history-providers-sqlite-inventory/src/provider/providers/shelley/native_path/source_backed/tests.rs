@@ -415,6 +415,7 @@ fn shelley_source_backed_cold_exact_and_replacement_keep_identity() {
         Some(TAIL)
     );
     assert_eq!(cold.provider_session_id.as_deref(), Some("conversation-1"));
+    assert_eq!(cold.agent_scope, Some(AgentScope::Primary));
     assert_eq!(cold.parent_session_id, None);
     assert_eq!(cold.root_session_id, None);
     assert_eq!(cold.session_relationship, None);
@@ -517,6 +518,7 @@ fn shelley_source_backed_lineage_uses_native_parent_and_root_threads() {
         shelley_session_identity(adapter.source(), "conversation-child").unwrap();
 
     assert_eq!(nested.parent_session_id, Some(child_session_id));
+    assert_eq!(nested.agent_scope, Some(AgentScope::Subagent));
     assert_eq!(nested.root_session_id, None);
     assert_eq!(
         nested.session_relationship,

@@ -50,6 +50,26 @@ fn contradictory_family_omits_relationship_instead_of_fallback_kind() {
 }
 
 #[test]
+fn absent_lineage_family_establishes_primary_scope() {
+    let source = source_key("root").unwrap();
+    let session_id = session_identity(&source, "root").unwrap();
+    let session = SessionState::new(
+        Path::new("/tmp/agents/a/sessions/root.jsonl"),
+        "root",
+        &serde_json::json!({}),
+        &OpenClawNativeSessionFamily::Absent,
+        DateTime::<Utc>::UNIX_EPOCH,
+        session_id,
+    )
+    .unwrap();
+
+    assert_eq!(session.relationship, None);
+    assert_eq!(session.agent_scope, Some(AgentScope::Primary));
+    assert_eq!(session.parent_session_id, None);
+    assert_eq!(session.root_session_id, None);
+}
+
+#[test]
 fn native_call_facts_preserve_alias_order_and_duplicates() {
     let value = serde_json::json!({
         "message": {

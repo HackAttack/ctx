@@ -7,7 +7,7 @@ use std::{
 
 use ctx_history_core::{
     derive_event_id, derive_session_id, ActivityInvocation, ActivityJsonCapture, ActivityResult,
-    ActivityTextCapture, CaptureProvider, CoreActivity, CoreRecord, CoreRecordError,
+    ActivityTextCapture, AgentScope, CaptureProvider, CoreActivity, CoreRecord, CoreRecordError,
     EventIdentityInput, LiteralFactKind, NativeItemKey, NativeSessionKey, ProjectionContractError,
     ProviderDeclaredFact, ScannedSourceCounts, SessionIdentityInput, SourceAnchor, SourceKey,
     SourceObservation, StableEntityId, SubrecordSelector, TypedKey, CORE_ACTIVITY_REVISION,
@@ -625,6 +625,7 @@ fn project_event(
         dialect.parser_revision,
         lexical_event_body(&event),
     )?;
+    record.agent_scope = Some(AgentScope::Primary);
     record.provider_session_id = Some(provider_session_id.to_owned());
     record.native_event_id = Some(native_event_id);
     record.occurred_at_unix_ms = event.occurred_at_millis;
@@ -809,14 +810,14 @@ mod replay_tests {
                 "f29a3a4b-8b02-8b15-ad30-22b8d3e245e5",
                 "985dcf50-7cf6-85de-87cb-79a03269ff1e",
                 "13ba5b2e-3b34-8fbd-97c7-6647718d8504",
-                "de7a3be796daff7d8e4c4bbb9869a845c29cba8441aa2a426a70edb4387029c3",
+                "6f71455768dedc42222ef4c9822f717defc2eb919805441609d087316320c43e",
             ),
             (
                 TaskJsonNativeDialect::ROO,
                 "095b0fe0-c153-8364-b970-22637e99ce3e",
                 "15349de7-8b56-8e85-b075-3a9d9e01d7a1",
                 "7e7f3701-2c21-83b6-b6df-d9e4a7a4d805",
-                "7a8385a1718bac33ec3c8f961f62f949a9a0c9e1e85ea194be74619df77d6309",
+                "ac03b640aace93d6ae7065c6db02c71d17ca2b1495174d646f7a6e737c42206a",
             ),
         ];
         for (dialect, event_id, session_id, source_id, record_leaf) in cases {
@@ -827,6 +828,7 @@ mod replay_tests {
             let initial = project_replay_record(dialect, "task-json replay body");
             let replay = project_replay_record(dialect, "task-json replay body");
             assert_eq!(replay, initial);
+            assert_eq!(initial.agent_scope, Some(AgentScope::Primary));
             assert_eq!(
                 initial.parser_revision,
                 "task-json-source-backed-v5-closed-facts"

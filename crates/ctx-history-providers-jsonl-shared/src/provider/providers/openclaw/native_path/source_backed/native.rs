@@ -273,6 +273,13 @@ impl SessionState {
         let lineage = resolve_session_lineage(agent_id.as_deref(), native_session_family, index)?;
         let parent_provider_session_id = lineage.parent_native_session_id;
         let relationship = lineage.relationship;
+        let agent_scope = if parent_provider_session_id.is_some() {
+            Some(AgentScope::Subagent)
+        } else if matches!(native_session_family, OpenClawNativeSessionFamily::Absent) {
+            Some(AgentScope::Primary)
+        } else {
+            None
+        };
         let root_provider_session_id = lineage
             .root_native_session_id
             .or_else(|| parent_provider_session_id.clone());
@@ -293,8 +300,7 @@ impl SessionState {
             started_at: imported_at,
             cwd: None,
             branch: explicit_branch(index),
-            agent_scope: (relationship == Some(ProviderNativeSessionRelationship::Delegated))
-                .then_some(AgentScope::Subagent),
+            agent_scope,
             relationship,
         })
     }

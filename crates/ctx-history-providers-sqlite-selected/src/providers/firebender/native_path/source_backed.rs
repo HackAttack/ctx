@@ -4,7 +4,7 @@ use chrono::{DateTime, Utc};
 use ctx_history_capture_model::normalization::provider_timestamp_millis;
 use ctx_history_core::{
     derive_event_id, derive_session_id, ActivityInvocation, ActivityJsonCapture, ActivityResult,
-    ActivityTextCapture, CaptureProvider, CoreActivity, CoreRecord, CoreRecordError,
+    ActivityTextCapture, AgentScope, CaptureProvider, CoreActivity, CoreRecord, CoreRecordError,
     EventIdentityInput, EventType, LiteralFactKind, NativeItemKey, NativeSessionKey,
     PositionStability, ProjectionContractError, ProviderDeclaredFact, SessionIdentityInput,
     SourceAnchor, SourceKey, StableEntityId, TypedKey, CORE_ACTIVITY_REVISION,
@@ -129,6 +129,7 @@ pub(super) fn firebender_core_record(
         direct::DIRECT_PARSER_REVISION,
         body,
     )?;
+    record.agent_scope = Some(AgentScope::Primary);
     record.provider_session_id = Some(row.id.clone());
     record.native_event_id = Some(TypedKey::composite(vec![
         TypedKey::I64(row.rowid),

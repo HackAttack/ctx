@@ -5,6 +5,7 @@ fn direct_core_projection_is_complete_and_self_contained() {
     assert!(production.contains("CoreRecord::new_selected"));
     assert!(production.contains("native_event_id = Some"));
     assert!(production.contains("PARSER_REVISION"));
+    assert!(production.contains("agent_scope = Some(AgentScope::Primary)"));
     assert!(production.contains("validate_contract"));
     assert!(production.contains("core.event.text.clone()"));
     for removed_api in [
