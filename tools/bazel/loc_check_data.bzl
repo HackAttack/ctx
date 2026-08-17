@@ -50,6 +50,7 @@ LOC_CHECK_SOURCE_DATA = [
     "//crates/ctx-history-source-discovery:loc_check_inputs",
     "//crates/ctx-history-source-io:loc_check_inputs",
     "//crates/ctx-history-source-sqlite:loc_check_inputs",
+    "//crates/ctx-managed-pair-engine:loc_check_inputs",
     "//crates/ctx-semantic-index:loc_check_inputs",
     "//crates/ctx-semantic-model:loc_check_inputs",
     "//crates/ctx-terminal:loc_check_inputs",

@@ -44,6 +44,7 @@ RELEASE_PACKAGE_AUDIT_PACKAGE_DATA = [
     "//crates/ctx-history-refresh-execution:cargo_package_data",
     "//crates/ctx-history-source-io:cargo_package_data",
     "//crates/ctx-history-source-sqlite:cargo_package_data",
+    "//crates/ctx-managed-pair-engine:cargo_package_data",
     "//crates/ctx-semantic-index:cargo_package_data",
     "//crates/ctx-semantic-model:cargo_package_data",
     "//crates/ctx-terminal:cargo_package_data",

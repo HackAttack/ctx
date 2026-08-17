@@ -43,6 +43,7 @@ source_paths=(
   crates/ctx-daemon-runtime/src
   crates/ctx-daemon-service/src
   crates/ctx-terminal/src
+  crates/ctx-managed-pair-engine/src
   crates/ctx-upgrade-engine/src
   crates/ctx-history-capture/src
   crates/ctx-history-capture-composition/src

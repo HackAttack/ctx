@@ -26,6 +26,7 @@ for target in lib test_support_lib qualification_lib; do
   printf '%s\n' \
     '//crates/ctx-history-core:lib' \
     '//crates/ctx-history-platform:lib' \
+    '//crates/ctx-managed-pair-engine:lib' \
     "//crates/ctx-upgrade-engine:${target}" >"${expected}"
   query "kind(\"rust_library rule\", deps(//crates/ctx-upgrade-engine:${target})) intersect //crates/..." \
     | LC_ALL=C sort -u >"${tmp}/${target}-actual.txt"
@@ -52,18 +53,20 @@ if [[ -z "$(query 'somepath(//crates/ctx-cli:ctx, //crates/ctx-upgrade-engine:li
 fi
 
 engine_root="${repo_root}/crates/ctx-upgrade-engine"
+managed_pair_root="${repo_root}/crates/ctx-managed-pair-engine"
 if grep -En 'ctx-(cli|history-index|history-refresh|semantic)|(^|[^[:alnum:]_-])(clap|ureq)([^[:alnum:]_-]|$)' \
-  "${engine_root}/Cargo.toml"; then
+  "${engine_root}/Cargo.toml" "${managed_pair_root}/Cargo.toml"; then
   echo 'forbidden Cargo dependency in ctx-upgrade-engine' >&2
   exit 1
 fi
 if grep -REn --include='*.rs' \
   'ctx_(history_index|history_refresh|semantic)|crate::(analytics|net|output|semantic|ui|process_environment)::|(^|[^[:alnum:]_])(clap|ureq)::' \
-  "${engine_root}/src"; then
+  "${engine_root}/src" "${managed_pair_root}/src"; then
   echo 'forbidden source dependency in ctx-upgrade-engine' >&2
   exit 1
 fi
-if grep -REn --include='*.rs' 'env!\("CARGO_PKG_VERSION"\)' "${engine_root}/src"; then
+if grep -REn --include='*.rs' 'env!\("CARGO_PKG_VERSION"\)' \
+  "${engine_root}/src" "${managed_pair_root}/src"; then
   echo 'package identity leaked into ctx-upgrade-engine product behavior' >&2
   exit 1
 fi

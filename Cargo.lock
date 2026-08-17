@@ -1651,6 +1651,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "ctx-managed-pair-engine"
+version = "1.0.0"
+dependencies = [
+ "anyhow",
+ "ctx-history-platform",
+ "fs2",
+ "libc",
+ "serde",
+ "serde_json",
+ "sha2",
+ "tempfile",
+ "uuid",
+ "windows-sys 0.61.2",
+]
+
+[[package]]
 name = "ctx-protocol"
 version = "1.0.0"
 dependencies = [
@@ -1740,6 +1756,7 @@ dependencies = [
  "chrono",
  "ctx-history-core",
  "ctx-history-platform",
+ "ctx-managed-pair-engine",
  "flate2",
  "fs2",
  "libc",

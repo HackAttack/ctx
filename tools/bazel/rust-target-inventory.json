@@ -329,6 +329,11 @@
       "native_unit": "//crates/ctx-history-refresh-execution:unit_tests",
       "feature_variants": ["//crates/ctx-history-refresh-execution:test_support_lib"]
     },
+    "ctx-managed-pair-engine": {
+      "manifest": "crates/ctx-managed-pair-engine/Cargo.toml",
+      "targets": {"lib:ctx_managed_pair_engine": "//crates/ctx-managed-pair-engine:lib"},
+      "native_unit": "//crates/ctx-managed-pair-engine:unit_tests"
+    },
     "ctx-semantic-index": {
       "manifest": "crates/ctx-semantic-index/Cargo.toml",
       "targets": {"lib:ctx_semantic_index": "//crates/ctx-semantic-index:lib"},
