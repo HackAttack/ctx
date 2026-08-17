@@ -340,3 +340,92 @@ fn copilot_route_enforces_independent_exact_identity_component_boundaries() {
         .iter()
         .all(|record| record.validate_contract().is_ok()));
 }
+
+#[test]
+fn copilot_activity_append_replay_preserves_stable_event_ids() {
+    let temp = tempdir().unwrap();
+    let root = temp.path().join("sessions");
+    let index_path = temp.path().join("index");
+    let cold_path = temp.path().join("cold");
+    write_session(
+        &root,
+        "stable",
+        "stable-session",
+        &[
+            tool_start("first-start", "first-call", "first-server", "first-tool"),
+            tool_completion("first-complete", "first-call", true),
+        ],
+    );
+    let registry = copilot_registry(&root, temp.path());
+
+    refresh_source_backed_generation(&index_path, &registry, WriterOptions::default()).unwrap();
+    let initial = core_records(&VerifiedIndex::open(&index_path).unwrap());
+    let initial_start = record_by_native_id(&initial, "first-start");
+    let initial_complete = record_by_native_id(&initial, "first-complete");
+    let initial_start_id = initial_start.event_id;
+    let initial_complete_id = initial_complete.event_id;
+    let initial_start_activity = initial_start.content.activity.clone();
+    let initial_complete_activity = initial_complete.content.activity.clone();
+
+    let events_path = root.join("stable").join("events.jsonl");
+    let mut writer = BufWriter::new(OpenOptions::new().append(true).open(events_path).unwrap());
+    writeln!(
+        writer,
+        "{}",
+        tool_start(
+            "second-start",
+            "second-call",
+            "second-server",
+            "second-tool"
+        )
+    )
+    .unwrap();
+    writeln!(
+        writer,
+        "{}",
+        tool_completion("second-complete", "second-call", false)
+    )
+    .unwrap();
+    writer.flush().unwrap();
+
+    let appended =
+        refresh_source_backed_generation(&index_path, &registry, WriterOptions::default()).unwrap();
+    assert!(appended.failed_routes.is_empty());
+    assert!(appended.logical_source_failures.is_empty());
+    let appended_generation = appended.commit.generation_id.clone();
+    let appended_records = core_records(&VerifiedIndex::open(&index_path).unwrap());
+    let first_start = record_by_native_id(&appended_records, "first-start");
+    let first_complete = record_by_native_id(&appended_records, "first-complete");
+    assert_eq!(first_start.event_id, initial_start_id);
+    assert_eq!(first_complete.event_id, initial_complete_id);
+    assert_eq!(first_start.content.activity, initial_start_activity);
+    assert_eq!(first_complete.content.activity, initial_complete_activity);
+    assert_eq!(
+        invocation_identity(record_by_native_id(&appended_records, "second-start")),
+        Some(("second-server", "second-tool"))
+    );
+    assert!(record_by_native_id(&appended_records, "second-complete")
+        .content
+        .activity
+        .as_ref()
+        .and_then(|activity| activity.result.as_ref())
+        .is_some());
+    let appended_snapshot = appended_records
+        .iter()
+        .map(|record| serde_json::to_vec(record).unwrap())
+        .collect::<Vec<_>>();
+
+    let replay =
+        refresh_source_backed_generation(&index_path, &registry, WriterOptions::default()).unwrap();
+    assert_eq!(replay.commit.generation_id, appended_generation);
+
+    refresh_source_backed_generation(&cold_path, &registry, WriterOptions::default()).unwrap();
+    let cold_records = core_records(&VerifiedIndex::open(&cold_path).unwrap());
+    assert_eq!(
+        cold_records
+            .iter()
+            .map(|record| serde_json::to_vec(record).unwrap())
+            .collect::<Vec<_>>(),
+        appended_snapshot
+    );
+}

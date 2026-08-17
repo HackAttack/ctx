@@ -30,13 +30,14 @@ of:
 - `source`
 - `session`
 - `event`
-- `file_touch`
+- `file_reference`
+- `file_touch` (released v1 compatibility)
 - `edge`
 
 Record order is flexible, but exporters should write a manifest first, then
-source and session records before their dependent events, file touches, and
-edges. Unknown fields are ignored unless they are inside `metadata`, `payload`,
-or another explicitly documented open object.
+source and session records before their dependent events, file references or
+touches, and edges. Unknown fields are ignored unless they are inside
+`metadata`, `payload`, or another explicitly documented open object.
 
 ## Manifest
 
@@ -117,22 +118,28 @@ Optional fields:
 - `native_session_id`
 - `cwd`
 - `ended_at`
-- `agent_type`
+- `agent_scope`: `primary` or `subagent`.
 - `role_hint`
-- `is_primary`
 - `status`
 - `metadata`
 
 With `lineage_contract: provider_native_v1`, use `session_relationship` with
 `parent_session_id` and `root_session_id` to state the provider's typed
 relationship. `root` has no parent. Every other relationship requires a
-parent. ctx derives primary/subagent filtering from the typed relationship;
-legacy `is_primary` is not relationship authority.
+parent. Use `agent_scope` to state the exporter-known primary/subagent scope;
+when omitted, scope remains unknown. `session_relationship` is independent
+lineage authority and does not imply an agent scope.
+
+Released v1 files may instead contain `agent_type` and `is_primary`. ctx maps
+an explicit `is_primary` value to `primary` or `subagent`; when it is absent,
+`agent_type: primary` maps to `primary`, the released non-primary agent types
+map to `subagent`, and `unknown` remains unknown. `agent_scope` takes
+precedence when both spellings are present.
 
 Example:
 
 ```json
-{"record_type":"session","source_id":"laptop-main","session_id":"run-1","native_session_id":"abc123","cwd":"/workspace/app","started_at":"2026-06-23T12:00:00Z","agent_type":"primary","role_hint":"developer","is_primary":true,"status":"completed"}
+{"record_type":"session","source_id":"laptop-main","session_id":"run-1","native_session_id":"abc123","cwd":"/workspace/app","started_at":"2026-06-23T12:00:00Z","agent_scope":"primary","role_hint":"developer","status":"completed"}
 ```
 
 ## Event
@@ -196,31 +203,65 @@ Example:
 {"record_type":"event","source_id":"laptop-main","session_id":"run-1","event_index":0,"event_type":"message","role":"user","occurred_at":"2026-06-23T12:00:01Z","payload":{"text":"Find the failing test."},"preview":"Find the failing test.","native_cursor":"line:42"}
 ```
 
-## File Touch
+## File Reference and File Touch
 
-A file touch records a path that the session read, wrote, created, deleted, or
-renamed.
+Use `file_reference` for current exports. It records an exact
+provider-declared file value associated with an event.
+
+Required fields:
+
+- `source_id`
+- `session_id`
+- `reference_index`: unsigned 64-bit integer.
+- `event_index`: unsigned 64-bit index of an event in the same session.
+- `value`: non-empty exact provider-declared file string.
+- `occurred_at`
+
+Optional fields:
+
+- `metadata`
+
+ctx does not normalize `value`. Repeated values are retained when they have
+different `reference_index` values. Although the wire decoder can diagnose a
+missing `event_index`, the neutral Core importer rejects that record because a
+file fact must be attached to an event.
+
+Example:
+
+```json
+{"record_type":"file_reference","source_id":"laptop-main","session_id":"run-1","reference_index":0,"event_index":1,"value":"crates/app/src/lib.rs","occurred_at":"2026-06-23T12:00:03Z"}
+```
+
+`file_touch` is the released v1 compatibility spelling for a path that the
+session read, wrote, created, deleted, or renamed.
+
+During import, ctx normalizes `touch_index` to the active file-reference index
+and preserves `path` as the exact provider-declared file value. The resulting
+file reference is attached to `event_index` as a literal file fact.
 
 Required fields:
 
 - `source_id`
 - `session_id`
 - `touch_index`: unsigned 64-bit integer.
+- `event_index`: unsigned 64-bit index of an event in the same session.
 - `path`
 - `occurred_at`
 
 Optional fields:
 
-- `event_index`
 - `change_kind`
 - `old_path`
 - `line_count_delta`
 - `confidence`
 - `metadata`
 
-`event_index` links the touch to an event when known. Use `old_path` for
-renames, `line_count_delta` for approximate net line changes, and `confidence`
-when a touch is inferred from text rather than structured tool output.
+Use `old_path` for renames, `line_count_delta` for approximate net line
+changes, and `confidence` when a touch is inferred from text rather than
+structured tool output. These v1 change-detail fields remain accepted for
+compatibility, but the neutral Core model does not promote them to canonical
+change or operation claims. As with `file_reference`, a missing or unknown
+`event_index` is rejected during Core import.
 
 Example:
 
@@ -273,7 +314,7 @@ JSONL route performs another idempotent scan of the provider-owned source.
 ```jsonl
 {"record_type":"manifest","schema_version":"ctx-history-jsonl-v1"}
 {"record_type":"source","source_id":"demo-source","provider_key":"demo-agent","source_format":"demo-jsonl","raw_source_path":"/tmp/demo-history.jsonl","cursor":{"after":{"stream":"demo-agent:demo-source","cursor":"3","observed_at":"2026-06-23T12:00:00Z"}}}
-{"record_type":"session","source_id":"demo-source","session_id":"demo-session","cwd":"/workspace/demo","started_at":"2026-06-23T12:00:00Z","agent_type":"primary","role_hint":"developer","is_primary":true,"status":"completed"}
+{"record_type":"session","source_id":"demo-source","session_id":"demo-session","cwd":"/workspace/demo","started_at":"2026-06-23T12:00:00Z","agent_scope":"primary","role_hint":"developer","status":"completed"}
 {"record_type":"event","source_id":"demo-source","session_id":"demo-session","event_index":0,"event_type":"message","role":"user","occurred_at":"2026-06-23T12:00:01Z","payload":{"text":"Add a parser test."},"preview":"Add a parser test.","native_cursor":"line:1"}
-{"record_type":"file_touch","source_id":"demo-source","session_id":"demo-session","touch_index":0,"event_index":0,"path":"tests/parser.rs","change_kind":"modified","confidence":"high","occurred_at":"2026-06-23T12:00:02Z"}
+{"record_type":"file_reference","source_id":"demo-source","session_id":"demo-session","reference_index":0,"event_index":0,"value":"tests/parser.rs","occurred_at":"2026-06-23T12:00:02Z"}
 ```

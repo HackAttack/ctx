@@ -405,12 +405,42 @@ class CapabilityMutationTests(unittest.TestCase):
 
     def test_contradictory_provider_docs_are_rejected(self) -> None:
         fixed = (
-            "Capability revision 3 exact providers are Codex, Warp, and Copilot CLI."
+            "Capability revision 4 exact providers are Codex, Warp, and Copilot CLI."
         )
         self.docs["docs/providers.md"] = self.docs["docs/providers.md"].replace(
             fixed, "Only Codex is exact in capability revision 1."
         )
-        self.assert_invalid("contradicts or omits the three-provider revision-3 contract")
+        self.assert_invalid("contradicts or omits the three-provider revision-4 contract")
+
+    def test_removed_core_attribution_field_claims_are_rejected(self) -> None:
+        for removed in ("mcp_tool_call", "mcpToolCall", "mcp_exchange", "mcpExchange"):
+            with self.subTest(removed=removed):
+                docs = copy.deepcopy(self.docs)
+                docs["docs/mcp.md"] += f"\n`{removed}`\n"
+                with self.assertRaisesRegex(
+                    CapabilityError, "still claims removed Core attribution field"
+                ):
+                    validate_public_docs(docs)
+
+    def test_stale_activity_search_denials_are_rejected(self) -> None:
+        docs = copy.deepcopy(self.docs)
+        docs["docs/search.md"] += "\nContent-governed `activity` is not indexed.\n"
+        with self.assertRaisesRegex(
+            CapabilityError, "contradicts the Core activity search projection"
+        ):
+            validate_public_docs(docs)
+
+    def test_activity_search_projection_claim_is_required(self) -> None:
+        docs = copy.deepcopy(self.docs)
+        docs["docs/mcp-tool-call-attribution.md"] = docs[
+            "docs/mcp-tool-call-attribution.md"
+        ].replace(
+            "For discovery-eligible selected content, retained invocation",
+            "For discovery-eligible selected content, retained activity is "
+            "available only through show output",
+        )
+        with self.assertRaisesRegex(CapabilityError, "missing exact contract text"):
+            validate_public_docs(docs)
 
     def test_generic_boundary_classes_reject_literal_and_obfuscated_forms(self) -> None:
         for expected, probe in boundary_class_probes().items():

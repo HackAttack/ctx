@@ -285,7 +285,7 @@ fn render_sources_human(
             Diagnostic {
                 level: DiagnosticLevel::Warning,
                 summary: &summary,
-                detail: Some("Declare a regular provider-owned ctx-history-jsonl-v2 path."),
+                detail: Some("Declare a regular provider-owned ctx-history-jsonl-v1 path."),
                 fields: &[
                     Field::new("Manifest", &manifest),
                     Field::new("Location", &location),
@@ -348,7 +348,7 @@ fn human_path(path: &Path, home: Option<&Path>) -> String {
 }
 
 fn human_source_format(format: &str) -> String {
-    if format == "ctx-history-jsonl-v2" {
+    if format == "ctx-history-jsonl-v1" {
         "ctx history".to_owned()
     } else if format.contains("sqlite") || format.contains("database") {
         "Session database".to_owned()

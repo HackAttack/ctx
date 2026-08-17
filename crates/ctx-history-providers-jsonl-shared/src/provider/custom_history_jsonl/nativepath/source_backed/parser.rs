@@ -1,6 +1,97 @@
 use super::*;
 use crate::provider::custom_history_jsonl::CUSTOM_HISTORY_IDENTIFIER_MAX_BYTES;
 
+#[derive(Debug, Deserialize)]
+#[serde(tag = "record_type", rename_all = "snake_case")]
+enum V1CompatibilityRecord {
+    FileTouch(V1FileTouchRecord),
+}
+
+#[derive(Debug, Deserialize)]
+struct V1SessionScopeFields {
+    #[serde(default)]
+    agent_type: Option<V1AgentType>,
+    #[serde(default)]
+    is_primary: Option<bool>,
+}
+
+impl V1SessionScopeFields {
+    fn agent_scope(self) -> Option<AgentScope> {
+        match self.is_primary {
+            Some(true) => Some(AgentScope::Primary),
+            Some(false) => Some(AgentScope::Subagent),
+            None => match self.agent_type {
+                Some(V1AgentType::Primary) => Some(AgentScope::Primary),
+                Some(
+                    V1AgentType::Subagent
+                    | V1AgentType::AgentTeamMember
+                    | V1AgentType::Reviewer
+                    | V1AgentType::Implementer,
+                ) => Some(AgentScope::Subagent),
+                Some(V1AgentType::Unknown) | None => None,
+            },
+        }
+    }
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum V1AgentType {
+    Primary,
+    Subagent,
+    AgentTeamMember,
+    Reviewer,
+    Implementer,
+    Unknown,
+}
+
+#[derive(Debug, Deserialize)]
+struct V1FileTouchRecord {
+    source_id: String,
+    session_id: String,
+    touch_index: u64,
+    #[serde(default)]
+    event_index: Option<u64>,
+    path: String,
+    #[serde(default, rename = "change_kind")]
+    _change_kind: Option<V1FileChangeKind>,
+    #[serde(default, rename = "old_path")]
+    _old_path: Option<String>,
+    #[serde(default, rename = "line_count_delta")]
+    _line_count_delta: Option<i64>,
+    #[serde(default, rename = "confidence")]
+    _confidence: V1Confidence,
+    occurred_at: DateTime<Utc>,
+    #[serde(default = "empty_metadata")]
+    metadata: serde_json::Value,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum V1FileChangeKind {
+    Read,
+    Created,
+    Modified,
+    Deleted,
+    Renamed,
+    Unknown,
+}
+
+#[derive(Debug, Default, Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum V1Confidence {
+    Explicit,
+    High,
+    Medium,
+    Low,
+    #[default]
+    Unknown,
+}
+
+fn empty_metadata() -> serde_json::Value {
+    serde_json::Value::Object(serde_json::Map::new())
+}
+
 #[derive(Debug)]
 struct FileReferenceCandidate {
     line_number: usize,
@@ -175,16 +266,16 @@ fn visit_record(
     record_custom_history_work(|work| {
         work.provider_records_parsed = work.provider_records_parsed.saturating_add(1);
     });
-    let record = match serde_json::from_slice::<CtxHistoryJsonlRecord>(bytes) {
+    let record = match parse_record(bytes) {
         Ok(record) => record,
         Err(error) => {
-            push_provider_import_failure(&mut catalog.summary, line.line_number, error.to_string());
+            push_provider_import_failure(&mut catalog.summary, line.line_number, error);
             return Ok(());
         }
     };
     match record {
         CtxHistoryJsonlRecord::Manifest(manifest) => {
-            if manifest.schema_version != CTX_HISTORY_JSONL_SCHEMA_VERSION {
+            if manifest.schema_version != CUSTOM_HISTORY_PUBLIC_SCHEMA_VERSION {
                 catalog.manifest_failure.get_or_insert_with(|| {
                     (
                         ProviderSourceFailureKind::SchemaIncompatible,
@@ -528,6 +619,62 @@ fn visit_record(
     Ok(())
 }
 
+fn parse_record(bytes: &[u8]) -> Result<CtxHistoryJsonlRecord, String> {
+    match serde_json::from_slice::<CtxHistoryJsonlRecord>(bytes) {
+        Ok(CtxHistoryJsonlRecord::Session(mut session)) => {
+            if session.agent_scope.is_none() {
+                let v1 =
+                    serde_json::from_slice::<V1SessionScopeFields>(bytes).map_err(|error| {
+                        format!("invalid ctx-history-jsonl-v1 session record: {error}")
+                    })?;
+                session.agent_scope = v1.agent_scope();
+            }
+            Ok(CtxHistoryJsonlRecord::Session(session))
+        }
+        Ok(record) => Ok(record),
+        Err(current_error) => {
+            let is_v1_file_touch = serde_json::from_slice::<serde_json::Value>(bytes)
+                .ok()
+                .and_then(|record| {
+                    record
+                        .get("record_type")
+                        .and_then(serde_json::Value::as_str)
+                        .map(|record_type| record_type == "file_touch")
+                })
+                .unwrap_or(false);
+            if !is_v1_file_touch {
+                return Err(current_error.to_string());
+            }
+
+            let V1CompatibilityRecord::FileTouch(touch) = serde_json::from_slice::<
+                V1CompatibilityRecord,
+            >(bytes)
+            .map_err(|error| format!("invalid ctx-history-jsonl-v1 file_touch record: {error}"))?;
+            let V1FileTouchRecord {
+                source_id,
+                session_id,
+                touch_index,
+                event_index,
+                path,
+                occurred_at,
+                metadata,
+                ..
+            } = touch;
+            Ok(CtxHistoryJsonlRecord::FileReference(
+                CtxHistoryJsonlFileReferenceRecord {
+                    source_id,
+                    session_id,
+                    reference_index: touch_index,
+                    event_index,
+                    value: path,
+                    occurred_at,
+                    metadata,
+                },
+            ))
+        }
+    }
+}
+
 fn retained_metadata_bytes(lengths: &[usize]) -> usize {
     lengths.iter().fold(
         CUSTOM_HISTORY_CATALOG_ENTRY_OVERHEAD_BYTES,
@@ -662,7 +809,7 @@ fn finish_projection(
     if catalog.manifest_line.is_none() {
         catalog.manifest_failure = Some((
             ProviderSourceFailureKind::InvalidSource,
-            "missing manifest record for ctx-history-jsonl-v2".to_owned(),
+            format!("missing manifest record for {CUSTOM_HISTORY_PUBLIC_SCHEMA_VERSION}"),
         ));
     }
     if let Some((kind, detail)) = catalog.manifest_failure {
@@ -1144,4 +1291,58 @@ fn finish_prefix_digest(hasher: &Sha256, prefix_bytes: u64) -> [u8; 32] {
     let mut digest = hasher.clone();
     digest.update(prefix_bytes.to_be_bytes());
     digest.finalize().into()
+}
+
+#[cfg(test)]
+mod compatibility_tests {
+    use super::*;
+
+    fn session_scope(raw: &[u8]) -> Option<AgentScope> {
+        let CtxHistoryJsonlRecord::Session(session) = parse_record(raw).unwrap() else {
+            panic!("expected session record");
+        };
+        session.agent_scope
+    }
+
+    #[test]
+    fn released_v1_session_scope_preserves_primary_search_eligibility() {
+        assert_eq!(
+            session_scope(
+                br#"{"record_type":"session","source_id":"source-a","session_id":"primary","agent_type":"primary","is_primary":true,"started_at":"2026-07-28T12:00:00Z"}"#,
+            ),
+            Some(AgentScope::Primary)
+        );
+        assert_eq!(
+            session_scope(
+                br#"{"record_type":"session","source_id":"source-a","session_id":"primary-fallback","agent_type":"primary","started_at":"2026-07-28T12:00:00Z"}"#,
+            ),
+            Some(AgentScope::Primary)
+        );
+        assert_eq!(
+            session_scope(
+                br#"{"record_type":"session","source_id":"source-a","session_id":"reviewer","agent_type":"reviewer","started_at":"2026-07-28T12:00:00Z"}"#,
+            ),
+            Some(AgentScope::Subagent)
+        );
+        assert_eq!(
+            session_scope(
+                br#"{"record_type":"session","source_id":"source-a","session_id":"explicit-current","agent_type":"subagent","is_primary":false,"agent_scope":"primary","started_at":"2026-07-28T12:00:00Z"}"#,
+            ),
+            Some(AgentScope::Primary)
+        );
+    }
+
+    #[test]
+    fn malformed_v1_file_touch_diagnostic_names_the_released_shape() {
+        let error = parse_record(
+            br#"{"record_type":"file_touch","source_id":"source-a","session_id":"child","touch_index":0,"occurred_at":"2026-07-28T12:00:02Z"}"#,
+        )
+        .unwrap_err();
+
+        assert!(
+            error.contains("invalid ctx-history-jsonl-v1 file_touch record"),
+            "{error}"
+        );
+        assert!(error.contains("missing field `path`"), "{error}");
+    }
 }

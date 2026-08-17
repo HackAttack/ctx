@@ -6,7 +6,7 @@ use std::{
 
 use ctx_history_core::{
     derive_event_id, derive_session_id, ActivityInvocation, ActivityJsonCapture, ActivityResult,
-    ActivityTextCapture, CaptureProvider, CertifiedSource, CoreActivity, CoreRecord,
+    ActivityTextCapture, AgentScope, CaptureProvider, CertifiedSource, CoreActivity, CoreRecord,
     EventIdentityInput, EventType, NativeItemKey, NativeSessionKey, ScannedSourceCounts,
     SessionIdentityInput, SourceAnchor, SourceKey, SourceObservation, StableEntityId, TypedKey,
     CORE_ACTIVITY_REVISION,
@@ -611,6 +611,7 @@ pub(crate) fn project_leaf_job(
                 body,
             )
             .map_err(core_contract)?;
+            record.agent_scope = Some(AgentScope::Primary);
             record.provider_session_id = Some(plan.conversation_id.clone());
             record.native_event_id = Some(TypedKey::utf8(decoded.event_id())?);
             record.occurred_at_unix_ms = Some(decoded.timestamp().timestamp_millis());

@@ -55,12 +55,9 @@ fn semantic_index_revision(
         let mut record = CoreRecord::new_selected(
             event_id,
             session_id,
-            session_id,
             source.clone(),
             revision,
             "message",
-            "primary",
-            true,
             "semantic-query-adapter-v1",
             format!("query adapter fixture {revision}"),
         )?;

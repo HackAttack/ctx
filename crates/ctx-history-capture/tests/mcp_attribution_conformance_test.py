@@ -575,7 +575,7 @@ class ConformanceRunnerTests(unittest.TestCase):
                     "unsupported-mode",
                 )
 
-    def test_runner_separates_allowed_from_required_evidence_classes(self) -> None:
+    def test_runner_requires_all_allowed_evidence_classes(self) -> None:
         self.assertEqual(conformance.CONFORMANCE_MODES, {PUBLIC_VALIDATION_MODE})
         self.assertEqual(
             ALLOWED_EVIDENCE_CLASSES,
@@ -588,14 +588,10 @@ class ConformanceRunnerTests(unittest.TestCase):
                 "max_plus_one",
                 "privacy_sinks",
                 "result_preservation",
-                "search_nonindexing",
                 "stable_ids",
             },
         )
-        self.assertEqual(
-            REQUIRED_EVIDENCE_CLASSES,
-            ALLOWED_EVIDENCE_CLASSES - {"search_nonindexing"},
-        )
+        self.assertEqual(REQUIRED_EVIDENCE_CLASSES, ALLOWED_EVIDENCE_CLASSES)
 
     def test_unknown_manifest_extensions_are_rejected(self) -> None:
         for location, value in [
@@ -1126,7 +1122,7 @@ class ConformanceRunnerTests(unittest.TestCase):
         manifest = minimal_manifest()
         manifest["capability_lanes"][0]["evidence"].append(
             {
-                "class": "search_nonindexing",
+                "class": "stable_ids",
                 "kind": "nonpublic_test",
                 "suite": "fixture_public",
                 "test": "nonpublic_claim",
@@ -1144,7 +1140,7 @@ class ConformanceRunnerTests(unittest.TestCase):
         first = manifest["capability_lanes"][0]
         first["evidence"] = [
             {
-                "class": "search_nonindexing",
+                "class": "stable_ids",
                 "kind": "rust_test",
                 "suite": "shared",
                 "test": "same_test",
@@ -1263,7 +1259,7 @@ class ConformanceRunnerTests(unittest.TestCase):
         lane = manifest["capability_lanes"][0]
         lane["evidence"] = [
             {
-                "class": "search_nonindexing",
+                "class": "stable_ids",
                 "kind": "rust_test",
                 "suite": "alias_a",
                 "test": "search_test",
@@ -1295,7 +1291,7 @@ class ConformanceRunnerTests(unittest.TestCase):
                         ),
                     },
                     {
-                        "alias_a": {"search_test": {"search_nonindexing"}},
+                        "alias_a": {"search_test": {"stable_ids"}},
                         "alias_b": {"privacy_test": {"privacy_sinks"}},
                     },
                     root / "tmp",
@@ -1375,7 +1371,7 @@ class ConformanceRunnerTests(unittest.TestCase):
                     root / "tmp-missing",
                 )
             stale = copy.deepcopy(public_capabilities)
-            stale["stale_test"] = {"search_nonindexing"}
+            stale["stale_test"] = {"stable_ids"}
             with self.assertRaisesRegex(ConformanceError, "capability test inventory.*stale"):
                 run_fixture_conformance(
                     manifest,
@@ -1410,14 +1406,14 @@ class ConformanceRunnerTests(unittest.TestCase):
         lane = manifest["capability_lanes"][0]
         lane["evidence"] = [
             {
-                "class": "search_nonindexing",
+                "class": "stable_ids",
                 "kind": "rust_test",
                 "suite": "selected",
                 "test": "selected_test",
                 "scope": "tuple",
             }
         ]
-        capabilities = {"selected_test": {"search_nonindexing"}}
+        capabilities = {"selected_test": {"stable_ids"}}
         with tempfile.TemporaryDirectory() as raw_root:
             root = Path(raw_root)
             inventory = run_fixture_conformance(

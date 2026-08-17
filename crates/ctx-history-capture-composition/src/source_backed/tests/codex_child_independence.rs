@@ -5,7 +5,7 @@ use crate::provider::source_backed::family::jsonl::set_before_jsonl_terminal_phy
 use ctx_history_core::{CertifiedSource, ProviderNativeSessionRelationship, SourceFrontier};
 use ctx_history_index::{GenerationWriter, RevalidationTarget, WriterOptions};
 
-const CURRENT_PARSER_REVISION: &str = "codex-nativepath-core-activity-v2-event-copy";
+const CURRENT_PARSER_REVISION: &str = "codex-nativepath-core-activity-v3-empty-result-text";
 
 fn writer_options() -> WriterOptions {
     WriterOptions {

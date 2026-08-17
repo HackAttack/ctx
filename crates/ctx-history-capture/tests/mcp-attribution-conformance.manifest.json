@@ -1,7 +1,7 @@
 {
-  "schema_version": 6,
+  "schema_version": 7,
   "capability": "mcp_tool_call_attribution",
-  "capability_revision": 5,
+  "capability_revision": 6,
   "expected_provider_count": 43,
   "expected_base_route_count": 45,
   "expected_schema_generation_count": 44,
@@ -1506,99 +1506,64 @@
         {
           "class": "ambiguity_duplicate_linkage",
           "kind": "rust_test",
-          "suite": "codex_direct_result",
-          "test": "appended_duplicate_terminal_retracts_prior_attribution_and_preserves_ids",
+          "suite": "mcp_attribution_codex_provider_units",
+          "test": "codex::nativepath::rows::tests::duplicate_selectors_withhold_linkage_and_preserve_raw_fact_order",
           "scope": "tuple"
         },
         {
           "class": "canonical_terminal_outcomes",
           "kind": "rust_test",
-          "suite": "codex_direct_result",
-          "test": "exact_error_attribution_and_ambiguous_pair_abstention_survive_publication",
+          "suite": "mcp_attribution_codex_provider_units",
+          "test": "codex::nativepath::rows::tests::terminal_outcomes_preserve_literal_status_and_complete_result_content",
           "scope": "tuple"
         },
         {
           "class": "exact_boundary",
           "kind": "rust_test",
           "suite": "mcp_attribution_codex_provider_units",
-          "test": "codex::nativepath::tests::profiles::exact_mcp_attribution_preserves_opaque_names_and_component_bound",
+          "test": "codex::nativepath::rows::tests::exact_mcp_identity_boundary_is_accepted_and_max_plus_one_abstains",
           "scope": "tuple"
         },
         {
           "class": "exact_positive_pair",
           "kind": "rust_test",
-          "suite": "codex_direct_result",
-          "test": "redacted_real_shape_fixture_is_admitted_with_linkage_and_metadata",
+          "suite": "mcp_attribution_codex_provider_units",
+          "test": "codex::nativepath::rows::tests::mcp_terminal_activity_preserves_exact_server_tool_and_linkage",
           "scope": "tuple"
         },
         {
           "class": "malformed_identity",
           "kind": "rust_test",
-          "suite": "codex_direct_result",
-          "test": "malformed_mcp_results_are_rejected_without_hiding_later_valid_content",
-          "scope": "tuple"
-        },
-        {
-          "class": "max_plus_one",
-          "kind": "rust_test",
-          "suite": "codex_direct_result",
-          "test": "exact_raw_limit_omits_oversized_arguments_but_publishes_result",
-          "scope": "tuple"
-        },
-        {
-          "class": "result_preservation",
-          "kind": "rust_test",
-          "suite": "codex_direct_result",
-          "test": "nested_duplicate_json_is_unavailable_without_losing_terminal_text",
-          "scope": "tuple"
-        },
-        {
-          "class": "result_preservation",
-          "kind": "rust_test",
-          "suite": "codex_direct_result",
-          "test": "over_8_mib_mcp_result_is_admitted_once_and_indexable",
-          "scope": "tuple"
-        },
-        {
-          "class": "search_nonindexing",
-          "kind": "rust_test",
-          "suite": "codex_direct_result",
-          "test": "codex_dual_layer_mcp_metadata_and_exchange_invocation_keep_search_contract",
-          "scope": "tuple"
-        },
-        {
-          "class": "stable_ids",
-          "kind": "rust_test",
-          "suite": "codex_direct_result",
-          "test": "invalid_attribution_preserves_terminal_content_and_all_stable_identities",
+          "suite": "mcp_attribution_codex_provider_units",
+          "test": "codex::nativepath::rows::tests::malformed_mcp_identity_abstains_without_losing_valid_result_activity",
           "scope": "tuple"
         },
         {
           "class": "max_plus_one",
           "kind": "rust_test",
           "suite": "mcp_attribution_core",
-          "test": "core_record::tests::mcp_tool_call_bounds_each_decoded_utf8_component_at_exact_64_kib",
+          "test": "core_record::tests::activity_metadata_accepts_exact_boundaries_and_rejects_max_plus_one",
           "scope": "provider_neutral"
         },
         {
           "class": "privacy_sinks",
           "kind": "rust_test",
           "suite": "mcp_attribution_privacy",
-          "test": "mcp_attribution_canaries_stay_out_of_search_analytics_usage_and_diagnostics",
+          "test": "mcp_activity_is_searchable_but_stays_out_of_analytics_usage_and_diagnostics",
           "scope": "provider_neutral"
         },
         {
-          "class": "ambiguity_duplicate_linkage",
+          "class": "result_preservation",
           "kind": "rust_test",
-          "suite": "codex_direct_result",
-          "test": "appended_malformed_duplicate_retracts_attribution_without_touching_neighbor_ids",
+          "suite": "mcp_attribution_codex_provider_units",
+          "test": "codex::nativepath::rows::tests::empty_result_string_is_absent_text_with_exact_structured_capture",
           "scope": "tuple"
         },
         {
-          "class": "malformed_identity",
+          "class": "stable_ids",
           "kind": "rust_test",
-          "suite": "codex_direct_result",
-          "test": "malformed_duplicate_terminals_abstain_without_losing_public_content_or_ids",
+          "suite": "mcp_attribution_capture_provider_units",
+          "test": "source_backed::tests::codex_child_independence::lifecycle::codex_mcp_activity_append_replay_preserves_stable_ids_and_exact_content",
           "scope": "tuple"
         }
       ],
@@ -2178,6 +2143,20 @@
           "scope": "tuple"
         },
         {
+          "class": "max_plus_one",
+          "kind": "rust_test",
+          "suite": "mcp_attribution_core",
+          "test": "core_record::tests::activity_metadata_accepts_exact_boundaries_and_rejects_max_plus_one",
+          "scope": "provider_neutral"
+        },
+        {
+          "class": "privacy_sinks",
+          "kind": "rust_test",
+          "suite": "mcp_attribution_privacy",
+          "test": "mcp_activity_is_searchable_but_stays_out_of_analytics_usage_and_diagnostics",
+          "scope": "provider_neutral"
+        },
+        {
           "class": "result_preservation",
           "kind": "rust_test",
           "suite": "mcp_attribution_selected_sqlite_provider_units",
@@ -2190,20 +2169,6 @@
           "suite": "mcp_attribution_selected_sqlite_provider_units",
           "test": "providers::warp::source_backed::result_tests::sanitized_mcp_fixture_projects_only_unique_qualified_terminal_pairs",
           "scope": "tuple"
-        },
-        {
-          "class": "max_plus_one",
-          "kind": "rust_test",
-          "suite": "mcp_attribution_core",
-          "test": "core_record::tests::mcp_tool_call_bounds_each_decoded_utf8_component_at_exact_64_kib",
-          "scope": "provider_neutral"
-        },
-        {
-          "class": "privacy_sinks",
-          "kind": "rust_test",
-          "suite": "mcp_attribution_privacy",
-          "test": "mcp_attribution_canaries_stay_out_of_search_analytics_usage_and_diagnostics",
-          "scope": "provider_neutral"
         }
       ],
       "source_schema": "warp-agent-task-protobuf-v1",
@@ -2815,14 +2780,14 @@
           "class": "ambiguity_duplicate_linkage",
           "kind": "rust_test",
           "suite": "mcp_attribution_native_jsonl_provider_units",
-          "test": "native_path::source_backed::copilot_tests::copilot_late_duplicate_retracts_the_previously_attributed_completion",
+          "test": "native_path::source_backed::copilot_tests::absent_and_ambiguous_capture_states_are_explicit",
           "scope": "tuple"
         },
         {
           "class": "canonical_terminal_outcomes",
           "kind": "rust_test",
           "suite": "mcp_attribution_native_jsonl_provider_units",
-          "test": "native_path::source_backed::copilot_tests::copilot_attributes_only_unique_exact_terminal_completions",
+          "test": "native_path::source_backed::copilot_tests::success_failure_and_unknown_outcomes_remain_literal_without_inferred_status",
           "scope": "tuple"
         },
         {
@@ -2836,43 +2801,43 @@
           "class": "exact_positive_pair",
           "kind": "rust_test",
           "suite": "mcp_attribution_native_jsonl_provider_units",
-          "test": "native_path::source_backed::copilot_tests::copilot_same_call_id_in_separate_sessions_remains_independent",
+          "test": "native_path::source_backed::copilot_tests::invocation_preserves_exact_native_identity_and_arguments",
           "scope": "tuple"
         },
         {
           "class": "malformed_identity",
           "kind": "rust_test",
           "suite": "mcp_attribution_native_jsonl_provider_units",
-          "test": "native_path::source_backed::copilot_tests::copilot_malformed_ambiguous_or_orphan_linkage_abstains",
-          "scope": "tuple"
-        },
-        {
-          "class": "result_preservation",
-          "kind": "rust_test",
-          "suite": "mcp_attribution_native_jsonl_provider_units",
-          "test": "native_path::source_backed::copilot_tests::copilot_large_unrelated_line_preserves_linkage_while_malformed_line_abstains",
-          "scope": "tuple"
-        },
-        {
-          "class": "stable_ids",
-          "kind": "rust_test",
-          "suite": "mcp_attribution_native_jsonl_provider_units",
-          "test": "native_path::source_backed::copilot_tests::copilot_attribution_does_not_change_stable_event_ids",
+          "test": "native_path::source_backed::copilot_tests::malformed_or_oversized_identity_abstains_without_poisoning_valid_input",
           "scope": "tuple"
         },
         {
           "class": "max_plus_one",
           "kind": "rust_test",
           "suite": "mcp_attribution_core",
-          "test": "core_record::tests::mcp_tool_call_bounds_each_decoded_utf8_component_at_exact_64_kib",
+          "test": "core_record::tests::activity_metadata_accepts_exact_boundaries_and_rejects_max_plus_one",
           "scope": "provider_neutral"
         },
         {
           "class": "privacy_sinks",
           "kind": "rust_test",
           "suite": "mcp_attribution_privacy",
-          "test": "mcp_attribution_canaries_stay_out_of_search_analytics_usage_and_diagnostics",
+          "test": "mcp_activity_is_searchable_but_stays_out_of_analytics_usage_and_diagnostics",
           "scope": "provider_neutral"
+        },
+        {
+          "class": "result_preservation",
+          "kind": "rust_test",
+          "suite": "mcp_attribution_native_jsonl_provider_units",
+          "test": "native_path::source_backed::copilot_tests::completion_preserves_literal_result_without_inferred_status",
+          "scope": "tuple"
+        },
+        {
+          "class": "stable_ids",
+          "kind": "rust_test",
+          "suite": "mcp_attribution_capture_provider_units",
+          "test": "source_backed::tests::copilot::copilot_activity_append_replay_preserves_stable_event_ids",
+          "scope": "tuple"
         }
       ],
       "source_schema": "copilot-cli-direct-native-jsonl-v1",

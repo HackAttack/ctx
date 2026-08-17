@@ -9,11 +9,12 @@ use ctx_history_capture::{
     ProviderCatalogSupport, ProviderImportSupport, ProviderSource, ProviderSourceKind,
     ProviderSourceStatus,
 };
-use ctx_history_core::{CaptureProvider, CtxHistoryJsonlRecord, CTX_HISTORY_JSONL_SCHEMA_VERSION};
+use ctx_history_core::{CaptureProvider, CtxHistoryJsonlRecord};
 
 use super::HistorySourcePluginSource;
 
-const ROUTE_SOURCE_FORMAT: &str = "ctx_history_jsonl_v2";
+const ROUTE_SOURCE_FORMAT: &str = "ctx_history_jsonl_v1";
+const PUBLIC_HISTORY_SCHEMA_VERSION: &str = "ctx-history-jsonl-v1";
 const MAX_HEADER_BYTES: usize = 1024 * 1024;
 const MAX_HEADER_RECORDS: usize = 64;
 const MAX_HEADER_LINE_BYTES: usize = 256 * 1024;
@@ -118,13 +119,13 @@ fn validate_provider_owned_source(
         }
         let record: CtxHistoryJsonlRecord = serde_json::from_slice(&line).with_context(|| {
             format!(
-                "history source plugin {} durable source has invalid ctx-history-jsonl-v2 at line {line_number}",
+                "history source plugin {} durable source has invalid ctx-history-jsonl-v1 at line {line_number}",
                 source.label()
             )
         })?;
         match record {
             CtxHistoryJsonlRecord::Manifest(record) => {
-                if record.schema_version != CTX_HISTORY_JSONL_SCHEMA_VERSION {
+                if record.schema_version != PUBLIC_HISTORY_SCHEMA_VERSION {
                     bail!(
                         "history source plugin {} durable source has unsupported schema_version `{}`",
                         source.label(),
@@ -203,7 +204,7 @@ mod tests {
         writeln!(
             file,
             "{}",
-            json!({"record_type":"manifest","schema_version":CTX_HISTORY_JSONL_SCHEMA_VERSION})
+            json!({"record_type":"manifest","schema_version":PUBLIC_HISTORY_SCHEMA_VERSION})
         )
         .unwrap();
         writeln!(file, "{}", json!({"record_type":"source","provider_key":"example","source_id":"default","source_format":"example-v1"})).unwrap();
@@ -229,14 +230,14 @@ mod tests {
     }
 
     #[test]
-    fn legacy_v1_schema_is_rejected_without_fallback() {
+    fn unsupported_v2_schema_is_rejected_without_fallback() {
         let temp = tempfile::tempdir().unwrap();
         let path = temp.path().join("history.jsonl");
         let mut file = File::create(&path).unwrap();
         writeln!(
             file,
             "{}",
-            json!({"record_type":"manifest","schema_version":"ctx-history-jsonl-v1"})
+            json!({"record_type":"manifest","schema_version":"ctx-history-jsonl-v2"})
         )
         .unwrap();
         writeln!(file, "{}", json!({"record_type":"source","provider_key":"example","source_id":"default","source_format":"example-v1"})).unwrap();
@@ -245,7 +246,7 @@ mod tests {
         assert!(
             error
                 .to_string()
-                .contains("unsupported schema_version `ctx-history-jsonl-v1`"),
+                .contains("unsupported schema_version `ctx-history-jsonl-v2`"),
             "{error:#}"
         );
     }
@@ -255,7 +256,7 @@ mod tests {
         let temp = tempfile::tempdir().unwrap();
         let path = temp.path().join("history.jsonl");
         let mut file = File::create(&path).unwrap();
-        writeln!(file, "{}", json!({"record_type":"manifest","schema_version":CTX_HISTORY_JSONL_SCHEMA_VERSION,"lineage_contract":"provider_native_v1"})).unwrap();
+        writeln!(file, "{}", json!({"record_type":"manifest","schema_version":PUBLIC_HISTORY_SCHEMA_VERSION,"lineage_contract":"provider_native_v1"})).unwrap();
         writeln!(file, "{}", json!({"record_type":"source","provider_key":"example","source_id":"default","source_format":"example-v1"})).unwrap();
 
         let error = prepare_source_backed_history_source(source(path.clone()), false).unwrap_err();

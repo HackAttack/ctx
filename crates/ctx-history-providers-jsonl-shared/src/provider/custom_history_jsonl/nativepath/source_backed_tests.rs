@@ -14,8 +14,8 @@ use crate::{test_support_paths::tempdir, CaptureError, ProviderSourceFailureKind
 fn manifest(lineage: bool) -> Value {
     let mut record = json!({
         "record_type": "manifest",
-        "schema_version": "ctx-history-jsonl-v2",
-        "producer": "source-backed-v2-test",
+        "schema_version": "ctx-history-jsonl-v1",
+        "producer": "source-backed-v1-test",
     });
     if lineage {
         record["lineage_contract"] = json!("provider_native_v1");
@@ -76,6 +76,36 @@ fn file_reference(index: u64, event_index: u64, value: &str) -> Value {
         "event_index": event_index,
         "value": value,
         "occurred_at": "2026-07-28T12:00:02Z",
+    })
+}
+
+fn v1_file_touch(index: u64, event_index: u64, path: &str) -> Value {
+    json!({
+        "record_type": "file_touch",
+        "source_id": "source-a",
+        "session_id": "child",
+        "touch_index": index,
+        "event_index": event_index,
+        "path": path,
+        "change_kind": "modified",
+        "old_path": "tests/old_parser.rs",
+        "line_count_delta": 12,
+        "confidence": "high",
+        "occurred_at": "2026-07-28T12:00:02Z",
+        "metadata": {"origin": "released-v1"},
+    })
+}
+
+fn v1_session(id: &str, agent_type: &str, is_primary: bool) -> Value {
+    json!({
+        "record_type": "session",
+        "source_id": "source-a",
+        "session_id": id,
+        "native_session_id": format!("native-{id}"),
+        "agent_type": agent_type,
+        "is_primary": is_primary,
+        "started_at": "2026-07-28T12:00:00Z",
+        "cwd": "/work/./literal",
     })
 }
 
@@ -205,6 +235,49 @@ fn v2_projects_exact_activity_payload_and_ordered_duplicate_facts() {
             ProviderDeclaredFact {
                 kind: LiteralFactKind::File,
                 value: "./src/../src/lib.rs".to_owned(),
+            },
+        ]
+    );
+}
+
+#[test]
+fn v1_file_touch_normalizes_to_neutral_file_reference_fact() {
+    let temp = tempdir().unwrap();
+    let path = temp.path().join("v1-file-touch.jsonl");
+    write_records(
+        &path,
+        &[
+            manifest(false),
+            source(),
+            v1_session("child", "primary", true),
+            event(0, "event-0", "child", json!({"text": "update parser"})),
+            v1_file_touch(0, 0, "tests/parser.rs"),
+        ],
+    );
+
+    let (records, certificate) =
+        collect_with_certificate(&CustomHistorySourceBackedInput::explicit(&path, [14; 32]));
+    assert_eq!(records.len(), 1);
+    assert_eq!(certificate.counts().complete_records, 5);
+    assert_eq!(certificate.counts().retained_records, 1);
+    assert_eq!(certificate.counts().rejected_records, 0);
+    assert_eq!(certificate.counts().ignored_records, 4);
+    assert_eq!(certificate.counts().indexed_documents, 1);
+    assert_eq!(records[0].agent_scope, Some(AgentScope::Primary));
+    assert_eq!(
+        records[0].provider_session_id.as_deref(),
+        Some("ctx-history-jsonl-v1-65ce2567-9c43-7f16-885e-7a1c5fe01c05")
+    );
+    assert_eq!(
+        records[0].content.activity.as_ref().unwrap().facts,
+        vec![
+            ProviderDeclaredFact {
+                kind: LiteralFactKind::SessionCwd,
+                value: "/work/./literal".to_owned(),
+            },
+            ProviderDeclaredFact {
+                kind: LiteralFactKind::File,
+                value: "tests/parser.rs".to_owned(),
             },
         ]
     );
@@ -421,19 +494,19 @@ fn absent_lineage_contract_omits_relationship_and_copy_claims() {
 }
 
 #[test]
-fn v1_manifest_is_a_schema_incompatible_source_failure() {
+fn v2_manifest_is_a_schema_incompatible_source_failure() {
     let temp = tempdir().unwrap();
     let path = temp.path().join("legacy.jsonl");
     write_records(
         &path,
         &[json!({
             "record_type": "manifest",
-            "schema_version": "ctx-history-jsonl-v1",
+            "schema_version": "ctx-history-jsonl-v2",
         })],
     );
     let input = CustomHistorySourceBackedInput::explicit(&path, [10; 32]);
     let error = scan_custom_history_source_backed_explicit(&input, None, |_, _| Ok(()))
-        .expect_err("v1 must not be translated");
+        .expect_err("v2 must not be translated");
     let CustomHistorySourceBackedError::Capture(CaptureError::ProviderSource {
         provider,
         kind,
@@ -445,5 +518,5 @@ fn v1_manifest_is_a_schema_incompatible_source_failure() {
     };
     assert_eq!(provider, CaptureProvider::Custom.as_str());
     assert_eq!(kind, ProviderSourceFailureKind::SchemaIncompatible);
-    assert!(detail.contains("ctx-history-jsonl-v1"), "{detail}");
+    assert!(detail.contains("ctx-history-jsonl-v2"), "{detail}");
 }

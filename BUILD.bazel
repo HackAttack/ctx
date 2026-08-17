@@ -1237,7 +1237,6 @@ non_rust_gate(
         "//crates/ctx-history-capture:BUILD.bazel",
         "//crates/ctx-history-capture:Cargo.toml",
         "//crates/ctx-history-capture:provider_architecture_sources",
-        "//crates/ctx-history-capture:tests/codex_direct_result.rs",
         "//tools/bazel:rust-target-inventory.json",
     ],
 )

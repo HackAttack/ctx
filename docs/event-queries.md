@@ -41,16 +41,14 @@ query runs.
 ## Content projection
 
 `--content full` returns the selected normalized `text`, provider-native
-`structured_content`, and optional content-governed `mcp_exchange` stored on an
+`structured_content`, and optional content-governed `activity` stored on an
 event. `--content text` returns only the existing normalized text body;
 `--content none` omits payload content entirely. Both reduced projections omit
-`mcp_exchange`, including its provider call ID, arguments, response status and
-timing, and response payload.
+activity, including provider call identity, arguments, result status/timing,
+result content, and literal facts.
 
-The separate top-level `mcp_tool_call: {server, tool}` is event metadata and
-survives every presentation projection when available. Neither identity nor
-exchange capture adds a list selector. Use full JSON/JSONL and filter emitted
-rows client-side when exchange content is required. See
+Activity adds no list selector. Use full JSON/JSONL and filter emitted rows
+client-side when provider activity is required. See
 [`mcp-exchange-capture.md`](mcp-exchange-capture.md).
 
 ## Bounded pages and cursors
@@ -99,18 +97,17 @@ ctx list events --root-session 01234567-89ab-8def-8123-456789abcdef \
      root_ctx_session_id, sequence, occurred_at_ms, event_type}'
 ```
 
-Filter exact MCP attribution client-side while omitting payload content:
+Filter exact MCP activity client-side:
 
 ```bash
-ctx list events --provider codex --content none --format jsonl |
+ctx list events --provider codex --content full --format jsonl |
   jq -c 'select(.record_type == "event_range_event") |
-    .event | select(.mcp_tool_call? != null) |
-    {ctx_event_id, ctx_session_id, mcp_tool_call}'
+    .event | select(.activity.invocation.protocol? == "mcp") |
+    {ctx_event_id, ctx_session_id, activity}'
 ```
 
-`mcp_tool_call` is metadata and therefore survives the `none` presentation
-projection. This `jq` predicate is not an indexed ctx selector; it runs only
-after each JSONL event has been emitted.
+This `jq` predicate is not an indexed ctx selector; it runs only after each
+full JSONL event has been emitted.
 
 Query a time window and print normalized text without materializing the stream:
 

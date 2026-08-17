@@ -241,35 +241,25 @@ reads do not reopen provider history. Provider changes become searchable and
 visible to show after explicit import or daemon refresh publishes a new Core
 generation. `ctx show session` preserves provider event order.
 
-The top-level exact `mcp_tool_call: {server, tool}` attribution object remains
-metadata. That object is not indexed and adds no search input, filter, result
-field, selector, match, ranking signal, snippet, `why_matched` value, SQL column,
-or another derived fact. Use log-mode `ctx show session`, `ctx show event`, or
-`ctx list events` and filter JSON/JSONL rows client-side when exact attribution
-metadata is needed.
+For discovery-eligible selected content, the shared Core search projection
+appends retained activity invocation protocol, server, tool, and present
+arguments; result status, present text, and present structured content; and
+literal fact values after the event body and provider-native structured
+content. These values participate in ordinary lexical matching, ranking,
+snippets, text match reasons, and semantic source text. A result using the
+`normalized_body` capture disposition relies on the event's ordinary body,
+which enters the projection exactly once.
 
-The separately stored, content-governed `mcp_exchange.invocation` has a narrow
-lexical body projection. On a policy-selected record, ctx projects the
-invocation server value, tool value, and the compact JSON representation of
-arguments whose capture state is `present`. It adds no synthetic server/tool
-labels. `absent`, `unavailable`, and `omitted` arguments contribute no terms.
-These values use ordinary lexical body matching and ranking under the record's
-existing event type; they are not new fields or selectors.
+Provider call identity, timestamps, durations, and capture-disposition labels
+do not enter the search projection. Activity adds no dedicated filter,
+selector, search result field, or SQL column; search sees one shared text
+projection rather than separately addressable activity fields.
 
-`mcp_exchange.provider_call_id` remains unsearchable metadata and adds no
-filter, selector, result field, ranking signal, or snippet. Response status,
-failure, timing, and structured payload capture are stored and retrievable in
-full-content event output but add no search terms. Response text represented by
-the `normalized_body` disposition retains the event's existing normalized-body
-search behavior exactly once; the exchange does not duplicate it.
-
-This projection adds no semantic text, filter, search result field, SQL column,
-another derived fact, or hidden network request. Sensitive invocation arguments can
-therefore become searchable in the local lexical index, but ctx does not send
-them over the network. The lexical projector revision participates in
-generation identity, so an older generation must be rebuilt or pass the narrow
-same-epoch preservation migration before the new terms are searchable; stored
-historical rows with no captured exchange remain unchanged. See
+Use log-mode `ctx show session`, `ctx show event`, or `ctx list events
+--content full` and filter JSON/JSONL rows client-side when exact provider
+activity is needed. Query paths do not reopen provider history or issue hidden
+network requests. Activity remains private local content, but matching queries
+and snippets can surface its searchable values. See
 [`mcp-exchange-capture.md`](mcp-exchange-capture.md).
 
 ## History reports

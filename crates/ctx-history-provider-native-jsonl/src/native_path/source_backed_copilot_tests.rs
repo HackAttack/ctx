@@ -59,6 +59,58 @@ fn completion_preserves_literal_result_without_inferred_status() {
 }
 
 #[test]
+fn success_failure_and_unknown_outcomes_remain_literal_without_inferred_status() {
+    let cases = [
+        (
+            br#"{"type":"tool.execution_complete","data":{"toolCallId":"success","success":true,"content":"complete"}}"#.as_slice(),
+            json!({"success": true, "content": "complete"}),
+        ),
+        (
+            br#"{"type":"tool.execution_complete","data":{"toolCallId":"failure","success":false,"error":{"message":"failed"}}}"#.as_slice(),
+            json!({"success": false, "error": {"message": "failed"}}),
+        ),
+        (
+            br#"{"type":"tool.execution_complete","data":{"toolCallId":"unknown","result":{"content":"unknown"}}}"#.as_slice(),
+            json!({"result": {"content": "unknown"}}),
+        ),
+    ];
+
+    for (raw, expected) in cases {
+        let activity = copilot_activity(raw).unwrap();
+        let result = activity.result.unwrap();
+        assert_eq!(result.status, None);
+        assert_eq!(
+            result.structured_content,
+            ActivityJsonCapture::Present { value: expected }
+        );
+    }
+}
+
+#[test]
+fn malformed_or_oversized_identity_abstains_without_poisoning_valid_input() {
+    const ACTIVITY_COMPONENT_MAX_BYTES: usize = 64 * 1024;
+
+    let oversized = format!(
+        r#"{{"type":"tool.execution_start","data":{{"toolCallId":"call-over","mcpServerName":"{}","mcpToolName":"tool"}}}}"#,
+        "s".repeat(ACTIVITY_COMPONENT_MAX_BYTES + 1)
+    );
+    for raw in [
+        br#"{"type":"tool.execution_start","data":{"toolCallId":7,"mcpServerName":"server","mcpToolName":"tool"}}"#.as_slice(),
+        br#"{"type":"tool.execution_start","data":{"toolCallId":"","mcpServerName":"server","mcpToolName":"tool"}}"#.as_slice(),
+        br#"{"type":"tool.execution_start","data":{"toolCallId":"call-empty","mcpServerName":"","mcpToolName":"tool"}}"#.as_slice(),
+        br#"{"type":"tool.execution_start","data":{"toolCallId":"call-empty","mcpServerName":"server","mcpToolName":""}}"#.as_slice(),
+        oversized.as_bytes(),
+    ] {
+        assert!(copilot_activity(raw).is_none());
+    }
+
+    assert!(copilot_activity(
+        br#"{"type":"tool.execution_start","data":{"toolCallId":"valid-after-malformed","mcpServerName":"server","mcpToolName":"tool"}}"#
+    )
+    .is_some());
+}
+
+#[test]
 fn absent_and_ambiguous_capture_states_are_explicit() {
     let absent = copilot_activity(
         br#"{"type":"tool.execution_start","data":{"toolCallId":"call-03","mcpServerName":"server","mcpToolName":"tool"}}"#,

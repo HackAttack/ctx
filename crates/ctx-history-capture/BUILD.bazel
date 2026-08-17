@@ -151,35 +151,6 @@ ctx_rust_test(
     edition = crate_edition(),
 )
 
-ctx_rust_test(
-    name = "codex_direct_result_tests",
-    srcs = ["tests/codex_direct_result.rs"],
-    crate_name = "codex_direct_result",
-    crate_root = "tests/codex_direct_result.rs",
-    compile_data = [
-        ":test_fixtures",
-        "//crates/ctx-history-provider-codex:test_fixtures",
-    ],
-    edition = crate_edition(),
-    aliases = aliases(
-        normal_dev = True,
-        proc_macro_dev = True,
-    ),
-    deps = crate_deps([
-        "serde_json",
-        "tempfile",
-    ]) + [
-        ":lib",
-        "//crates/ctx-history-core:lib",
-        "//crates/ctx-history-index:lib",
-    ],
-    proc_macro_deps = all_crate_deps(
-        proc_macro = True,
-        proc_macro_dev = True,
-    ),
-    rustc_env = COMMON_RUSTC_ENV,
-)
-
 py_test(
     name = "mcp_attribution_conformance_tests",
     srcs = [

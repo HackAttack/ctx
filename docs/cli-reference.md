@@ -389,19 +389,15 @@ the bounded presentation limit require `--max-events`; the value is capped at
 neighboring events in the same session; `--window N` is shorthand for
 `--before N --after N`. It accepts the same output formats as `show session`.
 
-Qualifying terminal/result events can include exact MCP metadata as
-`mcp_tool_call: {server, tool}` in JSON/JSONL and as safely escaped labelled
-values in text/Markdown. Ordinary tool results require `--mode log`; the
-default `lite` and `full` selection rules do not change. The object is omitted
-rather than `null` when exact attribution is unavailable. See
-[`mcp-tool-call-attribution.md`](mcp-tool-call-attribution.md).
-
-Full JSON/JSONL event output can also include content-governed
-`mcp_exchange`, with a provider call ID and invocation and/or response. Present
-arguments and response payloads remain decoded JSON values. This capture is
-separate from top-level attribution; see
-[`mcp-exchange-capture.md`](mcp-exchange-capture.md) for its wire shape and
-capture states.
+Full JSON/JSONL event output can include content-governed `activity`, with
+exact typed provider call identity, invocation and/or result channels, and
+ordered literal provider facts. A qualified MCP invocation has `protocol:
+"mcp"` plus exact source `server` and advertised `tool` strings. Present
+arguments and structured results remain decoded JSON values. Ordinary tool
+events require `--mode log`; the default `lite` and `full` selection rules do
+not change. See
+[`mcp-tool-call-attribution.md`](mcp-tool-call-attribution.md) and
+[`mcp-exchange-capture.md`](mcp-exchange-capture.md).
 
 ## List
 
@@ -421,12 +417,10 @@ JSONL streams bounded pages and ends with exactly one completion record. Opaque
 cursors are bound to the exact selection and immutable Core generation. See
 [`event-queries.md`](event-queries.md) for the wire contract and jq examples.
 
-Only `--content full` can return `mcp_exchange`. `--content text` keeps the
-existing normalized event text but omits structured content and the exchange;
-`--content none` omits all payload content. Both reduced projections retain
-event metadata, including an available `mcp_tool_call`. MCP attribution and
-exchange capture have no list selectors; filter full JSON/JSONL rows
-client-side.
+Only `--content full` can return `activity`. `--content text` keeps the
+existing normalized event text but omits structured content and activity;
+`--content none` omits all payload content. MCP activity has no list selector;
+filter full JSON/JSONL rows client-side.
 
 Show and list commands read complete policy-selected normalized records from the active
 verified Core/Tantivy generation. They do not reopen provider history at query
@@ -689,23 +683,19 @@ MCP search follows the same active Codex session-tree exclusion as the CLI when
 `CODEX_THREAD_ID` is set. Pass `include_current_session: true` to the search
 tool when the active session tree itself is the target.
 
-MCP `show_event`, log-mode `show_session`, and `query_events` event rows expose
-the same optional exact attribution as camelCase `mcpToolCall` in
-`structuredContent`. Full-content rows can also expose camelCase `mcpExchange`;
-`query_events` with `content: "text"` or `content: "none"` omits that capture
-while `mcpToolCall` remains metadata. Filter bounded pages on the client and
-continue with their existing opaque cursors; there are no MCP attribution or
-exchange selectors or search arguments. Captured JSON keys are not camelized.
-See [`mcp-exchange-capture.md`](mcp-exchange-capture.md).
+MCP `show_event`, log-mode `show_session`, and full-content `query_events`
+event rows expose the same optional snake_case `activity` value in
+`structuredContent`. `query_events` with `content: "text"` or `content:
+"none"` omits it. Filter bounded pages on the client and continue with their
+existing opaque cursors; there are no dedicated MCP activity selectors or
+search arguments. Ordinary CLI and MCP search can match retained searchable
+activity values through the shared Core search projection. Keys inside captured
+JSON values are unchanged.
 
-Human CLI and Markdown views retain exactly the first 256 Unicode scalar values
-of each MCP server/tool component before escaping and append
-`… [display truncated]` to a component when more values exist. The accompanying
-guidance is
-`MCP identity display truncated; use --format json or --format jsonl for exact values.`
-Use machine JSON/JSONL for each full exact value; see
-[`mcp-tool-call-attribution.md`](mcp-tool-call-attribution.md) for the complete
-escaping contract.
+Human CLI, Markdown, and MCP text views escape terminal controls and may bound
+the rendered event. Use machine JSON/JSONL or MCP `structuredContent` for the
+exact admitted activity value; see
+[`mcp-tool-call-attribution.md`](mcp-tool-call-attribution.md).
 
 The MCP server is optional. The CLI remains the primary interface, and MCP is
 intended for agents or hosts that prefer tool discovery over shell commands.

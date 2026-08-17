@@ -347,6 +347,49 @@ fn only_exact_provider_native_copy_proofs_are_admitted() {
 }
 
 #[test]
+fn activity_metadata_accepts_exact_boundaries_and_rejects_max_plus_one() {
+    let exact = "x".repeat(MAX_TEXT_METADATA_BYTES);
+    let mut bounded = activity();
+    let invocation = bounded.invocation.as_mut().unwrap();
+    invocation.protocol = Some(exact.clone());
+    invocation.server = Some(exact.clone());
+    invocation.tool = exact.clone();
+    bounded.result.as_mut().unwrap().status = Some(exact);
+
+    let mut record = record();
+    record.content.activity = Some(bounded.clone());
+    record.validate_contract().unwrap();
+
+    for (component, expected_field) in [
+        ("protocol", "activity.invocation.protocol"),
+        ("server", "activity.invocation.server"),
+        ("tool", "activity.invocation.tool"),
+        ("status", "activity.result.status"),
+    ] {
+        let mut oversized = bounded.clone();
+        let value = "x".repeat(MAX_TEXT_METADATA_BYTES + 1);
+        match component {
+            "protocol" => oversized.invocation.as_mut().unwrap().protocol = Some(value),
+            "server" => oversized.invocation.as_mut().unwrap().server = Some(value),
+            "tool" => oversized.invocation.as_mut().unwrap().tool = value,
+            "status" => oversized.result.as_mut().unwrap().status = Some(value),
+            _ => unreachable!(),
+        }
+        record.content.activity = Some(oversized);
+        assert!(matches!(
+            record.validate_contract(),
+            Err(CoreRecordError::FieldTooLarge {
+                field,
+                actual,
+                maximum,
+            }) if field == expected_field
+                && actual == MAX_TEXT_METADATA_BYTES + 1
+                && maximum == MAX_TEXT_METADATA_BYTES
+        ));
+    }
+}
+
+#[test]
 fn activity_linkage_and_content_policy_fail_closed() {
     let mut record = record();
     let mut unlinked = activity();

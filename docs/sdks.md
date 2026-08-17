@@ -55,10 +55,10 @@ Payloads include typed agent history data such as freshness, citations,
 sessions, events, and provider-owned session IDs. For Codex,
 `providerSessionId` is the resume UUID.
 
-Shown events can include projection-independent `mcpToolCall` attribution and
-full-content `mcpExchange` invocation/response capture. SDK contract-owned keys
-use camelCase, while keys inside captured JSON arguments and response payloads
-remain unchanged. See
+Shown events can include full-content `activity` with exact typed provider call
+identity, invocation and/or result channels, and literal provider facts. It is
+an additive event field; keys inside captured JSON arguments and structured
+results remain unchanged. See
 [`mcp-exchange-capture.md`](mcp-exchange-capture.md).
 
 ## Local and hosted backends

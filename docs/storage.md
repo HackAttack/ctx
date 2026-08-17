@@ -156,29 +156,23 @@ never checkpoint or write provider data.
 - `usage.sqlite` contains only the bounded content-free aggregates documented
   above. It is product state, not history or search authority.
 
-A qualifying normalized event may carry
-`mcp_tool_call: {server, tool}` as event-local Core metadata. The pair is stored
-only with that Core event. The top-level pair is not copied into lexical terms,
-semantic text or `usage.sqlite`, and query paths do not
+A selected Core event may carry content-governed `activity` with exact typed
+provider call identity, invocation and/or result channels, and ordered literal
+provider facts. Present arguments and structured results are complete decoded
+JSON, not raw source-byte representations. The normalized body,
+provider-native structured content, and activity share the 16 MiB Core
+selected-content budget. Oversized complete JSON or text channels become
+explicit `omitted` capture states without truncation.
+
+Activity is retrievable from full-content event output. For discovery-eligible
+selected content, retained protocol/server/tool/present arguments, result
+status/present text/structured content, and literal fact values enter the
+shared Core search projection used by lexical search, snippets, and semantic
+source text. Provider call identity, timing, and capture-disposition labels do
+not. No activity value is written to `usage.sqlite`, and query paths do not
 reconstruct it from provider-specific content or current MCP configuration.
-Presentation `--content none` retains already-stored metadata; Core `Redacted`
-or `Omitted` policy omits the sensitive pair by default.
-
-A selected Core event may separately carry content-governed `mcp_exchange`
-with a provider call ID and invocation and/or terminal response. Present
-arguments and response payloads are complete decoded JSON, not raw source-byte
-representations. The normalized body, provider-native structured content, and
-exchange share the 16 MiB Core encoded-content budget. Oversized JSON channels
-become explicit `omitted` capture states without truncation; if the compact
-exchange cannot fit, the ordinary event remains stored without it.
-
-The exchange is retrievable from full-content event output. Lexical publication
-projects the invocation server, tool, and compact JSON value of `present`
-arguments into ordinary body search for a policy-selected record. Other
-argument capture states add no terms. The projection follows the record's
-existing event type: separate invocation records are calls, while a combined
-Codex terminal `tool_output` remains an output and is not also classified as a
-call.
+`--content text` and `--content none` omit activity from chronology output;
+Core non-selected content cannot carry it.
 
 Capture can separately mark a complete record as ctx-retrieval-derived when
 every body-contributing atom is an exactly recognized direct ctx retrieval call
@@ -189,11 +183,12 @@ fail-open: errors, warnings, stderr, mixed content, unknown status, unsupported
 aliases, and ambiguous linkage remain discoverable. The marker is not
 redaction, omission, or deletion.
 
-The provider call ID, response status/failure/timing, and structured response
-payload are not copied into search terms. Response text with a
-`normalized_body` disposition retains its existing body-search behavior exactly
-once. The exchange adds no semantic text, selector, filter, search result field,
-`usage.sqlite` value or SQL column. See
+Search projection is selective rather than field-addressable: present
+invocation arguments and result content are included, while provider call IDs,
+timing, and capture-state metadata are excluded. Result text with a
+`normalized_body` disposition retains the event's existing body search behavior
+exactly once. Activity adds no dedicated selector, filter, search result field,
+`usage.sqlite` value, or SQL column. See
 [`mcp-exchange-capture.md`](mcp-exchange-capture.md).
 
 Search, show, list, locate, and MCP retrieval read verified Core/Tantivy
@@ -501,21 +496,12 @@ meaningful-body lexical selection, event projector/class revision, tokenizer
 and lexical schema revision, and semantic settings. A mismatch makes derived
 storage stale and requires a Core rebuild rather than an in-place migration.
 
-Exact MCP attribution introduces one deliberately narrow exception for the
-immediately preceding self-contained Core contract. When that allowlisted
-predecessor is present, ctx verifies its pointer, manifest, checksums, records,
-identities, and counts, then republishes an out-of-place current candidate with
-`mcp_tool_call` and `mcp_exchange` absent. It does not discover or reopen
-provider history during this preservation step. The prior generation remains
-authoritative until the new candidate is completely verified and atomically
-published; unknown, incomplete, or corrupt predecessors fail closed.
-
-A later ordinary provider refresh or reimport can enrich qualifying source
-records with exact attribution and typed exchange capture. If their original
-provider source is unavailable, historical records remain readable and
-unattributed, with `mcp_exchange` absent and stable existing event and session
-identities. This bridge applies only within the self-contained Core epoch; it
-does not read or migrate the legacy Store/SQL epoch described above.
+Activity participates in the current Core record contract fingerprint. An
+incompatible predecessor requires the ordinary Core rebuild path; query code
+does not reopen provider history or synthesize activity. A later provider
+refresh or reimport can populate current activity when the qualifying source is
+available. This does not read or migrate the legacy Store/SQL epoch described
+above.
 
 Remove a source from future imports:
 

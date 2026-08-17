@@ -10,8 +10,8 @@ import re
 from typing import Any
 
 
-MANIFEST_SCHEMA_VERSION = 6
-CAPABILITY_REVISION = 5
+MANIFEST_SCHEMA_VERSION = 7
+CAPABILITY_REVISION = 6
 PUBLIC_VALIDATION_MODE = "public-validation"
 CONFORMANCE_MODES = {PUBLIC_VALIDATION_MODE}
 
@@ -71,10 +71,9 @@ ALLOWED_EVIDENCE_CLASSES = {
     "max_plus_one",
     "result_preservation",
     "stable_ids",
-    "search_nonindexing",
     "privacy_sinks",
 }
-REQUIRED_EVIDENCE_CLASSES = ALLOWED_EVIDENCE_CLASSES - {"search_nonindexing"}
+REQUIRED_EVIDENCE_CLASSES = ALLOWED_EVIDENCE_CLASSES
 EVIDENCE_SCOPES = {"tuple", "provider_neutral"}
 PROVIDER_NEUTRAL_EVIDENCE_CLASSES = {
     "max_plus_one",

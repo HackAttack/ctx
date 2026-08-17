@@ -551,35 +551,26 @@ or `structured_content` when policy permits. Each rendered event also includes
 `content.complete`, `content.policy_status`, and an optional
 `content.policy_reason`.
 
-A selected full-content event can additionally include optional
-`mcp_exchange`, containing `provider_call_id` and invocation and/or response.
-Invocation arguments and response payloads use explicit
+A selected full-content event can additionally include optional `activity`.
+The revision-1 object can contain exact typed `provider_call_id`, invocation
+and/or result channels, and ordered provider-declared facts. Invocation
+arguments and structured results use explicit
 `present`/`absent`/`unavailable`/`omitted` capture states and remain decoded JSON
-when present. CLI/Core fields use snake_case. `ctx list events --content text`
-and `--content none` omit the entire exchange; full show-event and log-mode
-show-session event rows can include it. See
-[`mcp-exchange-capture.md`](../mcp-exchange-capture.md) for the closed wire
-shape, response status, limits, and state semantics.
+when present; result text additionally supports `normalized_body`. CLI/Core
+fields use snake_case.
 
-A qualifying terminal/result event can also include the optional top-level
-event field `mcp_tool_call: {"server": <string>, "tool": <string>}`. Both
-members are required nonempty decoded UTF-8 strings, each bounded to 64 KiB.
-Machine output preserves them exactly. The complete object is omitted, never
-`null`, when no exact pair is available; absence does not mean the event was
-not MCP. Event-range `--content none` removes payload content but retains this
-metadata. Ordinary tool results appear in session output only with
-`ctx show session --mode log`. Historical rows preserved across the immediate
-Core contract transition may remain unattributed until an ordinary provider
-refresh can recompute the field from source. See
-[`mcp-tool-call-attribution.md`](../mcp-tool-call-attribution.md).
+An exact MCP invocation has `protocol: "mcp"` plus nonempty source `server`
+and advertised `tool` strings. Machine output preserves admitted activity
+exactly. Absence means only that the event has no retained provider activity;
+it does not mean that the event was not MCP. `ctx list events --content text`
+and `--content none` omit activity; full show-event and log-mode show-session
+rows can include it. See
+[`mcp-tool-call-attribution.md`](../mcp-tool-call-attribution.md) and
+[`mcp-exchange-capture.md`](../mcp-exchange-capture.md).
 
-The same migrated historical rows have `mcp_exchange` absent until an ordinary
-provider refresh or reimport can recapture it. Contract migration does not
-reopen provider history.
-
-The 256-Unicode-scalar display bound and `… [display truncated]` marker apply
-only to human rendering. JSON, JSONL, and MCP `structuredContent` retain the
-full exact values admitted by the 64 KiB per-component contract.
+Human rendering escapes terminal controls and may bound a rendered event.
+JSON, JSONL, and MCP `structuredContent` retain the exact admitted activity
+value.
 
 Show reads the active Core/Tantivy generation without reopening provider
 history. It does not return provider source paths, existence checks, or source
@@ -587,14 +578,12 @@ cursors. With `--out`, a
 session transcript is staged and atomically installed only after the complete
 stream succeeds; a failed stream does not replace an existing destination.
 
-The in-repo Rust SDK preserves this split. `ShowSessionOptions::default()` has
+`ShowSessionOptions::default()` has
 no `limit` or `cursor` and uses the complete CLI stream. Supplying either option
 uses the existing local MCP `show_session` page contract; its returned
 `pagination` object is preserved in the SDK session result's additive fields.
-Typed SDK event output maps `mcp_tool_call` and `mcp_exchange` to camelCase
-`mcpToolCall` and `mcpExchange`, including `providerCallId`, `failureKind`,
-`durationNs`, `captureStatus`, and `observedEncodedBytes`. Keys inside captured
-JSON values are not camelized.
+Current Core `activity` is preserved as an additive event field; keys inside
+captured JSON values are not camelized.
 
 If the active generation changes while `show` or `search` is opening its
 verified reader, JSON mode exits nonzero and writes one error object to stderr
@@ -887,14 +876,16 @@ itself import provider history. It also excludes the active Codex session tree
 by default when `CODEX_THREAD_ID` is set; pass
 `include_current_session: true` to opt back in.
 
-MCP `show_event`, `show_session`, and `query_events` structured event rows reuse
-the same attribution identity as camelCase `mcpToolCall`. Text fallback is
-display-safe rather than the exact machine authority. Full-content rows can
-also include camelCase `mcpExchange`; `query_events` with `content: "text"` or
-`content: "none"` omits it. Neither field is added to MCP or CLI search inputs,
-matching, ranking, snippets, selectors, or SQL. Paginated MCP callers filter
-each returned page client-side and continue with the existing opaque cursor;
-`show_session` requires `mode: "log"` for ordinary tool results.
+MCP `show_event`, `show_session`, and full-content `query_events` structured
+event rows reuse the same snake_case `activity` value. Text fallback is
+display-safe rather than the exact machine authority. `query_events` with
+`content: "text"` or `content: "none"` omits activity. Discovery-eligible
+retained protocol/server/tool/present arguments, result status/present text/structured
+content, and facts enter the shared Core projection used by CLI and MCP search
+matching, ranking, snippets, and semantic source text. Activity adds no
+dedicated selector or SQL field. Paginated MCP callers filter each returned page
+client-side and continue with the existing opaque cursor; `show_session`
+requires `mode: "log"` for ordinary tool events.
 
 The MCP `sources` tool includes the same bounded `issues` and
 `issues_truncated` fields as `ctx sources --format json`.

@@ -104,36 +104,28 @@ than a cursor. The in-repo Rust SDK follows the complete CLI path when both
 `ShowSessionOptions.limit` and `.cursor` are absent, and uses this MCP page
 contract when either is supplied.
 
-Qualifying event rows from `show_event`, `show_session`, and `query_events`
-include the same optional exact identity as camelCase
-`mcpToolCall: {server, tool}`. Its presence identifies the exact source-time
-MCP dispatch server and advertised tool on an observed execution; absence means
-only that no qualifying exact pair was published. The complete object is
-omitted rather than `null`.
-
-Full-content event rows can separately include camelCase `mcpExchange`, with a
-provider call ID and invocation and/or response. Present arguments and response
-payloads stay decoded JSON, and keys inside those captured values are not
-camelized. `query_events` includes the exchange only for `content: "full"`;
-`content: "text"` and `content: "none"` omit it. Full `show_event` and
-log-mode `show_session` rows can include it. See
+Full event rows from `show_event`, `show_session`, and `query_events` can
+include optional snake_case `activity`. A qualified MCP invocation has
+`protocol: "mcp"` plus exact source `server` and advertised `tool` strings,
+alongside exact typed provider call identity and explicit argument/result
+capture states. `query_events` includes activity only for `content: "full"`;
+`content: "text"` and `content: "none"` omit it. See
 [`mcp-exchange-capture.md`](mcp-exchange-capture.md).
 
-Identity names, arguments, and responses are opaque private local data and can
-contain sensitive identifiers or controls. `structuredContent` preserves exact
-identity values; text fallback escapes them for display. Text fallback retains
-the first 256 Unicode scalar values of each identity component independently,
-appends `… [display truncated]` when a component is longer, and emits
-`MCP identity display truncated; inspect structuredContent for exact JSON values.`
+Activity values are opaque private local data and can contain sensitive
+identifiers, arguments, results, paths, or controls. `structuredContent`
+preserves the exact admitted value; text fallback escapes terminal controls and
+may bound the rendered event.
 
 Ordinary tool results are selected by `show_session` only in `mode: "log"`.
 To filter an entire session, request one bounded log-mode page, retain event
-rows that contain `mcpToolCall` on the client, and repeat with the returned
+rows whose `activity.invocation.protocol` is `mcp` on the client, and repeat with the returned
 `pagination.next_cursor` while `pagination.has_more` is true. Keep the session
 ID and mode unchanged. For cross-session enumeration, use the existing
-`query_events` cursor, optionally request `content: "none"`, and apply the same
-presence filter to each page. Attribution adds no MCP selector, query input,
-tool, SQL surface, or search behavior. See
+`query_events` cursor with `content: "full"` and apply the same presence filter
+to each page. Activity adds no dedicated MCP selector, query input, tool, or SQL
+surface. The ordinary MCP search tool uses the same Core search projection as
+the CLI, including retained searchable activity values. See
 [`mcp-tool-call-attribution.md`](mcp-tool-call-attribution.md).
 
 The `status` tool returns the CLI JSON status read model unchanged in
