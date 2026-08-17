@@ -102,8 +102,8 @@ class ProviderPackBoundaryMutations(unittest.TestCase):
             ),
             (
                 self.root / "BUILD.bazel",
-                "    ] + CARGO_WORKSPACE_PACKAGE_DATA + LOC_CHECK_SOURCE_DATA,\n",
-                "    ] + LOC_CHECK_SOURCE_DATA,\n",
+                "    ] + CARGO_WORKSPACE_PACKAGE_DATA,\n",
+                "    ],\n",
                 "input filegroup srcs",
             ),
             (

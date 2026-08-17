@@ -969,205 +969,23 @@ fn require_directory(kind: EntryKind) -> Result<()> {
     }
 }
 
-fn source_topology_open_error(error: io::Error) -> IndexError {
-    if platform::is_nofollow_rejection(&error) {
-        IndexError::CurrentRepublishSourceTopology(
-            "symlink, reparse point, or remote-provider file in republish source",
-        )
-    } else {
-        IndexError::Io(error)
-    }
-}
+mod resource;
+use resource::{admit_available_bytes, source_topology_open_error};
 
-fn admit_available_bytes(directory: &BoundDirectory, required: u64, recheck: bool) -> Result<()> {
-    let available = available_bytes(directory, recheck)?;
-    if available < required {
-        return Err(IndexError::CurrentRepublishInsufficientHeadroom {
-            available,
-            required,
-        });
-    }
-    Ok(())
-}
-
-fn available_bytes(directory: &BoundDirectory, recheck: bool) -> Result<u64> {
-    #[cfg(any(test, feature = "test-support"))]
-    if let Some(available) = TEST_OPTIONS.with(|options| {
-        let options = options.borrow();
-        if recheck {
-            options
-                .rechecked_available_bytes
-                .or(options.available_bytes)
-        } else {
-            options.available_bytes
-        }
-    }) {
-        return Ok(available);
-    }
-    #[cfg(not(any(test, feature = "test-support")))]
-    let _ = recheck;
-    platform::available_bytes(&directory.file, &directory.path).map_err(IndexError::Io)
-}
+mod test_support;
 
 #[cfg(any(test, feature = "test-support"))]
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum PortableCloneStage {
-    BeforeCopy,
-    AfterSourceOpen,
-    AfterCopy,
-    BeforeCleanup,
-}
-
+pub use test_support::{
+    PortableCloneMetrics, PortableCloneStage, PortableCloneTestGuard, PortableCloneTestOptions,
+};
 #[cfg(not(any(test, feature = "test-support")))]
-#[derive(Debug, Clone, Copy)]
-enum PortableCloneStage {
-    BeforeCopy,
-    AfterSourceOpen,
-    AfterCopy,
-    BeforeCleanup,
-}
-
+use test_support::PortableCloneStage;
+use test_support::{
+    clone_checkpoint, record_clone_metrics, record_plan_metrics,
+    record_plan_metrics_with_required,
+};
 #[cfg(any(test, feature = "test-support"))]
-#[derive(Debug, Clone, Copy, Default)]
-pub struct PortableCloneTestOptions {
-    pub available_bytes: Option<u64>,
-    pub rechecked_available_bytes: Option<u64>,
-}
-
-#[cfg(any(test, feature = "test-support"))]
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub struct PortableCloneMetrics {
-    pub planned_files: usize,
-    pub logical_bytes: u64,
-    pub required_headroom: u64,
-    pub available_bytes: u64,
-    pub copied_bytes: u64,
-    pub copied_files: usize,
-}
-
-#[cfg(any(test, feature = "test-support"))]
-type PortableCloneTestHook = Box<dyn for<'a> FnMut(PortableCloneStage, &'a Path) -> Result<()>>;
-
-#[cfg(any(test, feature = "test-support"))]
-thread_local! {
-    static FORCE_PORTABLE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
-    static TEST_OPTIONS: std::cell::RefCell<PortableCloneTestOptions> = const {
-        std::cell::RefCell::new(PortableCloneTestOptions {
-            available_bytes: None,
-            rechecked_available_bytes: None,
-        })
-    };
-    static TEST_HOOK: std::cell::RefCell<Option<PortableCloneTestHook>> =
-        std::cell::RefCell::new(None);
-    static TEST_METRICS: std::cell::Cell<PortableCloneMetrics> = const {
-        std::cell::Cell::new(PortableCloneMetrics {
-            planned_files: 0,
-            logical_bytes: 0,
-            required_headroom: 0,
-            available_bytes: 0,
-            copied_bytes: 0,
-            copied_files: 0,
-        })
-    };
-}
-
-#[cfg(any(test, feature = "test-support"))]
-pub struct PortableCloneTestGuard {
-    previous_force: bool,
-    previous_options: PortableCloneTestOptions,
-    previous_hook: Option<PortableCloneTestHook>,
-    previous_metrics: PortableCloneMetrics,
-}
-
-#[cfg(any(test, feature = "test-support"))]
-impl PortableCloneTestGuard {
-    pub fn set<F>(options: PortableCloneTestOptions, hook: F) -> Self
-    where
-        F: for<'a> FnMut(PortableCloneStage, &'a Path) -> Result<()> + 'static,
-    {
-        let previous_force = FORCE_PORTABLE.with(|force| force.replace(true));
-        let previous_options = TEST_OPTIONS.with(|slot| slot.replace(options));
-        let previous_hook = TEST_HOOK.with(|slot| slot.replace(Some(Box::new(hook))));
-        let previous_metrics =
-            TEST_METRICS.with(|slot| slot.replace(PortableCloneMetrics::default()));
-        Self {
-            previous_force,
-            previous_options,
-            previous_hook,
-            previous_metrics,
-        }
-    }
-
-    pub fn metrics(&self) -> PortableCloneMetrics {
-        TEST_METRICS.with(std::cell::Cell::get)
-    }
-}
-
-#[cfg(any(test, feature = "test-support"))]
-impl Drop for PortableCloneTestGuard {
-    fn drop(&mut self) {
-        FORCE_PORTABLE.with(|slot| slot.set(self.previous_force));
-        TEST_OPTIONS.with(|slot| slot.replace(self.previous_options));
-        TEST_HOOK.with(|slot| slot.replace(self.previous_hook.take()));
-        TEST_METRICS.with(|slot| slot.set(self.previous_metrics));
-    }
-}
-
-#[cfg(any(test, feature = "test-support"))]
-pub(super) fn forced_for_test() -> bool {
-    FORCE_PORTABLE.with(std::cell::Cell::get)
-}
-
-#[cfg(any(test, feature = "test-support"))]
-fn clone_checkpoint(stage: PortableCloneStage, path: &Path) -> Result<()> {
-    TEST_HOOK.with(|hook| match hook.borrow_mut().as_mut() {
-        Some(hook) => hook(stage, path),
-        None => Ok(()),
-    })
-}
-
-#[cfg(not(any(test, feature = "test-support")))]
-fn clone_checkpoint(_stage: PortableCloneStage, _path: &Path) -> Result<()> {
-    Ok(())
-}
-
-#[cfg(any(test, feature = "test-support"))]
-fn record_plan_metrics(plan: &ClonePlan, available: u64) {
-    record_plan_metrics_with_required(plan, available, plan.required_headroom);
-}
-
-#[cfg(any(test, feature = "test-support"))]
-fn record_plan_metrics_with_required(plan: &ClonePlan, available: u64, required_headroom: u64) {
-    TEST_METRICS.with(|metrics| {
-        metrics.set(PortableCloneMetrics {
-            planned_files: plan.files.len(),
-            logical_bytes: plan.logical_bytes,
-            required_headroom,
-            available_bytes: available,
-            ..metrics.get()
-        });
-    });
-}
-
-#[cfg(not(any(test, feature = "test-support")))]
-fn record_plan_metrics(_plan: &ClonePlan, _available: u64) {}
-
-#[cfg(not(any(test, feature = "test-support")))]
-fn record_plan_metrics_with_required(_plan: &ClonePlan, _available: u64, _required_headroom: u64) {}
-
-#[cfg(any(test, feature = "test-support"))]
-fn record_clone_metrics(copied_bytes: u64, copied_files: usize) {
-    TEST_METRICS.with(|metrics| {
-        metrics.set(PortableCloneMetrics {
-            copied_bytes,
-            copied_files,
-            ..metrics.get()
-        });
-    });
-}
-
-#[cfg(not(any(test, feature = "test-support")))]
-fn record_clone_metrics(_copied_bytes: u64, _copied_files: usize) {}
+pub(super) use test_support::forced_for_test;
 
 #[cfg(unix)]
 #[path = "portable/unix.rs"]
@@ -1177,46 +995,6 @@ mod platform;
 #[path = "portable/windows.rs"]
 mod platform;
 
+
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn portable_entry_contract_rejects_links_directories_and_special_files() {
-        assert!(require_regular(EntryKind::Regular).is_ok());
-        for kind in [
-            EntryKind::Directory,
-            EntryKind::LinkOrReparse,
-            EntryKind::Special,
-        ] {
-            assert!(matches!(
-                require_regular(kind),
-                Err(IndexError::CurrentRepublishSourceTopology(_))
-            ));
-        }
-    }
-
-    #[test]
-    fn portable_authenticated_growth_probe_never_writes_the_extra_byte() {
-        let mut source = io::Cursor::new(b"abcde".to_vec());
-        let mut destination = Vec::new();
-        assert!(matches!(
-            copy_with_digest(&mut source, &mut destination, 4, 4),
-            Err(IndexError::CurrentRepublishSourceTopology(
-                "source file grew while cloning"
-            ))
-        ));
-        assert_eq!(destination, b"abcd");
-
-        let mut source = io::Cursor::new(b"abcde".to_vec());
-        let mut destination = Vec::new();
-        assert!(matches!(
-            copy_with_digest(&mut source, &mut destination, 5, 4),
-            Err(IndexError::CurrentRepublishByteLimit {
-                actual: 5,
-                maximum: 4
-            })
-        ));
-        assert!(destination.is_empty());
-    }
-}
+mod tests;

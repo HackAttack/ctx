@@ -1,7 +1,6 @@
 load("@bazel_skylib//rules:common_settings.bzl", "bool_flag")
 load("@rules_python//python:defs.bzl", "py_test")
 load(":cargo_vendor_sources.bzl", "cargo_vendor_sources", "rust_toolchain_file")
-load(":gates.bzl", "loc_check_inputs")
 load(":mold_toolchain.bzl", "mold_toolchain_files")
 
 exports_files([
@@ -65,8 +64,6 @@ exports_files([
 ])
 
 package(default_visibility = ["//visibility:public"])
-
-loc_check_inputs(name = "loc_check_inputs")
 
 bool_flag(
     name = "windows_gnu_release",

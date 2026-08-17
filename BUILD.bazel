@@ -5,7 +5,6 @@ load("@rules_python//python:defs.bzl", "py_binary", "py_test")
 load("@rules_rust//rust:defs.bzl", "rustfmt_test")
 load(
     "//tools/bazel:gates.bzl",
-    "loc_check_inputs",
     "non_rust_gate",
     "real_harness_gate",
 )
@@ -16,7 +15,6 @@ load(
     "//tools/bazel:history_provider_sqlite_logical_boundary.bzl",
     "history_provider_sqlite_logical_boundary_checks",
 )
-load("//tools/bazel:loc_check_data.bzl", "LOC_CHECK_SOURCE_DATA")
 load("//tools/bazel:release_package_audit_data.bzl", "RELEASE_PACKAGE_AUDIT_PACKAGE_DATA")
 load("//tools/bazel:release_surface_tests.bzl", "release_surface_tests")
 load("//tools/bazel:root_build_settings.bzl", "root_build_settings")
@@ -43,8 +41,6 @@ java_binary(
     runtime_deps = ["@ctx_bazel_diff//jar"],
     tags = ["manual", "tool"],
 )
-
-loc_check_inputs(name = "loc_check_inputs")
 
 # These inputs belong to repository-policy, packaging, documentation, and real
 # harness actions. Rust compilation and Rust tests are deliberately absent:
@@ -145,7 +141,7 @@ filegroup(
     srcs = [
         "scripts/bazelw",
         "//tools/bazel:test_tiers.bzl",
-    ] + CARGO_WORKSPACE_PACKAGE_DATA + LOC_CHECK_SOURCE_DATA,
+    ] + CARGO_WORKSPACE_PACKAGE_DATA,
     visibility = ["//visibility:public"],
 )
 
@@ -368,7 +364,7 @@ py_test(
         "scripts/bazelw",
         "//tools/bazel:check-history-ingest-application-boundary.sh",
         "//tools/bazel:check-history-read-application-dependency-boundary.sh",
-    ] + CARGO_WORKSPACE_PACKAGE_DATA + LOC_CHECK_SOURCE_DATA,
+    ] + CARGO_WORKSPACE_PACKAGE_DATA,
     main = "//tools/bazel:check_history_application_contract_boundaries_test.py",
 )
 
@@ -985,7 +981,7 @@ sh_test(
         "BUILD.bazel",
         "scripts/bazelw",
         "scripts/check-rust-crate-size.py",
-    ] + CARGO_WORKSPACE_PACKAGE_DATA + LOC_CHECK_SOURCE_DATA,
+    ] + CARGO_WORKSPACE_PACKAGE_DATA,
     tags = [
         "build-graph",
         "exclusive",
@@ -1002,7 +998,7 @@ sh_test(
         "BUILD.bazel",
         "scripts/bazelw",
         "scripts/check-rust-crate-size.py",
-    ] + CARGO_WORKSPACE_PACKAGE_DATA + LOC_CHECK_SOURCE_DATA,
+    ] + CARGO_WORKSPACE_PACKAGE_DATA,
     tags = [
         "build-graph",
         "exclusive",
@@ -1018,7 +1014,7 @@ sh_test(
     data = [
         "BUILD.bazel",
         "scripts/bazelw",
-    ] + CARGO_WORKSPACE_PACKAGE_DATA + LOC_CHECK_SOURCE_DATA,
+    ] + CARGO_WORKSPACE_PACKAGE_DATA,
     tags = [
         "build-graph",
         "exclusive",
@@ -1035,7 +1031,7 @@ sh_test(
         "BUILD.bazel",
         "scripts/bazelw",
         "scripts/check-rust-crate-size.py",
-    ] + CARGO_WORKSPACE_PACKAGE_DATA + LOC_CHECK_SOURCE_DATA,
+    ] + CARGO_WORKSPACE_PACKAGE_DATA,
     tags = [
         "build-graph",
         "exclusive",
@@ -1051,7 +1047,7 @@ sh_test(
     data = [
         "BUILD.bazel",
         "scripts/bazelw",
-    ] + CARGO_WORKSPACE_PACKAGE_DATA + LOC_CHECK_SOURCE_DATA,
+    ] + CARGO_WORKSPACE_PACKAGE_DATA,
     tags = [
         "build-graph",
         "exclusive",

@@ -1,10 +1,7 @@
 load("@crates//:defs.bzl", "aliases", "all_crate_deps", "crate_edition")
 load("//tools/bazel:ctx_rust.bzl", "ctx_rust_test")
-load("//tools/bazel:gates.bzl", "loc_check_inputs")
 
 package(default_visibility = ["//visibility:public"])
-
-loc_check_inputs(name = "loc_check_inputs")
 
 exports_files([
     "BUILD.bazel",

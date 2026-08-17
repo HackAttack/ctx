@@ -1,7 +1,6 @@
 load("@crates//:defs.bzl", "aliases", "all_crate_deps", "crate_edition")
 load("@rules_rust//cargo:defs.bzl", "cargo_toml_env_vars")
 load("@rules_rust//rust:defs.bzl", "rust_library")
-load("//tools/bazel:gates.bzl", "loc_check_inputs")
 load(":test_targets.bzl", "ctx_cli_contract_test")
 
 package(default_visibility = ["//visibility:public"])
@@ -11,8 +10,6 @@ exports_files([
     "Cargo.toml",
     "test_targets.bzl",
 ])
-
-loc_check_inputs(name = "loc_check_inputs")
 
 filegroup(
     name = "cargo_package_data",

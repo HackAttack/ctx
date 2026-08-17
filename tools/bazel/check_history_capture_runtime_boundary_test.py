@@ -46,7 +46,6 @@ load("@crates//:defs.bzl", "aliases", "all_crate_deps", "crate_edition")
 load("@rules_rust//rust:defs.bzl", "rust_library")
 load("//:rust_sources.bzl", "RUST_PROD_SRC_EXCLUDES")
 load("//tools/bazel:ctx_rust.bzl", "ctx_rust_test")
-load("//tools/bazel:gates.bzl", "loc_check_inputs")
 
 RUNTIME_DEPS = [
     "//crates/ctx-history-capture-model:lib",
@@ -71,7 +70,6 @@ load("@crates//:defs.bzl", "aliases", "all_crate_deps", "crate_edition")
 load("@rules_rust//rust:defs.bzl", "rust_library")
 load("//:rust_sources.bzl", "RUST_PROD_SRC_EXCLUDES")
 load("//tools/bazel:ctx_rust.bzl", "ctx_rust_test")
-load("//tools/bazel:gates.bzl", "loc_check_inputs")
 
 JSONL_DEPS = [
     "//crates/ctx-history-capture-model:lib",
@@ -134,7 +132,6 @@ load("@crates//:defs.bzl", "aliases", "all_crate_deps", "crate_edition")
 load("@rules_rust//rust:defs.bzl", "rust_library")
 load("//:rust_sources.bzl", "RUST_PROD_SRC_EXCLUDES")
 load("//tools/bazel:ctx_rust.bzl", "ctx_rust_test")
-load("//tools/bazel:gates.bzl", "loc_check_inputs")
 
 NATIVE_JSONL_DEPS = [
     "//crates/ctx-history-capture-model:lib",

@@ -104,7 +104,6 @@ CANONICAL_LOAD_BINDINGS = {
     "@rules_rust//rust:defs.bzl": {"rust_library"},
     "//:rust_sources.bzl": {"RUST_PROD_SRC_EXCLUDES"},
     "//tools/bazel:ctx_rust.bzl": {"ctx_rust_test"},
-    "//tools/bazel:gates.bzl": {"loc_check_inputs"},
 }
 CANONICAL_SYMBOL_SOURCES = {
     symbol: source
@@ -119,7 +118,6 @@ ALLOWED_BAZEL_CALLS = {
     "filegroup",
     "glob",
     "load",
-    "loc_check_inputs",
     "package",
     "rust_library",
 }

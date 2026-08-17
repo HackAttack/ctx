@@ -2,12 +2,9 @@ load("@crates//:defs.bzl", "aliases", "all_crate_deps", "crate_deps", "crate_edi
 load("@rules_rust//cargo:defs.bzl", "cargo_toml_env_vars")
 load("//:rust_sources.bzl", "RUST_PROD_SRC_EXCLUDES")
 load("//tools/bazel:ctx_rust.bzl", "ctx_rust_binary", "ctx_rust_test")
-load("//tools/bazel:gates.bzl", "loc_check_inputs")
 load(":test_targets.bzl", "CTX_CLI_RUSTC_FLAGS", "ctx_cli_integration_test", "ctx_cli_test_data")
 
 package(default_visibility = ["//visibility:public"])
-
-loc_check_inputs(name = "loc_check_inputs")
 
 exports_files([
     "BUILD.bazel",

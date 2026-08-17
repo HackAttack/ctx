@@ -1,8 +1,5 @@
-load("//tools/bazel:gates.bzl", "loc_check_inputs")
 
 package(default_visibility = ["//visibility:public"])
-
-loc_check_inputs(name = "loc_check_inputs")
 
 constraint_setting(
     name = "windows_abi",

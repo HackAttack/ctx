@@ -4,7 +4,6 @@ load("@rules_shell//shell:sh_test.bzl", "sh_test")
 load("@rules_rust//rust:defs.bzl", "rust_library")
 load("//:rust_sources.bzl", "RUST_PROD_SRC_EXCLUDES")
 load("//tools/bazel:ctx_rust.bzl", "ctx_rust_test")
-load("//tools/bazel:gates.bzl", "loc_check_inputs")
 load(
     "//crates/ctx-history-capture:tests/mcp_attribution_suites.bzl",
     "mcp_attribution_suite_args",
@@ -12,8 +11,6 @@ load(
 )
 
 package(default_visibility = ["//visibility:public"])
-
-loc_check_inputs(name = "loc_check_inputs")
 
 filegroup(
     name = "cargo_package_data",
