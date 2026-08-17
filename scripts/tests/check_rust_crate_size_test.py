@@ -57,28 +57,6 @@ def measurement(count: int, name: str = "big", root: str = "crates/big") -> gate
     return gate.Measurement(package=package(name, root), cloc=count, files=1)
 
 
-def policy(
-    *,
-    ratchet: int = 25_000,
-    admission_sha: str = "a" * 40,
-    name: str = "big",
-    root: str = "crates/big",
-) -> dict[str, object]:
-    return {
-        "schema_version": 1,
-        "metric": gate.METRIC,
-        "hard_limit": gate.HARD_LIMIT,
-        "admission_sha": admission_sha,
-        "offenders": [
-            {
-                "package": name,
-                "manifest": f"{root}/Cargo.toml",
-                "ratchet": ratchet,
-            }
-        ],
-    }
-
-
 class PhysicalCensusTests(unittest.TestCase):
     def setUp(self) -> None:
         self.fixture = CheckoutFixture()
@@ -281,119 +259,35 @@ let lifetime: &'static str = "ok";
             gate.rust_cloc(b'let value = "unterminated')
 
 
-class PolicyTests(unittest.TestCase):
-    def test_bootstrap_requires_exact_current_offenders_and_counts(self) -> None:
-        candidate = policy()
-        entries = gate.validate_policy_transition(candidate, None, "a" * 40, [measurement(25_000)])
-        self.assertEqual(entries["big"]["ratchet"], 25_000)
+class LimitTests(unittest.TestCase):
+    def test_hard_limit_is_the_only_admission_threshold(self) -> None:
+        self.assertEqual(gate.measurement_failures([measurement(20_000)]), [])
+        self.assertEqual(
+            gate.measurement_failures(
+                [measurement(20_001, "new", "crates/new")]
+            ),
+            ["package=new count=20001 limit=20000"],
+        )
 
-        with self.assertRaisesRegex(gate.GateError, "exact current CLOC"):
-            gate.validate_policy_transition(candidate, None, "a" * 40, [measurement(24_999)])
-
-    def test_new_package_over_limit_is_rejected(self) -> None:
-        failures = gate.measurement_failures([measurement(20_001, "new", "crates/new")], {})
+    def test_all_over_limit_packages_are_reported_without_state(self) -> None:
+        failures = gate.measurement_failures(
+            [
+                measurement(20_002, "zeta", "crates/zeta"),
+                measurement(19_999, "small", "crates/small"),
+                measurement(20_001, "alpha", "crates/alpha"),
+            ]
+        )
         self.assertEqual(
             failures,
-            ["package=new count=20001 limit=20000 ratchet=none new offender forbidden"],
+            [
+                "package=alpha count=20001 limit=20000",
+                "package=zeta count=20002 limit=20000",
+            ],
         )
-
-    def test_growth_above_previous_ratchet_is_rejected(self) -> None:
-        failures = gate.measurement_failures([measurement(25_001)], gate.parse_policy(policy(), "candidate"))
-        self.assertIn("count=25001", failures[0])
-        self.assertIn("ratchet=25000", failures[0])
-        self.assertIn("growth forbidden", failures[0])
-
-    def test_two_revision_ratchet_raise_is_rejected(self) -> None:
-        previous = policy(ratchet=24_000)
-        candidate = policy(ratchet=24_001)
-
-        with self.assertRaisesRegex(gate.GateError, r"ratchet raise forbidden.*previous_ratchet=24000"):
-            gate.validate_policy_transition(candidate, previous, "b" * 40, [measurement(24_001)])
-
-    def test_retirement_is_allowed_only_at_hard_limit_or_after_removal(self) -> None:
-        previous = policy()
-        candidate = {**policy(), "offenders": []}
-        self.assertEqual(
-            gate.validate_policy_transition(candidate, previous, "b" * 40, [measurement(20_000)]),
-            {},
-        )
-        self.assertEqual(gate.validate_policy_transition(candidate, previous, "b" * 40, []), {})
-
-        with self.assertRaisesRegex(gate.GateError, r"entry removal forbidden.*count=20001"):
-            gate.validate_policy_transition(candidate, previous, "b" * 40, [measurement(20_001)])
-
-    def test_updater_removes_retired_entries(self) -> None:
-        previous = policy()
-        candidate = policy()
-        updated = gate.updated_policy(candidate, previous, "b" * 40, [measurement(20_000)])
-        self.assertEqual(updated["offenders"], [])
-        updated = gate.updated_policy(candidate, previous, "b" * 40, [])
-        self.assertEqual(updated["offenders"], [])
-
-    def test_manifest_rename_after_split_has_no_false_tombstone(self) -> None:
-        previous = policy()
-        candidate = policy()
-        split = measurement(19_000, root="crates/split-big")
-
-        updated = gate.updated_policy(candidate, previous, "b" * 40, [split])
-
-        self.assertEqual(updated["offenders"], [])
-        self.assertEqual(gate.measurement_failures([split], {}), [])
-
-    def test_retired_offender_cannot_be_resurrected(self) -> None:
-        previous = {**policy(), "offenders": []}
-        candidate = {**policy(), "offenders": []}
-        entries = gate.validate_policy_transition(candidate, previous, "b" * 40, [measurement(20_001)])
-        failures = gate.measurement_failures([measurement(20_001)], entries)
-        self.assertIn("new offender forbidden", failures[0])
-
-        with self.assertRaisesRegex(gate.GateError, "new offender entries are forbidden"):
-            gate.validate_policy_transition(policy(ratchet=20_001), previous, "b" * 40, [measurement(20_001)])
-
-    def test_retired_entry_must_be_removed(self) -> None:
-        entries = gate.parse_policy(policy(), "candidate")
-        failures = gate.measurement_failures([measurement(19_000)], entries)
-        self.assertIn("retired offender entry must be removed", failures[0])
-        self.assertIn("retired offender entry must be removed", gate.measurement_failures([], entries)[0])
-
-    def test_stale_ratchet_reports_atomic_update_command_once(self) -> None:
-        entries = gate.parse_policy(policy(), "candidate")
-        message = gate.format_failures(gate.measurement_failures([measurement(24_000)], entries))
-
-        self.assertIn("package=big count=24000 limit=20000 ratchet=25000", message)
-        self.assertIn("stale ratchet after shrink", message)
-        self.assertEqual(message.count(gate.UPDATE_COMMAND), 1)
-
-    def test_atomic_update_shrinks_but_cannot_raise_accepted_ratchet(self) -> None:
-        previous = policy()
-        candidate = policy()
-        updated = gate.updated_policy(candidate, previous, "b" * 40, [measurement(24_000)])
-        self.assertEqual(updated["offenders"][0]["ratchet"], 24_000)
-
-        with self.assertRaisesRegex(gate.GateError, "ratchet raise forbidden"):
-            gate.updated_policy(candidate, previous, "b" * 40, [measurement(25_001)])
-
-    def test_extra_or_malformed_policy_fields_are_rejected(self) -> None:
-        extra = policy()
-        extra["unexpected"] = True
-        with self.assertRaisesRegex(gate.GateError, "schema is unsupported"):
-            gate.parse_policy(extra, "candidate")
-
-        malformed = policy()
-        malformed["offenders"][0]["reason"] = "manual exception"
-        with self.assertRaisesRegex(gate.GateError, "offender entry is malformed"):
-            gate.parse_policy(malformed, "candidate")
-
-    def test_checked_policy_is_minimal_without_offenders(self) -> None:
-        value = json.loads((SCRIPT.parent / "check-rust-crate-size-policy-v1.json").read_text())
-        entries = gate.parse_policy(value, "checked")
-        self.assertEqual(
-            list(entries),
-            [],
-        )
-        self.assertEqual(value["hard_limit"], 20_000)
-        self.assertEqual(value["metric"], gate.METRIC)
-        self.assertTrue(all(set(entry) == {"package", "manifest", "ratchet"} for entry in value["offenders"]))
+        message = gate.format_failures(failures)
+        self.assertNotIn("ratchet", message)
+        self.assertNotIn("ledger", message)
+        self.assertNotIn("admission_sha", message)
 
 
 class TemporaryGitCheckout:
@@ -432,79 +326,21 @@ class TemporaryGitCheckout:
         return self.run("rev-parse", "HEAD")
 
     def base_commit(self) -> str:
-        self.write(gate.POLICY_PATH, gate.canonical_json(policy()).decode())
         self.write("marker", "base\n")
         return self.commit("base")
 
 
-class GitTransitionTests(unittest.TestCase):
+class ExactCandidateTests(unittest.TestCase):
     def setUp(self) -> None:
         self.checkout = TemporaryGitCheckout()
 
     def tearDown(self) -> None:
         self.checkout.close()
 
-    def test_pr_head_reads_origin_main_policy(self) -> None:
-        base = self.checkout.base_commit()
-        self.checkout.run("update-ref", "refs/remotes/origin/main", base)
-        self.checkout.run("switch", "-q", "-c", "candidate")
-        self.checkout.write("marker", "candidate\n")
-        self.checkout.commit("candidate")
+    def test_exact_candidate_accepts_current_clean_head(self) -> None:
+        candidate = self.checkout.base_commit()
 
-        selected, previous = gate.previous_accepted_policy(self.checkout.root)
-
-        self.assertEqual(selected, base)
-        self.assertEqual(previous, policy())
-
-    def test_post_merge_head_equal_origin_reads_first_parent_policy(self) -> None:
-        base = self.checkout.base_commit()
-        self.checkout.run("switch", "-q", "-c", "pr")
-        self.checkout.write(gate.POLICY_PATH, gate.canonical_json(policy(ratchet=24_000)).decode())
-        self.checkout.commit("candidate")
-        self.checkout.run("switch", "-q", "main")
-        self.checkout.run("merge", "-q", "--no-ff", "pr", "-m", "merge result")
-        merge = self.checkout.run("rev-parse", "HEAD")
-        self.checkout.run("update-ref", "refs/remotes/origin/main", merge)
-
-        selected, previous = gate.previous_accepted_policy(self.checkout.root)
-
-        self.assertEqual(selected, base)
-        self.assertEqual(previous, policy())
-
-    def test_origin_main_advanced_beyond_pr_base_fails_closed(self) -> None:
-        base = self.checkout.base_commit()
-        self.checkout.run("switch", "-q", "-c", "candidate")
-        self.checkout.write("candidate", "candidate\n")
-        self.checkout.commit("candidate")
-        self.checkout.run("switch", "-q", "main")
-        self.checkout.write("main", "advanced\n")
-        advanced = self.checkout.commit("main advanced")
-        self.checkout.run("update-ref", "refs/remotes/origin/main", advanced)
-        self.checkout.run("switch", "-q", "candidate")
-
-        with self.assertRaisesRegex(gate.GateError, "origin/main advanced beyond candidate base"):
-            gate.previous_accepted_policy(self.checkout.root)
-
-        self.assertNotEqual(base, advanced)
-
-    def test_exact_candidate_uses_its_parent_after_origin_main_advances(self) -> None:
-        base = self.checkout.base_commit()
-        self.checkout.run("switch", "-q", "-c", "candidate")
-        self.checkout.write("candidate", "candidate\n")
-        candidate = self.checkout.commit("candidate")
-        self.checkout.run("switch", "-q", "main")
-        self.checkout.write("main", "advanced\n")
-        advanced = self.checkout.commit("main advanced")
-        self.checkout.run("update-ref", "refs/remotes/origin/main", advanced)
-        self.checkout.run("switch", "-q", "candidate")
-
-        selected, previous = gate.previous_accepted_policy(
-            self.checkout.root, candidate
-        )
-
-        self.assertEqual(selected, base)
-        self.assertEqual(previous, policy())
-        self.assertNotEqual(candidate, advanced)
+        gate.verify_exact_candidate(self.checkout.root, candidate)
 
     def test_exact_candidate_rejects_a_different_checked_out_commit(self) -> None:
         base = self.checkout.base_commit()
@@ -512,7 +348,7 @@ class GitTransitionTests(unittest.TestCase):
         with self.assertRaisesRegex(
             gate.GateError, "exact candidate commit does not match checked-out HEAD"
         ):
-            gate.previous_accepted_policy(self.checkout.root, "b" * 40)
+            gate.verify_exact_candidate(self.checkout.root, "b" * 40)
 
         self.assertEqual(self.checkout.run("rev-parse", "HEAD"), base)
 
@@ -521,25 +357,16 @@ class GitTransitionTests(unittest.TestCase):
         self.checkout.write("dirty", "not committed\n")
 
         with self.assertRaisesRegex(gate.GateError, "exact candidate checkout is dirty"):
-            gate.previous_accepted_policy(self.checkout.root, candidate)
+            gate.verify_exact_candidate(self.checkout.root, candidate)
 
-    def test_stale_origin_main_relative_to_local_main_fails_closed(self) -> None:
-        base = self.checkout.base_commit()
-        self.checkout.run("update-ref", "refs/remotes/origin/main", base)
-        self.checkout.write("main", "advanced\n")
-        self.checkout.commit("local main advanced")
-        self.checkout.run("switch", "-q", "-c", "candidate")
-        self.checkout.write("candidate", "candidate\n")
-        self.checkout.commit("candidate")
-
-        with self.assertRaisesRegex(gate.GateError, "origin/main is stale relative to local main"):
-            gate.previous_accepted_policy(self.checkout.root)
-
-    def test_missing_origin_main_fails_closed(self) -> None:
+    def test_exact_candidate_rejects_zero_or_malformed_identity(self) -> None:
         self.checkout.base_commit()
-
-        with self.assertRaisesRegex(gate.GateError, "refs/remotes/origin/main"):
-            gate.previous_accepted_policy(self.checkout.root)
+        for identity in ("0" * 40, "A" * 40, "abc"):
+            with self.subTest(identity=identity):
+                with self.assertRaisesRegex(
+                    gate.GateError, "nonzero lowercase 40-hex"
+                ):
+                    gate.verify_exact_candidate(self.checkout.root, identity)
 
 
 class PythonCompatibilityTests(unittest.TestCase):

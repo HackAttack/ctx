@@ -294,7 +294,6 @@ py_test(
         "scripts/check-rust-crate-size.py",
         "scripts/tests/check_rust_crate_size_test.py",
     ],
-    data = ["scripts/check-rust-crate-size-policy-v1.json"],
     deps = ["@ctx_tomli//:lib"],
     main = "scripts/tests/check_rust_crate_size_test.py",
 )

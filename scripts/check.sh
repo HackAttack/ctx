@@ -27,7 +27,7 @@ run_rust_crate_size_gate() {
     scripts/bazelw run //:rust_crate_size_preflight -- \
       --exact-candidate "${candidate_commit}" "${repo_root}"
   else
-    printf '==> local physical Rust crate-size integration preflight\n'
+    printf '==> local physical Rust crate-size live-worktree preflight\n'
     scripts/bazelw run //:rust_crate_size_preflight -- --preflight "${repo_root}"
   fi
 }
@@ -44,8 +44,10 @@ Modes:
   release    nightly qualification for a release candidate
 
 The physical Rust crate-size gate runs locally before each named mode. CI and
-nightly enforce integration freshness; release validates the exact checked-out
-candidate without consulting a later-moving origin/main.
+nightly count the live worktree directly; release additionally verifies the
+exact clean checked-out candidate. The gate has one fixed limit and no
+checked-in size inventory, warning tier, grandfather ledger, or moving-base
+comparison.
 Cargo is not invoked by these modes; Bazel is the build and test authority.
 --force-rerun disables test-result reuse without deleting compilation caches.
 USAGE
