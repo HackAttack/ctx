@@ -146,7 +146,7 @@ const COMPANION_ROUTE: TestOwner = TestOwner::behavioral(
     &["paid_family_arguments", "assert_eq"],
 );
 const CORE_CAPABILITY_RESPONSE: TestOwner = TestOwner::behavioral(
-    "src/core_capability.rs::capability_response_is_one_exact_flushed_json_frame",
+    "src/core_capability/tests.rs::capability_response_is_one_exact_flushed_json_frame",
     &["src/core_capability.rs"],
     &["write_response_frame", "assert_eq"],
 );
@@ -217,12 +217,6 @@ const UI_MACHINE_BYTES: TestOwner = TestOwner::behavioral(
     &[UI_WRITER],
     &["write_stdout_bytes", "write_stderr_bytes", "assert_eq"],
 );
-const CORE_CAPABILITY_OUTPUT: TestOwner = TestOwner::behavioral(
-    "src/core_capability.rs::canonical_response_is_bounded_machine_json",
-    &["src/core_capability.rs"],
-    &["canonical", "MAX_RESPONSE_BYTES", "from_slice", "assert_eq"],
-);
-
 pub(super) const ALLOWLIST: &[AllowEntry] = &[
     allow!(
         CLI_BUILD,
