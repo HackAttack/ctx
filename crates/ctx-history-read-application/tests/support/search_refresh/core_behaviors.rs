@@ -507,8 +507,8 @@ fn assert_automatic_codex_append_after_targeted_import(
     let temp = tempdir();
     let codex_root = temp.path().join(".codex");
     let sessions = codex_root.join(session_tree);
-    let primary_oracle = (session_tree == "archived_sessions")
-        .then_some("primarysessionsretentionsentinel");
+    let primary_oracle =
+        (session_tree == "archived_sessions").then_some("primarysessionsretentionsentinel");
     let source = sessions
         .join("2026")
         .join("07")
@@ -517,11 +517,7 @@ fn assert_automatic_codex_append_after_targeted_import(
     write_codex_session(
         &source,
         native_session_id,
-        &[(
-            "2026-07-29T12:00:00Z",
-            "user",
-            initial_oracle,
-        )],
+        &[("2026-07-29T12:00:00Z", "user", initial_oracle)],
     );
     if let Some(primary_oracle) = primary_oracle {
         let primary_source = codex_root

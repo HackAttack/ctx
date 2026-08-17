@@ -155,8 +155,7 @@ mod tests {
             .unwrap();
 
         let archived = upsert_explicit_source(&data_root, &archived_source).unwrap();
-        let unrelated =
-            upsert_explicit_source(&data_root, &custom_source(unrelated_path)).unwrap();
+        let unrelated = upsert_explicit_source(&data_root, &custom_source(unrelated_path)).unwrap();
         let archived_route =
             ctx_history_index::SourceRouteIdentity::from_sha256("11".repeat(32)).unwrap();
         let unrelated_route =
@@ -189,10 +188,7 @@ mod tests {
             ],
             issues: Vec::new(),
         };
-        retained.prepare_discovery_report(
-            &mut requested_report,
-            &retained_secondary_sources,
-        );
+        retained.prepare_discovery_report(&mut requested_report, &retained_secondary_sources);
         assert_eq!(
             requested_report
                 .sources
