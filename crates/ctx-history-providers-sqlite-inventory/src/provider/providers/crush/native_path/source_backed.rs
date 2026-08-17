@@ -5,7 +5,7 @@
 //! and bounded complete-record projection.
 
 use std::{
-    collections::{HashMap, HashSet},
+    collections::HashSet,
     ffi::OsString,
     path::{Path, PathBuf},
     sync::Arc,

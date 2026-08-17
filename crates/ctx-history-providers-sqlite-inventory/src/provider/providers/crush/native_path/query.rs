@@ -9,7 +9,7 @@ use crate::{
 
 use super::super::{
     capture::CRUSH_SQLITE_VALUE_OVERHEAD_BYTES,
-    projection::{decode_message_child, decode_session_at, optional_text},
+    projection::{decode_message_child, decode_session_at},
     source::{
         message_projection, message_session_join, optional_session_column, retained_length_expr,
         session_projection,
@@ -179,38 +179,6 @@ pub(super) fn load_message_batch(
         loaded.insert(rowid, decoded);
     }
     Ok(loaded)
-}
-
-pub(super) fn load_session_parents(
-    connection: &Connection,
-    columns: &std::collections::BTreeSet<String>,
-) -> Result<HashMap<String, Option<String>>> {
-    const PAGE: usize = 256;
-    let parent = optional_session_column(columns, "parent_session_id");
-    let mut after = 0_i64;
-    let mut parents = HashMap::new();
-    loop {
-        let mut statement = connection.prepare(&format!(
-            "select s.rowid, s.id, {parent} from sessions s \
-             where s.rowid > ?1 order by s.rowid limit {PAGE}"
-        ))?;
-        let page = statement
-            .query_map([after], |row| {
-                Ok((row.get::<_, i64>(0)?, raw_sqlite_values_offset(row, 1, 2)?))
-            })?
-            .collect::<rusqlite::Result<Vec<_>>>()?;
-        if page.is_empty() {
-            break;
-        }
-        for (rowid, values) in page {
-            after = rowid;
-            let NativeSqliteValue::Text(id) = &values[0] else {
-                continue;
-            };
-            parents.insert(id.clone(), optional_text(&values, 1)?);
-        }
-    }
-    Ok(parents)
 }
 
 fn raw_sqlite_values_offset(

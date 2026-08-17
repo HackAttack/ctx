@@ -17,8 +17,6 @@ use super::{
     source::session_columns,
 };
 
-const CRUSH_NATIVE_MAX_EVENT_TOUCHES: usize = 3_000;
-
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct CrushNativeFrontier {
     after_rowid: Option<i64>,

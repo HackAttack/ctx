@@ -47,8 +47,21 @@ fn projection_keeps_complete_results_and_exact_statuses() -> Result<()> {
         assert_eq!(projection.complete_text.as_deref(), Some(body.as_str()));
         assert_eq!(output.status.as_deref(), status);
         assert_eq!(output.call_id.as_deref(), Some("call-1"));
-        assert_eq!(output.tool_name.as_deref(), Some("shell"));
     }
+
+    let ambiguous_tool_name = crush_message(json!([
+        {"type": "tool_result", "data": {
+            "content": "first body", "tool_call_id": "call-1", "name": "shell"
+        }},
+        {"type": "tool_result", "data": {
+            "content": "second body", "tool_call_id": "call-1", "name": "editor"
+        }}
+    ]));
+    let projection = match project_message(&ambiguous_tool_name, Some(&crush_session()))? {
+        CrushRecordProjection::Message(projection) => projection,
+        CrushRecordProjection::Rejection => panic!("complete tool results were rejected"),
+    };
+    assert!(projection.output.unwrap().call_id.is_none());
 
     let status_only = crush_message(json!([{
         "type": "tool_result",
