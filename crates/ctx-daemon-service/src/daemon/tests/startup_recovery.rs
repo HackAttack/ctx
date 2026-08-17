@@ -51,7 +51,6 @@ fn interrupted_queue_is_recovered_before_endpoint_accepts_a_new_admission() -> R
                 query_service: &mut query_service,
                 refresh_service: &mut refresh_service,
                 state: &mut reload,
-                finite_core_worker_admitted: None,
             },
             &wakeup,
             &lifecycle,

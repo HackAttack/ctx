@@ -1,9 +1,6 @@
 use std::{
     path::Path,
-    sync::{
-        atomic::{AtomicBool, Ordering},
-        Arc,
-    },
+    sync::Arc,
     time::{Duration as StdDuration, Instant},
 };
 
@@ -341,40 +338,30 @@ where
     let upgrade_restart_trigger = args
         .trigger_command
         .unwrap_or(DaemonTriggerCommandArg::Search);
-    let installation_daemon_lease = if finite_core_worker {
-        None
-    } else {
-        match ports.installation.acquire(
-            data_root,
-            upgrade_restart_trigger,
-            args.loop_interval_seconds,
-            ports
-                .installation
-                .current_process_owns_upgrade_handoff(data_root),
-        ) {
-            Ok(Some(lease)) => Some(lease),
-            Ok(None) => {
-                drop(lock);
-                return Ok(());
-            }
-            Err(error) => {
-                publish_daemon_fatal_status_while_owned(
-                    &lock,
-                    data_root,
-                    &args,
-                    started_at_ms,
-                    &error,
-                );
-                drop(lock);
-                return Err(error);
-            }
+    let installation_daemon_lease = match ports.installation.acquire(
+        data_root,
+        upgrade_restart_trigger,
+        args.loop_interval_seconds,
+        ports
+            .installation
+            .current_process_owns_upgrade_handoff(data_root),
+        !finite_core_worker,
+    ) {
+        Ok(Some(lease)) => Some(lease),
+        Ok(None) => {
+            drop(lock);
+            return Ok(());
+        }
+        Err(error) => {
+            publish_daemon_fatal_status_while_owned(&lock, data_root, &args, started_at_ms, &error);
+            drop(lock);
+            return Err(error);
         }
     };
     let mut prepared_auto_upgrade = None;
     let mut auto_upgrade_handoff = None;
     let wakeup = Arc::new(DaemonWakeup::default());
     let lifecycle_state = Arc::new(DaemonLifecycleState::starting());
-    let finite_core_worker_admitted = Arc::new(AtomicBool::new(false));
     if args.handle_process_signals {
         install_daemon_process_signal_handler(Arc::clone(&wakeup), Arc::clone(&lifecycle_state))?;
     }
@@ -416,8 +403,6 @@ where
                 query_service: &mut query_service,
                 refresh_service: &mut refresh_service,
                 state: &mut config_reload,
-                finite_core_worker_admitted: finite_core_worker
-                    .then_some(&finite_core_worker_admitted),
             },
             &wakeup,
             &lifecycle_state,
@@ -533,6 +518,8 @@ where
         // so choosing the borrowed scheduler input does not refcount-clone on
         // every iteration.
         let source_refresh_coordinator = runtime.source_refresh_coordinator.clone();
+        let mut finite_core_worker_exit =
+            finite_core_worker.then(|| FiniteCoreWorkerExit::new(refresh_service.as_ref()));
         loop {
             // Hermetic callers may remove their complete temporary data root
             // during shutdown. Do not recreate the deleted root merely to
@@ -551,8 +538,6 @@ where
                     query_service: &mut query_service,
                     refresh_service: &mut refresh_service,
                     state: &mut config_reload,
-                    finite_core_worker_admitted: finite_core_worker
-                        .then_some(&finite_core_worker_admitted),
                 },
                 &wakeup,
                 &lifecycle_state,
@@ -652,6 +637,16 @@ where
             let source_refresh = refresh_service
                 .as_ref()
                 .and(daemon_scheduler_source_refresh(&source_refresh_coordinator));
+            if finite_core_worker_exit.as_mut().is_some_and(|exit| {
+                exit.begin_stopping(
+                    source_refresh,
+                    refresh_service.as_ref(),
+                    &lifecycle_state,
+                    Instant::now(),
+                )
+            }) {
+                break;
+            }
             let mut iteration = run_daemon_scheduler_cycle_with_activity(
                 &args,
                 data_root,
@@ -693,25 +688,34 @@ where
             if finite_core_worker {
                 let pending_core_refresh = source_refresh
                     .is_some_and(|source_refresh| source_refresh.has_pending_request());
-                if finite_core_worker_admitted.load(Ordering::Acquire)
-                    && !pending_core_refresh
-                    && refresh_service
-                        .as_ref()
-                        .is_some_and(|service| service.activity.begin_stopping_if_idle())
-                {
+                if finite_core_worker_exit.as_mut().is_some_and(|exit| {
+                    exit.begin_stopping(
+                        source_refresh,
+                        refresh_service.as_ref(),
+                        &lifecycle_state,
+                        Instant::now(),
+                    )
+                }) {
                     break;
                 }
                 if continue_immediately || (pending_core_refresh && runtime.history_retry.ready()) {
                     continue;
                 }
-                let wake = if pending_core_refresh {
-                    runtime.history_retry.retry_after_ms().map_or_else(
-                        || wakeup.wait_for_signal(),
-                        |retry_after_ms| wakeup.wait(StdDuration::from_millis(retry_after_ms)),
-                    )
+                let now = Instant::now();
+                let exit_wait = finite_core_worker_exit
+                    .as_ref()
+                    .map_or(StdDuration::ZERO, |exit| exit.wait_duration(now));
+                let wait_for = if pending_core_refresh {
+                    runtime
+                        .history_retry
+                        .retry_after_ms()
+                        .map_or(exit_wait, |retry_after_ms| {
+                            exit_wait.min(StdDuration::from_millis(retry_after_ms))
+                        })
                 } else {
-                    wakeup.wait_for_signal()
+                    exit_wait
                 };
+                let wake = wakeup.wait(wait_for);
                 if wake.shutdown {
                     break;
                 }
@@ -884,6 +888,10 @@ where
     };
     let owned_shutdown_result = (|| -> Result<()> {
         if let Some(installation_daemon_lease) = installation_daemon_lease {
+            if finite_core_worker {
+                drop(installation_daemon_lease);
+                return Ok(());
+            }
             let active_installation_attempt =
                 ctx_upgrade_engine::active_installation_upgrade_attempt_id()?;
             let upgrade_attempt_id = prepared_auto_upgrade

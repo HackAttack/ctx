@@ -20,7 +20,6 @@ const SOURCE_REFRESH_RECOVERY_ROUTE_LIMIT: usize = 256;
 pub(crate) struct WireResponse {
     value: Value,
     response_barrier: Option<AdmissionResponseBarrier>,
-    admitted: bool,
 }
 
 pub(crate) fn handle_ipc_request(
@@ -36,7 +35,6 @@ pub(crate) fn handle_ipc_request(
             Ok(Some(WireResponse {
                 value: render_status(&status),
                 response_barrier,
-                admitted: true,
             }))
         }
         Some(SOURCE_REFRESH_STATUS_OP) => {
@@ -46,7 +44,6 @@ pub(crate) fn handle_ipc_request(
                 .filter(|request_id| !request_id.is_empty())
                 .ok_or_else(|| anyhow!("daemon source refresh request ID is missing"))?;
             let status = engine.status(request_id);
-            let admitted = status.is_some();
             let value = status
                 .as_ref()
                 .map(render_status)
@@ -54,11 +51,6 @@ pub(crate) fn handle_ipc_request(
             Ok(Some(WireResponse {
                 value,
                 response_barrier: None,
-                // A recovered worker may exist only to serve authoritative
-                // observation of a request admitted by its predecessor. An
-                // unknown probe must leave it alive for caller-authorized
-                // re-admission under the stable request ID.
-                admitted,
             }))
         }
         _ => Ok(None),
@@ -66,8 +58,8 @@ pub(crate) fn handle_ipc_request(
 }
 
 impl WireResponse {
-    pub(crate) fn into_parts(self) -> (Value, Option<AdmissionResponseBarrier>, bool) {
-        (self.value, self.response_barrier, self.admitted)
+    pub(crate) fn into_parts(self) -> (Value, Option<AdmissionResponseBarrier>) {
+        (self.value, self.response_barrier)
     }
 }
 
@@ -93,7 +85,6 @@ pub(crate) fn finish_wire_response_for_test(
     let WireResponse {
         value,
         response_barrier,
-        admitted: _,
     } = response;
     finish_source_refresh_response(response_barrier, engine, signal_scheduler);
     value
@@ -111,7 +102,6 @@ pub(crate) fn handle_ipc_request_for_test(
     let WireResponse {
         value,
         response_barrier,
-        admitted: _,
     } = response;
     if let Some(barrier) = response_barrier {
         barrier.release(engine);
@@ -310,7 +300,6 @@ mod tests {
         )
         .unwrap()
         .expect("source refresh response");
-        assert!(response.admitted);
         let job = crate::paths_status::read_daemon_job_status(
             &crate::paths_status::daemon_source_backed_refresh_job_path(temp.path()),
         )
@@ -322,53 +311,6 @@ mod tests {
         assert_eq!(job["daemon_mode"], "source-refresh-only");
         assert_eq!(job["trigger"], "search");
         assert_eq!(job["trigger_provenance"], "autostart");
-    }
-
-    #[test]
-    fn status_probe_arms_finite_exit_only_for_a_known_request() {
-        let temp = tempfile::tempdir().unwrap();
-        let engine = super::super::refresh_engine(&crate::test_support::SOURCE_REFRESH_CONFIG);
-        let request_id = "019fcaaa-0000-7000-8000-0000000002b2";
-
-        let unknown = handle_ipc_request(
-            &engine,
-            temp.path(),
-            &json!({
-                "op": SOURCE_REFRESH_STATUS_OP,
-                "request_id": request_id,
-            }),
-        )
-        .unwrap()
-        .expect("unknown status response");
-        assert_eq!(unknown.value["request_state"], "request_unknown");
-        assert!(!unknown.admitted);
-
-        let submission = handle_ipc_request(
-            &engine,
-            temp.path(),
-            &json!({
-                "op": SOURCE_REFRESH_REQUEST_OP,
-                "request_id": request_id,
-                "mode": "wait",
-                "operation": "refresh",
-            }),
-        )
-        .unwrap()
-        .expect("source refresh submission");
-        assert!(submission.admitted);
-
-        let known = handle_ipc_request(
-            &engine,
-            temp.path(),
-            &json!({
-                "op": SOURCE_REFRESH_STATUS_OP,
-                "request_id": request_id,
-            }),
-        )
-        .unwrap()
-        .expect("known status response");
-        assert_ne!(known.value["request_state"], "request_unknown");
-        assert!(known.admitted);
     }
 
     #[test]

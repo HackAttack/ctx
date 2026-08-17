@@ -179,6 +179,7 @@ pub trait DaemonInstallationPort {
         trigger: DaemonTrigger,
         loop_interval_seconds: Option<u64>,
         allow_active_upgrade: bool,
+        persistent: bool,
     ) -> Result<Option<Self::Lease>>;
     fn resume_completed(&self, data_root: &Path) -> Result<()>;
     fn acknowledge_restart_requests(&self, data_root: &Path);
@@ -361,6 +362,7 @@ mod tests {
             _trigger: DaemonTrigger,
             _loop_interval_seconds: Option<u64>,
             _allow_active_upgrade: bool,
+            _persistent: bool,
         ) -> Result<Option<Self::Lease>> {
             Ok(Some(Lease(Arc::clone(&self.0))))
         }
@@ -375,7 +377,7 @@ mod tests {
         let acknowledged = Arc::new(AtomicBool::new(false));
         let installation = Installation(Arc::clone(&acknowledged));
         let lease = installation
-            .acquire(Path::new("data"), DaemonTrigger::Search, None, false)
+            .acquire(Path::new("data"), DaemonTrigger::Search, None, false, true)
             .unwrap()
             .unwrap();
 

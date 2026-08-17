@@ -3,7 +3,7 @@
 
 use std::{
     collections::BTreeSet,
-    io::{Read as _, Write as _},
+    io::Read as _,
     path::{Component, Path, PathBuf},
     process::ExitCode,
 };
@@ -121,10 +121,14 @@ fn run() -> Result<()> {
     if bytes.len() > MAX_RESPONSE_BYTES {
         return Err(anyhow!("response exceeds bound"));
     }
-    let mut stdout = std::io::stdout().lock();
-    stdout.write_all(&bytes)?;
-    stdout.write_all(b"\n")?;
-    stdout.flush()?;
+    write_response_frame(std::io::stdout().lock(), &bytes)?;
+    Ok(())
+}
+
+fn write_response_frame(mut writer: impl std::io::Write, bytes: &[u8]) -> Result<()> {
+    writer.write_all(bytes)?;
+    writer.write_all(b"\n")?;
+    writer.flush()?;
     Ok(())
 }
 

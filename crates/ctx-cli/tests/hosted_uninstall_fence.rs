@@ -306,6 +306,231 @@ fn supervisor_waiter_rechecks_uninstall_fence_after_installation_lock() {
 }
 
 #[test]
+fn prepare_uninstall_waits_for_indexing_control_before_disabling_and_cleanup() {
+    let temp = tempdir();
+    let supervisor_stub_bin = install_supervisor_command_stub(temp.path());
+    let install = copied_ctx_binary(&temp);
+    let marker = install.with_file_name(format!(
+        "{}.install.json",
+        install.file_name().unwrap().to_string_lossy()
+    ));
+    fs::write(
+        &marker,
+        serde_json::to_vec_pretty(&json!({
+            "schema_version": 1,
+            "manager": "ctx-hosted-installer",
+            "install_attempt_id": "ia_indexing_control_uninstall_race",
+            "install_path": install,
+            "platform": platform_key(),
+            "channel": "stable",
+            "version": "1.0.0",
+            "sha256": sha256(&install),
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+    fs::set_permissions(&marker, fs::Permissions::from_mode(0o600)).unwrap();
+
+    let requested_root = temp.path().join("requested-indexing-race-root");
+    let mut initial = isolated_command(&install, temp.path());
+    initial
+        .env("PATH", &supervisor_stub_bin)
+        .arg("--data-root")
+        .arg(&requested_root)
+        .args(["daemon", "disable", "--format=json"]);
+    assert_eq!(successful_json(initial)["daemon_enabled"], false);
+
+    let gate = requested_root.join(".block-daemon-automatic-indexing-after-config-for-test");
+    let blocked = requested_root.join(".daemon-automatic-indexing-blocked-after-config-for-test");
+    fs::write(&gate, b"block\n").unwrap();
+    let mut enable = isolated_command(&install, temp.path());
+    enable
+        .env("PATH", &supervisor_stub_bin)
+        .arg("--data-root")
+        .arg(&requested_root)
+        .args(["daemon", "enable", "--format=json"])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    let mut enable = enable.spawn().expect("start blocked indexing command");
+    wait_for_marker(&mut enable, &blocked, Duration::from_secs(15));
+
+    let mut fence = isolated_command(&install, temp.path());
+    fence.args([
+        "upgrade",
+        "--hosted-transaction",
+        "uninstall-prepare",
+        "--install-path",
+        install.to_str().unwrap(),
+        "--attempt-id",
+        "ia_indexing_control_uninstall_race",
+    ]);
+    assert_eq!(successful_json(fence)["daemon_admission_fenced"], true);
+
+    let mut teardown = isolated_command(&install, temp.path());
+    teardown
+        .env("PATH", &supervisor_stub_bin)
+        .arg("--data-root")
+        .arg(&requested_root)
+        .args(["daemon", "disable", "--prepare-uninstall", "--format=json"])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    let mut teardown = teardown.spawn().expect("start prepare-uninstall waiter");
+    thread::sleep(Duration::from_millis(250));
+    assert!(
+        teardown.try_wait().unwrap().is_none(),
+        "prepare-uninstall bypassed indexing-control ownership"
+    );
+    let in_flight_config = fs::read_to_string(requested_root.join("config.toml")).unwrap();
+    assert!(
+        in_flight_config.contains("mode = \"automatic\""),
+        "prepare-uninstall changed indexing before acquiring control: {in_flight_config}"
+    );
+
+    fs::remove_file(&gate).unwrap();
+    let enable_output = enable
+        .wait_with_output()
+        .expect("finish fenced indexing command");
+    assert!(!enable_output.status.success());
+    assert!(
+        String::from_utf8_lossy(&enable_output.stderr).contains("hosted_uninstall_active"),
+        "unexpected indexing failure: {}",
+        String::from_utf8_lossy(&enable_output.stderr)
+    );
+
+    let teardown_output = teardown
+        .wait_with_output()
+        .expect("finish serialized prepare-uninstall");
+    assert!(
+        teardown_output.status.success(),
+        "prepare-uninstall failed: {}",
+        String::from_utf8_lossy(&teardown_output.stderr)
+    );
+    let proof: Value = serde_json::from_slice(&teardown_output.stdout).unwrap();
+    assert_eq!(proof["coordination_state_removed"], true, "{proof:#}");
+    for root in [&requested_root, &temp.path().join("canonical-root")] {
+        assert!(
+            !root.join("daemon/lifecycle-control.lock").exists(),
+            "successful uninstall retained control lock for {}",
+            root.display()
+        );
+        assert!(
+            !root.join("daemon/lifecycle-transition.lock").exists(),
+            "successful uninstall retained transition lock for {}",
+            root.display()
+        );
+    }
+}
+
+#[test]
+fn prepare_uninstall_discovers_and_quiesces_a_finite_custom_root_worker() {
+    let temp = tempdir();
+    let supervisor_stub_bin = install_supervisor_command_stub(temp.path());
+    let install = copied_ctx_binary(&temp);
+    let marker = install.with_file_name(format!(
+        "{}.install.json",
+        install.file_name().unwrap().to_string_lossy()
+    ));
+    fs::write(
+        &marker,
+        serde_json::to_vec_pretty(&json!({
+            "schema_version": 1,
+            "manager": "ctx-hosted-installer",
+            "install_attempt_id": "ia_finite_worker_uninstall",
+            "install_path": install,
+            "platform": platform_key(),
+            "channel": "stable",
+            "version": "1.0.0",
+            "sha256": sha256(&install),
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+    fs::set_permissions(&marker, fs::Permissions::from_mode(0o600)).unwrap();
+
+    let custom_root = temp.path().join("finite-custom-root");
+    let mut finite = isolated_command(&install, temp.path());
+    finite
+        .env("CTX_DAEMON_BACKGROUND_CHILD", "1")
+        .arg("--data-root")
+        .arg(&custom_root)
+        .args([
+            "daemon",
+            "run",
+            "--finite-core-worker",
+            "--force",
+            "--format=json",
+        ])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    let mut finite = finite.spawn().expect("start finite custom-root worker");
+    let registration_root = install.with_file_name(format!(
+        ".{}.daemon-quiescence-acks",
+        install.file_name().unwrap().to_string_lossy()
+    ));
+    let registration_deadline = Instant::now() + Duration::from_secs(15);
+    let (registration_path, registration) = loop {
+        if let Ok(entries) = fs::read_dir(&registration_root) {
+            if let Some(path) = entries
+                .filter_map(Result::ok)
+                .map(|entry| entry.path())
+                .next()
+            {
+                let value: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+                break (path, value);
+            }
+        }
+        if let Some(status) = finite.try_wait().unwrap() {
+            panic!("finite worker exited before registration: {status}");
+        }
+        if Instant::now() >= registration_deadline {
+            let _ = finite.kill();
+            let _ = finite.wait();
+            panic!("finite worker did not publish installation registration");
+        }
+        thread::sleep(Duration::from_millis(20));
+    };
+    assert_eq!(registration["status"], "live", "{registration:#}");
+    assert_eq!(registration["persistent"], false, "{registration:#}");
+    assert_eq!(
+        registration["data_root"],
+        custom_root.to_string_lossy().as_ref(),
+        "{registration:#}"
+    );
+
+    let requested_root = temp.path().join("requested-finite-uninstall-root");
+    let mut teardown = isolated_command(&install, temp.path());
+    teardown
+        .env("PATH", &supervisor_stub_bin)
+        .arg("--data-root")
+        .arg(&requested_root)
+        .args(["daemon", "disable", "--prepare-uninstall", "--format=json"]);
+    let proof = successful_json(teardown);
+    assert_eq!(proof["installation_quiescent"], true, "{proof:#}");
+    assert_eq!(proof["coordination_state_removed"], true, "{proof:#}");
+    assert!(
+        proof["quiesced_roots"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|root| root.as_str() == Some(custom_root.to_string_lossy().as_ref())),
+        "finite worker root was not discovered: {proof:#}"
+    );
+
+    let output = finite
+        .wait_with_output()
+        .expect("finish finite custom-root worker");
+    assert!(
+        output.status.success(),
+        "finite worker failed during uninstall: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(!registration_path.exists());
+    assert_eq!(registration_count(&registration_root), 0);
+    let config = fs::read_to_string(custom_root.join("config.toml")).unwrap();
+    assert!(config.contains("mode = \"manual\""), "{config}");
+}
+
+#[test]
 fn fresh_custom_root_daemon_cannot_enter_after_all_root_proof_before_helper_commit() {
     let temp = tempdir();
     let (supervisor_probe_bin, supervisor_probe_log) =

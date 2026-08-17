@@ -143,6 +143,7 @@ fn failed_restart_intent_write_preserves_partial_acknowledgement() -> Result<()>
         data_root: blocked_root,
         trigger: DaemonTriggerCommandArg::Search,
         loop_interval_seconds: None,
+        persistent: true,
         status: "live",
     };
     lease.write_status("live", None)?;

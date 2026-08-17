@@ -18,9 +18,9 @@ use ctx_history_capture_model::{
     ProviderCatalogSupport, ProviderImportSupport, ProviderSource, ProviderSourceKind,
 };
 use ctx_history_core::{
-    derive_event_id, derive_session_id, CertifiedSource, CoreRecord, EventIdentityInput,
-    NativeItemKey, NativeSessionKey, ScannedSourceCounts, SessionIdentityInput, SourceAnchor,
-    SourceKey, SourceObservation, TypedKey,
+    derive_event_id, derive_session_id, AgentScope, CertifiedSource, CoreRecord,
+    EventIdentityInput, NativeItemKey, NativeSessionKey, ScannedSourceCounts, SessionIdentityInput,
+    SourceAnchor, SourceKey, SourceObservation, TypedKey,
 };
 use ctx_history_index::SourceRouteIdentity;
 use ctx_history_refresh_execution::{
@@ -530,12 +530,9 @@ fn publication_pin_record(source: &SourceKey) -> CoreRecord {
     let mut record = CoreRecord::new_selected(
         event_id,
         session_id,
-        session_id,
         source.clone(),
         0,
         "message",
-        "primary",
-        true,
         "publication-pin-test-v1",
         "exact publication pin fixture",
     )
@@ -543,6 +540,7 @@ fn publication_pin_record(source: &SourceKey) -> CoreRecord {
     record.provider_session_id = Some("publication-pin-session".to_owned());
     record.native_event_id = Some(TypedKey::U64(0));
     record.role = Some("user".to_owned());
+    record.agent_scope = Some(AgentScope::Primary);
     record.validate_contract().unwrap();
     record
 }
@@ -577,9 +575,8 @@ fn publish_pin_fixture(
     writer.begin_source(source.clone())?;
     let mut record = publication_pin_record(&source);
     if alternate_source {
-        record
-            .metadata
-            .insert("fixture_revision".to_owned(), json!(2));
+        record.content.structured_content = Some(json!({"fixture_revision": 2}));
+        record.validate_contract()?;
     }
     writer.add_core_record(record)?;
     writer.certify_source(publication_pin_certificate(&source))?;

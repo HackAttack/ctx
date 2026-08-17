@@ -222,9 +222,9 @@ measurement = next(
     item for item in module.live_measurements(root)
     if item.package.name == "ctx-daemon-service"
 )
-if not 17_100 <= measurement.cloc <= 18_200:
+if not 15_100 <= measurement.cloc <= 16_200:
     raise SystemExit(
-        "ctx-daemon-service must remain within its 17,100-18,200 physical CLOC boundary: "
+        "ctx-daemon-service must remain within its 15,100-16,200 physical CLOC boundary: "
         f"{measurement.cloc}"
     )
 print(f"ctx-daemon-service physical CLOC: {measurement.cloc}")

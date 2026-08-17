@@ -90,9 +90,9 @@ and private relevance evals justify flipping the default.
 - Status, doctor, MCP status, and index readiness report `semantic.status =
   disabled` with `reason = semantic_disabled` when semantic is not enabled.
 - Setup refuses the invalid semantic-without-automatic-indexing configuration,
-  runs foreground lexical indexing in manual mode without starting a worker, reports
-  semantic background estimates only when semantic is enabled, and states that
-  the daemon will download the local embedding model if needed.
+  remains inert in manual mode, reports semantic background estimates only when
+  semantic is enabled, and states that the daemon will download the local
+  embedding model if needed.
 - The daemon does not create or mutate semantic sidecars when semantic is
   disabled.
 - When semantic is enabled and the local embedding model is missing, the daemon

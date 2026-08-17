@@ -18,7 +18,8 @@ mod config {
     #[cfg(test)]
     pub use crate::composition::DAEMON_MODE_ENV;
     pub use crate::composition::{
-        set_daemon_enabled, AppConfig, DaemonMode, CONFIG_FILE, DAEMON_DEFAULT_ENABLED,
+        persisted_daemon_enabled, set_daemon_enabled, AppConfig, DaemonMode, CONFIG_FILE,
+        DAEMON_DEFAULT_ENABLED,
     };
 
     #[cfg(test)]

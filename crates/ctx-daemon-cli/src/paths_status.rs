@@ -118,7 +118,7 @@ fn daemon_semantic_job_report(
     let semantic_supported = super::semantic_query_service_supported();
     let mode_allows_semantic = !context.daemon_mode.runs_only_source_refresh();
     let enabled = daemon_enabled && semantic_enabled && semantic_supported && mode_allows_semantic;
-    let activation_failed = reload.status == "activation_failed" && semantic_enabled;
+    let activation_failed = reload.status == "activation_failed" && enabled;
     let reload_pending = context.daemon_running && reload.status == "pending" && reload.out_of_sync;
     let disabled = !enabled && disabled_overrides_lifecycle && !context.semantic_runtime_active;
     let status_value = read_daemon_job_status(&daemon_semantic_job_path(data_root));

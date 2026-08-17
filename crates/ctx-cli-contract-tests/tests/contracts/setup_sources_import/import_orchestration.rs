@@ -444,6 +444,97 @@ fn manual_indexing_import_uses_a_finite_worker_and_background_search_stays_inert
 }
 
 #[test]
+fn manual_wait_recovers_when_its_finite_worker_retires_before_admission() {
+    let temp = tempdir();
+    fs::create_dir_all(data_root(&temp)).unwrap();
+    fs::write(
+        data_root(&temp).join("config.toml"),
+        "[indexing]\nmode = \"manual\"\n\n[search]\nsemantic = false\n",
+    )
+    .unwrap();
+    let query = "finite retirement handoff recovery oracle";
+    write_codex_message_fixture(
+        &temp.path().join(".codex/sessions/2026/08/17"),
+        "019fcaaa-0000-7000-8000-000000000818",
+        query,
+    );
+
+    let gate = data_root(&temp).join(".block-source-refresh-after-availability-for-test");
+    let blocked = data_root(&temp).join(".source-refresh-blocked-after-availability-for-test");
+    fs::write(&gate, b"block\n").unwrap();
+    let prepared = ctx(&temp);
+    let mut command = StdCommand::new(prepared.get_program());
+    for (name, value) in prepared.get_envs() {
+        match value {
+            Some(value) => {
+                command.env(name, value);
+            }
+            None => {
+                command.env_remove(name);
+            }
+        }
+    }
+    command
+        .args([
+            "search",
+            query,
+            "--provider=codex",
+            "--refresh=wait",
+            "--format=json",
+        ])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    let mut search = SourceRefreshDaemon {
+        child: Some(command.spawn().expect("start blocked manual wait")),
+    };
+
+    let marker_deadline = Instant::now() + Duration::from_secs(15);
+    while !blocked.exists() {
+        if let Some(status) = search.child.as_mut().unwrap().try_wait().unwrap() {
+            panic!("manual wait exited before its availability gate: {status}");
+        }
+        assert!(
+            Instant::now() < marker_deadline,
+            "manual wait did not reach its post-availability gate"
+        );
+        std::thread::sleep(Duration::from_millis(20));
+    }
+
+    let stopped = wait_for_daemon_status(&temp, "disabled", false, "search");
+    assert_eq!(stopped["daemon"]["running"], false, "{stopped:#}");
+    fs::remove_file(&gate).unwrap();
+
+    let exit_deadline = Instant::now() + Duration::from_secs(25);
+    let status = loop {
+        if let Some(status) = search.child.as_mut().unwrap().try_wait().unwrap() {
+            break status;
+        }
+        assert!(
+            Instant::now() < exit_deadline,
+            "manual wait did not recover after finite-worker retirement"
+        );
+        std::thread::sleep(Duration::from_millis(20));
+    };
+    let output = search.child.take().unwrap().wait_with_output().unwrap();
+    assert_eq!(output.status, status);
+    assert!(
+        status.success(),
+        "manual wait recovery failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let search: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert!(
+        !search["results"].as_array().unwrap().is_empty(),
+        "{search:#}"
+    );
+    let stopped = wait_for_daemon_status(&temp, "disabled", false, "search");
+    assert_eq!(stopped["daemon"]["running"], false, "{stopped:#}");
+    assert!(!data_root(&temp)
+        .join("daemon/source-refresh-endpoint.json")
+        .exists());
+}
+
+#[test]
 fn progress_json_native_import_recovers_enabled_daemon() {
     let temp = tempdir();
     let fixture = provider_history_fixture("codex-sessions");

@@ -244,24 +244,6 @@ impl<P: CoalescingWakePayload> Wakeup<P> {
         }
     }
 
-    pub fn wait_for_signal(&self) -> Wake<P> {
-        let mut state = self.lock_state();
-        state.blocking_waits = state.blocking_waits.saturating_add(1);
-        if state.pending == 0 {
-            state = self
-                .changed
-                .wait_while(state, |state| state.pending == 0)
-                .unwrap_or_else(|poisoned| poisoned.into_inner());
-        }
-        let pending = std::mem::take(&mut state.pending);
-        Wake {
-            filesystem: pending & WAKE_FILESYSTEM != 0,
-            shutdown: pending & WAKE_SHUTDOWN != 0,
-            timed_out: false,
-            payload: std::mem::take(&mut state.payload),
-        }
-    }
-
     pub fn pending_payload(&self) -> P {
         self.lock_state().payload.clone()
     }

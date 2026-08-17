@@ -480,6 +480,16 @@ fn start_daemon_profile_and_wait(
                 let Some(exit) = child.try_wait()? else {
                     return Ok(None);
                 };
+                if exit.success() && daemon_lock_is_active(data_root) {
+                    let executable = daemon_autostart_exe()?;
+                    if daemon_lock_matches_executable(data_root, &executable)? {
+                        // Another same-binary cold-start child won singleton
+                        // ownership. Join its authenticated readiness handoff
+                        // instead of treating the losing child's clean exit as
+                        // startup failure.
+                        return Ok(None);
+                    }
+                }
                 let detail = read_daemon_status(data_root)
                     .and_then(|status| {
                         (status.get("pid").and_then(Value::as_u64) == Some(u64::from(child.id())))

@@ -206,12 +206,14 @@ impl DaemonInstallationPort for CliDaemonInstallationPort {
         trigger: DaemonTrigger,
         loop_interval_seconds: Option<u64>,
         allow_active_upgrade: bool,
+        persistent: bool,
     ) -> Result<Option<Self::Lease>> {
         super::daemon_autostart::InstallationDaemonLease::acquire(
             data_root,
             cli_trigger(trigger),
             loop_interval_seconds,
             allow_active_upgrade,
+            persistent,
         )
         .map(|lease| lease.map(CliDaemonInstallationLease))
     }

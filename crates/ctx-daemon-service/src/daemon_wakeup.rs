@@ -197,16 +197,6 @@ impl DaemonWakeup {
         }
     }
 
-    pub(super) fn wait_for_signal(&self) -> DaemonWake {
-        let wake = self.inner.wait_for_signal();
-        DaemonWake {
-            filesystem: wake.filesystem,
-            shutdown: wake.shutdown,
-            timed_out: wake.timed_out,
-            source_watch: wake.payload,
-        }
-    }
-
     #[cfg(test)]
     fn pending_source_watch(&self) -> SourceWatchBatch {
         self.inner.pending_payload()

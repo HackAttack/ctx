@@ -1,7 +1,7 @@
 use std::{path::Path, time::Duration};
 
 use anyhow::{anyhow, Context};
-use ctx_daemon_runtime::daemon_lock_is_active;
+use ctx_daemon_runtime::{daemon_lock_is_active, DaemonLifecycleControlLock};
 
 use crate::{
     lifecycle, supervisor, DaemonApplicationHost, DaemonHandoff, DaemonStartError,
@@ -36,12 +36,44 @@ pub(super) fn update_daemon_enabled(
     data_root: &Path,
     enabled: bool,
 ) -> Result<DaemonEnabledUpdate, DaemonEnabledUpdateError> {
-    host.set_daemon_enabled(data_root, enabled)
+    reject_hosted_uninstall(host)?;
+    let _control = DaemonLifecycleControlLock::acquire(data_root)
         .map_err(DaemonEnabledUpdateError::Operation)?;
+    reject_hosted_uninstall(host)?;
+    let previous_enabled = host
+        .persisted_daemon_enabled(data_root)
+        .map_err(DaemonEnabledUpdateError::Operation)?;
+    persist_and_apply_enabled_with_rollback(
+        previous_enabled,
+        enabled,
+        |enabled| host.set_daemon_enabled(data_root, enabled),
+        |enabled| {
+            ctx_daemon_runtime::block_daemon_enabled_after_config_for_test(data_root, enabled)
+                .map_err(DaemonEnabledUpdateError::Operation)?;
+            apply_configured_enabled(host, data_root)
+        },
+    )
+}
+
+fn reject_hosted_uninstall(
+    host: &dyn DaemonApplicationHost,
+) -> Result<(), DaemonEnabledUpdateError> {
+    match host.hosted_uninstall_active() {
+        Ok(false) => Ok(()),
+        Ok(true) => Err(DaemonEnabledUpdateError::StartSuppressed),
+        Err(error) => Err(DaemonEnabledUpdateError::Operation(error)),
+    }
+}
+
+fn apply_configured_enabled(
+    host: &dyn DaemonApplicationHost,
+    data_root: &Path,
+) -> Result<DaemonEnabledUpdate, DaemonEnabledUpdateError> {
+    let config = host
+        .daemon_config(data_root)
+        .map_err(DaemonEnabledUpdateError::Operation)?;
+    let enabled = config.enabled;
     let handoff = if enabled {
-        let config = host
-            .daemon_config(data_root)
-            .map_err(DaemonEnabledUpdateError::Operation)?;
         if lifecycle::daemon_start_is_fenced(host) {
             return Err(DaemonEnabledUpdateError::StartSuppressed);
         }
@@ -73,6 +105,33 @@ pub(super) fn update_daemon_enabled(
         persistent,
         supervisor,
     })
+}
+
+fn persist_and_apply_enabled_with_rollback<T>(
+    previous_enabled: bool,
+    requested_enabled: bool,
+    mut persist: impl FnMut(bool) -> anyhow::Result<()>,
+    mut apply: impl FnMut(bool) -> Result<T, DaemonEnabledUpdateError>,
+) -> Result<T, DaemonEnabledUpdateError> {
+    persist(requested_enabled).map_err(DaemonEnabledUpdateError::Operation)?;
+    match apply(requested_enabled) {
+        Ok(update) => Ok(update),
+        Err(update_error) => {
+            let rollback = persist(previous_enabled)
+                .context("restore previous indexing mode configuration")
+                .and_then(|()| {
+                    apply(previous_enabled)
+                        .map(drop)
+                        .map_err(|error| anyhow!("reconcile previous indexing mode: {error:?}"))
+                });
+            match rollback {
+                Ok(()) => Err(update_error),
+                Err(rollback_error) => Err(DaemonEnabledUpdateError::Operation(anyhow!(
+                    "indexing mode update failed ({update_error:?}) and rollback failed: {rollback_error:#}"
+                ))),
+            }
+        }
+    }
 }
 
 fn request_daemon_shutdown_and_wait(
@@ -129,7 +188,7 @@ fn request_daemon_shutdown_and_wait_with(
 
 #[cfg(test)]
 mod tests {
-    use std::cell::Cell;
+    use std::cell::{Cell, RefCell};
 
     use super::*;
 
@@ -176,6 +235,36 @@ mod tests {
         assert_eq!(cleanups.get(), 1);
         assert_eq!(sleeps.get(), 0);
         assert_eq!(ticks.get(), 1);
+    }
+
+    #[test]
+    fn failed_enable_restores_previous_manual_mode_and_reconciles_it() {
+        let persisted = Cell::new(false);
+        let applications = RefCell::new(Vec::new());
+
+        let error = persist_and_apply_enabled_with_rollback(
+            false,
+            true,
+            |enabled| {
+                persisted.set(enabled);
+                Ok(())
+            },
+            |enabled| {
+                applications.borrow_mut().push(enabled);
+                if enabled {
+                    Err(DaemonEnabledUpdateError::Supervisor(anyhow!(
+                        "injected supervisor failure"
+                    )))
+                } else {
+                    Ok(())
+                }
+            },
+        )
+        .unwrap_err();
+
+        assert!(matches!(error, DaemonEnabledUpdateError::Supervisor(_)));
+        assert!(!persisted.get());
+        assert_eq!(*applications.borrow(), vec![true, false]);
     }
 
     #[test]

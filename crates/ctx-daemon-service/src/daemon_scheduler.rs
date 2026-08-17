@@ -361,7 +361,10 @@ where
         ));
     };
     let cold_all_refresh = run.scope == SourceBackedRefreshScope::All
-        && run.job.get("trigger").and_then(Value::as_str) == Some("periodic")
+        && matches!(
+            run.job.get("trigger").and_then(Value::as_str),
+            Some("periodic" | "setup")
+        )
         && run
             .job
             .get("previous_generation")
@@ -371,7 +374,7 @@ where
             || (run.scope == SourceBackedRefreshScope::All
                 && run.job.get("trigger").and_then(Value::as_str) == Some("import"))
             || cold_all_refresh,
-        "dirty-route work may become All only for cold startup or when a manual import upgrades the queued exact refresh"
+        "dirty-route work may become All only for cold startup/setup or when a manual import upgrades the queued exact refresh"
     );
     let terminal_persistence_pending = run.terminal_persistence_pending;
     let job = record_source_refresh_retry(

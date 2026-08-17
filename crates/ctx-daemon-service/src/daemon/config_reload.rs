@@ -112,7 +112,6 @@ pub(super) struct DaemonConfigReloadTargets<'a> {
     pub(super) query_service: &'a mut Option<DaemonQueryService>,
     pub(super) refresh_service: &'a mut Option<DaemonQueryService>,
     pub(super) state: &'a mut DaemonConfigReloadState,
-    pub(super) finite_core_worker_admitted: Option<&'a Arc<std::sync::atomic::AtomicBool>>,
 }
 
 pub(super) fn reload_daemon_runtime_config(
@@ -128,7 +127,6 @@ pub(super) fn reload_daemon_runtime_config(
         query_service,
         refresh_service,
         state: reload,
-        finite_core_worker_admitted,
     } = targets;
     let mut config = match config_port.load(data_root) {
         Ok(config) => config,
@@ -170,7 +168,6 @@ pub(super) fn reload_daemon_runtime_config(
             Arc::clone(wakeup),
             config_port,
             Arc::clone(lifecycle),
-            finite_core_worker_admitted.cloned(),
         );
         let started = start_daemon_source_refresh_service(data_root, handler, Arc::clone(wakeup));
         match started {
@@ -195,7 +192,6 @@ pub(super) fn reload_daemon_runtime_config(
             Arc::clone(wakeup),
             config_port,
             Arc::clone(lifecycle),
-            None,
         );
         match start_daemon_query_service(data_root, handler, Arc::clone(wakeup)) {
             Ok(service) => {

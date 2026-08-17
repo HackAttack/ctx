@@ -47,6 +47,7 @@ pub trait DaemonApplicationHost: Send + Sync {
     fn managed_install_executable(&self) -> Result<Option<PathBuf>>;
     fn installation_upgrade_active(&self) -> Result<bool>;
     fn daemon_config(&self, data_root: &Path) -> Result<DaemonConfigSnapshot>;
+    fn persisted_daemon_enabled(&self, data_root: &Path) -> Result<bool>;
     fn defer_restart_for_upgrade_handoff(
         &self,
         data_root: &Path,
@@ -344,6 +345,10 @@ impl DaemonApplicationHost for TestHost {
             mode: DaemonMode::Full,
             semantic_enabled: true,
         })
+    }
+
+    fn persisted_daemon_enabled(&self, _data_root: &Path) -> Result<bool> {
+        Ok(true)
     }
 
     fn defer_restart_for_upgrade_handoff(

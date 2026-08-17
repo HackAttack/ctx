@@ -49,8 +49,8 @@ pub(crate) fn doctor_facts(data_root: &std::path::Path) -> Result<Value> {
     if !data_root.exists() {
         findings.push(format!("data root does not exist: {}", data_root.display()));
     }
-    let config = AppConfig::load(&data_root)?;
-    let source = source_epoch_status_report(&data_root, &config)?;
+    let config = AppConfig::load(data_root)?;
+    let source = source_epoch_status_report(data_root, &config)?;
     findings.extend(ctx_cli_presentation::commands::source_epoch_findings(
         &source.report,
         config.semantic_search_enabled(),

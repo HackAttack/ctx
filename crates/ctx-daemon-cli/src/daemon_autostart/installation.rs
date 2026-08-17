@@ -7,6 +7,7 @@ pub(crate) struct InstallationDaemonLease {
     pub(super) data_root: PathBuf,
     pub(super) trigger: DaemonTriggerCommandArg,
     pub(super) loop_interval_seconds: Option<u64>,
+    pub(super) persistent: bool,
     pub(super) status: &'static str,
 }
 
@@ -26,6 +27,7 @@ impl InstallationDaemonLease {
         trigger: DaemonTriggerCommandArg,
         loop_interval_seconds: Option<u64>,
         allow_active_upgrade: bool,
+        persistent: bool,
     ) -> Result<Option<Self>> {
         let lock = open_installation_daemon_quiescence_lock()?;
         match fs2::FileExt::try_lock_shared(&lock) {
@@ -50,6 +52,7 @@ impl InstallationDaemonLease {
             data_root: data_root.to_path_buf(),
             trigger,
             loop_interval_seconds,
+            persistent,
             status: "live",
         };
         lease.write_status("live", None)?;
@@ -81,7 +84,7 @@ impl InstallationDaemonLease {
                 "pid": process::id(),
                 "data_root": self.data_root,
                 "trigger_command": self.trigger.as_str(),
-                "persistent": true,
+                "persistent": self.persistent,
                 "loop_interval_explicit": self.loop_interval_seconds.is_some(),
                 "loop_interval_seconds": self.loop_interval_seconds.unwrap_or(15 * 60),
                 "updated_at_ms": utc_now().timestamp_millis(),
@@ -229,6 +232,7 @@ mod tests {
             data_root: temp.path().join("data"),
             trigger: DaemonTriggerCommandArg::Search,
             loop_interval_seconds: Some(23),
+            persistent: true,
             status: "live",
         };
 
@@ -239,5 +243,35 @@ mod tests {
         assert_eq!(value["loop_interval_explicit"], Value::Bool(true));
         assert_eq!(value["loop_interval_seconds"], Value::from(23));
         assert!(value.get("idle_exit_seconds").is_none());
+    }
+
+    #[test]
+    fn finite_registration_is_discoverable_without_persistent_restart_policy() {
+        let temp = tempfile::tempdir().unwrap();
+        let registration_path = temp.path().join("registration.json");
+        let lock = fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .open(temp.path().join("lock"))
+            .unwrap();
+        let lease = InstallationDaemonLease {
+            lock,
+            registration_path: registration_path.clone(),
+            registration_id: "finite-registration".to_owned(),
+            data_root: temp.path().join("data"),
+            trigger: DaemonTriggerCommandArg::Search,
+            loop_interval_seconds: None,
+            persistent: false,
+            status: "live",
+        };
+
+        lease.write_status("live", None).unwrap();
+
+        let value: Value = serde_json::from_slice(&fs::read(registration_path).unwrap()).unwrap();
+        assert_eq!(value["persistent"], Value::Bool(false));
+        assert_eq!(value["data_root"], json!(temp.path().join("data")));
+        assert_eq!(value["loop_interval_explicit"], Value::Bool(false));
     }
 }

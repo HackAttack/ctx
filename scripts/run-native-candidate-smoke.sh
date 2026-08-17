@@ -429,11 +429,11 @@ fi
 
 analytics_default="$(inventory_default_field "analytics delivery" "value")"
 upgrade_default="$(inventory_default_field "automatic upgrade mode" "value")"
-daemon_default="$(inventory_default_field "daemon maintenance" "value")"
+indexing_default="$(inventory_default_field "indexing mode" "value")"
 semantic_default="$(inventory_default_field "semantic search" "value")"
 if [ "${analytics_default}" != true ] \
   || [ "${upgrade_default}" != apply ] \
-  || [ "${daemon_default}" != true ] \
+  || [ "${indexing_default}" != automatic ] \
   || [ "${semantic_default}" != false ]; then
   printf 'candidate smoke control inventory has unexpected released defaults\n' >&2
   exit 1

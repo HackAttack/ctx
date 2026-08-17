@@ -24,6 +24,40 @@ type SourceBackedRefreshProgressReporter<'a> = &'a mut dyn FnMut(&RefreshStatus)
 
 const SOURCE_REFRESH_PROGRESS_HEARTBEAT: StdDuration = StdDuration::from_secs(5);
 
+fn block_after_daemon_availability_for_test(data_root: &Path) -> Result<()> {
+    if !cfg!(debug_assertions) {
+        return Ok(());
+    }
+    let block = data_root.join(".block-source-refresh-after-availability-for-test");
+    if !block.exists() {
+        return Ok(());
+    }
+    let blocked = data_root.join(".source-refresh-blocked-after-availability-for-test");
+    std::fs::write(&blocked, format!("{}\n", std::process::id())).with_context(|| {
+        format!(
+            "publish source refresh availability test marker {}",
+            blocked.display()
+        )
+    })?;
+    let deadline = StdInstant::now() + StdDuration::from_secs(30);
+    while block.exists() && StdInstant::now() < deadline {
+        std::thread::sleep(StdDuration::from_millis(10));
+    }
+    if block.exists() {
+        bail!("timed out at source refresh post-availability test gate");
+    }
+    match std::fs::remove_file(&blocked) {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(error).with_context(|| {
+            format!(
+                "remove source refresh availability test marker {}",
+                blocked.display()
+            )
+        }),
+    }
+}
+
 #[derive(Debug)]
 pub struct SourceBackedRefreshDaemonUnavailable {
     detail: Option<String>,
@@ -409,6 +443,9 @@ fn coordinate_source_backed_refresh_with_catalog(
     {
         return daemon_unavailable_fallback(data_root, mode, None);
     }
+    if allow_daemon_autostart && mode == SourceBackedRefreshMode::Wait {
+        block_after_daemon_availability_for_test(data_root)?;
+    }
 
     let logical_request_id = Uuid::now_v7().to_string();
     let admission_request = wait_authority_request_json(
@@ -420,26 +457,58 @@ fn coordinate_source_backed_refresh_with_catalog(
         explicit_source_catalog,
         fresh_after_admitted_snapshot,
     )?;
-    let response =
-        match request_admission_with_recovery(&logical_request_id, std::thread::sleep, || {
-            daemon_source_refresh_request(
+    let mut retirement_recovery_attempted = false;
+    let response = loop {
+        let retirement_error =
+            match request_admission_with_recovery(&logical_request_id, std::thread::sleep, || {
+                daemon_source_refresh_request(
+                    data_root,
+                    admission_request.clone(),
+                    SOURCE_REFRESH_IPC_TIMEOUT,
+                    SOURCE_REFRESH_RESPONSE_MAX_BYTES,
+                )
+            }) {
+                Ok(Some(response)) => break response,
+                Ok(None)
+                    if mode == SourceBackedRefreshMode::Wait
+                        && allow_daemon_autostart
+                        && !retirement_recovery_attempted =>
+                {
+                    None
+                }
+                Ok(None) => return daemon_unavailable_fallback(data_root, mode, None),
+                Err(error)
+                    if error
+                        .downcast_ref::<DaemonSourceRefreshServiceUnavailable>()
+                        .is_some()
+                        && mode == SourceBackedRefreshMode::Wait
+                        && allow_daemon_autostart
+                        && !retirement_recovery_attempted =>
+                {
+                    Some(error)
+                }
+                Err(error)
+                    if error
+                        .downcast_ref::<DaemonSourceRefreshServiceUnavailable>()
+                        .is_some() =>
+                {
+                    return daemon_unavailable_fallback(data_root, mode, Some(error));
+                }
+                Err(error) => return Err(error),
+            };
+        retirement_recovery_attempted = true;
+        if availability
+            .ensure_available(
                 data_root,
-                admission_request.clone(),
-                SOURCE_REFRESH_IPC_TIMEOUT,
-                SOURCE_REFRESH_RESPONSE_MAX_BYTES,
+                trigger.daemon_trigger(),
+                crate::DaemonAvailabilityDemand::ExplicitWait,
             )
-        }) {
-            Ok(Some(response)) => response,
-            Ok(None) => return daemon_unavailable_fallback(data_root, mode, None),
-            Err(error)
-                if error
-                    .downcast_ref::<DaemonSourceRefreshServiceUnavailable>()
-                    .is_some() =>
-            {
-                return daemon_unavailable_fallback(data_root, mode, Some(error))
-            }
-            Err(error) => return Err(error),
-        };
+            .context("recover daemon after source refresh endpoint retirement")?
+            == crate::DaemonAvailability::Disabled
+        {
+            return daemon_unavailable_fallback(data_root, mode, retirement_error);
+        }
+    };
     validate_daemon_refresh_response(&response)?;
     let accepted_request_id = response_request_id(&response, "daemon source refresh response")?;
     let request_id = if fresh_after_admitted_snapshot {
