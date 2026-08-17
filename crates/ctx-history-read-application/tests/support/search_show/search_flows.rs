@@ -461,7 +461,6 @@ fn foreground_core_observations_are_truthful_and_recorded_once_after_output() {
                 SELECT
                     SUM(calls),
                     SUM(result_count),
-                    SUM(citation_count),
                     SUM(delivered_output_bytes),
                     SUM(delivered_context_bytes),
                     SUM(matched_normalized_session_bytes)
@@ -479,7 +478,6 @@ fn foreground_core_observations_are_truthful_and_recorded_once_after_output() {
                         row.get::<_, i64>(2)?,
                         row.get::<_, i64>(3)?,
                         row.get::<_, i64>(4)?,
-                        row.get::<_, i64>(5)?,
                     ))
                 },
             )
@@ -503,7 +501,6 @@ fn foreground_core_observations_are_truthful_and_recorded_once_after_output() {
         (
             1,
             search_result_count as i64,
-            0,
             search_output_bytes as i64,
             delivered_context_bytes as i64,
             search_complete.1,
@@ -511,22 +508,22 @@ fn foreground_core_observations_are_truthful_and_recorded_once_after_output() {
     );
     assert_eq!(
         totals("search", "success", "empty"),
-        (1, 0, 0, empty_search_output_bytes as i64, 0, 0)
+        (1, 0, empty_search_output_bytes as i64, 0, 0)
     );
     assert_eq!(
         totals("show_session", "success", "not_applicable"),
-        (1, 0, 0, show_session_output_bytes as i64, 0, 0)
+        (1, 0, show_session_output_bytes as i64, 0, 0)
     );
     assert_eq!(
         totals("show_event", "success", "not_applicable"),
-        (1, 0, 0, show_event_output_bytes as i64, 0, 0)
+        (1, 0, show_event_output_bytes as i64, 0, 0)
     );
     assert_eq!(
         totals("sources", "success", "not_applicable"),
-        (1, 0, 0, sources_output_bytes as i64, 0, 0)
+        (1, 0, sources_output_bytes as i64, 0, 0)
     );
     assert_eq!(
         totals("show_session", "failure", "not_applicable"),
-        (1, 0, 0, failed_show_output_bytes as i64, 0, 0)
+        (1, 0, failed_show_output_bytes as i64, 0, 0)
     );
 }
