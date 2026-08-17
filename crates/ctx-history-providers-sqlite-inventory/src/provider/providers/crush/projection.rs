@@ -55,10 +55,8 @@ pub(super) struct CrushMessageProjection {
 
 pub(super) struct CrushOutputProjection {
     pub(super) status: Option<String>,
-    pub(super) exit_code: Option<i32>,
     pub(super) duration_ms: Option<u64>,
     pub(super) call_id: Option<String>,
-    pub(super) tool_name: Option<String>,
 }
 
 pub(super) struct CrushChildMessageRow {
@@ -257,13 +255,9 @@ fn crush_output_projection(parts: &Value) -> CrushOutputProjection {
         status: (!aggregate.status_ambiguous)
             .then_some(aggregate.status)
             .flatten(),
-        exit_code: aggregate.exit_code,
         duration_ms: aggregate.duration_ms,
         call_id: (!aggregate.linkage_ambiguous)
             .then_some(aggregate.call_id)
-            .flatten(),
-        tool_name: (!aggregate.linkage_ambiguous)
-            .then_some(aggregate.tool_name)
             .flatten(),
     }
 }
@@ -272,7 +266,6 @@ fn crush_output_projection(parts: &Value) -> CrushOutputProjection {
 struct CrushResultAggregate {
     status: Option<String>,
     status_ambiguous: bool,
-    exit_code: Option<i32>,
     duration_ms: Option<u64>,
     call_id: Option<String>,
     tool_name: Option<String>,
@@ -329,14 +322,6 @@ fn crush_collect_result_literals(value: &Value, aggregate: &mut CrushResultAggre
     let Some(object) = value.as_object() else {
         return;
     };
-    if let Some(code) = object
-        .get("exit_code")
-        .or_else(|| object.get("exitCode"))
-        .and_then(Value::as_i64)
-        .and_then(|code| i32::try_from(code).ok())
-    {
-        aggregate.exit_code = Some(code);
-    }
     if aggregate.duration_ms.is_none() {
         aggregate.duration_ms = ["duration_ms", "durationMs"]
             .iter()

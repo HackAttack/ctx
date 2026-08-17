@@ -64,7 +64,6 @@ const SHELLEY_NATIVE_SESSION_NAMESPACE: &str = "shelley.conversation";
 const SHELLEY_LOGICAL_EVENT_KIND: &str = "shelley-message";
 const SHELLEY_NATIVE_MESSAGE_NAMESPACE: &str = "shelley.message";
 const SHELLEY_CERTIFIED_STREAM_DOMAIN: &[u8] = b"ctx-shelley-source-backed-stream-v1\0";
-const SHELLEY_LINEAGE_LABEL_MAX_CHARS: usize = 256;
 const SQLITE_SOURCE_INVALID_REASON: &str =
     "Shelley SQLite source must have an authorized parent and database leaf";
 
@@ -87,8 +86,6 @@ pub(crate) enum ShelleySourceBackedError {
     CountOverflow,
     #[error("Shelley source-backed projection produced no bounded lexical body")]
     MissingLexicalBody,
-    #[error("Shelley source-backed conversation lineage is invalid: {0}")]
-    InvalidLineage(String),
     #[error("Shelley source-backed result shape is invalid: {0}")]
     InvalidResultShape(String),
 }
@@ -404,7 +401,6 @@ impl ShelleySourceBackedScan {
                         Err(
                             error @ (ShelleySourceBackedError::Projection(_)
                             | ShelleySourceBackedError::MissingLexicalBody
-                            | ShelleySourceBackedError::InvalidLineage(_)
                             | ShelleySourceBackedError::InvalidResultShape(_)),
                         ) => {
                             self.hash_record(
@@ -623,13 +619,6 @@ fn open_root_authorized_snapshot_with_hook(
         .busy_timeout(std::time::Duration::from_secs(5))
         .map_err(CaptureError::from)?;
     Ok((source_root, sqlite_snapshot))
-}
-
-fn shelley_lineage_label(provider_session_id: &str) -> String {
-    provider_session_id
-        .chars()
-        .take(SHELLEY_LINEAGE_LABEL_MAX_CHARS)
-        .collect()
 }
 
 fn build_record(
