@@ -55,7 +55,9 @@ use config_reload::{
 };
 use lifecycle::*;
 pub(super) use source_watch::daemon_wait_duration;
-use source_watch::{daemon_scheduler_source_refresh, install_source_watch_ingress};
+use source_watch::{
+    daemon_scheduler_source_refresh, install_source_watch_ingress, source_route_ledger_now_ms,
+};
 use telemetry::{daemon_safety_reconcile_interval, send_daemon_events, DaemonTelemetry};
 use watch_runtime::{DaemonWatchRuntime, WatchCatalogReconcileTrigger};
 

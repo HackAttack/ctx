@@ -46,7 +46,7 @@ pub(super) fn source_route_ledger_now_ms() -> u64 {
         .unwrap_or_default()
 }
 
-pub(super) fn daemon_wait_duration(
+pub(crate) fn daemon_wait_duration(
     runtime: &DaemonRuntime,
     source_refresh: Option<&CoreRefreshEngine>,
     next_safety_reconcile: Instant,
