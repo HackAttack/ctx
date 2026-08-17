@@ -1,3 +1,4 @@
+mod active_session_env;
 mod compact_presentation;
 mod copied_lineage;
 mod locate;
@@ -6,6 +7,7 @@ mod search;
 mod shared;
 mod show;
 
+pub(crate) use active_session_env::detected_active_session;
 pub(crate) use compact_presentation::open_generation_read;
 pub use copied_lineage::copied_lineage_summary;
 pub use locate::run_locate;

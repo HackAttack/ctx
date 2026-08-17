@@ -81,6 +81,13 @@ pub struct SearchArgs {
     )]
     pub session: Option<String>,
     #[arg(
+        long = "exclude-session",
+        value_name = "SESSION",
+        conflicts_with = "session",
+        help = "Exclude one exact ctx session id or unambiguous id prefix; repeat to exclude multiple sessions"
+    )]
+    pub exclude_sessions: Vec<String>,
+    #[arg(
         long,
         help = "Return dense event-level results instead of diverse session results"
     )]
@@ -96,10 +103,7 @@ pub struct SearchArgs {
     pub semantic_weight: f32,
     #[arg(long, value_enum, default_value_t = CliRefreshArg::Background, help = "Index freshness behavior: background, off, or wait", long_help = "Index freshness behavior. background serves the existing index and lets daemon maintenance refresh history/indexes; off searches the existing index only; wait runs or waits for required refresh work before searching.")]
     pub refresh: CliRefreshArg,
-    #[arg(
-        long,
-        help = "Include the active Codex session tree when CODEX_THREAD_ID is set"
-    )]
+    #[arg(long, help = "Include the automatically detected active session tree")]
     pub include_current_session: bool,
     #[arg(long, value_enum, default_value_t = crate::JsonOutputFormat::Text)]
     pub format: crate::JsonOutputFormat,
@@ -191,6 +195,7 @@ pub fn adapt(args: SearchArgs) -> ctx_history_cli::SearchArgs {
         event_type: args.event_type,
         file: args.file,
         session: args.session,
+        exclude_sessions: args.exclude_sessions,
         events: args.events,
         backend: args.backend.map(|backend| match backend {
             SearchBackendArg::Hybrid => ctx_history_cli::SearchBackendArg::Hybrid,
@@ -419,6 +424,32 @@ mod tests {
         .search;
         assert!(matches!(args.content_scope, Some(ContentScopeArg::Calls)));
         assert!(args.events && args.include_current_session);
+    }
+
+    #[test]
+    fn search_clap_adapter_accepts_repeatable_session_exclusions_and_conflicts_with_session() {
+        let args = TestCli::try_parse_from([
+            "ctx",
+            "needle",
+            "--exclude-session",
+            "first",
+            "--exclude-session=second",
+        ])
+        .unwrap()
+        .search;
+        assert_eq!(args.exclude_sessions, ["first", "second"]);
+        assert_eq!(adapt(args).exclude_sessions, ["first", "second"]);
+
+        let error = TestCli::try_parse_from([
+            "ctx",
+            "needle",
+            "--session",
+            "positive",
+            "--exclude-session",
+            "negative",
+        ])
+        .unwrap_err();
+        assert!(error.to_string().contains("cannot be used with"));
     }
 
     #[test]

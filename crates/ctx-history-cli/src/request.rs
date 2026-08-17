@@ -126,6 +126,7 @@ pub struct SearchRequest {
     pub event_type: Option<String>,
     pub file: Option<PathBuf>,
     pub session: Option<String>,
+    pub exclude_sessions: Vec<String>,
     pub events: bool,
     pub backend: Option<SearchBackend>,
     pub semantic_weight: f32,
@@ -315,6 +316,7 @@ mod tests {
                     event_type: Some("message".to_owned()),
                     file: Some(PathBuf::from("src/lib.rs")),
                     session: Some("session".to_owned()),
+                    exclude_sessions: vec!["excluded".to_owned()],
                     events: false,
                     backend: Some(backend_arg),
                     semantic_weight: 0.25,
@@ -330,6 +332,7 @@ mod tests {
                     execution.events,
                     "a session selector must retain event-result semantics"
                 );
+                assert_eq!(execution.exclude_sessions, ["excluded"]);
             }
         }
     }

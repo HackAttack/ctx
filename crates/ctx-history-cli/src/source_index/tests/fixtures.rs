@@ -183,6 +183,7 @@ fn request(_refresh: RefreshArg) -> SourceSearchRequest {
         event_type: None,
         file: None,
         session: None,
+        exclude_sessions: Vec::new(),
         events: false,
         include_current_session: true,
         backend: Some(SearchBackendArg::Lexical),

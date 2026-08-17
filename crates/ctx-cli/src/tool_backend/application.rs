@@ -60,6 +60,7 @@ fn adapt_tool_search_request(
         event_type: request.event_type,
         file: request.file,
         session: request.session,
+        exclude_sessions: Vec::new(),
         events: request.events,
         include_current_session: request.include_current_session,
         backend: request.backend.map(|backend| match backend {

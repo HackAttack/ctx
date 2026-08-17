@@ -139,9 +139,15 @@ these as secondary resources; prefer installed help for command details.
    ctx show session <ctx-session-id> --format markdown --out <output-path>
    ```
 
-   In Codex, ctx excludes the active session tree by default when
-   `CODEX_THREAD_ID` is available. Use `--include-current-session` only when the
-   active session tree is the target.
+   Direct CLI searches automatically exclude the current session tree for
+   Codex, DeepSeek Harness, Grok Build, Pi, Claude Code, Goose, Hermes, Shelley,
+   Qwen Code, and Mux when the current session can be identified
+   unambiguously. Unsupported or ambiguous detection fails open: ctx leaves
+   the history included. `--include-current-session` restores the
+   automatically excluded tree. Repeat `--exclude-session
+   <ctx-uuid-or-unambiguous-prefix>` to exclude exact named sessions; the
+   option is repeatable and conflicts with `--session`. MCP searches do not
+   automatically exclude the caller's session.
 
 ## Trace code with ctx blame
 

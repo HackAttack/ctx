@@ -24,9 +24,14 @@ mod active_session;
 mod shaping;
 
 use active_session::excluded_active_session_tree;
+use active_session::{
+    normalize_manual_session_exclusions, resolved_manual_session_exclusion_ids,
+    validate_manual_session_exclusions,
+};
 #[cfg(test)]
 use active_session::{
-    resolved_unique_session_tree_root_id, SessionAncestry, MAX_ACTIVE_SESSION_ANCESTORS,
+    resolved_session_tree_ids, resolved_unique_session_tree_root_id, SessionAncestry,
+    MAX_ACTIVE_SESSION_ANCESTORS,
 };
 use shaping::root_first_candidate_pool_is_decisive;
 pub use shaping::shape_search_result_window;
@@ -91,6 +96,7 @@ pub struct SearchRequest {
     pub event_type: Option<String>,
     pub file: Option<PathBuf>,
     pub session: Option<String>,
+    pub exclude_sessions: Vec<String>,
     pub events: bool,
     pub include_current_session: bool,
     pub backend: Option<SearchBackend>,
@@ -183,6 +189,7 @@ fn normalized_query_alternative(value: &str) -> Option<String> {
 
 pub fn validate_search_request(request: &SearchRequest) -> Result<()> {
     validate_lexical_query_limits(request)?;
+    validate_manual_session_exclusions(request)?;
     if request
         .workspace
         .as_deref()
@@ -223,6 +230,7 @@ pub fn validate_search_request(request: &SearchRequest) -> Result<()> {
 
 pub fn normalize_search_request(request: &mut SearchRequest) -> Result<()> {
     validate_lexical_query_limits(request)?;
+    normalize_manual_session_exclusions(request)?;
     if request.workspace.is_some() {
         request.workspace = normalized_optional_text(request.workspace.as_deref())
             .map(Some)
@@ -344,6 +352,7 @@ pub fn search_filters_with_refs(
     references: &CompactRefResolver<'_>,
     active_session: Option<&ActiveSessionExclusion>,
 ) -> Result<EventSearchFilters> {
+    validate_manual_session_exclusions(request)?;
     let source_identity = normalized_request_source_identity_filters(request)?;
     let session_id = request
         .session
@@ -352,6 +361,7 @@ pub fn search_filters_with_refs(
             resolve_session_with_refs(references, id).map(|session| session.session_id.as_uuid())
         })
         .transpose()?;
+    let excluded_session_ids = resolved_manual_session_exclusion_ids(request, references)?;
     let event_type = request
         .event_type
         .as_deref()
@@ -392,6 +402,7 @@ pub fn search_filters_with_refs(
             .file
             .as_ref()
             .and_then(|path| normalized_optional_text(Some(&path.display().to_string()))),
+        excluded_session_ids,
         exclude_session_tree,
         ..EventSearchFilters::default()
     })

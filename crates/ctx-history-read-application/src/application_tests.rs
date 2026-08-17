@@ -26,9 +26,9 @@ use crate::{
     event_query_event_read_model, event_query_receipt, event_query_wire_request,
     event_window_with_lineage_read_model, execute_list_events_stream, execute_locate,
     execute_search, execute_show_event, execute_show_session_page, execute_show_session_stream,
-    normalize_uuid_prefix, paginated_session_transcript_read_model, plan_search,
-    render_event_read_model, render_search_json, retain_structured_session_page,
-    ActiveSessionExclusion, CompactPresentationProjection, EventContentProjection,
+    normalize_search_request, normalize_uuid_prefix, paginated_session_transcript_read_model,
+    plan_search, render_event_read_model, render_search_json, retain_structured_session_page,
+    search_filters, ActiveSessionExclusion, CompactPresentationProjection, EventContentProjection,
     EventWindowBudget, GenerationRead, GenerationReadPort, GenerationReadRequest,
     GenerationReadTarget, HistorySemanticBatch, HistorySemanticError, HistorySemanticPort,
     HistorySemanticQuery, ListEventsPageRequest, ListEventsRequest, ListEventsStreamCallback,
@@ -207,6 +207,7 @@ fn lexical_request() -> SearchRequest {
         event_type: None,
         file: None,
         session: None,
+        exclude_sessions: Vec::new(),
         events: true,
         include_current_session: false,
         backend: Some(SearchBackend::Lexical),
@@ -369,6 +370,69 @@ fn search_application_pins_once_opens_semantics_once_and_requests_peer_lazily() 
         Some(RetainedPeerRead::IfAvailable)
     );
     assert_eq!(compact.query().collection.result_window.hits.len(), 3);
+}
+
+#[test]
+fn manual_session_exclusions_resolve_and_dedupe_full_and_compact_ids() {
+    let temp = tempdir().unwrap();
+    let (index, records) = publish(temp.path());
+    let session_id = records[0].session_id.as_uuid();
+    let compact = session_id.simple().to_string()[..8].to_owned();
+    let mut request = lexical_request();
+    request.exclude_sessions = vec![format!("  {session_id}  "), compact, session_id.to_string()];
+    normalize_search_request(&mut request).unwrap();
+
+    let filters = search_filters(&request, &index, None).unwrap();
+    assert_eq!(filters.excluded_session_ids, vec![session_id]);
+    assert!(filters.exclude_session_tree.is_none());
+}
+
+#[test]
+fn manual_session_exclusions_request_retained_peer_and_render_original_selectors() {
+    let temp = tempdir().unwrap();
+    let (index, records) = publish(temp.path());
+    let session_id = records[0].session_id.as_uuid();
+    let compact = session_id.simple().to_string()[..8].to_owned();
+    let mut request = lexical_request();
+    request.exclude_sessions = vec![compact.clone()];
+    let plan = plan_search(
+        request,
+        SearchPolicy::lexical_only(SemanticReason::PolicyDisabled),
+    )
+    .unwrap();
+    let mut generation = RecordingGenerationPort::new(index);
+    let result = execute_search(
+        SearchApplicationRequest {
+            plan,
+            generation_target: GenerationReadTarget::Active,
+            compact_projection: false,
+            active_session: None,
+        },
+        &mut generation,
+        &UnusedSemanticPort,
+    )
+    .unwrap();
+    assert_eq!(
+        generation.retained_peer.get(),
+        Some(RetainedPeerRead::IfAvailable)
+    );
+    assert!(result.query().collection.result_window.hits.is_empty());
+
+    let read_model = result
+        .render_read_model(SearchApplicationReadModelInput {
+            commands: &[],
+            freshness_mode: "test",
+            generated_at: "2026-08-17T00:00:00.000Z",
+            semantic_fallback_code: None,
+            semantic_fallback_detail: None,
+            metrics: SearchRenderMetrics {
+                refresh_status: "existing_generation",
+                refresh_source_count: 1,
+                query_duration: result.query_duration(),
+            },
+        })
+        .unwrap();
+    assert_eq!(read_model["filters"]["exclude_session"], json!([compact]));
 }
 
 #[test]

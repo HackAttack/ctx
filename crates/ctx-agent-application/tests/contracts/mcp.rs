@@ -1114,12 +1114,12 @@ fn mcp_sources_reports_plugins_without_exposing_a_legacy_ingestion_path() {
 }
 
 #[test]
-fn mcp_search_excludes_active_codex_session_by_default_when_available() {
+fn mcp_search_does_not_infer_active_session_from_cli_environment() {
     let temp = tempdir();
     let fixture = provider_history_fixture("codex-sessions");
     let (_daemon, _) = import_codex_fixture_through_daemon(&temp, &fixture);
 
-    let excluded = mcp_roundtrip_with_env(
+    let default_search = mcp_roundtrip_with_env(
         &temp,
         &[
             json!({
@@ -1148,9 +1148,14 @@ fn mcp_search_excludes_active_codex_session_by_default_when_available() {
         ],
         &[("CODEX_THREAD_ID", "codex-session-root")],
     );
-    let excluded_search = &excluded[1]["result"]["structuredContent"];
-    assert_eq!(excluded_search["results"].as_array().unwrap().len(), 0);
-    assert!(excluded_search["filters"]["include_current_session"].is_null());
+    let default_search = &default_search[1]["result"]["structuredContent"];
+    let default_results = default_search["results"].as_array().unwrap();
+    assert_eq!(default_results.len(), 1, "{default_search:#}");
+    assert_eq!(
+        default_results[0]["provider_session_id"], "codex-session-root",
+        "{default_search:#}"
+    );
+    assert!(default_search["filters"]["include_current_session"].is_null());
 
     let included = mcp_roundtrip_with_env(
         &temp,

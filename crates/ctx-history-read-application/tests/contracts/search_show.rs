@@ -473,6 +473,14 @@ fn search_excludes_active_codex_session_by_default_when_available() {
         Path::new(&provider_history_fixture("codex-sessions")),
         &fixture,
     );
+    let child_fixture = fixture.join("2026/06/23/codex-session-child.jsonl");
+    let grandchild_fixture = fixture.join("2026/06/23/codex-session-grandchild.jsonl");
+    let grandchild_records = fs::read_to_string(child_fixture)
+        .unwrap()
+        .replace("codex-session-child", "codex-session-grandchild")
+        .replace("codex-session-root", "codex-session-child")
+        .replace("\"depth\":1", "\"depth\":2");
+    fs::write(grandchild_fixture, grandchild_records).unwrap();
     write_codex_message_fixture(
         &fixture,
         "codex-independent-root",
@@ -648,6 +656,35 @@ fn search_excludes_active_codex_session_by_default_when_available() {
         "explicit root selection included descendants or another root: {explicit_root:#}"
     );
 
+    let child_session_prefix = &child_session_id[..8];
+    let manually_excluded = json_output(ctx(&temp).args([
+        "search",
+        "local history search",
+        "--provider",
+        "codex",
+        "--events",
+        "--exclude-session",
+        root_session_id,
+        "--exclude-session",
+        child_session_prefix,
+        "--refresh",
+        "off",
+        "--format=json",
+    ]));
+    assert_eq!(
+        manually_excluded["filters"]["exclude_session"],
+        json!([root_session_id, child_session_prefix])
+    );
+    assert!(
+        manually_excluded["results"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|result| result["ctx_session_id"] != root_session_id
+                && result["ctx_session_id"] != child_session_id),
+        "repeatable manual exclusions leaked an excluded session: {manually_excluded:#}"
+    );
+
     let included = json_output(
         ctx(&temp)
             .env("CODEX_THREAD_ID", "codex-session-root")
@@ -690,6 +727,7 @@ fn search_excludes_active_codex_session_by_default_when_available() {
         BTreeSet::from([
             "codex-independent-root",
             "codex-session-child",
+            "codex-session-grandchild",
             "codex-session-root",
         ])
     );

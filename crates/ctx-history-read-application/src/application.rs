@@ -131,7 +131,13 @@ impl SearchApplicationRequest {
             .request()
             .session
             .as_deref()
-            .is_some_and(reference_needs_retained_peer);
+            .is_some_and(reference_needs_retained_peer)
+            || self
+                .plan
+                .request()
+                .exclude_sessions
+                .iter()
+                .any(|selector| reference_needs_retained_peer(selector));
         if self.compact_projection || compact_selector {
             RetainedPeerRead::IfAvailable
         } else {

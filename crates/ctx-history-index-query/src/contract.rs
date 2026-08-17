@@ -543,12 +543,13 @@ impl SearchContentScope {
 pub struct ExcludedSessionTree {
     pub provider: String,
     pub provider_session_id: String,
-    pub session_id: Option<Uuid>,
+    pub session_ids: Vec<Uuid>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct EventSearchFilters {
     pub session_id: Option<Uuid>,
+    pub excluded_session_ids: Vec<Uuid>,
     pub parent_session_id: Option<Uuid>,
     pub root_session_id: Option<Uuid>,
     pub provider: Option<String>,

@@ -152,6 +152,7 @@ fn request() -> SearchRequest {
         event_type: None,
         file: None,
         session: None,
+        exclude_sessions: Vec::new(),
         events: false,
         include_current_session: false,
         backend: Some(SearchBackend::Lexical),
@@ -176,6 +177,33 @@ fn custom_source_filter_rejects_noncustom_provider() {
     assert_eq!(
         validate_search_request(&request).unwrap_err().to_string(),
         "custom history source filters require the custom provider"
+    );
+}
+
+#[test]
+fn manual_session_exclusions_trim_selectors_and_reject_blanks() {
+    let mut request = request();
+    request.exclude_sessions = vec!["  abcdef12  ".to_owned()];
+    normalize_search_request(&mut request).unwrap();
+    assert_eq!(request.exclude_sessions, vec!["abcdef12".to_owned()]);
+
+    request.exclude_sessions.push("  ".to_owned());
+    assert_eq!(
+        normalize_search_request(&mut request)
+            .unwrap_err()
+            .to_string(),
+        "exclude_session selector is empty"
+    );
+}
+
+#[test]
+fn manual_session_exclusions_cannot_be_combined_with_positive_session() {
+    let mut request = request();
+    request.session = Some("abcdef12".to_owned());
+    request.exclude_sessions = vec!["abcdef34".to_owned()];
+    assert_eq!(
+        validate_search_request(&request).unwrap_err().to_string(),
+        "excluded sessions cannot be combined with a selected session"
     );
 }
 
@@ -457,6 +485,25 @@ fn active_tree_root_resolves_a_grandchild_with_an_immediate_parent_claim() {
     assert_eq!(
         resolved_test_root(&[grandchild], &records),
         Some(root.session_id)
+    );
+}
+
+#[test]
+fn active_tree_claim_closure_includes_nested_descendants() {
+    let root = Uuid::from_u128(1);
+    let child = Uuid::from_u128(2);
+    let grandchild = Uuid::from_u128(3);
+    let relations = [(child, root), (grandchild, child)];
+    assert_eq!(
+        resolved_session_tree_ids(root, |anchors| {
+            Ok(relations
+                .iter()
+                .filter(|(_, parent)| anchors.contains(parent))
+                .map(|(session, _)| *session)
+                .collect())
+        })
+        .unwrap(),
+        Some(vec![root, child, grandchild])
     );
 }
 

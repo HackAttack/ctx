@@ -111,6 +111,58 @@ fn copied_events_remain_searchable_and_preserve_exact_copy_claims() {
 }
 
 #[test]
+fn multiple_exact_session_exclusions_filter_lexical_and_semantic_candidates() {
+    let temp = tempdir().unwrap();
+    let source = source("multiple-session-exclusions.jsonl");
+    let first = document_for_session(&source, "first-session", 1, "multiple exclusion needle");
+    let second = document_for_session(&source, "second-session", 2, "multiple exclusion needle");
+    let retained =
+        document_for_session(&source, "retained-session", 3, "multiple exclusion needle");
+
+    let mut writer = GenerationWriter::open(temp.path(), WriterOptions::default())
+        .unwrap()
+        .into_writer()
+        .unwrap();
+    writer.begin_source(source.clone()).unwrap();
+    for record in [first.clone(), second.clone(), retained.clone()] {
+        writer.add_core_record(record).unwrap();
+    }
+    writer.certify_source(certificate(&source, 1, 3)).unwrap();
+    writer.commit(|_| true).unwrap();
+    let index = VerifiedIndex::open_pinned(temp.path()).unwrap();
+    let filters = EventSearchFilters {
+        excluded_session_ids: vec![first.session_id.as_uuid(), second.session_id.as_uuid()],
+        ..EventSearchFilters::default()
+    };
+
+    let lexical = index
+        .search_event_candidates_with_filters("multiple exclusion needle", &filters, 10)
+        .unwrap();
+    assert_eq!(
+        lexical
+            .iter()
+            .map(|candidate| candidate.event.session_id.as_uuid())
+            .collect::<Vec<_>>(),
+        vec![retained.session_id.as_uuid()]
+    );
+    let listed = index
+        .list_event_candidates_with_filters(&filters, 10)
+        .unwrap();
+    assert_eq!(
+        listed
+            .iter()
+            .map(|candidate| candidate.event.session_id.as_uuid())
+            .collect::<Vec<_>>(),
+        vec![retained.session_id.as_uuid()]
+    );
+    let semantic = index.semantic_filter_projection(&filters).unwrap();
+    assert_eq!(
+        semantic.event_ids().collect::<Vec<_>>(),
+        vec![retained.event_id.as_uuid()]
+    );
+}
+
+#[test]
 fn agent_scope_filter_uses_only_explicit_core_agent_scope() {
     let temp = tempdir().unwrap();
     let source = source("primary-scope-authority.jsonl");
@@ -562,7 +614,7 @@ fn filtered_search_covers_relationship_and_public_metadata_contracts() {
                 exclude_session_tree: Some(ExcludedSessionTree {
                     provider: "codex".to_owned(),
                     provider_session_id: "root-thread".to_owned(),
-                    session_id: Some(root_session_id.as_uuid()),
+                    session_ids: vec![root_session_id.as_uuid(), child_session_id.as_uuid()],
                 }),
                 ..EventSearchFilters::default()
             }

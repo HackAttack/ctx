@@ -121,8 +121,19 @@ impl Harness {
         I: IntoIterator<Item = S>,
         S: AsRef<OsStr>,
     {
-        let output = self
-            .command()
+        self.json_with_env(args, &[])
+    }
+
+    fn json_with_env<I, S>(&self, args: I, environment: &[(&str, &str)]) -> Value
+    where
+        I: IntoIterator<Item = S>,
+        S: AsRef<OsStr>,
+    {
+        let mut command = self.command();
+        for (name, value) in environment {
+            command.env(name, value);
+        }
+        let output = command
             .args(args)
             .output()
             .expect("run isolated ctx command");
@@ -226,6 +237,23 @@ impl Harness {
             "off",
             "--format=json",
         ])
+    }
+
+    fn search_as_active_session(&self, query: &str, include_current_session: bool) -> Value {
+        let mut args = vec![
+            "search",
+            query,
+            "--provider",
+            "grok-build",
+            "--events",
+            "--refresh",
+            "off",
+            "--format=json",
+        ];
+        if include_current_session {
+            args.push("--include-current-session");
+        }
+        self.json_with_env(args, &[("GROK_SESSION_ID", FIXTURE_SESSION_ID)])
     }
 }
 
@@ -508,6 +536,15 @@ fn explicit_fixture_import_search_show_noop_append_resume_is_source_read_only() 
     let first_generation = generation(first_source).to_owned();
     let search = harness.search(EXPLICIT_ORACLE);
     let result = one_matching_result(&search, EXPLICIT_ORACLE);
+    let excluded = harness.search_as_active_session(EXPLICIT_ORACLE, false);
+    assert!(
+        excluded["results"].as_array().unwrap().is_empty(),
+        "{excluded:#}"
+    );
+    one_matching_result(
+        &harness.search_as_active_session(EXPLICIT_ORACLE, true),
+        EXPLICIT_ORACLE,
+    );
     let shown = show_event(&harness, result);
     assert_eq!(shown["payload_type"], "event_window", "{shown:#}");
     assert_eq!(shown["event"]["provider"], "grok_build", "{shown:#}");

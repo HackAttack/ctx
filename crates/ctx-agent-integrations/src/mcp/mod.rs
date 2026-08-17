@@ -680,7 +680,7 @@ fn tool_definitions(provider_names: Vec<&'static str>) -> Vec<Value> {
                 "file": { "type": "string", "description": "Indexed touched-file path. Required unless query is provided." },
                 "session": { "type": "string", "description": "ctx session id." },
                 "events": { "type": "boolean", "default": false },
-                "include_current_session": { "type": "boolean", "default": false, "description": "Include the active Codex session tree when CODEX_THREAD_ID is set." },
+                "include_current_session": { "type": "boolean", "default": false, "description": "Compatibility input accepted by MCP; MCP does not infer a current session, so this has no effect." },
                 "backend": { "type": "string", "enum": ["hybrid", "semantic", "lexical"], "description": "Optional backend override. Defaults to lexical unless local semantic search is enabled in ctx config, then hybrid." },
                 "semantic_weight": { "type": "number", "minimum": 0.0, "maximum": 1.0, "default": 0.35 }
             }), vec![], "content_scope", "event_type"),

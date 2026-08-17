@@ -128,6 +128,8 @@ pub fn render_search_json(input: SearchJsonInput<'_>) -> Result<Value> {
             "event_type": request.event_type,
             "file": request.file.as_ref().map(|path| path.display().to_string()),
             "session": request.session,
+            "exclude_session": (!request.exclude_sessions.is_empty())
+                .then_some(&request.exclude_sessions),
             "primary_only": request.primary_only.then_some(true),
             "include_current_session": request.include_current_session.then_some(true),
         },

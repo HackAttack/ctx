@@ -405,6 +405,7 @@ fn valid_search(args: &[&str], root: RootOptions) -> bool {
                 || tail.has_nonempty_value("--term")
                 || tail.has("--file"))
             && !(tail.has("--content-scope") && tail.has("--event-type"))
+            && !(tail.has("--session") && tail.has("--exclude-session"))
     })
 }
 
@@ -487,6 +488,7 @@ const SEARCH_OPTIONS: &[OptionSpec] = &[
     OptionSpec::value("--event-type"),
     OptionSpec::value("--file"),
     OptionSpec::value("--session"),
+    OptionSpec::repeated("--exclude-session"),
     OptionSpec::flag("--events"),
     OptionSpec::checked("--backend", backend),
     OptionSpec::checked("--semantic-weight", semantic_weight),

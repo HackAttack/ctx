@@ -34,10 +34,14 @@ covers primary and subagent work with root-diverse results; use
 bounded, so do not infer exact corpus-wide counts from the number of returned
 hits.
 
-When ctx runs inside Codex and `CODEX_THREAD_ID` is available, search excludes
-the active Codex session tree by default to avoid returning the current prompt
-or its subagent work as the top match. Use `--include-current-session` only when
-the active session tree is itself the target.
+Direct CLI searches automatically exclude the current session tree for Codex,
+DeepSeek Harness, Grok Build, Pi, Claude Code, Goose, Hermes, Shelley, Qwen
+Code, and Mux when the current session can be identified unambiguously.
+Unsupported or ambiguous detection fails open: ctx leaves the history
+included. `--include-current-session` restores the automatically excluded
+tree. Repeat `--exclude-session <ctx-uuid-or-unambiguous-prefix>` to exclude
+exact named sessions; the option is repeatable and conflicts with `--session`.
+MCP searches do not automatically exclude the caller's session.
 
 ## History Research Reports
 

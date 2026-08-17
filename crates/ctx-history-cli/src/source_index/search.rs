@@ -357,6 +357,7 @@ fn run_search_inner<P: HistorySemanticPort>(
         refresh,
         !json_output,
         semantic_port,
+        super::detected_active_session(),
     )?;
     let collection = &application.query().collection;
     let index = application.index();
@@ -542,6 +543,7 @@ fn mcp_search_inner<P: HistorySemanticPort>(
         refresh,
         true,
         semantic_port,
+        None,
     )?;
     let observation = if config.local_usage.enabled {
         search_context_observation(&value, &application.query().collection, application.index())
@@ -684,6 +686,7 @@ fn search_pinned_generation<P: HistorySemanticPort>(
     refresh: RefreshOutcome,
     compact_projection: bool,
     semantic_port: &P,
+    active_session: Option<ctx_history_read_application::ActiveSessionExclusion>,
 ) -> SourceSearchResult<(
     Value,
     ctx_history_read_application::SearchApplicationResult,
@@ -706,6 +709,7 @@ fn search_pinned_generation<P: HistorySemanticPort>(
         },
         compact_projection,
         semantic_port,
+        active_session,
     )?;
     Ok((value, application, status, source_count))
 }
@@ -739,6 +743,7 @@ pub(super) fn search_existing_generation(
         },
         false,
         &crate::semantic::SemanticQueryAdapter::new(data_root),
+        None,
     )
     .map(|(value, application)| {
         let (query, index) = application.into_parts();
@@ -754,8 +759,8 @@ fn search_existing_generation_with_port<P: HistorySemanticPort>(
     refresh: SearchRefreshContext<'_>,
     compact_projection: bool,
     semantic_port: &P,
+    active_session: Option<ctx_history_read_application::ActiveSessionExclusion>,
 ) -> SourceSearchResult<(Value, ctx_history_read_application::SearchApplicationResult)> {
-    let active_session = active_session_exclusion();
     let mut index = Some(index);
     let mut generation_port = |request: &ctx_history_read_application::GenerationReadRequest| {
         generation_read(
@@ -790,19 +795,6 @@ fn search_existing_generation_with_port<P: HistorySemanticPort>(
         result.query_duration(),
     )?;
     Ok((value, result))
-}
-
-fn active_session_exclusion() -> Option<ctx_history_read_application::ActiveSessionExclusion> {
-    std::env::var("CODEX_THREAD_ID")
-        .ok()
-        .map(|value| value.trim().to_owned())
-        .filter(|value| !value.is_empty())
-        .map(
-            |provider_session_id| ctx_history_read_application::ActiveSessionExclusion {
-                provider: ctx_history_core::CaptureProvider::Codex.as_str().to_owned(),
-                provider_session_id,
-            },
-        )
 }
 
 #[cfg(test)]

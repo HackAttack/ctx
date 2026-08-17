@@ -122,9 +122,14 @@ the last published generation in background mode. Use `--refresh wait` for an
 authoritative Core refresh or `--refresh off` for a query that never starts or
 wakes a process.
 
-Inside Codex, ctx excludes the active session tree by default when it can
-identify it, so your current prompt and subagents do not dominate results. Add
-`--include-current-session` when that is what you want to search.
+Direct CLI searches automatically exclude the current session tree for Codex,
+DeepSeek Harness, Grok Build, Pi, Claude Code, Goose, Hermes, Shelley, Qwen
+Code, and Mux when the current session can be identified unambiguously. If
+detection is unsupported or ambiguous, ctx fails open and leaves the history
+included. Add `--include-current-session` to restore the automatically
+excluded tree. Repeat `--exclude-session <ctx-uuid-or-unambiguous-prefix>` to
+exclude exact named sessions; it conflicts with `--session`. MCP searches do
+not automatically exclude the caller's session.
 
 Copy ctx-owned IDs from the result and inspect the hit or transcript:
 

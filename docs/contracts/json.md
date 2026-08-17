@@ -862,10 +862,15 @@ as private like the rest of search JSON.
 `ctx search "<query>" --session <ctx-session-id>` command strings when the
 required ctx IDs are known.
 
-When ctx can identify the active Codex provider session through
-`CODEX_THREAD_ID`, search filters include `exclude_provider_session` and omit
-that active session tree by default. Passing `--include-current-session` removes
-that filter.
+For direct CLI searches, when ctx can identify the current session
+unambiguously for Codex, DeepSeek Harness, Grok Build, Pi, Claude Code, Goose,
+Hermes, Shelley, Qwen Code, or Mux, it applies the automatic
+current-session-tree exclusion. Unsupported or ambiguous detection fails open
+and applies no automatic exclusion. Passing
+`--include-current-session` removes the automatic exclusion. Repeatable
+`--exclude-session` accepts a ctx UUID or unambiguous prefix and excludes the
+exact named session; it conflicts with `--session`. JSON search filters echo
+those explicit selectors in the repeatable `exclude_session` field.
 
 ## MCP Tool Results
 
@@ -883,9 +888,9 @@ MCP search follows the same committed-generation and lexical/semantic/hybrid
 retrieval contract as CLI search. Hybrid may report lexical fallback when
 semantic is disabled or unavailable; semantic-only unavailability is a typed
 error, and zero semantic weight performs no vector work. MCP search does not
-itself import provider history. It also excludes the active Codex session tree
-by default when `CODEX_THREAD_ID` is set; pass
-`include_current_session: true` to opt back in.
+itself import provider history and does not automatically exclude the caller's
+session. Direct CLI current-session detection and
+`--include-current-session` do not apply to MCP calls.
 
 MCP `show_event`, `show_session`, and full-content `query_events` structured
 event rows reuse the same snake_case `activity` value. Text fallback is

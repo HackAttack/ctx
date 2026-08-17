@@ -214,8 +214,12 @@ fn semantic_filter_projection_matches_lexical_filter_semantics_without_core_deco
             exclude_session_tree: Some(ExcludedSessionTree {
                 provider: "codex".to_owned(),
                 provider_session_id: "target-session".to_owned(),
-                session_id: Some(target.session_id.as_uuid()),
+                session_ids: vec![target.session_id.as_uuid()],
             }),
+            ..EventSearchFilters::default()
+        },
+        EventSearchFilters {
+            excluded_session_ids: vec![target.session_id.as_uuid(), subagent.session_id.as_uuid()],
             ..EventSearchFilters::default()
         },
     ];

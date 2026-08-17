@@ -40,6 +40,7 @@ pub struct SearchArgs {
     pub event_type: Option<String>,
     pub file: Option<PathBuf>,
     pub session: Option<String>,
+    pub exclude_sessions: Vec<String>,
     pub events: bool,
     pub backend: Option<SearchBackendArg>,
     pub semantic_weight: f32,
@@ -122,6 +123,7 @@ impl From<SearchArgs> for SearchRequest {
             event_type: args.event_type,
             file: args.file,
             session: args.session,
+            exclude_sessions: args.exclude_sessions,
             events: args.events,
             backend: args.backend.map(|value| match value {
                 SearchBackendArg::Hybrid => SearchBackend::Hybrid,
@@ -171,6 +173,7 @@ mod tests {
             event_type: None,
             file: Some(PathBuf::from("src/lib.rs")),
             session: None,
+            exclude_sessions: Vec::new(),
             events: false,
             backend: Some(SearchBackendArg::Lexical),
             semantic_weight: 0.35,

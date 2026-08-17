@@ -190,11 +190,15 @@ last published generation without starting or waking a process. Use
 `--refresh wait` for authoritative Core refresh, or `ctx import --all` for an
 explicit import catch-up; either may use a finite Core worker in manual mode.
 
-When ctx runs inside Codex, search excludes the active Codex session tree by
-default when it can identify it. Use `--include-current-session` if the current
-session or its subagent work is the history you want to search. Use
-`--refresh off` when you need a strictly read-only query over the active Core
-generation.
+Direct CLI searches automatically exclude the current session tree for Codex,
+DeepSeek Harness, Grok Build, Pi, Claude Code, Goose, Hermes, Shelley, Qwen
+Code, and Mux when the current session can be identified unambiguously.
+Unsupported or ambiguous detection fails open: ctx leaves the history
+included. Use `--include-current-session` to restore the automatically
+excluded tree. Repeat `--exclude-session <ctx-uuid-or-unambiguous-prefix>` to
+exclude exact named sessions; it conflicts with `--session`. MCP searches do
+not automatically exclude the caller's session. Use `--refresh off` when you
+need a strictly read-only query over the active Core generation.
 
 Automatic background refresh may start the configured persistent daemon for
 local history freshness. Semantic and hybrid search read existing local sidecar

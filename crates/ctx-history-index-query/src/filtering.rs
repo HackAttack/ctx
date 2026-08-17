@@ -40,6 +40,20 @@ pub(super) fn filtered_event_query(
         filters.provider_session_id.as_deref(),
     )?;
     add_optional_uuid_filter(&mut clauses, fields.session_id, filters.session_id);
+    if !filters.excluded_session_ids.is_empty() {
+        clauses.push((
+            Occur::MustNot,
+            Box::new(TermSetQuery::new(
+                filters
+                    .excluded_session_ids
+                    .iter()
+                    .map(|session_id| {
+                        Term::from_field_text(fields.session_id, &session_id.to_string())
+                    })
+                    .collect::<Vec<_>>(),
+            )),
+        ));
+    }
     add_optional_uuid_filter(
         &mut clauses,
         fields.parent_session_id,
@@ -284,19 +298,21 @@ pub(super) fn excluded_session_tree_query(
             IndexRecordOption::Basic,
         )),
     ]);
-    let Some(session_id) = excluded.session_id else {
+    if excluded.session_ids.is_empty() {
         return Ok(Box::new(provider_thread));
-    };
-    let session_id = session_id.to_string();
+    }
     let mut alternatives: Vec<Box<dyn Query>> = vec![Box::new(provider_thread)];
     for field in [
         fields.session_id,
         fields.parent_session_id,
         fields.root_session_id,
     ] {
-        alternatives.push(Box::new(TermQuery::new(
-            Term::from_field_text(field, &session_id),
-            IndexRecordOption::Basic,
+        alternatives.push(Box::new(TermSetQuery::new(
+            excluded
+                .session_ids
+                .iter()
+                .map(|session_id| Term::from_field_text(field, &session_id.to_string()))
+                .collect::<Vec<_>>(),
         )));
     }
     Ok(Box::new(BooleanQuery::union(alternatives)))

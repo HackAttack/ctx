@@ -38,6 +38,7 @@ impl From<SearchRequest> for SourceSearchRequest {
             file: args.file,
             events: args.events || args.session.is_some(),
             session: args.session,
+            exclude_sessions: args.exclude_sessions,
             include_current_session: args.include_current_session,
             backend: args.backend.map(|backend| match backend {
                 HistorySearchBackend::Hybrid => SearchBackend::Hybrid,

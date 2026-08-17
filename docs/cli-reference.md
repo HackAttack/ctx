@@ -476,6 +476,7 @@ ctx search "token budget" --refresh off
 ctx search "signed metadata" --term checksum --term release
 ctx search "token budget" --limit 5
 ctx search "token budget" --session <ctx-session-id>
+ctx search "token budget" --exclude-session <ctx-session-id-or-prefix>
 ctx search "human decisions" --primary-only
 ctx search "this current task" --include-current-session
 ctx search "mail provider throttled bulk mailbox setup" --backend hybrid
@@ -573,12 +574,18 @@ Ordinary search uses the all-agent, root-diverse behavior described above. Use
 `--primary-only` only when a deliberately narrow search should exclude
 subagent work.
 
-When ctx is run from Codex and `CODEX_THREAD_ID` is available, search excludes
-the active Codex session tree by default so the current task and its subagents
-do not dominate historical retrieval. Use `--include-current-session` to opt
-back in. `--refresh off` is read-only for ctx-derived storage, but it still
-serves indexed snippets and typed show/locate data from the active Core
-generation. Explicit semantic or hybrid
+Direct CLI searches automatically exclude the current session tree for Codex,
+DeepSeek Harness, Grok Build, Pi, Claude Code, Goose, Hermes, Shelley, Qwen
+Code, and Mux when the current session can be identified unambiguously.
+Unsupported or ambiguous detection fails open: ctx leaves the history
+included. `--include-current-session` restores the automatically excluded
+tree. Repeat `--exclude-session <ctx-uuid-or-unambiguous-prefix>` to exclude
+exact named sessions; the option is repeatable and conflicts with `--session`.
+MCP searches do not automatically exclude the caller's session.
+
+`--refresh off` is read-only for ctx-derived storage, but it still serves
+indexed snippets and typed show/locate data from the active Core generation.
+Explicit semantic or hybrid
 requests may read a compatible semantic generation and ask the retained daemon
 query service to embed the query from an already-cached model.
 
@@ -610,6 +617,8 @@ Filters:
 - `--file <path>`, indexed touched-file path metadata, not the current
   filesystem;
 - `--session <ctx-session-id-or-prefix>`, for dense event results within one session;
+- repeatable `--exclude-session <ctx-session-id-or-prefix>`, for exact named
+  sessions to omit;
 - `--term <query-or-keyword>`, repeatable broadening queries or keywords merged with OR-style semantics;
 - `--events`, for dense event-level results instead of the default root-diverse results;
 - `--backend hybrid|semantic|lexical`, where `lexical` queries
@@ -689,9 +698,9 @@ Treat all MCP output as private local history: it may include absolute paths,
 source metadata, snippets, and transcript text, and the MCP host may log or
 forward tool output.
 
-MCP search follows the same active Codex session-tree exclusion as the CLI when
-`CODEX_THREAD_ID` is set. Pass `include_current_session: true` to the search
-tool when the active session tree itself is the target.
+MCP searches do not automatically exclude the caller's session; the CLI's
+automatic current-session detection and `--include-current-session` behavior
+do not apply to MCP calls.
 
 MCP `show_event`, log-mode `show_session`, and full-content `query_events`
 event rows expose the same optional snake_case `activity` value in

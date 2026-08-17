@@ -44,6 +44,7 @@ ctx search "token budget" --refresh off
 ctx search "signed metadata" --term checksum --term release
 ctx search "token budget" --limit 5
 ctx search "token budget" --session <ctx-session-id>
+ctx search "token budget" --exclude-session <ctx-session-id-or-prefix>
 ctx search "human decisions" --primary-only
 ctx search "this current task" --include-current-session
 ctx search "mail provider throttled bulk mailbox setup" --backend hybrid
@@ -88,6 +89,7 @@ Search filters narrow text and JSON output:
 - `--content-scope all|transcript|calls|outputs`;
 - `--file <path>`;
 - `--session <ctx-session-id-or-prefix>`;
+- repeatable `--exclude-session <ctx-session-id-or-prefix>`;
 - repeatable `--term <query-or-keyword>`;
 - `--events`;
 - `--primary-only`;
@@ -117,9 +119,16 @@ filter or the class-aware content scope, not both.
 
 Ordinary search uses the all-agent, root-diverse behavior described above. Use
 `--primary-only` only when a deliberately narrow search should exclude
-subagent work. When `CODEX_THREAD_ID` is available, ctx also excludes the
-active Codex session tree by default; use `--include-current-session` to
-include it.
+subagent work.
+
+Direct CLI searches automatically exclude the current session tree for Codex,
+DeepSeek Harness, Grok Build, Pi, Claude Code, Goose, Hermes, Shelley, Qwen
+Code, and Mux when the current session can be identified unambiguously.
+Unsupported or ambiguous detection fails open: ctx leaves the history
+included. `--include-current-session` restores the automatically excluded
+tree. Repeat `--exclude-session <ctx-uuid-or-unambiguous-prefix>` to exclude
+exact named sessions; the option is repeatable and conflicts with `--session`.
+MCP searches do not automatically exclude the caller's session.
 
 `--limit` defaults to `20` and is capped at `200`. Ordinary search returns
 one result per root task before repeating a root. Use `--session` for dense
