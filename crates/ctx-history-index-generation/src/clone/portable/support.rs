@@ -123,20 +123,20 @@ pub(super) fn clone_checkpoint(_stage: PortableCloneStage, _path: &Path) -> Resu
 }
 
 #[cfg(any(test, feature = "test-support"))]
-pub(super) fn record_plan_metrics(plan: &ClonePlan, available: u64) {
-    record_plan_metrics_with_required(plan, available, plan.required_headroom);
+pub(super) fn record_plan_metrics(plan: &ValidatedClonePlan, available: u64) {
+    record_plan_metrics_with_required(plan, available, plan.required_headroom());
 }
 
 #[cfg(any(test, feature = "test-support"))]
 pub(super) fn record_plan_metrics_with_required(
-    plan: &ClonePlan,
+    plan: &ValidatedClonePlan,
     available: u64,
     required_headroom: u64,
 ) {
     TEST_METRICS.with(|metrics| {
         metrics.set(PortableCloneMetrics {
-            planned_files: plan.files.len(),
-            logical_bytes: plan.logical_bytes,
+            planned_files: plan.files().len(),
+            logical_bytes: plan.logical_bytes(),
             required_headroom,
             available_bytes: available,
             ..metrics.get()
@@ -145,11 +145,11 @@ pub(super) fn record_plan_metrics_with_required(
 }
 
 #[cfg(not(any(test, feature = "test-support")))]
-pub(super) fn record_plan_metrics(_plan: &ClonePlan, _available: u64) {}
+pub(super) fn record_plan_metrics(_plan: &ValidatedClonePlan, _available: u64) {}
 
 #[cfg(not(any(test, feature = "test-support")))]
 pub(super) fn record_plan_metrics_with_required(
-    _plan: &ClonePlan,
+    _plan: &ValidatedClonePlan,
     _available: u64,
     _required_headroom: u64,
 ) {

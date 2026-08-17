@@ -74,9 +74,15 @@ fn portable_copy_failure_is_previsibility_and_retryable() {
 }
 
 #[test]
-fn portable_copy_rejects_insufficient_headroom_before_copying() {
+fn portable_planning_rejects_insufficient_headroom_without_transfer_or_mutation() {
     let predecessor = GoldenPredecessor::copy();
     let pointer_before = fs::read(predecessor.root().join("active-generation.json")).unwrap();
+    let generations = predecessor.root().join(INDEX_GENERATIONS_DIRECTORY);
+    let mut generation_entries_before = fs::read_dir(&generations)
+        .unwrap()
+        .map(|entry| entry.unwrap().file_name())
+        .collect::<Vec<_>>();
+    generation_entries_before.sort();
     let _guard = PortableCloneTestGuard::set(
         PortableCloneTestOptions {
             available_bytes: Some(0),
@@ -96,6 +102,12 @@ fn portable_copy_rejects_insufficient_headroom_before_copying() {
         fs::read(predecessor.root().join("active-generation.json")).unwrap(),
         pointer_before
     );
+    let mut generation_entries_after = fs::read_dir(generations)
+        .unwrap()
+        .map(|entry| entry.unwrap().file_name())
+        .collect::<Vec<_>>();
+    generation_entries_after.sort();
+    assert_eq!(generation_entries_after, generation_entries_before);
 }
 
 #[test]
