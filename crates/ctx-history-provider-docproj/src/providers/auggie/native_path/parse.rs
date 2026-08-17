@@ -37,8 +37,8 @@ pub(super) fn parse_opened_auggie_source(
     let data = AuggieSessionData::parse(&root, context)?;
     let session = ParsedAuggieSession {
         provider_session_id: data.provider_session_id.clone(),
-        parent_provider_session_id: data.parent_provider_session_id.clone(),
-        root_provider_session_id: data.root_provider_session_id.clone(),
+        parent_session_claim: data.parent_session_claim.clone(),
+        root_session_claim: data.root_session_claim.clone(),
         cwd: data.cwd.clone(),
     };
     let parsed_events = parse_events(&data)?;
@@ -203,8 +203,8 @@ mod tests {
         ];
         let data = AuggieSessionData {
             provider_session_id: "auggie-accounting".to_owned(),
-            parent_provider_session_id: None,
-            root_provider_session_id: None,
+            parent_session_claim: crate::provider::providers::auggie::AuggieLineageClaim::Absent,
+            root_session_claim: crate::provider::providers::auggie::AuggieLineageClaim::Absent,
             chat_history: &chat_history,
             started_at: DateTime::<Utc>::UNIX_EPOCH,
             cwd: None,

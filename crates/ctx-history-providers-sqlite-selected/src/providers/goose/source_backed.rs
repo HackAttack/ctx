@@ -54,7 +54,7 @@ use fingerprint::GooseLogicalFingerprint;
 const GOOSE_SOURCE_ANCHOR_NAMESPACE: &str = "goose.installed-sessions";
 const GOOSE_SOURCE_ANCHOR_KEY: &str = "selected-platform-sessions-db";
 const GOOSE_SOURCE_SCHEMA_VARIANT: &str = "goose-sessions-sqlite-v0";
-const GOOSE_PARSER_REVISION: &str = "goose-logical-sqlite-v8-closed-facts";
+const GOOSE_PARSER_REVISION: &str = "goose-logical-sqlite-v9-closed-facts-agent-scope";
 const GOOSE_NATIVE_SESSION_NAMESPACE: &str = "goose.session";
 const GOOSE_NATIVE_EVENT_NAMESPACE: &str = "goose.message";
 const GOOSE_LOGICAL_SESSION_KIND: &str = "goose-session";

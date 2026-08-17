@@ -33,7 +33,8 @@ const ZED_LOGICAL_SESSION_KIND: &str = "zed-thread";
 const ZED_LOGICAL_EVENT_KIND: &str = "zed-thread-event";
 const ZED_SOURCE_SCHEMA_VARIANT: &str = "zed-nativepath-sqlite-v0";
 const ZED_SOURCE_REVISION_KIND: &str = "zed-logical-rows-v1";
-pub(crate) const ZED_PARSER_REVISION: &str = "zed-nativepath-source-backed-v3-neutral-core";
+pub(crate) const ZED_PARSER_REVISION: &str =
+    "zed-nativepath-source-backed-v4-neutral-core-agent-scope";
 
 #[derive(Debug, Error)]
 pub(crate) enum ZedSourceBackedErrorV0 {

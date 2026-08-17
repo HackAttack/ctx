@@ -39,7 +39,8 @@ use super::{
 const KIRO_SOURCE_ANCHOR_NAMESPACE: &str = "kiro.legacy-sqlite";
 const KIRO_SOURCE_ANCHOR_KEY: &str = "default-history";
 const KIRO_SOURCE_SCHEMA_VARIANT: &str = "kiro-legacy-conversations-sqlite-v1";
-const KIRO_SOURCE_BACKED_PARSER_REVISION: &str = "kiro-source-backed-logical-v3-neutral-core";
+const KIRO_SOURCE_BACKED_PARSER_REVISION: &str =
+    "kiro-source-backed-logical-v4-neutral-core-agent-scope";
 const KIRO_NATIVE_SESSION_NAMESPACE: &str = "kiro.conversation";
 const KIRO_NATIVE_EVENT_NAMESPACE: &str = "kiro.history-event";
 const KIRO_LOGICAL_SESSION_KIND: &str = "kiro-conversation";

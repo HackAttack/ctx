@@ -58,7 +58,8 @@ mod tests;
 const SHELLEY_SOURCE_ANCHOR_NAMESPACE: &str = "shelley.exact-cwd-slot";
 const SHELLEY_SOURCE_ANCHOR_KEY: &str = "shelley.db";
 const SHELLEY_SOURCE_SCHEMA_VARIANT: &str = "shelley-exact-cwd-sqlite-v1";
-pub(crate) const SHELLEY_SOURCE_PARSER_REVISION: &str = "shelley-source-backed-v3-neutral-core";
+pub(crate) const SHELLEY_SOURCE_PARSER_REVISION: &str =
+    "shelley-source-backed-v4-neutral-core-agent-scope";
 const SHELLEY_LOGICAL_SESSION_KIND: &str = "shelley-conversation";
 const SHELLEY_NATIVE_SESSION_NAMESPACE: &str = "shelley.conversation";
 const SHELLEY_LOGICAL_EVENT_KIND: &str = "shelley-message";

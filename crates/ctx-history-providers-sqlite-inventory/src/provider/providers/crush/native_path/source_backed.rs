@@ -57,7 +57,8 @@ const CRUSH_SOURCE_ANCHOR_NAMESPACE: &str = "crush.project-database";
 const CRUSH_INVENTORY_AUTHORITY_NAMESPACE: &str = "crush.project-inventory";
 const CRUSH_INVENTORY_REVISION_KIND: &str = "crush-selected-registered-projects-v0";
 pub(crate) const CRUSH_SOURCE_SCHEMA_VARIANT: &str = "crush-project-sqlite-v0";
-pub(crate) const CRUSH_PARSER_REVISION: &str = "crush-sqlite-source-backed-v3-neutral-core";
+pub(crate) const CRUSH_PARSER_REVISION: &str =
+    "crush-sqlite-source-backed-v4-neutral-core-agent-scope";
 const CRUSH_NATIVE_SESSION_NAMESPACE: &str = "crush.session";
 const CRUSH_NATIVE_MESSAGE_NAMESPACE: &str = "crush.message";
 const CRUSH_LOGICAL_SESSION_KIND: &str = "crush-session";

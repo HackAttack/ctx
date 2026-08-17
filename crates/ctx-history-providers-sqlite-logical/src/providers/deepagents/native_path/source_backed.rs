@@ -50,7 +50,8 @@ use crate::{
 const DEEPAGENTS_SOURCE_ANCHOR_NAMESPACE: &str = "deepagents.sessions";
 const DEEPAGENTS_SOURCE_ANCHOR_KEY: &str = "selected-sessions-db";
 const DEEPAGENTS_SOURCE_SCHEMA_VARIANT: &str = "deepagents-sqlite-write-messages-v0";
-const DEEPAGENTS_SOURCE_PARSER_REVISION: &str = "deepagents-source-backed-v2-neutral-core";
+const DEEPAGENTS_SOURCE_PARSER_REVISION: &str =
+    "deepagents-source-backed-v3-neutral-core-agent-scope";
 const DEEPAGENTS_NATIVE_SESSION_NAMESPACE: &str = "deepagents.thread";
 const DEEPAGENTS_NATIVE_MESSAGE_NAMESPACE: &str = "deepagents.message";
 const DEEPAGENTS_NATIVE_WRITE_NAMESPACE: &str = "deepagents.write";

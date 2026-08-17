@@ -1,11 +1,11 @@
 use std::{fs, path::Path};
 
 use ctx_history_core::{
-    derive_event_id, derive_native_session_id, CaptureProvider, CoreRecord, EventIdentityInput,
-    EventType, NativeItemKey, PositionStability, SourceKey, StableEntityId, SubrecordSelector,
-    TypedKey,
+    derive_event_id, derive_native_session_id, AgentScope, CaptureProvider, CertifiedSource,
+    CoreRecord, EventIdentityInput, EventType, NativeItemKey, PositionStability, SourceKey,
+    StableEntityId, SubrecordSelector, TypedKey,
 };
-use ctx_history_index::{VerifiedIndex, WriterOptions};
+use ctx_history_index::{GenerationWriter, VerifiedIndex, WriterOptions};
 use serde_json::Value;
 
 use crate::{
@@ -27,7 +27,8 @@ const NATIVE_EVENT_REUSED_TOOL_CALL_POSITION_KIND: &str =
     "mistral-vibe-duplicate-tool-call-id-ordinal";
 const LOGICAL_SESSION_KIND: &str = "mistral-vibe-session";
 const LOGICAL_EVENT_KIND: &str = "mistral-vibe-event";
-const PARSER_REVISION: &str = "mistral-vibe-source-backed-v12-core-activity";
+const PARSER_REVISION: &str = "mistral-vibe-source-backed-v13-core-activity-agent-scope";
+const PRE_AGENT_SCOPE_PARSER_REVISION: &str = "mistral-vibe-source-backed-v12-core-activity";
 
 fn source_key(native_session_id: &str) -> SourceKey {
     SourceKey::derive_provider_native(
@@ -156,6 +157,86 @@ fn published_session(index: &Path, provider_session_id: &str) -> Vec<CoreRecord>
         .collect::<Vec<_>>();
     records.sort_by_key(|record| record.event_sequence);
     records
+}
+
+#[test]
+fn unchanged_pre_agent_scope_certificate_is_replaced_instead_of_replayed_stale() {
+    let messages = serde_json::json!({
+        "role": "user",
+        "message_id": "scope-upgrade-message",
+        "content": "unchanged scope upgrade fixture",
+    })
+    .to_string()
+        + "\n";
+    let temp = crate::test_support_paths::tempdir().unwrap();
+    let source_root = temp.path().join("source");
+    let index = temp.path().join("index");
+    write_session(&source_root, &messages);
+    refresh_source_backed_generation(&index, &registry(&source_root), WriterOptions::default())
+        .unwrap();
+
+    let source = source_key(SESSION_ID);
+    let current = VerifiedIndex::open(&index).unwrap();
+    let current_certificate = current
+        .manifest()
+        .sources
+        .iter()
+        .find(|certificate| certificate.observation().source() == &source)
+        .unwrap()
+        .clone();
+    let current_routes = current.manifest().source_routes().to_vec();
+    let mut stale_records = published_session(&index, SESSION_ID);
+    assert_eq!(stale_records.len(), 1);
+    for record in &mut stale_records {
+        record.parser_revision = PRE_AGENT_SCOPE_PARSER_REVISION.to_owned();
+        record.agent_scope = None;
+        record.validate_contract().unwrap();
+    }
+    let stale_certificate = CertifiedSource::certify_with_frontier(
+        current_certificate.observation().clone(),
+        current_certificate.observation().clone(),
+        PRE_AGENT_SCOPE_PARSER_REVISION,
+        *current_certificate.content_digest(),
+        current_certificate.counts(),
+        current_certificate.frontier().cloned(),
+    )
+    .unwrap();
+    drop(current);
+
+    let mut writer = GenerationWriter::open(&index, WriterOptions::default())
+        .unwrap()
+        .into_writer()
+        .unwrap();
+    writer.begin_source(source.clone()).unwrap();
+    for record in stale_records {
+        writer.add_core_record(record).unwrap();
+    }
+    writer.certify_source(stale_certificate).unwrap();
+    writer.set_present_source_routes(current_routes).unwrap();
+    let stale_generation = writer.commit(|_| true).unwrap().generation_id;
+    let stale = published_session(&index, SESSION_ID);
+    assert_eq!(stale[0].parser_revision, PRE_AGENT_SCOPE_PARSER_REVISION);
+    assert_eq!(stale[0].agent_scope, None);
+
+    let replacement =
+        refresh_source_backed_generation(&index, &registry(&source_root), WriterOptions::default())
+            .unwrap();
+    assert_ne!(replacement.commit.generation_id, stale_generation);
+    let replaced = published_session(&index, SESSION_ID);
+    assert_eq!(replaced.len(), 1);
+    assert_eq!(replaced[0].parser_revision, PARSER_REVISION);
+    assert_eq!(replaced[0].agent_scope, Some(AgentScope::Primary));
+    let replaced_index = VerifiedIndex::open(&index).unwrap();
+    assert_eq!(
+        replaced_index
+            .manifest()
+            .sources
+            .iter()
+            .find(|certificate| certificate.observation().source() == &source)
+            .unwrap()
+            .parser_revision(),
+        PARSER_REVISION
+    );
 }
 
 #[test]

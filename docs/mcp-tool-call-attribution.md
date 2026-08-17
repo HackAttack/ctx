@@ -89,7 +89,7 @@ The exact full tuples are:
   generation 1 only. Codex producer versions 0.200.0, 0.201.0, and 0.202.0 are
   separate explicit `not-qualified` lanes and never inherit exact status.
 - Warp `warp_sqlite` / `warp-agent-task-protobuf-v1`, parser
-  `warp-source-backed-logical-v6-neutral-activity`, for strict unversioned
+  `warp-source-backed-logical-v7-neutral-activity-agent-scope`, for strict unversioned
   generation 1. The pinned source commits are evidence for that shape, not
   runtime writer-version selectors.
 - Copilot CLI `copilot_cli_session_events_jsonl` /

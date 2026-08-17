@@ -461,7 +461,7 @@
       "provider_id": "warp", "route": "native_import", "source_format": "warp_sqlite", "source_schema": "warp-agent-task-protobuf-v1",
       "producer_bound": {"kind": "unversioned", "generation": 1, "unknown_generations": "not-qualified"},
       "implementation_source": "crates/ctx-history-providers-sqlite-selected/src/providers/warp/source_backed.rs",
-      "parser_revision": "warp-source-backed-logical-v6-neutral-activity",
+      "parser_revision": "warp-source-backed-logical-v7-neutral-activity-agent-scope",
       "suite_id": "ctx-history-providers-sqlite-selected::native_unit",
       "conformance_suite": "mcp_attribution_selected_sqlite_provider_units",
       "tests": [

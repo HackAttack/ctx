@@ -810,20 +810,20 @@ mod replay_tests {
                 "f29a3a4b-8b02-8b15-ad30-22b8d3e245e5",
                 "985dcf50-7cf6-85de-87cb-79a03269ff1e",
                 "13ba5b2e-3b34-8fbd-97c7-6647718d8504",
-                "6f71455768dedc42222ef4c9822f717defc2eb919805441609d087316320c43e",
+                "04e0e12bcb5b23989cb3f80d920a12a6c6264fc3f3155c0eb44dc9dabd660439",
             ),
             (
                 TaskJsonNativeDialect::ROO,
                 "095b0fe0-c153-8364-b970-22637e99ce3e",
                 "15349de7-8b56-8e85-b075-3a9d9e01d7a1",
                 "7e7f3701-2c21-83b6-b6df-d9e4a7a4d805",
-                "ac03b640aace93d6ae7065c6db02c71d17ca2b1495174d646f7a6e737c42206a",
+                "8d05f2a036adc00b43680ad9bb71da25c872760c3c18284b5af75d7ddd7f0ab2",
             ),
         ];
         for (dialect, event_id, session_id, source_id, record_leaf) in cases {
             assert_eq!(
                 dialect.parser_revision,
-                "task-json-source-backed-v5-closed-facts"
+                "task-json-source-backed-v6-closed-facts-agent-scope"
             );
             let initial = project_replay_record(dialect, "task-json replay body");
             let replay = project_replay_record(dialect, "task-json replay body");
@@ -831,7 +831,7 @@ mod replay_tests {
             assert_eq!(initial.agent_scope, Some(AgentScope::Primary));
             assert_eq!(
                 initial.parser_revision,
-                "task-json-source-backed-v5-closed-facts"
+                "task-json-source-backed-v6-closed-facts-agent-scope"
             );
             assert_eq!(initial.event_id.to_string(), event_id);
             assert_eq!(initial.session_id.to_string(), session_id);

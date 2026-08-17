@@ -1,7 +1,9 @@
 use chrono::DateTime;
 use ctx_history_core::{AgentScope, EventRole, EventType, ProviderNativeSessionRelationship};
+use serde_json::{json, Value};
 
 use super::*;
+use crate::provider::providers::auggie::{AuggieLineageClaim, AuggieSessionData};
 
 #[test]
 fn direct_core_projection_is_complete_and_self_contained() {
@@ -28,14 +30,17 @@ fn direct_core_projection_is_complete_and_self_contained() {
     );
 }
 
-fn scope_record(parent: Option<&str>, root: Option<&str>) -> CoreRecord {
+fn scope_record_with_claims(
+    parent_session_claim: AuggieLineageClaim,
+    root_session_claim: AuggieLineageClaim,
+) -> CoreRecord {
     let provider_session_id = "auggie-scope-session";
     let source = auggie_source_key(provider_session_id).unwrap();
     let session_id = auggie_session_id(&source, provider_session_id).unwrap();
     let session = ParsedAuggieSession {
         provider_session_id: provider_session_id.to_owned(),
-        parent_provider_session_id: parent.map(str::to_owned),
-        root_provider_session_id: root.map(str::to_owned),
+        parent_session_claim,
+        root_session_claim,
         cwd: None,
     };
     let event = ParsedAuggieEvent {
@@ -50,6 +55,28 @@ fn scope_record(parent: Option<&str>, root: Option<&str>) -> CoreRecord {
         native_event_id: Some("auggie-scope-event".to_owned()),
     };
     auggie_core_record(&source, session_id, &session, [7; 32], event).unwrap()
+}
+
+fn lineage_claim(value: Option<&str>) -> AuggieLineageClaim {
+    value.map_or(AuggieLineageClaim::Absent, |value| {
+        AuggieLineageClaim::Exact(value.to_owned())
+    })
+}
+
+fn scope_record(parent: Option<&str>, root: Option<&str>) -> CoreRecord {
+    scope_record_with_claims(lineage_claim(parent), lineage_claim(root))
+}
+
+fn scope_record_from_session_json(session: &Value) -> CoreRecord {
+    let context = ProviderAdapterContext {
+        imported_at: DateTime::UNIX_EPOCH,
+        ..ProviderAdapterContext::default()
+    };
+    let parsed = AuggieSessionData::parse(session, &context).unwrap();
+    scope_record_with_claims(
+        parsed.parent_session_claim.clone(),
+        parsed.root_session_claim.clone(),
+    )
 }
 
 #[test]
@@ -91,6 +118,40 @@ fn contradictory_or_insufficient_lineage_remains_unknown_without_edges() {
         (Some("auggie-parent"), Some("auggie-scope-session")),
     ] {
         let record = scope_record(parent, root);
+        assert_eq!(record.agent_scope, None);
+        assert_eq!(record.parent_session_id, None);
+        assert_eq!(record.root_session_id, None);
+        assert_eq!(record.session_relationship, None);
+    }
+}
+
+#[test]
+fn malformed_or_conflicting_lineage_aliases_remain_unknown_without_edges() {
+    for session in [
+        json!({
+            "sessionId": "auggie-scope-session",
+            "chatHistory": [],
+            "parentSessionId": 7
+        }),
+        json!({
+            "sessionId": "auggie-scope-session",
+            "chatHistory": [],
+            "parentConversationId": "auggie-parent",
+            "parent_session_id": "conflicting-parent"
+        }),
+        json!({
+            "sessionId": "auggie-scope-session",
+            "chatHistory": [],
+            "rootSessionId": null
+        }),
+        json!({
+            "sessionId": "auggie-scope-session",
+            "chatHistory": [],
+            "rootConversationId": "auggie-root",
+            "root_session_id": "conflicting-root"
+        }),
+    ] {
+        let record = scope_record_from_session_json(&session);
         assert_eq!(record.agent_scope, None);
         assert_eq!(record.parent_session_id, None);
         assert_eq!(record.root_session_id, None);

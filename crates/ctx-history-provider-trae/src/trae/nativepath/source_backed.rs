@@ -30,7 +30,8 @@ pub use replacement::TraeReplacementTree;
 
 const TRAE_SOURCE_ANCHOR_NAMESPACE: &str = "trae.workspace-storage";
 const TRAE_SOURCE_SCHEMA_VARIANT: &str = "trae-itemtable-json-v1";
-const TRAE_SOURCE_BACKED_PARSER_REVISION: &str = "trae-itemtable-source-backed-v2-core-activity";
+const TRAE_SOURCE_BACKED_PARSER_REVISION: &str =
+    "trae-itemtable-source-backed-v3-core-activity-agent-scope";
 const TRAE_NATIVE_SESSION_NAMESPACE: &str = "trae.itemtable-session-v1";
 const TRAE_SESSION_POSITION_KIND: &str = "trae.itemtable-session-position-v1";
 const TRAE_NATIVE_ITEM_NAMESPACE: &str = "trae.itemtable-key-v1";
@@ -433,7 +434,7 @@ mod tests {
         );
         assert_eq!(
             record.parser_revision,
-            "trae-itemtable-source-backed-v2-core-activity"
+            "trae-itemtable-source-backed-v3-core-activity-agent-scope"
         );
     }
 

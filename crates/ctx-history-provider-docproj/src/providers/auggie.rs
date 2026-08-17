@@ -2,16 +2,27 @@ use chrono::{DateTime, Utc};
 use serde_json::Value;
 
 use crate::{CaptureError, ProviderAdapterContext, Result};
-use ctx_history_capture_model::normalization::{
-    provider_string_field, provider_timestamp_from_fields,
+use ctx_history_capture_model::{
+    exact_bounded_string_alias,
+    normalization::{provider_string_field, provider_timestamp_from_fields},
+    ExactJsonStringAlias,
 };
+
+const MAX_AUGGIE_LINEAGE_SESSION_ID_BYTES: usize = 16 * 1024;
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) enum AuggieLineageClaim {
+    Absent,
+    Exact(String),
+    InvalidOrConflicting,
+}
 
 pub mod native_path;
 
 pub(super) struct AuggieSessionData<'a> {
     pub(super) provider_session_id: String,
-    pub(super) parent_provider_session_id: Option<String>,
-    pub(super) root_provider_session_id: Option<String>,
+    pub(super) parent_session_claim: AuggieLineageClaim,
+    pub(super) root_session_claim: AuggieLineageClaim,
     pub(super) chat_history: &'a [Value],
     pub(super) started_at: DateTime<Utc>,
     pub(super) cwd: Option<String>,
@@ -60,7 +71,7 @@ impl<'a> AuggieSessionData<'a> {
         );
         Ok(Self {
             provider_session_id,
-            parent_provider_session_id: provider_string_field(
+            parent_session_claim: auggie_lineage_claim(
                 session,
                 &[
                     "parentConversationId",
@@ -68,7 +79,7 @@ impl<'a> AuggieSessionData<'a> {
                     "parent_session_id",
                 ],
             ),
-            root_provider_session_id: provider_string_field(
+            root_session_claim: auggie_lineage_claim(
                 session,
                 &["rootConversationId", "rootSessionId", "root_session_id"],
             ),
@@ -76,6 +87,21 @@ impl<'a> AuggieSessionData<'a> {
             cwd,
             chat_history,
         })
+    }
+}
+
+fn auggie_lineage_claim(session: &Value, aliases: &[&str]) -> AuggieLineageClaim {
+    let Some(object) = session.as_object() else {
+        return AuggieLineageClaim::InvalidOrConflicting;
+    };
+    match exact_bounded_string_alias(object, aliases, MAX_AUGGIE_LINEAGE_SESSION_ID_BYTES) {
+        ExactJsonStringAlias::Missing => AuggieLineageClaim::Absent,
+        ExactJsonStringAlias::Exact(value) if !value.trim().is_empty() => {
+            AuggieLineageClaim::Exact(value.to_owned())
+        }
+        ExactJsonStringAlias::Exact(_) | ExactJsonStringAlias::Ambiguous => {
+            AuggieLineageClaim::InvalidOrConflicting
+        }
     }
 }
 

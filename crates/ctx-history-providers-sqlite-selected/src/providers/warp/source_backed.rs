@@ -45,7 +45,8 @@ const WARP_NATIVE_ITEM_NAMESPACE: &str = "warp.task-message";
 const WARP_LOGICAL_SESSION_KIND: &str = "warp-conversation";
 const WARP_LOGICAL_ITEM_KIND: &str = "warp-task-message";
 const WARP_SOURCE_SCHEMA_VARIANT: &str = "warp-agent-task-protobuf-v1";
-const WARP_SOURCE_BACKED_PARSER_REVISION: &str = "warp-source-backed-logical-v6-neutral-activity";
+const WARP_SOURCE_BACKED_PARSER_REVISION: &str =
+    "warp-source-backed-logical-v7-neutral-activity-agent-scope";
 const WARP_SCHEMA_EVIDENCE: &[u8] = b"agent_conversations+agent_tasks+unique-task-id-v1";
 const WARP_MISSING_TREE_DOMAIN: &[u8] = b"ctx.warp.missing-logical-tree.v1\0";
 const WARP_LOGICAL_LEAF_DOMAIN: &[u8] = b"ctx.warp.logical-leaf.v1\0";

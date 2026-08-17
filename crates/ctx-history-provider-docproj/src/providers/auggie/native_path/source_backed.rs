@@ -32,6 +32,7 @@ use crate::{
         open_provider_source_path, OpenedProviderSourcePath, ProviderSourceDirectory,
         ProviderSourceRoot,
     },
+    provider::providers::auggie::AuggieLineageClaim,
     provider::source_backed::{
         family::document::{
             ChangedDocumentSink, CompleteDocumentTree, DocumentLeafExecutionPolicy,
@@ -667,16 +668,29 @@ enum AuggieLineageEvidence<'a> {
 
 fn auggie_lineage_evidence(session: &ParsedAuggieSession) -> AuggieLineageEvidence<'_> {
     let native_session_id = session.provider_session_id.as_str();
-    let parent = session.parent_provider_session_id.as_deref();
-    let root = session.root_provider_session_id.as_deref();
+    let parent = &session.parent_session_claim;
+    let root = &session.root_session_claim;
     match (parent, root) {
-        (None, None) => AuggieLineageEvidence::Root,
-        (None, Some(root)) if root == native_session_id => AuggieLineageEvidence::Root,
-        (None, Some(_)) => AuggieLineageEvidence::Unknown,
-        (Some(parent), root) if parent == native_session_id || root == Some(native_session_id) => {
-            AuggieLineageEvidence::Unknown
+        (AuggieLineageClaim::Absent, AuggieLineageClaim::Absent) => AuggieLineageEvidence::Root,
+        (AuggieLineageClaim::Absent, AuggieLineageClaim::Exact(root))
+            if root == native_session_id =>
+        {
+            AuggieLineageEvidence::Root
         }
-        (Some(parent), root) => AuggieLineageEvidence::Child { parent, root },
+        (AuggieLineageClaim::Exact(parent), AuggieLineageClaim::Absent)
+            if parent != native_session_id =>
+        {
+            AuggieLineageEvidence::Child { parent, root: None }
+        }
+        (AuggieLineageClaim::Exact(parent), AuggieLineageClaim::Exact(root))
+            if parent != native_session_id && root != native_session_id =>
+        {
+            AuggieLineageEvidence::Child {
+                parent,
+                root: Some(root),
+            }
+        }
+        _ => AuggieLineageEvidence::Unknown,
     }
 }
 

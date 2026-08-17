@@ -111,8 +111,20 @@ fn mux_bounded_session_metadata_from_value(
         ),
         (Some(metadata_parent), Some(path_parent)) if metadata_parent != path_parent
     );
-    let lineage_ambiguous =
-        parent_aliases.conflicting || root_aliases.conflicting || path_parent_conflicts;
+    let self_parent = parent_provider_session_id
+        .as_deref()
+        .is_some_and(|parent| parent == provider_session_id);
+    let foreign_parent_with_self_root = parent_provider_session_id
+        .as_deref()
+        .is_some_and(|parent| parent != provider_session_id)
+        && root_provider_session_id
+            .as_deref()
+            .is_some_and(|root| root == provider_session_id);
+    let lineage_ambiguous = parent_aliases.ambiguous
+        || root_aliases.ambiguous
+        || path_parent_conflicts
+        || self_parent
+        || foreign_parent_with_self_root;
     let bounded_text = |value: Option<String>| {
         value.map(|text| provider_local_preview(&text, PROVIDER_MAX_PREVIEW_CHARS).0)
     };
@@ -144,22 +156,36 @@ fn mux_bounded_session_metadata_from_value(
 
 struct MuxLineageAliases {
     value: Option<String>,
-    conflicting: bool,
+    ambiguous: bool,
 }
 
 fn mux_lineage_aliases(value: &Value, pointers: &[&str]) -> MuxLineageAliases {
-    let claims = pointers
-        .iter()
-        .filter_map(|pointer| value.pointer(pointer))
-        .filter_map(Value::as_str)
-        .filter(|claim| !claim.trim().is_empty())
-        .collect::<Vec<_>>();
-    MuxLineageAliases {
-        value: claims.first().map(|claim| (*claim).to_owned()),
-        conflicting: claims
-            .first()
-            .is_some_and(|first| claims.iter().skip(1).any(|claim| claim != first)),
+    let mut resolved = MuxLineageAliases {
+        value: None,
+        ambiguous: false,
+    };
+    for pointer in pointers {
+        let Some(value) = value.pointer(pointer) else {
+            continue;
+        };
+        let Some(claim) = value
+            .as_str()
+            .filter(|claim| !claim.trim().is_empty() && claim.len() <= MUX_MAX_ID_BYTES)
+        else {
+            resolved.ambiguous = true;
+            continue;
+        };
+        if resolved
+            .value
+            .as_deref()
+            .is_some_and(|current| current != claim)
+        {
+            resolved.ambiguous = true;
+        } else if resolved.value.is_none() {
+            resolved.value = Some(claim.to_owned());
+        }
     }
+    resolved
 }
 
 pub(super) fn bounded_mux_id(value: String, path: &Path, label: &'static str) -> Result<String> {
@@ -209,5 +235,62 @@ pub(super) fn mux_value_timestamp(value: &Value) -> Option<DateTime<Utc>> {
             .as_f64()
             .and_then(provider_timestamp_seconds_to_datetime),
         _ => None,
+    }
+}
+
+#[cfg(test)]
+mod lineage_tests {
+    use super::*;
+
+    fn metadata(value: Value) -> MuxBoundedSessionMetadata {
+        let temp = tempfile::tempdir().unwrap();
+        let source = MuxSessionSource {
+            session_dir: temp.path().join("mux-child"),
+            chat_path: None,
+            partial_path: None,
+            metadata_path: None,
+            provider_session_id: "mux-child".to_owned(),
+            parent_provider_session_id: None,
+        };
+        mux_bounded_session_metadata_from_bytes(
+            &source,
+            "mux-lineage-test-v1",
+            DateTime::<Utc>::UNIX_EPOCH,
+            Some(&serde_json::to_vec(&value).unwrap()),
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn malformed_alias_presence_is_ambiguous() {
+        for value in [
+            serde_json::json!({
+                "workspaceId": "mux-child",
+                "parentWorkspaceId": 7
+            }),
+            serde_json::json!({
+                "workspaceId": "mux-child",
+                "rootSessionId": null
+            }),
+        ] {
+            assert!(metadata(value).lineage_ambiguous);
+        }
+    }
+
+    #[test]
+    fn self_parent_and_foreign_parent_self_root_are_ambiguous() {
+        for value in [
+            serde_json::json!({
+                "workspaceId": "mux-child",
+                "parentWorkspaceId": "mux-child"
+            }),
+            serde_json::json!({
+                "workspaceId": "mux-child",
+                "parentWorkspaceId": "mux-parent",
+                "rootWorkspaceId": "mux-child"
+            }),
+        ] {
+            assert!(metadata(value).lineage_ambiguous);
+        }
     }
 }

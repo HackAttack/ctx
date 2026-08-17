@@ -51,7 +51,7 @@ const FORGECODE_LOGICAL_EVENT_KIND: &str = "forgecode-message";
 const FORGECODE_NATIVE_EVENT_POSITION_KIND: &str = "forgecode-message-index-v1";
 const FORGECODE_RECORD_DIGEST_DOMAIN: &[u8] = b"ctx.forgecode.source-backed-scan-v0\0";
 const FORGECODE_SOURCE_BACKED_PARSER_REVISION: &str =
-    "forgecode-nativepath-source-backed-v1-neutral-core:parser=2;policy=7";
+    "forgecode-nativepath-source-backed-v2-neutral-core-agent-scope:parser=2;policy=7";
 
 #[derive(Debug, Error)]
 pub(crate) enum ForgeCodeSourceBackedErrorV0 {

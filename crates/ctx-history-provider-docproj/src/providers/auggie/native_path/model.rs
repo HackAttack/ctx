@@ -2,6 +2,7 @@ use chrono::{DateTime, Utc};
 use ctx_history_core::{EventRole, EventType};
 
 use super::source::AuggieFileStamp;
+use crate::provider::providers::auggie::AuggieLineageClaim;
 
 pub(super) const AUGGIE_PARSER_REVISION: &str = "auggie-nativepath-json-v4-agent-scope";
 pub(super) const AUGGIE_MAX_DISCOVERED_FILES: usize = 4_096;
@@ -18,8 +19,8 @@ pub(super) struct ParsedAuggieSource {
 
 pub(super) struct ParsedAuggieSession {
     pub(super) provider_session_id: String,
-    pub(super) parent_provider_session_id: Option<String>,
-    pub(super) root_provider_session_id: Option<String>,
+    pub(super) parent_session_claim: AuggieLineageClaim,
+    pub(super) root_session_claim: AuggieLineageClaim,
     pub(super) cwd: Option<String>,
 }
 

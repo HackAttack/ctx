@@ -15,7 +15,7 @@ use crate::{
 use super::*;
 
 const IDENTITY_VERSION: u32 = 1;
-const PARSER_REVISION: &str = "codebuddy-source-backed-v2-neutral-core";
+const PARSER_REVISION: &str = "codebuddy-source-backed-v3-neutral-core-agent-scope";
 const SOURCE_ANCHOR_NAMESPACE: &str = "codebuddy-native-source-v1";
 const SESSION_KEY_NAMESPACE: &str = "codebuddy-native-session-v1";
 const EVENT_KEY_NAMESPACE: &str = "codebuddy-native-event-v1";
