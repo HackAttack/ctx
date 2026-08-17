@@ -1,4 +1,10 @@
+use std::fmt;
+
 use chrono::{DateTime, Utc};
+use serde::{
+    de::{IgnoredAny, MapAccess, Visitor},
+    Deserializer as _,
+};
 use serde_json::Value;
 
 use crate::{CaptureError, ProviderAdapterContext, Result};
@@ -17,6 +23,12 @@ pub(super) enum AuggieLineageClaim {
     InvalidOrConflicting,
 }
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(super) struct AuggieRawLineageAuthority {
+    parent_duplicate: bool,
+    root_duplicate: bool,
+}
+
 pub mod native_path;
 
 pub(super) struct AuggieSessionData<'a> {
@@ -29,7 +41,11 @@ pub(super) struct AuggieSessionData<'a> {
 }
 
 impl<'a> AuggieSessionData<'a> {
-    pub(super) fn parse(session: &'a Value, context: &ProviderAdapterContext) -> Result<Self> {
+    pub(super) fn parse_with_lineage_authority(
+        session: &'a Value,
+        context: &ProviderAdapterContext,
+        authority: AuggieRawLineageAuthority,
+    ) -> Result<Self> {
         let provider_session_id = provider_string_field(session, &["sessionId", "session_id"])
             .ok_or_else(|| {
                 CaptureError::InvalidPayload("Auggie session JSON is missing sessionId".to_owned())
@@ -69,25 +85,88 @@ impl<'a> AuggieSessionData<'a> {
                 "cwd",
             ],
         );
-        Ok(Self {
-            provider_session_id,
-            parent_session_claim: auggie_lineage_claim(
+        let parent_session_claim = if authority.parent_duplicate {
+            AuggieLineageClaim::InvalidOrConflicting
+        } else {
+            auggie_lineage_claim(
                 session,
                 &[
                     "parentConversationId",
                     "parentSessionId",
                     "parent_session_id",
                 ],
-            ),
-            root_session_claim: auggie_lineage_claim(
+            )
+        };
+        let root_session_claim = if authority.root_duplicate {
+            AuggieLineageClaim::InvalidOrConflicting
+        } else {
+            auggie_lineage_claim(
                 session,
                 &["rootConversationId", "rootSessionId", "root_session_id"],
-            ),
+            )
+        };
+        Ok(Self {
+            provider_session_id,
+            parent_session_claim,
+            root_session_claim,
             started_at,
             cwd,
             chat_history,
         })
     }
+}
+
+pub(super) fn auggie_raw_lineage_authority(
+    bytes: &[u8],
+) -> serde_json::Result<AuggieRawLineageAuthority> {
+    let mut deserializer = serde_json::Deserializer::from_slice(bytes);
+    let authority = deserializer.deserialize_map(AuggieRawLineageVisitor)?;
+    deserializer.end()?;
+    Ok(authority)
+}
+
+struct AuggieRawLineageVisitor;
+
+impl<'de> Visitor<'de> for AuggieRawLineageVisitor {
+    type Value = AuggieRawLineageAuthority;
+
+    fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("an Auggie session JSON object")
+    }
+
+    fn visit_map<M>(self, mut map: M) -> std::result::Result<Self::Value, M::Error>
+    where
+        M: MapAccess<'de>,
+    {
+        let mut authority = AuggieRawLineageAuthority::default();
+        let mut seen = 0_u8;
+        while let Some(key) = map.next_key::<String>()? {
+            if let Some((bit, parent)) = auggie_lineage_alias_bit(&key) {
+                if seen & bit != 0 {
+                    if parent {
+                        authority.parent_duplicate = true;
+                    } else {
+                        authority.root_duplicate = true;
+                    }
+                }
+                seen |= bit;
+            }
+            map.next_value::<IgnoredAny>()?;
+        }
+        Ok(authority)
+    }
+}
+
+fn auggie_lineage_alias_bit(key: &str) -> Option<(u8, bool)> {
+    Some(match key {
+        "parentConversationId" => (1 << 0, true),
+        "parentSessionId" => (1 << 1, true),
+        "parent_session_id" => (1 << 2, true),
+        "rootConversationId" => (1 << 3, false),
+        "rootSessionId" => (1 << 4, false),
+        "root_session_id" => (1 << 5, false),
+        _ => return None,
+    })
 }
 
 fn auggie_lineage_claim(session: &Value, aliases: &[&str]) -> AuggieLineageClaim {

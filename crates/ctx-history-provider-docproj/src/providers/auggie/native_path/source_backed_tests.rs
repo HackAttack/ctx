@@ -3,7 +3,9 @@ use ctx_history_core::{AgentScope, EventRole, EventType, ProviderNativeSessionRe
 use serde_json::{json, Value};
 
 use super::*;
-use crate::provider::providers::auggie::{AuggieLineageClaim, AuggieSessionData};
+use crate::provider::providers::auggie::{
+    auggie_raw_lineage_authority, AuggieLineageClaim, AuggieSessionData,
+};
 
 #[test]
 fn direct_core_projection_is_complete_and_self_contained() {
@@ -26,7 +28,7 @@ fn direct_core_projection_is_complete_and_self_contained() {
     assert!(!production.contains("body.chars().take"));
     assert_eq!(
         AUGGIE_PARSER_REVISION,
-        "auggie-nativepath-json-v4-agent-scope"
+        "auggie-nativepath-json-v5-agent-scope-raw-lineage"
     );
 }
 
@@ -72,11 +74,28 @@ fn scope_record_from_session_json(session: &Value) -> CoreRecord {
         imported_at: DateTime::UNIX_EPOCH,
         ..ProviderAdapterContext::default()
     };
-    let parsed = AuggieSessionData::parse(session, &context).unwrap();
+    let parsed =
+        AuggieSessionData::parse_with_lineage_authority(session, &context, Default::default())
+            .unwrap();
     scope_record_with_claims(
         parsed.parent_session_claim.clone(),
         parsed.root_session_claim.clone(),
     )
+}
+
+fn scope_record_from_session_raw(raw: &str) -> CoreRecord {
+    let session = serde_json::from_str::<Value>(raw).unwrap();
+    let context = ProviderAdapterContext {
+        imported_at: DateTime::UNIX_EPOCH,
+        ..ProviderAdapterContext::default()
+    };
+    let parsed = AuggieSessionData::parse_with_lineage_authority(
+        &session,
+        &context,
+        auggie_raw_lineage_authority(raw.as_bytes()).unwrap(),
+    )
+    .unwrap();
+    scope_record_with_claims(parsed.parent_session_claim, parsed.root_session_claim)
 }
 
 #[test]
@@ -157,4 +176,38 @@ fn malformed_or_conflicting_lineage_aliases_remain_unknown_without_edges() {
         assert_eq!(record.root_session_id, None);
         assert_eq!(record.session_relationship, None);
     }
+}
+
+#[test]
+fn duplicate_lineage_keys_remain_unknown_without_edges() {
+    for raw in [
+        r#"{
+            "sessionId": "auggie-scope-session",
+            "chatHistory": [],
+            "parentSessionId": "auggie-parent",
+            "parentSessionId": "conflicting-parent"
+        }"#,
+        r#"{
+            "sessionId": "auggie-scope-session",
+            "chatHistory": [],
+            "rootSessionId": "auggie-scope-session",
+            "rootSessionId": "conflicting-root"
+        }"#,
+    ] {
+        let record = scope_record_from_session_raw(raw);
+        assert_eq!(record.agent_scope, None);
+        assert_eq!(record.parent_session_id, None);
+        assert_eq!(record.root_session_id, None);
+        assert_eq!(record.session_relationship, None);
+    }
+
+    let unrelated_duplicate = scope_record_from_session_raw(
+        r#"{
+            "sessionId": "auggie-scope-session",
+            "chatHistory": [],
+            "title": "first",
+            "title": "second"
+        }"#,
+    );
+    assert_eq!(unrelated_duplicate.agent_scope, Some(AgentScope::Primary));
 }

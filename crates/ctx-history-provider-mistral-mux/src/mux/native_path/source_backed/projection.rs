@@ -547,6 +547,7 @@ fn contract(error: impl std::fmt::Display) -> CaptureError {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::path::Path;
 
     #[derive(Clone)]
     struct EmptyLookup;
@@ -565,20 +566,14 @@ mod tests {
 
     fn project_lineage_fixture(parent: Option<&str>, root: Option<&str>) -> CoreRecord {
         let temp = tempfile::tempdir().unwrap();
-        let authority = Arc::new(ProviderSourceRoot::open(temp.path()).unwrap());
         let provider_session_id = if parent.is_some() || root.is_some() {
             "mux-child"
         } else {
             "mux-root"
         };
-        let source = super::super::source_key(provider_session_id).unwrap();
-        let session_id = super::super::session_identity(&source, provider_session_id).unwrap();
-        let parent_session_id = parent
-            .map(super::super::related_session_identity)
-            .transpose()
-            .unwrap();
-        let binding = MuxBinding {
-            metadata: crate::mux::metadata::MuxBoundedSessionMetadata {
+        project_metadata_fixture(
+            temp.path(),
+            crate::mux::metadata::MuxBoundedSessionMetadata {
                 provider_session_id: provider_session_id.to_owned(),
                 parent_provider_session_id: parent.map(str::to_owned),
                 root_provider_session_id: root.map(str::to_owned),
@@ -589,20 +584,44 @@ mod tests {
                 metadata_revision: "mux-test-metadata-v1".to_owned(),
                 metadata_failure: None,
             },
+            [7; 32],
+        )
+    }
+
+    fn project_metadata_fixture(
+        authority_path: &Path,
+        metadata: crate::mux::metadata::MuxBoundedSessionMetadata,
+        source_revision_digest: [u8; 32],
+    ) -> CoreRecord {
+        let provider_session_id = metadata.provider_session_id.clone();
+        let source = super::super::source_key(&provider_session_id).unwrap();
+        let session_id = super::super::session_identity(&source, &provider_session_id).unwrap();
+        let parent_session_id = metadata
+            .parent_provider_session_id
+            .as_deref()
+            .map(super::super::related_session_identity)
+            .transpose()
+            .unwrap();
+        let root_session_id = metadata
+            .root_provider_session_id
+            .as_deref()
+            .map(super::super::related_session_identity)
+            .transpose()
+            .unwrap()
+            .or(parent_session_id)
+            .unwrap_or(session_id);
+        let binding = MuxBinding {
+            metadata,
             session_id,
             parent_session_id,
-            root_session_id: root
-                .map(super::super::related_session_identity)
-                .transpose()
-                .unwrap()
-                .or(parent_session_id)
-                .unwrap_or(session_id),
+            root_session_id,
             primary_stream: MuxStreamKind::Chat,
             chat: None,
             partial: None,
             metadata_file: None,
-            source_revision_digest: [7; 32],
+            source_revision_digest,
         };
+        let authority = Arc::new(ProviderSourceRoot::open(authority_path).unwrap());
         let mut projector = MuxProjector::<EmptyLookup>::new(
             source,
             authority,
@@ -699,53 +718,45 @@ mod tests {
             Some("mux-parent")
         );
 
-        let source = super::super::source_key(&metadata.provider_session_id).unwrap();
-        let session_id =
-            super::super::session_identity(&source, &metadata.provider_session_id).unwrap();
-        let parent_session_id = super::super::related_session_identity("mux-parent").unwrap();
-        let binding = MuxBinding {
-            metadata,
-            session_id,
-            parent_session_id: Some(parent_session_id),
-            root_session_id: parent_session_id,
-            primary_stream: MuxStreamKind::Chat,
-            chat: None,
-            partial: None,
-            metadata_file: None,
-            source_revision_digest: [8; 32],
-        };
-        let authority = Arc::new(ProviderSourceRoot::open(temp.path()).unwrap());
-        let mut projector = MuxProjector::<EmptyLookup>::new(
-            source,
-            authority,
-            binding,
-            JsonlFamilyProjectionMode::Cold,
-            None,
-        )
-        .unwrap();
-        let bytes = serde_json::to_vec(&serde_json::json!({
-            "id": "ambiguous-lineage-event",
-            "workspaceId": "mux-child",
-            "role": "user",
-            "createdAt": "2026-08-05T12:00:01Z",
-            "parts": [{"type": "text", "text": "ambiguous Mux lineage"}]
-        }))
-        .unwrap();
-        let mut emitted = Vec::new();
-        projector
-            .project_record(
-                MuxStreamKind::Chat,
-                JsonlRecordRef::for_test(&bytes, 0),
-                &mut |record| {
-                    emitted.push(record);
-                    Ok(())
-                },
-            )
-            .unwrap();
-
-        let record = emitted.pop().unwrap();
+        let record = project_metadata_fixture(temp.path(), metadata, [8; 32]);
         assert_eq!(record.session_relationship, None);
         assert_eq!(record.agent_scope, None);
+        assert_eq!(record.parent_session_id, None);
+        assert_eq!(record.root_session_id, None);
+    }
+
+    #[test]
+    fn duplicate_lineage_keys_project_unknown_without_edges() {
+        let temp = tempfile::tempdir().unwrap();
+        let native = crate::mux::source::MuxSessionSource {
+            session_dir: temp.path().join("mux-child"),
+            chat_path: None,
+            partial_path: None,
+            metadata_path: None,
+            provider_session_id: "mux-child".to_owned(),
+            parent_provider_session_id: None,
+        };
+        let metadata = crate::mux::metadata::mux_bounded_session_metadata_from_bytes(
+            &native,
+            "mux-test-metadata-v3",
+            "2026-08-05T12:00:00Z".parse().unwrap(),
+            Some(
+                br#"{
+                    "workspaceId": "mux-child",
+                    "parentSessionId": "mux-parent",
+                    "parentSessionId": "conflicting-parent",
+                    "rootSessionId": "mux-root"
+                }"#,
+            ),
+        )
+        .unwrap();
+        assert!(metadata.lineage_ambiguous);
+
+        let record = project_metadata_fixture(temp.path(), metadata, [9; 32]);
+        assert_eq!(record.session_relationship, None);
+        assert_eq!(record.agent_scope, None);
+        assert_eq!(record.parent_session_id, None);
+        assert_eq!(record.root_session_id, None);
     }
 
     #[test]

@@ -1,5 +1,7 @@
 use super::*;
 use crate::common::json::{exact_bounded_string_alias, ExactJsonStringAlias};
+use serde::de::{DeserializeSeed, Deserializer, MapAccess, SeqAccess, Visitor};
+use std::fmt;
 
 pub(super) const TERMINAL_CALL_ID_DOMAIN: &[u8] = b"ctx/openclaw/terminal-call-id/v1\0";
 
@@ -134,6 +136,117 @@ pub(super) struct CompoundAdmission {
     pub(super) native_session_family: OpenClawNativeSessionFamily,
 }
 
+fn openclaw_raw_lineage_is_ambiguous(bytes: &[u8]) -> serde_json::Result<bool> {
+    let mut ambiguous = false;
+    let mut deserializer = serde_json::Deserializer::from_slice(bytes);
+    OpenClawRawLineageSeed(&mut ambiguous).deserialize(&mut deserializer)?;
+    deserializer.end()?;
+    Ok(ambiguous)
+}
+
+struct OpenClawRawLineageSeed<'a>(&'a mut bool);
+
+impl<'de> DeserializeSeed<'de> for OpenClawRawLineageSeed<'_> {
+    type Value = ();
+
+    fn deserialize<D>(self, deserializer: D) -> std::result::Result<(), D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        deserializer.deserialize_any(OpenClawRawLineageVisitor(self.0))
+    }
+}
+
+struct OpenClawRawLineageVisitor<'a>(&'a mut bool);
+
+impl<'de> Visitor<'de> for OpenClawRawLineageVisitor<'_> {
+    type Value = ();
+
+    fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("an OpenClaw session index JSON value")
+    }
+
+    fn visit_bool<E>(self, _: bool) -> std::result::Result<(), E> {
+        Ok(())
+    }
+
+    fn visit_i64<E>(self, _: i64) -> std::result::Result<(), E> {
+        Ok(())
+    }
+
+    fn visit_u64<E>(self, _: u64) -> std::result::Result<(), E> {
+        Ok(())
+    }
+
+    fn visit_f64<E>(self, _: f64) -> std::result::Result<(), E> {
+        Ok(())
+    }
+
+    fn visit_str<E>(self, _: &str) -> std::result::Result<(), E> {
+        Ok(())
+    }
+
+    fn visit_string<E>(self, _: String) -> std::result::Result<(), E> {
+        Ok(())
+    }
+
+    fn visit_none<E>(self) -> std::result::Result<(), E> {
+        Ok(())
+    }
+
+    fn visit_unit<E>(self) -> std::result::Result<(), E> {
+        Ok(())
+    }
+
+    fn visit_some<D>(self, deserializer: D) -> std::result::Result<(), D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        OpenClawRawLineageSeed(self.0).deserialize(deserializer)
+    }
+
+    fn visit_seq<S>(self, mut sequence: S) -> std::result::Result<(), S::Error>
+    where
+        S: SeqAccess<'de>,
+    {
+        while sequence
+            .next_element_seed(OpenClawRawLineageSeed(self.0))?
+            .is_some()
+        {}
+        Ok(())
+    }
+
+    fn visit_map<M>(self, mut map: M) -> std::result::Result<(), M::Error>
+    where
+        M: MapAccess<'de>,
+    {
+        let mut seen = 0_u8;
+        while let Some(key) = map.next_key::<String>()? {
+            if let Some(bit) = openclaw_lineage_key_bit(&key) {
+                if seen & bit != 0 {
+                    *self.0 = true;
+                }
+                seen |= bit;
+            }
+            map.next_value_seed(OpenClawRawLineageSeed(self.0))?;
+        }
+        Ok(())
+    }
+}
+
+fn openclaw_lineage_key_bit(key: &str) -> Option<u8> {
+    Some(match key {
+        "spawnedBy" => 1 << 0,
+        "parentSessionId" => 1 << 1,
+        "parent_session_id" => 1 << 2,
+        "rootSessionId" => 1 << 3,
+        "root_session_id" => 1 << 4,
+        "sessionId" => 1 << 5,
+        "id" => 1 << 6,
+        _ => return None,
+    })
+}
+
 pub(super) fn admit_compound(
     authority: &ProviderSourceRoot,
     path: &Path,
@@ -152,11 +265,16 @@ pub(super) fn admit_compound(
     if let Some(index) = &index_file {
         index.revalidate()?;
     }
-    let native_session_family = index_bytes
-        .as_deref()
-        .and_then(|bytes| serde_json::from_slice::<Value>(bytes).ok())
-        .map(|index| native_session_family(path, &index))
-        .unwrap_or(OpenClawNativeSessionFamily::Absent);
+    let native_session_family = match index_bytes.as_deref() {
+        None => OpenClawNativeSessionFamily::Absent,
+        Some(bytes) => match (
+            serde_json::from_slice::<Value>(bytes),
+            openclaw_raw_lineage_is_ambiguous(bytes),
+        ) {
+            (Ok(index), Ok(false)) => native_session_family(path, &index),
+            (Ok(_), Ok(true)) | (Err(_), _) | (_, Err(_)) => OpenClawNativeSessionFamily::Invalid,
+        },
+    };
     let observation = super::super::super::OpenClawSessionObservation::from_admitted(
         path.to_path_buf(),
         transcript.metadata(),

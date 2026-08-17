@@ -19,6 +19,37 @@ fn assert_unknown_lineage(index: &Value, family: &OpenClawNativeSessionFamily) {
     assert_eq!(session.root_session_id, None);
 }
 
+fn admitted_session(index: Option<&[u8]>) -> (SessionState, OpenClawNativeSessionFamily) {
+    let temp = tempfile::tempdir().unwrap();
+    let transcript_path = temp.path().join("child.jsonl");
+    fs::write(&transcript_path, b"{}\n").unwrap();
+    if let Some(index) = index {
+        fs::write(temp.path().join("sessions.json"), index).unwrap();
+    }
+    let authority = ProviderSourceRoot::open(temp.path()).unwrap();
+    let transcript = Arc::new(authority.open_file(Path::new("child.jsonl")).unwrap());
+    let compound = admit_compound(
+        &authority,
+        &transcript_path,
+        Path::new("sessions.json"),
+        transcript,
+    )
+    .unwrap();
+    let family = compound.native_session_family.clone();
+    let source = source_key("child").unwrap();
+    let session_id = session_identity(&source, "child").unwrap();
+    let session = SessionState::new(
+        &transcript_path,
+        "child",
+        &compound.index,
+        &family,
+        DateTime::<Utc>::UNIX_EPOCH,
+        session_id,
+    )
+    .unwrap();
+    (session, family)
+}
+
 #[test]
 fn exact_resolved_family_emits_delegated_scope() {
     let source = source_key("child").unwrap();
@@ -141,6 +172,71 @@ fn absent_lineage_family_establishes_primary_scope() {
     assert_eq!(session.agent_scope, Some(AgentScope::Primary));
     assert_eq!(session.parent_session_id, None);
     assert_eq!(session.root_session_id, None);
+}
+
+#[test]
+fn admission_distinguishes_missing_from_present_malformed_or_invalid_index() {
+    let (missing, family) = admitted_session(None);
+    assert_eq!(family, OpenClawNativeSessionFamily::Absent);
+    assert_eq!(missing.agent_scope, Some(AgentScope::Primary));
+
+    for raw in [b"{".as_slice(), b"[]".as_slice(), b"null".as_slice()] {
+        let (session, family) = admitted_session(Some(raw));
+        assert_eq!(family, OpenClawNativeSessionFamily::Invalid);
+        assert_eq!(session.agent_scope, None);
+        assert_eq!(session.relationship, None);
+        assert_eq!(session.parent_session_id, None);
+        assert_eq!(session.root_session_id, None);
+    }
+}
+
+#[test]
+fn duplicate_lineage_keys_admit_unknown_without_edges() {
+    for raw in [
+        br#"{
+            "child": {
+                "sessionId": "child",
+                "parentSessionId": "parent",
+                "parentSessionId": "conflicting-parent"
+            }
+        }"#
+        .as_slice(),
+        br#"{
+            "child": {
+                "sessionId": "child",
+                "rootSessionId": "root",
+                "rootSessionId": "conflicting-root"
+            }
+        }"#
+        .as_slice(),
+        br#"{
+            "child": {
+                "sessionId": "child",
+                "spawnedBy": "agent:a:parent",
+                "spawnedBy": "agent:a:other"
+            }
+        }"#
+        .as_slice(),
+    ] {
+        let (session, family) = admitted_session(Some(raw));
+        assert_eq!(family, OpenClawNativeSessionFamily::Invalid);
+        assert_eq!(session.agent_scope, None);
+        assert_eq!(session.relationship, None);
+        assert_eq!(session.parent_session_id, None);
+        assert_eq!(session.root_session_id, None);
+    }
+
+    let (unrelated_duplicate, family) = admitted_session(Some(
+        br#"{
+            "child": {
+                "sessionId": "child",
+                "title": "first",
+                "title": "second"
+            }
+        }"#,
+    ));
+    assert_eq!(family, OpenClawNativeSessionFamily::Absent);
+    assert_eq!(unrelated_duplicate.agent_scope, Some(AgentScope::Primary));
 }
 
 #[test]

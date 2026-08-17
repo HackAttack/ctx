@@ -1,4 +1,4 @@
-use std::path::Path;
+use std::{fmt, path::Path};
 
 use chrono::{DateTime, Utc};
 use ctx_history_capture_model::{
@@ -8,7 +8,10 @@ use ctx_history_capture_model::{
     ProviderImportSummary,
 };
 use ctx_history_provider_runtime::{CaptureError, Result};
-use serde::{Deserialize, Serialize};
+use serde::{
+    de::{IgnoredAny, MapAccess, Visitor},
+    Deserialize, Deserializer as _, Serialize,
+};
 use serde_json::Value;
 
 use super::source::MuxSessionSource;
@@ -35,6 +38,9 @@ pub(super) fn mux_bounded_session_metadata_from_bytes(
     bytes: Option<&[u8]>,
 ) -> Result<MuxBoundedSessionMetadata> {
     let mut summary = ProviderImportSummary::default();
+    let raw_lineage = bytes
+        .and_then(|bytes| mux_raw_lineage_authority(bytes).ok())
+        .unwrap_or_default();
     let metadata = match bytes {
         None => Value::Null,
         Some(bytes) => match serde_json::from_slice::<Value>(bytes) {
@@ -63,6 +69,7 @@ pub(super) fn mux_bounded_session_metadata_from_bytes(
         imported_at,
         metadata,
         summary,
+        raw_lineage,
     )
 }
 
@@ -72,6 +79,7 @@ fn mux_bounded_session_metadata_from_value(
     imported_at: DateTime<Utc>,
     metadata: Value,
     summary: ProviderImportSummary,
+    raw_lineage: MuxRawLineageAuthority,
 ) -> Result<MuxBoundedSessionMetadata> {
     let provider_session_id = bounded_mux_id(
         mux_string_pointer(&metadata, &["/workspaceId", "/sessionId"])
@@ -120,7 +128,9 @@ fn mux_bounded_session_metadata_from_value(
         && root_provider_session_id
             .as_deref()
             .is_some_and(|root| root == provider_session_id);
-    let lineage_ambiguous = parent_aliases.ambiguous
+    let lineage_ambiguous = raw_lineage.parent_duplicate
+        || raw_lineage.root_duplicate
+        || parent_aliases.ambiguous
         || root_aliases.ambiguous
         || path_parent_conflicts
         || self_parent
@@ -151,6 +161,64 @@ fn mux_bounded_session_metadata_from_value(
         model,
         metadata_revision: metadata_revision.to_owned(),
         metadata_failure,
+    })
+}
+
+#[derive(Debug, Clone, Copy, Default)]
+struct MuxRawLineageAuthority {
+    parent_duplicate: bool,
+    root_duplicate: bool,
+}
+
+fn mux_raw_lineage_authority(bytes: &[u8]) -> serde_json::Result<MuxRawLineageAuthority> {
+    let mut deserializer = serde_json::Deserializer::from_slice(bytes);
+    let authority = deserializer.deserialize_map(MuxRawLineageVisitor)?;
+    deserializer.end()?;
+    Ok(authority)
+}
+
+struct MuxRawLineageVisitor;
+
+impl<'de> Visitor<'de> for MuxRawLineageVisitor {
+    type Value = MuxRawLineageAuthority;
+
+    fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("a Mux metadata JSON object")
+    }
+
+    fn visit_map<M>(self, mut map: M) -> std::result::Result<Self::Value, M::Error>
+    where
+        M: MapAccess<'de>,
+    {
+        let mut authority = MuxRawLineageAuthority::default();
+        let mut seen = 0_u16;
+        while let Some(key) = map.next_key::<String>()? {
+            if let Some((bit, parent)) = mux_lineage_alias_bit(&key) {
+                if seen & bit != 0 {
+                    if parent {
+                        authority.parent_duplicate = true;
+                    } else {
+                        authority.root_duplicate = true;
+                    }
+                }
+                seen |= bit;
+            }
+            map.next_value::<IgnoredAny>()?;
+        }
+        Ok(authority)
+    }
+}
+
+fn mux_lineage_alias_bit(key: &str) -> Option<(u16, bool)> {
+    Some(match key {
+        "parentWorkspaceId" => (1 << 0, true),
+        "parentTaskId" => (1 << 1, true),
+        "parentSessionId" => (1 << 2, true),
+        "parent_session_id" => (1 << 3, true),
+        "rootWorkspaceId" => (1 << 4, false),
+        "rootTaskId" => (1 << 5, false),
+        "rootSessionId" => (1 << 6, false),
+        _ => return None,
     })
 }
 
@@ -243,6 +311,10 @@ mod lineage_tests {
     use super::*;
 
     fn metadata(value: Value) -> MuxBoundedSessionMetadata {
+        metadata_bytes(&serde_json::to_vec(&value).unwrap())
+    }
+
+    fn metadata_bytes(bytes: &[u8]) -> MuxBoundedSessionMetadata {
         let temp = tempfile::tempdir().unwrap();
         let source = MuxSessionSource {
             session_dir: temp.path().join("mux-child"),
@@ -256,7 +328,7 @@ mod lineage_tests {
             &source,
             "mux-lineage-test-v1",
             DateTime::<Utc>::UNIX_EPOCH,
-            Some(&serde_json::to_vec(&value).unwrap()),
+            Some(bytes),
         )
         .unwrap()
     }
@@ -292,5 +364,36 @@ mod lineage_tests {
         ] {
             assert!(metadata(value).lineage_ambiguous);
         }
+    }
+
+    #[test]
+    fn duplicate_lineage_keys_are_ambiguous_without_rejecting_unrelated_duplicates() {
+        for raw in [
+            br#"{
+                "workspaceId": "mux-child",
+                "parentSessionId": "mux-parent",
+                "parentSessionId": "conflicting-parent"
+            }"#
+            .as_slice(),
+            br#"{
+                "workspaceId": "mux-child",
+                "rootSessionId": "mux-root",
+                "rootSessionId": "conflicting-root"
+            }"#
+            .as_slice(),
+        ] {
+            assert!(metadata_bytes(raw).lineage_ambiguous);
+        }
+
+        assert!(
+            !metadata_bytes(
+                br#"{
+                "workspaceId": "mux-child",
+                "title": "first",
+                "title": "second"
+            }"#
+            )
+            .lineage_ambiguous
+        );
     }
 }

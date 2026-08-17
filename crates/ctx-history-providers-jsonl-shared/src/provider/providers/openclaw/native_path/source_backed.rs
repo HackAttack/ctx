@@ -50,7 +50,7 @@ const FALLBACK_EVENT_ID_DOMAIN: &[u8] = b"ctx-openclaw-fallback-event-id-v1\0";
 const LOGICAL_SESSION_KIND: &str = "openclaw-legacy-session";
 const LOGICAL_EVENT_KIND: &str = "openclaw-legacy-event";
 const SOURCE_SCHEMA_VARIANT: &str = "openclaw-legacy-jsonl-v2";
-const PARSER_REVISION: &str = "openclaw-source-backed-v14-core-activity-agent-scope";
+const PARSER_REVISION: &str = "openclaw-source-backed-v15-core-activity-agent-scope-raw-lineage";
 const MAX_TERMINAL_CALL_IDS: usize = 4096;
 const MAX_SELECTOR_CALL_ID_BYTES: usize = 16 * 1024;
 
@@ -483,6 +483,9 @@ fn native_session_family(path: &Path, index: &Value) -> OpenClawNativeSessionFam
         .and_then(|value| value.to_str())
         .unwrap_or_default();
     let selected = super::super::openclaw_session_index_for_file(path, index);
+    if selected.is_null() {
+        return OpenClawNativeSessionFamily::Invalid;
+    }
     let selected_spawned_by = match lineage_claim(&selected, "spawnedBy") {
         OpenClawLineageClaim::Absent => return OpenClawNativeSessionFamily::Absent,
         OpenClawLineageClaim::Valid(claim) => claim,

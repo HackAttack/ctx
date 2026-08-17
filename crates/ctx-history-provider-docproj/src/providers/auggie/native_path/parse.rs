@@ -9,7 +9,8 @@ use super::{
 };
 use crate::{
     provider::providers::auggie::{
-        auggie_entry_time, auggie_request_text, auggie_response_text, AuggieSessionData,
+        auggie_entry_time, auggie_raw_lineage_authority, auggie_request_text, auggie_response_text,
+        AuggieSessionData,
     },
     CaptureError, ProviderAdapterContext, Result, MAX_PROVIDER_JSONL_LINE_BYTES,
 };
@@ -31,10 +32,13 @@ pub(super) fn parse_opened_auggie_source(
     if !before.revalidate()? {
         return Err(CaptureError::SourceChangedDuringCapture);
     }
+    let lineage_authority = auggie_raw_lineage_authority(&bytes).map_err(|error| {
+        CaptureError::InvalidPayload(format!("invalid Auggie session JSON: {error}"))
+    })?;
     let root = serde_json::from_slice::<Value>(&bytes).map_err(|error| {
         CaptureError::InvalidPayload(format!("invalid Auggie session JSON: {error}"))
     })?;
-    let data = AuggieSessionData::parse(&root, context)?;
+    let data = AuggieSessionData::parse_with_lineage_authority(&root, context, lineage_authority)?;
     let session = ParsedAuggieSession {
         provider_session_id: data.provider_session_id.clone(),
         parent_session_claim: data.parent_session_claim.clone(),

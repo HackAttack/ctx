@@ -4,7 +4,7 @@ use ctx_history_core::{EventRole, EventType};
 use super::source::AuggieFileStamp;
 use crate::provider::providers::auggie::AuggieLineageClaim;
 
-pub(super) const AUGGIE_PARSER_REVISION: &str = "auggie-nativepath-json-v4-agent-scope";
+pub(super) const AUGGIE_PARSER_REVISION: &str = "auggie-nativepath-json-v5-agent-scope-raw-lineage";
 pub(super) const AUGGIE_MAX_DISCOVERED_FILES: usize = 4_096;
 
 pub(super) struct ParsedAuggieSource {
