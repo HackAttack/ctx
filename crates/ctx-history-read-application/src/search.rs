@@ -1,4 +1,9 @@
-use std::{collections::BTreeMap, fmt, path::PathBuf, str::FromStr};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    fmt,
+    path::PathBuf,
+    str::FromStr,
+};
 
 use anyhow::{anyhow, Result};
 use ctx_history_core::{
@@ -7,7 +12,7 @@ use ctx_history_core::{
 };
 use ctx_history_index_query::{
     EventRecord, EventSearchCandidate, EventSearchFilters, ExcludedSessionTree, IndexError,
-    SearchAgentScope, SearchContentScope, VerifiedIndex, LEXICAL_QUERY_LIMITS,
+    SearchAgentScope, SearchContentScope, SessionRecord, VerifiedIndex, LEXICAL_QUERY_LIMITS,
     MAX_LEXICAL_QUERY_RESULTS,
 };
 use serde_json::{json, Value};
@@ -25,6 +30,7 @@ const MAX_SESSION_DIVERSITY_CANDIDATES: usize = 64 * 1024;
 const MIN_CANDIDATE_BATCH: usize = 256;
 const CANDIDATE_OVERSAMPLE: usize = 8;
 const SOURCE_FUSION_CANDIDATES: usize = 1_600;
+const MAX_ACTIVE_SESSION_ANCESTORS: usize = 64;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SearchBackend {
@@ -378,11 +384,7 @@ pub fn search_filters_with_refs(
         since_unix_ms,
         content_scope: request.content_scope,
         event_type,
-        agent_scope: if request.primary_only || !request.include_subagents {
-            SearchAgentScope::Primary
-        } else {
-            SearchAgentScope::All
-        },
+        agent_scope: search_agent_scope(request, session_id),
         file: request
             .file
             .as_ref()
@@ -390,6 +392,16 @@ pub fn search_filters_with_refs(
         exclude_session_tree,
         ..EventSearchFilters::default()
     })
+}
+
+fn search_agent_scope(request: &SearchRequest, session_id: Option<Uuid>) -> SearchAgentScope {
+    // Selecting one exact session is an explicit opt-in to that session even
+    // when it is a subagent. The explicit primary-only control still wins.
+    if request.primary_only || (session_id.is_none() && !request.include_subagents) {
+        SearchAgentScope::Primary
+    } else {
+        SearchAgentScope::All
+    }
 }
 
 fn normalized_optional_text(value: Option<&str>) -> Option<String> {
@@ -407,11 +419,13 @@ fn excluded_active_session_tree(
         &active_session.provider_session_id,
         Some(&active_session.provider),
     )?;
-    let session_id = match sessions.as_slice() {
-        [session] => session.root_session_id.map(|id| id.as_uuid()),
-        [first, second] if first.root_session_id == second.root_session_id => {
-            first.root_session_id.map(|id| id.as_uuid())
-        }
+    let roots = sessions
+        .iter()
+        .map(|session| resolved_session_tree_root_id(index, session))
+        .collect::<Result<Vec<_>>>()?;
+    let session_id = match roots.as_slice() {
+        [Some(root)] => Some(*root),
+        [Some(first), Some(second)] if first == second => Some(*first),
         _ => None,
     };
     Ok(ExcludedSessionTree {
@@ -419,6 +433,34 @@ fn excluded_active_session_tree(
         provider_session_id: active_session.provider_session_id.clone(),
         session_id,
     })
+}
+
+fn resolved_session_tree_root_id(
+    index: &VerifiedIndex,
+    session: &SessionRecord,
+) -> Result<Option<Uuid>> {
+    // Some providers retain only immediate parent links. Resolve those links
+    // against the pinned generation, but decline broad tree suppression when
+    // ancestry is missing, cyclic, or exceeds the bounded walk.
+    let mut current = session.clone();
+    let mut visited = BTreeSet::new();
+    for _ in 0..MAX_ACTIVE_SESSION_ANCESTORS {
+        let current_id = current.session_id.as_uuid();
+        if !visited.insert(current_id) {
+            return Ok(None);
+        }
+        if let Some(root_id) = current.root_session_id {
+            return Ok(Some(root_id.as_uuid()));
+        }
+        let Some(parent_id) = current.parent_session_id else {
+            return Ok(Some(current_id));
+        };
+        let Some(parent) = index.session_by_id(parent_id.as_uuid())? else {
+            return Ok(None);
+        };
+        current = parent;
+    }
+    Ok(None)
 }
 
 #[derive(Debug, Error)]
@@ -1052,6 +1094,26 @@ mod tests {
             Some(SemanticReason::ContentScopeUnsupported)
         );
         assert!(!error.retryable());
+    }
+
+    #[test]
+    fn explicit_session_selection_overrides_only_the_default_agent_scope() {
+        let mut request = request();
+        assert_eq!(
+            search_agent_scope(&request, None),
+            SearchAgentScope::Primary
+        );
+
+        assert_eq!(
+            search_agent_scope(&request, Some(Uuid::nil())),
+            SearchAgentScope::All
+        );
+
+        request.primary_only = true;
+        assert_eq!(
+            search_agent_scope(&request, Some(Uuid::nil())),
+            SearchAgentScope::Primary
+        );
     }
 
     #[test]

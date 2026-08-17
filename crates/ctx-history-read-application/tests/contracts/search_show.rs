@@ -472,13 +472,22 @@ mod import_paths;
 #[test]
 fn search_excludes_active_codex_session_by_default_when_available() {
     let temp = tempdir();
-    let fixture = provider_history_fixture("codex-sessions");
+    let fixture = temp.path().join("active-tree-search-fixture");
+    copy_dir_all(
+        Path::new(&provider_history_fixture("codex-sessions")),
+        &fixture,
+    );
+    write_codex_message_fixture(
+        &fixture,
+        "codex-independent-root",
+        "Archived local history search remains independently searchable.",
+    );
     json_output(ctx(&temp).args([
         "import",
         "--provider",
         "codex",
         "--path",
-        &fixture,
+        fixture.to_str().unwrap(),
         "--format=json",
         "--progress",
         "none",
@@ -515,9 +524,135 @@ fn search_excludes_active_codex_session_by_default_when_available() {
             ]),
     );
     assert_eq!(
-        excluded_tree["results"].as_array().unwrap().len(),
-        0,
-        "active session tree was not excluded: {excluded_tree:#}"
+        excluded_tree["results"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|result| result["provider_session_id"].as_str().unwrap())
+            .collect::<Vec<_>>(),
+        ["codex-independent-root"],
+        "active tree exclusion suppressed an unrelated session or leaked the active tree: {excluded_tree:#}"
+    );
+
+    let excluded_resumed_tree = json_output(
+        ctx(&temp)
+            .env("CODEX_THREAD_ID", "codex-session-child")
+            .args([
+                "search",
+                "local history search",
+                "--provider",
+                "codex",
+                "--include-subagents",
+                "--refresh",
+                "off",
+                "--format=json",
+            ]),
+    );
+    assert_eq!(
+        excluded_resumed_tree["results"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|result| result["provider_session_id"].as_str().unwrap())
+            .collect::<Vec<_>>(),
+        ["codex-independent-root"],
+        "resumed child exclusion did not resolve the complete active tree: {excluded_resumed_tree:#}"
+    );
+
+    let child_session = json_output(ctx(&temp).args([
+        "show",
+        "session",
+        "--provider",
+        "codex",
+        "--provider-session",
+        "codex-session-child",
+        "--format=json",
+    ]));
+    let child_session_id = child_session["ctx_session_id"].as_str().unwrap();
+    let explicit_resumed_child = json_output(
+        ctx(&temp)
+            .env("CODEX_THREAD_ID", "codex-session-child")
+            .args([
+                "search",
+                "subagent",
+                "--session",
+                child_session_id,
+                "--refresh",
+                "off",
+                "--format=json",
+            ]),
+    );
+    assert_eq!(
+        explicit_resumed_child["filters"]["session"],
+        child_session_id
+    );
+    assert!(
+        explicit_resumed_child["results"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|result| result["ctx_session_id"] == child_session_id),
+        "explicit child selection escaped its exact session: {explicit_resumed_child:#}"
+    );
+    assert!(
+        !explicit_resumed_child["results"].as_array().unwrap().is_empty(),
+        "explicit child selection inherited the default primary-only suppression: {explicit_resumed_child:#}"
+    );
+
+    let explicit_primary_child = json_output(
+        ctx(&temp)
+            .env("CODEX_THREAD_ID", "codex-session-child")
+            .args([
+                "search",
+                "subagent",
+                "--session",
+                child_session_id,
+                "--primary-only",
+                "--refresh",
+                "off",
+                "--format=json",
+            ]),
+    );
+    assert!(
+        explicit_primary_child["results"]
+            .as_array()
+            .unwrap()
+            .is_empty(),
+        "explicit --primary-only did not retain authority: {explicit_primary_child:#}"
+    );
+
+    let root_session = json_output(ctx(&temp).args([
+        "show",
+        "session",
+        "--provider",
+        "codex",
+        "--provider-session",
+        "codex-session-root",
+        "--format=json",
+    ]));
+    let root_session_id = root_session["ctx_session_id"].as_str().unwrap();
+    let explicit_root = json_output(
+        ctx(&temp)
+            .env("CODEX_THREAD_ID", "codex-session-child")
+            .args([
+                "search",
+                "local history search",
+                "--session",
+                root_session_id,
+                "--include-subagents",
+                "--refresh",
+                "off",
+                "--format=json",
+            ]),
+    );
+    assert!(
+        !explicit_root["results"].as_array().unwrap().is_empty()
+            && explicit_root["results"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .all(|result| result["ctx_session_id"] == root_session_id),
+        "explicit root selection included descendants or another root: {explicit_root:#}"
     );
 
     let included = json_output(
@@ -552,7 +687,20 @@ fn search_excludes_active_codex_session_by_default_when_available() {
                 "--format=json",
             ]),
     );
-    assert!(!included_tree["results"].as_array().unwrap().is_empty());
+    let included_provider_sessions = included_tree["results"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|result| result["provider_session_id"].as_str())
+        .collect::<BTreeSet<_>>();
+    assert_eq!(
+        included_provider_sessions,
+        BTreeSet::from([
+            "codex-independent-root",
+            "codex-session-child",
+            "codex-session-root",
+        ])
+    );
 }
 
 #[test]
