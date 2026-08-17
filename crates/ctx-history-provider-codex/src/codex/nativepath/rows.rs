@@ -330,7 +330,7 @@ fn codex_result_activity(
         ActivityTextCapture::Unavailable
     } else {
         match value.as_ref() {
-            Some(Value::String(value)) => ActivityTextCapture::Present {
+            Some(Value::String(value)) if !value.is_empty() => ActivityTextCapture::Present {
                 value: value.clone(),
             },
             Some(_) | None => ActivityTextCapture::Absent,

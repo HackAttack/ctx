@@ -459,11 +459,8 @@ fn task_json_cli_imports_cline_and_roo_and_searches() {
         "fallback claude_messages",
         "--provider",
         "roo",
-        "--include-subagents",
         "--refresh",
         "off",
-        "--limit",
-        "1",
         "--format=json",
     ]));
     assert_search_provider_oracle(

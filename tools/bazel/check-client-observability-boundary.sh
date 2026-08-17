@@ -72,8 +72,13 @@ if dependencies != allowed:
     )
 if set(manifest.get("dev-dependencies", {})) != {"tempfile"}:
     raise SystemExit("ctx-client-observability dev dependencies must be exactly tempfile")
-if set(manifest.get("features", {})) != {"test-support"}:
-    raise SystemExit("ctx-client-observability features must be exactly test-support")
+expected_features = {"default", "local-usage", "test-support"}
+if set(manifest.get("features", {})) != expected_features:
+    raise SystemExit(
+        "ctx-client-observability feature inventory differs: "
+        f"missing={sorted(expected_features - set(manifest.get('features', {})))} "
+        f"extra={sorted(set(manifest.get('features', {})) - expected_features)}"
+    )
 PY
 
 crate_root="${repo_root}/crates/ctx-client-observability"

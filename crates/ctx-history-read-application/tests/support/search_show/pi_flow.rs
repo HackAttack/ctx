@@ -34,12 +34,8 @@ fn publish_pi_v6_predecessor(data_root: &Path) -> String {
 
     let mut records = provider_core_records(data_root, "pi");
     let current_record_count = records.len();
-    records.retain(|record| {
-        !matches!(
-            record.event_type.as_str(),
-            "tool_output" | "command_output"
-        )
-    });
+    records
+        .retain(|record| !matches!(record.event_type.as_str(), "tool_output" | "command_output"));
     let removed_outputs = u64::try_from(current_record_count - records.len()).unwrap();
     assert_eq!(removed_outputs, 2);
     for record in &mut records {
@@ -47,8 +43,10 @@ fn publish_pi_v6_predecessor(data_root: &Path) -> String {
     }
 
     certificate["parser_revision"] = json!(PI_V6_PARSER_REVISION);
-    certificate["counts"]["retained_records"] =
-        json!(counts.retained_records.checked_sub(removed_outputs).unwrap());
+    certificate["counts"]["retained_records"] = json!(counts
+        .retained_records
+        .checked_sub(removed_outputs)
+        .unwrap());
     certificate["counts"]["ignored_records"] =
         json!(counts.ignored_records.checked_add(removed_outputs).unwrap());
     certificate["counts"]["indexed_documents"] = json!(records.len());
@@ -165,12 +163,7 @@ fn pi_cli_import_search_flow() {
     let provider_outputs = records
         .iter()
         .filter(|record| matches!(record.event_type.as_str(), "tool_output" | "command_output"))
-        .map(|record| {
-            (
-                record.event_type.as_str(),
-                record.content.meaningful_text(),
-            )
-        })
+        .map(|record| (record.event_type.as_str(), record.content.meaningful_text()))
         .collect::<Vec<_>>();
     assert_eq!(
         provider_outputs,

@@ -24,9 +24,9 @@ mod launch;
 #[cfg(test)]
 mod tests;
 
+use launch::configured_finite_core_worker_command;
 #[cfg(test)]
 use launch::normalized_daemon_launch_for_test;
-use launch::configured_finite_core_worker_command;
 pub use launch::{
     configured_daemon_autostart_command, daemon_autostart_command, spawn_daemon_child,
     spawn_daemon_child_for_upgrade_handoff, spawn_detached_daemon_child,
