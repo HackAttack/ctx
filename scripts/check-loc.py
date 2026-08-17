@@ -110,9 +110,10 @@ def classify(path: str) -> str | None:
         return None
     if base.endswith(".lock"):
         return None
-    if base in DOC_NAMES or base.startswith(("README.", "CHANGELOG", "CHANGELOG.")):
+    if base in DOC_NAMES:
         return None
-    if pure.suffix in DOC_SUFFIXES or pure.suffix not in SOURCE_EXTENSIONS:
+    suffix = pure.suffix.lower()
+    if suffix in DOC_SUFFIXES or suffix not in SOURCE_EXTENSIONS:
         return None
 
     is_test = any(part in TEST_COMPONENTS for part in parents)

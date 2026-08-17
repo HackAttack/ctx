@@ -144,6 +144,15 @@ git -C "${current_repo}" add src/docs/tracked.rs src/fixtures/tracked.rs
 expect_fail "${current_repo}" 'src/docs/tracked.rs (source): 1001 lines > limit 1000'
 expect_fail "${current_repo}" 'src/fixtures/tracked.rs (source): 1001 lines > limit 1000'
 
+new_repo source_names_cannot_impersonate_docs
+write_lines "${current_repo}/src/README.rs" 1001
+write_lines "${current_repo}/src/CHANGELOG.py" 1001
+write_lines "${current_repo}/src/upgrade.PS1" 1001
+git -C "${current_repo}" add src/README.rs src/CHANGELOG.py src/upgrade.PS1
+expect_fail "${current_repo}" 'src/README.rs (source): 1001 lines > limit 1000'
+expect_fail "${current_repo}" 'src/CHANGELOG.py (source): 1001 lines > limit 1000'
+expect_fail "${current_repo}" 'src/upgrade.PS1 (source): 1001 lines > limit 1000'
+
 new_repo generated_data_source
 write_lines "${current_repo}/data/generated/large.rs" 1001
 git -C "${current_repo}" add data/generated/large.rs

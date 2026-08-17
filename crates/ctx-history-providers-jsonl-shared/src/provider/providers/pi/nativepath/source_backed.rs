@@ -397,9 +397,7 @@ impl<R: JsonlProviderRuntime> JsonlFamilyProjector for PiProjector<R> {
                 .unwrap_or("unknown"),
             value.get("message"),
         );
-        let Some(body) = projected_body(&value, event_type) else {
-            return Ok(());
-        };
+        let body = projected_body(&value, event_type);
         let mut facts = literal_facts(&value)?;
         let ordinal = evidence.physical_ordinal();
         let native_id = value
@@ -595,39 +593,18 @@ fn resolve_pi_lineage(discovered: &mut [DiscoveredPiSource]) -> Result<()> {
     Ok(())
 }
 
-fn projected_body(value: &Value, event_type: EventType) -> Option<String> {
+fn projected_body(value: &Value, event_type: EventType) -> String {
     let is_output = matches!(event_type, EventType::ToolOutput | EventType::CommandOutput);
-    if is_output && pi_explicit_success(value, event_type) {
-        return None;
-    }
     let text = if is_output {
         pi_result_content(value).or_else(|| pi_entry_text(value, value.get("message")))
     } else {
         pi_entry_text(value, value.get("message"))
     }
     .unwrap_or_default();
-    Some(if text.trim().is_empty() {
+    if text.trim().is_empty() {
         event_type.as_str().to_owned()
     } else {
         text
-    })
-}
-
-fn pi_explicit_success(value: &Value, event_type: EventType) -> bool {
-    let Some(message) = value.get("message") else {
-        return false;
-    };
-    match event_type {
-        EventType::ToolOutput => {
-            message.get("role").and_then(Value::as_str) == Some("toolResult")
-                && message.get("isError").and_then(Value::as_bool) == Some(false)
-        }
-        EventType::CommandOutput => {
-            message.get("role").and_then(Value::as_str) == Some("bashExecution")
-                && message.get("exitCode").and_then(Value::as_i64) == Some(0)
-                && message.get("cancelled").and_then(Value::as_bool) == Some(false)
-        }
-        _ => false,
     }
 }
 
@@ -841,7 +818,7 @@ mod tests {
     }
 
     #[test]
-    fn explicit_success_outputs_are_not_projected_but_failures_remain() {
+    fn provider_output_is_projected_without_adjudicating_success() {
         let successful_tool = serde_json::json!({
             "type": "message",
             "message": {
@@ -853,7 +830,7 @@ mod tests {
         });
         assert_eq!(
             projected_body(&successful_tool, EventType::ToolOutput),
-            None
+            "done"
         );
 
         let successful_command = serde_json::json!({
@@ -868,7 +845,7 @@ mod tests {
         });
         assert_eq!(
             projected_body(&successful_command, EventType::CommandOutput),
-            None
+            "done"
         );
 
         let failed_tool = serde_json::json!({
@@ -881,8 +858,8 @@ mod tests {
             },
         });
         assert_eq!(
-            projected_body(&failed_tool, EventType::ToolOutput).as_deref(),
-            Some("failure details")
+            projected_body(&failed_tool, EventType::ToolOutput),
+            "failure details"
         );
     }
 }

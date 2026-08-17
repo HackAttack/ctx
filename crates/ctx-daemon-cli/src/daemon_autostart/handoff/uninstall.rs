@@ -20,14 +20,15 @@ pub fn prepare_daemon_uninstall(data_root: &Path) -> Result<Value> {
         process::exit(89);
     }
 
-    super::super::daemon_supervisor::disable_daemon_supervisor(&canonical_root)
+    crate::daemon_supervisor::disable_daemon_supervisor(&canonical_root)
         .context("remove canonical ctx daemon supervisor before uninstall")?;
 
     let installation_deadline = Instant::now() + DAEMON_INSTALLATION_QUIESCE_TIMEOUT;
     let installation_quiescence = loop {
         reject_undiscovered_installation_roots(&roots)?;
         quiesce_daemon_roots(&roots, &expected_executable)?;
-        if let Some(quiescence) = super::installation::try_acquire_installation_daemon_quiescence()?
+        if let Some(quiescence) =
+            crate::daemon_autostart::installation::try_acquire_installation_daemon_quiescence()?
         {
             break quiescence;
         }
@@ -48,7 +49,7 @@ pub fn prepare_daemon_uninstall(data_root: &Path) -> Result<Value> {
             ));
         }
     }
-    super::installation::remove_installation_daemon_coordination()
+    crate::daemon_autostart::installation::remove_installation_daemon_coordination()
         .context("remove installation-wide ctx daemon coordination before uninstall")?;
     for locked in lifecycle_controls {
         remove_daemon_lifecycle_coordination(&locked.data_root)?;
@@ -93,7 +94,8 @@ fn lock_discovered_installation_roots(
     // transition work.
     let deadline = Instant::now() + DAEMON_INSTALLATION_QUIESCE_TIMEOUT;
     loop {
-        roots.extend(super::installation::registered_installation_daemon_roots()?);
+        roots
+            .extend(crate::daemon_autostart::installation::registered_installation_daemon_roots()?);
         let locked = roots
             .iter()
             .map(|data_root| {
@@ -103,7 +105,8 @@ fn lock_discovered_installation_roots(
                 })
             })
             .collect::<Result<Vec<_>>>()?;
-        let discovered = super::installation::registered_installation_daemon_roots()?;
+        let discovered =
+            crate::daemon_autostart::installation::registered_installation_daemon_roots()?;
         if discovered.iter().all(|root| roots.contains(root)) {
             return Ok(locked);
         }
@@ -118,10 +121,11 @@ fn lock_discovered_installation_roots(
 }
 
 fn reject_undiscovered_installation_roots(roots: &BTreeSet<PathBuf>) -> Result<()> {
-    let undiscovered = super::installation::registered_installation_daemon_roots()?
-        .into_iter()
-        .filter(|root| !roots.contains(root))
-        .collect::<Vec<_>>();
+    let undiscovered =
+        crate::daemon_autostart::installation::registered_installation_daemon_roots()?
+            .into_iter()
+            .filter(|root| !roots.contains(root))
+            .collect::<Vec<_>>();
     if undiscovered.is_empty() {
         return Ok(());
     }

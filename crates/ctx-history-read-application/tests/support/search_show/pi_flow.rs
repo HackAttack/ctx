@@ -50,7 +50,7 @@ fn pi_cli_import_search_flow() {
     );
 
     let records = provider_core_records(&data_root(&temp), "pi");
-    assert_eq!(provider_core_counts(&data_root(&temp), "pi"), (1, 4));
+    assert_eq!(provider_core_counts(&data_root(&temp), "pi"), (1, 6));
     assert_eq!(
         records
             .iter()
@@ -68,16 +68,24 @@ fn pi_cli_import_search_flow() {
             .count(),
         1
     );
-    for event_type in ["tool_output", "command_output"] {
-        assert_eq!(
-            records
-                .iter()
-                .filter(|record| record.event_type == event_type)
-                .count(),
-            0,
-            "successful Pi output created a Core {event_type} record"
-        );
-    }
+    let provider_outputs = records
+        .iter()
+        .filter(|record| matches!(record.event_type.as_str(), "tool_output" | "command_output"))
+        .map(|record| {
+            (
+                record.event_type.as_str(),
+                record.content.meaningful_text(),
+            )
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        provider_outputs,
+        [
+            ("tool_output", "tests passed"),
+            ("command_output", "ok token=fixture-secret"),
+        ],
+        "Core must preserve provider-native output without adjudicating command success"
+    );
     assert!(
         !temp.path().join("work.sqlite").exists(),
         "Pi acceptance must use the Core generation"
