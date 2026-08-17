@@ -552,15 +552,19 @@ fn control_input_and_output_bounds_fail_closed() {
 
 #[test]
 fn admission_and_captured_lifetime_bounds_are_independent() {
-    let mut limits = LimitConfiguration::default();
-    limits.admission_wait = Duration::ZERO;
+    let limits = LimitConfiguration {
+        admission_wait: Duration::ZERO,
+        ..LimitConfiguration::default()
+    };
     assert!(matches!(
         BridgeLimits::new(limits),
         Err(BridgeError::Limit("admission wait"))
     ));
 
-    let mut limits = LimitConfiguration::default();
-    limits.captured_wall_time = Duration::ZERO;
+    let limits = LimitConfiguration {
+        captured_wall_time: Duration::ZERO,
+        ..LimitConfiguration::default()
+    };
     assert!(matches!(
         BridgeLimits::new(limits),
         Err(BridgeError::Limit("captured wall time"))
