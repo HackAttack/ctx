@@ -84,7 +84,6 @@ export interface SearchOptions {
   workspace?: string;
   since?: string;
   primaryOnly?: boolean;
-  includeSubagents?: boolean;
   contentScope?: SearchContentScope;
   eventType?: string;
   file?: string;

@@ -175,10 +175,14 @@ character no-dash reference across the pinned and retained Core generations;
 machine output retains full UUIDs. A canonical search hit can list sessions
 that inherited the event, and `ctx show event` expands the bounded copied-event
 lineage automatically. Search also accepts filters such as `--provider`,
-`--workspace`, `--since`, `--event-type`, `--file`, `--include-subagents`,
+`--workspace`, `--since`, `--event-type`, `--file`, `--primary-only`,
 `--include-current-session`, `--term`, `--limit`, and
 `--refresh background|off|wait`.
 `--limit` is capped at `200`.
+Ordinary search includes primary and subagent work and returns one best result
+per exact root-session claim before repeats; sessions without one remain their
+own groups. Use `--primary-only` only for a deliberately narrow search that
+excludes subagent sessions.
 Search defaults to `--refresh background`, which serves the active Core
 generation. In automatic mode it may start or wake the persistent daemon for a
 Core refresh and semantic catch-up when enabled. In manual mode it uses only the

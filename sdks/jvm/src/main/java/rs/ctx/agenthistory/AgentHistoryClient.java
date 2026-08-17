@@ -113,7 +113,6 @@ public class AgentHistoryClient {
         add(args, "--session", safe.session());
         add(args, "--refresh", safe.refresh());
         if (safe.primaryOnly()) args.add("--primary-only");
-        if (safe.includeSubagents()) args.add("--include-subagents");
         if (safe.events()) args.add("--events");
         if (safe.includeCurrentSession()) args.add("--include-current-session");
         return new SearchResponse(executeEnvelope("search", args));

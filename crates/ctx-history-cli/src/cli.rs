@@ -36,7 +36,6 @@ pub struct SearchArgs {
     pub workspace: Option<String>,
     pub since: Option<String>,
     pub primary_only: bool,
-    pub include_subagents: bool,
     pub content_scope: Option<ContentScopeArg>,
     pub event_type: Option<String>,
     pub file: Option<PathBuf>,
@@ -114,7 +113,6 @@ impl From<SearchArgs> for SearchRequest {
             workspace: args.workspace,
             since: args.since,
             primary_only: args.primary_only,
-            include_subagents: args.include_subagents,
             content_scope: match args.content_scope.unwrap_or(ContentScopeArg::All) {
                 ContentScopeArg::All => SearchContentScope::All,
                 ContentScopeArg::Transcript => SearchContentScope::Transcript,
@@ -169,7 +167,6 @@ mod tests {
             workspace: Some(workspace),
             since: None,
             primary_only: false,
-            include_subagents: false,
             content_scope: Some(ContentScopeArg::All),
             event_type: None,
             file: Some(PathBuf::from("src/lib.rs")),

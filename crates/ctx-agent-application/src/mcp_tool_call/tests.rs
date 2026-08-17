@@ -94,7 +94,6 @@ fn search_request() -> ToolSearchRequest {
         workspace: Some("/workspace".to_owned()),
         since: None,
         primary_only: false,
-        include_subagents: false,
         content_scope: ToolSearchContentScope::All,
         event_type: None,
         file: None,

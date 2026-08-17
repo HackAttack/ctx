@@ -323,7 +323,6 @@ pub(crate) fn assert_analytics_properties_are_allowlisted(
         "has_workspace_filter",
         "host_memory_bucket",
         "include_current_session",
-        "include_subagents",
         "indexed_events_bucket",
         "indexed_items_bucket",
         "indexed_sessions_bucket",

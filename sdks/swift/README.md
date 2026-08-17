@@ -50,6 +50,12 @@ The public client mirrors the `agent-history-v1` operations:
 - `showSession()`
 - `version()` / `versioning()`
 
+Search includes primary and subagent sessions by default, groups exact
+root-session claims, and returns one best result per group before repeats;
+sessions without a root claim remain their own groups. Primary evidence is
+slightly preferred only near ties; stronger child evidence can win. Set
+`primaryOnly: true` only for a deliberately primary-only search.
+
 Swift reserves `init` for initializers, so the agent-history-v1 `init` operation is
 exposed as `initialize()`. Returned envelopes still use `operation: "init"`.
 

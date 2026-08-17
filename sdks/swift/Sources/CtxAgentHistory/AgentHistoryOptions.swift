@@ -46,7 +46,6 @@ public struct SearchOptions: Sendable {
     public var workspace: String?
     public var since: String?
     public var primaryOnly: Bool
-    public var includeSubagents: Bool
     public var eventType: String?
     public var contentScope: SearchContentScope?
     public var file: String?
@@ -64,7 +63,6 @@ public struct SearchOptions: Sendable {
         workspace: String? = nil,
         since: String? = nil,
         primaryOnly: Bool = false,
-        includeSubagents: Bool = false,
         eventType: String? = nil,
         contentScope: SearchContentScope? = nil,
         file: String? = nil,
@@ -81,7 +79,6 @@ public struct SearchOptions: Sendable {
         self.workspace = workspace
         self.since = since
         self.primaryOnly = primaryOnly
-        self.includeSubagents = includeSubagents
         self.eventType = eventType
         self.contentScope = contentScope
         self.file = file

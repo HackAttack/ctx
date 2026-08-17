@@ -476,7 +476,7 @@ ctx search "token budget" --refresh off
 ctx search "signed metadata" --term checksum --term release
 ctx search "token budget" --limit 5
 ctx search "token budget" --session <ctx-session-id>
-ctx search "review findings" --include-subagents
+ctx search "human decisions" --primary-only
 ctx search "this current task" --include-current-session
 ctx search "mail provider throttled bulk mailbox setup" --backend hybrid
 ctx search "pricing decisions from the launch review" --backend semantic
@@ -507,12 +507,16 @@ Search-only sources without native import support are searched from the active
 Core generation until they are explicitly imported through a supported path. Search
 requires a non-empty query, at least one non-empty `--term`, or
 `--file <path>`; provider, workspace, time, session, event, source, and result
-flags only narrow an actual search. Default results are session-diverse: ctx
-returns the strongest matching span from each session, plus
-`more_matches_in_session` and `session_importance` when more indexed events from
-that session also matched. Use `--session <ctx-session-id>` after a default
-search has identified a session to inspect; scoped session search returns dense
-event hits. Session/event commands accept full ctx IDs or unambiguous ctx ID
+flags only narrow an actual search. Ordinary results include primary and
+subagent sessions. Sessions with the same exact root-session claim are grouped
+together, while sessions without one remain their own groups; ctx returns one
+best matching span per group before repeats. Primary-session evidence gets a
+slight preference only when nearly as relevant; a stronger child-session match
+can win. Results include `more_matches_in_session` and
+`session_importance` when more indexed events from the returned session also
+matched. Use `--session <ctx-session-id>` after a default search has identified
+a session to inspect; scoped session search returns dense event hits.
+Session/event commands accept full ctx IDs or unambiguous ctx ID
 prefixes of at least eight hex characters. Human search, show, locate, Markdown,
 and MCP text render the shortest unambiguous lowercase no-dash prefix from 8
 through 32 characters. Uniqueness is checked against the command's pinned Core
@@ -545,10 +549,10 @@ with safe shell quoting, plus a shell-quoted `ctx --data-root <path>` prefix whe
 search uses a non-default data root. Each result's `rank` is its one-based
 position in the final shaped window. `retrieval_score` preserves the backend's
 diagnostic score, which can be non-monotonic after query-coverage and
-session-diversity shaping.
-Human output states `relevance order` and its primary-session or
-primary-plus-subagent scope in the result heading. Its compact `Event` row pairs
-the dynamic event reference with the exact matched-event UTC RFC 3339 millisecond time;
+root-diversity shaping.
+Human output states `relevance order` and the selected agent scope in the
+result heading. Its compact `Event` row pairs the dynamic event reference with
+the exact matched-event UTC RFC 3339 millisecond time;
 timestamps never re-sort results. `--verbose` additionally renders the stored
 event sequence and available workspace/working-directory, branch, agent, and
 parent/root lineage without repeating equal values.
@@ -565,10 +569,9 @@ Custom history imports can be filtered by canonical
 `--source-id`, and `--source-format` values. The plugin/source alias is for
 explicit plugin import selection. These search filters imply
 `--provider custom` and cannot be combined with another provider.
-Default search excludes subagent sessions so primary human-agent intent and
-decisions stay prominent. Use `--include-subagents` when implementation details,
-code review notes, test output, or failure analysis from subagent sessions
-should be searched too.
+Ordinary search uses the all-agent, root-diverse behavior described above. Use
+`--primary-only` only when a deliberately narrow search should exclude
+subagent work.
 
 When ctx is run from Codex and `CODEX_THREAD_ID` is available, search excludes
 the active Codex session tree by default so the current task and its subagents
@@ -608,7 +611,7 @@ Filters:
   filesystem;
 - `--session <ctx-session-id-or-prefix>`, for dense event results within one session;
 - `--term <query-or-keyword>`, repeatable broadening queries or keywords merged with OR-style semantics;
-- `--events`, for dense event-level results instead of the default session-diverse results;
+- `--events`, for dense event-level results instead of the default root-diverse results;
 - `--backend hybrid|semantic|lexical`, where `lexical` queries
   `search/lexical`, `semantic` queries `search/semantic`, and `hybrid` blends
   both only when semantic coverage is complete and bound to the active lexical
@@ -616,7 +619,7 @@ Filters:
   semantic prerequisites are missing. Explicit semantic reports a local error
   rather than downloading a model or using an incompatible generation;
 - `--semantic-weight <0.0-1.0>`, for hybrid ranking;
-- `--include-subagents`;
+- `--primary-only`;
 - `--limit <n>`, capped at `200`;
 - `--refresh background|off|wait`;
 - `--include-current-session`.

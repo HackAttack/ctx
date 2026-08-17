@@ -80,7 +80,6 @@ type SearchOptions struct {
 	Workspace             string
 	Since                 string
 	PrimaryOnly           bool
-	IncludeSubagents      bool
 	EventType             string
 	ContentScope          SearchContentScope
 	File                  string
@@ -189,9 +188,6 @@ func (c *Client) Search(ctx context.Context, opts SearchOptions) (*SearchRespons
 	appendStringFlag("--refresh", opts.Refresh)
 	if opts.PrimaryOnly {
 		args = append(args, "--primary-only")
-	}
-	if opts.IncludeSubagents {
-		args = append(args, "--include-subagents")
 	}
 	if opts.Events {
 		args = append(args, "--events")

@@ -119,7 +119,6 @@ class SourceFamilyColdRefreshPerformanceTest(unittest.TestCase):
                 query,
                 "--provider",
                 corpus.provider,
-                "--include-subagents",
                 "--refresh",
                 "off",
                 "--format=json",

@@ -554,6 +554,7 @@ fn builds_search_cli_arguments_without_running_for_public_options() {
     assert_eq!(options.semantic_weight, Some(0.35));
     assert!(SearchOptions::default().backend.is_none());
     assert!(SearchOptions::default().semantic_weight.is_none());
+    assert!(!SearchOptions::default().primary_only);
     assert!(SearchOptions::default().content_scope.is_none());
     assert!(SearchOptions::default().event_type.is_none());
     assert_eq!(SearchContentScope::All.as_arg(), "all");
@@ -596,6 +597,7 @@ exit 2
             limit: 7,
             backend: Some("hybrid".to_owned()),
             semantic_weight: Some(0.625),
+            primary_only: true,
             content_scope: Some(SearchContentScope::Calls),
             refresh: SearchRefresh::Off,
             ..SearchOptions::default()
@@ -615,6 +617,7 @@ exit 2
             "hybrid",
             "--semantic-weight",
             "0.625",
+            "--primary-only",
             "--content-scope",
             "calls",
             "--refresh",

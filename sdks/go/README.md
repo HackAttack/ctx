@@ -40,6 +40,12 @@ The public client mirrors agent-history-v1 operations:
 - `ShowEvent(ctx, ShowEventOptions)`
 - `ShowSession(ctx, ShowSessionOptions)`
 
+Search includes primary and subagent sessions by default, groups exact
+root-session claims, and returns one best result per group before repeats;
+sessions without a root claim remain their own groups. Primary evidence is
+slightly preferred only near ties; stronger child evidence can win. Set
+`SearchOptions.PrimaryOnly` only for a deliberately primary-only search.
+
 Version constants:
 
 - `APIVersion`

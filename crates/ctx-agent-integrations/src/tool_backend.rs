@@ -33,7 +33,6 @@ pub struct ToolSearchRequest {
     pub workspace: Option<String>,
     pub since: Option<String>,
     pub primary_only: bool,
-    pub include_subagents: bool,
     pub content_scope: ToolSearchContentScope,
     pub event_type: Option<String>,
     pub file: Option<PathBuf>,

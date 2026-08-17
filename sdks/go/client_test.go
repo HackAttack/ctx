@@ -108,6 +108,7 @@ func TestSearchBuildsAgentHistoryV1Operation(t *testing.T) {
 		Provider:              "codex",
 		Workspace:             "ctx",
 		Since:                 "30d",
+		PrimaryOnly:           true,
 		EventType:             "message",
 		File:                  "crates/ctx-cli/src/main.rs",
 		Session:               "00000000-0000-0000-0000-000000000001",
@@ -143,6 +144,7 @@ func TestSearchBuildsAgentHistoryV1Operation(t *testing.T) {
 		"--file", "crates/ctx-cli/src/main.rs",
 		"--session", "00000000-0000-0000-0000-000000000001",
 		"--refresh", "off",
+		"--primary-only",
 		"--events",
 		"--include-current-session",
 	}

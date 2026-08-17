@@ -137,7 +137,6 @@ fn personal_agent_provider_imports_are_idempotent_and_incremental() {
             &incremental_query,
             "--provider",
             cli_provider,
-            "--include-subagents",
             "--format=json",
         ]));
         assert_search_provider_oracle(&search, stored_provider, &incremental_query, 1, "message");
@@ -179,14 +178,8 @@ fn openclaw_import_accepts_explicit_session_jsonl_file() {
     assert_explicit_source_publication(&imported, "openclaw", "openclaw_session_jsonl_tree");
     assert_eq!(imported["totals"]["current_rejected_records"], 0);
 
-    let search = json_output(ctx(&temp).args([
-        "search",
-        query,
-        "--provider",
-        "openclaw",
-        "--include-subagents",
-        "--format=json",
-    ]));
+    let search =
+        json_output(ctx(&temp).args(["search", query, "--provider", "openclaw", "--format=json"]));
     assert_search_provider_oracle(&search, "openclaw", query, 1, "message");
 }
 
@@ -217,14 +210,8 @@ fn nanoclaw_import_tolerates_partial_auxiliary_tables() {
     assert_explicit_source_publication(&imported, "nanoclaw", "nanoclaw_project");
     assert_eq!(imported["totals"]["current_rejected_records"], 0);
 
-    let search = json_output(ctx(&temp).args([
-        "search",
-        query,
-        "--provider",
-        "nanoclaw",
-        "--include-subagents",
-        "--format=json",
-    ]));
+    let search =
+        json_output(ctx(&temp).args(["search", query, "--provider", "nanoclaw", "--format=json"]));
     assert_search_provider_oracle(&search, "nanoclaw", query, 1, "message");
 }
 
@@ -397,7 +384,6 @@ fn task_json_cli_imports_cline_and_roo_and_searches() {
         "parser note",
         "--provider",
         "cline",
-        "--include-subagents",
         "--refresh",
         "off",
         "--limit",
@@ -534,7 +520,6 @@ fn antigravity_cli_imports_native_transcript_tree() {
         "agycardinalityxylophonium",
         "--provider",
         "antigravity",
-        "--include-subagents",
         "--refresh",
         "off",
         "--format=json",
@@ -619,12 +604,7 @@ fn codex_cli_catalogs_valid_content_from_mixed_fixture() {
     );
     assert_eq!(provider_core_counts(&data_root(&temp), "codex"), (1, 2));
 
-    let search = json_output(ctx(&temp).args([
-        "search",
-        "after malformed",
-        "--include-subagents",
-        "--format=json",
-    ]));
+    let search = json_output(ctx(&temp).args(["search", "after malformed", "--format=json"]));
     assert!(!search["results"].as_array().unwrap().is_empty());
 }
 
@@ -650,14 +630,8 @@ fn pi_cli_catalogs_valid_content_from_mixed_fixture() {
     assert_eq!(provider_core_counts(&data_root(&temp), "pi"), (1, 2));
 
     let query = "after malformed line";
-    let search = json_output(ctx(&temp).args([
-        "search",
-        query,
-        "--provider",
-        "pi",
-        "--include-subagents",
-        "--format=json",
-    ]));
+    let search =
+        json_output(ctx(&temp).args(["search", query, "--provider", "pi", "--format=json"]));
     assert_search_provider_oracle(&search, "pi", query, 1, "message");
 }
 
@@ -686,7 +660,6 @@ fn import_all_isolates_rejected_records_and_imports_other_sources() {
         pi_query,
         "--provider",
         "pi",
-        "--include-subagents",
         "--refresh",
         "off",
         "--format=json",
@@ -697,7 +670,6 @@ fn import_all_isolates_rejected_records_and_imports_other_sources() {
         "after malformed",
         "--provider",
         "codex",
-        "--include-subagents",
         "--refresh",
         "off",
         "--format=json",

@@ -158,12 +158,15 @@ initialize storage, or write provider data.
 The `sources` tool returns the same bounded provider discovery `issues` as
 `ctx sources --format json`, including stable issue codes and truncation markers.
 
-MCP search defaults to primary-agent sessions only, matching `ctx search`.
-Pass `include_subagents: true` when implementation details, code review notes,
-test output, or failure traces from subagent sessions are relevant. When
-`CODEX_THREAD_ID` is set, MCP search also excludes the active Codex session tree
-by default; pass `include_current_session: true` when the active session tree is
-the target.
+Ordinary MCP search includes primary and subagent sessions, matching `ctx
+search`. Sessions with the same exact root-session claim are grouped together;
+sessions without that claim remain their own groups. Search returns one best
+result per group before repeats.
+Primary evidence is preferred only when nearly as relevant; stronger child
+evidence can win. Pass `primary_only: true` only for a deliberately narrow
+search that excludes subagent work. When `CODEX_THREAD_ID` is set, MCP search
+also excludes the active Codex session tree by default; pass
+`include_current_session: true` when the active session tree is the target.
 
 Malformed tool arguments return `isError: true` with the existing diagnostic
 `error` and stable `error_code: "invalid_request"` in `structuredContent`.

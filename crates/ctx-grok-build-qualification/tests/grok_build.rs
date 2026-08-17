@@ -221,7 +221,7 @@ impl Harness {
             query,
             "--provider",
             "grok-build",
-            "--include-subagents",
+            "--events",
             "--refresh",
             "off",
             "--format=json",

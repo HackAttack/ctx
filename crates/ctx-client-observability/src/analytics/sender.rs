@@ -510,7 +510,6 @@ fn insert_search_properties(properties: &mut Map<String, Value>, value: &SearchT
     insert_bool(properties, "has_session_filter", value.has_session_filter);
     insert_bool(properties, "event_results", value.event_results);
     insert_bool(properties, "primary_only", value.primary_only);
-    insert_bool(properties, "include_subagents", value.include_subagents);
     insert_bool(
         properties,
         "include_current_session",

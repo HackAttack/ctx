@@ -110,7 +110,6 @@ public final class AgentHistoryOptions {
         private String workspace;
         private String since;
         private boolean primaryOnly;
-        private boolean includeSubagents;
         private String eventType;
         private SearchContentScope contentScope;
         private String file;
@@ -153,10 +152,6 @@ public final class AgentHistoryOptions {
 
         public boolean primaryOnly() {
             return primaryOnly;
-        }
-
-        public boolean includeSubagents() {
-            return includeSubagents;
         }
 
         public String eventType() {
@@ -236,11 +231,6 @@ public final class AgentHistoryOptions {
 
         public Search primaryOnly(boolean primaryOnly) {
             this.primaryOnly = primaryOnly;
-            return this;
-        }
-
-        public Search includeSubagents(boolean includeSubagents) {
-            this.includeSubagents = includeSubagents;
             return this;
         }
 

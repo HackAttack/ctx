@@ -369,7 +369,6 @@ fn search_result_window_is_truthful_in_json_and_human_output() {
         "search",
         "--provider",
         "codex",
-        "--include-subagents",
         "--limit",
         "1",
         "--refresh",
@@ -396,7 +395,6 @@ fn search_result_window_is_truthful_in_json_and_human_output() {
             "search",
             "--provider",
             "codex",
-            "--include-subagents",
             "--limit",
             "1",
             "--refresh",
@@ -419,7 +417,6 @@ fn search_result_window_is_truthful_in_json_and_human_output() {
         "search",
         "--provider",
         "codex",
-        "--include-subagents",
         "--limit",
         "200",
         "--refresh",
@@ -443,7 +440,6 @@ fn search_result_window_is_truthful_in_json_and_human_output() {
             "search",
             "--provider",
             "codex",
-            "--include-subagents",
             "--limit",
             "200",
             "--refresh",
@@ -517,7 +513,6 @@ fn search_excludes_active_codex_session_by_default_when_available() {
                 "local history search",
                 "--provider",
                 "codex",
-                "--include-subagents",
                 "--refresh",
                 "off",
                 "--format=json",
@@ -542,7 +537,6 @@ fn search_excludes_active_codex_session_by_default_when_available() {
                 "local history search",
                 "--provider",
                 "codex",
-                "--include-subagents",
                 "--refresh",
                 "off",
                 "--format=json",
@@ -639,7 +633,6 @@ fn search_excludes_active_codex_session_by_default_when_available() {
                 "local history search",
                 "--session",
                 root_session_id,
-                "--include-subagents",
                 "--refresh",
                 "off",
                 "--format=json",
@@ -680,7 +673,6 @@ fn search_excludes_active_codex_session_by_default_when_available() {
                 "local history search",
                 "--provider",
                 "codex",
-                "--include-subagents",
                 "--refresh",
                 "off",
                 "--include-current-session",
@@ -890,7 +882,7 @@ fn doctor_reports_missing_store_without_creating_it() {
 }
 
 #[test]
-fn codex_cli_resume_is_idempotent_rescan_and_filters_subagents() {
+fn codex_cli_resume_is_idempotent_rescan_and_defaults_to_all_agents() {
     let temp = tempdir();
     let fixture = provider_history_fixture("codex-sessions");
     let _daemon = start_source_refresh_daemon(&temp);
@@ -914,14 +906,32 @@ fn codex_cli_resume_is_idempotent_rescan_and_filters_subagents() {
     wait_for_test_lexical_projection(&temp, &first_generation);
     assert_eq!(provider_core_counts(&data_root(&temp), "codex"), (2, 8));
 
-    let primary_default =
+    let all_agents_default =
         json_output(ctx(&temp).args(["search", "subagent", "--refresh", "off", "--format=json"]));
-    assert!(primary_default["filters"]["include_subagents"].is_null());
-    let primary_default_text = serde_json::to_string(&primary_default).unwrap();
+    assert!(all_agents_default["filters"]
+        .get("include_subagents")
+        .is_none());
+    let all_agents_default_text = serde_json::to_string(&all_agents_default).unwrap();
     assert!(
-        !primary_default_text.contains("codex-session-child"),
-        "{primary_default_text}"
+        all_agents_default_text.contains("codex-session-child"),
+        "{all_agents_default_text}"
     );
+
+    let root_first = json_output(ctx(&temp).args([
+        "search",
+        "local history search",
+        "--limit",
+        "1",
+        "--refresh",
+        "off",
+        "--format=json",
+    ]));
+    assert_eq!(
+        root_first["results"][0]["provider_session_id"],
+        "codex-session-child"
+    );
+    assert_eq!(root_first["results"][0]["agent_scope"], "subagent");
+    assert_eq!(root_first["result_window"]["more_available"], true);
 
     let default_events = json_output(ctx(&temp).args([
         "search",
@@ -931,26 +941,12 @@ fn codex_cli_resume_is_idempotent_rescan_and_filters_subagents() {
         "off",
         "--format=json",
     ]));
-    assert!(default_events["filters"]["include_subagents"].is_null());
+    assert!(default_events["filters"].get("include_subagents").is_none());
     let default_events_text = serde_json::to_string(&default_events).unwrap();
     assert!(
-        !default_events_text.contains("codex-session-child"),
+        default_events_text.contains("codex-session-child"),
         "{default_events_text}"
     );
-
-    let with_subagents = json_output(ctx(&temp).args([
-        "search",
-        "subagent",
-        "--include-subagents",
-        "--refresh",
-        "off",
-        "--format=json",
-    ]));
-    assert!(!with_subagents["results"].as_array().unwrap().is_empty());
-    assert_eq!(with_subagents["filters"]["include_subagents"], true);
-    assert!(serde_json::to_string(&with_subagents)
-        .unwrap()
-        .contains("codex-session-child"));
 
     let child_session = json_output(ctx(&temp).args([
         "show",
@@ -989,12 +985,15 @@ fn codex_cli_resume_is_idempotent_rescan_and_filters_subagents() {
         "off",
         "--format=json",
     ]));
-    assert!(primary_only["filters"]["include_subagents"].is_null());
+    assert!(primary_only["filters"].get("include_subagents").is_none());
     assert_eq!(primary_only["filters"]["primary_only"], true);
     assert!(
         primary_only["results"].as_array().unwrap().len()
-            <= with_subagents["results"].as_array().unwrap().len()
+            <= all_agents_default["results"].as_array().unwrap().len()
     );
+    assert!(!serde_json::to_string(&primary_only)
+        .unwrap()
+        .contains("codex-session-child"));
 
     let second = json_output(ctx(&temp).args([
         "import",

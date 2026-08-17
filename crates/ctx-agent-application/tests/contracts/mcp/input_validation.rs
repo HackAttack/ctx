@@ -80,6 +80,15 @@ fn mcp_tool_input_validation_returns_stable_invalid_request_and_server_recovers(
             "unknown argument content",
         ),
         (
+            "removed-include-subagents",
+            "search",
+            json!({
+                "query": "onboarding",
+                "include_subagents": true
+            }),
+            "unknown argument include_subagents",
+        ),
+        (
             "bad-since",
             "search",
             json!({"query": "onboarding", "since": "yesterday"}),

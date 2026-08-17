@@ -1,4 +1,99 @@
 use super::*;
+use ctx_history_core::{
+    derive_event_id, derive_session_id, EventIdentityInput, NativeItemKey, NativeSessionKey,
+    SessionIdentityInput, SourceAnchor, SourceKey, StableEntityId, TypedKey,
+};
+
+fn candidate_source() -> SourceKey {
+    SourceKey::derive(
+        "codex",
+        "root_first_search_test",
+        "session",
+        1,
+        SourceAnchor::provider_native(
+            "session-file",
+            TypedKey::utf8("root-first-search-test.jsonl").unwrap(),
+        )
+        .unwrap(),
+    )
+    .unwrap()
+}
+
+fn candidate_session_id(source: &SourceKey, session: u64) -> StableEntityId {
+    let native_session_key =
+        NativeSessionKey::native_id("session", TypedKey::U64(session)).unwrap();
+    derive_session_id(SessionIdentityInput {
+        source,
+        logical_session_kind: "thread",
+        native_session_key: &native_session_key,
+    })
+    .unwrap()
+}
+
+fn candidate(
+    score: f32,
+    session: u64,
+    root: Option<u64>,
+    agent_scope: Option<AgentScope>,
+    event_sequence: u64,
+) -> EventSearchCandidate {
+    candidate_with_parent(score, session, None, root, agent_scope, event_sequence)
+}
+
+fn candidate_with_parent(
+    score: f32,
+    session: u64,
+    parent: Option<u64>,
+    root: Option<u64>,
+    agent_scope: Option<AgentScope>,
+    event_sequence: u64,
+) -> EventSearchCandidate {
+    let source = candidate_source();
+    let session_id = candidate_session_id(&source, session);
+    let native_item_key =
+        NativeItemKey::native_id("message", TypedKey::U64(event_sequence)).unwrap();
+    let event_id = derive_event_id(EventIdentityInput {
+        source: &source,
+        session_id,
+        logical_item_kind: "message",
+        native_item_key: &native_item_key,
+        subrecord_selector: None,
+    })
+    .unwrap();
+    EventSearchCandidate {
+        score,
+        event: EventRecord {
+            event_id,
+            session_id,
+            parent_session_id: parent.map(|parent| candidate_session_id(&source, parent)),
+            root_session_id: root.map(|root| candidate_session_id(&source, root)),
+            session_relationship: None,
+            event_copy: None,
+            source,
+            provider: "codex".to_owned(),
+            source_format: "root_first_search_test".to_owned(),
+            provider_session_id: Some(format!("session-{session}")),
+            native_event_id: None,
+            agent_scope,
+            event_sequence,
+            occurred_at_unix_ms: Some(i64::try_from(event_sequence).unwrap()),
+            event_type: "message".to_owned(),
+            role: Some("assistant".to_owned()),
+        },
+    }
+}
+
+fn result_scores(window: &SearchResultWindow) -> Vec<f32> {
+    window.hits.iter().map(|hit| hit.score).collect()
+}
+
+fn candidate_tail_score(candidates: &[EventSearchCandidate]) -> f32 {
+    candidates
+        .iter()
+        .map(|candidate| candidate.score)
+        .min_by(f32::total_cmp)
+        .unwrap()
+}
 
 fn ancestry(
     session_id: u128,
@@ -53,7 +148,6 @@ fn request() -> SearchRequest {
         workspace: None,
         since: None,
         primary_only: false,
-        include_subagents: false,
         content_scope: SearchContentScope::All,
         event_type: None,
         file: None,
@@ -99,12 +193,9 @@ fn unsupported_semantic_scope_remains_typed() {
 }
 
 #[test]
-fn explicit_session_selection_overrides_only_the_default_agent_scope() {
+fn all_agents_are_default_and_primary_only_is_the_sole_narrower_scope() {
     let mut request = request();
-    assert_eq!(
-        search_agent_scope(&request, None),
-        SearchAgentScope::Primary
-    );
+    assert_eq!(search_agent_scope(&request, None), SearchAgentScope::All);
     assert_eq!(
         search_agent_scope(&request, Some(Uuid::nil())),
         SearchAgentScope::All
@@ -114,6 +205,236 @@ fn explicit_session_selection_overrides_only_the_default_agent_scope() {
         search_agent_scope(&request, Some(Uuid::nil())),
         SearchAgentScope::Primary
     );
+}
+
+#[test]
+fn ordinary_search_is_strictly_root_first() {
+    let candidates = [
+        candidate(90.0, 2, Some(1), Some(AgentScope::Subagent), 1),
+        candidate(80.0, 3, Some(3), Some(AgentScope::Subagent), 1),
+        candidate(100.0, 1, Some(1), Some(AgentScope::Subagent), 1),
+    ];
+
+    let window = shape_search_result_window(candidates.iter(), 2, false);
+
+    assert_eq!(result_scores(&window), [100.0, 80.0]);
+    assert!(window.more_available);
+}
+
+#[test]
+fn parent_only_claim_falls_back_to_the_session_id() {
+    let candidates = [
+        candidate(100.0, 1, None, Some(AgentScope::Primary), 1),
+        candidate_with_parent(90.0, 2, Some(1), None, Some(AgentScope::Subagent), 1),
+        candidate(80.0, 3, None, Some(AgentScope::Primary), 1),
+    ];
+
+    let window = shape_search_result_window(candidates.iter(), 2, false);
+
+    assert_eq!(result_scores(&window), [100.0, 90.0]);
+    assert!(window.more_available);
+}
+
+#[test]
+fn literal_root_claims_are_used_without_transitive_resolution() {
+    let candidates = [
+        candidate(100.0, 1, Some(9), Some(AgentScope::Subagent), 1),
+        candidate(90.0, 2, Some(9), Some(AgentScope::Subagent), 1),
+    ];
+
+    let window = shape_search_result_window(candidates.iter(), 1, false);
+
+    assert_eq!(result_scores(&window), [100.0]);
+    assert!(window.more_available);
+}
+
+#[test]
+fn primary_tolerance_is_inclusive_at_95_percent() {
+    let candidates = [
+        candidate(100.0, 2, Some(1), Some(AgentScope::Subagent), 1),
+        candidate(95.0, 1, Some(1), Some(AgentScope::Primary), 1),
+        candidate(97.0, 3, Some(3), Some(AgentScope::Subagent), 1),
+    ];
+
+    let window = shape_search_result_window(candidates.iter(), 2, false);
+
+    assert_eq!(result_scores(&window), [95.0, 97.0]);
+    assert_eq!(window.hits[0].event.agent_scope, Some(AgentScope::Primary));
+}
+
+#[test]
+fn primary_below_tolerance_does_not_displace_a_stronger_child() {
+    let candidates = [
+        candidate(94.99, 1, Some(1), Some(AgentScope::Primary), 1),
+        candidate(100.0, 2, Some(1), Some(AgentScope::Subagent), 1),
+    ];
+
+    let window = shape_search_result_window(candidates.iter(), 1, false);
+
+    assert_eq!(result_scores(&window), [100.0]);
+    assert_eq!(window.hits[0].event.agent_scope, Some(AgentScope::Subagent));
+    assert!(window.more_available);
+}
+
+#[test]
+fn equal_score_roots_use_the_literal_root_id_as_a_stable_tie_break() {
+    let first = candidate(10.0, 1, Some(1), Some(AgentScope::Subagent), 1);
+    let second = candidate(10.0, 2, Some(2), Some(AgentScope::Subagent), 1);
+    let mut expected = [
+        first.event.root_session_id.unwrap().as_uuid(),
+        second.event.root_session_id.unwrap().as_uuid(),
+    ];
+    expected.sort();
+
+    let candidates = [second, first];
+    let window = shape_search_result_window(candidates.iter(), 2, false);
+    let actual = window
+        .hits
+        .iter()
+        .map(|hit| hit.event.root_session_id.unwrap())
+        .collect::<Vec<_>>();
+
+    assert_eq!(actual, expected);
+}
+
+#[test]
+fn additional_sessions_fill_round_robin_in_root_order() {
+    let candidates = [
+        candidate(50.0, 6, Some(4), Some(AgentScope::Subagent), 1),
+        candidate(80.0, 3, Some(1), Some(AgentScope::Subagent), 1),
+        candidate(100.0, 1, Some(1), Some(AgentScope::Subagent), 1),
+        candidate(60.0, 5, Some(4), Some(AgentScope::Subagent), 1),
+        candidate(90.0, 2, Some(1), Some(AgentScope::Subagent), 1),
+        candidate(70.0, 4, Some(4), Some(AgentScope::Subagent), 1),
+    ];
+
+    let window = shape_search_result_window(candidates.iter(), 5, false);
+
+    assert_eq!(result_scores(&window), [100.0, 70.0, 90.0, 60.0, 80.0]);
+    assert!(window.more_available);
+}
+
+#[test]
+fn ordinary_results_keep_one_event_per_session_and_count_other_matches() {
+    let candidates = [
+        candidate(90.0, 1, Some(1), Some(AgentScope::Primary), 2),
+        candidate(70.0, 2, Some(2), Some(AgentScope::Primary), 1),
+        candidate(100.0, 1, Some(1), Some(AgentScope::Primary), 1),
+        candidate(80.0, 1, Some(1), Some(AgentScope::Primary), 3),
+    ];
+
+    let window = shape_search_result_window(candidates.iter(), 2, false);
+
+    assert_eq!(result_scores(&window), [100.0, 70.0]);
+    assert_eq!(window.hits[0].more_matches_in_session, 2);
+    assert_eq!(window.hits[1].more_matches_in_session, 0);
+    assert_ne!(
+        window.hits[0].event.session_id,
+        window.hits[1].event.session_id
+    );
+    assert!(!window.more_available);
+}
+
+#[test]
+fn dense_event_results_remain_ungrouped_and_score_ordered() {
+    let candidates = [
+        candidate(80.0, 1, Some(1), Some(AgentScope::Primary), 3),
+        candidate(100.0, 1, Some(1), Some(AgentScope::Primary), 1),
+        candidate(90.0, 1, Some(1), Some(AgentScope::Primary), 2),
+    ];
+
+    let window = shape_search_result_window(candidates.iter(), 2, true);
+
+    assert_eq!(result_scores(&window), [100.0, 90.0]);
+    assert_eq!(
+        window.hits[0].event.session_id,
+        window.hits[1].event.session_id
+    );
+    assert!(window
+        .hits
+        .iter()
+        .all(|hit| hit.more_matches_in_session == 0));
+    assert!(window.more_available);
+}
+
+#[test]
+fn sibling_heavy_candidate_pool_is_not_decisive_before_enough_roots_arrive() {
+    let candidates = [
+        candidate(100.0, 1, Some(1), Some(AgentScope::Primary), 1),
+        candidate(99.0, 2, Some(1), Some(AgentScope::Subagent), 1),
+        candidate(98.0, 3, Some(1), Some(AgentScope::Subagent), 1),
+    ];
+
+    assert!(!root_first_candidate_pool_is_decisive(
+        &candidates,
+        2,
+        candidate_tail_score(&candidates)
+    ));
+}
+
+#[test]
+fn candidate_pool_waits_until_unseen_primary_cannot_enter_tolerance() {
+    let candidates = [
+        candidate(100.0, 2, Some(1), Some(AgentScope::Subagent), 1),
+        candidate(99.0, 3, Some(3), Some(AgentScope::Subagent), 1),
+        candidate(96.0, 4, Some(4), Some(AgentScope::Subagent), 1),
+    ];
+
+    assert!(!root_first_candidate_pool_is_decisive(
+        &candidates,
+        2,
+        candidate_tail_score(&candidates)
+    ));
+
+    let mut decisive = candidates.to_vec();
+    decisive.push(candidate(94.0, 5, Some(5), Some(AgentScope::Subagent), 1));
+    assert!(root_first_candidate_pool_is_decisive(
+        &decisive,
+        2,
+        candidate_tail_score(&decisive)
+    ));
+}
+
+#[test]
+fn candidate_pool_is_decisive_when_qualifying_primaries_are_already_visible() {
+    let candidates = [
+        candidate(100.0, 2, Some(1), Some(AgentScope::Subagent), 1),
+        candidate(99.0, 3, Some(3), Some(AgentScope::Subagent), 1),
+        candidate(98.0, 1, Some(1), Some(AgentScope::Primary), 1),
+        candidate(97.0, 4, Some(3), Some(AgentScope::Primary), 1),
+        candidate(96.0, 5, Some(5), Some(AgentScope::Subagent), 1),
+    ];
+
+    assert!(root_first_candidate_pool_is_decisive(
+        &candidates,
+        2,
+        candidate_tail_score(&candidates)
+    ));
+}
+
+#[test]
+fn candidate_pool_waits_past_an_equal_score_primary_tie() {
+    let tied = [
+        candidate(100.0, 2, Some(1), Some(AgentScope::Subagent), 1),
+        candidate(95.0, 1, Some(1), Some(AgentScope::Primary), 1),
+    ];
+    assert!(!root_first_candidate_pool_is_decisive(&tied, 1, 95.0));
+    assert!(root_first_candidate_pool_is_decisive(&tied, 1, 94.99));
+}
+
+#[test]
+fn equal_score_root_boundary_requires_more_candidates_for_stable_tie_breaking() {
+    let candidates = [
+        candidate(100.0, 1, Some(1), Some(AgentScope::Primary), 1),
+        candidate(90.0, 2, Some(2), Some(AgentScope::Primary), 1),
+        candidate(90.0, 3, Some(3), Some(AgentScope::Primary), 1),
+    ];
+
+    assert!(!root_first_candidate_pool_is_decisive(
+        &candidates,
+        2,
+        candidate_tail_score(&candidates)
+    ));
 }
 
 #[test]

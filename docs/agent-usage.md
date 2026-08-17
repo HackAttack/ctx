@@ -28,9 +28,11 @@ authoritative refresh, or `--refresh off` when it must never start or wake a
 process.
 
 When one query is not enough, vary the wording, add `--term`, narrow by
-workspace/provider/file/session, or use `--events` and `--include-subagents`.
-Search windows are bounded, so do not infer exact corpus-wide counts from the
-number of returned hits.
+workspace/provider/file/session, or use `--events`. Ordinary search already
+covers primary and subagent work with root-diverse results; use
+`--primary-only` only for a deliberately narrow search. Search windows are
+bounded, so do not infer exact corpus-wide counts from the number of returned
+hits.
 
 When ctx runs inside Codex and `CODEX_THREAD_ID` is available, search excludes
 the active Codex session tree by default to avoid returning the current prompt

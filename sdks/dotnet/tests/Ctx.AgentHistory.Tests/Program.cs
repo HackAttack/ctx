@@ -624,7 +624,6 @@ internal static class Program
             Workspace = "ctx",
             Since = "30d",
             PrimaryOnly = true,
-            IncludeSubagents = true,
             EventType = "message",
             File = "src/lib.rs",
             Session = "session-1",
@@ -633,7 +632,7 @@ internal static class Program
             IncludeCurrentSession = true
         });
 
-        Equal("search retry --term timeout --term backoff --limit 5 --backend hybrid --semantic-weight 0.35 --provider codex --workspace ctx --since 30d --primary-only --include-subagents --event-type message --file src/lib.rs --session session-1 --events --refresh off --include-current-session --format=json", Join(transport.Calls[0]));
+        Equal("search retry --term timeout --term backoff --limit 5 --backend hybrid --semantic-weight 0.35 --provider codex --workspace ctx --since 30d --primary-only --event-type message --file src/lib.rs --session session-1 --events --refresh off --include-current-session --format=json", Join(transport.Calls[0]));
         Equal("search", response.Operation);
         Equal("retry", response.Search.Query ?? "");
         Equal("off", response.Search.Freshness!.Mode ?? "");

@@ -44,6 +44,12 @@ The public methods mirror the agent-history-v1 client surface:
 - `show_session()` / `showSession()`
 - `version()` and `versioning()`
 
+Search includes primary and subagent sessions by default, groups exact
+root-session claims, and returns one best result per group before repeats;
+sessions without a root claim remain their own groups. Primary evidence is
+slightly preferred only near ties; stronger child evidence can win. Pass
+`primary_only=True` only for a deliberately primary-only search.
+
 Every operation returns a dictionary with `contractVersion: "agent-history-v1"`,
 `schemaVersion: 1`, `operation`, `backend`, and an operation-specific payload
 such as `status`, `sources`, `import`, `search`, `event`, or `session`.

@@ -374,7 +374,6 @@ pub struct SearchTelemetry {
     pub has_session_filter: bool,
     pub event_results: bool,
     pub primary_only: bool,
-    pub include_subagents: bool,
     pub include_current_session: bool,
     pub limit: CountBucket,
     pub provider_filter: Option<CaptureProvider>,

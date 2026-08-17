@@ -483,7 +483,6 @@ const SEARCH_OPTIONS: &[OptionSpec] = &[
     OptionSpec::value("--workspace"),
     OptionSpec::value("--since"),
     OptionSpec::flag("--primary-only"),
-    OptionSpec::flag("--include-subagents"),
     OptionSpec::checked("--content-scope", content_scope),
     OptionSpec::value("--event-type"),
     OptionSpec::value("--file"),

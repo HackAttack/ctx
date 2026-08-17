@@ -260,7 +260,7 @@ fn fresh_home_search_mvp_flow() {
         .clone();
     let human_search = String::from_utf8(human_search).unwrap();
     assert!(
-        human_search.starts_with("1 result · relevance order · primary sessions\n\n"),
+        human_search.starts_with("1 result · relevance order · all agent sessions\n\n"),
         "{human_search}"
     );
     assert!(human_search.contains("1. "));

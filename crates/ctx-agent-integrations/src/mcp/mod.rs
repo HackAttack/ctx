@@ -106,7 +106,6 @@ const SEARCH_ARGUMENTS: &[&str] = &[
     "workspace",
     "since",
     "primary_only",
-    "include_subagents",
     "content_scope",
     "event_type",
     "file",
@@ -574,7 +573,6 @@ fn search_request<B: ToolBackend>(
     let workspace = optional_string(arguments, "workspace")?;
     let since = optional_string(arguments, "since")?;
     let primary_only = optional_bool(arguments, "primary_only")?.unwrap_or(false);
-    let include_subagents = optional_bool(arguments, "include_subagents")?.unwrap_or(false);
     let file = optional_string(arguments, "file")?.map(PathBuf::from);
     let events = optional_bool(arguments, "events")?.unwrap_or(false) || session.is_some();
     let include_current_session =
@@ -613,7 +611,6 @@ fn search_request<B: ToolBackend>(
         workspace,
         since,
         primary_only,
-        include_subagents,
         content_scope: content_scope.unwrap_or(ToolSearchContentScope::All),
         event_type,
         file,
@@ -677,7 +674,7 @@ fn tool_definitions(provider_names: Vec<&'static str>) -> Vec<Value> {
                 "source_format": { "type": "string", "description": "Custom history source_format." },
                 "workspace": { "type": "string", "description": "Workspace path or name text." },
                 "since": { "type": "string", "description": "RFC3339 timestamp or day window such as 30d." },
-                "include_subagents": { "type": "boolean", "default": false, "description": "Include subagent sessions in addition to primary-agent sessions." },
+                "primary_only": { "type": "boolean", "default": false, "description": "Search only primary agent sessions." },
                 "content_scope": { "type": "string", "enum": content_scope_names(), "default": "all", "description": "Search all indexed content, transcript text, tool/command calls, or tool/command outputs." },
                 "event_type": { "type": "string", "enum": event_type_names() },
                 "file": { "type": "string", "description": "Indexed touched-file path. Required unless query is provided." },

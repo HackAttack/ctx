@@ -28,7 +28,6 @@ impl From<SearchRequest> for SourceSearchRequest {
             workspace: args.workspace,
             since: args.since,
             primary_only: args.primary_only,
-            include_subagents: args.include_subagents,
             content_scope: match args.content_scope {
                 SearchContentScope::All => ctx_history_index::SearchContentScope::All,
                 SearchContentScope::Transcript => ctx_history_index::SearchContentScope::Transcript,

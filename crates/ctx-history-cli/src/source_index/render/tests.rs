@@ -14,8 +14,10 @@ use crate::ui::{
 };
 
 const SESSION_ID: &str = "01900000-0000-7000-8000-000000000001";
-const PARENT_SESSION_ID: &str = "01900000-0000-7000-8000-000000000010";
-const ROOT_SESSION_ID: &str = "01900000-0000-7000-8000-000000000020";
+const PARENT_SESSION_ID: &str = "01900010-0000-7000-8000-000000000010";
+const ROOT_SESSION_ID: &str = "01900020-0000-7000-8000-000000000020";
+const PARENT_SESSION_REF: &str = "019000100";
+const ROOT_SESSION_REF: &str = "019000101";
 const EVENT_ID: &str = "01900001-0000-7000-8000-000000000002";
 const SECOND_EVENT_ID: &str = "01900002-0000-7000-8000-000000000003";
 
@@ -225,7 +227,6 @@ fn search_value() -> Value {
             ],
         }],
         "filters": {
-            "include_subagents": null,
             "primary_only": null,
         },
         "result_window": {
@@ -252,6 +253,31 @@ fn empty_search_value() -> Value {
             "candidate_pool_truncated": false,
         },
     })
+}
+
+fn search_agent_value(
+    agent_scope: Option<&str>,
+    parent: Option<&str>,
+    root: Option<&str>,
+) -> Value {
+    let mut value = search_value();
+    let result = value["results"][0]
+        .as_object_mut()
+        .expect("search fixture result is an object");
+    if let Some(agent_scope) = agent_scope {
+        result.insert("agent_scope".to_owned(), json!(agent_scope));
+    } else {
+        result.remove("agent_scope");
+    }
+    result.insert(
+        "parent_ctx_session_id".to_owned(),
+        parent.map_or(Value::Null, |parent| json!(parent)),
+    );
+    result.insert(
+        "root_ctx_session_id".to_owned(),
+        root.map_or(Value::Null, |root| json!(root)),
+    );
+    value
 }
 
 fn show_value() -> Value {
@@ -450,49 +476,179 @@ fn primary_renderers_match_reference_goldens_at_80_columns() {
 fn search_heading_discloses_relevance_order_and_truthful_agent_scope() {
     for unicode in [true, false] {
         let separator = if unicode { " · " } else { " | " };
-        let primary =
+        let all_agents =
             render_search_document(&search_value(), false, &context_with_unicode(80, unicode))
                 .render_plain();
         assert!(
-            primary.starts_with(&format!(
-                "1 result{separator}relevance order{separator}primary sessions\n"
+            all_agents.starts_with(&format!(
+                "1 result{separator}relevance order{separator}all agent sessions\n"
             )),
-            "{primary}"
+            "{all_agents}"
         );
 
-        let mut included = search_value();
-        included["filters"]["include_subagents"] = json!(true);
-        let included = render_search_document(&included, false, &context_with_unicode(80, unicode))
-            .render_plain();
-        assert!(included.starts_with(&format!(
-            "1 result{separator}relevance order{separator}primary + subagent sessions\n"
-        )));
-        assert!(!included.contains("all sessions"));
-
         let mut primary_only = search_value();
-        primary_only["filters"]["include_subagents"] = json!(true);
         primary_only["filters"]["primary_only"] = json!(true);
         let primary_only =
             render_search_document(&primary_only, false, &context_with_unicode(80, unicode))
                 .render_plain();
-        assert!(primary_only.contains("primary sessions"), "{primary_only}");
-        assert!(!primary_only.contains("primary + subagent sessions"));
+        assert!(primary_only.starts_with(&format!(
+            "1 result{separator}relevance order{separator}primary sessions\n"
+        )));
+        assert!(!primary_only.contains("all agent sessions"));
     }
 
     let narrow = render_search_document(&search_value(), false, &context_with_unicode(32, true))
         .render_plain();
-    assert!(narrow.starts_with("1 result\n  relevance order\n  primary sessions\n"));
+    assert!(narrow.starts_with("1 result\n  relevance order\n  all agent sessions\n"));
 
-    let mut included = search_value();
-    included["filters"]["include_subagents"] = json!(true);
     for width in [32, 48, 80, 120] {
         let context = context(width, ColorMode::Never);
-        let first = render_search_document(&included, false, &context);
-        let second = render_search_document(&included, false, &context);
+        let first = render_search_document(&search_value(), false, &context);
+        let second = render_search_document(&search_value(), false, &context);
         assert_eq!(first.render_plain(), second.render_plain());
-        assert!(first.render_plain().contains("primary + subagent sessions"));
+        assert!(first.render_plain().contains("all agent sessions"));
         assert_fits(&first, &context);
     }
+}
+
+#[test]
+fn normal_search_agent_field_renders_primary() {
+    for width in [32, 48, 80, 120] {
+        let context = context(width, ColorMode::Never);
+        let document = render_search_document(&search_value(), false, &context);
+        let rendered = document.render_plain();
+
+        assert!(rendered.contains("   Agent    primary"), "{rendered}");
+        assert_eq!(rendered.matches("Agent").count(), 1, "{rendered}");
+        assert_fits(&document, &context);
+    }
+}
+
+#[test]
+fn normal_search_agent_field_collapses_child_parent_and_root() {
+    let value = search_agent_value(
+        Some("subagent"),
+        Some(ROOT_SESSION_REF),
+        Some(ROOT_SESSION_REF),
+    );
+    for unicode in [true, false] {
+        let separator = if unicode { " · " } else { " | " };
+        let document = render_search_document(&value, false, &context_with_unicode(80, unicode));
+        let rendered = document.render_plain();
+        assert!(
+            rendered.contains(&format!(
+                "   Agent    subagent{separator}parent/root {ROOT_SESSION_REF}"
+            )),
+            "{rendered}"
+        );
+        assert!(document
+            .lines()
+            .iter()
+            .flat_map(|line| line.spans())
+            .any(|span| span.content() == ROOT_SESSION_REF && span.token() == Token::Reference));
+    }
+}
+
+#[test]
+fn normal_search_agent_field_renders_nested_direct_lineage() {
+    let value = search_agent_value(
+        Some("subagent"),
+        Some(PARENT_SESSION_REF),
+        Some(ROOT_SESSION_REF),
+    );
+    for unicode in [true, false] {
+        let separator = if unicode { " · " } else { " | " };
+        let rendered = render_search_document(&value, false, &context_with_unicode(80, unicode))
+            .render_plain();
+        assert!(
+            rendered.contains(&format!(
+                "   Agent    subagent{separator}parent {PARENT_SESSION_REF}{separator}root {ROOT_SESSION_REF}"
+            )),
+            "{rendered}"
+        );
+    }
+
+    for width in [32, 48, 80, 120] {
+        let styled = context(width, ColorMode::Always);
+        let plain = context(width, ColorMode::Never);
+        let styled_document = render_search_document(&value, false, &styled);
+        let plain_document = render_search_document(&value, false, &plain);
+        assert_fits(&styled_document, &styled);
+        assert_control_safe(&styled_document.render_plain());
+        assert_eq!(
+            strip_ansi(&styled_document.render(&styled)),
+            plain_document.render_plain()
+        );
+        let references = styled_document
+            .lines()
+            .iter()
+            .flat_map(|line| line.spans())
+            .filter(|span| span.token() == Token::Reference)
+            .map(|span| span.content())
+            .collect::<Vec<_>>();
+        assert!(references.contains(&PARENT_SESSION_REF), "{references:?}");
+        assert!(references.contains(&ROOT_SESSION_REF), "{references:?}");
+    }
+}
+
+#[test]
+fn normal_search_agent_field_renders_only_available_direct_lineage() {
+    let cases = [
+        (
+            Some(PARENT_SESSION_REF),
+            None,
+            "   Agent    subagent · parent 019000100",
+            "root 019000101",
+        ),
+        (
+            None,
+            Some(ROOT_SESSION_REF),
+            "   Agent    subagent · root 019000101",
+            "parent 019000100",
+        ),
+        (None, None, "   Agent    subagent", "parent/root"),
+    ];
+    for (parent, root, expected, absent) in cases {
+        let rendered = render_search_document(
+            &search_agent_value(Some("subagent"), parent, root),
+            false,
+            &context(120, ColorMode::Never),
+        )
+        .render_plain();
+        assert!(rendered.contains(expected), "{rendered}");
+        assert!(!rendered.contains(absent), "{rendered}");
+    }
+
+    let controlled = search_agent_value(Some("subagent"), Some("parent\u{1b}[31m"), None);
+    let rendered =
+        render_search_document(&controlled, false, &context(48, ColorMode::Never)).render_plain();
+    assert!(rendered.contains("parent\\x1b[31m"), "{rendered}");
+    assert_control_safe(&rendered);
+}
+
+#[test]
+fn normal_search_agent_field_preserves_an_unresolved_full_reference() {
+    let value = search_agent_value(Some("subagent"), Some(PARENT_SESSION_ID), None);
+    let document = render_search_document(&value, false, &context(120, ColorMode::Never));
+    let rendered = document.render_plain();
+
+    assert!(rendered.contains(PARENT_SESSION_ID), "{rendered}");
+    assert!(document
+        .lines()
+        .iter()
+        .flat_map(|line| line.spans())
+        .any(|span| span.content() == PARENT_SESSION_ID && span.token() == Token::Reference));
+}
+
+#[test]
+fn normal_search_agent_field_does_not_infer_unknown_scope_from_lineage() {
+    let value = search_agent_value(None, Some(PARENT_SESSION_ID), Some(ROOT_SESSION_ID));
+    let rendered =
+        render_search_document(&value, false, &context(120, ColorMode::Never)).render_plain();
+
+    assert!(rendered.contains("   Agent    unknown"), "{rendered}");
+    assert!(!rendered.contains("01900010"), "{rendered}");
+    assert!(!rendered.contains("01900020"), "{rendered}");
 }
 
 #[test]
@@ -538,27 +694,27 @@ fn search_event_row_uses_exact_milliseconds_and_quiet_missing_time() {
 fn verbose_search_exposes_context_without_redundant_values_or_citation() {
     let ordinary = render_search_document(&search_value(), false, &context(120, ColorMode::Never))
         .render_plain();
-    for verbose_only in ["Sequence", "Agent"] {
-        assert!(!ordinary.contains(verbose_only), "{ordinary}");
-    }
+    assert!(!ordinary.contains("Sequence"), "{ordinary}");
+    assert!(ordinary.contains("Agent    primary"), "{ordinary}");
 
     let verbose = render_search_document(&search_value(), true, &context(120, ColorMode::Never))
         .render_plain();
     assert!(verbose.contains("Sequence          17"), "{verbose}");
-    assert!(verbose.contains("Agent             primary"), "{verbose}");
+    assert!(verbose.contains("Agent    primary"), "{verbose}");
     assert!(!verbose.contains("Citation"), "{verbose}");
-    assert_eq!(verbose.matches("primary").count(), 2, "{verbose}");
+    assert_eq!(verbose.matches("Agent").count(), 1, "{verbose}");
+    assert_eq!(verbose.matches("primary").count(), 1, "{verbose}");
 
     let mut nested = search_value();
     nested["results"][0]["agent_scope"] = json!("subagent");
-    nested["results"][0]["parent_ctx_session_id"] = json!(PARENT_SESSION_ID);
-    nested["results"][0]["root_ctx_session_id"] = json!(ROOT_SESSION_ID);
+    nested["results"][0]["parent_ctx_session_id"] = json!(PARENT_SESSION_REF);
+    nested["results"][0]["root_ctx_session_id"] = json!(ROOT_SESSION_REF);
     let nested =
         render_search_document(&nested, true, &context(120, ColorMode::Never)).render_plain();
     for expected in [
-        "Agent             subagent",
-        PARENT_SESSION_ID,
-        ROOT_SESSION_ID,
+        "Agent    subagent · parent 019000100 · root 019000101",
+        "Parent            019000100",
+        "Root              019000101",
     ] {
         assert!(nested.contains(expected), "{nested}");
     }
@@ -888,6 +1044,8 @@ fn search_candidate_warning_and_more_available_footer_are_actionable() {
         let rendered = document.render_plain();
         let normalized = rendered.split_whitespace().collect::<Vec<_>>().join(" ");
         assert!(rendered.contains("Warning\n"));
+        assert!(normalized.contains("Root diversity reached the current candidate bound."));
+        assert!(!normalized.contains("Session diversity"));
         assert!(normalized.contains("Refine the query"));
         assert!(normalized.contains("provider, workspace, file, or session filter"));
         assert!(rendered.ends_with("More results available.\n"));

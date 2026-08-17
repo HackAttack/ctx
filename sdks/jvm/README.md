@@ -19,6 +19,12 @@ large dependency footprint.
 - `showSession(String, ShowSessionOptions)` -> `ShowSessionResponse`
 - `version()` -> `VersionInfo`
 
+Search includes primary and subagent sessions by default, groups exact
+root-session claims, and returns one best result per group before repeats;
+sessions without a root claim remain their own groups. Primary evidence is
+slightly preferred only near ties; stronger child evidence can win. Call
+`primaryOnly(true)` only for a deliberately primary-only search.
+
 `SearchHit`, `Event`, and `SessionSummary` expose provider identity, including
 `providerSessionId` and `sourceFormat`; Codex uses `providerSessionId` as its
 resume UUID. `Event.content()` returns typed Core completeness and

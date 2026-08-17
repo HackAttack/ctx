@@ -91,10 +91,6 @@ public sealed class AgentHistoryClient
         {
             args.Add("--primary-only");
         }
-        if (options.IncludeSubagents)
-        {
-            args.Add("--include-subagents");
-        }
         if (options.ContentScope is { } contentScope)
         {
             AddOption(args, "--content-scope", SearchContentScopeValue(contentScope));

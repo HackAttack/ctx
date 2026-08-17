@@ -1,4 +1,4 @@
-use std::{collections::BTreeMap, fmt, path::PathBuf, str::FromStr};
+use std::{cmp::Ordering, collections::BTreeMap, fmt, path::PathBuf, str::FromStr};
 
 use anyhow::{anyhow, Result};
 use ctx_history_core::{
@@ -21,14 +21,17 @@ use crate::{
 };
 
 mod active_session;
+mod shaping;
 
 use active_session::excluded_active_session_tree;
 #[cfg(test)]
 use active_session::{
     resolved_unique_session_tree_root_id, SessionAncestry, MAX_ACTIVE_SESSION_ANCESTORS,
 };
+use shaping::root_first_candidate_pool_is_decisive;
+pub use shaping::shape_search_result_window;
 
-const MAX_SESSION_DIVERSITY_CANDIDATES: usize = 64 * 1024;
+const MAX_ROOT_DIVERSITY_CANDIDATES: usize = 64 * 1024;
 const MIN_CANDIDATE_BATCH: usize = 256;
 const CANDIDATE_OVERSAMPLE: usize = 8;
 const SOURCE_FUSION_CANDIDATES: usize = 1_600;
@@ -84,7 +87,6 @@ pub struct SearchRequest {
     pub workspace: Option<String>,
     pub since: Option<String>,
     pub primary_only: bool,
-    pub include_subagents: bool,
     pub content_scope: SearchContentScope,
     pub event_type: Option<String>,
     pub file: Option<PathBuf>,
@@ -395,10 +397,10 @@ pub fn search_filters_with_refs(
     })
 }
 
-fn search_agent_scope(request: &SearchRequest, session_id: Option<Uuid>) -> SearchAgentScope {
-    // Selecting one exact session is an explicit opt-in to that session even
-    // when it is a subagent. The explicit primary-only control still wins.
-    if request.primary_only || (session_id.is_none() && !request.include_subagents) {
+fn search_agent_scope(request: &SearchRequest, _session_id: Option<Uuid>) -> SearchAgentScope {
+    // Exact session selection remains authoritative under the default all-agent
+    // policy. The explicit primary-only control is the sole narrower scope.
+    if request.primary_only {
         SearchAgentScope::Primary
     } else {
         SearchAgentScope::All
@@ -811,22 +813,32 @@ fn collect_lexical_search_hits(
 ) -> Result<SearchCollection> {
     let document_count = usize::try_from(index.document_count()).unwrap_or(usize::MAX);
     let maximum = document_count
-        .min(MAX_SESSION_DIVERSITY_CANDIDATES)
+        .min(MAX_ROOT_DIVERSITY_CANDIDATES)
         .min(MAX_LEXICAL_QUERY_RESULTS);
     let mut candidate_limit = limit
         .saturating_mul(CANDIDATE_OVERSAMPLE)
         .max(MIN_CANDIDATE_BATCH)
         .min(maximum.max(1));
-
     loop {
         let candidates = if queries.is_empty() {
             index.list_event_candidates_with_filters(filters, candidate_limit)?
         } else {
             index.search_event_candidates_any_with_filters(queries, filters, candidate_limit)?
         };
-        let exhausted = candidates.len() < candidate_limit || candidate_limit >= document_count;
+        let source_candidate_pool = candidates.len();
+        let exhausted =
+            source_candidate_pool < candidate_limit || candidate_limit >= document_count;
+        let source_tail_score = candidates
+            .iter()
+            .map(|candidate| candidate.score)
+            .min_by(f32::total_cmp);
         let result_window = shape_search_result_window(candidates.iter(), limit, event_results);
-        if result_window.more_available || exhausted {
+        let decisive_window = result_window.more_available
+            && (event_results
+                || source_tail_score.is_some_and(|tail_score| {
+                    root_first_candidate_pool_is_decisive(&candidates, limit, tail_score)
+                }));
+        if decisive_window || exhausted {
             return Ok(SearchCollection {
                 result_window,
                 candidate_pool: candidates.len(),
@@ -903,25 +915,27 @@ fn fuse_source_candidates(
             event: evidence.event,
         })
         .collect::<Vec<_>>();
-    candidates.sort_by(|left, right| {
-        right
-            .score
-            .total_cmp(&left.score)
-            .then_with(|| {
-                right
-                    .event
-                    .occurred_at_unix_ms
-                    .cmp(&left.event.occurred_at_unix_ms)
-            })
-            .then_with(|| right.event.event_sequence.cmp(&left.event.event_sequence))
-            .then_with(|| {
-                left.event
-                    .event_id
-                    .as_uuid()
-                    .cmp(&right.event.event_id.as_uuid())
-            })
-    });
+    candidates.sort_by(search_candidate_order);
     candidates
+}
+
+fn search_candidate_order(left: &EventSearchCandidate, right: &EventSearchCandidate) -> Ordering {
+    right
+        .score
+        .total_cmp(&left.score)
+        .then_with(|| {
+            right
+                .event
+                .occurred_at_unix_ms
+                .cmp(&left.event.occurred_at_unix_ms)
+        })
+        .then_with(|| right.event.event_sequence.cmp(&left.event.event_sequence))
+        .then_with(|| {
+            left.event
+                .event_id
+                .as_uuid()
+                .cmp(&right.event.event_id.as_uuid())
+        })
 }
 
 fn weighted_rrf_score(
@@ -933,54 +947,6 @@ fn weighted_rrf_score(
     let lexical = lexical_rank.map(reciprocal_rank).unwrap_or(0.0);
     let semantic = semantic_rank.map(reciprocal_rank).unwrap_or(0.0);
     ((1.0 - semantic_weight) * lexical) + (semantic_weight * semantic)
-}
-
-pub fn shape_search_result_window<'a>(
-    candidates: impl IntoIterator<Item = &'a EventSearchCandidate>,
-    limit: usize,
-    event_results: bool,
-) -> SearchResultWindow {
-    let shape_limit = limit.saturating_add(1);
-    let mut hits = if event_results {
-        candidates
-            .into_iter()
-            .take(shape_limit)
-            .map(|candidate| SearchHit {
-                event: SearchEventMetadata::from(&candidate.event),
-                score: candidate.score,
-                more_matches_in_session: 0,
-            })
-            .collect()
-    } else {
-        let mut positions = BTreeMap::<Uuid, usize>::new();
-        let mut hits = Vec::<SearchHit>::new();
-        for candidate in candidates {
-            let session_id = candidate.event.session_id.as_uuid();
-            if let Some(position) = positions.get(&session_id).copied() {
-                if let Some(hit) = hits.get_mut(position) {
-                    hit.more_matches_in_session = hit.more_matches_in_session.saturating_add(1);
-                }
-                continue;
-            }
-            if hits.len() == shape_limit {
-                continue;
-            }
-            positions.insert(session_id, hits.len());
-            hits.push(SearchHit {
-                event: SearchEventMetadata::from(&candidate.event),
-                score: candidate.score,
-                more_matches_in_session: 0,
-            });
-        }
-        hits
-    };
-    let more_available = hits.len() > limit;
-    hits.truncate(limit);
-    SearchResultWindow {
-        limit,
-        hits,
-        more_available,
-    }
 }
 
 #[cfg(test)]

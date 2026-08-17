@@ -265,6 +265,17 @@ fn mcp_startup_health_checks_enabled_daemon_before_status_and_tools_list() {
         search_tool["inputSchema"]["properties"]["semantic_weight"]["default"],
         0.35
     );
+    assert!(search_tool["inputSchema"]["properties"]
+        .get("include_subagents")
+        .is_none());
+    assert_eq!(
+        search_tool["inputSchema"]["properties"]["primary_only"],
+        json!({
+            "type": "boolean",
+            "default": false,
+            "description": "Search only primary agent sessions."
+        })
+    );
     let status = &responses[2]["result"]["structuredContent"];
     assert_eq!(status["schema_version"], 2);
     let initialized = status["initialized"].as_bool().expect("initialized flag");
@@ -545,7 +556,6 @@ fn mcp_search_returns_structured_json_without_refresh() {
                     "arguments": {
                         "query": "search",
                         "provider": "codex",
-                        "include_subagents": true,
                         "limit": 1,
                         "backend": "lexical"
                     }

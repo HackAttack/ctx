@@ -379,7 +379,6 @@ class LocalCliAdapterTests(unittest.TestCase):
                     terms=["storage", "fts"],
                     events=True,
                     primary_only=True,
-                    include_subagents=True,
                     limit=3,
                     refresh="off",
                     include_current_session=True,

@@ -763,7 +763,6 @@ pub(crate) fn command_operation_descriptor(command: &CommandRoot) -> OperationDe
             has_session_filter: args.session.is_some(),
             event_results: args.events || args.session.is_some(),
             primary_only: args.primary_only,
-            include_subagents: args.include_subagents,
             include_current_session: args.include_current_session,
             limit: count_bucket(args.limit as u64),
             provider_filter: args.provider.map(|provider| provider.capture_provider()),

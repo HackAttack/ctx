@@ -44,6 +44,13 @@ Each SDK exposes typed operation-specific responses for:
 - version metadata
 - structured errors
 
+Ordinary SDK searches include primary and subagent sessions. Sessions with the
+same exact root-session claim are grouped together, while sessions without one
+remain their own groups; one best result is returned per group before repeats.
+Primary evidence is slightly preferred only when nearly as relevant; stronger
+child evidence can win. The language-specific `primaryOnly`,
+`primary_only`, or `PrimaryOnly` option is the sole narrow-scope override.
+
 Responses include the common `agent-history-v1` envelope fields:
 
 - `contractVersion`

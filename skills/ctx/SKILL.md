@@ -111,9 +111,9 @@ these as secondary resources; prefer installed help for command details.
    session-scoped search when one result looks relevant and dense event-level
    matches are needed.
 
-   Default search keeps primary-agent sessions prominent. Add
-   `--include-subagents` when implementation details, reviews, test output, or
-   failure traces may live in delegated sessions.
+   Ordinary search already covers primary and subagent work, returning one best
+   result per root task before repeats. Use `--primary-only` only when the
+   task deliberately calls for a narrow primary agent search.
 
    Use `--verbose` for full ctx IDs, provider IDs, source details, and copyable
    follow-up commands without switching to JSON.
@@ -196,7 +196,7 @@ Vary the query and use filters before drawing conclusions:
 ```bash
 ctx search "<query variant>" --events --refresh off
 ctx search "<query>" --session <ctx-session-id> --refresh off
-ctx search "<query>" --include-subagents --refresh off
+ctx search "<query>" --primary-only --refresh off
 ctx show event <ctx-event-id> --window 5
 ctx locate session <ctx-session-id>
 ```

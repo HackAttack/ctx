@@ -179,7 +179,6 @@ fn request(_refresh: RefreshArg) -> SourceSearchRequest {
         workspace: None,
         since: None,
         primary_only: false,
-        include_subagents: false,
         content_scope: SearchContentScope::All,
         event_type: None,
         file: None,

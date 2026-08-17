@@ -28,6 +28,12 @@ const results = await client.search("sqlite storage", { refresh: "off" });
 - `showSession({ provider, providerSession, mode })` looks up by provider-owned session ID.
 - `version()` wraps `ctx --version` and reports SDK/API version metadata.
 
+Search includes primary and subagent sessions by default, groups exact
+root-session claims, and returns one best result per group before repeats;
+sessions without a root claim remain their own groups. Primary evidence is
+slightly preferred only near ties; stronger child evidence can win. Set
+`primaryOnly: true` only for a deliberately primary-only search.
+
 All data methods return a `agent-history-v1` envelope with `contractVersion`,
 `schemaVersion`, `operation`, and an operation-specific field such as `status`,
 `search`, `event`, or `session`. TypeScript consumers get operation-specific return

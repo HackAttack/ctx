@@ -346,7 +346,6 @@ fn search_reports_query_observation_before_output_failure() {
             workspace: None,
             since: None,
             primary_only: false,
-            include_subagents: false,
             content_scope: None,
             event_type: None,
             file: None,
@@ -426,7 +425,6 @@ fn omitted_and_explicit_all_resolve_to_identical_weighted_retrieval() {
         workspace: None,
         since: None,
         primary_only: false,
-        include_subagents: false,
         content_scope,
         event_type: None,
         file: None,
@@ -518,7 +516,6 @@ fn content_scope_forwards_with_provider_workspace_since_file_agent_and_current_s
         workspace: Some("/workspace/pinned".to_owned()),
         since: Some("30d".to_owned()),
         primary_only: false,
-        include_subagents: true,
         content_scope: Some(ContentScopeArg::Calls),
         event_type: None,
         file: Some("src/lib.rs".into()),
@@ -533,7 +530,8 @@ fn content_scope_forwards_with_provider_workspace_since_file_agent_and_current_s
     }));
     let temp = tempdir().unwrap();
     write_test_generation(temp.path());
-    let filters = index_search_filters(&request, &open_index(temp.path()).unwrap()).unwrap();
+    let index = open_index(temp.path()).unwrap();
+    let filters = index_search_filters(&request, &index).unwrap();
 
     assert_eq!(request.content_scope, SearchContentScope::Calls);
     assert!(request.events);
@@ -544,6 +542,11 @@ fn content_scope_forwards_with_provider_workspace_since_file_agent_and_current_s
     assert_eq!(filters.file.as_deref(), Some("src/lib.rs"));
     assert_eq!(filters.agent_scope, AgentScope::All);
     assert!(filters.exclude_session_tree.is_none());
+
+    let mut primary_only_request = request.clone();
+    primary_only_request.primary_only = true;
+    let primary_only_filters = index_search_filters(&primary_only_request, &index).unwrap();
+    assert_eq!(primary_only_filters.agent_scope, AgentScope::Primary);
 }
 
 #[test]

@@ -33,7 +33,6 @@ public sealed record SearchOptions
     public string? Workspace { get; init; }
     public string? Since { get; init; }
     public bool PrimaryOnly { get; init; }
-    public bool IncludeSubagents { get; init; }
     public string? EventType { get; init; }
     public SearchContentScope? ContentScope { get; init; }
     public string? File { get; init; }

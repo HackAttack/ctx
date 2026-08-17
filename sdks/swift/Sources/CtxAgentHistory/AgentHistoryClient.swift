@@ -89,9 +89,6 @@ public struct AgentHistoryClient: Sendable {
         if options.primaryOnly {
             arguments.append("--primary-only")
         }
-        if options.includeSubagents {
-            arguments.append("--include-subagents")
-        }
         appendOption(&arguments, "--content-scope", options.contentScope?.rawValue)
         appendOption(&arguments, "--event-type", options.eventType)
         appendOption(&arguments, "--file", options.file)

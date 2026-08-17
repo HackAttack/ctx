@@ -294,7 +294,6 @@ impl Harness {
             query,
             "--provider",
             "deepseek-harness",
-            "--include-subagents",
             "--refresh",
             "off",
             "--format=json",

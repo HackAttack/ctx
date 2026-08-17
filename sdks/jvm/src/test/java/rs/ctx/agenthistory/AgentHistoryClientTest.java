@@ -913,6 +913,7 @@ public final class AgentHistoryClientTest {
                 .limit(5)
                 .backend("hybrid")
                 .semanticWeight(Double.valueOf(0.35))
+                .primaryOnly(true)
                 .eventType("message")
                 .refresh("off"));
 
@@ -922,6 +923,7 @@ public final class AgentHistoryClientTest {
         assertContainsInOrder(transport.lastOperation.args(), "--backend", "hybrid");
         assertContainsInOrder(transport.lastOperation.args(), "--semantic-weight", "0.35");
         assertContainsInOrder(transport.lastOperation.args(), "--term", "ctx");
+        assertContainsInOrder(transport.lastOperation.args(), "--refresh", "off", "--primary-only");
         assertContainsInOrder(transport.lastOperation.args(), "--event-type", "message");
         assertContainsInOrder(transport.lastOperation.args(), "--refresh", "off");
     }

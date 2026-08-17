@@ -92,6 +92,14 @@ fn direct_cli_rejects_missing_unknown_duplicate_conflicting_and_extra_syntax() {
 }
 
 #[test]
+fn direct_cli_rejects_obsolete_include_subagents_search_option() {
+    assert_eq!(
+        classify_direct_cli_command("ctx search incident --include-subagents"),
+        ContributionClass::Unknown
+    );
+}
+
+#[test]
 fn direct_cli_requires_bare_static_execution_and_exact_tool_input_fields() {
     for command in [
         "/tmp/ctx search incident",

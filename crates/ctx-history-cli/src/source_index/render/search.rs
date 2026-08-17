@@ -72,7 +72,7 @@ pub(in crate::source_index) fn render_search_document(
             &mut document,
             context,
             2,
-            "Session diversity reached the current candidate bound.",
+            "Root diversity reached the current candidate bound.",
             Token::Text,
         );
         push_wrapped(
@@ -105,12 +105,10 @@ fn render_results_heading(
         }
     );
     let order = "relevance order";
-    let includes_subagents =
-        value["filters"]["include_subagents"] == true && value["filters"]["primary_only"] != true;
-    let scope = if includes_subagents {
-        "primary + subagent sessions"
-    } else {
+    let scope = if value["filters"]["primary_only"] == true {
         "primary sessions"
+    } else {
+        "all agent sessions"
     };
     let separator = if context.unicode() { " · " } else { " | " };
     let width = display_width(&outcome)
@@ -204,6 +202,7 @@ fn render_result(
         &session,
         Token::Text,
     );
+    render_agent_field(document, context, result);
 
     let event_id = result["ctx_event_id"].as_str().unwrap_or("unknown");
     render_event_summary(document, context, event_id, result["timestamp"].as_str());
@@ -447,7 +446,6 @@ fn render_verbose_fields(document: &mut Document, context: &RenderContext, resul
             Token::Text,
         );
     }
-    render_agent_field(document, context, result);
     render_lineage_fields(document, context, result);
     if let Some(rank) = result["rank"].as_u64() {
         push_field(
@@ -474,21 +472,121 @@ fn render_verbose_fields(document: &mut Document, context: &RenderContext, resul
 }
 
 fn render_agent_field(document: &mut Document, context: &RenderContext, result: &Value) {
-    let Some(agent) = result["agent_scope"]
+    let agent = result["agent_scope"]
         .as_str()
         .filter(|value| !value.is_empty())
-    else {
-        return;
+        .unwrap_or("unknown");
+    let mut chunks = vec![agent_chunk(agent, Token::Text)];
+    if agent == "subagent" {
+        let parent = result["parent_ctx_session_id"]
+            .as_str()
+            .filter(|value| !value.is_empty());
+        let root = result["root_ctx_session_id"]
+            .as_str()
+            .filter(|value| !value.is_empty());
+        match (parent, root) {
+            (Some(parent), Some(root)) if parent == root => {
+                chunks.push(agent_reference_chunk("parent/root", parent));
+            }
+            (parent, root) => {
+                if let Some(parent) = parent {
+                    chunks.push(agent_reference_chunk("parent", parent));
+                }
+                if let Some(root) = root {
+                    chunks.push(agent_reference_chunk("root", root));
+                }
+            }
+        }
+    }
+    push_agent_chunks(document, context, chunks);
+}
+
+type AgentChunk = Vec<(String, Token)>;
+
+fn agent_chunk(text: &str, token: Token) -> AgentChunk {
+    let span = Span::new(text, token);
+    vec![(span.content().to_owned(), token)]
+}
+
+fn agent_reference_chunk(label: &str, reference: &str) -> AgentChunk {
+    let mut chunk = agent_chunk(&format!("{label} "), Token::Text);
+    // The application projection has already chosen the shortest prefix that
+    // is unambiguous in the pinned generation. Preserve that reference exactly;
+    // optional provider claims that cannot be resolved remain full UUIDs.
+    chunk.extend(agent_chunk(reference, Token::Reference));
+    chunk
+}
+
+fn push_agent_chunks(document: &mut Document, context: &RenderContext, chunks: Vec<AgentChunk>) {
+    let label = Span::new("Agent", Token::Label).content().to_owned();
+    let label_width = CARD_LABEL_WIDTH.max(display_width(&label));
+    let aligned_prefix_width = CARD_INDENT.saturating_add(label_width).saturating_add(2);
+    let aligned = context
+        .content_width()
+        .is_none_or(|width| width >= aligned_prefix_width.saturating_add(8));
+    let value_indent = if aligned {
+        aligned_prefix_width
+    } else {
+        document.push_line(
+            Line::new()
+                .with(Span::text(" ".repeat(CARD_INDENT)))
+                .with(Span::new(&label, Token::Label)),
+        );
+        CARD_INDENT.saturating_add(2)
     };
-    push_field(
-        document,
-        context,
-        CARD_INDENT,
-        "Agent",
-        VERBOSE_LABEL_WIDTH,
-        agent,
-        Token::Text,
-    );
+    let value_width = context
+        .content_width()
+        .map(|width| width.saturating_sub(value_indent).max(1));
+    let separator = if context.unicode() { " · " } else { " | " };
+    let separator = Span::new(separator, Token::Label).content().to_owned();
+    let separator_width = display_width(&separator);
+
+    let mut rows = Vec::<AgentChunk>::new();
+    let mut row = AgentChunk::new();
+    let mut row_width = 0usize;
+    for chunk in chunks {
+        let chunk_width = chunk.iter().fold(0usize, |width, (text, _)| {
+            width.saturating_add(display_width(text))
+        });
+        let next_separator_width = if row.is_empty() { 0 } else { separator_width };
+        let next_width = row_width
+            .saturating_add(next_separator_width)
+            .saturating_add(chunk_width);
+        if !row.is_empty() && value_width.is_some_and(|available| next_width > available) {
+            rows.push(std::mem::take(&mut row));
+            row_width = 0;
+        }
+        if !row.is_empty() {
+            row.push((separator.clone(), Token::Label));
+            row_width = row_width.saturating_add(separator_width);
+        }
+        row.extend(chunk);
+        row_width = row_width.saturating_add(chunk_width);
+    }
+    if !row.is_empty() {
+        rows.push(row);
+    }
+
+    for (index, row) in rows.into_iter().enumerate() {
+        let mut line = Line::new().with(Span::text(" ".repeat(CARD_INDENT)));
+        if aligned {
+            if index == 0 {
+                line.push(Span::new(&label, Token::Label));
+                line.push(Span::text(
+                    " ".repeat(label_width.saturating_sub(display_width(&label))),
+                ));
+            } else {
+                line.push(Span::text(" ".repeat(label_width)));
+            }
+            line.push(Span::text("  "));
+        } else {
+            line.push(Span::text("  "));
+        }
+        for (text, token) in row {
+            line.push(Span::new(text, token));
+        }
+        document.push_line(line);
+    }
 }
 
 fn render_lineage_fields(document: &mut Document, context: &RenderContext, result: &Value) {

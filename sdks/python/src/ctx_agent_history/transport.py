@@ -135,7 +135,6 @@ class AgentHistoryTransport(Protocol):
         backend: Optional[SearchBackendMode] = None,
         semantic_weight: Optional[float] = None,
         primary_only: bool = False,
-        include_subagents: bool = False,
         limit: Optional[int] = None,
         refresh: Optional[str] = None,
         include_current_session: bool = False,
@@ -271,7 +270,6 @@ class LocalCliAdapter:
         backend: Optional[SearchBackendMode] = None,
         semantic_weight: Optional[float] = None,
         primary_only: bool = False,
-        include_subagents: bool = False,
         limit: Optional[int] = None,
         refresh: Optional[str] = None,
         include_current_session: bool = False,
@@ -297,8 +295,6 @@ class LocalCliAdapter:
             args.extend(["--semantic-weight", str(semantic_weight)])
         if primary_only:
             args.append("--primary-only")
-        if include_subagents:
-            args.append("--include-subagents")
         if limit is not None:
             args.extend(["--limit", str(limit)])
         _extend_option(args, "--refresh", refresh)

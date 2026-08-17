@@ -127,6 +127,7 @@ pub struct SearchOptions {
     pub provider: Option<String>,
     pub workspace: Option<String>,
     pub since: Option<String>,
+    pub primary_only: bool,
     pub content_scope: Option<SearchContentScope>,
     pub event_type: Option<String>,
     pub file: Option<PathBuf>,
@@ -147,6 +148,7 @@ impl Default for SearchOptions {
             provider: None,
             workspace: None,
             since: None,
+            primary_only: false,
             content_scope: None,
             event_type: None,
             file: None,
@@ -322,6 +324,9 @@ impl AgentHistoryClient {
         push_opt(&mut owned, "--provider", options.provider);
         push_opt(&mut owned, "--workspace", options.workspace);
         push_opt(&mut owned, "--since", options.since);
+        if options.primary_only {
+            owned.push("--primary-only".to_owned());
+        }
         if let Some(content_scope) = options.content_scope {
             owned.extend([
                 "--content-scope".to_owned(),

@@ -203,7 +203,6 @@ fn lexical_request() -> SearchRequest {
         workspace: None,
         since: None,
         primary_only: false,
-        include_subagents: true,
         content_scope: SearchContentScope::All,
         event_type: None,
         file: None,

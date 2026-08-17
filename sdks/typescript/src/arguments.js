@@ -40,7 +40,6 @@ export function appendSearchArgs(args, options) {
   appendOptional(args, "--workspace", options.workspace);
   appendOptional(args, "--since", options.since);
   appendFlag(args, "--primary-only", options.primaryOnly);
-  appendFlag(args, "--include-subagents", options.includeSubagents);
   appendOptional(args, "--content-scope", options.contentScope);
   appendOptional(args, "--event-type", options.eventType);
   appendOptional(args, "--file", options.file);
@@ -53,6 +52,11 @@ export function appendSearchArgs(args, options) {
 }
 
 export function validateSearchOptions(options) {
+  if (Object.prototype.hasOwnProperty.call(options, "includeSubagents")) {
+    throw new CtxValidationError("search includeSubagents was removed; omit it", {
+      details: { includeSubagents: options.includeSubagents },
+    });
+  }
   if (
     options.contentScope !== undefined &&
     options.contentScope !== null &&

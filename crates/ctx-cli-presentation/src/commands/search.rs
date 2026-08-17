@@ -55,17 +55,8 @@ pub struct SearchArgs {
         help = "Filter to recent history, as RFC3339 or a day window like 30d"
     )]
     pub since: Option<String>,
-    #[arg(
-        long,
-        hide = true,
-        help = "Deprecated alias for the default primary-agent search scope"
-    )]
+    #[arg(long, help = "Search only primary agent sessions")]
     pub primary_only: bool,
-    #[arg(
-        long,
-        help = "Include subagent sessions in addition to primary-agent sessions"
-    )]
-    pub include_subagents: bool,
     #[arg(
         long,
         value_enum,
@@ -191,7 +182,6 @@ pub fn adapt(args: SearchArgs) -> ctx_history_cli::SearchArgs {
         workspace: args.workspace,
         since: args.since,
         primary_only: args.primary_only,
-        include_subagents: args.include_subagents,
         content_scope: args.content_scope.map(|scope| match scope {
             ContentScopeArg::All => ctx_history_cli::ContentScopeArg::All,
             ContentScopeArg::Transcript => ctx_history_cli::ContentScopeArg::Transcript,
@@ -316,7 +306,6 @@ mod tests {
             has_session_filter: false,
             event_results: false,
             primary_only: false,
-            include_subagents: false,
             include_current_session: false,
             limit: count_bucket(10),
             provider_filter: None,
@@ -424,13 +413,23 @@ mod tests {
             "--content-scope",
             "calls",
             "--events",
-            "--include-subagents",
             "--include-current-session",
         ])
         .unwrap()
         .search;
         assert!(matches!(args.content_scope, Some(ContentScopeArg::Calls)));
-        assert!(args.events && args.include_subagents && args.include_current_session);
+        assert!(args.events && args.include_current_session);
+    }
+
+    #[test]
+    fn primary_only_is_the_only_session_scope_override() {
+        let args = TestCli::try_parse_from(["ctx", "needle", "--primary-only"])
+            .unwrap()
+            .search;
+        assert!(args.primary_only);
+
+        let error = TestCli::try_parse_from(["ctx", "needle", "--include-subagents"]).unwrap_err();
+        assert!(error.to_string().contains("--include-subagents"));
     }
 
     #[test]

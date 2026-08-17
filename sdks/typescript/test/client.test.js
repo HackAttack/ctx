@@ -361,6 +361,24 @@ test("rejects an invalid content scope before invoking CLI", async () => {
   assert.equal(calls.length, 0);
 });
 
+test("rejects the removed includeSubagents option instead of ignoring it", async () => {
+  const { client, calls } = mockClient(() => {
+    throw new Error("runner should not be called");
+  });
+
+  for (const includeSubagents of [true, false]) {
+    await assert.rejects(
+      () => client.search("messages", { includeSubagents }),
+      (error) =>
+        error instanceof CtxValidationError &&
+        error.code === "CTX_VALIDATION_ERROR" &&
+        error.message === "search includeSubagents was removed; omit it" &&
+        error.details.includeSubagents === includeSubagents,
+    );
+  }
+  assert.equal(calls.length, 0);
+});
+
 test("rejects search without query, term, or file before invoking CLI", async () => {
   const { client, calls } = mockClient(() => {
     throw new Error("runner should not be called");

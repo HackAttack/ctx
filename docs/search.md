@@ -20,11 +20,14 @@ text regex: failed-result diagnostics, warnings, stderr, mixed records, unknown
 status, and ambiguous results remain searchable. Direct `show` and event
 enumeration still return the complete excluded records.
 
-Default results are session-diverse: ctx shows the strongest matching event
-from each session, then lets you drill into dense event-level results.
-Human output labels the result window as relevance ordered and identifies
-whether it contains primary sessions or primary plus subagent sessions. Each
-result's `Event` row shows the short ctx event ID and the matched event's exact
+Ordinary results include primary and subagent sessions. When history carries an
+exact root-session claim, ctx groups sessions by that claim and returns one best
+result per root task before repeating a root; a session without that claim is
+its own group. Primary-session evidence gets a slight preference only when it
+is nearly as relevant; stronger child-session evidence can win. Human output
+labels the result window as relevance ordered and identifies the selected
+agent scope. Each result's `Event` row shows the short ctx event ID and the
+matched event's exact
 UTC RFC 3339 millisecond timestamp; an indexed event without a timestamp says
 `time unavailable`. These timestamps do not change result ordering.
 
@@ -41,7 +44,7 @@ ctx search "token budget" --refresh off
 ctx search "signed metadata" --term checksum --term release
 ctx search "token budget" --limit 5
 ctx search "token budget" --session <ctx-session-id>
-ctx search "review findings" --include-subagents
+ctx search "human decisions" --primary-only
 ctx search "this current task" --include-current-session
 ctx search "mail provider throttled bulk mailbox setup" --backend hybrid
 ctx search "pricing decisions from the launch review" --backend semantic
@@ -54,7 +57,7 @@ A result can include:
 - the provider-owned session ID when known;
 - title, Core-backed snippet, one-based final rank, result scope, and match reasons;
 - the backend-provided `retrieval_score`, which is diagnostic and can be
-  non-monotonic after query-coverage and session-diversity shaping;
+  non-monotonic after query-coverage and root-diversity shaping;
 - compatibility session importance and the additional-match count for session
   results; like `retrieval_score`, session importance is not an ordering contract;
 - provider, event sequence, timestamp, workspace, and working directory;
@@ -87,7 +90,7 @@ Search filters narrow text and JSON output:
 - `--session <ctx-session-id-or-prefix>`;
 - repeatable `--term <query-or-keyword>`;
 - `--events`;
-- `--include-subagents`;
+- `--primary-only`;
 - `--limit <n>`;
 - `--backend hybrid|semantic|lexical`;
 - `--semantic-weight <0.0-1.0>`;
@@ -112,15 +115,15 @@ Search requires a nonempty query, at least one nonempty `--term`, or
 event type belongs to the selected content scope. Use the exact event-type
 filter or the class-aware content scope, not both.
 
-Default search excludes subagent sessions so primary human-agent intent stays
-prominent. Use `--include-subagents` for implementation details, reviews, test
-output, and failure analysis. When `CODEX_THREAD_ID` is available, ctx also
-excludes the active Codex session tree by default; use
-`--include-current-session` to include it.
+Ordinary search uses the all-agent, root-diverse behavior described above. Use
+`--primary-only` only when a deliberately narrow search should exclude
+subagent work. When `CODEX_THREAD_ID` is available, ctx also excludes the
+active Codex session tree by default; use `--include-current-session` to
+include it.
 
-`--limit` defaults to `20` and is capped at `200`. Default search returns one
-diverse result per session. Use `--session` for dense hits inside one session
-or `--events` for dense event hits across sessions.
+`--limit` defaults to `20` and is capped at `200`. Ordinary search returns
+one result per root task before repeating a root. Use `--session` for dense
+hits inside one session or `--events` for dense event hits across sessions.
 
 ## Content scopes
 
