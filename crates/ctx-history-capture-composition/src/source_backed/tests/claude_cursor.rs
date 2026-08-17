@@ -228,7 +228,7 @@ fn claude_message(kind: &str, uuid: &str, session_id: &str, text: &str) -> Value
 #[test]
 fn claude_route_publishes_cold_append_and_recovers_from_carried_checkpoint() {
     let temp = crate::test_support_paths::tempdir().unwrap();
-    let projects = temp.path().join("claude-projects");
+    let projects = temp.path().join("projects");
     let native_session_id = "neutral-claude-session";
     let transcript = projects
         .join("project")
