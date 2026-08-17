@@ -24,6 +24,17 @@ fn definition(report: &Value, version: i64) -> &Value {
         .unwrap()
 }
 
+fn assert_keys(value: &Value, expected: &str) {
+    let mut keys = value
+        .as_object()
+        .unwrap()
+        .keys()
+        .map(String::as_str)
+        .collect::<Vec<_>>();
+    keys.sort_unstable();
+    assert_eq!(keys.join(","), expected);
+}
+
 fn insert_row(
     connection: &Connection,
     definition_version: i64,
@@ -159,25 +170,26 @@ fn definition_two_math_uses_only_complete_search_context_and_spec_coefficients()
     drop(connection);
 
     let report = json_output(enabled(ctx(&temp).args(["stats", "--format=json"])));
-    assert_eq!(
-        report
-            .as_object()
-            .unwrap()
-            .keys()
-            .map(String::as_str)
-            .collect::<BTreeSet<_>>(),
-        BTreeSet::from([
-            "definitions",
-            "enabled",
-            "estimates",
-            "local_only",
-            "read_only",
-            "retention_days",
-            "schema_version",
-            "state",
-        ])
+    assert_keys(
+        &report,
+        "definitions,enabled,estimates,local_only,read_only,retention_days,schema_version,state",
     );
     let current = definition(&report, 2);
+    assert_keys(
+        current,
+        "active_days,by_operation,ctx_versions,definition_version,duration_buckets,first_day_utc,last_day_utc,summary",
+    );
+    assert_keys(
+        &current["summary"],
+        "calls,complete_context_eligible_calls,delivered_context_bytes,delivered_output_bytes,empty_calls,failed_calls,matched_normalized_session_bytes,not_applicable_calls,result_bearing_calls,result_count,successful_calls,unavailable_context_eligible_calls",
+    );
+    for operation in current["by_operation"].as_array().unwrap() {
+        assert_keys(
+            operation,
+            "calls,complete_context_eligible_calls,ctx_version,delivered_context_bytes,delivered_output_bytes,empty_calls,failed_calls,matched_normalized_session_bytes,not_applicable_calls,operation,result_bearing_calls,result_count,successful_calls,surface,unavailable_context_eligible_calls",
+        );
+    }
+    assert_keys(&current["duration_buckets"][0], "calls,duration_bucket");
     assert_eq!(current["summary"]["calls"], 2);
     assert_eq!(current["summary"]["delivered_output_bytes"], 760);
     assert_eq!(current["summary"]["delivered_context_bytes"], 19);
@@ -192,6 +204,10 @@ fn definition_two_math_uses_only_complete_search_context_and_spec_coefficients()
     assert_eq!(current["duration_buckets"][0]["calls"], 2);
 
     let approximate = &report["estimates"]["approximate_context_tokens"];
+    assert_keys(
+        approximate,
+        "central,coefficient_version,delivered_context_bytes,high,low",
+    );
     assert_eq!(
         approximate["coefficient_version"],
         "utf8_token_equivalent_range_v1"
@@ -202,6 +218,14 @@ fn definition_two_math_uses_only_complete_search_context_and_spec_coefficients()
     assert_eq!(approximate["high"], 7);
 
     let reduction = &report["estimates"]["estimated_context_reduction"];
+    assert_keys(
+        &report["estimates"],
+        "approximate_context_tokens,estimated_context_reduction",
+    );
+    assert_keys(
+        reduction,
+        "central,coefficient_version,comparison_baseline_bytes,covered_calls,estimate_model_version,estimated_avoided_context_bytes,high,low,observed_delivered_context_bytes,unavailable_calls",
+    );
     assert_eq!(
         reduction["estimate_model_version"],
         "matched_normalized_sessions_v1"
@@ -217,6 +241,10 @@ fn definition_two_math_uses_only_complete_search_context_and_spec_coefficients()
 
     let encoded = serde_json::to_string(&report).unwrap();
     for forbidden in [
+        "citation_count",
+        "pro_blame",
+        "target_type",
+        "pro_outcome",
         "time_saved",
         "open_credit",
         "blame_credit",

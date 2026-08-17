@@ -323,12 +323,11 @@ fn status_facts(data_root: &Path) -> Result<Value> {
 }
 
 fn local_usage_summary_facts(data_root: &Path) -> Result<Value> {
-    let config = crate::config::AppConfig::load(data_root)?;
     let storage = crate::observability_composition::local_usage_storage_authority(data_root);
-    let control =
-        crate::observability_composition::usage_control_snapshot(config.local_usage.enabled);
+    let mut control =
+        crate::observability_composition::LocalUsageControlAuthority::new(data_root.to_path_buf());
     bounded_value(serde_json::to_value(
-        crate::local_usage::read_report_authorized(&storage, &control, false),
+        crate::local_usage::read_report_authorized(&storage, &control.snapshot(), false),
     )?)
 }
 
@@ -927,6 +926,56 @@ mod tests {
         let mut output = Vec::new();
         write_response_frame(&mut output, br#"{"ok":true}"#).unwrap();
         assert_eq!(output, b"{\"ok\":true}\n");
+    }
+
+    #[test]
+    fn local_usage_summary_returns_canonical_config_error_without_aborting() {
+        let root = tempfile::tempdir().unwrap();
+        std::fs::write(
+            root.path().join("config.toml"),
+            "[local_usage]\nenabled = unavailable\n",
+        )
+        .unwrap();
+
+        let response = execute(Request {
+            data_root: root.path().to_path_buf(),
+            operation: Operation::LocalUsageSummary,
+            options: Options::Empty,
+        })
+        .unwrap();
+
+        assert_eq!(response["ok"], true);
+        assert_eq!(response["operation"], "LocalUsageSummary");
+        assert_eq!(
+            response["facts"],
+            serde_json::to_value(crate::local_usage::UsageReport::config_error()).unwrap()
+        );
+        assert!(!root.path().join("usage.sqlite").exists());
+    }
+
+    #[test]
+    fn local_usage_summary_protocol_mismatches_remain_hard_failures() {
+        let root = tempfile::tempdir().unwrap();
+        let request = json!({
+            "api_fingerprint": API_FINGERPRINT,
+            "data_root": root.path(),
+            "operation": "LocalUsageSummary",
+            "options": {},
+            "schema_version": 1,
+        });
+        assert!(parse_frame(canonical(&request).unwrap()).is_ok());
+
+        let mut wrong_fingerprint = request.clone();
+        wrong_fingerprint["api_fingerprint"] = json!("0".repeat(64));
+        assert!(parse_frame(canonical(&wrong_fingerprint).unwrap()).is_err());
+
+        let mut wrong_schema = request.clone();
+        wrong_schema["schema_version"] = json!(2);
+        assert!(parse_frame(canonical(&wrong_schema).unwrap()).is_err());
+
+        let mut unknown_field = request;
+        unknown_field["unexpected"] = json!(true);
+        assert!(parse_frame(canonical(&unknown_field).unwrap()).is_err());
     }
 
     #[test]

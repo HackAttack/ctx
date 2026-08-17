@@ -991,6 +991,45 @@ mod ui_tests {
     }
 
     #[test]
+    fn stats_json_docs_track_schema_three_and_core_sqlite_four() {
+        let topic = TOPICS
+            .iter()
+            .find(|topic| topic.id == "json-contracts")
+            .unwrap();
+        let stats = topic
+            .body
+            .split_once("## Stats\n")
+            .unwrap()
+            .1
+            .split_once("\n## Sources")
+            .unwrap()
+            .0;
+
+        assert!(stats.contains("`schema_version` is 3."));
+        assert!(stats.contains("current SQLite\nschema version is 4"));
+        assert!(stats.contains("`summary` contains exactly"));
+        assert!(stats.contains("Each `by_operation` row contains exactly"));
+        for field in [
+            "`delivered_output_bytes`",
+            "`delivered_context_bytes`",
+            "`matched_normalized_session_bytes`",
+            "`complete_context_eligible_calls`",
+            "`unavailable_context_eligible_calls`",
+        ] {
+            assert!(stats.contains(field), "missing public field {field}");
+        }
+        for stale in [
+            "`schema_version` is 2",
+            "citation_count",
+            "pro_blame",
+            "target_type",
+            "pro_outcome",
+        ] {
+            assert!(!stats.contains(stale), "stale Stats contract: {stale}");
+        }
+    }
+
+    #[test]
     fn docs_search_empty_state_neutralizes_query_controls() {
         let context = context(48, ColorMode::Never);
         let document = render_docs_search(&context, "missing\u{1b}[31m", &[]);

@@ -248,7 +248,7 @@ ctx stats --detail --format json
 
 Stats is local, offline, read-only, and excluded from its own counts. It does
 not create `usage.sqlite` on a pristine root. Its top-level
-`schema_version` is 2. The top-level object contains:
+`schema_version` is 3. The top-level object contains:
 
 - `schema_version`;
 - `local_only: true`;
@@ -273,22 +273,28 @@ measurement definition. Each object contains:
 - optional nonempty `by_operation[]`;
 - optional nonempty `duration_buckets[]`.
 
-`summary` contains `calls`, `successful_calls`, `failed_calls`,
+`summary` contains exactly `calls`, `successful_calls`, `failed_calls`,
 `result_bearing_calls`, `empty_calls`, `not_applicable_calls`, `result_count`,
-`citation_count`, `delivered_output_bytes`, `delivered_context_bytes`,
-`matched_normalized_session_bytes`, `complete_context_eligible_calls`,
-`unavailable_context_eligible_calls`, and `pro_blame`. `pro_blame` contains
-`requests`, `produced_attribution_requests`, `possible_only_requests`,
-`none_requests`, `error_requests`, and `by_target[]`. Each target row contains
-`target_type`, `requests`, `produced`, `possible`, `none`, and `error`.
+`delivered_output_bytes`, `delivered_context_bytes`,
+`matched_normalized_session_bytes`, `complete_context_eligible_calls`, and
+`unavailable_context_eligible_calls`.
 
-Each `by_operation` row contains `ctx_version`, `surface`, `operation`, `calls`,
-`successful_calls`, `failed_calls`, `result_bearing_calls`, `empty_calls`,
-`not_applicable_calls`, `result_count`, `citation_count`,
+Each `by_operation` row contains exactly `ctx_version`, `surface`, `operation`,
+`calls`, `successful_calls`, `failed_calls`, `result_bearing_calls`,
+`empty_calls`, `not_applicable_calls`, `result_count`,
 `delivered_output_bytes`, `delivered_context_bytes`,
 `matched_normalized_session_bytes`, `complete_context_eligible_calls`, and
 `unavailable_context_eligible_calls`. Each `duration_buckets` row contains
 `duration_bucket` and `calls`.
+
+The report reads the Core-owned `usage.sqlite` sidecar. Its current SQLite
+schema version is 4, whose daily aggregate rows contain only `day_utc`,
+`definition_version`, `ctx_version`, `surface`, `operation`, `outcome`,
+`value_class`, `duration_bucket`, `context_coverage`, `calls`, `result_count`,
+`delivered_output_bytes`, `delivered_context_bytes`, and
+`matched_normalized_session_bytes`. SQLite schema versions 1 through 3 are
+accepted only as migration inputs; new stores and current writes use version 4.
+The SQLite schema version and JSON report schema version are independent.
 
 CLI `delivered_output_bytes` counts the actual final stdout and stderr bytes
 accepted for delivery, including the selected terminal wrapping and ANSI mode.
