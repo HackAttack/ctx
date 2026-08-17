@@ -58,8 +58,8 @@ fn validate_old_rows(conn: &Connection, first_version: bool) -> Result<(), Usage
         let row = row?;
         // Older public schemas included additional operation families. They are
         // intentionally omitted during migration; neutral rows remain strict.
-        if valid_operation(row.definition_version, &row.surface, &row.operation)
-            && !row_is_valid(&row)
+        if valid_operation(row.definition_version, &row.surface, &row.operation, true)
+            && !row_is_valid(&row, true)
         {
             return Err(UsageStoreError::Integrity);
         }
@@ -79,7 +79,7 @@ pub(in crate::local_usage) fn validate_rows(conn: &Connection) -> Result<(), Usa
     )?;
     let rows = statement.query_map([], stored_row)?;
     for row in rows {
-        if !row_is_valid(&row?) {
+        if !row_is_valid(&row?, false) {
             return Err(UsageStoreError::Integrity);
         }
     }
@@ -105,7 +105,7 @@ fn stored_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<StoredRow> {
     })
 }
 
-fn row_is_valid(row: &StoredRow) -> bool {
+fn row_is_valid(row: &StoredRow, accepts_retired_sql: bool) -> bool {
     let failure_valid = if row.outcome == "failure" {
         row.value_class == "not_applicable" && row.result_count == 0
     } else {
@@ -124,8 +124,9 @@ fn row_is_valid(row: &StoredRow) -> bool {
         }
     } else if matches!(
         row.operation.as_str(),
-        "sources" | "search" | "sql" | "show_session" | "show_event"
-    ) {
+        "sources" | "search" | "show_session" | "show_event"
+    ) || (accepts_retired_sql && row.operation == "sql")
+    {
         matches!(row.value_class.as_str(), "result_bearing" | "empty")
     } else {
         row.value_class == "not_applicable"
@@ -164,7 +165,12 @@ fn row_is_valid(row: &StoredRow) -> bool {
     NaiveDate::parse_from_str(&row.day, "%Y-%m-%d").is_ok()
         && matches!(row.definition_version, 1 | 2)
         && valid_ctx_version(&row.ctx_version)
-        && valid_operation(row.definition_version, &row.surface, &row.operation)
+        && valid_operation(
+            row.definition_version,
+            &row.surface,
+            &row.operation,
+            accepts_retired_sql,
+        )
         && matches!(
             row.duration_bucket.as_str(),
             "under_10_ms"
@@ -195,7 +201,12 @@ fn valid_ctx_version(value: &str) -> bool {
             .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'+' | b'-'))
 }
 
-fn valid_operation(definition_version: i64, surface: &str, operation: &str) -> bool {
+fn valid_operation(
+    definition_version: i64,
+    surface: &str,
+    operation: &str,
+    accepts_retired_sql: bool,
+) -> bool {
     match surface {
         "cli" => {
             matches!(
@@ -206,7 +217,6 @@ fn valid_operation(definition_version: i64, surface: &str, operation: &str) -> b
                     | "import"
                     | "locate"
                     | "search"
-                    | "sql"
                     | "docs"
                     | "integrations"
                     | "daemon_status"
@@ -214,13 +224,16 @@ fn valid_operation(definition_version: i64, surface: &str, operation: &str) -> b
                     | "daemon_disable"
                     | "upgrade"
                     | "doctor"
-            ) || (definition_version == 1 && operation == "show")
+            ) || (accepts_retired_sql && operation == "sql")
+                || (definition_version == 1 && operation == "show")
                 || (definition_version == 2 && matches!(operation, "show_session" | "show_event"))
         }
-        "mcp" => matches!(
-            operation,
-            "status" | "sources" | "search" | "sql" | "show_session" | "show_event"
-        ),
+        "mcp" => {
+            matches!(
+                operation,
+                "status" | "sources" | "search" | "show_session" | "show_event"
+            ) || (accepts_retired_sql && operation == "sql")
+        }
         _ => false,
     }
 }

@@ -419,7 +419,7 @@ CREATE TABLE daily_usage (
             AND surface = 'cli'
             AND operation IN (
                 'setup', 'index', 'sources', 'import', 'show', 'locate',
-                'search', 'sql', 'docs', 'integrations', 'daemon_status',
+                'search', 'docs', 'integrations', 'daemon_status',
                 'daemon_enable', 'daemon_disable', 'upgrade', 'doctor'
             )
         )
@@ -429,7 +429,7 @@ CREATE TABLE daily_usage (
             AND surface = 'cli'
             AND operation IN (
                 'setup', 'index', 'sources', 'import', 'show_session',
-                'show_event', 'locate', 'search', 'sql', 'docs',
+                'show_event', 'locate', 'search', 'docs',
                 'integrations', 'daemon_status', 'daemon_enable',
                 'daemon_disable', 'upgrade', 'doctor'
             )
@@ -438,7 +438,7 @@ CREATE TABLE daily_usage (
         (
             surface = 'mcp'
             AND operation IN (
-                'status', 'sources', 'search', 'sql', 'show_session', 'show_event'
+                'status', 'sources', 'search', 'show_session', 'show_event'
             )
         )
     ),
@@ -503,7 +503,7 @@ CREATE TABLE daily_usage (
         OR (
             surface = 'mcp'
             AND (
-                (operation IN ('sources', 'search', 'sql', 'show_session', 'show_event')
+                (operation IN ('sources', 'search', 'show_session', 'show_event')
                     AND value_class IN ('result_bearing', 'empty'))
                 OR (operation = 'status' AND value_class = 'not_applicable')
             )
@@ -658,11 +658,11 @@ pub(super) fn migrate_to_current<T>(
             WHERE
                 (surface = 'cli' AND operation IN (
                     'setup', 'index', 'sources', 'import', 'show', 'locate',
-                    'search', 'sql', 'docs', 'integrations', 'daemon_status',
+                    'search', 'docs', 'integrations', 'daemon_status',
                     'daemon_enable', 'daemon_disable', 'upgrade', 'doctor'
                 ))
                 OR (surface = 'mcp' AND operation IN (
-                    'status', 'sources', 'search', 'sql', 'show_session', 'show_event'
+                    'status', 'sources', 'search', 'show_session', 'show_event'
                 ))
             GROUP BY day_utc, ctx_version, surface, operation, outcome,
                 value_class, duration_bucket;
@@ -685,17 +685,17 @@ pub(super) fn migrate_to_current<T>(
             WHERE
                 (definition_version = 1 AND surface = 'cli' AND operation IN (
                     'setup', 'index', 'sources', 'import', 'show', 'locate',
-                    'search', 'sql', 'docs', 'integrations', 'daemon_status',
+                    'search', 'docs', 'integrations', 'daemon_status',
                     'daemon_enable', 'daemon_disable', 'upgrade', 'doctor'
                 ))
                 OR (definition_version = 2 AND surface = 'cli' AND operation IN (
                     'setup', 'index', 'sources', 'import', 'show_session',
-                    'show_event', 'locate', 'search', 'sql', 'docs',
+                    'show_event', 'locate', 'search', 'docs',
                     'integrations', 'daemon_status', 'daemon_enable',
                     'daemon_disable', 'upgrade', 'doctor'
                 ))
                 OR (surface = 'mcp' AND operation IN (
-                    'status', 'sources', 'search', 'sql', 'show_session', 'show_event'
+                    'status', 'sources', 'search', 'show_session', 'show_event'
                 ))
             GROUP BY day_utc, definition_version, ctx_version, surface,
                 operation, outcome, value_class, duration_bucket, context_coverage;

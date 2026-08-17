@@ -99,6 +99,69 @@ fn schema_has_only_spec_26_aggregate_fields_and_content_free_maintenance() {
 }
 
 #[test]
+fn active_v4_admits_locate_and_rejects_retired_sql_in_schema_and_reports() {
+    let root = private_tempdir();
+    store::record(root.path(), operation("doctor")).unwrap();
+    let mcp_status = McpInvocation::from_operation(ObservedMcpProductOperation::Status).completed(
+        &McpCompletionFacts {
+            delivered_output_bytes: 17,
+            ..McpCompletionFacts::default()
+        },
+        Duration::ZERO,
+    );
+    store::record(root.path(), mcp_status).unwrap();
+
+    let conn = Connection::open(store::usage_path(root.path())).unwrap();
+    let schema = conn
+        .query_row(
+            "SELECT sql FROM sqlite_schema WHERE type = 'table' AND name = 'daily_usage'",
+            [],
+            |row| row.get::<_, String>(0),
+        )
+        .unwrap();
+    assert!(schema.contains("'locate'"));
+    assert!(!schema.contains("'sql'"));
+
+    assert_eq!(
+        conn.execute(
+            "UPDATE daily_usage SET operation = 'locate' WHERE surface = 'cli'",
+            [],
+        )
+        .unwrap(),
+        1
+    );
+    crate::local_usage::report::validate_rows(&conn).unwrap();
+    assert!(conn
+        .execute(
+            "UPDATE daily_usage SET operation = 'sql' WHERE surface = 'cli'",
+            [],
+        )
+        .is_err());
+    assert!(conn
+        .execute(
+            "UPDATE daily_usage SET operation = 'sql', value_class = 'result_bearing', \
+             result_count = calls WHERE surface = 'mcp'",
+            [],
+        )
+        .is_err());
+
+    conn.pragma_update(None, "ignore_check_constraints", true)
+        .unwrap();
+    assert_eq!(
+        conn.execute(
+            "UPDATE daily_usage SET operation = 'sql' WHERE surface = 'cli'",
+            [],
+        )
+        .unwrap(),
+        1
+    );
+    assert!(matches!(
+        crate::local_usage::report::validate_rows(&conn),
+        Err(UsageStoreError::Integrity)
+    ));
+}
+
+#[test]
 fn schema_rejects_invalid_context_classification() {
     let root = private_tempdir();
     store::record(root.path(), operation("doctor")).unwrap();

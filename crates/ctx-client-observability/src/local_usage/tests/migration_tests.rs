@@ -23,6 +23,7 @@ fn assert_neutral_fixture_report(root: &std::path::Path, schema_version: i64) {
     assert!(!serialized.contains("pro_status"));
     assert!(!serialized.contains("citation_count"));
     assert!(!serialized.contains("pro_blame"));
+    assert!(!serialized.contains("\"operation\":\"sql\""));
 
     let definitions = report.definitions.unwrap();
     assert_eq!(definitions.len(), 1);
