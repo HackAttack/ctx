@@ -233,6 +233,7 @@ pub(in crate::codex::nativepath) fn codex_core_record(
         session_cwd,
         lexical_body,
         structured_content,
+        discovery_exclusion,
         mut activity,
     } = row;
     if lexical_body.is_empty() {
@@ -351,6 +352,7 @@ pub(in crate::codex::nativepath) fn codex_core_record(
         ctx_history_core::MAX_CORE_CONTENT_BYTES,
     );
     record.content.structured_content = structured_content;
+    record.content.discovery_exclusion = discovery_exclusion;
     record.content.activity = activity;
     record
         .content

@@ -1,13 +1,13 @@
 use std::collections::BTreeMap;
 
-use ctx_history_core::TypedKey;
+use ctx_history_core::{CoreDiscoveryExclusion, TypedKey};
 use serde::{Deserialize, Serialize};
 
 use super::rows::{CodexSessionRow, MAX_CODEX_DURABLE_SESSION_ID_BYTES};
 
 pub(super) const MAX_CODEX_SEMANTIC_CHECKPOINT_BYTES: usize = 64 * 1024 - 5;
-const CODEX_SEMANTIC_CHECKPOINT_VERSION: u8 = 5;
-const CODEX_SEMANTIC_CHECKPOINT_PREFIX: &str = "codex.projector-checkpoint.v5:";
+const CODEX_SEMANTIC_CHECKPOINT_VERSION: u8 = 6;
+const CODEX_SEMANTIC_CHECKPOINT_PREFIX: &str = "codex.projector-checkpoint.v6:";
 pub(super) const MAX_CODEX_PENDING_CALLS: usize = 24;
 pub(super) const MAX_CODEX_CALL_ID_BYTES: usize = 1024;
 
@@ -24,6 +24,8 @@ pub(super) enum CodexPendingCallOriginV0 {
 pub(super) struct CodexPendingCallV0 {
     pub(super) raw_ordinal: u64,
     pub(super) origin: CodexPendingCallOriginV0,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(super) discovery_exclusion: Option<CoreDiscoveryExclusion>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -204,6 +206,7 @@ mod tests {
                 origin: CodexPendingCallOriginV0::CopiedFromAncestor {
                     ancestor_native_session_id,
                 },
+                discovery_exclusion: Some(CoreDiscoveryExclusion::CtxRetrievalDerived),
             },
         )]);
         let checkpoint = CodexSemanticCheckpoint::from_state(CodexSemanticCheckpointState {

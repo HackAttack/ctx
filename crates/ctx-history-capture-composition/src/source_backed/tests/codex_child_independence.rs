@@ -2,10 +2,14 @@ use std::{collections::BTreeSet, fs::OpenOptions, io::Write, path::Path};
 
 use super::*;
 use crate::provider::source_backed::family::jsonl::set_before_jsonl_terminal_physical_revalidation_hook;
-use ctx_history_core::{CertifiedSource, ProviderNativeSessionRelationship, SourceFrontier};
+use ctx_history_core::{
+    CertifiedSource, CoreDiscoveryExclusion, ProviderNativeSessionRelationship, SourceFrontier,
+    TypedKey,
+};
 use ctx_history_index::{GenerationWriter, RevalidationTarget, WriterOptions};
 
-const CURRENT_PARSER_REVISION: &str = "codex-nativepath-core-activity-v3-empty-result-text";
+const CURRENT_PARSER_REVISION: &str =
+    "codex-nativepath-core-activity-v4-empty-result-text-retrieval-exclusion";
 
 fn writer_options() -> WriterOptions {
     WriterOptions {
@@ -103,6 +107,10 @@ fn turn_context_with_id(turn_id: &str) -> serde_json::Value {
 }
 
 fn exec_call(call_id: &str) -> serde_json::Value {
+    exec_call_with_command(call_id, "git rev-parse HEAD")
+}
+
+fn exec_call_with_command(call_id: &str, command: &str) -> serde_json::Value {
     serde_json::json!({
         "timestamp": "2026-08-09T12:00:03Z",
         "type": "response_item",
@@ -111,10 +119,25 @@ fn exec_call(call_id: &str) -> serde_json::Value {
             "name": "exec_command",
             "call_id": call_id,
             "arguments": serde_json::json!({
-                "cmd": "git rev-parse HEAD",
+                "cmd": command,
                 "workdir": "/tmp/codex-child-independence",
                 "yield_time_ms": 10000
             }).to_string()
+        }
+    })
+}
+
+fn exact_exec_result(call_id: &str, output: &str) -> serde_json::Value {
+    serde_json::json!({
+        "timestamp": "2026-08-09T12:00:04Z",
+        "type": "response_item",
+        "payload": {
+            "type": "function_call_output",
+            "call_id": call_id,
+            "status": "success",
+            "output": format!(
+                "Script completed\nProcess exited with code 0\nFinal output:\n{output}"
+            )
         }
     })
 }
@@ -478,7 +501,7 @@ fn assert_current_provider_checkpoint(checkpoint: &serde_json::Value) {
         .get("Utf8")
         .and_then(serde_json::Value::as_str)
         .expect("Codex provider checkpoint must be compact UTF-8");
-    assert!(encoded.starts_with("codex.projector-checkpoint.v5:"));
+    assert!(encoded.starts_with("codex.projector-checkpoint.v6:"));
     assert!(encoded.len() <= MAX_PROVIDER_CHECKPOINT_BYTES);
 }
 
@@ -532,6 +555,112 @@ fn source_snapshot(
             .collect(),
         search_event_ids,
     }
+}
+
+#[test]
+fn codex_retrieval_exclusion_survives_raw_append_hydration_and_keeps_ids_stable() {
+    let temp = tempdir().unwrap();
+    let sessions = temp.path().join("sessions-retrieval-exclusion");
+    let index_root = temp.path().join("index-retrieval-exclusion");
+    fs::create_dir_all(&sessions).unwrap();
+    let native_session_id = "019fb000-0000-7000-8000-00000000005b";
+    let retrieval_call_id = "retrieval-call";
+    let ordinary_call_id = "ordinary-call";
+    let path = session_path(&sessions, native_session_id);
+    write_session(
+        &sessions,
+        native_session_id,
+        ProviderNativeSessionRelationship::Root,
+        None,
+        [
+            turn_context(),
+            exec_call_with_command(retrieval_call_id, "ctx search retrievaldiscoverymarker"),
+        ],
+    );
+    let registry = register_tree(&[&sessions]);
+
+    let cold = refresh_source_backed_generation(&index_root, &registry, writer_options()).unwrap();
+    assert!(cold.failed_routes.is_empty());
+    let cold_index = VerifiedIndex::open(&index_root).unwrap();
+    let cold_records = records_for(&cold_index, native_session_id);
+    assert_eq!(cold_records.len(), 1);
+    assert_eq!(
+        cold_records[0].content.discovery_exclusion,
+        Some(CoreDiscoveryExclusion::CtxRetrievalDerived)
+    );
+    assert!(cold_records[0].content.activity.is_some());
+    let retrieval_invocation_id = cold_records[0].event_id;
+    assert_eq!(
+        certificate_for(&cold_index, native_session_id).parser_revision(),
+        CURRENT_PARSER_REVISION
+    );
+    let (_, _, _, checkpoint) = provider_checkpoint_envelope(&cold_index, native_session_id);
+    assert_current_provider_checkpoint(&checkpoint);
+    drop(cold_index);
+
+    append_event(
+        &path,
+        exact_exec_result(retrieval_call_id, "retrievaldiscoverymarker result"),
+    );
+    let appended =
+        refresh_source_backed_generation(&index_root, &registry, writer_options()).unwrap();
+    assert!(appended.failed_routes.is_empty());
+    let appended_index = VerifiedIndex::open(&index_root).unwrap();
+    let appended_records = records_for(&appended_index, native_session_id);
+    assert_eq!(appended_records.len(), 2);
+    assert_eq!(appended_records[0].event_id, retrieval_invocation_id);
+    assert!(appended_records.iter().all(|record| {
+        record.content.discovery_exclusion == Some(CoreDiscoveryExclusion::CtxRetrievalDerived)
+            && record.content.activity.is_some()
+    }));
+    assert!(
+        appended_index
+            .search_event_candidates("retrievaldiscoverymarker", 32)
+            .unwrap()
+            .into_iter()
+            .all(|candidate| candidate.event.provider_session_id.as_deref()
+                != Some(native_session_id))
+    );
+    drop(appended_index);
+
+    append_event(
+        &path,
+        exec_call_with_command(ordinary_call_id, "ctx status"),
+    );
+    append_event(
+        &path,
+        exact_exec_result(ordinary_call_id, "ordinarycontrolmarker result"),
+    );
+    let controlled =
+        refresh_source_backed_generation(&index_root, &registry, writer_options()).unwrap();
+    assert!(controlled.failed_routes.is_empty());
+    let controlled_index = VerifiedIndex::open(&index_root).unwrap();
+    let controlled_records = records_for(&controlled_index, native_session_id);
+    assert_eq!(controlled_records.len(), 4);
+    assert_eq!(controlled_records[0].event_id, retrieval_invocation_id);
+    let ordinary = controlled_records
+        .iter()
+        .filter(|record| {
+            record
+                .content
+                .activity
+                .as_ref()
+                .and_then(|activity| activity.provider_call_id.as_ref())
+                == Some(&TypedKey::Utf8(ordinary_call_id.to_owned()))
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(ordinary.len(), 2);
+    assert!(ordinary
+        .iter()
+        .all(|record| record.content.discovery_exclusion.is_none()));
+    assert!(
+        controlled_index
+            .search_event_candidates("ordinarycontrolmarker", 32)
+            .unwrap()
+            .into_iter()
+            .any(|candidate| candidate.event.provider_session_id.as_deref()
+                == Some(native_session_id))
+    );
 }
 
 #[path = "codex_child_independence/lifecycle.rs"]

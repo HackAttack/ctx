@@ -1,9 +1,17 @@
 use chrono::{DateTime, Utc};
-use ctx_history_core::ProviderNativeSessionRelationship;
+use ctx_history_core::{
+    ActivityInvocation, ActivityJsonCapture, CoreActivity, CoreDiscoveryExclusion, EventRole,
+    EventType, ProviderNativeSessionRelationship, TypedKey, CORE_ACTIVITY_REVISION,
+};
+use serde_json::json;
 
-use super::{pending_call_origin, valid_local_turn_boundary};
+use super::{pending_call_for_row, pending_call_origin, valid_local_turn_boundary};
 use crate::provider::codex::nativepath::{
-    checkpoint::CodexPendingCallOriginV0, rows::CodexSessionRow,
+    checkpoint::CodexPendingCallOriginV0,
+    rows::{
+        CodexCoreRecordDraft, CodexProviderEventIdentityKindV0, CodexProviderEventIdentityV0,
+        CodexSessionRow,
+    },
 };
 
 fn forked_owner() -> CodexSessionRow {
@@ -62,4 +70,48 @@ fn post_local_turn_forked_call_is_not_a_copy_near_miss() {
         pending_call_origin(&forked_owner(), true),
         CodexPendingCallOriginV0::CurrentSession
     );
+}
+
+#[test]
+fn pending_call_carries_retrieval_exclusion_without_changing_activity() {
+    let call_id = "pending-ctx-retrieval";
+    let activity = CoreActivity {
+        revision: CORE_ACTIVITY_REVISION,
+        provider_call_id: Some(TypedKey::utf8(call_id).unwrap()),
+        invocation: Some(ActivityInvocation {
+            protocol: None,
+            server: None,
+            tool: "exec_command".to_owned(),
+            arguments: ActivityJsonCapture::Present {
+                value: json!({"cmd": "ctx search pending"}),
+            },
+            started_at_unix_ms: Some(1),
+        }),
+        result: None,
+        facts: Vec::new(),
+    };
+    let row = CodexCoreRecordDraft {
+        raw_ordinal: 7,
+        provider_event_identity: Some(CodexProviderEventIdentityV0 {
+            kind: CodexProviderEventIdentityKindV0::CallId,
+            value: call_id.to_owned(),
+        }),
+        provider_event_copy: None,
+        occurred_at: DateTime::<Utc>::from_timestamp_millis(1).unwrap(),
+        event_type: EventType::ToolCall,
+        role: Some(EventRole::Assistant),
+        session_cwd: None,
+        lexical_body: "retained invocation".to_owned(),
+        structured_content: Some(json!({"call_id": call_id})),
+        discovery_exclusion: Some(CoreDiscoveryExclusion::CtxRetrievalDerived),
+        activity: Some(activity.clone()),
+    };
+
+    let (_, pending) = pending_call_for_row(&forked_owner(), true, 7, &row).unwrap();
+    assert_eq!(pending.raw_ordinal, 7);
+    assert_eq!(
+        pending.discovery_exclusion,
+        Some(CoreDiscoveryExclusion::CtxRetrievalDerived)
+    );
+    assert_eq!(row.activity, Some(activity));
 }

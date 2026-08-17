@@ -202,7 +202,7 @@ fn codex_ctx_retrieval_echoes_are_hidden_from_search_but_remain_directly_retriev
 
     let exact_records = [
         ("direct-exact", "tool_call", EXCLUDED_DIRECT_INVOCATION),
-        ("direct-exact", "command_output", EXCLUDED_DIRECT_PAYLOAD),
+        ("direct-exact", "tool_output", EXCLUDED_DIRECT_PAYLOAD),
         ("mcp-ctx-exact", "tool_output", EXCLUDED_MCP_PAYLOAD),
     ]
     .map(|(native_event_id, event_type, oracle)| {

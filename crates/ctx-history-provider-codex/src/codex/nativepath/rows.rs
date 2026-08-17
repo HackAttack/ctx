@@ -1,4 +1,5 @@
 use std::{
+    borrow::Cow,
     io::{self, Write},
     mem::size_of,
 };
@@ -6,8 +7,8 @@ use std::{
 use chrono::{DateTime, Utc};
 use ctx_history_core::{
     ActivityInvocation, ActivityJsonCapture, ActivityResult, ActivityTextCapture, CoreActivity,
-    EventRole, EventType, LiteralFactKind, ProviderNativeSessionRelationship, TypedKey,
-    CORE_ACTIVITY_REVISION,
+    CoreDiscoveryExclusion, EventRole, EventType, LiteralFactKind,
+    ProviderNativeSessionRelationship, TypedKey, CORE_ACTIVITY_REVISION,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -85,6 +86,7 @@ pub(crate) struct CodexCoreRecordDraft {
     pub(crate) session_cwd: Option<String>,
     pub(crate) lexical_body: String,
     pub(crate) structured_content: Option<Value>,
+    pub(crate) discovery_exclusion: Option<CoreDiscoveryExclusion>,
     pub(crate) activity: Option<CoreActivity>,
 }
 
@@ -177,6 +179,10 @@ pub(super) fn build_source_backed_event_row(
     } else {
         semantic.lexical_body
     };
+    let activity = codex_invocation_activity(&retained.payload, &audit, retained.occurred_at);
+    let discovery_exclusion = (kind == CodexRetainedKind::ToolCall)
+        .then(|| codex_invocation_discovery_exclusion(&retained.payload, &audit, activity.as_ref()))
+        .flatten();
     Ok(Ok(CodexSourceBackedBuiltRowV0 {
         row: CodexCoreRecordDraft {
             raw_ordinal,
@@ -190,7 +196,8 @@ pub(super) fn build_source_backed_event_row(
             session_cwd: None,
             lexical_body,
             structured_content: (!audit.any_selector_ambiguous()).then(|| retained.payload.clone()),
-            activity: codex_invocation_activity(&retained.payload, &audit, retained.occurred_at),
+            discovery_exclusion,
+            activity,
         },
     }))
 }
@@ -200,6 +207,7 @@ pub(super) fn build_source_backed_sparse_output_row(
     raw_ordinal: u64,
     provider_event_identity: Option<CodexProviderEventIdentityV0>,
     provider_event_copy: Option<CodexProviderNativeEventCopyV0>,
+    linked_invocation_discovery_exclusion: Option<CoreDiscoveryExclusion>,
     provider_call_id: Option<&str>,
     occurred_at: DateTime<Utc>,
     _result_kind: CodexResultKind,
@@ -224,6 +232,11 @@ pub(super) fn build_source_backed_sparse_output_row(
         &audit,
         occurred_at,
     );
+    let discovery_exclusion = codex_result_discovery_exclusion(
+        raw_record,
+        linked_invocation_discovery_exclusion,
+        activity.as_ref(),
+    );
     Ok(Some(CodexCoreRecordDraft {
         raw_ordinal,
         provider_event_identity: (!audit.selector_ambiguous(SelectorGroup::CallId))
@@ -238,8 +251,326 @@ pub(super) fn build_source_backed_sparse_output_row(
         structured_content: (!audit.any_selector_ambiguous())
             .then_some(structured_content)
             .flatten(),
+        discovery_exclusion,
         activity,
     }))
+}
+
+fn codex_invocation_discovery_exclusion(
+    payload: &Value,
+    audit: &RawJsonAudit,
+    activity: Option<&CoreActivity>,
+) -> Option<CoreDiscoveryExclusion> {
+    if audit.selector_ambiguous(SelectorGroup::Type)
+        || audit.selector_ambiguous(SelectorGroup::CallId)
+        || audit.selector_ambiguous(SelectorGroup::ToolName)
+        || audit.selector_ambiguous(SelectorGroup::Arguments)
+        || payload.get("type").and_then(Value::as_str) != Some("function_call")
+        || payload.get("tool").is_some()
+    {
+        return None;
+    }
+    let invocation = activity?.invocation.as_ref()?;
+    if !ctx_history_capture_model::tool_input::is_command_tool(&invocation.tool) {
+        return None;
+    }
+    let ActivityJsonCapture::Present { value } = &invocation.arguments else {
+        return None;
+    };
+    ctx_history_capture_model::ctx_retrieval::discovery_exclusion_for([
+        ctx_history_capture_model::ctx_retrieval::classify_direct_cli_tool_input(value),
+    ])
+}
+
+fn codex_result_discovery_exclusion(
+    raw_record: &[u8],
+    linked_invocation_discovery_exclusion: Option<CoreDiscoveryExclusion>,
+    activity: Option<&CoreActivity>,
+) -> Option<CoreDiscoveryExclusion> {
+    let contribution =
+        exact_mcp_terminal_result_contribution(raw_record, activity).unwrap_or_else(|| {
+            let exact_success = activity
+                .and_then(|activity| activity.provider_call_id.as_ref())
+                .is_some_and(|call_id| {
+                    let TypedKey::Utf8(call_id) = call_id else {
+                        return false;
+                    };
+                    codex_exact_successful_function_output(raw_record, call_id)
+                });
+            let linked_invocation = linked_invocation_discovery_exclusion.map(|_| {
+                ctx_history_capture_model::ctx_retrieval::ContributionClass::RetrievalDerived
+            });
+            ctx_history_capture_model::ctx_retrieval::classify_linked_result(
+                linked_invocation,
+                if exact_success {
+                    ctx_history_capture_model::ctx_retrieval::ResultTerminalStatus::Succeeded
+                } else {
+                    ctx_history_capture_model::ctx_retrieval::ResultTerminalStatus::Unknown
+                },
+                if exact_success {
+                    [
+                        ctx_history_capture_model::ctx_retrieval::ResultAtom::KnownProviderEnvelope,
+                        ctx_history_capture_model::ctx_retrieval::ResultAtom::Payload,
+                    ]
+                } else {
+                    [
+                        ctx_history_capture_model::ctx_retrieval::ResultAtom::Unknown,
+                        ctx_history_capture_model::ctx_retrieval::ResultAtom::Unknown,
+                    ]
+                },
+            )
+        });
+    ctx_history_capture_model::ctx_retrieval::discovery_exclusion_for([contribution])
+}
+
+fn exact_mcp_terminal_result_contribution(
+    raw_record: &[u8],
+    activity: Option<&CoreActivity>,
+) -> Option<ctx_history_capture_model::ctx_retrieval::ContributionClass> {
+    let activity = activity?;
+    let TypedKey::Utf8(provider_call_id) = activity.provider_call_id.as_ref()? else {
+        return None;
+    };
+    let invocation = activity.invocation.as_ref()?;
+    let exact: ExactMcpTerminalEnvelope<'_> = serde_json::from_slice(raw_record).ok()?;
+    if exact.record_type != "event_msg"
+        || exact.payload.item_type != "mcp_tool_call_end"
+        || exact.payload.call_id.as_ref() != provider_call_id.as_str()
+        || Some(exact.payload.invocation.server.as_ref()) != invocation.server.as_deref()
+        || exact.payload.invocation.tool != invocation.tool
+        || exact.timestamp.as_deref().is_some_and(str::is_empty)
+    {
+        return None;
+    }
+    let linked_invocation = Some(
+        ctx_history_capture_model::ctx_retrieval::classify_mcp_invocation(
+            &exact.payload.invocation.server,
+            &exact.payload.invocation.tool,
+        ),
+    );
+    let (terminal_status, has_payload) =
+        match (exact.payload.result.success, exact.payload.result.error) {
+            (Some(success), None) => {
+                if success
+                    .content
+                    .as_ref()
+                    .is_some_and(|content| !content.is_array())
+                {
+                    return None;
+                }
+                (
+                    if success.is_error {
+                        ctx_history_capture_model::ctx_retrieval::ResultTerminalStatus::Failed
+                    } else {
+                        ctx_history_capture_model::ctx_retrieval::ResultTerminalStatus::Succeeded
+                    },
+                    success.content.is_some() || success.structured_content.is_some(),
+                )
+            }
+            (None, Some(_)) => (
+                ctx_history_capture_model::ctx_retrieval::ResultTerminalStatus::Failed,
+                true,
+            ),
+            (Some(_), Some(_)) | (None, None) => return None,
+        };
+    Some(
+        ctx_history_capture_model::ctx_retrieval::classify_linked_result(
+            linked_invocation,
+            terminal_status,
+            if has_payload {
+                [
+                    ctx_history_capture_model::ctx_retrieval::ResultAtom::KnownProviderEnvelope,
+                    ctx_history_capture_model::ctx_retrieval::ResultAtom::Payload,
+                ]
+            } else {
+                [
+                    ctx_history_capture_model::ctx_retrieval::ResultAtom::KnownProviderEnvelope,
+                    ctx_history_capture_model::ctx_retrieval::ResultAtom::Unknown,
+                ]
+            },
+        ),
+    )
+}
+
+const MAX_CODEX_EXEC_RESULT_ENVELOPE_BYTES: usize = 1024 * 1024;
+
+fn codex_exact_successful_function_output(record: &[u8], expected_call_id: &str) -> bool {
+    let Ok(envelope) = serde_json::from_slice::<ExactFunctionOutputEnvelope<'_>>(record) else {
+        return false;
+    };
+    envelope.record_type == "response_item"
+        && envelope.payload.item_type == "function_call_output"
+        && !envelope.payload.call_id.is_empty()
+        && envelope.payload.call_id == expected_call_id
+        && envelope
+            .payload
+            .status
+            .as_deref()
+            .is_none_or(|status| status == "success")
+        && envelope
+            .timestamp
+            .as_deref()
+            .is_none_or(|timestamp| !timestamp.is_empty())
+        && exact_codex_exec_result_body(&envelope.payload.output).is_some()
+}
+
+fn exact_codex_exec_result_body(output: &str) -> Option<&str> {
+    if output.is_empty()
+        || output.len() > MAX_CODEX_EXEC_RESULT_ENVELOPE_BYTES
+        || output.contains('\0')
+    {
+        return None;
+    }
+    if let Some(remainder) = output.strip_prefix("Script completed\n") {
+        return exact_codex_exec_result_tail(remainder);
+    }
+    let (chunk_id, remainder) = output.strip_prefix("Chunk ID: ")?.split_once('\n')?;
+    if chunk_id.len() != 6
+        || !chunk_id
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || matches!(byte, b'a'..=b'f'))
+    {
+        return None;
+    }
+    let (wall_time, remainder) = remainder
+        .strip_prefix("Wall time: ")?
+        .split_once(" seconds\n")?;
+    if wall_time.is_empty() || wall_time.len() > 32 {
+        return None;
+    }
+    let mut wall_time_components = wall_time.split('.');
+    let whole = wall_time_components.next()?;
+    let fractional = wall_time_components.next();
+    if whole.is_empty()
+        || !whole.bytes().all(|byte| byte.is_ascii_digit())
+        || fractional.is_some_and(|value| {
+            value.is_empty() || !value.bytes().all(|byte| byte.is_ascii_digit())
+        })
+        || wall_time_components.next().is_some()
+        || wall_time
+            .parse::<f64>()
+            .ok()
+            .is_none_or(|seconds| !seconds.is_finite())
+    {
+        return None;
+    }
+    exact_codex_exec_result_tail(remainder)
+}
+
+fn exact_codex_exec_result_tail(remainder: &str) -> Option<&str> {
+    let remainder = remainder.strip_prefix("Process exited with code 0\n")?;
+    let body = if let Some(remainder) = remainder.strip_prefix("Original token count: ") {
+        let (token_count, remainder) = remainder.split_once('\n')?;
+        if token_count.is_empty()
+            || token_count.len() > 20
+            || !token_count.bytes().all(|byte| byte.is_ascii_digit())
+            || token_count.parse::<u64>().is_err()
+        {
+            return None;
+        }
+        remainder.strip_prefix("Output:\n")?
+    } else {
+        remainder.strip_prefix("Final output:\n")?
+    };
+    if body.is_empty()
+        || body.len() > MAX_CODEX_EXEC_RESULT_ENVELOPE_BYTES
+        || body.lines().any(|line| {
+            let line = line.trim();
+            line.starts_with("Chunk ID: ")
+                || line.starts_with("Wall time: ")
+                || line.starts_with("Process exited with code ")
+                || line.starts_with("Original token count: ")
+                || line == "Output:"
+                || line == "Final output:"
+                || line.starts_with("Warning: truncated output (original token count: ")
+                || line.starts_with("Warning: truncated output (original char count: ")
+        })
+    {
+        return None;
+    }
+    Some(body)
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ExactFunctionOutputEnvelope<'a> {
+    #[serde(default, borrow)]
+    timestamp: Option<Cow<'a, str>>,
+    #[serde(rename = "type", borrow)]
+    record_type: Cow<'a, str>,
+    #[serde(borrow)]
+    payload: ExactFunctionOutputPayload<'a>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ExactFunctionOutputPayload<'a> {
+    #[serde(rename = "type", borrow)]
+    item_type: Cow<'a, str>,
+    #[serde(borrow)]
+    call_id: Cow<'a, str>,
+    #[serde(default, borrow)]
+    status: Option<Cow<'a, str>>,
+    #[serde(borrow)]
+    output: Cow<'a, str>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ExactMcpTerminalEnvelope<'a> {
+    #[serde(default, borrow)]
+    timestamp: Option<Cow<'a, str>>,
+    #[serde(rename = "type", borrow)]
+    record_type: Cow<'a, str>,
+    #[serde(borrow)]
+    payload: ExactMcpTerminalPayload<'a>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ExactMcpTerminalPayload<'a> {
+    #[serde(rename = "type", borrow)]
+    item_type: Cow<'a, str>,
+    #[serde(borrow)]
+    call_id: Cow<'a, str>,
+    #[serde(borrow)]
+    invocation: ExactMcpTerminalInvocation<'a>,
+    #[serde(rename = "duration", default)]
+    _duration: Option<Value>,
+    result: ExactMcpTerminalResult,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ExactMcpTerminalInvocation<'a> {
+    #[serde(borrow)]
+    server: Cow<'a, str>,
+    #[serde(borrow)]
+    tool: Cow<'a, str>,
+    #[serde(rename = "arguments")]
+    _arguments: Value,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ExactMcpTerminalResult {
+    #[serde(rename = "Ok", default)]
+    success: Option<ExactMcpSuccessfulResult>,
+    #[serde(rename = "Err", default)]
+    error: Option<Value>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ExactMcpSuccessfulResult {
+    #[serde(default)]
+    content: Option<Value>,
+    #[serde(rename = "structuredContent", default)]
+    structured_content: Option<Value>,
+    #[serde(rename = "isError")]
+    is_error: bool,
+    #[serde(rename = "_meta", default)]
+    _metadata: Option<Value>,
 }
 
 fn codex_invocation_activity(
@@ -693,6 +1024,191 @@ mod tests {
                 value: serde_json::json!({"error": "native failure"})
             }
         );
+
+        let exact = serde_json::json!({
+            "timestamp": "2026-08-16T12:00:00Z",
+            "type": "event_msg",
+            "payload": {
+                "type": "mcp_tool_call_end",
+                "call_id": "call-ctx-search",
+                "invocation": {
+                    "server": "ctx",
+                    "tool": "search",
+                    "arguments": {"query": "needle"}
+                },
+                "duration": {"secs": 0, "nanos": 42},
+                "result": {
+                    "Ok": {
+                        "content": [{"type": "text", "text": "{\"results\":[]}"}],
+                        "isError": false
+                    }
+                }
+            }
+        });
+        let raw = serde_json::to_vec(&exact).unwrap();
+        let payload = exact.get("payload").unwrap();
+        let audit = audit_codex_record(&raw).unwrap();
+        let activity = codex_result_activity(
+            payload.get("call_id").and_then(Value::as_str),
+            payload.get("result"),
+            payload,
+            &audit,
+            occurred_at,
+        )
+        .unwrap();
+        assert_eq!(
+            codex_result_discovery_exclusion(&raw, None, Some(&activity)),
+            Some(CoreDiscoveryExclusion::CtxRetrievalDerived)
+        );
+
+        for mutation in ["ordinary", "error", "diagnostic"] {
+            let mut control = exact.clone();
+            match mutation {
+                "ordinary" => {
+                    control["payload"]["invocation"]["server"] =
+                        Value::String("filesystem".to_owned())
+                }
+                "error" => control["payload"]["result"]["Ok"]["isError"] = Value::Bool(true),
+                "diagnostic" => {
+                    control["payload"]["result"]["Ok"]["warning"] =
+                        Value::String("provider warning".to_owned())
+                }
+                _ => unreachable!(),
+            }
+            let raw = serde_json::to_vec(&control).unwrap();
+            let payload = control.get("payload").unwrap();
+            let audit = audit_codex_record(&raw).unwrap();
+            let activity = codex_result_activity(
+                payload.get("call_id").and_then(Value::as_str),
+                payload.get("result"),
+                payload,
+                &audit,
+                occurred_at,
+            )
+            .unwrap();
+            assert_eq!(
+                codex_result_discovery_exclusion(&raw, None, Some(&activity)),
+                None,
+                "unexpected exclusion for {mutation} MCP terminal"
+            );
+        }
+    }
+
+    #[test]
+    fn direct_ctx_retrieval_invocation_excludes_without_losing_activity() {
+        let occurred_at = DateTime::parse_from_rfc3339("2026-08-16T12:00:00Z")
+            .unwrap()
+            .with_timezone(&Utc);
+        for (command, expected) in [
+            (
+                "ctx search exact-retrieval",
+                Some(CoreDiscoveryExclusion::CtxRetrievalDerived),
+            ),
+            ("ctx status", None),
+            ("git status", None),
+        ] {
+            let payload = serde_json::json!({
+                "type": "function_call",
+                "call_id": format!("call-{command}"),
+                "name": "exec_command",
+                "arguments": {"cmd": command}
+            });
+            let raw = serde_json::to_vec(&payload).unwrap();
+            let audit = audit_codex_record(&raw).unwrap();
+            let activity = codex_invocation_activity(&payload, &audit, occurred_at).unwrap();
+
+            assert_eq!(
+                codex_invocation_discovery_exclusion(&payload, &audit, Some(&activity)),
+                expected,
+                "unexpected classification for {command}"
+            );
+            assert_eq!(
+                activity.invocation.as_ref().unwrap().arguments,
+                ActivityJsonCapture::Present {
+                    value: serde_json::json!({"cmd": command})
+                }
+            );
+        }
+    }
+
+    #[test]
+    fn linked_ctx_retrieval_result_requires_exact_success_envelope() {
+        let occurred_at = DateTime::parse_from_rfc3339("2026-08-16T12:00:00Z")
+            .unwrap()
+            .with_timezone(&Utc);
+        let output = concat!(
+            "Script completed\n",
+            "Process exited with code 0\n",
+            "Final output:\n",
+            "{\"results\":[]}"
+        );
+        let exact = serde_json::json!({
+            "timestamp": "2026-08-16T12:00:00Z",
+            "type": "response_item",
+            "payload": {
+                "type": "function_call_output",
+                "call_id": "call-linked",
+                "status": "success",
+                "output": output
+            }
+        });
+        let classify =
+            |record: &Value,
+             linked_invocation_discovery_exclusion: Option<CoreDiscoveryExclusion>| {
+                let raw = serde_json::to_vec(record).unwrap();
+                let payload = record.get("payload").unwrap();
+                let audit = audit_codex_record(&raw).unwrap();
+                let activity = codex_result_activity(
+                    payload.get("call_id").and_then(Value::as_str),
+                    payload.get("output"),
+                    payload,
+                    &audit,
+                    occurred_at,
+                )
+                .unwrap();
+                codex_result_discovery_exclusion(
+                    &raw,
+                    linked_invocation_discovery_exclusion,
+                    Some(&activity),
+                )
+            };
+
+        assert_eq!(
+            classify(&exact, Some(CoreDiscoveryExclusion::CtxRetrievalDerived)),
+            Some(CoreDiscoveryExclusion::CtxRetrievalDerived)
+        );
+        assert_eq!(classify(&exact, None), None);
+        let mut legacy = exact.clone();
+        legacy["payload"].as_object_mut().unwrap().remove("status");
+        legacy["payload"]["output"] = Value::String(
+            concat!(
+                "Chunk ID: abc123\n",
+                "Wall time: 0.1 seconds\n",
+                "Process exited with code 0\n",
+                "Final output:\n",
+                "{\"results\":[]}"
+            )
+            .to_owned(),
+        );
+        assert_eq!(
+            classify(&legacy, Some(CoreDiscoveryExclusion::CtxRetrievalDerived)),
+            Some(CoreDiscoveryExclusion::CtxRetrievalDerived)
+        );
+        let mut failed = exact.clone();
+        failed["payload"]["status"] = Value::String("failed".to_owned());
+        assert_eq!(
+            classify(&failed, Some(CoreDiscoveryExclusion::CtxRetrievalDerived)),
+            None
+        );
+        let mut diagnostic = exact;
+        diagnostic["payload"]["stderr"] = Value::String("diagnostic".to_owned());
+        assert_eq!(
+            classify(
+                &diagnostic,
+                Some(CoreDiscoveryExclusion::CtxRetrievalDerived)
+            ),
+            None
+        );
     }
 
     #[test]
@@ -713,6 +1229,10 @@ mod tests {
         let raw = serde_json::to_vec(&invocation).unwrap();
         let audit = audit_codex_record(&raw).unwrap();
         let activity = codex_invocation_activity(&invocation, &audit, occurred_at).unwrap();
+        assert_eq!(
+            codex_invocation_discovery_exclusion(&invocation, &audit, Some(&activity)),
+            None
+        );
         assert_eq!(
             activity.provider_call_id,
             Some(TypedKey::utf8("call-exact").unwrap())

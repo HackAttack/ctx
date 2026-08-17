@@ -163,6 +163,9 @@ impl CodexNativeScanner {
             .saturating_add(physical.end_byte.saturating_sub(physical.start_byte));
 
         let call_id = probe.call_id.as_deref();
+        let linked_invocation_discovery_exclusion = call_id
+            .and_then(|call_id| self.pending_calls.get(call_id))
+            .and_then(|pending| pending.discovery_exclusion);
         let provider_event_copy = call_id.and_then(|call_id| {
             self.pending_calls
                 .get(call_id)
@@ -209,6 +212,7 @@ impl CodexNativeScanner {
             physical.raw_ordinal,
             provider_event_identity(&decoded.payload),
             provider_event_copy,
+            linked_invocation_discovery_exclusion,
             call_id,
             occurred_at,
             result_kind,
@@ -275,6 +279,7 @@ impl CodexNativeScanner {
                             }
                             std::collections::btree_map::Entry::Occupied(mut entry) => {
                                 entry.get_mut().origin = CodexPendingCallOriginV0::Unproven;
+                                entry.get_mut().discovery_exclusion = None;
                             }
                         }
                         while self.pending_calls.len() > MAX_CODEX_PENDING_CALLS {
@@ -345,6 +350,7 @@ fn pending_call_for_row(
         CodexPendingCallV0 {
             raw_ordinal,
             origin: pending_call_origin(owner, local_turn_started),
+            discovery_exclusion: row.discovery_exclusion,
         },
     ))
 }
