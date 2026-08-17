@@ -85,6 +85,7 @@ pub(crate) struct CodexNativeScanner {
     source: CodexCatalogSource,
     owner: Option<CodexSessionRow>,
     pending_calls: BTreeMap<String, CodexPendingCallV0>,
+    terminal_authority: CodexTerminalAuthority,
     counters: CodexScanCounters,
     local_turn_started: bool,
     core_source: SourceKey,
@@ -130,6 +131,7 @@ mod identity;
 mod page_builder;
 mod project;
 mod scanner;
+mod terminal;
 
 use checkpoint::*;
 pub(crate) use checkpoint::{
@@ -137,3 +139,4 @@ pub(crate) use checkpoint::{
     reopen_codex_source_capability, revalidate_codex_catalog_source_capability,
 };
 use identity::*;
+use terminal::*;

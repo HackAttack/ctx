@@ -9,7 +9,7 @@ use ctx_history_core::{
 use ctx_history_index::{GenerationWriter, RevalidationTarget, WriterOptions};
 
 const CURRENT_PARSER_REVISION: &str =
-    "codex-nativepath-core-activity-v4-empty-result-text-retrieval-exclusion";
+    "codex-nativepath-core-activity-v5-empty-result-text-retrieval-exclusion";
 
 fn writer_options() -> WriterOptions {
     WriterOptions {
@@ -138,6 +138,29 @@ fn exact_exec_result(call_id: &str, output: &str) -> serde_json::Value {
             "output": format!(
                 "Script completed\nProcess exited with code 0\nFinal output:\n{output}"
             )
+        }
+    })
+}
+
+fn exact_mcp_result(call_id: &str, output: &str) -> serde_json::Value {
+    serde_json::json!({
+        "timestamp": "2026-08-09T12:00:05Z",
+        "type": "event_msg",
+        "payload": {
+            "type": "mcp_tool_call_end",
+            "call_id": call_id,
+            "invocation": {
+                "server": "ctx",
+                "tool": "search",
+                "arguments": {"query": "terminal uniqueness"}
+            },
+            "duration": {"secs": 0, "nanos": 42},
+            "result": {
+                "Ok": {
+                    "content": [{"type": "text", "text": output}],
+                    "isError": false
+                }
+            }
         }
     })
 }
@@ -661,6 +684,167 @@ fn codex_retrieval_exclusion_survives_raw_append_hydration_and_keeps_ids_stable(
             .any(|candidate| candidate.event.provider_session_id.as_deref()
                 == Some(native_session_id))
     );
+}
+
+#[test]
+fn codex_cold_duplicate_direct_and_mcp_terminals_fail_open() {
+    let temp = tempdir().unwrap();
+    let sessions = temp.path().join("sessions-cold-duplicate-terminals");
+    let index_root = temp.path().join("index-cold-duplicate-terminals");
+    fs::create_dir_all(&sessions).unwrap();
+    let native_session_id = "019fb000-0000-7000-8000-00000000005c";
+    let direct_call_id = "cold-direct-duplicate";
+    let mcp_call_id = "cold-mcp-duplicate";
+    write_session(
+        &sessions,
+        native_session_id,
+        ProviderNativeSessionRelationship::Root,
+        None,
+        [
+            turn_context(),
+            exec_call_with_command(direct_call_id, "ctx search coldduplicatequery"),
+            exact_exec_result(direct_call_id, "colddirectduplicatefirst"),
+            exact_exec_result(direct_call_id, "colddirectduplicatesecond"),
+            exact_mcp_result(mcp_call_id, "coldmcpduplicatefirst"),
+            exact_mcp_result(mcp_call_id, "coldmcpduplicatesecond"),
+        ],
+    );
+    let registry = register_tree(&[&sessions]);
+
+    let receipt =
+        refresh_source_backed_generation(&index_root, &registry, writer_options()).unwrap();
+    assert!(receipt.failed_routes.is_empty());
+    let index = VerifiedIndex::open(&index_root).unwrap();
+    let records = records_for(&index, native_session_id);
+    assert_eq!(records.len(), 5);
+    let invocation = records
+        .iter()
+        .find(|record| {
+            record.content.activity.as_ref().is_some_and(|activity| {
+                activity.provider_call_id == Some(TypedKey::Utf8(direct_call_id.to_owned()))
+                    && activity.invocation.is_some()
+                    && activity.result.is_none()
+            })
+        })
+        .unwrap();
+    assert_eq!(
+        invocation.content.discovery_exclusion,
+        Some(CoreDiscoveryExclusion::CtxRetrievalDerived)
+    );
+    let terminals = records
+        .iter()
+        .filter(|record| {
+            record.content.activity.as_ref().is_some_and(|activity| {
+                activity.result.is_some()
+                    && matches!(
+                        activity.provider_call_id.as_ref(),
+                        Some(TypedKey::Utf8(call_id))
+                            if call_id == direct_call_id || call_id == mcp_call_id
+                    )
+            })
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(terminals.len(), 4);
+    assert!(terminals
+        .iter()
+        .all(|record| record.content.discovery_exclusion.is_none()));
+    for marker in ["colddirectduplicatefirst", "coldmcpduplicatefirst"] {
+        assert!(index
+            .search_event_candidates(marker, 32)
+            .unwrap()
+            .into_iter()
+            .any(|candidate| candidate.event.provider_session_id.as_deref()
+                == Some(native_session_id)));
+    }
+}
+
+#[test]
+fn codex_appended_duplicate_direct_and_mcp_terminals_retract_exclusion_with_stable_ids() {
+    let temp = tempdir().unwrap();
+    let sessions = temp.path().join("sessions-appended-duplicate-terminals");
+    let index_root = temp.path().join("index-appended-duplicate-terminals");
+    fs::create_dir_all(&sessions).unwrap();
+    let direct_session_id = "019fb000-0000-7000-8000-00000000005d";
+    let mcp_session_id = "019fb000-0000-7000-8000-00000000005e";
+    let direct_call_id = "appended-direct-duplicate";
+    let mcp_call_id = "appended-mcp-duplicate";
+    write_session(
+        &sessions,
+        direct_session_id,
+        ProviderNativeSessionRelationship::Root,
+        None,
+        [
+            turn_context(),
+            exec_call_with_command(direct_call_id, "ctx search appenddirectquery"),
+            exact_exec_result(direct_call_id, "appenddirectfirst"),
+        ],
+    );
+    write_session(
+        &sessions,
+        mcp_session_id,
+        ProviderNativeSessionRelationship::Root,
+        None,
+        [
+            turn_context(),
+            exact_mcp_result(mcp_call_id, "appendmcpfirst"),
+        ],
+    );
+    let registry = register_tree(&[&sessions]);
+
+    let cold = refresh_source_backed_generation(&index_root, &registry, writer_options()).unwrap();
+    assert!(cold.failed_routes.is_empty());
+    let cold_index = VerifiedIndex::open(&index_root).unwrap();
+    let cold_direct = records_for(&cold_index, direct_session_id);
+    let cold_mcp = records_for(&cold_index, mcp_session_id);
+    assert_eq!(cold_direct.len(), 2);
+    assert_eq!(cold_mcp.len(), 1);
+    assert!(cold_direct.iter().chain(&cold_mcp).all(|record| {
+        record.content.discovery_exclusion == Some(CoreDiscoveryExclusion::CtxRetrievalDerived)
+    }));
+    let direct_invocation_id = cold_direct[0].event_id;
+    let direct_result_id = cold_direct[1].event_id;
+    let mcp_result_id = cold_mcp[0].event_id;
+    drop(cold_index);
+
+    append_event(
+        &session_path(&sessions, direct_session_id),
+        exact_exec_result(direct_call_id, "appenddirectsecond"),
+    );
+    append_event(
+        &session_path(&sessions, mcp_session_id),
+        exact_mcp_result(mcp_call_id, "appendmcpsecond"),
+    );
+    let appended =
+        refresh_source_backed_generation(&index_root, &registry, writer_options()).unwrap();
+    assert!(appended.failed_routes.is_empty());
+    let appended_index = VerifiedIndex::open(&index_root).unwrap();
+    let direct = records_for(&appended_index, direct_session_id);
+    let mcp = records_for(&appended_index, mcp_session_id);
+    assert_eq!(direct.len(), 3);
+    assert_eq!(mcp.len(), 2);
+    assert_eq!(direct[0].event_id, direct_invocation_id);
+    assert_eq!(direct[1].event_id, direct_result_id);
+    assert_eq!(mcp[0].event_id, mcp_result_id);
+    assert_ne!(direct[2].event_id, direct_result_id);
+    assert_ne!(mcp[1].event_id, mcp_result_id);
+    assert_eq!(
+        direct[0].content.discovery_exclusion,
+        Some(CoreDiscoveryExclusion::CtxRetrievalDerived)
+    );
+    assert!(direct[1..]
+        .iter()
+        .chain(&mcp)
+        .all(|record| record.content.discovery_exclusion.is_none()));
+    for marker in ["appenddirectfirst", "appendmcpfirst"] {
+        assert!(appended_index
+            .search_event_candidates(marker, 32)
+            .unwrap()
+            .into_iter()
+            .any(|candidate| matches!(
+                candidate.event.provider_session_id.as_deref(),
+                Some(session_id) if session_id == direct_session_id || session_id == mcp_session_id
+            )));
+    }
 }
 
 #[path = "codex_child_independence/lifecycle.rs"]

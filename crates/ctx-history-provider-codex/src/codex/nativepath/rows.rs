@@ -208,6 +208,7 @@ pub(super) fn build_source_backed_sparse_output_row(
     provider_event_identity: Option<CodexProviderEventIdentityV0>,
     provider_event_copy: Option<CodexProviderNativeEventCopyV0>,
     linked_invocation_discovery_exclusion: Option<CoreDiscoveryExclusion>,
+    source_unique_terminal: bool,
     provider_call_id: Option<&str>,
     occurred_at: DateTime<Utc>,
     _result_kind: CodexResultKind,
@@ -235,6 +236,7 @@ pub(super) fn build_source_backed_sparse_output_row(
     let discovery_exclusion = codex_result_discovery_exclusion(
         raw_record,
         linked_invocation_discovery_exclusion,
+        source_unique_terminal,
         activity.as_ref(),
     );
     Ok(Some(CodexCoreRecordDraft {
@@ -285,8 +287,12 @@ fn codex_invocation_discovery_exclusion(
 fn codex_result_discovery_exclusion(
     raw_record: &[u8],
     linked_invocation_discovery_exclusion: Option<CoreDiscoveryExclusion>,
+    source_unique_terminal: bool,
     activity: Option<&CoreActivity>,
 ) -> Option<CoreDiscoveryExclusion> {
+    if !source_unique_terminal {
+        return None;
+    }
     let contribution =
         exact_mcp_terminal_result_contribution(raw_record, activity).unwrap_or_else(|| {
             let exact_success = activity
@@ -339,6 +345,11 @@ fn exact_mcp_terminal_result_contribution(
         || Some(exact.payload.invocation.server.as_ref()) != invocation.server.as_deref()
         || exact.payload.invocation.tool != invocation.tool
         || exact.timestamp.as_deref().is_some_and(str::is_empty)
+        || exact
+            .payload
+            .duration
+            .as_ref()
+            .is_some_and(|duration| duration.nanos >= 1_000_000_000)
     {
         return None;
     }
@@ -351,10 +362,11 @@ fn exact_mcp_terminal_result_contribution(
     let (terminal_status, has_payload) =
         match (exact.payload.result.success, exact.payload.result.error) {
             (Some(success), None) => {
-                if success
-                    .content
-                    .as_ref()
-                    .is_some_and(|content| !content.is_array())
+                if success.content.is_empty()
+                    || success
+                        .content
+                        .iter()
+                        .any(|block| block.block_type != "text" || block.text.is_empty())
                 {
                     return None;
                 }
@@ -364,7 +376,7 @@ fn exact_mcp_terminal_result_contribution(
                     } else {
                         ctx_history_capture_model::ctx_retrieval::ResultTerminalStatus::Succeeded
                     },
-                    success.content.is_some() || success.structured_content.is_some(),
+                    true,
                 )
             }
             (None, Some(_)) => (
@@ -535,9 +547,27 @@ struct ExactMcpTerminalPayload<'a> {
     call_id: Cow<'a, str>,
     #[serde(borrow)]
     invocation: ExactMcpTerminalInvocation<'a>,
-    #[serde(rename = "duration", default)]
-    _duration: Option<Value>,
-    result: ExactMcpTerminalResult,
+    #[serde(default, deserialize_with = "deserialize_present_mcp_duration")]
+    duration: Option<ExactMcpDuration>,
+    #[serde(borrow)]
+    result: ExactMcpTerminalResult<'a>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ExactMcpDuration {
+    #[serde(rename = "secs")]
+    _secs: u64,
+    nanos: u64,
+}
+
+fn deserialize_present_mcp_duration<'de, D>(
+    deserializer: D,
+) -> std::result::Result<Option<ExactMcpDuration>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    ExactMcpDuration::deserialize(deserializer).map(Some)
 }
 
 #[derive(Deserialize)]
@@ -553,24 +583,45 @@ struct ExactMcpTerminalInvocation<'a> {
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
-struct ExactMcpTerminalResult {
+struct ExactMcpTerminalResult<'a> {
     #[serde(rename = "Ok", default)]
-    success: Option<ExactMcpSuccessfulResult>,
+    #[serde(borrow)]
+    success: Option<ExactMcpSuccessfulResult<'a>>,
     #[serde(rename = "Err", default)]
     error: Option<Value>,
 }
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
-struct ExactMcpSuccessfulResult {
-    #[serde(default)]
-    content: Option<Value>,
-    #[serde(rename = "structuredContent", default)]
-    structured_content: Option<Value>,
+struct ExactMcpSuccessfulResult<'a> {
+    #[serde(borrow)]
+    content: Vec<ExactMcpTextContent<'a>>,
+    #[serde(
+        rename = "structuredContent",
+        default,
+        deserialize_with = "deserialize_present_structured_content"
+    )]
+    _structured_content: Option<serde_json::Map<String, Value>>,
     #[serde(rename = "isError")]
     is_error: bool,
-    #[serde(rename = "_meta", default)]
-    _metadata: Option<Value>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ExactMcpTextContent<'a> {
+    #[serde(rename = "type", borrow)]
+    block_type: Cow<'a, str>,
+    #[serde(borrow)]
+    text: Cow<'a, str>,
+}
+
+fn deserialize_present_structured_content<'de, D>(
+    deserializer: D,
+) -> std::result::Result<Option<serde_json::Map<String, Value>>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    serde_json::Map::<String, Value>::deserialize(deserializer).map(Some)
 }
 
 fn codex_invocation_activity(
@@ -1057,7 +1108,7 @@ mod tests {
         )
         .unwrap();
         assert_eq!(
-            codex_result_discovery_exclusion(&raw, None, Some(&activity)),
+            codex_result_discovery_exclusion(&raw, None, true, Some(&activity)),
             Some(CoreDiscoveryExclusion::CtxRetrievalDerived)
         );
 
@@ -1087,11 +1138,136 @@ mod tests {
             )
             .unwrap();
             assert_eq!(
-                codex_result_discovery_exclusion(&raw, None, Some(&activity)),
+                codex_result_discovery_exclusion(&raw, None, true, Some(&activity)),
                 None,
                 "unexpected exclusion for {mutation} MCP terminal"
             );
         }
+    }
+
+    #[test]
+    fn mcp_retrieval_exclusion_requires_nonempty_text_payload_and_valid_duration() {
+        let occurred_at = DateTime::parse_from_rfc3339("2026-08-16T12:00:00Z")
+            .unwrap()
+            .with_timezone(&Utc);
+        let exact = serde_json::json!({
+            "timestamp": "2026-08-16T12:00:00Z",
+            "type": "event_msg",
+            "payload": {
+                "type": "mcp_tool_call_end",
+                "call_id": "call-ctx-search-payload",
+                "invocation": {
+                    "server": "ctx",
+                    "tool": "search",
+                    "arguments": {"query": "needle"}
+                },
+                "duration": {"secs": 0, "nanos": 42},
+                "result": {
+                    "Ok": {
+                        "content": [{"type": "text", "text": "{\"results\":[]}"}],
+                        "isError": false
+                    }
+                }
+            }
+        });
+        let classify = |record: &Value| {
+            let raw = serde_json::to_vec(record).unwrap();
+            let payload = record.get("payload").unwrap();
+            let audit = audit_codex_record(&raw).unwrap();
+            let activity = codex_result_activity(
+                payload.get("call_id").and_then(Value::as_str),
+                payload.get("result"),
+                payload,
+                &audit,
+                occurred_at,
+            )
+            .unwrap();
+            codex_result_discovery_exclusion(&raw, None, true, Some(&activity))
+        };
+
+        assert_eq!(
+            classify(&exact),
+            Some(CoreDiscoveryExclusion::CtxRetrievalDerived)
+        );
+        let mut no_duration = exact.clone();
+        no_duration["payload"]
+            .as_object_mut()
+            .unwrap()
+            .remove("duration");
+        assert_eq!(
+            classify(&no_duration),
+            Some(CoreDiscoveryExclusion::CtxRetrievalDerived)
+        );
+        let mut structured = exact.clone();
+        structured["payload"]["result"]["Ok"]["structuredContent"] =
+            serde_json::json!({"results": []});
+        assert_eq!(
+            classify(&structured),
+            Some(CoreDiscoveryExclusion::CtxRetrievalDerived)
+        );
+
+        for (mutation, invalid) in [
+            ("empty-content", serde_json::json!([])),
+            (
+                "empty-text",
+                serde_json::json!([{"type": "text", "text": ""}]),
+            ),
+            (
+                "non-text",
+                serde_json::json!([{"type": "image", "data": "AA=="}]),
+            ),
+            (
+                "mixed-content",
+                serde_json::json!([
+                    {"type": "text", "text": "payload"},
+                    {"type": "image", "data": "AA=="}
+                ]),
+            ),
+        ] {
+            let mut control = exact.clone();
+            control["payload"]["result"]["Ok"]["content"] = invalid;
+            assert_eq!(
+                classify(&control),
+                None,
+                "unexpected exclusion for {mutation}"
+            );
+        }
+
+        let mut structured_only = exact.clone();
+        structured_only["payload"]["result"]["Ok"]
+            .as_object_mut()
+            .unwrap()
+            .remove("content");
+        structured_only["payload"]["result"]["Ok"]["structuredContent"] =
+            serde_json::json!({"results": []});
+        assert_eq!(classify(&structured_only), None);
+
+        for (mutation, invalid) in [
+            ("null-duration", Value::Null),
+            ("non-object-duration", Value::String("fast".to_owned())),
+            ("missing-secs", serde_json::json!({"nanos": 42})),
+            (
+                "unknown-duration-field",
+                serde_json::json!({"secs": 0, "nanos": 42, "warning": true}),
+            ),
+            (
+                "out-of-range-nanos",
+                serde_json::json!({"secs": 0, "nanos": 1_000_000_000_u64}),
+            ),
+        ] {
+            let mut control = exact.clone();
+            control["payload"]["duration"] = invalid;
+            assert_eq!(
+                classify(&control),
+                None,
+                "unexpected exclusion for {mutation}"
+            );
+        }
+
+        let mut metadata = exact;
+        metadata["payload"]["result"]["Ok"]["_meta"] =
+            serde_json::json!({"warning": "mixed diagnostic"});
+        assert_eq!(classify(&metadata), None);
     }
 
     #[test]
@@ -1169,6 +1345,7 @@ mod tests {
                 codex_result_discovery_exclusion(
                     &raw,
                     linked_invocation_discovery_exclusion,
+                    true,
                     Some(&activity),
                 )
             };

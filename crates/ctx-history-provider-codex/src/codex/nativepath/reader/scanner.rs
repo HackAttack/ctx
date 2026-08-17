@@ -1,18 +1,6 @@
 use super::*;
 use crate::provider::source_backed::ProviderRuntimeBinding;
 
-fn consume_neutral_preflight_records<T>(
-    mut next_record: impl FnMut() -> Result<Option<T>>,
-    is_complete: impl Fn(&T) -> bool,
-) -> Result<()> {
-    while let Some(record) = next_record()? {
-        if !is_complete(&record) {
-            break;
-        }
-    }
-    Ok(())
-}
-
 impl CodexNativeScanner {
     pub(in crate::codex::nativepath) fn new_semantic(
         source: CodexCatalogSource,
@@ -29,6 +17,7 @@ impl CodexNativeScanner {
             source,
             owner: None,
             pending_calls: BTreeMap::new(),
+            terminal_authority: CodexTerminalAuthority::default(),
             counters: CodexScanCounters::default(),
             local_turn_started: false,
             core_source,
@@ -63,8 +52,21 @@ impl CodexNativeScanner {
         &mut self,
         input: &mut JsonlFamilyExecutionIo<impl ProviderRuntimeBinding>,
     ) -> Result<bool> {
-        consume_neutral_preflight_records(|| input.next_record(), |record| record.complete())?;
-        Ok(false)
+        let certified_prefix_end = input.certified_prefix_end();
+        while let Some(record) = input.next_record()? {
+            if !record.complete() {
+                break;
+            }
+            let in_certified_prefix = certified_prefix_end
+                .is_some_and(|prefix_end| record.byte_end_exclusive() <= prefix_end);
+            if record.oversized() {
+                self.terminal_authority.exhaust(in_certified_prefix);
+            } else if !record.terminal_nul_padding() {
+                self.terminal_authority
+                    .observe_record(input.record_bytes(record)?, in_certified_prefix);
+            }
+        }
+        Ok(certified_prefix_end.is_some() && self.terminal_authority.append_requires_replacement())
     }
 
     pub(in crate::codex::nativepath) fn next_semantic_page(
@@ -164,59 +166,5 @@ impl CodexNativeScanner {
             let page = self.active_semantic_page()?;
             page.physical_records = page.physical_records.saturating_add(1);
         }
-    }
-}
-
-#[cfg(test)]
-mod neutral_preflight_tests {
-    use super::*;
-
-    #[derive(Clone, Copy)]
-    struct FixtureRecord {
-        complete: bool,
-    }
-
-    #[test]
-    fn neutral_preflight_drains_complete_records_without_semantic_output() {
-        let mut records = [
-            FixtureRecord { complete: true },
-            FixtureRecord { complete: true },
-            FixtureRecord { complete: true },
-        ]
-        .into_iter();
-        let mut reads = 0;
-
-        consume_neutral_preflight_records(
-            || {
-                reads += 1;
-                Ok(records.next())
-            },
-            |record| record.complete,
-        )
-        .unwrap();
-
-        assert_eq!(reads, 4, "the terminal EOF must be observed");
-    }
-
-    #[test]
-    fn neutral_preflight_stops_after_the_bounded_incomplete_tail() {
-        let mut records = [
-            FixtureRecord { complete: true },
-            FixtureRecord { complete: false },
-            FixtureRecord { complete: true },
-        ]
-        .into_iter();
-        let mut reads = 0;
-
-        consume_neutral_preflight_records(
-            || {
-                reads += 1;
-                Ok(records.next())
-            },
-            |record| record.complete,
-        )
-        .unwrap();
-
-        assert_eq!(reads, 2);
     }
 }

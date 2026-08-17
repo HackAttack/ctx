@@ -163,9 +163,15 @@ impl CodexNativeScanner {
             .saturating_add(physical.end_byte.saturating_sub(physical.start_byte));
 
         let call_id = probe.call_id.as_deref();
-        let linked_invocation_discovery_exclusion = call_id
-            .and_then(|call_id| self.pending_calls.get(call_id))
-            .and_then(|pending| pending.discovery_exclusion);
+        let source_unique_terminal =
+            call_id.is_some_and(|call_id| self.terminal_authority.is_unique(call_id));
+        let linked_invocation_discovery_exclusion = source_unique_terminal
+            .then(|| {
+                call_id
+                    .and_then(|call_id| self.pending_calls.get(call_id))
+                    .and_then(|pending| pending.discovery_exclusion)
+            })
+            .flatten();
         let provider_event_copy = call_id.and_then(|call_id| {
             self.pending_calls
                 .get(call_id)
@@ -213,6 +219,7 @@ impl CodexNativeScanner {
             provider_event_identity(&decoded.payload),
             provider_event_copy,
             linked_invocation_discovery_exclusion,
+            source_unique_terminal,
             call_id,
             occurred_at,
             result_kind,
