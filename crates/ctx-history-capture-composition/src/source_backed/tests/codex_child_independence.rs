@@ -18,6 +18,28 @@ fn writer_options() -> WriterOptions {
     }
 }
 
+fn incremental_refresh(
+    index_root: &Path,
+    registry: &SourceBackedProviderRegistry,
+    base: &SourceBackedRefreshReceipt,
+) -> (SourceBackedRefreshReceipt, u64) {
+    let mut completed_records = 0;
+    let receipt = SourceBackedRefreshExecutor::new(registry.clone(), writer_options())
+        .with_base_route_controls(base.route_controls.clone())
+        .refresh_scope_with_detailed_progress_and_reconciliation(
+            index_root,
+            SourceBackedRefreshScope::All,
+            SourceBackedReconciliationDemand::Incremental,
+            |update| {
+                completed_records =
+                    completed_records.max(update.progress.completed_records.unwrap_or(0));
+                Ok(())
+            },
+        )
+        .unwrap();
+    (receipt, completed_records)
+}
+
 fn session_path(root: &Path, native_session_id: &str) -> PathBuf {
     root.join(format!("rollout-{native_session_id}.jsonl"))
 }
@@ -438,6 +460,33 @@ fn retired_semantic_v2_checkpoint(native_session_id: &str) -> TypedKey {
     )
 }
 
+fn retired_semantic_v6_checkpoint(native_session_id: &str) -> TypedKey {
+    TypedKey::Utf8(format!(
+        "codex.projector-checkpoint.v6:{}",
+        serde_json::to_string(&serde_json::json!({
+            "version": 6,
+            "owner": {
+                "native_session_id": native_session_id,
+                "parent_native_session_id": null,
+                "root_native_session_id": null,
+                "session_relationship": "root",
+                "started_at": "2026-08-09T12:00:00Z",
+                "cwd": "/tmp/codex-child-independence",
+                "originator": "codex_cli_rs",
+                "cli_version": "0.1.0",
+                "source_kind": "cli",
+                "external_agent_id": null,
+                "role_hint": null,
+                "model_provider": "openai",
+                "git": null
+            },
+            "local_turn_started": false,
+            "pending_calls": {}
+        }))
+        .unwrap()
+    ))
+}
+
 fn assert_legacy_provider_checkpoint_is_inert(
     case: &str,
     provider_checkpoint: impl FnOnce(&str) -> TypedKey,
@@ -487,8 +536,7 @@ fn assert_legacy_provider_checkpoint_is_inert(
     drop(unchanged_index);
 
     append_event(&path, exec_result(&call_id, &marker));
-    let appended =
-        refresh_source_backed_generation(&index_root, &registry, writer_options()).unwrap();
+    let (appended, _) = incremental_refresh(&index_root, &registry, &unchanged);
     assert!(appended.failed_routes.is_empty());
     assert!(appended.logical_source_failures.is_empty());
 
@@ -524,28 +572,43 @@ fn assert_current_provider_checkpoint(checkpoint: &serde_json::Value) {
         .get("Utf8")
         .and_then(serde_json::Value::as_str)
         .expect("Codex provider checkpoint must be compact UTF-8");
-    assert!(encoded.starts_with("codex.projector-checkpoint.v6:"));
+    assert!(encoded.starts_with("codex.projector-checkpoint.v7:"));
     assert!(encoded.len() <= MAX_PROVIDER_CHECKPOINT_BYTES);
 }
 
 fn records_for(index: &VerifiedIndex, native_session_id: &str) -> Vec<CoreRecord> {
     let certificate = certificate_for(index, native_session_id);
-    let page = index
-        .source_event_page(certificate.observation().source(), None, 256)
-        .unwrap();
-    assert!(page.next_cursor.is_none());
-    let mut records = page
-        .items
-        .into_iter()
-        .map(|item| {
+    let mut cursor = None;
+    let mut records = Vec::new();
+    loop {
+        let page = index
+            .source_event_page(certificate.observation().source(), cursor.as_ref(), 256)
+            .unwrap();
+        records.extend(page.items.into_iter().map(|item| {
             index
                 .core_record_by_id(item.event_id.as_uuid())
                 .unwrap()
                 .unwrap()
-        })
-        .collect::<Vec<_>>();
+        }));
+        let Some(next_cursor) = page.next_cursor else {
+            break;
+        };
+        cursor = Some(next_cursor);
+    }
     records.sort_by_key(|record| record.event_sequence);
     records
+}
+
+fn result_record_for_call<'a>(records: &'a [CoreRecord], call_id: &str) -> &'a CoreRecord {
+    records
+        .iter()
+        .find(|record| {
+            record.content.activity.as_ref().is_some_and(|activity| {
+                activity.provider_call_id == Some(TypedKey::Utf8(call_id.to_owned()))
+                    && activity.result.is_some()
+            })
+        })
+        .unwrap_or_else(|| panic!("missing result for {call_id}"))
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -625,8 +688,7 @@ fn codex_retrieval_exclusion_survives_raw_append_hydration_and_keeps_ids_stable(
         &path,
         exact_exec_result(retrieval_call_id, "retrievaldiscoverymarker result"),
     );
-    let appended =
-        refresh_source_backed_generation(&index_root, &registry, writer_options()).unwrap();
+    let (appended, _) = incremental_refresh(&index_root, &registry, &cold);
     assert!(appended.failed_routes.is_empty());
     let appended_index = VerifiedIndex::open(&index_root).unwrap();
     let appended_records = records_for(&appended_index, native_session_id);
@@ -814,8 +876,7 @@ fn codex_appended_duplicate_direct_and_mcp_terminals_retract_exclusion_with_stab
         &session_path(&sessions, mcp_session_id),
         exact_mcp_result(mcp_call_id, "appendmcpsecond"),
     );
-    let appended =
-        refresh_source_backed_generation(&index_root, &registry, writer_options()).unwrap();
+    let (appended, _) = incremental_refresh(&index_root, &registry, &cold);
     assert!(appended.failed_routes.is_empty());
     let appended_index = VerifiedIndex::open(&index_root).unwrap();
     let direct = records_for(&appended_index, direct_session_id);
@@ -845,6 +906,168 @@ fn codex_appended_duplicate_direct_and_mcp_terminals_retract_exclusion_with_stab
                 Some(session_id) if session_id == direct_session_id || session_id == mcp_session_id
             )));
     }
+}
+
+#[test]
+fn codex_incremental_unique_terminal_append_and_restart_stay_suffix_bounded() {
+    let temp = tempdir().unwrap();
+    let sessions = temp.path().join("sessions-incremental-unique-terminals");
+    let index_root = temp.path().join("index-incremental-unique-terminals");
+    fs::create_dir_all(&sessions).unwrap();
+    let native_session_id = "019fb000-0000-7000-8000-00000000005f";
+    let first_call_id = "incremental-unique-first";
+    let second_call_id = "incremental-unique-second";
+    let third_call_id = "incremental-unique-third";
+    let path = session_path(&sessions, native_session_id);
+    let large_prefix_body = "p".repeat(256 * 1024);
+    write_session(
+        &sessions,
+        native_session_id,
+        ProviderNativeSessionRelationship::Root,
+        None,
+        [
+            turn_context(),
+            message(&large_prefix_body),
+            exec_call_with_command(first_call_id, "ctx search incrementalfirstquery"),
+            exact_exec_result(first_call_id, "incrementaluniquefirst"),
+        ],
+    );
+    let registry = register_tree(&[&sessions]);
+    let cold = refresh_source_backed_generation(&index_root, &registry, writer_options()).unwrap();
+    assert!(cold.failed_routes.is_empty());
+    let cold_index = VerifiedIndex::open(&index_root).unwrap();
+    let cold_records = records_for(&cold_index, native_session_id);
+    let first_event_id = result_record_for_call(&cold_records, first_call_id).event_id;
+    assert_eq!(
+        result_record_for_call(&cold_records, first_call_id)
+            .content
+            .discovery_exclusion,
+        Some(CoreDiscoveryExclusion::CtxRetrievalDerived)
+    );
+    drop(cold_index);
+
+    append_event(
+        &path,
+        exact_mcp_result(second_call_id, "incrementaluniquesecond"),
+    );
+    let (appended, completed_records) = incremental_refresh(&index_root, &registry, &cold);
+    assert!(appended.failed_routes.is_empty());
+    assert_eq!(completed_records, 1);
+    let appended_index = VerifiedIndex::open(&index_root).unwrap();
+    let appended_records = records_for(&appended_index, native_session_id);
+    assert_eq!(
+        result_record_for_call(&appended_records, first_call_id).event_id,
+        first_event_id
+    );
+    let second = result_record_for_call(&appended_records, second_call_id);
+    let second_event_id = second.event_id;
+    assert_eq!(
+        second.content.discovery_exclusion,
+        Some(CoreDiscoveryExclusion::CtxRetrievalDerived)
+    );
+    let (_, _, _, appended_checkpoint) =
+        provider_checkpoint_envelope(&appended_index, native_session_id);
+    assert_current_provider_checkpoint(&appended_checkpoint);
+    drop(appended_index);
+
+    append_event(
+        &path,
+        exec_call_with_command(third_call_id, "ctx search incrementalthirdquery"),
+    );
+    append_event(
+        &path,
+        exact_exec_result(third_call_id, "incrementaluniquethird"),
+    );
+    let restarted_registry = register_tree(&[&sessions]);
+    let (restarted, restart_completed_records) =
+        incremental_refresh(&index_root, &restarted_registry, &appended);
+    assert!(restarted.failed_routes.is_empty());
+    assert_eq!(restart_completed_records, 2);
+    let restarted_index = VerifiedIndex::open(&index_root).unwrap();
+    let restarted_records = records_for(&restarted_index, native_session_id);
+    assert_eq!(
+        result_record_for_call(&restarted_records, first_call_id).event_id,
+        first_event_id
+    );
+    assert_eq!(
+        result_record_for_call(&restarted_records, second_call_id).event_id,
+        second_event_id
+    );
+    for call_id in [first_call_id, second_call_id, third_call_id] {
+        assert_eq!(
+            result_record_for_call(&restarted_records, call_id)
+                .content
+                .discovery_exclusion,
+            Some(CoreDiscoveryExclusion::CtxRetrievalDerived)
+        );
+    }
+}
+
+#[test]
+fn codex_incremental_4097th_terminal_saturates_and_replaces_fail_open() {
+    let temp = tempdir().unwrap();
+    let sessions = temp.path().join("sessions-incremental-terminal-saturation");
+    let index_root = temp.path().join("index-incremental-terminal-saturation");
+    fs::create_dir_all(&sessions).unwrap();
+    let native_session_id = "019fb000-0000-7000-8000-000000000060";
+    let first_call_id = "capacity-terminal-0";
+    let path = session_path(&sessions, native_session_id);
+    let mut events = Vec::with_capacity(4_098);
+    events.push(turn_context());
+    events.push(exec_call_with_command(
+        first_call_id,
+        "ctx search capacityfirstquery",
+    ));
+    events.extend((0..4_096).map(|index| {
+        exact_exec_result(
+            &format!("capacity-terminal-{index}"),
+            "capacityterminalresult",
+        )
+    }));
+    write_session(
+        &sessions,
+        native_session_id,
+        ProviderNativeSessionRelationship::Root,
+        None,
+        events,
+    );
+    let registry = register_tree(&[&sessions]);
+    let cold = refresh_source_backed_generation(&index_root, &registry, writer_options()).unwrap();
+    assert!(cold.failed_routes.is_empty());
+    let cold_index = VerifiedIndex::open(&index_root).unwrap();
+    let cold_records = records_for(&cold_index, native_session_id);
+    let first = result_record_for_call(&cold_records, first_call_id);
+    let first_event_id = first.event_id;
+    assert_eq!(
+        first.content.discovery_exclusion,
+        Some(CoreDiscoveryExclusion::CtxRetrievalDerived)
+    );
+    let (_, _, _, cold_checkpoint) = provider_checkpoint_envelope(&cold_index, native_session_id);
+    assert_current_provider_checkpoint(&cold_checkpoint);
+    drop(cold_index);
+
+    append_event(
+        &path,
+        exact_exec_result("capacity-terminal-4096", "capacityterminaloverflow"),
+    );
+    let (saturated, completed_records) = incremental_refresh(&index_root, &registry, &cold);
+    assert!(saturated.failed_routes.is_empty());
+    let saturated_index = VerifiedIndex::open(&index_root).unwrap();
+    let saturated_records = records_for(&saturated_index, native_session_id);
+    assert!(completed_records > 1);
+    assert_eq!(completed_records, saturated_records.len() as u64);
+    assert_eq!(
+        result_record_for_call(&saturated_records, first_call_id).event_id,
+        first_event_id
+    );
+    assert!(saturated_records.iter().all(|record| {
+        record.content.activity.as_ref().is_none_or(|activity| {
+            activity.result.is_none() || record.content.discovery_exclusion.is_none()
+        })
+    }));
+    let (_, _, _, saturated_checkpoint) =
+        provider_checkpoint_envelope(&saturated_index, native_session_id);
+    assert_current_provider_checkpoint(&saturated_checkpoint);
 }
 
 #[path = "codex_child_independence/lifecycle.rs"]

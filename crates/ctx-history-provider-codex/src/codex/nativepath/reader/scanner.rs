@@ -37,6 +37,9 @@ impl CodexNativeScanner {
         if !checkpoint.direct_append_safe()
             || self.owner.is_some()
             || !self.pending_calls.is_empty()
+            || !self
+                .terminal_authority
+                .restore(checkpoint.terminal_authority())
         {
             return Err(CaptureError::InvalidPayload(
                 "Codex semantic checkpoint cannot resume this scanner".to_owned(),
@@ -52,21 +55,19 @@ impl CodexNativeScanner {
         &mut self,
         input: &mut JsonlFamilyExecutionIo<impl ProviderRuntimeBinding>,
     ) -> Result<bool> {
-        let certified_prefix_end = input.certified_prefix_end();
+        let direct_append = input.is_direct_append_resume();
         while let Some(record) = input.next_record()? {
             if !record.complete() {
                 break;
             }
-            let in_certified_prefix = certified_prefix_end
-                .is_some_and(|prefix_end| record.byte_end_exclusive() <= prefix_end);
             if record.oversized() {
-                self.terminal_authority.exhaust(in_certified_prefix);
+                self.terminal_authority.saturate();
             } else if !record.terminal_nul_padding() {
                 self.terminal_authority
-                    .observe_record(input.record_bytes(record)?, in_certified_prefix);
+                    .observe_record(input.record_bytes(record)?);
             }
         }
-        Ok(certified_prefix_end.is_some() && self.terminal_authority.append_requires_replacement())
+        Ok(direct_append && self.terminal_authority.append_requires_replacement())
     }
 
     pub(in crate::codex::nativepath) fn next_semantic_page(

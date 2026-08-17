@@ -50,11 +50,13 @@ impl CodexNativeScanner {
                 "Codex semantic scan must drain every owned page before finishing".to_owned(),
             ));
         }
+        let terminal_authority = self.terminal_authority.checkpoint();
         let checkpoint = super::super::checkpoint::CodexSemanticCheckpoint::from_state(
             super::super::checkpoint::CodexSemanticCheckpointState {
                 owner: self.owner.as_ref(),
                 local_turn_started: self.local_turn_started,
                 pending_calls: &self.pending_calls,
+                terminal_authority,
             },
         )?;
         Ok(CodexSemanticScan {

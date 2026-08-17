@@ -30,6 +30,11 @@ fn retired_semantic_v2_checkpoint_is_inert_and_append_matches_cold() {
 }
 
 #[test]
+fn retired_semantic_v6_checkpoint_is_inert_and_append_matches_cold() {
+    assert_legacy_provider_checkpoint_is_inert("retiredv6", retired_semantic_v6_checkpoint);
+}
+
+#[test]
 fn malformed_semantic_checkpoint_key_is_inert_and_append_matches_cold() {
     assert_legacy_provider_checkpoint_is_inert("malformedkey", |_| TypedKey::U64(2));
 }
