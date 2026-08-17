@@ -35,6 +35,8 @@ const DAEMON_HEALTH_RESPONSE_MAX_BYTES: u64 = 16 * 1024;
 const DAEMON_UPGRADE_STOP_TIMEOUT: Duration = Duration::from_secs(5);
 const DAEMON_UPGRADE_RESTART_TIMEOUT: Duration = Duration::from_secs(5);
 const DAEMON_UPGRADE_HANDOFF_TOKEN_ENV: &str = "CTX_DAEMON_UPGRADE_HANDOFF_TOKEN";
+const DAEMON_ENABLED_ENV: &str = "CTX_DAEMON_ENABLED";
+const DAEMON_LIFECYCLE_ENV: &str = "CTX_DAEMON_LIFECYCLE";
 const DAEMON_MODE_ENV: &str = "CTX_DAEMON_MODE";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -273,7 +275,7 @@ fn request_daemon_autostart(
             "hosted_uninstall_active",
         ));
     }
-    if config.enabled {
+    if config.lifecycle.starts_implicitly() {
         if let Some(deferral) = host.defer_restart_for_upgrade_handoff(data_root, trigger)? {
             return Ok(DaemonAutostartRequest::Deferred(deferral));
         }
@@ -281,7 +283,7 @@ fn request_daemon_autostart(
     // Suppression disables spawning, not reuse. Test harnesses and managed
     // callers can intentionally provide an already-owned daemon while
     // forbidding any additional detached process.
-    if config.enabled && daemon_lock_is_active(data_root) {
+    if config.lifecycle.starts_implicitly() && daemon_lock_is_active(data_root) {
         let executable = daemon_autostart_exe()?;
         if daemon_lock_matches_executable(data_root, &executable)? {
             return Ok(DaemonAutostartRequest::Existing(
@@ -787,7 +789,18 @@ fn daemon_applied_config_matches(status: &Value, expected: &DaemonConfigSnapshot
     else {
         return false;
     };
-    applied.get("daemon_enabled").and_then(Value::as_bool) == Some(expected.enabled)
+    let lifecycle_matches = applied
+        .get("daemon_lifecycle")
+        .and_then(Value::as_str)
+        .map_or_else(
+            || {
+                !expected.lifecycle.is_on_demand()
+                    && applied.get("daemon_enabled").and_then(Value::as_bool)
+                        == Some(expected.lifecycle.starts_implicitly())
+            },
+            |lifecycle| lifecycle == expected.lifecycle.as_str(),
+        );
+    lifecycle_matches
         && applied.get("daemon_mode").and_then(Value::as_str) == Some(expected.mode.as_str())
         && applied.get("semantic_enabled").and_then(Value::as_bool)
             == Some(expected.semantic_enabled)
@@ -1048,8 +1061,10 @@ pub fn configured_daemon_autostart_command(
     handoff_token: Option<&str>,
 ) -> io::Result<NormalizedLaunch> {
     let mut overrides = BTreeMap::new();
-    if let Some(mode) = env::var_os(DAEMON_MODE_ENV) {
-        overrides.insert(OsString::from(DAEMON_MODE_ENV), mode);
+    for name in [DAEMON_ENABLED_ENV, DAEMON_LIFECYCLE_ENV, DAEMON_MODE_ENV] {
+        if let Some(value) = env::var_os(name) {
+            overrides.insert(OsString::from(name), value);
+        }
     }
     let loop_interval_seconds =
         crate::supervisor::persisted_supervisor_loop_interval_seconds(data_root).or_else(|| {
@@ -1066,14 +1081,12 @@ pub fn configured_daemon_autostart_command(
 }
 
 pub fn daemon_restart_allowed(host: &dyn DaemonApplicationHost, data_root: &Path) -> Result<bool> {
-    Ok(daemon_autostart_allowed(
-        data_root,
-        &host.daemon_config(data_root)?,
-    ))
+    let config = host.daemon_config(data_root)?;
+    Ok(config.lifecycle.is_persistent() && daemon_autostart_allowed(data_root, &config))
 }
 
 pub fn daemon_autostart_allowed(_data_root: &Path, config: &DaemonConfigSnapshot) -> bool {
-    config.enabled && !semantic_env_flag(DAEMON_AUTOSTART_OFF_ENV)
+    config.lifecycle.starts_implicitly() && !semantic_env_flag(DAEMON_AUTOSTART_OFF_ENV)
 }
 
 pub fn daemon_restart_trigger(data_root: &Path) -> Option<DaemonTrigger> {

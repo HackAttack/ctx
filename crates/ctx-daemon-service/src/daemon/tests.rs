@@ -840,6 +840,7 @@ fn due_dirty_route_wakes_the_scheduler_immediately() {
         &runtime,
         Some(&coordinator),
         now + StdDuration::from_secs(30),
+        None,
         now,
     );
 
@@ -870,6 +871,7 @@ fn pending_source_refresh_wait_ignores_unreachable_work_until_retry() {
         &runtime,
         Some(&coordinator),
         now + StdDuration::from_secs(30),
+        None,
         now,
     );
 
@@ -931,15 +933,15 @@ fn semantic_runtime_is_requested_only_for_supported_full_daemons() {
         ..Default::default()
     };
 
-    assert!(daemon_semantic_runtime_requested(&config, true));
-    assert!(!daemon_semantic_runtime_requested(&config, false));
+    assert!(daemon_semantic_runtime_requested(&config, true, true));
+    assert!(!daemon_semantic_runtime_requested(&config, false, true));
 
     config.semantic_enabled = false;
-    assert!(!daemon_semantic_runtime_requested(&config, true));
+    assert!(!daemon_semantic_runtime_requested(&config, true, true));
 
     config.semantic_enabled = true;
     config.daemon.mode = DaemonMode::SourceRefreshOnly;
-    assert!(!daemon_semantic_runtime_requested(&config, true));
+    assert!(!daemon_semantic_runtime_requested(&config, true, true));
 }
 
 #[test]
@@ -953,7 +955,7 @@ fn source_refresh_only_scheduler_runs_no_unrelated_job() -> Result<()> {
     let mut runtime = DaemonRuntime {
         config: AppConfig {
             daemon: crate::DaemonProductConfig {
-                enabled: true,
+                lifecycle: crate::DaemonLifecycle::Persistent,
                 mode: DaemonMode::SourceRefreshOnly,
             },
             semantic_enabled: true,

@@ -21,7 +21,7 @@ mod lifecycle;
 mod status;
 mod supervisor;
 
-pub use control::{DaemonEnabledUpdate, DaemonEnabledUpdateError};
+pub use control::{DaemonLifecycleUpdate, DaemonLifecycleUpdateError};
 pub use host::{
     DaemonHostRunError, DaemonHostRunRequest, DaemonHostStartMode, DaemonObservedOperation,
     DAEMON_BACKGROUND_CHILD_ENV,
@@ -61,7 +61,7 @@ pub trait DaemonApplicationHost: Send + Sync {
     ) -> Result<Option<Value>>;
     fn home_dir(&self) -> Option<PathBuf>;
     fn run_daemon_service(&self, data_root: &Path, request: DaemonHostRunRequest) -> Result<()>;
-    fn set_daemon_enabled(&self, data_root: &Path, enabled: bool) -> Result<()>;
+    fn set_daemon_lifecycle(&self, data_root: &Path, lifecycle: DaemonLifecycle) -> Result<()>;
     fn request_daemon_shutdown(
         &self,
         data_root: &Path,
@@ -89,9 +89,48 @@ pub struct DaemonEndpointObservation {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DaemonConfigSnapshot {
-    pub enabled: bool,
+    pub lifecycle: DaemonLifecycle,
     pub mode: DaemonMode,
     pub semantic_enabled: bool,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum DaemonLifecycle {
+    #[default]
+    Persistent,
+    OnDemand,
+    Disabled,
+}
+
+impl DaemonLifecycle {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Persistent => "persistent",
+            Self::OnDemand => "on-demand",
+            Self::Disabled => "disabled",
+        }
+    }
+
+    pub const fn starts_implicitly(self) -> bool {
+        !matches!(self, Self::Disabled)
+    }
+
+    pub const fn is_persistent(self) -> bool {
+        matches!(self, Self::Persistent)
+    }
+
+    pub const fn is_on_demand(self) -> bool {
+        matches!(self, Self::OnDemand)
+    }
+
+    pub fn parse(value: &str) -> Option<Self> {
+        match value.to_ascii_lowercase().as_str() {
+            "persistent" => Some(Self::Persistent),
+            "on-demand" => Some(Self::OnDemand),
+            "disabled" => Some(Self::Disabled),
+            _ => None,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -270,12 +309,12 @@ impl<'a> DaemonApplication<'a> {
         host::observe_daemon_operation(self.host, data_root, operation, succeeded, elapsed);
     }
 
-    pub fn update_daemon_enabled(
+    pub fn update_daemon_lifecycle(
         &self,
         data_root: &Path,
-        enabled: bool,
-    ) -> std::result::Result<DaemonEnabledUpdate, DaemonEnabledUpdateError> {
-        control::update_daemon_enabled(self.host, data_root, enabled)
+        lifecycle: DaemonLifecycle,
+    ) -> std::result::Result<DaemonLifecycleUpdate, DaemonLifecycleUpdateError> {
+        control::update_daemon_lifecycle(self.host, data_root, lifecycle)
     }
 
     pub fn prepare_daemon_status<'b>(
@@ -331,7 +370,7 @@ impl DaemonApplicationHost for TestHost {
 
     fn daemon_config(&self, _data_root: &Path) -> Result<DaemonConfigSnapshot> {
         Ok(DaemonConfigSnapshot {
-            enabled: true,
+            lifecycle: DaemonLifecycle::Persistent,
             mode: DaemonMode::Full,
             semantic_enabled: true,
         })
@@ -363,7 +402,7 @@ impl DaemonApplicationHost for TestHost {
         Ok(())
     }
 
-    fn set_daemon_enabled(&self, _data_root: &Path, _enabled: bool) -> Result<()> {
+    fn set_daemon_lifecycle(&self, _data_root: &Path, _lifecycle: DaemonLifecycle) -> Result<()> {
         Ok(())
     }
 

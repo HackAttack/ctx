@@ -119,6 +119,8 @@ impl CoreRefreshEngine {
                 .map(AdmissionResponseBarrier::new)
         })
         .flatten();
+        self.request_activity_generation
+            .fetch_add(1, Ordering::Release);
         Ok(RefreshAdmission::new(
             RefreshStatus::from_schema_v1_fields(response),
             response_barrier,

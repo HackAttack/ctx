@@ -32,18 +32,19 @@ pub(crate) fn run_setup(
 ) -> Result<()> {
     let semantic_supported = semantic_query_service_supported();
     let suppression_reason = daemon_autostart_suppression_reason();
-    if args.semantic && (!config.daemon.enabled || args.no_daemon) {
+    if args.semantic && (!config.daemon.is_persistent() || args.no_daemon) {
         bail!(
-            "`ctx setup --semantic` requires daemon maintenance. Enable [daemon] enabled = true and rerun without --no-daemon"
+            "`ctx setup --semantic` requires daemon lifecycle `persistent`; rerun without --no-daemon"
         );
     }
     if args.semantic {
         CliHistoryConfigAdapter::new(&data_root, config).set_semantic_search_enabled(true)?;
     }
     let semantic_enabled = config.semantic_search_enabled();
-    if semantic_enabled && semantic_supported && (!config.daemon.enabled || args.no_daemon) {
+    if semantic_enabled && semantic_supported && (!config.daemon.is_persistent() || args.no_daemon)
+    {
         bail!(
-            "local semantic search requires the ctx daemon. Set [daemon] enabled = true, remove --no-daemon, or set [search] semantic = false"
+            "local semantic search requires daemon lifecycle `persistent`; remove --no-daemon or set [search] semantic = false"
         );
     }
 
@@ -51,10 +52,10 @@ pub(crate) fn run_setup(
 
     let json_output = args.format.is_json();
     let daemon_autostart_requested =
-        config.daemon.enabled && !args.no_daemon && suppression_reason.is_none();
+        config.daemon.starts_implicitly() && !args.no_daemon && suppression_reason.is_none();
     let daemon_autostart_reason = if args.no_daemon {
         Some("explicit_opt_out")
-    } else if !config.daemon.enabled {
+    } else if !config.daemon.starts_implicitly() {
         Some("daemon_disabled")
     } else {
         suppression_reason
@@ -72,7 +73,7 @@ pub(crate) fn run_setup(
         let mut progress = setup_progress_reporter(ui, args.progress, json_output, quiet);
         request_source_refresh(
             &data_root,
-            config.daemon.enabled,
+            config.daemon.starts_implicitly(),
             args.no_daemon,
             args.wait,
             false,
@@ -85,7 +86,7 @@ pub(crate) fn run_setup(
     // Observe the final owner without re-entering supervisor/startup mutation,
     // then replace only the daemon report so unrelated source fields retain
     // their original admission boundary.
-    if daemon_autostart_requested {
+    if daemon_autostart_requested && config.daemon.is_persistent() {
         let (observed_source, observed_handoff) = observe_setup_output_daemon(&data_root, config)?;
         source.report["daemon"] = observed_source.report["daemon"].clone();
         daemon_handoff = Some(observed_handoff);
@@ -122,6 +123,7 @@ pub(crate) fn run_setup(
         daemon_autostart_json(
             daemon_autostart_requested,
             daemon_autostart_reason,
+            config.daemon.is_persistent(),
             daemon_handoff.as_ref(),
             &supervisor,
         ),
@@ -146,6 +148,7 @@ pub(crate) fn run_setup(
                 requested: daemon_autostart_requested,
                 reason: daemon_autostart_reason,
                 started: daemon_handoff.is_some(),
+                persistent: config.daemon.is_persistent(),
                 persistent_supervisor_verified: supervisor_persistently_verified(&supervisor),
             },
         );
@@ -356,6 +359,7 @@ fn refresh_request_failure(
 fn daemon_autostart_json(
     requested: bool,
     reason: Option<&str>,
+    persistent: bool,
     startup: Option<&DaemonSetupHandoff>,
     supervisor: &Value,
 ) -> Value {
@@ -363,15 +367,15 @@ fn daemon_autostart_json(
     match startup {
         Some(startup) => {
             json!({
-                "status": if persistently_supervised { "verified" } else { "degraded" },
-                "reason": if persistently_supervised {
+                "status": if !persistent || persistently_supervised { "verified" } else { "degraded" },
+                "reason": if !persistent || persistently_supervised {
                     Value::Null
                 } else {
                     Value::String("native_supervisor_unavailable".to_owned())
                 },
                 "requested": requested,
                 "pid": startup.handoff.pid,
-                "persistent": true,
+                "persistent": persistent,
                 "limitation": Value::Null,
                 "supervisor": supervisor,
                 "status_command": "ctx daemon status",
@@ -511,7 +515,7 @@ mod tests {
                 heartbeat_at_ms: 1,
             },
         };
-        let autostart = daemon_autostart_json(true, None, Some(&startup), &supervisor);
+        let autostart = daemon_autostart_json(true, None, true, Some(&startup), &supervisor);
         assert_eq!(autostart["status"], "degraded");
         assert_eq!(autostart["persistent"], true);
         assert!(autostart["limitation"].is_null());
@@ -536,10 +540,31 @@ mod tests {
                 heartbeat_at_ms: 1,
             },
         };
-        let autostart = daemon_autostart_json(true, None, Some(&startup), &supervisor);
+        let autostart = daemon_autostart_json(true, None, true, Some(&startup), &supervisor);
         assert_eq!(autostart["status"], "degraded");
         assert_eq!(autostart["persistent"], true);
         assert!(autostart["limitation"].is_null());
+    }
+
+    #[test]
+    fn on_demand_setup_reports_a_verified_finite_daemon() {
+        let supervisor = json!({
+            "kind": "disabled",
+            "status": "disabled",
+            "registration_verified": false,
+            "live_owner_verified": false,
+        });
+        let startup = DaemonSetupHandoff {
+            handoff: DaemonHandoff {
+                pid: 42,
+                heartbeat_at_ms: 1,
+            },
+        };
+        let autostart = daemon_autostart_json(true, None, false, Some(&startup), &supervisor);
+        assert_eq!(autostart["status"], "verified");
+        assert!(autostart["reason"].is_null());
+        assert_eq!(autostart["persistent"], false);
+        assert_eq!(autostart["pid"], 42);
     }
 
     #[test]

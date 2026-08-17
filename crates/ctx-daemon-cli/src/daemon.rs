@@ -9,13 +9,15 @@ use serde_json::json;
 
 use crate::{
     config::{AppConfig, CONFIG_FILE},
-    DaemonArgs, DaemonCommand, DaemonDisableArgs, DaemonRunArgs, DaemonStartModeArg, FormatArgs,
+    DaemonArgs, DaemonCommand, DaemonDisableArgs, DaemonLifecycleArgs, DaemonRunArgs,
+    DaemonStartModeArg, FormatArgs,
 };
 
 use super::{
     daemon_status::{
         daemon_report_failure_message, render_daemon_disable_receipt, render_daemon_enable_receipt,
-        render_daemon_prepare_uninstall_receipt, render_daemon_status_human, DaemonStatusView,
+        render_daemon_on_demand_receipt, render_daemon_prepare_uninstall_receipt,
+        render_daemon_status_human, DaemonStatusView,
     },
     paths_status::daemon_report_with_disabled_status,
 };

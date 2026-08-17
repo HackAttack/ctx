@@ -4,7 +4,7 @@ use super::*;
 
 fn application_config(config: &AppConfig<'_>) -> ctx_daemon_application::DaemonConfigSnapshot {
     ctx_daemon_application::DaemonConfigSnapshot {
-        enabled: config.daemon.enabled,
+        lifecycle: super::super::daemon_supervisor::daemon_lifecycle(config.daemon.lifecycle),
         mode: super::super::daemon_supervisor::daemon_mode(config.daemon.mode),
         semantic_enabled: config.semantic_search_enabled(),
     }
@@ -32,7 +32,9 @@ pub fn maybe_autostart_daemon(
         if application.daemon_start_is_fenced() {
             return;
         }
-        if daemon_autostart_suppression_reason().is_none() {
+        if config.daemon.lifecycle.is_persistent()
+            && daemon_autostart_suppression_reason().is_none()
+        {
             match super::super::daemon_supervisor::ensure_daemon_supervisor(application, data_root)
             {
                 Ok(_) => {}
@@ -66,7 +68,9 @@ pub fn autostart_daemon_for_setup_and_wait(
                 "ctx daemon start was suppressed (hosted_uninstall_active); retry after it clears or run `ctx setup --no-daemon`"
             ));
         }
-        if daemon_autostart_suppression_reason().is_none() {
+        if config.daemon.lifecycle.is_persistent()
+            && daemon_autostart_suppression_reason().is_none()
+        {
             super::super::daemon_supervisor::ensure_daemon_supervisor(application, data_root)
                 .context("establish ctx daemon supervision")?;
         }

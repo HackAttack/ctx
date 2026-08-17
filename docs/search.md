@@ -199,8 +199,11 @@ remains lexical-safe in those cases.
 ## Refresh and freshness
 
 `--refresh background` is the default. Search health-checks and, when needed,
-wakes or recovers the default-enabled persistent daemon, then serves the latest
+wakes or recovers the default `persistent` daemon, then serves the latest
 committed lexical generation without waiting for optional semantic indexing.
+With lifecycle `on-demand`, it starts the same daemon coordinator, waits only
+for durable refresh admission, serves the current generation, and lets the
+daemon exit after publishing the request.
 The daemon owns bounded provider discovery, source refresh, immutable
 candidate-generation construction, publication, and opted-in semantic catch-up.
 The query process never becomes a foreground history writer.
@@ -212,10 +215,12 @@ generation. Enabled auto-refresh history-source plugins run through the same
 daemon-owned, bounded Core refresh route; explicit-only sources still require
 an explicit import.
 
-`--refresh wait` wakes the daemon and waits for the requested source frontier
+`--refresh wait` starts or wakes the daemon and waits for the requested source frontier
 and lexical-generation receipt. It fails with a typed source, lag, or system
 error when that receipt cannot publish; it does not fall back to a foreground
-importer or wait for complete semantic coverage.
+importer or wait for complete semantic coverage. Lifecycle `disabled` forbids
+this implicit start, so use `on-demand` for the old refresh-when-search-runs
+experience.
 
 `--refresh off` queries the currently published generations without provider
 discovery, plugin execution, refresh scheduling, semantic catch-up, or model

@@ -366,7 +366,7 @@ pub(crate) fn run_cli() -> Result<()> {
                 .expect("search has a telemetry draft")
                 .search_mut(),
             ctx_history_cli::HistoryCliConfig {
-                daemon_enabled: config.daemon.enabled,
+                daemon_enabled: config.daemon.is_persistent(),
                 semantic_search_enabled: config.semantic_search_enabled(),
                 local_usage_enabled: config.local_usage.enabled,
             },
@@ -591,6 +591,7 @@ fn command_json_output(command: &CommandRoot) -> bool {
         CommandRoot::Daemon(args) => match &args.command {
             DaemonCommand::Run(args) => args.format.is_json(),
             DaemonCommand::Status(args) | DaemonCommand::Enable(args) => args.format.is_json(),
+            DaemonCommand::Lifecycle(args) => args.format.is_json(),
             DaemonCommand::Disable(args) => args.format.is_json(),
         },
         CommandRoot::Upgrade(args) => args.json_output(),
@@ -789,6 +790,12 @@ pub(crate) fn command_operation_descriptor(command: &CommandRoot) -> OperationDe
             DaemonCommand::Run(_) => CliOperation::DaemonRun,
             DaemonCommand::Status(_) => CliOperation::DaemonStatus,
             DaemonCommand::Enable(_) => CliOperation::DaemonEnable,
+            DaemonCommand::Lifecycle(args)
+                if matches!(args.lifecycle, crate::cli::DaemonLifecycleArg::Disabled) =>
+            {
+                CliOperation::DaemonDisable
+            }
+            DaemonCommand::Lifecycle(_) => CliOperation::DaemonEnable,
             DaemonCommand::Disable(_) => CliOperation::DaemonDisable,
         },
         CommandRoot::Upgrade(args) => CliOperation::Upgrade {

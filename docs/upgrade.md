@@ -23,13 +23,12 @@ sidecars are treated as unmanaged and will not self-upgrade.
 warns when another binary shadows the managed install.
 
 Managed automatic upgrades are on by default (`upgrade.auto = "apply"`).
-Signed release metadata must also allow automatic application. The enabled
-long-lived daemon is the sole authority that checks cadence/backoff, downloads,
+Signed release metadata must also allow automatic application. The persistent
+daemon is the sole authority that checks cadence/backoff, downloads,
 stages, and initiates an automatic replacement. Foreground commands and MCP
 never schedule an upgrade or spawn a background upgrade process.
-Machine-readable foreground commands also do not start or nudge the daemon.
-When `daemon.enabled = false`, there is no automatic network check, download,
-or apply; explicit `ctx upgrade` remains available.
+With daemon lifecycle `on-demand` or `disabled`, there is no automatic network
+check, download, or apply; explicit `ctx upgrade` remains available.
 
 Use `CTX_UPGRADE_AUTO=off` for a process-level opt-out. For a persistent opt-out,
 run `ctx upgrade disable`; it writes `upgrade.auto = "off"` in `config.toml`.

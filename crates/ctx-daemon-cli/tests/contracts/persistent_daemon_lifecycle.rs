@@ -452,7 +452,8 @@ mod native {
         assert_eq!(disabled_status["running"], false, "{disabled_status:#}");
         let disabled_config = fs::read_to_string(harness.root().join("config.toml")).unwrap();
         assert!(
-            disabled_config.contains("[daemon]") && disabled_config.contains("enabled = false"),
+            disabled_config.contains("[daemon]\nlifecycle = \"disabled\"")
+                && !disabled_config.contains("[daemon]\nenabled ="),
             "disable was not durable: {disabled_config}"
         );
 
@@ -482,6 +483,32 @@ mod native {
             false,
             "MCP must not undo durable daemon disable"
         );
+        let disabled_background =
+            harness.search("persistent daemon passive append oracle", "background");
+        assert_search_result(
+            &disabled_background,
+            "persistent daemon passive append oracle",
+            &append_generation,
+        );
+        let disabled_wait = harness.output(&[
+            "search",
+            "persistent daemon passive append oracle",
+            "--provider",
+            "codex",
+            "--refresh",
+            "wait",
+            "--format=json",
+        ]);
+        assert!(
+            !disabled_wait.status.success(),
+            "disabled wait refresh unexpectedly succeeded: {}",
+            String::from_utf8_lossy(&disabled_wait.stdout)
+        );
+        assert_eq!(
+            harness.daemon_status()["running"],
+            false,
+            "search refresh must not undo durable daemon disable"
+        );
 
         let enabled = harness.json(&["daemon", "enable", "--format=json"]);
         assert_eq!(enabled["daemon_enabled"], true, "{enabled:#}");
@@ -491,7 +518,8 @@ mod native {
         assert!(process_is_running(enabled_pid), "{enabled:#}");
         let enabled_config = fs::read_to_string(harness.root().join("config.toml")).unwrap();
         assert!(
-            enabled_config.contains("enabled = true"),
+            enabled_config.contains("[daemon]\nlifecycle = \"persistent\"")
+                && !enabled_config.contains("[daemon]\nenabled ="),
             "enable was not durable: {enabled_config}"
         );
 
@@ -579,6 +607,176 @@ mod native {
             "{dedup_status:#}"
         );
         assert_single_daemon_process(&harness, dedup_pid);
+    }
+
+    #[test]
+    fn on_demand_search_refreshes_through_a_finite_daemon() {
+        let _serial = TEST_SERIAL
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let harness = Harness::new();
+        let reduced = success_json(
+            harness
+                .std_command()
+                .env("CTX_DAEMON_LIFECYCLE", "on-demand")
+                .args(["daemon", "lifecycle", "persistent", "--format=json"])
+                .output()
+                .expect("run lifecycle command with reducing environment"),
+            &["daemon", "lifecycle", "persistent", "--format=json"],
+        );
+        assert_eq!(reduced["daemon_lifecycle"], "on-demand", "{reduced:#}");
+        assert_eq!(reduced["running"], false, "{reduced:#}");
+        assert_eq!(reduced["persistent"], false, "{reduced:#}");
+
+        let lifecycle = harness.json(&["daemon", "lifecycle", "on-demand", "--format=json"]);
+        assert_eq!(lifecycle["daemon_lifecycle"], "on-demand", "{lifecycle:#}");
+        assert_eq!(lifecycle["daemon_enabled"], true, "{lifecycle:#}");
+        assert_eq!(lifecycle["running"], false, "{lifecycle:#}");
+        assert_eq!(lifecycle["persistent"], false, "{lifecycle:#}");
+
+        let lexical_root = harness.root().join("search/lexical");
+        fs::create_dir_all(&lexical_root).unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt as _;
+
+            fs::set_permissions(&lexical_root, fs::Permissions::from_mode(0o700)).unwrap();
+        }
+        let source = write_codex_session(harness.home(), "on demand setup refresh oracle");
+        let setup = harness.json(&["setup", "--wait", "--format=json", "--progress", "none"]);
+        assert_eq!(setup["mode"], "ready", "{setup:#}");
+        assert_eq!(setup["daemon_autostart"]["status"], "verified", "{setup:#}");
+        assert_eq!(setup["daemon_autostart"]["persistent"], false, "{setup:#}");
+        assert!(setup["daemon_autostart"]["reason"].is_null(), "{setup:#}");
+        let setup_generation = setup["lexical"]["generation_id"]
+            .as_str()
+            .expect("on-demand setup should publish a Core generation");
+        wait_for_no_daemon(&harness);
+
+        append_codex_message(
+            &source,
+            "2026-08-16T18:30:00.000Z",
+            "assistant",
+            "on demand import refresh oracle",
+        );
+        let imported = harness.json(&["import", "--all", "--format=json", "--progress", "none"]);
+        assert_eq!(imported["outcome"], "success", "{imported:#}");
+        let import_generation = imported["sources"][0]["published_generation"]
+            .as_str()
+            .expect("on-demand import should publish a Core generation");
+        assert_ne!(import_generation, setup_generation, "{imported:#}");
+        wait_for_no_daemon(&harness);
+        let imported_search = harness.search("on demand import refresh oracle", "off");
+        assert_search_result(
+            &imported_search,
+            "on demand import refresh oracle",
+            import_generation,
+        );
+
+        append_codex_message(
+            &source,
+            "2026-08-16T18:45:00.000Z",
+            "assistant",
+            "on demand wait refresh oracle",
+        );
+        let searched = harness.search("on demand wait refresh oracle", "wait");
+        let generation = searched["retrieval"]["generation_id"]
+            .as_str()
+            .expect("on-demand wait should publish a Core generation");
+        assert_search_result(&searched, "on demand wait refresh oracle", generation);
+
+        wait_for_no_daemon(&harness);
+
+        let idle = harness.daemon_status();
+        assert_eq!(idle["lifecycle"], "on-demand", "{idle:#}");
+        assert_eq!(idle["running"], false, "{idle:#}");
+        let config = fs::read_to_string(harness.root().join("config.toml")).unwrap();
+        assert!(config.contains("lifecycle = \"on-demand\""), "{config}");
+        assert!(!config.contains("[daemon]\nenabled ="), "{config}");
+
+        append_codex_message(
+            &source,
+            "2026-08-16T19:00:00.000Z",
+            "assistant",
+            "on demand background refresh oracle",
+        );
+        let background = harness.search("on demand background refresh oracle", "background");
+        assert_eq!(background["retrieval"]["index"], "core", "{background:#}");
+        let background_job = wait_for_job(&harness, "on-demand background publication", |job| {
+            (job["request_state"] == "published"
+                && job["published_generation"]
+                    .as_str()
+                    .is_some_and(|published| published != generation))
+            .then_some(job)
+        });
+        let background_generation = background_job["published_generation"]
+            .as_str()
+            .expect("background refresh generation");
+        wait_for_no_daemon(&harness);
+        let read_only = harness.search("on demand background refresh oracle", "off");
+        assert_search_result(
+            &read_only,
+            "on demand background refresh oracle",
+            background_generation,
+        );
+        assert!(
+            read_lock(harness.root())
+                .as_ref()
+                .and_then(|lock| json_u32(lock, "pid"))
+                .is_none_or(|pid| !process_is_running(pid)),
+            "--refresh off started an on-demand daemon"
+        );
+
+        let mut mcp = harness.mcp_session();
+        let initialized = mcp.request(json!({
+            "jsonrpc": "2.0",
+            "id": "on-demand-init",
+            "method": "initialize",
+            "params": {
+                "protocolVersion": "2025-11-25",
+                "capabilities": {},
+                "clientInfo": { "name": "on-demand-no-start-test", "version": "0" }
+            }
+        }));
+        assert_eq!(initialized["result"]["serverInfo"]["name"], "ctx");
+        assert!(
+            read_lock(harness.root())
+                .as_ref()
+                .and_then(|lock| json_u32(lock, "pid"))
+                .is_none_or(|pid| !process_is_running(pid)),
+            "MCP startup started an on-demand daemon"
+        );
+
+        let mcp_search = mcp.request(json!({
+            "jsonrpc": "2.0",
+            "id": "on-demand-search",
+            "method": "tools/call",
+            "params": {
+                "name": "search",
+                "arguments": {
+                    "query": "on demand background refresh oracle",
+                    "provider": "codex",
+                    "limit": 5
+                }
+            }
+        }));
+        assert!(
+            mcp_search.get("error").is_none()
+                && mcp_search["result"]["isError"].as_bool() != Some(true),
+            "{mcp_search:#}"
+        );
+        assert_search_result(
+            &mcp_search["result"]["structuredContent"],
+            "on demand background refresh oracle",
+            background_generation,
+        );
+        assert!(
+            read_lock(harness.root())
+                .as_ref()
+                .and_then(|lock| json_u32(lock, "pid"))
+                .is_none_or(|pid| !process_is_running(pid)),
+            "RefreshArg::Off MCP search started an on-demand daemon"
+        );
     }
 
     #[test]
@@ -1088,6 +1286,21 @@ mod native {
                 "daemon did not become ready after previous pid {previous_pid:?}: {last:#}"
             );
             thread::sleep(Duration::from_millis(25));
+        }
+    }
+
+    fn wait_for_no_daemon(harness: &Harness) {
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            let running = read_lock(harness.root())
+                .as_ref()
+                .and_then(|lock| json_u32(lock, "pid"))
+                .is_some_and(process_is_running);
+            if !running {
+                return;
+            }
+            assert!(Instant::now() < deadline, "on-demand owner remained live");
+            thread::sleep(Duration::from_millis(20));
         }
     }
 

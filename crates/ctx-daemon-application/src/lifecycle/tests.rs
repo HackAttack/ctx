@@ -160,7 +160,7 @@ fn autostart_child_detaches_from_the_invoking_terminal_session() -> Result<()> {
 
 fn test_config() -> DaemonConfigSnapshot {
     DaemonConfigSnapshot {
-        enabled: true,
+        lifecycle: DaemonLifecycle::Persistent,
         mode: DaemonMode::Full,
         semantic_enabled: true,
     }
@@ -188,7 +188,8 @@ fn running_status(
         "config_reload": {
             "status": "applied",
             "applied": {
-                "daemon_enabled": expected.enabled,
+                "daemon_lifecycle": expected.lifecycle.as_str(),
+                "daemon_enabled": expected.lifecycle.starts_implicitly(),
                 "daemon_mode": expected.mode.as_str(),
                 "semantic_enabled": expected.semantic_enabled,
             },
@@ -342,7 +343,7 @@ fn status_owner_start_time_and_exact_config_are_required_before_probe() {
     wrong_start["started_at_ms"] = json!(owner.started_at_ms + 1);
     invalid_statuses.push(wrong_start);
     for (field, value) in [
-        ("daemon_enabled", json!(!expected.enabled)),
+        ("daemon_lifecycle", json!("disabled")),
         ("daemon_mode", json!(DaemonMode::SourceRefreshOnly.as_str())),
         ("semantic_enabled", json!(!expected.semantic_enabled)),
     ] {

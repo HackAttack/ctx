@@ -106,7 +106,7 @@ mod unix {
         fs::write(
             root.join("config.toml"),
             format!(
-                "[analytics]\nenabled = false\n\n[upgrade]\nauto = \"off\"\n\n[daemon]\nenabled = true\nmode = \"{daemon_mode}\"\n\n[search]\nsemantic = {semantic}\n"
+                "[analytics]\nenabled = false\n\n[upgrade]\nauto = \"off\"\n\n[daemon]\nlifecycle = \"persistent\"\nmode = \"{daemon_mode}\"\n\n[search]\nsemantic = {semantic}\n"
             ),
         )
         .unwrap();
@@ -261,6 +261,15 @@ mod unix {
         json_output(&mut command)["daemon"].clone()
     }
 
+    fn stop_current_daemon(temp: &tempfile::TempDir, binary: &Path) {
+        let mut command = ctx_from_binary(temp, binary);
+        command
+            .args(["daemon", "disable", "--format=json"])
+            .env_remove("CTX_DAEMON_AUTOSTART_OFF");
+        let disabled = json_output(&mut command);
+        assert_eq!(disabled["running"], false, "{disabled:#}");
+    }
+
     #[test]
     fn semantic_opt_in_live_activates_the_existing_daemon() {
         let _serial = serial_daemon_test();
@@ -273,6 +282,7 @@ mod unix {
         wait_for_disabled_cycle(&temp, original_pid);
 
         write_config(&temp, true);
+        wait_for_active_cycle(&temp, original_pid);
         let setup = run_supported_setup(&temp, &binary);
         assert_eq!(setup["schema_version"], 2);
         assert_eq!(setup["daemon_autostart"]["status"], "degraded");
@@ -349,6 +359,15 @@ mod unix {
         });
 
         write_mode_config(&temp, "full", true);
+        wait_for("full-mode live reload", || {
+            daemon_lifecycle(&temp).is_some_and(|lifecycle| {
+                lifecycle["pid"] == original_pid
+                    && lifecycle["semantic_runtime_active"] == true
+                    && lifecycle["config_reload"]["status"] == "applied"
+                    && lifecycle["config_reload"]["applied"]["daemon_mode"] == "full"
+                    && data_root(&temp).join("daemon/query-endpoint.json").is_file()
+            })
+        });
         let _setup = run_supported_setup(&temp, &binary);
         let full = daemon_lifecycle(&temp).expect("full-mode lifecycle");
         assert_eq!(full["pid"], original_pid);
@@ -365,6 +384,16 @@ mod unix {
         daemon.assert_running();
 
         write_mode_config(&temp, "source-refresh-only", true);
+        wait_for("source-refresh-only live reload", || {
+            daemon_lifecycle(&temp).is_some_and(|lifecycle| {
+                lifecycle["pid"] == original_pid
+                    && lifecycle["semantic_runtime_active"] == false
+                    && lifecycle["config_reload"]["status"] == "applied"
+                    && lifecycle["config_reload"]["applied"]["daemon_mode"]
+                        == "source-refresh-only"
+                    && !data_root(&temp).join("daemon/query-endpoint.json").exists()
+            })
+        });
         let _setup = run_supported_setup(&temp, &binary);
         let source_only = daemon_lifecycle(&temp).expect("source-refresh-only lifecycle");
         assert_eq!(source_only["pid"], original_pid);
@@ -392,16 +421,21 @@ mod unix {
         let binary = copied_ctx_binary(&temp);
         write_config(&temp, false);
         initialize_store(&temp, &binary);
-        let daemon = spawn_daemon(&temp, &binary, 120);
-        wait_for_disabled_cycle(&temp, daemon.pid());
+        let mut daemon = spawn_daemon(&temp, &binary, 120);
+        let original_pid = daemon.pid();
+        wait_for_disabled_cycle(&temp, original_pid);
 
         write_config(&temp, true);
         let setup = run_supported_setup(&temp, &binary);
         assert_eq!(setup["daemon_autostart"]["status"], "degraded");
-        assert_eq!(setup["daemon_autostart"]["pid"], daemon.pid());
+        let ready_pid = setup["daemon_autostart"]["pid"]
+            .as_u64()
+            .and_then(|pid| u32::try_from(pid).ok())
+            .expect("setup ready daemon pid");
         let status = daemon_status(&temp, &binary);
 
         assert_eq!(status["running"], true);
+        assert_eq!(status["pid"], ready_pid);
         assert_eq!(status["semantic_runtime_active"], true);
         assert_eq!(status["config_reload"]["status"], "applied");
         assert_eq!(status["config_reload"]["out_of_sync"], false);
@@ -415,6 +449,11 @@ mod unix {
         assert!(data_root(&temp)
             .join("daemon/query-endpoint.json")
             .is_file());
+        stop_current_daemon(&temp, &binary);
+        assert!(
+            daemon.wait_for_exit().success(),
+            "setup turnover must stop the original daemon cleanly (original={original_pid}, ready={ready_pid})"
+        );
     }
 
     #[test]

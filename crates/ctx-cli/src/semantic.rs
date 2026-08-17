@@ -5,7 +5,7 @@ use std::{borrow::Cow, io::Write, path::Path, time::Duration};
 
 use anyhow::Result;
 use ctx_client_observability::analytics::PublicEventV1;
-use ctx_daemon_cli::{AppConfig as DaemonCliConfig, DaemonConfig, DaemonMode};
+use ctx_daemon_cli::{AppConfig as DaemonCliConfig, DaemonConfig, DaemonLifecycle, DaemonMode};
 
 pub(crate) use ctx_daemon_cli::{
     begin_daemon_upgrade_handoff, begin_legacy_daemon_upgrade_handoff,
@@ -41,7 +41,7 @@ fn daemon_cli_config<'a>(config: &'a crate::config::AppConfig) -> DaemonCliConfi
         Cow::Borrowed(config.upgrade.channel.as_str()),
         config.upgrade.interval,
         DaemonConfig {
-            enabled: config.daemon.enabled,
+            lifecycle: daemon_lifecycle(config.daemon.lifecycle),
             mode: match config.daemon.mode {
                 crate::config::DaemonMode::Full => DaemonMode::Full,
                 crate::config::DaemonMode::SourceRefreshOnly => DaemonMode::SourceRefreshOnly,
@@ -56,7 +56,7 @@ fn owned_daemon_cli_config(config: crate::config::AppConfig) -> DaemonCliConfig<
     let analytics_enabled = config.analytics.enabled;
     let automatic_upgrade_enabled = config.auto_upgrade_enabled();
     let upgrade_interval = config.upgrade.interval;
-    let daemon_enabled = config.daemon.enabled;
+    let daemon_lifecycle = daemon_lifecycle(config.daemon.lifecycle);
     let daemon_mode = match config.daemon.mode {
         crate::config::DaemonMode::Full => DaemonMode::Full,
         crate::config::DaemonMode::SourceRefreshOnly => DaemonMode::SourceRefreshOnly,
@@ -69,7 +69,7 @@ fn owned_daemon_cli_config(config: crate::config::AppConfig) -> DaemonCliConfig<
         Cow::Owned(config.upgrade.channel),
         upgrade_interval,
         DaemonConfig {
-            enabled: daemon_enabled,
+            lifecycle: daemon_lifecycle,
             mode: daemon_mode,
         },
         semantic_enabled,
@@ -191,6 +191,12 @@ pub(crate) fn run_daemon_command(
         C::Status(args) => ctx_daemon_cli::DaemonCommand::Status(ctx_daemon_cli::FormatArgs {
             format: output_format(args.format),
         }),
+        C::Lifecycle(args) => {
+            ctx_daemon_cli::DaemonCommand::Lifecycle(ctx_daemon_cli::DaemonLifecycleArgs {
+                lifecycle: daemon_lifecycle(args.lifecycle.into()),
+                format: output_format(args.format),
+            })
+        }
         C::Enable(args) => ctx_daemon_cli::DaemonCommand::Enable(ctx_daemon_cli::FormatArgs {
             format: output_format(args.format),
         }),
@@ -221,8 +227,15 @@ impl ctx_daemon_cli::DaemonCliHost for CtxDaemonCliHost {
         crate::config::AppConfig::load(data_root).map(owned_daemon_cli_config)
     }
 
-    fn set_daemon_enabled(&self, data_root: &Path, enabled: bool) -> Result<()> {
-        crate::config::set_daemon_enabled(data_root, enabled)
+    fn set_daemon_lifecycle(&self, data_root: &Path, lifecycle: DaemonLifecycle) -> Result<()> {
+        crate::config::set_daemon_lifecycle(
+            data_root,
+            match lifecycle {
+                DaemonLifecycle::Persistent => crate::config::DaemonLifecycle::Persistent,
+                DaemonLifecycle::OnDemand => crate::config::DaemonLifecycle::OnDemand,
+                DaemonLifecycle::Disabled => crate::config::DaemonLifecycle::Disabled,
+            },
+        )
     }
 
     fn home_dir(&self) -> Option<std::path::PathBuf> {
@@ -299,6 +312,14 @@ impl ctx_daemon_cli::DaemonCliHost for CtxDaemonCliHost {
             COMPANION_MAINTENANCE_WAKE_ACTIVE.store(false, Ordering::Release);
         }
         Ok(())
+    }
+}
+
+const fn daemon_lifecycle(lifecycle: crate::config::DaemonLifecycle) -> DaemonLifecycle {
+    match lifecycle {
+        crate::config::DaemonLifecycle::Persistent => DaemonLifecycle::Persistent,
+        crate::config::DaemonLifecycle::OnDemand => DaemonLifecycle::OnDemand,
+        crate::config::DaemonLifecycle::Disabled => DaemonLifecycle::Disabled,
     }
 }
 

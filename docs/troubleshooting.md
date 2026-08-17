@@ -98,7 +98,7 @@ CTX_UPGRADE_AUTO=off ctx search "query"
 
 The automatic scheduler state is stored beside the managed executable in
 `.ctx.upgrade-state.json`; checks should not write to foreground stdout or
-stderr. With `daemon.enabled = false`, no automatic check occurs.
+stderr. With daemon lifecycle `on-demand` or `disabled`, no automatic check occurs.
 
 ## Store Problems
 

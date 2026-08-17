@@ -115,7 +115,7 @@ impl LocalToolBackend {
             .map_err(classify_mcp_search_error)?;
         let config = config::AppConfig::load(&self.data_root);
         if let Ok(config) = &config {
-            self.recover_enabled_daemon_before_search(config);
+            self.recover_persistent_daemon_before_search(config);
         }
         let config = match config {
             Ok(config) => config,
@@ -131,7 +131,7 @@ impl LocalToolBackend {
                 request,
                 &self.data_root,
                 ctx_history_cli::HistoryCliConfig {
-                    daemon_enabled: config.daemon.enabled,
+                    daemon_enabled: config.daemon.is_persistent(),
                     semantic_search_enabled: config.semantic_search_enabled(),
                     local_usage_enabled: config.local_usage.enabled,
                 },
@@ -148,8 +148,8 @@ impl LocalToolBackend {
         })
     }
 
-    fn recover_enabled_daemon_before_search(&self, config: &config::AppConfig) {
-        if !config.daemon.enabled
+    fn recover_persistent_daemon_before_search(&self, config: &config::AppConfig) {
+        if !config.daemon.is_persistent()
             || crate::semantic::daemon_autostart_suppression_reason().is_some()
         {
             return;
@@ -540,7 +540,7 @@ mod tests {
     #[test]
     fn mcp_search_recovery_and_backend_selection_share_one_config_snapshot() {
         let root = private_tempdir();
-        config::set_daemon_enabled(root.path(), false).unwrap();
+        config::set_daemon_lifecycle(root.path(), config::DaemonLifecycle::Disabled).unwrap();
         let backend = LocalToolBackend::new(root.path().to_path_buf());
 
         let (result, config_loads) =

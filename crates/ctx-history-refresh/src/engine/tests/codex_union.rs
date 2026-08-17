@@ -205,11 +205,11 @@ fn codex_nested_root_advisory_is_admitted_from_each_childs_own_bytes() {
     let grandchild_record = by_marker(grandchild_marker);
     let great_grandchild_record = by_marker(great_grandchild_marker);
     assert_eq!(root_record.provider_session_id.as_deref(), Some(root));
-    assert_eq!(root_record.root_session_id, root_record.session_id);
+    assert!(root_record.root_session_id.is_none());
     assert!(root_record.parent_session_id.is_none());
     assert_eq!(child_record.provider_session_id.as_deref(), Some(child));
     assert_eq!(child_record.parent_session_id, Some(root_record.session_id));
-    assert_eq!(child_record.root_session_id, root_record.session_id);
+    assert!(child_record.root_session_id.is_none());
     assert_eq!(
         grandchild_record.provider_session_id.as_deref(),
         Some(grandchild)
@@ -218,8 +218,7 @@ fn codex_nested_root_advisory_is_admitted_from_each_childs_own_bytes() {
         grandchild_record.parent_session_id,
         Some(child_record.session_id)
     );
-    assert_eq!(grandchild_record.root_session_id, child_record.session_id);
-    assert_ne!(grandchild_record.root_session_id, root_record.session_id);
+    assert!(grandchild_record.root_session_id.is_none());
     assert_eq!(
         great_grandchild_record.provider_session_id.as_deref(),
         Some(great_grandchild)
@@ -228,10 +227,7 @@ fn codex_nested_root_advisory_is_admitted_from_each_childs_own_bytes() {
         great_grandchild_record.parent_session_id,
         Some(grandchild_record.session_id)
     );
-    assert_eq!(
-        great_grandchild_record.root_session_id,
-        grandchild_record.session_id
-    );
+    assert!(great_grandchild_record.root_session_id.is_none());
 }
 
 #[test]
@@ -672,12 +668,17 @@ fn explicit_child_without_selected_parent_publishes_unresolved_and_never_reroots
             record.content.normalized_body.as_deref() == Some("missingparentchildmarker")
         })
         .unwrap();
-    assert_eq!(selected.session_relationship.as_str(), "root");
-    assert_eq!(selected.root_session_id, selected.session_id);
+    assert!(selected.session_relationship.is_none());
+    assert!(selected.root_session_id.is_none());
     assert!(selected.parent_session_id.is_none());
-    assert_eq!(child.session_relationship.as_str(), "forked");
+    assert_eq!(
+        child
+            .session_relationship
+            .map(|relationship| relationship.as_str()),
+        Some("forked")
+    );
     let unresolved_parent = child.parent_session_id.expect("direct parent claim");
-    assert_eq!(child.root_session_id, unresolved_parent);
+    assert!(child.root_session_id.is_none());
     assert_ne!(unresolved_parent, selected.session_id);
     assert!(records
         .iter()
@@ -702,12 +703,17 @@ fn assert_codex_parent_child_records(
         .iter()
         .find(|record| record.content.normalized_body.as_deref() == Some(child_marker))
         .unwrap();
-    assert_eq!(parent.session_relationship.as_str(), "root");
+    assert!(parent.session_relationship.is_none());
     assert!(parent.parent_session_id.is_none());
-    assert_eq!(parent.root_session_id, parent.session_id);
-    assert_eq!(child.session_relationship.as_str(), "forked");
+    assert!(parent.root_session_id.is_none());
+    assert_eq!(
+        child
+            .session_relationship
+            .map(|relationship| relationship.as_str()),
+        Some("forked")
+    );
     assert_eq!(child.parent_session_id, Some(parent.session_id));
-    assert_eq!(child.root_session_id, parent.session_id);
+    assert!(child.root_session_id.is_none());
     assert_ne!(child.session_id, parent.session_id);
 }
 

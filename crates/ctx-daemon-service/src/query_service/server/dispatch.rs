@@ -382,7 +382,12 @@ impl CtxAuthenticatedRequestHandler {
         }
         if matches!(op, "shutdown" | "supervisor_handoff") {
             let config = self.config.load(&self.data_root)?;
-            if config.daemon.enabled == (op == "shutdown") {
+            let allowed = match op {
+                "shutdown" => !config.daemon.lifecycle.is_persistent(),
+                "supervisor_handoff" => config.daemon.lifecycle.is_persistent(),
+                _ => false,
+            };
+            if !allowed {
                 return Err(anyhow!(
                     "daemon {op} is not allowed by current configuration"
                 ));

@@ -3,7 +3,7 @@
 
 use std::{
     collections::BTreeSet,
-    io::{Read as _, Write as _},
+    io::Read as _,
     path::{Component, Path, PathBuf},
     process::ExitCode,
 };
@@ -118,10 +118,14 @@ fn run() -> Result<()> {
     if bytes.len() > MAX_RESPONSE_BYTES {
         return Err(anyhow!("response exceeds bound"));
     }
-    let mut stdout = std::io::stdout().lock();
-    stdout.write_all(&bytes)?;
-    stdout.write_all(b"\n")?;
-    stdout.flush()?;
+    write_response_frame(std::io::stdout().lock(), &bytes)?;
+    Ok(())
+}
+
+fn write_response_frame(mut writer: impl std::io::Write, bytes: &[u8]) -> Result<()> {
+    writer.write_all(bytes)?;
+    writer.write_all(b"\n")?;
+    writer.flush()?;
     Ok(())
 }
 
@@ -346,7 +350,7 @@ fn core_setup_facts(
     wait: bool,
 ) -> Result<Value> {
     let mut config = crate::config::AppConfig::load(data_root)?;
-    if semantic && (!config.daemon.enabled || no_daemon) {
+    if semantic && (!config.daemon.is_persistent() || no_daemon) {
         return Err(anyhow!(
             "semantic setup requires enabled daemon maintenance"
         ));
@@ -355,7 +359,7 @@ fn core_setup_facts(
         crate::config::set_semantic_search_enabled(data_root, true)?;
         config = crate::config::AppConfig::load(data_root)?;
     }
-    if config.semantic_search_enabled() && (!config.daemon.enabled || no_daemon) {
+    if config.semantic_search_enabled() && (!config.daemon.is_persistent() || no_daemon) {
         return Err(anyhow!(
             "configured semantic search requires enabled daemon maintenance"
         ));
@@ -363,7 +367,7 @@ fn core_setup_facts(
     crate::history_config::CliHistoryConfigAdapter::new(data_root, &mut config)
         .write_default_config()?;
 
-    let daemon_requested = config.daemon.enabled && !no_daemon;
+    let daemon_requested = config.daemon.starts_implicitly() && !no_daemon;
     if daemon_requested {
         let _ = crate::semantic::autostart_daemon_for_setup_and_wait(
             data_root,
@@ -486,7 +490,7 @@ fn setup_generation_id(published: Option<String>, status: &Value) -> Option<Stri
 
 fn refresh_and_facts(data_root: &Path) -> Result<Value> {
     let config = crate::config::AppConfig::load(data_root)?;
-    if !config.daemon.enabled {
+    if !config.daemon.starts_implicitly() {
         return Err(anyhow!(
             "Core convergence requires enabled daemon maintenance"
         ));
@@ -896,6 +900,13 @@ mod tests {
     fn only_the_exact_hidden_argv_is_intercepted() {
         assert!(intercept(&["ctx".into(), INVOCATION.into()]).is_some());
         assert!(intercept(&["ctx".into(), "--ctx-core-capability-v1=x".into()]).is_none());
+    }
+
+    #[test]
+    fn capability_response_is_one_exact_flushed_json_frame() {
+        let mut output = Vec::new();
+        write_response_frame(&mut output, br#"{"ok":true}"#).unwrap();
+        assert_eq!(output, b"{\"ok\":true}\n");
     }
 
     #[test]

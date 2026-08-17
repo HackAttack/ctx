@@ -569,12 +569,13 @@ fn discover_and_disable_installation_roots(
     roots.extend(super::installation::registered_installation_daemon_roots()?);
     for root in roots.iter() {
         if disabled_roots.insert(root.clone()) {
-            crate::config::set_daemon_enabled(root, false).with_context(|| {
-                format!(
-                    "durably disable ctx daemon root {} before uninstall",
-                    root.display()
-                )
-            })?;
+            crate::config::set_daemon_lifecycle(root, crate::config::DaemonLifecycle::Disabled)
+                .with_context(|| {
+                    format!(
+                        "durably disable ctx daemon root {} before uninstall",
+                        root.display()
+                    )
+                })?;
         }
     }
     Ok(())

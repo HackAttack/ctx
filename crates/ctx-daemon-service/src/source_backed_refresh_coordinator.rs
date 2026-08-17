@@ -54,9 +54,9 @@ pub use ctx_history_refresh::{
 
 #[cfg(test)]
 pub(crate) use ctx_history_refresh::{
-    open_verified_index, source_backed_index_root, EventWatermark, PinnedCorePublication,
-    RefreshLogicalPhase, SourceBackedRefreshCurrent, SourceBackedRefreshExecution,
-    SourceBackedRefreshExecutor, SourceBackedRefreshPublication, SourceBackedRefreshRouteResult,
+    open_verified_index, source_backed_index_root, EventWatermark, RefreshLogicalPhase,
+    SourceBackedRefreshCurrent, SourceBackedRefreshExecution, SourceBackedRefreshExecutor,
+    SourceBackedRefreshPublication, SourceBackedRefreshRouteResult,
     SourceBackedRefreshSourceFailure, SourceBackedRefreshTimings,
 };
 
@@ -382,10 +382,6 @@ impl CoreRefreshEngine {
 
     pub(crate) fn has_pending_request(&self) -> bool {
         self.0.has_pending_request()
-    }
-
-    pub(crate) fn pinned_core_publication(&self) -> Option<Arc<PinnedCorePublication>> {
-        self.0.pinned_core_publication()
     }
 
     pub(crate) fn handle_ipc_request(

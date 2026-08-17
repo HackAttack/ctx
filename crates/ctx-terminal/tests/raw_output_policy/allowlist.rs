@@ -145,6 +145,11 @@ const COMPANION_ROUTE: TestOwner = TestOwner::behavioral(
     &["src/companion.rs"],
     &["paid_family_arguments", "assert_eq"],
 );
+const CORE_CAPABILITY_RESPONSE: TestOwner = TestOwner::behavioral(
+    "src/core_capability.rs::capability_response_is_one_exact_flushed_json_frame",
+    &["src/core_capability.rs"],
+    &["write_response_frame", "assert_eq"],
+);
 const CARGO_DIRECTIVE: &str = "Cargo build-script protocol directive";
 const JSON_PROTOCOL: &str = "documented JSON or JSONL machine-output contract";
 const TEXT_PROTOCOL: &str = "documented plain-text machine-output contract";
@@ -160,6 +165,7 @@ const MODEL_BUILD: &str = "crates/ctx-semantic-model/build.rs";
 const ENGINE_BUILD: &str = "crates/ctx-upgrade-engine/build.rs";
 const ANALYTICS_SENDER: &str = "src/analytics.rs";
 const COMPANION: &str = "src/companion.rs";
+const CORE_CAPABILITY: &str = "src/core_capability.rs";
 const LIST_EVENTS: &str = "crates/ctx-history-cli/src/list_events.rs";
 const SOURCE_INDEX_SHOW: &str = "crates/ctx-history-cli/src/source_index/show.rs";
 const SOURCE_INDEX_SHARED: &str = "crates/ctx-history-cli/src/source_index/shared.rs";
@@ -300,6 +306,30 @@ pub(super) const ALLOWLIST: &[AllowEntry] = &[
         Infrastructure,
         "bounded opaque companion stderr forwarding",
         COMPANION_ROUTE
+    ),
+    allow!(
+        CORE_CAPABILITY,
+        "run#1@1ef2a6ac56c71cd9",
+        StdoutConstructor,
+        Infrastructure,
+        "bounded Core-capability response stream",
+        CORE_CAPABILITY_RESPONSE
+    ),
+    allow!(
+        CORE_CAPABILITY,
+        "write_response_frame#1@256ff91bbfae0edf",
+        DirectWrite,
+        MachineProtocol,
+        JSON_PROTOCOL,
+        CORE_CAPABILITY_RESPONSE
+    ),
+    allow!(
+        CORE_CAPABILITY,
+        "write_response_frame#2@a125c974b59a63d4",
+        DirectWrite,
+        MachineProtocol,
+        JSON_PROTOCOL,
+        CORE_CAPABILITY_RESPONSE
     ),
     allow!(
         COMPANION,

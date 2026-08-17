@@ -61,7 +61,7 @@ impl DaemonAvailabilityPort for TestAvailability {
 impl DaemonConfigPort for TestConfig {
     fn load(&self, _data_root: &Path) -> Result<DaemonConfigSnapshot> {
         let mut config = DaemonConfigSnapshot::default();
-        config.daemon.enabled = true;
+        config.daemon.lifecycle = crate::DaemonLifecycle::Persistent;
         Ok(config)
     }
 
@@ -80,7 +80,7 @@ impl DaemonConfigPort for TestConfig {
 impl DaemonConfigPort for SourceRefreshConfig {
     fn load(&self, _data_root: &Path) -> Result<DaemonConfigSnapshot> {
         let mut config = DaemonConfigSnapshot::default();
-        config.daemon.enabled = true;
+        config.daemon.lifecycle = crate::DaemonLifecycle::Persistent;
         config.daemon.mode = crate::DaemonMode::SourceRefreshOnly;
         Ok(config)
     }

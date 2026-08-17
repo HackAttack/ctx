@@ -11,6 +11,7 @@ const DEFAULT_CONTROL_ENV_KEYS: &[&str] = &[
     "CTX_UPGRADE_OFF",
     "CTX_DISABLE_AUTO_UPGRADE",
     "CTX_DAEMON_ENABLED",
+    DAEMON_LIFECYCLE_ENV,
     DAEMON_MODE_ENV,
     "CTX_DAEMON_OFF",
     "CTX_DISABLE_DAEMON",
@@ -95,7 +96,7 @@ mode = "source-refresh-only"
     assert_eq!(config.upgrade.auto, "off");
     assert_eq!(config.upgrade.channel, "beta");
     assert_eq!(config.upgrade.interval, Duration::from_secs(60 * 60));
-    assert!(!config.daemon.enabled);
+    assert_eq!(config.daemon.lifecycle, DaemonLifecycle::Disabled);
     assert_eq!(config.daemon.mode, DaemonMode::SourceRefreshOnly);
     assert_eq!(config.search.semantic, None);
 }
@@ -144,7 +145,7 @@ fn load_without_config_file_uses_defaults() {
     assert!(config.auto_upgrade_enabled());
     assert_eq!(config.upgrade.channel, "stable");
     assert_eq!(config.upgrade.interval, Duration::from_secs(24 * 60 * 60));
-    assert!(config.daemon.enabled);
+    assert_eq!(config.daemon.lifecycle, DaemonLifecycle::Persistent);
     assert_eq!(config.daemon.mode, DaemonMode::Full);
     assert_eq!(config.search.semantic, None);
     assert!(!config.semantic_search_enabled());
@@ -182,8 +183,8 @@ fn empty_config_runtime_defaults_match_public_control_inventory() {
         serde_json::json!(config.auto_upgrade_mode().as_str())
     );
     assert_eq!(
-        released("daemon.enabled"),
-        serde_json::json!(config.daemon.enabled)
+        released("daemon.lifecycle"),
+        serde_json::json!(config.daemon.lifecycle.as_str())
     );
     assert_eq!(
         released("search.semantic"),
@@ -207,7 +208,7 @@ fn legacy_config_without_runtime_control_keys_adopts_public_defaults() {
     assert!(config.local_usage.enabled);
     assert_eq!(config.auto_upgrade_mode(), AutoUpgradeMode::Apply);
     assert!(config.auto_upgrade_enabled());
-    assert!(config.daemon.enabled);
+    assert_eq!(config.daemon.lifecycle, DaemonLifecycle::Persistent);
     assert!(!config.semantic_search_enabled());
 }
 
@@ -242,16 +243,58 @@ fn explicit_daemon_opt_out_wins_over_default_and_env_enable() {
     fs::write(temp.path().join(CONFIG_FILE), "[daemon]\nenabled = false\n").unwrap();
 
     let persisted = AppConfig::load(temp.path()).unwrap();
-    assert!(!persisted.daemon.enabled);
+    assert_eq!(persisted.daemon.lifecycle, DaemonLifecycle::Disabled);
 
     env_guard.set("CTX_DAEMON_ENABLED", "true");
     let still_persisted = AppConfig::load(temp.path()).unwrap();
-    assert!(!still_persisted.daemon.enabled);
+    assert_eq!(still_persisted.daemon.lifecycle, DaemonLifecycle::Disabled);
 
     fs::remove_file(temp.path().join(CONFIG_FILE)).unwrap();
     env_guard.set("CTX_DAEMON_ENABLED", "false");
     let environment_opt_out = AppConfig::load(temp.path()).unwrap();
-    assert!(!environment_opt_out.daemon.enabled);
+    assert_eq!(
+        environment_opt_out.daemon.lifecycle,
+        DaemonLifecycle::Disabled
+    );
+}
+
+#[test]
+fn daemon_lifecycle_supports_on_demand_and_environment_only_reduces_policy() {
+    let env_guard = EnvGuard::new(&[DAEMON_LIFECYCLE_ENV]);
+    let temp = tempfile::tempdir().unwrap();
+    fs::write(
+        temp.path().join(CONFIG_FILE),
+        "[daemon]\nlifecycle = \"on-demand\"\n",
+    )
+    .unwrap();
+
+    assert_eq!(
+        AppConfig::load(temp.path()).unwrap().daemon.lifecycle,
+        DaemonLifecycle::OnDemand
+    );
+    env_guard.set(DAEMON_LIFECYCLE_ENV, "persistent");
+    assert_eq!(
+        AppConfig::load(temp.path()).unwrap().daemon.lifecycle,
+        DaemonLifecycle::OnDemand
+    );
+    env_guard.set(DAEMON_LIFECYCLE_ENV, "disabled");
+    assert_eq!(
+        AppConfig::load(temp.path()).unwrap().daemon.lifecycle,
+        DaemonLifecycle::Disabled
+    );
+}
+
+#[test]
+fn daemon_lifecycle_rejects_ambiguous_legacy_and_new_keys() {
+    let temp = tempfile::tempdir().unwrap();
+    fs::write(
+        temp.path().join(CONFIG_FILE),
+        "[daemon]\nenabled = true\nlifecycle = \"on-demand\"\n",
+    )
+    .unwrap();
+
+    let error = format!("{:#}", AppConfig::load(temp.path()).unwrap_err());
+    assert!(error.contains("both `daemon.lifecycle` and legacy `daemon.enabled`"));
 }
 
 #[test]
@@ -590,7 +633,7 @@ fn deprecated_opt_outs_keep_historical_truthiness_and_win_over_enabling() {
     env_guard.set("CTX_DAEMON_OFF", "0");
     let inactive = AppConfig::load(temp.path()).unwrap();
     assert!(inactive.analytics.enabled);
-    assert!(inactive.daemon.enabled);
+    assert_eq!(inactive.daemon.lifecycle, DaemonLifecycle::Persistent);
     assert_eq!(inactive.upgrade.auto, "apply");
 
     env_guard.set("CTX_INSTALL_DIAGNOSTICS_OFF", "yes");
@@ -598,7 +641,7 @@ fn deprecated_opt_outs_keep_historical_truthiness_and_win_over_enabling() {
     env_guard.set("CTX_UPGRADE_OFF", "ON");
     let active = AppConfig::load(temp.path()).unwrap();
     assert!(!active.analytics.enabled);
-    assert!(!active.daemon.enabled);
+    assert_eq!(active.daemon.lifecycle, DaemonLifecycle::Disabled);
     assert_eq!(active.upgrade.auto, "off");
 }
 
@@ -630,7 +673,7 @@ enabled = false
     assert_eq!(config.upgrade.auto, "off");
     assert_eq!(config.upgrade.channel, "beta");
     assert_eq!(config.upgrade.interval, Duration::from_secs(2 * 60 * 60));
-    assert!(!config.daemon.enabled);
+    assert_eq!(config.daemon.lifecycle, DaemonLifecycle::Disabled);
 }
 
 #[test]
@@ -650,21 +693,23 @@ fn config_rejects_upgrade_metadata_authority_substitution() {
 }
 
 #[test]
-fn set_daemon_enabled_rewrites_or_adds_config_key() {
+fn set_daemon_lifecycle_rewrites_legacy_key_and_is_idempotent() {
     let temp = tempfile::tempdir().unwrap();
+    fs::write(temp.path().join(CONFIG_FILE), "[daemon]\nenabled = false\n").unwrap();
 
-    set_daemon_enabled(temp.path(), false).unwrap();
-    let disabled = AppConfig::load(temp.path()).unwrap();
-    assert!(!disabled.daemon.enabled);
+    set_daemon_lifecycle(temp.path(), DaemonLifecycle::OnDemand).unwrap();
+    let on_demand = AppConfig::load(temp.path()).unwrap();
+    assert_eq!(on_demand.daemon.lifecycle, DaemonLifecycle::OnDemand);
     let text = fs::read_to_string(temp.path().join(CONFIG_FILE)).unwrap();
     assert!(text.contains("[daemon]"));
-    assert!(text.contains("enabled = false"));
+    assert!(text.contains("lifecycle = \"on-demand\""));
+    assert!(!text.contains("enabled ="));
 
-    set_daemon_enabled(temp.path(), true).unwrap();
-    let enabled = AppConfig::load(temp.path()).unwrap();
-    assert!(enabled.daemon.enabled);
-    let text = fs::read_to_string(temp.path().join(CONFIG_FILE)).unwrap();
-    assert!(text.contains("enabled = true"));
+    set_daemon_lifecycle(temp.path(), DaemonLifecycle::OnDemand).unwrap();
+    assert_eq!(
+        fs::read_to_string(temp.path().join(CONFIG_FILE)).unwrap(),
+        text
+    );
 }
 
 #[test]

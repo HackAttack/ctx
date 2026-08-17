@@ -13,6 +13,7 @@ enum DaemonPresentation {
     Partial,
     Failed,
     Completed,
+    OnDemandIdle,
     NotStarted,
     Stopped,
     Disabled,
@@ -40,6 +41,11 @@ pub(crate) fn render_daemon_status_human(
         .get("enabled")
         .and_then(Value::as_bool)
         .unwrap_or(true);
+    let lifecycle = daemon
+        .get("lifecycle")
+        .and_then(Value::as_str)
+        .unwrap_or(if enabled { "persistent" } else { "disabled" });
+    let on_demand = lifecycle == "on-demand";
     let running = daemon
         .get("running")
         .and_then(Value::as_bool)
@@ -72,13 +78,19 @@ pub(crate) fn render_daemon_status_human(
         .and_then(Value::as_str)
         .is_some_and(|error| !error.is_empty());
     let service_issue = config_issue || supervisor_issue.is_some() || daemon_error;
-    let service_failed =
-        recoverable || matches!(status, "failed" | "stale_lock") || (!running && enabled);
+    let service_failed = recoverable
+        || matches!(status, "failed" | "stale_lock")
+        || (!running && enabled && !on_demand);
 
+    let observed_failure = recoverable || matches!(status, "failed" | "stale_lock");
     let presentation = if status == "completed" && !enabled {
         DaemonPresentation::Completed
     } else if !enabled || status == "disabled" {
         DaemonPresentation::Disabled
+    } else if observed_failure {
+        DaemonPresentation::Failed
+    } else if on_demand && !running {
+        DaemonPresentation::OnDemandIdle
     } else if !running && status == "unknown" {
         DaemonPresentation::NotStarted
     } else if service_failed {
@@ -141,6 +153,11 @@ pub(crate) fn render_daemon_status_human(
             Some("Automatic history refresh is not running."),
         ),
         DaemonPresentation::Completed => (OutcomeState::Success, "Daemon run completed", None),
+        DaemonPresentation::OnDemandIdle => (
+            OutcomeState::Neutral,
+            "Daemon is idle",
+            Some("It starts when a command requests refresh work."),
+        ),
         DaemonPresentation::NotStarted => (
             OutcomeState::Warning,
             "Daemon is enabled but has not started",
@@ -162,9 +179,13 @@ pub(crate) fn render_daemon_status_human(
         },
     );
 
-    let (service_state, service_token) = service_state(enabled, running, recoverable, status);
+    let (service_state, service_token) =
+        service_state(enabled, running, recoverable, on_demand, status);
     let mut service = vec![state_field("Status", service_state, service_token)];
     let mut service_details = Vec::new();
+    if on_demand {
+        service_details.push(("Lifecycle", humanize_code(lifecycle)));
+    }
     if let Some(mode) = daemon
         .get("mode")
         .and_then(Value::as_str)
@@ -374,6 +395,40 @@ pub(crate) fn render_daemon_disable_receipt(
     config_path: &Path,
 ) -> Document {
     render_daemon_enabled_receipt(context, false, false, false, supervisor, config_path)
+}
+
+/// Builds the first-class on-demand lifecycle receipt.
+pub(crate) fn render_daemon_on_demand_receipt(
+    context: &RenderContext,
+    supervisor: &Value,
+    config_path: &Path,
+) -> Document {
+    let supervisor_disabled = supervisor.get("status").and_then(Value::as_str) == Some("disabled");
+    let config_display = config_path.display().to_string();
+    let mut document = outcome(
+        context,
+        Outcome {
+            state: if supervisor_disabled {
+                OutcomeState::Success
+            } else {
+                OutcomeState::Warning
+            },
+            title: "Daemon set to on-demand",
+            detail: Some(
+                "Search, setup, and import can start temporary refresh work; it exits when the request is complete.",
+            ),
+        },
+    );
+    let mut service = vec![
+        state_field("Status", "stopped", Token::Text),
+        state_field("Lifecycle", "on-demand", Token::Success),
+    ];
+    if !supervisor_disabled {
+        service.push(Field::new("Config", &config_display));
+    }
+    document.push_blank();
+    document.append(section("Service", fields(context, &service)));
+    document
 }
 
 fn render_daemon_enabled_receipt(
@@ -601,6 +656,7 @@ fn service_state(
     enabled: bool,
     running: bool,
     recoverable: bool,
+    on_demand: bool,
     status: &str,
 ) -> (&'static str, Token) {
     if status == "completed" && !enabled {
@@ -611,6 +667,8 @@ fn service_state(
         ("failed (recoverable)", Token::Error)
     } else if running {
         ("running", Token::Success)
+    } else if on_demand {
+        ("idle", Token::Text)
     } else if status == "unknown" {
         ("not started", Token::Warning)
     } else {

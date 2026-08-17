@@ -302,7 +302,7 @@ where
         run.terminal_persistence_pending,
     )?;
     let failed = run.failed || run.terminal_persistence_pending;
-    if !run.terminal_persistence_pending {
+    if runtime.process_is_persistent() && !run.terminal_persistence_pending {
         notify_core_generation_published(data_root, &job, generation_published);
     }
     let iteration = DaemonIteration::new(run.did_work, failed, daemon_core_cycle_state(&job));
@@ -325,6 +325,13 @@ fn run_dirty_core_refresh<N>(
 where
     N: crate::CoreGenerationPublishedPort + ?Sized,
 {
+    if !runtime.process_is_persistent() {
+        return Ok(DaemonIteration::new(
+            false,
+            false,
+            DaemonCycleStateV1::unknown(),
+        ));
+    }
     let Some(source_refresh) = source_refresh else {
         return Ok(DaemonIteration::new(
             false,
@@ -367,7 +374,7 @@ where
         run.job,
         terminal_persistence_pending,
     )?;
-    if !terminal_persistence_pending {
+    if runtime.process_is_persistent() && !terminal_persistence_pending {
         notify_core_generation_published(data_root, &job, generation_published);
     }
     let published_generation = (!run.failed
@@ -448,7 +455,7 @@ where
         run.job,
         terminal_persistence_pending,
     )?;
-    if !terminal_persistence_pending {
+    if runtime.process_is_persistent() && !terminal_persistence_pending {
         notify_core_generation_published(data_root, &job, generation_published);
     }
     let failed = run.failed || terminal_persistence_pending;
@@ -492,7 +499,9 @@ where
 {
     let job = record_daemon_job_retry(&mut runtime.history_retry, job);
     let job = persist_core_scheduler_status(data_root, coordinator, job)?;
-    notify_core_generation_published(data_root, &job, generation_published);
+    if runtime.process_is_persistent() {
+        notify_core_generation_published(data_root, &job, generation_published);
+    }
     let failed = daemon_job_failed(&job);
     let state = daemon_core_cycle_state(&job);
     let published_generation = (!failed

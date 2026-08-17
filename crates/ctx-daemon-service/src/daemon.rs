@@ -105,6 +105,17 @@ pub(super) struct DaemonRuntime {
     pub(super) sidecar_drain: DaemonSidecarDrain,
     pub(super) consumer_retry_deferral: DaemonConsumerRetryDeferral,
     pub(super) config: AppConfig,
+    pub(super) manual_run: bool,
+}
+
+impl DaemonRuntime {
+    pub(super) fn process_is_persistent(&self) -> bool {
+        self.manual_run || self.config.daemon.lifecycle.is_persistent()
+    }
+
+    pub(super) fn process_is_on_demand(&self) -> bool {
+        !self.manual_run && self.config.daemon.lifecycle.is_on_demand()
+    }
 }
 
 #[cfg(test)]
@@ -284,7 +295,7 @@ where
     AP: ctx_upgrade_engine::AutomaticUpgradePolicyProvider<Snapshot = AppConfig>,
     UO: ctx_upgrade_engine::UpgradeObserver<AppConfig>,
 {
-    if !config.daemon.enabled && !args.force {
+    if !config.daemon.lifecycle.starts_implicitly() && !args.force {
         return Ok(());
     }
     if ports
@@ -363,6 +374,7 @@ where
         let mut failed = false;
         let mut runtime = DaemonRuntime {
             config: config.clone(),
+            manual_run: daemon_run_start_mode(&args) == DaemonStartModeArg::Manual,
             ..DaemonRuntime::default()
         };
         let mut config_reload = DaemonConfigReloadState::pending(&config);
@@ -400,12 +412,14 @@ where
             &lifecycle_state,
             ports.config,
         ) == DaemonConfigReloadOutcome::StopDisabled;
-        install_source_watch_ingress(
-            &wakeup,
-            refresh_service
-                .as_ref()
-                .and(runtime.source_refresh_coordinator.as_ref()),
-        );
+        if runtime.process_is_persistent() {
+            install_source_watch_ingress(
+                &wakeup,
+                refresh_service
+                    .as_ref()
+                    .and(runtime.source_refresh_coordinator.as_ref()),
+            );
+        }
         if config_reload.status == "activation_failed" {
             let activation_error = config_reload
                 .last_error
@@ -428,7 +442,8 @@ where
         ensure_daemon_ipc_services_healthy(query_service.as_ref(), refresh_service.as_ref())?;
         #[cfg(any(test, feature = "test-support"))]
         fail_daemon_before_ready_for_test(data_root)?;
-        if !runtime.config.daemon.mode.runs_only_source_refresh() {
+        if runtime.process_is_persistent() && !runtime.config.daemon.mode.runs_only_source_refresh()
+        {
             ports.installation.resume_completed(data_root)?;
         }
         write_daemon_lifecycle_status_with_runtime(
@@ -442,25 +457,27 @@ where
             &config_reload.to_json(),
         )?;
         let mut watch_runtime = DaemonWatchRuntime::new(Arc::clone(&wakeup), ports.config);
-        watch_runtime.reconcile_catalog_and_route_authority(
-            data_root,
-            refresh_service
-                .as_ref()
-                .and(runtime.source_refresh_coordinator.as_deref()),
-            WatchCatalogReconcileTrigger::Startup,
-            false,
-        );
-        if let (Some(source_refresh), Some(catalog)) = (
-            refresh_service
-                .as_ref()
-                .and(runtime.source_refresh_coordinator.as_deref()),
-            watch_runtime.catalog.snapshot(),
-        ) {
-            source_refresh.enqueue_overdue_hermes_exact_reconciliation(
+        if runtime.process_is_persistent() {
+            watch_runtime.reconcile_catalog_and_route_authority(
                 data_root,
-                &catalog,
-                source_route_ledger_now_ms(),
-            )?;
+                refresh_service
+                    .as_ref()
+                    .and(runtime.source_refresh_coordinator.as_deref()),
+                WatchCatalogReconcileTrigger::Startup,
+                false,
+            );
+            if let (Some(source_refresh), Some(catalog)) = (
+                refresh_service
+                    .as_ref()
+                    .and(runtime.source_refresh_coordinator.as_deref()),
+                watch_runtime.catalog.snapshot(),
+            ) {
+                source_refresh.enqueue_overdue_hermes_exact_reconciliation(
+                    data_root,
+                    &catalog,
+                    source_route_ledger_now_ms(),
+                )?;
+            }
         }
         // Linearize the final handoff check, Ready publication, and restart
         // acknowledgement with every writer of durable handoff intent.
@@ -474,7 +491,7 @@ where
         // cadence/backoff or reconcile a completed helper.
         if lifecycle_ready
             && daemon_should_schedule_auto_upgrade(
-                runtime.config.daemon.enabled,
+                runtime.process_is_persistent(),
                 runtime.config.daemon.mode,
             )
         {
@@ -499,6 +516,7 @@ where
         // so choosing the borrowed scheduler input does not refcount-clone on
         // every iteration.
         let source_refresh_coordinator = runtime.source_refresh_coordinator.clone();
+        let mut on_demand_exit = OnDemandExit::new(refresh_service.as_ref());
         loop {
             // Hermetic callers may remove their complete temporary data root
             // during shutdown. Do not recreate the deleted root merely to
@@ -536,12 +554,14 @@ where
                 break;
             }
             ensure_daemon_ipc_services_healthy(query_service.as_ref(), refresh_service.as_ref())?;
-            install_source_watch_ingress(
-                &wakeup,
-                refresh_service
-                    .as_ref()
-                    .and(source_refresh_coordinator.as_ref()),
-            );
+            if runtime.process_is_persistent() {
+                install_source_watch_ingress(
+                    &wakeup,
+                    refresh_service
+                        .as_ref()
+                        .and(source_refresh_coordinator.as_ref()),
+                );
+            }
             if runtime.config.daemon.mode.runs_only_source_refresh() {
                 // A live mode change must not carry a previously prepared
                 // automatic upgrade into the source-refresh-only profile.
@@ -549,17 +569,19 @@ where
                 // future full-mode daemon without applying it here.
                 prepared_auto_upgrade = None;
             }
-            if let Some(source_refresh) = refresh_service
-                .as_ref()
-                .and(daemon_scheduler_source_refresh(&source_refresh_coordinator))
-                .filter(|refresh| !refresh.watch_routes_initialized())
-            {
-                watch_runtime.reconcile_catalog_and_route_authority(
-                    data_root,
-                    Some(source_refresh),
-                    WatchCatalogReconcileTrigger::RuntimeActivation,
-                    false,
-                );
+            if runtime.process_is_persistent() {
+                if let Some(source_refresh) = refresh_service
+                    .as_ref()
+                    .and(daemon_scheduler_source_refresh(&source_refresh_coordinator))
+                    .filter(|refresh| !refresh.watch_routes_initialized())
+                {
+                    watch_runtime.reconcile_catalog_and_route_authority(
+                        data_root,
+                        Some(source_refresh),
+                        WatchCatalogReconcileTrigger::RuntimeActivation,
+                        false,
+                    );
+                }
             }
             write_daemon_lifecycle_status_with_runtime(
                 data_root,
@@ -573,7 +595,7 @@ where
             )?;
             if prepared_auto_upgrade.is_none()
                 && daemon_should_schedule_auto_upgrade(
-                    runtime.config.daemon.enabled,
+                    runtime.process_is_persistent(),
                     runtime.config.daemon.mode,
                 )
             {
@@ -588,6 +610,7 @@ where
                     .unwrap_or(None);
             }
             if prepared_auto_upgrade.is_none()
+                && runtime.process_is_persistent()
                 && !runtime.config.daemon.mode.runs_only_source_refresh()
             {
                 ports.installation.resume_completed(data_root)?;
@@ -610,6 +633,11 @@ where
             let source_refresh = refresh_service
                 .as_ref()
                 .and(daemon_scheduler_source_refresh(&source_refresh_coordinator));
+            if runtime.process_is_on_demand()
+                && on_demand_exit.observe(source_refresh, refresh_service.as_ref(), Instant::now())
+            {
+                break;
+            }
             let mut iteration = run_daemon_scheduler_cycle_with_activity(
                 &args,
                 data_root,
@@ -648,6 +676,11 @@ where
                 &config_reload.to_json(),
             )?;
             failed |= iteration.failed;
+            if runtime.process_is_on_demand()
+                && on_demand_exit.observe(source_refresh, refresh_service.as_ref(), Instant::now())
+            {
+                break;
+            }
             if continue_immediately {
                 continue;
             }
@@ -658,6 +691,9 @@ where
                     .as_ref()
                     .and(daemon_scheduler_source_refresh(&source_refresh_coordinator)),
                 next_safety_reconcile,
+                runtime
+                    .process_is_on_demand()
+                    .then(|| on_demand_exit.wait_duration(now)),
                 now,
             );
             let wake = wakeup.wait(wait_for);
@@ -666,7 +702,8 @@ where
             }
             // Native activity must not starve the safety deadline. A busy or
             // degraded watcher can keep producing wakes indefinitely.
-            let safety_due = Instant::now() >= next_safety_reconcile;
+            let safety_due =
+                runtime.process_is_persistent() && Instant::now() >= next_safety_reconcile;
             let retry_wakeup_due = wake.timed_out && daemon_retry_due(&runtime);
             if retry_wakeup_due {
                 wakeup.record_scheduled_retry_wakeup();
@@ -676,6 +713,7 @@ where
                 .and(daemon_scheduler_source_refresh(&source_refresh_coordinator));
             let scheduled_refresh_wakeup_due = wake.timed_out
                 && !retry_wakeup_due
+                && runtime.process_is_persistent()
                 && daemon_scheduled_refresh_due(source_refresh, source_route_ledger_now_ms());
             if scheduled_refresh_wakeup_due {
                 wakeup.record_scheduled_refresh_wakeup();
@@ -701,19 +739,23 @@ where
                     )?;
                 }
             }
-            let watch_reconcile_trigger = wake
-                .source_watch
-                .reconcile
-                .map(WatchCatalogReconcileTrigger::CatalogControl)
-                .or_else(|| {
+            let watch_reconcile_trigger = runtime
+                .process_is_persistent()
+                .then(|| {
                     wake.source_watch
-                        .rearm
-                        .then_some(WatchCatalogReconcileTrigger::WatcherRecovery)
+                        .reconcile
+                        .map(WatchCatalogReconcileTrigger::CatalogControl)
+                        .or_else(|| {
+                            wake.source_watch
+                                .rearm
+                                .then_some(WatchCatalogReconcileTrigger::WatcherRecovery)
+                        })
+                        .or_else(|| {
+                            wake.filesystem
+                                .then_some(WatchCatalogReconcileTrigger::Filesystem)
+                        })
                 })
-                .or_else(|| {
-                    wake.filesystem
-                        .then_some(WatchCatalogReconcileTrigger::Filesystem)
-                });
+                .flatten();
             if let Some(trigger) = watch_reconcile_trigger {
                 watch_runtime.reconcile_catalog_and_route_authority(
                     data_root,
@@ -722,12 +764,14 @@ where
                     wake.source_watch.rearm,
                 );
             }
-            if let Some(source_refresh) = source_refresh {
-                source_refresh.record_watch_routes_with_members(
-                    wake.source_watch.routes,
-                    wake.source_watch.members,
-                    source_route_ledger_now_ms(),
-                );
+            if runtime.process_is_persistent() {
+                if let Some(source_refresh) = source_refresh {
+                    source_refresh.record_watch_routes_with_members(
+                        wake.source_watch.routes,
+                        wake.source_watch.members,
+                        source_route_ledger_now_ms(),
+                    );
+                }
             }
             if let Some(watcher) = watch_runtime.file_watcher.as_ref() {
                 let _ = watcher.write_receipt(
@@ -882,6 +926,7 @@ pub(super) fn daemon_wait_duration(
     runtime: &DaemonRuntime,
     source_refresh: Option<&CoreRefreshEngine>,
     next_safety_reconcile: Instant,
+    on_demand_wait: Option<StdDuration>,
     now: Instant,
 ) -> StdDuration {
     let pending_source_refresh = source_refresh.is_some_and(CoreRefreshEngine::has_pending_request);
@@ -909,8 +954,17 @@ pub(super) fn daemon_wait_duration(
             wait_for = wait_for.min(StdDuration::from_millis(retry_after_ms));
         }
     }
-    if let Some(route_due_ms) = source_refresh
-        .and_then(|refresh| refresh.next_dirty_route_due_in_ms(source_route_ledger_now_ms()))
+    if let Some(wait) = on_demand_wait {
+        wait_for = wait_for.min(wait);
+    }
+    if let Some(route_due_ms) = runtime
+        .process_is_persistent()
+        .then(|| {
+            source_refresh.and_then(|refresh| {
+                refresh.next_dirty_route_due_in_ms(source_route_ledger_now_ms())
+            })
+        })
+        .flatten()
     {
         let route_wait = StdDuration::from_millis(route_due_ms);
         wait_for = wait_for.min(route_wait);

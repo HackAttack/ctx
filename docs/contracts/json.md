@@ -34,10 +34,13 @@ Writes local storage and returns schema version 2:
 - `deprecated_catalog_only_ignored`;
 - `source_rebuild_required`;
 
-When daemon maintenance is enabled, human and machine-readable setup both
-health-check and recover the persistent daemon before returning.
-`daemon_autostart.status: "verified"` includes the live PID. A one-run
-`--no-daemon` opt-out reports `status: "not_requested"` and reason
+With lifecycle `persistent`, human and machine-readable setup health-check and
+recover the persistent daemon before returning. With `on-demand`, setup starts
+the same coordinator for its bounded Core request and the process exits after
+completion. `daemon_autostart.status: "verified"` includes the live PID.
+On-demand startup reports `persistent: false` and is not degraded merely because
+no native restart supervisor is installed. A one-run `--no-daemon` opt-out
+reports `status: "not_requested"` and reason
 `explicit_opt_out`; a durable disabled configuration uses reason
 `daemon_disabled`. `refresh_request` separately reports whether setup queued
 or waited for daemon-owned Core publication. A completed `--wait` request
@@ -218,8 +221,9 @@ that source is observed without rejections, and do not make the daemon fail.
 Source-level failures remain terminal and are reported separately.
 
 `ctx daemon status --format json` returns `schema_version`, `daemon`, `pro`, and
-`local_only`. `ctx daemon enable --format json` and `ctx daemon disable --format json` return
-`schema_version`, `daemon_enabled`, `running`, `pid`, `persistent`, `supervisor`,
+`local_only`. `ctx daemon lifecycle <value> --format json`, `ctx daemon enable
+--format json`, and `ctx daemon disable --format json` return `schema_version`,
+`daemon_lifecycle`, the compatibility field `daemon_enabled`, `running`, `pid`, `persistent`, `supervisor`,
 `config_path`, and `local_only`. Here `persistent` means the running process has
 no planned idle exit; automatic restart after process failure is reported
 separately by `supervisor.restart_supported` and the supervisor verification
@@ -398,8 +402,8 @@ failures. `sources_completed_with_rejections` counts sources that committed
 accepted content while rejecting other records. `resume_mode` is currently `idempotent_rescan` when
 `--resume` is passed and `normal_scan` otherwise.
 
-Imports may opportunistically start the ctx-owned daemon maintenance profile
-when `[daemon].enabled` is true. Explicit custom JSONL and history-source
+Imports may opportunistically start the ctx-owned daemon coordinator with
+lifecycle `persistent` or `on-demand`. Explicit custom JSONL and history-source
 imports require its source-refresh endpoint even with JSON output. Set
 `ctx import --no-daemon` to prevent autostart; those explicit provider-source
 routes then require an already-running endpoint. The daemon, when started, reports

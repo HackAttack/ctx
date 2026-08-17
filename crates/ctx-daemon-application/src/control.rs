@@ -4,7 +4,7 @@ use anyhow::{anyhow, Context};
 use ctx_daemon_runtime::daemon_lock_is_active;
 
 use crate::{
-    lifecycle, supervisor, DaemonApplicationHost, DaemonHandoff, DaemonStartError,
+    lifecycle, supervisor, DaemonApplicationHost, DaemonHandoff, DaemonLifecycle, DaemonStartError,
     DaemonSupervisorReport, DaemonTrigger,
 };
 
@@ -15,7 +15,7 @@ const CONTROL_TIMEOUT: Duration = Duration::from_millis(500);
 const CONTROL_RESPONSE_MAX_BYTES: u64 = 16 * 1024;
 
 #[derive(Debug)]
-pub enum DaemonEnabledUpdateError {
+pub enum DaemonLifecycleUpdateError {
     Operation(anyhow::Error),
     StartSuppressed,
     Supervisor(anyhow::Error),
@@ -23,51 +23,59 @@ pub enum DaemonEnabledUpdateError {
 }
 
 #[derive(Debug)]
-pub struct DaemonEnabledUpdate {
-    pub enabled: bool,
+pub struct DaemonLifecycleUpdate {
+    pub lifecycle: DaemonLifecycle,
     pub running: bool,
     pub pid: Option<u32>,
     pub persistent: bool,
     pub supervisor: DaemonSupervisorReport,
 }
 
-pub(super) fn update_daemon_enabled(
+pub(super) fn update_daemon_lifecycle(
     host: &dyn DaemonApplicationHost,
     data_root: &Path,
-    enabled: bool,
-) -> Result<DaemonEnabledUpdate, DaemonEnabledUpdateError> {
-    host.set_daemon_enabled(data_root, enabled)
-        .map_err(DaemonEnabledUpdateError::Operation)?;
-    let handoff = if enabled {
-        let config = host
-            .daemon_config(data_root)
-            .map_err(DaemonEnabledUpdateError::Operation)?;
+    lifecycle: DaemonLifecycle,
+) -> Result<DaemonLifecycleUpdate, DaemonLifecycleUpdateError> {
+    host.set_daemon_lifecycle(data_root, lifecycle)
+        .map_err(DaemonLifecycleUpdateError::Operation)?;
+    let config = host
+        .daemon_config(data_root)
+        .map_err(DaemonLifecycleUpdateError::Operation)?;
+    let lifecycle = config.lifecycle;
+    let handoff = if lifecycle.is_persistent() {
         if lifecycle::daemon_start_is_fenced(host) {
-            return Err(DaemonEnabledUpdateError::StartSuppressed);
+            return Err(DaemonLifecycleUpdateError::StartSuppressed);
         }
         if lifecycle::daemon_autostart_suppression_reason().is_none() {
             supervisor::ensure_daemon_supervisor(host, data_root)
-                .map_err(DaemonEnabledUpdateError::Supervisor)?;
+                .map_err(DaemonLifecycleUpdateError::Supervisor)?;
         }
         Some(
             lifecycle::start_daemon_and_wait(host, data_root, &config, DaemonTrigger::Setup)
-                .map_err(DaemonEnabledUpdateError::Start)?,
+                .map_err(DaemonLifecycleUpdateError::Start)?,
         )
     } else {
         request_daemon_shutdown_and_wait(host, data_root)
-            .map_err(DaemonEnabledUpdateError::Operation)?;
+            .map_err(DaemonLifecycleUpdateError::Operation)?;
         supervisor::disable_daemon_supervisor(host, data_root)
-            .map_err(DaemonEnabledUpdateError::Operation)?;
-        host.cancel_core_finalization_generation_lease(data_root, "daemon was disabled")
-            .map_err(DaemonEnabledUpdateError::Operation)?;
+            .map_err(DaemonLifecycleUpdateError::Operation)?;
+        host.cancel_core_finalization_generation_lease(
+            data_root,
+            if lifecycle.is_on_demand() {
+                "daemon changed to on-demand"
+            } else {
+                "daemon was disabled"
+            },
+        )
+        .map_err(DaemonLifecycleUpdateError::Operation)?;
         None
     };
     let supervisor =
         DaemonSupervisorReport::new(supervisor::daemon_supervisor_report(host, data_root));
     let running = handoff.is_some();
-    let persistent = enabled && running;
-    Ok(DaemonEnabledUpdate {
-        enabled,
+    let persistent = lifecycle.is_persistent() && running;
+    Ok(DaemonLifecycleUpdate {
+        lifecycle,
         running,
         pid: handoff.map(|handoff: DaemonHandoff| handoff.pid),
         persistent,

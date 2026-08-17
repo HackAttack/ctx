@@ -11,7 +11,7 @@ use ctx_client_observability::analytics::PublicEventV1;
 use ctx_daemon_service::CoreGenerationPublished;
 
 pub const CONFIG_FILE: &str = "config.toml";
-pub const DAEMON_DEFAULT_ENABLED: bool = true;
+pub const DAEMON_DEFAULT_LIFECYCLE: DaemonLifecycle = DaemonLifecycle::Persistent;
 #[cfg(test)]
 pub const DAEMON_MODE_ENV: &str = "CTX_DAEMON_MODE";
 
@@ -22,6 +22,36 @@ pub enum DaemonMode {
     SourceRefreshOnly,
 }
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum DaemonLifecycle {
+    #[default]
+    Persistent,
+    OnDemand,
+    Disabled,
+}
+
+impl DaemonLifecycle {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Persistent => "persistent",
+            Self::OnDemand => "on-demand",
+            Self::Disabled => "disabled",
+        }
+    }
+
+    pub const fn starts_implicitly(self) -> bool {
+        !matches!(self, Self::Disabled)
+    }
+
+    pub const fn is_persistent(self) -> bool {
+        matches!(self, Self::Persistent)
+    }
+
+    pub const fn is_on_demand(self) -> bool {
+        matches!(self, Self::OnDemand)
+    }
+}
+
 impl DaemonMode {
     pub const fn runs_only_source_refresh(self) -> bool {
         matches!(self, Self::SourceRefreshOnly)
@@ -30,7 +60,7 @@ impl DaemonMode {
 
 #[derive(Debug, Clone)]
 pub struct DaemonConfig {
-    pub enabled: bool,
+    pub lifecycle: DaemonLifecycle,
     pub mode: DaemonMode,
 }
 
@@ -109,7 +139,7 @@ impl Default for AppConfig<'static> {
             Cow::Borrowed("stable"),
             Duration::from_secs(24 * 60 * 60),
             DaemonConfig {
-                enabled: true,
+                lifecycle: DAEMON_DEFAULT_LIFECYCLE,
                 mode: DaemonMode::Full,
             },
             false,
@@ -120,7 +150,7 @@ impl Default for AppConfig<'static> {
 
 pub trait DaemonCliHost: Send + Sync {
     fn load_config(&self, data_root: &Path) -> Result<AppConfig<'static>>;
-    fn set_daemon_enabled(&self, data_root: &Path, enabled: bool) -> Result<()>;
+    fn set_daemon_lifecycle(&self, data_root: &Path, lifecycle: DaemonLifecycle) -> Result<()>;
     fn home_dir(&self) -> Option<PathBuf>;
     fn run_daemon_service(
         &self,
@@ -172,8 +202,8 @@ pub(crate) fn host() -> &'static dyn DaemonCliHost {
     panic!("ctx daemon CLI host must be installed before adapter use")
 }
 
-pub fn set_daemon_enabled(data_root: &Path, enabled: bool) -> Result<()> {
-    host().set_daemon_enabled(data_root, enabled)
+pub fn set_daemon_lifecycle(data_root: &Path, lifecycle: DaemonLifecycle) -> Result<()> {
+    host().set_daemon_lifecycle(data_root, lifecycle)
 }
 
 #[cfg(test)]
@@ -220,10 +250,23 @@ impl DaemonCliHost for TestHost {
         {
             config.analytics.enabled = enabled;
         }
-        if let Some(enabled) =
+        if let Some(lifecycle) =
+            Self::config_item(&document, "daemon", "lifecycle").and_then(toml_edit::Item::as_str)
+        {
+            config.daemon.lifecycle = match lifecycle {
+                "persistent" => DaemonLifecycle::Persistent,
+                "on-demand" => DaemonLifecycle::OnDemand,
+                "disabled" => DaemonLifecycle::Disabled,
+                _ => return Err(anyhow!("unknown daemon lifecycle `{lifecycle}`")),
+            };
+        } else if let Some(enabled) =
             Self::config_item(&document, "daemon", "enabled").and_then(toml_edit::Item::as_bool)
         {
-            config.daemon.enabled = enabled;
+            config.daemon.lifecycle = if enabled {
+                DaemonLifecycle::Persistent
+            } else {
+                DaemonLifecycle::Disabled
+            };
         }
         if let Some(mode) =
             Self::config_item(&document, "daemon", "mode").and_then(toml_edit::Item::as_str)
@@ -243,7 +286,7 @@ impl DaemonCliHost for TestHost {
         Ok(config)
     }
 
-    fn set_daemon_enabled(&self, data_root: &Path, enabled: bool) -> Result<()> {
+    fn set_daemon_lifecycle(&self, data_root: &Path, lifecycle: DaemonLifecycle) -> Result<()> {
         std::fs::create_dir_all(data_root)?;
         let mut document = self.parsed_config(data_root)?;
         if document.as_table().get("daemon").is_none() {
@@ -254,7 +297,8 @@ impl DaemonCliHost for TestHost {
             .get_mut("daemon")
             .and_then(toml_edit::Item::as_table_mut)
             .ok_or_else(|| anyhow!("daemon configuration must be a table"))?;
-        daemon.insert("enabled", toml_edit::value(enabled));
+        daemon.remove("enabled");
+        daemon.insert("lifecycle", toml_edit::value(lifecycle.as_str()));
         std::fs::write(data_root.join(CONFIG_FILE), document.to_string())?;
         Ok(())
     }

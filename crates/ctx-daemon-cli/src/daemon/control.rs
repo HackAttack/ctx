@@ -13,9 +13,18 @@ pub fn run_daemon_command(
         let result = match args.command {
             DaemonCommand::Run(args) => run_daemon(application, args, data_root, ui),
             DaemonCommand::Status(args) => run_daemon_status(application, args, data_root, ui),
-            DaemonCommand::Enable(args) => {
-                run_daemon_enabled_update(application, args, data_root, true, ui)
+            DaemonCommand::Lifecycle(args) => {
+                run_daemon_lifecycle_update(application, args, data_root, ui)
             }
+            DaemonCommand::Enable(args) => run_daemon_lifecycle_update(
+                application,
+                DaemonLifecycleArgs {
+                    lifecycle: crate::DaemonLifecycle::Persistent,
+                    format: args.format,
+                },
+                data_root,
+                ui,
+            ),
             DaemonCommand::Disable(args) => run_daemon_disable(application, args, data_root, ui),
         };
         if let Some(operation) = operation {
@@ -36,6 +45,15 @@ fn daemon_operation_for_command(
     match command {
         DaemonCommand::Run(_) => None,
         DaemonCommand::Status(_) => Some(ctx_daemon_application::DaemonObservedOperation::Status),
+        DaemonCommand::Lifecycle(args) => match args.lifecycle {
+            crate::DaemonLifecycle::Persistent => {
+                Some(ctx_daemon_application::DaemonObservedOperation::Enable)
+            }
+            crate::DaemonLifecycle::OnDemand => None,
+            crate::DaemonLifecycle::Disabled => {
+                Some(ctx_daemon_application::DaemonObservedOperation::Disable)
+            }
+        },
         DaemonCommand::Enable(_) => Some(ctx_daemon_application::DaemonObservedOperation::Enable),
         DaemonCommand::Disable(_) => Some(ctx_daemon_application::DaemonObservedOperation::Disable),
     }
@@ -63,16 +81,34 @@ pub(super) fn run_daemon_status(
     Ok(())
 }
 
-pub(super) fn run_daemon_enabled_update(
+pub(super) fn run_daemon_lifecycle_update(
     application: &ctx_daemon_application::DaemonApplication<'_>,
-    args: FormatArgs,
+    args: DaemonLifecycleArgs,
     data_root: PathBuf,
-    enabled: bool,
     ui: &mut Ui,
 ) -> Result<()> {
+    let requested_lifecycle = args.lifecycle;
     let update = application
-        .update_daemon_enabled(&data_root, enabled)
-        .map_err(daemon_enabled_update_error)?;
+        .update_daemon_lifecycle(
+            &data_root,
+            match requested_lifecycle {
+                crate::DaemonLifecycle::Persistent => {
+                    ctx_daemon_application::DaemonLifecycle::Persistent
+                }
+                crate::DaemonLifecycle::OnDemand => {
+                    ctx_daemon_application::DaemonLifecycle::OnDemand
+                }
+                crate::DaemonLifecycle::Disabled => {
+                    ctx_daemon_application::DaemonLifecycle::Disabled
+                }
+            },
+        )
+        .map_err(daemon_lifecycle_update_error)?;
+    let lifecycle = match update.lifecycle {
+        ctx_daemon_application::DaemonLifecycle::Persistent => crate::DaemonLifecycle::Persistent,
+        ctx_daemon_application::DaemonLifecycle::OnDemand => crate::DaemonLifecycle::OnDemand,
+        ctx_daemon_application::DaemonLifecycle::Disabled => crate::DaemonLifecycle::Disabled,
+    };
     let supervisor = update.supervisor.into_json();
     let persistent = update.persistent;
     let running = update.running;
@@ -81,7 +117,8 @@ pub(super) fn run_daemon_enabled_update(
     if args.format.is_json() {
         print_json(json!({
             "schema_version": 1,
-            "daemon_enabled": enabled,
+            "daemon_lifecycle": lifecycle.as_str(),
+            "daemon_enabled": lifecycle.starts_implicitly(),
             "running": running,
             "pid": pid,
             "persistent": persistent,
@@ -89,7 +126,7 @@ pub(super) fn run_daemon_enabled_update(
             "config_path": config_path,
             "local_only": true,
         }))?;
-    } else if enabled {
+    } else if lifecycle.is_persistent() {
         let document = render_daemon_enable_receipt(
             ui.stdout_context(),
             running,
@@ -97,6 +134,10 @@ pub(super) fn run_daemon_enabled_update(
             &supervisor,
             &config_path,
         );
+        ui.write_stdout(&document)?;
+    } else if lifecycle.is_on_demand() {
+        let document =
+            render_daemon_on_demand_receipt(ui.stdout_context(), &supervisor, &config_path);
         ui.write_stdout(&document)?;
     } else {
         let document =
@@ -106,18 +147,18 @@ pub(super) fn run_daemon_enabled_update(
     Ok(())
 }
 
-fn daemon_enabled_update_error(
-    error: ctx_daemon_application::DaemonEnabledUpdateError,
+fn daemon_lifecycle_update_error(
+    error: ctx_daemon_application::DaemonLifecycleUpdateError,
 ) -> anyhow::Error {
     match error {
-        ctx_daemon_application::DaemonEnabledUpdateError::Operation(error) => error,
-        ctx_daemon_application::DaemonEnabledUpdateError::StartSuppressed => anyhow!(
+        ctx_daemon_application::DaemonLifecycleUpdateError::Operation(error) => error,
+        ctx_daemon_application::DaemonLifecycleUpdateError::StartSuppressed => anyhow!(
             "ctx daemon start was suppressed (hosted_uninstall_active); retry after it clears or run `ctx setup --no-daemon`"
         ),
-        ctx_daemon_application::DaemonEnabledUpdateError::Supervisor(error) => {
+        ctx_daemon_application::DaemonLifecycleUpdateError::Supervisor(error) => {
             error.context("establish ctx daemon supervision")
         }
-        ctx_daemon_application::DaemonEnabledUpdateError::Start(error) => match error {
+        ctx_daemon_application::DaemonLifecycleUpdateError::Start(error) => match error {
             ctx_daemon_application::DaemonStartError::Suppressed(reason) => anyhow!(
                 "ctx daemon start was suppressed ({reason}); retry after it clears or run `ctx setup --no-daemon`"
             ),
@@ -139,13 +180,13 @@ fn run_daemon_disable(
     ui: &mut Ui,
 ) -> Result<()> {
     if !args.prepare_uninstall {
-        return run_daemon_enabled_update(
+        return run_daemon_lifecycle_update(
             application,
-            FormatArgs {
+            DaemonLifecycleArgs {
+                lifecycle: crate::DaemonLifecycle::Disabled,
                 format: args.format,
             },
             data_root,
-            false,
             ui,
         );
     }

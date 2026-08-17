@@ -6,7 +6,7 @@ use ctx_semantic_model::semantic_query_service_supported;
 use serde_json::{json, Value};
 
 use crate::{
-    config::{AppConfig, DaemonMode},
+    config::{AppConfig, DaemonLifecycle, DaemonMode},
     DaemonConfigPort, DaemonRunArgs,
 };
 
@@ -28,10 +28,10 @@ pub(super) struct DaemonConfigReloadState {
     pub(super) status: &'static str,
     last_attempt_at_ms: i64,
     last_applied_at_ms: Option<i64>,
-    requested_daemon_enabled: bool,
+    requested_daemon_lifecycle: DaemonLifecycle,
     requested_daemon_mode: DaemonMode,
     requested_semantic_enabled: bool,
-    applied_daemon_enabled: Option<bool>,
+    applied_daemon_lifecycle: Option<DaemonLifecycle>,
     applied_daemon_mode: Option<DaemonMode>,
     applied_semantic_enabled: Option<bool>,
     pub(super) last_error: Option<String>,
@@ -43,10 +43,10 @@ impl DaemonConfigReloadState {
             status: "pending",
             last_attempt_at_ms: utc_now().timestamp_millis(),
             last_applied_at_ms: None,
-            requested_daemon_enabled: config.daemon.enabled,
+            requested_daemon_lifecycle: config.daemon.lifecycle,
             requested_daemon_mode: config.daemon.mode,
             requested_semantic_enabled: config.semantic_search_enabled(),
-            applied_daemon_enabled: None,
+            applied_daemon_lifecycle: None,
             applied_daemon_mode: None,
             applied_semantic_enabled: None,
             last_error: None,
@@ -55,7 +55,7 @@ impl DaemonConfigReloadState {
 
     fn begin_attempt(&mut self, config: &AppConfig) {
         self.last_attempt_at_ms = utc_now().timestamp_millis();
-        self.requested_daemon_enabled = config.daemon.enabled;
+        self.requested_daemon_lifecycle = config.daemon.lifecycle;
         self.requested_daemon_mode = config.daemon.mode;
         self.requested_semantic_enabled = config.semantic_search_enabled();
         self.last_error = None;
@@ -64,7 +64,7 @@ impl DaemonConfigReloadState {
     fn applied(&mut self) {
         self.status = "applied";
         self.last_applied_at_ms = Some(self.last_attempt_at_ms);
-        self.applied_daemon_enabled = Some(self.requested_daemon_enabled);
+        self.applied_daemon_lifecycle = Some(self.requested_daemon_lifecycle);
         self.applied_daemon_mode = Some(self.requested_daemon_mode);
         self.applied_semantic_enabled = Some(self.requested_semantic_enabled);
         self.last_error = None;
@@ -78,7 +78,7 @@ impl DaemonConfigReloadState {
 
     fn activation_failed(&mut self, error: anyhow::Error) {
         self.status = "activation_failed";
-        self.applied_daemon_enabled = Some(self.requested_daemon_enabled);
+        self.applied_daemon_lifecycle = Some(self.requested_daemon_lifecycle);
         self.last_error = Some(format!("{error:#}"));
     }
 
@@ -88,12 +88,14 @@ impl DaemonConfigReloadState {
             "last_attempt_at_ms": self.last_attempt_at_ms,
             "last_applied_at_ms": self.last_applied_at_ms,
             "requested": {
-                "daemon_enabled": self.requested_daemon_enabled,
+                "daemon_lifecycle": self.requested_daemon_lifecycle.as_str(),
+                "daemon_enabled": self.requested_daemon_lifecycle.starts_implicitly(),
                 "daemon_mode": self.requested_daemon_mode.as_str(),
                 "semantic_enabled": self.requested_semantic_enabled,
             },
             "applied": {
-                "daemon_enabled": self.applied_daemon_enabled,
+                "daemon_lifecycle": self.applied_daemon_lifecycle.map(DaemonLifecycle::as_str),
+                "daemon_enabled": self.applied_daemon_lifecycle.map(DaemonLifecycle::starts_implicitly),
                 "daemon_mode": self.applied_daemon_mode.map(DaemonMode::as_str),
                 "semantic_enabled": self.applied_semantic_enabled,
             },
@@ -138,7 +140,7 @@ pub(super) fn reload_daemon_runtime_config(
     reload.begin_attempt(&config);
     runtime.config = config;
 
-    if !runtime.config.daemon.enabled && !args.force {
+    if !runtime.config.daemon.lifecycle.starts_implicitly() && !args.force {
         drop(query_service.take());
         drop(refresh_service.take());
         let _ = runtime.semantic_runtime.release_if_idle();
@@ -149,6 +151,7 @@ pub(super) fn reload_daemon_runtime_config(
     let semantic_runtime_requested = daemon_semantic_runtime_requested(
         &runtime.config,
         semantic_query_service_supported() && daemon_query_service_transport_supported(),
+        runtime.process_is_persistent(),
     );
     if daemon_query_service_transport_supported() && refresh_service.is_none() {
         let Some(source_refresh) = runtime.source_refresh_coordinator.as_ref().cloned() else {
@@ -212,8 +215,10 @@ pub(super) fn reload_daemon_runtime_config(
 pub(super) fn daemon_semantic_runtime_requested(
     config: &AppConfig,
     service_supported: bool,
+    process_is_persistent: bool,
 ) -> bool {
     service_supported
+        && process_is_persistent
         && config.semantic_search_enabled()
         && !config.daemon.mode.runs_only_source_refresh()
 }
