@@ -875,7 +875,10 @@ fn native_provider_cli_preserves_complete_tool_outputs_without_legacy_payloads()
         assert!(
             provider_core_records(&data_root(&temp), provider)
                 .iter()
-                .all(|record| record.repository_file_observations.is_empty()),
+                .all(|record| serde_json::to_value(record)
+                    .unwrap()
+                    .get("repository_file_observations")
+                    .is_none()),
             "unscoped file paths must not cross the Core repository boundary"
         );
     }
