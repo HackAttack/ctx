@@ -1289,22 +1289,61 @@ fn build_merged_source_backed_registry_with_automatic_routes(
         catalog_route_bindings: previous_catalog_route_bindings,
         route_controls: previous_route_controls,
     } = published_state.open_published_state(data_root)?;
+    let authenticate_requested_codex = explicit_source_catalog
+        .map(ExplicitSourceCatalogAuthority::has_codex_session_tree_entry)
+        .transpose()?
+        .unwrap_or(false);
+    let authenticated_automatic_build = ((previous_explicit_source_catalog.is_some()
+        && !admitted_automatic_routes.is_empty())
+        || authenticate_requested_codex)
+        .then(|| {
+            build_automatic_source_backed_registry_from_report(discovery, data_root, report.clone())
+        });
+    let mut reactivated_automatic_sources = Vec::new();
+    if previous_explicit_source_catalog.is_some() && !admitted_automatic_routes.is_empty() {
+        let authenticated = authenticated_automatic_build
+            .as_ref()
+            .expect("automatic reactivation requested an authenticated registry");
+        for route in admitted_automatic_routes {
+            if let Some(sources) = authenticated
+                .registry
+                .automatic_route_registration_sources(route)
+            {
+                reactivated_automatic_sources.extend(sources.cloned());
+            }
+        }
+    }
+    let secondary_codex_registration_sources = explicit_source_catalog
+        .filter(|_| authenticate_requested_codex)
+        .map(|catalog| {
+            catalog.secondary_codex_registration_sources(
+                &authenticated_automatic_build
+                    .as_ref()
+                    .expect("explicit request built an authenticated automatic registry")
+                    .registry,
+            )
+        })
+        .transpose()?
+        .unwrap_or_default();
     // A request overlay is not the whole durable explicit catalog. Keep every
     // unmatched retained explicit owner out of automatic discovery so those
     // base routes remain carried rather than being re-scanned under a new
-    // automatic identity. An exact automatic watcher admission is the one
-    // exception: it may reclaim the same provider/format/path after a one-shot
-    // explicit import. Deduplicate only exact provider/format/path keys;
+    // automatic identity. An exact automatic watcher admission may reclaim
+    // only the exact registration roots authenticated by its grouped route;
     // relocation deliberately preserves lineage while changing the path.
     if let Some(catalog) = previous_explicit_source_catalog.as_ref() {
         catalog.prepare_retained_discovery_report_with_automatic_routes(
             explicit_source_catalog,
             &mut report,
-            admitted_automatic_routes,
+            &reactivated_automatic_sources,
         )?;
     }
     if let Some(catalog) = explicit_source_catalog {
-        catalog.prepare_discovery_report(data_root, &mut report)?;
+        // Codex combines sessions and archived_sessions into one authenticated
+        // automatic route. Keep only an exact requested secondary root in the
+        // automatic registration so the shared generation coordinator can
+        // transfer that root without dropping the route's primary root.
+        catalog.prepare_discovery_report(&mut report, &secondary_codex_registration_sources);
     }
     let mut build =
         build_automatic_source_backed_registry_from_report(discovery, data_root, report);

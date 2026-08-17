@@ -358,6 +358,23 @@ impl SourceBackedProviderRegistry {
         self.routes.routes()
     }
 
+    /// Returns the exact discovery roots declared by one executable automatic
+    /// route. Grouped routes may expose one primary metadata path while
+    /// retaining multiple registration roots; callers must match these roots
+    /// by exact provider/format/path identity rather than path containment.
+    pub fn automatic_route_registration_sources(
+        &self,
+        route_identity: &SourceRouteIdentity,
+    ) -> Option<impl ExactSizeIterator<Item = &ProviderSource>> {
+        let route = self.routes.iter().find(|route| {
+            route.metadata.route_identity.as_ref() == Some(route_identity)
+                && route.metadata.selection == Some(SourceBackedRouteSelection::Automatic)
+                && route.driver.is_some()
+                && !route.registration_sources.is_empty()
+        })?;
+        Some(route.registration_sources.iter())
+    }
+
     pub fn executable_route_count(&self) -> usize {
         self.routes.executable_route_count()
     }

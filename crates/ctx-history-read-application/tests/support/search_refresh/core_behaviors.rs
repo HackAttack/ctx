@@ -480,9 +480,35 @@ fn persistent_daemon_passively_publishes_appended_source_without_foreground_comm
 
 #[test]
 fn automatic_codex_append_after_targeted_import_preserves_and_extends_generation() {
+    assert_automatic_codex_append_after_targeted_import(
+        "sessions",
+        "019c08d7-0000-7000-8000-000000000002",
+        "targeted import automatic append initial oracle",
+        "targeted import automatic append new oracle",
+    );
+}
+
+#[test]
+fn automatic_codex_archived_append_after_targeted_import_preserves_and_extends_generation() {
+    assert_automatic_codex_append_after_targeted_import(
+        "archived_sessions",
+        "019c08d7-0000-7000-8000-000000000003",
+        "targeted archived import automatic append initial oracle",
+        "targeted archived import automatic append new oracle",
+    );
+}
+
+fn assert_automatic_codex_append_after_targeted_import(
+    session_tree: &str,
+    native_session_id: &str,
+    initial_oracle: &str,
+    appended_oracle: &str,
+) {
     let temp = tempdir();
-    let native_session_id = "019c08d7-0000-7000-8000-000000000002";
-    let sessions = temp.path().join(".codex").join("sessions");
+    let codex_root = temp.path().join(".codex");
+    let sessions = codex_root.join(session_tree);
+    let primary_oracle = (session_tree == "archived_sessions")
+        .then_some("primarysessionsretentionsentinel");
     let source = sessions
         .join("2026")
         .join("07")
@@ -494,14 +520,27 @@ fn automatic_codex_append_after_targeted_import_preserves_and_extends_generation
         &[(
             "2026-07-29T12:00:00Z",
             "user",
-            "targeted import automatic append initial oracle",
+            initial_oracle,
         )],
     );
+    if let Some(primary_oracle) = primary_oracle {
+        let primary_source = codex_root
+            .join("sessions")
+            .join("2026")
+            .join("07")
+            .join("29")
+            .join("rollout-019c08d7-0000-7000-8000-000000000004.jsonl");
+        write_codex_session(
+            &primary_source,
+            "019c08d7-0000-7000-8000-000000000004",
+            &[("2026-07-29T11:00:00Z", "user", primary_oracle)],
+        );
+    }
     let _daemon = start_source_refresh_daemon(&temp);
 
     let initial = json_output(ctx(&temp).args([
         "search",
-        "targeted import automatic append initial oracle",
+        initial_oracle,
         "--provider",
         "codex",
         "--refresh",
@@ -526,15 +565,16 @@ fn automatic_codex_append_after_targeted_import_preserves_and_extends_generation
         .expect("targeted import should leave a published generation active")
         .to_owned();
     assert_eq!(
-        status["lexical"]["indexed_documents"], 1,
-        "targeted import must preserve the initial document: {status:#}"
+        status["lexical"]["indexed_documents"],
+        if primary_oracle.is_some() { 2 } else { 1 },
+        "targeted import must preserve the initial and primary-root documents: {status:#}"
     );
 
     append_codex_message(
         &source,
         "2026-07-29T12:01:00Z",
         "assistant",
-        "targeted import automatic append new oracle",
+        appended_oracle,
     );
 
     // The mutation belongs to the normal automatic Codex watch route even
@@ -576,18 +616,20 @@ fn automatic_codex_append_after_targeted_import_preserves_and_extends_generation
         "{automatic_job:#}"
     );
     assert_eq!(
-        automatic_job["receipt"]["current"]["current_source_count"], 1,
+        automatic_job["receipt"]["current"]["current_source_count"],
+        if primary_oracle.is_some() { 2 } else { 1 },
         "{automatic_job:#}"
     );
     assert_eq!(
-        automatic_job["receipt"]["current"]["current_indexed_documents"], 2,
+        automatic_job["receipt"]["current"]["current_indexed_documents"],
+        if primary_oracle.is_some() { 3 } else { 2 },
         "{automatic_job:#}"
     );
 
-    for (query, expected) in [
-        ("targeted import automatic append initial oracle", 1),
-        ("targeted import automatic append new oracle", 1),
-    ] {
+    for query in [Some(initial_oracle), Some(appended_oracle), primary_oracle]
+        .into_iter()
+        .flatten()
+    {
         let search = json_output(ctx(&temp).args([
             "search",
             query,
@@ -603,7 +645,7 @@ fn automatic_codex_append_after_targeted_import_preserves_and_extends_generation
         );
         assert_eq!(
             search["results"].as_array().map(Vec::len),
-            Some(expected),
+            Some(1),
             "{search:#}"
         );
     }

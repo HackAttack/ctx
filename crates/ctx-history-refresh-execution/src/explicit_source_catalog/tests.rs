@@ -76,9 +76,7 @@ mod tests {
         assert_eq!(report.sources.len(), 1);
         assert_eq!(report.sources[0].path, new_path);
 
-        relocated
-            .prepare_discovery_report(&data_root, &mut report)
-            .unwrap();
+        relocated.prepare_discovery_report(&mut report, &[]);
         assert!(report.sources.is_empty());
 
         let mut repeated = DiscoveryReport {
@@ -89,9 +87,8 @@ mod tests {
             .prepare_retained_discovery_report(Some(&retained), &mut repeated)
             .unwrap();
         assert_eq!(repeated.sources.len(), 1);
-        retained
-            .prepare_discovery_report(&data_root, &mut repeated)
-            .unwrap();
+        assert_eq!(repeated.sources[0].path, old_path);
+        retained.prepare_discovery_report(&mut repeated, &[]);
         assert!(repeated.sources.is_empty());
     }
 
@@ -102,12 +99,11 @@ mod tests {
         let sessions = temp.path().join("codex-sessions");
         fs::create_dir_all(&sessions).unwrap();
         let source = provider_source_for_path(CaptureProvider::Codex, sessions);
-        let automatic_route = automatic_source_backed_route_identity(&source).unwrap();
         let retained = upsert_explicit_source(&data_root, &source)
             .unwrap()
             .authority;
         let mut report = DiscoveryReport {
-            sources: vec![source],
+            sources: vec![source.clone()],
             issues: Vec::new(),
         };
 
@@ -115,12 +111,106 @@ mod tests {
             .prepare_retained_discovery_report_with_automatic_routes(
                 None,
                 &mut report,
-                &BTreeSet::from([automatic_route]),
+                std::slice::from_ref(&source),
             )
             .unwrap();
 
         assert_eq!(report.sources.len(), 1);
         assert_eq!(report.sources[0].provider, CaptureProvider::Codex);
+    }
+
+    #[test]
+    fn grouped_automatic_route_reclaims_its_secondary_registration_root_only() {
+        let temp = tempfile::tempdir().unwrap();
+        let data_root = temp.path().join("data");
+        let codex_root = temp.path().join(".codex");
+        let sessions = codex_root.join("sessions");
+        let archived_sessions = codex_root.join("archived_sessions");
+        let unrelated_path = temp.path().join("unrelated.jsonl");
+        fs::create_dir_all(&sessions).unwrap();
+        fs::create_dir_all(&archived_sessions).unwrap();
+        fs::write(&unrelated_path, b"\n").unwrap();
+
+        let sessions_source = provider_source_for_path(CaptureProvider::Codex, sessions);
+        let archived_source =
+            provider_source_for_path(CaptureProvider::Codex, archived_sessions.clone());
+        let discovery = ctx_history_capture::DiscoveryContext::new(
+            temp.path(),
+            temp.path(),
+            ctx_history_capture::DiscoveryPlatform::Linux,
+            ctx_history_capture::DiscoveryPlatformDirs::default(),
+        );
+        let build = ctx_history_capture::build_automatic_source_backed_registry_from_report(
+            &discovery,
+            &data_root,
+            DiscoveryReport {
+                sources: vec![sessions_source, archived_source.clone()],
+                issues: Vec::new(),
+            },
+        );
+        let automatic_route = build
+            .registry
+            .routes()
+            .find_map(|route| route.route_identity.clone())
+            .unwrap();
+
+        let archived = upsert_explicit_source(&data_root, &archived_source).unwrap();
+        let unrelated =
+            upsert_explicit_source(&data_root, &custom_source(unrelated_path)).unwrap();
+        let archived_route =
+            ctx_history_index::SourceRouteIdentity::from_sha256("11".repeat(32)).unwrap();
+        let unrelated_route =
+            ctx_history_index::SourceRouteIdentity::from_sha256("22".repeat(32)).unwrap();
+        let mut entries = vec![
+            archived.authority.entries[0].clone(),
+            unrelated.authority.entries[0].clone(),
+        ];
+        sort_and_validate_entries(&mut entries).unwrap();
+        let retained = authority_for(1, &entries).unwrap();
+        let bindings = vec![
+            ExplicitSourceCatalogRouteBinding {
+                catalog_lineage: archived.catalog_lineage_hex(),
+                route_identity: archived_route.as_str().to_owned(),
+            },
+            ExplicitSourceCatalogRouteBinding {
+                catalog_lineage: unrelated.catalog_lineage_hex(),
+                route_identity: unrelated_route.as_str().to_owned(),
+            },
+        ];
+
+        let retained_secondary_sources = retained
+            .secondary_codex_registration_sources(&build.registry)
+            .unwrap();
+        assert_eq!(retained_secondary_sources, vec![archived_source.clone()]);
+        let mut requested_report = DiscoveryReport {
+            sources: vec![
+                provider_source_for_path(CaptureProvider::Codex, codex_root.join("sessions")),
+                archived_source,
+            ],
+            issues: Vec::new(),
+        };
+        retained.prepare_discovery_report(
+            &mut requested_report,
+            &retained_secondary_sources,
+        );
+        assert_eq!(
+            requested_report
+                .sources
+                .iter()
+                .map(|source| source.path.clone())
+                .collect::<BTreeSet<_>>(),
+            BTreeSet::from([codex_root.join("sessions"), archived_sessions])
+        );
+        assert_eq!(
+            retained
+                .automatic_reactivation_retirements(
+                    &bindings,
+                    &build,
+                    &BTreeSet::from([automatic_route.clone()]),
+                )
+                .unwrap(),
+            std::collections::BTreeMap::from([(automatic_route, vec![archived_route])])
+        );
     }
 
     #[test]
