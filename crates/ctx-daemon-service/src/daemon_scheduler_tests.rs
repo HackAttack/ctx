@@ -474,6 +474,40 @@ fn notification_failure_cannot_revoke_a_ready_searchable_core_publication() {
 }
 
 #[test]
+fn finite_core_worker_does_not_notify_adjacent_maintenance() {
+    let temp = tempfile::tempdir().unwrap();
+    let coordinator = CoreRefreshEngine::with_executor(Arc::new(
+        move |execution: SourceBackedRefreshExecution<'_>| {
+            Ok(publish_empty_authoritative_generation(&execution))
+        },
+    ));
+    coordinator.enqueue_for_test(None);
+    let mut args = daemon_args();
+    args.profile = crate::DaemonRunProfile::FiniteCoreWorker;
+    let mut runtime = DaemonRuntime::default();
+    let notification = FailingGenerationPublished::default();
+
+    let core = run_daemon_scheduler_cycle_with_activity_and_notification(
+        &args,
+        temp.path(),
+        &mut runtime,
+        None,
+        false,
+        None,
+        Some(&coordinator),
+        &notification,
+    )
+    .unwrap();
+
+    assert!(core.did_work);
+    assert!(!core.failed);
+    assert_eq!(notification.calls.load(Ordering::SeqCst), 0);
+    let job = read_daemon_job_status(&daemon_core_refresh_job_path(temp.path())).unwrap();
+    assert_eq!(job["status"], "completed", "{job:#}");
+    assert_eq!(job["request_state"], "published", "{job:#}");
+}
+
+#[test]
 fn healthy_idle_scheduler_performs_zero_source_refresh_scans() {
     let temp = tempfile::tempdir().unwrap();
     let calls = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));

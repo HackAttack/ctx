@@ -104,6 +104,9 @@ where
             data_root,
             runtime,
             source_refresh,
+            // Finite workers publish Core only; this notification seam may
+            // wake adjacent persistent maintenance consumers.
+            false,
             generation_published,
             observation,
         )?
@@ -121,6 +124,7 @@ where
             data_root,
             runtime,
             source_refresh,
+            true,
             generation_published,
             observation,
         )? {
@@ -296,6 +300,7 @@ fn run_pending_core_refresh<N>(
     data_root: &Path,
     runtime: &mut DaemonRuntime,
     source_refresh: Option<&CoreRefreshEngine>,
+    notify_generation_published: bool,
     generation_published: &N,
     observation: &dyn crate::DaemonObservationPort,
 ) -> Result<Option<DaemonIteration>>
@@ -316,7 +321,7 @@ where
         run.terminal_persistence_pending,
     )?;
     let failed = run.failed || run.terminal_persistence_pending;
-    if !run.terminal_persistence_pending {
+    if notify_generation_published && !run.terminal_persistence_pending {
         notify_core_generation_published(data_root, &job, generation_published);
     }
     let iteration = DaemonIteration::new(run.did_work, failed, daemon_core_cycle_state(&job));
