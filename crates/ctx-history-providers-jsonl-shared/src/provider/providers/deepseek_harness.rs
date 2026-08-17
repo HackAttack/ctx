@@ -46,7 +46,7 @@ use ctx_history_jsonl::{JsonlFamilyExecutionIo, JsonlPhysicalEncoding};
 pub(crate) const TREE_SOURCE_FORMAT: &str = "deepseek_harness_session_jsonl_tree";
 pub(crate) const EXPLICIT_SOURCE_FORMAT: &str = "deepseek_harness_session_jsonl";
 
-const PARSER_REVISION: &str = "deepseek-harness-native-jsonl-v2-core-activity";
+const PARSER_REVISION: &str = "deepseek-harness-native-jsonl-v3-selected-core-activity";
 const EVENT_IDENTITY_REVISION: &str = "deepseek-harness-sequence-v1";
 
 #[derive(Debug, Clone, Copy)]
@@ -398,23 +398,6 @@ impl<R: JsonlProviderRuntime> DeepSeekHarnessSemanticExecutor<R> {
             record.parent_session_id =
                 Some(session_identity(&self.source, parent).map_err(contract)?);
         }
-        let mut facts = Vec::new();
-        if let Some(cwd) = &self.binding.cwd {
-            facts.push(ProviderDeclaredFact {
-                kind: LiteralFactKind::SessionCwd,
-                value: cwd.clone(),
-            });
-        }
-        facts.extend(exact_file_references(&event.value).map_err(contract)?);
-        if !facts.is_empty() {
-            record.content.activity = Some(CoreActivity {
-                revision: CORE_ACTIVITY_REVISION,
-                provider_call_id: None,
-                invocation: None,
-                result: None,
-                facts,
-            });
-        }
         if let Some(reason) = event.content_omission_reason {
             record.content.policy_status = CoreContentPolicyStatus::Omitted {
                 reason: reason.to_owned(),
@@ -422,6 +405,23 @@ impl<R: JsonlProviderRuntime> DeepSeekHarnessSemanticExecutor<R> {
             record.content.normalized_body = None;
             record.content.structured_content = None;
         } else {
+            let mut facts = Vec::new();
+            if let Some(cwd) = &self.binding.cwd {
+                facts.push(ProviderDeclaredFact {
+                    kind: LiteralFactKind::SessionCwd,
+                    value: cwd.clone(),
+                });
+            }
+            facts.extend(exact_file_references(&event.value).map_err(contract)?);
+            if !facts.is_empty() {
+                record.content.activity = Some(CoreActivity {
+                    revision: CORE_ACTIVITY_REVISION,
+                    provider_call_id: None,
+                    invocation: None,
+                    result: None,
+                    facts,
+                });
+            }
             record.content.structured_content = Some(event.value);
             record
                 .content

@@ -835,6 +835,7 @@ fn private_reasoning_and_image_only_messages_are_retained_but_not_searchable() {
     assert!(omitted.iter().all(|record| {
         record.core_record.content.normalized_body.is_none()
             && record.core_record.content.structured_content.is_none()
+            && record.core_record.content.activity.is_none()
             && format!("{:?}", record.core_record.content.policy_status).starts_with("Omitted")
     }));
     let encoded = serde_json::to_string(
