@@ -295,7 +295,15 @@ fn classify_path(
     match components.as_slice() {
         [] if !is_file => Ok(AllocationCategory::Control),
         [name] if is_file && name == "active-generation.json" => Ok(AllocationCategory::Pointer),
-        [name] if is_file && name == ".ctx-generation-writer.lock" => {
+        [name]
+            if is_file
+                && matches!(
+                    name.as_str(),
+                    ".ctx-generation-writer.lock"
+                        | ".ctx-generation-read-leases-v2.lock"
+                        | ".ctx-generation-lease-coordinator-init-v2.lock"
+                ) =>
+        {
             Ok(AllocationCategory::Control)
         }
         [name] if is_file && is_atomic_temporary(name) => Ok(AllocationCategory::Temporary),
@@ -1309,6 +1317,15 @@ fn disk_gate_rejects_wrong_denominator_scope_or_value() {
 
 #[test]
 fn disk_gate_rejects_unexplained_files_and_bytes() {
+    for name in [
+        ".ctx-generation-read-leases-v2.lock",
+        ".ctx-generation-lease-coordinator-init-v2.lock",
+    ] {
+        assert_eq!(
+            classify_path(Path::new(name), true, "generation-base"),
+            Ok(AllocationCategory::Control)
+        );
+    }
     assert_eq!(
         classify_path(
             Path::new(
