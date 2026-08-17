@@ -19,6 +19,7 @@ const CHILD: &str = "child-session";
 fn direct_core_projection_is_complete_and_has_no_recursive_ancestry_sql() {
     let production = [
         include_str!("../source_backed.rs"),
+        include_str!("projection.rs"),
         include_str!("replacement.rs"),
     ]
     .join("\n");
