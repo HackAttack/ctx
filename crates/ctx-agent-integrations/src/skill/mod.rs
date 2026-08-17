@@ -23,6 +23,7 @@ pub const BUNDLED_SKILL_BODY: &str = include_str!("../../../../skills/ctx/SKILL.
 const LEGACY_BUNDLED_SKILL_NAME: &str = "ctx-agent-history-search";
 const METADATA_FILE: &str = ".ctx-skill.json";
 const LEGACY_BUNDLED_SKILL_HASHES: &[&str] = &[
+    "sha256:d76cd55f506f6d8605f2fed933a16e4ab995b3a4ab8e6d96bfd84d469872b3d6",
     "sha256:e0c0088162ed194d4961d856d441c3f46387609be41c5df625d546ddd4550946",
     "sha256:9c2ddb5ed64da0471050af225addd5823ef7fc2b9bbcea27e72a3c8553234774",
     "sha256:b4210c5e3c4fd8a8e62335ca61879bb88d026c092b4b663a9ae3ad15f34ee2ba",

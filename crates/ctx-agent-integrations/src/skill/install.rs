@@ -505,6 +505,8 @@ fn metadata_manages_legacy_hash(metadata: Option<&SkillMetadata>, hash: &str) ->
 mod tests {
     use super::*;
 
+    const RELEASED_LEGACY_SKILL_V0_17_0: &[u8] = include_bytes!("testdata/legacy_skill_v0_17_0.md");
+
     fn write_managed_legacy_skill(target: &SkillTarget, body: &[u8]) -> PathBuf {
         let legacy_dir = target.base_dir.join(LEGACY_BUNDLED_SKILL_NAME);
         fs::create_dir_all(&legacy_dir).unwrap();
@@ -559,6 +561,42 @@ mod tests {
             assert!(!legacy_dir.join("SKILL.md").exists());
             assert!(native_target.skill_dir.join("SKILL.md").is_file());
         }
+    }
+
+    #[test]
+    fn metadata_free_released_legacy_skill_is_migrated() {
+        let root = tempfile::tempdir().unwrap();
+        let context = super::super::PathContext::for_tests(
+            root.path().join("home"),
+            root.path().join("repo"),
+        );
+        let target =
+            super::super::single_target(super::super::SkillAgentArg::Universal, false, &context)
+                .unwrap();
+        let legacy_dir = target.base_dir.join(LEGACY_BUNDLED_SKILL_NAME);
+        fs::create_dir_all(&legacy_dir).unwrap();
+        fs::write(legacy_dir.join("SKILL.md"), RELEASED_LEGACY_SKILL_V0_17_0).unwrap();
+        assert_eq!(
+            sha256_hex(RELEASED_LEGACY_SKILL_V0_17_0),
+            "sha256:d76cd55f506f6d8605f2fed933a16e4ab995b3a4ab8e6d96bfd84d469872b3d6"
+        );
+        assert!(!legacy_dir.join(METADATA_FILE).exists());
+
+        let before = status_target(&target).unwrap();
+        assert_eq!(before.status, SkillInstallStatus::Stale);
+        assert_eq!(before.legacy_status, Some(SkillInstallStatus::Stale));
+
+        let result = install_target(&target, false, true, "1.0.0").unwrap();
+
+        assert!(result.success);
+        assert!(result.migrated);
+        assert_eq!(result.status, SkillInstallStatus::Current);
+        assert!(!legacy_dir.join("SKILL.md").exists());
+        assert_eq!(
+            fs::read(target.skill_dir.join("SKILL.md")).unwrap(),
+            BUNDLED_SKILL_BODY.as_bytes()
+        );
+        assert!(target.skill_dir.join(METADATA_FILE).is_file());
     }
 
     #[cfg(unix)]
