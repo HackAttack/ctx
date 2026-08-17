@@ -163,6 +163,16 @@ pub(super) enum PublishedGenerationOpen {
     Verified(VerifiedIndex),
 }
 
+pub(super) fn prepare_generation_control_state(data_root: &Path) -> Result<()> {
+    let index_root = source_backed_index_root(data_root);
+    match std::fs::symlink_metadata(&index_root) {
+        Ok(_) => ctx_history_index::ensure_generation_control_state_private(&index_root)
+            .context("protect source-backed generation control state"),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(error.into()),
+    }
+}
+
 pub(super) fn open_published_generation(
     data_root: &Path,
     journal: &dyn RefreshJournal,

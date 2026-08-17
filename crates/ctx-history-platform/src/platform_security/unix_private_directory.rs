@@ -17,19 +17,44 @@ use std::{
 };
 
 #[cfg(target_os = "macos")]
-use std::ffi::c_void;
+use std::{ffi::c_void, ptr::null_mut};
 
 const PRIVATE_DIRECTORY_MODE: libc::mode_t = 0o700;
 
+#[cfg(target_os = "macos")]
+type Acl = *mut c_void;
+#[cfg(target_os = "macos")]
+const ACL_TYPE_EXTENDED: libc::c_int = 0x0000_0100;
+
+#[cfg(target_os = "macos")]
+unsafe extern "C" {
+    fn acl_init(count: libc::c_int) -> Acl;
+    fn acl_get_fd_np(fd: libc::c_int, acl_type: libc::c_int) -> Acl;
+    fn acl_get_entry(acl: Acl, entry_id: libc::c_int, entry: *mut *mut c_void) -> libc::c_int;
+    fn acl_set_fd_np(fd: libc::c_int, acl: Acl, acl_type: libc::c_int) -> libc::c_int;
+    fn acl_free(object: *mut c_void) -> libc::c_int;
+}
+
 pub(super) fn create_private_directory_all(path: &Path) -> io::Result<()> {
-    walk_private_directory(path, false)
+    walk_private_directory(path, ExistingFinalPolicy::Verify)
 }
 
 pub(super) fn establish_private_data_root(path: &Path) -> io::Result<()> {
-    walk_private_directory(path, true)
+    walk_private_directory(path, ExistingFinalPolicy::EstablishExact)
 }
 
-fn walk_private_directory(path: &Path, repair_final: bool) -> io::Result<()> {
+pub(super) fn ensure_private_directory(path: &Path) -> io::Result<()> {
+    walk_private_directory(path, ExistingFinalPolicy::EnsurePrivate)
+}
+
+#[derive(Clone, Copy)]
+enum ExistingFinalPolicy {
+    Verify,
+    EstablishExact,
+    EnsurePrivate,
+}
+
+fn walk_private_directory(path: &Path, existing_final: ExistingFinalPolicy) -> io::Result<()> {
     if path.as_os_str().is_empty()
         || path
             .components()
@@ -42,10 +67,13 @@ fn walk_private_directory(path: &Path, repair_final: bool) -> io::Result<()> {
     }
 
     let normalized_path = super::path_overlap::normalize_platform_namespace_alias(path);
-    walk_private_directory_nofollow(&normalized_path, repair_final)
+    walk_private_directory_nofollow(&normalized_path, existing_final)
 }
 
-fn walk_private_directory_nofollow(path: &Path, repair_final: bool) -> io::Result<()> {
+fn walk_private_directory_nofollow(
+    path: &Path,
+    existing_final: ExistingFinalPolicy,
+) -> io::Result<()> {
     let mut components = path.components().peekable();
     let mut current = match components.peek() {
         Some(Component::RootDir) => {
@@ -74,16 +102,20 @@ fn walk_private_directory_nofollow(path: &Path, repair_final: bool) -> io::Resul
             clear_extended_acl(&next)?;
             verify_exact_private_directory(&next.metadata()?)?;
             created_private_ancestor = true;
-        } else if is_final && repair_final {
-            establish_exact_private_directory(&next)?;
-        } else if is_final || created_private_ancestor || raced_existing {
+        } else if is_final {
+            match existing_final {
+                ExistingFinalPolicy::Verify => verify_owner_only_directory(&next.metadata()?)?,
+                ExistingFinalPolicy::EstablishExact => establish_exact_private_directory(&next)?,
+                ExistingFinalPolicy::EnsurePrivate => ensure_owner_private_directory(&next)?,
+            }
+        } else if created_private_ancestor || raced_existing {
             verify_owner_only_directory(&next.metadata()?)?;
         }
         current = next;
     }
 
     if !saw_component {
-        if repair_final {
+        if matches!(existing_final, ExistingFinalPolicy::EstablishExact) {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
                 "ctx data root must name a directory below the filesystem root",
@@ -92,6 +124,19 @@ fn walk_private_directory_nofollow(path: &Path, repair_final: bool) -> io::Resul
         verify_owner_only_directory(&current.metadata()?)?;
     }
     Ok(())
+}
+
+fn ensure_owner_private_directory(directory: &File) -> io::Result<()> {
+    let metadata = directory.metadata()?;
+    verify_directory_type(&metadata)?;
+    if metadata.uid() != unsafe { libc::geteuid() } {
+        return Err(private_directory_error());
+    }
+    if metadata.mode() & 0o077 != 0 {
+        directory.set_permissions(std::fs::Permissions::from_mode(0o700))?;
+    }
+    clear_extended_acl(directory)?;
+    verify_owner_only_directory(&directory.metadata()?)
 }
 
 fn establish_exact_private_directory(directory: &File) -> io::Result<()> {
@@ -109,16 +154,7 @@ fn establish_exact_private_directory(directory: &File) -> io::Result<()> {
 }
 
 #[cfg(target_os = "macos")]
-fn clear_extended_acl(directory: &File) -> io::Result<()> {
-    type Acl = *mut c_void;
-    const ACL_TYPE_EXTENDED: libc::c_int = 0x0000_0100;
-
-    unsafe extern "C" {
-        fn acl_init(count: libc::c_int) -> Acl;
-        fn acl_set_fd_np(fd: libc::c_int, acl: Acl, acl_type: libc::c_int) -> libc::c_int;
-        fn acl_free(object: *mut c_void) -> libc::c_int;
-    }
-
+pub(super) fn clear_extended_acl(directory: &File) -> io::Result<()> {
     let acl = unsafe { acl_init(0) };
     if acl.is_null() {
         return Err(io::Error::last_os_error());
@@ -136,7 +172,43 @@ fn clear_extended_acl(directory: &File) -> io::Result<()> {
 }
 
 #[cfg(not(target_os = "macos"))]
-fn clear_extended_acl(_directory: &File) -> io::Result<()> {
+pub(super) fn clear_extended_acl(_directory: &File) -> io::Result<()> {
+    Ok(())
+}
+
+#[cfg(target_os = "macos")]
+pub(super) fn verify_no_extended_acl(file: &File) -> io::Result<()> {
+    const ACL_FIRST_ENTRY: libc::c_int = 0;
+
+    let acl = unsafe { acl_get_fd_np(file.as_raw_fd(), ACL_TYPE_EXTENDED) };
+    if acl.is_null() {
+        return Err(io::Error::last_os_error());
+    }
+    let mut entry = null_mut();
+    let result = unsafe { acl_get_entry(acl, ACL_FIRST_ENTRY, &raw mut entry) };
+    let entry_error = (result != 0).then(io::Error::last_os_error);
+    let free_result = unsafe { acl_free(acl) };
+    if free_result != 0 {
+        return Err(io::Error::last_os_error());
+    }
+    // Darwin returns zero when ACL_FIRST_ENTRY finds an entry and EINVAL when
+    // the valid retrieved ACL has no first entry.
+    match (result, entry_error) {
+        (0, _) => Err(io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            "private state path has an extended ACL",
+        )),
+        (-1, Some(error)) if error.raw_os_error() == Some(libc::EINVAL) => Ok(()),
+        (-1, Some(error)) => Err(error),
+        _ => Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "unexpected result while inspecting an extended ACL",
+        )),
+    }
+}
+
+#[cfg(not(target_os = "macos"))]
+pub(super) fn verify_no_extended_acl(_file: &File) -> io::Result<()> {
     Ok(())
 }
 
@@ -231,7 +303,7 @@ fn verify_directory_type(metadata: &Metadata) -> io::Result<()> {
 
 fn verify_owner_only_directory(metadata: &Metadata) -> io::Result<()> {
     verify_directory_type(metadata)?;
-    if metadata.permissions().mode() & 0o077 == 0 {
+    if metadata.uid() == unsafe { libc::geteuid() } && metadata.permissions().mode() & 0o077 == 0 {
         Ok(())
     } else {
         Err(private_directory_error())
@@ -240,7 +312,9 @@ fn verify_owner_only_directory(metadata: &Metadata) -> io::Result<()> {
 
 fn verify_exact_private_directory(metadata: &Metadata) -> io::Result<()> {
     verify_directory_type(metadata)?;
-    if metadata.permissions().mode() & 0o777 == 0o700 {
+    if metadata.uid() == unsafe { libc::geteuid() }
+        && metadata.permissions().mode() & 0o777 == 0o700
+    {
         Ok(())
     } else {
         Err(private_directory_error())

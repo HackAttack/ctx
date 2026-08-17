@@ -113,8 +113,9 @@ use orchestration::{
     source_backed_route_admission_fence, SourceBackedRefreshPlan,
 };
 use publication::{
-    open_published_generation, open_published_generation_for_recovery, published_generation_id,
-    retained_generation_hint, verify_source_backed_publication, PublishedGenerationOpen,
+    open_published_generation, open_published_generation_for_recovery,
+    prepare_generation_control_state, published_generation_id, retained_generation_hint,
+    verify_source_backed_publication, PublishedGenerationOpen,
 };
 
 const SOURCE_REFRESH_ATTEMPT_HISTORY: usize = 64;

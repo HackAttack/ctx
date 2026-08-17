@@ -10,6 +10,12 @@ use std::{
     sync::Arc,
 };
 
+#[cfg(unix)]
+use std::os::unix::fs::OpenOptionsExt as _;
+#[cfg(windows)]
+use std::os::windows::fs::OpenOptionsExt as _;
+
+use fs4::fs_std::FileExt as _;
 use tantivy::directory::{
     error::{DeleteError, LockError, OpenDirectoryError, OpenReadError, OpenWriteError},
     Directory, DirectoryLock, FileHandle, FileSlice, Lock, MmapDirectory, WatchCallback,
@@ -17,6 +23,13 @@ use tantivy::directory::{
 };
 use tantivy::HasLen;
 use uuid::Uuid;
+
+use ctx_history_platform::platform_security::restrict_private_file_handle;
+
+#[cfg(windows)]
+use windows_sys::Win32::Storage::FileSystem::{
+    FILE_FLAG_OPEN_REPARSE_POINT, FILE_GENERIC_WRITE, READ_CONTROL, WRITE_DAC,
+};
 
 const TEMPORARY_FILE_PREFIX: &str = ".ctx-tantivy-atomic-";
 const TEMPORARY_FILE_ATTEMPTS: usize = 16;
@@ -309,7 +322,19 @@ impl Directory for DurableMmapDirectory {
 
     fn acquire_lock(&self, lock: &Lock) -> Result<DirectoryLock, LockError> {
         match &self.inner {
-            DurableDirectoryBackend::Mmap(inner) => inner.acquire_lock(lock),
+            DurableDirectoryBackend::Mmap(_) => {
+                let file = open_private_lock_file(&self.resolve_path(&lock.filepath))
+                    .map_err(LockError::wrap_io_error)?;
+                if lock.is_blocking {
+                    file.lock_exclusive().map_err(LockError::wrap_io_error)?;
+                } else if !file
+                    .try_lock_exclusive()
+                    .map_err(LockError::wrap_io_error)?
+                {
+                    return Err(LockError::LockBusy);
+                }
+                Ok(Box::new(PrivateFileLock { _file: file }).into())
+            }
             // Immutable generations are protected from outer reclamation by
             // GenerationReadLease. Tantivy's meta lock only coordinates its
             // own mutable-directory GC, which cannot run through this
@@ -330,6 +355,26 @@ impl Directory for DurableMmapDirectory {
             }
         }
     }
+}
+
+struct PrivateFileLock {
+    _file: File,
+}
+
+fn open_private_lock_file(path: &Path) -> io::Result<File> {
+    let mut options = OpenOptions::new();
+    options.write(true).create(true).truncate(false);
+    #[cfg(unix)]
+    options
+        .mode(0o600)
+        .custom_flags(libc::O_CLOEXEC | libc::O_NOFOLLOW | libc::O_NONBLOCK);
+    #[cfg(windows)]
+    options
+        .access_mode(FILE_GENERIC_WRITE | READ_CONTROL | WRITE_DAC)
+        .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT);
+    let file = options.open(path)?;
+    restrict_private_file_handle(&file)?;
+    Ok(file)
 }
 
 #[derive(Debug)]
@@ -588,12 +633,21 @@ fn create_temporary_file(parent_path: &Path) -> io::Result<(PathBuf, File)> {
             "{TEMPORARY_FILE_PREFIX}{}.tmp",
             Uuid::new_v4().simple()
         ));
-        match OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .open(&temporary_path)
-        {
-            Ok(file) => return Ok((temporary_path, file)),
+        let mut options = OpenOptions::new();
+        options.write(true).create_new(true);
+        #[cfg(unix)]
+        options.mode(0o600);
+        #[cfg(windows)]
+        options.access_mode(FILE_GENERIC_WRITE | READ_CONTROL | WRITE_DAC);
+        match options.open(&temporary_path) {
+            Ok(file) => {
+                if let Err(error) = restrict_private_file_handle(&file) {
+                    drop(file);
+                    let _ = fs::remove_file(&temporary_path);
+                    return Err(error);
+                }
+                return Ok((temporary_path, file));
+            }
             Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {}
             Err(error) => return Err(error),
         }
@@ -695,6 +749,53 @@ mod tests {
     use tempfile::tempdir;
 
     use super::*;
+
+    #[cfg(unix)]
+    #[test]
+    fn lock_rejects_symlink_without_changing_its_target() {
+        use std::os::unix::fs::{symlink, PermissionsExt as _};
+
+        let temporary_directory = tempdir().unwrap();
+        let target = temporary_directory.path().join("outside");
+        fs::write(&target, b"preserve").unwrap();
+        fs::set_permissions(&target, fs::Permissions::from_mode(0o664)).unwrap();
+        let lock_path = temporary_directory.path().join("writer.lock");
+        symlink(&target, &lock_path).unwrap();
+        let directory = DurableMmapDirectory::open(temporary_directory.path()).unwrap();
+
+        let error = match directory.acquire_lock(&Lock {
+            filepath: PathBuf::from("writer.lock"),
+            is_blocking: false,
+        }) {
+            Ok(_) => panic!("symlink lock unexpectedly opened"),
+            Err(error) => error,
+        };
+
+        assert!(matches!(error, LockError::IoError(_)));
+        assert_eq!(fs::read(&target).unwrap(), b"preserve");
+        assert_eq!(
+            fs::metadata(&target).unwrap().permissions().mode() & 0o777,
+            0o664
+        );
+    }
+
+    #[test]
+    fn private_lock_preserves_nonblocking_exclusion_and_releases_on_drop() {
+        let temporary_directory = tempdir().unwrap();
+        let directory = DurableMmapDirectory::open(temporary_directory.path()).unwrap();
+        let lock = Lock {
+            filepath: PathBuf::from("writer.lock"),
+            is_blocking: false,
+        };
+
+        let held = directory.acquire_lock(&lock).unwrap();
+        assert!(matches!(
+            directory.acquire_lock(&lock),
+            Err(LockError::LockBusy)
+        ));
+        drop(held);
+        directory.acquire_lock(&lock).unwrap();
+    }
 
     #[test]
     fn atomic_write_replaces_existing_file() {

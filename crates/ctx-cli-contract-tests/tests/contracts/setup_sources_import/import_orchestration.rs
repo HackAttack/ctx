@@ -128,6 +128,147 @@ fn published_generation(report: &Value) -> String {
         .to_owned()
 }
 
+#[cfg(unix)]
+fn ctx_with_umask(temp: &TempDir, mask: &str) -> assert_cmd::Command {
+    let prepared = ctx(temp);
+    let binary = prepared.get_program().to_owned();
+    let mut command = assert_cmd::Command::new("sh");
+    for (name, value) in prepared.get_envs() {
+        match value {
+            Some(value) => {
+                command.env(name, value);
+            }
+            None => {
+                command.env_remove(name);
+            }
+        }
+    }
+    command
+        .args(["-c", "umask \"$1\"; shift; exec \"$@\"", "ctx-umask", mask])
+        .arg(binary);
+    command
+}
+
+#[cfg(unix)]
+fn unix_mode(path: impl AsRef<Path>) -> u32 {
+    use std::os::unix::fs::PermissionsExt as _;
+
+    fs::metadata(path).unwrap().permissions().mode() & 0o777
+}
+
+#[cfg(unix)]
+fn set_unix_mode(path: impl AsRef<Path>, mode: u32) {
+    use std::os::unix::fs::PermissionsExt as _;
+
+    fs::set_permissions(path, fs::Permissions::from_mode(mode)).unwrap();
+}
+
+#[cfg(unix)]
+fn assert_private_index_control_state(temp: &TempDir) {
+    let search_root = data_root(temp).join("search");
+    let lexical_root = search_root.join("lexical");
+    for directory in [
+        data_root(temp),
+        search_root,
+        lexical_root.clone(),
+        lexical_root.join("ctx-generations"),
+        lexical_root.join("index-generations"),
+    ] {
+        assert_eq!(unix_mode(&directory), 0o700, "{}", directory.display());
+    }
+    for file in [
+        lexical_root.join(".ctx-generation-writer.lock"),
+        lexical_root.join("active-generation.json"),
+    ] {
+        assert_eq!(unix_mode(&file), 0o600, "{}", file.display());
+    }
+    for entry in fs::read_dir(lexical_root.join("ctx-generations")).unwrap() {
+        let path = entry.unwrap().path();
+        if path
+            .extension()
+            .is_some_and(|extension| extension == "json")
+        {
+            assert_eq!(unix_mode(&path), 0o600, "{}", path.display());
+        }
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn manual_first_import_is_umask_independent_and_publishes_private_control_state() {
+    let temp = tempdir();
+    write_codex_setup_session(&temp);
+
+    ctx_with_umask(&temp, "0002")
+        .args(["daemon", "disable"])
+        .assert()
+        .success();
+    let imported = json_output(
+        ctx_with_umask(&temp, "0002")
+            .args(["import", "--all", "--format=json", "--progress", "none"])
+            .timeout(Duration::from_secs(20)),
+    );
+    assert_eq!(imported["outcome"], "success", "{imported:#}");
+
+    assert_private_index_control_state(&temp);
+}
+
+#[cfg(unix)]
+#[test]
+fn manual_exact_noop_repairs_legacy_permissive_control_state() {
+    let temp = tempdir();
+    write_codex_setup_session(&temp);
+
+    ctx_with_umask(&temp, "0077")
+        .args(["daemon", "disable"])
+        .assert()
+        .success();
+    let initial = json_output(
+        ctx_with_umask(&temp, "0077")
+            .args(["import", "--all", "--format=json", "--progress", "none"])
+            .timeout(Duration::from_secs(20)),
+    );
+    assert_eq!(initial["outcome"], "success", "{initial:#}");
+
+    let search_root = data_root(&temp).join("search");
+    let lexical_root = search_root.join("lexical");
+    for directory in [
+        search_root,
+        lexical_root.clone(),
+        lexical_root.join("ctx-generations"),
+        lexical_root.join("index-generations"),
+    ] {
+        set_unix_mode(directory, 0o775);
+    }
+    for file in [
+        lexical_root.join(".ctx-generation-writer.lock"),
+        lexical_root.join("active-generation.json"),
+    ] {
+        set_unix_mode(file, 0o664);
+    }
+    for entry in fs::read_dir(lexical_root.join("ctx-generations")).unwrap() {
+        let path = entry.unwrap().path();
+        if path
+            .extension()
+            .is_some_and(|extension| extension == "json")
+        {
+            set_unix_mode(path, 0o664);
+        }
+    }
+
+    let repaired = json_output(
+        ctx_with_umask(&temp, "0002")
+            .args(["import", "--all", "--format=json", "--progress", "none"])
+            .timeout(Duration::from_secs(20)),
+    );
+    assert_eq!(repaired["outcome"], "success", "{repaired:#}");
+    assert_eq!(
+        published_generation(&repaired),
+        published_generation(&initial)
+    );
+    assert_private_index_control_state(&temp);
+}
+
 #[test]
 fn deprecated_partial_remains_a_noop_without_bypassing_daemon_only_writes() {
     let temp = tempdir();

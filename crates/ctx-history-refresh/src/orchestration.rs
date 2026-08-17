@@ -214,6 +214,7 @@ fn source_backed_route_observation_fence(
     let discovery_duration = discovery_started.elapsed();
     validate_provider_source_roots_outside_data_root(data_root, report.sources.iter())
         .context("validate provider roots before admitting source refresh demand")?;
+    prepare_generation_control_state(data_root)?;
     let published_state = RetainedPublishedState { journal };
     let catalog = ctx_history_refresh_execution::source_backed_watch_catalog_from_report(
         &discovery,

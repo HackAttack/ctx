@@ -31,11 +31,13 @@ impl GenerationWriter {
         };
         let changed_session_registry_memory_bytes = options.memory_bytes;
         let requested_root = root.as_ref().to_path_buf();
-        fs::create_dir_all(&requested_root)?;
+        ctx_history_platform::platform_security::ensure_private_directory(&requested_root)?;
         let directory =
             DurableMmapDirectory::open(&requested_root).map_err(tantivy::TantivyError::from)?;
         let root = directory.root_path().to_path_buf();
-        fs::create_dir_all(root.join(MANIFEST_DIRECTORY))?;
+        ctx_history_platform::platform_security::ensure_private_directory(
+            &root.join(MANIFEST_DIRECTORY),
+        )?;
         let generation_writer_lock = Lock {
             filepath: PathBuf::from(GENERATION_WRITER_LOCK_FILE),
             is_blocking: false,
@@ -44,6 +46,10 @@ impl GenerationWriter {
             acquire_generation_writer_lock_with_retry(&directory, &generation_writer_lock)?;
         reclaim_abandoned_atomic_writes(&root)?;
         reclaim_abandoned_atomic_writes(&root.join(MANIFEST_DIRECTORY))?;
+        ctx_history_index_generation::ensure_generation_control_files_private_with_writer_lock_held(
+            &root,
+        )?;
+        ctx_history_index_format::clear_manifest_cache_for_root(&root)?;
 
         let (active_authority, mut pointer_requires_rebuild) =
             match load_active_publication_authority(&root) {

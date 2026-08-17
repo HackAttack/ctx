@@ -22,6 +22,7 @@ ctx-history-core = { path = "../ctx-history-core" }
 ctx-history-index-format = { path = "../ctx-history-index-format" }
 ctx-history-index-generation = { path = "../ctx-history-index-generation" }
 ctx-history-index-query = { path = "../ctx-history-index-query" }
+ctx-history-platform = { path = "../ctx-history-platform" }
 ctx-semantic-model = { path = "../ctx-semantic-model" }
 memmap2.workspace = true
 serde.workspace = true

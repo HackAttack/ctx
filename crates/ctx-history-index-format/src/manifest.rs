@@ -35,6 +35,21 @@ type ManifestCacheKey = (PathBuf, String);
 static MANIFEST_CACHE: OnceLock<Mutex<BTreeMap<ManifestCacheKey, ManifestCacheEntry>>> =
     OnceLock::new();
 
+/// Drops process-local manifest identity snapshots after a synchronized,
+/// metadata-only permission repair. Live publications retain their immutable
+/// materialization; subsequent opens authenticate the repaired files anew.
+#[doc(hidden)]
+pub fn clear_manifest_cache_for_root(root: &Path) -> Result<()> {
+    let Some(cache) = MANIFEST_CACHE.get() else {
+        return Ok(());
+    };
+    cache
+        .lock()
+        .map_err(|_| IndexError::NonCanonicalManifest)?
+        .retain(|(cached_root, _), _| cached_root != root);
+    Ok(())
+}
+
 #[derive(Clone)]
 struct ManifestCacheEntry {
     manifest: Weak<GenerationManifest>,

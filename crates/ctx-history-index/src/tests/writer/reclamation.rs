@@ -54,6 +54,97 @@ fn writer_open_reclaims_unreferenced_and_quarantined_manifests() {
     assert!(manifest_path(temp.path(), &receipt.generation_id).exists());
 }
 
+#[cfg(unix)]
+#[test]
+fn writer_open_repairs_legacy_flat_delta_ancestor_before_materialization() {
+    use std::os::unix::fs::PermissionsExt as _;
+
+    let temp = tempdir().unwrap();
+    let source = source("legacy-flat-delta-ancestor.jsonl");
+    let mut initial = GenerationWriter::open(temp.path(), WriterOptions::default())
+        .unwrap()
+        .into_writer()
+        .unwrap();
+    initial.begin_source(source.clone()).unwrap();
+    initial
+        .add_core_record(document(&source, 1, "base generation"))
+        .unwrap();
+    initial.certify_source(certificate(&source, 1, 1)).unwrap();
+    let base = initial.commit(|_| true).unwrap();
+    let pinned_base = VerifiedIndex::open(temp.path()).unwrap();
+
+    let mut successor = GenerationWriter::open(temp.path(), WriterOptions::default())
+        .unwrap()
+        .into_writer()
+        .unwrap();
+    successor.begin_source(source.clone()).unwrap();
+    successor
+        .add_core_record(document(&source, 2, "delta generation"))
+        .unwrap();
+    successor
+        .certify_source(certificate(&source, 2, 1))
+        .unwrap();
+    let delta = successor.commit(|_| true).unwrap();
+    let delta_bytes = fs::read(manifest_path(temp.path(), &delta.generation_id)).unwrap();
+    let delta_json: serde_json::Value = serde_json::from_slice(&delta_bytes).unwrap();
+    assert_eq!(delta_json["storage_format"], "ctx-manifest-flat-delta-v1");
+    assert_eq!(delta_json["base_generation_id"], base.generation_id);
+
+    let base_manifest = manifest_path(temp.path(), &base.generation_id);
+    fs::set_permissions(&base_manifest, fs::Permissions::from_mode(0o664)).unwrap();
+    let reopened = GenerationWriter::open(temp.path(), WriterOptions::default())
+        .unwrap()
+        .into_writer()
+        .unwrap();
+
+    assert_eq!(
+        fs::metadata(&base_manifest).unwrap().permissions().mode() & 0o777,
+        0o600
+    );
+    assert_eq!(
+        reopened.base_generation_id(),
+        Some(delta.generation_id.as_str())
+    );
+    assert_eq!(pinned_base.generation_id(), base.generation_id);
+}
+
+#[cfg(unix)]
+#[test]
+fn permission_repair_through_noncanonical_root_evicts_canonical_cache_entry() {
+    use std::os::unix::fs::PermissionsExt as _;
+
+    let temp = tempfile::tempdir_in(".").unwrap();
+    let root = PathBuf::from(temp.path().file_name().unwrap());
+    assert!(root.is_relative());
+    let canonical_root = root.canonicalize().unwrap();
+    assert_eq!(canonical_root, temp.path().canonicalize().unwrap());
+    assert_ne!(root, canonical_root);
+    let source = source("noncanonical-repair-root.jsonl");
+    let mut initial = GenerationWriter::open(&root, WriterOptions::default())
+        .unwrap()
+        .into_writer()
+        .unwrap();
+    initial.begin_source(source.clone()).unwrap();
+    initial
+        .add_core_record(document(&source, 1, "cached generation"))
+        .unwrap();
+    initial.certify_source(certificate(&source, 1, 1)).unwrap();
+    let receipt = initial.commit(|_| true).unwrap();
+    let pinned = VerifiedIndex::open(&root).unwrap();
+
+    let manifest = manifest_path(&root, &receipt.generation_id);
+    fs::set_permissions(&manifest, fs::Permissions::from_mode(0o664)).unwrap();
+    ensure_generation_control_state_private(&root).unwrap();
+
+    let reopened = VerifiedIndex::open(&root).unwrap();
+    assert_eq!(reopened.generation_id(), receipt.generation_id);
+    assert_eq!(pinned.generation_id(), receipt.generation_id);
+    assert_eq!(
+        fs::metadata(&manifest).unwrap().permissions().mode() & 0o777,
+        0o600
+    );
+}
+
 #[test]
 fn writer_exposes_the_base_manifest_captured_under_its_lock() {
     let temp = tempdir().unwrap();

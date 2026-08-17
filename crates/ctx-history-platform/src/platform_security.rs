@@ -75,6 +75,32 @@ pub fn create_private_directory_all(path: &Path) -> io::Result<()> {
     }
 }
 
+/// Creates missing directories with an owner-only policy and repairs an
+/// existing final directory when it is owned by the current user but is not
+/// private yet.
+///
+/// Existing owner-private directories are left unchanged, including more
+/// restrictive modes such as read/execute-only directories. Unsafe ownership,
+/// symlinks, and Windows reparse points fail closed.
+pub fn ensure_private_directory(path: &Path) -> io::Result<()> {
+    #[cfg(unix)]
+    {
+        unix_private_directory::ensure_private_directory(path)
+    }
+    #[cfg(windows)]
+    {
+        create_private_directory_all(path).or_else(|_| establish_private_data_root(path))
+    }
+    #[cfg(not(any(unix, windows)))]
+    {
+        let _ = path;
+        Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "private directory establishment is unavailable on this platform",
+        ))
+    }
+}
+
 /// Applies and verifies an owner-only directory policy.
 pub fn restrict_private_directory(path: &Path) -> io::Result<()> {
     #[cfg(unix)]
@@ -100,8 +126,8 @@ pub fn restrict_private_directory(path: &Path) -> io::Result<()> {
 pub fn restrict_private_file(path: &Path) -> io::Result<()> {
     #[cfg(unix)]
     {
-        use std::os::unix::fs::PermissionsExt as _;
-        fs::set_permissions(path, fs::Permissions::from_mode(0o600))
+        let file = open_regular_file_nofollow(path)?;
+        restrict_private_file_handle(&file)
     }
     #[cfg(windows)]
     {
@@ -117,13 +143,28 @@ pub fn restrict_private_file(path: &Path) -> io::Result<()> {
     }
 }
 
+/// Verifies an existing regular file and repairs its owner-only policy when
+/// the current user owns it. Symlinks, reparse points, unsafe ownership, and
+/// non-regular files fail closed.
+pub fn ensure_private_file(path: &Path) -> io::Result<()> {
+    match verify_private_file(path) {
+        Ok(()) => Ok(()),
+        Err(_) => restrict_private_file(path),
+    }
+}
+
 /// Applies and verifies an owner-only regular-file policy through an already
 /// open handle.
 pub fn restrict_private_file_handle(handle: &std::fs::File) -> io::Result<()> {
     #[cfg(unix)]
     {
-        use std::os::unix::fs::PermissionsExt as _;
+        use std::os::unix::fs::{MetadataExt as _, PermissionsExt as _};
+        let metadata = handle.metadata()?;
+        if !metadata.is_file() || metadata.uid() != unsafe { libc::geteuid() } {
+            return Err(private_policy_error());
+        }
         handle.set_permissions(fs::Permissions::from_mode(0o600))?;
+        unix_private_directory::clear_extended_acl(handle)?;
         verify_private_file_handle(handle)
     }
     #[cfg(windows)]
@@ -165,10 +206,11 @@ pub fn restrict_private_executable(path: &Path) -> io::Result<()> {
 pub fn verify_private_directory(path: &Path) -> io::Result<()> {
     #[cfg(unix)]
     {
-        use std::os::unix::fs::PermissionsExt as _;
+        use std::os::unix::fs::{MetadataExt as _, PermissionsExt as _};
         let metadata = fs::symlink_metadata(path)?;
         if metadata.is_dir()
             && !metadata.file_type().is_symlink()
+            && metadata.uid() == unsafe { libc::geteuid() }
             && metadata.permissions().mode() & 0o077 == 0
         {
             Ok(())
@@ -194,16 +236,8 @@ pub fn verify_private_directory(path: &Path) -> io::Result<()> {
 pub fn verify_private_file(path: &Path) -> io::Result<()> {
     #[cfg(unix)]
     {
-        use std::os::unix::fs::PermissionsExt as _;
-        let metadata = fs::symlink_metadata(path)?;
-        if metadata.is_file()
-            && !metadata.file_type().is_symlink()
-            && metadata.permissions().mode() & 0o177 == 0
-        {
-            Ok(())
-        } else {
-            Err(private_policy_error())
-        }
+        let file = open_regular_file_nofollow(path)?;
+        verify_private_file_handle(&file)
     }
     #[cfg(windows)]
     {
@@ -262,10 +296,13 @@ pub fn verify_private_directory_handle(handle: &std::fs::File) -> io::Result<()>
 pub fn verify_private_file_handle(handle: &std::fs::File) -> io::Result<()> {
     #[cfg(unix)]
     {
-        use std::os::unix::fs::PermissionsExt as _;
+        use std::os::unix::fs::{MetadataExt as _, PermissionsExt as _};
         let metadata = handle.metadata()?;
-        if metadata.is_file() && metadata.permissions().mode() & 0o177 == 0 {
-            Ok(())
+        if metadata.is_file()
+            && metadata.uid() == unsafe { libc::geteuid() }
+            && metadata.permissions().mode() & 0o177 == 0
+        {
+            unix_private_directory::verify_no_extended_acl(handle)
         } else {
             Err(private_policy_error())
         }
@@ -290,6 +327,58 @@ fn private_policy_error() -> io::Error {
         io::ErrorKind::PermissionDenied,
         "private state path is not owner-only",
     )
+}
+
+#[cfg(unix)]
+fn open_regular_file_nofollow(path: &Path) -> io::Result<std::fs::File> {
+    use std::os::unix::fs::OpenOptionsExt as _;
+
+    let open = |read: bool, write: bool| {
+        let mut options = fs::OpenOptions::new();
+        options
+            .read(read)
+            .write(write)
+            .custom_flags(libc::O_CLOEXEC | libc::O_NOFOLLOW | libc::O_NONBLOCK)
+            .open(path)
+    };
+    match open(true, false) {
+        Ok(file) => Ok(file),
+        Err(error) if error.kind() == io::ErrorKind::PermissionDenied => open(false, true),
+        Err(error) => Err(error),
+    }
+}
+
+#[cfg(all(test, unix))]
+mod unix_tests {
+    use std::os::unix::fs::PermissionsExt as _;
+
+    use super::*;
+
+    #[test]
+    fn ensure_private_directory_repairs_permissive_existing_target() -> io::Result<()> {
+        let parent = tempfile::tempdir()?;
+        let target = parent.path().join("state");
+        fs::create_dir(&target)?;
+        fs::set_permissions(&target, fs::Permissions::from_mode(0o775))?;
+
+        ensure_private_directory(&target)?;
+
+        assert_eq!(fs::metadata(target)?.permissions().mode() & 0o777, 0o700);
+        Ok(())
+    }
+
+    #[test]
+    fn ensure_private_directory_preserves_more_restrictive_existing_target() -> io::Result<()> {
+        let parent = tempfile::tempdir()?;
+        let target = parent.path().join("state");
+        fs::create_dir(&target)?;
+        fs::set_permissions(&target, fs::Permissions::from_mode(0o500))?;
+
+        ensure_private_directory(&target)?;
+
+        assert_eq!(fs::metadata(target)?.permissions().mode() & 0o777, 0o500);
+        Ok(())
+    }
 }
 
 #[cfg(all(test, windows))]

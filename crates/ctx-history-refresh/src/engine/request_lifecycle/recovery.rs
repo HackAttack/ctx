@@ -8,6 +8,7 @@ impl CoreRefreshEngine {
     /// Restores exact durable terminal responses, or queues one bounded replay
     /// when Core may have committed past the last terminal job snapshot.
     pub fn recover_interrupted_publication(&self, data_root: &Path) -> Result<bool> {
+        prepare_generation_control_state(data_root)?;
         let Some(job) = self.journal.load(data_root)? else {
             return Ok(false);
         };

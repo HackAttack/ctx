@@ -169,6 +169,9 @@ where
     ) -> Result<SourceBackedRefreshPublication>,
 {
     let discovery = discovery.clone().with_data_root(execution.data_root);
+    if source_backed_index_state_exists(execution.index_root)? {
+        establish_source_backed_index_privacy(execution.data_root, execution.index_root)?;
+    }
     let published_state = execution
         .published_state
         .open_published_state(execution.data_root)?;
@@ -189,6 +192,7 @@ where
                 "validate requested explicit provider roots before source-refresh state writes",
             )?;
     }
+    establish_source_backed_index_privacy(execution.data_root, execution.index_root)?;
     let mut report_progress = |update: CaptureSourceBackedDetailedRefreshProgress| {
         let progress = update.progress;
         execution
@@ -242,6 +246,30 @@ where
         &published_state,
         &mut report_progress,
     )
+}
+
+fn source_backed_index_state_exists(index_root: &Path) -> Result<bool> {
+    match std::fs::symlink_metadata(index_root) {
+        Ok(_) => Ok(true),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(false),
+        Err(error) => Err(error).context("inspect source-refresh lexical index root"),
+    }
+}
+
+fn establish_source_backed_index_privacy(data_root: &Path, index_root: &Path) -> Result<()> {
+    use ctx_history_platform::platform_security::{
+        ensure_private_directory, establish_private_data_root,
+    };
+
+    establish_private_data_root(data_root).context("protect source-refresh data root")?;
+    let expected_index_root = source_backed_index_root(data_root);
+    if index_root == expected_index_root {
+        ensure_private_directory(&data_root.join(SEARCH_DIRECTORY))
+            .context("protect source-refresh search root")?;
+    }
+    ensure_private_directory(index_root).context("protect source-refresh lexical index root")?;
+    ctx_history_index::ensure_generation_control_state_private(index_root)
+        .context("protect source-refresh generation control state")
 }
 
 fn catalog_refresh_admission(

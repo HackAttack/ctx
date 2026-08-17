@@ -17,6 +17,15 @@ mod writer_support;
 
 pub use ctx_history_index_generation::durable_atomic_replace_file;
 
+/// Repairs legacy generation control permissions before a mutating refresh
+/// captures immutable file identities.
+pub fn ensure_generation_control_state_private(root: &std::path::Path) -> Result<()> {
+    let canonical_root =
+        ctx_history_index_generation::ensure_generation_control_state_private(root)?;
+    ctx_history_index_format::clear_manifest_cache_for_root(&canonical_root)?;
+    Ok(())
+}
+
 pub use publication::{
     acquire_generation_retention_lease, load_generation_retention_lease,
     release_generation_retention_lease, GenerationRetentionLease,

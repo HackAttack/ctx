@@ -12,6 +12,8 @@ use serde::{
 };
 use tantivy::directory::Directory as _;
 
+use ctx_history_platform::platform_security::ensure_private_directory;
+
 use crate::{
     active_index_files, load_active_generation_pointer, manifest_path, physical_integrity_audit,
     slot_path, ActiveGenerationPointer, DurableMmapDirectory, GenerationError as IndexError,
@@ -477,7 +479,7 @@ fn install_certification(
         let bytes = serde_json::to_vec(&certification)?;
         if bytes.len() <= MAX_CERTIFICATION_BYTES {
             let certification_directory = root.join(CERTIFICATION_DIRECTORY);
-            if fs::create_dir_all(&certification_directory).is_ok()
+            if ensure_private_directory(&certification_directory).is_ok()
                 && ensure_real_directory(&certification_directory).is_ok()
             {
                 if let Ok(directory) = DurableMmapDirectory::open(root) {

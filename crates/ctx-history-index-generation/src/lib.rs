@@ -60,7 +60,11 @@ pub use generation::{
 pub use generation::{ReclamationStage, ReclamationTestHookGuard};
 pub use identity::{hex, is_generation_id, sha256_hex};
 pub use lock::acquire_generation_writer_lock_with_retry;
-pub use manifest::{load_manifest_bytes, reclaim_unreferenced_manifests, write_manifest_bytes};
+pub use manifest::{
+    ensure_generation_control_files_private_with_writer_lock_held,
+    ensure_generation_control_state_private, load_manifest_bytes, reclaim_unreferenced_manifests,
+    write_manifest_bytes,
+};
 pub use physical::{
     active_index_files, physical_integrity_audit, physical_integrity_audit_with_candidate_proof,
     physical_integrity_digest, prime_candidate_physical_proof, validate_candidate_managed_files,

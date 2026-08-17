@@ -4,6 +4,8 @@ use std::{
     path::{Path, PathBuf},
 };
 
+use ctx_history_platform::platform_security::ensure_private_directory;
+
 use crate::retention::{
     ensure_generation_read_lease_coordinator, try_generation_directory_reclaim_authority,
 };
@@ -40,7 +42,7 @@ pub fn reclaim_unreferenced_certifications(
 ) -> Result<()> {
     ensure_generation_read_lease_coordinator(root)?;
     let directory = root.join(CERTIFICATION_DIRECTORY);
-    fs::create_dir_all(&directory)?;
+    ensure_private_directory(&directory)?;
     let retained = pointer
         .into_iter()
         .flat_map(|pointer| std::iter::once(pointer.active()).chain(pointer.previous()))

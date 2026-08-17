@@ -6,7 +6,7 @@ use std::{
 };
 
 #[cfg(unix)]
-use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
+use std::os::unix::fs::{DirBuilderExt as _, MetadataExt, OpenOptionsExt};
 #[cfg(windows)]
 use std::os::windows::{fs::OpenOptionsExt, io::AsRawHandle};
 
@@ -23,6 +23,10 @@ use windows_sys::Win32::{
 use serde::{Deserialize, Serialize};
 use tantivy::{schema::Schema, store::Compressor, Index, IndexSettings};
 use uuid::Uuid;
+
+use ctx_history_platform::platform_security::{
+    ensure_private_directory, restrict_private_directory,
+};
 
 use crate::clone::{bind_candidate_activation_fence, create_authenticated_candidate_generation};
 use crate::is_generation_id;
@@ -240,10 +244,10 @@ pub fn create_candidate_generation(
     }
 
     let generations = root.join(INDEX_GENERATIONS_DIRECTORY);
-    fs::create_dir_all(&generations)?;
+    ensure_private_directory(&generations)?;
     let directory_name = format!("{GENERATION_DIRECTORY_PREFIX}{}", Uuid::now_v7().simple());
     let path = generations.join(&directory_name);
-    fs::create_dir(&path)?;
+    create_private_candidate_directory(&path)?;
     sync_directory(&generations)?;
     let directory = DurableMmapDirectory::open(&path).map_err(tantivy::TantivyError::from)?;
     let index = Index::create(directory, schema, lexical_index_settings())?;
@@ -341,7 +345,7 @@ pub fn reclaim_inactive_generation_directories(
 ) -> Result<()> {
     ensure_generation_read_lease_coordinator(root)?;
     let generations = root.join(INDEX_GENERATIONS_DIRECTORY);
-    fs::create_dir_all(&generations)?;
+    ensure_private_directory(&generations)?;
     let retained = pointer
         .into_iter()
         .flat_map(|pointer| std::iter::once(pointer.active()).chain(pointer.previous()))
@@ -373,6 +377,17 @@ pub fn reclaim_inactive_generation_directories(
         sync_directory(&generations)?;
     }
     Ok(())
+}
+
+fn create_private_candidate_directory(path: &Path) -> std::io::Result<()> {
+    #[cfg(unix)]
+    {
+        let mut builder = fs::DirBuilder::new();
+        builder.mode(0o700).create(path)?;
+    }
+    #[cfg(not(unix))]
+    fs::create_dir(path)?;
+    restrict_private_directory(path)
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
