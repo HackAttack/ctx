@@ -146,12 +146,10 @@ mod tests {
             .routes()
             .find_map(|route| route.route_identity.clone())
             .unwrap();
-        assert!(
-            build
-                .registry
-                .automatic_route_registration_sources(&automatic_route)
-                .is_none()
-        );
+        assert!(build
+            .registry
+            .automatic_route_registration_sources(&automatic_route)
+            .is_none());
 
         let retained = upsert_explicit_source(&data_root, &custom_source(explicit_path)).unwrap();
         let previous_route =
