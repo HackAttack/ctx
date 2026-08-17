@@ -13,7 +13,7 @@ use std::{
 
 use ctx_history_core::{
     derive_event_id, derive_session_id, ActivityInvocation, ActivityJsonCapture, ActivityResult,
-    ActivityTextCapture, CaptureProvider, CertifiedSource, CoreActivity, CoreRecord,
+    ActivityTextCapture, AgentScope, CaptureProvider, CertifiedSource, CoreActivity, CoreRecord,
     CoreRecordError, EventIdentityInput, LiteralFactKind, NativeItemKey, NativeSessionKey,
     ProjectionContractError, ProviderDeclaredFact, ProviderNativeSessionRelationship,
     ScannedSourceCounts, SessionIdentityInput, SourceAnchor, SourceKey, SourceObservation,
@@ -115,6 +115,7 @@ const HERMES_SESSION_KEY_MAX_BYTES: usize = 64 * 1024;
 struct HermesSessionContext {
     session_id: StableEntityId,
     parent_session_id: Option<StableEntityId>,
+    agent_scope: AgentScope,
     branch: Option<String>,
     workspace: Option<String>,
     cwd: Option<String>,
@@ -151,6 +152,11 @@ fn direct_session_context(
     Ok(HermesSessionContext {
         session_id,
         parent_session_id,
+        agent_scope: if parent_session_id.is_some() {
+            AgentScope::Subagent
+        } else {
+            AgentScope::Primary
+        },
         branch: row.git_branch.clone(),
         workspace: row.git_repo_root.clone(),
         cwd: row.cwd.clone(),

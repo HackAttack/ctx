@@ -60,8 +60,10 @@ filegroup(
     name = "setup_sources_import_extra_srcs",
     srcs = [
         "tests/contracts/setup_sources_import/import_orchestration.rs",
+        "tests/contracts/setup_sources_import/import_orchestration/additional.rs",
         "tests/contracts/setup_sources_import/import_orchestration/relocation.rs",
         "tests/contracts/setup_sources_import/lifecycle.rs",
+        "tests/contracts/setup_sources_import/lifecycle/additional.rs",
         "tests/contracts/setup_sources_import/source_inventory.rs",
         "tests/contracts/support/setup_sources_import/lifecycle_helpers.rs",
     ],
