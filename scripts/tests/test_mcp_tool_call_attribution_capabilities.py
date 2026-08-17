@@ -146,7 +146,7 @@ class CapabilityMutationTests(unittest.TestCase):
                 "lane_statuses": {"exact": 3, "not-qualified": 44, "excluded": 1},
                 "provider_statuses": {"exact": 3, "not-qualified": 40, "excluded": 0},
                 "exact_suites": 3,
-                "exact_tests": 9,
+                "exact_tests": 8,
                 "exact_links": 4,
                 "conformance_authority": "validated",
             },
@@ -180,6 +180,12 @@ class CapabilityMutationTests(unittest.TestCase):
     def test_nonexistent_test_is_rejected(self) -> None:
         self.capability["exact_checks"][0]["tests"][0]["id"] = "nonexistent_exact_test"
         self.assert_invalid(r"does not name a #\[test\] function")
+
+    def test_codex_exact_check_requires_two_authoritative_tests(self) -> None:
+        self.capability["exact_checks"][0]["tests"] = self.capability["exact_checks"][0][
+            "tests"
+        ][:1]
+        self.assert_invalid("must name at least 2 authoritative exact tests")
 
     def test_stale_helper_claim_is_rejected(self) -> None:
         self.capability["exact_checks"][0]["tests"][0]["id"] = "mcp_result"

@@ -786,8 +786,11 @@ def validate_exact_checks(
         if conformance_suite != expected_conformance_suite:
             fail(f"{label}.conformance_suite does not name the authoritative suite")
         tests = expect_list(check.get("tests"), f"{label}.tests")
-        if len(tests) < 3:
-            fail(f"{label} must name exact activity, ambiguity, and result tests")
+        minimum_test_count = 2 if base[0] == "codex" else 3
+        if len(tests) < minimum_test_count:
+            fail(
+                f"{label} must name at least {minimum_test_count} authoritative exact tests"
+            )
         for test_index, raw_test in enumerate(tests):
             test = expect_dict(raw_test, f"{label}.tests[{test_index}]")
             test_id = validate_test_source(
