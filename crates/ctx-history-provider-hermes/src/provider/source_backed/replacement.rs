@@ -729,7 +729,7 @@ mod route_tests {
         assert_eq!(diagnostic.artifact, SqliteArtifactKind::PrivateSourceCopy);
         assert_eq!(diagnostic.sqlite_primary_code, Some(ffi::SQLITE_FULL));
         assert_eq!(
-            crate::provider_sources::sqlite_retry_decision(&source),
+            crate::provider_sources::sqlite_retry_decision(source),
             SqliteRetryDecision::RouteFatalResource
         );
         assert_eq!(
