@@ -697,7 +697,7 @@ fn codex_result_activity(
         ActivityTextCapture::Unavailable
     } else {
         match value.as_ref() {
-            Some(Value::String(value)) if !value.is_empty() => ActivityTextCapture::Present {
+            Some(Value::String(value)) => ActivityTextCapture::Present {
                 value: value.clone(),
             },
             Some(_) | None => ActivityTextCapture::Absent,
@@ -1456,7 +1456,7 @@ mod tests {
     }
 
     #[test]
-    fn empty_result_string_is_absent_text_with_exact_structured_capture() {
+    fn empty_result_string_is_present_text_with_exact_structured_capture() {
         let occurred_at = DateTime::parse_from_rfc3339("2026-08-16T12:00:00Z")
             .unwrap()
             .with_timezone(&Utc);
@@ -1475,9 +1475,14 @@ mod tests {
             occurred_at,
         )
         .unwrap();
-
         let result = activity.result.unwrap();
-        assert_eq!(result.text, ActivityTextCapture::Absent);
+
+        assert_eq!(
+            result.text,
+            ActivityTextCapture::Present {
+                value: String::new()
+            }
+        );
         assert_eq!(
             result.structured_content,
             ActivityJsonCapture::Present {

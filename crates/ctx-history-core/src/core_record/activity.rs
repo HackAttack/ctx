@@ -3,7 +3,7 @@ use serde::{Deserialize, Serialize};
 use crate::TypedKey;
 
 use super::{
-    validation::{validate_count, validate_optional_text, validate_text},
+    validation::{validate_count, validate_optional_text, validate_size, validate_text},
     CoreRecordError, CoreRecordResult, MAX_CORE_CONTENT_BYTES, MAX_TEXT_METADATA_BYTES,
 };
 
@@ -135,6 +135,9 @@ pub enum ActivityJsonCapture {
 
 /// Complete text capture, a reference to the record body, or an explicit
 /// reason no complete value exists.
+///
+/// `Present` preserves the provider's exact text, including an empty string.
+/// `Absent` means the provider did not supply a text channel.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "capture_status", rename_all = "snake_case", deny_unknown_fields)]
 pub enum ActivityTextCapture {
@@ -243,7 +246,7 @@ impl ActivityTextCapture {
     fn validate_contract(&self, normalized_body: Option<&str>) -> CoreRecordResult<()> {
         match self {
             Self::Present { value } => {
-                validate_text("activity.result.text", value, MAX_CORE_CONTENT_BYTES)
+                validate_size("activity.result.text", value.len(), MAX_CORE_CONTENT_BYTES)
             }
             Self::NormalizedBody if normalized_body.is_none_or(str::is_empty) => {
                 Err(CoreRecordError::InvalidActivity)

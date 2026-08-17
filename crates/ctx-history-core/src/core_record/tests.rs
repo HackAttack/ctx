@@ -214,6 +214,25 @@ fn provider_activity_retains_exact_order_duplicates_and_complete_result_content(
 }
 
 #[test]
+fn provider_activity_distinguishes_present_empty_result_text_from_absent() {
+    let mut record = record();
+    let mut activity = activity();
+    activity.result.as_mut().unwrap().text = ActivityTextCapture::Present {
+        value: String::new(),
+    };
+    record.content.activity = Some(activity);
+
+    let encoded = record.encode_stored().unwrap();
+    let decoded = CoreRecord::decode_stored(&encoded).unwrap();
+    assert_eq!(
+        decoded.content.activity.unwrap().result.unwrap().text,
+        ActivityTextCapture::Present {
+            value: String::new()
+        }
+    );
+}
+
+#[test]
 fn session_relationship_and_agent_scope_are_optional_direct_claims() {
     let mut record = record();
     let empty = serde_json::to_value(&record).unwrap();
