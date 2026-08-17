@@ -21,7 +21,7 @@ BAZEL_DECLARATIONS = {
     "BUILD", "BUILD.bazel", "MODULE.bazel", "WORKSPACE", "WORKSPACE.bazel",
 }
 EXCLUDED_COMPONENTS = {
-    "data", "docs", "external", "fixture", "fixtures", "target",
+    "docs", "fixture", "fixtures", "target",
 }
 TEST_COMPONENTS = {"Tests", "__tests__", "benches", "test", "test_support", "tests"}
 DOC_NAMES = {"LICENSE", "NOTICE", "README", "SECURITY.md"}

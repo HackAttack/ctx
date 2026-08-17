@@ -870,5 +870,4 @@ fn fill_generation_past_republish_entry_cap(generation: &Path) {
     );
 }
 
-
 mod additional;

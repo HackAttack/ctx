@@ -278,4 +278,3 @@ impl GenerationManifest {
         Ok(())
     }
 }
-

@@ -28,8 +28,7 @@ fn verified_source_count_routes(route_bytes: &[u8]) -> (tempfile::TempDir, Verif
         )
         .unwrap();
         let observation =
-            SourceObservation::new(source.clone(), "source-count-test-v1", vec![*byte])
-                .unwrap();
+            SourceObservation::new(source.clone(), "source-count-test-v1", vec![*byte]).unwrap();
         writer.begin_source(source.clone()).unwrap();
         writer
             .certify_source(
@@ -376,6 +375,3 @@ fn legacy_terminal_record_uses_explicit_failure_type_fallback() {
         .chain()
         .any(|cause| cause.downcast_ref::<CaptureError>().is_some()));
 }
-}
-
-#[cfg(test)]

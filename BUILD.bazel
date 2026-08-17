@@ -277,6 +277,15 @@ py_test(
 )
 
 py_test(
+    name = "rust_target_inventory_unit_tests",
+    srcs = [
+        "//tools/bazel:check_rust_target_inventory.py",
+        "//tools/bazel:check_rust_target_inventory_test.py",
+    ],
+    main = "//tools/bazel:check_rust_target_inventory_test.py",
+)
+
+py_test(
     name = "rust_crate_size_unit_tests",
     srcs = [
         "scripts/check-rust-crate-size.py",

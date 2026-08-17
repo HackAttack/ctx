@@ -4,6 +4,7 @@ load(":cargo_vendor_sources.bzl", "cargo_vendor_sources", "rust_toolchain_file")
 load(":mold_toolchain.bzl", "mold_toolchain_files")
 
 exports_files([
+    "binary_contracts.bzl",
     "check_agent_application_boundary.py",
     "check_agent_integrations_boundary.py",
     "check-client-observability-boundary.sh",
@@ -43,6 +44,9 @@ exports_files([
     "check_history_source_sqlite_boundary.py",
     "check_history_provider_sqlite_selected_boundary.py",
     "check_history_provider_sqlite_selected_boundary_test.py",
+    "check_history_provider_sqlite_logical_boundary.py",
+    "check_history_provider_sqlite_logical_boundary_test.py",
+    "check-history-provider-sqlite-logical-boundary.sh",
     "check_sqlite_inventory_provider_boundary.py",
     "check_sqlite_inventory_provider_boundary_test.py",
     "check-semantic-index-dependency-boundary.sh",
@@ -51,16 +55,27 @@ exports_files([
     "check-semantic-model-build-cfg.sh",
     "check-semantic-model-dependency-boundary.sh",
     "check-semantic-model-dependency-boundary-test.sh",
+    "check-terminal-dependency-boundary.sh",
     "check-upgrade-engine-build-cfg.sh",
     "check-upgrade-engine-dependency-boundary.sh",
     "check_freebsd_ort_exit_contract.py",
     "check_freebsd_ort_exit_contract_test.py",
     "check_rust_target_inventory.py",
+    "check_rust_target_inventory_test.py",
     "check_rust_toolchain_pins.py",
     "check_rust_toolchain_pins_test.py",
     "check_test_tier_inventory.py",
+    "ctx_rust.bzl",
+    "gates.bzl",
+    "history_provider_docproj_boundary.bzl",
+    "history_provider_sqlite_logical_boundary.bzl",
+    "history_source_boundaries.bzl",
+    "release_package_audit_data.bzl",
+    "release_surface_tests.bzl",
+    "root_build_settings.bzl",
     "select_affected_tests.py",
     "select_affected_tests_test.py",
+    "test_tiers.bzl",
 ])
 
 package(default_visibility = ["//visibility:public"])

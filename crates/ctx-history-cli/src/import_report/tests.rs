@@ -11,11 +11,7 @@ fn context(width: usize, color: ColorMode) -> RenderContext {
     RenderContext::for_test(TestContext::tty(StreamKind::Stdout, width).color(color))
 }
 
-fn report(
-    resume: bool,
-    totals: ImportTotals,
-    sources: Vec<IngestSourceOutcome>,
-) -> IngestReport {
+fn report(resume: bool, totals: ImportTotals, sources: Vec<IngestSourceOutcome>) -> IngestReport {
     IngestReport {
         resume,
         totals,
@@ -340,8 +336,7 @@ fn retained_usable_generation_reports_bounded_schema_v2_source_failures() {
                 IngestSourceOutcome::SourceFailure(
                     ctx_history_ingest_application::SourceFailureOutcome {
                         status: ctx_history_ingest_application::IngestStatus::Failure,
-                        failure_scope:
-                            ctx_history_ingest_application::IngestFailureScope::Source,
+                        failure_scope: ctx_history_ingest_application::IngestFailureScope::Source,
                         failure_type: ctx_history_ingest_application::IngestFailureType::Other,
                         source_identity: format!("source-{index}"),
                         provider: "codex".to_owned(),

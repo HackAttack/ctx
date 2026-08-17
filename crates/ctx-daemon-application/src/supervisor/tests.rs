@@ -901,5 +901,4 @@ fn concurrent_recovery_revalidates_registration_under_the_installation_lock() ->
     Ok(())
 }
 
-
 mod additional;

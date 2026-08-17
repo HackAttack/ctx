@@ -80,7 +80,11 @@ pub(super) fn open_path_nofollow(path: &Path, flags: libc::c_int) -> io::Result<
     file_from_fd(fd)
 }
 
-pub(super) fn open_at_nofollow(directory: RawFd, path: &Path, flags: libc::c_int) -> io::Result<File> {
+pub(super) fn open_at_nofollow(
+    directory: RawFd,
+    path: &Path,
+    flags: libc::c_int,
+) -> io::Result<File> {
     let path = path_cstring(path)?;
     // SAFETY: `path` is NUL-terminated, `directory` is borrowed for the
     // call, and successful descriptor ownership transfers exactly once.
@@ -105,9 +109,8 @@ pub(super) fn file_from_fd(fd: libc::c_int) -> io::Result<File> {
 
 pub(super) fn path_cstring(path: &Path) -> io::Result<CString> {
     use std::os::unix::ffi::OsStrExt;
-    CString::new(path.as_os_str().as_bytes()).map_err(|_| {
-        io::Error::new(io::ErrorKind::InvalidInput, "path contains an interior NUL")
-    })
+    CString::new(path.as_os_str().as_bytes())
+        .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "path contains an interior NUL"))
 }
 
 pub(super) fn create_directory_at(parent: &File, path: &Path) -> Result<()> {
@@ -245,7 +248,11 @@ pub(super) fn validate_path_binding(path: &Path, expected: FileIdentity) -> Resu
     Ok(())
 }
 
-pub(super) fn validate_child_binding(parent: &File, path: &Path, expected: FileIdentity) -> Result<()> {
+pub(super) fn validate_child_binding(
+    parent: &File,
+    path: &Path,
+    expected: FileIdentity,
+) -> Result<()> {
     let actual = stat_at(parent, path)?;
     if !actual.is_directory() || !actual.is_same_object(expected) {
         return Err(IndexError::CurrentRepublishSourceTopology(
@@ -255,7 +262,11 @@ pub(super) fn validate_child_binding(parent: &File, path: &Path, expected: FileI
     Ok(())
 }
 
-pub(super) fn validate_file_binding(parent: &File, path: &Path, expected: FileIdentity) -> Result<()> {
+pub(super) fn validate_file_binding(
+    parent: &File,
+    path: &Path,
+    expected: FileIdentity,
+) -> Result<()> {
     let actual = stat_at(parent, path)?;
     if !actual.is_regular() || actual != expected {
         return Err(IndexError::CurrentRepublishSourceTopology(
@@ -362,7 +373,7 @@ pub(super) fn admit_available_bytes(directory: &File, required: u64, recheck: bo
 
 pub(super) fn available_bytes(directory: &File, recheck: bool) -> Result<u64> {
     #[cfg(any(test, feature = "test-support"))]
-    if let Some(available) = TEST_CLONE_OPTIONS.with(|options| {
+    if let Some(available) = super::support::TEST_CLONE_OPTIONS.with(|options| {
         let options = options.borrow();
         if recheck {
             options
@@ -389,12 +400,8 @@ pub(super) fn source_topology_open_error(error: io::Error) -> IndexError {
         .raw_os_error()
         .is_some_and(|code| [libc::ELOOP, libc::ENOTDIR].contains(&code))
     {
-        IndexError::CurrentRepublishSourceTopology(
-            "symlinked or non-directory republish source",
-        )
+        IndexError::CurrentRepublishSourceTopology("symlinked or non-directory republish source")
     } else {
         IndexError::Io(error)
     }
 }
-
-#[cfg(any(test, feature = "test-support"))]

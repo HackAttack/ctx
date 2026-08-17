@@ -105,6 +105,16 @@ write_lines "${current_repo}/generated/large.rs" 1001
 git -C "${current_repo}" add generated/large.rs
 expect_fail "${current_repo}" 'generated/large.rs (source): 1001 lines > limit 1000'
 
+new_repo generated_data_source
+write_lines "${current_repo}/data/generated/large.rs" 1001
+git -C "${current_repo}" add data/generated/large.rs
+expect_fail "${current_repo}" 'data/generated/large.rs (source): 1001 lines > limit 1000'
+
+new_repo external_source
+write_lines "${current_repo}/external/large.rs" 1001
+git -C "${current_repo}" add external/large.rs
+expect_fail "${current_repo}" 'external/large.rs (source): 1001 lines > limit 1000'
+
 new_repo bazel_declarations
 for declaration in BUILD BUILD.bazel WORKSPACE WORKSPACE.bazel MODULE.bazel; do
   write_lines "${current_repo}/${declaration}" 2001

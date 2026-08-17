@@ -250,8 +250,12 @@ struct JsonlSemanticPreflightBinding {
     complete_prefix_ends_with_terminal_nul_padding: bool,
 }
 
-
 mod reader;
+/// Projects the first complete physical record and returns its prefix state.
+///
+/// Cold and replacement scans resume after this record, so the provider parser
+/// sees every physical record at most once. Append and unchanged scans discard
+/// the probe state after binding identity.
 pub fn probe_first_record<T, E, V>(
     source_path: &Path,
     source_file: &Arc<OpenedProviderSourceFile<E>>,
@@ -424,7 +428,6 @@ fn read_bounded_line<E: JsonlFamilyError>(
         wire_bytes,
     })
 }
-
 
 #[cfg(test)]
 mod tests;

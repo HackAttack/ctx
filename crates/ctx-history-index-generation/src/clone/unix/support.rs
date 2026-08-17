@@ -1,5 +1,6 @@
 use super::*;
 
+#[cfg(any(test, feature = "test-support"))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CloneStage {
     BeforeFile,
@@ -48,7 +49,7 @@ pub(super) type CloneTestHook = Box<dyn for<'a> FnMut(CloneStage, &'a Path) -> R
 
 #[cfg(any(test, feature = "test-support"))]
 thread_local! {
-    static TEST_CLONE_OPTIONS: std::cell::RefCell<CloneTestOptions> = const {
+    pub(super) static TEST_CLONE_OPTIONS: std::cell::RefCell<CloneTestOptions> = const {
         std::cell::RefCell::new(CloneTestOptions {
             force_copy: false,
             force_reflink_fallback: false,
@@ -159,7 +160,11 @@ pub(super) fn record_plan_metrics(plan: &ClonePlan, available: u64) {
 }
 
 #[cfg(any(test, feature = "test-support"))]
-pub(super) fn record_plan_metrics_with_required(plan: &ClonePlan, available: u64, required_headroom: u64) {
+pub(super) fn record_plan_metrics_with_required(
+    plan: &ClonePlan,
+    available: u64,
+    required_headroom: u64,
+) {
     TEST_CLONE_METRICS.with(|metrics| {
         metrics.set(CloneMetrics {
             planned_files: plan.files.len(),
@@ -195,4 +200,5 @@ pub(super) fn record_clone_metrics(copied_bytes: u64, linked_files: usize, copie
 }
 
 #[cfg(not(any(test, feature = "test-support")))]
-pub(super) fn record_clone_metrics(_copied_bytes: u64, _linked_files: usize, _copied_files: usize) {}
+pub(super) fn record_clone_metrics(_copied_bytes: u64, _linked_files: usize, _copied_files: usize) {
+}

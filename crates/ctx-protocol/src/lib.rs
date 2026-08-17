@@ -894,6 +894,5 @@ fn snake_to_camel(key: &str) -> String {
     out
 }
 
-
 #[cfg(test)]
 mod tests;

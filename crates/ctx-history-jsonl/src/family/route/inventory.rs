@@ -2,12 +2,12 @@ use super::*;
 
 #[derive(Debug)]
 pub struct JsonlFamilyInventory<E: JsonlFamilyError> {
-    root_missing: bool,
-    observation: SourceInventoryObservation,
-    authorities: Vec<Arc<ProviderSourceRoot<E>>>,
-    leaves: Vec<JsonlFamilyLeaf<E>>,
-    rejected_leaves: Vec<JsonlFamilyRejectedLeaf>,
-    exact_dependencies: Vec<JsonlFamilyTerminalProof<E>>,
+    pub(super) root_missing: bool,
+    pub(super) observation: SourceInventoryObservation,
+    pub(super) authorities: Vec<Arc<ProviderSourceRoot<E>>>,
+    pub(super) leaves: Vec<JsonlFamilyLeaf<E>>,
+    pub(super) rejected_leaves: Vec<JsonlFamilyRejectedLeaf>,
+    pub(super) exact_dependencies: Vec<JsonlFamilyTerminalProof<E>>,
 }
 
 impl<E: JsonlFamilyError> Clone for JsonlFamilyInventory<E> {
@@ -137,7 +137,10 @@ impl<E: JsonlFamilyError> JsonlFamilyInventory<E> {
     }
 
     #[cfg(test)]
-    pub(super) fn certify_against(&self, closing: &Self) -> JsonlResult<CertifiedSourceInventory, E> {
+    pub(super) fn certify_against(
+        &self,
+        closing: &Self,
+    ) -> JsonlResult<CertifiedSourceInventory, E> {
         self.certify_selected_against(
             closing,
             closing
@@ -217,6 +220,3 @@ impl<E: JsonlFamilyError> JsonlFamilyInventory<E> {
         }
     }
 }
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(deny_unknown_fields)]

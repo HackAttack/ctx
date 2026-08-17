@@ -209,10 +209,8 @@ fn forced_color_never_decorates_generic_machine_mode_errors() {
 
         let machine_stderr = styled_stderr_copy.bytes();
         assert!(!machine_stderr.contains(&0x1b), "{args:?}");
-        assert!(
-            String::from_utf8_lossy(&machine_stderr)
-                .starts_with("Error: representative command failure")
-        );
+        assert!(String::from_utf8_lossy(&machine_stderr)
+            .starts_with("Error: representative command failure"));
     }
 }
 

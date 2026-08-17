@@ -1060,8 +1060,10 @@ pub(super) fn source_refresh_request_is_unknown(
 }
 
 #[cfg(test)]
-mod progress_poll_tests;
+#[path = "client_admission_recovery_tests.rs"]
 mod admission_recovery_tests;
+#[cfg(test)]
+mod progress_poll_tests;
 
 #[cfg(all(test, unix))]
 #[path = "client_transport_recovery_tests.rs"]

@@ -1118,5 +1118,4 @@ fn missing_root_does_not_reclassify_an_unrelated_refresh_io_error() {
         .is_none());
 }
 
-
 mod additional;

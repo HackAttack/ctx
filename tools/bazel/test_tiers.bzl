@@ -294,6 +294,7 @@ CI_TESTS = [
     ":release_target_matrix_check",
     ":release_target_matrix_tests",
     ":rust_crate_size_unit_tests",
+    ":rust_target_inventory_unit_tests",
     ":rust_toolchain_pin_check",
     ":rust_toolchain_pin_mutation_tests",
     ":rustfmt_check",

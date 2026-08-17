@@ -675,6 +675,6 @@ fn strict_preflight_preserves_legacy_and_paged_oversized_singleton_behavior() {
     assert_eq!(ctx_history_index_query::core_record_decodes(), 1);
 }
 
-include!("lookup/coordinate_bounds.rs");
+include!("coordinate_bounds.rs");
 
-include!("lookup/query_constraints.rs");
+include!("query_constraints.rs");

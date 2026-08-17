@@ -185,7 +185,10 @@ platform, stress, and release targets stay outside affected execution.
 invocation. It enforces fixed physical-line limits and discovers every Cargo
 package, target, local dependency, and Bazel owner without a copied package
 inventory. The target is intentionally uncached so a newly added package or
-source file cannot be hidden by an incomplete declared-input list.
+source file cannot be hidden by an incomplete declared-input list. Production
+source, including generated source, is limited to 1,000 physical lines; test
+source is limited to 1,500. Bazel declaration files are exempt, `.bzl` source
+is not, and there is no exception or grandfather list.
 
 Bazel automatically reuses successful results when their declared inputs,
 configuration, toolchain, platform, and target are unchanged. Use

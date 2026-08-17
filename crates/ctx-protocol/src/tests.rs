@@ -65,8 +65,7 @@ fn parses_all_shared_fixtures_into_typed_envelopes() {
                     "toolResult"
                 );
                 assert_eq!(
-                    event.structured_content.as_ref().unwrap()["payload"]["items"][2]["nested"]
-                        [1],
+                    event.structured_content.as_ref().unwrap()["payload"]["items"][2]["nested"][1],
                     false
                 );
                 assert_eq!(
@@ -130,8 +129,7 @@ fn preserves_additive_fields() {
 
 #[test]
 fn mcp_tool_call_is_exact_bounded_and_omitted_when_absent() {
-    let fixture =
-        fs::read_to_string(fixture_root().join("show-event.mcp-tool-call.json")).unwrap();
+    let fixture = fs::read_to_string(fixture_root().join("show-event.mcp-tool-call.json")).unwrap();
     let envelope: AgentHistoryEnvelope = serde_json::from_str(&fixture).unwrap();
     let result = envelope.event.unwrap();
     let selected = result.event.unwrap();
@@ -163,10 +161,10 @@ fn mcp_tool_call_is_exact_bounded_and_omitted_when_absent() {
     ] {
         assert!(serde_json::from_value::<McpToolCall>(invalid).is_err());
     }
-    assert!(serde_json::from_value::<AgentHistoryEvent>(
-        serde_json::json!({"mcpToolCall": null})
-    )
-    .is_err());
+    assert!(
+        serde_json::from_value::<AgentHistoryEvent>(serde_json::json!({"mcpToolCall": null}))
+            .is_err()
+    );
 
     let exact = serde_json::json!({
         "server": " ",
@@ -184,8 +182,7 @@ fn mcp_tool_call_is_exact_bounded_and_omitted_when_absent() {
 
 #[test]
 fn mcp_exchange_is_typed_lossless_bounded_and_shape_validated() {
-    let fixture =
-        fs::read_to_string(fixture_root().join("show-event.mcp-tool-call.json")).unwrap();
+    let fixture = fs::read_to_string(fixture_root().join("show-event.mcp-tool-call.json")).unwrap();
     let envelope: AgentHistoryEnvelope = serde_json::from_str(&fixture).unwrap();
     let result = envelope.event.unwrap();
     let selected = result.event.unwrap();
@@ -424,8 +421,7 @@ fn mcp_exchange_direct_decode_rejects_duplicate_captured_json_and_bad_event_text
         "invalid-mcp-exchange-unsafe-duration-ns.json",
         "invalid-mcp-exchange-unsafe-observed-encoded-bytes.json",
     ] {
-        let fixture =
-            fs::read_to_string(fixture_root().join("adversarial").join(name)).unwrap();
+        let fixture = fs::read_to_string(fixture_root().join("adversarial").join(name)).unwrap();
         assert!(
             serde_json::from_str::<EventResult>(&fixture).is_err(),
             "direct protocol decode accepted {name}"

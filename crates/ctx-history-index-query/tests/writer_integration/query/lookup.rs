@@ -898,5 +898,5 @@ fn corrupt_stored_core_fails_closed_during_exhaustive_open() {
     ));
 }
 
-
+#[path = "lookup/additional.rs"]
 mod additional;

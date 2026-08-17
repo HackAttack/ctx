@@ -251,7 +251,6 @@ pub struct ManagedPairEngine {
     install_root: PathBuf,
 }
 
-
 mod engine;
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]

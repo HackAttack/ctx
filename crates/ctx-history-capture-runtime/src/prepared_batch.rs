@@ -7,7 +7,6 @@ pub struct CorePreparedBatchBuilder<P: CorePreparationPort> {
     prepared_bytes: u64,
     progress: CoreRecordBatchProgress,
 }
-
 impl<P: CorePreparationPort> Default for CorePreparedBatchBuilder<P> {
     fn default() -> Self {
         Self {
@@ -162,4 +161,3 @@ impl<P: CorePreparationPort> CorePreparedBatch<P> {
         (self.prepared, self.lease)
     }
 }
-

@@ -970,22 +970,21 @@ fn require_directory(kind: EntryKind) -> Result<()> {
 }
 
 mod resource;
-use resource::{admit_available_bytes, source_topology_open_error};
+use resource::{admit_available_bytes, available_bytes, source_topology_open_error};
 
-mod test_support;
+mod support;
 
 #[cfg(any(test, feature = "test-support"))]
-pub use test_support::{
+pub(super) use support::forced_for_test;
+#[cfg(not(any(test, feature = "test-support")))]
+use support::PortableCloneStage;
+use support::{
+    clone_checkpoint, record_clone_metrics, record_plan_metrics, record_plan_metrics_with_required,
+};
+#[cfg(any(test, feature = "test-support"))]
+pub use support::{
     PortableCloneMetrics, PortableCloneStage, PortableCloneTestGuard, PortableCloneTestOptions,
 };
-#[cfg(not(any(test, feature = "test-support")))]
-use test_support::PortableCloneStage;
-use test_support::{
-    clone_checkpoint, record_clone_metrics, record_plan_metrics,
-    record_plan_metrics_with_required,
-};
-#[cfg(any(test, feature = "test-support"))]
-pub(super) use test_support::forced_for_test;
 
 #[cfg(unix)]
 #[path = "portable/unix.rs"]
@@ -994,7 +993,6 @@ mod platform;
 #[cfg(windows)]
 #[path = "portable/windows.rs"]
 mod platform;
-
 
 #[cfg(test)]
 mod tests;

@@ -569,9 +569,6 @@ fn systemic_exact_publication_failure_leaves_the_route_dirty_with_backoff() {
     assert!(retry_after <= 10_000 && retry_after > 0);
 }
 
-#[path = "tests/receipt.rs"]
-mod receipt_tests;
-
 #[test]
 fn differing_catalog_authority_queues_one_successor_behind_a_running_refresh() {
     let temp = tempfile::tempdir().unwrap();
@@ -792,17 +789,3 @@ fn default_executor_uses_capture_owned_execution() {
         std::any::type_name::<CaptureOwnedSourceBackedRefreshExecutor>()
     );
 }
-#[path = "tests/unsupported_refresh.rs"]
-mod unsupported_refresh;
-
-#[path = "tests/codex_union.rs"]
-mod codex_union_tests;
-
-#[path = "tests/request_coalescing.rs"]
-mod request_coalescing_tests;
-
-#[path = "tests/publication_lifecycle.rs"]
-mod publication_lifecycle_tests;
-
-#[path = "tests/durable_receipt.rs"]
-mod durable_receipt_tests;

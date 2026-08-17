@@ -948,6 +948,5 @@ fn write_spill_at(file: &File, buffer: &[u8], offset: u64) -> std::io::Result<us
     file.seek_write(buffer, offset)
 }
 
-
 #[cfg(test)]
 mod tests;

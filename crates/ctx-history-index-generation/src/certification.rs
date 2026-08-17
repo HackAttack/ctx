@@ -933,9 +933,12 @@ fn read_certification(path: &Path) -> Option<Vec<u8>> {
     Some(bytes)
 }
 
-
 mod artifact_io;
 use artifact_io::*;
+pub(crate) use artifact_io::{
+    capture_artifact_identity, open_artifact, open_authenticated_artifact, recapture_artifact,
+    recapture_authenticated_artifact,
+};
 mod sidecar;
 
 #[cfg(any(test, feature = "test-support"))]

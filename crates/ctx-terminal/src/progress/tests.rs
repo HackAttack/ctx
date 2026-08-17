@@ -234,8 +234,7 @@ fn plain_refresh_progress_is_the_stable_live_document_without_internal_routes() 
     let context = crate::ui::RenderContext::for_test(crate::ui::TestContext::pipe(
         crate::ui::StreamKind::Stderr,
     ));
-    let shared_document =
-        crate::ui::refresh_progress(&context, &active_status()).render_plain();
+    let shared_document = crate::ui::refresh_progress(&context, &active_status()).render_plain();
     let (mut ui, stdout_capture) = ui_with_stderr(stderr, context);
 
     let mut reporter = ProgressReporter::new(&mut ui, ProgressMode::Plain, false, "setup", 0);
@@ -574,8 +573,7 @@ fn sqlite_logical_progress_is_typed_and_never_invents_a_total() {
     assert_eq!((line.completed_bytes, line.total_bytes), (0, 0));
 
     let value: serde_json::Value =
-        serde_json::from_str(&progress_json("import", &line, StdDuration::from_secs(2)))
-            .unwrap();
+        serde_json::from_str(&progress_json("import", &line, StdDuration::from_secs(2))).unwrap();
     assert_eq!(value["percent"], 0.0);
     assert_eq!(value["eta_seconds"], serde_json::Value::Null);
     assert_eq!(value["current_source_progress"]["stage"], "logical_scan");

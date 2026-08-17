@@ -1,6 +1,6 @@
 use super::*;
 
-fn default_base_source_path<R: JsonlFamilyRuntime>(
+pub(super) fn default_base_source_path<R: JsonlFamilyRuntime>(
     _adapter: &(impl JsonlFamilyAdapter<Runtime = R> + ?Sized),
     certificate: &CertifiedSource,
 ) -> JsonlResult<PathBuf, JsonlRuntimeError<R>> {
@@ -33,7 +33,7 @@ fn default_base_source_path<R: JsonlFamilyRuntime>(
 pub fn jsonl_family_driver<R: JsonlFamilyRuntime>(
     adapter: Arc<dyn JsonlFamilyAdapter<Runtime = R>>,
     root: PathBuf,
-) -> super::JsonlRuntimeDriver<R> {
+) -> super::super::JsonlRuntimeDriver<R> {
     let resident = Arc::new(Mutex::new(FamilyResident::<JsonlRuntimeError<R>>::default()));
     let scan_adapter = Arc::clone(&adapter);
     let scan_root = root.clone();
@@ -45,7 +45,7 @@ pub fn jsonl_family_driver<R: JsonlFamilyRuntime>(
     let terminal_root = root;
     let inventory_resident = Arc::clone(&resident);
 
-    super::JsonlRuntimeDriver::<R>::new(
+    super::super::JsonlRuntimeDriver::<R>::new(
         move |sink| capture(&*scan_adapter, &scan_root, &scan_resident, sink),
         move |source| {
             owns_adapter.owns(source)

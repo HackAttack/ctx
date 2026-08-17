@@ -1,6 +1,6 @@
 use super::*;
 
-pub(super) fn open_artifact(
+pub(crate) fn open_artifact(
     root: &Path,
     generation_path: &Path,
     relative_path: &Path,
@@ -245,7 +245,7 @@ pub(super) fn stable_artifact_link_snapshot_with_alias_authority(
     Err(IndexError::ChecksumMismatch)
 }
 
-pub(super) fn recapture_artifact(
+pub(crate) fn recapture_artifact(
     root: &Path,
     generation_path: &Path,
     relative_path: &Path,

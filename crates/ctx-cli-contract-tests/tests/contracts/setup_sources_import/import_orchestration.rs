@@ -1070,4 +1070,5 @@ fn explicit_import_reports_requested_route_failure_when_another_cold_route_publi
     );
 }
 
+#[path = "import_orchestration/additional.rs"]
 mod additional;

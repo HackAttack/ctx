@@ -15,26 +15,23 @@ use std::{
 use tantivy::Index;
 use uuid::Uuid;
 
-use super::exact_copy::{
-    copy_and_hash_exact_authenticated_file, copy_exact_authenticated_file,
-};
+use super::exact_copy::{copy_and_hash_exact_authenticated_file, copy_exact_authenticated_file};
 use super::{
     admit_clone_resource, record_candidate_clone_metrics, validate_single_component,
     CandidateActivationFence, CandidateCloneMetrics, MANAGED_FILE, MAX_REPUBLISH_CLONE_BYTES,
-    MAX_REPUBLISH_CLONE_FILES, MAX_REPUBLISH_DIRECTORY_ENTRIES,
-    REPUBLISH_HEADROOM_RESERVE_BYTES, TANTIVY_LOCK_FILES,
+    MAX_REPUBLISH_CLONE_FILES, MAX_REPUBLISH_DIRECTORY_ENTRIES, REPUBLISH_HEADROOM_RESERVE_BYTES,
+    TANTIVY_LOCK_FILES,
 };
 use crate::{
     active_index_files,
     certification::{
-        capture_artifact_identity, open_authenticated_artifact,
-        recapture_authenticated_artifact,
+        capture_artifact_identity, open_authenticated_artifact, recapture_authenticated_artifact,
     },
     lexical_index_settings,
     physical::{PhysicalFileDigest, MAX_MANAGED_METADATA_BYTES},
     physical_integrity_digest, verify_or_certify_physical_integrity, ActiveGenerationPointer,
-    CandidateGeneration, CandidatePhysicalProof, CertifiedPhysicalIntegrity,
-    DurableMmapDirectory, GenerationError as IndexError, Result, INDEX_GENERATIONS_DIRECTORY,
+    CandidateGeneration, CandidatePhysicalProof, CertifiedPhysicalIntegrity, DurableMmapDirectory,
+    GenerationError as IndexError, Result, INDEX_GENERATIONS_DIRECTORY,
 };
 pub(super) use guard::CandidateGuard;
 
@@ -145,9 +142,8 @@ impl BoundDirectory {
     }
 
     fn open_at(parent: &File, name: &Path) -> Result<Self> {
-        let file =
-            open_at_nofollow(parent.as_raw_fd(), name, libc::O_RDONLY | libc::O_DIRECTORY)
-                .map_err(source_topology_open_error)?;
+        let file = open_at_nofollow(parent.as_raw_fd(), name, libc::O_RDONLY | libc::O_DIRECTORY)
+            .map_err(source_topology_open_error)?;
         Self::from_file(file)
     }
 
@@ -222,8 +218,8 @@ pub(super) fn create_authenticated_republish_candidate(
         validate_child_binding(&guard.generations.file, source_name, source.identity)?;
         guard.validate_binding()?;
 
-        let directory = DurableMmapDirectory::open(&destination_path)
-            .map_err(tantivy::TantivyError::from)?;
+        let directory =
+            DurableMmapDirectory::open(&destination_path).map_err(tantivy::TantivyError::from)?;
         let index = Index::open(directory)?;
         if index.settings() != &lexical_index_settings() {
             return Err(IndexError::IndexSettingsMismatch);
@@ -261,12 +257,8 @@ pub(super) fn create_authenticated_candidate_generation(
     writer_memory_bytes: u64,
 ) -> Result<CandidateGeneration> {
     let base = predecessor_pointer.active();
-    let certified = verify_or_certify_physical_integrity(
-        root,
-        predecessor_pointer,
-        base,
-        predecessor_index,
-    )?;
+    let certified =
+        verify_or_certify_physical_integrity(root, predecessor_pointer, base, predecessor_index)?;
     let root_path = root.to_path_buf();
     let root_directory = BoundDirectory::open_path(root)?;
     validate_path_binding(root, root_directory.identity)?;
@@ -335,8 +327,8 @@ pub(super) fn create_authenticated_candidate_generation(
         validate_child_binding(&guard.generations.file, source_name, source.identity)?;
         guard.validate_binding()?;
 
-        let directory = DurableMmapDirectory::open(&destination_path)
-            .map_err(tantivy::TantivyError::from)?;
+        let directory =
+            DurableMmapDirectory::open(&destination_path).map_err(tantivy::TantivyError::from)?;
         let index = Index::open(directory)?;
         if index.settings() != &lexical_index_settings() {
             return Err(IndexError::IndexSettingsMismatch);
@@ -435,9 +427,12 @@ fn authenticated_clone_plan(source: &BoundDirectory, index: &Index) -> Result<Cl
         ));
     }
 
-    let managed = planned.get(Path::new(MANAGED_FILE)).ok_or(
-        IndexError::CurrentRepublishSourceTopology("managed file missing"),
-    )?;
+    let managed =
+        planned
+            .get(Path::new(MANAGED_FILE))
+            .ok_or(IndexError::CurrentRepublishSourceTopology(
+                "managed file missing",
+            ))?;
     let managed_bytes = read_bound_file(source, managed, MAX_MANAGED_METADATA_BYTES)?;
     let managed_paths: Vec<PathBuf> = serde_json::from_slice(&managed_bytes)
         .map_err(|_| IndexError::CurrentRepublishSourceTopology("invalid managed metadata"))?;
@@ -560,15 +555,13 @@ fn clone_files(
         } else {
             clone_checkpoint(CloneStage::BeforeCopy, &planned.path)?;
             source_file.seek(SeekFrom::Start(0))?;
-            let remaining_allowance = plan
-                .logical_bytes
-                .checked_sub(actual_copied_bytes)
-                .ok_or(IndexError::CurrentRepublishByteLimit {
+            let remaining_allowance = plan.logical_bytes.checked_sub(actual_copied_bytes).ok_or(
+                IndexError::CurrentRepublishByteLimit {
                     actual: actual_copied_bytes,
                     maximum: plan.logical_bytes,
-                })?;
-            let mut destination_file =
-                create_regular_file_at(&destination.file, &planned.path)?;
+                },
+            )?;
+            let mut destination_file = create_regular_file_at(&destination.file, &planned.path)?;
             let copied = copy_exact_authenticated_file(
                 &mut source_file,
                 &mut destination_file,
@@ -576,8 +569,7 @@ fn clone_files(
                 remaining_allowance,
             )?;
             destination_file.flush()?;
-            let destination_identity =
-                FileIdentity::from_metadata(&destination_file.metadata()?);
+            let destination_identity = FileIdentity::from_metadata(&destination_file.metadata()?);
             if copied != before.bytes || destination_identity.bytes != before.bytes {
                 return Err(IndexError::CurrentRepublishSourceTopology(
                     "copy byte count does not match authenticated source",
@@ -727,11 +719,8 @@ fn clone_candidate_files(
             && !planned.copy_required
             && !force_hardlink_fallback()
             && !force_copy_fallback()
-            && match hard_link_authenticated_source(
-                &source.file,
-                &planned.path,
-                &destination.file,
-            ) {
+            && match hard_link_authenticated_source(&source.file, &planned.path, &destination.file)
+            {
                 Ok(()) => true,
                 Err(error) if hardlink_copy_fallback_error(&error) => false,
                 Err(error) => return Err(error.into()),
@@ -846,8 +835,15 @@ fn clone_candidate_files(
     Ok(())
 }
 
-
 mod fs_ops;
 use fs_ops::*;
-mod test_support;
-pub(super) use test_support::*;
+mod support;
+
+#[cfg(not(any(test, feature = "test-support")))]
+use support::CloneStage;
+use support::{
+    clone_checkpoint, force_copy_fallback, force_hardlink_fallback, force_reflink_fallback,
+    record_clone_metrics, record_plan_metrics, record_plan_metrics_with_required,
+};
+#[cfg(any(test, feature = "test-support"))]
+pub use support::{CloneMetrics, CloneStage, CloneTestHookGuard, CloneTestOptions};

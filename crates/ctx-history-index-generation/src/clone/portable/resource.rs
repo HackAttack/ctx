@@ -25,9 +25,9 @@ pub(super) fn admit_available_bytes(
     Ok(())
 }
 
-fn available_bytes(directory: &BoundDirectory, recheck: bool) -> Result<u64> {
+pub(super) fn available_bytes(directory: &BoundDirectory, recheck: bool) -> Result<u64> {
     #[cfg(any(test, feature = "test-support"))]
-    if let Some(available) = test_support::TEST_OPTIONS.with(|options| {
+    if let Some(available) = support::TEST_OPTIONS.with(|options| {
         let options = options.borrow();
         if recheck {
             options

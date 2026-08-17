@@ -230,7 +230,7 @@ fn limit_200_search_reduces_each_large_core_body_before_retaining_presentations(
     assert_eq!(typed.retained_snippet_bytes, retained_snippet_bytes);
 }
 
-include!("tests/search_presentation_hydration.rs");
+include!("search_presentation_hydration.rs");
 
 #[test]
 fn search_context_bytes_use_core_snippets_and_indexed_complete_session_sizes_not_json() {

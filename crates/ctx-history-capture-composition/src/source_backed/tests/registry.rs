@@ -890,5 +890,4 @@ fn cold_refresh_with_only_failed_routes_does_not_publish_ready_data() {
     ));
 }
 
-
 mod additional;

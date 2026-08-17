@@ -897,5 +897,22 @@ fn running_incremental_startup_exact_promotes_manual_exhaustive_with_full_rescan
     assert!(!coordinator.has_scheduled_route_work());
 }
 
-
 mod additional;
+
+#[path = "tests/receipt.rs"]
+mod receipt_tests;
+
+#[path = "tests/unsupported_refresh.rs"]
+mod unsupported_refresh;
+
+#[path = "tests/codex_union.rs"]
+mod codex_union_tests;
+
+#[path = "tests/request_coalescing.rs"]
+mod request_coalescing_tests;
+
+#[path = "tests/publication_lifecycle.rs"]
+mod publication_lifecycle_tests;
+
+#[path = "tests/durable_receipt.rs"]
+mod durable_receipt_tests;

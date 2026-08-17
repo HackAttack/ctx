@@ -859,5 +859,4 @@ fn local_json_timeout_kills_and_reaps_the_child() {
     );
 }
 
-
 mod additional;

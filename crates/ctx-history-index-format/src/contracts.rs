@@ -871,6 +871,12 @@ pub fn implicit_source_routes(sources: &[CertifiedSource]) -> Result<Vec<SourceR
         .collect()
 }
 
-
 #[cfg(test)]
 mod tests;
+
+#[derive(Debug, Clone, Serialize)]
+pub struct CommitPayload {
+    pub version: u32,
+    pub generation_id: String,
+    pub publication_metadata: Option<String>,
+}

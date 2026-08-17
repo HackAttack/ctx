@@ -102,9 +102,8 @@ fn comparison_documents() -> Vec<Document> {
 }
 
 fn differential_comparison_bytes(frames: usize) -> usize {
-    let context = RenderContext::for_test(
-        TestContext::tty(StreamKind::Stdout, 80).color(ColorMode::Never),
-    );
+    let context =
+        RenderContext::for_test(TestContext::tty(StreamKind::Stdout, 80).color(ColorMode::Never));
     let documents = comparison_documents();
     let mut output = LiveOutput::new(Vec::new(), context);
     for frame in 0..frames {
@@ -116,9 +115,8 @@ fn differential_comparison_bytes(frames: usize) -> usize {
 }
 
 fn full_repaint_comparison_bytes(frames: usize) -> usize {
-    let context = RenderContext::for_test(
-        TestContext::tty(StreamKind::Stdout, 80).color(ColorMode::Never),
-    );
+    let context =
+        RenderContext::for_test(TestContext::tty(StreamKind::Stdout, 80).color(ColorMode::Never));
     let documents = comparison_documents();
     let mut output = Vec::new();
     let mut rendered_lines = 0;
@@ -141,9 +139,7 @@ fn full_repaint_comparison_bytes(frames: usize) -> usize {
             output.push(b'\n');
         }
         if rendered_lines > lines.len() {
-            output.extend_from_slice(
-                format!("\x1b[{}A", rendered_lines - lines.len()).as_bytes(),
-            );
+            output.extend_from_slice(format!("\x1b[{}A", rendered_lines - lines.len()).as_bytes());
         }
         rendered_lines = lines.len();
     }
@@ -410,9 +406,8 @@ fn ui_adapter_preserves_live_controls_when_tty_styling_is_disabled() {
 
 #[test]
 fn terminal_adapter_capability_is_independent_of_styling() {
-    let live_without_style = RenderContext::for_test(
-        TestContext::tty(StreamKind::Stdout, 80).color(ColorMode::Never),
-    );
+    let live_without_style =
+        RenderContext::for_test(TestContext::tty(StreamKind::Stdout, 80).color(ColorMode::Never));
     assert!(!live_without_style.color_enabled());
     assert!(live_without_style.live_output_capable());
     assert_eq!(
@@ -453,9 +448,8 @@ fn terminal_adapter_capability_is_independent_of_styling() {
 
 #[test]
 fn per_destination_terminal_control_resolution_gates_live_output() {
-    let live = RenderContext::for_test(
-        TestContext::tty(StreamKind::Stdout, 80).color(ColorMode::Never),
-    );
+    let live =
+        RenderContext::for_test(TestContext::tty(StreamKind::Stdout, 80).color(ColorMode::Never));
     assert!(resolve_terminal_controls(live, || true));
     assert!(!resolve_terminal_controls(live, || false));
 
@@ -476,10 +470,9 @@ fn per_destination_terminal_control_resolution_gates_live_output() {
         anstream::ColorChoice::Never
     );
 
-    let styled_unsupported = RenderContext::for_test(
-        TestContext::tty(StreamKind::Stderr, 80).color(ColorMode::Always),
-    )
-    .with_terminal_control_support(false);
+    let styled_unsupported =
+        RenderContext::for_test(TestContext::tty(StreamKind::Stderr, 80).color(ColorMode::Always))
+            .with_terminal_control_support(false);
     assert!(!styled_unsupported.live_output_capable());
     assert!(styled_unsupported.color_enabled());
     assert_eq!(

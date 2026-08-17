@@ -41,10 +41,3 @@ fn malformed_deserialized_route_identity_reaches_complete_manifest_validation() 
         Err(IndexError::InvalidSourceRouteIdentity)
     ));
 }
-}
-
-#[derive(Debug, Clone, Serialize)]
-pub struct CommitPayload {
-pub version: u32,
-pub generation_id: String,
-pub publication_metadata: Option<String>,

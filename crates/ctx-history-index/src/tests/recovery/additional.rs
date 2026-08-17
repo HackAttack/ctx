@@ -844,6 +844,6 @@ fn verified_open_rejects_mismatched_active_policy() {
     );
 }
 
-include!("recovery/identity_validation.rs");
+include!("identity_validation.rs");
 
-include!("recovery/verifier.rs");
+include!("verifier.rs");

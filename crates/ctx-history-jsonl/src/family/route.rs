@@ -973,11 +973,11 @@ impl<E: JsonlFamilyError> JsonlFamilyAbsentMember<E> {
     }
 }
 
-
 mod capture;
-pub use capture::jsonl_family_driver;
 #[cfg(test)]
 use capture::capture;
+use capture::default_base_source_path;
+pub use capture::jsonl_family_driver;
 
 #[cfg(test)]
 #[path = "route/tests.rs"]

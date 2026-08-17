@@ -864,5 +864,5 @@ fn empty_catalog_default_background_oracle_is_status_sensitive() {
     .is_err());
 }
 
-
+#[path = "lifecycle/additional.rs"]
 mod additional;

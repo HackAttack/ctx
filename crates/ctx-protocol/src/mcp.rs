@@ -14,7 +14,6 @@ pub struct McpToolCall {
     )]
     pub tool: String,
 }
-
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct McpExchange {
     pub provider_call_id: String,
@@ -512,4 +511,3 @@ impl Serialize for McpResponse {
         .serialize(serializer)
     }
 }
-

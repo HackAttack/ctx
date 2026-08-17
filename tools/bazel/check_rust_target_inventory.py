@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import ast
 from collections import defaultdict
 import os
 from pathlib import Path, PurePosixPath
@@ -78,9 +79,18 @@ def normalized_member(value: Any) -> str:
     return path.as_posix()
 
 
-def tracked_package_manifests(root: Path) -> set[Path]:
+def live_package_manifests(root: Path) -> set[Path]:
     result: set[Path] = set()
-    raw = git(root, "ls-files", "-z", "*/Cargo.toml", "*/*/Cargo.toml", "*/*/*/Cargo.toml")
+    raw = git(
+        root,
+        "ls-files",
+        "--cached",
+        "--others",
+        "--exclude-standard",
+        "-z",
+        "--",
+        ":(glob)**/Cargo.toml",
+    )
     for item in raw.split(b"\0"):
         if not item:
             continue
@@ -88,6 +98,8 @@ def tracked_package_manifests(root: Path) -> set[Path]:
             relative = Path(item.decode("utf-8"))
         except UnicodeDecodeError as error:
             raise InventoryError("Cargo manifest paths must be UTF-8") from error
+        if relative == Path("Cargo.toml"):
+            continue
         data = load_toml(root / relative)
         if "package" in data:
             result.add(relative)
@@ -102,7 +114,7 @@ def workspace_packages(root: Path) -> dict[str, tuple[Path, dict[str, Any]]]:
         Path(member) / "Cargo.toml"
         for member in map(normalized_member, workspace["members"])
     }
-    discovered = tracked_package_manifests(root)
+    discovered = live_package_manifests(root)
     if declared != discovered:
         missing = sorted(path.as_posix() for path in discovered - declared)
         stale = sorted(path.as_posix() for path in declared - discovered)
@@ -158,15 +170,19 @@ def cargo_targets(package_dir: Path, data: dict[str, Any]) -> dict[str, Path]:
                 fail(f"{package_name} [[{kind}]] target has no name")
             default_path = f"{defaults[kind][2]}/{name}.rs"
             targets[f"{kind}:{name}"] = Path(item.get("path", default_path))
-        if explicit or package.get(defaults[kind][0]) is False:
+        if package.get(defaults[kind][0]) is False:
             continue
         flag, primary, directory, primary_name = defaults[kind]
         if primary and (package_dir / primary).is_file():
-            targets[f"{kind}:{primary_name}"] = Path(primary)
+            targets.setdefault(f"{kind}:{primary_name}", Path(primary))
         target_dir = package_dir / directory
         if target_dir.is_dir():
             for path in sorted(target_dir.glob("*.rs")):
-                targets[f"{kind}:{path.stem}"] = path.relative_to(package_dir)
+                targets.setdefault(f"{kind}:{path.stem}", path.relative_to(package_dir))
+            for path in sorted(target_dir.glob("*/main.rs")):
+                targets.setdefault(
+                    f"{kind}:{path.parent.name}", path.relative_to(package_dir)
+                )
 
     build = package.get("build")
     if build is not False and (build or (package_dir / "build.rs").is_file()):
@@ -176,11 +192,192 @@ def cargo_targets(package_dir: Path, data: dict[str, Any]) -> dict[str, Path]:
     return targets
 
 
-def package_bazel_text(root: Path, package_dir: Path) -> str:
+def package_bazel_modules(root: Path, package_dir: Path) -> list[ast.Module]:
     files = [package_dir / "BUILD.bazel", *sorted(package_dir.glob("*.bzl"))]
     if not files[0].is_file():
         fail(f"Cargo package has no BUILD.bazel: {package_dir.relative_to(root)}")
-    return "\n".join(path.read_text(encoding="utf-8") for path in files if path.is_file())
+    modules: list[ast.Module] = []
+    for path in files:
+        if not path.is_file():
+            continue
+        try:
+            modules.append(ast.parse(path.read_text(encoding="utf-8"), path.as_posix()))
+        except (OSError, UnicodeError, SyntaxError) as error:
+            fail(f"cannot parse Bazel metadata {path.relative_to(root)}: {error}")
+    return modules
+
+
+def assignments(module: ast.Module) -> dict[str, ast.AST]:
+    return {
+        node.targets[0].id: node.value
+        for node in module.body
+        if isinstance(node, ast.Assign)
+        and len(node.targets) == 1
+        and isinstance(node.targets[0], ast.Name)
+    }
+
+
+def string_values(
+    node: ast.AST | None,
+    environment: dict[str, ast.AST],
+    visiting: frozenset[str] = frozenset(),
+) -> set[str]:
+    if node is None:
+        return set()
+    if isinstance(node, ast.Constant) and isinstance(node.value, str):
+        return {node.value}
+    if isinstance(node, (ast.List, ast.Tuple, ast.Set)):
+        return set().union(
+            *(string_values(item, environment, visiting) for item in node.elts)
+        ) if node.elts else set()
+    if isinstance(node, ast.Dict):
+        return set().union(
+            *(string_values(item, environment, visiting) for item in node.values)
+        ) if node.values else set()
+    if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Add):
+        return string_values(node.left, environment, visiting) | string_values(
+            node.right, environment, visiting
+        )
+    if isinstance(node, ast.Name) and node.id in environment and node.id not in visiting:
+        return string_values(
+            environment[node.id], environment, visiting | frozenset({node.id})
+        )
+    if isinstance(node, ast.Call):
+        return set().union(
+            *(string_values(argument, environment, visiting) for argument in node.args),
+            *(string_values(keyword.value, environment, visiting) for keyword in node.keywords),
+        )
+    return set()
+
+
+def bazel_glob_matches(pattern: str, path: str) -> bool:
+    marker = "\0DOUBLESTAR_SLASH\0"
+    expression = re.escape(pattern).replace(r"\*\*/", marker)
+    expression = expression.replace(r"\*\*", ".*").replace(r"\*", "[^/]*")
+    expression = expression.replace(r"\?", "[^/]").replace(
+        re.escape(marker), "(?:[^/]+/)*"
+    )
+    return re.fullmatch(expression, path) is not None
+
+
+def expression_owns_path(
+    node: ast.AST | None,
+    path: str,
+    environment: dict[str, ast.AST],
+    visiting: frozenset[str] = frozenset(),
+) -> bool:
+    if node is None:
+        return False
+    if isinstance(node, ast.Constant) and isinstance(node.value, str):
+        return node.value == path
+    if isinstance(node, (ast.List, ast.Tuple, ast.Set)):
+        return any(expression_owns_path(item, path, environment, visiting) for item in node.elts)
+    if isinstance(node, ast.Dict):
+        return any(expression_owns_path(item, path, environment, visiting) for item in node.values)
+    if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Add):
+        return expression_owns_path(node.left, path, environment, visiting) or expression_owns_path(
+            node.right, path, environment, visiting
+        )
+    if isinstance(node, ast.Name) and node.id in environment and node.id not in visiting:
+        return expression_owns_path(
+            environment[node.id], path, environment, visiting | frozenset({node.id})
+        )
+    if isinstance(node, ast.Call):
+        function = node.func.id if isinstance(node.func, ast.Name) else ""
+        if function == "glob":
+            includes = string_values(node.args[0] if node.args else None, environment)
+            excludes = set()
+            for keyword in node.keywords:
+                if keyword.arg == "exclude":
+                    excludes |= string_values(keyword.value, environment)
+            return any(bazel_glob_matches(pattern, path) for pattern in includes) and not any(
+                bazel_glob_matches(pattern, path) for pattern in excludes
+            )
+        if function == "select":
+            return any(expression_owns_path(argument, path, environment, visiting) for argument in node.args)
+    return False
+
+
+def rust_source_owned(modules: list[ast.Module], path: str) -> bool:
+    for module in modules:
+        environment = assignments(module)
+        for node in ast.walk(module):
+            if not isinstance(node, ast.Call):
+                continue
+            keywords = {keyword.arg: keyword.value for keyword in node.keywords}
+            if not {"crate_root", "src", "srcs"}.intersection(keywords):
+                continue
+            if expression_owns_path(keywords.get("crate_root"), path, environment) or expression_owns_path(
+                keywords.get("src"), path, environment
+            ) or expression_owns_path(
+                keywords.get("srcs"), path, environment
+            ):
+                return True
+    return False
+
+
+def bazel_path_declared(modules: list[ast.Module], path: str) -> bool:
+    """Return whether a non-Rust Cargo input is structurally declared to Bazel."""
+    for module in modules:
+        environment = assignments(module)
+        for node in ast.walk(module):
+            if not isinstance(node, ast.Call):
+                continue
+            function = node.func.id if isinstance(node.func, ast.Name) else ""
+            if function == "exports_files" and any(
+                expression_owns_path(argument, path, environment) for argument in node.args
+            ):
+                return True
+            keywords = {keyword.arg: keyword.value for keyword in node.keywords}
+            if any(
+                expression_owns_path(keywords.get(attribute), path, environment)
+                for attribute in ("src", "srcs", "data")
+            ):
+                return True
+    return False
+
+
+def has_named_target(modules: list[ast.Module], name: str) -> bool:
+    return any(
+        isinstance(node, ast.Call)
+        and any(
+            keyword.arg == "name"
+            and isinstance(keyword.value, ast.Constant)
+            and keyword.value.value == name
+            for keyword in node.keywords
+        )
+        for module in modules
+        for node in ast.walk(module)
+    )
+
+
+def dependency_ownership(modules: list[ast.Module]) -> tuple[set[str], set[str]]:
+    labels: set[str] = set()
+    flags: set[str] = set()
+    for module in modules:
+        environment = assignments(module)
+        for node in ast.walk(module):
+            if not isinstance(node, ast.Call):
+                continue
+            for keyword in node.keywords:
+                if keyword.arg not in {"deps", "proc_macro_deps"}:
+                    continue
+                labels |= {
+                    value for value in string_values(keyword.value, environment) if value.startswith("//")
+                }
+                for call in ast.walk(keyword.value):
+                    if not isinstance(call, ast.Call) or not isinstance(call.func, ast.Name):
+                        continue
+                    if call.func.id != "all_crate_deps":
+                        continue
+                    flags |= {
+                        item.arg
+                        for item in call.keywords
+                        if item.arg is not None
+                        and isinstance(item.value, ast.Constant)
+                        and item.value.value is True
+                    }
+    return labels, flags
 
 
 def assert_target_ownership(
@@ -189,22 +386,22 @@ def assert_target_ownership(
     package_dir: Path,
     data: dict[str, Any],
 ) -> int:
-    text = package_bazel_text(root, package_dir)
-    if re.search(
-        r"\bname\s*=\s*[\"']cargo_package_data[\"']",
-        text,
-    ) is None:
+    modules = package_bazel_modules(root, package_dir)
+    if not has_named_target(modules, "cargo_package_data"):
         fail(f"{package_name} BUILD.bazel has no cargo_package_data target")
     targets = cargo_targets(package_dir, data)
-    root_build = (root / "BUILD.bazel").read_text(encoding="utf-8")
+    root_modules = package_bazel_modules(root, root)
     for target, relative in targets.items():
         path = relative.as_posix()
         if not (package_dir / relative).is_file():
             fail(f"{package_name} {target} source is missing: {path}")
-        if path not in text and (
-            target != "custom-build:build-script-build"
-            or path not in root_build
-        ):
+        owned = rust_source_owned(modules, path)
+        if target == "custom-build:build-script-build":
+            workspace_path = (package_dir.relative_to(root) / relative).as_posix()
+            owned = owned or bazel_path_declared(modules, path) or bazel_path_declared(
+                root_modules, workspace_path
+            )
+        if not owned:
             fail(f"{package_name} Cargo target is not owned by Bazel: {target} ({path})")
     return len(targets)
 
@@ -237,7 +434,8 @@ def local_graph(
     by_root = {directory.resolve(): name for name, (directory, _) in packages.items()}
     graph = {name: set() for name in packages}
     for name, (directory, data) in packages.items():
-        bazel_text = package_bazel_text(root, directory)
+        modules = package_bazel_modules(root, directory)
+        dependency_labels, dependency_flags = dependency_ownership(modules)
         for table, dependency_name, value in dependency_entries(data):
             if not isinstance(value, dict) or "path" not in value:
                 continue
@@ -251,7 +449,12 @@ def local_graph(
             if table != "dev-dependencies":
                 graph[name].add(target)
             package_label = f"//{resolved.relative_to(root).as_posix()}:"
-            if package_label not in bazel_text and "all_crate_deps(" not in bazel_text:
+            required_flag = {
+                "dependencies": "normal",
+                "dev-dependencies": "normal_dev",
+                "build-dependencies": "build",
+            }[table]
+            if not any(label.startswith(package_label) for label in dependency_labels) and required_flag not in dependency_flags:
                 fail(f"{name} Bazel target omits Cargo path dependency {target}")
     return graph
 

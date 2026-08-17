@@ -235,8 +235,7 @@ fn source_event_order_key_has_exact_source_order_and_size_layout() {
     );
     assert_eq!(
         u32::from_be_bytes(
-            key[SOURCE_EVENT_ORDER_ENCODED_BYTES_OFFSET
-                ..SOURCE_EVENT_ORDER_CONTENT_BYTES_OFFSET]
+            key[SOURCE_EVENT_ORDER_ENCODED_BYTES_OFFSET..SOURCE_EVENT_ORDER_CONTENT_BYTES_OFFSET]
                 .try_into()
                 .unwrap()
         ) as usize,

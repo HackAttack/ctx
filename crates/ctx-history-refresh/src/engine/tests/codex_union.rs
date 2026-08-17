@@ -674,6 +674,7 @@ fn explicit_child_without_selected_parent_publishes_unresolved_and_never_reroots
     assert_eq!(
         child
             .session_relationship
+            .as_ref()
             .map(|relationship| relationship.as_str()),
         Some("forked")
     );
@@ -709,6 +710,7 @@ fn assert_codex_parent_child_records(
     assert_eq!(
         child
             .session_relationship
+            .as_ref()
             .map(|relationship| relationship.as_str()),
         Some("forked")
     );

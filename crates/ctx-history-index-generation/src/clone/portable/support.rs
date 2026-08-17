@@ -105,7 +105,7 @@ impl Drop for PortableCloneTestGuard {
 }
 
 #[cfg(any(test, feature = "test-support"))]
-pub(super) fn forced_for_test() -> bool {
+pub(in crate::clone) fn forced_for_test() -> bool {
     FORCE_PORTABLE.with(std::cell::Cell::get)
 }
 
