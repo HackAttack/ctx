@@ -17,8 +17,10 @@ boundary:
    result activity without FIFO, order, or timing inference.
 3. The producer, route, source format, schema, and version/generation boundary
    are explicit. Unknown generations remain `not-qualified`.
-4. Current executable provider tests cover an exact activity pair,
-   duplicate/ambiguous abstention, and result preservation.
+4. Current executable tests cover the nine public evidence classes: exact
+   activity, terminal outcomes, malformed and duplicate/ambiguous abstention,
+   exact boundaries and max-plus-one rejection, result preservation, stable
+   identities across lifecycle replay, and privacy sinks.
 
 Configuration, current server lists, record order, punctuation splitting, and
 time proximity are never identity evidence. Malformed, partial, oversized,
@@ -31,9 +33,12 @@ Its executable suite registry is
 `crates/ctx-history-capture/tests/mcp_attribution_suites.bzl`. Manifest
 capability revision 6 freezes 43 providers, 45 base routes, 44 imported schema
 generations, and 48 capability lanes: three `supported`, 44 `not_qualified`,
-and one `excluded`. Supported rows require exactly the current public evidence
-roles `exact_positive_pair`, `ambiguity_duplicate_linkage`, and
-`result_preservation`.
+and one `excluded`. Every supported row requires
+`ambiguity_duplicate_linkage`, `canonical_terminal_outcomes`, `exact_boundary`,
+`exact_positive_pair`, `malformed_identity`, `max_plus_one`, `privacy_sinks`,
+`result_preservation`, and `stable_ids`. The max-plus-one and privacy checks are
+provider-neutral closed classes; the other seven are tuple-specific provider
+evidence.
 
 For Codex's session-tree route, only unversioned generation 1 is supported.
 Producer versions 0.200.0, 0.201.0, and 0.202.0 are distinct

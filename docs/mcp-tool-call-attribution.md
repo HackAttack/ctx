@@ -123,10 +123,19 @@ ctx list events --provider codex --content full --format jsonl |
     {ctx_event_id, ctx_session_id, activity}'
 ```
 
-`--content text` and `--content none` omit `activity`. Filtering is
-client-side after ctx emits each row. There is no server/tool filter, search,
-query selector, SQL column, ranking signal, snippet source, or separate MCP
+`--content text` and `--content none` omit `activity` from chronology rows.
+Filtering those rows is client-side after ctx emits each row. There is no
+dedicated server/tool filter, query selector, SQL column, or separate MCP
 attribution command.
+
+For discovery-eligible selected content, retained invocation
+protocol/server/tool/present arguments, result status/present text/structured content,
+and literal facts enter the shared Core search projection. That projection
+supplies lexical terms and snippets as well as semantic source text, so these
+values can affect ordinary matching and ranking like other retained Core
+content. Provider call IDs, timestamps, durations, and capture-disposition
+labels do not enter the projection, and a `normalized_body` result reference
+does not duplicate the event body.
 
 ## MCP access and pagination
 
@@ -159,5 +168,8 @@ repository names, terminal controls, personal data, or proprietary output.
 Machine JSON/JSONL and MCP `structuredContent` preserve the admitted activity
 value exactly. Human CLI and MCP text rendering escapes terminal controls and
 may bound the rendered event; use the machine value when exact bytes matter.
+Private local storage is not a search-exclusion guarantee: matching queries,
+ranked results, and snippets can surface retained searchable activity values,
+so review search output before sharing it.
 
 Release-note credit: Reported by [@j2h4u](https://github.com/j2h4u).

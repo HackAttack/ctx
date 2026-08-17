@@ -241,18 +241,25 @@ reads do not reopen provider history. Provider changes become searchable and
 visible to show after explicit import or daemon refresh publishes a new Core
 generation. `ctx show session` preserves provider event order.
 
-Content-governed `activity` is not indexed. Provider call identity, invocation
-protocol/server/tool/arguments, result status/timing/text/structured content,
-and literal facts add no search input, filter, result field, selector, match,
-ranking signal, snippet, `why_matched` value, semantic text, SQL column, or
-another derived fact. A result using the `normalized_body` capture disposition
-still relies on the event's ordinary normalized body, which is indexed exactly
-once under the existing content policy.
+For discovery-eligible selected content, the shared Core search projection
+appends retained activity invocation protocol, server, tool, and present
+arguments; result status, present text, and present structured content; and
+literal fact values after the event body and provider-native structured
+content. These values participate in ordinary lexical matching, ranking,
+snippets, text match reasons, and semantic source text. A result using the
+`normalized_body` capture disposition relies on the event's ordinary body,
+which enters the projection exactly once.
+
+Provider call identity, timestamps, durations, and capture-disposition labels
+do not enter the search projection. Activity adds no dedicated filter,
+selector, search result field, or SQL column; search sees one shared text
+projection rather than separately addressable activity fields.
 
 Use log-mode `ctx show session`, `ctx show event`, or `ctx list events
 --content full` and filter JSON/JSONL rows client-side when exact provider
 activity is needed. Query paths do not reopen provider history or issue hidden
-network requests. See
+network requests. Activity remains private local content, but matching queries
+and snippets can surface its searchable values. See
 [`mcp-exchange-capture.md`](mcp-exchange-capture.md).
 
 ## History reports

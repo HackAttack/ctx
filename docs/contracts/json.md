@@ -879,11 +879,13 @@ by default when `CODEX_THREAD_ID` is set; pass
 MCP `show_event`, `show_session`, and full-content `query_events` structured
 event rows reuse the same snake_case `activity` value. Text fallback is
 display-safe rather than the exact machine authority. `query_events` with
-`content: "text"` or `content: "none"` omits activity. It is not added to MCP
-or CLI search inputs, matching, ranking, snippets, selectors, or SQL. Paginated
-MCP callers filter each returned page client-side and continue with the
-existing opaque cursor; `show_session` requires `mode: "log"` for ordinary
-tool events.
+`content: "text"` or `content: "none"` omits activity. Discovery-eligible
+retained protocol/server/tool/present arguments, result status/present text/structured
+content, and facts enter the shared Core projection used by CLI and MCP search
+matching, ranking, snippets, and semantic source text. Activity adds no
+dedicated selector or SQL field. Paginated MCP callers filter each returned page
+client-side and continue with the existing opaque cursor; `show_session`
+requires `mode: "log"` for ordinary tool events.
 
 The MCP `sources` tool includes the same bounded `issues` and
 `issues_truncated` fields as `ctx sources --format json`.

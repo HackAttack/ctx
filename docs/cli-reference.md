@@ -687,8 +687,10 @@ MCP `show_event`, log-mode `show_session`, and full-content `query_events`
 event rows expose the same optional snake_case `activity` value in
 `structuredContent`. `query_events` with `content: "text"` or `content:
 "none"` omits it. Filter bounded pages on the client and continue with their
-existing opaque cursors; there are no MCP activity selectors or search
-arguments. Keys inside captured JSON values are unchanged.
+existing opaque cursors; there are no dedicated MCP activity selectors or
+search arguments. Ordinary CLI and MCP search can match retained searchable
+activity values through the shared Core search projection. Keys inside captured
+JSON values are unchanged.
 
 Human CLI, Markdown, and MCP text views escape terminal controls and may bound
 the rendered event. Use machine JSON/JSONL or MCP `structuredContent` for the

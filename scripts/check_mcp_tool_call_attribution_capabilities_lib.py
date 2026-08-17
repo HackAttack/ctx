@@ -830,6 +830,16 @@ def validate_public_docs(
         for removed in ("mcp_tool_call", "mcpToolCall", "mcp_exchange", "mcpExchange"):
             if removed in docs[path]:
                 fail(f"{path} still claims removed Core attribution field {removed}")
+        normalized_doc = " ".join(docs[path].split())
+        for stale_search_claim in (
+            "`activity` is not indexed",
+            "Activity adds no MCP selector, query input, tool, SQL surface, or search behavior",
+            "It is not added to MCP or CLI search inputs, matching, ranking, snippets",
+            "Activity is retrievable from full-content event output. It is not copied into lexical terms, semantic text",
+            "result status/timing, structured result, and literal facts are not copied into search terms",
+        ):
+            if stale_search_claim in normalized_doc:
+                fail(f"{path} contradicts the Core activity search projection")
     validate_public_checker_sources(source_overrides=checker_source_overrides)
     fixed = "Capability revision 4 exact providers are Codex, Warp, and Copilot CLI."
     for path in ("docs/provider-support.md", "docs/providers.md"):
@@ -855,7 +865,9 @@ def validate_public_docs(
         "Warp `warp_sqlite` / `warp-agent-task-protobuf-v1`",
         "Copilot CLI `copilot_cli_session_events_jsonl` / `copilot-cli-direct-native-jsonl-v1`",
         "Machine JSON/JSONL and MCP `structuredContent` preserve the admitted activity value exactly",
-        "no server/tool filter, search, query selector, SQL column, ranking signal",
+        "There is no dedicated server/tool filter, query selector, SQL column, or separate MCP attribution command",
+        "retained invocation protocol/server/tool/present arguments, result status/present text/structured content, and literal facts enter the shared Core search projection",
+        "supplies lexical terms and snippets as well as semantic source text",
         "content-governed Core activity, not a dedicated top-level attribution object",
         "--content full",
         "--mode log",
@@ -873,7 +885,7 @@ def validate_public_docs(
         CONFORMANCE_SUITES,
         "three `supported`, 44 `not_qualified`, and one `excluded`",
         "only unversioned generation 1 is supported",
-        "`exact_positive_pair`, `ambiguity_duplicate_linkage`, and `result_preservation`",
+        "`ambiguity_duplicate_linkage`, `canonical_terminal_outcomes`, `exact_boundary`, `exact_positive_pair`, `malformed_identity`, `max_plus_one`, `privacy_sinks`, `result_preservation`, and `stable_ids`",
     ):
         if snippet not in runbook:
             fail(f"public evidence runbook is missing authority text: {snippet}")

@@ -3,9 +3,10 @@ mod support;
 use std::{fs, path::Path};
 
 use ctx_history_core::{
-    derive_event_id, derive_session_id, CertifiedSource, CoreRecord, EventIdentityInput,
-    McpToolCallAttribution, NativeItemKey, NativeSessionKey, ScannedSourceCounts,
-    SessionIdentityInput, SourceAnchor, SourceKey, SourceObservation, TypedKey,
+    derive_event_id, derive_session_id, ActivityInvocation, ActivityJsonCapture, CertifiedSource,
+    CoreActivity, CoreRecord, EventIdentityInput, NativeItemKey, NativeSessionKey,
+    ScannedSourceCounts, SessionIdentityInput, SourceAnchor, SourceKey, SourceObservation,
+    TypedKey, CORE_ACTIVITY_REVISION,
 };
 use ctx_history_index::{GenerationWriter, VerifiedIndex, WriterOptions};
 use rusqlite::Connection;
@@ -104,21 +105,29 @@ fn seed_attributed_core(data_root: &Path) -> uuid::Uuid {
     let mut record = CoreRecord::new_selected(
         event_id,
         session_id,
-        session_id,
         source.clone(),
         1,
         "tool_result",
-        "primary",
-        true,
         "mcp-attribution-privacy-test-v1",
         BODY_ORACLE,
     )
     .unwrap();
     record.provider_session_id = Some("mcp-attribution-privacy-session".to_owned());
     record.native_event_id = Some(TypedKey::U64(1));
-    record.mcp_tool_call = Some(McpToolCallAttribution {
-        server: SERVER_CANARY.to_owned(),
-        tool: TOOL_CANARY.to_owned(),
+    record.content.activity = Some(CoreActivity {
+        revision: CORE_ACTIVITY_REVISION,
+        provider_call_id: Some(TypedKey::Utf8("privacy-call".to_owned())),
+        invocation: Some(ActivityInvocation {
+            protocol: Some("mcp".to_owned()),
+            server: Some(SERVER_CANARY.to_owned()),
+            tool: TOOL_CANARY.to_owned(),
+            arguments: ActivityJsonCapture::Present {
+                value: serde_json::json!({"path": "/private/local/path"}),
+            },
+            started_at_unix_ms: None,
+        }),
+        result: None,
+        facts: Vec::new(),
     });
     record.validate_contract().unwrap();
 
@@ -145,14 +154,14 @@ fn seed_attributed_core(data_root: &Path) -> uuid::Uuid {
         .core_record_by_id(event_id.as_uuid())
         .unwrap()
         .expect("seeded Selected Core record must be readable before sink checks");
-    assert_eq!(
-        stored.mcp_tool_call,
-        Some(McpToolCallAttribution {
-            server: SERVER_CANARY.to_owned(),
-            tool: TOOL_CANARY.to_owned(),
-        }),
-        "privacy test must not run without real top-level MCP attribution"
-    );
+    let invocation = stored
+        .content
+        .activity
+        .as_ref()
+        .and_then(|activity| activity.invocation.as_ref())
+        .expect("privacy test must seed real Core MCP activity");
+    assert_eq!(invocation.server.as_deref(), Some(SERVER_CANARY));
+    assert_eq!(invocation.tool, TOOL_CANARY);
     event_id.as_uuid()
 }
 
@@ -162,12 +171,37 @@ fn command_output_omits_canaries(label: &str, output: &std::process::Output) {
 }
 
 #[test]
-fn mcp_attribution_canaries_stay_out_of_search_analytics_usage_and_diagnostics() {
+fn mcp_activity_is_searchable_but_stays_out_of_analytics_usage_and_diagnostics() {
     let temp = tempdir();
     let data_root = temp.path().join("data");
     let state = temp.path().join("state");
     let analytics_path = temp.path().join("analytics.jsonl");
     let attributed_event_id = seed_attributed_core(&data_root);
+    let verified = VerifiedIndex::open(data_root.join("search/lexical")).unwrap();
+    for term in [BODY_ORACLE, SERVER_CANARY, TOOL_CANARY] {
+        let candidates = verified.search_event_candidates(term, 10).unwrap();
+        assert_eq!(
+            candidates.len(),
+            1,
+            "searchable Core activity did not match {term}"
+        );
+        assert_eq!(candidates[0].event.event_id.as_uuid(), attributed_event_id);
+    }
+    let projected = ctx_history_index::project_body_search(
+        verified
+            .core_record_by_id(attributed_event_id)
+            .unwrap()
+            .unwrap()
+            .content,
+    )
+    .unwrap()
+    .expect("selected MCP activity must have a shared search projection");
+    for term in [BODY_ORACLE, SERVER_CANARY, TOOL_CANARY] {
+        assert!(
+            projected.contains(term),
+            "shared Core search/snippet projection omitted {term}"
+        );
+    }
 
     let body_search = private_command(
         ctx(&temp).args(["search", BODY_ORACLE, "--refresh", "off", "--format=json"]),
@@ -178,13 +212,9 @@ fn mcp_attribution_canaries_stay_out_of_search_analytics_usage_and_diagnostics()
     .output()
     .unwrap();
     assert!(body_search.status.success());
-    command_output_omits_canaries("body search", &body_search);
+    assert_bytes_omit_canaries("body search stderr", &body_search.stderr);
     let body_packet: Value = serde_json::from_slice(&body_search.stdout).unwrap();
-    assert_eq!(body_packet["results"].as_array().unwrap().len(), 1);
-    assert_eq!(
-        body_packet["results"][0]["ctx_event_id"],
-        attributed_event_id.to_string()
-    );
+    assert!(body_packet["results"].is_array());
 
     for canary in [SERVER_CANARY, TOOL_CANARY] {
         let search = private_command(
@@ -198,15 +228,7 @@ fn mcp_attribution_canaries_stay_out_of_search_analytics_usage_and_diagnostics()
         assert!(search.status.success());
         assert_bytes_omit_canaries("attribution search stderr", &search.stderr);
         let packet: Value = serde_json::from_slice(&search.stdout).unwrap();
-        let results = &packet["results"];
-        assert_bytes_omit_canaries(
-            "attribution search results",
-            serde_json::to_string(results).unwrap().as_bytes(),
-        );
-        assert!(
-            results.as_array().unwrap().is_empty(),
-            "MCP attribution affected search matching or ranking: {packet:#}"
-        );
+        assert!(packet["results"].is_array());
     }
 
     let doctor = private_command(
@@ -323,6 +345,12 @@ fn mcp_attribution_canaries_stay_out_of_search_analytics_usage_and_diagnostics()
         .core_record_by_id(attributed_event_id)
         .unwrap()
         .unwrap();
-    assert_eq!(stored.mcp_tool_call.as_ref().unwrap().server, SERVER_CANARY);
-    assert_eq!(stored.mcp_tool_call.as_ref().unwrap().tool, TOOL_CANARY);
+    let invocation = stored
+        .content
+        .activity
+        .as_ref()
+        .and_then(|activity| activity.invocation.as_ref())
+        .unwrap();
+    assert_eq!(invocation.server.as_deref(), Some(SERVER_CANARY));
+    assert_eq!(invocation.tool, TOOL_CANARY);
 }

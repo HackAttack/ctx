@@ -13,8 +13,14 @@
   },
   "required_supported_evidence_classes": [
     "ambiguity_duplicate_linkage",
+    "canonical_terminal_outcomes",
+    "exact_boundary",
     "exact_positive_pair",
-    "result_preservation"
+    "malformed_identity",
+    "max_plus_one",
+    "privacy_sinks",
+    "result_preservation",
+    "stable_ids"
   ],
   "base_routes": [
     {
@@ -1505,6 +1511,20 @@
           "scope": "tuple"
         },
         {
+          "class": "canonical_terminal_outcomes",
+          "kind": "rust_test",
+          "suite": "mcp_attribution_codex_provider_units",
+          "test": "codex::nativepath::rows::tests::terminal_outcomes_preserve_literal_status_and_complete_result_content",
+          "scope": "tuple"
+        },
+        {
+          "class": "exact_boundary",
+          "kind": "rust_test",
+          "suite": "mcp_attribution_codex_provider_units",
+          "test": "codex::nativepath::rows::tests::exact_mcp_identity_boundary_is_accepted_and_max_plus_one_abstains",
+          "scope": "tuple"
+        },
+        {
           "class": "exact_positive_pair",
           "kind": "rust_test",
           "suite": "mcp_attribution_codex_provider_units",
@@ -1512,10 +1532,38 @@
           "scope": "tuple"
         },
         {
+          "class": "malformed_identity",
+          "kind": "rust_test",
+          "suite": "mcp_attribution_codex_provider_units",
+          "test": "codex::nativepath::rows::tests::malformed_mcp_identity_abstains_without_losing_valid_result_activity",
+          "scope": "tuple"
+        },
+        {
+          "class": "max_plus_one",
+          "kind": "rust_test",
+          "suite": "mcp_attribution_core",
+          "test": "core_record::tests::activity_metadata_accepts_exact_boundaries_and_rejects_max_plus_one",
+          "scope": "provider_neutral"
+        },
+        {
+          "class": "privacy_sinks",
+          "kind": "rust_test",
+          "suite": "mcp_attribution_privacy",
+          "test": "mcp_activity_is_searchable_but_stays_out_of_analytics_usage_and_diagnostics",
+          "scope": "provider_neutral"
+        },
+        {
           "class": "result_preservation",
           "kind": "rust_test",
           "suite": "mcp_attribution_codex_provider_units",
           "test": "codex::nativepath::rows::tests::empty_result_string_is_absent_text_with_exact_structured_capture",
+          "scope": "tuple"
+        },
+        {
+          "class": "stable_ids",
+          "kind": "rust_test",
+          "suite": "mcp_attribution_capture_provider_units",
+          "test": "source_backed::tests::codex_child_independence::lifecycle::codex_mcp_activity_append_replay_preserves_stable_ids_and_exact_content",
           "scope": "tuple"
         }
       ],
@@ -2067,6 +2115,20 @@
           "scope": "tuple"
         },
         {
+          "class": "canonical_terminal_outcomes",
+          "kind": "rust_test",
+          "suite": "mcp_attribution_selected_sqlite_provider_units",
+          "test": "providers::warp::nativepath::decode::tests::textual_success_failure_and_unknown_results_are_complete",
+          "scope": "tuple"
+        },
+        {
+          "class": "exact_boundary",
+          "kind": "rust_test",
+          "suite": "mcp_attribution_selected_sqlite_provider_units",
+          "test": "providers::warp::nativepath::decode::tests::validated_uuid_text_is_preserved_exactly",
+          "scope": "tuple"
+        },
+        {
           "class": "exact_positive_pair",
           "kind": "rust_test",
           "suite": "mcp_attribution_selected_sqlite_provider_units",
@@ -2074,10 +2136,38 @@
           "scope": "tuple"
         },
         {
+          "class": "malformed_identity",
+          "kind": "rust_test",
+          "suite": "mcp_attribution_selected_sqlite_provider_units",
+          "test": "providers::warp::nativepath::decode::tests::invalid_then_valid_required_strings_permanently_invalidate_attribution",
+          "scope": "tuple"
+        },
+        {
+          "class": "max_plus_one",
+          "kind": "rust_test",
+          "suite": "mcp_attribution_core",
+          "test": "core_record::tests::activity_metadata_accepts_exact_boundaries_and_rejects_max_plus_one",
+          "scope": "provider_neutral"
+        },
+        {
+          "class": "privacy_sinks",
+          "kind": "rust_test",
+          "suite": "mcp_attribution_privacy",
+          "test": "mcp_activity_is_searchable_but_stays_out_of_analytics_usage_and_diagnostics",
+          "scope": "provider_neutral"
+        },
+        {
           "class": "result_preservation",
           "kind": "rust_test",
           "suite": "mcp_attribution_selected_sqlite_provider_units",
           "test": "providers::warp::source_backed::result_tests::core_projection_keeps_success_failure_unknown_and_large_result_bodies_once",
+          "scope": "tuple"
+        },
+        {
+          "class": "stable_ids",
+          "kind": "rust_test",
+          "suite": "mcp_attribution_selected_sqlite_provider_units",
+          "test": "providers::warp::source_backed::result_tests::sanitized_mcp_fixture_projects_only_unique_qualified_terminal_pairs",
           "scope": "tuple"
         }
       ],
@@ -2694,6 +2784,20 @@
           "scope": "tuple"
         },
         {
+          "class": "canonical_terminal_outcomes",
+          "kind": "rust_test",
+          "suite": "mcp_attribution_native_jsonl_provider_units",
+          "test": "native_path::source_backed::copilot_tests::success_failure_and_unknown_outcomes_remain_literal_without_inferred_status",
+          "scope": "tuple"
+        },
+        {
+          "class": "exact_boundary",
+          "kind": "rust_test",
+          "suite": "mcp_attribution_capture_provider_units",
+          "test": "source_backed::tests::copilot::copilot_route_enforces_independent_exact_identity_component_boundaries",
+          "scope": "tuple"
+        },
+        {
           "class": "exact_positive_pair",
           "kind": "rust_test",
           "suite": "mcp_attribution_native_jsonl_provider_units",
@@ -2701,10 +2805,38 @@
           "scope": "tuple"
         },
         {
+          "class": "malformed_identity",
+          "kind": "rust_test",
+          "suite": "mcp_attribution_native_jsonl_provider_units",
+          "test": "native_path::source_backed::copilot_tests::malformed_or_oversized_identity_abstains_without_poisoning_valid_input",
+          "scope": "tuple"
+        },
+        {
+          "class": "max_plus_one",
+          "kind": "rust_test",
+          "suite": "mcp_attribution_core",
+          "test": "core_record::tests::activity_metadata_accepts_exact_boundaries_and_rejects_max_plus_one",
+          "scope": "provider_neutral"
+        },
+        {
+          "class": "privacy_sinks",
+          "kind": "rust_test",
+          "suite": "mcp_attribution_privacy",
+          "test": "mcp_activity_is_searchable_but_stays_out_of_analytics_usage_and_diagnostics",
+          "scope": "provider_neutral"
+        },
+        {
           "class": "result_preservation",
           "kind": "rust_test",
           "suite": "mcp_attribution_native_jsonl_provider_units",
           "test": "native_path::source_backed::copilot_tests::completion_preserves_literal_result_without_inferred_status",
+          "scope": "tuple"
+        },
+        {
+          "class": "stable_ids",
+          "kind": "rust_test",
+          "suite": "mcp_attribution_capture_provider_units",
+          "test": "source_backed::tests::copilot::copilot_activity_append_replay_preserves_stable_event_ids",
           "scope": "tuple"
         }
       ],

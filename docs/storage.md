@@ -164,11 +164,15 @@ provider-native structured content, and activity share the 16 MiB Core
 selected-content budget. Oversized complete JSON or text channels become
 explicit `omitted` capture states without truncation.
 
-Activity is retrievable from full-content event output. It is not copied into
-lexical terms, semantic text, or `usage.sqlite`, and query paths do not
+Activity is retrievable from full-content event output. For discovery-eligible
+selected content, retained protocol/server/tool/present arguments, result
+status/present text/structured content, and literal fact values enter the
+shared Core search projection used by lexical search, snippets, and semantic
+source text. Provider call identity, timing, and capture-disposition labels do
+not. No activity value is written to `usage.sqlite`, and query paths do not
 reconstruct it from provider-specific content or current MCP configuration.
-`--content text` and `--content none` omit activity; Core non-selected content
-cannot carry it.
+`--content text` and `--content none` omit activity from chronology output;
+Core non-selected content cannot carry it.
 
 Capture can separately mark a complete record as ctx-retrieval-derived when
 every body-contributing atom is an exactly recognized direct ctx retrieval call
@@ -179,11 +183,12 @@ fail-open: errors, warnings, stderr, mixed content, unknown status, unsupported
 aliases, and ambiguous linkage remain discoverable. The marker is not
 redaction, omission, or deletion.
 
-The provider call ID, invocation identity and arguments, result status/timing,
-structured result, and literal facts are not copied into search terms. Result
-text with a `normalized_body` disposition retains the event's existing body
-search behavior exactly once. Activity adds no selector, filter, search result
-field, `usage.sqlite` value, or SQL column. See
+Search projection is selective rather than field-addressable: present
+invocation arguments and result content are included, while provider call IDs,
+timing, and capture-state metadata are excluded. Result text with a
+`normalized_body` disposition retains the event's existing body search behavior
+exactly once. Activity adds no dedicated selector, filter, search result field,
+`usage.sqlite` value, or SQL column. See
 [`mcp-exchange-capture.md`](mcp-exchange-capture.md).
 
 Search, show, list, locate, and MCP retrieval read verified Core/Tantivy

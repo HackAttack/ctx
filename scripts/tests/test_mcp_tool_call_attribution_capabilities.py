@@ -422,6 +422,26 @@ class CapabilityMutationTests(unittest.TestCase):
                 ):
                     validate_public_docs(docs)
 
+    def test_stale_activity_search_denials_are_rejected(self) -> None:
+        docs = copy.deepcopy(self.docs)
+        docs["docs/search.md"] += "\nContent-governed `activity` is not indexed.\n"
+        with self.assertRaisesRegex(
+            CapabilityError, "contradicts the Core activity search projection"
+        ):
+            validate_public_docs(docs)
+
+    def test_activity_search_projection_claim_is_required(self) -> None:
+        docs = copy.deepcopy(self.docs)
+        docs["docs/mcp-tool-call-attribution.md"] = docs[
+            "docs/mcp-tool-call-attribution.md"
+        ].replace(
+            "For discovery-eligible selected content, retained invocation",
+            "For discovery-eligible selected content, retained activity is "
+            "available only through show output",
+        )
+        with self.assertRaisesRegex(CapabilityError, "missing exact contract text"):
+            validate_public_docs(docs)
+
     def test_generic_boundary_classes_reject_literal_and_obfuscated_forms(self) -> None:
         for expected, probe in boundary_class_probes().items():
             for encoding, attack in attack_forms(probe).items():

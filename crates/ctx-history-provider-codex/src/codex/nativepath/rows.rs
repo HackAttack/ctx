@@ -790,6 +790,152 @@ mod tests {
     }
 
     #[test]
+    fn terminal_outcomes_preserve_literal_status_and_complete_result_content() {
+        let occurred_at = DateTime::parse_from_rfc3339("2026-08-16T12:00:00Z")
+            .unwrap()
+            .with_timezone(&Utc);
+        for (status, expected) in [
+            (Some("provider::ok"), Some("provider::ok")),
+            (Some("provider::failed"), Some("provider::failed")),
+            (None, None),
+        ] {
+            let mut payload = serde_json::json!({
+                "type": "function_call_output",
+                "call_id": "call-outcome",
+                "output": {"message": "complete provider result"}
+            });
+            if let Some(status) = status {
+                payload["status"] = Value::String(status.to_owned());
+            }
+            let raw = serde_json::to_vec(&payload).unwrap();
+            let audit = audit_codex_record(&raw).unwrap();
+            let activity = codex_result_activity(
+                payload.get("call_id").and_then(Value::as_str),
+                payload.get("output"),
+                &payload,
+                &audit,
+                occurred_at,
+            )
+            .unwrap();
+            let result = activity.result.unwrap();
+            assert_eq!(result.status.as_deref(), expected);
+            assert_eq!(result.text, ActivityTextCapture::Absent);
+            assert_eq!(
+                result.structured_content,
+                ActivityJsonCapture::Present {
+                    value: serde_json::json!({"message": "complete provider result"})
+                }
+            );
+        }
+    }
+
+    #[test]
+    fn malformed_mcp_identity_abstains_without_losing_valid_result_activity() {
+        let occurred_at = DateTime::parse_from_rfc3339("2026-08-16T12:00:00Z")
+            .unwrap()
+            .with_timezone(&Utc);
+        for invocation in [
+            serde_json::json!({"server": 7, "tool": "read", "arguments": {}}),
+            serde_json::json!({"server": "server", "tool": "", "arguments": {}}),
+            serde_json::json!({
+                "server": "s".repeat(MAX_CODEX_DURABLE_METADATA_BYTES + 1),
+                "tool": "read",
+                "arguments": {}
+            }),
+        ] {
+            let payload = serde_json::json!({
+                "type": "mcp_tool_call_end",
+                "call_id": "call-malformed-identity",
+                "invocation": invocation,
+                "result": "valid result survives"
+            });
+            let raw = serde_json::to_vec(&payload).unwrap();
+            let audit = audit_codex_record(&raw).unwrap();
+            let activity = codex_result_activity(
+                payload.get("call_id").and_then(Value::as_str),
+                payload.get("result"),
+                &payload,
+                &audit,
+                occurred_at,
+            )
+            .unwrap();
+            assert!(activity.invocation.is_none());
+            assert_eq!(
+                activity.result.unwrap().text,
+                ActivityTextCapture::Present {
+                    value: "valid result survives".to_owned()
+                }
+            );
+        }
+
+        let invalid_call = serde_json::json!({
+            "type": "function_call_output",
+            "call_id": ["not", "a", "string"],
+            "output": "unlinked result"
+        });
+        let raw = serde_json::to_vec(&invalid_call).unwrap();
+        let audit = audit_codex_record(&raw).unwrap();
+        assert!(codex_result_activity(
+            invalid_call.get("call_id").and_then(Value::as_str),
+            invalid_call.get("output"),
+            &invalid_call,
+            &audit,
+            occurred_at,
+        )
+        .is_none());
+    }
+
+    #[test]
+    fn exact_mcp_identity_boundary_is_accepted_and_max_plus_one_abstains() {
+        let occurred_at = DateTime::parse_from_rfc3339("2026-08-16T12:00:00Z")
+            .unwrap()
+            .with_timezone(&Utc);
+        let exact_server = "s".repeat(MAX_CODEX_DURABLE_METADATA_BYTES);
+        let exact_tool = "t".repeat(MAX_CODEX_DURABLE_METADATA_BYTES);
+        let payload = serde_json::json!({
+            "type": "mcp_tool_call_end",
+            "call_id": "call-boundary",
+            "invocation": {
+                "server": exact_server,
+                "tool": exact_tool,
+                "arguments": {}
+            },
+            "result": "boundary result"
+        });
+        let raw = serde_json::to_vec(&payload).unwrap();
+        let audit = audit_codex_record(&raw).unwrap();
+        let activity = codex_result_activity(
+            payload.get("call_id").and_then(Value::as_str),
+            payload.get("result"),
+            &payload,
+            &audit,
+            occurred_at,
+        )
+        .unwrap();
+        let invocation = activity.invocation.unwrap();
+        assert_eq!(invocation.server.as_deref(), Some(exact_server.as_str()));
+        assert_eq!(invocation.tool, exact_tool);
+
+        for component in ["server", "tool"] {
+            let mut oversized = payload.clone();
+            oversized["invocation"][component] =
+                Value::String("x".repeat(MAX_CODEX_DURABLE_METADATA_BYTES + 1));
+            let raw = serde_json::to_vec(&oversized).unwrap();
+            let audit = audit_codex_record(&raw).unwrap();
+            let activity = codex_result_activity(
+                oversized.get("call_id").and_then(Value::as_str),
+                oversized.get("result"),
+                &oversized,
+                &audit,
+                occurred_at,
+            )
+            .unwrap();
+            assert!(activity.invocation.is_none(), "oversized {component}");
+            assert!(activity.result.is_some());
+        }
+    }
+
+    #[test]
     fn duplicate_selectors_withhold_linkage_and_preserve_raw_fact_order() {
         let raw = br#"{"type":"function_call","call_id":"one","call_id":"two","name":"tool","arguments":{"command":" c ","path":" p ","url":" u "}}"#;
         let payload: Value = serde_json::from_slice(raw).unwrap();

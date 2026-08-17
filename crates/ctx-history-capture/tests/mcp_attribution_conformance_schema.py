@@ -71,14 +71,9 @@ ALLOWED_EVIDENCE_CLASSES = {
     "max_plus_one",
     "result_preservation",
     "stable_ids",
-    "search_nonindexing",
     "privacy_sinks",
 }
-REQUIRED_EVIDENCE_CLASSES = {
-    "ambiguity_duplicate_linkage",
-    "exact_positive_pair",
-    "result_preservation",
-}
+REQUIRED_EVIDENCE_CLASSES = ALLOWED_EVIDENCE_CLASSES
 EVIDENCE_SCOPES = {"tuple", "provider_neutral"}
 PROVIDER_NEUTRAL_EVIDENCE_CLASSES = {
     "max_plus_one",

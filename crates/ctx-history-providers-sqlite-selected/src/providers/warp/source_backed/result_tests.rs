@@ -182,6 +182,24 @@ fn sanitized_mcp_fixture_projects_only_unique_qualified_terminal_pairs() {
         .map(|event| core_record(&source, &lineage, event).unwrap())
         .collect::<Vec<_>>();
 
+    for (event, attributed_record) in events.iter().cloned().zip(&records) {
+        let mut unattributed_event = event;
+        unattributed_event.mcp_attribution = false;
+        unattributed_event.mcp_invocation = None;
+        unattributed_event.mcp_response = None;
+        let unattributed_record = core_record(&source, &lineage, unattributed_event).unwrap();
+        assert_eq!(attributed_record.event_id, unattributed_record.event_id);
+        assert_eq!(attributed_record.session_id, unattributed_record.session_id);
+        assert_eq!(
+            attributed_record.native_event_id,
+            unattributed_record.native_event_id
+        );
+        assert_eq!(
+            attributed_record.event_sequence,
+            unattributed_record.event_sequence
+        );
+    }
+
     let call_links = records
         .iter()
         .filter(|record| record.event_type == EventType::ToolCall.as_str())

@@ -123,8 +123,9 @@ rows whose `activity.invocation.protocol` is `mcp` on the client, and repeat wit
 `pagination.next_cursor` while `pagination.has_more` is true. Keep the session
 ID and mode unchanged. For cross-session enumeration, use the existing
 `query_events` cursor with `content: "full"` and apply the same presence filter
-to each page. Activity adds no MCP selector, query input, tool, SQL surface, or
-search behavior. See
+to each page. Activity adds no dedicated MCP selector, query input, tool, or SQL
+surface. The ordinary MCP search tool uses the same Core search projection as
+the CLI, including retained searchable activity values. See
 [`mcp-tool-call-attribution.md`](mcp-tool-call-attribution.md).
 
 The `status` tool returns the CLI JSON status read model unchanged in
