@@ -285,6 +285,37 @@ fn daemon_lifecycle_supports_on_demand_and_environment_only_reduces_policy() {
 }
 
 #[test]
+fn persisted_daemon_lifecycle_ignores_runtime_and_deprecated_reductions() {
+    let env_guard = EnvGuard::new(&[
+        DAEMON_LIFECYCLE_ENV,
+        "CTX_DAEMON_ENABLED",
+        "CTX_DAEMON_OFF",
+        "CTX_DISABLE_DAEMON",
+    ]);
+    let temp = tempfile::tempdir().unwrap();
+    fs::write(
+        temp.path().join(CONFIG_FILE),
+        "[daemon]\nlifecycle = \"persistent\"\n",
+    )
+    .unwrap();
+
+    for (key, value) in [
+        (DAEMON_LIFECYCLE_ENV, "on-demand"),
+        ("CTX_DAEMON_ENABLED", "false"),
+        ("CTX_DAEMON_OFF", "1"),
+        ("CTX_DISABLE_DAEMON", "yes"),
+    ] {
+        env_guard.set(key, value);
+        assert_eq!(
+            persisted_daemon_lifecycle(temp.path()).unwrap(),
+            DaemonLifecycle::Persistent,
+            "{key} changed the durable lifecycle snapshot"
+        );
+        env::remove_var(key);
+    }
+}
+
+#[test]
 fn daemon_lifecycle_rejects_ambiguous_legacy_and_new_keys() {
     let temp = tempfile::tempdir().unwrap();
     fs::write(

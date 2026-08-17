@@ -61,6 +61,13 @@ impl ctx_daemon_application::DaemonApplicationHost for CliDaemonApplicationHost<
         })
     }
 
+    fn persisted_daemon_lifecycle(
+        &self,
+        data_root: &Path,
+    ) -> Result<ctx_daemon_application::DaemonLifecycle> {
+        crate::config::persisted_daemon_lifecycle(data_root).map(daemon_lifecycle)
+    }
+
     fn defer_restart_for_upgrade_handoff(
         &self,
         data_root: &Path,

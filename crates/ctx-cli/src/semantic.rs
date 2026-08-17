@@ -227,6 +227,12 @@ impl ctx_daemon_cli::DaemonCliHost for CtxDaemonCliHost {
         crate::config::AppConfig::load(data_root).map(owned_daemon_cli_config)
     }
 
+    fn persisted_daemon_lifecycle(&self, data_root: &Path) -> Result<DaemonLifecycle> {
+        Ok(daemon_lifecycle(crate::config::persisted_daemon_lifecycle(
+            data_root,
+        )?))
+    }
+
     fn set_daemon_lifecycle(&self, data_root: &Path, lifecycle: DaemonLifecycle) -> Result<()> {
         crate::config::set_daemon_lifecycle(
             data_root,

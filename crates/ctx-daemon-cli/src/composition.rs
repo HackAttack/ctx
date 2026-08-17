@@ -150,6 +150,7 @@ impl Default for AppConfig<'static> {
 
 pub trait DaemonCliHost: Send + Sync {
     fn load_config(&self, data_root: &Path) -> Result<AppConfig<'static>>;
+    fn persisted_daemon_lifecycle(&self, data_root: &Path) -> Result<DaemonLifecycle>;
     fn set_daemon_lifecycle(&self, data_root: &Path, lifecycle: DaemonLifecycle) -> Result<()>;
     fn home_dir(&self) -> Option<PathBuf>;
     fn run_daemon_service(
@@ -204,6 +205,10 @@ pub(crate) fn host() -> &'static dyn DaemonCliHost {
 
 pub fn set_daemon_lifecycle(data_root: &Path, lifecycle: DaemonLifecycle) -> Result<()> {
     host().set_daemon_lifecycle(data_root, lifecycle)
+}
+
+pub fn persisted_daemon_lifecycle(data_root: &Path) -> Result<DaemonLifecycle> {
+    host().persisted_daemon_lifecycle(data_root)
 }
 
 #[cfg(test)]
@@ -284,6 +289,10 @@ impl DaemonCliHost for TestHost {
             config.semantic_source = "config";
         }
         Ok(config)
+    }
+
+    fn persisted_daemon_lifecycle(&self, data_root: &Path) -> Result<DaemonLifecycle> {
+        Ok(self.load_config(data_root)?.daemon.lifecycle)
     }
 
     fn set_daemon_lifecycle(&self, data_root: &Path, lifecycle: DaemonLifecycle) -> Result<()> {

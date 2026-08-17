@@ -882,6 +882,48 @@ mod native {
     }
 
     #[test]
+    fn env_reduced_lifecycle_failures_restore_only_the_durable_policy() {
+        let _serial = TEST_SERIAL
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+
+        for (name, value) in [
+            ("CTX_DAEMON_LIFECYCLE", "on-demand"),
+            ("CTX_DAEMON_ENABLED", "false"),
+            ("CTX_DAEMON_OFF", "1"),
+        ] {
+            let harness = Harness::new();
+            let fail = harness
+                .root()
+                .join(".fail-daemon-persistent-lifecycle-after-config-for-test");
+            fs::write(&fail, b"fail once\n").unwrap();
+
+            let output = harness
+                .std_command()
+                .env(name, value)
+                .args(["daemon", "lifecycle", "persistent", "--format=json"])
+                .output()
+                .unwrap_or_else(|error| panic!("run {name} rollback injection: {error}"));
+            assert!(!output.status.success(), "{name} failure injection succeeded");
+            assert!(
+                String::from_utf8_lossy(&output.stderr)
+                    .contains("injected daemon lifecycle failure after durable config"),
+                "unexpected {name} failure: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+            assert!(!fail.exists(), "{name} failure injection was not consumed");
+
+            let config = fs::read_to_string(harness.root().join("config.toml")).unwrap();
+            assert!(
+                config.contains("lifecycle = \"persistent\""),
+                "{name} made its transient reduction durable: {config}"
+            );
+            let status = harness.daemon_status();
+            assert_eq!(status["lifecycle"], "persistent", "{name}: {status:#}");
+        }
+    }
+
+    #[test]
     fn simultaneous_cold_on_demand_callers_join_the_authenticated_owner() {
         let _serial = TEST_SERIAL
             .lock()

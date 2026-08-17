@@ -36,12 +36,13 @@ pub(super) fn update_daemon_lifecycle(
     data_root: &Path,
     lifecycle: DaemonLifecycle,
 ) -> Result<DaemonLifecycleUpdate, DaemonLifecycleUpdateError> {
+    reject_hosted_uninstall(host)?;
     let _control = DaemonLifecycleControlLock::acquire(data_root)
         .map_err(DaemonLifecycleUpdateError::Operation)?;
+    reject_hosted_uninstall(host)?;
     let previous_lifecycle = host
-        .daemon_config(data_root)
-        .map_err(DaemonLifecycleUpdateError::Operation)?
-        .lifecycle;
+        .persisted_daemon_lifecycle(data_root)
+        .map_err(DaemonLifecycleUpdateError::Operation)?;
     persist_and_apply_lifecycle_with_rollback(
         previous_lifecycle,
         lifecycle,
@@ -55,6 +56,16 @@ pub(super) fn update_daemon_lifecycle(
             apply_configured_lifecycle(host, data_root)
         },
     )
+}
+
+fn reject_hosted_uninstall(
+    host: &dyn DaemonApplicationHost,
+) -> Result<(), DaemonLifecycleUpdateError> {
+    match host.hosted_uninstall_active() {
+        Ok(false) => Ok(()),
+        Ok(true) => Err(DaemonLifecycleUpdateError::StartSuppressed),
+        Err(error) => Err(DaemonLifecycleUpdateError::Operation(error)),
+    }
 }
 
 fn apply_configured_lifecycle(

@@ -674,10 +674,12 @@ fn live_daemon_prepare_uninstall_disables_stops_and_removes_coordination() {
     daemon.child = None;
     let data_root = search_refresh_data_root(&temp);
     let config = fs::read_to_string(data_root.join("config.toml")).unwrap();
-    assert!(config.contains("enabled = false"), "{config}");
+    assert!(config.contains("lifecycle = \"disabled\""), "{config}");
     for relative in [
         "daemon/daemon.lock",
         "daemon/daemon.guard",
+        "daemon/lifecycle-control.lock",
+        "daemon/lifecycle-transition.lock",
         "daemon/query-endpoint.json",
         "daemon/source-refresh-endpoint.json",
         "daemon/upgrade-handoff.json",
@@ -710,7 +712,7 @@ fn interrupted_prepare_uninstall_is_retry_safe() {
     let config_after_interrupt =
         fs::read_to_string(search_refresh_data_root(&temp).join("config.toml")).unwrap();
     assert!(
-        config_after_interrupt.contains("enabled = false"),
+        config_after_interrupt.contains("lifecycle = \"disabled\""),
         "{config_after_interrupt}"
     );
 

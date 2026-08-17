@@ -233,7 +233,20 @@ pub fn block_daemon_lifecycle_after_config_for_test(
     let blocked = data_root.join(format!(
         ".daemon-{lifecycle}-lifecycle-blocked-after-config-for-test"
     ));
-    block_on_debug_test_gate(&block, &blocked, "daemon lifecycle after config")
+    block_on_debug_test_gate(&block, &blocked, "daemon lifecycle after config")?;
+    let fail = data_root.join(format!(
+        ".fail-daemon-{lifecycle}-lifecycle-after-config-for-test"
+    ));
+    if cfg!(debug_assertions) && fail.exists() {
+        fs::remove_file(&fail).with_context(|| {
+            format!(
+                "consume daemon lifecycle failure injection {}",
+                fail.display()
+            )
+        })?;
+        anyhow::bail!("injected daemon lifecycle failure after durable config");
+    }
+    Ok(())
 }
 
 /// Makes independently spawned daemon children meet immediately before the

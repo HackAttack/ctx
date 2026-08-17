@@ -350,6 +350,15 @@ impl AppConfig {
         data_root: &Path,
         deprecated_controls: &DeprecatedControls,
     ) -> Result<Self> {
+        let mut config = Self::load_persisted(data_root)?;
+        config.apply_env(deprecated_controls)?;
+        if ctx_upgrade_engine::current_exe_is_staging_dogfood() {
+            config.upgrade.auto = AutoUpgradeMode::Off.as_str().to_owned();
+        }
+        Ok(config)
+    }
+
+    fn load_persisted(data_root: &Path) -> Result<Self> {
         observe_app_config_load();
         let mut config = Self::default();
         let path = data_root.join(CONFIG_FILE);
@@ -363,10 +372,6 @@ impl AppConfig {
             }
             Err(err) if err.kind() == io::ErrorKind::NotFound => {}
             Err(err) => return Err(err).with_context(|| format!("read {}", path.display())),
-        }
-        config.apply_env(deprecated_controls)?;
-        if ctx_upgrade_engine::current_exe_is_staging_dogfood() {
-            config.upgrade.auto = AutoUpgradeMode::Off.as_str().to_owned();
         }
         Ok(config)
     }
@@ -544,6 +549,10 @@ pub fn set_daemon_lifecycle(data_root: &Path, lifecycle: DaemonLifecycle) -> Res
         lifecycle.as_str(),
         Some("enabled"),
     )
+}
+
+pub fn persisted_daemon_lifecycle(data_root: &Path) -> Result<DaemonLifecycle> {
+    Ok(AppConfig::load_persisted(data_root)?.daemon.lifecycle)
 }
 
 pub fn set_semantic_search_enabled(data_root: &Path, enabled: bool) -> Result<()> {

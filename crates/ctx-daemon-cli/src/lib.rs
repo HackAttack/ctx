@@ -20,8 +20,8 @@ mod config {
     #[cfg(test)]
     pub use crate::composition::DAEMON_MODE_ENV;
     pub use crate::composition::{
-        set_daemon_lifecycle, AppConfig, DaemonLifecycle, DaemonMode, CONFIG_FILE,
-        DAEMON_DEFAULT_LIFECYCLE,
+        persisted_daemon_lifecycle, set_daemon_lifecycle, AppConfig, DaemonLifecycle, DaemonMode,
+        CONFIG_FILE, DAEMON_DEFAULT_LIFECYCLE,
     };
 
     #[cfg(test)]
