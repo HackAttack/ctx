@@ -21,9 +21,10 @@ that installed ctx to upgrade it.
 
 ## Binary Lifecycle Handoff
 
-`ctx setup` enables a persistent background daemon. Before any package manager,
-manual installer, or source-install command replaces or removes the executable,
-run the currently installed executable:
+Automatic indexing is the default, so `ctx setup` may enable a persistent
+background daemon. Before any package manager, manual installer, or
+source-install command replaces or removes the executable, run the currently
+installed executable:
 
 ```bash
 ctx daemon disable --prepare-uninstall --format=json

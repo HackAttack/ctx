@@ -14,18 +14,19 @@ a hosted research agent.
 ## In Scope
 
 - `ctx setup` initializes local storage, publishes discovered supported local
-  transcript formats, and can opportunistically start the default-on ctx-owned
-  background daemon maintenance profile. An explicit `[daemon] enabled = false`
-  remains a durable opt-out.
+  transcript formats, and in automatic indexing mode can opportunistically
+  start the default-on persistent ctx-owned daemon. Manual indexing runs no
+  persistent or background daemon.
   `ctx setup --no-daemon` is the one-run daemon-autostart opt-out. Output format
   does not change setup autostart behavior. The deprecated `--catalog-only` flag
   is ignored and does not change setup behavior.
 - `ctx sources` reports known local provider history paths, including whether a
   native source is currently importable.
 - `ctx import` publishes supported local transcript formats and selected local
-  history-source plugins as complete normalized Core records, and can
-  opportunistically start the same short one-pass ctx-owned maintenance profile
-  when `[daemon].enabled` is true.
+  history-source plugins as complete normalized Core records. In automatic
+  mode it may start the persistent daemon. In manual mode an explicit import
+  may start the same daemon/Core refresh engine as a finite worker, waits for
+  authoritative Core publication, and then lets that worker exit.
   Explicit custom JSONL and history-source imports use its required
   daemon-owned source-refresh endpoint. `ctx import --no-daemon` never starts
   it and therefore requires an already-running endpoint for those explicit
@@ -34,9 +35,11 @@ a hosted research agent.
   sources before returning ranked local hits from the active Core generation,
   with event IDs when a hit maps to an imported event. History-source plugins
   enter Core only through explicit single-source import in 1.0.
-  Default background refresh may autostart daemon maintenance for
-  human-readable search while
-  semantic search is disabled. Semantic and hybrid search read existing local
+  In automatic mode, default background refresh may autostart persistent daemon
+  maintenance. In manual mode, default and explicit background refresh read
+  only the last published generation and never start or wake a worker.
+  Explicit `--refresh wait` may start a finite Core worker; `--refresh off`
+  never starts or wakes one. Semantic and hybrid search read existing local
   sidecar coverage only; search does not run vector backfill or download
   embedding models. Hybrid uses semantic evidence only after sidecar coverage
   is complete and dirty work is drained; explicit semantic search may query
@@ -58,8 +61,8 @@ a hosted research agent.
 - `ctx upgrade` checks and applies signed CLI releases for official
   installer-managed binaries.
 - `ctx daemon` is the first-class local coordinator surface for status,
-  enable/disable config, opportunistic maintenance started by setup/import when
-  enabled, and foreground maintenance runs. The coordinator performs bounded
+  automatic/manual indexing config, persistent maintenance in automatic mode,
+  and explicit foreground maintenance runs. The coordinator performs bounded
   native provider-history refresh and local semantic indexing/freshness work.
   Setup/import
   autostart reports semantic status read-only; explicit `ctx daemon run` is the
@@ -73,9 +76,9 @@ a hosted research agent.
   uncounted, and separates measured facts from versioned estimates. Detail is
   an option on `ctx stats`; enable, disable, and logical reset remain under
   `ctx status --usage`.
-- JSON output supports local agents and scripts without daemon-start or
-  daemon-nudge side effects. A daemon already running independently continues
-  its own maintenance and automatic-upgrade cadence.
+- Output format does not grant or remove refresh authority. Implicit/background
+  operations remain inert in manual mode; explicit import and search
+  `--refresh wait` may use a finite worker in either human or JSON output.
 
 ## Out Of Scope
 

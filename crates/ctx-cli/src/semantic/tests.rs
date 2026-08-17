@@ -122,6 +122,7 @@ fn post_lock_initialization_failure_retains_restart_intent() -> Result<()> {
         crate::DaemonArgs {
             command: crate::DaemonCommand::Run(crate::cli::DaemonRunArgs {
                 foreground: false,
+                finite_core_worker: false,
                 loop_interval_seconds: None,
                 max_chunks: None,
                 force: false,

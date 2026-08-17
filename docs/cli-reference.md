@@ -54,9 +54,9 @@ ctx daemon enable
   generation, and prints next steps. It never opens, migrates, or deletes
   pre-v0.26 history. Old Store files are ignored and may be removed explicitly
   by their owner. Setup does not write `config.toml` for implicit defaults or
-  execute history-source plugin commands. When `[daemon].enabled` is true,
-  setup may opportunistically start the ctx-owned background daemon after
-  foreground work completes. Use `setup --no-daemon` for a one-run opt-out.
+  execute history-source plugin commands. In automatic indexing mode, setup
+  may opportunistically start the persistent ctx-owned daemon. In manual mode
+  setup never starts a worker. Use `setup --no-daemon` for a one-run opt-out.
 - `setup --quiet` performs setup without printing success status lines, import
   summaries, data-root details, or get-started tips. It still exits nonzero and
   prints errors on failure.
@@ -105,10 +105,10 @@ ctx daemon enable
   loops. Enabling
   `[search] semantic = true` and rerunning setup activates the existing daemon;
   no unrelated restart is required.
-- `daemon disable` and `daemon enable` update `[daemon].enabled` in
-  `config.toml`. Daemon maintenance is enabled by default; an explicit disable
-  persists across upgrades. `daemon run --force` overrides a disabled config
-  for explicit manual troubleshooting.
+- `daemon disable` writes `[indexing] mode = "manual"`; `daemon enable` writes
+  `[indexing] mode = "automatic"`. Automatic is the default. Touching either
+  lifecycle control removes the legacy `[daemon] enabled` key.
+  `daemon run --force` remains available for explicit troubleshooting.
 
 Setup and health checks do not change shell startup files, install repository
 integrations, write into source repositories, call model APIs, or require API
@@ -116,10 +116,9 @@ keys. Without semantic opt-in they do not download embedding models; with
 semantic enabled, daemon maintenance may acquire the local embedding model.
 Each daemon maintenance pass is bounded and local. Core storage checks use the
 configured data root, and JSON stdout remains structured.
-Machine-readable foreground commands do not start or nudge daemon maintenance.
-For human-readable commands, use `--no-daemon` or search `--refresh off` for an
-invocation-level opt-out. The enabled daemon, not command dispatch, owns signed
-automatic upgrade checks.
+Output format does not change lifecycle authority. Use `--no-daemon` or search
+`--refresh off` for an invocation-level opt-out. The automatic persistent
+daemon, not command dispatch or a finite worker, owns signed upgrade checks.
 
 ## Agent Skill
 
@@ -348,12 +347,12 @@ Import results report `change: changed|no_op` independently from import and
 skip counters. `change: changed` remains truthful even when a source projects
 to the same stable event identities.
 
-When `[daemon].enabled` is true, `import` may opportunistically start the
-ctx-owned persistent daemon and uses its source-refresh endpoint for foreground
-Core publication. Optional semantic work continues independently. Explicit
-custom JSONL and history-source imports use the same daemon-owned endpoint and
-may start it unless `import --no-daemon` is set. With `--no-daemon`, an
-already-running full daemon is required; import never falls back to a
+In automatic mode, `import` may start the persistent daemon and uses its
+source-refresh endpoint for foreground Core publication. In manual mode, an
+explicit import may start the same Core engine as a finite worker; it waits for
+publication and the worker exits after admitted Core work is terminal and IPC
+is quiescent. `import --no-daemon` never starts or restarts a process and
+therefore requires an already-running endpoint. Import never falls back to a
 foreground writer.
 
 ## Paid Companion Routes
@@ -479,20 +478,21 @@ ctx search "release notes" --provider-key example-agent --source-id default
 ```
 
 `search` defaults to `--refresh background`, which serves the published
-Tantivy generation while the ctx daemon owns lexical publication and optional
-semantic catch-up. If no local generation exists yet, search
-performs a bounded foreground lexical bootstrap. If daemon maintenance is
-disabled, background mode uses the same bounded foreground source-refresh path
-for discovered native providers. History-source plugins are searched from the
-published generation after explicit import; search refresh does not execute
-their commands in 1.0.
+Tantivy generation. In automatic indexing mode it may start or wake the
+persistent daemon for lexical publication and optional semantic catch-up. In
+manual mode, background refresh uses only the last published generation and
+does not contact, start, or wake a process; there is no hidden foreground
+bootstrap or importer. History-source plugins are searched from the published
+generation after explicit import; search refresh does not execute their
+commands in 1.0.
 Semantic retrieval reads an existing compatible generation under
 `search/semantic`; search does not initialize semantic storage, download
 embedding models, or run semantic indexing. Use `--refresh off` to query the
-published generations without refreshing or scheduling work, or
-`--refresh wait` to request foreground Core refresh and fail when it cannot
-complete. Results are rendered from Core under every refresh mode. Foreground
-refresh skips isolated malformed records with a
+published generations without starting or waking a process. Use
+`--refresh wait` to request authoritative Core publication; in manual mode it
+may start a finite worker that exits after admitted Core requests are terminal
+and IPC is quiescent. Results are rendered from Core under every refresh mode.
+Wait refresh skips isolated malformed records with a
 warning and publishes valid records; source-level and system-level failures
 remain fatal. NanoClaw and supported AstrBot `data_v4.db` locations participate
 in bounded native discovery and may also be imported with an explicit `--path`.
@@ -625,9 +625,9 @@ scope changes neither retained bodies nor the Core/index schema and requires no
 rebuild. Search JSON always reports the resolved selection as
 `filters.content_scope`, including `all` when the option was omitted.
 
-Default daemon maintenance owns provider/plugin refresh, immutable candidate
+Automatic daemon maintenance owns provider/plugin refresh, immutable candidate
 construction, atomic lexical publication, source discovery state, and semantic
-catch-up. Use
+catch-up. Manual mode retains only explicit finite Core publication. Use
 `ctx daemon run` for explicit foreground maintenance. JSON status exposes
 `history_epoch`, `lexical`, `refresh`, `semantic`, and `daemon`
 objects. `ctx doctor` is the diagnostic surface for those components.
@@ -727,12 +727,12 @@ shadows the managed install or multiple `ctx` binaries are present. Diagnostics
 identify candidates without executing a shadowing binary.
 
 Official installer-managed installs use daemon-owned automatic upgrade by
-default; signed release metadata must also explicitly allow it. The enabled
-long-lived daemon is the only automatic scheduler, including cadence and
-backoff. Command dispatch and MCP never schedule upgrades. Disabling the daemon
-causes zero automatic checks, downloads, or application. Scheduler state is
-stored beside the managed executable and does not write to foreground stdout or
-stderr. Use
+default; signed release metadata must also explicitly allow it. Automatic
+indexing's persistent daemon is the only automatic scheduler, including cadence
+and backoff. Command dispatch, MCP, and finite Core workers never schedule
+upgrades. Manual indexing causes zero automatic checks, downloads, or
+application. Scheduler state is stored beside the managed executable and does
+not write to foreground stdout or stderr. Use
 `CTX_UPGRADE_AUTO=off` for a process-level opt-out,
 or `ctx upgrade disable` to write `upgrade.auto = "off"` in `config.toml`.
 

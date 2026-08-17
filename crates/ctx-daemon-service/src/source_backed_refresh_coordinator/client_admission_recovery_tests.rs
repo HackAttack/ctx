@@ -1,5 +1,25 @@
 use super::*;
 
+#[derive(Default)]
+struct RecordingAvailability(
+    std::sync::Mutex<Vec<(crate::DaemonTrigger, crate::DaemonAvailabilityDemand)>>,
+);
+
+impl crate::DaemonAvailabilityPort for RecordingAvailability {
+    fn ensure_available(
+        &self,
+        _data_root: &Path,
+        trigger: crate::DaemonTrigger,
+        demand: crate::DaemonAvailabilityDemand,
+    ) -> Result<crate::DaemonAvailability> {
+        self.0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .push((trigger, demand));
+        Ok(crate::DaemonAvailability::Available)
+    }
+}
+
 fn admitted_response(request_id: &str, request_state: &str) -> Value {
     compact_json(json!({
         "ok": true,
@@ -106,17 +126,28 @@ fn no_daemon_post_ack_recovery_is_typed_retained_and_unobservable() {
 #[test]
 fn post_ack_daemon_recovery_reobserves_coalesced_id_before_readmission() {
     let request_id = "periodic-physical-request";
+    let availability = RecordingAvailability::default();
 
     let recovered = recover_wait_refresh_request(
-        &crate::test_support::AVAILABILITY,
+        &availability,
         Path::new("no-endpoint-needed-before-reobservation"),
         request_id,
-        SourceBackedRefreshTrigger::Setup,
+        SourceBackedRefreshTrigger::Search,
         true,
     )
     .unwrap();
 
     assert_eq!(recovered, request_id);
+    assert_eq!(
+        *availability
+            .0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner),
+        [(
+            crate::DaemonTrigger::Search,
+            crate::DaemonAvailabilityDemand::ExplicitWait,
+        )]
+    );
 }
 
 #[test]

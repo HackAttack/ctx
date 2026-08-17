@@ -1,6 +1,9 @@
 use std::{
     path::{Path, PathBuf},
-    sync::Arc,
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc,
+    },
     time::Instant,
 };
 
@@ -214,6 +217,7 @@ pub(crate) struct CtxAuthenticatedRequestHandler {
     wakeup: Arc<DaemonWakeup>,
     config: &'static dyn DaemonConfigPort,
     lifecycle: Arc<DaemonLifecycleState>,
+    finite_core_worker_admitted: Option<Arc<AtomicBool>>,
 }
 
 #[cfg(test)]
@@ -231,6 +235,7 @@ pub(crate) fn ctx_authenticated_request_handler(
         wakeup,
         config,
         Arc::new(DaemonLifecycleState::starting()),
+        None,
     )
 }
 
@@ -241,6 +246,7 @@ pub(crate) fn ctx_authenticated_request_handler_with_lifecycle(
     wakeup: Arc<DaemonWakeup>,
     config: &'static dyn DaemonConfigPort,
     lifecycle: Arc<DaemonLifecycleState>,
+    finite_core_worker_admitted: Option<Arc<AtomicBool>>,
 ) -> Arc<CtxAuthenticatedRequestHandler> {
     Arc::new(CtxAuthenticatedRequestHandler {
         data_root: data_root.to_path_buf(),
@@ -249,6 +255,7 @@ pub(crate) fn ctx_authenticated_request_handler_with_lifecycle(
         wakeup,
         config,
         lifecycle,
+        finite_core_worker_admitted,
     })
 }
 
@@ -264,21 +271,21 @@ impl AuthenticatedRequestHandler for CtxAuthenticatedRequestHandler {
         if service.as_str() == SOURCE_REFRESH_SERVICE_ID {
             return match self.handle_source_refresh(&request) {
                 Ok(SourceRefreshResponse::Wire(response)) => {
-                    let (response, response_barrier) = response.into_parts();
+                    let (response, response_barrier, admitted) = response.into_parts();
                     HandlerOutcome::with_post_write_action(
                         Ok(response),
-                        CtxPostWriteAction::source_refresh(response_barrier, self),
+                        CtxPostWriteAction::source_refresh(response_barrier, admitted, self),
                     )
                 }
                 Ok(SourceRefreshResponse::Value(response)) => {
                     HandlerOutcome::with_post_write_action(
                         Ok(response),
-                        CtxPostWriteAction::source_refresh(None, self),
+                        CtxPostWriteAction::source_refresh(None, false, self),
                     )
                 }
                 Err(error) => HandlerOutcome::with_post_write_action(
                     Err(error),
-                    CtxPostWriteAction::source_refresh(None, self),
+                    CtxPostWriteAction::source_refresh(None, false, self),
                 ),
             };
         }
@@ -303,6 +310,7 @@ enum CtxPostWriteActionKind<'a> {
     None,
     SourceRefresh {
         response_barrier: Option<ctx_history_refresh::AdmissionResponseBarrier>,
+        admitted: bool,
         handler: &'a CtxAuthenticatedRequestHandler,
     },
 }
@@ -318,11 +326,13 @@ impl Default for CtxPostWriteAction<'_> {
 impl<'a> CtxPostWriteAction<'a> {
     fn source_refresh(
         response_barrier: Option<ctx_history_refresh::AdmissionResponseBarrier>,
+        admitted: bool,
         handler: &'a CtxAuthenticatedRequestHandler,
     ) -> Self {
         Self {
             kind: CtxPostWriteActionKind::SourceRefresh {
                 response_barrier,
+                admitted,
                 handler,
             },
         }
@@ -333,12 +343,19 @@ impl PostWriteAction for CtxPostWriteAction<'_> {
     fn run(self) {
         if let CtxPostWriteActionKind::SourceRefresh {
             response_barrier,
+            admitted,
             handler,
         } = self.kind
         {
             wire::finish_source_refresh_response(response_barrier, &handler.source_refresh, || {
                 handler.wakeup.signal_ipc()
             });
+            if admitted {
+                if let Some(activity) = handler.finite_core_worker_admitted.as_ref() {
+                    activity.store(true, Ordering::Release);
+                    handler.wakeup.signal_ipc();
+                }
+            }
         }
     }
 }

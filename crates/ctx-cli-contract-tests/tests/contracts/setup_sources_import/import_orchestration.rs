@@ -343,6 +343,107 @@ fn explicit_import_reuses_running_daemon_when_autostart_is_disabled() {
 }
 
 #[test]
+fn manual_indexing_import_uses_a_finite_worker_and_background_search_stays_inert() {
+    let temp = tempdir();
+    fs::create_dir_all(data_root(&temp)).unwrap();
+    let config = "[indexing]\nmode = \"manual\"\n\n[search]\nsemantic = false\n";
+    fs::write(data_root(&temp).join("config.toml"), config).unwrap();
+    let fixture = temp.path().join("manual-finite-worker.jsonl");
+    let query = "manual finite worker publication oracle";
+    write_valid_explicit_custom_source(&fixture, query);
+
+    let imported = json_output(
+        ctx(&temp)
+            .args([
+                "import",
+                "--input-format",
+                "ctx-history-jsonl-v1",
+                "--path",
+                fixture.to_str().unwrap(),
+                "--format=json",
+                "--progress",
+                "none",
+            ])
+            .timeout(Duration::from_secs(20)),
+    );
+    assert_eq!(imported["outcome"], "success", "{imported:#}");
+    assert_eq!(
+        imported["sources"][0]["status"], "published",
+        "{imported:#}"
+    );
+
+    let stopped = wait_for_daemon_status(&temp, "disabled", false, "import");
+    assert_eq!(
+        stopped["daemon"]["config_reload"]["applied"]["daemon_mode"], "source-refresh-only",
+        "{stopped:#}"
+    );
+    let daemon_root = data_root(&temp).join("daemon");
+    assert!(!daemon_root.join("source-refresh-endpoint.json").exists());
+    assert!(!daemon_root.join("wakeup.json").exists());
+    assert!(!daemon_root.join("supervisor.json").exists());
+    assert!(!daemon_root.join("semantic-index.json").exists());
+    assert_eq!(
+        fs::read_to_string(data_root(&temp).join("config.toml")).unwrap(),
+        config
+    );
+
+    let status_before = fs::read(daemon_root.join("status.json")).unwrap();
+    let native_query = "manual wait discovers newly arrived native history";
+    write_codex_message_fixture(
+        &temp.path().join(".codex/sessions/2026/08/17"),
+        "019fcaaa-0000-7000-8000-000000000817",
+        native_query,
+    );
+    let search = json_output(ctx(&temp).args([
+        "search",
+        native_query,
+        "--provider=codex",
+        "--refresh=background",
+        "--format=json",
+    ]));
+    assert!(
+        search["results"].as_array().unwrap().is_empty(),
+        "{search:#}"
+    );
+    assert_eq!(
+        fs::read(daemon_root.join("status.json")).unwrap(),
+        status_before,
+        "manual background search must not start or wake a worker"
+    );
+    assert!(!daemon_root.join("source-refresh-endpoint.json").exists());
+
+    let off = json_output(ctx(&temp).args([
+        "search",
+        native_query,
+        "--provider=codex",
+        "--refresh=off",
+        "--format=json",
+    ]));
+    assert!(off["results"].as_array().unwrap().is_empty(), "{off:#}");
+    assert_eq!(
+        fs::read(daemon_root.join("status.json")).unwrap(),
+        status_before,
+        "refresh off must not start or wake a worker"
+    );
+
+    let waited = json_output(ctx(&temp).args([
+        "search",
+        native_query,
+        "--provider=codex",
+        "--refresh=wait",
+        "--format=json",
+    ]));
+    assert!(
+        !waited["results"].as_array().unwrap().is_empty(),
+        "{waited:#}"
+    );
+    let stopped = wait_for_daemon_status(&temp, "disabled", false, "search");
+    assert_eq!(stopped["daemon"]["running"], false, "{stopped:#}");
+    assert!(!daemon_root.join("source-refresh-endpoint.json").exists());
+    assert!(!daemon_root.join("supervisor.json").exists());
+}
+
+#[test]
 fn progress_json_native_import_recovers_enabled_daemon() {
     let temp = tempdir();
     let fixture = provider_history_fixture("codex-sessions");

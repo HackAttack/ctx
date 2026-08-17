@@ -34,18 +34,19 @@ Writes local storage and returns schema version 2:
 - `deprecated_catalog_only_ignored`;
 - `source_rebuild_required`;
 
-When daemon maintenance is enabled, human and machine-readable setup both
-health-check and recover the persistent daemon before returning.
+In automatic indexing mode, human and machine-readable setup both health-check
+and recover the persistent daemon before returning. In manual mode, setup does
+not start a persistent or finite worker.
 `daemon_autostart.status: "verified"` includes the live PID. A one-run
 `--no-daemon` opt-out reports `status: "not_requested"` and reason
-`explicit_opt_out`; a durable disabled configuration uses reason
+`explicit_opt_out`; a durable manual configuration uses reason
 `daemon_disabled`. `refresh_request` separately reports whether setup queued
 or waited for daemon-owned Core publication. A completed `--wait` request
 also includes its request-bound terminal `receipt`; callers should use that
 receipt rather than a later periodic daemon job when reporting the setup run.
 
 If the platform's native current-user service manager is not operational,
-setup starts the same coordinator as a persistent detached process without
+automatic setup starts the same coordinator as a persistent detached process without
 forcing an initial Core-refresh wait. `daemon_autostart.status` is then
 `"degraded"`, `persistent` is `true`, and `reason` is
 `"native_supervisor_unavailable"`; the nested supervisor report uses status
@@ -156,19 +157,21 @@ vectors may be stale after import or daemon startup freshness checks.
 `daemon` reports the ctx-owned background coordinator state. Fields listed as
 nullable may be omitted when unavailable:
 
-- `enabled`;
+- `enabled`, retained as a compatibility-shaped boolean and true when indexing
+  mode is automatic;
 - `status`, one of `unknown`, `disabled`, `running`, `stopped`, `completed`,
   `failed`, or `stale_lock`; `completed` remains readable for legacy finite-run
-  receipts, while current persistent daemons use `stopped` after graceful
-  shutdown;
+  receipts, while current persistent and finite workers use `stopped` after
+  graceful shutdown. A stopped finite worker may render `disabled` because the
+  durable indexing mode is manual;
 - `running`;
 - `pid`, nullable/omitted;
 - `started_at_ms`, `heartbeat_at_ms`, and `finished_at_ms`, nullable/omitted;
 - `last_error`, nullable/omitted;
-- `start_mode`, nullable/omitted, currently `auto` for setup/import autostarts
-  or `manual` for explicit daemon runs;
-- `trigger_command`, nullable/omitted, currently `setup` or `import` for
-  automatic starts;
+- `start_mode`, nullable/omitted, currently `auto` for setup/import/search
+  process starts or `manual` for explicit daemon runs;
+- `trigger_command`, nullable/omitted, currently `setup`, `import`, or `search`
+  for automatic or finite starts;
 - `semantic_runtime_active`, true only while the running daemon owns its
   semantic query service;
 - `config_reload`, with `status`, `out_of_sync`, `requested`, `applied`,
@@ -404,12 +407,14 @@ failures. `sources_completed_with_rejections` counts sources that committed
 accepted content while rejecting other records. `resume_mode` is currently `idempotent_rescan` when
 `--resume` is passed and `normal_scan` otherwise.
 
-Imports may opportunistically start the ctx-owned daemon maintenance profile
-when `[daemon].enabled` is true. Explicit custom JSONL and history-source
-imports require its source-refresh endpoint even with JSON output. Set
-`ctx import --no-daemon` to prevent autostart; those explicit provider-source
-routes then require an already-running endpoint. The daemon, when started, reports
-`start_mode: "auto"` and `trigger_command: "import"` through status surfaces.
+In automatic indexing mode, imports may start the persistent ctx-owned daemon.
+In manual mode, an explicit import may start a finite Core worker. Both use the
+same source-refresh endpoint and publication engine, including for custom JSONL
+and history-source imports, and both wait for authoritative Core publication.
+Set `ctx import --no-daemon` to prevent any start or restart; explicit routes
+then require an already-running endpoint. Output format does not change this
+authority. A process started for import reports `start_mode: "auto"` and
+`trigger_command: "import"` through live status surfaces.
 Import result schema version 2 does not embed daemon process state. Use
 `ctx daemon status --format json` to inspect an already-running or explicitly started
 daemon.

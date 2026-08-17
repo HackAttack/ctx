@@ -31,7 +31,7 @@ RELEASED_DEFAULT_SCOPES = {
     "analytics.enabled": "all_cli_installations",
     "local_usage.enabled": "all_cli_installations",
     "upgrade.auto": "official_installer_managed",
-    "daemon.enabled": "all_cli_installations",
+    "indexing.mode": "all_cli_installations",
     "search.semantic": "all_cli_installations",
 }
 PINNED_STABLE_SNAPSHOTS = {
@@ -137,12 +137,23 @@ def extract_empty_config_defaults(config_source: str) -> dict[str, object]:
             r"upgrade:\s*UpgradeConfig\s*\{.*?auto:\s*([^,\n]+),",
             "automatic upgrade",
         ),
-        "daemon.enabled": default_field(
-            r"daemon:\s*DaemonConfig\s*\{.*?enabled:\s*([^,\n]+),",
-            "daemon",
-        ),
         "search.semantic": scalar_value(semantic.group(1), constants),
     }
+    indexing_mode = re.search(
+        r"indexing:\s*IndexingConfig\s*\{.*?mode:\s*IndexingMode::([A-Za-z]+),",
+        default_source,
+        re.DOTALL,
+    )
+    if indexing_mode:
+        defaults["indexing.mode"] = indexing_mode.group(1).lower()
+    else:
+        # Previous stable releases exposed the same control as a boolean.
+        # Keep extracting that historical key so the pinned snapshot can be
+        # verified before main() maps it to the canonical mode vocabulary.
+        defaults["daemon.enabled"] = default_field(
+            r"daemon:\s*DaemonConfig\s*\{.*?enabled:\s*([^,\n]+),",
+            "daemon",
+        )
     if "LocalUsageConfig" in default_source:
         defaults["local_usage.enabled"] = default_field(
             r"local_usage:\s*LocalUsageConfig\s*\{.*?enabled:\s*([^,\n]+),",
@@ -152,7 +163,7 @@ def extract_empty_config_defaults(config_source: str) -> dict[str, object]:
 
 
 def default_state(value: object) -> str:
-    return "on" if value is True or value == "apply" else "off"
+    return "on" if value is True or value in {"apply", "automatic"} else "off"
 
 
 def previous_stable_defaults(
@@ -341,6 +352,9 @@ def main() -> None:
         "crates/ctx-cli/src/config.rs",
         contract.get("previous_stable_snapshot", ""),
     )
+    stable_defaults["indexing.mode"] = (
+        "automatic" if stable_defaults.pop("daemon.enabled") else "manual"
+    )
     validate_released_defaults(
         controls, runtime_defaults, stable_defaults, previous_tag
     )
@@ -357,7 +371,23 @@ def main() -> None:
     # apply_env. Scan the complete production config module so helper-owned
     # variables are inventoried while any undocumented literal still fails.
     implemented_env = set(re.findall(r'"(CTX_[A-Z0-9_]+)"', config_source))
-    contract_keys = set(config_keys).union(rejected_config_keys)
+    compatibility_config_keys = contract.get("compatibility_config_keys")
+    if (
+        not isinstance(compatibility_config_keys, dict)
+        or any(
+            not isinstance(key, str)
+            or not isinstance(target, str)
+            or target not in config_keys
+            or key in config_keys
+            for key, target in compatibility_config_keys.items()
+        )
+    ):
+        fail("compatibility_config_keys must map legacy keys to canonical controls")
+    contract_keys = (
+        set(config_keys)
+        .union(rejected_config_keys)
+        .union(compatibility_config_keys)
+    )
     if implemented_keys != contract_keys:
         fail(
             "config keys differ from contract: "

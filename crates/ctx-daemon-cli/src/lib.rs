@@ -113,6 +113,7 @@ pub struct DaemonDisableArgs {
 pub struct DaemonRunArgs {
     pub loop_interval_seconds: Option<u64>,
     pub max_chunks: Option<usize>,
+    pub finite_core_worker: bool,
     pub force: bool,
     pub start_mode: Option<DaemonStartModeArg>,
     pub trigger_command: Option<DaemonTriggerCommandArg>,

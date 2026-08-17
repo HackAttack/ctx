@@ -131,7 +131,7 @@ impl LocalToolBackend {
                 request,
                 &self.data_root,
                 ctx_history_cli::HistoryCliConfig {
-                    daemon_enabled: config.daemon.enabled,
+                    daemon_enabled: config.automatic_indexing_enabled(),
                     semantic_search_enabled: config.semantic_search_enabled(),
                     local_usage_enabled: config.local_usage.enabled,
                 },
@@ -149,7 +149,7 @@ impl LocalToolBackend {
     }
 
     fn recover_enabled_daemon_before_search(&self, config: &config::AppConfig) {
-        if !config.daemon.enabled
+        if !config.automatic_indexing_enabled()
             || crate::semantic::daemon_autostart_suppression_reason().is_some()
         {
             return;

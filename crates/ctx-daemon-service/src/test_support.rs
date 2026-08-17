@@ -13,8 +13,8 @@ use serde_json::Value;
 
 use crate::{
     CoreGenerationPublished, CoreGenerationPublishedPort, DaemonAvailability,
-    DaemonAvailabilityPort, DaemonConfigPort, DaemonConfigSnapshot, DaemonObservationPort,
-    DaemonTrigger,
+    DaemonAvailabilityDemand, DaemonAvailabilityPort, DaemonConfigPort, DaemonConfigSnapshot,
+    DaemonObservationPort, DaemonTrigger,
 };
 
 pub(crate) static CONFIG: TestConfig = TestConfig;
@@ -53,6 +53,7 @@ impl DaemonAvailabilityPort for TestAvailability {
         &self,
         _data_root: &Path,
         _trigger: DaemonTrigger,
+        _demand: DaemonAvailabilityDemand,
     ) -> Result<DaemonAvailability> {
         Ok(DaemonAvailability::Available)
     }

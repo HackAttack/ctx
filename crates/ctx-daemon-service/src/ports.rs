@@ -73,9 +73,17 @@ pub struct DaemonRunArgs {
     pub max_chunks: Option<usize>,
     pub handle_process_signals: bool,
     pub force: bool,
+    pub profile: DaemonRunProfile,
     pub start_mode: Option<DaemonStartMode>,
     pub trigger_command: Option<DaemonTrigger>,
     pub supervisor: DaemonSupervisor,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum DaemonRunProfile {
+    #[default]
+    Persistent,
+    FiniteCoreWorker,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -139,7 +147,14 @@ pub trait DaemonAvailabilityPort: Sync {
         &self,
         data_root: &Path,
         trigger: DaemonTrigger,
+        demand: DaemonAvailabilityDemand,
     ) -> Result<DaemonAvailability>;
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DaemonAvailabilityDemand {
+    Background,
+    ExplicitWait,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

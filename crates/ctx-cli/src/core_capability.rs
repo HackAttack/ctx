@@ -364,24 +364,22 @@ fn core_setup_facts(
     wait: bool,
 ) -> Result<Value> {
     let mut config = crate::config::AppConfig::load(data_root)?;
-    if semantic && (!config.daemon.enabled || no_daemon) {
-        return Err(anyhow!(
-            "semantic setup requires enabled daemon maintenance"
-        ));
+    if semantic && (!config.automatic_indexing_enabled() || no_daemon) {
+        return Err(anyhow!("semantic setup requires automatic indexing"));
     }
     if semantic {
         crate::config::set_semantic_search_enabled(data_root, true)?;
         config = crate::config::AppConfig::load(data_root)?;
     }
-    if config.semantic_search_enabled() && (!config.daemon.enabled || no_daemon) {
+    if config.semantic_search_enabled() && (!config.automatic_indexing_enabled() || no_daemon) {
         return Err(anyhow!(
-            "configured semantic search requires enabled daemon maintenance"
+            "configured semantic search requires automatic indexing"
         ));
     }
     crate::history_config::CliHistoryConfigAdapter::new(data_root, &mut config)
         .write_default_config()?;
 
-    let daemon_requested = config.daemon.enabled && !no_daemon;
+    let daemon_requested = config.automatic_indexing_enabled() && !no_daemon;
     if daemon_requested {
         let _ = crate::semantic::autostart_daemon_for_setup_and_wait(
             data_root,
@@ -503,19 +501,8 @@ fn setup_generation_id(published: Option<String>, status: &Value) -> Option<Stri
 }
 
 fn refresh_and_facts(data_root: &Path) -> Result<Value> {
-    let config = crate::config::AppConfig::load(data_root)?;
-    if !config.daemon.enabled {
-        return Err(anyhow!(
-            "Core convergence requires enabled daemon maintenance"
-        ));
-    }
-    let _ = crate::semantic::autostart_daemon_for_setup_and_wait(
-        data_root,
-        &config,
-        crate::DaemonTriggerCommandArg::Setup,
-    )?;
     let mut progress = |_status: &crate::semantic::RefreshStatus| Ok(());
-    let observation = crate::semantic::coordinate_setup_source_backed_refresh_with_progress(
+    let observation = crate::semantic::coordinate_source_backed_refresh_with_progress(
         data_root,
         crate::semantic::SourceBackedRefreshMode::Wait,
         &mut progress,

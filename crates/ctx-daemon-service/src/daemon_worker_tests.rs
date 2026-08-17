@@ -528,6 +528,7 @@ fn daemon_lifecycle_receipt_preserves_service_trigger_metadata() -> anyhow::Resu
         max_chunks: None,
         handle_process_signals: false,
         force: false,
+        profile: crate::DaemonRunProfile::Persistent,
         start_mode: Some(crate::DaemonStartMode::Auto),
         trigger_command: Some(crate::DaemonTrigger::Setup),
         supervisor: crate::DaemonSupervisor::User,

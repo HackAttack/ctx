@@ -5,14 +5,16 @@ search.
 
 ## Decision
 
-ctx makes local daemon-owned indexing the default path. Semantic search remains
-an explicit opt-in; when enabled, hybrid retrieval becomes the default.
+ctx makes automatic local daemon-owned indexing the default path and also
+supports manual indexing. Semantic search remains an explicit opt-in; when
+enabled, hybrid retrieval becomes the default.
 
-Indexing is background infrastructure. Search is an interactive read path.
-When the daemon is enabled, `ctx search` should not perform inline history
-refresh, lexical index refresh, semantic document projection, or embedding.
-It should read the current indexes, optionally signal daemon work, and return
-quickly.
+Search is an interactive read path and never becomes a duplicate importer.
+Automatic background search may start or signal the persistent daemon. Manual
+background search reads the current indexes without contacting a process;
+explicit `--refresh wait` may start the same Core engine as a finite worker.
+Neither search path performs inline history refresh, lexical publication,
+semantic document projection, or embedding in the query process.
 
 The public retrieval modes are:
 
@@ -30,9 +32,9 @@ Freshness is separate from retrieval mode:
 
 | Freshness | Meaning |
 | --- | --- |
-| `background` | Default. Serve current indexes and start/poke daemon work if needed. |
+| `background` | Default. Serve current indexes; start/poke persistent daemon work only in automatic indexing mode. Manual mode is inert. |
 | `off` | Serve current indexes and do not start, poke, wait for, or run indexing. |
-| `wait` | Wait for requested readiness from the daemon, then search or fail with a clear local error. |
+| `wait` | Wait for authoritative Core publication from the persistent daemon or a manual-mode finite Core worker, then search or fail with a clear local error. |
 
 The existing `strict` behavior can map to `wait` for command-line users while
 the public docs move to `wait`. Do not add compatibility aliases unless a
@@ -57,8 +59,9 @@ or summarization is allowed in the local indexing path.
 ## Setup UX
 
 `ctx setup` should initialize local state, identify/index or enqueue available
-history, start daemon maintenance when enabled, and return promptly. It should
-not block for full semantic completion by default.
+history, start persistent daemon maintenance in automatic mode, and return
+promptly. Manual setup starts no worker. Setup should not block for full
+semantic completion by default.
 
 Default human output should include a strong foreground signal:
 
@@ -152,15 +155,16 @@ The search command owns:
 - argument parsing
 - opening existing indexes read-only when possible
 - retrieval over the current lexical/semantic indexes
-- optional daemon signal/autostart for background freshness
+- automatic persistent-daemon signal/autostart for background freshness
+- explicit wait authority for a persistent daemon or manual finite Core worker
 - clear freshness/retrieval status in JSON
 
 The setup command owns:
 
 - creating the data root/config/store
 - source discovery and scanning
-- daemon autostart unless explicitly disabled with `--no-daemon`; the deprecated
-  `--catalog-only` flag is ignored
+- persistent daemon autostart only in automatic mode and unless explicitly
+  disabled with `--no-daemon`; the deprecated `--catalog-only` flag is ignored
 - printing initial background indexing estimates and status commands
 - queueing model acquisition for the daemon without downloading in the setup
   process
@@ -180,7 +184,11 @@ The foreground `index` command owns:
 - No model download from foreground setup, import, search, status, doctor, MCP,
   or index-observer commands. Only the opted-in daemon may acquire or repair the
   pinned model, and unverified bytes must fail closed before cache publication.
-- No duplicate inline refresh when daemon is enabled and running.
+- No duplicate inline importer. Persistent and finite publication both use the
+  same daemon/Core refresh engine.
+- A finite Core worker installs no supervision, runs no watcher/timer/semantic/
+  upgrade maintenance, admits at least one request before idle exit, and exits
+  only when Core work is terminal and IPC is quiescent.
 - No LLM-generated semantic documents.
 - Prefer one persisted semantic-document projection over reconstructing the
   corpus from raw events for every worker pass.
@@ -199,10 +207,10 @@ The foreground `index` command owns:
    mapping or replacing the current `RefreshArg::Auto|Off|Strict` behavior.
 
 3. Make search read-only under daemon ownership:
-   when daemon is enabled or running and a local index exists, skip inline
-   `refresh_before_search`; allow one bounded foreground bootstrap when the
-   index is absent,
-   serve the existing index, and signal/autostart daemon work when allowed.
+   never run inline `refresh_before_search`; serve the existing index, let
+   automatic background mode signal/autostart persistent work, leave manual
+   background and `off` inert, and let explicit `wait` request finite Core work
+   in manual mode.
 
 4. Make setup foreground-light:
    keep setup initialization and source scanning visible, start daemon work,

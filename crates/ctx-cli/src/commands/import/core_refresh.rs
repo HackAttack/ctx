@@ -3,13 +3,11 @@ use std::path::Path;
 use anyhow::{bail, Context, Result};
 
 use crate::{
-    config::AppConfig,
     progress::ProgressReporter,
     semantic::{
-        autostart_daemon_and_wait, coordinate_import_source_backed_refresh_with_progress,
-        SourceBackedRefreshMode, SourceBackedRefreshObservation,
+        coordinate_import_source_backed_refresh_with_progress, SourceBackedRefreshMode,
+        SourceBackedRefreshObservation,
     },
-    DaemonTriggerCommandArg,
 };
 
 use super::ExplicitSourceCatalogAuthority;
@@ -24,15 +22,10 @@ pub(super) enum ImportCoreRefreshRequest<'a> {
 /// Import may start the daemon and waits only for authoritative Core publication.
 pub(super) fn wait_for_import_core_refresh(
     data_root: &Path,
-    config: &AppConfig,
     no_daemon: bool,
     request: ImportCoreRefreshRequest<'_>,
     progress: &mut ProgressReporter<'_>,
 ) -> Result<SourceBackedRefreshObservation> {
-    if !no_daemon {
-        autostart_daemon_and_wait(data_root, config, DaemonTriggerCommandArg::Import)?;
-    }
-
     let mut report_progress = |update: &crate::semantic::RefreshStatus| {
         progress.source_refresh(update).map_err(anyhow::Error::new)
     };

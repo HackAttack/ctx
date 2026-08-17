@@ -198,21 +198,23 @@ remains lexical-safe in those cases.
 
 ## Refresh and freshness
 
-`--refresh background` is the default. Search health-checks and, when needed,
-wakes or recovers the default-enabled persistent daemon, then serves the latest
-committed lexical generation without waiting for optional semantic indexing.
+`--refresh background` is the default. In automatic mode, search health-checks
+and, when needed, wakes or recovers the persistent daemon. In manual mode it
+does not contact, start, or wake a process. Both serve the latest committed
+lexical generation without waiting for optional semantic indexing.
 The daemon owns bounded provider discovery, source refresh, immutable
 candidate-generation construction, publication, and opted-in semantic catch-up.
 The query process never becomes a foreground history writer.
 
-On a fresh root, background mode asks the daemon to publish the first lexical
-generation. If daemon maintenance is disabled, search performs no hidden
-bootstrap or fallback import and can query only an already committed
-generation. Enabled auto-refresh history-source plugins run through the same
+On a fresh automatic root, background mode asks the daemon to publish the first
+lexical generation. In manual mode, search performs no hidden bootstrap or
+fallback import and can query only an already committed generation. Enabled
+auto-refresh history-source plugins run through the same
 daemon-owned, bounded Core refresh route; explicit-only sources still require
 an explicit import.
 
-`--refresh wait` wakes the daemon and waits for the requested source frontier
+`--refresh wait` wakes the persistent daemon in automatic mode or starts a
+finite Core worker in manual mode, then waits for the requested source frontier
 and lexical-generation receipt. It fails with a typed source, lag, or system
 error when that receipt cannot publish; it does not fall back to a foreground
 importer or wait for complete semantic coverage.

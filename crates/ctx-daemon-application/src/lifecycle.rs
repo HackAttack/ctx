@@ -84,6 +84,12 @@ enum DaemonAutostartRequest {
     Spawned(Child),
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum DaemonLaunchProfile {
+    Persistent,
+    FiniteCoreWorker,
+}
+
 fn daemon_autostart_exe() -> Result<std::path::PathBuf> {
     std::env::var("CTX_DAEMON_AUTOSTART_EXE")
         .ok()
@@ -267,13 +273,14 @@ fn request_daemon_autostart(
     data_root: &Path,
     config: &DaemonConfigSnapshot,
     trigger: DaemonTrigger,
+    profile: DaemonLaunchProfile,
 ) -> Result<DaemonAutostartRequest> {
     if hosted_uninstall_fences_daemon_autostart(host) {
         return Ok(DaemonAutostartRequest::Suppressed(
             "hosted_uninstall_active",
         ));
     }
-    if config.enabled {
+    if profile == DaemonLaunchProfile::Persistent && config.enabled {
         if let Some(deferral) = host.defer_restart_for_upgrade_handoff(data_root, trigger)? {
             return Ok(DaemonAutostartRequest::Deferred(deferral));
         }
@@ -281,7 +288,9 @@ fn request_daemon_autostart(
     // Suppression disables spawning, not reuse. Test harnesses and managed
     // callers can intentionally provide an already-owned daemon while
     // forbidding any additional detached process.
-    if config.enabled && daemon_lock_is_active(data_root) {
+    if (config.enabled || profile == DaemonLaunchProfile::FiniteCoreWorker)
+        && daemon_lock_is_active(data_root)
+    {
         let executable = daemon_autostart_exe()?;
         if daemon_lock_matches_executable(data_root, &executable)? {
             return Ok(DaemonAutostartRequest::Existing(
@@ -305,7 +314,7 @@ fn request_daemon_autostart(
     if let Some(reason) = daemon_autostart_suppression_reason() {
         return Ok(DaemonAutostartRequest::Suppressed(reason));
     }
-    if !daemon_autostart_allowed(data_root, config) {
+    if profile == DaemonLaunchProfile::Persistent && !daemon_autostart_allowed(data_root, config) {
         return Ok(DaemonAutostartRequest::Suppressed("not_allowed"));
     }
     if host.installation_upgrade_active().unwrap_or(false) {
@@ -339,7 +348,14 @@ fn request_daemon_autostart(
             return Err(error);
         }
     };
-    let launch = configured_daemon_autostart_command(&exe, data_root, trigger, None);
+    let launch = match profile {
+        DaemonLaunchProfile::Persistent => {
+            configured_daemon_autostart_command(&exe, data_root, trigger, None)
+        }
+        DaemonLaunchProfile::FiniteCoreWorker => {
+            configured_finite_core_worker_command(&exe, data_root, trigger)
+        }
+    };
     match launch.and_then(|launch| spawn_daemon_child(host, launch)) {
         Ok(child) => Ok(DaemonAutostartRequest::Spawned(child)),
         Err(error) => {
@@ -362,7 +378,13 @@ pub fn request_daemon_start(
     config: &DaemonConfigSnapshot,
     trigger: DaemonTrigger,
 ) -> Result<()> {
-    let _request = request_daemon_autostart(host, data_root, config, trigger)?;
+    let _request = request_daemon_autostart(
+        host,
+        data_root,
+        config,
+        trigger,
+        DaemonLaunchProfile::Persistent,
+    )?;
     Ok(())
 }
 
@@ -372,16 +394,48 @@ pub fn start_daemon_and_wait(
     config: &DaemonConfigSnapshot,
     trigger: DaemonTrigger,
 ) -> std::result::Result<DaemonHandoff, DaemonStartError> {
+    start_daemon_profile_and_wait(
+        host,
+        data_root,
+        config,
+        trigger,
+        DaemonLaunchProfile::Persistent,
+    )
+}
+
+pub fn start_finite_core_worker_and_wait(
+    host: &dyn DaemonApplicationHost,
+    data_root: &Path,
+    config: &DaemonConfigSnapshot,
+    trigger: DaemonTrigger,
+) -> std::result::Result<DaemonHandoff, DaemonStartError> {
+    start_daemon_profile_and_wait(
+        host,
+        data_root,
+        config,
+        trigger,
+        DaemonLaunchProfile::FiniteCoreWorker,
+    )
+}
+
+fn start_daemon_profile_and_wait(
+    host: &dyn DaemonApplicationHost,
+    data_root: &Path,
+    config: &DaemonConfigSnapshot,
+    trigger: DaemonTrigger,
+    profile: DaemonLaunchProfile,
+) -> std::result::Result<DaemonHandoff, DaemonStartError> {
     let mut recovery_attempted = false;
     loop {
-        let request =
-            request_daemon_autostart(host, data_root, config, trigger).map_err(|error| {
+        let request = request_daemon_autostart(host, data_root, config, trigger, profile).map_err(
+            |error| {
                 if error.is::<BinaryIdentityHandoffError>() {
                     DaemonStartError::BinaryIdentity(error)
                 } else {
                     DaemonStartError::Start(error)
                 }
-            })?;
+            },
+        )?;
         let (mut child, pending_restart_request, existing_owner) = match request {
             DaemonAutostartRequest::Existing(owner) => (None, None, Some(owner)),
             DaemonAutostartRequest::Deferred(deferral) => (
@@ -837,6 +891,7 @@ pub fn daemon_autostart_command(
         loop_interval,
         handoff_token,
         BTreeMap::new(),
+        DaemonLaunchProfile::Persistent,
     )
 }
 
@@ -847,6 +902,7 @@ fn daemon_autostart_command_with_environment_overrides(
     loop_interval: Option<u64>,
     handoff_token: Option<&str>,
     overrides: BTreeMap<OsString, OsString>,
+    profile: DaemonLaunchProfile,
 ) -> io::Result<NormalizedLaunch> {
     let mut args = vec![
         OsString::from("--data-root"),
@@ -859,6 +915,10 @@ fn daemon_autostart_command_with_environment_overrides(
         OsString::from(trigger.as_str()),
         OsString::from("--format=json"),
     ];
+    if profile == DaemonLaunchProfile::FiniteCoreWorker {
+        args.push(OsString::from("--finite-core-worker"));
+        args.push(OsString::from("--force"));
+    }
     if let Some(loop_interval) = loop_interval {
         args.push(OsString::from("--loop-interval-seconds"));
         args.push(OsString::from(loop_interval.to_string()));
@@ -1062,6 +1122,23 @@ pub fn configured_daemon_autostart_command(
         loop_interval_seconds,
         handoff_token,
         overrides,
+        DaemonLaunchProfile::Persistent,
+    )
+}
+
+fn configured_finite_core_worker_command(
+    exe: &Path,
+    data_root: &Path,
+    trigger: DaemonTrigger,
+) -> io::Result<NormalizedLaunch> {
+    daemon_autostart_command_with_environment_overrides(
+        exe,
+        data_root,
+        trigger,
+        None,
+        None,
+        BTreeMap::new(),
+        DaemonLaunchProfile::FiniteCoreWorker,
     )
 }
 

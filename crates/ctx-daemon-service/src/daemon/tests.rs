@@ -884,10 +884,22 @@ fn test_daemon_run_args() -> DaemonRunArgs {
         max_chunks: None,
         handle_process_signals: false,
         force: false,
+        profile: crate::DaemonRunProfile::Persistent,
         start_mode: None,
         trigger_command: None,
         supervisor: crate::DaemonSupervisor::User,
     }
+}
+
+#[test]
+fn finite_worker_quiescence_waits_for_active_ipc_and_then_rejects_new_requests() {
+    let activity = Arc::new(crate::query_service::DaemonQueryActivity::new());
+    let guard = activity.begin_request().expect("first request admitted");
+
+    assert!(!activity.begin_stopping_if_idle());
+    drop(guard);
+    assert!(activity.begin_stopping_if_idle());
+    assert!(activity.begin_request().is_none());
 }
 
 fn run_daemon_scheduler_cycle_with_activity(

@@ -21,17 +21,15 @@ use super::{
 
 /// Final-host implementation of the static import application port. This is
 /// deliberately limited to concrete filesystem/catalog/daemon side effects.
-pub(super) struct CliImportHost<'a> {
-    config: &'a crate::config::AppConfig,
-}
+pub(super) struct CliImportHost;
 
-impl<'a> CliImportHost<'a> {
-    pub(super) const fn new(config: &'a crate::config::AppConfig) -> Self {
-        Self { config }
+impl CliImportHost {
+    pub(super) const fn new() -> Self {
+        Self
     }
 }
 
-impl ctx_history_cli::ImportApplicationPort for CliImportHost<'_> {
+impl ctx_history_cli::ImportApplicationPort for CliImportHost {
     fn protect_data_root(&mut self, data_root: &Path) -> Result<()> {
         establish_private_data_root(data_root).map_err(anyhow::Error::new)
     }
@@ -86,8 +84,7 @@ impl ctx_history_cli::ImportApplicationPort for CliImportHost<'_> {
         let request = admission.map_or(ImportCoreRefreshRequest::Automatic, |authority| {
             ImportCoreRefreshRequest::ExplicitCatalog(authority)
         });
-        let refresh =
-            wait_for_import_core_refresh(data_root, self.config, no_daemon, request, progress)?;
+        let refresh = wait_for_import_core_refresh(data_root, no_daemon, request, progress)?;
         let pinned_generation = refresh.pin.generation_id().to_owned();
         let policy_schema_hash = admission.is_none().then(|| {
             refresh

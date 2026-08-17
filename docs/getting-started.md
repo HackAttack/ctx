@@ -23,8 +23,8 @@ to manage `PATH` yourself.
 
 The install script installs `ctx`, runs the bundled agent-history skill
 installer, and runs `ctx setup` so discovered local history is inventoried and
-indexing begins. Daemon maintenance is enabled by default, so that setup run
-requests the ctx-owned background daemon after setup output for native-history
+indexing begins. Automatic indexing is the default, so that setup run requests
+the persistent ctx-owned daemon after setup output for native-history
 freshness. Semantic
 catch-up remains disabled unless semantic search is explicitly enabled. The
 skill installer opens an agent picker when interactive;
@@ -73,9 +73,17 @@ generation with complete policy-selected records and source identities, starts o
 enabled persistent daemon, requests a provider-source refresh, and prints next
 steps. It does not write `config.toml`
 for implicit defaults and does not execute history-source plugin commands. The
-default data root is `~/.ctx`. Use `ctx daemon disable` for a durable opt-out or
-`ctx setup --no-daemon` for a one-run opt-out. Existing configurations that
-already set `[daemon] enabled = false` remain disabled after upgrade.
+default data root is `~/.ctx`. Use `ctx daemon disable` to select manual
+indexing or `ctx setup --no-daemon` for a one-run opt-out. Existing
+`[daemon] enabled = false` configurations are accepted as manual mode and are
+migrated to `[indexing] mode = "manual"` when lifecycle controls touch them.
+The equivalent canonical configuration is:
+
+```toml
+[indexing]
+mode = "manual"
+```
+
 Machine-readable setup follows the same lifecycle and reports schema version 2
 with top-level `daemon_autostart` and `refresh_request` objects. The deprecated
 `--catalog-only` flag no longer disables daemon maintenance.
@@ -88,9 +96,10 @@ CTX_DATA_ROOT=/tmp/ctx-demo ctx status
 ```
 
 Setup does not write to source repositories, call model APIs, download embedding
-models, or require API keys while semantic search is disabled. If daemon and
-semantic search are explicitly enabled, daemon maintenance may acquire the local
-ONNX Runtime asset and embedding model needed for the installed platform.
+models, or require API keys while semantic search is disabled. If automatic
+indexing and semantic search are explicitly enabled, daemon maintenance may
+acquire the local ONNX Runtime asset and embedding model needed for the
+installed platform.
 ctx has no hosted-history client or `ctx cloud` subcommand. Official
 installer-managed binaries can separately run signed CLI
 upgrade checks; that updater does not collect provider history.
@@ -131,13 +140,12 @@ native cursor-resume API. Imports keep valid records when isolated records are
 malformed and report those rejections explicitly. Unreadable or incompatible
 sources still fail without preventing `--all` from importing other sources.
 
-With default daemon maintenance, `ctx import` can start the same ctx-owned
-background daemon profile after the foreground import finishes.
-The daemon refreshes native history within local budgets and, when semantic is
-enabled, may acquire the local embedding model and perform semantic catch-up.
-Use `ctx import --no-daemon` for a one-run opt-out. JSON import output does not
-start or nudge the daemon. Use a human-readable native import or an explicit
-daemon command when background maintenance should start.
+With automatic indexing, `ctx import` can start the persistent ctx-owned daemon.
+With manual indexing, the explicit import instead starts a finite Core worker,
+waits for authoritative publication, and lets it exit without watcher,
+semantic, timer, supervisor, or upgrade maintenance. Use
+`ctx import --no-daemon` to forbid starting or restarting either process.
+Output format does not change this authority.
 
 After upgrading an older data root to `0.10.x` or newer, the first refresh or
 import may perform a one-time provider reimport. That rebuilds search content
@@ -172,9 +180,11 @@ lineage automatically. Search also accepts filters such as `--provider`,
 `--refresh background|off|wait`.
 `--limit` is capped at `200`.
 Search defaults to `--refresh background`, which serves the active Core
-generation while daemon maintenance requests a Core refresh and semantic
-catch-up when enabled. Use `--refresh wait` for foreground Core refresh, or
-`ctx import --all` for an explicit import catch-up.
+generation. In automatic mode it may start or wake the persistent daemon for a
+Core refresh and semantic catch-up when enabled. In manual mode it uses only the
+last published generation without starting or waking a process. Use
+`--refresh wait` for authoritative Core refresh, or `ctx import --all` for an
+explicit import catch-up; either may use a finite Core worker in manual mode.
 
 When ctx runs inside Codex, search excludes the active Codex session tree by
 default when it can identify it. Use `--include-current-session` if the current
@@ -182,15 +192,16 @@ session or its subagent work is the history you want to search. Use
 `--refresh off` when you need a strictly read-only query over the active Core
 generation.
 
-Default background refresh may start the configured daemon for local history
-freshness. Semantic and hybrid search read existing local sidecar coverage; when
-semantic is enabled, the daemon-owned query service can embed the query.
-`--refresh off` skips daemon autostart. Search does not run semantic catch-up or download embedding
-models. Hybrid uses semantic evidence only after coverage is complete and dirty
-work is drained; until then it falls back to lexical search with a structured
-reason. Explicit semantic search can query partial coverage for diagnostics,
-but reports a local error when the model cache is missing or the semantic worker
-is actively indexing.
+Automatic background refresh may start the configured persistent daemon for
+local history freshness. Semantic and hybrid search read existing local sidecar
+coverage; when semantic is enabled, the daemon-owned query service can embed the
+query. Manual background refresh and `--refresh off` skip process startup.
+Search does not run semantic catch-up or download embedding models. Hybrid uses
+semantic evidence only after coverage is complete and dirty work is drained;
+until then it falls back to lexical search with a structured reason. Explicit
+semantic search can query partial coverage for diagnostics, but reports a local
+error when the model cache is missing or the semantic worker is actively
+indexing.
 
 ## 6. Use JSON For Scripts
 
@@ -228,6 +239,7 @@ available for human shell use.
 `ctx upgrade` works for official installer-managed binaries. Source builds,
 `cargo install`, package-manager installs, and copied binaries are treated as
 unmanaged and will not self-upgrade. Automatic upgrade is on by default for a
-managed binary while the daemon is enabled; use `ctx upgrade disable` for a
-persistent upgrade-only opt-out or `ctx daemon disable` to disable all daemon
-maintenance, including automatic upgrade.
+managed binary while automatic indexing's persistent daemon is enabled; use
+`ctx upgrade disable` for a persistent upgrade-only opt-out or
+`ctx daemon disable` to select manual indexing, which also disables automatic
+upgrade maintenance.

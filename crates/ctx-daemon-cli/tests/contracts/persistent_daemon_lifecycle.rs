@@ -452,7 +452,9 @@ mod native {
         assert_eq!(disabled_status["running"], false, "{disabled_status:#}");
         let disabled_config = fs::read_to_string(harness.root().join("config.toml")).unwrap();
         assert!(
-            disabled_config.contains("[daemon]") && disabled_config.contains("enabled = false"),
+            disabled_config.contains("[indexing]")
+                && disabled_config.contains("mode = \"manual\"")
+                && !disabled_config.contains("[daemon]\nenabled"),
             "disable was not durable: {disabled_config}"
         );
 
@@ -491,7 +493,9 @@ mod native {
         assert!(process_is_running(enabled_pid), "{enabled:#}");
         let enabled_config = fs::read_to_string(harness.root().join("config.toml")).unwrap();
         assert!(
-            enabled_config.contains("enabled = true"),
+            enabled_config.contains("[indexing]")
+                && enabled_config.contains("mode = \"automatic\"")
+                && !enabled_config.contains("[daemon]\nenabled"),
             "enable was not durable: {enabled_config}"
         );
 

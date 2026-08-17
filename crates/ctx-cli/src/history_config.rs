@@ -29,7 +29,7 @@ impl<'a> CliHistoryConfigSnapshot<'a> {
 impl HistoryConfigSnapshotPort for CliHistoryConfigSnapshot<'_> {
     fn snapshot(&self) -> HistoryCliConfig {
         HistoryCliConfig {
-            daemon_enabled: self.config.daemon.enabled,
+            daemon_enabled: self.config.automatic_indexing_enabled(),
             semantic_search_enabled: self.config.semantic_search_enabled(),
             local_usage_enabled: self.config.local_usage.enabled,
         }

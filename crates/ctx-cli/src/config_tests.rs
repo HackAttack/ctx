@@ -95,7 +95,7 @@ mode = "source-refresh-only"
     assert_eq!(config.upgrade.auto, "off");
     assert_eq!(config.upgrade.channel, "beta");
     assert_eq!(config.upgrade.interval, Duration::from_secs(60 * 60));
-    assert!(!config.daemon.enabled);
+    assert_eq!(config.indexing.mode, IndexingMode::Manual);
     assert_eq!(config.daemon.mode, DaemonMode::SourceRefreshOnly);
     assert_eq!(config.search.semantic, None);
 }
@@ -144,7 +144,7 @@ fn load_without_config_file_uses_defaults() {
     assert!(config.auto_upgrade_enabled());
     assert_eq!(config.upgrade.channel, "stable");
     assert_eq!(config.upgrade.interval, Duration::from_secs(24 * 60 * 60));
-    assert!(config.daemon.enabled);
+    assert_eq!(config.indexing.mode, IndexingMode::Automatic);
     assert_eq!(config.daemon.mode, DaemonMode::Full);
     assert_eq!(config.search.semantic, None);
     assert!(!config.semantic_search_enabled());
@@ -182,8 +182,8 @@ fn empty_config_runtime_defaults_match_public_control_inventory() {
         serde_json::json!(config.auto_upgrade_mode().as_str())
     );
     assert_eq!(
-        released("daemon.enabled"),
-        serde_json::json!(config.daemon.enabled)
+        released("indexing.mode"),
+        serde_json::json!(config.indexing.mode.as_str())
     );
     assert_eq!(
         released("search.semantic"),
@@ -207,7 +207,7 @@ fn legacy_config_without_runtime_control_keys_adopts_public_defaults() {
     assert!(config.local_usage.enabled);
     assert_eq!(config.auto_upgrade_mode(), AutoUpgradeMode::Apply);
     assert!(config.auto_upgrade_enabled());
-    assert!(config.daemon.enabled);
+    assert_eq!(config.indexing.mode, IndexingMode::Automatic);
     assert!(!config.semantic_search_enabled());
 }
 
@@ -242,16 +242,47 @@ fn explicit_daemon_opt_out_wins_over_default_and_env_enable() {
     fs::write(temp.path().join(CONFIG_FILE), "[daemon]\nenabled = false\n").unwrap();
 
     let persisted = AppConfig::load(temp.path()).unwrap();
-    assert!(!persisted.daemon.enabled);
+    assert_eq!(persisted.indexing.mode, IndexingMode::Manual);
 
     env_guard.set("CTX_DAEMON_ENABLED", "true");
     let still_persisted = AppConfig::load(temp.path()).unwrap();
-    assert!(!still_persisted.daemon.enabled);
+    assert_eq!(still_persisted.indexing.mode, IndexingMode::Manual);
 
     fs::remove_file(temp.path().join(CONFIG_FILE)).unwrap();
     env_guard.set("CTX_DAEMON_ENABLED", "false");
     let environment_opt_out = AppConfig::load(temp.path()).unwrap();
-    assert!(!environment_opt_out.daemon.enabled);
+    assert_eq!(environment_opt_out.indexing.mode, IndexingMode::Manual);
+}
+
+#[test]
+fn canonical_indexing_mode_wins_over_legacy_daemon_enabled() {
+    let _env_guard = EnvGuard::new(&["CTX_DAEMON_ENABLED"]);
+    let temp = tempfile::tempdir().unwrap();
+    fs::write(
+        temp.path().join(CONFIG_FILE),
+        "[indexing]\nmode = \"manual\"\n\n[daemon]\nenabled = true\n",
+    )
+    .unwrap();
+
+    let config = AppConfig::load(temp.path()).unwrap();
+
+    assert_eq!(config.indexing.mode, IndexingMode::Manual);
+}
+
+#[test]
+fn indexing_mode_rejects_unknown_values() {
+    let temp = tempfile::tempdir().unwrap();
+    fs::write(
+        temp.path().join(CONFIG_FILE),
+        "[indexing]\nmode = \"on-demand\"\n",
+    )
+    .unwrap();
+
+    let error = format!("{:#}", AppConfig::load(temp.path()).unwrap_err());
+
+    assert!(error.contains("indexing.mode"), "{error}");
+    assert!(error.contains("automatic"), "{error}");
+    assert!(error.contains("manual"), "{error}");
 }
 
 #[test]
@@ -590,7 +621,7 @@ fn deprecated_opt_outs_keep_historical_truthiness_and_win_over_enabling() {
     env_guard.set("CTX_DAEMON_OFF", "0");
     let inactive = AppConfig::load(temp.path()).unwrap();
     assert!(inactive.analytics.enabled);
-    assert!(inactive.daemon.enabled);
+    assert_eq!(inactive.indexing.mode, IndexingMode::Automatic);
     assert_eq!(inactive.upgrade.auto, "apply");
 
     env_guard.set("CTX_INSTALL_DIAGNOSTICS_OFF", "yes");
@@ -598,7 +629,7 @@ fn deprecated_opt_outs_keep_historical_truthiness_and_win_over_enabling() {
     env_guard.set("CTX_UPGRADE_OFF", "ON");
     let active = AppConfig::load(temp.path()).unwrap();
     assert!(!active.analytics.enabled);
-    assert!(!active.daemon.enabled);
+    assert_eq!(active.indexing.mode, IndexingMode::Manual);
     assert_eq!(active.upgrade.auto, "off");
 }
 
@@ -630,7 +661,7 @@ enabled = false
     assert_eq!(config.upgrade.auto, "off");
     assert_eq!(config.upgrade.channel, "beta");
     assert_eq!(config.upgrade.interval, Duration::from_secs(2 * 60 * 60));
-    assert!(!config.daemon.enabled);
+    assert_eq!(config.indexing.mode, IndexingMode::Manual);
 }
 
 #[test]
@@ -650,21 +681,31 @@ fn config_rejects_upgrade_metadata_authority_substitution() {
 }
 
 #[test]
-fn set_daemon_enabled_rewrites_or_adds_config_key() {
+fn daemon_lifecycle_updates_write_canonical_indexing_mode_and_remove_legacy_key() {
     let temp = tempfile::tempdir().unwrap();
+    fs::write(
+        temp.path().join(CONFIG_FILE),
+        "# retained\n[daemon]\nenabled = true\nmode = \"full\"\n",
+    )
+    .unwrap();
 
     set_daemon_enabled(temp.path(), false).unwrap();
     let disabled = AppConfig::load(temp.path()).unwrap();
-    assert!(!disabled.daemon.enabled);
+    assert_eq!(disabled.indexing.mode, IndexingMode::Manual);
     let text = fs::read_to_string(temp.path().join(CONFIG_FILE)).unwrap();
-    assert!(text.contains("[daemon]"));
-    assert!(text.contains("enabled = false"));
+    assert!(text.contains("[indexing]"));
+    assert!(text.contains("mode = \"manual\""));
+    assert!(!text.contains("enabled = false"));
+    assert!(!text.contains("enabled = true"));
+    assert!(text.contains("# retained"));
+    assert!(text.contains("mode = \"full\""));
 
     set_daemon_enabled(temp.path(), true).unwrap();
     let enabled = AppConfig::load(temp.path()).unwrap();
-    assert!(enabled.daemon.enabled);
+    assert_eq!(enabled.indexing.mode, IndexingMode::Automatic);
     let text = fs::read_to_string(temp.path().join(CONFIG_FILE)).unwrap();
-    assert!(text.contains("enabled = true"));
+    assert!(text.contains("mode = \"automatic\""));
+    assert!(!text.contains("enabled = true"));
 }
 
 #[test]

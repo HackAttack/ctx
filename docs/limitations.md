@@ -33,21 +33,27 @@ shipped.
 
 ## Import Semantics
 
-- Imports are explicit unless non-JSON `ctx setup`, native-provider
-  `ctx import`, or `ctx daemon run` starts ctx-owned local daemon maintenance.
-  Setup/import autostart uses the normal persistent background daemon profile;
-  explicit `ctx daemon run` runs the same coordinator in the foreground. Use
-  `ctx setup --no-daemon` or `ctx import --no-daemon` for a one-run autostart
-  opt-out. Semantic catch-up runs only when the required local model cache
-  already exists.
+- Automatic indexing is the default and permits eligible setup, import, and
+  background search operations to start or wake persistent ctx-owned daemon
+  maintenance. Manual indexing starts no persistent/background daemon; setup
+  and background search remain inert, while explicit import and search
+  `--refresh wait` may start a finite Core worker. Use `ctx setup --no-daemon`
+  or `ctx import --no-daemon` for a one-run process-start opt-out. Explicit
+  `ctx daemon run --force` runs persistent maintenance in the foreground even
+  when manual mode is configured.
+- Finite Core workers use the same daemon refresh engine and endpoint, but do
+  not install supervision or run watcher, timer, semantic, reconciliation, or
+  upgrade maintenance. They exit only after an admitted request exists, all
+  Core requests are terminal, and IPC is quiescent.
 - Automatic restart of continuous refresh for a hosted managed install requires
   an operational native current-user service manager: systemd-user on Linux,
   the launchd GUI user domain on macOS, or Task Scheduler on Windows. When that
-  manager is unavailable, setup and eligible imports use the same persistent
-  detached CLI-self-healing daemon as unmanaged installs and custom data roots.
-  The process has no finite idle lifetime, but native automatic restart after a
-  crash, login, logout, or reboot is unavailable. The next eligible ctx command
-  restarts an absent fallback daemon.
+  manager is unavailable, automatic setup and eligible imports use the same
+  persistent detached CLI-self-healing daemon as unmanaged installs and custom
+  data roots. The process has no finite idle lifetime, but native automatic
+  restart after a crash, login, logout, or reboot is unavailable. The next
+  eligible automatic ctx command restarts an absent fallback daemon. Manual
+  finite workers never install this fallback.
 - Current importers use idempotent rescans.
 - `--resume` is reported in output but is not a universal provider cursor
   contract.
@@ -87,6 +93,8 @@ shipped.
 - Core setup/import/search are local filesystem operations.
 - Official installer-managed binaries can use signed release metadata for an
   explicit `ctx upgrade` command and daemon-owned automatic checks while the
-  daemon and automatic upgrades are enabled.
+  persistent daemon, automatic indexing, and automatic upgrades are enabled.
+- Manual indexing and finite Core workers do not perform automatic upgrade
+  checks or application.
 - Unmanaged installs do not self-upgrade.
 - No provider beyond the support matrix should be described as supported.

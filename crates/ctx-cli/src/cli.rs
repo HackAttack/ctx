@@ -239,9 +239,9 @@ pub(crate) enum DaemonCommand {
     Run(DaemonRunArgs),
     #[command(about = "Show ctx daemon status")]
     Status(FormatArgs),
-    #[command(about = "Enable ctx daemon maintenance")]
+    #[command(about = "Use automatic indexing and enable persistent maintenance")]
     Enable(FormatArgs),
-    #[command(about = "Disable ctx daemon maintenance")]
+    #[command(about = "Use manual indexing and remove persistent maintenance")]
     Disable(DaemonDisableArgs),
 }
 
@@ -257,6 +257,8 @@ pub(crate) struct DaemonDisableArgs {
 pub(crate) struct DaemonRunArgs {
     #[arg(long, hide = true)]
     pub(crate) foreground: bool,
+    #[arg(long, hide = true)]
+    pub(crate) finite_core_worker: bool,
     #[arg(
         long,
         value_parser = parse_daemon_interval_seconds,
@@ -269,7 +271,7 @@ pub(crate) struct DaemonRunArgs {
         help = "Process at most this many semantic chunks per pass"
     )]
     pub(crate) max_chunks: Option<usize>,
-    #[arg(long, help = "Run even when daemon.enabled is false")]
+    #[arg(long, help = "Run even when automatic indexing is disabled")]
     pub(crate) force: bool,
     #[arg(long, value_enum, hide = true)]
     pub(crate) start_mode: Option<DaemonStartModeArg>,

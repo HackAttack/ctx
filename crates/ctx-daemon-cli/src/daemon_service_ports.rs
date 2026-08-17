@@ -4,9 +4,9 @@ use anyhow::{Context, Result};
 use ctx_client_observability::analytics::PublicEventV1;
 use ctx_daemon_service::{
     CoreGenerationPublished, CoreGenerationPublishedPort, DaemonAvailability,
-    DaemonAvailabilityPort, DaemonConfigPort, DaemonConfigSnapshot, DaemonInstallationLease,
-    DaemonInstallationPort, DaemonMode, DaemonObservationPort, DaemonProductConfig,
-    DaemonServicePorts, DaemonTrigger,
+    DaemonAvailabilityDemand, DaemonAvailabilityPort, DaemonConfigPort, DaemonConfigSnapshot,
+    DaemonInstallationLease, DaemonInstallationPort, DaemonMode, DaemonObservationPort,
+    DaemonProductConfig, DaemonServicePorts, DaemonTrigger,
 };
 use ctx_history_capture::DiscoveryContext;
 use ctx_semantic_model::{ArtifactFetchRequest, ArtifactFetcher, SemanticModelConfig};
@@ -78,13 +78,23 @@ where
     AP: ctx_upgrade_engine::AutomaticUpgradePolicyProvider<Snapshot = DaemonConfigSnapshot>,
     UO: ctx_upgrade_engine::UpgradeObserver<DaemonConfigSnapshot>,
 {
-    use ctx_daemon_service::{DaemonRunArgs, DaemonStartMode, DaemonSupervisor, DaemonTrigger};
+    use ctx_daemon_service::{
+        DaemonRunArgs, DaemonRunProfile, DaemonStartMode, DaemonSupervisor, DaemonTrigger,
+    };
 
     let service_args = DaemonRunArgs {
         loop_interval_seconds: request.loop_interval_seconds,
         max_chunks: request.max_chunks,
         handle_process_signals: request.handle_process_signals,
         force: request.force,
+        profile: match request.profile {
+            ctx_daemon_application::DaemonHostRunProfile::Persistent => {
+                DaemonRunProfile::Persistent
+            }
+            ctx_daemon_application::DaemonHostRunProfile::FiniteCoreWorker => {
+                DaemonRunProfile::FiniteCoreWorker
+            }
+        },
         start_mode: request.start_mode.map(|mode| match mode {
             ctx_daemon_application::DaemonHostStartMode::Manual => DaemonStartMode::Manual,
             ctx_daemon_application::DaemonHostStartMode::Auto => DaemonStartMode::Auto,
@@ -139,13 +149,22 @@ impl DaemonAvailabilityPort for CliDaemonAvailabilityPort {
         &self,
         data_root: &Path,
         trigger: DaemonTrigger,
+        demand: DaemonAvailabilityDemand,
     ) -> Result<DaemonAvailability> {
         let config = AppConfig::load(data_root)
             .context("load daemon configuration before availability check")?;
-        if !config.daemon.enabled {
+        if config.daemon.enabled {
+            super::daemon_autostart::autostart_daemon_and_wait(
+                data_root,
+                &config,
+                cli_trigger(trigger),
+            )?;
+            return Ok(DaemonAvailability::Available);
+        }
+        if demand == DaemonAvailabilityDemand::Background || trigger == DaemonTrigger::Setup {
             return Ok(DaemonAvailability::Disabled);
         }
-        super::daemon_autostart::autostart_daemon_and_wait(
+        super::daemon_autostart::start_finite_core_worker_and_wait(
             data_root,
             &config,
             cli_trigger(trigger),

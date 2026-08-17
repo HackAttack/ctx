@@ -36,6 +36,11 @@ fn run_daemon(
         max_chunks: args.max_chunks,
         handle_process_signals: true,
         force: args.force,
+        profile: if args.finite_core_worker {
+            ctx_daemon_application::DaemonHostRunProfile::FiniteCoreWorker
+        } else {
+            ctx_daemon_application::DaemonHostRunProfile::Persistent
+        },
         start_mode: args.start_mode.map(|mode| match mode {
             DaemonStartModeArg::Manual => ctx_daemon_application::DaemonHostStartMode::Manual,
             DaemonStartModeArg::Auto => ctx_daemon_application::DaemonHostStartMode::Auto,

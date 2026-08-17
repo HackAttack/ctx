@@ -7,16 +7,18 @@ the local retrieval product.
 
 - `ctx setup` reads supported provider history and writes only under the
   configured ctx data root: Core/Tantivy generations, optional semantic data,
-  config data, and optional daemon lock/status/job state when daemon autostart
-  runs.
+  config data, and optional persistent daemon lock/status/job state when
+  automatic autostart runs. Manual setup starts no worker.
 - `ctx sources` writes nothing in local-only security mode.
 - `ctx import` writes only under the configured ctx data root: Core generations,
   optional semantic data, config data, and optional daemon lock/status/job
-  state when daemon autostart runs.
-- `ctx search` may request a bounded daemon-owned refresh of discovered native
-  provider history before querying the active Core generation. The query process
-  does not write Core generations or projections. Without semantic opt-in,
-  default search must not download embedding models or start semantic indexing.
+  state when a persistent daemon or finite Core worker runs.
+- Automatic background search and explicit search `--refresh wait` may request
+  a bounded daemon-owned refresh of discovered native provider history before
+  querying the active Core generation. Manual background search and
+  `--refresh off` must not start or wake a process. The query process does not
+  write Core generations or projections. Without semantic opt-in, default
+  search must not download embedding models or start semantic indexing.
 - `ctx show` writes nothing in local-only security mode, except
   `ctx show session --out` writes only the explicit path when one is provided.
 - `ctx status` does not mutate canonical history: missing stores stay missing,
@@ -28,8 +30,8 @@ the local retrieval product.
   cache is missing. Explicit semantic/hybrid search may initialize an
   already-cached local model to embed the query.
 - `ctx setup --no-daemon` and `ctx import --no-daemon` must not autostart daemon
-  maintenance. Machine-readable output is not a daemon-autostart security
-  control. The deprecated `ctx setup --catalog-only` flag is ignored and is not
+  maintenance or finite workers. Machine-readable output is not a process-start
+  security control. The deprecated `ctx setup --catalog-only` flag is ignored and is not
   a daemon-autostart security control either.
 - `ctx docs` reads embedded documentation and writes only an explicit topic
   output path for `ctx docs show --out` or an explicit man-page output
@@ -45,18 +47,23 @@ the local retrieval product.
   checksum file, runtime archive, and runtime DLL. The public verifier accepts
   that exact handoff plus an independently supplied expected manifest digest;
   it does not sign, attest, or treat a matching handoff sidecar as authority.
-- Automatic upgrade defaults on for managed installs, but the enabled daemon is
-  its only scheduler. A disabled daemon performs no automatic check, download,
-  or apply. Signed policy and explicit opt-outs remain mandatory, and upgrade
-  work must not collect provider history or pollute command stdout/stderr.
+- Automatic upgrade defaults on for managed installs, but the persistent
+  daemon in automatic indexing mode is its only scheduler. Manual indexing and
+  finite Core workers perform no automatic check, download, or apply. Signed
+  policy and explicit opt-outs remain mandatory, and upgrade work must not
+  collect provider history or pollute command stdout/stderr.
 
-- A ctx-owned background coordinator, when launched by `ctx daemon run` or
-  setup/import autostart, must write only under the configured ctx data root,
-  respect `[daemon].enabled` unless explicitly forced, and may run only bounded
-  native local provider-history refresh and bounded semantic catch-up. It must
-  not run history-source plugins.
+- A ctx-owned persistent coordinator, when launched by `ctx daemon run` or
+  automatic setup/import autostart, must write only under the configured ctx
+  data root, respect `[indexing] mode` unless explicitly forced, and may run
+  only bounded native local provider-history refresh and bounded semantic
+  catch-up. It must not run history-source plugins.
   Network model acquisition is allowed only for the local embedding model when
   semantic search is explicitly enabled.
+- A finite Core worker may start only for explicit import or search
+  `--refresh wait`. It must not install persistent supervision or run watcher,
+  timer, semantic, or upgrade maintenance, and it must not exit before admitted
+  Core refresh work is terminal and its IPC endpoint is quiescent.
 - Provider files are read as sources and not modified.
 - Provider-native SQLite histories are opened as short read-only logical
   snapshots; ctx does not checkpoint, migrate, or write those databases.

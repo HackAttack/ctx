@@ -280,6 +280,19 @@ impl DaemonQueryActivity {
         }
     }
 
+    /// Atomically prevents new requests once the service has no in-flight
+    /// work. If a request is active, arrange a wake when the last guard exits.
+    pub fn begin_stopping_if_idle(&self) -> bool {
+        let mut state = self.state();
+        if state.active_requests == 0 {
+            state.stopping = true;
+            true
+        } else {
+            state.wake_when_idle = true;
+            false
+        }
+    }
+
     pub fn cancel_idle_wakeup(&self) {
         self.state().wake_when_idle = false;
     }

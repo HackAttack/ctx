@@ -59,16 +59,16 @@
       "environment_variable": "CTX_UPGRADE_INTERVAL_SECONDS"
     },
     {
-      "behavior": "daemon maintenance",
-      "config_key": "daemon.enabled",
+      "behavior": "indexing mode",
+      "config_key": "indexing.mode",
       "environment_variable": "CTX_DAEMON_ENABLED",
       "released_default": {
-        "value": true,
+        "value": "automatic",
         "state": "on",
         "scope": "all_cli_installations"
       },
       "previous_stable_default": {
-        "value": false,
+        "value": "manual",
         "state": "off"
       },
       "deliberate_change_approval": {
@@ -99,6 +99,9 @@
       }
     }
   ],
+  "compatibility_config_keys": {
+    "daemon.enabled": "indexing.mode"
+  },
   "rejected_config_keys": [
     "cloud.mode"
   ],

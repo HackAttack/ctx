@@ -29,6 +29,12 @@ The duplicate `upgrade.interval_seconds` config key is also removed. Use
 `upgrade.interval_hours` for persistent configuration or
 `CTX_UPGRADE_INTERVAL_SECONDS` for a process-level override.
 
+The canonical persisted indexing control is `[indexing] mode = "automatic"`
+or `"manual"`. Existing `[daemon] enabled = true|false` files remain accepted
+as compatibility input and map to automatic/manual respectively. If both keys
+are present, the canonical indexing mode wins. A daemon lifecycle enable or
+disable command rewrites the canonical key and removes the legacy key.
+
 ctx stores immutable Core/Tantivy search generations, optional semantic data,
 and content-free local usage aggregates locally. Treat the ctx data root like
 private source history.
@@ -284,14 +290,14 @@ local upsert as described above.
 
 | Command | Reads | Writes |
 | --- | --- | --- |
-| `ctx setup` | provider transcript files and bounded path metadata for source discovery | data root, source catalog/epoch metadata, `search/lexical`, and optional daemon lock/status/job files when eligible human-readable daemon autostart runs; old Store artifacts are neither opened nor deleted |
+| `ctx setup` | provider transcript files and bounded path metadata for source discovery | data root, source catalog/epoch metadata, `search/lexical`, and optional persistent daemon lock/status/job files in automatic mode; old Store artifacts are neither opened nor deleted |
 | `ctx status` | data root metadata, source epoch, lexical/semantic generation metadata, daemon state, and compact local usage health | none; does not mutate provider history, Core generations, or usage aggregates |
 | `ctx stats` | owner-private aggregate `usage.sqlite` when present | none; does not create pristine usage state or count itself |
 | `ctx sources` | bounded provider path metadata, allowlisted persistent selector files, and local history-source plugin manifests | none |
-| `ctx import` | provider transcript files and path metadata, the explicit custom history JSONL file passed with `--input-format ctx-history-jsonl-v1 --path`, or a durable provider-owned custom history JSONL file declared by an explicit history-source plugin manifest | immutable candidate Core/Tantivy generation and atomic publication, catalog/epoch metadata, and optional daemon files; semantic work is daemon-owned and does not delay foreground completion |
+| `ctx import` | provider transcript files and path metadata, the explicit custom history JSONL file passed with `--input-format ctx-history-jsonl-v1 --path`, or a durable provider-owned custom history JSONL file declared by an explicit history-source plugin manifest | immutable candidate Core/Tantivy generation and atomic publication, catalog/epoch metadata, and optional persistent or finite-worker daemon files; finite workers do not run semantic work |
 | `ctx show session` / `ctx show event` | complete policy-selected records in the active verified Core/Tantivy generation | selected `--out` path for `show session` when provided |
 | `ctx list events` | complete policy-selected records and existing index terms in one pinned verified Core/Tantivy generation | none; event enumeration is read-only |
-| `ctx search` | active verified Core/Tantivy generation and existing semantic generation; depending on refresh mode, bounded provider discovery/path metadata | candidate Core generation publication only when refresh runs; background mode may write daemon state, and semantic-enabled search may create query endpoint files |
+| `ctx search` | active verified Core/Tantivy generation and existing semantic generation; when refresh has authority, bounded provider discovery/path metadata | candidate Core publication and daemon state only when refresh has authority; manual background and `--refresh off` do not start or wake a process |
 | `ctx docs` | embedded documentation in the binary | selected topic `--out` path for `ctx docs show --out` or selected `--out` directory for `ctx docs man --out` |
 | `ctx upgrade` | signed release metadata and installed binary/sidecar metadata | installed binary for manual upgrade, install sidecar, and executable-adjacent `.ctx.upgrade-state.json`, `.ctx.install.lock`, and transaction journal |
 | `ctx doctor` | source epoch, lexical/semantic generation metadata, and ctx-owned daemon lock/status/job metadata | none |
@@ -303,13 +309,13 @@ Setup, import, and default search do not require source repository writes, model
 APIs, API keys, or remote accounts. Without semantic opt-in they do not download
 models or runtime assets; with semantic enabled, installer/runtime acquisition
 and daemon maintenance may acquire the local ONNX Runtime asset and embedding
-model when the installed build supports that path. Setup and native provider
-setup may opportunistically start the default-on ctx-owned background daemon
-maintenance profile when `[daemon].enabled` is true, regardless of output
-format. Explicit custom JSONL and history-source imports may start the required
-source-refresh endpoint even for machine-readable output. Use
-`ctx setup --no-daemon` or `ctx import --no-daemon` for a one-run opt-out; an
-explicit provider-source import with that opt-out requires an existing endpoint.
+model when the installed build supports that path. In automatic indexing mode,
+setup and import may start the persistent ctx-owned daemon regardless of output
+format. In manual mode, setup starts no worker; explicit imports may start only
+a finite Core worker using the same source-refresh endpoint and publication
+engine. Use `ctx setup --no-daemon` or `ctx import --no-daemon` for a one-run
+opt-out; an explicit provider-source import with that opt-out requires an
+existing endpoint.
 The deprecated `ctx setup --catalog-only` flag is ignored and does not change
 daemon-autostart behavior.
 `ctx search --refresh off` does not refresh providers, run plugins, autostart
@@ -326,33 +332,46 @@ the semantic generation when it already exists; this does not create semantic
 storage, initialize the model, or embed text.
 Explicit semantic search also refuses to initialize or download the embedding
 model when the required local cache is missing; hybrid falls back to lexical in
-that case. Default `--refresh background` lets daemon maintenance own native
-provider refresh and may autostart the configured daemon query service for
-semantic/hybrid retrieval. History-source plugins are refreshed only by an
-explicit selected-plugin import in 1.0.
+that case. In automatic mode, default `--refresh background` lets persistent
+daemon maintenance own native provider refresh and may autostart the configured
+daemon query service for semantic/hybrid retrieval. In manual mode, background
+refresh serves the last published generation without starting or waking a
+process. Explicit `--refresh wait` may start a finite Core worker, but that
+worker never starts semantic services or catch-up. History-source plugins are
+refreshed only by an explicit selected-plugin import in 1.0.
 
-When `ctx daemon run` or setup/import autostart runs the ctx-owned background
+When automatic setup/import autostart or `ctx daemon run` starts the persistent
 coordinator, it stores private lock/status files under `daemon/` in the ctx data
-root. Setup/import autostart normally uses the persistent background daemon
-profile; explicit `ctx daemon run` runs the same coordinator in the foreground.
-The coordinator always bounds native provider-history refresh
-and local semantic indexing by its local runtime/model availability. Foreground
-query activity preempts background work.
+root. Explicit `ctx daemon run` runs the same persistent coordinator in the
+foreground; `--force` is required to override manual indexing. The coordinator
+always bounds native provider-history refresh and local semantic indexing by
+its local runtime/model availability. Foreground query activity preempts
+background work.
+
+Manual explicit import and search `--refresh wait` instead start the same Core
+refresh engine in a finite worker. The finite profile does not install native
+or detached supervision and does not run watcher, timer, semantic, scheduled
+reconciliation, or upgrade maintenance. It waits for at least one admitted Core
+request and exits only after all Core requests are terminal and its IPC endpoint
+is quiescent. Post-ack observation recovery may start another finite worker to
+observe or complete the authoritative request.
+
 A hosted managed install probes systemd-user, the launchd GUI user domain, or
 current-user Task Scheduler before changing native registration state. When
-that manager is unavailable, setup/import runs this same coordinator as a
-persistent detached process, preserves any unverified native artifact for a
-later retry, and reports that native automatic restart after failure, login, or
-reboot is unavailable. The next eligible ctx command self-heals an absent
-process. This fallback does not create a second importer or index writer.
+that manager is unavailable, automatic setup/import runs this same coordinator
+as a persistent detached process, preserves any unverified native artifact for
+a later retry, and reports that native automatic restart after failure, login,
+or reboot is unavailable. The next eligible automatic ctx command self-heals
+an absent process. This fallback does not create a second importer or index
+writer.
 Native ownership, identity, integrity, fencing, and security failures still
 fail closed.
 A looping daemon may keep the
 local embedding model resident between passes and uses semantic projection state
-to prioritize recent/stale events. Default background refresh may start the
-configured daemon for local history freshness. With semantic enabled, the same
-daemon-owned query service can embed the query; `ctx search --refresh off` does
-not start it.
+to prioritize recent/stale events. Automatic background refresh may start the
+configured persistent daemon for local history freshness. With semantic
+enabled, the same daemon-owned query service can embed the query;
+`ctx search --refresh off` and manual background refresh do not start it.
 
 ## Config Overrides
 
@@ -390,20 +409,27 @@ Qualification on every supported filesystem/platform remains release evidence;
 the repository tests do not claim that cross-platform qualification has already
 been completed.
 
-Daemon maintenance is enabled by default. Disable it durably with:
+Indexing is automatic by default. Select manual indexing durably with:
 
 ```toml
-[daemon]
-enabled = false
+[indexing]
+mode = "manual"
 ```
 
-`daemon.enabled = true` allows setup and eligible native provider imports to
-opportunistically start the ctx-owned background daemon maintenance profile.
-Setup output format does not change this behavior.
-Use `ctx setup --no-daemon` or `ctx import --no-daemon` for a one-run opt-out.
-`ctx daemon enable` and `ctx daemon disable` write only the `[daemon] enabled`
-override. An explicit disabled override continues to win after CLI upgrades and
-over `CTX_DAEMON_ENABLED=true`.
+Automatic mode allows eligible setup, import, and background search operations
+to start or wake the persistent ctx-owned daemon. Manual mode runs no persistent
+or background daemon: setup and ordinary/background search remain inert, while
+explicit import and search `--refresh wait` may use a finite Core worker.
+`--refresh off` and explicit `--no-daemon` controls never start or wake either
+profile.
+
+`ctx daemon disable` writes `[indexing] mode = "manual"`; `ctx daemon enable`
+writes `"automatic"`. Both remove a legacy `[daemon] enabled` key while
+preserving other daemon settings. Legacy `enabled = true|false` remains accepted
+under `[daemon]` as automatic/manual compatibility input, but the canonical key
+wins if both are present. An explicit manual config continues to win after CLI
+upgrades and over `CTX_DAEMON_ENABLED=true`; `CTX_DAEMON_ENABLED=false` remains
+a process-level manual-mode override.
 
 For a daemon that serves and serializes only atomic Core refreshes,
 set:
@@ -420,6 +446,8 @@ source-refresh-only mode, the source refresh IPC endpoint, all-provider capture
 registry, atomic generation publication, status reporting, disable behavior,
 and persistent process lifecycle remain active. History refresh, semantic
 indexing and serving, canonical maintenance, and automatic upgrades do not run.
+Manual finite workers always enforce the Core-only exclusions independently of
+this persistent-daemon setting.
 
 Local semantic search requires daemon maintenance and remains disabled by
 default. Its opt-in is:
@@ -429,12 +457,12 @@ default. Its opt-in is:
 semantic = true
 ```
 
-If daemon maintenance was previously disabled, re-enable it before enabling
-semantic search.
+If manual indexing was previously selected, run `ctx daemon enable` before
+enabling semantic search.
 
-The enabled daemon is the sole automatic-upgrade authority and uses
-`upgrade.auto = "apply"` by default for official installer-managed binaries
-with a valid install sidecar. With the daemon disabled, no automatic upgrade
+The persistent daemon in automatic mode is the sole automatic-upgrade authority
+and uses `upgrade.auto = "apply"` by default for official installer-managed
+binaries with a valid install sidecar. In manual mode, no automatic upgrade
 network or filesystem work occurs. `ctx upgrade disable` writes an explicit
 `upgrade.auto = "off"` opt-out. Unmanaged installs do not self-upgrade.
 
@@ -582,12 +610,13 @@ their own configuration; ctx indexing those transcripts does not repeat that
 behavior.
 
 Official installer-managed binaries can contact the signed release metadata
-endpoint for an explicit `ctx upgrade` command. When the daemon and automatic
-upgrades are enabled, the daemon alone performs cadenced automatic checks and
-application. Foreground commands, including machine-readable commands and MCP,
-never schedule this work. A disabled daemon, unmanaged install, or
-process-level `CTX_UPGRADE_AUTO=off` opt-out performs no automatic upgrade
-network or filesystem work. Upgrade metadata checks do not send provider
+endpoint for an explicit `ctx upgrade` command. When automatic indexing and
+automatic upgrades are enabled, the persistent daemon alone performs cadenced
+automatic checks and application. Foreground commands, including
+machine-readable commands and MCP, and finite Core workers never schedule this
+work. Manual indexing, an unmanaged install, or a process-level
+`CTX_UPGRADE_AUTO=off` opt-out performs no automatic upgrade network or
+filesystem work. Upgrade metadata checks do not send provider
 transcript text, search queries, result snippets, source paths, repository
 names, or command output.
 

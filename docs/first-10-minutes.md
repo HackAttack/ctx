@@ -116,9 +116,11 @@ ctx search "build failure" --term checksum --term release --limit 5
 ```
 
 `--limit` is capped at `200`. Search defaults to `--refresh background`, which
-serves the active Core generation while daemon maintenance requests a Core
-refresh and semantic catch-up when enabled; use `--refresh off` for a read-only
-query of the active Core generation.
+serves the active Core generation while automatic indexing requests persistent
+daemon refresh and semantic catch-up when enabled. Manual indexing serves only
+the last published generation in background mode. Use `--refresh wait` for an
+authoritative Core refresh or `--refresh off` for a query that never starts or
+wakes a process.
 
 Inside Codex, ctx excludes the active session tree by default when it can
 identify it, so your current prompt and subagents do not dominate results. Add

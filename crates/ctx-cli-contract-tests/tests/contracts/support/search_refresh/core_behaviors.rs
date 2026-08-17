@@ -505,7 +505,9 @@ fn live_daemon_prepare_uninstall_disables_stops_and_removes_coordination() {
     daemon.child = None;
     let data_root = search_refresh_data_root(&temp);
     let config = fs::read_to_string(data_root.join("config.toml")).unwrap();
-    assert!(config.contains("enabled = false"), "{config}");
+    assert!(config.contains("[indexing]"), "{config}");
+    assert!(config.contains("mode = \"manual\""), "{config}");
+    assert!(!config.contains("[daemon]\nenabled"), "{config}");
     for relative in [
         "daemon/daemon.lock",
         "daemon/daemon.guard",
@@ -541,7 +543,9 @@ fn interrupted_prepare_uninstall_is_retry_safe() {
     let config_after_interrupt =
         fs::read_to_string(search_refresh_data_root(&temp).join("config.toml")).unwrap();
     assert!(
-        config_after_interrupt.contains("enabled = false"),
+        config_after_interrupt.contains("[indexing]")
+            && config_after_interrupt.contains("mode = \"manual\"")
+            && !config_after_interrupt.contains("[daemon]\nenabled"),
         "{config_after_interrupt}"
     );
 

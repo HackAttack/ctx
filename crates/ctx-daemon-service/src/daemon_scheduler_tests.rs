@@ -51,6 +51,7 @@ fn daemon_args() -> DaemonRunArgs {
         max_chunks: None,
         handle_process_signals: false,
         force: false,
+        profile: crate::DaemonRunProfile::Persistent,
         start_mode: None,
         trigger_command: None,
         supervisor: crate::DaemonSupervisor::User,
@@ -504,6 +505,46 @@ fn healthy_idle_scheduler_performs_zero_source_refresh_scans() {
 }
 
 #[test]
+fn finite_core_worker_never_turns_dirty_routes_into_background_work() {
+    let temp = tempfile::tempdir().unwrap();
+    let calls = Arc::new(AtomicUsize::new(0));
+    let executor_calls = Arc::clone(&calls);
+    let coordinator =
+        CoreRefreshEngine::with_executor(Arc::new(move |_: SourceBackedRefreshExecution<'_>| {
+            executor_calls.fetch_add(1, Ordering::SeqCst);
+            Err(anyhow::anyhow!(
+                "finite worker must not run dirty-route work"
+            ))
+        }));
+    let route = SourceRouteIdentity::from_sha256("91".repeat(32)).unwrap();
+    coordinator.initialize_watch_route_authority(BTreeSet::from([route.clone()]));
+    coordinator.schedule_startup_route_reconciliation(
+        BTreeSet::from([route]),
+        EventWatermark::new(1, 0),
+        super::source_route_ledger_now_ms().saturating_sub(1_000),
+    );
+    let mut args = daemon_args();
+    args.profile = crate::DaemonRunProfile::FiniteCoreWorker;
+    let mut runtime = DaemonRuntime::default();
+
+    let idle = run_daemon_scheduler_cycle_with_activity(
+        &args,
+        temp.path(),
+        &mut runtime,
+        None,
+        false,
+        None,
+        Some(&coordinator),
+    )
+    .unwrap();
+
+    assert!(!idle.did_work);
+    assert!(!idle.failed);
+    assert_eq!(calls.load(Ordering::SeqCst), 0);
+    assert!(!coordinator.has_pending_request());
+}
+
+#[test]
 fn startup_seeded_manual_all_successor_reuses_exhaustively_reconciled_routes() {
     let temp = tempfile::tempdir().unwrap();
     let data_root = temp.path().join("data");
@@ -904,6 +945,7 @@ fn source_refresh_only_tick_creates_no_consumer_catch_up_status() {
         max_chunks: None,
         handle_process_signals: false,
         force: false,
+        profile: crate::DaemonRunProfile::Persistent,
         start_mode: None,
         trigger_command: None,
         supervisor: crate::DaemonSupervisor::User,

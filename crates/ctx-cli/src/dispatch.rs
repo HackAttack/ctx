@@ -366,7 +366,7 @@ pub(crate) fn run_cli() -> Result<()> {
                 .expect("search has a telemetry draft")
                 .search_mut(),
             ctx_history_cli::HistoryCliConfig {
-                daemon_enabled: config.daemon.enabled,
+                daemon_enabled: config.automatic_indexing_enabled(),
                 semantic_search_enabled: config.semantic_search_enabled(),
                 local_usage_enabled: config.local_usage.enabled,
             },

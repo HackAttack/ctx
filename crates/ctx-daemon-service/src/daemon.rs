@@ -1,6 +1,9 @@
 use std::{
     path::Path,
-    sync::Arc,
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc,
+    },
     time::{Duration as StdDuration, Instant},
 };
 
@@ -20,8 +23,8 @@ use crate::{
     },
     config::{AppConfig, DaemonMode},
     CoreGenerationPublishedPort, DaemonAvailabilityPort, DaemonConfigPort, DaemonInstallationLease,
-    DaemonInstallationPort, DaemonObservationPort, DaemonRunArgs, DaemonServicePorts,
-    DaemonStartModeArg, DaemonTriggerCommandArg, DaemonUpgradePorts,
+    DaemonInstallationPort, DaemonObservationPort, DaemonRunArgs, DaemonRunProfile,
+    DaemonServicePorts, DaemonStartModeArg, DaemonTriggerCommandArg, DaemonUpgradePorts,
 };
 
 use super::source_backed_refresh_coordinator::CoreRefreshEngine;
@@ -266,7 +269,7 @@ fn publish_daemon_fatal_status_while_owned(
 fn run_daemon_inner<I, N, D, AP, UO>(
     args: DaemonRunArgs,
     data_root: &Path,
-    config: AppConfig,
+    mut config: AppConfig,
     ports: &DaemonServicePorts<
         'static,
         dyn DaemonConfigPort,
@@ -284,7 +287,12 @@ where
     AP: ctx_upgrade_engine::AutomaticUpgradePolicyProvider<Snapshot = AppConfig>,
     UO: ctx_upgrade_engine::UpgradeObserver<AppConfig>,
 {
-    if !config.daemon.enabled && !args.force {
+    let finite_core_worker = args.profile == DaemonRunProfile::FiniteCoreWorker;
+    if finite_core_worker {
+        config.daemon.mode = DaemonMode::SourceRefreshOnly;
+        config.semantic_enabled = false;
+    }
+    if !config.daemon.enabled && !args.force && !finite_core_worker {
         return Ok(());
     }
     if ports
@@ -333,29 +341,40 @@ where
     let upgrade_restart_trigger = args
         .trigger_command
         .unwrap_or(DaemonTriggerCommandArg::Search);
-    let installation_daemon_lease = match ports.installation.acquire(
-        data_root,
-        upgrade_restart_trigger,
-        args.loop_interval_seconds,
-        ports
-            .installation
-            .current_process_owns_upgrade_handoff(data_root),
-    ) {
-        Ok(Some(lease)) => lease,
-        Ok(None) => {
-            drop(lock);
-            return Ok(());
-        }
-        Err(error) => {
-            publish_daemon_fatal_status_while_owned(&lock, data_root, &args, started_at_ms, &error);
-            drop(lock);
-            return Err(error);
+    let installation_daemon_lease = if finite_core_worker {
+        None
+    } else {
+        match ports.installation.acquire(
+            data_root,
+            upgrade_restart_trigger,
+            args.loop_interval_seconds,
+            ports
+                .installation
+                .current_process_owns_upgrade_handoff(data_root),
+        ) {
+            Ok(Some(lease)) => Some(lease),
+            Ok(None) => {
+                drop(lock);
+                return Ok(());
+            }
+            Err(error) => {
+                publish_daemon_fatal_status_while_owned(
+                    &lock,
+                    data_root,
+                    &args,
+                    started_at_ms,
+                    &error,
+                );
+                drop(lock);
+                return Err(error);
+            }
         }
     };
     let mut prepared_auto_upgrade = None;
     let mut auto_upgrade_handoff = None;
     let wakeup = Arc::new(DaemonWakeup::default());
     let lifecycle_state = Arc::new(DaemonLifecycleState::starting());
+    let finite_core_worker_admitted = Arc::new(AtomicBool::new(false));
     if args.handle_process_signals {
         install_daemon_process_signal_handler(Arc::clone(&wakeup), Arc::clone(&lifecycle_state))?;
     }
@@ -379,7 +398,9 @@ where
             false,
             &config_reload.to_json(),
         )?;
-        if !runtime.config.daemon.mode.runs_only_source_refresh() {
+        if finite_core_worker {
+            restore_daemon_source_refresh_retry(&mut runtime, data_root);
+        } else if !runtime.config.daemon.mode.runs_only_source_refresh() {
             restore_daemon_source_refresh_retry(&mut runtime, data_root);
             restore_daemon_consumer_retries(&mut runtime, data_root);
         }
@@ -395,17 +416,21 @@ where
                 query_service: &mut query_service,
                 refresh_service: &mut refresh_service,
                 state: &mut config_reload,
+                finite_core_worker_admitted: finite_core_worker
+                    .then_some(&finite_core_worker_admitted),
             },
             &wakeup,
             &lifecycle_state,
             ports.config,
         ) == DaemonConfigReloadOutcome::StopDisabled;
-        install_source_watch_ingress(
-            &wakeup,
-            refresh_service
-                .as_ref()
-                .and(runtime.source_refresh_coordinator.as_ref()),
-        );
+        if !finite_core_worker {
+            install_source_watch_ingress(
+                &wakeup,
+                refresh_service
+                    .as_ref()
+                    .and(runtime.source_refresh_coordinator.as_ref()),
+            );
+        }
         if config_reload.status == "activation_failed" {
             let activation_error = config_reload
                 .last_error
@@ -428,7 +453,7 @@ where
         ensure_daemon_ipc_services_healthy(query_service.as_ref(), refresh_service.as_ref())?;
         #[cfg(any(test, feature = "test-support"))]
         fail_daemon_before_ready_for_test(data_root)?;
-        if !runtime.config.daemon.mode.runs_only_source_refresh() {
+        if !finite_core_worker && !runtime.config.daemon.mode.runs_only_source_refresh() {
             ports.installation.resume_completed(data_root)?;
         }
         write_daemon_lifecycle_status_with_runtime(
@@ -441,31 +466,39 @@ where
             daemon_semantic_runtime_active(&runtime, query_service.as_ref()),
             &config_reload.to_json(),
         )?;
-        let mut watch_runtime = DaemonWatchRuntime::new(Arc::clone(&wakeup), ports.config);
-        watch_runtime.reconcile_catalog_and_route_authority(
-            data_root,
-            refresh_service
-                .as_ref()
-                .and(runtime.source_refresh_coordinator.as_deref()),
-            WatchCatalogReconcileTrigger::Startup,
-            false,
-        );
-        if let (Some(source_refresh), Some(catalog)) = (
-            refresh_service
-                .as_ref()
-                .and(runtime.source_refresh_coordinator.as_deref()),
-            watch_runtime.catalog.snapshot(),
-        ) {
-            source_refresh.enqueue_overdue_hermes_exact_reconciliation(
+        let mut watch_runtime = (!finite_core_worker)
+            .then(|| DaemonWatchRuntime::new(Arc::clone(&wakeup), ports.config));
+        if let Some(watch_runtime) = watch_runtime.as_mut() {
+            watch_runtime.reconcile_catalog_and_route_authority(
                 data_root,
-                &catalog,
-                source_route_ledger_now_ms(),
-            )?;
+                refresh_service
+                    .as_ref()
+                    .and(runtime.source_refresh_coordinator.as_deref()),
+                WatchCatalogReconcileTrigger::Startup,
+                false,
+            );
+            if let (Some(source_refresh), Some(catalog)) = (
+                refresh_service
+                    .as_ref()
+                    .and(runtime.source_refresh_coordinator.as_deref()),
+                watch_runtime.catalog.snapshot(),
+            ) {
+                source_refresh.enqueue_overdue_hermes_exact_reconciliation(
+                    data_root,
+                    &catalog,
+                    source_route_ledger_now_ms(),
+                )?;
+            }
         }
         // Linearize the final handoff check, Ready publication, and restart
         // acknowledgement with every writer of durable handoff intent.
         let lifecycle_ready = !stop_disabled
-            && publish_lifecycle_ready(data_root, &lifecycle_state, ports.installation)?;
+            && publish_lifecycle_ready(
+                data_root,
+                &lifecycle_state,
+                ports.installation,
+                !finite_core_worker,
+            )?;
         if lifecycle_ready {
             ctx_daemon_runtime::block_daemon_main_after_ready_for_test(data_root)?;
         }
@@ -473,6 +506,7 @@ where
         // after readiness; later ticks only revisit installation-scoped
         // cadence/backoff or reconcile a completed helper.
         if lifecycle_ready
+            && !finite_core_worker
             && daemon_should_schedule_auto_upgrade(
                 runtime.config.daemon.enabled,
                 runtime.config.daemon.mode,
@@ -517,6 +551,8 @@ where
                     query_service: &mut query_service,
                     refresh_service: &mut refresh_service,
                     state: &mut config_reload,
+                    finite_core_worker_admitted: finite_core_worker
+                        .then_some(&finite_core_worker_admitted),
                 },
                 &wakeup,
                 &lifecycle_state,
@@ -536,12 +572,14 @@ where
                 break;
             }
             ensure_daemon_ipc_services_healthy(query_service.as_ref(), refresh_service.as_ref())?;
-            install_source_watch_ingress(
-                &wakeup,
-                refresh_service
-                    .as_ref()
-                    .and(source_refresh_coordinator.as_ref()),
-            );
+            if !finite_core_worker {
+                install_source_watch_ingress(
+                    &wakeup,
+                    refresh_service
+                        .as_ref()
+                        .and(source_refresh_coordinator.as_ref()),
+                );
+            }
             if runtime.config.daemon.mode.runs_only_source_refresh() {
                 // A live mode change must not carry a previously prepared
                 // automatic upgrade into the source-refresh-only profile.
@@ -549,11 +587,13 @@ where
                 // future full-mode daemon without applying it here.
                 prepared_auto_upgrade = None;
             }
-            if let Some(source_refresh) = refresh_service
-                .as_ref()
-                .and(daemon_scheduler_source_refresh(&source_refresh_coordinator))
-                .filter(|refresh| !refresh.watch_routes_initialized())
-            {
+            if let (Some(watch_runtime), Some(source_refresh)) = (
+                watch_runtime.as_mut(),
+                refresh_service
+                    .as_ref()
+                    .and(daemon_scheduler_source_refresh(&source_refresh_coordinator))
+                    .filter(|refresh| !refresh.watch_routes_initialized()),
+            ) {
                 watch_runtime.reconcile_catalog_and_route_authority(
                     data_root,
                     Some(source_refresh),
@@ -571,7 +611,8 @@ where
                 daemon_semantic_runtime_active(&runtime, query_service.as_ref()),
                 &config_reload.to_json(),
             )?;
-            if prepared_auto_upgrade.is_none()
+            if !finite_core_worker
+                && prepared_auto_upgrade.is_none()
                 && daemon_should_schedule_auto_upgrade(
                     runtime.config.daemon.enabled,
                     runtime.config.daemon.mode,
@@ -587,7 +628,8 @@ where
                     )
                     .unwrap_or(None);
             }
-            if prepared_auto_upgrade.is_none()
+            if !finite_core_worker
+                && prepared_auto_upgrade.is_none()
                 && !runtime.config.daemon.mode.runs_only_source_refresh()
             {
                 ports.installation.resume_completed(data_root)?;
@@ -648,6 +690,36 @@ where
                 &config_reload.to_json(),
             )?;
             failed |= iteration.failed;
+            if finite_core_worker {
+                let pending_core_refresh = source_refresh
+                    .is_some_and(|source_refresh| source_refresh.has_pending_request());
+                if finite_core_worker_admitted.load(Ordering::Acquire)
+                    && !pending_core_refresh
+                    && refresh_service
+                        .as_ref()
+                        .is_some_and(|service| service.activity.begin_stopping_if_idle())
+                {
+                    break;
+                }
+                if continue_immediately || (pending_core_refresh && runtime.history_retry.ready()) {
+                    continue;
+                }
+                let wake = if pending_core_refresh {
+                    runtime.history_retry.retry_after_ms().map_or_else(
+                        || wakeup.wait_for_signal(),
+                        |retry_after_ms| wakeup.wait(StdDuration::from_millis(retry_after_ms)),
+                    )
+                } else {
+                    wakeup.wait_for_signal()
+                };
+                if wake.shutdown {
+                    break;
+                }
+                if wake.timed_out {
+                    wakeup.record_scheduled_retry_wakeup();
+                }
+                continue;
+            }
             if continue_immediately {
                 continue;
             }
@@ -683,6 +755,9 @@ where
             let source_retry_due = retry_wakeup_due
                 && runtime.history_retry.consecutive_failures > 0
                 && runtime.history_retry.ready();
+            let watch_runtime = watch_runtime
+                .as_mut()
+                .expect("persistent daemon owns watch runtime");
             if safety_due {
                 next_safety_reconcile = Instant::now() + safety_interval;
                 watch_runtime.reconcile_catalog_and_route_authority(
@@ -808,17 +883,19 @@ where
         }
     };
     let owned_shutdown_result = (|| -> Result<()> {
-        let active_installation_attempt =
-            ctx_upgrade_engine::active_installation_upgrade_attempt_id()?;
-        let upgrade_attempt_id = prepared_auto_upgrade
-            .as_ref()
-            .and_then(PreparedDaemonUpgrade::attempt_id)
-            .map(str::to_owned)
-            .or(active_installation_attempt);
-        if let Some(attempt_id) = upgrade_attempt_id.as_deref() {
-            installation_daemon_lease.acknowledge(attempt_id)?;
-        } else {
-            drop(installation_daemon_lease);
+        if let Some(installation_daemon_lease) = installation_daemon_lease {
+            let active_installation_attempt =
+                ctx_upgrade_engine::active_installation_upgrade_attempt_id()?;
+            let upgrade_attempt_id = prepared_auto_upgrade
+                .as_ref()
+                .and_then(PreparedDaemonUpgrade::attempt_id)
+                .map(str::to_owned)
+                .or(active_installation_attempt);
+            if let Some(attempt_id) = upgrade_attempt_id.as_deref() {
+                installation_daemon_lease.acknowledge(attempt_id)?;
+            } else {
+                drop(installation_daemon_lease);
+            }
         }
         Ok(())
     })();
@@ -848,12 +925,15 @@ fn publish_lifecycle_ready<I: DaemonInstallationPort>(
     data_root: &Path,
     lifecycle: &DaemonLifecycleState,
     installation: &I,
+    acknowledge_restart_requests: bool,
 ) -> Result<bool> {
     let _transition = ctx_daemon_runtime::DaemonLifecycleTransitionLock::acquire(data_root)?;
     if installation.upgrade_handoff_blocks_current_process(data_root) || !lifecycle.mark_ready() {
         return Ok(false);
     }
-    installation.acknowledge_restart_requests(data_root);
+    if acknowledge_restart_requests {
+        installation.acknowledge_restart_requests(data_root);
+    }
     Ok(true)
 }
 

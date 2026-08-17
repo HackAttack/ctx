@@ -28,6 +28,9 @@ pub fn maybe_autostart_daemon(
     config: &AppConfig<'_>,
     trigger: DaemonTriggerCommandArg,
 ) {
+    if !config.daemon.enabled {
+        return;
+    }
     super::super::daemon_supervisor::with_daemon_application(|application| {
         if application.daemon_start_is_fenced() {
             return;
@@ -45,6 +48,37 @@ pub fn maybe_autostart_daemon(
             application_trigger(trigger),
         );
     });
+}
+
+pub fn start_finite_core_worker_and_wait(
+    data_root: &Path,
+    config: &AppConfig<'_>,
+    trigger: DaemonTriggerCommandArg,
+) -> Result<DaemonHandoff> {
+    super::super::daemon_supervisor::with_daemon_application(|application| {
+        let mut effective = application_config(config);
+        effective.enabled = false;
+        effective.mode = ctx_daemon_application::DaemonMode::SourceRefreshOnly;
+        effective.semantic_enabled = false;
+        let handoff = application
+            .start_finite_core_worker_and_wait(data_root, &effective, application_trigger(trigger))
+            .map_err(|error| match error {
+                ctx_daemon_application::DaemonStartError::Suppressed(reason) => anyhow!(
+                    "ctx finite Core worker start was suppressed ({reason}); retry after it clears"
+                ),
+                ctx_daemon_application::DaemonStartError::BinaryIdentity(error) => error,
+                ctx_daemon_application::DaemonStartError::Start(error) => {
+                    anyhow!("ctx finite Core worker did not start: {error:#}")
+                }
+                ctx_daemon_application::DaemonStartError::Ready(error) => {
+                    anyhow!("ctx finite Core worker did not become ready: {error}")
+                }
+            })?;
+        Ok(DaemonHandoff {
+            pid: handoff.pid,
+            heartbeat_at_ms: handoff.heartbeat_at_ms,
+        })
+    })
 }
 
 pub fn autostart_daemon_and_wait(

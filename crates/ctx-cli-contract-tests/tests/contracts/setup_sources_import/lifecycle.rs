@@ -278,7 +278,7 @@ fn setup_semantic_rejects_disabled_daemon_without_mutating_source_epoch() {
     let temp = tempdir();
     let config_path = data_root(&temp).join("config.toml");
     fs::create_dir_all(data_root(&temp)).unwrap();
-    let original = "[daemon]\nenabled = false\n";
+    let original = "[indexing]\nmode = \"manual\"\n";
     fs::write(&config_path, original).unwrap();
 
     let stderr = failure_stderr(ctx(&temp).args([
@@ -288,7 +288,7 @@ fn setup_semantic_rejects_disabled_daemon_without_mutating_source_epoch() {
         "--progress",
         "none",
     ]));
-    assert!(stderr.contains("requires daemon maintenance"), "{stderr}");
+    assert!(stderr.contains("requires automatic indexing"), "{stderr}");
     assert_eq!(fs::read_to_string(config_path).unwrap(), original);
     assert!(!data_root(&temp).join("search").exists());
     assert!(!data_root(&temp).join("relational.sqlite").exists());
@@ -304,7 +304,7 @@ fn setup_semantic_rejects_disabled_daemon_without_mutating_source_epoch() {
         "--progress",
         "none",
     ]));
-    assert!(stderr.contains("requires daemon maintenance"), "{stderr}");
+    assert!(stderr.contains("requires automatic indexing"), "{stderr}");
     assert!(!data_root(&explicit_opt_out).join("config.toml").exists());
     assert!(!data_root(&explicit_opt_out).join("search").exists());
     assert!(!data_root(&explicit_opt_out)

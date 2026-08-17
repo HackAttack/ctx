@@ -32,7 +32,7 @@ pub(crate) fn run_import(
     }
     let request = import_request(&args);
     provider_refreshes.start_timing();
-    let mut host = CliImportHost::new(config);
+    let mut host = CliImportHost::new();
     let config_snapshot = crate::history_config::CliHistoryConfigSnapshot::new(config);
     let report = ctx_history_cli::run_import_application(
         request,

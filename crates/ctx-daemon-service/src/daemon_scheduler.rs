@@ -95,6 +95,20 @@ where
     } = ports;
     let source_refresh_requested =
         source_refresh.is_some_and(CoreRefreshEngine::has_pending_request);
+    if args.profile == crate::DaemonRunProfile::FiniteCoreWorker {
+        runtime.consumer_retry_deferral.reset();
+        if source_refresh_requested && !runtime.history_retry.ready() {
+            return Ok(deferred_pending_core_refresh(data_root, runtime));
+        }
+        return Ok(run_pending_core_refresh(
+            data_root,
+            runtime,
+            source_refresh,
+            generation_published,
+            observation,
+        )?
+        .unwrap_or_else(|| DaemonIteration::new(false, false, DaemonCycleStateV1::unknown())));
+    }
     if runtime.config.daemon.mode.runs_only_source_refresh() {
         runtime.consumer_retry_deferral.reset();
         if let Some(activity) = query_activity {

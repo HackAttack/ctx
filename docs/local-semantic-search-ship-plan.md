@@ -15,11 +15,12 @@ and private relevance evals justify flipping the default.
   cross-device continuity, shared/team memory, admin controls, policy,
   compliance, hosted acceleration, and LLM summaries. The free local CLI should
   stay useful enough to create trust.
-- Daemon maintenance is enabled by default. Users can opt out durably with:
+- Automatic indexing and persistent daemon maintenance are the default. Users
+  can select manual indexing durably with:
 
   ```toml
-  [daemon]
-  enabled = false
+  [indexing]
+  mode = "manual"
   ```
 
 - Semantic remains disabled by default and requires the daemon. The supported
@@ -31,9 +32,10 @@ and private relevance evals justify flipping the default.
   semantic = true
   ```
 
-- `CTX_DAEMON_ENABLED=1` and `CTX_SEARCH_SEMANTIC=1` are available as
-  operator/test overrides. Explicit daemon opt-outs, `CTX_DAEMON_ENABLED=false`,
-  and `CTX_SEARCH_SEMANTIC=false` force their feature off.
+- `CTX_DAEMON_ENABLED=1` and `CTX_SEARCH_SEMANTIC=1` remain available as
+  operator/test overrides. Explicit manual config, daemon opt-outs,
+  `CTX_DAEMON_ENABLED=false`, and `CTX_SEARCH_SEMANTIC=false` force their
+  feature off.
 - Daemon without semantic is valid and useful: it owns lexical incremental
   refresh and can later own additional local query-service work. The semantic
   query-embedding socket is created only when semantic is enabled. Semantic
@@ -42,12 +44,13 @@ and private relevance evals justify flipping the default.
   disabled and hybrid when semantic is enabled. Explicit `--backend lexical`
   remains available.
 - There is no product `max-runtime-seconds` option. Tests and dogfood can wrap
-  foreground daemon commands in process-level timeouts; the product daemon runs
-  until failure or normal service shutdown.
+  foreground daemon commands in process-level timeouts. The persistent daemon
+  runs until failure or normal service shutdown; the internal finite Core
+  worker exits from admitted-work and IPC quiescence, not a user timer.
 - `ctx setup`, `ctx import`, and `ctx search` should not write `config.toml` for
   implicit defaults. The config file is user-managed override surface.
 - `ctx setup` should be repeatable. If an existing user later enables
-  `[daemon] enabled = true` and `[search] semantic = true` and reruns setup,
+  `[indexing] mode = "automatic"` and `[search] semantic = true` and reruns setup,
   setup should leave existing data intact, start daemon-owned indexing when
   possible, and let the daemon acquire the local embedding model and build
   missing semantic sidecars.
@@ -77,16 +80,17 @@ and private relevance evals justify flipping the default.
   `intfloat/multilingual-e5-small`. Query and passage role prefixes are applied
   exactly once, and the new model key prevents pre-migration vectors from being
   counted as E5 sidecar coverage.
-- Config now has `[daemon] enabled = true|false` and
-  `[search] semantic = true|false`. An unset daemon defaults on, while unset
-  semantic search defaults off; both have env overrides.
+- Config now has `[indexing] mode = "automatic"|"manual"` and
+  `[search] semantic = true|false`. Indexing defaults to automatic, while unset
+  semantic search defaults off; both have env overrides. Legacy
+  `[daemon] enabled = true|false` is compatibility input only.
 - Default search backend resolution is config-aware: lexical by default while
   semantic is off, hybrid by default while semantic is on, and explicit semantic
   fails fast when disabled.
 - Status, doctor, MCP status, and index readiness report `semantic.status =
   disabled` with `reason = semantic_disabled` when semantic is not enabled.
-- Setup refuses the invalid semantic-without-daemon configuration, runs
-  foreground lexical indexing when daemon maintenance is not enabled, reports
+- Setup refuses the invalid semantic-without-automatic-indexing configuration,
+  runs foreground lexical indexing in manual mode without starting a worker, reports
   semantic background estimates only when semantic is enabled, and states that
   the daemon will download the local embedding model if needed.
 - The daemon does not create or mutate semantic sidecars when semantic is
@@ -109,9 +113,10 @@ and private relevance evals justify flipping the default.
   Full vector search can move into the daemon later if command startup,
   flat-F32 scan, or result assembly becomes the dominant latency.
 - Search with semantic enabled and default background refresh attempts to
-  autostart the daemon before hybrid/semantic retrieval. Explicit
-  `--refresh off` does not autostart daemon work; strict semantic fails with an
-  actionable daemon-query-service error when the daemon is not running.
+  autostart the persistent daemon only in automatic indexing mode. Manual
+  background refresh and explicit `--refresh off` do not start daemon work;
+  strict semantic fails with an actionable daemon-query-service error when the
+  daemon is not running.
 - Daemon query socket startup is required when semantic is enabled. If the
   socket cannot bind during initial startup, daemon startup fails visibly. If a
   running semantic-disabled daemon cannot bind while applying a later opt-in,
@@ -124,7 +129,7 @@ and private relevance evals justify flipping the default.
 ## Ship Goals
 
 - `ctx setup` runs foreground lexical indexing by default during prerelease.
-  When daemon maintenance is explicitly enabled, setup can start daemon-owned
+  In automatic indexing mode, setup can start daemon-owned
   lexical indexing and report a truthful, actionable status. When semantic is
   also explicitly enabled, setup queues daemon-owned semantic indexing and model
   acquisition.
@@ -339,13 +344,14 @@ and private relevance evals justify flipping the default.
 
 - Done on this branch:
   - `[search] semantic = true|false`;
-  - `[daemon] enabled = true|false`;
+  - `[indexing] mode = "automatic"|"manual"`;
+  - compatibility parsing for `[daemon] enabled = true|false`;
   - `CTX_SEARCH_SEMANTIC`;
   - `CTX_DAEMON_ENABLED`;
   - default search backend is lexical until semantic is enabled;
-  - daemon maintenance is default on while semantic search remains default off;
+  - automatic indexing is the default while semantic search remains default off;
   - setup/import/search do not write default values to `config.toml`;
-  - no public `auto` mode.
+  - no public `auto` retrieval mode.
 - Remaining product work:
   - decide whether cloud-randomized feature flags should live outside this CLI
     config path. The local CLI should continue to honor explicit TOML/env

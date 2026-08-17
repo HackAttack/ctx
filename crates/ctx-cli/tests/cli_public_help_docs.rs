@@ -648,7 +648,7 @@ fn daemon_help_exposes_readable_status_and_run_controls() {
             vec![
                 "Usage: ctx daemon enable",
                 "--format <FORMAT>",
-                "Enable ctx daemon maintenance",
+                "Use automatic indexing and enable persistent maintenance",
             ],
         ),
         (
@@ -656,7 +656,7 @@ fn daemon_help_exposes_readable_status_and_run_controls() {
             vec![
                 "Usage: ctx daemon disable",
                 "--format <FORMAT>",
-                "Disable ctx daemon maintenance",
+                "Use manual indexing and remove persistent maintenance",
             ],
         ),
     ] {

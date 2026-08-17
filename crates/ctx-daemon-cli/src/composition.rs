@@ -226,6 +226,15 @@ impl DaemonCliHost for TestHost {
             config.daemon.enabled = enabled;
         }
         if let Some(mode) =
+            Self::config_item(&document, "indexing", "mode").and_then(toml_edit::Item::as_str)
+        {
+            config.daemon.enabled = match mode {
+                "automatic" => true,
+                "manual" => false,
+                _ => return Err(anyhow!("unknown indexing mode `{mode}`")),
+            };
+        }
+        if let Some(mode) =
             Self::config_item(&document, "daemon", "mode").and_then(toml_edit::Item::as_str)
         {
             config.daemon.mode = match mode {
@@ -246,15 +255,27 @@ impl DaemonCliHost for TestHost {
     fn set_daemon_enabled(&self, data_root: &Path, enabled: bool) -> Result<()> {
         std::fs::create_dir_all(data_root)?;
         let mut document = self.parsed_config(data_root)?;
-        if document.as_table().get("daemon").is_none() {
-            document.as_table_mut().insert("daemon", toml_edit::table());
+        if document.as_table().get("indexing").is_none() {
+            document
+                .as_table_mut()
+                .insert("indexing", toml_edit::table());
         }
-        let daemon = document
+        let indexing = document
+            .as_table_mut()
+            .get_mut("indexing")
+            .and_then(toml_edit::Item::as_table_mut)
+            .ok_or_else(|| anyhow!("indexing configuration must be a table"))?;
+        indexing.insert(
+            "mode",
+            toml_edit::value(if enabled { "automatic" } else { "manual" }),
+        );
+        if let Some(daemon) = document
             .as_table_mut()
             .get_mut("daemon")
             .and_then(toml_edit::Item::as_table_mut)
-            .ok_or_else(|| anyhow!("daemon configuration must be a table"))?;
-        daemon.insert("enabled", toml_edit::value(enabled));
+        {
+            daemon.remove("enabled");
+        }
         std::fs::write(data_root.join(CONFIG_FILE), document.to_string())?;
         Ok(())
     }

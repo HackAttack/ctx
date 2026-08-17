@@ -20,10 +20,12 @@ ctx locate event <ctx-event-id>
 ```
 
 Normal `ctx search` uses `--refresh background`, which serves the active Core
-generation while default-on daemon maintenance requests a Core refresh.
-Semantic coverage remains disabled unless explicitly enabled.
-Rerun the same search with `--refresh off` when the task requires a strictly
-read-only query over the active Core generation.
+generation while default automatic indexing requests a persistent daemon Core
+refresh. In manual indexing mode it serves only the last published generation
+without starting or waking a worker. Semantic coverage remains disabled unless
+explicitly enabled. Use `--refresh wait` when the task authorizes an
+authoritative refresh, or `--refresh off` when it must never start or wake a
+process.
 
 When one query is not enough, vary the wording, add `--term`, narrow by
 workspace/provider/file/session, or use `--events` and `--include-subagents`.

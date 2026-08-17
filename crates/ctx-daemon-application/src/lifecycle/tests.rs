@@ -166,6 +166,27 @@ fn test_config() -> DaemonConfigSnapshot {
     }
 }
 
+#[test]
+fn finite_core_worker_launch_is_forced_internal_and_has_no_persistent_timer() {
+    let launch = configured_finite_core_worker_command(
+        Path::new("/managed/ctx"),
+        Path::new("/managed/data"),
+        DaemonTrigger::Import,
+    )
+    .unwrap();
+    let args = launch
+        .get_args()
+        .filter_map(OsStr::to_str)
+        .collect::<Vec<_>>();
+
+    assert!(args.contains(&"--finite-core-worker"), "{args:?}");
+    assert!(args.contains(&"--force"), "{args:?}");
+    assert!(!args.contains(&"--loop-interval-seconds"), "{args:?}");
+    assert!(launch.get_envs().any(|(key, value)| {
+        key == OsStr::new(DAEMON_BACKGROUND_CHILD_ENV) && value == Some(OsStr::new("1"))
+    }));
+}
+
 fn test_daemon_owner(owner_id: &str, pid: u32) -> DaemonOwnerIdentity {
     DaemonOwnerIdentity {
         owner_id: owner_id.to_owned(),

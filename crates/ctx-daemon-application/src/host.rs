@@ -14,12 +14,20 @@ pub enum DaemonHostStartMode {
     Auto,
 }
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum DaemonHostRunProfile {
+    #[default]
+    Persistent,
+    FiniteCoreWorker,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct DaemonHostRunRequest {
     pub loop_interval_seconds: Option<u64>,
     pub max_chunks: Option<usize>,
     pub handle_process_signals: bool,
     pub force: bool,
+    pub profile: DaemonHostRunProfile,
     pub start_mode: Option<DaemonHostStartMode>,
     pub trigger: Option<crate::DaemonTrigger>,
 }
@@ -76,7 +84,11 @@ fn run_daemon_host_with(
     mut background_child: impl FnMut() -> bool,
     mut run_service: impl FnMut(&Path, DaemonHostRunRequest) -> anyhow::Result<()>,
 ) -> Result<(), DaemonHostRunError> {
-    if (request.start_mode.is_some() || request.trigger.is_some()) && !background_child() {
+    if (request.start_mode.is_some()
+        || request.trigger.is_some()
+        || request.profile == DaemonHostRunProfile::FiniteCoreWorker)
+        && !background_child()
+    {
         return Err(DaemonHostRunError::InternalAutostartMetadata);
     }
     run_service(data_root, request).map_err(DaemonHostRunError::Service)
@@ -141,6 +153,7 @@ mod tests {
             max_chunks: Some(3),
             handle_process_signals: false,
             force: true,
+            profile: DaemonHostRunProfile::Persistent,
             start_mode: None,
             trigger: None,
         }
@@ -269,6 +282,7 @@ mod tests {
             max_chunks: None,
             handle_process_signals: false,
             force: false,
+            profile: DaemonHostRunProfile::Persistent,
             start_mode: Some(DaemonHostStartMode::Auto),
             trigger: Some(crate::DaemonTrigger::Search),
         };

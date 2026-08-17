@@ -15,10 +15,37 @@ use durable_write::write_config_durably;
 
 pub const CONFIG_FILE: &str = "config.toml";
 pub const AUTO_UPGRADE_DEFAULT_MODE: &str = "apply";
-pub const DAEMON_DEFAULT_ENABLED: bool = true;
 pub const DAEMON_MODE_ENV: &str = "CTX_DAEMON_MODE";
 pub const LOCAL_USAGE_DEFAULT_ENABLED: bool = true;
 pub const SEMANTIC_SEARCH_DEFAULT_ENABLED: bool = false;
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum IndexingMode {
+    #[default]
+    Automatic,
+    Manual,
+}
+
+impl IndexingMode {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Automatic => "automatic",
+            Self::Manual => "manual",
+        }
+    }
+
+    pub const fn is_automatic(self) -> bool {
+        matches!(self, Self::Automatic)
+    }
+
+    const fn from_legacy_daemon_enabled(enabled: bool) -> Self {
+        if enabled {
+            Self::Automatic
+        } else {
+            Self::Manual
+        }
+    }
+}
 
 #[derive(Debug, thiserror::Error)]
 #[error("unknown config key `cloud.mode`: cloud history configuration is no longer supported")]
@@ -83,6 +110,7 @@ pub struct AppConfig {
     pub analytics: AnalyticsConfig,
     pub local_usage: LocalUsageConfig,
     pub upgrade: UpgradeConfig,
+    pub indexing: IndexingConfig,
     pub daemon: DaemonConfig,
     pub search: SearchConfig,
 }
@@ -234,8 +262,12 @@ pub struct UpgradeConfig {
 }
 
 #[derive(Debug, Clone)]
+pub struct IndexingConfig {
+    pub mode: IndexingMode,
+}
+
+#[derive(Debug, Clone)]
 pub struct DaemonConfig {
-    pub enabled: bool,
     pub mode: DaemonMode,
 }
 
@@ -262,8 +294,10 @@ impl Default for AppConfig {
                 channel: "stable".to_owned(),
                 interval: Duration::from_secs(24 * 60 * 60),
             },
+            indexing: IndexingConfig {
+                mode: IndexingMode::Automatic,
+            },
             daemon: DaemonConfig {
-                enabled: DAEMON_DEFAULT_ENABLED,
                 mode: DaemonMode::Full,
             },
             search: SearchConfig { semantic: None },
@@ -272,6 +306,10 @@ impl Default for AppConfig {
 }
 
 impl AppConfig {
+    pub const fn automatic_indexing_enabled(&self) -> bool {
+        self.indexing.mode.is_automatic()
+    }
+
     pub fn auto_upgrade_mode(&self) -> AutoUpgradeMode {
         if self.upgrade.auto.eq_ignore_ascii_case("apply") {
             AutoUpgradeMode::Apply
@@ -329,6 +367,8 @@ impl AppConfig {
     }
 
     fn apply_values(&mut self, values: &BTreeMap<String, ConfigValue>) -> Result<()> {
+        let mut legacy_daemon_enabled = None;
+        let mut indexing_mode = None;
         for (key, value) in values {
             match key.as_str() {
                 "analytics.enabled" => {
@@ -351,10 +391,13 @@ impl AppConfig {
                     self.upgrade.interval = Duration::from_secs(hours.saturating_mul(60 * 60));
                 }
                 "daemon.enabled" => {
-                    self.daemon.enabled = parse_config_bool(key, value)?;
+                    legacy_daemon_enabled = Some(parse_config_bool(key, value)?);
                 }
                 "daemon.mode" => {
                     self.daemon.mode = parse_daemon_mode(value)?;
+                }
+                "indexing.mode" => {
+                    indexing_mode = Some(parse_indexing_mode(value)?);
                 }
                 "search.semantic" => {
                     self.search.semantic = Some(parse_config_bool(key, value)?);
@@ -363,6 +406,11 @@ impl AppConfig {
                 _ => bail!("unknown config key `{key}` at line {}", value.line),
             }
         }
+        self.indexing.mode = indexing_mode.unwrap_or_else(|| {
+            legacy_daemon_enabled
+                .map(IndexingMode::from_legacy_daemon_enabled)
+                .unwrap_or(self.indexing.mode)
+        });
         Ok(())
     }
 
@@ -411,17 +459,17 @@ impl AppConfig {
                 self.upgrade.interval = Duration::from_secs(seconds);
             }
         }
-        let daemon_config_disabled = !self.daemon.enabled;
+        let indexing_config_manual = !self.indexing.mode.is_automatic();
         let daemon_enabled_override = env::var("CTX_DAEMON_ENABLED")
             .ok()
             .and_then(|value| parse_bool_value(&value));
-        let daemon_disabled = daemon_config_disabled
+        let daemon_disabled = indexing_config_manual
             || daemon_enabled_override == Some(false)
             || deprecated_controls.disables_daemon();
         if daemon_disabled {
-            self.daemon.enabled = false;
+            self.indexing.mode = IndexingMode::Manual;
         } else if daemon_enabled_override == Some(true) {
-            self.daemon.enabled = true;
+            self.indexing.mode = IndexingMode::Automatic;
         }
         if let Ok(mode) = env::var(DAEMON_MODE_ENV) {
             if !mode.trim().is_empty() {
@@ -477,7 +525,55 @@ pub fn write_default_config(data_root: &Path) -> Result<()> {
 }
 
 pub fn set_daemon_enabled(data_root: &Path, enabled: bool) -> Result<()> {
-    set_config_bool(data_root, "daemon", "enabled", enabled)
+    set_indexing_mode(data_root, IndexingMode::from_legacy_daemon_enabled(enabled))
+}
+
+pub fn set_indexing_mode(data_root: &Path, mode: IndexingMode) -> Result<()> {
+    establish_private_data_root(data_root)?;
+    let path = AppConfig::config_path(data_root);
+    let text = match fs::read_to_string(&path) {
+        Ok(text) => text,
+        Err(err) if err.kind() == io::ErrorKind::NotFound => String::new(),
+        Err(err) => return Err(err).with_context(|| format!("read {}", path.display())),
+    };
+    let parsed = parse_toml_subset(&text).with_context(|| format!("parse {}", path.display()))?;
+    let mut config = AppConfig::default();
+    config
+        .apply_values(&parsed)
+        .with_context(|| format!("load {}", path.display()))?;
+
+    let mut document = text
+        .parse::<toml_edit::DocumentMut>()
+        .with_context(|| format!("parse {}", path.display()))?;
+    if document.as_table().get("indexing").is_none() {
+        document
+            .as_table_mut()
+            .insert("indexing", toml_edit::table());
+    }
+    let indexing = document
+        .as_table_mut()
+        .get_mut("indexing")
+        .and_then(toml_edit::Item::as_table_mut)
+        .ok_or_else(|| anyhow::anyhow!("indexing configuration must be a table"))?;
+    indexing.insert("mode", toml_edit::value(mode.as_str()));
+    if let Some(daemon) = document
+        .as_table_mut()
+        .get_mut("daemon")
+        .and_then(toml_edit::Item::as_table_mut)
+    {
+        daemon.remove("enabled");
+    }
+    let updated = document.to_string();
+    let parsed =
+        parse_toml_subset(&updated).with_context(|| format!("parse updated {}", path.display()))?;
+    let mut config = AppConfig::default();
+    config
+        .apply_values(&parsed)
+        .with_context(|| format!("load updated {}", path.display()))?;
+    if updated != text {
+        write_config_durably(&path, updated.as_bytes())?;
+    }
+    Ok(())
 }
 
 pub fn set_semantic_search_enabled(data_root: &Path, enabled: bool) -> Result<()> {
@@ -926,6 +1022,18 @@ fn parse_upgrade_auto_text(key: &str, value: &str) -> Result<AutoUpgradeMode> {
         "apply" => Ok(AutoUpgradeMode::Apply),
         "off" => Ok(AutoUpgradeMode::Off),
         _ => bail!("{key} must be either \"apply\" or \"off\""),
+    }
+}
+
+fn parse_indexing_mode(value: &ConfigValue) -> Result<IndexingMode> {
+    let mode = parse_non_empty_string("indexing.mode", value)?;
+    match mode.to_ascii_lowercase().as_str() {
+        "automatic" => Ok(IndexingMode::Automatic),
+        "manual" => Ok(IndexingMode::Manual),
+        _ => bail!(
+            "indexing.mode at line {} must be either \"automatic\" or \"manual\"",
+            value.line
+        ),
     }
 }
 

@@ -43,15 +43,24 @@ ctx import --provider codex --path ~/.codex/sessions
 
 ## Search Misses Recent Work
 
-Re-run import:
+In automatic indexing mode, the default background search asks the persistent
+daemon to refresh while serving the latest published generation. In manual
+mode, ordinary search and `--refresh background` intentionally use only that
+published generation and do not start or wake a process.
+
+Request an authoritative refresh explicitly:
 
 ```bash
 ctx import --all
 ctx search "the missing phrase"
+# Or refresh before this search:
+ctx search "the missing phrase" --refresh wait
 ```
 
 Use `ctx import --resume --format json` when you want output to mark the run as an
-idempotent rescan.
+idempotent rescan. In manual mode, explicit import and `--refresh wait` may
+start a finite Core worker and wait for it to publish. `--refresh off` never
+starts or wakes one. Run `ctx daemon enable` to return to automatic indexing.
 
 After upgrading to `0.10.x` or newer, a refresh can take longer once because ctx
 marks older provider import cache rows pending and reimports them to populate
@@ -83,7 +92,7 @@ package-manager installs, and binaries whose SHA-256 no longer matches the
 sidecar are intentionally unmanaged.
 
 Daemon-owned automatic upgrade is on by default for an official
-installer-managed binary while the daemon is enabled. To opt out persistently,
+installer-managed binary in automatic indexing mode. To opt out persistently,
 run:
 
 ```bash
@@ -98,7 +107,8 @@ CTX_UPGRADE_AUTO=off ctx search "query"
 
 The automatic scheduler state is stored beside the managed executable in
 `.ctx.upgrade-state.json`; checks should not write to foreground stdout or
-stderr. With `daemon.enabled = false`, no automatic check occurs.
+stderr. With `[indexing] mode = "manual"`, no automatic check occurs. Finite
+Core workers do not perform upgrade maintenance.
 
 ## Store Problems
 

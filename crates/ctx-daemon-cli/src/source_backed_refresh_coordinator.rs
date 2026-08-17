@@ -72,7 +72,7 @@ mod client_admission_recovery_tests {
     use super::*;
 
     #[test]
-    fn disabled_daemon_post_ack_recovery_preserves_stable_request_identity() {
+    fn manual_mode_declines_background_availability_without_starting_a_worker() {
         let temp = tempfile::tempdir().unwrap();
         let data_root = temp.path().join("data");
         ctx_history_platform::platform_security::establish_private_data_root(&data_root).unwrap();
@@ -81,20 +81,18 @@ mod client_admission_recovery_tests {
             "[daemon]\nenabled = false\n",
         )
         .unwrap();
-        let request_id = "019fcaaa-0000-7000-8000-0000000002b1";
+        let availability = ctx_daemon_service::DaemonAvailabilityPort::ensure_available(
+            &AVAILABILITY,
+            &data_root,
+            ctx_daemon_service::DaemonTrigger::Search,
+            ctx_daemon_service::DaemonAvailabilityDemand::Background,
+        )
+        .unwrap();
 
-        let error = recover_wait_refresh_request_for_test(&AVAILABILITY, &data_root, request_id)
-            .unwrap_err();
-
-        let retained = error
-            .downcast_ref::<SourceRefreshObservationRecoveryFailed>()
-            .expect("disabled post-ack recovery remains request-bound");
-        assert_eq!(retained.request_id, request_id);
-        assert_eq!(retained.disconnect_policy, "retain_after_durable_admission");
-        assert!(format!("{error:#}").contains("daemon was disabled"));
-        assert!(error
-            .downcast_ref::<SourceBackedRefreshDaemonUnavailable>()
-            .is_none());
+        assert_eq!(
+            availability,
+            ctx_daemon_service::DaemonAvailability::Disabled
+        );
     }
 
     #[test]

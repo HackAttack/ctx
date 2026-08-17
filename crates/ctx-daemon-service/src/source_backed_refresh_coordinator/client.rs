@@ -389,10 +389,25 @@ fn coordinate_source_backed_refresh_with_catalog(
         });
     }
 
-    if allow_daemon_autostart {
-        availability
-            .ensure_available(data_root, trigger.daemon_trigger())
-            .context("start or recover enabled daemon before source-backed refresh")?;
+    if allow_daemon_autostart
+        && availability
+            .ensure_available(
+                data_root,
+                trigger.daemon_trigger(),
+                match mode {
+                    SourceBackedRefreshMode::Background => {
+                        crate::DaemonAvailabilityDemand::Background
+                    }
+                    SourceBackedRefreshMode::Wait => crate::DaemonAvailabilityDemand::ExplicitWait,
+                    SourceBackedRefreshMode::Off => {
+                        unreachable!("off returned before availability")
+                    }
+                },
+            )
+            .context("start or recover daemon before source-backed refresh")?
+            == crate::DaemonAvailability::Disabled
+    {
+        return daemon_unavailable_fallback(data_root, mode, None);
     }
 
     let logical_request_id = Uuid::now_v7().to_string();
@@ -848,8 +863,11 @@ pub(super) fn recover_wait_refresh_request(
         return Err(retained_request_unobservable(request_id, 0));
     }
     let recovery = (|| {
-        if availability.ensure_available(data_root, trigger.daemon_trigger())?
-            == crate::DaemonAvailability::Disabled
+        if availability.ensure_available(
+            data_root,
+            trigger.daemon_trigger(),
+            crate::DaemonAvailabilityDemand::ExplicitWait,
+        )? == crate::DaemonAvailability::Disabled
         {
             bail!("daemon was disabled while waiting for source refresh");
         }

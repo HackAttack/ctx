@@ -23,8 +23,8 @@ mod supervisor;
 
 pub use control::{DaemonEnabledUpdate, DaemonEnabledUpdateError};
 pub use host::{
-    DaemonHostRunError, DaemonHostRunRequest, DaemonHostStartMode, DaemonObservedOperation,
-    DAEMON_BACKGROUND_CHILD_ENV,
+    DaemonHostRunError, DaemonHostRunProfile, DaemonHostRunRequest, DaemonHostStartMode,
+    DaemonObservedOperation, DAEMON_BACKGROUND_CHILD_ENV,
 };
 pub use lifecycle::{
     configured_daemon_autostart_command, daemon_autostart_allowed, daemon_autostart_command,
@@ -205,6 +205,15 @@ impl<'a> DaemonApplication<'a> {
         trigger: DaemonTrigger,
     ) -> std::result::Result<DaemonHandoff, DaemonStartError> {
         lifecycle::start_daemon_and_wait(self.host, data_root, config, trigger)
+    }
+
+    pub fn start_finite_core_worker_and_wait(
+        &self,
+        data_root: &Path,
+        config: &DaemonConfigSnapshot,
+        trigger: DaemonTrigger,
+    ) -> std::result::Result<DaemonHandoff, DaemonStartError> {
+        lifecycle::start_finite_core_worker_and_wait(self.host, data_root, config, trigger)
     }
 
     pub fn observe_daemon_and_wait(

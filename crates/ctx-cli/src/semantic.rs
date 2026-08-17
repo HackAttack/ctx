@@ -10,7 +10,8 @@ use ctx_daemon_cli::{AppConfig as DaemonCliConfig, DaemonConfig, DaemonMode};
 pub(crate) use ctx_daemon_cli::{
     begin_daemon_upgrade_handoff, begin_legacy_daemon_upgrade_handoff,
     complete_replacement_daemon_handoff, coordinate_import_source_backed_refresh_with_progress,
-    coordinate_setup_source_backed_refresh_with_progress, current_rejected_record_count,
+    coordinate_setup_source_backed_refresh_with_progress,
+    coordinate_source_backed_refresh_with_progress, current_rejected_record_count,
     daemon_autostart_suppression_reason, finish_replacement_daemon_handoff,
     mark_replacement_helper_handoff, published_explicit_source_relocation_authority,
     replacement_helper_owns_daemon_handoff, semantic_managed_model_snapshot_dir,
@@ -41,7 +42,7 @@ fn daemon_cli_config<'a>(config: &'a crate::config::AppConfig) -> DaemonCliConfi
         Cow::Borrowed(config.upgrade.channel.as_str()),
         config.upgrade.interval,
         DaemonConfig {
-            enabled: config.daemon.enabled,
+            enabled: config.automatic_indexing_enabled(),
             mode: match config.daemon.mode {
                 crate::config::DaemonMode::Full => DaemonMode::Full,
                 crate::config::DaemonMode::SourceRefreshOnly => DaemonMode::SourceRefreshOnly,
@@ -56,7 +57,7 @@ fn owned_daemon_cli_config(config: crate::config::AppConfig) -> DaemonCliConfig<
     let analytics_enabled = config.analytics.enabled;
     let automatic_upgrade_enabled = config.auto_upgrade_enabled();
     let upgrade_interval = config.upgrade.interval;
-    let daemon_enabled = config.daemon.enabled;
+    let daemon_enabled = config.automatic_indexing_enabled();
     let daemon_mode = match config.daemon.mode {
         crate::config::DaemonMode::Full => DaemonMode::Full,
         crate::config::DaemonMode::SourceRefreshOnly => DaemonMode::SourceRefreshOnly,
@@ -180,6 +181,7 @@ pub(crate) fn run_daemon_command(
         C::Run(args) => ctx_daemon_cli::DaemonCommand::Run(ctx_daemon_cli::DaemonRunArgs {
             loop_interval_seconds: args.loop_interval_seconds,
             max_chunks: args.max_chunks,
+            finite_core_worker: args.finite_core_worker,
             force: args.force,
             start_mode: args.start_mode.map(|mode| match mode {
                 crate::DaemonStartModeArg::Auto => ctx_daemon_cli::DaemonStartModeArg::Auto,

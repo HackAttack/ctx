@@ -32,18 +32,21 @@ pub(crate) fn run_setup(
 ) -> Result<()> {
     let semantic_supported = semantic_query_service_supported();
     let suppression_reason = daemon_autostart_suppression_reason();
-    if args.semantic && (!config.daemon.enabled || args.no_daemon) {
+    if args.semantic && (!config.automatic_indexing_enabled() || args.no_daemon) {
         bail!(
-            "`ctx setup --semantic` requires daemon maintenance. Enable [daemon] enabled = true and rerun without --no-daemon"
+            "`ctx setup --semantic` requires automatic indexing. Set [indexing] mode = \"automatic\" and rerun without --no-daemon"
         );
     }
     if args.semantic {
         CliHistoryConfigAdapter::new(&data_root, config).set_semantic_search_enabled(true)?;
     }
     let semantic_enabled = config.semantic_search_enabled();
-    if semantic_enabled && semantic_supported && (!config.daemon.enabled || args.no_daemon) {
+    if semantic_enabled
+        && semantic_supported
+        && (!config.automatic_indexing_enabled() || args.no_daemon)
+    {
         bail!(
-            "local semantic search requires the ctx daemon. Set [daemon] enabled = true, remove --no-daemon, or set [search] semantic = false"
+            "local semantic search requires automatic indexing. Set [indexing] mode = \"automatic\", remove --no-daemon, or set [search] semantic = false"
         );
     }
 
@@ -51,10 +54,10 @@ pub(crate) fn run_setup(
 
     let json_output = args.format.is_json();
     let daemon_autostart_requested =
-        config.daemon.enabled && !args.no_daemon && suppression_reason.is_none();
+        config.automatic_indexing_enabled() && !args.no_daemon && suppression_reason.is_none();
     let daemon_autostart_reason = if args.no_daemon {
         Some("explicit_opt_out")
-    } else if !config.daemon.enabled {
+    } else if !config.automatic_indexing_enabled() {
         Some("daemon_disabled")
     } else {
         suppression_reason
@@ -72,7 +75,7 @@ pub(crate) fn run_setup(
         let mut progress = setup_progress_reporter(ui, args.progress, json_output, quiet);
         request_source_refresh(
             &data_root,
-            config.daemon.enabled,
+            config.automatic_indexing_enabled(),
             args.no_daemon,
             args.wait,
             false,
