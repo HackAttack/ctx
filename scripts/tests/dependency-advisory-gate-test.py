@@ -43,6 +43,7 @@ class AdvisoryGateTest(unittest.TestCase):
         self.scanner.chmod(0o700)
         self.scanner_config = self.scanner.with_suffix(".config.json")
         self.scanner_environment_receipt = self.root / "scanner-environments.jsonl"
+        self.scanner_database_receipt = self.root / "scanner-database.json"
         self.policy = self.repo / "policy.json"
         self.policy.write_text(
             json.dumps(
@@ -123,17 +124,28 @@ class AdvisoryGateTest(unittest.TestCase):
         }
 
     def run_gate(
-        self, fixture: str, scanner_exit: int = 0
+        self,
+        fixture: str,
+        scanner_exit: int = 0,
+        replace_inputs_after_validation: bool = False,
     ) -> tuple[subprocess.CompletedProcess[str], dict[str, object]]:
         self.scanner_environment_receipt.unlink(missing_ok=True)
+        self.scanner_database_receipt.unlink(missing_ok=True)
+        scanner_config = {
+            "environment_receipt": str(self.scanner_environment_receipt),
+            "exit_code": scanner_exit,
+            "fixture": str(FIXTURES / fixture),
+        }
+        if replace_inputs_after_validation:
+            scanner_config["database_receipt"] = str(self.scanner_database_receipt)
+            scanner_config["replace_after_validation"] = {
+                "archive": str(
+                    self.database_root / "osv-scanner/crates.io/all.zip"
+                ),
+                "metadata": str(self.metadata),
+            }
         self.scanner_config.write_text(
-            json.dumps(
-                {
-                    "environment_receipt": str(self.scanner_environment_receipt),
-                    "exit_code": scanner_exit,
-                    "fixture": str(FIXTURES / fixture),
-                }
-            ),
+            json.dumps(scanner_config),
             encoding="utf-8",
         )
         environment = os.environ.copy()
@@ -197,10 +209,9 @@ class AdvisoryGateTest(unittest.TestCase):
         self.assertEqual(version["arguments"], ["--version"])
         self.assertNotIn("OSV_SCANNER_LOCAL_DB_CACHE_DIRECTORY", version["environment"])
         self.assertIn("scan", scan["arguments"])
-        self.assertEqual(
-            scan["environment"]["OSV_SCANNER_LOCAL_DB_CACHE_DIRECTORY"],
-            str(self.database_root),
-        )
+        snapshot = Path(scan["environment"]["OSV_SCANNER_LOCAL_DB_CACHE_DIRECTORY"])
+        self.assertNotEqual(snapshot, self.database_root)
+        self.assertFalse(snapshot.exists())
         for invocation in invocations:
             environment = invocation["environment"]
             self.assertNotIn("APPLE_SIGNING_IDENTITY", environment)
@@ -281,6 +292,27 @@ class AdvisoryGateTest(unittest.TestCase):
         result, receipt = self.run_gate("osv-clean.json")
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(receipt["status"], "clean")
+
+    def test_replaced_metadata_and_archive_cannot_change_scanner_bytes(self) -> None:
+        database = self.database_root / "osv-scanner/crates.io/all.zip"
+        database_sha256 = hashlib.sha256(database.read_bytes()).hexdigest()
+        metadata_sha256 = hashlib.sha256(self.metadata.read_bytes()).hexdigest()
+        result, receipt = self.run_gate(
+            "osv-clean.json",
+            replace_inputs_after_validation=True,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        observed = json.loads(
+            self.scanner_database_receipt.read_text(encoding="utf-8")
+        )
+        self.assertEqual(observed["sha256"], database_sha256)
+        self.assertEqual(receipt["database"]["metadata_sha256"], metadata_sha256)
+        self.assertFalse(Path(observed["root"]).exists())
+        self.assertEqual(database.read_bytes(), b"replacement database\n")
+        self.assertEqual(
+            self.metadata.read_text(encoding="utf-8"),
+            "replacement metadata\n",
+        )
 
     def test_unofficial_database_source_is_rejected(self) -> None:
         metadata = json.loads(self.metadata.read_text(encoding="utf-8"))

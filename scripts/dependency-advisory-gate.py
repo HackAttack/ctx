@@ -95,14 +95,19 @@ def sha256_file(path: Path) -> str:
     return digest.hexdigest()
 
 
-def read_json(path: Path, label: str) -> dict[str, Any]:
+def read_json_buffer(path: Path, label: str) -> tuple[dict[str, Any], bytes]:
     try:
-        value = json.loads(path.read_bytes())
+        payload = path.read_bytes()
+        value = json.loads(payload)
     except (OSError, json.JSONDecodeError) as error:
         raise GateError("tool_failure", f"{label} is unavailable or malformed") from error
     if not isinstance(value, dict):
         raise GateError("tool_failure", f"{label} must be a JSON object")
-    return value
+    return value, payload
+
+
+def read_json(path: Path, label: str) -> dict[str, Any]:
+    return read_json_buffer(path, label)[0]
 
 
 def parse_time(value: Any, label: str) -> datetime:
@@ -225,10 +230,13 @@ def validate_policy(
 def validate_database(
     metadata_path: Path,
     database_root: Path,
+    snapshot_root: Path,
     ecosystems: set[str],
     now: datetime,
 ) -> dict[str, Any]:
-    metadata = read_json(metadata_path, "OSV database metadata")
+    metadata, metadata_payload = read_json_buffer(
+        metadata_path, "OSV database metadata"
+    )
     records = metadata.get("databases")
     if metadata.get("schema_version") != 2 or not isinstance(records, list):
         raise GateError("tool_failure", "OSV database metadata schema is unsupported")
@@ -260,14 +268,23 @@ def validate_database(
         if record.get("source_url") != OSV_SOURCE_URLS[ecosystem]:
             raise GateError("tool_failure", f"OSV database source is invalid: {ecosystem}")
         path = database_root / relative
+        snapshot = snapshot_root / relative
+        snapshot.parent.mkdir(parents=True, exist_ok=True)
+        digest = hashlib.sha256()
+        actual_size = 0
         try:
-            actual_size = path.stat().st_size
+            with path.open("rb") as source, snapshot.open("xb") as output:
+                while block := source.read(1024 * 1024):
+                    output.write(block)
+                    digest.update(block)
+                    actual_size += len(block)
         except OSError as error:
             raise GateError(
                 "tool_failure", f"OSV database is unavailable: {ecosystem}"
             ) from error
-        if actual_size != expected_size or sha256_file(path) != expected_hash:
+        if actual_size != expected_size or digest.hexdigest() != expected_hash:
             raise GateError("tool_failure", f"OSV database digest mismatch: {ecosystem}")
+        snapshot.chmod(0o400)
         modified = parse_time(
             record.get("source_last_modified"),
             f"{ecosystem} database source_last_modified",
@@ -285,7 +302,7 @@ def validate_database(
             }
         )
     return {
-        "metadata_sha256": sha256_file(metadata_path),
+        "metadata_sha256": hashlib.sha256(metadata_payload).hexdigest(),
         "sealed_at": sealed_at.isoformat().replace("+00:00", "Z"),
         "oldest_source_timestamp": oldest.isoformat().replace("+00:00", "Z"),
         "records": validated,
@@ -548,7 +565,10 @@ def severity_for(item: dict[str, Any], advisory_id: str) -> str | None:
 
 
 def evaluate(
-    args: argparse.Namespace, now: datetime, receipt: dict[str, Any]
+    args: argparse.Namespace,
+    now: datetime,
+    receipt: dict[str, Any],
+    database_snapshot: Path,
 ) -> tuple[str, str | None]:
     repo_root = args.repo_root.resolve()
     try:
@@ -586,6 +606,7 @@ def evaluate(
     receipt["database"] = validate_database(
         args.database_metadata,
         args.database_root,
+        database_snapshot,
         ecosystems,
         now,
     )
@@ -612,7 +633,7 @@ def evaluate(
     ]
 
     output, scanner_exit, scanner_stderr = scan_with_osv(
-        args.scanner, args.database_root, repo_root, entries
+        args.scanner, database_snapshot, repo_root, entries
     )
     receipt["scanner_result"] = {
         "exit_code": scanner_exit,
@@ -795,7 +816,8 @@ def main() -> int:
         "target_id": args.target_id,
     }
     try:
-        status, reason = evaluate(args, now, receipt)
+        with tempfile.TemporaryDirectory(prefix="ctx-osv-database.") as directory:
+            status, reason = evaluate(args, now, receipt, Path(directory))
     except GateError as error:
         status, reason = error.status, str(error)
     except Exception as error:

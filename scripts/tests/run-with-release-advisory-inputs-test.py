@@ -53,15 +53,33 @@ class ReleaseAdvisoryInputsTest(unittest.TestCase):
         return payload.getvalue()
 
     @staticmethod
-    def source_headers(generation: str, last_modified: str) -> dict[str, str]:
-        return {
-            "x-goog-generation": generation,
-            "Last-Modified": last_modified,
-        }
+    def metadata_response(generation: str, updated: str) -> Response:
+        return Response(
+            json.dumps({"generation": generation, "updated": updated}).encode()
+        )
 
-    def update_database(self, responses: list[Response]):
+    def download_response(self, generation: str) -> Response:
+        return Response(
+            self.database_archive(),
+            {"x-goog-generation": generation},
+        )
+
+    def update_database(
+        self,
+        responses: list[Response],
+        ecosystems: tuple[str, ...] = ("crates.io",),
+    ):
         database = self.root / "database"
         metadata = self.root / "metadata.json"
+        argv = [
+            str(UPDATE_SCRIPT),
+            "--database-root",
+            str(database),
+            "--metadata",
+            str(metadata),
+        ]
+        for ecosystem in ecosystems:
+            argv.extend(["--ecosystem", ecosystem])
         with mock.patch.object(
             UPDATE_MODULE.urllib.request,
             "urlopen",
@@ -69,15 +87,7 @@ class ReleaseAdvisoryInputsTest(unittest.TestCase):
         ) as urlopen, mock.patch.object(
             sys,
             "argv",
-            [
-                str(UPDATE_SCRIPT),
-                "--database-root",
-                str(database),
-                "--metadata",
-                str(metadata),
-                "--ecosystem",
-                "crates.io",
-            ],
+            argv,
         ):
             result = UPDATE_MODULE.main()
         return result, metadata, urlopen
@@ -230,29 +240,45 @@ class ReleaseAdvisoryInputsTest(unittest.TestCase):
             "v2.4.0/osv-scanner_linux_arm64",
         )
 
-    def test_database_seal_rejects_generation_superseded_upstream(self) -> None:
+    def test_cached_ordinary_endpoint_cannot_certify_latest(self) -> None:
+        with mock.patch.object(
+            UPDATE_MODULE.urllib.request,
+            "urlopen",
+            return_value=self.metadata_response("101", "2020-01-01T00:00:00Z"),
+        ) as urlopen:
+            generation, _modified = UPDATE_MODULE.latest_source_metadata("crates.io")
+        request = urlopen.call_args.args[0]
+        self.assertEqual(generation, "101")
+        self.assertEqual(request.full_url, UPDATE_MODULE.METADATA_SOURCES["crates.io"])
+        self.assertNotEqual(request.full_url, UPDATE_MODULE.SOURCES["crates.io"])
+        self.assertEqual(request.get_header("Cache-control"), "no-cache")
+
+    def test_two_ecosystem_seal_rejects_one_superseded_generation(self) -> None:
         metadata = self.root / "metadata.json"
         metadata.write_text(
             "preexisting metadata must be invalidated\n",
             encoding="utf-8",
         )
-        old_headers = self.source_headers("100", "Wed, 01 Jan 2020 00:00:00 GMT")
-        new_headers = self.source_headers("101", "Thu, 02 Jan 2020 00:00:00 GMT")
-        with self.assertRaisesRegex(SystemExit, "no longer current: crates.io"):
+        with self.assertRaisesRegex(SystemExit, "no longer current: npm"):
             self.update_database(
                 [
-                    Response(self.database_archive(), old_headers),
-                    Response(b"", new_headers),
-                ]
+                    self.metadata_response("100", "2020-01-01T00:00:00Z"),
+                    self.metadata_response("200", "2020-01-01T00:00:00Z"),
+                    self.download_response("100"),
+                    self.download_response("200"),
+                    self.metadata_response("100", "2020-01-01T00:00:00Z"),
+                    self.metadata_response("201", "2020-01-02T00:00:00Z"),
+                ],
+                ("crates.io", "npm"),
             )
         self.assertFalse(metadata.exists())
 
-    def test_database_seal_accepts_latest_generation_regardless_of_age(self) -> None:
-        headers = self.source_headers("100", "Wed, 01 Jan 2020 00:00:00 GMT")
+    def test_exact_generation_download_preserves_canonical_origin(self) -> None:
         result, metadata, urlopen = self.update_database(
             [
-                Response(self.database_archive(), headers),
-                Response(b"", headers),
+                self.metadata_response("100", "2020-01-01T00:00:00Z"),
+                self.download_response("100"),
+                self.metadata_response("100", "2020-01-01T00:00:00Z"),
             ]
         )
         self.assertEqual(result, 0)
@@ -263,7 +289,18 @@ class ReleaseAdvisoryInputsTest(unittest.TestCase):
             sealed["databases"][0]["source_last_modified"],
             "2020-01-01T00:00:00Z",
         )
-        self.assertEqual(urlopen.call_args_list[1].args[0].get_method(), "HEAD")
+        self.assertEqual(
+            sealed["databases"][0]["source_url"],
+            UPDATE_MODULE.SOURCES["crates.io"],
+        )
+        self.assertEqual(
+            urlopen.call_args_list[1].args[0].full_url,
+            f"{UPDATE_MODULE.SOURCES['crates.io']}?generation=100",
+        )
+        self.assertEqual(
+            urlopen.call_args_list[2].args[0].full_url,
+            UPDATE_MODULE.METADATA_SOURCES["crates.io"],
+        )
 
     def test_rejects_scanner_before_database_update_on_digest_mismatch(self) -> None:
         task_root = self.root / "bad-task"

@@ -5,13 +5,12 @@ from __future__ import annotations
 
 import argparse
 from datetime import datetime, timezone
-from email.utils import parsedate_to_datetime
 import hashlib
 import json
 import os
 from pathlib import Path
 import tempfile
-from typing import Any
+from urllib.parse import quote
 import urllib.request
 import zipfile
 
@@ -21,26 +20,61 @@ SOURCES = {
     "crates.io": "https://osv-vulnerabilities.storage.googleapis.com/crates.io/all.zip",
     "npm": "https://osv-vulnerabilities.storage.googleapis.com/npm/all.zip",
 }
+OBJECTS = {
+    "crates.io": "crates.io/all.zip",
+    "npm": "npm/all.zip",
+}
+METADATA_SOURCES = {
+    ecosystem: (
+        "https://storage.googleapis.com/storage/v1/b/osv-vulnerabilities/o/"
+        f"{quote(object_name, safe='')}?fields=generation%2Cupdated&prettyPrint=false"
+    )
+    for ecosystem, object_name in OBJECTS.items()
+}
 
 
-def response_source_metadata(ecosystem: str, response: Any) -> tuple[str, str]:
-    modified_header = response.headers.get("Last-Modified")
-    generation = response.headers.get("x-goog-generation")
-    if not modified_header or not generation:
-        raise SystemExit(f"OSV response lacks source metadata: {ecosystem}")
-    modified = parsedate_to_datetime(modified_header).astimezone(UTC)
-    return generation, modified.isoformat().replace("+00:00", "Z")
-
-
-def download(ecosystem: str, destination: Path) -> dict[str, object]:
+def latest_source_metadata(ecosystem: str) -> tuple[str, str]:
     request = urllib.request.Request(
-        SOURCES[ecosystem], headers={"User-Agent": "ctx-release-advisory-db/1"}
+        METADATA_SOURCES[ecosystem],
+        headers={
+            "Cache-Control": "no-cache",
+            "User-Agent": "ctx-release-advisory-db/1",
+        },
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=120) as response:
+            value = json.loads(response.read())
+        generation = value["generation"]
+        modified = value["updated"]
+        if (
+            not isinstance(generation, str)
+            or not generation.isdecimal()
+            or not isinstance(modified, str)
+            or not modified.endswith("Z")
+        ):
+            raise ValueError
+        datetime.fromisoformat(modified[:-1] + "+00:00")
+    except (KeyError, TypeError, ValueError, json.JSONDecodeError) as error:
+        raise SystemExit(f"OSV metadata authority is invalid: {ecosystem}") from error
+    return generation, modified
+
+
+def download(
+    ecosystem: str,
+    generation: str,
+    modified: str,
+    destination: Path,
+) -> dict[str, object]:
+    request = urllib.request.Request(
+        f"{SOURCES[ecosystem]}?generation={generation}",
+        headers={"User-Agent": "ctx-release-advisory-db/1"},
     )
     destination.parent.mkdir(parents=True, exist_ok=True)
     digest = hashlib.sha256()
     size = 0
     with urllib.request.urlopen(request, timeout=120) as response:
-        generation, modified = response_source_metadata(ecosystem, response)
+        if response.headers.get("x-goog-generation") != generation:
+            raise SystemExit(f"OSV exact-generation response mismatch: {ecosystem}")
         with tempfile.NamedTemporaryFile(dir=destination.parent, delete=False) as output:
             temporary = Path(output.name)
             while block := response.read(1024 * 1024):
@@ -71,13 +105,7 @@ def download(ecosystem: str, destination: Path) -> dict[str, object]:
 def verify_latest(records: list[dict[str, object]]) -> None:
     for record in records:
         ecosystem = str(record["ecosystem"])
-        request = urllib.request.Request(
-            SOURCES[ecosystem],
-            headers={"User-Agent": "ctx-release-advisory-db/1"},
-            method="HEAD",
-        )
-        with urllib.request.urlopen(request, timeout=120) as response:
-            generation, modified = response_source_metadata(ecosystem, response)
+        generation, modified = latest_source_metadata(ecosystem)
         if (
             generation != record["source_generation"]
             or modified != record["source_last_modified"]
@@ -100,9 +128,18 @@ def main() -> int:
     args = parser.parse_args()
     root = args.database_root.resolve()
     args.metadata.unlink(missing_ok=True)
+    ecosystems = sorted(set(args.ecosystem))
+    latest = {
+        ecosystem: latest_source_metadata(ecosystem) for ecosystem in ecosystems
+    }
     records = [
-        download(ecosystem, root / f"osv-scanner/{ecosystem}/all.zip")
-        for ecosystem in sorted(set(args.ecosystem))
+        download(
+            ecosystem,
+            latest[ecosystem][0],
+            latest[ecosystem][1],
+            root / f"osv-scanner/{ecosystem}/all.zip",
+        )
+        for ecosystem in ecosystems
     ]
     verify_latest(records)
     metadata = {
