@@ -1,5 +1,24 @@
 use super::*;
 
+pub(super) fn nanoclaw_requested_project_root(path: &Path) -> Result<PathBuf> {
+    let root = if path.file_name().and_then(|name| name.to_str()) == Some("v2.db") {
+        path.parent()
+            .and_then(Path::parent)
+            .map(Path::to_path_buf)
+            .ok_or_else(|| CaptureError::InvalidProviderTranscriptPath {
+                path: path.to_path_buf(),
+                reason: "NanoClaw data/v2.db has no project root",
+            })?
+    } else {
+        path.to_path_buf()
+    };
+    if root.is_absolute() {
+        Ok(root)
+    } else {
+        Ok(std::env::current_dir()?.join(root))
+    }
+}
+
 pub(super) fn nanoclaw_sidecar_path(path: &Path, suffix: &str) -> PathBuf {
     let mut sidecar = path.as_os_str().to_os_string();
     sidecar.push(suffix);

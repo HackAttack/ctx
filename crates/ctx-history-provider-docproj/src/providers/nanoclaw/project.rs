@@ -982,48 +982,5 @@ struct NanoClawCompoundRevisionEvidence<'a> {
     certified_bytes: u64,
 }
 
-fn nanoclaw_requested_project_root(path: &Path) -> Result<PathBuf> {
-    let root = if path.file_name().and_then(|name| name.to_str()) == Some("v2.db") {
-        path.parent()
-            .and_then(Path::parent)
-            .map(Path::to_path_buf)
-            .ok_or_else(|| CaptureError::InvalidProviderTranscriptPath {
-                path: path.to_path_buf(),
-                reason: "NanoClaw data/v2.db has no project root",
-            })?
-    } else {
-        path.to_path_buf()
-    };
-    if root.is_absolute() {
-        Ok(root)
-    } else {
-        Ok(std::env::current_dir()?.join(root))
-    }
-}
-
 #[cfg(test)]
-mod finalization_tests {
-    use super::*;
-    use crate::provider_sources::fail_next_opened_snapshot_cleanup_for_test;
-
-    #[test]
-    fn central_schema_error_runs_cleanup_and_preserves_both_failures() {
-        let project = tempfile::tempdir().unwrap();
-        let data_root = tempfile::tempdir().unwrap();
-        fs::create_dir_all(project.path().join("data/v2-sessions")).unwrap();
-        Connection::open(project.path().join("data/v2.db"))
-            .unwrap()
-            .execute_batch("CREATE TABLE wrong(value TEXT);")
-            .unwrap();
-        fail_next_opened_snapshot_cleanup_for_test();
-
-        let error = match NanoClawSourceBackedProject::open(data_root.path(), project.path()) {
-            Ok(_) => panic!("invalid NanoClaw central schema unexpectedly opened"),
-            Err(error) => error,
-        };
-        let rendered = error.to_string();
-        assert!(rendered.contains("missing required sessions table"));
-        assert!(rendered.contains("injected SQLite snapshot cleanup failure"));
-        assert_eq!(fs::read_dir(data_root.path()).unwrap().count(), 0);
-    }
-}
+mod finalization_tests;
