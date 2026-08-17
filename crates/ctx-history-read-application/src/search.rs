@@ -419,15 +419,16 @@ fn excluded_active_session_tree(
         &active_session.provider_session_id,
         Some(&active_session.provider),
     )?;
-    let roots = sessions
+    let ancestries = sessions
         .iter()
-        .map(|session| resolved_session_tree_root_id(index, session))
-        .collect::<Result<Vec<_>>>()?;
-    let session_id = match roots.as_slice() {
-        [Some(root)] => Some(*root),
-        [Some(first), Some(second)] if first == second => Some(*first),
-        _ => None,
-    };
+        .map(SessionAncestry::from)
+        .collect::<Vec<_>>();
+    let session_id = resolved_unique_session_tree_root_id(&ancestries, |session_id| {
+        Ok(index
+            .session_by_id(session_id)?
+            .as_ref()
+            .map(SessionAncestry::from))
+    })?;
     Ok(ExcludedSessionTree {
         provider: active_session.provider.clone(),
         provider_session_id: active_session.provider_session_id.clone(),
@@ -435,32 +436,83 @@ fn excluded_active_session_tree(
     })
 }
 
-fn resolved_session_tree_root_id(
-    index: &VerifiedIndex,
-    session: &SessionRecord,
-) -> Result<Option<Uuid>> {
-    // Some providers retain only immediate parent links. Resolve those links
-    // against the pinned generation, but decline broad tree suppression when
-    // ancestry is missing, cyclic, or exceeds the bounded walk.
-    let mut current = session.clone();
+#[derive(Debug, Clone, Copy)]
+struct SessionAncestry {
+    session_id: Uuid,
+    parent_session_id: Option<Uuid>,
+    claimed_root_session_id: Option<Uuid>,
+}
+
+impl From<&SessionRecord> for SessionAncestry {
+    fn from(session: &SessionRecord) -> Self {
+        Self {
+            session_id: session.session_id.as_uuid(),
+            parent_session_id: session.parent_session_id.map(|id| id.as_uuid()),
+            claimed_root_session_id: session.root_session_id.map(|id| id.as_uuid()),
+        }
+    }
+}
+
+fn resolved_unique_session_tree_root_id<F>(
+    sessions: &[SessionAncestry],
+    session_by_id: F,
+) -> Result<Option<Uuid>>
+where
+    F: FnMut(Uuid) -> Result<Option<SessionAncestry>>,
+{
+    let [session] = sessions else {
+        return Ok(None);
+    };
+    resolved_session_tree_root_id(*session, session_by_id)
+}
+
+fn resolved_session_tree_root_id<F>(
+    session: SessionAncestry,
+    mut session_by_id: F,
+) -> Result<Option<Uuid>>
+where
+    F: FnMut(Uuid) -> Result<Option<SessionAncestry>>,
+{
+    // Prove the complete parent chain against the pinned generation. Codex
+    // may put an immediate parent in root_session_id for deeper descendants,
+    // so a stored root is accepted only when it names a proven ancestor.
+    let mut current = session;
     let mut visited = BTreeSet::new();
-    for _ in 0..MAX_ACTIVE_SESSION_ANCESTORS {
-        let current_id = current.session_id.as_uuid();
-        if !visited.insert(current_id) {
+    let mut ancestry = Vec::with_capacity(MAX_ACTIVE_SESSION_ANCESTORS + 1);
+    let root_id = loop {
+        if !visited.insert(current.session_id) {
             return Ok(None);
         }
-        if let Some(root_id) = current.root_session_id {
-            return Ok(Some(root_id.as_uuid()));
-        }
+        ancestry.push(current);
         let Some(parent_id) = current.parent_session_id else {
-            return Ok(Some(current_id));
+            break current.session_id;
         };
-        let Some(parent) = index.session_by_id(parent_id.as_uuid())? else {
+        if ancestry.len() > MAX_ACTIVE_SESSION_ANCESTORS {
+            return Ok(None);
+        }
+        let Some(parent) = session_by_id(parent_id)? else {
             return Ok(None);
         };
         current = parent;
+    };
+
+    for (position, session) in ancestry.iter().enumerate() {
+        let Some(claimed_root_id) = session.claimed_root_session_id else {
+            continue;
+        };
+        let claim_is_proven = if position + 1 == ancestry.len() {
+            claimed_root_id == session.session_id
+        } else {
+            ancestry[position + 1..]
+                .iter()
+                .any(|ancestor| ancestor.session_id == claimed_root_id)
+        };
+        if !claim_is_proven {
+            return Ok(None);
+        }
     }
-    Ok(None)
+
+    Ok(Some(root_id))
 }
 
 #[derive(Debug, Error)]
@@ -1038,6 +1090,46 @@ pub fn shape_search_result_window<'a>(
 mod tests {
     use super::*;
 
+    fn ancestry(
+        session_id: u128,
+        parent_session_id: Option<u128>,
+        claimed_root_session_id: Option<u128>,
+    ) -> SessionAncestry {
+        SessionAncestry {
+            session_id: Uuid::from_u128(session_id),
+            parent_session_id: parent_session_id.map(Uuid::from_u128),
+            claimed_root_session_id: claimed_root_session_id.map(Uuid::from_u128),
+        }
+    }
+
+    fn resolved_test_root(
+        sessions: &[SessionAncestry],
+        records: &BTreeMap<Uuid, SessionAncestry>,
+    ) -> Option<Uuid> {
+        resolved_unique_session_tree_root_id(sessions, |session_id| {
+            Ok(records.get(&session_id).copied())
+        })
+        .unwrap()
+    }
+
+    fn linear_ancestry(depth: usize) -> (SessionAncestry, Uuid, BTreeMap<Uuid, SessionAncestry>) {
+        let records = (0..=depth)
+            .map(|position| {
+                let session_id = 1_000 + position as u128;
+                let parent_session_id = (position < depth).then_some(session_id + 1);
+                let claimed_root_session_id = parent_session_id.or(Some(session_id));
+                ancestry(session_id, parent_session_id, claimed_root_session_id)
+            })
+            .collect::<Vec<_>>();
+        let active = records[0];
+        let root_id = records[depth].session_id;
+        let records = records
+            .into_iter()
+            .map(|record| (record.session_id, record))
+            .collect();
+        (active, root_id, records)
+    }
+
     fn request() -> SearchRequest {
         SearchRequest {
             query: "  first query  ".to_owned(),
@@ -1114,6 +1206,75 @@ mod tests {
             search_agent_scope(&request, Some(Uuid::nil())),
             SearchAgentScope::Primary
         );
+    }
+
+    #[test]
+    fn active_tree_root_resolves_a_direct_child() {
+        let root = ancestry(1, None, Some(1));
+        let child = ancestry(2, Some(1), Some(1));
+        let records = BTreeMap::from([(root.session_id, root)]);
+
+        assert_eq!(
+            resolved_test_root(&[child], &records),
+            Some(root.session_id)
+        );
+    }
+
+    #[test]
+    fn active_tree_root_resolves_a_grandchild_with_an_immediate_parent_claim() {
+        let root = ancestry(1, None, None);
+        let child = ancestry(2, Some(1), Some(1));
+        let grandchild = ancestry(3, Some(2), Some(2));
+        let records = BTreeMap::from([(root.session_id, root), (child.session_id, child)]);
+
+        assert_eq!(
+            resolved_test_root(&[grandchild], &records),
+            Some(root.session_id)
+        );
+    }
+
+    #[test]
+    fn active_tree_root_rejects_a_malformed_claimed_root() {
+        let root = ancestry(1, None, None);
+        let child = ancestry(2, Some(1), Some(99));
+        let records = BTreeMap::from([(root.session_id, root)]);
+
+        assert_eq!(resolved_test_root(&[child], &records), None);
+    }
+
+    #[test]
+    fn active_tree_root_rejects_ambiguous_provider_session_matches() {
+        let root = ancestry(1, None, None);
+        let first = ancestry(2, Some(1), Some(1));
+        let second = ancestry(3, Some(1), Some(1));
+        let records = BTreeMap::from([(root.session_id, root)]);
+
+        assert_eq!(resolved_test_root(&[first, second], &records), None);
+    }
+
+    #[test]
+    fn active_tree_root_rejects_a_missing_parent() {
+        let child = ancestry(2, Some(1), Some(1));
+
+        assert_eq!(resolved_test_root(&[child], &BTreeMap::new()), None);
+    }
+
+    #[test]
+    fn active_tree_root_rejects_a_parent_cycle() {
+        let first = ancestry(1, Some(2), Some(2));
+        let second = ancestry(2, Some(1), Some(1));
+        let records = BTreeMap::from([(first.session_id, first), (second.session_id, second)]);
+
+        assert_eq!(resolved_test_root(&[first], &records), None);
+    }
+
+    #[test]
+    fn active_tree_root_rejects_depth_over_64() {
+        let (at_limit, root_id, records) = linear_ancestry(MAX_ACTIVE_SESSION_ANCESTORS);
+        assert_eq!(resolved_test_root(&[at_limit], &records), Some(root_id));
+
+        let (over_limit, _, records) = linear_ancestry(MAX_ACTIVE_SESSION_ANCESTORS + 1);
+        assert_eq!(resolved_test_root(&[over_limit], &records), None);
     }
 
     #[test]
