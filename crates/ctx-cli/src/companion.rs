@@ -258,6 +258,11 @@ fn paid_family_arguments(arguments: &[OsString]) -> Option<Vec<OsString>> {
                 .iter()
                 .any(|family| argument == family)
         {
+            if argument == "upgrade"
+                && has_hosted_transaction_control(&arguments[index.saturating_add(1)..])
+            {
+                return None;
+            }
             return Some(arguments[1..].to_vec());
         }
         if argument == "help"
@@ -293,6 +298,18 @@ fn paid_family_arguments(arguments: &[OsString]) -> Option<Vec<OsString>> {
             .any(|family| argument == family)
             .then(|| arguments[1..].to_vec())
     })
+}
+
+fn has_hosted_transaction_control(arguments: &[OsString]) -> bool {
+    arguments
+        .iter()
+        .take_while(|argument| argument.as_os_str() != OsStr::new("--"))
+        .any(|argument| {
+            argument == "--hosted-transaction"
+                || argument
+                    .as_encoded_bytes()
+                    .starts_with(b"--hosted-transaction=")
+        })
 }
 
 pub(crate) fn managed_pair_enabled() -> bool {
@@ -516,6 +533,33 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn hosted_install_transactions_remain_core_owned() {
+        for arguments in [
+            vec!["--hosted-transaction", "install"],
+            vec!["--hosted-transaction=install"],
+        ] {
+            let arguments = arguments
+                .into_iter()
+                .map(OsString::from)
+                .collect::<Vec<_>>();
+            assert!(has_hosted_transaction_control(&arguments));
+
+            if managed_pair_enabled() {
+                let full = [
+                    vec![OsString::from("ctx"), OsString::from("upgrade")],
+                    arguments,
+                ]
+                .concat();
+                assert!(paid_family_arguments(&full).is_none());
+            }
+        }
+        assert!(!has_hosted_transaction_control(&[
+            OsString::from("--"),
+            OsString::from("--hosted-transaction=install"),
+        ]));
     }
 
     #[test]
