@@ -3,6 +3,13 @@ set -euo pipefail
 
 mode="${1:-docs_check}"
 
+if [[ "${mode}" == "loc_check" && -n "${2:-}" ]]; then
+  readonly loc_root_build="$(readlink -f "$2")"
+  readonly loc_live_root="$(dirname "${loc_root_build}")"
+else
+  readonly loc_live_root=""
+fi
+
 fail() {
   printf 'bazel gate failed: %s\n' "$*" >&2
   exit 1
@@ -10,7 +17,7 @@ fail() {
 
 find_repo_root() {
   local candidate
-  for candidate in "${BUILD_WORKSPACE_DIRECTORY:-}" "$(pwd)" "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"; do
+  for candidate in "${loc_live_root}" "${BUILD_WORKSPACE_DIRECTORY:-}" "$(pwd)" "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"; do
     if [[ -n "${candidate}" && -f "${candidate}/Cargo.toml" ]]; then
       cd "${candidate}"
       return 0

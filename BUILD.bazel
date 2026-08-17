@@ -1247,7 +1247,9 @@ non_rust_gate(
 non_rust_gate(name = "macos_release_signing_tests", mode = "macos_release_signing_tests", data = NON_RUST_GATE_DATA)
 non_rust_gate(
     name = "loc_check",
+    args = ["$(rootpath BUILD.bazel)"],
     data = [
+        "BUILD.bazel",
         "scripts/check-loc.py",
         "scripts/check-loc.sh",
         "scripts/tests/check_loc_test.sh",
@@ -1256,12 +1258,15 @@ non_rust_gate(
         "external",
         "local",
         "no-cache",
+        "no-sandbox",
     ],
 )
 sh_test(
     name = "repository_policy_check",
     srcs = ["scripts/check-repository-policy.sh"],
+    args = ["$(rootpath BUILD.bazel)"],
     data = [
+        "BUILD.bazel",
         "scripts/check-loc.py",
         "//tools/bazel:check_rust_target_inventory.py",
     ],
@@ -1269,6 +1274,7 @@ sh_test(
         "external",
         "local",
         "no-cache",
+        "no-sandbox",
     ],
 )
 non_rust_gate(
