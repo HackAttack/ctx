@@ -29,9 +29,6 @@ pub(super) fn register_route(
         CaptureProvider::OpenCode | CaptureProvider::Kilo | CaptureProvider::MiMoCode => {
             logical::register_opencode_family_route(registry, source, selection, data_root)
         }
-        CaptureProvider::Hermes => {
-            logical::register_hermes_route(registry, source, selection, data_root)
-        }
         CaptureProvider::Trae => {
             logical::register_trae_route(registry, source, selection, data_root)
         }

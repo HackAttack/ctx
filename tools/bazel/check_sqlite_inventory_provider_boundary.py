@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Static ownership and dependency boundary for the SQLite inventory pack."""
+"""Static ownership and dependency boundary for SQLite inventory and Hermes."""
 
 from __future__ import annotations
 
@@ -19,27 +19,33 @@ EXPECTED_INTERNAL = {
     "ctx-history-source-io",
     "ctx-history-source-sqlite",
 }
+EXPECTED_HERMES_INTERNAL = EXPECTED_INTERNAL - {"ctx-history-source-discovery"}
 FORBIDDEN_PACKAGES = {"ctx-history-capture", "ctx-history-index"}
-PROVIDERS = {"astrbot", "crush", "hermes", "lingma", "shelley"}
+PROVIDERS = {"astrbot", "crush", "lingma", "shelley"}
+EXTRACTED_PROVIDERS = PROVIDERS | {"hermes"}
 EXPECTED_REGISTRATIONS = {
     "astrbot_registration",
     "crush_registration",
     "discovered_lingma_registration",
-    "hermes_automatic_registration",
-    "hermes_explicit_registration",
     "lingma_registration",
     "shelley_registration",
+}
+EXPECTED_HERMES_REGISTRATIONS = {
+    "hermes_automatic_registration",
+    "hermes_explicit_registration",
 }
 EXPECTED_COMPOSITION_FACADE_FUNCTIONS = {
     "register_astrbot_source_backed_route",
     "register_crush_source_backed_route",
-    "register_hermes_explicit_source_backed_route",
     "register_lingma_source_backed_route",
     "register_shelley_source_backed_route",
 }
 EXPECTED_COMPOSITION_FACADE_REGISTRATIONS = EXPECTED_REGISTRATIONS - {
     "discovered_lingma_registration",
-    "hermes_automatic_registration",
+}
+EXPECTED_HERMES_COMPOSITION_FUNCTIONS = {
+    "register_hermes_source_backed_route",
+    "register_hermes_explicit_source_backed_route",
 }
 # Rust identifiers used by this project are ASCII: a letter or underscore,
 # followed by letters, digits, or underscores.
@@ -91,44 +97,61 @@ def dependency_tables(manifest: dict):
             )
 
 
-def validate_manifest(path: Path) -> None:
+def validate_provider_manifest(path: Path, expected_internal: set[str], label: str) -> None:
     manifest = load_toml(path)
     normal = manifest.get("dependencies", {})
     normal_packages = dependency_packages(normal, "dependencies")
     internal = {name for name in normal_packages if name.startswith("ctx-")}
-    if internal != EXPECTED_INTERNAL:
+    if internal != expected_internal:
         raise BoundaryError(
-            "SQLite inventory normal dependency inventory drifted: "
-            f"expected={sorted(EXPECTED_INTERNAL)} actual={sorted(internal)}"
+            f"{label} normal dependency inventory drifted: "
+            f"expected={sorted(expected_internal)} actual={sorted(internal)}"
         )
     all_packages = set()
-    for label, table in dependency_tables(manifest):
-        all_packages.update(dependency_packages(table, label))
+    for table_label, table in dependency_tables(manifest):
+        all_packages.update(dependency_packages(table, table_label))
     upward = FORBIDDEN_PACKAGES & all_packages
     if upward:
         raise BoundaryError(
-            "SQLite inventory pack gained an upward capture/index dependency: "
+            f"{label} gained an upward capture/index dependency: "
             + ", ".join(sorted(upward))
         )
     features = manifest.get("features", {})
     if set(features) != {"test-support"}:
-        raise BoundaryError("SQLite inventory feature inventory drifted")
+        raise BoundaryError(f"{label} feature inventory drifted")
 
 
-def validate_build(path: Path) -> None:
+def validate_manifest(path: Path) -> None:
+    validate_provider_manifest(path, EXPECTED_INTERNAL, "SQLite inventory")
+
+
+def validate_hermes_manifest(path: Path) -> None:
+    validate_provider_manifest(path, EXPECTED_HERMES_INTERNAL, "Hermes provider")
+
+
+def validate_provider_build(path: Path, expected_internal: set[str], label: str) -> None:
     text = path.read_text(encoding="utf-8")
     labels = set(re.findall(r'"//crates/(ctx-[^:]+):', text))
     forbidden = FORBIDDEN_PACKAGES & labels
     if forbidden:
         raise BoundaryError(
-            "SQLite inventory Bazel target gained an upward edge: "
+            f"{label} Bazel target gained an upward edge: "
             + ", ".join(sorted(forbidden))
         )
-    if not EXPECTED_INTERNAL <= labels:
+    if labels != expected_internal:
         raise BoundaryError(
-            "SQLite inventory Bazel lower dependency inventory is incomplete: "
-            + ", ".join(sorted(EXPECTED_INTERNAL - labels))
+            f"{label} Bazel dependency inventory drifted: "
+            f"missing={sorted(expected_internal - labels)} "
+            f"extra={sorted(labels - expected_internal)}"
         )
+
+
+def validate_build(path: Path) -> None:
+    validate_provider_build(path, EXPECTED_INTERNAL, "SQLite inventory")
+
+
+def validate_hermes_build(path: Path) -> None:
+    validate_provider_build(path, EXPECTED_HERMES_INTERNAL, "Hermes provider")
 
 
 def validate_pack_sources(root: Path) -> None:
@@ -183,6 +206,67 @@ def validate_pack_sources(root: Path) -> None:
     if provider_write:
         raise BoundaryError(
             "SQLite inventory production source contains a provider write-capable API: "
+            + provider_write.group(0)
+        )
+
+
+def validate_hermes_sources(root: Path) -> None:
+    lib = strip_rust_non_code((root / "lib.rs").read_text(encoding="utf-8"))
+    modules = set(
+        re.findall(
+            rf"(?m)^\s*(?:pub\s+)?mod\s+({RUST_IDENTIFIER})\s*;",
+            lib,
+        )
+    )
+    if modules != {"provider", "registration"}:
+        raise BoundaryError(
+            "Hermes provider module ownership drifted: "
+            f"expected=['provider', 'registration'] actual={sorted(modules)}"
+        )
+    if not (root / "provider.rs").is_file():
+        raise BoundaryError("Hermes provider implementation root is missing")
+
+    production = []
+    for path in root.rglob("*.rs"):
+        if path.name == "tests.rs" or path.name.endswith("_tests.rs"):
+            continue
+        production.append(strip_test_only_rust_items(path.read_text(encoding="utf-8")))
+    registration_text = strip_rust_non_code("\n".join(production))
+    registration_declarations = re.findall(
+        r"(?m)^\s*pub(?:\([^)]*\))?\s+"
+        rf"(?:async\s+|const\s+|unsafe\s+)*fn\s+({REGISTRATION_IDENTIFIER})\b",
+        registration_text,
+    )
+    actual_registrations = set(registration_declarations)
+    duplicate_registrations = {
+        registration
+        for registration in actual_registrations
+        if registration_declarations.count(registration) != 1
+    }
+    if (
+        actual_registrations != EXPECTED_HERMES_REGISTRATIONS
+        or duplicate_registrations
+    ):
+        raise BoundaryError(
+            "Hermes registration authority drifted: "
+            f"missing={sorted(EXPECTED_HERMES_REGISTRATIONS - actual_registrations)} "
+            f"extra={sorted(actual_registrations - EXPECTED_HERMES_REGISTRATIONS)} "
+            f"duplicates={sorted(duplicate_registrations)}"
+        )
+    joined = "\n".join(production)
+    if re.search(r"\bctx_history_(capture|index)\b", joined):
+        raise BoundaryError("Hermes production source references capture or index")
+    provider_write = re.search(
+        r"\b(?:rusqlite::)?Connection::(?:open|open_in_memory)\b"
+        r"|\.execute(?:_batch)?\s*\("
+        r"|\bpragma_update(?:_and_check)?\s*\("
+        r"|\b(?:std::)?fs::write\s*\("
+        r"|\bOpenOptions\b",
+        joined,
+    )
+    if provider_write:
+        raise BoundaryError(
+            "Hermes production source contains a provider write-capable API: "
             + provider_write.group(0)
         )
 
@@ -294,6 +378,10 @@ def validate_composition_ownership(composition_root: Path) -> None:
     if not facade.is_file():
         raise BoundaryError("composition SQLite inventory façade is missing")
     validate_composition_facade(facade)
+    hermes_facade = composition_root / "source_backed/registration/families/hermes.rs"
+    if not hermes_facade.is_file():
+        raise BoundaryError("composition Hermes façade is missing")
+    validate_hermes_composition_facade(hermes_facade)
     retired = (
         composition_root
         / "source_backed/registration/families/sqlite/inventory.rs"
@@ -312,7 +400,7 @@ def validate_capture_absence(capture_root: Path) -> None:
             providers.read_text(encoding="utf-8"),
         )
     )
-    retained = PROVIDERS & declarations
+    retained = EXTRACTED_PROVIDERS & declarations
     if retained:
         raise BoundaryError(
             "capture retains production ownership of extracted providers: "
@@ -439,6 +527,52 @@ def validate_composition_facade(path: Path) -> None:
         )
 
 
+def validate_hermes_composition_facade(path: Path) -> None:
+    source = strip_rust_non_code(path.read_text(encoding="utf-8"))
+    imports = re.findall(
+        r"\buse\s+ctx_history_provider_hermes::registration::\s*"
+        r"\{([^}]*)\}\s*;",
+        source,
+        flags=re.DOTALL,
+    )
+    registrations = (
+        set(re.findall(rf"\b({REGISTRATION_IDENTIFIER})\b", imports[0]))
+        if len(imports) == 1
+        else set()
+    )
+    if registrations != EXPECTED_HERMES_REGISTRATIONS:
+        raise BoundaryError(
+            "composition Hermes provider bindings drifted: "
+            f"expected={sorted(EXPECTED_HERMES_REGISTRATIONS)} "
+            f"actual={sorted(registrations)}"
+        )
+    functions = set(
+        re.findall(
+            rf"(?m)^\s*pub(?:\([^)]*\))?\s+fn\s+({RUST_IDENTIFIER})\b",
+            source,
+        )
+    )
+    if functions != EXPECTED_HERMES_COMPOSITION_FUNCTIONS:
+        raise BoundaryError(
+            "composition Hermes façade function surface drifted: "
+            f"expected={sorted(EXPECTED_HERMES_COMPOSITION_FUNCTIONS)} "
+            f"actual={sorted(functions)}"
+        )
+    for registration in EXPECTED_HERMES_REGISTRATIONS:
+        if len(re.findall(rf"\b{registration}\s*::", source)) != 1:
+            raise BoundaryError(
+                f"composition Hermes façade must call {registration} exactly once"
+            )
+    if source.count("install_hermes_registration(") != 2:
+        raise BoundaryError(
+            "composition Hermes façade must install exactly one registration per route function"
+        )
+    if "install_sqlite_inventory_registration" in source:
+        raise BoundaryError(
+            "composition Hermes façade must not use the finite-inventory installer"
+        )
+
+
 def strip_rust_non_code(text: str) -> str:
     """Blank comments and literals before inspecting Rust declarations and names."""
     code = list(text)
@@ -460,6 +594,9 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     parser.add_argument("pack_manifest", type=Path)
     parser.add_argument("pack_build", type=Path)
     parser.add_argument("pack_lib", type=Path)
+    parser.add_argument("hermes_manifest", type=Path)
+    parser.add_argument("hermes_build", type=Path)
+    parser.add_argument("hermes_lib", type=Path)
     parser.add_argument("composition_lib", type=Path)
     parser.add_argument("capture_lib", type=Path)
     return parser.parse_args(argv)
@@ -471,12 +608,15 @@ def main(argv: list[str]) -> int:
         validate_manifest(args.pack_manifest)
         validate_build(args.pack_build)
         validate_pack_sources(args.pack_lib.parent)
+        validate_hermes_manifest(args.hermes_manifest)
+        validate_hermes_build(args.hermes_build)
+        validate_hermes_sources(args.hermes_lib.parent)
         validate_composition_ownership(args.composition_lib.parent)
         validate_capture_absence(args.capture_lib.parent)
     except (BoundaryError, OSError, tomllib.TOMLDecodeError) as error:
         print(error, file=sys.stderr)
         return 1
-    print("SQLite inventory provider ownership/dependency boundary ok")
+    print("SQLite inventory/Hermes provider ownership/dependency boundary ok")
     return 0
 
 

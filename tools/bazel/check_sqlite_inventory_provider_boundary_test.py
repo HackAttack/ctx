@@ -11,11 +11,15 @@ from pathlib import Path
 
 from check_sqlite_inventory_provider_boundary import (
     BoundaryError,
+    EXPECTED_HERMES_INTERNAL,
     EXPECTED_INTERNAL,
     main,
     validate_build,
     validate_capture_absence,
     validate_composition_ownership,
+    validate_hermes_build,
+    validate_hermes_manifest,
+    validate_hermes_sources,
     validate_manifest,
     validate_pack_sources,
 )
@@ -24,8 +28,8 @@ from check_sqlite_inventory_provider_boundary import (
 def facade_text() -> str:
     return (
         "use ctx_history_providers_sqlite_inventory::registration::{\n"
-        "    astrbot_registration, crush_registration, hermes_explicit_registration,\n"
-        "    lingma_registration, shelley_registration,\n"
+        "    astrbot_registration, crush_registration, lingma_registration,\n"
+        "    shelley_registration,\n"
         "};\n"
         "pub fn register_astrbot_source_backed_route() {\n"
         "    install_sqlite_inventory_registration(astrbot_registration::<L, S>());\n"
@@ -33,14 +37,25 @@ def facade_text() -> str:
         "pub fn register_crush_source_backed_route() {\n"
         "    install_sqlite_inventory_registration(crush_registration::<I, L, S>());\n"
         "}\n"
-        "pub fn register_hermes_explicit_source_backed_route() {\n"
-        "    install_sqlite_inventory_registration(hermes_explicit_registration::<L, S>());\n"
-        "}\n"
         "pub fn register_lingma_source_backed_route() {\n"
         "    install_sqlite_inventory_registration(lingma_registration::<L, S>());\n"
         "}\n"
         "pub fn register_shelley_source_backed_route() {\n"
         "    install_sqlite_inventory_registration(shelley_registration::<L, S>());\n"
+        "}\n"
+    )
+
+
+def hermes_facade_text() -> str:
+    return (
+        "use ctx_history_provider_hermes::registration::{\n"
+        "    hermes_automatic_registration, hermes_explicit_registration,\n"
+        "};\n"
+        "pub(super) fn register_hermes_source_backed_route() {\n"
+        "    install_hermes_registration(hermes_automatic_registration::<L, S>());\n"
+        "}\n"
+        "pub fn register_hermes_explicit_source_backed_route() {\n"
+        "    install_hermes_registration(hermes_explicit_registration::<L, S>());\n"
         "}\n"
     )
 
@@ -55,13 +70,12 @@ class SqliteInventoryProviderBoundaryMutations(unittest.TestCase):
         providers = self.pack_root / "provider/providers"
         providers.mkdir(parents=True)
         (providers / "mod.rs").write_text(
-            "pub mod astrbot;\npub mod crush;\npub mod hermes;\npub mod lingma;\npub mod shelley;\n",
+            "pub mod astrbot;\npub mod crush;\npub mod lingma;\npub mod shelley;\n",
             encoding="utf-8",
         )
         (self.pack_root / "registration.rs").write_text(
             "pub fn astrbot_registration() {}\npub fn crush_registration() {}\n"
-            "pub fn discovered_lingma_registration() {}\npub fn hermes_automatic_registration() {}\n"
-            "pub fn hermes_explicit_registration() {}\npub fn lingma_registration() {}\n"
+            "pub fn discovered_lingma_registration() {}\npub fn lingma_registration() {}\n"
             "pub fn shelley_registration() {}\n",
             encoding="utf-8",
         )
@@ -87,6 +101,42 @@ class SqliteInventoryProviderBoundaryMutations(unittest.TestCase):
             encoding="utf-8",
         )
 
+        self.hermes = self.root / "hermes"
+        self.hermes_root = self.hermes / "src"
+        self.hermes_root.mkdir(parents=True)
+        self.hermes_lib = self.hermes_root / "lib.rs"
+        self.hermes_lib.write_text(
+            "mod provider;\npub mod registration;\n", encoding="utf-8"
+        )
+        (self.hermes_root / "provider.rs").write_text(
+            "pub fn provider_root() {}\n", encoding="utf-8"
+        )
+        (self.hermes_root / "registration.rs").write_text(
+            "pub fn hermes_automatic_registration() {}\n"
+            "pub fn hermes_explicit_registration() {}\n",
+            encoding="utf-8",
+        )
+        self.hermes_manifest = self.hermes / "Cargo.toml"
+        hermes_dependencies = "".join(
+            f'{dependency} = "1"\n'
+            for dependency in sorted(EXPECTED_HERMES_INTERNAL)
+        )
+        self.hermes_manifest.write_text(
+            "[features]\ntest-support = []\n\n[dependencies]\n"
+            f"{hermes_dependencies}\n[dev-dependencies]\n",
+            encoding="utf-8",
+        )
+        self.hermes_build = self.hermes / "BUILD.bazel"
+        self.hermes_build.write_text(
+            "deps = [\n"
+            + "".join(
+                f'    "//crates/{dependency}:lib",\n'
+                for dependency in sorted(EXPECTED_HERMES_INTERNAL)
+            )
+            + "]\n",
+            encoding="utf-8",
+        )
+
         self.composition_root = self.root / "composition/src"
         self.composition_lib = self.composition_root / "lib.rs"
         self.composition_lib.parent.mkdir(parents=True)
@@ -97,6 +147,12 @@ class SqliteInventoryProviderBoundaryMutations(unittest.TestCase):
         )
         self.composition_facade.parent.mkdir(parents=True)
         self.composition_facade.write_text(facade_text(), encoding="utf-8")
+        self.hermes_composition_facade = (
+            self.composition_root / "source_backed/registration/families/hermes.rs"
+        )
+        self.hermes_composition_facade.write_text(
+            hermes_facade_text(), encoding="utf-8"
+        )
 
         self.capture_root = self.root / "capture/src"
         capture_providers = self.capture_root / "provider/providers"
@@ -112,6 +168,9 @@ class SqliteInventoryProviderBoundaryMutations(unittest.TestCase):
         validate_manifest(self.manifest)
         validate_build(self.pack_build)
         validate_pack_sources(self.pack_root)
+        validate_hermes_manifest(self.hermes_manifest)
+        validate_hermes_build(self.hermes_build)
+        validate_hermes_sources(self.hermes_root)
         validate_composition_ownership(self.composition_root)
         validate_capture_absence(self.capture_root)
 
@@ -127,6 +186,9 @@ class SqliteInventoryProviderBoundaryMutations(unittest.TestCase):
                         str(self.manifest),
                         str(self.pack_build),
                         str(self.pack_lib),
+                        str(self.hermes_manifest),
+                        str(self.hermes_build),
+                        str(self.hermes_lib),
                         str(self.composition_lib),
                         str(self.capture_lib),
                     ]
@@ -189,8 +251,9 @@ class SqliteInventoryProviderBoundaryMutations(unittest.TestCase):
     def test_digit_bearing_extra_composition_binding_is_rejected(self) -> None:
         self.composition_facade.write_text(
             self.composition_facade.read_text(encoding="utf-8").replace(
-                "    lingma_registration, shelley_registration,\n",
-                "    duplicate2_registration, lingma_registration, shelley_registration,\n",
+                "    astrbot_registration, crush_registration, lingma_registration,\n",
+                "    astrbot_registration, crush_registration, duplicate2_registration, "
+                "lingma_registration,\n",
             ),
             encoding="utf-8",
         )
@@ -229,6 +292,33 @@ class SqliteInventoryProviderBoundaryMutations(unittest.TestCase):
         with self.assertRaisesRegex(
             BoundaryError, "composition SQLite inventory façade is missing"
         ):
+            self.validate()
+
+    def test_missing_hermes_composition_facade_is_rejected(self) -> None:
+        self.hermes_composition_facade.unlink()
+        with self.assertRaisesRegex(BoundaryError, "composition Hermes façade is missing"):
+            self.validate()
+
+    def test_hermes_extra_registration_owner_is_rejected(self) -> None:
+        registration = self.hermes_root / "registration.rs"
+        registration.write_text(
+            registration.read_text(encoding="utf-8")
+            + "pub fn duplicate_registration() {}\n",
+            encoding="utf-8",
+        )
+        with self.assertRaisesRegex(BoundaryError, "Hermes registration authority drifted"):
+            self.validate()
+
+    def test_hermes_cannot_depend_on_finite_inventory_pack(self) -> None:
+        self.hermes_manifest.write_text(
+            self.hermes_manifest.read_text(encoding="utf-8").replace(
+                "\n[dev-dependencies]\n",
+                '\nctx-history-providers-sqlite-inventory = "1"\n'
+                "\n[dev-dependencies]\n",
+            ),
+            encoding="utf-8",
+        )
+        with self.assertRaisesRegex(BoundaryError, "dependency inventory drifted"):
             self.validate()
 
     def test_missing_composition_registration_is_rejected(self) -> None:

@@ -1054,6 +1054,7 @@ dependencies = [
  "ctx-history-provider-codex",
  "ctx-history-provider-docproj",
  "ctx-history-provider-gemini",
+ "ctx-history-provider-hermes",
  "ctx-history-provider-mistral-mux",
  "ctx-history-provider-native-jsonl",
  "ctx-history-provider-runtime",
@@ -1345,6 +1346,26 @@ dependencies = [
  "sha2",
  "tempfile",
  "thiserror 1.0.69",
+]
+
+[[package]]
+name = "ctx-history-provider-hermes"
+version = "1.0.0"
+dependencies = [
+ "chrono",
+ "ctx-history-capture-model",
+ "ctx-history-capture-runtime",
+ "ctx-history-core",
+ "ctx-history-provider-runtime",
+ "ctx-history-source-io",
+ "ctx-history-source-sqlite",
+ "rusqlite",
+ "serde",
+ "serde_json",
+ "sha2",
+ "tempfile",
+ "thiserror 1.0.69",
+ "uuid",
 ]
 
 [[package]]

@@ -499,9 +499,8 @@ fn source_backed_route_identity(
         digest.update((path.len() as u64).to_be_bytes());
         digest.update(path);
     } else if source.provider == CaptureProvider::Hermes {
-        let profile =
-            ctx_history_providers_sqlite_inventory::hermes_automatic_profile_name(&source.path)
-                .map_err(|error| invalid_route(source.provider, error.to_string()))?;
+        let profile = ctx_history_provider_hermes::hermes_automatic_profile_name(&source.path)
+            .map_err(|error| invalid_route(source.provider, error.to_string()))?;
         if profile != "default" {
             // Hermes discovery intentionally multiplexes independently owned
             // named profiles. Keep the historical default route identity, but

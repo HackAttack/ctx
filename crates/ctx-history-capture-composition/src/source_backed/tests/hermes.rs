@@ -2,7 +2,7 @@ use std::{collections::BTreeMap, fs, path::Path};
 
 use ctx_history_core::{CoreRecord, SourceAnchor};
 use ctx_history_index::{IndexError, VerifiedIndex};
-use ctx_history_providers_sqlite_inventory::test_support::{
+use ctx_history_provider_hermes::test_support::{
     hermes_work_counters, reset_hermes_work_counters, set_after_hermes_snapshot_seal_hook,
     set_before_hermes_snapshot_seal_hook,
 };

@@ -1,6 +1,6 @@
 //! Finite-inventory SQLite providers for ctx agent history.
 //!
-//! The crate owns AstrBot, Crush, Lingma, Shelley, Hermes, and their bounded
+//! The crate owns AstrBot, Crush, Lingma, Shelley, and their bounded
 //! provider registration fragments. It depends only on provider-neutral
 //! capture and source layers; the capture facade supplies the concrete index
 //! lifecycle when composing routes.
@@ -59,32 +59,12 @@ pub use provider::providers::crush::native_path::source_backed::{
     CrushProjectDatabaseV0, CrushProjectInventoryObservationV0, CrushProjectInventorySourceV0,
     CrushSourceBackedErrorV0, CrushSourceBackedResultV0,
 };
-pub use provider::providers::hermes::source_backed::{
-    hermes_route_control_database_identity, hermes_route_control_exact_due,
-    hermes_route_control_exact_due_for_profile,
-};
-
-pub fn hermes_automatic_profile_name(
-    path: &std::path::Path,
-) -> std::result::Result<String, String> {
-    provider::providers::hermes::source_backed::hermes_automatic_profile_name(path)
-        .map_err(|error| error.to_string())
-}
-
 pub const ASTRBOT_SQLITE_SOURCE_FORMAT: &str = "astrbot_data_v4_sqlite";
 pub const CRUSH_SQLITE_SOURCE_FORMAT: &str = "crush_sqlite";
 pub const LINGMA_SQLITE_SOURCE_FORMAT: &str = "lingma_sqlite";
 pub const SHELLEY_SQLITE_SOURCE_FORMAT: &str = "shelley_sqlite";
-pub const HERMES_SQLITE_SOURCE_FORMAT: &str = "hermes_state_sqlite";
 pub const MAX_PROVIDER_SQLITE_VALUE_BYTES: usize =
     ctx_history_source_sqlite::MAX_PROVIDER_SQLITE_VALUE_BYTES;
-
-pub(crate) mod record_evidence {
-    pub(crate) use ctx_history_capture_model::RecordDigest;
-}
-
-const NATIVE_INGESTION_PAGE_MAX_UNITS: usize = 64;
-const NATIVE_INGESTION_PAGE_MAX_BYTES: usize = 8 * 1024 * 1024;
 
 pub mod lifecycle {
     pub use ctx_history_capture_runtime::{
@@ -106,7 +86,6 @@ pub(crate) mod common {
 }
 
 pub(crate) mod provider_sources {
-    pub(crate) use ctx_history_capture_model::ProviderSource;
     pub(crate) use ctx_history_source_sqlite::*;
 
     #[cfg(test)]
@@ -149,50 +128,4 @@ pub(crate) fn test_provider_sqlite_data_root() -> &'static std::path::Path {
     static ROOT: OnceLock<tempfile::TempDir> = OnceLock::new();
     ROOT.get_or_init(|| tempfile::tempdir().expect("provider SQLite test root"))
         .path()
-}
-
-#[cfg(feature = "test-support")]
-pub mod test_support {
-    use std::collections::BTreeMap;
-
-    #[derive(Debug, Clone, PartialEq, Eq)]
-    pub struct HermesWorkCounters {
-        pub logical_row_traversals: u64,
-        pub inventory_observation_rows: u64,
-        pub document_base_route_source_visits: u64,
-        pub session_scans: BTreeMap<String, (u64, u64)>,
-        pub exact_message_queries: (u64, u64),
-        pub exact_message_spools: (u64, u64, u64, u64, u64),
-    }
-
-    pub fn reset_hermes_work_counters() {
-        crate::provider::providers::hermes::source_backed::reset_logical_row_traversals();
-        crate::provider::providers::hermes::source_backed::reset_base_route_source_visits();
-        crate::provider::providers::hermes::reset_exact_message_query_counters();
-    }
-
-    pub fn hermes_work_counters() -> HermesWorkCounters {
-        HermesWorkCounters {
-            logical_row_traversals:
-                crate::provider::providers::hermes::source_backed::logical_row_traversals(),
-            inventory_observation_rows:
-                crate::provider::providers::hermes::source_backed::inventory_observation_rows(),
-            document_base_route_source_visits:
-                crate::provider::providers::hermes::source_backed::base_route_source_visits(),
-            session_scans: crate::provider::providers::hermes::source_backed::session_scan_receipts(
-            ),
-            exact_message_queries: crate::provider::providers::hermes::exact_message_query_counters(
-            ),
-            exact_message_spools: crate::provider::providers::hermes::exact_message_spool_counters(
-            ),
-        }
-    }
-
-    pub fn set_before_hermes_snapshot_seal_hook(hook: impl FnOnce() + 'static) {
-        crate::provider::providers::hermes::source_backed::replacement::set_before_hermes_snapshot_seal_hook(hook);
-    }
-
-    pub fn set_after_hermes_snapshot_seal_hook(hook: impl FnOnce() + 'static) {
-        crate::provider::providers::hermes::source_backed::replacement::set_after_hermes_snapshot_seal_hook(hook);
-    }
 }

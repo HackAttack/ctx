@@ -39,7 +39,6 @@ mod crush;
 mod shared;
 
 pub use crush::crush_registration;
-pub use ctx_history_core::SourceAnchor;
 use shared::{
     sqlite_inventory_authority_fingerprint, SqliteInventoryCatalog, SqliteInventoryCatalogLeaf,
     SqliteInventoryDocumentAdapter, SqliteInventoryProvider,
@@ -93,82 +92,6 @@ impl<A> SqliteInventoryRegistration<A> {
             self.watch_targets,
         )
     }
-}
-
-pub fn hermes_automatic_registration<L, S>(
-    source: ProviderSource,
-    selection: SourceBackedRouteSelection,
-    data_root: &Path,
-) -> Result<
-    SqliteInventoryRegistration<
-        impl ReplacementDocumentTree<
-            Lifecycle = L,
-            Spool = S,
-            RouteControl = crate::ProviderRouteControlExpectation,
-        >,
-    >,
->
-where
-    L: CaptureLifecycleSink + 'static,
-    L::PinnedAppendBase: Clone + Send + Sync + 'static,
-    S: DocumentRecordSpool,
-{
-    if selection != SourceBackedRouteSelection::Automatic {
-        return Err(CaptureError::InvalidPayload(
-            "manual Hermes registration requires persistent explicit catalog lineage".to_owned(),
-        ));
-    }
-    let candidate =
-        crate::provider::providers::hermes::source_backed::HermesSourceCandidate::automatic(
-            data_root,
-            source.clone(),
-        )
-        .map_err(|error| CaptureError::InvalidPayload(error.to_string()))?;
-    Ok(SqliteInventoryRegistration::new(
-        source,
-        selection,
-        SourceBackedSelectorAuthority::DiscoveredWinner,
-        crate::provider::providers::hermes::source_backed::replacement::HermesDocumentAdapter::new(
-            candidate,
-        ),
-        None,
-    ))
-}
-
-pub fn hermes_explicit_registration<L, S>(
-    source: ProviderSource,
-    data_root: &Path,
-    anchor: SourceAnchor,
-) -> Result<
-    SqliteInventoryRegistration<
-        impl ReplacementDocumentTree<
-            Lifecycle = L,
-            Spool = S,
-            RouteControl = crate::ProviderRouteControlExpectation,
-        >,
-    >,
->
-where
-    L: CaptureLifecycleSink + 'static,
-    L::PinnedAppendBase: Clone + Send + Sync + 'static,
-    S: DocumentRecordSpool,
-{
-    let candidate =
-        crate::provider::providers::hermes::source_backed::hermes_source_backed_explicit(
-            data_root,
-            source.path.clone(),
-            anchor,
-        )
-        .map_err(|error| CaptureError::InvalidPayload(error.to_string()))?;
-    Ok(SqliteInventoryRegistration::new(
-        source,
-        SourceBackedRouteSelection::ExplicitManual,
-        SourceBackedSelectorAuthority::ExplicitPath,
-        crate::provider::providers::hermes::source_backed::replacement::HermesDocumentAdapter::new(
-            candidate,
-        ),
-        None,
-    ))
 }
 
 fn sqlite_inventory_watch_targets<'a>(

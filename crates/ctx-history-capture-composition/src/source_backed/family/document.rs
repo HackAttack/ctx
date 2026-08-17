@@ -82,6 +82,19 @@ where
     Ok(())
 }
 
+pub(crate) fn install_hermes_registration<A>(
+    registry: &mut SourceBackedProviderRegistry,
+    registration: ctx_history_provider_hermes::registration::HermesRegistration<A>,
+) -> SourceBackedCoordinatorResult<()>
+where
+    A: CaptureReplacementDocumentTree,
+{
+    let (source, selection, authority, adapter) = registration.into_parts();
+    register_replacement_document_tree_route_with_authority(
+        registry, source, selection, authority, adapter,
+    )
+}
+
 pub(crate) trait CaptureReplacementDocumentTree:
     ProviderReplacementDocumentTree<CaptureProviderRuntime>
 {

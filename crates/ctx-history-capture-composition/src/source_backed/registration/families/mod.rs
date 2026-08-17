@@ -2,12 +2,14 @@ use super::*;
 
 mod document;
 mod event_file;
+mod hermes;
 mod jsonl;
 mod sqlite;
 mod sqlite_inventory;
 
 pub use document::*;
 use event_file::*;
+pub use hermes::*;
 pub use jsonl::*;
 pub use sqlite::*;
 pub use sqlite_inventory::*;
@@ -87,6 +89,15 @@ fn register_landed_source_backed_route_inner(
         | CaptureProvider::Mux
         | CaptureProvider::OpenClaw
         | CaptureProvider::Qoder => jsonl::register_route(registry, source, selection),
+        CaptureProvider::Hermes => {
+            let data_root = data_root.ok_or_else(|| {
+                invalid_route(
+                    source.provider,
+                    "Hermes registration requires the selected ctx data root",
+                )
+            })?;
+            hermes::register_hermes_source_backed_route(registry, source, selection, data_root)
+        }
         CaptureProvider::OpenCode
         | CaptureProvider::Kilo
         | CaptureProvider::KiroCli
@@ -94,7 +105,6 @@ fn register_landed_source_backed_route_inner(
         | CaptureProvider::Firebender
         | CaptureProvider::ForgeCode
         | CaptureProvider::DeepAgents
-        | CaptureProvider::Hermes
         | CaptureProvider::Trae
         | CaptureProvider::MiMoCode => {
             let data_root = data_root.ok_or_else(|| {

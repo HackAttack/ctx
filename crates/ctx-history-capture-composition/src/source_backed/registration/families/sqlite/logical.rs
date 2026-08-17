@@ -63,25 +63,6 @@ pub(super) fn register_opencode_family_route(
     register_logical_plan(registry, selection, plan)
 }
 
-pub(super) fn register_hermes_route(
-    registry: &mut SourceBackedProviderRegistry,
-    source: ProviderSource,
-    selection: SourceBackedRouteSelection,
-    data_root: &Path,
-) -> SourceBackedCoordinatorResult<()> {
-    let provider = source.provider;
-    let registration =
-        ctx_history_providers_sqlite_inventory::registration::hermes_automatic_registration::<
-            crate::provider::source_backed::family::document::CaptureDocumentLifecycle,
-            crate::provider::source_backed::family::document::CaptureDocumentSpool,
-        >(source, selection, data_root)
-        .map_err(|error| invalid_route(provider, error.to_string()))?;
-    crate::provider::source_backed::family::document::install_sqlite_inventory_registration(
-        registry,
-        registration,
-    )
-}
-
 pub(super) fn register_trae_route(
     registry: &mut SourceBackedProviderRegistry,
     source: ProviderSource,

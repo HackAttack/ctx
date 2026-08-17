@@ -645,7 +645,6 @@ fn sqlite_inventory_uses_serial_bounded_streaming() {
         CaptureProvider::Crush,
         CaptureProvider::Lingma,
         CaptureProvider::Shelley,
-        CaptureProvider::Hermes,
     ] {
         assert_eq!(
             sqlite_inventory_leaf_execution_policy(provider),

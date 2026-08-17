@@ -7,7 +7,7 @@ use std::collections::BTreeSet;
 
 use rusqlite::{Connection, Row};
 
-use crate::provider::sqlite::{
+use crate::source_sqlite::{
     ensure_sqlite_table_columns, sqlite_table_columns, sqlite_table_exists,
 };
 use crate::{CaptureError, Result};

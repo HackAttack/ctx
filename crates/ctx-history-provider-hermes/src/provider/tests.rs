@@ -118,7 +118,7 @@ fn minimum_sqlite_rowid_is_distinct_from_the_initial_frontier() {
         )
         .unwrap();
 
-    let conn = crate::provider::sqlite::open_provider_sqlite_readonly(
+    let conn = crate::source_sqlite::open_provider_sqlite_readonly(
         crate::test_provider_sqlite_data_root(),
         &path,
     )
@@ -174,7 +174,7 @@ fn row_reader_scans_sessions_then_messages_and_rejects_before_hydration() {
         )
         .unwrap();
 
-    let conn = crate::provider::sqlite::open_provider_sqlite_readonly(
+    let conn = crate::source_sqlite::open_provider_sqlite_readonly(
         crate::test_provider_sqlite_data_root(),
         &path,
     )
@@ -203,7 +203,7 @@ fn oversized_non_tool_message_rejects_at_page_limit_without_hydration() {
     let path = temp.path().join("state.db");
     create_fixture(&path, "page-limit-session");
     let oversized =
-        i64::try_from(crate::provider::native_ingestion::NATIVE_INGESTION_PAGE_MAX_BYTES).unwrap();
+        i64::try_from(crate::native_ingestion::NATIVE_INGESTION_PAGE_MAX_BYTES).unwrap();
     assert!(usize::try_from(oversized).unwrap() < crate::MAX_PROVIDER_SQLITE_VALUE_BYTES);
     let connection = Connection::open(&path).unwrap();
     connection.execute("DELETE FROM messages", []).unwrap();
@@ -216,7 +216,7 @@ fn oversized_non_tool_message_rejects_at_page_limit_without_hydration() {
         .unwrap();
     drop(connection);
 
-    let conn = crate::provider::sqlite::open_provider_sqlite_readonly(
+    let conn = crate::source_sqlite::open_provider_sqlite_readonly(
         crate::test_provider_sqlite_data_root(),
         &path,
     )

@@ -20,6 +20,7 @@ ctx-history-provider-claude-cursor = { path = "../ctx-history-provider-claude-cu
 ctx-history-provider-codex = { path = "../ctx-history-provider-codex" }
 ctx-history-provider-docproj = { path = "../ctx-history-provider-docproj" }
 ctx-history-provider-gemini = { path = "../ctx-history-provider-gemini" }
+ctx-history-provider-hermes = { path = "../ctx-history-provider-hermes" }
 ctx-history-provider-mistral-mux = { path = "../ctx-history-provider-mistral-mux" }
 ctx-history-provider-native-jsonl = { path = "../ctx-history-provider-native-jsonl" }
 ctx-history-provider-runtime = { path = "../ctx-history-provider-runtime" }
@@ -41,6 +42,7 @@ uuid.workspace = true
 ctx-history-jsonl = { path = "../ctx-history-jsonl", features = ["test-support"] }
 ctx-history-provider-claude-cursor = { path = "../ctx-history-provider-claude-cursor", features = ["test-support"] }
 ctx-history-provider-codex = { path = "../ctx-history-provider-codex", features = ["test-support"] }
+ctx-history-provider-hermes = { path = "../ctx-history-provider-hermes", features = ["test-support"] }
 ctx-history-providers-sqlite-inventory = { path = "../ctx-history-providers-sqlite-inventory", features = ["test-support"] }
 ctx-history-providers-sqlite-selected = { path = "../ctx-history-providers-sqlite-selected", features = ["test-support"] }
 ctx-history-source-io = { path = "../ctx-history-source-io", features = ["test-support"] }

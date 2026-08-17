@@ -59,7 +59,7 @@ pub(crate) mod provider_sources {
 pub use source_backed::*;
 
 pub fn hermes_route_control_exact_due(control: &[u8], now_ms: i64) -> Option<bool> {
-    ctx_history_providers_sqlite_inventory::hermes_route_control_exact_due(control, now_ms)
+    ctx_history_provider_hermes::hermes_route_control_exact_due(control, now_ms)
 }
 
 pub fn hermes_route_control_exact_due_for_profile(
@@ -67,7 +67,7 @@ pub fn hermes_route_control_exact_due_for_profile(
     profile_source_descriptor: [u8; 32],
     now_ms: i64,
 ) -> Option<bool> {
-    ctx_history_providers_sqlite_inventory::hermes_route_control_exact_due_for_profile(
+    ctx_history_provider_hermes::hermes_route_control_exact_due_for_profile(
         control,
         profile_source_descriptor,
         now_ms,
@@ -75,7 +75,7 @@ pub fn hermes_route_control_exact_due_for_profile(
 }
 
 pub fn hermes_route_control_database_identity(control: &[u8]) -> Option<[u8; 32]> {
-    ctx_history_providers_sqlite_inventory::hermes_route_control_database_identity(control)
+    ctx_history_provider_hermes::hermes_route_control_database_identity(control)
 }
 
 #[cfg(test)]

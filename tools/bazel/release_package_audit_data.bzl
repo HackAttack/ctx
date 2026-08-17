@@ -21,6 +21,7 @@ RELEASE_PACKAGE_AUDIT_PACKAGE_DATA = [
     "//crates/ctx-history-cli:cargo_package_data",
     "//crates/ctx-history-capture-runtime:cargo_package_data",
     "//crates/ctx-history-provider-docproj:cargo_package_data",
+    "//crates/ctx-history-provider-hermes:cargo_package_data",
     "//crates/ctx-history-provider-runtime:cargo_package_data",
     "//crates/ctx-history-provider-claude-cursor:cargo_package_data",
     "//crates/ctx-history-provider-codex:cargo_package_data",

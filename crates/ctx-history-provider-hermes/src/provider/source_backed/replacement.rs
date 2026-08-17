@@ -1,7 +1,7 @@
 use std::{marker::PhantomData, ops::Deref, sync::Mutex};
 
 use super::*;
-use crate::provider::source_backed::{
+use crate::source_backed::{
     family::document::{
         ChangedDocumentSink, CompleteDocumentTree, DocumentAppendBase, DocumentBaseRoute,
         DocumentRecordSpool, DocumentSourceTerminal, ReplacementDocumentTree,
@@ -635,7 +635,7 @@ fn abort_hermes_route_snapshot(
 ) -> SourceBackedRouteError {
     match snapshot.abort() {
         Ok(()) => primary,
-        Err(cleanup) => crate::provider::source_backed::combine_primary_and_cleanup_route_errors(
+        Err(cleanup) => crate::source_backed::combine_primary_and_cleanup_route_errors(
             primary,
             hermes_sqlite_route_error(cleanup),
         ),
@@ -729,7 +729,7 @@ mod route_tests {
         assert_eq!(diagnostic.artifact, SqliteArtifactKind::PrivateSourceCopy);
         assert_eq!(diagnostic.sqlite_primary_code, Some(ffi::SQLITE_FULL));
         assert_eq!(
-            crate::provider_sources::sqlite_retry_decision(source),
+            crate::provider_sources::sqlite_retry_decision(&source),
             SqliteRetryDecision::RouteFatalResource
         );
         assert_eq!(

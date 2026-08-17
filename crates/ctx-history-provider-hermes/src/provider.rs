@@ -3,9 +3,7 @@ use ctx_history_core::{EventRole, EventType};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 
-use crate::provider::normalization::{
-    provider_nonnegative_i64_to_u64, provider_required_timestamp_seconds,
-};
+use crate::normalization::{provider_nonnegative_i64_to_u64, provider_required_timestamp_seconds};
 use crate::{record_evidence::RecordDigest, Result, HERMES_SQLITE_SOURCE_FORMAT};
 use ctx_history_capture_model::normalization::{
     provider_json_text, provider_role, provider_value_text,
@@ -41,7 +39,7 @@ pub(super) struct HermesNativeEvent {
     pub(super) complete_text: String,
 }
 
-pub(in crate::provider::providers::hermes) fn hermes_native_event(
+pub(in crate::provider) fn hermes_native_event(
     row: &HermesMessageRow,
     source_record_ordinal: u64,
 ) -> Result<HermesNativeEvent> {
@@ -165,5 +163,4 @@ fn hermes_event_type(row: &HermesMessageRow) -> EventType {
 }
 
 #[cfg(test)]
-#[path = "hermes/tests.rs"]
 mod tests;

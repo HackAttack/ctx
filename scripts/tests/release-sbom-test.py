@@ -74,6 +74,7 @@ WORKSPACE_PACKAGES = (
         "crates/ctx-history-provider-docproj",
     ),
     ("ctx-history-provider-gemini", "crates/ctx-history-provider-gemini"),
+    ("ctx-history-provider-hermes", "crates/ctx-history-provider-hermes"),
     (
         "ctx-history-provider-mistral-mux",
         "crates/ctx-history-provider-mistral-mux",
@@ -264,6 +265,7 @@ members = [
   "crates/ctx-history-provider-claude-cursor",
   "crates/ctx-history-provider-docproj",
   "crates/ctx-history-provider-gemini",
+  "crates/ctx-history-provider-hermes",
   "crates/ctx-history-provider-mistral-mux",
   "crates/ctx-history-provider-native-jsonl",
   "crates/ctx-history-provider-runtime",
@@ -411,6 +413,7 @@ uuid = "1.0.0"
                     "ctx-history-provider-codex = { path = \"../ctx-history-provider-codex\" }\n"
                     "ctx-history-provider-docproj = { path = \"../ctx-history-provider-docproj\" }\n"
                     "ctx-history-provider-gemini = { path = \"../ctx-history-provider-gemini\" }\n"
+                    "ctx-history-provider-hermes = { path = \"../ctx-history-provider-hermes\" }\n"
                     "ctx-history-provider-mistral-mux = { path = \"../ctx-history-provider-mistral-mux\" }\n"
                     "ctx-history-provider-native-jsonl = { path = \"../ctx-history-provider-native-jsonl\" }\n"
                     "ctx-history-provider-runtime = { path = \"../ctx-history-provider-runtime\" }\n"
@@ -461,6 +464,18 @@ uuid = "1.0.0"
                     "serde.workspace = true\n"
                     "serde_json.workspace = true\n"
                     "sha2.workspace = true\n"
+                    "thiserror.workspace = true"
+                ),
+                "ctx-history-provider-hermes": (
+                    "ctx-history-capture-model = { path = \"../ctx-history-capture-model\" }\n"
+                    "ctx-history-capture-runtime = { path = \"../ctx-history-capture-runtime\" }\n"
+                    "ctx-history-core = { path = \"../ctx-history-core\" }\n"
+                    "ctx-history-provider-runtime = { path = \"../ctx-history-provider-runtime\" }\n"
+                    "ctx-history-source-io = { path = \"../ctx-history-source-io\" }\n"
+                    "ctx-history-source-sqlite = { path = \"../ctx-history-source-sqlite\" }\n"
+                    "chrono.workspace = true\nrusqlite.workspace = true\n"
+                    "serde.workspace = true\nserde_json.workspace = true\n"
+                    "sha2.workspace = true\ntempfile.workspace = true\n"
                     "thiserror.workspace = true"
                 ),
                 "ctx-history-provider-docproj": (
@@ -715,6 +730,7 @@ repository = "https://example.invalid/{name}"
             "@@//crates/ctx-history-provider-claude-cursor:ctx_history_provider_claude_cursor",
             "@@//crates/ctx-history-provider-docproj:ctx_history_provider_docproj",
             "@@//crates/ctx-history-provider-gemini:ctx_history_provider_gemini",
+            "@@//crates/ctx-history-provider-hermes:ctx_history_provider_hermes",
             "@@//crates/ctx-history-provider-mistral-mux:ctx_history_provider_mistral_mux",
             "@@//crates/ctx-history-provider-native-jsonl:ctx_history_provider_native_jsonl",
             "@@//crates/ctx-history-provider-runtime:ctx_history_provider_runtime",

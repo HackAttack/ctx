@@ -52,10 +52,10 @@ pub(crate) fn exact_message_query_counters() -> (u64, u64) {
 
 use rusqlite::{params_from_iter, Connection, Statement};
 
-use crate::provider::{
+use crate::{
     native_ingestion::NATIVE_INGESTION_PAGE_MAX_BYTES,
     normalization::{provider_nonnegative_i64_to_u64, provider_required_timestamp_seconds},
-    sqlite::SqliteLengthPreflightGuard,
+    source_sqlite::SqliteLengthPreflightGuard,
 };
 use crate::{CaptureError, Result, MAX_PROVIDER_SQLITE_VALUE_BYTES};
 

@@ -3,10 +3,9 @@ use std::{
     sync::Arc,
 };
 
-use ctx_history_core::{SourceAnchor, TypedKey};
+use ctx_history_core::TypedKey;
 use ctx_history_providers_sqlite_inventory::registration::{
-    astrbot_registration, crush_registration, hermes_explicit_registration, lingma_registration,
-    shelley_registration,
+    astrbot_registration, crush_registration, lingma_registration, shelley_registration,
 };
 
 use super::*;
@@ -78,20 +77,5 @@ pub fn register_shelley_source_backed_route(
         source, data_root, exact_cwd,
     )
     .map_err(|error| invalid_route(provider, error.to_string()))?;
-    install_sqlite_inventory_registration(registry, registration)
-}
-
-pub fn register_hermes_explicit_source_backed_route(
-    registry: &mut SourceBackedProviderRegistry,
-    source: ProviderSource,
-    data_root: &Path,
-    anchor: SourceAnchor,
-) -> SourceBackedCoordinatorResult<()> {
-    let provider = source.provider;
-    let registration =
-        hermes_explicit_registration::<CaptureDocumentLifecycle, CaptureDocumentSpool>(
-            source, data_root, anchor,
-        )
-        .map_err(|error| invalid_route(provider, error.to_string()))?;
     install_sqlite_inventory_registration(registry, registration)
 }

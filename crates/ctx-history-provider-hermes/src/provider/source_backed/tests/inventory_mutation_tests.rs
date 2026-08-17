@@ -106,7 +106,7 @@ fn create_many_session_fixture(path: &Path) {
 
 fn reset_work_counters() {
     reset_logical_row_traversals();
-    crate::provider::providers::hermes::sqlite::reset_exact_message_query_counters();
+    crate::provider::sqlite::reset_exact_message_query_counters();
 }
 
 fn extend_events(records: Vec<HermesSourceBackedRecord>, events: &mut Vec<CoreRecord>) {
@@ -214,11 +214,11 @@ fn exact_refresh_retains_unchanged_sessions_and_bounds_changed_body_work() {
     assert_eq!(logical_row_traversals(), SESSION_COUNT as u64);
     assert_eq!(inventory_observation_rows(), (SESSION_COUNT * 2) as u64);
     assert_eq!(
-        crate::provider::providers::hermes::sqlite::exact_message_query_counters(),
+        crate::provider::sqlite::exact_message_query_counters(),
         (1, 0)
     );
     assert_eq!(
-        crate::provider::providers::hermes::sqlite::exact_message_spool_counters(),
+        crate::provider::sqlite::exact_message_spool_counters(),
         (1, 0, 1, SESSION_COUNT as u64, SESSION_COUNT as u64)
     );
 
@@ -246,11 +246,11 @@ fn exact_refresh_retains_unchanged_sessions_and_bounds_changed_body_work() {
     assert_eq!(inventory_observation_rows(), (SESSION_COUNT * 2) as u64);
     assert_eq!(logical_row_traversals(), 1);
     assert_eq!(
-        crate::provider::providers::hermes::sqlite::exact_message_query_counters(),
+        crate::provider::sqlite::exact_message_query_counters(),
         (1, 0)
     );
     assert_eq!(
-        crate::provider::providers::hermes::sqlite::exact_message_spool_counters(),
+        crate::provider::sqlite::exact_message_spool_counters(),
         (1, 0, 1, 1, 1)
     );
     assert_eq!(
@@ -366,11 +366,11 @@ fn exact_deletion_removes_one_source_and_retains_every_peer() {
     );
     assert_eq!(logical_row_traversals(), 0);
     assert_eq!(
-        crate::provider::providers::hermes::sqlite::exact_message_query_counters(),
+        crate::provider::sqlite::exact_message_query_counters(),
         (1, 0)
     );
     assert_eq!(
-        crate::provider::providers::hermes::sqlite::exact_message_spool_counters(),
+        crate::provider::sqlite::exact_message_spool_counters(),
         (1, 0, 0, 0, 0)
     );
     assert!(session_scan_receipts().is_empty());

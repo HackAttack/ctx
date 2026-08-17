@@ -1,22 +1,3 @@
-pub(crate) mod normalization {
-    use chrono::{DateTime, Utc};
-
-    use crate::{CaptureError, Result};
-
-    pub(crate) fn provider_nonnegative_i64_to_u64(value: i64, field: &'static str) -> Result<u64> {
-        ctx_history_capture_model::normalization::provider_nonnegative_i64_to_u64(value, field)
-            .map_err(CaptureError::InvalidPayload)
-    }
-
-    pub(crate) fn provider_required_timestamp_seconds(
-        value: f64,
-        field: &'static str,
-    ) -> Result<DateTime<Utc>> {
-        ctx_history_capture_model::normalization::provider_required_timestamp_seconds(value, field)
-            .map_err(CaptureError::InvalidPayload)
-    }
-}
-
 pub(crate) mod sqlite {
     use std::collections::BTreeSet;
 
@@ -103,41 +84,15 @@ pub(crate) mod source_backed {
         }
     }
 
-    pub(crate) fn sqlite_source_progress(
-        progress: ctx_history_source_sqlite::SqliteSourceProgress,
-    ) -> SourceBackedCurrentSourceProgress {
-        let stage = match progress.stage {
-            ctx_history_source_sqlite::SqliteSourceProgressStage::SourceFamilyCopy => {
-                SourceBackedCurrentSourceProgressStage::SourceFamilyCopy
-            }
-        };
-        SourceBackedCurrentSourceProgress {
-            stage,
-            snapshot_pages_completed: progress.snapshot_pages_completed,
-            snapshot_pages_total: progress.snapshot_pages_total,
-            snapshot_bytes_completed: progress.snapshot_bytes_completed,
-            snapshot_bytes_total: progress.snapshot_bytes_total,
-            logical_rows_scanned: None,
-            logical_certified_bytes: None,
-        }
-    }
-
     pub(crate) mod family {
         pub(crate) mod document {
             pub(crate) use crate::lifecycle::{
-                ChangedDocumentSink, CompleteDocumentTree, DocumentAppendBase, DocumentBaseRoute,
-                DocumentLeafExecutionPolicy, DocumentLeafFingerprint, DocumentRecordSpool,
-                DocumentSourceTerminal, ObservedDocumentLeaf, ReplacementDocumentTree,
+                ChangedDocumentSink, CompleteDocumentTree, DocumentLeafExecutionPolicy,
+                DocumentLeafFingerprint, DocumentRecordSpool, DocumentSourceTerminal,
+                ObservedDocumentLeaf, ReplacementDocumentTree,
             };
         }
     }
-}
-
-pub(crate) mod native_ingestion {
-    pub(crate) const NATIVE_INGESTION_PAGE_MAX_UNITS: usize =
-        crate::NATIVE_INGESTION_PAGE_MAX_UNITS;
-    pub(crate) const NATIVE_INGESTION_PAGE_MAX_BYTES: usize =
-        crate::NATIVE_INGESTION_PAGE_MAX_BYTES;
 }
 
 pub mod providers;
