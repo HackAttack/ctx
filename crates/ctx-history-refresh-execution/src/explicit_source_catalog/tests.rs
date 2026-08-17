@@ -120,6 +120,61 @@ mod tests {
     }
 
     #[test]
+    fn certified_missing_reactivation_does_not_retire_an_explicit_owner() {
+        let temp = tempfile::tempdir().unwrap();
+        let data_root = temp.path().join("data");
+        let explicit_path = temp.path().join("history.jsonl");
+        fs::write(&explicit_path, b"\n").unwrap();
+        let missing_source = provider_source_for_path(
+            CaptureProvider::Hermes,
+            temp.path().join(".hermes/state.db"),
+        );
+        let missing_route = ctx_history_capture::SourceBackedRoute::certified_missing(
+            missing_source,
+            ctx_history_capture::SourceBackedSelectorAuthority::DiscoveredWinner,
+        )
+        .unwrap();
+        let mut registry = SourceBackedProviderRegistry::new();
+        registry.register(missing_route);
+        let build = SourceBackedAutomaticRegistryBuild {
+            registry,
+            issues: Vec::new(),
+            discovery_duration: std::time::Duration::default(),
+        };
+        let automatic_route = build
+            .registry
+            .routes()
+            .find_map(|route| route.route_identity.clone())
+            .unwrap();
+        assert!(
+            build
+                .registry
+                .automatic_route_registration_sources(&automatic_route)
+                .is_none()
+        );
+
+        let retained = upsert_explicit_source(&data_root, &custom_source(explicit_path)).unwrap();
+        let previous_route =
+            ctx_history_index::SourceRouteIdentity::from_sha256("33".repeat(32)).unwrap();
+        let bindings = vec![ExplicitSourceCatalogRouteBinding {
+            catalog_lineage: retained.catalog_lineage_hex(),
+            route_identity: previous_route.as_str().to_owned(),
+        }];
+
+        assert_eq!(
+            retained
+                .authority
+                .automatic_reactivation_retirements(
+                    &bindings,
+                    &build,
+                    &BTreeSet::from([automatic_route.clone()]),
+                )
+                .unwrap(),
+            std::collections::BTreeMap::new()
+        );
+    }
+
+    #[test]
     fn grouped_automatic_route_reclaims_its_secondary_registration_root_only() {
         let temp = tempfile::tempdir().unwrap();
         let data_root = temp.path().join("data");

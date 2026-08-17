@@ -129,16 +129,16 @@ impl ExplicitSourceCatalogAuthority {
                 .as_ref()
                 .expect("reactivated automatic routes carry identities")
                 .clone();
-            let registration_sources = build
+            // A certified-missing automatic route is watchable but has no
+            // executable replacement driver. It cannot retire an explicit
+            // owner until a later discovery makes that same route executable.
+            let Some(registration_sources) = build
                 .registry
                 .automatic_route_registration_sources(&route_identity)
-                .ok_or_else(|| {
-                    anyhow!(
-                        "reactivated automatic route {} has no declared registration roots",
-                        route_identity.as_str()
-                    )
-                })?
-                .collect::<Vec<_>>();
+            else {
+                continue;
+            };
+            let registration_sources = registration_sources.collect::<Vec<_>>();
             let mut retired = Vec::new();
             for (entry, previous_route) in &bound_routes {
                 let entry_provider = entry.provider()?;
