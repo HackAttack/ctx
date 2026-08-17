@@ -187,6 +187,22 @@ class CapabilityMutationTests(unittest.TestCase):
         ][:1]
         self.assert_invalid("must name at least 2 authoritative exact tests")
 
+    def test_non_codex_exact_checks_require_three_authoritative_tests(self) -> None:
+        baseline = self.capability
+        try:
+            for provider_id in ("warp", "copilot_cli"):
+                with self.subTest(provider_id=provider_id):
+                    self.capability = copy.deepcopy(baseline)
+                    check = next(
+                        check
+                        for check in self.capability["exact_checks"]
+                        if check["provider_id"] == provider_id
+                    )
+                    check["tests"] = check["tests"][:2]
+                    self.assert_invalid("must name at least 3 authoritative exact tests")
+        finally:
+            self.capability = baseline
+
     def test_stale_helper_claim_is_rejected(self) -> None:
         self.capability["exact_checks"][0]["tests"][0]["id"] = "mcp_result"
         self.assert_invalid(r"does not name a #\[test\] function")
