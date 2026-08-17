@@ -38,9 +38,16 @@ pub(super) fn mux_bounded_session_metadata_from_bytes(
     bytes: Option<&[u8]>,
 ) -> Result<MuxBoundedSessionMetadata> {
     let mut summary = ProviderImportSummary::default();
-    let raw_lineage = bytes
-        .and_then(|bytes| mux_raw_lineage_authority(bytes).ok())
-        .unwrap_or_default();
+    let raw_lineage = match bytes {
+        None => MuxRawLineageAuthority::default(),
+        Some(bytes) => match mux_raw_lineage_authority(bytes) {
+            Ok(authority) => authority,
+            Err(_) => MuxRawLineageAuthority {
+                audit_failed: true,
+                ..MuxRawLineageAuthority::default()
+            },
+        },
+    };
     let metadata = match bytes {
         None => Value::Null,
         Some(bytes) => match serde_json::from_slice::<Value>(bytes) {
@@ -128,7 +135,8 @@ fn mux_bounded_session_metadata_from_value(
         && root_provider_session_id
             .as_deref()
             .is_some_and(|root| root == provider_session_id);
-    let lineage_ambiguous = raw_lineage.parent_duplicate
+    let lineage_ambiguous = raw_lineage.audit_failed
+        || raw_lineage.parent_duplicate
         || raw_lineage.root_duplicate
         || parent_aliases.ambiguous
         || root_aliases.ambiguous
@@ -166,6 +174,7 @@ fn mux_bounded_session_metadata_from_value(
 
 #[derive(Debug, Clone, Copy, Default)]
 struct MuxRawLineageAuthority {
+    audit_failed: bool,
     parent_duplicate: bool,
     root_duplicate: bool,
 }

@@ -759,6 +759,75 @@ mod tests {
         assert_eq!(record.root_session_id, None);
     }
 
+    fn duplicate_then_depth_exhausted_metadata() -> Vec<u8> {
+        let depth = 256;
+        let mut raw = br#"{
+            "workspaceId": "mux-child",
+            "parentSessionId": "metadata-parent",
+            "parentSessionId": "duplicate-parent",
+            "unrelated":
+        "#
+        .to_vec();
+        raw.extend(std::iter::repeat_n(b'[', depth));
+        raw.extend_from_slice(b"null");
+        raw.extend(std::iter::repeat_n(b']', depth));
+        raw.push(b'}');
+        raw
+    }
+
+    #[test]
+    fn failed_raw_lineage_audit_projects_unknown_with_or_without_path_parent() {
+        let malformed = br#"{
+            "workspaceId": "mux-child",
+            "parentSessionId": "metadata-parent",
+            "parentSessionId": "duplicate-parent",
+            "unrelated":
+        "#
+        .to_vec();
+        let depth_exhausted = duplicate_then_depth_exhausted_metadata();
+
+        for (failure_kind, raw) in [
+            ("malformed", malformed.as_slice()),
+            ("depth-exhausted", depth_exhausted.as_slice()),
+        ] {
+            for path_parent in [None, Some("mux-path-parent")] {
+                let temp = tempfile::tempdir().unwrap();
+                let native = crate::mux::source::MuxSessionSource {
+                    session_dir: temp.path().join("mux-child"),
+                    chat_path: None,
+                    partial_path: None,
+                    metadata_path: None,
+                    provider_session_id: "mux-child".to_owned(),
+                    parent_provider_session_id: path_parent.map(str::to_owned),
+                };
+                let metadata = crate::mux::metadata::mux_bounded_session_metadata_from_bytes(
+                    &native,
+                    &format!("mux-test-{failure_kind}"),
+                    "2026-08-05T12:00:00Z".parse().unwrap(),
+                    Some(raw),
+                )
+                .unwrap();
+                assert!(metadata.lineage_ambiguous, "{failure_kind} {path_parent:?}");
+                assert!(metadata.metadata_failure.is_some());
+                assert_eq!(
+                    metadata.parent_provider_session_id.as_deref(),
+                    path_parent,
+                    "{failure_kind}"
+                );
+
+                let record = project_metadata_fixture(temp.path(), metadata, [10; 32]);
+                assert_eq!(record.agent_scope, None, "{failure_kind} {path_parent:?}");
+                assert_eq!(record.session_relationship, None);
+                assert_eq!(record.parent_session_id, None);
+                assert_eq!(record.root_session_id, None);
+                assert_eq!(
+                    record.content.meaningful_text(),
+                    "exact child-owned Mux event"
+                );
+            }
+        }
+    }
+
     #[test]
     fn provider_textual_result_over_16k_is_complete() {
         let tail = "mux_success_result_tail_complete";
