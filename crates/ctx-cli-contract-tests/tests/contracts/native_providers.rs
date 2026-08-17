@@ -106,8 +106,11 @@ fn qwen_kimi_mistral_mux_and_qoder_default_sources_import_search_and_reimport() 
             query,
             "--provider",
             cli_provider,
+            "--include-subagents",
             "--refresh",
             "off",
+            "--limit",
+            "1",
             "--format=json",
         ]));
         assert_source_backed_search(&search, stored_provider, query);
@@ -154,6 +157,7 @@ fn mimocode_default_and_env_sources_import_search_and_reimport() {
         default_query,
         "--provider",
         "mimo-code",
+        "--include-subagents",
         "--refresh",
         "wait",
         "--format=json",
@@ -221,6 +225,7 @@ fn mimocode_default_and_env_sources_import_search_and_reimport() {
         home_query,
         "--provider",
         "mimocode",
+        "--include-subagents",
         "--refresh",
         "off",
         "--format=json",
@@ -247,6 +252,7 @@ fn mimocode_default_and_env_sources_import_search_and_reimport() {
         custom_query,
         "--provider",
         "mimocode",
+        "--include-subagents",
         "--refresh",
         "off",
         "--format=json",
@@ -326,6 +332,7 @@ fn windsurf_default_discovery_is_native_and_search_refresh_imports() {
         query,
         "--provider",
         "windsurf",
+        "--include-subagents",
         "--refresh",
         "wait",
         "--format=json",
@@ -405,6 +412,7 @@ fn copilot_cli_import_skips_symlinked_session_files_checkout() {
         query,
         "--provider",
         "copilot-cli",
+        "--include-subagents",
         "--refresh",
         "off",
         "--format=json",
@@ -415,6 +423,7 @@ fn copilot_cli_import_skips_symlinked_session_files_checkout() {
         outside_query,
         "--provider",
         "copilot-cli",
+        "--include-subagents",
         "--refresh",
         "off",
         "--format=json",
@@ -731,8 +740,11 @@ fn native_provider_cli_flow_imports_supported_provider_paths() {
             &query,
             "--provider",
             cli_provider,
+            "--include-subagents",
             "--refresh",
             "off",
+            "--limit",
+            "1",
             "--format=json",
         ]));
         assert_search_provider_oracle(&search, stored_provider, &query, 1, "message");
@@ -848,6 +860,7 @@ fn native_provider_cli_preserves_complete_tool_outputs_without_legacy_payloads()
             query,
             "--provider",
             provider,
+            "--include-subagents",
             "--refresh",
             "off",
             "--format=json",
@@ -859,6 +872,7 @@ fn native_provider_cli_preserves_complete_tool_outputs_without_legacy_payloads()
             sentinel,
             "--provider",
             provider,
+            "--include-subagents",
             "--refresh",
             "off",
             "--format=json",
@@ -875,13 +889,15 @@ fn native_provider_cli_preserves_complete_tool_outputs_without_legacy_payloads()
         assert!(
             provider_core_records(&data_root(&temp), provider)
                 .iter()
-                .all(|record| serde_json::to_value(record)
+                .all(|record| !serde_json::to_value(record)
                     .unwrap()
-                    .get("repository_file_observations")
-                    .is_none()),
+                    .as_object()
+                    .unwrap()
+                    .contains_key("repository_file_observations")),
             "unscoped file paths must not cross the Core repository boundary"
         );
     }
 }
 
+#[path = "native_providers/additional.rs"]
 mod additional;

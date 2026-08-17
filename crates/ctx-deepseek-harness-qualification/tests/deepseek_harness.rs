@@ -294,6 +294,7 @@ impl Harness {
             query,
             "--provider",
             "deepseek-harness",
+            "--include-subagents",
             "--refresh",
             "off",
             "--format=json",
@@ -909,12 +910,14 @@ fn automatic_default_and_dsh_home_discovery_keep_parent_and_child_independent() 
         let child_result = one_matching_result(&child_search, CHILD_ORACLE);
         assert_eq!(parent_result["provider_session_id"], PARENT_SESSION_ID);
         assert_eq!(child_result["provider_session_id"], CHILD_SESSION_ID);
-        assert_eq!(
-            parent_result["session_relationship"], "root",
+        assert_eq!(parent_result["agent_scope"], "primary", "{parent_result:#}");
+        assert_eq!(child_result["agent_scope"], "subagent", "{child_result:#}");
+        assert!(
+            parent_result["session_relationship"].is_null(),
             "{parent_result:#}"
         );
-        assert_eq!(
-            child_result["session_relationship"], "root",
+        assert!(
+            child_result["session_relationship"].is_null(),
             "{child_result:#}"
         );
         assert_ne!(

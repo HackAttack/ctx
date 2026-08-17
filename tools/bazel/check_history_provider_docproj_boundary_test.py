@@ -7,7 +7,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from check_history_provider_docproj_boundary import BoundaryError, EXPECTED_SOURCES, validate
+from check_history_provider_docproj_boundary import BoundaryError, validate
 
 
 MANIFEST = """\
@@ -54,7 +54,14 @@ COMPOSITION_BUILD = '"//crates/ctx-history-provider-docproj:lib"\n'
 FACADES = "pub(crate) mod nanoclaw;\npub(crate) mod openhands;\n"
 DOCUMENT = 'NanoClawDocumentTreeAdapter::<CaptureProviderRuntime>::new_with_base_sources'
 EVENT_FILE = 'OpenHandsEventFileAdapterV2::<CaptureProviderRuntime>'
-EXPECTED_ADVERSARIAL_MUTATION_COUNT = 12
+SOURCE_PATHS = {
+    "lib.rs",
+    "providers/mod.rs",
+    "providers/auggie.rs",
+    "providers/nanoclaw.rs",
+    "providers/openhands.rs",
+}
+EXPECTED_ADVERSARIAL_MUTATION_COUNT = 14
 
 
 class DocumentProjectionBoundaryMutationTests(unittest.TestCase):
@@ -76,7 +83,7 @@ class DocumentProjectionBoundaryMutationTests(unittest.TestCase):
                               (self.facades, FACADES), (self.document, DOCUMENT), (self.event_file, EVENT_FILE)):
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_text(content, encoding="utf-8")
-        for relative in EXPECTED_SOURCES:
+        for relative in SOURCE_PATHS:
             path = self.manifest.parent / "src" / relative
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_text(SOURCE if relative == "lib.rs" else "", encoding="utf-8")
@@ -156,6 +163,18 @@ class DocumentProjectionBoundaryMutationTests(unittest.TestCase):
     def test_mutation_openhands_capture_runtime_binding_is_required(self) -> None:
         self.event_file.write_text("OpenHandsEventFileAdapterV2", encoding="utf-8")
         with self.assertRaisesRegex(BoundaryError, "OpenHands registration"):
+            self.check()
+
+    def test_mutation_split_companion_does_not_stale_source_ownership(self) -> None:
+        companion = self.manifest.parent / "src/providers/nanoclaw/project/helper.rs"
+        companion.parent.mkdir(parents=True, exist_ok=True)
+        companion.write_text("pub(super) fn helper() {}\n", encoding="utf-8")
+        self.check()
+
+    def test_mutation_unowned_provider_source_is_rejected(self) -> None:
+        unexpected = self.manifest.parent / "src/providers/gemini.rs"
+        unexpected.write_text("pub fn leaked_provider() {}\n", encoding="utf-8")
+        with self.assertRaisesRegex(BoundaryError, "source ownership drifted"):
             self.check()
 
 

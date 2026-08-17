@@ -239,15 +239,16 @@ fn byte_bounded_search_snippet(
         .map(|(start, grapheme)| start..start.saturating_add(grapheme.len()))
         .collect::<Vec<_>>();
     let matched = query_match_range(snippet, query_texts);
-    let match_containing = matched
-        .as_ref()
-        .and_then(|matched| grapheme_span_covering_match(&graphemes, matched))
-        .filter(|required| grapheme_window_bytes(&graphemes, required) <= SEARCH_SNIPPET_MAX_BYTES)
-        .and_then(|required| {
-            match_containing_grapheme_window(&graphemes, &required, matched.as_ref())
-        });
-    let window =
-        match_containing.or_else(|| fallback_grapheme_window(&graphemes, matched.as_ref()));
+    let window = match matched.as_ref() {
+        Some(matched) => grapheme_span_covering_match(&graphemes, matched)
+            .filter(|required| {
+                grapheme_window_bytes(&graphemes, required) <= SEARCH_SNIPPET_MAX_BYTES
+            })
+            .and_then(|required| {
+                match_containing_grapheme_window(&graphemes, &required, Some(matched))
+            }),
+        None => fallback_grapheme_window(&graphemes, None),
+    };
     let Some(window) = window else {
         return (String::new(), true);
     };

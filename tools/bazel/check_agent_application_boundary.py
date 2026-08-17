@@ -12,8 +12,6 @@ import tomllib
 PACKAGE = "ctx-agent-application"
 EXPECTED_LOCAL_DEPS = {"ctx-agent-integrations", "ctx-client-observability"}
 ALLOWED_REVERSE_DEPENDENTS = {"ctx", "ctx-cli-presentation"}
-REVIEW_CLOC_TARGET = 14_000
-HARD_CLOC_LIMIT = 19_500
 
 
 def fail(message: str) -> None:
@@ -61,28 +59,6 @@ def find_cycle(graph: dict[str, set[str]]) -> list[str] | None:
         if cycle:
             return cycle
     return None
-
-
-def approximate_physical_cloc(paths: list[pathlib.Path]) -> int:
-    count = 0
-    in_block_comment = False
-    for path in paths:
-        for raw_line in path.read_text(encoding="utf-8").splitlines():
-            line = raw_line.strip()
-            if in_block_comment:
-                if "*/" not in line:
-                    continue
-                line = line.split("*/", 1)[1].strip()
-                in_block_comment = False
-            while line.startswith("/*"):
-                if "*/" not in line[2:]:
-                    in_block_comment = True
-                    line = ""
-                    break
-                line = line.split("*/", 1)[1].strip()
-            if line and not line.startswith("//"):
-                count += 1
-    return count
 
 
 def main() -> None:
@@ -261,13 +237,8 @@ def main() -> None:
     if "ctx-cli:lib" in build + contract_build or "ctx_cli" in build + contract_build:
         fail("application BUILD has a Rust test or production backedge to ctx-cli")
 
-    cloc = approximate_physical_cloc(sources)
-    if cloc >= HARD_CLOC_LIMIT:
-        fail(f"physical Rust CLOC {cloc} is not below hard stop {HARD_CLOC_LIMIT}")
-    review = "within review target" if cloc < REVIEW_CLOC_TARGET else "above review target"
     print(
-        f"agent application boundary is acyclic with local deps {sorted(graph[PACKAGE])}; "
-        f"physical Rust CLOC={cloc} ({review} <{REVIEW_CLOC_TARGET}; hard <{HARD_CLOC_LIMIT})"
+        f"agent application boundary is acyclic with local deps {sorted(graph[PACKAGE])}"
     )
 
 

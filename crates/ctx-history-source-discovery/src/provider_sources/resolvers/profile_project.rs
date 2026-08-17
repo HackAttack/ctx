@@ -398,6 +398,8 @@ fn hermes_sticky_profile(
 
 mod nanoclaw;
 use nanoclaw::resolve_nanoclaw;
+#[cfg(test)]
+use nanoclaw::{nanoclaw_sha1_slug, nanoclaw_systemd_registry_dirs};
 fn resolve_astrbot(
     probes: &StaticProviderProbeCatalog,
     context: &DiscoveryContext,

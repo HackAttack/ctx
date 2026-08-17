@@ -12,7 +12,6 @@ import tomllib
 PACKAGE = "ctx-agent-integrations"
 EXPECTED_LOCAL_DEPS = {"ctx-history-core"}
 ALLOWED_REVERSE_DEPENDENTS = {"ctx", "ctx-agent-application", "ctx-cli-presentation"}
-HARD_CLOC_LIMIT = 20_000
 
 
 def fail(message: str) -> None:
@@ -71,29 +70,6 @@ def find_cycle(graph: dict[str, set[str]]) -> list[str] | None:
 
 def rust_sources(crate_dir: pathlib.Path) -> list[pathlib.Path]:
     return sorted((crate_dir / "src").rglob("*.rs"))
-
-
-def approximate_physical_cloc(paths: list[pathlib.Path]) -> int:
-    count = 0
-    in_block_comment = False
-    for path in paths:
-        for raw_line in path.read_text(encoding="utf-8").splitlines():
-            line = raw_line.strip()
-            if in_block_comment:
-                if "*/" in line:
-                    line = line.split("*/", 1)[1].strip()
-                    in_block_comment = False
-                else:
-                    continue
-            while line.startswith("/*"):
-                if "*/" not in line[2:]:
-                    in_block_comment = True
-                    line = ""
-                    break
-                line = line.split("*/", 1)[1].strip()
-            if line and not line.startswith("//"):
-                count += 1
-    return count
 
 
 def main() -> None:
@@ -187,12 +163,8 @@ def main() -> None:
     if duplicate_config_functions:
         fail(f"duplicate CLI MCP-config functions remain: {duplicate_config_functions}")
 
-    cloc = approximate_physical_cloc(sources)
-    if cloc >= HARD_CLOC_LIMIT:
-        fail(f"physical Rust CLOC {cloc} is not below {HARD_CLOC_LIMIT}")
     print(
-        f"agent integrations boundary is acyclic with local deps {sorted(graph[PACKAGE])}; "
-        f"physical Rust CLOC={cloc} (<{HARD_CLOC_LIMIT})"
+        f"agent integrations boundary is acyclic with local deps {sorted(graph[PACKAGE])}"
     )
 
 

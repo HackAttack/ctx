@@ -205,7 +205,14 @@ fn codex_nested_root_advisory_is_admitted_from_each_childs_own_bytes() {
     let grandchild_record = by_marker(grandchild_marker);
     let great_grandchild_record = by_marker(great_grandchild_marker);
     assert_eq!(root_record.provider_session_id.as_deref(), Some(root));
-    assert!(root_record.root_session_id.is_none());
+    assert_eq!(
+        root_record
+            .session_relationship
+            .as_ref()
+            .map(|relationship| relationship.as_str()),
+        Some("root")
+    );
+    assert_eq!(root_record.root_session_id, Some(root_record.session_id));
     assert!(root_record.parent_session_id.is_none());
     assert_eq!(child_record.provider_session_id.as_deref(), Some(child));
     assert_eq!(child_record.parent_session_id, Some(root_record.session_id));
@@ -668,8 +675,14 @@ fn explicit_child_without_selected_parent_publishes_unresolved_and_never_reroots
             record.content.normalized_body.as_deref() == Some("missingparentchildmarker")
         })
         .unwrap();
-    assert!(selected.session_relationship.is_none());
-    assert!(selected.root_session_id.is_none());
+    assert_eq!(
+        selected
+            .session_relationship
+            .as_ref()
+            .map(|relationship| relationship.as_str()),
+        Some("root")
+    );
+    assert_eq!(selected.root_session_id, Some(selected.session_id));
     assert!(selected.parent_session_id.is_none());
     assert_eq!(
         child
@@ -704,9 +717,15 @@ fn assert_codex_parent_child_records(
         .iter()
         .find(|record| record.content.normalized_body.as_deref() == Some(child_marker))
         .unwrap();
-    assert!(parent.session_relationship.is_none());
+    assert_eq!(
+        parent
+            .session_relationship
+            .as_ref()
+            .map(|relationship| relationship.as_str()),
+        Some("root")
+    );
     assert!(parent.parent_session_id.is_none());
-    assert!(parent.root_session_id.is_none());
+    assert_eq!(parent.root_session_id, Some(parent.session_id));
     assert_eq!(
         child
             .session_relationship

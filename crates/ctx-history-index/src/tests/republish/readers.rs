@@ -1,3 +1,4 @@
+use super::additional::{spawn_republish_subprocess, subprocess_paths, wait_for_subprocess_marker};
 use super::*;
 
 #[test]

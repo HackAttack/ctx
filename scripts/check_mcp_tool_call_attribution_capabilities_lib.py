@@ -869,7 +869,7 @@ def validate_public_docs(
     required = (
         "Codex `codex_session_jsonl_tree` / `codex-nativepath-jsonl-v0`",
         "48 capability lanes: three `exact`, 44 `not-qualified`, and one `excluded`",
-        "`codex-nativepath-core-activity-v5-empty-result-text-retrieval-exclusion`",
+        "`codex-nativepath-core-activity-v6-command-output-retrieval-exclusion`",
         "`warp-source-backed-logical-v7-neutral-activity-agent-scope`",
         "`copilot-cli-direct-native-jsonl-v7-core-activity`",
         "`activity.invocation`",

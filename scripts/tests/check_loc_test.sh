@@ -2,8 +2,11 @@
 set -euo pipefail
 
 readonly scripts_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+readonly repository_root="$(cd "${scripts_dir}/.." && pwd)"
 readonly checker_shell="${scripts_dir}/check-loc.sh"
 readonly checker_python="${scripts_dir}/check-loc.py"
+readonly policy_checker="${scripts_dir}/check-repository-policy.sh"
+readonly inventory_checker="${repository_root}/tools/bazel/check_rust_target_inventory.py"
 readonly test_root="$(mktemp -d "${TMPDIR:-/tmp}/ctx-loc-test.XXXXXX")"
 current_repo=''
 
@@ -69,6 +72,28 @@ expect_fail() {
     *)
       printf '%s\n' "${output}" >&2
       fail "failure did not contain expected text: ${expected}"
+      ;;
+  esac
+}
+
+run_repository_policy() {
+  local repo="$1"
+  (cd "${repo}" && bash scripts/check-repository-policy.sh)
+}
+
+expect_repository_policy_fail() {
+  local repo="$1"
+  local expected="$2"
+  local output
+  if output="$(run_repository_policy "${repo}" 2>&1)"; then
+    printf '%s\n' "${output}" >&2
+    fail "expected repository policy to fail in ${repo}"
+  fi
+  case "${output}" in
+    *"${expected}"*) ;;
+    *)
+      printf '%s\n' "${output}" >&2
+      fail "repository-policy failure did not contain expected text: ${expected}"
       ;;
   esac
 }
@@ -145,6 +170,19 @@ write_lines "${current_repo}/fixtures/example.rs" 2001
 write_lines "${current_repo}/BUILD.bazel" 2001
 git -C "${current_repo}" add docs/example.py fixtures/example.rs BUILD.bazel
 expect_pass "${current_repo}"
+
+new_repo repository_policy_subprocess_shadow
+cp "${policy_checker}" "${current_repo}/scripts/check-repository-policy.sh"
+mkdir -p "${current_repo}/tools/bazel"
+cp "${inventory_checker}" "${current_repo}/tools/bazel/check_rust_target_inventory.py"
+printf '# policy root\n' > "${current_repo}/BUILD.bazel"
+printf "open('subprocess-shadow-executed', 'w', encoding='utf-8').write('executed')\nraise SystemExit(0)\n" \
+  > "${current_repo}/scripts/subprocess.py"
+write_lines "${current_repo}/src/large.rs" 1001
+expect_repository_policy_fail "${current_repo}" 'src/large.rs (source): 1001 lines > limit 1000'
+if [[ -e "${current_repo}/subprocess-shadow-executed" ]]; then
+  fail 'candidate scripts/subprocess.py was imported by repository policy'
+fi
 
 new_repo bazel_execroot
 printf 'bazel-*\n' > "${current_repo}/.gitignore"

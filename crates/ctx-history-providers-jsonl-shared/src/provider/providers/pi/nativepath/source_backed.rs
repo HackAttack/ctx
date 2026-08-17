@@ -51,7 +51,7 @@ const NATIVE_EVENT_NAMESPACE: &str = "pi.entry";
 const LOGICAL_SESSION_KIND: &str = "pi-session";
 const LOGICAL_EVENT_KIND: &str = "pi-event";
 const SOURCE_SCHEMA_VARIANT: &str = "pi-nativepath-jsonl-v1";
-const PARSER_REVISION: &str = "pi-shared-jsonl-v5-core-activity";
+const PARSER_REVISION: &str = "pi-shared-jsonl-v6-linked-core-activity";
 const EVENT_IDENTITY_REVISION: &str = "pi-content-occurrence-v1";
 const FALLBACK_FINGERPRINT_DOMAIN: &[u8] = b"ctx.pi.fallback-event-fingerprint.v1\0";
 const MAX_TOUCHES_PER_RECORD: usize = 63;
@@ -597,6 +597,9 @@ fn resolve_pi_lineage(discovered: &mut [DiscoveredPiSource]) -> Result<()> {
 
 fn projected_body(value: &Value, event_type: EventType) -> Option<String> {
     let is_output = matches!(event_type, EventType::ToolOutput | EventType::CommandOutput);
+    if is_output && pi_explicit_success(value, event_type) {
+        return None;
+    }
     let text = if is_output {
         pi_result_content(value).or_else(|| pi_entry_text(value, value.get("message")))
     } else {
@@ -608,6 +611,24 @@ fn projected_body(value: &Value, event_type: EventType) -> Option<String> {
     } else {
         text
     })
+}
+
+fn pi_explicit_success(value: &Value, event_type: EventType) -> bool {
+    let Some(message) = value.get("message") else {
+        return false;
+    };
+    match event_type {
+        EventType::ToolOutput => {
+            message.get("role").and_then(Value::as_str) == Some("toolResult")
+                && message.get("isError").and_then(Value::as_bool) == Some(false)
+        }
+        EventType::CommandOutput => {
+            message.get("role").and_then(Value::as_str) == Some("bashExecution")
+                && message.get("exitCode").and_then(Value::as_i64) == Some(0)
+                && message.get("cancelled").and_then(Value::as_bool) == Some(false)
+        }
+        _ => false,
+    }
 }
 
 fn literal_facts(value: &Value) -> Result<Vec<ProviderDeclaredFact>> {
@@ -648,7 +669,7 @@ fn pi_activity(
         .into_iter()
         .filter_map(|field| message.get(field).and_then(Value::as_str))
         .collect::<Vec<_>>();
-    let invocation = if event_type == EventType::ToolCall {
+    let invocation = if provider_call_id.is_some() && event_type == EventType::ToolCall {
         match tools.as_slice() {
             [tool] if !tool.is_empty() => Some(ActivityInvocation {
                 protocol: None,
@@ -668,20 +689,19 @@ fn pi_activity(
     } else {
         None
     };
-    let result =
-        matches!(event_type, EventType::ToolOutput | EventType::CommandOutput).then(|| {
-            ActivityResult {
-                status: None,
-                completed_at_unix_ms: None,
-                duration_ns: None,
-                text: ActivityTextCapture::Present {
-                    value: body.to_owned(),
-                },
-                structured_content: ActivityJsonCapture::Present {
-                    value: message.clone(),
-                },
-            }
-        });
+    let result = (provider_call_id.is_some()
+        && matches!(event_type, EventType::ToolOutput | EventType::CommandOutput))
+    .then(|| ActivityResult {
+        status: None,
+        completed_at_unix_ms: None,
+        duration_ns: None,
+        text: ActivityTextCapture::Present {
+            value: body.to_owned(),
+        },
+        structured_content: ActivityJsonCapture::Present {
+            value: message.clone(),
+        },
+    });
     if provider_call_id.is_none() && invocation.is_none() && result.is_none() && facts.is_empty() {
         return Ok(None);
     }
@@ -763,4 +783,106 @@ fn is_historical_omp_root(path: &Path) -> bool {
 
 fn contract(error: impl std::fmt::Display) -> CaptureError {
     CaptureError::InvalidPayload(error.to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn unlinked_output_withholds_result_but_preserves_literal_facts() {
+        let message = serde_json::json!({
+            "type": "bashExecution",
+            "output": "future output",
+        });
+        let facts = vec![ProviderDeclaredFact {
+            kind: LiteralFactKind::Command,
+            value: "printf future".to_owned(),
+        }];
+
+        let activity = pi_activity(
+            &message,
+            EventType::CommandOutput,
+            "future output",
+            facts.clone(),
+        )
+        .unwrap()
+        .unwrap();
+
+        assert!(activity.provider_call_id.is_none());
+        assert!(activity.invocation.is_none());
+        assert!(activity.result.is_none());
+        assert_eq!(activity.facts, facts);
+    }
+
+    #[test]
+    fn exact_call_id_retains_linked_output_result() {
+        let message = serde_json::json!({
+            "type": "toolResult",
+            "toolCallId": "pi-call-1",
+            "content": "provider output",
+        });
+
+        let activity = pi_activity(
+            &message,
+            EventType::ToolOutput,
+            "provider output",
+            Vec::new(),
+        )
+        .unwrap()
+        .unwrap();
+
+        assert_eq!(
+            activity.provider_call_id,
+            Some(TypedKey::utf8("pi-call-1").unwrap())
+        );
+        assert!(activity.invocation.is_none());
+        assert!(activity.result.is_some());
+    }
+
+    #[test]
+    fn explicit_success_outputs_are_not_projected_but_failures_remain() {
+        let successful_tool = serde_json::json!({
+            "type": "message",
+            "message": {
+                "role": "toolResult",
+                "toolCallId": "pi-call-success",
+                "content": "done",
+                "isError": false,
+            },
+        });
+        assert_eq!(
+            projected_body(&successful_tool, EventType::ToolOutput),
+            None
+        );
+
+        let successful_command = serde_json::json!({
+            "type": "message",
+            "message": {
+                "role": "bashExecution",
+                "command": "true",
+                "output": "done",
+                "exitCode": 0,
+                "cancelled": false,
+            },
+        });
+        assert_eq!(
+            projected_body(&successful_command, EventType::CommandOutput),
+            None
+        );
+
+        let failed_tool = serde_json::json!({
+            "type": "message",
+            "message": {
+                "role": "toolResult",
+                "toolCallId": "pi-call-failed",
+                "content": "failure details",
+                "isError": true,
+            },
+        });
+        assert_eq!(
+            projected_body(&failed_tool, EventType::ToolOutput).as_deref(),
+            Some("failure details")
+        );
+    }
 }

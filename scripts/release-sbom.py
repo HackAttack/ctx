@@ -42,7 +42,7 @@ try:
         tantivy_closure,
         target_package_identities,
     )
-    from release_sbom.generation import build_bundle, load_core_build_info
+    from release_sbom.generation import build_bundle, load_core_build_info, target_contract
 finally:
     del sys.path[0]
 del _SCRIPT_DIRECTORY

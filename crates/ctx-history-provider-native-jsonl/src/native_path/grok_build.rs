@@ -9,7 +9,7 @@ use crate::NativeJsonlRuntime;
 
 pub const GROK_BUILD_SOURCE_FORMAT: &str = "grok_build_session_updates_jsonl";
 
-const PARSER_REVISION: &str = "direct-native-jsonl-parser-v6-core-activity";
+const PARSER_REVISION: &str = "direct-native-jsonl-parser-v7-grok-closed-content";
 
 pub const fn grok_build_source_backed_adapter<R: NativeJsonlRuntime>(
 ) -> super::DirectJsonlFamilyAdapter<R> {
@@ -26,6 +26,7 @@ pub(crate) fn grok_build_file_is_selected(path: &Path) -> bool {
 }
 
 pub(super) use grok_build::{
+    contentless_result_evidence as grok_build_contentless_result_evidence,
     event_identity as grok_build_event_identity, event_text as grok_build_event_text,
     event_type as grok_build_event_type, header_session_id as grok_build_header_session_id,
     role as grok_build_role, structured_tool_call_text as grok_build_structured_tool_call_text,

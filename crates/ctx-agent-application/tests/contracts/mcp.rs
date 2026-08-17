@@ -65,7 +65,7 @@ fn mcp_status_exactly_matches_cli_json_for_pristine_unavailable_state() {
     assert_eq!(
         cli["local_usage"],
         json!({
-            "schema_version": 2,
+            "schema_version": 3,
             "enabled": false,
             "state": "disabled",
             "definition_version": 2,

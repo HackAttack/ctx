@@ -335,6 +335,20 @@ mod tests {
     }
 
     #[test]
+    fn unlinked_tool_events_do_not_invent_activity_linkage() {
+        let event = serde_json::json!({
+            "type": "tool.call",
+            "toolName": "Write",
+            "input": {"path": "src/example.rs"}
+        });
+
+        assert_eq!(
+            kimi_activity(&event, EventType::ToolCall, "body", Vec::new()).unwrap(),
+            None
+        );
+    }
+
+    #[test]
     fn provider_textual_result_over_16k_is_complete() {
         let tail = "kimi_success_result_tail_complete";
         let output = format!("{} {tail}", "successful kimi output ".repeat(800));

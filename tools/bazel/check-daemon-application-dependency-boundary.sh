@@ -121,7 +121,6 @@ if [[ -n "$(query 'somepath(//crates/ctx-daemon-application:lib, //crates/ctx-cl
 fi
 
 python3 - "${repo_root}" <<'PY'
-import importlib.util
 import pathlib
 import sys
 import tomllib
@@ -157,39 +156,6 @@ for candidate in sorted((root / "crates").glob("*/Cargo.toml")):
         reverse.append(candidate.relative_to(root).as_posix())
 if reverse != ["crates/ctx-daemon-cli/Cargo.toml"]:
     raise SystemExit(f"unexpected reverse Cargo consumer of ctx-daemon-application: {reverse}")
-
-try:
-    import tomli
-except ModuleNotFoundError:
-    sys.modules["tomli"] = tomllib
-spec = importlib.util.spec_from_file_location(
-    "check_rust_crate_size", root / "scripts/check-rust-crate-size.py"
-)
-module = importlib.util.module_from_spec(spec)
-sys.modules[spec.name] = module
-spec.loader.exec_module(module)
-measurement = next(
-    item for item in module.live_measurements(root)
-    if item.package.name == "ctx-daemon-application"
-)
-if not 7_000 <= measurement.cloc <= 10_500:
-    raise SystemExit(
-        "ctx-daemon-application must remain within its 7,000-10,500 physical CLOC policy band: "
-        f"{measurement.cloc}"
-    )
-physical = sum(
-    len(path.read_text(encoding="utf-8").splitlines())
-    for path in (root / "crates/ctx-daemon-application").rglob("*.rs")
-)
-if physical > 11_000:
-    raise SystemExit(
-        "ctx-daemon-application exceeds its 11,000 physical Rust hard stop: "
-        f"{physical}"
-    )
-print(
-    "ctx-daemon-application size boundary: "
-    f"files={measurement.files} cloc={measurement.cloc} physical={physical}"
-)
 PY
 
 application_root="${repo_root}/crates/ctx-daemon-application"

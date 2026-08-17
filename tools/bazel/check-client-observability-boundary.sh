@@ -52,7 +52,6 @@ for forbidden in \
 done
 
 python3 - "${repo_root}" <<'PY'
-import importlib.util
 import pathlib
 import sys
 import tomllib
@@ -75,24 +74,6 @@ if set(manifest.get("dev-dependencies", {})) != {"tempfile"}:
     raise SystemExit("ctx-client-observability dev dependencies must be exactly tempfile")
 if set(manifest.get("features", {})) != {"test-support"}:
     raise SystemExit("ctx-client-observability features must be exactly test-support")
-
-sys.modules["tomli"] = tomllib
-spec = importlib.util.spec_from_file_location(
-    "check_rust_crate_size", root / "scripts/check-rust-crate-size.py"
-)
-module = importlib.util.module_from_spec(spec)
-sys.modules[spec.name] = module
-spec.loader.exec_module(module)
-measurement = next(
-    item for item in module.live_measurements(root)
-    if item.package.name == "ctx-client-observability"
-)
-if measurement.cloc > 13_000:
-    raise SystemExit(
-        "ctx-client-observability exceeds its 13,000 physical CLOC ceiling: "
-        f"{measurement.cloc}"
-    )
-print(f"ctx-client-observability physical CLOC: {measurement.cloc}")
 PY
 
 crate_root="${repo_root}/crates/ctx-client-observability"

@@ -1133,7 +1133,7 @@ fn codex_cli_provider_oracle_covers_retrieval_and_claimed_fidelity() {
     assert_source_backed_search(&search, "codex", query);
 
     let records = provider_core_records(&data_root(&temp), "codex");
-    assert_eq!(provider_core_counts(&data_root(&temp), "codex"), (3, 15));
+    assert_eq!(provider_core_counts(&data_root(&temp), "codex"), (3, 16));
     assert_eq!(
         records
             .iter()
@@ -1163,7 +1163,7 @@ fn codex_cli_provider_oracle_covers_retrieval_and_claimed_fidelity() {
             .iter()
             .filter(|record| record.event_type == "tool_output")
             .count(),
-        1
+        2
     );
     assert_eq!(
         records

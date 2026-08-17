@@ -153,7 +153,7 @@ impl CodexNativeScanner {
         &mut self,
         record: &[u8],
         probe: &CodexRecordProbe<'_>,
-        result_kind: CodexResultKind,
+        _result_kind: CodexResultKind,
         physical: CodexPhysicalRecordContext,
     ) -> Result<CodexRecordProjection> {
         self.counters.native_result_records = self.counters.native_result_records.saturating_add(1);
@@ -172,6 +172,11 @@ impl CodexNativeScanner {
                     .and_then(|pending| pending.discovery_exclusion)
             })
             .flatten();
+        let result_event_type = call_id
+            .and_then(|call_id| self.pending_calls.get(call_id))
+            .map_or(ctx_history_core::EventType::ToolOutput, |pending| {
+                pending.result_event_type
+            });
         let provider_event_copy = call_id.and_then(|call_id| {
             self.pending_calls
                 .get(call_id)
@@ -220,9 +225,9 @@ impl CodexNativeScanner {
             provider_event_copy,
             linked_invocation_discovery_exclusion,
             source_unique_terminal,
+            result_event_type,
             call_id,
             occurred_at,
-            result_kind,
             normalized_body,
             structured_content,
             result_content,
@@ -286,6 +291,8 @@ impl CodexNativeScanner {
                             }
                             std::collections::btree_map::Entry::Occupied(mut entry) => {
                                 entry.get_mut().origin = CodexPendingCallOriginV0::Unproven;
+                                entry.get_mut().result_event_type =
+                                    ctx_history_core::EventType::ToolOutput;
                                 entry.get_mut().discovery_exclusion = None;
                             }
                         }
@@ -357,6 +364,15 @@ fn pending_call_for_row(
         CodexPendingCallV0 {
             raw_ordinal,
             origin: pending_call_origin(owner, local_turn_started),
+            result_event_type: activity
+                .invocation
+                .as_ref()
+                .filter(|invocation| {
+                    ctx_history_capture_model::tool_input::is_command_tool(&invocation.tool)
+                })
+                .map_or(ctx_history_core::EventType::ToolOutput, |_| {
+                    ctx_history_core::EventType::CommandOutput
+                }),
             discovery_exclusion: row.discovery_exclusion,
         },
     ))

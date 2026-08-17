@@ -449,12 +449,13 @@
       "provider_id": "codex", "route": "native_import", "source_format": "codex_session_jsonl_tree", "source_schema": "codex-nativepath-jsonl-v0",
       "producer_bound": {"kind": "unversioned", "generation": 1, "unknown_generations": "not-qualified"},
       "implementation_source": "crates/ctx-history-provider-codex/src/codex/nativepath/source_backed.rs",
-      "parser_revision": "codex-nativepath-core-activity-v5-empty-result-text-retrieval-exclusion",
+      "parser_revision": "codex-nativepath-core-activity-v6-command-output-retrieval-exclusion",
       "suite_id": "ctx-history-provider-codex::native_unit",
       "conformance_suite": "mcp_attribution_codex_provider_units",
       "tests": [
-        {"id": "codex::nativepath::rows::tests::mcp_terminal_activity_preserves_exact_server_tool_and_linkage", "source": "crates/ctx-history-provider-codex/src/codex/nativepath/rows.rs"},
-        {"id": "codex::nativepath::rows::tests::duplicate_selectors_withhold_linkage_and_preserve_raw_fact_order", "source": "crates/ctx-history-provider-codex/src/codex/nativepath/rows.rs"}
+        {"id": "codex::nativepath::rows::tests::mcp_terminal_activity_preserves_exact_server_tool_and_linkage", "source": "crates/ctx-history-provider-codex/src/codex/nativepath/rows/tests.rs"},
+        {"id": "codex::nativepath::rows::tests::duplicate_selectors_withhold_linkage_and_preserve_raw_fact_order", "source": "crates/ctx-history-provider-codex/src/codex/nativepath/rows/tests.rs"},
+        {"id": "codex::nativepath::rows::tests::empty_result_string_is_absent_text_with_exact_structured_capture", "source": "crates/ctx-history-provider-codex/src/codex/nativepath/rows/tests.rs"}
       ]
     },
     {

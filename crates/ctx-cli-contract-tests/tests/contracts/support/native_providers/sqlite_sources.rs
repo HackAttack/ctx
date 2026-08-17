@@ -21,8 +21,11 @@ fn warp_cli_imports_default_sqlite() {
         "Warp sqlite oracle answer",
         "--provider",
         "warp",
+        "--include-subagents",
         "--refresh",
         "off",
+        "--limit",
+        "1",
         "--format=json",
     ]));
     assert_search_provider_oracle(&search, "warp", "Warp sqlite oracle answer", 1, "message");
@@ -62,6 +65,7 @@ fn warp_native_default_discovery_auto_imports_for_search() {
         "Warp sqlite oracle answer",
         "--provider",
         "warp",
+        "--include-subagents",
         "--refresh",
         "wait",
         "--format=json",
@@ -94,8 +98,11 @@ fn warp_native_default_discovery_is_included_in_import_all() {
         "Warp sqlite oracle answer",
         "--provider",
         "warp",
+        "--include-subagents",
         "--refresh",
         "off",
+        "--limit",
+        "1",
         "--format=json",
     ]));
     assert_search_provider_oracle(&search, "warp", "Warp sqlite oracle answer", 1, "message");
@@ -124,12 +131,24 @@ fn lingma_cli_default_source_imports_home_local_db() {
     assert_eq!(imported["totals"]["current_rejected_records"], 0);
     assert_eq!(provider_core_counts(&data_root(&temp), "lingma"), (1, 2));
 
-    let search =
-        json_output(ctx(&temp).args(["search", query, "--provider", "lingma", "--format=json"]));
+    let search = json_output(ctx(&temp).args([
+        "search",
+        query,
+        "--provider",
+        "lingma",
+        "--include-subagents",
+        "--format=json",
+    ]));
     assert_search_provider_oracle(&search, "lingma", query, 1, "message");
 
-    let alias_search =
-        json_output(ctx(&temp).args(["search", query, "--provider", "qoder-cn", "--format=json"]));
+    let alias_search = json_output(ctx(&temp).args([
+        "search",
+        query,
+        "--provider",
+        "qoder-cn",
+        "--include-subagents",
+        "--format=json",
+    ]));
     assert_search_provider_oracle(&alias_search, "lingma", query, 1, "message");
 
     let second = json_output(ctx(&temp).args(["import", "--provider", "lingma", "--format=json"]));
@@ -160,8 +179,11 @@ fn tabnine_cli_imports_default_agent_home_searches_and_reimports() {
         "tabnine jsonl oracle answer",
         "--provider",
         "tabnine",
+        "--include-subagents",
         "--refresh",
         "off",
+        "--limit",
+        "1",
         "--format=json",
     ]));
     assert_search_provider_oracle(
@@ -229,6 +251,7 @@ fn deepagents_cli_sources_import_search_and_reimport_with_aliases() {
         "deepagents fixture oracle",
         "--provider",
         "dcode",
+        "--include-subagents",
         "--refresh",
         "off",
         "--format=json",
@@ -392,8 +415,11 @@ fn sqlite_cli_imports_crush_goose_zed_kiro_and_forgecode_and_searches() {
             query,
             "--provider",
             cli_provider,
+            "--include-subagents",
             "--refresh",
             "off",
+            "--limit",
+            "1",
             "--format=json",
         ]));
         assert_source_backed_search(&search, stored_provider, query);

@@ -7,5 +7,5 @@ if [[ -n "${1:-}" ]]; then
 else
   readonly root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 fi
-python3 "${root}/scripts/check-loc.py" --root "${root}"
-python3 "${root}/tools/bazel/check_rust_target_inventory.py"
+python3 -I -B "${root}/scripts/check-loc.py" --root "${root}"
+python3 -I -B "${root}/tools/bazel/check_rust_target_inventory.py"

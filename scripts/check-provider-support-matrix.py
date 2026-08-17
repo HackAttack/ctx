@@ -110,6 +110,20 @@ PUBLIC_COVERAGE_PATHS = {
 }
 
 
+def public_coverage_paths() -> list[str]:
+    """Return coverage roots plus any recursively split companion modules."""
+    paths = set(PUBLIC_COVERAGE_PATHS)
+    for relative in PUBLIC_COVERAGE_PATHS:
+        companion_root = (REPO_ROOT / relative).with_suffix("")
+        if companion_root.is_dir():
+            paths.update(
+                path.relative_to(REPO_ROOT).as_posix()
+                for path in companion_root.rglob("*.rs")
+                if path.is_file()
+            )
+    return sorted(paths)
+
+
 class MatrixError(Exception):
     pass
 
@@ -290,7 +304,7 @@ def validate_provider(provider: Any, index: int, seen_ids: set[str]) -> None:
         fail(f"docs/provider-support.md is missing supported row for {provider_id}")
 
     provider_specific_test = False
-    for test_index, test_path in enumerate(sorted(PUBLIC_COVERAGE_PATHS)):
+    for test_index, test_path in enumerate(public_coverage_paths()):
         resolved_test_path = require_repo_path(test_path, f"public_coverage_paths[{test_index}]")
         if text_mentions_provider(
             resolved_test_path.read_text(encoding="utf-8", errors="ignore"),

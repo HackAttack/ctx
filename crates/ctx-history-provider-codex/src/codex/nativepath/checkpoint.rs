@@ -1,14 +1,14 @@
 use std::collections::BTreeMap;
 
 use base64::{engine::general_purpose::STANDARD as BASE64_STANDARD, Engine as _};
-use ctx_history_core::{CoreDiscoveryExclusion, TypedKey};
+use ctx_history_core::{CoreDiscoveryExclusion, EventType, TypedKey};
 use serde::{de::Error as _, Deserialize, Deserializer, Serialize, Serializer};
 
 use super::rows::{CodexSessionRow, MAX_CODEX_DURABLE_SESSION_ID_BYTES};
 
 pub(super) const MAX_CODEX_SEMANTIC_CHECKPOINT_BYTES: usize = 64 * 1024 - 5;
-const CODEX_SEMANTIC_CHECKPOINT_VERSION: u8 = 7;
-const CODEX_SEMANTIC_CHECKPOINT_PREFIX: &str = "codex.projector-checkpoint.v7:";
+const CODEX_SEMANTIC_CHECKPOINT_VERSION: u8 = 8;
+const CODEX_SEMANTIC_CHECKPOINT_PREFIX: &str = "codex.projector-checkpoint.v8:";
 pub(super) const MAX_CODEX_PENDING_CALLS: usize = 24;
 pub(super) const MAX_CODEX_CALL_ID_BYTES: usize = 1024;
 pub(super) const MAX_CODEX_TERMINAL_AUTHORITIES: usize = 4 * 1024;
@@ -107,6 +107,7 @@ pub(super) enum CodexPendingCallOriginV0 {
 pub(super) struct CodexPendingCallV0 {
     pub(super) raw_ordinal: u64,
     pub(super) origin: CodexPendingCallOriginV0,
+    pub(super) result_event_type: EventType,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(super) discovery_exclusion: Option<CoreDiscoveryExclusion>,
 }
@@ -201,6 +202,10 @@ impl CodexSemanticCheckpoint {
             && self.pending_calls.iter().all(|(call_id, pending)| {
                 !call_id.is_empty()
                     && call_id.len() <= MAX_CODEX_CALL_ID_BYTES
+                    && matches!(
+                        pending.result_event_type,
+                        EventType::ToolOutput | EventType::CommandOutput
+                    )
                     && match &pending.origin {
                         CodexPendingCallOriginV0::CurrentSession
                         | CodexPendingCallOriginV0::Unproven => true,
@@ -304,6 +309,7 @@ mod tests {
                 origin: CodexPendingCallOriginV0::CopiedFromAncestor {
                     ancestor_native_session_id,
                 },
+                result_event_type: EventType::CommandOutput,
                 discovery_exclusion: Some(CoreDiscoveryExclusion::CtxRetrievalDerived),
             },
         )]);

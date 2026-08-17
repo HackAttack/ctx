@@ -49,7 +49,9 @@ class TraeBoundaryMutationTests(unittest.TestCase):
                 else f"{dependency}.workspace = true\n"
                 for dependency in sorted(regular)
             )
-            + "[dev-dependencies]\ntempfile.workspace = true\n",
+            + "[dev-dependencies]\n"
+            + 'ctx-history-source-sqlite = { path = "../ctx-history-source-sqlite", features = ["test-support"] }\n'
+            + "tempfile.workspace = true\n",
             encoding="utf-8",
         )
         self.build.write_text(
@@ -139,6 +141,52 @@ class TraeBoundaryMutationTests(unittest.TestCase):
             encoding="utf-8",
         )
         with self.assertRaisesRegex(BoundaryError, "version.workspace"):
+            self.validate()
+
+    def test_additional_workspace_dev_dependency_does_not_stale_the_boundary(self) -> None:
+        self.manifest.write_text(
+            self.manifest.read_text(encoding="utf-8")
+            + "pretty_assertions.workspace = true\n",
+            encoding="utf-8",
+        )
+        self.validate()
+
+    def test_additional_workspace_production_dependency_does_not_stale_the_boundary(self) -> None:
+        self.manifest.write_text(
+            self.manifest.read_text(encoding="utf-8").replace(
+                "[dev-dependencies]",
+                "pretty_assertions.workspace = true\n[dev-dependencies]",
+            ),
+            encoding="utf-8",
+        )
+        self.validate()
+
+    def test_upward_internal_production_dependency_is_rejected(self) -> None:
+        self.manifest.write_text(
+            self.manifest.read_text(encoding="utf-8").replace(
+                "[dev-dependencies]",
+                'ctx-history-index = { path = "../ctx-history-index" }\n[dev-dependencies]',
+            ),
+            encoding="utf-8",
+        )
+        with self.assertRaisesRegex(BoundaryError, "upward internal"):
+            self.validate()
+
+    def test_upward_internal_dev_dependency_is_rejected(self) -> None:
+        self.manifest.write_text(
+            self.manifest.read_text(encoding="utf-8")
+            + 'ctx-history-index = { path = "../ctx-history-index" }\n',
+            encoding="utf-8",
+        )
+        with self.assertRaisesRegex(BoundaryError, "production-lower"):
+            self.validate()
+
+    def test_external_dev_dependency_must_inherit_workspace(self) -> None:
+        self.manifest.write_text(
+            self.manifest.read_text(encoding="utf-8") + 'assert_cmd = "2"\n',
+            encoding="utf-8",
+        )
+        with self.assertRaisesRegex(BoundaryError, "inherit the workspace"):
             self.validate()
 
     def test_capture_dependency_is_rejected(self) -> None:

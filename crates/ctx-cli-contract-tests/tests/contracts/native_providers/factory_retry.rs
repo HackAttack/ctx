@@ -138,6 +138,7 @@ fn factory_droid_default_source_imports_searches_and_reimports_without_identity_
         query,
         "--provider",
         "factory-ai-droid",
+        "--include-subagents",
         "--refresh",
         "off",
         "--format=json",

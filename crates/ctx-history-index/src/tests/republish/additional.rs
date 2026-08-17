@@ -428,7 +428,7 @@ fn post_publication_cleanup_failure_is_best_effort_and_restart_keeps_current_aut
     );
 }
 
-fn subprocess_paths(root: &Path) -> (PathBuf, PathBuf, PathBuf) {
+pub(super) fn subprocess_paths(root: &Path) -> (PathBuf, PathBuf, PathBuf) {
     (
         root.join("republish-child.marker"),
         root.join("republish-child.continue"),
@@ -534,14 +534,14 @@ fn predecessor_republish_subprocess_worker() {
     drop(republish_guard);
 }
 
-fn spawn_republish_subprocess(root: &Path, mode: &str) -> Child {
+pub(super) fn spawn_republish_subprocess(root: &Path, mode: &str) -> Child {
     let (marker, continue_path, result) = subprocess_paths(root);
     for path in [&marker, &continue_path, &result] {
         let _ = fs::remove_file(path);
     }
     Command::new(env::current_exe().unwrap())
         .arg("--exact")
-        .arg("tests::republish::predecessor_republish_subprocess_worker")
+        .arg("tests::republish::additional::predecessor_republish_subprocess_worker")
         .arg("--nocapture")
         .arg("--test-threads=1")
         .env(SUBPROCESS_MODE_ENV, mode)
@@ -555,7 +555,7 @@ fn spawn_republish_subprocess(root: &Path, mode: &str) -> Child {
         .unwrap()
 }
 
-fn wait_for_subprocess_marker(child: &mut Child, marker: &Path) {
+pub(super) fn wait_for_subprocess_marker(child: &mut Child, marker: &Path) {
     let deadline = Instant::now() + SUBPROCESS_TIMEOUT;
     while Instant::now() < deadline {
         if marker.exists() {

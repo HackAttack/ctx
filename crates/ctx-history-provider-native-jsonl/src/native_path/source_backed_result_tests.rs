@@ -291,7 +291,7 @@ fn direct_provider_revision_matrix_matches_the_neutral_projection_and_identity_i
         ),
         (
             CaptureProvider::GrokBuild,
-            "direct-native-jsonl-parser-v6-core-activity",
+            "direct-native-jsonl-parser-v7-grok-closed-content",
         ),
         (
             CaptureProvider::Qoder,
@@ -319,6 +319,70 @@ fn direct_provider_revision_matrix_matches_the_neutral_projection_and_identity_i
             "{provider:?}"
         );
     }
+}
+
+#[test]
+fn grok_future_typed_result_retains_linkage_without_untrusted_content() {
+    let marker = "grokfuturetypedimagemarker8f31";
+    let value = json!({
+        "timestamp": 1_786_547_762_i64,
+        "method": "session/update",
+        "params": {
+            "sessionId": "grok_build-result-contract",
+            "update": {
+                "sessionUpdate": "tool_call_update",
+                "toolCallId": "future-typed-content",
+                "status": "completed",
+                "content": [{
+                    "type": "content",
+                    "content": {
+                        "type": "image_resource_vNext",
+                        "resource": {"uri": marker, "mimeType": "image/png"}
+                    }
+                }],
+                "rawOutput": {
+                    "type": "FutureResourceVNext",
+                    "resource": {"uri": marker}
+                }
+            },
+            "_meta": {
+                "eventId": "future-typed-content-event",
+                "agentTimestampMs": 1_786_547_762_000_i64
+            }
+        }
+    });
+
+    let (records, rejected) = project(CaptureProvider::GrokBuild, &value);
+
+    assert_eq!(rejected, 0);
+    assert_eq!(records.len(), 1);
+    let record = &records[0];
+    assert_eq!(record.event_type, EventType::ToolOutput.as_str());
+    assert_eq!(
+        record.content.normalized_body.as_deref(),
+        Some("tool_output")
+    );
+    let expected_evidence = json!({
+        "sessionUpdate": "tool_call_update",
+        "toolCallId": "future-typed-content",
+        "status": "completed",
+    });
+    assert_eq!(
+        record.content.structured_content.as_ref(),
+        Some(&expected_evidence)
+    );
+    let activity = record.content.activity.as_ref().unwrap();
+    assert_eq!(
+        activity.provider_call_id,
+        Some(TypedKey::utf8("future-typed-content").unwrap())
+    );
+    assert!(activity.result.is_some());
+    assert!(
+        !serde_json::to_string(&record.content)
+            .unwrap()
+            .contains(marker),
+        "future ACP content escaped the closed parser projection"
+    );
 }
 
 #[test]
@@ -407,7 +471,7 @@ fn copilot_and_windsurf_replay_preserve_current_revision_ids_and_records() {
             CaptureProvider::CopilotCli => {
                 super::copilot::COPILOT_DIRECT_NATIVE_JSONL_PARSER_REVISION
             }
-            CaptureProvider::GrokBuild => "direct-native-jsonl-parser-v6-core-activity",
+            CaptureProvider::GrokBuild => "direct-native-jsonl-parser-v7-grok-closed-content",
             _ => "direct-native-jsonl-parser-v5-core-activity",
         };
         assert_eq!(

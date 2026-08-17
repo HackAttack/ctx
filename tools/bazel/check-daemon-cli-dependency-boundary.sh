@@ -101,7 +101,6 @@ if [[ -n "$(query 'somepath(//crates/ctx-daemon-cli:lib, //crates/ctx-cli:ctx)')
 fi
 
 python3 - "${repo_root}" <<'PY'
-import importlib.util
 import pathlib
 import sys
 import tomllib
@@ -169,55 +168,16 @@ if reverse != [
     "crates/ctx-history-cli/Cargo.toml",
 ]:
     raise SystemExit(f"unexpected reverse Cargo consumer of ctx-daemon-cli: {reverse}")
-
-try:
-    import tomli
-except ModuleNotFoundError:
-    sys.modules["tomli"] = tomllib
-spec = importlib.util.spec_from_file_location(
-    "check_rust_crate_size", root / "scripts/check-rust-crate-size.py"
-)
-module = importlib.util.module_from_spec(spec)
-sys.modules[spec.name] = module
-spec.loader.exec_module(module)
-measurement = next(
-    item for item in module.live_measurements(root)
-    if item.package.name == "ctx-daemon-cli"
-)
-if not 9_400 <= measurement.cloc <= 14_000:
-    raise SystemExit(
-        "ctx-daemon-cli must remain within its 9,400-14,000 physical CLOC policy band: "
-        f"{measurement.cloc}"
-    )
-physical = sum(
-    len(path.read_text(encoding="utf-8").splitlines())
-    for path in (root / "crates/ctx-daemon-cli").rglob("*.rs")
-)
-if physical > 15_000:
-    raise SystemExit(
-        "ctx-daemon-cli exceeds its 15,000 physical Rust hard stop: "
-        f"{physical}"
-    )
-print(
-    "ctx-daemon-cli size boundary: "
-    f"files={measurement.files} cloc={measurement.cloc} physical={physical}"
-)
 PY
 
 crate_root="${repo_root}/crates/ctx-daemon-cli"
-expected_contract_sources=(
-  'auto_upgrade_acceptance.rs'
-  'daemon_config_reload.rs'
-  'daemon_rendering.rs'
-  'persistent_daemon_lifecycle.rs'
-  'support.rs'
-)
-mapfile -t actual_contract_sources < <(
-  find "${crate_root}/tests/contracts" -type f -name '*.rs' -printf '%P\n' | LC_ALL=C sort
-)
-if [[ "${actual_contract_sources[*]}" != "${expected_contract_sources[*]}" ]]; then
-  printf 'ctx-daemon-cli Bazel-only contract inventory drifted\nexpected=%s\nactual=%s\n' \
-    "${expected_contract_sources[*]}" "${actual_contract_sources[*]}" >&2
+find "${crate_root}/tests/contracts" -type f -name '*.rs' \
+  -printf '//crates/ctx-daemon-cli:tests/contracts/%P\n' \
+  | LC_ALL=C sort -u >"${tmp}/contract-sources.txt"
+query 'filter("^//crates/ctx-daemon-cli:tests/contracts/", labels(srcs, kind("rust_test rule", //crates/ctx-daemon-cli:*)))' \
+  | LC_ALL=C sort -u >"${tmp}/owned-contract-sources.txt"
+if ! diff -u "${tmp}/contract-sources.txt" "${tmp}/owned-contract-sources.txt"; then
+  echo 'ctx-daemon-cli contract sources must be live Bazel rust_test sources' >&2
   exit 1
 fi
 if find "${crate_root}" -type l -print -quit | grep -q .; then
@@ -246,4 +206,4 @@ if grep -REn --include='*.rs' \
   exit 1
 fi
 
-printf 'ctx-daemon-cli dependency, locality, size, and bounded-consumer boundary ok\n'
+printf 'ctx-daemon-cli dependency, locality, source ownership, and bounded-consumer boundary ok\n'

@@ -79,7 +79,7 @@ fn nanoclaw_service_registrations(context: &DiscoveryContext) -> Vec<NanoClawSer
     }
 }
 
-fn nanoclaw_systemd_registry_dirs(context: &DiscoveryContext) -> Vec<PathBuf> {
+pub(super) fn nanoclaw_systemd_registry_dirs(context: &DiscoveryContext) -> Vec<PathBuf> {
     let mut registry_dirs = vec![context.home().join(".config/systemd/user")];
     if context.effective_uid() == Some(0) {
         registry_dirs.push(PathBuf::from("/etc/systemd/system"));
@@ -774,7 +774,7 @@ fn validate_nanoclaw_registered_project(
     canonical_nanoclaw_project_store(&project).ok_or_else(|| registration.to_path_buf())
 }
 
-fn nanoclaw_sha1_slug(input: &[u8]) -> String {
+pub(super) fn nanoclaw_sha1_slug(input: &[u8]) -> String {
     let mut message = input.to_vec();
     let bit_len = (message.len() as u64).wrapping_mul(8);
     message.push(0x80);

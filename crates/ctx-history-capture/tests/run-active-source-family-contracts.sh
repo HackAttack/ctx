@@ -29,7 +29,8 @@ run_runner_regressions() {
   local fake_binary="${fixture_root}/fake-unit-tests"
   local fake_manifest="${fixture_root}/active-source-family-contract-tests.txt"
 
-  mkdir -p -- "${fixture_root}/ignored" "${fixture_root}/count-mismatch"
+  mkdir -p -- "${fixture_root}/ignored" "${fixture_root}/count-mismatch" \
+    "${fixture_root}/module-move"
   printf '%s\n' \
     '#!/usr/bin/env bash' \
     'set -euo pipefail' \
@@ -48,11 +49,26 @@ run_runner_regressions() {
     '    printf "running 0 tests\n\n"' \
     '    printf "test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 1 filtered out; finished in 0.00s\n"' \
     '    ;;' \
+    '  pass)' \
+    '    printf "running 1 test\n"' \
+    '    printf "test %s ... ok\n\n" "${test_name}"' \
+    '    printf "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s\n"' \
+    '    ;;' \
     '  *) exit 2 ;;' \
     'esac' >"${fake_binary}"
   chmod +x "${fake_binary}"
   printf '%s\n' \
-    'fixture::active_source_family_contract_selected' >"${fake_manifest}"
+    'active_source_family_contract_selected' >"${fake_manifest}"
+
+  CTX_ACTIVE_SOURCE_FAMILY_RUNNER_REGRESSION=1 \
+    CTX_ACTIVE_SOURCE_FAMILY_FAKE_RESULT=pass \
+    TEST_TMPDIR="${fixture_root}/module-move" \
+    "${runner}" "${fake_binary}" "${fake_manifest}" \
+    >"${fixture_root}/module-move.log" 2>&1 || {
+    printf 'runner regression failed: a module-qualified test did not match its stable leaf name\n' >&2
+    sed -n '1,160p' "${fixture_root}/module-move.log" >&2
+    return 1
+  }
 
   if CTX_ACTIVE_SOURCE_FAMILY_RUNNER_REGRESSION=1 \
     CTX_ACTIVE_SOURCE_FAMILY_FAKE_RESULT=ignored \
@@ -93,11 +109,27 @@ expected="${TEST_TMPDIR}/active-source-family-contract-tests.expected"
 for test_binary in "${test_binaries[@]}"; do
   LC_ALL=C "${test_binary}" --list
 done |
-  awk '/active_source_family_contract_.*: test$/ { sub(/: test$/, ""); print }' |
+  awk '/active_source_family_contract_.*: test$/ {
+    sub(/: test$/, "")
+    count = split($0, parts, "::")
+    print parts[count]
+  }' |
   sort >"${actual}"
 LC_ALL=C sort "${expected_tests}" >"${expected}"
+if grep -Env '^active_source_family_contract_[[:alnum:]_]+$' "${expected}"; then
+  printf 'active source-family manifest must contain stable leaf test names only\n' >&2
+  exit 1
+fi
+if [[ -n "$(uniq -d "${expected}")" ]]; then
+  printf 'active source-family manifest contains duplicate leaf test names\n' >&2
+  exit 1
+fi
+if [[ -n "$(uniq -d "${actual}")" ]]; then
+  printf 'active source-family discovered duplicate leaf test names\n' >&2
+  exit 1
+fi
 if ! diff -u "${expected}" "${actual}"; then
-  printf 'active source-family test inventory changed; update the reviewed manifest deliberately\n' >&2
+  printf 'active source-family leaf test contract changed; update the reviewed manifest deliberately\n' >&2
   exit 1
 fi
 [[ -s "${actual}" ]] || {

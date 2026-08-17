@@ -9,7 +9,7 @@ use ctx_history_core::{
 use ctx_history_index::{GenerationWriter, RevalidationTarget, WriterOptions};
 
 const CURRENT_PARSER_REVISION: &str =
-    "codex-nativepath-core-activity-v5-empty-result-text-retrieval-exclusion";
+    "codex-nativepath-core-activity-v6-command-output-retrieval-exclusion";
 
 fn writer_options() -> WriterOptions {
     WriterOptions {
@@ -572,7 +572,7 @@ fn assert_current_provider_checkpoint(checkpoint: &serde_json::Value) {
         .get("Utf8")
         .and_then(serde_json::Value::as_str)
         .expect("Codex provider checkpoint must be compact UTF-8");
-    assert!(encoded.starts_with("codex.projector-checkpoint.v7:"));
+    assert!(encoded.starts_with("codex.projector-checkpoint.v8:"));
     assert!(encoded.len() <= MAX_PROVIDER_CHECKPOINT_BYTES);
 }
 

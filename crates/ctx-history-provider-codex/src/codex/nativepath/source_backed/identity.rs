@@ -218,9 +218,6 @@ pub(in crate::codex::nativepath) fn codex_core_record(
         .as_deref()
         .map(codex_session_id_for_native_id)
         .transpose()?;
-    let is_primary = owner.session_relationship.is_none()
-        || owner.session_relationship
-            == Some(ctx_history_core::ProviderNativeSessionRelationship::Root);
     let (event_id, native_event_id, provider_occurrence) =
         event_identity_state.next_identity(source, session_id, &row)?;
     let CodexCoreRecordDraft {
@@ -299,11 +296,12 @@ pub(in crate::codex::nativepath) fn codex_core_record(
         CODEX_PARSER_REVISION,
         lexical_body,
     )?;
-    if let Some(parent_session_id) = parent_session_id {
-        record.parent_session_id = Some(parent_session_id);
-        record.root_session_id = root_session_id;
-        record.session_relationship = owner.session_relationship;
-    }
+    record.parent_session_id = parent_session_id;
+    record.root_session_id = match owner.session_relationship {
+        Some(ctx_history_core::ProviderNativeSessionRelationship::Root) => Some(session_id),
+        _ => root_session_id,
+    };
+    record.session_relationship = owner.session_relationship;
     record.event_copy = provider_event_copy
         .as_ref()
         .zip(provider_event_identity.as_ref())
@@ -322,10 +320,12 @@ pub(in crate::codex::nativepath) fn codex_core_record(
     record.native_event_id = Some(native_event_id);
     record.occurred_at_unix_ms = Some(occurred_at.timestamp_millis());
     record.role = role.map(|role| role.as_str().to_owned());
-    record.agent_scope = Some(if is_primary {
-        ctx_history_core::AgentScope::Primary
-    } else {
-        ctx_history_core::AgentScope::Subagent
+    record.agent_scope = owner.session_relationship.map(|relationship| {
+        if relationship == ctx_history_core::ProviderNativeSessionRelationship::Root {
+            ctx_history_core::AgentScope::Primary
+        } else {
+            ctx_history_core::AgentScope::Subagent
+        }
     });
     let mut structured_content = structured_content;
     if !ctx_history_jsonl::selected_content_fits(

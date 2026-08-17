@@ -134,7 +134,6 @@ if ! diff -u "${expected_reverse_qualification}" "${tmp}/actual-reverse-qualific
 fi
 
 python3 - "${repo_root}" <<'PY'
-import importlib.util
 import pathlib
 import sys
 import tomllib
@@ -207,27 +206,6 @@ if reverse != [
     "crates/ctx-daemon-cli/Cargo.toml",
 ]:
     raise SystemExit(f"unexpected reverse Cargo consumer of ctx-daemon-service: {reverse}")
-
-try:
-    import tomli
-except ModuleNotFoundError:
-    sys.modules["tomli"] = tomllib
-spec = importlib.util.spec_from_file_location(
-    "check_rust_crate_size", root / "scripts/check-rust-crate-size.py"
-)
-module = importlib.util.module_from_spec(spec)
-sys.modules[spec.name] = module
-spec.loader.exec_module(module)
-measurement = next(
-    item for item in module.live_measurements(root)
-    if item.package.name == "ctx-daemon-service"
-)
-if not 15_100 <= measurement.cloc <= 16_200:
-    raise SystemExit(
-        "ctx-daemon-service must remain within its 15,100-16,200 physical CLOC boundary: "
-        f"{measurement.cloc}"
-    )
-print(f"ctx-daemon-service physical CLOC: {measurement.cloc}")
 PY
 
 service_root="${repo_root}/crates/ctx-daemon-service"

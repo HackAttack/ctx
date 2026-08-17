@@ -249,11 +249,17 @@ impl DirectJsonlProjector {
                 self.provider,
                 CaptureProvider::CopilotCli | CaptureProvider::GrokBuild
             ) && subrecord.call_id.is_some();
+            let contentless_grok_completion =
+                self.provider == CaptureProvider::GrokBuild && content.is_none();
             if content.is_none() && !retain_contentless_completion {
                 continue;
             }
             let sub_ordinal = subrecord.subrecord_index;
-            let facts = direct_jsonl_facts(value);
+            let facts = if contentless_grok_completion {
+                Vec::new()
+            } else {
+                direct_jsonl_facts(value)
+            };
             debug_assert!(content.is_some() || retain_contentless_completion);
             let mut event = direct_event(
                 self.provider,
@@ -268,11 +274,15 @@ impl DirectJsonlProjector {
                 false,
                 None,
             )?;
+            if contentless_grok_completion {
+                event.native_value =
+                    super::grok_build::grok_build_contentless_result_evidence(value);
+            }
             event.activity = if self.provider == CaptureProvider::CopilotCli {
                 super::copilot::copilot_activity(record_bytes)
-                    .or(native_result_activity(&subrecord, value)?)
+                    .or(native_result_activity(&subrecord, &event.native_value)?)
             } else {
-                native_result_activity(&subrecord, value)?
+                native_result_activity(&subrecord, &event.native_value)?
             };
             event.source_record = DirectJsonlSourceRecord {
                 byte_start,

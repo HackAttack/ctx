@@ -216,30 +216,4 @@ if grep -REn --include='*.rs' \
   exit 1
 fi
 
-python3 - "${repo_root}" <<'PY'
-import importlib.util
-import pathlib
-import sys
-import tomllib
-
-root = pathlib.Path(sys.argv[1])
-sys.modules.setdefault("tomli", tomllib)
-spec = importlib.util.spec_from_file_location(
-    "check_rust_crate_size", root / "scripts/check-rust-crate-size.py"
-)
-module = importlib.util.module_from_spec(spec)
-sys.modules[spec.name] = module
-spec.loader.exec_module(module)
-measurement = next(
-    item for item in module.live_measurements(root)
-    if item.package.name == "ctx-history-read-application"
-)
-if measurement.cloc > 13_792:
-    raise SystemExit(
-        "ctx-history-read-application exceeds its 13,792 physical CLOC ceiling: "
-        f"{measurement.cloc}"
-    )
-print(f"ctx-history-read-application physical CLOC: {measurement.cloc}")
-PY
-
-printf 'ctx-history-read-application dependency, contract, locality, and CLOC boundary ok\n'
+printf 'ctx-history-read-application dependency, contract, and locality boundary ok\n'

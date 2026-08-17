@@ -15,7 +15,19 @@ class CodexBoundaryMutationTests(unittest.TestCase):
         self.lib = root / "lib.rs"
         self.registration = root / "codex.rs"
         self.manifest.write_text('[package]\nname = "ctx-history-provider-codex"\n[dependencies]\n' + ''.join(f'{x} = {{ workspace = true }}\n' if x in {"base64", "chrono", "serde", "serde_json", "sha2", "tempfile", "thiserror", "uuid", "zstd"} else f'{x} = {{ path = "../{x}" }}\n' for x in sorted({"base64", "chrono", "ctx-history-capture-model", "ctx-history-capture-runtime", "ctx-history-core", "ctx-history-provider-runtime", "ctx-history-source-io", "serde", "serde_json", "sha2", "tempfile", "thiserror", "uuid", "zstd"})), encoding="utf-8")
-        self.build.write_text('"//crates/ctx-history-provider-runtime:lib",\n', encoding="utf-8")
+        self.build.write_text(
+            "\n".join(
+                f'"//crates/{dependency}:lib",'
+                for dependency in (
+                    "ctx-history-capture-model",
+                    "ctx-history-capture-runtime",
+                    "ctx-history-core",
+                    "ctx-history-provider-runtime",
+                    "ctx-history-source-io",
+                )
+            ),
+            encoding="utf-8",
+        )
         self.lib.write_text('pub struct Pack;\n', encoding="utf-8")
         self.registration.write_text('CaptureProviderRuntime CodexPromptHistoryJsonlFamilyAdapterV0::<CaptureProviderRuntime>', encoding="utf-8")
 
@@ -33,6 +45,22 @@ class CodexBoundaryMutationTests(unittest.TestCase):
     def test_forbidden_source_name_rejected(self):
         self.lib.write_text('use ctx_history_index::IndexError;', encoding="utf-8")
         with self.assertRaisesRegex(BoundaryError, "forbidden"):
+            validate(self.manifest, self.build, self.lib, self.registration)
+
+    def test_additional_workspace_dependency_does_not_stale_boundary(self):
+        self.manifest.write_text(
+            self.manifest.read_text(encoding="utf-8") + "pretty_assertions.workspace = true\n",
+            encoding="utf-8",
+        )
+        validate(self.manifest, self.build, self.lib, self.registration)
+
+    def test_upward_internal_dependency_rejected(self):
+        self.manifest.write_text(
+            self.manifest.read_text(encoding="utf-8")
+            + 'ctx-history-index = { path = "../ctx-history-index" }\n',
+            encoding="utf-8",
+        )
+        with self.assertRaisesRegex(BoundaryError, "upward internal"):
             validate(self.manifest, self.build, self.lib, self.registration)
 
 

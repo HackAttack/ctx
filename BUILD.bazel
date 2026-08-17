@@ -269,9 +269,12 @@ py_test(
     name = "rust_target_inventory_check",
     srcs = ["//tools/bazel:check_rust_target_inventory.py"],
     main = "//tools/bazel:check_rust_target_inventory.py",
+    # This live worktree audit intentionally inspects tracked and untracked
+    # Cargo/Bazel metadata. Its hermetic mutation tests remain release-routed.
     tags = [
         "external",
         "local",
+        "manual",
         "no-cache",
     ],
 )
@@ -1001,7 +1004,6 @@ sh_test(
     data = [
         "BUILD.bazel",
         "scripts/bazelw",
-        "scripts/check-rust-crate-size.py",
     ] + CARGO_WORKSPACE_PACKAGE_DATA,
     tags = [
         "build-graph",
@@ -1018,7 +1020,6 @@ sh_test(
     data = [
         "BUILD.bazel",
         "scripts/bazelw",
-        "scripts/check-rust-crate-size.py",
     ] + CARGO_WORKSPACE_PACKAGE_DATA,
     tags = [
         "build-graph",
@@ -1051,7 +1052,6 @@ sh_test(
     data = [
         "BUILD.bazel",
         "scripts/bazelw",
-        "scripts/check-rust-crate-size.py",
     ] + CARGO_WORKSPACE_PACKAGE_DATA,
     tags = [
         "build-graph",
@@ -1121,7 +1121,6 @@ sh_test(
         "BUILD.bazel",
         "Cargo.toml",
         "scripts/bazelw",
-        "scripts/check-rust-crate-size.py",
         "//crates/ctx-cli:BUILD.bazel",
         "//crates/ctx-cli:cargo_package_data",
         "//crates/ctx-client-observability:BUILD.bazel",
@@ -1260,7 +1259,9 @@ non_rust_gate(
         "BUILD.bazel",
         "scripts/check-loc.py",
         "scripts/check-loc.sh",
+        "scripts/check-repository-policy.sh",
         "scripts/tests/check_loc_test.sh",
+        "//tools/bazel:check_rust_target_inventory.py",
     ],
     tags = [
         "external",

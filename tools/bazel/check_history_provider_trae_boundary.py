@@ -15,34 +15,6 @@ class BoundaryError(RuntimeError):
     pass
 
 
-EXPECTED_DEPENDENCIES = {
-    "chrono",
-    "ctx-history-capture-model",
-    "ctx-history-capture-runtime",
-    "ctx-history-core",
-    "ctx-history-provider-runtime",
-    "ctx-history-source-io",
-    "ctx-history-source-sqlite",
-    "rusqlite",
-    "serde",
-    "serde_json",
-    "sha2",
-    "thiserror",
-}
-EXPECTED_DEV_DEPENDENCIES = {"tempfile"}
-EXPECTED_PATHS = {
-    dependency: f"../{dependency}"
-    for dependency in EXPECTED_DEPENDENCIES
-    if dependency.startswith("ctx-history-")
-}
-REQUIRED_BUILD_LABELS = {
-    "//crates/ctx-history-capture-model:lib",
-    "//crates/ctx-history-capture-runtime:lib",
-    "//crates/ctx-history-core:lib",
-    "//crates/ctx-history-provider-runtime:lib",
-    "//crates/ctx-history-source-io:lib",
-    "//crates/ctx-history-source-sqlite:lib",
-}
 FORBIDDEN_PACK_FRAGMENTS = (
     "ctx_history_capture::",
     "ctx_history_index::",
@@ -195,6 +167,15 @@ def _forbid_fragments(text: str, fragments: tuple[str, ...], label: str) -> None
         raise BoundaryError(f"{label} retained forbidden authority: {', '.join(retained)}")
 
 
+def _is_lower_internal_dependency(dependency: str) -> bool:
+    return dependency in {
+        "ctx-history-capture-model",
+        "ctx-history-capture-runtime",
+        "ctx-history-core",
+        "ctx-history-provider-runtime",
+    } or dependency.startswith("ctx-history-source-")
+
+
 def validate(
     manifest: Path,
     build: Path,
@@ -215,18 +196,30 @@ def validate(
 
     dependencies = data.get("dependencies", {})
     dev_dependencies = data.get("dev-dependencies", {})
-    if set(dependencies) != EXPECTED_DEPENDENCIES:
-        raise BoundaryError(
-            f"Trae Cargo dependency inventory drifted: {sorted(dependencies)}"
-        )
-    if set(dev_dependencies) != EXPECTED_DEV_DEPENDENCIES:
-        raise BoundaryError(
-            "Trae Cargo dev-dependency inventory drifted: "
-            f"{sorted(dev_dependencies)}"
-        )
-    for dependency, expected_path in EXPECTED_PATHS.items():
-        if dependencies[dependency] != {"path": expected_path}:
-            raise BoundaryError(f"Trae path dependency drifted: {dependency}")
+    for dependency, contract in dependencies.items():
+        if dependency.startswith("ctx-"):
+            if not _is_lower_internal_dependency(dependency):
+                raise BoundaryError(f"Trae gained an upward internal dependency: {dependency}")
+            if contract != {"path": f"../{dependency}"}:
+                raise BoundaryError(f"Trae path dependency drifted: {dependency}")
+        elif not isinstance(contract, dict) or contract.get("workspace") is not True or "path" in contract:
+            raise BoundaryError(
+                f"Trae external dependency must inherit the workspace: {dependency}"
+            )
+    for dependency, contract in dev_dependencies.items():
+        if dependency.startswith("ctx-"):
+            if dependency not in dependencies:
+                raise BoundaryError(
+                    f"Trae dev dependency is not a production-lower dependency: {dependency}"
+                )
+            if not isinstance(contract, dict) or contract.get("path") != f"../{dependency}":
+                raise BoundaryError(f"Trae dev path dependency drifted: {dependency}")
+            if set(contract).difference({"path", "features"}):
+                raise BoundaryError(f"Trae dev path dependency has unsupported options: {dependency}")
+        elif not isinstance(contract, dict) or contract.get("workspace") is not True or "path" in contract:
+            raise BoundaryError(
+                f"Trae external dev dependency must inherit the workspace: {dependency}"
+            )
 
     build_lines = _active_starlark_lines(build.read_text(encoding="utf-8"))
     build_labels = {
@@ -241,7 +234,12 @@ def validate(
         for forbidden in forbidden_labels
     ):
         raise BoundaryError("Trae pack gained capture/index Bazel authority")
-    missing_labels = sorted(REQUIRED_BUILD_LABELS - build_labels)
+    required_build_labels = {
+        f"//crates/{dependency}:lib"
+        for dependency in dependencies
+        if dependency.startswith("ctx-")
+    }
+    missing_labels = sorted(required_build_labels - build_labels)
     if missing_labels:
         raise BoundaryError(
             "Trae lower-layer Bazel inventory drifted: " + ", ".join(missing_labels)

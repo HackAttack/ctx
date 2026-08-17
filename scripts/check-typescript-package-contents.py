@@ -10,6 +10,8 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 PACKAGE_ROOT = ROOT / "sdks" / "typescript"
 EXPECTED_RUNTIME_FILES = {
+    "arguments.js",
+    "errors.js",
     "index.d.ts",
     "index.js",
     "subprocess.js",

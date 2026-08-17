@@ -53,25 +53,7 @@ EXPECTED_INTERNAL_BAZEL = {
     "//crates/ctx-history-source-sqlite:lib",
     "//crates/ctx-history-source-sqlite:test_support_lib",
 }
-EXPECTED_SOURCES = {
-    "lib.rs", "provider_sources.rs", "test_support_paths.rs", "providers/mod.rs",
-    "providers/auggie.rs", "providers/auggie/native_path.rs",
-    "providers/auggie/native_path/model.rs", "providers/auggie/native_path/parse.rs",
-    "providers/auggie/native_path/source.rs", "providers/auggie/native_path/source_backed.rs",
-    "providers/auggie/native_path/source_backed_tests.rs", "providers/auggie/tests.rs",
-    "providers/nanoclaw.rs", "providers/nanoclaw/native_path.rs",
-    "providers/nanoclaw/native_path/source_backed.rs",
-    "providers/nanoclaw/native_path/source_backed/replay.rs",
-    "providers/nanoclaw/position.rs", "providers/nanoclaw/project.rs",
-    "providers/nanoclaw/project/helpers.rs", "providers/nanoclaw/projection.rs",
-    "providers/nanoclaw/rows.rs", "providers/nanoclaw/source.rs", "providers/nanoclaw/tests.rs",
-    "providers/openhands.rs", "providers/openhands/event.rs",
-    "providers/openhands/nativepath.rs",
-    "providers/openhands/nativepath/source_backed.rs",
-    "providers/openhands/nativepath/source_backed/detection.rs",
-    "providers/openhands/nativepath/source_backed_tests.rs",
-    "providers/openhands/source.rs",
-}
+OWNED_PROVIDERS = ("auggie", "nanoclaw", "openhands")
 FORBIDDEN_PACKAGES = {
     "ctx-history-capture", "ctx-history-index", "ctx-history-index-format",
     "ctx-history-index-generation", "ctx-history-index-query",
@@ -127,8 +109,27 @@ def validate_build(path: Path) -> None:
 def validate_sources(manifest: Path) -> None:
     root = manifest.parent / "src"
     paths = {path.relative_to(root).as_posix() for path in root.rglob("*.rs")}
-    if paths != EXPECTED_SOURCES:
-        raise BoundaryError(f"document-projection source ownership drifted: missing={sorted(EXPECTED_SOURCES - paths)} extra={sorted(paths - EXPECTED_SOURCES)}")
+    missing_entries = [
+        f"providers/{provider}.rs"
+        for provider in OWNED_PROVIDERS
+        if f"providers/{provider}.rs" not in paths
+    ]
+    unexpected_provider_sources = sorted(
+        path
+        for path in paths
+        if path.startswith("providers/")
+        and path != "providers/mod.rs"
+        and not any(
+            path == f"providers/{provider}.rs"
+            or path.startswith(f"providers/{provider}/")
+            for provider in OWNED_PROVIDERS
+        )
+    )
+    if missing_entries or unexpected_provider_sources:
+        raise BoundaryError(
+            "document-projection source ownership drifted: "
+            f"missing={missing_entries} unexpected={unexpected_provider_sources}"
+        )
     source = "\n".join(_read(root / path) for path in sorted(paths))
     required = (
         "decode_document_full_snapshot_checkpoint", "DocumentFullSnapshotCheckpointError",

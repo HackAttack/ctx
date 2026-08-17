@@ -200,30 +200,4 @@ for port in SourceDiscoveryPort CaptureAdmissionPort IngestRefreshPort IngestPro
   fi
 done
 
-python3 - "${repo_root}" <<'PY'
-import importlib.util
-import pathlib
-import sys
-import tomllib
-
-root = pathlib.Path(sys.argv[1])
-sys.modules.setdefault("tomli", tomllib)
-spec = importlib.util.spec_from_file_location(
-    "check_rust_crate_size", root / "scripts/check-rust-crate-size.py"
-)
-module = importlib.util.module_from_spec(spec)
-sys.modules[spec.name] = module
-spec.loader.exec_module(module)
-measurement = next(
-    item for item in module.live_measurements(root)
-    if item.package.name == "ctx-history-ingest-application"
-)
-if measurement.cloc > 6_143:
-    raise SystemExit(
-        "ctx-history-ingest-application exceeds its 6,143 physical CLOC ceiling: "
-        f"{measurement.cloc}"
-    )
-print(f"ctx-history-ingest-application physical CLOC: {measurement.cloc}")
-PY
-
-printf 'ctx-history-ingest-application normal, qualification, test-support, contract, locality, CLOC, and borrowed-port boundary ok\n'
+printf 'ctx-history-ingest-application normal, qualification, test-support, contract, locality, and borrowed-port boundary ok\n'

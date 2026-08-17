@@ -138,6 +138,17 @@ pub fn enumerate_results(value: &Value) -> Vec<GrokBuildResultSubrecord<'_>> {
     }]
 }
 
+/// Retains only the audited linkage envelope for a terminal result whose ACP
+/// content union has no recognized visible-text variant.
+pub fn contentless_result_evidence(value: &Value) -> Value {
+    let update = update(value);
+    json!({
+        "sessionUpdate": update.get("sessionUpdate"),
+        "toolCallId": update.get("toolCallId"),
+        "status": update.get("status"),
+    })
+}
+
 fn terminal_status(value: &Value) -> Option<&str> {
     update(value)
         .get("status")
@@ -464,6 +475,13 @@ mod tests {
             let results = enumerate_results(&value);
             assert_eq!(results.len(), 1);
             assert!(results[0].content.is_none());
+            let evidence = contentless_result_evidence(&value);
+            assert_eq!(evidence["sessionUpdate"], "tool_call_update");
+            assert_eq!(evidence["toolCallId"], "call");
+            assert_eq!(evidence["status"], "completed");
+            assert!(!serde_json::to_string(&evidence)
+                .unwrap()
+                .contains("future-sensitive"));
         }
     }
 

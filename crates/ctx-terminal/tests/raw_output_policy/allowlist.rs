@@ -50,17 +50,17 @@ const ANALYTICS: TestOwner = TestOwner::behavioral(
     &["post_event_chunks", "failure_on_post", "is_ok"],
 );
 const LIVE_OUTPUT: TestOwner = TestOwner::behavioral(
-    "crates/ctx-terminal/src/ui/writer.rs::live_controller_bytes_cover_first_grow_shrink_and_final_frames",
+    "crates/ctx-terminal/src/ui/writer/tests.rs::live_controller_bytes_cover_first_grow_shrink_and_final_frames",
     &["crates/ctx-terminal/src/ui/writer.rs"],
     &["LiveOutput", "write_frame", "assert_eq"],
 );
 const PLAIN_REFRESH_PROGRESS: TestOwner = TestOwner::behavioral(
-    "crates/ctx-terminal/src/progress.rs::plain_refresh_progress_is_the_stable_live_document_without_internal_routes",
+    "crates/ctx-terminal/src/progress/tests.rs::plain_refresh_progress_is_the_stable_live_document_without_internal_routes",
     &["crates/ctx-terminal/src/progress.rs"],
     &["ProgressMode", "Plain", "refresh_progress", "assert_eq"],
 );
 const APPEND_OUTPUT: TestOwner = TestOwner::behavioral(
-    "crates/ctx-terminal/src/ui/writer.rs::append_controller_writes_documents_and_lines_exactly",
+    "crates/ctx-terminal/src/ui/writer/tests.rs::append_controller_writes_documents_and_lines_exactly",
     &["crates/ctx-terminal/src/ui/writer.rs"],
     &["LiveOutput", "write_document", "write_line", "assert_eq"],
 );
@@ -70,7 +70,7 @@ const SOURCE_INDEX_MACHINE_ERROR: TestOwner = TestOwner::behavioral(
     &["render_show_error", "render_search_error", "from_str"],
 );
 const QUERY_AUTHORITY_DISPATCH_MACHINE_ERROR: TestOwner = TestOwner::behavioral(
-    "src/dispatch.rs::query_authority_error_json_is_scoped_to_machine_search_show_and_locate",
+    "src/dispatch/tests.rs::query_authority_error_json_is_scoped_to_machine_search_show_and_locate",
     &["src/dispatch.rs"],
     &[
         "command_uses_query_authority_error_json",
@@ -79,7 +79,7 @@ const QUERY_AUTHORITY_DISPATCH_MACHINE_ERROR: TestOwner = TestOwner::behavioral(
     ],
 );
 const SOURCE_INDEX_STREAM: TestOwner = TestOwner::behavioral(
-    "crates/ctx-history-cli/src/source_index/tests.rs::unbounded_cli_show_streams_valid_json_beyond_4096_events_in_order",
+    "crates/ctx-history-cli/src/source_index/tests/additional.rs::unbounded_cli_show_streams_valid_json_beyond_4096_events_in_order",
     &["crates/ctx-history-cli/src/source_index/show.rs"],
     &["stream_cli_session", "events_returned", "from_slice"],
 );
@@ -131,12 +131,12 @@ const WINDOWS_READINESS: TestOwner = TestOwner::behavioral(
     &["ready_receipt", "validate_ready_receipt"],
 );
 const DISPATCH_MACHINE_ERROR: TestOwner = TestOwner::behavioral(
-    "src/dispatch.rs::forced_color_never_decorates_generic_machine_mode_errors",
+    "src/dispatch/tests.rs::forced_color_never_decorates_generic_machine_mode_errors",
     &["src/dispatch.rs"],
     &["render_generic_command_error", "machine_stderr", "contains"],
 );
 const CLAP_OUTPUT: TestOwner = TestOwner::behavioral(
-    "src/dispatch.rs::clap_value_errors_use_the_selected_stderr_stream_with_contextual_usage",
+    "src/dispatch/tests.rs::clap_value_errors_use_the_selected_stderr_stream_with_contextual_usage",
     &["src/dispatch.rs"],
     &["write_clap_output", "contains", "rendered"],
 );
@@ -193,7 +193,7 @@ const INDEX_WAIT_OUTPUT: TestOwner = TestOwner::behavioral(
     &["IndexWaitHumanOutput", "assert_eq", "rendered"],
 );
 const DOCS_OUTPUT: TestOwner = TestOwner::behavioral(
-    "crates/ctx-cli-presentation/src/docs.rs::docs_machine_and_plain_branches_write_exact_selected_stdout_protocols",
+    "crates/ctx-cli-presentation/src/docs/ui_tests.rs::docs_machine_and_plain_branches_write_exact_selected_stdout_protocols",
     &[PRESENTATION_DOCS],
     &["list_docs", "search_docs", "show_doc", "man_docs", "assert_eq"],
 );
@@ -216,6 +216,11 @@ const UI_MACHINE_BYTES: TestOwner = TestOwner::behavioral(
     "crates/ctx-terminal/src/ui/tests.rs::ui_writes_exact_framed_machine_bytes_to_the_selected_stream",
     &[UI_WRITER],
     &["write_stdout_bytes", "write_stderr_bytes", "assert_eq"],
+);
+const CORE_CAPABILITY_OUTPUT: TestOwner = TestOwner::behavioral(
+    "src/core_capability.rs::canonical_response_is_bounded_machine_json",
+    &["src/core_capability.rs"],
+    &["canonical", "MAX_RESPONSE_BYTES", "from_slice", "assert_eq"],
 );
 
 pub(super) const ALLOWLIST: &[AllowEntry] = &[
