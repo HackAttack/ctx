@@ -20,10 +20,12 @@ use super::{CompletedOperation, LocalUsageStorageAuthority, RETENTION_DAYS};
 #[cfg(test)]
 const TEST_PRODUCT_VERSION: &str = "1.0.0";
 
+mod connection;
 mod file_family;
 mod migration;
 mod write;
 
+use connection::{configure_persistent, configure_report_connection, configure_transient};
 #[cfg(all(test, windows))]
 pub(super) use file_family::{assert_single_link_for_test, verify_same_file_for_test};
 use file_family::{
@@ -802,19 +804,6 @@ fn open_writable_with_migration_hook(
     Ok(Some(WritableStore { conn, family_guard }))
 }
 
-fn configure_persistent(conn: &Connection) -> Result<(), UsageStoreError> {
-    conn.pragma_update(None, "max_page_count", MAX_PAGE_COUNT)?;
-    let max_page_count: i64 = conn.pragma_query_value(None, "max_page_count", |row| row.get(0))?;
-    if max_page_count > MAX_PAGE_COUNT {
-        return Err(UsageStoreError::GrowthLimit);
-    }
-    conn.pragma_update(None, "journal_mode", "WAL")?;
-    conn.pragma_update(None, "synchronous", "NORMAL")?;
-    conn.pragma_update(None, "wal_autocheckpoint", WAL_AUTOCHECKPOINT_PAGES)?;
-    conn.pragma_update(None, "journal_size_limit", JOURNAL_SIZE_LIMIT_BYTES)?;
-    Ok(())
-}
-
 fn prepare_file(path: &Path, create: bool) -> Result<PreparedFile, UsageStoreError> {
     let Some(parent) = path.parent() else {
         return Err(UsageStoreError::SchemaIdentity);
@@ -986,20 +975,6 @@ fn cleanup_stale_initializer_slots(path: &Path, now: SystemTime) -> Result<usize
         }
     }
     Ok(removed)
-}
-
-fn configure_transient(conn: &Connection, busy_timeout: Duration) -> Result<(), UsageStoreError> {
-    conn.busy_timeout(busy_timeout)?;
-    conn.pragma_update(None, "foreign_keys", "ON")?;
-    conn.pragma_update(None, "trusted_schema", "OFF")?;
-    Ok(())
-}
-
-fn configure_report_connection(conn: &Connection) -> Result<(), UsageStoreError> {
-    configure_transient(conn, BUSY_TIMEOUT)?;
-    conn.pragma_update(None, "temp_store", "MEMORY")?;
-    conn.pragma_update(None, "query_only", "ON")?;
-    Ok(())
 }
 
 fn utc_day(now: SystemTime) -> String {
