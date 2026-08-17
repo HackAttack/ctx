@@ -298,22 +298,55 @@ def expression_owns_path(
     return False
 
 
-def rust_source_owned(modules: list[ast.Module], path: str) -> bool:
+def call_name(node: ast.Call) -> str:
+    return node.func.id if isinstance(node.func, ast.Name) else ""
+
+
+def is_rust_rule(node: ast.Call) -> bool:
+    function = call_name(node)
+    return (
+        function.startswith(("rust_", "ctx_rust_"))
+        or function.endswith("_contract_test")
+        or function.endswith("_binary_contract")
+        or function.endswith("_integration_test")
+    )
+
+
+def rule_name(node: ast.Call) -> str | None:
+    for keyword in node.keywords:
+        if (
+            keyword.arg == "name"
+            and isinstance(keyword.value, ast.Constant)
+            and isinstance(keyword.value.value, str)
+        ):
+            return keyword.value.value
+    return None
+
+
+def rust_rules_for_target(
+    modules: list[ast.Module],
+    path: str,
+    target_name: str | None = None,
+) -> list[tuple[ast.Call, dict[str, ast.AST]]]:
+    result: list[tuple[ast.Call, dict[str, ast.AST]]] = []
     for module in modules:
         environment = assignments(module)
         for node in ast.walk(module):
-            if not isinstance(node, ast.Call):
+            if not isinstance(node, ast.Call) or not is_rust_rule(node):
+                continue
+            if target_name is not None and rule_name(node) != target_name:
                 continue
             keywords = {keyword.arg: keyword.value for keyword in node.keywords}
-            if not {"crate_root", "src", "srcs"}.intersection(keywords):
-                continue
-            if expression_owns_path(keywords.get("crate_root"), path, environment) or expression_owns_path(
-                keywords.get("src"), path, environment
-            ) or expression_owns_path(
-                keywords.get("srcs"), path, environment
+            if any(
+                expression_owns_path(keywords.get(attribute), path, environment)
+                for attribute in ("crate_root", "src", "srcs")
             ):
-                return True
-    return False
+                result.append((node, environment))
+    return result
+
+
+def rust_source_owned(modules: list[ast.Module], path: str) -> bool:
+    return bool(rust_rules_for_target(modules, path))
 
 
 def bazel_path_declared(modules: list[ast.Module], path: str) -> bool:
@@ -351,14 +384,36 @@ def has_named_target(modules: list[ast.Module], name: str) -> bool:
     )
 
 
-def dependency_ownership(modules: list[ast.Module]) -> tuple[set[str], set[str]]:
+def dependency_ownership(
+    modules: list[ast.Module],
+    *,
+    target_name: str | None = None,
+    target_path: str | None = None,
+    tests_only: bool = False,
+) -> tuple[set[str], set[str]]:
     labels: set[str] = set()
     flags: set[str] = set()
     for module in modules:
         environment = assignments(module)
         for node in ast.walk(module):
-            if not isinstance(node, ast.Call):
+            if not isinstance(node, ast.Call) or not is_rust_rule(node):
                 continue
+            name = rule_name(node)
+            if target_name is not None and name != target_name:
+                continue
+            function = call_name(node)
+            if tests_only and not (
+                function.endswith(("_test", "_contract_test"))
+                or name == "unit_tests"
+            ):
+                continue
+            if target_path is not None:
+                keywords = {keyword.arg: keyword.value for keyword in node.keywords}
+                if not any(
+                    expression_owns_path(keywords.get(attribute), target_path, environment)
+                    for attribute in ("crate_root", "src", "srcs")
+                ):
+                    continue
             for keyword in node.keywords:
                 if keyword.arg not in {"deps", "proc_macro_deps"}:
                     continue
@@ -380,6 +435,13 @@ def dependency_ownership(modules: list[ast.Module]) -> tuple[set[str], set[str]]
     return labels, flags
 
 
+def expected_bazel_target_name(target: str) -> str | None:
+    kind, name = target.split(":", 1)
+    if kind == "custom-build":
+        return None
+    return "lib" if kind == "lib" else name
+
+
 def assert_target_ownership(
     root: Path,
     package_name: str,
@@ -395,7 +457,15 @@ def assert_target_ownership(
         path = relative.as_posix()
         if not (package_dir / relative).is_file():
             fail(f"{package_name} {target} source is missing: {path}")
-        owned = rust_source_owned(modules, path)
+        expected_name = expected_bazel_target_name(target)
+        owning_rules = (
+            rust_rules_for_target(modules, path, expected_name)
+            if expected_name is not None
+            else []
+        )
+        if not owning_rules and target.startswith(("test:", "example:", "bench:")):
+            owning_rules = rust_rules_for_target(modules, path)
+        owned = bool(owning_rules)
         if target == "custom-build:build-script-build":
             workspace_path = (package_dir.relative_to(root) / relative).as_posix()
             owned = owned or bazel_path_declared(modules, path) or bazel_path_declared(
@@ -435,7 +505,7 @@ def local_graph(
     graph = {name: set() for name in packages}
     for name, (directory, data) in packages.items():
         modules = package_bazel_modules(root, directory)
-        dependency_labels, dependency_flags = dependency_ownership(modules)
+        targets = cargo_targets(directory, data)
         for table, dependency_name, value in dependency_entries(data):
             if not isinstance(value, dict) or "path" not in value:
                 continue
@@ -454,8 +524,36 @@ def local_graph(
                 "dev-dependencies": "normal_dev",
                 "build-dependencies": "build",
             }[table]
-            if not any(label.startswith(package_label) for label in dependency_labels) and required_flag not in dependency_flags:
-                fail(f"{name} Bazel target omits Cargo path dependency {target}")
+            checks: list[tuple[str, set[str], set[str]]] = []
+            if table == "dependencies":
+                for cargo_target, relative in targets.items():
+                    if cargo_target.startswith(("test:", "custom-build:")):
+                        continue
+                    bazel_target = expected_bazel_target_name(cargo_target)
+                    if bazel_target is None:
+                        continue
+                    labels, flags = dependency_ownership(
+                        modules,
+                        target_name=bazel_target,
+                        target_path=relative.as_posix(),
+                    )
+                    checks.append((cargo_target, labels, flags))
+            elif table == "dev-dependencies":
+                labels, flags = dependency_ownership(modules, tests_only=True)
+                checks.append(("test targets", labels, flags))
+            else:
+                labels, flags = dependency_ownership(modules)
+                checks.append(("build targets", labels, flags))
+            if not checks:
+                fail(f"{name} has no Bazel {table} target for Cargo path dependency {target}")
+            for cargo_target, dependency_labels, dependency_flags in checks:
+                if (
+                    not any(label.startswith(package_label) for label in dependency_labels)
+                    and required_flag not in dependency_flags
+                ):
+                    fail(
+                        f"{name} Bazel {cargo_target} omits Cargo path dependency {target}"
+                    )
     return graph
 
 

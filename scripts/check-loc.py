@@ -20,9 +20,6 @@ SOURCE_EXTENSIONS = {
 BAZEL_DECLARATIONS = {
     "BUILD", "BUILD.bazel", "MODULE.bazel", "WORKSPACE", "WORKSPACE.bazel",
 }
-EXCLUDED_COMPONENTS = {
-    "docs", "fixture", "fixtures", "target",
-}
 TEST_COMPONENTS = {"Tests", "__tests__", "benches", "test", "test_support", "tests"}
 DOC_NAMES = {"LICENSE", "NOTICE", "README", "SECURITY.md"}
 DOC_SUFFIXES = {
@@ -101,9 +98,12 @@ def classify(path: str) -> str | None:
     parents = pure.parts[:-1]
     if base in BAZEL_DECLARATIONS:
         return None
+    if parents and parents[0] in {"docs", "fixture", "fixtures"}:
+        return None
     if any(
-        part in EXCLUDED_COMPONENTS or part.startswith("bazel-")
-        for part in parents
+        part in {"fixture", "fixtures"}
+        and any(prefix in TEST_COMPONENTS for prefix in parents[:index])
+        for index, part in enumerate(parents)
     ):
         return None
     if base in {"Cargo.lock", "MODULE.bazel.lock", "package-lock.json"}:

@@ -130,6 +130,20 @@ write_lines "${current_repo}/generated/large.rs" 1001
 git -C "${current_repo}" add generated/large.rs
 expect_fail "${current_repo}" 'generated/large.rs (source): 1001 lines > limit 1000'
 
+new_repo tracked_output_named_directories
+write_lines "${current_repo}/target/tracked.rs" 1001
+write_lines "${current_repo}/bazel-generated/tracked.rs" 1001
+git -C "${current_repo}" add -f target/tracked.rs bazel-generated/tracked.rs
+expect_fail "${current_repo}" 'bazel-generated/tracked.rs (source): 1001 lines > limit 1000'
+expect_fail "${current_repo}" 'target/tracked.rs (source): 1001 lines > limit 1000'
+
+new_repo nested_production_names_are_source
+write_lines "${current_repo}/src/docs/tracked.rs" 1001
+write_lines "${current_repo}/src/fixtures/tracked.rs" 1001
+git -C "${current_repo}" add src/docs/tracked.rs src/fixtures/tracked.rs
+expect_fail "${current_repo}" 'src/docs/tracked.rs (source): 1001 lines > limit 1000'
+expect_fail "${current_repo}" 'src/fixtures/tracked.rs (source): 1001 lines > limit 1000'
+
 new_repo generated_data_source
 write_lines "${current_repo}/data/generated/large.rs" 1001
 git -C "${current_repo}" add data/generated/large.rs

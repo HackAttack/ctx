@@ -61,6 +61,10 @@ filegroup(name = "cargo_package_data", data = ["src/main.rs"])
 '''
         )
         self.assertFalse(rust_source_owned([misleading], "src/main.rs"))
+        broad_filegroup = module(
+            'filegroup(name = "cargo_package_data", srcs = glob(["**"]))'
+        )
+        self.assertFalse(rust_source_owned([broad_filegroup], "src/main.rs"))
         owned = module('rust_binary(name = "app", crate_root = "src/main.rs")')
         self.assertTrue(rust_source_owned([owned], "src/main.rs"))
 
@@ -104,6 +108,27 @@ rust_library(
         )
         labels, _ = dependency_ownership([owned])
         self.assertEqual(labels, {"//crates/owned:lib"})
+
+    def test_dependency_ownership_is_scoped_to_the_named_rust_target(self) -> None:
+        metadata = module(
+            '''
+rust_library(name = "lib", crate_root = "src/lib.rs", deps = [])
+ctx_rust_test(
+    name = "unit_tests",
+    crate_root = "src/lib.rs",
+    deps = all_crate_deps(normal = True, normal_dev = True),
+)
+'''
+        )
+        labels, flags = dependency_ownership(
+            [metadata],
+            target_name="lib",
+            target_path="src/lib.rs",
+        )
+        self.assertEqual(labels, set())
+        self.assertEqual(flags, set())
+        _, test_flags = dependency_ownership([metadata], tests_only=True)
+        self.assertEqual(test_flags, {"normal", "normal_dev"})
 
     def test_live_manifest_discovery_includes_untracked_and_ignores_ignored(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
