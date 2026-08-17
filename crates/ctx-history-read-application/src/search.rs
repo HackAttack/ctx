@@ -31,7 +31,7 @@ use active_session::{
 #[cfg(test)]
 use active_session::{
     resolved_session_tree_ids, resolved_unique_session_tree_root_id, SessionAncestry,
-    MAX_ACTIVE_SESSION_ANCESTORS,
+    MAX_ACTIVE_SESSION_ANCESTORS, MAX_ACTIVE_SESSION_TREE_SESSIONS,
 };
 use shaping::root_first_candidate_pool_is_decisive;
 pub use shaping::shape_search_result_window;

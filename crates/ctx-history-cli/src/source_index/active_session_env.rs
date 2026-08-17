@@ -1,5 +1,9 @@
 use ctx_history_read_application::ActiveSessionExclusion;
 
+// Provider session IDs become exact index metadata filters. Keep malformed
+// inherited environment values from reaching the index query validator.
+const MAX_PROVIDER_SESSION_ID_BYTES: usize = 64 * 1024;
+
 #[derive(Clone, Copy)]
 struct Marker {
     name: &'static str,
@@ -141,7 +145,10 @@ where
         else {
             continue;
         };
-        if provider_session_id.is_empty() || !rule_matches(rule.gate, &mut lookup) {
+        if provider_session_id.is_empty()
+            || provider_session_id.len() > MAX_PROVIDER_SESSION_ID_BYTES
+            || !rule_matches(rule.gate, &mut lookup)
+        {
             continue;
         }
 
@@ -216,6 +223,18 @@ mod tests {
             Some(expected("codex", "id/with  spaces/Ü"))
         );
         assert_eq!(resolve(&[("CODEX_THREAD_ID", "   ")]), None);
+    }
+
+    #[test]
+    fn session_identity_length_boundary_fails_open() {
+        let maximum = "x".repeat(MAX_PROVIDER_SESSION_ID_BYTES);
+        assert_eq!(
+            resolve(&[("CODEX_THREAD_ID", maximum.as_str())]),
+            Some(expected("codex", &maximum))
+        );
+
+        let oversized = "x".repeat(MAX_PROVIDER_SESSION_ID_BYTES + 1);
+        assert_eq!(resolve(&[("CODEX_THREAD_ID", oversized.as_str())]), None);
     }
 
     #[test]

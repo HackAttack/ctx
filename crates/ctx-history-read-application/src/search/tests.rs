@@ -508,6 +508,45 @@ fn active_tree_claim_closure_includes_nested_descendants() {
 }
 
 #[test]
+fn active_tree_claim_closure_accepts_the_session_limit() {
+    let root = Uuid::from_u128(1);
+    let related = (2..=MAX_ACTIVE_SESSION_TREE_SESSIONS as u128)
+        .map(Uuid::from_u128)
+        .collect::<Vec<_>>();
+    let resolved = resolved_session_tree_ids(root, |_| Ok(related.clone()))
+        .unwrap()
+        .unwrap();
+    assert_eq!(resolved.len(), MAX_ACTIVE_SESSION_TREE_SESSIONS);
+}
+
+#[test]
+fn active_tree_claim_closure_fails_open_over_the_session_limit() {
+    let root = Uuid::from_u128(1);
+    let related = (2..=(MAX_ACTIVE_SESSION_TREE_SESSIONS as u128 + 1))
+        .map(Uuid::from_u128)
+        .collect::<Vec<_>>();
+    assert_eq!(
+        resolved_session_tree_ids(root, |_| Ok(related.clone())).unwrap(),
+        None
+    );
+}
+
+#[test]
+fn active_tree_claim_closure_fails_open_over_the_depth_limit() {
+    let root = Uuid::from_u128(1);
+    let mut next = 2_u128;
+    assert_eq!(
+        resolved_session_tree_ids(root, |_| {
+            let session_id = Uuid::from_u128(next);
+            next += 1;
+            Ok(vec![session_id])
+        })
+        .unwrap(),
+        None
+    );
+}
+
+#[test]
 fn active_tree_root_rejects_a_malformed_claimed_root() {
     let root = ancestry(1, None, None);
     let child = ancestry(2, Some(1), Some(99));
