@@ -72,6 +72,92 @@ pub(crate) fn atomic_update(
     publish(path, &stage, existing.as_ref(), &replacement)
 }
 
+pub(crate) fn atomic_remove_if_unchanged(path: &Path, expected: &[u8]) -> Result<bool> {
+    let parent = path
+        .parent()
+        .ok_or_else(|| anyhow!("target path has no parent: {}", path.display()))?;
+    let lock_path = lock_path(path)?;
+    let lock = match OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .open(&lock_path)
+    {
+        Ok(lock) => lock,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(false),
+        Err(error) => {
+            return Err(error)
+                .with_context(|| format!("open transaction lock {}", lock_path.display()))
+        }
+    };
+    lock.lock_exclusive()
+        .with_context(|| format!("lock transaction {}", lock_path.display()))?;
+    let Some(existing) = open_observed_target(path)? else {
+        return Ok(false);
+    };
+    if existing.body != expected {
+        return Err(anyhow!(
+            "refusing to remove concurrently changed target {}",
+            path.display()
+        ));
+    }
+
+    remove_observed(path, parent, &existing)?;
+    Ok(true)
+}
+
+#[cfg(any(target_os = "linux", target_os = "macos", windows))]
+fn remove_observed(path: &Path, parent: &Path, existing: &ObservedTarget) -> Result<()> {
+    let displaced = stage_path(path)?;
+    let mut displaced_cleanup = StageCleanup::new(&displaced);
+    run_before_publish_hook(path);
+    move_file_noreplace(path, &displaced)
+        .with_context(|| format!("stage removal of {}", path.display()))?;
+
+    if let Err(changed) = verify_target_unchanged(&displaced, existing) {
+        if let Err(rollback) = publish_new_file(&displaced, path) {
+            displaced_cleanup.disarm();
+            return Err(anyhow!(
+                "{changed:#}; failed to restore concurrently changed target; displaced file remains at {}: {rollback}",
+                displaced.display()
+            ));
+        }
+        return Err(changed);
+    }
+    match fs::symlink_metadata(path) {
+        Ok(_) => {
+            displaced_cleanup.disarm();
+            return Err(anyhow!(
+                "target was recreated during removal; displaced file remains at {}",
+                displaced.display()
+            ));
+        }
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+        Err(error) => {
+            displaced_cleanup.disarm();
+            return Err(error).with_context(|| {
+                format!(
+                    "inspect target after removal; displaced file remains at {}",
+                    displaced.display()
+                )
+            });
+        }
+    }
+
+    fs::remove_file(&displaced)
+        .with_context(|| format!("remove displaced file {}", displaced.display()))?;
+    displaced_cleanup.disarm();
+    sync_directory(parent)
+}
+
+#[cfg(not(any(target_os = "linux", target_os = "macos", windows)))]
+fn remove_observed(_path: &Path, _parent: &Path, _existing: &ObservedTarget) -> Result<()> {
+    Err(anyhow!(
+        "atomic removal of an existing integration file is unsupported on this platform"
+    ))
+}
+
 fn publish(
     path: &Path,
     stage: &Path,
@@ -343,6 +429,54 @@ fn publish_new_file(source: &Path, target: &Path) -> io::Result<()> {
     }
 }
 
+#[cfg(target_os = "linux")]
+fn move_file_noreplace(source: &Path, target: &Path) -> io::Result<()> {
+    use std::{ffi::CString, os::unix::ffi::OsStrExt as _};
+
+    let source = CString::new(source.as_os_str().as_bytes())?;
+    let target = CString::new(target.as_os_str().as_bytes())?;
+    if unsafe {
+        libc::renameat2(
+            libc::AT_FDCWD,
+            source.as_ptr(),
+            libc::AT_FDCWD,
+            target.as_ptr(),
+            libc::RENAME_NOREPLACE,
+        )
+    } == 0
+    {
+        Ok(())
+    } else {
+        Err(io::Error::last_os_error())
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn move_file_noreplace(source: &Path, target: &Path) -> io::Result<()> {
+    use std::{ffi::CString, os::unix::ffi::OsStrExt as _};
+
+    let source = CString::new(source.as_os_str().as_bytes())?;
+    let target = CString::new(target.as_os_str().as_bytes())?;
+    if unsafe { libc::renamex_np(source.as_ptr(), target.as_ptr(), libc::RENAME_EXCL) } == 0 {
+        Ok(())
+    } else {
+        Err(io::Error::last_os_error())
+    }
+}
+
+#[cfg(windows)]
+fn move_file_noreplace(source: &Path, target: &Path) -> io::Result<()> {
+    use windows_sys::Win32::Storage::FileSystem::{MoveFileExW, MOVEFILE_WRITE_THROUGH};
+
+    let source = wide_path(source);
+    let target = wide_path(target);
+    if unsafe { MoveFileExW(source.as_ptr(), target.as_ptr(), MOVEFILE_WRITE_THROUGH) } == 0 {
+        Err(io::Error::last_os_error())
+    } else {
+        Ok(())
+    }
+}
+
 fn publish_stage(
     source: &Path,
     target: &Path,
@@ -500,7 +634,7 @@ thread_local! {
 }
 
 #[cfg(test)]
-fn with_before_publish_hook<T>(
+pub(crate) fn with_before_publish_hook<T>(
     hook: impl FnOnce(&Path) + 'static,
     update: impl FnOnce() -> T,
 ) -> T {
@@ -730,5 +864,22 @@ mod tests {
 
         assert!(result.is_err());
         assert_eq!(fs::read(&path).unwrap(), b"external creation");
+    }
+
+    #[cfg(any(target_os = "linux", target_os = "macos", windows))]
+    #[test]
+    fn remove_revalidates_content_immediately_before_unlinking() {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("legacy.md");
+        fs::write(&path, b"managed legacy body").unwrap();
+        let external_path = path.clone();
+
+        let result = with_before_publish_hook(
+            move |_| fs::write(&external_path, b"concurrent local edit").unwrap(),
+            || atomic_remove_if_unchanged(&path, b"managed legacy body"),
+        );
+
+        assert!(format!("{:#}", result.unwrap_err()).contains("concurrently changed"));
+        assert_eq!(fs::read(&path).unwrap(), b"concurrent local edit");
     }
 }

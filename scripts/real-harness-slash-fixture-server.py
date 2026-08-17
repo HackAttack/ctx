@@ -51,12 +51,12 @@ class Handler(http.server.BaseHTTPRequestHandler):
             "path": self.path,
             "model": payload.get("model"),
             "stream": payload.get("stream"),
-            "has_ctx_history_expansion": "# ctx History" in text
-            and "Use ctx to search local coding-agent history" in text,
+            "has_ctx_expansion": "# ctx" in text
+            and "Choose local history search or ctx pro blame based on the request."
+            in text,
             "has_expected_user_request": expected_user_request in text,
             "has_ctx_citations_instruction": "ctx citations" in text,
-            "has_raw_slash_invocation": f"/ctx-history {self.state.expected_query}"
-            in text,
+            "has_raw_slash_invocation": f"/ctx {self.state.expected_query}" in text,
         }
         with self.state.log_path.open("a", encoding="utf-8") as handle:
             handle.write(json.dumps(entry, separators=(",", ":")))

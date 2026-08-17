@@ -132,8 +132,8 @@ ctx integrations status skills
 ctx integrations status skills --agent codex --format json
 ```
 
-`integrations install skills` installs or refreshes ctx's bundled
-`ctx-agent-history-search` skill. With no target flags in an interactive
+`integrations install skills` installs or refreshes ctx's bundled `ctx` skill.
+With no target flags in an interactive
 terminal, it opens a small agent picker with the universal `~/.agents/skills`
 location selected plus detected agent-specific folders for tools that need
 them. In non-interactive runs, it installs to the universal folder and also
@@ -149,6 +149,10 @@ global paths to the current project's skill folders.
 stale bundled copies automatically, but it refuses to overwrite locally
 modified skill files unless you pass `--force`. The command only manages the
 bundled ctx skill and does not fetch arbitrary remote skills.
+
+The 1.0 installer performs a one-way migration from a managed
+`ctx-agent-history-search` directory to `ctx`. It preserves a locally edited
+legacy skill unless `--force` is passed.
 
 ## Integrations
 
@@ -188,7 +192,7 @@ untouched unless `--force` is passed. Invalid JSON, JSONC, TOML, or YAML configs
 reported and left untouched. `integrations status mcp` reports `current`,
 `missing`, `conflict`, `invalid_config`, or `unsupported`.
 
-`integrations install slash-commands` installs a `/ctx-history` entry point only
+`integrations install slash-commands` installs a `/ctx` entry point only
 for providers where ctx has a documented, file-based command surface it can
 manage safely: OpenCode, MiMo Code, Gemini CLI, Qwen Code, and Windsurf. With no
 explicit agent flag, it writes detected file-based targets only. `--project`
@@ -200,10 +204,13 @@ command files. Re-running the command is idempotent, stale ctx-owned files are
 refreshed automatically, and locally modified command files are preserved unless
 you pass `--force`.
 
+The 1.0 installer also migrates a managed `/ctx-history` file to `/ctx`. It
+preserves a locally edited legacy command unless `--force` is passed.
+
 For Codex, Claude Code, Cursor, GitHub Copilot CLI, Pi, and other skill-first
 agents, use `ctx integrations install skills`; those providers expose the
 bundled skill through their own skill invocation surface rather than a separate
-`/ctx-history` command file. See `ctx docs show slash-command-integrations` for
+`/ctx` command file. See `ctx docs show slash-command-integrations` for
 the provider matrix and rationale.
 
 Run `ctx docs show mcp-integrations` for the MCP support matrix, config paths,

@@ -4,7 +4,7 @@ use sha2::{Digest, Sha256};
 use support::*;
 
 const CURRENT_BUNDLED_SKILL_BODY: &str =
-    include_str!("../../../../skills/ctx-agent-history-search/SKILL.md");
+    include_str!("../../../../skills/ctx/SKILL.md");
 
 fn human_stdout(command: &mut assert_cmd::Command) -> String {
     let output = command.assert().success().get_output().clone();
@@ -82,7 +82,7 @@ fn skill_install_defaults_to_global_canonical_agents_dir_and_is_idempotent() {
             .env("CODEX_HOME", temp.path().join("missing-codex"))
             .args(["integrations", "install", "skills", "--format=json"]),
     );
-    assert_eq!(first["skill"], "ctx-agent-history-search");
+    assert_eq!(first["skill"], "ctx");
     assert_eq!(first["results"][0]["agent"], "universal");
     assert_eq!(first["results"][0]["previous_status"], "missing");
     assert_eq!(first["results"][0]["status"], "current");
@@ -92,7 +92,7 @@ fn skill_install_defaults_to_global_canonical_agents_dir_and_is_idempotent() {
         .path()
         .join(".agents")
         .join("skills")
-        .join("ctx-agent-history-search");
+        .join("ctx");
     assert!(skill_dir.join("SKILL.md").exists());
     assert!(skill_dir.join(".ctx-skill.json").exists());
 
@@ -111,6 +111,175 @@ fn skill_install_defaults_to_global_canonical_agents_dir_and_is_idempotent() {
             .args(["integrations", "status", "skills", "--format=json"]),
     );
     assert_eq!(status["results"][0]["status"], "current");
+}
+
+#[test]
+fn skill_install_migrates_a_managed_legacy_skill_once() {
+    let temp = tempdir();
+    let skills_dir = temp.path().join(".agents").join("skills");
+    let legacy_dir = skills_dir.join("ctx-agent-history-search");
+    let skill_dir = skills_dir.join("ctx");
+    let legacy_body = "legacy managed skill\n";
+    fs::create_dir_all(&legacy_dir).unwrap();
+    fs::write(legacy_dir.join("SKILL.md"), legacy_body).unwrap();
+    fs::write(legacy_dir.join("notes.txt"), "keep").unwrap();
+    fs::write(
+        legacy_dir.join(".ctx-skill.json"),
+        json!({
+            "schema_version": 1,
+            "installer": "ctx-cli",
+            "skill_name": "ctx-agent-history-search",
+            "skill_hash": bundled_skill_hash(legacy_body),
+            "ctx_cli_version": "0.9.0",
+            "installed_at": "2026-01-01T00:00:00Z"
+        })
+        .to_string(),
+    )
+    .unwrap();
+
+    let status = json_output(ctx(&temp).args([
+        "integrations",
+        "status",
+        "skills",
+        "--agent",
+        "universal",
+        "--format=json",
+    ]));
+    assert_eq!(status["results"][0]["status"], "stale");
+    assert_eq!(status["results"][0]["legacy_status"], "stale");
+    assert_eq!(status["results"][0]["legacy_path"], json!(legacy_dir));
+
+    let migrated = json_output(ctx(&temp).args([
+        "integrations",
+        "install",
+        "skills",
+        "--agent",
+        "universal",
+        "--format=json",
+    ]));
+    assert_eq!(migrated["results"][0]["previous_status"], "stale");
+    assert_eq!(migrated["results"][0]["status"], "current");
+    assert_eq!(migrated["results"][0]["migrated"], true);
+    assert_eq!(migrated["results"][0]["updated"], true);
+    assert!(skill_dir.join("SKILL.md").is_file());
+    assert!(!legacy_dir.join("SKILL.md").exists());
+    assert!(!legacy_dir.join(".ctx-skill.json").exists());
+    assert_eq!(
+        fs::read_to_string(legacy_dir.join("notes.txt")).unwrap(),
+        "keep"
+    );
+
+    let second = json_output(ctx(&temp).args([
+        "integrations",
+        "install",
+        "skills",
+        "--agent",
+        "universal",
+        "--format=json",
+    ]));
+    assert_eq!(second["results"][0]["already_installed"], true);
+    assert_eq!(second["results"][0]["migrated"], false);
+    assert_eq!(second["results"][0]["updated"], false);
+}
+
+#[test]
+fn default_skill_install_migrates_a_managed_legacy_codex_copy() {
+    let temp = tempdir();
+    let legacy_dir = temp
+        .path()
+        .join(".codex")
+        .join("skills")
+        .join("ctx-agent-history-search");
+    let legacy_body = "legacy managed codex skill\n";
+    fs::create_dir_all(&legacy_dir).unwrap();
+    fs::write(legacy_dir.join("SKILL.md"), legacy_body).unwrap();
+    fs::write(
+        legacy_dir.join(".ctx-skill.json"),
+        json!({
+            "schema_version": 1,
+            "installer": "ctx-cli",
+            "skill_name": "ctx-agent-history-search",
+            "skill_hash": bundled_skill_hash(legacy_body),
+            "ctx_cli_version": "0.9.0",
+            "installed_at": "2026-01-01T00:00:00Z"
+        })
+        .to_string(),
+    )
+    .unwrap();
+
+    let migrated = json_output(
+        ctx(&temp)
+            .env("CODEX_HOME", temp.path().join(".codex"))
+            .args(["integrations", "install", "skills", "--format=json"]),
+    );
+
+    let results = migrated["results"].as_array().unwrap();
+    assert_eq!(results[0]["agent"], "universal");
+    assert!(results
+        .iter()
+        .any(|result| result["agent"] == "codex" && result["migrated"] == true));
+    assert!(!legacy_dir.join("SKILL.md").exists());
+    assert!(temp
+        .path()
+        .join(".codex")
+        .join("skills")
+        .join("ctx")
+        .join("SKILL.md")
+        .is_file());
+}
+
+#[test]
+fn skill_install_preserves_modified_legacy_skill_unless_forced() {
+    let temp = tempdir();
+    let skills_dir = temp.path().join(".agents").join("skills");
+    let legacy_dir = skills_dir.join("ctx-agent-history-search");
+    let skill_dir = skills_dir.join("ctx");
+    fs::create_dir_all(&legacy_dir).unwrap();
+    fs::write(legacy_dir.join("SKILL.md"), "local legacy edits\n").unwrap();
+    fs::write(legacy_dir.join("notes.txt"), "keep").unwrap();
+
+    let output = ctx(&temp)
+        .args([
+            "integrations",
+            "install",
+            "skills",
+            "--agent",
+            "universal",
+            "--format=json",
+        ])
+        .assert()
+        .failure()
+        .get_output()
+        .clone();
+    let preserved: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(preserved["results"][0]["status"], "modified");
+    assert_eq!(preserved["results"][0]["migrated"], false);
+    assert!(preserved["results"][0]["error"]
+        .as_str()
+        .unwrap()
+        .contains("preserved locally modified legacy"));
+    assert!(!skill_dir.exists());
+    assert_eq!(
+        fs::read_to_string(legacy_dir.join("SKILL.md")).unwrap(),
+        "local legacy edits\n"
+    );
+
+    let forced = json_output(ctx(&temp).args([
+        "integrations",
+        "install",
+        "skills",
+        "--agent",
+        "universal",
+        "--force",
+        "--format=json",
+    ]));
+    assert_eq!(forced["results"][0]["migrated"], true);
+    assert!(skill_dir.join("SKILL.md").is_file());
+    assert!(!legacy_dir.join("SKILL.md").exists());
+    assert_eq!(
+        fs::read_to_string(legacy_dir.join("notes.txt")).unwrap(),
+        "keep"
+    );
 }
 
 #[test]
@@ -133,14 +302,14 @@ fn skill_install_auto_targets_universal_and_detected_claude_code() {
         .path()
         .join(".agents")
         .join("skills")
-        .join("ctx-agent-history-search")
+        .join("ctx")
         .join("SKILL.md")
         .exists());
     assert!(temp
         .path()
         .join(".claude")
         .join("skills")
-        .join("ctx-agent-history-search")
+        .join("ctx")
         .join("SKILL.md")
         .exists());
 }
@@ -169,13 +338,13 @@ fn skill_install_detected_mimocode_uses_universal_skill_location() {
         .path()
         .join(".agents")
         .join("skills")
-        .join("ctx-agent-history-search")
+        .join("ctx")
         .join("SKILL.md")
         .exists());
     assert!(!xdg
         .join("mimocode")
         .join("skills")
-        .join("ctx-agent-history-search")
+        .join("ctx")
         .exists());
 }
 
@@ -186,7 +355,7 @@ fn skill_install_refreshes_stale_bundled_copy() {
         .path()
         .join(".agents")
         .join("skills")
-        .join("ctx-agent-history-search");
+        .join("ctx");
     fs::create_dir_all(&skill_dir).unwrap();
     fs::write(skill_dir.join("SKILL.md"), "old instructions\n").unwrap();
     let old_hash = format!("sha256:{:x}", Sha256::digest(b"old instructions\n"));
@@ -195,7 +364,7 @@ fn skill_install_refreshes_stale_bundled_copy() {
         json!({
             "schema_version": 1,
             "installer": "ctx-cli",
-            "skill_name": "ctx-agent-history-search",
+            "skill_name": "ctx",
             "skill_hash": old_hash,
             "ctx_cli_version": "0.0.0",
             "installed_at": "2026-01-01T00:00:00Z"
@@ -226,7 +395,7 @@ fn skill_install_refreshes_stale_bundled_copy() {
     assert_eq!(install["results"][0]["updated"], true);
     assert!(fs::read_to_string(skill_dir.join("SKILL.md"))
         .unwrap()
-        .contains("ctx Agent History Search"));
+        .contains("\n# ctx\n"));
 }
 
 #[test]
@@ -236,7 +405,7 @@ fn skill_install_backfills_current_metadata_without_rewriting_body() {
         .path()
         .join(".agents")
         .join("skills")
-        .join("ctx-agent-history-search");
+        .join("ctx");
     fs::create_dir_all(&skill_dir).unwrap();
     fs::write(skill_dir.join("SKILL.md"), CURRENT_BUNDLED_SKILL_BODY).unwrap();
     fs::write(
@@ -244,7 +413,7 @@ fn skill_install_backfills_current_metadata_without_rewriting_body() {
         json!({
             "schema_version": 1,
             "installer": "ctx-cli",
-            "skill_name": "ctx-agent-history-search",
+            "skill_name": "ctx",
             "skill_hash": bundled_skill_hash(CURRENT_BUNDLED_SKILL_BODY),
             "ctx_cli_version": "0.0.0",
             "installed_at": "2026-01-01T00:00:00Z"
@@ -283,7 +452,7 @@ fn skill_install_default_fallback_preserves_custom_copy_without_failing() {
         .path()
         .join(".agents")
         .join("skills")
-        .join("ctx-agent-history-search");
+        .join("ctx");
     fs::create_dir_all(&skill_dir).unwrap();
     fs::write(skill_dir.join("SKILL.md"), "local custom instructions\n").unwrap();
 
@@ -313,7 +482,7 @@ fn skill_install_preserves_modified_copy_unless_forced() {
         .path()
         .join(".agents")
         .join("skills")
-        .join("ctx-agent-history-search");
+        .join("ctx");
     fs::create_dir_all(&skill_dir).unwrap();
     fs::write(skill_dir.join("SKILL.md"), "local custom instructions\n").unwrap();
 
@@ -374,7 +543,7 @@ fn skill_install_preserves_modified_copy_unless_forced() {
     assert_eq!(forced["results"][0]["status"], "current");
     assert!(fs::read_to_string(skill_dir.join("SKILL.md"))
         .unwrap()
-        .contains("ctx Agent History Search"));
+        .contains("\n# ctx\n"));
 }
 
 #[test]
@@ -410,24 +579,24 @@ fn skill_install_agent_paths_respect_env_xdg_and_project_scope() {
     assert_eq!(global["results"].as_array().unwrap().len(), 4);
     assert!(codex_home
         .join("skills")
-        .join("ctx-agent-history-search")
+        .join("ctx")
         .join("SKILL.md")
         .exists());
     assert!(mimocode_home
         .join("config")
         .join("skills")
-        .join("ctx-agent-history-search")
+        .join("ctx")
         .join("SKILL.md")
         .exists());
     assert!(claude_home
         .join("skills")
-        .join("ctx-agent-history-search")
+        .join("ctx")
         .join("SKILL.md")
         .exists());
     assert!(xdg
         .join("opencode")
         .join("skills")
-        .join("ctx-agent-history-search")
+        .join("ctx")
         .join("SKILL.md")
         .exists());
 
@@ -452,25 +621,25 @@ fn skill_install_agent_paths_respect_env_xdg_and_project_scope() {
     assert!(project
         .join(".agents")
         .join("skills")
-        .join("ctx-agent-history-search")
+        .join("ctx")
         .join("SKILL.md")
         .exists());
     assert!(project
         .join(".claude")
         .join("skills")
-        .join("ctx-agent-history-search")
+        .join("ctx")
         .join("SKILL.md")
         .exists());
     assert!(project
         .join(".agents")
         .join("skills")
-        .join("ctx-agent-history-search")
+        .join("ctx")
         .join("SKILL.md")
         .exists());
     assert!(!home
         .join(".codex")
         .join("skills")
-        .join("ctx-agent-history-search")
+        .join("ctx")
         .exists());
 }
 
@@ -491,7 +660,7 @@ fn skill_install_mimocode_honors_config_dir_env() {
     assert_eq!(output["results"][0]["agent"], "mimocode");
     assert!(config_dir
         .join("skills")
-        .join("ctx-agent-history-search")
+        .join("ctx")
         .join("SKILL.md")
         .exists());
     assert!(!temp

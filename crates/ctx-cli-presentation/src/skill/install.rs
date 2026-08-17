@@ -99,6 +99,8 @@ fn status_result_json(result: &StatusResult) -> Value {
         "path": result.target.skill_dir,
         "installed_hash": result.installed_hash,
         "bundled_hash": bundled_hash(),
+        "legacy_path": result.legacy_skill_dir,
+        "legacy_status": result.legacy_status.map(SkillInstallStatus::as_str),
         "metadata": result.metadata.as_ref().map(|metadata| json!({
             "schema_version": metadata.schema_version,
             "skill_name": metadata.skill_name,
@@ -119,6 +121,7 @@ fn install_result_json(result: &InstallResult) -> Value {
         "status": result.status.as_str(),
         "already_installed": result.already_installed,
         "updated": result.updated,
+        "migrated": result.migrated,
         "error": result.error,
     })
 }
@@ -129,11 +132,16 @@ fn render_install_results(context: &RenderContext, results: &[InstallResult]) ->
     let any_updated = results
         .iter()
         .any(|result| result.success && result.updated);
+    let any_migrated = results
+        .iter()
+        .any(|result| result.success && result.migrated);
     let any_installed = results
         .iter()
         .any(|result| result.success && !result.already_installed && !result.updated);
     let title = if all_current {
         "Agent skill is already installed"
+    } else if all_success && any_migrated && !any_installed {
+        "Agent skill migrated"
     } else if all_success && any_updated && !any_installed {
         "Agent skill updated"
     } else if all_success {
@@ -159,7 +167,9 @@ fn render_install_results(context: &RenderContext, results: &[InstallResult]) ->
     let rows = results
         .iter()
         .map(|result| {
-            let status = if result.already_installed {
+            let status = if result.migrated {
+                "migrated"
+            } else if result.already_installed {
                 "current"
             } else if !result.success {
                 "skipped"
@@ -408,6 +418,7 @@ mod render_tests {
                 status: SkillInstallStatus::Modified,
                 already_installed: false,
                 updated: false,
+                migrated: false,
                 error: Some("preserved an existing skill; use --force to replace".to_owned()),
             };
             let expected_project = if project { " --project" } else { "" };

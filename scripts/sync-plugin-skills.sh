@@ -4,8 +4,8 @@ set -euo pipefail
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "${repo_root}"
 
-source_skill="skills/ctx-agent-history-search/SKILL.md"
-plugin_skill="plugins/ctx-agent-history-search/skills/ctx-agent-history-search/SKILL.md"
+source_skill="skills/ctx/SKILL.md"
+plugin_skill="plugins/ctx/skills/ctx/SKILL.md"
 
 usage() {
   cat <<'USAGE'

@@ -35,9 +35,14 @@ required_paths=(
   docs/agent-skill-install.md
   docs/unmanaged-installs.md
   docs/sdks.md
-  skills/ctx-agent-history-search/SKILL.md
-  plugins/ctx-agent-history-search/skills/ctx-agent-history-search/SKILL.md
-  plugins/ctx-agent-history-search/commands/ctx-history.md
+  skills/ctx/SKILL.md
+  plugins/ctx/plugin.json
+  plugins/ctx/.codex-plugin/plugin.json
+  plugins/ctx/.cursor-plugin/plugin.json
+  plugins/ctx/.claude-plugin/plugin.json
+  plugins/ctx/skills/ctx/SKILL.md
+  plugins/ctx/commands/ctx.md
+  plugins/ctx/README.md
   scripts/sync-plugin-skills.sh
   scripts/tests/test_mcp_tool_call_attribution_capabilities.py
 )
@@ -62,9 +67,10 @@ public_docs=(
   SECURITY.md
   docs/*.md
   docs/contracts/*.md
-  skills/ctx-agent-history-search/SKILL.md
-  plugins/ctx-agent-history-search/skills/ctx-agent-history-search/SKILL.md
-  plugins/ctx-agent-history-search/commands/ctx-history.md
+  skills/ctx/SKILL.md
+  plugins/ctx/skills/ctx/SKILL.md
+  plugins/ctx/commands/ctx.md
+  plugins/ctx/README.md
 )
 
 analytics_scope=()
@@ -127,27 +133,104 @@ fi
 
 bash scripts/sync-plugin-skills.sh --check
 
-for manifest in \
-  plugins/ctx-agent-history-search/.codex-plugin/plugin.json \
-  plugins/ctx-agent-history-search/.cursor-plugin/plugin.json \
-  plugins/ctx-agent-history-search/.claude-plugin/plugin.json; do
-  for required in \
-    '"name": "ctx-agent-history-search"' \
-    '"version": "0.1.0"' \
-    '"skills": "./skills/"'; do
-    if ! grep -F -q "${required}" "${manifest}"; then
-      printf 'plugin manifest %s missing required snippet: %s\n' "${manifest}" "${required}" >&2
-      exit 1
-    fi
-  done
-done
+python3 <<'PY'
+import json
+import tomllib
+from pathlib import Path
 
-if ! grep -F -q 'ctx-agent-history-search' plugins/ctx-agent-history-search/commands/ctx-history.md; then
-  printf 'ctx-history command must reference the ctx-agent-history-search skill\n' >&2
+root = Path(".")
+version = tomllib.loads((root / "Cargo.toml").read_text(encoding="utf-8"))["workspace"]["package"]["version"]
+description = "Fast local search and 'git blame' for agent sessions."
+author = {"name": "ctx engineering inc", "url": "https://ctx.rs"}
+keywords = [
+    "ctx", "agent-sessions", "agent-history", "transcripts",
+    "local-search", "code-provenance",
+]
+
+portable_path = root / "plugins/ctx/plugin.json"
+portable = json.loads(portable_path.read_text(encoding="utf-8"))
+portable_keys = {
+    "$schema", "name", "version", "description", "author", "homepage",
+    "repository", "license", "keywords", "extensions",
+}
+unknown = set(portable) - portable_keys
+if unknown:
+    raise SystemExit(f"{portable_path} has non-portable fields: {sorted(unknown)}")
+expected_portable = {
+    "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
+    "name": "ctx",
+    "version": version,
+    "description": description,
+    "author": author,
+    "homepage": "https://ctx.rs",
+    "repository": "https://github.com/ctxrs/ctx",
+    "license": "Apache-2.0",
+    "keywords": keywords,
+}
+for key, expected in expected_portable.items():
+    if portable.get(key) != expected:
+        raise SystemExit(f"{portable_path} {key} must be {expected!r}")
+
+native_paths = [
+    root / "plugins/ctx/.codex-plugin/plugin.json",
+    root / "plugins/ctx/.cursor-plugin/plugin.json",
+    root / "plugins/ctx/.claude-plugin/plugin.json",
+]
+for path in native_paths:
+    manifest = json.loads(path.read_text(encoding="utf-8"))
+    expected = {
+        "name": "ctx",
+        "version": version,
+        "description": description,
+        "author": author,
+        "homepage": "https://ctx.rs",
+        "repository": "https://github.com/ctxrs/ctx",
+        "license": "Apache-2.0",
+        "keywords": keywords,
+        "skills": "./skills/",
+    }
+    for key, value in expected.items():
+        if manifest.get(key) != value:
+            raise SystemExit(f"{path} {key} must match portable metadata")
+
+codex = json.loads(native_paths[0].read_text(encoding="utf-8"))
+interface = codex.get("interface", {})
+if interface.get("displayName") != "ctx" or interface.get("developerName") != "ctx engineering inc":
+    raise SystemExit("Codex display and developer names must match ctx publisher metadata")
+
+catalog_expectations = {
+    root / ".agents/plugins/marketplace.json": ("ctx", "./plugins/ctx"),
+    root / ".cursor-plugin/marketplace.json": ("ctx", "plugins/ctx"),
+    root / ".claude-plugin/marketplace.json": ("ctx", "./plugins/ctx"),
+}
+for path, (name, source) in catalog_expectations.items():
+    catalog = json.loads(path.read_text(encoding="utf-8"))
+    entries = catalog.get("plugins", [])
+    if len(entries) != 1 or entries[0].get("name") != name:
+        raise SystemExit(f"{path} must contain exactly the ctx plugin")
+    actual_source = entries[0].get("source")
+    if isinstance(actual_source, dict):
+        actual_source = actual_source.get("path")
+    if actual_source != source:
+        raise SystemExit(f"{path} source must be {source}")
+    if "version" in entries[0] and entries[0]["version"] != version:
+        raise SystemExit(f"{path} version must match Cargo workspace version")
+    if "description" in entries[0] and entries[0]["description"] != description:
+        raise SystemExit(f"{path} description must match portable metadata")
+    if "keywords" in entries[0] and entries[0]["keywords"] != keywords:
+        raise SystemExit(f"{path} keywords must match portable metadata")
+
+cursor_catalog = json.loads((root / ".cursor-plugin/marketplace.json").read_text(encoding="utf-8"))
+if cursor_catalog.get("metadata", {}).get("description") != description:
+    raise SystemExit("Cursor marketplace description must match portable metadata")
+PY
+
+if ! grep -F -q 'Use the `ctx` skill' plugins/ctx/commands/ctx.md; then
+  printf 'ctx command must delegate to the ctx skill\n' >&2
   exit 1
 fi
 
-if scan_docs 'ctx search "[^"]*" --format json[[:space:]]*$' docs/agent-usage.md docs/getting-started.md docs/first-10-minutes.md skills/ctx-agent-history-search/SKILL.md plugins/ctx-agent-history-search/skills/ctx-agent-history-search/SKILL.md plugins/ctx-agent-history-search/commands/ctx-history.md; then
+if scan_docs 'ctx search "[^"]*" --format json[[:space:]]*$' docs/agent-usage.md docs/getting-started.md docs/first-10-minutes.md skills/ctx/SKILL.md plugins/ctx/skills/ctx/SKILL.md plugins/ctx/commands/ctx.md; then
   printf 'agent-facing docs should not recommend ctx search --format json for normal reading\n' >&2
   exit 1
 fi

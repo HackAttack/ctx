@@ -173,6 +173,8 @@ fn install_result_json(result: &InstallResult) -> Value {
         "status": result.status.as_str(),
         "already_installed": result.already_installed,
         "updated": result.updated,
+        "migrated": result.migrated,
+        "legacy_path": result.legacy_path,
         "error": result.error,
         "note": result.note,
     })
@@ -216,7 +218,7 @@ fn render_install_results(context: &RenderContext, results: &[InstallResult]) ->
                 OutcomeState::Success
             },
             title: &title,
-            detail: Some("Invoke the installed entry point as /ctx-history."),
+            detail: Some("Invoke the installed entry point as /ctx."),
         },
     );
     let mut targets = Table::new(["Agent", "Status", "Location"]);
@@ -310,6 +312,8 @@ fn install_result_verb(result: &InstallResult) -> &'static str {
         }
     } else if !result.success {
         "skipped"
+    } else if result.migrated {
+        "migrated"
     } else if result.updated {
         "updated"
     } else {

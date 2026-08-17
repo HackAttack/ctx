@@ -25,13 +25,15 @@ fn install_result(status: SlashCommandInstallStatus) -> InstallResult {
         agent: SlashCommandAgent::OpenCode,
         scope: Some(SlashCommandScope::Global),
         path: Some(PathBuf::from(
-            "/tmp/config with spaces/opencode/commands/ctx-history.md",
+            "/tmp/config with spaces/opencode/commands/ctx.md",
         )),
         success: status != SlashCommandInstallStatus::Modified,
         previous_status: SlashCommandInstallStatus::Missing,
         status,
         already_installed: status == SlashCommandInstallStatus::Current,
         updated: status == SlashCommandInstallStatus::Stale,
+        migrated: false,
+        legacy_path: None,
         error: (status == SlashCommandInstallStatus::Modified)
             .then(|| "local command edits detected".to_owned()),
         note: None,
@@ -82,7 +84,7 @@ fn install_results_are_outcome_first_and_responsive() {
         let normalized = rendered.split_whitespace().collect::<Vec<_>>().join(" ");
         assert!(normalized.starts_with("✓ Slash-command integration is ready"));
         assert!(rendered.contains("Targets\n"));
-        assert!(compact.contains("/tmp/configwithspaces/opencode/commands/ctx-history.md"));
+        assert!(compact.contains("/tmp/configwithspaces/opencode/commands/ctx.md"));
         assert_fits(&document, &context);
     }
 }
@@ -127,7 +129,7 @@ fn failed_target_details_and_recovery_are_written_to_stderr() {
         .path()
         .join(".gemini")
         .join("commands")
-        .join("ctx-history.toml");
+        .join("ctx.toml");
     fs::create_dir_all(command_path.parent().unwrap()).unwrap();
     fs::write(command_path, "prompt = 'local'\n").unwrap();
 

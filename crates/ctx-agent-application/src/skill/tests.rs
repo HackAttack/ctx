@@ -40,7 +40,7 @@ fn default_target_is_global_canonical_agents_dir() {
     assert_eq!(targets[0].agent, SkillAgentArg::Universal);
     assert_eq!(
         targets[0].skill_dir,
-        PathBuf::from("/home/tester/.agents/skills/ctx-agent-history-search")
+        PathBuf::from("/home/tester/.agents/skills/ctx")
     );
 }
 
@@ -68,26 +68,17 @@ fn agent_global_paths_preserve_env_and_xdg_rules() {
         .iter()
         .map(|target| (target.agent.id(), target.skill_dir.clone()))
         .collect::<BTreeMap<_, _>>();
-    assert_eq!(
-        paths["codex"],
-        PathBuf::from("/codex-home/skills/ctx-agent-history-search")
-    );
+    assert_eq!(paths["codex"], PathBuf::from("/codex-home/skills/ctx"));
     assert_eq!(
         paths["claude-code"],
-        PathBuf::from("/claude-home/skills/ctx-agent-history-search")
+        PathBuf::from("/claude-home/skills/ctx")
     );
-    assert_eq!(
-        paths["opencode"],
-        PathBuf::from("/xdg/opencode/skills/ctx-agent-history-search")
-    );
+    assert_eq!(paths["opencode"], PathBuf::from("/xdg/opencode/skills/ctx"));
     assert_eq!(
         paths["mimocode"],
-        PathBuf::from("/mimocode-home/config/skills/ctx-agent-history-search")
+        PathBuf::from("/mimocode-home/config/skills/ctx")
     );
-    assert_eq!(
-        paths["amp"],
-        PathBuf::from("/xdg/agents/skills/ctx-agent-history-search")
-    );
+    assert_eq!(paths["amp"], PathBuf::from("/xdg/agents/skills/ctx"));
 }
 
 #[test]
@@ -110,16 +101,10 @@ fn project_paths_are_agent_specific_and_relative_to_cwd() {
         .collect::<BTreeMap<_, _>>();
     assert_eq!(
         paths["claude-code"],
-        PathBuf::from("/repo/.claude/skills/ctx-agent-history-search")
+        PathBuf::from("/repo/.claude/skills/ctx")
     );
-    assert_eq!(
-        paths["codex"],
-        PathBuf::from("/repo/.agents/skills/ctx-agent-history-search")
-    );
-    assert_eq!(
-        paths["mimocode"],
-        PathBuf::from("/repo/.agents/skills/ctx-agent-history-search")
-    );
+    assert_eq!(paths["codex"], PathBuf::from("/repo/.agents/skills/ctx"));
+    assert_eq!(paths["mimocode"], PathBuf::from("/repo/.agents/skills/ctx"));
 }
 
 #[test]

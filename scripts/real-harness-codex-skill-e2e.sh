@@ -90,7 +90,7 @@ main() {
   stderr_file="${run_root}/codex.stderr"
   port_file="${run_root}/fixture.port"
   log_file="${run_root}/fixture-requests.jsonl"
-  skill_path="${codex_home}/skills/ctx-agent-history-search/SKILL.md"
+  skill_path="${codex_home}/skills/ctx/SKILL.md"
 
   PATH="$(dirname "${ctx_bin}"):${PATH}" \
     CODEX_HOME="${codex_home}" \
@@ -100,8 +100,8 @@ main() {
     run "${ctx_bin}" integrations install skills --agent codex --format json > "${install_json}"
   require_contains "${install_json}" '"agent":"codex"'
   require_contains "${install_json}" '"status":"current"'
-  require_contains "${skill_path}" 'name: ctx-agent-history-search'
-  require_contains "${skill_path}" 'Use ctx to search local coding-agent history'
+  require_contains "${skill_path}" 'name: ctx'
+  require_contains "${skill_path}" 'Use ctx to ground your work in relevant prior agent sessions.'
 
   run python3 scripts/real-harness-codex-skill-fixture-server.py "${port_file}" "${log_file}" &
   server_pid=$!
@@ -120,7 +120,7 @@ main() {
     OPENAI_API_KEY="sk-ctx-real-harness-fixture" \
     run "${codex_bin}" exec \
       --skip-git-repo-check \
-      --sandbox read-only \
+      --sandbox danger-full-access \
       --color never \
       -m "${MODEL}" \
       -c 'model_provider="fixture"' \
@@ -129,7 +129,7 @@ main() {
       -c 'model_providers.fixture.env_key="OPENAI_API_KEY"' \
       -c 'model_providers.fixture.wire_api="responses"' \
       -C "${project}" \
-      'Use the ctx-agent-history-search skill and verify ctx is available.' \
+      'Use the ctx skill and verify ctx is available.' \
       > "${stdout_file}" 2> "${stderr_file}"
 
   wait "${server_pid}"
