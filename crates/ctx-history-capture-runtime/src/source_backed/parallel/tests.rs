@@ -2559,12 +2559,9 @@ fn test_core_record(source: &SourceKey, sequence: u64, revision: u8) -> CoreReco
     let mut record = CoreRecord::new_selected(
         event_id,
         session_id,
-        session_id,
         source.clone(),
         sequence,
         "message",
-        "primary",
-        true,
         format!("parallel-leaf-parser-{revision}"),
         format!("parallel leaf Core record {sequence}"),
     )
