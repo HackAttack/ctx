@@ -23,6 +23,7 @@ ctx-history-provider-gemini = { path = "../ctx-history-provider-gemini" }
 ctx-history-provider-hermes = { path = "../ctx-history-provider-hermes" }
 ctx-history-provider-mistral-mux = { path = "../ctx-history-provider-mistral-mux" }
 ctx-history-provider-native-jsonl = { path = "../ctx-history-provider-native-jsonl" }
+ctx-history-provider-openclaw-sqlite = { path = "../ctx-history-provider-openclaw-sqlite" }
 ctx-history-provider-runtime = { path = "../ctx-history-provider-runtime" }
 ctx-history-provider-trae = { path = "../ctx-history-provider-trae" }
 ctx-history-providers-jsonl-shared = { path = "../ctx-history-providers-jsonl-shared" }

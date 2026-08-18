@@ -392,6 +392,13 @@ pub const LANDED_SOURCE_BACKED_ROUTES: &[SourceBackedProviderRouteMetadata] = &[
         true,
         DiscoveredWinner
     ),
+    sqlite_route!(
+        OpenClaw,
+        "openclaw_agent_sqlite",
+        true,
+        true,
+        DiscoveredWinner
+    ),
     sqlite_route!(Hermes, "hermes_state_sqlite", true, true, DiscoveredWinner),
     route!(
         NanoClaw,
@@ -561,6 +568,7 @@ Mux|mux_session_jsonl_tree|mux_session_jsonl|true|true|DiscoveredWinner|none|Pro
 Mux|mux_session_jsonl|mux_session_jsonl|false|true|ExplicitPath|none|ProviderSource
 RovoDev|rovodev_session_json_tree|rovodev_session_json_tree|true|true|DiscoveredWinner|none|ProviderSource
 OpenClaw|openclaw_session_jsonl_tree|openclaw_session_jsonl_tree|true|true|DiscoveredWinner|none|ProviderSource
+OpenClaw|openclaw_agent_sqlite|openclaw_agent_sqlite|true|true|DiscoveredWinner|none|ProviderSource
 Hermes|hermes_state_sqlite|hermes_state_sqlite|true|true|DiscoveredWinner|none|ProviderSource
 NanoClaw|nanoclaw_project|nanoclaw_project|true|true|CatalogLineage|none|CatalogLineage
 AstrBot|astrbot_data_v4_sqlite|astrbot_data_v4_sqlite|true|true|DiscoveredWinner|none|DiscoveryContext

@@ -13,7 +13,7 @@ pub(crate) struct OpenClawEventFact {
     pub(crate) lexical_text: String,
 }
 
-pub(super) fn event_fact(
+pub(crate) fn event_fact(
     event_index: u64,
     _line_number: usize,
     row: &Value,

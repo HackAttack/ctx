@@ -62,6 +62,7 @@ WORKSPACE_RELEASE_PACKAGES = {
     "ctx-history-provider-hermes",
     "ctx-history-provider-gemini",
     "ctx-history-provider-native-jsonl",
+    "ctx-history-provider-openclaw-sqlite",
     "ctx-history-provider-runtime",
     "ctx-history-provider-claude-cursor",
     "ctx-history-provider-codex",

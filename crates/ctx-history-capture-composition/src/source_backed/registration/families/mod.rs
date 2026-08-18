@@ -4,6 +4,7 @@ mod document;
 mod event_file;
 mod hermes;
 mod jsonl;
+mod openclaw;
 mod sqlite;
 mod sqlite_inventory;
 
@@ -87,8 +88,10 @@ fn register_landed_source_backed_route_inner(
         | CaptureProvider::Junie
         | CaptureProvider::MistralVibe
         | CaptureProvider::Mux
-        | CaptureProvider::OpenClaw
         | CaptureProvider::Qoder => jsonl::register_route(registry, source, selection),
+        CaptureProvider::OpenClaw => {
+            openclaw::register_route(registry, source, selection, data_root)
+        }
         CaptureProvider::Hermes => {
             let data_root = data_root.ok_or_else(|| {
                 invalid_route(

@@ -82,6 +82,10 @@ WORKSPACE_PACKAGES = (
         "ctx-history-provider-native-jsonl",
         "crates/ctx-history-provider-native-jsonl",
     ),
+    (
+        "ctx-history-provider-openclaw-sqlite",
+        "crates/ctx-history-provider-openclaw-sqlite",
+    ),
     ("ctx-history-provider-runtime", "crates/ctx-history-provider-runtime"),
     ("ctx-history-provider-codex", "crates/ctx-history-provider-codex"),
     ("ctx-history-provider-trae", "crates/ctx-history-provider-trae"),
@@ -266,6 +270,7 @@ members = [
   "crates/ctx-history-provider-hermes",
   "crates/ctx-history-provider-mistral-mux",
   "crates/ctx-history-provider-native-jsonl",
+  "crates/ctx-history-provider-openclaw-sqlite",
   "crates/ctx-history-provider-runtime",
   "crates/ctx-history-provider-codex",
   "crates/ctx-history-provider-trae",
@@ -305,6 +310,7 @@ tempfile = "3.0.0"
 tantivy = { version = "0.26.1", default-features = false, features = ["mmap", "lz4-compression", "zstd-compression", "columnar-zstd-compression"] }
 thiserror = "1.0.0"
 uuid = "1.0.0"
+zstd = "0.13"
 """,
             encoding="utf-8",
         )
@@ -414,6 +420,7 @@ uuid = "1.0.0"
                     "ctx-history-provider-hermes = { path = \"../ctx-history-provider-hermes\" }\n"
                     "ctx-history-provider-mistral-mux = { path = \"../ctx-history-provider-mistral-mux\" }\n"
                     "ctx-history-provider-native-jsonl = { path = \"../ctx-history-provider-native-jsonl\" }\n"
+                    "ctx-history-provider-openclaw-sqlite = { path = \"../ctx-history-provider-openclaw-sqlite\" }\n"
                     "ctx-history-provider-runtime = { path = \"../ctx-history-provider-runtime\" }\n"
                     "ctx-history-provider-trae = { path = \"../ctx-history-provider-trae\" }\n"
                     "ctx-history-providers-jsonl-shared = { path = \"../ctx-history-providers-jsonl-shared\" }\n"
@@ -509,6 +516,20 @@ uuid = "1.0.0"
                     "serde_json.workspace = true\n"
                     "sha2.workspace = true\n"
                     "thiserror.workspace = true"
+                ),
+                "ctx-history-provider-openclaw-sqlite": (
+                    "chrono.workspace = true\n"
+                    "ctx-history-capture-model = { path = \"../ctx-history-capture-model\" }\n"
+                    "ctx-history-capture-runtime = { path = \"../ctx-history-capture-runtime\" }\n"
+                    "ctx-history-core = { path = \"../ctx-history-core\" }\n"
+                    "ctx-history-provider-runtime = { path = \"../ctx-history-provider-runtime\" }\n"
+                    "ctx-history-providers-jsonl-shared = { path = \"../ctx-history-providers-jsonl-shared\" }\n"
+                    "rusqlite.workspace = true\n"
+                    "serde_json.workspace = true\n"
+                    "sha2.workspace = true\n"
+                    "tempfile.workspace = true\n"
+                    "thiserror.workspace = true\n"
+                    "zstd.workspace = true"
                 ),
                 "ctx-history-provider-codex": (
                     "ctx-history-capture-model = { path = \"../ctx-history-capture-model\" }\n"
@@ -729,6 +750,7 @@ repository = "https://example.invalid/{name}"
             "@@//crates/ctx-history-provider-hermes:ctx_history_provider_hermes",
             "@@//crates/ctx-history-provider-mistral-mux:ctx_history_provider_mistral_mux",
             "@@//crates/ctx-history-provider-native-jsonl:ctx_history_provider_native_jsonl",
+            "@@//crates/ctx-history-provider-openclaw-sqlite:ctx_history_provider_openclaw_sqlite",
             "@@//crates/ctx-history-provider-runtime:ctx_history_provider_runtime",
             "@@//crates/ctx-history-provider-codex:ctx_history_provider_codex",
             "@@//crates/ctx-history-provider-trae:ctx_history_provider_trae",
