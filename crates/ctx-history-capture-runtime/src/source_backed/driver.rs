@@ -177,6 +177,12 @@ where
         #[source]
         source: SourceBackedRouteError,
     },
+    #[error("source-backed route registration failed for {provider}: {source}")]
+    RouteRegistration {
+        provider: CaptureProvider,
+        #[source]
+        source: SourceBackedRouteError,
+    },
     #[error("source-backed refresh has an unknown or unavailable route for {provider}: {detail}")]
     UnavailableRoute {
         provider: CaptureProvider,

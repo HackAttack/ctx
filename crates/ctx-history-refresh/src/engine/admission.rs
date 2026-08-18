@@ -718,13 +718,31 @@ impl CoreRefreshEngine {
     ) -> Result<Option<SourceBackedRefreshRun>> {
         let snapshot = AdmissionResolutionSnapshot::capture(state);
         state.manual_all_continuations.remove(request_id);
-        let failure_outcome = SourceBackedRefreshFailureOutcome::new(
-            "source_refresh_admission_failed",
-            "control_plane",
-            true,
-            BTreeSet::new(),
-            Some("retry_admission"),
-        );
+        let attempted_routes = find_attempt(state, request_id)
+            .and_then(|attempt| match &attempt.refresh_scope {
+                SourceBackedRefreshScope::All => None,
+                SourceBackedRefreshScope::Exact(routes) => Some(routes.clone()),
+            })
+            .unwrap_or_default();
+        let failure_type = source_backed_refresh_failure_type(&error);
+        let classified_outcome = source_backed_refresh_failure_outcome(&error, &attempted_routes);
+        let failure_outcome = if classified_outcome.code == "source_refresh_failed"
+            && classified_outcome.class == "internal"
+        {
+            SourceBackedRefreshFailureOutcome::new(
+                "source_refresh_admission_failed",
+                "control_plane",
+                true,
+                BTreeSet::new(),
+                Some("retry_admission"),
+            )
+        } else {
+            classified_outcome
+        };
+        let retry_admission = failure_outcome.code == "source_refresh_admission_failed"
+            && failure_outcome.retry_advice == Some("retry_admission");
+        let retryable_routes = failure_outcome.retryable_routes.clone();
+        let blocked_routes = failure_outcome.blocked_routes.clone();
         let (scope, last_error) = {
             let attempt = find_attempt_mut(state, request_id)
                 .ok_or_else(|| anyhow!("source refresh request `{request_id}` is unknown"))?;
@@ -732,6 +750,7 @@ impl CoreRefreshEngine {
             attempt.state = SourceBackedRefreshState::Failed;
             attempt.finished_at_ms = Some(utc_now().timestamp_millis());
             attempt.progress.phase = "failed".to_owned();
+            attempt.failure_type = failure_type;
             attempt.failure_outcome = Some(failure_outcome);
             attempt.last_error = Some(last_error.clone());
             (attempt.refresh_scope.clone(), last_error)
@@ -742,7 +761,10 @@ impl CoreRefreshEngine {
             snapshot.restore(state);
             return Err(persist_error.context("persist terminal source refresh admission failure"));
         }
-        state.pending_scheduler_retry_root_id = Some(request_id.to_owned());
+        Self::restore_route_dispositions_locked(state, &retryable_routes, &blocked_routes);
+        if retry_admission {
+            state.pending_scheduler_retry_root_id = Some(request_id.to_owned());
+        }
         let observed_generation = state.current_published_generation.clone();
         advance_after_terminal_attempt(state, request_id, observed_generation);
         trim_terminal_attempt_history(state);

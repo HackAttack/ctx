@@ -76,6 +76,6 @@ pub fn register_shelley_source_backed_route(
     let registration = shelley_registration::<CaptureDocumentLifecycle, CaptureDocumentSpool>(
         source, data_root, exact_cwd,
     )
-    .map_err(|error| invalid_route(provider, error.to_string()))?;
+    .map_err(|source| SourceBackedCoordinatorError::RouteRegistration { provider, source })?;
     install_sqlite_inventory_registration(registry, registration)
 }

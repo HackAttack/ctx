@@ -65,6 +65,77 @@ pub(super) fn source_backed_refresh_failure_outcome(
     error: &anyhow::Error,
     attempted_routes: &BTreeSet<SourceRouteIdentity>,
 ) -> SourceBackedRefreshFailureOutcome {
+    if let Some(registration_failures) = error
+        .chain()
+        .find_map(|cause| cause.downcast_ref::<SourceBackedAdmissionRouteFailures>())
+    {
+        let failures = registration_failures.failures();
+        let affected_routes = failures
+            .iter()
+            .map(|failure| failure.route_identity().clone())
+            .collect::<BTreeSet<_>>();
+        if failures
+            .iter()
+            .any(|failure| failure.kind() == SourceBackedRouteErrorKind::Internal)
+        {
+            return SourceBackedRefreshFailureOutcome::new(
+                "source_refresh_failed",
+                "internal",
+                true,
+                affected_routes,
+                Some("retry_request"),
+            );
+        }
+        let (retryable_routes, blocked_routes): (BTreeSet<_>, BTreeSet<_>) = failures
+            .iter()
+            .map(|failure| failure.route_identity().clone())
+            .partition(|route| {
+                failures.iter().any(|failure| {
+                    failure.route_identity() == route
+                        && matches!(
+                            failure.kind(),
+                            SourceBackedRouteErrorKind::Unavailable
+                                | SourceBackedRouteErrorKind::SourceChanged
+                                | SourceBackedRouteErrorKind::ResourceUnavailable
+                        )
+                })
+            });
+        let resource_unavailable = failures
+            .iter()
+            .any(|failure| failure.kind() == SourceBackedRouteErrorKind::ResourceUnavailable);
+        let first_kind = failures[0].kind();
+        let homogeneous = failures.iter().all(|failure| failure.kind() == first_kind);
+        let (code, class) = if resource_unavailable {
+            ("resource_unavailable", "resource_unavailable")
+        } else if homogeneous {
+            match first_kind {
+                SourceBackedRouteErrorKind::Unavailable => ("source_unavailable", "unavailable"),
+                SourceBackedRouteErrorKind::SourceChanged => ("source_changed", "source_changed"),
+                SourceBackedRouteErrorKind::InvalidSource => ("malformed_source", "unreadable"),
+                SourceBackedRouteErrorKind::Unsupported => ("unsupported_schema", "incompatible"),
+                SourceBackedRouteErrorKind::ResourceUnavailable
+                | SourceBackedRouteErrorKind::Internal => unreachable!(),
+            }
+        } else {
+            ("source_failures", "mixed")
+        };
+        let retryable = !retryable_routes.is_empty();
+        let retry_advice = if retryable {
+            "retry_affected_routes"
+        } else if homogeneous && first_kind == SourceBackedRouteErrorKind::Unsupported {
+            "upgrade_or_reconfigure"
+        } else {
+            "inspect_sources"
+        };
+        return SourceBackedRefreshFailureOutcome::with_route_dispositions(
+            code,
+            class,
+            retryable,
+            retryable_routes,
+            blocked_routes,
+            Some(retry_advice),
+        );
+    }
     if error.chain().any(|cause| {
         cause
             .downcast_ref::<ZeroSourcePublicationBlocked>()

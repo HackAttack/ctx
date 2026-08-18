@@ -51,7 +51,8 @@ use serde_json::{json, Value};
 use catalog_witness::reconcile_published_catalog_witness;
 use observation::{admitted_route_observations, run_after_capture_scan_before_metadata_hook};
 use registry_issues::{
-    automatic_registry_route_less_blockers, selected_registry_route_count,
+    automatic_registry_admission_failures, automatic_registry_route_less_blockers,
+    selected_registry_route_count, AutomaticRegistryAdmissionFailurePolicy,
     RouteLessRegistryBlockers,
 };
 type SourceBackedRefreshOperation = RefreshOperation;
@@ -134,6 +135,109 @@ impl fmt::Display for ZeroSourcePublicationBlocked {
 }
 
 impl std::error::Error for ZeroSourcePublicationBlocked {}
+
+#[derive(Debug, Clone)]
+pub struct SourceBackedAdmissionRouteFailure {
+    route_identity: SourceRouteIdentity,
+    kind: SourceBackedRouteErrorKind,
+    detail: String,
+}
+
+impl SourceBackedAdmissionRouteFailure {
+    #[doc(hidden)]
+    pub fn new(
+        route_identity: SourceRouteIdentity,
+        kind: SourceBackedRouteErrorKind,
+        detail: impl Into<String>,
+    ) -> Self {
+        Self {
+            route_identity,
+            kind,
+            detail: detail.into(),
+        }
+    }
+
+    pub fn route_identity(&self) -> &SourceRouteIdentity {
+        &self.route_identity
+    }
+
+    pub fn kind(&self) -> SourceBackedRouteErrorKind {
+        self.kind
+    }
+
+    pub fn detail(&self) -> &str {
+        &self.detail
+    }
+}
+
+#[derive(Debug)]
+pub struct SourceBackedAdmissionRouteFailures {
+    failures: Vec<SourceBackedAdmissionRouteFailure>,
+}
+
+impl SourceBackedAdmissionRouteFailures {
+    #[doc(hidden)]
+    pub fn try_from_failures(
+        failures: impl IntoIterator<Item = SourceBackedAdmissionRouteFailure>,
+    ) -> Result<Self> {
+        let failures = failures
+            .into_iter()
+            .map(|failure| (failure.route_identity.clone(), failure))
+            .collect::<BTreeMap<_, _>>()
+            .into_values()
+            .collect::<Vec<_>>();
+        if failures.is_empty() {
+            bail!("source-backed admission route failures cannot be empty");
+        }
+        if failures.len() > SOURCE_REFRESH_TERMINAL_ROUTE_LIMIT {
+            bail!(
+                "source-backed admission route failures exceed the terminal route limit: {} > {SOURCE_REFRESH_TERMINAL_ROUTE_LIMIT}",
+                failures.len()
+            );
+        }
+        Ok(Self { failures })
+    }
+
+    pub fn failures(&self) -> &[SourceBackedAdmissionRouteFailure] {
+        &self.failures
+    }
+}
+
+impl fmt::Display for SourceBackedAdmissionRouteFailures {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            formatter,
+            "source-backed admission has {} route registration failure(s): ",
+            self.failures.len()
+        )?;
+        for (index, failure) in self
+            .failures
+            .iter()
+            .take(SOURCE_REFRESH_BUILD_ISSUE_LIMIT)
+            .enumerate()
+        {
+            if index != 0 {
+                formatter.write_str("; ")?;
+            }
+            write!(
+                formatter,
+                "{}: {}",
+                failure.route_identity.as_str(),
+                failure.detail
+            )?;
+        }
+        let omitted = self
+            .failures
+            .len()
+            .saturating_sub(SOURCE_REFRESH_BUILD_ISSUE_LIMIT);
+        if omitted != 0 {
+            write!(formatter, "; {omitted} additional failure(s) omitted")?;
+        }
+        Ok(())
+    }
+}
+
+impl std::error::Error for SourceBackedAdmissionRouteFailures {}
 
 pub fn source_backed_index_root(data_root: &Path) -> PathBuf {
     data_root.join(SEARCH_DIRECTORY).join(LEXICAL_DIRECTORY)
@@ -311,6 +415,28 @@ pub fn source_backed_admitted_discovery_from_report(
             .cloned()
             .collect()
     };
+    if let Some(registration_failures) = automatic_registry_admission_failures(
+        &merged.build.issues,
+        AutomaticRegistryAdmissionFailurePolicy::ScopedSelection,
+    )? {
+        return Err(registration_failures.into());
+    }
+    if selected_routes.is_empty() {
+        let registry_failures = automatic_registry_route_failures(
+            &merged.build.issues,
+            merged.retained_generation.as_ref(),
+        )?;
+        if !registry_failures.is_empty() {
+            return Err(SourceBackedCoordinatorError::NoUsableSourceRoutes {
+                failed_routes: SourceBackedSourceFailures::from_failures(registry_failures),
+            }
+            .into());
+        }
+        let route_less_blockers = automatic_registry_route_less_blockers(&merged.build.issues, &[]);
+        if route_less_blockers.total != 0 {
+            return Err(route_less_blockers.publication_error().into());
+        }
+    }
     let admitted_report = match explicit_admitted_report {
         Some(report) => report,
         None if selected_routes.is_empty() => DiscoveryReport {

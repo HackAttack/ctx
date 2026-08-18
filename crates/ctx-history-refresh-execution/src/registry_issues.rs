@@ -107,6 +107,68 @@ pub fn automatic_registry_route_failures(
     Ok(failures.into_values().collect())
 }
 
+#[derive(Clone, Copy)]
+pub(super) enum AutomaticRegistryAdmissionFailurePolicy<'a> {
+    SystemicOnly,
+    ScopedSelection,
+    ExactRoutes(&'a BTreeSet<SourceRouteIdentity>),
+}
+
+pub(super) fn automatic_registry_admission_failures(
+    issues: &[SourceBackedAutomaticRegistryIssue],
+    policy: AutomaticRegistryAdmissionFailurePolicy<'_>,
+) -> Result<Option<SourceBackedAdmissionRouteFailures>> {
+    let failures = issues
+        .iter()
+        .filter_map(|issue| {
+            let SourceBackedAutomaticRegistryIssue::Unavailable { source, reason } = issue else {
+                return None;
+            };
+            let SourceBackedAutomaticUnavailableReason::RegistrationRejected { kind, detail } =
+                reason
+            else {
+                return None;
+            };
+            if !source.exists {
+                return None;
+            }
+            if matches!(
+                policy,
+                AutomaticRegistryAdmissionFailurePolicy::SystemicOnly
+            ) && !matches!(
+                kind,
+                SourceBackedRouteErrorKind::ResourceUnavailable
+                    | SourceBackedRouteErrorKind::Internal
+            ) {
+                return None;
+            }
+            Some((source, *kind, detail))
+        })
+        .filter_map(|(source, kind, detail)| {
+            let route_identity = match automatic_registry_issue_route_identity(source) {
+                Ok(route_identity) => route_identity,
+                Err(error) => return Some(Err(error)),
+            };
+            if matches!(
+                policy,
+                AutomaticRegistryAdmissionFailurePolicy::ExactRoutes(selected)
+                    if !selected.contains(&route_identity)
+            ) {
+                return None;
+            }
+            Some(Ok(SourceBackedAdmissionRouteFailure::new(
+                route_identity,
+                kind,
+                detail.clone(),
+            )))
+        })
+        .collect::<Result<Vec<_>>>()?;
+    if failures.is_empty() {
+        return Ok(None);
+    }
+    SourceBackedAdmissionRouteFailures::try_from_failures(failures).map(Some)
+}
+
 pub(super) fn automatic_registry_route_less_blockers(
     issues: &[SourceBackedAutomaticRegistryIssue],
     route_failures: &[ctx_history_capture::SourceBackedFailedRoute],
@@ -175,9 +237,13 @@ fn automatic_registry_issue_failure_class(
         SourceBackedAutomaticUnavailableReason::SourceStatus(_) if source.exists => {
             Some(SourceBackedSourceFailureClass::Unavailable)
         }
+        SourceBackedAutomaticUnavailableReason::RegistrationRejected { kind, .. }
+            if source.exists =>
+        {
+            kind.source_failure_class()
+        }
         SourceBackedAutomaticUnavailableReason::UnsupportedFormat { .. }
         | SourceBackedAutomaticUnavailableReason::SelectorAuthorityUnavailable { .. }
-        | SourceBackedAutomaticUnavailableReason::RegistrationRejected { .. }
             if source.exists =>
         {
             Some(SourceBackedSourceFailureClass::Incompatible)
@@ -220,7 +286,9 @@ fn automatic_registry_issue_reason(reason: &SourceBackedAutomaticUnavailableReas
             format!("source status is {}", status.as_str())
         }
         SourceBackedAutomaticUnavailableReason::UnsafeRootOverlap { detail }
-        | SourceBackedAutomaticUnavailableReason::RegistrationRejected { detail } => detail.clone(),
+        | SourceBackedAutomaticUnavailableReason::RegistrationRejected { detail, .. } => {
+            detail.clone()
+        }
         SourceBackedAutomaticUnavailableReason::UnsupportedFormat { detail }
         | SourceBackedAutomaticUnavailableReason::SelectorAuthorityUnavailable { detail } => {
             (*detail).to_owned()

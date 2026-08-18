@@ -333,6 +333,94 @@ fn source_refresh_finisher_releases_barrier_before_signaling_scheduler() -> Resu
     Ok(())
 }
 
+#[cfg(any(unix, windows))]
+#[test]
+fn typed_admission_failure_is_durable_and_visible_over_the_status_transport() -> Result<()> {
+    let (_temp, data_root) = private_data_root()?;
+    let route = ctx_history_index::SourceRouteIdentity::from_sha256("ab".repeat(32))?;
+    let failed_route = route.clone();
+    let coordinator = Arc::new(CoreRefreshEngine::with_admission_fence_for_test(Arc::new(
+        move |_data_root, _catalog| {
+            Err(
+                ctx_history_capture::SourceBackedCoordinatorError::NoUsableSourceRoutes {
+                    failed_routes: ctx_history_capture::SourceBackedSourceFailures::from_failures(
+                        [ctx_history_capture::SourceBackedFailedRoute::new(
+                            failed_route.clone(),
+                            "cd".repeat(32),
+                            ctx_history_core::CaptureProvider::Shelley,
+                            ctx_history_capture::SourceBackedSourceFailureClass::Unreadable,
+                            false,
+                            "shelley.db",
+                            "file is not a database",
+                        )],
+                    ),
+                }
+                .into(),
+            )
+        },
+    )));
+    let wakeup = Arc::new(DaemonWakeup::default());
+    let handler = ctx_authenticated_request_handler(
+        &data_root,
+        SharedSemanticRuntime::default(),
+        Arc::clone(&coordinator),
+        wakeup,
+        &crate::test_support::CONFIG,
+    );
+    let service = start_daemon_source_refresh_service_with_request_timeout(
+        &data_root,
+        handler,
+        TEST_QUERY_REQUEST_READ_TIMEOUT,
+    )?;
+    let request_id = "019fcaaa-0000-7000-8000-000000000296";
+
+    let acknowledged = source_refresh_roundtrip(&data_root, refresh_request(request_id))?;
+    assert_eq!(acknowledged["request_state"], "admission_pending");
+    assert!(coordinator.prepare_next_pending_admission(&data_root)?);
+    let terminal = source_refresh_roundtrip(
+        &data_root,
+        compact_json(json!({
+            "schema_version": 1,
+            "op": "source_refresh_status",
+            "request_id": request_id,
+        })),
+    )?;
+
+    assert_eq!(terminal["request_state"], "failed", "{terminal:#}");
+    assert_eq!(terminal["failure_type"], "malformed_source", "{terminal:#}");
+    assert_eq!(terminal["error_code"], "malformed_source", "{terminal:#}");
+    assert_eq!(terminal["reason"], "unreadable", "{terminal:#}");
+    assert_eq!(
+        terminal["structured_outcome"]["affected_routes"],
+        json!([route.as_str()]),
+        "{terminal:#}"
+    );
+    assert_eq!(
+        terminal["structured_outcome"]["blocked_routes"],
+        json!([route.as_str()]),
+        "{terminal:#}"
+    );
+    assert_eq!(terminal["structured_outcome"]["retryable"], false);
+    assert_eq!(
+        terminal["structured_outcome"]["retry_advice"],
+        "inspect_sources"
+    );
+    let durable = read_daemon_job_status(&daemon_source_backed_refresh_job_path(&data_root))
+        .expect("typed terminal admission failure");
+    assert_eq!(durable["request_id"], terminal["request_id"]);
+    assert_eq!(durable["request_state"], terminal["request_state"]);
+    assert_eq!(durable["failure_type"], terminal["failure_type"]);
+    assert_eq!(durable["error_code"], terminal["error_code"]);
+    assert_eq!(durable["reason"], terminal["reason"]);
+    assert_eq!(
+        durable["structured_outcome"],
+        terminal["structured_outcome"]
+    );
+    assert_eq!(coordinator.pending_scheduler_retry_root_for_test(), None);
+    drop(service);
+    Ok(())
+}
+
 #[test]
 fn disconnected_client_does_not_cancel_a_durably_admitted_request() -> Result<()> {
     let (_temp, data_root) = private_data_root()?;

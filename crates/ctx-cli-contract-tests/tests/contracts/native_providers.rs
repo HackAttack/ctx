@@ -60,22 +60,26 @@ fn qwen_kimi_mistral_mux_and_qoder_default_sources_import_search_and_reimport() 
         assert_eq!(source["importable"], true);
     }
 
-    for (cli_provider, stored_provider, query, minimum_events) in [
-        ("qwen-code", "qwen_code", "qwen jsonl oracle prompt", 2),
+    // Qwen owns the fixture's one malformed record. Each import receipt is
+    // provider-scoped even though the current-generation total remains one.
+    for (cli_provider, stored_provider, query, minimum_events, rejected_records) in [
+        ("qwen-code", "qwen_code", "qwen jsonl oracle prompt", 2, 1),
         (
             "kimi-code-cli",
             "kimi_code_cli",
             "kimi jsonl oracle prompt",
             5,
+            0,
         ),
         (
             "mistral-vibe",
             "mistral_vibe",
             "mistral vibe oracle prompt",
             3,
+            0,
         ),
-        ("mux", "mux", "mux jsonl oracle prompt", 4),
-        ("qoder", "qoder", "qoder jsonl oracle prompt", 6),
+        ("mux", "mux", "mux jsonl oracle prompt", 4, 0),
+        ("qoder", "qoder", "qoder jsonl oracle prompt", 6, 0),
     ] {
         let first = json_output(ctx(&temp).args([
             "import",
@@ -86,7 +90,7 @@ fn qwen_kimi_mistral_mux_and_qoder_default_sources_import_search_and_reimport() 
             "--progress",
             "none",
         ]));
-        assert_authoritative_provider_publication_with_rejections(&first, 1);
+        assert_authoritative_provider_publication_with_rejections(&first, rejected_records);
         wait_for_imported_core(&temp, &first);
         assert_eq!(first["totals"]["current_rejected_records"], 1, "{first:#}");
         let (session_count, event_count) = provider_core_counts(&data_root(&temp), stored_provider);
@@ -123,7 +127,7 @@ fn qwen_kimi_mistral_mux_and_qoder_default_sources_import_search_and_reimport() 
             "--progress",
             "none",
         ]));
-        assert_authoritative_provider_publication_with_rejections(&second, 1);
+        assert_authoritative_provider_publication_with_rejections(&second, rejected_records);
         assert_eq!(
             second["totals"]["current_rejected_records"], 1,
             "{second:#}"

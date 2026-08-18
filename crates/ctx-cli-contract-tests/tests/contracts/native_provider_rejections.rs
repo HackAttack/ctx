@@ -214,10 +214,8 @@ fn mixed_source_replay_remains_stable_after_malformed_file_is_skipped() {
         "antigravity_cli_transcript_jsonl_tree",
         0,
     );
-    let generation = first_source["published_generation"]
-        .as_str()
-        .unwrap()
-        .to_owned();
+    let route_identity = first_source["route_identity"].clone();
+    let complete_records = first_source["current_complete_records"].clone();
 
     let replay = json_output(ctx(&temp).args([
         "import",
@@ -239,7 +237,15 @@ fn mixed_source_replay_remains_stable_after_malformed_file_is_skipped() {
     assert_eq!(replay_source["change"], "no_op", "{replay:#}");
     assert_eq!(replay_source["generation_changed"], false, "{replay:#}");
     assert_eq!(
-        replay_source["published_generation"], generation,
+        replay_source["published_generation"], replay_source["previous_generation"],
+        "{replay:#}"
+    );
+    assert_eq!(
+        replay_source["route_identity"], route_identity,
+        "{replay:#}"
+    );
+    assert_eq!(
+        replay_source["current_complete_records"], complete_records,
         "{replay:#}"
     );
 }

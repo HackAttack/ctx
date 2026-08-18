@@ -63,6 +63,225 @@ fn provider_submission(request_id: &str, provider: CaptureProvider) -> RefreshSu
     .with_selector(SourceBackedRefreshSelector::AutomaticProvider(provider))
 }
 
+fn assert_unreadable_admission_failure(retain_generation: bool, request_id: &str) {
+    let (_temp, data_root) = private_data_root();
+    let retained_generation = retain_generation.then(|| {
+        ctx_history_index::GenerationWriter::open(
+            source_backed_index_root(&data_root),
+            ctx_history_index::WriterOptions::default(),
+        )
+        .unwrap()
+        .into_writer()
+        .unwrap()
+        .commit(|_| true)
+        .unwrap()
+        .generation_id
+    });
+    let route = SourceRouteIdentity::from_sha256("ab".repeat(32)).unwrap();
+    let failed_route = route.clone();
+    let coordinator = CoreRefreshEngine::with_admission_fence_for_test(
+        Arc::new(TestRefreshJournal::default()),
+        test_refresh_runtime(),
+        Arc::new(move |_, _, _, _| {
+            Err(SourceBackedCoordinatorError::NoUsableSourceRoutes {
+                failed_routes: SourceBackedSourceFailures::from_failures([
+                    SourceBackedFailedRoute::new(
+                        failed_route.clone(),
+                        "cd".repeat(32),
+                        CaptureProvider::Shelley,
+                        SourceBackedSourceFailureClass::Unreadable,
+                        false,
+                        "shelley.db",
+                        "file is not a database",
+                    ),
+                ]),
+            }
+            .into())
+        }),
+    );
+    let admission = coordinator
+        .submit(&data_root, test_refresh_submission(request_id))
+        .unwrap();
+    release_pending_admission(&coordinator, admission);
+
+    let run = coordinator
+        .run_next(&data_root)
+        .expect("terminal admission failure");
+    assert!(run.failed, "{:#}", run.job);
+    assert_eq!(run.job["request_state"], "failed");
+    assert_eq!(run.job["failure_type"], "malformed_source");
+    assert_eq!(run.job["error_code"], "malformed_source");
+    assert_eq!(run.job["reason"], "unreadable");
+    assert_eq!(run.job["structured_outcome"]["code"], "malformed_source");
+    assert_eq!(run.job["structured_outcome"]["class"], "unreadable");
+    assert_eq!(run.job["structured_outcome"]["retryable"], false);
+    assert_eq!(
+        run.job["structured_outcome"]["affected_routes"],
+        json!([route.as_str()])
+    );
+    assert_eq!(
+        run.job["structured_outcome"]["blocked_routes"],
+        json!([route.as_str()])
+    );
+    assert_eq!(run.job["structured_outcome"]["retryable_routes"], json!([]));
+    assert_eq!(
+        run.job["structured_outcome"]["retry_advice"],
+        "inspect_sources"
+    );
+    assert_eq!(
+        run.job["structured_outcome"]["retained_generation"],
+        json!(retained_generation)
+    );
+    assert_eq!(run.job["published_generation"], json!(retained_generation));
+    assert_eq!(coordinator.pending_scheduler_retry_root_for_test(), None);
+    assert_eq!(
+        coordinator.dirty_route_ids_for_test(),
+        BTreeSet::from([route.clone()])
+    );
+    assert!(coordinator.route_is_permanently_blocked_for_test(&route));
+}
+
+#[test]
+fn cold_admission_preserves_typed_unreadable_route_failure() {
+    assert_unreadable_admission_failure(false, "019fcaaa-0000-7000-8000-000000000508");
+}
+
+#[test]
+fn warm_admission_preserves_typed_unreadable_route_failure_and_retained_generation() {
+    assert_unreadable_admission_failure(true, "019fcaaa-0000-7000-8000-000000000509");
+}
+
+#[test]
+fn retryable_admission_failure_schedules_exact_route_without_restart() {
+    let (_temp, data_root) = private_data_root();
+    let route = SourceRouteIdentity::from_sha256("de".repeat(32)).unwrap();
+    let failed_route = route.clone();
+    let retry_route = route.clone();
+    let executor: Arc<dyn SourceBackedRefreshExecutor> = Arc::new(
+        move |_: ctx_history_refresh_execution::SourceBackedRefreshExecution<'_>| {
+            Err(SourceBackedAdmissionRouteFailures::try_from_failures([
+                ctx_history_refresh_execution::SourceBackedAdmissionRouteFailure::new(
+                    retry_route.clone(),
+                    SourceBackedRouteErrorKind::ResourceUnavailable,
+                    "Shelley registration resource remains unavailable",
+                ),
+            ])
+            .unwrap()
+            .into())
+        },
+    );
+    let coordinator = CoreRefreshEngine::with_runtime_for_test(
+        Arc::new(TestRefreshJournal::default()),
+        test_refresh_runtime(),
+        executor,
+        Arc::new(move |_, _, _, _| {
+            Err(SourceBackedAdmissionRouteFailures::try_from_failures([
+                ctx_history_refresh_execution::SourceBackedAdmissionRouteFailure::new(
+                    failed_route.clone(),
+                    SourceBackedRouteErrorKind::ResourceUnavailable,
+                    "Shelley registration exhausted a bounded resource",
+                ),
+            ])
+            .unwrap()
+            .into())
+        }),
+    );
+    let request_id = "019fcaaa-0000-7000-8000-000000000510";
+    let admission = coordinator
+        .submit(&data_root, test_refresh_submission(request_id))
+        .unwrap();
+    release_pending_admission(&coordinator, admission);
+
+    let run = coordinator.run_next(&data_root).expect("admission failure");
+
+    assert!(run.failed, "{:#}", run.job);
+    assert_eq!(run.job["error_code"], "resource_unavailable");
+    assert_eq!(run.job["reason"], "resource_unavailable");
+    assert_eq!(run.job["structured_outcome"]["retryable"], true);
+    assert_eq!(
+        run.job["structured_outcome"]["retryable_routes"],
+        json!([route.as_str()])
+    );
+    assert_eq!(run.job["structured_outcome"]["blocked_routes"], json!([]));
+    assert_eq!(
+        coordinator.dirty_route_ids_for_test(),
+        BTreeSet::from([route.clone()])
+    );
+    assert!(!coordinator.route_is_permanently_blocked_for_test(&route));
+    coordinator.reconcile_watch_routes(
+        BTreeSet::from([route.clone()]),
+        EventWatermark::new(2, 0),
+        source_route_ledger_now_ms().saturating_sub(1_000),
+    );
+    assert!(coordinator
+        .enqueue_next_dirty_route(&data_root, source_route_ledger_now_ms())
+        .expect("schedule retryable admission route"));
+    let retry = coordinator.run_next(&data_root).expect("exact route retry");
+    assert!(retry.failed, "{:#}", retry.job);
+    assert_eq!(
+        retry.scope,
+        SourceBackedRefreshScope::Exact(BTreeSet::from([route.clone()]))
+    );
+    assert_eq!(
+        retry.job["error_code"], "resource_unavailable",
+        "{:#}",
+        retry.job
+    );
+    assert_eq!(
+        retry.job["structured_outcome"]["retryable_routes"],
+        json!([route.as_str()])
+    );
+    assert_eq!(
+        coordinator.dirty_route_ids_for_test(),
+        BTreeSet::from([route.clone()])
+    );
+    assert!(!coordinator.route_is_permanently_blocked_for_test(&route));
+}
+
+#[test]
+fn internal_registration_failure_uses_admission_retry_handoff() {
+    let (_temp, data_root) = private_data_root();
+    let route = SourceRouteIdentity::from_sha256("fa".repeat(32)).unwrap();
+    let failed_route = route.clone();
+    let coordinator = CoreRefreshEngine::with_admission_fence_for_test(
+        Arc::new(TestRefreshJournal::default()),
+        test_refresh_runtime(),
+        Arc::new(move |_, _, _, _| {
+            Err(SourceBackedAdmissionRouteFailures::try_from_failures([
+                ctx_history_refresh_execution::SourceBackedAdmissionRouteFailure::new(
+                    failed_route.clone(),
+                    SourceBackedRouteErrorKind::Internal,
+                    "injected registration invariant failure",
+                ),
+            ])
+            .unwrap()
+            .into())
+        }),
+    );
+    let request_id = "019fcaaa-0000-7000-8000-000000000511";
+    let admission = coordinator
+        .submit(&data_root, test_refresh_submission(request_id))
+        .unwrap();
+    release_pending_admission(&coordinator, admission);
+
+    let run = coordinator.run_next(&data_root).expect("admission failure");
+
+    assert!(run.failed, "{:#}", run.job);
+    assert_eq!(run.job["error_code"], "source_refresh_admission_failed");
+    assert_eq!(run.job["reason"], "control_plane");
+    assert_eq!(run.job["structured_outcome"]["retryable"], true);
+    assert_eq!(
+        run.job["structured_outcome"]["retry_advice"],
+        "retry_admission"
+    );
+    assert_eq!(run.job["structured_outcome"]["affected_routes"], json!([]));
+    assert_eq!(
+        coordinator.pending_scheduler_retry_root_for_test(),
+        Some(request_id.to_owned())
+    );
+    assert!(!coordinator.route_is_permanently_blocked_for_test(&route));
+}
+
 #[test]
 fn automatic_provider_admission_is_exact_on_a_fresh_root_without_global_discovery() {
     let (temp, data_root) = private_data_root();
@@ -148,6 +367,13 @@ fn unavailable_provider_admission_fails_without_widening() {
         "{status:#}"
     );
     assert_eq!(status["refresh_scope"], json!({ "kind": "all" }));
+    assert_eq!(status["error_code"], "source_refresh_admission_failed");
+    assert_eq!(status["reason"], "control_plane");
+    assert_eq!(status["structured_outcome"]["retryable"], true);
+    assert_eq!(
+        status["structured_outcome"]["retry_advice"],
+        "retry_admission"
+    );
 }
 
 #[test]

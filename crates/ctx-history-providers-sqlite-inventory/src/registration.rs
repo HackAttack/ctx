@@ -272,7 +272,7 @@ pub fn shelley_registration<L, S>(
     source: ProviderSource,
     data_root: &Path,
     exact_cwd: impl Into<PathBuf>,
-) -> Result<
+) -> SourceBackedRouteResult<
     SqliteInventoryRegistration<
         impl ReplacementDocumentTree<
             Lifecycle = L,
@@ -287,14 +287,16 @@ where
 {
     let exact_cwd = exact_cwd.into();
     let adapter = discover_shelley_source_backed_exact_cwd(data_root, &exact_cwd)
-        .map_err(|error| CaptureError::InvalidPayload(error.to_string()))?
+        .map_err(shelley_inventory_route_error)?
         .ok_or_else(|| {
-            CaptureError::InvalidPayload(
+            SourceBackedRouteError::new(
+                SourceBackedRouteErrorKind::SourceChanged,
                 "the exact Shelley CWD no longer contains an admitted database".to_owned(),
             )
         })?;
     if adapter.database_path() != source.path {
-        return Err(CaptureError::InvalidPayload(
+        return Err(SourceBackedRouteError::new(
+            SourceBackedRouteErrorKind::InvalidSource,
             "the Shelley source path does not belong to the supplied exact CWD".to_owned(),
         ));
     }

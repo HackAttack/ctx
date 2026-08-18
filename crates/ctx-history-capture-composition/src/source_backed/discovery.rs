@@ -51,10 +51,19 @@ fn exact_source_catalog_lineage_preserves_released_v1_identity() {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SourceBackedAutomaticUnavailableReason {
     SourceStatus(ProviderSourceStatus),
-    UnsafeRootOverlap { detail: String },
-    UnsupportedFormat { detail: &'static str },
-    SelectorAuthorityUnavailable { detail: &'static str },
-    RegistrationRejected { detail: String },
+    UnsafeRootOverlap {
+        detail: String,
+    },
+    UnsupportedFormat {
+        detail: &'static str,
+    },
+    SelectorAuthorityUnavailable {
+        detail: &'static str,
+    },
+    RegistrationRejected {
+        kind: SourceBackedRouteErrorKind,
+        detail: String,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -235,9 +244,7 @@ fn build_automatic_source_backed_registry_from_parts_with_probes(
             ) {
                 Ok(route) => registry.register(route),
                 Err(error) => {
-                    let reason = SourceBackedAutomaticUnavailableReason::RegistrationRejected {
-                        detail: error.to_string(),
-                    };
+                    let reason = automatic_registration_rejected(error);
                     registry.register(SourceBackedRoute::unsupported(
                         source.clone(),
                         automatic_unavailable_detail(&reason),
@@ -323,9 +330,7 @@ fn build_automatic_source_backed_registry_from_parts_with_probes(
             SourceBackedRouteSelection::Automatic,
         );
         if let (Some(source), Err(error)) = (source, registration) {
-            let reason = SourceBackedAutomaticUnavailableReason::RegistrationRejected {
-                detail: error.to_string(),
-            };
+            let reason = automatic_registration_rejected(error);
             registry.register(SourceBackedRoute::unsupported(
                 source.clone(),
                 automatic_unavailable_detail(&reason),
@@ -384,7 +389,9 @@ fn automatic_unavailable_detail(reason: &SourceBackedAutomaticUnavailableReason)
             format!("provider source status is {}", status.as_str())
         }
         SourceBackedAutomaticUnavailableReason::UnsafeRootOverlap { detail }
-        | SourceBackedAutomaticUnavailableReason::RegistrationRejected { detail } => detail.clone(),
+        | SourceBackedAutomaticUnavailableReason::RegistrationRejected { detail, .. } => {
+            detail.clone()
+        }
         SourceBackedAutomaticUnavailableReason::UnsupportedFormat { detail }
         | SourceBackedAutomaticUnavailableReason::SelectorAuthorityUnavailable { detail } => {
             (*detail).to_owned()
@@ -459,7 +466,10 @@ fn register_discovered_automatic_route(
                         SourceBackedAutomaticUnavailableReason::SelectorAuthorityUnavailable { detail }
                     }
                     ctx_history_providers_sqlite_inventory::registration::LingmaRegistrationError::RegistrationRejected(detail) => {
-                        SourceBackedAutomaticUnavailableReason::RegistrationRejected { detail }
+                        SourceBackedAutomaticUnavailableReason::RegistrationRejected {
+                            kind: SourceBackedRouteErrorKind::Unsupported,
+                            detail,
+                        }
                     }
                 })?;
             crate::provider::source_backed::family::document::install_sqlite_inventory_registration(
@@ -512,11 +522,30 @@ fn register_discovered_automatic_route(
             "the landed route constructor does not match its provider registration callback",
         )),
     };
-    result.map_err(
-        |error| SourceBackedAutomaticUnavailableReason::RegistrationRejected {
-            detail: error.to_string(),
-        },
-    )
+    result.map_err(automatic_registration_rejected)
+}
+
+fn automatic_registration_rejected(
+    error: SourceBackedCoordinatorError,
+) -> SourceBackedAutomaticUnavailableReason {
+    let kind = match &error {
+        SourceBackedCoordinatorError::RouteScan { source, .. }
+        | SourceBackedCoordinatorError::RouteRegistration { source, .. }
+        | SourceBackedCoordinatorError::Progress(source)
+        | SourceBackedCoordinatorError::CoreEmission(source) => source.kind,
+        SourceBackedCoordinatorError::UnavailableRoute { .. } => {
+            SourceBackedRouteErrorKind::Unavailable
+        }
+        SourceBackedCoordinatorError::InvalidRoute { .. }
+        | SourceBackedCoordinatorError::InvalidRefreshScope { .. } => {
+            SourceBackedRouteErrorKind::Unsupported
+        }
+        _ => SourceBackedRouteErrorKind::Internal,
+    };
+    SourceBackedAutomaticUnavailableReason::RegistrationRejected {
+        kind,
+        detail: error.to_string(),
+    }
 }
 
 fn goose_platform_root(discovery: &DiscoveryContext, database: &Path) -> Option<PathBuf> {
@@ -625,6 +654,7 @@ fn discovered_crush_inventory_source(
     }
     crush_adapter_inventory(opening).map_err(|error| {
         SourceBackedAutomaticUnavailableReason::RegistrationRejected {
+            kind: SourceBackedRouteErrorKind::Unsupported,
             detail: error.to_string(),
         }
     })?;

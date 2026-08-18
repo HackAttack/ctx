@@ -259,6 +259,12 @@ fn personal_agent_sqlite_imports_report_corrupt_databases() {
         "--format=json",
     ]));
     assert!(stderr.contains("not a database"), "{stderr}");
+    assert!(stderr.contains("route registration failed"), "{stderr}");
+    assert!(
+        !stderr.contains("discovery produced no executable source routes"),
+        "{stderr}"
+    );
+    assert!(!stderr.contains("Core-record emission failed"), "{stderr}");
 
     let temp = tempdir();
     let root = temp.path().join("corrupt-nanoclaw");

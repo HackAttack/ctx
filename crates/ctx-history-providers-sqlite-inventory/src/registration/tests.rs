@@ -16,6 +16,7 @@ use rusqlite::Connection;
 use uuid::Uuid;
 
 use super::*;
+use crate::provider_sources::SqliteSourceAccessError;
 
 #[derive(Clone, Default)]
 pub(crate) struct NoopLookup;
@@ -453,6 +454,86 @@ fn fixture_provider_source(
         status: crate::ProviderSourceStatus::Available,
         unsupported_reason: None,
     }
+}
+
+fn shelley_registration_error(error: SqliteSourceAccessError) -> SourceBackedRouteError {
+    shelley_inventory_route_error(
+        crate::provider::providers::shelley::native_path::source_backed::ShelleySourceBackedError::SqliteSource(
+            error,
+        ),
+    )
+}
+
+#[test]
+fn shelley_registration_preserves_corrupt_source_classification() {
+    let temp = crate::test_support_paths::tempdir().unwrap();
+    let exact_cwd = temp.path().join("workspace");
+    let database = exact_cwd.join("shelley.db");
+    std::fs::create_dir_all(&exact_cwd).unwrap();
+    std::fs::write(&database, b"not a sqlite database").unwrap();
+    let source = fixture_provider_source(
+        CaptureProvider::Shelley,
+        database,
+        crate::SHELLEY_SQLITE_SOURCE_FORMAT,
+    );
+
+    let error = shelley_registration::<NoopLifecycle, NoopSpool>(
+        source,
+        crate::test_provider_sqlite_data_root(),
+        exact_cwd,
+    )
+    .err()
+    .expect("corrupt Shelley source must be rejected");
+
+    assert_eq!(error.kind, SourceBackedRouteErrorKind::InvalidSource);
+    assert!(error.detail.contains("not a database"));
+}
+
+#[test]
+fn shelley_registration_preserves_source_change_classification() {
+    let error = shelley_registration_error(SqliteSourceAccessError::SourceChanged);
+
+    assert_eq!(error.kind, SourceBackedRouteErrorKind::SourceChanged);
+}
+
+#[test]
+fn shelley_registration_treats_disappearance_after_discovery_as_source_change() {
+    let temp = crate::test_support_paths::tempdir().unwrap();
+    let exact_cwd = temp.path().join("workspace");
+    let database = exact_cwd.join("shelley.db");
+    std::fs::create_dir_all(&exact_cwd).unwrap();
+    Connection::open(&database)
+        .unwrap()
+        .execute_batch("create table admitted_before_registration(value text);")
+        .unwrap();
+    let source = fixture_provider_source(
+        CaptureProvider::Shelley,
+        database.clone(),
+        crate::SHELLEY_SQLITE_SOURCE_FORMAT,
+    );
+    std::fs::remove_file(database).unwrap();
+
+    let error = shelley_registration::<NoopLifecycle, NoopSpool>(
+        source,
+        crate::test_provider_sqlite_data_root(),
+        exact_cwd,
+    )
+    .err()
+    .expect("disappeared Shelley source must be retried");
+
+    assert_eq!(error.kind, SourceBackedRouteErrorKind::SourceChanged);
+    assert!(error.detail.contains("no longer contains"));
+}
+
+#[test]
+fn shelley_registration_preserves_resource_unavailable_classification() {
+    let error = shelley_registration_error(SqliteSourceAccessError::ResourceUnavailable {
+        operation: "test Shelley admission",
+        path: PathBuf::from("shelley.db"),
+        source: std::io::Error::from(std::io::ErrorKind::OutOfMemory),
+    });
+
+    assert_eq!(error.kind, SourceBackedRouteErrorKind::ResourceUnavailable);
 }
 
 #[test]

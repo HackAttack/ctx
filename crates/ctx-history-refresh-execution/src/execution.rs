@@ -14,14 +14,13 @@ use publication::{
 };
 pub(super) use registry_merge::build_merged_source_backed_registry;
 use registry_merge::build_merged_source_backed_registry_with_automatic_routes;
-
 pub(super) struct MergedSourceBackedRegistry {
     pub(super) build: ctx_history_capture::SourceBackedAutomaticRegistryBuild,
     reactivated_automatic_routes: BTreeSet<SourceRouteIdentity>,
     previous_explicit_source_catalog: Option<ExplicitSourceCatalogAuthority>,
     previous_catalog_route_bindings: Vec<ExplicitSourceCatalogRouteBinding>,
     requested_explicit_source_catalog: Option<ExplicitSourceCatalogAuthority>,
-    retained_generation: Option<VerifiedIndex>,
+    pub(super) retained_generation: Option<VerifiedIndex>,
     pub(super) requested_catalog_route_bindings: Vec<ExplicitSourceCatalogRouteBinding>,
     previous_route_controls: BTreeMap<SourceRouteIdentity, Vec<u8>>,
 }
@@ -493,6 +492,17 @@ fn refresh_all_provider_sources_route_local_with_reconciliation(
             &previous_catalog_route_bindings,
             &previous_route_controls,
         )?;
+    }
+    let registration_failure_policy = match &scope {
+        SourceBackedRefreshScope::All => AutomaticRegistryAdmissionFailurePolicy::SystemicOnly,
+        SourceBackedRefreshScope::Exact(routes) => {
+            AutomaticRegistryAdmissionFailurePolicy::ExactRoutes(routes)
+        }
+    };
+    if let Some(registration_failures) =
+        automatic_registry_admission_failures(&build.issues, registration_failure_policy)?
+    {
+        return Err(registration_failures.into());
     }
     let registry_failures = if matches!(scope, SourceBackedRefreshScope::All) {
         reject_blocking_automatic_registry_issues(&build.issues)?;

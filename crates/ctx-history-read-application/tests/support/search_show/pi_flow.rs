@@ -75,11 +75,26 @@ fn publish_pi_v6_predecessor(data_root: &Path) -> String {
     assert!(legacy.publication_metadata().is_none());
     assert_eq!(pi_parser_revision(data_root), PI_V6_PARSER_REVISION);
 
-    let job_path = data_root.join("daemon/jobs/core-refresh.json");
-    let mut job: Value = serde_json::from_slice(&fs::read(&job_path).unwrap()).unwrap();
-    job["previous_generation"] = Value::Null;
-    job["published_generation"] = json!(legacy_generation.clone());
-    fs::write(job_path, serde_json::to_vec(&job).unwrap()).unwrap();
+    let job = json!({
+        "schema_version": 1,
+        "owner": "daemon",
+        "request_id": "legacy-pi-v6-publication",
+        "request_state": "published",
+        "status": "completed",
+        "operation": "refresh",
+        "previous_generation": null,
+        "published_generation": legacy_generation.clone(),
+        "refresh_scope": { "kind": "all" },
+        "daemon_mode": "full",
+        "trigger": "periodic",
+        "trigger_provenance": "daemon_scheduler",
+    });
+    assert!(job.get("queued_successors").is_none());
+    fs::write(
+        data_root.join("daemon/jobs/core-refresh.json"),
+        serde_json::to_vec(&job).unwrap(),
+    )
+    .unwrap();
     legacy_generation
 }
 

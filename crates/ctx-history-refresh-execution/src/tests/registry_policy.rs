@@ -168,6 +168,79 @@ fn only_unscopable_registry_safety_issues_block_globally() {
 }
 
 #[test]
+fn systemic_registration_failures_keep_exact_admission_route_authority() {
+    let temp = tempfile::tempdir().unwrap();
+    let database = temp.path().join("shelley.db");
+    std::fs::write(&database, b"fixture").unwrap();
+    for kind in [
+        SourceBackedRouteErrorKind::ResourceUnavailable,
+        SourceBackedRouteErrorKind::Internal,
+    ] {
+        let source = provider_source_for_path(CaptureProvider::Shelley, database.clone());
+        let expected_route = automatic_source_backed_route_identity(&source).unwrap();
+        let issue = SourceBackedAutomaticRegistryIssue::Unavailable {
+            source,
+            reason: SourceBackedAutomaticUnavailableReason::RegistrationRejected {
+                kind,
+                detail: "injected Shelley registration systemic failure".to_owned(),
+            },
+        };
+
+        assert!(
+            automatic_registry_route_failures(std::slice::from_ref(&issue), None)
+                .unwrap()
+                .is_empty()
+        );
+        let failures = automatic_registry_admission_failures(
+            std::slice::from_ref(&issue),
+            AutomaticRegistryAdmissionFailurePolicy::SystemicOnly,
+        )
+        .unwrap()
+        .expect("systemic admission failure");
+
+        assert_eq!(failures.failures().len(), 1);
+        assert_eq!(failures.failures()[0].route_identity(), &expected_route);
+        assert_eq!(failures.failures()[0].kind(), kind);
+        assert!(failures.failures()[0]
+            .detail()
+            .contains("registration systemic failure"));
+        assert!(automatic_registry_admission_failures(
+            std::slice::from_ref(&issue),
+            AutomaticRegistryAdmissionFailurePolicy::ExactRoutes(&BTreeSet::from([
+                expected_route.clone(),
+            ])),
+        )
+        .unwrap()
+        .is_some());
+        let unrelated = SourceRouteIdentity::from_sha256("11".repeat(32)).unwrap();
+        assert!(automatic_registry_admission_failures(
+            std::slice::from_ref(&issue),
+            AutomaticRegistryAdmissionFailurePolicy::ExactRoutes(&BTreeSet::from([unrelated])),
+        )
+        .unwrap()
+        .is_none());
+    }
+}
+
+#[test]
+fn admission_registration_failures_enforce_the_durable_route_bound() {
+    let failures = (0..=SOURCE_REFRESH_TERMINAL_ROUTE_LIMIT).map(|index| {
+        SourceBackedAdmissionRouteFailure::new(
+            SourceRouteIdentity::from_sha256(format!("{index:064x}")).unwrap(),
+            SourceBackedRouteErrorKind::ResourceUnavailable,
+            "bounded resource failure",
+        )
+    });
+
+    let error = SourceBackedAdmissionRouteFailures::try_from_failures(failures).unwrap_err();
+
+    assert!(
+        format!("{error:#}").contains("exceed the terminal route limit"),
+        "{error:#}"
+    );
+}
+
+#[test]
 fn registry_failure_identity_uses_the_canonical_certified_format() {
     let path = PathBuf::from("/detected/codex-sessions");
     let source = registry_policy_source(
@@ -247,6 +320,7 @@ fn distinct_nanoclaw_registry_failures_match_retained_automatic_routes() {
     let issues = sources.map(|source| SourceBackedAutomaticRegistryIssue::Unavailable {
         source,
         reason: SourceBackedAutomaticUnavailableReason::RegistrationRejected {
+            kind: SourceBackedRouteErrorKind::Unsupported,
             detail: "injected NanoClaw registration failure".to_owned(),
         },
     });
@@ -313,6 +387,62 @@ fn mixed_codex_and_unsupported_warp_routes_continue_with_typed_evidence() {
     );
     assert!(is_sha256_identity(&failure.route_identity));
     assert!(is_sha256_identity(&failure.source_identity));
+    let verified = VerifiedIndex::open(&index_root).unwrap();
+    assert_eq!(verified.manifest().sources.len(), 1);
+    assert_eq!(
+        verified
+            .search_event_candidates("registrypolicyvalidmarker", 10)
+            .unwrap()
+            .len(),
+        1
+    );
+}
+
+#[test]
+fn all_route_execution_preserves_a_healthy_peer_during_source_local_registration_failure() {
+    let temp = tempfile::tempdir().unwrap();
+    let data_root = temp.path().join("data");
+    let index_root = source_backed_index_root(&data_root);
+    ctx_history_platform::platform_security::establish_private_data_root(&data_root).unwrap();
+    let (_, cwd, discovery) = discovery_fixture(temp.path());
+    let codex_root = temp.path().join("codex-sessions");
+    let malformed_shelley = cwd.join("shelley.db");
+    write_registry_policy_codex_rollout(&codex_root);
+    std::fs::write(&malformed_shelley, b"not sqlite").unwrap();
+
+    let publication = run_report(
+        &discovery,
+        DiscoveryReport {
+            sources: vec![
+                provider_source_for_path(CaptureProvider::Codex, codex_root),
+                provider_source_for_path(CaptureProvider::Shelley, malformed_shelley),
+            ],
+            issues: Vec::new(),
+        },
+        &data_root,
+        &index_root,
+    )
+    .unwrap();
+
+    assert_eq!(publication.route_results.len(), 2);
+    assert_eq!(publication.certified_source_count, 1);
+    assert_eq!(
+        publication
+            .route_results
+            .iter()
+            .filter(|result| result.outcome.is_success())
+            .count(),
+        1
+    );
+    let failures = publication
+        .route_results
+        .iter()
+        .flat_map(|result| result.source_failures.iter())
+        .collect::<Vec<_>>();
+    assert_eq!(failures.len(), 1);
+    assert_eq!(failures[0].provider, "shelley");
+    assert_eq!(failures[0].class, "unreadable");
+    assert!(failures[0].detail.contains("not a database"));
     let verified = VerifiedIndex::open(&index_root).unwrap();
     assert_eq!(verified.manifest().sources.len(), 1);
     assert_eq!(
@@ -440,6 +570,47 @@ fn registry_issue_only_cold_refresh_retains_the_all_fail_guard() {
         SourceBackedSourceFailureClass::Incompatible
     );
     assert!(!index_root.exists());
+}
+
+#[test]
+fn scoped_admission_preserves_typed_registration_failure_details() {
+    let temp = tempfile::tempdir().unwrap();
+    let data_root = temp.path().join("data");
+    ctx_history_platform::platform_security::establish_private_data_root(&data_root).unwrap();
+    let (_, cwd, discovery) = discovery_fixture(temp.path());
+    let database = cwd.join("shelley.db");
+    std::fs::write(&database, b"not sqlite").unwrap();
+    let source = provider_source_for_path(CaptureProvider::Shelley, database);
+
+    let error = source_backed_admitted_discovery_from_report(
+        &discovery,
+        DiscoveryReport {
+            sources: vec![source],
+            issues: Vec::new(),
+        },
+        StdDuration::ZERO,
+        &data_root,
+        None,
+        &TestPublishedState,
+    )
+    .unwrap_err();
+    let registration_failures = error
+        .chain()
+        .find_map(|cause| cause.downcast_ref::<SourceBackedAdmissionRouteFailures>())
+        .expect("typed scoped registration error");
+    assert_eq!(registration_failures.failures().len(), 1);
+    let failure = &registration_failures.failures()[0];
+    assert_eq!(failure.kind(), SourceBackedRouteErrorKind::InvalidSource);
+    assert!(
+        failure.detail().contains("not a database"),
+        "unexpected Shelley failure detail: {failure:?}"
+    );
+    assert!(
+        failure
+            .detail()
+            .contains("source-backed route registration failed for shelley"),
+        "unexpected Shelley failure phase: {failure:?}"
+    );
 }
 
 fn write_registry_policy_codex_rollout(root: &Path) {
