@@ -16,16 +16,24 @@ and private relevance evals justify flipping the default.
   compliance, hosted acceleration, and LLM summaries. The free local CLI should
   stay useful enough to create trust.
 - Automatic indexing and persistent daemon maintenance are the default. Users
-  can select manual indexing durably with:
+  can inspect the mode with `ctx index mode` and change it with
+  `ctx index mode auto` or `ctx index mode manual`. The
+  canonical config is:
 
   ```toml
   [indexing]
-  mode = "manual"
+  mode = "auto" # or "manual"
   ```
 
-- Semantic remains disabled by default and requires the daemon. The supported
-  semantic opt-in shape
-  is:
+- Semantic remains disabled by default and requires auto mode. Enable it with:
+
+  ```bash
+  ctx index mode auto
+  ctx setup --semantic
+  ctx index
+  ```
+
+  The equivalent config opt-in is:
 
   ```toml
   [search]
@@ -50,7 +58,7 @@ and private relevance evals justify flipping the default.
 - `ctx setup`, `ctx import`, and `ctx search` should not write `config.toml` for
   implicit defaults. The config file is user-managed override surface.
 - `ctx setup` should be repeatable. If an existing user later enables
-  `[indexing] mode = "automatic"` and `[search] semantic = true` and reruns setup,
+  `[indexing] mode = "auto"` and `[search] semantic = true` and reruns setup,
   setup should leave existing data intact, start daemon-owned indexing when
   possible, and let the daemon acquire the local embedding model and build
   missing semantic sidecars.
@@ -80,10 +88,10 @@ and private relevance evals justify flipping the default.
   `intfloat/multilingual-e5-small`. Query and passage role prefixes are applied
   exactly once, and the new model key prevents pre-migration vectors from being
   counted as E5 sidecar coverage.
-- Config now has `[indexing] mode = "automatic"|"manual"` and
-  `[search] semantic = true|false`. Indexing defaults to automatic, while unset
+- Config now has `[indexing] mode = "auto"|"manual"` and
+  `[search] semantic = true|false`. Indexing defaults to auto, while unset
   semantic search defaults off; both have env overrides. Legacy
-  `[daemon] enabled = true|false` is compatibility input only.
+  `[daemon] enabled = true|false` remains compatibility input only.
 - Default search backend resolution is config-aware: lexical by default while
   semantic is off, hybrid by default while semantic is on, and explicit semantic
   fails fast when disabled.
@@ -117,6 +125,8 @@ and private relevance evals justify flipping the default.
   background refresh and explicit `--refresh off` do not start daemon work;
   strict semantic fails with an actionable daemon-query-service error when the
   daemon is not running.
+- Lexical search remains available during semantic backfill. Hybrid search uses
+  both lexical and semantic evidence automatically when coverage is ready.
 - Daemon query socket startup is required when semantic is enabled. If the
   socket cannot bind during initial startup, daemon startup fails visibly. If a
   running semantic-disabled daemon cannot bind while applying a later opt-in,
@@ -344,7 +354,7 @@ and private relevance evals justify flipping the default.
 
 - Done on this branch:
   - `[search] semantic = true|false`;
-  - `[indexing] mode = "automatic"|"manual"`;
+  - `[indexing] mode = "auto"|"manual"`;
   - compatibility parsing for `[daemon] enabled = true|false`;
   - `CTX_SEARCH_SEMANTIC`;
   - `CTX_DAEMON_ENABLED`;

@@ -11,31 +11,65 @@ use serde_json::{json, Value};
 
 use crate::analytics::{count_bucket, IndexOperation, IndexState, IndexTelemetry, WaitOutcome};
 use crate::output::{compact_json, print_json, JsonOutputFormat};
-use crate::ui::{Document, LiveOutput, Ui};
+use crate::ui::{fields, outcome, Document, Field, LiveOutput, Outcome, OutcomeState, Ui};
 
 use super::index_dashboard::{render_semantic_disabled_wait, IndexDashboard};
 
 #[derive(Debug, Args)]
 pub struct IndexArgs {
+    #[arg(long, value_enum, default_value_t = JsonOutputFormat::Text)]
+    format: JsonOutputFormat,
     #[command(subcommand)]
-    command: IndexCommand,
+    command: Option<IndexCommand>,
 }
 
 impl IndexArgs {
     pub fn json_output(&self) -> bool {
-        match &self.command {
-            IndexCommand::Watch(args) => args.format == IndexWatchFormat::Jsonl,
-            IndexCommand::Wait(args) => args.format.is_json(),
-        }
+        self.format.is_json()
+            || match &self.command {
+                None => false,
+                Some(IndexCommand::Mode(args)) => args.format.is_json(),
+                Some(IndexCommand::Watch(args)) => args.format == IndexWatchFormat::Jsonl,
+                Some(IndexCommand::Wait(args)) => args.format.is_json(),
+            }
     }
 }
 
 #[derive(Debug, Subcommand)]
 enum IndexCommand {
+    #[command(about = "Show or change automatic indexing mode")]
+    Mode(IndexModeArgs),
     #[command(about = "Watch local indexing progress until ready")]
     Watch(IndexWatchArgs),
     #[command(about = "Wait until local indexing reaches a ready state")]
     Wait(IndexWaitArgs),
+}
+
+#[derive(Debug, Args)]
+struct IndexModeArgs {
+    #[arg(value_enum)]
+    mode: Option<IndexModeArg>,
+    #[arg(long, value_enum, default_value_t = JsonOutputFormat::Text)]
+    format: JsonOutputFormat,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+pub enum IndexModeArg {
+    Auto,
+    Manual,
+}
+
+impl IndexModeArg {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Auto => "auto",
+            Self::Manual => "manual",
+        }
+    }
+
+    pub const fn is_auto(self) -> bool {
+        matches!(self, Self::Auto)
+    }
 }
 
 #[derive(Debug, Args)]
@@ -72,24 +106,125 @@ pub trait IndexReadinessPort {
     fn snapshot(&mut self, data_root: &Path) -> Result<Value>;
 }
 
+pub trait IndexModePort {
+    fn current(&mut self, data_root: &Path) -> Result<Value>;
+    fn update(&mut self, data_root: &Path, mode: IndexModeArg) -> Result<Value>;
+}
+
 pub fn run_index(
     args: IndexArgs,
     data_root: PathBuf,
     quiet: bool,
     telemetry: &mut IndexTelemetry,
     readiness: &mut dyn IndexReadinessPort,
+    mode: &mut dyn IndexModePort,
     ui: &mut Ui,
 ) -> Result<()> {
+    let parent_json = args.format.is_json();
     match args.command {
-        IndexCommand::Watch(args) => {
+        None => {
+            telemetry.operation = Some(IndexOperation::Status);
+            let status = readiness.snapshot(&data_root)?;
+            record_index_telemetry(telemetry, &status);
+            if args.format.is_json() {
+                print_json(status)?;
+            } else if !quiet {
+                let mut document = IndexDashboard.render(&status, ui.stdout_context());
+                append_indexing_mode(&mut document, &status, ui);
+                ui.write_stdout(&document)?;
+            }
+            Ok(())
+        }
+        Some(IndexCommand::Mode(args)) => {
+            telemetry.operation = Some(IndexOperation::Mode);
+            let report = match args.mode {
+                Some(requested) => mode.update(&data_root, requested)?,
+                None => mode.current(&data_root)?,
+            };
+            if parent_json || args.format.is_json() {
+                print_json(report)?;
+            } else if !quiet {
+                let document = render_index_mode(&report, args.mode.is_some(), ui);
+                ui.write_stdout(&document)?;
+            }
+            Ok(())
+        }
+        Some(IndexCommand::Watch(mut args)) => {
             telemetry.operation = Some(IndexOperation::Watch);
+            if parent_json {
+                args.format = IndexWatchFormat::Jsonl;
+            }
             run_index_watch(args, &data_root, quiet, telemetry, readiness, ui)
         }
-        IndexCommand::Wait(args) => {
+        Some(IndexCommand::Wait(mut args)) => {
             telemetry.operation = Some(IndexOperation::Wait);
+            if parent_json {
+                args.format = JsonOutputFormat::Json;
+            }
             run_index_wait(args, &data_root, quiet, telemetry, readiness, ui)
         }
     }
+}
+
+fn append_indexing_mode(document: &mut Document, report: &Value, ui: &Ui) {
+    let mode = report
+        .pointer("/indexing/mode")
+        .and_then(Value::as_str)
+        .unwrap_or("unknown");
+    if !document.is_empty() {
+        document.push_blank();
+    }
+    document.append(fields(
+        ui.stdout_context(),
+        &[Field::new("Indexing mode", mode)],
+    ));
+}
+
+fn render_index_mode(report: &Value, changed: bool, ui: &Ui) -> Document {
+    let mode = report
+        .pointer("/indexing/mode")
+        .and_then(Value::as_str)
+        .unwrap_or("unknown");
+    if !changed {
+        return fields(ui.stdout_context(), &[Field::new("Indexing mode", mode)]);
+    }
+
+    let requested_mode = report
+        .pointer("/indexing/requested_mode")
+        .and_then(Value::as_str)
+        .unwrap_or(mode);
+    let overridden = report
+        .pointer("/indexing/overridden")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+    if overridden {
+        let title = format!("Indexing mode remains {mode}");
+        let detail = format!(
+            "The requested {requested_mode} mode was saved, but a process-level override keeps {mode} mode active."
+        );
+        return outcome(
+            ui.stdout_context(),
+            Outcome {
+                state: OutcomeState::Warning,
+                title: &title,
+                detail: Some(&detail),
+            },
+        );
+    }
+
+    let detail = match mode {
+        "auto" => "ctx will keep the index current in the background.",
+        "manual" => "Run `ctx import` or use `ctx search --refresh wait` to update the index.",
+        _ => "The indexing mode was updated.",
+    };
+    outcome(
+        ui.stdout_context(),
+        Outcome {
+            state: OutcomeState::Success,
+            title: &format!("Indexing mode set to {mode}"),
+            detail: Some(detail),
+        },
+    )
 }
 
 fn run_index_watch(

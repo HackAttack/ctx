@@ -433,7 +433,7 @@ indexing_default="$(inventory_default_field "indexing mode" "value")"
 semantic_default="$(inventory_default_field "semantic search" "value")"
 if [ "${analytics_default}" != true ] \
   || [ "${upgrade_default}" != apply ] \
-  || [ "${indexing_default}" != automatic ] \
+  || [ "${indexing_default}" != auto ] \
   || [ "${semantic_default}" != false ]; then
   printf 'candidate smoke control inventory has unexpected released defaults\n' >&2
   exit 1

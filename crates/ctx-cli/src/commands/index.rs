@@ -4,7 +4,10 @@ use anyhow::Result;
 use serde_json::{json, Value};
 
 use crate::{
-    analytics::IndexTelemetry, config, output::compact_json, semantic::source_epoch_status_report,
+    analytics::IndexTelemetry,
+    config::{self, CONFIG_FILE},
+    output::compact_json,
+    semantic::source_epoch_status_report,
     ui::Ui,
 };
 
@@ -15,9 +18,39 @@ pub(crate) use ctx_cli_presentation::commands::index::IndexArgs;
 
 struct CliIndexReadiness;
 
+struct CliIndexMode;
+
 impl ctx_cli_presentation::commands::index::IndexReadinessPort for CliIndexReadiness {
     fn snapshot(&mut self, data_root: &Path) -> Result<Value> {
         index_readiness_snapshot(data_root)
+    }
+}
+
+impl ctx_cli_presentation::commands::index::IndexModePort for CliIndexMode {
+    fn current(&mut self, data_root: &Path) -> Result<Value> {
+        let config = config::AppConfig::load(data_root)?;
+        Ok(index_mode_report(
+            data_root,
+            config.indexing.mode.as_str(),
+            None,
+            None,
+        ))
+    }
+
+    fn update(
+        &mut self,
+        data_root: &Path,
+        mode: ctx_cli_presentation::commands::index::IndexModeArg,
+    ) -> Result<Value> {
+        let config = config::AppConfig::load(data_root)?;
+        let update = crate::semantic::update_indexing_mode(data_root, &config, mode.is_auto())?;
+        let applied_mode = if update.automatic { "auto" } else { "manual" };
+        Ok(index_mode_report(
+            data_root,
+            applied_mode,
+            Some(mode.as_str()),
+            Some(update),
+        ))
     }
 }
 
@@ -34,8 +67,39 @@ pub(crate) fn run_index(
         quiet,
         telemetry,
         &mut CliIndexReadiness,
+        &mut CliIndexMode,
         ui,
     )
+}
+
+fn index_mode_report(
+    data_root: &Path,
+    mode: &str,
+    requested_mode: Option<&str>,
+    update: Option<ctx_daemon_cli::IndexingModeUpdate>,
+) -> Value {
+    let mut report = json!({
+        "schema_version": 1,
+        "indexing": {
+            "mode": mode,
+        },
+        "config_path": data_root.join(CONFIG_FILE),
+        "local_only": true,
+        "read_only": update.is_none(),
+    });
+    if let Some(requested_mode) = requested_mode {
+        report["indexing"]["requested_mode"] = json!(requested_mode);
+        report["indexing"]["overridden"] = json!(requested_mode != mode);
+    }
+    if let Some(update) = update {
+        report["daemon"] = json!({
+            "running": update.running,
+            "pid": update.pid,
+            "persistent": update.persistent,
+            "supervisor": update.supervisor,
+        });
+    }
+    compact_json(report)
 }
 
 fn index_readiness_snapshot(data_root: &Path) -> Result<Value> {
@@ -48,6 +112,9 @@ fn index_readiness_snapshot(data_root: &Path) -> Result<Value> {
     Ok(compact_json(json!({
         "schema_version": 1,
         "initialized": source.initialized,
+        "indexing": {
+            "mode": config.indexing.mode.as_str(),
+        },
         "lexical": {
             "status": source_lexical.get("status"),
             "reason": source_lexical.get("reason"),

@@ -104,6 +104,15 @@ pub struct FormatArgs {
     pub format: ctx_terminal::JsonOutputFormat,
 }
 
+#[derive(Debug)]
+pub struct IndexingModeUpdate {
+    pub automatic: bool,
+    pub running: bool,
+    pub pid: Option<u32>,
+    pub persistent: bool,
+    pub supervisor: serde_json::Value,
+}
+
 #[derive(Debug, Clone)]
 pub struct DaemonDisableArgs {
     pub format: ctx_terminal::JsonOutputFormat,
@@ -149,7 +158,7 @@ mod query_service;
 pub use query_service::wait_for_daemon_query_service;
 mod daemon;
 mod paths_status;
-pub use daemon::run_daemon_command;
+pub use daemon::{run_daemon_command, update_indexing_mode};
 pub mod daemon_service_ports;
 mod daemon_status;
 mod daemon_supervisor;

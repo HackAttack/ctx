@@ -133,7 +133,7 @@ pub(crate) enum CommandRoot {
     Status(StatusArgs),
     #[command(about = "Show local history retrieval and value statistics")]
     Stats(StatsArgs),
-    #[command(about = "Show, watch, or wait for local indexing progress")]
+    #[command(about = "Show or configure local indexing and follow progress")]
     Index(commands::index::IndexArgs),
     #[command(about = "List configured and discovered agent history sources")]
     Sources(SourcesArgs),
@@ -153,7 +153,7 @@ pub(crate) enum CommandRoot {
     Integrations(integrations::IntegrationsArgs),
     #[command(about = "Serve local ctx tools over MCP")]
     Mcp(mcp::McpArgs),
-    #[command(about = "Run or inspect local ctx background maintenance")]
+    #[command(about = "Run local ctx background maintenance")]
     Daemon(DaemonArgs),
     #[command(about = "Check or apply signed ctx CLI upgrades")]
     Upgrade(upgrade::UpgradeArgs),
@@ -235,13 +235,22 @@ pub(crate) struct DaemonArgs {
 
 #[derive(Debug, Subcommand, Clone)]
 pub(crate) enum DaemonCommand {
-    #[command(about = "Run ctx background maintenance in the foreground")]
+    #[command(
+        about = "Run ctx background maintenance in the foreground until stopped",
+        long_about = "Run ctx background maintenance in the foreground until stopped. This command blocks the terminal and does not change the configured indexing mode."
+    )]
     Run(DaemonRunArgs),
-    #[command(about = "Show ctx daemon status")]
+    #[command(about = "Show ctx daemon status", hide = true)]
     Status(FormatArgs),
-    #[command(about = "Use automatic indexing and enable persistent maintenance")]
+    #[command(
+        about = "Use automatic indexing and enable persistent maintenance",
+        hide = true
+    )]
     Enable(FormatArgs),
-    #[command(about = "Use manual indexing and remove persistent maintenance")]
+    #[command(
+        about = "Use manual indexing and remove persistent maintenance",
+        hide = true
+    )]
     Disable(DaemonDisableArgs),
 }
 

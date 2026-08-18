@@ -30,7 +30,11 @@ installed executable:
 ctx daemon disable --prepare-uninstall --format=json
 ```
 
-This is an installation-wide handoff, even when `CTX_DATA_ROOT` or
+This hidden compatibility command is reserved for the installation-wide
+uninstall handoff; it is not the public indexing-mode control. Use
+`ctx index mode auto` or `ctx index mode manual` for normal indexing
+configuration. The handoff
+applies even when `CTX_DATA_ROOT` or
 `--data-root` selects a custom root. It disables and quiesces every registered
 daemon root, removes the singleton native supervisor from the canonical root,
 releases owner locks and endpoints, and retains the executable and history
@@ -57,7 +61,7 @@ After an upgrade or reinstall, restore the normal unmanaged installation:
 
 ```bash
 ctx integrations install skills
-ctx daemon enable
+ctx index mode auto
 ctx setup
 ```
 

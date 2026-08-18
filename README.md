@@ -109,7 +109,7 @@ Your past coding agent sessions already live on your machine, usually in JSONL f
 
 `ctx setup` discovers those sources and reads them without modifying them. It converts each provider’s format into consistent local records for sessions, messages, tool calls, relationships, and repository activity, then stores and indexes those records locally.
 
-ctx does not require hooks or any code running inside the agent process. After setup, a local background daemon watches the history sources your agents already write and keeps the index current as they change. Each update is completed before it becomes visible, so commands never read a partially built index.
+ctx does not require hooks or any code running inside the agent process. Automatic indexing is on by default and keeps the index current as those history sources change. Each update is completed before it becomes visible, so commands never read a partially built index.
 
 Every session and event receives a stable ctx ID and retains its complete transcript content and source information. `ctx search` finds the relevant history, `ctx show` retrieves the exact event or full transcript, and `ctx locate` identifies where it came from. Semantic search and ctx pro use those same records.
 
@@ -136,6 +136,19 @@ ctx show event <ctx-event-id> --window 3
 ctx show session <ctx-session-id>
 ```
 
+Search uses BM25 lexical matching by default. Give it likely terms—an error, file, command, or decision—and it ranks sessions containing those terms.
+
+### Semantic search
+
+Semantic search helps when related ideas use different wording. ctx computes embeddings locally and searches them directly, without a vector database to run. Enable it with:
+
+```bash
+ctx setup --semantic
+ctx index
+```
+
+Semantic search requires automatic indexing, which is the default. If you use manual indexing, run `ctx index mode auto` first. Lexical search remains available while embeddings build; once they are ready, hybrid search uses lexical and semantic evidence automatically.
+
 ctx does not send your prompts, transcripts, or indexed history to a cloud service, call model APIs, require API keys, or write into your source repositories. Transcript text is preserved rather than automatically redacted, so review copied output before sharing it outside your machine.
 
 For the full pipeline, see [How ctx works](https://ctx.rs/concepts/how-it-works). For a quick first run, see [Quickstart](https://ctx.rs/first-search).
@@ -144,13 +157,11 @@ For the full pipeline, see [How ctx works](https://ctx.rs/concepts/how-it-works)
 
 ctx is written in Rust, but that's not the main reason why it's fast. Instead of ingesting your history into a local relational database like SQLite, ctx scans it with parallel workers and writes searchable records directly to [Tantivy](https://github.com/quickwit-oss/tantivy). That removes an entire database ingest step while still supporting structured filtering and complete record retrieval.
 
-Tantivy builds the index in parallel. It creates a compact map from each term to the records containing it, searches memory-mapped segments without loading your entire history into memory, and ranks the results with BM25. The same index stores the complete record for every result, so `ctx search`, `ctx show`, and `ctx locate` can read it without a second database or reopening and reparsing the original agent logs.
+Tantivy builds the index in parallel. It creates a compact map from each term to the records containing it and searches memory-mapped segments without loading your entire history into memory. The same index stores the complete record for every result, so `ctx search`, `ctx show`, and `ctx locate` can read it without a second database or reopening and reparsing the original agent logs.
 
 In our benchmark, this was 16x faster than ctx's previous optimized SQLite implementation.
 
 <img src="docs/assets/ctx-cold-indexing-chart.png" alt="Cold indexing time: ctx with Tantivy, 9.65 seconds; previous ctx SQLite pipeline, 155.09 seconds. Lower is better." width="100%">
-
-Semantic search takes a similarly direct approach. ctx embeds your history locally with `multilingual-e5-small` and stores the vectors in memory-mapped flat-F32 segments. At the scale of personal agent history, scanning those vectors exactly is fast, so there is no vector database or approximate HNSW graph to build, tune, or maintain.
 
 ## How ctx differs from agent memory and codebase intelligence
 

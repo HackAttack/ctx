@@ -161,6 +161,8 @@ pub struct StatusTelemetry {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum IndexOperation {
+    Status,
+    Mode,
     Watch,
     Wait,
 }
@@ -168,6 +170,8 @@ pub enum IndexOperation {
 impl IndexOperation {
     pub fn as_str(self) -> &'static str {
         match self {
+            Self::Status => "status",
+            Self::Mode => "mode",
             Self::Watch => "watch",
             Self::Wait => "wait",
         }

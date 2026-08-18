@@ -116,10 +116,10 @@ pub fn autostart_daemon_for_setup_and_wait(
                 ),
                 ctx_daemon_application::DaemonStartError::BinaryIdentity(error) => error,
                 ctx_daemon_application::DaemonStartError::Start(error) => anyhow!(
-                    "ctx daemon did not start: {error:#}. Run `ctx daemon status --format json`, then `ctx daemon run` for details"
+                    "ctx daemon did not start: {error:#}. Run `ctx status --format json`, then `ctx daemon run` for details"
                 ),
                 ctx_daemon_application::DaemonStartError::Ready(error) => anyhow!(
-                    "ctx daemon did not become ready: {error}. Run `ctx daemon status --format json`, then `ctx daemon run` for details"
+                    "ctx daemon did not become ready: {error}. Run `ctx status --format json`, then `ctx daemon run` for details"
                 ),
             })?;
         Ok(DaemonSetupHandoff {

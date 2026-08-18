@@ -168,10 +168,7 @@ fn setup_autostart_records_spawn_failure_status() {
         .clone();
     let stderr = String::from_utf8(output.stderr).unwrap();
     assert!(stderr.contains("ctx daemon did not start"), "{stderr}");
-    assert!(
-        stderr.contains("ctx daemon status --format json"),
-        "{stderr}"
-    );
+    assert!(stderr.contains("ctx status --format json"), "{stderr}");
     assert!(
         output.stdout.is_empty(),
         "failed quiet setup must not print success or queued output: {}",

@@ -40,7 +40,9 @@ shipped.
   `--refresh wait` may start a finite Core worker. Use `ctx setup --no-daemon`
   or `ctx import --no-daemon` for a one-run process-start opt-out. Explicit
   `ctx daemon run --force` runs persistent maintenance in the foreground even
-  when manual mode is configured.
+  when manual mode is configured, blocks until stopped, and does not change the
+  configured indexing mode. The canonical setting is `[indexing] mode = "auto"`
+  or `"manual"`; use `ctx index mode` to read or change it.
 - Finite Core workers use the same daemon refresh engine and endpoint, but do
   not install supervision or run watcher, timer, semantic, reconciliation, or
   upgrade maintenance. They exit only after an admitted request exists, all
@@ -73,6 +75,10 @@ shipped.
   validated local runtime remain lexical-safe: `hybrid` falls back to lexical
   and explicit `semantic` reports a local unavailable/runtime error instead of
   linking an unsupported backend.
+- Semantic indexing requires auto mode. Use `ctx index mode auto` before
+  `ctx setup --semantic` when manual mode is configured. Lexical search remains
+  available while embeddings build, and hybrid uses both backends when coverage
+  is ready.
 - The ctx macOS CLI targets macOS 13, but ONNX Runtime 1.27 follows its upstream
   macOS 14 minimum. On macOS 13, daemon-backed lexical search remains available
   while semantic search is unavailable.

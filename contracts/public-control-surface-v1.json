@@ -63,7 +63,7 @@
       "config_key": "indexing.mode",
       "environment_variable": "CTX_DAEMON_ENABLED",
       "released_default": {
-        "value": "automatic",
+        "value": "auto",
         "state": "on",
         "scope": "all_cli_installations"
       },

@@ -23,7 +23,7 @@ use super::{
 pub(crate) mod control;
 #[cfg(test)]
 mod seam_tests;
-pub use control::run_daemon_command;
+pub use control::{run_daemon_command, update_indexing_mode};
 
 fn run_daemon(
     application: &ctx_daemon_application::DaemonApplication<'_>,

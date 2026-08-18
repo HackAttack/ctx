@@ -23,7 +23,13 @@ the local retrieval product.
   `ctx show session --out` writes only the explicit path when one is provided.
 - `ctx status` does not mutate canonical history: missing stores stay missing,
   and existing stores are not migrated, repaired, or used to create search
-  generations.
+  generations. It reports daemon and supervisor health without changing either.
+- `ctx index` is read-only, as are `ctx index mode` with no mode argument,
+  `ctx index watch`, and `ctx index wait`. `ctx index mode auto` and
+  `ctx index mode manual` are explicit configuration and process-lifecycle
+  mutations. They persist the requested mode and reconcile supervision to the
+  effective mode; a process-level override can keep manual mode active after an
+  auto request.
 - In local-only security mode, setup/import/default search do not use network
   access or API keys. Explicit semantic use still must not call hosted model
   APIs, and search must not download the local embedding model when the required
@@ -59,7 +65,9 @@ the local retrieval product.
   only bounded native local provider-history refresh and bounded semantic
   catch-up. It must not run history-source plugins.
   Network model acquisition is allowed only for the local embedding model when
-  semantic search is explicitly enabled.
+  semantic search is explicitly enabled with `ctx setup --semantic` in auto
+  mode. `ctx daemon run` blocks in the foreground and does not mutate indexing
+  mode.
 - A finite Core worker may start only for explicit import or search
   `--refresh wait`. It must not install persistent supervision or run watcher,
   timer, semantic, or upgrade maintenance, and it must not exit before admitted

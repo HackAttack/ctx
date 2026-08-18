@@ -34,7 +34,7 @@ pub(crate) fn run_setup(
     let suppression_reason = daemon_autostart_suppression_reason();
     if args.semantic && (!config.automatic_indexing_enabled() || args.no_daemon) {
         bail!(
-            "`ctx setup --semantic` requires automatic indexing. Set [indexing] mode = \"automatic\" and rerun without --no-daemon"
+            "`ctx setup --semantic` requires automatic indexing. Run `ctx index mode auto` and retry without --no-daemon"
         );
     }
     if args.semantic {
@@ -46,7 +46,7 @@ pub(crate) fn run_setup(
         && (!config.automatic_indexing_enabled() || args.no_daemon)
     {
         bail!(
-            "local semantic search requires automatic indexing. Set [indexing] mode = \"automatic\", remove --no-daemon, or set [search] semantic = false"
+            "local semantic search requires automatic indexing. Run `ctx index mode auto`, remove --no-daemon, or set [search] semantic = false"
         );
     }
 
@@ -377,7 +377,7 @@ fn daemon_autostart_json(
                 "persistent": true,
                 "limitation": Value::Null,
                 "supervisor": supervisor,
-                "status_command": "ctx daemon status",
+                "status_command": "ctx status",
             })
         }
         None => json!({
@@ -387,7 +387,7 @@ fn daemon_autostart_json(
             "persistent": false,
             "limitation": Value::Null,
             "supervisor": supervisor,
-            "status_command": "ctx daemon status",
+            "status_command": "ctx status",
         }),
     }
 }

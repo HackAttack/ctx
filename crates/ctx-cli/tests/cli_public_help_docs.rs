@@ -431,10 +431,10 @@ fn public_subcommand_help_is_golden_enough_for_session_retrieval() {
             "index",
             vec![
                 "Usage: ctx index",
-                "status",
+                "mode",
                 "watch",
                 "wait",
-                "Show, watch, or wait for local indexing progress",
+                "Show or configure local indexing and follow progress",
             ],
         ),
         ("sources", vec!["Usage: ctx sources", "--format <FORMAT>"]),
@@ -484,10 +484,7 @@ fn public_subcommand_help_is_golden_enough_for_session_retrieval() {
             vec![
                 "Usage: ctx daemon",
                 "run",
-                "status",
-                "enable",
-                "disable",
-                "Run or inspect local ctx background maintenance",
+                "Run local ctx background maintenance",
             ],
         ),
         (
@@ -569,6 +566,8 @@ fn machine_readable_output_uses_format_without_a_json_alias() {
         &["setup", "--help"][..],
         &["status", "--help"],
         &["stats", "--help"],
+        &["index", "--help"],
+        &["index", "mode", "--help"],
         &["index", "watch", "--help"],
         &["index", "wait", "--help"],
         &["sources", "--help"],
@@ -586,9 +585,6 @@ fn machine_readable_output_uses_format_without_a_json_alias() {
         &["integrations", "status", "mcp", "--help"],
         &["integrations", "status", "skills", "--help"],
         &["daemon", "run", "--help"],
-        &["daemon", "status", "--help"],
-        &["daemon", "enable", "--help"],
-        &["daemon", "disable", "--help"],
         &["upgrade", "--help"],
         &["upgrade", "check", "--help"],
         &["upgrade", "status", "--help"],
@@ -622,15 +618,18 @@ fn machine_readable_output_uses_format_without_a_json_alias() {
 }
 
 #[test]
-fn daemon_help_exposes_readable_status_and_run_controls() {
+fn indexing_mode_and_daemon_run_help_expose_the_public_controls() {
     let temp = tempdir();
     for (args, required) in [
         (
-            vec!["daemon", "status", "--help"],
+            vec!["index", "mode", "--help"],
             vec![
-                "Usage: ctx daemon status",
+                "Usage: ctx index mode",
+                "[MODE]",
+                "auto",
+                "manual",
                 "--format <FORMAT>",
-                "Show ctx daemon status",
+                "Show or change automatic indexing mode",
             ],
         ),
         (
@@ -643,22 +642,8 @@ fn daemon_help_exposes_readable_status_and_run_controls() {
                 "Process at most this many semantic chunks per pass",
                 "--force",
                 "--format <FORMAT>",
-            ],
-        ),
-        (
-            vec!["daemon", "enable", "--help"],
-            vec![
-                "Usage: ctx daemon enable",
-                "--format <FORMAT>",
-                "Use automatic indexing and enable persistent maintenance",
-            ],
-        ),
-        (
-            vec!["daemon", "disable", "--help"],
-            vec![
-                "Usage: ctx daemon disable",
-                "--format <FORMAT>",
-                "Use manual indexing and remove persistent maintenance",
+                "foreground until stopped",
+                "does not change the configured indexing mode",
             ],
         ),
     ] {
@@ -685,6 +670,26 @@ fn daemon_help_exposes_readable_status_and_run_controls() {
             !help.contains("--idle-exit-seconds"),
             "{args:?} help:\n{help}"
         );
+    }
+
+    let daemon_help = String::from_utf8(
+        ctx(&temp)
+            .args(["daemon", "--help"])
+            .assert()
+            .success()
+            .get_output()
+            .stdout
+            .clone(),
+    )
+    .unwrap();
+    let daemon_commands = daemon_help
+        .split("Commands:")
+        .nth(1)
+        .and_then(|tail| tail.split("Options:").next())
+        .unwrap_or(&daemon_help);
+    assert!(daemon_commands.contains("run"), "{daemon_help}");
+    for hidden in ["status", "enable", "disable"] {
+        assert!(!daemon_commands.contains(hidden), "{daemon_help}");
     }
 
     let stderr = ctx(&temp)

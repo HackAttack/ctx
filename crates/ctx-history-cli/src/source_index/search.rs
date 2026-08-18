@@ -175,7 +175,7 @@ fn semantic_external_detail(reason: SemanticReason, detail: &str) -> String {
     match reason {
         SemanticReason::PolicyDisabled => "semantic search is disabled. Set [search] semantic = true in ctx config to enable local semantic search".to_owned(),
         SemanticReason::PlatformUnsupported => "local semantic search is not supported on this platform yet. Set [search] semantic = false or use --backend lexical".to_owned(),
-        SemanticReason::ExecutionUnavailable => "local semantic search requires automatic indexing. Set [indexing] mode = \"automatic\", set [search] semantic = false, or use --backend lexical".to_owned(),
+        SemanticReason::ExecutionUnavailable => "local semantic search requires automatic indexing. Run `ctx index mode auto`, set [search] semantic = false, or use --backend lexical".to_owned(),
         SemanticReason::ContentScopeUnsupported => format!("{detail}; use --backend lexical or choose --content-scope all|transcript"),
         SemanticReason::EventTypeUnsupported => format!("{detail}; use --backend lexical or remove --event-type"),
         _ => detail.to_owned(),

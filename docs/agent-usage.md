@@ -27,6 +27,11 @@ explicitly enabled. Use `--refresh wait` when the task authorizes an
 authoritative refresh, or `--refresh off` when it must never start or wake a
 process.
 
+Use `ctx index mode` to inspect the mode. `ctx index mode auto` enables
+persistent background indexing; `ctx index mode manual` stops the persistent
+daemon and removes its supervision while leaving explicit `ctx import` and
+`ctx search --refresh wait` available through finite workers.
+
 When one query is not enough, vary the wording, add `--term`, narrow by
 workspace/provider/file/session, or use `--events`. Ordinary search already
 covers primary and subagent work with root-diverse results; use

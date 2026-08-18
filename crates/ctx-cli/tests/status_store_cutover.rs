@@ -13,6 +13,7 @@ fn pristine_status_doctor_and_mcp_status_create_nothing() {
             .env("CTX_DATA_ROOT", &data_root),
     );
     assert_eq!(status["schema_version"], 2);
+    assert_eq!(status["indexing"]["mode"], "auto");
     assert_eq!(status["initialized"], false);
     assert_eq!(
         status["lexical"]["path"],

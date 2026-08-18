@@ -1,13 +1,27 @@
-# Daemon-Owned Indexing and Semantic Search Spec
+# Indexing and Semantic Search Spec
 
 This spec records the product and architecture decision for local semantic
 search.
 
 ## Decision
 
-ctx makes automatic local daemon-owned indexing the default path and also
-supports manual indexing. Semantic search remains an explicit opt-in; when
-enabled, hybrid retrieval becomes the default.
+ctx makes automatic indexing the default and also supports manual indexing.
+Automatic indexing uses a persistent background daemon; manual indexing starts
+finite workers only for explicit refreshes. Semantic search remains an explicit
+opt-in; when enabled, hybrid retrieval becomes the default.
+
+The public indexing modes are:
+
+| Mode | Meaning |
+| --- | --- |
+| `auto` | Default. Permit persistent background maintenance to keep indexes current. |
+| `manual` | Run no persistent daemon. `ctx import` and `ctx search --refresh wait` can start finite workers for explicit updates. |
+
+`ctx index mode` reads the mode; `ctx index mode auto` and
+`ctx index mode manual` persist changes and immediately reconcile supervision.
+When auto remains effective, ctx installs or repairs supervision and starts the
+daemon; manual mode stops it and removes supervision.
+The canonical config is `[indexing] mode = "auto"|"manual"`.
 
 Search is an interactive read path and never becomes a duplicate importer.
 Automatic background search may start or signal the persistent daemon. Manual
@@ -63,6 +77,11 @@ history, start persistent daemon maintenance in automatic mode, and return
 promptly. Manual setup starts no worker. Setup should not block for full
 semantic completion by default.
 
+`ctx setup --semantic` enables semantic search and requires auto mode. A user in
+manual mode runs `ctx index mode auto` first. Lexical search remains available
+while embeddings build; hybrid retrieval uses both indexes when coverage is
+ready.
+
 Default human output should include a strong foreground signal:
 
 ```text
@@ -107,10 +126,15 @@ semantic job as enabled.
 
 ## Foreground Progress Commands
 
-Add an `index` command group that observes daemon state. It should not become
-the indexing worker.
+The `index` command group shows focused indexing state and controls automatic
+indexing. Its status and readiness commands do not become indexing workers.
 
 ```text
+ctx index
+ctx index --format json
+ctx index mode
+ctx index mode auto
+ctx index mode manual
 ctx index watch
 ctx index watch --format jsonl
 ctx index wait --lexical
@@ -125,6 +149,8 @@ without terminal control sequences. `--format jsonl` writes one JSON object per
 snapshot instead. `ctx index wait` exits zero when the requested readiness is
 reached and non-zero on timeout/error; wait uses `--format json` for one
 structured result. `ctx status` remains the complete one-shot authority.
+It includes daemon and supervisor health; `ctx index` is the smaller one-shot
+indexing status view.
 
 Example watch output:
 
@@ -171,10 +197,18 @@ The setup command owns:
 
 The foreground `index` command owns:
 
+- showing a one-shot indexing status view
+- reading and updating the persisted indexing mode
+- installing or repairing persistent supervision in auto mode
+- stopping and removing persistent supervision in manual mode
 - reading daemon/store/semantic status
 - displaying progress
 - waiting on readiness
 - never doing embedding itself
+
+`ctx daemon run` remains an advanced foreground command. It blocks until stopped
+and does not change the persisted indexing mode. Automatic mode owns ordinary
+background startup; there is no separate public daemon start command.
 
 ## Implementation Principles
 
@@ -218,8 +252,9 @@ The foreground `index` command owns:
    full semantic indexing by default.
 
 5. Add `ctx index`:
-   implement `status`, `watch`, and `wait` by reading existing daemon job and
-   semantic worker status. Reuse `daemon_report` and `semantic_worker_report`.
+   implement the one-shot status view, `mode`, `watch`, and `wait` by reading
+   existing daemon job and semantic worker status. Mode changes reuse the
+   persistent supervision lifecycle.
 
 6. Move semantic corpus toward `lite_turn + rollups`:
    replace raw event chunking in the semantic worker with deterministic

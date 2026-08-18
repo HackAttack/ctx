@@ -48,6 +48,13 @@ daemon to refresh while serving the latest published generation. In manual
 mode, ordinary search and `--refresh background` intentionally use only that
 published generation and do not start or wake a process.
 
+Check the current mode and background health:
+
+```bash
+ctx status
+ctx index mode
+```
+
 Request an authoritative refresh explicitly:
 
 ```bash
@@ -60,7 +67,24 @@ ctx search "the missing phrase" --refresh wait
 Use `ctx import --resume --format json` when you want output to mark the run as an
 idempotent rescan. In manual mode, explicit import and `--refresh wait` may
 start a finite Core worker and wait for it to publish. `--refresh off` never
-starts or wakes one. Run `ctx daemon enable` to return to automatic indexing.
+starts or wakes one. Run `ctx index mode auto` to return to automatic indexing;
+when no process-level override disables it, that command installs or repairs
+supervision and starts persistent background indexing.
+
+## Background Indexing Is Not Running
+
+Run:
+
+```bash
+ctx status
+ctx index mode auto
+```
+
+`ctx status` includes daemon and supervisor health. Reapplying auto mode
+reconciles the lifecycle to the effective mode; if an override still selects
+manual mode, the command reports that instead of starting a daemon.
+For advanced foreground diagnosis, `ctx daemon run` blocks in the current
+terminal and does not change the configured indexing mode.
 
 After upgrading to `0.10.x` or newer, a refresh can take longer once because ctx
 marks older provider import cache rows pending and reimports them to populate
@@ -109,6 +133,19 @@ The automatic scheduler state is stored beside the managed executable in
 `.ctx.upgrade-state.json`; checks should not write to foreground stdout or
 stderr. With `[indexing] mode = "manual"`, no automatic check occurs. Finite
 Core workers do not perform upgrade maintenance.
+
+## Semantic Search Is Not Ready
+
+Semantic indexing requires auto mode. Enable it and inspect current health with:
+
+```bash
+ctx index mode auto
+ctx setup --semantic
+ctx index
+```
+
+Lexical search remains available while embeddings build. Hybrid search begins
+using both lexical and semantic evidence when coverage is ready.
 
 ## Store Problems
 

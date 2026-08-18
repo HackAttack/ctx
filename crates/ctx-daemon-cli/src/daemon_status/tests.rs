@@ -200,7 +200,7 @@ fn changed_installed_supervisor_environment_is_a_restart_caveat() {
     assert!(rendered.starts_with("! Daemon is partially healthy\n"));
     assert!(rendered.contains("Persistence  not verified\n"));
     assert!(normalized.contains(
-        "Caveat native supervisor environment changed; run `ctx daemon enable` to install the current nonsecret snapshot and restart"
+        "Caveat native supervisor environment changed; run `ctx index mode auto` to install the current nonsecret snapshot and restart"
     ));
     assert!(!rendered.contains("installed-snapshot"));
     assert!(!rendered.contains("current-snapshot"));
@@ -268,7 +268,7 @@ fn disabled_status_is_clear_and_enable_is_the_only_action() {
     assert!(rendered.contains("Service\nStatus  disabled\n"));
     assert!(rendered.contains("History refresh\nStatus  disabled\n"));
     assert!(rendered.contains("Semantic\nStatus  disabled\n"));
-    assert_eq!(rendered.matches("ctx daemon enable").count(), 1);
+    assert_eq!(rendered.matches("ctx index mode auto").count(), 1);
 }
 
 #[test]
@@ -408,7 +408,7 @@ fn recoverable_failure_surfaces_error_and_one_restart_action() {
     assert!(rendered.contains("Status    failed (recoverable)\n"));
     assert!(rendered.contains("Reason    daemon lock stale\n"));
     assert!(rendered.contains("Error     the previous daemon exited unexpectedly\n"));
-    assert_eq!(rendered.matches("ctx daemon enable").count(), 1);
+    assert_eq!(rendered.matches("ctx index mode auto").count(), 1);
     assert!(!rendered.contains("999"));
     assert!(!rendered.contains("omit-me"));
 }
@@ -751,7 +751,7 @@ fn enable_receipts_distinguish_managed_and_limited_persistence() {
         "Hint: Check supervisor status.\n",
         "\n",
         "Next\n",
-        "  ctx daemon status\n",
+        "  ctx status\n",
     );
     assert_exact_cross_width(
         |context| {
@@ -772,7 +772,7 @@ fn enable_receipts_distinguish_managed_and_limited_persistence() {
                     "Hint: Check supervisor status.\n",
                     "\n",
                     "Next\n",
-                    "  ctx daemon status\n",
+                    "  ctx status\n",
                 ),
             ),
             (48, limited_wide),
@@ -784,7 +784,7 @@ fn enable_receipts_distinguish_managed_and_limited_persistence() {
             "\u{1b}[2mHint\u{1b}[0m: Check supervisor status.\n",
             "\n",
             "\u{1b}[2mNext\u{1b}[0m\n",
-            "  \u{1b}[36mctx daemon status\u{1b}[0m\n",
+            "  \u{1b}[36mctx status\u{1b}[0m\n",
         ),
     );
     let limited_rendered = render_daemon_enable_receipt(

@@ -154,7 +154,13 @@ pub fn render_status_human(
     } else {
         component_display(daemon)
     };
+    let indexing_mode = report
+        .pointer("/indexing/mode")
+        .and_then(Value::as_str)
+        .unwrap_or("unknown")
+        .to_owned();
     let mut service_values = vec![
+        ("Indexing mode", indexing_mode),
         ("Daemon", daemon_status),
         (
             "Semantic",
@@ -265,6 +271,7 @@ mod tests {
     fn status_report(initialized: bool, lexical: &str, refresh: &str) -> Value {
         json!({
             "initialized": initialized,
+            "indexing": {"mode": "auto"},
             "history_epoch": {"status": lexical},
             "lexical": {"status": lexical},
             "refresh": {"status": refresh},
@@ -326,6 +333,7 @@ mod tests {
             assert!(normalized.contains("1,000 searchable events"));
             assert!(rendered.contains("\nServices\n"));
             assert!(normalized.contains("Daemon running"));
+            assert!(normalized.contains("Indexing mode auto"));
             assert!(normalized.contains("Semantic disabled"));
             assert!(!rendered.contains("Automatic upgrades"));
             assert!(rendered.contains("Local usage"));
@@ -443,14 +451,14 @@ mod tests {
                     state: "disabled",
                     ..usage_report()
                 },
-                "Local usage  disabled",
+                "Local usage disabled",
             ),
             (
                 local_usage::UsageReport {
                     state: "empty",
                     ..usage_report()
                 },
-                "Local usage  enabled; store missing or empty",
+                "Local usage enabled; store missing or empty",
             ),
         ] {
             let rendered = render_status_human(
@@ -462,7 +470,8 @@ mod tests {
                 &usage,
             )
             .render_plain();
-            assert!(rendered.contains(expected), "{rendered}");
+            let normalized = rendered.split_whitespace().collect::<Vec<_>>().join(" ");
+            assert!(normalized.contains(expected), "{rendered}");
         }
     }
 

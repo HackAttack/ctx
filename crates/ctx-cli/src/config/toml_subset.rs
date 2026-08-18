@@ -141,10 +141,10 @@ pub(super) fn parse_upgrade_auto_text(key: &str, value: &str) -> Result<AutoUpgr
 pub(super) fn parse_indexing_mode(value: &ConfigValue) -> Result<IndexingMode> {
     let mode = parse_non_empty_string("indexing.mode", value)?;
     match mode.to_ascii_lowercase().as_str() {
-        "automatic" => Ok(IndexingMode::Automatic),
+        "auto" | "automatic" => Ok(IndexingMode::Automatic),
         "manual" => Ok(IndexingMode::Manual),
         _ => bail!(
-            "indexing.mode at line {} must be either \"automatic\" or \"manual\"",
+            "indexing.mode at line {} must be either \"auto\" or \"manual\"",
             value.line
         ),
     }

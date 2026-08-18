@@ -32,6 +32,11 @@ upgrade process; manual mode's finite Core workers do not either. With
 apply; explicit `ctx upgrade` remains available. Output format does not change
 these rules.
 
+Use `ctx index mode` to inspect the indexing mode. `ctx index mode auto`
+restores automatic indexing and its persistent daemon when no process-level
+override disables it; `ctx index mode manual` stops the daemon and removes its
+supervision.
+
 Use `CTX_UPGRADE_AUTO=off` for a process-level opt-out. For a persistent opt-out,
 run `ctx upgrade disable`; it writes `upgrade.auto = "off"` in `config.toml`.
 Run `ctx upgrade enable` to restore `upgrade.auto = "apply"`. `ctx status` and

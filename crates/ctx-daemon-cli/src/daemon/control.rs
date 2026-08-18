@@ -70,10 +70,9 @@ pub(super) fn run_daemon_enabled_update(
     enabled: bool,
     ui: &mut Ui,
 ) -> Result<()> {
-    let update = application
-        .update_daemon_enabled(&data_root, enabled)
-        .map_err(daemon_enabled_update_error)?;
-    let supervisor = update.supervisor.into_json();
+    let update = apply_indexing_mode(application, &data_root, enabled)?;
+    let effective_enabled = update.automatic;
+    let supervisor = update.supervisor;
     let persistent = update.persistent;
     let running = update.running;
     let pid = update.pid;
@@ -81,7 +80,7 @@ pub(super) fn run_daemon_enabled_update(
     if args.format.is_json() {
         print_json(json!({
             "schema_version": 1,
-            "daemon_enabled": enabled,
+            "daemon_enabled": effective_enabled,
             "running": running,
             "pid": pid,
             "persistent": persistent,
@@ -89,7 +88,7 @@ pub(super) fn run_daemon_enabled_update(
             "config_path": config_path,
             "local_only": true,
         }))?;
-    } else if enabled {
+    } else if effective_enabled {
         let document = render_daemon_enable_receipt(
             ui.stdout_context(),
             running,
@@ -104,6 +103,33 @@ pub(super) fn run_daemon_enabled_update(
         ui.write_stdout(&document)?;
     }
     Ok(())
+}
+
+pub fn update_indexing_mode(
+    data_root: &Path,
+    config: &AppConfig<'_>,
+    automatic: bool,
+) -> Result<crate::IndexingModeUpdate> {
+    super::super::daemon_supervisor::with_daemon_run_application(config, |application| {
+        apply_indexing_mode(application, data_root, automatic)
+    })
+}
+
+fn apply_indexing_mode(
+    application: &ctx_daemon_application::DaemonApplication<'_>,
+    data_root: &Path,
+    automatic: bool,
+) -> Result<crate::IndexingModeUpdate> {
+    let update = application
+        .update_daemon_enabled(data_root, automatic)
+        .map_err(daemon_enabled_update_error)?;
+    Ok(crate::IndexingModeUpdate {
+        automatic: update.enabled,
+        running: update.running,
+        pid: update.pid,
+        persistent: update.persistent,
+        supervisor: update.supervisor.into_json(),
+    })
 }
 
 fn daemon_enabled_update_error(
@@ -123,10 +149,10 @@ fn daemon_enabled_update_error(
             ),
             ctx_daemon_application::DaemonStartError::BinaryIdentity(error) => error,
             ctx_daemon_application::DaemonStartError::Start(error) => anyhow!(
-                "ctx daemon did not start: {error:#}. Run `ctx daemon status --format json`, then `ctx daemon run` for details"
+                "ctx daemon did not start: {error:#}. Run `ctx status --format json`, then `ctx daemon run` for details"
             ),
             ctx_daemon_application::DaemonStartError::Ready(error) => anyhow!(
-                "ctx daemon did not become ready: {error}. Run `ctx daemon status --format json`, then `ctx daemon run` for details"
+                "ctx daemon did not become ready: {error}. Run `ctx status --format json`, then `ctx daemon run` for details"
             ),
         },
     }

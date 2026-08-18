@@ -42,6 +42,10 @@ pub(crate) fn status_read_model_authorized(
     let mut report = source.report;
     if let Some(object) = report.as_object_mut() {
         object.remove("catalog");
+        object.insert(
+            "indexing".to_owned(),
+            json!({"mode": config.indexing.mode.as_str()}),
+        );
         object.insert("upgrade".to_owned(), upgrade);
         object.insert(
             "local_usage".to_owned(),
@@ -191,6 +195,7 @@ mod tests {
         let config = config::AppConfig::default();
         let status = status_read_model(&data_root, &config).unwrap();
         assert_eq!(status.report["lexical"]["status"], "ready");
+        assert_eq!(status.report["indexing"]["mode"], "auto");
         assert_eq!(status.report["lexical"]["generation_id"], generation_id);
         assert!(status.report.get("catalog").is_none());
     }

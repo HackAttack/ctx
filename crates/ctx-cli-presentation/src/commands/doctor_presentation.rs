@@ -111,7 +111,7 @@ pub fn render_doctor_human(
         },
         Some(Action {
             command: if refresh_failed {
-                "ctx daemon status"
+                "ctx status"
             } else {
                 "ctx doctor"
             },
@@ -279,7 +279,7 @@ mod ui_tests {
                 "History source catalog is still preparing",
                 "History refresh is unavailable",
                 "Check the history refresh service.",
-                "ctx daemon status",
+                "ctx status",
             ] {
                 assert!(
                     flattened.contains(expected),

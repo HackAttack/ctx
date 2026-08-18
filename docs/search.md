@@ -50,6 +50,7 @@ ctx search "this current task" --include-current-session
 ctx search "mail provider throttled bulk mailbox setup" --backend hybrid
 ctx search "pricing decisions from the launch review" --backend semantic
 ctx status --format json
+ctx index
 ```
 
 A result can include:
@@ -202,6 +203,18 @@ chunking, source projector, and lexical generation policies participate in
 generation identity, so incompatible derived data is rebuilt rather than
 silently reused.
 
+Enable local semantic search with:
+
+```bash
+ctx index mode auto
+ctx setup --semantic
+ctx index
+```
+
+Semantic indexing requires auto mode. Lexical search remains available while
+embeddings build; when semantic coverage is ready, the default hybrid backend
+uses lexical and semantic evidence together automatically.
+
 Search does not download models, initialize semantic storage, or perform
 foreground semantic catch-up. Explicit semantic search reports a typed local
 error when its cached runtime/model or compatible generation is unavailable; it
@@ -210,7 +223,7 @@ remains lexical-safe in those cases.
 
 ## Refresh and freshness
 
-`--refresh background` is the default. In automatic mode, search health-checks
+`--refresh background` is the default. In auto mode, search health-checks
 and, when needed, wakes or recovers the persistent daemon. In manual mode it
 does not contact, start, or wake a process. Both serve the latest committed
 lexical generation without waiting for optional semantic indexing.
@@ -218,14 +231,14 @@ The daemon owns bounded provider discovery, source refresh, immutable
 candidate-generation construction, publication, and opted-in semantic catch-up.
 The query process never becomes a foreground history writer.
 
-On a fresh automatic root, background mode asks the daemon to publish the first
+On a fresh auto-mode root, background mode asks the daemon to publish the first
 lexical generation. In manual mode, search performs no hidden bootstrap or
 fallback import and can query only an already committed generation. Enabled
 auto-refresh history-source plugins run through the same
 daemon-owned, bounded Core refresh route; explicit-only sources still require
 an explicit import.
 
-`--refresh wait` wakes the persistent daemon in automatic mode or starts a
+`--refresh wait` wakes the persistent daemon in auto mode or starts a
 finite Core worker in manual mode, then waits for the requested source frontier
 and lexical-generation receipt. It fails with a typed source, lag, or system
 error when that receipt cannot publish; it does not fall back to a foreground
@@ -242,8 +255,9 @@ Winner-only provider precedence prevents combining a selected replacement with
 stale defaults.
 
 `ctx status` and search JSON report lexical generation, refresh state, semantic
-generation binding and coverage, daemon work, and typed fallback reasons.
-`ctx index watch` and `ctx index wait` expose a smaller readiness-only view.
+generation binding and coverage, daemon work, supervisor health, and typed
+fallback reasons. `ctx index` shows the smaller one-shot indexing status view;
+`ctx index watch` follows it and `ctx index wait` blocks for readiness.
 
 ## Core-backed presentation
 

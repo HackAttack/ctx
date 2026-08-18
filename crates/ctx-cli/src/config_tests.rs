@@ -270,6 +270,23 @@ fn canonical_indexing_mode_wins_over_legacy_daemon_enabled() {
 }
 
 #[test]
+fn indexing_mode_accepts_canonical_and_automatic_alias() {
+    for (spelling, expected, canonical) in [
+        ("auto", IndexingMode::Automatic, "auto"),
+        ("automatic", IndexingMode::Automatic, "auto"),
+        ("manual", IndexingMode::Manual, "manual"),
+    ] {
+        let values = parse_toml_subset(&format!("[indexing]\nmode = \"{spelling}\"\n")).unwrap();
+        let mut config = AppConfig::default();
+
+        config.apply_values(&values).unwrap();
+
+        assert_eq!(config.indexing.mode, expected);
+        assert_eq!(config.indexing.mode.as_str(), canonical);
+    }
+}
+
+#[test]
 fn indexing_mode_rejects_unknown_values() {
     let temp = tempfile::tempdir().unwrap();
     fs::write(
@@ -281,8 +298,9 @@ fn indexing_mode_rejects_unknown_values() {
     let error = format!("{:#}", AppConfig::load(temp.path()).unwrap_err());
 
     assert!(error.contains("indexing.mode"), "{error}");
-    assert!(error.contains("automatic"), "{error}");
+    assert!(error.contains("\"auto\""), "{error}");
     assert!(error.contains("manual"), "{error}");
+    assert!(!error.contains("automatic"), "{error}");
 }
 
 #[test]
@@ -704,7 +722,8 @@ fn daemon_enablement_updates_write_canonical_indexing_mode_and_remove_legacy_key
     let enabled = AppConfig::load(temp.path()).unwrap();
     assert_eq!(enabled.indexing.mode, IndexingMode::Automatic);
     let text = fs::read_to_string(temp.path().join(CONFIG_FILE)).unwrap();
-    assert!(text.contains("mode = \"automatic\""));
+    assert!(text.contains("mode = \"auto\""));
+    assert!(!text.contains("automatic"));
     assert!(!text.contains("enabled = true"));
 }
 

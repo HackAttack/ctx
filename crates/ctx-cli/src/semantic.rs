@@ -145,6 +145,14 @@ pub(crate) fn maybe_autostart_daemon(
     );
 }
 
+pub(crate) fn update_indexing_mode(
+    data_root: &Path,
+    config: &crate::config::AppConfig,
+    automatic: bool,
+) -> Result<ctx_daemon_cli::IndexingModeUpdate> {
+    ctx_daemon_cli::update_indexing_mode(data_root, &daemon_cli_config(config), automatic)
+}
+
 pub(crate) fn begin_current_daemon_upgrade_handoff(
     data_root: &Path,
     attempt_id: &str,

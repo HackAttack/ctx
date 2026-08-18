@@ -36,6 +36,7 @@ inventories local history sources, imports discovered native provider sources,
 and publishes an immutable Core/Tantivy search generation. Optional semantic
 indexing advances separately. It does not execute history-source plugin
 commands. The default root is `~/.ctx`.
+
 Use a temporary root for trials:
 
 ```bash
@@ -116,11 +117,12 @@ ctx search "build failure" --term checksum --term release --limit 5
 ```
 
 `--limit` is capped at `200`. Search defaults to `--refresh background`, which
-serves the active Core generation while automatic indexing requests persistent
-daemon refresh and semantic catch-up when enabled. Manual indexing serves only
-the last published generation in background mode. Use `--refresh wait` for an
-authoritative Core refresh or `--refresh off` for a query that never starts or
-wakes a process.
+serves the active Core generation while automatic indexing requests background
+refresh and semantic catch-up when enabled. Manual indexing serves only the last
+published generation in background mode. Use `ctx index mode auto` or
+`ctx index mode manual` to change the mode, `--refresh wait` for an authoritative
+Core refresh, or `--refresh off` for a query that never starts or wakes a
+process.
 
 Direct CLI searches automatically exclude the current session tree for Codex,
 DeepSeek Harness, Grok Build, Pi, Claude Code, Goose, Hermes, Shelley, Qwen
@@ -137,6 +139,9 @@ Copy ctx-owned IDs from the result and inspect the hit or transcript:
 ctx show event <ctx-event-id> --window 3
 ctx show session <ctx-session-id>
 ```
+
+Semantic search is optional; see [Retrieval backends](search.md#retrieval-backends)
+for setup and readiness behavior.
 
 Use citations from `ctx search` or `ctx show` when the retrieved material
 affects an answer or implementation. Add `--format json` only when a script or

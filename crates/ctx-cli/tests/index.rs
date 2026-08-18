@@ -93,17 +93,79 @@ fn assert_single_human_diagnosis(
 }
 
 #[test]
+fn index_status_and_mode_have_one_coherent_public_surface() {
+    let temp = daemon_test_root();
+
+    let status = json_output(ctx(&temp).args(["index", "--format=json"]));
+    assert_eq!(status["indexing"]["mode"], "auto");
+    assert_eq!(status["local_only"], true);
+    assert_eq!(status["read_only"], true);
+
+    let default_mode = json_output(ctx(&temp).args(["index", "--format=json", "mode"]));
+    assert_eq!(default_mode["indexing"]["mode"], "auto");
+    assert_eq!(default_mode["read_only"], true);
+    assert!(!data_root(&temp).join("config.toml").exists());
+
+    let manual = json_output(ctx(&temp).args(["index", "mode", "manual", "--format=json"]));
+    assert_eq!(manual["indexing"]["mode"], "manual");
+    assert_eq!(manual["daemon"]["running"], false);
+    assert_eq!(manual["read_only"], false);
+    let config = fs::read_to_string(data_root(&temp).join("config.toml")).unwrap();
+    assert!(config.contains("mode = \"manual\""), "{config}");
+
+    let current = json_output(ctx(&temp).args(["index", "mode", "--format=json"]));
+    assert_eq!(current["indexing"]["mode"], "manual");
+    assert_eq!(current["read_only"], true);
+}
+
+#[test]
+fn daemon_off_override_is_truthful_when_auto_mode_is_requested() {
+    let temp = daemon_test_root();
+
+    let update = json_output(
+        ctx(&temp)
+            .args(["index", "mode", "auto", "--format=json"])
+            .env("CTX_DAEMON_ENABLED", "false"),
+    );
+
+    assert_eq!(update["indexing"]["mode"], "manual");
+    assert_eq!(update["indexing"]["requested_mode"], "auto");
+    assert_eq!(update["indexing"]["overridden"], true);
+    assert_eq!(update["daemon"]["running"], false);
+    assert_eq!(update["daemon"]["persistent"], false);
+    let config = fs::read_to_string(data_root(&temp).join("config.toml")).unwrap();
+    assert!(config.contains("mode = \"auto\""), "{config}");
+}
+
+#[test]
+fn automatic_index_mode_starts_managed_background_maintenance() {
+    let temp = daemon_test_root();
+    ctx(&temp)
+        .args(["index", "mode", "manual", "--format=json"])
+        .assert()
+        .success();
+
+    let automatic = json_output(ctx(&temp).args(["index", "mode", "auto", "--format=json"]));
+    assert_eq!(automatic["indexing"]["mode"], "auto");
+    assert_eq!(automatic["daemon"]["running"], true);
+    assert_eq!(automatic["daemon"]["persistent"], true);
+    assert_eq!(automatic["read_only"], false);
+    let config = fs::read_to_string(data_root(&temp).join("config.toml")).unwrap();
+    assert!(config.contains("mode = \"auto\""), "{config}");
+    assert!(!config.contains("automatic"), "{config}");
+
+    ctx(&temp)
+        .args(["index", "mode", "manual", "--format=json"])
+        .assert()
+        .success();
+}
+
+#[test]
 fn index_watch_and_wait_are_read_only_for_missing_store() {
     let temp = tempdir();
 
     let watch_machine = ctx(&temp)
-        .args([
-            "index",
-            "watch",
-            "--format=jsonl",
-            "--interval-seconds",
-            "1",
-        ])
+        .args(["index", "--format=json", "watch", "--interval-seconds", "1"])
         .assert()
         .failure()
         .get_output()
@@ -120,7 +182,7 @@ fn index_watch_and_wait_are_read_only_for_missing_store() {
     );
 
     let wait_machine = ctx(&temp)
-        .args(["index", "wait", "--format=json", "--interval-seconds", "1"])
+        .args(["index", "--format=json", "wait", "--interval-seconds", "1"])
         .assert()
         .failure()
         .get_output()
@@ -297,7 +359,7 @@ fn authoritative_status_reports_stale_daemon_lock_as_recoverable() {
 }
 
 #[test]
-fn index_command_has_only_watch_and_wait_subcommands() {
+fn index_command_exposes_mode_watch_and_wait_without_a_status_subcommand() {
     let temp = tempdir();
     let help = String::from_utf8(
         ctx(&temp)
@@ -309,6 +371,7 @@ fn index_command_has_only_watch_and_wait_subcommands() {
             .clone(),
     )
     .unwrap();
+    assert!(help.contains("mode"), "{help}");
     assert!(help.contains("watch"), "{help}");
     assert!(help.contains("wait"), "{help}");
     assert!(!help.contains("\n  status"), "{help}");
@@ -795,6 +858,10 @@ fn human_wait_stops_when_selected_semantic_work_has_no_running_daemon() {
 fn forced_color_on_a_pipe_adds_only_sgr_not_cursor_motion() {
     let temp = daemon_test_root();
     import_ready_history(&temp);
+    ctx(&temp)
+        .args(["index", "mode", "manual", "--format=json"])
+        .assert()
+        .success();
 
     let plain = ctx(&temp)
         .args(["--color=never", "index", "watch", "--interval-seconds", "1"])

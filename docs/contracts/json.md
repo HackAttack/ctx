@@ -69,8 +69,8 @@ setup attaches long enough to certify a verified empty Core generation instead
 of returning an uncertified pending state. The deprecated `--catalog-only` flag
 is reported by `deprecated_catalog_only_ignored` and does not change the
 persistent lifecycle.
-Use `ctx daemon status --format json` for the complete process and applied
-configuration state.
+Use `ctx status --format json` for complete process, supervisor, and applied
+configuration health.
 
 ## Status
 
@@ -84,6 +84,7 @@ Reads local storage state and returns:
 - `initialized`;
 - `data_root`;
 - `config_path`;
+- `indexing`, with effective `mode` (`auto` or `manual`);
 - `history_epoch`;
 - `lexical`;
 - `refresh`;
@@ -119,46 +120,56 @@ local diagnostics.
 ## Index Readiness
 
 ```bash
+ctx index --format json
+ctx index mode --format json
+ctx index mode auto --format json
+ctx index mode manual --format json
 ctx index watch --format jsonl
 ctx index wait --format json
 ```
 
-Each watch line is a read-only readiness snapshot containing `schema_version`,
-`initialized`, `lexical`, `refresh`, `semantic`, `daemon`, `local_only`, and
-`read_only`. Lexical counts and certified source bytes describe the currently
-verified generation. Refresh progress contains only values reported by the
-active refresh job; no synthetic work units, failure counts, rates, or remaining
-time are added.
+`ctx index --format json` returns the one-shot readiness snapshot. Each watch
+line uses the same read-only shape: `schema_version`, `initialized`, `indexing`,
+`lexical`, `refresh`, `semantic`, `daemon`, `local_only`, and `read_only`.
+`indexing.mode` is `auto` or `manual`. Lexical counts and certified source bytes
+describe the currently verified generation. Refresh progress contains only
+values reported by the active refresh job; no synthetic work units, failure
+counts, rates, or remaining time are added.
+
+`ctx index mode --format json` returns `schema_version`, `indexing.mode`,
+`config_path`, `local_only`, and `read_only: true`. Supplying `auto` or `manual`
+persists the mode and returns `read_only: false` plus
+`indexing.requested_mode`, `indexing.overridden`, `daemon.running`, optional
+`daemon.pid`, `daemon.persistent`, and `daemon.supervisor`. `overridden` is true
+when a process-level control keeps a different effective mode. Mode changes
+reconcile supervision to that effective mode. When auto remains effective, ctx
+installs or repairs supervision and starts the persistent daemon; manual mode
+stops it and removes persistent supervision. Explicit import and search
+`--refresh wait` can still use finite workers.
 
 Wait returns one object with `schema_version`, `status` (`ready`, `blocked`, or
 `timeout`), `selection`, the final `readiness` snapshot, `local_only`, and
-`read_only`. Use `ctx status --format json` for the complete status contract;
-the index command intentionally has no separate one-shot status surface.
+`read_only`. Use `ctx status --format json` for the complete health contract,
+including daemon and supervisor diagnostics.
 
-`semantic.status` is one of:
+Index snapshots expose the reduced
+`semantic.{status,reason,enabled,coverage.{searchable_items,embedded_items,embedded_chunks}}`
+shape and `daemon.{status,running,jobs.semantic_index}`. The complete semantic
+and daemon fields below describe `ctx status --format json`, not index
+snapshots.
 
-- `unknown`, no initialized ctx store is available for live coverage;
-- `empty`, the store has no semantic-eligible items;
-- `pending`, semantic-eligible items exist but the sidecar is missing, behind,
-  or has dirty/stale items queued for re-embedding;
-- `ready`, sidecar coverage matches the current searchable item count and the
-  dirty queue is empty;
-- `running`, the background worker lock belongs to a live process;
-- `stale_lock`, a worker lock exists but the recorded process is not live;
-- `failed`, the last worker run failed and recorded `last_error`;
-- `unavailable`, the sidecar cannot be opened/read by this ctx build;
-- `budget_exhausted`, the worker indexed a bounded batch and left queued work.
-
-`semantic.coverage` includes `searchable_items`, `embedded_items`,
-`embedded_chunks`, `dirty_items`, `queued_items_estimate`, and
-`coverage_ratio`. `dirty_items` counts already-known events whose semantic
-vectors may be stale after import or daemon startup freshness checks.
+`semantic.status` is `disabled`, `pending`, `ready`, or `unavailable`.
+`semantic.flat_f32` reports the source-backed projection and can include its
+`status`, `reason`, `path`, Core and flat generation identity, semantic document
+count, active event/chunk/vector-byte counts, and `last_error`. Optional
+`semantic.catch_up` retains the latest semantic-index job receipt. Live worker
+state and coverage are reported under `daemon.jobs.semantic_index` below.
 
 `daemon` reports the ctx-owned background coordinator state. Fields listed as
 nullable may be omitted when unavailable:
 
 - `enabled`, retained as a compatibility-shaped boolean and true when indexing
-  mode is automatic;
+  mode is `auto`;
 - `status`, one of `unknown`, `disabled`, `running`, `stopped`, `completed`,
   `failed`, or `stale_lock`; `completed` remains readable for legacy finite-run
   receipts, while current persistent and finite workers use `stopped` after
@@ -187,8 +198,9 @@ configuration acknowledged by the running daemon. A changed config remains
 `pending` with `out_of_sync: true` until the daemon reloads it. Parse/read
 failures retain the last applied runtime and report `failed`; inability to
 establish newly requested semantic runtime ownership reports
-`activation_failed`. `ctx daemon status` remains available while the config is
-malformed so this retained failure can be diagnosed.
+`activation_failed`. `ctx daemon status --format json` remains a hidden
+compatibility diagnostic when malformed configuration caused the retained
+reload failure; ordinary commands reject malformed configuration.
 
 `daemon.jobs.semantic_index` mirrors live semantic coverage and includes
 `status`, `enabled`, `runtime_active`, `semantic_enabled`,
@@ -220,13 +232,6 @@ diagnostics survive later healthy source cycles and daemon restarts, clear when
 that source is observed without rejections, and do not make the daemon fail.
 Source-level failures remain terminal and are reported separately.
 
-`ctx daemon status --format json` returns `schema_version`, `daemon`, `pro`, and
-`local_only`. `ctx daemon enable --format json` and `ctx daemon disable --format json` return
-`schema_version`, `daemon_enabled`, `running`, `pid`, `persistent`, `supervisor`,
-`config_path`, and `local_only`. Here `persistent` means the running process has
-no planned idle exit; automatic restart after process failure is reported
-separately by `supervisor.restart_supported` and the supervisor verification
-fields.
 `ctx daemon run --format json` returns the daemon object directly. The legacy hidden
 `__ctx-daemon` entry point follows the same run output for compatibility.
 
@@ -416,8 +421,7 @@ then require an already-running endpoint. Output format does not change this
 authority. A process started for import reports `start_mode: "auto"` and
 `trigger_command: "import"` through live status surfaces.
 Import result schema version 2 does not embed daemon process state. Use
-`ctx daemon status --format json` to inspect an already-running or explicitly started
-daemon.
+`ctx status --format json` to inspect daemon and supervisor health.
 
 ## Progress
 

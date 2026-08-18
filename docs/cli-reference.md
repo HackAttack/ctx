@@ -42,11 +42,14 @@ ctx status --usage disable
 ctx status --usage reset
 ctx doctor
 ctx doctor --format json
-ctx daemon status
-ctx daemon status --format json
+ctx index
+ctx index --format json
+ctx index mode
+ctx index mode auto
+ctx index mode manual
+ctx index watch
+ctx index wait
 ctx daemon run
-ctx daemon disable
-ctx daemon enable
 ```
 
 - `setup` creates the data root, discovers known provider history locations,
@@ -64,9 +67,10 @@ ctx daemon enable
   It is deprecated and ignored; setup follows the same refresh lifecycle as
   when the flag is omitted.
 - `status` reports the ctx root, source epoch, lexical and refresh readiness,
-  semantic generation and coverage, daemon state, initialization state,
-  compact local usage health, local-only marker, and read-only marker. It does
-  not initialize or repair Core or semantic state or open old history.
+  semantic generation and coverage, daemon and supervisor health,
+  initialization state, compact local usage health, local-only marker, and
+  read-only marker. It does not initialize or repair Core or semantic state or
+  open old history.
 - `stats` is the read-only, local, offline report for History retrieval, Code
   provenance, Measured delivery, and Estimated savings. Measured facts and
   model-based estimates are separate in JSON; the estimate model and
@@ -88,15 +92,23 @@ ctx daemon enable
   success. Use `status --format json` when scripts need the actual state.
 - `doctor` validates source-epoch storage and reports lexical, semantic, and
   daemon lock/status problems when present.
-- `daemon status` reports the same ctx-owned daemon coordinator state without
-  mutating storage. It separates current requested config from the last config
-  applied by the running daemon, and reports observed semantic query-runtime
-  ownership. `config_reload.status` exposes pending, applied, parse/read failure,
-  or semantic activation failure rather than treating config-file mutation as a
-  successful live reload. This diagnostic remains available when malformed
-  config caused the retained reload failure; ordinary commands still reject the
-  malformed file.
-- `daemon run` runs persistent local maintenance in the foreground. Each pass
+- `index` prints a one-shot indexing status view. It is the focused view of the
+  current indexing mode, lexical publication, refresh progress, semantic
+  coverage, and background process state. Use `--format json` for the
+  readiness snapshot.
+- `index mode` prints the current mode. Its setters persist the requested mode
+  and reconcile supervision to the effective mode. When auto is not overridden,
+  ctx installs or repairs supervision and starts the persistent background
+  daemon. Manual mode stops it and removes supervision. In manual mode,
+  `ctx import` and `ctx search --refresh wait` can still start finite workers
+  for explicit refreshes.
+- `index watch` redraws indexing progress until the default readiness target is
+  met; `--format jsonl` emits one snapshot per line. `index wait` blocks until
+  the selected lexical, semantic, or combined readiness target is met and
+  supports one final `--format json` result.
+- `daemon run` is an advanced command that runs persistent local maintenance in
+  the foreground and blocks until stopped. It does not change the configured
+  indexing mode. In manual mode, pass `--force` to run it explicitly. Each pass
   performs bounded native provider-history refresh followed by semantic
   catch-up when semantic is enabled. The daemon may acquire the local embedding
   model for semantic indexing. A looping daemon keeps the embedding model
@@ -105,10 +117,14 @@ ctx daemon enable
   loops. Enabling
   `[search] semantic = true` and rerunning setup activates the existing daemon;
   no unrelated restart is required.
-- `daemon disable` writes `[indexing] mode = "manual"`; `daemon enable` writes
-  `[indexing] mode = "automatic"`. Automatic is the default. Touching either
-  lifecycle control removes the legacy `[daemon] enabled` key.
-  `daemon run --force` remains available for explicit troubleshooting.
+
+Automatic indexing is the default. Its canonical configuration is
+`[indexing] mode = "auto"`; the other supported value is `"manual"`.
+Enable local semantic search with `ctx setup --semantic`. Semantic indexing
+requires auto mode, so run `ctx index mode auto` first if the current mode is
+manual. Lexical search remains available while embeddings build, and hybrid
+search uses lexical and semantic evidence automatically when semantic coverage
+is ready.
 
 Setup and health checks do not change shell startup files, install repository
 integrations, write into source repositories, call model APIs, or require API
@@ -644,12 +660,13 @@ scope changes neither retained bodies nor the Core/index schema and requires no
 rebuild. Search JSON always reports the resolved selection as
 `filters.content_scope`, including `all` when the option was omitted.
 
-Automatic daemon maintenance owns provider/plugin refresh, immutable candidate
-construction, atomic lexical publication, source discovery state, and semantic
-catch-up. Manual mode retains only explicit finite Core publication. Use
-`ctx daemon run` for explicit foreground maintenance. JSON status exposes
-`history_epoch`, `lexical`, `refresh`, `semantic`, and `daemon`
-objects. `ctx doctor` is the diagnostic surface for those components.
+In auto mode, persistent background maintenance owns provider/plugin refresh,
+immutable candidate construction, atomic lexical publication, source discovery
+state, and semantic catch-up. Manual mode retains explicit finite Core
+publication. `ctx daemon run` is available for advanced foreground maintenance
+and does not change the indexing mode. `ctx status` exposes `history_epoch`,
+`lexical`, `refresh`, `semantic`, and `daemon` objects; `ctx doctor` is the
+diagnostic surface for those components.
 
 ## Docs
 
@@ -801,6 +818,10 @@ Structured output is available for:
 ```text
 ctx setup --format json
 ctx status --format json
+ctx index --format json
+ctx index mode --format json
+ctx index mode auto --format json
+ctx index mode manual --format json
 ctx index watch --format jsonl
 ctx index wait --format json
 ctx sources --format json

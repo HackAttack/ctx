@@ -410,7 +410,7 @@ fn render_daemon_enabled_receipt(
                 text: "Check supervisor status.",
             },
             Some(Action {
-                command: "ctx daemon status",
+                command: "ctx status",
             }),
         ));
         return document;
@@ -514,7 +514,7 @@ fn render_daemon_enabled_receipt(
                 text: "Retry startup after resolving the service error.",
             },
             Some(Action {
-                command: "ctx daemon enable",
+                command: "ctx index mode auto",
             }),
         ));
     } else if !enabled && !supervisor_disabled {
@@ -720,8 +720,8 @@ fn recovery_action(
     } = signals;
     if presentation == DaemonPresentation::Disabled {
         return Some((
-            "Enable the daemon to resume automatic history refresh.",
-            "ctx daemon enable",
+            "Use automatic indexing to resume background history refresh.",
+            "ctx index mode auto",
         ));
     }
     if presentation == DaemonPresentation::NotStarted {
@@ -730,7 +730,7 @@ fn recovery_action(
     if recoverable {
         return Some((
             "Restart the daemon and check its health.",
-            "ctx daemon enable",
+            "ctx index mode auto",
         ));
     }
     if history_failed || source_failures > 0 {
@@ -847,7 +847,7 @@ fn supervisor_persistence_issue(supervisor: &Value) -> Option<String> {
         == Some(true)
     {
         return Some(
-            "native supervisor environment changed; run `ctx daemon enable` to install the current nonsecret snapshot and restart"
+            "native supervisor environment changed; run `ctx index mode auto` to install the current nonsecret snapshot and restart"
                 .to_owned(),
         );
     }

@@ -14,9 +14,8 @@ a hosted research agent.
 ## In Scope
 
 - `ctx setup` initializes local storage, publishes discovered supported local
-  transcript formats, and in automatic indexing mode can opportunistically
-  start the default-on persistent ctx-owned daemon. Manual indexing runs no
-  persistent or background daemon.
+  transcript formats, and in automatic indexing mode can start persistent
+  background indexing. Manual indexing runs no persistent or background daemon.
   `ctx setup --no-daemon` is the one-run daemon-autostart opt-out. Output format
   does not change setup autostart behavior. The deprecated `--catalog-only` flag
   is ignored and does not change setup behavior.
@@ -60,14 +59,20 @@ a hosted research agent.
 - `ctx docs` exposes embedded public documentation and generated man pages.
 - `ctx upgrade` checks and applies signed CLI releases for official
   installer-managed binaries.
-- `ctx daemon` is the first-class local coordinator surface for status,
-  automatic/manual indexing config, persistent maintenance in automatic mode,
-  and explicit foreground maintenance runs. The coordinator performs bounded
+- `ctx index` is the focused indexing surface. With no subcommand it shows a
+  one-shot status view; `ctx index mode` reads or changes `auto|manual` mode;
+  `ctx index watch` follows progress; and `ctx index wait` blocks for selected
+  readiness. The canonical config is `[indexing] mode = "auto"|"manual"`, with
+  auto as the default. Auto permits persistent background maintenance; manual
+  disables it while retaining finite explicit refresh workers. The mode-change
+  commands persist the choice and immediately reconcile daemon supervision.
+- `ctx status` and `ctx doctor` report ctx-owned daemon and supervisor health.
+- `ctx daemon run` is an advanced foreground, blocking maintenance command. It
+  does not change the configured indexing mode. The daemon performs bounded
   native provider-history refresh and local semantic indexing/freshness work.
-  Setup/import
-  autostart reports semantic status read-only; explicit `ctx daemon run` is the
-  path that may perform semantic catch-up.
-- `ctx status` and `ctx doctor` report ctx-owned daemon coordinator state.
+- `ctx setup --semantic` enables local semantic search and requires auto mode.
+  Lexical search remains available while embeddings build; hybrid search uses
+  lexical and semantic evidence when semantic coverage is ready.
 - `ctx stats` reports bounded local usage/value aggregates from the separate
   owner-private `usage.sqlite` sidecar. This default-on product state is
   independent of remote event reporting, has no network path or identity, keeps
@@ -120,7 +125,7 @@ Provider-owned IDs are metadata. Positional command arguments are ctx-owned
 IDs unless a command explicitly accepts `--provider ... --provider-session ...`.
 
 Search and show read indexed content and complete policy-selected normalized
-records from the active Core/Tantivy generation. Explicit import and daemon
+records from the active Core/Tantivy generation. Explicit import and background
 refresh publish provider-file changes into a new search generation.
 
 ## Privacy Contract

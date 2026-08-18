@@ -145,7 +145,11 @@ def extract_empty_config_defaults(config_source: str) -> dict[str, object]:
         re.DOTALL,
     )
     if indexing_mode:
-        defaults["indexing.mode"] = indexing_mode.group(1).lower()
+        mode_variant = indexing_mode.group(1)
+        defaults["indexing.mode"] = {
+            "Automatic": "auto",
+            "Manual": "manual",
+        }.get(mode_variant, mode_variant.lower())
     else:
         # Previous stable releases exposed the same control as a boolean.
         # Keep extracting that historical key so the pinned snapshot can be
@@ -163,7 +167,7 @@ def extract_empty_config_defaults(config_source: str) -> dict[str, object]:
 
 
 def default_state(value: object) -> str:
-    return "on" if value is True or value in {"apply", "automatic"} else "off"
+    return "on" if value is True or value in {"apply", "auto", "automatic"} else "off"
 
 
 def previous_stable_defaults(

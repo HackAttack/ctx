@@ -234,7 +234,7 @@ impl DaemonCliHost for TestHost {
             Self::config_item(&document, "indexing", "mode").and_then(toml_edit::Item::as_str)
         {
             config.daemon.enabled = match mode {
-                "automatic" => true,
+                "auto" | "automatic" => true,
                 "manual" => false,
                 _ => return Err(anyhow!("unknown indexing mode `{mode}`")),
             };
@@ -276,7 +276,7 @@ impl DaemonCliHost for TestHost {
             .ok_or_else(|| anyhow!("indexing configuration must be a table"))?;
         indexing.insert(
             "mode",
-            toml_edit::value(if enabled { "automatic" } else { "manual" }),
+            toml_edit::value(if enabled { "auto" } else { "manual" }),
         );
         if let Some(daemon) = document
             .as_table_mut()

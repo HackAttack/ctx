@@ -494,7 +494,7 @@ mod native {
         let enabled_config = fs::read_to_string(harness.root().join("config.toml")).unwrap();
         assert!(
             enabled_config.contains("[indexing]")
-                && enabled_config.contains("mode = \"automatic\"")
+                && enabled_config.contains("mode = \"auto\"")
                 && !enabled_config.contains("[daemon]\nenabled"),
             "enable was not durable: {enabled_config}"
         );

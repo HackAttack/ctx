@@ -23,9 +23,8 @@ to manage `PATH` yourself.
 
 The install script installs `ctx`, runs the bundled agent-history skill
 installer, and runs `ctx setup` so discovered local history is inventoried and
-indexing begins. Automatic indexing is the default, so that setup run requests
-the persistent ctx-owned daemon after setup output for native-history
-freshness. Semantic
+indexing begins. Automatic indexing is the default, so ctx keeps native history
+fresh in the background after setup. Semantic
 catch-up remains disabled unless semantic search is explicitly enabled. The
 skill installer opens an agent picker when interactive;
 otherwise it installs the universal `~/.agents/skills` copy plus detected
@@ -69,20 +68,33 @@ ctx status
 ```
 
 Setup creates the configured ctx data root, prepares an immutable Core/Tantivy
-generation with complete policy-selected records and source identities, starts or health-checks the
-enabled persistent daemon, requests a provider-source refresh, and prints next
-steps. It does not write `config.toml`
+generation with complete policy-selected records and source identities,
+requests a provider-source refresh, starts or health-checks automatic background
+indexing, and prints next steps. It does not write `config.toml`
 for implicit defaults and does not execute history-source plugin commands. The
-default data root is `~/.ctx`. Use `ctx daemon disable` to select manual
-indexing or `ctx setup --no-daemon` for a one-run opt-out. Existing
-`[daemon] enabled = false` configurations are accepted as manual mode and are
-migrated to `[indexing] mode = "manual"` when lifecycle controls touch them.
+default data root is `~/.ctx`. Use `ctx index mode manual` to select manual
+indexing or `ctx setup --no-daemon` for a one-run process-start opt-out. Check or
+change the mode with:
+
+```bash
+ctx index mode
+ctx index mode auto
+ctx index mode manual
+```
+
 The equivalent canonical configuration is:
 
 ```toml
 [indexing]
 mode = "manual"
 ```
+
+The other supported value is `"auto"`, which is the default and permits
+persistent background maintenance. Mode setters persist the requested choice
+and reconcile supervision to the effective mode. When auto is not overridden,
+ctx installs or repairs supervision and starts the daemon. Manual mode stops the
+persistent daemon and removes its supervision; explicit `ctx import` and
+`ctx search --refresh wait` can still use finite workers.
 
 Machine-readable setup follows the same lifecycle and reports schema version 2
 with top-level `daemon_autostart` and `refresh_request` objects. The deprecated
@@ -100,6 +112,19 @@ models, or require API keys while semantic search is disabled. If automatic
 indexing and semantic search are explicitly enabled, daemon maintenance may
 acquire the local ONNX Runtime asset and embedding model needed for the
 installed platform.
+
+Enable local semantic search with:
+
+```bash
+ctx setup --semantic
+ctx index
+```
+
+Semantic indexing requires auto mode. If you selected manual indexing, run
+`ctx index mode auto` before `ctx setup --semantic`. Lexical search remains
+available while embeddings build; hybrid search uses lexical and semantic
+evidence automatically when coverage is ready.
+
 ctx has no hosted-history client or `ctx cloud` subcommand. Official
 installer-managed binaries can separately run signed CLI
 upgrade checks; that updater does not collect provider history.
@@ -141,7 +166,7 @@ malformed and report those rejections explicitly. Unreadable or incompatible
 sources still fail without preventing `--all` from importing other sources.
 
 With automatic indexing, `ctx import` can start the persistent ctx-owned daemon.
-With manual indexing, the explicit import instead starts a finite Core worker,
+With manual indexing, the explicit import can instead start a finite Core worker,
 waits for authoritative publication, and lets it exit without watcher,
 semantic, timer, supervisor, or upgrade maintenance. Use
 `ctx import --no-daemon` to forbid starting or restarting either process.
@@ -249,5 +274,5 @@ available for human shell use.
 unmanaged and will not self-upgrade. Automatic upgrade is on by default for a
 managed binary while automatic indexing's persistent daemon is enabled; use
 `ctx upgrade disable` for a persistent upgrade-only opt-out or
-`ctx daemon disable` to select manual indexing, which also disables automatic
+`ctx index mode manual` to select manual indexing, which also disables automatic
 upgrade maintenance.

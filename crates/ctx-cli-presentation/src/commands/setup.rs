@@ -130,9 +130,9 @@ pub fn render_setup_human(
     } else if queued {
         "ctx index watch"
     } else if daemon.requested && !daemon.started {
-        "ctx daemon status"
+        "ctx status"
     } else if matches!(daemon.reason, Some("daemon_disabled" | "explicit_opt_out")) {
-        "ctx daemon enable"
+        "ctx index mode auto"
     } else {
         "ctx doctor"
     };
@@ -160,7 +160,7 @@ fn daemon_human_status(daemon: &SetupDaemonState<'_>) -> Option<String> {
         (true, true) => None,
         (true, false) => Some("persistent daemon (automatic restart unavailable)".to_owned()),
         (false, _) if daemon.requested => {
-            Some("startup was not verified; run ctx daemon status".to_owned())
+            Some("startup was not verified; run ctx status".to_owned())
         }
         (false, _) if daemon.reason == Some("explicit_opt_out") => {
             Some("skipped because --no-daemon was used".to_owned())
@@ -362,7 +362,7 @@ mod tests {
             assert!(rendered.starts_with("! History is not ready\n"));
             assert!(rendered.contains("Background  disabled\n"));
             assert!(rendered.contains("Data\nRoot  /tmp/ctx\n"));
-            assert!(rendered.contains("Next\n  ctx daemon enable\n"));
+            assert!(rendered.contains("Next\n  ctx index mode auto\n"));
             assert!(!rendered.contains("ctx index watch"));
             assert_fits(&document, &context);
         }

@@ -382,7 +382,7 @@ fn prepare_uninstall_waits_for_indexing_control_before_disabling_and_cleanup() {
     );
     let in_flight_config = fs::read_to_string(requested_root.join("config.toml")).unwrap();
     assert!(
-        in_flight_config.contains("mode = \"automatic\""),
+        in_flight_config.contains("mode = \"auto\""),
         "prepare-uninstall changed indexing before acquiring control: {in_flight_config}"
     );
 

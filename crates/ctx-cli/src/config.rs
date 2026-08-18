@@ -31,7 +31,7 @@ pub enum IndexingMode {
 impl IndexingMode {
     pub const fn as_str(self) -> &'static str {
         match self {
-            Self::Automatic => "automatic",
+            Self::Automatic => "auto",
             Self::Manual => "manual",
         }
     }
