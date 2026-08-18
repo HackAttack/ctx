@@ -30,6 +30,34 @@ fn unmarked_filesystem_root(path: &Path) -> &Path {
     root
 }
 
+fn codex_rollout(native_session_id: &str, marker: &str) -> Vec<u8> {
+    [
+        json!({
+            "timestamp": "2026-08-18T01:00:00Z",
+            "type": "session_meta",
+            "payload": {
+                "id": native_session_id,
+                "timestamp": "2026-08-18T01:00:00Z",
+                "cwd": "/workspace/project",
+                "originator": "codex-cli"
+            }
+        }),
+        json!({
+            "timestamp": "2026-08-18T01:00:01Z",
+            "type": "response_item",
+            "payload": {
+                "type": "message",
+                "id": "compressed-custom-root-message",
+                "role": "user",
+                "content": [{"type": "input_text", "text": marker}]
+            }
+        }),
+    ]
+    .into_iter()
+    .flat_map(|record| format!("{}\n", serde_json::to_string(&record).unwrap()).into_bytes())
+    .collect()
+}
+
 #[test]
 fn sources_json_keeps_the_v1_top_level_and_source_fields() {
     let temp = tempdir();
@@ -331,8 +359,40 @@ fn explicit_manual_paths_still_import_and_current_unsupported_shapes_stop_at_adm
     assert_search_provider_oracle(&search, "factory_ai_droid", query, 1, "message");
 
     let unsupported = tempdir();
-    let codex = unsupported.path().join("rollout.jsonl.zst");
-    fs::write(&codex, b"compressed").unwrap();
+    let unsupported_state = unsupported.path().join("state");
+    fs::create_dir_all(&unsupported_state).unwrap();
+    let _unsupported_daemon = start_source_refresh_daemon(
+        &unsupported,
+        &data_root(&unsupported),
+        unsupported.path(),
+        &unsupported_state,
+    );
+    let codex = unsupported.path().join("renamed-rollout.jsonl.zst");
+    let codex_marker = "codex-compressed-custom-root-oracle";
+    let compressed = zstd::stream::encode_all(
+        std::io::Cursor::new(codex_rollout(
+            "019fb000-0000-7000-8000-000000000070",
+            codex_marker,
+        )),
+        1,
+    )
+    .unwrap();
+    fs::write(&codex, compressed).unwrap();
+    let imported_codex = json_output(ctx(&unsupported).args([
+        "import",
+        "--provider",
+        "codex",
+        "--path",
+        codex.to_str().unwrap(),
+        "--no-daemon",
+        "--progress",
+        "none",
+        "--format=json",
+    ]));
+    assert_eq!(imported_codex["outcome"], "success", "{imported_codex:#}");
+    assert!(imported_codex["totals"]["current_indexed_documents"]
+        .as_u64()
+        .is_some_and(|count| count >= 1));
     let kiro = unsupported.path().join("sessions");
     let kiro_cli = kiro.join("cli");
     fs::create_dir_all(&kiro_cli).unwrap();
@@ -352,7 +412,6 @@ fn explicit_manual_paths_still_import_and_current_unsupported_shapes_stop_at_adm
     fs::write(&cline, b"{}").unwrap();
 
     for (provider, path, reason) in [
-        ("codex", codex, "Codex compressed .jsonl.zst"),
         ("kiro-cli", kiro, "Kiro ACP/v3"),
         ("qoder", qoder, "Qoder direct SDK JSONL"),
         ("openclaw", openclaw, "OpenClaw openclaw-agent.sqlite"),

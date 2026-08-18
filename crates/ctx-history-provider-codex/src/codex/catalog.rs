@@ -1,5 +1,5 @@
 use std::{
-    io::{BufReader, Seek, SeekFrom},
+    io::{BufReader, Read, Seek, SeekFrom},
     path::Path,
     time::SystemTime,
 };
@@ -17,6 +17,8 @@ use crate::provider::codex::nativepath::{opened_codex_file_observation, CodexFil
 use crate::provider::codex::{CODEX_CAPTURE_REVISION, CODEX_POLICY_REVISION};
 
 pub(crate) const CODEX_CATALOG_MAX_SOURCES: usize = 131_072;
+const CODEX_COMPRESSED_CATALOG_MAX_DECODED_PREFIX_BYTES: u64 = 32 * 1024 * 1024;
+const CODEX_COMPRESSED_CATALOG_MAX_WINDOW_LOG: u32 = 27;
 
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct CatalogSession {
@@ -78,7 +80,7 @@ fn catalog_codex_session_opened(
     observation: &CodexFileObservation,
     cataloged_at_ms: i64,
 ) -> Result<CatalogSession> {
-    let session_meta = read_codex_session_meta_from_opened(opened)?;
+    let session_meta = read_codex_session_meta_from_opened(path, opened, observation.len)?;
     let payload = session_meta.as_ref().and_then(|value| value.get("payload"));
     let source = payload
         .and_then(|payload| payload.get("source"))
@@ -98,7 +100,11 @@ fn catalog_codex_session_opened(
         .and_then(Value::as_str)
         .filter(|id| !id.trim().is_empty())
         .map(str::to_owned)
-        .or_else(|| codex_session_id_from_path(path));
+        .or_else(|| {
+            (!is_codex_compressed_session_rollout_path(path))
+                .then(|| codex_session_id_from_path(path))
+                .flatten()
+        });
     let session_started_at_ms = payload
         .and_then(|payload| payload.get("timestamp"))
         .and_then(Value::as_str)
@@ -161,16 +167,53 @@ fn catalog_codex_session_opened(
         }),
     })
 }
-fn read_codex_session_meta_from_opened(opened: &OpenedProviderSourceFile) -> Result<Option<Value>> {
-    let session_meta = read_codex_session_meta(opened)?;
+fn read_codex_session_meta_from_opened(
+    path: &Path,
+    opened: &OpenedProviderSourceFile,
+    compressed_length: u64,
+) -> Result<Option<Value>> {
+    let session_meta = read_codex_session_meta(path, opened, compressed_length)?;
     opened.revalidate()?;
     Ok(session_meta)
 }
 
-fn read_codex_session_meta(opened: &OpenedProviderSourceFile) -> Result<Option<Value>> {
+fn read_codex_session_meta(
+    path: &Path,
+    opened: &OpenedProviderSourceFile,
+    compressed_length: u64,
+) -> Result<Option<Value>> {
     let mut file = opened.file().try_clone()?;
     file.seek(SeekFrom::Start(0))?;
-    let mut reader = BufReader::new(file);
+    if !is_codex_compressed_session_rollout_path(path) {
+        return read_codex_session_meta_from_reader(BufReader::new(file));
+    }
+    if compressed_length == 0
+        || compressed_length > ctx_history_jsonl::MAX_STANDARD_ZSTD_COMPRESSED_BYTES
+    {
+        return Err(CaptureError::InvalidPayload(
+            "Codex compressed catalog source exceeds the bounded physical limit".to_owned(),
+        ));
+    }
+    let mut decoder =
+        zstd::stream::read::Decoder::new(file.take(compressed_length)).map_err(|error| {
+            CaptureError::InvalidPayload(format!(
+                "invalid Codex compressed catalog source header: {error}"
+            ))
+        })?;
+    decoder.window_log_max(CODEX_COMPRESSED_CATALOG_MAX_WINDOW_LOG)?;
+    let mut reader = BufReader::new(
+        decoder.take(CODEX_COMPRESSED_CATALOG_MAX_DECODED_PREFIX_BYTES.saturating_add(1)),
+    );
+    let session_meta = read_codex_session_meta_from_reader(&mut reader)?;
+    if session_meta.is_none() && reader.get_ref().limit() == 0 {
+        return Err(CaptureError::InvalidPayload(
+            "Codex compressed catalog prefix exceeds the bounded decompression limit".to_owned(),
+        ));
+    }
+    Ok(session_meta)
+}
+
+fn read_codex_session_meta_from_reader(mut reader: impl std::io::BufRead) -> Result<Option<Value>> {
     let mut line = Vec::new();
     for _ in 0..32 {
         match read_provider_jsonl_line_or_skip_oversized(&mut reader, &mut line)? {
@@ -195,13 +238,15 @@ fn read_codex_session_meta(opened: &OpenedProviderSourceFile) -> Result<Option<V
 /// appearing Codex membership candidate. This deliberately avoids cataloging
 /// or hashing the transcript body.
 pub(crate) fn probe_codex_native_session_id(
+    path: &Path,
     opened: &OpenedProviderSourceFile,
+    compressed_length: u64,
 ) -> Result<Option<String>> {
-    let first = read_codex_session_meta(opened)?
+    let first = read_codex_session_meta(path, opened, compressed_length)?
         .as_ref()
         .and_then(codex_native_session_id_from_meta);
     opened.revalidate_same_object()?;
-    let second = read_codex_session_meta(opened)?
+    let second = read_codex_session_meta(path, opened, compressed_length)?
         .as_ref()
         .and_then(codex_native_session_id_from_meta);
     opened.revalidate_same_object()?;

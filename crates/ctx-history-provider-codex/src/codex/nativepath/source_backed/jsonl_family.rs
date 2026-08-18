@@ -17,7 +17,7 @@ use crate::{
     },
     Result,
 };
-use ctx_history_jsonl::JsonlPhysicalEncoding;
+use ctx_history_jsonl::{JsonlPhysicalEncoding, MAX_STANDARD_ZSTD_PARALLEL_STREAMS};
 
 fn observe_generation_source_capability_v0(
     source: &CodexCatalogSource,
@@ -192,7 +192,14 @@ fn prepare_codex_session_jsonl_scans_v0<B: ProviderRuntimeBinding>(
             ));
         }
     }
-    Ok(None)
+    Ok(leaves
+        .iter()
+        .any(|leaf| {
+            crate::provider::codex::catalog::is_codex_compressed_session_rollout_path(
+                leaf.source_path(),
+            )
+        })
+        .then_some(MAX_STANDARD_ZSTD_PARALLEL_STREAMS))
 }
 
 fn install_prepared_state_v0(

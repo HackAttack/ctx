@@ -89,6 +89,34 @@ fn exact_compressed_and_raw_rollouts_have_identical_logical_identity() {
 }
 
 #[test]
+fn exact_noncanonical_compressed_rollout_uses_embedded_session_identity() {
+    let temp = tempdir().unwrap();
+    let source_root = temp.path().join("renamed");
+    let index_root = temp.path().join("index");
+    fs::create_dir_all(&source_root).unwrap();
+    let native_session_id = "019fb000-0000-7000-8000-000000000067";
+    let marker = "noncanonicalcompressedidentitymarker";
+    let source = source_root.join("copied-rollout.jsonl.zst");
+    write_compressed(&source, &session_bytes(native_session_id, marker));
+
+    let mut registry = SourceBackedProviderRegistry::new();
+    add_explicit_route(&mut registry, &source);
+    let receipt =
+        refresh_source_backed_generation(&index_root, &registry, writer_options()).unwrap();
+    assert!(receipt.failed_routes.is_empty());
+    assert!(receipt.logical_source_failures.is_empty());
+    assert_eq!(receipt.sources.len(), 1);
+    let index = VerifiedIndex::open(&index_root).unwrap();
+    let records = records_for(&index, native_session_id);
+    assert_eq!(records.len(), 1);
+    assert_eq!(index.search_event_candidates(marker, 8).unwrap().len(), 1);
+    assert_eq!(
+        records[0].provider_session_id.as_deref(),
+        Some(native_session_id)
+    );
+}
+
+#[test]
 fn mixed_raw_and_compressed_tree_imports_each_native_session() {
     let temp = tempdir().unwrap();
     let sessions = temp.path().join("sessions");
@@ -164,6 +192,129 @@ fn raw_to_compressed_representation_transition_replaces_physical_state_only() {
             .certified_prefix_bytes(),
         fs::metadata(&compressed_path).unwrap().len()
     );
+}
+
+#[test]
+fn overlapping_raw_and_compressed_representations_coalesce_raw_first_and_keep_ids() {
+    let temp = tempdir().unwrap();
+    let sessions = temp.path().join("sessions");
+    let index_root = temp.path().join("index");
+    fs::create_dir_all(&sessions).unwrap();
+    let native_session_id = "019fb000-0000-7000-8000-000000000068";
+    let marker = "overlappingrepresentationmarker";
+    let plaintext = session_bytes(native_session_id, marker);
+    let raw_path = session_path(&sessions, native_session_id);
+    let compressed_path = compressed_session_path(&sessions, native_session_id);
+    fs::write(&raw_path, &plaintext).unwrap();
+    write_compressed(&compressed_path, &plaintext);
+    let registry = register_tree(&[&sessions]);
+
+    let cold = refresh_source_backed_generation(&index_root, &registry, writer_options()).unwrap();
+    assert!(cold.failed_routes.is_empty());
+    assert!(cold.logical_source_failures.is_empty());
+    assert_eq!(cold.sources.len(), 1);
+    let cold_index = VerifiedIndex::open(&index_root).unwrap();
+    let identity = logical_identity(&records_for(&cold_index, native_session_id));
+    assert_eq!(
+        certificate_for(&cold_index, native_session_id)
+            .frontier()
+            .unwrap()
+            .certified_prefix_bytes(),
+        plaintext.len() as u64,
+        "raw JSONL must deterministically win while both representations exist"
+    );
+    drop(cold_index);
+
+    fs::remove_file(&raw_path).unwrap();
+    let compressed_only =
+        refresh_source_backed_generation(&index_root, &registry, writer_options()).unwrap();
+    assert!(compressed_only.failed_routes.is_empty());
+    assert_eq!(compressed_only.sources.len(), 1);
+    let compressed_index = VerifiedIndex::open(&index_root).unwrap();
+    assert_eq!(
+        logical_identity(&records_for(&compressed_index, native_session_id)),
+        identity
+    );
+    assert_eq!(
+        certificate_for(&compressed_index, native_session_id)
+            .frontier()
+            .unwrap()
+            .certified_prefix_bytes(),
+        fs::metadata(&compressed_path).unwrap().len()
+    );
+    drop(compressed_index);
+
+    fs::write(&raw_path, &plaintext).unwrap();
+    let overlapping_again =
+        refresh_source_backed_generation(&index_root, &registry, writer_options()).unwrap();
+    assert!(overlapping_again.failed_routes.is_empty());
+    assert_eq!(overlapping_again.sources.len(), 1);
+    let overlapping_index = VerifiedIndex::open(&index_root).unwrap();
+    assert_eq!(
+        logical_identity(&records_for(&overlapping_index, native_session_id)),
+        identity
+    );
+    assert_eq!(
+        certificate_for(&overlapping_index, native_session_id)
+            .frontier()
+            .unwrap()
+            .certified_prefix_bytes(),
+        plaintext.len() as u64
+    );
+    drop(overlapping_index);
+
+    fs::remove_file(&compressed_path).unwrap();
+    let raw_only =
+        refresh_source_backed_generation(&index_root, &registry, writer_options()).unwrap();
+    assert!(raw_only.failed_routes.is_empty());
+    let raw_index = VerifiedIndex::open(&index_root).unwrap();
+    assert_eq!(
+        logical_identity(&records_for(&raw_index, native_session_id)),
+        identity
+    );
+    assert_eq!(
+        raw_index.search_event_candidates(marker, 8).unwrap().len(),
+        1
+    );
+}
+
+#[test]
+fn compressed_same_inode_overwrite_after_snapshot_fails_terminal_fence() {
+    let temp = tempdir().unwrap();
+    let sessions = temp.path().join("sessions");
+    let index_root = temp.path().join("index");
+    fs::create_dir_all(&sessions).unwrap();
+    let native_session_id = "019fb000-0000-7000-8000-000000000069";
+    let path = compressed_session_path(&sessions, native_session_id);
+    write_compressed(
+        &path,
+        &session_bytes(native_session_id, "snapshotterminalfencemarker"),
+    );
+    let mutate = path.clone();
+    set_after_standard_zstd_snapshot_hook(move || {
+        let mut bytes = fs::read(&mutate).unwrap();
+        bytes[0] ^= 0xff;
+        OpenOptions::new()
+            .write(true)
+            .open(&mutate)
+            .unwrap()
+            .write_all(&bytes)
+            .unwrap();
+    });
+    let registry = register_tree(&[&sessions]);
+    match refresh_source_backed_generation(&index_root, &registry, writer_options()) {
+        Ok(receipt) => {
+            assert_eq!(receipt.failed_routes.len(), 1);
+            assert!(receipt.sources.is_empty());
+        }
+        Err(SourceBackedCoordinatorError::NoUsableSourceRoutes { failed_routes }) => {
+            assert_eq!(failed_routes.len(), 1);
+        }
+        Err(SourceBackedCoordinatorError::RouteScan { source, .. }) => {
+            assert_eq!(source.kind, SourceBackedRouteErrorKind::InvalidSource);
+        }
+        Err(error) => panic!("unexpected compressed overwrite failure: {error:?}"),
+    }
 }
 
 fn assert_compressed_source_rejected(sessions: &Path, index_root: &Path) {

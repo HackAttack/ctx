@@ -71,7 +71,7 @@ pub(crate) use ctx_history_provider_runtime::{
     revalidate_frozen_prefix, set_after_final_jsonl_prefix_hash_hook,
     set_after_jsonl_append_observation_route_binding_hook, set_after_jsonl_prefix_hash_hook,
     set_after_jsonl_semantic_preflight_hook, set_after_second_jsonl_prefix_hash_hook,
-    set_before_jsonl_terminal_physical_revalidation_hook,
+    set_after_standard_zstd_snapshot_hook, set_before_jsonl_terminal_physical_revalidation_hook,
 };
 
 /// Concrete coordinator binding for the extracted Gemini provider. The provider

@@ -98,6 +98,13 @@ support matrix is:
 | Cline | Supported | `cline_task_directory_json` |
 | Roo Code | Supported | `roo_task_directory_json` |
 
+Codex session-tree discovery and exact `--path` import accept both ordinary
+`.jsonl` rollouts and official standard-Zstandard `.jsonl.zst` rollouts. Both
+representations derive source, session, and event identity from the embedded
+Codex session UUID. If both representations of one native session coexist,
+ctx selects raw JSONL first (then lexical path order) and publishes one logical
+source; removing either representation does not change logical IDs.
+
 Hermes Agent uses the native `hermes_state_sqlite` route. On Linux, a non-root
 ctx process with the certified read-only live-WAL path makes new sessions and
 appended records converge on native-watch and search refreshes. Where that fast

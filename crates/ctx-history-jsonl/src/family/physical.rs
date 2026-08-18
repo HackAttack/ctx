@@ -5,6 +5,10 @@ use std::{
 
 use sha2::{Digest, Sha256};
 
+use ctx_history_capture_runtime::{
+    SourceBackedRouteByteReservation, SourceBackedRouteResourceKind, SourceBackedRouteResources,
+};
+
 use super::{
     read_bounded_record, read_bounded_record_complete_and_prefix_sha256,
     read_bounded_record_complete_sha256, read_bounded_record_full_complete_and_prefix_sha256,
@@ -21,9 +25,13 @@ const MAX_ZSTD_FRAME_BYTES: usize = MAX_ZSTD_DECODED_FRAME_BYTES + (1024 * 1024)
 const MAX_ZSTD_WINDOW_LOG: u32 = 26;
 
 /// Hard physical bound for one provider-owned standard Zstandard JSONL stream.
-pub const MAX_STANDARD_ZSTD_COMPRESSED_BYTES: u64 = 4 * 1024 * 1024 * 1024;
+pub const MAX_STANDARD_ZSTD_COMPRESSED_BYTES: u64 = 256 * 1024 * 1024;
 /// Hard logical bound for one decoded standard Zstandard JSONL stream.
-pub const MAX_STANDARD_ZSTD_DECOMPRESSED_BYTES: u64 = 16 * 1024 * 1024 * 1024;
+pub const MAX_STANDARD_ZSTD_DECOMPRESSED_BYTES: u64 = 256 * 1024 * 1024;
+/// Compressed snapshot plus decoded spool retained by one standard stream.
+pub const MAX_STANDARD_ZSTD_TEMP_BYTES_PER_LEAF: u64 = 256 * 1024 * 1024;
+/// The production route scratch budget admits this many maximum-size leaves.
+pub const MAX_STANDARD_ZSTD_PARALLEL_STREAMS: usize = 4;
 const MAX_STANDARD_ZSTD_EXPANSION_RATIO: u64 = 256;
 const STANDARD_ZSTD_EXPANSION_SLACK_BYTES: u64 = 16 * 1024 * 1024;
 const MAX_STANDARD_ZSTD_WINDOW_LOG: u32 = 27;
@@ -283,6 +291,7 @@ struct StandardZstdBacking {
     physical_reader: BufReader<File>,
     logical_length: u64,
     total_records: u64,
+    _scratch_reservations: Vec<SourceBackedRouteByteReservation>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -336,6 +345,31 @@ impl<E: JsonlFamilyError> JsonlPhysicalStream<E> {
         digest: JsonlPhysicalDigest,
         source_changed: fn() -> E,
     ) -> JsonlResult<Self, E> {
+        Self::open_with_encoding_and_resources(
+            file,
+            frozen_length,
+            offset,
+            next_physical_ordinal,
+            encoding,
+            framing,
+            digest,
+            source_changed,
+            None,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn open_with_encoding_and_resources(
+        file: File,
+        frozen_length: u64,
+        offset: u64,
+        next_physical_ordinal: u64,
+        encoding: JsonlPhysicalEncoding,
+        framing: JsonlRecordFraming,
+        digest: JsonlPhysicalDigest,
+        source_changed: fn() -> E,
+        route_resources: Option<&SourceBackedRouteResources>,
+    ) -> JsonlResult<Self, E> {
         if offset > frozen_length {
             return Err(source_changed());
         }
@@ -352,6 +386,7 @@ impl<E: JsonlFamilyError> JsonlPhysicalStream<E> {
                     frozen_length,
                     framing,
                     StandardZstdLimits::PRODUCTION,
+                    route_resources,
                 )?;
                 (
                     BufReader::new(decoded.plaintext),
@@ -359,6 +394,7 @@ impl<E: JsonlFamilyError> JsonlPhysicalStream<E> {
                         physical_reader: decoded.physical_reader,
                         logical_length: decoded.logical_length,
                         total_records: decoded.total_records,
+                        _scratch_reservations: decoded.scratch_reservations,
                     }),
                     0,
                 )
@@ -654,6 +690,7 @@ struct DecodedStandardZstd {
     physical_reader: BufReader<File>,
     logical_length: u64,
     total_records: u64,
+    scratch_reservations: Vec<SourceBackedRouteByteReservation>,
 }
 
 fn decode_standard_zstd_jsonl<E: JsonlFamilyError>(
@@ -661,6 +698,7 @@ fn decode_standard_zstd_jsonl<E: JsonlFamilyError>(
     compressed_length: u64,
     framing: JsonlRecordFraming,
     limits: StandardZstdLimits,
+    route_resources: Option<&SourceBackedRouteResources>,
 ) -> JsonlResult<DecodedStandardZstd, E> {
     if compressed_length == 0 {
         return Err(invalid_standard_zstd::<E>("compressed stream is empty"));
@@ -670,11 +708,22 @@ fn decode_standard_zstd_jsonl<E: JsonlFamilyError>(
             "compressed stream exceeds the bounded physical limit",
         ));
     }
+    if compressed_length > MAX_STANDARD_ZSTD_TEMP_BYTES_PER_LEAF {
+        return Err(invalid_standard_zstd::<E>(
+            "compressed snapshot exceeds the per-leaf temporary-volume limit",
+        ));
+    }
     let ratio_bound = compressed_length
         .saturating_mul(limits.expansion_ratio)
         .saturating_add(limits.expansion_slack_bytes);
     let decoded_bound = limits.decompressed_bytes.min(ratio_bound);
-    let mut decoder = zstd::stream::read::Decoder::new(file).map_err(|error| {
+    let compressed_reservation =
+        reserve_standard_zstd_scratch::<E>(route_resources, compressed_length)?;
+    let snapshot = snapshot_standard_zstd_prefix::<E>(file, compressed_length)?;
+    #[cfg(any(test, feature = "test-support"))]
+    run_after_standard_zstd_snapshot_hook();
+    let decoder_source = snapshot.try_clone()?;
+    let mut decoder = zstd::stream::read::Decoder::new(decoder_source).map_err(|error| {
         E::invalid_payload(format!(
             "invalid standard Zstandard JSONL stream header: {error}"
         ))
@@ -686,6 +735,10 @@ fn decode_standard_zstd_jsonl<E: JsonlFamilyError>(
     let mut total_records = 0_u64;
     let mut trailing_bytes = 0_u64;
     let mut trailing_bytes_are_nul = true;
+    let mut scratch_reservations = Vec::new();
+    if let Some(reservation) = compressed_reservation {
+        scratch_reservations.push(reservation);
+    }
     loop {
         let read = decoder.read(&mut buffer).map_err(|error| {
             E::invalid_payload(format!(
@@ -705,6 +758,15 @@ fn decode_standard_zstd_jsonl<E: JsonlFamilyError>(
                 "decoded stream exceeds the bounded decompression limit",
             ));
         }
+        if compressed_length.saturating_add(logical_length) > MAX_STANDARD_ZSTD_TEMP_BYTES_PER_LEAF
+        {
+            return Err(invalid_standard_zstd::<E>(
+                "compressed snapshot and decoded stream exceed the per-leaf temporary-volume limit",
+            ));
+        }
+        if let Some(reservation) = reserve_standard_zstd_scratch::<E>(route_resources, read_u64)? {
+            scratch_reservations.push(reservation);
+        }
         for byte in &buffer[..read] {
             if *byte == b'\n' {
                 total_records = total_records.checked_add(1).ok_or_else(|| {
@@ -719,7 +781,7 @@ fn decode_standard_zstd_jsonl<E: JsonlFamilyError>(
         }
         plaintext.write_all(&buffer[..read])?;
     }
-    let mut physical_reader = decoder.finish();
+    drop(decoder.finish());
     if logical_length == 0 {
         return Err(invalid_standard_zstd::<E>(
             "decoded stream contains no JSONL records",
@@ -743,13 +805,83 @@ fn decode_standard_zstd_jsonl<E: JsonlFamilyError>(
     }
     plaintext.flush()?;
     plaintext.seek(SeekFrom::Start(0))?;
+    let mut physical_reader = BufReader::new(snapshot);
     physical_reader.seek(SeekFrom::Start(0))?;
     Ok(DecodedStandardZstd {
         plaintext,
         physical_reader,
         logical_length,
         total_records,
+        scratch_reservations,
     })
+}
+
+fn snapshot_standard_zstd_prefix<E: JsonlFamilyError>(
+    mut source: File,
+    compressed_length: u64,
+) -> JsonlResult<File, E> {
+    source.seek(SeekFrom::Start(0))?;
+    let mut snapshot = tempfile::tempfile()?;
+    let mut remaining = compressed_length;
+    let mut buffer = [0_u8; STANDARD_ZSTD_COPY_BUFFER_BYTES];
+    while remaining != 0 {
+        let take = usize::try_from(remaining.min(buffer.len() as u64))
+            .map_err(|_| E::system_invariant("Zstandard snapshot chunk exceeds usize"))?;
+        let read = source.read(&mut buffer[..take])?;
+        if read == 0 {
+            return Err(E::source_changed());
+        }
+        snapshot.write_all(&buffer[..read])?;
+        remaining = remaining.saturating_sub(read as u64);
+    }
+    snapshot.flush()?;
+    snapshot.seek(SeekFrom::Start(0))?;
+    Ok(snapshot)
+}
+
+fn reserve_standard_zstd_scratch<E: JsonlFamilyError>(
+    route_resources: Option<&SourceBackedRouteResources>,
+    bytes: u64,
+) -> JsonlResult<Option<SourceBackedRouteByteReservation>, E> {
+    let Some(route_resources) = route_resources else {
+        return Ok(None);
+    };
+    let bytes = usize::try_from(bytes).map_err(|_| {
+        E::invalid_payload("standard Zstandard scratch size exceeds usize".to_owned())
+    })?;
+    route_resources
+        .reserve(SourceBackedRouteResourceKind::LogicalSourceScratch, bytes)
+        .map(Some)
+        .map_err(|error| {
+            E::invalid_payload(format!(
+                "standard Zstandard JSONL temporary-volume budget unavailable: {error}"
+            ))
+        })
+}
+
+#[cfg(any(test, feature = "test-support"))]
+std::thread_local! {
+    static AFTER_STANDARD_ZSTD_SNAPSHOT_HOOK: std::cell::RefCell<Option<Box<dyn FnOnce()>>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+#[cfg(any(test, feature = "test-support"))]
+pub fn set_after_standard_zstd_snapshot_hook(hook: impl FnOnce() + 'static) {
+    AFTER_STANDARD_ZSTD_SNAPSHOT_HOOK.with(|slot| {
+        assert!(
+            slot.borrow().is_none(),
+            "standard Zstandard snapshot hook is already installed"
+        );
+        *slot.borrow_mut() = Some(Box::new(hook));
+    });
+}
+
+#[cfg(any(test, feature = "test-support"))]
+fn run_after_standard_zstd_snapshot_hook() {
+    let hook = AFTER_STANDARD_ZSTD_SNAPSHOT_HOOK.with(|slot| slot.borrow_mut().take());
+    if let Some(hook) = hook {
+        hook();
+    }
 }
 
 fn standard_zstd_physical_end(
@@ -1130,9 +1262,120 @@ mod tests {
                 compressed.len() as u64,
                 JsonlRecordFraming::ordinary(),
                 limits,
+                None,
             );
             assert!(result.is_err());
         }
+    }
+
+    #[test]
+    fn standard_zstd_snapshot_hash_and_decode_use_only_the_certified_prefix() {
+        use std::fs::OpenOptions;
+
+        for overwrite in [false, true] {
+            let temp = tempfile::tempdir().unwrap();
+            let path = temp.path().join("bounded-prefix.jsonl.zst");
+            let plaintext = b"{\"type\":\"session_meta\"}\n{\"type\":\"response_item\"}\n";
+            let compressed = standard_stream(plaintext);
+            std::fs::write(&path, &compressed).unwrap();
+            let hook_path = path.clone();
+            let appended = standard_stream(b"{\"type\":\"appended\"}\n");
+            let hook_compressed = compressed.clone();
+            let hook_appended = appended.clone();
+            set_after_standard_zstd_snapshot_hook(move || {
+                if overwrite {
+                    let mut replacement = hook_compressed;
+                    replacement[0] ^= 0xff;
+                    OpenOptions::new()
+                        .write(true)
+                        .open(&hook_path)
+                        .unwrap()
+                        .write_all(&replacement)
+                        .unwrap();
+                } else {
+                    OpenOptions::new()
+                        .append(true)
+                        .open(&hook_path)
+                        .unwrap()
+                        .write_all(&hook_appended)
+                        .unwrap();
+                }
+            });
+
+            let mut stream = JsonlPhysicalStream::open_with_encoding(
+                File::open(&path).unwrap(),
+                compressed.len() as u64,
+                0,
+                0,
+                JsonlPhysicalEncoding::StandardZstdJsonl,
+                JsonlRecordFraming::ordinary(),
+                JsonlPhysicalDigest::complete(JsonlResumableSha256::new()),
+                || SourceIoError::SourceChangedDuringCapture,
+            )
+            .unwrap();
+            let mut records = Vec::new();
+            while let Some(record) = stream.next_record().unwrap() {
+                records.push(stream.record_bytes(record).to_vec());
+            }
+            assert_eq!(
+                records,
+                [
+                    b"{\"type\":\"session_meta\"}".to_vec(),
+                    b"{\"type\":\"response_item\"}".to_vec()
+                ]
+            );
+            assert_eq!(
+                stream.digest().complete_hasher().digest(),
+                <[u8; 32]>::from(Sha256::digest(&compressed))
+            );
+            let current = std::fs::read(&path).unwrap();
+            if overwrite {
+                assert_ne!(&current[..compressed.len()], compressed.as_slice());
+            } else {
+                assert_eq!(&current[..compressed.len()], compressed.as_slice());
+                assert_eq!(&current[compressed.len()..], appended.as_slice());
+            }
+        }
+    }
+
+    #[test]
+    fn standard_zstd_parallel_scratch_budget_fails_closed_and_releases() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("parallel-budget.jsonl.zst");
+        let plaintext = b"{}\n".repeat(4096);
+        let compressed = standard_stream(&plaintext);
+        std::fs::write(&path, &compressed).unwrap();
+        let one_stream_bytes = compressed.len().saturating_add(plaintext.len());
+        let resources = SourceBackedRouteResources::for_test(2, 0, one_stream_bytes as u64);
+        let open = || {
+            JsonlPhysicalStream::open_with_encoding_and_resources(
+                File::open(&path).unwrap(),
+                compressed.len() as u64,
+                0,
+                0,
+                JsonlPhysicalEncoding::StandardZstdJsonl,
+                JsonlRecordFraming::ordinary(),
+                JsonlPhysicalDigest::complete(JsonlResumableSha256::new()),
+                || SourceIoError::SourceChangedDuringCapture,
+                Some(&resources),
+            )
+        };
+
+        let first = open().unwrap();
+        assert_eq!(
+            resources.live_bytes(SourceBackedRouteResourceKind::LogicalSourceScratch),
+            one_stream_bytes as u64
+        );
+        assert!(
+            open().is_err(),
+            "a concurrent second spool exceeded the shared budget"
+        );
+        drop(first);
+        assert_eq!(
+            resources.live_bytes(SourceBackedRouteResourceKind::LogicalSourceScratch),
+            0
+        );
+        assert!(open().is_ok());
     }
 
     #[test]

@@ -1,7 +1,9 @@
 use std::{collections::BTreeSet, fs::OpenOptions, io::Write, path::Path};
 
 use super::*;
-use crate::provider::source_backed::family::jsonl::set_before_jsonl_terminal_physical_revalidation_hook;
+use crate::provider::source_backed::family::jsonl::{
+    set_after_standard_zstd_snapshot_hook, set_before_jsonl_terminal_physical_revalidation_hook,
+};
 use ctx_history_core::{
     CertifiedSource, CoreDiscoveryExclusion, ProviderNativeSessionRelationship, SourceFrontier,
     TypedKey,
