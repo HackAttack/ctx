@@ -257,6 +257,16 @@ pub(crate) fn read_registered_file(root: &Path, relative: &Path) -> io::Result<O
     Ok(Some(bytes))
 }
 
+pub(crate) fn registered_file_metadata(
+    root: &Path,
+    relative: &Path,
+) -> io::Result<Option<std::fs::Metadata>> {
+    let Some(root) = registered_read_directory(root)? else {
+        return Ok(None);
+    };
+    root.open_file(relative)?.metadata().map(Some)
+}
+
 pub(crate) fn with_registered_read_root<T>(
     root: &GenerationReadRoot,
     access: impl FnOnce() -> T,

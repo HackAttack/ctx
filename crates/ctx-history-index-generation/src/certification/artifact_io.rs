@@ -411,6 +411,13 @@ pub(super) fn validate_named_regular_file(path: &Path) -> Result<()> {
 }
 
 pub(super) fn ensure_real_directory(path: &Path) -> Result<()> {
+    if let Some(opened) = crate::read_root::registered_read_directory(path)
+        .map_err(|_| IndexError::ChecksumMismatch)?
+    {
+        return opened
+            .verify_private()
+            .map_err(|_| IndexError::ChecksumMismatch);
+    }
     let metadata = fs::symlink_metadata(path).map_err(|_| IndexError::ChecksumMismatch)?;
     if metadata.file_type().is_symlink()
         || metadata_is_reparse_point(&metadata)

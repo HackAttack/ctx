@@ -1,6 +1,6 @@
 use std::{
     collections::BTreeMap,
-    fs::{self, File, Metadata},
+    fs::{File, Metadata},
     io::Read,
     path::{Path, PathBuf},
     sync::{Arc, Mutex, OnceLock, Weak},
@@ -9,7 +9,7 @@ use std::{
 use base64::{engine::general_purpose::STANDARD_NO_PAD, Engine as _};
 use ctx_history_core::{CORE_RECORD_VERSION, IDENTITY_VERSION};
 use ctx_history_index_generation::{
-    load_manifest_bytes, manifest_path, sha256_hex, write_manifest_bytes,
+    load_manifest_bytes, load_manifest_metadata, manifest_path, sha256_hex, write_manifest_bytes,
 };
 use serde::{Deserialize, Serialize};
 use tantivy::{IndexMeta, Searcher};
@@ -263,14 +263,7 @@ fn cached_manifest(key: &ManifestCacheKey) -> Result<Option<Arc<GenerationManife
 }
 
 fn capture_manifest_identity(root: &Path, generation_id: &str) -> Result<ManifestFileIdentity> {
-    let path = manifest_path(root, generation_id);
-    let metadata = fs::symlink_metadata(&path).map_err(|error| {
-        if error.kind() == std::io::ErrorKind::NotFound {
-            IndexError::MissingManifest(generation_id.to_owned())
-        } else {
-            IndexError::Io(error)
-        }
-    })?;
+    let metadata = load_manifest_metadata(root, generation_id)?;
     if !metadata.file_type().is_file() {
         return Err(IndexError::NonCanonicalManifest);
     }

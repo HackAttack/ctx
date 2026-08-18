@@ -1,6 +1,6 @@
 use std::{
     collections::BTreeSet,
-    fs::{self, File},
+    fs::{self, File, Metadata},
     io::Read,
     path::{Path, PathBuf},
 };
@@ -97,6 +97,27 @@ pub fn load_manifest_bytes(root: &Path, generation_id: &str) -> Result<Vec<u8>> 
         });
     }
     Ok(bytes)
+}
+
+/// Loads metadata for the exact immutable manifest through the active opened
+/// read-root capability when one is installed for this thread.
+pub fn load_manifest_metadata(root: &Path, generation_id: &str) -> Result<Metadata> {
+    let relative_path = Path::new(MANIFEST_DIRECTORY).join(format!("{generation_id}.json"));
+    match crate::read_root::registered_file_metadata(root, &relative_path) {
+        Ok(Some(metadata)) => Ok(metadata),
+        Ok(None) => {
+            fs::symlink_metadata(root.join(relative_path)).map_err(|error| match error.kind() {
+                std::io::ErrorKind::NotFound => {
+                    GenerationError::MissingManifest(generation_id.to_owned())
+                }
+                _ => GenerationError::Io(error),
+            })
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            Err(GenerationError::MissingManifest(generation_id.to_owned()))
+        }
+        Err(error) => Err(GenerationError::Io(error)),
+    }
 }
 
 /// Durably publishes already-canonical manifest bytes under their SHA-256 id.

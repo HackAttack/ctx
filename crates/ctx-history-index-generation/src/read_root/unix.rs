@@ -130,14 +130,23 @@ impl OpenedDirectory {
     }
 
     pub(crate) fn stable_path(&self, original_path: &Path) -> io::Result<PathBuf> {
-        let reopened = Self::open_absolute(original_path)?;
-        if reopened.identity != self.identity {
+        let _ = original_path;
+        #[cfg(any(target_os = "linux", target_os = "android"))]
+        let path = PathBuf::from(format!("/proc/self/fd/{}", self.file.as_raw_fd()));
+        #[cfg(not(any(target_os = "linux", target_os = "android")))]
+        let path = PathBuf::from(format!("/dev/fd/{}", self.file.as_raw_fd()));
+        let metadata = std::fs::metadata(&path)?;
+        let observed = ObjectIdentity {
+            device: metadata.dev(),
+            inode: metadata.ino(),
+        };
+        if observed != self.identity {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
                 "stable directory-handle path changed identity",
             ));
         }
-        Ok(original_path.to_path_buf())
+        Ok(path)
     }
 
     pub(crate) fn try_clone_file(&self) -> io::Result<File> {
@@ -222,10 +231,9 @@ mod tests {
         assert!(!path
             .components()
             .any(|component| matches!(component, Component::CurDir | Component::ParentDir)));
-        assert_eq!(
-            OpenedDirectory::open_absolute(&path)?.identity,
-            opened.identity
-        );
+        let metadata = std::fs::metadata(path)?;
+        assert_eq!(metadata.dev(), opened.identity.device);
+        assert_eq!(metadata.ino(), opened.identity.inode);
         Ok(())
     }
 }

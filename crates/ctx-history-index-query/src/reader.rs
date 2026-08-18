@@ -127,9 +127,6 @@ impl VerifiedIndex {
         root: impl AsRef<Path>,
         lease: &GenerationReadLease,
     ) -> Result<Self> {
-        if !root.as_ref().is_dir() {
-            return Err(IndexError::MissingActiveGenerationPointer);
-        }
         let control_directory =
             DurableMmapDirectory::open(root).map_err(tantivy::TantivyError::from)?;
         let root = control_directory.root_path().to_path_buf();
