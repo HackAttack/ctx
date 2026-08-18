@@ -446,17 +446,21 @@ fn has_mux_session_files(root: &Path, max_entries: usize) -> BoundedProbe {
 }
 
 fn has_openhands_event_json(root: &Path, max_entries: usize) -> BoundedProbe {
+    match has_openhands_v1_event_json(root, max_entries) {
+        BoundedProbe::Found => BoundedProbe::Found,
+        BoundedProbe::IoError => BoundedProbe::IoError,
+        BoundedProbe::BudgetExhausted => BoundedProbe::BudgetExhausted,
+        BoundedProbe::NotFound => has_openhands_current_event_json(root, max_entries),
+    }
+}
+
+pub(super) fn has_openhands_current_event_json(root: &Path, max_entries: usize) -> BoundedProbe {
+    has_json_file_under_matching(root, max_entries, is_openhands_current_event_json)
+}
+
+pub(super) fn has_openhands_v1_event_json(root: &Path, max_entries: usize) -> BoundedProbe {
     has_json_file_under_matching(root, max_entries, |path| {
         path_has_component(path, "v1_conversations")
-            || (path
-                .parent()
-                .and_then(Path::file_name)
-                .and_then(|name| name.to_str())
-                == Some("events")
-                && path
-                    .file_name()
-                    .and_then(|name| name.to_str())
-                    .is_some_and(|name| name.starts_with("event-") && name.ends_with(".json")))
     })
 }
 
@@ -469,6 +473,24 @@ fn qoder_jsonl_path_is_supported(path: &Path) -> bool {
         .and_then(Path::file_name)
         .and_then(|name| name.to_str())
         == Some("projects")
+}
+
+pub(super) fn is_openhands_current_event_json(path: &Path) -> bool {
+    path.file_name()
+        .and_then(|name| name.to_str())
+        .is_some_and(|name| name.starts_with("event-") && name.ends_with(".json"))
+        && path.parent().is_some_and(|parent| {
+            parent.file_name().and_then(|name| name.to_str()) == Some("events")
+        })
+        && path
+            .parent()
+            .and_then(Path::parent)
+            .is_some_and(|conversation| {
+                conversation
+                    .file_name()
+                    .and_then(|name| name.to_str())
+                    .is_some_and(|name| !name.is_empty())
+            })
 }
 
 fn has_codebuddy_history_json(root: &Path, max_entries: usize) -> BoundedProbe {

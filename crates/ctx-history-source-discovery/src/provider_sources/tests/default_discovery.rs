@@ -762,7 +762,7 @@ fn supported_explicit_shapes_and_missing_textual_paths_keep_pinned_mapping() {
         (
             CaptureProvider::OpenHands,
             temp.path()
-                .join("conversations/conversation/events/event-1.json"),
+                .join("conversations/conversation/events/event-00001-current.json"),
         ),
         (CaptureProvider::Mux, temp.path().join("session/chat.jsonl")),
         (
@@ -793,6 +793,29 @@ fn supported_explicit_shapes_and_missing_textual_paths_keep_pinned_mapping() {
     assert_eq!(source.path, missing_archive);
     assert_eq!(source.status, ProviderSourceStatus::Missing);
     assert_eq!(source.source_format, "mux_session_jsonl");
+}
+
+#[test]
+fn openhands_current_cli_exact_conversation_events_and_leaf_are_importable() {
+    let temp = tempdir();
+    let root = temp.path().join("official-direct-root");
+    let conversation = root.join("conversation");
+    let events = conversation.join("events");
+    let event = events.join("event-00001-current.json");
+    std::fs::create_dir_all(&events).unwrap();
+    std::fs::write(&event, b"{}\n").unwrap();
+
+    for path in [root, conversation, events, event] {
+        let source = provider_source_for_path(CaptureProvider::OpenHands, path);
+        assert_eq!(source.status, ProviderSourceStatus::Available);
+        assert_eq!(source.import_support, ProviderImportSupport::Native);
+        assert_eq!(source.source_kind, ProviderSourceKind::NativeHistory);
+        assert_eq!(
+            source.source_format,
+            super::super::OPENHANDS_CURRENT_CLI_SOURCE_FORMAT
+        );
+        assert_eq!(source.unsupported_reason, None);
+    }
 }
 
 #[test]

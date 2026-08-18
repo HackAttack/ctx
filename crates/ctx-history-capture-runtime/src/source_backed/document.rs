@@ -11,7 +11,7 @@ use std::{
 };
 
 use super::*;
-use crate::{CaptureLifecycleSink, ImmutableCaptureSnapshot};
+use crate::CaptureLifecycleSink;
 use ctx_history_core::{
     CertifiedSource, CertifiedSourceAppend, CertifiedSourceDeletion, ScannedSourceCounts,
     SourceFrontier, SourceKey, SourceObservation, TypedKey,
@@ -563,7 +563,7 @@ where
     let mut base_sources = if lazy_base_route {
         Vec::new()
     } else {
-        document_base_sources(sink, |source| adapter.owns_source(source))
+        document_base_sources(sink, |source| adapter.owns_source(source))?
     };
     let mut tree = if lazy_base_route {
         let owns_source = |source: &SourceKey| adapter.owns_source(source);
@@ -578,7 +578,7 @@ where
         )?
     };
     if lazy_base_route && tree.inventory_scope == DocumentInventoryScope::Complete {
-        base_sources = document_base_sources(sink, |source| adapter.owns_source(source));
+        base_sources = document_base_sources(sink, |source| adapter.owns_source(source))?;
     }
     validate_unique_leaf_fingerprints(&tree.leaves)?;
     bind_durable_replay_sources(adapter, &mut tree)?;
@@ -861,17 +861,15 @@ pub fn document_frontier_fingerprint(
 fn document_base_sources<L: CaptureLifecycleSink>(
     sink: &SourceBackedGenerationSink<'_, L>,
     owns: impl Fn(&SourceKey) -> bool,
-) -> Vec<CertifiedSource> {
-    sink.base_snapshot()
-        .map(|snapshot| {
-            snapshot
-                .sources()
-                .iter()
-                .filter(|source| owns(source.observation().source()))
-                .cloned()
-                .collect()
-        })
-        .unwrap_or_default()
+) -> SourceBackedRouteResult<Vec<CertifiedSource>> {
+    let mut sources = sink
+        .base_route_sources()
+        .map_err(route_coordinator_error)?
+        .into_values()
+        .filter(|source| owns(source.observation().source()))
+        .collect::<Vec<_>>();
+    sources.sort_by_key(|source| source.observation().source().identity().digest());
+    Ok(sources)
 }
 
 fn route_coordinator_error<E: std::error::Error + 'static>(

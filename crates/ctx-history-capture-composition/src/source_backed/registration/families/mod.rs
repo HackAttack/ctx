@@ -8,7 +8,8 @@ mod sqlite;
 mod sqlite_inventory;
 
 pub use document::*;
-use event_file::*;
+pub(in crate::source_backed) use event_file::register_openhands_automatic_route;
+use event_file::register_openhands_route;
 pub use hermes::*;
 pub use jsonl::*;
 pub use sqlite::*;

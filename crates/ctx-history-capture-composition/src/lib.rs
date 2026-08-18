@@ -10,7 +10,7 @@ pub use ctx_history_source_discovery::{
     DiscoveryIssue, DiscoveryPlatform, DiscoveryPlatformDirs, DiscoveryReport,
     LingmaInventorySelector, PathPresence, ProviderCatalogSupport, ProviderImportSupport,
     ProviderSource, ProviderSourceKind, ProviderSourceSpec, ProviderSourceStatus,
-    StaticProviderProbeCatalog,
+    StaticProviderProbeCatalog, OPENHANDS_CURRENT_CLI_SOURCE_FORMAT,
 };
 
 #[cfg(test)]

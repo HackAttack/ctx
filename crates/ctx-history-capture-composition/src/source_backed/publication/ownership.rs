@@ -1,5 +1,54 @@
 use super::*;
 
+pub(super) fn automatic_carried_route_retirements(
+    registry: &SourceBackedProviderRegistry,
+    selected_routes: &BTreeSet<SourceRouteIdentity>,
+    base_routes: &BTreeSet<SourceRouteIdentity>,
+) -> SourceBackedCoordinatorResult<BTreeMap<SourceRouteIdentity, Vec<SourceRouteIdentity>>> {
+    let mut owners = BTreeMap::<SourceRouteIdentity, SourceRouteIdentity>::new();
+    let mut retirements = BTreeMap::<SourceRouteIdentity, Vec<SourceRouteIdentity>>::new();
+    for route in registry.routes.iter().filter(|route| {
+        route.driver.is_some()
+            && route
+                .metadata
+                .route_identity
+                .as_ref()
+                .is_some_and(|identity| selected_routes.contains(identity))
+    }) {
+        let replacement = route.metadata.route_identity.as_ref().ok_or_else(|| {
+            index_writer_invariant("selected automatic replacement has no route identity")
+        })?;
+        for retired in route
+            .automatic_retire_after_success
+            .iter()
+            .filter(|candidate| {
+                base_routes.contains(*candidate)
+                    && !selected_routes.contains(*candidate)
+                    && !route.retire_after_success.contains(*candidate)
+            })
+        {
+            if let Some(other) = owners.insert(retired.clone(), replacement.clone()) {
+                if other != *replacement {
+                    return Err(SourceBackedCoordinatorError::InvalidRoute {
+                        provider: route.metadata.source.provider,
+                        detail: format!(
+                            "automatic routes {} and {} both claim carried route {}",
+                            other.as_str(),
+                            replacement.as_str(),
+                            retired.as_str()
+                        ),
+                    });
+                }
+            }
+            retirements
+                .entry(replacement.clone())
+                .or_default()
+                .push(retired.clone());
+        }
+    }
+    Ok(retirements)
+}
+
 pub(super) fn capture_staged_source_route_revalidation_receipts(
     lifecycle: &impl CaptureLifecycleSink<Error = IndexError>,
     route_index: usize,

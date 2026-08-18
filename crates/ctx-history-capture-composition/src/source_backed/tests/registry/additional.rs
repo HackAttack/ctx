@@ -200,6 +200,54 @@ fn successful_replacement_does_not_report_the_retired_route_as_carried() {
 }
 
 #[test]
+fn automatic_retirement_candidates_activate_only_for_exhaustive_refresh() {
+    let temp = tempdir().unwrap();
+    let retired = fixture_route(CaptureProvider::Gemini, GEMINI_CLI_SOURCE_FORMAT, 76);
+    let replacement = fixture_route(CaptureProvider::Mux, "mux_session_jsonl_tree", 77);
+    let retired_id = retired.metadata.route_identity.clone().unwrap();
+    let replacement_id = replacement.metadata.route_identity.clone().unwrap();
+    let mut initial_registry = SourceBackedProviderRegistry::new();
+    initial_registry.register(retired);
+    initial_registry.register(replacement.clone());
+    refresh_source_backed_generation(temp.path(), &initial_registry, WriterOptions::default())
+        .unwrap();
+
+    let mut replacement_registry = SourceBackedProviderRegistry::new();
+    replacement_registry.register(replacement);
+    replacement_registry
+        .retire_automatic_routes_after_success(&replacement_id, [retired_id.clone()])
+        .unwrap();
+
+    let exact = refresh_source_backed_generation_for_routes(
+        temp.path(),
+        &replacement_registry,
+        WriterOptions::default(),
+        [replacement_id.clone()],
+    )
+    .unwrap();
+    assert_eq!(exact.carried_unselected_route_ids, vec![retired_id.clone()]);
+    assert!(exact.commit.manifest().source_route(&retired_id).is_some());
+
+    let exhaustive = refresh_source_backed_generation(
+        temp.path(),
+        &replacement_registry,
+        WriterOptions::default(),
+    )
+    .unwrap();
+    assert!(exhaustive.carried_unselected_route_ids.is_empty());
+    assert!(exhaustive
+        .commit
+        .manifest()
+        .source_route(&retired_id)
+        .is_none());
+    assert!(exhaustive
+        .commit
+        .manifest()
+        .source_route(&replacement_id)
+        .is_some());
+}
+
+#[test]
 fn empty_replacement_cannot_hide_a_cold_route_failure_behind_retired_content() {
     let temp = tempdir().unwrap();
     let retired = explicit_route_at(

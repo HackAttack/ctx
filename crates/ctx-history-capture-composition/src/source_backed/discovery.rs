@@ -515,6 +515,14 @@ fn register_discovered_automatic_route(
                 exact_cwd,
             )
         }
+        (SourceBackedRouteConstructor::ProviderSource, CaptureProvider::OpenHands) => {
+            let current_root = resolve_openhands_conversations_root(discovery).ok_or(
+                SourceBackedAutomaticUnavailableReason::SelectorAuthorityUnavailable {
+                    detail: "OpenHands automatic registration requires its exact current conversation root",
+                },
+            )?;
+            register_openhands_automatic_route(registry, source, &current_root)
+        }
         (SourceBackedRouteConstructor::ProviderSource, _) => {
             register_landed_source_backed_route_with_data_root(
                 registry,

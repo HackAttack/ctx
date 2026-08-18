@@ -55,8 +55,8 @@ impl SourceBackedRefreshExecutionBudget {
 #[cfg(test)]
 use ownership::source_owner_covers_base_source;
 use ownership::{
-    capture_staged_source_route_revalidation_receipts, require_complete_base_source_ownership,
-    revalidate_staged_source_route,
+    automatic_carried_route_retirements, capture_staged_source_route_revalidation_receipts,
+    require_complete_base_source_ownership, revalidate_staged_source_route,
 };
 
 #[cfg(test)]

@@ -11,39 +11,46 @@ pub(super) struct OpenHandsEventPath {
 ///
 /// Legacy V1 permits JSON leaves below `v1_conversations/<id>/` for released
 /// compatibility. Current CLI history is intentionally narrower and admits
-/// only `conversations/<id>/events/event-*.json`.
+/// only `<conversation-root>/<id>/events/event-*.json`; the official direct
+/// conversation-root override does not constrain the root directory's name.
 pub(super) fn openhands_event_path(
     path: &Path,
 ) -> OpenHandsSourceBackedResultV2<Option<OpenHandsEventPath>> {
     let components = path.components().collect::<Vec<_>>();
-    for index in (0..components.len()).rev() {
-        let component = components[index].as_os_str();
-        let legacy = component == "v1_conversations"
+    for index in 0..components.len() {
+        let legacy = components[index].as_os_str() == "v1_conversations"
             && components.len() >= index.saturating_add(3)
             && path.extension().and_then(|extension| extension.to_str()) == Some("json");
-        let current = component == "conversations"
-            && components.len() == index.saturating_add(4)
-            && components
-                .get(index.saturating_add(2))
-                .is_some_and(|component| component.as_os_str() == "events")
-            && current_cli_event_file(path);
-        if legacy || current {
+        if legacy {
             return Ok(Some(OpenHandsEventPath {
-                conversation_id: conversation_id(path, &components, index)?,
-                conversation_root: conversation_root(&components, index),
+                conversation_id: normal_component(path, &components, index.saturating_add(1))?,
+                conversation_root: path_through(&components, index.saturating_add(1)),
             }));
         }
+    }
+    let Some(conversation_index) = components.len().checked_sub(3) else {
+        return Ok(None);
+    };
+    let current = components
+        .get(conversation_index.saturating_add(1))
+        .is_some_and(|component| component.as_os_str() == "events")
+        && current_cli_event_file(path);
+    if current {
+        return Ok(Some(OpenHandsEventPath {
+            conversation_id: normal_component(path, &components, conversation_index)?,
+            conversation_root: path_through(&components, conversation_index),
+        }));
     }
     Ok(None)
 }
 
-fn conversation_id(
+fn normal_component(
     path: &Path,
     components: &[Component<'_>],
-    layout_index: usize,
+    index: usize,
 ) -> OpenHandsSourceBackedResultV2<String> {
     components
-        .get(layout_index.saturating_add(1))
+        .get(index)
         .and_then(|component| match component {
             Component::Normal(value) => value.to_str(),
             _ => None,
@@ -57,9 +64,9 @@ fn conversation_id(
         )
 }
 
-fn conversation_root(components: &[Component<'_>], layout_index: usize) -> PathBuf {
+fn path_through(components: &[Component<'_>], inclusive_index: usize) -> PathBuf {
     let mut root = PathBuf::new();
-    for component in components.iter().take(layout_index.saturating_add(2)) {
+    for component in components.iter().take(inclusive_index.saturating_add(1)) {
         root.push(component.as_os_str());
     }
     root

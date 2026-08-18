@@ -235,8 +235,8 @@ fn sources_reports_adjacent_current_and_legacy_routes_without_unsupported_duplic
         ("mux", "mux_session_jsonl_tree", mux_root.as_path()),
         (
             "openhands",
-            "openhands_file_events",
-            openhands_events.as_path(),
+            "openhands_cli_file_events",
+            openhands_conversations.as_path(),
         ),
     ] {
         let matches = source_entries(&sources)

@@ -81,6 +81,7 @@ pub struct SourceBackedRoute {
     pub(in super::super) driver: Option<SourceBackedRouteDriver>,
     pub(in super::super) certified_missing_paths: Vec<PathBuf>,
     pub(in super::super) retire_after_success: Vec<SourceRouteIdentity>,
+    pub(in super::super) automatic_retire_after_success: Vec<SourceRouteIdentity>,
     pub(in super::super) controlled_retire_after_success: Vec<ControlledRouteRetirement>,
     pub(in super::super) codex_generation_participant: Option<usize>,
 }
@@ -111,6 +112,7 @@ impl SourceBackedRoute {
             driver: Some(driver),
             certified_missing_paths: Vec::new(),
             retire_after_success: Vec::new(),
+            automatic_retire_after_success: Vec::new(),
             controlled_retire_after_success: Vec::new(),
             codex_generation_participant: None,
         })
@@ -146,6 +148,7 @@ impl SourceBackedRoute {
             driver: Some(driver),
             certified_missing_paths: Vec::new(),
             retire_after_success: Vec::new(),
+            automatic_retire_after_success: Vec::new(),
             controlled_retire_after_success: Vec::new(),
             codex_generation_participant: None,
         })
@@ -176,6 +179,7 @@ impl SourceBackedRoute {
             driver: None,
             certified_missing_paths: vec![path],
             retire_after_success: Vec::new(),
+            automatic_retire_after_success: Vec::new(),
             controlled_retire_after_success: Vec::new(),
             codex_generation_participant: None,
         })
@@ -198,6 +202,7 @@ impl SourceBackedRoute {
             driver: None,
             certified_missing_paths: Vec::new(),
             retire_after_success: Vec::new(),
+            automatic_retire_after_success: Vec::new(),
             controlled_retire_after_success: Vec::new(),
             codex_generation_participant: None,
         }
@@ -281,6 +286,45 @@ impl SourceBackedProviderRegistry {
         route.retire_after_success.dedup();
         if route
             .retire_after_success
+            .binary_search(replacement)
+            .is_ok()
+        {
+            return Err(SourceBackedCoordinatorError::InvalidRefreshScope {
+                route_id: replacement.as_str().to_owned(),
+            });
+        }
+        Ok(())
+    }
+
+    /// Binds bounded automatic replacement candidates to one automatic route.
+    ///
+    /// The coordinator activates only candidates present in the locked base
+    /// during an exhaustive refresh. Exact-scoped refreshes never authorize
+    /// these ownership transfers.
+    pub fn retire_automatic_routes_after_success(
+        &mut self,
+        replacement: &SourceRouteIdentity,
+        retired: impl IntoIterator<Item = SourceRouteIdentity>,
+    ) -> SourceBackedCoordinatorResult<()> {
+        let route = self
+            .routes
+            .iter_mut()
+            .find(|route| route.metadata.route_identity.as_ref() == Some(replacement))
+            .ok_or_else(|| SourceBackedCoordinatorError::InvalidRefreshScope {
+                route_id: replacement.as_str().to_owned(),
+            })?;
+        if route.metadata.selection != Some(SourceBackedRouteSelection::Automatic)
+            || route.driver.is_none()
+        {
+            return Err(SourceBackedCoordinatorError::InvalidRefreshScope {
+                route_id: replacement.as_str().to_owned(),
+            });
+        }
+        route.automatic_retire_after_success.extend(retired);
+        route.automatic_retire_after_success.sort();
+        route.automatic_retire_after_success.dedup();
+        if route
+            .automatic_retire_after_success
             .binary_search(replacement)
             .is_ok()
         {

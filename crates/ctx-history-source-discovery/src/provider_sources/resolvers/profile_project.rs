@@ -9,6 +9,7 @@ use serde_json::Value;
 
 use super::super::{
     context::{DiscoveryContext, DiscoveryPlatform},
+    probes::{has_openhands_v1_event_json, BoundedProbe},
     selectors::{
         direct_entries, direct_regular_files_matching, ordinary_directory, ordinary_file,
         ordinary_path, read_bounded_bytes, SelectorDocument, SelectorFormat, SelectorIncludeBudget,
@@ -151,7 +152,10 @@ fn push_selected_source(
 ) {
     let directory = matches!(
         format,
-        "nanoclaw_project" | "openclaw_session_jsonl_tree" | "openhands_file_events"
+        "nanoclaw_project"
+            | "openclaw_session_jsonl_tree"
+            | "openhands_file_events"
+            | super::super::OPENHANDS_CURRENT_CLI_SOURCE_FORMAT
     );
     if !selected_path_is_safe(&path, directory) {
         issue_manual(report, spec.provider, Some(path));
@@ -530,13 +534,14 @@ fn resolve_openhands(
             "aws" | "s3" | "gcp" | "google_cloud"
         )
     });
-    if remote {
+    let legacy_root = if remote {
         report.issues.push(issue(
             spec.provider,
             None,
             DiscoveryIssueKind::NoDiskHistory,
             REMOTE_OPENHANDS_REASON,
         ));
+        None
     } else {
         let root = match openhands_v1_root(context) {
             Ok(path) => path,
@@ -552,8 +557,8 @@ fn resolve_openhands(
                 return report;
             }
         };
-        push_selected_source(probes, &mut report, spec, root, "openhands_file_events");
-    }
+        Some(root)
+    };
 
     let cli_root = match openhands_cli_root(context) {
         Ok(path) => path,
@@ -562,13 +567,79 @@ fn resolve_openhands(
             return report;
         }
     };
-    match openhands_cli_event_roots(&cli_root) {
-        Ok(roots) => {
-            for root in roots {
-                push_selected_source(probes, &mut report, spec, root, "openhands_file_events");
+    let cli_present = match path_presence(&cli_root) {
+        PathPresence::Missing => false,
+        PathPresence::Present if ordinary_directory(&cli_root) => {
+            if openhands_cli_event_roots(&cli_root).is_err() {
+                issue_selector(&mut report, spec.provider);
+                return report;
+            }
+            true
+        }
+        PathPresence::Present | PathPresence::Unsupported | PathPresence::Unknown(_) => {
+            issue_selector(&mut report, spec.provider);
+            return report;
+        }
+    };
+
+    match legacy_root {
+        Some(root) if cli_root.starts_with(&root) => {
+            match has_openhands_v1_event_json(&root, MAX_FINITE_SELECTOR_ENTRIES) {
+                BoundedProbe::Found => {
+                    // One umbrella route deterministically owns a mixed profile,
+                    // so provider-native IDs cannot be imported twice.
+                    push_selected_source(probes, &mut report, spec, root, "openhands_file_events");
+                }
+                BoundedProbe::NotFound if cli_present => push_selected_source(
+                    probes,
+                    &mut report,
+                    spec,
+                    cli_root.clone(),
+                    super::super::OPENHANDS_CURRENT_CLI_SOURCE_FORMAT,
+                ),
+                BoundedProbe::NotFound => {
+                    push_selected_source(probes, &mut report, spec, root, "openhands_file_events");
+                }
+                BoundedProbe::BudgetExhausted | BoundedProbe::IoError => {
+                    issue_selector(&mut report, spec.provider);
+                    push_selected_source(probes, &mut report, spec, root, "openhands_file_events");
+                }
+            }
+            if !cli_present {
+                // Discovery has no persistent memory of which overlapping
+                // layout owned the prior generation. Keep both exact missing
+                // route identities selected so either can age out through the
+                // bounded automatic deletion protocol without an uncovered
+                // base route.
+                push_selected_source(
+                    probes,
+                    &mut report,
+                    spec,
+                    cli_root,
+                    super::super::OPENHANDS_CURRENT_CLI_SOURCE_FORMAT,
+                );
             }
         }
-        Err(_) => issue_selector(&mut report, spec.provider),
+        Some(root) => {
+            let disjoint_cli_root = !cli_root.starts_with(&root);
+            push_selected_source(probes, &mut report, spec, root, "openhands_file_events");
+            if cli_present || disjoint_cli_root {
+                push_selected_source(
+                    probes,
+                    &mut report,
+                    spec,
+                    cli_root,
+                    super::super::OPENHANDS_CURRENT_CLI_SOURCE_FORMAT,
+                );
+            }
+        }
+        None => push_selected_source(
+            probes,
+            &mut report,
+            spec,
+            cli_root,
+            super::super::OPENHANDS_CURRENT_CLI_SOURCE_FORMAT,
+        ),
     }
     report
 }
@@ -633,6 +704,15 @@ fn openhands_cli_root(context: &DiscoveryContext) -> Result<PathBuf, ()> {
         return Ok(persistence.join("conversations"));
     }
     Ok(context.home().join(".openhands").join("conversations"))
+}
+
+/// Resolves the official current CLI direct conversation root with the same
+/// environment precedence used by automatic discovery.
+///
+/// `None` means the configured value cannot be represented safely or a
+/// relative/empty override requires an unavailable process CWD.
+pub fn resolve_openhands_conversations_root(context: &DiscoveryContext) -> Option<PathBuf> {
+    openhands_cli_root(context).ok()
 }
 
 fn openhands_cli_event_roots(root: &Path) -> Result<Vec<PathBuf>, SelectorReadError> {
