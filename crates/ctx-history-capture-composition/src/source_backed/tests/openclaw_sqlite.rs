@@ -195,9 +195,16 @@ fn registered_adapter_replaces_append_rewrite_active_delete_and_database_replace
     insert_active(&connection, "session-a", 1, 0, "event-a", "cold body");
     let registry = registered_registry(&data_root, &database);
 
-    refresh(&index_root, &registry);
+    let cold_receipt = refresh(&index_root, &registry);
     let cold = records(&index_root);
     assert_eq!(cold.len(), 1);
+
+    let unchanged = refresh(&index_root, &registry);
+    assert_eq!(
+        unchanged.commit.generation_id,
+        cold_receipt.commit.generation_id
+    );
+    assert_eq!(records(&index_root), cold);
 
     insert_active(&connection, "session-a", 2, 1, "event-b", "append body");
     refresh(&index_root, &registry);

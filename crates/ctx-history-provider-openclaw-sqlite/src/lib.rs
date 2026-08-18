@@ -48,7 +48,7 @@ use thiserror::Error;
 const DATABASE_LEAF: &str = "openclaw-agent.sqlite";
 const DATABASE_PARENT: &str = "agent";
 const SOURCE_SCHEMA_VARIANT: &str = "openclaw-agent-schema-v17";
-const PARSER_REVISION: &str = "openclaw-agent-sqlite-v2";
+const PARSER_REVISION: &str = "openclaw-agent-sqlite-v3";
 const SOURCE_ANCHOR_NAMESPACE: &str = "openclaw.agent";
 const ACTIVE_SESSION_NAMESPACE: &str = "openclaw.sqlite.session";
 const ARCHIVE_SESSION_NAMESPACE: &str = "openclaw.sqlite.archive-generation";

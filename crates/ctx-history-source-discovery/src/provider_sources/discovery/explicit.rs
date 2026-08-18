@@ -33,6 +33,27 @@ pub fn provider_source_for_path(
     provider: CaptureProvider,
     path: PathBuf,
 ) -> ProviderSource {
+    provider_source_for_path_with_optional_data_root(probes, provider, path, None)
+}
+
+/// Resolves one explicit provider path with bounded ctx-owned SQLite scratch
+/// authority. This is required for portable read-only admission when a source
+/// has a WAL or the platform has no retained-handle immutable SQLite VFS.
+pub fn provider_source_for_path_with_data_root(
+    probes: &StaticProviderProbeCatalog,
+    provider: CaptureProvider,
+    path: PathBuf,
+    data_root: &Path,
+) -> ProviderSource {
+    provider_source_for_path_with_optional_data_root(probes, provider, path, Some(data_root))
+}
+
+fn provider_source_for_path_with_optional_data_root(
+    probes: &StaticProviderProbeCatalog,
+    provider: CaptureProvider,
+    path: PathBuf,
+    data_root: Option<&Path>,
+) -> ProviderSource {
     let unknown_spec = ProviderSourceSpec {
         provider,
         display_name: "unknown",
@@ -44,7 +65,7 @@ pub fn provider_source_for_path(
     let spec = provider_source_spec(provider).unwrap_or(&unknown_spec);
     let observed = selectors::source_path_kind(&path);
     let (path, openclaw_source_format) = if provider == CaptureProvider::OpenClaw {
-        match openclaw_explicit_selection(probes, path, observed.ok()) {
+        match openclaw_explicit_selection(probes, path, observed.ok(), data_root) {
             Ok(selection) => (selection.path, Some(selection.source_format)),
             Err((path, reason)) => return unsupported_source(spec, path, reason),
         }
@@ -494,6 +515,7 @@ fn openclaw_explicit_selection(
     probes: &StaticProviderProbeCatalog,
     path: PathBuf,
     kind: Option<SourcePathKind>,
+    data_root: Option<&Path>,
 ) -> Result<OpenClawExplicitSelection, (PathBuf, &'static str)> {
     const JSONL: &str = "openclaw_session_jsonl_tree";
     const SQLITE: &str = ctx_history_openclaw_schema::OPENCLAW_AGENT_SQLITE_SOURCE_FORMAT;
@@ -507,7 +529,7 @@ fn openclaw_explicit_selection(
                 .and_then(Path::parent)
                 .map(|agent_root| agent_root.join("sessions"))
                 .ok_or_else(|| (path.clone(), EXACT_AGENT_REQUIRED))?;
-            return select_openclaw_sqlite(probes, path.clone(), path, jsonl);
+            return select_openclaw_sqlite(probes, path.clone(), path, jsonl, data_root);
         }
         return Ok(OpenClawExplicitSelection {
             path,
@@ -544,7 +566,7 @@ fn openclaw_explicit_selection(
         )
     };
     if is_openclaw_agent_sqlite_leaf(&sqlite) {
-        return select_openclaw_sqlite(probes, path, sqlite, jsonl);
+        return select_openclaw_sqlite(probes, path, sqlite, jsonl, data_root);
     }
     if contains_openclaw_sqlite(&path, SourcePathKind::Directory) {
         return Err((path, EXACT_AGENT_REQUIRED));
@@ -560,6 +582,7 @@ fn select_openclaw_sqlite(
     selected_path: PathBuf,
     sqlite: PathBuf,
     jsonl: PathBuf,
+    data_root: Option<&Path>,
 ) -> Result<OpenClawExplicitSelection, (PathBuf, &'static str)> {
     use super::super::probes::{has_openclaw_agent_sqlite_v17, BoundedProbe};
 
@@ -570,7 +593,7 @@ fn select_openclaw_sqlite(
     const PROBE_UNAVAILABLE: &str =
         "OpenClaw SQLite admission could not complete within the bounded read-only probe";
 
-    let admission = has_openclaw_agent_sqlite_v17(None, &sqlite);
+    let admission = has_openclaw_agent_sqlite_v17(data_root, &sqlite);
     if admission != BoundedProbe::Found
         && has_supported_explicit_history(probes, CaptureProvider::OpenClaw, &jsonl)
     {

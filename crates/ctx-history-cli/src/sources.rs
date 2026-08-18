@@ -49,7 +49,7 @@ where
     F: FnOnce(SourcesDiscoveryObservation),
 {
     let provider_filter = request.provider.map(|provider| provider.capture_provider());
-    let discovery = CliSourceDiscoveryPort::new(home.clone());
+    let discovery = CliSourceDiscoveryPort::new(home.clone(), data_root.to_path_buf());
     let show_all_sources = request.all || request.show_missing || provider_filter.is_some();
     let listing = ctx_history_ingest_application::assemble_source_listing(
         &discovery,

@@ -399,6 +399,56 @@ fn empty_lexical_event_retains_native_json_without_synthesized_text_or_scope() {
 }
 
 #[test]
+fn tool_only_events_retain_exact_structure_without_invented_message_text() {
+    let fixture = Fixture::new("tool-only-agent", false);
+    insert_active(&fixture.connection, "session-a", 1, 0, "call-event", "seed");
+    insert_active(
+        &fixture.connection,
+        "session-a",
+        2,
+        1,
+        "result-event",
+        "seed",
+    );
+    let call = json!({
+        "type": "message",
+        "id": "call-event",
+        "timestamp": 1_700_000_000_001_i64,
+        "message": {
+            "role": "assistant",
+            "content": [{
+                "type": "toolCall",
+                "id": "call-1",
+                "name": "read_file",
+                "arguments": {"path": "notes.txt", "offset": 4}
+            }]
+        }
+    });
+    let result = json!({
+        "type": "message",
+        "id": "result-event",
+        "timestamp": 1_700_000_000_002_i64,
+        "message": {
+            "role": "toolResult",
+            "content": [{
+                "type": "tool_result",
+                "toolCallId": "call-1",
+                "result": {"bytes": 12, "ok": true}
+            }]
+        }
+    });
+    rewrite_active_event(&fixture.connection, "session-a", 1, &call);
+    rewrite_active_event(&fixture.connection, "session-a", 2, &result);
+
+    let snapshot = fixture.read().expect("read tool-only native events");
+    assert_eq!(snapshot.records.len(), 2);
+    for (record, event) in snapshot.records.iter().zip([&call, &result]) {
+        assert_eq!(record.content.normalized_body, None);
+        assert_eq!(record.content.structured_content.as_ref(), Some(event));
+    }
+}
+
+#[test]
 fn reset_and_deleted_archives_are_generation_qualified_sessions() {
     let fixture = Fixture::new("archive-agent", false);
     insert_active(

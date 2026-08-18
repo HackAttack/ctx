@@ -94,7 +94,7 @@ impl LocalToolBackend {
     }
 
     fn sources(&self) -> Result<SourceCatalog, ToolBackendError> {
-        let report = crate::provider_sources::discovered_sources_report();
+        let report = crate::provider_sources::discovered_sources_report(&self.data_root);
         let mut source_values = crate::sources_json(&report.sources);
         source_values.extend(
             crate::discovered_plugin_sources_json(&self.data_root)

@@ -12,9 +12,9 @@ use ctx_history_refresh::ExplicitSourceCatalogUpsert;
 use ctx_terminal::Ui;
 
 use crate::{
-    discovered_sources_for_provider_report, discovered_sources_report, provider_selection_guidance,
-    HistoryCliConfig, HistoryConfigSnapshotPort, HistoryProvider, ImportRequest, ProgressMode,
-    ProgressReporter,
+    discovered_sources_for_provider_report_with_data_root,
+    discovered_sources_report_with_data_root, provider_selection_guidance, HistoryCliConfig,
+    HistoryConfigSnapshotPort, HistoryProvider, ImportRequest, ProgressMode, ProgressReporter,
 };
 
 /// Final-host authority retained outside the history application. Implementors
@@ -25,6 +25,7 @@ pub trait ImportApplicationPort {
 
     fn explicit_source(
         &self,
+        data_root: &Path,
         path: &Path,
         provider: Option<CaptureProvider>,
         custom_jsonl: bool,
@@ -71,6 +72,7 @@ pub fn run_import_application<P: ImportApplicationPort, C: HistoryConfigSnapshot
     let request = ingest_request(request);
     let mut host = HistoryImportHost {
         home,
+        data_root: data_root.to_path_buf(),
         port,
         config: config.snapshot(),
         progress_mode,
@@ -98,6 +100,7 @@ fn ingest_request(request: ImportRequest) -> IngestRequest {
 
 struct HistoryImportHost<'a, P> {
     home: Option<PathBuf>,
+    data_root: PathBuf,
     port: &'a mut P,
     config: HistoryCliConfig,
     progress_mode: ProgressMode,
@@ -112,12 +115,16 @@ impl<P: ImportApplicationPort> SourceDiscoveryPort for HistoryImportHost<'_, P> 
             .home
             .as_deref()
             .context("resolve user home for provider-root safety preflight")?;
-        Ok(discovered_sources_report(Some(home)))
+        Ok(discovered_sources_report_with_data_root(
+            Some(home),
+            &self.data_root,
+        ))
     }
 
     fn discover_provider(&self, provider: CaptureProvider) -> Result<DiscoveryReport> {
-        Ok(discovered_sources_for_provider_report(
+        Ok(discovered_sources_for_provider_report_with_data_root(
             self.home.as_deref(),
+            &self.data_root,
             provider,
         ))
     }
@@ -137,11 +144,13 @@ impl<P: ImportApplicationPort> CaptureAdmissionPort for HistoryImportHost<'_, P>
 
     fn explicit_source(
         &self,
+        data_root: &Path,
         path: &Path,
         provider: Option<CaptureProvider>,
         custom_jsonl: bool,
     ) -> Result<ProviderSource> {
-        self.port.explicit_source(path, provider, custom_jsonl)
+        self.port
+            .explicit_source(data_root, path, provider, custom_jsonl)
     }
 
     fn prepare_plugin(
