@@ -16,7 +16,7 @@ use sha2::{Digest, Sha256};
 use ctx_history_jsonl::{
     fit_jsonl_activity, FallbackEventIdentityState, JsonlActivityObservedBytes,
     JsonlFamilyProjectionMode, JsonlFamilyProjector, JsonlFamilyWorkerContext, JsonlReader,
-    JsonlRecordRef, JsonlSourceIdentity,
+    JsonlRecordFraming, JsonlRecordRef, JsonlSourceIdentity,
 };
 use ctx_history_provider_runtime::{
     source_io::ProviderSourceRoot, CaptureError, ProviderBaseEventLookup, ProviderJsonlRuntime,
@@ -25,13 +25,15 @@ use ctx_history_provider_runtime::{
 
 use crate::mux::normalization::{
     apply_mux_core_output_diagnostic, mux_core_event, mux_event_text, mux_event_type,
-    mux_message_timestamp_opt, mux_output_projection, mux_partial_event_index,
-    mux_provider_event_id, mux_result_content, MuxMessageRow, MuxOutputProjection,
+    mux_history_sequence, mux_message_timestamp_opt, mux_output_projection,
+    mux_partial_event_index, mux_provider_event_id, mux_result_content, MuxMessageRow,
+    MuxOutputProjection,
 };
 
 use super::{
-    open_verified, MuxBinding, MuxStreamKind, EVENT_IDENTITY_REVISION, LOGICAL_EVENT_KIND,
-    MAX_EVENT_SEQUENCE_ORDINAL, PARSER_REVISION, PARTIAL_EVENT_SEQUENCE_BASE,
+    bound_stream, open_verified, optional_bound_stream, MuxBinding, MuxStreamKind,
+    EVENT_IDENTITY_REVISION, LOGICAL_EVENT_KIND, MAX_EVENT_SEQUENCE_ORDINAL, PARSER_REVISION,
+    PARTIAL_EVENT_SEQUENCE_BASE,
 };
 
 const NATIVE_ITEM_NAMESPACE: &str = "mux.record";
@@ -43,6 +45,7 @@ pub(super) struct MuxProjector<L: BaseEventLookup> {
     authority: Arc<ProviderSourceRoot>,
     binding: MuxBinding,
     fallback_identities: FallbackEventIdentityState<L, CaptureError>,
+    next_history_ordinal: u64,
 }
 
 impl<L> MuxProjector<L>
@@ -70,10 +73,11 @@ where
             authority,
             binding,
             fallback_identities,
+            next_history_ordinal: 0,
         })
     }
 
-    fn project_record(
+    pub(super) fn project_record(
         &mut self,
         stream: MuxStreamKind,
         record: JsonlRecordRef<'_>,
@@ -108,11 +112,29 @@ where
                 "Mux source ordinal exceeds event identity capacity".to_owned(),
             ));
         }
+        let fallback_sequence =
+            if stream.is_partial() {
+                None
+            } else {
+                let fallback = self.next_history_ordinal;
+                if fallback > MAX_EVENT_SEQUENCE_ORDINAL {
+                    return Err(CaptureError::InvalidPayload(
+                        "Mux compound history exceeds event ordering capacity".to_owned(),
+                    ));
+                }
+                self.next_history_ordinal = self.next_history_ordinal.checked_add(1).ok_or(
+                    CaptureError::SystemInvariant("Mux compound history ordinal overflowed"),
+                )?;
+                Some(fallback)
+            };
         let event_sequence = if stream.is_partial() {
             PARTIAL_EVENT_SEQUENCE_BASE
                 | (mux_partial_event_index(bytes) & MAX_EVENT_SEQUENCE_ORDINAL)
         } else {
-            ordinal
+            mux_history_sequence(&value)
+                .and_then(|sequence| u64::try_from(sequence).ok())
+                .filter(|sequence| *sequence <= MAX_EVENT_SEQUENCE_ORDINAL)
+                .unwrap_or_else(|| fallback_sequence.unwrap_or_default())
         };
         let native_record_id = mux_provider_event_id(&value, stream.is_partial());
         let (native_item_key, native_event_id) = match native_record_id {
@@ -234,6 +256,53 @@ where
         }
         record.validate_contract().map_err(contract)?;
         emit(record)
+    }
+
+    pub(super) fn project_bound_stream(
+        &mut self,
+        stream: MuxStreamKind,
+        emit: &mut dyn FnMut(CoreRecord) -> Result<()>,
+    ) -> Result<()> {
+        let bound = bound_stream(&self.binding, stream)?.clone();
+        let source_file = open_verified(&self.authority, &bound)?;
+        let path = self.authority.named_path().join(&bound.relative_path);
+        let stream_variant = match stream {
+            MuxStreamKind::Archive => "mux-bounded-archive-jsonl-v1",
+            MuxStreamKind::Chat => "mux-bounded-chat-jsonl-v1",
+            MuxStreamKind::Partial => "mux-bounded-partial-snapshot-v1",
+        };
+        let identity = JsonlSourceIdentity::new(
+            "mux",
+            PARSER_REVISION,
+            stream_variant,
+            self.source.exact_descriptor_digest(),
+            path,
+        );
+        let mut reader = if stream.is_partial() {
+            JsonlReader::open_whole_record(identity, source_file, None)?
+        } else {
+            JsonlReader::open_with_record_framing(
+                identity,
+                source_file,
+                None,
+                None,
+                JsonlRecordFraming::ordinary(),
+            )?
+        };
+        while reader
+            .visit_page(&mut |record| self.project_record(stream, record, emit))?
+            .is_some()
+        {}
+        if reader.outcome().is_none() {
+            return Err(CaptureError::SystemInvariant(
+                "Mux companion stream scan has no terminal evidence",
+            ));
+        }
+        Ok(())
+    }
+
+    pub(super) fn finish(&self) -> Result<()> {
+        self.fallback_identities.finish()
     }
 }
 
@@ -401,46 +470,26 @@ where
         _worker: &mut JsonlFamilyWorkerContext<Self::Runtime>,
         emit: &mut dyn FnMut(CoreRecord) -> Result<()>,
     ) -> Result<()> {
-        if !self.inner.binding.primary_stream.is_partial() {
-            if let Some(partial) = self.inner.binding.partial.clone() {
-                let source_file = open_verified(&self.inner.authority, &partial)?;
-                let path = self
-                    .inner
-                    .authority
-                    .named_path()
-                    .join(&partial.relative_path);
-                let mut reader = JsonlReader::open_whole_record(
-                    JsonlSourceIdentity::new(
-                        "mux",
-                        PARSER_REVISION,
-                        "mux-bounded-partial-snapshot-v1",
-                        self.inner.source.exact_descriptor_digest(),
-                        path,
-                    ),
-                    source_file,
-                    None,
-                )?;
-                while reader
-                    .visit_page(&mut |record| {
-                        self.inner
-                            .project_record(MuxStreamKind::Partial, record, emit)
-                    })?
-                    .is_some()
-                {}
-                if reader.outcome().is_none() {
-                    return Err(CaptureError::SystemInvariant(
-                        "Mux partial snapshot scan has no terminal evidence",
-                    ));
-                }
+        let trailing_streams: &[MuxStreamKind] = match self.inner.binding.primary_stream {
+            MuxStreamKind::Archive => &[MuxStreamKind::Chat, MuxStreamKind::Partial],
+            MuxStreamKind::Chat => &[MuxStreamKind::Partial],
+            MuxStreamKind::Partial => &[],
+        };
+        for stream in trailing_streams {
+            if optional_bound_stream(&self.inner.binding, *stream).is_some() {
+                self.inner.project_bound_stream(*stream, emit)?;
             }
         }
-        self.inner.fallback_identities.finish()
+        self.inner.finish()
     }
 }
 
 fn fallback_fingerprint(stream: MuxStreamKind, bytes: &[u8]) -> Result<TypedKey> {
     let mut digest = Sha256::new();
     digest.update(FALLBACK_FINGERPRINT_DOMAIN);
+    // Archive and active chat are one durable history stream. Keep their
+    // fallback identity domain identical so rotation cannot churn event IDs;
+    // the staged partial remains deliberately separate.
     digest.update([u8::from(stream.is_partial())]);
     digest.update((bytes.len() as u64).to_be_bytes());
     digest.update(bytes);
@@ -632,6 +681,7 @@ mod tests {
             parent_session_id,
             root_session_id,
             primary_stream: MuxStreamKind::Chat,
+            archive: None,
             chat: None,
             partial: None,
             metadata_file: None,
@@ -733,6 +783,7 @@ mod tests {
         let temp = tempfile::tempdir().unwrap();
         let native = crate::mux::source::MuxSessionSource {
             session_dir: temp.path().join("mux-child"),
+            archive_path: None,
             chat_path: None,
             partial_path: None,
             metadata_path: None,
@@ -777,6 +828,7 @@ mod tests {
         let temp = tempfile::tempdir().unwrap();
         let native = crate::mux::source::MuxSessionSource {
             session_dir: temp.path().join("mux-child"),
+            archive_path: None,
             chat_path: None,
             partial_path: None,
             metadata_path: None,
@@ -841,6 +893,7 @@ mod tests {
                 let temp = tempfile::tempdir().unwrap();
                 let native = crate::mux::source::MuxSessionSource {
                     session_dir: temp.path().join("mux-child"),
+                    archive_path: None,
                     chat_path: None,
                     partial_path: None,
                     metadata_path: None,
