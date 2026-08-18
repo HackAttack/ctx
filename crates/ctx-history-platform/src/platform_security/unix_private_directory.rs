@@ -182,7 +182,14 @@ pub(super) fn verify_no_extended_acl(file: &File) -> io::Result<()> {
 
     let acl = unsafe { acl_get_fd_np(file.as_raw_fd(), ACL_TYPE_EXTENDED) };
     if acl.is_null() {
-        return Err(io::Error::last_os_error());
+        let error = io::Error::last_os_error();
+        // Darwin reports ENOENT when a regular file has no extended ACL.
+        // Absence is the exact state this verifier requires.
+        return if error.raw_os_error() == Some(libc::ENOENT) {
+            Ok(())
+        } else {
+            Err(error)
+        };
     }
     let mut entry = null_mut();
     let result = unsafe { acl_get_entry(acl, ACL_FIRST_ENTRY, &raw mut entry) };

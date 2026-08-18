@@ -379,6 +379,17 @@ mod unix_tests {
         assert_eq!(fs::metadata(target)?.permissions().mode() & 0o777, 0o500);
         Ok(())
     }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn private_file_without_extended_acl_is_valid() -> io::Result<()> {
+        let parent = tempfile::tempdir()?;
+        let target = parent.path().join("private-state");
+        fs::write(&target, b"state")?;
+
+        restrict_private_file(&target)?;
+        verify_private_file(&target)
+    }
 }
 
 #[cfg(all(test, windows))]
