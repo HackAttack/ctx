@@ -45,7 +45,9 @@ pub(super) struct MuxProjector<L: BaseEventLookup> {
     authority: Arc<ProviderSourceRoot>,
     binding: MuxBinding,
     fallback_identities: FallbackEventIdentityState<L, CaptureError>,
-    next_history_ordinal: u64,
+    next_history_sequence: u64,
+    archived_max_history_sequence: Option<u64>,
+    chat_overlap_prefix_open: bool,
 }
 
 impl<L> MuxProjector<L>
@@ -73,7 +75,9 @@ where
             authority,
             binding,
             fallback_identities,
-            next_history_ordinal: 0,
+            next_history_sequence: 0,
+            archived_max_history_sequence: None,
+            chat_overlap_prefix_open: true,
         })
     }
 
@@ -103,6 +107,23 @@ where
                 "Mux record changed its native session owner".to_owned(),
             ));
         }
+        let history_sequence = mux_history_sequence(&value);
+        // Mux fsyncs archive appends before rewriting chat.jsonl. A crash can
+        // therefore replay covered sequences at the active-file prefix. Match
+        // its recovery rule: malformed sequences are retained, and the first
+        // newer valid sequence closes the overlap seam.
+        if stream == MuxStreamKind::Archive {
+            self.archived_max_history_sequence =
+                self.archived_max_history_sequence.max(history_sequence);
+        } else if stream == MuxStreamKind::Chat && self.chat_overlap_prefix_open {
+            match (self.archived_max_history_sequence, history_sequence) {
+                (Some(archived_max), Some(sequence)) if sequence <= archived_max => return Ok(()),
+                (Some(archived_max), Some(sequence)) if sequence > archived_max => {
+                    self.chat_overlap_prefix_open = false;
+                }
+                _ => {}
+            }
+        }
         let output = mux_output_projection(&value);
         let content_omission = mux_output_content_omission(&value, output.as_ref());
         let evidence = record.evidence();
@@ -112,29 +133,23 @@ where
                 "Mux source ordinal exceeds event identity capacity".to_owned(),
             ));
         }
-        let fallback_sequence =
-            if stream.is_partial() {
-                None
-            } else {
-                let fallback = self.next_history_ordinal;
-                if fallback > MAX_EVENT_SEQUENCE_ORDINAL {
-                    return Err(CaptureError::InvalidPayload(
-                        "Mux compound history exceeds event ordering capacity".to_owned(),
-                    ));
-                }
-                self.next_history_ordinal = self.next_history_ordinal.checked_add(1).ok_or(
-                    CaptureError::SystemInvariant("Mux compound history ordinal overflowed"),
-                )?;
-                Some(fallback)
-            };
         let event_sequence = if stream.is_partial() {
             PARTIAL_EVENT_SEQUENCE_BASE
                 | (mux_partial_event_index(bytes) & MAX_EVENT_SEQUENCE_ORDINAL)
         } else {
-            mux_history_sequence(&value)
-                .and_then(|sequence| u64::try_from(sequence).ok())
+            if self.next_history_sequence > MAX_EVENT_SEQUENCE_ORDINAL {
+                return Err(CaptureError::InvalidPayload(
+                    "Mux compound history exceeds event ordering capacity".to_owned(),
+                ));
+            }
+            // Preserve a valid provider sequence when it remains available;
+            // otherwise promote the row to the next free compound slot.
+            let sequence = history_sequence
                 .filter(|sequence| *sequence <= MAX_EVENT_SEQUENCE_ORDINAL)
-                .unwrap_or_else(|| fallback_sequence.unwrap_or_default())
+                .filter(|sequence| *sequence >= self.next_history_sequence)
+                .unwrap_or(self.next_history_sequence);
+            self.next_history_sequence = sequence + 1;
+            sequence
         };
         let native_record_id = mux_provider_event_id(&value, stream.is_partial());
         let (native_item_key, native_event_id) = match native_record_id {

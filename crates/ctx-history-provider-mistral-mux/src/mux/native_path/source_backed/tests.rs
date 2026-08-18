@@ -276,6 +276,177 @@ fn rotation_preserves_source_session_and_event_identities_without_duplicates() {
 }
 
 #[test]
+fn crash_window_overlap_is_removed_only_from_the_active_seam() {
+    let temp = tempfile::tempdir().unwrap();
+    let session = temp.path().join("crash-overlap-session");
+    fs::create_dir(&session).unwrap();
+    let records = [
+        message(
+            "crash-overlap-session",
+            Some("archived-provider-id"),
+            Some(json!(0)),
+            "first sealed message",
+        ),
+        message(
+            "crash-overlap-session",
+            None,
+            Some(json!(1)),
+            "second sealed message",
+        ),
+        message(
+            "crash-overlap-session",
+            Some("active-provider-id"),
+            Some(json!(2)),
+            "first active message",
+        ),
+        message(
+            "crash-overlap-session",
+            Some("same-text-distinct-id"),
+            Some(json!(3)),
+            "second sealed message",
+        ),
+    ];
+    let chat = session.join("chat.jsonl");
+    let archive = session.join("chat-archive.jsonl");
+    write_jsonl(&chat, &records);
+    let before = project(&session);
+
+    // Mux appends and fsyncs the sealed prefix before rewriting chat.jsonl.
+    // A crash in that window leaves the same valid sequences at both sides of
+    // the archive/chat seam.
+    write_jsonl(&archive, &records[..2]);
+    write_jsonl(&chat, &records);
+    let crash_window = project(&session);
+
+    assert!(before.source.exact_descriptor_eq(&crash_window.source));
+    assert_eq!(before.binding.session_id, crash_window.binding.session_id);
+    assert_eq!(before.records, crash_window.records);
+    assert_eq!(crash_window.records.len(), records.len());
+    assert_eq!(
+        crash_window
+            .records
+            .iter()
+            .map(|record| record.event_sequence)
+            .collect::<Vec<_>>(),
+        [0, 1, 2, 3]
+    );
+    assert_eq!(
+        crash_window.records[3].content.meaningful_text(),
+        "second sealed message"
+    );
+    assert_ne!(
+        crash_window.records[1].event_id,
+        crash_window.records[3].event_id
+    );
+
+    write_jsonl(&chat, &records[2..]);
+    let healed = project(&session);
+    assert_eq!(before.records, healed.records);
+}
+
+#[test]
+fn malformed_and_missing_history_sequences_use_monotonic_collision_free_fallbacks() {
+    let temp = tempfile::tempdir().unwrap();
+    let session = temp.path().join("malformed-sequence-session");
+    fs::create_dir(&session).unwrap();
+    let records = [
+        message(
+            "malformed-sequence-session",
+            None,
+            Some(json!(5)),
+            "valid five",
+        ),
+        message("malformed-sequence-session", None, None, "missing sequence"),
+        message(
+            "malformed-sequence-session",
+            None,
+            Some(json!(7.0)),
+            "integral JSON number is valid",
+        ),
+        message(
+            "malformed-sequence-session",
+            None,
+            Some(json!("6")),
+            "numeric string is malformed",
+        ),
+        message(
+            "malformed-sequence-session",
+            None,
+            Some(json!(6.5)),
+            "fractional sequence is malformed",
+        ),
+        message(
+            "malformed-sequence-session",
+            None,
+            Some(json!(-1)),
+            "negative sequence is malformed",
+        ),
+        message(
+            "malformed-sequence-session",
+            None,
+            Some(json!(6)),
+            "valid six after fallback slots",
+        ),
+        message(
+            "malformed-sequence-session",
+            None,
+            Some(json!(100)),
+            "valid hundred",
+        ),
+        message(
+            "malformed-sequence-session",
+            None,
+            None,
+            "missing after hundred",
+        ),
+        message(
+            "malformed-sequence-session",
+            None,
+            Some(json!(101)),
+            "valid one hundred one after fallback",
+        ),
+    ];
+    let chat = session.join("chat.jsonl");
+    write_jsonl(&chat, &records);
+    let before = project(&session);
+
+    assert_eq!(before.records.len(), records.len());
+    assert_eq!(
+        before
+            .records
+            .iter()
+            .map(|record| record.event_sequence)
+            .collect::<Vec<_>>(),
+        [5, 6, 7, 8, 9, 10, 11, 100, 101, 102]
+    );
+    assert!(before
+        .records
+        .windows(2)
+        .all(|window| window[0].event_sequence < window[1].event_sequence));
+    assert_eq!(
+        before.records[0].native_event_id,
+        Some(TypedKey::Utf8("historySequence:5".to_owned()))
+    );
+    assert_ne!(
+        before.records[3].native_event_id,
+        Some(TypedKey::Utf8("historySequence:6".to_owned()))
+    );
+    assert_eq!(
+        before.records[2].native_event_id,
+        Some(TypedKey::Utf8("historySequence:7".to_owned()))
+    );
+    assert_eq!(
+        before.records[6].native_event_id,
+        Some(TypedKey::Utf8("historySequence:6".to_owned()))
+    );
+
+    write_jsonl(&session.join("chat-archive.jsonl"), &records[..2]);
+    write_jsonl(&chat, &records[2..]);
+    let rotated = project(&session);
+    assert_eq!(before.records, rotated.records);
+}
+
+#[test]
 fn archive_append_rewrite_and_delete_change_compound_source_revision() {
     let temp = tempfile::tempdir().unwrap();
     let session = temp.path().join("revision-session");

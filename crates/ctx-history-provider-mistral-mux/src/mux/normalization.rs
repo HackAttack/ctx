@@ -341,14 +341,19 @@ pub(super) fn mux_partial_event_index(bytes: &[u8]) -> u64 {
     u64::from_be_bytes(prefix) | (1_u64 << 63)
 }
 
-pub(super) fn mux_history_sequence(value: &Value) -> Option<i64> {
-    match value.pointer("/metadata/historySequence") {
-        Some(Value::Number(number)) => number
-            .as_i64()
-            .or_else(|| number.as_u64().and_then(|value| i64::try_from(value).ok())),
-        Some(Value::String(raw)) => raw.parse::<i64>().ok(),
-        _ => None,
+pub(super) fn mux_history_sequence(value: &Value) -> Option<u64> {
+    let number = value
+        .pointer("/metadata/historySequence")
+        .and_then(Value::as_number)?;
+    if let Some(sequence) = number.as_u64() {
+        return Some(sequence);
     }
+    let sequence = number.as_f64()?;
+    (sequence.is_finite()
+        && sequence >= 0.0
+        && sequence.fract() == 0.0
+        && sequence < u64::MAX as f64)
+        .then_some(sequence as u64)
 }
 
 pub(super) fn mux_message_timestamp_opt(value: &Value) -> Option<DateTime<Utc>> {
