@@ -16,22 +16,17 @@ ADVISORY_POLICY_PATH = ROOT / "security" / "release-advisory-policy-v1.json"
 SUPPORTED_TARGET_IDS = tuple(
     "linux-arm64 linux-x64 macos-arm64 macos-x64 windows-x64".split()
 )
-HELPER_RUST_TARGETS = {
+PUBLIC_RUST_TARGETS = {
     "linux-arm64": "aarch64-unknown-linux-gnu",
     "linux-x64": "x86_64-unknown-linux-gnu",
     "macos-arm64": "aarch64-apple-darwin",
     "macos-x64": "x86_64-apple-darwin",
-    "windows-x64": "x86_64-pc-windows-msvc",
-}
-HELPER_FACTORY_RUST_TARGETS = {
-    **HELPER_RUST_TARGETS,
     "windows-x64": "x86_64-pc-windows-gnu",
 }
 STRING_FIELDS = set(
     """
-    arch archive helper_artifact helper_factory_rust_target
-    helper_rust_target id managed_pair_bin_dir managed_pair_companion_slot
-    managed_pair_core_slot official_companion_rust_target os platform_signature
+    arch archive helper_artifact id managed_pair_bin_dir
+    managed_pair_companion_slot managed_pair_core_slot os platform_signature
     public_artifact public_construction_authority public_construction_label
     public_rust_target runtime_authority vault
     """.split()
@@ -79,19 +74,8 @@ def validate_target(target: dict[str, Any]) -> None:
         "scripts/release/build-public-candidate-on-linux.sh"
     ):
         raise ValueError("public construction label must name the Linux factory")
-    if target["helper_rust_target"] != HELPER_RUST_TARGETS[target["id"]]:
-        raise ValueError(f"unexpected native helper target for {target['id']}")
-    if (
-        target["helper_factory_rust_target"]
-        != HELPER_FACTORY_RUST_TARGETS[target["id"]]
-    ):
-        raise ValueError(
-            f"unexpected helper factory target for {target['id']}"
-        )
-    if target["official_companion_rust_target"] != target["helper_rust_target"]:
-        raise ValueError(
-            f"official companion target must match native helper target for {target['id']}"
-        )
+    if target["public_rust_target"] != PUBLIC_RUST_TARGETS[target["id"]]:
+        raise ValueError(f"unexpected release Rust target for {target['id']}")
     suffix = ".exe" if target["os"] == "windows" else ""
     expected_public = f"ctx-{target['id']}{suffix}"
     if target["id"] == "linux-arm64":

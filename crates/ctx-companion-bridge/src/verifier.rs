@@ -29,7 +29,7 @@ const EMBEDDED_TARGET_MATRIX: &[u8] = include_bytes!("../../../contracts/release
 const STATE_SCHEMA_SHA256: &str =
     "bc81eae66d02e436e3f97cbcc5e019508cf9591be05eb8e4bf86ad4659e7dbe1";
 const TARGET_MATRIX_SHA256: &str =
-    "1cf089c8f494c9662428518ce07ff91a3ceb28fe4ac4d75b6a9d7dd3f16c75a5";
+    "d5d62904b417ea41ff593e4c40a3b7238af24733fbf82757d06b150f3243eefa";
 const MAX_ENVELOPE_BYTES: usize = 2 * 1024 * 1024;
 const MAX_MANIFEST_BYTES: usize = 1024 * 1024;
 const MAX_SIGNATURE_BYTES: usize = 16 * 1024;
@@ -282,8 +282,8 @@ fn validate_manifest_identity(manifest: &Manifest, target: TargetSpec) -> Result
     if manifest.target.id != target.id
         || manifest.target.os != target.os
         || manifest.target.arch != target.arch
-        || manifest.target.core_rust_target != target.core_rust_target
-        || manifest.target.companion_rust_target != target.companion_rust_target
+        || manifest.target.core_rust_target != target.rust_target
+        || manifest.target.companion_rust_target != target.rust_target
     {
         return Err(verification(
             "manifest target does not match this Core build",
@@ -310,14 +310,14 @@ fn validate_manifest_identity(manifest: &Manifest, target: TargetSpec) -> Result
         "core",
         target.core_artifact,
         target.core_slot,
-        target.core_rust_target,
+        target.rust_target,
     )?;
     validate_component_document(
         &manifest.components.companion,
         "companion",
         target.companion_artifact,
         target.companion_slot,
-        target.companion_rust_target,
+        target.rust_target,
     )
 }
 
@@ -468,7 +468,7 @@ mod component_tests {
                 "core",
                 target.core_artifact,
                 target.core_slot,
-                target.core_rust_target,
+                target.rust_target,
                 CORE_SHA,
                 size_bytes,
             ))
@@ -480,7 +480,7 @@ mod component_tests {
             "core",
             target.core_artifact,
             target.core_slot,
-            target.core_rust_target,
+            target.rust_target,
         )
         .is_ok());
 
@@ -490,7 +490,7 @@ mod component_tests {
             "core",
             target.core_artifact,
             target.core_slot,
-            target.core_rust_target,
+            target.rust_target,
         )
         .is_err());
     }

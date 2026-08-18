@@ -148,7 +148,7 @@ def manifest(target_id: str) -> dict[str, object]:
             "os": target["os"],
             "arch": target["arch"],
             "core_rust_target": target["public_rust_target"],
-            "companion_rust_target": target["official_companion_rust_target"],
+            "companion_rust_target": target["public_rust_target"],
         },
         "install_geometry": {
             "install_root": "<install-root>",
@@ -162,7 +162,7 @@ def manifest(target_id: str) -> dict[str, object]:
         "compatibility": {"invocation_fingerprint": digest("invoke"), "core_capability_fingerprint": digest("core-capabilities")},
         "components": {
             "core": component("core", target["public_artifact"], target["managed_pair_core_slot"], target["public_rust_target"]),
-            "companion": component("companion", target["helper_artifact"], target["managed_pair_companion_slot"], target["official_companion_rust_target"]),
+            "companion": component("companion", target["helper_artifact"], target["managed_pair_companion_slot"], target["public_rust_target"]),
         },
     }
 
@@ -347,9 +347,9 @@ class ManagedPairContractsTest(unittest.TestCase):
                 with self.assertRaisesRegex(contracts.ContractError, message):
                     contracts.validate_manifest(value)
 
-    def test_windows_companion_is_independently_bound_to_msvc_not_gnu_factory_output(self) -> None:
+    def test_windows_companion_is_bound_to_the_linux_factory_gnu_output(self) -> None:
         value = manifest("windows-x64")
-        value["target"]["companion_rust_target"] = "x86_64-pc-windows-gnu"  # type: ignore[index]
+        value["target"]["companion_rust_target"] = "x86_64-pc-windows-msvc"  # type: ignore[index]
         with self.assertRaisesRegex(contracts.ContractError, "official companion target"):
             contracts.validate_manifest(value)
 
@@ -414,7 +414,7 @@ class ManagedPairContractsTest(unittest.TestCase):
         with self.assertRaisesRegex(contracts.ContractError, "compact canonical JSON"):
             contracts.validate_envelope(noncompact, authorities=test_authorities())
         value = manifest("windows-x64")
-        value["components"]["companion"]["build_identity"]["rust_target"] = "x86_64-pc-windows-gnu"  # type: ignore[index]
+        value["components"]["companion"]["build_identity"]["rust_target"] = "x86_64-pc-windows-msvc"  # type: ignore[index]
         with self.assertRaisesRegex(contracts.ContractError, "companion build identity"):
             contracts.validate_manifest(value)
 

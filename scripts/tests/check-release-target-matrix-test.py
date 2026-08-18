@@ -42,6 +42,7 @@ class ReleaseTargetMatrixTest(unittest.TestCase):
             windows["public_construction_authority"],
             "linux-cross-cargo-zigbuild-v1",
         )
+        self.assertEqual(windows["public_rust_target"], "x86_64-pc-windows-gnu")
         self.assertNotIn("bazel_platform", windows)
         self.assertIsNone(windows["linux_build"])
         linux = next(
@@ -51,6 +52,9 @@ class ReleaseTargetMatrixTest(unittest.TestCase):
         serialized = json.dumps(value)
         for stale_field in (
             "builder_image",
+            "helper_factory_rust_target",
+            "helper_rust_target",
+            "official_companion_rust_target",
             "rust_commit",
             "rust_sysroot",
             "rust_toolchain",
@@ -121,7 +125,6 @@ class ReleaseTargetMatrixTest(unittest.TestCase):
             id="freebsd-x64",
             os="freebsd",
             public_rust_target="x86_64-unknown-freebsd",
-            helper_rust_target="x86_64-unknown-freebsd",
             public_artifact="ctx-freebsd-x64",
             helper_artifact="ctx-pro-freebsd-x64",
             public_construction_label="scripts/release/build-public-candidate-on-linux.sh",

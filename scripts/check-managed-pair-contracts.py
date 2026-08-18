@@ -228,7 +228,7 @@ def validate_component(
     )
     if identity["component"] != component:
         raise ContractError(f"{component} build identity has the wrong component")
-    expected_rust_target = target["public_rust_target"] if component == "core" else target["official_companion_rust_target"]
+    expected_rust_target = target["public_rust_target"]
     if identity["rust_target"] != expected_rust_target or RUST_TARGET.fullmatch(identity["rust_target"]) is None:
         raise ContractError(f"{component} build identity is not bound to its target triple")
     require_string(identity["source_revision"], f"{component} source revision", re.compile(r"[0-9a-f]{40}\Z"))
@@ -274,7 +274,7 @@ def validate_manifest(
             raise ContractError(f"target {field} does not match the fixed target matrix")
     if target_value["core_rust_target"] != target["public_rust_target"]:
         raise ContractError("Core target triple does not match the fixed target matrix")
-    if target_value["companion_rust_target"] != target["official_companion_rust_target"]:
+    if target_value["companion_rust_target"] != target["public_rust_target"]:
         raise ContractError("companion target triple does not match the official companion target")
     geometry = require_keys(value["install_geometry"], {"install_root", "managed_bin_dir", "core_slot", "companion_slot"}, "install geometry")
     if geometry != {

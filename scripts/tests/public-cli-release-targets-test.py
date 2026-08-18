@@ -37,31 +37,17 @@ class PublicCliReleaseTargetsTest(unittest.TestCase):
             "windows-x64": ("ctx.exe", "ctx-windows-x64.exe"),
         }
         actual = {}
-        helper_targets = {}
-        helper_factory_targets = {}
+        rust_targets = {}
         for target_id in sorted(expected):
             target = helper.find_target(value, target_id)
             actual[target_id] = (
                 helper.RAW_BINARIES[target_id],
                 target["public_artifact"],
             )
-            helper_targets[target_id] = target["helper_rust_target"]
-            helper_factory_targets[target_id] = target[
-                "helper_factory_rust_target"
-            ]
+            rust_targets[target_id] = target["public_rust_target"]
         self.assertEqual(actual, expected)
         self.assertEqual(
-            helper_targets,
-            {
-                "linux-arm64": "aarch64-unknown-linux-gnu",
-                "linux-x64": "x86_64-unknown-linux-gnu",
-                "macos-arm64": "aarch64-apple-darwin",
-                "macos-x64": "x86_64-apple-darwin",
-                "windows-x64": "x86_64-pc-windows-msvc",
-            },
-        )
-        self.assertEqual(
-            helper_factory_targets,
+            rust_targets,
             {
                 "linux-arm64": "aarch64-unknown-linux-gnu",
                 "linux-x64": "x86_64-unknown-linux-gnu",
@@ -101,35 +87,19 @@ class PublicCliReleaseTargetsTest(unittest.TestCase):
             with self.assertRaisesRegex(helper.ContractError, "unexpected release contract"):
                 helper.load_matrix(path)
 
-    def test_native_and_factory_helper_targets_cannot_be_conflated(self) -> None:
-        mutations = (
-            (
-                "helper_rust_target",
-                "x86_64-pc-windows-gnu",
-                "unexpected native helper target",
-            ),
-            (
-                "helper_factory_rust_target",
-                "x86_64-pc-windows-msvc",
-                "unexpected helper factory target",
-            ),
+    def test_windows_release_must_use_the_linux_factory_gnu_target(self) -> None:
+        value = json.loads(MATRIX.read_text(encoding="utf-8"))
+        windows = next(
+            target for target in value["targets"] if target["id"] == "windows-x64"
         )
-        for field, replacement, message in mutations:
-            with self.subTest(field=field):
-                value = json.loads(MATRIX.read_text(encoding="utf-8"))
-                windows = next(
-                    target
-                    for target in value["targets"]
-                    if target["id"] == "windows-x64"
-                )
-                windows[field] = replacement
-                with tempfile.TemporaryDirectory() as directory:
-                    path = Path(directory) / "release-targets-v1.json"
-                    path.write_text(json.dumps(value), encoding="utf-8")
-                    with self.assertRaisesRegex(
-                        helper.ContractError, message
-                    ):
-                        helper.load_matrix(path)
+        windows["public_rust_target"] = "x86_64-pc-windows-msvc"
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "release-targets-v1.json"
+            path.write_text(json.dumps(value), encoding="utf-8")
+            with self.assertRaisesRegex(
+                helper.ContractError, "unexpected release Rust target"
+            ):
+                helper.load_matrix(path)
 
 
 if __name__ == "__main__":
