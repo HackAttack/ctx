@@ -18,6 +18,16 @@ fn duplicates_and_multiframe_input_fail_closed() {
 fn only_the_exact_hidden_argv_is_intercepted() {
     assert!(intercept(&["ctx".into(), INVOCATION.into()]).is_some());
     assert!(intercept(&["ctx".into(), "--ctx-core-capability-v1=x".into()]).is_none());
+    assert!(intercept(&["ctx".into(), "--ctx-core-hosted-pair-install-v1=x".into()]).is_none());
+}
+
+#[test]
+fn hosted_pair_sources_must_be_absolute_regular_files() {
+    assert!(hosted_source_path(std::ffi::OsStr::new("relative"), "test").is_err());
+    let root = tempfile::tempdir().unwrap();
+    let file = root.path().join("artifact");
+    std::fs::write(&file, b"artifact").unwrap();
+    assert_eq!(hosted_source_path(file.as_os_str(), "test").unwrap(), file);
 }
 
 #[test]
