@@ -1,6 +1,6 @@
 use std::{collections::BTreeSet, fmt, path::Path};
 
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, NaiveDateTime, Utc};
 use ctx_history_capture_model::{
     normalization::{provider_explicit_result_value_text, provider_role, provider_value_text},
     time::parse_rfc3339_utc,
@@ -348,7 +348,13 @@ fn openhands_event_timestamp(value: &Value) -> Option<DateTime<Utc>> {
     value
         .get("timestamp")
         .and_then(Value::as_str)
-        .and_then(parse_rfc3339_utc)
+        .and_then(|timestamp| {
+            parse_rfc3339_utc(timestamp).or_else(|| {
+                NaiveDateTime::parse_from_str(timestamp, "%Y-%m-%dT%H:%M:%S%.f")
+                    .ok()
+                    .map(|naive| DateTime::<Utc>::from_naive_utc_and_offset(naive, Utc))
+            })
+        })
 }
 
 fn openhands_entry_type(value: &Value) -> String {
@@ -498,10 +504,11 @@ mod tests {
 
     #[test]
     fn decoder_preserves_current_and_legacy_event_semantics_exactly() {
-        let current_path = Path::new("/profile/v1_conversations/session/current.json");
+        let current_path =
+            Path::new("/profile/conversations/session/events/event-00000-current-id.json");
         let current_bytes = serde_json::to_vec(&json!({
             "id": "current-id",
-            "timestamp": "2026-07-22T12:00:00Z",
+            "timestamp": "2026-07-22T12:00:00.123456",
             "kind": "MessageEvent",
             "source": "agent",
             "llm_message": {
@@ -517,7 +524,9 @@ mod tests {
         assert_eq!(current.text(), "current exact text");
         assert_eq!(
             current.timestamp(),
-            "2026-07-22T12:00:00Z".parse::<DateTime<Utc>>().unwrap()
+            "2026-07-22T12:00:00.123456Z"
+                .parse::<DateTime<Utc>>()
+                .unwrap()
         );
 
         let legacy_path = Path::new("/profile/v1_conversations/session/0007-legacy.json");
