@@ -53,20 +53,20 @@ fn local_usage_summary_returns_canonical_config_error_without_aborting() {
 }
 
 #[test]
-fn local_usage_summary_protocol_mismatches_remain_hard_failures() {
+fn local_usage_summary_protocol_version_mismatches_remain_hard_failures() {
     let root = tempfile::tempdir().unwrap();
     let request = json!({
-        "api_fingerprint": API_FINGERPRINT,
         "data_root": root.path(),
         "operation": "LocalUsageSummary",
         "options": {},
+        "protocol_version": CORE_PRO_PROTOCOL_VERSION.get(),
         "schema_version": 1,
     });
     assert!(parse_frame(canonical(&request).unwrap()).is_ok());
 
-    let mut wrong_fingerprint = request.clone();
-    wrong_fingerprint["api_fingerprint"] = json!("0".repeat(64));
-    assert!(parse_frame(canonical(&wrong_fingerprint).unwrap()).is_err());
+    let mut wrong_protocol = request.clone();
+    wrong_protocol["protocol_version"] = json!(CORE_PRO_PROTOCOL_VERSION.get() + 1);
+    assert!(parse_frame(canonical(&wrong_protocol).unwrap()).is_err());
 
     let mut wrong_schema = request.clone();
     wrong_schema["schema_version"] = json!(2);

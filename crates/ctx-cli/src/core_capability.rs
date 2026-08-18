@@ -1,5 +1,6 @@
-//! Fixed, process-neutral Core capability endpoint used only by a verified
-//! managed companion.  This is deliberately not a general command runner.
+//! Fixed, process-neutral Core capability endpoint used by a
+//! protocol-compatible installed companion. This is deliberately not a
+//! general command runner.
 
 use std::{
     collections::BTreeSet,
@@ -11,6 +12,7 @@ use std::{
 use anyhow::{anyhow, Context as _, Result};
 use ctx_companion_bridge::{
     verify_signed_managed_pair_envelope, SignedManagedPairIdentity, SignedManagedPairTarget,
+    CORE_PRO_PROTOCOL_VERSION,
 };
 use ctx_history_cli::HistoryConfigPort;
 use ctx_upgrade_engine::{
@@ -180,17 +182,18 @@ fn parse_frame(bytes: Vec<u8>) -> Result<Request> {
     exact_keys(
         object.keys().map(String::as_str),
         [
-            "api_fingerprint",
             "data_root",
             "operation",
             "options",
+            "protocol_version",
             "schema_version",
         ],
     )?;
     if object.get("schema_version") != Some(&json!(1))
-        || object.get("api_fingerprint").and_then(Value::as_str) != Some(API_FINGERPRINT)
+        || object.get("protocol_version").and_then(Value::as_u64)
+            != Some(u64::from(CORE_PRO_PROTOCOL_VERSION.get()))
     {
-        return Err(anyhow!("protocol version or fingerprint mismatch"));
+        return Err(anyhow!("Core↔Pro protocol version mismatch"));
     }
     let root = object
         .get("data_root")
@@ -301,10 +304,10 @@ fn execute(request: Request) -> Result<Value> {
         _ => return Err(anyhow!("operation options are inconsistent")),
     };
     Ok(json!({
-        "api_fingerprint": API_FINGERPRINT,
         "facts": facts,
         "ok": true,
         "operation": request.operation.name(),
+        "protocol_version": CORE_PRO_PROTOCOL_VERSION.get(),
         "schema_version": 1,
     }))
 }
