@@ -114,7 +114,9 @@ pub(crate) fn wake_verified_private_maintenance(
     })
     .map_err(|_| CompanionRouteError::Incompatible)?;
     let expectations = managed_pair_expectations()?;
-    let mut request = CompanionRequest::new(absolute_data_root(data_root.to_path_buf())?);
+    let data_root = absolute_data_root(data_root.to_path_buf())?;
+    let mut request = CompanionRequest::new(data_root.clone());
+    bind_installation_identity(&mut request, &data_root)?;
     request.push_argument(MAINTENANCE_ARGUMENT);
     let request = request.capture(Vec::new());
     let output = CompanionBridge::new(limits)
@@ -136,7 +138,7 @@ fn forward_paid_cli(
     data_root: PathBuf,
 ) -> Result<ExitCode, CompanionRouteError> {
     let expectations = managed_pair_expectations()?;
-    let request = companion_request(arguments, data_root);
+    let request = companion_request(arguments, data_root)?;
     let exit = CompanionBridge::new(BridgeLimits::default())
         .launch_streaming(&expectations, request, companion_cancellation()?)
         .map_err(classify_bridge_error)?;
@@ -150,14 +152,18 @@ fn launch_companion_captured(
     limits: BridgeLimits,
 ) -> Result<ctx_companion_bridge::CompanionOutput, CompanionRouteError> {
     let expectations = managed_pair_expectations()?;
-    let request = companion_request(arguments, data_root).capture(stdin);
+    let request = companion_request(arguments, data_root)?.capture(stdin);
     CompanionBridge::new(limits)
         .launch_captured(&expectations, request, companion_cancellation()?)
         .map_err(classify_bridge_error)
 }
 
-fn companion_request(arguments: Vec<OsString>, data_root: PathBuf) -> CompanionRequest {
-    let mut request = CompanionRequest::new(data_root);
+fn companion_request(
+    arguments: Vec<OsString>,
+    data_root: PathBuf,
+) -> Result<CompanionRequest, CompanionRouteError> {
+    let mut request = CompanionRequest::new(data_root.clone());
+    bind_installation_identity(&mut request, &data_root)?;
     for argument in arguments {
         request.push_argument(argument);
     }
@@ -168,7 +174,22 @@ fn companion_request(arguments: Vec<OsString>, data_root: PathBuf) -> CompanionR
             }
         }
     }
+    Ok(request)
+}
+
+fn bind_installation_identity(
+    request: &mut CompanionRequest,
+    data_root: &Path,
+) -> Result<(), CompanionRouteError> {
+    let installation_id = companion_installation_id(data_root)?;
     request
+        .environment_mut()
+        .set(EnvironmentKey::InstallationId, installation_id);
+    Ok(())
+}
+
+fn companion_installation_id(data_root: &Path) -> Result<String, CompanionRouteError> {
+    crate::identity::installation_id(data_root).map_err(|_| CompanionRouteError::Incompatible)
 }
 
 fn environment_value_is_forwardable(key: EnvironmentKey, value: &OsStr) -> bool {
@@ -571,7 +592,10 @@ mod tests {
 
     #[test]
     fn forwarded_environment_is_the_complete_typed_allowlist() {
-        assert_eq!(FORWARDED_ENVIRONMENT.len(), MAX_ENVIRONMENT_ENTRIES);
+        assert_eq!(FORWARDED_ENVIRONMENT.len() + 1, MAX_ENVIRONMENT_ENTRIES);
+        assert!(!FORWARDED_ENVIRONMENT
+            .iter()
+            .any(|(key, _)| *key == EnvironmentKey::InstallationId));
         assert!(FORWARDED_ENVIRONMENT
             .contains(&(EnvironmentKey::LocalUsageEnabled, "CTX_LOCAL_USAGE_ENABLED")));
         assert!(FORWARDED_ENVIRONMENT.contains(&(EnvironmentKey::Home, "HOME")));
@@ -583,6 +607,19 @@ mod tests {
             EnvironmentKey::Home,
             OsStr::new("")
         ));
+    }
+
+    #[test]
+    fn companion_receives_the_uuid_inside_the_core_identity_record() {
+        let root = tempfile::tempdir().unwrap();
+        let data_root = root.path().join("data");
+        let installation_id = companion_installation_id(&data_root).unwrap();
+        let record_bytes = std::fs::read(crate::identity::install_path(&data_root)).unwrap();
+        let record: serde_json::Value = serde_json::from_slice(&record_bytes).unwrap();
+
+        assert_eq!(record["install_id"], installation_id);
+        assert_ne!(record_bytes, installation_id.as_bytes());
+        assert!(uuid::Uuid::parse_str(&installation_id).is_ok_and(|id| !id.is_nil()));
     }
 
     #[test]

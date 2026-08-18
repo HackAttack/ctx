@@ -322,14 +322,18 @@ fn native_non_utf8_argument_round_trips_without_loss() {
 #[test]
 fn environment_is_stripped_to_allowlist_and_cwd_is_managed_root() {
     let fixture = Fixture::new(
-        b"#!/usr/bin/python3\nimport os\nvalues=[os.getenv('PATH','<missing>'),os.getenv('LANG','<missing>'),os.getenv('HOME','<missing>'),os.getcwd(),os.getenv('CTX_DATA_ROOT','<missing>'),os.getenv('CTX_PRO_DATA_ROOT','<missing>'),os.getenv('CTX_LOCAL_USAGE_ENABLED','<missing>')]\nos.write(1, '\\0'.join(values).encode())\n",
+        b"#!/usr/bin/python3\nimport os\nvalues=[os.getenv('PATH','<missing>'),os.getenv('LANG','<missing>'),os.getenv('HOME','<missing>'),os.getcwd(),os.getenv('CTX_DATA_ROOT','<missing>'),os.getenv('CTX_PRO_DATA_ROOT','<missing>'),os.getenv('CTX_LOCAL_USAGE_ENABLED','<missing>'),os.getenv('CTX_PRO_INSTALLATION_ID','<missing>')]\nos.write(1, '\\0'.join(values).encode())\n",
     );
     let mut request = request(&fixture);
     request
         .environment_mut()
         .set(EnvironmentKey::Home, OsStr::new("/home/tester"))
         .set(EnvironmentKey::Lang, OsStr::new("C.UTF-8"))
-        .set(EnvironmentKey::LocalUsageEnabled, OsStr::new("false"));
+        .set(EnvironmentKey::LocalUsageEnabled, OsStr::new("false"))
+        .set(
+            EnvironmentKey::InstallationId,
+            OsStr::new("aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee"),
+        );
     let output = launch_with(
         &fixture,
         request,
@@ -351,7 +355,8 @@ fn environment_is_stripped_to_allowlist_and_cwd_is_managed_root() {
         fixture.root.join("data").as_os_str().as_encoded_bytes()
     );
     assert_eq!(fields[6], b"false");
-    assert_eq!(MAX_ENVIRONMENT_ENTRIES, 7);
+    assert_eq!(fields[7], b"aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee");
+    assert_eq!(MAX_ENVIRONMENT_ENTRIES, 8);
 }
 
 #[test]
