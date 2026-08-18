@@ -978,6 +978,8 @@ mod secure_directory;
 
 pub(super) use platform::durable_replace;
 #[cfg(windows)]
+use platform::windows_file_information;
+#[cfg(windows)]
 pub(super) use platform::{current_process_creation_identity, wait_for_parent_exit};
 use platform::{durable_rename, file_information, sync_parent};
 #[cfg(all(test, windows))]

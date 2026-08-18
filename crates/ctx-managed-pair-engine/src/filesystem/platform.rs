@@ -22,7 +22,7 @@ pub(super) fn file_information(file: &File, label: &str) -> Result<(u64, u64, u6
 }
 
 #[cfg(windows)]
-fn windows_file_information(file: &File, label: &str) -> Result<(u64, u64, u32)> {
+pub(super) fn windows_file_information(file: &File, label: &str) -> Result<(u64, u64, u32)> {
     use std::{mem::MaybeUninit, os::windows::io::AsRawHandle as _};
     use windows_sys::Win32::{
         Foundation::HANDLE,
