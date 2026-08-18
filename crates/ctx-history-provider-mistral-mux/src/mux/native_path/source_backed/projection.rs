@@ -1,4 +1,6 @@
-use std::sync::Arc;
+mod seam;
+
+use std::{collections::HashSet, sync::Arc};
 
 use chrono::{DateTime, Utc};
 use ctx_history_capture_model::normalization::provider_value_text;
@@ -35,6 +37,7 @@ use super::{
     EVENT_IDENTITY_REVISION, LOGICAL_EVENT_KIND, MAX_EVENT_SEQUENCE_ORDINAL, PARSER_REVISION,
     PARTIAL_EVENT_SEQUENCE_BASE,
 };
+use seam::MuxArchiveSeam;
 
 const NATIVE_ITEM_NAMESPACE: &str = "mux.record";
 const FALLBACK_ITEM_NAMESPACE: &str = "mux.record.fallback";
@@ -45,7 +48,9 @@ pub(super) struct MuxProjector<L: BaseEventLookup> {
     authority: Arc<ProviderSourceRoot>,
     binding: MuxBinding,
     fallback_identities: FallbackEventIdentityState<L, CaptureError>,
-    next_history_ordinal: u64,
+    seen_native_record_ids: HashSet<String>,
+    next_history_sequence: u64,
+    archive_seam: MuxArchiveSeam,
 }
 
 impl<L> MuxProjector<L>
@@ -73,7 +78,9 @@ where
             authority,
             binding,
             fallback_identities,
-            next_history_ordinal: 0,
+            seen_native_record_ids: HashSet::new(),
+            next_history_sequence: 0,
+            archive_seam: MuxArchiveSeam::new(),
         })
     }
 
@@ -103,8 +110,6 @@ where
                 "Mux record changed its native session owner".to_owned(),
             ));
         }
-        let output = mux_output_projection(&value);
-        let content_omission = mux_output_content_omission(&value, output.as_ref());
         let evidence = record.evidence();
         let ordinal = evidence.physical_ordinal();
         if !stream.is_partial() && ordinal > MAX_EVENT_SEQUENCE_ORDINAL {
@@ -112,33 +117,38 @@ where
                 "Mux source ordinal exceeds event identity capacity".to_owned(),
             ));
         }
-        let fallback_sequence =
-            if stream.is_partial() {
-                None
-            } else {
-                let fallback = self.next_history_ordinal;
-                if fallback > MAX_EVENT_SEQUENCE_ORDINAL {
-                    return Err(CaptureError::InvalidPayload(
-                        "Mux compound history exceeds event ordering capacity".to_owned(),
-                    ));
-                }
-                self.next_history_ordinal = self.next_history_ordinal.checked_add(1).ok_or(
-                    CaptureError::SystemInvariant("Mux compound history ordinal overflowed"),
-                )?;
-                Some(fallback)
-            };
+        let history_sequence = mux_history_sequence(&value);
+        if self
+            .archive_seam
+            .suppress_replayed_chat_row(stream, &value)?
+        {
+            return Ok(());
+        }
+        let output = mux_output_projection(&value);
+        let content_omission = mux_output_content_omission(&value, output.as_ref());
         let event_sequence = if stream.is_partial() {
             PARTIAL_EVENT_SEQUENCE_BASE
                 | (mux_partial_event_index(bytes) & MAX_EVENT_SEQUENCE_ORDINAL)
         } else {
-            mux_history_sequence(&value)
-                .and_then(|sequence| u64::try_from(sequence).ok())
+            if self.next_history_sequence > MAX_EVENT_SEQUENCE_ORDINAL {
+                return Err(CaptureError::InvalidPayload(
+                    "Mux compound history exceeds event ordering capacity".to_owned(),
+                ));
+            }
+            // Preserve a valid provider sequence when it remains available;
+            // otherwise promote the row to the next free compound slot.
+            let sequence = history_sequence
                 .filter(|sequence| *sequence <= MAX_EVENT_SEQUENCE_ORDINAL)
-                .unwrap_or_else(|| fallback_sequence.unwrap_or_default())
+                .filter(|sequence| *sequence >= self.next_history_sequence)
+                .unwrap_or(self.next_history_sequence);
+            self.next_history_sequence = sequence + 1;
+            sequence
         };
         let native_record_id = mux_provider_event_id(&value, stream.is_partial());
         let (native_item_key, native_event_id) = match native_record_id {
-            Some(native_record_id) => {
+            Some(native_record_id)
+                if self.seen_native_record_ids.insert(native_record_id.clone()) =>
+            {
                 let native_event_id = TypedKey::utf8(native_record_id).map_err(contract)?;
                 (
                     NativeItemKey::native_id(NATIVE_ITEM_NAMESPACE, native_event_id.clone())
@@ -146,7 +156,7 @@ where
                     native_event_id,
                 )
             }
-            None => {
+            Some(_) | None => {
                 let assignment = self
                     .fallback_identities
                     .assign(fallback_fingerprint(stream, bytes)?, None)?;

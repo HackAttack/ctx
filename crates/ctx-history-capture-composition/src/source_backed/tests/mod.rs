@@ -6,6 +6,7 @@ mod hermes;
 mod inventory;
 mod jsonl_shared_publication;
 mod mistral_vibe_publication;
+mod mux_publication;
 mod registry;
 mod sqlite_selected;
 
