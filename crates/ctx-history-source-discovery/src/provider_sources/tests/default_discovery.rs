@@ -631,19 +631,11 @@ fn legacy_vector_apis_are_exact_report_source_projections() {
 #[test]
 fn exact_current_incompatible_explicit_paths_are_detection_only_unsupported() {
     let temp = tempdir();
-    let cases = [
-        (
-            CaptureProvider::Codex,
-            temp.path().join(".codex/sessions/session.jsonl.zst"),
-            "compressed .jsonl.zst",
-        ),
-        (
-            CaptureProvider::OpenClaw,
-            temp.path()
-                .join(".openclaw/agents/main/agent/openclaw-agent.sqlite"),
-            "openclaw-agent.sqlite",
-        ),
-    ];
+    let cases = [(
+        CaptureProvider::Codex,
+        temp.path().join(".codex/sessions/session.jsonl.zst"),
+        "compressed .jsonl.zst",
+    )];
     for (_, path, _) in &cases {
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
         std::fs::write(path, b"current format marker").unwrap();
@@ -678,12 +670,6 @@ fn explicit_unsupported_detection_preserves_supported_mixed_trees() {
             temp.path().join("qoder/projects"),
             "bucket/transcript/legacy.jsonl",
             "bucket/current.jsonl",
-        ),
-        (
-            CaptureProvider::OpenClaw,
-            temp.path().join("openclaw"),
-            "agents/main/sessions/legacy.jsonl",
-            "agents/main/agent/openclaw-agent.sqlite",
         ),
         (
             CaptureProvider::OpenHands,

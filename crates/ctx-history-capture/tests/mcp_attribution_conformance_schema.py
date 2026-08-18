@@ -11,7 +11,7 @@ from typing import Any
 
 
 MANIFEST_SCHEMA_VERSION = 7
-CAPABILITY_REVISION = 6
+CAPABILITY_REVISION = 7
 PUBLIC_VALIDATION_MODE = "public-validation"
 CONFORMANCE_MODES = {PUBLIC_VALIDATION_MODE}
 
@@ -27,9 +27,9 @@ EXPECTED_PROVIDER_STATUS_ROWS = {
 }
 EXPECTED_AUDIT_COUNTS = {
     "providers": 42,
-    "base_routes": 44,
-    "capability_lanes": 47,
-    "lane_statuses": {"exact": 3, "not-qualified": 43, "excluded": 1},
+    "base_routes": 45,
+    "capability_lanes": 48,
+    "lane_statuses": {"exact": 3, "not-qualified": 44, "excluded": 1},
     "provider_statuses": {"exact": 3, "not-qualified": 39, "excluded": 0},
 }
 LOCAL_DEEPAGENTS_ROUTE = (

@@ -28,6 +28,19 @@ fn provider_source_for_path(
         path,
     )
 }
+
+fn provider_source_for_path_with_data_root(
+    provider: CaptureProvider,
+    path: PathBuf,
+    data_root: &Path,
+) -> crate::provider_sources::ProviderSource {
+    crate::provider_sources::provider_source_for_path_with_data_root(
+        &crate::provider_sources::TEST_PROVIDER_PROBES,
+        provider,
+        path,
+        data_root,
+    )
+}
 fn tempdir() -> tempfile::TempDir {
     crate::test_support_paths::tempdir().expect("resolver fixture tempdir")
 }
@@ -56,6 +69,58 @@ fn windows_context(home: &Path, cwd: &Path, local_data: &Path) -> DiscoveryConte
 fn write(path: &Path, body: impl AsRef<[u8]>) {
     fs::create_dir_all(path.parent().expect("fixture parent")).unwrap();
     fs::write(path, body).unwrap();
+}
+
+fn write_openclaw_v17(path: &Path, owner: &str) {
+    fs::create_dir_all(path.parent().expect("OpenClaw database parent")).unwrap();
+    let connection = rusqlite::Connection::open(path).unwrap();
+    connection
+        .execute_batch(ctx_history_openclaw_schema::test_support::OPENCLAW_AGENT_V17_MINIMAL_SCHEMA)
+        .unwrap();
+    connection
+        .execute(
+            "INSERT INTO schema_meta\
+               (meta_key, role, schema_version, agent_id, app_version, created_at, updated_at)\
+             VALUES ('primary', 'agent', 17, ?1, 'test', 1, 1)",
+            [owner],
+        )
+        .unwrap();
+}
+
+fn write_openclaw_v17_wal(path: &Path, owner: &str) -> rusqlite::Connection {
+    fs::create_dir_all(path.parent().expect("OpenClaw database parent")).unwrap();
+    let connection = rusqlite::Connection::open(path).unwrap();
+    connection
+        .pragma_update(None, "journal_mode", "wal")
+        .unwrap();
+    connection
+        .pragma_update(None, "wal_autocheckpoint", 0)
+        .unwrap();
+    connection
+        .execute_batch(ctx_history_openclaw_schema::test_support::OPENCLAW_AGENT_V17_MINIMAL_SCHEMA)
+        .unwrap();
+    connection
+        .execute(
+            "INSERT INTO schema_meta\
+               (meta_key, role, schema_version, agent_id, app_version, created_at, updated_at)\
+             VALUES ('primary', 'agent', 17, ?1, 'test', 1, 1)",
+            [owner],
+        )
+        .unwrap();
+    assert!(PathBuf::from(format!("{}-wal", path.display())).is_file());
+    connection
+}
+
+fn directory_file_bytes(path: &Path) -> Vec<(std::ffi::OsString, Vec<u8>)> {
+    let mut files = fs::read_dir(path)
+        .unwrap()
+        .map(|entry| {
+            let entry = entry.unwrap();
+            (entry.file_name(), fs::read(entry.path()).unwrap())
+        })
+        .collect::<Vec<_>>();
+    files.sort_by(|left, right| left.0.cmp(&right.0));
+    files
 }
 
 fn write_nanoclaw_project(root: &Path) {
@@ -559,7 +624,7 @@ fn nanoclaw_registration_to_symlink_checkout_fails_closed() {
 }
 
 #[test]
-fn openclaw_selects_one_override_and_bounded_configured_agent_histories() {
+fn openclaw_selects_sqlite_per_admitted_agent_and_jsonl_for_foreign_or_corrupt_agents() {
     let temp = tempdir();
     let home = temp.path().join("home");
     let cwd = temp.path().join("cwd");
@@ -571,26 +636,37 @@ fn openclaw_selects_one_override_and_bounded_configured_agent_histories() {
     );
     write(
         &state.join("agents.json5"),
-        "{list: [{id: 'Ops'}, {id: 'research'}]}",
+        "{list: [{id: 'Ops'}, {id: 'research'}, {id: 'corrupt'}, {id: 'broken'}]}",
     );
-    for id in ["ops", "research"] {
-        write(
-            &state.join("agents").join(id).join("sessions/legacy.jsonl"),
-            "{}",
-        );
-        write(
-            &state
-                .join("agents")
-                .join(id)
-                .join("agent/openclaw-agent.sqlite"),
-            "sqlite",
-        );
-    }
+    let ops_database = state.join("agents/ops/agent/openclaw-agent.sqlite");
+    write_openclaw_v17(&ops_database, "ops");
+    write(
+        &state.join("agents/ops/sessions/legacy.jsonl"),
+        "{\"id\":\"suppressed\"}\n",
+    );
+    let research_database = state.join("agents/research/agent/openclaw-agent.sqlite");
+    write_openclaw_v17(&research_database, "foreign-owner");
+    write(
+        &state.join("agents/research/sessions/legacy.jsonl"),
+        "{\"id\":\"foreign-fallback\"}\n",
+    );
+    let corrupt_database = state.join("agents/corrupt/agent/openclaw-agent.sqlite");
+    write(&corrupt_database, "not sqlite");
+    write(
+        &state.join("agents/corrupt/sessions/legacy.jsonl"),
+        "{\"id\":\"corrupt-fallback\"}\n",
+    );
+    let broken_database = state.join("agents/broken/agent/openclaw-agent.sqlite");
+    write(&broken_database, "not sqlite and no JSONL fallback");
     write(
         &home.join(".openclaw/agents/main/agent/openclaw-agent.sqlite"),
         "stale",
     );
-    let context = context(&home, &cwd).with_env("OPENCLAW_STATE_DIR", state.as_os_str().to_owned());
+    let data_root = temp.path().join("ctx-data");
+    fs::create_dir_all(&data_root).unwrap();
+    let context = context(&home, &cwd)
+        .with_data_root(data_root)
+        .with_env("OPENCLAW_STATE_DIR", state.as_os_str().to_owned());
     let report = report(&context, CaptureProvider::OpenClaw);
     assert_eq!(
         report
@@ -599,68 +675,50 @@ fn openclaw_selects_one_override_and_bounded_configured_agent_histories() {
             .map(|source| source.path.clone())
             .collect::<Vec<_>>(),
         vec![
-            state.join("agents/ops/sessions"),
+            broken_database,
+            state.join("agents/corrupt/sessions"),
             state.join("agents/ops/agent/openclaw-agent.sqlite"),
-            state.join("agents/research/sessions"),
-            state.join("agents/research/agent/openclaw-agent.sqlite")
+            state.join("agents/research/sessions")
         ]
     );
     assert_eq!(
         report
             .sources
             .iter()
-            .filter(|source| source.source_format == "openclaw_session_jsonl_tree")
-            .count(),
-        2
+            .map(|source| source.source_format)
+            .collect::<Vec<_>>(),
+        vec![
+            "unsupported",
+            "openclaw_session_jsonl_tree",
+            "openclaw_agent_sqlite",
+            "openclaw_session_jsonl_tree"
+        ]
     );
-    assert!(report.sources.iter().all(|source| {
-        if source.source_format == "openclaw_session_jsonl_tree" {
-            source.status == ProviderSourceStatus::Available
-                && source.source_kind == ProviderSourceKind::NativeHistory
-                && source.import_support == ProviderImportSupport::Native
-                && source.unsupported_reason.is_none()
-        } else {
-            source.status == ProviderSourceStatus::Unsupported
-                && source.source_kind == ProviderSourceKind::DetectionOnly
-                && source.unsupported_reason == Some(OPENCLAW_UNSUPPORTED_REASON)
-        }
-    }));
+    assert!(report
+        .sources
+        .iter()
+        .filter(|source| source.source_format != "unsupported")
+        .all(|source| source.status == ProviderSourceStatus::Available));
+    assert_eq!(report.sources[0].status, ProviderSourceStatus::Unsupported);
+    for agent in ["broken", "corrupt", "ops", "research"] {
+        assert_eq!(
+            report
+                .sources
+                .iter()
+                .filter(|source| source
+                    .path
+                    .components()
+                    .any(|part| part.as_os_str() == agent))
+                .count(),
+            1,
+            "one admitted history family for {agent}"
+        );
+    }
     assert!(report.issues.is_empty());
 }
 
 #[test]
-fn openclaw_configured_agent_histories_preserve_the_finite_candidate_bound() {
-    let temp = tempdir();
-    let home = temp.path().join("home");
-    let cwd = temp.path().join("cwd");
-    let state = temp.path().join("selected");
-    fs::create_dir_all(&cwd).unwrap();
-    let agents = (0..=MAX_FINITE_SELECTOR_ENTRIES)
-        .map(|index| format!("{{id:'agent-{index}'}}"))
-        .collect::<Vec<_>>()
-        .join(",");
-    write(
-        &state.join("openclaw.json"),
-        format!("{{agents:{{list:[{agents}]}}}}"),
-    );
-    let context = context(&home, &cwd).with_env("OPENCLAW_STATE_DIR", state.as_os_str().to_owned());
-
-    let report = report(&context, CaptureProvider::OpenClaw);
-
-    assert_eq!(report.sources.len(), MAX_FINITE_SELECTOR_ENTRIES);
-    assert!(report.sources.iter().all(|source| {
-        source.source_format == "openclaw_session_jsonl_tree"
-            && source.status == ProviderSourceStatus::Missing
-    }));
-    assert_eq!(report.issues.len(), 1);
-    assert_eq!(
-        report.issues[0].kind,
-        DiscoveryIssueKind::SelectorUnreconstructible
-    );
-}
-
-#[test]
-fn openclaw_uses_conditional_clawdbot_for_mixed_history_but_never_moltbot() {
+fn openclaw_uses_conditional_clawdbot_and_falls_back_to_its_agent_jsonl() {
     let temp = tempdir();
     let home = temp.path().join("home");
     let cwd = temp.path().join("cwd");
@@ -678,70 +736,114 @@ fn openclaw_uses_conditional_clawdbot_for_mixed_history_but_never_moltbot() {
         "{}",
     );
     let report = report(&context(&home, &cwd), CaptureProvider::OpenClaw);
-    assert_eq!(report.sources.len(), 2);
-    assert!(report
-        .sources
-        .iter()
-        .all(|source| source.path.starts_with(home.join(".clawdbot"))));
-    assert!(report
-        .sources
-        .iter()
-        .all(|source| !source.path.to_string_lossy().contains("moltbot")));
-    assert_eq!(
-        report.sources[0].source_format,
-        "openclaw_session_jsonl_tree"
-    );
-    assert_eq!(report.sources[0].status, ProviderSourceStatus::Available);
-    assert_eq!(report.sources[1].status, ProviderSourceStatus::Unsupported);
-}
-
-#[test]
-fn openclaw_legacy_only_current_root_is_supported() {
-    let temp = tempdir();
-    let home = temp.path().join("home");
-    let cwd = temp.path().join("cwd");
-    fs::create_dir_all(&cwd).unwrap();
-    write(
-        &home.join(".openclaw/agents/main/sessions/legacy.jsonl"),
-        "{}",
-    );
-
-    let report = report(&context(&home, &cwd), CaptureProvider::OpenClaw);
     assert_eq!(report.sources.len(), 1);
-    assert_eq!(
-        report.sources[0].path,
-        home.join(".openclaw/agents/main/sessions")
-    );
-    assert_eq!(report.sources[0].status, ProviderSourceStatus::Available);
-    assert_eq!(
-        report.sources[0].source_kind,
-        ProviderSourceKind::NativeHistory
-    );
-}
-
-#[test]
-fn openclaw_current_only_root_keeps_unsupported_sqlite_and_probeable_legacy_route() {
-    let temp = tempdir();
-    let home = temp.path().join("home");
-    let cwd = temp.path().join("cwd");
-    fs::create_dir_all(&cwd).unwrap();
-    write(
-        &home.join(".openclaw/agents/main/agent/openclaw-agent.sqlite"),
-        "sqlite",
-    );
-
-    let report = report(&context(&home, &cwd), CaptureProvider::OpenClaw);
-    assert_eq!(report.sources.len(), 2);
-    assert_eq!(report.sources[0].status, ProviderSourceStatus::Missing);
+    assert!(report.sources[0].path.starts_with(home.join(".clawdbot")));
+    assert!(!report.sources[0].path.to_string_lossy().contains("moltbot"));
     assert_eq!(
         report.sources[0].source_format,
         "openclaw_session_jsonl_tree"
     );
-    assert_eq!(report.sources[1].status, ProviderSourceStatus::Unsupported);
-    assert_eq!(
-        report.sources[1].unsupported_reason,
-        Some(OPENCLAW_UNSUPPORTED_REASON)
+}
+
+#[test]
+fn openclaw_explicit_agent_root_uses_admitted_sqlite_and_foreign_falls_back_to_jsonl() {
+    let temp = tempdir();
+    let data_root = temp.path().join("ctx-data");
+    fs::create_dir_all(&data_root).unwrap();
+    let admitted = temp.path().join("agents/admitted");
+    let admitted_database = admitted.join("agent/openclaw-agent.sqlite");
+    write_openclaw_v17(&admitted_database, "admitted");
+    write(
+        &admitted.join("sessions/legacy.jsonl"),
+        "{\"id\":\"suppressed\"}\n",
     );
+    let source =
+        provider_source_for_path_with_data_root(CaptureProvider::OpenClaw, admitted, &data_root);
+    assert_eq!(source.path, admitted_database);
+    assert_eq!(source.source_format, "openclaw_agent_sqlite");
+    assert_eq!(source.status, ProviderSourceStatus::Available);
+
+    let foreign = temp.path().join("agents/foreign");
+    write_openclaw_v17(&foreign.join("agent/openclaw-agent.sqlite"), "other");
+    let fallback = foreign.join("sessions");
+    write(&fallback.join("legacy.jsonl"), "{\"id\":\"fallback\"}\n");
+    let source =
+        provider_source_for_path_with_data_root(CaptureProvider::OpenClaw, foreign, &data_root);
+    assert_eq!(source.path, fallback);
+    assert_eq!(source.source_format, "openclaw_session_jsonl_tree");
+    assert_eq!(source.status, ProviderSourceStatus::Available);
+
+    let corrupt = temp
+        .path()
+        .join("agents/corrupt/agent/openclaw-agent.sqlite");
+    write(&corrupt, "corrupt");
+    let fallback = temp.path().join("agents/corrupt/sessions");
+    write(&fallback.join("legacy.jsonl"), "{\"id\":\"fallback\"}\n");
+    let source = provider_source_for_path_with_data_root(
+        CaptureProvider::OpenClaw,
+        corrupt.clone(),
+        &data_root,
+    );
+    assert_eq!(source.path, fallback);
+    assert_eq!(source.source_format, "openclaw_session_jsonl_tree");
+    assert_eq!(source.status, ProviderSourceStatus::Available);
+
+    fs::remove_dir_all(temp.path().join("agents/corrupt/sessions")).unwrap();
+    let source =
+        provider_source_for_path_with_data_root(CaptureProvider::OpenClaw, corrupt, &data_root);
+    assert_eq!(source.source_format, "unsupported");
+    assert_eq!(source.status, ProviderSourceStatus::Unsupported);
+}
+
+#[test]
+fn openclaw_explicit_wal_admission_uses_bounded_ctx_scratch_without_provider_writes() {
+    let temp = tempdir();
+    let agent = temp.path().join("agents/portable");
+    let database = agent.join("agent/openclaw-agent.sqlite");
+    let _writer = write_openclaw_v17_wal(&database, "portable");
+    let before = directory_file_bytes(database.parent().unwrap());
+
+    let unavailable = provider_source_for_path(CaptureProvider::OpenClaw, agent.clone());
+    assert_eq!(unavailable.source_format, "unsupported");
+    assert_eq!(unavailable.status, ProviderSourceStatus::Unsupported);
+
+    let data_root = temp.path().join("ctx-data");
+    fs::create_dir_all(&data_root).unwrap();
+    let admitted =
+        provider_source_for_path_with_data_root(CaptureProvider::OpenClaw, agent, &data_root);
+    assert_eq!(admitted.path, database);
+    assert_eq!(admitted.source_format, "openclaw_agent_sqlite");
+    assert_eq!(admitted.status, ProviderSourceStatus::Available);
+    assert_eq!(
+        directory_file_bytes(admitted.path.parent().unwrap()),
+        before
+    );
+    let staging = data_root.join("tmp/provider-sqlite");
+    assert!(!staging.exists() || fs::read_dir(staging).unwrap().next().is_none());
+}
+
+#[test]
+fn openclaw_explicit_cold_admission_is_portable_with_ctx_scratch_authority() {
+    let temp = tempdir();
+    let agent = temp.path().join("agents/cold");
+    let database = agent.join("agent/openclaw-agent.sqlite");
+    write_openclaw_v17(&database, "cold");
+    let data_root = temp.path().join("ctx-data");
+    fs::create_dir_all(&data_root).unwrap();
+
+    let admitted = provider_source_for_path_with_data_root(
+        CaptureProvider::OpenClaw,
+        agent.clone(),
+        &data_root,
+    );
+    assert_eq!(admitted.path, database);
+    assert_eq!(admitted.status, ProviderSourceStatus::Available);
+
+    let without_scratch = provider_source_for_path(CaptureProvider::OpenClaw, agent);
+    #[cfg(target_os = "linux")]
+    assert_eq!(without_scratch.status, ProviderSourceStatus::Available);
+    #[cfg(not(target_os = "linux"))]
+    assert_eq!(without_scratch.status, ProviderSourceStatus::Unsupported);
 }
 
 #[test]

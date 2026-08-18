@@ -247,6 +247,17 @@ ROUTE_SCHEMA_CONTRACTS = (
         sha256="50bf882171d86e819e9cecb7102e13c1a986fb7b116c7862e59669362a5989d5",
     ),
     RouteSchemaContract(
+        provider="openclaw",
+        route="native_import",
+        source_format="openclaw_agent_sqlite",
+        format_schema=_structural(1),
+        producer_domain=_discrete(_unversioned(1)),
+        path="crates/ctx-history-capture/tests/contracts/mcp-attribution/openclaw/openclaw_agent_sqlite/shape-contract.json",
+        allowed_subtree="crates/ctx-history-capture/tests/contracts/mcp-attribution/openclaw/openclaw_agent_sqlite",
+        classification=ROUTE_CONTRACT_CLASSIFICATION,
+        sha256="68556a7a1ec603a025957a65959d45bc9c676be7c68d60870def199440ea7e5f",
+    ),
+    RouteSchemaContract(
         provider="hermes",
         route="native_import",
         source_format="hermes_state_sqlite",

@@ -725,13 +725,22 @@
           "source_format": "openclaw_session_jsonl_tree",
           "fidelity": "partial",
           "notes": [
-            "Legacy OpenClaw session JSONL transcripts remain importable by exact explicit path; automatic discovery instead detects current per-agent SQLite as unsupported under one selected state/profile root.",
+            "Legacy OpenClaw session JSONL transcripts remain importable by exact explicit path and are the per-agent fallback when current SQLite fails bounded admission.",
             "Upstream exposes newer session helpers and warns plugins not to depend on legacy sessions.json shape."
+          ]
+        },
+        {
+          "kind": "native_import",
+          "source_format": "openclaw_agent_sqlite",
+          "fidelity": "imported",
+          "notes": [
+            "Reads the current schema-v17 per-agent database through a read-only WAL-aware snapshot after exact schema, key, index, and owner admission.",
+            "Imports active-position transcript projection plus bounded reset/deleted archive generations; admitted SQLite suppresses only the same normalized agent's legacy JSONL route."
           ]
         }
       ],
       "history_locations": [
-        "Detected unsupported: `agents/<agent-id>/agent/openclaw-agent.sqlite` beneath one selected state/profile root for each configured agent."
+        "Automatic per configured agent: `agents/<agent-id>/agent/openclaw-agent.sqlite` after bounded admission; otherwise that agent's `sessions/*.jsonl` tree remains fallback."
       ],
       "imports_existing_history": true,
       "captures_new_runs_passively": false,
@@ -754,7 +763,7 @@
         "parent_child_session_edges": false
       },
       "limitations": [
-        "Current SQLite has no importer. Legacy JSONL, old profiles, `.moltbot`, mounts, and remotes are manual-only and not unioned."
+        "Only exact schema v17 is admitted. Oversized or corrupt archives fail the whole SQLite source closed; legacy JSONL, old profiles, `.moltbot`, mounts, and remotes are not unioned."
       ],
       "public_docs": "docs/providers.md"
     },

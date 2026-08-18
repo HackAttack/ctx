@@ -61,11 +61,13 @@ pub use provider_args::{
 };
 pub use provider_sources::{
     discovered_plugin_sources_json, discovered_sources_for_provider_report,
-    discovered_sources_report, discovery_report_issues_json, filter_cli_supported_report,
-    filter_cli_supported_sources, history_source_plugin_refresh_json, history_source_plugin_report,
-    import_support_json, manual_path_guidance, plugin_manifest_failures_json, plugin_sources_json,
-    provider_selection_guidance, sources_json, CliSourceDiscoveryPort, SourceInfo,
-    DEFAULT_VISIBLE_SOURCE_PROVIDERS, MAX_DISCOVERY_ISSUES, MAX_DISCOVERY_ISSUE_MESSAGE_BYTES,
+    discovered_sources_for_provider_report_with_data_root, discovered_sources_report,
+    discovered_sources_report_with_data_root, discovery_report_issues_json,
+    filter_cli_supported_report, filter_cli_supported_sources, history_source_plugin_refresh_json,
+    history_source_plugin_report, import_support_json, manual_path_guidance,
+    plugin_manifest_failures_json, plugin_sources_json, provider_selection_guidance, sources_json,
+    CliSourceDiscoveryPort, SourceInfo, DEFAULT_VISIBLE_SOURCE_PROVIDERS, MAX_DISCOVERY_ISSUES,
+    MAX_DISCOVERY_ISSUE_MESSAGE_BYTES,
 };
 pub use source_index::{
     copied_lineage_summary, generation_query_authority_error_json, mcp_search_with_compact,

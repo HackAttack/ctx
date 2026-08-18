@@ -12,6 +12,8 @@ use crate::{fnv1a64, Result, PROVIDER_MAX_PREVIEW_CHARS};
 pub(crate) mod native_path;
 mod normalization;
 
+pub(crate) use normalization::event_fact;
+
 pub(crate) use native_path::openclaw_source_backed_adapter_v0;
 
 #[derive(Debug, Clone, PartialEq, Eq)]

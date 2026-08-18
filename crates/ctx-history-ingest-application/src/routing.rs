@@ -30,6 +30,7 @@ pub trait CaptureAdmissionPort {
     fn protect_data_root(&mut self, data_root: &Path) -> Result<()>;
     fn explicit_source(
         &self,
+        data_root: &Path,
         path: &Path,
         provider: Option<CaptureProvider>,
         custom_jsonl: bool,

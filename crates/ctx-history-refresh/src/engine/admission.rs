@@ -328,7 +328,7 @@ impl CoreRefreshEngine {
                     .validate_source_roots(data_root)
                     .context("validate explicit source roots before scoped admission")?;
                 let started = StdInstant::now();
-                let report = authority.admission_discovery_report()?;
+                let report = authority.admission_discovery_report(data_root)?;
                 let duration = started.elapsed();
                 self.resolve_scoped_admission_report(data_root, claim, &discovery, report, duration)
                     .context("resolve explicit-catalog source refresh admission")

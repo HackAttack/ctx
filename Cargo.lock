@@ -1049,6 +1049,7 @@ dependencies = [
  "ctx-history-core",
  "ctx-history-index",
  "ctx-history-jsonl",
+ "ctx-history-openclaw-schema",
  "ctx-history-provider-claude-cursor",
  "ctx-history-provider-codex",
  "ctx-history-provider-docproj",
@@ -1056,6 +1057,7 @@ dependencies = [
  "ctx-history-provider-hermes",
  "ctx-history-provider-mistral-mux",
  "ctx-history-provider-native-jsonl",
+ "ctx-history-provider-openclaw-sqlite",
  "ctx-history-provider-runtime",
  "ctx-history-providers-jsonl-shared",
  "ctx-history-providers-sqlite-inventory",
@@ -1260,6 +1262,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "ctx-history-openclaw-schema"
+version = "1.0.0"
+dependencies = [
+ "rusqlite",
+ "thiserror 1.0.69",
+]
+
+[[package]]
 name = "ctx-history-platform"
 version = "1.0.0"
 dependencies = [
@@ -1401,6 +1411,25 @@ dependencies = [
  "tempfile",
  "thiserror 1.0.69",
  "uuid",
+]
+
+[[package]]
+name = "ctx-history-provider-openclaw-sqlite"
+version = "1.0.0"
+dependencies = [
+ "chrono",
+ "ctx-history-capture-model",
+ "ctx-history-capture-runtime",
+ "ctx-history-core",
+ "ctx-history-openclaw-schema",
+ "ctx-history-provider-runtime",
+ "ctx-history-providers-jsonl-shared",
+ "rusqlite",
+ "serde_json",
+ "sha2",
+ "tempfile",
+ "thiserror 1.0.69",
+ "zstd",
 ]
 
 [[package]]
@@ -1606,6 +1635,7 @@ dependencies = [
  "chrono",
  "ctx-history-capture-model",
  "ctx-history-core",
+ "ctx-history-openclaw-schema",
  "ctx-history-platform",
  "ctx-history-source-io",
  "ctx-history-source-sqlite",

@@ -53,7 +53,7 @@ pub fn validate_provider_source_roots_outside_data_root<'a>(
 }
 
 mod explicit;
-pub use explicit::provider_source_for_path;
+pub use explicit::{provider_source_for_path, provider_source_for_path_with_data_root};
 
 pub fn discover_provider_sources(
     probes: &StaticProviderProbeCatalog,

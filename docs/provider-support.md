@@ -69,7 +69,7 @@ support matrix is:
 | Qoder | Supported | `qoder_transcript_jsonl_tree` |
 | Warp | Supported | `warp_sqlite` |
 | CodeBuddy | Supported | `codebuddy_history_json` |
-| OpenClaw | Supported | `openclaw_session_jsonl_tree` |
+| OpenClaw | Supported | `openclaw_agent_sqlite`, `openclaw_session_jsonl_tree` |
 | Hermes Agent | Supported | `hermes_state_sqlite` |
 | NanoClaw | Supported | `nanoclaw_project` |
 | AstrBot | Supported | `astrbot_data_v4_sqlite` |

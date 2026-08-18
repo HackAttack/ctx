@@ -65,6 +65,12 @@ pub(super) fn default_location_import_probe(
         CaptureProvider::Crush => path_is_file_probe(path),
         CaptureProvider::Goose => path_is_file_probe(path),
         CaptureProvider::Claude => has_jsonl_file_under_matching(path, 10_000, |_| true),
+        CaptureProvider::OpenClaw
+            if location.source_format
+                == ctx_history_openclaw_schema::OPENCLAW_AGENT_SQLITE_SOURCE_FORMAT =>
+        {
+            has_openclaw_agent_sqlite_v17(data_root, path)
+        }
         CaptureProvider::OpenClaw => has_openclaw_session_jsonl(path, 10_000),
         CaptureProvider::Hermes => path_is_file_probe(path),
         CaptureProvider::NanoClaw => has_nanoclaw_project(path),
@@ -428,6 +434,25 @@ fn has_openclaw_session_jsonl(root: &Path, max_entries: usize) -> BoundedProbe {
     has_jsonl_file_under_matching(root, max_entries, |path| {
         path_has_component(path, "sessions")
     })
+}
+
+pub(super) fn has_openclaw_agent_sqlite_v17(data_root: Option<&Path>, path: &Path) -> BoundedProbe {
+    let Some(agent_id) = path
+        .parent()
+        .filter(|parent| parent.file_name().and_then(|name| name.to_str()) == Some("agent"))
+        .and_then(Path::parent)
+        .and_then(Path::file_name)
+        .and_then(|name| name.to_str())
+        .filter(|agent_id| !agent_id.is_empty())
+    else {
+        return BoundedProbe::NotFound;
+    };
+    sqlite_structural_probe(
+        data_root,
+        path,
+        SqliteProbeLimits::default(),
+        |connection| ctx_history_openclaw_schema::matches_openclaw_agent_v17(connection, agent_id),
+    )
 }
 
 fn has_mux_session_files(root: &Path, max_entries: usize) -> BoundedProbe {

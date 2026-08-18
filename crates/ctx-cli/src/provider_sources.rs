@@ -11,6 +11,9 @@ pub(crate) fn discovered_plugin_sources_json(data_root: &Path) -> Result<Vec<ser
     ctx_history_cli::discovered_plugin_sources_json(data_root)
 }
 
-pub(crate) fn discovered_sources_report() -> DiscoveryReport {
-    ctx_history_cli::discovered_sources_report(crate::identity::home_dir().as_deref())
+pub(crate) fn discovered_sources_report(data_root: &Path) -> DiscoveryReport {
+    ctx_history_cli::discovered_sources_report_with_data_root(
+        crate::identity::home_dir().as_deref(),
+        data_root,
+    )
 }
