@@ -409,7 +409,7 @@ pub const LANDED_SOURCE_BACKED_ROUTES: &[SourceBackedProviderRouteMetadata] = &[
         DiscoveredWinner,
         DiscoveryContext
     ),
-    sqlite_route!(Shelley, "shelley_sqlite", true, false, ExactCwd, ExactCwd),
+    sqlite_route!(Shelley, "shelley_sqlite", true, true, ExactCwd, ExactCwd),
     route!(
         Continue,
         CONTINUE_CLI_SOURCE_FORMAT,
@@ -564,7 +564,7 @@ OpenClaw|openclaw_session_jsonl_tree|openclaw_session_jsonl_tree|true|true|Disco
 Hermes|hermes_state_sqlite|hermes_state_sqlite|true|true|DiscoveredWinner|none|ProviderSource
 NanoClaw|nanoclaw_project|nanoclaw_project|true|true|CatalogLineage|none|CatalogLineage
 AstrBot|astrbot_data_v4_sqlite|astrbot_data_v4_sqlite|true|true|DiscoveredWinner|none|DiscoveryContext
-Shelley|shelley_sqlite|shelley_sqlite|true|false|ExactCwd|none|ExactCwd
+Shelley|shelley_sqlite|shelley_sqlite|true|true|ExactCwd|none|ExactCwd
 Continue|continue_cli_sessions_json|continue_cli_sessions_json|true|true|DiscoveredWinner|none|ProviderSource
 OpenHands|openhands_file_events|openhands_file_events|true|true|DiscoveredWinner|none|ProviderSource
 Cline|cline_task_directory_json|cline_task_directory_json|true|true|DiscoveredWinner|none|ProviderSource

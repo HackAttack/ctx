@@ -189,6 +189,85 @@ fn sources_lists_supported_personal_agent_provider_defaults() {
 }
 
 #[test]
+fn sources_reports_adjacent_current_and_legacy_routes_without_unsupported_duplicates() {
+    let temp = tempdir();
+
+    let openclaw_sessions = temp.path().join(".openclaw/agents/personal-agent/sessions");
+    fs::create_dir_all(&openclaw_sessions).unwrap();
+    fs::write(
+        temp.path().join(".openclaw/openclaw.json"),
+        r#"{"agents":{"list":[{"id":"personal-agent"}]}}"#,
+    )
+    .unwrap();
+    fs::write(openclaw_sessions.join("session.jsonl"), "{}\n").unwrap();
+
+    install_default_kiro_fixture(&temp, "kiro-coexistence-oracle");
+    fs::create_dir_all(temp.path().join(".kiro/sessions")).unwrap();
+
+    let qoder_root = temp.path().join(".qoder/projects");
+    let qoder_project = qoder_root.join("project");
+    fs::create_dir_all(&qoder_project).unwrap();
+    fs::write(qoder_project.join("direct-session.jsonl"), "{}\n").unwrap();
+
+    let mux_root = temp.path().join(".mux/sessions");
+    let mux_workspace = mux_root.join("workspace");
+    fs::create_dir_all(&mux_workspace).unwrap();
+    fs::write(mux_workspace.join("chat-archive.jsonl"), "{}\n").unwrap();
+
+    let openhands_conversations = temp.path().join("openhands-conversations");
+    let openhands_events = openhands_conversations.join("conversation/events");
+    fs::create_dir_all(&openhands_events).unwrap();
+    fs::write(openhands_events.join("event-1.json"), "{}").unwrap();
+
+    let sources = json_output(
+        ctx(&temp)
+            .env("OPENHANDS_CONVERSATIONS_DIR", &openhands_conversations)
+            .args(["sources", "--format=json"]),
+    );
+
+    for (provider, format, path) in [
+        (
+            "openclaw",
+            "openclaw_session_jsonl_tree",
+            openclaw_sessions.as_path(),
+        ),
+        ("qoder", "qoder_transcript_jsonl_tree", qoder_root.as_path()),
+        ("mux", "mux_session_jsonl_tree", mux_root.as_path()),
+        (
+            "openhands",
+            "openhands_file_events",
+            openhands_events.as_path(),
+        ),
+    ] {
+        let matches = source_entries(&sources)
+            .iter()
+            .filter(|source| source["provider"] == provider)
+            .collect::<Vec<_>>();
+        assert_eq!(matches.len(), 1, "{provider}: {sources:#}");
+        assert_eq!(matches[0]["source_format"], format);
+        assert_eq!(matches[0]["path"], path.to_str().unwrap());
+        assert_eq!(matches[0]["status"], "available");
+        assert_eq!(matches[0]["importable"], true);
+        assert!(matches[0]["unsupported_reason"].is_null());
+    }
+
+    let kiro = source_entries(&sources)
+        .iter()
+        .filter(|source| source["provider"] == "kiro_cli")
+        .collect::<Vec<_>>();
+    assert_eq!(kiro.len(), 2, "{sources:#}");
+    assert!(kiro.iter().any(|source| {
+        source["source_format"] == "kiro_cli_sqlite"
+            && source["status"] == "available"
+            && source["importable"] == true
+    }));
+    assert!(kiro.iter().any(|source| {
+        source["status"] == "unsupported"
+            && source["path"] == temp.path().join(".kiro/sessions").to_str().unwrap()
+    }));
+}
+
+#[test]
 fn hermes_sources_and_imports_are_native_and_read_only() {
     let temp = tempdir();
     let query = "hermes-automatic-import-oracle";

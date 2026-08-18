@@ -86,19 +86,20 @@ fn resolve_kiro(
         }
     };
     let current_sessions = current_root.join("sessions");
+    let mut report = DiscoveryReport::default();
     match path_presence(&current_sessions) {
         PathPresence::Present => {
             if !ordinary_directory(&current_sessions) {
                 return selector_issue_report(spec, Some(current_sessions));
             }
-            return DiscoveryReport {
-                sources: vec![unsupported_source(
+            push_source_candidate(
+                &mut report.sources,
+                unsupported_source(
                     spec,
                     current_sessions,
                     "current Kiro ACP/v3 sessions are detected but are not supported by the Kiro SQLite importer",
-                )],
-                issues: Vec::new(),
-            };
+                ),
+            );
         }
         PathPresence::Missing => {}
         PathPresence::Unsupported | PathPresence::Unknown(_) => {
@@ -124,7 +125,6 @@ fn resolve_kiro(
         ),
         DiscoveryPlatform::Windows | DiscoveryPlatform::OtherUnix => None,
     };
-    let mut report = DiscoveryReport::default();
     if let Some(path) = legacy {
         push_source_candidate(
             &mut report.sources,

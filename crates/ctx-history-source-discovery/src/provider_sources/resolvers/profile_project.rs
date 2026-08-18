@@ -29,8 +29,6 @@ use validation::{valid_hermes_profile_name, valid_uuid};
 
 const OPENCLAW_UNSUPPORTED_REASON: &str =
     "OpenClaw openclaw-agent.sqlite history is detected but unsupported";
-const OPENHANDS_CLI_UNSUPPORTED_REASON: &str =
-    "OpenHands CLI events/event-*.json history is detected but unsupported";
 const PATH_MANUAL_REASON: &str =
     "the selected provider path cannot be reconstructed safely; use an exact --path";
 const SELECTOR_MANUAL_REASON: &str =
@@ -151,7 +149,10 @@ fn push_selected_source(
     path: PathBuf,
     format: &'static str,
 ) {
-    let directory = matches!(format, "nanoclaw_project" | "openhands_file_events");
+    let directory = matches!(
+        format,
+        "nanoclaw_project" | "openclaw_session_jsonl_tree" | "openhands_file_events"
+    );
     if !selected_path_is_safe(&path, directory) {
         issue_manual(report, spec.provider, Some(path));
         return;
@@ -564,13 +565,7 @@ fn resolve_openhands(
     match openhands_cli_event_roots(&cli_root) {
         Ok(roots) => {
             for root in roots {
-                if !push_source_candidate(
-                    &mut report.sources,
-                    unsupported_source(spec, root.clone(), OPENHANDS_CLI_UNSUPPORTED_REASON),
-                ) {
-                    issue_limit(&mut report, spec.provider, root);
-                    break;
-                }
+                push_selected_source(probes, &mut report, spec, root, "openhands_file_events");
             }
         }
         Err(_) => issue_selector(&mut report, spec.provider),
@@ -673,7 +668,7 @@ fn openhands_cli_event_roots(root: &Path) -> Result<Vec<PathBuf>, SelectorReadEr
                     .and_then(OsStr::to_str)
                     .is_some_and(|name| name.starts_with("event-") && name.ends_with(".json"))
         }) {
-            event_roots.push(conversation);
+            event_roots.push(events);
         }
     }
     Ok(event_roots)

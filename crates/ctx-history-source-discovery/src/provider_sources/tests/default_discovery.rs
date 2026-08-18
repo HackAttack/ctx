@@ -484,8 +484,15 @@ fn native_provider_default_discovery_uses_importer_specific_file_predicates() {
     let openclaw = temp.path().join(".openclaw/agents/personal/sessions");
     std::fs::create_dir_all(&openclaw).unwrap();
     std::fs::write(openclaw.join("session.jsonl"), "{}\n").unwrap();
-    assert!(
-        discover_provider_sources_for_provider(temp.path(), CaptureProvider::OpenClaw).is_empty()
+    std::fs::write(
+        temp.path().join(".openclaw/openclaw.json"),
+        r#"{"agents":{"list":[{"id":"personal"}]}}"#,
+    )
+    .unwrap();
+    assert_source_status(
+        temp.path(),
+        CaptureProvider::OpenClaw,
+        ProviderSourceStatus::Available,
     );
 
     let hermes = temp.path().join(".hermes");
@@ -637,17 +644,6 @@ fn exact_current_incompatible_explicit_paths_are_detection_only_unsupported() {
             "openclaw-agent.sqlite",
         ),
         (
-            CaptureProvider::OpenHands,
-            temp.path()
-                .join(".openhands/conversations/conversation/events/event-1.json"),
-            "events/event-*.json",
-        ),
-        (
-            CaptureProvider::Mux,
-            temp.path().join(".mux/sessions/session/chat-archive.jsonl"),
-            "chat-archive.jsonl",
-        ),
-        (
             CaptureProvider::Cline,
             temp.path().join(".cline/data/db/sessions.db"),
             "current Cline SDK",
@@ -662,14 +658,11 @@ fn exact_current_incompatible_explicit_paths_are_detection_only_unsupported() {
     std::fs::create_dir_all(kiro.join("cli")).unwrap();
     std::fs::write(kiro.join("cli/session.json"), b"{}").unwrap();
     std::fs::write(kiro.join("cli/session.jsonl"), b"{}\n").unwrap();
-    let qoder = temp.path().join(".qoder/projects/bucket/session.jsonl");
-    std::fs::create_dir_all(qoder.parent().unwrap()).unwrap();
-    std::fs::write(&qoder, b"{}\n").unwrap();
-
-    for (provider, path, reason_fragment) in cases.into_iter().chain([
-        (CaptureProvider::KiroCli, kiro, "ACP/v3"),
-        (CaptureProvider::Qoder, qoder, "direct SDK JSONL"),
-    ]) {
+    for (provider, path, reason_fragment) in
+        cases
+            .into_iter()
+            .chain([(CaptureProvider::KiroCli, kiro, "ACP/v3")])
+    {
         let source = provider_source_for_path(provider, path);
         assert_eq!(source.status, ProviderSourceStatus::Unsupported);
         assert_eq!(source.import_support, ProviderImportSupport::Unsupported);
@@ -760,6 +753,10 @@ fn supported_explicit_shapes_and_missing_textual_paths_keep_pinned_mapping() {
             temp.path().join("projects/bucket/transcript/session.jsonl"),
         ),
         (
+            CaptureProvider::Qoder,
+            temp.path().join("projects/direct-bucket/session.jsonl"),
+        ),
+        (
             CaptureProvider::OpenClaw,
             temp.path().join("legacy-openclaw-sessions"),
         ),
@@ -767,7 +764,16 @@ fn supported_explicit_shapes_and_missing_textual_paths_keep_pinned_mapping() {
             CaptureProvider::OpenHands,
             temp.path().join("v1_conversations/conversation/event.json"),
         ),
+        (
+            CaptureProvider::OpenHands,
+            temp.path()
+                .join("conversations/conversation/events/event-1.json"),
+        ),
         (CaptureProvider::Mux, temp.path().join("session/chat.jsonl")),
+        (
+            CaptureProvider::Mux,
+            temp.path().join("session/chat-archive.jsonl"),
+        ),
         (
             CaptureProvider::Cline,
             temp.path().join("legacy-cline-root"),

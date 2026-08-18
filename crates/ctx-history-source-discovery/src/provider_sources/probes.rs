@@ -85,9 +85,9 @@ pub(super) fn default_location_import_probe(
         CaptureProvider::Gemini | CaptureProvider::Tabnine => has_gemini_chat_jsonl(path, 10_000),
         CaptureProvider::Cursor => has_cursor_agent_transcript(probes, path),
         CaptureProvider::Windsurf => has_jsonl_file_under_matching(path, 10_000, |_| true),
-        CaptureProvider::Qoder => has_jsonl_file_under_matching(path, 10_000, |candidate| {
-            path_has_component(candidate, "transcript")
-        }),
+        CaptureProvider::Qoder => {
+            has_jsonl_file_under_matching(path, 10_000, qoder_jsonl_path_is_supported)
+        }
         CaptureProvider::Zed => path_is_file_probe(path),
         CaptureProvider::CopilotCli => has_jsonl_file_under_matching(path, 10_000, |candidate| {
             candidate.file_name().and_then(|name| name.to_str()) == Some("events.jsonl")
@@ -616,7 +616,10 @@ fn has_openclaw_session_jsonl(root: &Path, max_entries: usize) -> BoundedProbe {
 
 fn has_mux_session_files(root: &Path, max_entries: usize) -> BoundedProbe {
     match has_jsonl_file_under_matching(root, max_entries, |candidate| {
-        candidate.file_name().and_then(|name| name.to_str()) == Some("chat.jsonl")
+        matches!(
+            candidate.file_name().and_then(|name| name.to_str()),
+            Some("chat.jsonl" | "chat-archive.jsonl")
+        )
     }) {
         BoundedProbe::Found => BoundedProbe::Found,
         BoundedProbe::IoError => BoundedProbe::IoError,
@@ -629,7 +632,27 @@ fn has_mux_session_files(root: &Path, max_entries: usize) -> BoundedProbe {
 fn has_openhands_event_json(root: &Path, max_entries: usize) -> BoundedProbe {
     has_json_file_under_matching(root, max_entries, |path| {
         path_has_component(path, "v1_conversations")
+            || (path
+                .parent()
+                .and_then(Path::file_name)
+                .and_then(|name| name.to_str())
+                == Some("events")
+                && path
+                    .file_name()
+                    .and_then(|name| name.to_str())
+                    .is_some_and(|name| name.starts_with("event-") && name.ends_with(".json")))
     })
+}
+
+fn qoder_jsonl_path_is_supported(path: &Path) -> bool {
+    if path_has_component(path, "transcript") {
+        return true;
+    }
+    path.parent()
+        .and_then(Path::parent)
+        .and_then(Path::file_name)
+        .and_then(|name| name.to_str())
+        == Some("projects")
 }
 
 fn has_codebuddy_history_json(root: &Path, max_entries: usize) -> BoundedProbe {
