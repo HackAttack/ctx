@@ -1,349 +1,258 @@
 #![cfg(unix)]
 
 use std::{
-    ffi::{OsStr, OsString},
+    ffi::OsStr,
     fs,
     io::{BufRead as _, BufReader, Write as _},
-    os::unix::{
-        ffi::OsStringExt as _,
-        fs::{symlink, PermissionsExt as _},
-        io::{FromRawFd as _, OwnedFd},
-        net::UnixStream,
-    },
+    os::{fd::OwnedFd, unix::fs::PermissionsExt as _, unix::net::UnixStream},
     path::{Path, PathBuf},
     process::Stdio,
-    sync::{Arc, Mutex},
+    sync::Arc,
     thread,
     time::{Duration, Instant},
 };
 
-use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
-use sha2::{Digest as _, Sha256};
-
 use super::*;
-use crate::{
-    slot::PreparedPair,
-    verifier::{
-        embedded_authority_for_tests, embedded_state_schema_for_tests,
-        embedded_target_matrix_for_tests, PairVerifier,
-    },
-};
 
-const CORE_BYTES: &[u8] = b"#!/bin/sh\nexit 0\n";
+#[test]
+fn detached_install_verifier_rejects_unsigned_input() {
+    let zero = Sha256Digest::from_bytes([0; 32]);
+    let expectations = ManagedPairExpectations::new(
+        ReleaseChannel::Staging,
+        CoreBuildIdentity::new("a".repeat(40)).unwrap(),
+        CompatibilityIdentity::new(zero, zero),
+    );
+    let unsigned = br#"{"manifest_base64":"e30=","schema_version":1,"signature_base64":""}"#;
+    assert!(matches!(
+        verify_signed_managed_pair_envelope(&expectations, unsigned),
+        Err(BridgeError::Verification(_))
+    ));
+}
+
+#[test]
+fn detached_install_verifier_embeds_the_canonical_contracts() {
+    assert_eq!(
+        crate::verifier::embedded_authority_for_tests(),
+        include_bytes!("../../../contracts/ctx-managed-pair-release-authority-v1.json")
+    );
+    assert_eq!(
+        crate::verifier::embedded_state_schema_for_tests(),
+        include_bytes!("../../../contracts/ctx-managed-pair-state-v1.schema.json")
+    );
+    assert_eq!(
+        crate::verifier::embedded_target_matrix_for_tests(),
+        include_bytes!("../../../contracts/release-targets-v1.json")
+    );
+}
 
 struct Fixture {
     _temp: tempfile::TempDir,
-    root: PathBuf,
-    launcher: PathBuf,
-    companion: PathBuf,
+    pro: PathBuf,
 }
 
 impl Fixture {
-    fn new(companion_bytes: &[u8]) -> Self {
+    fn new(operation: &[u8]) -> Self {
         let temp = tempfile::tempdir().unwrap();
-        let root = temp.path().join("managed");
-        let bin = root.join("bin");
-        let libexec = root.join("libexec");
-        let share = root.join("share").join("ctx");
-        let share_root = root.join("share");
-        for directory in [&root, &bin, &libexec, &share_root, &share] {
-            fs::create_dir(directory).unwrap();
-            fs::set_permissions(directory, fs::Permissions::from_mode(0o700)).unwrap();
-        }
-        let launcher = bin.join("ctx");
-        let companion = libexec.join("ctx-pro");
-        write_mode(&launcher, CORE_BYTES, 0o700);
-        write_mode(&companion, companion_bytes, 0o700);
-        Self {
-            _temp: temp,
-            root,
-            launcher,
-            companion,
-        }
+        let root = temp.path().join("installed");
+        let pro = root.join("libexec/ctx-pro");
+        fs::create_dir_all(pro.parent().unwrap()).unwrap();
+        write_executable(
+            &pro,
+            br##"#!/bin/sh
+printf '%s' "$0" > "${0}.launched"
+if [ "$1" = "--ctx-pro-protocol-v3" ] && [ "$2" = "handshake" ]; then
+  printf '{"protocol_version":3}\n'
+  exit 0
+fi
+if [ "$1" != "--ctx-pro-protocol-v3" ]; then
+  exit 90
+fi
+case "$2" in
+  cli)
+    shift 2
+    [ "$1" = "--" ] || exit 91
+    shift
+    ;;
+  mcp-serve|maintenance)
+    shift 2
+    ;;
+  *) exit 92 ;;
+esac
+exec "${0}.operation" "$@"
+"##,
+        );
+        write_executable(&pro.with_extension("operation"), operation);
+        Self { _temp: temp, pro }
     }
 
-    fn shared_path(&self, filename: &str) -> PathBuf {
-        self.root.join("share").join("ctx").join(filename)
+    fn companion(&self) -> InstalledCompanion {
+        InstalledCompanion::new(&self.pro)
     }
 }
 
-fn write_mode(path: &Path, bytes: &[u8], mode: u32) {
+fn write_executable(path: &Path, bytes: &[u8]) {
     fs::write(path, bytes).unwrap();
-    fs::set_permissions(path, fs::Permissions::from_mode(mode)).unwrap();
+    fs::set_permissions(path, fs::Permissions::from_mode(0o700)).unwrap();
 }
 
-struct AcceptingVerifier;
-
-impl PairVerifier for AcceptingVerifier {
-    fn verify(&self, _pair: &PreparedPair) -> Result<(), BridgeError> {
-        Ok(())
-    }
-}
-
-struct RefusingVerifier;
-
-impl PairVerifier for RefusingVerifier {
-    fn verify(&self, _pair: &PreparedPair) -> Result<(), BridgeError> {
-        Err(BridgeError::Verification("test refusal".to_owned()))
-    }
-}
-
-fn launch_with(
+fn launch_mcp_with(
     fixture: &Fixture,
-    request: CompanionRequest,
+    request: McpRequest,
     limits: LimitConfiguration,
     cancellation: &CancellationToken,
-) -> Result<CompanionOutput, BridgeError> {
-    CompanionBridge::new(BridgeLimits::new(limits).unwrap()).launch_captured_at(
-        &fixture.launcher,
-        request.capture(Vec::new()),
+) -> Result<McpResponse, BridgeError> {
+    CompanionBridge::new(BridgeLimits::new(limits).unwrap()).launch_mcp(
+        &fixture.companion(),
+        request,
         cancellation,
-        &AcceptingVerifier,
     )
-}
-
-fn launch_with_verified_channel(
-    fixture: &Fixture,
-    request: CompanionRequest,
-    limits: LimitConfiguration,
-    cancellation: &CancellationToken,
-    channel: ReleaseChannel,
-) -> Result<CompanionOutput, BridgeError> {
-    CompanionBridge::new(BridgeLimits::new(limits).unwrap()).launch_captured_at_with_channel(
-        &fixture.launcher,
-        request.capture(Vec::new()),
-        cancellation,
-        &AcceptingVerifier,
-        Some(channel),
-    )
-}
-
-static MANAGED_CHANNEL_ENV_LOCK: Mutex<()> = Mutex::new(());
-
-struct ManagedChannelEnvironmentRestore(Option<OsString>);
-
-impl Drop for ManagedChannelEnvironmentRestore {
-    fn drop(&mut self) {
-        // This test-only guard restores the parent process environment after a
-        // child has proved that `env_clear` plus the verified injection wins.
-        unsafe {
-            match self.0.take() {
-                Some(value) => std::env::set_var("CTX_MANAGED_PAIR_CHANNEL", value),
-                None => std::env::remove_var("CTX_MANAGED_PAIR_CHANNEL"),
-            }
-        }
-    }
-}
-
-fn request(fixture: &Fixture) -> CompanionRequest {
-    CompanionRequest::new(fixture.root.join("data"))
 }
 
 #[test]
-fn verified_managed_channel_replaces_ambient_spoof_for_each_release_channel() {
-    let _environment_guard = MANAGED_CHANNEL_ENV_LOCK.lock().unwrap();
-    let restore = ManagedChannelEnvironmentRestore(std::env::var_os("CTX_MANAGED_PAIR_CHANNEL"));
-    let fixture = Fixture::new(b"#!/bin/sh\nprintf '%s' \"$CTX_MANAGED_PAIR_CHANNEL\"\n");
-
-    for (verified, ambient, expected) in [
-        (ReleaseChannel::Stable, "staging", b"stable".as_slice()),
-        (ReleaseChannel::Staging, "stable", b"staging".as_slice()),
-    ] {
-        // The companion process receives no inherited environment. The only
-        // channel source is the bridge value supplied after pair verification.
-        unsafe { std::env::set_var("CTX_MANAGED_PAIR_CHANNEL", ambient) };
-        let output = launch_with_verified_channel(
-            &fixture,
-            request(&fixture),
-            LimitConfiguration::default(),
+fn protocol_v3_mcp_request_and_response_are_sufficient() {
+    let fixture =
+        Fixture::new(b"#!/bin/sh\nIFS= read -r value\nprintf 'compatible:%s' \"$value\"\n");
+    let output = CompanionBridge::default()
+        .launch_mcp(
+            &fixture.companion(),
+            McpRequest::new(b"ok\n"),
             &CancellationToken::new(),
-            verified,
         )
         .unwrap();
-        assert_eq!(output.stdout(), expected);
-    }
-
-    drop(restore);
+    assert_eq!(output.exit_class(), ExitClass::Success);
+    assert_eq!(output.stdout(), b"compatible:ok");
+    assert!(output.stderr().is_empty());
 }
 
 #[test]
-fn fixed_contract_paths_and_embedded_root_authority_are_exact() {
-    let root_authority =
-        include_bytes!("../../../contracts/ctx-managed-pair-release-authority-v1.json");
-    let root_state_schema =
-        include_bytes!("../../../contracts/ctx-managed-pair-state-v1.schema.json");
-    let root_target_matrix = include_bytes!("../../../contracts/release-targets-v1.json");
-    assert_eq!(MANAGED_PAIR_ENVELOPE_FILENAME, "managed-pair-envelope.json");
-    assert_eq!(MANAGED_PAIR_STATE_FILENAME, "managed-pair-state.json");
-    assert_eq!(
-        crate::slot::ENVELOPE_RELATIVE_PATH,
-        ["share", "ctx", "managed-pair-envelope.json"]
-    );
-    assert_eq!(
-        crate::slot::STATE_RELATIVE_PATH,
-        ["share", "ctx", "managed-pair-state.json"]
-    );
-    assert_eq!(
-        format!("{:x}", Sha256::digest(embedded_authority_for_tests())),
-        "a381be00d1f4f1da43f58fcc3a9c6c392e6460c9f51c06669981e4a6b612e120"
-    );
-    assert_eq!(embedded_authority_for_tests(), root_authority);
-    assert_eq!(embedded_state_schema_for_tests(), root_state_schema);
-    assert_eq!(embedded_target_matrix_for_tests(), root_target_matrix);
-    assert_eq!(
-        format!("{:x}", Sha256::digest(embedded_target_matrix_for_tests())),
-        "1cf089c8f494c9662428518ce07ff91a3ceb28fe4ac4d75b6a9d7dd3f16c75a5"
-    );
-    let registry: serde_json::Value =
-        serde_json::from_slice(embedded_authority_for_tests()).unwrap();
-    assert_eq!(registry["contract"], "ctx-managed-pair-release-authority");
-    assert_eq!(registry["schema_version"], 1);
-    assert_eq!(
-        registry["channels"][0]["key_id"],
-        "ctx-pro-release-stable-2026-07-27"
-    );
-    assert_eq!(
-        registry["channels"][1]["key_id"],
-        "ctx-pro-release-staging-2026-07-30"
-    );
-    assert_eq!(
-        registry["channels"][1]["public_key_der_sha256"],
-        "e08a1534a6cbbf3ebbf4fdb40d44d55d34c9fe3e89eba83b5d095b1036f1086a"
-    );
-    let state_schema: serde_json::Value = serde_json::from_slice(root_state_schema).unwrap();
-    assert_eq!(
-        state_schema["$id"],
-        "https://ctx.rs/contracts/ctx-managed-pair-state-v1.schema.json"
-    );
-    assert_eq!(
-        state_schema["required"],
-        serde_json::json!([
-            "contract",
-            "schema_version",
-            "identity",
-            "envelope_sha256",
-            "envelope_size_bytes"
-        ])
-    );
-    assert_eq!(
-        state_schema["$defs"]["pair_identity"]["required"],
-        serde_json::json!([
-            "release_name",
-            "target",
-            "rollback_generation",
-            "manifest_sha256",
-            "core",
-            "companion"
-        ])
-    );
-}
-
-#[test]
-fn fixed_slot_rejects_relative_wrong_traversal_and_symlink_paths() {
-    assert!(matches!(
-        crate::slot::SlotPaths::from_launcher(Path::new("bin/ctx")),
-        Err(BridgeError::InvalidSlot(_))
-    ));
-    assert!(matches!(
-        crate::slot::SlotPaths::from_launcher(Path::new("/managed/bin/not-ctx")),
-        Err(BridgeError::InvalidSlot(_))
-    ));
-    assert!(matches!(
-        crate::slot::SlotPaths::from_launcher(Path::new("/managed/other/../bin/ctx")),
-        Err(BridgeError::InvalidSlot(_))
-    ));
-
-    let fixture = Fixture::new(b"#!/bin/sh\nexit 0\n");
-    fs::remove_file(&fixture.companion).unwrap();
-    symlink("/bin/true", &fixture.companion).unwrap();
-    let error = CompanionBridge::default()
-        .launch_captured_at(
-            &fixture.launcher,
-            request(&fixture).capture(Vec::new()),
+fn protocol_v3_cli_request_is_typed_and_launches_directly() {
+    let fixture = Fixture::new(b"#!/bin/sh\n[ \"$1\" = paid ] && [ \"$2\" = action ]\n");
+    let output = CompanionBridge::default()
+        .launch_cli(
+            &fixture.companion(),
+            CliRequest::new(vec!["paid".into(), "action".into()]),
             &CancellationToken::new(),
-            &AcceptingVerifier,
+        )
+        .unwrap();
+    assert_eq!(output.exit_class(), ExitClass::Success);
+    assert_eq!(
+        fs::read(fixture.pro.with_extension("launched")).unwrap(),
+        fixture.pro.as_os_str().as_encoded_bytes()
+    );
+}
+
+#[test]
+fn protocol_v3_maintenance_response_is_closed_and_typed() {
+    let fixture =
+        Fixture::new(b"#!/bin/sh\nprintf '{\"accepted\":true,\"schema_version\":1}\\n'\n");
+    let response = CompanionBridge::default()
+        .launch_maintenance(
+            &fixture.companion(),
+            MaintenanceRequest::new(),
+            &CancellationToken::new(),
+        )
+        .unwrap();
+    assert!(response.accepted());
+}
+
+#[test]
+fn protocol_mismatch_is_typed_and_prevents_operation() {
+    let temp = tempfile::tempdir().unwrap();
+    let pro = temp.path().join("ctx-pro");
+    let marker = temp.path().join("operation-started");
+    write_executable(
+        &pro,
+        format!(
+            "#!/bin/sh\nif [ \"$2\" = handshake ]; then printf '{{\"protocol_version\":2}}\\n'; exit 0; fi\nprintf started > '{}'\n",
+            marker.display()
+        )
+        .as_bytes(),
+    );
+    let error = CompanionBridge::default()
+        .launch_mcp(
+            &InstalledCompanion::new(&pro),
+            McpRequest::new(Vec::new()),
+            &CancellationToken::new(),
         )
         .unwrap_err();
-    assert!(matches!(error, BridgeError::Filesystem { .. }), "{error:?}");
-
-    let linked_fixture = Fixture::new(b"#!/bin/sh\nexit 0\n");
-    let linked_root = linked_fixture._temp.path().join("linked-managed");
-    symlink(&linked_fixture.root, &linked_root).unwrap();
-    let linked_launcher = linked_root.join("bin").join("ctx");
-    let error = crate::slot::prepare(&linked_launcher).err().unwrap();
-    assert!(matches!(error, BridgeError::Filesystem { .. }), "{error:?}");
-}
-
-#[test]
-fn unsafe_permissions_and_shared_file_symlinks_are_rejected() {
-    let fixture = Fixture::new(b"#!/bin/sh\nexit 0\n");
-    fs::set_permissions(&fixture.companion, fs::Permissions::from_mode(0o720)).unwrap();
-    let error = crate::slot::prepare(&fixture.launcher).err().unwrap();
-    assert!(matches!(error, BridgeError::Filesystem { .. }));
-
-    fs::set_permissions(&fixture.companion, fs::Permissions::from_mode(0o700)).unwrap();
-    let pair = crate::slot::prepare(&fixture.launcher).unwrap();
-    let outside = fixture._temp.path().join("outside-state.json");
-    write_mode(&outside, b"{}", 0o600);
-    symlink(&outside, fixture.shared_path(MANAGED_PAIR_STATE_FILENAME)).unwrap();
-    let error = pair
-        .read_shared_file(&crate::slot::STATE_RELATIVE_PATH, 64 * 1024)
-        .unwrap_err();
-    assert!(matches!(error, BridgeError::Filesystem { .. }));
-}
-
-#[test]
-fn verifier_refusal_occurs_before_any_companion_code_runs() {
-    let fixture = Fixture::new(b"#!/bin/sh\nprintf started > \"$1\"\n");
-    let marker = fixture.root.join("started");
-    let mut request = request(&fixture);
-    request.push_argument(marker.as_os_str());
-    let error = CompanionBridge::default()
-        .launch_captured_at(
-            &fixture.launcher,
-            request.capture(Vec::new()),
-            &CancellationToken::new(),
-            &RefusingVerifier,
-        )
-        .unwrap_err();
-    assert!(matches!(error, BridgeError::Verification(_)));
+    assert!(matches!(
+        error,
+        BridgeError::ProtocolMismatch {
+            expected: CORE_PRO_PROTOCOL_VERSION,
+            observed: Some(observed),
+        } if observed == ProtocolVersion::new(2)
+    ));
     assert!(!marker.exists());
 }
 
 #[test]
-fn native_non_utf8_argument_round_trips_without_loss() {
-    let fixture =
-        Fixture::new(b"#!/usr/bin/python3\nimport os,sys\nos.write(1, os.fsencode(sys.argv[1]))\n");
-    let expected = vec![b'n', b'a', 0xff, b't', b'i', b'v', b'e'];
-    let mut request = request(&fixture);
-    request.push_argument(OsString::from_vec(expected.clone()));
-    let output = launch_with(
-        &fixture,
-        request,
-        LimitConfiguration::default(),
-        &CancellationToken::new(),
-    )
-    .unwrap();
-    assert_eq!(output.exit_class(), ExitClass::Success);
-    assert_eq!(output.stdout(), expected);
+fn missing_pro_is_distinct_from_protocol_mismatch() {
+    let temp = tempfile::tempdir().unwrap();
+    let missing = temp.path().join("missing-ctx-pro");
+    let error = CompanionBridge::default()
+        .launch_mcp(
+            &InstalledCompanion::new(&missing),
+            McpRequest::new(Vec::new()),
+            &CancellationToken::new(),
+        )
+        .unwrap_err();
+    assert!(matches!(
+        error,
+        BridgeError::MissingExecutable { ref path } if path == &missing
+    ));
 }
 
 #[test]
-fn environment_is_stripped_to_allowlist_and_cwd_is_managed_root() {
+fn launch_environment_contains_no_install_context_authority() {
     let fixture = Fixture::new(
-        b"#!/usr/bin/python3\nimport os\nvalues=[os.getenv('PATH','<missing>'),os.getenv('LANG','<missing>'),os.getenv('HOME','<missing>'),os.getcwd(),os.getenv('CTX_DATA_ROOT','<missing>'),os.getenv('CTX_PRO_DATA_ROOT','<missing>'),os.getenv('CTX_LOCAL_USAGE_ENABLED','<missing>'),os.getenv('CTX_PRO_INSTALLATION_ID','<missing>')]\nos.write(1, '\\0'.join(values).encode())\n",
+        b"#!/usr/bin/python3\nimport os\nforbidden=['CTX_PRO_PATH','CTX_PRO_INSTALL_CONTEXT','CTX_DATA_ROOT','CTX_PRO_DATA_ROOT','CTX_MANAGED_PAIR_CHANNEL','CTX_PRO_INSTALLATION_ID','CTX_MANAGED_PAIR_INVOCATION_FINGERPRINT','CTX_MANAGED_PAIR_CORE_CAPABILITY_FINGERPRINT','CTX_RELEASE_BUILD_SOURCE_COMMIT']\npresent=[name for name in forbidden if name in os.environ]\nos.write(1, '\\n'.join(present).encode())\n",
     );
-    let mut request = request(&fixture);
+    let output = CompanionBridge::default()
+        .launch_mcp(
+            &fixture.companion(),
+            McpRequest::new(Vec::new()),
+            &CancellationToken::new(),
+        )
+        .unwrap();
+    assert_eq!(output.exit_class(), ExitClass::Success);
+    assert!(output.stdout().is_empty());
+}
+
+#[test]
+fn relative_and_directory_pro_paths_have_typed_errors() {
+    let relative = InstalledCompanion::new("ctx-pro");
+    assert!(matches!(
+        CompanionBridge::default().launch_mcp(
+            &relative,
+            McpRequest::new(Vec::new()),
+            &CancellationToken::new(),
+        ),
+        Err(BridgeError::InvalidExecutablePath)
+    ));
+
+    let temp = tempfile::tempdir().unwrap();
+    let directory = InstalledCompanion::new(temp.path());
+    assert!(matches!(
+        CompanionBridge::default().launch_mcp(
+            &directory,
+            McpRequest::new(Vec::new()),
+            &CancellationToken::new(),
+        ),
+        Err(BridgeError::ExecutableNotFile { .. })
+    ));
+}
+
+#[test]
+fn typed_environment_allowlist_is_preserved_and_ambient_is_cleared() {
+    let fixture = Fixture::new(
+        b"#!/usr/bin/python3\nimport os\nvalues=[os.getenv('PATH','<missing>'),os.getenv('LANG','<missing>'),os.getenv('HOME','<missing>')]\nos.write(1, '\\0'.join(values).encode())\n",
+    );
+    let mut request = McpRequest::new(Vec::new());
     request
         .environment_mut()
         .set(EnvironmentKey::Home, OsStr::new("/home/tester"))
-        .set(EnvironmentKey::Lang, OsStr::new("C.UTF-8"))
-        .set(EnvironmentKey::LocalUsageEnabled, OsStr::new("false"))
-        .set(
-            EnvironmentKey::InstallationId,
-            OsStr::new("aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee"),
-        );
-    let output = launch_with(
+        .set(EnvironmentKey::Lang, OsStr::new("C.UTF-8"));
+    let output = launch_mcp_with(
         &fixture,
         request,
         LimitConfiguration::default(),
@@ -351,163 +260,20 @@ fn environment_is_stripped_to_allowlist_and_cwd_is_managed_root() {
     )
     .unwrap();
     let fields: Vec<_> = output.stdout().split(|byte| *byte == 0).collect();
-    assert_eq!(fields[0], b"<missing>");
-    assert_eq!(fields[1], b"C.UTF-8");
-    assert_eq!(fields[2], b"/home/tester");
-    assert_eq!(fields[3], fixture.root.as_os_str().as_encoded_bytes());
     assert_eq!(
-        fields[4],
-        fixture.root.join("data").as_os_str().as_encoded_bytes()
+        fields,
+        [b"<missing>".as_slice(), b"C.UTF-8", b"/home/tester"]
     );
-    assert_eq!(
-        fields[5],
-        fixture.root.join("data").as_os_str().as_encoded_bytes()
-    );
-    assert_eq!(fields[6], b"false");
-    assert_eq!(fields[7], b"aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee");
-    assert_eq!(MAX_ENVIRONMENT_ENTRIES, 8);
 }
 
 #[test]
-fn streaming_transport_preserves_interactive_request_response_order() {
-    let fixture = Fixture::new(
-        b"#!/usr/bin/python3\nimport os,sys\nfirst=sys.stdin.buffer.readline()\nos.write(1,b'ready:'+first)\nsecond=sys.stdin.buffer.readline()\nraise SystemExit(0 if second == b'second\\n' else 9)\n",
-    );
-    let pair = crate::slot::prepare(&fixture.launcher).unwrap();
-    let data_root = fixture.root.join("data");
-    let (mut parent, child) = UnixStream::pair().unwrap();
-    parent
-        .set_read_timeout(Some(Duration::from_secs(2)))
-        .unwrap();
-    let parent_reader = parent.try_clone().unwrap();
-    let child_stdin: OwnedFd = child.try_clone().unwrap().into();
-    let child_stdout: OwnedFd = child.into();
-    let launch = thread::spawn(move || {
-        crate::process::run_streaming_with_stdio(
-            &pair.execution,
-            CompanionRequest::new(data_root),
-            &CancellationToken::new(),
-            Stdio::from(child_stdin),
-            Stdio::from(child_stdout),
-            Stdio::null(),
-        )
-    });
-
-    parent.write_all(b"first\n").unwrap();
-    parent.flush().unwrap();
-    let mut line = String::new();
-    BufReader::new(parent_reader).read_line(&mut line).unwrap();
-    assert_eq!(line, "ready:first\n");
-    parent.write_all(b"second\n").unwrap();
-    parent.flush().unwrap();
-    let exit = launch.join().unwrap().unwrap();
-    assert_eq!(exit.exit, ExitClass::Success);
-}
-
-#[test]
-fn streaming_transport_preserves_terminal_identity() {
-    let fixture = Fixture::new(
-        b"#!/usr/bin/python3\nimport os\nok=all(os.isatty(fd) for fd in (0,1,2))\nos.write(1,b'tty-ok\\n' if ok else b'tty-missing\\n')\nraise SystemExit(0 if ok else 7)\n",
-    );
-    let pair = crate::slot::prepare(&fixture.launcher).unwrap();
-    let (master, slave) = pseudo_terminal();
-    let child_stdin: OwnedFd = slave.try_clone().unwrap().into();
-    let child_stdout: OwnedFd = slave.try_clone().unwrap().into();
-    let child_stderr: OwnedFd = slave.into();
-    let exit = crate::process::run_streaming_with_stdio(
-        &pair.execution,
-        request(&fixture),
-        &CancellationToken::new(),
-        Stdio::from(child_stdin),
-        Stdio::from(child_stdout),
-        Stdio::from(child_stderr),
-    )
-    .unwrap();
-    assert_eq!(exit.exit, ExitClass::Success);
-    let mut output = String::new();
-    BufReader::new(master).read_line(&mut output).unwrap();
-    assert!(output.contains("tty-ok"), "{output:?}");
-}
-
-#[test]
-fn streaming_child_lifetime_is_independent_of_captured_wall_time() {
-    let fixture = Fixture::new(b"#!/bin/sh\n/usr/bin/sleep 0.15\nexit 0\n");
-    let bridge = CompanionBridge::new(
-        BridgeLimits::new(LimitConfiguration {
-            admission_wait: Duration::from_secs(1),
-            captured_wall_time: Duration::from_millis(25),
-            ..LimitConfiguration::default()
-        })
-        .unwrap(),
-    );
-    let started = Instant::now();
-    let exit = bridge
-        .launch_streaming_at(
-            &fixture.launcher,
-            request(&fixture),
-            &CancellationToken::new(),
-            &AcceptingVerifier,
-        )
-        .unwrap();
-    assert_eq!(exit.exit_class(), ExitClass::Success);
-    assert!(started.elapsed() >= Duration::from_millis(100));
-}
-
-#[test]
-#[ignore = "requires a dedicated controlling terminal"]
-fn streaming_transport_hands_foreground_terminal_to_companion() {
-    let fixture = Fixture::new(
-        b"#!/usr/bin/python3\nimport os,sys\nforeground=os.tcgetpgrp(0)==os.getpgrp()\nline=sys.stdin.buffer.readline()\nok=foreground and line==b'hello\\n'\nos.write(1,b'foreground-ok\\n' if ok else b'foreground-missing\\n')\nraise SystemExit(0 if ok else 8)\n",
-    );
-    let exit = CompanionBridge::default()
-        .launch_streaming_at(
-            &fixture.launcher,
-            request(&fixture),
-            &CancellationToken::new(),
-            &AcceptingVerifier,
-        )
-        .unwrap();
-    assert_eq!(exit.exit_class(), ExitClass::Success);
-}
-
-fn pseudo_terminal() -> (fs::File, fs::File) {
-    let mut master = -1;
-    let mut slave = -1;
-    let result = unsafe {
-        libc::openpty(
-            &raw mut master,
-            &raw mut slave,
-            std::ptr::null_mut(),
-            std::ptr::null(),
-            std::ptr::null(),
-        )
-    };
-    assert_eq!(result, 0, "openpty: {}", std::io::Error::last_os_error());
-    assert!(master >= 0 && slave >= 0);
-    unsafe { (fs::File::from_raw_fd(master), fs::File::from_raw_fd(slave)) }
-}
-
-#[test]
-fn data_root_is_mandatory_and_absolute() {
-    let fixture = Fixture::new(b"#!/bin/sh\nexit 0\n");
-    let error = launch_with(
-        &fixture,
-        CompanionRequest::new("relative-data"),
-        LimitConfiguration::default(),
-        &CancellationToken::new(),
-    )
-    .unwrap_err();
-    assert!(matches!(error, BridgeError::InvalidDataRoot));
-}
-
-#[test]
-fn exit_class_and_binary_stdout_stderr_are_preserved() {
+fn exit_class_and_binary_output_are_preserved() {
     let fixture = Fixture::new(
         b"#!/usr/bin/python3\nimport os\nos.write(1,b'out\\xff')\nos.write(2,b'err\\xfe')\nraise SystemExit(17)\n",
     );
-    let output = launch_with(
+    let output = launch_mcp_with(
         &fixture,
-        request(&fixture),
+        McpRequest::new(Vec::new()),
         LimitConfiguration::default(),
         &CancellationToken::new(),
     )
@@ -523,37 +289,40 @@ fn exit_class_and_binary_stdout_stderr_are_preserved() {
 fn control_input_and_output_bounds_fail_closed() {
     let fixture = Fixture::new(b"#!/usr/bin/python3\nimport os\nos.write(1,b'x'*65536)\n");
     let small = LimitConfiguration {
-        control_bytes: 1024,
+        control_bytes: 512,
         input_bytes: 8,
         stdout_bytes: 32,
         stderr_bytes: 32,
         captured_wall_time: Duration::from_secs(2),
         ..LimitConfiguration::default()
     };
-    let oversized_input = request(&fixture).capture(vec![0; 9]);
     assert!(matches!(
-        CompanionBridge::new(BridgeLimits::new(small).unwrap()).launch_captured_at(
-            &fixture.launcher,
-            oversized_input,
+        launch_mcp_with(
+            &fixture,
+            McpRequest::new(vec![0; 9]),
+            small,
             &CancellationToken::new(),
-            &AcceptingVerifier,
         ),
         Err(BridgeError::Limit("input bytes"))
     ));
-    let mut oversized_control = request(&fixture);
-    oversized_control.push_argument("x".repeat(1024));
+
+    let mut oversized_control = McpRequest::new(Vec::new());
+    oversized_control
+        .environment_mut()
+        .set(EnvironmentKey::Home, "x".repeat(512));
     assert!(matches!(
-        launch_with(
+        launch_mcp_with(
             &fixture,
             oversized_control,
             small,
-            &CancellationToken::new()
+            &CancellationToken::new(),
         ),
         Err(BridgeError::Limit("control bytes"))
     ));
-    let output = launch_with(
+
+    let output = launch_mcp_with(
         &fixture,
-        request(&fixture),
+        McpRequest::new(Vec::new()),
         small,
         &CancellationToken::new(),
     )
@@ -567,37 +336,76 @@ fn control_input_and_output_bounds_fail_closed() {
 }
 
 #[test]
-fn admission_and_captured_lifetime_bounds_are_independent() {
-    let limits = LimitConfiguration {
-        admission_wait: Duration::ZERO,
-        ..LimitConfiguration::default()
-    };
-    assert!(matches!(
-        BridgeLimits::new(limits),
-        Err(BridgeError::Limit("admission wait"))
-    ));
-
-    let limits = LimitConfiguration {
-        captured_wall_time: Duration::ZERO,
-        ..LimitConfiguration::default()
-    };
-    assert!(matches!(
-        BridgeLimits::new(limits),
-        Err(BridgeError::Limit("captured wall time"))
-    ));
+fn streaming_transport_preserves_request_response_order() {
+    let fixture = Fixture::new(
+        b"#!/usr/bin/python3\nimport os,sys\nfirst=sys.stdin.buffer.readline()\nos.write(1,b'ready:'+first)\nsecond=sys.stdin.buffer.readline()\nraise SystemExit(0 if second == b'second\\n' else 9)\n",
+    );
+    let companion = fixture.companion();
+    let bridge = CompanionBridge::default();
+    bridge
+        .handshake(&companion, &CancellationToken::new())
+        .unwrap();
+    let (mut parent, child) = UnixStream::pair().unwrap();
+    parent
+        .set_read_timeout(Some(Duration::from_secs(2)))
+        .unwrap();
+    let parent_reader = parent.try_clone().unwrap();
+    let child_stdin: OwnedFd = child.try_clone().unwrap().into();
+    let child_stdout: OwnedFd = child.into();
+    let launch = thread::spawn(move || {
+        crate::process::run_streaming_with_stdio(
+            &companion,
+            CliRequest::new(Vec::new()).into_process(),
+            &CancellationToken::new(),
+            Stdio::from(child_stdin),
+            Stdio::from(child_stdout),
+            Stdio::null(),
+        )
+    });
+    parent.write_all(b"first\n").unwrap();
+    parent.flush().unwrap();
+    let mut line = String::new();
+    BufReader::new(parent_reader).read_line(&mut line).unwrap();
+    assert_eq!(line, "ready:first\n");
+    parent.write_all(b"second\n").unwrap();
+    parent.flush().unwrap();
+    assert_eq!(launch.join().unwrap().unwrap().exit, ExitClass::Success);
 }
 
 #[test]
+fn streaming_child_lifetime_is_independent_of_captured_wall_time() {
+    let fixture = Fixture::new(b"#!/bin/sh\n/usr/bin/sleep 0.15\nexit 0\n");
+    let bridge = CompanionBridge::new(
+        BridgeLimits::new(LimitConfiguration {
+            admission_wait: Duration::from_secs(1),
+            captured_wall_time: Duration::from_millis(25),
+            ..LimitConfiguration::default()
+        })
+        .unwrap(),
+    );
+    let started = Instant::now();
+    let exit = bridge
+        .launch_cli(
+            &fixture.companion(),
+            CliRequest::new(Vec::new()),
+            &CancellationToken::new(),
+        )
+        .unwrap();
+    assert_eq!(exit.exit_class(), ExitClass::Success);
+    assert!(started.elapsed() >= Duration::from_millis(100));
+}
+
+#[cfg(target_os = "linux")]
+#[test]
 fn timeout_terminates_the_descendant_process_group() {
     let fixture = Fixture::new(b"#!/bin/sh\n/usr/bin/sleep 60 &\nprintf '%s\\n' \"$!\"\nwait\n");
-    let limits = LimitConfiguration {
-        captured_wall_time: Duration::from_millis(150),
-        ..LimitConfiguration::default()
-    };
-    let output = launch_with(
+    let output = launch_mcp_with(
         &fixture,
-        request(&fixture),
-        limits,
+        McpRequest::new(Vec::new()),
+        LimitConfiguration {
+            captured_wall_time: Duration::from_millis(150),
+            ..LimitConfiguration::default()
+        },
         &CancellationToken::new(),
     )
     .unwrap();
@@ -605,7 +413,7 @@ fn timeout_terminates_the_descendant_process_group() {
         output.exit_class(),
         ExitClass::Terminated(TerminationReason::WallTime)
     );
-    let pid: u32 = String::from_utf8(output.stdout().to_vec())
+    let pid = String::from_utf8(output.stdout().to_vec())
         .unwrap()
         .trim()
         .parse()
@@ -613,6 +421,7 @@ fn timeout_terminates_the_descendant_process_group() {
     assert_process_stopped(pid);
 }
 
+#[cfg(target_os = "linux")]
 #[test]
 fn cancellation_terminates_the_descendant_process_group() {
     let fixture = Fixture::new(b"#!/bin/sh\n/usr/bin/sleep 60 &\nprintf '%s\\n' \"$!\"\nwait\n");
@@ -622,9 +431,9 @@ fn cancellation_terminates_the_descendant_process_group() {
         thread::sleep(Duration::from_millis(100));
         trigger.cancel();
     });
-    let output = launch_with(
+    let output = launch_mcp_with(
         &fixture,
-        request(&fixture),
+        McpRequest::new(Vec::new()),
         LimitConfiguration {
             captured_wall_time: Duration::from_secs(2),
             ..LimitConfiguration::default()
@@ -637,7 +446,7 @@ fn cancellation_terminates_the_descendant_process_group() {
         output.exit_class(),
         ExitClass::Terminated(TerminationReason::Cancelled)
     );
-    let pid: u32 = String::from_utf8(output.stdout().to_vec())
+    let pid = String::from_utf8(output.stdout().to_vec())
         .unwrap()
         .trim()
         .parse()
@@ -645,38 +454,18 @@ fn cancellation_terminates_the_descendant_process_group() {
     assert_process_stopped(pid);
 }
 
-#[test]
-fn streaming_cancellation_terminates_the_descendant_process_group() {
-    let fixture =
-        Fixture::new(b"#!/bin/sh\n/usr/bin/sleep 60 &\nprintf '%s\\n' \"$!\" > \"$1\"\nwait\n");
-    let pid_path = fixture.root.join("streaming-descendant.pid");
-    let mut request = request(&fixture);
-    request.push_argument(pid_path.as_os_str());
-    let cancellation = CancellationToken::new();
-    let trigger = cancellation.clone();
-    let canceller = thread::spawn(move || {
-        thread::sleep(Duration::from_millis(100));
-        trigger.cancel();
-    });
-    let exit = CompanionBridge::default()
-        .launch_streaming_at(
-            &fixture.launcher,
-            request,
-            &cancellation,
-            &AcceptingVerifier,
-        )
-        .unwrap();
-    canceller.join().unwrap();
-    assert_eq!(
-        exit.exit_class(),
-        ExitClass::Terminated(TerminationReason::Cancelled)
-    );
-    let pid = fs::read_to_string(pid_path)
-        .unwrap()
-        .trim()
-        .parse()
-        .unwrap();
-    assert_process_stopped(pid);
+#[cfg(target_os = "linux")]
+fn assert_process_stopped(pid: u32) {
+    let deadline = Instant::now() + Duration::from_secs(2);
+    loop {
+        let stat = fs::read_to_string(format!("/proc/{pid}/stat"));
+        match stat {
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return,
+            Ok(value) if value.split_whitespace().nth(2) == Some("Z") => return,
+            _ if Instant::now() >= deadline => panic!("descendant {pid} survived tree termination"),
+            _ => thread::sleep(Duration::from_millis(20)),
+        }
+    }
 }
 
 #[test]
@@ -692,19 +481,6 @@ fn admission_queue_wait_remains_bounded() {
     assert!(matches!(error, BridgeError::QueueTimeout));
     assert!(started.elapsed() >= Duration::from_millis(20));
     assert!(started.elapsed() < Duration::from_secs(1));
-}
-
-fn assert_process_stopped(pid: u32) {
-    let deadline = Instant::now() + Duration::from_secs(2);
-    loop {
-        let stat = fs::read_to_string(format!("/proc/{pid}/stat"));
-        match stat {
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return,
-            Ok(value) if value.split_whitespace().nth(2) == Some("Z") => return,
-            _ if Instant::now() >= deadline => panic!("descendant {pid} survived tree termination"),
-            _ => thread::sleep(Duration::from_millis(20)),
-        }
-    }
 }
 
 #[test]
@@ -727,11 +503,10 @@ fn configured_concurrency_is_a_real_gate() {
         let bridge = Arc::clone(&bridge);
         workers.push(thread::spawn(move || {
             bridge
-                .launch_captured_at(
-                    &fixture.launcher,
-                    request(&fixture).capture(Vec::new()),
+                .launch_mcp(
+                    &fixture.companion(),
+                    McpRequest::new(Vec::new()),
                     &CancellationToken::new(),
-                    &AcceptingVerifier,
                 )
                 .unwrap()
         }));
@@ -743,211 +518,19 @@ fn configured_concurrency_is_a_real_gate() {
 }
 
 #[test]
-fn production_verifier_fails_closed_when_fixed_envelope_is_absent() {
-    let fixture = Fixture::new(b"#!/bin/sh\nexit 0\n");
-    let zero = Sha256Digest::from_bytes([0; 32]);
-    let expectations = ManagedPairExpectations::new(
-        ReleaseChannel::Staging,
-        CoreBuildIdentity::new("a".repeat(40)).unwrap(),
-        CompatibilityIdentity::new(zero, zero),
-    );
-    let verifier = crate::verifier::ProductionVerifier::new(&expectations);
-    let error = CompanionBridge::default()
-        .launch_captured_at(
-            &fixture.launcher,
-            request(&fixture).capture(Vec::new()),
-            &CancellationToken::new(),
-            &verifier,
-        )
-        .unwrap_err();
-    assert!(matches!(error, BridgeError::Filesystem { .. }), "{error:?}");
-    assert!(!fixture.shared_path(MANAGED_PAIR_ENVELOPE_FILENAME).exists());
-}
-
-#[test]
-fn production_verifier_uses_root_authority_and_rejects_an_invalid_signature() {
-    let companion_bytes = b"#!/bin/sh\nprintf started > started\n";
-    let fixture = Fixture::new(companion_bytes);
-    let zero = Sha256Digest::from_bytes([0; 32]);
-    let expectations = ManagedPairExpectations::new(
-        ReleaseChannel::Staging,
-        CoreBuildIdentity::new("a".repeat(40)).unwrap(),
-        CompatibilityIdentity::new(zero, zero),
-    );
-    let target = test_target();
-    let core_sha = format!("{:x}", Sha256::digest(CORE_BYTES));
-    let companion_sha = format!("{:x}", Sha256::digest(companion_bytes));
-    let manifest = serde_json::json!({
-        "channel": "staging",
-        "compatibility": {
-            "core_capability_fingerprint": zero.to_hex(),
-            "invocation_fingerprint": zero.to_hex(),
-        },
-        "components": {
-            "companion": test_component(
-                "companion",
-                target.companion_artifact,
-                target.companion_slot,
-                target.companion_rust_target,
-                &companion_sha,
-                companion_bytes.len(),
-                "b",
-            ),
-            "core": test_component(
-                "core",
-                target.core_artifact,
-                target.core_slot,
-                target.core_rust_target,
-                &core_sha,
-                CORE_BYTES.len(),
-                "a",
-            ),
-        },
-        "contract": "ctx-managed-pair-manifest",
-        "install_geometry": {
-            "companion_slot": target.companion_slot,
-            "core_slot": target.core_slot,
-            "install_root": "<install-root>",
-            "managed_bin_dir": "<install-root>/bin",
-        },
-        "release_authority_key_id": "ctx-pro-release-staging-2026-07-30",
-        "release_name": "v1.2.3",
-        "rollback_generation": 7,
-        "schema_version": 1,
-        "snapshot": {
-            "contract": "ctx-managed-pair-snapshot-v1",
-            "fingerprint": zero.to_hex(),
-        },
-        "target": {
-            "arch": target.arch,
-            "companion_rust_target": target.companion_rust_target,
-            "core_rust_target": target.core_rust_target,
-            "id": target.id,
-            "os": target.os,
-        },
-        "target_matrix_sha256": "1cf089c8f494c9662428518ce07ff91a3ceb28fe4ac4d75b6a9d7dd3f16c75a5",
-    });
-    let payload = serde_json::to_vec(&manifest).unwrap();
-    let envelope = serde_json::to_vec(&serde_json::json!({
-        "manifest_base64": BASE64.encode(payload),
-        "schema_version": 1,
-        "signature_base64": BASE64.encode([0_u8; 384]),
-    }))
-    .unwrap();
-    write_mode(
-        &fixture.shared_path(MANAGED_PAIR_ENVELOPE_FILENAME),
-        &envelope,
-        0o600,
-    );
-
-    let verifier = crate::verifier::ProductionVerifier::new(&expectations);
-    let error = CompanionBridge::default()
-        .launch_captured_at(
-            &fixture.launcher,
-            request(&fixture).capture(Vec::new()),
-            &CancellationToken::new(),
-            &verifier,
-        )
-        .unwrap_err();
-    assert!(
-        matches!(error, BridgeError::Verification(ref message) if message.contains("signature")),
-        "{error:?}"
-    );
-    assert!(!fixture.root.join("started").exists());
-}
-
-struct TestTarget {
-    id: &'static str,
-    os: &'static str,
-    arch: &'static str,
-    core_rust_target: &'static str,
-    companion_rust_target: &'static str,
-    core_slot: &'static str,
-    companion_slot: &'static str,
-    core_artifact: &'static str,
-    companion_artifact: &'static str,
-}
-
-fn test_component(
-    kind: &str,
-    artifact: &str,
-    slot: &str,
-    rust_target: &str,
-    sha256: &str,
-    size_bytes: usize,
-    revision_digit: &str,
-) -> serde_json::Value {
-    serde_json::json!({
-        "artifact_name": artifact,
-        "build_identity": {
-            "build_fingerprint": "0".repeat(64),
-            "component": kind,
-            "rust_target": rust_target,
-            "source_revision": revision_digit.repeat(40),
-        },
-        "install_slot": slot,
-        "object_key": format!("sha256/{sha256}/{artifact}"),
-        "sha256": sha256,
-        "size_bytes": size_bytes,
-    })
-}
-
-#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
-fn test_target() -> TestTarget {
-    TestTarget {
-        id: "linux-x64",
-        os: "linux",
-        arch: "x86_64",
-        core_rust_target: "x86_64-unknown-linux-gnu",
-        companion_rust_target: "x86_64-unknown-linux-gnu",
-        core_slot: "<install-root>/bin/ctx",
-        companion_slot: "<install-root>/libexec/ctx-pro",
-        core_artifact: "ctx-linux-x64",
-        companion_artifact: "ctx-pro-linux-x64",
-    }
-}
-
-#[cfg(all(target_os = "linux", target_arch = "aarch64"))]
-fn test_target() -> TestTarget {
-    TestTarget {
-        id: "linux-arm64",
-        os: "linux",
-        arch: "aarch64",
-        core_rust_target: "aarch64-unknown-linux-gnu",
-        companion_rust_target: "aarch64-unknown-linux-gnu",
-        core_slot: "<install-root>/bin/ctx",
-        companion_slot: "<install-root>/libexec/ctx-pro",
-        core_artifact: "ctx-linux-aarch64",
-        companion_artifact: "ctx-pro-linux-arm64",
-    }
-}
-
-#[cfg(all(target_os = "macos", target_arch = "x86_64"))]
-fn test_target() -> TestTarget {
-    TestTarget {
-        id: "macos-x64",
-        os: "macos",
-        arch: "x86_64",
-        core_rust_target: "x86_64-apple-darwin",
-        companion_rust_target: "x86_64-apple-darwin",
-        core_slot: "<install-root>/bin/ctx",
-        companion_slot: "<install-root>/libexec/ctx-pro",
-        core_artifact: "ctx-macos-x64",
-        companion_artifact: "ctx-pro-macos-x64",
-    }
-}
-
-#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
-fn test_target() -> TestTarget {
-    TestTarget {
-        id: "macos-arm64",
-        os: "macos",
-        arch: "aarch64",
-        core_rust_target: "aarch64-apple-darwin",
-        companion_rust_target: "aarch64-apple-darwin",
-        core_slot: "<install-root>/bin/ctx",
-        companion_slot: "<install-root>/libexec/ctx-pro",
-        core_artifact: "ctx-macos-arm64",
-        companion_artifact: "ctx-pro-macos-arm64",
-    }
+fn admission_and_captured_lifetime_bounds_are_independent() {
+    assert!(matches!(
+        BridgeLimits::new(LimitConfiguration {
+            admission_wait: Duration::ZERO,
+            ..LimitConfiguration::default()
+        }),
+        Err(BridgeError::Limit("admission wait"))
+    ));
+    assert!(matches!(
+        BridgeLimits::new(LimitConfiguration {
+            captured_wall_time: Duration::ZERO,
+            ..LimitConfiguration::default()
+        }),
+        Err(BridgeError::Limit("captured wall time"))
+    ));
 }

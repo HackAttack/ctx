@@ -16,11 +16,10 @@ mod platform;
 #[path = "process/windows.rs"]
 mod platform;
 
-use crate::ReleaseChannel;
 use crate::{
     limits::LimitConfiguration,
-    request::{CancellationToken, CapturedCompanionRequest, CompanionRequest},
-    slot::ExecutionBinding,
+    protocol::InstalledCompanion,
+    request::{CancellationToken, CapturedProcessRequest, ProcessRequest},
     BridgeError,
 };
 
@@ -57,25 +56,23 @@ pub(crate) struct ProcessExit {
 }
 
 pub(crate) fn run_captured(
-    binding: &ExecutionBinding,
-    request: CapturedCompanionRequest,
+    companion: &InstalledCompanion,
+    request: CapturedProcessRequest,
     cancellation: &CancellationToken,
     limits: LimitConfiguration,
-    verified_channel: Option<ReleaseChannel>,
 ) -> Result<ProcessOutput, BridgeError> {
-    binding.verify_retained()?;
-    let CapturedCompanionRequest {
+    let CapturedProcessRequest {
         control,
         stdin: captured_stdin,
     } = request;
-    let mut command = std::process::Command::new(binding.program());
-    configure_command(&mut command, &control, verified_channel)?;
+    let mut command = std::process::Command::new(companion.executable());
+    configure_command(&mut command, &control)?;
     command
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
     let started = Instant::now();
-    let (mut child, tree) = platform::spawn(binding, &mut command)?;
+    let (mut child, tree) = platform::spawn(&mut command)?;
     let child_stdin = child.stdin.take().ok_or_else(|| {
         tree.terminate();
         terminate_direct(&mut child);
@@ -234,60 +231,55 @@ pub(crate) fn run_captured(
 }
 
 pub(crate) fn run_streaming(
-    binding: &ExecutionBinding,
-    request: CompanionRequest,
+    companion: &InstalledCompanion,
+    request: ProcessRequest,
     cancellation: &CancellationToken,
-    verified_channel: Option<ReleaseChannel>,
 ) -> Result<ProcessExit, BridgeError> {
     run_streaming_with_stdio_inner(
-        binding,
+        companion,
         request,
         cancellation,
         Stdio::inherit(),
         Stdio::inherit(),
         Stdio::inherit(),
         true,
-        verified_channel,
     )
 }
 
 #[cfg(test)]
 pub(crate) fn run_streaming_with_stdio(
-    binding: &ExecutionBinding,
-    request: CompanionRequest,
+    companion: &InstalledCompanion,
+    request: ProcessRequest,
     cancellation: &CancellationToken,
     stdin: Stdio,
     stdout: Stdio,
     stderr: Stdio,
 ) -> Result<ProcessExit, BridgeError> {
     run_streaming_with_stdio_inner(
-        binding,
+        companion,
         request,
         cancellation,
         stdin,
         stdout,
         stderr,
         false,
-        None,
     )
 }
 
 #[allow(clippy::too_many_arguments)]
 fn run_streaming_with_stdio_inner(
-    binding: &ExecutionBinding,
-    request: CompanionRequest,
+    companion: &InstalledCompanion,
+    request: ProcessRequest,
     cancellation: &CancellationToken,
     stdin: Stdio,
     stdout: Stdio,
     stderr: Stdio,
     handoff_terminal: bool,
-    verified_channel: Option<ReleaseChannel>,
 ) -> Result<ProcessExit, BridgeError> {
-    binding.verify_retained()?;
-    let mut command = std::process::Command::new(binding.program());
-    configure_command(&mut command, &request, verified_channel)?;
+    let mut command = std::process::Command::new(companion.executable());
+    configure_command(&mut command, &request)?;
     command.stdin(stdin).stdout(stdout).stderr(stderr);
-    let (mut child, tree) = platform::spawn(binding, &mut command)?;
+    let (mut child, tree) = platform::spawn(&mut command)?;
     let mut foreground = match platform::ForegroundTerminal::handoff(handoff_terminal, child.id()) {
         Ok(foreground) => foreground,
         Err(error) => {
@@ -335,21 +327,11 @@ fn run_streaming_with_stdio_inner(
 
 fn configure_command(
     command: &mut std::process::Command,
-    request: &CompanionRequest,
-    verified_channel: Option<ReleaseChannel>,
+    request: &ProcessRequest,
 ) -> Result<(), BridgeError> {
-    command
-        .args(&request.arguments)
-        .env_clear()
-        .env("CTX_DATA_ROOT", request.data_root())
-        .env("CTX_PRO_DATA_ROOT", request.data_root());
+    command.args(request.arguments()).env_clear();
     for (key, value) in request.environment.iter() {
         command.env(key.as_str(), value);
-    }
-    // Not caller-controlled: this is set only after the bridge verified the
-    // signed pair's channel, release authority, rollback state, and binaries.
-    if let Some(channel) = verified_channel {
-        command.env("CTX_MANAGED_PAIR_CHANNEL", channel.as_str());
     }
     platform::configure_required_environment(command)
 }

@@ -1,23 +1,34 @@
-use std::io;
+use std::{io, path::PathBuf};
 
 use thiserror::Error;
 
+use crate::ProtocolVersion;
+
 #[derive(Debug, Error)]
 pub enum BridgeError {
-    #[error("managed companion slot is invalid: {0}")]
-    InvalidSlot(&'static str),
-    #[error("managed companion filesystem validation failed: {context}")]
-    Filesystem {
-        context: &'static str,
+    #[error("installed companion executable path must be absolute")]
+    InvalidExecutablePath,
+    #[error("installed companion executable is missing: {path}")]
+    MissingExecutable { path: PathBuf },
+    #[error("installed companion path is not a file: {path}")]
+    ExecutableNotFile { path: PathBuf },
+    #[error("installed companion executable could not be inspected: {path}")]
+    ExecutableMetadata {
+        path: PathBuf,
         #[source]
         source: io::Error,
     },
-    #[error("managed companion verification refused the pair: {0}")]
+    #[error("managed-pair installation verification failed: {0}")]
     Verification(String),
+    #[error("installed companion failed the Core protocol {expected} handshake")]
+    ProtocolMismatch {
+        expected: ProtocolVersion,
+        observed: Option<ProtocolVersion>,
+    },
+    #[error("installed companion returned an invalid Protocol V3 {0} response")]
+    InvalidProtocolResponse(&'static str),
     #[error("managed companion request exceeds the {0} limit")]
     Limit(&'static str),
-    #[error("managed companion data root must be an absolute native path")]
-    InvalidDataRoot,
     #[error("managed companion request deadline expired before spawn")]
     QueueTimeout,
     #[error("managed companion launch was cancelled before spawn")]
@@ -30,10 +41,4 @@ pub enum BridgeError {
     WorkerFailed,
     #[error("managed companion transport is unsupported on this platform")]
     UnsupportedPlatform,
-}
-
-impl BridgeError {
-    pub(crate) fn filesystem(context: &'static str, source: io::Error) -> Self {
-        Self::Filesystem { context, source }
-    }
 }

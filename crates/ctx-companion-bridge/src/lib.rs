@@ -1,36 +1,38 @@
-//! Neutral, fail-closed launch and byte transport for a fixed managed companion.
+//! Neutral Protocol V3 launch and bounded byte transport for installed Pro.
 //!
-//! Production launch always resolves the running Core executable from
-//! `<root>/bin/ctx[.exe]`, verifies the detached signed V1 pair envelope and
-//! retained rollback state under `<root>/share/ctx`, and executes only
-//! `<root>/libexec/ctx-pro[.exe]`. This crate owns no companion protocol or
-//! product semantics.
+//! Core supplies only the installed Pro executable and a typed operation. The
+//! bridge performs a bounded Protocol V3 handshake against that executable,
+//! clears ambient environment authority, and launches the operation directly.
+//!
+//! The detached signed-envelope API remains available solely to distribution
+//! and installation callers. Launch does not invoke it or consume pair identity.
 
 mod environment;
 mod error;
 mod identity;
 mod limits;
 mod process;
+mod protocol;
 mod request;
-mod slot;
 mod verifier;
 
 use std::{
-    path::Path,
+    fs, io,
     sync::{Condvar, Mutex},
     time::{Duration, Instant},
 };
 
 pub use environment::{CompanionEnvironment, EnvironmentKey};
 pub use error::BridgeError;
-pub use identity::{FileIdentity, PairIdentity, Sha256Digest};
+pub use identity::Sha256Digest;
 pub use limits::{
     BridgeLimits, LimitConfiguration, MAX_ADMISSION_WAIT, MAX_ARGUMENTS, MAX_CAPTURED_WALL_TIME,
     MAX_CONCURRENT_PROCESSES, MAX_CONTROL_BYTES, MAX_ENVIRONMENT_ENTRIES, MAX_INPUT_BYTES,
     MAX_STDERR_BYTES, MAX_STDOUT_BYTES,
 };
 pub use process::{ExitClass, TerminationReason};
-pub use request::{CancellationToken, CapturedCompanionRequest, CompanionRequest};
+pub use protocol::{InstalledCompanion, ProtocolVersion, CORE_PRO_PROTOCOL_VERSION};
+pub use request::{CancellationToken, CliRequest, MaintenanceRequest, McpRequest};
 pub use verifier::{
     verify_signed_managed_pair_envelope, CompatibilityIdentity, CoreBuildIdentity,
     ManagedPairExpectations, ReleaseChannel, SignedManagedPairComponentIdentity,
@@ -39,11 +41,16 @@ pub use verifier::{
 };
 
 use process::{ProcessExit, ProcessOutput};
-use verifier::{PairVerifier, ProductionVerifier};
+use protocol::parse_handshake_receipt;
+use request::ProcessRequest;
+
+const HANDSHAKE_STDOUT_BYTES: usize = 256;
+const HANDSHAKE_STDERR_BYTES: usize = 4 * 1024;
+const HANDSHAKE_WALL_TIME: Duration = Duration::from_secs(5);
+const MAINTENANCE_RECEIPT: &[u8] = b"{\"accepted\":true,\"schema_version\":1}\n";
 
 #[derive(Debug)]
-pub struct CompanionOutput {
-    pair_identity: PairIdentity,
+pub struct McpResponse {
     exit: ExitClass,
     stdout: Vec<u8>,
     stderr: Vec<u8>,
@@ -52,26 +59,22 @@ pub struct CompanionOutput {
 }
 
 #[derive(Debug)]
-pub struct CompanionExit {
-    pair_identity: PairIdentity,
+pub struct CliResponse {
     exit: ExitClass,
 }
 
-impl CompanionExit {
-    pub const fn pair_identity(&self) -> &PairIdentity {
-        &self.pair_identity
-    }
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct MaintenanceResponse {
+    accepted: bool,
+}
 
+impl CliResponse {
     pub const fn exit_class(&self) -> ExitClass {
         self.exit
     }
 }
 
-impl CompanionOutput {
-    pub const fn pair_identity(&self) -> &PairIdentity {
-        &self.pair_identity
-    }
-
+impl McpResponse {
     pub const fn exit_class(&self) -> ExitClass {
         self.exit
     }
@@ -93,6 +96,24 @@ impl CompanionOutput {
     }
 }
 
+impl MaintenanceResponse {
+    pub const fn accepted(self) -> bool {
+        self.accepted
+    }
+}
+
+impl From<ProcessOutput> for McpResponse {
+    fn from(output: ProcessOutput) -> Self {
+        Self {
+            exit: output.exit,
+            stdout: output.stdout,
+            stderr: output.stderr,
+            stdout_truncated: output.stdout_truncated,
+            stderr_truncated: output.stderr_truncated,
+        }
+    }
+}
+
 pub struct CompanionBridge {
     limits: LimitConfiguration,
     gate: ConcurrencyGate,
@@ -107,142 +128,99 @@ impl CompanionBridge {
         }
     }
 
-    /// Launches the companion paired with the currently running Core process.
-    ///
-    /// No executable path, current directory, release authority, rollback
-    /// location, or arbitrary environment key is accepted from the caller.
-    pub fn launch_captured(
+    pub fn launch_mcp(
         &self,
-        expectations: &ManagedPairExpectations,
-        request: CapturedCompanionRequest,
+        companion: &InstalledCompanion,
+        request: McpRequest,
         cancellation: &CancellationToken,
-    ) -> Result<CompanionOutput, BridgeError> {
-        let launcher = std::env::current_exe()
-            .map_err(|error| BridgeError::filesystem("resolve current Core executable", error))?;
-        let verifier = ProductionVerifier::new(expectations);
-        self.launch_captured_at_with_channel(
-            &launcher,
-            request,
-            cancellation,
-            &verifier,
-            Some(expectations.channel()),
-        )
-    }
-
-    /// Launches the verified companion with the caller's existing standard
-    /// streams inherited directly. This mode preserves terminal identity,
-    /// backpressure, and interactive request/response ordering. Once admitted,
-    /// the child runs until it exits or cancellation terminates its process
-    /// tree; captured request wall limits do not apply.
-    pub fn launch_streaming(
-        &self,
-        expectations: &ManagedPairExpectations,
-        request: CompanionRequest,
-        cancellation: &CancellationToken,
-    ) -> Result<CompanionExit, BridgeError> {
-        let launcher = std::env::current_exe()
-            .map_err(|error| BridgeError::filesystem("resolve current Core executable", error))?;
-        let verifier = ProductionVerifier::new(expectations);
-        self.launch_streaming_at_with_channel(
-            &launcher,
-            request,
-            cancellation,
-            &verifier,
-            Some(expectations.channel()),
-        )
-    }
-
-    #[cfg(test)]
-    fn launch_captured_at(
-        &self,
-        launcher: &Path,
-        request: CapturedCompanionRequest,
-        cancellation: &CancellationToken,
-        verifier: &dyn PairVerifier,
-    ) -> Result<CompanionOutput, BridgeError> {
-        self.launch_captured_at_with_channel(launcher, request, cancellation, verifier, None)
-    }
-
-    fn launch_captured_at_with_channel(
-        &self,
-        launcher: &Path,
-        request: CapturedCompanionRequest,
-        cancellation: &CancellationToken,
-        verifier: &dyn PairVerifier,
-        verified_channel: Option<ReleaseChannel>,
-    ) -> Result<CompanionOutput, BridgeError> {
+    ) -> Result<McpResponse, BridgeError> {
+        let request = request.into_process();
         request.validate(self.limits)?;
-        let (pair, _permit) = self.prepare_launch(launcher, cancellation, verifier)?;
-        let ProcessOutput {
-            exit,
-            stdout,
-            stderr,
-            stdout_truncated,
-            stderr_truncated,
-        } = process::run_captured(
-            &pair.execution,
-            request,
-            cancellation,
-            self.limits,
-            verified_channel,
-        )?;
-        Ok(CompanionOutput {
-            pair_identity: pair.identity,
-            exit,
-            stdout,
-            stderr,
-            stdout_truncated,
-            stderr_truncated,
-        })
+        let _permit = self.prepare_launch(companion, cancellation)?;
+        process::run_captured(companion, request, cancellation, self.limits).map(McpResponse::from)
     }
 
-    #[cfg(test)]
-    fn launch_streaming_at(
+    pub fn launch_maintenance(
         &self,
-        launcher: &Path,
-        request: CompanionRequest,
+        companion: &InstalledCompanion,
+        request: MaintenanceRequest,
         cancellation: &CancellationToken,
-        verifier: &dyn PairVerifier,
-    ) -> Result<CompanionExit, BridgeError> {
-        self.launch_streaming_at_with_channel(launcher, request, cancellation, verifier, None)
-    }
-
-    fn launch_streaming_at_with_channel(
-        &self,
-        launcher: &Path,
-        request: CompanionRequest,
-        cancellation: &CancellationToken,
-        verifier: &dyn PairVerifier,
-        verified_channel: Option<ReleaseChannel>,
-    ) -> Result<CompanionExit, BridgeError> {
+    ) -> Result<MaintenanceResponse, BridgeError> {
+        let request = request.into_process();
         request.validate(self.limits)?;
-        let (pair, _permit) = self.prepare_launch(launcher, cancellation, verifier)?;
-        let ProcessExit { exit } =
-            process::run_streaming(&pair.execution, request, cancellation, verified_channel)?;
-        Ok(CompanionExit {
-            pair_identity: pair.identity,
-            exit,
-        })
+        let _permit = self.prepare_launch(companion, cancellation)?;
+        let output = process::run_captured(companion, request, cancellation, self.limits)?;
+        if output.exit != ExitClass::Success
+            || output.stdout_truncated
+            || output.stderr_truncated
+            || output.stdout != MAINTENANCE_RECEIPT
+            || !output.stderr.is_empty()
+        {
+            return Err(BridgeError::InvalidProtocolResponse("maintenance"));
+        }
+        Ok(MaintenanceResponse { accepted: true })
+    }
+
+    /// Launches a Protocol V3 CLI operation with the caller's existing standard
+    /// streams inherited directly. Once admitted, the child runs until it exits
+    /// or cancellation terminates its process tree.
+    pub fn launch_cli(
+        &self,
+        companion: &InstalledCompanion,
+        request: CliRequest,
+        cancellation: &CancellationToken,
+    ) -> Result<CliResponse, BridgeError> {
+        let request = request.into_process();
+        request.validate(self.limits)?;
+        let _permit = self.prepare_launch(companion, cancellation)?;
+        let ProcessExit { exit } = process::run_streaming(companion, request, cancellation)?;
+        Ok(CliResponse { exit })
     }
 
     fn prepare_launch<'a>(
         &'a self,
-        launcher: &Path,
+        companion: &InstalledCompanion,
         cancellation: &CancellationToken,
-        verifier: &dyn PairVerifier,
-    ) -> Result<(slot::PreparedPair, ConcurrencyPermit<'a>), BridgeError> {
+    ) -> Result<ConcurrencyPermit<'a>, BridgeError> {
+        validate_executable(companion)?;
         let permit = self
             .gate
             .acquire(cancellation, self.limits.admission_wait)?;
         if cancellation.is_cancelled() {
             return Err(BridgeError::CancelledBeforeSpawn);
         }
-        let pair = slot::prepare(launcher)?;
-        verifier.verify(&pair)?;
+        self.handshake(companion, cancellation)?;
         if cancellation.is_cancelled() {
             return Err(BridgeError::CancelledBeforeSpawn);
         }
-        Ok((pair, permit))
+        Ok(permit)
+    }
+
+    fn handshake(
+        &self,
+        companion: &InstalledCompanion,
+        cancellation: &CancellationToken,
+    ) -> Result<(), BridgeError> {
+        let request = ProcessRequest::handshake();
+        let limits = handshake_limits(self.limits);
+        request.validate(limits)?;
+        let output = process::run_captured(companion, request, cancellation, limits)?;
+        if output.exit == ExitClass::Terminated(TerminationReason::Cancelled) {
+            return Err(BridgeError::CancelledBeforeSpawn);
+        }
+        let observed = (output.exit == ExitClass::Success
+            && !output.stdout_truncated
+            && !output.stderr_truncated
+            && output.stderr.is_empty())
+        .then(|| parse_handshake_receipt(&output.stdout))
+        .flatten();
+        if observed != Some(CORE_PRO_PROTOCOL_VERSION) {
+            return Err(BridgeError::ProtocolMismatch {
+                expected: CORE_PRO_PROTOCOL_VERSION,
+                observed,
+            });
+        }
+        Ok(())
     }
 }
 
@@ -250,6 +228,41 @@ impl Default for CompanionBridge {
     fn default() -> Self {
         Self::new(BridgeLimits::default())
     }
+}
+
+fn handshake_limits(mut limits: LimitConfiguration) -> LimitConfiguration {
+    limits.input_bytes = 1;
+    limits.stdout_bytes = limits.stdout_bytes.min(HANDSHAKE_STDOUT_BYTES);
+    limits.stderr_bytes = limits.stderr_bytes.min(HANDSHAKE_STDERR_BYTES);
+    limits.captured_wall_time = limits.captured_wall_time.min(HANDSHAKE_WALL_TIME);
+    limits
+}
+
+fn validate_executable(companion: &InstalledCompanion) -> Result<(), BridgeError> {
+    let executable = companion.executable();
+    if !executable.is_absolute() {
+        return Err(BridgeError::InvalidExecutablePath);
+    }
+    let metadata = match fs::metadata(executable) {
+        Ok(metadata) => metadata,
+        Err(source) if source.kind() == io::ErrorKind::NotFound => {
+            return Err(BridgeError::MissingExecutable {
+                path: executable.to_path_buf(),
+            });
+        }
+        Err(source) => {
+            return Err(BridgeError::ExecutableMetadata {
+                path: executable.to_path_buf(),
+                source,
+            });
+        }
+    };
+    if !metadata.is_file() {
+        return Err(BridgeError::ExecutableNotFile {
+            path: executable.to_path_buf(),
+        });
+    }
+    Ok(())
 }
 
 struct ConcurrencyGate {

@@ -1,4 +1,4 @@
-use std::{fmt, path::Path};
+use std::fmt;
 
 use crate::BridgeError;
 
@@ -52,101 +52,5 @@ impl fmt::Display for Sha256Digest {
             write!(formatter, "{byte:02x}")?;
         }
         Ok(())
-    }
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct FileIdentity {
-    size_bytes: u64,
-    sha256: Sha256Digest,
-    #[cfg(unix)]
-    device: u64,
-    #[cfg(unix)]
-    inode: u64,
-    #[cfg(unix)]
-    owner: u32,
-    #[cfg(windows)]
-    volume_serial: u32,
-    #[cfg(windows)]
-    file_index: u64,
-}
-
-impl FileIdentity {
-    #[cfg(unix)]
-    pub(crate) const fn unix(
-        size_bytes: u64,
-        sha256: Sha256Digest,
-        device: u64,
-        inode: u64,
-        owner: u32,
-    ) -> Self {
-        Self {
-            size_bytes,
-            sha256,
-            device,
-            inode,
-            owner,
-        }
-    }
-
-    #[cfg(windows)]
-    pub(crate) const fn windows(
-        size_bytes: u64,
-        sha256: Sha256Digest,
-        volume_serial: u32,
-        file_index: u64,
-    ) -> Self {
-        Self {
-            size_bytes,
-            sha256,
-            volume_serial,
-            file_index,
-        }
-    }
-
-    pub const fn size_bytes(&self) -> u64 {
-        self.size_bytes
-    }
-
-    pub const fn sha256(&self) -> Sha256Digest {
-        self.sha256
-    }
-
-    #[cfg(unix)]
-    pub const fn owner(&self) -> u32 {
-        self.owner
-    }
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct PairIdentity {
-    root: std::path::PathBuf,
-    launcher: FileIdentity,
-    companion: FileIdentity,
-}
-
-impl PairIdentity {
-    pub(crate) fn new(
-        root: std::path::PathBuf,
-        launcher: FileIdentity,
-        companion: FileIdentity,
-    ) -> Self {
-        Self {
-            root,
-            launcher,
-            companion,
-        }
-    }
-
-    pub fn managed_root(&self) -> &Path {
-        &self.root
-    }
-
-    pub const fn launcher(&self) -> &FileIdentity {
-        &self.launcher
-    }
-
-    pub const fn companion(&self) -> &FileIdentity {
-        &self.companion
     }
 }

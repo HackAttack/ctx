@@ -1,13 +1,20 @@
 use std::{
     ffi::{OsStr, OsString},
-    path::{Path, PathBuf},
     sync::{
         atomic::{AtomicBool, Ordering},
         Arc,
     },
 };
 
-use crate::{environment::CompanionEnvironment, limits::LimitConfiguration, BridgeError};
+use crate::{
+    environment::CompanionEnvironment,
+    limits::LimitConfiguration,
+    protocol::{
+        PROTOCOL_CLI_COMMAND, PROTOCOL_ENTRYPOINT_ARGUMENT, PROTOCOL_HANDSHAKE_COMMAND,
+        PROTOCOL_MAINTENANCE_COMMAND, PROTOCOL_MCP_COMMAND,
+    },
+    BridgeError,
+};
 
 #[derive(Clone, Debug, Default)]
 pub struct CancellationToken {
@@ -29,35 +36,16 @@ impl CancellationToken {
 }
 
 #[derive(Clone, Debug)]
-pub struct CompanionRequest {
-    pub(crate) data_root: PathBuf,
-    pub(crate) arguments: Vec<OsString>,
-    pub(crate) environment: CompanionEnvironment,
+pub struct CliRequest {
+    arguments: Vec<OsString>,
+    environment: CompanionEnvironment,
 }
 
-impl CompanionRequest {
-    /// Creates control data for one companion launch.
-    ///
-    /// The effective data root is mandatory because the bridge clears the
-    /// ambient environment before executing the fixed companion.
-    pub fn new(data_root: impl Into<PathBuf>) -> Self {
+impl CliRequest {
+    pub fn new(arguments: Vec<OsString>) -> Self {
         Self {
-            data_root: data_root.into(),
-            arguments: Vec::new(),
+            arguments,
             environment: CompanionEnvironment::new(),
-        }
-    }
-
-    pub fn push_argument(&mut self, argument: impl Into<OsString>) -> &mut Self {
-        self.arguments.push(argument.into());
-        self
-    }
-
-    /// Selects bounded request/response transport for machine-oriented calls.
-    pub fn capture(self, stdin: impl Into<Vec<u8>>) -> CapturedCompanionRequest {
-        CapturedCompanionRequest {
-            control: self,
-            stdin: stdin.into(),
         }
     }
 
@@ -65,21 +53,132 @@ impl CompanionRequest {
         &mut self.environment
     }
 
+    pub(crate) fn into_process(self) -> ProcessRequest {
+        ProcessRequest {
+            command: ProtocolCommand::Cli(self.arguments),
+            environment: self.environment,
+        }
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct McpRequest {
+    input: Vec<u8>,
+    environment: CompanionEnvironment,
+}
+
+impl McpRequest {
+    pub fn new(input: impl Into<Vec<u8>>) -> Self {
+        Self {
+            input: input.into(),
+            environment: CompanionEnvironment::new(),
+        }
+    }
+
+    pub fn environment_mut(&mut self) -> &mut CompanionEnvironment {
+        &mut self.environment
+    }
+
+    pub(crate) fn into_process(self) -> CapturedProcessRequest {
+        CapturedProcessRequest {
+            control: ProcessRequest {
+                command: ProtocolCommand::McpServe,
+                environment: self.environment,
+            },
+            stdin: self.input,
+        }
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct MaintenanceRequest {
+    environment: CompanionEnvironment,
+}
+
+impl MaintenanceRequest {
+    pub fn new() -> Self {
+        Self {
+            environment: CompanionEnvironment::new(),
+        }
+    }
+
+    pub fn environment_mut(&mut self) -> &mut CompanionEnvironment {
+        &mut self.environment
+    }
+
+    pub(crate) fn into_process(self) -> CapturedProcessRequest {
+        CapturedProcessRequest {
+            control: ProcessRequest {
+                command: ProtocolCommand::Maintenance,
+                environment: self.environment,
+            },
+            stdin: Vec::new(),
+        }
+    }
+}
+
+impl Default for MaintenanceRequest {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+#[derive(Clone, Debug)]
+pub(crate) enum ProtocolCommand {
+    Handshake,
+    Cli(Vec<OsString>),
+    McpServe,
+    Maintenance,
+}
+
+impl ProtocolCommand {
+    fn arguments(&self) -> Vec<OsString> {
+        let mut arguments = vec![OsString::from(PROTOCOL_ENTRYPOINT_ARGUMENT)];
+        match self {
+            Self::Handshake => arguments.push(OsString::from(PROTOCOL_HANDSHAKE_COMMAND)),
+            Self::Cli(cli) => {
+                arguments.push(OsString::from(PROTOCOL_CLI_COMMAND));
+                arguments.push(OsString::from("--"));
+                arguments.extend(cli.iter().cloned());
+            }
+            Self::McpServe => arguments.push(OsString::from(PROTOCOL_MCP_COMMAND)),
+            Self::Maintenance => arguments.push(OsString::from(PROTOCOL_MAINTENANCE_COMMAND)),
+        }
+        arguments
+    }
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct ProcessRequest {
+    pub(crate) command: ProtocolCommand,
+    pub(crate) environment: CompanionEnvironment,
+}
+
+impl ProcessRequest {
+    pub(crate) fn handshake() -> CapturedProcessRequest {
+        CapturedProcessRequest {
+            control: Self {
+                command: ProtocolCommand::Handshake,
+                environment: CompanionEnvironment::new(),
+            },
+            stdin: Vec::new(),
+        }
+    }
+
+    pub(crate) fn arguments(&self) -> Vec<OsString> {
+        self.command.arguments()
+    }
+
     pub(crate) fn validate(&self, limits: LimitConfiguration) -> Result<(), BridgeError> {
-        if self.arguments.len() > limits.arguments {
+        let arguments = self.arguments();
+        if arguments.len() > limits.arguments {
             return Err(BridgeError::Limit("argument count"));
         }
         if self.environment.len() > limits.environment_entries {
             return Err(BridgeError::Limit("environment entry count"));
         }
-        if !self.data_root.is_absolute() {
-            return Err(BridgeError::InvalidDataRoot);
-        }
-        reject_nul(self.data_root.as_os_str())?;
-        let mut control_bytes = native_size(self.data_root.as_os_str())
-            .checked_add(1)
-            .ok_or(BridgeError::Limit("control bytes"))?;
-        for argument in &self.arguments {
+        let mut control_bytes = 0_usize;
+        for argument in &arguments {
             control_bytes = control_bytes
                 .checked_add(native_size(argument))
                 .and_then(|value| value.checked_add(1))
@@ -99,19 +198,15 @@ impl CompanionRequest {
         }
         Ok(())
     }
-
-    pub(crate) fn data_root(&self) -> &Path {
-        &self.data_root
-    }
 }
 
 #[derive(Clone, Debug)]
-pub struct CapturedCompanionRequest {
-    pub(crate) control: CompanionRequest,
+pub(crate) struct CapturedProcessRequest {
+    pub(crate) control: ProcessRequest,
     pub(crate) stdin: Vec<u8>,
 }
 
-impl CapturedCompanionRequest {
+impl CapturedProcessRequest {
     pub(crate) fn validate(&self, limits: LimitConfiguration) -> Result<(), BridgeError> {
         self.control.validate(limits)?;
         if self.stdin.len() > limits.input_bytes {

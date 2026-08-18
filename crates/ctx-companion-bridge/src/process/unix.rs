@@ -4,7 +4,7 @@ use std::{
     process::{Child, Command},
 };
 
-use crate::{slot::ExecutionBinding, BridgeError};
+use crate::BridgeError;
 
 pub(super) struct ForegroundTerminal {
     terminal: Option<(libc::c_int, libc::pid_t)>,
@@ -100,26 +100,12 @@ pub(super) fn configure_required_environment(_command: &mut Command) -> Result<(
     Ok(())
 }
 
-pub(super) fn spawn(
-    binding: &ExecutionBinding,
-    command: &mut Command,
-) -> Result<(Child, ProcessTree), BridgeError> {
-    let execution_fd = binding.execution_fd();
-    let root_fd = binding.root_fd();
+pub(super) fn spawn(command: &mut Command) -> Result<(Child, ProcessTree), BridgeError> {
     #[cfg(target_os = "linux")]
     let expected_parent = unsafe { libc::getpid() };
     command.process_group(0);
     unsafe {
         command.pre_exec(move || {
-            let flags = libc::fcntl(execution_fd, libc::F_GETFD);
-            if flags == -1
-                || libc::fcntl(execution_fd, libc::F_SETFD, flags & !libc::FD_CLOEXEC) == -1
-            {
-                return Err(io::Error::last_os_error());
-            }
-            if libc::fchdir(root_fd) == -1 {
-                return Err(io::Error::last_os_error());
-            }
             #[cfg(target_os = "linux")]
             {
                 if libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGKILL) == -1 {

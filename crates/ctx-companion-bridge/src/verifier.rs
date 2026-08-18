@@ -1,3 +1,7 @@
+//! Detached managed-pair verification for installation and distribution only.
+//!
+//! Runtime launch does not call this module.
+
 mod contract;
 mod target;
 
@@ -6,11 +10,7 @@ use ring::signature::{UnparsedPublicKey, RSA_PKCS1_2048_8192_SHA256};
 use serde_json::Value;
 use sha2::{Digest as _, Sha256};
 
-use crate::{
-    identity::Sha256Digest,
-    slot::{PreparedPair, ENVELOPE_RELATIVE_PATH, MAX_COMPONENT_BYTES, STATE_RELATIVE_PATH},
-    BridgeError,
-};
+use crate::{identity::Sha256Digest, BridgeError};
 
 use self::{
     contract::{
@@ -34,7 +34,7 @@ const TARGET_MATRIX_SHA256: &str =
 const MAX_ENVELOPE_BYTES: usize = 2 * 1024 * 1024;
 const MAX_MANIFEST_BYTES: usize = 1024 * 1024;
 const MAX_SIGNATURE_BYTES: usize = 16 * 1024;
-const MAX_STATE_BYTES: usize = 64 * 1024;
+const MAX_COMPONENT_BYTES: u64 = 256 * 1024 * 1024;
 const MAX_ROLLBACK_GENERATION: u64 = 9_007_199_254_740_991;
 
 pub const MANAGED_PAIR_ENVELOPE_FILENAME: &str = "managed-pair-envelope.json";
@@ -174,57 +174,13 @@ impl ManagedPairExpectations {
     pub const fn channel(&self) -> ReleaseChannel {
         self.channel
     }
-}
 
-pub(crate) trait PairVerifier {
-    fn verify(&self, pair: &PreparedPair) -> Result<(), BridgeError>;
-}
-
-pub(crate) struct ProductionVerifier<'a> {
-    expectations: &'a ManagedPairExpectations,
-    authority: &'static [u8],
-}
-
-impl<'a> ProductionVerifier<'a> {
-    pub(crate) const fn new(expectations: &'a ManagedPairExpectations) -> Self {
-        Self {
-            expectations,
-            authority: EMBEDDED_AUTHORITY,
-        }
-    }
-}
-
-impl PairVerifier for ProductionVerifier<'_> {
-    fn verify(&self, pair: &PreparedPair) -> Result<(), BridgeError> {
-        let envelope_bytes = pair.read_shared_file(&ENVELOPE_RELATIVE_PATH, MAX_ENVELOPE_BYTES)?;
-        let verified = verify_envelope(
-            self.expectations,
-            self.authority,
-            &envelope_bytes,
-            CoreRevisionPolicy::Exact,
-        )?;
-        validate_installed_components(
-            &verified.manifest,
-            verified.target,
-            pair,
-            self.expectations,
-        )?;
-        validate_state(
-            pair,
-            &verified.manifest,
-            verified.target,
-            &verified.payload_bytes,
-            &envelope_bytes,
-        )?;
-        pair.execution.verify_retained()?;
-        Ok(())
+    pub const fn core(&self) -> &CoreBuildIdentity {
+        &self.core
     }
 }
 
 struct VerifiedEnvelope {
-    manifest: Manifest,
-    payload_bytes: Vec<u8>,
-    target: TargetSpec,
     identity: SignedManagedPairIdentity,
 }
 
@@ -232,26 +188,13 @@ pub fn verify_signed_managed_pair_envelope(
     expectations: &ManagedPairExpectations,
     envelope_bytes: &[u8],
 ) -> Result<SignedManagedPairIdentity, BridgeError> {
-    verify_envelope(
-        expectations,
-        EMBEDDED_AUTHORITY,
-        envelope_bytes,
-        CoreRevisionPolicy::WellFormed,
-    )
-    .map(|value| value.identity)
-}
-
-#[derive(Clone, Copy)]
-enum CoreRevisionPolicy {
-    Exact,
-    WellFormed,
+    verify_envelope(expectations, EMBEDDED_AUTHORITY, envelope_bytes).map(|value| value.identity)
 }
 
 fn verify_envelope(
     expectations: &ManagedPairExpectations,
     authority_bytes: &[u8],
     envelope_bytes: &[u8],
-    core_revision: CoreRevisionPolicy,
 ) -> Result<VerifiedEnvelope, BridgeError> {
     if envelope_bytes.is_empty() || envelope_bytes.len() > MAX_ENVELOPE_BYTES {
         return Err(verification("detached envelope exceeds its bound"));
@@ -303,14 +246,9 @@ fn verify_envelope(
         .verify(&payload_bytes, &signature)
         .map_err(|_| verification("detached manifest signature is invalid"))?;
     let target = TargetSpec::current()?;
-    validate_manifest_identity(&manifest, target, expectations, core_revision)?;
+    validate_manifest_identity(&manifest, target, expectations)?;
     let identity = signed_identity(&manifest, target, &payload_bytes)?;
-    Ok(VerifiedEnvelope {
-        manifest,
-        payload_bytes,
-        target,
-        identity,
-    })
+    Ok(VerifiedEnvelope { identity })
 }
 
 struct VerifiedAuthority {
@@ -385,7 +323,6 @@ fn validate_manifest_identity(
     manifest: &Manifest,
     target: TargetSpec,
     expected: &ManagedPairExpectations,
-    core_revision: CoreRevisionPolicy,
 ) -> Result<(), BridgeError> {
     if !is_name(&manifest.release_name)
         || manifest.target_matrix_sha256 != TARGET_MATRIX_SHA256
@@ -430,7 +367,7 @@ fn validate_manifest_identity(
         target.core_artifact,
         target.core_slot,
         target.core_rust_target,
-        matches!(core_revision, CoreRevisionPolicy::Exact).then_some(&expected.core),
+        None,
     )?;
     validate_component_document(
         &manifest.components.companion,
@@ -469,89 +406,6 @@ fn signed_identity(
             size_bytes: manifest.components.companion.size_bytes,
         },
     })
-}
-
-fn validate_installed_components(
-    manifest: &Manifest,
-    target: TargetSpec,
-    pair: &PreparedPair,
-    expected: &ManagedPairExpectations,
-) -> Result<(), BridgeError> {
-    if !is_name(&manifest.release_name)
-        || manifest.target_matrix_sha256 != TARGET_MATRIX_SHA256
-        || manifest.rollback_generation == 0
-        || manifest.rollback_generation > MAX_ROLLBACK_GENERATION
-    {
-        return Err(verification("manifest release identity is malformed"));
-    }
-    if manifest.target.id != target.id
-        || manifest.target.os != target.os
-        || manifest.target.arch != target.arch
-        || manifest.target.core_rust_target != target.core_rust_target
-        || manifest.target.companion_rust_target != target.companion_rust_target
-    {
-        return Err(verification(
-            "manifest target does not match this Core build",
-        ));
-    }
-    if manifest.install_geometry.install_root != "<install-root>"
-        || manifest.install_geometry.managed_bin_dir != "<install-root>/bin"
-        || manifest.install_geometry.core_slot != target.core_slot
-        || manifest.install_geometry.companion_slot != target.companion_slot
-    {
-        return Err(verification(
-            "manifest does not use the fixed managed slots",
-        ));
-    }
-    if manifest.snapshot.contract != "ctx-managed-pair-snapshot-v1"
-        || parse_digest(&manifest.snapshot.fingerprint).is_err()
-        || parse_digest(&manifest.compatibility.invocation_fingerprint)?
-            != expected.compatibility.invocation_fingerprint
-        || parse_digest(&manifest.compatibility.core_capability_fingerprint)?
-            != expected.compatibility.core_capability_fingerprint
-    {
-        return Err(verification(
-            "manifest compatibility does not match current Core",
-        ));
-    }
-    validate_component(
-        &manifest.components.core,
-        "core",
-        target.core_artifact,
-        target.core_slot,
-        target.core_rust_target,
-        pair.identity.launcher(),
-        Some(&expected.core),
-    )?;
-    validate_component(
-        &manifest.components.companion,
-        "companion",
-        target.companion_artifact,
-        target.companion_slot,
-        target.companion_rust_target,
-        pair.identity.companion(),
-        None,
-    )
-}
-
-#[allow(clippy::too_many_arguments)]
-fn validate_component(
-    component: &ComponentDocument,
-    kind: &str,
-    artifact: &str,
-    slot: &str,
-    rust_target: &str,
-    actual: &crate::FileIdentity,
-    expected_core: Option<&CoreBuildIdentity>,
-) -> Result<(), BridgeError> {
-    validate_component_document(component, kind, artifact, slot, rust_target, expected_core)?;
-    let signed_digest = parse_digest(&component.sha256)?;
-    if component.size_bytes != actual.size_bytes() || signed_digest != actual.sha256() {
-        return Err(verification(
-            "signed component does not match fixed executable bytes",
-        ));
-    }
-    Ok(())
 }
 
 fn validate_component_document(
@@ -595,18 +449,6 @@ fn validate_build_identity(
         }
     }
     Ok(())
-}
-
-fn validate_state(
-    pair: &PreparedPair,
-    manifest: &Manifest,
-    target: TargetSpec,
-    payload_bytes: &[u8],
-    envelope_bytes: &[u8],
-) -> Result<(), BridgeError> {
-    let bytes = pair.read_shared_file(&STATE_RELATIVE_PATH, MAX_STATE_BYTES)?;
-    let state: ManagedPairState = parse_closed_json(&bytes, "managed-pair state")?;
-    validate_state_document(&state, manifest, target, payload_bytes, envelope_bytes)
 }
 
 fn validate_state_document(
@@ -803,7 +645,6 @@ mod state_tests {
     #[test]
     fn signed_component_and_state_bounds_are_exactly_256_mib() {
         let target = TargetSpec::current().unwrap();
-        let digest = parse_digest(CORE_SHA).unwrap();
         let component_at = |size_bytes| {
             serde_json::from_value::<ComponentDocument>(component(
                 "core",
@@ -815,16 +656,13 @@ mod state_tests {
             ))
             .unwrap()
         };
-        let identity_at = |size_bytes| test_file_identity(size_bytes, digest);
-
         let accepted = component_at(MAX_COMPONENT_BYTES);
-        assert!(validate_component(
+        assert!(validate_component_document(
             &accepted,
             "core",
             target.core_artifact,
             target.core_slot,
             target.core_rust_target,
-            &identity_at(MAX_COMPONENT_BYTES),
             None,
         )
         .is_ok());
@@ -835,13 +673,12 @@ mod state_tests {
         assert!(state_component_matches(&accepted_state, &accepted).unwrap());
 
         let rejected = component_at(MAX_COMPONENT_BYTES + 1);
-        assert!(validate_component(
+        assert!(validate_component_document(
             &rejected,
             "core",
             target.core_artifact,
             target.core_slot,
             target.core_rust_target,
-            &identity_at(MAX_COMPONENT_BYTES + 1),
             None,
         )
         .is_err());
@@ -850,16 +687,6 @@ mod state_tests {
             size_bytes: MAX_COMPONENT_BYTES + 1,
         };
         assert!(!state_component_matches(&rejected_state, &rejected).unwrap());
-    }
-
-    #[cfg(unix)]
-    fn test_file_identity(size_bytes: u64, sha256: Sha256Digest) -> crate::FileIdentity {
-        crate::FileIdentity::unix(size_bytes, sha256, 1, 2, 3)
-    }
-
-    #[cfg(windows)]
-    fn test_file_identity(size_bytes: u64, sha256: Sha256Digest) -> crate::FileIdentity {
-        crate::FileIdentity::windows(size_bytes, sha256, 1, 2)
     }
 
     fn manifest(target: TargetSpec) -> Manifest {

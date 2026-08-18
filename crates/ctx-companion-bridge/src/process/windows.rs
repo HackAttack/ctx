@@ -25,7 +25,7 @@ use windows_sys::Win32::System::{
     Threading::{OpenThread, ResumeThread, CREATE_SUSPENDED, THREAD_SUSPEND_RESUME},
 };
 
-use crate::{slot::ExecutionBinding, BridgeError};
+use crate::BridgeError;
 
 pub(super) struct ForegroundTerminal;
 
@@ -74,13 +74,8 @@ pub(super) fn configure_required_environment(command: &mut Command) -> Result<()
     }
 }
 
-pub(super) fn spawn(
-    binding: &ExecutionBinding,
-    command: &mut Command,
-) -> Result<(Child, ProcessTree), BridgeError> {
-    command
-        .current_dir(binding.root_path())
-        .creation_flags(CREATE_SUSPENDED);
+pub(super) fn spawn(command: &mut Command) -> Result<(Child, ProcessTree), BridgeError> {
+    command.creation_flags(CREATE_SUSPENDED);
     let mut child = command.spawn().map_err(BridgeError::Spawn)?;
     match start_job(&child) {
         Ok(tree) => Ok((child, tree)),
