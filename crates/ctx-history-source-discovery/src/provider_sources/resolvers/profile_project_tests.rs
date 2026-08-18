@@ -1039,6 +1039,34 @@ fn openhands_empty_oh_uses_exact_cwd_and_routes_stable_cli_root() {
 }
 
 #[test]
+fn openhands_disjoint_missing_cli_root_remains_selected_for_deletion() {
+    let temp = tempdir();
+    let home = temp.path().join("home");
+    let cwd = temp.path().join("cwd");
+    let legacy = temp.path().join("legacy");
+    let cli = temp.path().join("current/conversations");
+    fs::create_dir_all(&cwd).unwrap();
+    write(
+        &legacy.join("v1_conversations/conversation/event.json"),
+        "{}",
+    );
+    let context = context(&home, &cwd)
+        .with_env("OH_PERSISTENCE_DIR", legacy.as_os_str().to_owned())
+        .with_env("OPENHANDS_CONVERSATIONS_DIR", cli.as_os_str().to_owned());
+
+    let report = report(&context, CaptureProvider::OpenHands);
+    assert_eq!(report.sources.len(), 2);
+    assert_eq!(report.sources[0].path, legacy);
+    assert_eq!(report.sources[0].status, ProviderSourceStatus::Available);
+    assert_eq!(report.sources[1].path, cli);
+    assert_eq!(
+        report.sources[1].source_format,
+        OPENHANDS_CURRENT_CLI_SOURCE_FORMAT
+    );
+    assert_eq!(report.sources[1].status, ProviderSourceStatus::Missing);
+}
+
+#[test]
 fn openhands_current_default_avoids_overlapping_legacy_umbrella_route() {
     let temp = tempdir();
     let home = temp.path().join("home");

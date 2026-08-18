@@ -605,8 +605,9 @@ fn resolve_openhands(
             }
         }
         Some(root) => {
+            let disjoint_cli_root = !cli_root.starts_with(&root);
             push_selected_source(probes, &mut report, spec, root, "openhands_file_events");
-            if cli_present {
+            if cli_present || disjoint_cli_root {
                 push_selected_source(
                     probes,
                     &mut report,
@@ -616,14 +617,13 @@ fn resolve_openhands(
                 );
             }
         }
-        None if cli_present => push_selected_source(
+        None => push_selected_source(
             probes,
             &mut report,
             spec,
             cli_root,
             super::super::OPENHANDS_CURRENT_CLI_SOURCE_FORMAT,
         ),
-        None => {}
     }
     report
 }

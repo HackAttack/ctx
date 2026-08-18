@@ -1,5 +1,6 @@
 use super::*;
 use crate::provider::source_backed::family::document::register_replacement_document_tree_route_with_authority;
+use ctx_history_provider_docproj::OPENHANDS_FILE_EVENTS_SOURCE_FORMAT;
 
 /// OpenHands event-file conversations now use the common replacement-document
 /// lifecycle. Each conversation is an independently staged logical source;
@@ -12,11 +13,44 @@ pub(super) fn register_openhands_route(
     let authority = landed_format_route(source.provider, source.source_format)
         .ok_or_else(|| invalid_route(source.provider, "unknown OpenHands source format"))?
         .selector_authority;
+    let automatic_retirement = openhands_automatic_retirement(&source, selection)?;
     let adapter = OpenHandsEventFileAdapterV2::<CaptureProviderRuntime>::new(source.path.clone());
     register_replacement_document_tree_route_with_authority(
         registry, source, selection, authority, adapter,
-    )
+    )?;
+    if let Some((replacement, retired)) = automatic_retirement {
+        registry.retire_automatic_routes_after_success(&replacement, [retired])?;
+    }
+    Ok(())
 }
+
+fn openhands_automatic_retirement(
+    source: &ProviderSource,
+    selection: SourceBackedRouteSelection,
+) -> SourceBackedCoordinatorResult<Option<(SourceRouteIdentity, SourceRouteIdentity)>> {
+    if selection != SourceBackedRouteSelection::Automatic {
+        return Ok(None);
+    }
+    let replacement = automatic_source_backed_route_identity(source)?;
+    let mut retired = source.clone();
+    match source.source_format {
+        OPENHANDS_CURRENT_CLI_SOURCE_FORMAT => {
+            retired.source_format = OPENHANDS_FILE_EVENTS_SOURCE_FORMAT;
+        }
+        OPENHANDS_FILE_EVENTS_SOURCE_FORMAT => {
+            retired.source_format = OPENHANDS_CURRENT_CLI_SOURCE_FORMAT;
+            retired.path = source.path.join("conversations");
+        }
+        _ => return Ok(None),
+    }
+    Ok(Some((
+        replacement,
+        automatic_source_backed_route_identity(&retired)?,
+    )))
+}
+
+#[cfg(test)]
+mod automatic_lifecycle_tests;
 
 #[cfg(test)]
 mod tests {
@@ -28,7 +62,6 @@ mod tests {
     use ctx_history_index::{
         GenerationWriter, RevalidationTarget, SourceRouteSnapshot, VerifiedIndex, WriterOptions,
     };
-    use ctx_history_provider_docproj::OPENHANDS_FILE_EVENTS_SOURCE_FORMAT;
     use std::{fs, path::Path};
 
     #[test]

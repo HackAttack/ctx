@@ -157,6 +157,17 @@ pub(super) fn refresh_source_backed_generation_with_detailed_progress_and_discov
                     .collect::<BTreeSet<_>>()
             })
             .unwrap_or_default();
+        let automatic_retirements = if matches!(&plan.scope, SourceBackedRefreshScope::All) {
+            let retirements = automatic_carried_route_retirements(
+                registry,
+                &selected_route_ids,
+                &base_route_ids,
+            )?;
+            carried_unselected_route_ids.extend(retirements.values().flatten().cloned());
+            retirements
+        } else {
+            BTreeMap::new()
+        };
         if matches!(&plan.scope, SourceBackedRefreshScope::Exact(_))
             && carried_unselected_route_ids.is_empty()
         {
@@ -272,7 +283,15 @@ pub(super) fn refresh_source_backed_generation_with_detailed_progress_and_discov
             let current_source = route.metadata.source.path.display().to_string();
             let record_progress = std::cell::RefCell::new(SourceRecordProgress::default());
             let progress_failure = std::cell::RefCell::new(None::<SourceBackedRouteError>);
-            for retired_route in &route.retire_after_success {
+            let automatic_route_retirements = automatic_retirements
+                .get(route_identity)
+                .map(Vec::as_slice)
+                .unwrap_or_default();
+            for retired_route in route
+                .retire_after_success
+                .iter()
+                .chain(automatic_route_retirements)
+            {
                 lifecycle.authorize_carried_route_retirement(route_identity, retired_route)?;
             }
             let scan_result = {
@@ -472,6 +491,7 @@ pub(super) fn refresh_source_backed_generation_with_detailed_progress_and_discov
                         for retired_route in route
                             .retire_after_success
                             .iter()
+                            .chain(automatic_route_retirements)
                             .chain(&dynamic_retirements)
                         {
                             let retired_sources =
