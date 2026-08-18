@@ -65,7 +65,6 @@ pub fn provider_source_for_path(
                     BoundedProbe::BudgetExhausted | BoundedProbe::IoError => {
                         ProviderSourceStatus::Unknown
                     }
-                    BoundedProbe::BlockedAuthOrEncryption => ProviderSourceStatus::Unsupported,
                 },
                 unsupported_reason: None,
             };

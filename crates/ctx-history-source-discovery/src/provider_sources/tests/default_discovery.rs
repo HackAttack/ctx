@@ -643,22 +643,6 @@ fn exact_current_incompatible_explicit_paths_are_detection_only_unsupported() {
                 .join(".openclaw/agents/main/agent/openclaw-agent.sqlite"),
             "openclaw-agent.sqlite",
         ),
-        (
-            CaptureProvider::Cline,
-            temp.path().join(".cline/data/db/sessions.db"),
-            "current Cline SDK",
-        ),
-        (
-            CaptureProvider::OpenHands,
-            temp.path()
-                .join(".openhands/conversations/conversation/events/event-1.json"),
-            "events/event-*.json",
-        ),
-        (
-            CaptureProvider::Mux,
-            temp.path().join(".mux/sessions/session/chat-archive.jsonl"),
-            "chat-archive.jsonl",
-        ),
     ];
     for (_, path, _) in &cases {
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
