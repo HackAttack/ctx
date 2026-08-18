@@ -39,6 +39,13 @@ enum ChangedDocumentTarget<'sink, 'writer, L: CaptureLifecycleSink> {
     ),
 }
 
+pub(super) struct ValidatedDocumentTerminal {
+    terminal: DocumentSourceTerminal,
+    certificate: CertifiedSource,
+    append: Option<CertifiedSourceAppend>,
+    replay_fingerprint: Option<DocumentLeafFingerprint>,
+}
+
 impl<'sink, 'writer, L, S> ChangedDocumentSink<'sink, 'writer, L, S>
 where
     L: CaptureLifecycleSink,
@@ -147,6 +154,13 @@ where
         std::mem::take(&mut self.record_rejections)
     }
 
+    pub(super) fn preserve_record_rejections_on_failure(&mut self) {
+        let rejections = std::mem::take(&mut self.record_rejections);
+        if let ChangedDocumentTarget::Generation(sink) = &mut self.target {
+            sink.record_rejections(rejections);
+        }
+    }
+
     pub fn report_completed_bytes(&mut self, bytes: u64) -> SourceBackedRouteResult<()> {
         match &mut self.target {
             ChangedDocumentTarget::Generation(sink) => sink
@@ -178,12 +192,12 @@ where
             .ok_or_else(|| document_internal("document adapter did not begin its source"))
     }
 
-    pub(super) fn finish(
-        mut self,
+    pub(super) fn preflight_terminal(
+        &self,
         terminal: DocumentSourceTerminal,
         replay_fingerprint: Option<DocumentLeafFingerprint>,
-        append_base: Option<DocumentAppendBase<L>>,
-    ) -> SourceBackedRouteResult<CertifiedSource> {
+        append_base: Option<&DocumentAppendBase<L>>,
+    ) -> SourceBackedRouteResult<ValidatedDocumentTerminal> {
         let source = self.source()?.clone();
         if !terminal.source.exact_descriptor_eq(&source)
             || !terminal.opening.source().exact_descriptor_eq(&source)
@@ -194,19 +208,42 @@ where
             ));
         }
         let expected_emitted =
-            append_base
-                .as_ref()
-                .map_or(Some(terminal.counts.indexed_documents), |base| {
-                    terminal
-                        .counts
-                        .indexed_documents
-                        .checked_sub(base.certificate().counts().indexed_documents)
-                });
+            append_base.map_or(Some(terminal.counts.indexed_documents), |base| {
+                terminal
+                    .counts
+                    .indexed_documents
+                    .checked_sub(base.certificate().counts().indexed_documents)
+            });
         if expected_emitted != Some(self.emitted_core_records) {
             return Err(document_changed(
                 "document terminal indexed count did not match forwarded Core records",
             ));
         }
+        let certificate = terminal.certify(replay_fingerprint)?;
+        let append = append_base
+            .map(|base| certify_document_append(base.certificate(), certificate.clone()))
+            .transpose()?;
+        reject_all_rejected_document_source(&terminal)?;
+        Ok(ValidatedDocumentTerminal {
+            terminal,
+            certificate,
+            append,
+            replay_fingerprint,
+        })
+    }
+
+    pub(super) fn finish(
+        mut self,
+        validated: ValidatedDocumentTerminal,
+        append_base: Option<DocumentAppendBase<L>>,
+    ) -> SourceBackedRouteResult<CertifiedSource> {
+        let ValidatedDocumentTerminal {
+            terminal,
+            certificate,
+            append,
+            replay_fingerprint,
+        } = validated;
+        let source = terminal.source.clone();
         let logical_base = self.deferred.as_ref().and_then(|_| {
             append_base
                 .as_ref()
@@ -226,20 +263,12 @@ where
                         document_frontier_fingerprint(base) == Some(fingerprint)
                     })
             });
-        let certificate = terminal.certify(replay_fingerprint)?;
         if let Some(deferred) = self.deferred.take() {
             if let Some(base) = append_base {
                 let certificate_base = base.certificate().clone();
-                let frontier = certificate_base.frontier().ok_or_else(|| {
-                    document_changed("document append base has no certified frontier")
+                let append = append.ok_or_else(|| {
+                    document_internal("preflighted document append proof disappeared")
                 })?;
-                let append = CertifiedSourceAppend::certify(
-                    &certificate_base,
-                    certificate.clone(),
-                    frontier.certified_prefix_bytes(),
-                    *frontier.certified_prefix_digest(),
-                )
-                .map_err(document_contract_error)?;
                 match &mut self.target {
                     ChangedDocumentTarget::Generation(sink) => {
                         match base {
@@ -367,6 +396,22 @@ where
         }
         Ok(certificate)
     }
+}
+
+fn certify_document_append(
+    base: &CertifiedSource,
+    current: CertifiedSource,
+) -> SourceBackedRouteResult<CertifiedSourceAppend> {
+    let frontier = base
+        .frontier()
+        .ok_or_else(|| document_changed("document append base has no certified frontier"))?;
+    CertifiedSourceAppend::certify(
+        base,
+        current,
+        frontier.certified_prefix_bytes(),
+        *frontier.certified_prefix_digest(),
+    )
+    .map_err(|error| document_changed(error.to_string()))
 }
 
 fn route_coordinator_error<L: CaptureLifecycleSink>(

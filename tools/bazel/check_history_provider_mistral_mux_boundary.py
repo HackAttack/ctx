@@ -47,6 +47,7 @@ EXPECTED_SOURCES = {
     "mistral_vibe.rs",
     "mistral_vibe/native_path.rs",
     "mistral_vibe/native_path/source_backed.rs",
+    "mistral_vibe/native_path/source_backed/activity.rs",
     "mistral_vibe/schema.rs",
     "mistral_vibe/source.rs",
     "mux.rs",

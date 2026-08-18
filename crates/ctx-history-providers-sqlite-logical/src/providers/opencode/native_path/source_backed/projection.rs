@@ -1,5 +1,6 @@
 use super::*;
 use ctx_history_core::{
+    admit_optional_metadata_text, admit_optional_provider_call_id, admit_provider_declared_fact,
     ActivityInvocation, ActivityJsonCapture, ActivityResult, ActivityTextCapture, AgentScope,
     CoreActivity, LiteralFactKind, ProviderDeclaredFact, ProviderNativeSessionRelationship,
     CORE_ACTIVITY_REVISION,
@@ -375,7 +376,6 @@ pub(super) fn core_record(
         searchable
     };
     let event_sequence = *next_sequence;
-    *next_sequence = checked_add(*next_sequence, 1)?;
     let mut record = CoreRecord::new_selected(
         event_id,
         session.session_id,
@@ -395,24 +395,27 @@ pub(super) fn core_record(
     record.provider_session_id = Some(session.native_identity.clone());
     record.native_event_id = Some(native_event_id);
     record.occurred_at_unix_ms = Some(normalized_time);
-    record.role = Some(retained.role.clone());
+    record.role = admit_optional_metadata_text(Some(retained.role.clone()));
     record.content.structured_content = Some(retained.body.clone());
     let mut facts = Vec::new();
     if let Some(directory) = session.directory.clone() {
-        facts.push(ProviderDeclaredFact {
-            kind: LiteralFactKind::SessionCwd,
-            value: directory,
-        });
+        if let Some(fact) =
+            admit_provider_declared_fact(LiteralFactKind::SessionCwd, directory, facts.len())
+        {
+            facts.push(fact);
+        }
     }
     if let Some(branch) = session.branch.clone() {
-        facts.push(ProviderDeclaredFact {
-            kind: LiteralFactKind::Branch,
-            value: branch,
-        });
+        if let Some(fact) =
+            admit_provider_declared_fact(LiteralFactKind::Branch, branch, facts.len())
+        {
+            facts.push(fact);
+        }
     }
     collect_opencode_facts(&retained.body, &mut facts);
     let (provider_call_id, invocation, result) =
-        opencode_activity(kind, &retained.body, normalized_time)?;
+        opencode_activity(kind, &retained.body, normalized_time);
+    let retained_linked_activity = invocation.is_some() || result.is_some();
     if invocation.is_some() || result.is_some() || !facts.is_empty() {
         record.content.activity = Some(CoreActivity {
             revision: CORE_ACTIVITY_REVISION,
@@ -424,8 +427,18 @@ pub(super) fn core_record(
     }
     record
         .content
-        .omit_structured_content_if_aggregate_exceeds_limit()?;
+        .omit_provider_declared_facts_if_aggregate_exceeds_limit()?;
+    if !matches!(
+        kind,
+        OpenCodeNativeEventKind::ToolCall | OpenCodeNativeEventKind::ToolOutput
+    ) || retained_linked_activity
+    {
+        record
+            .content
+            .omit_structured_content_if_aggregate_exceeds_limit()?;
+    }
     record.validate_contract()?;
+    *next_sequence = checked_add(*next_sequence, 1)?;
     Ok(record)
 }
 
@@ -494,11 +507,10 @@ fn collect_opencode_fact_values(
         return;
     }
     match value {
-        serde_json::Value::String(value) if !value.is_empty() => {
-            facts.push(ProviderDeclaredFact {
-                kind,
-                value: value.clone(),
-            });
+        serde_json::Value::String(value) => {
+            if let Some(fact) = admit_provider_declared_fact(kind, value.clone(), facts.len()) {
+                facts.push(fact);
+            }
         }
         serde_json::Value::Array(values) => {
             for value in values {
@@ -513,12 +525,12 @@ fn opencode_activity(
     kind: OpenCodeNativeEventKind,
     body: &serde_json::Value,
     occurred_at_unix_ms: i64,
-) -> OpenCodeSourceBackedResult<(
+) -> (
     Option<TypedKey>,
     Option<ActivityInvocation>,
     Option<ActivityResult>,
-)> {
-    let call_id = unique_opencode_string(
+) {
+    let provider_call_id = admit_optional_provider_call_id(unique_opencode_string(
         body,
         &[
             "/call_id",
@@ -530,20 +542,22 @@ fn opencode_activity(
             "/state/callId",
             "/id",
         ],
-    );
-    let Some(call_id) = call_id else {
-        return Ok((None, None, None));
+    ));
+    let Some(provider_call_id) = provider_call_id else {
+        return (None, None, None);
     };
-    let provider_call_id = Some(TypedKey::utf8(&call_id)?);
     if kind == OpenCodeNativeEventKind::ToolCall {
-        let tool = unique_opencode_string(body, &["/tool", "/tool_name", "/toolName", "/name"]);
+        let tool = admit_optional_metadata_text(unique_opencode_string(
+            body,
+            &["/tool", "/tool_name", "/toolName", "/name"],
+        ));
         let Some(tool) = tool else {
-            return Ok((None, None, None));
+            return (None, None, None);
         };
         let arguments =
             opencode_json_alias_capture(body, &["/state/input", "/input", "/arguments"]);
-        return Ok((
-            provider_call_id,
+        return (
+            Some(provider_call_id),
             Some(ActivityInvocation {
                 protocol: None,
                 server: None,
@@ -552,19 +566,19 @@ fn opencode_activity(
                 started_at_unix_ms: Some(occurred_at_unix_ms),
             }),
             None,
-        ));
+        );
     }
     if kind != OpenCodeNativeEventKind::ToolOutput {
-        return Ok((None, None, None));
+        return (None, None, None);
     }
-    Ok((
-        provider_call_id,
+    (
+        Some(provider_call_id),
         None,
         Some(ActivityResult {
-            status: unique_opencode_string(
+            status: admit_optional_metadata_text(unique_opencode_string(
                 body,
                 &["/state/status", "/status", "/state/outcome", "/outcome"],
-            ),
+            )),
             completed_at_unix_ms: Some(occurred_at_unix_ms),
             duration_ns: None,
             text: ActivityTextCapture::NormalizedBody,
@@ -572,7 +586,7 @@ fn opencode_activity(
                 value: body.clone(),
             },
         }),
-    ))
+    )
 }
 
 fn unique_opencode_string(body: &serde_json::Value, pointers: &[&str]) -> Option<String> {
@@ -622,6 +636,41 @@ mod tests {
             Some("call-valid".to_owned())
         );
         assert_eq!(unique_opencode_string(&body, &["/callID"]), None);
+    }
+
+    #[test]
+    fn fact_admission_uses_value_bounds_and_current_fact_count() {
+        let values = serde_json::json!([
+            "",
+            "first",
+            "x".repeat(ctx_history_core::MAX_CORE_CONTENT_BYTES + 1),
+            "second"
+        ]);
+        let mut facts = Vec::new();
+        collect_opencode_fact_values(LiteralFactKind::File, &values, &mut facts, usize::MAX);
+        assert_eq!(
+            facts
+                .iter()
+                .map(|fact| fact.value.as_str())
+                .collect::<Vec<_>>(),
+            ["first", "second"]
+        );
+
+        facts.resize(
+            ctx_history_core::MAX_PROVIDER_DECLARED_FACTS,
+            ProviderDeclaredFact {
+                kind: LiteralFactKind::File,
+                value: "retained".to_owned(),
+            },
+        );
+        let count = facts.len();
+        collect_opencode_fact_values(
+            LiteralFactKind::File,
+            &serde_json::json!("withheld"),
+            &mut facts,
+            count + 1,
+        );
+        assert_eq!(facts.len(), count);
     }
 
     #[test]

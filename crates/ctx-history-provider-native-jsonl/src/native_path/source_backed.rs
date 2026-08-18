@@ -6,10 +6,10 @@ use std::{
 
 use chrono::{DateTime, Utc};
 use ctx_history_core::{
-    derive_event_id, derive_native_session_id, CaptureProvider, CoreActivity, CoreRecord,
-    CoreRecordError, EventIdentityInput, LiteralFactKind, NativeItemKey, PositionStability,
-    ProjectionContractError, ProviderDeclaredFact, SourceKey, StableEntityId, SubrecordSelector,
-    TypedKey, CORE_ACTIVITY_REVISION, MAX_CORE_CONTENT_BYTES,
+    admit_provider_declared_fact, derive_event_id, derive_native_session_id, CaptureProvider,
+    CoreActivity, CoreRecord, CoreRecordError, EventIdentityInput, LiteralFactKind, NativeItemKey,
+    PositionStability, ProjectionContractError, ProviderDeclaredFact, SourceKey, StableEntityId,
+    SubrecordSelector, TypedKey, CORE_ACTIVITY_REVISION, MAX_CORE_CONTENT_BYTES,
 };
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
@@ -762,15 +762,16 @@ fn project_event<R: NativeJsonlRuntime>(
     let mut activity = event.activity;
     let mut facts = Vec::new();
     if let Some(cwd) = &session.cwd {
-        facts.push(ProviderDeclaredFact {
-            kind: LiteralFactKind::SessionCwd,
-            value: cwd.clone(),
-        });
+        push_admitted_fact(&mut facts, LiteralFactKind::SessionCwd, cwd.clone());
     }
     if let Some(activity) = activity.as_mut() {
-        facts.append(&mut activity.facts);
+        for fact in std::mem::take(&mut activity.facts) {
+            push_admitted_fact(&mut facts, fact.kind, fact.value);
+        }
     }
-    facts.extend(event.facts);
+    for fact in event.facts {
+        push_admitted_fact(&mut facts, fact.kind, fact.value);
+    }
     if !facts.is_empty() {
         activity
             .get_or_insert_with(|| CoreActivity {
@@ -782,6 +783,11 @@ fn project_event<R: NativeJsonlRuntime>(
             })
             .facts = facts;
     }
+    if activity.as_ref().is_some_and(|activity| {
+        activity.invocation.is_none() && activity.result.is_none() && activity.facts.is_empty()
+    }) {
+        activity = None;
+    }
     record.content.activity = activity;
     if event.lexical_text.trim().is_empty() {
         record.content.normalized_body = None;
@@ -789,9 +795,18 @@ fn project_event<R: NativeJsonlRuntime>(
     fit_activity_to_content_budget(&mut record)?;
     record
         .content
+        .omit_provider_declared_facts_if_aggregate_exceeds_limit()?;
+    record
+        .content
         .omit_structured_content_if_aggregate_exceeds_limit()?;
     record.validate_contract()?;
     Ok(record)
+}
+
+fn push_admitted_fact(facts: &mut Vec<ProviderDeclaredFact>, kind: LiteralFactKind, value: String) {
+    if let Some(fact) = admit_provider_declared_fact(kind, value, facts.len()) {
+        facts.push(fact);
+    }
 }
 
 fn fit_activity_to_content_budget(record: &mut CoreRecord) -> DirectJsonlAdapterResult<()> {

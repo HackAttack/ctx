@@ -12,12 +12,12 @@ use std::{
 
 use chrono::{DateTime, Utc};
 use ctx_history_core::{
+    admit_optional_metadata_text, admit_optional_provider_call_id, admit_provider_declared_fact,
     derive_event_id, derive_session_id, ActivityInvocation, ActivityJsonCapture, ActivityResult,
     ActivityTextCapture, AgentScope, CaptureProvider, CertifiedSource, CoreActivity, CoreRecord,
     CoreRecordError, EventIdentityInput, LiteralFactKind, NativeItemKey, NativeSessionKey,
-    PositionStability, ProjectionContractError, ProviderDeclaredFact, ScannedSourceCounts,
-    SessionIdentityInput, SourceAnchor, SourceKey, StableEntityId, TypedKey,
-    CORE_ACTIVITY_REVISION,
+    PositionStability, ProjectionContractError, ScannedSourceCounts, SessionIdentityInput,
+    SourceAnchor, SourceKey, StableEntityId, TypedKey, CORE_ACTIVITY_REVISION,
 };
 use sha2::{Digest, Sha256};
 use thiserror::Error;
@@ -51,7 +51,7 @@ const FORGECODE_LOGICAL_EVENT_KIND: &str = "forgecode-message";
 const FORGECODE_NATIVE_EVENT_POSITION_KIND: &str = "forgecode-message-index-v1";
 const FORGECODE_RECORD_DIGEST_DOMAIN: &[u8] = b"ctx.forgecode.source-backed-scan-v0\0";
 const FORGECODE_SOURCE_BACKED_PARSER_REVISION: &str =
-    "forgecode-nativepath-source-backed-v2-neutral-core-agent-scope:parser=2;policy=7";
+    "forgecode-nativepath-source-backed-v3-neutral-core-agent-scope-optional-admission:parser=2;policy=7";
 
 #[derive(Debug, Error)]
 pub(crate) enum ForgeCodeSourceBackedErrorV0 {
@@ -268,10 +268,14 @@ fn core_record(
     record.occurred_at_unix_ms = Some(retained.event.occurred_at.timestamp_millis());
     record.role = retained.event.role.map(|role| role.as_str().to_owned());
     record.content.structured_content = structured_content;
-    let facts = vec![ProviderDeclaredFact {
-        kind: LiteralFactKind::Workspace,
-        value: row.workspace_id.to_string(),
-    }];
+    let mut facts = Vec::new();
+    if let Some(fact) = admit_provider_declared_fact(
+        LiteralFactKind::Workspace,
+        row.workspace_id.to_string(),
+        facts.len(),
+    ) {
+        facts.push(fact);
+    }
     let native_entry = record
         .content
         .structured_content
@@ -296,6 +300,9 @@ fn core_record(
             facts,
         });
     }
+    record
+        .content
+        .omit_provider_declared_facts_if_aggregate_exceeds_limit()?;
     record
         .content
         .omit_structured_content_if_aggregate_exceeds_limit()?;
@@ -325,9 +332,17 @@ fn forgecode_activity(
         let [call] = calls.as_slice() else {
             return Ok((None, None, None));
         };
-        let call_id = call.get("call_id").and_then(serde_json::Value::as_str);
-        let tool = call.get("name").and_then(serde_json::Value::as_str);
-        let (Some(call_id), Some(tool)) = (call_id, tool) else {
+        let provider_call_id = admit_optional_provider_call_id(
+            call.get("call_id")
+                .and_then(serde_json::Value::as_str)
+                .map(str::to_owned),
+        );
+        let tool = admit_optional_metadata_text(
+            call.get("name")
+                .and_then(serde_json::Value::as_str)
+                .map(str::to_owned),
+        );
+        let (Some(provider_call_id), Some(tool)) = (provider_call_id, tool) else {
             return Ok((None, None, None));
         };
         let arguments = call
@@ -336,11 +351,11 @@ fn forgecode_activity(
             .map(|value| ActivityJsonCapture::Present { value })
             .unwrap_or(ActivityJsonCapture::Absent);
         return Ok((
-            Some(TypedKey::utf8(call_id)?),
+            Some(provider_call_id),
             Some(ActivityInvocation {
                 protocol: None,
                 server: None,
-                tool: tool.to_owned(),
+                tool,
                 arguments,
                 started_at_unix_ms: Some(occurred_at_unix_ms),
             }),
@@ -350,22 +365,27 @@ fn forgecode_activity(
     if event_type != ctx_history_core::EventType::ToolOutput {
         return Ok((None, None, None));
     }
-    let call_id = parts
-        .body
-        .get("call_id")
-        .and_then(serde_json::Value::as_str);
-    let Some(call_id) = call_id else {
+    let provider_call_id = admit_optional_provider_call_id(
+        parts
+            .body
+            .get("call_id")
+            .and_then(serde_json::Value::as_str)
+            .map(str::to_owned),
+    );
+    let Some(provider_call_id) = provider_call_id else {
         return Ok((None, None, None));
     };
     Ok((
-        Some(TypedKey::utf8(call_id)?),
+        Some(provider_call_id),
         None,
         Some(ActivityResult {
-            status: parts
-                .body
-                .get("status")
-                .and_then(serde_json::Value::as_str)
-                .map(str::to_owned),
+            status: admit_optional_metadata_text(
+                parts
+                    .body
+                    .get("status")
+                    .and_then(serde_json::Value::as_str)
+                    .map(str::to_owned),
+            ),
             completed_at_unix_ms: Some(occurred_at_unix_ms),
             duration_ns: None,
             text: ActivityTextCapture::NormalizedBody,

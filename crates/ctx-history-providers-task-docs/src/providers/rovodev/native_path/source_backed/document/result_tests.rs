@@ -13,6 +13,22 @@ fn document() -> PreparedDocument {
     }
 }
 
+fn projected_record(raw_message: &serde_json::Value, document: &PreparedDocument) -> CoreRecord {
+    let provider_session_id = "session".to_owned();
+    let source_key = rovodev_source_key(&provider_session_id).unwrap();
+    let session_id = rovodev_session_identity(&source_key, &provider_session_id).unwrap();
+    let message_id = explicit_message_id(raw_message).unwrap().to_owned();
+    let bound = RovoDevBoundDocument {
+        source_key,
+        provider_session_id,
+        session_id,
+        parent_session_id: None,
+        unique_message_ids: HashSet::from([message_id]),
+    };
+    let event = project_message(raw_message, 0, document).unwrap().unwrap();
+    core_record(&bound, [9; 32], document, raw_message, 0, event).unwrap()
+}
+
 #[test]
 fn typed_tool_results_keep_exact_status_strings_and_large_bodies() {
     for status in [Some("SUCCESS"), Some("failure"), None] {
@@ -108,6 +124,90 @@ fn rovodev_conflicting_id_name_and_argument_aliases_abstain_without_dropping_rec
         ),
         None
     );
+}
+
+#[test]
+fn rovodev_invalid_optional_facts_abstain_without_changing_identity_or_payload() {
+    let raw_message = serde_json::json!({
+        "id": "message-1",
+        "role": "assistant",
+        "content": "retained exact body",
+    });
+    let mut valid_document = document();
+    valid_document.metadata = serde_json::json!({"branch": "main"});
+    valid_document.cwd = Some("/workspace".to_owned());
+    let valid = projected_record(&raw_message, &valid_document);
+    assert_eq!(valid.content.activity.as_ref().unwrap().facts.len(), 2);
+
+    let mut invalid_document = document();
+    invalid_document.metadata = serde_json::json!({"branch": ""});
+    invalid_document.cwd = Some("x".repeat(ctx_history_core::MAX_CORE_CONTENT_BYTES + 1));
+    let invalid = projected_record(&raw_message, &invalid_document);
+
+    assert_eq!(invalid.event_id, valid.event_id);
+    assert_eq!(invalid.native_event_id, valid.native_event_id);
+    assert_eq!(invalid.event_sequence, valid.event_sequence);
+    assert_eq!(
+        invalid.content.structured_content.as_ref(),
+        Some(&raw_message)
+    );
+    assert!(invalid.content.activity.is_none());
+    invalid.validate_contract().unwrap();
+}
+
+#[test]
+fn rovodev_invalid_optional_tool_metadata_abstains_without_empty_activity() {
+    let oversized_metadata = "x".repeat(1024 * 1024);
+    for raw_message in [
+        serde_json::json!({
+            "id": "message-1",
+            "role": "tool",
+            "tool_use_id": "",
+            "content": "retained exact output",
+        }),
+        serde_json::json!({
+            "id": "message-1",
+            "role": "tool_use",
+            "tool_use_id": oversized_metadata.clone(),
+            "name": "read_file",
+            "content": "retained exact invocation",
+        }),
+        serde_json::json!({
+            "id": "message-1",
+            "role": "tool_use",
+            "tool_use_id": "call-1",
+            "name": oversized_metadata.clone(),
+            "content": "retained exact invocation",
+        }),
+    ] {
+        let record = projected_record(&raw_message, &document());
+        assert_eq!(
+            record.content.structured_content.as_ref(),
+            Some(&raw_message)
+        );
+        assert!(record.content.activity.is_none());
+        record.validate_contract().unwrap();
+    }
+
+    let raw_output = serde_json::json!({
+        "id": "message-1",
+        "role": "tool",
+        "tool_use_id": "call-1",
+        "status": oversized_metadata,
+        "content": "retained exact output",
+    });
+    let record = projected_record(&raw_output, &document());
+    let activity = record.content.activity.as_ref().unwrap();
+    assert_eq!(
+        activity.provider_call_id,
+        Some(TypedKey::Utf8("call-1".to_owned()))
+    );
+    assert_eq!(activity.result.as_ref().unwrap().status, None);
+    assert_eq!(
+        record.content.structured_content.as_ref(),
+        Some(&raw_output)
+    );
+    record.validate_contract().unwrap();
 }
 
 #[test]

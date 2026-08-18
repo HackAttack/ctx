@@ -15,11 +15,12 @@ use std::{
 
 use chrono::{DateTime, Utc};
 use ctx_history_core::{
-    derive_event_id, derive_session_id, ActivityJsonCapture, ActivityResult, ActivityTextCapture,
-    AgentScope, CaptureProvider, CertifiedSource, CoreActivity, CoreRecord, CoreRecordError,
-    EventIdentityInput, LiteralFactKind, NativeItemKey, NativeSessionKey, PositionStability,
-    ProjectionContractError, ProviderDeclaredFact, ScannedSourceCounts, SessionIdentityInput,
-    SourceAnchor, SourceKey, StableEntityId, SubrecordSelector, TypedKey, CORE_ACTIVITY_REVISION,
+    admit_provider_declared_fact, derive_event_id, derive_session_id, ActivityJsonCapture,
+    ActivityResult, ActivityTextCapture, AgentScope, CaptureProvider, CertifiedSource,
+    CoreActivity, CoreRecord, CoreRecordError, EventIdentityInput, LiteralFactKind, NativeItemKey,
+    NativeSessionKey, PositionStability, ProjectionContractError, ScannedSourceCounts,
+    SessionIdentityInput, SourceAnchor, SourceKey, StableEntityId, SubrecordSelector, TypedKey,
+    CORE_ACTIVITY_REVISION,
 };
 use sha2::{Digest, Sha256};
 use thiserror::Error;
@@ -51,7 +52,7 @@ const DEEPAGENTS_SOURCE_ANCHOR_NAMESPACE: &str = "deepagents.sessions";
 const DEEPAGENTS_SOURCE_ANCHOR_KEY: &str = "selected-sessions-db";
 const DEEPAGENTS_SOURCE_SCHEMA_VARIANT: &str = "deepagents-sqlite-write-messages-v0";
 const DEEPAGENTS_SOURCE_PARSER_REVISION: &str =
-    "deepagents-source-backed-v3-neutral-core-agent-scope";
+    "deepagents-source-backed-v4-neutral-core-agent-scope-optional-fact-admission";
 const DEEPAGENTS_NATIVE_SESSION_NAMESPACE: &str = "deepagents.thread";
 const DEEPAGENTS_NATIVE_MESSAGE_NAMESPACE: &str = "deepagents.message";
 const DEEPAGENTS_NATIVE_WRITE_NAMESPACE: &str = "deepagents.write";
@@ -644,16 +645,18 @@ fn deepagents_core_record(
     }));
     let mut facts = Vec::new();
     if let Some(branch) = branch {
-        facts.push(ProviderDeclaredFact {
-            kind: LiteralFactKind::Branch,
-            value: branch.to_owned(),
-        });
+        if let Some(fact) =
+            admit_provider_declared_fact(LiteralFactKind::Branch, branch.to_owned(), facts.len())
+        {
+            facts.push(fact);
+        }
     }
     if let Some(cwd) = cwd {
-        facts.push(ProviderDeclaredFact {
-            kind: LiteralFactKind::SessionCwd,
-            value: cwd.to_owned(),
-        });
+        if let Some(fact) =
+            admit_provider_declared_fact(LiteralFactKind::SessionCwd, cwd.to_owned(), facts.len())
+        {
+            facts.push(fact);
+        }
     }
     let call_id = bounded_linkage(message.tool_call_id.as_deref());
     let result =
@@ -706,6 +709,9 @@ fn deepagents_core_record(
             };
         }
     }
+    record
+        .content
+        .omit_provider_declared_facts_if_aggregate_exceeds_limit()?;
     record
         .content
         .omit_structured_content_if_aggregate_exceeds_limit()?;

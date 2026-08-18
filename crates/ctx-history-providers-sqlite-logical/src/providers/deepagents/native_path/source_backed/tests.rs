@@ -102,3 +102,48 @@ fn core_projection_keeps_complete_success_failure_unknown_and_large_results_once
         assert!(structured.to_string().contains(&body));
     }
 }
+
+#[test]
+fn empty_optional_session_facts_do_not_reject_or_create_an_empty_activity() {
+    use chrono::{TimeZone, Utc};
+    use ctx_history_core::EventRole;
+
+    let source = super::deepagents_source_key().unwrap();
+    let key = super::DeepAgentsWriteKey {
+        thread_id: "thread-empty-facts".to_owned(),
+        checkpoint_id: "checkpoint".to_owned(),
+        task_id: "task".to_owned(),
+        idx: 0,
+    };
+    let session_id = super::deepagents_session_id(&source, &key.thread_id).unwrap();
+    let message = super::DeepAgentsMessage {
+        role: EventRole::User,
+        message_type: "human".to_owned(),
+        message_class: Some("HumanMessage".to_owned()),
+        message_id: Some("message-empty-facts".to_owned()),
+        tool_call_id: None,
+        status: None,
+        exit_code: None,
+        duration_ms: None,
+        timed_out: false,
+        is_error: None,
+        success: None,
+        text: "exact DeepAgents body".to_owned(),
+    };
+    let record = super::deepagents_core_record(
+        &source,
+        &key,
+        session_id,
+        1,
+        0,
+        Utc.timestamp_millis_opt(1).unwrap(),
+        Some(""),
+        Some(""),
+        &message,
+    )
+    .unwrap();
+
+    assert_eq!(record.content.meaningful_text(), "exact DeepAgents body");
+    assert!(record.content.activity.is_none());
+    record.validate_contract().unwrap();
+}

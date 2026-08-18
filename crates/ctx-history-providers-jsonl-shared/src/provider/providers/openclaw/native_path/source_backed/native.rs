@@ -4,6 +4,7 @@ use serde::de::{DeserializeSeed, Deserializer, MapAccess, SeqAccess, Visitor};
 use std::fmt;
 
 pub(super) const TERMINAL_CALL_ID_DOMAIN: &[u8] = b"ctx/openclaw/terminal-call-id/v1\0";
+pub(super) const TERMINAL_INVOCATION_ID_DOMAIN: &[u8] = b"ctx/openclaw/terminal-invocation-id/v1\0";
 
 pub(super) type OpenClawTerminalAuthority = JsonlTerminalAuthority;
 
@@ -17,7 +18,7 @@ fn observe_terminal(
             TERMINAL_CALL_ID_DOMAIN,
             call_id,
             region,
-            MAX_TERMINAL_CALL_IDS,
+            MAX_TERMINAL_LINKAGE_IDS,
         );
     }
 }
@@ -33,6 +34,18 @@ pub(super) fn observe_terminal_record(
     let Ok(value) = serde_json::from_slice::<Value>(record) else {
         return;
     };
+    for call in native_tool_calls(&value) {
+        if let Some(call_id) = call.call_id {
+            if !authority.exhausted() && !call_id.is_empty() {
+                authority.observe(
+                    TERMINAL_INVOCATION_ID_DOMAIN,
+                    call_id,
+                    region,
+                    MAX_TERMINAL_LINKAGE_IDS,
+                );
+            }
+        }
+    }
     if let Some(result) = native_tool_result(&value) {
         if result.ambiguous_linkage {
             authority.observe_ambiguous_terminal();

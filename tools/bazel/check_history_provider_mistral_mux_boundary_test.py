@@ -65,6 +65,7 @@ pub fn mux_jsonl_adapter<B>() -> ProviderJsonlRuntime<B> { todo!() }
     "mistral_vibe.rs": "CaptureProvider::MistralVibe\n",
     "mistral_vibe/native_path.rs": "mistral-vibe-content-occurrence-v1\n",
     "mistral_vibe/native_path/source_backed.rs": "ProviderBaseEventLookup<B>\n",
+    "mistral_vibe/native_path/source_backed/activity.rs": "",
     "mistral_vibe/schema.rs": "",
     "mistral_vibe/source.rs": "",
     "mux.rs": "CaptureProvider::Mux\n",

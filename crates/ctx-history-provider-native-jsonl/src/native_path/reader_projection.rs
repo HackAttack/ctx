@@ -299,11 +299,11 @@ fn native_result_activity(
     subrecord: &NativeJsonlResultSubrecord<'_>,
     native_value: &Value,
 ) -> Result<Option<CoreActivity>> {
-    let provider_call_id = subrecord
-        .call_id
-        .map(TypedKey::utf8)
-        .transpose()
-        .map_err(|error| CaptureError::InvalidPayload(error.to_string()))?;
+    let Some(provider_call_id) =
+        admit_optional_provider_call_id(subrecord.call_id.map(str::to_owned))
+    else {
+        return Ok(None);
+    };
     let text = if subrecord.content.is_some() {
         ActivityTextCapture::NormalizedBody
     } else {
@@ -311,7 +311,7 @@ fn native_result_activity(
     };
     Ok(Some(CoreActivity {
         revision: CORE_ACTIVITY_REVISION,
-        provider_call_id,
+        provider_call_id: Some(provider_call_id),
         invocation: None,
         result: Some(ActivityResult {
             status: None,
@@ -583,10 +583,9 @@ fn direct_jsonl_event_sequence(raw_ordinal: u64, sub_ordinal: u32) -> Result<u64
 fn direct_jsonl_facts(value: &Value) -> Vec<ctx_history_core::ProviderDeclaredFact> {
     let mut facts = Vec::new();
     visit_literal_file_reference_drafts(value, |draft| {
-        facts.push(ctx_history_core::ProviderDeclaredFact {
-            kind: draft.kind,
-            value: draft.value,
-        });
+        if let Some(fact) = admit_provider_declared_fact(draft.kind, draft.value, facts.len()) {
+            facts.push(fact);
+        }
         Ok::<_, std::convert::Infallible>(())
     })
     .expect("direct JSONL file-reference collection is infallible");

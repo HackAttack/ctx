@@ -10,6 +10,7 @@ mod activity;
 mod validation;
 
 pub use activity::{
+    admit_optional_metadata_text, admit_optional_provider_call_id, admit_provider_declared_fact,
     ActivityInvocation, ActivityJsonCapture, ActivityResult, ActivityTextCapture, CoreActivity,
     LiteralFactKind, ProviderDeclaredFact, CORE_ACTIVITY_REVISION, MAX_PROVIDER_DECLARED_FACTS,
 };
@@ -481,6 +482,35 @@ impl CoreContent {
 
     pub fn encoded_content_bytes(&self) -> CoreRecordResult<usize> {
         Ok(self.encoded_content_byte_counts()?.total)
+    }
+
+    /// Omits trailing provider-declared facts when optional activity metadata
+    /// alone would exceed the selected-content budget.
+    pub fn omit_provider_declared_facts_if_aggregate_exceeds_limit(
+        &mut self,
+    ) -> CoreRecordResult<usize> {
+        let mut excess = self
+            .encoded_content_byte_counts()?
+            .total
+            .saturating_sub(MAX_CORE_CONTENT_BYTES);
+        let mut omitted = 0;
+        while excess > 0 {
+            let Some(fact) = self
+                .activity
+                .as_mut()
+                .and_then(|activity| activity.facts.pop())
+            else {
+                break;
+            };
+            excess = excess.saturating_sub(count_encoded_json_bytes(&fact)?);
+            omitted += 1;
+        }
+        if self.activity.as_ref().is_some_and(|activity| {
+            activity.invocation.is_none() && activity.result.is_none() && activity.facts.is_empty()
+        }) {
+            self.activity = None;
+        }
+        Ok(omitted)
     }
 
     /// Omits a projector-declared redundant structured representation when it

@@ -11,6 +11,7 @@ use std::{
 use crate::{provider::source_backed::IndexBaseEventLookup, JsonlProviderRuntime};
 use chrono::{DateTime, Utc};
 use ctx_history_core::{
+    admit_optional_metadata_text, admit_optional_provider_call_id, admit_provider_declared_fact,
     derive_event_id, derive_native_session_id, ActivityInvocation, ActivityJsonCapture,
     ActivityResult, ActivityTextCapture, AgentScope, CaptureProvider, CoreActivity, CoreRecord,
     EventIdentityInput, EventType, LiteralFactKind, NativeItemKey, ProviderDeclaredFact, SourceKey,
@@ -51,7 +52,7 @@ const NATIVE_EVENT_NAMESPACE: &str = "pi.entry";
 const LOGICAL_SESSION_KIND: &str = "pi-session";
 const LOGICAL_EVENT_KIND: &str = "pi-event";
 const SOURCE_SCHEMA_VARIANT: &str = "pi-nativepath-jsonl-v1";
-const PARSER_REVISION: &str = "pi-shared-jsonl-v7-provider-native-outputs";
+const PARSER_REVISION: &str = "pi-shared-jsonl-v8-optional-activity-admission";
 const EVENT_IDENTITY_REVISION: &str = "pi-content-occurrence-v1";
 const FALLBACK_FINGERPRINT_DOMAIN: &[u8] = b"ctx.pi.fallback-event-fingerprint.v1\0";
 const MAX_TOUCHES_PER_RECORD: usize = 63;
@@ -433,13 +434,11 @@ impl<R: JsonlProviderRuntime> JsonlFamilyProjector for PiProjector<R> {
         .map_err(contract)?;
         let message = value.get("message").unwrap_or(&value);
         if let Some(cwd) = &self.binding.cwd {
-            facts.insert(
-                0,
-                ProviderDeclaredFact {
-                    kind: LiteralFactKind::SessionCwd,
-                    value: cwd.clone(),
-                },
-            );
+            if let Some(fact) =
+                admit_provider_declared_fact(LiteralFactKind::SessionCwd, cwd.clone(), facts.len())
+            {
+                facts.insert(0, fact);
+            }
         }
         let activity = pi_activity(message, event_type, &body, facts)?;
         let mut core = CoreRecord::new_selected(
@@ -478,6 +477,9 @@ impl<R: JsonlProviderRuntime> JsonlFamilyProjector for PiProjector<R> {
             ctx_history_jsonl::JsonlActivityObservedBytes::infer_from_present(),
             MAX_CORE_CONTENT_BYTES,
         );
+        core.content
+            .omit_provider_declared_facts_if_aggregate_exceeds_limit()
+            .map_err(contract)?;
         core.content
             .omit_structured_content_if_aggregate_exceeds_limit()
             .map_err(contract)?;
@@ -614,10 +616,11 @@ fn literal_facts(value: &Value) -> Result<Vec<ProviderDeclaredFact>> {
         value,
         MAX_TOUCHES_PER_RECORD,
         |(_, reference)| {
-            facts.push(ProviderDeclaredFact {
-                kind: reference.kind,
-                value: reference.value,
-            });
+            if let Some(fact) =
+                admit_provider_declared_fact(reference.kind, reference.value, facts.len())
+            {
+                facts.push(fact);
+            }
             Ok::<(), CaptureError>(())
         },
     )?;
@@ -639,7 +642,7 @@ fn pi_activity(
         .filter_map(|field| message.get(field).and_then(Value::as_str))
         .collect::<Vec<_>>();
     let provider_call_id = match call_ids.as_slice() {
-        [id] if !id.is_empty() => Some(TypedKey::utf8(*id).map_err(contract)?),
+        [id] => admit_optional_provider_call_id(Some((*id).to_owned())),
         _ => None,
     };
     let tools = ["toolName", "tool_name", "name"]
@@ -648,18 +651,19 @@ fn pi_activity(
         .collect::<Vec<_>>();
     let invocation = if provider_call_id.is_some() && event_type == EventType::ToolCall {
         match tools.as_slice() {
-            [tool] if !tool.is_empty() => Some(ActivityInvocation {
-                protocol: None,
-                server: None,
-                tool: (*tool).to_owned(),
-                arguments: message
-                    .get("arguments")
-                    .map_or(ActivityJsonCapture::Absent, |value| {
-                        ActivityJsonCapture::Present {
+            [tool] => admit_optional_metadata_text(Some((*tool).to_owned())).map(|tool| {
+                ActivityInvocation {
+                    protocol: None,
+                    server: None,
+                    tool,
+                    arguments: message.get("arguments").map_or(
+                        ActivityJsonCapture::Absent,
+                        |value| ActivityJsonCapture::Present {
                             value: value.clone(),
-                        }
-                    }),
-                started_at_unix_ms: None,
+                        },
+                    ),
+                    started_at_unix_ms: None,
+                }
             }),
             _ => None,
         }
@@ -679,7 +683,7 @@ fn pi_activity(
             value: message.clone(),
         },
     });
-    if provider_call_id.is_none() && invocation.is_none() && result.is_none() && facts.is_empty() {
+    if invocation.is_none() && result.is_none() && facts.is_empty() {
         return Ok(None);
     }
     Ok(Some(CoreActivity {
@@ -815,6 +819,25 @@ mod tests {
         );
         assert!(activity.invocation.is_none());
         assert!(activity.result.is_some());
+    }
+
+    #[test]
+    fn unadmitted_optional_linkage_does_not_emit_empty_activity() {
+        let oversized = "x".repeat(64 * 1024 + 1);
+        let output = serde_json::json!({"toolCallId": oversized});
+        assert_eq!(
+            pi_activity(&output, EventType::ToolOutput, "output", Vec::new()).unwrap(),
+            None
+        );
+
+        let call = serde_json::json!({
+            "toolCallId": "pi-call-1",
+            "toolName": oversized,
+        });
+        assert_eq!(
+            pi_activity(&call, EventType::ToolCall, "call", Vec::new()).unwrap(),
+            None
+        );
     }
 
     #[test]

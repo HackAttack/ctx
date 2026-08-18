@@ -186,11 +186,8 @@ impl<L: CaptureLifecycleSink> SourceBackedGenerationSink<'_, L> {
             ) -> Result<(), ParallelLeafScanWorkerError<E>>
             + Sync,
     {
-        self.run_parallel_leaf_scans_inner(
+        self.run_parallel_leaf_scans_with_worker_states_and_source_outcomes(
             jobs,
-            worker_states.len(),
-            |job| Some(job.source().clone()),
-            ParallelLeafScanJob::worker_affinity,
             worker_states,
             scan,
         )?
@@ -202,6 +199,36 @@ impl<L: CaptureLifecycleSink> SourceBackedGenerationSink<'_, L> {
             )),
         })
         .collect()
+    }
+
+    /// Runs source-bound scans with persistent worker state while preserving
+    /// logical source failures as typed per-source outcomes.
+    pub fn run_parallel_leaf_scans_with_worker_states_and_source_outcomes<J, R, E, W, F>(
+        &mut self,
+        jobs: Vec<ParallelLeafScanJob<J>>,
+        worker_states: &mut [W],
+        scan: F,
+    ) -> Result<Vec<SourceBackedSourceOutcome<R>>, ParallelLeafScanError<E, L::Error>>
+    where
+        J: Send,
+        R: Send,
+        E: StdError + Send + 'static,
+        W: Send,
+        F: Fn(
+                &mut W,
+                &ParallelLeafScanJob<J>,
+                &mut ParallelLeafScanEmitter<'_, R, E, L::Preparation>,
+            ) -> Result<(), ParallelLeafScanWorkerError<E>>
+            + Sync,
+    {
+        self.run_parallel_leaf_scans_inner(
+            jobs,
+            worker_states.len(),
+            |job| Some(job.source().clone()),
+            ParallelLeafScanJob::worker_affinity,
+            worker_states,
+            scan,
+        )
     }
 
     pub fn run_parallel_leaf_scans_with_source_outcomes<J, R, E, F>(

@@ -1,6 +1,7 @@
 use std::{collections::BTreeSet, path::Path};
 
 use ctx_history_core::{
+    admit_optional_metadata_text, admit_optional_provider_call_id, admit_provider_declared_fact,
     derive_event_id, derive_session_id, ActivityInvocation, ActivityJsonCapture, ActivityResult,
     ActivityTextCapture, AgentScope, CaptureProvider, CoreActivity, CoreRecord, CoreRecordError,
     EventIdentityInput, LiteralFactKind, NativeItemKey, NativeSessionKey, PositionStability,
@@ -34,7 +35,7 @@ const ZED_LOGICAL_EVENT_KIND: &str = "zed-thread-event";
 const ZED_SOURCE_SCHEMA_VARIANT: &str = "zed-nativepath-sqlite-v0";
 const ZED_SOURCE_REVISION_KIND: &str = "zed-logical-rows-v1";
 pub(crate) const ZED_PARSER_REVISION: &str =
-    "zed-nativepath-source-backed-v4-neutral-core-agent-scope";
+    "zed-nativepath-source-backed-v5-neutral-core-agent-scope-optional-admission";
 
 #[derive(Debug, Error)]
 pub(crate) enum ZedSourceBackedErrorV0 {
@@ -276,16 +277,20 @@ fn zed_core_record(
     record.content.structured_content = Some(structured_content);
     let mut facts = Vec::new();
     if let Some(cwd) = session.cwd.clone() {
-        facts.push(ProviderDeclaredFact {
-            kind: LiteralFactKind::SessionCwd,
-            value: cwd,
-        });
+        if let Some(fact) =
+            admit_provider_declared_fact(LiteralFactKind::SessionCwd, cwd, facts.len())
+        {
+            facts.push(fact);
+        }
     }
     for folder_path in &session.folder_paths {
-        facts.push(ProviderDeclaredFact {
-            kind: LiteralFactKind::Workspace,
-            value: folder_path.clone(),
-        });
+        if let Some(fact) = admit_provider_declared_fact(
+            LiteralFactKind::Workspace,
+            folder_path.clone(),
+            facts.len(),
+        ) {
+            facts.push(fact);
+        }
     }
     collect_zed_facts(&event.native_content, &mut facts);
     let (provider_call_id, invocation, result) =
@@ -299,6 +304,9 @@ fn zed_core_record(
             facts,
         });
     }
+    record
+        .content
+        .omit_provider_declared_facts_if_aggregate_exceeds_limit()?;
     record
         .content
         .omit_structured_content_if_aggregate_exceeds_limit()?;
@@ -353,10 +361,11 @@ fn collect_zed_fact_values(
         return;
     }
     match value {
-        serde_json::Value::String(value) => facts.push(ProviderDeclaredFact {
-            kind,
-            value: value.clone(),
-        }),
+        serde_json::Value::String(value) => {
+            if let Some(fact) = admit_provider_declared_fact(kind, value.clone(), facts.len()) {
+                facts.push(fact);
+            }
+        }
         serde_json::Value::Array(values) => {
             for value in values {
                 collect_zed_fact_values(kind, value, facts, maximum);
@@ -384,7 +393,10 @@ fn zed_activity(
     {
         return Ok((None, None, None));
     }
-    let provider_call_id = Some(TypedKey::utf8(first_call_id)?);
+    let Some(provider_call_id) = admit_optional_provider_call_id(Some(first_call_id.clone()))
+    else {
+        return Ok((None, None, None));
+    };
     let invocation = event
         .native_content
         .get("content")
@@ -399,10 +411,12 @@ fn zed_activity(
             matching.next().is_none().then_some(selected)
         })
         .and_then(|tool_use| {
-            let tool = tool_use.get("name")?.as_str()?.to_owned();
-            if tool.is_empty() {
-                return None;
-            }
+            let tool = admit_optional_metadata_text(
+                tool_use
+                    .get("name")
+                    .and_then(serde_json::Value::as_str)
+                    .map(str::to_owned),
+            )?;
             let arguments = match (tool_use.get("input"), tool_use.get("raw_input")) {
                 (Some(input), Some(raw_input)) if !input.is_null() && !raw_input.is_null() => {
                     ActivityJsonCapture::Unavailable
@@ -429,7 +443,10 @@ fn zed_activity(
         .and_then(serde_json::Value::as_object)
         .and_then(|results| results.get(first_call_id));
     let result = result_value.map(|value| ActivityResult {
-        status: unique_zed_string(value, &["/status", "/output/status"]),
+        status: admit_optional_metadata_text(unique_zed_string(
+            value,
+            &["/status", "/output/status"],
+        )),
         completed_at_unix_ms: Some(occurred_at_unix_ms),
         duration_ns: None,
         text: value
@@ -446,7 +463,7 @@ fn zed_activity(
     if invocation.is_none() && result.is_none() {
         return Ok((None, None, None));
     }
-    Ok((provider_call_id, invocation, result))
+    Ok((Some(provider_call_id), invocation, result))
 }
 
 fn unique_zed_string(value: &serde_json::Value, pointers: &[&str]) -> Option<String> {

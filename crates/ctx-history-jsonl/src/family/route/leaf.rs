@@ -1,10 +1,10 @@
 use std::{
     collections::{BTreeMap, HashMap},
-    sync::Arc,
+    sync::{Arc, Mutex},
 };
 
 use chrono::{DateTime, Utc};
-use ctx_history_core::{CertifiedSource, CertifiedSourceAppend, CoreRecord};
+use ctx_history_core::{CertifiedSource, CertifiedSourceAppend};
 
 use super::super::{
     JsonlFamilyError, JsonlFamilyRuntime, JsonlProbe, JsonlReader, JsonlResult, JsonlRuntimeError,
@@ -22,6 +22,8 @@ use super::{
     JsonlFamilyWorkerContext,
 };
 mod checkpoint;
+mod evidence;
+mod output;
 mod prepare;
 mod semantic;
 #[cfg(test)]
@@ -37,6 +39,12 @@ use ctx_history_capture_runtime::{
     ParallelLeafScanComplete, ParallelLeafScanJob, ParallelLeafScanWorkerError,
     SourceBackedGenerationSink, SourceBackedRecordRejectionDrafts, SourceBackedRouteResult,
 };
+pub(super) use evidence::TerminalSourceEvidence;
+use evidence::{
+    candidate_would_replace_retained_records_with_only_rejections,
+    reconcile_parallel_source_outcomes, terminal_byte_remainder,
+};
+pub(super) use output::{JsonlLeafOutput, JsonlLeafOutputEvent};
 pub(super) use prepare::prepare_leaf;
 use semantic::{prepare_semantic_leaf, SemanticLeafExecution, SemanticLeafPlan};
 
@@ -45,27 +53,6 @@ pub(super) struct PreparedLeaf<E: JsonlFamilyError> {
     pub(super) append: Option<CertifiedSourceAppend>,
     pub(super) terminal_proof: JsonlFamilyTerminalProof<E>,
     pub(super) record_rejections: SourceBackedRecordRejectionDrafts,
-}
-
-#[derive(Debug)]
-pub(super) struct TerminalSourceEvidence<E: JsonlFamilyError> {
-    pub(super) certificate: CertifiedSource,
-    pub(super) terminal_proof: JsonlFamilyTerminalProof<E>,
-    pub(super) emitted_bytes: u64,
-    pub(super) exact_scan_bytes: Option<u64>,
-    pub(super) record_rejections: SourceBackedRecordRejectionDrafts,
-}
-
-impl<E: JsonlFamilyError> Clone for TerminalSourceEvidence<E> {
-    fn clone(&self) -> Self {
-        Self {
-            certificate: self.certificate.clone(),
-            terminal_proof: self.terminal_proof.clone(),
-            emitted_bytes: self.emitted_bytes,
-            exact_scan_bytes: self.exact_scan_bytes,
-            record_rejections: self.record_rejections.clone(),
-        }
-    }
 }
 
 struct JsonlLeafJob<E: JsonlFamilyError> {
@@ -104,55 +91,6 @@ impl<R: JsonlFamilyRuntime> JsonlFamilyWorkerContexts<R> {
     }
 }
 
-// The large variant deliberately carries CoreRecord by value: boxing every
-// projected record would add one allocation to the generic JSONL hot path.
-#[allow(clippy::large_enum_variant)]
-pub(super) enum JsonlLeafOutputEvent {
-    Page {
-        append: bool,
-        completed_bytes: u64,
-        records: Vec<CoreRecord>,
-    },
-    Record {
-        append: bool,
-        record: CoreRecord,
-    },
-    Flush,
-}
-
-pub(super) struct JsonlLeafOutput<'emit, E: JsonlFamilyError> {
-    emit: &'emit mut dyn FnMut(JsonlLeafOutputEvent) -> JsonlResult<(), E>,
-}
-
-impl<'emit, E: JsonlFamilyError> JsonlLeafOutput<'emit, E> {
-    pub(super) fn new(
-        emit: &'emit mut dyn FnMut(JsonlLeafOutputEvent) -> JsonlResult<(), E>,
-    ) -> Self {
-        Self { emit }
-    }
-
-    fn emit_page(
-        &mut self,
-        append: bool,
-        completed_bytes: u64,
-        records: Vec<CoreRecord>,
-    ) -> JsonlResult<(), E> {
-        (self.emit)(JsonlLeafOutputEvent::Page {
-            append,
-            completed_bytes,
-            records,
-        })
-    }
-
-    fn emit_record(&mut self, append: bool, record: CoreRecord) -> JsonlResult<(), E> {
-        (self.emit)(JsonlLeafOutputEvent::Record { append, record })
-    }
-
-    fn flush(&mut self) -> JsonlResult<(), E> {
-        (self.emit)(JsonlLeafOutputEvent::Flush)
-    }
-}
-
 fn scan_leaf_serial<R: JsonlFamilyRuntime>(
     adapter: &dyn JsonlFamilyAdapter<Runtime = R>,
     leaf: &JsonlFamilyLeaf<JsonlRuntimeError<R>>,
@@ -167,6 +105,12 @@ fn scan_leaf_serial<R: JsonlFamilyRuntime>(
     let mut sink_failure = None;
     let mut emitted_bytes = 0_u64;
     let mut emit = |event| {
+        if matches!(
+            &event,
+            JsonlLeafOutputEvent::Page { records, .. } if records.is_empty()
+        ) {
+            return Ok(());
+        }
         let append = match &event {
             JsonlLeafOutputEvent::Page { append, .. }
             | JsonlLeafOutputEvent::Record { append, .. } => *append,
@@ -239,6 +183,36 @@ fn scan_leaf_serial<R: JsonlFamilyRuntime>(
         terminal_proof,
         record_rejections,
     } = prepared;
+    if candidate_would_replace_retained_records_with_only_rejections(&certificate, base) {
+        let retained = base.cloned();
+        let publication_certificate = retained.clone().unwrap_or_else(|| certificate.clone());
+        if let Some(base) = retained.as_ref() {
+            sink.retain_source(base.clone()).map_err(route_internal)?;
+        }
+        sink.record_logical_source_failure(
+            leaf.source().clone(),
+            route_invalid("JSONL source is unreadable"),
+            retained.is_some(),
+        )
+        .map_err(route_internal)?;
+        sink.record_rejections(record_rejections);
+        sink.report_completed_bytes_with_exact(
+            certificate.counts().certified_bytes,
+            leaf.frozen_scan_observation()
+                .map(|observation| observation.length()),
+        )
+        .map_err(route_internal)?;
+        return Ok(TerminalSourceEvidence {
+            certificate: publication_certificate,
+            terminal_certificate: Some(certificate),
+            terminal_proof,
+            emitted_bytes: 0,
+            exact_scan_bytes: leaf
+                .frozen_scan_observation()
+                .map(|observation| observation.length()),
+            record_rejections: SourceBackedRecordRejectionDrafts::default(),
+        });
+    }
     sink.record_rejections(record_rejections);
     match append {
         Some(append) => {
@@ -264,6 +238,7 @@ fn scan_leaf_serial<R: JsonlFamilyRuntime>(
             .map_err(route_internal)?;
             Ok(TerminalSourceEvidence {
                 certificate,
+                terminal_certificate: None,
                 terminal_proof,
                 emitted_bytes,
                 exact_scan_bytes: leaf
@@ -292,6 +267,7 @@ fn scan_leaf_serial<R: JsonlFamilyRuntime>(
             .map_err(route_internal)?;
             Ok(TerminalSourceEvidence {
                 certificate,
+                terminal_certificate: None,
                 terminal_proof,
                 emitted_bytes,
                 exact_scan_bytes: leaf
@@ -312,7 +288,8 @@ fn run_parallel_leaf_job_batch<R: JsonlFamilyRuntime>(
     append_only_trust_allowed: bool,
     #[cfg(test)] scanner_probe: Option<&JsonlFamilyScannerProbe>,
 ) -> SourceBackedRouteResult<Vec<TerminalSourceEvidence<JsonlRuntimeError<R>>>> {
-    let result = sink.run_parallel_leaf_scans_with_worker_states(
+    let failed_evidences = Mutex::new(Vec::new());
+    let result = sink.run_parallel_leaf_scans_with_worker_states_and_source_outcomes(
         jobs,
         worker_states,
         |contexts, job, emitter| {
@@ -328,6 +305,12 @@ fn run_parallel_leaf_job_batch<R: JsonlFamilyRuntime>(
             >::default();
             let mut emitted_bytes = 0_u64;
             let mut emit = |event| {
+                if matches!(
+                    &event,
+                    JsonlLeafOutputEvent::Page { records, .. } if records.is_empty()
+                ) {
+                    return Ok(());
+                }
                 let flush = matches!(
                     &event,
                     JsonlLeafOutputEvent::Page { .. } | JsonlLeafOutputEvent::Flush
@@ -440,6 +423,45 @@ fn run_parallel_leaf_job_batch<R: JsonlFamilyRuntime>(
                 terminal_proof,
                 record_rejections,
             } = prepared;
+            if candidate_would_replace_retained_records_with_only_rejections(
+                &certificate,
+                job.leaf().base.as_ref(),
+            ) {
+                if staging_started || append.is_some() {
+                    return Err(ParallelLeafScanWorkerError::provider(route_internal(
+                        "all-rejected JSONL leaf entered publication staging",
+                    )));
+                }
+                let retained = job.leaf().base.clone();
+                let publication_certificate =
+                    retained.clone().unwrap_or_else(|| certificate.clone());
+                failed_evidences
+                    .lock()
+                    .map_err(|_| {
+                        ParallelLeafScanWorkerError::provider(route_internal(
+                            "JSONL failed-evidence lock was poisoned",
+                        ))
+                    })?
+                    .push(TerminalSourceEvidence {
+                        certificate: publication_certificate,
+                        terminal_certificate: Some(certificate),
+                        terminal_proof,
+                        emitted_bytes: 0,
+                        exact_scan_bytes: leaf
+                            .frozen_scan_observation()
+                            .map(|observation| observation.length()),
+                        record_rejections: SourceBackedRecordRejectionDrafts::default(),
+                    });
+                emitter
+                    .complete(ParallelLeafScanComplete::source_failure_with_rejections(
+                        leaf.source().clone(),
+                        retained,
+                        route_invalid("JSONL source is unreadable"),
+                        record_rejections,
+                    ))
+                    .map_err(ParallelLeafScanWorkerError::from)?;
+                return Ok(());
+            }
             match append {
                 Some(append) => {
                     if staging_started && !append_staging {
@@ -460,6 +482,7 @@ fn run_parallel_leaf_job_batch<R: JsonlFamilyRuntime>(
                             append,
                             TerminalSourceEvidence {
                                 certificate,
+                                terminal_certificate: None,
                                 terminal_proof,
                                 emitted_bytes,
                                 exact_scan_bytes: leaf
@@ -483,6 +506,7 @@ fn run_parallel_leaf_job_batch<R: JsonlFamilyRuntime>(
                     }
                     let evidence = TerminalSourceEvidence {
                         certificate: certificate.clone(),
+                        terminal_certificate: None,
                         terminal_proof,
                         emitted_bytes,
                         exact_scan_bytes: leaf
@@ -498,11 +522,15 @@ fn run_parallel_leaf_job_batch<R: JsonlFamilyRuntime>(
             Ok(())
         },
     );
-    let evidences = result.map_err(map_parallel_leaf_error)?;
+    let outcomes = result.map_err(map_parallel_leaf_error)?;
+    let failed_evidences = failed_evidences
+        .into_inner()
+        .map_err(|_| route_internal("JSONL failed-evidence lock was poisoned"))?;
+    let evidences = reconcile_parallel_source_outcomes(outcomes, failed_evidences)?;
     for evidence in &evidences {
         sink.record_rejections(evidence.record_rejections.clone());
         sink.report_completed_bytes_with_exact(
-            terminal_byte_remainder(&evidence.certificate, evidence.emitted_bytes)?,
+            terminal_byte_remainder(evidence.observed_certificate(), evidence.emitted_bytes)?,
             evidence
                 .exact_scan_bytes
                 .and_then(|total| total.checked_sub(evidence.emitted_bytes)),
@@ -510,19 +538,6 @@ fn run_parallel_leaf_job_batch<R: JsonlFamilyRuntime>(
         .map_err(route_internal)?;
     }
     Ok(evidences)
-}
-
-fn terminal_byte_remainder(
-    certificate: &CertifiedSource,
-    emitted_bytes: u64,
-) -> SourceBackedRouteResult<u64> {
-    certificate
-        .counts()
-        .certified_bytes
-        .checked_sub(emitted_bytes)
-        .ok_or_else(|| {
-            route_invalid("JSONL page byte progress exceeded terminal certified source bytes")
-        })
 }
 
 pub(super) fn scan_leaves<R: JsonlFamilyRuntime>(

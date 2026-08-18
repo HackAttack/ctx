@@ -12,12 +12,13 @@ use std::{
 };
 
 use ctx_history_core::{
+    admit_optional_metadata_text, admit_optional_provider_call_id, admit_provider_declared_fact,
     derive_event_id, derive_session_id, ActivityInvocation, ActivityJsonCapture, ActivityResult,
     ActivityTextCapture, AgentScope, CaptureProvider, CertifiedSource, CoreActivity, CoreRecord,
     CoreRecordError, EventIdentityInput, LiteralFactKind, NativeItemKey, NativeSessionKey,
-    ProjectionContractError, ProviderDeclaredFact, ProviderNativeSessionRelationship,
-    ScannedSourceCounts, SessionIdentityInput, SourceAnchor, SourceKey, SourceObservation,
-    StableEntityId, TypedKey, CORE_ACTIVITY_REVISION,
+    ProjectionContractError, ProviderNativeSessionRelationship, ScannedSourceCounts,
+    SessionIdentityInput, SourceAnchor, SourceKey, SourceObservation, StableEntityId, TypedKey,
+    CORE_ACTIVITY_REVISION,
 };
 use sha2::{Digest, Sha256};
 use thiserror::Error;
@@ -64,7 +65,7 @@ const HERMES_PROFILE_SOURCE_SCHEMA_VARIANT: &str = "hermes-state-db-v1";
 const HERMES_SESSION_SOURCE_SCHEMA_VARIANT: &str = "hermes-state-session-v1";
 const SQLITE_SOURCE_INVALID_REASON: &str =
     "Hermes SQLite source must have an authorized parent and database leaf";
-const HERMES_SOURCE_PARSER_REVISION: &str = "hermes-source-backed-v4-neutral-core";
+const HERMES_SOURCE_PARSER_REVISION: &str = "hermes-source-backed-v5-optional-admission";
 const HERMES_SOURCE_DIGEST_DOMAIN: &[u8] = b"ctx-hermes-session-content-v1\0";
 const HERMES_TREE_FINGERPRINT_DOMAIN: &[u8] = b"ctx-hermes-source-inventory-v1\0";
 const HERMES_LEAF_FINGERPRINT_DOMAIN: &[u8] = b"ctx-hermes-session-leaf-v1\0";

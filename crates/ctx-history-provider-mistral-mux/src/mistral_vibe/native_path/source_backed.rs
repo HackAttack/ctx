@@ -10,6 +10,7 @@ use chrono::{DateTime, Utc};
 use ctx_history_capture_model::normalization::provider_explicit_result_value_text;
 use ctx_history_capture_runtime::BaseEventLookup;
 use ctx_history_core::{
+    admit_optional_metadata_text, admit_optional_provider_call_id, admit_provider_declared_fact,
     derive_event_id, derive_native_session_id, ActivityInvocation, ActivityJsonCapture,
     ActivityResult, ActivityTextCapture, AgentScope, CaptureProvider, CoreActivity, CoreRecord,
     EventIdentityInput, EventType, LiteralFactKind, NativeItemKey, PositionStability,
@@ -32,6 +33,9 @@ use ctx_history_provider_runtime::{
 };
 use ctx_history_source_io::MAX_PROVIDER_JSONL_LINE_BYTES;
 
+mod activity;
+use activity::mistral_vibe_activity;
+
 const SOURCE_SCHEMA_VARIANT: &str = "meta-json-messages-jsonl-v1";
 const SOURCE_ANCHOR_NAMESPACE: &str = "mistral-vibe-session-id";
 const NATIVE_SESSION_NAMESPACE: &str = "mistral-vibe-session";
@@ -40,7 +44,7 @@ const NATIVE_EVENT_REUSED_TOOL_CALL_POSITION_KIND: &str =
     "mistral-vibe-duplicate-tool-call-id-ordinal";
 const LOGICAL_SESSION_KIND: &str = "mistral-vibe-session";
 const LOGICAL_EVENT_KIND: &str = "mistral-vibe-event";
-const PARSER_REVISION: &str = "mistral-vibe-source-backed-v13-core-activity-agent-scope";
+const PARSER_REVISION: &str = "mistral-vibe-source-backed-v14-optional-admission";
 const EVENT_IDENTITY_REVISION: &str = "mistral-vibe-content-occurrence-v1";
 const FALLBACK_FINGERPRINT_DOMAIN: &[u8] = b"ctx.mistral-vibe.fallback-event-fingerprint.v1\0";
 const SOURCE_REVISION_DIGEST_DOMAIN: &[u8] = b"ctx.mistral-vibe.source-revision.v1\0";
@@ -366,19 +370,21 @@ where
     let role = ctx_history_capture_model::normalization::provider_role(Some(role));
     let mut facts = Vec::new();
     if let Some(cwd) = &binding.cwd {
-        facts.push(ProviderDeclaredFact {
-            kind: LiteralFactKind::SessionCwd,
-            value: cwd.clone(),
-        });
+        if let Some(fact) =
+            admit_provider_declared_fact(LiteralFactKind::SessionCwd, cwd.clone(), facts.len())
+        {
+            facts.push(fact);
+        }
     }
     if let Some(branch) = &binding.branch {
-        facts.push(ProviderDeclaredFact {
-            kind: LiteralFactKind::Branch,
-            value: branch.clone(),
-        });
+        if let Some(fact) =
+            admit_provider_declared_fact(LiteralFactKind::Branch, branch.clone(), facts.len())
+        {
+            facts.push(fact);
+        }
     }
-    facts.extend(collect_file_facts(&value));
-    let activity = mistral_vibe_activity(&value, event_type, &body, facts)?;
+    collect_file_facts(&value, &mut facts);
+    let activity = mistral_vibe_activity(&value, event_type, &body, facts);
     let mut record = CoreRecord::new_selected(
         event_id,
         binding.session_id,
@@ -416,6 +422,10 @@ where
         JsonlActivityObservedBytes::infer_from_present(),
         MAX_CORE_CONTENT_BYTES,
     );
+    record
+        .content
+        .omit_provider_declared_facts_if_aggregate_exceeds_limit()
+        .map_err(contract)?;
     record
         .content
         .omit_structured_content_if_aggregate_exceeds_limit()
@@ -671,72 +681,6 @@ fn mistral_vibe_output_text(value: &Value) -> Result<Option<String>> {
         }
     };
     Ok(provider_explicit_result_value_text(selected).filter(|text| !text.trim().is_empty()))
-}
-
-fn mistral_vibe_activity(
-    value: &Value,
-    event_type: EventType,
-    body: &str,
-    facts: Vec<ProviderDeclaredFact>,
-) -> Result<Option<CoreActivity>> {
-    let provider_call_id = value
-        .get("tool_call_id")
-        .and_then(Value::as_str)
-        .filter(|value| !value.is_empty())
-        .map(TypedKey::utf8)
-        .transpose()
-        .map_err(contract)?;
-    let invocation = if event_type == EventType::ToolCall {
-        value
-            .get("name")
-            .or_else(|| value.get("tool_name"))
-            .and_then(Value::as_str)
-            .filter(|value| !value.is_empty())
-            .map(|tool| ActivityInvocation {
-                protocol: None,
-                server: None,
-                tool: tool.to_owned(),
-                arguments: exact_json_capture(value, &["arguments", "input"]),
-                started_at_unix_ms: None,
-            })
-    } else {
-        None
-    };
-    let result = (event_type == EventType::ToolOutput).then(|| ActivityResult {
-        status: None,
-        completed_at_unix_ms: None,
-        duration_ns: None,
-        text: ActivityTextCapture::Present {
-            value: body.to_owned(),
-        },
-        structured_content: ActivityJsonCapture::Present {
-            value: value.clone(),
-        },
-    });
-    if provider_call_id.is_none() && invocation.is_none() && result.is_none() && facts.is_empty() {
-        return Ok(None);
-    }
-    Ok(Some(CoreActivity {
-        revision: CORE_ACTIVITY_REVISION,
-        provider_call_id,
-        invocation,
-        result,
-        facts,
-    }))
-}
-
-fn exact_json_capture(value: &Value, fields: &[&str]) -> ActivityJsonCapture {
-    let candidates = fields
-        .iter()
-        .filter_map(|field| value.get(*field))
-        .collect::<Vec<_>>();
-    match candidates.as_slice() {
-        [] => ActivityJsonCapture::Absent,
-        [candidate] => ActivityJsonCapture::Present {
-            value: (*candidate).clone(),
-        },
-        _ => ActivityJsonCapture::Unavailable,
-    }
 }
 
 fn provider_native_event_id(value: &Value) -> Option<String> {

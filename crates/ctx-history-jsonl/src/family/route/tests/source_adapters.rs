@@ -243,6 +243,7 @@ pub(super) fn expected_state(
                 leaf.source().exact_descriptor_digest(),
                 TerminalSourceEvidence {
                     certificate,
+                    terminal_certificate: None,
                     terminal_proof,
                     emitted_bytes: 0,
                     exact_scan_bytes: None,

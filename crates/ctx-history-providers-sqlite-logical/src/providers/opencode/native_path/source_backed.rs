@@ -43,7 +43,7 @@ use crate::{
 
 const SOURCE_ANCHOR_KEY: &str = "active-database";
 const SOURCE_IDENTITY_VERSION: u32 = 1;
-const PARSER_REVISION: &str = "opencode-family-source-backed-v10-neutral-core";
+const PARSER_REVISION: &str = "opencode-family-source-backed-v11-optional-metadata-admission";
 const LOGICAL_SESSION_KIND: &str = "opencode-family-session";
 const LOGICAL_EVENT_KIND: &str = "opencode-family-event";
 const NATIVE_SESSION_NAMESPACE: &str = "opencode-family.session-id";
@@ -463,10 +463,7 @@ fn stream_logical_rows(
             let disposition = projection_disposition(&event.projection);
             let retained = retained_projection(&event.projection);
             match disposition {
-                ProjectionDisposition::Retained => {
-                    counts.retained_records = checked_add(counts.retained_records, 1)?;
-                    counts.indexed_documents = checked_add(counts.indexed_documents, 1)?;
-                }
+                ProjectionDisposition::Retained => {}
                 ProjectionDisposition::Rejected => {
                     counts.rejected_records = checked_add(counts.rejected_records, 1)?;
                 }
@@ -501,7 +498,7 @@ fn stream_logical_rows(
             let session = current_session.as_ref().ok_or_else(|| {
                 OpenCodeSourceBackedError::MissingSession(event.session_identity.clone())
             })?;
-            let document = core_record(
+            let document = match core_record(
                 source,
                 schema.family,
                 path,
@@ -509,7 +506,19 @@ fn stream_logical_rows(
                 event,
                 retained,
                 &mut next_session_sequence,
-            )?;
+            ) {
+                Ok(document) => document,
+                Err(OpenCodeSourceBackedError::CoreRecord(error)) => {
+                    if !record_local_core_projection_failure(&error) {
+                        return Err(OpenCodeSourceBackedError::CoreRecord(error));
+                    }
+                    counts.rejected_records = checked_add(counts.rejected_records, 1)?;
+                    return Ok(());
+                }
+                Err(error) => return Err(error),
+            };
+            counts.retained_records = checked_add(counts.retained_records, 1)?;
+            counts.indexed_documents = checked_add(counts.indexed_documents, 1)?;
             emit(OpenCodeScanOutput::Document(document))
         };
         stream_fallback_ordered_events(
@@ -548,6 +557,16 @@ fn stream_logical_rows(
             max_buffered_payload_bytes: fallback_stats.max_hydration_batch_bytes,
         },
     })
+}
+
+fn record_local_core_projection_failure(error: &CoreRecordError) -> bool {
+    matches!(
+        error,
+        CoreRecordError::FieldTooLarge {
+            field: "normalized_body" | "structured_content" | "selected_content",
+            ..
+        }
+    )
 }
 
 fn scan_session_evidence(

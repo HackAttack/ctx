@@ -179,7 +179,7 @@ pub(super) fn project_message(
 ) -> HermesSourceBackedResult<CoreRecord> {
     let native = hermes_native_event(&row, ordinal)?;
     let _provider_owned_evidence = (&native.cursor, &native.payload, &native.metadata);
-    let activity = hermes_activity(&row, &native)?;
+    let activity = hermes_activity(&row, &native);
     let body = native.complete_text;
     let native_item_key = NativeItemKey::composite(
         HERMES_MESSAGE_NAMESPACE,
@@ -218,6 +218,9 @@ pub(super) fn project_message(
     record.content.activity = merge_hermes_facts(activity, session);
     record
         .content
+        .omit_provider_declared_facts_if_aggregate_exceeds_limit()?;
+    record
+        .content
         .omit_structured_content_if_aggregate_exceeds_limit()?;
     record.validate_contract()?;
     Ok(record)
@@ -226,19 +229,15 @@ pub(super) fn project_message(
 pub(super) fn hermes_activity(
     row: &HermesMessageRow,
     native: &HermesNativeEvent,
-) -> HermesSourceBackedResult<Option<CoreActivity>> {
-    let provider_call_id = row
-        .tool_call_id
-        .as_deref()
-        .map(TypedKey::utf8)
-        .transpose()?;
+) -> Option<CoreActivity> {
+    let provider_call_id = admit_optional_provider_call_id(row.tool_call_id.clone());
     let invocation = if native.event_type == ctx_history_core::EventType::ToolCall
         && provider_call_id.is_some()
     {
-        row.tool_name.as_ref().map(|tool| ActivityInvocation {
+        admit_optional_metadata_text(row.tool_name.clone()).map(|tool| ActivityInvocation {
             protocol: None,
             server: None,
-            tool: tool.clone(),
+            tool,
             arguments: row
                 .tool_calls
                 .as_deref()
@@ -253,7 +252,7 @@ pub(super) fn hermes_activity(
     let result = (native.event_type == ctx_history_core::EventType::ToolOutput
         && provider_call_id.is_some())
     .then(|| ActivityResult {
-        status: row.finish_reason.clone(),
+        status: admit_optional_metadata_text(row.finish_reason.clone()),
         completed_at_unix_ms: Some(native.occurred_at.timestamp_millis()),
         duration_ns: None,
         text: ActivityTextCapture::NormalizedBody,
@@ -262,15 +261,15 @@ pub(super) fn hermes_activity(
         },
     });
     if invocation.is_none() && result.is_none() {
-        return Ok(None);
+        return None;
     }
-    Ok(Some(CoreActivity {
+    Some(CoreActivity {
         revision: CORE_ACTIVITY_REVISION,
         provider_call_id,
         invocation,
         result,
         facts: Vec::new(),
-    }))
+    })
 }
 
 pub(super) fn merge_hermes_facts(
@@ -278,23 +277,16 @@ pub(super) fn merge_hermes_facts(
     session: &HermesSessionContext,
 ) -> Option<CoreActivity> {
     let mut facts = Vec::new();
-    if let Some(branch) = session.branch.clone() {
-        facts.push(ProviderDeclaredFact {
-            kind: LiteralFactKind::Branch,
-            value: branch,
-        });
-    }
-    if let Some(workspace) = session.workspace.clone() {
-        facts.push(ProviderDeclaredFact {
-            kind: LiteralFactKind::Workspace,
-            value: workspace,
-        });
-    }
-    if let Some(cwd) = session.cwd.clone() {
-        facts.push(ProviderDeclaredFact {
-            kind: LiteralFactKind::SessionCwd,
-            value: cwd,
-        });
+    for (kind, value) in [
+        (LiteralFactKind::Branch, session.branch.clone()),
+        (LiteralFactKind::Workspace, session.workspace.clone()),
+        (LiteralFactKind::SessionCwd, session.cwd.clone()),
+    ] {
+        if let Some(fact) =
+            value.and_then(|value| admit_provider_declared_fact(kind, value, facts.len()))
+        {
+            facts.push(fact);
+        }
     }
     match (activity, facts.is_empty()) {
         (Some(mut activity), _) => {

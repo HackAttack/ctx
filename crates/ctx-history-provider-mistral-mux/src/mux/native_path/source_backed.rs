@@ -41,7 +41,7 @@ const LOGICAL_SESSION_KIND: &str = "mux-session";
 const LOGICAL_EVENT_KIND: &str = "mux-event";
 const SOURCE_SCHEMA_VARIANT: &str = "mux-session-tree-source-backed-v2";
 const PARSER_REVISION: &str =
-    "mux-source-backed-v10-core-activity-agent-scope-raw-lineage-fail-closed";
+    "mux-source-backed-v11-core-activity-agent-scope-raw-lineage-fail-closed-optional-admission";
 const EVENT_IDENTITY_REVISION: &str = "mux-content-occurrence-v1";
 const COMPOUND_REVISION_DOMAIN: &[u8] = b"ctx.mux.compound-source.v3\0";
 const PARTIAL_EVENT_SEQUENCE_BASE: u64 = 1_u64 << 62;

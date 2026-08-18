@@ -9,6 +9,7 @@ use std::{
 use crate::{provider::source_backed::IndexBaseEventLookup, JsonlProviderRuntime};
 use chrono::{DateTime, Utc};
 use ctx_history_core::{
+    admit_optional_metadata_text, admit_optional_provider_call_id, admit_provider_declared_fact,
     derive_event_id, derive_native_session_id, ActivityInvocation, ActivityJsonCapture,
     ActivityResult, ActivityTextCapture, AgentScope, CaptureProvider, CoreActivity, CoreRecord,
     EventIdentityInput, EventType, LiteralFactKind, NativeItemKey, ProviderDeclaredFact, SourceKey,
@@ -41,7 +42,7 @@ const NATIVE_SESSION_NAMESPACE: &str = "junie.session";
 const LOGICAL_SESSION_KIND: &str = "junie-session";
 const LOGICAL_EVENT_KIND: &str = "junie-event";
 const SOURCE_SCHEMA_VARIANT: &str = "junie-session-events-v2";
-const PARSER_REVISION: &str = "junie-source-backed-v6-core-activity";
+const PARSER_REVISION: &str = "junie-source-backed-v7-optional-activity-admission";
 const EVENT_IDENTITY_REVISION: &str = "junie-content-occurrence-v2";
 const FALLBACK_FINGERPRINT_DOMAIN: &[u8] = b"ctx.junie.fallback-event-fingerprint.v1\0";
 
@@ -310,28 +311,15 @@ fn core_record(
     }
     let mut facts = Vec::new();
     if let Some(workspace) = workspace {
-        facts.push(ProviderDeclaredFact {
-            kind: LiteralFactKind::Workspace,
-            value: workspace.to_owned(),
-        });
+        push_fact(&mut facts, LiteralFactKind::Workspace, workspace.to_owned());
     }
     if let Some(cwd) = cwd {
-        facts.push(ProviderDeclaredFact {
-            kind: LiteralFactKind::SessionCwd,
-            value: cwd.to_owned(),
-        });
+        push_fact(&mut facts, LiteralFactKind::SessionCwd, cwd.to_owned());
     }
     if let Some(change) = &row.file_change {
-        facts.extend(
-            change
-                .paths
-                .iter()
-                .cloned()
-                .map(|value| ProviderDeclaredFact {
-                    kind: LiteralFactKind::File,
-                    value,
-                }),
-        );
+        for path in &change.paths {
+            push_fact(&mut facts, LiteralFactKind::File, path.clone());
+        }
     }
     let activity = junie_activity(&row, facts)?;
     let mut record = CoreRecord::new_selected(
@@ -358,6 +346,10 @@ fn core_record(
         ctx_history_jsonl::JsonlActivityObservedBytes::infer_from_present(),
         MAX_CORE_CONTENT_BYTES,
     );
+    record
+        .content
+        .omit_provider_declared_facts_if_aggregate_exceeds_limit()
+        .map_err(contract)?;
     record
         .content
         .omit_structured_content_if_aggregate_exceeds_limit()
@@ -387,36 +379,37 @@ fn junie_activity(
     row: &EventDraft,
     facts: Vec<ProviderDeclaredFact>,
 ) -> Result<Option<CoreActivity>> {
-    let provider_call_id = row
-        .body
-        .pointer("/provider_native_tool_result/call_id")
-        .or_else(|| row.body.get("provider_step_id"))
-        .and_then(serde_json::Value::as_str)
-        .filter(|value| !value.is_empty())
-        .map(TypedKey::utf8)
-        .transpose()
-        .map_err(contract)?;
-    let invocation = (row.event_type == EventType::ToolCall)
-        .then(|| {
+    let provider_call_id = admit_optional_provider_call_id(
+        row.body
+            .pointer("/provider_native_tool_result/call_id")
+            .or_else(|| row.body.get("provider_step_id"))
+            .and_then(serde_json::Value::as_str)
+            .map(str::to_owned),
+    );
+    let invocation = if provider_call_id.is_some() && row.event_type == EventType::ToolCall {
+        admit_optional_metadata_text(
             row.body
                 .get("tool_name")
                 .and_then(serde_json::Value::as_str)
-        })
-        .flatten()
-        .filter(|tool| !tool.is_empty())
+                .map(str::to_owned),
+        )
         .map(|tool| ActivityInvocation {
             protocol: None,
             server: None,
-            tool: tool.to_owned(),
+            tool,
             arguments: ActivityJsonCapture::Present {
                 value: row.body.clone(),
             },
             started_at_unix_ms: None,
-        });
-    let result = matches!(
-        row.event_type,
-        EventType::ToolOutput | EventType::CommandOutput
-    )
+        })
+    } else {
+        None
+    };
+    let result = (provider_call_id.is_some()
+        && matches!(
+            row.event_type,
+            EventType::ToolOutput | EventType::CommandOutput
+        ))
     .then(|| ActivityResult {
         status: None,
         completed_at_unix_ms: None,
@@ -426,7 +419,7 @@ fn junie_activity(
             value: row.body.clone(),
         },
     });
-    if provider_call_id.is_none() && invocation.is_none() && result.is_none() && facts.is_empty() {
+    if invocation.is_none() && result.is_none() && facts.is_empty() {
         return Ok(None);
     }
     Ok(Some(CoreActivity {
@@ -436,6 +429,54 @@ fn junie_activity(
         result,
         facts,
     }))
+}
+
+fn push_fact(facts: &mut Vec<ProviderDeclaredFact>, kind: LiteralFactKind, value: String) {
+    if let Some(fact) = admit_provider_declared_fact(kind, value, facts.len()) {
+        facts.push(fact);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn row(event_type: EventType, body: serde_json::Value) -> EventDraft {
+        EventDraft {
+            event_index: 0,
+            event_type,
+            role: None,
+            occurred_at: DateTime::<Utc>::UNIX_EPOCH,
+            text: "body".to_owned(),
+            body,
+            file_change: None,
+        }
+    }
+
+    #[test]
+    fn unadmitted_call_id_withholds_linkage_and_empty_activity() {
+        let oversized = "x".repeat(64 * 1024 + 1);
+        let call = row(
+            EventType::ToolCall,
+            serde_json::json!({"provider_step_id": oversized, "tool_name": "Bash"}),
+        );
+        assert_eq!(junie_activity(&call, Vec::new()).unwrap(), None);
+
+        let output = row(
+            EventType::CommandOutput,
+            serde_json::json!({
+                "provider_native_tool_result": {"call_id": oversized},
+            }),
+        );
+        let facts = vec![ProviderDeclaredFact {
+            kind: LiteralFactKind::Command,
+            value: "true".to_owned(),
+        }];
+        let activity = junie_activity(&output, facts.clone()).unwrap().unwrap();
+        assert!(activity.provider_call_id.is_none());
+        assert!(activity.result.is_none());
+        assert_eq!(activity.facts, facts);
+    }
 }
 
 fn decode_binding(leaf: &JsonlFamilyLeaf) -> Result<JunieBinding> {

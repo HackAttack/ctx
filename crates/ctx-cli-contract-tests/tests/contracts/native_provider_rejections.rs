@@ -251,7 +251,7 @@ fn mixed_source_replay_remains_stable_after_malformed_file_is_skipped() {
 }
 
 #[test]
-fn firebender_replay_preserves_mixed_and_all_invalid_outcomes() {
+fn firebender_replay_preserves_mixed_rejections_and_distinguishes_all_invalid_from_empty() {
     let mixed_temp = daemon_test_root();
     let mixed_project =
         write_native_firebender_fixture(&mixed_temp, "firebender mixed rejection replay oracle");
@@ -328,54 +328,211 @@ fn firebender_replay_preserves_mixed_and_all_invalid_outcomes() {
         }
     }
 
-    let invalid_temp = daemon_test_root();
-    let invalid_project =
-        write_native_firebender_fixture(&invalid_temp, "unused all-invalid oracle");
-    let invalid_database = Path::new(&invalid_project)
+    let warm_temp = daemon_test_root();
+    let marker = "firebender warm all-invalid carry-forward oracle";
+    let warm_project = write_native_firebender_fixture(&warm_temp, marker);
+    let warm_database = Path::new(&warm_project)
         .join(".idea")
         .join("firebender")
         .join("chat_history.db");
-    let conn = Connection::open(&invalid_database).unwrap();
-    conn.execute("update chat_sessions set messages_json = '{'", [])
-        .unwrap();
+
+    let valid = json_output(ctx(&warm_temp).args([
+        "import",
+        "--provider",
+        "firebender",
+        "--path",
+        &warm_project,
+        "--format=json",
+        "--progress",
+        "none",
+    ]));
+    let valid_source =
+        assert_source_backed_publication(&valid, "firebender", "firebender_chat_history_sqlite", 0);
+    assert_eq!(valid_source["current_source_count"], 1, "{valid:#}");
+    assert_eq!(valid_source["current_indexed_documents"], 3, "{valid:#}");
+    let valid_generation = valid_source["published_generation"]
+        .as_str()
+        .expect("published valid Firebender generation")
+        .to_owned();
+    let valid_search = json_output(ctx(&warm_temp).args([
+        "search",
+        marker,
+        "--provider",
+        "firebender",
+        "--refresh",
+        "off",
+        "--format=json",
+    ]));
+    assert_search_provider_oracle(&valid_search, "firebender", marker, 1, "message");
+
+    let conn = Connection::open(&warm_database).unwrap();
+    conn.execute(
+        "update chat_sessions
+         set messages_json = '{', updated_at = updated_at + 100",
+        [],
+    )
+    .unwrap();
     drop(conn);
 
-    for resume in [false, true] {
-        let mut command = ctx(&invalid_temp);
-        command.args([
-            "import",
-            "--provider",
-            "firebender",
-            "--path",
-            &invalid_project,
-            "--format=json",
-            "--progress",
-            "none",
-        ]);
-        if resume {
-            command.arg("--resume");
-        }
-        let report = failure_json_output(&mut command);
-        let source = assert_unusable_source_backed_failure(
-            &report,
-            "firebender",
-            "firebender_chat_history_sqlite",
-            1,
-        );
-        assert_eq!(source["current_source_count"], 1, "{report:#}");
-        assert_eq!(source["current_indexed_documents"], 0, "{report:#}");
-        assert_eq!(source["current_retained_records"], 0, "{report:#}");
-    }
+    let all_rejected = json_output(ctx(&warm_temp).args([
+        "import",
+        "--provider",
+        "firebender",
+        "--path",
+        &warm_project,
+        "--format=json",
+        "--progress",
+        "none",
+    ]));
+    assert_eq!(
+        all_rejected["outcome"], "completed_with_source_failures",
+        "{all_rejected:#}"
+    );
+    assert_eq!(all_rejected["failure_scope"], "source", "{all_rejected:#}");
+    assert_eq!(
+        all_rejected["failure_type"], "source_failure",
+        "{all_rejected:#}"
+    );
+    assert_eq!(
+        all_rejected["totals"]["failed_sources"], 1,
+        "{all_rejected:#}"
+    );
+    assert_eq!(
+        all_rejected["totals"]["current_indexed_documents"], 3,
+        "{all_rejected:#}"
+    );
+    let rejected_source = &all_rejected["sources"][0];
+    assert_eq!(
+        rejected_source["provider"], "firebender",
+        "{all_rejected:#}"
+    );
+    assert_eq!(
+        rejected_source["source_format"], "firebender_chat_history_sqlite",
+        "{all_rejected:#}"
+    );
+    assert_eq!(rejected_source["status"], "failure", "{all_rejected:#}");
+    assert_eq!(
+        rejected_source["failure_scope"], "source",
+        "{all_rejected:#}"
+    );
+    assert_eq!(rejected_source["failure_type"], "other", "{all_rejected:#}");
+    assert_eq!(
+        rejected_source["source_failure_class"], "unreadable",
+        "{all_rejected:#}"
+    );
+    assert_eq!(rejected_source["carried_forward"], true, "{all_rejected:#}");
+    assert_eq!(
+        rejected_source["source_failure_total"], 1,
+        "{all_rejected:#}"
+    );
+    assert_eq!(
+        rejected_source["route_source_failure_total"], 1,
+        "{all_rejected:#}"
+    );
+    assert_eq!(rejected_source["successful_routes"], 0, "{all_rejected:#}");
+    assert_eq!(rejected_source["change"], "no_op", "{all_rejected:#}");
+    assert_eq!(
+        rejected_source["generation_changed"], false,
+        "{all_rejected:#}"
+    );
+    assert_eq!(
+        rejected_source["previous_generation"], valid_generation,
+        "{all_rejected:#}"
+    );
+    assert_eq!(
+        rejected_source["published_generation"], valid_generation,
+        "{all_rejected:#}"
+    );
+    assert_eq!(
+        rejected_source["current_source_count"], 1,
+        "{all_rejected:#}"
+    );
+    assert_eq!(
+        rejected_source["current_indexed_documents"], 3,
+        "{all_rejected:#}"
+    );
+    assert_eq!(
+        rejected_source["current_retained_records"], 3,
+        "{all_rejected:#}"
+    );
+    assert_eq!(
+        rejected_source["rejected_record_total"], 0,
+        "{all_rejected:#}"
+    );
+    assert!(rejected_source["rejection_diagnostics"]
+        .as_array()
+        .is_some_and(Vec::is_empty));
+
+    let retained_search = json_output(ctx(&warm_temp).args([
+        "search",
+        marker,
+        "--provider",
+        "firebender",
+        "--refresh",
+        "off",
+        "--format=json",
+    ]));
+    assert_search_provider_oracle(&retained_search, "firebender", marker, 1, "message");
+    assert_eq!(
+        retained_search["retrieval"]["generation_id"], valid_generation,
+        "{retained_search:#}"
+    );
+
+    let conn = Connection::open(&warm_database).unwrap();
+    conn.execute("delete from chat_sessions", []).unwrap();
+    drop(conn);
+
+    let empty = json_output(ctx(&warm_temp).args([
+        "import",
+        "--provider",
+        "firebender",
+        "--path",
+        &warm_project,
+        "--format=json",
+        "--progress",
+        "none",
+    ]));
+    let empty_source =
+        assert_source_backed_publication(&empty, "firebender", "firebender_chat_history_sqlite", 0);
+    assert_eq!(empty_source["current_source_count"], 1, "{empty:#}");
+    assert_eq!(empty_source["current_indexed_documents"], 0, "{empty:#}");
+    assert_eq!(empty_source["current_complete_records"], 0, "{empty:#}");
+    assert_eq!(empty_source["current_retained_records"], 0, "{empty:#}");
+    assert_eq!(empty_source["current_rejected_records"], 0, "{empty:#}");
+    assert_ne!(
+        empty_source["published_generation"], valid_generation,
+        "{empty:#}"
+    );
+
+    let removed_search = json_output(ctx(&warm_temp).args([
+        "search",
+        marker,
+        "--provider",
+        "firebender",
+        "--refresh",
+        "off",
+        "--format=json",
+    ]));
+    assert!(
+        removed_search["results"]
+            .as_array()
+            .is_some_and(Vec::is_empty),
+        "{removed_search:#}"
+    );
+    assert_eq!(
+        removed_search["retrieval"]["generation_id"], empty_source["published_generation"],
+        "{removed_search:#}"
+    );
 
     assert!(
-        !invalid_temp.path().join("work.sqlite").exists(),
-        "an all-invalid provider source must not create the previous-epoch Store"
+        !warm_temp.path().join("work.sqlite").exists(),
+        "Firebender refreshes must not create the previous-epoch Store"
     );
     assert!(
-        provider_core_records(&data_root(&invalid_temp), "firebender").is_empty(),
-        "an all-invalid source must publish no Core records"
+        provider_core_records(&data_root(&warm_temp), "firebender").is_empty(),
+        "a successful empty Firebender replacement must clear prior Core records"
     );
-    assert!(!data_root(&invalid_temp).join("relational.sqlite").exists());
+    assert!(!data_root(&warm_temp).join("relational.sqlite").exists());
 }
 
 #[test]
@@ -791,9 +948,34 @@ fn all_invalid_source_reports_daemon_owned_failure_and_exits_nonzero() {
 }
 
 #[test]
-fn complete_oversize_only_codex_session_reports_source_backed_rejection() {
+fn complete_oversize_only_codex_refresh_preserves_last_good_generation() {
     let temp = daemon_test_root();
     let session = temp.path().join("codex-all-rejected.jsonl");
+    let marker = "codex JSONL all-rejected carry-forward oracle";
+    let valid = concat!(
+        r#"{"timestamp":"2026-07-13T12:00:00Z","type":"session_meta","payload":{"id":"codex-all-rejected","timestamp":"2026-07-13T12:00:00Z","cwd":"/repo","originator":"codex-cli"}}"#,
+        "\n",
+        r#"{"timestamp":"2026-07-13T12:00:01Z","type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"__MARKER__"}]}}"#,
+        "\n"
+    )
+    .replace("__MARKER__", marker);
+    fs::write(&session, valid).unwrap();
+    let first = json_output(ctx(&temp).args([
+        "import",
+        "--provider",
+        "codex",
+        "--path",
+        session.to_str().unwrap(),
+        "--format=json",
+        "--progress",
+        "none",
+    ]));
+    let first_source = assert_source_backed_publication(&first, "codex", "codex_session_jsonl", 0);
+    let first_generation = first_source["published_generation"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+
     let mut source = concat!(
         r#"{"timestamp":"2026-07-13T12:00:00Z","type":"session_meta","payload":{"id":"codex-all-rejected","timestamp":"2026-07-13T12:00:00Z","cwd":"/repo","originator":"codex-cli"}}"#,
         "\n",
@@ -819,21 +1001,47 @@ fn complete_oversize_only_codex_session_reports_source_backed_rejection() {
         if resume {
             command.arg("--resume");
         }
-        let report = failure_json_output(&mut command);
-        let source =
-            assert_unusable_source_backed_failure(&report, "codex", "codex_session_jsonl", 1);
-        assert_eq!(source["current_indexed_documents"], 0, "{report:#}");
-        assert_eq!(source["current_retained_records"], 0, "{report:#}");
-        assert_eq!(source["current_sources_with_rejections"], 1, "{report:#}");
+        let report = json_output(&mut command);
+        assert_eq!(
+            report["outcome"], "completed_with_source_failures",
+            "{report:#}"
+        );
+        assert_eq!(report["failure_scope"], "source", "{report:#}");
+        let failed_source = &report["sources"][0];
+        assert_eq!(failed_source["provider"], "codex", "{report:#}");
+        assert_eq!(
+            failed_source["source_format"], "codex_session_jsonl",
+            "{report:#}"
+        );
+        assert_eq!(failed_source["status"], "partial", "{report:#}");
+        assert_eq!(failed_source["carried_forward"], true, "{report:#}");
+        assert_eq!(failed_source["change"], "no_op", "{report:#}");
+        assert_eq!(
+            failed_source["published_generation"], first_generation,
+            "{report:#}"
+        );
+        assert_eq!(failed_source["current_indexed_documents"], 1, "{report:#}");
+        assert_eq!(failed_source["current_retained_records"], 1, "{report:#}");
+        assert_eq!(failed_source["rejected_record_total"], 0, "{report:#}");
     }
 
     assert!(
         !temp.path().join("work.sqlite").exists(),
-        "an all-rejected provider source must not create the previous-epoch Store"
+        "Codex refreshes must not create the previous-epoch Store"
     );
-    assert!(
-        provider_core_records(&data_root(&temp), "codex").is_empty(),
-        "an all-rejected source must publish no Core records"
+    let retained = json_output(ctx(&temp).args([
+        "search",
+        marker,
+        "--provider",
+        "codex",
+        "--refresh",
+        "off",
+        "--format=json",
+    ]));
+    assert_search_provider_oracle(&retained, "codex", marker, 1, "message");
+    assert_eq!(
+        retained["retrieval"]["generation_id"], first_generation,
+        "{retained:#}"
     );
     assert!(!data_root(&temp).join("relational.sqlite").exists());
 }

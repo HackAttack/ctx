@@ -2,8 +2,9 @@ use std::path::{Path, PathBuf};
 
 use chrono::{DateTime, Utc};
 use ctx_history_core::{
-    ActivityJsonCapture, ActivityResult, ActivityTextCapture, CaptureProvider, CoreActivity,
-    EventType, TypedKey, CORE_ACTIVITY_REVISION,
+    admit_optional_provider_call_id, admit_provider_declared_fact, ActivityJsonCapture,
+    ActivityResult, ActivityTextCapture, CaptureProvider, CoreActivity, EventType,
+    CORE_ACTIVITY_REVISION,
 };
 use serde_json::{json, Value};
 

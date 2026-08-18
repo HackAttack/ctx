@@ -13,7 +13,7 @@ use super::super::result_content::{
     extract_direct_result_content, NativeJsonlResultExtractionError, NativeJsonlResultSubrecord,
 };
 
-const PARSER_REVISION: &str = "direct-native-jsonl-parser-v5-core-activity";
+const PARSER_REVISION: &str = "direct-native-jsonl-parser-v6-optional-activity-admission";
 
 pub const fn factory_droid_source_backed_adapter<R: NativeJsonlRuntime>(
 ) -> super::DirectJsonlFamilyAdapter<R> {

@@ -279,7 +279,7 @@ fn direct_provider_revision_matrix_matches_the_neutral_projection_and_identity_i
     let parser_cases = [
         (
             CaptureProvider::Antigravity,
-            "direct-native-jsonl-parser-v5-core-activity",
+            "direct-native-jsonl-parser-v6-optional-activity-admission",
         ),
         (
             CaptureProvider::CopilotCli,
@@ -287,27 +287,27 @@ fn direct_provider_revision_matrix_matches_the_neutral_projection_and_identity_i
         ),
         (
             CaptureProvider::FactoryAiDroid,
-            "direct-native-jsonl-parser-v5-core-activity",
+            "direct-native-jsonl-parser-v6-optional-activity-admission",
         ),
         (
             CaptureProvider::GrokBuild,
-            "direct-native-jsonl-parser-v7-grok-closed-content",
+            "direct-native-jsonl-parser-v8-grok-closed-content-admission",
         ),
         (
             CaptureProvider::Qoder,
-            "direct-native-jsonl-parser-v5-core-activity",
+            "direct-native-jsonl-parser-v6-optional-activity-admission",
         ),
         (
             CaptureProvider::QwenCode,
-            "direct-native-jsonl-parser-v5-core-activity",
+            "direct-native-jsonl-parser-v6-optional-activity-admission",
         ),
         (
             CaptureProvider::Tabnine,
-            "direct-native-jsonl-parser-v5-core-activity",
+            "direct-native-jsonl-parser-v6-optional-activity-admission",
         ),
         (
             CaptureProvider::Windsurf,
-            "direct-native-jsonl-parser-v5-core-activity",
+            "direct-native-jsonl-parser-v6-optional-activity-admission",
         ),
     ];
     for (provider, parser_revision) in parser_cases {
@@ -448,7 +448,7 @@ fn copilot_and_windsurf_replay_preserve_current_revision_ids_and_records() {
             "ac4f77cb-6658-8c1d-89fe-6d23fbf96fd0",
             "6c78de65-0cee-8b0c-841f-56d0004e2af8",
             "cb5a35bb-fb49-8701-8739-101eb01c524f",
-            "c03a0ec6949bdfdc9d618552aaedfe4aa750f7b8e66e4e1747bae007fa52defe",
+            "3f61ed135293b4d64d3682911a0e84457c1a5a8633fd9ff24a13ec41a0aa875b",
         ),
         (
             CaptureProvider::CopilotCli,
@@ -461,7 +461,7 @@ fn copilot_and_windsurf_replay_preserve_current_revision_ids_and_records() {
             "c1ebd99c-7338-859b-891d-1c7e04d9ae9d",
             "5ff93a01-4aa3-82f8-8d9e-784490016567",
             "8d4627ce-c12c-8d64-af2d-d85ac722121f",
-            "631b3e2b8f8fc5bac93918763764653e77f0737e29fd3bc9bd0486aa00ffab7e",
+            "242c534cc04212dd8babe58be9810c1c91b3bced3be22056c3bc1ff66e3e9739",
         ),
     ];
 
@@ -471,8 +471,10 @@ fn copilot_and_windsurf_replay_preserve_current_revision_ids_and_records() {
             CaptureProvider::CopilotCli => {
                 super::copilot::COPILOT_DIRECT_NATIVE_JSONL_PARSER_REVISION
             }
-            CaptureProvider::GrokBuild => "direct-native-jsonl-parser-v7-grok-closed-content",
-            _ => "direct-native-jsonl-parser-v5-core-activity",
+            CaptureProvider::GrokBuild => {
+                "direct-native-jsonl-parser-v8-grok-closed-content-admission"
+            }
+            _ => "direct-native-jsonl-parser-v6-optional-activity-admission",
         };
         assert_eq!(
             JsonlFamilyAdapter::parser_revision(&adapter),
@@ -816,6 +818,31 @@ fn supported_family_members_retain_complete_result_bodies_in_core() {
             "{provider:?}"
         );
     }
+}
+
+#[test]
+fn unlinked_native_result_preserves_exact_record_without_empty_activity() {
+    let value = json!({
+        "type": "tool_result",
+        "message": {
+            "role": "tool",
+            "content": [{
+                "type": "tool_result",
+                "name": "shell",
+                "content": "unlinked complete result"
+            }]
+        }
+    });
+
+    let (records, rejected) = project(CaptureProvider::QwenCode, &value);
+
+    assert_eq!(rejected, 0);
+    assert_eq!(records.len(), 1);
+    assert_eq!(
+        records[0].content.normalized_body.as_deref(),
+        Some("unlinked complete result")
+    );
+    assert!(records[0].content.activity.is_none());
 }
 
 #[test]

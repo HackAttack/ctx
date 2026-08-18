@@ -4,6 +4,7 @@ use chrono::{DateTime, Utc};
 use ctx_history_capture_model::normalization::provider_value_text;
 use ctx_history_capture_runtime::BaseEventLookup;
 use ctx_history_core::{
+    admit_optional_metadata_text, admit_optional_provider_call_id, admit_provider_declared_fact,
     derive_event_id, ActivityInvocation, ActivityJsonCapture, ActivityResult, ActivityTextCapture,
     AgentScope, CoreActivity, CoreContentPolicyStatus, CoreRecord, EventIdentityInput,
     LiteralFactKind, NativeItemKey, ProviderDeclaredFact, ProviderNativeSessionRelationship,
@@ -165,12 +166,13 @@ where
         }
         let mut facts = Vec::new();
         if let Some(cwd) = &self.binding.metadata.cwd {
-            facts.push(ProviderDeclaredFact {
-                kind: LiteralFactKind::SessionCwd,
-                value: cwd.clone(),
-            });
+            if let Some(fact) =
+                admit_provider_declared_fact(LiteralFactKind::SessionCwd, cwd.clone(), facts.len())
+            {
+                facts.push(fact);
+            }
         }
-        let activity = mux_activity(&row.value, facts).map_err(contract)?;
+        let activity = mux_activity(&row.value, facts);
         let mut record = CoreRecord::new_selected(
             event_id,
             self.binding.session_id,
@@ -223,6 +225,10 @@ where
             );
             record
                 .content
+                .omit_provider_declared_facts_if_aggregate_exceeds_limit()
+                .map_err(contract)?;
+            record
+                .content
                 .omit_structured_content_if_aggregate_exceeds_limit()
                 .map_err(contract)?;
         }
@@ -231,7 +237,7 @@ where
     }
 }
 
-fn mux_activity(value: &Value, facts: Vec<ProviderDeclaredFact>) -> Result<Option<CoreActivity>> {
+fn mux_activity(value: &Value, facts: Vec<ProviderDeclaredFact>) -> Option<CoreActivity> {
     let dynamic_parts = value
         .get("parts")
         .and_then(Value::as_array)
@@ -240,13 +246,13 @@ fn mux_activity(value: &Value, facts: Vec<ProviderDeclaredFact>) -> Result<Optio
         .filter(|part| part.get("type").and_then(Value::as_str) == Some("dynamic-tool"))
         .collect::<Vec<_>>();
     let [part] = dynamic_parts.as_slice() else {
-        return Ok((!facts.is_empty()).then_some(CoreActivity {
+        return (!facts.is_empty()).then_some(CoreActivity {
             revision: CORE_ACTIVITY_REVISION,
             provider_call_id: None,
             invocation: None,
             result: None,
             facts,
-        }));
+        });
     };
     let call_ids = [
         "toolCallId",
@@ -260,19 +266,23 @@ fn mux_activity(value: &Value, facts: Vec<ProviderDeclaredFact>) -> Result<Optio
     .into_iter()
     .filter_map(|field| part.get(field).and_then(Value::as_str))
     .collect::<Vec<_>>();
-    let provider_call_id = match call_ids.as_slice() {
-        [id] if !id.is_empty() => Some(TypedKey::utf8(*id).map_err(contract)?),
+    let provider_call_id = admit_optional_provider_call_id(match call_ids.as_slice() {
+        [id] => Some((*id).to_owned()),
         _ => None,
-    };
+    });
     let tool = ["toolName", "tool_name", "name"]
         .into_iter()
         .filter_map(|field| part.get(field).and_then(Value::as_str))
         .collect::<Vec<_>>();
-    let invocation = match tool.as_slice() {
-        [tool] if !tool.is_empty() => Some(ActivityInvocation {
+    let tool = admit_optional_metadata_text(match tool.as_slice() {
+        [tool] => Some((*tool).to_owned()),
+        _ => None,
+    });
+    let invocation = if provider_call_id.is_some() {
+        tool.map(|tool| ActivityInvocation {
             protocol: None,
             server: None,
-            tool: (*tool).to_owned(),
+            tool,
             arguments: part
                 .get("input")
                 .map_or(ActivityJsonCapture::Absent, |value| {
@@ -281,11 +291,14 @@ fn mux_activity(value: &Value, facts: Vec<ProviderDeclaredFact>) -> Result<Optio
                     }
                 }),
             started_at_unix_ms: None,
-        }),
-        _ => None,
+        })
+    } else {
+        None
     };
     let output_redacted = part.get("state").and_then(Value::as_str) == Some("output-redacted");
-    let result = if output_redacted {
+    let result = if provider_call_id.is_none() {
+        None
+    } else if output_redacted {
         Some(ActivityResult {
             status: None,
             completed_at_unix_ms: None,
@@ -310,13 +323,16 @@ fn mux_activity(value: &Value, facts: Vec<ProviderDeclaredFact>) -> Result<Optio
             },
         })
     };
-    Ok(Some(CoreActivity {
+    if invocation.is_none() && result.is_none() && facts.is_empty() {
+        return None;
+    }
+    Some(CoreActivity {
         revision: CORE_ACTIVITY_REVISION,
         provider_call_id,
         invocation,
         result,
         facts,
-    }))
+    })
 }
 
 pub(super) struct MuxJsonlProjector<B: ProviderRuntimeBinding> {
@@ -651,6 +667,37 @@ mod tests {
             .unwrap();
         assert_eq!(emitted.len(), 1);
         emitted.pop().unwrap()
+    }
+
+    #[test]
+    fn optional_dynamic_tool_metadata_abstains_without_losing_valid_result_content() {
+        let oversized = "x".repeat(64 * 1024 + 1);
+        let invalid_id = serde_json::json!({
+            "parts": [{
+                "type": "dynamic-tool",
+                "toolCallId": oversized,
+                "toolName": "shell",
+                "output": {"exact": true},
+            }]
+        });
+        assert_eq!(mux_activity(&invalid_id, Vec::new()), None);
+
+        let invalid_tool = serde_json::json!({
+            "parts": [{
+                "type": "dynamic-tool",
+                "toolCallId": "call-1",
+                "toolName": "x".repeat(64 * 1024 + 1),
+                "output": {"exact": true},
+            }]
+        });
+        let activity = mux_activity(&invalid_tool, Vec::new()).unwrap();
+        assert!(activity.invocation.is_none());
+        assert_eq!(
+            activity.result.unwrap().structured_content,
+            ActivityJsonCapture::Present {
+                value: serde_json::json!({"exact": true}),
+            }
+        );
     }
 
     #[test]

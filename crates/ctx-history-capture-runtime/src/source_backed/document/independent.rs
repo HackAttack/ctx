@@ -200,16 +200,16 @@ where
                     "independent document leaf derived a different exact source",
                 ));
             }
+            let replay_fingerprint = observed
+                .replay_from_frontier
+                .then_some(observed.fingerprint);
+            let append_base = adapter.append_base(authority, &observed.provider_leaf);
+            let terminal =
+                active.preflight_terminal(terminal, replay_fingerprint, append_base.as_ref())?;
             changed
                 .take()
                 .ok_or_else(|| document_internal("document leaf sink was consumed early"))?
-                .finish(
-                    terminal,
-                    observed
-                        .replay_from_frontier
-                        .then_some(observed.fingerprint),
-                    adapter.append_base(authority, &observed.provider_leaf),
-                )
+                .finish(terminal, append_base)
         })();
         let record_rejections = changed
             .as_mut()

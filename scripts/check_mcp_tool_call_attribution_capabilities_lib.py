@@ -871,7 +871,7 @@ def validate_public_docs(
         "48 capability lanes: three `exact`, 44 `not-qualified`, and one `excluded`",
         "`codex-nativepath-core-activity-v6-command-output-retrieval-exclusion`",
         "`warp-source-backed-logical-v7-neutral-activity-agent-scope`",
-        "`copilot-cli-direct-native-jsonl-v7-core-activity`",
+        "`copilot-cli-direct-native-jsonl-v8-optional-activity-admission`",
         "`activity.invocation`",
         "`provider_call_id`",
         "`protocol` equal to `mcp`",

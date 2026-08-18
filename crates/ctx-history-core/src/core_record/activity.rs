@@ -13,6 +13,37 @@ pub const CORE_ACTIVITY_REVISION: u32 = 1;
 /// Maximum literal provider-declared facts retained on one event.
 pub const MAX_PROVIDER_DECLARED_FACTS: usize = 4_096;
 
+/// Admits exact optional Core metadata text within the metadata byte bound.
+///
+/// Empty and oversized values are omitted. Admitted text is not trimmed or
+/// otherwise altered.
+pub fn admit_optional_metadata_text(value: Option<String>) -> Option<String> {
+    value.filter(|value| !value.is_empty() && value.len() <= MAX_TEXT_METADATA_BYTES)
+}
+
+/// Admits an exact optional provider call ID as a UTF-8 typed key.
+pub fn admit_optional_provider_call_id(value: Option<String>) -> Option<TypedKey> {
+    value.and_then(|value| {
+        let key = TypedKey::utf8(value).ok()?;
+        key.validate_contract().ok().map(|()| key)
+    })
+}
+
+/// Admits one exact provider-declared fact within the value and count bounds.
+pub fn admit_provider_declared_fact(
+    kind: LiteralFactKind,
+    value: String,
+    current_fact_count: usize,
+) -> Option<ProviderDeclaredFact> {
+    if current_fact_count >= MAX_PROVIDER_DECLARED_FACTS
+        || value.is_empty()
+        || value.len() > MAX_TEXT_METADATA_BYTES
+    {
+        return None;
+    }
+    Some(ProviderDeclaredFact { kind, value })
+}
+
 /// One event-local provider activity envelope.
 ///
 /// Providers retain native event granularity. Separate invocation and result

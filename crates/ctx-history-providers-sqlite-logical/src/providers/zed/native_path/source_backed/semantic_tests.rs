@@ -553,3 +553,86 @@ fn zed_conflicting_input_aliases_abstain_and_metadata_paths_do_not_escape() {
         vec!["src/exact.rs"]
     );
 }
+
+#[test]
+fn zed_optional_activity_fields_and_facts_abstain_independently() {
+    let oversized = "x".repeat(64 * 1024 + 1);
+    let invalid_id_event = ZedNativeEvent::from_draft(
+        1,
+        "thread-activity",
+        super::super::model::ZedDecodedCoreEvent {
+            provider_message_id: None,
+            thread_ordinal: 0,
+            message_ordinal: 0,
+            event_type: EventType::ToolCall,
+            role: EventRole::Assistant,
+            occurred_at: "2026-08-16T00:00:00Z".parse().unwrap(),
+            kind: "agent_tool_call",
+            call_ids: vec![oversized.clone()],
+            native_content: serde_json::json!({
+                "content": [{"type": "tool_use", "id": oversized, "name": "read_file"}],
+            }),
+            body: "tool call: read_file".to_owned(),
+        },
+        RecordDigest::from_text("zed invalid optional call id"),
+    )
+    .unwrap();
+    assert_eq!(
+        zed_activity(&invalid_id_event, 0).unwrap(),
+        (None, None, None)
+    );
+
+    let result_event = ZedNativeEvent::from_draft(
+        2,
+        "thread-activity",
+        super::super::model::ZedDecodedCoreEvent {
+            provider_message_id: None,
+            thread_ordinal: 0,
+            message_ordinal: 1,
+            event_type: EventType::ToolOutput,
+            role: EventRole::Tool,
+            occurred_at: "2026-08-16T00:00:01Z".parse().unwrap(),
+            kind: "agent_tool_result",
+            call_ids: vec!["call-1".to_owned()],
+            native_content: serde_json::json!({
+                "content": [{
+                    "type": "tool_use",
+                    "id": "call-1",
+                    "name": "x".repeat(64 * 1024 + 1),
+                    "input": {"path": "src/lib.rs"},
+                }],
+                "tool_results": {
+                    "call-1": {"status": "x".repeat(64 * 1024 + 1), "content": "exact result"},
+                },
+            }),
+            body: "exact result".to_owned(),
+        },
+        RecordDigest::from_text("zed optional metadata"),
+    )
+    .unwrap();
+    let (call_id, invocation, result) = zed_activity(&result_event, 1).unwrap();
+    assert_eq!(call_id, Some(TypedKey::Utf8("call-1".to_owned())));
+    assert!(invocation.is_none());
+    let result = result.unwrap();
+    assert_eq!(result.status, None);
+    assert_eq!(
+        result.text,
+        ActivityTextCapture::Present {
+            value: "exact result".to_owned(),
+        }
+    );
+
+    let mut facts = Vec::new();
+    collect_zed_facts(
+        &serde_json::json!({
+            "content": [{
+                "type": "tool_use",
+                "input": {"path": "", "command": "cargo check"},
+            }],
+        }),
+        &mut facts,
+    );
+    assert_eq!(facts.len(), 1);
+    assert_eq!(facts[0].kind, LiteralFactKind::Command);
+    assert_eq!(facts[0].value, "cargo check");
+}

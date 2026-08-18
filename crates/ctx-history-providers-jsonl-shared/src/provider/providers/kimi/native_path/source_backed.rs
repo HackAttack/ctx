@@ -19,6 +19,7 @@ use ctx_history_capture_model::file_references::{
     visit_provider_file_reference_drafts_with_limit, MAX_PROVIDER_FILE_REFERENCES_PER_EVENT,
 };
 use ctx_history_core::{
+    admit_optional_metadata_text, admit_optional_provider_call_id, admit_provider_declared_fact,
     derive_event_id, derive_native_session_id, ActivityInvocation, ActivityJsonCapture,
     ActivityResult, ActivityTextCapture, CaptureProvider, CoreActivity, CoreRecord,
     CoreRecordError, EventIdentityInput, EventType, LiteralFactKind, ProjectionContractError,
@@ -60,8 +61,9 @@ const KIMI_SOURCE_ANCHOR_NAMESPACE: &str = "kimi-code-cli-wire-lineage-v1";
 const KIMI_NATIVE_SESSION_NAMESPACE: &str = "kimi-code-cli-session-v1";
 const KIMI_LOGICAL_SESSION_KIND: &str = "agent-session";
 const KIMI_LOGICAL_EVENT_KIND: &str = "wire-event";
-// v5 withholds invocation/result activity when Kimi did not emit an exact call ID.
-const KIMI_SOURCE_PARSER_REVISION: &str = "kimi-code-cli-source-backed-v5-exact-activity-linkage";
+// v6 omits optional activity fields that do not satisfy the Core admission bounds.
+const KIMI_SOURCE_PARSER_REVISION: &str =
+    "kimi-code-cli-source-backed-v6-optional-activity-admission";
 const KIMI_EVENT_IDENTITY_REVISION: &str = "kimi-code-cli-content-occurrence-v1";
 const KIMI_FALLBACK_FINGERPRINT_DOMAIN: &[u8] =
     b"ctx.kimi-code-cli.fallback-event-fingerprint.v1\0";

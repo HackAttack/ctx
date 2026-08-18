@@ -29,7 +29,19 @@ pub(super) fn core_record<R: crate::JsonlProviderRuntime>(
         native_item_key: assignment.native_item_key(),
         subrecord_selector: None,
     })?;
-    let mut facts = kimi_literal_facts(value)?;
+    let mut facts = Vec::new();
+    if let Some(cwd) = &compound.native.session.cwd {
+        if let Some(fact) =
+            admit_provider_declared_fact(LiteralFactKind::SessionCwd, cwd.clone(), facts.len())
+        {
+            facts.push(fact);
+        }
+    }
+    for fact in kimi_literal_facts(value)? {
+        if let Some(fact) = admit_provider_declared_fact(fact.kind, fact.value, facts.len()) {
+            facts.push(fact);
+        }
+    }
     let parent_session_id = compound
         .native
         .session
@@ -44,15 +56,6 @@ pub(super) fn core_record<R: crate::JsonlProviderRuntime>(
         .as_deref()
         .map(lineage_session_identity)
         .transpose()?;
-    if let Some(cwd) = &compound.native.session.cwd {
-        facts.insert(
-            0,
-            ProviderDeclaredFact {
-                kind: LiteralFactKind::SessionCwd,
-                value: cwd.clone(),
-            },
-        );
-    }
     let event = value.get("event").unwrap_or(value);
     let activity = kimi_activity(event, event_type, &body, facts)?;
     let mut record = CoreRecord::new_selected(
@@ -87,6 +90,9 @@ pub(super) fn core_record<R: crate::JsonlProviderRuntime>(
     );
     record
         .content
+        .omit_provider_declared_facts_if_aggregate_exceeds_limit()?;
+    record
+        .content
         .omit_structured_content_if_aggregate_exceeds_limit()?;
     record.validate_contract()?;
     Ok(Some(record))
@@ -103,7 +109,7 @@ fn kimi_activity(
         .filter_map(|field| event.get(field).and_then(Value::as_str))
         .collect::<Vec<_>>();
     let provider_call_id = match call_ids.as_slice() {
-        [id] if !id.is_empty() => Some(TypedKey::utf8(*id)?),
+        [id] => admit_optional_provider_call_id(Some((*id).to_owned())),
         _ => None,
     };
     let tools = ["toolName", "tool_name", "name"]
@@ -112,17 +118,19 @@ fn kimi_activity(
         .collect::<Vec<_>>();
     let invocation = if provider_call_id.is_some() && event_type == EventType::ToolCall {
         match tools.as_slice() {
-            [tool] if !tool.is_empty() => Some(ActivityInvocation {
-                protocol: None,
-                server: None,
-                tool: (*tool).to_owned(),
-                arguments: event.get("args").or_else(|| event.get("arguments")).map_or(
-                    ActivityJsonCapture::Absent,
-                    |value| ActivityJsonCapture::Present {
-                        value: value.clone(),
-                    },
-                ),
-                started_at_unix_ms: None,
+            [tool] => admit_optional_metadata_text(Some((*tool).to_owned())).map(|tool| {
+                ActivityInvocation {
+                    protocol: None,
+                    server: None,
+                    tool,
+                    arguments: event.get("args").or_else(|| event.get("arguments")).map_or(
+                        ActivityJsonCapture::Absent,
+                        |value| ActivityJsonCapture::Present {
+                            value: value.clone(),
+                        },
+                    ),
+                    started_at_unix_ms: None,
+                }
             }),
             _ => None,
         }
@@ -181,10 +189,11 @@ fn kimi_literal_facts(value: &Value) -> KimiSourceBackedResult<Vec<ProviderDecla
         value,
         MAX_PROVIDER_FILE_REFERENCES_PER_EVENT,
         |(_, reference)| {
-            facts.push(ProviderDeclaredFact {
-                kind: reference.kind,
-                value: reference.value,
-            });
+            if let Some(fact) =
+                admit_provider_declared_fact(reference.kind, reference.value, facts.len())
+            {
+                facts.push(fact);
+            }
             Ok::<(), CaptureError>(())
         },
     )?;
@@ -344,6 +353,25 @@ mod tests {
 
         assert_eq!(
             kimi_activity(&event, EventType::ToolCall, "body", Vec::new()).unwrap(),
+            None
+        );
+    }
+
+    #[test]
+    fn unadmitted_optional_linkage_does_not_emit_empty_activity() {
+        let oversized = "x".repeat(64 * 1024 + 1);
+        let output = serde_json::json!({"toolCallId": oversized});
+        assert_eq!(
+            kimi_activity(&output, EventType::ToolOutput, "output", Vec::new()).unwrap(),
+            None
+        );
+
+        let call = serde_json::json!({
+            "toolCallId": "kimi-call-1",
+            "toolName": oversized,
+        });
+        assert_eq!(
+            kimi_activity(&call, EventType::ToolCall, "call", Vec::new()).unwrap(),
             None
         );
     }

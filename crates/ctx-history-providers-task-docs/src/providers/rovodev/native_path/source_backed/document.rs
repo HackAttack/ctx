@@ -707,16 +707,18 @@ fn core_record(
     record.content.structured_content = Some(raw_message.clone());
     let mut facts = Vec::new();
     if let Some(branch) = branch {
-        facts.push(ProviderDeclaredFact {
-            kind: LiteralFactKind::Branch,
-            value: branch,
-        });
+        if let Some(fact) =
+            admit_provider_declared_fact(LiteralFactKind::Branch, branch, facts.len())
+        {
+            facts.push(fact);
+        }
     }
     if let Some(cwd) = document.cwd.clone() {
-        facts.push(ProviderDeclaredFact {
-            kind: LiteralFactKind::SessionCwd,
-            value: cwd,
-        });
+        if let Some(fact) =
+            admit_provider_declared_fact(LiteralFactKind::SessionCwd, cwd, facts.len())
+        {
+            facts.push(fact);
+        }
     }
     let projected_output = event.output.as_ref();
     let projected_call_id = projected_output.and_then(|output| output.call_id.clone());
@@ -732,21 +734,23 @@ fn core_record(
         ],
     );
     let call_id = exact_owned_string_alias(projected_call_id, known_call_id);
-    let provider_call_id = call_id.as_deref().map(TypedKey::utf8).transpose()?;
+    let provider_call_id = admit_optional_provider_call_id(call_id);
     let invocation = (provider_call_id.is_some() && event.event_type == EventType::ToolCall)
         .then(|| {
-            known_message_string_field(raw_message, &["tool_name", "toolName", "name", "tool"]).map(
-                |tool| ActivityInvocation {
-                    protocol: None,
-                    server: None,
-                    tool,
-                    arguments: known_message_json_alias_capture(
-                        raw_message,
-                        &["arguments", "args", "input", "parameters"],
-                    ),
-                    started_at_unix_ms: Some(event.occurred_at.timestamp_millis()),
-                },
-            )
+            admit_optional_metadata_text(known_message_string_field(
+                raw_message,
+                &["tool_name", "toolName", "name", "tool"],
+            ))
+            .map(|tool| ActivityInvocation {
+                protocol: None,
+                server: None,
+                tool,
+                arguments: known_message_json_alias_capture(
+                    raw_message,
+                    &["arguments", "args", "input", "parameters"],
+                ),
+                started_at_unix_ms: Some(event.occurred_at.timestamp_millis()),
+            })
         })
         .flatten();
     let result = provider_call_id
@@ -754,7 +758,10 @@ fn core_record(
         .then_some(projected_output)
         .flatten()
         .map(|_| ActivityResult {
-            status: rovodev_string_alias(raw_message, &["status", "state", "outcome"]),
+            status: admit_optional_metadata_text(rovodev_string_alias(
+                raw_message,
+                &["status", "state", "outcome"],
+            )),
             completed_at_unix_ms: Some(event.occurred_at.timestamp_millis()),
             duration_ns: None,
             text: if projected_output.is_some_and(|output| output.capture_unavailable) {
@@ -780,6 +787,9 @@ fn core_record(
             facts,
         });
     }
+    record
+        .content
+        .omit_provider_declared_facts_if_aggregate_exceeds_limit()?;
     record
         .content
         .omit_structured_content_if_aggregate_exceeds_limit()?;

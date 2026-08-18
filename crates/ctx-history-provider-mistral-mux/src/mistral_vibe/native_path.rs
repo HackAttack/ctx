@@ -6,7 +6,7 @@ use std::{
 
 use chrono::{DateTime, Utc};
 use ctx_history_capture_model::file_references::visit_literal_file_reference_drafts;
-use ctx_history_core::{ProviderDeclaredFact, MAX_PROVIDER_DECLARED_FACTS};
+use ctx_history_core::{admit_provider_declared_fact, ProviderDeclaredFact};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
@@ -160,18 +160,11 @@ fn valid_mistral_vibe_record_role(value: &Value) -> std::result::Result<&str, &'
     Ok(role)
 }
 
-fn collect_file_facts(value: &Value) -> Vec<ProviderDeclaredFact> {
-    let mut facts = Vec::new();
+fn collect_file_facts(value: &Value, facts: &mut Vec<ProviderDeclaredFact>) {
     let _ = visit_literal_file_reference_drafts(value, |draft| {
-        facts.push(ProviderDeclaredFact {
-            kind: draft.kind,
-            value: draft.value,
-        });
+        if let Some(fact) = admit_provider_declared_fact(draft.kind, draft.value, facts.len()) {
+            facts.push(fact);
+        }
         Ok::<(), std::convert::Infallible>(())
     });
-    if facts.len() > MAX_PROVIDER_DECLARED_FACTS {
-        Vec::new()
-    } else {
-        facts
-    }
 }

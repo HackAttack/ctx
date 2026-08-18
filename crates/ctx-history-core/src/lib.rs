@@ -115,6 +115,7 @@ pub mod provider;
 pub mod source;
 
 pub use core_record::{
+    admit_optional_metadata_text, admit_optional_provider_call_id, admit_provider_declared_fact,
     core_record_accumulator_leaf_digest, core_record_contract_fingerprint, core_record_leaf_digest,
     core_record_leaf_sha256, ActivityInvocation, ActivityJsonCapture, ActivityResult,
     ActivityTextCapture, AgentScope, CoreActivity, CoreContent, CoreContentPolicyStatus,

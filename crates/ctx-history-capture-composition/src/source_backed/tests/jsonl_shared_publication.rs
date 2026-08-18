@@ -563,6 +563,43 @@ fn openclaw_preflight_preserves_unique_append_and_carries_cross_boundary_duplica
 }
 
 #[test]
+fn openclaw_cross_record_duplicate_calls_fail_closed_across_append_boundary() {
+    let temp = crate::test_support_paths::tempdir().unwrap();
+    let root = temp.path().join("openclaw");
+    let transcript = openclaw_lifecycle_transcript(&root);
+    let first_call = serde_json::json!({
+        "type": "message",
+        "id": "first-call-record",
+        "timestamp": "2026-08-06T12:00:00Z",
+        "message": {"role": "assistant", "content": [{"type": "toolCall", "id": "duplicate-call", "name": "exec", "arguments": {"command": "ctx search first"}}]}
+    });
+    let duplicate_call = serde_json::json!({
+        "type": "message",
+        "id": "second-call-record",
+        "timestamp": "2026-08-06T12:00:01Z",
+        "message": {"role": "assistant", "content": [{"type": "toolCall", "id": "duplicate-call", "name": "exec", "arguments": {"command": "ctx search second"}}]}
+    });
+    write_openclaw_lifecycle_transcript(&transcript, &[first_call]);
+    let registry = openclaw_registry(&root);
+    let index = temp.path().join("index");
+
+    let initial = refresh_source_backed_generation(&index, &registry, writer_options()).unwrap();
+    assert!(initial.failed_routes.is_empty());
+    let initial_records = all_indexed_records(&index);
+    assert_eq!(initial_records.len(), 1);
+
+    append_openclaw_lifecycle_transcript(&transcript, &duplicate_call);
+    let duplicate = refresh_source_backed_generation(&index, &registry, writer_options()).unwrap();
+    assert_eq!(duplicate.failed_routes.len(), 1);
+    assert_eq!(
+        duplicate.failed_routes[0].class,
+        SourceBackedSourceFailureClass::Unreadable
+    );
+    assert!(duplicate.failed_routes[0].carried_forward);
+    assert_eq!(all_indexed_records(&index), initial_records);
+}
+
+#[test]
 fn openclaw_projector_preflight_rejects_same_length_interpass_rewrite() {
     let temp = crate::test_support_paths::tempdir().unwrap();
     let root = temp.path().join("openclaw");

@@ -59,6 +59,51 @@ fn production_jsonl_scheduler_projects_multiple_sources_concurrently() {
 }
 
 #[test]
+fn parallel_all_rejected_candidates_preserve_cold_and_warm_source_semantics() {
+    let temp = crate::test_support_paths::tempdir().unwrap();
+    let root = temp.path().join("sessions");
+    fs::create_dir_all(&root).unwrap();
+    for index in 0..2 {
+        fs::write(
+            root.join(format!("{index}.jsonl")),
+            b"{\"message\":\"valid\"}\n",
+        )
+        .unwrap();
+    }
+    let reject = Arc::new(AtomicBool::new(false));
+    let adapter = AllRejectedParallelTestAdapter {
+        reject: Arc::clone(&reject),
+    };
+    let index = temp.path().join("index");
+
+    let cold = capture_parallel_test_generation(&adapter, &root, &index, 2).0;
+    assert_eq!(cold.manifest.sources.len(), 2);
+    assert_eq!(cold.manifest.records.len(), 2);
+
+    reject.store(true, Ordering::SeqCst);
+    for leaf in 0..2 {
+        fs::write(
+            root.join(format!("{leaf}.jsonl")),
+            format!("{{\"message\":\"rejected-{leaf}\"}}\n"),
+        )
+        .unwrap();
+    }
+    let carried = capture_parallel_test_generation(&adapter, &root, &index, 2).0;
+    assert_eq!(carried.manifest, cold.manifest);
+    assert_eq!(carried.generation_id, cold.generation_id);
+
+    let cold_rejected_index = temp.path().join("cold-rejected-index");
+    let cold_rejected =
+        capture_parallel_test_generation(&adapter, &root, &cold_rejected_index, 2).0;
+    assert!(cold_rejected.manifest.records.is_empty());
+    assert_eq!(cold_rejected.manifest.sources.len(), 2);
+    assert!(cold_rejected.manifest.sources.iter().all(|source| {
+        let counts = source.counts();
+        counts.complete_records == 1 && counts.retained_records == 0 && counts.rejected_records == 1
+    }));
+}
+
+#[test]
 fn dependency_phases_bar_later_jsonl_scans_without_serializing_each_phase() {
     let temp = crate::test_support_paths::tempdir().unwrap();
     let root = temp.path().join("sessions");

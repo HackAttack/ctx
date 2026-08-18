@@ -1,5 +1,6 @@
 use super::*;
 use ctx_history_core::{
+    admit_optional_metadata_text, admit_optional_provider_call_id, admit_provider_declared_fact,
     ActivityInvocation, ActivityJsonCapture, ActivityResult, ActivityTextCapture, CoreActivity,
     LiteralFactKind, ProviderDeclaredFact, SubrecordSelector, CORE_ACTIVITY_REVISION,
     MAX_CORE_CONTENT_BYTES,
@@ -69,7 +70,7 @@ impl<R: crate::JsonlProviderRuntime> OpenClawProjector<R> {
             ))?;
         let mut facts = session_facts(&self.session);
         let activity = if let Some(call) = tool_call {
-            facts.extend(call_facts(call));
+            extend_call_facts(&mut facts, call);
             call_activity(call, tool_call_id_is_unique, facts)?
         } else if let Some(result) = tool_result {
             result_activity(
@@ -110,6 +111,10 @@ impl<R: crate::JsonlProviderRuntime> OpenClawProjector<R> {
         );
         record
             .content
+            .omit_provider_declared_facts_if_aggregate_exceeds_limit()
+            .map_err(contract)?;
+        record
+            .content
             .omit_structured_content_if_aggregate_exceeds_limit()
             .map_err(contract)?;
         record.validate_contract().map_err(contract)?;
@@ -120,44 +125,30 @@ impl<R: crate::JsonlProviderRuntime> OpenClawProjector<R> {
 fn session_facts(session: &SessionState) -> Vec<ProviderDeclaredFact> {
     let mut facts = Vec::new();
     if let Some(cwd) = &session.cwd {
-        facts.push(ProviderDeclaredFact {
-            kind: LiteralFactKind::SessionCwd,
-            value: cwd.clone(),
-        });
+        push_fact(&mut facts, LiteralFactKind::SessionCwd, cwd.clone());
     }
     if let Some(branch) = &session.branch {
-        facts.push(ProviderDeclaredFact {
-            kind: LiteralFactKind::Branch,
-            value: branch.clone(),
-        });
+        push_fact(&mut facts, LiteralFactKind::Branch, branch.clone());
     }
     facts
 }
 
-fn call_facts(call: &NativeToolCall<'_>) -> Vec<ProviderDeclaredFact> {
-    let mut facts = Vec::new();
+fn extend_call_facts(facts: &mut Vec<ProviderDeclaredFact>, call: &NativeToolCall<'_>) {
     if let Some(command) = &call.command {
-        facts.push(ProviderDeclaredFact {
-            kind: LiteralFactKind::Command,
-            value: command.clone(),
-        });
+        push_fact(facts, LiteralFactKind::Command, command.clone());
     }
     if let Some(workdir) = &call.declared_workdir {
-        facts.push(ProviderDeclaredFact {
-            kind: LiteralFactKind::ToolWorkdir,
-            value: workdir.clone(),
-        });
+        push_fact(facts, LiteralFactKind::ToolWorkdir, workdir.clone());
     }
-    facts.extend(
-        call.file_references
-            .iter()
-            .cloned()
-            .map(|value| ProviderDeclaredFact {
-                kind: LiteralFactKind::File,
-                value,
-            }),
-    );
-    facts
+    for path in &call.file_references {
+        push_fact(facts, LiteralFactKind::File, path.clone());
+    }
+}
+
+fn push_fact(facts: &mut Vec<ProviderDeclaredFact>, kind: LiteralFactKind, value: String) {
+    if let Some(fact) = admit_provider_declared_fact(kind, value, facts.len()) {
+        facts.push(fact);
+    }
 }
 
 fn call_activity(
@@ -165,19 +156,22 @@ fn call_activity(
     call_id_is_unique: bool,
     facts: Vec<ProviderDeclaredFact>,
 ) -> Result<Option<CoreActivity>> {
-    let provider_call_id = call
-        .call_id
-        .filter(|id| call_id_is_unique && !id.is_empty())
-        .map(TypedKey::utf8)
-        .transpose()
-        .map_err(contract)?;
-    let invocation =
-        call.tool_name
-            .filter(|tool| !tool.is_empty())
-            .map(|tool| ActivityInvocation {
+    if call.call_id.is_some_and(|call_id| !call_id.is_empty()) && !call_id_is_unique {
+        return Err(CaptureError::InvalidPayload(
+            "OpenClaw tool call ID is ambiguous within the source".to_owned(),
+        ));
+    }
+    let provider_call_id = admit_optional_provider_call_id(
+        call.call_id
+            .filter(|_| call_id_is_unique)
+            .map(str::to_owned),
+    );
+    let invocation = provider_call_id.as_ref().and_then(|_| {
+        admit_optional_metadata_text(call.tool_name.map(str::to_owned)).map(|tool| {
+            ActivityInvocation {
                 protocol: None,
                 server: None,
-                tool: tool.to_owned(),
+                tool,
                 arguments: call.block.get("arguments").map_or(
                     ActivityJsonCapture::Absent,
                     |value| ActivityJsonCapture::Present {
@@ -185,14 +179,10 @@ fn call_activity(
                     },
                 ),
                 started_at_unix_ms: None,
-            });
-    Ok(Some(CoreActivity {
-        revision: CORE_ACTIVITY_REVISION,
-        provider_call_id,
-        invocation,
-        result: None,
-        facts,
-    }))
+            }
+        })
+    });
+    Ok(admitted_activity(provider_call_id, invocation, None, facts))
 }
 
 fn result_activity(
@@ -200,35 +190,51 @@ fn result_activity(
     call_id_is_unique: bool,
     facts: Vec<ProviderDeclaredFact>,
 ) -> Result<Option<CoreActivity>> {
-    let provider_call_id = result
-        .call_id
-        .filter(|id| call_id_is_unique && !result.ambiguous_linkage && !id.is_empty())
-        .map(TypedKey::utf8)
-        .transpose()
-        .map_err(contract)?;
-    Ok(Some(CoreActivity {
-        revision: CORE_ACTIVITY_REVISION,
+    if result.call_id.is_some_and(|call_id| !call_id.is_empty())
+        && (!call_id_is_unique || result.ambiguous_linkage)
+    {
+        return Err(CaptureError::InvalidPayload(
+            "OpenClaw tool result call ID is ambiguous within the source".to_owned(),
+        ));
+    }
+    let provider_call_id = admit_optional_provider_call_id(
+        result
+            .call_id
+            .filter(|_| call_id_is_unique && !result.ambiguous_linkage)
+            .map(str::to_owned),
+    );
+    let activity_result = provider_call_id.as_ref().map(|_| ActivityResult {
+        status: None,
+        completed_at_unix_ms: None,
+        duration_ns: None,
+        text: ActivityTextCapture::NormalizedBody,
+        structured_content: ActivityJsonCapture::Present {
+            value: result.output.clone(),
+        },
+    });
+    Ok(admitted_activity(
         provider_call_id,
-        invocation: None,
-        result: Some(ActivityResult {
-            status: None,
-            completed_at_unix_ms: None,
-            duration_ns: None,
-            text: ActivityTextCapture::NormalizedBody,
-            structured_content: ActivityJsonCapture::Present {
-                value: result.output.clone(),
-            },
-        }),
+        None,
+        activity_result,
         facts,
-    }))
+    ))
 }
 
 fn facts_activity(facts: Vec<ProviderDeclaredFact>) -> Option<CoreActivity> {
-    (!facts.is_empty()).then_some(CoreActivity {
+    admitted_activity(None, None, None, facts)
+}
+
+fn admitted_activity(
+    provider_call_id: Option<TypedKey>,
+    invocation: Option<ActivityInvocation>,
+    result: Option<ActivityResult>,
+    facts: Vec<ProviderDeclaredFact>,
+) -> Option<CoreActivity> {
+    (invocation.is_some() || result.is_some() || !facts.is_empty()).then_some(CoreActivity {
         revision: CORE_ACTIVITY_REVISION,
-        provider_call_id: None,
-        invocation: None,
-        result: None,
+        provider_call_id,
+        invocation,
+        result,
         facts,
     })
 }
@@ -321,14 +327,11 @@ impl<R: crate::JsonlProviderRuntime> JsonlFamilyProjector for OpenClawProjector<
         );
         let tool_calls = native_tool_calls(&value);
         if !tool_calls.is_empty() {
-            let mut call_id_counts = HashMap::<&str, usize>::new();
-            for call_id in tool_calls.iter().filter_map(|call| call.call_id) {
-                *call_id_counts.entry(call_id).or_default() += 1;
-            }
             for call in &tool_calls {
-                let unique_call_id = call
-                    .call_id
-                    .is_some_and(|call_id| call_id_counts.get(call_id) == Some(&1));
+                let unique_call_id = call.call_id.is_some_and(|call_id| {
+                    self.terminal_authority
+                        .is_unique(TERMINAL_INVOCATION_ID_DOMAIN, call_id)
+                });
                 let subrecord =
                     tool_call_subrecord(call, unique_call_id, evidence.record_digest())?;
                 self.project_event(
@@ -375,11 +378,11 @@ fn tool_call_subrecord(
     let subordinal = u64::try_from(call.block_index).map_err(|_| {
         CaptureError::SystemInvariant("OpenClaw tool-call block index exceeds platform limits")
     })?;
-    if let Some(call_id) = call
-        .call_id
-        .filter(|call_id| unique_call_id && call_id.len() <= MAX_SELECTOR_CALL_ID_BYTES)
-    {
-        let call_key = TypedKey::utf8(call_id).map_err(contract)?;
+    if let Some(call_key) = admit_optional_provider_call_id(
+        call.call_id
+            .filter(|call_id| unique_call_id && call_id.len() <= MAX_SELECTOR_CALL_ID_BYTES)
+            .map(str::to_owned),
+    ) {
         return Ok((
             SubrecordSelector::native_id(TOOL_CALL_SELECTOR_NAMESPACE, call_key.clone())
                 .map_err(contract)?,

@@ -94,7 +94,7 @@ The exact full tuples are:
   runtime writer-version selectors.
 - Copilot CLI `copilot_cli_session_events_jsonl` /
   `copilot-cli-direct-native-jsonl-v1`, parser
-  `copilot-cli-direct-native-jsonl-v7-core-activity`, for strict unversioned
+  `copilot-cli-direct-native-jsonl-v8-optional-activity-admission`, for strict unversioned
   generation 1. Observed versions and the pinned source commit are evidence,
   not runtime admission selectors.
 

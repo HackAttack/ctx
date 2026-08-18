@@ -292,7 +292,7 @@ pub struct DocumentSourceTerminal {
 
 impl DocumentSourceTerminal {
     fn certify(
-        self,
+        &self,
         replay_fingerprint: Option<DocumentLeafFingerprint>,
     ) -> SourceBackedRouteResult<CertifiedSource> {
         let frontier = replay_fingerprint
@@ -302,18 +302,18 @@ impl DocumentSourceTerminal {
                     self.counts.certified_bytes,
                     self.content_digest,
                 )
-                .map_err(document_contract_error)
+                .map_err(|error| document_changed(error.to_string()))
             })
             .transpose()?;
         CertifiedSource::certify_with_frontier(
-            self.opening,
-            self.closing,
+            self.opening.clone(),
+            self.closing.clone(),
             self.parser_revision,
             self.content_digest,
             self.counts,
             frontier,
         )
-        .map_err(document_contract_error)
+        .map_err(|error| document_changed(error.to_string()))
     }
 }
 
@@ -753,13 +753,21 @@ where
                     "complete document tree produced a duplicate logical source",
                 ));
             }
-            changed.finish(
+            let replay_fingerprint = observed
+                .replay_from_frontier
+                .then_some(observed.fingerprint);
+            let terminal = match changed.preflight_terminal(
                 terminal,
-                observed
-                    .replay_from_frontier
-                    .then_some(observed.fingerprint),
-                append_base,
-            )?
+                replay_fingerprint,
+                append_base.as_ref(),
+            ) {
+                Ok(terminal) => terminal,
+                Err(error) => {
+                    changed.preserve_record_rejections_on_failure();
+                    return Err(error);
+                }
+            };
+            changed.finish(terminal, append_base)?
         };
         let source = certificate.observation().source().clone();
         validate_current_document_source(adapter, &mut current_sources, source)?;
@@ -887,4 +895,15 @@ fn document_internal(detail: impl Into<String>) -> SourceBackedRouteError {
 
 fn document_contract_error(error: impl std::fmt::Display) -> SourceBackedRouteError {
     SourceBackedRouteError::new(SourceBackedRouteErrorKind::InvalidSource, error.to_string())
+}
+
+fn reject_all_rejected_document_source(
+    terminal: &DocumentSourceTerminal,
+) -> SourceBackedRouteResult<()> {
+    let counts = terminal.counts;
+    if counts.complete_records > 0 && counts.retained_records == 0 && counts.rejected_records > 0 {
+        Err(document_contract_error("document source is unreadable"))
+    } else {
+        Ok(())
+    }
 }

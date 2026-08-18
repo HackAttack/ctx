@@ -33,6 +33,58 @@ impl_standard_jsonl_test_adapter!(
     |_adapter, _leaf, _source_file, _imported_at| { Ok(Box::new(ParallelTestProjector)) }
 );
 
+pub(super) struct AllRejectedParallelTestAdapter {
+    pub(super) reject: Arc<AtomicBool>,
+}
+
+pub(super) struct AllRejectedParallelTestProjector {
+    pub(super) source: SourceKey,
+    pub(super) reject: Arc<AtomicBool>,
+    pub(super) rejected_records: u64,
+}
+
+impl JsonlFamilyProjector for AllRejectedParallelTestProjector {
+    type Runtime = TestJsonlRuntime;
+
+    fn project(
+        &mut self,
+        record: JsonlRecordRef<'_>,
+        _worker: &mut JsonlFamilyWorkerContext,
+        emit: &mut dyn FnMut(CoreRecord) -> Result<()>,
+    ) -> Result<()> {
+        if self.reject.load(Ordering::SeqCst) {
+            self.rejected_records =
+                self.rejected_records
+                    .checked_add(1)
+                    .ok_or(CaptureError::SystemInvariant(
+                        "all-rejected test count overflowed",
+                    ))?;
+            return Ok(());
+        }
+        emit(emission_test_record(
+            &self.source,
+            record.evidence().physical_ordinal(),
+        )?)
+    }
+
+    fn rejected_records(&self) -> u64 {
+        self.rejected_records
+    }
+}
+
+impl_standard_jsonl_test_adapter!(
+    AllRejectedParallelTestAdapter,
+    "all-rejected-parallel-test-parser-v1",
+    JsonlFamilyAppendMode::Replacement,
+    |adapter, leaf, _source_file, _imported_at| {
+        Ok(Box::new(AllRejectedParallelTestProjector {
+            source: leaf.source().clone(),
+            reject: Arc::clone(&adapter.reject),
+            rejected_records: 0,
+        }))
+    }
+);
+
 pub(super) struct PhasedTestAdapter {
     pub(super) completed_first_phase: Arc<AtomicUsize>,
     pub(super) second_phase_started_early: Arc<AtomicBool>,

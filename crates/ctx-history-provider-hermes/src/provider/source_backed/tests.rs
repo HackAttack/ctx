@@ -32,6 +32,10 @@ fn direct_core_projection_is_complete_and_has_no_recursive_ancestry_sql() {
     assert!(!production.to_ascii_lowercase().contains("with recursive"));
     assert!(!production.contains("body.truncate"));
     assert!(!production.contains("body.chars().take"));
+    assert_eq!(
+        HERMES_SOURCE_PARSER_REVISION,
+        "hermes-source-backed-v5-optional-admission"
+    );
 }
 
 #[test]
@@ -104,6 +108,167 @@ fn candidate(data_root: &Path, database: &Path) -> HermesSourceCandidate {
 
 fn session_source(candidate: &HermesSourceCandidate, session: &str) -> SourceKey {
     hermes_session_source_key(&candidate.source, session).unwrap()
+}
+
+fn projection_context(source: &SourceKey) -> HermesSessionContext {
+    let native_session_key =
+        NativeSessionKey::native_id(HERMES_SESSION_NAMESPACE, TypedKey::utf8(PARENT).unwrap())
+            .unwrap();
+    let session_id = derive_session_id(SessionIdentityInput {
+        source,
+        logical_session_kind: HERMES_LOGICAL_SESSION_KIND,
+        native_session_key: &native_session_key,
+    })
+    .unwrap();
+    HermesSessionContext {
+        session_id,
+        parent_session_id: None,
+        agent_scope: AgentScope::Primary,
+        branch: None,
+        workspace: None,
+        cwd: None,
+    }
+}
+
+fn projection_message_row(id: i64, role: &str) -> HermesMessageRow {
+    HermesMessageRow {
+        id,
+        session_id: PARENT.to_owned(),
+        role: role.to_owned(),
+        content: Some("complete provider content".to_owned()),
+        tool_call_id: None,
+        tool_calls: None,
+        tool_name: None,
+        timestamp: 1_782_259_202.0,
+        token_count: None,
+        finish_reason: None,
+        reasoning: None,
+        reasoning_content: None,
+        reasoning_details: None,
+        codex_reasoning_items: None,
+        codex_message_items: None,
+        platform_message_id: None,
+        observed: 0,
+        active: 1,
+        compacted: 0,
+    }
+}
+
+fn oversized_optional_metadata() -> String {
+    "x".repeat(64 * 1024 + 1)
+}
+
+#[test]
+fn optional_activity_values_are_omitted_without_losing_raw_content_or_emitting_empty_activity() {
+    let temp = crate::test_support_paths::tempdir().unwrap();
+    let database = temp.path().join("source/state.db");
+    create_fixture(&database);
+    let candidate = candidate(&temp.path().join("data-root"), &database);
+    let source = session_source(&candidate, PARENT);
+    let context = projection_context(&source);
+
+    for (offset, invalid_call_id) in [String::new(), oversized_optional_metadata()]
+        .into_iter()
+        .enumerate()
+    {
+        let mut row = projection_message_row(100 + offset as i64, "assistant");
+        row.tool_call_id = Some(invalid_call_id.clone());
+        row.tool_calls = Some("{}".to_owned());
+        row.tool_name = Some("run".to_owned());
+
+        let record = project_message(&source, offset as u64, row, &context).unwrap();
+        assert_eq!(
+            record.content.structured_content.as_ref().unwrap()["tool_call_id"].as_str(),
+            Some(invalid_call_id.as_str())
+        );
+        assert_eq!(record.content.activity, None);
+
+        let mut row = projection_message_row(102 + offset as i64, "tool");
+        row.tool_call_id = Some(invalid_call_id.clone());
+        let record = project_message(&source, 2 + offset as u64, row, &context).unwrap();
+        assert_eq!(
+            record.content.structured_content.as_ref().unwrap()["tool_call_id"].as_str(),
+            Some(invalid_call_id.as_str())
+        );
+        assert_eq!(record.content.activity, None);
+    }
+
+    for (offset, invalid_tool_name) in [String::new(), oversized_optional_metadata()]
+        .into_iter()
+        .enumerate()
+    {
+        let mut row = projection_message_row(110 + offset as i64, "assistant");
+        row.tool_call_id = Some("call-110".to_owned());
+        row.tool_calls = Some("{}".to_owned());
+        row.tool_name = Some(invalid_tool_name.clone());
+
+        let record = project_message(&source, 10 + offset as u64, row, &context).unwrap();
+        assert_eq!(
+            record.content.structured_content.as_ref().unwrap()["tool_name"].as_str(),
+            Some(invalid_tool_name.as_str())
+        );
+        assert_eq!(record.content.activity, None);
+    }
+
+    for (offset, invalid_status) in [String::new(), oversized_optional_metadata()]
+        .into_iter()
+        .enumerate()
+    {
+        let mut row = projection_message_row(120 + offset as i64, "tool");
+        row.tool_call_id = Some("call-120".to_owned());
+        row.finish_reason = Some(invalid_status.clone());
+
+        let record = project_message(&source, 20 + offset as u64, row, &context).unwrap();
+        assert_eq!(
+            record.content.structured_content.as_ref().unwrap()["status"].as_str(),
+            Some(invalid_status.as_str())
+        );
+        let activity = record.content.activity.unwrap();
+        assert!(activity.provider_call_id.is_some());
+        assert_eq!(activity.result.unwrap().status, None);
+    }
+}
+
+#[test]
+fn optional_facts_omit_empty_and_oversized_values_while_preserving_order_and_exact_text() {
+    let temp = crate::test_support_paths::tempdir().unwrap();
+    let database = temp.path().join("source/state.db");
+    create_fixture(&database);
+    let candidate = candidate(&temp.path().join("data-root"), &database);
+    let source = session_source(&candidate, PARENT);
+    let mut context = projection_context(&source);
+    context.branch = Some(String::new());
+    context.workspace = Some("x".repeat(ctx_history_core::MAX_CORE_CONTENT_BYTES + 1));
+
+    let record = project_message(
+        &source,
+        0,
+        projection_message_row(130, "assistant"),
+        &context,
+    )
+    .unwrap();
+    assert_eq!(record.content.activity, None);
+
+    context.branch = Some(" feature ".to_owned());
+    context.cwd = Some(" /repo/worktree ".to_owned());
+    let record = project_message(
+        &source,
+        1,
+        projection_message_row(131, "assistant"),
+        &context,
+    )
+    .unwrap();
+    let facts = record.content.activity.unwrap().facts;
+    assert_eq!(
+        facts
+            .iter()
+            .map(|fact| (fact.kind, fact.value.as_str()))
+            .collect::<Vec<_>>(),
+        vec![
+            (LiteralFactKind::Branch, " feature "),
+            (LiteralFactKind::SessionCwd, " /repo/worktree "),
+        ]
+    );
 }
 
 fn automatic_candidate(data_root: &Path, database: &Path) -> HermesSourceCandidate {

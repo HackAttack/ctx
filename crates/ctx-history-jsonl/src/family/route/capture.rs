@@ -229,6 +229,7 @@ pub(super) fn capture<R: JsonlFamilyRuntime>(
             leaf.source().exact_descriptor_digest(),
             TerminalSourceEvidence {
                 certificate: base.clone(),
+                terminal_certificate: None,
                 terminal_proof,
                 emitted_bytes: 0,
                 exact_scan_bytes: leaf

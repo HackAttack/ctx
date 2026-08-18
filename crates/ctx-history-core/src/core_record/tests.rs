@@ -409,6 +409,132 @@ fn activity_metadata_accepts_exact_boundaries_and_rejects_max_plus_one() {
 }
 
 #[test]
+fn optional_metadata_text_admission_omits_only_invalid_values() {
+    assert_eq!(admit_optional_metadata_text(None), None);
+    assert_eq!(admit_optional_metadata_text(Some(String::new())), None);
+    assert_eq!(
+        admit_optional_metadata_text(Some(" \t".to_owned())),
+        Some(" \t".to_owned())
+    );
+
+    let exact = "x".repeat(MAX_TEXT_METADATA_BYTES);
+    assert_eq!(
+        admit_optional_metadata_text(Some(exact.clone())),
+        Some(exact)
+    );
+    assert_eq!(
+        admit_optional_metadata_text(Some("x".repeat(MAX_TEXT_METADATA_BYTES + 1))),
+        None
+    );
+}
+
+#[test]
+fn optional_provider_call_id_admission_uses_typed_key_boundaries() {
+    assert_eq!(admit_optional_provider_call_id(None), None);
+    assert_eq!(admit_optional_provider_call_id(Some(String::new())), None);
+    assert_eq!(
+        admit_optional_provider_call_id(Some(" \t".to_owned())),
+        Some(TypedKey::Utf8(" \t".to_owned()))
+    );
+
+    // UTF-8 typed keys add a one-byte tag and an eight-byte length prefix.
+    let exact = "x".repeat(MAX_TEXT_METADATA_BYTES - 9);
+    assert_eq!(
+        admit_optional_provider_call_id(Some(exact.clone())),
+        Some(TypedKey::Utf8(exact.clone()))
+    );
+    assert!(TypedKey::Utf8(exact).validate_contract().is_ok());
+    assert_eq!(
+        admit_optional_provider_call_id(Some("x".repeat(MAX_TEXT_METADATA_BYTES - 8))),
+        None
+    );
+}
+
+#[test]
+fn provider_declared_fact_admission_enforces_value_and_count_boundaries() {
+    assert_eq!(
+        admit_provider_declared_fact(LiteralFactKind::Command, String::new(), 0),
+        None
+    );
+    assert_eq!(
+        admit_provider_declared_fact(LiteralFactKind::Command, " \t".to_owned(), 0),
+        Some(ProviderDeclaredFact {
+            kind: LiteralFactKind::Command,
+            value: " \t".to_owned(),
+        })
+    );
+
+    let exact = "x".repeat(MAX_TEXT_METADATA_BYTES);
+    assert_eq!(
+        admit_provider_declared_fact(LiteralFactKind::Command, exact.clone(), 0),
+        Some(ProviderDeclaredFact {
+            kind: LiteralFactKind::Command,
+            value: exact.clone(),
+        })
+    );
+    let mut complete = record();
+    complete.content.activity = Some(CoreActivity {
+        revision: CORE_ACTIVITY_REVISION,
+        provider_call_id: None,
+        invocation: None,
+        result: None,
+        facts: vec![ProviderDeclaredFact {
+            kind: LiteralFactKind::Command,
+            value: exact,
+        }],
+    });
+    complete.validate_contract().unwrap();
+    assert_eq!(
+        admit_provider_declared_fact(
+            LiteralFactKind::Command,
+            "x".repeat(MAX_TEXT_METADATA_BYTES + 1),
+            0,
+        ),
+        None
+    );
+    assert!(admit_provider_declared_fact(
+        LiteralFactKind::Command,
+        "command".to_owned(),
+        MAX_PROVIDER_DECLARED_FACTS - 1,
+    )
+    .is_some());
+    assert_eq!(
+        admit_provider_declared_fact(
+            LiteralFactKind::Command,
+            "command".to_owned(),
+            MAX_PROVIDER_DECLARED_FACTS,
+        ),
+        None
+    );
+}
+
+#[test]
+fn optional_facts_are_omitted_against_the_complete_selected_content_budget() {
+    let mut record = record();
+    record.content.normalized_body = Some("b".repeat(MAX_CORE_CONTENT_BYTES - 32));
+    record.content.activity = Some(CoreActivity {
+        revision: CORE_ACTIVITY_REVISION,
+        provider_call_id: None,
+        invocation: None,
+        result: None,
+        facts: vec![ProviderDeclaredFact {
+            kind: LiteralFactKind::Command,
+            value: "optional command".to_owned(),
+        }],
+    });
+
+    assert_eq!(
+        record
+            .content
+            .omit_provider_declared_facts_if_aggregate_exceeds_limit()
+            .unwrap(),
+        1
+    );
+    assert!(record.content.activity.is_none());
+    record.validate_contract().unwrap();
+}
+
+#[test]
 fn activity_linkage_and_content_policy_fail_closed() {
     let mut record = record();
     let mut unlinked = activity();

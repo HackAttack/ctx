@@ -4,7 +4,7 @@ use ctx_history_core::CaptureProvider;
 
 use crate::{NativeJsonlRuntime, WINDSURF_CASCADE_HOOK_TRANSCRIPT_SOURCE_FORMAT};
 
-const PARSER_REVISION: &str = "direct-native-jsonl-parser-v5-core-activity";
+const PARSER_REVISION: &str = "direct-native-jsonl-parser-v6-optional-activity-admission";
 
 pub(crate) use ctx_history_native_jsonl_parsers::windsurf::{
     event_role as windsurf_event_role, event_text as windsurf_event_text,

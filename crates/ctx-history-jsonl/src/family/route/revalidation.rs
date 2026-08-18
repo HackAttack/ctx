@@ -146,7 +146,7 @@ pub(super) fn revalidate_complete_inventory<R: JsonlFamilyRuntime>(
     for evidence in expected_sources.values() {
         evidence
             .terminal_proof
-            .revalidate_for(&evidence.certificate)?;
+            .revalidate_for(evidence.observed_certificate())?;
     }
     for dependency in &opening_inventory.exact_dependencies {
         dependency.revalidate_dependency()?;

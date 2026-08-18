@@ -50,8 +50,10 @@ const FALLBACK_EVENT_ID_DOMAIN: &[u8] = b"ctx-openclaw-fallback-event-id-v1\0";
 const LOGICAL_SESSION_KIND: &str = "openclaw-legacy-session";
 const LOGICAL_EVENT_KIND: &str = "openclaw-legacy-event";
 const SOURCE_SCHEMA_VARIANT: &str = "openclaw-legacy-jsonl-v2";
-const PARSER_REVISION: &str = "openclaw-source-backed-v15-core-activity-agent-scope-raw-lineage";
+const PARSER_REVISION: &str =
+    "openclaw-source-backed-v17-source-wide-call-id-admission-agent-scope-raw-lineage";
 const MAX_TERMINAL_CALL_IDS: usize = 4096;
+const MAX_TERMINAL_LINKAGE_IDS: usize = MAX_TERMINAL_CALL_IDS * 2;
 const MAX_SELECTOR_CALL_ID_BYTES: usize = 16 * 1024;
 
 #[derive(Debug, Clone, Copy, Default)]

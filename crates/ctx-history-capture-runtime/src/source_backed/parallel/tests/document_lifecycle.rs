@@ -1,4 +1,5 @@
 use super::*;
+use crate::DocumentAppendBase;
 
 const PARSER_V1: &str = "no-io-document-v1";
 const PARSER_V2: &str = "no-io-document-v2";
@@ -36,9 +37,23 @@ impl LifecycleLeaf {
     }
 }
 
+#[derive(Debug, Clone, Copy, Default)]
+enum LifecycleProjection {
+    #[default]
+    Retained,
+    AllRejected,
+    RejectedAndIgnored,
+    MalformedAllRejected,
+    Empty,
+    IgnoredOnly,
+    Mixed,
+    AppendCountRegression,
+}
+
 #[derive(Default)]
 struct LifecycleState {
     leaves: Vec<LifecycleLeaf>,
+    projection: LifecycleProjection,
     durable_replay: bool,
     bind_exact_descriptor: bool,
     parser_v2: bool,
@@ -51,6 +66,7 @@ struct LifecycleState {
     mutate_before_scan: Option<u8>,
     mutate_on_revalidate: bool,
     unavailable_leaf: Option<u8>,
+    append_base: Option<CertifiedSource>,
 }
 
 #[derive(Clone)]
@@ -153,6 +169,14 @@ impl LifecycleAdapter {
         self.state.lock().unwrap().independent_workers = Some(workers);
     }
 
+    fn project(&self, projection: LifecycleProjection) {
+        self.state.lock().unwrap().projection = projection;
+    }
+
+    fn append_from(&self, base: CertifiedSource) {
+        self.state.lock().unwrap().append_base = Some(base);
+    }
+
     fn install_barrier(&self, workers: usize) {
         self.state.lock().unwrap().scan_barrier = Some(Arc::new(Barrier::new(workers)));
     }
@@ -240,7 +264,7 @@ impl ReplacementDocumentTree for LifecycleAdapter {
         if let Some(barrier) = barrier {
             barrier.wait();
         }
-        let (live, schema_v2, parser_revision) = {
+        let (live, schema_v2, parser_revision, projection) = {
             let mut state = self.state.lock().unwrap();
             if state.mutate_before_scan == Some(leaf.physical_id) {
                 let live = state
@@ -283,11 +307,81 @@ impl ReplacementDocumentTree for LifecycleAdapter {
                 } else {
                     PARSER_V1
                 },
+                state.projection,
             )
         };
         let source = live.source(schema_v2);
         sink.begin_source(source.clone())?;
-        sink.emit_core_record(test_core_record(&source, 0, live.revision))?;
+        let counts = match projection {
+            LifecycleProjection::Retained => {
+                sink.emit_core_record(test_core_record(&source, 0, live.revision))?;
+                ScannedSourceCounts {
+                    complete_records: 1,
+                    retained_records: 1,
+                    indexed_documents: 1,
+                    certified_bytes: 1,
+                    ..ScannedSourceCounts::default()
+                }
+            }
+            LifecycleProjection::AllRejected => {
+                sink.record_rejections(rejection_drafts(&source, live.physical_id));
+                ScannedSourceCounts {
+                    complete_records: 1,
+                    rejected_records: 1,
+                    certified_bytes: 1,
+                    ..ScannedSourceCounts::default()
+                }
+            }
+            LifecycleProjection::RejectedAndIgnored => {
+                sink.record_rejections(rejection_drafts(&source, live.physical_id));
+                ScannedSourceCounts {
+                    complete_records: 2,
+                    rejected_records: 1,
+                    ignored_records: 1,
+                    certified_bytes: 1,
+                    ..ScannedSourceCounts::default()
+                }
+            }
+            LifecycleProjection::MalformedAllRejected => {
+                sink.record_rejections(rejection_drafts(&source, live.physical_id));
+                ScannedSourceCounts {
+                    complete_records: 1,
+                    rejected_records: 1,
+                    indexed_documents: 1,
+                    certified_bytes: 1,
+                    ..ScannedSourceCounts::default()
+                }
+            }
+            LifecycleProjection::Empty => ScannedSourceCounts {
+                certified_bytes: 1,
+                ..ScannedSourceCounts::default()
+            },
+            LifecycleProjection::IgnoredOnly => ScannedSourceCounts {
+                complete_records: 1,
+                ignored_records: 1,
+                certified_bytes: 1,
+                ..ScannedSourceCounts::default()
+            },
+            LifecycleProjection::Mixed => {
+                sink.emit_core_record(test_core_record(&source, 0, live.revision))?;
+                sink.record_rejections(rejection_drafts(&source, live.physical_id));
+                ScannedSourceCounts {
+                    complete_records: 2,
+                    retained_records: 1,
+                    rejected_records: 1,
+                    indexed_documents: 1,
+                    certified_bytes: 1,
+                    ..ScannedSourceCounts::default()
+                }
+            }
+            LifecycleProjection::AppendCountRegression => ScannedSourceCounts {
+                complete_records: 1,
+                retained_records: 1,
+                indexed_documents: 1,
+                certified_bytes: 1,
+                ..ScannedSourceCounts::default()
+            },
+        };
         let observation_revision = if self.state.lock().unwrap().durable_replay {
             vec![live.revision]
         } else {
@@ -305,14 +399,21 @@ impl ReplacementDocumentTree for LifecycleAdapter {
             closing: observation,
             parser_revision,
             content_digest: live.logical_fingerprint(),
-            counts: ScannedSourceCounts {
-                complete_records: 1,
-                retained_records: 1,
-                indexed_documents: 1,
-                certified_bytes: 1,
-                ..ScannedSourceCounts::default()
-            },
+            counts,
         })
+    }
+
+    fn append_base(
+        &self,
+        _authority: &Self::TreeAuthority,
+        _leaf: &Self::Leaf,
+    ) -> Option<DocumentAppendBase<Self::Lifecycle>> {
+        self.state
+            .lock()
+            .unwrap()
+            .append_base
+            .clone()
+            .map(|base| DocumentAppendBase::Certificate(Box::new(base)))
     }
 
     fn revalidate_complete(
@@ -334,6 +435,20 @@ impl ReplacementDocumentTree for LifecycleAdapter {
             ))
         }
     }
+}
+
+fn rejection_drafts(source: &SourceKey, physical_id: u8) -> SourceBackedRecordRejectionDrafts {
+    let mut rejections = SourceBackedRecordRejectionDrafts::default();
+    rejections.record(SourceBackedRecordRejectionDraft {
+        source: source.clone(),
+        provider: CaptureProvider::Codex,
+        source_selector: format!("document-{physical_id}"),
+        line_number: u64::from(physical_id),
+        payload_type: Some("lifecycle-fixture".to_owned()),
+        class: SourceBackedRecordRejectionClass::MalformedRecord,
+        detail: "injected rejected document record".to_owned(),
+    });
+    rejections
 }
 
 fn document_source(logical_id: u8, schema: &str) -> SourceKey {
@@ -587,6 +702,219 @@ fn active_source_family_contract_document_add_change_delete_failure_carry_forwar
         .observation()
         .source()
         .exact_descriptor_eq(&document_source(2, SCHEMA_V1))));
+}
+
+#[test]
+fn active_source_family_contract_document_cold_all_rejected_is_a_source_failure() {
+    let adapter = LifecycleAdapter::new(vec![leaf(1)]);
+    adapter.use_parallel(1);
+    adapter.project(LifecycleProjection::AllRejected);
+
+    let failed = run(&adapter, &[], 1);
+
+    assert!(sources(&failed).is_empty());
+    assert!(failed.writer.records.is_empty());
+    assert_eq!(failed.logical_source_failures.total(), 1);
+    let failure = &failed.logical_source_failures.failures()[0];
+    assert_eq!(failure.class.as_str(), "unreadable");
+    assert!(!failure.carried_forward);
+    assert_eq!(failed.record_rejections.total(), 1);
+    assert_eq!(failed.record_rejections.rejections()[0].line_number, 1);
+}
+
+#[test]
+fn active_source_family_contract_document_serial_all_rejected_fails_before_publication() {
+    let adapter = LifecycleAdapter::new(vec![leaf(1)]);
+    adapter.project(LifecycleProjection::AllRejected);
+
+    let (failure, failed) = run_error(&adapter, &[], 1);
+
+    assert_eq!(failure.kind, SourceBackedRouteErrorKind::InvalidSource);
+    assert!(failed.writer.certified_sources.is_empty());
+    assert!(failed.writer.records.is_empty());
+    assert_eq!(failed.record_rejections.total(), 1);
+}
+
+#[test]
+fn active_source_family_contract_document_rejected_plus_ignored_preserves_last_good_source() {
+    let adapter = LifecycleAdapter::new(vec![leaf(1)]);
+    adapter.use_parallel(1);
+    let cold = run(&adapter, &[], 1);
+    let base = sources(&cold);
+
+    adapter.touch(1, 2);
+    adapter.project(LifecycleProjection::RejectedAndIgnored);
+    let failed = run(&adapter, &base, 1);
+
+    assert_eq!(sources(&failed), base);
+    assert_eq!(failed.logical_source_failures.total(), 1);
+    assert!(failed.logical_source_failures.failures()[0].carried_forward);
+}
+
+#[test]
+fn active_source_family_contract_document_structural_failure_precedes_all_rejected_policy() {
+    let adapter = LifecycleAdapter::new(vec![leaf(1)]);
+    adapter.use_parallel(1);
+    adapter.project(LifecycleProjection::MalformedAllRejected);
+
+    let (failure, failed) = run_error(&adapter, &[], 1);
+
+    assert_eq!(failure.kind, SourceBackedRouteErrorKind::SourceChanged);
+    assert!(failed.writer.certified_sources.is_empty());
+    assert_eq!(failed.logical_source_failures.total(), 0);
+}
+
+#[test]
+fn active_source_family_contract_document_warm_all_rejected_carries_last_good_source() {
+    let adapter = LifecycleAdapter::new(vec![leaf(2)]);
+    adapter.use_parallel(1);
+    let cold = run(&adapter, &[], 1);
+    let base = sources(&cold);
+
+    adapter.touch(2, 2);
+    adapter.project(LifecycleProjection::AllRejected);
+    let failed = run(&adapter, &base, 1);
+
+    assert_eq!(sources(&failed), base);
+    assert!(failed.writer.records.is_empty());
+    assert_eq!(failed.logical_source_failures.total(), 1);
+    let failure = &failed.logical_source_failures.failures()[0];
+    assert_eq!(failure.class.as_str(), "unreadable");
+    assert!(failure.carried_forward);
+    assert_eq!(failed.record_rejections.total(), 1);
+}
+
+#[test]
+fn active_source_family_contract_document_all_rejected_does_not_mask_unsafe_transition() {
+    let adapter = LifecycleAdapter::new(vec![leaf(2)]);
+    adapter.use_parallel(1);
+    let cold = run(&adapter, &[], 1);
+
+    adapter.touch(2, 2);
+    {
+        let mut state = adapter.state.lock().unwrap();
+        state.schema_v2 = true;
+        state.projection = LifecycleProjection::AllRejected;
+    }
+    let (failure, failed) = run_error(&adapter, &sources(&cold), 1);
+
+    assert_eq!(failure.kind, SourceBackedRouteErrorKind::SourceChanged);
+    assert!(failed.writer.certified_sources.is_empty());
+}
+
+#[test]
+fn active_source_family_contract_document_append_invariant_failures_remain_route_fatal() {
+    let parser = LifecycleAdapter::new(vec![leaf(1)]);
+    parser.use_parallel(1);
+    let parser_cold = run(&parser, &[], 1);
+    let parser_base = sources(&parser_cold);
+    parser.touch(1, 2);
+    parser.append_from(parser_base[0].clone());
+    parser.state.lock().unwrap().parser_v2 = true;
+    let (parser_failure, parser_failed) = run_error(&parser, &parser_base, 1);
+    assert_eq!(
+        parser_failure.kind,
+        SourceBackedRouteErrorKind::SourceChanged
+    );
+    assert_eq!(parser_failed.logical_source_failures.total(), 0);
+
+    let descriptor = LifecycleAdapter::new(vec![leaf(2)]);
+    descriptor.use_parallel(1);
+    let descriptor_cold = run(&descriptor, &[], 1);
+    let descriptor_base = sources(&descriptor_cold);
+    descriptor.touch(2, 2);
+    descriptor.append_from(descriptor_base[0].clone());
+    descriptor.state.lock().unwrap().schema_v2 = true;
+    let (descriptor_failure, descriptor_failed) = run_error(&descriptor, &descriptor_base, 1);
+    assert_eq!(
+        descriptor_failure.kind,
+        SourceBackedRouteErrorKind::SourceChanged
+    );
+    assert_eq!(descriptor_failed.logical_source_failures.total(), 0);
+
+    let counts = LifecycleAdapter::new(vec![leaf(3)]);
+    counts.use_parallel(1);
+    counts.project(LifecycleProjection::Mixed);
+    let counts_cold = run(&counts, &[], 1);
+    let counts_base = sources(&counts_cold);
+    counts.touch(3, 2);
+    counts.append_from(counts_base[0].clone());
+    counts.project(LifecycleProjection::AppendCountRegression);
+    let (counts_failure, counts_failed) = run_error(&counts, &counts_base, 1);
+    assert_eq!(
+        counts_failure.kind,
+        SourceBackedRouteErrorKind::SourceChanged
+    );
+    assert_eq!(counts_failed.logical_source_failures.total(), 0);
+
+    let masked = LifecycleAdapter::new(vec![leaf(4)]);
+    masked.use_parallel(1);
+    masked.project(LifecycleProjection::IgnoredOnly);
+    let masked_cold = run(&masked, &[], 1);
+    let masked_base = sources(&masked_cold);
+    masked.touch(4, 2);
+    masked.append_from(masked_base[0].clone());
+    masked.project(LifecycleProjection::AllRejected);
+    let (masked_failure, masked_failed) = run_error(&masked, &masked_base, 1);
+    assert_eq!(
+        masked_failure.kind,
+        SourceBackedRouteErrorKind::SourceChanged
+    );
+    assert_eq!(masked_failed.logical_source_failures.total(), 0);
+}
+
+#[test]
+fn active_source_family_contract_document_all_zero_replacement_and_ignored_only_source_are_valid() {
+    let empty = LifecycleAdapter::new(vec![leaf(3)]);
+    empty.use_parallel(1);
+    let cold = run(&empty, &[], 1);
+    let base = sources(&cold);
+    empty.touch(3, 2);
+    empty.project(LifecycleProjection::Empty);
+
+    let replaced = run(&empty, &base, 1);
+    let replaced_sources = sources(&replaced);
+    let replacement = &replaced_sources[0];
+    assert_ne!(replacement, &base[0]);
+    assert_eq!(replacement.counts().complete_records, 0);
+    assert_eq!(replacement.counts().retained_records, 0);
+    assert_eq!(replacement.counts().rejected_records, 0);
+    assert!(replaced.writer.records.is_empty());
+    assert_eq!(replaced.logical_source_failures.total(), 0);
+
+    let ignored = LifecycleAdapter::new(vec![leaf(4)]);
+    ignored.use_parallel(1);
+    ignored.project(LifecycleProjection::IgnoredOnly);
+    let published = run(&ignored, &[], 1);
+    let published_sources = sources(&published);
+    let certificate = &published_sources[0];
+    assert_eq!(certificate.counts().complete_records, 1);
+    assert_eq!(certificate.counts().ignored_records, 1);
+    assert_eq!(certificate.counts().retained_records, 0);
+    assert_eq!(certificate.counts().rejected_records, 0);
+    assert!(published.writer.records.is_empty());
+    assert_eq!(published.logical_source_failures.total(), 0);
+}
+
+#[test]
+fn active_source_family_contract_document_mixed_retained_and_rejected_records_publish() {
+    let adapter = LifecycleAdapter::new(vec![leaf(5)]);
+    adapter.use_parallel(1);
+    adapter.project(LifecycleProjection::Mixed);
+
+    let published = run(&adapter, &[], 1);
+    let published_sources = sources(&published);
+    let certificate = &published_sources[0];
+    assert_eq!(certificate.counts().complete_records, 2);
+    assert_eq!(certificate.counts().retained_records, 1);
+    assert_eq!(certificate.counts().rejected_records, 1);
+    assert_eq!(published.writer.records.len(), 1);
+    assert_eq!(published.logical_source_failures.total(), 0);
+    assert_eq!(published.record_rejections.total(), 1);
+    assert_eq!(
+        published.record_rejections.rejections()[0].class,
+        SourceBackedRecordRejectionClass::MalformedRecord
+    );
 }
 
 #[test]

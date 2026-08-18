@@ -31,6 +31,8 @@ mod temp_authority;
 
 use current_schema::create_current_fixture;
 
+const OVER_LIMIT_OPTIONAL_METADATA_BYTES: usize = 64 * 1024 + 1;
+
 fn write_current_schema(
     path: &Path,
     directory: &Path,
@@ -299,6 +301,169 @@ fn empty_command_fact_does_not_reject_the_opencode_source() {
         .facts
         .iter()
         .any(|fact| fact.kind == LiteralFactKind::Command));
+    record.validate_contract().unwrap();
+}
+
+#[test]
+fn empty_and_oversized_call_ids_omit_dependent_activity_without_losing_content() {
+    let temp = crate::test_support_paths::tempdir().unwrap();
+    let oversized = "c".repeat(OVER_LIMIT_OPTIONAL_METADATA_BYTES);
+    let cases = [
+        (
+            "empty-invocation",
+            json!({
+                "type": "tool",
+                "call_id": "",
+                "tool": "read_file",
+                "state": {"input": {}}
+            }),
+        ),
+        (
+            "oversized-invocation",
+            json!({
+                "type": "tool",
+                "call_id": oversized,
+                "tool": "read_file",
+                "state": {"input": {}}
+            }),
+        ),
+        (
+            "empty-result",
+            json!({
+                "type": "tool_result",
+                "call_id": "",
+                "status": "completed",
+                "output": "exact result"
+            }),
+        ),
+        (
+            "oversized-result",
+            json!({
+                "type": "tool_result",
+                "call_id": "c".repeat(OVER_LIMIT_OPTIONAL_METADATA_BYTES),
+                "status": "completed",
+                "output": "exact result"
+            }),
+        ),
+    ];
+
+    for (label, body) in cases {
+        let database = temp.path().join(format!("{label}-opencode.db"));
+        drop(write_current_schema(&database, temp.path(), &body));
+
+        let (_, _, records) = scan_current_schema(&database);
+        let [record] = records.as_slice() else {
+            panic!("expected {label} to remain a Core record");
+        };
+        assert_eq!(record.content.structured_content.as_ref(), Some(&body));
+        let activity = record.content.activity.as_ref().unwrap();
+        assert!(activity.provider_call_id.is_none());
+        assert!(activity.invocation.is_none());
+        assert!(activity.result.is_none());
+        assert!(!activity.facts.is_empty());
+        record.validate_contract().unwrap();
+    }
+}
+
+#[test]
+fn invalid_call_id_never_publishes_a_summary_after_raw_content_no_longer_fits() {
+    let temp = crate::test_support_paths::tempdir().unwrap();
+    let database = temp.path().join("oversized-invalid-call-opencode.db");
+    let mut body = json!({
+        "type": "tool",
+        "call_id": "",
+        "tool": "read_file",
+        "state": {"input": {"payload": ""}}
+    });
+    let fixed_bytes = body.to_string().len();
+    body["state"]["input"]["payload"] = serde_json::Value::String(
+        "x".repeat(ctx_history_core::MAX_CORE_CONTENT_BYTES - fixed_bytes - 8),
+    );
+    assert_eq!(
+        body.to_string().len(),
+        ctx_history_core::MAX_CORE_CONTENT_BYTES - 8
+    );
+    drop(write_current_schema(&database, temp.path(), &body));
+
+    let (_, scan, records) = scan_current_schema(&database);
+
+    assert!(records.is_empty());
+    let counts = scan.certificate.counts();
+    assert_eq!(counts.complete_records, 1);
+    assert_eq!(counts.retained_records, 0);
+    assert_eq!(counts.rejected_records, 1);
+}
+
+#[test]
+fn empty_and_oversized_activity_metadata_are_omitted_without_losing_content() {
+    let temp = crate::test_support_paths::tempdir().unwrap();
+    let oversized = "m".repeat(OVER_LIMIT_OPTIONAL_METADATA_BYTES);
+
+    for (label, tool) in [
+        ("empty-tool", String::new()),
+        ("oversized-tool", oversized.clone()),
+    ] {
+        let body = json!({
+            "type": "tool",
+            "call_id": format!("call-{label}"),
+            "tool": tool,
+            "state": {"input": {}}
+        });
+        let database = temp.path().join(format!("{label}-opencode.db"));
+        drop(write_current_schema(&database, temp.path(), &body));
+
+        let (_, _, records) = scan_current_schema(&database);
+        let [record] = records.as_slice() else {
+            panic!("expected {label} to remain a Core record");
+        };
+        assert_eq!(record.content.structured_content.as_ref(), Some(&body));
+        let activity = record.content.activity.as_ref().unwrap();
+        assert!(activity.provider_call_id.is_none());
+        assert!(activity.invocation.is_none());
+        assert!(activity.result.is_none());
+        assert!(!activity.facts.is_empty());
+        record.validate_contract().unwrap();
+    }
+
+    for (label, status) in [
+        ("empty-status", String::new()),
+        ("oversized-status", oversized.clone()),
+    ] {
+        let body = json!({
+            "type": "tool_result",
+            "call_id": format!("call-{label}"),
+            "status": status,
+            "output": "exact result"
+        });
+        let database = temp.path().join(format!("{label}-opencode.db"));
+        drop(write_current_schema(&database, temp.path(), &body));
+
+        let (_, _, records) = scan_current_schema(&database);
+        let [record] = records.as_slice() else {
+            panic!("expected {label} to remain a Core record");
+        };
+        assert_eq!(record.content.structured_content.as_ref(), Some(&body));
+        let activity = record.content.activity.as_ref().unwrap();
+        assert!(activity.result.as_ref().unwrap().status.is_none());
+        record.validate_contract().unwrap();
+    }
+
+    let body = json!({
+        "type": "tool_result",
+        "role": oversized,
+        "call_id": "call-oversized-role",
+        "status": "completed",
+        "output": "exact result"
+    });
+    let database = temp.path().join("oversized-role-opencode.db");
+    drop(write_current_schema(&database, temp.path(), &body));
+
+    let (_, _, records) = scan_current_schema(&database);
+    let [record] = records.as_slice() else {
+        panic!("expected oversized role to remain a Core record");
+    };
+    assert_eq!(record.content.structured_content.as_ref(), Some(&body));
+    assert!(record.role.is_none());
     record.validate_contract().unwrap();
 }
 
@@ -1275,4 +1440,24 @@ fn exact_provider_strings_are_not_trimmed_by_helpers() {
         Some("  /literal/path  ")
     );
     assert_eq!(nonempty(String::new()), None);
+}
+
+#[test]
+fn only_payload_content_size_failures_are_record_local() {
+    assert!(record_local_core_projection_failure(
+        &CoreRecordError::FieldTooLarge {
+            field: "selected_content",
+            actual: ctx_history_core::MAX_CORE_CONTENT_BYTES + 1,
+            maximum: ctx_history_core::MAX_CORE_CONTENT_BYTES,
+        }
+    ));
+    assert!(!record_local_core_projection_failure(
+        &CoreRecordError::InvalidIdentityRelationship
+    ));
+    assert!(!record_local_core_projection_failure(
+        &CoreRecordError::InvalidSessionRelationship
+    ));
+    assert!(!record_local_core_projection_failure(
+        &CoreRecordError::InvalidActivity
+    ));
 }

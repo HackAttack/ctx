@@ -84,3 +84,46 @@ fn supported_conversations_are_primary_with_exact_native_content() {
     assert_eq!(facts[0].kind, ctx_history_core::LiteralFactKind::Workspace);
     assert_eq!(facts[0].value, "7");
 }
+
+#[test]
+fn optional_activity_metadata_abstains_without_altering_exact_result_content() {
+    let oversized = "x".repeat(64 * 1024 + 1);
+    let invalid_call = serde_json::json!({
+        "text": {"tool_calls": [{"call_id": oversized, "name": "shell"}]},
+    });
+    assert_eq!(
+        super::forgecode_activity(&invalid_call, ctx_history_core::EventType::ToolCall, 0).unwrap(),
+        (None, None, None)
+    );
+
+    let invalid_tool = serde_json::json!({
+        "text": {"tool_calls": [{
+            "call_id": "call-1",
+            "name": "x".repeat(64 * 1024 + 1),
+        }]},
+    });
+    assert_eq!(
+        super::forgecode_activity(&invalid_tool, ctx_history_core::EventType::ToolCall, 0).unwrap(),
+        (None, None, None)
+    );
+
+    let exact_body = serde_json::json!({
+        "call_id": "call-1",
+        "status": "x".repeat(64 * 1024 + 1),
+        "output": {"exact": true},
+    });
+    let output = serde_json::json!({"tool": exact_body.clone()});
+    let (call_id, invocation, result) =
+        super::forgecode_activity(&output, ctx_history_core::EventType::ToolOutput, 1).unwrap();
+    assert_eq!(
+        call_id,
+        Some(ctx_history_core::TypedKey::Utf8("call-1".to_owned()))
+    );
+    assert!(invocation.is_none());
+    let result = result.unwrap();
+    assert_eq!(result.status, None);
+    assert_eq!(
+        result.structured_content,
+        ctx_history_core::ActivityJsonCapture::Present { value: exact_body }
+    );
+}
