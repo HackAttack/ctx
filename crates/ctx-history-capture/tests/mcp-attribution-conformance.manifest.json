@@ -2,13 +2,13 @@
   "schema_version": 7,
   "capability": "mcp_tool_call_attribution",
   "capability_revision": 6,
-  "expected_provider_count": 43,
-  "expected_base_route_count": 45,
-  "expected_schema_generation_count": 44,
-  "expected_capability_lane_count": 48,
+  "expected_provider_count": 42,
+  "expected_base_route_count": 44,
+  "expected_schema_generation_count": 43,
+  "expected_capability_lane_count": 47,
   "expected_status_rows": {
     "supported": 3,
-    "not_qualified": 44,
+    "not_qualified": 43,
     "excluded": 1
   },
   "required_supported_evidence_classes": [
@@ -102,11 +102,6 @@
       "provider": "codebuddy",
       "route": "native_import",
       "source_format": "codebuddy_history_json"
-    },
-    {
-      "provider": "trae",
-      "route": "native_import",
-      "source_format": "trae_state_vscdb"
     },
     {
       "provider": "openclaw",
@@ -660,31 +655,6 @@
         "classification": "route_schema_contract",
         "reference": "crates/ctx-history-capture/tests/contracts/mcp-attribution/codebuddy/codebuddy_history_json/shape-contract.json",
         "sha256": "59811cb3ff2bfbbd2539ae4f3bde1bbade05aff7c0ddacbda0f806cc32481a38"
-      }
-    },
-    {
-      "provider": "trae",
-      "route": "native_import",
-      "source_format": "trae_state_vscdb",
-      "format_schema": {
-        "kind": "structural_revision",
-        "revision": 1,
-        "shape_sha256": "611d3fa61c4c7dffddaedf583f533aa23541a5f6580acb5eb0e6fbf1c491a92c"
-      },
-      "producer_domain": {
-        "kind": "discrete",
-        "versions": [
-          {
-            "kind": "unversioned_generation",
-            "generation": 1
-          }
-        ]
-      },
-      "provenance": {
-        "kind": "route_schema_contract",
-        "classification": "route_schema_contract",
-        "reference": "crates/ctx-history-capture/tests/contracts/mcp-attribution/trae/trae_state_vscdb/shape-contract.json",
-        "sha256": "611d3fa61c4c7dffddaedf583f533aa23541a5f6580acb5eb0e6fbf1c491a92c"
       }
     },
     {
@@ -2212,43 +2182,6 @@
       }
     },
     {
-      "provider": "trae",
-      "route": "native_import",
-      "source_format": "trae_state_vscdb",
-      "format_schema": {
-        "kind": "structural_revision",
-        "revision": 1,
-        "shape_sha256": "611d3fa61c4c7dffddaedf583f533aa23541a5f6580acb5eb0e6fbf1c491a92c"
-      },
-      "producer_partition": {
-        "kind": "discrete",
-        "versions": [
-          {
-            "kind": "unversioned_generation",
-            "generation": 1
-          }
-        ]
-      },
-      "status": {
-        "kind": "not_qualified",
-        "reason": {
-          "kind": "format_not_audited",
-          "evidence_ref": "provider-support-matrix:trae/trae_state_vscdb"
-        }
-      },
-      "evidence": [],
-      "source_schema": "trae-itemtable-state-v1",
-      "producer_bound": {
-        "kind": "versions",
-        "versions": [
-          "2.3.61406"
-        ],
-        "ranges": [],
-        "source_commits": [],
-        "unknown_generations": "not-qualified"
-      }
-    },
-    {
       "provider": "openclaw",
       "route": "native_import",
       "source_format": "openclaw_session_jsonl_tree",
@@ -3379,7 +3312,7 @@
   ],
   "expected_provider_status_rows": {
     "supported": 3,
-    "not_qualified": 40,
+    "not_qualified": 39,
     "excluded": 0
   }
 }

@@ -68,7 +68,6 @@ RUST_FORMAT_TARGETS = [
     "//crates/ctx-history-provider-claude-cursor:unit_tests",
     "//crates/ctx-history-provider-codex:unit_tests",
     "//crates/ctx-history-provider-mistral-mux:unit_tests",
-    "//crates/ctx-history-provider-trae:unit_tests",
     "//crates/ctx-history-providers-sqlite-selected:unit_tests",
     "//crates/ctx-history-providers-sqlite-inventory:unit_tests",
     "//crates/ctx-history-providers-sqlite-logical:unit_tests",

@@ -227,11 +227,6 @@ const NATIVE_PROVIDER_CLI_SPECS: &[ProviderCliSpec] = &[
         cli_name: "codebuddy",
         aliases: &["code-buddy", "code_buddy"],
     },
-    ProviderCliSpec {
-        provider: CaptureProvider::Trae,
-        cli_name: "trae",
-        aliases: &["trae-cn", "trae_cn"],
-    },
 ];
 
 const CUSTOM_PROVIDER_CLI_SPEC: ProviderCliSpec = ProviderCliSpec {

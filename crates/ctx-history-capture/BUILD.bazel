@@ -60,7 +60,6 @@ CTX_HISTORY_CAPTURE_DEPS = [
     "//crates/ctx-history-core:lib",
     "//crates/ctx-history-provider-runtime:lib",
     "//crates/ctx-history-provider-claude-cursor:lib",
-    "//crates/ctx-history-provider-trae:lib",
     "//crates/ctx-history-source-discovery:lib",
     "//crates/ctx-history-source-io:lib",
 ]

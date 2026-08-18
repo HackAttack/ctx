@@ -218,7 +218,6 @@ Read more about [agent memory](https://ctx.rs/comparisons/agent-memory), [codeba
 | Qwen Code | Supported |
 | Rovo Dev | Supported |
 | Tabnine CLI | Supported |
-| Trae / Trae CN | Supported |
 | Warp | Supported |
 | Windsurf | Supported |
 | Zed | Supported |

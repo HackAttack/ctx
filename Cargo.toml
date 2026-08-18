@@ -25,7 +25,6 @@ members = [
     "crates/ctx-history-provider-claude-cursor",
     "crates/ctx-history-provider-codex",
     "crates/ctx-history-provider-mistral-mux",
-    "crates/ctx-history-provider-trae",
     "crates/ctx-history-providers-sqlite-inventory",
     "crates/ctx-history-providers-sqlite-logical",
     "crates/ctx-history-ingest-application",

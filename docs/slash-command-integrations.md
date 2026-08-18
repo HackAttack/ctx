@@ -91,7 +91,6 @@ Source links were checked on August 12, 2026.
 | Qoder | Unknown | n/a | n/a | n/a | n/a | Do not write | [Qoder skills](https://docs.qoder.com/extensions/skills), [ctx provider list](provider-support.md) | Public docs found skills UI, not a stable slash-command file path. |
 | Lingma | Unknown | n/a | n/a | n/a | n/a | Do not write | [ctx provider list](provider-support.md) | No authoritative command or skill file contract found during this research pass. |
 | CodeBuddy | Unknown | n/a | n/a | n/a | n/a | Do not write | [ctx provider list](provider-support.md) | No authoritative command or skill file contract found during this research pass. |
-| Trae | Unknown | n/a | n/a | n/a | n/a | Do not write | [ctx provider list](provider-support.md) | No authoritative command or skill file contract found during this research pass. |
 | OpenClaw | Unknown | n/a | n/a | n/a | n/a | Do not write | [ctx provider list](provider-support.md) | No standalone slash-command file contract found. |
 | Hermes Agent | Unknown | n/a | n/a | n/a | n/a | Do not write | [ctx provider list](provider-support.md) | No authoritative command or skill file contract found during this research pass. |
 | NanoClaw | Unknown | n/a | n/a | n/a | n/a | Do not write | [ctx provider list](provider-support.md) | No authoritative command or skill file contract found during this research pass. |

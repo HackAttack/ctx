@@ -47,7 +47,6 @@ text_enum! {
         Qoder => "qoder",
         Warp => "warp",
         CodeBuddy => "codebuddy",
-        Trae => "trae",
         Shell => "shell",
         Git => "git",
         Jj => "jj",

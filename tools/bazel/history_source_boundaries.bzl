@@ -50,35 +50,6 @@ def history_source_boundaries():
     )
 
     py_test(
-        name = "history_provider_trae_dependency_boundary_check",
-        srcs = ["//tools/bazel:check_history_provider_trae_boundary.py"],
-        main = "//tools/bazel:check_history_provider_trae_boundary.py",
-        args = [
-            "$(rootpath //crates/ctx-history-provider-trae:Cargo.toml)",
-            "$(rootpath //crates/ctx-history-provider-trae:BUILD.bazel)",
-            "$(rootpath //crates/ctx-history-provider-trae:src/lib.rs)",
-            "$(rootpath //crates/ctx-history-capture:src/provider/providers/trae.rs)",
-            "$(rootpath //crates/ctx-history-capture-composition:Cargo.toml)",
-            "$(rootpath //crates/ctx-history-capture-composition:BUILD.bazel)",
-            "$(rootpath //crates/ctx-history-capture-composition:src/lib.rs)",
-            "$(rootpath //crates/ctx-history-capture-composition:src/source_backed/registration/families/sqlite/logical.rs)",
-            "$(rootpath //crates/ctx-history-capture:src/provider_sources.rs)",
-        ],
-        data = [
-            "//crates/ctx-history-provider-trae:BUILD.bazel",
-            "//crates/ctx-history-provider-trae:Cargo.toml",
-            "//crates/ctx-history-provider-trae:cargo_package_data",
-            "//crates/ctx-history-provider-trae:src/lib.rs",
-            "//crates/ctx-history-capture:src/provider/providers/trae.rs",
-            "//crates/ctx-history-capture-composition:BUILD.bazel",
-            "//crates/ctx-history-capture-composition:Cargo.toml",
-            "//crates/ctx-history-capture-composition:src/lib.rs",
-            "//crates/ctx-history-capture-composition:src/source_backed/registration/families/sqlite/logical.rs",
-            "//crates/ctx-history-capture:src/provider_sources.rs",
-        ],
-    )
-
-    py_test(
         name = "history_capture_runtime_dependency_boundary_check",
         srcs = ["//tools/bazel:check_history_capture_runtime_boundary.py"],
         main = "//tools/bazel:check_history_capture_runtime_boundary.py",

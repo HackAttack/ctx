@@ -37,8 +37,8 @@ event-local Core capability has its own provider + route + source format +
 format version authority in
 [`mcp-tool-call-attribution-capabilities.json`](mcp-tool-call-attribution-capabilities.json).
 Capability revision 4 exact providers are Codex, Warp, and Copilot CLI. The
-complete evidence matrix contains 45 base routes and 48 capability lanes:
-three exact, 44 not-qualified, and one excluded. The Deep Agents hosted trace
+complete evidence matrix contains 44 base routes and 47 capability lanes:
+three exact, 43 not-qualified, and one excluded. The Deep Agents hosted trace
 is excluded from the local-only boundary, while its local SQLite history import
 remains Supported but not qualified for exact attribution. See
 [`mcp-tool-call-attribution.md`](mcp-tool-call-attribution.md) for absence,
@@ -69,7 +69,6 @@ support matrix is:
 | Qoder | Supported | `qoder_transcript_jsonl_tree` |
 | Warp | Supported | `warp_sqlite` |
 | CodeBuddy | Supported | `codebuddy_history_json` |
-| Trae | Supported | `trae_state_vscdb` |
 | OpenClaw | Supported | `openclaw_session_jsonl_tree` |
 | Hermes Agent | Supported | `hermes_state_sqlite` |
 | NanoClaw | Supported | `nanoclaw_project` |
@@ -128,16 +127,6 @@ of scope, and this import does not qualify exact MCP server/tool attribution.
 Unknown required events and future format versions fail the source. Delegated
 sessions remain independently searchable, but their immediate parent header
 does not prove the transitive root identity required for typed lineage edges.
-
-Trae's current platform application-data database
-(`Trae/ModularData/ai-agent/database.db`) is located automatically on Linux,
-macOS, and Windows. Current Trae 1.107.1 relational chat history is
-SQLCipher-encrypted and is not imported: the source reports `unknown` with an
-encryption/key-access diagnostic. A plaintext database at that location is
-automatic only when bounded probing recognizes the released ItemTable chat
-shape. Exact `--path` imports of released `User/workspaceStorage/state.vscdb`
-ItemTable compatibility data remain supported and are never unioned with the
-current location.
 
 `ctx sources --format json` reports each known provider source with `import_support`
 and `importable` fields. A source is importable only when provider-specific

@@ -726,7 +726,6 @@ mod tests {
             CaptureProvider::Qoder,
             CaptureProvider::Warp,
             CaptureProvider::CodeBuddy,
-            CaptureProvider::Trae,
             CaptureProvider::Shell,
             CaptureProvider::Git,
             CaptureProvider::Jj,
