@@ -7,14 +7,15 @@ use serde_json::{Map, Value};
 
 use super::{
     absolute_from_cwd, env_text, expand_leading_tilde, issue_limit, issue_manual, issue_selector,
-    ordinary_file, path_presence, push_unsupported_existing, select_current_or_legacy,
-    selected_path_is_safe, DiscoveryContext, DiscoveryReport, ProviderSourceSpec, SelectorDocument,
-    SelectorFormat, SelectorIncludeBudget, SelectorReadError, SelectorReader,
-    StaticProviderProbeCatalog, MAX_FINITE_SELECTOR_ENTRIES, OPENCLAW_UNSUPPORTED_REASON,
+    ordinary_file, path_presence, push_selected_source, push_unsupported_existing,
+    select_current_or_legacy, selected_path_is_safe, DiscoveryContext, DiscoveryReport,
+    ProviderSourceSpec, SelectorDocument, SelectorFormat, SelectorIncludeBudget, SelectorReadError,
+    SelectorReader, StaticProviderProbeCatalog, MAX_FINITE_SELECTOR_ENTRIES,
+    OPENCLAW_UNSUPPORTED_REASON,
 };
 
 pub(super) fn resolve(
-    _probes: &StaticProviderProbeCatalog,
+    probes: &StaticProviderProbeCatalog,
     context: &DiscoveryContext,
     spec: &ProviderSourceSpec,
 ) -> DiscoveryReport {
@@ -94,14 +95,18 @@ pub(super) fn resolve(
     }
 
     for agent_id in agent_ids {
+        let agent_root = state_root.join("agents").join(agent_id);
+        push_selected_source(
+            probes,
+            &mut report,
+            spec,
+            agent_root.join("sessions"),
+            "openclaw_session_jsonl_tree",
+        );
         push_unsupported_existing(
             &mut report,
             spec,
-            state_root
-                .join("agents")
-                .join(agent_id)
-                .join("agent")
-                .join("openclaw-agent.sqlite"),
+            agent_root.join("agent").join("openclaw-agent.sqlite"),
             OPENCLAW_UNSUPPORTED_REASON,
         );
     }

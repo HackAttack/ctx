@@ -558,7 +558,7 @@ fn nanoclaw_registration_to_symlink_checkout_fails_closed() {
 }
 
 #[test]
-fn openclaw_selects_one_override_and_bounded_configured_agents_as_unsupported() {
+fn openclaw_selects_one_override_and_bounded_configured_agent_histories() {
     let temp = tempdir();
     let home = temp.path().join("home");
     let cwd = temp.path().join("cwd");
@@ -573,6 +573,10 @@ fn openclaw_selects_one_override_and_bounded_configured_agents_as_unsupported() 
         "{list: [{id: 'Ops'}, {id: 'research'}]}",
     );
     for id in ["ops", "research"] {
+        write(
+            &state.join("agents").join(id).join("sessions/legacy.jsonl"),
+            "{}",
+        );
         write(
             &state
                 .join("agents")
@@ -594,23 +598,68 @@ fn openclaw_selects_one_override_and_bounded_configured_agents_as_unsupported() 
             .map(|source| source.path.clone())
             .collect::<Vec<_>>(),
         vec![
+            state.join("agents/ops/sessions"),
             state.join("agents/ops/agent/openclaw-agent.sqlite"),
+            state.join("agents/research/sessions"),
             state.join("agents/research/agent/openclaw-agent.sqlite")
         ]
     );
+    assert_eq!(
+        report
+            .sources
+            .iter()
+            .filter(|source| source.source_format == "openclaw_session_jsonl_tree")
+            .count(),
+        2
+    );
     assert!(report.sources.iter().all(|source| {
-        source.status == ProviderSourceStatus::Unsupported
-            && source.source_kind == ProviderSourceKind::DetectionOnly
-            && source.unsupported_reason == Some(OPENCLAW_UNSUPPORTED_REASON)
-            && provider_source_for_path(CaptureProvider::OpenClaw, source.path.clone())
-                .source_format
-                == source.source_format
+        if source.source_format == "openclaw_session_jsonl_tree" {
+            source.status == ProviderSourceStatus::Available
+                && source.source_kind == ProviderSourceKind::NativeHistory
+                && source.import_support == ProviderImportSupport::Native
+                && source.unsupported_reason.is_none()
+        } else {
+            source.status == ProviderSourceStatus::Unsupported
+                && source.source_kind == ProviderSourceKind::DetectionOnly
+                && source.unsupported_reason == Some(OPENCLAW_UNSUPPORTED_REASON)
+        }
     }));
     assert!(report.issues.is_empty());
 }
 
 #[test]
-fn openclaw_uses_conditional_clawdbot_but_never_moltbot_or_legacy_jsonl() {
+fn openclaw_configured_agent_histories_preserve_the_finite_candidate_bound() {
+    let temp = tempdir();
+    let home = temp.path().join("home");
+    let cwd = temp.path().join("cwd");
+    let state = temp.path().join("selected");
+    fs::create_dir_all(&cwd).unwrap();
+    let agents = (0..=MAX_FINITE_SELECTOR_ENTRIES)
+        .map(|index| format!("{{id:'agent-{index}'}}"))
+        .collect::<Vec<_>>()
+        .join(",");
+    write(
+        &state.join("openclaw.json"),
+        format!("{{agents:{{list:[{agents}]}}}}"),
+    );
+    let context = context(&home, &cwd).with_env("OPENCLAW_STATE_DIR", state.as_os_str().to_owned());
+
+    let report = report(&context, CaptureProvider::OpenClaw);
+
+    assert_eq!(report.sources.len(), MAX_FINITE_SELECTOR_ENTRIES);
+    assert!(report.sources.iter().all(|source| {
+        source.source_format == "openclaw_session_jsonl_tree"
+            && source.status == ProviderSourceStatus::Missing
+    }));
+    assert_eq!(report.issues.len(), 1);
+    assert_eq!(
+        report.issues[0].kind,
+        DiscoveryIssueKind::SelectorUnreconstructible
+    );
+}
+
+#[test]
+fn openclaw_uses_conditional_clawdbot_for_mixed_history_but_never_moltbot() {
     let temp = tempdir();
     let home = temp.path().join("home");
     let cwd = temp.path().join("cwd");
@@ -628,13 +677,70 @@ fn openclaw_uses_conditional_clawdbot_but_never_moltbot_or_legacy_jsonl() {
         "{}",
     );
     let report = report(&context(&home, &cwd), CaptureProvider::OpenClaw);
-    assert_eq!(report.sources.len(), 1);
-    assert!(report.sources[0].path.starts_with(home.join(".clawdbot")));
-    assert!(!report.sources[0].path.to_string_lossy().contains("moltbot"));
-    assert!(!report
+    assert_eq!(report.sources.len(), 2);
+    assert!(report
         .sources
         .iter()
-        .any(|source| source.source_format == "openclaw_session_jsonl_tree"));
+        .all(|source| source.path.starts_with(home.join(".clawdbot"))));
+    assert!(report
+        .sources
+        .iter()
+        .all(|source| !source.path.to_string_lossy().contains("moltbot")));
+    assert_eq!(
+        report.sources[0].source_format,
+        "openclaw_session_jsonl_tree"
+    );
+    assert_eq!(report.sources[0].status, ProviderSourceStatus::Available);
+    assert_eq!(report.sources[1].status, ProviderSourceStatus::Unsupported);
+}
+
+#[test]
+fn openclaw_legacy_only_current_root_is_supported() {
+    let temp = tempdir();
+    let home = temp.path().join("home");
+    let cwd = temp.path().join("cwd");
+    fs::create_dir_all(&cwd).unwrap();
+    write(
+        &home.join(".openclaw/agents/main/sessions/legacy.jsonl"),
+        "{}",
+    );
+
+    let report = report(&context(&home, &cwd), CaptureProvider::OpenClaw);
+    assert_eq!(report.sources.len(), 1);
+    assert_eq!(
+        report.sources[0].path,
+        home.join(".openclaw/agents/main/sessions")
+    );
+    assert_eq!(report.sources[0].status, ProviderSourceStatus::Available);
+    assert_eq!(
+        report.sources[0].source_kind,
+        ProviderSourceKind::NativeHistory
+    );
+}
+
+#[test]
+fn openclaw_current_only_root_keeps_unsupported_sqlite_and_probeable_legacy_route() {
+    let temp = tempdir();
+    let home = temp.path().join("home");
+    let cwd = temp.path().join("cwd");
+    fs::create_dir_all(&cwd).unwrap();
+    write(
+        &home.join(".openclaw/agents/main/agent/openclaw-agent.sqlite"),
+        "sqlite",
+    );
+
+    let report = report(&context(&home, &cwd), CaptureProvider::OpenClaw);
+    assert_eq!(report.sources.len(), 2);
+    assert_eq!(report.sources[0].status, ProviderSourceStatus::Missing);
+    assert_eq!(
+        report.sources[0].source_format,
+        "openclaw_session_jsonl_tree"
+    );
+    assert_eq!(report.sources[1].status, ProviderSourceStatus::Unsupported);
+    assert_eq!(
+        report.sources[1].unsupported_reason,
+        Some(OPENCLAW_UNSUPPORTED_REASON)
+    );
 }
 
 #[test]
@@ -1007,7 +1113,7 @@ fn openhands_remote_backend_selectors_suppress_v1_disk_root_with_primary_precede
 }
 
 #[test]
-fn openhands_empty_oh_uses_exact_cwd_and_detects_cli_events_as_unsupported() {
+fn openhands_v1_and_current_cli_event_roots_coexist_as_supported() {
     let temp = tempdir();
     let home = temp.path().join("home");
     let cwd = temp.path().join("cwd");
@@ -1024,15 +1130,13 @@ fn openhands_empty_oh_uses_exact_cwd_and_detects_cli_events_as_unsupported() {
     let report = report(&context, CaptureProvider::OpenHands);
     assert_eq!(report.sources.len(), 2);
     assert_eq!(report.sources[0].path, cwd);
-    assert_eq!(report.sources[1].path, cli.join("conversation"));
-    assert_eq!(report.sources[1].status, ProviderSourceStatus::Unsupported);
-    assert_eq!(
-        report.sources[1].unsupported_reason,
-        Some(OPENHANDS_CLI_UNSUPPORTED_REASON)
-    );
-    let explicit = provider_source_for_path(CaptureProvider::OpenHands, cli.join("conversation"));
+    assert_eq!(report.sources[1].path, cli.join("conversation/events"));
+    assert_eq!(report.sources[1].status, ProviderSourceStatus::Available);
+    assert!(report.sources[1].unsupported_reason.is_none());
+    let explicit =
+        provider_source_for_path(CaptureProvider::OpenHands, cli.join("conversation/events"));
     assert_eq!(report.sources[1].source_format, explicit.source_format);
-    assert_eq!(explicit.status, ProviderSourceStatus::Unsupported);
+    assert_eq!(explicit.status, ProviderSourceStatus::Available);
 }
 
 #[test]

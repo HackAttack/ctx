@@ -317,17 +317,8 @@ fn exact_current_unsupported_reason(
         CaptureProvider::KiroCli if is_current_kiro_shape(path, kind?) => {
             Some("Kiro ACP/v3 session history is detected but unsupported")
         }
-        CaptureProvider::Qoder if is_qoder_direct_sdk_shape(path, kind?) => {
-            Some("Qoder direct SDK JSONL history without a transcript directory is detected but unsupported")
-        }
         CaptureProvider::OpenClaw if contains_openclaw_sqlite(path, kind?) => {
             Some("OpenClaw openclaw-agent.sqlite history is detected but unsupported")
-        }
-        CaptureProvider::OpenHands if is_openhands_cli_events_shape(path, kind?) => {
-            Some("OpenHands CLI events/event-*.json history is detected but unsupported")
-        }
-        CaptureProvider::Mux if contains_mux_archive(path, kind?) => {
-            Some("Mux chat-archive.jsonl history is detected but unsupported")
         }
         CaptureProvider::Cline if is_current_cline_sdk_shape(path, kind?) => {
             Some("current Cline SDK session history is detected but unsupported")
@@ -413,44 +404,6 @@ fn is_current_kiro_shape(path: &Path, kind: SourcePathKind) -> bool {
         && is_named_regular_file(&counterpart, |_| true)
 }
 
-fn is_qoder_direct_sdk_shape(path: &Path, kind: SourcePathKind) -> bool {
-    if path_has_component(path, "transcript") {
-        return false;
-    }
-    if kind == SourcePathKind::File {
-        return path.extension().and_then(|extension| extension.to_str()) == Some("jsonl")
-            && path
-                .parent()
-                .and_then(Path::parent)
-                .is_some_and(|projects| {
-                    projects.file_name().and_then(|name| name.to_str()) == Some("projects")
-                });
-    }
-    if kind != SourcePathKind::Directory {
-        return false;
-    }
-    if path
-        .parent()
-        .is_some_and(|parent| parent.file_name().and_then(|name| name.to_str()) == Some("projects"))
-    {
-        return direct_entries(path).is_some_and(|entries| {
-            entries
-                .iter()
-                .any(|entry| is_named_regular_file(entry, |name| name.ends_with(".jsonl")))
-        });
-    }
-    path.file_name().and_then(|name| name.to_str()) == Some("projects")
-        && direct_entries(path).is_some_and(|buckets| {
-            buckets.iter().any(|bucket| {
-                direct_entries(bucket).is_some_and(|entries| {
-                    entries
-                        .iter()
-                        .any(|entry| is_named_regular_file(entry, |name| name.ends_with(".jsonl")))
-                })
-            })
-        })
-}
-
 fn contains_openclaw_sqlite(path: &Path, kind: SourcePathKind) -> bool {
     if kind == SourcePathKind::File {
         return is_named_regular_file(path, |name| name == "openclaw-agent.sqlite");
@@ -477,52 +430,6 @@ fn contains_openclaw_sqlite(path: &Path, kind: SourcePathKind) -> bool {
             })
         })
     })
-}
-
-fn is_openhands_cli_events_shape(path: &Path, kind: SourcePathKind) -> bool {
-    if path_has_component(path, "v1_conversations") {
-        return false;
-    }
-    if kind == SourcePathKind::File {
-        return is_openhands_cli_event_file(path);
-    }
-    if kind != SourcePathKind::Directory {
-        return false;
-    }
-    let events = if path.file_name().and_then(|name| name.to_str()) == Some("events") {
-        path.to_path_buf()
-    } else {
-        path.join("events")
-    };
-    direct_entries(&events).is_some_and(|entries| {
-        entries
-            .iter()
-            .any(|entry| is_openhands_cli_event_file(entry))
-    })
-}
-
-fn is_openhands_cli_event_file(path: &Path) -> bool {
-    path.parent()
-        .is_some_and(|parent| parent.file_name().and_then(|name| name.to_str()) == Some("events"))
-        && is_named_regular_file(path, |name| {
-            name.starts_with("event-") && name.ends_with(".json")
-        })
-}
-
-fn contains_mux_archive(path: &Path, kind: SourcePathKind) -> bool {
-    if kind == SourcePathKind::File {
-        return is_named_regular_file(path, |name| name == "chat-archive.jsonl");
-    }
-    kind == SourcePathKind::Directory
-        && (is_named_regular_file(&path.join("chat-archive.jsonl"), |name| {
-            name == "chat-archive.jsonl"
-        }) || direct_entries(path).is_some_and(|entries| {
-            entries.iter().any(|entry| {
-                is_named_regular_file(&entry.join("chat-archive.jsonl"), |name| {
-                    name == "chat-archive.jsonl"
-                })
-            })
-        }))
 }
 
 fn is_current_cline_sdk_shape(path: &Path, kind: SourcePathKind) -> bool {
@@ -572,9 +479,4 @@ fn is_named_regular_file(path: &Path, matches: impl FnOnce(&str) -> bool) -> boo
             .file_name()
             .and_then(|name| name.to_str())
             .is_some_and(matches)
-}
-
-fn path_has_component(path: &Path, expected: &str) -> bool {
-    path.components()
-        .any(|component| component.as_os_str().to_str() == Some(expected))
 }

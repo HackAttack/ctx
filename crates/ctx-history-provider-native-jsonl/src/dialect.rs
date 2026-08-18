@@ -22,9 +22,14 @@ fn provider_jsonl_path_is_native(provider: CaptureProvider, path: &Path) -> bool
         CaptureProvider::Windsurf => path.extension().and_then(|ext| ext.to_str()) == Some("jsonl"),
         CaptureProvider::Qoder => {
             path.extension().and_then(|ext| ext.to_str()) == Some("jsonl")
-                && path
+                && (path
                     .components()
                     .any(|component| component.as_os_str() == "transcript")
+                    || path
+                        .parent()
+                        .and_then(Path::parent)
+                        .and_then(Path::file_name)
+                        == Some(OsStr::new("projects")))
         }
         CaptureProvider::CopilotCli => {
             path.file_name().and_then(|name| name.to_str()) == Some("events.jsonl")

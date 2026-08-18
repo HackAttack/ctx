@@ -160,6 +160,35 @@ fn qoder_probe_is_shallow_bounded_and_deterministic() {
 }
 
 #[test]
+fn qoder_direct_and_transcript_histories_share_one_supported_source() {
+    for (name, relative) in [
+        ("direct", "project/session.jsonl"),
+        ("transcript", "project/transcript/session.jsonl"),
+        ("mixed", "project/direct.jsonl"),
+    ] {
+        let temp = tempdir();
+        let context = context(temp.path(), DiscoveryPlatform::Linux);
+        let projects = context.home().join(".qoder/projects");
+        write(&projects.join(relative), b"{}\n");
+        if name == "mixed" {
+            write(
+                &projects.join("project/transcript/transcript.jsonl"),
+                b"{}\n",
+            );
+        }
+
+        let report = resolve(&context, spec(CaptureProvider::Qoder));
+        assert_eq!(report.sources.len(), 1, "{name}: {report:?}");
+        let source = &report.sources[0];
+        assert_eq!(source.path, projects);
+        assert_eq!(source.source_format, "qoder_transcript_jsonl_tree");
+        assert_eq!(source.status, ProviderSourceStatus::Available);
+        assert_eq!(source.import_support, ProviderImportSupport::Native);
+        assert!(source.unsupported_reason.is_none());
+    }
+}
+
+#[test]
 fn firebender_unmarked_cwd_does_not_synthesize_a_project_store() {
     let temp = tempdir();
     let base = context(temp.path(), DiscoveryPlatform::Linux);
@@ -473,7 +502,7 @@ fn linked_selected_paths_are_not_followed_or_replaced_by_stale_fallbacks() {
 }
 
 #[test]
-fn mux_root_is_one_raw_winner_and_archive_is_detection_only() {
+fn mux_root_is_one_raw_supported_winner_when_active_and_archive_history_coexist() {
     let temp = tempdir();
     let custom = temp.path().join("custom-mux");
     let context =
@@ -489,19 +518,30 @@ fn mux_root_is_one_raw_winner_and_archive_is_detection_only() {
     );
     let report = resolve(&context, spec(CaptureProvider::Mux));
     let supported = source(&report, "mux_session_jsonl_tree");
-    let unsupported = source(&report, "unsupported");
+    assert_eq!(report.sources.len(), 1);
     assert_eq!(
         (&supported.path, supported.status),
         (&custom.join("sessions"), ProviderSourceStatus::Available)
     );
-    assert_eq!(
-        (&unsupported.path, unsupported.unsupported_reason),
-        (&supported.path, Some(MUX_ARCHIVE_UNSUPPORTED))
-    );
+    assert!(supported.unsupported_reason.is_none());
     assert!(report
         .sources
         .iter()
         .all(|item| !item.path.starts_with(context.home().join(".mux"))));
+}
+
+#[test]
+fn mux_archive_only_history_makes_the_session_tree_available() {
+    let temp = tempdir();
+    let context = context(temp.path(), DiscoveryPlatform::Linux);
+    let sessions = context.home().join(".mux/sessions");
+    write(&sessions.join("workspace/chat-archive.jsonl"), b"{}\n");
+
+    let report = resolve(&context, spec(CaptureProvider::Mux));
+    assert_eq!(report.sources.len(), 1);
+    assert_eq!(report.sources[0].path, sessions);
+    assert_eq!(report.sources[0].status, ProviderSourceStatus::Available);
+    assert!(report.sources[0].unsupported_reason.is_none());
 }
 
 #[test]

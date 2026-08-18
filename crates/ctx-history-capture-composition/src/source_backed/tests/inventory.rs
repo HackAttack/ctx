@@ -225,6 +225,24 @@ fn provider_inventory_covers_supported_automatic_routes() {
 }
 
 #[test]
+fn shelley_keeps_exact_cwd_automatic_authority_and_admits_explicit_paths() {
+    let route = LANDED_SOURCE_BACKED_ROUTES
+        .iter()
+        .find(|route| {
+            route.provider == CaptureProvider::Shelley && route.source_format == "shelley_sqlite"
+        })
+        .expect("Shelley route");
+
+    assert!(route.automatic);
+    assert!(route.explicit_manual);
+    assert_eq!(
+        route.selector_authority,
+        SourceBackedSelectorAuthority::ExactCwd
+    );
+    assert_eq!(route.constructor, SourceBackedRouteConstructor::ExactCwd);
+}
+
+#[test]
 fn hermes_route_is_executable_for_automatic_registration() {
     let temp = tempdir().unwrap();
     let home = temp.path().join("home");
