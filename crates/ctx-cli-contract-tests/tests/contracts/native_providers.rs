@@ -749,34 +749,130 @@ fn native_provider_cli_flow_imports_supported_provider_paths() {
 
 #[test]
 fn discovery_only_sqlite_explicit_paths_are_rejected_without_fallback() {
-    for (provider, fixture, reason) in [
-        (
-            "astrbot",
-            write_native_astrbot_fixture as fn(&TempDir, &str) -> String,
-            "requires provider discovery authority",
-        ),
-        (
-            "shelley",
-            write_native_shelley_fixture,
-            "has no explicit source-backed adapter",
-        ),
-    ] {
-        let temp = tempdir();
-        let path = fixture(&temp, &format!("{provider}-explicit-unsupported-oracle"));
-        let stderr = failure_stderr(ctx(&temp).args([
-            "import",
-            "--provider",
-            provider,
-            "--path",
-            &path,
-            "--no-daemon",
-            "--format=json",
-        ]));
-        assert!(
-            stderr.contains(reason) && stderr.contains("no legacy import fallback was used"),
-            "{provider}: {stderr}"
-        );
-    }
+    let temp = tempdir();
+    let path = write_native_astrbot_fixture(&temp, "astrbot-explicit-unsupported-oracle");
+    let stderr = failure_stderr(ctx(&temp).args([
+        "import",
+        "--provider",
+        "astrbot",
+        "--path",
+        &path,
+        "--no-daemon",
+        "--format=json",
+    ]));
+    assert!(
+        stderr.contains("requires provider discovery authority")
+            && stderr.contains("no legacy import fallback was used"),
+        "{stderr}"
+    );
+}
+
+#[test]
+fn shelley_imports_exact_cwd_automatically_and_exact_path_explicitly() {
+    let automatic_temp = tempdir();
+    let automatic_fixture = PathBuf::from(write_native_shelley_fixture(
+        &automatic_temp,
+        "shelley-cwd-oracle",
+    ));
+    let automatic_path = automatic_temp.path().join("shelley.db");
+    fs::copy(automatic_fixture, &automatic_path).unwrap();
+    let _automatic_daemon = start_isolated_provider_daemon(&automatic_temp);
+
+    let automatic_first = json_output(
+        ctx(&automatic_temp)
+            .current_dir(automatic_temp.path())
+            .args([
+                "import",
+                "--provider",
+                "shelley",
+                "--no-daemon",
+                "--format=json",
+            ]),
+    );
+    assert_authoritative_provider_publication(&automatic_first);
+    wait_for_imported_core(&automatic_temp, &automatic_first);
+    let automatic_first_records = provider_core_records(&data_root(&automatic_temp), "shelley");
+    assert!(!automatic_first_records.is_empty(), "{automatic_first:#}");
+    let automatic_source_identity = automatic_first_records[0].source.clone();
+
+    let automatic_second = json_output(
+        ctx(&automatic_temp)
+            .current_dir(automatic_temp.path())
+            .args([
+                "import",
+                "--provider",
+                "shelley",
+                "--no-daemon",
+                "--format=json",
+            ]),
+    );
+    assert_authoritative_provider_publication(&automatic_second);
+    assert_eq!(
+        provider_core_records(&data_root(&automatic_temp), "shelley")[0].source,
+        automatic_source_identity
+    );
+
+    let explicit_temp = tempdir();
+    let explicit_fixture = PathBuf::from(write_native_shelley_fixture(
+        &explicit_temp,
+        "shelley-explicit-oracle",
+    ));
+    let explicit_path = explicit_temp.path().join("selected/shelley.db");
+    fs::create_dir_all(explicit_path.parent().unwrap()).unwrap();
+    fs::copy(explicit_fixture, &explicit_path).unwrap();
+    let _explicit_daemon = start_isolated_provider_daemon(&explicit_temp);
+
+    let explicit_first = json_output(ctx(&explicit_temp).args([
+        "import",
+        "--provider",
+        "shelley",
+        "--path",
+        explicit_path.to_str().unwrap(),
+        "--no-daemon",
+        "--format=json",
+    ]));
+    assert_explicit_source_publication(&explicit_first, "shelley", "shelley_sqlite");
+    wait_for_imported_core(&explicit_temp, &explicit_first);
+    let explicit_first_records = provider_core_records(&data_root(&explicit_temp), "shelley");
+    assert!(!explicit_first_records.is_empty(), "{explicit_first:#}");
+    let explicit_source_identity = explicit_first_records[0].source.clone();
+    let explicit_route = explicit_first["sources"][0]["route_identity"].clone();
+    let explicit_lineage = explicit_first["sources"][0]["catalog_lineage"].clone();
+
+    let explicit_second = json_output(ctx(&explicit_temp).args([
+        "import",
+        "--provider",
+        "shelley",
+        "--path",
+        explicit_path.to_str().unwrap(),
+        "--no-daemon",
+        "--format=json",
+    ]));
+    assert_explicit_source_publication(&explicit_second, "shelley", "shelley_sqlite");
+    assert_eq!(
+        explicit_second["sources"][0]["route_identity"],
+        explicit_route
+    );
+    assert_eq!(
+        explicit_second["sources"][0]["catalog_lineage"],
+        explicit_lineage
+    );
+    assert_eq!(
+        provider_core_records(&data_root(&explicit_temp), "shelley")[0].source,
+        explicit_source_identity
+    );
+    let search = json_output(ctx(&explicit_temp).args([
+        "search",
+        "shelley-explicit-oracle",
+        "--provider",
+        "shelley",
+        "--refresh",
+        "off",
+        "--limit",
+        "1",
+        "--format=json",
+    ]));
+    assert_search_provider_oracle(&search, "shelley", "shelley-explicit-oracle", 1, "message");
 }
 
 fn source_by_path<'a>(packet: &'a Value, provider: &str, path: &Path) -> &'a Value {

@@ -69,12 +69,13 @@ pub fn register_lingma_source_backed_route(
 pub fn register_shelley_source_backed_route(
     registry: &mut SourceBackedProviderRegistry,
     source: ProviderSource,
+    selection: SourceBackedRouteSelection,
     data_root: &Path,
     exact_cwd: impl Into<PathBuf>,
 ) -> SourceBackedCoordinatorResult<()> {
     let provider = source.provider;
     let registration = shelley_registration::<CaptureDocumentLifecycle, CaptureDocumentSpool>(
-        source, data_root, exact_cwd,
+        source, selection, data_root, exact_cwd,
     )
     .map_err(|source| SourceBackedCoordinatorError::RouteRegistration { provider, source })?;
     install_sqlite_inventory_registration(registry, registration)

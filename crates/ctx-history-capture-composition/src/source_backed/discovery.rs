@@ -507,7 +507,13 @@ fn register_discovered_automatic_route(
                     detail: "Shelley automatic registration requires the exact discovery CWD",
                 },
             )?;
-            register_shelley_source_backed_route(registry, source, data_root, exact_cwd)
+            register_shelley_source_backed_route(
+                registry,
+                source,
+                SourceBackedRouteSelection::Automatic,
+                data_root,
+                exact_cwd,
+            )
         }
         (SourceBackedRouteConstructor::ProviderSource, _) => {
             register_landed_source_backed_route_with_data_root(

@@ -266,10 +266,13 @@ fn astrbot_inventory_route_error(
     SourceBackedRouteError::new(kind, error.to_string())
 }
 
-/// Registers Shelley only when the caller retains the exact CWD that selected
-/// `shelley.db`. No branch or fallback CWD is inferred.
+/// Registers Shelley only from the exact CWD which owns the selected
+/// `shelley.db`. Automatic callers supply the discovery CWD; explicit callers
+/// derive it only from their approved exact database path. No branch or
+/// fallback CWD is inferred.
 pub fn shelley_registration<L, S>(
     source: ProviderSource,
+    selection: SourceBackedRouteSelection,
     data_root: &Path,
     exact_cwd: impl Into<PathBuf>,
 ) -> SourceBackedRouteResult<
@@ -308,8 +311,16 @@ where
     );
     Ok(SqliteInventoryRegistration::new(
         source,
-        SourceBackedRouteSelection::Automatic,
-        SourceBackedSelectorAuthority::ExactCwd,
+        selection,
+        match selection {
+            SourceBackedRouteSelection::Automatic => SourceBackedSelectorAuthority::ExactCwd,
+            // An exact --path is a path-bound escape hatch. It must not gain
+            // automatic exact-CWD authority merely because the SQLite adapter
+            // needs the database's parent for safe leaf validation.
+            SourceBackedRouteSelection::ExplicitManual => {
+                SourceBackedSelectorAuthority::ExplicitPath
+            }
+        },
         adapter,
         None,
     ))

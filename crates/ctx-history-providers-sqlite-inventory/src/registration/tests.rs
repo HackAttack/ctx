@@ -479,6 +479,7 @@ fn shelley_registration_preserves_corrupt_source_classification() {
 
     let error = shelley_registration::<NoopLifecycle, NoopSpool>(
         source,
+        SourceBackedRouteSelection::Automatic,
         crate::test_provider_sqlite_data_root(),
         exact_cwd,
     )
@@ -515,6 +516,7 @@ fn shelley_registration_treats_disappearance_after_discovery_as_source_change() 
 
     let error = shelley_registration::<NoopLifecycle, NoopSpool>(
         source,
+        SourceBackedRouteSelection::Automatic,
         crate::test_provider_sqlite_data_root(),
         exact_cwd,
     )
