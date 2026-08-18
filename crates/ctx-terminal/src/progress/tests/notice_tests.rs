@@ -6,7 +6,7 @@ fn trusted_progress_notice_preserves_exact_lines_in_plain_and_json_modes() {
         "first approved line",
         "second approved line — local",
         "third approved line",
-        "fourth approved line → https://pro.ctx.rs/code",
+        "fourth approved line → https://companion.example.test/opaque-code",
     ];
     let expected = lines.join("\n");
 
@@ -19,7 +19,7 @@ fn trusted_progress_notice_preserves_exact_lines_in_plain_and_json_modes() {
         )),
     );
     ProgressReporter::new(&mut ui, ProgressMode::Plain, false, "setup", 0)
-        .notice("pro", &lines)
+        .notice("companion", &lines)
         .unwrap();
     assert_eq!(stderr_capture.text(), format!("{expected}\n"));
 
@@ -32,20 +32,22 @@ fn trusted_progress_notice_preserves_exact_lines_in_plain_and_json_modes() {
         )),
     );
     ProgressReporter::new(&mut ui, ProgressMode::Json, false, "setup", 0)
-        .notice("pro", &lines)
+        .notice("companion", &lines)
         .unwrap();
     let event: serde_json::Value = serde_json::from_str(stderr_capture.text().trim()).unwrap();
-    assert_eq!(event["phase"], "pro");
+    assert_eq!(event["phase"], "companion");
     assert_eq!(event["message"], expected);
 }
 
 #[test]
 fn live_notice_is_composed_once_into_every_later_refresh_frame() {
     let disclosure = [
-        "ctx pro is a US$20/mo paid add-on for “git blame, but for agent sessions.”",
-        "Not a cloud service — all your agent history stays local.",
-        "You get a 14-day free trial — no account or card required.",
-        "To keep it after May 18: create an account and add a card → https://pro.ctx.rs/code",
+        "first trusted companion line",
+        "second trusted companion line",
+        "third trusted companion line",
+        "",
+        "trusted action:",
+        "https://companion.example.test/opaque-code",
     ];
     let mut notice = Document::new();
     notice.push_blank();
@@ -70,7 +72,7 @@ fn live_notice_is_composed_once_into_every_later_refresh_frame() {
         );
         let rendered = frame.render_plain();
         assert_eq!(rendered.matches(disclosure[0]).count(), 1, "{rendered}");
-        assert_eq!(rendered.matches(disclosure[3]).count(), 1, "{rendered}");
+        assert_eq!(rendered.matches(disclosure[5]).count(), 1, "{rendered}");
         let notice_end = frame.lines().len() - usize::from(terminal);
         assert_eq!(
             &frame.lines()[notice_end - notice.lines().len()..notice_end],
@@ -148,12 +150,14 @@ fn hosted_json_live_progress_keeps_stdout_machine_clean() {
         );
         reporter
             .notice(
-                "pro",
+                "companion",
                 &[
-                    "ctx pro is a US$20/mo paid add-on for “git blame, but for agent sessions.”",
-                    "Not a cloud service — all your agent history stays local.",
-                    "You get a 14-day free trial — no account or card required.",
-                    "To keep it after August 28: create an account and add a card → https://pro.ctx.rs/code",
+                    "first trusted companion line",
+                    "second trusted companion line",
+                    "third trusted companion line",
+                    "",
+                    "trusted action:",
+                    "https://companion.example.test/opaque-code",
                 ],
             )
             .unwrap();
@@ -169,8 +173,11 @@ fn hosted_json_live_progress_keeps_stdout_machine_clean() {
     let stderr = stderr_capture.text();
     assert!(stderr.contains("Reading your agent history"), "{stderr:?}");
     assert!(
-        stderr.contains("all your agent history stays local"),
+        stderr.contains("second trusted companion line"),
         "{stderr:?}"
     );
-    assert!(stderr.contains("https://pro.ctx.rs/code"), "{stderr:?}");
+    assert!(
+        stderr.contains("https://companion.example.test/opaque-code"),
+        "{stderr:?}"
+    );
 }

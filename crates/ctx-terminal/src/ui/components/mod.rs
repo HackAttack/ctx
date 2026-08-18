@@ -15,7 +15,7 @@ pub use empty_state::{empty_state, EmptyState};
 pub use evidence::{evidence_list, Evidence};
 pub use fields::{fields, Field};
 pub use hint::{hint, Action, Hint};
-pub use layout::is_copyable_atom;
+pub use layout::{display_width, is_copyable_atom};
 pub use outcome::{outcome, Outcome, OutcomeState};
 pub use progress::{progress, Progress};
 pub use refresh_progress::{

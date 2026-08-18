@@ -177,3 +177,66 @@ fn managed_fresh_default_preserves_core_only_empty_publication_wait() {
     assert!(!should_wait_for_fresh_empty_publication(true, &empty));
     assert!(!should_wait_for_fresh_empty_publication(false, &nonempty));
 }
+
+#[test]
+fn managed_setup_presentation_options_are_closed_and_bounded() {
+    let options = json!({
+        "catalog_only": false,
+        "defer_fresh_empty_wait": true,
+        "no_daemon": false,
+        "notice_lines": ["approved line", "", "https://companion.example.test/opaque"],
+        "progress": "auto",
+        "semantic": false,
+        "wait": false,
+    });
+    let parsed = parse_options(Operation::CoreSetup, &options).unwrap();
+    let Options::Setup {
+        defer_fresh_empty_wait,
+        notice_lines,
+        progress,
+        ..
+    } = parsed
+    else {
+        panic!("expected setup options")
+    };
+    assert!(defer_fresh_empty_wait);
+    assert_eq!(notice_lines[2], "https://companion.example.test/opaque");
+    assert_eq!(progress, crate::progress::ProgressArg::Auto);
+
+    let mut invalid = options.clone();
+    invalid["notice_lines"] = json!(["line\nforgery"]);
+    assert!(parse_options(Operation::CoreSetup, &invalid).is_err());
+    invalid = options;
+    invalid["progress"] = json!("verbose");
+    assert!(parse_options(Operation::CoreSetup, &invalid).is_err());
+
+    let mut oversized = json!({
+        "catalog_only": false,
+        "defer_fresh_empty_wait": true,
+        "no_daemon": false,
+        "notice_lines": ["x".repeat(513)],
+        "progress": "auto",
+        "semantic": false,
+        "wait": false,
+    });
+    assert!(parse_options(Operation::CoreSetup, &oversized).is_err());
+    oversized["notice_lines"] = json!(["x".repeat(512)]);
+    assert!(parse_options(Operation::CoreSetup, &oversized).is_ok());
+}
+
+#[test]
+fn oversized_live_notice_degrades_to_plain_progress_before_cursor_rendering() {
+    let lines = vec!["one line wider than a narrow terminal".to_owned()];
+    assert_eq!(
+        progress_mode_for_notice(crate::progress::ProgressArg::Auto, Some(32), &lines),
+        crate::progress::ProgressArg::Plain
+    );
+    assert_eq!(
+        progress_mode_for_notice(crate::progress::ProgressArg::Auto, Some(80), &lines),
+        crate::progress::ProgressArg::Auto
+    );
+    assert_eq!(
+        progress_mode_for_notice(crate::progress::ProgressArg::Plain, Some(32), &lines),
+        crate::progress::ProgressArg::Plain
+    );
+}
