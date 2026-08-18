@@ -300,7 +300,7 @@ pub(crate) fn codex_source_kind(source: &Value) -> Option<String> {
         .and_then(|object| object.keys().next().cloned())
 }
 pub(crate) fn codex_session_id_from_path(path: &Path) -> Option<String> {
-    let stem = path.file_stem()?.to_str()?;
+    let stem = codex_session_file_stem(path)?;
     if stem.len() >= 36 {
         let tail = &stem[stem.len() - 36..];
         if tail.chars().all(|ch| ch.is_ascii_hexdigit() || ch == '-') {
@@ -308,4 +308,22 @@ pub(crate) fn codex_session_id_from_path(path: &Path) -> Option<String> {
         }
     }
     (!stem.trim().is_empty()).then(|| stem.to_owned())
+}
+
+pub(crate) fn is_codex_session_rollout_path(path: &Path) -> bool {
+    path.file_name()
+        .and_then(|name| name.to_str())
+        .is_some_and(|name| name.ends_with(".jsonl") || name.ends_with(".jsonl.zst"))
+}
+
+pub(crate) fn is_codex_compressed_session_rollout_path(path: &Path) -> bool {
+    path.file_name()
+        .and_then(|name| name.to_str())
+        .is_some_and(|name| name.ends_with(".jsonl.zst"))
+}
+
+pub(crate) fn codex_session_file_stem(path: &Path) -> Option<&str> {
+    let name = path.file_name()?.to_str()?;
+    name.strip_suffix(".jsonl.zst")
+        .or_else(|| name.strip_suffix(".jsonl"))
 }

@@ -36,4 +36,8 @@ impl JsonlSourceIdentity {
     pub fn source_path(&self) -> &PathBuf {
         &self.source_path
     }
+
+    pub(crate) fn has_compressed_physical_ordinals(&self) -> bool {
+        self.policy_revision.ends_with(":standard-zstd-jsonl-v1")
+    }
 }

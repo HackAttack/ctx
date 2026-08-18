@@ -149,7 +149,8 @@ pub use framing::{
 use identity::observe_metadata;
 pub use physical::{
     JsonlPhysicalDigest, JsonlPhysicalEncoding, JsonlPhysicalRecord, JsonlPhysicalStream,
-    JsonlPhysicalStreamPosition,
+    JsonlPhysicalStreamPosition, MAX_STANDARD_ZSTD_COMPRESSED_BYTES,
+    MAX_STANDARD_ZSTD_DECOMPRESSED_BYTES,
 };
 use revalidation::hash_prefix;
 pub use revalidation::revalidate_frozen_prefix;

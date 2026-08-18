@@ -72,6 +72,15 @@ pub fn provider_source_for_path(
 
     let source_format = match provider {
         CaptureProvider::Codex if is_directory => "codex_session_jsonl_tree",
+        CaptureProvider::Codex
+            if observed == Ok(SourcePathKind::File)
+                && path
+                    .file_name()
+                    .and_then(|name| name.to_str())
+                    .is_some_and(|name| name.ends_with(".jsonl.zst")) =>
+        {
+            "codex_session_jsonl"
+        }
         CaptureProvider::Codex if observed == Ok(SourcePathKind::File) => {
             let Some(source_format) = codex_explicit_jsonl_source_format(&path) else {
                 return unsupported_source(spec, path, CODEX_AMBIGUOUS_JSONL_REASON);
@@ -311,9 +320,6 @@ fn exact_current_unsupported_reason(
     }
 
     match provider {
-        CaptureProvider::Codex if is_named_regular_file(path, |name| name.ends_with(".jsonl.zst")) => {
-            Some("Codex compressed .jsonl.zst history is detected but unsupported")
-        }
         CaptureProvider::KiroCli if is_current_kiro_shape(path, kind?) => {
             Some("Kiro ACP/v3 session history is detected but unsupported")
         }

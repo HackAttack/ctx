@@ -206,6 +206,7 @@ impl<E: JsonlFamilyError> JsonlReader<E> {
         let mut unchanged_checkpoint = None;
         let mut semantic_append_resume = None;
         let mut used_direct_append = false;
+        let physical_suffix_resume = physical_encoding != JsonlPhysicalEncoding::StandardZstdJsonl;
 
         if let Some(previous) = previous.filter(|checkpoint| checkpoint.supports(&identity)) {
             let previous_observation = previous.source_observation();
@@ -223,7 +224,10 @@ impl<E: JsonlFamilyError> JsonlReader<E> {
                 source_change = JsonlSourceChange::Unchanged;
                 skip_scan = true;
                 unchanged_checkpoint = Some(previous.clone());
-            } else if same_file && observation.length() >= previous.complete_prefix_end() {
+            } else if physical_suffix_resume
+                && same_file
+                && observation.length() >= previous.complete_prefix_end()
+            {
                 if direct_append
                     && previous.terminal()
                     && observation.length() > previous.source_observation().length()

@@ -47,3 +47,4 @@ ctx-history-providers-sqlite-inventory = { path = "../ctx-history-providers-sqli
 ctx-history-providers-sqlite-selected = { path = "../ctx-history-providers-sqlite-selected", features = ["test-support"] }
 ctx-history-source-io = { path = "../ctx-history-source-io", features = ["test-support"] }
 rusqlite.workspace = true
+zstd.workspace = true

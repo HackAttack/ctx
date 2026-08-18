@@ -244,7 +244,9 @@ fn observe_membership_directory<E: JsonlFamilyError>(
                     || source_path
                         .file_name()
                         .and_then(|name| name.to_str())
-                        .is_some_and(|name| name.ends_with(".jsonl.zstd")) =>
+                        .is_some_and(|name| {
+                            name.ends_with(".jsonl.zstd") || name.ends_with(".jsonl.zst")
+                        }) =>
             {
                 opened.revalidate_same_object_leaf()?;
                 if state

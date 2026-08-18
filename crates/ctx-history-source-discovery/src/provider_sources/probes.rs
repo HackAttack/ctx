@@ -54,7 +54,12 @@ pub(super) fn default_location_import_probe(
         CaptureProvider::Codex if location.source_format == "codex_history_jsonl" => {
             path_is_file_probe(path)
         }
-        CaptureProvider::Codex => has_jsonl_file_under_matching(path, 10_000, |_| true),
+        CaptureProvider::Codex => has_file_under_matching(path, 10_000, |candidate| {
+            candidate
+                .file_name()
+                .and_then(|name| name.to_str())
+                .is_some_and(|name| name.ends_with(".jsonl") || name.ends_with(".jsonl.zst"))
+        }),
         CaptureProvider::GrokBuild => has_jsonl_file_under_matching(path, 10_000, |candidate| {
             candidate.file_name().and_then(|name| name.to_str()) == Some("updates.jsonl")
         }),

@@ -174,12 +174,7 @@ pub(crate) fn discover_codex_deferred_session_tree_inventory_v0(
 pub(super) fn bind_codex_partial_member_v0(
     member: &JsonlFamilyOpenedMember<'_>,
 ) -> CodexSourceBackedResultV0<(CodexCatalogSource, SourceKey, String)> {
-    if member
-        .source_path()
-        .extension()
-        .and_then(|value| value.to_str())
-        != Some("jsonl")
-    {
+    if !crate::provider::codex::catalog::is_codex_session_rollout_path(member.source_path()) {
         return Err(CodexSourceBackedErrorV0::IncompleteCatalog {
             rejected: 1,
             failed: 0,
@@ -311,10 +306,9 @@ fn discover_codex_metadata_inventory_root_v0(
                     child_directories.push((relative_path, depth.saturating_add(1)));
                 }
                 OpenedProviderSourcePath::File(opened)
-                    if source_path
-                        .extension()
-                        .and_then(|extension| extension.to_str())
-                        == Some("jsonl") =>
+                    if crate::provider::codex::catalog::is_codex_session_rollout_path(
+                        &source_path,
+                    ) =>
                 {
                     ctx_history_source_io::provider_path_identity(&source_path)
                         .map_err(CaptureError::from)?;
@@ -398,7 +392,7 @@ fn catalog_source_from_path_hint(
 }
 
 fn codex_canonical_native_session_id_path_hint(path: &Path) -> Option<String> {
-    let stem = path.file_stem()?.to_str()?;
+    let stem = crate::provider::codex::catalog::codex_session_file_stem(path)?;
     if stem.len() >= 36 {
         let tail = &stem[stem.len() - 36..];
         if tail
@@ -415,7 +409,7 @@ pub(super) fn codex_native_session_id_path_hint(path: &Path) -> Option<String> {
     if let Some(native_session_id) = codex_canonical_native_session_id_path_hint(path) {
         return Some(native_session_id);
     }
-    let stem = path.file_stem()?.to_str()?;
+    let stem = crate::provider::codex::catalog::codex_session_file_stem(path)?;
     (!stem.trim().is_empty()).then(|| stem.to_owned())
 }
 

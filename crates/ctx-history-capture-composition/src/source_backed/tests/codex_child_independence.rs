@@ -1070,6 +1070,8 @@ fn codex_incremental_4097th_terminal_saturates_and_replaces_fail_open() {
     assert_current_provider_checkpoint(&saturated_checkpoint);
 }
 
+#[path = "codex_child_independence/compressed.rs"]
+mod compressed;
 #[path = "codex_child_independence/lifecycle.rs"]
 mod lifecycle;
 #[path = "codex_child_independence/repository.rs"]

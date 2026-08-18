@@ -626,11 +626,6 @@ fn exact_current_incompatible_explicit_paths_are_detection_only_unsupported() {
     let temp = tempdir();
     let cases = [
         (
-            CaptureProvider::Codex,
-            temp.path().join(".codex/sessions/session.jsonl.zst"),
-            "compressed .jsonl.zst",
-        ),
-        (
             CaptureProvider::OpenClaw,
             temp.path()
                 .join(".openclaw/agents/main/agent/openclaw-agent.sqlite"),
@@ -809,6 +804,12 @@ fn explicit_codex_files_use_bounded_schema_admission_not_filenames() {
         r#"{"timestamp":"2026-06-24T10:00:00Z","type":"session_meta","payload":{"id":"rollout-session"}}"#,
     )
     .unwrap();
+    let compressed_rollout = temp.path().join("rollout-session.jsonl.zst");
+    std::fs::write(
+        &compressed_rollout,
+        b"classification does not decode bodies",
+    )
+    .unwrap();
 
     let prompt = provider_source_for_path(CaptureProvider::Codex, prompt_named_rollout);
     assert_eq!(prompt.status, ProviderSourceStatus::Available);
@@ -817,6 +818,12 @@ fn explicit_codex_files_use_bounded_schema_admission_not_filenames() {
     let rollout = provider_source_for_path(CaptureProvider::Codex, rollout_named_history);
     assert_eq!(rollout.status, ProviderSourceStatus::Available);
     assert_eq!(rollout.source_format, "codex_session_jsonl");
+
+    let compressed = provider_source_for_path(CaptureProvider::Codex, compressed_rollout);
+    assert_eq!(compressed.status, ProviderSourceStatus::Available);
+    assert_eq!(compressed.import_support, ProviderImportSupport::Native);
+    assert_eq!(compressed.source_kind, ProviderSourceKind::NativeHistory);
+    assert_eq!(compressed.source_format, "codex_session_jsonl");
 }
 
 #[test]
