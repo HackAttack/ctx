@@ -1,3 +1,7 @@
+use super::hosted_pair_install::{
+    acquire_hosted_install_lock, hosted_source_path, replace_hosted_file, stage_hosted_bytes,
+    HostedInstallMarker,
+};
 use super::*;
 
 #[test]
@@ -28,6 +32,52 @@ fn hosted_pair_sources_must_be_absolute_regular_files() {
     let file = root.path().join("artifact");
     std::fs::write(&file, b"artifact").unwrap();
     assert_eq!(hosted_source_path(file.as_os_str(), "test").unwrap(), file);
+}
+
+#[test]
+fn hosted_pair_replacement_is_atomic_and_idempotently_repairable() {
+    let root = tempfile::tempdir().unwrap();
+    let target = root.path().join("libexec/ctx-pro");
+    std::fs::create_dir_all(target.parent().unwrap()).unwrap();
+    std::fs::write(&target, b"old-pro").unwrap();
+
+    let abandoned = stage_hosted_bytes(b"abandoned", &target, 0o755, "test Pro").unwrap();
+    let restaged = stage_hosted_bytes(b"protocol-v3-pro", &target, 0o755, "test Pro").unwrap();
+    assert_eq!(abandoned, restaged);
+    replace_hosted_file(&restaged, &target, "test Pro").unwrap();
+
+    for _ in 0..2 {
+        let staged = stage_hosted_bytes(b"protocol-v3-pro", &target, 0o755, "test Pro").unwrap();
+        replace_hosted_file(&staged, &target, "test Pro").unwrap();
+        assert_eq!(std::fs::read(&target).unwrap(), b"protocol-v3-pro");
+        assert!(!staged.exists());
+    }
+}
+
+#[test]
+fn hosted_pair_installation_is_serialized_without_persistent_lock_state() {
+    let root = tempfile::tempdir().unwrap();
+    let first = acquire_hosted_install_lock(root.path()).unwrap();
+    assert!(acquire_hosted_install_lock(root.path()).is_err());
+    drop(first);
+    assert!(acquire_hosted_install_lock(root.path()).is_ok());
+}
+
+#[test]
+fn hosted_marker_channel_is_distribution_only() {
+    let staging = HostedInstallMarker {
+        schema_version: 1,
+        manager: "ctx-hosted-installer".to_owned(),
+        install_path: "/tmp/ctx".to_owned(),
+        platform: "linux-x64".to_owned(),
+        channel: "stable".to_owned(),
+        sha256: "1".repeat(64),
+        staging_dogfood: true,
+    };
+    assert_eq!(
+        staging.release_channel().unwrap(),
+        ctx_companion_bridge::ReleaseChannel::Staging
+    );
 }
 
 #[test]

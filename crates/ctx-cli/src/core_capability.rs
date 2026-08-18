@@ -16,14 +16,14 @@ use ctx_companion_bridge::{
 };
 use ctx_history_cli::HistoryConfigPort;
 use ctx_upgrade_engine::{
-    managed_install_marker_for_current_exe, ManagedInstallMarker, ManagedPairActivation,
     ManagedPairComponentIdentity, ManagedPairEngine, ManagedPairTarget,
     ManagedPairTransactionStatus, ManagedPairVerifier, VerifiedManagedPairIdentity,
-    MANAGED_PAIR_ENVELOPE_RELATIVE_PATH,
 };
 use serde_json::{json, Value};
 #[cfg(test)]
 use sha2::{Digest as _, Sha256};
+
+mod hosted_pair_install;
 
 const INVOCATION: &str = "--ctx-core-capability-v1";
 const HOSTED_PAIR_INSTALL_INVOCATION: &str = "--ctx-core-hosted-pair-install-v1";
@@ -97,7 +97,7 @@ pub(crate) fn intercept(arguments: &[std::ffi::OsString]) -> Option<ExitCode> {
         .get(1)
         .is_some_and(|value| value == HOSTED_PAIR_INSTALL_INVOCATION)
     {
-        return Some(match run_hosted_pair_install(arguments) {
+        return Some(match hosted_pair_install::run(arguments) {
             Ok(()) => ExitCode::SUCCESS,
             Err(error) => {
                 eprintln!("{error:#}");
@@ -130,114 +130,6 @@ pub(crate) fn intercept(arguments: &[std::ffi::OsString]) -> Option<ExitCode> {
         Ok(()) => ExitCode::SUCCESS,
         Err(_) => ExitCode::FAILURE,
     })
-}
-
-/// Completes hosted distribution from an already installed, signed Core.
-/// Artifact acquisition remains in the thin installer; signature verification,
-/// fixed-slot construction, rollback protection, and activation live here.
-fn run_hosted_pair_install(arguments: &[std::ffi::OsString]) -> Result<()> {
-    if arguments.len() != 4 {
-        return Err(anyhow!("invalid hosted managed-pair install invocation"));
-    }
-    let envelope = hosted_source_path(&arguments[2], "signed envelope")?;
-    let companion = hosted_source_path(&arguments[3], "companion artifact")?;
-    let marker = match managed_install_marker_for_current_exe()? {
-        ManagedInstallMarker::Valid(marker) => marker,
-        ManagedInstallMarker::Absent => {
-            return Err(anyhow!(
-                "hosted pair installation requires a verified hosted Core install"
-            ));
-        }
-        ManagedInstallMarker::Invalid { reason } => {
-            return Err(anyhow!("hosted Core install identity is invalid: {reason}"));
-        }
-    };
-    let core = marker.install_path;
-    let expected_core_name = if cfg!(windows) { "ctx.exe" } else { "ctx" };
-    let bin = core
-        .parent()
-        .filter(|path| path.file_name() == Some(std::ffi::OsStr::new("bin")))
-        .filter(|_| core.file_name() == Some(std::ffi::OsStr::new(expected_core_name)))
-        .ok_or_else(|| {
-            anyhow!("hosted pair installation requires <root>/bin/{expected_core_name}")
-        })?;
-    let install_root = bin
-        .parent()
-        .ok_or_else(|| anyhow!("installed Core has no installation root"))?;
-    let verifier = CoreManagedPairVerifier::new()?;
-    let engine = ManagedPairEngine::new(install_root.to_path_buf())?;
-    let attempt = engine.begin(&verifier)?;
-    let candidate = attempt.candidate_root();
-    let candidate_core = candidate.join("bin").join(expected_core_name);
-    let candidate_companion = candidate.join("libexec").join(if cfg!(windows) {
-        "ctx-pro.exe"
-    } else {
-        "ctx-pro"
-    });
-    let candidate_envelope = candidate.join(MANAGED_PAIR_ENVELOPE_RELATIVE_PATH);
-    let result = (|| -> Result<VerifiedManagedPairIdentity> {
-        copy_hosted_source(&core, &candidate_core, "installed Core")?;
-        copy_hosted_source(&companion, &candidate_companion, "companion artifact")?;
-        copy_hosted_source(&envelope, &candidate_envelope, "signed envelope")?;
-        let prepared = engine.stage_attempt(attempt.attempt_id(), &verifier)?;
-        match engine.activate(&prepared, &verifier)? {
-            ManagedPairActivation::Activated => {}
-            ManagedPairActivation::PostExitRequired { .. } => {
-                return Err(anyhow!(
-                    "hosted managed-pair activation requires a post-exit continuation"
-                ));
-            }
-        }
-        engine.validate_active(&verifier)
-    })();
-    let identity = match result {
-        Ok(identity) => identity,
-        Err(error) => {
-            return match engine.abort(attempt.attempt_id()) {
-                Ok(_) => Err(error),
-                Err(abort) => Err(anyhow!(
-                    "hosted managed-pair installation failed: {error:#}; abort failed: {abort:#}"
-                )),
-            };
-        }
-    };
-    let receipt = json!({
-        "command": "hosted_managed_pair_install",
-        "release_name": identity.release_name(),
-        "rollback_generation": identity.rollback_generation(),
-        "schema_version": 1,
-        "status": "committed",
-    });
-    let receipt = serde_json::to_vec_pretty(&receipt)
-        .context("serialize hosted managed-pair install receipt")?;
-    write_response_frame(std::io::stdout().lock(), &receipt)
-}
-
-fn hosted_source_path(value: &std::ffi::OsStr, label: &str) -> Result<PathBuf> {
-    let path = PathBuf::from(value);
-    if !path.is_absolute()
-        || path
-            .components()
-            .any(|component| matches!(component, Component::CurDir | Component::ParentDir))
-    {
-        return Err(anyhow!(
-            "hosted {label} path must be normalized and absolute"
-        ));
-    }
-    let metadata =
-        std::fs::symlink_metadata(&path).with_context(|| format!("inspect hosted {label}"))?;
-    if metadata.file_type().is_symlink() || !metadata.is_file() {
-        return Err(anyhow!("hosted {label} must be a regular file"));
-    }
-    Ok(path)
-}
-
-fn copy_hosted_source(source: &Path, target: &Path, label: &str) -> Result<()> {
-    if std::fs::symlink_metadata(target).is_ok() {
-        return Err(anyhow!("managed-pair candidate {label} already exists"));
-    }
-    std::fs::copy(source, target).with_context(|| format!("stage hosted managed-pair {label}"))?;
-    Ok(())
 }
 
 fn run() -> Result<()> {
@@ -745,11 +637,6 @@ fn engine_identity(identity: &SignedManagedPairIdentity) -> Result<VerifiedManag
 }
 
 fn managed_pair_engine() -> Result<ManagedPairEngine> {
-    if !crate::companion::managed_pair_enabled() {
-        return Err(anyhow!(
-            "managed-pair capability is unavailable in a Core-only build"
-        ));
-    }
     let root = std::env::current_dir().context("resolve managed-pair install root")?;
     ManagedPairEngine::new(root)
 }

@@ -117,66 +117,19 @@ impl ReleaseChannel {
 }
 
 #[derive(Clone, Debug)]
-pub struct CoreBuildIdentity {
-    source_revision: String,
-}
-
-impl CoreBuildIdentity {
-    pub fn new(source_revision: impl Into<String>) -> Result<Self, BridgeError> {
-        let source_revision = source_revision.into();
-        if !is_lower_hex(&source_revision, 40) {
-            return Err(verification("current Core source revision is malformed"));
-        }
-        Ok(Self { source_revision })
-    }
-}
-
-#[derive(Clone, Copy, Debug)]
-pub struct CompatibilityIdentity {
-    invocation_fingerprint: Sha256Digest,
-    core_capability_fingerprint: Sha256Digest,
-}
-
-impl CompatibilityIdentity {
-    pub const fn new(
-        invocation_fingerprint: Sha256Digest,
-        core_capability_fingerprint: Sha256Digest,
-    ) -> Self {
-        Self {
-            invocation_fingerprint,
-            core_capability_fingerprint,
-        }
-    }
-}
-
-#[derive(Clone, Debug)]
 pub struct ManagedPairExpectations {
     channel: ReleaseChannel,
-    core: CoreBuildIdentity,
-    compatibility: CompatibilityIdentity,
 }
 
 impl ManagedPairExpectations {
-    pub const fn new(
-        channel: ReleaseChannel,
-        core: CoreBuildIdentity,
-        compatibility: CompatibilityIdentity,
-    ) -> Self {
-        Self {
-            channel,
-            core,
-            compatibility,
-        }
+    pub const fn new(channel: ReleaseChannel) -> Self {
+        Self { channel }
     }
 
     /// This identity is injected only after the signed manifest has been
     /// verified against the corresponding managed-pair expectation.
     pub const fn channel(&self) -> ReleaseChannel {
         self.channel
-    }
-
-    pub const fn core(&self) -> &CoreBuildIdentity {
-        &self.core
     }
 }
 
@@ -352,14 +305,10 @@ fn validate_manifest_identity(
     }
     if manifest.snapshot.contract != "ctx-managed-pair-snapshot-v1"
         || parse_digest(&manifest.snapshot.fingerprint).is_err()
-        || parse_digest(&manifest.compatibility.invocation_fingerprint)?
-            != expected.compatibility.invocation_fingerprint
-        || parse_digest(&manifest.compatibility.core_capability_fingerprint)?
-            != expected.compatibility.core_capability_fingerprint
+        || parse_digest(&manifest.compatibility.invocation_fingerprint).is_err()
+        || parse_digest(&manifest.compatibility.core_capability_fingerprint).is_err()
     {
-        return Err(verification(
-            "manifest compatibility does not match current Core",
-        ));
+        return Err(verification("manifest compatibility metadata is malformed"));
     }
     validate_component_document(
         &manifest.components.core,
@@ -367,7 +316,6 @@ fn validate_manifest_identity(
         target.core_artifact,
         target.core_slot,
         target.core_rust_target,
-        None,
     )?;
     validate_component_document(
         &manifest.components.companion,
@@ -375,7 +323,6 @@ fn validate_manifest_identity(
         target.companion_artifact,
         target.companion_slot,
         target.companion_rust_target,
-        None,
     )
 }
 
@@ -414,7 +361,6 @@ fn validate_component_document(
     artifact: &str,
     slot: &str,
     rust_target: &str,
-    expected_core: Option<&CoreBuildIdentity>,
 ) -> Result<(), BridgeError> {
     let signed_digest = parse_digest(&component.sha256)?;
     if component.artifact_name != artifact
@@ -425,14 +371,13 @@ fn validate_component_document(
     {
         return Err(verification("signed component identity is malformed"));
     }
-    validate_build_identity(&component.build_identity, kind, rust_target, expected_core)
+    validate_build_identity(&component.build_identity, kind, rust_target)
 }
 
 fn validate_build_identity(
     identity: &BuildIdentityDocument,
     kind: &str,
     rust_target: &str,
-    expected_core: Option<&CoreBuildIdentity>,
 ) -> Result<(), BridgeError> {
     if identity.component != kind
         || identity.rust_target != rust_target
@@ -440,13 +385,6 @@ fn validate_build_identity(
         || parse_digest(&identity.build_fingerprint).is_err()
     {
         return Err(verification("signed component build identity is malformed"));
-    }
-    if let Some(expected) = expected_core {
-        if identity.source_revision != expected.source_revision {
-            return Err(verification(
-                "signed Core build identity does not match this process",
-            ));
-        }
     }
     Ok(())
 }
@@ -663,7 +601,6 @@ mod state_tests {
             target.core_artifact,
             target.core_slot,
             target.core_rust_target,
-            None,
         )
         .is_ok());
         let accepted_state = ManagedPairComponentIdentityDocument {
@@ -679,7 +616,6 @@ mod state_tests {
             target.core_artifact,
             target.core_slot,
             target.core_rust_target,
-            None,
         )
         .is_err());
         let rejected_state = ManagedPairComponentIdentityDocument {

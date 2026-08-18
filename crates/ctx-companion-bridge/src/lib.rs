@@ -34,10 +34,9 @@ pub use process::{ExitClass, TerminationReason};
 pub use protocol::{InstalledCompanion, ProtocolVersion, CORE_PRO_PROTOCOL_VERSION};
 pub use request::{CancellationToken, CliRequest, MaintenanceRequest, McpRequest};
 pub use verifier::{
-    verify_signed_managed_pair_envelope, CompatibilityIdentity, CoreBuildIdentity,
-    ManagedPairExpectations, ReleaseChannel, SignedManagedPairComponentIdentity,
-    SignedManagedPairIdentity, SignedManagedPairTarget, MANAGED_PAIR_ENVELOPE_FILENAME,
-    MANAGED_PAIR_STATE_FILENAME,
+    verify_signed_managed_pair_envelope, ManagedPairExpectations, ReleaseChannel,
+    SignedManagedPairComponentIdentity, SignedManagedPairIdentity, SignedManagedPairTarget,
+    MANAGED_PAIR_ENVELOPE_FILENAME, MANAGED_PAIR_STATE_FILENAME,
 };
 
 use process::{ProcessExit, ProcessOutput};

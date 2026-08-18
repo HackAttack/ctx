@@ -147,8 +147,16 @@ const COMPANION_ROUTE: TestOwner = TestOwner::behavioral(
 );
 const CORE_CAPABILITY_RESPONSE: TestOwner = TestOwner::behavioral(
     "src/core_capability/tests.rs::capability_response_is_one_exact_flushed_json_frame",
-    &["src/core_capability.rs"],
+    &[
+        "src/core_capability.rs",
+        "src/core_capability/hosted_pair_install.rs",
+    ],
     &["write_response_frame", "assert_eq"],
+);
+const HOSTED_PAIR_INSTALL_ERROR: TestOwner = TestOwner::behavioral(
+    "src/core_capability/tests.rs::only_the_exact_hidden_argv_is_intercepted",
+    &["src/core_capability.rs"],
+    &["intercept", "HOSTED_PAIR_INSTALL_INVOCATION", "is_none"],
 );
 const CARGO_DIRECTIVE: &str = "Cargo build-script protocol directive";
 const JSON_PROTOCOL: &str = "documented JSON or JSONL machine-output contract";
@@ -166,6 +174,7 @@ const ENGINE_BUILD: &str = "crates/ctx-upgrade-engine/build.rs";
 const ANALYTICS_SENDER: &str = "src/analytics.rs";
 const COMPANION: &str = "src/companion.rs";
 const CORE_CAPABILITY: &str = "src/core_capability.rs";
+const HOSTED_PAIR_INSTALL: &str = "src/core_capability/hosted_pair_install.rs";
 const LIST_EVENTS: &str = "crates/ctx-history-cli/src/list_events.rs";
 const SOURCE_INDEX_SHOW: &str = "crates/ctx-history-cli/src/source_index/show.rs";
 const SOURCE_INDEX_SHARED: &str = "crates/ctx-history-cli/src/source_index/shared.rs";
@@ -307,12 +316,28 @@ pub(super) const ALLOWLIST: &[AllowEntry] = &[
         COMPANION_ROUTE
     ),
     allow!(
+        HOSTED_PAIR_INSTALL,
+        "run#1@1ef2a6ac56c71cd9",
+        StdoutConstructor,
+        Infrastructure,
+        "bounded Core-capability response stream",
+        CORE_CAPABILITY_RESPONSE
+    ),
+    allow!(
         CORE_CAPABILITY,
         "run#1@1ef2a6ac56c71cd9",
         StdoutConstructor,
         Infrastructure,
         "bounded Core-capability response stream",
         CORE_CAPABILITY_RESPONSE
+    ),
+    allow!(
+        CORE_CAPABILITY,
+        "intercept#1@b829ec991f891e23",
+        PrintMacro,
+        JustifiedPlainHuman,
+        "bounded hidden hosted-install failure diagnostic",
+        HOSTED_PAIR_INSTALL_ERROR
     ),
     allow!(
         CORE_CAPABILITY,

@@ -9,11 +9,10 @@ use std::{
 
 use ctx_companion_bridge::{
     BridgeError, BridgeLimits, CancellationToken, CliRequest, CompanionBridge,
-    CompanionEnvironment, CompatibilityIdentity, CoreBuildIdentity, EnvironmentKey, ExitClass,
-    InstalledCompanion, LimitConfiguration, MaintenanceRequest, ManagedPairExpectations,
-    McpRequest, ProtocolVersion, ReleaseChannel, Sha256Digest, TerminationReason,
-    MAX_ADMISSION_WAIT, MAX_ARGUMENTS, MAX_CAPTURED_WALL_TIME, MAX_CONCURRENT_PROCESSES,
-    MAX_CONTROL_BYTES, MAX_ENVIRONMENT_ENTRIES, MAX_STDERR_BYTES,
+    CompanionEnvironment, EnvironmentKey, ExitClass, InstalledCompanion, LimitConfiguration,
+    MaintenanceRequest, ManagedPairExpectations, McpRequest, ProtocolVersion, ReleaseChannel,
+    TerminationReason, MAX_ADMISSION_WAIT, MAX_ARGUMENTS, MAX_CAPTURED_WALL_TIME,
+    MAX_CONCURRENT_PROCESSES, MAX_CONTROL_BYTES, MAX_ENVIRONMENT_ENTRIES, MAX_STDERR_BYTES,
 };
 use serde_json::{json, Value};
 
@@ -219,27 +218,22 @@ fn companion_cancellation() -> Result<&'static CancellationToken, CompanionLaunc
 
 fn installed_companion() -> Result<InstalledCompanion, CompanionLaunchError> {
     let core = std::env::current_exe().map_err(|_| CompanionLaunchError::Unavailable)?;
-    let managed_build = managed_pair_enabled();
-    let explicit_pro = (!managed_build)
-        .then(|| std::env::var_os(PRO_PATH_OVERRIDE_ENVIRONMENT))
-        .flatten()
-        .map(PathBuf::from);
-    installed_companion_from_parts(&core, explicit_pro, managed_build)
+    let explicit_pro = std::env::var_os(PRO_PATH_OVERRIDE_ENVIRONMENT).map(PathBuf::from);
+    installed_companion_from_parts(&core, explicit_pro)
 }
 
 fn installed_companion_from_parts(
     core: &Path,
     explicit_pro: Option<PathBuf>,
-    managed_build: bool,
 ) -> Result<InstalledCompanion, CompanionLaunchError> {
     if !core.is_absolute() {
         return Err(CompanionLaunchError::InvalidLaunch {
             reason: "Core executable path must be absolute",
         });
     }
-    let pro = match (managed_build, explicit_pro) {
-        (false, Some(pro)) => source_override_path(pro)?,
-        _ => official_companion_path(core)?,
+    let pro = match explicit_pro {
+        Some(pro) => source_override_path(pro)?,
+        None => official_companion_path(core)?,
     };
     Ok(InstalledCompanion::new(pro))
 }
@@ -274,33 +268,25 @@ fn source_override_path(pro: PathBuf) -> Result<PathBuf, CompanionLaunchError> {
 }
 
 pub(crate) fn managed_pair_expectations() -> Result<ManagedPairExpectations, CompanionRouteError> {
-    let channel = match option_env!("CTX_MANAGED_PAIR_CHANNEL") {
-        Some("stable") => ReleaseChannel::Stable,
-        Some("staging") => ReleaseChannel::Staging,
-        Some(_) => return Err(CompanionRouteError::Incompatible),
-        None => return Err(CompanionRouteError::Unavailable),
+    let marker = match ctx_upgrade_engine::managed_install_marker_for_current_exe()
+        .map_err(|_| CompanionRouteError::Unavailable)?
+    {
+        ctx_upgrade_engine::ManagedInstallMarker::Valid(marker) => marker,
+        ctx_upgrade_engine::ManagedInstallMarker::Absent => {
+            return Err(CompanionRouteError::Unavailable)
+        }
+        ctx_upgrade_engine::ManagedInstallMarker::Invalid { .. } => {
+            return Err(CompanionRouteError::Incompatible)
+        }
     };
-    let source_revision = required_build_value(option_env!("CTX_RELEASE_BUILD_SOURCE_COMMIT"))?;
-    let invocation_fingerprint =
-        required_digest(option_env!("CTX_MANAGED_PAIR_INVOCATION_FINGERPRINT"))?;
-    let core_capability_fingerprint =
-        required_digest(option_env!("CTX_MANAGED_PAIR_CORE_CAPABILITY_FINGERPRINT"))?;
-    let core =
-        CoreBuildIdentity::new(source_revision).map_err(|_| CompanionRouteError::Incompatible)?;
-    Ok(ManagedPairExpectations::new(
-        channel,
-        core,
-        CompatibilityIdentity::new(invocation_fingerprint, core_capability_fingerprint),
-    ))
-}
-
-fn required_build_value(value: Option<&'static str>) -> Result<&'static str, CompanionRouteError> {
-    value.ok_or(CompanionRouteError::Unavailable)
-}
-
-fn required_digest(value: Option<&'static str>) -> Result<Sha256Digest, CompanionRouteError> {
-    let value = required_build_value(value)?;
-    Sha256Digest::from_hex(value).map_err(|_| CompanionRouteError::Incompatible)
+    let channel = if marker.staging_dogfood {
+        ReleaseChannel::Staging
+    } else if marker.channel == "stable" {
+        ReleaseChannel::Stable
+    } else {
+        return Err(CompanionRouteError::Incompatible);
+    };
+    Ok(ManagedPairExpectations::new(channel))
 }
 
 fn mcp_limits() -> Result<BridgeLimits, CompanionRouteError> {
@@ -394,13 +380,6 @@ fn has_explicit_pro_selector(arguments: &[OsString]) -> bool {
         .skip(1)
         .take_while(|argument| argument.as_os_str() != OsStr::new("--"))
         .any(|argument| argument == "--pro")
-}
-
-pub(crate) fn managed_pair_enabled() -> bool {
-    matches!(
-        option_env!("CTX_MANAGED_PAIR_CHANNEL"),
-        Some("stable" | "staging")
-    )
 }
 
 fn is_global_help_or_version(value: &OsStr) -> bool {
@@ -571,18 +550,18 @@ mod tests {
     }
 
     #[test]
-    fn source_build_override_selects_only_the_explicit_pro_executable() {
+    fn explicit_override_selects_only_the_protocol_compatible_pro_executable() {
         let temp = tempfile::tempdir().unwrap();
         let source_core = temp.path().join("source/target/debug/ctx");
         let pro = temp.path().join("installed/libexec/ctx-pro");
-        let companion = installed_companion_from_parts(&source_core, Some(pro.clone()), false)
+        let companion = installed_companion_from_parts(&source_core, Some(pro.clone()))
             .expect("source override");
 
         assert_eq!(companion.executable(), pro);
     }
 
     #[test]
-    fn official_core_selects_only_its_sibling_pro_executable() {
+    fn installed_core_defaults_to_its_sibling_pro_executable() {
         let temp = tempfile::tempdir().unwrap();
         let core =
             temp.path()
@@ -596,9 +575,7 @@ mod tests {
             } else {
                 "ctx-pro"
             });
-        let ignored_override = temp.path().join("other/ctx-pro");
-        let companion =
-            installed_companion_from_parts(&core, Some(ignored_override), true).unwrap();
+        let companion = installed_companion_from_parts(&core, None).unwrap();
 
         assert_eq!(companion.executable(), expected);
     }
@@ -610,7 +587,7 @@ mod tests {
             temp.path()
                 .join("installed/bin")
                 .join(if cfg!(windows) { "ctx.exe" } else { "ctx" });
-        let companion = installed_companion_from_parts(&core, None, true).unwrap();
+        let companion = installed_companion_from_parts(&core, None).unwrap();
         let missing_path = companion.executable().to_path_buf();
         let error = CompanionBridge::default()
             .launch_mcp(
@@ -656,7 +633,7 @@ printf '{"jsonrpc":"2.0"}\n'
         )
         .unwrap();
         std::fs::set_permissions(&pro, std::fs::Permissions::from_mode(0o700)).unwrap();
-        let companion = installed_companion_from_parts(&core, None, true).unwrap();
+        let companion = installed_companion_from_parts(&core, None).unwrap();
         let response = CompanionBridge::default()
             .launch_mcp(
                 &companion,

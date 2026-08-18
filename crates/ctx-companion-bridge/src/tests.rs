@@ -16,12 +16,7 @@ use super::*;
 
 #[test]
 fn detached_install_verifier_rejects_unsigned_input() {
-    let zero = Sha256Digest::from_bytes([0; 32]);
-    let expectations = ManagedPairExpectations::new(
-        ReleaseChannel::Staging,
-        CoreBuildIdentity::new("a".repeat(40)).unwrap(),
-        CompatibilityIdentity::new(zero, zero),
-    );
+    let expectations = ManagedPairExpectations::new(ReleaseChannel::Staging);
     let unsigned = br#"{"manifest_base64":"e30=","schema_version":1,"signature_base64":""}"#;
     assert!(matches!(
         verify_signed_managed_pair_envelope(&expectations, unsigned),
