@@ -37,8 +37,8 @@ event-local Core capability has its own provider + route + source format +
 format version authority in
 [`mcp-tool-call-attribution-capabilities.json`](mcp-tool-call-attribution-capabilities.json).
 Capability revision 4 exact providers are Codex, Warp, and Copilot CLI. The
-complete evidence matrix contains 44 base routes and 47 capability lanes:
-three exact, 43 not-qualified, and one excluded. The Deep Agents hosted trace
+complete evidence matrix contains 47 base routes and 50 capability lanes:
+three exact, 46 not-qualified, and one excluded. The Deep Agents hosted trace
 is excluded from the local-only boundary, while its local SQLite history import
 remains Supported but not qualified for exact attribution. See
 [`mcp-tool-call-attribution.md`](mcp-tool-call-attribution.md) for absence,
@@ -75,7 +75,7 @@ support matrix is:
 | AstrBot | Supported | `astrbot_data_v4_sqlite` |
 | Shelley | Supported | `shelley_sqlite` |
 | Continue | Supported | `continue_cli_sessions_json` |
-| OpenHands | Supported | `openhands_file_events` |
+| OpenHands | Supported | `openhands_file_events`, `openhands_cli_file_events` |
 | Antigravity | Supported | `antigravity_cli_transcript_jsonl_tree` |
 | Gemini | Supported | `gemini_cli_chat_recording_jsonl` |
 | Tabnine | Supported | `tabnine_cli_chat_recording_jsonl` |
@@ -94,7 +94,7 @@ support matrix is:
 | Mistral Vibe | Supported | `mistral_vibe_session_jsonl_tree` |
 | Mux | Supported | `mux_session_jsonl_tree` |
 | Rovo Dev | Supported | `rovodev_session_json_tree` |
-| Cline | Supported | `cline_task_directory_json` |
+| Cline | Supported | `cline_sdk_session_store`, `cline_task_directory_json` |
 | Roo Code | Supported | `roo_task_directory_json` |
 
 Codex session-tree discovery and exact `--path` import accept both ordinary

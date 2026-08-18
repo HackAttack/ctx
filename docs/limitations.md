@@ -30,8 +30,9 @@ shipped.
 - One-shot flags, API paths, moved roots, past launch directories, and container
   host mappings generally require exact `--path`. Manual selection bypasses
   discovery precedence, not parser or path-safety validation.
-- Current Kiro ACP/v3, Qoder direct SDK JSONL, OpenClaw SQLite, OpenHands CLI
-  events, Mux archive JSONL, and Cline SDK stores are detected but unsupported.
+- Current Kiro ACP/v3 remains detected but unsupported. Provider selectors that
+  cannot be safely reconstructed, including unsafe Qoder SDK selections, require
+  exact `--path`.
 
 ## Import Semantics
 

@@ -182,7 +182,7 @@ Secondary traits are noted only to guide tests and hardening work.
 | Crush | `crush_sqlite` | SQLite message store | SQLite sessions with message parts and tool metadata. |
 | Goose | `goose_sessions_sqlite` | SQLite message store | SQLite sessions/messages with structured content JSON. |
 | Lingma | `lingma_sqlite` | SQLite message store | SQLite chat rows with prompt/assistant fields. |
-| Qoder | `qoder_transcript_jsonl_tree` | JSONL transcript stream/tree | Transcript tree. |
+| Qoder | `qoder_transcript_jsonl_tree` | JSONL transcript stream/tree | Transcript and direct project session JSONL leaves under the selected bounded project root. |
 | Warp | `warp_sqlite` | SQLite encoded/blob store | SQLite rows include JSON plus decoded task protobuf blobs. |
 | CodeBuddy | `codebuddy_history_json` | JSON session/task document | JSON history documents from editor state. |
 | OpenClaw | `openclaw_session_jsonl_tree` | JSONL transcript stream/tree | Session tree with possible sidecar data. |
@@ -192,7 +192,7 @@ Secondary traits are noted only to guide tests and hardening work.
 | AstrBot | `astrbot_data_v4_sqlite` | SQLite message store | SQLite conversation/platform rows. |
 | Shelley | `shelley_sqlite` | SQLite message store | SQLite conversations, messages, and tool rows. |
 | Continue | `continue_cli_sessions_json` | JSON session/task document | JSON session files. |
-| OpenHands | `openhands_file_events` | File event log | Event files rather than a chat transcript table. |
+| OpenHands | `openhands_file_events`, `openhands_cli_file_events` | File event log | Legacy V1 and current CLI conversation event files rather than a chat transcript table. |
 | Antigravity | `antigravity_cli_transcript_jsonl_tree` | JSONL transcript stream/tree | Transcript tree. |
 | Gemini | `gemini_cli_chat_recording_jsonl` | JSONL transcript stream/tree | Chat recording JSONL. |
 | Tabnine | `tabnine_cli_chat_recording_jsonl` | JSONL transcript stream/tree | Chat recording JSONL. |
@@ -209,7 +209,7 @@ Secondary traits are noted only to guide tests and hardening work.
 | ForgeCode | `forgecode_sqlite` | SQLite message store | SQLite sessions/messages. |
 | Deep Agents | `deepagents_sessions_sqlite` | SQLite encoded/blob store | SQLite checkpoints/writes with decoded MessagePack values. |
 | Mistral Vibe | `mistral_vibe_session_jsonl_tree` | JSONL transcript stream/tree | Session JSONL tree. |
-| Mux | `mux_session_jsonl_tree` | JSONL transcript stream/tree | Session JSONL tree with tool events. |
+| Mux | `mux_session_jsonl_tree` | JSONL transcript stream/tree | Session JSONL tree with active, archive, partial, and subagent history. |
 | Rovo Dev | `rovodev_session_json_tree` | JSON session/task document | Session JSON tree. |
 | Cline | `cline_sdk_session_store`, `cline_task_directory_json` | JSON session/task document | Current compound session catalog plus manifest/message artifacts; legacy task directory JSON remains separate. |
 | Roo Code | `roo_task_directory_json` | JSON session/task document | Task directory JSON. |
