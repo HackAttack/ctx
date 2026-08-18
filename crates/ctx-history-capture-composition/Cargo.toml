@@ -40,10 +40,12 @@ thiserror.workspace = true
 uuid.workspace = true
 
 [dev-dependencies]
+ctx-history-openclaw-schema = { path = "../ctx-history-openclaw-schema", features = ["test-support"] }
 ctx-history-jsonl = { path = "../ctx-history-jsonl", features = ["test-support"] }
 ctx-history-provider-claude-cursor = { path = "../ctx-history-provider-claude-cursor", features = ["test-support"] }
 ctx-history-provider-codex = { path = "../ctx-history-provider-codex", features = ["test-support"] }
 ctx-history-provider-hermes = { path = "../ctx-history-provider-hermes", features = ["test-support"] }
+ctx-history-provider-openclaw-sqlite = { path = "../ctx-history-provider-openclaw-sqlite", features = ["test-support"] }
 ctx-history-providers-sqlite-inventory = { path = "../ctx-history-providers-sqlite-inventory", features = ["test-support"] }
 ctx-history-providers-sqlite-selected = { path = "../ctx-history-providers-sqlite-selected", features = ["test-support"] }
 ctx-history-source-io = { path = "../ctx-history-source-io", features = ["test-support"] }

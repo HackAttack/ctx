@@ -7,14 +7,19 @@ use serde_json::{Map, Value};
 
 use super::{
     absolute_from_cwd, env_text, expand_leading_tilde, issue_limit, issue_manual, issue_selector,
-    ordinary_file, path_presence, push_unsupported_existing, select_current_or_legacy,
-    selected_path_is_safe, DiscoveryContext, DiscoveryReport, ProviderSourceSpec, SelectorDocument,
-    SelectorFormat, SelectorIncludeBudget, SelectorReadError, SelectorReader,
-    StaticProviderProbeCatalog, MAX_FINITE_SELECTOR_ENTRIES, OPENCLAW_UNSUPPORTED_REASON,
+    ordinary_file, path_presence, push_source_candidate, push_unsupported_existing,
+    select_current_or_legacy, selected_path_is_safe, source_from_parts,
+    source_from_parts_with_data_root, DiscoveryContext, DiscoveryReport, ProviderSourceKind,
+    ProviderSourceSpec, ProviderSourceStatus, SelectorDocument, SelectorFormat,
+    SelectorIncludeBudget, SelectorReadError, SelectorReader, StaticProviderProbeCatalog,
+    MAX_FINITE_SELECTOR_ENTRIES, OPENCLAW_UNSUPPORTED_REASON,
 };
+use crate::provider_sources::probes::{has_openclaw_agent_sqlite_v17, BoundedProbe};
+
+const OPENCLAW_JSONL_SOURCE_FORMAT: &str = "openclaw_session_jsonl_tree";
 
 pub(super) fn resolve(
-    _probes: &StaticProviderProbeCatalog,
+    probes: &StaticProviderProbeCatalog,
     context: &DiscoveryContext,
     spec: &ProviderSourceSpec,
 ) -> DiscoveryReport {
@@ -94,16 +99,53 @@ pub(super) fn resolve(
     }
 
     for agent_id in agent_ids {
-        push_unsupported_existing(
-            &mut report,
+        let agent_root = state_root.join("agents").join(&agent_id);
+        let sqlite = agent_root.join("agent/openclaw-agent.sqlite");
+        let sqlite_probe = has_openclaw_agent_sqlite_v17(context.data_root(), &sqlite);
+        if sqlite_probe == BoundedProbe::Found {
+            let source = source_from_parts_with_data_root(
+                probes,
+                context.data_root(),
+                spec,
+                sqlite.clone(),
+                ctx_history_openclaw_schema::OPENCLAW_AGENT_SQLITE_SOURCE_FORMAT,
+                ProviderSourceKind::NativeHistory,
+            );
+            if !push_source_candidate(&mut report.sources, source) {
+                issue_limit(&mut report, spec.provider, sqlite);
+            }
+            continue;
+        }
+
+        let sessions = agent_root.join("sessions");
+        let jsonl = source_from_parts(
+            probes,
             spec,
-            state_root
-                .join("agents")
-                .join(agent_id)
-                .join("agent")
-                .join("openclaw-agent.sqlite"),
-            OPENCLAW_UNSUPPORTED_REASON,
+            sessions.clone(),
+            OPENCLAW_JSONL_SOURCE_FORMAT,
+            ProviderSourceKind::NativeHistory,
         );
+        if jsonl.status == ProviderSourceStatus::Available {
+            if !push_source_candidate(&mut report.sources, jsonl) {
+                issue_limit(&mut report, spec.provider, sessions);
+            }
+            continue;
+        }
+
+        if path_presence(&sqlite).suppresses_fallback() {
+            match sqlite_probe {
+                BoundedProbe::NotFound
+                | BoundedProbe::BudgetExhausted
+                | BoundedProbe::IoError
+                | BoundedProbe::BlockedAuthOrEncryption => push_unsupported_existing(
+                    &mut report,
+                    spec,
+                    sqlite,
+                    OPENCLAW_UNSUPPORTED_REASON,
+                ),
+                BoundedProbe::Found => {}
+            }
+        }
     }
     report
 }

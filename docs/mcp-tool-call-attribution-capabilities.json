@@ -6,10 +6,10 @@
   "conformance_authority": {
     "manifest": "crates/ctx-history-capture/tests/mcp-attribution-conformance.manifest.json",
     "suite_registry": "crates/ctx-history-capture/tests/mcp_attribution_suites.bzl",
-    "manifest_sha256": "7205d3cf3fda611f9c97d842a282c22b4b17d2c6f7b44a1e1a7bfb47e6b028e4",
+    "manifest_sha256": "cca0f93ff3e5a2f898ef883e7f9f5a3b4bdd228594c217e11d89f5a3790e0e87",
     "suite_registry_sha256": "4ea7e8bf8d4e671fb6c0ebd82d19c99d14510c286f9615d9808af9aaf0257466",
     "manifest_schema_version": 7,
-    "capability_revision": 6,
+    "capability_revision": 7,
     "status_mapping": {
       "exact": "supported",
       "not-qualified": "not_qualified",
@@ -17,12 +17,12 @@
     },
     "expected_counts": {
       "providers": 43,
-      "base_routes": 45,
-      "schema_generations": 44,
-      "capability_lanes": 48,
+      "base_routes": 46,
+      "schema_generations": 45,
+      "capability_lanes": 49,
       "status_rows": {
         "supported": 3,
-        "not_qualified": 44,
+        "not_qualified": 45,
         "excluded": 1
       }
     }
@@ -77,11 +77,11 @@
   },
   "expected_counts": {
     "providers": 43,
-    "base_routes": 45,
-    "capability_lanes": 48,
+    "base_routes": 46,
+    "capability_lanes": 49,
     "lane_statuses": {
       "exact": 3,
-      "not-qualified": 44,
+      "not-qualified": 45,
       "excluded": 1
     },
     "provider_statuses": {
@@ -253,6 +253,13 @@
       "status": "not-qualified", "reason": "route_mismatch",
       "detail": "Legacy JSONL has stable result linkage but only a lossy generated name; exact current MCP metadata belongs to the newer SQLite route, which this tuple does not import.",
       "evidence": ["https://github.com/openclaw/openclaw/tree/554a6f3bbf6d8173efc2f1c92e30139f88dc26d6"]
+    },
+    {
+      "provider_id": "openclaw", "route": "native_import", "source_format": "openclaw_agent_sqlite", "source_schema": "openclaw-agent-schema-v17",
+      "producer_bound": {"kind": "source_commits", "commits": ["39b39ca6eec684f0675cd93500646b578f6e7021"], "unknown_generations": "not-qualified"},
+      "status": "not-qualified", "reason": "route_mismatch",
+      "detail": "The admitted v17 SQLite route preserves complete native event JSON, but it does not project an exact event-local MCP server/tool pair and terminal linkage into CoreActivity.",
+      "evidence": ["https://github.com/openclaw/openclaw/blob/39b39ca6eec684f0675cd93500646b578f6e7021/src/state/openclaw-agent-schema.sql"]
     },
     {
       "provider_id": "hermes", "route": "native_import", "source_format": "hermes_state_sqlite", "source_schema": "hermes-state-db-v1",

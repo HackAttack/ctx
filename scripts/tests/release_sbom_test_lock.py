@@ -370,6 +370,7 @@ def synthetic_lock_text() -> str:
                 "ctx-history-capture-model",
                 "ctx-history-capture-runtime",
                 "ctx-history-core",
+                "ctx-history-openclaw-schema",
                 "ctx-history-provider-runtime",
                 "ctx-history-providers-jsonl-shared",
                 "rusqlite 0.32.1",
@@ -379,6 +380,11 @@ def synthetic_lock_text() -> str:
                 "thiserror 1.0.0",
                 "zstd 0.13.0",
             ),
+        ),
+        package(
+            "ctx-history-openclaw-schema",
+            "0.26.0",
+            ("rusqlite 0.32.1", "thiserror 1.0.0"),
         ),
         package(
             "ctx-history-provider-runtime",
@@ -430,7 +436,11 @@ def synthetic_lock_text() -> str:
             "ctx-history-source-io",
             "0.26.0",
         ),
-        package("ctx-history-source-discovery", "0.26.0"),
+        package(
+            "ctx-history-source-discovery",
+            "0.26.0",
+            ("ctx-history-openclaw-schema",),
+        ),
         package(
             "ctx-history-source-sqlite",
             "0.26.0",

@@ -181,7 +181,7 @@ Secondary traits are noted only to guide tests and hardening work.
 | CodeBuddy | `codebuddy_history_json` | JSON session/task document | JSON history documents from editor state. |
 | Trae | `trae_state_vscdb` | SQLite encoded/blob store | Released plaintext ItemTable compatibility with JSON chat values, including safely recognized copies at the official current database location. The current SQLCipher-encrypted relational database is detected but not imported. |
 | OpenClaw | `openclaw_session_jsonl_tree` | JSONL transcript stream/tree | Session tree with possible sidecar data. |
-| OpenClaw | `openclaw_agent_sqlite` | SQLite transcript projection | Current per-agent database. Once admitted for an agent, this source suppresses that agent's legacy JSONL route; JSONL remains fallback-only so the two source descriptors cannot duplicate native sessions. |
+| OpenClaw | `openclaw_agent_sqlite` | SQLite transcript projection | Current per-agent database. Exact bounded v17 schema/owner admission is evaluated per normalized agent; admitted SQLite suppresses only that agent's legacy JSONL route, while corrupt/foreign databases fall back to JSONL and the two families are never admitted together. |
 | Hermes Agent | `hermes_state_sqlite` | SQLite message store | SQLite sessions/messages with bounded exact reconciliation. |
 | NanoClaw | `nanoclaw_project` | SQLite message store | Native project root containing central and per-session SQLite databases, discovered from exact CWD or official launchd/systemd service registration; exact `--path` remains available. |
 | AstrBot | `astrbot_data_v4_sqlite` | SQLite message store | SQLite conversation/platform rows. |

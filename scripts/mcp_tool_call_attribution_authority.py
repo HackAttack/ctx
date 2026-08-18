@@ -20,10 +20,10 @@ CODEX_NOT_QUALIFIED_VERSIONS = ("0.200.0", "0.201.0", "0.202.0")
 CONFORMANCE_AUTHORITY = {
     "manifest": CONFORMANCE_MANIFEST,
     "suite_registry": CONFORMANCE_SUITES,
-    "manifest_sha256": "7205d3cf3fda611f9c97d842a282c22b4b17d2c6f7b44a1e1a7bfb47e6b028e4",
+    "manifest_sha256": "cca0f93ff3e5a2f898ef883e7f9f5a3b4bdd228594c217e11d89f5a3790e0e87",
     "suite_registry_sha256": "4ea7e8bf8d4e671fb6c0ebd82d19c99d14510c286f9615d9808af9aaf0257466",
     "manifest_schema_version": 7,
-    "capability_revision": 6,
+    "capability_revision": 7,
     "status_mapping": {
         "exact": "supported",
         "not-qualified": "not_qualified",
@@ -31,10 +31,10 @@ CONFORMANCE_AUTHORITY = {
     },
     "expected_counts": {
         "providers": 43,
-        "base_routes": 45,
-        "schema_generations": 44,
-        "capability_lanes": 48,
-        "status_rows": {"supported": 3, "not_qualified": 44, "excluded": 1},
+        "base_routes": 46,
+        "schema_generations": 45,
+        "capability_lanes": 49,
+        "status_rows": {"supported": 3, "not_qualified": 45, "excluded": 1},
     },
 }
 

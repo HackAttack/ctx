@@ -22,33 +22,33 @@ use std::{
 };
 
 use chrono::{DateTime, Utc};
-use ctx_history_capture_model::normalization::{provider_local_preview, provider_timestamp_value};
+use ctx_history_capture_model::normalization::provider_timestamp_value;
 use ctx_history_capture_runtime::{
     CompleteDocumentTree, DocumentLeafFingerprint, DocumentSourceTerminal, ObservedDocumentLeaf,
     ReplacementDocumentTree, SourceBackedRouteError, SourceBackedRouteErrorKind,
     SourceBackedRouteResult,
 };
 use ctx_history_core::{
-    derive_event_id, derive_session_id, AgentScope, CaptureProvider, CoreRecord,
-    EventIdentityInput, NativeItemKey, NativeSessionKey, ProjectionContractError,
-    ScannedSourceCounts, SessionIdentityInput, SourceKey, SourceObservation, TypedKey,
+    derive_event_id, derive_session_id, CaptureProvider, CoreRecord, EventIdentityInput,
+    NativeItemKey, NativeSessionKey, ProjectionContractError, ScannedSourceCounts,
+    SessionIdentityInput, SourceKey, SourceObservation, TypedKey,
+};
+pub use ctx_history_openclaw_schema::{
+    OPENCLAW_AGENT_SCHEMA_VERSION, OPENCLAW_AGENT_SQLITE_SOURCE_FORMAT,
 };
 use ctx_history_provider_runtime::{
     combine_primary_and_cleanup_route_errors, open_provider_sqlite_readonly, source_io,
-    sqlite_table_columns, CaptureError, ProviderChangedDocumentSink,
-    ProviderRouteControlExpectation, ProviderRuntimeBinding, ReadOnlySqliteConnection,
+    CaptureError, ProviderChangedDocumentSink, ProviderRouteControlExpectation,
+    ProviderRuntimeBinding, ReadOnlySqliteConnection,
 };
-use rusqlite::{Connection, OptionalExtension};
+use rusqlite::Connection;
 use sha2::{Digest, Sha256};
 use thiserror::Error;
-
-pub const OPENCLAW_AGENT_SQLITE_SOURCE_FORMAT: &str = "openclaw_agent_sqlite";
-pub const OPENCLAW_AGENT_SCHEMA_VERSION: i64 = 17;
 
 const DATABASE_LEAF: &str = "openclaw-agent.sqlite";
 const DATABASE_PARENT: &str = "agent";
 const SOURCE_SCHEMA_VARIANT: &str = "openclaw-agent-schema-v17";
-const PARSER_REVISION: &str = "openclaw-agent-sqlite-v1";
+const PARSER_REVISION: &str = "openclaw-agent-sqlite-v2";
 const SOURCE_ANCHOR_NAMESPACE: &str = "openclaw.agent";
 const ACTIVE_SESSION_NAMESPACE: &str = "openclaw.sqlite.session";
 const ARCHIVE_SESSION_NAMESPACE: &str = "openclaw.sqlite.archive-generation";
@@ -59,7 +59,6 @@ const OBSERVATION_KIND: &str = "openclaw-agent-logical-snapshot-v1";
 const FINGERPRINT_DOMAIN: &[u8] = b"ctx-openclaw-agent-sqlite-leaf-v1\0";
 const CONTENT_DOMAIN: &[u8] = b"ctx-openclaw-agent-sqlite-content-v1\0";
 const MAX_ARCHIVE_DECODED_BYTES: usize = 64 * 1024 * 1024;
-const MAX_NORMALIZED_EVENT_CHARS: usize = 64 * 1024;
 
 /// Automatic discovery policy consumed by the shared OpenClaw resolver.
 pub const OPENCLAW_JSONL_SQLITE_OVERLAP_POLICY: &str =
@@ -99,6 +98,45 @@ impl From<serde_json::Error> for OpenClawSqliteError {
 impl From<ProjectionContractError> for OpenClawSqliteError {
     fn from(error: ProjectionContractError) -> Self {
         contract_capture(error)
+    }
+}
+
+impl From<ctx_history_openclaw_schema::OpenClawSchemaError> for OpenClawSqliteError {
+    fn from(error: ctx_history_openclaw_schema::OpenClawSchemaError) -> Self {
+        match error {
+            ctx_history_openclaw_schema::OpenClawSchemaError::Sqlite(error) => error.into(),
+            ctx_history_openclaw_schema::OpenClawSchemaError::Mismatch(detail) => {
+                unsupported_schema(detail)
+            }
+        }
+    }
+}
+
+#[cfg(any(test, feature = "test-support"))]
+thread_local! {
+    static BEFORE_TERMINAL_REVALIDATION_HOOK: std::cell::RefCell<Option<Box<dyn FnOnce()>>> = const { std::cell::RefCell::new(None) };
+}
+
+#[cfg(any(test, feature = "test-support"))]
+fn run_before_terminal_revalidation_hook() {
+    BEFORE_TERMINAL_REVALIDATION_HOOK.with(|slot| {
+        if let Some(hook) = slot.borrow_mut().take() {
+            hook();
+        }
+    });
+}
+
+#[cfg(not(any(test, feature = "test-support")))]
+fn run_before_terminal_revalidation_hook() {}
+
+#[cfg(feature = "test-support")]
+pub mod test_support {
+    /// Installs a one-shot mutation hook immediately before terminal SQLite
+    /// source-family revalidation.
+    pub fn set_before_openclaw_sqlite_terminal_revalidation_hook(hook: impl FnOnce() + 'static) {
+        super::BEFORE_TERMINAL_REVALIDATION_HOOK.with(|slot| {
+            assert!(slot.borrow_mut().replace(Box::new(hook)).is_none());
+        });
     }
 }
 
@@ -276,6 +314,7 @@ impl<B: ProviderRuntimeBinding> ReplacementDocumentTree for OpenClawSqliteAdapte
                     "OpenClaw SQLite snapshot was finalized before tree revalidation",
                 )
             })?;
+        run_before_terminal_revalidation_hook();
         connection.finish().map_err(capture_route_error)?;
         Ok(tree.tree_fingerprint)
     }
@@ -486,7 +525,7 @@ fn project_event(
                 ACTIVE_SESSION_NAMESPACE,
                 TypedKey::utf8(native_session_id)?,
             )?,
-            native_session_id.to_owned(),
+            Some(native_session_id.to_owned()),
         ),
         SessionGeneration::Archive(generation) => (
             NativeSessionKey::composite(
@@ -496,7 +535,7 @@ fn project_event(
                     TypedKey::utf8(generation)?,
                 ],
             )?,
-            format!("{native_session_id}#{generation}"),
+            None,
         ),
     };
     let session_id = derive_session_id(SessionIdentityInput {
@@ -521,11 +560,11 @@ fn project_event(
         event,
         occurred_at,
     );
-    let body = if fact.lexical_text.trim().is_empty() {
-        format!("OpenClaw {}", fact.event_type.as_str())
-    } else {
-        provider_local_preview(&fact.lexical_text, MAX_NORMALIZED_EVENT_CHARS).0
-    };
+    let body = fact.lexical_text;
+    // `new_selected` validates its initial body before structured content is
+    // attached. Empty lexical events retain only their complete native JSON;
+    // the temporary constructor body is never published.
+    let constructor_body = if body.is_empty() { "{}" } else { body.as_str() };
     let mut record = CoreRecord::new_selected(
         event_id,
         session_id,
@@ -533,113 +572,23 @@ fn project_event(
         sequence,
         fact.event_type.as_str(),
         PARSER_REVISION,
-        body,
+        constructor_body,
     )
     .map_err(contract_capture)?;
-    record.provider_session_id = Some(provider_session_id);
+    record.provider_session_id = provider_session_id;
     record.native_event_id = Some(TypedKey::utf8(native_event_id)?);
     record.occurred_at_unix_ms = Some(fact.occurred_at.timestamp_millis());
     record.role = fact.role.map(|role| role.as_str().to_owned());
-    record.agent_scope = Some(AgentScope::Primary);
+    record.agent_scope = None;
+    record.content.normalized_body = (!body.is_empty()).then_some(body);
     record.content.structured_content = Some(event.clone());
-    record
-        .content
-        .omit_structured_content_if_aggregate_exceeds_limit()
-        .map_err(contract_capture)?;
     record.validate_contract().map_err(contract_capture)?;
     Ok(record)
 }
 
 fn validate_database(connection: &Connection, path_agent_id: &str) -> Result<()> {
-    let user_version: i64 = connection.query_row("PRAGMA user_version", [], |row| row.get(0))?;
-    if user_version != OPENCLAW_AGENT_SCHEMA_VERSION {
-        return Err(unsupported_schema(format!(
-            "OpenClaw PRAGMA user_version is {user_version}, expected {OPENCLAW_AGENT_SCHEMA_VERSION}"
-        )));
-    }
-    validate_strict_table(connection, "schema_meta", SCHEMA_META_COLUMNS)?;
-    validate_strict_table(connection, "session_windows", SESSION_WINDOWS_COLUMNS)?;
-    validate_strict_table(connection, "transcript_events", TRANSCRIPT_EVENTS_COLUMNS)?;
-    validate_strict_table(
-        connection,
-        "session_transcript_active_events",
-        ACTIVE_EVENTS_COLUMNS,
-    )?;
-    validate_strict_table(
-        connection,
-        "transcript_event_identities",
-        EVENT_IDENTITIES_COLUMNS,
-    )?;
-    validate_strict_table(
-        connection,
-        "session_transcript_archives",
-        TRANSCRIPT_ARCHIVES_COLUMNS,
-    )?;
-    validate_strict_table(
-        connection,
-        "session_transcript_index_state",
-        INDEX_STATE_COLUMNS,
-    )?;
-    let owner = connection
-        .query_row(
-            "SELECT role, schema_version, agent_id FROM schema_meta WHERE meta_key = 'primary'",
-            [],
-            |row| {
-                Ok((
-                    row.get::<_, String>(0)?,
-                    row.get::<_, i64>(1)?,
-                    row.get::<_, Option<String>>(2)?,
-                ))
-            },
-        )
-        .optional()?;
-    let Some((role, schema_version, agent_id)) = owner else {
-        return Err(unsupported_schema(
-            "OpenClaw schema_meta has no primary ownership row",
-        ));
-    };
-    if role != "agent" || schema_version != OPENCLAW_AGENT_SCHEMA_VERSION {
-        return Err(unsupported_schema(format!(
-            "OpenClaw primary ownership is role={role:?}, schema_version={schema_version}"
-        )));
-    }
-    if agent_id.as_deref() != Some(path_agent_id) {
-        return Err(unsupported_schema(format!(
-            "OpenClaw database owner {:?} does not match path agent {path_agent_id:?}",
-            agent_id.as_deref()
-        )));
-    }
-    Ok(())
-}
-
-fn validate_strict_table(
-    connection: &Connection,
-    table: &str,
-    expected_columns: &[&str],
-) -> Result<()> {
-    let strict = connection
-        .query_row(
-            "SELECT strict FROM pragma_table_list WHERE schema = 'main' AND name = ?1 AND type = 'table'",
-            [table],
-            |row| row.get::<_, i64>(0),
-        )
-        .optional()?;
-    if strict != Some(1) {
-        return Err(unsupported_schema(format!(
-            "OpenClaw table {table:?} is missing or is not STRICT"
-        )));
-    }
-    let actual = sqlite_table_columns(connection, table)?;
-    let expected = expected_columns
-        .iter()
-        .map(|column| (*column).to_owned())
-        .collect::<BTreeSet<_>>();
-    if actual != expected {
-        return Err(unsupported_schema(format!(
-            "OpenClaw table {table:?} columns do not match schema v{OPENCLAW_AGENT_SCHEMA_VERSION}"
-        )));
-    }
-    Ok(())
+    ctx_history_openclaw_schema::validate_openclaw_agent_v17(connection, path_agent_id)
+        .map_err(Into::into)
 }
 
 fn validate_active_projection(connection: &Connection) -> Result<()> {
@@ -984,84 +933,6 @@ fn capture_route_error(error: CaptureError) -> SourceBackedRouteError {
     };
     SourceBackedRouteError::new(kind, error.to_string())
 }
-
-const SCHEMA_META_COLUMNS: &[&str] = &[
-    "agent_id",
-    "app_version",
-    "created_at",
-    "meta_key",
-    "role",
-    "schema_version",
-    "updated_at",
-];
-const SESSION_WINDOWS_COLUMNS: &[&str] = &[
-    "account_id",
-    "acp_owned",
-    "agent_harness_id",
-    "channel",
-    "chat_type",
-    "created_at",
-    "display_name",
-    "ended_at",
-    "hook_external_content_source",
-    "model",
-    "model_provider",
-    "parent_session_key",
-    "plugin_owner_id",
-    "previous_session_id",
-    "primary_conversation_id",
-    "reason",
-    "session_entry_provenance",
-    "session_id",
-    "session_key",
-    "session_scope",
-    "spawned_by",
-    "started_at",
-    "status",
-    "transcript_observed_at",
-    "transcript_updated_at",
-    "updated_at",
-];
-const TRANSCRIPT_EVENTS_COLUMNS: &[&str] = &["created_at", "event_json", "seq", "session_id"];
-const ACTIVE_EVENTS_COLUMNS: &[&str] = &[
-    "active_position",
-    "event_seq",
-    "message_position",
-    "session_id",
-];
-const EVENT_IDENTITIES_COLUMNS: &[&str] = &[
-    "created_at",
-    "event_id",
-    "event_type",
-    "message_idempotency_key",
-    "parent_id",
-    "seq",
-    "session_id",
-];
-const TRANSCRIPT_ARCHIVES_COLUMNS: &[&str] = &[
-    "archive_blob",
-    "archive_name",
-    "archive_sha256",
-    "created_at",
-    "encoding",
-    "generation",
-    "last_publish_attempt_at",
-    "last_publish_error",
-    "publish_attempts",
-    "published_at",
-    "reason",
-    "session_id",
-    "session_key",
-];
-const INDEX_STATE_COLUMNS: &[&str] = &[
-    "active_event_count",
-    "active_message_count",
-    "indexed_seq",
-    "leaf_event_id",
-    "needs_rebuild",
-    "session_id",
-    "updated_at",
-];
 
 #[cfg(test)]
 mod tests;

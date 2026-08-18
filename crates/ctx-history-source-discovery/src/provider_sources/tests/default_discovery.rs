@@ -631,12 +631,6 @@ fn exact_current_incompatible_explicit_paths_are_detection_only_unsupported() {
             "compressed .jsonl.zst",
         ),
         (
-            CaptureProvider::OpenClaw,
-            temp.path()
-                .join(".openclaw/agents/main/agent/openclaw-agent.sqlite"),
-            "openclaw-agent.sqlite",
-        ),
-        (
             CaptureProvider::OpenHands,
             temp.path()
                 .join(".openhands/conversations/conversation/events/event-1.json"),
@@ -690,12 +684,6 @@ fn explicit_unsupported_detection_preserves_supported_mixed_trees() {
             temp.path().join("qoder/projects"),
             "bucket/transcript/legacy.jsonl",
             "bucket/current.jsonl",
-        ),
-        (
-            CaptureProvider::OpenClaw,
-            temp.path().join("openclaw"),
-            "agents/main/sessions/legacy.jsonl",
-            "agents/main/agent/openclaw-agent.sqlite",
         ),
         (
             CaptureProvider::OpenHands,

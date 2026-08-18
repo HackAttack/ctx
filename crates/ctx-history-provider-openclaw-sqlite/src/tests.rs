@@ -22,6 +22,10 @@ struct Snapshot {
 
 impl Fixture {
     fn new(agent_id: &str, wal: bool) -> Self {
+        Self::with_schema(agent_id, wal, SCHEMA)
+    }
+
+    fn with_schema(agent_id: &str, wal: bool, schema: &str) -> Self {
         let root = tempfile::tempdir().expect("create fixture root");
         let path = root
             .path()
@@ -41,7 +45,7 @@ impl Fixture {
                 .expect("disable WAL autocheckpoint");
         }
         connection
-            .execute_batch(SCHEMA)
+            .execute_batch(schema)
             .expect("create OpenClaw fixture schema");
         connection
             .execute(
@@ -176,6 +180,20 @@ fn rewrite_active(connection: &Connection, session_id: &str, seq: i64, event_id:
         .expect("rewrite active event");
 }
 
+fn rewrite_active_event(
+    connection: &Connection,
+    session_id: &str,
+    seq: i64,
+    event: &serde_json::Value,
+) {
+    connection
+        .execute(
+            "UPDATE transcript_events SET event_json = ?3 WHERE session_id = ?1 AND seq = ?2",
+            params![session_id, seq, event.to_string()],
+        )
+        .expect("rewrite active event JSON");
+}
+
 fn insert_archive(
     connection: &Connection,
     session_id: &str,
@@ -224,6 +242,37 @@ fn insert_archive(
             ],
         )
         .expect("insert transcript archive");
+}
+
+fn insert_raw_archive(
+    connection: &Connection,
+    session_id: &str,
+    generation: &str,
+    encoding: &str,
+    blob: Vec<u8>,
+) {
+    let sha = Sha256::digest(&blob)
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect::<String>();
+    connection
+        .execute(
+            "INSERT INTO session_transcript_archives\
+               (session_id, generation, session_key, reason, encoding, archive_blob,\
+                archive_sha256, archive_name, created_at, published_at, publish_attempts,\
+                last_publish_attempt_at, last_publish_error)\
+             VALUES (?1, ?2, ?3, 'reset', ?4, ?5, ?6, ?7, 10, NULL, 0, NULL, NULL)",
+            params![
+                session_id,
+                generation,
+                format!("agent:test:{session_id}"),
+                encoding,
+                blob,
+                sha,
+                format!("{session_id}-{generation}.reset")
+            ],
+        )
+        .expect("insert raw transcript archive");
 }
 
 #[test]
@@ -301,6 +350,55 @@ fn rewrite_keeps_native_identity_while_replacing_content() {
 }
 
 #[test]
+fn complete_native_content_is_preserved_or_the_row_is_rejected() {
+    let fixture = Fixture::new("content-agent", false);
+    let retained = format!("{}tail-marker", "x".repeat(70 * 1024));
+    insert_active(&fixture.connection, "session-a", 1, 0, "event-a", &retained);
+    let snapshot = fixture.read().expect("read complete long event");
+    assert_eq!(
+        snapshot.records[0].content.normalized_body.as_deref(),
+        Some(retained.as_str())
+    );
+    assert_eq!(
+        snapshot.records[0]
+            .content
+            .structured_content
+            .as_ref()
+            .and_then(|event| event.pointer("/message/content"))
+            .and_then(serde_json::Value::as_str),
+        Some(retained.as_str())
+    );
+
+    let oversized = "z".repeat(ctx_history_core::MAX_CORE_CONTENT_BYTES / 2 + 1);
+    rewrite_active(&fixture.connection, "session-a", 1, "event-a", &oversized);
+    assert!(matches!(
+        fixture
+            .read()
+            .expect_err("aggregate oversized native row must be rejected"),
+        OpenClawSqliteError::Capture(CaptureError::InvalidPayload(_))
+    ));
+}
+
+#[test]
+fn empty_lexical_event_retains_native_json_without_synthesized_text_or_scope() {
+    let fixture = Fixture::new("empty-agent", false);
+    insert_active(&fixture.connection, "session-a", 1, 0, "event-a", "seed");
+    let event = json!({
+        "type": "custom_status",
+        "id": "event-a",
+        "timestamp": 1_700_000_000_001_i64,
+        "status": {"phase": "waiting", "detail": 7}
+    });
+    rewrite_active_event(&fixture.connection, "session-a", 1, &event);
+
+    let snapshot = fixture.read().expect("read empty lexical event");
+    let record = &snapshot.records[0];
+    assert_eq!(record.content.normalized_body, None);
+    assert_eq!(record.content.structured_content.as_ref(), Some(&event));
+    assert_eq!(record.agent_scope, None);
+}
+
+#[test]
 fn reset_and_deleted_archives_are_generation_qualified_sessions() {
     let fixture = Fixture::new("archive-agent", false);
     insert_active(
@@ -347,8 +445,18 @@ fn reset_and_deleted_archives_are_generation_qualified_sessions() {
         .filter_map(|record| record.provider_session_id.as_deref())
         .collect::<BTreeSet<_>>();
     assert!(provider_sessions.contains("current-session"));
-    assert!(provider_sessions.contains("old-session#generation-reset"));
-    assert!(provider_sessions.contains("old-session#generation-deleted"));
+    assert_eq!(provider_sessions.len(), 1);
+    assert!(
+        snapshot
+            .records
+            .iter()
+            .filter(|record| {
+                record.provider_session_id.is_none()
+                    && record.content.meaningful_text().starts_with("before ")
+            })
+            .count()
+            == 2
+    );
 }
 
 #[test]
@@ -374,6 +482,47 @@ fn unsupported_archive_is_typed_and_never_certified_as_complete() {
             ref generation,
             ..
         } if session_id == "old-session" && generation == "large-generation"
+    ));
+}
+
+#[test]
+fn corrupt_and_over_limit_zstd_archives_are_typed_unsupported() {
+    let corrupt = Fixture::new("corrupt-zstd-agent", false);
+    insert_raw_archive(
+        &corrupt.connection,
+        "old-session",
+        "corrupt-generation",
+        "zstd",
+        b"not a zstd frame".to_vec(),
+    );
+    assert!(matches!(
+        corrupt
+            .read()
+            .expect_err("corrupt zstd must not produce partial history"),
+        OpenClawSqliteError::UnsupportedArchive { .. }
+    ));
+
+    let oversized = Fixture::new("oversized-zstd-agent", false);
+    let line = format!(
+        "{}\n",
+        json!({
+            "type": "message",
+            "id": "large-event",
+            "message": {"role": "assistant", "content": "x".repeat(4096)}
+        })
+    );
+    let compressed = zstd::stream::encode_all(Cursor::new(line), 1).expect("compress fixture");
+    insert_raw_archive(
+        &oversized.connection,
+        "old-session",
+        "oversized-generation",
+        "zstd",
+        compressed,
+    );
+    assert!(matches!(
+        read_path(oversized.root.path(), &oversized.path, 128)
+            .expect_err("over-limit zstd must not produce partial history"),
+        OpenClawSqliteError::UnsupportedArchive { .. }
     ));
 }
 
@@ -409,6 +558,49 @@ fn schema_version_and_owner_must_match_the_current_agent_database() {
         .expect("remove required fixture table");
     assert!(matches!(
         shape.read().expect_err("required table mismatch must fail"),
+        OpenClawSqliteError::Capture(CaptureError::UnsupportedSchema(_))
+    ));
+}
+
+#[test]
+fn schema_affinity_nullability_keys_and_indexes_must_match_v17_exactly() {
+    let affinity_schema =
+        SCHEMA.replacen("event_json TEXT NOT NULL", "event_json BLOB NOT NULL", 1);
+    let affinity = Fixture::with_schema("affinity-agent", false, &affinity_schema);
+    assert!(matches!(
+        affinity.read().expect_err("wrong affinity must fail"),
+        OpenClawSqliteError::Capture(CaptureError::UnsupportedSchema(_))
+    ));
+
+    let nullable_schema = SCHEMA.replacen(
+        "created_at INTEGER NOT NULL, PRIMARY KEY (session_id, seq)",
+        "created_at INTEGER, PRIMARY KEY (session_id, seq)",
+        1,
+    );
+    let nullable = Fixture::with_schema("nullable-agent", false, &nullable_schema);
+    assert!(matches!(
+        nullable.read().expect_err("wrong nullability must fail"),
+        OpenClawSqliteError::Capture(CaptureError::UnsupportedSchema(_))
+    ));
+
+    let key_schema = SCHEMA.replacen(
+        "PRIMARY KEY (session_id, seq)",
+        "UNIQUE (session_id, seq)",
+        1,
+    );
+    let key = Fixture::with_schema("key-agent", false, &key_schema);
+    assert!(matches!(
+        key.read().expect_err("wrong key origin must fail"),
+        OpenClawSqliteError::Capture(CaptureError::UnsupportedSchema(_))
+    ));
+
+    let index = Fixture::new("index-agent", false);
+    index
+        .connection
+        .execute_batch("DROP INDEX idx_agent_transcript_active_messages;")
+        .expect("remove required v17 index");
+    assert!(matches!(
+        index.read().expect_err("missing exact index must fail"),
         OpenClawSqliteError::Capture(CaptureError::UnsupportedSchema(_))
     ));
 }
@@ -479,13 +671,21 @@ CREATE TABLE schema_meta (
 CREATE TABLE session_windows (
   session_id TEXT NOT NULL PRIMARY KEY, session_key TEXT NOT NULL, previous_session_id TEXT,
   reason TEXT, session_scope TEXT NOT NULL DEFAULT 'conversation', created_at INTEGER NOT NULL,
-  updated_at INTEGER NOT NULL, transcript_updated_at INTEGER, transcript_observed_at INTEGER,
+  updated_at INTEGER NOT NULL, transcript_updated_at INTEGER DEFAULT NULL,
+  transcript_observed_at INTEGER DEFAULT NULL,
   session_entry_provenance INTEGER NOT NULL DEFAULT 0, acp_owned INTEGER NOT NULL DEFAULT 0,
   plugin_owner_id TEXT, hook_external_content_source TEXT, started_at INTEGER, ended_at INTEGER,
   status TEXT, chat_type TEXT, channel TEXT, account_id TEXT, primary_conversation_id TEXT,
   model_provider TEXT, model TEXT, agent_harness_id TEXT, parent_session_key TEXT, spawned_by TEXT,
   display_name TEXT
 ) STRICT;
+CREATE INDEX idx_agent_session_windows_updated_at
+  ON session_windows(updated_at DESC, session_id);
+CREATE INDEX idx_agent_session_windows_created_at
+  ON session_windows(created_at DESC, session_id);
+CREATE INDEX idx_agent_session_windows_conversation
+  ON session_windows(primary_conversation_id, updated_at DESC, session_id)
+  WHERE primary_conversation_id IS NOT NULL;
 CREATE TABLE transcript_events (
   session_id TEXT NOT NULL, seq INTEGER NOT NULL, event_json TEXT NOT NULL,
   created_at INTEGER NOT NULL, PRIMARY KEY (session_id, seq)
@@ -498,11 +698,24 @@ CREATE TABLE session_transcript_archives (
   last_publish_attempt_at INTEGER, last_publish_error TEXT,
   PRIMARY KEY (session_id, generation)
 ) STRICT;
+CREATE INDEX idx_agent_session_transcript_archives_pending
+  ON session_transcript_archives(created_at, session_id, generation)
+  WHERE published_at IS NULL;
+CREATE INDEX idx_agent_session_transcript_archives_retention
+  ON session_transcript_archives(created_at, session_id, generation);
 CREATE TABLE transcript_event_identities (
   session_id TEXT NOT NULL, event_id TEXT NOT NULL, seq INTEGER NOT NULL, event_type TEXT,
   parent_id TEXT, message_idempotency_key TEXT, created_at INTEGER NOT NULL,
   PRIMARY KEY (session_id, event_id)
 ) STRICT;
+CREATE UNIQUE INDEX idx_agent_transcript_message_idempotency
+  ON transcript_event_identities(session_id, message_idempotency_key)
+  WHERE message_idempotency_key IS NOT NULL;
+CREATE INDEX idx_agent_transcript_event_parent
+  ON transcript_event_identities(session_id, parent_id)
+  WHERE parent_id IS NOT NULL;
+CREATE INDEX idx_agent_transcript_event_sequence
+  ON transcript_event_identities(session_id, event_type, seq DESC);
 CREATE TABLE session_transcript_index_state (
   session_id TEXT NOT NULL PRIMARY KEY, indexed_seq INTEGER NOT NULL, leaf_event_id TEXT,
   needs_rebuild INTEGER NOT NULL DEFAULT 0, active_event_count INTEGER NOT NULL DEFAULT 0,
@@ -512,6 +725,9 @@ CREATE TABLE session_transcript_active_events (
   session_id TEXT NOT NULL, active_position INTEGER NOT NULL, event_seq INTEGER NOT NULL,
   message_position INTEGER, PRIMARY KEY (session_id, active_position)
 ) STRICT;
-CREATE UNIQUE INDEX idx_fixture_active_seq
+CREATE UNIQUE INDEX idx_agent_transcript_active_event_seq
   ON session_transcript_active_events(session_id, event_seq);
+CREATE UNIQUE INDEX idx_agent_transcript_active_messages
+  ON session_transcript_active_events(session_id, message_position)
+  WHERE message_position IS NOT NULL;
 "#;

@@ -50,6 +50,7 @@ COMPOSITION_TEST_DEPS = [
     "//crates/ctx-history-provider-hermes:test_support_lib",
     "//crates/ctx-history-provider-mistral-mux:test_support_lib",
     "//crates/ctx-history-provider-native-jsonl:test_support_lib",
+    "//crates/ctx-history-openclaw-schema:test_support_lib",
     "//crates/ctx-history-provider-openclaw-sqlite:test_support_lib",
     "//crates/ctx-history-provider-runtime:test_support_lib",
     "//crates/ctx-history-provider-trae:test_support_lib",

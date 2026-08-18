@@ -43,6 +43,15 @@ pub fn provider_source_for_path(
     };
     let spec = provider_source_spec(provider).unwrap_or(&unknown_spec);
     let observed = selectors::source_path_kind(&path);
+    let (path, openclaw_source_format) = if provider == CaptureProvider::OpenClaw {
+        match openclaw_explicit_selection(probes, path, observed.ok()) {
+            Ok(selection) => (selection.path, Some(selection.source_format)),
+            Err((path, reason)) => return unsupported_source(spec, path, reason),
+        }
+    } else {
+        (path, None)
+    };
+    let observed = selectors::source_path_kind(&path);
     let is_directory = observed == Ok(SourcePathKind::Directory);
     if let Some(reason) = exact_current_unsupported_reason(probes, provider, &path, observed.ok()) {
         return unsupported_source(spec, path, reason);
@@ -130,7 +139,7 @@ pub fn provider_source_for_path(
         CaptureProvider::Mux if is_directory => "mux_session_jsonl_tree",
         CaptureProvider::Mux => "mux_session_jsonl",
         CaptureProvider::RovoDev => "rovodev_session_json_tree",
-        CaptureProvider::OpenClaw => "openclaw_session_jsonl_tree",
+        CaptureProvider::OpenClaw => openclaw_source_format.unwrap_or("unsupported"),
         CaptureProvider::Hermes => "hermes_state_sqlite",
         CaptureProvider::NanoClaw => "nanoclaw_project",
         CaptureProvider::AstrBot => "astrbot_data_v4_sqlite",
@@ -320,9 +329,6 @@ fn exact_current_unsupported_reason(
         CaptureProvider::Qoder if is_qoder_direct_sdk_shape(path, kind?) => {
             Some("Qoder direct SDK JSONL history without a transcript directory is detected but unsupported")
         }
-        CaptureProvider::OpenClaw if contains_openclaw_sqlite(path, kind?) => {
-            Some("OpenClaw openclaw-agent.sqlite history is detected but unsupported")
-        }
         CaptureProvider::OpenHands if is_openhands_cli_events_shape(path, kind?) => {
             Some("OpenHands CLI events/event-*.json history is detected but unsupported")
         }
@@ -477,6 +483,125 @@ fn contains_openclaw_sqlite(path: &Path, kind: SourcePathKind) -> bool {
             })
         })
     })
+}
+
+struct OpenClawExplicitSelection {
+    path: PathBuf,
+    source_format: &'static str,
+}
+
+fn openclaw_explicit_selection(
+    probes: &StaticProviderProbeCatalog,
+    path: PathBuf,
+    kind: Option<SourcePathKind>,
+) -> Result<OpenClawExplicitSelection, (PathBuf, &'static str)> {
+    const JSONL: &str = "openclaw_session_jsonl_tree";
+    const SQLITE: &str = ctx_history_openclaw_schema::OPENCLAW_AGENT_SQLITE_SOURCE_FORMAT;
+    const EXACT_AGENT_REQUIRED: &str =
+        "OpenClaw roots containing per-agent SQLite require the exact agent database or agent root with --path";
+
+    if kind == Some(SourcePathKind::File) {
+        if is_openclaw_agent_sqlite_leaf(&path) {
+            let jsonl = path
+                .parent()
+                .and_then(Path::parent)
+                .map(|agent_root| agent_root.join("sessions"))
+                .ok_or_else(|| (path.clone(), EXACT_AGENT_REQUIRED))?;
+            return select_openclaw_sqlite(probes, path.clone(), path, jsonl);
+        }
+        return Ok(OpenClawExplicitSelection {
+            path,
+            source_format: JSONL,
+        });
+    }
+    if kind.is_none()
+        && path.file_name().and_then(|name| name.to_str()) == Some("openclaw-agent.sqlite")
+    {
+        return Ok(OpenClawExplicitSelection {
+            path,
+            source_format: SQLITE,
+        });
+    }
+    if kind != Some(SourcePathKind::Directory) {
+        return Ok(OpenClawExplicitSelection {
+            path,
+            source_format: JSONL,
+        });
+    }
+
+    let (sqlite, jsonl) = if path.file_name().and_then(|name| name.to_str()) == Some("agent") {
+        let Some(agent_root) = path.parent() else {
+            return Err((path, EXACT_AGENT_REQUIRED));
+        };
+        (
+            path.join("openclaw-agent.sqlite"),
+            agent_root.join("sessions"),
+        )
+    } else {
+        (
+            path.join("agent/openclaw-agent.sqlite"),
+            path.join("sessions"),
+        )
+    };
+    if is_openclaw_agent_sqlite_leaf(&sqlite) {
+        return select_openclaw_sqlite(probes, path, sqlite, jsonl);
+    }
+    if contains_openclaw_sqlite(&path, SourcePathKind::Directory) {
+        return Err((path, EXACT_AGENT_REQUIRED));
+    }
+    Ok(OpenClawExplicitSelection {
+        path,
+        source_format: JSONL,
+    })
+}
+
+fn select_openclaw_sqlite(
+    probes: &StaticProviderProbeCatalog,
+    selected_path: PathBuf,
+    sqlite: PathBuf,
+    jsonl: PathBuf,
+) -> Result<OpenClawExplicitSelection, (PathBuf, &'static str)> {
+    use super::super::probes::{has_openclaw_agent_sqlite_v17, BoundedProbe};
+
+    const JSONL: &str = "openclaw_session_jsonl_tree";
+    const SQLITE: &str = ctx_history_openclaw_schema::OPENCLAW_AGENT_SQLITE_SOURCE_FORMAT;
+    const INVALID_SQLITE: &str =
+        "OpenClaw openclaw-agent.sqlite does not satisfy the bounded current v17 schema and ownership contract";
+    const PROBE_UNAVAILABLE: &str =
+        "OpenClaw SQLite admission could not complete within the bounded read-only probe";
+
+    let admission = has_openclaw_agent_sqlite_v17(None, &sqlite);
+    if admission != BoundedProbe::Found
+        && has_supported_explicit_history(probes, CaptureProvider::OpenClaw, &jsonl)
+    {
+        return Ok(OpenClawExplicitSelection {
+            path: jsonl,
+            source_format: JSONL,
+        });
+    }
+    match admission {
+        BoundedProbe::Found => Ok(OpenClawExplicitSelection {
+            path: sqlite,
+            source_format: SQLITE,
+        }),
+        BoundedProbe::NotFound => Err((selected_path, INVALID_SQLITE)),
+        BoundedProbe::BudgetExhausted
+        | BoundedProbe::IoError
+        | BoundedProbe::BlockedAuthOrEncryption => Err((selected_path, PROBE_UNAVAILABLE)),
+    }
+}
+
+fn is_openclaw_agent_sqlite_leaf(path: &Path) -> bool {
+    is_named_regular_file(path, |name| name == "openclaw-agent.sqlite")
+        && path.parent().is_some_and(|parent| {
+            parent.file_name().and_then(|name| name.to_str()) == Some("agent")
+        })
+        && path.parent().and_then(Path::parent).is_some_and(|agent| {
+            agent
+                .file_name()
+                .and_then(|name| name.to_str())
+                .is_some_and(|name| !name.is_empty())
+        })
 }
 
 fn is_openhands_cli_events_shape(path: &Path, kind: SourcePathKind) -> bool {

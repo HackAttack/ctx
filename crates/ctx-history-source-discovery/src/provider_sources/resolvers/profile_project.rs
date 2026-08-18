@@ -14,12 +14,15 @@ use super::super::{
         ordinary_path, read_bounded_bytes, SelectorDocument, SelectorFormat, SelectorIncludeBudget,
         SelectorReadError, SelectorReader, MAX_FINITE_SELECTOR_ENTRIES, MAX_SELECTOR_FILE_BYTES,
     },
-    types::{DiscoveryIssueKind, DiscoveryReport, ProviderSourceKind, ProviderSourceSpec},
+    types::{
+        DiscoveryIssueKind, DiscoveryReport, ProviderSourceKind, ProviderSourceSpec,
+        ProviderSourceStatus,
+    },
     StaticProviderProbeCatalog,
 };
 use super::{
     dedupe_report, issue, path_presence, push_source_candidate, select_current_or_legacy,
-    source_from_parts, unsupported_source, PathPresence,
+    source_from_parts, source_from_parts_with_data_root, unsupported_source, PathPresence,
 };
 
 mod openclaw;
@@ -28,7 +31,7 @@ use openclaw::resolve as resolve_openclaw;
 use validation::{valid_hermes_profile_name, valid_uuid};
 
 const OPENCLAW_UNSUPPORTED_REASON: &str =
-    "OpenClaw openclaw-agent.sqlite history is detected but unsupported";
+    "OpenClaw openclaw-agent.sqlite does not satisfy the bounded current v17 schema and ownership contract";
 const OPENHANDS_CLI_UNSUPPORTED_REASON: &str =
     "OpenHands CLI events/event-*.json history is detected but unsupported";
 const PATH_MANUAL_REASON: &str =
