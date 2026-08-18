@@ -11,20 +11,26 @@ good default.
 ## Provider Location Policy
 
 Discovery must be bounded, local, read-only, and offline. Reproduce the
-provider's current precedence and emit the winner, not a union of override,
-default, old channel, migration, and fallback roots. Emit multiple roots only
-for finite current stores that genuinely coexist. An unreconstructible present
-replacement suppresses stale-default discovery and requires exact `--path`.
+provider's current precedence and select one authoritative root or profile,
+not a union of override, default, old channel, migration, and fallback roots.
+Within that selected root, import every bounded canonical history component
+whose format is supported. A recognized unsupported component may coexist with
+supported compatibility history and must not suppress it. Emit multiple roots
+only for finite current stores that genuinely coexist. An unreconstructible
+present replacement suppresses stale-default discovery and requires exact
+`--path`.
 
 One-shot flags, API paths, old working directories, copies, and host mounts are
 explicit-path inputs. An explicit path bypasses discovery precedence only; it
 does not bypass format admission, path safety, read bounds, identity, or
 read-only database handling, and it is not remembered as a default.
 
-Root support and format support are independent. Recognize current unsupported
-formats precisely and stop them before native dispatch. Removing an obsolete
-automatic probe preserves compatible exact-path import and already indexed ctx
-history where those existing contracts still apply.
+Root support and format support are independent. Recognize genuinely
+unsupported formats precisely and stop them before native dispatch, while
+continuing to dispatch independent supported history selected by the same
+bounded provider authority. Exact-path import is an escape hatch for moved,
+copied, ambiguous, or unregistered locations; it is not a manual-only product
+state for canonical history that ctx has already detected and can parse.
 
 ## Import Failure Policy
 
