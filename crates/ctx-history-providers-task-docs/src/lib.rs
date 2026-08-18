@@ -20,6 +20,8 @@ pub(crate) use error::{CaptureError, Result};
 pub(crate) const MAX_PROVIDER_JSONL_LINE_BYTES: usize =
     ctx_history_source_io::MAX_PROVIDER_JSONL_LINE_BYTES;
 pub const CLINE_TASK_JSON_SOURCE_FORMAT: &str = "cline_task_directory_json";
+/// Compound Cline SDK session catalogs plus their manifest/message artifacts.
+pub const CLINE_SDK_SOURCE_FORMAT: &str = "cline_sdk_session_store";
 pub const ROO_TASK_JSON_SOURCE_FORMAT: &str = "roo_task_directory_json";
 pub const CODEBUDDY_SOURCE_FORMAT: &str = "codebuddy_history_json";
 pub const CONTINUE_CLI_SOURCE_FORMAT: &str = "continue_cli_sessions_json";

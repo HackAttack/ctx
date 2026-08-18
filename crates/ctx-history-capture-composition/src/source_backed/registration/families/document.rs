@@ -3,6 +3,7 @@ use super::*;
 use crate::provider::source_backed::family::document::register_replacement_document_tree_route;
 use ctx_history_providers_task_docs::{
     providers::{
+        cline_sdk::ClineSdkDocumentTreeAdapter,
         codebuddy::native_path::CodeBuddyDocumentAdapter,
         continue_cli::native_path::ContinueSourceBackedReader,
         rovodev::native_path::RovoDevDocumentTreeAdapter,
@@ -10,7 +11,7 @@ use ctx_history_providers_task_docs::{
             cline_task_json_source_backed_adapter, roo_task_json_source_backed_adapter,
         },
     },
-    ProviderAdapterContext,
+    ProviderAdapterContext, CLINE_SDK_SOURCE_FORMAT,
 };
 
 const DIRECT_ROUTES: &[RouteEntry] = &[RouteEntry::new(
@@ -22,11 +23,21 @@ pub(super) fn register_route(
     registry: &mut SourceBackedProviderRegistry,
     source: ProviderSource,
     selection: SourceBackedRouteSelection,
+    data_root: Option<&Path>,
 ) -> SourceBackedCoordinatorResult<()> {
     if let Some(register) = direct_route_registration(DIRECT_ROUTES, source.provider) {
         return register(registry, source, selection);
     }
     match source.provider {
+        CaptureProvider::Cline if source.source_format == CLINE_SDK_SOURCE_FORMAT => {
+            let data_root = data_root.ok_or_else(|| {
+                invalid_route(
+                    source.provider,
+                    "Cline SDK registration requires the selected ctx data root",
+                )
+            })?;
+            register_cline_sdk_route(registry, source, selection, data_root)
+        }
         CaptureProvider::Cline | CaptureProvider::RooCode => {
             register_task_json_route(registry, source, selection)
         }
@@ -38,6 +49,16 @@ pub(super) fn register_route(
             "this provider is not registered by the document route family",
         )),
     }
+}
+
+fn register_cline_sdk_route(
+    registry: &mut SourceBackedProviderRegistry,
+    source: ProviderSource,
+    selection: SourceBackedRouteSelection,
+    data_root: &Path,
+) -> SourceBackedCoordinatorResult<()> {
+    let adapter = ClineSdkDocumentTreeAdapter::new(source.path.clone(), data_root.to_path_buf());
+    register_replacement_document_tree_route(registry, source, selection, adapter)
 }
 
 pub(super) fn register_task_json_route(
@@ -369,6 +390,70 @@ mod tests {
         );
     }
 
+    #[test]
+    fn cline_sdk_compound_route_append_rewrite_malformed_recovery_and_delete() {
+        let temp = crate::test_support_paths::tempdir().unwrap();
+        let provider_root = temp.path().join("cline-data");
+        let ctx_data_root = temp.path().join("ctx-data");
+        let index = temp.path().join("index");
+        fs::create_dir_all(provider_root.join("sessions/session-a")).unwrap();
+        fs::create_dir_all(&ctx_data_root).unwrap();
+        write_cline_sdk_index(&provider_root, true);
+        write_cline_sdk_messages(&provider_root, &["one"]);
+        let registry = cline_sdk_registry(&provider_root, &ctx_data_root);
+
+        let cold =
+            refresh_source_backed_generation(&index, &registry, WriterOptions::default()).unwrap();
+        let cold_events = cline_sdk_events(&index, &cold);
+        let first_id = cold_events
+            .iter()
+            .find(|event| event.event_sequence > 0)
+            .unwrap()
+            .event_id;
+
+        write_cline_sdk_messages(&provider_root, &["one", "two"]);
+        let append =
+            refresh_source_backed_generation(&index, &registry, WriterOptions::default()).unwrap();
+        let append_events = cline_sdk_events(&index, &append);
+        assert_eq!(
+            append_events
+                .iter()
+                .find(|event| event.event_sequence > 0)
+                .unwrap()
+                .event_id,
+            first_id
+        );
+
+        write_cline_sdk_messages(&provider_root, &["one revised", "two"]);
+        let rewrite =
+            refresh_source_backed_generation(&index, &registry, WriterOptions::default()).unwrap();
+        let rewrite_events = cline_sdk_events(&index, &rewrite);
+        let first = rewrite_events
+            .iter()
+            .find(|event| event.event_sequence > 0)
+            .unwrap();
+        assert_eq!(first.event_id, first_id);
+        assert_eq!(first.core_record.content.meaningful_text(), "one revised");
+
+        fs::write(
+            provider_root.join("sessions/session-a/session-a.messages.json"),
+            b"{malformed",
+        )
+        .unwrap();
+        let malformed =
+            refresh_source_backed_generation(&index, &registry, WriterOptions::default()).unwrap();
+        assert_eq!(malformed.commit.generation_id, rewrite.commit.generation_id);
+        assert_eq!(VerifiedIndex::open(&index).unwrap().document_count(), 3);
+
+        write_cline_sdk_messages(&provider_root, &["repaired"]);
+        refresh_source_backed_generation(&index, &registry, WriterOptions::default()).unwrap();
+        write_cline_sdk_index(&provider_root, false);
+        let deleted =
+            refresh_source_backed_generation(&index, &registry, WriterOptions::default()).unwrap();
+        assert_eq!(deleted.commit.indexed_documents, 0);
+        assert_eq!(VerifiedIndex::open(&index).unwrap().document_count(), 0);
+    }
+
     fn leaf_identity(
         index: &Path,
         receipt: &SourceBackedRefreshReceipt,
@@ -477,5 +562,90 @@ mod tests {
         )
         .unwrap();
         registry
+    }
+
+    fn cline_sdk_registry(path: &Path, data_root: &Path) -> SourceBackedProviderRegistry {
+        let mut registry = SourceBackedProviderRegistry::new();
+        register_cline_sdk_route(
+            &mut registry,
+            ProviderSource {
+                provider: CaptureProvider::Cline,
+                path: path.to_path_buf(),
+                exists: true,
+                source_format: CLINE_SDK_SOURCE_FORMAT,
+                source_kind: ProviderSourceKind::NativeHistory,
+                import_support: ProviderImportSupport::Native,
+                catalog_support: ProviderCatalogSupport::None,
+                status: ProviderSourceStatus::Available,
+                unsupported_reason: None,
+            },
+            SourceBackedRouteSelection::Automatic,
+            data_root,
+        )
+        .unwrap();
+        registry
+    }
+
+    fn write_cline_sdk_index(root: &Path, include_session: bool) {
+        let sessions = if include_session {
+            serde_json::json!({
+                "session-a": {
+                    "sessionId": "session-a",
+                    "model": "cline-model",
+                    "cwd": "/fixture/cwd"
+                }
+            })
+        } else {
+            serde_json::json!({})
+        };
+        fs::write(
+            root.join("sessions/sessions.index.json"),
+            serde_json::to_vec(&serde_json::json!({"version": 1, "sessions": sessions})).unwrap(),
+        )
+        .unwrap();
+    }
+
+    fn write_cline_sdk_messages(root: &Path, bodies: &[&str]) {
+        let messages = bodies
+            .iter()
+            .enumerate()
+            .map(|(index, body)| {
+                serde_json::json!({
+                    "id": format!("message-{index}"),
+                    "role": if index == 0 { "user" } else { "assistant" },
+                    "content": [{"type": "text", "text": body}]
+                })
+            })
+            .collect::<Vec<_>>();
+        fs::write(
+            root.join("sessions/session-a/session-a.messages.json"),
+            serde_json::to_vec(&serde_json::json!({
+                "version": 1,
+                "updated_at": "2026-08-18T12:00:00Z",
+                "agent": "lead",
+                "sessionId": "session-a",
+                "system_prompt": "You are Cline.",
+                "messages": messages
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+    }
+
+    fn cline_sdk_events(
+        index: &Path,
+        receipt: &SourceBackedRefreshReceipt,
+    ) -> Vec<CoreEventRecord> {
+        let verified = VerifiedIndex::open(index).unwrap();
+        receipt
+            .sources
+            .iter()
+            .flat_map(|source| {
+                verified
+                    .core_source_event_page(source.observation().source(), None, 64)
+                    .unwrap()
+                    .items
+            })
+            .collect()
     }
 }
