@@ -129,25 +129,15 @@ impl OpenedDirectory {
         }
     }
 
-    pub(crate) fn stable_path(&self, _original_path: &Path) -> io::Result<PathBuf> {
-        #[cfg(target_os = "linux")]
-        let path = PathBuf::from(format!("/proc/self/fd/{}/.", self.file.as_raw_fd()));
-        #[cfg(target_os = "macos")]
-        let path = PathBuf::from(format!("/dev/fd/{}/.", self.file.as_raw_fd()));
-        #[cfg(not(any(target_os = "linux", target_os = "macos")))]
-        return Err(io::Error::new(
-            io::ErrorKind::Unsupported,
-            "stable directory-handle paths are unavailable on this Unix platform",
-        ));
-
-        let reopened = std::fs::OpenOptions::new().read(true).open(&path)?;
-        if identity(&reopened)? != self.identity || !reopened.metadata()?.is_dir() {
+    pub(crate) fn stable_path(&self, original_path: &Path) -> io::Result<PathBuf> {
+        let reopened = Self::open_absolute(original_path)?;
+        if reopened.identity != self.identity {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
                 "stable directory-handle path changed identity",
             ));
         }
-        Ok(path)
+        Ok(original_path.to_path_buf())
     }
 
     pub(crate) fn try_clone_file(&self) -> io::Result<File> {
@@ -214,4 +204,28 @@ fn invalid_path() -> io::Error {
         io::ErrorKind::InvalidInput,
         "generation read path must be absolute and traversal-free",
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn stable_path_is_normalized_and_uses_the_opened_directory_identity() -> io::Result<()> {
+        let directory = tempfile::tempdir()?;
+        let original = directory.path().canonicalize()?;
+        let opened = OpenedDirectory::open_absolute(&original)?;
+
+        let path = opened.stable_path(&original)?;
+
+        assert!(path.is_absolute());
+        assert!(!path
+            .components()
+            .any(|component| matches!(component, Component::CurDir | Component::ParentDir)));
+        assert_eq!(
+            OpenedDirectory::open_absolute(&path)?.identity,
+            opened.identity
+        );
+        Ok(())
+    }
 }
