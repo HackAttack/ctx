@@ -17,7 +17,8 @@ use sha2::{Digest, Sha256};
 
 use ctx_history_jsonl::{
     observe_opened_file, JsonlFamilyAdapter, JsonlFamilyAppendMode, JsonlFamilyInventory,
-    JsonlFamilyLeaf, JsonlFamilyProjectionMode, JsonlFamilyProjector, JsonlFileObservation,
+    JsonlFamilyLeaf, JsonlFamilyProjectionMode, JsonlFamilyProjector, JsonlFamilyTerminalProof,
+    JsonlFileObservation,
 };
 use ctx_history_provider_runtime::{
     source_io::{OpenedProviderSourceFile, ProviderSourceRoot},
@@ -41,7 +42,7 @@ const LOGICAL_SESSION_KIND: &str = "mux-session";
 const LOGICAL_EVENT_KIND: &str = "mux-event";
 const SOURCE_SCHEMA_VARIANT: &str = "mux-session-tree-source-backed-v2";
 const PARSER_REVISION: &str =
-    "mux-source-backed-v11-core-activity-agent-scope-raw-lineage-fail-closed-optional-admission";
+    "mux-source-backed-v12-compound-archive-history-sequence-optional-admission";
 const EVENT_IDENTITY_REVISION: &str = "mux-content-occurrence-v1";
 const COMPOUND_REVISION_DOMAIN: &[u8] = b"ctx.mux.compound-source.v3\0";
 const PARTIAL_EVENT_SEQUENCE_BASE: u64 = 1_u64 << 62;
@@ -50,6 +51,7 @@ const MAX_EVENT_SEQUENCE_ORDINAL: u64 = (1_u64 << 47) - 1;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 enum MuxStreamKind {
+    Archive,
     Chat,
     Partial,
 }
@@ -75,6 +77,7 @@ struct MuxBinding {
     parent_session_id: Option<StableEntityId>,
     root_session_id: StableEntityId,
     primary_stream: MuxStreamKind,
+    archive: Option<MuxBoundFile>,
     chat: Option<MuxBoundFile>,
     partial: Option<MuxBoundFile>,
     metadata_file: Option<MuxBoundFile>,
@@ -157,6 +160,7 @@ where
         native_sources.sort_by(|left, right| left.session_dir.cmp(&right.session_dir));
 
         let mut leaves = Vec::with_capacity(native_sources.len());
+        let mut exact_dependencies = Vec::new();
         let mut sources = HashSet::with_capacity(native_sources.len());
         for native in native_sources {
             let (source, binding) = bind_source(&authority, &native)?;
@@ -167,6 +171,18 @@ where
                 )));
             }
             let primary = bound_stream(&binding, binding.primary_stream)?;
+            for bound in [
+                binding.archive.as_ref(),
+                binding.chat.as_ref(),
+                binding.partial.as_ref(),
+                binding.metadata_file.as_ref(),
+            ]
+            .into_iter()
+            .flatten()
+            .filter(|bound| bound.relative_path != primary.relative_path)
+            {
+                exact_dependencies.push(exact_dependency(&authority, bound)?);
+            }
             let source_path = authority.named_path().join(&primary.relative_path);
             let binding_key = TypedKey::bytes(serde_json::to_vec(&binding)?).map_err(contract)?;
             leaves.push(if binding.primary_stream.is_partial() {
@@ -188,6 +204,7 @@ where
             });
         }
         JsonlFamilyInventory::present(self.provider(), root, authority, leaves)
+            .map(|inventory| inventory.with_exact_dependencies(exact_dependencies))
     }
 
     fn projector(
@@ -234,6 +251,7 @@ fn bind_source(
     authority: &Arc<ProviderSourceRoot>,
     native: &MuxSessionSource,
 ) -> Result<(SourceKey, MuxBinding)> {
+    let archive = observe_optional(authority, native.archive_path.as_deref())?;
     let chat = observe_optional(authority, native.chat_path.as_deref())?;
     let partial = observe_optional(authority, native.partial_path.as_deref())?;
     let metadata_file = observe_optional(authority, native.metadata_path.as_deref())?;
@@ -267,13 +285,20 @@ fn bind_source(
         .transpose()?
         .or(parent_session_id)
         .unwrap_or(session_id);
-    let primary_stream = if chat.is_some() {
+    let primary_stream = if archive.is_some() {
+        MuxStreamKind::Archive
+    } else if chat.is_some() {
         MuxStreamKind::Chat
     } else {
         MuxStreamKind::Partial
     };
-    let source_revision_digest =
-        compound_revision_digest(&chat, &partial, &metadata_file, metadata_bytes.as_deref())?;
+    let source_revision_digest = compound_revision_digest(
+        &archive,
+        &chat,
+        &partial,
+        &metadata_file,
+        metadata_bytes.as_deref(),
+    )?;
     Ok((
         source,
         MuxBinding {
@@ -282,6 +307,7 @@ fn bind_source(
             parent_session_id,
             root_session_id,
             primary_stream,
+            archive,
             chat,
             partial,
             metadata_file,
@@ -322,6 +348,7 @@ fn compound_component_revision(
 }
 
 fn compound_revision_digest(
+    archive: &Option<MuxBoundFile>,
     chat: &Option<MuxBoundFile>,
     partial: &Option<MuxBoundFile>,
     metadata: &Option<MuxBoundFile>,
@@ -329,7 +356,7 @@ fn compound_revision_digest(
 ) -> Result<[u8; 32]> {
     let mut digest = Sha256::new();
     digest.update(COMPOUND_REVISION_DOMAIN);
-    digest.update(serde_json::to_vec(&(chat, partial, metadata))?);
+    digest.update(serde_json::to_vec(&(archive, chat, partial, metadata))?);
     if let Some(bytes) = metadata_bytes {
         digest.update(Sha256::digest(bytes));
     }
@@ -373,11 +400,33 @@ fn decode_binding(leaf: &JsonlFamilyLeaf<CaptureError>) -> Result<MuxBinding> {
 }
 
 fn bound_stream(binding: &MuxBinding, stream: MuxStreamKind) -> Result<&MuxBoundFile> {
+    optional_bound_stream(binding, stream)
+        .ok_or_else(|| CaptureError::InvalidPayload("Mux bound stream is absent".to_owned()))
+}
+
+fn optional_bound_stream(binding: &MuxBinding, stream: MuxStreamKind) -> Option<&MuxBoundFile> {
     match stream {
+        MuxStreamKind::Archive => binding.archive.as_ref(),
         MuxStreamKind::Chat => binding.chat.as_ref(),
         MuxStreamKind::Partial => binding.partial.as_ref(),
     }
-    .ok_or_else(|| CaptureError::InvalidPayload("Mux bound stream is absent".to_owned()))
+}
+
+fn exact_dependency(
+    authority: &Arc<ProviderSourceRoot>,
+    bound: &MuxBoundFile,
+) -> Result<JsonlFamilyTerminalProof<CaptureError>> {
+    let source_path = authority.named_path().join(&bound.relative_path);
+    let opened = authority.open_file(&bound.relative_path)?;
+    if observe_opened_file(&source_path, &opened)? != bound.observation {
+        return Err(CaptureError::SourceChangedDuringCapture);
+    }
+    JsonlFamilyTerminalProof::exact_opened_path(
+        source_path,
+        Arc::clone(authority),
+        bound.relative_path.clone(),
+        &opened,
+    )
 }
 
 fn open_verified(
@@ -404,3 +453,6 @@ fn relative_to_authority(authority: &ProviderSourceRoot, path: &Path) -> Result<
 fn contract(error: impl std::fmt::Display) -> CaptureError {
     CaptureError::InvalidPayload(error.to_string())
 }
+
+#[cfg(test)]
+mod tests;

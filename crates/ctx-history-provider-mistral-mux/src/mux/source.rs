@@ -15,6 +15,7 @@ pub(super) const MUX_MAX_DIRECTORY_DEPTH: usize = 128;
 #[derive(Debug, Clone)]
 pub(super) struct MuxSessionSource {
     pub(super) session_dir: PathBuf,
+    pub(super) archive_path: Option<PathBuf>,
     pub(super) chat_path: Option<PathBuf>,
     pub(super) partial_path: Option<PathBuf>,
     pub(super) metadata_path: Option<PathBuf>,
@@ -23,9 +24,10 @@ pub(super) struct MuxSessionSource {
 }
 
 pub(super) fn mux_session_source_from_dir(dir: &Path) -> Result<Option<MuxSessionSource>> {
+    let archive_path = mux_optional_regular_file(&dir.join("chat-archive.jsonl"))?;
     let chat_path = mux_optional_regular_file(&dir.join("chat.jsonl"))?;
     let partial_path = mux_optional_regular_file(&dir.join("partial.json"))?;
-    if chat_path.is_none() && partial_path.is_none() {
+    if archive_path.is_none() && chat_path.is_none() && partial_path.is_none() {
         return Ok(None);
     }
     let metadata_path = mux_optional_regular_file(&dir.join("metadata.json"))?;
@@ -41,6 +43,7 @@ pub(super) fn mux_session_source_from_dir(dir: &Path) -> Result<Option<MuxSessio
     let parent_provider_session_id = mux_parent_session_id_from_path(dir);
     Ok(Some(MuxSessionSource {
         session_dir: dir.to_path_buf(),
+        archive_path,
         chat_path,
         partial_path,
         metadata_path,
@@ -114,7 +117,7 @@ fn visit_mux_session_sources_at_depth(
         ensure_regular_provider_transcript_file(root)?;
         if matches!(
             root.file_name().and_then(|name| name.to_str()),
-            Some("chat.jsonl" | "partial.json")
+            Some("chat-archive.jsonl" | "chat.jsonl" | "partial.json")
         ) {
             if let Some(session_dir) = root.parent() {
                 if let Some(source) = mux_session_source_from_dir(session_dir)? {

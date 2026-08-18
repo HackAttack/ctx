@@ -327,6 +327,7 @@ mod lineage_tests {
         let temp = tempfile::tempdir().unwrap();
         let source = MuxSessionSource {
             session_dir: temp.path().join("mux-child"),
+            archive_path: None,
             chat_path: None,
             partial_path: None,
             metadata_path: None,
