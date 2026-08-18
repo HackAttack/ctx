@@ -1,4 +1,8 @@
-use std::{fs, path::Path};
+use std::{
+    fs::{self, OpenOptions},
+    io::Write,
+    path::Path,
+};
 
 use ctx_history_core::{CaptureProvider, CoreRecord};
 use ctx_history_index::{VerifiedIndex, WriterOptions};
@@ -60,6 +64,13 @@ fn write_jsonl(path: &Path, records: &[Value]) {
         bytes.push(b'\n');
     }
     fs::write(path, bytes).unwrap();
+}
+
+fn append_jsonl(path: &Path, record: &Value) {
+    let mut file = OpenOptions::new().append(true).open(path).unwrap();
+    serde_json::to_writer(&mut file, record).unwrap();
+    file.write_all(b"\n").unwrap();
+    file.sync_all().unwrap();
 }
 
 fn mux_records(index: &Path) -> Vec<CoreRecord> {
@@ -129,6 +140,27 @@ fn mux_compound_route_cold_noop_companion_replacement_and_deletion() {
     assert_eq!(noop.sources, cold.sources);
     assert_eq!(mux_records(&index), cold_records);
 
+    append_jsonl(
+        &chat,
+        &mux_message(
+            "route-session",
+            "appended-event",
+            2,
+            "active appended record",
+        ),
+    );
+    let appended = refresh_source_backed_generation(&index, &registry, writer_options()).unwrap();
+    assert!(appended.failed_routes.is_empty());
+    assert_ne!(appended.commit.generation_id, noop.commit.generation_id);
+    assert_eq!(appended.sources.len(), 1);
+    let appended_records = mux_records(&index);
+    assert_eq!(appended_records.len(), 3);
+    assert_eq!(appended_records[..2], cold_records);
+    assert_eq!(
+        appended_records[2].content.meaningful_text(),
+        "active appended record"
+    );
+
     write_jsonl(
         &chat,
         &[mux_message(
@@ -141,7 +173,10 @@ fn mux_compound_route_cold_noop_companion_replacement_and_deletion() {
     let replacement =
         refresh_source_backed_generation(&index, &registry, writer_options()).unwrap();
     assert!(replacement.failed_routes.is_empty());
-    assert_ne!(replacement.commit.generation_id, noop.commit.generation_id);
+    assert_ne!(
+        replacement.commit.generation_id,
+        appended.commit.generation_id
+    );
     assert_eq!(replacement.sources.len(), 1);
     assert!(replacement.sources[0]
         .observation()

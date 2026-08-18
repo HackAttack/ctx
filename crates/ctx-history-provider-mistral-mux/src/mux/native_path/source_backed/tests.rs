@@ -15,7 +15,9 @@ use super::{
     MuxStreamKind, ProviderSourceRoot, SourceKey, MAX_EVENT_SEQUENCE_ORDINAL,
     PARTIAL_EVENT_SEQUENCE_BASE,
 };
-use crate::mux::source::{mux_session_source_from_dir, visit_mux_session_sources};
+use crate::mux::source::{
+    mux_session_source_from_dir, visit_mux_session_sources, visit_mux_session_sources_with_limits,
+};
 
 #[derive(Clone)]
 struct EmptyLookup;
@@ -345,6 +347,94 @@ fn crash_window_overlap_is_removed_only_from_the_active_seam() {
 }
 
 #[test]
+fn crash_overlap_with_provider_ids_and_malformed_sequences_has_one_identity_per_row() {
+    let temp = tempfile::tempdir().unwrap();
+    let session = temp.path().join("malformed-overlap-session");
+    fs::create_dir(&session).unwrap();
+    let records = [
+        message(
+            "malformed-overlap-session",
+            Some("missing-sequence-id"),
+            None,
+            "missing sequence replay",
+        ),
+        message(
+            "malformed-overlap-session",
+            Some("malformed-sequence-id"),
+            Some(json!("not-a-sequence")),
+            "malformed sequence replay",
+        ),
+        message(
+            "malformed-overlap-session",
+            Some("active-id"),
+            Some(json!(2)),
+            "active row",
+        ),
+    ];
+    let archive = session.join("chat-archive.jsonl");
+    let chat = session.join("chat.jsonl");
+    write_jsonl(&chat, &records);
+    let before = project(&session);
+
+    write_jsonl(&archive, &records[..2]);
+    write_jsonl(&chat, &records);
+    let crash_window = project(&session);
+
+    assert_eq!(before.records, crash_window.records);
+    assert_eq!(crash_window.records.len(), records.len());
+    assert_eq!(
+        crash_window
+            .records
+            .iter()
+            .map(|record| record.event_id)
+            .collect::<HashSet<_>>()
+            .len(),
+        records.len()
+    );
+}
+
+#[test]
+fn covered_sequence_with_distinct_content_is_not_suppressed_or_identity_collapsed() {
+    let temp = tempfile::tempdir().unwrap();
+    let session = temp.path().join("covered-distinct-session");
+    fs::create_dir(&session).unwrap();
+    let archived = message(
+        "covered-distinct-session",
+        None,
+        Some(json!(7)),
+        "archived sequence seven",
+    );
+    let distinct = message(
+        "covered-distinct-session",
+        None,
+        Some(json!(7)),
+        "distinct active sequence seven",
+    );
+    write_jsonl(&session.join("chat-archive.jsonl"), &[archived]);
+    write_jsonl(&session.join("chat.jsonl"), &[distinct]);
+
+    let projected = project(&session);
+    assert_eq!(projected.records.len(), 2);
+    assert_eq!(
+        projected
+            .records
+            .iter()
+            .map(|record| record.content.meaningful_text())
+            .collect::<Vec<_>>(),
+        ["archived sequence seven", "distinct active sequence seven"]
+    );
+    assert_ne!(projected.records[0].event_id, projected.records[1].event_id);
+    assert_eq!(
+        projected
+            .records
+            .iter()
+            .map(|record| record.event_sequence)
+            .collect::<Vec<_>>(),
+        [7, 8]
+    );
+}
+
+#[test]
 fn malformed_and_missing_history_sequences_use_monotonic_collision_free_fallbacks() {
     let temp = tempfile::tempdir().unwrap();
     let session = temp.path().join("malformed-sequence-session");
@@ -550,4 +640,52 @@ fn archive_append_rewrite_and_delete_change_compound_source_revision() {
     fs::remove_file(&chat).unwrap();
     fs::remove_file(&partial).unwrap();
     assert!(mux_session_source_from_dir(&session).unwrap().is_none());
+}
+
+#[test]
+fn aggregate_traversal_limit_fails_before_any_source_is_accumulated() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path().join("over-limit");
+    fs::create_dir(&root).unwrap();
+    for name in ["a", "b", "c"] {
+        fs::create_dir(root.join(name)).unwrap();
+    }
+
+    let mut sources = Vec::new();
+    let error = visit_mux_session_sources_with_limits(&root, 2, 2, &mut |source| {
+        sources.push(source);
+        Ok(())
+    })
+    .unwrap_err();
+
+    assert!(sources.is_empty());
+    assert!(error
+        .to_string()
+        .contains("Mux session traversal exceeds the supported directory entry limit"));
+}
+
+#[test]
+fn aggregate_source_limit_fails_without_exposing_a_partial_inventory() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path().join("source-over-limit");
+    for name in ["a", "b"] {
+        let session = root.join(name);
+        fs::create_dir_all(&session).unwrap();
+        write_jsonl(
+            &session.join("chat.jsonl"),
+            &[message(name, Some(name), Some(json!(0)), name)],
+        );
+    }
+
+    let mut sources = Vec::new();
+    let error = visit_mux_session_sources_with_limits(&root, 8, 1, &mut |source| {
+        sources.push(source);
+        Ok(())
+    })
+    .unwrap_err();
+
+    assert!(sources.is_empty());
+    assert!(error
+        .to_string()
+        .contains("Mux session traversal exceeds the supported source limit"));
 }
