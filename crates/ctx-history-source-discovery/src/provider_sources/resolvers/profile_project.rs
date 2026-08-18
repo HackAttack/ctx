@@ -582,26 +582,43 @@ fn resolve_openhands(
     };
 
     match legacy_root {
-        Some(root) if cli_present && cli_root.starts_with(&root) => {
+        Some(root) if cli_root.starts_with(&root) => {
             match has_openhands_v1_event_json(&root, MAX_FINITE_SELECTOR_ENTRIES) {
                 BoundedProbe::Found => {
                     // One umbrella route deterministically owns a mixed profile,
                     // so provider-native IDs cannot be imported twice.
                     push_selected_source(probes, &mut report, spec, root, "openhands_file_events");
                 }
-                BoundedProbe::NotFound => push_selected_source(
+                BoundedProbe::NotFound if cli_present => push_selected_source(
                     probes,
                     &mut report,
                     spec,
-                    cli_root,
+                    cli_root.clone(),
                     super::super::OPENHANDS_CURRENT_CLI_SOURCE_FORMAT,
                 ),
+                BoundedProbe::NotFound => {
+                    push_selected_source(probes, &mut report, spec, root, "openhands_file_events");
+                }
                 BoundedProbe::BudgetExhausted
                 | BoundedProbe::IoError
                 | BoundedProbe::BlockedAuthOrEncryption => {
                     issue_selector(&mut report, spec.provider);
                     push_selected_source(probes, &mut report, spec, root, "openhands_file_events");
                 }
+            }
+            if !cli_present {
+                // Discovery has no persistent memory of which overlapping
+                // layout owned the prior generation. Keep both exact missing
+                // route identities selected so either can age out through the
+                // bounded automatic deletion protocol without an uncovered
+                // base route.
+                push_selected_source(
+                    probes,
+                    &mut report,
+                    spec,
+                    cli_root,
+                    super::super::OPENHANDS_CURRENT_CLI_SOURCE_FORMAT,
+                );
             }
         }
         Some(root) => {
@@ -688,6 +705,15 @@ fn openhands_cli_root(context: &DiscoveryContext) -> Result<PathBuf, ()> {
         return Ok(persistence.join("conversations"));
     }
     Ok(context.home().join(".openhands").join("conversations"))
+}
+
+/// Resolves the official current CLI direct conversation root with the same
+/// environment precedence used by automatic discovery.
+///
+/// `None` means the configured value cannot be represented safely or a
+/// relative/empty override requires an unavailable process CWD.
+pub fn resolve_openhands_conversations_root(context: &DiscoveryContext) -> Option<PathBuf> {
+    openhands_cli_root(context).ok()
 }
 
 fn openhands_cli_event_roots(root: &Path) -> Result<Vec<PathBuf>, SelectorReadError> {

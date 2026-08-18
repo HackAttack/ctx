@@ -500,6 +500,26 @@ fn current_cli_official_event_shapes_use_the_authoritative_decoder() {
 }
 
 #[test]
+fn current_cli_direct_root_accepts_an_arbitrary_directory_name() {
+    let temp = crate::test_support_paths::tempdir().unwrap();
+    let root = temp.path().join("official-override-without-reserved-name");
+    let event = write_current_event_at_root(
+        &root,
+        "conversation-direct",
+        "event-00001-direct.json",
+        message("event-direct", "direct current body"),
+    );
+
+    let from_root = project(&root).unwrap().remove(0);
+    let from_leaf = project(&event).unwrap().remove(0);
+    assert_eq!(from_root.plan.conversation_id, "conversation-direct");
+    assert_eq!(from_root.plan.source, from_leaf.plan.source);
+    assert_eq!(from_root.plan.session_id, from_leaf.plan.session_id);
+    assert_eq!(from_root.records[0].event_id, from_leaf.records[0].event_id);
+    assert_eq!(body(&from_root.records[0]), "direct current body");
+}
+
+#[test]
 fn layout_migration_preserves_identity_and_mixed_overlap_fails_closed() {
     let temp = crate::test_support_paths::tempdir().unwrap();
     let legacy_root = temp.path().join("legacy");
@@ -960,11 +980,16 @@ fn write_current_event(
     file: &str,
     value: Value,
 ) -> std::path::PathBuf {
-    let path = root
-        .join("conversations")
-        .join(conversation)
-        .join("events")
-        .join(file);
+    write_current_event_at_root(&root.join("conversations"), conversation, file, value)
+}
+
+fn write_current_event_at_root(
+    root: &Path,
+    conversation: &str,
+    file: &str,
+    value: Value,
+) -> std::path::PathBuf {
+    let path = root.join(conversation).join("events").join(file);
     fs::create_dir_all(path.parent().unwrap()).unwrap();
     fs::write(&path, serde_json::to_vec(&value).unwrap()).unwrap();
     path

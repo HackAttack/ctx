@@ -42,6 +42,7 @@ pub use config_project::{
     CrushProjectInventorySelectorError,
 };
 pub(super) use platform::{resolve_lingma_with_authority, resolve_warp_with_authority};
+pub use profile_project::resolve_openhands_conversations_root;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum ResolverGroup {

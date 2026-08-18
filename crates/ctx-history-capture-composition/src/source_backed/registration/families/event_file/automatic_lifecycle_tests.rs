@@ -127,6 +127,119 @@ fn disjoint_current_root_disappearance_deletes_and_restores_only_its_route() {
 }
 
 #[test]
+fn default_current_only_root_disappearance_ages_out_and_restores_exactly() {
+    let temp = crate::test_support_paths::tempdir().unwrap();
+    let home = temp.path().join("home");
+    let cwd = temp.path().join("cwd");
+    fs::create_dir_all(&cwd).unwrap();
+    let profile = home.join(".openhands");
+    write_current_message(
+        &profile,
+        "conversation-current",
+        1,
+        "current-event",
+        "current body",
+        "2026-07-28T12:00:00Z",
+    );
+    let context = DiscoveryContext::new(
+        &home,
+        &cwd,
+        DiscoveryPlatform::Linux,
+        crate::DiscoveryPlatformDirs::default(),
+    );
+    let data_root = temp.path().join("ctx-data");
+    let index = temp.path().join("default-root-disappearance-index");
+
+    let cold_registry = discovered_openhands_registry(&context, &data_root);
+    let cold_routes = openhands_route_facts(&cold_registry);
+    assert_eq!(cold_routes.len(), 1);
+    assert_eq!(cold_routes[0].1, OPENHANDS_CURRENT_CLI_SOURCE_FORMAT);
+    let current_route_id = cold_routes[0].0.clone();
+    let cold =
+        refresh_source_backed_generation(&index, &cold_registry, WriterOptions::default()).unwrap();
+    let cold_current = indexed_events(&index, &cold).remove(0);
+
+    fs::remove_dir_all(&profile).unwrap();
+    let exact_registry = discovered_openhands_registry(&context, &data_root);
+    let missing_routes = openhands_route_facts(&exact_registry);
+    assert_eq!(missing_routes.len(), 2);
+    let legacy_route_id = missing_routes
+        .iter()
+        .find(|(_, format, _)| *format == OPENHANDS_FILE_EVENTS_SOURCE_FORMAT)
+        .unwrap()
+        .0
+        .clone();
+    let missing_current = exact_registry
+        .routes()
+        .find(|route| route.source.source_format == OPENHANDS_CURRENT_CLI_SOURCE_FORMAT)
+        .unwrap();
+    assert_eq!(
+        missing_current.route_identity.as_ref(),
+        Some(&current_route_id)
+    );
+    assert_eq!(missing_current.source.status, ProviderSourceStatus::Missing);
+
+    let exact = refresh_source_backed_generation_for_routes(
+        &index,
+        &exact_registry,
+        WriterOptions::default(),
+        [legacy_route_id],
+    )
+    .unwrap();
+    assert_eq!(indexed_bodies(&index, &exact), vec!["current body"]);
+    assert!(exact
+        .commit
+        .manifest()
+        .source_route(&current_route_id)
+        .is_some());
+
+    let mut deleted = None;
+    for observation in 1..=AUTOMATIC_ROUTE_DELETION_MISSING_OBSERVATIONS {
+        let missing_registry = discovered_openhands_registry(&context, &data_root);
+        let current = missing_registry
+            .routes()
+            .find(|route| route.source.source_format == OPENHANDS_CURRENT_CLI_SOURCE_FORMAT)
+            .unwrap();
+        assert_eq!(current.route_identity.as_ref(), Some(&current_route_id));
+        assert_eq!(current.source.status, ProviderSourceStatus::Missing);
+        let receipt =
+            refresh_source_backed_generation(&index, &missing_registry, WriterOptions::default())
+                .unwrap();
+        if observation < AUTOMATIC_ROUTE_DELETION_MISSING_OBSERVATIONS {
+            assert_eq!(indexed_bodies(&index, &receipt), vec!["current body"]);
+        } else {
+            deleted = Some(receipt);
+        }
+    }
+    let deleted = deleted.unwrap();
+    assert!(deleted.sources.is_empty());
+    assert_eq!(deleted.commit.indexed_documents, 0);
+    assert!(deleted
+        .commit
+        .manifest()
+        .source_route(&current_route_id)
+        .is_none());
+
+    write_current_message(
+        &profile,
+        "conversation-current",
+        1,
+        "current-event",
+        "current body",
+        "2026-07-28T12:00:00Z",
+    );
+    let restored_registry = discovered_openhands_registry(&context, &data_root);
+    assert_eq!(openhands_route_facts(&restored_registry), cold_routes);
+    let restored =
+        refresh_source_backed_generation(&index, &restored_registry, WriterOptions::default())
+            .unwrap();
+    let restored_current = indexed_events(&index, &restored).remove(0);
+    assert_eq!(restored_current.source, cold_current.source);
+    assert_eq!(restored_current.session_id, cold_current.session_id);
+    assert_eq!(restored_current.event_id, cold_current.event_id);
+}
+
+#[test]
 fn overlapping_default_layout_transfers_route_ownership_in_both_directions() {
     let temp = crate::test_support_paths::tempdir().unwrap();
     let home = temp.path().join("home");
@@ -216,6 +329,122 @@ fn overlapping_default_layout_transfers_route_ownership_in_both_directions() {
         .manifest()
         .source_route(&current_route_id)
         .is_none());
+    let restored_events = indexed_events(&index, &restored);
+    let restored_current = restored_events
+        .iter()
+        .find(|record| record.content.meaningful_text() == "current body")
+        .unwrap();
+    let restored_legacy = restored_events
+        .iter()
+        .find(|record| record.content.meaningful_text() == "legacy body")
+        .unwrap();
+    assert_eq!(restored_current.source, cold_current.source);
+    assert_eq!(restored_current.session_id, cold_current.session_id);
+    assert_eq!(restored_current.event_id, cold_current.event_id);
+    assert_eq!(restored_legacy.source, cold_legacy.source);
+    assert_eq!(restored_legacy.session_id, cold_legacy.session_id);
+    assert_eq!(restored_legacy.event_id, cold_legacy.event_id);
+}
+
+#[test]
+fn nested_arbitrary_current_root_transfers_its_exact_route_identity() {
+    let temp = crate::test_support_paths::tempdir().unwrap();
+    let home = temp.path().join("home");
+    let cwd = temp.path().join("cwd");
+    fs::create_dir_all(&cwd).unwrap();
+    let profile = home.join(".openhands");
+    let current_root = profile.join("nested/official-direct-root");
+    let legacy_event = write_message(
+        &profile,
+        "conversation-legacy",
+        "legacy-event",
+        "legacy body",
+    );
+    write_current_message_at_root(
+        &current_root,
+        "conversation-current",
+        1,
+        "current-event",
+        "current body",
+        "2026-07-28T12:00:00Z",
+    );
+    let context = DiscoveryContext::new(
+        &home,
+        &cwd,
+        DiscoveryPlatform::Linux,
+        crate::DiscoveryPlatformDirs::default(),
+    )
+    .with_env(
+        "OPENHANDS_CONVERSATIONS_DIR",
+        current_root.as_os_str().to_owned(),
+    );
+    let data_root = temp.path().join("ctx-data");
+    let index = temp.path().join("nested-layout-transition-index");
+
+    let umbrella_registry = discovered_openhands_registry(&context, &data_root);
+    let umbrella_routes = openhands_route_facts(&umbrella_registry);
+    assert_eq!(umbrella_routes.len(), 1);
+    assert_eq!(umbrella_routes[0].1, OPENHANDS_FILE_EVENTS_SOURCE_FORMAT);
+    let umbrella_route_id = umbrella_routes[0].0.clone();
+    let cold =
+        refresh_source_backed_generation(&index, &umbrella_registry, WriterOptions::default())
+            .unwrap();
+    assert_eq!(
+        indexed_bodies(&index, &cold),
+        vec!["current body", "legacy body"]
+    );
+    let cold_events = indexed_events(&index, &cold);
+    let cold_current = cold_events
+        .iter()
+        .find(|record| record.content.meaningful_text() == "current body")
+        .unwrap();
+    let cold_legacy = cold_events
+        .iter()
+        .find(|record| record.content.meaningful_text() == "legacy body")
+        .unwrap();
+
+    fs::remove_file(&legacy_event).unwrap();
+    let current_registry = discovered_openhands_registry(&context, &data_root);
+    let current_route = current_registry.routes().next().unwrap();
+    assert_eq!(current_route.source.path, current_root);
+    assert_eq!(
+        current_route.source.source_format,
+        OPENHANDS_CURRENT_CLI_SOURCE_FORMAT
+    );
+    let current_route_id = current_route.route_identity.clone().unwrap();
+    let transitioned =
+        refresh_source_backed_generation(&index, &current_registry, WriterOptions::default())
+            .unwrap();
+    assert_eq!(indexed_bodies(&index, &transitioned), vec!["current body"]);
+    assert!(transitioned
+        .commit
+        .manifest()
+        .source_route(&umbrella_route_id)
+        .is_none());
+    let transitioned_current = indexed_events(&index, &transitioned).remove(0);
+    assert_eq!(transitioned_current.source, cold_current.source);
+    assert_eq!(transitioned_current.session_id, cold_current.session_id);
+    assert_eq!(transitioned_current.event_id, cold_current.event_id);
+
+    fs::write(
+        &legacy_event,
+        serde_json::to_vec(&message("legacy-event", "legacy body")).unwrap(),
+    )
+    .unwrap();
+    let restored_registry = discovered_openhands_registry(&context, &data_root);
+    assert_eq!(openhands_route_facts(&restored_registry), umbrella_routes);
+    let restored =
+        refresh_source_backed_generation(&index, &restored_registry, WriterOptions::default())
+            .unwrap();
+    assert!(restored
+        .commit
+        .manifest()
+        .source_route(&current_route_id)
+        .is_none());
+    assert_eq!(
+        indexed_bodies(&index, &restored),
+        vec!["current body", "legacy body"]
+    );
     let restored_events = indexed_events(&index, &restored);
     let restored_current = restored_events
         .iter()
@@ -325,8 +554,25 @@ fn write_current_message(
     body: &str,
     timestamp: &str,
 ) -> std::path::PathBuf {
+    write_current_message_at_root(
+        &root.join("conversations"),
+        conversation,
+        ordinal,
+        id,
+        body,
+        timestamp,
+    )
+}
+
+fn write_current_message_at_root(
+    root: &Path,
+    conversation: &str,
+    ordinal: usize,
+    id: &str,
+    body: &str,
+    timestamp: &str,
+) -> std::path::PathBuf {
     let path = root
-        .join("conversations")
         .join(conversation)
         .join("events")
         .join(format!("event-{ordinal:05}-{id}.json"));

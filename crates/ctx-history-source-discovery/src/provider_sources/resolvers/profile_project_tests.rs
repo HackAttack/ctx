@@ -1008,7 +1008,7 @@ fn openhands_remote_backend_selectors_suppress_v1_disk_root_with_primary_precede
 }
 
 #[test]
-fn openhands_empty_oh_uses_exact_cwd_and_routes_stable_cli_root() {
+fn openhands_empty_oh_routes_arbitrary_official_cli_root() {
     let temp = tempdir();
     let home = temp.path().join("home");
     let cwd = temp.path().join("cwd");
@@ -1017,8 +1017,11 @@ fn openhands_empty_oh_uses_exact_cwd_and_routes_stable_cli_root() {
         &cwd.join("v1_conversations/0123456789abcdef/event.json"),
         "{}",
     );
-    let cli = temp.path().join("conversations");
-    write(&cli.join("conversation/events/event-1.json"), "{}");
+    let cli = temp.path().join("official-direct-root");
+    let conversation = cli.join("conversation");
+    let events = conversation.join("events");
+    let event = events.join("event-1.json");
+    write(&event, "{}");
     let context = context(&home, &cwd)
         .with_env("OH_PERSISTENCE_DIR", "")
         .with_env("OPENHANDS_CONVERSATIONS_DIR", cli.as_os_str().to_owned());
@@ -1033,9 +1036,11 @@ fn openhands_empty_oh_uses_exact_cwd_and_routes_stable_cli_root() {
     );
     assert_eq!(report.sources[1].status, ProviderSourceStatus::Available);
     assert_eq!(report.sources[1].unsupported_reason, None);
-    let explicit = provider_source_for_path(CaptureProvider::OpenHands, cli.join("conversation"));
-    assert_eq!(report.sources[1].source_format, explicit.source_format);
-    assert_eq!(explicit.status, ProviderSourceStatus::Available);
+    for explicit_path in [cli, conversation, events, event] {
+        let explicit = provider_source_for_path(CaptureProvider::OpenHands, explicit_path);
+        assert_eq!(report.sources[1].source_format, explicit.source_format);
+        assert_eq!(explicit.status, ProviderSourceStatus::Available);
+    }
 }
 
 #[test]

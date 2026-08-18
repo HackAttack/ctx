@@ -9,7 +9,10 @@ use serde_json::Value;
 use ctx_history_source_io::open_provider_source_file;
 
 use super::super::{
-    probes::{has_deepseek_harness_session_file, has_trae_state_vscdb_chat_history, BoundedProbe},
+    probes::{
+        has_deepseek_harness_session_file, has_openhands_current_event_json,
+        has_trae_state_vscdb_chat_history, is_openhands_current_event_json, BoundedProbe,
+    },
     provider_source_spec,
     reasons::blocked_auth_or_encryption_reason,
     resolvers::unsupported_source,
@@ -136,7 +139,7 @@ pub fn provider_source_for_path(
         CaptureProvider::AstrBot => "astrbot_data_v4_sqlite",
         CaptureProvider::Shelley => "shelley_sqlite",
         CaptureProvider::Continue => "continue_cli_sessions_json",
-        CaptureProvider::OpenHands if is_openhands_current_cli_path(&path) => {
+        CaptureProvider::OpenHands if is_openhands_current_cli_path(&path, observed.ok()) => {
             super::super::OPENHANDS_CURRENT_CLI_SOURCE_FORMAT
         }
         CaptureProvider::OpenHands => "openhands_file_events",
@@ -479,10 +482,22 @@ fn contains_openclaw_sqlite(path: &Path, kind: SourcePathKind) -> bool {
     })
 }
 
-fn is_openhands_current_cli_path(path: &Path) -> bool {
+fn is_openhands_current_cli_path(path: &Path, kind: Option<SourcePathKind>) -> bool {
     if path_has_component(path, "v1_conversations") {
         return false;
     }
+    if matches!(kind, Some(SourcePathKind::File)) && is_openhands_current_event_json(path) {
+        return true;
+    }
+    if matches!(kind, Some(SourcePathKind::Directory))
+        && has_openhands_current_event_json(path, 10_000) == BoundedProbe::Found
+    {
+        return true;
+    }
+    openhands_current_textual_alias(path)
+}
+
+fn openhands_current_textual_alias(path: &Path) -> bool {
     let components = path.components().collect::<Vec<_>>();
     for index in (0..components.len()).rev() {
         if components[index].as_os_str() != "conversations" {

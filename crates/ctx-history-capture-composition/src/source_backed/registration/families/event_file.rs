@@ -1,6 +1,10 @@
 use super::*;
 use crate::provider::source_backed::family::document::register_replacement_document_tree_route_with_authority;
+#[cfg(test)]
 use ctx_history_provider_docproj::OPENHANDS_FILE_EVENTS_SOURCE_FORMAT;
+
+mod automatic;
+use automatic::openhands_automatic_retirement;
 
 /// OpenHands event-file conversations now use the common replacement-document
 /// lifecycle. Each conversation is an independently staged logical source;
@@ -10,10 +14,32 @@ pub(super) fn register_openhands_route(
     source: ProviderSource,
     selection: SourceBackedRouteSelection,
 ) -> SourceBackedCoordinatorResult<()> {
+    register_openhands_route_with_current_root(registry, source, selection, None)
+}
+
+pub(in crate::source_backed) fn register_openhands_automatic_route(
+    registry: &mut SourceBackedProviderRegistry,
+    source: ProviderSource,
+    current_root: &Path,
+) -> SourceBackedCoordinatorResult<()> {
+    register_openhands_route_with_current_root(
+        registry,
+        source,
+        SourceBackedRouteSelection::Automatic,
+        Some(current_root),
+    )
+}
+
+fn register_openhands_route_with_current_root(
+    registry: &mut SourceBackedProviderRegistry,
+    source: ProviderSource,
+    selection: SourceBackedRouteSelection,
+    current_root: Option<&Path>,
+) -> SourceBackedCoordinatorResult<()> {
     let authority = landed_format_route(source.provider, source.source_format)
         .ok_or_else(|| invalid_route(source.provider, "unknown OpenHands source format"))?
         .selector_authority;
-    let automatic_retirement = openhands_automatic_retirement(&source, selection)?;
+    let automatic_retirement = openhands_automatic_retirement(&source, selection, current_root)?;
     let adapter = OpenHandsEventFileAdapterV2::<CaptureProviderRuntime>::new(source.path.clone());
     register_replacement_document_tree_route_with_authority(
         registry, source, selection, authority, adapter,
@@ -22,31 +48,6 @@ pub(super) fn register_openhands_route(
         registry.retire_automatic_routes_after_success(&replacement, [retired])?;
     }
     Ok(())
-}
-
-fn openhands_automatic_retirement(
-    source: &ProviderSource,
-    selection: SourceBackedRouteSelection,
-) -> SourceBackedCoordinatorResult<Option<(SourceRouteIdentity, SourceRouteIdentity)>> {
-    if selection != SourceBackedRouteSelection::Automatic {
-        return Ok(None);
-    }
-    let replacement = automatic_source_backed_route_identity(source)?;
-    let mut retired = source.clone();
-    match source.source_format {
-        OPENHANDS_CURRENT_CLI_SOURCE_FORMAT => {
-            retired.source_format = OPENHANDS_FILE_EVENTS_SOURCE_FORMAT;
-        }
-        OPENHANDS_FILE_EVENTS_SOURCE_FORMAT => {
-            retired.source_format = OPENHANDS_CURRENT_CLI_SOURCE_FORMAT;
-            retired.path = source.path.join("conversations");
-        }
-        _ => return Ok(None),
-    }
-    Ok(Some((
-        replacement,
-        automatic_source_backed_route_identity(&retired)?,
-    )))
 }
 
 #[cfg(test)]

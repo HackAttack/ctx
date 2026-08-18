@@ -118,8 +118,8 @@ pub use lingma::{
 
 pub use resolvers::PathPresence;
 pub use resolvers::{
-    path_presence, CrushDiscoveredProjectInventory, CrushProjectInventorySelector,
-    CrushProjectInventorySelectorError,
+    path_presence, resolve_openhands_conversations_root, CrushDiscoveredProjectInventory,
+    CrushProjectInventorySelector, CrushProjectInventorySelectorError,
 };
 pub use specs::{provider_source_spec, provider_source_specs};
 pub use types::{

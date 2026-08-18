@@ -796,13 +796,14 @@ fn supported_explicit_shapes_and_missing_textual_paths_keep_pinned_mapping() {
 #[test]
 fn openhands_current_cli_exact_conversation_events_and_leaf_are_importable() {
     let temp = tempdir();
-    let conversation = temp.path().join("conversations/conversation");
+    let root = temp.path().join("official-direct-root");
+    let conversation = root.join("conversation");
     let events = conversation.join("events");
     let event = events.join("event-00001-current.json");
     std::fs::create_dir_all(&events).unwrap();
     std::fs::write(&event, b"{}\n").unwrap();
 
-    for path in [conversation, events, event] {
+    for path in [root, conversation, events, event] {
         let source = provider_source_for_path(CaptureProvider::OpenHands, path);
         assert_eq!(source.status, ProviderSourceStatus::Available);
         assert_eq!(source.import_support, ProviderImportSupport::Native);

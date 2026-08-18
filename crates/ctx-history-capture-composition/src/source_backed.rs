@@ -41,9 +41,10 @@ pub use ctx_history_providers_sqlite_inventory::{
     CrushProjectDatabaseV0, CrushProjectInventoryObservationV0, CrushProjectInventorySourceV0,
 };
 use ctx_history_source_discovery::{
-    path_presence, resolve_warp_discovery_authority, CrushDiscoveredProjectInventory,
-    CrushProjectInventorySelector, CrushProjectInventorySelectorError, LingmaInventorySelector,
-    PathPresence, WarpDiscoveryUnavailable,
+    path_presence, resolve_openhands_conversations_root, resolve_warp_discovery_authority,
+    CrushDiscoveredProjectInventory, CrushProjectInventorySelector,
+    CrushProjectInventorySelectorError, LingmaInventorySelector, PathPresence,
+    WarpDiscoveryUnavailable,
 };
 
 mod discovery;
