@@ -18,12 +18,7 @@ load(
 load("//tools/bazel:release_package_audit_data.bzl", "RELEASE_PACKAGE_AUDIT_PACKAGE_DATA")
 load("//tools/bazel:release_surface_tests.bzl", "release_surface_tests")
 load("//tools/bazel:root_build_settings.bzl", "root_build_settings")
-load(
-    "//tools/bazel:test_tiers.bzl",
-    "CI_TESTS",
-    "NIGHTLY_TESTS",
-    "RUST_FORMAT_TARGETS",
-)
+load("//tools/bazel:test_tiers.bzl", "RUST_FORMAT_TARGETS")
 
 exports_files([
     ".bazelrc",
@@ -142,10 +137,7 @@ filegroup(
 
 filegroup(
     name = "history_provider_pack_boundary_inputs",
-    srcs = [
-        "scripts/bazelw",
-        "//tools/bazel:test_tiers.bzl",
-    ] + CARGO_WORKSPACE_PACKAGE_DATA,
+    srcs = ["scripts/bazelw"] + CARGO_WORKSPACE_PACKAGE_DATA,
     visibility = ["//visibility:public"],
 )
 
@@ -494,7 +486,10 @@ py_test(
     ],
     imports = ["scripts/tests"],
     main = "scripts/tests/performance_sanity_test.py",
-    tags = ["release-gate"],
+    tags = [
+        "release-gate",
+        "tier-nightly",
+    ],
 )
 
 py_test(
@@ -510,7 +505,10 @@ py_test(
     ],
     imports = ["scripts/tests"],
     main = "scripts/tests/provider_family_continuous_refresh_test.py",
-    tags = ["release-gate"],
+    tags = [
+        "release-gate",
+        "tier-nightly",
+    ],
     target_compatible_with = ["@platforms//os:linux"],
     timeout = "long",
 )
@@ -938,20 +936,17 @@ py_test(
     ],
 )
 
-# This test intentionally queries the complete live workspace graph. The
-# no-cache/no-sandbox execution requirements keep undeclared package additions
-# from being hidden by a stale test result.
+# This test intentionally queries the complete live workspace graph. Untagged
+# tests default to CI; only manual, nightly, and release exceptions are tagged.
+# The isolated Bazel output root keeps this nested metadata query independent
+# from the parent test command.
 sh_test(
-    name = "test_tier_inventory_check",
-    srcs = ["scripts/tests/test-tier-inventory-test.sh"],
-    args = [
-        "$(rootpath BUILD.bazel)",
-        "$(rootpath //tools/bazel:check_test_tier_inventory.py)",
-    ],
+    name = "test_taxonomy_policy_check",
+    srcs = ["scripts/tests/test-taxonomy-policy-test.sh"],
+    args = ["$(rootpath BUILD.bazel)"],
     data = [
         "BUILD.bazel",
         "scripts/bazelw",
-        "//tools/bazel:check_test_tier_inventory.py",
     ],
     tags = [
         "build-graph",
@@ -1360,15 +1355,3 @@ real_harness_gate(name = "real_harness_gemini_mcp_e2e", script_mode = "real_harn
 real_harness_gate(name = "real_harness_opencode_mcp_e2e", script_mode = "real_harness_opencode_mcp_e2e", binary = "//crates/ctx-cli:ctx", data = REAL_HARNESS_DATA)
 
 release_surface_tests()
-
-test_suite(
-    name = "ci_tests",
-    tests = CI_TESTS,
-)
-
-test_suite(
-    name = "nightly_tests",
-    tests = [
-        ":ci_tests",
-    ] + NIGHTLY_TESTS,
-)

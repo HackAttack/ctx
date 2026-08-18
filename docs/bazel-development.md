@@ -162,23 +162,23 @@ scripts/bazel-affected.sh origin/main
 
 Run focused tests repeatedly while editing, then run the affected selector
 against the comparison base. Build-configuration changes, uncertain ownership,
-unmapped changes, and selector failures all expand to `//:ci_tests`, the
-complete deterministic test suite. The complete public merge gate remains
+unmapped changes, and selector failures all expand to the default-CI `//...`
+selection. The complete public merge gate remains
 `scripts/check.sh --mode=ci`.
 The named check first builds `//...` under `--config=ci`; that configuration
-inherits the strict Clippy aspect and `-Dwarnings`. It then runs the owning
-`//:ci_tests` or `//:nightly_tests` suite under the
-deterministic test configuration, so test execution does not reapply the lint
-aspect.
+inherits the strict Clippy aspect and `-Dwarnings`. It then discovers tests
+from `//...` under the deterministic test configuration, so test execution
+does not reapply the lint aspect. Untagged tests run in CI by default;
+`tier-nightly`, `tier-release`, and `manual` are the explicit exceptions.
 Performance sanity, serialized auto-upgrade acceptance, persistent-daemon soak,
 and process/fault injection run in `nightly` and `release`; they are
 intentionally outside the per-change `ci` loop.
 
 The affected command uses pinned bazel-diff, an ephemeral detached base
 worktree, a commit-keyed cached base hash, and complete target-graph hashes for
-both graphs. BUILD, `.bzl`, module, lock, and configuration changes select the full
-`//:ci_tests` suite. A diff/query/filter failure or a changed file with no mapped
-test also fails closed to `//:ci_tests`. Non-routine external, manual, network,
+both graphs. BUILD, `.bzl`, module, lock, and configuration changes select the
+full default-CI graph. A diff/query/filter failure or a changed file with no
+mapped test does the same. Non-routine external, manual, network,
 platform, stress, and release targets stay outside affected execution.
 
 `//:repository_policy_check` reads the live Git and Cargo workspaces on every

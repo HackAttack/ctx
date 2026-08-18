@@ -26,11 +26,10 @@ class ProviderPackBoundaryMutations(unittest.TestCase):
         self.root = Path(self.temporary.name)
         shutil.copy2(REPOSITORY / "Cargo.toml", self.root / "Cargo.toml")
         shutil.copy2(REPOSITORY / "BUILD.bazel", self.root / "BUILD.bazel")
-        test_tiers = self.root / "tools/bazel/test_tiers.bzl"
-        test_tiers.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copy2(REPOSITORY / "tools/bazel/test_tiers.bzl", test_tiers)
+        tools_build = self.root / "tools/bazel/BUILD.bazel"
+        tools_build.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(
-            REPOSITORY / "tools/bazel/BUILD.bazel", test_tiers.with_name("BUILD.bazel")
+            REPOSITORY / "tools/bazel/BUILD.bazel", tools_build
         )
         workspace_inputs = list((REPOSITORY / "crates").glob("*/Cargo.toml"))
         workspace_inputs.extend((REPOSITORY / "crates").glob("*/BUILD.bazel"))
@@ -86,7 +85,7 @@ class ProviderPackBoundaryMutations(unittest.TestCase):
     def test_clean_head_passes(self) -> None:
         self.validate()
 
-    def test_live_registration_and_tier_routes_cannot_disappear(self) -> None:
+    def test_live_registration_and_default_ci_routes_cannot_disappear(self) -> None:
         cases = (
             (
                 self.root / "BUILD.bazel",
@@ -102,8 +101,8 @@ class ProviderPackBoundaryMutations(unittest.TestCase):
             ),
             (
                 self.root / "BUILD.bazel",
-                "    ] + CARGO_WORKSPACE_PACKAGE_DATA,\n",
-                "    ],\n",
+                '    srcs = ["scripts/bazelw"] + CARGO_WORKSPACE_PACKAGE_DATA,\n',
+                '    srcs = ["scripts/bazelw"],\n',
                 "input filegroup srcs",
             ),
             (
@@ -113,28 +112,10 @@ class ProviderPackBoundaryMutations(unittest.TestCase):
                 "complete Cargo/BUILD data drifted",
             ),
             (
-                self.root / "tools/bazel/test_tiers.bzl",
-                f'    "{LIVE_BOUNDARY_TARGET}",\n',
-                "",
-                "must route",
-            ),
-            (
-                self.root / "tools/bazel/test_tiers.bzl",
-                f'    "{MUTATION_BOUNDARY_TARGET}",\n',
-                "",
-                "must route",
-            ),
-            (
-                self.root / "tools/bazel/test_tiers.bzl",
-                "RUST_FORMAT_TARGETS = [\n",
-                f'RUST_FORMAT_TARGETS = [\n    "{LIVE_BOUNDARY_TARGET}",\n',
-                "must not route",
-            ),
-            (
-                self.root / "tools/bazel/test_tiers.bzl",
-                "RUST_FORMAT_TARGETS = [\n",
-                f'RUST_FORMAT_TARGETS = [\n    "{MUTATION_BOUNDARY_TARGET}",\n',
-                "must not route",
+                self.root / "tools/bazel/BUILD.bazel",
+                '    main = "check_history_provider_pack_boundary_test.py",\n',
+                '    main = "check_history_provider_pack_boundary_test.py",\n    tags = ["manual"],\n',
+                "must remain in default CI",
             ),
         )
         for path, before, after, error in cases:
@@ -143,10 +124,6 @@ class ProviderPackBoundaryMutations(unittest.TestCase):
                 with self.assertRaisesRegex(BoundaryError, error):
                     self.validate()
                 shutil.copy2(REPOSITORY / "BUILD.bazel", self.root / "BUILD.bazel")
-                shutil.copy2(
-                    REPOSITORY / "tools/bazel/test_tiers.bzl",
-                    self.root / "tools/bazel/test_tiers.bzl",
-                )
                 shutil.copy2(
                     REPOSITORY / "tools/bazel/BUILD.bazel",
                     self.root / "tools/bazel/BUILD.bazel",

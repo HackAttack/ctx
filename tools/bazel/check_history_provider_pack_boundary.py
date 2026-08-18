@@ -696,7 +696,7 @@ def _validate_pack_bazel(build_path: Path) -> None:
 
 
 def _validate_live_gate_registration(
-    root_build_path: Path, tools_build_path: Path, test_tiers_path: Path
+    root_build_path: Path, tools_build_path: Path
 ) -> None:
     package = "root provider-pack boundary"
     root_tokens = _tokenize_starlark(
@@ -759,7 +759,6 @@ def _validate_live_gate_registration(
         ("CARGO_WORKSPACE_PACKAGE_DATA",),
     ) != (
         "scripts/bazelw",
-        "//tools/bazel:test_tiers.bzl",
     ):
         raise BoundaryError("root provider-pack boundary input filegroup drifted")
     if _literal_string_list(
@@ -787,29 +786,14 @@ def _validate_live_gate_registration(
         "//:history_provider_pack_boundary_inputs",
     ):
         raise BoundaryError(f"{MUTATION_BOUNDARY_TARGET} complete Cargo/BUILD data drifted")
-
-    tier_tokens = _tokenize_starlark(
-        test_tiers_path.read_text(encoding="utf-8"), "public test tiers"
+    mutation_tag_tokens = mutation_gate.get("tags")
+    mutation_tags = (
+        _literal_string_list(mutation_tag_tokens, package, "mutation tags")
+        if mutation_tag_tokens is not None
+        else ()
     )
-    for inventory, expected_count in (
-        ("RUST_FORMAT_TARGETS", 0),
-        ("_CI_RUST_TESTS", 1),
-    ):
-        assignments = _assignments(tier_tokens, inventory)
-        if len(assignments) != 1 or assignments[0][0] != "=":
-            raise BoundaryError(f"public test tiers must assign {inventory} exactly once")
-        labels = _literal_string_list(
-            assignments[0][1], "public test tiers", inventory
-        )
-        for label in (LIVE_BOUNDARY_TARGET, MUTATION_BOUNDARY_TARGET):
-            if labels.count(label) != expected_count:
-                if expected_count == 0:
-                    raise BoundaryError(
-                        f"public test tiers {inventory} must not route non-Rust {label}"
-                    )
-                raise BoundaryError(
-                    f"public test tiers {inventory} must route {label} exactly once"
-                )
+    if {"manual", "tier-nightly", "tier-release"}.intersection(mutation_tags):
+        raise BoundaryError(f"{MUTATION_BOUNDARY_TARGET} must remain in default CI")
 
 
 def _validate_reverse_build_inventory(
@@ -901,7 +885,6 @@ def validate(
     _validate_live_gate_registration(
         repo_root / "BUILD.bazel",
         repo_root / "tools/bazel/BUILD.bazel",
-        repo_root / "tools/bazel/test_tiers.bzl",
     )
     workspace_manifest = _read_manifest(workspace_manifest_path)
     _validate_pack_manifest(pack_manifest_path, workspace_manifest)

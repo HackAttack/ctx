@@ -178,7 +178,10 @@ daemon_cli_binary_contract(
         "RUST_TEST_THREADS": "1",
     },
     fixtures = True,
-    tags = ["release-gate"],
+    tags = [
+        "release-gate",
+        "tier-nightly",
+    ],
     upgrade = True,
 )
 
@@ -208,5 +211,9 @@ daemon_cli_binary_contract(
         "tests/contracts/native/process_control.rs",
         "tests/contracts/persistent_daemon_lifecycle/lifecycle_regressions.rs",
     ],
-    tags = ["exclusive", "release-gate"],
+    tags = [
+        "exclusive",
+        "release-gate",
+        "tier-nightly",
+    ],
 )

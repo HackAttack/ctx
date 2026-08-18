@@ -47,6 +47,7 @@ SOURCE_BACKED_RECOVERY_FAULT_TAGS = [
     "linux-only",
     "release-gate",
     "source-backed-recovery",
+    "tier-nightly",
 ]
 
 # Each leaf target names one ignored Rust test so a failed fault point has an

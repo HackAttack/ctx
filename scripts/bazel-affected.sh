@@ -8,10 +8,11 @@ source "${repo_root}/scripts/ci-common.sh"
 
 base_ref="${1:-origin/main}"
 if ! base_sha="$(git rev-parse --verify "${base_ref}^{commit}")"; then
-  printf 'could not resolve affected-test base %s; selecting //:ci_tests\n' "${base_ref}" >&2
-  printf '//:ci_tests\n'
+  printf 'could not resolve affected-test base %s; selecting default CI tests\n' "${base_ref}" >&2
+  printf '//...\n'
   if [[ "${CTX_AFFECTED_DRY_RUN:-0}" != "1" ]]; then
-    scripts/bazelw test //:ci_tests --config=test
+    scripts/bazelw test //... --config=test \
+      --test_tag_filters=-manual,-tier-nightly,-tier-release
   fi
   exit 0
 fi
@@ -84,12 +85,12 @@ generate_selection() {
   # bazel-diff deliberately reports every affected graph node. Let Bazel reduce
   # that set to executable leaf tests and keep aggregate test suites, manual,
   # network, external-harness, and release targets out of routine affected
-  # runs. Selecting an affected tier suite such as //:ci_tests would erase the
-  # benefit of selecting its affected members.
+  # runs. Selecting an aggregate test suite would erase the benefit of
+  # selecting its affected members.
   if [[ -s "${impacted}" ]]; then
     impacted_set="$(tr '\n' ' ' <"${impacted}")"
     scripts/bazelw query \
-      "kind(\".*_test rule\", set(${impacted_set})) except attr(\"tags\", \".*(advisory|external|flaky-repetition|manual|network|no-cache|platform-native|release|requires-local-history|requires-signing|requires-vm|stress).*\", set(${impacted_set}))" \
+      "kind(\".*_test rule\", set(${impacted_set})) except attr(\"tags\", \".*(advisory|external|flaky-repetition|manual|network|no-cache|platform-native|release|requires-local-history|requires-signing|requires-vm|stress|tier-nightly|tier-release).*\", set(${impacted_set}))" \
       --output=label >"${filtered_impacted}" || return 1
   else
     : >"${filtered_impacted}"
@@ -104,8 +105,8 @@ generate_selection() {
 }
 
 fail_closed() {
-  printf '//:ci_tests\n' >"${selected}"
-  printf 'bazel-diff failed; selecting //:ci_tests\n' >&2
+  printf '//...\n' >"${selected}"
+  printf 'bazel-diff failed; selecting default CI tests\n' >&2
 }
 
 if ! generate_selection; then
@@ -118,5 +119,6 @@ if [[ "${CTX_AFFECTED_DRY_RUN:-0}" != "1" ]] && [[ -s "${selected}" ]]; then
   while IFS= read -r test_label; do
     tests+=("${test_label}")
   done <"${selected}"
-  scripts/bazelw test "${tests[@]}" --config=test
+  scripts/bazelw test "${tests[@]}" --config=test \
+    --test_tag_filters=-manual,-tier-nightly,-tier-release
 fi

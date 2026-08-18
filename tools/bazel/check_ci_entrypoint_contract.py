@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Validate the complete public CI entrypoint and nested suite contract."""
+"""Validate the graph-discovered public test-mode entrypoint contract."""
 
 from __future__ import annotations
 
@@ -60,22 +60,22 @@ def validate_check_text(check_text: str) -> None:
         marker,
         "ci)",
         "run_bazel build //... --config=ci",
-        "run_bazel test //:ci_tests --config=test",
+        "run_bazel test //... --config=test --test_tag_filters=-manual,-tier-nightly,-tier-release",
         ";;",
         "nightly)",
         "run_bazel build //... --config=ci",
-        "run_bazel test //:nightly_tests --config=test",
+        "run_bazel test //... --config=test --test_tag_filters=-manual,-tier-release",
         ";;",
         "release)",
         "run_bazel build //... --config=ci",
-        "run_bazel test //:nightly_tests --config=test",
+        "run_bazel test //... --config=test --test_tag_filters=-manual",
         ";;",
         "esac",
     ]
     if execution != expected:
         raise ContractError(
-            "named modes must lint-build //... with --config=ci, then run only "
-            "their deterministic *_tests suite with --config=test"
+            "named modes must lint-build //... with --config=ci, then discover "
+            "tests from //... with the exact default-CI exception filters"
         )
 
 
@@ -90,53 +90,47 @@ def _call_name(call: ast.Call) -> str | None:
     return None
 
 
-def _keyword(call: ast.Call, name: str) -> ast.AST | None:
-    return next(
-        (keyword.value for keyword in call.keywords if keyword.arg == name),
-        None,
-    )
-
-
-def _shape(expression: str) -> str:
-    return ast.dump(ast.parse(expression, mode="eval").body, include_attributes=False)
-
-
 def validate_build_text(build_text: str) -> None:
     try:
         tree = ast.parse(build_text, filename="BUILD.bazel")
     except SyntaxError as error:
         raise ContractError(f"BUILD.bazel cannot be parsed: {error}") from error
 
-    retired = {"ci", "nightly", "release"}
+    retired = {
+        "ci",
+        "nightly",
+        "release",
+        "ci_tests",
+        "nightly_tests",
+        "release_tests",
+    }
     for node in ast.walk(tree):
         if isinstance(node, ast.Call) and _call_name(node) in retired:
-            raise ContractError("retired ambiguous root suite name remains")
+            raise ContractError("retired exhaustive root test suite remains")
 
-    suites: dict[str, ast.Call] = {}
+    policy_checks = 0
     for node in tree.body:
         if not (
             isinstance(node, ast.Expr)
             and isinstance(node.value, ast.Call)
             and isinstance(node.value.func, ast.Name)
-            and node.value.func.id == "test_suite"
+            and node.value.func.id == "sh_test"
         ):
             continue
-        name = _call_name(node.value)
-        if name in {"ci_tests", "nightly_tests"}:
-            if name in suites:
-                raise ContractError(f"duplicate //:{name} suite")
-            suites[name] = node.value
+        if _call_name(node.value) == "test_taxonomy_policy_check":
+            policy_checks += 1
+    if policy_checks != 1:
+        raise ContractError("exactly one live test taxonomy policy check is required")
 
-    expected = {
-        "ci_tests": _shape("CI_TESTS"),
-        "nightly_tests": _shape('[":ci_tests"] + NIGHTLY_TESTS'),
+    retired_inventories = {
+        node.id
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Name) and node.id in {"CI_TESTS", "NIGHTLY_TESTS"}
     }
-    if set(suites) != set(expected):
-        raise ContractError("the ci_tests/nightly_tests suites are required")
-    for name, expected_tests in expected.items():
-        tests = _keyword(suites[name], "tests")
-        if tests is None or ast.dump(tests, include_attributes=False) != expected_tests:
-            raise ContractError(f"//:{name} has incorrect nesting or inventory")
+    if retired_inventories:
+        raise ContractError(
+            f"retired exhaustive test inventories remain: {sorted(retired_inventories)}"
+        )
 
 
 def main() -> int:

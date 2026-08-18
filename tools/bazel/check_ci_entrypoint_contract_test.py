@@ -52,33 +52,46 @@ class CiEntrypointContractTest(unittest.TestCase):
 
     def test_tests_cannot_reapply_the_lint_aspect(self) -> None:
         mutated = CHECK_TEXT.replace(
-            "run_bazel test //:ci_tests --config=test",
-            "run_bazel test //:ci_tests --config=ci",
+            "run_bazel test //... --config=test",
+            "run_bazel test //... --config=ci",
             1,
         )
         self.assertNotEqual(mutated, CHECK_TEXT)
-        with self.assertRaisesRegex(ContractError, "deterministic .* suite"):
+        with self.assertRaisesRegex(ContractError, "discover tests"):
             validate_check_text(mutated)
 
     def test_lint_must_finish_before_tests_start(self) -> None:
         build = "run_bazel build //... --config=ci"
-        test = "run_bazel test //:ci_tests --config=test"
+        test = "run_bazel test //... --config=test --test_tag_filters=-manual,-tier-nightly,-tier-release"
         mutated = CHECK_TEXT.replace(f"{build}\n    {test}", f"{test}\n    {build}", 1)
         self.assertNotEqual(mutated, CHECK_TEXT)
         with self.assertRaisesRegex(ContractError, "lint-build //..."):
             validate_check_text(mutated)
 
-    def test_ambiguous_suite_alias_is_rejected(self) -> None:
-        mutated = BUILD_TEXT.replace('name = "ci_tests"', 'name = "ci"', 1)
+    def test_exhaustive_suite_alias_is_rejected(self) -> None:
+        mutated = BUILD_TEXT + '\ntest_suite(name = "ci_tests", tests = [])\n'
         self.assertNotEqual(mutated, BUILD_TEXT)
-        with self.assertRaisesRegex(ContractError, "ambiguous root suite"):
+        with self.assertRaisesRegex(ContractError, "exhaustive root test suite"):
             validate_build_text(mutated)
 
-    def test_nightly_cannot_drop_ci(self) -> None:
-        nested = '[\n        ":ci_tests",\n    ] + NIGHTLY_TESTS'
-        mutated = BUILD_TEXT.replace(nested, "NIGHTLY_TESTS", 1)
+    def test_ci_cannot_drop_default_exception_filter(self) -> None:
+        mutated = CHECK_TEXT.replace(
+            "-manual,-tier-nightly,-tier-release",
+            "-manual,-tier-release",
+            1,
+        )
+        self.assertNotEqual(mutated, CHECK_TEXT)
+        with self.assertRaisesRegex(ContractError, "exception filters"):
+            validate_check_text(mutated)
+
+    def test_live_taxonomy_policy_check_is_required(self) -> None:
+        mutated = BUILD_TEXT.replace(
+            'name = "test_taxonomy_policy_check"',
+            'name = "removed_taxonomy_policy_check"',
+            1,
+        )
         self.assertNotEqual(mutated, BUILD_TEXT)
-        with self.assertRaisesRegex(ContractError, "incorrect nesting"):
+        with self.assertRaisesRegex(ContractError, "taxonomy policy check"):
             validate_build_text(mutated)
 
 

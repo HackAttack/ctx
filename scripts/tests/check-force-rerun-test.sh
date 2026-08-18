@@ -179,14 +179,15 @@ for mode in ci nightly release; do
       fail "${mode} mode unexpectedly selected exact-candidate validation"
     fi
   fi
-  grep -Fqx 'arg=//...' "${CTX_FAKE_BAZEL_LOG}" \
-    || fail "${mode} mode did not lint the full workspace"
-  suite="${mode}_tests"
-  if [[ "${mode}" == release ]]; then
-    suite="nightly_tests"
-  fi
-  grep -Fqx "arg=//:${suite}" "${CTX_FAKE_BAZEL_LOG}" \
-    || fail "${mode} mode did not execute its owning suite"
+  [[ "$(grep -c '^arg=//\.\.\.$' "${CTX_FAKE_BAZEL_LOG}")" == "2" ]] \
+    || fail "${mode} mode did not lint and test the full discovered graph"
+  case "${mode}" in
+    ci) expected_filter='-manual,-tier-nightly,-tier-release' ;;
+    nightly) expected_filter='-manual,-tier-release' ;;
+    release) expected_filter='-manual' ;;
+  esac
+  grep -Fqx "arg=--test_tag_filters=${expected_filter}" "${CTX_FAKE_BAZEL_LOG}" \
+    || fail "${mode} mode did not enforce its test-tier exceptions"
   [[ "$(grep -c '^arg=--config=ci$' "${CTX_FAKE_BAZEL_LOG}")" == "1" ]] \
     || fail "${mode} mode did not use the inherited lint config exactly once"
   [[ "$(grep -c '^arg=--config=test$' "${CTX_FAKE_BAZEL_LOG}")" == "1" ]] \

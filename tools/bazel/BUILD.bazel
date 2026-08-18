@@ -64,7 +64,6 @@ exports_files([
     "check_rust_target_inventory_test.py",
     "check_rust_toolchain_pins.py",
     "check_rust_toolchain_pins_test.py",
-    "check_test_tier_inventory.py",
     "ctx_rust.bzl",
     "gates.bzl",
     "history_provider_docproj_boundary.bzl",
@@ -178,16 +177,6 @@ py_test(
     data = ["//:history_provider_pack_boundary_inputs"],
     imports = ["."],
     main = "check_history_provider_pack_boundary_test.py",
-)
-
-py_test(
-    name = "test_tier_inventory_tests",
-    srcs = [
-        "check_test_tier_inventory.py",
-        "check_test_tier_inventory_test.py",
-    ],
-    imports = ["."],
-    main = "check_test_tier_inventory_test.py",
 )
 
 py_test(

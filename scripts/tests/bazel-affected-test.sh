@@ -102,7 +102,7 @@ grep -Fq 'arg=--excludeExternalTargets' "${fake_log}" \
 if grep -Fq 'test_suite' "${fake_log}"; then
   fail 'affected query retained aggregate test suites'
 fi
-grep -Fq 'advisory|external|flaky-repetition|manual|network|no-cache|platform-native|release|requires-local-history|requires-signing|requires-vm|stress' "${fake_log}" \
+grep -Fq 'advisory|external|flaky-repetition|manual|network|no-cache|platform-native|release|requires-local-history|requires-signing|requires-vm|stress|tier-nightly|tier-release' "${fake_log}" \
   || fail 'query did not exclude non-routine tags'
 
 generate_count_before="$(grep -c '^event=generate-hashes ' "${fake_log}")"
@@ -127,16 +127,16 @@ generate_count_after="$(grep -c '^event=generate-hashes ' "${fake_log}")"
   CTX_TOTAL_MEMORY_GB=16 \
     scripts/bazel-affected.sh HEAD
 ) >"${test_root}/failure.out" 2>"${test_root}/failure.err"
-[[ "$(cat "${test_root}/failure.out")" == '//:ci_tests' ]] \
+[[ "$(cat "${test_root}/failure.out")" == '//...' ]] \
   || fail 'bazel-diff failure did not select ci'
-grep -Fq 'bazel-diff failed; selecting //:ci_tests' "${test_root}/failure.err" \
+grep -Fq 'bazel-diff failed; selecting default CI tests' "${test_root}/failure.err" \
   || fail 'fail-closed diagnostic was not emitted'
 
 (
   cd "${repo_root}"
   CTX_AFFECTED_DRY_RUN=1 scripts/bazel-affected.sh refs/heads/missing
 ) >"${test_root}/missing-base.out" 2>"${test_root}/missing-base.err"
-[[ "$(cat "${test_root}/missing-base.out")" == '//:ci_tests' ]] \
+[[ "$(cat "${test_root}/missing-base.out")" == '//...' ]] \
   || fail 'missing base did not select ci'
 grep -Fq 'could not resolve affected-test base' "${test_root}/missing-base.err" \
   || fail 'missing-base fail-closed diagnostic was not emitted'

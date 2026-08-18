@@ -1,6 +1,6 @@
 # Testing Taxonomy
 
-Public verification has one nested three-tier graph. All normal commands use
+Public verification has three graph-discovered modes. All normal commands use
 repository-owned wrappers; direct `bazel` and broad raw Cargo commands are not
 routine entry points.
 
@@ -13,16 +13,23 @@ routine entry points.
 | `release` | `nightly`, named explicitly for release-candidate qualification. |
 
 Each named mode first builds `//...` with `--config=ci`, whose checked-in
-configuration inherits the strict Clippy aspect with `-Dwarnings`. It then runs
-`//:ci_tests` for `ci` and `//:nightly_tests` for both `nightly` and `release`,
-with the deterministic test configuration and without applying the lint aspect
-a second time. Release mode differs only by its exact-clean-candidate Rust
-crate-size preflight; it does not maintain a duplicate suite that aliases
-nightly.
+configuration inherits the strict Clippy aspect with `-Dwarnings`. It then
+discovers tests from `//...` and runs them with the deterministic test
+configuration, without applying the lint aspect a second time.
+
+An untagged test runs in `ci`, `nightly`, and `release` by default.
+`tier-nightly` moves an expensive test out of `ci`; `tier-release` moves a test
+out of both `ci` and `nightly`; and Bazel's standard `manual` tag excludes an
+explicit operation or harness from all three modes. Tier tags belong on leaf
+tests, are mutually exclusive, and are checked against the live graph. There
+is no maintained allowlist of ordinary tests, so a newly added untagged test
+cannot be orphaned from CI.
+Release mode additionally uses the exact-clean-candidate Rust crate-size
+preflight.
 
 During editing, run the smallest owning test and then the affected selector.
 Build-graph changes, unresolved comparison bases, selector failures, and
-unmapped changes fail closed to the complete deterministic `//:ci_tests` suite;
+unmapped changes fail closed to the complete default-CI graph;
 the full merge gate remains `scripts/check.sh --mode=ci`. Use `nightly` or
 `release` for performance sanity and the serialized upgrade, daemon-soak, and
 fault-injection qualification that is too expensive for each source change.

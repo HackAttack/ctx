@@ -87,14 +87,14 @@ run_rust_crate_size_gate "${mode}"
 case "${mode}" in
   ci)
     run_bazel build //... --config=ci
-    run_bazel test //:ci_tests --config=test
+    run_bazel test //... --config=test --test_tag_filters=-manual,-tier-nightly,-tier-release
     ;;
   nightly)
     run_bazel build //... --config=ci
-    run_bazel test //:nightly_tests --config=test
+    run_bazel test //... --config=test --test_tag_filters=-manual,-tier-release
     ;;
   release)
     run_bazel build //... --config=ci
-    run_bazel test //:nightly_tests --config=test
+    run_bazel test //... --config=test --test_tag_filters=-manual
     ;;
 esac

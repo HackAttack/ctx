@@ -6,7 +6,7 @@ from __future__ import annotations
 import pathlib
 import sys
 
-FULL_SUITE = "//:ci_tests"
+FULL_SUITE = "//..."
 GLOBAL_FILES = {
     ".bazelrc",
     ".bazelversion",
@@ -36,6 +36,8 @@ EXCLUDED_TARGET_TERMS = (
     "requires_signing",
     "requires_vm",
     "stress",
+    "tier-nightly",
+    "tier-release",
 )
 
 
