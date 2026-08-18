@@ -119,7 +119,9 @@ fn register_landed_source_backed_route_inner(
         | CaptureProvider::Continue
         | CaptureProvider::Cline
         | CaptureProvider::RooCode
-        | CaptureProvider::CodeBuddy => document::register_route(registry, source, selection),
+        | CaptureProvider::CodeBuddy => {
+            document::register_route(registry, source, selection, data_root)
+        }
         CaptureProvider::OpenHands => register_openhands_route(registry, source, selection),
         provider => Err(invalid_route(
             provider,

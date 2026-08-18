@@ -1,3 +1,5 @@
+#[path = "providers/cline_sdk.rs"]
+pub mod cline_sdk;
 #[path = "providers/codebuddy.rs"]
 pub mod codebuddy;
 #[path = "providers/continue_cli.rs"]
