@@ -83,6 +83,14 @@ fn typed_terminal_status() -> Value {
 }
 
 #[test]
+fn live_progress_heartbeat_is_ten_hertz() {
+    assert_eq!(
+        SOURCE_REFRESH_PROGRESS_HEARTBEAT,
+        StdDuration::from_millis(100)
+    );
+}
+
+#[test]
 fn published_source_count_uses_request_routes_not_global_or_diagnostic_counts() {
     let (_temp, verified) = verified_source_count_routes(&[1, 2, 3, 4]);
     for (name, scanned_routes, unsupported_routes, route_results, global_sources, expected) in [

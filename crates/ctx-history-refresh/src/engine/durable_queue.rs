@@ -1,5 +1,7 @@
 use super::*;
 
+const DURABLE_PROGRESS_PERSIST_INTERVAL: StdDuration = StdDuration::from_secs(1);
+
 const QUEUED_SUCCESSORS_FIELD: &str = "queued_successors";
 const DAEMON_RETRY_FIELDS: [&str; 4] = [
     "retryable",
@@ -63,7 +65,19 @@ impl CoreRefreshEngine {
         let Some(job) = update_progress(&mut state, request_id, update) else {
             return Ok(());
         };
-        self.write_status(data_root, &job)
+        let now = StdInstant::now();
+        let should_persist = state.last_progress_persisted_request_id.as_deref()
+            != Some(request_id)
+            || state.last_progress_persisted_at.is_none_or(|persisted_at| {
+                now.saturating_duration_since(persisted_at) >= DURABLE_PROGRESS_PERSIST_INTERVAL
+            });
+        if !should_persist {
+            return Ok(());
+        }
+        self.write_status(data_root, &job)?;
+        state.last_progress_persisted_request_id = Some(request_id.to_owned());
+        state.last_progress_persisted_at = Some(now);
+        Ok(())
     }
 
     #[cfg(test)]
@@ -533,4 +547,14 @@ pub(super) fn install_recovered_successors(
         state.attempts.push_back(successor);
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod cadence_tests {
+    use super::*;
+
+    #[test]
+    fn durable_progress_remains_one_hertz() {
+        assert_eq!(DURABLE_PROGRESS_PERSIST_INTERVAL, StdDuration::from_secs(1));
+    }
 }

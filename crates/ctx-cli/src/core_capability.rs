@@ -160,22 +160,20 @@ struct Request {
 }
 
 enum Options {
-    Setup {
-        catalog_only: bool,
-        defer_fresh_empty_wait: bool,
-        no_daemon: bool,
-        notice_lines: Vec<String>,
-        progress: crate::progress::ProgressArg,
-        semantic: bool,
-        wait: bool,
-    },
-    Status {
-        usage: Option<UsageAction>,
-    },
-    PairAttempt {
-        attempt_id: String,
-    },
+    Setup(CoreSetupOptions),
+    Status { usage: Option<UsageAction> },
+    PairAttempt { attempt_id: String },
     Empty,
+}
+
+struct CoreSetupOptions {
+    catalog_only: bool,
+    defer_fresh_empty_wait: bool,
+    no_daemon: bool,
+    notice_lines: Vec<String>,
+    progress: crate::progress::ProgressArg,
+    semantic: bool,
+    wait: bool,
 }
 
 #[derive(Clone, Copy)]
@@ -252,27 +250,9 @@ fn execute(request: Request) -> Result<Value> {
         crate::semantic::initialize()?;
     }
     let facts = match (request.operation, request.options) {
-        (
-            Operation::CoreSetup,
-            Options::Setup {
-                catalog_only,
-                defer_fresh_empty_wait,
-                no_daemon,
-                notice_lines,
-                progress,
-                semantic,
-                wait,
-            },
-        ) => core_setup_facts(
-            &request.data_root,
-            catalog_only,
-            defer_fresh_empty_wait,
-            no_daemon,
-            &notice_lines,
-            progress,
-            semantic,
-            wait,
-        )?,
+        (Operation::CoreSetup, Options::Setup(options)) => {
+            core_setup_facts(&request.data_root, options)?
+        }
         (Operation::CoreStatus, Options::Status { usage }) => {
             core_status_facts(&request.data_root, usage)?
         }
@@ -397,16 +377,16 @@ fn core_status_facts(data_root: &Path, usage: Option<UsageAction>) -> Result<Val
     }))
 }
 
-fn core_setup_facts(
-    data_root: &Path,
-    catalog_only: bool,
-    defer_fresh_empty_wait: bool,
-    no_daemon: bool,
-    notice_lines: &[String],
-    progress_mode: crate::progress::ProgressArg,
-    semantic: bool,
-    wait: bool,
-) -> Result<Value> {
+fn core_setup_facts(data_root: &Path, options: CoreSetupOptions) -> Result<Value> {
+    let CoreSetupOptions {
+        catalog_only,
+        defer_fresh_empty_wait,
+        no_daemon,
+        notice_lines,
+        progress: progress_mode,
+        semantic,
+        wait,
+    } = options;
     let mut config = crate::config::AppConfig::load(data_root)?;
     if semantic && (!config.automatic_indexing_enabled() || no_daemon) {
         return Err(anyhow!("semantic setup requires automatic indexing"));
@@ -436,7 +416,7 @@ fn core_setup_facts(
             data_root,
             wait,
             defer_fresh_empty_wait,
-            notice_lines,
+            &notice_lines,
             progress_mode,
         )?
     } else {
@@ -616,7 +596,7 @@ fn parse_options(operation: Operation, value: &Value) -> Result<Options> {
     };
     exact_keys(object.keys().map(String::as_str), expected.iter().copied())?;
     match operation {
-        Operation::CoreSetup => Ok(Options::Setup {
+        Operation::CoreSetup => Ok(Options::Setup(CoreSetupOptions {
             catalog_only: required_bool(object, "catalog_only")?,
             defer_fresh_empty_wait: required_bool(object, "defer_fresh_empty_wait")?,
             no_daemon: required_bool(object, "no_daemon")?,
@@ -624,7 +604,7 @@ fn parse_options(operation: Operation, value: &Value) -> Result<Options> {
             progress: setup_progress_mode(object)?,
             semantic: required_bool(object, "semantic")?,
             wait: required_bool(object, "wait")?,
-        }),
+        })),
         Operation::CoreStatus => Ok(Options::Status {
             usage: match object.get("usage") {
                 Some(Value::Null) => None,

@@ -26,7 +26,10 @@ use model::{SourceBackedRefreshPlan, SourceBackedVerifiedPublication};
 use route_content::source_route_content_fingerprints;
 use route_outcomes::successful_route_outcomes_for_snapshot;
 
-const SOURCE_RECORD_PROGRESS_INTERVAL: Duration = Duration::from_secs(1);
+/// Keep the in-memory progress stream responsive enough for a live terminal
+/// without turning every accepted record into a callback. Durable journal
+/// writes are throttled separately by the refresh engine.
+const SOURCE_RECORD_PROGRESS_INTERVAL: Duration = Duration::from_millis(100);
 
 type SourceBackedPublicationMetadataFactory<'factory> =
     dyn for<'context> FnMut(

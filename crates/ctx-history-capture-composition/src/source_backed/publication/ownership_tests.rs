@@ -4,6 +4,11 @@ use ctx_history_core::{
 
 use super::*;
 
+#[test]
+fn source_record_progress_is_emitted_at_ten_hertz() {
+    assert_eq!(SOURCE_RECORD_PROGRESS_INTERVAL, Duration::from_millis(100));
+}
+
 fn descriptor(schema_variant: &str, lineage: u8) -> SourceKey {
     SourceKey::derive(
         CaptureProvider::Gemini.as_str(),

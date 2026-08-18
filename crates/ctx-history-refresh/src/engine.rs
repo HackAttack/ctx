@@ -137,6 +137,8 @@ pub(super) struct CoreRefreshEngineState {
     unacknowledged_admissions: BTreeMap<String, usize>,
     admission_resolutions_in_flight: BTreeSet<String>,
     watch_routes_initialized: bool,
+    last_progress_persisted_request_id: Option<String>,
+    last_progress_persisted_at: Option<StdInstant>,
 }
 
 struct PendingTerminalPersistence {
@@ -339,6 +341,8 @@ impl CoreRefreshEngine {
                 unacknowledged_admissions: BTreeMap::new(),
                 admission_resolutions_in_flight: BTreeSet::new(),
                 watch_routes_initialized: false,
+                last_progress_persisted_request_id: None,
+                last_progress_persisted_at: None,
             }),
             request_activity_generation: AtomicU64::new(0),
             executor,

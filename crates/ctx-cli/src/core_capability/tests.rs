@@ -190,12 +190,12 @@ fn managed_setup_presentation_options_are_closed_and_bounded() {
         "wait": false,
     });
     let parsed = parse_options(Operation::CoreSetup, &options).unwrap();
-    let Options::Setup {
+    let Options::Setup(CoreSetupOptions {
         defer_fresh_empty_wait,
         notice_lines,
         progress,
         ..
-    } = parsed
+    }) = parsed
     else {
         panic!("expected setup options")
     };

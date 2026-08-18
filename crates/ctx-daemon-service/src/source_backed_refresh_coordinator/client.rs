@@ -29,7 +29,9 @@ pub use types::{
 
 type SourceBackedRefreshProgressReporter<'a> = &'a mut dyn FnMut(&RefreshStatus) -> Result<()>;
 
-const SOURCE_REFRESH_PROGRESS_HEARTBEAT: StdDuration = StdDuration::from_secs(5);
+// Polls observe in-memory progress at 20 Hz; report at most 10 Hz so the
+// terminal feels live without making rendering itself the hot loop.
+const SOURCE_REFRESH_PROGRESS_HEARTBEAT: StdDuration = StdDuration::from_millis(100);
 
 fn daemon_trigger(trigger: RefreshRequestTrigger) -> crate::DaemonTrigger {
     match trigger {
