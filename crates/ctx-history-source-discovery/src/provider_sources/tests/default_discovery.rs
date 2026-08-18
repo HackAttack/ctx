@@ -807,7 +807,10 @@ fn openhands_current_cli_exact_conversation_events_and_leaf_are_importable() {
         assert_eq!(source.status, ProviderSourceStatus::Available);
         assert_eq!(source.import_support, ProviderImportSupport::Native);
         assert_eq!(source.source_kind, ProviderSourceKind::NativeHistory);
-        assert_eq!(source.source_format, "openhands_file_events");
+        assert_eq!(
+            source.source_format,
+            super::super::OPENHANDS_CURRENT_CLI_SOURCE_FORMAT
+        );
         assert_eq!(source.unsupported_reason, None);
     }
 }

@@ -150,7 +150,12 @@ fn push_selected_source(
     path: PathBuf,
     format: &'static str,
 ) {
-    let directory = matches!(format, "nanoclaw_project" | "openhands_file_events");
+    let directory = matches!(
+        format,
+        "nanoclaw_project"
+            | "openhands_file_events"
+            | super::super::OPENHANDS_CURRENT_CLI_SOURCE_FORMAT
+    );
     if !selected_path_is_safe(&path, directory) {
         issue_manual(report, spec.provider, Some(path));
         return;
@@ -589,7 +594,7 @@ fn resolve_openhands(
                     &mut report,
                     spec,
                     cli_root,
-                    "openhands_file_events",
+                    super::super::OPENHANDS_CURRENT_CLI_SOURCE_FORMAT,
                 ),
                 BoundedProbe::BudgetExhausted
                 | BoundedProbe::IoError
@@ -602,12 +607,22 @@ fn resolve_openhands(
         Some(root) => {
             push_selected_source(probes, &mut report, spec, root, "openhands_file_events");
             if cli_present {
-                push_selected_source(probes, &mut report, spec, cli_root, "openhands_file_events");
+                push_selected_source(
+                    probes,
+                    &mut report,
+                    spec,
+                    cli_root,
+                    super::super::OPENHANDS_CURRENT_CLI_SOURCE_FORMAT,
+                );
             }
         }
-        None if cli_present => {
-            push_selected_source(probes, &mut report, spec, cli_root, "openhands_file_events")
-        }
+        None if cli_present => push_selected_source(
+            probes,
+            &mut report,
+            spec,
+            cli_root,
+            super::super::OPENHANDS_CURRENT_CLI_SOURCE_FORMAT,
+        ),
         None => {}
     }
     report

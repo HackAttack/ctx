@@ -136,6 +136,9 @@ pub fn provider_source_for_path(
         CaptureProvider::AstrBot => "astrbot_data_v4_sqlite",
         CaptureProvider::Shelley => "shelley_sqlite",
         CaptureProvider::Continue => "continue_cli_sessions_json",
+        CaptureProvider::OpenHands if is_openhands_current_cli_path(&path) => {
+            super::super::OPENHANDS_CURRENT_CLI_SOURCE_FORMAT
+        }
         CaptureProvider::OpenHands => "openhands_file_events",
         CaptureProvider::Cline => "cline_task_directory_json",
         CaptureProvider::RooCode => "roo_task_directory_json",
@@ -474,6 +477,32 @@ fn contains_openclaw_sqlite(path: &Path, kind: SourcePathKind) -> bool {
             })
         })
     })
+}
+
+fn is_openhands_current_cli_path(path: &Path) -> bool {
+    if path_has_component(path, "v1_conversations") {
+        return false;
+    }
+    let components = path.components().collect::<Vec<_>>();
+    for index in (0..components.len()).rev() {
+        if components[index].as_os_str() != "conversations" {
+            continue;
+        }
+        let tail = &components[index.saturating_add(1)..];
+        return match tail {
+            [] | [_] => true,
+            [_conversation, events] => events.as_os_str() == "events",
+            [_conversation, events, event] => {
+                events.as_os_str() == "events"
+                    && event
+                        .as_os_str()
+                        .to_str()
+                        .is_some_and(|name| name.starts_with("event-") && name.ends_with(".json"))
+            }
+            _ => false,
+        };
+    }
+    false
 }
 
 fn contains_mux_archive(path: &Path, kind: SourcePathKind) -> bool {

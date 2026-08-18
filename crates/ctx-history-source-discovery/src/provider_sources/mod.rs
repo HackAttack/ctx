@@ -11,6 +11,9 @@ mod warp;
 
 use std::path::Path;
 
+/// Discovery-only route format for independently owned current CLI stores.
+pub const OPENHANDS_CURRENT_CLI_SOURCE_FORMAT: &str = "openhands_cli_file_events";
+
 /// The Cursor-specific result shape discovery needs without taking ownership of
 /// Cursor's inventory implementation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

@@ -30,6 +30,7 @@ use crate::{
     provider_source_spec, validate_provider_source_roots_outside_data_root, DiscoveryContext,
     DiscoveryIssue, DiscoveryPlatform, DiscoveryReport, ProviderImportSupport, ProviderSource,
     ProviderSourceKind, ProviderSourceSpec, ProviderSourceStatus, StaticProviderProbeCatalog,
+    OPENHANDS_CURRENT_CLI_SOURCE_FORMAT,
 };
 use ctx_history_provider_codex::codex::nativepath::CodexGenerationNormalizationCoordinatorV0;
 use ctx_history_provider_docproj::providers::{

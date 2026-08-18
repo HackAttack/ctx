@@ -1,6 +1,7 @@
 use super::super::super::{
     context::DiscoveryPlatformDirs,
     types::{ProviderImportSupport, ProviderSourceStatus},
+    OPENHANDS_CURRENT_CLI_SOURCE_FORMAT,
 };
 use std::fs;
 
@@ -1024,7 +1025,12 @@ fn openhands_empty_oh_uses_exact_cwd_and_routes_stable_cli_root() {
     let report = report(&context, CaptureProvider::OpenHands);
     assert_eq!(report.sources.len(), 2);
     assert_eq!(report.sources[0].path, cwd);
+    assert_eq!(report.sources[0].source_format, "openhands_file_events");
     assert_eq!(report.sources[1].path, cli);
+    assert_eq!(
+        report.sources[1].source_format,
+        OPENHANDS_CURRENT_CLI_SOURCE_FORMAT
+    );
     assert_eq!(report.sources[1].status, ProviderSourceStatus::Available);
     assert_eq!(report.sources[1].unsupported_reason, None);
     let explicit = provider_source_for_path(CaptureProvider::OpenHands, cli.join("conversation"));
@@ -1051,6 +1057,10 @@ fn openhands_current_default_avoids_overlapping_legacy_umbrella_route() {
         home.join(".openhands/conversations")
     );
     assert_eq!(report.sources[0].status, ProviderSourceStatus::Available);
+    assert_eq!(
+        report.sources[0].source_format,
+        OPENHANDS_CURRENT_CLI_SOURCE_FORMAT
+    );
 }
 
 #[test]

@@ -425,6 +425,13 @@ pub const LANDED_SOURCE_BACKED_ROUTES: &[SourceBackedProviderRouteMetadata] = &[
         DiscoveredWinner
     ),
     route!(
+        OpenHands,
+        OPENHANDS_CURRENT_CLI_SOURCE_FORMAT => "openhands_file_events",
+        true,
+        true,
+        CatalogLineage
+    ),
+    route!(
         Cline,
         CLINE_TASK_JSON_SOURCE_FORMAT,
         true,
@@ -567,6 +574,7 @@ AstrBot|astrbot_data_v4_sqlite|astrbot_data_v4_sqlite|true|true|DiscoveredWinner
 Shelley|shelley_sqlite|shelley_sqlite|true|false|ExactCwd|none|ExactCwd
 Continue|continue_cli_sessions_json|continue_cli_sessions_json|true|true|DiscoveredWinner|none|ProviderSource
 OpenHands|openhands_file_events|openhands_file_events|true|true|DiscoveredWinner|none|ProviderSource
+OpenHands|openhands_cli_file_events|openhands_file_events|true|true|CatalogLineage|none|ProviderSource
 Cline|cline_task_directory_json|cline_task_directory_json|true|true|DiscoveredWinner|none|ProviderSource
 RooCode|roo_task_directory_json|roo_task_directory_json|true|true|DiscoveredWinner|none|ProviderSource
 Crush|crush_sqlite|crush_sqlite|true|true|SelectedWithRetainedExplicit|none|FiniteInventory

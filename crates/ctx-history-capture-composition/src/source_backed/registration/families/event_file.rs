@@ -1,5 +1,5 @@
 use super::*;
-use crate::provider::source_backed::family::document::register_replacement_document_tree_route;
+use crate::provider::source_backed::family::document::register_replacement_document_tree_route_with_authority;
 
 /// OpenHands event-file conversations now use the common replacement-document
 /// lifecycle. Each conversation is an independently staged logical source;
@@ -9,8 +9,13 @@ pub(super) fn register_openhands_route(
     source: ProviderSource,
     selection: SourceBackedRouteSelection,
 ) -> SourceBackedCoordinatorResult<()> {
+    let authority = landed_format_route(source.provider, source.source_format)
+        .ok_or_else(|| invalid_route(source.provider, "unknown OpenHands source format"))?
+        .selector_authority;
     let adapter = OpenHandsEventFileAdapterV2::<CaptureProviderRuntime>::new(source.path.clone());
-    register_replacement_document_tree_route(registry, source, selection, adapter)
+    register_replacement_document_tree_route_with_authority(
+        registry, source, selection, authority, adapter,
+    )
 }
 
 #[cfg(test)]
@@ -540,7 +545,7 @@ mod tests {
         );
         let source = crate::provider_source_for_path(CaptureProvider::OpenHands, event);
         assert_eq!(source.status, ProviderSourceStatus::Available);
-        assert_eq!(source.source_format, OPENHANDS_FILE_EVENTS_SOURCE_FORMAT);
+        assert_eq!(source.source_format, OPENHANDS_CURRENT_CLI_SOURCE_FORMAT);
 
         let mut registry = SourceBackedProviderRegistry::new();
         register_landed_source_backed_route(
@@ -549,6 +554,10 @@ mod tests {
             SourceBackedRouteSelection::ExplicitManual,
         )
         .unwrap();
+        assert_eq!(
+            registry.routes().next().unwrap().certified_source_format,
+            OPENHANDS_FILE_EVENTS_SOURCE_FORMAT
+        );
         let index = temp.path().join("exact-index");
         let receipt =
             refresh_source_backed_generation(&index, &registry, WriterOptions::default()).unwrap();
@@ -631,6 +640,123 @@ mod tests {
         refresh_source_backed_generation(&index, &deleted_registry, WriterOptions::default())
             .unwrap();
         assert_eq!(VerifiedIndex::open(&index).unwrap().document_count(), 0);
+    }
+
+    #[test]
+    fn disjoint_legacy_and_current_routes_coexist_and_delete_independently() {
+        let temp = crate::test_support_paths::tempdir().unwrap();
+        let home = temp.path().join("home");
+        let cwd = temp.path().join("cwd");
+        fs::create_dir_all(&cwd).unwrap();
+        let legacy_root = temp.path().join("legacy-profile");
+        let current_profile = temp.path().join("current-profile");
+        let conversations = current_profile.join("conversations");
+        write_message(
+            &legacy_root,
+            "conversation-legacy",
+            "legacy-event",
+            "legacy body",
+        );
+        write_current_message(
+            &current_profile,
+            "conversation-current",
+            1,
+            "current-event",
+            "current body",
+            "2026-07-28T12:00:00Z",
+        );
+        let context = DiscoveryContext::new(
+            &home,
+            &cwd,
+            DiscoveryPlatform::Linux,
+            crate::DiscoveryPlatformDirs::default(),
+        )
+        .with_env("OH_PERSISTENCE_DIR", legacy_root.as_os_str().to_owned())
+        .with_env(
+            "OPENHANDS_CONVERSATIONS_DIR",
+            conversations.as_os_str().to_owned(),
+        );
+        let data_root = temp.path().join("ctx-data");
+        let index = temp.path().join("coexistence-index");
+
+        let cold_registry = discovered_openhands_registry(&context, &data_root);
+        let cold_routes = openhands_route_facts(&cold_registry);
+        assert_eq!(cold_routes.len(), 2);
+        assert_eq!(
+            cold_routes
+                .iter()
+                .map(|(_, format, authority)| (*format, *authority))
+                .collect::<Vec<_>>(),
+            vec![
+                (
+                    OPENHANDS_CURRENT_CLI_SOURCE_FORMAT,
+                    SourceBackedSelectorAuthority::CatalogLineage,
+                ),
+                (
+                    "openhands_file_events",
+                    SourceBackedSelectorAuthority::DiscoveredWinner,
+                ),
+            ]
+        );
+        assert_ne!(cold_routes[0].0, cold_routes[1].0);
+        let cold =
+            refresh_source_backed_generation(&index, &cold_registry, WriterOptions::default())
+                .unwrap();
+        assert_eq!(
+            indexed_bodies(&index, &cold),
+            vec!["current body", "legacy body"]
+        );
+
+        fs::remove_dir_all(
+            legacy_root
+                .join("v1_conversations")
+                .join("conversation-legacy"),
+        )
+        .unwrap();
+        let legacy_deleted_registry = discovered_openhands_registry(&context, &data_root);
+        assert_eq!(openhands_route_facts(&legacy_deleted_registry), cold_routes);
+        let legacy_deleted = refresh_source_backed_generation(
+            &index,
+            &legacy_deleted_registry,
+            WriterOptions::default(),
+        )
+        .unwrap();
+        assert_eq!(
+            indexed_bodies(&index, &legacy_deleted),
+            vec!["current body"]
+        );
+
+        write_message(
+            &legacy_root,
+            "conversation-legacy",
+            "legacy-event",
+            "legacy body",
+        );
+        let restored_registry = discovered_openhands_registry(&context, &data_root);
+        let restored =
+            refresh_source_backed_generation(&index, &restored_registry, WriterOptions::default())
+                .unwrap();
+        assert_eq!(
+            indexed_bodies(&index, &restored),
+            vec!["current body", "legacy body"]
+        );
+
+        fs::remove_dir_all(conversations.join("conversation-current")).unwrap();
+        let current_deleted_registry = discovered_openhands_registry(&context, &data_root);
+        assert_eq!(
+            openhands_route_facts(&current_deleted_registry),
+            cold_routes
+        );
+        let current_deleted = refresh_source_backed_generation(
+            &index,
+            &current_deleted_registry,
+            WriterOptions::default(),
+        )
+        .unwrap();
+        assert_eq!(
+            indexed_bodies(&index, &current_deleted),
+            vec!["legacy body"]
+        );
     }
 
     #[test]
@@ -767,6 +893,28 @@ mod tests {
         );
         assert!(build.issues.is_empty(), "{:?}", build.issues);
         build.registry
+    }
+
+    fn openhands_route_facts(
+        registry: &SourceBackedProviderRegistry,
+    ) -> Vec<(
+        ctx_history_capture_model::SourceRouteIdentity,
+        &'static str,
+        SourceBackedSelectorAuthority,
+    )> {
+        let mut facts = registry
+            .routes()
+            .filter(|route| route.source.provider == CaptureProvider::OpenHands)
+            .map(|route| {
+                (
+                    route.route_identity.clone().unwrap(),
+                    route.source.source_format,
+                    route.selector_authority,
+                )
+            })
+            .collect::<Vec<_>>();
+        facts.sort_by(|left, right| left.1.cmp(right.1));
+        facts
     }
 
     fn write_message(root: &Path, conversation: &str, id: &str, body: &str) -> std::path::PathBuf {
