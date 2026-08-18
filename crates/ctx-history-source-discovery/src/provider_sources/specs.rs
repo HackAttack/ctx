@@ -121,38 +121,6 @@ const LINGMA_DEFAULTS: &[ProviderDefaultLocation] = &[ProviderDefaultLocation {
     source_kind: ProviderSourceKind::NativeHistory,
 }];
 
-const TRAE_DEFAULTS: &[ProviderDefaultLocation] = &[
-    ProviderDefaultLocation {
-        path_components: &[".config", "Trae", "ModularData", "ai-agent", "database.db"],
-        source_format: "trae_state_vscdb",
-        source_kind: ProviderSourceKind::NativeHistory,
-    },
-    ProviderDefaultLocation {
-        path_components: &[
-            "Library",
-            "Application Support",
-            "Trae",
-            "ModularData",
-            "ai-agent",
-            "database.db",
-        ],
-        source_format: "trae_state_vscdb",
-        source_kind: ProviderSourceKind::NativeHistory,
-    },
-    ProviderDefaultLocation {
-        path_components: &[
-            "AppData",
-            "Roaming",
-            "Trae",
-            "ModularData",
-            "ai-agent",
-            "database.db",
-        ],
-        source_format: "trae_state_vscdb",
-        source_kind: ProviderSourceKind::NativeHistory,
-    },
-];
-
 const QODER_DEFAULTS: &[ProviderDefaultLocation] = &[ProviderDefaultLocation {
     path_components: &[".qoder", "projects"],
     source_format: "qoder_transcript_jsonl_tree",
@@ -689,14 +657,6 @@ pub(super) const PROVIDER_SPECS: &[ProviderSourceSpec] = &[
         provider: CaptureProvider::Lingma,
         display_name: "Lingma",
         default_locations: LINGMA_DEFAULTS,
-        import_support: ProviderImportSupport::Native,
-        catalog_support: ProviderCatalogSupport::None,
-        unsupported_reason: None,
-    },
-    ProviderSourceSpec {
-        provider: CaptureProvider::Trae,
-        display_name: "Trae",
-        default_locations: TRAE_DEFAULTS,
         import_support: ProviderImportSupport::Native,
         catalog_support: ProviderCatalogSupport::None,
         unsupported_reason: None,

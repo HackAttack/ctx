@@ -58,7 +58,7 @@ FORBIDDEN_PACKAGES = {
     "ctx-history-capture", "ctx-history-index", "ctx-history-index-format",
     "ctx-history-index-generation", "ctx-history-index-query",
     "ctx-history-provider-gemini", "ctx-history-provider-mistral-mux",
-    "ctx-history-provider-trae", "ctx-history-providers-jsonl-shared",
+    "ctx-history-providers-jsonl-shared",
 }
 
 

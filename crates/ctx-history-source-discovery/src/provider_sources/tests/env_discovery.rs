@@ -1,7 +1,6 @@
 use ctx_history_core::CaptureProvider;
 use rusqlite::Connection;
 
-use super::super::probes::BoundedProbe;
 use super::super::{
     DiscoveryContext, DiscoveryPlatform, DiscoveryPlatformDirs, ProviderImportSupport,
     ProviderSourceStatus,
@@ -10,8 +9,7 @@ use super::support::{
     shared_provider_history_fixture, tempdir, write_junie_discovery_session,
     write_kimi_discovery_wire, write_lingma_discovery_db, write_mistral_vibe_discovery_session,
     write_mux_discovery_session, write_pi_discovery_session, write_qwen_discovery_chat,
-    write_task_json_discovery_task, write_trae_discovery_db, write_trae_non_chat_state_db,
-    CwdGuard, EnvGuard, ENV_LOCK,
+    write_task_json_discovery_task, CwdGuard, EnvGuard, ENV_LOCK,
 };
 
 fn discover_provider_sources(home: &std::path::Path) -> Vec<super::super::ProviderSource> {
@@ -61,19 +59,6 @@ fn discover_provider_sources_for_provider_with_projects(
         home,
         provider,
         projects,
-    )
-}
-
-fn has_trae_state_vscdb_chat_history(
-    data_root: Option<&std::path::Path>,
-    path: &std::path::Path,
-    traversal_limit: usize,
-) -> BoundedProbe {
-    super::super::probes::has_trae_state_vscdb_chat_history(
-        &super::super::TEST_PROVIDER_PROBES,
-        data_root,
-        path,
-        traversal_limit,
     )
 }
 
@@ -498,47 +483,6 @@ fn lingma_discovery_uses_current_vscode_root_only() {
     assert_eq!(sources[0].status, ProviderSourceStatus::Available);
     assert_eq!(sources[0].source_format, "lingma_sqlite");
     assert_eq!(sources[0].import_support, ProviderImportSupport::Native);
-}
-
-#[test]
-fn trae_current_database_is_automatic_without_workspace_storage_union() {
-    let _lock = ENV_LOCK.lock().unwrap();
-    let temp = tempdir();
-    let appdata = temp.path().join("appdata");
-    let _appdata = EnvGuard::set("APPDATA", appdata.as_os_str());
-    let xdg_config = temp.path().join("xdg-config");
-    let _xdg_config = EnvGuard::set("XDG_CONFIG_HOME", xdg_config.as_os_str());
-
-    let standard_mac_root = temp
-        .path()
-        .join("Library/Application Support/Trae/User/workspaceStorage");
-    let standard_appdata_root = appdata.join("Trae/User/workspaceStorage");
-    for root in [&standard_mac_root, &standard_appdata_root] {
-        write_trae_discovery_db(&root.join("workspace-hash/state.vscdb"));
-    }
-    assert_eq!(
-        has_trae_state_vscdb_chat_history(None, &standard_mac_root, 10_000),
-        BoundedProbe::Found
-    );
-
-    let empty_root = temp
-        .path()
-        .join("Library/Application Support/Trae/User/workspaceStorage-empty");
-    write_trae_non_chat_state_db(&empty_root.join("workspace-hash/state.vscdb"));
-    assert_eq!(
-        has_trae_state_vscdb_chat_history(None, &empty_root, 10_000),
-        BoundedProbe::NotFound
-    );
-
-    let current = xdg_config.join("Trae/ModularData/ai-agent/database.db");
-    write_trae_discovery_db(&current);
-    let sources = discover_provider_sources_for_provider(temp.path(), CaptureProvider::Trae);
-    assert_eq!(sources.len(), 1);
-    assert_eq!(sources[0].path, current);
-    assert_eq!(sources[0].status, ProviderSourceStatus::Available);
-    assert!(sources
-        .iter()
-        .all(|source| !source.path.to_string_lossy().contains("workspaceStorage")));
 }
 
 #[test]

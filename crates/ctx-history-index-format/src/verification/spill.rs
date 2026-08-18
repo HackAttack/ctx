@@ -15,7 +15,7 @@ use crate::{CompactIdentity, IndexError, Result};
 pub(super) const VERIFICATION_SPILL_BUFFER_BYTES: usize = 8 * 1024;
 const COMPACT_IDENTITY_BYTES: usize = 32;
 const SOURCE_ORDINAL_BYTES: usize = std::mem::size_of::<u32>();
-const IDENTITY_SPILL_RECORD_BYTES: usize = COMPACT_IDENTITY_BYTES * 4 + SOURCE_ORDINAL_BYTES + 2;
+const IDENTITY_SPILL_RECORD_BYTES: usize = COMPACT_IDENTITY_BYTES * 4 + SOURCE_ORDINAL_BYTES + 4;
 const QUERY_PROJECTION_ACCUMULATOR_BYTES: usize = 32;
 pub(super) const VERIFICATION_SPILL_RECORD_BYTES: usize =
     IDENTITY_SPILL_RECORD_BYTES + QUERY_PROJECTION_ACCUMULATOR_BYTES;
@@ -212,6 +212,8 @@ pub(super) struct SpillVerificationIdentities {
     pub(super) parent_session: Option<CompactIdentity>,
     pub(super) root_session: Option<CompactIdentity>,
     pub(super) session_source_ordinal: u32,
+    pub(super) session_relationship_kind: Option<u8>,
+    pub(super) session_witness_present: bool,
 }
 
 /// Sequential identity-only scratch for records changed relative to an audited base.
@@ -826,6 +828,10 @@ fn encode_record(identities: SpillVerificationIdentities) -> [u8; IDENTITY_SPILL
     );
     encoded[cursor..cursor + SOURCE_ORDINAL_BYTES]
         .copy_from_slice(&identities.session_source_ordinal.to_be_bytes());
+    cursor += SOURCE_ORDINAL_BYTES;
+    encoded[cursor] = identities.session_relationship_kind.unwrap_or(0);
+    cursor += 1;
+    encoded[cursor] = u8::from(identities.session_witness_present);
     encoded
 }
 
@@ -864,6 +870,18 @@ fn decode_record(
             .try_into()
             .expect("fixed source ordinal layout"),
     );
+    cursor += SOURCE_ORDINAL_BYTES;
+    let session_relationship_kind = match encoded[cursor] {
+        0 => None,
+        tag @ 1..=5 => Some(tag),
+        _ => return Err(IndexError::InvalidStoredDocumentField(field)),
+    };
+    cursor += 1;
+    let session_witness_present = match encoded[cursor] {
+        0 => false,
+        1 => true,
+        _ => return Err(IndexError::InvalidStoredDocumentField(field)),
+    };
     if (!has_parent && parent.digest != [0; 32]) || (!has_root && root.digest != [0; 32]) {
         return Err(IndexError::InvalidStoredDocumentField(field));
     }
@@ -873,6 +891,8 @@ fn decode_record(
         parent_session: has_parent.then_some(parent),
         root_session: has_root.then_some(root),
         session_source_ordinal,
+        session_relationship_kind,
+        session_witness_present,
     })
 }
 

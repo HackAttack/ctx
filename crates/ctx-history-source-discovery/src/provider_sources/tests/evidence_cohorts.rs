@@ -178,7 +178,6 @@ const PROVIDER_EVIDENCE_COHORTS: &[(CaptureProvider, EvidenceCohort)] = &[
         CaptureProvider::Lingma,
         EvidenceCohort::DedicatedSqliteMessages,
     ),
-    (CaptureProvider::Trae, EvidenceCohort::DirectorySidecarJson),
     (CaptureProvider::Qoder, EvidenceCohort::SharedNativeJsonl),
     (
         CaptureProvider::Warp,
@@ -195,7 +194,7 @@ fn every_registered_provider_is_routed_to_one_evidence_cohort() {
     let registered = provider_source_specs();
     assert_eq!(
         registered.len(),
-        43,
+        42,
         "update the evidence matrix deliberately"
     );
     assert_eq!(PROVIDER_EVIDENCE_COHORTS.len(), registered.len());

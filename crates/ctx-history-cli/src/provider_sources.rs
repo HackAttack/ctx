@@ -263,11 +263,7 @@ pub fn import_support_json(support: ProviderImportSupport) -> &'static str {
 
 #[cfg(test)]
 mod tests {
-    use std::fs;
-
     use super::*;
-    use ctx_history_capture::{provider_source_for_path, ProviderSourceKind};
-    use rusqlite::{params, Connection};
 
     fn issue(kind: DiscoveryIssueKind, reason: &'static str) -> DiscoveryIssue {
         DiscoveryIssue {
@@ -323,58 +319,6 @@ mod tests {
             assert!(message.is_char_boundary(message.len()));
             assert_eq!(issue["message_truncated"], true);
         }
-    }
-
-    #[test]
-    fn trae_exact_paths_serialize_route_specific_support_and_typed_status() {
-        let temp = tempfile::tempdir().unwrap();
-        let plaintext = temp.path().join("state.vscdb");
-        let connection = Connection::open(&plaintext).unwrap();
-        connection
-            .execute(
-                "CREATE TABLE ItemTable ([key] TEXT PRIMARY KEY, value TEXT)",
-                [],
-            )
-            .unwrap();
-        connection
-            .execute(
-                "INSERT INTO ItemTable ([key], value) VALUES (?1, ?2)",
-                params![
-                    "memento/icube-ai-agent-storage",
-                    r#"{"list":[{"id":"supported","messages":[{"content":"hello"}]}]}"#,
-                ],
-            )
-            .unwrap();
-        drop(connection);
-
-        let plaintext_source = provider_source_for_path(CaptureProvider::Trae, plaintext);
-        assert_eq!(
-            plaintext_source.source_kind,
-            ProviderSourceKind::NativeHistory
-        );
-        let plaintext_json = &sources_json(&[plaintext_source])[0];
-        assert_eq!(plaintext_json["status"], "available");
-        assert_eq!(plaintext_json["status_reason"], Value::Null);
-        assert_eq!(plaintext_json["import_support"], "explicit");
-        assert_eq!(plaintext_json["native_import"], false);
-        assert_eq!(plaintext_json["importable"], true);
-
-        let encrypted = temp.path().join("database.db");
-        fs::write(&encrypted, [0x8a_u8; 4096]).unwrap();
-        let encrypted_source = provider_source_for_path(CaptureProvider::Trae, encrypted);
-        assert_eq!(
-            encrypted_source.source_kind,
-            ProviderSourceKind::DetectionOnly
-        );
-        let encrypted_json = &sources_json(&[encrypted_source])[0];
-        assert_eq!(encrypted_json["status"], "unknown");
-        assert_eq!(
-            encrypted_json["status_reason"],
-            "blocked_auth_or_encryption"
-        );
-        assert_eq!(encrypted_json["import_support"], "unsupported");
-        assert_eq!(encrypted_json["native_import"], false);
-        assert_eq!(encrypted_json["importable"], false);
     }
 
     #[test]

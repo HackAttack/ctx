@@ -1032,7 +1032,6 @@ dependencies = [
  "ctx-history-index",
  "ctx-history-provider-claude-cursor",
  "ctx-history-provider-runtime",
- "ctx-history-provider-trae",
  "ctx-history-source-discovery",
  "ctx-history-source-io",
  "rusqlite",
@@ -1058,7 +1057,6 @@ dependencies = [
  "ctx-history-provider-mistral-mux",
  "ctx-history-provider-native-jsonl",
  "ctx-history-provider-runtime",
- "ctx-history-provider-trae",
  "ctx-history-providers-jsonl-shared",
  "ctx-history-providers-sqlite-inventory",
  "ctx-history-providers-sqlite-logical",
@@ -1422,25 +1420,6 @@ dependencies = [
  "sha2",
  "thiserror 1.0.69",
  "uuid",
-]
-
-[[package]]
-name = "ctx-history-provider-trae"
-version = "1.0.0"
-dependencies = [
- "chrono",
- "ctx-history-capture-model",
- "ctx-history-capture-runtime",
- "ctx-history-core",
- "ctx-history-provider-runtime",
- "ctx-history-source-io",
- "ctx-history-source-sqlite",
- "rusqlite",
- "serde",
- "serde_json",
- "sha2",
- "tempfile",
- "thiserror 1.0.69",
 ]
 
 [[package]]

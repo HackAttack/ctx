@@ -651,6 +651,124 @@ fn replacement_rejects_a_compact_session_collision_owned_by_a_retained_source() 
 }
 
 #[test]
+fn candidate_deletion_ignores_a_compact_session_collision_owned_only_by_the_deleted_source() {
+    const IDENTITY_DIGEST_OFFSET: usize = 3;
+    const IDENTITY_SOURCE_DIGEST_OFFSET: usize = IDENTITY_DIGEST_OFFSET + 32;
+    const IDENTITY_UUID_OFFSET: usize = StableEntityId::CANONICAL_LEN - 16;
+
+    let temp = tempdir().unwrap();
+    let deleted_source = source("deleted-session-owner.jsonl");
+    let candidate_source = source("candidate-session-owner.jsonl");
+    let deleted_record = document(&deleted_source, 1, "deleted session");
+    let deleted_session = deleted_record.session_id;
+    let mut initial = GenerationWriter::open(temp.path(), WriterOptions::default())
+        .unwrap()
+        .into_writer()
+        .unwrap();
+    initial.begin_source(deleted_source.clone()).unwrap();
+    initial.add_core_record(deleted_record).unwrap();
+    initial
+        .certify_source(certificate(&deleted_source, 1, 1))
+        .unwrap();
+    initial.commit(|_| true).unwrap();
+
+    let mut candidate = GenerationWriter::open(temp.path(), WriterOptions::default())
+        .unwrap()
+        .into_writer()
+        .unwrap();
+    let (deletion, inventory) =
+        deletion_evidence_with_retained(&deleted_source, 2, vec![candidate_source.clone()]);
+    candidate.delete_source(deletion, inventory).unwrap();
+    candidate.begin_source(candidate_source.clone()).unwrap();
+    let mut prepared = candidate
+        .core_record_preparer()
+        .prepare(document(&candidate_source, 1, "colliding candidate"))
+        .unwrap();
+
+    let candidate_session = prepared.test_identity_facts_mut().session.session_id;
+    let mut encoded = candidate_session.encode_canonical().unwrap();
+    encoded[IDENTITY_DIGEST_OFFSET..IDENTITY_DIGEST_OFFSET + 16]
+        .copy_from_slice(&deleted_session.digest()[..16]);
+    encoded[IDENTITY_UUID_OFFSET..].copy_from_slice(deleted_session.as_uuid().as_bytes());
+    let colliding_session = StableEntityId::decode_canonical(&encoded).unwrap();
+    assert_eq!(colliding_session.as_uuid(), deleted_session.as_uuid());
+    assert_ne!(colliding_session.digest(), deleted_session.digest());
+    assert_eq!(
+        &encoded[IDENTITY_SOURCE_DIGEST_OFFSET..IDENTITY_SOURCE_DIGEST_OFFSET + 32],
+        &candidate_source.identity().digest()
+    );
+    prepared.test_identity_facts_mut().session.session_id = colliding_session;
+
+    candidate.add_prepared_core_record(prepared).unwrap();
+    candidate
+        .certify_source(certificate(&candidate_source, 1, 1))
+        .unwrap();
+    candidate.commit(|_| true).unwrap();
+
+    let index = VerifiedIndex::open(temp.path()).unwrap();
+    assert_eq!(index.document_count(), 1);
+    assert_eq!(index.count_term("colliding").unwrap(), 1);
+}
+
+#[test]
+fn same_source_replacement_rejects_a_compact_session_collision_without_poisoning_the_base() {
+    const IDENTITY_DIGEST_OFFSET: usize = 3;
+    const IDENTITY_UUID_OFFSET: usize = StableEntityId::CANONICAL_LEN - 16;
+
+    let temp = tempdir().unwrap();
+    let source = source("same-source-session-collision.jsonl");
+    let retained = document_for_session(&source, "retained", 1, "retained session");
+    let retained_session = retained.session_id;
+    let mut initial = GenerationWriter::open(temp.path(), WriterOptions::default())
+        .unwrap()
+        .into_writer()
+        .unwrap();
+    initial.begin_source(source.clone()).unwrap();
+    initial.add_core_record(retained).unwrap();
+    initial.certify_source(certificate(&source, 1, 1)).unwrap();
+    initial.commit(|_| true).unwrap();
+
+    let mut replacement = GenerationWriter::open(temp.path(), WriterOptions::default())
+        .unwrap()
+        .into_writer()
+        .unwrap();
+    replacement.begin_source(source.clone()).unwrap();
+    let mut prepared = replacement
+        .core_record_preparer()
+        .prepare(document_for_session(
+            &source,
+            "different",
+            1,
+            "colliding replacement",
+        ))
+        .unwrap();
+    let candidate_session = prepared.test_identity_facts_mut().session.session_id;
+    let mut encoded = candidate_session.encode_canonical().unwrap();
+    encoded[IDENTITY_DIGEST_OFFSET..IDENTITY_DIGEST_OFFSET + 16]
+        .copy_from_slice(&retained_session.digest()[..16]);
+    encoded[IDENTITY_UUID_OFFSET..].copy_from_slice(retained_session.as_uuid().as_bytes());
+    prepared.test_identity_facts_mut().session.session_id =
+        StableEntityId::decode_canonical(&encoded).unwrap();
+
+    assert!(matches!(
+        replacement.add_prepared_core_record(prepared),
+        Err(IndexError::CompactIdentityCollision {
+            kind: "session",
+            ..
+        })
+    ));
+    drop(replacement);
+    assert!(!temp
+        .path()
+        .join("active-generation-rebuild-required.json")
+        .exists());
+    GenerationWriter::open(temp.path(), WriterOptions::default())
+        .unwrap()
+        .into_writer()
+        .unwrap();
+}
+
+#[test]
 fn verified_generation_rejects_a_forged_duplicate_event_identity() {
     let temp = tempdir().unwrap();
     let source = source("session.jsonl");

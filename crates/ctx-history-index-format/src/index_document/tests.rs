@@ -209,6 +209,30 @@ fn provider_native_copy_keeps_exact_fields_and_remains_discoverable() {
 }
 
 #[test]
+fn session_authority_attachment_is_canonical_and_one_shot() {
+    let schema = lexical_schema();
+    let fields = fields_from_schema(&schema).unwrap();
+    let core_source = source("codex_session_jsonl");
+    let record = core_record(&core_source);
+    let expected = SessionAuthorityKey::new(record.session_id, core_source.identity())
+        .unwrap()
+        .into_bytes();
+    let encoded = record.encode_stored().unwrap();
+    let content_bytes = core_content_bytes(&record.content).unwrap();
+    let mut document = IndexDocument::from_core(fields, record, encoded, content_bytes).unwrap();
+
+    document.add_session_authority(fields);
+    document.add_session_authority(fields);
+
+    let document = document.into_tantivy_document();
+    let authorities = document
+        .get_all(fields.session_authority)
+        .filter_map(|value| value.as_bytes())
+        .collect::<Vec<_>>();
+    assert_eq!(authorities, vec![expected.as_slice()]);
+}
+
+#[test]
 fn source_event_order_key_has_exact_source_order_and_size_layout() {
     let source = source("codex_session_jsonl");
     let record = core_record(&source);

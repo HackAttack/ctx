@@ -1,12 +1,13 @@
 use ctx_history_core::{StableEntityId, StableEntityKind};
-use tantivy::{DocAddress, TantivyDocument};
+use tantivy::{schema::Value, DocAddress, TantivyDocument};
 
 use crate::{
     core_record_leaf, decode_core_record_bytes,
     index_document::{
-        core_content_bytes, EventRangeOrderKey, SemanticEventOrderKey, SessionEventOrderKey,
-        SourceEventOrderKey, EVENT_RANGE_ORDER_KEY_LEN, SEMANTIC_EVENT_ORDER_KEY_LEN,
-        SESSION_EVENT_ORDER_KEY_LEN, SOURCE_EVENT_ORDER_KEY_LEN,
+        core_content_bytes, EventRangeOrderKey, SemanticEventOrderKey, SessionAuthorityKey,
+        SessionEventOrderKey, SourceEventOrderKey, EVENT_RANGE_ORDER_KEY_LEN,
+        SEMANTIC_EVENT_ORDER_KEY_LEN, SESSION_AUTHORITY_KEY_LEN, SESSION_EVENT_ORDER_KEY_LEN,
+        SOURCE_EVENT_ORDER_KEY_LEN,
     },
     source_token, unique_required_bytes, Fields, IndexError, Result, LEXICAL_SCHEMA_VERSION,
 };
@@ -19,6 +20,7 @@ pub struct VerificationRecord {
     pub core_record_leaf: [u8; 32],
     pub source_event_order: [u8; SOURCE_EVENT_ORDER_KEY_LEN],
     pub session_event_order: [u8; SESSION_EVENT_ORDER_KEY_LEN],
+    pub session_authority: Option<[u8; SESSION_AUTHORITY_KEY_LEN]>,
     pub semantic_event_order: [u8; SEMANTIC_EVENT_ORDER_KEY_LEN],
     pub event_range_order: [u8; EVENT_RANGE_ORDER_KEY_LEN],
     pub identities: CompactVerificationIdentities,
@@ -92,6 +94,19 @@ pub fn stored_verification_record(
     let source_event_order =
         SourceEventOrderKey::for_core_record(&core, stored_core_bytes)?.into_bytes();
     let session_event_order = SessionEventOrderKey::for_core_record(&core)?.into_bytes();
+    let mut authority_values = document.get_all(fields.session_authority);
+    let session_authority = match authority_values.next() {
+        None => None,
+        Some(value) if authority_values.next().is_none() => Some(
+            SessionAuthorityKey::decode(
+                value
+                    .as_bytes()
+                    .ok_or(IndexError::InvalidStoredDocumentField("session_authority"))?,
+            )?
+            .into_bytes(),
+        ),
+        Some(_) => return Err(IndexError::InvalidStoredDocumentField("session_authority")),
+    };
     let semantic_event_order = SemanticEventOrderKey::for_event(core.event_id)?.into_bytes();
     let event_range_order = EventRangeOrderKey::for_core_record(
         &core,
@@ -112,6 +127,7 @@ pub fn stored_verification_record(
         core_record_leaf,
         source_event_order,
         session_event_order,
+        session_authority,
         semantic_event_order,
         event_range_order,
         identities,

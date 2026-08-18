@@ -28,6 +28,91 @@ const SESSION_EVENT_ORDER_OCCURRED_AT_OFFSET: usize = SESSION_EVENT_ORDER_SEQUEN
 const SESSION_EVENT_ORDER_EVENT_ID_OFFSET: usize = SESSION_EVENT_ORDER_OCCURRED_AT_OFFSET + 9;
 const SESSION_EVENT_ORDER_FIELD: &str = "session_event_order";
 
+/// Sparse session witness key. The UUID prefix bounds dictionary traversal;
+/// the two canonical identities make compact collisions fail closed.
+pub const SESSION_AUTHORITY_UUID_PREFIX_LEN: usize = 16;
+const SESSION_AUTHORITY_SESSION_OFFSET: usize = SESSION_AUTHORITY_UUID_PREFIX_LEN;
+const SESSION_AUTHORITY_SOURCE_OFFSET: usize =
+    SESSION_AUTHORITY_SESSION_OFFSET + StableEntityId::CANONICAL_LEN;
+pub const SESSION_AUTHORITY_KEY_LEN: usize =
+    SESSION_AUTHORITY_SOURCE_OFFSET + StableEntityId::CANONICAL_LEN;
+const SESSION_AUTHORITY_FIELD: &str = "session_authority";
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub struct SessionAuthorityKey([u8; SESSION_AUTHORITY_KEY_LEN]);
+
+impl SessionAuthorityKey {
+    fn new(session_id: StableEntityId, source_owner: StableEntityId) -> Result<Self> {
+        if session_id.entity_kind() != StableEntityKind::Session {
+            return Err(IndexError::InvalidStoredDocumentField(
+                SESSION_AUTHORITY_FIELD,
+            ));
+        }
+        let mut key = [0; SESSION_AUTHORITY_KEY_LEN];
+        key[..SESSION_AUTHORITY_UUID_PREFIX_LEN].copy_from_slice(session_id.as_uuid().as_bytes());
+        key[SESSION_AUTHORITY_SESSION_OFFSET..SESSION_AUTHORITY_SOURCE_OFFSET]
+            .copy_from_slice(&session_id.encode_canonical()?);
+        key[SESSION_AUTHORITY_SOURCE_OFFSET..].copy_from_slice(&source_owner.encode_canonical()?);
+        Ok(Self(key))
+    }
+
+    pub fn decode(encoded: &[u8]) -> Result<Self> {
+        let key: [u8; SESSION_AUTHORITY_KEY_LEN] = encoded
+            .try_into()
+            .map_err(|_| IndexError::InvalidStoredDocumentField(SESSION_AUTHORITY_FIELD))?;
+        let key = Self(key);
+        let (session_id, _) = key.identities()?;
+        if key.0[..SESSION_AUTHORITY_UUID_PREFIX_LEN] != *session_id.as_uuid().as_bytes() {
+            return Err(IndexError::InvalidStoredDocumentField(
+                SESSION_AUTHORITY_FIELD,
+            ));
+        }
+        Ok(key)
+    }
+
+    pub fn uuid_prefix(
+        session_id: StableEntityId,
+    ) -> Result<[u8; SESSION_AUTHORITY_UUID_PREFIX_LEN]> {
+        if session_id.entity_kind() != StableEntityKind::Session {
+            return Err(IndexError::InvalidStoredDocumentField(
+                SESSION_AUTHORITY_FIELD,
+            ));
+        }
+        Ok(*session_id.as_uuid().as_bytes())
+    }
+
+    pub fn uuid_range_end(session_id: StableEntityId) -> Result<Vec<u8>> {
+        let mut end = Vec::with_capacity(SESSION_AUTHORITY_KEY_LEN + 1);
+        end.extend_from_slice(&Self::uuid_prefix(session_id)?);
+        end.extend(std::iter::repeat_n(
+            u8::MAX,
+            SESSION_AUTHORITY_KEY_LEN - SESSION_AUTHORITY_UUID_PREFIX_LEN + 1,
+        ));
+        Ok(end)
+    }
+
+    pub fn identities(self) -> Result<(StableEntityId, StableEntityId)> {
+        let session_id = StableEntityId::decode_canonical(
+            &self.0[SESSION_AUTHORITY_SESSION_OFFSET..SESSION_AUTHORITY_SOURCE_OFFSET],
+        )?;
+        let source_owner =
+            StableEntityId::decode_canonical(&self.0[SESSION_AUTHORITY_SOURCE_OFFSET..])?;
+        if session_id.entity_kind() != StableEntityKind::Session {
+            return Err(IndexError::InvalidStoredDocumentField(
+                SESSION_AUTHORITY_FIELD,
+            ));
+        }
+        Ok((session_id, source_owner))
+    }
+
+    pub fn as_bytes(&self) -> &[u8; SESSION_AUTHORITY_KEY_LEN] {
+        &self.0
+    }
+    pub fn into_bytes(self) -> [u8; SESSION_AUTHORITY_KEY_LEN] {
+        self.0
+    }
+}
+
 pub const SEMANTIC_EVENT_ORDER_KEY_LEN: usize = 32;
 const SEMANTIC_EVENT_ORDER_FIELD: &str = "semantic_event_order";
 
@@ -594,14 +679,30 @@ impl<'a> Value<'a> for &'a IndexValue {
 ///     let _ = document.into_tantivy_document();
 /// }
 /// ```
+///
+/// ```compile_fail
+/// use ctx_history_index_format::{Fields, IndexDocument, SessionAuthorityKey};
+///
+/// fn attach_arbitrary_authority(
+///     document: &mut IndexDocument,
+///     fields: Fields,
+///     authority: SessionAuthorityKey,
+/// ) {
+///     document.add_session_authority(fields, authority);
+/// }
+/// ```
 pub struct IndexDocument {
     fields: Vec<(Field, IndexValue)>,
+    // This remains private so a writer can elect a witness but cannot choose
+    // the session/source identity written for that witness.
+    session_authority: Option<SessionAuthorityKey>,
 }
 
 impl IndexDocument {
     fn with_capacity(field_values: usize) -> Self {
         Self {
             fields: Vec::with_capacity(field_values),
+            session_authority: None,
         }
     }
 
@@ -615,6 +716,17 @@ impl IndexDocument {
 
     fn add_bytes(&mut self, field: Field, value: impl Into<Vec<u8>>) {
         self.fields.push((field, IndexValue::Bytes(value.into())));
+    }
+
+    /// Adds the sparse stored+indexed Core witness selected by the writer.
+    ///
+    /// The witness key is derived from this document's private Core identity
+    /// in [`Self::from_core`] and can be attached only once.
+    #[doc(hidden)]
+    pub fn add_session_authority(&mut self, fields: Fields) {
+        if let Some(authority) = self.session_authority.take() {
+            self.add_bytes(fields.session_authority, authority.into_bytes());
+        }
     }
 
     fn add_u64(&mut self, field: Field, value: u64) {
@@ -647,6 +759,8 @@ impl IndexDocument {
         core_record_bytes: Vec<u8>,
         core_content_bytes: usize,
     ) -> Result<Self> {
+        let session_authority =
+            SessionAuthorityKey::new(record.session_id, record.source.identity())?;
         let source_token = crate::source_token(&record.source);
         let source = IndexSourceFields::new(&record.source, &source_token);
         let core_record_encoded_bytes = core_record_bytes.len();
@@ -670,6 +784,7 @@ impl IndexDocument {
             .as_ref()
             .map_or(0, |activity| activity.facts.len());
         let mut target = Self::with_capacity(BASE_FIELD_VALUES + literal_fact_values);
+        target.session_authority = Some(session_authority);
         target.add_text(fields.event_id, record.event_id.to_string());
         target.add_text(
             fields.event_identity_digest,

@@ -13,8 +13,8 @@ use super::{
     context::DiscoveryContext,
     probes::{default_location_import_probe, BoundedProbe},
     reasons::{
-        blocked_auth_or_encryption_reason, empty_source_reason, path_presence_unknown_reason,
-        probe_io_error_reason, unknown_source_reason,
+        empty_source_reason, path_presence_unknown_reason, probe_io_error_reason,
+        unknown_source_reason,
     },
     selectors::{
         encoded_path_within_limit, source_path_kind, SourcePathError,
@@ -115,7 +115,6 @@ pub(super) fn resolver_group(provider: CaptureProvider) -> Option<ResolverGroup>
         | CaptureProvider::Lingma
         | CaptureProvider::Zed
         | CaptureProvider::CopilotCli
-        | CaptureProvider::Trae
         | CaptureProvider::Antigravity
         | CaptureProvider::Windsurf => Some(ResolverGroup::Platform),
         CaptureProvider::Pi
@@ -285,11 +284,6 @@ pub(super) fn source_from_location(
                             ProviderSourceStatus::Unknown,
                             probe_io_error_reason(spec.provider),
                             false,
-                        ),
-                        BoundedProbe::BlockedAuthOrEncryption => (
-                            ProviderSourceStatus::Unknown,
-                            blocked_auth_or_encryption_reason(spec.provider),
-                            true,
                         ),
                     }
                 }
@@ -534,13 +528,13 @@ mod tests {
     #[test]
     fn every_registered_provider_has_exactly_one_grouped_dispatch_lane() {
         let specs = provider_source_specs();
-        assert_eq!(specs.len(), 43);
+        assert_eq!(specs.len(), 42);
         assert!(specs
             .iter()
             .all(|spec| resolver_group(spec.provider).is_some()));
         for (group, expected) in [
             (ResolverGroup::Simple, 16),
-            (ResolverGroup::Platform, 9),
+            (ResolverGroup::Platform, 8),
             (ResolverGroup::ConfigProject, 6),
             (ResolverGroup::ProfileProject, 6),
             (ResolverGroup::ManualUnsupported, 6),

@@ -81,7 +81,6 @@ PROVIDER_FAMILY_COVERAGE = (
     ("qoder", JSONL_FAMILY, None),
     ("warp", SQLITE_WAL_FAMILY, None),
     ("codebuddy", DOCUMENT_TREE_FAMILY, None),
-    ("trae", SQLITE_WAL_FAMILY, None),
     ("mimocode", SQLITE_WAL_FAMILY, None),
 )
 

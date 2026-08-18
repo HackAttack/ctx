@@ -63,9 +63,7 @@ row with `status: "empty"` means the path exists but no provider-specific
 transcript files were found. A row with `status: "unknown"` means bounded
 discovery could not decide safely, for example because of a scan budget, I/O
 failure, or an authentication/encryption boundary. Inspect `status_reason` and
-`unsupported_reason` for the typed and human-readable diagnostics; an encrypted
-or non-plaintext Trae database reports
-`status_reason: "blocked_auth_or_encryption"`.
+`unsupported_reason` for the typed and human-readable diagnostics.
 
 Hermes `state.db` appears as native and importable. On Linux, a non-root ctx
 process with the certified read-only live-WAL path makes new sessions and

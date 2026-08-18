@@ -7,6 +7,8 @@ fn identities() -> SpillVerificationIdentities {
         parent_session: Some(CompactIdentity { digest: [2; 32] }),
         root_session: Some(CompactIdentity { digest: [3; 32] }),
         session_source_ordinal: 4,
+        session_relationship_kind: Some(2),
+        session_witness_present: true,
     }
 }
 

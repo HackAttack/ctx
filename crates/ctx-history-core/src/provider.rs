@@ -62,8 +62,6 @@ pub enum ProviderId {
     Warp,
     #[serde(rename = "codebuddy", alias = "code_buddy", alias = "code-buddy")]
     CodeBuddy,
-    #[serde(rename = "trae", alias = "trae-cn", alias = "trae_cn")]
-    Trae,
     #[serde(rename = "openhands")]
     OpenHands,
     Cagent,
@@ -108,7 +106,7 @@ pub enum ProviderId {
 }
 
 impl ProviderId {
-    pub const ALL: [Self; 53] = [
+    pub const ALL: [Self; 52] = [
         Self::Codex,
         Self::GrokBuild,
         Self::DeepSeekHarness,
@@ -142,7 +140,6 @@ impl ProviderId {
         Self::Qoder,
         Self::Warp,
         Self::CodeBuddy,
-        Self::Trae,
         Self::OpenHands,
         Self::Cagent,
         Self::QwenCode,
@@ -335,7 +332,6 @@ mod tests {
             ProviderId::GrokBuild,
             ProviderId::DeepSeekHarness,
             ProviderId::CodeBuddy,
-            ProviderId::Trae,
             ProviderId::Continue,
             ProviderId::Crush,
             ProviderId::Cursor,

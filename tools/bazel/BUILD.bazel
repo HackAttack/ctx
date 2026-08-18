@@ -37,8 +37,6 @@ exports_files([
     "check_history_provider_mistral_mux_boundary_test.py",
     "check_history_provider_docproj_boundary.py",
     "check_history_provider_docproj_boundary_test.py",
-    "check_history_provider_trae_boundary.py",
-    "check_history_provider_trae_boundary_test.py",
     "check_history_source_discovery_boundary.py",
     "check_history_source_discovery_boundary_test.py",
     "check_history_source_sqlite_boundary.py",
@@ -177,13 +175,6 @@ py_test(
     data = ["//:history_provider_pack_boundary_inputs"],
     imports = ["."],
     main = "check_history_provider_pack_boundary_test.py",
-)
-
-py_test(
-    name = "history_provider_trae_boundary_mutation_tests",
-    srcs = ["check_history_provider_trae_boundary.py", "check_history_provider_trae_boundary_test.py"],
-    imports = ["."],
-    main = "check_history_provider_trae_boundary_test.py",
 )
 
 rust_toolchain_file(

@@ -216,7 +216,7 @@ sqlite_route!(Warp, "warp", true, true, NamedSurface, NamedSurface);
             self.validate()
 
     def test_provider_cohort_drift_is_rejected(self) -> None:
-        (self.pack / "src/providers/trae").mkdir()
+        (self.pack / "src/providers/unexpected").mkdir()
         with self.assertRaisesRegex(BoundaryError, "cohort drifted"):
             self.validate()
 

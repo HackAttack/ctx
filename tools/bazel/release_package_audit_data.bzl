@@ -26,7 +26,6 @@ RELEASE_PACKAGE_AUDIT_PACKAGE_DATA = [
     "//crates/ctx-history-provider-claude-cursor:cargo_package_data",
     "//crates/ctx-history-provider-codex:cargo_package_data",
     "//crates/ctx-history-provider-mistral-mux:cargo_package_data",
-    "//crates/ctx-history-provider-trae:cargo_package_data",
     "//crates/ctx-history-providers-sqlite-selected:cargo_package_data",
     "//crates/ctx-history-providers-sqlite-logical:cargo_package_data",
     "//crates/ctx-history-core:cargo_package_data",

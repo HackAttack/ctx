@@ -236,17 +236,6 @@ ROUTE_SCHEMA_CONTRACTS = (
         sha256="59811cb3ff2bfbbd2539ae4f3bde1bbade05aff7c0ddacbda0f806cc32481a38",
     ),
     RouteSchemaContract(
-        provider="trae",
-        route="native_import",
-        source_format="trae_state_vscdb",
-        format_schema=_structural(1),
-        producer_domain=_discrete(_unversioned(1)),
-        path="crates/ctx-history-capture/tests/contracts/mcp-attribution/trae/trae_state_vscdb/shape-contract.json",
-        allowed_subtree="crates/ctx-history-capture/tests/contracts/mcp-attribution/trae/trae_state_vscdb",
-        classification=ROUTE_CONTRACT_CLASSIFICATION,
-        sha256="611d3fa61c4c7dffddaedf583f533aa23541a5f6580acb5eb0e6fbf1c491a92c",
-    ),
-    RouteSchemaContract(
         provider="openclaw",
         route="native_import",
         source_format="openclaw_session_jsonl_tree",

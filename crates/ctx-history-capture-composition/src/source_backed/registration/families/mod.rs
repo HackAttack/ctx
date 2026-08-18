@@ -105,7 +105,6 @@ fn register_landed_source_backed_route_inner(
         | CaptureProvider::Firebender
         | CaptureProvider::ForgeCode
         | CaptureProvider::DeepAgents
-        | CaptureProvider::Trae
         | CaptureProvider::MiMoCode => {
             let data_root = data_root.ok_or_else(|| {
                 invalid_route(

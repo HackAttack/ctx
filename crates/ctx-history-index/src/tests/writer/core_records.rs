@@ -24,8 +24,9 @@ fn stored_document_contains_exactly_one_canonical_core_record() {
     let stored: TantivyDocument = searcher.doc(address).unwrap();
     let values = stored.field_values().collect::<Vec<_>>();
 
-    assert_eq!(values.len(), 1);
+    assert_eq!(values.len(), 2);
     assert_eq!(values[0].0, fields.core_record);
+    assert_eq!(values[1].0, fields.session_authority);
     let encoded = values[0].1.as_bytes().unwrap();
     assert_eq!(CoreRecord::decode_stored(encoded).unwrap(), expected);
     let segment = &searcher.segment_readers()[address.segment_ord as usize];

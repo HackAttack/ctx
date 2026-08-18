@@ -1,8 +1,5 @@
 use super::*;
-use crate::provider::{
-    providers::trae::nativepath::TraeReplacementTree,
-    source_backed::family::document::register_replacement_document_tree_route_with_authority,
-};
+use crate::provider::source_backed::family::document::register_replacement_document_tree_route_with_authority;
 use ctx_history_providers_sqlite_logical::{
     explicit_forgecode_route_plan, logical_sqlite_route_plan, LogicalSqliteRoutePlan,
     LogicalSqliteRuntimeBinding,
@@ -61,22 +58,6 @@ pub(super) fn register_opencode_family_route(
     let plan = logical_sqlite_route_plan(source, selection, data_root)
         .map_err(|error| invalid_route(provider, error.to_string()))?;
     register_logical_plan(registry, selection, plan)
-}
-
-pub(super) fn register_trae_route(
-    registry: &mut SourceBackedProviderRegistry,
-    source: ProviderSource,
-    selection: SourceBackedRouteSelection,
-    data_root: &Path,
-) -> SourceBackedCoordinatorResult<()> {
-    let adapter = TraeReplacementTree::new(data_root, source.path.clone());
-    register_replacement_document_tree_route_with_authority(
-        registry,
-        source,
-        selection,
-        SourceBackedSelectorAuthority::DiscoveredWinner,
-        adapter,
-    )
 }
 
 pub(super) fn register_zed_route(

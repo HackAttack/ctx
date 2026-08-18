@@ -65,7 +65,6 @@ WORKSPACE_RELEASE_PACKAGES = {
     "ctx-history-provider-runtime",
     "ctx-history-provider-claude-cursor",
     "ctx-history-provider-codex",
-    "ctx-history-provider-trae",
     "ctx-history-providers-sqlite-logical",
     "ctx-history-providers-jsonl-shared",
     "ctx-history-providers-task-docs",

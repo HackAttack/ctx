@@ -50,6 +50,7 @@ pub struct Fields {
     pub core_record: Field,
     pub source_event_order: Field,
     pub session_event_order: Field,
+    pub session_authority: Field,
     pub semantic_event_order: Field,
     pub event_range_order: Field,
     pub discovery_eligible: Field,
@@ -155,6 +156,7 @@ pub fn lexical_schema() -> Schema {
     builder.add_bytes_field("core_record", STORED);
     builder.add_bytes_field("source_event_order", INDEXED);
     builder.add_bytes_field("session_event_order", INDEXED);
+    builder.add_bytes_field("session_authority", STORED | INDEXED);
     builder.add_bytes_field("semantic_event_order", INDEXED);
     builder.add_bytes_field("event_range_order", FAST | INDEXED);
     builder.add_u64_field("discovery_eligible", INDEXED);
@@ -209,6 +211,7 @@ pub fn fields_from_schema(schema: &Schema) -> Result<Fields> {
         core_record: required_field(schema, "core_record")?,
         source_event_order: required_field(schema, "source_event_order")?,
         session_event_order: required_field(schema, "session_event_order")?,
+        session_authority: required_field(schema, "session_authority")?,
         semantic_event_order: required_field(schema, "semantic_event_order")?,
         event_range_order: required_field(schema, "event_range_order")?,
         discovery_eligible: required_field(schema, "discovery_eligible")?,
@@ -267,14 +270,14 @@ mod tests {
     }
 
     #[test]
-    fn core_record_is_the_only_stored_document_representation() {
+    fn authority_and_core_record_are_the_only_stored_document_representations() {
         let schema = lexical_schema();
         let stored = schema
             .fields()
             .filter_map(|(_, entry)| entry.is_stored().then_some(entry.name()))
             .collect::<Vec<_>>();
 
-        assert_eq!(stored, vec!["core_record"]);
+        assert_eq!(stored, vec!["core_record", "session_authority"]);
     }
 
     #[test]

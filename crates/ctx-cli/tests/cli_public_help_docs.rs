@@ -370,8 +370,6 @@ fn provider_json_names_are_accepted_as_cli_filter_aliases() {
         ("qwen_code", "qwen_code"),
         ("kimi_code_cli", "kimi_code_cli"),
         ("code_buddy", "codebuddy"),
-        ("trae", "trae"),
-        ("trae-cn", "trae"),
         ("auggie", "auggie"),
         ("augment", "auggie"),
         ("augment-code", "auggie"),

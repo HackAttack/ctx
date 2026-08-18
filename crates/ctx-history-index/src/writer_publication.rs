@@ -64,6 +64,7 @@ impl GenerationWriter {
         expected_generation_id: &str,
         publication_metadata: Vec<u8>,
     ) -> Result<VerifiedIndex> {
+        self.ensure_reusable_base_not_invalidated()?;
         if self.preflight_lock.is_none() {
             return Err(IndexError::WriterInvariant(
                 "generation writer lost its root publication lock",
@@ -313,6 +314,7 @@ impl GenerationWriter {
         M: FnOnce(PublicationMetadataContext<'_>) -> Result<Option<Vec<u8>>>,
         P: FnMut(PublicationStage) -> Result<()>,
     {
+        self.ensure_reusable_base_not_invalidated()?;
         if self.preflight_lock.is_none() {
             return Err(IndexError::WriterInvariant(
                 "generation writer lost its root publication lock",
@@ -687,6 +689,23 @@ impl GenerationWriter {
             receipt,
             disposition: PublicationDisposition::Published,
             verified_index,
+        })
+    }
+
+    fn ensure_reusable_base_not_invalidated(&self) -> Result<()> {
+        let Some(detail) = self.reusable_base_rebuild_detail.as_ref() else {
+            return Ok(());
+        };
+        let active = self
+            .active_pointer
+            .as_ref()
+            .ok_or(IndexError::WriterInvariant(
+                "invalidated reusable base is missing its active pointer",
+            ))?
+            .active();
+        Err(IndexError::ActiveGenerationNeedsRebuild {
+            generation_id: active.generation_id().to_owned(),
+            detail: detail.clone(),
         })
     }
 

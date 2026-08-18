@@ -167,6 +167,36 @@ ctx_rust_test(
     timeout = "long",
 )
 
+ctx_rust_test(
+    name = "session_authority_high_cardinality_tests",
+    srcs = RUST_TEST_SRCS,
+    crate_name = "ctx_history_index_session_authority_high_cardinality",
+    crate_root = "src/lib.rs",
+    edition = crate_edition(),
+    aliases = aliases(
+        normal_dev = True,
+        proc_macro_dev = True,
+    ),
+    args = [
+        "--ignored",
+        "--exact",
+        "tests::writer::complexity_contract::high_cardinality_same_session_append_reads_only_the_live_witness",
+        "--nocapture",
+        "--test-threads=1",
+    ],
+    deps = all_crate_deps(
+        normal = True,
+        normal_dev = True,
+    ) + CTX_HISTORY_INDEX_TEST_DEPS,
+    proc_macro_deps = all_crate_deps(
+        proc_macro = True,
+        proc_macro_dev = True,
+    ),
+    rustc_env = COMMON_RUSTC_ENV,
+    tags = ["tier-nightly"],
+    timeout = "long",
+)
+
 # Dedicated controlled-host report. Invoke with --config=release,
 # --nocache_test_results, and CTX_REPUBLISH_QUALIFICATION_ENFORCE_PERF=1 for the
 # blocking release run.

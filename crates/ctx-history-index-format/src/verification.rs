@@ -35,7 +35,8 @@ use crate::{
     verify_certified_physical_integrity, verify_or_certify_physical_integrity,
     ActiveGenerationPointer, CandidatePhysicalProof, CertifiedPhysicalIntegrity, CompactIdentity,
     Fields, GenerationManifest, GenerationSlot, IdentityFieldRole, IndexError, LoadedPublication,
-    PhysicalIntegrityAudit, Result, SourceCoreRecordAggregate, VerificationRecord,
+    PhysicalIntegrityAudit, Result, SessionAuthorityKey, SourceCoreRecordAggregate,
+    VerificationRecord,
 };
 use ctx_history_core::CertifiedSource;
 
