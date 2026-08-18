@@ -9,6 +9,7 @@ use serde_json::Value;
 
 use super::super::{
     context::{DiscoveryContext, DiscoveryPlatform},
+    probes::{has_openhands_v1_event_json, BoundedProbe},
     selectors::{
         direct_entries, direct_regular_files_matching, ordinary_directory, ordinary_file,
         ordinary_path, read_bounded_bytes, SelectorDocument, SelectorFormat, SelectorIncludeBudget,
@@ -29,8 +30,6 @@ use validation::{valid_hermes_profile_name, valid_uuid};
 
 const OPENCLAW_UNSUPPORTED_REASON: &str =
     "OpenClaw openclaw-agent.sqlite history is detected but unsupported";
-const OPENHANDS_CLI_UNSUPPORTED_REASON: &str =
-    "OpenHands CLI events/event-*.json history is detected but unsupported";
 const PATH_MANUAL_REASON: &str =
     "the selected provider path cannot be reconstructed safely; use an exact --path";
 const SELECTOR_MANUAL_REASON: &str =
@@ -529,13 +528,14 @@ fn resolve_openhands(
             "aws" | "s3" | "gcp" | "google_cloud"
         )
     });
-    if remote {
+    let legacy_root = if remote {
         report.issues.push(issue(
             spec.provider,
             None,
             DiscoveryIssueKind::NoDiskHistory,
             REMOTE_OPENHANDS_REASON,
         ));
+        None
     } else {
         let root = match openhands_v1_root(context) {
             Ok(path) => path,
@@ -551,8 +551,8 @@ fn resolve_openhands(
                 return report;
             }
         };
-        push_selected_source(probes, &mut report, spec, root, "openhands_file_events");
-    }
+        Some(root)
+    };
 
     let cli_root = match openhands_cli_root(context) {
         Ok(path) => path,
@@ -561,19 +561,54 @@ fn resolve_openhands(
             return report;
         }
     };
-    match openhands_cli_event_roots(&cli_root) {
-        Ok(roots) => {
-            for root in roots {
-                if !push_source_candidate(
-                    &mut report.sources,
-                    unsupported_source(spec, root.clone(), OPENHANDS_CLI_UNSUPPORTED_REASON),
-                ) {
-                    issue_limit(&mut report, spec.provider, root);
-                    break;
+    let cli_present = match path_presence(&cli_root) {
+        PathPresence::Missing => false,
+        PathPresence::Present if ordinary_directory(&cli_root) => {
+            if openhands_cli_event_roots(&cli_root).is_err() {
+                issue_selector(&mut report, spec.provider);
+                return report;
+            }
+            true
+        }
+        PathPresence::Present | PathPresence::Unsupported | PathPresence::Unknown(_) => {
+            issue_selector(&mut report, spec.provider);
+            return report;
+        }
+    };
+
+    match legacy_root {
+        Some(root) if cli_present && cli_root.starts_with(&root) => {
+            match has_openhands_v1_event_json(&root, MAX_FINITE_SELECTOR_ENTRIES) {
+                BoundedProbe::Found => {
+                    // One umbrella route deterministically owns a mixed profile,
+                    // so provider-native IDs cannot be imported twice.
+                    push_selected_source(probes, &mut report, spec, root, "openhands_file_events");
+                }
+                BoundedProbe::NotFound => push_selected_source(
+                    probes,
+                    &mut report,
+                    spec,
+                    cli_root,
+                    "openhands_file_events",
+                ),
+                BoundedProbe::BudgetExhausted
+                | BoundedProbe::IoError
+                | BoundedProbe::BlockedAuthOrEncryption => {
+                    issue_selector(&mut report, spec.provider);
+                    push_selected_source(probes, &mut report, spec, root, "openhands_file_events");
                 }
             }
         }
-        Err(_) => issue_selector(&mut report, spec.provider),
+        Some(root) => {
+            push_selected_source(probes, &mut report, spec, root, "openhands_file_events");
+            if cli_present {
+                push_selected_source(probes, &mut report, spec, cli_root, "openhands_file_events");
+            }
+        }
+        None if cli_present => {
+            push_selected_source(probes, &mut report, spec, cli_root, "openhands_file_events")
+        }
+        None => {}
     }
     report
 }

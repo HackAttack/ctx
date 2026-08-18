@@ -146,7 +146,7 @@ fn cold_projection_preserves_complete_bodies_and_core_semantics() {
     );
     assert_eq!(
         projection.source.parser_revision(),
-        "openhands-source-backed-v6-closed-facts"
+        "openhands-source-backed-v7-naive-time"
     );
 }
 
@@ -330,7 +330,7 @@ fn unchanged_plan_reads_zero_bodies_and_changed_group_reads_each_leaf_once() {
                 let plan = adapter.bind_group(group).unwrap();
                 let certified = base.get(group.group_key()).unwrap();
                 certified.observation() == &plan.opening
-                    && certified.parser_revision() == "openhands-source-backed-v6-closed-facts"
+                    && certified.parser_revision() == "openhands-source-backed-v7-naive-time"
             })
             .collect::<Vec<_>>()
     });
@@ -350,7 +350,7 @@ fn unchanged_plan_reads_zero_bodies_and_changed_group_reads_each_leaf_once() {
             let plan = adapter.bind_group(group).unwrap();
             let certified = base.get(group.group_key()).unwrap();
             if certified.observation() == &plan.opening
-                && certified.parser_revision() == "openhands-source-backed-v6-closed-facts"
+                && certified.parser_revision() == "openhands-source-backed-v7-naive-time"
             {
                 continue;
             }
@@ -480,14 +480,16 @@ fn current_cli_official_event_shapes_use_the_authoritative_decoder() {
     assert_eq!(projection.records[0].role.as_deref(), Some("user"));
     assert_eq!(body(&projection.records[1]), "echo hello world");
     assert_eq!(projection.records[1].event_type, "tool_call");
+    assert_eq!(projection.records[0].occurred_at_unix_ms, None);
+    assert_eq!(projection.records[1].occurred_at_unix_ms, None);
     assert_eq!(
-        projection.records[0].occurred_at_unix_ms,
-        Some(
-            "2026-01-27T03:56:17.815138Z"
-                .parse::<chrono::DateTime<chrono::Utc>>()
-                .unwrap()
-                .timestamp_millis()
-        )
+        projection.records[1]
+            .content
+            .activity
+            .as_ref()
+            .and_then(|activity| activity.invocation.as_ref())
+            .and_then(|invocation| invocation.started_at_unix_ms),
+        None
     );
     assert_eq!(
         projection.records[1].native_event_id,
@@ -559,6 +561,40 @@ fn layout_migration_preserves_identity_and_mixed_overlap_fails_closed() {
         Err(OpenHandsSourceBackedErrorV2::DuplicateConversationId(conversation_id))
             if conversation_id == "conversation-overlap"
     ));
+}
+
+#[test]
+fn legacy_nested_reserved_component_preserves_first_marker_identity() {
+    let temp = crate::test_support_paths::tempdir().unwrap();
+    let nested_root = temp.path().join("nested");
+    let nested_path = nested_root
+        .join("v1_conversations")
+        .join("conversation-first")
+        .join("subtree")
+        .join("v1_conversations")
+        .join("conversation-second")
+        .join("event.json");
+    fs::create_dir_all(nested_path.parent().unwrap()).unwrap();
+    fs::write(
+        &nested_path,
+        serde_json::to_vec(&message("stable-event", "nested body")).unwrap(),
+    )
+    .unwrap();
+
+    let flat_root = temp.path().join("flat");
+    write_event(
+        &flat_root,
+        "conversation-first",
+        "event.json",
+        message("stable-event", "nested body"),
+    );
+
+    let nested = project(&nested_root).unwrap().remove(0);
+    let flat = project(&flat_root).unwrap().remove(0);
+    assert_eq!(nested.plan.conversation_id, "conversation-first");
+    assert_eq!(nested.plan.source, flat.plan.source);
+    assert_eq!(nested.plan.session_id, flat.plan.session_id);
+    assert_eq!(nested.records[0].event_id, flat.records[0].event_id);
 }
 
 #[test]

@@ -91,7 +91,7 @@ pub(super) fn empty_source_reason(provider: CaptureProvider) -> Option<&'static 
             Some("path exists but no Continue CLI session JSON files were found")
         }
         CaptureProvider::OpenHands => {
-            Some("path exists but no OpenHands v1_conversations event JSON files were found")
+            Some("path exists but no OpenHands legacy or current CLI event JSON files were found")
         }
         CaptureProvider::Cline => Some("path exists but no Cline task JSON files were found"),
         CaptureProvider::RooCode => Some("path exists but no Roo Code task JSON files were found"),

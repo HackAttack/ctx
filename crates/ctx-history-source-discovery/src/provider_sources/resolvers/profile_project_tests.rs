@@ -1007,7 +1007,7 @@ fn openhands_remote_backend_selectors_suppress_v1_disk_root_with_primary_precede
 }
 
 #[test]
-fn openhands_empty_oh_uses_exact_cwd_and_detects_cli_events_as_unsupported() {
+fn openhands_empty_oh_uses_exact_cwd_and_routes_stable_cli_root() {
     let temp = tempdir();
     let home = temp.path().join("home");
     let cwd = temp.path().join("cwd");
@@ -1016,7 +1016,7 @@ fn openhands_empty_oh_uses_exact_cwd_and_detects_cli_events_as_unsupported() {
         &cwd.join("v1_conversations/0123456789abcdef/event.json"),
         "{}",
     );
-    let cli = temp.path().join("cli");
+    let cli = temp.path().join("conversations");
     write(&cli.join("conversation/events/event-1.json"), "{}");
     let context = context(&home, &cwd)
         .with_env("OH_PERSISTENCE_DIR", "")
@@ -1024,15 +1024,33 @@ fn openhands_empty_oh_uses_exact_cwd_and_detects_cli_events_as_unsupported() {
     let report = report(&context, CaptureProvider::OpenHands);
     assert_eq!(report.sources.len(), 2);
     assert_eq!(report.sources[0].path, cwd);
-    assert_eq!(report.sources[1].path, cli.join("conversation"));
-    assert_eq!(report.sources[1].status, ProviderSourceStatus::Unsupported);
-    assert_eq!(
-        report.sources[1].unsupported_reason,
-        Some(OPENHANDS_CLI_UNSUPPORTED_REASON)
-    );
+    assert_eq!(report.sources[1].path, cli);
+    assert_eq!(report.sources[1].status, ProviderSourceStatus::Available);
+    assert_eq!(report.sources[1].unsupported_reason, None);
     let explicit = provider_source_for_path(CaptureProvider::OpenHands, cli.join("conversation"));
     assert_eq!(report.sources[1].source_format, explicit.source_format);
-    assert_eq!(explicit.status, ProviderSourceStatus::Unsupported);
+    assert_eq!(explicit.status, ProviderSourceStatus::Available);
+}
+
+#[test]
+fn openhands_current_default_avoids_overlapping_legacy_umbrella_route() {
+    let temp = tempdir();
+    let home = temp.path().join("home");
+    let cwd = temp.path().join("cwd");
+    fs::create_dir_all(&cwd).unwrap();
+    write(
+        &home.join(".openhands/conversations/conversation/events/event-00001-current.json"),
+        "{}",
+    );
+
+    let report = report(&context(&home, &cwd), CaptureProvider::OpenHands);
+    assert_eq!(report.issues, []);
+    assert_eq!(report.sources.len(), 1);
+    assert_eq!(
+        report.sources[0].path,
+        home.join(".openhands/conversations")
+    );
+    assert_eq!(report.sources[0].status, ProviderSourceStatus::Available);
 }
 
 #[test]

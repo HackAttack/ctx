@@ -16,18 +16,26 @@ pub(super) fn openhands_event_path(
     path: &Path,
 ) -> OpenHandsSourceBackedResultV2<Option<OpenHandsEventPath>> {
     let components = path.components().collect::<Vec<_>>();
-    for index in (0..components.len()).rev() {
-        let component = components[index].as_os_str();
-        let legacy = component == "v1_conversations"
+    for index in 0..components.len() {
+        let legacy = components[index].as_os_str() == "v1_conversations"
             && components.len() >= index.saturating_add(3)
             && path.extension().and_then(|extension| extension.to_str()) == Some("json");
+        if legacy {
+            return Ok(Some(OpenHandsEventPath {
+                conversation_id: conversation_id(path, &components, index)?,
+                conversation_root: conversation_root(&components, index),
+            }));
+        }
+    }
+    for index in (0..components.len()).rev() {
+        let component = components[index].as_os_str();
         let current = component == "conversations"
             && components.len() == index.saturating_add(4)
             && components
                 .get(index.saturating_add(2))
                 .is_some_and(|component| component.as_os_str() == "events")
             && current_cli_event_file(path);
-        if legacy || current {
+        if current {
             return Ok(Some(OpenHandsEventPath {
                 conversation_id: conversation_id(path, &components, index)?,
                 conversation_root: conversation_root(&components, index),

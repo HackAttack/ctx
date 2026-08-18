@@ -358,7 +358,7 @@ mod tests {
     }
 
     #[test]
-    fn openhands_v3_to_v4_migration_preserves_ids_order_and_uniqueness() {
+    fn openhands_v3_to_current_migration_preserves_ids_order_and_uniqueness() {
         let temp = crate::test_support_paths::tempdir().unwrap();
         let selected = temp.path().join("openhands");
         for index in 0..3 {
@@ -370,7 +370,7 @@ mod tests {
             );
         }
         let registry = registry(&selected);
-        let fixture_index = temp.path().join("v4-fixture-index");
+        let fixture_index = temp.path().join("current-fixture-index");
         let fixture =
             refresh_source_backed_generation(&fixture_index, &registry, WriterOptions::default())
                 .unwrap();
@@ -422,7 +422,7 @@ mod tests {
         assert_ne!(migrated.commit.generation_id, seeded.generation_id);
         assert_eq!(
             migrated.sources[0].parser_revision(),
-            "openhands-source-backed-v6-closed-facts"
+            "openhands-source-backed-v7-naive-time"
         );
         let migrated_events = indexed_events(&migration_index, &migrated);
         assert_eq!(
@@ -447,6 +447,190 @@ mod tests {
                 .len(),
             migrated_events.len()
         );
+    }
+
+    #[test]
+    fn openhands_v6_warm_upgrade_replays_naive_timestamp_projection() {
+        let temp = crate::test_support_paths::tempdir().unwrap();
+        let selected = temp.path().join("profile");
+        write_current_message(
+            &selected,
+            "conversation",
+            1,
+            "event-naive",
+            "naive body",
+            "2026-11-01T01:30:00",
+        );
+        let registry = registry(&selected);
+        let fixture_index = temp.path().join("v7-fixture-index");
+        let fixture =
+            refresh_source_backed_generation(&fixture_index, &registry, WriterOptions::default())
+                .unwrap();
+        let source = fixture.sources[0].clone();
+        let mut v6_records = indexed_events(&fixture_index, &fixture);
+        let expected_event_id = v6_records[0].event_id;
+        v6_records[0].parser_revision = "openhands-source-backed-v6-closed-facts".to_owned();
+        v6_records[0].occurred_at_unix_ms = Some(
+            "2026-11-01T01:30:00Z"
+                .parse::<chrono::DateTime<chrono::Utc>>()
+                .unwrap()
+                .timestamp_millis(),
+        );
+        let v6_certificate = CertifiedSource::certify(
+            source.observation().clone(),
+            source.observation().clone(),
+            "openhands-source-backed-v6-closed-facts",
+            *source.content_digest(),
+            source.counts(),
+        )
+        .unwrap();
+
+        let migration_index = temp.path().join("v6-migration-index");
+        let mut writer = GenerationWriter::open(&migration_index, WriterOptions::default())
+            .unwrap()
+            .into_writer()
+            .unwrap();
+        writer
+            .begin_source(source.observation().source().clone())
+            .unwrap();
+        writer.add_core_record(v6_records.remove(0)).unwrap();
+        writer.certify_source(v6_certificate.clone()).unwrap();
+        writer
+            .set_present_source_routes(vec![SourceRouteSnapshot::present(
+                fixture.selected_route_ids[0].clone(),
+                vec![source.observation().source().clone()],
+            )
+            .unwrap()])
+            .unwrap();
+        let seeded = writer
+            .commit(|target| {
+                matches!(target, RevalidationTarget::Source(source) if source == &v6_certificate)
+            })
+            .unwrap();
+
+        let upgraded =
+            refresh_source_backed_generation(&migration_index, &registry, WriterOptions::default())
+                .unwrap();
+        assert_ne!(upgraded.commit.generation_id, seeded.generation_id);
+        assert_eq!(
+            upgraded.sources[0].parser_revision(),
+            "openhands-source-backed-v7-naive-time"
+        );
+        let upgraded_events = indexed_events(&migration_index, &upgraded);
+        assert_eq!(upgraded_events[0].event_id, expected_event_id);
+        assert_eq!(upgraded_events[0].occurred_at_unix_ms, None);
+
+        let replay =
+            refresh_source_backed_generation(&migration_index, &registry, WriterOptions::default())
+                .unwrap();
+        assert_eq!(replay.commit.generation_id, upgraded.commit.generation_id);
+    }
+
+    #[test]
+    fn current_cli_exact_discovery_imports_an_event_leaf() {
+        let temp = crate::test_support_paths::tempdir().unwrap();
+        let selected = temp.path().join("profile");
+        let event = write_current_message(
+            &selected,
+            "conversation-exact",
+            1,
+            "event-exact",
+            "exact current body",
+            "2026-07-28T12:00:00Z",
+        );
+        let source = crate::provider_source_for_path(CaptureProvider::OpenHands, event);
+        assert_eq!(source.status, ProviderSourceStatus::Available);
+        assert_eq!(source.source_format, OPENHANDS_FILE_EVENTS_SOURCE_FORMAT);
+
+        let mut registry = SourceBackedProviderRegistry::new();
+        register_landed_source_backed_route(
+            &mut registry,
+            source,
+            SourceBackedRouteSelection::ExplicitManual,
+        )
+        .unwrap();
+        let index = temp.path().join("exact-index");
+        let receipt =
+            refresh_source_backed_generation(&index, &registry, WriterOptions::default()).unwrap();
+        assert_eq!(indexed_bodies(&index, &receipt), vec!["exact current body"]);
+    }
+
+    #[test]
+    fn current_cli_automatic_discovery_covers_append_rewrite_and_conversation_deletion() {
+        let temp = crate::test_support_paths::tempdir().unwrap();
+        let home = temp.path().join("home");
+        let cwd = temp.path().join("cwd");
+        fs::create_dir_all(&cwd).unwrap();
+        let profile = home.join(".openhands");
+        let conversations = profile.join("conversations");
+        let first = write_current_message(
+            &profile,
+            "conversation-lifecycle",
+            1,
+            "event-a",
+            "one",
+            "2026-07-28T12:00:00Z",
+        );
+        let context = DiscoveryContext::new(
+            &home,
+            &cwd,
+            DiscoveryPlatform::Linux,
+            crate::DiscoveryPlatformDirs::default(),
+        );
+        let data_root = temp.path().join("ctx-data");
+        let index = temp.path().join("automatic-index");
+
+        let cold_registry = discovered_openhands_registry(&context, &data_root);
+        let current_route = cold_registry
+            .routes()
+            .find(|route| route.source.provider == CaptureProvider::OpenHands)
+            .unwrap();
+        assert_eq!(current_route.source.path, conversations);
+        assert_eq!(current_route.source.status, ProviderSourceStatus::Available);
+        let cold =
+            refresh_source_backed_generation(&index, &cold_registry, WriterOptions::default())
+                .unwrap();
+        assert_eq!(indexed_bodies(&index, &cold), vec!["one"]);
+
+        write_current_message(
+            &profile,
+            "conversation-lifecycle",
+            2,
+            "event-b",
+            "two",
+            "2026-07-28T12:00:01Z",
+        );
+        let appended_registry = discovered_openhands_registry(&context, &data_root);
+        let appended =
+            refresh_source_backed_generation(&index, &appended_registry, WriterOptions::default())
+                .unwrap();
+        assert_eq!(indexed_bodies(&index, &appended), vec!["one", "two"]);
+
+        fs::write(
+            &first,
+            serde_json::to_vec(&message("event-a", "one rewritten")).unwrap(),
+        )
+        .unwrap();
+        let rewritten_registry = discovered_openhands_registry(&context, &data_root);
+        let rewritten =
+            refresh_source_backed_generation(&index, &rewritten_registry, WriterOptions::default())
+                .unwrap();
+        assert_eq!(
+            indexed_bodies(&index, &rewritten),
+            vec!["one rewritten", "two"]
+        );
+
+        fs::remove_dir_all(conversations.join("conversation-lifecycle")).unwrap();
+        let deleted_registry = discovered_openhands_registry(&context, &data_root);
+        let current_route = deleted_registry
+            .routes()
+            .find(|route| route.source.provider == CaptureProvider::OpenHands)
+            .unwrap();
+        assert_eq!(current_route.source.path, conversations);
+        assert_eq!(current_route.source.status, ProviderSourceStatus::Empty);
+        refresh_source_backed_generation(&index, &deleted_registry, WriterOptions::default())
+            .unwrap();
+        assert_eq!(VerifiedIndex::open(&index).unwrap().document_count(), 0);
     }
 
     #[test]
@@ -565,6 +749,26 @@ mod tests {
         registry
     }
 
+    fn discovered_openhands_registry(
+        context: &DiscoveryContext,
+        data_root: &Path,
+    ) -> SourceBackedProviderRegistry {
+        let report =
+            ctx_history_source_discovery::discover_provider_sources_for_provider_with_context(
+                &crate::test_provider_probes(),
+                context,
+                CaptureProvider::OpenHands,
+            );
+        let build = build_automatic_source_backed_registry_from_report_with_probes(
+            &crate::test_provider_probes(),
+            context,
+            data_root,
+            report,
+        );
+        assert!(build.issues.is_empty(), "{:?}", build.issues);
+        build.registry
+    }
+
     fn write_message(root: &Path, conversation: &str, id: &str, body: &str) -> std::path::PathBuf {
         let path = root
             .join("v1_conversations")
@@ -572,6 +776,26 @@ mod tests {
             .join(format!("{id}.json"));
         fs::create_dir_all(path.parent().unwrap()).unwrap();
         fs::write(&path, serde_json::to_vec(&message(id, body)).unwrap()).unwrap();
+        path
+    }
+
+    fn write_current_message(
+        root: &Path,
+        conversation: &str,
+        ordinal: usize,
+        id: &str,
+        body: &str,
+        timestamp: &str,
+    ) -> std::path::PathBuf {
+        let path = root
+            .join("conversations")
+            .join(conversation)
+            .join("events")
+            .join(format!("event-{ordinal:05}-{id}.json"));
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        let mut event = message(id, body);
+        event["timestamp"] = serde_json::Value::String(timestamp.to_owned());
+        fs::write(&path, serde_json::to_vec(&event).unwrap()).unwrap();
         path
     }
 

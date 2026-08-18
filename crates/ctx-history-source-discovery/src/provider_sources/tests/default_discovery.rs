@@ -637,12 +637,6 @@ fn exact_current_incompatible_explicit_paths_are_detection_only_unsupported() {
             "openclaw-agent.sqlite",
         ),
         (
-            CaptureProvider::OpenHands,
-            temp.path()
-                .join(".openhands/conversations/conversation/events/event-1.json"),
-            "events/event-*.json",
-        ),
-        (
             CaptureProvider::Mux,
             temp.path().join(".mux/sessions/session/chat-archive.jsonl"),
             "chat-archive.jsonl",
@@ -767,6 +761,11 @@ fn supported_explicit_shapes_and_missing_textual_paths_keep_pinned_mapping() {
             CaptureProvider::OpenHands,
             temp.path().join("v1_conversations/conversation/event.json"),
         ),
+        (
+            CaptureProvider::OpenHands,
+            temp.path()
+                .join("conversations/conversation/events/event-00001-current.json"),
+        ),
         (CaptureProvider::Mux, temp.path().join("session/chat.jsonl")),
         (
             CaptureProvider::Cline,
@@ -792,6 +791,25 @@ fn supported_explicit_shapes_and_missing_textual_paths_keep_pinned_mapping() {
     assert_eq!(source.path, missing_archive);
     assert_eq!(source.status, ProviderSourceStatus::Missing);
     assert_eq!(source.source_format, "mux_session_jsonl");
+}
+
+#[test]
+fn openhands_current_cli_exact_conversation_events_and_leaf_are_importable() {
+    let temp = tempdir();
+    let conversation = temp.path().join("conversations/conversation");
+    let events = conversation.join("events");
+    let event = events.join("event-00001-current.json");
+    std::fs::create_dir_all(&events).unwrap();
+    std::fs::write(&event, b"{}\n").unwrap();
+
+    for path in [conversation, events, event] {
+        let source = provider_source_for_path(CaptureProvider::OpenHands, path);
+        assert_eq!(source.status, ProviderSourceStatus::Available);
+        assert_eq!(source.import_support, ProviderImportSupport::Native);
+        assert_eq!(source.source_kind, ProviderSourceKind::NativeHistory);
+        assert_eq!(source.source_format, "openhands_file_events");
+        assert_eq!(source.unsupported_reason, None);
+    }
 }
 
 #[test]

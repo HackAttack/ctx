@@ -323,9 +323,6 @@ fn exact_current_unsupported_reason(
         CaptureProvider::OpenClaw if contains_openclaw_sqlite(path, kind?) => {
             Some("OpenClaw openclaw-agent.sqlite history is detected but unsupported")
         }
-        CaptureProvider::OpenHands if is_openhands_cli_events_shape(path, kind?) => {
-            Some("OpenHands CLI events/event-*.json history is detected but unsupported")
-        }
         CaptureProvider::Mux if contains_mux_archive(path, kind?) => {
             Some("Mux chat-archive.jsonl history is detected but unsupported")
         }
@@ -477,36 +474,6 @@ fn contains_openclaw_sqlite(path: &Path, kind: SourcePathKind) -> bool {
             })
         })
     })
-}
-
-fn is_openhands_cli_events_shape(path: &Path, kind: SourcePathKind) -> bool {
-    if path_has_component(path, "v1_conversations") {
-        return false;
-    }
-    if kind == SourcePathKind::File {
-        return is_openhands_cli_event_file(path);
-    }
-    if kind != SourcePathKind::Directory {
-        return false;
-    }
-    let events = if path.file_name().and_then(|name| name.to_str()) == Some("events") {
-        path.to_path_buf()
-    } else {
-        path.join("events")
-    };
-    direct_entries(&events).is_some_and(|entries| {
-        entries
-            .iter()
-            .any(|entry| is_openhands_cli_event_file(entry))
-    })
-}
-
-fn is_openhands_cli_event_file(path: &Path) -> bool {
-    path.parent()
-        .is_some_and(|parent| parent.file_name().and_then(|name| name.to_str()) == Some("events"))
-        && is_named_regular_file(path, |name| {
-            name.starts_with("event-") && name.ends_with(".json")
-        })
 }
 
 fn contains_mux_archive(path: &Path, kind: SourcePathKind) -> bool {

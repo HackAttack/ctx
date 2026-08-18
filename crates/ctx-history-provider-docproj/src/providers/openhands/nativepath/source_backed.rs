@@ -51,7 +51,7 @@ const OPENHANDS_LOGICAL_SESSION_KIND: &str = "openhands-conversation";
 const OPENHANDS_LOGICAL_EVENT_KIND: &str = "openhands-event";
 const OPENHANDS_SOURCE_SCHEMA_VARIANT: &str = "openhands-v1-conversation-tree-v1";
 const OPENHANDS_SOURCE_REVISION_KIND: &str = "openhands-v1-conversation-leaves-v2";
-const OPENHANDS_PARSER_REVISION: &str = "openhands-source-backed-v6-closed-facts";
+const OPENHANDS_PARSER_REVISION: &str = "openhands-source-backed-v7-naive-time";
 const OPENHANDS_CONVERSATION_CONTENT_DOMAIN: &[u8] = b"ctx.openhands.conversation-content.v1\0";
 const OPENHANDS_DOCUMENT_LEAF_DOMAIN: &[u8] = b"ctx.openhands.document-leaf.v1\0";
 const OPENHANDS_DISCOVERY_MAX_DEPTH: usize = 16;
@@ -590,7 +590,7 @@ pub(crate) fn project_leaf_job(
             record.agent_scope = Some(AgentScope::Primary);
             record.provider_session_id = Some(plan.conversation_id.clone());
             record.native_event_id = Some(TypedKey::utf8(decoded.event_id())?);
-            record.occurred_at_unix_ms = Some(decoded.timestamp().timestamp_millis());
+            record.occurred_at_unix_ms = decoded.occurred_at_unix_ms();
             record.role = Some(decoded.role().as_str().to_owned());
             if !decoded.capture_audit().duplicate_key {
                 record.content.structured_content = Some(decoded.value().clone());
@@ -673,7 +673,7 @@ fn openhands_activity(
                     .cloned()
                     .map(|value| ActivityJsonCapture::Present { value })
                     .unwrap_or(ActivityJsonCapture::Absent),
-                    started_at_unix_ms: Some(decoded.timestamp().timestamp_millis()),
+                    started_at_unix_ms: decoded.occurred_at_unix_ms(),
                 })
         })
     } else {
@@ -693,7 +693,7 @@ fn openhands_activity(
                 })
                 .flatten()
                 .map(str::to_owned),
-            completed_at_unix_ms: Some(decoded.timestamp().timestamp_millis()),
+            completed_at_unix_ms: decoded.occurred_at_unix_ms(),
             duration_ns: None,
             text: ActivityTextCapture::NormalizedBody,
             structured_content: value
