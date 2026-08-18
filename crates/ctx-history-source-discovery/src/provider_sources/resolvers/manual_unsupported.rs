@@ -21,7 +21,7 @@ use super::{
 };
 
 const CLINE_CURRENT_UNSUPPORTED: &str =
-    "current Cline SDK session history is detected but unsupported";
+    "split Cline SDK roots are unsupported because ctx requires the common data root to bind the SDK catalog safely";
 const CLINE_SDK_FORMAT: &str = "cline_sdk_session_store";
 const MANUAL_SELECTOR_REASON: &str =
     "the provider selector cannot be safely reconstructed; use an exact --path";

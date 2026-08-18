@@ -594,7 +594,8 @@ fn reject_unsupported_openclaw_root(root: &Path) -> Result<()> {
     if contains_openclaw_sqlite(root)? {
         return Err(CaptureError::InvalidProviderTranscriptPath {
             path: root.to_path_buf(),
-            reason: "OpenClaw openclaw-agent.sqlite history is detected but unsupported",
+            reason:
+                "OpenClaw SQLite history must be routed through the OpenClaw SQLite source adapter",
         });
     }
     Ok(())

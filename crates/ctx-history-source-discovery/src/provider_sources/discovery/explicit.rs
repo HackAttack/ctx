@@ -407,7 +407,7 @@ fn exact_current_unsupported_reason(
             Some("Kiro ACP/v3 session history is detected but unsupported")
         }
         CaptureProvider::Cline if is_current_cline_sdk_shape(path, kind?) => {
-            Some("current Cline SDK session history is detected but unsupported")
+            Some("split Cline SDK roots are unsupported because ctx requires the common data root to bind the SDK catalog safely")
         }
         _ => None,
     }
