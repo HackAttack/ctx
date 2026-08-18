@@ -629,36 +629,20 @@ fn legacy_vector_apis_are_exact_report_source_projections() {
 }
 
 #[test]
-fn exact_current_incompatible_explicit_paths_are_detection_only_unsupported() {
+fn current_kiro_explicit_path_is_detection_only_unsupported() {
     let temp = tempdir();
-    let cases = [(
-        CaptureProvider::Codex,
-        temp.path().join(".codex/sessions/session.jsonl.zst"),
-        "compressed .jsonl.zst",
-    )];
-    for (_, path, _) in &cases {
-        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
-        std::fs::write(path, b"current format marker").unwrap();
-    }
-
     let kiro = temp.path().join(".kiro/sessions");
     std::fs::create_dir_all(kiro.join("cli")).unwrap();
     std::fs::write(kiro.join("cli/session.json"), b"{}").unwrap();
     std::fs::write(kiro.join("cli/session.jsonl"), b"{}\n").unwrap();
-    for (provider, path, reason_fragment) in
-        cases
-            .into_iter()
-            .chain([(CaptureProvider::KiroCli, kiro, "ACP/v3")])
-    {
-        let source = provider_source_for_path(provider, path);
-        assert_eq!(source.status, ProviderSourceStatus::Unsupported);
-        assert_eq!(source.import_support, ProviderImportSupport::Unsupported);
-        assert_eq!(source.source_kind, ProviderSourceKind::DetectionOnly);
-        assert_eq!(source.source_format, "unsupported");
-        assert!(source
-            .unsupported_reason
-            .is_some_and(|reason| reason.contains(reason_fragment)));
-    }
+    let source = provider_source_for_path(CaptureProvider::KiroCli, kiro);
+    assert_eq!(source.status, ProviderSourceStatus::Unsupported);
+    assert_eq!(source.import_support, ProviderImportSupport::Unsupported);
+    assert_eq!(source.source_kind, ProviderSourceKind::DetectionOnly);
+    assert_eq!(source.source_format, "unsupported");
+    assert!(source
+        .unsupported_reason
+        .is_some_and(|reason| reason.contains("ACP/v3")));
 }
 
 #[test]
@@ -819,6 +803,12 @@ fn explicit_codex_files_use_bounded_schema_admission_not_filenames() {
         r#"{"timestamp":"2026-06-24T10:00:00Z","type":"session_meta","payload":{"id":"rollout-session"}}"#,
     )
     .unwrap();
+    let compressed_rollout = temp.path().join("rollout-session.jsonl.zst");
+    std::fs::write(
+        &compressed_rollout,
+        b"classification does not decode bodies",
+    )
+    .unwrap();
 
     let prompt = provider_source_for_path(CaptureProvider::Codex, prompt_named_rollout);
     assert_eq!(prompt.status, ProviderSourceStatus::Available);
@@ -827,6 +817,12 @@ fn explicit_codex_files_use_bounded_schema_admission_not_filenames() {
     let rollout = provider_source_for_path(CaptureProvider::Codex, rollout_named_history);
     assert_eq!(rollout.status, ProviderSourceStatus::Available);
     assert_eq!(rollout.source_format, "codex_session_jsonl");
+
+    let compressed = provider_source_for_path(CaptureProvider::Codex, compressed_rollout);
+    assert_eq!(compressed.status, ProviderSourceStatus::Available);
+    assert_eq!(compressed.import_support, ProviderImportSupport::Native);
+    assert_eq!(compressed.source_kind, ProviderSourceKind::NativeHistory);
+    assert_eq!(compressed.source_format, "codex_session_jsonl");
 }
 
 #[test]

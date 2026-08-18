@@ -1,5 +1,6 @@
 use super::*;
 
+#[cfg(test)]
 pub(in super::super) fn prepare_leaf<R: JsonlFamilyRuntime>(
     adapter: &dyn JsonlFamilyAdapter<Runtime = R>,
     leaf: &JsonlFamilyLeaf<JsonlRuntimeError<R>>,
@@ -8,6 +9,30 @@ pub(in super::super) fn prepare_leaf<R: JsonlFamilyRuntime>(
     worker: &mut JsonlFamilyWorkerContext<R>,
     output: &mut JsonlLeafOutput<'_, JsonlRuntimeError<R>>,
     append_only_trust_allowed: bool,
+) -> JsonlResult<PreparedLeaf<JsonlRuntimeError<R>>, JsonlRuntimeError<R>> {
+    let resources = ctx_history_capture_runtime::SourceBackedRouteResources::production(1);
+    prepare_leaf_with_resources(
+        adapter,
+        leaf,
+        base,
+        base_event_lookup,
+        worker,
+        output,
+        append_only_trust_allowed,
+        &resources,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(in super::super) fn prepare_leaf_with_resources<R: JsonlFamilyRuntime>(
+    adapter: &dyn JsonlFamilyAdapter<Runtime = R>,
+    leaf: &JsonlFamilyLeaf<JsonlRuntimeError<R>>,
+    base: Option<&CertifiedSource>,
+    base_event_lookup: &JsonlRuntimeLookup<R>,
+    worker: &mut JsonlFamilyWorkerContext<R>,
+    output: &mut JsonlLeafOutput<'_, JsonlRuntimeError<R>>,
+    append_only_trust_allowed: bool,
+    route_resources: &ctx_history_capture_runtime::SourceBackedRouteResources,
 ) -> JsonlResult<PreparedLeaf<JsonlRuntimeError<R>>, JsonlRuntimeError<R>> {
     worker.begin_leaf();
     let optimized_outcome = if append_only_trust_allowed
@@ -67,6 +92,7 @@ pub(in super::super) fn prepare_leaf<R: JsonlFamilyRuntime>(
             previous,
             projector_preflight,
             append_only_trust_allowed,
+            route_resources,
         )
     };
     let mut reader = open_reader(previous_physical)?;

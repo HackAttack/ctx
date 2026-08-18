@@ -17,6 +17,7 @@ use crate::{
     },
     Result,
 };
+use ctx_history_jsonl::{JsonlPhysicalEncoding, MAX_STANDARD_ZSTD_PARALLEL_STREAMS};
 
 fn observe_generation_source_capability_v0(
     source: &CodexCatalogSource,
@@ -191,7 +192,14 @@ fn prepare_codex_session_jsonl_scans_v0<B: ProviderRuntimeBinding>(
             ));
         }
     }
-    Ok(None)
+    Ok(leaves
+        .iter()
+        .any(|leaf| {
+            crate::provider::codex::catalog::is_codex_compressed_session_rollout_path(
+                leaf.source_path(),
+            )
+        })
+        .then_some(MAX_STANDARD_ZSTD_PARALLEL_STREAMS))
 }
 
 fn install_prepared_state_v0(
@@ -374,6 +382,16 @@ impl<B: ProviderRuntimeBinding> JsonlFamilyAdapter for CodexSessionJsonlFamilyAd
         JsonlRecordFraming::terminal_nul_padded(crate::MAX_PROVIDER_JSONL_LINE_BYTES)
     }
 
+    fn physical_encoding(&self, leaf: &JsonlFamilyLeaf) -> JsonlPhysicalEncoding {
+        if crate::provider::codex::catalog::is_codex_compressed_session_rollout_path(
+            leaf.source_path(),
+        ) {
+            JsonlPhysicalEncoding::StandardZstdJsonl
+        } else {
+            JsonlPhysicalEncoding::RawJsonl
+        }
+    }
+
     fn bind_admitted_eof(&self) -> bool {
         true
     }
@@ -388,7 +406,9 @@ impl<B: ProviderRuntimeBinding> JsonlFamilyAdapter for CodexSessionJsonlFamilyAd
     }
 
     fn allows_direct_append_for_leaf(&self, leaf: &JsonlFamilyLeaf) -> bool {
-        self.generation.is_session_tree() && leaf.observation().supports_exact_revalidation()
+        self.generation.is_session_tree()
+            && self.physical_encoding(leaf) == JsonlPhysicalEncoding::RawJsonl
+            && leaf.observation().supports_exact_revalidation()
     }
 
     fn root_missing_mode(&self) -> JsonlFamilyRootMissingMode {

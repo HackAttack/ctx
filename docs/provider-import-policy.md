@@ -170,7 +170,7 @@ Secondary traits are noted only to guide tests and hardening work.
 
 | Provider | Source format(s) | Primary family | Notes |
 | --- | --- | --- | --- |
-| Codex | `codex_session_jsonl_tree`, `codex_history_jsonl` | JSONL transcript stream/tree | Session tree plus legacy history JSONL. |
+| Codex | `codex_session_jsonl_tree`, `codex_history_jsonl` | JSONL transcript stream/tree | Session rollouts may be raw `.jsonl` or standard-Zstandard `.jsonl.zst`; exact compressed imports recover the embedded session UUID with a bounded catalog probe. Raw and compressed copies coalesce to one UUID-based source, preferring raw. Legacy prompt history remains raw JSONL. |
 | Grok Build | `grok_build_session_updates_jsonl_tree` | JSONL transcript stream/tree | Session directories contain authoritative `updates.jsonl`; exact leaves use `grok_build_session_updates_jsonl`. Derived sidecars are excluded. |
 | DeepSeek Harness | `deepseek_harness_session_jsonl_tree` | JSONL transcript stream/tree | Supported for local format version 0 only. Nested leaves use default `session.jsonl.zstd` or configured raw `session.jsonl`; exact leaves use `deepseek_harness_session_jsonl`. Hosted/cloud history is excluded. |
 | Pi | `pi_session_jsonl` | JSONL transcript stream/tree | Single-provider JSONL sessions, including OMP-compatible paths. |
@@ -242,6 +242,13 @@ contract for that source family:
   boundaries as well. Only complete records ending at or before the frozen EOF
   are published; a partial final record is deferred until a later refresh
   completes it.
+- Standard-Zstandard Codex rollouts snapshot exactly the frozen compressed
+  prefix from the retained source handle, then decode and hash that same private
+  snapshot. The compressed snapshot plus decoded spool is bounded to 256 MiB
+  per leaf; a 256x plus 16 MiB expansion bound and 128 MiB decoder-window bound
+  apply inside that ceiling. At most four maximum-size compressed leaves run in
+  parallel against the shared 1 GiB route scratch budget. Corrupt, truncated,
+  over-bound, or budget-unavailable streams fail closed.
 - SQLite is observed as one short read-only logical snapshot. WAL size,
   checkpointing, and physical database-file size are not ingestion states.
   Concurrent committed rows belong to a subsequent certified snapshot unless

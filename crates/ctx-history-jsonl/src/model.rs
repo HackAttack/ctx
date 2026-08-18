@@ -206,10 +206,17 @@ impl JsonlCheckpoint {
 
     pub fn is_internally_consistent(&self) -> bool {
         let empty_prefix = self.complete_prefix_end == 0;
-        let empty_prefix_is_exact = self.next_physical_ordinal == 0
+        let compressed_physical_ordinals = self.identity.has_compressed_physical_ordinals();
+        let empty_prefix_is_exact = (self.next_physical_ordinal == 0
+            || compressed_physical_ordinals)
             && self.complete_prefix_sha256 == jsonl_prefix_digest(&new_jsonl_prefix_hasher());
+        // A decoded compressed stream may contain more logical records than
+        // physical source bytes. Its ordinal only needs to be nonzero once the
+        // certified physical prefix is nonempty; raw streams retain the
+        // stricter record-count-to-byte bound.
         let nonempty_prefix_is_possible = self.next_physical_ordinal > 0
-            && self.next_physical_ordinal <= self.complete_prefix_end;
+            && (compressed_physical_ordinals
+                || self.next_physical_ordinal <= self.complete_prefix_end);
         self.version == Self::VERSION
             && self.complete_prefix_end <= self.source_observation.length
             && if empty_prefix {
@@ -420,5 +427,29 @@ mod tests {
         let wrong_bound: JsonlCheckpoint = serde_json::from_value(wrong_bound).unwrap();
         assert!(!wrong_bound.is_internally_consistent());
         assert!(wrong_bound.restore_complete_prefix_hasher().is_none());
+    }
+
+    #[test]
+    fn only_standard_zstd_checkpoints_allow_more_ordinals_than_physical_bytes() {
+        let observation = JsonlFileObservation::new(1, UNIX_EPOCH, false, None, None);
+        let checkpoint = |policy_revision| {
+            JsonlCheckpoint::new(
+                JsonlSourceIdentity::new(
+                    "test",
+                    "parser-v1",
+                    policy_revision,
+                    [3; 32],
+                    "/tmp/test",
+                ),
+                observation.clone(),
+                1,
+                [4; 32],
+                2,
+                true,
+            )
+        };
+
+        assert!(!checkpoint("policy-v1").is_internally_consistent());
+        assert!(checkpoint("policy-v1:standard-zstd-jsonl-v1").is_internally_consistent());
     }
 }

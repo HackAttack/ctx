@@ -55,7 +55,7 @@ fn paths(report: &DiscoveryReport) -> Vec<PathBuf> {
 }
 
 #[test]
-fn codex_official_root_includes_active_archive_history_and_compression_detection() {
+fn codex_official_root_includes_active_and_compressed_archive_history() {
     let temp = tempdir();
     let base = context(&temp, DiscoveryPlatform::Linux);
     let custom = temp.path().join("custom-codex");
@@ -83,29 +83,14 @@ fn codex_official_root_includes_active_archive_history_and_compression_detection
             .with_env("CODEX_HOME", selected_root.as_os_str()),
         CaptureProvider::Codex,
     );
-    assert_eq!(report.sources.len(), 5);
+    assert_eq!(report.sources.len(), 3);
     assert_eq!(report.sources[0].path, selected_root.join("sessions"));
     assert_eq!(
         report.sources[1].path,
         selected_root.join("archived_sessions")
     );
     assert_eq!(report.sources[2].path, selected_root.join("history.jsonl"));
-    assert_eq!(
-        report.sources[3].path,
-        selected_root.join("archived_sessions/a-first.jsonl.zst")
-    );
-    assert_eq!(report.sources[3].status, ProviderSourceStatus::Unsupported);
-    assert_eq!(
-        report.sources[4].path,
-        selected_root.join("archived_sessions/z-last.jsonl.zst")
-    );
-    assert_eq!(report.sources[4].status, ProviderSourceStatus::Unsupported);
-    for selected in &report.sources[3..] {
-        let explicit = provider_source_for_path(CaptureProvider::Codex, selected.path.clone());
-        assert_eq!(explicit.path, selected.path);
-        assert_eq!(explicit.source_format, selected.source_format);
-        assert_eq!(explicit.status, ProviderSourceStatus::Unsupported);
-    }
+    assert_eq!(report.sources[1].status, ProviderSourceStatus::Available);
     assert!(report
         .sources
         .iter()
@@ -320,27 +305,6 @@ fn deepseek_harness_probe_requires_exact_nested_session_leaf() {
     let empty = provider_source_for_path(CaptureProvider::DeepSeekHarness, empty);
     assert_eq!(empty.status, ProviderSourceStatus::Unsupported);
     assert_eq!(empty.source_format, "unsupported");
-}
-
-#[test]
-fn codex_compression_detection_stops_at_the_fixed_directory_bound() {
-    let temp = tempdir();
-    let root = temp.path().join("bounded-codex");
-    let sessions = root.join("sessions");
-    fs::create_dir_all(&sessions).unwrap();
-    for index in 0..=super::super::super::selectors::MAX_DIRECT_DIRECTORY_ENTRIES {
-        fs::write(sessions.join(format!("rollout-{index:04}.jsonl")), "{}\n").unwrap();
-    }
-
-    let report = resolve_provider(
-        &context(&temp, DiscoveryPlatform::Linux).with_env("CODEX_HOME", root.as_os_str()),
-        CaptureProvider::Codex,
-    );
-    assert_eq!(report.sources.len(), 3);
-    assert!(report.issues.iter().any(|issue| {
-        issue.kind == DiscoveryIssueKind::SelectorUnreconstructible
-            && issue.reason == CODEX_COMPRESSION_SCAN_REASON
-    }));
 }
 
 #[cfg(unix)]

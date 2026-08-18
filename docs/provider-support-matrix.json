@@ -40,7 +40,8 @@
           "source_format": "codex_session_jsonl_tree",
           "fidelity": "imported",
           "notes": [
-            "Reads supported local session JSONL files under ~/.codex/sessions."
+            "Reads supported local raw .jsonl and standard Zstandard .jsonl.zst session rollouts under ~/.codex/sessions and ~/.codex/archived_sessions.",
+            "Compressed and raw representations use the embedded Codex session UUID for one logical source identity; a simultaneous raw representation wins deterministically."
           ]
         },
         {
@@ -76,7 +77,7 @@
         "parent_child_session_edges": true
       },
       "limitations": [
-        "Exact supported JSONL is manual-importable. `.jsonl.zst` is detected unsupported; SQLite, past roots, and the default beside an override are excluded."
+        "Exact supported .jsonl and .jsonl.zst rollouts are manual-importable. Compressed leaves have a 256 MiB combined snapshot/decode-spool bound, a 256x plus 16 MiB expansion bound, a 128 MiB window bound, and share a 1 GiB route scratch budget; SQLite, past roots, and the default beside an override are excluded."
       ],
       "public_docs": "docs/providers.md"
     },

@@ -45,7 +45,9 @@ use evidence::{
     reconcile_parallel_source_outcomes, terminal_byte_remainder,
 };
 pub(super) use output::{JsonlLeafOutput, JsonlLeafOutputEvent};
+#[cfg(test)]
 pub(super) use prepare::prepare_leaf;
+use prepare::prepare_leaf_with_resources;
 use semantic::{prepare_semantic_leaf, SemanticLeafExecution, SemanticLeafPlan};
 
 pub(super) struct PreparedLeaf<E: JsonlFamilyError> {
@@ -104,6 +106,7 @@ fn scan_leaf_serial<R: JsonlFamilyRuntime>(
     let mut append_staging = false;
     let mut sink_failure = None;
     let mut emitted_bytes = 0_u64;
+    let route_resources = sink.route_resources();
     let mut emit = |event| {
         if matches!(
             &event,
@@ -163,7 +166,7 @@ fn scan_leaf_serial<R: JsonlFamilyRuntime>(
         Ok(())
     };
     let mut output = JsonlLeafOutput::new(&mut emit);
-    let prepared = prepare_leaf(
+    let prepared = prepare_leaf_with_resources(
         adapter,
         leaf,
         base,
@@ -171,6 +174,7 @@ fn scan_leaf_serial<R: JsonlFamilyRuntime>(
         worker,
         &mut output,
         append_only_trust_allowed,
+        &route_resources,
     );
     if let Some(error) = sink_failure {
         return Err(error);
@@ -304,6 +308,7 @@ fn run_parallel_leaf_job_batch<R: JsonlFamilyRuntime>(
                 <R::Lifecycle as CaptureLifecycleSink>::Preparation,
             >::default();
             let mut emitted_bytes = 0_u64;
+            let route_resources = emitter.route_resources();
             let mut emit = |event| {
                 if matches!(
                     &event,
@@ -401,7 +406,7 @@ fn run_parallel_leaf_job_batch<R: JsonlFamilyRuntime>(
                 Ok(())
             };
             let mut output = JsonlLeafOutput::new(&mut emit);
-            let prepared = prepare_leaf(
+            let prepared = prepare_leaf_with_resources(
                 adapter,
                 leaf,
                 job.leaf().base.as_ref(),
@@ -409,6 +414,7 @@ fn run_parallel_leaf_job_batch<R: JsonlFamilyRuntime>(
                 worker,
                 &mut output,
                 append_only_trust_allowed,
+                &route_resources,
             );
             if let Some(error) = emission_failure {
                 return Err(ParallelLeafScanWorkerError::provider(error));
@@ -842,6 +848,7 @@ fn open_leaf_reader<R: JsonlFamilyRuntime>(
     previous: Option<&FamilyCheckpoint>,
     projector_preflight: bool,
     append_only_trust_allowed: bool,
+    route_resources: &ctx_history_capture_runtime::SourceBackedRouteResources,
 ) -> JsonlResult<JsonlReader<JsonlRuntimeError<R>>, JsonlRuntimeError<R>> {
     let direct_append = previous
         .and_then(|checkpoint| checkpoint.provider_checkpoint.as_ref())
@@ -860,7 +867,7 @@ fn open_leaf_reader<R: JsonlFamilyRuntime>(
         )
     } else {
         if adapter.bind_admitted_eof() {
-            JsonlReader::open_semantic_with_record_framing_and_encoding_direct(
+            JsonlReader::open_semantic_with_record_framing_and_encoding_direct_and_resources(
                 physical_identity(adapter, leaf),
                 Arc::clone(opened),
                 previous.map(|checkpoint| &checkpoint.physical),
@@ -872,9 +879,10 @@ fn open_leaf_reader<R: JsonlFamilyRuntime>(
                 adapter.record_framing(),
                 leaf.frozen_scan_observation(),
                 direct_append,
+                Some(route_resources),
             )
         } else if projector_preflight {
-            JsonlReader::open_semantic_with_record_framing_and_encoding_direct(
+            JsonlReader::open_semantic_with_record_framing_and_encoding_direct_and_resources(
                 physical_identity(adapter, leaf),
                 Arc::clone(opened),
                 previous.map(|checkpoint| &checkpoint.physical),
@@ -884,15 +892,17 @@ fn open_leaf_reader<R: JsonlFamilyRuntime>(
                 adapter.record_framing(),
                 leaf.frozen_scan_observation(),
                 direct_append,
+                Some(route_resources),
             )
         } else {
-            JsonlReader::open_with_record_framing_and_encoding(
+            JsonlReader::open_with_record_framing_and_encoding_and_resources(
                 physical_identity(adapter, leaf),
                 Arc::clone(opened),
                 previous.map(|checkpoint| &checkpoint.physical),
                 leaf.identity_probe.clone(),
                 adapter.physical_encoding(leaf),
                 adapter.record_framing(),
+                route_resources,
             )
         }
     }?;

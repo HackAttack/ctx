@@ -5,10 +5,28 @@ use std::{
 
 use sha2::{Digest, Sha256};
 
+use ctx_history_capture_runtime::SourceBackedRouteResources;
+
 use super::{
     read_bounded_record, read_bounded_record_complete_and_prefix_sha256,
     read_bounded_record_complete_sha256, read_bounded_record_full_complete_and_prefix_sha256,
-    JsonlFamilyError, JsonlRecordFraming, JsonlResult, JsonlResumableSha256,
+    read_bounded_record_unhashed, JsonlFamilyError, JsonlRecordFraming, JsonlResult,
+    JsonlResumableSha256,
+};
+
+mod standard_zstd;
+#[cfg(test)]
+mod tests;
+
+#[cfg(any(test, feature = "test-support"))]
+pub use standard_zstd::set_after_standard_zstd_snapshot_hook;
+use standard_zstd::{
+    advance_standard_zstd_digest, decode_standard_zstd_jsonl, standard_zstd_physical_end,
+    StandardZstdBacking, StandardZstdLimits,
+};
+pub use standard_zstd::{
+    MAX_STANDARD_ZSTD_COMPRESSED_BYTES, MAX_STANDARD_ZSTD_DECOMPRESSED_BYTES,
+    MAX_STANDARD_ZSTD_PARALLEL_STREAMS, MAX_STANDARD_ZSTD_TEMP_BYTES_PER_LEAF,
 };
 
 const ZSTD_FRAME_MAGIC: [u8; 4] = [0x28, 0xb5, 0x2f, 0xfd];
@@ -23,6 +41,8 @@ const MAX_ZSTD_WINDOW_LOG: u32 = 26;
 pub enum JsonlPhysicalEncoding {
     RawJsonl,
     ChecksummedZstdFrames,
+    /// One ordinary Zstandard stream whose decoded bytes are JSONL records.
+    StandardZstdJsonl,
 }
 
 impl JsonlPhysicalEncoding {
@@ -30,6 +50,7 @@ impl JsonlPhysicalEncoding {
         match self {
             Self::RawJsonl => "raw-jsonl-v1",
             Self::ChecksummedZstdFrames => "checksummed-zstd-frames-v1",
+            Self::StandardZstdJsonl => "standard-zstd-jsonl-v1",
         }
     }
 }
@@ -193,6 +214,7 @@ impl JsonlPhysicalRecord {
 #[derive(Debug, Clone)]
 pub struct JsonlPhysicalStreamPosition {
     offset: u64,
+    logical_offset: u64,
     next_physical_ordinal: u64,
     complete_prefix_end: u64,
     digest: JsonlPhysicalDigest,
@@ -249,8 +271,10 @@ impl JsonlPhysicalPassBinding {
 #[derive(Debug)]
 pub struct JsonlPhysicalStream<E: JsonlFamilyError> {
     reader: BufReader<File>,
+    standard_zstd: Option<StandardZstdBacking>,
     frozen_length: u64,
     offset: u64,
+    logical_offset: u64,
     next_physical_ordinal: u64,
     complete_prefix_end: u64,
     encoding: JsonlPhysicalEncoding,
@@ -287,7 +311,7 @@ impl<E: JsonlFamilyError> JsonlPhysicalStream<E> {
 
     #[allow(clippy::too_many_arguments)]
     pub fn open_with_encoding(
-        mut file: File,
+        file: File,
         frozen_length: u64,
         offset: u64,
         next_physical_ordinal: u64,
@@ -296,14 +320,72 @@ impl<E: JsonlFamilyError> JsonlPhysicalStream<E> {
         digest: JsonlPhysicalDigest,
         source_changed: fn() -> E,
     ) -> JsonlResult<Self, E> {
+        Self::open_with_encoding_and_resources(
+            file,
+            frozen_length,
+            offset,
+            next_physical_ordinal,
+            encoding,
+            framing,
+            digest,
+            source_changed,
+            None,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn open_with_encoding_and_resources(
+        file: File,
+        frozen_length: u64,
+        offset: u64,
+        next_physical_ordinal: u64,
+        encoding: JsonlPhysicalEncoding,
+        framing: JsonlRecordFraming,
+        digest: JsonlPhysicalDigest,
+        source_changed: fn() -> E,
+        route_resources: Option<&SourceBackedRouteResources>,
+    ) -> JsonlResult<Self, E> {
         if offset > frozen_length {
             return Err(source_changed());
         }
-        file.seek(SeekFrom::Start(offset))?;
+        let (reader, standard_zstd, logical_offset) = match encoding {
+            JsonlPhysicalEncoding::StandardZstdJsonl => {
+                if offset != 0 || next_physical_ordinal != 0 {
+                    return Err(E::invalid_payload(
+                        "standard Zstandard JSONL does not support physical suffix resume"
+                            .to_owned(),
+                    ));
+                }
+                let decoded = decode_standard_zstd_jsonl::<E>(
+                    file,
+                    frozen_length,
+                    framing,
+                    StandardZstdLimits::PRODUCTION,
+                    route_resources,
+                )?;
+                (
+                    BufReader::new(decoded.plaintext),
+                    Some(StandardZstdBacking {
+                        physical_reader: decoded.physical_reader,
+                        logical_length: decoded.logical_length,
+                        total_records: decoded.total_records,
+                        _scratch_reservations: decoded.scratch_reservations,
+                    }),
+                    0,
+                )
+            }
+            JsonlPhysicalEncoding::RawJsonl | JsonlPhysicalEncoding::ChecksummedZstdFrames => {
+                let mut file = file;
+                file.seek(SeekFrom::Start(offset))?;
+                (BufReader::new(file), None, offset)
+            }
+        };
         Ok(Self {
-            reader: BufReader::new(file),
+            reader,
+            standard_zstd,
             frozen_length,
             offset,
+            logical_offset,
             next_physical_ordinal,
             complete_prefix_end: offset,
             encoding,
@@ -320,12 +402,14 @@ impl<E: JsonlFamilyError> JsonlPhysicalStream<E> {
         if self.exhausted {
             return Ok(None);
         }
-        if self.offset == self.frozen_length {
+        if self.stream_exhausted() {
             self.exhausted = true;
             return Ok(None);
         }
-        let remaining = self.frozen_length.saturating_sub(self.offset);
-        let record = if self.encoding == JsonlPhysicalEncoding::ChecksummedZstdFrames {
+        let record = if self.encoding == JsonlPhysicalEncoding::StandardZstdJsonl {
+            self.read_standard_zstd_record()?
+        } else if self.encoding == JsonlPhysicalEncoding::ChecksummedZstdFrames {
+            let remaining = self.frozen_length.saturating_sub(self.offset);
             let frame = read_checksummed_zstd_frame::<E>(
                 &mut self.reader,
                 &mut self.record_buffer,
@@ -340,9 +424,11 @@ impl<E: JsonlFamilyError> JsonlPhysicalStream<E> {
                 stored_len: self.record_buffer.len(),
                 byte_len: u64::try_from(frame.physical_bytes.len())
                     .map_err(|_| E::system_invariant("Zstandard frame length exceeds u64"))?,
+                byte_end_exclusive: None,
                 sha256: Sha256::digest(&frame.physical_bytes).into(),
             }
         } else {
+            let remaining = self.frozen_length.saturating_sub(self.offset);
             let record = match &mut self.digest {
                 JsonlPhysicalDigest::Complete { complete } => read_bounded_record_complete_sha256(
                     &mut self.reader,
@@ -398,14 +484,20 @@ impl<E: JsonlFamilyError> JsonlPhysicalStream<E> {
                 oversized: record.oversized,
                 stored_len: record.stored_len,
                 byte_len: record.byte_len,
+                byte_end_exclusive: None,
                 sha256: record.sha256,
             }
         };
         let byte_start = self.offset;
-        let byte_end_exclusive = byte_start
-            .checked_add(record.byte_len)
-            .ok_or_else(|| E::system_invariant("JSONL physical stream offset overflowed"))?;
+        let byte_end_exclusive = record.byte_end_exclusive.unwrap_or(
+            byte_start
+                .checked_add(record.byte_len)
+                .ok_or_else(|| E::system_invariant("JSONL physical stream offset overflowed"))?,
+        );
         self.offset = byte_end_exclusive;
+        if self.encoding != JsonlPhysicalEncoding::StandardZstdJsonl {
+            self.logical_offset = byte_end_exclusive;
+        }
         let physical_ordinal = self.next_physical_ordinal;
         if record.complete {
             self.complete_prefix_end = byte_end_exclusive;
@@ -442,6 +534,7 @@ impl<E: JsonlFamilyError> JsonlPhysicalStream<E> {
     pub fn position(&self) -> JsonlPhysicalStreamPosition {
         JsonlPhysicalStreamPosition {
             offset: self.offset,
+            logical_offset: self.logical_offset,
             next_physical_ordinal: self.next_physical_ordinal,
             complete_prefix_end: self.complete_prefix_end,
             digest: self.digest.clone(),
@@ -451,8 +544,14 @@ impl<E: JsonlFamilyError> JsonlPhysicalStream<E> {
     }
 
     pub fn restore(&mut self, position: JsonlPhysicalStreamPosition) -> JsonlResult<(), E> {
-        self.reader.seek(SeekFrom::Start(position.offset))?;
+        self.reader.seek(SeekFrom::Start(position.logical_offset))?;
+        if let Some(standard_zstd) = self.standard_zstd.as_mut() {
+            standard_zstd
+                .physical_reader
+                .seek(SeekFrom::Start(position.offset))?;
+        }
         self.offset = position.offset;
+        self.logical_offset = position.logical_offset;
         self.next_physical_ordinal = position.next_physical_ordinal;
         self.complete_prefix_end = position.complete_prefix_end;
         self.digest = position.digest;
@@ -493,6 +592,72 @@ impl<E: JsonlFamilyError> JsonlPhysicalStream<E> {
     pub fn terminal(&self) -> bool {
         self.exhausted && !self.incomplete_tail
     }
+
+    fn stream_exhausted(&self) -> bool {
+        self.standard_zstd.as_ref().map_or_else(
+            || self.offset == self.frozen_length,
+            |standard_zstd| self.logical_offset == standard_zstd.logical_length,
+        )
+    }
+
+    fn read_standard_zstd_record(&mut self) -> JsonlResult<JsonlDecodedPhysicalUnit, E> {
+        let standard_zstd = self.standard_zstd.as_mut().ok_or_else(|| {
+            E::system_invariant("standard Zstandard JSONL stream lost its decoded backing")
+        })?;
+        let logical_remaining = standard_zstd
+            .logical_length
+            .saturating_sub(self.logical_offset);
+        let decoded = read_bounded_record_unhashed::<E>(
+            &mut self.reader,
+            &mut self.record_buffer,
+            logical_remaining,
+            self.framing,
+            self.source_changed,
+        )?
+        .ok_or_else(|| (self.source_changed)())?;
+        let logical_end = self
+            .logical_offset
+            .checked_add(decoded.byte_len)
+            .ok_or_else(|| E::system_invariant("decoded Zstandard JSONL offset overflowed"))?;
+        let next_ordinal = self
+            .next_physical_ordinal
+            .checked_add(u64::from(decoded.complete))
+            .ok_or_else(|| E::system_invariant("decoded Zstandard JSONL ordinal overflowed"))?;
+        let physical_end = if decoded.complete {
+            standard_zstd_physical_end(
+                self.offset,
+                self.frozen_length,
+                logical_end,
+                standard_zstd.logical_length,
+                next_ordinal,
+                standard_zstd.total_records,
+            )
+        } else {
+            self.offset
+        };
+        advance_standard_zstd_digest::<E>(
+            &mut standard_zstd.physical_reader,
+            &mut self.digest,
+            self.offset,
+            physical_end,
+            decoded.complete,
+        )?;
+        self.logical_offset = logical_end;
+        let sha256 = if decoded.terminal_nul_padding {
+            [0; 32]
+        } else {
+            Sha256::digest(&self.record_buffer[..decoded.stored_len]).into()
+        };
+        Ok(JsonlDecodedPhysicalUnit {
+            complete: decoded.complete,
+            terminal_nul_padding: decoded.terminal_nul_padding,
+            oversized: decoded.oversized,
+            stored_len: decoded.stored_len,
+            byte_len: physical_end.saturating_sub(self.offset),
+            byte_end_exclusive: Some(physical_end),
+            sha256,
+        })
+    }
 }
 
 struct JsonlDecodedPhysicalUnit {
@@ -501,6 +666,7 @@ struct JsonlDecodedPhysicalUnit {
     oversized: bool,
     stored_len: usize,
     byte_len: u64,
+    byte_end_exclusive: Option<u64>,
     sha256: [u8; 32],
 }
 
@@ -653,195 +819,4 @@ fn read_frame_part<E: JsonlFamilyError>(
 
 fn invalid_zstd<E: JsonlFamilyError>(detail: &str) -> E {
     E::invalid_payload(format!("invalid checksummed Zstandard JSONL: {detail}"))
-}
-
-#[cfg(test)]
-mod tests {
-    use ctx_history_source_io::SourceIoError;
-    use sha2::{Digest, Sha256};
-
-    use super::*;
-
-    #[test]
-    fn stream_tracks_complete_prefix_tail_and_rollback() {
-        let temp = tempfile::tempdir().unwrap();
-        let path = temp.path().join("records.jsonl");
-        let contents = b"one\ntwo\nincomplete";
-        std::fs::write(&path, contents).unwrap();
-        let mut stream = JsonlPhysicalStream::open(
-            File::open(&path).unwrap(),
-            contents.len() as u64,
-            0,
-            0,
-            JsonlRecordFraming::ordinary(),
-            JsonlPhysicalDigest::full_and_complete(
-                JsonlResumableSha256::new(),
-                JsonlResumableSha256::new(),
-            ),
-            || SourceIoError::SourceChangedDuringCapture,
-        )
-        .unwrap();
-
-        let first = stream.next_record().unwrap().unwrap();
-        assert_eq!(stream.record_bytes(first), b"one");
-        let after_first = stream.position();
-        let second = stream.next_record().unwrap().unwrap();
-        assert_eq!(stream.record_bytes(second), b"two");
-        stream.restore(after_first).unwrap();
-        assert_eq!(stream.next_record().unwrap().unwrap(), second);
-        let tail = stream.next_record().unwrap().unwrap();
-        assert!(!tail.complete);
-        assert_eq!(stream.record_bytes(tail), b"incomplete");
-        let after_tail = stream.position();
-        assert!(stream.next_record().unwrap().is_none());
-        stream.restore(after_tail).unwrap();
-        assert!(stream.next_record().unwrap().is_none());
-        assert_eq!(stream.complete_prefix_end(), 8);
-        assert_eq!(stream.next_physical_ordinal(), 2);
-        assert!(!stream.terminal());
-        let digest = stream.digest();
-        let complete = digest.complete_hasher().digest();
-        let expected_complete: [u8; 32] = Sha256::digest(&contents[..8]).into();
-        assert_eq!(complete, expected_complete);
-        let full = digest.full_hasher().unwrap().digest();
-        let expected_full: [u8; 32] = Sha256::digest(contents).into();
-        assert_eq!(full, expected_full);
-    }
-
-    fn checksummed_frame(plaintext: &[u8]) -> Vec<u8> {
-        let mut encoder = zstd::stream::Encoder::new(Vec::new(), 1).unwrap();
-        encoder.include_checksum(true).unwrap();
-        std::io::Write::write_all(&mut encoder, plaintext).unwrap();
-        encoder.finish().unwrap()
-    }
-
-    #[test]
-    fn zstd_stream_decodes_concatenated_checksummed_frames_and_rolls_back() {
-        let temp = tempfile::tempdir().unwrap();
-        let path = temp.path().join("session.jsonl.zstd");
-        let first_bytes = checksummed_frame(b"{\"type\":\"session\"}\n");
-        let second_bytes =
-            checksummed_frame(b"{\"type\":\"user/message\"}\n{\"type\":\"assistant/message\"}\n");
-        let contents = [first_bytes.as_slice(), second_bytes.as_slice()].concat();
-        std::fs::write(&path, &contents).unwrap();
-        let mut stream = JsonlPhysicalStream::open_with_encoding(
-            File::open(&path).unwrap(),
-            contents.len() as u64,
-            0,
-            0,
-            JsonlPhysicalEncoding::ChecksummedZstdFrames,
-            JsonlRecordFraming::ordinary(),
-            JsonlPhysicalDigest::full_and_complete(
-                JsonlResumableSha256::new(),
-                JsonlResumableSha256::new(),
-            ),
-            || SourceIoError::SourceChangedDuringCapture,
-        )
-        .unwrap();
-
-        let header = stream.next_record().unwrap().unwrap();
-        assert_eq!(stream.record_bytes(header), b"{\"type\":\"session\"}\n");
-        let after_header = stream.position();
-        let batch = stream.next_record().unwrap().unwrap();
-        assert_eq!(
-            stream.record_bytes(batch),
-            b"{\"type\":\"user/message\"}\n{\"type\":\"assistant/message\"}\n"
-        );
-        stream.restore(after_header).unwrap();
-        assert_eq!(stream.next_record().unwrap().unwrap(), batch);
-        assert!(stream.next_record().unwrap().is_none());
-        assert!(stream.terminal());
-        assert_eq!(stream.complete_prefix_end(), contents.len() as u64);
-        assert_eq!(stream.next_physical_ordinal(), 2);
-        assert_eq!(
-            stream.digest().complete_hasher().digest(),
-            <[u8; 32]>::from(Sha256::digest(&contents))
-        );
-    }
-
-    #[test]
-    fn zstd_stream_omits_torn_frame_and_rejects_corrupt_or_unchecked_frames() {
-        let temp = tempfile::tempdir().unwrap();
-        let complete = checksummed_frame(b"{\"type\":\"session\"}\n");
-        let mut torn = checksummed_frame(b"{\"type\":\"user/message\"}\n");
-        torn.truncate(torn.len().saturating_sub(2));
-        let contents = [complete.as_slice(), torn.as_slice()].concat();
-        let path = temp.path().join("torn.jsonl.zstd");
-        std::fs::write(&path, &contents).unwrap();
-        let mut stream = JsonlPhysicalStream::open_with_encoding(
-            File::open(&path).unwrap(),
-            contents.len() as u64,
-            0,
-            0,
-            JsonlPhysicalEncoding::ChecksummedZstdFrames,
-            JsonlRecordFraming::ordinary(),
-            JsonlPhysicalDigest::full_and_complete(
-                JsonlResumableSha256::new(),
-                JsonlResumableSha256::new(),
-            ),
-            || SourceIoError::SourceChangedDuringCapture,
-        )
-        .unwrap();
-        assert!(stream.next_record().unwrap().unwrap().complete);
-        assert!(!stream.next_record().unwrap().unwrap().complete);
-        assert!(!stream.terminal());
-        assert_eq!(stream.complete_prefix_end(), complete.len() as u64);
-        assert_eq!(
-            stream.digest().full_hasher().unwrap().digest(),
-            <[u8; 32]>::from(Sha256::digest(&contents))
-        );
-
-        let mut corrupt = complete.clone();
-        let last = corrupt.len().saturating_sub(1);
-        corrupt[last] ^= 0xff;
-        let corrupt_path = temp.path().join("corrupt.jsonl.zstd");
-        std::fs::write(&corrupt_path, &corrupt).unwrap();
-        let mut corrupt_stream = JsonlPhysicalStream::open_with_encoding(
-            File::open(&corrupt_path).unwrap(),
-            corrupt.len() as u64,
-            0,
-            0,
-            JsonlPhysicalEncoding::ChecksummedZstdFrames,
-            JsonlRecordFraming::ordinary(),
-            JsonlPhysicalDigest::complete(JsonlResumableSha256::new()),
-            || SourceIoError::SourceChangedDuringCapture,
-        )
-        .unwrap();
-        assert!(corrupt_stream.next_record().is_err());
-
-        let mut encoder = zstd::stream::Encoder::new(Vec::new(), 1).unwrap();
-        std::io::Write::write_all(&mut encoder, b"{}\n").unwrap();
-        let unchecked = encoder.finish().unwrap();
-        let unchecked_path = temp.path().join("unchecked.jsonl.zstd");
-        std::fs::write(&unchecked_path, &unchecked).unwrap();
-        let mut unchecked_stream = JsonlPhysicalStream::open_with_encoding(
-            File::open(&unchecked_path).unwrap(),
-            unchecked.len() as u64,
-            0,
-            0,
-            JsonlPhysicalEncoding::ChecksummedZstdFrames,
-            JsonlRecordFraming::ordinary(),
-            JsonlPhysicalDigest::complete(JsonlResumableSha256::new()),
-            || SourceIoError::SourceChangedDuringCapture,
-        )
-        .unwrap();
-        assert!(unchecked_stream.next_record().is_err());
-
-        let mut reserved = complete.clone();
-        reserved[4] |= 0x10;
-        let reserved_path = temp.path().join("reserved.jsonl.zstd");
-        std::fs::write(&reserved_path, &reserved).unwrap();
-        let mut reserved_stream = JsonlPhysicalStream::open_with_encoding(
-            File::open(&reserved_path).unwrap(),
-            reserved.len() as u64,
-            0,
-            0,
-            JsonlPhysicalEncoding::ChecksummedZstdFrames,
-            JsonlRecordFraming::ordinary(),
-            JsonlPhysicalDigest::complete(JsonlResumableSha256::new()),
-            || SourceIoError::SourceChangedDuringCapture,
-        )
-        .unwrap();
-        assert!(reserved_stream.next_record().is_err());
-    }
 }

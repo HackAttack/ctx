@@ -484,9 +484,14 @@ fn discovered_codex_session_tree_reports_admitted_source_format() {
     let _daemon = start_source_refresh_daemon(&tree_temp);
     let tree = home_root(&tree_temp).join(".codex/sessions");
     fs::create_dir_all(tree.join("2026/07/23")).unwrap();
+    let compressed = zstd::stream::encode_all(
+        std::io::Cursor::new(codex_source("tree dispatch")),
+        1,
+    )
+    .unwrap();
     fs::write(
-        tree.join("2026/07/23/rollout-2026-07-23T01-00-00-tree-dispatch.jsonl"),
-        codex_source("tree dispatch"),
+        tree.join("2026/07/23/rollout-2026-07-23T01-00-00-tree-dispatch.jsonl.zst"),
+        compressed,
     )
     .unwrap();
     let tree_report = import_codex(&tree_temp);

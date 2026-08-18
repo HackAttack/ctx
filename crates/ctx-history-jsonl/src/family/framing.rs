@@ -34,6 +34,10 @@ impl JsonlRecordFraming {
     pub const fn terminal_nul_padded(maximum_stored_bytes: usize) -> Self {
         Self::new(maximum_stored_bytes, true)
     }
+
+    pub(crate) const fn allows_terminal_nul_padding(self) -> bool {
+        self.terminal_nul_padding
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
