@@ -1,4 +1,4 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 
 use chrono::{DateTime, TimeZone, Utc};
 use ctx_history_core::{
@@ -172,7 +172,6 @@ pub(super) fn project_messages(
         }
     }
 
-    let unique_message_ids = unique_message_ids(messages);
     let mut message_occurrences = HashMap::<String, u64>::new();
     let mut digest_occurrences = HashMap::<[u8; 32], u64>::new();
     for (message_index, message) in messages.iter().enumerate() {
@@ -180,12 +179,8 @@ pub(super) fn project_messages(
             rejected = checked_add(rejected, 1)?;
             continue;
         };
-        let (native_item_key, message_coordinate) = message_native_identity(
-            message,
-            &unique_message_ids,
-            &mut message_occurrences,
-            &mut digest_occurrences,
-        )?;
+        let (native_item_key, message_coordinate) =
+            message_native_identity(message, &mut message_occurrences, &mut digest_occurrences)?;
         let role = message_object
             .get("role")
             .and_then(Value::as_str)
@@ -569,18 +564,10 @@ fn message_blocks(content: &Value) -> Result<Vec<&Value>> {
 
 fn message_native_identity(
     message: &Value,
-    unique_ids: &HashSet<String>,
     id_occurrences: &mut HashMap<String, u64>,
     digest_occurrences: &mut HashMap<[u8; 32], u64>,
 ) -> Result<(NativeItemKey, TypedKey)> {
     if let Some(id) = exact_string(message.get("id")) {
-        if unique_ids.contains(&id) {
-            let coordinate = TypedKey::utf8(&id)?;
-            return Ok((
-                NativeItemKey::native_id(MESSAGE_NAMESPACE, coordinate.clone())?,
-                coordinate,
-            ));
-        }
         let occurrence = id_occurrences.entry(id.clone()).or_default();
         let coordinate =
             TypedKey::composite(vec![TypedKey::utf8(&id)?, TypedKey::U64(*occurrence)])?;
@@ -611,19 +598,6 @@ fn message_native_identity(
         .checked_add(1)
         .ok_or(ProjectionError::CoordinateOverflow)?;
     Ok((key, coordinate))
-}
-
-fn unique_message_ids(messages: &[Value]) -> HashSet<String> {
-    let mut counts = HashMap::<String, usize>::new();
-    for message in messages {
-        if let Some(id) = exact_string(message.get("id")) {
-            *counts.entry(id).or_default() += 1;
-        }
-    }
-    counts
-        .into_iter()
-        .filter_map(|(id, count)| (count == 1).then_some(id))
-        .collect()
 }
 
 fn explicit_agent_scope(metadata: &SessionMetadata, agent: Option<&str>) -> Option<AgentScope> {

@@ -293,3 +293,12 @@ pub(super) fn test_project_leaf(
     .map(|projected| projected.records)
     .map_err(|error| error.to_string())
 }
+
+#[cfg(test)]
+pub(super) fn test_source_revision(
+    leaf: &SessionLeaf,
+    manifest: Option<&[u8]>,
+    messages: Option<&[u8]>,
+) -> [u8; 32] {
+    source_revision(leaf, manifest, messages)
+}

@@ -454,6 +454,92 @@ mod tests {
         assert_eq!(VerifiedIndex::open(&index).unwrap().document_count(), 0);
     }
 
+    #[test]
+    fn cline_sdk_real_automatic_and_exact_discovery_import_the_common_data_root() {
+        let temp = crate::test_support_paths::tempdir().unwrap();
+        let home = temp.path().join("home");
+        let cwd = temp.path().join("work");
+        let provider_root = home.join(".cline/data");
+        let ctx_data_root = temp.path().join("ctx-data");
+        let automatic_index = temp.path().join("automatic-index");
+        let exact_index = temp.path().join("exact-index");
+        fs::create_dir_all(provider_root.join("sessions/session-a")).unwrap();
+        fs::create_dir_all(&cwd).unwrap();
+        fs::create_dir_all(&ctx_data_root).unwrap();
+        write_cline_sdk_index(&provider_root, true);
+        write_cline_sdk_messages(&provider_root, &["one"]);
+
+        let discovery = crate::DiscoveryContext::new(
+            home,
+            cwd,
+            crate::DiscoveryPlatform::Linux,
+            crate::DiscoveryPlatformDirs::default(),
+        );
+        let automatic = build_automatic_source_backed_registry_with_probes(
+            &crate::test_provider_probes(),
+            &discovery,
+            &ctx_data_root,
+        );
+        assert!(automatic.issues.iter().all(|issue| !matches!(
+            issue,
+            SourceBackedAutomaticRegistryIssue::Unavailable { source, .. }
+                if source.provider == CaptureProvider::Cline
+                    && source.source_format == CLINE_SDK_SOURCE_FORMAT
+        )));
+        let automatic_registry = automatic.registry;
+        let cold = refresh_source_backed_generation(
+            &automatic_index,
+            &automatic_registry,
+            WriterOptions::default(),
+        )
+        .unwrap();
+        let cold_event = cline_sdk_events(&automatic_index, &cold)
+            .into_iter()
+            .find(|event| event.event_sequence > 0)
+            .unwrap();
+
+        write_cline_sdk_messages(&provider_root, &["one", "two"]);
+        let appended = refresh_source_backed_generation(
+            &automatic_index,
+            &automatic_registry,
+            WriterOptions::default(),
+        )
+        .unwrap();
+        assert_eq!(
+            cline_sdk_events(&automatic_index, &appended)
+                .into_iter()
+                .find(|event| event.event_sequence > 0)
+                .unwrap()
+                .event_id,
+            cold_event.event_id
+        );
+
+        let exact_source =
+            crate::provider_source_for_path(CaptureProvider::Cline, provider_root.clone());
+        assert_eq!(exact_source.path, provider_root);
+        assert_eq!(exact_source.source_format, CLINE_SDK_SOURCE_FORMAT);
+        let mut exact_registry = SourceBackedProviderRegistry::new();
+        register_landed_source_backed_route_with_data_root(
+            &mut exact_registry,
+            exact_source,
+            SourceBackedRouteSelection::ExplicitManual,
+            &ctx_data_root,
+        )
+        .unwrap();
+        let exact = refresh_source_backed_generation(
+            &exact_index,
+            &exact_registry,
+            WriterOptions::default(),
+        )
+        .unwrap();
+        let exact_event = cline_sdk_events(&exact_index, &exact)
+            .into_iter()
+            .find(|event| event.event_sequence > 0)
+            .unwrap();
+        assert_eq!(exact_event.event_id, cold_event.event_id);
+        assert_eq!(exact_event.session_id, cold_event.session_id);
+    }
+
     fn leaf_identity(
         index: &Path,
         receipt: &SourceBackedRefreshReceipt,

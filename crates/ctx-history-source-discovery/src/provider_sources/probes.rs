@@ -117,6 +117,9 @@ pub(super) fn default_location_import_probe(
         CaptureProvider::RovoDev => has_json_file_under_matching(path, 10_000, |candidate| {
             candidate.file_name().and_then(|name| name.to_str()) == Some("session_context.json")
         }),
+        CaptureProvider::Cline if location.source_format == "cline_sdk_session_store" => {
+            has_cline_sdk_catalog(path)
+        }
         CaptureProvider::Cline => has_task_json_file_under_matching(path, 10_000, |name| {
             matches!(
                 name,
@@ -146,6 +149,18 @@ pub(super) fn default_location_import_probe(
         | CaptureProvider::Gh
         | CaptureProvider::Custom
         | CaptureProvider::Unknown => BoundedProbe::NotFound,
+    }
+}
+
+fn has_cline_sdk_catalog(root: &Path) -> BoundedProbe {
+    let index = path_is_file_probe(&root.join("sessions/sessions.index.json"));
+    let database = path_is_file_probe(&root.join("db/sessions.db"));
+    if matches!(index, BoundedProbe::Found) || matches!(database, BoundedProbe::Found) {
+        BoundedProbe::Found
+    } else if matches!(index, BoundedProbe::IoError) || matches!(database, BoundedProbe::IoError) {
+        BoundedProbe::IoError
+    } else {
+        BoundedProbe::NotFound
     }
 }
 

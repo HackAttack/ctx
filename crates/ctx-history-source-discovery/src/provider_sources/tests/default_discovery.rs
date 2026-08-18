@@ -647,11 +647,6 @@ fn exact_current_incompatible_explicit_paths_are_detection_only_unsupported() {
             temp.path().join(".mux/sessions/session/chat-archive.jsonl"),
             "chat-archive.jsonl",
         ),
-        (
-            CaptureProvider::Cline,
-            temp.path().join(".cline/data/db/sessions.db"),
-            "current Cline SDK",
-        ),
     ];
     for (_, path, _) in &cases {
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();

@@ -42,6 +42,36 @@ pub fn provider_source_for_path(
         unsupported_reason: Some("provider is not registered for native local-history import"),
     };
     let spec = provider_source_spec(provider).unwrap_or(&unknown_spec);
+    if provider == CaptureProvider::Cline {
+        if let Some(data_root) = cline_sdk_data_root_for_explicit(&path) {
+            let location = ProviderDefaultLocation {
+                path_components: &[],
+                source_format: "cline_sdk_session_store",
+                source_kind: ProviderSourceKind::NativeHistory,
+            };
+            let probe = super::super::probes::default_location_import_probe(
+                probes, None, provider, &location, &data_root,
+            );
+            return ProviderSource {
+                provider,
+                exists: true,
+                path: data_root,
+                source_format: location.source_format,
+                source_kind: location.source_kind,
+                import_support: spec.import_support,
+                catalog_support: spec.catalog_support,
+                status: match probe {
+                    BoundedProbe::Found => ProviderSourceStatus::Available,
+                    BoundedProbe::NotFound => ProviderSourceStatus::Empty,
+                    BoundedProbe::BudgetExhausted | BoundedProbe::IoError => {
+                        ProviderSourceStatus::Unknown
+                    }
+                    BoundedProbe::BlockedAuthOrEncryption => ProviderSourceStatus::Unsupported,
+                },
+                unsupported_reason: None,
+            };
+        }
+    }
     let observed = selectors::source_path_kind(&path);
     let is_directory = observed == Ok(SourcePathKind::Directory);
     if let Some(reason) = exact_current_unsupported_reason(probes, provider, &path, observed.ok()) {
@@ -193,6 +223,46 @@ pub fn provider_source_for_path(
             spec.unsupported_reason
         },
     }
+}
+
+fn cline_sdk_data_root_for_explicit(path: &Path) -> Option<PathBuf> {
+    let candidate = if selectors::ordinary_directory(path) {
+        match path.file_name().and_then(|name| name.to_str()) {
+            Some("sessions" | "db") => path.parent()?.to_path_buf(),
+            _ => path.to_path_buf(),
+        }
+    } else if selectors::ordinary_file(path) {
+        match path.file_name().and_then(|name| name.to_str()) {
+            Some("sessions.index.json")
+                if path
+                    .parent()
+                    .and_then(Path::file_name)
+                    .and_then(|name| name.to_str())
+                    == Some("sessions") =>
+            {
+                path.parent()?.parent()?.to_path_buf()
+            }
+            Some("sessions.db")
+                if path
+                    .parent()
+                    .and_then(Path::file_name)
+                    .and_then(|name| name.to_str())
+                    == Some("db") =>
+            {
+                path.parent()?.parent()?.to_path_buf()
+            }
+            _ => return None,
+        }
+    } else {
+        return None;
+    };
+    (selectors::ordinary_directory(&candidate)
+        && (is_named_regular_file(&candidate.join("sessions/sessions.index.json"), |name| {
+            name == "sessions.index.json"
+        }) || is_named_regular_file(&candidate.join("db/sessions.db"), |name| {
+            name == "sessions.db"
+        })))
+    .then_some(candidate)
 }
 
 fn codex_explicit_jsonl_source_format(path: &Path) -> Option<&'static str> {

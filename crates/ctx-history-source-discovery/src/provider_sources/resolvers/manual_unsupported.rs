@@ -25,6 +25,7 @@ const QODER_DIRECT_UNSUPPORTED: &str =
 const MUX_ARCHIVE_UNSUPPORTED: &str = "Mux chat-archive.jsonl history is detected but unsupported";
 const CLINE_CURRENT_UNSUPPORTED: &str =
     "current Cline SDK session history is detected but unsupported";
+const CLINE_SDK_FORMAT: &str = "cline_sdk_session_store";
 const MANUAL_SELECTOR_REASON: &str =
     "the provider selector cannot be safely reconstructed; use an exact --path";
 const UNSAFE_SELECTED_PATH_REASON: &str =
@@ -489,10 +490,23 @@ fn resolve_cline(
                 inspect_cline_legacy(path),
             ),
         );
+        if has_safe_cline_sdk_catalog(path) {
+            push_selected_source(
+                &mut report,
+                source_from_parts_with_data_root(
+                    _probes,
+                    context.data_root(),
+                    spec,
+                    path.clone(),
+                    CLINE_SDK_FORMAT,
+                    ProviderSourceKind::NativeHistory,
+                ),
+            );
+        }
     }
 
     add_cline_microsoft_host_roots(context, spec, &mut report);
-    add_current_cline_detections(context, spec, selected_legacy.as_deref(), &mut report);
+    add_split_cline_sdk_detections(context, spec, &mut report);
     report
 }
 
@@ -672,19 +686,19 @@ fn is_cline_legacy_marker(path: &Path) -> bool {
     ) && matches!(safe_path_kind(path), SafePathKind::File)
 }
 
-fn add_current_cline_detections(
+fn has_safe_cline_sdk_catalog(root: &Path) -> bool {
+    is_regular_file_named(
+        &root.join("sessions/sessions.index.json"),
+        "sessions.index.json",
+    ) || is_regular_file_named(&root.join("db/sessions.db"), "sessions.db")
+}
+
+fn add_split_cline_sdk_detections(
     context: &DiscoveryContext,
     spec: &ProviderSourceSpec,
-    legacy_root: Option<&Path>,
     report: &mut DiscoveryReport,
 ) {
-    let session_root = cline_current_root(
-        context,
-        spec,
-        report,
-        "CLINE_SESSION_DATA_DIR",
-        legacy_root.map(|root| root.join("sessions")),
-    );
+    let session_root = cline_current_root(context, spec, report, "CLINE_SESSION_DATA_DIR", None);
     if let Some(path) = session_root.filter(|path| has_current_cline_session_shape(path)) {
         push_selected_source(
             report,
@@ -692,13 +706,7 @@ fn add_current_cline_detections(
         );
     }
 
-    let db_root = cline_current_root(
-        context,
-        spec,
-        report,
-        "CLINE_DB_DATA_DIR",
-        legacy_root.map(|root| root.join("db")),
-    );
+    let db_root = cline_current_root(context, spec, report, "CLINE_DB_DATA_DIR", None);
     if let Some(path) = db_root {
         let db = path.join("sessions.db");
         if is_regular_file_named(&db, "sessions.db") {

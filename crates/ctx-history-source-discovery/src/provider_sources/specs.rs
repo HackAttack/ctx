@@ -310,6 +310,11 @@ const OPENHANDS_DEFAULTS: &[ProviderDefaultLocation] = &[ProviderDefaultLocation
 const CLINE_DEFAULTS: &[ProviderDefaultLocation] = &[
     ProviderDefaultLocation {
         path_components: &[".cline", "data"],
+        source_format: "cline_sdk_session_store",
+        source_kind: ProviderSourceKind::NativeHistory,
+    },
+    ProviderDefaultLocation {
+        path_components: &[".cline", "data"],
         source_format: "cline_task_directory_json",
         source_kind: ProviderSourceKind::NativeHistory,
     },

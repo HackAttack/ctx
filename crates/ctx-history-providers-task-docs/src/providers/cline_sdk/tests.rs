@@ -314,6 +314,243 @@ fn missing_message_ids_use_content_occurrence_fallback_not_global_position() {
     assert_eq!(inserted_records.last().unwrap().event_id, tail_id);
 }
 
+#[test]
+fn appending_a_duplicate_provider_message_id_never_rekeys_the_existing_event() {
+    let fixture = Fixture::new();
+    fixture.write_index(single_index("duplicates", "model"));
+    let first = messages_document(
+        "duplicates",
+        vec![json!({"id": "same-id", "role": "user", "content": "first"})],
+    );
+    fixture.write_messages("duplicates", &first);
+    let first_tree = test_bind_tree(&fixture.provider_root, &fixture.ctx_root).unwrap();
+    let first_records =
+        test_project_leaf(&first_tree.leaves[0].provider_leaf, &encoded(&first)).unwrap();
+    let first_event_id = first_records[1].event_id;
+
+    let duplicated = messages_document(
+        "duplicates",
+        vec![
+            json!({"id": "same-id", "role": "user", "content": "first"}),
+            json!({"id": "same-id", "role": "assistant", "content": "second"}),
+        ],
+    );
+    fixture.write_messages("duplicates", &duplicated);
+    let duplicate_tree = test_bind_tree(&fixture.provider_root, &fixture.ctx_root).unwrap();
+    let duplicate_records = test_project_leaf(
+        &duplicate_tree.leaves[0].provider_leaf,
+        &encoded(&duplicated),
+    )
+    .unwrap();
+    assert_eq!(duplicate_records[1].event_id, first_event_id);
+    assert_ne!(duplicate_records[2].event_id, first_event_id);
+}
+
+#[test]
+fn another_sessions_catalog_row_does_not_invalidate_an_unchanged_leaf() {
+    let fixture = Fixture::new();
+    fixture.write_index(json!({
+        "version": 1,
+        "sessions": {
+            "session-a": {"sessionId": "session-a", "model": "model-a"},
+            "session-b": {"sessionId": "session-b", "model": "model-b-one"}
+        }
+    }));
+    let first = discover_cline_sdk_tree(&fixture.provider_root, &fixture.ctx_root).unwrap();
+    let first_a = first
+        .leaves
+        .iter()
+        .find(|leaf| leaf.provider_session_id == "session-a")
+        .unwrap();
+    let first_b = first
+        .leaves
+        .iter()
+        .find(|leaf| leaf.provider_session_id == "session-b")
+        .unwrap();
+    let first_a_fingerprint = first_a.fingerprint();
+    let first_b_fingerprint = first_b.fingerprint();
+    let first_a_revision = test_source_revision(first_a, None, None);
+    let first_b_revision = test_source_revision(first_b, None, None);
+
+    fixture.write_index(json!({
+        "version": 1,
+        "sessions": {
+            "session-a": {"sessionId": "session-a", "model": "model-a"},
+            "session-b": {"sessionId": "session-b", "model": "model-b-two"}
+        }
+    }));
+    let second = discover_cline_sdk_tree(&fixture.provider_root, &fixture.ctx_root).unwrap();
+    let second_a = second
+        .leaves
+        .iter()
+        .find(|leaf| leaf.provider_session_id == "session-a")
+        .unwrap();
+    let second_b = second
+        .leaves
+        .iter()
+        .find(|leaf| leaf.provider_session_id == "session-b")
+        .unwrap();
+
+    assert_ne!(second.tree_fingerprint, first.tree_fingerprint);
+    assert_eq!(second_a.fingerprint(), first_a_fingerprint);
+    assert_eq!(test_source_revision(second_a, None, None), first_a_revision);
+    assert_ne!(second_b.fingerprint(), first_b_fingerprint);
+    assert_ne!(test_source_revision(second_b, None, None), first_b_revision);
+}
+
+#[test]
+fn another_sqlite_row_does_not_invalidate_an_unchanged_leaf() {
+    let fixture = Fixture::new();
+    let connection = fixture.open_database();
+    for (session_id, model) in [("session-a", "model-a"), ("session-b", "model-b-one")] {
+        insert_database_session(
+            &connection,
+            session_id,
+            None,
+            None,
+            None,
+            model,
+            "/cwd",
+            fixture.messages_path(session_id).to_str().unwrap(),
+            false,
+        );
+    }
+    drop(connection);
+    let first = discover_cline_sdk_tree(&fixture.provider_root, &fixture.ctx_root).unwrap();
+    let first_a = first
+        .leaves
+        .iter()
+        .find(|leaf| leaf.provider_session_id == "session-a")
+        .unwrap();
+    let first_b = first
+        .leaves
+        .iter()
+        .find(|leaf| leaf.provider_session_id == "session-b")
+        .unwrap();
+    let first_a_fingerprint = first_a.fingerprint();
+    let first_b_fingerprint = first_b.fingerprint();
+    let first_a_revision = test_source_revision(first_a, None, None);
+
+    let connection = Connection::open(fixture.provider_root.join(DATABASE_PATH)).unwrap();
+    connection
+        .execute(
+            "UPDATE sessions SET model = 'model-b-two' WHERE session_id = 'session-b'",
+            [],
+        )
+        .unwrap();
+    drop(connection);
+    let second = discover_cline_sdk_tree(&fixture.provider_root, &fixture.ctx_root).unwrap();
+    let second_a = second
+        .leaves
+        .iter()
+        .find(|leaf| leaf.provider_session_id == "session-a")
+        .unwrap();
+    let second_b = second
+        .leaves
+        .iter()
+        .find(|leaf| leaf.provider_session_id == "session-b")
+        .unwrap();
+
+    assert_ne!(second.tree_fingerprint, first.tree_fingerprint);
+    assert_eq!(second_a.fingerprint(), first_a_fingerprint);
+    assert_eq!(test_source_revision(second_a, None, None), first_a_revision);
+    assert_ne!(second_b.fingerprint(), first_b_fingerprint);
+}
+
+#[test]
+fn one_malformed_catalog_recovers_from_the_other_valid_catalog() {
+    let database_fixture = Fixture::new();
+    fs::write(
+        database_fixture.provider_root.join(INDEX_PATH),
+        b"{malformed-index",
+    )
+    .unwrap();
+    let connection = database_fixture.open_database();
+    insert_database_session(
+        &connection,
+        "from-database",
+        None,
+        None,
+        None,
+        "model",
+        "/cwd",
+        database_fixture
+            .messages_path("from-database")
+            .to_str()
+            .unwrap(),
+        false,
+    );
+    drop(connection);
+    let from_database =
+        discover_cline_sdk_tree(&database_fixture.provider_root, &database_fixture.ctx_root)
+            .unwrap();
+    assert_eq!(from_database.leaves.len(), 1);
+    assert_eq!(from_database.leaves[0].provider_session_id, "from-database");
+
+    let index_fixture = Fixture::new();
+    index_fixture.write_index(single_index("from-index", "model"));
+    let malformed = Connection::open(index_fixture.provider_root.join(DATABASE_PATH)).unwrap();
+    malformed
+        .execute_batch("CREATE TABLE not_sessions (value TEXT);")
+        .unwrap();
+    drop(malformed);
+    let from_index =
+        discover_cline_sdk_tree(&index_fixture.provider_root, &index_fixture.ctx_root).unwrap();
+    assert_eq!(from_index.leaves.len(), 1);
+    assert_eq!(from_index.leaves[0].provider_session_id, "from-index");
+}
+
+#[test]
+fn sqlite_catalog_materialization_is_aggregate_bounded_and_skips_unused_columns() {
+    let unused_fixture = Fixture::new();
+    let connection = unused_fixture.open_database();
+    insert_database_session(
+        &connection,
+        "unused-large-column",
+        None,
+        None,
+        None,
+        "model",
+        "/cwd",
+        unused_fixture
+            .messages_path("unused-large-column")
+            .to_str()
+            .unwrap(),
+        false,
+    );
+    let unused = "x".repeat(MAX_SQLITE_CATALOG_MATERIALIZED_BYTES + 1);
+    connection
+        .execute(
+            "UPDATE sessions SET metadata_json = ?1 WHERE session_id = 'unused-large-column'",
+            params![unused],
+        )
+        .unwrap();
+    drop(connection);
+    assert!(test_bind_tree(&unused_fixture.provider_root, &unused_fixture.ctx_root).is_ok());
+
+    let bounded_fixture = Fixture::new();
+    let connection = bounded_fixture.open_database();
+    let half_budget = "y".repeat(MAX_SQLITE_CATALOG_MATERIALIZED_BYTES / 2);
+    for session_id in ["large-a", "large-b"] {
+        insert_database_session(
+            &connection,
+            session_id,
+            None,
+            None,
+            None,
+            "model",
+            &half_budget,
+            bounded_fixture.messages_path(session_id).to_str().unwrap(),
+            false,
+        );
+    }
+    drop(connection);
+    let error = test_bind_tree(&bounded_fixture.provider_root, &bounded_fixture.ctx_root)
+        .unwrap_err()
+        .to_string();
+    assert!(error.contains("aggregate materialization limit"), "{error}");
+}
+
 struct Fixture {
     temp: tempfile::TempDir,
     provider_root: std::path::PathBuf,

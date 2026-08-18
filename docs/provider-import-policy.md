@@ -205,7 +205,7 @@ Secondary traits are noted only to guide tests and hardening work.
 | Mistral Vibe | `mistral_vibe_session_jsonl_tree` | JSONL transcript stream/tree | Session JSONL tree. |
 | Mux | `mux_session_jsonl_tree` | JSONL transcript stream/tree | Session JSONL tree with tool events. |
 | Rovo Dev | `rovodev_session_json_tree` | JSON session/task document | Session JSON tree. |
-| Cline | `cline_task_directory_json` | JSON session/task document | Task directory JSON. |
+| Cline | `cline_sdk_session_store`, `cline_task_directory_json` | JSON session/task document | Current compound session catalog plus manifest/message artifacts; legacy task directory JSON remains separate. |
 | Roo Code | `roo_task_directory_json` | JSON session/task document | Task directory JSON. |
 
 Hermes `hermes_state_sqlite` is a supported SQLite message-store route with a

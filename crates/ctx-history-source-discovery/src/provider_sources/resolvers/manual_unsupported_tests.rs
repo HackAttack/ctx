@@ -755,6 +755,96 @@ fn cline_detects_current_sdk_roots_without_mapping_them_to_task_json() {
 }
 
 #[test]
+fn cline_common_data_root_publishes_separate_sdk_and_legacy_routes() {
+    let temp = tempdir();
+    let context = context(temp.path(), DiscoveryPlatform::Linux);
+    let data = context.home().join(".cline/data");
+    write(
+        &data.join("sessions/sessions.index.json"),
+        br#"{"version":1,"sessions":{}}"#,
+    );
+    write(
+        &data.join("tasks/legacy/api_conversation_history.json"),
+        b"[]",
+    );
+
+    let report = dedupe_report(resolve(&context, spec(CaptureProvider::Cline)));
+    let sdk = source(&report, "cline_sdk_session_store");
+    let legacy = source(&report, "cline_task_directory_json");
+    assert_eq!(sdk.path, data);
+    assert_eq!(sdk.status, ProviderSourceStatus::Available);
+    assert_eq!(sdk.import_support, ProviderImportSupport::Native);
+    assert_eq!(legacy.path, sdk.path);
+    assert_eq!(legacy.status, ProviderSourceStatus::Available);
+
+    let explicit = provider_source_for_path(CaptureProvider::Cline, sdk.path.clone());
+    assert_eq!(explicit.path, sdk.path);
+    assert_eq!(explicit.source_format, sdk.source_format);
+    assert_eq!(explicit.status, ProviderSourceStatus::Available);
+    assert_eq!(explicit.import_support, ProviderImportSupport::Native);
+
+    for selected in [
+        data.join("sessions"),
+        data.join("sessions/sessions.index.json"),
+    ] {
+        let exact_catalog = provider_source_for_path(CaptureProvider::Cline, selected);
+        assert_eq!(exact_catalog.path, data);
+        assert_eq!(exact_catalog.source_format, "cline_sdk_session_store");
+        assert_eq!(exact_catalog.status, ProviderSourceStatus::Available);
+    }
+}
+
+#[test]
+fn cline_sdk_discovery_requires_an_ordinary_catalog_leaf() {
+    let temp = tempdir();
+    let context = context(temp.path(), DiscoveryPlatform::Linux);
+    let data = context.home().join(".cline/data");
+    fs::create_dir_all(data.join("sessions/sessions.index.json")).unwrap();
+    assert!(resolve(&context, spec(CaptureProvider::Cline))
+        .sources
+        .iter()
+        .all(|source| source.source_format != "cline_sdk_session_store"));
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::symlink;
+
+        fs::remove_dir_all(data.join("sessions/sessions.index.json")).unwrap();
+        let outside = temp.path().join("outside-index.json");
+        write(&outside, br#"{"version":1,"sessions":{}}"#);
+        symlink(&outside, data.join("sessions/sessions.index.json")).unwrap();
+        assert!(resolve(&context, spec(CaptureProvider::Cline))
+            .sources
+            .iter()
+            .all(|source| source.source_format != "cline_sdk_session_store"));
+    }
+}
+
+#[test]
+fn cline_db_only_catalog_selects_the_common_data_root_automatically_and_exactly() {
+    let temp = tempdir();
+    let context = context(temp.path(), DiscoveryPlatform::Linux);
+    let data = context.home().join(".cline/data");
+    let database = data.join("db/sessions.db");
+    fs::create_dir_all(database.parent().unwrap()).unwrap();
+    let connection = Connection::open(&database).unwrap();
+    connection
+        .execute_batch("CREATE TABLE sessions (session_id TEXT PRIMARY KEY);")
+        .unwrap();
+    drop(connection);
+
+    let report = dedupe_report(resolve(&context, spec(CaptureProvider::Cline)));
+    let automatic = source(&report, "cline_sdk_session_store");
+    assert_eq!(automatic.path, data);
+    assert_eq!(automatic.status, ProviderSourceStatus::Available);
+
+    let exact = provider_source_for_path(CaptureProvider::Cline, database);
+    assert_eq!(exact.path, data);
+    assert_eq!(exact.source_format, "cline_sdk_session_store");
+    assert_eq!(exact.status, ProviderSourceStatus::Available);
+}
+
+#[test]
 fn cline_probe_rejects_context_only_compatibility_false_positive() {
     let temp = tempdir();
     let selected = temp.path().join("selected");

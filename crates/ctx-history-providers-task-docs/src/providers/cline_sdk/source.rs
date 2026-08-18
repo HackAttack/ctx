@@ -1,6 +1,6 @@
 use std::{
     collections::{BTreeMap, BTreeSet},
-    fs, io,
+    io,
     path::{Component, Path, PathBuf},
 };
 
@@ -18,10 +18,14 @@ pub(super) const DATABASE_PATH: &str = "db/sessions.db";
 pub(super) const MAX_CLINE_SESSIONS: usize = 65_536;
 pub(super) const MAX_MANIFEST_BYTES: usize = 4 * 1024 * 1024;
 pub(super) const MAX_MESSAGES_BYTES: usize = 64 * 1024 * 1024;
+pub(super) const MAX_SQLITE_CATALOG_MATERIALIZED_BYTES: usize = 8 * 1024 * 1024;
 const MAX_INDEX_BYTES: usize = 32 * 1024 * 1024;
 const MAX_PATH_BYTES: usize = 4 * 1024;
+const SQLITE_CATALOG_ROW_OVERHEAD_BYTES: usize = 16 * 64;
 const TREE_DOMAIN: &[u8] = b"ctx.cline.sdk.compound-tree.v1\0";
 const LEAF_DOMAIN: &[u8] = b"ctx.cline.sdk.compound-leaf.v1\0";
+const INDEX_FENCE_DOMAIN: &[u8] = b"ctx.cline.sdk.index-fence.v1\0";
+const DATABASE_FENCE_DOMAIN: &[u8] = b"ctx.cline.sdk.database-fence.v1\0";
 
 pub(super) type BoundLeafFiles = (Option<Vec<u8>>, Option<Vec<u8>>);
 
@@ -133,7 +137,43 @@ struct CatalogEntry {
 #[derive(Debug)]
 struct CatalogRows {
     rows: BTreeMap<String, Value>,
-    evidence: [u8; 32],
+}
+
+#[derive(Debug)]
+struct CatalogAttempt {
+    rows: Option<CatalogRows>,
+    fence: [u8; 32],
+    error: Option<ClineSdkError>,
+    present: bool,
+}
+
+impl CatalogAttempt {
+    fn missing(domain: &[u8]) -> Self {
+        Self {
+            rows: None,
+            fence: catalog_fence(domain, 0, None),
+            error: None,
+            present: false,
+        }
+    }
+
+    fn valid(domain: &[u8], evidence: [u8; 32], rows: BTreeMap<String, Value>) -> Self {
+        Self {
+            rows: Some(CatalogRows { rows }),
+            fence: catalog_fence(domain, 1, Some(evidence)),
+            error: None,
+            present: true,
+        }
+    }
+
+    fn invalid(domain: &[u8], evidence: Option<[u8; 32]>, error: ClineSdkError) -> Self {
+        Self {
+            rows: None,
+            fence: catalog_fence(domain, 2, evidence),
+            error: Some(error),
+            present: true,
+        }
+    }
 }
 
 pub(super) fn discover_cline_sdk_tree(
@@ -141,21 +181,28 @@ pub(super) fn discover_cline_sdk_tree(
     data_root: &Path,
 ) -> Result<ClineSdkTreeSnapshot> {
     let authority = ProviderSourceRoot::open(root)?;
-    let index = read_index_catalog(&authority)?;
-    let database = read_database_catalog(&authority, data_root)?;
-    if index.is_none() && database.is_none() {
-        return Err(ClineSdkError::MissingCatalog);
+    let mut index = read_index_catalog(&authority);
+    let mut database = read_database_catalog(&authority, data_root);
+    if index.rows.is_none() && database.rows.is_none() {
+        if !index.present && !database.present {
+            return Err(ClineSdkError::MissingCatalog);
+        }
+        return Err(index
+            .error
+            .take()
+            .or_else(|| database.error.take())
+            .unwrap_or_else(|| ClineSdkError::Invalid("no usable Cline SDK catalog".into())));
     }
 
     let mut catalog = BTreeMap::<String, CatalogEntry>::new();
-    if let Some(index) = &index {
-        for (session_id, row) in &index.rows {
-            catalog.entry(session_id.clone()).or_default().index_row = Some(row.clone());
+    if let Some(index) = index.rows.take() {
+        for (session_id, row) in index.rows {
+            catalog.entry(session_id).or_default().index_row = Some(row);
         }
     }
-    if let Some(database) = &database {
-        for (session_id, row) in &database.rows {
-            catalog.entry(session_id.clone()).or_default().database_row = Some(row.clone());
+    if let Some(database) = database.rows.take() {
+        for (session_id, row) in database.rows {
+            catalog.entry(session_id).or_default().database_row = Some(row);
         }
     }
     if catalog.len() > MAX_CLINE_SESSIONS {
@@ -166,21 +213,15 @@ pub(super) fn discover_cline_sdk_tree(
 
     let mut leaves = Vec::with_capacity(catalog.len());
     for (session_id, entry) in catalog {
-        leaves.push(bind_session_leaf(
-            &authority,
-            session_id,
-            entry,
-            index.as_ref().map(|value| value.evidence),
-            database.as_ref().map(|value| value.evidence),
-        )?);
+        leaves.push(bind_session_leaf(&authority, session_id, entry)?);
     }
     leaves.sort_by(|left, right| left.provider_session_id.cmp(&right.provider_session_id));
 
     let mut tree = Sha256::new();
     tree.update(TREE_DOMAIN);
     tree.update(authority.authority_fingerprint());
-    hash_optional_digest(&mut tree, index.as_ref().map(|value| value.evidence));
-    hash_optional_digest(&mut tree, database.as_ref().map(|value| value.evidence));
+    tree.update(index.fence);
+    tree.update(database.fence);
     tree.update((leaves.len() as u64).to_be_bytes());
     for leaf in &leaves {
         tree.update(leaf.fingerprint());
@@ -193,12 +234,21 @@ pub(super) fn discover_cline_sdk_tree(
     })
 }
 
-fn read_index_catalog(authority: &ProviderSourceRoot) -> Result<Option<CatalogRows>> {
-    let Some((bytes, _)) = read_optional_bytes(authority, Path::new(INDEX_PATH), MAX_INDEX_BYTES)?
-    else {
-        return Ok(None);
+fn read_index_catalog(authority: &ProviderSourceRoot) -> CatalogAttempt {
+    let bytes = match read_optional_bytes(authority, Path::new(INDEX_PATH), MAX_INDEX_BYTES) {
+        Ok(Some((bytes, _))) => bytes,
+        Ok(None) => return CatalogAttempt::missing(INDEX_FENCE_DOMAIN),
+        Err(error) => return CatalogAttempt::invalid(INDEX_FENCE_DOMAIN, None, error),
     };
-    let value: Value = serde_json::from_slice(&bytes)?;
+    let evidence = Sha256::digest(&bytes).into();
+    match parse_index_catalog(&bytes) {
+        Ok(rows) => CatalogAttempt::valid(INDEX_FENCE_DOMAIN, evidence, rows),
+        Err(error) => CatalogAttempt::invalid(INDEX_FENCE_DOMAIN, Some(evidence), error),
+    }
+}
+
+fn parse_index_catalog(bytes: &[u8]) -> Result<BTreeMap<String, Value>> {
+    let value: Value = serde_json::from_slice(bytes)?;
     validate_json_bounds(&value, 0, &mut 0)?;
     if value.get("version").and_then(Value::as_u64) != Some(1) {
         return Err(ClineSdkError::Invalid(
@@ -229,34 +279,35 @@ fn read_index_catalog(authority: &ProviderSourceRoot) -> Result<Option<CatalogRo
         }
         rows.insert(key.clone(), row.clone());
     }
-    Ok(Some(CatalogRows {
-        rows,
-        evidence: Sha256::digest(&bytes).into(),
-    }))
+    Ok(rows)
 }
 
-fn read_database_catalog(
-    authority: &ProviderSourceRoot,
-    data_root: &Path,
-) -> Result<Option<CatalogRows>> {
+fn read_database_catalog(authority: &ProviderSourceRoot, data_root: &Path) -> CatalogAttempt {
+    let main_evidence = match open_optional_evidence(authority, Path::new(DATABASE_PATH)) {
+        Ok(Some(evidence)) => evidence,
+        Ok(None) => return CatalogAttempt::missing(DATABASE_FENCE_DOMAIN),
+        Err(error) => return CatalogAttempt::invalid(DATABASE_FENCE_DOMAIN, None, error),
+    };
+    let main_digest = file_evidence_digest(&main_evidence);
     let path = authority.named_path().join(DATABASE_PATH);
-    match fs::symlink_metadata(&path) {
-        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
-        Err(error) => return Err(error.into()),
-        Ok(_) => {}
-    }
-    let connection = open_provider_sqlite_readonly(data_root, &path)?;
-    let query_result = query_database_rows(&connection);
-    let finish_result = connection.finish();
-    let rows = match query_result {
-        Ok(rows) => rows,
+    let connection = match open_provider_sqlite_readonly(data_root, &path) {
+        Ok(connection) => connection,
         Err(error) => {
-            let _ = finish_result;
-            return Err(error);
+            return CatalogAttempt::invalid(DATABASE_FENCE_DOMAIN, Some(main_digest), error.into())
         }
     };
-    let evidence = finish_result?.revision().to_owned();
-    Ok(Some(CatalogRows { rows, evidence }))
+    let query_result = query_database_rows(&connection);
+    let finish_result = connection.finish();
+    let revision = match finish_result {
+        Ok(evidence) => database_evidence_digest(main_digest, *evidence.revision()),
+        Err(error) => {
+            return CatalogAttempt::invalid(DATABASE_FENCE_DOMAIN, Some(main_digest), error.into())
+        }
+    };
+    match query_result {
+        Ok(rows) => CatalogAttempt::valid(DATABASE_FENCE_DOMAIN, revision, rows),
+        Err(error) => CatalogAttempt::invalid(DATABASE_FENCE_DOMAIN, Some(revision), error),
+    }
 }
 
 fn query_database_rows(connection: &Connection) -> Result<BTreeMap<String, Value>> {
@@ -267,7 +318,6 @@ fn query_database_rows(connection: &Connection) -> Result<BTreeMap<String, Value
         ));
     }
     const OPTIONAL: &[&str] = &[
-        "source",
         "started_at",
         "updated_at",
         "provider",
@@ -279,7 +329,6 @@ fn query_database_rows(connection: &Connection) -> Result<BTreeMap<String, Value
         "agent_id",
         "conversation_id",
         "is_subagent",
-        "metadata_json",
         "messages_path",
     ];
     let expressions = OPTIONAL
@@ -293,20 +342,46 @@ fn query_database_rows(connection: &Connection) -> Result<BTreeMap<String, Value
         })
         .collect::<Vec<_>>()
         .join(", ");
+    let materialized_bytes = std::iter::once("session_id")
+        .chain(OPTIONAL.iter().copied())
+        .map(|column| {
+            if columns.contains(column) {
+                format!("COALESCE(octet_length(CAST({column} AS TEXT)), 0)")
+            } else {
+                "0".to_owned()
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(" + ");
     let sql = format!(
-        "SELECT CAST(session_id AS TEXT), {expressions} FROM sessions ORDER BY session_id LIMIT {}",
+        "SELECT {materialized_bytes}, CAST(session_id AS TEXT), {expressions} FROM sessions ORDER BY session_id LIMIT {}",
         MAX_CLINE_SESSIONS + 1
     );
     let mut statement = connection.prepare(&sql)?;
     let mut query = statement.query([])?;
     let mut rows = BTreeMap::new();
+    let mut retained_bytes = 0_usize;
     while let Some(row) = query.next()? {
         if rows.len() >= MAX_CLINE_SESSIONS {
             return Err(ClineSdkError::Invalid(format!(
                 "sessions.db exceeds the {MAX_CLINE_SESSIONS} session limit"
             )));
         }
-        let session_id: String = row.get(0)?;
+        let row_bytes = usize::try_from(row.get::<_, i64>(0)?).map_err(|_| {
+            ClineSdkError::Invalid("sessions.db reported an invalid materialized byte count".into())
+        })?;
+        retained_bytes = retained_bytes
+            .checked_add(row_bytes)
+            .and_then(|value| value.checked_add(SQLITE_CATALOG_ROW_OVERHEAD_BYTES))
+            .ok_or_else(|| {
+                ClineSdkError::Invalid("sessions.db materialized byte count overflowed".into())
+            })?;
+        if retained_bytes > MAX_SQLITE_CATALOG_MATERIALIZED_BYTES {
+            return Err(ClineSdkError::Invalid(format!(
+                "sessions.db exceeds the {MAX_SQLITE_CATALOG_MATERIALIZED_BYTES} byte aggregate materialization limit"
+            )));
+        }
+        let session_id: String = row.get(1)?;
         validate_session_id(&session_id)?;
         if rows.contains_key(&session_id) {
             return Err(ClineSdkError::Invalid(format!(
@@ -316,7 +391,7 @@ fn query_database_rows(connection: &Connection) -> Result<BTreeMap<String, Value
         let mut object = Map::new();
         object.insert("session_id".into(), Value::String(session_id.clone()));
         for (offset, column) in OPTIONAL.iter().enumerate() {
-            let value: Option<String> = row.get(offset + 1)?;
+            let value: Option<String> = row.get(offset + 2)?;
             if let Some(value) = value {
                 object.insert((*column).into(), Value::String(value));
             }
@@ -343,8 +418,6 @@ fn bind_session_leaf(
     authority: &ProviderSourceRoot,
     session_id: String,
     entry: CatalogEntry,
-    index_evidence: Option<[u8; 32]>,
-    database_evidence: Option<[u8; 32]>,
 ) -> Result<SessionLeaf> {
     validate_session_id(&session_id)?;
     let manifest_relative = PathBuf::from("sessions")
@@ -371,11 +444,6 @@ fn bind_session_leaf(
         metadata_from_catalog(entry.database_row.as_ref(), true),
     );
     overlay_manifest_metadata(&mut metadata, manifest_value.as_ref());
-    metadata.index_row = entry.index_row.clone();
-    metadata.database_row = entry.database_row.clone();
-    metadata.manifest = manifest_value.clone();
-    metadata.malformed_manifest = malformed_manifest;
-
     let messages_path = string_field(entry.database_row.as_ref(), "messages_path")
         .or_else(|| string_field(entry.index_row.as_ref(), "messagesPath"))
         .or_else(|| string_field(manifest_value.as_ref(), "messages_path"));
@@ -388,10 +456,12 @@ fn bind_session_leaf(
 
     let mut catalog_digest = Sha256::new();
     catalog_digest.update(b"ctx.cline.sdk.catalog-evidence.v1\0");
-    hash_optional_digest(&mut catalog_digest, index_evidence);
-    hash_optional_digest(&mut catalog_digest, database_evidence);
     hash_optional_json(&mut catalog_digest, entry.index_row.as_ref());
     hash_optional_json(&mut catalog_digest, entry.database_row.as_ref());
+    metadata.index_row = entry.index_row;
+    metadata.database_row = entry.database_row;
+    metadata.manifest = manifest_value;
+    metadata.malformed_manifest = malformed_manifest;
     let source_key_digest = Sha256::digest(session_id.as_bytes()).into();
     Ok(SessionLeaf {
         provider_session_id: session_id,
@@ -684,6 +754,27 @@ fn hash_optional_digest(digest: &mut Sha256, value: Option<[u8; 32]>) {
         }
         None => digest.update([0]),
     }
+}
+
+fn catalog_fence(domain: &[u8], state: u8, evidence: Option<[u8; 32]>) -> [u8; 32] {
+    let mut digest = Sha256::new();
+    digest.update(domain);
+    digest.update([state]);
+    hash_optional_digest(&mut digest, evidence);
+    digest.finalize().into()
+}
+
+fn file_evidence_digest(evidence: &FileEvidence) -> [u8; 32] {
+    let mut digest = Sha256::new();
+    evidence.hash_into(&mut digest);
+    digest.finalize().into()
+}
+
+fn database_evidence_digest(main: [u8; 32], revision: [u8; 32]) -> [u8; 32] {
+    let mut digest = Sha256::new();
+    digest.update(main);
+    digest.update(revision);
+    digest.finalize().into()
 }
 
 fn hash_optional_json(digest: &mut Sha256, value: Option<&Value>) {
