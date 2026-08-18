@@ -30,6 +30,7 @@ const MAX_FRAME_BYTES: usize = 64 * 1024;
 const MAX_RESPONSE_BYTES: usize = 48 * 1024;
 #[cfg(test)]
 const API_INVENTORY: &str = r#"{"operations":{"CoreDoctor":{"request_keys":[],"response_keys":["facts"]},"CoreSetup":{"request_keys":["catalog_only","no_daemon","semantic","wait"],"response_keys":["facts","generation_id"]},"CoreStatus":{"request_keys":["usage"],"response_keys":["facts"]},"LocalUsageSummary":{"request_keys":[],"response_keys":["facts"]},"ManagedPairAbort":{"request_keys":["attempt_id"],"response_keys":["aborted"]},"ManagedPairBegin":{"request_keys":[],"response_keys":["attempt_id","candidate_root"]},"ManagedPairStage":{"request_keys":["attempt_id"],"response_keys":["attempt_id","release_name","rollback_generation","status"]},"ManagedPairStatus":{"request_keys":["attempt_id"],"response_keys":["status"]},"ManagedPairUninstall":{"request_keys":[],"response_keys":["attempt_id","cleanup_mode","status"]},"RefreshAndWait":{"request_keys":[],"response_keys":["facts","generation_id"]},"WakeCompanionMaintenance":{"request_keys":[],"response_keys":["accepted"]},"WakeRefresh":{"request_keys":[],"response_keys":["accepted"]}},"protocol":"ctx-core-capability","schema_version":1}"#;
+#[cfg(test)]
 pub(crate) const API_FINGERPRINT: &str =
     "e9338bb0508f3a506655b58df5cfe75a561fe73db14a633b15d2df8635acc860";
 

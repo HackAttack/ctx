@@ -348,7 +348,7 @@ pub(super) const ALLOWLIST: &[AllowEntry] = &[
     ),
     allow!(
         COMPANION,
-        "write_cli_route_error#1@3f1d569965a6609b",
+        "write_cli_launch_error#1@3f1d569965a6609b",
         DirectWrite,
         MachineProtocol,
         JSON_PROTOCOL,
@@ -356,7 +356,7 @@ pub(super) const ALLOWLIST: &[AllowEntry] = &[
     ),
     allow!(
         COMPANION,
-        "write_cli_route_error#1@8d1da5f184bab174",
+        "write_cli_launch_error#1@8d1da5f184bab174",
         StderrConstructor,
         MachineProtocol,
         JSON_PROTOCOL,
