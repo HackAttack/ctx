@@ -519,7 +519,10 @@ fn register_explicit_source_catalog_snapshot_routes(
             .collect::<BTreeSet<_>>();
         let source = source_from_catalog_entry(entry, true)?;
         validate_explicit_source_root(data_root, &source)?;
-        let automatic_route_retirement = if source.provider == CaptureProvider::NanoClaw {
+        let automatic_route_retirement = if matches!(
+            source.provider,
+            CaptureProvider::NanoClaw | CaptureProvider::Shelley
+        ) {
             let identity = automatic_source_backed_route_identity(&source)?;
             base_generation
                 .is_some_and(|index| index.manifest().source_route(&identity).is_some())

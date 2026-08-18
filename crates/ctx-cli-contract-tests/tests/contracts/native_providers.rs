@@ -1,5 +1,6 @@
 mod support;
 
+use ctx_history_index::VerifiedIndex;
 use support::{daemon_test_root as tempdir, *};
 
 #[path = "native_providers/factory_retry.rs"]
@@ -769,60 +770,59 @@ fn discovery_only_sqlite_explicit_paths_are_rejected_without_fallback() {
 
 #[test]
 fn shelley_imports_exact_cwd_automatically_and_exact_path_explicitly() {
-    let automatic_temp = tempdir();
-    let automatic_fixture = PathBuf::from(write_native_shelley_fixture(
-        &automatic_temp,
-        "shelley-cwd-oracle",
-    ));
-    let automatic_path = automatic_temp.path().join("shelley.db");
+    let temp = tempdir();
+    let automatic_query = "shelleyautomaticcwdonlymarker";
+    let automatic_fixture = PathBuf::from(write_native_shelley_fixture(&temp, automatic_query));
+    let automatic_path = temp.path().join("shelley.db");
     fs::copy(automatic_fixture, &automatic_path).unwrap();
-    let _automatic_daemon = start_isolated_provider_daemon(&automatic_temp);
+    let _daemon = start_isolated_provider_daemon(&temp);
 
-    let automatic_first = json_output(
-        ctx(&automatic_temp)
-            .current_dir(automatic_temp.path())
-            .args([
-                "import",
-                "--provider",
-                "shelley",
-                "--no-daemon",
-                "--format=json",
-            ]),
-    );
+    let automatic_first = json_output(ctx(&temp).current_dir(temp.path()).args([
+        "import",
+        "--provider",
+        "shelley",
+        "--no-daemon",
+        "--format=json",
+    ]));
     assert_authoritative_provider_publication(&automatic_first);
-    wait_for_imported_core(&automatic_temp, &automatic_first);
-    let automatic_first_records = provider_core_records(&data_root(&automatic_temp), "shelley");
-    assert!(!automatic_first_records.is_empty(), "{automatic_first:#}");
-    let automatic_source_identity = automatic_first_records[0].source.clone();
-
-    let automatic_second = json_output(
-        ctx(&automatic_temp)
-            .current_dir(automatic_temp.path())
-            .args([
-                "import",
-                "--provider",
-                "shelley",
-                "--no-daemon",
-                "--format=json",
-            ]),
-    );
-    assert_authoritative_provider_publication(&automatic_second);
+    wait_for_imported_core(&temp, &automatic_first);
+    let automatic_snapshot = shelley_lifecycle_snapshot(&data_root(&temp));
     assert_eq!(
-        provider_core_records(&data_root(&automatic_temp), "shelley")[0].source,
-        automatic_source_identity
+        automatic_snapshot.route_ownership.len(),
+        1,
+        "{automatic_first:#}"
+    );
+    let automatic_route = automatic_snapshot.route_ownership[0].0.clone();
+    assert_eq!(
+        automatic_snapshot.source_ids.len(),
+        1,
+        "{automatic_first:#}"
+    );
+    assert_eq!(
+        (
+            automatic_snapshot.session_ids.len(),
+            automatic_snapshot.record_count
+        ),
+        (1, 2),
+        "{automatic_first:#}"
+    );
+    assert_eq!(
+        automatic_snapshot.route_ownership,
+        vec![(
+            automatic_route.clone(),
+            automatic_snapshot.source_ids.clone()
+        )]
     );
 
     let explicit_temp = tempdir();
-    let explicit_fixture = PathBuf::from(write_native_shelley_fixture(
-        &explicit_temp,
-        "shelley-explicit-oracle",
-    ));
+    let explicit_query = "shelleyexplicitpathonlymarker";
+    let explicit_fixture =
+        PathBuf::from(write_native_shelley_fixture(&explicit_temp, explicit_query));
     let explicit_path = explicit_temp.path().join("selected/shelley.db");
     fs::create_dir_all(explicit_path.parent().unwrap()).unwrap();
     fs::copy(explicit_fixture, &explicit_path).unwrap();
-    let _explicit_daemon = start_isolated_provider_daemon(&explicit_temp);
 
-    let explicit_first = json_output(ctx(&explicit_temp).args([
+    let explicit_first = json_output(ctx(&temp).current_dir(temp.path()).args([
         "import",
         "--provider",
         "shelley",
@@ -832,38 +832,51 @@ fn shelley_imports_exact_cwd_automatically_and_exact_path_explicitly() {
         "--format=json",
     ]));
     assert_explicit_source_publication(&explicit_first, "shelley", "shelley_sqlite");
-    wait_for_imported_core(&explicit_temp, &explicit_first);
-    let explicit_first_records = provider_core_records(&data_root(&explicit_temp), "shelley");
-    assert!(!explicit_first_records.is_empty(), "{explicit_first:#}");
-    let explicit_source_identity = explicit_first_records[0].source.clone();
-    let explicit_route = explicit_first["sources"][0]["route_identity"].clone();
-    let explicit_lineage = explicit_first["sources"][0]["catalog_lineage"].clone();
+    wait_for_imported_core(&temp, &explicit_first);
+    let explicit_route = explicit_first["sources"][0]["route_identity"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let explicit_lineage = explicit_first["sources"][0]["catalog_lineage"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    assert_ne!(explicit_route, automatic_route);
+    let explicit_snapshot = shelley_lifecycle_snapshot(&data_root(&temp));
+    assert_eq!(explicit_snapshot.source_ids, automatic_snapshot.source_ids);
+    assert_eq!(
+        explicit_snapshot.session_ids,
+        automatic_snapshot.session_ids
+    );
+    assert_eq!(explicit_snapshot.event_ids, automatic_snapshot.event_ids);
+    assert_eq!(
+        explicit_snapshot.record_count,
+        automatic_snapshot.record_count
+    );
+    assert_eq!(
+        explicit_snapshot.route_ownership,
+        vec![(explicit_route.clone(), explicit_snapshot.source_ids.clone())]
+    );
+    let explicit_bodies = provider_core_records(&data_root(&temp), "shelley")
+        .into_iter()
+        .filter_map(|record| record.content.normalized_body)
+        .collect::<Vec<_>>();
+    assert!(
+        explicit_bodies
+            .iter()
+            .any(|body| body.contains(explicit_query)),
+        "exact --path content was not published: {explicit_bodies:#?}"
+    );
+    assert!(
+        explicit_bodies
+            .iter()
+            .all(|body| !body.contains(automatic_query)),
+        "competing automatic-CWD content survived exact --path replacement: {explicit_bodies:#?}"
+    );
 
-    let explicit_second = json_output(ctx(&explicit_temp).args([
-        "import",
-        "--provider",
-        "shelley",
-        "--path",
-        explicit_path.to_str().unwrap(),
-        "--no-daemon",
-        "--format=json",
-    ]));
-    assert_explicit_source_publication(&explicit_second, "shelley", "shelley_sqlite");
-    assert_eq!(
-        explicit_second["sources"][0]["route_identity"],
-        explicit_route
-    );
-    assert_eq!(
-        explicit_second["sources"][0]["catalog_lineage"],
-        explicit_lineage
-    );
-    assert_eq!(
-        provider_core_records(&data_root(&explicit_temp), "shelley")[0].source,
-        explicit_source_identity
-    );
-    let search = json_output(ctx(&explicit_temp).args([
+    let explicit_search = json_output(ctx(&temp).args([
         "search",
-        "shelley-explicit-oracle",
+        explicit_query,
         "--provider",
         "shelley",
         "--refresh",
@@ -872,7 +885,121 @@ fn shelley_imports_exact_cwd_automatically_and_exact_path_explicitly() {
         "1",
         "--format=json",
     ]));
-    assert_search_provider_oracle(&search, "shelley", "shelley-explicit-oracle", 1, "message");
+    assert_search_provider_oracle(&explicit_search, "shelley", explicit_query, 1, "message");
+    let competing_cwd_search = json_output(ctx(&temp).args([
+        "search",
+        automatic_query,
+        "--provider",
+        "shelley",
+        "--refresh",
+        "off",
+        "--format=json",
+    ]));
+    assert_eq!(
+        competing_cwd_search["results"].as_array().unwrap().len(),
+        0,
+        "exact --path did not take precedence over the competing CWD database: {competing_cwd_search:#}"
+    );
+
+    let changed_query = "shelleycontentchangedonlymarker";
+    append_native_shelley_event(explicit_path.to_str().unwrap(), changed_query);
+    let explicit_changed = json_output(ctx(&temp).current_dir(temp.path()).args([
+        "import",
+        "--provider",
+        "shelley",
+        "--path",
+        explicit_path.to_str().unwrap(),
+        "--no-daemon",
+        "--format=json",
+    ]));
+    assert_explicit_source_publication(&explicit_changed, "shelley", "shelley_sqlite");
+    assert_eq!(
+        explicit_changed["sources"][0]["route_identity"],
+        explicit_route
+    );
+    assert_eq!(
+        explicit_changed["sources"][0]["catalog_lineage"],
+        explicit_lineage
+    );
+    assert_ne!(
+        explicit_changed["sources"][0]["published_generation"],
+        explicit_first["sources"][0]["published_generation"]
+    );
+    let changed_snapshot = shelley_lifecycle_snapshot(&data_root(&temp));
+    assert_eq!(changed_snapshot.source_ids, explicit_snapshot.source_ids);
+    assert_eq!(changed_snapshot.session_ids, explicit_snapshot.session_ids);
+    assert!(changed_snapshot
+        .event_ids
+        .is_superset(&explicit_snapshot.event_ids));
+    assert_eq!(
+        changed_snapshot.event_ids.len(),
+        explicit_snapshot.event_ids.len() + 1
+    );
+    assert_eq!(
+        changed_snapshot.record_count,
+        explicit_snapshot.record_count + 1
+    );
+    assert_eq!(
+        changed_snapshot.route_ownership,
+        vec![(explicit_route, changed_snapshot.source_ids.clone())]
+    );
+    let changed_search = json_output(ctx(&temp).args([
+        "search",
+        changed_query,
+        "--provider",
+        "shelley",
+        "--refresh",
+        "off",
+        "--limit",
+        "1",
+        "--format=json",
+    ]));
+    assert_search_provider_oracle(&changed_search, "shelley", changed_query, 1, "message");
+}
+
+#[derive(Debug, PartialEq, Eq)]
+struct ShelleyLifecycleSnapshot {
+    source_ids: BTreeSet<String>,
+    session_ids: BTreeSet<String>,
+    event_ids: BTreeSet<String>,
+    record_count: usize,
+    route_ownership: Vec<(String, BTreeSet<String>)>,
+}
+
+fn shelley_lifecycle_snapshot(data_root: &Path) -> ShelleyLifecycleSnapshot {
+    let records = provider_core_records(data_root, "shelley");
+    let index = VerifiedIndex::open(data_root.join("search/lexical")).unwrap();
+    let route_ownership = index
+        .manifest()
+        .source_routes()
+        .iter()
+        .filter_map(|route| {
+            let source_ids = route
+                .sources()
+                .iter()
+                .filter(|source| source.provider() == "shelley")
+                .map(|source| source.identity().to_string())
+                .collect::<BTreeSet<_>>();
+            (!source_ids.is_empty())
+                .then(|| (route.route_identity().as_str().to_owned(), source_ids))
+        })
+        .collect();
+    ShelleyLifecycleSnapshot {
+        source_ids: records
+            .iter()
+            .map(|record| record.source.identity().to_string())
+            .collect(),
+        session_ids: records
+            .iter()
+            .map(|record| record.session_id.to_string())
+            .collect(),
+        event_ids: records
+            .iter()
+            .map(|record| record.event_id.to_string())
+            .collect(),
+        record_count: records.len(),
+        route_ownership,
+    }
 }
 
 fn source_by_path<'a>(packet: &'a Value, provider: &str, path: &Path) -> &'a Value {
