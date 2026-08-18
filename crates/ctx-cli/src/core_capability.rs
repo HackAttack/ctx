@@ -24,6 +24,9 @@ use serde_json::{json, Value};
 use sha2::{Digest as _, Sha256};
 
 mod hosted_pair_install;
+mod setup_options;
+
+use setup_options::{progress_mode_for_notice, setup_notice_lines, setup_progress_mode};
 
 const INVOCATION: &str = "--ctx-core-capability-v1";
 const HOSTED_PAIR_INSTALL_INVOCATION: &str = "--ctx-core-hosted-pair-install-v1";
@@ -32,10 +35,10 @@ const POST_EXIT_UNINSTALL_INVOCATION: &str = "--ctx-core-managed-pair-uninstall-
 const MAX_FRAME_BYTES: usize = 64 * 1024;
 const MAX_RESPONSE_BYTES: usize = 48 * 1024;
 #[cfg(test)]
-const API_INVENTORY: &str = r#"{"operations":{"CoreDoctor":{"request_keys":[],"response_keys":["facts"]},"CoreSetup":{"request_keys":["catalog_only","no_daemon","semantic","wait"],"response_keys":["facts","generation_id"]},"CoreStatus":{"request_keys":["usage"],"response_keys":["facts"]},"LocalUsageSummary":{"request_keys":[],"response_keys":["facts"]},"ManagedPairAbort":{"request_keys":["attempt_id"],"response_keys":["aborted"]},"ManagedPairBegin":{"request_keys":[],"response_keys":["attempt_id","candidate_root"]},"ManagedPairStage":{"request_keys":["attempt_id"],"response_keys":["attempt_id","release_name","rollback_generation","status"]},"ManagedPairStatus":{"request_keys":["attempt_id"],"response_keys":["status"]},"ManagedPairUninstall":{"request_keys":[],"response_keys":["attempt_id","cleanup_mode","status"]},"RefreshAndWait":{"request_keys":[],"response_keys":["facts","generation_id"]},"WakeCompanionMaintenance":{"request_keys":[],"response_keys":["accepted"]},"WakeRefresh":{"request_keys":[],"response_keys":["accepted"]}},"protocol":"ctx-core-capability","schema_version":1}"#;
+const API_INVENTORY: &str = r#"{"operations":{"CoreDoctor":{"request_keys":[],"response_keys":["facts"]},"CoreSetup":{"request_keys":["catalog_only","defer_fresh_empty_wait","no_daemon","notice_lines","progress","semantic","wait"],"response_keys":["facts","generation_id"]},"CoreStatus":{"request_keys":["usage"],"response_keys":["facts"]},"LocalUsageSummary":{"request_keys":[],"response_keys":["facts"]},"ManagedPairAbort":{"request_keys":["attempt_id"],"response_keys":["aborted"]},"ManagedPairBegin":{"request_keys":[],"response_keys":["attempt_id","candidate_root"]},"ManagedPairStage":{"request_keys":["attempt_id"],"response_keys":["attempt_id","release_name","rollback_generation","status"]},"ManagedPairStatus":{"request_keys":["attempt_id"],"response_keys":["status"]},"ManagedPairUninstall":{"request_keys":[],"response_keys":["attempt_id","cleanup_mode","status"]},"RefreshAndWait":{"request_keys":[],"response_keys":["facts","generation_id"]},"WakeCompanionMaintenance":{"request_keys":[],"response_keys":["accepted"]},"WakeRefresh":{"request_keys":[],"response_keys":["accepted"]}},"protocol":"ctx-core-capability","schema_version":1}"#;
 #[cfg(test)]
 pub(crate) const API_FINGERPRINT: &str =
-    "e9338bb0508f3a506655b58df5cfe75a561fe73db14a633b15d2df8635acc860";
+    "b92406887e8d39b0249e8a7b3a12ba904de025d9b1b8f4fdca9570576bc4cc6e";
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum Operation {
@@ -159,7 +162,10 @@ struct Request {
 enum Options {
     Setup {
         catalog_only: bool,
+        defer_fresh_empty_wait: bool,
         no_daemon: bool,
+        notice_lines: Vec<String>,
+        progress: crate::progress::ProgressArg,
         semantic: bool,
         wait: bool,
     },
@@ -250,11 +256,23 @@ fn execute(request: Request) -> Result<Value> {
             Operation::CoreSetup,
             Options::Setup {
                 catalog_only,
+                defer_fresh_empty_wait,
                 no_daemon,
+                notice_lines,
+                progress,
                 semantic,
                 wait,
             },
-        ) => core_setup_facts(&request.data_root, catalog_only, no_daemon, semantic, wait)?,
+        ) => core_setup_facts(
+            &request.data_root,
+            catalog_only,
+            defer_fresh_empty_wait,
+            no_daemon,
+            &notice_lines,
+            progress,
+            semantic,
+            wait,
+        )?,
         (Operation::CoreStatus, Options::Status { usage }) => {
             core_status_facts(&request.data_root, usage)?
         }
@@ -382,7 +400,10 @@ fn core_status_facts(data_root: &Path, usage: Option<UsageAction>) -> Result<Val
 fn core_setup_facts(
     data_root: &Path,
     catalog_only: bool,
+    defer_fresh_empty_wait: bool,
     no_daemon: bool,
+    notice_lines: &[String],
+    progress_mode: crate::progress::ProgressArg,
     semantic: bool,
     wait: bool,
 ) -> Result<Value> {
@@ -411,7 +432,13 @@ fn core_setup_facts(
         )?;
     }
     let (published_generation, refresh_request) = if daemon_requested {
-        core_setup_refresh(data_root, wait)
+        core_setup_refresh(
+            data_root,
+            wait,
+            defer_fresh_empty_wait,
+            notice_lines,
+            progress_mode,
+        )?
     } else {
         (
             None,
@@ -436,9 +463,29 @@ fn core_setup_facts(
     }))
 }
 
-fn core_setup_refresh(data_root: &Path, wait: bool) -> (Option<String>, Value) {
+fn core_setup_refresh(
+    data_root: &Path,
+    wait: bool,
+    defer_fresh_empty_wait: bool,
+    notice_lines: &[String],
+    progress_mode: crate::progress::ProgressArg,
+) -> Result<(Option<String>, Value)> {
     let mut effective_wait = wait;
-    let mut progress = |_status: &crate::semantic::RefreshStatus| Ok(());
+    let mut ui = crate::ui::Ui::stdio(ctx_terminal::ui::ColorMode::Auto);
+    let progress_mode = progress_mode_for_notice(
+        progress_mode,
+        ui.stderr_context().content_width(),
+        notice_lines,
+    );
+    let mut reporter =
+        crate::progress::ProgressReporter::new(&mut ui, progress_mode.into(), false, "setup", 0);
+    if !notice_lines.is_empty() {
+        let lines = notice_lines.iter().map(String::as_str).collect::<Vec<_>>();
+        reporter.notice("companion", &lines)?;
+    }
+    let mut progress = |status: &crate::semantic::RefreshStatus| {
+        reporter.source_refresh(status).map_err(anyhow::Error::new)
+    };
     let mode = if wait {
         crate::semantic::SourceBackedRefreshMode::Wait
     } else {
@@ -449,10 +496,9 @@ fn core_setup_refresh(data_root: &Path, wait: bool) -> (Option<String>, Value) {
         mode,
         &mut progress,
     );
-    if result
-        .as_ref()
-        .is_err_and(|error| should_wait_for_fresh_empty_publication(wait, error))
-    {
+    if result.as_ref().is_err_and(|error| {
+        !defer_fresh_empty_wait && should_wait_for_fresh_empty_publication(wait, error)
+    }) {
         effective_wait = true;
         result = crate::semantic::coordinate_setup_source_backed_refresh_with_progress(
             data_root,
@@ -467,7 +513,7 @@ fn core_setup_refresh(data_root: &Path, wait: bool) -> (Option<String>, Value) {
                 .receipt
                 .as_ref()
                 .map(|receipt| receipt.to_json());
-            (
+            Ok((
                 Some(generation_id.clone()),
                 json!({
                     "daemon_available": observation.daemon_available,
@@ -479,15 +525,22 @@ fn core_setup_refresh(data_root: &Path, wait: bool) -> (Option<String>, Value) {
                     "source_count": observation.source_count,
                     "status": observation.status,
                 }),
-            )
+            ))
         }
         Err(error) => {
+            if error.chain().any(|cause| {
+                cause
+                    .downcast_ref::<crate::progress::ProgressWriterError>()
+                    .is_some()
+            }) {
+                return Err(error);
+            }
             let pending = (!effective_wait)
                 .then(|| {
                     error.downcast_ref::<crate::semantic::SourceBackedRefreshPendingPublication>()
                 })
                 .flatten();
-            (
+            Ok((
                 None,
                 json!({
                     "daemon_available": true,
@@ -503,7 +556,7 @@ fn core_setup_refresh(data_root: &Path, wait: bool) -> (Option<String>, Value) {
                     "source_count": pending.map(crate::semantic::SourceBackedRefreshPendingPublication::source_count),
                     "status": if pending.is_some() { "pending" } else { "unavailable" },
                 }),
-            )
+            ))
         }
     }
 }
@@ -540,7 +593,15 @@ fn parse_options(operation: Operation, value: &Value) -> Result<Options> {
         .as_object()
         .ok_or_else(|| anyhow!("options are not an object"))?;
     let expected: &[&str] = match operation {
-        Operation::CoreSetup => &["catalog_only", "no_daemon", "semantic", "wait"],
+        Operation::CoreSetup => &[
+            "catalog_only",
+            "defer_fresh_empty_wait",
+            "no_daemon",
+            "notice_lines",
+            "progress",
+            "semantic",
+            "wait",
+        ],
         Operation::CoreStatus => &["usage"],
         Operation::CoreDoctor
         | Operation::LocalUsageSummary
@@ -557,7 +618,10 @@ fn parse_options(operation: Operation, value: &Value) -> Result<Options> {
     match operation {
         Operation::CoreSetup => Ok(Options::Setup {
             catalog_only: required_bool(object, "catalog_only")?,
+            defer_fresh_empty_wait: required_bool(object, "defer_fresh_empty_wait")?,
             no_daemon: required_bool(object, "no_daemon")?,
+            notice_lines: setup_notice_lines(object)?,
+            progress: setup_progress_mode(object)?,
             semantic: required_bool(object, "semantic")?,
             wait: required_bool(object, "wait")?,
         }),

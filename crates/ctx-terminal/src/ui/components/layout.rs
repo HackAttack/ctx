@@ -1,7 +1,7 @@
 use unicode_segmentation::UnicodeSegmentation as _;
 use unicode_width::UnicodeWidthStr;
 
-pub(super) fn display_width(text: &str) -> usize {
+pub fn display_width(text: &str) -> usize {
     UnicodeWidthStr::width(crate::ui::document::neutralize_controls(text).as_str())
 }
 

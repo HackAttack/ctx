@@ -14,9 +14,9 @@ mod writer;
 
 pub use bootstrap::{bootstrap_color_choice, scan_color_mode, scan_machine_output_hint};
 pub use components::{
-    diagnostic, empty_state, evidence_list, fields, hint, is_copyable_atom, outcome, progress,
-    refresh_progress, section, table, Action, Diagnostic, DiagnosticLevel, EmptyState, Evidence,
-    Field, Hint, Outcome, OutcomeState, Progress, RefreshCurrentSourceProgress,
+    diagnostic, display_width, empty_state, evidence_list, fields, hint, is_copyable_atom, outcome,
+    progress, refresh_progress, section, table, Action, Diagnostic, DiagnosticLevel, EmptyState,
+    Evidence, Field, Hint, Outcome, OutcomeState, Progress, RefreshCurrentSourceProgress,
     RefreshCurrentSourceProgressStage, RefreshLogicalPhase, RefreshLogicalStatus, RefreshProgress,
     RefreshProgressSnapshot, RefreshRequestState, RefreshStatusKind, RefreshStructuredOutcome,
     RefreshWholeRunStage, Table,
