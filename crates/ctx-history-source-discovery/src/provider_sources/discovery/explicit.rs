@@ -358,7 +358,9 @@ fn exact_current_unsupported_reason(
     }
 
     match provider {
-        CaptureProvider::Codex if is_named_regular_file(path, |name| name.ends_with(".jsonl.zst")) => {
+        CaptureProvider::Codex
+            if is_named_regular_file(path, |name| name.ends_with(".jsonl.zst")) =>
+        {
             Some("Codex compressed .jsonl.zst history is detected but unsupported")
         }
         CaptureProvider::KiroCli if is_current_kiro_shape(path, kind?) => {
