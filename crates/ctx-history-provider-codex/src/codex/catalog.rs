@@ -215,6 +215,8 @@ fn read_codex_session_meta(
 
 fn read_codex_session_meta_from_reader(mut reader: impl std::io::BufRead) -> Result<Option<Value>> {
     let mut line = Vec::new();
+    let mut session_meta = None;
+    let mut native_session_id = None;
     for _ in 0..32 {
         match read_provider_jsonl_line_or_skip_oversized(&mut reader, &mut line)? {
             ProviderJsonlLineRead::Eof => break,
@@ -227,11 +229,27 @@ fn read_codex_session_meta_from_reader(mut reader: impl std::io::BufRead) -> Res
         let Ok(value) = serde_json::from_slice::<Value>(&line) else {
             continue;
         };
-        if value.get("type").and_then(Value::as_str) == Some("session_meta") {
-            return Ok(Some(value));
+        if value.get("type").and_then(Value::as_str) != Some("session_meta") {
+            continue;
+        }
+        let candidate_native_session_id = codex_native_session_id_from_meta(&value);
+        if native_session_id
+            .as_ref()
+            .zip(candidate_native_session_id.as_ref())
+            .is_some_and(|(admitted, candidate)| admitted != candidate)
+        {
+            return Err(CaptureError::InvalidPayload(
+                "Codex catalog prefix contains conflicting session_meta owners".to_owned(),
+            ));
+        }
+        if native_session_id.is_none() {
+            native_session_id = candidate_native_session_id;
+        }
+        if session_meta.is_none() {
+            session_meta = Some(value);
         }
     }
-    Ok(None)
+    Ok(session_meta)
 }
 
 /// Reads only the bounded session-meta prefix needed to identify a newly
@@ -371,4 +389,67 @@ pub(crate) fn codex_session_file_stem(path: &Path) -> Option<&str> {
     let name = path.file_name()?.to_str()?;
     name.strip_suffix(".jsonl.zst")
         .or_else(|| name.strip_suffix(".jsonl"))
+}
+
+#[cfg(test)]
+mod tests {
+    use std::io::Cursor;
+
+    use serde_json::json;
+
+    use super::*;
+    use crate::common::io::open_provider_source_file;
+
+    fn compressed_session_meta_frame(native_session_id: &str) -> Vec<u8> {
+        let mut line = serde_json::to_vec(&json!({
+            "timestamp": "2026-08-18T01:00:00Z",
+            "type": "session_meta",
+            "payload": {
+                "id": native_session_id,
+                "timestamp": "2026-08-18T01:00:00Z"
+            }
+        }))
+        .unwrap();
+        line.push(b'\n');
+        zstd::stream::encode_all(Cursor::new(line), 1).unwrap()
+    }
+
+    #[test]
+    fn compressed_catalog_probe_rejects_conflicting_concatenated_frame_owners() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("renamed-rollout.jsonl.zst");
+        let bytes = [
+            compressed_session_meta_frame("019fb000-0000-7000-8000-000000000071"),
+            compressed_session_meta_frame("019fb000-0000-7000-8000-000000000072"),
+        ]
+        .concat();
+        std::fs::write(&path, &bytes).unwrap();
+        let opened = open_provider_source_file(&path).unwrap();
+
+        let error = probe_codex_native_session_id(&path, &opened, bytes.len() as u64).unwrap_err();
+        assert!(matches!(
+            error,
+            CaptureError::InvalidPayload(detail)
+                if detail.contains("conflicting session_meta owners")
+        ));
+    }
+
+    #[test]
+    fn compressed_catalog_probe_accepts_consistent_concatenated_frame_owners() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("renamed-rollout.jsonl.zst");
+        let native_session_id = "019fb000-0000-7000-8000-000000000073";
+        let bytes = [
+            compressed_session_meta_frame(native_session_id),
+            compressed_session_meta_frame(native_session_id),
+        ]
+        .concat();
+        std::fs::write(&path, &bytes).unwrap();
+        let opened = open_provider_source_file(&path).unwrap();
+
+        assert_eq!(
+            probe_codex_native_session_id(&path, &opened, bytes.len() as u64).unwrap(),
+            Some(native_session_id.to_owned())
+        );
+    }
 }

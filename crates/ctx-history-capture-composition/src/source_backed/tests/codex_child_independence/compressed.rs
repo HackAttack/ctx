@@ -22,6 +22,14 @@ fn write_compressed(path: &Path, plaintext: &[u8]) {
     fs::write(path, compressed).unwrap();
 }
 
+fn write_compressed_frames(path: &Path, plaintext_frames: &[Vec<u8>]) {
+    let mut compressed = Vec::new();
+    for plaintext in plaintext_frames {
+        compressed.extend(zstd::stream::encode_all(Cursor::new(plaintext), 1).unwrap());
+    }
+    fs::write(path, compressed).unwrap();
+}
+
 fn logical_identity(records: &[CoreRecord]) -> Vec<(String, String, String)> {
     records
         .iter()
@@ -279,6 +287,120 @@ fn overlapping_raw_and_compressed_representations_coalesce_raw_first_and_keep_id
 }
 
 #[test]
+fn exact_compressed_route_rejects_conflicting_concatenated_frame_owners() {
+    let temp = tempdir().unwrap();
+    let source_root = temp.path().join("explicit");
+    fs::create_dir_all(&source_root).unwrap();
+    let first_owner = "019fb000-0000-7000-8000-000000000074";
+    let second_owner = "019fb000-0000-7000-8000-000000000075";
+    let source = source_root.join("ambiguous-rollout.jsonl.zst");
+    write_compressed_frames(
+        &source,
+        &[
+            jsonl_bytes([session_meta(
+                first_owner,
+                ProviderNativeSessionRelationship::Root,
+                None,
+            )]),
+            jsonl_bytes([
+                session_meta(second_owner, ProviderNativeSessionRelationship::Root, None),
+                message("explicitambiguousownermarker"),
+            ]),
+        ],
+    );
+
+    let mut registry = SourceBackedProviderRegistry::new();
+    let error = register_landed_source_backed_route(
+        &mut registry,
+        fixture_provider_source_at(
+            CaptureProvider::Codex,
+            "codex_session_jsonl",
+            ProviderImportSupport::Explicit,
+            &source,
+        ),
+        SourceBackedRouteSelection::ExplicitManual,
+    )
+    .unwrap_err();
+    assert!(matches!(
+        error,
+        SourceBackedCoordinatorError::InvalidRoute {
+            provider: CaptureProvider::Codex,
+            detail,
+        } if detail.contains("conflicting session_meta owners")
+    ));
+    assert!(registry.routes().next().is_none());
+}
+
+#[test]
+fn automatic_compressed_route_rejects_later_concatenated_frame_owner() {
+    let temp = tempdir().unwrap();
+    let sessions = temp.path().join("sessions");
+    let index_root = temp.path().join("index");
+    fs::create_dir_all(&sessions).unwrap();
+    let admitted_owner = "019fb000-0000-7000-8000-000000000076";
+    let conflicting_owner = "019fb000-0000-7000-8000-000000000077";
+    let source = compressed_session_path(&sessions, admitted_owner);
+    let mut bounded_catalog_prefix = vec![session_meta(
+        admitted_owner,
+        ProviderNativeSessionRelationship::Root,
+        None,
+    )];
+    bounded_catalog_prefix.extend(
+        (0..31).map(|sequence| serde_json::json!({"type": "world_state", "sequence": sequence})),
+    );
+    write_compressed_frames(
+        &source,
+        &[
+            jsonl_bytes(bounded_catalog_prefix),
+            jsonl_bytes([
+                session_meta(
+                    conflicting_owner,
+                    ProviderNativeSessionRelationship::Root,
+                    None,
+                ),
+                message("automaticambiguousownermarker"),
+            ]),
+        ],
+    );
+
+    let registry = register_tree(&[&sessions]);
+    assert_compressed_registry_rejected(&registry, &index_root);
+}
+
+#[test]
+fn repeated_consistent_compressed_metadata_across_frames_remains_admissible() {
+    let temp = tempdir().unwrap();
+    let source_root = temp.path().join("explicit");
+    let index_root = temp.path().join("index");
+    fs::create_dir_all(&source_root).unwrap();
+    let native_session_id = "019fb000-0000-7000-8000-000000000078";
+    let marker = "consistentcompressedownermarker";
+    let source = source_root.join("repeated-rollout.jsonl.zst");
+    let metadata = session_meta(
+        native_session_id,
+        ProviderNativeSessionRelationship::Root,
+        None,
+    );
+    write_compressed_frames(
+        &source,
+        &[
+            jsonl_bytes([metadata.clone()]),
+            jsonl_bytes([metadata, message(marker)]),
+        ],
+    );
+
+    let mut registry = SourceBackedProviderRegistry::new();
+    add_explicit_route(&mut registry, &source);
+    let receipt =
+        refresh_source_backed_generation(&index_root, &registry, writer_options()).unwrap();
+    assert!(receipt.failed_routes.is_empty());
+    assert!(receipt.logical_source_failures.is_empty());
+    let index = VerifiedIndex::open(&index_root).unwrap();
+    assert_eq!(records_for(&index, native_session_id).len(), 1);
+    assert_eq!(index.search_event_candidates(marker, 8).unwrap().len(), 1);
+}
+
+#[test]
 fn compressed_same_inode_overwrite_after_snapshot_fails_terminal_fence() {
     let temp = tempdir().unwrap();
     let sessions = temp.path().join("sessions");
@@ -317,9 +439,8 @@ fn compressed_same_inode_overwrite_after_snapshot_fails_terminal_fence() {
     }
 }
 
-fn assert_compressed_source_rejected(sessions: &Path, index_root: &Path) {
-    let registry = register_tree(&[sessions]);
-    match refresh_source_backed_generation(index_root, &registry, writer_options()) {
+fn assert_compressed_registry_rejected(registry: &SourceBackedProviderRegistry, index_root: &Path) {
+    match refresh_source_backed_generation(index_root, registry, writer_options()) {
         Ok(receipt) => {
             assert_eq!(receipt.failed_routes.len(), 1);
             assert!(receipt.sources.is_empty());
@@ -332,6 +453,11 @@ fn assert_compressed_source_rejected(sessions: &Path, index_root: &Path) {
         }
         Err(error) => panic!("unexpected compressed-source failure: {error:?}"),
     }
+}
+
+fn assert_compressed_source_rejected(sessions: &Path, index_root: &Path) {
+    let registry = register_tree(&[sessions]);
+    assert_compressed_registry_rejected(&registry, index_root);
 }
 
 #[test]
