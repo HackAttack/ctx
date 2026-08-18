@@ -1,7 +1,6 @@
 use super::*;
 
 const QUEUED_SUCCESSORS_FIELD: &str = "queued_successors";
-const LOGICAL_DEMAND_FIELD: &str = "logical_demand";
 const DAEMON_RETRY_FIELDS: [&str; 4] = [
     "retryable",
     "retry_after_ms",
@@ -281,27 +280,7 @@ fn authoritative_route_terminal_job(
     if outcome.affected_routes.is_empty() {
         return None;
     }
-    let physical_attempt_id = attempt
-        .physical_attempt_id
-        .as_deref()
-        .unwrap_or(attempt.request_id.as_str());
-    let durable_request_id = state
-        .attempts
-        .iter()
-        .rev()
-        .find(|candidate| {
-            candidate.request_id != physical_attempt_id
-                && candidate.state == SourceBackedRefreshState::Failed
-                && candidate
-                    .physical_attempt_id
-                    .as_deref()
-                    .unwrap_or(candidate.request_id.as_str())
-                    == physical_attempt_id
-                && candidate.failure_outcome.as_ref() == Some(outcome)
-        })
-        .map(|candidate| candidate.request_id.as_str())
-        .unwrap_or(request_id);
-    durable_job_json(state, durable_request_id)
+    durable_job_json(state, request_id)
 }
 
 pub(super) fn durable_job_json(state: &CoreRefreshEngineState, request_id: &str) -> Option<Value> {
@@ -323,7 +302,7 @@ pub(super) fn job_with_queued_successors(state: &CoreRefreshEngineState, mut job
             )
         }) {
             if let Some(job) = projected_job_json(state, &active.request_id) {
-                successors.push(job_with_logical_demand(state, job));
+                successors.push(job);
             }
         }
     }
@@ -338,8 +317,7 @@ pub(super) fn job_with_queued_successors(state: &CoreRefreshEngineState, mut job
                     SourceBackedRefreshState::AdmissionPending | SourceBackedRefreshState::Queued
                 )
             })
-            .filter_map(|attempt| projected_job_json(state, &attempt.request_id))
-            .map(|job| job_with_logical_demand(state, job)),
+            .filter_map(|attempt| projected_job_json(state, &attempt.request_id)),
     );
     let Some(object) = job.as_object_mut() else {
         return job;
@@ -349,63 +327,7 @@ pub(super) fn job_with_queued_successors(state: &CoreRefreshEngineState, mut job
     } else {
         object.insert(QUEUED_SUCCESSORS_FIELD.to_owned(), Value::Array(successors));
     }
-    job_with_logical_demand(state, job)
-}
-
-fn job_with_logical_demand(state: &CoreRefreshEngineState, mut job: Value) -> Value {
-    let request_id = job
-        .get("request_id")
-        .and_then(Value::as_str)
-        .map(str::to_owned);
-    let Some(object) = job.as_object_mut() else {
-        return job;
-    };
-    match request_id
-        .as_deref()
-        .and_then(|request_id| state.manual_all_continuations.get(request_id))
-    {
-        Some(continuation) => {
-            object.insert(LOGICAL_DEMAND_FIELD.to_owned(), continuation.to_json());
-        }
-        None => {
-            object.remove(LOGICAL_DEMAND_FIELD);
-        }
-    }
     job
-}
-
-pub(super) fn recover_logical_demand_continuations(
-    job: &Value,
-) -> Result<BTreeMap<String, ManualAllContinuation>> {
-    let mut recovered = BTreeMap::new();
-    let mut recover = |candidate: &Value| -> Result<()> {
-        let Some(value) = candidate.get(LOGICAL_DEMAND_FIELD) else {
-            return Ok(());
-        };
-        let request_id = candidate
-            .get("request_id")
-            .and_then(Value::as_str)
-            .filter(|value| !value.is_empty())
-            .ok_or_else(|| anyhow!("logical refresh demand has no request ID"))?
-            .to_owned();
-        if recovered
-            .insert(request_id, ManualAllContinuation::from_json(value)?)
-            .is_some()
-        {
-            bail!("logical refresh demand request ID is duplicated");
-        }
-        Ok(())
-    };
-    recover(job)?;
-    if let Some(successors) = job.get(QUEUED_SUCCESSORS_FIELD) {
-        for successor in successors
-            .as_array()
-            .ok_or_else(|| anyhow!("durable source refresh successors must be an array"))?
-        {
-            recover(successor)?;
-        }
-    }
-    Ok(recovered)
 }
 
 pub(super) fn recover_queued_successors(job: &Value) -> Result<Vec<SourceBackedRefreshAttempt>> {
@@ -477,23 +399,8 @@ fn recover_pending_attempt(
         .ok_or_else(|| anyhow!("durable source refresh {role} has no request ID"))?;
     let operation = SourceBackedRefreshOperation::from_request_json(job)
         .with_context(|| format!("recover durable source refresh {role} operation"))?;
-    // Pre-overlay periodic roots can carry obsolete catalog-shaped data. It
-    // was never request authority for refresh operations, so retain that
-    // compatibility without weakening import or successor validation.
-    let requested_catalog = if is_root
-        && operation == SourceBackedRefreshOperation::Refresh
-        && job.get("refresh_selector").is_none()
-    {
-        None
-    } else {
-        job.get("requested_explicit_source_catalog")
-            .filter(|value| !value.is_null())
-            .map(ExplicitSourceCatalogAuthority::from_json)
-            .transpose()
-            .with_context(|| format!("recover durable source refresh {role} explicit authority"))?
-    };
-    let selector = recover_refresh_selector(job, operation, requested_catalog.is_some(), false)
-        .with_context(|| format!("recover durable source refresh {role} selector"))?;
+    let intent = recover_refresh_intent(job, operation, false, is_root)
+        .with_context(|| format!("recover durable source refresh {role} intent"))?;
     let daemon_mode = job
         .get("daemon_mode")
         .and_then(Value::as_str)
@@ -514,6 +421,7 @@ fn recover_pending_attempt(
             "autostart",
             "setup_command",
             "import_command",
+            "automatic_provider",
             "daemon_scheduler",
             "explicit_source_catalog",
         ],
@@ -526,31 +434,19 @@ fn recover_pending_attempt(
         trigger,
         trigger_provenance,
     };
-    let mut attempt = new_refresh_attempt(
-        previous_generation,
-        metadata,
-        requested_catalog,
-        refresh_scope,
-    );
+    let mut attempt = new_refresh_attempt(previous_generation, metadata, intent, refresh_scope);
     attempt.request_id = request_id.to_owned();
-    attempt.selector = selector;
     attempt.reconciliation_demand = recover_reconciliation_demand(job, operation)?;
-    attempt.physical_attempt_id = optional_pending_string(job, "physical_attempt_id")?;
+    let _legacy_physical_attempt_id = optional_pending_string(job, "physical_attempt_id")?;
     attempt.state = if request_state == Some("admission_pending") {
         SourceBackedRefreshState::AdmissionPending
     } else {
         SourceBackedRefreshState::Queued
     };
-    attempt.fresh_after_admitted_snapshot = match job.get("fresh_after_admitted_snapshot") {
-        None => false,
-        Some(value) => value.as_bool().ok_or_else(|| {
-            anyhow!("durable source refresh {role} has invalid freshness requirement")
-        })?,
-    };
     attempt.request_fingerprint = optional_sha256(job, "request_fingerprint")?;
     attempt.admission_durability_indeterminate =
         recover_admission_durability(job, &format!("durable source refresh {role}"))?;
-    attempt.coalesced_into_request_id = job
+    let _legacy_coalesced_into_request_id = job
         .get("coalesced_into_request_id")
         .filter(|value| !value.is_null())
         .map(|value| {
@@ -561,14 +457,6 @@ fn recover_pending_attempt(
                 .ok_or_else(|| anyhow!("durable source refresh {role} has invalid predecessor ID"))
         })
         .transpose()?;
-    if attempt.physical_attempt_id.is_none() {
-        attempt.physical_attempt_id = Some(
-            attempt
-                .coalesced_into_request_id
-                .clone()
-                .unwrap_or_else(|| attempt.request_id.clone()),
-        );
-    }
     if let Some(requested_at_ms) = job
         .get("requested_at_ms")
         .or_else(|| job.get("last_run_at_ms"))
@@ -582,17 +470,10 @@ fn recover_pending_attempt(
             anyhow!("durable source refresh {role} has invalid coalesced request count")
         })?;
     }
-    if let Some(coalesced_logical_demands) = job.get("coalesced_logical_demands") {
-        attempt.coalesced_logical_demands =
-            coalesced_logical_demands.as_u64().ok_or_else(|| {
-                anyhow!("durable source refresh {role} has invalid logical demand count")
-            })?;
-    }
-    if attempt.state == SourceBackedRefreshState::AdmissionPending
-        && !attempt.fresh_after_admitted_snapshot
-        && matches!(attempt.selector, SourceBackedRefreshSelector::AllAutomatic)
-    {
-        bail!("durable admission-pending source refresh has no freshness requirement");
+    if let Some(legacy_coalesced_logical_demands) = job.get("coalesced_logical_demands") {
+        legacy_coalesced_logical_demands.as_u64().ok_or_else(|| {
+            anyhow!("durable source refresh {role} has invalid logical demand count")
+        })?;
     }
     Ok(attempt)
 }

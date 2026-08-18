@@ -338,15 +338,20 @@ struct IndexWaitHumanOutput {
 }
 
 impl IndexWaitHumanOutput {
-    fn print(&mut self, ui: &mut Ui, status: &Value) -> Result<()> {
-        let (document, frame) = self.render(ui, status);
+    fn print(&mut self, ui: &mut Ui, status: &Value, selection: IndexSelection) -> Result<()> {
+        let (document, frame) = self.render(ui, status, selection);
         ui.write_stdout(&document)?;
         self.last_frame = Some(frame);
         Ok(())
     }
 
-    fn print_final(&mut self, ui: &mut Ui, status: &Value) -> Result<()> {
-        let (document, frame) = self.render(ui, status);
+    fn print_final(
+        &mut self,
+        ui: &mut Ui,
+        status: &Value,
+        selection: IndexSelection,
+    ) -> Result<()> {
+        let (document, frame) = self.render(ui, status, selection);
         if self.last_frame.as_ref() != Some(&frame) {
             ui.write_stdout(&document)?;
             self.last_frame = Some(frame);
@@ -354,9 +359,11 @@ impl IndexWaitHumanOutput {
         Ok(())
     }
 
-    fn render(&mut self, ui: &Ui, status: &Value) -> (Document, String) {
+    fn render(&mut self, ui: &Ui, status: &Value, selection: IndexSelection) -> (Document, String) {
         let context = *ui.stdout_context();
-        let document = self.dashboard.render(status, &context);
+        let document = self
+            .dashboard
+            .render_wait(status, &context, selection.refresh_convergence);
         let frame = document.render(&context);
         (document, frame)
     }
@@ -406,7 +413,7 @@ fn run_index_wait(
             if args.format.is_json() {
                 print_json(index_wait_json(status, selection, "ready"))?;
             } else if !quiet {
-                human_output.print(ui, &status)?;
+                human_output.print(ui, &status, selection)?;
             }
             return Ok(());
         }
@@ -418,14 +425,14 @@ fn run_index_wait(
             if args.format.is_json() {
                 print_json(index_wait_json(status, selection, "timeout"))?;
             } else if !quiet {
-                human_output.print_final(ui, &status)?;
+                human_output.print_final(ui, &status, selection)?;
             }
             return Err(anyhow!(
                 "ctx index wait timed out before indexing was ready"
             ));
         }
         if !quiet && !args.format.is_json() {
-            human_output.print(ui, &status)?;
+            human_output.print(ui, &status, selection)?;
             ui.write_stdout(&crate::ui::Document::from_line(crate::ui::Line::new()))?;
         }
         thread::sleep(interval);

@@ -3,17 +3,42 @@
 use super::*;
 use std::{fs::OpenOptions, io::Write};
 
+#[derive(Debug, Clone)]
+struct ObservationFenceRuntime {
+    home: PathBuf,
+    cwd: PathBuf,
+}
+
+impl RefreshRuntime for ObservationFenceRuntime {
+    fn metadata(&self, _data_root: &Path, operation: RefreshOperation) -> RefreshRuntimeMetadata {
+        RefreshRuntimeMetadata {
+            operation,
+            ..RefreshRuntimeMetadata::default()
+        }
+    }
+
+    fn discovery_context(&self, _data_root: &Path) -> Result<DiscoveryContext> {
+        Ok(DiscoveryContext::new(
+            &self.home,
+            &self.cwd,
+            DiscoveryPlatform::Linux,
+            DiscoveryPlatformDirs::default(),
+        ))
+    }
+}
+
 #[test]
 fn post_scan_jsonl_append_is_not_certified_clean_across_restart() {
     let temp = tempfile::tempdir().unwrap();
     let data_root = temp.path().join("data");
     let index_root = source_backed_index_root(&data_root);
-    let source_path = temp.path().join("history.jsonl");
     let home = temp.path().join("home");
     let cwd = temp.path().join("cwd");
+    let source_path = home.join(".codex/history.jsonl");
     ctx_history_platform::platform_security::establish_private_data_root(&data_root).unwrap();
     fs::create_dir_all(&home).unwrap();
     fs::create_dir_all(&cwd).unwrap();
+    fs::create_dir_all(source_path.parent().unwrap()).unwrap();
     writeln!(
         OpenOptions::new()
             .create(true)
@@ -52,9 +77,7 @@ fn post_scan_jsonl_append_is_not_certified_clean_across_restart() {
                 execution.data_root,
                 execution.index_root,
                 execution.explicit_source_catalog,
-                execution.scope,
-                &execution.covered_route_ids,
-                &execution.covered_publication,
+                execution.admitted_refresh().publication_scope(),
                 execution.published_state,
                 &mut progress,
             )
@@ -75,7 +98,16 @@ fn post_scan_jsonl_append_is_not_certified_clean_across_restart() {
     );
     assert!(requested_observations[&route].is_some());
     assert_eq!(requested_observations[&missing_route], None);
-    let coordinator = CoreRefreshEngine::with_executor(make_executor());
+    let journal = Arc::new(TestRefreshJournal::default());
+    let runtime = Arc::new(ObservationFenceRuntime {
+        home: home.clone(),
+        cwd: cwd.clone(),
+    });
+    let coordinator = CoreRefreshEngine(super::super::CoreRefreshEngine::with_journal_for_test(
+        Arc::clone(&journal) as Arc<dyn RefreshJournal>,
+        Arc::clone(&runtime) as Arc<dyn RefreshRuntime>,
+        make_executor(),
+    ));
     let request = coordinator.enqueue_periodic(&data_root).unwrap();
     let request_id = request["request_id"].as_str().unwrap().to_owned();
     let append_path = source_path.clone();
@@ -106,7 +138,11 @@ fn post_scan_jsonl_append_is_not_certified_clean_across_restart() {
 
     // No watcher event is delivered. Restart must compare the exact target
     // against the pre-scan durable token and schedule the omitted append.
-    let restarted = CoreRefreshEngine::with_executor(make_executor());
+    let restarted = CoreRefreshEngine(super::super::CoreRefreshEngine::with_journal_for_test(
+        journal as Arc<dyn RefreshJournal>,
+        runtime as Arc<dyn RefreshRuntime>,
+        make_executor(),
+    ));
     assert!(!restarted
         .recover_interrupted_publication(&data_root)
         .unwrap());

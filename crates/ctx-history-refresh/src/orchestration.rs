@@ -3,20 +3,6 @@ use super::*;
 mod catalog_witness;
 use catalog_witness::retained_catalog_witness;
 
-pub(super) struct SourceBackedRefreshPlan<'a> {
-    pub(super) explicit_source_catalog: Option<&'a ExplicitSourceCatalogAuthority>,
-    pub(super) operation: SourceBackedRefreshOperation,
-    pub(super) reconciliation_demand: SourceBackedReconciliationDemand,
-    pub(super) scope: SourceBackedRefreshScope,
-    pub(super) route_worksets: BTreeMap<SourceRouteIdentity, SourceBackedRefreshWorkset>,
-    pub(super) watch_catalog: Option<SourceBackedWatchCatalog>,
-    pub(super) admitted_discovery:
-        Option<ctx_history_refresh_execution::SourceBackedAdmittedDiscovery>,
-    pub(super) requires_admitted_discovery: bool,
-    pub(super) covered_route_ids: BTreeSet<SourceRouteIdentity>,
-    pub(super) covered_publication: SourceBackedRefreshCoveredPublication,
-}
-
 pub(crate) struct RetainedPublishedState<'a> {
     pub(crate) journal: &'a dyn RefreshJournal,
 }
@@ -45,7 +31,9 @@ pub(super) fn execute_source_backed_refresh(
     data_root: &Path,
     request_id: &str,
     coordinator: &CoreRefreshEngine,
-    plan: SourceBackedRefreshPlan<'_>,
+    intent: &RefreshIntent,
+    reconciliation_demand: SourceBackedReconciliationDemand,
+    admitted: ctx_history_refresh_execution::AdmittedRefresh,
 ) -> Result<SourceBackedRefreshPublication> {
     let index_root = source_backed_index_root(data_root);
     let discovery_context = coordinator.runtime.discovery_context(data_root)?;
@@ -80,20 +68,14 @@ pub(super) fn execute_source_backed_refresh(
             data_root,
             &index_root,
             request_id,
-            plan.operation,
-            plan.explicit_source_catalog,
-            plan.scope,
-            plan.covered_route_ids,
-            plan.covered_publication,
+            intent.operation(),
+            intent.explicit_source_authority(),
+            admitted,
             &discovery_context,
             &published_state,
             &report_progress,
         )
-        .with_reconciliation_demand(plan.reconciliation_demand)
-        .with_route_worksets(plan.route_worksets)
-        .with_watch_catalog_opt(plan.watch_catalog)
-        .with_admitted_discovery_opt(plan.admitted_discovery)
-        .with_admitted_discovery_requirement(plan.requires_admitted_discovery),
+        .with_reconciliation_demand(reconciliation_demand),
     )
 }
 
@@ -107,7 +89,6 @@ pub(super) fn refresh_all_provider_sources(
     index_root: &Path,
     explicit_source_catalog: Option<&ExplicitSourceCatalogAuthority>,
     scope: SourceBackedRefreshScope,
-    covered_route_ids: &BTreeSet<SourceRouteIdentity>,
     report_progress: &mut dyn FnMut(
         CaptureSourceBackedDetailedRefreshProgress,
     ) -> SourceBackedRouteResult<()>,
@@ -123,8 +104,6 @@ pub(super) fn refresh_all_provider_sources(
         index_root,
         explicit_source_catalog,
         scope,
-        covered_route_ids,
-        &SourceBackedRefreshCoveredPublication::default(),
         &journal,
         report_progress,
     )
@@ -142,8 +121,6 @@ pub(super) fn refresh_all_provider_sources_route_local(
     index_root: &Path,
     explicit_source_catalog: Option<&ExplicitSourceCatalogAuthority>,
     scope: SourceBackedRefreshScope,
-    covered_route_ids: &BTreeSet<SourceRouteIdentity>,
-    covered_publication: &SourceBackedRefreshCoveredPublication,
     journal: &dyn RefreshJournal,
     report_progress: &mut dyn FnMut(
         CaptureSourceBackedDetailedRefreshProgress,
@@ -160,57 +137,38 @@ pub(super) fn refresh_all_provider_sources_route_local(
         index_root,
         explicit_source_catalog,
         scope,
-        covered_route_ids,
-        covered_publication,
         &published_state,
         report_progress,
     )
 }
 
-/// Captures the logical caller's admission fence over the current automatic
-/// route catalog. Missing observation tokens are retained explicitly so
-/// coverage evaluation fails closed instead of treating silence as freshness.
+#[cfg(any(test, feature = "test-support"))]
+pub(super) fn admitted_refresh_for_test(
+    route_observations: BTreeMap<SourceRouteIdentity, Option<String>>,
+) -> ctx_history_refresh_execution::AdmittedRefresh {
+    ctx_history_refresh_execution::AdmittedRefresh::for_test(
+        ctx_history_refresh_execution::AdmittedRefreshCoverage::CompleteCatalog,
+        route_observations.keys().cloned().collect(),
+        ctx_history_refresh_execution::SourceBackedAdmittedDiscovery::new(
+            ctx_history_capture_model::DiscoveryReport {
+                sources: Vec::new(),
+                issues: Vec::new(),
+            },
+            StdDuration::ZERO,
+            SourceBackedWatchCatalog::default(),
+        ),
+    )
+    .expect("test admission authority must be valid")
+}
+
+/// Resolves one logical all-route request into immutable exact execution
+/// authority. Discovery happens once here and cannot be repeated by execution.
 pub(super) fn source_backed_route_admission_fence(
     discovery: &DiscoveryContext,
     journal: &dyn RefreshJournal,
     data_root: &Path,
     explicit_source_catalog: Option<&ExplicitSourceCatalogAuthority>,
-) -> Result<BTreeMap<SourceRouteIdentity, Option<String>>> {
-    source_backed_route_observation_fence(
-        discovery,
-        journal,
-        data_root,
-        explicit_source_catalog,
-        None,
-    )
-}
-
-/// Samples only the exact routes that can contribute to one publication
-/// coverage certificate. Requested routes absent from the current catalog are
-/// retained with an indeterminate observation so certification fails closed.
-pub(super) fn source_backed_requested_route_observation_fence(
-    discovery: &DiscoveryContext,
-    journal: &dyn RefreshJournal,
-    data_root: &Path,
-    explicit_source_catalog: Option<&ExplicitSourceCatalogAuthority>,
-    requested_routes: &BTreeSet<SourceRouteIdentity>,
-) -> Result<BTreeMap<SourceRouteIdentity, Option<String>>> {
-    source_backed_route_observation_fence(
-        discovery,
-        journal,
-        data_root,
-        explicit_source_catalog,
-        Some(requested_routes),
-    )
-}
-
-fn source_backed_route_observation_fence(
-    discovery: &DiscoveryContext,
-    journal: &dyn RefreshJournal,
-    data_root: &Path,
-    explicit_source_catalog: Option<&ExplicitSourceCatalogAuthority>,
-    requested_routes: Option<&BTreeSet<SourceRouteIdentity>>,
-) -> Result<BTreeMap<SourceRouteIdentity, Option<String>>> {
+) -> Result<ctx_history_refresh_execution::AdmittedRefresh> {
     let discovery = discovery.clone().with_data_root(data_root);
     let work_budget =
         source_backed_refresh_work_budget(source_backed_refresh_writer_options().indexer_threads);
@@ -221,25 +179,14 @@ fn source_backed_route_observation_fence(
         .context("validate provider roots before admitting source refresh demand")?;
     prepare_generation_control_state(data_root)?;
     let published_state = RetainedPublishedState { journal };
-    let catalog = ctx_history_refresh_execution::source_backed_watch_catalog_from_report(
+    let admitted = ctx_history_refresh_execution::source_backed_admitted_discovery_from_report(
         &discovery,
         report,
         discovery_duration,
         data_root,
+        ctx_history_refresh_execution::AdmittedRefreshCoverage::CompleteCatalog,
         explicit_source_catalog,
         &published_state,
     )?;
-    Ok(match requested_routes {
-        Some(requested_routes) => {
-            source_backed_requested_route_observations(&catalog, requested_routes)
-        }
-        None => catalog
-            .route_ids()
-            .cloned()
-            .map(|route| {
-                let observation = catalog.certify_route_observation(&route);
-                (route, observation)
-            })
-            .collect(),
-    })
+    Ok(admitted)
 }

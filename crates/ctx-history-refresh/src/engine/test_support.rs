@@ -105,36 +105,6 @@ impl RefreshJournal for TestFileRefreshJournal {
     }
 }
 
-struct TestStatusWriterJournal {
-    writer: TestStatusWriter,
-}
-
-impl RefreshJournal for TestStatusWriterJournal {
-    fn load(&self, data_root: &Path) -> Result<Option<Value>> {
-        Ok(read_daemon_job_status(
-            &daemon_source_backed_refresh_job_path(data_root),
-        ))
-    }
-
-    fn store(&self, data_root: &Path, value: &Value) -> Result<()> {
-        (self.writer)(&daemon_source_backed_refresh_job_path(data_root), value)
-    }
-
-    fn store_before_ack(&self, data_root: &Path, value: &Value) -> DurableAdmissionPersistence {
-        match self.store(data_root, value) {
-            Ok(()) => DurableAdmissionPersistence::Confirmed,
-            Err(error)
-                if read_daemon_job_status(&daemon_source_backed_refresh_job_path(data_root))
-                    .as_ref()
-                    == Some(value) =>
-            {
-                DurableAdmissionPersistence::Retained(error)
-            }
-            Err(error) => DurableAdmissionPersistence::Failed(error),
-        }
-    }
-}
-
 #[derive(Debug, Default)]
 struct TestRefreshRuntime;
 
@@ -152,7 +122,8 @@ impl RefreshRuntime for TestRefreshRuntime {
     }
 
     fn discovery_context(&self, data_root: &Path) -> Result<DiscoveryContext> {
-        Ok(DiscoveryContext::from_process(data_root.join("test-home")))
+        let test_home = data_root.parent().unwrap_or(data_root).join("test-home");
+        Ok(DiscoveryContext::from_process(test_home))
     }
 }
 
@@ -174,26 +145,24 @@ pub(super) fn test_refresh_engine_with_executor(
     )
 }
 
-pub(super) fn test_refresh_engine_with_status_writer(
+pub(super) fn test_refresh_engine_with_executor_and_admitted_routes(
     executor: Arc<dyn SourceBackedRefreshExecutor>,
-    writer: TestStatusWriter,
+    routes: impl IntoIterator<Item = SourceRouteIdentity>,
 ) -> CoreRefreshEngine {
-    CoreRefreshEngine::with_executor(
-        Arc::new(TestStatusWriterJournal { writer }),
+    let observations = routes
+        .into_iter()
+        .map(|route| (route, Some("ab".repeat(32))))
+        .collect::<BTreeMap<_, _>>();
+    CoreRefreshEngine::with_runtime_for_test(
+        Arc::new(TestFileRefreshJournal),
         test_refresh_runtime(),
         executor,
+        Arc::new(move |_, _, _, _| Ok(observations.clone())),
     )
 }
 
-pub(super) fn test_refresh_submission(request_id: &str) -> RefreshSubmission {
-    RefreshSubmission::new(
-        request_id.to_owned(),
-        RefreshOperation::Refresh,
-        None,
-        SourceBackedRefreshScope::All,
-        true,
-        false,
-    )
+pub(super) fn test_refresh_submission(request_id: &str) -> RefreshRequest {
+    RefreshRequest::selected_import(request_id.to_owned(), RefreshSelection::All)
 }
 
 pub(super) fn status_value(engine: &CoreRefreshEngine, request_id: &str) -> Value {
@@ -220,13 +189,6 @@ impl CoreRefreshEngine {
     pub fn status_for_test(&self, request_id: &str) -> Option<Value> {
         self.status(request_id)
             .map(|status| status.schema_v1_fields().clone())
-    }
-
-    pub fn logical_continuation_is_fully_covered_for_test(&self, request_id: &str) -> bool {
-        self.lock_state()
-            .manual_all_continuations
-            .get(request_id)
-            .is_some_and(ManualAllContinuation::is_fully_covered)
     }
 
     pub fn dirty_route_ids_for_test(&self) -> BTreeSet<SourceRouteIdentity> {

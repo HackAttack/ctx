@@ -23,9 +23,18 @@ use crate::{
 };
 
 fn load_explicit_source_catalog_authority(
-    _data_root: &Path,
+    data_root: &Path,
 ) -> Result<ctx_history_refresh::ExplicitSourceCatalogAuthority> {
-    Ok(ctx_history_refresh::explicit_source_catalog_authority_for_test(0))
+    let path = data_root
+        .parent()
+        .context("test data root has no parent")?
+        .join("explicit-source.jsonl");
+    std::fs::write(
+        &path,
+        "{\"record_type\":\"manifest\",\"schema_version\":\"ctx-history-jsonl-v1\"}\n",
+    )?;
+    let source = ctx_history_refresh::explicit_source_for_path(&path, None, true)?;
+    Ok(ctx_history_refresh::upsert_explicit_source(data_root, &source)?.authority)
 }
 
 #[cfg(any(unix, windows))]
@@ -249,7 +258,7 @@ fn typed_unknown_recovery_reenqueues_stable_uuid_and_returns_its_terminal_genera
                 &waiter_root,
                 waiter_request_id,
                 SourceBackedRefreshMode::Wait,
-                SourceBackedRefreshOperation::Refresh,
+                ctx_history_refresh::RefreshOperation::Refresh,
                 None,
                 false,
             )
@@ -267,6 +276,13 @@ fn typed_unknown_recovery_reenqueues_stable_uuid_and_returns_its_terminal_genera
             );
             std::thread::sleep(StdDuration::from_millis(5));
         }
+        source_refresh
+            .complete_pending_admission_for_test(
+                &data_root,
+                &stable_request_id,
+                std::collections::BTreeMap::new(),
+            )
+            .unwrap();
         let execute_generation = Arc::clone(&terminal_generation);
         let probe_generation = Arc::clone(&terminal_generation);
         let run = source_refresh
@@ -340,7 +356,7 @@ fn pre_overlay_periodic_job_does_not_block_restart_on_legacy_catalog_commitment(
         .unwrap());
     let recovered = read_daemon_job_status(&daemon_source_backed_refresh_job_path(&data_root))
         .expect("recovery job");
-    assert_eq!(recovered["request_state"], "queued");
+    assert_eq!(recovered["request_state"], "admission_pending");
     assert!(recovered.get("requested_explicit_source_catalog").is_none());
 }
 
@@ -430,7 +446,7 @@ fn legacy_terminal_publication_recovers_successor_without_pointer_change() {
         .unwrap());
     assert_eq!(
         coordinator.status(&successor_id).unwrap()["request_state"],
-        "queued"
+        "admission_pending"
     );
     assert!(coordinator.has_pending_request());
 }
@@ -552,7 +568,7 @@ fn old_wait_request_keeps_exact_identity_across_restart_and_returns_exact_genera
         .status(&old_request_id)
         .expect("acknowledged request survives restart");
     assert_eq!(recovered["request_id"], old_request_id);
-    assert_eq!(recovered["request_state"], "queued");
+    assert_eq!(recovered["request_state"], "admission_pending");
     assert_eq!(recovered["requested_at_ms"], old_requested_at_ms);
     assert_eq!(recovered["coalesced_requests"], 0);
     assert_eq!(recovered["operation"], old["operation"]);
@@ -564,88 +580,50 @@ fn old_wait_request_keeps_exact_identity_across_restart_and_returns_exact_genera
         recovered["requested_explicit_source_catalog"],
         old["requested_explicit_source_catalog"]
     );
-    let active = source_refresh
-        .handle_ipc_request(
-            &data_root,
-            &json!({
-                "op": SOURCE_REFRESH_REQUEST_OP,
-                "mode": "wait",
-                "operation": "import",
-                "explicit_source_catalog": authority.to_json(),
-            }),
-        )
-        .unwrap()
-        .expect("restarted-process equivalent request");
-    let active_request_id = active["request_id"].as_str().unwrap().to_owned();
-    assert_eq!(active_request_id, old_request_id);
+    let active_request_id = old_request_id.clone();
 
-    let terminal_generation = Arc::new(Mutex::new(None::<String>));
-    let observation = std::thread::scope(|scope| {
-        let waiter_root = data_root.clone();
-        let waiter_authority = authority.clone();
-        let waiter_old_request_id = old_request_id.clone();
-        let waiter = scope.spawn(move || {
-            wait_for_published_generation(
-                &waiter_root,
-                waiter_old_request_id,
-                SourceBackedRefreshMode::Wait,
-                SourceBackedRefreshOperation::Import,
-                Some(&waiter_authority),
-                false,
+    assert!(source_refresh
+        .prepare_next_pending_admission(&data_root)
+        .unwrap());
+    let admitted = source_refresh
+        .status(&active_request_id)
+        .expect("re-admitted exact request");
+    let admitted_routes = admitted["refresh_scope"]["routes"]
+        .as_array()
+        .expect("exact admitted routes")
+        .iter()
+        .map(|route| {
+            ctx_history_index::SourceRouteIdentity::from_sha256(
+                route.as_str().expect("exact admitted route").to_owned(),
             )
             .unwrap()
-        });
+        })
+        .collect::<BTreeSet<_>>();
+    assert_eq!(admitted_routes.len(), 1);
+    assert_eq!(
+        source_refresh.request_catalog_authority_for_test(&active_request_id),
+        Some(authority.clone())
+    );
 
-        let started = StdInstant::now();
-        loop {
-            let status = source_refresh
-                .status(&active_request_id)
-                .expect("active restarted request");
-            if status["coalesced_requests"].as_u64() == Some(1) {
-                break;
-            }
-            assert!(
-                started.elapsed() < StdDuration::from_secs(2),
-                "waiter did not attach to equivalent restarted work"
-            );
-            std::thread::sleep(StdDuration::from_millis(5));
-        }
-        assert_eq!(
-            source_refresh.request_catalog_authority_for_test(&active_request_id),
-            Some(authority.clone())
-        );
+    let run = source_refresh
+        .run_next(&data_root)
+        .expect("restarted terminal refresh");
+    assert!(!run.failed, "{:#}", run.job);
+    let expected_generation = run.job["published_generation"]
+        .as_str()
+        .expect("terminal published generation")
+        .to_owned();
 
-        let execute_generation = Arc::clone(&terminal_generation);
-        let execute_authority = authority.clone();
-        let probe_generation = Arc::clone(&terminal_generation);
-        let run = source_refresh
-            .run_next_with(
-                move |request_id, _| {
-                    let mut publication = publish_authoritative_empty_generation_for_test(
-                        &source_backed_index_root(&data_root),
-                        request_id,
-                        ctx_history_refresh::RefreshOperation::Import,
-                        ctx_history_capture::SourceBackedRefreshScope::All,
-                        Some(execute_authority),
-                    )?;
-                    *execute_generation.lock().unwrap() = Some(publication.generation_id.clone());
-                    publication.current.removed_source_count = 0;
-                    Ok(publication)
-                },
-                move || Ok(probe_generation.lock().unwrap().clone()),
-                |_| Ok(()),
-                |_| Ok(()),
-            )
-            .expect("restarted terminal refresh");
-        assert!(!run.failed);
-        waiter.join().unwrap()
-    });
+    let observation = wait_for_published_generation(
+        &data_root,
+        old_request_id,
+        SourceBackedRefreshMode::Wait,
+        ctx_history_refresh::RefreshOperation::Import,
+        Some(&authority),
+        false,
+    )
+    .unwrap();
 
-    let expected_generation = terminal_generation
-        .lock()
-        .unwrap()
-        .clone()
-        .expect("terminal generation");
     assert_eq!(
         observation.request_id.as_deref(),
         Some(active_request_id.as_str())

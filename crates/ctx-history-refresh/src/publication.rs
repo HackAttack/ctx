@@ -1,9 +1,5 @@
 use super::*;
 
-pub(crate) use ctx_history_refresh_execution::{
-    parse_zero_source_authority, zero_source_authority_json,
-};
-
 #[cfg(test)]
 pub(crate) mod observation {
     pub(crate) use ctx_history_refresh_execution::install_after_capture_scan_before_metadata_hook_for_test;

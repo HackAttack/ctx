@@ -38,7 +38,7 @@ pub fn recover_wait_refresh_request_for_test(
         availability,
         data_root,
         request_id,
-        request::SourceBackedRefreshTrigger::Search,
+        ctx_history_refresh::RefreshRequestTrigger::Search,
         true,
     )
 }
@@ -47,9 +47,10 @@ pub fn recover_wait_refresh_request_for_test(
 pub(crate) use ctx_history_refresh::RefreshEngine as CoreRefreshEngine;
 pub use ctx_history_refresh::{
     explicit_catalog_request_is_accounted_for, optional_generation,
-    published_refresh_receipt_for_index, RefreshOutcomeClass, RefreshRequestState, RefreshStatus,
-    RefreshStatusKind, RefreshTerminalOutcome, SourceBackedCurrentSourceProgress,
-    SourceBackedPublicationMetadata, SourceBackedRefreshReceipt, SourceBackedRefreshSelector,
+    published_refresh_receipt_for_index, RefreshIntent, RefreshOutcomeClass, RefreshRequest,
+    RefreshRequestState, RefreshRequestTrigger, RefreshSelection, RefreshStatus, RefreshStatusKind,
+    RefreshTerminalOutcome, SourceBackedCurrentSourceProgress, SourceBackedPublicationMetadata,
+    SourceBackedRefreshReceipt,
 };
 
 #[cfg(test)]
@@ -397,35 +398,6 @@ impl CoreRefreshEngine {
             &self.0, data_root, request,
         )
     }
-
-    pub(crate) fn handle_ipc_request_with_admission_fence_for_test(
-        &self,
-        data_root: &Path,
-        request: &Value,
-        observations: std::collections::BTreeMap<
-            ctx_history_index::SourceRouteIdentity,
-            Option<String>,
-        >,
-    ) -> Result<Option<Value>> {
-        let response = self.handle_ipc_request(data_root, request)?;
-        let Some(request_id) = response
-            .as_ref()
-            .and_then(|response| response.get("request_id"))
-            .and_then(Value::as_str)
-            .map(str::to_owned)
-        else {
-            return Ok(response);
-        };
-        if response
-            .as_ref()
-            .is_some_and(|response| response["request_state"] == "admission_pending")
-        {
-            self.0
-                .complete_pending_admission_for_test(data_root, &request_id, observations)?;
-            return Ok(self.status(&request_id));
-        }
-        Ok(response)
-    }
 }
 
 #[allow(unused_imports)] // Stable typed terminal outcome for command/API integrations.
@@ -437,9 +409,7 @@ pub use client::{
     SourceBackedRefreshTerminalError,
 };
 pub use refresh_mode::SourceBackedRefreshMode;
-use request::{
-    SourceBackedRefreshOperation, SourceBackedRefreshRequest, SourceBackedRefreshTrigger,
-};
+use request::SourceBackedRefreshRequest;
 
 const SOURCE_REFRESH_REQUEST_OP: &str = "source_refresh_request";
 const SOURCE_REFRESH_STATUS_OP: &str = "source_refresh_status";

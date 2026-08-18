@@ -267,11 +267,17 @@ fn wait_human_output_prints_a_changed_final_snapshot() {
     let mut output = IndexWaitHumanOutput::default();
 
     output
-        .print(&mut ui, &readiness("pending", 0, true))
+        .print(
+            &mut ui,
+            &readiness("pending", 0, true),
+            IndexSelection::all(),
+        )
         .unwrap();
     let mut final_status = readiness("pending", 4, true);
     final_status["refresh"]["progress"]["processed_sessions"] = json!(4);
-    output.print_final(&mut ui, &final_status).unwrap();
+    output
+        .print_final(&mut ui, &final_status, IndexSelection::all())
+        .unwrap();
 
     let rendered = captured.text();
     assert_eq!(rendered.matches("Your history is searchable").count(), 2);

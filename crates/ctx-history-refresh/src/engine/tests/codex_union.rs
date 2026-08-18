@@ -2,6 +2,44 @@
 
 use super::*;
 
+fn refresh_exact_source(
+    discovery: &DiscoveryContext,
+    authority: &ExplicitSourceCatalogAuthority,
+    data_root: &Path,
+    index_root: &Path,
+    report_progress: &mut dyn FnMut(
+        CaptureSourceBackedDetailedRefreshProgress,
+    ) -> SourceBackedRouteResult<()>,
+) -> Result<SourceBackedRefreshPublication> {
+    let report = authority.admission_discovery_report()?;
+    let journal = TestRefreshJournal::default();
+    let published_state = crate::orchestration::RetainedPublishedState { journal: &journal };
+    let admitted = ctx_history_refresh_execution::source_backed_admitted_discovery_from_report(
+        discovery,
+        report.clone(),
+        StdDuration::ZERO,
+        data_root,
+        ctx_history_refresh_execution::AdmittedRefreshCoverage::SelectedRoutes,
+        Some(authority),
+        &published_state,
+    )?;
+    let exact_routes = admitted.exact_routes().clone();
+    assert!(!exact_routes.is_empty(), "exact fixture must admit a route");
+    crate::orchestration::refresh_all_provider_sources_route_local(
+        discovery,
+        report,
+        StdDuration::ZERO,
+        "test-exact-source-refresh",
+        SourceBackedRefreshOperation::Import,
+        data_root,
+        index_root,
+        Some(authority),
+        SourceBackedRefreshScope::Exact(exact_routes),
+        &journal,
+        report_progress,
+    )
+}
+
 #[test]
 fn automatic_and_explicit_empty_routes_preserve_generation_bound_authority() {
     let temp = tempfile::tempdir().unwrap();
@@ -26,7 +64,7 @@ fn automatic_and_explicit_empty_routes_preserve_generation_bound_authority() {
     let mut progress =
         |_: CaptureSourceBackedDetailedRefreshProgress| Ok::<(), SourceBackedRouteError>(());
 
-    let publication = refresh_all_provider_sources(
+    let automatic_publication = refresh_all_provider_sources(
         &discovery,
         DiscoveryReport {
             sources: vec![automatic],
@@ -35,15 +73,24 @@ fn automatic_and_explicit_empty_routes_preserve_generation_bound_authority() {
         StdDuration::ZERO,
         &data_root,
         &index_root,
-        Some(&upsert.authority),
+        None,
         SourceBackedRefreshScope::All,
-        &BTreeSet::new(),
+        &mut progress,
+    )
+    .unwrap();
+    let publication = refresh_exact_source(
+        &discovery,
+        &upsert.authority,
+        &data_root,
+        &index_root,
         &mut progress,
     )
     .unwrap();
 
-    assert_eq!(publication.route_results.len(), 2);
-    assert_eq!(publication.zero_source_authority.len(), 2);
+    assert_eq!(automatic_publication.route_results.len(), 1);
+    assert_eq!(automatic_publication.zero_source_authority.len(), 1);
+    assert_eq!(publication.route_results.len(), 1);
+    assert!(!publication.zero_source_authority.is_empty());
     assert!(publication
         .zero_source_authority
         .iter()
@@ -91,7 +138,6 @@ fn successful_codex_route_derives_rejected_records_from_committed_core_sources()
         &index_root,
         None,
         SourceBackedRefreshScope::All,
-        &BTreeSet::new(),
         &mut progress,
     )
     .unwrap();
@@ -164,7 +210,6 @@ fn codex_nested_root_advisory_is_admitted_from_each_childs_own_bytes() {
         &index_root,
         None,
         SourceBackedRefreshScope::All,
-        &BTreeSet::new(),
         &mut progress,
     )
     .unwrap();
@@ -289,7 +334,6 @@ fn codex_deep_root_advisory_chain_has_exact_linear_cardinality() {
         &index_root,
         None,
         SourceBackedRefreshScope::All,
-        &BTreeSet::new(),
         &mut progress,
     )
     .unwrap();
@@ -369,7 +413,6 @@ fn registered_codex_parent_and_exact_subdir_share_route_scoped_ownership() {
         &index_root,
         None,
         SourceBackedRefreshScope::All,
-        &BTreeSet::new(),
         &mut progress,
     )
     .unwrap();
@@ -379,20 +422,16 @@ fn registered_codex_parent_and_exact_subdir_share_route_scoped_ownership() {
 
     let explicit_source = provider_source_for_path(CaptureProvider::Codex, explicit_root.clone());
     let upsert = crate::upsert_explicit_source(&data_root, &explicit_source).unwrap();
-    let first = refresh_all_provider_sources(
+    let first = refresh_exact_source(
         &discovery,
-        report.clone(),
-        StdDuration::ZERO,
+        &upsert.authority,
         &data_root,
         &index_root,
-        Some(&upsert.authority),
-        SourceBackedRefreshScope::All,
-        &BTreeSet::new(),
         &mut progress,
     )
     .unwrap();
 
-    assert_eq!(first.route_results.len(), 2);
+    assert_eq!(first.route_results.len(), 1);
     assert!(first.certified_source_count >= 1);
     assert_eq!(
         first
@@ -406,9 +445,11 @@ fn registered_codex_parent_and_exact_subdir_share_route_scoped_ownership() {
     let [binding] = first.catalog_route_bindings.as_slice() else {
         panic!("successful explicit request should retain one route binding");
     };
-    assert!(first.route_results.iter().any(|result| {
-        result.route_identity == binding.route_identity && result.outcome.is_success()
-    }));
+    assert_eq!(
+        first.route_results[0].route_identity,
+        binding.route_identity
+    );
+    assert!(first.route_results[0].outcome.is_success());
     let verified = VerifiedIndex::open(&index_root).unwrap();
     assert!(!verified.manifest().sources.is_empty());
     assert_eq!(
@@ -419,7 +460,7 @@ fn registered_codex_parent_and_exact_subdir_share_route_scoped_ownership() {
         1
     );
     // The parent automatic route retains its existing exact source ownership;
-    // the successful exact overlay owns no duplicate sources.
+    // the successful exact import owns no duplicate sources.
     assert_eq!(
         verified
             .search_event_candidates("explicitrootmarker", 10)
@@ -430,20 +471,16 @@ fn registered_codex_parent_and_exact_subdir_share_route_scoped_ownership() {
     assert_ne!(first.generation_id, parent_generation);
     drop(verified);
 
-    let replay = refresh_all_provider_sources(
+    let replay = refresh_exact_source(
         &discovery,
-        report,
-        StdDuration::ZERO,
+        &upsert.authority,
         &data_root,
         &index_root,
-        Some(&upsert.authority),
-        SourceBackedRefreshScope::All,
-        &BTreeSet::new(),
         &mut progress,
     )
     .unwrap();
     assert_eq!(replay.generation_id, first.generation_id);
-    assert_eq!(replay.route_results.len(), 2);
+    assert_eq!(replay.route_results.len(), 1);
     assert!(replay.published_explicit_source_catalog.is_some());
     assert_eq!(replay.catalog_route_bindings.len(), 1);
     assert!(replay.certified_source_count >= 1);
@@ -496,20 +533,28 @@ fn automatic_parent_and_explicit_directory_child_normalize_in_one_generation() {
     let mut progress =
         |_: CaptureSourceBackedDetailedRefreshProgress| Ok::<(), SourceBackedRouteError>(());
 
-    let publication = refresh_all_provider_sources(
+    let parent_publication = refresh_all_provider_sources(
         &discovery,
         report,
         StdDuration::ZERO,
         &data_root,
         &index_root,
-        Some(&upsert.authority),
+        None,
         SourceBackedRefreshScope::All,
-        &BTreeSet::new(),
+        &mut progress,
+    )
+    .unwrap();
+    assert_eq!(parent_publication.route_results.len(), 1);
+    let publication = refresh_exact_source(
+        &discovery,
+        &upsert.authority,
+        &data_root,
+        &index_root,
         &mut progress,
     )
     .unwrap();
 
-    assert_eq!(publication.route_results.len(), 2);
+    assert_eq!(publication.route_results.len(), 1);
     assert!(publication
         .route_results
         .iter()
@@ -557,20 +602,28 @@ fn automatic_parent_and_explicit_file_child_normalize_in_one_generation() {
     let mut progress =
         |_: CaptureSourceBackedDetailedRefreshProgress| Ok::<(), SourceBackedRouteError>(());
 
-    let publication = refresh_all_provider_sources(
+    let parent_publication = refresh_all_provider_sources(
         &discovery,
         report,
         StdDuration::ZERO,
         &data_root,
         &index_root,
-        Some(&upsert.authority),
+        None,
         SourceBackedRefreshScope::All,
-        &BTreeSet::new(),
+        &mut progress,
+    )
+    .unwrap();
+    assert_eq!(parent_publication.route_results.len(), 1);
+    let publication = refresh_exact_source(
+        &discovery,
+        &upsert.authority,
+        &data_root,
+        &index_root,
         &mut progress,
     )
     .unwrap();
 
-    assert_eq!(publication.route_results.len(), 2);
+    assert_eq!(publication.route_results.len(), 1);
     assert!(publication
         .route_results
         .iter()
@@ -633,20 +686,28 @@ fn explicit_child_without_selected_parent_publishes_unresolved_and_never_reroots
     let mut progress =
         |_: CaptureSourceBackedDetailedRefreshProgress| Ok::<(), SourceBackedRouteError>(());
 
-    let publication = refresh_all_provider_sources(
+    let selected_root_publication = refresh_all_provider_sources(
         &discovery,
         report,
         StdDuration::ZERO,
         &data_root,
         &index_root,
-        Some(&upsert.authority),
+        None,
         SourceBackedRefreshScope::All,
-        &BTreeSet::new(),
+        &mut progress,
+    )
+    .unwrap();
+    assert_eq!(selected_root_publication.route_results.len(), 1);
+    let publication = refresh_exact_source(
+        &discovery,
+        &upsert.authority,
+        &data_root,
+        &index_root,
         &mut progress,
     )
     .unwrap();
 
-    assert_eq!(publication.route_results.len(), 2);
+    assert_eq!(publication.route_results.len(), 1);
     let [binding] = publication.catalog_route_bindings.as_slice() else {
         panic!("one explicit child route binding expected");
     };

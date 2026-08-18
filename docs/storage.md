@@ -152,6 +152,21 @@ normalized records, and source identity metadata. Provider SQLite adapters use
 short read-only logical snapshots with normal committed WAL visibility and
 never checkpoint or write provider data.
 
+### Core refresh request boundary
+
+Core persists one logical refresh intent: automatic maintenance, or a selected
+import of all sources, one provider, or one exact source authority. A single
+admission resolver turns that intent into certified exact routes. The executor
+accepts only this admitted request; it does not discover providers, infer a
+missing selection, or widen selected work. Interrupted requests persist their
+logical intent and are re-admitted through the same resolver before execution,
+so missing or changed selected routes fail closed.
+
+Request receipts describe only the routes and rejections observed by that
+request. Generation metadata separately describes the complete retained
+publication. A selected no-op can therefore report its own rejection outcome
+without changing generation-wide totals or the daemon's global watch catalog.
+
 - `search/lexical` contains immutable verified Core/Tantivy generations used
   for lexical search and indexed snippets.
 - `search/semantic` contains generation-bound flat-F32 vectors, hashes, and

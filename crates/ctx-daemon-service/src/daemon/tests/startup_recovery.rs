@@ -32,7 +32,7 @@ fn interrupted_queue_is_recovered_before_endpoint_accepts_a_new_admission() -> R
         startup_source_refresh
             .status_for_test(&predecessor_id)
             .unwrap()["request_state"],
-        "queued"
+        "admission_pending"
     );
     assert!(!daemon_service_endpoint_path(&data_root, DaemonIpcService::SourceRefresh).exists());
 
@@ -76,14 +76,17 @@ fn interrupted_queue_is_recovered_before_endpoint_accepts_a_new_admission() -> R
             "op": "source_refresh_request",
             "request_id": successor_id,
             "mode": "wait",
-            "operation": "refresh",
-            "fresh_after_admitted_snapshot": true,
+            "trigger": "import",
+            "refresh_intent": {
+                "kind": "selected_import",
+                "selection": {"kind": "all"},
+            },
         })),
         StdDuration::from_secs(1),
         64 * 1024,
     )?
     .expect("new admission after recovery");
-    assert_eq!(acknowledgement["coalesced_into_request_id"], predecessor_id);
+    assert!(acknowledgement["coalesced_into_request_id"].is_null());
 
     let durable = read_daemon_job_status(&daemon_core_refresh_job_path(&data_root))
         .expect("recovered root plus new admission");

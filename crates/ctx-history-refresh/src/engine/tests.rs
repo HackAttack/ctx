@@ -31,8 +31,8 @@ use ctx_history_refresh_execution::{
 #[path = "tests/harness.rs"]
 mod harness;
 use harness::{
-    load_explicit_source_catalog_authority, pin_active_verified_generation,
-    pin_published_generation, CoreRefreshEngine, SOURCE_REFRESH_REQUEST_OP,
+    pin_active_verified_generation, pin_published_generation, CoreRefreshEngine,
+    SOURCE_REFRESH_REQUEST_OP,
 };
 
 #[test]
@@ -40,7 +40,7 @@ fn read_model_source_count_uses_request_routes_not_global_or_diagnostic_counts()
     let mut attempt = new_refresh_attempt(
         None,
         SourceRefreshRuntimeMetadata::default(),
-        None,
+        RefreshIntent::AutomaticMaintenance,
         SourceBackedRefreshScope::All,
     );
     attempt.state = SourceBackedRefreshState::Published;
@@ -83,15 +83,6 @@ fn read_model_source_count_uses_request_routes_not_global_or_diagnostic_counts()
 
 #[path = "tests/observation_fence.rs"]
 mod observation_fence;
-
-#[path = "tests/logical_demand.rs"]
-mod logical_demand;
-
-#[path = "tests/logical_completion_race.rs"]
-mod logical_completion_race;
-
-#[path = "tests/delayed_admission.rs"]
-mod delayed_admission;
 
 #[path = "tests/pending_missing.rs"]
 mod pending_missing;
@@ -350,15 +341,25 @@ fn test_catalog_authority(revision: u64, digest_byte: u8) -> ExplicitSourceCatal
     crate::explicit_source_catalog_authority_for_test(revision)
 }
 
+fn test_exact_catalog_authority(
+    data_root: &Path,
+    source_root: &Path,
+) -> ExplicitSourceCatalogAuthority {
+    fs::create_dir_all(source_root).expect("create exact-source fixture root");
+    crate::upsert_explicit_source(
+        data_root,
+        &provider_source_for_path(CaptureProvider::Codex, source_root.to_path_buf()),
+    )
+    .expect("register exact-source fixture")
+    .authority
+}
+
 fn physically_selected_routes(
     execution: &SourceBackedRefreshExecution<'_>,
     current_routes: &BTreeSet<SourceRouteIdentity>,
 ) -> BTreeSet<SourceRouteIdentity> {
-    match &execution.scope {
-        SourceBackedRefreshScope::All => current_routes
-            .difference(&execution.covered_route_ids)
-            .cloned()
-            .collect(),
+    match &execution.admitted_refresh().publication_scope() {
+        SourceBackedRefreshScope::All => current_routes.clone(),
         SourceBackedRefreshScope::Exact(routes) => routes.clone(),
     }
 }
@@ -411,49 +412,6 @@ fn publish_selected_routes(
             detail: "fixture failure".to_owned(),
         }];
     }
-    execution.covered_publication.apply(&mut publication);
-    Ok(publication)
-}
-
-fn publish_selected_routes_with_rejection(
-    execution: &SourceBackedRefreshExecution<'_>,
-    selected: &BTreeSet<SourceRouteIdentity>,
-    rejected_route: &SourceRouteIdentity,
-) -> Result<SourceBackedRefreshPublication> {
-    let source = publication_pin_source_with_anchor(0x93);
-    let mut writer =
-        ctx_history_index::GenerationWriter::open(execution.index_root, WriterOptions::default())?
-            .into_writer()
-            .map_err(crate::committed_generation_recovery_error)?;
-    writer.begin_source(source.clone())?;
-    writer.add_core_record(publication_pin_record(&source))?;
-    writer.certify_source(publication_rejection_certificate(&source))?;
-    let commit = writer.commit(|_| true)?;
-    let mut publication = empty_test_publication(commit.generation_id.clone());
-    publication.current = SourceBackedRefreshCurrent::from_sources(&commit.manifest().sources, 0)?;
-    publication.certified_source_count = publication.current.source_count;
-    publication.certified_source_bytes = publication.current.certified_source_bytes;
-    publication.route_results = selected
-        .iter()
-        .map(|route| SourceBackedRefreshRouteResult::succeeded(route.as_str().to_owned(), true))
-        .collect();
-    let result = publication
-        .route_results
-        .iter_mut()
-        .find(|result| result.route_identity == rejected_route.as_str())
-        .expect("rejected route is selected");
-    result.rejected_record_total = 1;
-    result.rejection_diagnostics = vec![SourceBackedRefreshRecordRejection {
-        route_identity: rejected_route.as_str().to_owned(),
-        source_identity: "95".repeat(32),
-        provider: "codex".to_owned(),
-        source_selector: "/fixture/rejected.jsonl".to_owned(),
-        line: 7,
-        payload_type: "unsupported_fixture".to_owned(),
-        class: "unsupported_record".to_owned(),
-        detail: "fixture record rejection".to_owned(),
-    }];
-    execution.covered_publication.apply(&mut publication);
     Ok(publication)
 }
 
@@ -593,7 +551,7 @@ fn publish_pin_fixture(
         ..SourceBackedRefreshCurrent::default()
     };
     publication.published_explicit_source_catalog = execution.explicit_source_catalog.cloned();
-    let selected = match &execution.scope {
+    let selected = match &execution.admitted_refresh().publication_scope() {
         SourceBackedRefreshScope::All => BTreeSet::new(),
         SourceBackedRefreshScope::Exact(routes) => routes.iter().cloned().collect(),
     };
@@ -612,11 +570,12 @@ fn publication_pin_executor(
     })
 }
 
-fn manual_all_request(
-    coordinator: &CoreRefreshEngine,
-    data_root: &Path,
-    authority: &ExplicitSourceCatalogAuthority,
-) -> Value {
+fn manual_all_request_without_catalog(coordinator: &CoreRefreshEngine, data_root: &Path) -> Value {
+    let observations = coordinator
+        .scheduled_route_ids_for_test()
+        .into_iter()
+        .map(|route| (route, Some("ab".repeat(32))))
+        .collect();
     coordinator
         .handle_ipc_request_with_admission_fence_for_test(
             data_root,
@@ -626,81 +585,13 @@ fn manual_all_request(
                 "request_id": Uuid::now_v7().to_string(),
                 "mode": "wait",
                 "operation": "import",
-                "explicit_source_catalog": authority.to_json(),
+                "refresh_selector": {"kind": "all_automatic"},
                 "fresh_after_admitted_snapshot": true,
             }),
-            BTreeMap::new(),
+            observations,
         )
         .unwrap()
         .expect("manual all-route refresh response")
-}
-
-#[test]
-fn queued_startup_exact_is_upgraded_to_one_manual_all_scan() {
-    let temp = tempfile::tempdir().unwrap();
-    let data_root = temp.path().join("data");
-    ctx_history_platform::platform_security::establish_private_data_root(&data_root).unwrap();
-    let routes = BTreeSet::from([
-        route_identity(0x11),
-        route_identity(0x12),
-        route_identity(0x13),
-    ]);
-    let scans = Arc::new(Mutex::new(BTreeMap::<SourceRouteIdentity, usize>::new()));
-    let executor_routes = routes.clone();
-    let executor_scans = Arc::clone(&scans);
-    let coordinator = CoreRefreshEngine::with_executor(Arc::new(
-        move |execution: SourceBackedRefreshExecution<'_>| {
-            assert_eq!(execution.scope, SourceBackedRefreshScope::All);
-            assert!(execution.covered_route_ids.is_empty());
-            let selected = physically_selected_routes(&execution, &executor_routes);
-            for route in &selected {
-                *executor_scans
-                    .lock()
-                    .unwrap()
-                    .entry(route.clone())
-                    .or_default() += 1;
-            }
-            publish_selected_routes(&execution, &selected, None)
-        },
-    ));
-    coordinator.reconcile_watch_routes(
-        routes.clone(),
-        EventWatermark::new(1, 0),
-        ledger_now_ms().saturating_sub(1_000),
-    );
-    assert!(coordinator
-        .enqueue_next_dirty_route(&data_root, ledger_now_ms())
-        .unwrap());
-    let automatic_request_id =
-        read_daemon_job_status(&daemon_source_backed_refresh_job_path(&data_root))
-            .and_then(|status| status["request_id"].as_str().map(str::to_owned))
-            .expect("queued startup exact request ID");
-    let authority = load_explicit_source_catalog_authority(&data_root).unwrap();
-    let manual = manual_all_request(&coordinator, &data_root, &authority);
-    let manual_request_id = request_id(&manual);
-
-    assert_ne!(manual_request_id, automatic_request_id);
-    assert_eq!(manual["coalesced_into_request_id"], automatic_request_id);
-    assert_eq!(manual["request_state"], "queued");
-    let upgraded = coordinator.status(&automatic_request_id).unwrap();
-    assert_eq!(upgraded["trigger"], "import");
-    assert_eq!(upgraded["coalesced_logical_demands"], 1);
-    let run = coordinator.run_next(&data_root).expect("upgraded all run");
-    assert!(!run.failed);
-    assert_eq!(run.scope, SourceBackedRefreshScope::All);
-    assert_eq!(
-        *scans.lock().unwrap(),
-        routes
-            .iter()
-            .cloned()
-            .map(|route| (route, 1))
-            .collect::<BTreeMap<_, _>>()
-    );
-    assert_eq!(
-        coordinator.status(&manual_request_id).unwrap()["request_state"],
-        "queued"
-    );
-    assert!(!coordinator.has_scheduled_route_work());
 }
 
 #[test]
@@ -727,11 +618,11 @@ fn warm_dirty_route_burst_uses_one_bounded_refresh_and_publication() {
     let expected_routes = routes.clone();
     let executor_calls = Arc::clone(&calls);
     let executor_scans = Arc::clone(&scans);
-    let coordinator = CoreRefreshEngine::with_executor(Arc::new(
-        move |execution: SourceBackedRefreshExecution<'_>| {
+    let coordinator = CoreRefreshEngine::with_executor_and_admitted_routes(
+        Arc::new(move |execution: SourceBackedRefreshExecution<'_>| {
             executor_calls.fetch_add(1, Ordering::SeqCst);
             assert_eq!(
-                execution.scope,
+                execution.admitted_refresh().publication_scope(),
                 SourceBackedRefreshScope::Exact(expected_routes.clone())
             );
             for route in &expected_routes {
@@ -742,8 +633,9 @@ fn warm_dirty_route_burst_uses_one_bounded_refresh_and_publication() {
                     .or_default() += 1;
             }
             publish_selected_routes(&execution, &expected_routes, None)
-        },
-    ));
+        }),
+        routes.clone(),
+    );
     coordinator.reconcile_watch_routes(
         routes.clone(),
         EventWatermark::new(1, 0),
@@ -769,132 +661,6 @@ fn warm_dirty_route_burst_uses_one_bounded_refresh_and_publication() {
     assert!(!coordinator
         .enqueue_next_dirty_route(&data_root, u64::MAX)
         .unwrap());
-}
-
-#[test]
-fn running_incremental_startup_exact_promotes_manual_exhaustive_with_full_rescan() {
-    let temp = tempfile::tempdir().unwrap();
-    let data_root = temp.path().join("data");
-    ctx_history_platform::platform_security::establish_private_data_root(&data_root).unwrap();
-    let routes = BTreeSet::from([
-        route_identity(0x21),
-        route_identity(0x22),
-        route_identity(0x23),
-    ]);
-    let scans = Arc::new(Mutex::new(BTreeMap::<SourceRouteIdentity, usize>::new()));
-    let calls = Arc::new(AtomicUsize::new(0));
-    let entered = Arc::new(Barrier::new(2));
-    let release = Arc::new(Barrier::new(2));
-    let executor_routes = routes.clone();
-    let executor_scans = Arc::clone(&scans);
-    let executor_calls = Arc::clone(&calls);
-    let executor_entered = Arc::clone(&entered);
-    let executor_release = Arc::clone(&release);
-    let coordinator = Arc::new(CoreRefreshEngine::with_executor(Arc::new(
-        move |execution: SourceBackedRefreshExecution<'_>| {
-            let selected = physically_selected_routes(&execution, &executor_routes);
-            for route in &selected {
-                *executor_scans
-                    .lock()
-                    .unwrap()
-                    .entry(route.clone())
-                    .or_default() += 1;
-            }
-            let first = executor_calls.fetch_add(1, Ordering::SeqCst) == 0;
-            if first {
-                assert!(matches!(
-                    execution.scope,
-                    SourceBackedRefreshScope::Exact(_)
-                ));
-                assert!(execution.covered_route_ids.is_empty());
-                executor_entered.wait();
-                executor_release.wait();
-            } else {
-                assert_eq!(execution.scope, SourceBackedRefreshScope::All);
-                assert!(execution.covered_route_ids.is_empty());
-            }
-            let mut publication = if first {
-                let rejected_route = selected.iter().next().expect("selected exact route");
-                publish_selected_routes_with_rejection(&execution, &selected, rejected_route)?
-            } else {
-                publish_selected_routes(&execution, &selected, None)?
-            };
-            if first {
-                publication.current.removed_source_count = 1;
-            }
-            Ok(publication)
-        },
-    )));
-    coordinator.reconcile_watch_routes(
-        routes.clone(),
-        EventWatermark::new(2, 0),
-        ledger_now_ms().saturating_sub(1_000),
-    );
-    assert!(coordinator
-        .enqueue_next_dirty_route(&data_root, ledger_now_ms())
-        .unwrap());
-    let authority = load_explicit_source_catalog_authority(&data_root).unwrap();
-
-    // Startup exact work is Incremental. A later manual import requires
-    // Exhaustive reconciliation, so it must run one all-route successor.
-    let manual = std::thread::scope(|scope| {
-        let runner = Arc::clone(&coordinator);
-        let runner_root = data_root.clone();
-        scope.spawn(move || {
-            let run = runner
-                .run_next_with_coverage_fence_for_test(&runner_root, |_catalog, routes| {
-                    Ok(routes.iter().cloned().map(|route| (route, None)).collect())
-                })
-                .expect("running startup exact");
-            assert!(!run.failed, "{:#}", run.job);
-        });
-        entered.wait();
-        let manual = manual_all_request(&coordinator, &data_root, &authority);
-        release.wait();
-        manual
-    });
-
-    let manual_request_id = request_id(&manual);
-    let successor = coordinator
-        .run_next_with_coverage_fence_for_test(&data_root, |_catalog, routes| {
-            Ok(routes.iter().cloned().map(|route| (route, None)).collect())
-        })
-        .expect("manual all continuation");
-    assert!(!successor.failed, "{:#}", successor.job);
-    assert_eq!(request_id(&successor.job), manual_request_id);
-    assert_eq!(calls.load(Ordering::SeqCst), 2);
-    assert_eq!(
-        *scans.lock().unwrap(),
-        routes
-            .iter()
-            .cloned()
-            .map(|route| (route, 2))
-            .collect::<BTreeMap<_, _>>()
-    );
-    let terminal = coordinator.status(&manual_request_id).unwrap();
-    assert_eq!(terminal["request_state"], "published");
-    assert_eq!(terminal["outcome"], "completed");
-    assert_eq!(terminal["generation_changed"], false);
-    assert_eq!(terminal["scanned_routes"], routes.len());
-    assert_eq!(terminal["receipt"]["current"]["removed_source_count"], 0);
-    assert_eq!(
-        terminal["receipt"]["successful_route_total"]
-            .as_u64()
-            .unwrap() as usize,
-        routes.len()
-    );
-    assert_eq!(terminal["receipt"]["rejected_record_total"], 0);
-    assert_eq!(
-        terminal["receipt"]["route_results"]
-            .as_object()
-            .unwrap()
-            .values()
-            .filter_map(|result| result.as_array())
-            .map(|result| result.get(4).and_then(Value::as_u64).unwrap_or(0))
-            .sum::<u64>(),
-        0
-    );
-    assert!(!coordinator.has_scheduled_route_work());
 }
 
 mod additional;

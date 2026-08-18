@@ -19,6 +19,7 @@ struct RouteWatchTargets {
     kind: Option<SourceBackedWatchTargetKind>,
     control: Option<SourceBackedRouteControlExpectation>,
     targets: BTreeSet<PathBuf>,
+    admission_sources: Option<Vec<ProviderSource>>,
     registration_sources: Option<Vec<RegisteredSource>>,
 }
 
@@ -51,6 +52,22 @@ pub struct SourceBackedWatchCatalog {
 impl SourceBackedWatchCatalog {
     pub fn route_ids(&self) -> impl ExactSizeIterator<Item = &SourceRouteIdentity> {
         self.routes.keys()
+    }
+
+    pub fn route_ids_for_provider(
+        &self,
+        provider: CaptureProvider,
+    ) -> BTreeSet<SourceRouteIdentity> {
+        self.routes
+            .iter()
+            .filter(|(_, targets)| {
+                targets
+                    .admission_sources
+                    .as_ref()
+                    .is_some_and(|sources| sources.iter().any(|source| source.provider == provider))
+            })
+            .map(|(route, _)| route.clone())
+            .collect()
     }
 
     pub fn route_targets(
@@ -127,7 +144,6 @@ impl SourceBackedWatchCatalog {
         if routes.is_empty() {
             return None;
         }
-        let mut sources = Vec::new();
         for route in routes {
             let registrations = self.routes.get(route)?.registration_sources.as_ref()?;
             if registrations
@@ -136,10 +152,30 @@ impl SourceBackedWatchCatalog {
             {
                 return None;
             }
+        }
+        self.route_admission_report(routes)
+    }
+
+    /// Reconstructs the bounded discovery inputs for exact registered routes,
+    /// including routes whose source is currently unavailable. Admission may
+    /// use this immutable catalog authority to execute the exact request and
+    /// produce a route-local missing/unavailable disposition; a route absent
+    /// from the catalog still fails closed.
+    pub fn route_admission_report(
+        &self,
+        routes: &BTreeSet<SourceRouteIdentity>,
+    ) -> Option<DiscoveryReport> {
+        if routes.is_empty() {
+            return None;
+        }
+        let mut sources = Vec::new();
+        for route in routes {
+            let registrations = self.routes.get(route)?.admission_sources.as_ref()?;
             sources.extend(
                 registrations
                     .iter()
-                    .map(|registration| registration.source.clone()),
+                    .cloned()
+                    .map(refresh_admission_source_presence),
             );
         }
         sources.sort_by(|left, right| {
@@ -289,12 +325,14 @@ impl SourceBackedProviderRegistry {
                         .as_ref()
                         .and_then(|driver| driver.route_control_expectation),
                     targets: BTreeSet::new(),
+                    admission_sources: route_admission_sources(route),
                     registration_sources: automatic_executable_registration_sources(route),
                 });
             if targets.primary != route.metadata.source.path
                 || targets.kind != Some(route.metadata.watch_target_kind)
             {
                 targets.kind = None;
+                targets.admission_sources = None;
             }
             let route_control = route
                 .driver
@@ -302,7 +340,18 @@ impl SourceBackedProviderRegistry {
                 .and_then(|driver| driver.route_control_expectation.as_ref());
             if targets.control.as_ref() != route_control {
                 targets.control = None;
+                targets.admission_sources = None;
                 targets.registration_sources = None;
+            }
+            match (
+                targets.admission_sources.as_mut(),
+                route_admission_sources(route),
+            ) {
+                (Some(existing), Some(additional)) => {
+                    existing.extend(additional);
+                    sort_and_dedup_sources(existing);
+                }
+                _ => targets.admission_sources = None,
             }
             if targets.registration_sources != automatic_executable_registration_sources(route) {
                 targets.registration_sources = None;
@@ -351,6 +400,44 @@ impl SourceBackedProviderRegistry {
         }
         catalog
     }
+}
+
+fn route_admission_sources(route: &SourceBackedRoute) -> Option<Vec<ProviderSource>> {
+    route.metadata.selection.is_some().then(|| {
+        if route.registration_sources.is_empty() {
+            vec![route.metadata.source.clone()]
+        } else {
+            route.registration_sources.clone()
+        }
+    })
+}
+
+fn sort_and_dedup_sources(sources: &mut Vec<ProviderSource>) {
+    sources.sort_by(|left, right| {
+        left.provider
+            .as_str()
+            .cmp(right.provider.as_str())
+            .then_with(|| left.source_format.cmp(right.source_format))
+            .then_with(|| left.path.cmp(&right.path))
+    });
+    sources.dedup();
+}
+
+fn refresh_admission_source_presence(mut source: ProviderSource) -> ProviderSource {
+    match fs::symlink_metadata(&source.path) {
+        Ok(_) => {
+            source.exists = true;
+            if source.status == ProviderSourceStatus::Missing {
+                source.status = ProviderSourceStatus::Available;
+            }
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            source.exists = false;
+            source.status = ProviderSourceStatus::Missing;
+        }
+        Err(_) => {}
+    }
+    source
 }
 
 fn automatic_executable_registration_sources(
@@ -782,6 +869,12 @@ mod tests {
         assert!(catalog
             .route_discovery_report(&BTreeSet::from([identity.clone()]))
             .is_none());
+        let admitted = catalog
+            .route_admission_report(&BTreeSet::from([identity.clone()]))
+            .expect("exact admission retains the missing route's bounded source descriptor");
+        assert_eq!(admitted.sources.len(), 1);
+        assert!(!admitted.sources[0].exists);
+        assert_eq!(admitted.sources[0].status, ProviderSourceStatus::Missing);
         fs::create_dir(&sqlite).unwrap();
         assert!(catalog
             .route_discovery_report(&BTreeSet::from([identity]))

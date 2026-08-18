@@ -1,8 +1,7 @@
 use std::path::Path;
 
 use anyhow::{bail, Context, Result};
-use ctx_history_core::CaptureProvider;
-use ctx_history_refresh::SourceBackedRefreshSelector;
+use ctx_history_refresh::RefreshSelection;
 
 use crate::{
     progress::ProgressReporter,
@@ -12,42 +11,22 @@ use crate::{
     },
 };
 
-use super::ExplicitSourceCatalogAuthority;
-
-pub(super) enum ImportCoreRefreshRequest<'a> {
-    Automatic,
-    AutomaticProvider(CaptureProvider),
-    ExplicitCatalog(&'a ExplicitSourceCatalogAuthority),
-}
-
 /// Applies import-specific policy around the one Core refresh control path.
 ///
 /// Import may start the daemon and waits only for authoritative Core publication.
 pub(super) fn wait_for_import_core_refresh(
     data_root: &Path,
     no_daemon: bool,
-    request: ImportCoreRefreshRequest<'_>,
+    selection: RefreshSelection,
     progress: &mut ProgressReporter<'_>,
 ) -> Result<SourceBackedRefreshObservation> {
     let mut report_progress = |update: &crate::semantic::RefreshStatus| {
         progress.source_refresh(update).map_err(anyhow::Error::new)
     };
-    let (selector, explicit_source_catalog) = match request {
-        ImportCoreRefreshRequest::Automatic => (SourceBackedRefreshSelector::AllAutomatic, None),
-        ImportCoreRefreshRequest::AutomaticProvider(provider) => (
-            SourceBackedRefreshSelector::AutomaticProvider(provider),
-            None,
-        ),
-        ImportCoreRefreshRequest::ExplicitCatalog(authority) => (
-            SourceBackedRefreshSelector::ExplicitCatalog,
-            Some(authority),
-        ),
-    };
     let refresh = coordinate_import_source_backed_refresh_with_progress(
         data_root,
         SourceBackedRefreshMode::Wait,
-        selector,
-        explicit_source_catalog,
+        selection,
         !no_daemon,
         &mut report_progress,
     )
@@ -74,6 +53,8 @@ mod tests {
         let source = include_str!("core_refresh.rs");
         for forbidden in [
             ["ctx_history_", "capture"].concat(),
+            ["ImportCore", "RefreshRequest"].concat(),
+            ["SourceBackedRefresh", "Selector"].concat(),
             ["SourceBackedRefresh", "Executor"].concat(),
             ["VerifiedIndex", "::open"].concat(),
             ["Store", "::open"].concat(),

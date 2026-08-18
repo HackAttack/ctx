@@ -807,16 +807,16 @@ fn query_service_coalesces_source_refresh_requests_on_one_daemon_ticket() -> Res
     let first = request()?.expect("first source refresh response");
     let second = request()?.expect("coalesced source refresh response");
 
-    assert_eq!(first["request_state"], "queued");
-    assert_eq!(second["request_state"], "queued");
+    assert_eq!(first["request_state"], "admission_pending");
+    assert_eq!(second["request_state"], "admission_pending");
     assert_eq!(first["request_id"], second["request_id"]);
     assert_eq!(first["coalesced_requests"], 0);
     assert_eq!(second["coalesced_requests"], 1);
     assert!(source_refresh.has_pending_request());
     let job = read_daemon_job_status(&daemon_source_backed_refresh_job_path(temp.path()))
-        .expect("queued source refresh job status");
+        .expect("admission-pending source refresh job status");
     assert_eq!(job["owner"], "daemon");
-    assert_eq!(job["request_state"], "queued");
+    assert_eq!(job["request_state"], "admission_pending");
     assert_eq!(job["request_id"], first["request_id"]);
     assert_eq!(job["coalesced_requests"], 1);
     drop(service);

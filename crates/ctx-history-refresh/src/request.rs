@@ -293,201 +293,179 @@ impl std::str::FromStr for RefreshRequestTrigger {
     }
 }
 
-/// Logical source selection owned by one refresh request.
-///
-/// This remains distinct from [`SourceBackedRefreshScope`]: provider and
-/// explicit-catalog selections are resolved by daemon admission into an exact
-/// physical route set before capture execution begins.
-#[derive(Debug, Clone, Copy, Eq, PartialEq)]
-pub enum SourceBackedRefreshSelector {
-    AllAutomatic,
-    AutomaticProvider(CaptureProvider),
-    ExplicitCatalog,
+/// The one logical source selection accepted by Core refresh admission.
+/// Physical route identities are produced only by the admission resolver.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RefreshSelection {
+    All,
+    Provider(CaptureProvider),
+    ExactSource(ExplicitSourceCatalogAuthority),
 }
 
-impl SourceBackedRefreshSelector {
-    #[doc(hidden)]
-    pub fn to_json(self) -> Value {
+impl RefreshSelection {
+    pub fn to_json(&self) -> Value {
         match self {
-            Self::AllAutomatic => json!({ "kind": "all_automatic" }),
-            Self::AutomaticProvider(provider) => json!({
-                "kind": "automatic_provider",
+            Self::All => json!({ "kind": "all" }),
+            Self::Provider(provider) => json!({
+                "kind": "provider",
                 "provider": provider.as_str(),
             }),
-            Self::ExplicitCatalog => json!({ "kind": "explicit_catalog" }),
+            Self::ExactSource(authority) => json!({
+                "kind": "exact_source",
+                "authority": authority.to_json(),
+            }),
         }
     }
 
-    #[doc(hidden)]
     pub fn from_json(value: &Value) -> Result<Self> {
         let fields = value
             .as_object()
-            .ok_or_else(|| anyhow!("source refresh selector is not an object"))?;
+            .ok_or_else(|| anyhow!("source refresh selection is not an object"))?;
         match fields.get("kind").and_then(Value::as_str) {
-            Some("all_automatic") if fields.len() == 1 => Ok(Self::AllAutomatic),
-            Some("automatic_provider") if fields.len() == 2 => {
+            Some("all") if fields.len() == 1 => Ok(Self::All),
+            Some("provider") if fields.len() == 2 => {
                 let provider = fields
                     .get("provider")
                     .and_then(Value::as_str)
-                    .ok_or_else(|| anyhow!("automatic provider selector has no provider"))?
+                    .ok_or_else(|| anyhow!("provider source refresh selection has no provider"))?
                     .parse()
-                    .context("parse automatic provider selector")?;
+                    .context("parse provider source refresh selection")?;
                 if provider == CaptureProvider::Unknown {
-                    bail!("automatic provider selector has an unknown provider");
+                    bail!("provider source refresh selection has an unknown provider");
                 }
-                Ok(Self::AutomaticProvider(provider))
+                Ok(Self::Provider(provider))
             }
-            Some("explicit_catalog") if fields.len() == 1 => Ok(Self::ExplicitCatalog),
-            Some(kind) => bail!("source refresh selector `{kind}` is malformed"),
-            None => bail!("source refresh selector kind is missing"),
+            Some("exact_source") if fields.len() == 2 => fields
+                .get("authority")
+                .ok_or_else(|| anyhow!("exact-source refresh selection has no authority"))
+                .and_then(ExplicitSourceCatalogAuthority::from_json)
+                .map(Self::ExactSource),
+            Some(kind) => bail!("source refresh selection `{kind}` is malformed"),
+            None => bail!("source refresh selection kind is missing"),
         }
     }
 
-    pub const fn is_scoped(self) -> bool {
-        !matches!(self, Self::AllAutomatic)
+    pub fn explicit_source_authority(&self) -> Option<&ExplicitSourceCatalogAuthority> {
+        match self {
+            Self::ExactSource(authority) => Some(authority),
+            Self::All | Self::Provider(_) => None,
+        }
     }
 }
 
-#[cfg(test)]
-mod source_backed_refresh_selector_tests {
-    use super::*;
+/// Canonical logical intent for one Core refresh request.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RefreshIntent {
+    AutomaticMaintenance,
+    SelectedImport(RefreshSelection),
+}
 
-    #[test]
-    fn selector_json_round_trips_and_rejects_malformed_scoped_values() {
-        for selector in [
-            SourceBackedRefreshSelector::AllAutomatic,
-            SourceBackedRefreshSelector::AutomaticProvider(CaptureProvider::Codex),
-            SourceBackedRefreshSelector::ExplicitCatalog,
-        ] {
-            assert_eq!(
-                SourceBackedRefreshSelector::from_json(&selector.to_json()).unwrap(),
-                selector
-            );
-        }
-
-        for malformed in [
-            json!({ "kind": "automatic_provider" }),
-            json!({ "kind": "automatic_provider", "provider": 7 }),
-            json!({ "kind": "automatic_provider", "provider": "unknown" }),
-            json!({
-                "kind": "automatic_provider",
-                "provider": "codex",
-                "unexpected": true,
+impl RefreshIntent {
+    pub fn to_json(&self) -> Value {
+        match self {
+            Self::AutomaticMaintenance => json!({ "kind": "automatic_maintenance" }),
+            Self::SelectedImport(selection) => json!({
+                "kind": "selected_import",
+                "selection": selection.to_json(),
             }),
-            json!({ "kind": "explicit_catalog", "provider": "codex" }),
-        ] {
-            assert!(SourceBackedRefreshSelector::from_json(&malformed).is_err());
         }
     }
 
-    #[test]
-    fn submission_constructor_defaults_to_legacy_all_and_allows_typed_override() {
-        let automatic = RefreshSubmission::new(
-            "automatic".to_owned(),
-            RefreshOperation::Refresh,
-            None,
-            SourceBackedRefreshScope::All,
-            false,
-            false,
-        );
-        assert_eq!(
-            automatic.selector(),
-            SourceBackedRefreshSelector::AllAutomatic
-        );
-        assert_eq!(
-            automatic
-                .with_selector(SourceBackedRefreshSelector::AutomaticProvider(
-                    CaptureProvider::Codex,
-                ))
-                .selector(),
-            SourceBackedRefreshSelector::AutomaticProvider(CaptureProvider::Codex)
-        );
+    pub fn from_json(value: &Value) -> Result<Self> {
+        let fields = value
+            .as_object()
+            .ok_or_else(|| anyhow!("source refresh intent is not an object"))?;
+        match fields.get("kind").and_then(Value::as_str) {
+            Some("automatic_maintenance") if fields.len() == 1 => Ok(Self::AutomaticMaintenance),
+            Some("selected_import") if fields.len() == 2 => fields
+                .get("selection")
+                .ok_or_else(|| anyhow!("selected import has no source selection"))
+                .and_then(RefreshSelection::from_json)
+                .map(Self::SelectedImport),
+            Some(kind) => bail!("source refresh intent `{kind}` is malformed"),
+            None => bail!("source refresh intent kind is missing"),
+        }
+    }
 
-        let explicit = RefreshSubmission::new(
-            "explicit".to_owned(),
-            RefreshOperation::Import,
-            Some(crate::explicit_source_catalog_authority_for_test(1)),
-            SourceBackedRefreshScope::All,
-            true,
-            false,
-        );
-        assert_eq!(
-            explicit.selector(),
-            SourceBackedRefreshSelector::AllAutomatic
-        );
-        assert_eq!(
-            explicit
-                .with_selector(SourceBackedRefreshSelector::ExplicitCatalog)
-                .selector(),
-            SourceBackedRefreshSelector::ExplicitCatalog
-        );
+    pub const fn operation(&self) -> RefreshOperation {
+        match self {
+            Self::AutomaticMaintenance => RefreshOperation::Refresh,
+            Self::SelectedImport(_) => RefreshOperation::Import,
+        }
+    }
+
+    pub const fn reconciliation_demand(&self) -> SourceBackedReconciliationDemand {
+        match self {
+            Self::AutomaticMaintenance => SourceBackedReconciliationDemand::Incremental,
+            Self::SelectedImport(_) => SourceBackedReconciliationDemand::Exhaustive,
+        }
+    }
+
+    pub fn selection(&self) -> Option<&RefreshSelection> {
+        match self {
+            Self::AutomaticMaintenance => None,
+            Self::SelectedImport(selection) => Some(selection),
+        }
+    }
+
+    pub const fn is_selected_import(&self) -> bool {
+        matches!(self, Self::SelectedImport(_))
+    }
+
+    pub fn explicit_source_authority(&self) -> Option<&ExplicitSourceCatalogAuthority> {
+        self.selection()
+            .and_then(RefreshSelection::explicit_source_authority)
     }
 }
 
-/// Process-neutral facts required to submit one logical refresh request.
-#[derive(Debug, Clone)]
-pub struct RefreshSubmission {
+/// Process-neutral logical request accepted by the refresh engine.
+///
+/// Admission is solely responsible for turning `intent` into certified exact
+/// routes. Callers cannot provide a physical scope or an execution fallback.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RefreshRequest {
     pub(crate) request_id: String,
-    pub(crate) operation: RefreshOperation,
-    pub(crate) reconciliation_demand: SourceBackedReconciliationDemand,
-    pub(crate) explicit_source_catalog: Option<ExplicitSourceCatalogAuthority>,
-    pub(crate) selector: SourceBackedRefreshSelector,
-    pub(crate) refresh_scope: SourceBackedRefreshScope,
-    pub(crate) fresh_after_admitted_snapshot: bool,
-    pub(crate) maintenance_wake: bool,
-    pub(crate) trigger: Option<RefreshRequestTrigger>,
+    pub(crate) intent: RefreshIntent,
+    pub(crate) trigger: RefreshRequestTrigger,
 }
 
-impl RefreshSubmission {
-    pub fn new(
-        request_id: String,
-        operation: RefreshOperation,
-        explicit_source_catalog: Option<ExplicitSourceCatalogAuthority>,
-        refresh_scope: SourceBackedRefreshScope,
-        fresh_after_admitted_snapshot: bool,
-        maintenance_wake: bool,
-    ) -> Self {
-        let reconciliation_demand = match operation {
-            RefreshOperation::Refresh => SourceBackedReconciliationDemand::Incremental,
-            RefreshOperation::Import => SourceBackedReconciliationDemand::Exhaustive,
-        };
+impl RefreshRequest {
+    pub fn new(request_id: String, intent: RefreshIntent, trigger: RefreshRequestTrigger) -> Self {
         Self {
             request_id,
-            operation,
-            reconciliation_demand,
-            explicit_source_catalog,
-            // The constructor preserves the pre-selector meaning of an
-            // explicit catalog: an overlay on an all-route import. New typed
-            // scoped callers opt in with `with_selector`.
-            selector: SourceBackedRefreshSelector::AllAutomatic,
-            refresh_scope,
-            fresh_after_admitted_snapshot,
-            maintenance_wake,
-            trigger: None,
+            intent,
+            trigger,
         }
     }
 
-    pub fn with_reconciliation_demand(mut self, demand: SourceBackedReconciliationDemand) -> Self {
-        self.reconciliation_demand = demand;
-        self
+    pub fn automatic(request_id: String, trigger: RefreshRequestTrigger) -> Self {
+        Self::new(request_id, RefreshIntent::AutomaticMaintenance, trigger)
     }
 
-    pub fn with_trigger(mut self, trigger: RefreshRequestTrigger) -> Self {
-        self.trigger = Some(trigger);
-        self
-    }
-
-    pub fn with_selector(mut self, selector: SourceBackedRefreshSelector) -> Self {
-        self.selector = selector;
-        self
-    }
-
-    pub fn selector(&self) -> SourceBackedRefreshSelector {
-        self.selector
+    pub fn selected_import(request_id: String, selection: RefreshSelection) -> Self {
+        Self::new(
+            request_id,
+            RefreshIntent::SelectedImport(selection),
+            RefreshRequestTrigger::Import,
+        )
     }
 
     pub fn request_id(&self) -> &str {
         &self.request_id
+    }
+
+    pub fn intent(&self) -> &RefreshIntent {
+        &self.intent
+    }
+
+    pub const fn trigger(&self) -> RefreshRequestTrigger {
+        self.trigger
+    }
+
+    #[doc(hidden)]
+    pub fn with_trigger(mut self, trigger: RefreshRequestTrigger) -> Self {
+        self.trigger = trigger;
+        self
     }
 }
 

@@ -51,16 +51,8 @@ fn release_pending_admission(
     status.schema_v1_fields().clone()
 }
 
-fn provider_submission(request_id: &str, provider: CaptureProvider) -> RefreshSubmission {
-    RefreshSubmission::new(
-        request_id.to_owned(),
-        RefreshOperation::Refresh,
-        None,
-        SourceBackedRefreshScope::All,
-        false,
-        false,
-    )
-    .with_selector(SourceBackedRefreshSelector::AutomaticProvider(provider))
+fn provider_submission(request_id: &str, provider: CaptureProvider) -> RefreshRequest {
+    RefreshRequest::selected_import(request_id.to_owned(), RefreshSelection::Provider(provider))
 }
 
 fn assert_unreadable_admission_failure(retain_generation: bool, request_id: &str) {
@@ -395,15 +387,10 @@ fn explicit_catalog_admission_uses_only_its_exact_path_authority() {
     let admission = coordinator
         .submit(
             &data_root,
-            RefreshSubmission::new(
+            RefreshRequest::selected_import(
                 request_id.to_owned(),
-                RefreshOperation::Import,
-                Some(authority),
-                SourceBackedRefreshScope::All,
-                true,
-                false,
-            )
-            .with_selector(SourceBackedRefreshSelector::ExplicitCatalog),
+                RefreshSelection::ExactSource(authority),
+            ),
         )
         .unwrap();
     release_pending_admission(&coordinator, admission);
@@ -445,22 +432,14 @@ fn explicit_catalog_admission_does_not_inherit_running_all_route_work() {
     let admission = coordinator
         .submit(
             &data_root,
-            RefreshSubmission::new(
+            RefreshRequest::selected_import(
                 request_id.to_owned(),
-                RefreshOperation::Import,
-                Some(authority),
-                SourceBackedRefreshScope::All,
-                true,
-                false,
-            )
-            .with_selector(SourceBackedRefreshSelector::ExplicitCatalog),
+                RefreshSelection::ExactSource(authority),
+            ),
         )
         .unwrap();
     release_pending_admission(&coordinator, admission);
 
-    let state = coordinator.lock_state();
-    assert!(!state.manual_all_continuations.contains_key(request_id));
-    drop(state);
     let pending = status_value(&coordinator, request_id);
     assert_eq!(pending["request_state"], "admission_pending");
     assert_eq!(pending["physical_attempt_id"], request_id);
@@ -867,14 +846,7 @@ fn stable_request_id_replay_requires_the_exact_same_payload() {
         .unwrap();
     assert_eq!(replay.status(), first.status());
 
-    let changed = RefreshSubmission::new(
-        request_id.to_owned(),
-        RefreshOperation::Refresh,
-        None,
-        SourceBackedRefreshScope::All,
-        false,
-        false,
-    );
+    let changed = RefreshRequest::automatic(request_id.to_owned(), RefreshRequestTrigger::Search);
     let conflict = coordinator.submit(&data_root, changed).unwrap();
     let conflict = conflict.status().schema_v1_fields();
     assert_eq!(conflict["ok"], false);
@@ -885,36 +857,26 @@ fn stable_request_id_replay_requires_the_exact_same_payload() {
 }
 
 #[test]
-fn stable_request_id_distinguishes_exact_catalog_from_legacy_all_overlay() {
+fn stable_request_id_distinguishes_exact_source_from_selected_all() {
     let (_temp, data_root) = private_data_root();
     let coordinator = test_refresh_engine();
     let request_id = "019fcaaa-0000-7000-8000-000000000506";
     let authority = crate::explicit_source_catalog_authority_for_test(1);
-    let submission = |selector| {
-        RefreshSubmission::new(
+    let exact = || {
+        RefreshRequest::selected_import(
             request_id.to_owned(),
-            RefreshOperation::Import,
-            Some(authority.clone()),
-            SourceBackedRefreshScope::All,
-            true,
-            false,
+            RefreshSelection::ExactSource(authority.clone()),
         )
-        .with_selector(selector)
     };
 
     let legacy = coordinator
         .submit(
             &data_root,
-            submission(SourceBackedRefreshSelector::AllAutomatic),
+            RefreshRequest::selected_import(request_id.to_owned(), RefreshSelection::All),
         )
         .unwrap();
     release_pending_admission(&coordinator, legacy);
-    let conflict = coordinator
-        .submit(
-            &data_root,
-            submission(SourceBackedRefreshSelector::ExplicitCatalog),
-        )
-        .unwrap();
+    let conflict = coordinator.submit(&data_root, exact()).unwrap();
     let conflict = conflict.status().schema_v1_fields();
     assert_eq!(conflict["request_state"], "request_conflict");
     assert_eq!(conflict["error_code"], "request_id_conflict");
@@ -926,15 +888,7 @@ fn stable_request_id_replays_the_same_provider_and_conflicts_on_provider_change(
     let coordinator = test_refresh_engine();
     let request_id = "019fcaaa-0000-7000-8000-000000000414";
     let submission = |provider| {
-        RefreshSubmission::new(
-            request_id.to_owned(),
-            RefreshOperation::Refresh,
-            None,
-            SourceBackedRefreshScope::All,
-            false,
-            false,
-        )
-        .with_selector(SourceBackedRefreshSelector::AutomaticProvider(provider))
+        RefreshRequest::selected_import(request_id.to_owned(), RefreshSelection::Provider(provider))
     };
 
     let first = coordinator
@@ -959,25 +913,18 @@ fn provider_selection_does_not_coalesce_with_all_automatic() {
     let coordinator = test_refresh_engine();
     let all_request_id = "019fcaaa-0000-7000-8000-000000000415";
     let provider_request_id = "019fcaaa-0000-7000-8000-000000000416";
-    let submission = |request_id: &str| {
-        RefreshSubmission::new(
-            request_id.to_owned(),
-            RefreshOperation::Refresh,
-            None,
-            SourceBackedRefreshScope::All,
-            false,
-            false,
-        )
-    };
-
     let all = coordinator
-        .submit(&data_root, submission(all_request_id))
+        .submit(
+            &data_root,
+            RefreshRequest::automatic(all_request_id.to_owned(), RefreshRequestTrigger::Search),
+        )
         .unwrap();
     let provider = coordinator
         .submit(
             &data_root,
-            submission(provider_request_id).with_selector(
-                SourceBackedRefreshSelector::AutomaticProvider(CaptureProvider::Codex),
+            RefreshRequest::selected_import(
+                provider_request_id.to_owned(),
+                RefreshSelection::Provider(CaptureProvider::Codex),
             ),
         )
         .unwrap();
@@ -985,48 +932,58 @@ fn provider_selection_does_not_coalesce_with_all_automatic() {
     assert_eq!(all.status()["request_id"], all_request_id);
     assert_eq!(provider.status()["request_id"], provider_request_id);
     assert_eq!(
-        status_value(&coordinator, all_request_id)["refresh_selector"],
-        json!({ "kind": "all_automatic" })
+        status_value(&coordinator, all_request_id)["refresh_intent"],
+        json!({ "kind": "automatic_maintenance" })
     );
     assert_eq!(
-        status_value(&coordinator, provider_request_id)["refresh_selector"],
-        json!({ "kind": "automatic_provider", "provider": "codex" })
+        status_value(&coordinator, provider_request_id)["refresh_intent"],
+        json!({
+            "kind": "selected_import",
+            "selection": { "kind": "provider", "provider": "codex" },
+        })
     );
 }
 
 #[test]
-fn durable_recovery_preserves_selector_separately_from_physical_scope() {
+fn durable_recovery_preserves_intent_separately_from_physical_scope() {
     let routes = BTreeSet::from([
         SourceRouteIdentity::from_sha256("41".repeat(32)).unwrap(),
         SourceRouteIdentity::from_sha256("42".repeat(32)).unwrap(),
     ]);
     let scope = SourceBackedRefreshScope::Exact(routes);
-    let mut attempt = new_refresh_attempt(
+    let attempt = new_refresh_attempt(
         None,
         SourceRefreshRuntimeMetadata::default(),
-        None,
+        RefreshIntent::SelectedImport(RefreshSelection::Provider(CaptureProvider::Codex)),
         scope.clone(),
     );
-    attempt.selector = SourceBackedRefreshSelector::AutomaticProvider(CaptureProvider::Codex);
     let job = attempt.job_json();
 
     assert_eq!(
-        job["refresh_selector"],
-        json!({ "kind": "automatic_provider", "provider": "codex" })
+        job["refresh_intent"],
+        json!({
+            "kind": "selected_import",
+            "selection": { "kind": "provider", "provider": "codex" }
+        })
     );
+    assert!(job.get("refresh_selector").is_none());
+    assert!(job.get("fresh_after_admitted_snapshot").is_none());
+    assert!(job.get("requested_explicit_source_catalog").is_none());
     let recovered = recover_queued_root(&job, None).unwrap();
-    assert_eq!(recovered.selector, attempt.selector);
+    assert_eq!(recovered.intent, attempt.intent);
     assert_eq!(recovered.refresh_scope, scope);
 
     let mut legacy = job.clone();
-    legacy.as_object_mut().unwrap().remove("refresh_selector");
+    legacy.as_object_mut().unwrap().remove("refresh_intent");
+    legacy["refresh_selector"] = json!({ "kind": "automatic_provider", "provider": "codex" });
     let recovered_legacy = recover_queued_root(&legacy, None).unwrap();
     assert_eq!(
-        recovered_legacy.selector,
-        SourceBackedRefreshSelector::AllAutomatic
+        recovered_legacy.intent,
+        RefreshIntent::SelectedImport(RefreshSelection::Provider(CaptureProvider::Codex))
     );
     assert_eq!(recovered_legacy.refresh_scope, attempt.refresh_scope);
 
+    let legacy_authority = crate::explicit_source_catalog_authority_for_test(1);
     let mut legacy_explicit = new_refresh_attempt(
         None,
         SourceRefreshRuntimeMetadata {
@@ -1035,37 +992,47 @@ fn durable_recovery_preserves_selector_separately_from_physical_scope() {
             trigger: "import",
             trigger_provenance: "explicit_source_catalog",
         },
-        Some(crate::explicit_source_catalog_authority_for_test(1)),
+        RefreshIntent::SelectedImport(RefreshSelection::ExactSource(legacy_authority.clone())),
         SourceBackedRefreshScope::All,
     )
     .job_json();
     legacy_explicit
         .as_object_mut()
         .unwrap()
-        .remove("refresh_selector");
+        .remove("refresh_intent");
+    legacy_explicit["requested_explicit_source_catalog"] = legacy_authority.to_json();
     let recovered_explicit = recover_queued_root(&legacy_explicit, None).unwrap();
     assert_eq!(
-        recovered_explicit.selector,
-        SourceBackedRefreshSelector::AllAutomatic
+        recovered_explicit.intent,
+        RefreshIntent::SelectedImport(RefreshSelection::ExactSource(
+            crate::explicit_source_catalog_authority_for_test(1),
+        ))
     );
 
     let mut malformed = job.clone();
-    malformed["refresh_selector"] = json!({
-        "kind": "automatic_provider",
-        "provider": "codex",
+    malformed["refresh_intent"] = json!({
+        "kind": "selected_import",
+        "selection": {
+            "kind": "provider",
+            "provider": "codex",
+            "unexpected": true
+        },
         "unexpected": true,
     });
     assert!(recover_queued_root(&malformed, None).is_err());
 
     let mut unknown_provider = job.clone();
-    unknown_provider["refresh_selector"] = json!({
-        "kind": "automatic_provider",
-        "provider": "unknown",
+    unknown_provider["refresh_intent"] = json!({
+        "kind": "selected_import",
+        "selection": { "kind": "provider", "provider": "unknown" },
     });
     assert!(recover_queued_root(&unknown_provider, None).is_err());
 
     let mut missing_authority = job;
-    missing_authority["refresh_selector"] = json!({ "kind": "explicit_catalog" });
+    missing_authority["refresh_intent"] = json!({
+        "kind": "selected_import",
+        "selection": { "kind": "exact_source" },
+    });
     assert!(recover_queued_root(&missing_authority, None).is_err());
 }
 
@@ -1121,20 +1088,16 @@ fn restart_recovers_terminal_setup_metadata() {
     let (_temp, data_root) = private_data_root();
     let request_id = "019fcaaa-0000-7000-8000-000000000413";
     let journal = Arc::new(TestRefreshJournal::default());
-    let first = CoreRefreshEngine::new(
+    let route = SourceRouteIdentity::from_sha256("41".repeat(32)).unwrap();
+    let first = CoreRefreshEngine::with_admission_fence_for_test(
         Arc::clone(&journal) as Arc<dyn RefreshJournal>,
         test_refresh_runtime(),
+        Arc::new(move |_, _, _, _| Ok(BTreeMap::from([(route.clone(), Some("42".repeat(32)))]))),
     );
-    let submission = RefreshSubmission::new(
-        request_id.to_owned(),
-        RefreshOperation::Refresh,
-        None,
-        SourceBackedRefreshScope::All,
-        false,
-        false,
-    )
-    .with_trigger(RefreshRequestTrigger::Setup);
-    first.submit(&data_root, submission).unwrap();
+    let submission = RefreshRequest::automatic(request_id.to_owned(), RefreshRequestTrigger::Setup);
+    let admission = first.submit(&data_root, submission).unwrap();
+    release_pending_admission(&first, admission);
+    assert!(first.prepare_next_pending_admission(&data_root).unwrap());
     let failed = first
         .run_next_with(
             |_, _| {
@@ -1217,7 +1180,7 @@ fn crash_restart_preserves_a_logical_successors_non_null_generation_baseline() {
     let mut predecessor = new_refresh_attempt(
         Some(generation_zero.clone()),
         SourceRefreshRuntimeMetadata::periodic(),
-        None,
+        RefreshIntent::AutomaticMaintenance,
         SourceBackedRefreshScope::All,
     );
     predecessor.request_id = "019fcaaa-0000-7000-8000-0000000002a0".to_owned();
@@ -1226,11 +1189,10 @@ fn crash_restart_preserves_a_logical_successors_non_null_generation_baseline() {
     let mut successor = new_refresh_attempt(
         Some(generation_zero.clone()),
         SourceRefreshRuntimeMetadata::default(),
-        None,
+        RefreshIntent::SelectedImport(RefreshSelection::All),
         SourceBackedRefreshScope::All,
     );
     successor.request_id = "019fcaaa-0000-7000-8000-0000000002a1".to_owned();
-    successor.fresh_after_admitted_snapshot = true;
     let mut interrupted = predecessor.job_json();
     interrupted["queued_successors"] = Value::Array(vec![successor.job_json()]);
 

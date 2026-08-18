@@ -3,31 +3,16 @@ mod admission_scope;
 mod recovery;
 mod resolution;
 
-struct AdmittedRefreshScope {
-    covered_route_ids: BTreeSet<SourceRouteIdentity>,
-    covered_publication: SourceBackedRefreshCoveredPublication,
-    route_worksets: BTreeMap<SourceRouteIdentity, SourceBackedRefreshWorkset>,
-    watch_catalog: Option<SourceBackedWatchCatalog>,
-    admitted_discovery: Option<ctx_history_refresh_execution::SourceBackedAdmittedDiscovery>,
-    requires_admitted_discovery: bool,
-}
-
 impl CoreRefreshEngine {
     pub fn enqueue_periodic(&self, data_root: &Path) -> Result<Value> {
         let observed_generation = self.observed_published_generation(data_root)?;
-        self.enqueue_with_catalog_metadata(
+        self.enqueue_intent(
             observed_generation,
             SourceRefreshRuntimeMetadata::periodic(),
-            None,
+            RefreshIntent::AutomaticMaintenance,
             SourceBackedRefreshScope::All,
-            SourceRefreshLogicalDemand {
-                admission: SourceRefreshAdmissionRequirement::AttachEquivalent,
-                reconciliation_demand: SourceBackedReconciliationDemand::Incremental,
-                route_observations: BTreeMap::new(),
-                request_id: None,
-                request_fingerprint: None,
-                admission_pending: false,
-            },
+            None,
+            None,
         )
     }
 
@@ -42,29 +27,6 @@ impl CoreRefreshEngine {
     }
 
     #[cfg(any(test, feature = "test-support"))]
-    pub fn enqueue_fresh_demand_for_test(
-        &self,
-        observed_generation: Option<String>,
-        request_id: String,
-        admission_route_observations: BTreeMap<SourceRouteIdentity, Option<String>>,
-    ) -> Result<Value> {
-        self.enqueue_with_catalog_metadata(
-            observed_generation,
-            SourceRefreshRuntimeMetadata::default(),
-            None,
-            SourceBackedRefreshScope::All,
-            SourceRefreshLogicalDemand {
-                admission: SourceRefreshAdmissionRequirement::FreshAfterAdmittedSnapshot,
-                reconciliation_demand: SourceBackedReconciliationDemand::Incremental,
-                route_observations: admission_route_observations,
-                request_id: Some(request_id),
-                request_fingerprint: None,
-                admission_pending: false,
-            },
-        )
-    }
-
-    #[cfg(any(test, feature = "test-support"))]
     pub fn enqueue_fresh_catalog_demand_for_test(
         &self,
         data_root: &Path,
@@ -72,7 +34,7 @@ impl CoreRefreshEngine {
         request_id: String,
         requested_catalog: ExplicitSourceCatalogAuthority,
     ) -> Result<Value> {
-        let response = match self.enqueue_with_catalog_metadata(
+        let response = match self.enqueue_intent(
             observed_generation,
             SourceRefreshRuntimeMetadata {
                 operation: SourceBackedRefreshOperation::Import,
@@ -80,16 +42,46 @@ impl CoreRefreshEngine {
                 trigger: "import",
                 trigger_provenance: "explicit_source_catalog",
             },
-            Some(requested_catalog),
+            RefreshIntent::SelectedImport(RefreshSelection::ExactSource(requested_catalog)),
             SourceBackedRefreshScope::All,
-            SourceRefreshLogicalDemand {
-                admission: SourceRefreshAdmissionRequirement::FreshAfterAdmittedSnapshot,
-                reconciliation_demand: SourceBackedReconciliationDemand::Exhaustive,
-                route_observations: BTreeMap::new(),
-                request_id: Some(request_id),
-                request_fingerprint: None,
-                admission_pending: false,
+            Some(request_id),
+            None,
+        ) {
+            Ok(response) => response,
+            Err(error) => {
+                if let Some(queue_full) = error.downcast_ref::<SourceBackedRefreshQueueFull>() {
+                    return Ok(queue_full.to_json());
+                }
+                return Err(error);
+            }
+        };
+        let request_id = response
+            .get("request_id")
+            .and_then(Value::as_str)
+            .ok_or_else(|| anyhow!("queued test source refresh has no request ID"))?;
+        self.persist_job_status(data_root, request_id)?;
+        Ok(response)
+    }
+
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn enqueue_manual_all_demand_for_test(
+        &self,
+        data_root: &Path,
+        observed_generation: Option<String>,
+        request_id: String,
+    ) -> Result<Value> {
+        let response = match self.enqueue_intent(
+            observed_generation,
+            SourceRefreshRuntimeMetadata {
+                operation: SourceBackedRefreshOperation::Import,
+                daemon_mode: "full".to_owned(),
+                trigger: "import",
+                trigger_provenance: "import_command",
             },
+            RefreshIntent::SelectedImport(RefreshSelection::All),
+            SourceBackedRefreshScope::All,
+            Some(request_id),
+            None,
         ) {
             Ok(response) => response,
             Err(error) => {
@@ -113,65 +105,68 @@ impl CoreRefreshEngine {
         observed_generation: Option<String>,
         metadata: SourceRefreshRuntimeMetadata,
     ) -> Value {
-        self.enqueue_with_catalog_metadata(
-            observed_generation,
-            metadata,
-            None,
-            SourceBackedRefreshScope::All,
-            SourceRefreshLogicalDemand {
-                admission: SourceRefreshAdmissionRequirement::AttachEquivalent,
-                reconciliation_demand: SourceBackedReconciliationDemand::Incremental,
-                route_observations: BTreeMap::new(),
-                request_id: None,
-                request_fingerprint: None,
-                admission_pending: false,
-            },
-        )
-        .expect("requests without catalog authority always coalesce")
+        let response = self
+            .enqueue_intent(
+                observed_generation,
+                metadata,
+                RefreshIntent::AutomaticMaintenance,
+                SourceBackedRefreshScope::All,
+                None,
+                None,
+            )
+            .expect("requests without catalog authority always coalesce");
+        let request_id = response["request_id"]
+            .as_str()
+            .expect("test refresh response has a request ID")
+            .to_owned();
+        let mut state = self.lock_state();
+        if let Some(attempt) = find_attempt_mut(&mut state, &request_id) {
+            if attempt.state == SourceBackedRefreshState::AdmissionPending {
+                attempt.admitted_authority = Some(admitted_refresh_for_test(BTreeMap::new()));
+                attempt.state = SourceBackedRefreshState::Queued;
+            }
+        }
+        projected_status_json(&state, &request_id).unwrap_or(response)
     }
 
-    pub(super) fn enqueue_with_catalog_metadata(
+    pub(super) fn enqueue_intent(
         &self,
         observed_generation: Option<String>,
         metadata: SourceRefreshRuntimeMetadata,
-        requested_catalog: Option<ExplicitSourceCatalogAuthority>,
+        intent: RefreshIntent,
         refresh_scope: SourceBackedRefreshScope,
-        logical_demand: SourceRefreshLogicalDemand,
+        request_id: Option<String>,
+        request_fingerprint: Option<String>,
     ) -> Result<Value> {
-        // This compatibility entry point predates typed selectors. Its
-        // explicit catalog is an all-route overlay.
-        let selector = SourceBackedRefreshSelector::AllAutomatic;
         let mut state = self.lock_state();
-        let response = Self::enqueue_with_catalog_metadata_locked(
+        let response = Self::enqueue_intent_locked(
             &mut state,
             observed_generation,
             metadata,
-            requested_catalog,
+            intent,
             refresh_scope,
-            logical_demand,
-            selector,
+            request_id,
+            request_fingerprint,
         )?;
         trim_terminal_attempt_history(&mut state);
         Ok(response)
     }
 
-    pub(super) fn enqueue_with_catalog_metadata_locked(
+    pub(super) fn enqueue_intent_locked(
         state: &mut CoreRefreshEngineState,
         observed_generation: Option<String>,
         metadata: SourceRefreshRuntimeMetadata,
-        requested_catalog: Option<ExplicitSourceCatalogAuthority>,
+        intent: RefreshIntent,
         refresh_scope: SourceBackedRefreshScope,
-        logical_demand: SourceRefreshLogicalDemand,
-        selector: SourceBackedRefreshSelector,
+        logical_request_id: Option<String>,
+        request_fingerprint: Option<String>,
     ) -> Result<Value> {
-        let SourceRefreshLogicalDemand {
-            admission,
-            reconciliation_demand,
-            route_observations: mut admission_route_observations,
-            request_id: logical_request_id,
-            request_fingerprint,
-            admission_pending,
-        } = logical_demand;
+        let reconciliation_demand = match (&intent, &refresh_scope) {
+            (RefreshIntent::AutomaticMaintenance, SourceBackedRefreshScope::Exact(_)) => {
+                SourceBackedReconciliationDemand::Exhaustive
+            }
+            _ => intent.reconciliation_demand(),
+        };
         if let Some(existing) = logical_request_id
             .as_deref()
             .and_then(|request_id| find_attempt(state, request_id))
@@ -185,135 +180,21 @@ impl CoreRefreshEngine {
             return projected_status_json(state, &existing.request_id)
                 .ok_or_else(|| anyhow!("existing source refresh request disappeared"));
         }
-        // Only a genuinely all-automatic request may enter the all-route
-        // continuation path. Typed provider and explicit-catalog selections
-        // begin at the legacy wire scope of All, but scoped admission must
-        // resolve them to Exact without inheriting unrelated predecessor work.
-        let is_manual_all = admission
-            == SourceRefreshAdmissionRequirement::FreshAfterAdmittedSnapshot
-            && refresh_scope == SourceBackedRefreshScope::All
-            && matches!(selector, SourceBackedRefreshSelector::AllAutomatic);
-        // A later manual exhaustive demand is a logical waiter on the one
-        // already-queued exhaustive successor. It receives its own durable
-        // request identity but cannot manufacture another physical scan.
-        let queued_exhaustive_successor = is_manual_all
-            .then(|| {
-                state.pending_request_ids.iter().find_map(|request_id| {
+        if intent == RefreshIntent::AutomaticMaintenance {
+            let coalesced_request_id = state
+                .active_request_id
+                .iter()
+                .chain(state.pending_request_ids.iter())
+                .find_map(|request_id| {
                     find_attempt(state, request_id)
                         .filter(|attempt| {
-                            attempt.state == SourceBackedRefreshState::Queued
-                                && !matches!(
-                                    attempt.selector,
-                                    SourceBackedRefreshSelector::AutomaticProvider(_)
-                                )
-                                && attempt.refresh_scope == SourceBackedRefreshScope::All
+                            attempt.state.is_active()
+                                && attempt.intent == RefreshIntent::AutomaticMaintenance
+                                && attempt.refresh_scope == refresh_scope
                                 && attempt.reconciliation_demand >= reconciliation_demand
                         })
                         .map(|attempt| attempt.request_id.clone())
-                })
-            })
-            .flatten();
-        let mut continuation_predecessor = queued_exhaustive_successor.clone();
-        if let Some(active_request_id) = state.active_request_id.clone() {
-            if let Some(active) = find_attempt_mut(state, &active_request_id) {
-                if active.state.is_active() {
-                    if is_manual_all
-                        && !matches!(
-                            active.selector,
-                            SourceBackedRefreshSelector::AutomaticProvider(_)
-                        )
-                    {
-                        // Command ownership applies to the work a command is
-                        // waiting on even when a running attempt remains
-                        // physically immutable and needs a logical successor.
-                        merge_trigger_ownership(active, &metadata);
-                        if queued_exhaustive_successor.is_none()
-                            && (active.state == SourceBackedRefreshState::Queued
-                                || active.reconciliation_demand >= reconciliation_demand)
-                        {
-                            continuation_predecessor = Some(active.request_id.clone());
-                        }
-                        if queued_exhaustive_successor.is_none()
-                            && active.state == SourceBackedRefreshState::Queued
-                        {
-                            if let Some(requested_catalog) = requested_catalog.as_ref() {
-                                if active.requested_explicit_source_catalog.is_none() {
-                                    active.requested_explicit_source_catalog =
-                                        Some(requested_catalog.clone());
-                                }
-                            }
-                            active.refresh_scope = SourceBackedRefreshScope::All;
-                            active.reconciliation_demand =
-                                active.reconciliation_demand.max(reconciliation_demand);
-                            let _ = coalesce_attempt(active, metadata.clone());
-                            active.coalesced_logical_demands =
-                                active.coalesced_logical_demands.saturating_add(1);
-                        } else if queued_exhaustive_successor.is_none() {
-                            active.coalesced_logical_demands =
-                                active.coalesced_logical_demands.saturating_add(1);
-                        }
-                    } else if admission.requires_successor(active.state) {
-                        // A logical freshness demand attaches to the immutable
-                        // physical attempt, then proves coverage after its
-                        // publication instead of eagerly repeating the pass.
-                        merge_trigger_ownership(active, &metadata);
-                    } else {
-                        if active.selector == selector {
-                            if let Some(requested_catalog) = requested_catalog.as_ref() {
-                                let upgrades_queued_automatic =
-                                    active.requested_explicit_source_catalog.is_none()
-                                        && active.state == SourceBackedRefreshState::Queued;
-                                if upgrades_queued_automatic {
-                                    active.requested_explicit_source_catalog =
-                                        Some(requested_catalog.clone());
-                                }
-                            }
-                        }
-                        let automatic_exact = active.trigger == "periodic"
-                            && active.trigger_provenance == "daemon_scheduler"
-                            && matches!(&active.refresh_scope, SourceBackedRefreshScope::Exact(_));
-                        if is_manual_all
-                            && automatic_exact
-                            && active.state == SourceBackedRefreshState::Queued
-                        {
-                            active.refresh_scope = SourceBackedRefreshScope::All;
-                            return Ok(coalesce_attempt(active, metadata));
-                        }
-                        let stronger_running_demand = active.state
-                            == SourceBackedRefreshState::Running
-                            && reconciliation_demand > active.reconciliation_demand;
-                        if active.requested_explicit_source_catalog.as_ref()
-                            == requested_catalog.as_ref()
-                            && active.selector == selector
-                            && active.refresh_scope == refresh_scope
-                            && !stronger_running_demand
-                        {
-                            if active.state == SourceBackedRefreshState::Queued {
-                                active.reconciliation_demand =
-                                    active.reconciliation_demand.max(reconciliation_demand);
-                            }
-                            return Ok(coalesce_attempt(active, metadata));
-                        }
-                        // A running refresh is immutable. Preserve both catalog
-                        // authorities by serializing the newer one as a successor.
-                    }
-                }
-            }
-        }
-
-        if admission != SourceRefreshAdmissionRequirement::FreshAfterAdmittedSnapshot {
-            let coalesced_request_id = state.pending_request_ids.iter().find_map(|request_id| {
-                find_attempt(state, request_id)
-                    .filter(|attempt| {
-                        attempt.state.is_active()
-                            && attempt.requested_explicit_source_catalog.as_ref()
-                                == requested_catalog.as_ref()
-                            && attempt.selector == selector
-                            && attempt.refresh_scope == refresh_scope
-                            && attempt.reconciliation_demand >= reconciliation_demand
-                    })
-                    .map(|attempt| attempt.request_id.clone())
-            });
+                });
             if let Some(coalesced_request_id) = coalesced_request_id {
                 let attempt = find_attempt_mut(state, &coalesced_request_id)
                     .expect("pending source refresh attempt");
@@ -329,20 +210,11 @@ impl CoreRefreshEngine {
             .into());
         }
 
-        let mut attempt = new_refresh_attempt(
-            observed_generation,
-            metadata,
-            requested_catalog,
-            refresh_scope,
-        );
+        let mut attempt = new_refresh_attempt(observed_generation, metadata, intent, refresh_scope);
         if let Some(logical_request_id) = logical_request_id {
             attempt.request_id = logical_request_id;
-            attempt.physical_attempt_id = Some(attempt.request_id.clone());
         }
         attempt.request_fingerprint = request_fingerprint;
-        attempt.selector = selector;
-        attempt.fresh_after_admitted_snapshot =
-            admission == SourceRefreshAdmissionRequirement::FreshAfterAdmittedSnapshot;
         attempt.reconciliation_demand = reconciliation_demand;
         let request_id = attempt.request_id.clone();
         let terminal_persistence_owns_root = state.pending_terminal_persistence.is_some();
@@ -356,58 +228,8 @@ impl CoreRefreshEngine {
         } else {
             state.active_request_id = Some(request_id.clone());
         }
-        if let Some(predecessor_request_id) = continuation_predecessor {
-            attempt.coalesced_into_request_id = Some(predecessor_request_id.clone());
-            attempt.physical_attempt_id = Some(predecessor_request_id.clone());
-            let continuation = if admission_pending {
-                ManualAllContinuation::pending(predecessor_request_id)
-            } else {
-                let ledger_eligible_routes = state
-                    .known_route_ids
-                    .iter()
-                    .filter(|route| {
-                        admission_route_observations
-                            .get(*route)
-                            .is_none_or(Option::is_none)
-                    })
-                    .cloned()
-                    .collect();
-                for route in &state.known_route_ids {
-                    admission_route_observations
-                        .entry(route.clone())
-                        .or_insert(None);
-                }
-                let admission_event_watermarks = admission_route_observations
-                    .keys()
-                    .filter_map(|route| {
-                        state
-                            .route_event_watermarks
-                            .get(route)
-                            .copied()
-                            .map(|watermark| (route.clone(), watermark))
-                    })
-                    .collect();
-                let predecessor_event_watermarks = state
-                    .route_admission_watermarks
-                    .get(&predecessor_request_id)
-                    .cloned()
-                    .unwrap_or_default();
-                ManualAllContinuation::new(
-                    predecessor_request_id,
-                    admission_route_observations,
-                    ledger_eligible_routes,
-                    admission_event_watermarks,
-                    predecessor_event_watermarks,
-                )
-            };
-            state
-                .manual_all_continuations
-                .insert(request_id.clone(), continuation);
-        }
-        if admission_pending {
-            attempt.state = SourceBackedRefreshState::AdmissionPending;
-            attempt.progress.phase = "admission_pending".to_owned();
-        }
+        attempt.state = SourceBackedRefreshState::AdmissionPending;
+        attempt.progress.phase = "admission_pending".to_owned();
         state.attempts.push_back(attempt);
         projected_status_json(state, &request_id)
             .ok_or_else(|| anyhow!("new source refresh request disappeared"))
@@ -538,19 +360,11 @@ impl CoreRefreshEngine {
         let (request_id, previous_generation, requested_catalog, refresh_scope) = {
             let mut state = self.lock_state();
             let request_id = state.active_request_id.clone()?;
-            if state
-                .manual_all_continuations
-                .get(&request_id)
-                .is_some_and(|continuation| !continuation.predecessor_finished)
-            {
-                return None;
-            }
             let attempt = find_attempt_mut(&mut state, &request_id)?;
             if attempt.state != SourceBackedRefreshState::Queued {
                 return None;
             }
             attempt.state = SourceBackedRefreshState::Running;
-            attempt.physical_attempt_id = Some(request_id.clone());
             attempt.started_at_ms = Some(utc_now().timestamp_millis());
             // The executor owns provider discovery. Persist the truthful live
             // phase before entering it so a long discovery cannot leave an
@@ -559,7 +373,7 @@ impl CoreRefreshEngine {
             (
                 request_id,
                 attempt.previous_generation.clone(),
-                attempt.requested_explicit_source_catalog.clone(),
+                attempt.requested_explicit_source_catalog().cloned(),
                 attempt.refresh_scope.clone(),
             )
         };
@@ -679,7 +493,6 @@ impl CoreRefreshEngine {
             },
         };
         let mut state = self.lock_state();
-        state.manual_all_continuations.remove(&request_id);
         let mut newly_published_generation = None;
         let mut terminal_persistence_pending = false;
         let (failed_run, did_work) = match verified {

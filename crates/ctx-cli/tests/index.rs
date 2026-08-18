@@ -842,12 +842,18 @@ fn human_wait_stops_when_selected_semantic_work_has_no_running_daemon() {
         searchable_frames,
         "{stdout}"
     );
-    assert!((1..=2).contains(&searchable_frames), "{stdout}");
-    assert!(stdout.contains("Your history is searchable"), "{stdout}");
-    assert!(stdout.contains("Embedded"));
+    // The terminal diagnosis can win the first polling race, in which case
+    // no transient readiness frame is emitted before stderr reports the
+    // stopped daemon. Any emitted frame must still be a complete snapshot.
+    assert!(searchable_frames <= 2, "{stdout}");
+    assert_eq!(
+        stdout.matches("Embedded").count(),
+        searchable_frames,
+        "{stdout}"
+    );
     assert!(!stdout.contains("Background indexing stopped"), "{stdout}");
     assert!(!stdout.contains("Throughput"));
-    assert!(!stdout.contains("Remaining"));
+    assert!(!stdout.contains("Remaining"), "{stdout}");
     assert_eq!(output.status.code(), Some(1));
     assert_eq!(stderr.matches("Background indexing stopped").count(), 1);
     assert_eq!(stderr.matches("ctx doctor").count(), 1);

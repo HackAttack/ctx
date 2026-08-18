@@ -26,7 +26,6 @@ impl CoreRefreshEngine {
         for successor in &mut queued_successors {
             require_scoped_rehydration(successor)?;
         }
-        let recovered_continuations = recover_logical_demand_continuations(&job)?;
         let request_state = job
             .get("request_state")
             .and_then(Value::as_str)
@@ -62,21 +61,11 @@ impl CoreRefreshEngine {
                         validate_terminal_receipt_fields(&job, &request_receipt)?;
                     }
                     let _ = recover_terminal_attempt(&job, SourceBackedRefreshState::Published)?;
-                    return self.recover_published_rebuild(
-                        data_root,
-                        &job,
-                        queued_successors,
-                        recovered_continuations,
-                    );
+                    return self.recover_published_rebuild(data_root, &job, queued_successors);
                 }
                 "queued" | "running" => {
                     require_active_state(&job, request_state)?;
-                    return self.recover_published_rebuild(
-                        data_root,
-                        &job,
-                        queued_successors,
-                        recovered_continuations,
-                    );
+                    return self.recover_published_rebuild(data_root, &job, queued_successors);
                 }
                 _ => {}
             }
@@ -111,7 +100,6 @@ impl CoreRefreshEngine {
                             attempt,
                             terminal,
                             queued_successors,
-                            recovered_continuations,
                             active_generation,
                         )?;
                         let _ = self.finish_route_admissions(&request_id, true, None);
@@ -123,20 +111,8 @@ impl CoreRefreshEngine {
         }
 
         let job_request_id = required_nonempty_string(&job, "request_id", "source refresh job")?;
-        let continuation_predecessor_is_active = verified.as_ref().is_some_and(|verified| {
-            recovered_continuations
-                .get(job_request_id)
-                .filter(|continuation| continuation.predecessor_finished)
-                .and_then(|continuation| {
-                    SourceBackedPublicationMetadata::decode(verified)
-                        .ok()
-                        .map(|metadata| metadata.request_id == continuation.predecessor_request_id)
-                })
-                == Some(true)
-        });
         let previous_generation = job.get("previous_generation").and_then(Value::as_str);
-        let pointer_advanced = active_generation.as_deref() != previous_generation
-            && !continuation_predecessor_is_active;
+        let pointer_advanced = active_generation.as_deref() != previous_generation;
         // A terminal job must always recover or reject its exact publication,
         // even when its persisted previous-generation pointer already equals
         // the active generation.
@@ -153,7 +129,6 @@ impl CoreRefreshEngine {
                     &job,
                     active_generation,
                     queued_successors,
-                    recovered_continuations,
                 );
             }
             let metadata = SourceBackedPublicationMetadata::decode(&verified)
@@ -179,7 +154,6 @@ impl CoreRefreshEngine {
                 attempt,
                 terminal,
                 queued_successors,
-                recovered_continuations,
                 Some(active_generation),
             )?;
             let _ = self.finish_route_admissions(job_request_id, true, None);
@@ -194,6 +168,7 @@ impl CoreRefreshEngine {
                 .is_some_and(|progress| progress.contains_key("current_source_progress"));
             let failed = recover_failed_attempt(&job)?;
             let failed_request_id = failed.request_id.clone();
+            let failed_intent = failed.intent.clone();
             let failure_route_dispositions = failed.failure_outcome.as_ref().map(|outcome| {
                 (
                     outcome.retryable_routes.clone(),
@@ -204,9 +179,6 @@ impl CoreRefreshEngine {
                 let mut state = self.lock_state();
                 state.attempts.push_back(failed);
                 install_recovered_successors(&mut state, queued_successors)?;
-                state
-                    .manual_all_continuations
-                    .extend(recovered_continuations);
                 state.current_published_generation = active_generation;
                 if let Some((retryable_routes, blocked_routes)) =
                     failure_route_dispositions.as_ref()
@@ -215,6 +187,7 @@ impl CoreRefreshEngine {
                         &mut state,
                         retryable_routes,
                         blocked_routes,
+                        Some(&failed_intent),
                     );
                 }
                 trim_terminal_attempt_history(&mut state);
@@ -241,11 +214,7 @@ impl CoreRefreshEngine {
             return Ok(false);
         }
 
-        let recovered_previous_generation = if continuation_predecessor_is_active {
-            optional_generation(job.get("previous_generation"))?
-        } else {
-            active_generation.clone()
-        };
+        let recovered_previous_generation = active_generation.clone();
         let mut root = recover_queued_root(&job, recovered_previous_generation)?;
         require_scoped_rehydration(&mut root)?;
         let request_id = root.request_id.clone();
@@ -257,9 +226,6 @@ impl CoreRefreshEngine {
             state.active_request_id = Some(request_id.clone());
             state.attempts.push_back(root);
             install_recovered_successors(&mut state, queued_successors)?;
-            state
-                .manual_all_continuations
-                .extend(recovered_continuations);
             state.current_published_generation = active_generation;
         }
         self.persist_job_status(data_root, &request_id)?;
@@ -271,7 +237,6 @@ impl CoreRefreshEngine {
         attempt: SourceBackedRefreshAttempt,
         terminal: CoreRefreshTerminalSuccess,
         queued_successors: Vec<SourceBackedRefreshAttempt>,
-        recovered_continuations: BTreeMap<String, ManualAllContinuation>,
         active_generation: Option<String>,
     ) -> Result<()> {
         let route_dispositions = attempt
@@ -279,18 +244,17 @@ impl CoreRefreshEngine {
             .as_ref()
             .map(SourceBackedRefreshReceipt::route_retry_dispositions)
             .unwrap_or_default();
+        let retry_intent = attempt.intent.clone();
         let mut state = self.lock_state();
         terminal.install(&mut state);
         state.attempts.push_back(attempt);
         install_recovered_successors(&mut state, queued_successors)?;
-        state
-            .manual_all_continuations
-            .extend(recovered_continuations);
         state.current_published_generation = active_generation;
         Self::restore_route_dispositions_locked(
             &mut state,
             &route_dispositions.0,
             &route_dispositions.1,
+            Some(&retry_intent),
         );
         trim_terminal_attempt_history(&mut state);
         Ok(())
@@ -301,7 +265,6 @@ impl CoreRefreshEngine {
         data_root: &Path,
         job: &Value,
         queued_successors: Vec<SourceBackedRefreshAttempt>,
-        recovered_continuations: BTreeMap<String, ManualAllContinuation>,
     ) -> Result<bool> {
         let mut rebuild_job = job.clone();
         let object = rebuild_job
@@ -337,9 +300,6 @@ impl CoreRefreshEngine {
         state.active_request_id = Some(request_id.clone());
         state.attempts.push_back(root);
         install_recovered_successors(&mut state, queued_successors)?;
-        state
-            .manual_all_continuations
-            .extend(recovered_continuations);
         state.current_published_generation = None;
         drop(state);
         self.persist_job_status(data_root, &request_id)?;
@@ -352,7 +312,6 @@ impl CoreRefreshEngine {
         job: &Value,
         active_generation: String,
         queued_successors: Vec<SourceBackedRefreshAttempt>,
-        recovered_continuations: BTreeMap<String, ManualAllContinuation>,
     ) -> Result<bool> {
         let job_generation = required_generation(
             job.get("published_generation"),
@@ -368,9 +327,6 @@ impl CoreRefreshEngine {
         let durable_request_id = {
             let mut state = self.lock_state();
             install_recovered_successors(&mut state, queued_successors)?;
-            state
-                .manual_all_continuations
-                .extend(recovered_continuations);
             state.current_published_generation = Some(active_generation);
             state
                 .active_request_id
@@ -384,10 +340,12 @@ impl CoreRefreshEngine {
 }
 
 fn require_scoped_rehydration(attempt: &mut SourceBackedRefreshAttempt) -> Result<()> {
-    if matches!(attempt.selector, SourceBackedRefreshSelector::AllAutomatic) {
-        return Ok(());
-    }
-    if attempt.state == SourceBackedRefreshState::Queued
+    if matches!(
+        attempt.intent,
+        RefreshIntent::SelectedImport(
+            RefreshSelection::Provider(_) | RefreshSelection::ExactSource(_)
+        )
+    ) && attempt.state == SourceBackedRefreshState::Queued
         && !matches!(attempt.refresh_scope, SourceBackedRefreshScope::Exact(_))
     {
         bail!("durable resolved scoped source refresh has no exact physical scope");
@@ -509,18 +467,14 @@ fn recover_terminal_attempt(
             "autostart",
             "setup_command",
             "import_command",
+            "automatic_provider",
             "daemon_scheduler",
             "explicit_source_catalog",
             "commit_payload",
         ],
     )?;
-    let requested_catalog = job
-        .get("requested_explicit_source_catalog")
-        .filter(|value| !value.is_null())
-        .map(ExplicitSourceCatalogAuthority::from_json)
-        .transpose()?;
-    let selector = recover_refresh_selector(job, operation, requested_catalog.is_some(), true)
-        .context("recover durable terminal source refresh selector")?;
+    let intent = recover_refresh_intent(job, operation, true, false)
+        .context("recover durable terminal source refresh intent")?;
     let previous_generation = optional_generation(job.get("previous_generation"))?;
     let mut attempt = new_refresh_attempt(
         previous_generation,
@@ -530,13 +484,12 @@ fn recover_terminal_attempt(
             trigger,
             trigger_provenance,
         },
-        requested_catalog,
+        intent,
         refresh_scope_from_json(job.get("refresh_scope"))?,
     );
     attempt.request_id =
         required_nonempty_string(job, "request_id", "terminal source refresh")?.to_owned();
-    attempt.selector = selector;
-    attempt.physical_attempt_id = optional_string(job, "physical_attempt_id")?;
+    let _legacy_physical_attempt_id = optional_string(job, "physical_attempt_id")?;
     attempt.reconciliation_demand = recover_reconciliation_demand(job, operation)?;
     attempt.state = state;
     attempt.requested_at_ms = optional_i64(job, "requested_at_ms")?
@@ -545,10 +498,6 @@ fn recover_terminal_attempt(
     attempt.started_at_ms = optional_i64(job, "started_at_ms")?;
     attempt.finished_at_ms = optional_i64(job, "finished_at_ms")?;
     attempt.published_generation = optional_generation(job.get("published_generation"))?;
-    attempt.fresh_after_admitted_snapshot = job
-        .get("fresh_after_admitted_snapshot")
-        .and_then(Value::as_bool)
-        .unwrap_or_default();
     attempt.request_fingerprint = optional_string(job, "request_fingerprint")?;
     if attempt
         .request_fingerprint
@@ -559,9 +508,8 @@ fn recover_terminal_attempt(
     }
     attempt.admission_durability_indeterminate =
         recover_admission_durability(job, "durable terminal source refresh")?;
-    attempt.coalesced_into_request_id = optional_string(job, "coalesced_into_request_id")?;
-    attempt.coalesced_logical_demands =
-        optional_u64(job, "coalesced_logical_demands")?.unwrap_or_default();
+    let _legacy_coalesced_into_request_id = optional_string(job, "coalesced_into_request_id")?;
+    let _legacy_coalesced_logical_demands = optional_u64(job, "coalesced_logical_demands")?;
     attempt.coalesced_requests = optional_u64(job, "coalesced_requests")?.unwrap_or_default();
     attempt.progress = SourceBackedRefreshProgress::from_status_json(job)?;
     // Pre-fix schema-v1 terminal snapshots could retain an active-source
@@ -585,15 +533,6 @@ fn recover_terminal_attempt(
         None
     };
     attempt.last_error = optional_string(job, "last_error")?;
-    if attempt.physical_attempt_id.is_none() {
-        attempt.physical_attempt_id = Some(
-            attempt
-                .coalesced_into_request_id
-                .clone()
-                .filter(|_| attempt.scanned_routes == Some(0))
-                .unwrap_or_else(|| attempt.request_id.clone()),
-        );
-    }
     // Estimator state is deliberately non-durable. Recovery never revives a
     // deadline from a prior process or physical attempt.
     attempt.whole_run_eta.clear();
@@ -633,6 +572,17 @@ fn recover_failure_outcome(
             anyhow!("durable terminal source refresh outcome has invalid retryability")
         })?;
     let affected_routes = recover_outcome_routes(fields, "affected_routes")?;
+    if let SourceBackedRefreshScope::Exact(exact_routes) = scope {
+        let out_of_scope = affected_routes
+            .difference(exact_routes)
+            .cloned()
+            .collect::<BTreeSet<_>>();
+        if !out_of_scope.is_empty() {
+            bail!(
+                "durable terminal source refresh outcome exceeds its exact scope: {out_of_scope:?}"
+            );
+        }
+    }
     let retry_advice = match fields.get("retry_advice") {
         None | Some(Value::Null) => None,
         Some(Value::String(value)) => Some(
@@ -682,6 +632,63 @@ fn recover_failure_outcome(
             retry_advice,
         ))),
         _ => bail!("durable terminal source refresh outcome has incomplete route disposition"),
+    }
+}
+
+#[cfg(test)]
+mod failure_outcome_scope_tests {
+    use super::*;
+
+    fn route(byte: char) -> SourceRouteIdentity {
+        SourceRouteIdentity::from_sha256(byte.to_string().repeat(64)).unwrap()
+    }
+
+    fn exact_scope(route: &SourceRouteIdentity) -> SourceBackedRefreshScope {
+        SourceBackedRefreshScope::Exact(BTreeSet::from([route.clone()]))
+    }
+
+    #[test]
+    fn exact_recovery_rejects_out_of_scope_retryable_disposition() {
+        let admitted = route('a');
+        let peer = route('b');
+        let job = json!({
+            "structured_outcome": {
+                "code": "source_changed",
+                "class": "source_changed",
+                "retryable": true,
+                "affected_routes": [peer.as_str()],
+                "retryable_routes": [peer.as_str()],
+                "blocked_routes": [],
+                "retry_advice": "retry_automatically"
+            }
+        });
+
+        let error = recover_failure_outcome(&job, &exact_scope(&admitted), None)
+            .expect_err("out-of-scope retryable route must fail closed");
+
+        assert!(format!("{error:#}").contains("exceeds its exact scope"));
+    }
+
+    #[test]
+    fn exact_recovery_rejects_out_of_scope_blocked_disposition() {
+        let admitted = route('a');
+        let peer = route('b');
+        let job = json!({
+            "structured_outcome": {
+                "code": "malformed_source",
+                "class": "unreadable",
+                "retryable": false,
+                "affected_routes": [peer.as_str()],
+                "retryable_routes": [],
+                "blocked_routes": [peer.as_str()],
+                "retry_advice": "repair_source"
+            }
+        });
+
+        let error = recover_failure_outcome(&job, &exact_scope(&admitted), None)
+            .expect_err("out-of-scope blocked route must fail closed");
+
+        assert!(format!("{error:#}").contains("exceeds its exact scope"));
     }
 }
 

@@ -216,7 +216,7 @@ impl ProviderObservationFixture {
 
     fn publish_initial_observation(&self) -> Result<()> {
         let coordinator = CoreRefreshEngine::with_executor(Arc::clone(&self.executor));
-        coordinator.initialize_watch_route_authority(self.catalog.route_ids().cloned());
+        coordinator.install_watch_catalog(self.catalog.clone());
         coordinator.schedule_startup_route_reconciliation(
             self.catalog.route_ids().cloned(),
             EventWatermark::new(1, 0),
@@ -769,7 +769,7 @@ fn forced_watcher_recovery_emits_a_route_mutated_during_rearm_overlap() -> Resul
         |_| Ok(catalog.clone()),
         DaemonFileWatcher::start,
     );
-    coordinator.initialize_watch_route_authority(catalog.route_ids().cloned());
+    coordinator.install_watch_catalog(catalog.clone());
     assert!(!coordinator.has_scheduled_route_work());
     let watcher = watch_runtime
         .file_watcher
@@ -1146,12 +1146,14 @@ fn one_scheduler_cycle_publishes_core_before_consumer_jobs() -> Result<()> {
     let refresh_calls = Arc::new(AtomicUsize::new(0));
     let executor_calls = refresh_calls.clone();
     let executor_route = route.clone();
+    let expected_scope =
+        ctx_history_capture::SourceBackedRefreshScope::Exact(BTreeSet::from([route.clone()]));
     let coordinator = CoreRefreshEngine::with_executor(Arc::new(
         move |execution: SourceBackedRefreshExecution<'_>| {
             executor_calls.fetch_add(1, Ordering::SeqCst);
             assert_eq!(
-                execution.scope,
-                ctx_history_capture::SourceBackedRefreshScope::All
+                execution.admitted_refresh().publication_scope(),
+                expected_scope
             );
             let writer = ctx_history_index::GenerationWriter::open(
                 execution.index_root,
@@ -1181,6 +1183,16 @@ fn one_scheduler_cycle_publishes_core_before_consumer_jobs() -> Result<()> {
     assert!(!coordinator.has_pending_request());
     coordinator.reconcile_watch_routes([route], EventWatermark::new(1, 0), 0);
     assert!(coordinator.has_scheduled_route_work());
+    assert!(coordinator.enqueue_next_dirty_route(temp.path(), u64::MAX)?);
+    let pending = read_daemon_job_status(&daemon_core_refresh_job_path(temp.path()))
+        .ok_or_else(|| anyhow!("periodic source refresh admission was not persisted"))?;
+    coordinator.complete_pending_admission_for_test(
+        temp.path(),
+        pending["request_id"]
+            .as_str()
+            .ok_or_else(|| anyhow!("periodic source refresh admission has no request ID"))?,
+        Default::default(),
+    )?;
     let mut runtime = DaemonRuntime::default();
 
     let iteration = run_daemon_scheduler_cycle_with_activity(
@@ -1193,12 +1205,12 @@ fn one_scheduler_cycle_publishes_core_before_consumer_jobs() -> Result<()> {
         Some(&coordinator),
     )?;
 
-    assert!(iteration.did_work);
+    let job = read_daemon_job_status(&daemon_core_refresh_job_path(temp.path()))
+        .ok_or_else(|| anyhow!("periodic source refresh job was not persisted"))?;
+    assert!(iteration.did_work, "{job:#}");
     assert!(!iteration.failed);
     assert!(iteration.continue_immediately);
     assert_eq!(refresh_calls.load(Ordering::SeqCst), 1);
-    let job = read_daemon_job_status(&daemon_core_refresh_job_path(temp.path()))
-        .ok_or_else(|| anyhow!("periodic source refresh job was not persisted"))?;
     assert_eq!(job["status"], "completed");
     assert_eq!(job["daemon_mode"], "full");
     assert_eq!(job["trigger"], "periodic");

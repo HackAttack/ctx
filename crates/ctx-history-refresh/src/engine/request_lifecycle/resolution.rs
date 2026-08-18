@@ -10,315 +10,8 @@ impl CoreRefreshEngine {
         if self.active_request_admission_pending() {
             return None;
         }
-        if let Some(run) =
-            self.resolve_fully_covered_continuation_with(data_root, |catalog, routes| {
-                let discovery = self.runtime.discovery_context(data_root)?;
-                source_backed_requested_route_observation_fence(
-                    &discovery,
-                    self.journal.as_ref(),
-                    data_root,
-                    catalog,
-                    routes,
-                )
-            })
-        {
-            return Some(run);
-        }
         self.run_next_with_verified_index_opener(data_root, |index_root| {
             Ok(Arc::new(open_verified_index(index_root)?))
-        })
-    }
-
-    #[cfg(any(test, feature = "test-support"))]
-    pub fn run_next_with_post_publication_sampler_for_test<Sample>(
-        &self,
-        data_root: &Path,
-        sample: Sample,
-    ) -> Option<SourceBackedRefreshRun>
-    where
-        Sample: FnOnce(
-            Option<&ExplicitSourceCatalogAuthority>,
-        ) -> Result<BTreeMap<SourceRouteIdentity, Option<String>>>,
-    {
-        if let Some(run) = self
-            .resolve_fully_covered_continuation_with(data_root, |catalog, _routes| sample(catalog))
-        {
-            return Some(run);
-        }
-        self.run_next_with_verified_index_opener(data_root, |index_root| {
-            Ok(Arc::new(open_verified_index(index_root)?))
-        })
-    }
-
-    #[cfg(any(test, feature = "test-support"))]
-    pub fn resolve_fully_covered_continuation_for_test<Sample>(
-        &self,
-        data_root: &Path,
-        sample: Sample,
-    ) -> Option<SourceBackedRefreshRun>
-    where
-        Sample: FnOnce(
-            Option<&ExplicitSourceCatalogAuthority>,
-        ) -> Result<BTreeMap<SourceRouteIdentity, Option<String>>>,
-    {
-        self.resolve_fully_covered_continuation_with(data_root, |catalog, _routes| sample(catalog))
-    }
-
-    fn resolve_fully_covered_continuation_with<Sample>(
-        &self,
-        data_root: &Path,
-        sample: Sample,
-    ) -> Option<SourceBackedRefreshRun>
-    where
-        Sample: FnOnce(
-            Option<&ExplicitSourceCatalogAuthority>,
-            &BTreeSet<SourceRouteIdentity>,
-        ) -> Result<BTreeMap<SourceRouteIdentity, Option<String>>>,
-    {
-        let (sample_request_id, sample_routes, scoped_catalog) = {
-            let state = self.lock_state();
-            let request_id = state.active_request_id.clone()?;
-            let continuation = state.manual_all_continuations.get(&request_id)?;
-            if !continuation.predecessor_finished || !continuation.is_fully_covered() {
-                return None;
-            }
-            let predecessor = find_attempt(&state, &continuation.predecessor_request_id)?;
-            let requested = find_attempt(&state, &request_id)?;
-            if predecessor.reconciliation_demand < requested.reconciliation_demand {
-                return None;
-            }
-            let publication_receipt = predecessor
-                .publication_receipt
-                .as_ref()
-                .or(predecessor.receipt.as_ref())?;
-            if publication_receipt.published_generation.is_empty() {
-                return None;
-            }
-            let routes = continuation
-                .covered_route_results
-                .keys()
-                .filter(|route| !continuation.ledger_eligible_routes.contains(*route))
-                .cloned()
-                .collect();
-            let scoped_catalog = requested
-                .admitted_authority
-                .as_ref()
-                .map(|authority| authority.discovery.watch_catalog().clone());
-            (request_id, routes, scoped_catalog)
-        };
-        let post_publication_fence = match scoped_catalog {
-            Some(catalog) => self.post_publication_route_coverage_fence_with(
-                &sample_request_id,
-                sample_routes,
-                move |_authority, routes| {
-                    Ok(source_backed_requested_route_observations(&catalog, routes))
-                },
-            ),
-            None => self.post_publication_route_coverage_fence_with(
-                &sample_request_id,
-                sample_routes,
-                sample,
-            ),
-        };
-
-        let mut state = self.lock_state();
-        let request_id = state.active_request_id.clone()?;
-        if request_id != sample_request_id {
-            return None;
-        }
-        let continuation = state.manual_all_continuations.get(&request_id)?.clone();
-        if !continuation.predecessor_finished || !continuation.is_fully_covered() {
-            return None;
-        }
-        let predecessor = find_attempt(&state, &continuation.predecessor_request_id)?.clone();
-        let requested = find_attempt(&state, &request_id)?;
-        if predecessor.reconciliation_demand < requested.reconciliation_demand {
-            return None;
-        }
-        let publication_receipt = predecessor
-            .publication_receipt
-            .clone()
-            .or_else(|| predecessor.receipt.clone())?;
-        let published_generation = publication_receipt.published_generation.clone();
-        let publication_authority = state
-            .pinned_core_publication
-            .as_ref()
-            .filter(|authority| authority.generation_id() == published_generation)
-            .cloned();
-        let publication_metadata = publication_authority
-            .as_ref()
-            .and_then(|authority| {
-                SourceBackedPublicationMetadata::decode(authority.verified_index_ref()).ok()
-            })
-            .filter(|metadata| metadata.request_id == continuation.predecessor_request_id);
-        let invalid_routes = continuation
-            .covered_route_results
-            .keys()
-            .filter(|route| {
-                if continuation.ledger_eligible_routes.contains(*route) {
-                    return continuation.admission_event_watermarks.get(*route)
-                        != state.route_event_watermarks.get(*route);
-                }
-                let admitted_observation = continuation
-                    .admission_route_observations
-                    .get(*route)
-                    .and_then(Option::as_deref);
-                admitted_observation.is_none_or(|admitted| {
-                    publication_metadata
-                        .as_ref()
-                        .and_then(|metadata| metadata.route_observations.get(*route))
-                        .is_none_or(|published| published != admitted)
-                        || !post_publication_fence.exactly_matches(route, admitted)
-                })
-            })
-            .cloned()
-            .collect::<BTreeSet<_>>();
-        if !invalid_routes.is_empty() {
-            let continuation = state.manual_all_continuations.get_mut(&request_id)?;
-            for route in invalid_routes {
-                continuation.invalidate_route(&route);
-            }
-            return None;
-        }
-        let coverage_certificate = publication_metadata.map(|metadata| {
-            let routes = continuation
-                .covered_route_results
-                .keys()
-                .filter_map(|route| {
-                    let observation = continuation
-                        .admission_route_observations
-                        .get(route)
-                        .and_then(Option::as_ref)?;
-                    if metadata.route_observations.get(route) != Some(observation) {
-                        return None;
-                    }
-                    let admitted_watermark = continuation
-                        .admission_event_watermarks
-                        .get(route)
-                        .copied()?;
-                    let admitted_watermark = post_publication_fence.certified_boundary(
-                        route,
-                        admitted_watermark,
-                        observation,
-                    );
-                    Some((
-                        route.clone(),
-                        SourceBackedRefreshRouteCoverageCertificate {
-                            observation: observation.clone(),
-                            admitted_watermark,
-                        },
-                    ))
-                })
-                .collect();
-            SourceBackedRefreshCoverageCertificate {
-                request_id: request_id.clone(),
-                published_generation: published_generation.clone(),
-                routes,
-            }
-        });
-        let request_source_count = publication_authority.as_ref().map(|authority| {
-            let mut covered_receipt = publication_receipt.clone();
-            covered_receipt.route_results = continuation
-                .covered_route_results
-                .values()
-                .cloned()
-                .collect();
-            covered_receipt.source_count(authority.verified_index_ref())
-        });
-        let now = utc_now().timestamp_millis();
-        let request_receipt = {
-            let attempt = find_attempt_mut(&mut state, &request_id)?;
-            let mut receipt = publication_receipt.clone();
-            receipt.previous_generation = attempt.previous_generation.clone();
-            receipt.generation_changed =
-                receipt.previous_generation.as_deref() != Some(published_generation.as_str());
-            attempt.state = SourceBackedRefreshState::Published;
-            attempt.started_at_ms = Some(now);
-            attempt.finished_at_ms = Some(now);
-            attempt.published_generation = Some(published_generation.clone());
-            attempt.progress.phase = "published".to_owned();
-            attempt.progress.completed_sources = receipt.route_results.len();
-            attempt.progress.total_sources = receipt.route_results.len();
-            attempt.progress_total_sources_known = true;
-            attempt.scanned_routes = Some(0);
-            attempt.unsupported_routes = Some(
-                receipt
-                    .route_results
-                    .iter()
-                    .filter(|result| result.outcome.failure_class() == Some("incompatible"))
-                    .count(),
-            );
-            attempt.request_source_count = request_source_count;
-            attempt.certified_source_count = Some(receipt.current.source_count);
-            attempt.certified_source_bytes = Some(receipt.current.certified_source_bytes);
-            attempt.receipt = Some(receipt.clone());
-            attempt.publication_receipt = Some(publication_receipt);
-            attempt.timings = Some(continuation.covered_timings);
-            attempt.failure_type = None;
-            attempt.failure_outcome = None;
-            attempt.last_error = None;
-            receipt
-        };
-        // A fresh logical demand can be admitted while the provider sample
-        // above runs without the state lock. Its exact predecessor is this
-        // logical request, so release that durable fence with this terminal
-        // image. Coverage is intentionally not inherited transitively here:
-        // the later snapshot executes unless it establishes its own proof.
-        let successor_fence_snapshots = state
-            .manual_all_continuations
-            .iter_mut()
-            .filter_map(|(successor_id, successor)| {
-                (successor.predecessor_request_id == request_id && !successor.predecessor_finished)
-                    .then(|| {
-                        let snapshot = successor.clone();
-                        successor.predecessor_finished = true;
-                        (successor_id.clone(), snapshot)
-                    })
-            })
-            .collect::<BTreeMap<_, _>>();
-        let terminal_job = durable_job_json(&state, &request_id)?;
-        if let Err(error) = self.write_status(data_root, &terminal_job) {
-            for (successor_id, snapshot) in successor_fence_snapshots {
-                state
-                    .manual_all_continuations
-                    .insert(successor_id, snapshot);
-            }
-            let attempt = find_attempt_mut(&mut state, &request_id)?;
-            attempt.state = SourceBackedRefreshState::Queued;
-            attempt.progress.phase = "persisting_terminal".to_owned();
-            attempt.receipt = None;
-            attempt.publication_receipt = None;
-            attempt.last_error = Some(format!(
-                "persist exact logical demand resolution before acknowledgement: {error:#}"
-            ));
-            return Some(SourceBackedRefreshRun {
-                job: attempt.job_json(),
-                did_work: false,
-                failed: false,
-                terminal_persistence_pending: true,
-                scope: attempt.refresh_scope.clone(),
-                coverage_certificate: None,
-            });
-        }
-        let scope = find_attempt(&state, &request_id)?.refresh_scope.clone();
-        state.manual_all_continuations.remove(&request_id);
-        state.current_published_generation = Some(published_generation.clone());
-        advance_after_terminal_attempt(&mut state, &request_id, Some(published_generation));
-        trim_terminal_attempt_history(&mut state);
-        let job = find_attempt(&state, &request_id)?.job_json();
-        debug_assert_eq!(
-            request_receipt.published_generation,
-            job.get("published_generation")
-                .and_then(Value::as_str)
-                .unwrap_or_default()
-        );
-        Some(SourceBackedRefreshRun {
-            job,
-            did_work: false,
-            failed: false,
-            terminal_persistence_pending: false,
-            scope,
-            coverage_certificate,
         })
     }
 
@@ -333,7 +26,7 @@ impl CoreRefreshEngine {
         self.run_next_with_verified_index_opener_and_coverage_fence(
             data_root,
             open_verified,
-            |request_id| self.post_publication_route_coverage_fence(data_root, request_id),
+            |request_id| self.post_publication_route_coverage_fence(request_id),
         )
     }
 
@@ -373,35 +66,24 @@ impl CoreRefreshEngine {
         let publication_probe_attempted = Cell::new(false);
         let mut run = self.run_next_with_terminal_success(
             |request_id, coordinator| {
-                let requested_catalog = coordinator.requested_explicit_source_catalog(request_id);
-                let refresh_scope = coordinator
-                    .refresh_scope(request_id)
+                let intent = coordinator
+                    .refresh_intent(request_id)
                     .ok_or_else(|| anyhow!("source refresh request `{request_id}` is unknown"))?;
-                let operation = coordinator
-                    .operation(request_id)
-                    .ok_or_else(|| anyhow!("source refresh request `{request_id}` is unknown"))?;
+                let operation = intent.operation();
                 let reconciliation_demand = coordinator
                     .reconciliation_demand(request_id)
                     .ok_or_else(|| anyhow!("source refresh request `{request_id}` is unknown"))?;
-                let admitted = coordinator.admit_refresh_scope(request_id, &refresh_scope)?;
+                let admitted = coordinator.admit_refresh(request_id)?;
+                let refresh_scope = admitted.publication_scope();
                 coordinator.persist_job_status(data_root, request_id)?;
                 let mut publication = execute_source_backed_refresh(
                     executor.as_ref(),
                     data_root,
                     request_id,
                     coordinator,
-                    SourceBackedRefreshPlan {
-                        explicit_source_catalog: requested_catalog.as_ref(),
-                        operation,
-                        reconciliation_demand,
-                        scope: refresh_scope.clone(),
-                        route_worksets: admitted.route_worksets,
-                        watch_catalog: admitted.watch_catalog,
-                        admitted_discovery: admitted.admitted_discovery,
-                        requires_admitted_discovery: admitted.requires_admitted_discovery,
-                        covered_route_ids: admitted.covered_route_ids,
-                        covered_publication: admitted.covered_publication,
-                    },
+                    &intent,
+                    reconciliation_demand,
+                    admitted,
                 )?;
                 let probe_started = StdInstant::now();
                 let pin = if let Some(pin) = publication.verified_index.take() {
@@ -506,14 +188,13 @@ impl CoreRefreshEngine {
 
     fn post_publication_route_coverage_fence(
         &self,
-        data_root: &Path,
         request_id: &str,
     ) -> PostPublicationRouteCoverageFence {
         let scoped_catalog = {
             let state = self.lock_state();
             find_attempt(&state, request_id)
                 .and_then(|attempt| attempt.admitted_authority.as_ref())
-                .map(|authority| authority.discovery.watch_catalog().clone())
+                .map(|authority| authority.discovery().watch_catalog().clone())
         };
         if let Some(catalog) = scoped_catalog {
             return self.regular_post_publication_route_coverage_fence_with(
@@ -523,16 +204,7 @@ impl CoreRefreshEngine {
                 },
             );
         }
-        self.regular_post_publication_route_coverage_fence_with(request_id, |catalog, routes| {
-            let discovery = self.runtime.discovery_context(data_root)?;
-            source_backed_requested_route_observation_fence(
-                &discovery,
-                self.journal.as_ref(),
-                data_root,
-                catalog,
-                routes,
-            )
-        })
+        PostPublicationRouteCoverageFence::fail_closed()
     }
 
     fn regular_post_publication_route_coverage_fence_with<Sample>(
@@ -604,7 +276,7 @@ impl CoreRefreshEngine {
                 })
                 .collect();
             let requested_catalog =
-                attempt.and_then(|attempt| attempt.requested_explicit_source_catalog.clone());
+                attempt.and_then(|attempt| attempt.requested_explicit_source_catalog().cloned());
             (seen_watermarks, requested_catalog)
         };
         let mut sampled = sample(requested_catalog.as_ref(), &routes).unwrap_or_default();

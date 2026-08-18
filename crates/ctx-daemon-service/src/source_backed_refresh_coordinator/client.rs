@@ -31,6 +31,14 @@ type SourceBackedRefreshProgressReporter<'a> = &'a mut dyn FnMut(&RefreshStatus)
 
 const SOURCE_REFRESH_PROGRESS_HEARTBEAT: StdDuration = StdDuration::from_secs(5);
 
+fn daemon_trigger(trigger: RefreshRequestTrigger) -> crate::DaemonTrigger {
+    match trigger {
+        RefreshRequestTrigger::Setup => crate::DaemonTrigger::Setup,
+        RefreshRequestTrigger::Search => crate::DaemonTrigger::Search,
+        RefreshRequestTrigger::Import => crate::DaemonTrigger::Import,
+    }
+}
+
 fn block_after_daemon_availability_for_test(data_root: &Path) -> Result<()> {
     if !cfg!(debug_assertions) {
         return Ok(());
@@ -179,7 +187,7 @@ pub fn coordinate_setup_source_backed_refresh_with_progress(
         availability,
         data_root,
         mode,
-        SourceBackedRefreshTrigger::Setup,
+        RefreshRequestTrigger::Setup,
         Some(report_progress),
     )
 }
@@ -194,7 +202,7 @@ fn coordinate_source_backed_refresh_inner(
         availability,
         data_root,
         mode,
-        SourceBackedRefreshTrigger::Search,
+        RefreshRequestTrigger::Search,
         report_progress,
     )
 }
@@ -203,10 +211,10 @@ fn coordinate_source_backed_refresh_inner_with_trigger(
     availability: &dyn crate::DaemonAvailabilityPort,
     data_root: &Path,
     mode: SourceBackedRefreshMode,
-    trigger: SourceBackedRefreshTrigger,
+    trigger: RefreshRequestTrigger,
     report_progress: Option<SourceBackedRefreshProgressReporter<'_>>,
 ) -> Result<SourceBackedRefreshObservation> {
-    coordinate_source_backed_refresh_with_catalog(
+    coordinate_source_backed_refresh_with_policy(
         availability,
         data_root,
         mode,
@@ -219,8 +227,7 @@ pub fn coordinate_import_source_backed_refresh_with_progress(
     availability: &dyn crate::DaemonAvailabilityPort,
     data_root: &Path,
     mode: SourceBackedRefreshMode,
-    selector: SourceBackedRefreshSelector,
-    explicit_source_catalog: Option<&ExplicitSourceCatalogAuthority>,
+    selection: RefreshSelection,
     allow_daemon_autostart: bool,
     report_progress: &mut dyn FnMut(&RefreshStatus) -> Result<()>,
 ) -> Result<SourceBackedRefreshObservation> {
@@ -228,8 +235,7 @@ pub fn coordinate_import_source_backed_refresh_with_progress(
         availability,
         data_root,
         mode,
-        selector,
-        explicit_source_catalog,
+        selection,
         allow_daemon_autostart,
         Some(report_progress),
     )
@@ -239,41 +245,33 @@ fn coordinate_import_source_backed_refresh_inner(
     availability: &dyn crate::DaemonAvailabilityPort,
     data_root: &Path,
     mode: SourceBackedRefreshMode,
-    selector: SourceBackedRefreshSelector,
-    explicit_source_catalog: Option<&ExplicitSourceCatalogAuthority>,
+    selection: RefreshSelection,
     allow_daemon_autostart: bool,
     report_progress: Option<SourceBackedRefreshProgressReporter<'_>>,
 ) -> Result<SourceBackedRefreshObservation> {
-    coordinate_source_backed_refresh_with_catalog(
+    coordinate_source_backed_refresh_with_policy(
         availability,
         data_root,
         mode,
-        SourceBackedRefreshRequestPolicy::import(
-            selector,
-            explicit_source_catalog,
-            allow_daemon_autostart,
-        ),
+        SourceBackedRefreshRequestPolicy::import(selection, allow_daemon_autostart),
         report_progress,
     )
 }
 
-fn coordinate_source_backed_refresh_with_catalog(
+fn coordinate_source_backed_refresh_with_policy(
     availability: &dyn crate::DaemonAvailabilityPort,
     data_root: &Path,
     mode: SourceBackedRefreshMode,
-    policy: SourceBackedRefreshRequestPolicy<'_>,
+    policy: SourceBackedRefreshRequestPolicy,
     report_progress: Option<SourceBackedRefreshProgressReporter<'_>>,
 ) -> Result<SourceBackedRefreshObservation> {
     let SourceBackedRefreshRequestPolicy {
-        operation,
+        intent,
         trigger,
-        selector,
-        explicit_source_catalog,
-        fresh_after_admitted_snapshot,
         allow_daemon_autostart,
     } = policy;
     if mode == SourceBackedRefreshMode::Off {
-        if operation == SourceBackedRefreshOperation::Import {
+        if intent.operation() == ctx_history_refresh::RefreshOperation::Import {
             bail!("explicit source catalog imports require daemon refresh mode `wait`");
         }
         let pin = pin_active_verified_generation(data_root)?;
@@ -295,7 +293,7 @@ fn coordinate_source_backed_refresh_with_catalog(
         && availability
             .ensure_available(
                 data_root,
-                trigger.daemon_trigger(),
+                daemon_trigger(trigger),
                 match mode {
                     SourceBackedRefreshMode::Background => {
                         crate::DaemonAvailabilityDemand::Background
@@ -316,15 +314,9 @@ fn coordinate_source_backed_refresh_with_catalog(
     }
 
     let logical_request_id = Uuid::now_v7().to_string();
-    let admission_request = wait_authority_request_json(
-        &logical_request_id,
-        mode,
-        operation,
-        trigger,
-        selector,
-        explicit_source_catalog,
-        fresh_after_admitted_snapshot,
-    )?;
+    let canonical_request =
+        RefreshRequest::new(logical_request_id.clone(), intent.clone(), trigger);
+    let admission_request = wait_authority_request_json(mode, &canonical_request)?;
     let mut retirement_recovery_attempted = false;
     let response = loop {
         let retirement_error =
@@ -368,7 +360,7 @@ fn coordinate_source_backed_refresh_with_catalog(
         if availability
             .ensure_available(
                 data_root,
-                trigger.daemon_trigger(),
+                daemon_trigger(trigger),
                 crate::DaemonAvailabilityDemand::ExplicitWait,
             )
             .context("recover daemon after source refresh endpoint retirement")?
@@ -379,7 +371,7 @@ fn coordinate_source_backed_refresh_with_catalog(
     };
     validate_daemon_refresh_response(&response)?;
     let accepted_request_id = response_request_id(&response, "daemon source refresh response")?;
-    let request_id = if fresh_after_admitted_snapshot {
+    let request_id = if intent.is_selected_import() {
         validate_source_refresh_status_response_authority(&response, &logical_request_id)?;
         logical_request_id
     } else {
@@ -401,7 +393,7 @@ fn coordinate_source_backed_refresh_with_catalog(
                     &response,
                     request_id,
                     mode,
-                    explicit_source_catalog,
+                    intent.explicit_source_authority(),
                 );
             }
             RefreshRequestState::Failed => {
@@ -440,11 +432,8 @@ fn coordinate_source_backed_refresh_with_catalog(
         request_id,
         PublishedGenerationWait {
             mode,
-            operation,
+            intent,
             trigger,
-            selector,
-            expected_catalog: explicit_source_catalog,
-            fresh_after_admitted_snapshot,
             allow_daemon_autostart,
             report_progress,
         },
@@ -456,7 +445,7 @@ pub(super) fn wait_for_published_generation(
     data_root: &Path,
     request_id: String,
     mode: SourceBackedRefreshMode,
-    operation: SourceBackedRefreshOperation,
+    operation: ctx_history_refresh::RefreshOperation,
     expected_catalog: Option<&ExplicitSourceCatalogAuthority>,
     allow_daemon_autostart: bool,
 ) -> Result<SourceBackedRefreshObservation> {
@@ -466,31 +455,31 @@ pub(super) fn wait_for_published_generation(
         request_id,
         PublishedGenerationWait {
             mode,
-            operation,
+            intent: match (operation, expected_catalog) {
+                (_, Some(authority)) => {
+                    RefreshIntent::SelectedImport(RefreshSelection::ExactSource(authority.clone()))
+                }
+                (ctx_history_refresh::RefreshOperation::Import, None) => {
+                    RefreshIntent::SelectedImport(RefreshSelection::All)
+                }
+                (ctx_history_refresh::RefreshOperation::Refresh, None) => {
+                    RefreshIntent::AutomaticMaintenance
+                }
+            },
             trigger: match operation {
-                SourceBackedRefreshOperation::Refresh => SourceBackedRefreshTrigger::Search,
-                SourceBackedRefreshOperation::Import => SourceBackedRefreshTrigger::Import,
+                ctx_history_refresh::RefreshOperation::Refresh => RefreshRequestTrigger::Search,
+                ctx_history_refresh::RefreshOperation::Import => RefreshRequestTrigger::Import,
             },
-            selector: if expected_catalog.is_some() {
-                SourceBackedRefreshSelector::ExplicitCatalog
-            } else {
-                SourceBackedRefreshSelector::AllAutomatic
-            },
-            expected_catalog,
-            fresh_after_admitted_snapshot: false,
             allow_daemon_autostart,
             report_progress: None,
         },
     )
 }
 
-struct PublishedGenerationWait<'catalog, 'progress> {
+struct PublishedGenerationWait<'progress> {
     mode: SourceBackedRefreshMode,
-    operation: SourceBackedRefreshOperation,
-    trigger: SourceBackedRefreshTrigger,
-    selector: SourceBackedRefreshSelector,
-    expected_catalog: Option<&'catalog ExplicitSourceCatalogAuthority>,
-    fresh_after_admitted_snapshot: bool,
+    intent: RefreshIntent,
+    trigger: RefreshRequestTrigger,
     allow_daemon_autostart: bool,
     report_progress: Option<SourceBackedRefreshProgressReporter<'progress>>,
 }
@@ -499,15 +488,12 @@ fn wait_for_published_generation_inner(
     availability: &dyn crate::DaemonAvailabilityPort,
     data_root: &Path,
     mut request_id: String,
-    wait: PublishedGenerationWait<'_, '_>,
+    wait: PublishedGenerationWait<'_>,
 ) -> Result<SourceBackedRefreshObservation> {
     let PublishedGenerationWait {
         mode,
-        operation,
+        intent,
         trigger,
-        selector,
-        expected_catalog,
-        fresh_after_admitted_snapshot,
         allow_daemon_autostart,
         mut report_progress,
     } = wait;
@@ -581,14 +567,11 @@ fn wait_for_published_generation_inner(
                 enqueue_equivalent_wait_refresh_request(
                     data_root,
                     &lost_request_id,
-                    operation,
+                    intent.clone(),
                     trigger,
-                    selector,
-                    expected_catalog,
-                    fresh_after_admitted_snapshot,
                 )
             };
-            request_id = if fresh_after_admitted_snapshot {
+            request_id = if intent.is_selected_import() {
                 recover_typed_unknown_request_with(
                     &mut unknown_request_recovery,
                     &lost_request_id,
@@ -635,7 +618,7 @@ fn wait_for_published_generation_inner(
                     &response,
                     request_id,
                     mode,
-                    expected_catalog,
+                    intent.explicit_source_authority(),
                 );
             }
             RefreshRequestState::Failed => {
@@ -772,7 +755,7 @@ pub(super) fn recover_wait_refresh_request(
     availability: &dyn crate::DaemonAvailabilityPort,
     data_root: &Path,
     request_id: &str,
-    trigger: SourceBackedRefreshTrigger,
+    trigger: RefreshRequestTrigger,
     allow_daemon_autostart: bool,
 ) -> Result<String> {
     if !allow_daemon_autostart {
@@ -781,7 +764,7 @@ pub(super) fn recover_wait_refresh_request(
     let recovery = (|| {
         if availability.ensure_available(
             data_root,
-            trigger.daemon_trigger(),
+            daemon_trigger(trigger),
             crate::DaemonAvailabilityDemand::ExplicitWait,
         )? == crate::DaemonAvailability::Disabled
         {
@@ -804,21 +787,12 @@ pub(super) fn recover_wait_refresh_request(
 fn enqueue_equivalent_wait_refresh_request(
     data_root: &Path,
     request_id: &str,
-    operation: SourceBackedRefreshOperation,
-    trigger: SourceBackedRefreshTrigger,
-    selector: SourceBackedRefreshSelector,
-    explicit_source_catalog: Option<&ExplicitSourceCatalogAuthority>,
-    fresh_after_admitted_snapshot: bool,
+    intent: RefreshIntent,
+    trigger: RefreshRequestTrigger,
 ) -> Result<String> {
-    let request = wait_authority_request_json(
-        request_id,
-        SourceBackedRefreshMode::Wait,
-        operation,
-        trigger,
-        selector,
-        explicit_source_catalog,
-        fresh_after_admitted_snapshot,
-    )?;
+    let selected_import = intent.is_selected_import();
+    let canonical_request = RefreshRequest::new(request_id.to_owned(), intent, trigger);
+    let request = wait_authority_request_json(SourceBackedRefreshMode::Wait, &canonical_request)?;
     let response = request_admission_with_recovery(request_id, std::thread::sleep, || {
         daemon_source_refresh_request(
             data_root,
@@ -830,7 +804,7 @@ fn enqueue_equivalent_wait_refresh_request(
     .ok_or_else(|| retained_request_unobservable(request_id, 0))?;
     validate_daemon_refresh_response(&response)?;
     let accepted_request_id = response_request_id(&response, "daemon source refresh response")?;
-    let request_id = if fresh_after_admitted_snapshot {
+    let request_id = if selected_import {
         validate_source_refresh_status_response_authority(&response, request_id)?;
         request_id.to_owned()
     } else {
@@ -842,24 +816,10 @@ fn enqueue_equivalent_wait_refresh_request(
 }
 
 fn wait_authority_request_json(
-    request_id: &str,
     mode: SourceBackedRefreshMode,
-    operation: SourceBackedRefreshOperation,
-    trigger: SourceBackedRefreshTrigger,
-    selector: SourceBackedRefreshSelector,
-    explicit_source_catalog: Option<&ExplicitSourceCatalogAuthority>,
-    fresh_after_admitted_snapshot: bool,
+    request: &RefreshRequest,
 ) -> Result<Value> {
-    SourceBackedRefreshRequest::new(
-        mode,
-        operation,
-        selector,
-        explicit_source_catalog,
-        fresh_after_admitted_snapshot,
-    )
-    .with_trigger(trigger)
-    .with_request_id(request_id)
-    .to_json()
+    SourceBackedRefreshRequest::new(mode, request).to_json()
 }
 
 fn response_request_id(response: &Value, label: &str) -> Result<String> {

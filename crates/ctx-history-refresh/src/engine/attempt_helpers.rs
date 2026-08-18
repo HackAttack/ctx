@@ -478,7 +478,6 @@ pub(super) fn coalesce_attempt(
     metadata: SourceRefreshRuntimeMetadata,
 ) -> Value {
     if metadata.operation == SourceBackedRefreshOperation::Import {
-        attempt.operation = SourceBackedRefreshOperation::Import;
         attempt.whole_run_eta.disable();
     }
     merge_trigger_ownership(attempt, &metadata);
@@ -512,13 +511,14 @@ fn trigger_ownership_priority(trigger: &str) -> u8 {
 pub(super) fn new_refresh_attempt(
     observed_generation: Option<String>,
     metadata: SourceRefreshRuntimeMetadata,
-    requested_catalog: Option<ExplicitSourceCatalogAuthority>,
+    intent: RefreshIntent,
     refresh_scope: SourceBackedRefreshScope,
 ) -> SourceBackedRefreshAttempt {
     let request_id = Uuid::now_v7().to_string();
     let eta_eligible = observed_generation.is_none()
-        && metadata.operation == SourceBackedRefreshOperation::Refresh
+        && intent == RefreshIntent::AutomaticMaintenance
         && matches!(&refresh_scope, SourceBackedRefreshScope::All);
+    let reconciliation_demand = intent.reconciliation_demand();
     SourceBackedRefreshAttempt {
         request_id: request_id.clone(),
         state: SourceBackedRefreshState::Queued,
@@ -527,27 +527,16 @@ pub(super) fn new_refresh_attempt(
         finished_at_ms: None,
         previous_generation: observed_generation.clone(),
         published_generation: observed_generation,
+        intent,
         refresh_scope,
-        operation: metadata.operation,
-        reconciliation_demand: match metadata.operation {
-            SourceBackedRefreshOperation::Refresh => SourceBackedReconciliationDemand::Incremental,
-            SourceBackedRefreshOperation::Import => SourceBackedReconciliationDemand::Exhaustive,
-        },
-        // Callers that own a typed scoped request replace this legacy
-        // all-route default after construction.
-        selector: SourceBackedRefreshSelector::AllAutomatic,
-        requested_explicit_source_catalog: requested_catalog,
+        reconciliation_demand,
         admitted_authority: None,
-        fresh_after_admitted_snapshot: false,
         request_fingerprint: None,
         admission_durability_indeterminate: false,
-        coalesced_into_request_id: None,
-        coalesced_logical_demands: 0,
         coalesced_requests: 0,
         progress: SourceBackedRefreshProgress::default(),
         progress_total_sources_known: false,
         whole_run_eta: WholeRunEtaEstimator::new(eta_eligible),
-        physical_attempt_id: Some(request_id),
         scanned_routes: None,
         unsupported_routes: None,
         request_source_count: None,
@@ -582,42 +571,110 @@ pub(super) fn recover_reconciliation_demand(
     }
 }
 
-pub(super) fn recover_refresh_selector(
+pub(super) fn recover_refresh_intent(
     job: &Value,
     operation: SourceBackedRefreshOperation,
-    has_explicit_catalog: bool,
     allow_legacy_terminal_catalog_omission: bool,
-) -> Result<SourceBackedRefreshSelector> {
-    let legacy = job.get("refresh_selector").is_none();
-    let selector = match job.get("refresh_selector") {
-        Some(value) => SourceBackedRefreshSelector::from_json(value)?,
-        None => SourceBackedRefreshSelector::AllAutomatic,
-    };
-    if legacy {
-        match (
-            operation,
-            has_explicit_catalog,
-            allow_legacy_terminal_catalog_omission,
-        ) {
-            (SourceBackedRefreshOperation::Import, false, false) => {
-                bail!("durable import source refresh has no explicit source authority")
+    ignore_obsolete_root_catalog: bool,
+) -> Result<RefreshIntent> {
+    if let Some(value) = job.get("refresh_intent") {
+        let intent = RefreshIntent::from_json(value)?;
+        if intent.operation() != operation {
+            bail!("durable source refresh intent disagrees with its operation");
+        }
+        if let Some(legacy_catalog) = job
+            .get("requested_explicit_source_catalog")
+            .filter(|value| !value.is_null())
+            .map(ExplicitSourceCatalogAuthority::from_json)
+            .transpose()?
+        {
+            if intent.explicit_source_authority() != Some(&legacy_catalog) {
+                bail!("durable source refresh intent disagrees with its legacy exact-source authority");
             }
-            (SourceBackedRefreshOperation::Refresh, true, _) => {
+        }
+        return Ok(intent);
+    }
+
+    // One isolated decoder for pre-canonical durable jobs. Legacy fields are
+    // normalized immediately and never enter scheduling or execution as an
+    // independent request representation.
+    // Pre-overlay periodic roots can carry obsolete catalog-shaped data. It
+    // was never request authority for refresh operations, so retain that
+    // compatibility without weakening import or successor validation.
+    let explicit_catalog = if ignore_obsolete_root_catalog
+        && operation == SourceBackedRefreshOperation::Refresh
+        && job.get("refresh_selector").is_none()
+    {
+        None
+    } else {
+        job.get("requested_explicit_source_catalog")
+            .filter(|value| !value.is_null())
+            .map(ExplicitSourceCatalogAuthority::from_json)
+            .transpose()?
+    };
+    let explicit_catalog = explicit_catalog.as_ref();
+    let has_explicit_catalog = explicit_catalog.is_some();
+    let fresh = job
+        .get("fresh_after_admitted_snapshot")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+    let Some(selector) = job.get("refresh_selector") else {
+        return match (operation, explicit_catalog) {
+            (SourceBackedRefreshOperation::Refresh, Some(_)) => {
                 bail!("durable refresh carries legacy explicit source authority")
             }
-            _ => {}
+            (SourceBackedRefreshOperation::Import, Some(authority)) => Ok(
+                RefreshIntent::SelectedImport(RefreshSelection::ExactSource(authority.clone())),
+            ),
+            (SourceBackedRefreshOperation::Import, None)
+                if !allow_legacy_terminal_catalog_omission =>
+            {
+                bail!("durable import source refresh has no explicit source authority")
+            }
+            (_, None) if fresh || operation == SourceBackedRefreshOperation::Import => {
+                Ok(RefreshIntent::SelectedImport(RefreshSelection::All))
+            }
+            (_, None) => Ok(RefreshIntent::AutomaticMaintenance),
+        };
+    };
+    let fields = selector
+        .as_object()
+        .ok_or_else(|| anyhow!("durable source refresh selector is not an object"))?;
+    match fields.get("kind").and_then(Value::as_str) {
+        Some("all_automatic") if fields.len() == 1 => match explicit_catalog {
+            Some(authority) if operation == SourceBackedRefreshOperation::Import => Ok(
+                RefreshIntent::SelectedImport(RefreshSelection::ExactSource(authority.clone())),
+            ),
+            Some(_) => bail!("durable refresh carries explicit source authority"),
+            None if fresh => Ok(RefreshIntent::SelectedImport(RefreshSelection::All)),
+            None => Ok(RefreshIntent::AutomaticMaintenance),
+        },
+        Some("automatic_provider") if fields.len() == 2 && !has_explicit_catalog => {
+            let provider = fields
+                .get("provider")
+                .and_then(Value::as_str)
+                .ok_or_else(|| anyhow!("durable provider selector has no provider"))?
+                .parse()
+                .context("parse durable provider selector")?;
+            if provider == CaptureProvider::Unknown {
+                bail!("durable provider selector has an unknown provider");
+            }
+            Ok(RefreshIntent::SelectedImport(RefreshSelection::Provider(
+                provider,
+            )))
         }
-    }
-    match (selector, has_explicit_catalog) {
-        (SourceBackedRefreshSelector::AllAutomatic, _)
-        | (SourceBackedRefreshSelector::AutomaticProvider(_), false)
-        | (SourceBackedRefreshSelector::ExplicitCatalog, true) => Ok(selector),
-        (SourceBackedRefreshSelector::ExplicitCatalog, false) => {
-            bail!("durable explicit-catalog source refresh has no catalog authority")
+        Some("explicit_catalog") if fields.len() == 1 => Ok(RefreshIntent::SelectedImport(
+            RefreshSelection::ExactSource(
+                explicit_catalog
+                    .cloned()
+                    .ok_or_else(|| anyhow!("durable exact-source refresh has no authority"))?,
+            ),
+        )),
+        Some("automatic_provider") if has_explicit_catalog => {
+            bail!("durable provider selector carries explicit source authority")
         }
-        (SourceBackedRefreshSelector::AutomaticProvider(_), true) => {
-            bail!("durable automatic provider source refresh carries explicit catalog authority")
-        }
+        Some(kind) => bail!("durable source refresh selector `{kind}` is malformed"),
+        None => bail!("durable source refresh selector kind is missing"),
     }
 }
 
@@ -687,12 +744,6 @@ pub(super) fn advance_after_terminal_attempt(
     let Some(next_request_id) = state.active_request_id.clone() else {
         return;
     };
-    if state
-        .manual_all_continuations
-        .contains_key(&next_request_id)
-    {
-        return;
-    }
     if let Some(next_attempt) = find_attempt_mut(state, &next_request_id) {
         if observed_generation.is_some() {
             next_attempt.previous_generation = observed_generation.clone();
@@ -711,86 +762,6 @@ pub(super) fn source_route_ledger_now_ms() -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn continuation_preserves_route_local_change_in_catalog_outcome() {
-        let route = SourceRouteIdentity::from_sha256("ab".repeat(32)).unwrap();
-        let mut continuation = ManualAllContinuation::new(
-            "predecessor".to_owned(),
-            BTreeMap::new(),
-            BTreeSet::new(),
-            BTreeMap::new(),
-            BTreeMap::new(),
-        );
-        continuation.covered_route_results.insert(
-            route.clone(),
-            SourceBackedRefreshRouteResult::succeeded(route.as_str().to_owned(), false),
-        );
-        let mut publication = SourceBackedRefreshPublication {
-            zero_source_authority: Vec::new(),
-            generation_id: "generation".to_owned(),
-            published_explicit_source_catalog: None,
-            unsupported_routes: 0,
-            certified_source_count: 0,
-            certified_source_bytes: 0,
-            current: SourceBackedRefreshCurrent::default(),
-            timings: SourceBackedRefreshTimings::default(),
-            route_results: Vec::new(),
-            catalog_route_bindings: vec![ExplicitSourceCatalogRouteBinding {
-                catalog_lineage: "cd".repeat(32),
-                route_identity: route.as_str().to_owned(),
-            }],
-            verified_index: None,
-        };
-
-        continuation.covered_publication().apply(&mut publication);
-
-        assert_eq!(publication.route_results.len(), 1);
-        assert_eq!(publication.route_results[0].route_identity, route.as_str());
-        assert_eq!(publication.route_results[0].outcome.changed(), Some(false));
-    }
-
-    #[test]
-    fn continuation_overlap_remains_visible_to_canonical_duplicate_rejection() {
-        let route = SourceRouteIdentity::from_sha256("ef".repeat(32)).unwrap();
-        let mut continuation = ManualAllContinuation::new(
-            "predecessor".to_owned(),
-            BTreeMap::new(),
-            BTreeSet::new(),
-            BTreeMap::new(),
-            BTreeMap::new(),
-        );
-        continuation.covered_route_results.insert(
-            route.clone(),
-            SourceBackedRefreshRouteResult::succeeded(route.as_str().to_owned(), false),
-        );
-        let mut publication = SourceBackedRefreshPublication {
-            zero_source_authority: Vec::new(),
-            generation_id: "generation".to_owned(),
-            published_explicit_source_catalog: None,
-            unsupported_routes: 0,
-            certified_source_count: 0,
-            certified_source_bytes: 0,
-            current: SourceBackedRefreshCurrent::default(),
-            timings: SourceBackedRefreshTimings::default(),
-            route_results: vec![SourceBackedRefreshRouteResult::succeeded(
-                route.as_str().to_owned(),
-                true,
-            )],
-            catalog_route_bindings: Vec::new(),
-            verified_index: None,
-        };
-
-        continuation.covered_publication().apply(&mut publication);
-
-        let error = SourceBackedRefreshReceipt::from_verified_publication(
-            None,
-            publication.generation_id.clone(),
-            &publication,
-        )
-        .unwrap_err();
-        assert!(format!("{error:#}").contains("duplicate route result"));
-    }
 
     #[test]
     fn bounded_failure_diagnostics_do_not_bound_affected_routes_or_retryability() {

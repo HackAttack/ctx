@@ -2,19 +2,14 @@
 
 use super::*;
 
-fn enqueue_synthetic_fresh_request(
+fn enqueue_synthetic_manual_all_request(
     coordinator: &super::super::CoreRefreshEngine,
     data_root: &Path,
-    revision: u64,
+    _revision: u64,
 ) -> Value {
     coordinator
-        .enqueue_fresh_catalog_demand_for_test(
-            data_root,
-            None,
-            Uuid::now_v7().to_string(),
-            test_catalog_authority(revision, 0),
-        )
-        .expect("synthetic fresh request")
+        .enqueue_manual_all_demand_for_test(data_root, None, Uuid::now_v7().to_string())
+        .expect("synthetic manual-all request")
 }
 
 fn publication_pin_test_publication(
@@ -43,7 +38,7 @@ fn exact_no_op_restart_migrates_pre_fix_source_count_and_reuses_durable_receipt(
         move |execution: SourceBackedRefreshExecution<'_>| {
             let request_id = execution.request_id.to_owned();
             let operation = execution.operation;
-            let scope = execution.scope.clone();
+            let scope = execution.admitted_refresh().publication_scope().clone();
             let factories = Arc::clone(&first_factories);
             let source = publication_pin_source();
             let mut writer = ctx_history_index::GenerationWriter::open(
@@ -197,7 +192,7 @@ fn lone_failed_terminal_recovers_exact_status_without_reenqueue() {
     let data_root = temp.path().join("data");
     ctx_history_platform::platform_security::establish_private_data_root(&data_root).unwrap();
     let first = CoreRefreshEngine::new();
-    let request = first.enqueue_periodic(&data_root).unwrap();
+    let request = first.enqueue(None);
     let request_id = request_id(&request);
     let failed = first
         .run_next_with(
@@ -285,7 +280,7 @@ fn pointer_crash_recovers_active_receipt_and_preserves_fresh_successor() {
     let data_root = temp.path().join("data");
     ctx_history_platform::platform_security::establish_private_data_root(&data_root).unwrap();
     let first = CoreRefreshEngine::new();
-    let active = first.enqueue_periodic(&data_root).unwrap();
+    let active = first.enqueue(None);
     let active_request_id = request_id(&active);
     let successor_request_id = Arc::new(Mutex::new(None::<String>));
     let recorded_successor = Arc::clone(&successor_request_id);
@@ -294,7 +289,8 @@ fn pointer_crash_recovers_active_receipt_and_preserves_fresh_successor() {
     let crash = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         let _ = first.run_next_with(
             |active_id, coordinator| {
-                let successor = enqueue_synthetic_fresh_request(coordinator, &execution_root, 1);
+                let successor =
+                    enqueue_synthetic_manual_all_request(coordinator, &execution_root, 1);
                 *recorded_successor.lock().unwrap() = Some(request_id(&successor));
 
                 let metadata_request_id = active_id.to_owned();
@@ -375,7 +371,7 @@ fn pointer_crash_recovers_active_receipt_and_preserves_fresh_successor() {
     );
     assert_eq!(
         restarted.status(&successor_request_id).unwrap()["request_state"],
-        "queued"
+        "admission_pending"
     );
     assert_eq!(
         restarted
@@ -397,261 +393,12 @@ fn pointer_crash_recovers_active_receipt_and_preserves_fresh_successor() {
 }
 
 #[test]
-fn pointer_crash_recovers_exact_manual_all_continuation_receipt_without_recapture() {
-    let temp = tempfile::tempdir().unwrap();
-    let data_root = temp.path().join("data");
-    ctx_history_platform::platform_security::establish_private_data_root(&data_root).unwrap();
-    let covered_routes = BTreeSet::from([route_identity(0xa1), route_identity(0xa2)]);
-    let routes = covered_routes
-        .iter()
-        .cloned()
-        .chain([route_identity(0xa3)])
-        .collect::<BTreeSet<_>>();
-    let entered = Arc::new(Barrier::new(2));
-    let release = Arc::new(Barrier::new(2));
-    let calls = Arc::new(AtomicUsize::new(0));
-    let expected_receipt = Arc::new(Mutex::new(None::<Value>));
-    let executor_routes = routes.clone();
-    let executor_entered = Arc::clone(&entered);
-    let executor_release = Arc::clone(&release);
-    let executor_calls = Arc::clone(&calls);
-    let recorded_receipt = Arc::clone(&expected_receipt);
-    let coordinator = Arc::new(CoreRefreshEngine::with_executor(Arc::new(
-        move |execution: SourceBackedRefreshExecution<'_>| {
-            let selected = physically_selected_routes(&execution, &executor_routes);
-            if executor_calls.fetch_add(1, Ordering::SeqCst) == 0 {
-                executor_entered.wait();
-                executor_release.wait();
-                let rejected_route = selected.iter().next().expect("selected exact route");
-                let mut publication =
-                    publish_selected_routes_with_rejection(&execution, &selected, rejected_route)?;
-                publication.current.removed_source_count = 1;
-                return Ok(publication);
-            }
-
-            assert_eq!(execution.scope, SourceBackedRefreshScope::All);
-            assert!(execution.covered_route_ids.is_empty());
-            assert_eq!(selected.len(), executor_routes.len());
-            let previous_generation = open_verified_index(execution.index_root)
-                .ok()
-                .map(|index| index.generation_id().to_owned());
-            let request_id = execution.request_id.to_owned();
-            let operation = execution.operation;
-            let scope = execution.scope.clone();
-            let covered_publication = execution.covered_publication.clone();
-            let selected_route_results = selected
-                .iter()
-                .map(|route| {
-                    SourceBackedRefreshRouteResult::succeeded(route.as_str().to_owned(), true)
-                })
-                .collect::<Vec<_>>();
-            let expected = Arc::clone(&recorded_receipt);
-            let source = publication_pin_source_with_anchor(0x93);
-            let changed_source = publication_pin_source_with_anchor(0x96);
-            let mut writer = ctx_history_index::GenerationWriter::open(
-                execution.index_root,
-                WriterOptions::default(),
-            )?
-            .into_writer()
-            .map_err(crate::committed_generation_recovery_error)?;
-            writer.begin_source(source.clone())?;
-            writer.add_core_record(publication_pin_record(&source))?;
-            writer.certify_source(publication_rejection_certificate(&source))?;
-            writer.begin_source(changed_source.clone())?;
-            writer.add_core_record(publication_pin_record(&changed_source))?;
-            writer.certify_source(publication_pin_certificate(&changed_source))?;
-            let published = writer.commit_with_publication_metadata(
-                |_| true,
-                move |context| {
-                    let mut publication =
-                        empty_test_publication(context.generation_id().to_owned());
-                    publication.current =
-                        SourceBackedRefreshCurrent::from_sources(&context.manifest().sources, 0)
-                            .map_err(|error| {
-                                IndexError::PublicationMetadata(format!("{error:#}"))
-                            })?;
-                    publication.certified_source_count = publication.current.source_count;
-                    publication.certified_source_bytes = publication.current.certified_source_bytes;
-                    publication.route_results = selected_route_results.clone();
-                    covered_publication.apply_receipt(&mut publication);
-                    let receipt = SourceBackedRefreshReceipt::from_verified_publication(
-                        previous_generation.clone(),
-                        context.generation_id().to_owned(),
-                        &publication,
-                    )
-                    .map_err(|error| IndexError::PublicationMetadata(format!("{error:#}")))?;
-                    *expected.lock().unwrap() = Some(receipt.to_json());
-                    SourceBackedPublicationMetadata {
-                        version: SOURCE_REFRESH_PUBLICATION_METADATA_VERSION,
-                        request_id: request_id.clone(),
-                        operation,
-                        refresh_scope: scope.clone(),
-                        receipt: receipt.to_json(),
-                        route_observations: BTreeMap::new(),
-                        route_controls: BTreeMap::new(),
-                    }
-                    .encode()
-                },
-            )?;
-            panic!(
-                "injected crash after continuation pointer publication {}",
-                published.receipt().generation_id
-            );
-        },
-    )));
-    coordinator.reconcile_watch_routes(
-        covered_routes,
-        EventWatermark::new(2, 0),
-        ledger_now_ms().saturating_sub(1_000),
-    );
-    assert!(coordinator
-        .enqueue_next_dirty_route(&data_root, ledger_now_ms())
-        .unwrap());
-    let manual = std::thread::scope(|scope| {
-        let runner = Arc::clone(&coordinator);
-        let runner_root = data_root.clone();
-        scope.spawn(move || {
-            let run = runner
-                .run_next(&runner_root)
-                .expect("running exact predecessor");
-            assert!(!run.failed, "{:#}", run.job);
-        });
-        entered.wait();
-        coordinator.initialize_watch_route_authority(routes.iter().cloned());
-        let manual = enqueue_synthetic_fresh_request(&coordinator, &data_root, 2);
-        release.wait();
-        manual
-    });
-    let manual_request_id = request_id(&manual);
-
-    let crash = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        coordinator.run_next(&data_root)
-    }));
-    match crash {
-        Err(_) => {}
-        Ok(run) => panic!(
-            "continuation publication returned instead of crashing: {:#?}",
-            run.as_ref().map(|run| &run.job)
-        ),
-    }
-    let expected_receipt = expected_receipt
-        .lock()
-        .unwrap()
-        .clone()
-        .expect("exact no-crash continuation receipt");
-    assert_eq!(expected_receipt["selected_route_total"], routes.len());
-    assert_eq!(expected_receipt["rejected_record_total"], 0);
-    assert_eq!(expected_receipt["outcome"], "completed");
-    drop(coordinator);
-
-    let recaptures = Arc::new(AtomicUsize::new(0));
-    let observed_recaptures = Arc::clone(&recaptures);
-    let restarted = CoreRefreshEngine::with_executor(Arc::new(
-        move |_execution: SourceBackedRefreshExecution<'_>| {
-            observed_recaptures.fetch_add(1, Ordering::SeqCst);
-            Err(anyhow!(
-                "recovery must not recapture committed continuation work"
-            ))
-        },
-    ));
-    assert!(!restarted
-        .recover_interrupted_publication(&data_root)
-        .unwrap());
-    assert_eq!(recaptures.load(Ordering::SeqCst), 0);
-    let recovered = restarted
-        .status(&manual_request_id)
-        .expect("exact acknowledged continuation request");
-    assert_eq!(recovered["request_id"], manual_request_id);
-    assert_eq!(recovered["request_state"], "published");
-    assert_eq!(recovered["receipt"], expected_receipt);
-    assert_eq!(recovered["outcome"], "completed");
-    assert_eq!(
-        recovered["receipt"]["route_results"]
-            .as_object()
-            .unwrap()
-            .values()
-            .filter_map(Value::as_array)
-            .map(|result| result.get(4).and_then(Value::as_u64).unwrap_or(0))
-            .sum::<u64>(),
-        0
-    );
-}
-
-#[test]
-fn failed_predecessor_terminalizes_and_recovers_its_attached_fresh_demand() {
-    let temp = tempfile::tempdir().unwrap();
-    let data_root = temp.path().join("data");
-    ctx_history_platform::platform_security::establish_private_data_root(&data_root).unwrap();
-    let first = CoreRefreshEngine::new();
-    let predecessor_id = Uuid::from_u128(0x5a11ec).to_string();
-    let predecessor = first
-        .enqueue_fresh_catalog_demand_for_test(
-            &data_root,
-            None,
-            predecessor_id.clone(),
-            test_catalog_authority(2, 0),
-        )
-        .expect("exhaustive predecessor");
-    assert_eq!(request_id(&predecessor), predecessor_id);
-    assert_eq!(predecessor["reconciliation_demand"], "exhaustive");
-    let successor_id = Uuid::from_u128(0x5a11ed).to_string();
-    let successor_authority = test_catalog_authority(3, 0);
-    let run = first
-        .run_next_with(
-            |_, coordinator| {
-                let successor = coordinator
-                    .enqueue_fresh_catalog_demand_for_test(
-                        &data_root,
-                        None,
-                        successor_id.clone(),
-                        successor_authority.clone(),
-                    )
-                    .expect("attached synthetic fresh request");
-                assert_eq!(request_id(&successor), successor_id);
-                Err(anyhow!("injected terminal provider failure"))
-            },
-            || Ok(None),
-            |job| write_daemon_job_status(&daemon_source_backed_refresh_job_path(&data_root), job),
-            |_| Ok(()),
-        )
-        .unwrap();
-    assert!(run.failed);
-    let exact_failure = first.status(&successor_id).unwrap();
-    assert_eq!(exact_failure["request_state"], "failed");
-    assert_eq!(exact_failure["logical_phase"], "terminal");
-    assert_eq!(
-        exact_failure["structured_outcome"]["physical_attempt_id"],
-        run.job["request_id"]
-    );
-    assert!(!first.has_pending_request());
-    let crash_window = read_daemon_job_status(&daemon_source_backed_refresh_job_path(&data_root))
-        .expect("physical failure persisted before logical cancellation");
-    assert_eq!(
-        crash_window["queued_successors"][0]["request_id"],
-        successor_id
-    );
-    drop(first);
-
-    let restarted = CoreRefreshEngine::new();
-    assert!(!restarted
-        .recover_interrupted_publication(&data_root)
-        .unwrap());
-    assert_eq!(restarted.status(&successor_id).unwrap(), exact_failure);
-    assert!(!restarted.has_pending_request());
-    assert!(restarted.run_next(&data_root).is_none());
-    let replay = restarted
-        .enqueue_fresh_catalog_demand_for_test(&data_root, None, successor_id, successor_authority)
-        .expect("same-ID terminal replay after restart");
-    assert_eq!(replay, exact_failure);
-}
-
-#[test]
 fn failed_terminal_retry_journals_successor_before_restart() {
     let temp = tempfile::tempdir().unwrap();
     let data_root = temp.path().join("data");
     ctx_history_platform::platform_security::establish_private_data_root(&data_root).unwrap();
     let first = CoreRefreshEngine::new();
-    let active = first.enqueue_periodic(&data_root).unwrap();
+    let active = first.enqueue(None);
     let active_id = request_id(&active);
     let failed = first
         .run_next_with(
@@ -664,7 +411,7 @@ fn failed_terminal_retry_journals_successor_before_restart() {
     assert!(failed.failed);
     assert!(failed.terminal_persistence_pending);
 
-    let successor = enqueue_synthetic_fresh_request(&first, &data_root, 4);
+    let successor = enqueue_synthetic_manual_all_request(&first, &data_root, 4);
     let successor_id = request_id(&successor);
     let pending = read_daemon_job_status(&daemon_source_backed_refresh_job_path(&data_root))
         .expect("failed root with durable successor");
@@ -689,7 +436,7 @@ fn failed_terminal_retry_journals_successor_before_restart() {
         .unwrap());
     assert_eq!(
         restarted.status(&successor_id).unwrap()["request_state"],
-        "queued"
+        "admission_pending"
     );
     assert!(restarted.has_pending_request());
 }

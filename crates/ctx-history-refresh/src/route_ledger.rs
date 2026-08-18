@@ -219,7 +219,10 @@ impl DirtySourceRoutes {
                 .entry(route.clone())
                 .and_modify(|current| *current = (*current).max(watermark))
                 .or_insert(watermark);
-            self.mark_dirty(route, observed_at_ms);
+            self.mark_dirty(route.clone(), observed_at_ms);
+            if let Some(state) = self.dirty.get_mut(&route) {
+                state.reset_retry();
+            }
         }
     }
 
@@ -387,40 +390,6 @@ impl DirtySourceRoutes {
             admissions.push(self.admit_exact(route, now_ms)?);
         }
         Some(admissions)
-    }
-
-    /// Admits every dirty route for an explicit all-route authority request.
-    /// Unlike watcher admission this deliberately bypasses debounce/backoff;
-    /// the caller has explicitly requested fresh global work.
-    pub(super) fn admit_all(&mut self) -> Vec<DirtySourceRouteAdmission> {
-        let routes = self
-            .dirty
-            .iter()
-            .filter(|(_, state)| state.in_flight.is_none())
-            .map(|(route, _)| route.clone())
-            .collect::<Vec<_>>();
-        let mut admissions = Vec::with_capacity(routes.len());
-        for route in routes {
-            let Some(watermark) = self.seen_watermarks.get(&route).copied() else {
-                continue;
-            };
-            let admission_id = self.allocate_admission_id();
-            let Some(state) = self.dirty.get_mut(&route) else {
-                continue;
-            };
-            let dirty_revision = state.dirty_revision;
-            state.in_flight = Some(InFlightAdmission {
-                dirty_revision,
-                admission_id,
-            });
-            admissions.push(DirtySourceRouteAdmission {
-                route,
-                watermark,
-                dirty_revision,
-                admission_id,
-            });
-        }
-        admissions
     }
 
     /// Acknowledges the admitted watermark after publication or no-op proof.

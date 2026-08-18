@@ -1,43 +1,24 @@
 use super::*;
 
-pub(super) struct SourceBackedRefreshRequestPolicy<'catalog> {
-    pub(super) operation: SourceBackedRefreshOperation,
-    pub(super) trigger: SourceBackedRefreshTrigger,
-    pub(super) selector: SourceBackedRefreshSelector,
-    pub(super) explicit_source_catalog: Option<&'catalog ExplicitSourceCatalogAuthority>,
-    pub(super) fresh_after_admitted_snapshot: bool,
+pub(super) struct SourceBackedRefreshRequestPolicy {
+    pub(super) intent: RefreshIntent,
+    pub(super) trigger: RefreshRequestTrigger,
     pub(super) allow_daemon_autostart: bool,
 }
 
-impl<'catalog> SourceBackedRefreshRequestPolicy<'catalog> {
-    pub(super) fn refresh(trigger: SourceBackedRefreshTrigger) -> Self {
+impl SourceBackedRefreshRequestPolicy {
+    pub(super) fn refresh(trigger: RefreshRequestTrigger) -> Self {
         Self {
-            operation: SourceBackedRefreshOperation::Refresh,
+            intent: RefreshIntent::AutomaticMaintenance,
             trigger,
-            selector: SourceBackedRefreshSelector::AllAutomatic,
-            explicit_source_catalog: None,
-            fresh_after_admitted_snapshot: false,
             allow_daemon_autostart: true,
         }
     }
 
-    pub(super) fn import(
-        selector: SourceBackedRefreshSelector,
-        explicit_source_catalog: Option<&'catalog ExplicitSourceCatalogAuthority>,
-        allow_daemon_autostart: bool,
-    ) -> Self {
+    pub(super) fn import(selection: RefreshSelection, allow_daemon_autostart: bool) -> Self {
         Self {
-            operation: match selector {
-                SourceBackedRefreshSelector::AllAutomatic => SourceBackedRefreshOperation::Refresh,
-                SourceBackedRefreshSelector::AutomaticProvider(_)
-                | SourceBackedRefreshSelector::ExplicitCatalog => {
-                    SourceBackedRefreshOperation::Import
-                }
-            },
-            trigger: SourceBackedRefreshTrigger::Import,
-            selector,
-            explicit_source_catalog,
-            fresh_after_admitted_snapshot: true,
+            intent: RefreshIntent::SelectedImport(selection),
+            trigger: RefreshRequestTrigger::Import,
             allow_daemon_autostart,
         }
     }

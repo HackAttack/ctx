@@ -27,6 +27,21 @@ fn requested_watch_observations_preserve_present_and_missing_routes() {
         &BTreeSet::from([present.clone(), missing.clone()]),
     );
 
+    let admitted = AdmittedRefresh::from_exact_catalog_authority(
+        BTreeSet::from([present.clone()]),
+        StdDuration::ZERO,
+        catalog.clone(),
+    )
+    .unwrap();
+    assert_eq!(admitted.exact_routes(), &BTreeSet::from([present.clone()]));
+    let error = AdmittedRefresh::from_exact_catalog_authority(
+        BTreeSet::from([missing.clone()]),
+        StdDuration::ZERO,
+        catalog.clone(),
+    )
+    .unwrap_err();
+    assert!(error.to_string().contains("absent from catalog authority"));
+
     assert_eq!(observations.len(), 2);
     assert!(observations[&present].is_some());
     assert_eq!(observations[&missing], None);
@@ -45,7 +60,7 @@ fn requested_watch_observations_preserve_present_and_missing_routes() {
 }
 
 #[test]
-fn provider_wide_execution_discovers_once_and_preserves_progress_order() {
+fn complete_catalog_execution_reuses_admission_and_preserves_progress_order() {
     let temp = tempfile::tempdir().unwrap();
     let data_root = temp.path().join("data");
     let index_root = source_backed_index_root(&data_root);
@@ -71,6 +86,8 @@ fn provider_wide_execution_discovers_once_and_preserves_progress_order() {
         DiscoveryPlatform::Linux,
         DiscoveryPlatformDirs::default(),
     );
+    let forge_source = provider_source_for_path(CaptureProvider::ForgeCode, forge.clone());
+    let forge_route = automatic_source_backed_route_identity(&forge_source).unwrap();
     let updates = std::sync::Mutex::new(Vec::new());
     let report_progress = |update: SourceBackedRefreshProgressUpdate| {
         updates.lock().unwrap().push((
@@ -89,25 +106,37 @@ fn provider_wide_execution_discovers_once_and_preserves_progress_order() {
         ));
         Ok(())
     };
+    let admitted = source_backed_admitted_discovery_from_report(
+        &discovery,
+        DiscoveryReport {
+            sources: vec![forge_source],
+            issues: Vec::new(),
+        },
+        StdDuration::from_millis(7),
+        &data_root,
+        AdmittedRefreshCoverage::CompleteCatalog,
+        None,
+        &TestPublishedState,
+    )
+    .unwrap()
+    .with_execution_facts(BTreeMap::new())
+    .unwrap();
     let execution = SourceBackedRefreshExecution::new(
         &data_root,
         &index_root,
         "all-provider-request",
         RefreshOperation::Refresh,
         None,
-        SourceBackedRefreshScope::All,
-        BTreeSet::new(),
-        SourceBackedRefreshCoveredPublication::default(),
+        admitted,
         &discovery,
         &TestPublishedState,
         &report_progress,
     );
-    let mut provider_wide_calls = 0;
+    let mut capture_calls = 0;
 
     let publication = execute_capture_owned_refresh_with(
         execution,
         &discovery,
-        None,
         |observed_discovery,
          observed_report,
          observed_discovery_duration,
@@ -117,11 +146,11 @@ fn provider_wide_execution_discovers_once_and_preserves_progress_order() {
          observed_index_root,
          observed_explicit_source_catalog,
          observed_scope,
-         observed_covered_route_ids,
-         observed_covered_publication,
+         observed_physical_scope,
+         observed_exact_catalog_members,
          _observed_published_state,
          progress| {
-            provider_wide_calls += 1;
+            capture_calls += 1;
             assert_eq!(observed_discovery.home(), discovery.home());
             assert_eq!(observed_discovery.cwd(), discovery.cwd());
             assert_eq!(observed_discovery.data_root(), Some(data_root.as_path()));
@@ -130,15 +159,18 @@ fn provider_wide_execution_discovers_once_and_preserves_progress_order() {
                     && source.path == forge
                     && source.status == ProviderSourceStatus::Available
             }));
-            assert_ne!(observed_discovery_duration, StdDuration::ZERO);
+            assert_eq!(observed_discovery_duration, StdDuration::from_millis(7));
             assert_eq!(observed_request_id, "all-provider-request");
             assert_eq!(observed_operation, RefreshOperation::Refresh);
             assert_eq!(observed_data_root, data_root);
             assert_eq!(observed_index_root, index_root);
             assert!(observed_explicit_source_catalog.is_none());
             assert_eq!(observed_scope, SourceBackedRefreshScope::All);
-            assert!(observed_covered_route_ids.is_empty());
-            assert!(observed_covered_publication.route_results.is_empty());
+            assert_eq!(
+                observed_physical_scope,
+                SourceBackedRefreshScope::exact([forge_route.clone()])
+            );
+            assert!(!observed_exact_catalog_members);
             progress(CaptureSourceBackedDetailedRefreshProgress {
                 progress: ctx_history_capture::SourceBackedRefreshProgress {
                     phase: "discovering",
@@ -198,7 +230,7 @@ fn provider_wide_execution_discovers_once_and_preserves_progress_order() {
     .unwrap();
     drop(forge_writer);
 
-    assert_eq!(provider_wide_calls, 1);
+    assert_eq!(capture_calls, 1);
     assert_eq!(publication.generation_id, "all-provider-generation");
     assert_eq!(
         updates.into_inner().unwrap(),
@@ -250,42 +282,114 @@ fn provider_wide_execution_discovers_once_and_preserves_progress_order() {
 }
 
 #[test]
-fn exact_execution_without_admitted_authority_cannot_fall_back_to_global_discovery() {
+fn selected_route_facts_cannot_attach_unadmitted_work() {
+    let selected = SourceRouteIdentity::from_sha256("cc".repeat(32)).unwrap();
+    let outside = SourceRouteIdentity::from_sha256("cd".repeat(32)).unwrap();
+    let discovery = SourceBackedAdmittedDiscovery::new(
+        DiscoveryReport {
+            sources: Vec::new(),
+            issues: Vec::new(),
+        },
+        StdDuration::ZERO,
+        SourceBackedProviderRegistry::new().watch_catalog(),
+    );
+    let workset_error = AdmittedRefresh::for_test(
+        AdmittedRefreshCoverage::SelectedRoutes,
+        BTreeSet::from([selected]),
+        discovery,
+    )
+    .unwrap()
+    .with_execution_facts(BTreeMap::from([(
+        outside,
+        SourceBackedRefreshWorkset::Exhaustive,
+    )]))
+    .unwrap_err();
+    assert!(format!("{workset_error:#}")
+        .contains("source refresh workset references a route outside physical admission"));
+}
+
+#[test]
+fn selected_execution_never_widens_beyond_its_admitted_report() {
     let temp = tempfile::tempdir().unwrap();
     let data_root = temp.path().join("data");
     let index_root = source_backed_index_root(&data_root);
     ctx_history_platform::platform_security::establish_private_data_root(&data_root).unwrap();
-    let (home, cwd, discovery) = discovery_fixture(temp.path());
-    fs::create_dir_all(&home).unwrap();
-    fs::create_dir_all(&cwd).unwrap();
-    let route = SourceRouteIdentity::from_sha256("ac".repeat(32)).unwrap();
+    let (home, _, discovery) = discovery_fixture(temp.path());
+    let unrelated_forge = home.join(".forge/.forge.db");
+    fs::create_dir_all(unrelated_forge.parent().unwrap()).unwrap();
+    fs::write(&unrelated_forge, b"discoverable but not admitted").unwrap();
+
+    let selected_path = temp.path().join("selected-history.jsonl");
+    fs::write(&selected_path, b"selected\n").unwrap();
+    let selected_source = provider_source_for_path(CaptureProvider::OpenCode, selected_path);
+    let selected_route = SourceBackedRoute::automatic(
+        selected_source.clone(),
+        SourceBackedSelectorAuthority::DiscoveredWinner,
+        SourceBackedRouteDriver::new(|_| Ok(()), |_| false, |_| true),
+    )
+    .unwrap();
+    let selected_route_id = selected_route.metadata().route_identity.clone().unwrap();
+    let mut registry = SourceBackedProviderRegistry::new();
+    registry.register(selected_route);
+    let admitted = AdmittedRefresh::for_test(
+        AdmittedRefreshCoverage::SelectedRoutes,
+        BTreeSet::from([selected_route_id.clone()]),
+        SourceBackedAdmittedDiscovery::new(
+            DiscoveryReport {
+                sources: vec![selected_source.clone()],
+                issues: Vec::new(),
+            },
+            StdDuration::from_millis(3),
+            registry.watch_catalog(),
+        ),
+    )
+    .unwrap()
+    .with_execution_facts(BTreeMap::new())
+    .unwrap();
     let progress = |_: SourceBackedRefreshProgressUpdate| Ok(());
     let execution = SourceBackedRefreshExecution::new(
         &data_root,
         &index_root,
-        "missing-scoped-authority",
+        "selected-no-widening",
         RefreshOperation::Refresh,
         None,
-        SourceBackedRefreshScope::exact([route]),
-        BTreeSet::new(),
-        SourceBackedRefreshCoveredPublication::default(),
+        admitted,
         &discovery,
         &TestPublishedState,
         &progress,
-    )
-    .with_admitted_discovery_requirement(true);
+    );
 
-    let error = execute_capture_owned_refresh_with(
+    let publication = execute_capture_owned_refresh_with(
         execution,
         &discovery,
-        None,
-        |_, _, _, _, _, _, _, _, _, _, _, _, _| {
-            panic!("exact execution reached refresh after global fallback")
+        |_,
+         report,
+         discovery_duration,
+         _,
+         _,
+         _,
+         _,
+         _,
+         publication_scope,
+         physical_scope,
+         exact_catalog_members,
+         _,
+         _| {
+            assert_eq!(report.sources, vec![selected_source]);
+            assert!(report
+                .sources
+                .iter()
+                .all(|source| source.path != unrelated_forge));
+            assert_eq!(discovery_duration, StdDuration::from_millis(3));
+            let exact_scope = SourceBackedRefreshScope::exact([selected_route_id]);
+            assert_eq!(publication_scope, exact_scope);
+            assert_eq!(physical_scope, exact_scope);
+            assert!(!exact_catalog_members);
+            Ok(test_publication("selected-no-widening-generation"))
         },
     )
-    .unwrap_err();
-    assert!(format!("{error:#}")
-        .contains("selected source refresh has no admitted discovery authority"));
+    .unwrap();
+    assert_eq!(publication.generation_id, "selected-no-widening-generation");
 }
 
 #[test]
@@ -361,7 +465,6 @@ fn warm_exact_carries_unselected_routes_while_receipt_stays_selected() {
         &index_root,
         None,
         SourceBackedRefreshScope::All,
-        &BTreeSet::new(),
         &mut progress,
     )
     .unwrap();
@@ -411,8 +514,6 @@ fn warm_exact_carries_unselected_routes_while_receipt_stays_selected() {
         &index_root,
         None,
         SourceBackedRefreshScope::Exact(exact_routes.clone()),
-        &BTreeSet::new(),
-        &SourceBackedRefreshCoveredPublication::default(),
         &TestPublishedState,
         &mut exact_progress,
     )

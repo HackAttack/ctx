@@ -4,41 +4,15 @@ use sha2::{Digest as _, Sha256};
 #[derive(Clone)]
 struct PendingAdmissionClaim {
     request_id: String,
-    selector: SourceBackedRefreshSelector,
-    requested_catalog: Option<ExplicitSourceCatalogAuthority>,
+    intent: RefreshIntent,
     persisted_scope: SourceBackedRefreshScope,
 }
 
-enum PendingAdmissionResolution {
-    Unscoped(BTreeMap<SourceRouteIdentity, Option<String>>),
-    Scoped(read_model::AdmittedSourceBackedRefreshAuthority),
-}
-
-fn request_fingerprint(
-    operation: SourceBackedRefreshOperation,
-    trigger: RefreshRequestTrigger,
-    reconciliation_demand: SourceBackedReconciliationDemand,
-    selector: SourceBackedRefreshSelector,
-    requested_catalog: Option<&ExplicitSourceCatalogAuthority>,
-    refresh_scope: &SourceBackedRefreshScope,
-    admission: SourceRefreshAdmissionRequirement,
-) -> Result<String> {
-    let mut authority = compact_json(json!({
-        "operation": operation.as_str(),
-        "trigger": trigger.as_str(),
-        "reconciliation_demand": reconciliation_demand.as_str(),
-        "explicit_source_catalog": requested_catalog
-            .map(ExplicitSourceCatalogAuthority::to_json),
-        "fresh_after_admitted_snapshot": admission
-            == SourceRefreshAdmissionRequirement::FreshAfterAdmittedSnapshot,
-        "refresh_scope": refresh_scope_json(refresh_scope),
-    }));
-    // Legacy all-automatic payloads predate the selector field. Scoped
-    // selectors are new request semantics and must participate in stable-ID
-    // identity so exact-catalog work cannot replay as an all-route overlay.
-    if selector.is_scoped() {
-        authority["refresh_selector"] = selector.to_json();
-    }
+fn request_fingerprint(request: &RefreshRequest) -> Result<String> {
+    let authority = json!({
+        "intent": request.intent.to_json(),
+        "trigger": request.trigger.as_str(),
+    });
     Ok(format!(
         "{:x}",
         Sha256::digest(serde_json::to_vec(&authority)?)
@@ -49,91 +23,46 @@ struct SourceRefreshAdmissionReservation<'a> {
     data_root: &'a Path,
     previous_generation: Option<String>,
     metadata: SourceRefreshRuntimeMetadata,
-    requested_catalog: Option<ExplicitSourceCatalogAuthority>,
-    selector: SourceBackedRefreshSelector,
-    refresh_scope: SourceBackedRefreshScope,
-    logical_demand: SourceRefreshLogicalDemand,
+    request: RefreshRequest,
+    request_fingerprint: String,
     defer_admission_until_response: bool,
 }
 
 impl CoreRefreshEngine {
-    pub fn submit(
-        &self,
-        data_root: &Path,
-        submission: RefreshSubmission,
-    ) -> Result<RefreshAdmission> {
-        let admission = if submission.fresh_after_admitted_snapshot {
-            SourceRefreshAdmissionRequirement::FreshAfterAdmittedSnapshot
-        } else {
-            SourceRefreshAdmissionRequirement::AttachEquivalent
-        };
-        if submission.maintenance_wake {
-            let response =
-                self.background_maintenance_wake_response(data_root, submission.request_id)?;
-            return Ok(RefreshAdmission::new(
-                RefreshStatus::from_schema_v1_fields(response),
-                None,
-            ));
-        }
-        let trigger = submission.trigger.unwrap_or(match submission.operation {
-            SourceBackedRefreshOperation::Refresh => RefreshRequestTrigger::Search,
-            SourceBackedRefreshOperation::Import => RefreshRequestTrigger::Import,
-        });
-        match (
-            submission.selector,
-            submission.explicit_source_catalog.is_some(),
-        ) {
-            (SourceBackedRefreshSelector::AllAutomatic, _)
-            | (SourceBackedRefreshSelector::AutomaticProvider(_), false)
-            | (SourceBackedRefreshSelector::ExplicitCatalog, true) => {}
-            (SourceBackedRefreshSelector::ExplicitCatalog, false) => {
-                bail!("explicit-catalog source refresh selector has no catalog authority")
-            }
-            (SourceBackedRefreshSelector::AutomaticProvider(_), true) => bail!(
-                "automatic provider source refresh selector carries explicit catalog authority"
-            ),
-        }
-        let fingerprint = request_fingerprint(
-            submission.operation,
-            trigger,
-            submission.reconciliation_demand,
-            submission.selector,
-            submission.explicit_source_catalog.as_ref(),
-            &submission.refresh_scope,
-            admission,
-        )?;
+    pub fn maintenance_wake(&self, data_root: &Path, request_id: String) -> Result<RefreshStatus> {
+        self.background_maintenance_wake_response(data_root, request_id)
+            .map(RefreshStatus::from_schema_v1_fields)
+    }
+
+    pub fn submit(&self, data_root: &Path, request: RefreshRequest) -> Result<RefreshAdmission> {
+        let trigger = request.trigger;
+        let operation = request.intent.operation();
+        let fingerprint = request_fingerprint(&request)?;
         let previous_generation = self.observed_published_generation(data_root)?;
-        let mut metadata = self.runtime.metadata(data_root, submission.operation);
+        let mut metadata = self.runtime.metadata(data_root, operation);
         metadata.trigger = trigger.as_str();
-        match trigger {
-            RefreshRequestTrigger::Setup => metadata.trigger_provenance = "setup_command",
-            RefreshRequestTrigger::Import
-                if submission.operation == SourceBackedRefreshOperation::Refresh =>
-            {
-                metadata.trigger_provenance = "import_command";
-            }
-            RefreshRequestTrigger::Search | RefreshRequestTrigger::Import => {}
+        match (&request.intent, trigger) {
+            (_, RefreshRequestTrigger::Setup) => metadata.trigger_provenance = "setup_command",
+            (
+                RefreshIntent::SelectedImport(RefreshSelection::All),
+                RefreshRequestTrigger::Import,
+            ) => metadata.trigger_provenance = "import_command",
+            (
+                RefreshIntent::SelectedImport(RefreshSelection::Provider(_)),
+                RefreshRequestTrigger::Import,
+            ) => metadata.trigger_provenance = "automatic_provider",
+            (
+                RefreshIntent::SelectedImport(RefreshSelection::ExactSource(_)),
+                RefreshRequestTrigger::Import,
+            ) => metadata.trigger_provenance = "explicit_source_catalog",
+            _ => {}
         }
         let response = self.reserve_ipc_request(SourceRefreshAdmissionReservation {
             data_root,
             previous_generation,
             metadata,
-            requested_catalog: submission.explicit_source_catalog,
-            selector: submission.selector,
-            refresh_scope: submission.refresh_scope,
-            logical_demand: SourceRefreshLogicalDemand {
-                admission,
-                reconciliation_demand: submission.reconciliation_demand,
-                route_observations: BTreeMap::new(),
-                request_id: Some(submission.request_id),
-                request_fingerprint: Some(fingerprint),
-                admission_pending: admission
-                    == SourceRefreshAdmissionRequirement::FreshAfterAdmittedSnapshot
-                    || matches!(
-                        submission.selector,
-                        SourceBackedRefreshSelector::AutomaticProvider(_)
-                    ),
-            },
+            request,
+            request_fingerprint: fingerprint,
             defer_admission_until_response: true,
         });
         let response = match response {
@@ -176,50 +105,50 @@ impl CoreRefreshEngine {
             data_root,
             previous_generation,
             metadata,
-            requested_catalog,
-            selector,
-            refresh_scope,
-            logical_demand,
+            request,
+            request_fingerprint,
             defer_admission_until_response,
         } = reservation;
-        let logical_request_id = logical_demand
-            .request_id
-            .as_deref()
-            .ok_or_else(|| anyhow!("daemon source refresh logical request ID is missing"))?;
-        let request_fingerprint = logical_demand.request_fingerprint.as_ref();
+        let logical_request_id = request.request_id;
+        let intent = request.intent;
+        let request_fingerprint = Some(&request_fingerprint);
         let mut state = self.lock_state();
-        if let Some(existing) = find_attempt(&state, logical_request_id) {
+        if let Some(existing) = find_attempt(&state, &logical_request_id) {
             if existing.request_fingerprint.as_ref() != request_fingerprint {
                 return Err(SourceBackedRefreshIdempotencyConflict {
-                    request_id: logical_request_id.to_owned(),
+                    request_id: logical_request_id.clone(),
                 }
                 .into());
             }
             if existing.admission_durability_indeterminate {
-                self.reconfirm_retained_admission_locked(data_root, &mut state, logical_request_id);
+                self.reconfirm_retained_admission_locked(
+                    data_root,
+                    &mut state,
+                    &logical_request_id,
+                );
             }
-            let existing = find_attempt(&state, logical_request_id).ok_or_else(|| {
+            let existing = find_attempt(&state, &logical_request_id).ok_or_else(|| {
                 anyhow!("source refresh request `{logical_request_id}` disappeared during replay")
             })?;
-            let response = projected_status_json(&state, logical_request_id)
+            let response = projected_status_json(&state, &logical_request_id)
                 .ok_or_else(|| anyhow!("replayed source refresh request disappeared"))?;
             if defer_admission_until_response
                 && existing.state == SourceBackedRefreshState::AdmissionPending
             {
-                increment_response_barrier(&mut state, logical_request_id);
+                increment_response_barrier(&mut state, &logical_request_id);
             }
             return Ok(response);
         }
 
         let snapshot = AdmissionReservationSnapshot::capture(&state);
-        let response = match Self::enqueue_with_catalog_metadata_locked(
+        let response = match Self::enqueue_intent_locked(
             &mut state,
             previous_generation,
             metadata,
-            requested_catalog,
-            refresh_scope,
-            logical_demand,
-            selector,
+            intent,
+            SourceBackedRefreshScope::All,
+            Some(logical_request_id),
+            request_fingerprint.cloned(),
         ) {
             Ok(response) => response,
             Err(error) => {
@@ -362,24 +291,28 @@ impl CoreRefreshEngine {
         &self,
         data_root: &Path,
         claim: &PendingAdmissionClaim,
-    ) -> Result<PendingAdmissionResolution> {
+    ) -> Result<ctx_history_refresh_execution::AdmittedRefresh> {
         let discovery = self
             .runtime
             .discovery_context(data_root)?
             .with_data_root(data_root);
-        match claim.selector {
-            SourceBackedRefreshSelector::AllAutomatic => (self.admission_fence)(
-                &discovery,
-                self.journal.as_ref(),
-                data_root,
-                claim.requested_catalog.as_ref(),
-            )
-            .map(PendingAdmissionResolution::Unscoped),
-            SourceBackedRefreshSelector::AutomaticProvider(provider) => {
+        if let (RefreshIntent::AutomaticMaintenance, SourceBackedRefreshScope::Exact(routes)) =
+            (&claim.intent, &claim.persisted_scope)
+        {
+            return self.resolve_exact_maintenance_admission(data_root, claim, routes);
+        }
+        match &claim.intent {
+            RefreshIntent::AutomaticMaintenance
+            | RefreshIntent::SelectedImport(RefreshSelection::All) => {
+                let resolved =
+                    (self.admission_fence)(&discovery, self.journal.as_ref(), data_root, None)?;
+                self.bound_resolved_admission(claim, resolved)
+            }
+            RefreshIntent::SelectedImport(RefreshSelection::Provider(provider)) => {
                 let started = StdInstant::now();
                 let report =
                     ctx_history_capture::discover_provider_sources_for_provider_with_context(
-                        &discovery, provider,
+                        &discovery, *provider,
                     );
                 let duration = started.elapsed();
                 self.resolve_scoped_admission_report(data_root, claim, &discovery, report, duration)
@@ -390,10 +323,7 @@ impl CoreRefreshEngine {
                         )
                     })
             }
-            SourceBackedRefreshSelector::ExplicitCatalog => {
-                let authority = claim.requested_catalog.as_ref().ok_or_else(|| {
-                    anyhow!("explicit-catalog source refresh admission has no authority")
-                })?;
+            RefreshIntent::SelectedImport(RefreshSelection::ExactSource(authority)) => {
                 authority
                     .validate_source_roots(data_root)
                     .context("validate explicit source roots before scoped admission")?;
@@ -406,6 +336,79 @@ impl CoreRefreshEngine {
         }
     }
 
+    fn resolve_exact_maintenance_admission(
+        &self,
+        data_root: &Path,
+        claim: &PendingAdmissionClaim,
+        routes: &BTreeSet<SourceRouteIdentity>,
+    ) -> Result<ctx_history_refresh_execution::AdmittedRefresh> {
+        let catalog = self.lock_state().watch_catalog.clone();
+        #[cfg(any(test, feature = "test-support"))]
+        if catalog.is_none() {
+            let admitted = admitted_refresh_for_test(
+                routes.iter().cloned().map(|route| (route, None)).collect(),
+            );
+            return self.bound_resolved_admission(claim, admitted);
+        }
+        let catalog = catalog
+            .ok_or_else(|| anyhow!("exact maintenance admission has no installed route catalog"))?;
+        let installed_routes = catalog.route_ids().cloned().collect::<BTreeSet<_>>();
+        let missing = routes
+            .difference(&installed_routes)
+            .cloned()
+            .collect::<BTreeSet<_>>();
+        if !missing.is_empty() {
+            bail!(
+                "exact maintenance admission routes are missing from the installed catalog: {missing:?}"
+            );
+        }
+        let started = StdInstant::now();
+        let admitted =
+            ctx_history_refresh_execution::AdmittedRefresh::from_exact_catalog_authority(
+                routes.clone(),
+                started.elapsed(),
+                catalog,
+            )?;
+        validate_provider_source_roots_outside_data_root(
+            data_root,
+            admitted.discovery().report().sources.iter(),
+        )
+        .context("validate exact maintenance roots before admission")?;
+        self.bound_resolved_admission(claim, admitted)
+    }
+
+    fn bound_resolved_admission(
+        &self,
+        claim: &PendingAdmissionClaim,
+        resolved: ctx_history_refresh_execution::AdmittedRefresh,
+    ) -> Result<ctx_history_refresh_execution::AdmittedRefresh> {
+        let selected_routes = match &claim.persisted_scope {
+            SourceBackedRefreshScope::All => resolved.exact_routes().clone(),
+            SourceBackedRefreshScope::Exact(persisted) => {
+                let missing = persisted
+                    .difference(resolved.exact_routes())
+                    .cloned()
+                    .collect::<BTreeSet<_>>();
+                if !missing.is_empty() {
+                    bail!(
+                        "recovered source refresh admission is missing persisted exact routes: {missing:?}"
+                    );
+                }
+                persisted.clone()
+            }
+        };
+        let route_observations = source_backed_requested_route_observations(
+            resolved.discovery().watch_catalog(),
+            &selected_routes,
+        );
+        validate_admission_observations(route_observations.clone())?;
+        let admitted = match &claim.persisted_scope {
+            SourceBackedRefreshScope::All => resolved,
+            SourceBackedRefreshScope::Exact(_) => resolved.narrow_to(selected_routes)?,
+        };
+        Ok(admitted)
+    }
+
     fn resolve_scoped_admission_report(
         &self,
         data_root: &Path,
@@ -413,17 +416,18 @@ impl CoreRefreshEngine {
         discovery: &DiscoveryContext,
         report: ctx_history_capture::DiscoveryReport,
         discovery_duration: StdDuration,
-    ) -> Result<PendingAdmissionResolution> {
+    ) -> Result<ctx_history_refresh_execution::AdmittedRefresh> {
         if report.sources.is_empty() && report.issues.is_empty() {
-            match claim.selector {
-                SourceBackedRefreshSelector::AutomaticProvider(provider) => bail!(
+            match &claim.intent {
+                RefreshIntent::SelectedImport(RefreshSelection::Provider(provider)) => bail!(
                     "automatic provider `{}` discovery produced no executable source routes",
                     provider.as_str()
                 ),
-                SourceBackedRefreshSelector::ExplicitCatalog => {
+                RefreshIntent::SelectedImport(RefreshSelection::ExactSource(_)) => {
                     bail!("explicit source catalog produced no executable source routes")
                 }
-                SourceBackedRefreshSelector::AllAutomatic => {
+                RefreshIntent::AutomaticMaintenance
+                | RefreshIntent::SelectedImport(RefreshSelection::All) => {
                     bail!("all-automatic admission unexpectedly resolved as scoped")
                 }
             }
@@ -434,25 +438,62 @@ impl CoreRefreshEngine {
         let published_state = crate::orchestration::RetainedPublishedState {
             journal: self.journal.as_ref(),
         };
-        let (admitted_discovery, routes) =
+        let mut admitted_refresh =
             ctx_history_refresh_execution::source_backed_admitted_discovery_from_report(
                 discovery,
                 report,
                 discovery_duration,
                 data_root,
-                claim.requested_catalog.as_ref(),
+                ctx_history_refresh_execution::AdmittedRefreshCoverage::SelectedRoutes,
+                claim.intent.explicit_source_authority(),
                 &published_state,
             )?;
+        if let RefreshIntent::SelectedImport(RefreshSelection::Provider(provider)) = &claim.intent {
+            let catalog = admitted_refresh.discovery().watch_catalog().clone();
+            let catalog_provider_routes = catalog.route_ids_for_provider(*provider);
+            let freshly_executable = admitted_refresh
+                .exact_routes()
+                .intersection(&catalog_provider_routes)
+                .cloned()
+                .collect::<BTreeSet<_>>();
+            let mut provider_routes = freshly_executable.clone();
+            if provider_routes.is_empty() {
+                bail!(
+                    "automatic provider `{}` discovery produced no executable source routes",
+                    provider.as_str()
+                );
+            }
+            if let SourceBackedRefreshScope::Exact(persisted) = &claim.persisted_scope {
+                let missing = persisted
+                    .difference(&freshly_executable)
+                    .cloned()
+                    .collect::<BTreeSet<_>>();
+                if !missing.is_empty() {
+                    bail!(
+                        "recovered scoped source refresh discovery is missing persisted exact routes: {missing:?}"
+                    );
+                }
+                provider_routes = persisted.clone();
+            }
+            admitted_refresh =
+                ctx_history_refresh_execution::AdmittedRefresh::from_exact_catalog_authority(
+                    provider_routes,
+                    discovery_duration,
+                    catalog,
+                )?;
+        }
+        let routes = admitted_refresh.exact_routes().clone();
         if routes.is_empty() {
-            match claim.selector {
-                SourceBackedRefreshSelector::AutomaticProvider(provider) => bail!(
+            match &claim.intent {
+                RefreshIntent::SelectedImport(RefreshSelection::Provider(provider)) => bail!(
                     "automatic provider `{}` discovery produced no executable source routes",
                     provider.as_str()
                 ),
-                SourceBackedRefreshSelector::ExplicitCatalog => {
+                RefreshIntent::SelectedImport(RefreshSelection::ExactSource(_)) => {
                     bail!("explicit source catalog produced no executable source routes")
                 }
-                SourceBackedRefreshSelector::AllAutomatic => {
+                RefreshIntent::AutomaticMaintenance
+                | RefreshIntent::SelectedImport(RefreshSelection::All) => {
                     bail!("all-automatic admission unexpectedly resolved as scoped")
                 }
             }
@@ -479,19 +520,13 @@ impl CoreRefreshEngine {
         if selected_routes.len() > SOURCE_REFRESH_TERMINAL_ROUTE_LIMIT {
             bail!("scoped source refresh admission exceeds its bounded route capacity");
         }
-        let scope = SourceBackedRefreshScope::Exact(selected_routes.clone());
         let route_observations = source_backed_requested_route_observations(
-            admitted_discovery.watch_catalog(),
+            admitted_refresh.discovery().watch_catalog(),
             &selected_routes,
         );
         validate_admission_observations(route_observations.clone())?;
-        Ok(PendingAdmissionResolution::Scoped(
-            read_model::AdmittedSourceBackedRefreshAuthority {
-                scope,
-                route_observations,
-                discovery: admitted_discovery,
-            },
-        ))
+        let admitted = admitted_refresh.narrow_to(selected_routes)?;
+        Ok(admitted)
     }
 
     pub(super) fn active_request_admission_pending(&self) -> bool {
@@ -540,8 +575,7 @@ impl CoreRefreshEngine {
         }
         let claim = PendingAdmissionClaim {
             request_id: request_id.clone(),
-            selector: attempt.selector,
-            requested_catalog: attempt.requested_explicit_source_catalog.clone(),
+            intent: attempt.intent.clone(),
             persisted_scope: attempt.refresh_scope.clone(),
         };
         state
@@ -570,8 +604,7 @@ impl CoreRefreshEngine {
         let attempt = find_attempt(&state, &request_id)?;
         let claim = PendingAdmissionClaim {
             request_id: request_id.clone(),
-            selector: attempt.selector,
-            requested_catalog: attempt.requested_explicit_source_catalog.clone(),
+            intent: attempt.intent.clone(),
             persisted_scope: attempt.refresh_scope.clone(),
         };
         state
@@ -584,7 +617,7 @@ impl CoreRefreshEngine {
         &self,
         data_root: &Path,
         request_id: &str,
-        resolution: Result<PendingAdmissionResolution>,
+        resolution: Result<ctx_history_refresh_execution::AdmittedRefresh>,
     ) -> Result<Option<SourceBackedRefreshRun>> {
         let mut state = self.lock_state();
         state.admission_resolutions_in_flight.remove(request_id);
@@ -593,13 +626,7 @@ impl CoreRefreshEngine {
         {
             return Ok(None);
         }
-        match resolution.and_then(|resolution| match resolution {
-            PendingAdmissionResolution::Unscoped(observations) => {
-                validate_admission_observations(observations)
-                    .map(PendingAdmissionResolution::Unscoped)
-            }
-            scoped @ PendingAdmissionResolution::Scoped(_) => Ok(scoped),
-        }) {
+        match resolution {
             Ok(resolution) => {
                 self.persist_resolved_admission(data_root, &mut state, request_id, resolution)?;
                 Ok(None)
@@ -613,92 +640,31 @@ impl CoreRefreshEngine {
         data_root: &Path,
         state: &mut CoreRefreshEngineState,
         request_id: &str,
-        resolution: PendingAdmissionResolution,
+        authority: ctx_history_refresh_execution::AdmittedRefresh,
     ) -> Result<()> {
         let snapshot = AdmissionResolutionSnapshot::capture(state);
-        let mut observations = match resolution {
-            PendingAdmissionResolution::Unscoped(observations) => observations,
-            PendingAdmissionResolution::Scoped(authority) => {
-                let observations = authority.route_observations.clone();
-                let attempt = find_attempt_mut(state, request_id)
-                    .ok_or_else(|| anyhow!("source refresh request `{request_id}` is unknown"))?;
-                if matches!(attempt.selector, SourceBackedRefreshSelector::AllAutomatic) {
-                    bail!("all-automatic source refresh received scoped admission authority");
-                }
-                if matches!(&attempt.refresh_scope, SourceBackedRefreshScope::Exact(_))
-                    && attempt.refresh_scope != authority.scope
-                {
-                    bail!("scoped source refresh admission would widen its persisted exact scope");
-                }
-                attempt.refresh_scope = authority.scope.clone();
-                attempt.admitted_authority = Some(authority);
-                observations
+        let attempt = find_attempt_mut(state, request_id)
+            .ok_or_else(|| anyhow!("source refresh request `{request_id}` is unknown"))?;
+        let authority_scope = match authority.coverage() {
+            ctx_history_refresh_execution::AdmittedRefreshCoverage::CompleteCatalog => {
+                SourceBackedRefreshScope::All
+            }
+            ctx_history_refresh_execution::AdmittedRefreshCoverage::SelectedRoutes => {
+                SourceBackedRefreshScope::Exact(authority.exact_routes().clone())
             }
         };
-        if state.manual_all_continuations.contains_key(request_id) {
-            let known_route_ids = state.known_route_ids.clone();
-            if observations.len().saturating_add(known_route_ids.len())
-                > SOURCE_REFRESH_TERMINAL_ROUTE_LIMIT.saturating_mul(2)
-            {
-                bail!("source refresh admission fence exceeds its bounded route capacity");
-            }
-            let ledger_eligible_routes = known_route_ids
-                .iter()
-                .filter(|route| observations.get(*route).is_none_or(Option::is_none))
-                .cloned()
-                .collect::<BTreeSet<_>>();
-            for route in &known_route_ids {
-                observations.entry(route.clone()).or_insert(None);
-            }
-            if observations.len() > SOURCE_REFRESH_TERMINAL_ROUTE_LIMIT {
-                bail!("source refresh admission fence exceeds its bounded route capacity");
-            }
-            let admission_event_watermarks = observations
-                .keys()
-                .filter_map(|route| {
-                    state
-                        .route_event_watermarks
-                        .get(route)
-                        .copied()
-                        .map(|watermark| (route.clone(), watermark))
-                })
-                .collect::<BTreeMap<_, _>>();
-            let predecessor_request_id = state
-                .manual_all_continuations
-                .get(request_id)
-                .map(|continuation| continuation.predecessor_request_id.clone())
-                .ok_or_else(|| {
-                    anyhow!("source refresh request `{request_id}` lost its predecessor")
-                })?;
-            let predecessor_event_watermarks = state
-                .route_admission_watermarks
-                .get(&predecessor_request_id)
-                .cloned()
-                .or_else(|| {
-                    state
-                        .manual_all_continuations
-                        .get(request_id)
-                        .map(|continuation| continuation.predecessor_event_watermarks.clone())
-                })
-                .unwrap_or_default();
-            let continuation = state
-                .manual_all_continuations
-                .get_mut(request_id)
-                .ok_or_else(|| {
-                    anyhow!("source refresh request `{request_id}` lost its continuation")
-                })?;
-            continuation.admission_pending = false;
-            continuation.admission_route_observations = observations;
-            continuation.ledger_eligible_routes = ledger_eligible_routes;
-            continuation.admission_event_watermarks = admission_event_watermarks;
-            continuation.predecessor_event_watermarks = predecessor_event_watermarks;
+        if matches!(&attempt.refresh_scope, SourceBackedRefreshScope::Exact(_))
+            && attempt.refresh_scope != authority_scope
+        {
+            bail!("scoped source refresh admission would widen its persisted exact scope");
         }
+        attempt.refresh_scope = authority_scope;
+        attempt.admitted_authority = Some(authority);
         let attempt = find_attempt_mut(state, request_id)
             .ok_or_else(|| anyhow!("source refresh request `{request_id}` is unknown"))?;
         attempt.state = SourceBackedRefreshState::Queued;
         attempt.progress.phase = "queued".to_owned();
         attempt.last_error = None;
-        apply_finished_predecessor_coverage(state, request_id);
         let durable_request_id = durable_request_id(state, request_id);
         let job = durable_job_json(state, durable_request_id)
             .ok_or_else(|| anyhow!("source refresh request `{durable_request_id}` is unknown"))?;
@@ -717,7 +683,6 @@ impl CoreRefreshEngine {
         error: anyhow::Error,
     ) -> Result<Option<SourceBackedRefreshRun>> {
         let snapshot = AdmissionResolutionSnapshot::capture(state);
-        state.manual_all_continuations.remove(request_id);
         let attempted_routes = find_attempt(state, request_id)
             .and_then(|attempt| match &attempt.refresh_scope {
                 SourceBackedRefreshScope::All => None,
@@ -761,7 +726,13 @@ impl CoreRefreshEngine {
             snapshot.restore(state);
             return Err(persist_error.context("persist terminal source refresh admission failure"));
         }
-        Self::restore_route_dispositions_locked(state, &retryable_routes, &blocked_routes);
+        let retry_intent = find_attempt(state, request_id).map(|attempt| attempt.intent.clone());
+        Self::restore_route_dispositions_locked(
+            state,
+            &retryable_routes,
+            &blocked_routes,
+            retry_intent.as_ref(),
+        );
         if retry_admission {
             state.pending_scheduler_retry_root_id = Some(request_id.to_owned());
         }
@@ -784,20 +755,28 @@ impl CoreRefreshEngine {
         &self,
         data_root: &Path,
         request_id: &str,
-        observations: BTreeMap<SourceRouteIdentity, Option<String>>,
+        mut observations: BTreeMap<SourceRouteIdentity, Option<String>>,
     ) -> Result<()> {
         let mut state = self.lock_state();
-        if find_attempt(&state, request_id)
-            .is_none_or(|attempt| attempt.state != SourceBackedRefreshState::AdmissionPending)
-        {
+        let Some(attempt) = find_attempt(&state, request_id) else {
+            return Ok(());
+        };
+        if attempt.state != SourceBackedRefreshState::AdmissionPending {
             return Ok(());
         }
-        self.persist_resolved_admission(
-            data_root,
-            &mut state,
-            request_id,
-            PendingAdmissionResolution::Unscoped(validate_admission_observations(observations)?),
-        )
+        let exact_routes = match &attempt.refresh_scope {
+            SourceBackedRefreshScope::All => None,
+            SourceBackedRefreshScope::Exact(routes) => Some(routes.clone()),
+        };
+        if let Some(routes) = exact_routes.as_ref() {
+            observations.extend(routes.iter().cloned().map(|route| (route, None)));
+        }
+        let admitted = admitted_refresh_for_test(observations);
+        let admitted = match exact_routes {
+            Some(routes) => admitted.narrow_to(routes)?,
+            None => admitted,
+        };
+        self.persist_resolved_admission(data_root, &mut state, request_id, admitted)
     }
 }
 
@@ -842,61 +821,10 @@ fn durable_request_id<'a>(state: &'a CoreRefreshEngineState, request_id: &'a str
         .unwrap_or(request_id)
 }
 
-fn apply_finished_predecessor_coverage(state: &mut CoreRefreshEngineState, request_id: &str) {
-    let Some(continuation) = state.manual_all_continuations.get(request_id).cloned() else {
-        return;
-    };
-    if !continuation.predecessor_finished || continuation.admission_pending {
-        return;
-    }
-    let Some(predecessor) = find_attempt(state, &continuation.predecessor_request_id).cloned()
-    else {
-        return;
-    };
-    let requested_demand = find_attempt(state, request_id)
-        .map(|attempt| attempt.reconciliation_demand)
-        .unwrap_or(SourceBackedReconciliationDemand::Exhaustive);
-    if predecessor.reconciliation_demand < requested_demand {
-        return;
-    }
-    let Some(receipt) = predecessor.receipt.as_ref() else {
-        return;
-    };
-    let continuation = state
-        .manual_all_continuations
-        .get_mut(request_id)
-        .expect("logical demand continuation");
-    for (route, admission_observation) in &continuation.admission_route_observations {
-        let covered = !continuation.invalidated_routes.contains(route)
-            && continuation.admission_event_watermarks.get(route)
-                == continuation.predecessor_event_watermarks.get(route)
-            && admission_observation.as_ref().is_some_and(|admitted| {
-                predecessor.route_observations.get(route) == Some(admitted)
-                    && receipt.route_results.iter().any(|result| {
-                        result.route_identity == route.as_str() && result.outcome.is_success()
-                    })
-            });
-        if covered {
-            if let Some(result) = receipt
-                .route_results
-                .iter()
-                .find(|result| result.route_identity == route.as_str())
-            {
-                continuation
-                    .covered_route_results
-                    .insert(route.clone(), result.clone());
-            }
-        }
-    }
-    continuation.covered_removed_source_count = receipt.current.removed_source_count;
-    continuation.covered_timings = predecessor.timings.unwrap_or_default();
-}
-
 struct AdmissionReservationSnapshot {
     active_request_id: Option<String>,
     pending_request_ids: VecDeque<String>,
     attempts: VecDeque<SourceBackedRefreshAttempt>,
-    continuations: BTreeMap<String, ManualAllContinuation>,
     response_barriers: BTreeMap<String, usize>,
 }
 
@@ -906,7 +834,6 @@ impl AdmissionReservationSnapshot {
             active_request_id: state.active_request_id.clone(),
             pending_request_ids: state.pending_request_ids.clone(),
             attempts: state.attempts.clone(),
-            continuations: state.manual_all_continuations.clone(),
             response_barriers: state.unacknowledged_admissions.clone(),
         }
     }
@@ -915,26 +842,22 @@ impl AdmissionReservationSnapshot {
         state.active_request_id = self.active_request_id;
         state.pending_request_ids = self.pending_request_ids;
         state.attempts = self.attempts;
-        state.manual_all_continuations = self.continuations;
         state.unacknowledged_admissions = self.response_barriers;
     }
 }
 
 struct AdmissionResolutionSnapshot {
     attempts: VecDeque<SourceBackedRefreshAttempt>,
-    continuations: BTreeMap<String, ManualAllContinuation>,
 }
 
 impl AdmissionResolutionSnapshot {
     fn capture(state: &CoreRefreshEngineState) -> Self {
         Self {
             attempts: state.attempts.clone(),
-            continuations: state.manual_all_continuations.clone(),
         }
     }
 
     fn restore(self, state: &mut CoreRefreshEngineState) {
         state.attempts = self.attempts;
-        state.manual_all_continuations = self.continuations;
     }
 }

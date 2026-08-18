@@ -22,12 +22,9 @@ mod test_support;
 mod tests;
 mod watch_routes;
 mod whole_run_eta;
-#[cfg(test)]
-type TestStatusWriter = Arc<dyn Fn(&Path, &Value) -> Result<()> + Send + Sync>;
 use attempt_helpers::*;
 use coverage_contract::{
-    ManualAllContinuation, PostPublicationRouteCoverageFence,
-    SourceBackedRefreshRouteCoverageCertificate,
+    PostPublicationRouteCoverageFence, SourceBackedRefreshRouteCoverageCertificate,
 };
 pub use coverage_contract::{
     SourceBackedRefreshCoverageCertificate, SourceBackedRefreshRun,
@@ -35,7 +32,7 @@ pub use coverage_contract::{
 };
 use durable_queue::{
     durable_job_json, install_recovered_successors, job_with_queued_successors,
-    recover_logical_demand_continuations, recover_queued_root, recover_queued_successors,
+    recover_queued_root, recover_queued_successors,
 };
 use generation_authority::CoreRefreshTerminalSuccess;
 pub use generation_authority::PinnedCorePublication;
@@ -57,7 +54,7 @@ pub(crate) use test_support::TestRefreshJournal;
 use test_support::{
     daemon_source_backed_refresh_job_path, pin_test_active_verified_generation,
     pin_test_published_generation, read_daemon_job_status, status_value, test_refresh_engine,
-    test_refresh_engine_with_executor, test_refresh_engine_with_status_writer,
+    test_refresh_engine_with_executor, test_refresh_engine_with_executor_and_admitted_routes,
     test_refresh_runtime, test_refresh_submission, write_daemon_job_status,
 };
 use whole_run_eta::WholeRunEtaEstimator;
@@ -132,9 +129,9 @@ pub(super) struct CoreRefreshEngineState {
     routes_requiring_exhaustive_reconciliation: BTreeSet<SourceRouteIdentity>,
     route_event_watermarks: BTreeMap<SourceRouteIdentity, EventWatermark>,
     route_worksets: BTreeMap<SourceRouteIdentity, SourceBackedRefreshWorkset>,
+    route_retry_intents: BTreeMap<SourceRouteIdentity, Arc<RefreshIntent>>,
     route_admissions: BTreeMap<String, Vec<DirtySourceRouteAdmission>>,
     route_admission_watermarks: BTreeMap<String, BTreeMap<SourceRouteIdentity, EventWatermark>>,
-    manual_all_continuations: BTreeMap<String, ManualAllContinuation>,
     pending_terminal_persistence: Option<PendingTerminalPersistence>,
     pending_scheduler_retry_root_id: Option<String>,
     unacknowledged_admissions: BTreeMap<String, usize>,
@@ -201,7 +198,7 @@ type SourceRefreshAdmissionFence = dyn Fn(
         &dyn RefreshJournal,
         &Path,
         Option<&ExplicitSourceCatalogAuthority>,
-    ) -> Result<BTreeMap<SourceRouteIdentity, Option<String>>>
+    ) -> Result<ctx_history_refresh_execution::AdmittedRefresh>
     + Send
     + Sync;
 
@@ -222,29 +219,6 @@ struct SourceBackedRefreshQueueFull {
 #[derive(Debug)]
 struct SourceBackedRefreshIdempotencyConflict {
     request_id: String,
-}
-
-#[derive(Debug, Clone, Copy, Eq, PartialEq)]
-enum SourceRefreshAdmissionRequirement {
-    /// Observe the terminal result of equivalent work already admitted.
-    AttachEquivalent,
-    /// Require work whose admission occurs after the currently running attempt.
-    FreshAfterAdmittedSnapshot,
-}
-
-struct SourceRefreshLogicalDemand {
-    admission: SourceRefreshAdmissionRequirement,
-    reconciliation_demand: SourceBackedReconciliationDemand,
-    route_observations: BTreeMap<SourceRouteIdentity, Option<String>>,
-    request_id: Option<String>,
-    request_fingerprint: Option<String>,
-    admission_pending: bool,
-}
-
-impl SourceRefreshAdmissionRequirement {
-    fn requires_successor(self, state: SourceBackedRefreshState) -> bool {
-        self == Self::FreshAfterAdmittedSnapshot && state == SourceBackedRefreshState::Running
-    }
 }
 
 impl SourceBackedRefreshQueueFull {
@@ -347,9 +321,9 @@ impl CoreRefreshEngine {
                 routes_requiring_exhaustive_reconciliation: BTreeSet::new(),
                 route_event_watermarks: BTreeMap::new(),
                 route_worksets: BTreeMap::new(),
+                route_retry_intents: BTreeMap::new(),
                 route_admissions: BTreeMap::new(),
                 route_admission_watermarks: BTreeMap::new(),
-                manual_all_continuations: BTreeMap::new(),
                 pending_terminal_persistence: None,
                 pending_scheduler_retry_root_id: None,
                 unacknowledged_admissions: BTreeMap::new(),
@@ -378,22 +352,49 @@ impl CoreRefreshEngine {
         journal: Arc<dyn RefreshJournal>,
         runtime: Arc<dyn RefreshRuntime>,
         executor: Arc<dyn SourceBackedRefreshExecutor>,
-        admission_fence: Arc<SourceRefreshAdmissionFence>,
+        admission_fence: Arc<
+            dyn Fn(
+                    &DiscoveryContext,
+                    &dyn RefreshJournal,
+                    &Path,
+                    Option<&ExplicitSourceCatalogAuthority>,
+                ) -> Result<BTreeMap<SourceRouteIdentity, Option<String>>>
+                + Send
+                + Sync,
+        >,
     ) -> Self {
-        Self::with_runtime(executor, admission_fence, journal, runtime)
+        let adapted = Arc::new(
+            move |discovery: &DiscoveryContext,
+                  journal: &dyn RefreshJournal,
+                  data_root: &Path,
+                  catalog: Option<&ExplicitSourceCatalogAuthority>| {
+                admission_fence(discovery, journal, data_root, catalog)
+                    .map(admitted_refresh_for_test)
+            },
+        );
+        Self::with_runtime(executor, adapted, journal, runtime)
     }
 
     #[cfg(any(test, feature = "test-support"))]
     pub fn with_admission_fence_for_test(
         journal: Arc<dyn RefreshJournal>,
         runtime: Arc<dyn RefreshRuntime>,
-        admission_fence: Arc<SourceRefreshAdmissionFence>,
+        admission_fence: Arc<
+            dyn Fn(
+                    &DiscoveryContext,
+                    &dyn RefreshJournal,
+                    &Path,
+                    Option<&ExplicitSourceCatalogAuthority>,
+                ) -> Result<BTreeMap<SourceRouteIdentity, Option<String>>>
+                + Send
+                + Sync,
+        >,
     ) -> Self {
-        Self::with_runtime(
-            Arc::new(CaptureOwnedSourceBackedRefreshExecutor),
-            admission_fence,
+        Self::with_runtime_for_test(
             journal,
             runtime,
+            Arc::new(CaptureOwnedSourceBackedRefreshExecutor),
+            admission_fence,
         )
     }
 

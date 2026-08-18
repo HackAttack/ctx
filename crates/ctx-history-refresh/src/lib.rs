@@ -44,11 +44,10 @@ use ctx_history_index::{
 };
 use ctx_history_refresh_execution::{
     is_sha256_identity, refresh_scope_from_json, refresh_scope_json, required_generation,
-    required_route_results, source_backed_requested_route_observations,
-    source_backed_route_retry_disposition, verify_generation_query_readiness,
-    GenerationQueryReadiness, PublishedSourceBackedState, PublishedSourceBackedStatePort,
-    SourceBackedAdmissionRouteFailures, SourceBackedExactScanProgress,
-    SourceBackedRefreshCoveredPublication,
+    source_backed_requested_route_observations, source_backed_route_retry_disposition,
+    verify_generation_query_readiness, GenerationQueryReadiness, PublishedSourceBackedState,
+    PublishedSourceBackedStatePort, SourceBackedAdmissionRouteFailures,
+    SourceBackedExactScanProgress,
     SourceBackedRefreshProgressUpdate as PhysicalRefreshProgressUpdate,
 };
 use serde_json::{json, Value};
@@ -96,21 +95,20 @@ pub use publication::{
     GenerationQueryAuthorityError, MissingActiveGeneration, PinnedSourceBackedGeneration,
 };
 pub use request::{
-    AdmissionResponseBarrier, RefreshAdmission, RefreshLogicalPhase, RefreshLogicalStatus,
-    RefreshMaintenanceWakeStatus, RefreshOperation, RefreshOutcomeClass, RefreshOutcomeCode,
-    RefreshRequestState, RefreshRequestTrigger, RefreshRetryAdvice, RefreshStatus,
-    RefreshStatusKind, RefreshSubmission, RefreshTerminalFailureScope, RefreshTerminalFailureType,
-    RefreshTerminalOutcome, SourceBackedRefreshSelector,
+    AdmissionResponseBarrier, RefreshAdmission, RefreshIntent, RefreshLogicalPhase,
+    RefreshLogicalStatus, RefreshMaintenanceWakeStatus, RefreshOperation, RefreshOutcomeClass,
+    RefreshOutcomeCode, RefreshRequest, RefreshRequestState, RefreshRequestTrigger,
+    RefreshRetryAdvice, RefreshSelection, RefreshStatus, RefreshStatusKind,
+    RefreshTerminalFailureScope, RefreshTerminalFailureType, RefreshTerminalOutcome,
 };
 pub use route_ledger::EventWatermark;
 
 #[cfg(test)]
 use engine::TestRefreshJournal;
 use engine::{CoreRefreshEngine, SourceBackedRefreshProgressUpdate};
-use orchestration::{
-    execute_source_backed_refresh, source_backed_requested_route_observation_fence,
-    source_backed_route_admission_fence, SourceBackedRefreshPlan,
-};
+#[cfg(any(test, feature = "test-support"))]
+use orchestration::admitted_refresh_for_test;
+use orchestration::{execute_source_backed_refresh, source_backed_route_admission_fence};
 use publication::{
     open_published_generation, open_published_generation_for_recovery,
     prepare_generation_control_state, published_generation_id, retained_generation_hint,

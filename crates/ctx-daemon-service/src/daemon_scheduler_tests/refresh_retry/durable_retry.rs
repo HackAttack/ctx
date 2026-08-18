@@ -36,7 +36,14 @@ fn blocked_retry_writer_serializes_concurrent_admission_and_restart() {
     let coordinator = Arc::new(CoreRefreshEngine::with_status_writer_for_test(
         executor, writer,
     ));
-    coordinator.enqueue_periodic(&data_root).unwrap();
+    let periodic = coordinator.enqueue_periodic(&data_root).unwrap();
+    coordinator
+        .complete_pending_admission_for_test(
+            &data_root,
+            periodic["request_id"].as_str().unwrap(),
+            BTreeMap::new(),
+        )
+        .unwrap();
     let mut runtime = DaemonRuntime::default();
     let first = run_pending_core_refresh(
         &data_root,
@@ -92,7 +99,6 @@ fn blocked_retry_writer_serializes_concurrent_admission_and_restart() {
     let recorded =
         record_source_refresh_retry(&data_root, &mut backoff, &coordinator, retry.job, false)
             .unwrap();
-    assert_eq!(recorded["queued_successors"].as_array().unwrap().len(), 1);
     assert_eq!(executions.load(Ordering::SeqCst), 1);
     let before_restart = read_daemon_job_status(&daemon_core_refresh_job_path(&data_root)).unwrap();
     assert_eq!(before_restart["request_id"], recorded["request_id"]);
@@ -121,7 +127,7 @@ fn blocked_retry_writer_serializes_concurrent_admission_and_restart() {
             )
             .unwrap()
             .expect("concurrent successor survives restart")["request_state"],
-        "queued"
+        "admission_pending"
     );
     let durable = read_daemon_job_status(&daemon_core_refresh_job_path(&data_root)).unwrap();
     assert_eq!(durable["request_state"], "failed");
@@ -149,7 +155,14 @@ fn failed_terminal_root_keeps_capacity_through_successful_retry_and_restart() {
         write_daemon_job_status(path, job)
     });
     let coordinator = CoreRefreshEngine::with_status_writer_for_test(executor, writer);
-    coordinator.enqueue_periodic(&data_root).unwrap();
+    let periodic = coordinator.enqueue_periodic(&data_root).unwrap();
+    coordinator
+        .complete_pending_admission_for_test(
+            &data_root,
+            periodic["request_id"].as_str().unwrap(),
+            BTreeMap::new(),
+        )
+        .unwrap();
     let mut runtime = DaemonRuntime::default();
     assert!(
         run_pending_core_refresh(
@@ -196,7 +209,7 @@ fn failed_terminal_root_keeps_capacity_through_successful_retry_and_restart() {
     assert!(!retry.terminal_persistence_pending);
     let still_full = enqueue_synthetic_refresh_successor(&coordinator, &data_root, 99);
     assert_eq!(still_full["error_code"], "source_refresh_queue_full");
-    let persisted = record_source_refresh_retry(
+    record_source_refresh_retry(
         &data_root,
         &mut runtime.history_retry,
         &coordinator,
@@ -204,6 +217,7 @@ fn failed_terminal_root_keeps_capacity_through_successful_retry_and_restart() {
         false,
     )
     .unwrap();
+    let persisted = read_daemon_job_status(&daemon_core_refresh_job_path(&data_root)).unwrap();
     assert_eq!(
         persisted["queued_successors"].as_array().unwrap().len(),
         successor_ids.len()
@@ -225,7 +239,7 @@ fn failed_terminal_root_keeps_capacity_through_successful_retry_and_restart() {
             )
             .unwrap()
             .expect("every saturated successor recovers");
-        assert_eq!(status["request_state"], "queued");
+        assert_eq!(status["request_state"], "admission_pending");
     }
 }
 
@@ -275,7 +289,7 @@ fn stale_global_backoff_cannot_overwrite_durable_same_id_admission() {
     assert_eq!(admitted, replayed);
     let durable = read_daemon_job_status(&daemon_core_refresh_job_path(&data_root)).unwrap();
     assert_eq!(durable["request_id"], request_id);
-    assert_eq!(durable["request_state"], "queued");
+    assert_eq!(durable["request_state"], "admission_pending");
     assert!(durable.get("consecutive_failures").is_none());
     assert!(durable.get("retry_after_ms").is_none());
     drop(coordinator);
@@ -296,6 +310,6 @@ fn stale_global_backoff_cannot_overwrite_durable_same_id_admission() {
         .unwrap()
         .expect("exact acknowledged request survives restart");
     assert_eq!(recovered["request_id"], request_id);
-    assert_eq!(recovered["request_state"], "queued");
+    assert_eq!(recovered["request_state"], "admission_pending");
     assert_eq!(recovered, admitted);
 }

@@ -92,25 +92,23 @@ pub(super) struct SourceBackedRefreshAttempt {
     pub(super) finished_at_ms: Option<i64>,
     pub(super) previous_generation: Option<String>,
     pub(super) published_generation: Option<String>,
+    /// The sole durable logical request authority.
+    pub(super) intent: RefreshIntent,
+    /// Durable admitted target. `All` records complete-catalog certification;
+    /// `Exact` records a fail-closed selected/retry checkpoint. This value is
+    /// never passed to physical execution.
     pub(super) refresh_scope: SourceBackedRefreshScope,
-    pub(super) operation: SourceBackedRefreshOperation,
     pub(super) reconciliation_demand: SourceBackedReconciliationDemand,
-    pub(super) selector: SourceBackedRefreshSelector,
-    pub(super) requested_explicit_source_catalog: Option<ExplicitSourceCatalogAuthority>,
-    /// Attempt-local authority resolved from the logical selector. Durable
-    /// state persists only the selector and exact scope; recovery rehydrates
-    /// and verifies this provider-neutral input before execution.
-    pub(super) admitted_authority: Option<AdmittedSourceBackedRefreshAuthority>,
-    pub(super) fresh_after_admitted_snapshot: bool,
+    /// Attempt-local authority resolved from the logical intent. Durable state
+    /// persists the intent and admitted target; recovery re-admits both through
+    /// the same resolver before execution.
+    pub(super) admitted_authority: Option<ctx_history_refresh_execution::AdmittedRefresh>,
     pub(super) request_fingerprint: Option<String>,
     pub(super) admission_durability_indeterminate: bool,
-    pub(super) coalesced_into_request_id: Option<String>,
-    pub(super) coalesced_logical_demands: u64,
     pub(super) coalesced_requests: u64,
     pub(super) progress: SourceBackedRefreshProgress,
     pub(super) progress_total_sources_known: bool,
     pub(super) whole_run_eta: WholeRunEtaEstimator,
-    pub(super) physical_attempt_id: Option<String>,
     pub(super) scanned_routes: Option<usize>,
     pub(super) unsupported_routes: Option<usize>,
     pub(super) request_source_count: Option<usize>,
@@ -132,14 +130,17 @@ pub(super) struct SourceBackedRefreshAttempt {
     pub(super) last_error: Option<String>,
 }
 
-#[derive(Debug, Clone)]
-pub(super) struct AdmittedSourceBackedRefreshAuthority {
-    pub(super) scope: SourceBackedRefreshScope,
-    pub(super) route_observations: BTreeMap<SourceRouteIdentity, Option<String>>,
-    pub(super) discovery: ctx_history_refresh_execution::SourceBackedAdmittedDiscovery,
-}
-
 impl SourceBackedRefreshAttempt {
+    pub(super) fn operation(&self) -> SourceBackedRefreshOperation {
+        self.intent.operation()
+    }
+
+    pub(super) fn requested_explicit_source_catalog(
+        &self,
+    ) -> Option<&ExplicitSourceCatalogAuthority> {
+        self.intent.explicit_source_authority()
+    }
+
     fn source_count(&self) -> usize {
         self.request_source_count
             .or(self.scanned_routes)
@@ -186,9 +187,7 @@ impl SourceBackedRefreshAttempt {
     }
 
     fn physical_attempt_id(&self) -> &str {
-        self.physical_attempt_id
-            .as_deref()
-            .unwrap_or(self.request_id.as_str())
+        self.request_id.as_str()
     }
 
     fn structured_outcome_json(&self) -> Option<Value> {
@@ -270,7 +269,7 @@ impl SourceBackedRefreshAttempt {
             "reconciliation_demand".to_owned(),
             json!(self.reconciliation_demand.as_str()),
         );
-        fields.insert("refresh_selector".to_owned(), self.selector.to_json());
+        fields.insert("refresh_intent".to_owned(), self.intent.to_json());
         if let Some(outcome) = self.structured_outcome_json() {
             fields.insert("structured_outcome".to_owned(), outcome);
         }
@@ -285,25 +284,23 @@ impl SourceBackedRefreshAttempt {
             "owner": "daemon",
             "request_id": self.request_id,
             "request_state": self.state.as_str(),
-            "operation": self.operation.as_str(),
+            "operation": self.operation().as_str(),
             "requested_at_ms": self.requested_at_ms,
             "started_at_ms": self.started_at_ms,
             "finished_at_ms": self.finished_at_ms,
             "previous_generation": self.previous_generation,
             "published_generation": self.published_generation,
             "refresh_scope": refresh_scope_json(&self.refresh_scope),
-            "requested_explicit_source_catalog": self.requested_explicit_source_catalog
-                .as_ref()
+            "requested_explicit_source_catalog": self.requested_explicit_source_catalog()
                 .map(ExplicitSourceCatalogAuthority::to_json),
-            "fresh_after_admitted_snapshot": self.fresh_after_admitted_snapshot,
             "request_fingerprint": self.request_fingerprint,
             "admission_acknowledgement": self.admission_durability_indeterminate
                 .then_some("retained_after_durability_error"),
             "admission_durability": self.admission_durability_indeterminate
                 .then_some("replacement_visible_or_indeterminate"),
             "disconnect_policy": "retain_after_durable_admission",
-            "coalesced_into_request_id": self.coalesced_into_request_id,
-            "coalesced_logical_demands": self.coalesced_logical_demands,
+            "coalesced_into_request_id": None::<String>,
+            "coalesced_logical_demands": 0,
             "generation_changed": self.request_generation_changed(),
             "receipt": publication_receipt.map(SourceBackedRefreshReceipt::to_json),
             "request_outcome": self.request_outcome_receipt()
@@ -345,7 +342,7 @@ impl SourceBackedRefreshAttempt {
             "status": status,
             "request_id": self.request_id,
             "request_state": self.state.as_str(),
-            "operation": self.operation.as_str(),
+            "operation": self.operation().as_str(),
             "source_count": self.source_count(),
             "requested_at_ms": self.requested_at_ms,
             "started_at_ms": self.started_at_ms,
@@ -354,18 +351,14 @@ impl SourceBackedRefreshAttempt {
             "previous_generation": self.previous_generation,
             "published_generation": self.published_generation,
             "refresh_scope": refresh_scope_json(&self.refresh_scope),
-            "requested_explicit_source_catalog": self.requested_explicit_source_catalog
-                .as_ref()
-                .map(ExplicitSourceCatalogAuthority::to_json),
-            "fresh_after_admitted_snapshot": self.fresh_after_admitted_snapshot,
             "request_fingerprint": self.request_fingerprint,
             "admission_acknowledgement": self.admission_durability_indeterminate
                 .then_some("retained_after_durability_error"),
             "admission_durability": self.admission_durability_indeterminate
                 .then_some("replacement_visible_or_indeterminate"),
             "disconnect_policy": "retain_after_durable_admission",
-            "coalesced_into_request_id": self.coalesced_into_request_id,
-            "coalesced_logical_demands": self.coalesced_logical_demands,
+            "coalesced_into_request_id": None::<String>,
+            "coalesced_logical_demands": 0,
             "generation_changed": self.request_generation_changed(),
             "receipt": publication_receipt.map(SourceBackedRefreshReceipt::to_json),
             "request_outcome": self.request_outcome_receipt()
@@ -405,12 +398,7 @@ pub(super) fn projected_status_json(
     request_id: &str,
 ) -> Option<Value> {
     let attempt = find_attempt(state, request_id)?;
-    Some(apply_read_projection(
-        state,
-        attempt,
-        attempt.to_json(),
-        false,
-    ))
+    Some(apply_read_projection(attempt, attempt.to_json(), false))
 }
 
 pub(super) fn projected_job_json(
@@ -418,65 +406,18 @@ pub(super) fn projected_job_json(
     request_id: &str,
 ) -> Option<Value> {
     let attempt = find_attempt(state, request_id)?;
-    Some(apply_read_projection(
-        state,
-        attempt,
-        attempt.job_json(),
-        true,
-    ))
+    Some(apply_read_projection(attempt, attempt.job_json(), true))
 }
 
 fn apply_read_projection(
-    state: &CoreRefreshEngineState,
     logical: &SourceBackedRefreshAttempt,
     mut value: Value,
     job: bool,
 ) -> Value {
-    let continuation = state.manual_all_continuations.get(&logical.request_id);
-    let logical_phase = if !logical.state.is_active() {
-        "terminal"
-    } else if state
-        .admission_resolutions_in_flight
-        .contains(&logical.request_id)
-    {
-        "coverage_check"
-    } else if let Some(continuation) = continuation {
-        if !continuation.predecessor_finished {
-            "attached"
-        } else if continuation.is_fully_covered() {
-            "coverage_check"
-        } else if logical.state == SourceBackedRefreshState::Running {
-            "exact_successor"
-        } else {
-            "waiting"
-        }
-    } else {
-        logical.default_logical_phase()
-    };
-
-    let progress_owner = continuation
-        .filter(|continuation| {
-            logical.state.is_active()
-                && (!continuation.predecessor_finished || continuation.is_fully_covered())
-        })
-        .and_then(|continuation| find_attempt(state, &continuation.predecessor_request_id))
-        .unwrap_or(logical);
-    let physical_attempt_id = if continuation.is_some_and(|continuation| {
-        logical.state.is_active()
-            && continuation.predecessor_finished
-            && !continuation.is_fully_covered()
-    }) {
-        logical.request_id.as_str()
-    } else {
-        logical.physical_attempt_id.as_deref().unwrap_or_else(|| {
-            continuation
-                .map(|continuation| continuation.predecessor_request_id.as_str())
-                .unwrap_or(logical.request_id.as_str())
-        })
-    };
-    let physical_state = find_attempt(state, physical_attempt_id)
-        .map(|attempt| attempt.state)
-        .unwrap_or(logical.state);
+    let logical_phase = logical.default_logical_phase();
+    let progress_owner = logical;
+    let physical_attempt_id = logical.request_id.as_str();
+    let physical_state = logical.state;
 
     let Some(fields) = value.as_object_mut() else {
         return value;

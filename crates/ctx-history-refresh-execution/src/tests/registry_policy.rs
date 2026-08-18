@@ -590,6 +590,7 @@ fn scoped_admission_preserves_typed_registration_failure_details() {
         },
         StdDuration::ZERO,
         &data_root,
+        AdmittedRefreshCoverage::SelectedRoutes,
         None,
         &TestPublishedState,
     )

@@ -6,5 +6,4 @@ mod provider_refresh;
 
 pub(crate) use ctx_history_ingest_application::SourceStats;
 pub(crate) use entry::run_import;
-pub(crate) use explicit_source_catalog::ExplicitSourceCatalogAuthority;
 pub(crate) use provider_refresh::ProviderRefreshCollector;

@@ -285,7 +285,10 @@ fn search_refresh_codex_generation_covers_full_source_lifecycle() {
         "message",
     );
     let unavailable_generation = assert_published_generation(&unavailable, "wait");
-    assert_ne!(unavailable_generation, truncate_generation);
+    assert_ne!(
+        unavailable_generation, truncate_generation,
+        "{unavailable:#}"
+    );
     assert_eq!(
         unavailable["retrieval"]["indexed_documents"], 2,
         "{unavailable:#}"

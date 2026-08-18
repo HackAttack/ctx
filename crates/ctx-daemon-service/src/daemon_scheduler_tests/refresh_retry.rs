@@ -70,7 +70,7 @@ fn hot_route_failure_retries_exact_after_cooldown_while_blocked_route_stays_idle
                 observed_scopes
                     .lock()
                     .unwrap()
-                    .push(execution.scope.clone());
+                    .push(execution.admitted_refresh().publication_scope().clone());
                 Err(SourceBackedRouteError::new(kind, "injected route failure").into())
             },
         ));
@@ -237,9 +237,9 @@ fn terminal_admission_fence_failure_releases_root_before_exact_dirty_route_runs(
             observed_scopes
                 .lock()
                 .unwrap()
-                .push(execution.scope.clone());
+                .push(execution.admitted_refresh().publication_scope().clone());
             assert_eq!(
-                execution.scope,
+                execution.admitted_refresh().publication_scope(),
                 SourceBackedRefreshScope::Exact(BTreeSet::from([executor_route.clone()]))
             );
             let mut publication = publish_empty_authoritative_generation(&execution);
@@ -341,104 +341,6 @@ fn terminal_admission_fence_failure_releases_root_before_exact_dirty_route_runs(
         .unwrap()
         .expect("failed admission remains replayable");
     assert_eq!(replay, terminal);
-}
-
-#[test]
-fn failed_attached_demand_is_terminal_replayable_and_never_executes_a_successor() {
-    let temp = tempfile::tempdir().unwrap();
-    let data_root = temp.path().join("data");
-    ctx_history_platform::platform_security::establish_private_data_root(&data_root).unwrap();
-    let entered = Arc::new(Barrier::new(2));
-    let release = Arc::new(Barrier::new(2));
-    let executor_entered = Arc::clone(&entered);
-    let executor_release = Arc::clone(&release);
-    let executions = Arc::new(AtomicUsize::new(0));
-    let observed_executions = Arc::clone(&executions);
-    let coordinator = Arc::new(CoreRefreshEngine::with_executor(Arc::new(
-        move |_execution: SourceBackedRefreshExecution<'_>| {
-            let invocation = observed_executions.fetch_add(1, Ordering::SeqCst);
-            assert_eq!(invocation, 0, "failed attached demand executed a successor");
-            executor_entered.wait();
-            executor_release.wait();
-            Err(SourceBackedRouteError::new(
-                SourceBackedRouteErrorKind::SourceChanged,
-                "injected predecessor failure",
-            )
-            .into())
-        },
-    )));
-    let authority = ctx_history_refresh::explicit_source_catalog_authority_for_test(7);
-    let predecessor_request_id = uuid::Uuid::from_u128(0x294_0000).to_string();
-    let predecessor = coordinator
-        .enqueue_fresh_catalog_demand_for_test(
-            &data_root,
-            None,
-            predecessor_request_id.clone(),
-            authority.clone(),
-        )
-        .expect("exhaustive predecessor");
-    assert_eq!(predecessor["request_id"], predecessor_request_id);
-    assert_eq!(predecessor["reconciliation_demand"], "exhaustive");
-    let logical_request_id = uuid::Uuid::from_u128(0x294_0001).to_string();
-
-    let (iteration, attached) = std::thread::scope(|scope| {
-        let scheduler_coordinator = Arc::clone(&coordinator);
-        let scheduler_root = data_root.clone();
-        let scheduler = scope.spawn(move || {
-            let mut runtime = source_refresh_only_runtime();
-            run_source_refresh_cycle(&scheduler_root, &mut runtime, &scheduler_coordinator)
-        });
-        entered.wait();
-        let attached = coordinator
-            .enqueue_fresh_catalog_demand_for_test(
-                &data_root,
-                None,
-                logical_request_id.clone(),
-                authority.clone(),
-            )
-            .expect("attached logical freshness demand");
-        release.wait();
-        (scheduler.join().unwrap(), attached)
-    });
-
-    assert_eq!(attached["logical_phase"], "attached");
-    assert!(iteration.failed);
-    let physical_attempt_id = attached["physical_attempt_id"].as_str().unwrap().to_owned();
-    let terminal = coordinator
-        .handle_ipc_request(
-            &data_root,
-            &json!({
-                "op": "source_refresh_status",
-                "request_id": logical_request_id,
-            }),
-        )
-        .unwrap()
-        .expect("terminal logical demand");
-    assert_eq!(terminal["request_state"], "failed");
-    assert_eq!(terminal["logical_phase"], "terminal");
-    assert_eq!(
-        terminal["structured_outcome"]["physical_attempt_id"],
-        physical_attempt_id
-    );
-    assert!(!coordinator.has_pending_request());
-
-    let mut idle_runtime = source_refresh_only_runtime();
-    let idle = run_source_refresh_cycle(&data_root, &mut idle_runtime, &coordinator);
-    assert!(!idle.did_work);
-    assert_eq!(executions.load(Ordering::SeqCst), 1);
-    drop(coordinator);
-
-    let restarted = CoreRefreshEngine::new();
-    let _ = restarted
-        .recover_interrupted_publication(&data_root)
-        .unwrap();
-    assert!(!restarted.has_pending_request());
-    assert!(restarted.run_next(&data_root).is_none());
-    let replay = restarted
-        .enqueue_fresh_catalog_demand_for_test(&data_root, None, logical_request_id, authority)
-        .expect("same-ID terminal replay after restart");
-    assert_eq!(replay, terminal);
-    assert_eq!(executions.load(Ordering::SeqCst), 1);
 }
 
 #[test]
@@ -551,7 +453,14 @@ fn persistent_terminal_status_failure_retries_without_reexecution_or_hot_spin() 
         write_daemon_job_status(path, job)
     });
     let coordinator = CoreRefreshEngine::with_status_writer_for_test(executor, writer);
-    coordinator.enqueue_periodic(&data_root).unwrap();
+    let periodic = coordinator.enqueue_periodic(&data_root).unwrap();
+    coordinator
+        .complete_pending_admission_for_test(
+            &data_root,
+            periodic["request_id"].as_str().unwrap(),
+            BTreeMap::new(),
+        )
+        .unwrap();
     let mut runtime = DaemonRuntime::default();
     runtime.config.daemon.mode = DaemonMode::SourceRefreshOnly;
 
@@ -639,7 +548,14 @@ fn scheduler_retries_terminal_status_without_republishing_core() {
         write_daemon_job_status(path, job)
     });
     let coordinator = CoreRefreshEngine::with_status_writer_for_test(executor, writer);
-    coordinator.enqueue_periodic(&data_root).unwrap();
+    let periodic = coordinator.enqueue_periodic(&data_root).unwrap();
+    coordinator
+        .complete_pending_admission_for_test(
+            &data_root,
+            periodic["request_id"].as_str().unwrap(),
+            BTreeMap::new(),
+        )
+        .unwrap();
     let mut runtime = DaemonRuntime::default();
 
     let first = run_pending_core_refresh(
@@ -710,6 +626,9 @@ fn scheduler_failed_terminal_retry_preserves_successor_across_restart() {
     let coordinator = CoreRefreshEngine::with_status_writer_for_test(executor, writer);
     let root = coordinator.enqueue_periodic(&data_root).unwrap();
     let root_id = root["request_id"].as_str().unwrap().to_owned();
+    coordinator
+        .complete_pending_admission_for_test(&data_root, &root_id, BTreeMap::new())
+        .unwrap();
     let mut runtime = DaemonRuntime::default();
     let first = run_pending_core_refresh(
         &data_root,
@@ -731,7 +650,7 @@ fn scheduler_failed_terminal_retry_preserves_successor_across_restart() {
     assert!(retry.failed);
     let later = enqueue_synthetic_refresh_successor(&coordinator, &data_root, 1);
     let later_id = later["request_id"].as_str().unwrap().to_owned();
-    let recorded = record_source_refresh_retry(
+    record_source_refresh_retry(
         &data_root,
         &mut runtime.history_retry,
         &coordinator,
@@ -739,7 +658,6 @@ fn scheduler_failed_terminal_retry_preserves_successor_across_restart() {
         false,
     )
     .unwrap();
-    assert_eq!(recorded["queued_successors"].as_array().unwrap().len(), 1);
     assert_eq!(executions.load(Ordering::SeqCst), 1);
     let exact_failed_root = coordinator
         .handle_ipc_request(
@@ -767,7 +685,7 @@ fn scheduler_failed_terminal_retry_preserves_successor_across_restart() {
         )
         .unwrap()
         .expect("recovered successor status");
-    assert_eq!(successor_status["request_state"], "queued");
+    assert_eq!(successor_status["request_state"], "admission_pending");
     let later_status = restarted
         .handle_ipc_request(
             &data_root,
@@ -778,7 +696,7 @@ fn scheduler_failed_terminal_retry_preserves_successor_across_restart() {
         )
         .unwrap()
         .expect("later recovered successor status");
-    assert_eq!(later_status["request_state"], "queued");
+    assert_eq!(later_status["request_state"], "admission_pending");
     let recovered_root = restarted
         .handle_ipc_request(
             &data_root,

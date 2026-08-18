@@ -4,7 +4,7 @@ use anyhow::Result;
 use ctx_history_capture::{source_backed_source_failure_identity, ProviderSource};
 use ctx_history_core::CaptureProvider;
 use ctx_history_ingest_application::{
-    HistorySourcePluginSource, IngestPublication, IngestRefreshSelection,
+    HistorySourcePluginSource, IngestPublication, RefreshSelection,
 };
 use ctx_history_platform::platform_security::establish_private_data_root;
 use ctx_history_refresh::ExplicitSourceCatalogUpsert;
@@ -14,7 +14,7 @@ use crate::{
 };
 
 use super::{
-    core_refresh::{wait_for_import_core_refresh, ImportCoreRefreshRequest},
+    core_refresh::wait_for_import_core_refresh,
     explicit_source_catalog::{
         explicit_source_for_admission, relocate_explicit_source, relocation_authority_for_import,
         upsert_explicit_source,
@@ -79,33 +79,25 @@ impl ctx_history_cli::ImportApplicationPort for CliImportHost {
         &mut self,
         data_root: &Path,
         _config: ctx_history_cli::HistoryCliConfig,
-        selection: IngestRefreshSelection<'_>,
+        selection: RefreshSelection,
         no_daemon: bool,
         progress: &mut ProgressReporter<'_>,
     ) -> Result<IngestPublication> {
-        let request = match selection {
-            IngestRefreshSelection::AllAutomatic => ImportCoreRefreshRequest::Automatic,
-            IngestRefreshSelection::AutomaticProvider(provider) => {
-                ImportCoreRefreshRequest::AutomaticProvider(provider)
-            }
-            IngestRefreshSelection::ExplicitCatalog(authority) => {
-                ImportCoreRefreshRequest::ExplicitCatalog(authority)
-            }
-        };
-        let refresh = wait_for_import_core_refresh(data_root, no_daemon, request, progress)?;
+        let exact_route_lineages = selection
+            .explicit_source_authority()
+            .map(|authority| authority.route_lineages());
+        let refresh = wait_for_import_core_refresh(data_root, no_daemon, selection, progress)?;
         let pinned_generation = refresh.pin.generation_id().to_owned();
-        let policy_schema_hash = (!matches!(selection, IngestRefreshSelection::ExplicitCatalog(_)))
-            .then(|| {
-                refresh
-                    .pin
-                    .verified_index()
-                    .manifest()
-                    .policy_schema_hash
-                    .clone()
-            });
-        let catalog_content = match (selection, refresh.receipt.as_ref()) {
-            (IngestRefreshSelection::ExplicitCatalog(authority), Some(receipt)) => authority
-                .route_lineages()
+        let policy_schema_hash = exact_route_lineages.is_none().then(|| {
+            refresh
+                .pin
+                .verified_index()
+                .manifest()
+                .policy_schema_hash
+                .clone()
+        });
+        let catalog_content = match (exact_route_lineages, refresh.receipt.as_ref()) {
+            (Some(route_lineages), Some(receipt)) => route_lineages
                 .into_iter()
                 .map(|lineage| {
                     receipt
@@ -135,6 +127,8 @@ mod tests {
         let source = include_str!("application_adapter.rs");
         for forbidden in [
             ["Ingest", "Request"].concat(),
+            ["Ingest", "RefreshSelection"].concat(),
+            ["ImportCore", "RefreshRequest"].concat(),
             ["run", "_ingest"].concat(),
             ["Source", "Discovery", "Port"].concat(),
         ] {

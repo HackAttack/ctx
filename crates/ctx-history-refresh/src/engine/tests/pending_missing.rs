@@ -135,12 +135,8 @@ fn missing_fixture_executor(
             entered.wait();
             release.wait();
         }
-        let selected = match &execution.scope {
-            SourceBackedRefreshScope::All => fixtures
-                .keys()
-                .filter(|route| !execution.covered_route_ids.contains(*route))
-                .cloned()
-                .collect::<BTreeSet<_>>(),
+        let selected = match &execution.admitted_refresh().publication_scope() {
+            SourceBackedRefreshScope::All => fixtures.keys().cloned().collect::<BTreeSet<_>>(),
             SourceBackedRefreshScope::Exact(routes) => routes.clone(),
         };
         let base = open_verified_index(execution.index_root)?;
@@ -236,28 +232,22 @@ impl MissingFixtureHarness {
         let pause_next = Arc::new(AtomicBool::new(false));
         let entered = Arc::new(Barrier::new(2));
         let release = Arc::new(Barrier::new(2));
-        let coordinator = Arc::new(CoreRefreshEngine::with_executor(missing_fixture_executor(
-            fixtures.clone(),
-            Arc::clone(&scans),
-            Arc::clone(&pause_next),
-            Arc::clone(&entered),
-            Arc::clone(&release),
-        )));
-        let routes = fixtures.iter().map(|fixture| fixture.route.clone());
+        let routes = fixtures
+            .iter()
+            .map(|fixture| fixture.route.clone())
+            .collect::<BTreeSet<_>>();
+        let coordinator = Arc::new(CoreRefreshEngine::with_executor_and_admitted_routes(
+            missing_fixture_executor(
+                fixtures.clone(),
+                Arc::clone(&scans),
+                Arc::clone(&pause_next),
+                Arc::clone(&entered),
+                Arc::clone(&release),
+            ),
+            routes.clone(),
+        ));
         coordinator.reconcile_watch_routes(routes, EventWatermark::new(1, 0), 0);
-        let authority = load_explicit_source_catalog_authority(&data_root).unwrap();
-        coordinator
-            .handle_ipc_request(
-                &data_root,
-                &json!({
-                    "op": SOURCE_REFRESH_REQUEST_OP,
-                    "mode": "wait",
-                    "operation": "import",
-                    "explicit_source_catalog": authority.to_json(),
-                }),
-            )
-            .unwrap()
-            .expect("initial all-route request");
+        manual_all_request_without_catalog(&coordinator, &data_root);
         let initial = coordinator.run_next(&data_root).unwrap();
         assert!(!initial.failed, "{:#}", initial.job);
         assert!(!coordinator.has_scheduled_route_work());
@@ -375,13 +365,16 @@ fn safety_recheck_recovers_pending_missing_state_after_engine_restart() {
     harness.record_missing_event();
     assert_eq!(harness.missing_count(), Some(1));
 
-    let restarted = CoreRefreshEngine::with_executor(missing_fixture_executor(
-        harness.fixtures.clone(),
-        Arc::clone(&harness.scans),
-        Arc::clone(&harness.pause_next),
-        Arc::clone(&harness.entered),
-        Arc::clone(&harness.release),
-    ));
+    let restarted = CoreRefreshEngine::with_executor_and_admitted_routes(
+        missing_fixture_executor(
+            harness.fixtures.clone(),
+            Arc::clone(&harness.scans),
+            Arc::clone(&harness.pause_next),
+            Arc::clone(&harness.entered),
+            Arc::clone(&harness.release),
+        ),
+        harness.fixtures.iter().map(|fixture| fixture.route.clone()),
+    );
     restarted.initialize_watch_route_authority(
         harness.fixtures.iter().map(|fixture| fixture.route.clone()),
     );
@@ -498,20 +491,7 @@ fn watcher_and_manual_race_cannot_overadvance_or_delete_a_live_route() {
             [(harness.missing().route.clone(), EventWatermark::new(1, 2))],
             0,
         );
-        let authority = load_explicit_source_catalog_authority(&harness.data_root).unwrap();
-        harness
-            .coordinator
-            .handle_ipc_request(
-                &harness.data_root,
-                &json!({
-                    "op": SOURCE_REFRESH_REQUEST_OP,
-                    "mode": "wait",
-                    "operation": "import",
-                    "explicit_source_catalog": authority.to_json(),
-                }),
-            )
-            .unwrap()
-            .expect("manual race request");
+        manual_all_request_without_catalog(&harness.coordinator, &harness.data_root);
         harness.release.wait();
     });
 

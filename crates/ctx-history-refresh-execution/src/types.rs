@@ -249,16 +249,6 @@ pub struct SourceBackedZeroSourceAuthority {
     pub kind: SourceBackedZeroSourceAuthorityKind,
 }
 
-impl SourceBackedZeroSourceAuthority {
-    fn rebound_to(&self, generation_id: &str) -> Self {
-        Self {
-            generation_id: generation_id.to_owned(),
-            route_identity: self.route_identity.clone(),
-            kind: self.kind,
-        }
-    }
-}
-
 #[derive(Clone)]
 pub struct SourceBackedRefreshPublication {
     pub generation_id: String,
@@ -282,57 +272,6 @@ impl fmt::Debug for SourceBackedRefreshPublication {
             .field("route_results", &self.route_results)
             .field("has_verified_index", &self.verified_index.is_some())
             .finish_non_exhaustive()
-    }
-}
-
-#[derive(Debug, Clone, Default)]
-pub struct SourceBackedRefreshCoveredPublication {
-    pub route_results: Vec<SourceBackedRefreshRouteResult>,
-    pub zero_source_authority: Vec<SourceBackedZeroSourceAuthority>,
-    pub removed_source_count: usize,
-    pub timings: SourceBackedRefreshTimings,
-}
-
-impl SourceBackedRefreshCoveredPublication {
-    pub fn apply_receipt(&self, publication: &mut SourceBackedRefreshPublication) {
-        publication
-            .route_results
-            .extend(self.route_results.iter().cloned());
-        publication
-            .route_results
-            .sort_by(|left, right| left.route_identity.cmp(&right.route_identity));
-        publication.zero_source_authority.extend(
-            self.zero_source_authority
-                .iter()
-                .map(|authority| authority.rebound_to(&publication.generation_id)),
-        );
-        publication
-            .zero_source_authority
-            .sort_by(|left, right| left.route_identity.cmp(&right.route_identity));
-        publication.current.removed_source_count = publication
-            .current
-            .removed_source_count
-            .saturating_add(self.removed_source_count);
-    }
-
-    pub fn apply_timings(&self, publication: &mut SourceBackedRefreshPublication) {
-        publication.timings.discovery_us = publication
-            .timings
-            .discovery_us
-            .saturating_add(self.timings.discovery_us);
-        publication.timings.scan_stage_us = publication
-            .timings
-            .scan_stage_us
-            .saturating_add(self.timings.scan_stage_us);
-        publication.timings.commit_us = publication
-            .timings
-            .commit_us
-            .saturating_add(self.timings.commit_us);
-    }
-
-    pub fn apply(&self, publication: &mut SourceBackedRefreshPublication) {
-        self.apply_receipt(publication);
-        self.apply_timings(publication);
     }
 }
 
@@ -381,18 +320,7 @@ pub struct SourceBackedRefreshExecution<'a> {
     pub operation: RefreshOperation,
     pub reconciliation_demand: SourceBackedReconciliationDemand,
     pub explicit_source_catalog: Option<&'a ExplicitSourceCatalogAuthority>,
-    pub scope: SourceBackedRefreshScope,
-    pub route_worksets: BTreeMap<SourceRouteIdentity, SourceBackedRefreshWorkset>,
-    /// Immutable authenticated watch-catalog snapshot admitted with this
-    /// request. It is absent for manual and uncertainty fallbacks.
-    pub watch_catalog: Option<SourceBackedWatchCatalog>,
-    /// Provider-neutral discovery authority resolved before exact execution.
-    /// Logical provider selection is deliberately absent from this boundary.
-    pub admitted_discovery: Option<SourceBackedAdmittedDiscovery>,
-    /// Whether this request is forbidden from using provider-wide discovery.
-    pub requires_admitted_discovery: bool,
-    pub covered_route_ids: BTreeSet<SourceRouteIdentity>,
-    pub covered_publication: SourceBackedRefreshCoveredPublication,
+    admitted_refresh: AdmittedRefresh,
     pub discovery_context: &'a DiscoveryContext,
     #[doc(hidden)]
     pub published_state: &'a dyn PublishedSourceBackedStatePort,
@@ -408,9 +336,7 @@ impl<'a> SourceBackedRefreshExecution<'a> {
         request_id: &'a str,
         operation: RefreshOperation,
         explicit_source_catalog: Option<&'a ExplicitSourceCatalogAuthority>,
-        scope: SourceBackedRefreshScope,
-        covered_route_ids: BTreeSet<SourceRouteIdentity>,
-        covered_publication: SourceBackedRefreshCoveredPublication,
+        admitted_refresh: AdmittedRefresh,
         discovery_context: &'a DiscoveryContext,
         published_state: &'a dyn PublishedSourceBackedStatePort,
         report_progress: &'a dyn Fn(SourceBackedRefreshProgressUpdate) -> Result<()>,
@@ -426,13 +352,7 @@ impl<'a> SourceBackedRefreshExecution<'a> {
             operation,
             reconciliation_demand,
             explicit_source_catalog,
-            scope,
-            route_worksets: BTreeMap::new(),
-            watch_catalog: None,
-            admitted_discovery: None,
-            requires_admitted_discovery: false,
-            covered_route_ids,
-            covered_publication,
+            admitted_refresh,
             discovery_context,
             published_state,
             report_progress,
@@ -444,32 +364,12 @@ impl<'a> SourceBackedRefreshExecution<'a> {
         self
     }
 
-    pub fn with_route_worksets(
-        mut self,
-        route_worksets: BTreeMap<SourceRouteIdentity, SourceBackedRefreshWorkset>,
-    ) -> Self {
-        self.route_worksets = route_worksets;
-        self
+    pub fn admitted_refresh(&self) -> &AdmittedRefresh {
+        &self.admitted_refresh
     }
 
-    pub fn with_watch_catalog_opt(mut self, catalog: Option<SourceBackedWatchCatalog>) -> Self {
-        self.watch_catalog = catalog;
-        self
-    }
-
-    #[doc(hidden)]
-    pub fn with_admitted_discovery_opt(
-        mut self,
-        admitted: Option<SourceBackedAdmittedDiscovery>,
-    ) -> Self {
-        self.admitted_discovery = admitted;
-        self
-    }
-
-    #[doc(hidden)]
-    pub fn with_admitted_discovery_requirement(mut self, required: bool) -> Self {
-        self.requires_admitted_discovery = required;
-        self
+    pub(crate) fn admitted_refresh_mut(&mut self) -> &mut AdmittedRefresh {
+        &mut self.admitted_refresh
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -596,6 +496,136 @@ pub struct SourceBackedAdmittedDiscovery {
     report: DiscoveryReport,
     discovery_duration: StdDuration,
     watch_catalog: SourceBackedWatchCatalog,
+}
+
+/// Immutable physical authority produced by refresh admission.
+///
+/// Execution can inspect these exact routes and the discovery snapshot that
+/// certified them, but it cannot discover or widen the request.
+#[derive(Debug, Clone)]
+pub struct AdmittedRefresh {
+    coverage: AdmittedRefreshCoverage,
+    exact_routes: BTreeSet<SourceRouteIdentity>,
+    discovery: SourceBackedAdmittedDiscovery,
+    route_worksets: BTreeMap<SourceRouteIdentity, SourceBackedRefreshWorkset>,
+}
+
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+pub enum AdmittedRefreshCoverage {
+    CompleteCatalog,
+    SelectedRoutes,
+}
+
+impl AdmittedRefresh {
+    pub(crate) fn new(
+        coverage: AdmittedRefreshCoverage,
+        exact_routes: BTreeSet<SourceRouteIdentity>,
+        discovery: SourceBackedAdmittedDiscovery,
+    ) -> Result<Self> {
+        if coverage == AdmittedRefreshCoverage::SelectedRoutes && exact_routes.is_empty() {
+            bail!("selected admitted refresh must contain at least one exact route");
+        }
+        Ok(Self {
+            coverage,
+            exact_routes,
+            discovery,
+            route_worksets: BTreeMap::new(),
+        })
+    }
+
+    pub const fn coverage(&self) -> AdmittedRefreshCoverage {
+        self.coverage
+    }
+
+    /// Binds an exact physical request directly to one immutable watcher
+    /// catalog snapshot. The caller must supply route-local discovery inputs
+    /// reconstructed from that same catalog; no provider discovery or scope
+    /// inference is performed here.
+    pub fn from_exact_catalog_authority(
+        exact_routes: BTreeSet<SourceRouteIdentity>,
+        discovery_duration: StdDuration,
+        watch_catalog: SourceBackedWatchCatalog,
+    ) -> Result<Self> {
+        let catalog_routes = watch_catalog.route_ids().cloned().collect::<BTreeSet<_>>();
+        let missing = exact_routes
+            .difference(&catalog_routes)
+            .cloned()
+            .collect::<BTreeSet<_>>();
+        if !missing.is_empty() {
+            bail!("exact admitted refresh routes are absent from catalog authority: {missing:?}");
+        }
+        let report = watch_catalog
+            .route_admission_report(&exact_routes)
+            .ok_or_else(|| anyhow!("exact admitted refresh has no route-local catalog report"))?;
+        Self::new(
+            AdmittedRefreshCoverage::SelectedRoutes,
+            exact_routes,
+            SourceBackedAdmittedDiscovery::new(report, discovery_duration, watch_catalog),
+        )
+    }
+
+    pub fn exact_routes(&self) -> &BTreeSet<SourceRouteIdentity> {
+        &self.exact_routes
+    }
+
+    pub fn discovery(&self) -> &SourceBackedAdmittedDiscovery {
+        &self.discovery
+    }
+
+    pub fn publication_scope(&self) -> SourceBackedRefreshScope {
+        match self.coverage {
+            AdmittedRefreshCoverage::CompleteCatalog => SourceBackedRefreshScope::All,
+            AdmittedRefreshCoverage::SelectedRoutes => {
+                SourceBackedRefreshScope::Exact(self.exact_routes.clone())
+            }
+        }
+    }
+
+    pub fn route_worksets(&self) -> &BTreeMap<SourceRouteIdentity, SourceBackedRefreshWorkset> {
+        &self.route_worksets
+    }
+
+    pub fn narrow_to(mut self, exact_routes: BTreeSet<SourceRouteIdentity>) -> Result<Self> {
+        if !exact_routes.is_subset(&self.exact_routes) {
+            bail!("admitted refresh cannot widen beyond its certified exact routes");
+        }
+        self.coverage = AdmittedRefreshCoverage::SelectedRoutes;
+        if exact_routes.is_empty() {
+            bail!("selected admitted refresh must contain at least one exact route");
+        }
+        self.exact_routes = exact_routes;
+        Ok(self)
+    }
+
+    pub fn with_execution_facts(
+        mut self,
+        route_worksets: BTreeMap<SourceRouteIdentity, SourceBackedRefreshWorkset>,
+    ) -> Result<Self> {
+        if route_worksets
+            .keys()
+            .any(|route| !self.exact_routes.contains(route))
+        {
+            bail!("source refresh workset references a route outside physical admission");
+        }
+        self.route_worksets = route_worksets;
+        Ok(self)
+    }
+
+    pub(crate) fn promote_worksets_to_exhaustive(&mut self) {
+        self.route_worksets
+            .values_mut()
+            .for_each(|workset| *workset = SourceBackedRefreshWorkset::Exhaustive);
+    }
+
+    #[cfg(any(test, feature = "test-support"))]
+    #[doc(hidden)]
+    pub fn for_test(
+        coverage: AdmittedRefreshCoverage,
+        exact_routes: BTreeSet<SourceRouteIdentity>,
+        discovery: SourceBackedAdmittedDiscovery,
+    ) -> Result<Self> {
+        Self::new(coverage, exact_routes, discovery)
+    }
 }
 
 impl SourceBackedAdmittedDiscovery {

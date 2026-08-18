@@ -22,11 +22,13 @@ impl CoreRefreshEngine {
         Self(test_refresh_engine_with_executor(executor))
     }
 
-    pub(super) fn with_status_writer_for_test(
+    pub(super) fn with_executor_and_admitted_routes(
         executor: Arc<dyn SourceBackedRefreshExecutor>,
-        writer: TestStatusWriter,
+        routes: impl IntoIterator<Item = SourceRouteIdentity>,
     ) -> Self {
-        Self(test_refresh_engine_with_status_writer(executor, writer))
+        Self(test_refresh_engine_with_executor_and_admitted_routes(
+            executor, routes,
+        ))
     }
 
     pub(super) fn status(&self, request_id: &str) -> Option<Value> {
@@ -40,6 +42,17 @@ impl CoreRefreshEngine {
     ) -> Result<Option<Value>> {
         match request.get("op").and_then(Value::as_str) {
             Some(SOURCE_REFRESH_REQUEST_OP) => {
+                if request.get("mode").and_then(Value::as_str) == Some("background") {
+                    let request_id = request
+                        .get("request_id")
+                        .and_then(Value::as_str)
+                        .map(str::to_owned)
+                        .unwrap_or_else(|| Uuid::now_v7().to_string());
+                    return self
+                        .0
+                        .maintenance_wake(data_root, request_id)
+                        .map(|status| Some(status.schema_v1_fields().clone()));
+                }
                 let admission = self
                     .0
                     .submit(data_root, test_refresh_submission_from_json(request)?)?;
@@ -89,7 +102,7 @@ impl CoreRefreshEngine {
     }
 }
 
-fn test_refresh_submission_from_json(request: &Value) -> Result<RefreshSubmission> {
+fn test_refresh_submission_from_json(request: &Value) -> Result<RefreshRequest> {
     let mode = request.get("mode").and_then(Value::as_str).unwrap_or("");
     if !matches!(mode, "background" | "wait") {
         bail!("invalid daemon source refresh mode `{mode}`");
@@ -104,6 +117,11 @@ fn test_refresh_submission_from_json(request: &Value) -> Result<RefreshSubmissio
             operation => bail!("invalid daemon source refresh operation `{operation}`"),
         })?;
     let explicit_catalog = request.get("explicit_source_catalog");
+    let all_selection = request
+        .get("refresh_selector")
+        .and_then(|selector| selector.get("kind"))
+        .and_then(Value::as_str)
+        == Some("all_automatic");
     match (operation, mode, explicit_catalog) {
         (RefreshOperation::Refresh, _, Some(_)) => {
             bail!("refresh operation cannot carry explicit source catalog authority")
@@ -111,7 +129,7 @@ fn test_refresh_submission_from_json(request: &Value) -> Result<RefreshSubmissio
         (RefreshOperation::Import, "background", _) => {
             bail!("import operation requires daemon refresh mode `wait`")
         }
-        (RefreshOperation::Import, _, None) => {
+        (RefreshOperation::Import, _, None) if !all_selection => {
             bail!("import operation requires explicit source catalog authority")
         }
         _ => {}
@@ -141,26 +159,29 @@ fn test_refresh_submission_from_json(request: &Value) -> Result<RefreshSubmissio
     let requested_catalog = explicit_catalog
         .map(ExplicitSourceCatalogAuthority::from_json)
         .transpose()?;
-    let refresh_scope = request
-        .get("refresh_scope")
-        .filter(|value| !value.is_null())
-        .map(|value| refresh_scope_from_json(Some(value)))
+    let intent = match (operation, requested_catalog, fresh_after_admitted_snapshot) {
+        (RefreshOperation::Import, Some(authority), _) => {
+            RefreshIntent::SelectedImport(RefreshSelection::ExactSource(authority))
+        }
+        (RefreshOperation::Import, None, _) => RefreshIntent::SelectedImport(RefreshSelection::All),
+        (RefreshOperation::Refresh, None, true) => {
+            RefreshIntent::SelectedImport(RefreshSelection::All)
+        }
+        (RefreshOperation::Refresh, None, false) => RefreshIntent::AutomaticMaintenance,
+        (RefreshOperation::Refresh, Some(_), _) => {
+            unreachable!("validated request authority")
+        }
+    };
+    let trigger = request
+        .get("trigger")
+        .and_then(Value::as_str)
+        .map(str::parse)
         .transpose()?
-        .unwrap_or(SourceBackedRefreshScope::All);
-    Ok(RefreshSubmission::new(
-        request_id,
-        operation,
-        requested_catalog,
-        refresh_scope,
-        fresh_after_admitted_snapshot,
-        operation == RefreshOperation::Refresh && mode == "background",
-    ))
-}
-
-pub(super) fn load_explicit_source_catalog_authority(
-    _data_root: &Path,
-) -> Result<ExplicitSourceCatalogAuthority> {
-    Ok(crate::explicit_source_catalog_authority_for_test(0))
+        .unwrap_or(match intent {
+            RefreshIntent::AutomaticMaintenance => RefreshRequestTrigger::Search,
+            RefreshIntent::SelectedImport(_) => RefreshRequestTrigger::Import,
+        });
+    Ok(RefreshRequest::new(request_id, intent, trigger))
 }
 
 pub(super) fn pin_published_generation(

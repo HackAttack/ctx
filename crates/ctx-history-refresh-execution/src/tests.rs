@@ -70,7 +70,6 @@ fn refresh_all_provider_sources(
     index_root: &Path,
     explicit_source_catalog: Option<&ExplicitSourceCatalogAuthority>,
     scope: SourceBackedRefreshScope,
-    covered_route_ids: &BTreeSet<SourceRouteIdentity>,
     report_progress: &mut dyn FnMut(
         CaptureSourceBackedDetailedRefreshProgress,
     ) -> SourceBackedRouteResult<()>,
@@ -85,8 +84,6 @@ fn refresh_all_provider_sources(
         index_root,
         explicit_source_catalog,
         scope,
-        covered_route_ids,
-        &SourceBackedRefreshCoveredPublication::default(),
         &TestPublishedState,
         report_progress,
     )
@@ -122,7 +119,6 @@ fn run_report(
         index_root,
         None,
         SourceBackedRefreshScope::All,
-        &BTreeSet::new(),
         &mut progress,
     )
 }

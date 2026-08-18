@@ -40,8 +40,11 @@ fn refresh_request(request_id: &str) -> Value {
         "op": "source_refresh_request",
         "request_id": request_id,
         "mode": "wait",
-        "operation": "refresh",
-        "fresh_after_admitted_snapshot": true,
+        "trigger": "import",
+        "refresh_intent": {
+            "kind": "selected_import",
+            "selection": {"kind": "all"},
+        },
     }))
 }
 
@@ -52,7 +55,7 @@ fn source_refresh_roundtrip(data_root: &Path, request: Value) -> Result<Value> {
 
 #[cfg(any(unix, windows))]
 #[test]
-fn running_cold_periodic_all_and_manual_all_share_one_physical_executor() -> Result<()> {
+fn running_cold_periodic_all_and_manual_all_keep_distinct_physical_policy() -> Result<()> {
     let (_temp, data_root) = private_data_root()?;
     let admission_entered = Arc::new(Barrier::new(2));
     let admission_release = Arc::new(Barrier::new(2));
@@ -70,6 +73,7 @@ fn running_cold_periodic_all_and_manual_all_share_one_physical_executor() -> Res
         .as_str()
         .expect("periodic request ID")
         .to_owned();
+    coordinator.complete_pending_admission_for_test(&data_root, &periodic_id, BTreeMap::new())?;
 
     let execution_entered = Arc::new(Barrier::new(2));
     let execution_release = Arc::new(Barrier::new(2));
@@ -137,7 +141,7 @@ fn running_cold_periodic_all_and_manual_all_share_one_physical_executor() -> Res
         acknowledgement["disconnect_policy"],
         "retain_after_durable_admission"
     );
-    assert_eq!(acknowledgement["coalesced_into_request_id"], periodic_id);
+    assert!(acknowledgement["coalesced_into_request_id"].is_null());
 
     admission_entered.wait();
     let ping_started = Instant::now();
@@ -189,16 +193,25 @@ fn running_cold_periodic_all_and_manual_all_share_one_physical_executor() -> Res
     assert_eq!(execution_count.load(Ordering::SeqCst), 1);
     assert_eq!(
         coordinator.status_for_test(&periodic_id).unwrap()["coalesced_logical_demands"],
-        1
+        0
     );
 
-    let logical = coordinator
-        .resolve_fully_covered_continuation_for_test(&data_root, |_catalog| Ok(BTreeMap::new()))
-        .expect("covered logical demand terminal result");
-    assert_eq!(logical.job["request_id"], manual_id);
-    assert_eq!(logical.job["request_state"], "published");
-    assert_eq!(logical.job["scanned_routes"], 0);
-    assert_eq!(execution_count.load(Ordering::SeqCst), 1);
+    let manual_execution_count = Arc::clone(&execution_count);
+    let manual = coordinator
+        .run_next_with(
+            move |_request_id, _coordinator| {
+                manual_execution_count.fetch_add(1, Ordering::SeqCst);
+                Ok(successful_publication("manual-all-generation"))
+            },
+            || Ok(Some("manual-all-generation".to_owned())),
+            |_job| Ok(()),
+            |_error| Ok(()),
+        )
+        .expect("manual All physical run");
+    assert_eq!(manual.job["request_id"], manual_id);
+    assert_eq!(manual.job["request_state"], "published");
+    assert_eq!(manual.job["operation"], "import");
+    assert_eq!(execution_count.load(Ordering::SeqCst), 2);
 
     drop(service);
     Ok(())

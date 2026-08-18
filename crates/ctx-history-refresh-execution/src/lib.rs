@@ -60,8 +60,10 @@ type SourceBackedRefreshOperation = RefreshOperation;
 pub use ctx_history_capture::{SourceBackedReconciliationDemand, SourceBackedRefreshScope};
 pub use current_state::SourceBackedRefreshCurrent;
 #[doc(hidden)]
+pub use execution::{exclusive_scan_stage_duration, execute_capture_owned_refresh_with};
+#[cfg(any(test, feature = "test-support"))]
+#[doc(hidden)]
 pub use execution::{
-    exclusive_scan_stage_duration, execute_capture_owned_refresh_with,
     refresh_all_provider_sources_route_local,
     refresh_all_provider_sources_route_local_with_worksets,
 };
@@ -98,13 +100,12 @@ pub use route_result::{
     SourceBackedRefreshSourceFailure,
 };
 pub use types::{
-    nonzero_duration_micros, PublishedSourceBackedState, PublishedSourceBackedStatePort,
-    RefreshOperation, SourceBackedAdmittedDiscovery, SourceBackedCurrentSourceProgress,
-    SourceBackedCurrentSourceProgressStage, SourceBackedExactScanProgress,
-    SourceBackedRefreshCoveredPublication, SourceBackedRefreshExecution,
-    SourceBackedRefreshProgressUpdate, SourceBackedRefreshPublication, SourceBackedRefreshTimings,
-    SourceBackedRefreshWorkset, SourceBackedZeroSourceAuthority,
-    SourceBackedZeroSourceAuthorityKind,
+    nonzero_duration_micros, AdmittedRefresh, AdmittedRefreshCoverage, PublishedSourceBackedState,
+    PublishedSourceBackedStatePort, RefreshOperation, SourceBackedAdmittedDiscovery,
+    SourceBackedCurrentSourceProgress, SourceBackedCurrentSourceProgressStage,
+    SourceBackedExactScanProgress, SourceBackedRefreshExecution, SourceBackedRefreshProgressUpdate,
+    SourceBackedRefreshPublication, SourceBackedRefreshTimings, SourceBackedRefreshWorkset,
+    SourceBackedZeroSourceAuthority, SourceBackedZeroSourceAuthorityKind,
 };
 
 const SEARCH_DIRECTORY: &str = "search";
@@ -379,13 +380,16 @@ pub fn source_backed_admitted_discovery_from_report(
     report: DiscoveryReport,
     discovery_duration: StdDuration,
     data_root: &Path,
+    coverage: AdmittedRefreshCoverage,
     explicit_source_catalog: Option<&ExplicitSourceCatalogAuthority>,
     published_state: &dyn PublishedSourceBackedStatePort,
-) -> Result<(SourceBackedAdmittedDiscovery, BTreeSet<SourceRouteIdentity>)> {
+) -> Result<AdmittedRefresh> {
     // Explicit-catalog discovery is already reconstructed from the catalog
     // authority itself. Unlike automatic routes, explicit routes deliberately
     // do not expose replayable registration sources through the watch catalog.
-    let explicit_admitted_report = explicit_source_catalog.is_some().then(|| report.clone());
+    let request_admitted_report = (explicit_source_catalog.is_some()
+        || coverage == AdmittedRefreshCoverage::CompleteCatalog)
+        .then(|| report.clone());
     let merged = execution::build_merged_source_backed_registry(
         discovery,
         report,
@@ -404,6 +408,12 @@ pub fn source_backed_admitted_discovery_from_report(
                 SourceRouteIdentity::from_sha256(binding.route_identity.clone()).map_err(Into::into)
             })
             .collect::<Result<BTreeSet<_>>>()?
+    } else if coverage == AdmittedRefreshCoverage::CompleteCatalog {
+        // A newly admitted automatic-maintenance request owns the complete
+        // catalog snapshot, including retained missing routes whose lifecycle
+        // state must advance. This is the admission boundary; exact retries
+        // reconstruct only their persisted route-local catalog authority.
+        watch_catalog.route_ids().cloned().collect()
     } else {
         watch_catalog
             .route_ids()
@@ -415,29 +425,37 @@ pub fn source_backed_admitted_discovery_from_report(
             .cloned()
             .collect()
     };
-    if let Some(registration_failures) = automatic_registry_admission_failures(
-        &merged.build.issues,
-        AutomaticRegistryAdmissionFailurePolicy::ScopedSelection,
-    )? {
+    let admission_failure_policy = match coverage {
+        AdmittedRefreshCoverage::CompleteCatalog => {
+            AutomaticRegistryAdmissionFailurePolicy::SystemicOnly
+        }
+        AdmittedRefreshCoverage::SelectedRoutes => {
+            AutomaticRegistryAdmissionFailurePolicy::ScopedSelection
+        }
+    };
+    if let Some(registration_failures) =
+        automatic_registry_admission_failures(&merged.build.issues, admission_failure_policy)?
+    {
         return Err(registration_failures.into());
     }
+    let registry_failures = automatic_registry_route_failures(
+        &merged.build.issues,
+        merged.retained_generation.as_ref(),
+    )?;
     if selected_routes.is_empty() {
-        let registry_failures = automatic_registry_route_failures(
-            &merged.build.issues,
-            merged.retained_generation.as_ref(),
-        )?;
-        if !registry_failures.is_empty() {
+        if coverage == AdmittedRefreshCoverage::SelectedRoutes && !registry_failures.is_empty() {
             return Err(SourceBackedCoordinatorError::NoUsableSourceRoutes {
                 failed_routes: SourceBackedSourceFailures::from_failures(registry_failures),
             }
             .into());
         }
-        let route_less_blockers = automatic_registry_route_less_blockers(&merged.build.issues, &[]);
+        let route_less_blockers =
+            automatic_registry_route_less_blockers(&merged.build.issues, &registry_failures);
         if route_less_blockers.total != 0 {
             return Err(route_less_blockers.publication_error().into());
         }
     }
-    let admitted_report = match explicit_admitted_report {
+    let admitted_report = match request_admitted_report {
         Some(report) => report,
         None if selected_routes.is_empty() => DiscoveryReport {
             sources: Vec::new(),
@@ -449,8 +467,12 @@ pub fn source_backed_admitted_discovery_from_report(
                 anyhow!("selected source routes have no provider-neutral discovery report")
             })?,
     };
-    Ok((
-        SourceBackedAdmittedDiscovery::new(admitted_report, discovery_duration, watch_catalog),
+    if coverage == AdmittedRefreshCoverage::SelectedRoutes && selected_routes.is_empty() {
+        bail!("selected source discovery produced no executable source routes");
+    }
+    AdmittedRefresh::new(
+        coverage,
         selected_routes,
-    ))
+        SourceBackedAdmittedDiscovery::new(admitted_report, discovery_duration, watch_catalog),
+    )
 }

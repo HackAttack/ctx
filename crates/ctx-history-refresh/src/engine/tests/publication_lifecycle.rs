@@ -282,10 +282,11 @@ fn exact_watcher_member_reaches_physical_execution() {
         *executor_observed
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner) =
-            Some(execution.route_worksets.clone());
+            Some(execution.admitted_refresh().route_worksets().clone());
         publish_pin_fixture(&execution, false)
     });
-    let coordinator = CoreRefreshEngine::with_executor(executor);
+    let coordinator =
+        CoreRefreshEngine::with_executor_and_admitted_routes(executor, [route.clone()]);
     coordinator.initialize_watch_route_authority([route.clone()]);
     coordinator.record_watch_routes_with_members(
         [(route.clone(), EventWatermark::new(8, 1))],
@@ -323,11 +324,12 @@ fn watcher_event_without_exact_member_requires_exhaustive_execution() {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner) = Some((
             execution.reconciliation_demand,
-            execution.route_worksets.clone(),
+            execution.admitted_refresh().route_worksets().clone(),
         ));
         publish_pin_fixture(&execution, false)
     });
-    let coordinator = CoreRefreshEngine::with_executor(executor);
+    let coordinator =
+        CoreRefreshEngine::with_executor_and_admitted_routes(executor, [route.clone()]);
     coordinator.initialize_watch_route_authority([route.clone()]);
     coordinator.record_watch_routes_requiring_exhaustive_reconciliation(
         [(route, EventWatermark::new(9, 1))],
@@ -378,16 +380,17 @@ fn cold_dirty_routes_are_published_in_one_all_route_generation() {
     let executor_routes = routes.clone();
     let scopes = Arc::new(std::sync::Mutex::new(Vec::new()));
     let executor_scopes = Arc::clone(&scopes);
-    let coordinator = CoreRefreshEngine::with_executor(Arc::new(
-        move |execution: SourceBackedRefreshExecution<'_>| {
+    let coordinator = CoreRefreshEngine::with_executor_and_admitted_routes(
+        Arc::new(move |execution: SourceBackedRefreshExecution<'_>| {
             executor_scopes
                 .lock()
                 .unwrap()
-                .push(execution.scope.clone());
+                .push(execution.admitted_refresh().publication_scope().clone());
             let selected = physically_selected_routes(&execution, &executor_routes);
             publish_selected_routes(&execution, &selected, None)
-        },
-    ));
+        }),
+        routes.clone(),
+    );
     coordinator.reconcile_watch_routes(
         routes,
         EventWatermark::new(1, 0),
@@ -421,6 +424,9 @@ fn publication_remains_running_until_exact_pin_authority_exists() {
     publish_nonempty.store(true, Ordering::SeqCst);
     let queued = coordinator.enqueue_periodic(&data_root).unwrap();
     let request_id = request_id(&queued);
+    assert!(coordinator
+        .prepare_next_pending_admission(&data_root)
+        .unwrap());
     let (gate, opener_started, opener_release) = RunningRefreshGate::new();
     std::thread::scope(|scope| {
         let runner = Arc::clone(&coordinator);
@@ -479,6 +485,9 @@ fn mismatched_pin_fails_without_rebinding_stale_prior_authority() {
     publish_nonempty.store(true, Ordering::SeqCst);
     let queued = coordinator.enqueue_periodic(&data_root).unwrap();
     let request_id = request_id(&queued);
+    assert!(coordinator
+        .prepare_next_pending_admission(&data_root)
+        .unwrap());
     let run = coordinator
         .run_next_with_verified_index_opener(&data_root, |_| Ok(stale_index))
         .expect("mismatched publication attempt");
@@ -509,15 +518,17 @@ fn missing_pin_retries_exact_route_and_reopens_without_stale_authority() {
     let data_root = temp.path().join("data");
     ctx_history_platform::platform_security::establish_private_data_root(&data_root).unwrap();
     let publish_nonempty = Arc::new(AtomicBool::new(false));
-    let coordinator =
-        CoreRefreshEngine::with_executor(publication_pin_executor(Arc::clone(&publish_nonempty)));
+    let route = route_identity(0xa1);
+    let coordinator = CoreRefreshEngine::with_executor_and_admitted_routes(
+        publication_pin_executor(Arc::clone(&publish_nonempty)),
+        [route.clone()],
+    );
     coordinator.enqueue_periodic(&data_root).unwrap();
     assert!(!coordinator.run_next(&data_root).unwrap().failed);
     let prior = coordinator
         .pinned_core_publication()
         .expect("prior retained authority");
 
-    let route = route_identity(0xa1);
     coordinator.reconcile_watch_routes(
         [route.clone()],
         EventWatermark::new(7, 0),
@@ -525,6 +536,9 @@ fn missing_pin_retries_exact_route_and_reopens_without_stale_authority() {
     );
     assert!(coordinator
         .enqueue_next_dirty_route(&data_root, ledger_now_ms())
+        .unwrap());
+    assert!(coordinator
+        .prepare_next_pending_admission(&data_root)
         .unwrap());
     publish_nonempty.store(true, Ordering::SeqCst);
     let injected_opens = AtomicUsize::new(0);
@@ -745,112 +759,6 @@ fn terminal_persist_retry_retains_admissions_without_readmitting_routes() {
 }
 
 #[test]
-fn recovered_wait_after_restart_attaches_to_equivalent_running_attempt() {
-    let temp = tempfile::tempdir().unwrap();
-    let authority = load_explicit_source_catalog_authority(temp.path()).unwrap();
-    let first = CoreRefreshEngine::new();
-    let interrupted = first.enqueue_periodic(temp.path()).unwrap();
-    let interrupted_request_id = request_id(&interrupted);
-    let crash = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        let _ = first.run_next_with(
-            |_, _| panic!("injected daemon process interruption"),
-            || Ok(None),
-            |_| Ok(()),
-            |_| Ok(()),
-        );
-    }));
-    assert!(crash.is_err());
-    let running_job = first
-        .set_progress(
-            &interrupted_request_id,
-            SourceBackedRefreshProgressUpdate {
-                phase: "refreshing".to_owned(),
-                completed_sources: 0,
-                total_sources: 1,
-                total_sources_known: true,
-                current_source: Some("interrupted-source".to_owned()),
-                completed_records: Some(5),
-                completed_bytes: Some(640),
-                current_source_progress: None,
-                ..Default::default()
-            },
-        )
-        .expect("interrupted running job");
-    assert_eq!(running_job["progress"]["completed_records"], 5);
-    assert_eq!(running_job["progress"]["completed_bytes"], 640);
-    write_daemon_job_status(
-        &daemon_source_backed_refresh_job_path(temp.path()),
-        &running_job,
-    )
-    .unwrap();
-    drop(first);
-
-    let restarted = Arc::new(CoreRefreshEngine::new());
-    let active = restarted
-        .handle_ipc_request(
-            temp.path(),
-            &json!({
-                "op": SOURCE_REFRESH_REQUEST_OP,
-                "mode": "wait",
-                "operation": "import",
-                "explicit_source_catalog": authority.to_json(),
-            }),
-        )
-        .unwrap()
-        .expect("restarted explicit request");
-    let active_request_id = request_id(&active);
-    assert_ne!(active_request_id, interrupted_request_id);
-    let (gate, runner_started, runner_release) = RunningRefreshGate::new();
-
-    let recovered = std::thread::scope(|scope| {
-        let runner = Arc::clone(&restarted);
-        let runner_authority = authority.clone();
-        scope.spawn(move || {
-            let run = runner
-                .run_next_with(
-                    |_, _| {
-                        runner_started.send(()).expect("signal running refresh");
-                        let _ = runner_release.recv();
-                        let mut publication = test_publication("restart-generation");
-                        publication.published_explicit_source_catalog = Some(runner_authority);
-                        Ok(publication)
-                    },
-                    || Ok(Some("restart-generation".to_owned())),
-                    |_| Ok(()),
-                    |_| Ok(()),
-                )
-                .expect("restarted running refresh");
-            assert!(!run.failed, "{:#}", run.job);
-        });
-        gate.wait_until_started();
-
-        let recovered = restarted
-            .handle_ipc_request(
-                temp.path(),
-                &json!({
-                    "op": SOURCE_REFRESH_REQUEST_OP,
-                    "mode": "wait",
-                    "operation": "import",
-                    "explicit_source_catalog": authority.to_json(),
-                }),
-            )
-            .unwrap()
-            .expect("recovered wait refresh response");
-        gate.release();
-        recovered
-    });
-
-    assert_eq!(request_id(&recovered), active_request_id);
-    let terminal = restarted.status(&active_request_id).unwrap();
-    assert_eq!(terminal["request_state"], "published");
-    assert_eq!(
-        terminal["receipt"]["published_generation"],
-        "restart-generation"
-    );
-    assert!(!restarted.has_pending_request());
-}
-
-#[test]
 fn restart_rebuilds_all_routes_after_interrupted_background_refresh_progress() {
     let temp = tempfile::tempdir().unwrap();
     let data_root = temp.path().join("data");
@@ -863,7 +771,7 @@ fn restart_rebuilds_all_routes_after_interrupted_background_refresh_progress() {
     ]);
     let first = CoreRefreshEngine::new();
     first.initialize_watch_route_authority(routes.iter().cloned());
-    let queued = first.enqueue_periodic(&data_root).unwrap();
+    let queued = first.enqueue(None);
     let interrupted_request_id = request_id(&queued);
 
     let crash = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
@@ -916,11 +824,13 @@ fn restart_rebuilds_all_routes_after_interrupted_background_refresh_progress() {
     let observed_routes = Arc::clone(&executed_routes);
     let executor_routes = routes.clone();
     let expected_request_id = interrupted_request_id.clone();
-    let restarted = CoreRefreshEngine::with_executor(Arc::new(
-        move |execution: SourceBackedRefreshExecution<'_>| {
+    let restarted = CoreRefreshEngine::with_executor_and_admitted_routes(
+        Arc::new(move |execution: SourceBackedRefreshExecution<'_>| {
             assert_eq!(execution.request_id, expected_request_id);
-            assert_eq!(execution.scope, SourceBackedRefreshScope::All);
-            assert!(execution.covered_route_ids.is_empty());
+            assert_eq!(
+                execution.admitted_refresh().publication_scope(),
+                SourceBackedRefreshScope::All
+            );
             execution.report_progress("refreshing", 0, executor_routes.len(), None, None, None)?;
             let resumed_progress =
                 read_daemon_job_status(&daemon_source_backed_refresh_job_path(execution.data_root))
@@ -936,17 +846,18 @@ fn restart_rebuilds_all_routes_after_interrupted_background_refresh_progress() {
             assert_eq!(selected, executor_routes);
             *observed_routes.lock().unwrap() = selected.clone();
             publish_selected_routes(&execution, &selected, None)
-        },
-    ));
+        }),
+        routes.clone(),
+    );
     restarted.initialize_watch_route_authority(routes.clone());
     assert!(restarted
         .recover_interrupted_publication(&data_root)
         .unwrap());
 
     let recovered = restarted.status(&interrupted_request_id).unwrap();
-    assert_eq!(recovered["request_state"], "queued");
+    assert_eq!(recovered["request_state"], "admission_pending");
     assert_eq!(recovered["physical_attempt_id"], interrupted_request_id);
-    assert_eq!(recovered["progress"]["phase"], "queued");
+    assert_eq!(recovered["progress"]["phase"], "admission_pending");
     assert_eq!(recovered["progress"]["completed_sources"], 0);
     assert_eq!(recovered["progress"]["total_sources"], 0);
     assert!(recovered["progress"].get("current_source").is_none());
@@ -1016,7 +927,7 @@ fn restart_after_pointer_publication_recovers_exact_receipt_without_recapture() 
         move |execution: SourceBackedRefreshExecution<'_>| {
             let request_id = execution.request_id.to_owned();
             let operation = execution.operation;
-            let scope = execution.scope.clone();
+            let scope = execution.admitted_refresh().publication_scope().clone();
             let published = ctx_history_index::GenerationWriter::open(
                 execution.index_root,
                 WriterOptions::default(),
@@ -1140,7 +1051,7 @@ fn published_journal_with_incompatible_pointer_rebuilds_from_source_on_restart()
         .unwrap());
     let queued = read_daemon_job_status(&daemon_source_backed_refresh_job_path(&data_root))
         .expect("durable rebuild request");
-    assert_eq!(queued["request_state"], "queued");
+    assert_eq!(queued["request_state"], "admission_pending");
     assert_eq!(queued["previous_generation"], Value::Null);
 
     let rebuilt = restarted.run_next(&data_root).expect("source rebuild");
@@ -1337,11 +1248,14 @@ fn incompatible_pointer_rebuilds_queued_and_running_journals_preserving_successo
         let queued_engine = CoreRefreshEngine::new();
         let root = queued_engine.enqueue_periodic(&data_root).unwrap();
         let root_id = request_id(&root);
+        assert!(queued_engine
+            .prepare_next_pending_admission(&data_root)
+            .unwrap());
         let successor = queued_engine
-            .enqueue_fresh_demand_for_test(
+            .enqueue_manual_all_demand_for_test(
+                &data_root,
                 Some(previous_generation.to_owned()),
                 Uuid::now_v7().to_string(),
-                BTreeMap::new(),
             )
             .unwrap();
         let successor_id = request_id(&successor);
@@ -1370,7 +1284,7 @@ fn incompatible_pointer_rebuilds_queued_and_running_journals_preserving_successo
             .recover_interrupted_publication(&data_root)
             .unwrap());
         let recovered = read_daemon_job_status(&status_path).expect("recovered journal");
-        assert_eq!(recovered["request_state"], "queued");
+        assert_eq!(recovered["request_state"], "admission_pending");
         assert_eq!(request_id(&recovered), root_id);
         let recovered_successors = recovered["queued_successors"].as_array().unwrap();
         assert_eq!(recovered_successors.len(), 1);

@@ -1,142 +1,4 @@
 use super::*;
-
-#[test]
-fn failed_running_exact_remains_in_manual_all_successor_work() {
-    let temp = tempfile::tempdir().unwrap();
-    let data_root = temp.path().join("data");
-    ctx_history_platform::platform_security::establish_private_data_root(&data_root).unwrap();
-    let routes = BTreeSet::from([route_identity(0x31), route_identity(0x32)]);
-    let first_route = routes.iter().next().unwrap().clone();
-    let scans = Arc::new(Mutex::new(BTreeMap::<SourceRouteIdentity, usize>::new()));
-    let calls = Arc::new(AtomicUsize::new(0));
-    let entered = Arc::new(Barrier::new(2));
-    let release = Arc::new(Barrier::new(2));
-    let executor_routes = routes.clone();
-    let executor_scans = Arc::clone(&scans);
-    let executor_calls = Arc::clone(&calls);
-    let executor_entered = Arc::clone(&entered);
-    let executor_release = Arc::clone(&release);
-    let executor_first_route = first_route.clone();
-    let coordinator = Arc::new(CoreRefreshEngine::with_executor(Arc::new(
-        move |execution: SourceBackedRefreshExecution<'_>| {
-            let selected = physically_selected_routes(&execution, &executor_routes);
-            for route in &selected {
-                *executor_scans
-                    .lock()
-                    .unwrap()
-                    .entry(route.clone())
-                    .or_default() += 1;
-            }
-            let first = executor_calls.fetch_add(1, Ordering::SeqCst) == 0;
-            if first {
-                executor_entered.wait();
-                executor_release.wait();
-            } else {
-                assert!(execution.covered_route_ids.is_empty());
-            }
-            publish_selected_routes(
-                &execution,
-                &selected,
-                first.then_some((&executor_first_route, "unavailable")),
-            )
-        },
-    )));
-    coordinator.reconcile_watch_routes(
-        routes.clone(),
-        EventWatermark::new(3, 0),
-        ledger_now_ms().saturating_sub(1_000),
-    );
-    assert!(coordinator
-        .enqueue_next_dirty_route(&data_root, ledger_now_ms())
-        .unwrap());
-    let authority = load_explicit_source_catalog_authority(&data_root).unwrap();
-
-    std::thread::scope(|scope| {
-        let runner = Arc::clone(&coordinator);
-        let runner_root = data_root.clone();
-        scope.spawn(move || {
-            assert!(!runner.run_next(&runner_root).unwrap().failed);
-        });
-        entered.wait();
-        let _manual = manual_all_request(&coordinator, &data_root, &authority);
-        release.wait();
-    });
-    assert!(!coordinator.run_next(&data_root).unwrap().failed);
-
-    let observed = scans.lock().unwrap();
-    assert_eq!(observed.get(&first_route), Some(&2));
-    for route in routes.iter().filter(|route| *route != &first_route) {
-        assert_eq!(observed.get(route), Some(&2));
-    }
-    assert!(!coordinator.has_scheduled_route_work());
-}
-
-#[test]
-fn event_during_running_exact_invalidates_manual_all_coverage() {
-    let temp = tempfile::tempdir().unwrap();
-    let data_root = temp.path().join("data");
-    ctx_history_platform::platform_security::establish_private_data_root(&data_root).unwrap();
-    let routes = BTreeSet::from([route_identity(0x41), route_identity(0x42)]);
-    let first_route = routes.iter().next().unwrap().clone();
-    let scans = Arc::new(Mutex::new(BTreeMap::<SourceRouteIdentity, usize>::new()));
-    let calls = Arc::new(AtomicUsize::new(0));
-    let entered = Arc::new(Barrier::new(2));
-    let release = Arc::new(Barrier::new(2));
-    let executor_routes = routes.clone();
-    let executor_scans = Arc::clone(&scans);
-    let executor_calls = Arc::clone(&calls);
-    let executor_entered = Arc::clone(&entered);
-    let executor_release = Arc::clone(&release);
-    let coordinator = Arc::new(CoreRefreshEngine::with_executor(Arc::new(
-        move |execution: SourceBackedRefreshExecution<'_>| {
-            let selected = physically_selected_routes(&execution, &executor_routes);
-            for route in &selected {
-                *executor_scans
-                    .lock()
-                    .unwrap()
-                    .entry(route.clone())
-                    .or_default() += 1;
-            }
-            if executor_calls.fetch_add(1, Ordering::SeqCst) == 0 {
-                executor_entered.wait();
-                executor_release.wait();
-            } else {
-                assert!(execution.covered_route_ids.is_empty());
-            }
-            publish_selected_routes(&execution, &selected, None)
-        },
-    )));
-    let observed_at_ms = ledger_now_ms().saturating_sub(1_000);
-    coordinator.reconcile_watch_routes(routes.clone(), EventWatermark::new(4, 0), observed_at_ms);
-    assert!(coordinator
-        .enqueue_next_dirty_route(&data_root, ledger_now_ms())
-        .unwrap());
-    let authority = load_explicit_source_catalog_authority(&data_root).unwrap();
-
-    std::thread::scope(|scope| {
-        let runner = Arc::clone(&coordinator);
-        let runner_root = data_root.clone();
-        scope.spawn(move || {
-            assert!(!runner.run_next(&runner_root).unwrap().failed);
-        });
-        entered.wait();
-        let _manual = manual_all_request(&coordinator, &data_root, &authority);
-        coordinator.record_watch_routes(
-            [(first_route.clone(), EventWatermark::new(4, 1))],
-            observed_at_ms,
-        );
-        release.wait();
-    });
-    assert!(!coordinator.run_next(&data_root).unwrap().failed);
-
-    let observed = scans.lock().unwrap();
-    assert_eq!(observed.get(&first_route), Some(&2));
-    for route in routes.iter().filter(|route| *route != &first_route) {
-        assert_eq!(observed.get(route), Some(&2));
-    }
-    assert!(!coordinator.has_scheduled_route_work());
-}
-
 #[test]
 fn ordinary_manual_all_still_scans_every_current_route() {
     let temp = tempfile::tempdir().unwrap();
@@ -146,10 +8,12 @@ fn ordinary_manual_all_still_scans_every_current_route() {
     let scans = Arc::new(Mutex::new(BTreeMap::<SourceRouteIdentity, usize>::new()));
     let executor_routes = routes.clone();
     let executor_scans = Arc::clone(&scans);
-    let coordinator = CoreRefreshEngine::with_executor(Arc::new(
-        move |execution: SourceBackedRefreshExecution<'_>| {
-            assert_eq!(execution.scope, SourceBackedRefreshScope::All);
-            assert!(execution.covered_route_ids.is_empty());
+    let coordinator = CoreRefreshEngine::with_executor_and_admitted_routes(
+        Arc::new(move |execution: SourceBackedRefreshExecution<'_>| {
+            assert_eq!(
+                execution.admitted_refresh().publication_scope(),
+                SourceBackedRefreshScope::All
+            );
             let selected = physically_selected_routes(&execution, &executor_routes);
             for route in &selected {
                 *executor_scans
@@ -159,15 +23,15 @@ fn ordinary_manual_all_still_scans_every_current_route() {
                     .or_default() += 1;
             }
             publish_selected_routes(&execution, &selected, None)
-        },
-    ));
+        }),
+        routes.clone(),
+    );
     coordinator.reconcile_watch_routes(
         routes.clone(),
         EventWatermark::new(5, 0),
         ledger_now_ms().saturating_sub(1_000),
     );
-    let authority = load_explicit_source_catalog_authority(&data_root).unwrap();
-    let manual = manual_all_request(&coordinator, &data_root, &authority);
+    let manual = manual_all_request_without_catalog(&coordinator, &data_root);
 
     let run = coordinator
         .run_next(&data_root)
@@ -201,7 +65,7 @@ fn exact_route_event_during_execution_creates_one_successor_and_noop_ack_cleans_
     let executor: Arc<dyn SourceBackedRefreshExecutor> =
         Arc::new(move |execution: SourceBackedRefreshExecution<'_>| {
             assert_eq!(
-                execution.scope,
+                execution.admitted_refresh().publication_scope(),
                 SourceBackedRefreshScope::exact([executor_route.clone()])
             );
             let call = executor_calls.fetch_add(1, Ordering::SeqCst);
@@ -225,7 +89,10 @@ fn exact_route_event_during_execution_creates_one_successor_and_noop_ack_cleans_
             )];
             Ok(publication)
         });
-    let coordinator = Arc::new(CoreRefreshEngine::with_executor(executor));
+    let coordinator = Arc::new(CoreRefreshEngine::with_executor_and_admitted_routes(
+        executor,
+        [route.clone()],
+    ));
     let observed_at_ms = ledger_now_ms().saturating_sub(1_000);
     coordinator.reconcile_watch_routes([route.clone()], EventWatermark::new(1, 0), observed_at_ms);
     assert!(coordinator
@@ -304,8 +171,10 @@ fn exact_route_receipt_failures_back_off_or_block_until_a_new_event() {
     let retry_temp = tempfile::tempdir().unwrap();
     let retry_root = retry_temp.path().join("data");
     ctx_history_platform::platform_security::establish_private_data_root(&retry_root).unwrap();
-    let retry =
-        CoreRefreshEngine::with_executor(route_failure_executor(route.clone(), "unavailable"));
+    let retry = CoreRefreshEngine::with_executor_and_admitted_routes(
+        route_failure_executor(route.clone(), "unavailable"),
+        [route.clone()],
+    );
     retry.reconcile_watch_routes([route.clone()], EventWatermark::new(1, 0), observed_at_ms);
     assert!(retry
         .enqueue_next_dirty_route(&retry_root, ledger_now_ms())
@@ -314,7 +183,10 @@ fn exact_route_receipt_failures_back_off_or_block_until_a_new_event() {
     let retry_after = retry
         .next_dirty_route_due_in_ms(ledger_now_ms())
         .expect("retryable route remains scheduled");
-    assert!(retry_after <= 10_000 && retry_after > 0);
+    assert!(
+        retry_after <= 10_000 && retry_after > 0,
+        "unexpected retry delay: {retry_after}ms"
+    );
     assert!(!retry
         .enqueue_next_dirty_route(&retry_root, ledger_now_ms())
         .unwrap());
@@ -322,8 +194,10 @@ fn exact_route_receipt_failures_back_off_or_block_until_a_new_event() {
     let blocked_temp = tempfile::tempdir().unwrap();
     let blocked_root = blocked_temp.path().join("data");
     ctx_history_platform::platform_security::establish_private_data_root(&blocked_root).unwrap();
-    let blocked =
-        CoreRefreshEngine::with_executor(route_failure_executor(route.clone(), "incompatible"));
+    let blocked = CoreRefreshEngine::with_executor_and_admitted_routes(
+        route_failure_executor(route.clone(), "incompatible"),
+        [route.clone()],
+    );
     blocked.reconcile_watch_routes([route.clone()], EventWatermark::new(2, 0), observed_at_ms);
     assert!(blocked
         .enqueue_next_dirty_route(&blocked_root, ledger_now_ms())
@@ -334,126 +208,6 @@ fn exact_route_receipt_failures_back_off_or_block_until_a_new_event() {
     assert!(!blocked.has_scheduled_route_work());
     blocked.record_watch_routes([(route, EventWatermark::new(2, 1))], observed_at_ms);
     assert!(blocked.has_scheduled_route_work());
-}
-
-#[test]
-fn failed_exhaustive_exact_predecessor_cancels_attached_broad_successor_and_retains_route_retry() {
-    let temp = tempfile::tempdir().unwrap();
-    let data_root = temp.path().join("data");
-    ctx_history_platform::platform_security::establish_private_data_root(&data_root).unwrap();
-    let route = route_identity(0x64);
-    let entered = Arc::new(Barrier::new(2));
-    let release = Arc::new(Barrier::new(2));
-    let executor_entered = Arc::clone(&entered);
-    let executor_release = Arc::clone(&release);
-    let failed_route = route.clone();
-    let executor: Arc<dyn SourceBackedRefreshExecutor> =
-        Arc::new(move |execution: SourceBackedRefreshExecution<'_>| {
-            assert_eq!(
-                execution.scope,
-                SourceBackedRefreshScope::exact([failed_route.clone()])
-            );
-            executor_entered.wait();
-            executor_release.wait();
-            Err(SourceBackedCoordinatorError::NoUsableSourceRoutes {
-                failed_routes: SourceBackedSourceFailures::from_failures([
-                    SourceBackedFailedRoute::new(
-                        failed_route.clone(),
-                        "65".repeat(32),
-                        CaptureProvider::Codex,
-                        SourceBackedSourceFailureClass::Unavailable,
-                        false,
-                        "fixture source",
-                        "temporarily unavailable",
-                    ),
-                ]),
-            }
-            .into())
-        });
-    let coordinator = Arc::new(CoreRefreshEngine::with_executor(executor));
-    let observed_at_ms = ledger_now_ms().saturating_sub(1_000);
-    coordinator.reconcile_watch_routes([route.clone()], EventWatermark::new(8, 0), observed_at_ms);
-    coordinator
-        .enqueue_with_catalog_metadata(
-            None,
-            SourceRefreshRuntimeMetadata::periodic(),
-            None,
-            SourceBackedRefreshScope::exact([route.clone()]),
-            SourceRefreshLogicalDemand {
-                admission: SourceRefreshAdmissionRequirement::AttachEquivalent,
-                reconciliation_demand: SourceBackedReconciliationDemand::Exhaustive,
-                route_observations: BTreeMap::new(),
-                request_id: None,
-                request_fingerprint: None,
-                admission_pending: false,
-            },
-        )
-        .unwrap();
-    let logical_request_id = Uuid::from_u128(0x64).to_string();
-    let authority = test_catalog_authority(8, 0);
-
-    let physical = std::thread::scope(|scope| {
-        let runner = Arc::clone(&coordinator);
-        let runner_data_root = data_root.clone();
-        let handle = scope.spawn(move || {
-            runner
-                .run_next(&runner_data_root)
-                .expect("failed exact predecessor")
-        });
-        entered.wait();
-        let attached = coordinator
-            .enqueue_fresh_catalog_demand_for_test(
-                &data_root,
-                None,
-                logical_request_id.clone(),
-                authority,
-            )
-            .expect("attached broad logical successor");
-        assert_eq!(attached["logical_phase"], "attached");
-        release.wait();
-        handle.join().unwrap()
-    });
-
-    assert!(physical.failed);
-    let logical = coordinator
-        .status(&logical_request_id)
-        .expect("terminal logical successor");
-    assert_eq!(logical["request_state"], "failed");
-    assert_eq!(logical["logical_phase"], "terminal");
-    assert_eq!(
-        logical["structured_outcome"]["physical_attempt_id"],
-        physical.job["request_id"]
-    );
-    assert_eq!(
-        logical["structured_outcome"]["retryable_routes"],
-        json!([route.as_str()])
-    );
-    assert!(!coordinator.has_pending_request());
-    assert_eq!(
-        read_daemon_job_status(&daemon_source_backed_refresh_job_path(&data_root)).unwrap()
-            ["request_id"],
-        logical_request_id
-    );
-    let mut global_retry = physical.job.clone();
-    global_retry["retryable"] = json!(true);
-    global_retry["retry_after_ms"] = json!(30_000);
-    let authoritative = coordinator
-        .persist_retry_status(&data_root, global_retry)
-        .expect("route-local terminal authority");
-    assert_eq!(authoritative["request_id"], logical_request_id);
-    assert!(authoritative.get("retryable").is_none());
-    assert!(authoritative.get("retry_after_ms").is_none());
-    assert_eq!(
-        coordinator.dirty_route_ids_for_test(),
-        BTreeSet::from([route.clone()])
-    );
-    assert!(!coordinator.route_is_permanently_blocked_for_test(&route));
-    assert!(coordinator
-        .next_dirty_route_due_in_ms(ledger_now_ms())
-        .is_some_and(|delay| delay > 0));
-    assert!(!coordinator
-        .enqueue_next_dirty_route(&data_root, ledger_now_ms())
-        .unwrap());
 }
 
 #[test]
@@ -499,7 +253,8 @@ fn successful_partial_publication_retains_mixed_route_retry_dispositions() {
             .collect();
             Ok(publication)
         });
-    let coordinator = CoreRefreshEngine::with_executor(executor);
+    let coordinator =
+        CoreRefreshEngine::with_executor_and_admitted_routes(executor, routes.clone());
     let observed_at_ms = ledger_now_ms().saturating_sub(1_000);
     coordinator.reconcile_watch_routes(routes.clone(), EventWatermark::new(4, 0), observed_at_ms);
     assert!(coordinator
@@ -553,7 +308,8 @@ fn systemic_exact_publication_failure_leaves_the_route_dirty_with_backoff() {
     let route = route_identity(0x71);
     let executor: Arc<dyn SourceBackedRefreshExecutor> =
         Arc::new(|_: SourceBackedRefreshExecution<'_>| Err(anyhow!("systemic fixture failure")));
-    let coordinator = CoreRefreshEngine::with_executor(executor);
+    let coordinator =
+        CoreRefreshEngine::with_executor_and_admitted_routes(executor, [route.clone()]);
     coordinator.reconcile_watch_routes(
         [route],
         EventWatermark::new(3, 0),
@@ -572,16 +328,30 @@ fn systemic_exact_publication_failure_leaves_the_route_dirty_with_backoff() {
 #[test]
 fn differing_catalog_authority_queues_one_successor_behind_a_running_refresh() {
     let temp = tempfile::tempdir().unwrap();
-    let coordinator = Arc::new(CoreRefreshEngine::new());
-    let first_authority = test_catalog_authority(1, 0x11);
-    let second_authority = test_catalog_authority(2, 0x22);
-    let request = |authority: &ExplicitSourceCatalogAuthority| {
+    let data_root = temp.path().join("data");
+    ctx_history_platform::platform_security::establish_private_data_root(&data_root).unwrap();
+    let first_authority =
+        test_exact_catalog_authority(&data_root, &temp.path().join("exact-source-1"));
+    let (gate, executor_started, executor_release) = RunningRefreshGate::new();
+    let executor_release = Mutex::new(executor_release);
+    let executor_calls = AtomicUsize::new(0);
+    let coordinator = Arc::new(CoreRefreshEngine::with_executor(Arc::new(
+        move |execution: SourceBackedRefreshExecution<'_>| {
+            if executor_calls.fetch_add(1, Ordering::SeqCst) == 0 {
+                executor_started.send(()).expect("signal running refresh");
+                let _ = executor_release.lock().unwrap().recv();
+            }
+            CaptureOwnedSourceBackedRefreshExecutor.refresh(execution)
+        },
+    )));
+    let request = |authority: &ExplicitSourceCatalogAuthority, logical_request_id: &str| {
         coordinator
             .handle_ipc_request(
-                temp.path(),
+                &data_root,
                 &json!({
                     "schema_version": 1,
                     "op": SOURCE_REFRESH_REQUEST_OP,
+                    "request_id": logical_request_id,
                     "mode": "wait",
                     "operation": "import",
                     "explicit_source_catalog": authority.to_json(),
@@ -591,66 +361,57 @@ fn differing_catalog_authority_queues_one_successor_behind_a_running_refresh() {
             .expect("source refresh response")
     };
 
-    let first = request(&first_authority);
+    let first = request(&first_authority, &Uuid::now_v7().to_string());
+    assert_eq!(first["refresh_intent"]["selection"]["kind"], "exact_source");
     let first_request_id = request_id(&first);
-    let (gate, runner_started, runner_release) = RunningRefreshGate::new();
+    assert!(coordinator
+        .prepare_next_pending_admission(&data_root)
+        .unwrap());
 
-    let (second, second_replay) = std::thread::scope(|scope| {
+    let (second, second_replay, second_authority) = std::thread::scope(|scope| {
         let runner = Arc::clone(&coordinator);
-        let runner_request_id = first_request_id.clone();
-        let runner_authority = first_authority.clone();
+        let runner_root = data_root.clone();
         scope.spawn(move || {
             let first_run = runner
-                .run_next_with(
-                    |request_id, _| {
-                        assert_eq!(request_id, runner_request_id);
-                        runner_started.send(()).expect("signal running refresh");
-                        let _ = runner_release.recv();
-                        let mut publication = test_publication("catalog-generation-1");
-                        publication.published_explicit_source_catalog = Some(runner_authority);
-                        Ok(publication)
-                    },
-                    || Ok(Some("catalog-generation-1".to_owned())),
-                    |_| Ok(()),
-                    |_| Ok(()),
-                )
+                .run_next(&runner_root)
                 .expect("running first catalog refresh");
-            assert!(!first_run.failed);
+            assert!(!first_run.failed, "{:#}", first_run.job);
         });
         gate.wait_until_started();
 
-        let second = request(&second_authority);
-        let second_replay = request(&second_authority);
+        let second_authority =
+            test_exact_catalog_authority(&data_root, &temp.path().join("exact-source-2"));
+        assert_ne!(first_authority, second_authority);
+        let second_logical_request_id = Uuid::now_v7().to_string();
+        let second = request(&second_authority, &second_logical_request_id);
+        let second_replay = request(&second_authority, &second_logical_request_id);
         gate.release();
-        (second, second_replay)
+        (second, second_replay, second_authority)
     });
 
     let second_request_id = request_id(&second);
     assert_ne!(first_request_id, second_request_id);
     assert_eq!(request_id(&second_replay), second_request_id);
-    assert_eq!(second_replay["coalesced_requests"], 1);
-    assert_eq!(second["request_state"], "queued");
+    assert_eq!(second_replay["coalesced_requests"], 0);
+    assert_eq!(second["request_state"], "admission_pending");
     assert_eq!(
         coordinator.status(&first_request_id).unwrap()["request_state"],
         "published"
     );
+    let pending_second = coordinator.status(&second_request_id).unwrap();
+    assert_eq!(pending_second["request_state"], "admission_pending");
+    let first_generation = coordinator.status(&first_request_id).unwrap()["published_generation"]
+        .as_str()
+        .expect("first exact generation")
+        .to_owned();
+    assert!(coordinator
+        .prepare_next_pending_admission(&data_root)
+        .unwrap());
     let queued_second = coordinator.status(&second_request_id).unwrap();
     assert_eq!(queued_second["request_state"], "queued");
-    assert_eq!(queued_second["previous_generation"], "catalog-generation-1");
+    assert_eq!(queued_second["previous_generation"], first_generation);
 
-    let second_run = coordinator
-        .run_next_with(
-            |request_id, _| {
-                assert_eq!(request_id, second_request_id);
-                let mut publication = test_publication("catalog-generation-2");
-                publication.published_explicit_source_catalog = Some(second_authority.clone());
-                Ok(publication)
-            },
-            || Ok(Some("catalog-generation-2".to_owned())),
-            |_| Ok(()),
-            |_| Ok(()),
-        )
-        .unwrap();
+    let second_run = coordinator.run_next(&data_root).unwrap();
     assert!(!second_run.failed);
     assert!(!coordinator.has_pending_request());
     let published_second = coordinator.status(&second_request_id).unwrap();
@@ -667,13 +428,17 @@ fn differing_catalog_authority_queues_one_successor_behind_a_running_refresh() {
 #[test]
 fn active_and_pending_refreshes_are_bounded_with_a_typed_busy_response() {
     let temp = tempfile::tempdir().unwrap();
+    let data_root = temp.path().join("data");
+    ctx_history_platform::platform_security::establish_private_data_root(&data_root).unwrap();
     let coordinator = CoreRefreshEngine::new();
     let request = |revision: u64| {
-        let digest_byte = u8::try_from(revision).unwrap();
-        let authority = test_catalog_authority(revision, digest_byte);
+        let authority = test_exact_catalog_authority(
+            &data_root,
+            &temp.path().join(format!("exact-source-{revision}")),
+        );
         coordinator
             .handle_ipc_request(
-                temp.path(),
+                &data_root,
                 &json!({
                     "schema_version": 1,
                     "op": SOURCE_REFRESH_REQUEST_OP,
@@ -718,6 +483,9 @@ fn active_and_pending_refreshes_are_bounded_with_a_typed_busy_response() {
 
 #[test]
 fn terminal_history_is_trimmed_independently_from_inflight_capacity() {
+    let temp = tempfile::tempdir().unwrap();
+    let data_root = temp.path().join("data");
+    ctx_history_platform::platform_security::establish_private_data_root(&data_root).unwrap();
     let coordinator = CoreRefreshEngine::new();
     let total = SOURCE_REFRESH_ATTEMPT_HISTORY + 3;
     let mut request_ids = Vec::with_capacity(total);
@@ -726,7 +494,11 @@ fn terminal_history_is_trimmed_independently_from_inflight_capacity() {
         let previous = format!("generation-{generation}");
         let published = format!("generation-{}", generation.saturating_add(1));
         let request = coordinator.enqueue(Some(previous));
-        request_ids.push(request_id(&request));
+        let queued_request_id = request_id(&request);
+        coordinator
+            .complete_pending_admission_for_test(&data_root, &queued_request_id, BTreeMap::new())
+            .unwrap();
+        request_ids.push(queued_request_id);
         let run = coordinator
             .run_next_with(
                 |_, _| Ok(test_publication(published.clone())),
@@ -746,7 +518,14 @@ fn terminal_history_is_trimmed_independently_from_inflight_capacity() {
         .all(|request_id| coordinator.status(request_id).is_some()));
 
     let next = coordinator.enqueue(Some(format!("generation-{total}")));
-    assert_eq!(next["request_state"], "queued");
+    let next_request_id = request_id(&next);
+    coordinator
+        .complete_pending_admission_for_test(&data_root, &next_request_id, BTreeMap::new())
+        .unwrap();
+    assert_eq!(
+        coordinator.status(&next_request_id).unwrap()["request_state"],
+        "queued"
+    );
     assert!(coordinator.has_pending_request());
 }
 
@@ -773,8 +552,7 @@ fn production_run_persists_discovering_before_executor_entry() {
             Err(anyhow!("stop after observing persisted discovery phase"))
         },
     ));
-    let authority = load_explicit_source_catalog_authority(&data_root).unwrap();
-    let _request = manual_all_request(&coordinator, &data_root, &authority);
+    let _request = manual_all_request_without_catalog(&coordinator, &data_root);
 
     let run = coordinator.run_next(&data_root).expect("queued refresh");
     assert!(run.failed);

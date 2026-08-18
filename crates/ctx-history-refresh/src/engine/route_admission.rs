@@ -28,6 +28,21 @@ impl CoreRefreshEngine {
             if routes.is_empty() {
                 return Ok(false);
             }
+            let retry_intent = routes
+                .iter()
+                .find_map(|route| state.route_retry_intents.get(route).cloned());
+            let routes = retry_intent.as_ref().map_or(routes.clone(), |intent| {
+                routes
+                    .iter()
+                    .filter(|route| {
+                        state
+                            .route_retry_intents
+                            .get(*route)
+                            .is_some_and(|stored| stored.as_ref() == intent.as_ref())
+                    })
+                    .cloned()
+                    .collect()
+            });
             let requires_exhaustive_recovery = routes.iter().any(|route| {
                 state
                     .hermes_routes_requiring_exhaustive_recovery
@@ -36,20 +51,26 @@ impl CoreRefreshEngine {
                         .routes_requiring_exhaustive_reconciliation
                         .contains(route)
             });
-            let refresh_scope = if cold_all && observed_generation.is_none() {
-                // A cold generation has no retained routes to carry. Publish
-                // the complete startup inventory atomically instead of one
-                // transient partial generation per initially dirty route.
-                SourceBackedRefreshScope::All
-            } else {
-                SourceBackedRefreshScope::Exact(routes)
-            };
+            let refresh_scope =
+                if retry_intent.is_none() && cold_all && observed_generation.is_none() {
+                    // A cold generation has no retained routes to carry. Publish
+                    // the complete startup inventory atomically instead of one
+                    // transient partial generation per initially dirty route.
+                    SourceBackedRefreshScope::All
+                } else {
+                    SourceBackedRefreshScope::Exact(routes)
+                };
             let mut attempt = new_refresh_attempt(
                 observed_generation,
                 SourceRefreshRuntimeMetadata::periodic(),
-                None,
+                retry_intent
+                    .as_deref()
+                    .cloned()
+                    .unwrap_or(RefreshIntent::AutomaticMaintenance),
                 refresh_scope,
             );
+            attempt.state = SourceBackedRefreshState::AdmissionPending;
+            attempt.progress.phase = "admission_pending".to_owned();
             if requires_exhaustive_recovery {
                 attempt.reconciliation_demand = SourceBackedReconciliationDemand::Exhaustive;
             }
@@ -156,20 +177,15 @@ impl CoreRefreshEngine {
             .route_admissions
             .remove(request_id)
             .unwrap_or_default();
-        let retained_predecessor_event_watermarks =
-            state.route_admission_watermarks.remove(request_id);
-        if let Some(predecessor_event_watermarks) = retained_predecessor_event_watermarks.as_ref() {
-            for continuation in state.manual_all_continuations.values_mut() {
-                if continuation.predecessor_request_id == request_id {
-                    continuation.predecessor_event_watermarks =
-                        predecessor_event_watermarks.clone();
-                }
-            }
-        }
-        let predecessor_event_watermarks =
-            retained_predecessor_event_watermarks.unwrap_or_default();
-        let current_event_watermarks = state.route_event_watermarks.clone();
+        let predecessor_event_watermarks = state
+            .route_admission_watermarks
+            .remove(request_id)
+            .unwrap_or_default();
         let attempt = find_attempt(state, request_id).cloned();
+        let selected_retry_intent = attempt.as_ref().and_then(|attempt| {
+            matches!(attempt.intent, RefreshIntent::SelectedImport(_))
+                .then(|| Arc::new(attempt.intent.clone()))
+        });
         let route_results = attempt
             .as_ref()
             .and_then(|attempt| attempt.receipt.as_ref())
@@ -180,7 +196,6 @@ impl CoreRefreshEngine {
                     .map(|result| (result.route_identity.as_str(), result))
                     .collect::<BTreeMap<_, _>>()
             });
-        let mut covered_route_results = BTreeMap::new();
         let mut certified_routes = BTreeMap::new();
         for admission in admissions {
             let terminal_failed = !publication_ready
@@ -193,8 +208,14 @@ impl CoreRefreshEngine {
                     .and_then(|attempt| attempt.failure_outcome.as_ref())
                     .is_some_and(|outcome| outcome.blocked_routes.contains(admission.route()));
                 if blocked {
+                    state.route_retry_intents.remove(admission.route());
                     state.dirty_routes.permanent_failure(&admission);
                 } else {
+                    if let Some(intent) = selected_retry_intent.as_ref() {
+                        state
+                            .route_retry_intents
+                            .insert(admission.route().clone(), intent.clone());
+                    }
                     state.dirty_routes.retryable_failure(&admission, now_ms);
                     state
                         .routes_requiring_exhaustive_reconciliation
@@ -215,11 +236,17 @@ impl CoreRefreshEngine {
             };
             if let Some(retryable) = source_backed_route_retry_disposition(result) {
                 if retryable {
+                    if let Some(intent) = selected_retry_intent.as_ref() {
+                        state
+                            .route_retry_intents
+                            .insert(admission.route().clone(), intent.clone());
+                    }
                     state.dirty_routes.retryable_failure(&admission, now_ms);
                     state
                         .routes_requiring_exhaustive_reconciliation
                         .insert(admission.route().clone());
                 } else {
+                    state.route_retry_intents.remove(admission.route());
                     state.dirty_routes.permanent_failure(&admission);
                 }
                 continue;
@@ -255,6 +282,7 @@ impl CoreRefreshEngine {
                     None => state.dirty_routes.acknowledge(&admission),
                 };
                 if acknowledged {
+                    state.route_retry_intents.remove(admission.route());
                     if attempt.as_ref().is_some_and(|attempt| {
                         attempt.reconciliation_demand
                             == SourceBackedReconciliationDemand::Exhaustive
@@ -266,7 +294,6 @@ impl CoreRefreshEngine {
                             .routes_requiring_exhaustive_reconciliation
                             .remove(admission.route());
                     }
-                    covered_route_results.insert(admission.route().clone(), result.clone());
                     if let Some((boundary, observation)) = verified_boundary {
                         certified_routes.insert(
                             admission.route().clone(),
@@ -278,6 +305,11 @@ impl CoreRefreshEngine {
                     }
                 }
             } else {
+                if let Some(intent) = selected_retry_intent.as_ref() {
+                    state
+                        .route_retry_intents
+                        .insert(admission.route().clone(), intent.clone());
+                }
                 state.dirty_routes.retryable_failure(&admission, now_ms);
                 state
                     .routes_requiring_exhaustive_reconciliation
@@ -288,12 +320,6 @@ impl CoreRefreshEngine {
             .as_ref()
             .is_some_and(|attempt| attempt.state == SourceBackedRefreshState::Failed)
         {
-            let durable_request_id = Self::terminalize_failed_predecessor_demands(
-                state,
-                request_id,
-                attempt.as_ref().expect("failed predecessor snapshot"),
-            )
-            .unwrap_or_else(|| request_id.to_owned());
             if attempt
                 .as_ref()
                 .and_then(|attempt| attempt.failure_outcome.as_ref())
@@ -304,134 +330,8 @@ impl CoreRefreshEngine {
             }
             return RouteAdmissionFinish {
                 coverage_certificate: None,
-                durable_request_id,
+                durable_request_id: request_id.to_owned(),
             };
-        }
-        let predecessor_reconciliation_demand = attempt
-            .as_ref()
-            .map(|attempt| attempt.reconciliation_demand)
-            .unwrap_or(SourceBackedReconciliationDemand::Incremental);
-        let successor_reconciliation_demands = state
-            .attempts
-            .iter()
-            .map(|attempt| (attempt.request_id.clone(), attempt.reconciliation_demand))
-            .collect::<BTreeMap<_, _>>();
-        for (continuation_id, continuation) in &mut state.manual_all_continuations {
-            if continuation.predecessor_request_id != request_id {
-                continue;
-            }
-            continuation.predecessor_finished = true;
-            if successor_reconciliation_demands
-                .get(continuation_id)
-                .is_some_and(|requested| predecessor_reconciliation_demand < *requested)
-            {
-                continue;
-            }
-            if let Some(attempt) = attempt.as_ref() {
-                if let Some(receipt) = attempt.receipt.as_ref() {
-                    for (route, admission_observation) in &continuation.admission_route_observations
-                    {
-                        let covered = !continuation.invalidated_routes.contains(route)
-                            && continuation.admission_event_watermarks.get(route)
-                                == continuation.predecessor_event_watermarks.get(route)
-                            && admission_observation.as_ref().is_some_and(|admitted| {
-                                attempt.route_observations.get(route) == Some(admitted)
-                                    && receipt.route_results.iter().any(|result| {
-                                        result.route_identity == route.as_str()
-                                            && source_backed_route_retry_disposition(result)
-                                                .is_none()
-                                    })
-                            });
-                        if covered {
-                            if let Some(result) = receipt
-                                .route_results
-                                .iter()
-                                .find(|result| result.route_identity == route.as_str())
-                            {
-                                continuation
-                                    .covered_route_results
-                                    .insert(route.clone(), result.clone());
-                                if let Some(authority) = receipt
-                                    .zero_source_authority
-                                    .iter()
-                                    .find(|authority| authority.route_identity == *route)
-                                {
-                                    continuation
-                                        .covered_zero_source_authority
-                                        .insert(route.clone(), authority.clone());
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-            if covered_route_results.is_empty() {
-                if continuation.covered_route_results.is_empty() {
-                    continue;
-                }
-            } else {
-                for (route, result) in &covered_route_results {
-                    if continuation.invalidated_routes.contains(route) {
-                        continue;
-                    }
-                    if attempt
-                        .as_ref()
-                        .is_some_and(|attempt| attempt.route_observations.contains_key(route))
-                    {
-                        // A predecessor with a provider-certified observation
-                        // cannot be covered by a later indeterminate sample.
-                        // The ledger path is only for route kinds that were
-                        // indeterminate throughout the same successful pass.
-                        continue;
-                    }
-                    if continuation
-                        .admission_route_observations
-                        .contains_key(route)
-                        && !continuation.ledger_eligible_routes.contains(route)
-                    {
-                        continue;
-                    }
-                    // Legacy watcher-ledger admissions are a second exact
-                    // coverage proof for routes outside the catalog-derived
-                    // fence. Keep them in the durable logical demand, but do
-                    // not let them override an indeterminate or mismatched
-                    // catalog observation for the same route.
-                    continuation
-                        .admission_route_observations
-                        .insert(route.clone(), None);
-                    if let Some(watermark) = current_event_watermarks.get(route).copied() {
-                        continuation
-                            .admission_event_watermarks
-                            .insert(route.clone(), watermark);
-                    }
-                    if let Some(watermark) = predecessor_event_watermarks.get(route).copied() {
-                        continuation
-                            .predecessor_event_watermarks
-                            .insert(route.clone(), watermark);
-                    }
-                    if continuation.admission_event_watermarks.get(route)
-                        != continuation.predecessor_event_watermarks.get(route)
-                    {
-                        continue;
-                    }
-                    continuation.cover_route(
-                        route.clone(),
-                        result.clone(),
-                        attempt
-                            .as_ref()
-                            .and_then(|attempt| attempt.receipt.as_ref()),
-                    );
-                }
-            }
-            continuation.covered_removed_source_count = attempt
-                .as_ref()
-                .and_then(|attempt| attempt.receipt.as_ref())
-                .map(|receipt| receipt.current.removed_source_count)
-                .unwrap_or_default();
-            continuation.covered_timings = attempt
-                .as_ref()
-                .and_then(|attempt| attempt.timings)
-                .unwrap_or_default();
         }
         let coverage_certificate = attempt
             .filter(|attempt| {
@@ -450,76 +350,11 @@ impl CoreRefreshEngine {
         }
     }
 
-    fn terminalize_failed_predecessor_demands(
-        state: &mut CoreRefreshEngineState,
-        predecessor_request_id: &str,
-        predecessor: &SourceBackedRefreshAttempt,
-    ) -> Option<String> {
-        let dependent_request_ids = state
-            .manual_all_continuations
-            .iter()
-            .filter(|(_, continuation)| {
-                continuation.predecessor_request_id == predecessor_request_id
-            })
-            .map(|(request_id, _)| request_id.clone())
-            .collect::<Vec<_>>();
-        debug_assert!(
-            dependent_request_ids.len() <= 1,
-            "one predecessor must have at most one exact broad successor"
-        );
-        let mut durable_request_id = None;
-        for request_id in dependent_request_ids {
-            let fallback_routes = find_attempt(state, &request_id)
-                .and_then(|attempt| match &attempt.refresh_scope {
-                    SourceBackedRefreshScope::All => None,
-                    SourceBackedRefreshScope::Exact(routes) => Some(routes.clone()),
-                })
-                .unwrap_or_default();
-            let failure_outcome = predecessor.failure_outcome.clone().unwrap_or_else(|| {
-                SourceBackedRefreshFailureOutcome::new(
-                    "source_refresh_failed",
-                    "internal",
-                    true,
-                    fallback_routes,
-                    Some("retry_request"),
-                )
-            });
-            if let Some(logical) = find_attempt_mut(state, &request_id) {
-                logical.state = SourceBackedRefreshState::Failed;
-                logical.finished_at_ms = predecessor
-                    .finished_at_ms
-                    .or_else(|| Some(utc_now().timestamp_millis()));
-                logical.published_generation = predecessor.published_generation.clone();
-                logical.progress = predecessor.progress.clone();
-                logical.progress.phase = "failed".to_owned();
-                logical.progress_total_sources_known = predecessor.progress_total_sources_known;
-                logical.physical_attempt_id = Some(predecessor_request_id.to_owned());
-                logical.failure_type = predecessor.failure_type;
-                logical.failure_outcome = Some(failure_outcome);
-                logical.last_error = predecessor.last_error.as_ref().map(|detail| {
-                    format!("physical predecessor `{predecessor_request_id}` failed: {detail}")
-                });
-            }
-            state.manual_all_continuations.remove(&request_id);
-            state.admission_resolutions_in_flight.remove(&request_id);
-            state.unacknowledged_admissions.remove(&request_id);
-            state.route_admissions.remove(&request_id);
-            state.route_admission_watermarks.remove(&request_id);
-            state
-                .pending_request_ids
-                .retain(|pending| pending != &request_id);
-            if state.active_request_id.as_deref() == Some(request_id.as_str()) {
-                state.active_request_id = state.pending_request_ids.pop_front();
-            }
-            durable_request_id.get_or_insert(request_id);
-        }
-        durable_request_id
-    }
-
     pub(super) fn restore_route_dispositions_locked(
         state: &mut CoreRefreshEngineState,
         retryable_routes: &BTreeSet<SourceRouteIdentity>,
         blocked_routes: &BTreeSet<SourceRouteIdentity>,
+        retry_intent: Option<&RefreshIntent>,
     ) {
         let routes = retryable_routes
             .union(blocked_routes)
@@ -541,5 +376,16 @@ impl CoreRefreshEngine {
             .dirty_routes
             .seed_exact_routes(routes, watermark, now_ms);
         state.dirty_routes.block_exact_routes(blocked_routes.iter());
+        if let Some(intent @ RefreshIntent::SelectedImport(_)) = retry_intent {
+            let intent = Arc::new(intent.clone());
+            for route in retryable_routes {
+                state
+                    .route_retry_intents
+                    .insert(route.clone(), Arc::clone(&intent));
+            }
+        }
+        for route in blocked_routes {
+            state.route_retry_intents.remove(route);
+        }
     }
 }

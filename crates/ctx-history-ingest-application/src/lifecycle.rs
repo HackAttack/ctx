@@ -16,10 +16,10 @@ use crate::{
     validate_ingest_request, AutomaticPublicationOutcome, CaptureAdmissionPort,
     CorePublicationFacts, ExactPublicationOutcome, HistorySourcePluginSource, ImportTotals,
     IngestChange, IngestFailureScope, IngestFailureType, IngestProgressPort, IngestPublication,
-    IngestRefreshPort, IngestRefreshSelection, IngestReport, IngestRequest, IngestRoute,
-    IngestSourceOutcome, IngestStatus, IngestTelemetryFacts, IngestTerminalOutcome,
-    PluginPublicationOutcome, ProviderRefreshFacts, ProviderRefreshModeFact,
-    RecordRejectionOutcome, SourceDiscoveryPort, SourceFailureOutcome, SourceStats,
+    IngestRefreshPort, IngestReport, IngestRequest, IngestRoute, IngestSourceOutcome, IngestStatus,
+    IngestTelemetryFacts, IngestTerminalOutcome, PluginPublicationOutcome, ProviderRefreshFacts,
+    ProviderRefreshModeFact, RecordRejectionOutcome, RefreshSelection, SourceDiscoveryPort,
+    SourceFailureOutcome, SourceStats,
 };
 
 const MAX_REPORTED_SOURCE_FAILURES: usize = 3;
@@ -52,11 +52,11 @@ where
             report.sources.iter(),
         )
         .context("validate provider roots before initializing ctx state")?;
-        IngestRefreshSelection::AutomaticProvider(provider)
+        RefreshSelection::Provider(provider)
     } else {
         automatic_source_preflight(host, data_root)
             .context("validate provider roots before initializing ctx state")?;
-        IngestRefreshSelection::AllAutomatic
+        RefreshSelection::All
     };
 
     host.protect_data_root(data_root)
@@ -182,7 +182,7 @@ where
     let upsert = host.admit_exact(data_root, &source, request.relocate_from.as_deref())?;
     let publication = host.refresh(
         data_root,
-        IngestRefreshSelection::ExplicitCatalog(&upsert.authority),
+        RefreshSelection::ExactSource(upsert.authority.clone()),
         request.no_daemon,
     )?;
     let duration = started.elapsed();
@@ -354,7 +354,7 @@ where
     let upsert = host.admit_exact(data_root, &route_source, None)?;
     let publication = host.refresh(
         data_root,
-        IngestRefreshSelection::ExplicitCatalog(&upsert.authority),
+        RefreshSelection::ExactSource(upsert.authority.clone()),
         request.no_daemon,
     )?;
     let duration = started.elapsed();

@@ -53,14 +53,8 @@ impl PublishedSourceBackedStatePort for PreopenedPublishedState {
 pub(super) fn execute_capture_owned_refresh(
     execution: SourceBackedRefreshExecution<'_>,
 ) -> Result<SourceBackedRefreshPublication> {
-    if execution.admitted_discovery.is_some()
-        && !matches!(execution.scope, SourceBackedRefreshScope::Exact(_))
-    {
-        bail!("admitted scoped discovery requires an exact source refresh scope");
-    }
-    let catalog_admission = catalog_refresh_admission(&execution);
     let mut family_fallback = execution.clone();
-    match execute_capture_owned_refresh_once(execution, catalog_admission.clone()) {
+    match execute_capture_owned_refresh_once(execution) {
         Err(error)
             if error
                 .downcast_ref::<ExactMemberFallbackRequired>()
@@ -68,16 +62,9 @@ pub(super) fn execute_capture_owned_refresh(
         {
             family_fallback.reconciliation_demand = SourceBackedReconciliationDemand::Exhaustive;
             family_fallback
-                .route_worksets
-                .values_mut()
-                .for_each(|workset| *workset = SourceBackedRefreshWorkset::Exhaustive);
-            execute_capture_owned_refresh_once(
-                family_fallback,
-                catalog_admission.map(|mut admission| {
-                    admission.exact_members = false;
-                    admission
-                }),
-            )
+                .admitted_refresh_mut()
+                .promote_worksets_to_exhaustive();
+            execute_capture_owned_refresh_once(family_fallback)
         }
         result => result,
     }
@@ -85,12 +72,12 @@ pub(super) fn execute_capture_owned_refresh(
 
 fn execute_capture_owned_refresh_once(
     execution: SourceBackedRefreshExecution<'_>,
-    catalog_admission: Option<CatalogRefreshAdmission>,
 ) -> Result<SourceBackedRefreshPublication> {
     let discovery_context = execution.discovery_context;
     let reconciliation_demand = execution.reconciliation_demand;
     let route_worksets = execution
-        .route_worksets
+        .admitted_refresh()
+        .route_worksets()
         .iter()
         .filter_map(|(route, workset)| match workset {
             SourceBackedRefreshWorkset::Members(paths) => Some((route.clone(), paths.clone())),
@@ -100,9 +87,6 @@ fn execute_capture_owned_refresh_once(
     execute_capture_owned_refresh_with(
         execution,
         discovery_context,
-        catalog_admission
-            .as_ref()
-            .map(|admission| (admission.report.clone(), admission.discovery_duration)),
         move |discovery,
               report,
               discovery_duration,
@@ -112,8 +96,8 @@ fn execute_capture_owned_refresh_once(
               index_root,
               explicit_source_catalog,
               scope,
-              covered_route_ids,
-              covered_publication,
+              physical_scope,
+              exact_catalog_members,
               published_state,
               report_progress| {
             refresh_all_provider_sources_route_local_with_reconciliation(
@@ -123,16 +107,13 @@ fn execute_capture_owned_refresh_once(
                 request_id,
                 operation,
                 reconciliation_demand,
-                catalog_admission
-                    .as_ref()
-                    .is_some_and(|admission| admission.exact_members),
+                exact_catalog_members,
                 &route_worksets,
                 data_root,
                 index_root,
                 explicit_source_catalog,
                 scope,
-                covered_route_ids,
-                covered_publication,
+                physical_scope,
                 published_state,
                 report_progress,
             )
@@ -144,7 +125,6 @@ fn execute_capture_owned_refresh_once(
 pub fn execute_capture_owned_refresh_with<Refresh>(
     execution: SourceBackedRefreshExecution<'_>,
     discovery: &DiscoveryContext,
-    admitted_report: Option<(DiscoveryReport, StdDuration)>,
     refresh_all: Refresh,
 ) -> Result<SourceBackedRefreshPublication>
 where
@@ -158,8 +138,8 @@ where
         &Path,
         Option<&ExplicitSourceCatalogAuthority>,
         SourceBackedRefreshScope,
-        &BTreeSet<SourceRouteIdentity>,
-        &SourceBackedRefreshCoveredPublication,
+        SourceBackedRefreshScope,
+        bool,
         &dyn PublishedSourceBackedStatePort,
         &mut dyn FnMut(CaptureSourceBackedDetailedRefreshProgress) -> SourceBackedRouteResult<()>,
     ) -> Result<SourceBackedRefreshPublication>,
@@ -172,21 +152,12 @@ where
         .published_state
         .open_published_state(execution.data_root)?;
     let published_state = PreopenedPublishedState(Mutex::new(Some(published_state)));
-    let (report, discovery_duration) = match admitted_report {
-        Some(admitted) => admitted,
-        None if execution.requires_admitted_discovery => {
-            bail!("selected source refresh has no admitted discovery authority")
-        }
-        None => {
-            let work_budget = source_backed_refresh_work_budget(
-                source_backed_refresh_writer_options().indexer_threads,
-            );
-            let discovery_started = StdInstant::now();
-            let report =
-                discover_provider_sources_with_context_and_work_budget(&discovery, work_budget);
-            (report, discovery_started.elapsed())
-        }
-    };
+    let catalog_admission = catalog_refresh_admission(&execution);
+    let report = catalog_admission.report;
+    let discovery_duration = catalog_admission.discovery_duration;
+    let publication_scope = execution.admitted_refresh().publication_scope();
+    let physical_scope =
+        SourceBackedRefreshScope::Exact(execution.admitted_refresh().exact_routes().clone());
     validate_provider_source_roots_outside_data_root(execution.data_root, report.sources.iter())
         .context("validate provider roots before source-refresh state writes")?;
     if let Some(authority) = execution.explicit_source_catalog {
@@ -244,9 +215,9 @@ where
         execution.data_root,
         execution.index_root,
         execution.explicit_source_catalog,
-        execution.scope.clone(),
-        &execution.covered_route_ids,
-        &execution.covered_publication,
+        publication_scope,
+        physical_scope,
+        catalog_admission.exact_members,
         &published_state,
         &mut report_progress,
     )
@@ -278,53 +249,13 @@ fn establish_source_backed_index_privacy(data_root: &Path, index_root: &Path) ->
 
 fn catalog_refresh_admission(
     execution: &SourceBackedRefreshExecution<'_>,
-) -> Option<CatalogRefreshAdmission> {
-    if let Some(admitted) = execution.admitted_discovery.as_ref() {
-        let SourceBackedRefreshScope::Exact(routes) = &execution.scope else {
-            return None;
-        };
-        let exact_member_report = (execution.reconciliation_demand
-            == SourceBackedReconciliationDemand::Incremental)
-            .then(|| {
-                execution
-                    .route_worksets
-                    .iter()
-                    .map(|(route, workset)| match workset {
-                        SourceBackedRefreshWorkset::Members(members) => {
-                            Some((route.clone(), members.clone()))
-                        }
-                        SourceBackedRefreshWorkset::Exhaustive => None,
-                    })
-                    .collect::<Option<BTreeMap<_, _>>>()
-                    .and_then(|worksets| {
-                        admitted
-                            .watch_catalog()
-                            .exact_member_discovery_report(routes, &worksets)
-                    })
-            })
-            .flatten();
-        return Some(CatalogRefreshAdmission {
-            report: exact_member_report
-                .clone()
-                .unwrap_or_else(|| admitted.report().clone()),
-            discovery_duration: admitted.discovery_duration(),
-            exact_members: exact_member_report.is_some(),
-        });
-    }
-    if execution.operation != RefreshOperation::Refresh
-        || execution.explicit_source_catalog.is_some()
-    {
-        return None;
-    }
-    let SourceBackedRefreshScope::Exact(routes) = &execution.scope else {
-        return None;
-    };
-    let catalog = execution.watch_catalog.as_ref()?;
+) -> CatalogRefreshAdmission {
+    let admitted = execution.admitted_refresh();
     let exact_member_report = (execution.reconciliation_demand
         == SourceBackedReconciliationDemand::Incremental)
         .then(|| {
-            execution
-                .route_worksets
+            admitted
+                .route_worksets()
                 .iter()
                 .map(|(route, workset)| match workset {
                     SourceBackedRefreshWorkset::Members(members) => {
@@ -333,25 +264,26 @@ fn catalog_refresh_admission(
                     SourceBackedRefreshWorkset::Exhaustive => None,
                 })
                 .collect::<Option<BTreeMap<_, _>>>()
-                .and_then(|worksets| catalog.exact_member_discovery_report(routes, &worksets))
+                .and_then(|worksets| {
+                    admitted
+                        .discovery()
+                        .watch_catalog()
+                        .exact_member_discovery_report(admitted.exact_routes(), &worksets)
+                })
         })
         .flatten();
-    if let Some(report) = exact_member_report {
-        return Some(CatalogRefreshAdmission {
-            report,
-            discovery_duration: StdDuration::ZERO,
-            exact_members: true,
-        });
+    CatalogRefreshAdmission {
+        report: exact_member_report
+            .clone()
+            .unwrap_or_else(|| admitted.discovery().report().clone()),
+        discovery_duration: admitted.discovery().discovery_duration(),
+        exact_members: exact_member_report.is_some(),
     }
-    Some(CatalogRefreshAdmission {
-        report: catalog.route_discovery_report(routes)?,
-        discovery_duration: StdDuration::ZERO,
-        exact_members: false,
-    })
 }
 
 #[allow(clippy::too_many_arguments)]
 #[doc(hidden)]
+#[cfg(any(test, feature = "test-support"))]
 pub fn refresh_all_provider_sources_route_local(
     discovery: &DiscoveryContext,
     report: DiscoveryReport,
@@ -362,13 +294,21 @@ pub fn refresh_all_provider_sources_route_local(
     index_root: &Path,
     explicit_source_catalog: Option<&ExplicitSourceCatalogAuthority>,
     scope: SourceBackedRefreshScope,
-    covered_route_ids: &BTreeSet<SourceRouteIdentity>,
-    covered_publication: &SourceBackedRefreshCoveredPublication,
     published_state: &dyn PublishedSourceBackedStatePort,
     report_progress: &mut dyn FnMut(
         CaptureSourceBackedDetailedRefreshProgress,
     ) -> SourceBackedRouteResult<()>,
 ) -> Result<SourceBackedRefreshPublication> {
+    let admitted = admitted_refresh_for_test_execution(
+        discovery,
+        report.clone(),
+        discovery_duration,
+        data_root,
+        explicit_source_catalog,
+        scope,
+        BTreeMap::new(),
+        published_state,
+    )?;
     refresh_all_provider_sources_route_local_with_reconciliation(
         discovery,
         report,
@@ -381,9 +321,8 @@ pub fn refresh_all_provider_sources_route_local(
         data_root,
         index_root,
         explicit_source_catalog,
-        scope,
-        covered_route_ids,
-        covered_publication,
+        admitted.publication_scope(),
+        SourceBackedRefreshScope::Exact(admitted.exact_routes().clone()),
         published_state,
         report_progress,
     )
@@ -391,6 +330,7 @@ pub fn refresh_all_provider_sources_route_local(
 
 #[allow(clippy::too_many_arguments)]
 #[doc(hidden)]
+#[cfg(any(test, feature = "test-support"))]
 pub fn refresh_all_provider_sources_route_local_with_worksets(
     discovery: &DiscoveryContext,
     report: DiscoveryReport,
@@ -403,13 +343,29 @@ pub fn refresh_all_provider_sources_route_local_with_worksets(
     index_root: &Path,
     explicit_source_catalog: Option<&ExplicitSourceCatalogAuthority>,
     scope: SourceBackedRefreshScope,
-    covered_route_ids: &BTreeSet<SourceRouteIdentity>,
-    covered_publication: &SourceBackedRefreshCoveredPublication,
     published_state: &dyn PublishedSourceBackedStatePort,
     report_progress: &mut dyn FnMut(
         CaptureSourceBackedDetailedRefreshProgress,
     ) -> SourceBackedRouteResult<()>,
 ) -> Result<SourceBackedRefreshPublication> {
+    let admitted = admitted_refresh_for_test_execution(
+        discovery,
+        report.clone(),
+        discovery_duration,
+        data_root,
+        explicit_source_catalog,
+        scope,
+        route_worksets
+            .iter()
+            .map(|(route, members)| {
+                (
+                    route.clone(),
+                    SourceBackedRefreshWorkset::members(members.iter().cloned()),
+                )
+            })
+            .collect(),
+        published_state,
+    )?;
     refresh_all_provider_sources_route_local_with_reconciliation(
         discovery,
         report,
@@ -422,12 +378,43 @@ pub fn refresh_all_provider_sources_route_local_with_worksets(
         data_root,
         index_root,
         explicit_source_catalog,
-        scope,
-        covered_route_ids,
-        covered_publication,
+        admitted.publication_scope(),
+        SourceBackedRefreshScope::Exact(admitted.exact_routes().clone()),
         published_state,
         report_progress,
     )
+}
+
+#[cfg(any(test, feature = "test-support"))]
+#[allow(clippy::too_many_arguments)]
+fn admitted_refresh_for_test_execution(
+    discovery: &DiscoveryContext,
+    report: DiscoveryReport,
+    discovery_duration: StdDuration,
+    data_root: &Path,
+    explicit_source_catalog: Option<&ExplicitSourceCatalogAuthority>,
+    scope: SourceBackedRefreshScope,
+    route_worksets: BTreeMap<SourceRouteIdentity, SourceBackedRefreshWorkset>,
+    published_state: &dyn PublishedSourceBackedStatePort,
+) -> Result<AdmittedRefresh> {
+    let coverage = match &scope {
+        SourceBackedRefreshScope::All => AdmittedRefreshCoverage::CompleteCatalog,
+        SourceBackedRefreshScope::Exact(_) => AdmittedRefreshCoverage::SelectedRoutes,
+    };
+    let admitted = source_backed_admitted_discovery_from_report(
+        discovery,
+        report,
+        discovery_duration,
+        data_root,
+        coverage,
+        explicit_source_catalog,
+        published_state,
+    )?;
+    let admitted = match scope {
+        SourceBackedRefreshScope::All => admitted,
+        SourceBackedRefreshScope::Exact(routes) => admitted.narrow_to(routes)?,
+    };
+    admitted.with_execution_facts(route_worksets)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -444,17 +431,24 @@ fn refresh_all_provider_sources_route_local_with_reconciliation(
     index_root: &Path,
     explicit_source_catalog: Option<&ExplicitSourceCatalogAuthority>,
     scope: SourceBackedRefreshScope,
-    covered_route_ids: &BTreeSet<SourceRouteIdentity>,
-    covered_publication: &SourceBackedRefreshCoveredPublication,
+    physical_scope: SourceBackedRefreshScope,
     published_state: &dyn PublishedSourceBackedStatePort,
     report_progress: &mut dyn FnMut(
         CaptureSourceBackedDetailedRefreshProgress,
     ) -> SourceBackedRouteResult<()>,
 ) -> Result<SourceBackedRefreshPublication> {
+    let SourceBackedRefreshScope::Exact(physical_routes) = &physical_scope else {
+        bail!("capture-owned physical refresh scope must contain exact admitted routes");
+    };
+    if let SourceBackedRefreshScope::Exact(publication_routes) = &scope {
+        if publication_routes != physical_routes {
+            bail!("selected-route publication does not match physical admission");
+        }
+    }
     let no_admitted_automatic_routes = BTreeSet::new();
-    let admitted_automatic_routes = match (&scope, operation, explicit_source_catalog) {
-        (SourceBackedRefreshScope::Exact(routes), RefreshOperation::Refresh, None) => routes,
-        _ => &no_admitted_automatic_routes,
+    let admitted_automatic_routes = match explicit_source_catalog {
+        None => physical_routes,
+        Some(_) => &no_admitted_automatic_routes,
     };
     let MergedSourceBackedRegistry {
         mut build,
@@ -524,21 +518,6 @@ fn refresh_all_provider_sources_route_local_with_reconciliation(
                 .collect::<BTreeSet<_>>()
         })
         .unwrap_or_default();
-    // `All` is a logical request over every route in this request's registry.
-    // Express it to Core as an exact set so routes committed by an earlier
-    // request-scoped explicit overlay are carried as read authority instead of
-    // becoming automatic roots or accidental deletion decisions.
-    let physical_scope = if scope == SourceBackedRefreshScope::All {
-        let current_route_ids = build
-            .registry
-            .watch_catalog()
-            .route_ids()
-            .cloned()
-            .collect::<BTreeSet<_>>();
-        SourceBackedRefreshScope::exact(current_route_ids.difference(covered_route_ids).cloned())
-    } else {
-        scope.clone()
-    };
     let expected_selected_route_ids = match &physical_scope {
         SourceBackedRefreshScope::Exact(routes) => routes
             .iter()
@@ -585,7 +564,6 @@ fn refresh_all_provider_sources_route_local_with_reconciliation(
     let executor = executor.with_base_route_controls(previous_route_controls.clone());
     let eta_execution_eligible = retained_generation.is_none()
         && scope == SourceBackedRefreshScope::All
-        && covered_route_ids.is_empty()
         && registry_failures.is_empty();
     let mut report_attempt_progress = |mut update: CaptureSourceBackedDetailedRefreshProgress| {
         if !eta_execution_eligible {
@@ -672,7 +650,6 @@ fn refresh_all_provider_sources_route_local_with_reconciliation(
                     timings: SourceBackedRefreshTimings::default(),
                     verified_index: None,
                 };
-                covered_publication.apply_receipt(&mut publication);
                 publication.zero_source_authority = match classify_inventory_disposition(
                     &publication,
                     &complete_inventory_route_ids,
@@ -748,7 +725,6 @@ fn refresh_all_provider_sources_route_local_with_reconciliation(
             timings,
             verified_index,
         )?;
-        covered_publication.apply_timings(&mut publication);
         publication.unsupported_routes = unsupported_routes;
         return Ok(publication);
     }
@@ -798,7 +774,6 @@ fn refresh_all_provider_sources_route_local_with_reconciliation(
         timings,
         verified_index: Some(Arc::new(verified_index.into_inner().into_verified_index())),
     };
-    covered_publication.apply(&mut publication);
     publication.zero_source_authority = match classify_inventory_disposition(
         &publication,
         &receipt

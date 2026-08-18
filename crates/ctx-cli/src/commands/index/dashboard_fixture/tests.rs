@@ -184,6 +184,6 @@ fn all_22_fixture_screens_and_redraws_match_the_exact_golden_digest() {
     let digest = format!("{:x}", Sha256::digest(golden));
     assert_eq!(
         digest,
-        "d9cce5302a94c14597ecdea95a4330b04952f0bfdab6ced3eb72819105ccb618"
+        "d986b48c907fde7443e60017a8309662e2d015ec2b4238ec1e00efc4b115a82f"
     );
 }

@@ -2,7 +2,7 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{anyhow, Result};
 use ctx_history_core::CaptureProvider;
-use ctx_history_refresh::{ExplicitSourceCatalogAuthority, ExplicitSourceCatalogUpsert};
+use ctx_history_refresh::{ExplicitSourceCatalogUpsert, RefreshSelection};
 use ctx_history_source_discovery::{
     validate_provider_source_roots_outside_data_root, DiscoveryIssueKind, DiscoveryReport,
     ProviderSource, ProviderSourceStatus,
@@ -55,18 +55,9 @@ pub trait IngestRefreshPort {
     fn refresh(
         &mut self,
         data_root: &Path,
-        selection: IngestRefreshSelection<'_>,
+        selection: RefreshSelection,
         no_daemon: bool,
     ) -> Result<IngestPublication>;
-}
-
-/// Logical source selection for one import request. This is intentionally
-/// independent from the daemon's later physical route scope.
-#[derive(Debug, Clone, Copy)]
-pub enum IngestRefreshSelection<'a> {
-    AllAutomatic,
-    AutomaticProvider(CaptureProvider),
-    ExplicitCatalog(&'a ExplicitSourceCatalogAuthority),
 }
 
 /// Bounded operation-level progress boundary; no source record is permitted to

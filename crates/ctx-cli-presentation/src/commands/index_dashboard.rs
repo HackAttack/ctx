@@ -12,11 +12,24 @@ pub(super) struct IndexDashboard;
 
 impl IndexDashboard {
     pub(super) fn render(&mut self, readiness: &Value, context: &RenderContext) -> Document {
-        render_dashboard(readiness, context)
+        render_dashboard(readiness, context, true)
+    }
+
+    pub(super) fn render_wait(
+        &mut self,
+        readiness: &Value,
+        context: &RenderContext,
+        refresh_convergence_selected: bool,
+    ) -> Document {
+        render_dashboard(readiness, context, refresh_convergence_selected)
     }
 }
 
-fn render_dashboard(readiness: &Value, context: &RenderContext) -> Document {
+fn render_dashboard(
+    readiness: &Value,
+    context: &RenderContext,
+    refresh_convergence_selected: bool,
+) -> Document {
     let lexical_status = string_at(readiness, &["lexical", "status"], "unknown");
     let lexical_reason = string_at(readiness, &["lexical", "reason"], "");
     let refresh_status = string_at(readiness, &["refresh", "status"], "unknown");
@@ -38,7 +51,12 @@ fn render_dashboard(readiness: &Value, context: &RenderContext) -> Document {
             refresh_reason.as_str(),
             "daemon_unavailable" | "refresh_not_observed"
         );
-    if lexical_status == "ready" && refresh_status != "ready" && !refresh_is_idle {
+    if lexical_status == "ready"
+        && refresh_convergence_selected
+        && refresh_status != "ready"
+        && !refresh_is_idle
+        && bool_at(readiness, &["daemon", "running"])
+    {
         append_separated(&mut document, render_refresh(readiness, context));
     }
     append_separated(&mut document, render_semantic(readiness, context));
@@ -443,7 +461,7 @@ mod tests {
 
     #[test]
     fn searchable_generation_and_refresh_progress_are_separate_truths() {
-        let rendered = render_dashboard(&readiness(), &context(80)).render_plain();
+        let rendered = render_dashboard(&readiness(), &context(80), true).render_plain();
         assert!(rendered.starts_with("✓ Your history is searchable"));
         assert!(rendered.contains("Refresh"));
         assert!(rendered.contains("Agent histories  OpenCode"));
@@ -465,10 +483,32 @@ mod tests {
             "status": "pending",
             "reason": "generation_not_published",
         });
-        let rendered = render_dashboard(&value, &context(80)).render_plain();
+        let rendered = render_dashboard(&value, &context(80), true).render_plain();
         assert!(rendered.starts_with("Indexing your agent history"));
         assert!(rendered.contains("Current index  not published"));
         assert!(!rendered.contains("ctx setup"));
+    }
+
+    #[test]
+    fn stopped_daemon_does_not_present_a_stale_refresh_eta() {
+        let mut value = readiness();
+        value["daemon"]["running"] = json!(false);
+
+        let rendered = render_dashboard(&value, &context(80), true).render_plain();
+
+        assert!(rendered.contains("Background indexing stopped"));
+        assert!(!rendered.contains("\nRefresh\n"), "{rendered}");
+        assert!(!rendered.contains("Remaining"), "{rendered}");
+    }
+
+    #[test]
+    fn semantic_only_wait_omits_unselected_refresh_convergence() {
+        let rendered = render_dashboard(&readiness(), &context(80), false).render_plain();
+
+        assert!(rendered.contains("Your history is searchable"));
+        assert!(rendered.contains("Semantic search"));
+        assert!(!rendered.contains("\nRefresh\n"), "{rendered}");
+        assert!(!rendered.contains("Remaining"), "{rendered}");
     }
 
     #[test]
@@ -483,7 +523,7 @@ mod tests {
             "status": "unavailable",
             "reason": "daemon_unavailable",
         });
-        let rendered = render_dashboard(&value, &context(80)).render_plain();
+        let rendered = render_dashboard(&value, &context(80), true).render_plain();
         assert!(rendered.starts_with("✗ Search index is not set up"));
         assert!(rendered.contains("ctx setup"));
     }
@@ -492,7 +532,7 @@ mod tests {
     fn dashboard_fits_supported_widths() {
         for width in [32, 48, 80, 120] {
             let context = context(width);
-            assert_fits(&render_dashboard(&readiness(), &context), &context);
+            assert_fits(&render_dashboard(&readiness(), &context, true), &context);
         }
     }
 
@@ -501,7 +541,7 @@ mod tests {
         let context = RenderContext::for_test(
             TestContext::tty(StreamKind::Stdout, 80).color(ColorMode::Always),
         );
-        let document = render_dashboard(&readiness(), &context);
+        let document = render_dashboard(&readiness(), &context, true);
         let styled = document.render(&context);
         assert!(styled.contains("\u{1b}["));
         assert_eq!(strip_ansi(&styled), document.render_plain());

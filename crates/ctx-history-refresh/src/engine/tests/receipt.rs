@@ -9,7 +9,7 @@ fn mismatched_request_overlay_is_not_recorded_as_verified() {
     let published = test_catalog_authority(2, 0x22);
     let coordinator = CoreRefreshEngine::new();
     let response = coordinator
-        .handle_ipc_request(
+        .handle_ipc_request_with_admission_fence_for_test(
             temp.path(),
             &json!({
                 "schema_version": 1,
@@ -18,6 +18,7 @@ fn mismatched_request_overlay_is_not_recorded_as_verified() {
                 "operation": "import",
                 "explicit_source_catalog": requested.to_json(),
             }),
+            BTreeMap::new(),
         )
         .unwrap()
         .unwrap();

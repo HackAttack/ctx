@@ -20,11 +20,6 @@ impl CoreRefreshEngine {
         state
             .route_worksets
             .retain(|route, _| routes.contains(route));
-        for continuation in state.manual_all_continuations.values_mut() {
-            for route in &routes {
-                continuation.invalidate_route(route);
-            }
-        }
         state.known_route_ids = routes;
         state.watch_routes_initialized = true;
     }
@@ -46,11 +41,6 @@ impl CoreRefreshEngine {
             .route_event_watermarks
             .retain(|route, _| routes.contains(route));
         state.route_worksets.clear();
-        for continuation in state.manual_all_continuations.values_mut() {
-            for route in &routes {
-                continuation.invalidate_route(route);
-            }
-        }
         state.known_route_ids = routes;
         state.watch_catalog = Some(catalog);
         state.watch_routes_initialized = true;
@@ -258,9 +248,6 @@ impl CoreRefreshEngine {
                     state
                         .route_event_watermarks
                         .insert(route.clone(), watermark);
-                    for continuation in state.manual_all_continuations.values_mut() {
-                        continuation.invalidate_route(&route);
-                    }
                 }
             }
         }
@@ -394,19 +381,13 @@ impl CoreRefreshEngine {
                 .seed_exact_routes(routes.iter().cloned(), watermark, now_ms);
             routes
         };
-        let response = match self.enqueue_with_catalog_metadata(
+        let response = match self.enqueue_intent(
             Some(index.generation_id().to_owned()),
             SourceRefreshRuntimeMetadata::periodic(),
-            None,
+            RefreshIntent::AutomaticMaintenance,
             SourceBackedRefreshScope::Exact(routes),
-            SourceRefreshLogicalDemand {
-                admission: SourceRefreshAdmissionRequirement::AttachEquivalent,
-                reconciliation_demand: SourceBackedReconciliationDemand::Exhaustive,
-                route_observations: BTreeMap::new(),
-                request_id: None,
-                request_fingerprint: None,
-                admission_pending: false,
-            },
+            None,
+            None,
         ) {
             Ok(response) => response,
             Err(error)

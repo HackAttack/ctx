@@ -48,7 +48,6 @@ pub(super) fn run_report(
         index_root,
         None,
         SourceBackedRefreshScope::All,
-        &BTreeSet::new(),
         &mut progress,
     )
 }

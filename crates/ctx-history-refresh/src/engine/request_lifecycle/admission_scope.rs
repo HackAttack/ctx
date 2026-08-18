@@ -6,23 +6,15 @@ impl CoreRefreshEngine {
         projected_status_json(&state, request_id).map(RefreshStatus::from_schema_v1_fields)
     }
 
-    pub(super) fn requested_explicit_source_catalog(
-        &self,
-        request_id: &str,
-    ) -> Option<ExplicitSourceCatalogAuthority> {
+    pub(super) fn refresh_intent(&self, request_id: &str) -> Option<RefreshIntent> {
         let state = self.lock_state();
-        find_attempt(&state, request_id)
-            .and_then(|attempt| attempt.requested_explicit_source_catalog.clone())
+        find_attempt(&state, request_id).map(|attempt| attempt.intent.clone())
     }
 
+    #[cfg(test)]
     pub(super) fn refresh_scope(&self, request_id: &str) -> Option<SourceBackedRefreshScope> {
         let state = self.lock_state();
         find_attempt(&state, request_id).map(|attempt| attempt.refresh_scope.clone())
-    }
-
-    pub(super) fn operation(&self, request_id: &str) -> Option<SourceBackedRefreshOperation> {
-        let state = self.lock_state();
-        find_attempt(&state, request_id).map(|attempt| attempt.operation)
     }
 
     pub(super) fn reconciliation_demand(
@@ -40,122 +32,75 @@ impl CoreRefreshEngine {
     ) -> Option<ExplicitSourceCatalogAuthority> {
         let state = self.lock_state();
         find_attempt(&state, request_id)
-            .and_then(|attempt| attempt.requested_explicit_source_catalog.clone())
+            .and_then(|attempt| attempt.requested_explicit_source_catalog().cloned())
     }
 
-    pub(super) fn admit_refresh_scope(
+    pub(super) fn admit_refresh(
         &self,
         request_id: &str,
-        scope: &SourceBackedRefreshScope,
-    ) -> Result<AdmittedRefreshScope> {
+    ) -> Result<ctx_history_refresh_execution::AdmittedRefresh> {
         let now_ms = source_route_ledger_now_ms();
         let mut state = self.lock_state();
         if state.route_admissions.contains_key(request_id) {
             bail!("source refresh request `{request_id}` already has retained route admissions");
         }
-        let (admitted_authority, requires_admitted_discovery) = find_attempt(&state, request_id)
-            .map(|attempt| {
-                (
-                    attempt.admitted_authority.clone(),
-                    attempt.selector.is_scoped()
-                        && matches!(scope, SourceBackedRefreshScope::Exact(_)),
-                )
-            })
-            .unwrap_or((None, false));
-        if let Some(authority) = admitted_authority.as_ref() {
-            if &authority.scope != scope {
-                bail!("scoped source refresh execution does not match its admitted exact scope");
-            }
-        }
-        let known_route_ids = state.known_route_ids.clone();
-        let mut covered_route_ids = if let Some(continuation) =
-            state.manual_all_continuations.get_mut(request_id)
-        {
-            if !continuation.predecessor_finished {
-                bail!(
-                    "manual all-route continuation `{request_id}` started before its exact predecessor finished"
-                );
-            }
-            let retained = continuation
-                .covered_route_results
-                .keys()
-                .filter(|route| known_route_ids.contains(*route))
-                .cloned()
-                .collect::<BTreeSet<_>>();
-            if retained.len() != continuation.covered_route_results.len() {
-                continuation
-                    .covered_route_results
-                    .retain(|route, _| retained.contains(route));
-                if continuation.covered_route_results.is_empty() {
-                    continuation.covered_removed_source_count = 0;
-                    continuation.covered_timings = SourceBackedRefreshTimings::default();
-                }
-            }
-            retained
-        } else {
-            BTreeSet::new()
+        let admitted_authority = find_attempt(&state, request_id)
+            .and_then(|attempt| attempt.admitted_authority.clone())
+            .ok_or_else(|| anyhow!("source refresh execution has no admitted authority"))?;
+        let scope = find_attempt(&state, request_id)
+            .map(|attempt| attempt.refresh_scope.clone())
+            .ok_or_else(|| anyhow!("source refresh request `{request_id}` is unknown"))?;
+        let intent = find_attempt(&state, request_id)
+            .map(|attempt| attempt.intent.clone())
+            .ok_or_else(|| anyhow!("source refresh request `{request_id}` is unknown"))?;
+        let authority_matches_scope = match (admitted_authority.coverage(), &scope) {
+            (
+                ctx_history_refresh_execution::AdmittedRefreshCoverage::CompleteCatalog,
+                SourceBackedRefreshScope::All,
+            ) => true,
+            (
+                ctx_history_refresh_execution::AdmittedRefreshCoverage::SelectedRoutes,
+                SourceBackedRefreshScope::Exact(routes),
+            ) => routes == admitted_authority.exact_routes(),
+            _ => false,
         };
-        let admissions = match scope {
-            SourceBackedRefreshScope::All => {
-                let watermark = state.dirty_routes.seed_watermark();
-                let routes = known_route_ids
-                    .difference(&covered_route_ids)
-                    .cloned()
-                    .collect::<Vec<_>>();
-                for route in &routes {
-                    state
-                        .route_event_watermarks
-                        .entry(route.clone())
-                        .and_modify(|current| *current = (*current).max(watermark))
-                        .or_insert(watermark);
-                }
+        if !authority_matches_scope {
+            bail!("source refresh execution does not match its admitted exact scope");
+        }
+        let exact_routes = admitted_authority.exact_routes().clone();
+        if exact_routes.len() > SOURCE_REFRESH_TERMINAL_ROUTE_LIMIT {
+            bail!(
+                "daemon exact source refresh exceeds {SOURCE_REFRESH_TERMINAL_ROUTE_LIMIT} routes"
+            );
+        }
+        let should_seed = matches!(intent, RefreshIntent::SelectedImport(_))
+            || matches!(scope, SourceBackedRefreshScope::All);
+        if should_seed {
+            let watermark = state.dirty_routes.seed_watermark();
+            for route in &exact_routes {
                 state
-                    .dirty_routes
-                    .seed_exact_routes(routes, watermark, now_ms);
-                let admissions = state.dirty_routes.admit_all();
-                if admissions
-                    .iter()
-                    .any(|admission| covered_route_ids.contains(admission.route()))
-                {
-                    covered_route_ids.clear();
-                    if let Some(continuation) = state.manual_all_continuations.get_mut(request_id) {
-                        continuation.covered_route_results.clear();
-                        continuation.covered_removed_source_count = 0;
-                        continuation.covered_timings = SourceBackedRefreshTimings::default();
-                    }
-                }
-                admissions
+                    .route_event_watermarks
+                    .entry(route.clone())
+                    .and_modify(|current| *current = (*current).max(watermark))
+                    .or_insert(watermark);
             }
-            SourceBackedRefreshScope::Exact(routes) => {
-                if routes.is_empty() || routes.len() > SOURCE_REFRESH_TERMINAL_ROUTE_LIMIT {
-                    bail!(
-                        "daemon exact source refresh must admit between one and {SOURCE_REFRESH_TERMINAL_ROUTE_LIMIT} routes"
-                    );
-                }
-                if admitted_authority.is_some() {
-                    let watermark = state.dirty_routes.seed_watermark();
-                    for route in routes {
-                        state
-                            .route_event_watermarks
-                            .entry(route.clone())
-                            .and_modify(|current| *current = (*current).max(watermark))
-                            .or_insert(watermark);
-                    }
-                    state.dirty_routes.seed_exact_routes(
-                        routes.iter().cloned(),
-                        watermark,
-                        // A logical request is explicit admission, so its
-                        // first exact attempt bypasses watcher debounce.
-                        now_ms.saturating_sub(1_000),
-                    );
-                }
-                state
-                    .dirty_routes
-                    .admit_exact_routes(routes, now_ms)
-                    .ok_or_else(|| {
-                        anyhow!("one or more exact source routes are no longer due for admission")
-                    })?
-            }
+            state.dirty_routes.seed_exact_routes(
+                exact_routes.iter().cloned(),
+                watermark,
+                // Logical admission is explicit authority, so its exact first
+                // attempt bypasses watcher debounce without admitting any peer.
+                now_ms.saturating_sub(1_000),
+            );
+        }
+        let admissions = if exact_routes.is_empty() {
+            Vec::new()
+        } else {
+            state
+                .dirty_routes
+                .admit_exact_routes(&exact_routes, now_ms)
+                .ok_or_else(|| {
+                    anyhow!("one or more exact source routes are no longer due for admission")
+                })?
         };
         state
             .route_admissions
@@ -173,19 +118,9 @@ impl CoreRefreshEngine {
                     .map(|watermark| (admission.route().clone(), watermark))
             })
             .collect::<BTreeMap<_, _>>();
-        for continuation in state.manual_all_continuations.values_mut() {
-            if continuation.predecessor_request_id == request_id {
-                continuation.predecessor_event_watermarks = admitted_watermarks.clone();
-            }
-        }
         state
             .route_admission_watermarks
             .insert(request_id.to_owned(), admitted_watermarks);
-        let covered_publication = state
-            .manual_all_continuations
-            .get(request_id)
-            .map(ManualAllContinuation::covered_publication)
-            .unwrap_or_default();
         let incremental_exact = find_attempt(&state, request_id).is_some_and(|attempt| {
             attempt.reconciliation_demand == SourceBackedReconciliationDemand::Incremental
                 && matches!(scope, SourceBackedRefreshScope::Exact(_))
@@ -205,26 +140,18 @@ impl CoreRefreshEngine {
                 }
             }
         }
-        Ok(AdmittedRefreshScope {
-            covered_route_ids,
-            covered_publication,
-            route_worksets,
-            watch_catalog: admitted_authority
-                .as_ref()
-                .map(|authority| authority.discovery.watch_catalog().clone())
-                .or_else(|| state.watch_catalog.clone()),
-            admitted_discovery: admitted_authority.map(|authority| authority.discovery),
-            requires_admitted_discovery,
-        })
+        admitted_authority.with_execution_facts(route_worksets)
     }
 
-    #[cfg(any(test, feature = "test-support"))]
+    #[cfg(test)]
     pub fn admit_refresh_scope_for_test(
         &self,
         request_id: &str,
         scope: &SourceBackedRefreshScope,
     ) -> Result<BTreeSet<SourceRouteIdentity>> {
-        self.admit_refresh_scope(request_id, scope)
-            .map(|admitted| admitted.covered_route_ids)
+        if self.refresh_scope(request_id).as_ref() != Some(scope) {
+            bail!("test source refresh scope does not match the queued request");
+        }
+        self.admit_refresh(request_id).map(|_| BTreeSet::new())
     }
 }

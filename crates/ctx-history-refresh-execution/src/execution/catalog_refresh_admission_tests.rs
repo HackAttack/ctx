@@ -14,6 +14,22 @@ impl PublishedSourceBackedStatePort for UnusedPublishedState {
     }
 }
 
+fn admitted_refresh(
+    route_identity: SourceRouteIdentity,
+    report: DiscoveryReport,
+    watch_catalog: SourceBackedWatchCatalog,
+    route_worksets: BTreeMap<SourceRouteIdentity, SourceBackedRefreshWorkset>,
+) -> AdmittedRefresh {
+    AdmittedRefresh::for_test(
+        AdmittedRefreshCoverage::SelectedRoutes,
+        BTreeSet::from([route_identity]),
+        SourceBackedAdmittedDiscovery::new(report, StdDuration::ZERO, watch_catalog),
+    )
+    .unwrap()
+    .with_execution_facts(route_worksets)
+    .unwrap()
+}
+
 #[test]
 fn exhaustive_exact_route_reuses_catalog_without_claiming_member_work() {
     let temp = tempfile::tempdir().unwrap();
@@ -42,24 +58,29 @@ fn exhaustive_exact_route_reuses_catalog_without_claiming_member_work() {
         DiscoveryPlatformDirs::default(),
     );
     let progress = |_: SourceBackedRefreshProgressUpdate| Ok(());
+    let admitted = admitted_refresh(
+        route_identity,
+        DiscoveryReport {
+            sources: vec![source.clone()],
+            issues: Vec::new(),
+        },
+        registry.watch_catalog(),
+        BTreeMap::new(),
+    );
     let execution = SourceBackedRefreshExecution::new(
         &data_root,
         &index_root,
         "route-local-exhaustive",
         RefreshOperation::Refresh,
         None,
-        SourceBackedRefreshScope::exact([route_identity]),
-        BTreeSet::new(),
-        SourceBackedRefreshCoveredPublication::default(),
+        admitted,
         &discovery,
         &UnusedPublishedState,
         &progress,
     )
-    .with_reconciliation_demand(SourceBackedReconciliationDemand::Exhaustive)
-    .with_watch_catalog_opt(Some(registry.watch_catalog()));
+    .with_reconciliation_demand(SourceBackedReconciliationDemand::Exhaustive);
 
-    let admission = catalog_refresh_admission(&execution)
-        .expect("exact registered route should avoid global discovery");
+    let admission = catalog_refresh_admission(&execution);
     assert!(!admission.exact_members);
     assert_eq!(admission.report.sources, vec![source]);
 }
@@ -93,52 +114,65 @@ fn catalog_selector_distinguishes_exact_members_from_global_fallbacks() {
         DiscoveryPlatformDirs::default(),
     );
     let progress = |_: SourceBackedRefreshProgressUpdate| Ok(());
+    let admitted = admitted_refresh(
+        route_identity.clone(),
+        DiscoveryReport {
+            sources: vec![source.clone()],
+            issues: Vec::new(),
+        },
+        registry.watch_catalog(),
+        BTreeMap::from([(
+            route_identity.clone(),
+            SourceBackedRefreshWorkset::members([member.clone()]),
+        )]),
+    );
     let execution = SourceBackedRefreshExecution::new(
         &data_root,
         &index_root,
         "exact-member",
         RefreshOperation::Refresh,
         None,
-        SourceBackedRefreshScope::exact([route_identity.clone()]),
-        BTreeSet::new(),
-        SourceBackedRefreshCoveredPublication::default(),
+        admitted,
         &discovery,
         &UnusedPublishedState,
         &progress,
-    )
-    .with_route_worksets(BTreeMap::from([(
-        route_identity.clone(),
-        SourceBackedRefreshWorkset::members([member.clone()]),
-    )]))
-    .with_watch_catalog_opt(Some(registry.watch_catalog()));
+    );
 
-    let exact = catalog_refresh_admission(&execution)
-        .expect("valid registered member should stay route-local");
+    let exact = catalog_refresh_admission(&execution);
     assert!(exact.exact_members);
-    assert_eq!(exact.report.sources, vec![source]);
+    assert_eq!(exact.report.sources, vec![source.clone()]);
 
-    let mut invalid_member = execution.clone();
-    invalid_member.route_worksets = BTreeMap::from([(
+    let invalid_member = admitted_refresh(
         route_identity.clone(),
-        SourceBackedRefreshWorkset::members([root.join("missing.jsonl")]),
-    )]);
-    let invalid_member = catalog_refresh_admission(&invalid_member)
-        .expect("invalid member should retain route-local exhaustive work");
+        DiscoveryReport {
+            sources: vec![source.clone()],
+            issues: Vec::new(),
+        },
+        registry.watch_catalog(),
+        BTreeMap::from([(
+            route_identity,
+            SourceBackedRefreshWorkset::members([root.join("missing.jsonl")]),
+        )]),
+    );
+    let invalid_member = SourceBackedRefreshExecution::new(
+        &data_root,
+        &index_root,
+        "invalid-exact-member",
+        RefreshOperation::Refresh,
+        None,
+        invalid_member,
+        &discovery,
+        &UnusedPublishedState,
+        &progress,
+    );
+    let invalid_member = catalog_refresh_admission(&invalid_member);
     assert!(!invalid_member.exact_members);
-
-    let mut all = execution.clone();
-    all.scope = SourceBackedRefreshScope::All;
-    assert!(catalog_refresh_admission(&all).is_none());
-
-    let mut unknown = execution.clone();
-    unknown.scope =
-        SourceBackedRefreshScope::exact([
-            SourceRouteIdentity::from_sha256("ef".repeat(32)).unwrap()
-        ]);
-    assert!(catalog_refresh_admission(&unknown).is_none());
+    assert_eq!(invalid_member.report.sources, vec![source.clone()]);
 
     fs::remove_dir_all(root).unwrap();
-    assert!(catalog_refresh_admission(&execution).is_none());
+    let removed_member = catalog_refresh_admission(&execution);
+    assert!(!removed_member.exact_members);
+    assert_eq!(removed_member.report.sources, vec![source]);
 }
 
 #[test]

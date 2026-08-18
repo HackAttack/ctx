@@ -15,6 +15,7 @@ mod plugins;
 mod routing;
 mod totals;
 
+pub use ctx_history_refresh::RefreshSelection;
 pub use inventory::{source_stats, SourceStats};
 pub use lifecycle::run_ingest;
 pub use listing::{
@@ -35,7 +36,7 @@ pub use plugins::{
 };
 pub use routing::{
     automatic_source_preflight, validate_ingest_request, AutomaticSourcePreflight,
-    CaptureAdmissionPort, IngestProgressPort, IngestRefreshPort, IngestRefreshSelection,
-    IngestRequest, IngestRoute, ProviderSelectionGuidance, SourceDiscoveryPort,
+    CaptureAdmissionPort, IngestProgressPort, IngestRefreshPort, IngestRequest, IngestRoute,
+    ProviderSelectionGuidance, SourceDiscoveryPort,
 };
 pub use totals::{ImportFailureScope, ImportFailureType, ImportOutcome, ImportTotals};

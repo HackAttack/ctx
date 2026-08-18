@@ -101,7 +101,7 @@ fn no_daemon_post_ack_recovery_is_typed_retained_and_unobservable() {
         &crate::test_support::AVAILABILITY,
         Path::new("unused-after-durable-ack"),
         request_id,
-        SourceBackedRefreshTrigger::Search,
+        RefreshRequestTrigger::Search,
         false,
     )
     .unwrap_err();
@@ -132,7 +132,7 @@ fn post_ack_daemon_recovery_reobserves_coalesced_id_before_readmission() {
         &availability,
         Path::new("no-endpoint-needed-before-reobservation"),
         request_id,
-        SourceBackedRefreshTrigger::Search,
+        RefreshRequestTrigger::Search,
         true,
     )
     .unwrap();
