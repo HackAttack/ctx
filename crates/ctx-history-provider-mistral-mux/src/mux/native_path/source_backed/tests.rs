@@ -347,6 +347,69 @@ fn crash_window_overlap_is_removed_only_from_the_active_seam() {
 }
 
 #[test]
+fn crash_seam_consumes_one_archived_occurrence_per_equivalent_chat_occurrence() {
+    let temp = tempfile::tempdir().unwrap();
+    let session = temp.path().join("multiplicity-overlap-session");
+    fs::create_dir(&session).unwrap();
+    let repeated_a = message(
+        "multiplicity-overlap-session",
+        Some("repeated-provider-id"),
+        Some(json!(0)),
+        "legitimate repeated A",
+    );
+    let b = message(
+        "multiplicity-overlap-session",
+        Some("provider-id-b"),
+        Some(json!(1)),
+        "B",
+    );
+    let archive = session.join("chat-archive.jsonl");
+    let chat = session.join("chat.jsonl");
+
+    write_jsonl(&chat, &[repeated_a.clone(), repeated_a.clone(), b.clone()]);
+    let before = project(&session);
+
+    // A crash after appending one A to the archive but before rewriting chat
+    // leaves [A] ++ [A, A, B]. Only the first active A is replay evidence;
+    // the second is a legitimate provider repetition and must remain visible.
+    write_jsonl(&archive, std::slice::from_ref(&repeated_a));
+    write_jsonl(&chat, &[repeated_a.clone(), repeated_a.clone(), b.clone()]);
+    let crash_window = project(&session);
+
+    write_jsonl(&archive, &[repeated_a.clone(), repeated_a]);
+    write_jsonl(&chat, std::slice::from_ref(&b));
+    let healed = project(&session);
+
+    assert_eq!(before.records.len(), 3);
+    assert_eq!(crash_window.records.len(), 3);
+    assert_eq!(healed.records.len(), 3);
+    assert_eq!(before.records, crash_window.records);
+    assert_eq!(before.records, healed.records);
+    assert_eq!(before.records[1].event_id, crash_window.records[1].event_id);
+    assert_eq!(before.records[1].event_id, healed.records[1].event_id);
+    assert_eq!(
+        crash_window
+            .records
+            .iter()
+            .map(|record| record.content.meaningful_text())
+            .collect::<Vec<_>>(),
+        ["legitimate repeated A", "legitimate repeated A", "B"]
+    );
+    assert_ne!(
+        crash_window.records[0].event_id,
+        crash_window.records[1].event_id
+    );
+    assert_eq!(
+        crash_window
+            .records
+            .iter()
+            .map(|record| record.event_sequence)
+            .collect::<Vec<_>>(),
+        [0, 1, 2]
+    );
+}
+
+#[test]
 fn crash_overlap_with_provider_ids_and_malformed_sequences_has_one_identity_per_row() {
     let temp = tempfile::tempdir().unwrap();
     let session = temp.path().join("malformed-overlap-session");

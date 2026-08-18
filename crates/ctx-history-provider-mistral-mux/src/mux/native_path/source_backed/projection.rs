@@ -110,6 +110,13 @@ where
                 "Mux record changed its native session owner".to_owned(),
             ));
         }
+        let evidence = record.evidence();
+        let ordinal = evidence.physical_ordinal();
+        if !stream.is_partial() && ordinal > MAX_EVENT_SEQUENCE_ORDINAL {
+            return Err(CaptureError::InvalidPayload(
+                "Mux source ordinal exceeds event identity capacity".to_owned(),
+            ));
+        }
         let history_sequence = mux_history_sequence(&value);
         if self
             .archive_seam
@@ -119,13 +126,6 @@ where
         }
         let output = mux_output_projection(&value);
         let content_omission = mux_output_content_omission(&value, output.as_ref());
-        let evidence = record.evidence();
-        let ordinal = evidence.physical_ordinal();
-        if !stream.is_partial() && ordinal > MAX_EVENT_SEQUENCE_ORDINAL {
-            return Err(CaptureError::InvalidPayload(
-                "Mux source ordinal exceeds event identity capacity".to_owned(),
-            ));
-        }
         let event_sequence = if stream.is_partial() {
             PARTIAL_EVENT_SEQUENCE_BASE
                 | (mux_partial_event_index(bytes) & MAX_EVENT_SEQUENCE_ORDINAL)
