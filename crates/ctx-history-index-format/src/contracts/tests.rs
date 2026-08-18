@@ -16,11 +16,11 @@ fn source_route_snapshot_and_generation_wire_contract_remain_stable() {
     let manifest = GenerationManifest::from_parts(Vec::new(), vec![snapshot]).unwrap();
     assert_eq!(
         serde_json::to_string(&manifest).unwrap(),
-        "{\"manifest_version\":8,\"identity_version\":1,\"core_record_version\":3,\"core_record_contract_fingerprint\":\"ebb5c9b638de184824a6ce141ebf9b70941fb293fc113d29e2851565bad4371e\",\"lexical_schema_version\":21,\"lexical_analyzer_version\":2,\"policy_schema_hash\":\"fa91524af6c806f43e1203db44bb068d5c3dc1e22c1829703d54a03ed5cb8788\",\"indexed_documents\":0,\"certified_source_bytes\":0,\"sources\":[],\"core_record_aggregates\":[],\"source_routes\":[{\"route_identity\":\"abababababababababababababababababababababababababababababababab\",\"sources\":[],\"missing\":null}]}",
+        "{\"manifest_version\":8,\"identity_version\":1,\"core_record_version\":3,\"core_record_contract_fingerprint\":\"ebb5c9b638de184824a6ce141ebf9b70941fb293fc113d29e2851565bad4371e\",\"lexical_schema_version\":22,\"lexical_analyzer_version\":2,\"policy_schema_hash\":\"98a522ab684f09534a71628117e182f3559d7094880609a74e81041d00361475\",\"indexed_documents\":0,\"certified_source_bytes\":0,\"sources\":[],\"core_record_aggregates\":[],\"source_routes\":[{\"route_identity\":\"abababababababababababababababababababababababababababababababab\",\"sources\":[],\"missing\":null}]}",
     );
     assert_eq!(
         manifest.generation_id().unwrap(),
-        "348e8629b8db4b15f3445b916a7eb8e87ddaeb3a3cd1be3696d9d99b24ce6bed"
+        "7a79f1d9a89f696b273eff2baab00c038847b3dca1b79993a6b150bee4c29ea2"
     );
 }
 

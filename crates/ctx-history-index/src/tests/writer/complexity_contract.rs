@@ -2,6 +2,9 @@ use super::*;
 
 const RETAINED_N: u64 = 32;
 const RETAINED_2N: u64 = RETAINED_N * 2;
+const LIVE_SEGMENT_COUNT: usize = 8;
+const EVENTS_IN_TARGET_SESSION: u64 = 128;
+const EVENTS_PER_PEER_SEGMENT: u64 = 32;
 
 #[derive(Debug, PartialEq, Eq)]
 struct PublicationWork {
@@ -15,10 +18,14 @@ struct PublicationWork {
     complete_session_id_traversals: usize,
     hashed_artifact_bytes: u64,
     writer_constructions: usize,
+    authority_lookup: PriorSessionIdentityLookupWork,
 }
 
 impl PublicationWork {
-    fn capture(writer_constructions: usize) -> Self {
+    fn capture(
+        writer_constructions: usize,
+        authority_lookup: PriorSessionIdentityLookupWork,
+    ) -> Self {
         let (checksum_walks, logical_passes) = crate::publication::verification_activity();
         let (identity_terms, identity_documents) =
             crate::publication::candidate_identity_verification_activity();
@@ -35,6 +42,7 @@ impl PublicationWork {
             complete_session_id_traversals: crate::publication::complete_session_id_traversals(),
             hashed_artifact_bytes: crate::publication::hashed_artifact_bytes(),
             writer_constructions,
+            authority_lookup,
         }
     }
 }
@@ -94,7 +102,10 @@ fn measure_exact_noop(retained_documents: u64) -> PublicationWork {
             |current| current == &fixture.inventory,
         )
         .unwrap();
-    PublicationWork::capture(constructions.load(Ordering::SeqCst))
+    PublicationWork::capture(
+        constructions.load(Ordering::SeqCst),
+        PriorSessionIdentityLookupWork::default(),
+    )
 }
 
 fn measure_one_record_append(retained_documents: u64) -> PublicationWork {
@@ -108,6 +119,7 @@ fn measure_one_record_append(retained_documents: u64) -> PublicationWork {
         .begin_source_append(fixture.source.clone())
         .unwrap()
         .clone();
+    crate::reset_prior_session_identity_lookup_work();
     writer
         .add_core_record(document(
             &fixture.source,
@@ -134,7 +146,101 @@ fn measure_one_record_append(retained_documents: u64) -> PublicationWork {
 
     crate::publication::reset_verification_activity();
     writer.commit(|_| true).unwrap();
-    PublicationWork::capture(constructions.load(Ordering::SeqCst))
+    PublicationWork::capture(
+        constructions.load(Ordering::SeqCst),
+        crate::prior_session_identity_lookup_work(),
+    )
+}
+
+fn multisegment_append_lookup_work() -> PriorSessionIdentityLookupWork {
+    let root = tempdir().unwrap();
+    let target = source("complexity-multisegment-target.jsonl");
+    let options = WriterOptions {
+        indexer_threads: 1,
+        memory_bytes: INDEX_MEMORY_MIN_PER_THREAD,
+    };
+
+    for segment in 0..LIVE_SEGMENT_COUNT {
+        let current = if segment == 0 {
+            target.clone()
+        } else {
+            source(&format!("complexity-multisegment-peer-{segment}.jsonl"))
+        };
+        let document_count = if segment == 0 {
+            EVENTS_IN_TARGET_SESSION
+        } else {
+            EVENTS_PER_PEER_SEGMENT
+        };
+        let mut writer = GenerationWriter::open(root.path(), options.clone())
+            .unwrap()
+            .into_writer()
+            .unwrap();
+        writer.begin_source(current.clone()).unwrap();
+        writer.test_disable_merges().unwrap();
+        for sequence in 1..=document_count {
+            writer
+                .add_core_record(document(
+                    &current,
+                    sequence,
+                    "multi-segment authority fixture",
+                ))
+                .unwrap();
+        }
+        if segment == 0 {
+            writer
+                .certify_source(appendable_certificate(
+                    &current,
+                    1,
+                    document_count,
+                    document_count * 10,
+                ))
+                .unwrap();
+        } else {
+            writer
+                .certify_source(certificate(&current, segment as u8, document_count))
+                .unwrap();
+        }
+        writer.commit(|_| true).unwrap();
+    }
+
+    let (searcher, _) = open_unverified_generation(root.path());
+    assert_eq!(
+        searcher.segment_readers().len(),
+        LIVE_SEGMENT_COUNT,
+        "the fixture must retain independently live production-shaped segments"
+    );
+
+    let mut writer = GenerationWriter::open(root.path(), options)
+        .unwrap()
+        .into_writer()
+        .unwrap();
+    let base = writer.begin_source_append(target.clone()).unwrap().clone();
+    crate::reset_prior_session_identity_lookup_work();
+    writer
+        .add_core_record(document(
+            &target,
+            EVENTS_IN_TARGET_SESSION + 1,
+            "multi-segment append",
+        ))
+        .unwrap();
+    writer
+        .certify_source_append(
+            CertifiedSourceAppend::certify(
+                &base,
+                appendable_certificate(
+                    &target,
+                    2,
+                    EVENTS_IN_TARGET_SESSION + 1,
+                    (EVENTS_IN_TARGET_SESSION + 1) * 10,
+                ),
+                EVENTS_IN_TARGET_SESSION * 10,
+                [1; 32],
+            )
+            .unwrap(),
+        )
+        .unwrap();
+    writer.commit(|_| true).unwrap();
+    crate::prior_session_identity_lookup_work()
 }
 
 #[test]
@@ -156,6 +262,7 @@ fn exact_noop_work_is_zero_for_n_and_2n_retained_documents() {
             complete_session_id_traversals: 0,
             hashed_artifact_bytes: 0,
             writer_constructions: 0,
+            authority_lookup: PriorSessionIdentityLookupWork::default(),
         },
         "an exact replay must do no publication or verification work"
     );
@@ -180,6 +287,8 @@ fn one_record_append_verification_work_is_independent_of_retained_corpus_size() 
     assert_eq!(n.lineage_spills, 0);
     assert_eq!(n.complete_session_id_traversals, 0);
     assert_eq!(n.writer_constructions, 1);
+    assert_eq!(n.authority_lookup.segment_range_probes, 1);
+    assert_eq!(n.authority_lookup.dictionary_terms, 1);
     assert_eq!(two_n.identity_terms, n.identity_terms);
     assert_eq!(two_n.identity_documents, n.identity_documents);
     assert_eq!(two_n.projection_documents, n.projection_documents);
@@ -190,6 +299,308 @@ fn one_record_append_verification_work_is_independent_of_retained_corpus_size() 
         n.complete_session_id_traversals
     );
     assert_eq!(two_n.writer_constructions, n.writer_constructions);
+    assert_eq!(two_n.authority_lookup, n.authority_lookup);
+}
+
+#[test]
+fn same_session_append_charges_each_live_segment_and_not_each_session_event() {
+    let work = multisegment_append_lookup_work();
+
+    assert_eq!(work.segment_range_probes, LIVE_SEGMENT_COUNT);
+    assert_eq!(work.dictionary_terms, 1);
+    assert_eq!(work.postings, 1);
+    assert_eq!(work.core_decodes, 1);
+    assert!(
+        work.segment_range_probes <= MAX_SESSION_WITNESS_SEGMENT_PROBES,
+        "segment range probes must remain inside their fixed budget"
+    );
+    assert!(
+        work.dictionary_terms + work.postings <= MAX_SESSION_WITNESS_VISITS,
+        "carrier visits must remain inside their fixed budget"
+    );
+}
+
+#[test]
+#[ignore = "high-cardinality authority dictionary contract; tier-nightly"]
+fn high_cardinality_same_session_append_reads_only_the_live_witness() {
+    let work = measure_one_record_append(4_096);
+    assert_eq!(work.authority_lookup.segment_range_probes, 1);
+    assert_eq!(work.authority_lookup.dictionary_terms, 1);
+    assert_eq!(work.authority_lookup.postings, 1);
+    assert_eq!(work.authority_lookup.core_decodes, 1);
+}
+
+#[test]
+fn repeated_replacement_tombstones_hit_the_witness_cap_and_fail_closed() {
+    let root = tempdir().unwrap();
+    let replaced = source("witness-cap-replacements.jsonl");
+    let replaced_route = SourceRouteIdentity::from_sha256("51".repeat(32)).unwrap();
+    let options = WriterOptions {
+        indexer_threads: 1,
+        memory_bytes: INDEX_MEMORY_MIN_PER_THREAD,
+    };
+    let mut initial = GenerationWriter::open(root.path(), options.clone())
+        .unwrap()
+        .into_writer()
+        .unwrap();
+    initial.begin_source(replaced.clone()).unwrap();
+    initial
+        .writer_mut()
+        .unwrap()
+        .set_merge_policy(Box::<NoMergePolicy>::default());
+    initial
+        .add_core_record(document(&replaced, 1, "replacement 1"))
+        .unwrap();
+    initial
+        .certify_source(certificate(&replaced, 1, 1))
+        .unwrap();
+    let first_peer = source("witness-cap-peer-1.jsonl");
+    initial.begin_source(first_peer.clone()).unwrap();
+    for sequence in 1..=3 {
+        initial
+            .add_core_record(document(&first_peer, sequence, "retained peer 1"))
+            .unwrap();
+    }
+    initial
+        .certify_source(certificate(&first_peer, 1, 3))
+        .unwrap();
+    let mut replaced_route_sources = vec![replaced.clone(), first_peer];
+    initial
+        .set_present_source_routes(vec![SourceRouteSnapshot::present(
+            replaced_route.clone(),
+            replaced_route_sources.clone(),
+        )
+        .unwrap()])
+        .unwrap();
+    initial.commit(|_| true).unwrap();
+
+    let mut failure = None;
+    let mut failure_work = None;
+    for revision in 2_u8..=40 {
+        let (searcher, _) = open_unverified_generation(root.path());
+        let exercise_route_rollback =
+            searcher.segment_readers().len() * 2 > MAX_SESSION_WITNESS_VISITS;
+        let mut replacement = GenerationWriter::open(root.path(), options.clone())
+            .unwrap()
+            .into_writer()
+            .unwrap();
+        let successful_route = SourceRouteIdentity::from_sha256("62".repeat(32)).unwrap();
+        let successful_source = source("witness-cap-successful-route.jsonl");
+        if exercise_route_rollback {
+            replacement
+                .set_source_route_plan(
+                    BTreeSet::from([replaced_route.clone(), successful_route.clone()]),
+                    BTreeSet::new(),
+                )
+                .unwrap();
+            replacement
+                .begin_source_route_stage(successful_route.clone())
+                .unwrap();
+            replacement.begin_source(successful_source.clone()).unwrap();
+            replacement
+                .add_core_record(document(&successful_source, 1, "successful prior route"))
+                .unwrap();
+            replacement
+                .certify_source(certificate(&successful_source, revision, 1))
+                .unwrap();
+            replacement
+                .finish_source_route_stage(&successful_route)
+                .unwrap();
+            replacement
+                .begin_source_route_stage(replaced_route.clone())
+                .unwrap();
+        }
+        replacement.begin_source(replaced.clone()).unwrap();
+        replacement
+            .writer_mut()
+            .unwrap()
+            .set_merge_policy(Box::<NoMergePolicy>::default());
+        crate::reset_prior_session_identity_lookup_work();
+        match replacement.add_core_record(document(
+            &replaced,
+            1,
+            &format!("replacement {revision}"),
+        )) {
+            Ok(()) => {
+                replacement
+                    .certify_source(certificate(&replaced, revision, 1))
+                    .unwrap();
+                let peer = source(&format!("witness-cap-peer-{revision}.jsonl"));
+                replacement.begin_source(peer.clone()).unwrap();
+                for sequence in 1..=3 {
+                    replacement
+                        .add_core_record(document(
+                            &peer,
+                            sequence,
+                            &format!("retained peer {revision}"),
+                        ))
+                        .unwrap();
+                }
+                replacement
+                    .certify_source(certificate(&peer, revision, 3))
+                    .unwrap();
+                replaced_route_sources.push(peer);
+                replacement
+                    .set_present_source_routes(vec![SourceRouteSnapshot::present(
+                        replaced_route.clone(),
+                        replaced_route_sources.clone(),
+                    )
+                    .unwrap()])
+                    .unwrap();
+                replacement.commit(|_| true).unwrap();
+            }
+            Err(error) => {
+                failure_work = Some(crate::prior_session_identity_lookup_work());
+                failure = Some(error);
+                assert!(exercise_route_rollback);
+                replacement
+                    .rollback_source_route_stage(&replaced_route)
+                    .unwrap();
+                assert!(replacement
+                    .carry_failed_source_route_from_base(&replaced_route)
+                    .unwrap());
+                replacement
+                    .set_present_source_routes(vec![SourceRouteSnapshot::present(
+                        successful_route,
+                        vec![successful_source],
+                    )
+                    .unwrap()])
+                    .unwrap();
+                assert!(matches!(
+                    replacement.commit(|_| true),
+                    Err(IndexError::ActiveGenerationNeedsRebuild { .. })
+                ));
+                let rebuild = GenerationWriter::open(root.path(), options.clone())
+                    .unwrap()
+                    .into_writer()
+                    .unwrap();
+                assert!(rebuild.base_manifest().is_none());
+                break;
+            }
+        }
+    }
+
+    assert!(
+        matches!(
+            failure,
+            Some(IndexError::ActiveGenerationNeedsRebuild { .. })
+        ),
+        "unexpected cap outcome: {failure:?}"
+    );
+    let work = failure_work.unwrap();
+    assert_eq!(
+        work.dictionary_terms + work.postings,
+        MAX_SESSION_WITNESS_VISITS + 1,
+        "the lookup must stop immediately after crossing its fixed carrier visit cap"
+    );
+    assert!(work.segment_range_probes <= MAX_SESSION_WITNESS_SEGMENT_PROBES);
+    assert!(
+        work.core_decodes <= 1,
+        "only the live witness may be decoded"
+    );
+    assert!(root
+        .path()
+        .join("active-generation-rebuild-required.json")
+        .is_file());
+}
+
+#[test]
+fn session_witness_segment_probe_cap_accepts_64_and_rejects_65() {
+    let root = tempdir().unwrap();
+    let target = source("witness-segment-cap-target.jsonl");
+    let options = WriterOptions {
+        indexer_threads: 1,
+        memory_bytes: INDEX_MEMORY_MIN_PER_THREAD,
+    };
+    let mut initial = GenerationWriter::open(root.path(), options.clone())
+        .unwrap()
+        .into_writer()
+        .unwrap();
+    initial.test_disable_merges().unwrap();
+    for segment in 0..MAX_SESSION_WITNESS_SEGMENT_PROBES {
+        let current = if segment == 0 {
+            target.clone()
+        } else {
+            source(&format!("witness-segment-cap-peer-{segment}.jsonl"))
+        };
+        initial.begin_source(current.clone()).unwrap();
+        initial
+            .add_core_record(document(&current, 1, "segment cap fixture"))
+            .unwrap();
+        if segment == 0 {
+            initial
+                .certify_source(appendable_certificate(&current, 1, 1, 10))
+                .unwrap();
+        } else {
+            initial.certify_source(certificate(&current, 1, 1)).unwrap();
+        }
+        initial.writer_mut().unwrap().commit().unwrap();
+    }
+    initial.commit(|_| true).unwrap();
+    let (searcher, _) = open_unverified_generation(root.path());
+    assert_eq!(
+        searcher.segment_readers().len(),
+        MAX_SESSION_WITNESS_SEGMENT_PROBES
+    );
+
+    let mut accepted = GenerationWriter::open(root.path(), options.clone())
+        .unwrap()
+        .into_writer()
+        .unwrap();
+    let base = accepted
+        .begin_source_append(target.clone())
+        .unwrap()
+        .clone();
+    accepted.test_disable_merges().unwrap();
+    crate::reset_prior_session_identity_lookup_work();
+    accepted
+        .add_core_record(document(&target, 2, "accepted at segment cap"))
+        .unwrap();
+    assert_eq!(
+        crate::prior_session_identity_lookup_work().segment_range_probes,
+        MAX_SESSION_WITNESS_SEGMENT_PROBES
+    );
+    accepted
+        .certify_source_append(
+            CertifiedSourceAppend::certify(
+                &base,
+                appendable_certificate(&target, 2, 2, 20),
+                10,
+                [1; 32],
+            )
+            .unwrap(),
+        )
+        .unwrap();
+    accepted.commit(|_| true).unwrap();
+    let (searcher, _) = open_unverified_generation(root.path());
+    assert_eq!(
+        searcher.segment_readers().len(),
+        MAX_SESSION_WITNESS_SEGMENT_PROBES + 1
+    );
+
+    let mut rejected = GenerationWriter::open(root.path(), options.clone())
+        .unwrap()
+        .into_writer()
+        .unwrap();
+    rejected.begin_source_append(target.clone()).unwrap();
+    crate::reset_prior_session_identity_lookup_work();
+    assert!(matches!(
+        rejected.add_core_record(document(&target, 3, "rejected past segment cap")),
+        Err(IndexError::ActiveGenerationNeedsRebuild { .. })
+    ));
+    assert_eq!(
+        crate::prior_session_identity_lookup_work().segment_range_probes,
+        MAX_SESSION_WITNESS_SEGMENT_PROBES + 1
+    );
+    assert!(matches!(
+        rejected.commit(|_| true),
+        Err(IndexError::ActiveGenerationNeedsRebuild { .. })
+    ));
+    let rebuild = GenerationWriter::open(root.path(), options)
+        .unwrap()
+        .into_writer()
+        .unwrap();
+    assert!(rebuild.base_manifest().is_none());
 }
 
 #[test]

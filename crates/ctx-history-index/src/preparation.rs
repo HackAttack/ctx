@@ -255,20 +255,6 @@ pub(crate) struct PreparedSessionIdentityFacts {
     pub(crate) relationship: PreparedSessionRelationship,
 }
 
-impl PreparedSessionIdentityFacts {
-    pub(crate) fn for_core_record(record: &CoreRecord) -> Self {
-        Self {
-            session_id: record.session_id,
-            source_owner: record.source.identity().digest(),
-            relationship: PreparedSessionRelationship {
-                parent_session_id: record.parent_session_id,
-                root_session_id: record.root_session_id,
-                kind: record.session_relationship,
-            },
-        }
-    }
-}
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct PreparedSessionRelationship {
     pub(crate) parent_session_id: Option<StableEntityId>,

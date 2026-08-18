@@ -92,7 +92,14 @@ pub use ctx_history_index_query::{
     MAX_SESSION_EVENT_PAGE_ITEMS, MAX_SOURCE_EVENT_PAGE_ITEMS, SEARCH_COPIED_EVENT_LINEAGE_POLICY,
     SHOW_COPIED_EVENT_LINEAGE_POLICY,
 };
-pub(crate) use identity::{prior_session_identity_facts, register_compact_identity};
+pub(crate) use identity::{
+    prior_session_identity_facts, register_compact_identity, BaseWitnessSource,
+};
+#[cfg(test)]
+pub(crate) use identity::{
+    prior_session_identity_lookup_work, reset_prior_session_identity_lookup_work,
+    PriorSessionIdentityLookupWork, MAX_SESSION_WITNESS_SEGMENT_PROBES, MAX_SESSION_WITNESS_VISITS,
+};
 pub use preparation::{
     CoreRecordPreparer, PreparedCoreRecord, PreparedCoreRecordDraft,
     PreparedCoreRecordMaterialization,
@@ -382,6 +389,7 @@ pub struct GenerationWriter {
     changed_session_registry_memory_bytes: usize,
     source_route_plan: Option<SourceRoutePlan>,
     active_source_route_stage: Option<SourceRouteStageCheckpoint>,
+    reusable_base_rebuild_detail: Option<String>,
     #[cfg(test)]
     index_writer_constructions: std::sync::Arc<std::sync::atomic::AtomicUsize>,
     #[cfg(test)]
@@ -620,11 +628,12 @@ impl GenerationWriter {
             Some(pending) if pending.source.exact_descriptor_eq(prepared.source()) => pending,
             _ => return Err(IndexError::DocumentSourceNotActive),
         };
-        let is_append = matches!(&pending_source.mode, PendingSourceMode::Append { .. });
         if matches!(&pending_source.mode, PendingSourceMode::Retain { .. }) {
             return Err(IndexError::DocumentSourceNotActive);
         }
-        if is_append && self.base_publication.is_none() {
+        if matches!(&pending_source.mode, PendingSourceMode::Append { .. })
+            && self.base_publication.is_none()
+        {
             return Err(IndexError::AppendBaseMismatch);
         }
         let preparation::PreparedCoreRecordParts {
@@ -632,69 +641,88 @@ impl GenerationWriter {
             identity_facts,
             document,
         } = prepared.into_parts();
-        let session_facts = identity_facts.session;
+        let candidate = identity_facts.session;
         let source_owner = pending_source.source.identity().digest();
-        if session_facts.source_owner != source_owner
+        if candidate.source_owner != source_owner
             || identity_facts.event_id.source_digest() != source_owner
-            || session_facts.session_id.source_digest() != source_owner
+            || candidate.session_id.source_digest() != source_owner
         {
             return Err(IndexError::WriterInvariant(
                 "prepared Core identity facts do not match their staged source",
             ));
         }
-        let session_uuid = session_facts.session_id.as_uuid();
-        let (merged_session_facts, first_insertion) =
-            if let Some(existing) = self.changed_sessions.get(&session_uuid).copied() {
-                (
-                    merge_session_identity_facts(existing, session_facts)?,
+        let session_uuid = candidate.session_id.as_uuid();
+        let (merged, first_for_candidate, prior) =
+            match self.changed_sessions.get(&session_uuid).copied() {
+                Some(existing) => (
+                    merge_session_identity_facts(existing, candidate)?,
                     false,
-                )
-            } else {
-                self.ensure_changed_session_registry_capacity()?;
-                let mut merged = session_facts;
-                if let Some(base) = self.base_publication.as_ref() {
-                    let base_facts = prior_session_identity_facts(
-                        base.searcher(),
-                        self.fields,
-                        session_facts.session_id,
-                    )
-                    .map_err(|error| match self.active_pointer.as_ref() {
-                        Some(pointer) => {
-                            classify_active_integrity_failure(&self.root, pointer.active(), error)
+                    None,
+                ),
+                None => {
+                    self.ensure_changed_session_registry_capacity()?;
+                    let prior = if let Some(base) = self.base_publication.as_ref() {
+                        let lookup = prior_session_identity_facts(
+                            base.searcher(),
+                            self.fields,
+                            candidate.session_id,
+                            |owner, core| self.base_witness_source_state(owner, core),
+                        );
+                        match lookup {
+                            Ok(prior) => prior,
+                            Err(error)
+                                if matches!(error, IndexError::CompactIdentityCollision { .. }) =>
+                            {
+                                return Err(error);
+                            }
+                            Err(error) => match self.active_pointer.as_ref() {
+                                Some(pointer) => {
+                                    let classified = classify_active_integrity_failure(
+                                        &self.root,
+                                        pointer.active(),
+                                        error,
+                                    );
+                                    self.reusable_base_rebuild_detail =
+                                        Some(classified.to_string());
+                                    return Err(classified);
+                                }
+                                None => return Err(error),
+                            },
                         }
-                        None => error,
-                    })?;
-                    if let Some(existing) = base_facts {
-                        // Replacement deletes this source's old postings, so its old
-                        // claim is not candidate authority. A claim owned by any
-                        // other source remains live and must still agree. Append
-                        // preserves every base posting and therefore always agrees.
-                        if is_append || existing.source_owner != source_owner {
-                            merged = merge_session_identity_facts(existing, merged)?;
-                        }
-                    }
+                    } else {
+                        None
+                    };
+                    // Candidate-vs-base contradictions are intentionally outside
+                    // the active-integrity classification boundary above.
+                    let merged = match prior {
+                        Some(existing) => merge_session_identity_facts(existing, candidate)?,
+                        None => candidate,
+                    };
+                    (merged, true, prior)
                 }
-                (merged, true)
             };
+        let advances = self.changed_sessions.get(&session_uuid).copied() != Some(merged);
+        let mut document = document;
+        let is_replacement = matches!(&pending_source.mode, PendingSourceMode::Replace);
+        if (first_for_candidate && (is_replacement || prior.is_none() || prior != Some(merged)))
+            || (!first_for_candidate && advances)
+        {
+            document.add_session_authority(self.fields);
+        }
         self.writer_mut()?.add_document(document)?;
-        if first_insertion {
-            self.changed_sessions
-                .entry(session_uuid)
-                .or_insert(merged_session_facts);
+        if first_for_candidate {
+            self.changed_sessions.insert(session_uuid, merged);
             if let Some(checkpoint) = self.active_source_route_stage.as_mut() {
                 checkpoint.changed_session_insertions.push(session_uuid);
             }
-        } else if self.changed_sessions.get(&session_uuid).copied() != Some(merged_session_facts) {
-            let prior = self
-                .changed_sessions
-                .insert(session_uuid, merged_session_facts)
-                .ok_or(IndexError::WriterInvariant(
-                    "changed-session merge lost its prior registry entry",
-                ))?;
+        } else if advances {
+            let previous = self.changed_sessions.insert(session_uuid, merged).ok_or(
+                IndexError::WriterInvariant("changed-session merge lost its prior registry entry"),
+            )?;
             if let Some(checkpoint) = self.active_source_route_stage.as_mut() {
                 checkpoint
                     .changed_session_updates
-                    .push((session_uuid, prior));
+                    .push((session_uuid, previous));
             }
         }
         let pending = self
@@ -726,6 +754,43 @@ impl GenerationWriter {
             });
         }
         Ok(())
+    }
+
+    /// Resolves base witness source lifecycle through the candidate overlay.
+    fn base_witness_source_state(
+        &self,
+        owner: ctx_history_core::StableEntityId,
+        core: &CoreRecord,
+    ) -> Result<BaseWitnessSource> {
+        let owner_canonical = owner.encode_canonical()?;
+        let owner_digest = owner.digest();
+        let owner_token = hex(&owner_digest);
+        if let Some(pending) = self.pending.get(&owner_token) {
+            let candidate = pending.source.identity();
+            if candidate.encode_canonical()? != owner_canonical {
+                return Err(IndexError::CompactIdentityCollision {
+                    kind: "source",
+                    uuid: owner.as_uuid(),
+                    existing_digest: hex(&candidate.digest()),
+                    new_digest: hex(&owner_digest),
+                });
+            }
+            return Ok(match pending.mode {
+                PendingSourceMode::Replace => BaseWitnessSource::Replaced,
+                PendingSourceMode::Append { .. } | PendingSourceMode::Retain { .. } => {
+                    BaseWitnessSource::Active
+                }
+            });
+        }
+        // The certified base guarantees that every live Core document belongs
+        // to a manifest source. Tombstoned witnesses never reach this callback,
+        // so candidate-local deletion state is the only remaining distinction.
+        let source = &core.source;
+        if self.deletions.contains_key(source) || self.route_deletions.contains(source) {
+            Ok(BaseWitnessSource::Deleted)
+        } else {
+            Ok(BaseWitnessSource::Active)
+        }
     }
 
     pub fn certify_source(&mut self, certificate: CertifiedSource) -> Result<()> {

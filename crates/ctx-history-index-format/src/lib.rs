@@ -56,9 +56,10 @@ pub use core_contract::{
 #[doc(hidden)]
 pub use index_document::{
     core_content_bytes, EventRangeOrderKey, IndexDocument, SemanticEventOrderKey,
-    SessionEventOrderKey, SourceEventOrderKey, EVENT_RANGE_ORDER_KEY_LEN,
-    SEMANTIC_EVENT_ORDER_KEY_LEN, SESSION_EVENT_ORDER_KEY_LEN, SOURCE_EVENT_ORDER_KEY_LEN,
-    SOURCE_EVENT_ORDER_SIZE_SUFFIX_LEN, SOURCE_EVENT_ORDER_SOURCE_PREFIX_LEN,
+    SessionAuthorityKey, SessionEventOrderKey, SourceEventOrderKey, EVENT_RANGE_ORDER_KEY_LEN,
+    SEMANTIC_EVENT_ORDER_KEY_LEN, SESSION_AUTHORITY_KEY_LEN, SESSION_EVENT_ORDER_KEY_LEN,
+    SOURCE_EVENT_ORDER_KEY_LEN, SOURCE_EVENT_ORDER_SIZE_SUFFIX_LEN,
+    SOURCE_EVENT_ORDER_SOURCE_PREFIX_LEN,
 };
 #[doc(hidden)]
 pub use manifest::{

@@ -572,6 +572,11 @@ fn source_event_page_rejects_a_forged_order_size_suffix_before_returning_record(
         .and_then(|value| value.as_bytes())
         .unwrap()
         .to_vec();
+    let session_authority = stored
+        .get_first(fields.session_authority)
+        .and_then(|value| value.as_bytes())
+        .unwrap()
+        .to_vec();
     let core_record = ctx_history_core::CoreRecord::decode_stored(&encoded_core).unwrap();
     let mut forged_order = ctx_history_index_format::SourceEventOrderKey::for_core_record(
         &core_record,
@@ -589,6 +594,7 @@ fn source_event_page_rejects_a_forged_order_size_suffix_before_returning_record(
         }
     }
     forged.add_bytes(fields.source_event_order, &forged_order);
+    forged.add_bytes(fields.session_authority, &session_authority);
     drop(searcher);
 
     let directory = DurableMmapDirectory::open(active_generation_path(temp.path())).unwrap();

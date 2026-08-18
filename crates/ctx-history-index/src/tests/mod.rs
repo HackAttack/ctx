@@ -265,7 +265,8 @@ fn indexed_document(record: CoreRecord) -> TantivyDocument {
     let fields = fields_from_schema(&schema).unwrap();
     let encoded = record.encode_stored().unwrap();
     let content_bytes = core_content_bytes(&record.content).unwrap();
-    let projected = IndexDocument::from_core(fields, record, encoded, content_bytes).unwrap();
+    let mut projected = IndexDocument::from_core(fields, record, encoded, content_bytes).unwrap();
+    projected.add_session_authority(fields);
     let mut document = TantivyDocument::default();
     for (field, value) in projected.iter_fields_and_values() {
         if let Some(value) = value.as_str() {

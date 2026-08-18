@@ -240,6 +240,7 @@ fn verify_segment(
             .ok_or(IndexError::CountOverflow)?;
         verify_query_fast_fields(segment, doc_id, &record)?;
         let projection_delta = expected_query_projection_delta(fields, &record)?;
+        let session_witness_present = verify_session_witness_key(&record)?;
         let source_ordinal = *source_ordinals
             .get(&record.source_owner)
             .ok_or(IndexError::InvalidStoredDocumentField("source_key"))?;
@@ -276,6 +277,10 @@ fn verify_segment(
                 parent_session: record.identities.parent_session,
                 root_session: record.identities.root_session,
                 session_source_ordinal: source_ordinal,
+                session_relationship_kind: relationship_kind_tag(
+                    record.core_record.session_relationship,
+                ),
+                session_witness_present,
             },
             projection_delta,
         )?;
@@ -524,6 +529,12 @@ fn expected_query_projection_delta(
         fields.session_event_order,
         &record.session_event_order,
     ));
+    if let Some(session_authority) = record.session_authority {
+        add(Term::from_field_bytes(
+            fields.session_authority,
+            &session_authority,
+        ));
+    }
     add(Term::from_field_bytes(
         fields.semantic_event_order,
         &record.semantic_event_order,
@@ -658,9 +669,9 @@ impl IncrementalProjectionVerifier {
     }
 }
 
-fn incremental_query_projection_fields(fields: crate::Fields) -> [Field; 38] {
+fn incremental_query_projection_fields(fields: crate::Fields) -> [Field; 39] {
     let remaining = remaining_query_projection_fields(fields);
-    let mut all = [fields.event_id; 38];
+    let mut all = [fields.event_id; 39];
     all[..4].copy_from_slice(&[
         fields.event_id,
         fields.session_id,
@@ -760,7 +771,7 @@ fn verify_remaining_query_projections(
     Ok(())
 }
 
-fn remaining_query_projection_fields(fields: crate::Fields) -> [Field; 34] {
+fn remaining_query_projection_fields(fields: crate::Fields) -> [Field; 35] {
     [
         fields.event_identity_digest,
         fields.provider_native_session_relationship,
@@ -793,6 +804,7 @@ fn remaining_query_projection_fields(fields: crate::Fields) -> [Field; 34] {
         fields.fact_provider_disposition,
         fields.source_event_order,
         fields.session_event_order,
+        fields.session_authority,
         fields.semantic_event_order,
         fields.event_range_order,
         fields.discovery_eligible,
@@ -866,7 +878,8 @@ fn verify_manifest_aggregates(
 
 mod logical_identity;
 use logical_identity::{
-    canonical_uuid_term, for_each_live_posting, verify_event_identities, verify_session_identities,
+    canonical_uuid_term, for_each_live_posting, relationship_kind_tag, verify_event_identities,
+    verify_session_identities, verify_session_witness_key,
 };
 
 #[cfg(test)]
