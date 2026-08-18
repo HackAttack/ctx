@@ -202,6 +202,16 @@ type SourceRefreshAdmissionFence = dyn Fn(
     + Send
     + Sync;
 
+#[cfg(any(test, feature = "test-support"))]
+type TestSourceRefreshAdmissionFence = dyn Fn(
+        &DiscoveryContext,
+        &dyn RefreshJournal,
+        &Path,
+        Option<&ExplicitSourceCatalogAuthority>,
+    ) -> Result<BTreeMap<SourceRouteIdentity, Option<String>>>
+    + Send
+    + Sync;
+
 pub struct CoreRefreshEngine {
     state: Mutex<CoreRefreshEngineState>,
     request_activity_generation: AtomicU64,
@@ -352,16 +362,7 @@ impl CoreRefreshEngine {
         journal: Arc<dyn RefreshJournal>,
         runtime: Arc<dyn RefreshRuntime>,
         executor: Arc<dyn SourceBackedRefreshExecutor>,
-        admission_fence: Arc<
-            dyn Fn(
-                    &DiscoveryContext,
-                    &dyn RefreshJournal,
-                    &Path,
-                    Option<&ExplicitSourceCatalogAuthority>,
-                ) -> Result<BTreeMap<SourceRouteIdentity, Option<String>>>
-                + Send
-                + Sync,
-        >,
+        admission_fence: Arc<TestSourceRefreshAdmissionFence>,
     ) -> Self {
         let adapted = Arc::new(
             move |discovery: &DiscoveryContext,
@@ -379,16 +380,7 @@ impl CoreRefreshEngine {
     pub fn with_admission_fence_for_test(
         journal: Arc<dyn RefreshJournal>,
         runtime: Arc<dyn RefreshRuntime>,
-        admission_fence: Arc<
-            dyn Fn(
-                    &DiscoveryContext,
-                    &dyn RefreshJournal,
-                    &Path,
-                    Option<&ExplicitSourceCatalogAuthority>,
-                ) -> Result<BTreeMap<SourceRouteIdentity, Option<String>>>
-                + Send
-                + Sync,
-        >,
+        admission_fence: Arc<TestSourceRefreshAdmissionFence>,
     ) -> Self {
         Self::with_runtime_for_test(
             journal,

@@ -15,8 +15,7 @@ use crate::{identity::Sha256Digest, BridgeError};
 use self::{
     contract::{
         AuthorityChannel, AuthorityRegistry, BuildIdentityDocument, ComponentDocument, Envelope,
-        ManagedPairComponentIdentityDocument, ManagedPairState, Manifest,
-        VerifiedManagedPairIdentityDocument,
+        Manifest,
     },
     target::TargetSpec,
 };
@@ -199,7 +198,7 @@ fn verify_envelope(
         .verify(&payload_bytes, &signature)
         .map_err(|_| verification("detached manifest signature is invalid"))?;
     let target = TargetSpec::current()?;
-    validate_manifest_identity(&manifest, target, expectations)?;
+    validate_manifest_identity(&manifest, target)?;
     let identity = signed_identity(&manifest, target, &payload_bytes)?;
     Ok(VerifiedEnvelope { identity })
 }
@@ -272,11 +271,7 @@ fn select_authority<'a>(
         .ok_or_else(|| verification("manifest channel is unsupported"))
 }
 
-fn validate_manifest_identity(
-    manifest: &Manifest,
-    target: TargetSpec,
-    expected: &ManagedPairExpectations,
-) -> Result<(), BridgeError> {
+fn validate_manifest_identity(manifest: &Manifest, target: TargetSpec) -> Result<(), BridgeError> {
     if !is_name(&manifest.release_name)
         || manifest.target_matrix_sha256 != TARGET_MATRIX_SHA256
         || manifest.rollback_generation == 0
@@ -389,52 +384,6 @@ fn validate_build_identity(
     Ok(())
 }
 
-fn validate_state_document(
-    state: &ManagedPairState,
-    manifest: &Manifest,
-    target: TargetSpec,
-    payload_bytes: &[u8],
-    envelope_bytes: &[u8],
-) -> Result<(), BridgeError> {
-    if state.contract != "ctx-managed-pair-state"
-        || state.schema_version != 1
-        || state.envelope_size_bytes == 0
-        || state.envelope_size_bytes > MAX_ENVELOPE_BYTES as u64
-        || state.envelope_size_bytes != envelope_bytes.len() as u64
-        || parse_digest(&state.envelope_sha256)? != digest(envelope_bytes)
-        || !state_identity_matches(&state.identity, manifest, target, payload_bytes)?
-    {
-        return Err(verification(
-            "managed-pair state does not retain this verified signed pair",
-        ));
-    }
-    Ok(())
-}
-
-fn state_identity_matches(
-    state: &VerifiedManagedPairIdentityDocument,
-    manifest: &Manifest,
-    target: TargetSpec,
-    payload_bytes: &[u8],
-) -> Result<bool, BridgeError> {
-    Ok(state.release_name == manifest.release_name
-        && state.target == target.id
-        && state.rollback_generation == manifest.rollback_generation
-        && parse_digest(&state.manifest_sha256)? == digest(payload_bytes)
-        && state_component_matches(&state.core, &manifest.components.core)?
-        && state_component_matches(&state.companion, &manifest.components.companion)?)
-}
-
-fn state_component_matches(
-    state: &ManagedPairComponentIdentityDocument,
-    signed: &ComponentDocument,
-) -> Result<bool, BridgeError> {
-    Ok(state.size_bytes > 0
-        && state.size_bytes <= MAX_COMPONENT_BYTES
-        && state.size_bytes == signed.size_bytes
-        && parse_digest(&state.sha256)? == parse_digest(&signed.sha256)?)
-}
-
 fn strict_base64(
     value: &str,
     maximum_decoded_bytes: usize,
@@ -504,84 +453,15 @@ pub(crate) fn embedded_target_matrix_for_tests() -> &'static [u8] {
 }
 
 #[cfg(test)]
-mod state_tests {
+mod component_tests {
     use serde_json::{json, Value};
 
     use super::*;
 
     const CORE_SHA: &str = "1111111111111111111111111111111111111111111111111111111111111111";
-    const COMPANION_SHA: &str = "2222222222222222222222222222222222222222222222222222222222222222";
 
     #[test]
-    fn managed_pair_state_binds_envelope_and_complete_verified_identity() {
-        let target = TargetSpec::current().unwrap();
-        let payload = b"canonical-manifest";
-        let envelope = b"signed-envelope";
-        let manifest = manifest(target);
-        let valid = state_value(target, payload, envelope);
-        let mut worker_bytes = serde_json::to_vec_pretty(&valid).unwrap();
-        worker_bytes.push(b'\n');
-        let state: ManagedPairState = serde_json::from_slice(&worker_bytes).unwrap();
-        validate_state_document(&state, &manifest, target, payload, envelope).unwrap();
-
-        for (pointer, replacement) in [
-            ("/contract", json!("ctx-managed-pair-state-v2")),
-            ("/schema_version", json!(2)),
-            ("/identity/release_name", json!("v1.2.4")),
-            ("/identity/target", json!("unsupported-target")),
-            ("/identity/rollback_generation", json!(8)),
-            ("/identity/manifest_sha256", json!(CORE_SHA)),
-            (
-                "/identity/core/sha256",
-                json!("3333333333333333333333333333333333333333333333333333333333333333"),
-            ),
-            ("/identity/core/size_bytes", json!(18)),
-            (
-                "/identity/companion/sha256",
-                json!("4444444444444444444444444444444444444444444444444444444444444444"),
-            ),
-            ("/identity/companion/size_bytes", json!(30)),
-            ("/envelope_sha256", json!(CORE_SHA)),
-            ("/envelope_size_bytes", json!(envelope.len() + 1)),
-        ] {
-            let mut changed = valid.clone();
-            *changed.pointer_mut(pointer).unwrap() = replacement;
-            let parsed: ManagedPairState = serde_json::from_value(changed).unwrap();
-            assert!(
-                validate_state_document(&parsed, &manifest, target, payload, envelope).is_err(),
-                "state field {pointer} was not bound"
-            );
-        }
-    }
-
-    #[test]
-    fn managed_pair_state_is_closed_and_has_no_legacy_receipt_shape() {
-        let target = TargetSpec::current().unwrap();
-        let mut unknown_root = state_value(target, b"manifest", b"envelope");
-        unknown_root["unexpected"] = json!(true);
-        assert!(serde_json::from_value::<ManagedPairState>(unknown_root).is_err());
-
-        let mut unknown_identity = state_value(target, b"manifest", b"envelope");
-        unknown_identity["identity"]["channel"] = json!("staging");
-        assert!(serde_json::from_value::<ManagedPairState>(unknown_identity).is_err());
-
-        let mut unknown_component = state_value(target, b"manifest", b"envelope");
-        unknown_component["identity"]["core"]["artifact_name"] = json!("ctx-linux-x64");
-        assert!(serde_json::from_value::<ManagedPairState>(unknown_component).is_err());
-
-        let legacy = json!({
-            "contract": "ctx-managed-pair-rollback-receipt",
-            "schema_version": 1,
-            "channel": "staging",
-            "release_authority_key_id": "legacy",
-            "rollback_generation": 7,
-            "manifest_sha256": CORE_SHA,
-        });
-        assert!(serde_json::from_value::<ManagedPairState>(legacy).is_err());
-    }
-
-    #[test]
-    fn signed_component_and_state_bounds_are_exactly_256_mib() {
+    fn signed_component_bound_is_exactly_256_mib() {
         let target = TargetSpec::current().unwrap();
         let component_at = |size_bytes| {
             serde_json::from_value::<ComponentDocument>(component(
@@ -603,11 +483,6 @@ mod state_tests {
             target.core_rust_target,
         )
         .is_ok());
-        let accepted_state = ManagedPairComponentIdentityDocument {
-            sha256: CORE_SHA.to_owned(),
-            size_bytes: MAX_COMPONENT_BYTES,
-        };
-        assert!(state_component_matches(&accepted_state, &accepted).unwrap());
 
         let rejected = component_at(MAX_COMPONENT_BYTES + 1);
         assert!(validate_component_document(
@@ -618,49 +493,6 @@ mod state_tests {
             target.core_rust_target,
         )
         .is_err());
-        let rejected_state = ManagedPairComponentIdentityDocument {
-            sha256: CORE_SHA.to_owned(),
-            size_bytes: MAX_COMPONENT_BYTES + 1,
-        };
-        assert!(!state_component_matches(&rejected_state, &rejected).unwrap());
-    }
-
-    fn manifest(target: TargetSpec) -> Manifest {
-        serde_json::from_value(json!({
-            "contract": "ctx-managed-pair-manifest",
-            "schema_version": 1,
-            "channel": "staging",
-            "release_authority_key_id": "ctx-pro-release-staging-test",
-            "release_name": "v1.2.3",
-            "target": {
-                "id": target.id,
-                "os": target.os,
-                "arch": target.arch,
-                "core_rust_target": target.core_rust_target,
-                "companion_rust_target": target.companion_rust_target,
-            },
-            "install_geometry": {
-                "install_root": "<install-root>",
-                "managed_bin_dir": "<install-root>/bin",
-                "core_slot": target.core_slot,
-                "companion_slot": target.companion_slot,
-            },
-            "target_matrix_sha256": TARGET_MATRIX_SHA256,
-            "rollback_generation": 7,
-            "snapshot": {
-                "contract": "ctx-managed-pair-snapshot-v1",
-                "fingerprint": CORE_SHA,
-            },
-            "compatibility": {
-                "invocation_fingerprint": CORE_SHA,
-                "core_capability_fingerprint": CORE_SHA,
-            },
-            "components": {
-                "core": component("core", target.core_artifact, target.core_slot, target.core_rust_target, CORE_SHA, 17),
-                "companion": component("companion", target.companion_artifact, target.companion_slot, target.companion_rust_target, COMPANION_SHA, 29),
-            },
-        }))
-        .unwrap()
     }
 
     fn component(
@@ -683,23 +515,6 @@ mod state_tests {
                 "source_revision": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
                 "build_fingerprint": CORE_SHA,
             },
-        })
-    }
-
-    fn state_value(target: TargetSpec, payload: &[u8], envelope: &[u8]) -> Value {
-        json!({
-            "contract": "ctx-managed-pair-state",
-            "schema_version": 1,
-            "identity": {
-                "release_name": "v1.2.3",
-                "target": target.id,
-                "rollback_generation": 7,
-                "manifest_sha256": digest(payload).to_hex(),
-                "core": {"sha256": CORE_SHA, "size_bytes": 17},
-                "companion": {"sha256": COMPANION_SHA, "size_bytes": 29},
-            },
-            "envelope_sha256": digest(envelope).to_hex(),
-            "envelope_size_bytes": envelope.len(),
         })
     }
 }

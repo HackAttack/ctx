@@ -102,31 +102,3 @@ pub(super) struct BuildIdentityDocument {
     pub(super) source_revision: String,
     pub(super) build_fingerprint: String,
 }
-
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-pub(super) struct ManagedPairState {
-    pub(super) contract: String,
-    pub(super) schema_version: u32,
-    pub(super) identity: VerifiedManagedPairIdentityDocument,
-    pub(super) envelope_sha256: String,
-    pub(super) envelope_size_bytes: u64,
-}
-
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-pub(super) struct VerifiedManagedPairIdentityDocument {
-    pub(super) release_name: String,
-    pub(super) target: String,
-    pub(super) rollback_generation: u64,
-    pub(super) manifest_sha256: String,
-    pub(super) core: ManagedPairComponentIdentityDocument,
-    pub(super) companion: ManagedPairComponentIdentityDocument,
-}
-
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-pub(super) struct ManagedPairComponentIdentityDocument {
-    pub(super) sha256: String,
-    pub(super) size_bytes: u64,
-}

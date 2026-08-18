@@ -635,63 +635,6 @@ fn recover_failure_outcome(
     }
 }
 
-#[cfg(test)]
-mod failure_outcome_scope_tests {
-    use super::*;
-
-    fn route(byte: char) -> SourceRouteIdentity {
-        SourceRouteIdentity::from_sha256(byte.to_string().repeat(64)).unwrap()
-    }
-
-    fn exact_scope(route: &SourceRouteIdentity) -> SourceBackedRefreshScope {
-        SourceBackedRefreshScope::Exact(BTreeSet::from([route.clone()]))
-    }
-
-    #[test]
-    fn exact_recovery_rejects_out_of_scope_retryable_disposition() {
-        let admitted = route('a');
-        let peer = route('b');
-        let job = json!({
-            "structured_outcome": {
-                "code": "source_changed",
-                "class": "source_changed",
-                "retryable": true,
-                "affected_routes": [peer.as_str()],
-                "retryable_routes": [peer.as_str()],
-                "blocked_routes": [],
-                "retry_advice": "retry_automatically"
-            }
-        });
-
-        let error = recover_failure_outcome(&job, &exact_scope(&admitted), None)
-            .expect_err("out-of-scope retryable route must fail closed");
-
-        assert!(format!("{error:#}").contains("exceeds its exact scope"));
-    }
-
-    #[test]
-    fn exact_recovery_rejects_out_of_scope_blocked_disposition() {
-        let admitted = route('a');
-        let peer = route('b');
-        let job = json!({
-            "structured_outcome": {
-                "code": "malformed_source",
-                "class": "unreadable",
-                "retryable": false,
-                "affected_routes": [peer.as_str()],
-                "retryable_routes": [],
-                "blocked_routes": [peer.as_str()],
-                "retry_advice": "repair_source"
-            }
-        });
-
-        let error = recover_failure_outcome(&job, &exact_scope(&admitted), None)
-            .expect_err("out-of-scope blocked route must fail closed");
-
-        assert!(format!("{error:#}").contains("exceeds its exact scope"));
-    }
-}
-
 fn recover_outcome_routes(
     fields: &serde_json::Map<String, Value>,
     field: &str,
@@ -891,4 +834,61 @@ fn recover_timings(job: &Value) -> Result<(Option<SourceBackedRefreshTimings>, u
         }),
         required("publication_probe")?,
     ))
+}
+
+#[cfg(test)]
+mod failure_outcome_scope_tests {
+    use super::*;
+
+    fn route(byte: char) -> SourceRouteIdentity {
+        SourceRouteIdentity::from_sha256(byte.to_string().repeat(64)).unwrap()
+    }
+
+    fn exact_scope(route: &SourceRouteIdentity) -> SourceBackedRefreshScope {
+        SourceBackedRefreshScope::Exact(BTreeSet::from([route.clone()]))
+    }
+
+    #[test]
+    fn exact_recovery_rejects_out_of_scope_retryable_disposition() {
+        let admitted = route('a');
+        let peer = route('b');
+        let job = json!({
+            "structured_outcome": {
+                "code": "source_changed",
+                "class": "source_changed",
+                "retryable": true,
+                "affected_routes": [peer.as_str()],
+                "retryable_routes": [peer.as_str()],
+                "blocked_routes": [],
+                "retry_advice": "retry_automatically"
+            }
+        });
+
+        let error = recover_failure_outcome(&job, &exact_scope(&admitted), None)
+            .expect_err("out-of-scope retryable route must fail closed");
+
+        assert!(format!("{error:#}").contains("exceeds its exact scope"));
+    }
+
+    #[test]
+    fn exact_recovery_rejects_out_of_scope_blocked_disposition() {
+        let admitted = route('a');
+        let peer = route('b');
+        let job = json!({
+            "structured_outcome": {
+                "code": "malformed_source",
+                "class": "unreadable",
+                "retryable": false,
+                "affected_routes": [peer.as_str()],
+                "retryable_routes": [],
+                "blocked_routes": [peer.as_str()],
+                "retry_advice": "repair_source"
+            }
+        });
+
+        let error = recover_failure_outcome(&job, &exact_scope(&admitted), None)
+            .expect_err("out-of-scope blocked route must fail closed");
+
+        assert!(format!("{error:#}").contains("exceeds its exact scope"));
+    }
 }
