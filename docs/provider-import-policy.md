@@ -192,7 +192,7 @@ Secondary traits are noted only to guide tests and hardening work.
 | AstrBot | `astrbot_data_v4_sqlite` | SQLite message store | SQLite conversation/platform rows. |
 | Shelley | `shelley_sqlite` | SQLite message store | SQLite conversations, messages, and tool rows. |
 | Continue | `continue_cli_sessions_json` | JSON session/task document | JSON session files. |
-| OpenHands | `openhands_file_events`, `openhands_cli_file_events` | File event log | Legacy V1 and current CLI conversation event files rather than a chat transcript table. |
+| OpenHands | `openhands_file_events` | File event log | Legacy V1 and the selected current CLI route share the same certified conversation event-file storage family rather than a chat transcript table. |
 | Antigravity | `antigravity_cli_transcript_jsonl_tree` | JSONL transcript stream/tree | Transcript tree. |
 | Gemini | `gemini_cli_chat_recording_jsonl` | JSONL transcript stream/tree | Chat recording JSONL. |
 | Tabnine | `tabnine_cli_chat_recording_jsonl` | JSONL transcript stream/tree | Chat recording JSONL. |

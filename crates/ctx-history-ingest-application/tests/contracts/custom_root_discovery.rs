@@ -266,12 +266,7 @@ fn current_kiro_discovery_is_human_only_and_provider_filtered_import_does_not_di
         "{stdout}"
     );
 
-    let json = json_output(ctx(&temp).args([
-        "sources",
-        "--provider",
-        "kiro-cli",
-        "--format=json",
-    ]));
+    let json = json_output(ctx(&temp).args(["sources", "--provider", "kiro-cli", "--format=json"]));
     assert_eq!(json["schema_version"], 1);
     assert_eq!(
         object_keys(&json),
@@ -295,20 +290,13 @@ fn current_kiro_discovery_is_human_only_and_provider_filtered_import_does_not_di
     assert_eq!(source["native_import"], false);
     assert_eq!(source["importable"], false);
 
-    let stderr = failure_stderr(ctx(&temp).args([
-        "import",
-        "--provider",
-        "kiro-cli",
-        "--format=json",
-    ]));
+    let stderr =
+        failure_stderr(ctx(&temp).args(["import", "--provider", "kiro-cli", "--format=json"]));
     assert!(
         stderr.contains("detected unsupported history at"),
         "{stderr}"
     );
-    assert!(
-        stderr.contains(sessions.to_str().unwrap()),
-        "{stderr}"
-    );
+    assert!(stderr.contains(sessions.to_str().unwrap()), "{stderr}");
     assert!(
         stderr.contains("current ctx cannot import that path"),
         "{stderr}"
@@ -494,13 +482,8 @@ fn current_kiro_blocks_unqualified_all_provider_publication_without_dispatching_
     fs::write(sessions.join("session-id.json"), b"{}").unwrap();
     fs::write(sessions.join("session-id.jsonl"), b"{}\n").unwrap();
 
-    let setup = json_output(ctx(&temp).args([
-        "setup",
-        "--wait",
-        "--progress",
-        "none",
-        "--format=json",
-    ]));
+    let setup =
+        json_output(ctx(&temp).args(["setup", "--wait", "--progress", "none", "--format=json"]));
     assert!(
         setup["import"].is_null() || setup["import"]["totals"]["imported_sources"] == 0,
         "{setup:#}"
@@ -528,12 +511,7 @@ fn current_kiro_blocks_unqualified_all_provider_publication_without_dispatching_
         baseline_status["daemon"]["status"]
     );
 
-    let import_all = failure_stderr(ctx(&temp).args([
-        "import",
-        "--all",
-        "--progress",
-        "none",
-    ]));
+    let import_all = failure_stderr(ctx(&temp).args(["import", "--all", "--progress", "none"]));
     assert!(
         import_all.contains("all_provider_terminal_coverage_unavailable"),
         "{import_all}"

@@ -36,6 +36,10 @@ use lifecycle_tests::TestLifecycle;
 
 const TEST_PARSER_REVISION: &str = "sqlite-inventory-pack-contract-v1";
 
+fn test_route_identity() -> SourceRouteIdentity {
+    SourceRouteIdentity::from_sha256("11".repeat(32)).unwrap()
+}
+
 #[derive(Clone)]
 struct TestLeaf {
     source: SourceKey,
@@ -363,7 +367,7 @@ impl SinkHarness {
             &mut self.complete_inventories,
             &mut self.applied_removals,
             0,
-            SourceRouteIdentity::from_sha256("11".repeat(32)).unwrap(),
+            test_route_identity(),
             None,
             SourceBackedRouteResources::production(workers),
             &mut self.logical_source_failures,

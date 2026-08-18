@@ -14,9 +14,28 @@ use ctx_history_core::{
 
 use crate::registration::tests::{NoopLookup, NoopPreparation};
 
+use super::test_route_identity;
+
 #[derive(Clone, Default)]
 pub(super) struct TestSnapshot {
     sources: Vec<CertifiedSource>,
+    route_identity: Option<SourceRouteIdentity>,
+    route_sources: Vec<SourceKey>,
+}
+
+impl TestSnapshot {
+    fn with_sources(mut sources: Vec<CertifiedSource>) -> Self {
+        sources.sort_by_key(|source| source.observation().source().identity().digest());
+        let route_sources = sources
+            .iter()
+            .map(|source| source.observation().source().clone())
+            .collect();
+        Self {
+            sources,
+            route_identity: Some(test_route_identity()),
+            route_sources,
+        }
+    }
 }
 
 impl ImmutableCaptureSnapshot for TestSnapshot {
@@ -29,11 +48,17 @@ impl ImmutableCaptureSnapshot for TestSnapshot {
     }
 
     fn source_routes(&self) -> impl ExactSizeIterator<Item = CaptureRouteRef<'_>> {
-        std::iter::empty()
+        self.route_identity
+            .as_ref()
+            .map(|identity| CaptureRouteRef::new(identity, &self.route_sources, false))
+            .into_iter()
     }
 
-    fn source_route(&self, _route_identity: &SourceRouteIdentity) -> Option<CaptureRouteRef<'_>> {
-        None
+    fn source_route(&self, route_identity: &SourceRouteIdentity) -> Option<CaptureRouteRef<'_>> {
+        self.route_identity
+            .as_ref()
+            .filter(|identity| *identity == route_identity)
+            .map(|identity| CaptureRouteRef::new(identity, &self.route_sources, false))
     }
 }
 
@@ -60,9 +85,7 @@ impl TestLifecycle {
     }
 
     fn snapshot(&self) -> TestSnapshot {
-        TestSnapshot {
-            sources: self.sources(),
-        }
+        TestSnapshot::with_sources(self.sources())
     }
 
     fn commit_receipt(self) -> CaptureCommitReceipt<TestSnapshot> {
@@ -109,9 +132,8 @@ impl CaptureLifecycleSink for TestLifecycle {
     }
 
     fn base_snapshot(&self) -> Option<Self::Snapshot<'_>> {
-        (!self.base_sources.is_empty()).then(|| TestSnapshot {
-            sources: self.base_sources.clone(),
-        })
+        (!self.base_sources.is_empty())
+            .then(|| TestSnapshot::with_sources(self.base_sources.clone()))
     }
 
     fn base_source(&self, source: &SourceKey) -> Option<&CertifiedSource> {
