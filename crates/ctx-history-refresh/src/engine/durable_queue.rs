@@ -66,11 +66,12 @@ impl CoreRefreshEngine {
             return Ok(());
         };
         let now = StdInstant::now();
-        let should_persist = state.last_progress_persisted_request_id.as_deref()
-            != Some(request_id)
-            || state.last_progress_persisted_at.is_none_or(|persisted_at| {
-                now.saturating_duration_since(persisted_at) >= DURABLE_PROGRESS_PERSIST_INTERVAL
-            });
+        let should_persist = should_persist_progress(
+            state.last_progress_persisted_request_id.as_deref(),
+            state.last_progress_persisted_at,
+            request_id,
+            now,
+        );
         if !should_persist {
             return Ok(());
         }
@@ -199,6 +200,18 @@ impl CoreRefreshEngine {
         }
         Ok(job)
     }
+}
+
+fn should_persist_progress(
+    persisted_request_id: Option<&str>,
+    persisted_at: Option<StdInstant>,
+    request_id: &str,
+    now: StdInstant,
+) -> bool {
+    persisted_request_id != Some(request_id)
+        || persisted_at.is_none_or(|persisted_at| {
+            now.saturating_duration_since(persisted_at) >= DURABLE_PROGRESS_PERSIST_INTERVAL
+        })
 }
 
 fn update_progress(
@@ -554,7 +567,27 @@ mod cadence_tests {
     use super::*;
 
     #[test]
-    fn durable_progress_remains_one_hertz() {
+    fn durable_progress_is_throttled_independently_of_live_updates() {
         assert_eq!(DURABLE_PROGRESS_PERSIST_INTERVAL, StdDuration::from_secs(1));
+        let started = StdInstant::now();
+        assert!(should_persist_progress(None, None, "request-a", started));
+        assert!(should_persist_progress(
+            Some("request-a"),
+            Some(started),
+            "request-b",
+            started + StdDuration::from_millis(1),
+        ));
+        assert!(!should_persist_progress(
+            Some("request-a"),
+            Some(started),
+            "request-a",
+            started + StdDuration::from_millis(999),
+        ));
+        assert!(should_persist_progress(
+            Some("request-a"),
+            Some(started),
+            "request-a",
+            started + DURABLE_PROGRESS_PERSIST_INTERVAL,
+        ));
     }
 }

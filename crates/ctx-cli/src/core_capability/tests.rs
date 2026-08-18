@@ -179,6 +179,13 @@ fn managed_fresh_default_preserves_core_only_empty_publication_wait() {
 }
 
 #[test]
+fn managed_waited_refresh_failure_is_not_reported_as_setup_success() {
+    let failure = anyhow!("source refresh failed");
+    assert!(should_propagate_setup_refresh_failure(true, &failure));
+    assert!(!should_propagate_setup_refresh_failure(false, &failure));
+}
+
+#[test]
 fn managed_setup_presentation_options_are_closed_and_bounded() {
     let options = json!({
         "catalog_only": false,

@@ -508,11 +508,10 @@ fn core_setup_refresh(
             ))
         }
         Err(error) => {
-            if error.chain().any(|cause| {
-                cause
-                    .downcast_ref::<crate::progress::ProgressWriterError>()
-                    .is_some()
-            }) {
+            // A caller that explicitly waited asked for a usable generation, not
+            // merely admission. Keep background admission fail-soft, but never
+            // turn a failed waited refresh into a successful setup response.
+            if should_propagate_setup_refresh_failure(effective_wait, &error) {
                 return Err(error);
             }
             let pending = (!effective_wait)
@@ -539,6 +538,15 @@ fn core_setup_refresh(
             ))
         }
     }
+}
+
+fn should_propagate_setup_refresh_failure(effective_wait: bool, error: &anyhow::Error) -> bool {
+    effective_wait
+        || error.chain().any(|cause| {
+            cause
+                .downcast_ref::<crate::progress::ProgressWriterError>()
+                .is_some()
+        })
 }
 
 fn should_wait_for_fresh_empty_publication(wait: bool, error: &anyhow::Error) -> bool {
