@@ -253,7 +253,6 @@ fn every_capture_provider_emits_without_usage_suppression() {
         CaptureProvider::Qoder,
         CaptureProvider::Warp,
         CaptureProvider::CodeBuddy,
-        CaptureProvider::Trae,
         CaptureProvider::Shell,
         CaptureProvider::Git,
         CaptureProvider::Jj,

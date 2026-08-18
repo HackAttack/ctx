@@ -3,16 +3,10 @@
 use std::path::{Path, PathBuf};
 
 use ctx_history_core::CaptureProvider;
+use ctx_history_provider_claude_cursor::{discover_cursor_transcripts, CursorDiscoveryIssueKind};
 use ctx_history_source_discovery::{
     CursorProbeFragment, CursorTranscriptProbeOutcome, StaticProviderProbeCatalog,
-    TraePayloadProbeOutcome, TraeProbeFragment,
 };
-
-use crate::provider::providers::trae::{
-    trae_payload_admission, TraePayloadAdmission, TRAE_CHAT_KEYS, TRAE_CHAT_ROWS_QUERY,
-    TRAE_SQLITE_VALUE_OVERHEAD_BYTES,
-};
-use ctx_history_provider_claude_cursor::{discover_cursor_transcripts, CursorDiscoveryIssueKind};
 
 pub use ctx_history_source_discovery::{
     path_presence, CrushDiscoveredProjectInventory, CrushProjectInventorySelectorError,
@@ -32,22 +26,7 @@ pub use ctx_history_source_io::OrdinaryFileObservation;
 ctx_history_source_io::define_mapped_ordinary_io_compat!(crate::CaptureError);
 
 pub(crate) static BUILTIN_PROVIDER_PROBES: StaticProviderProbeCatalog =
-    StaticProviderProbeCatalog::new(
-        CursorProbeFragment::new(probe_cursor_transcripts),
-        TraeProbeFragment::new(
-            [
-                TRAE_CHAT_KEYS[0],
-                TRAE_CHAT_KEYS[1],
-                TRAE_CHAT_KEYS[2],
-                TRAE_CHAT_KEYS[3],
-                TRAE_CHAT_KEYS[4],
-                TRAE_CHAT_KEYS[5],
-            ],
-            TRAE_CHAT_ROWS_QUERY,
-            TRAE_SQLITE_VALUE_OVERHEAD_BYTES,
-            classify_trae_payload_for_discovery,
-        ),
-    );
+    StaticProviderProbeCatalog::new(CursorProbeFragment::new(probe_cursor_transcripts));
 
 fn probe_cursor_transcripts(path: &Path) -> CursorTranscriptProbeOutcome {
     let input = if path.is_dir() && path.join("projects").is_dir() {
@@ -71,14 +50,6 @@ fn probe_cursor_transcripts(path: &Path) -> CursorTranscriptProbeOutcome {
         CursorTranscriptProbeOutcome::NotFound
     } else {
         CursorTranscriptProbeOutcome::Found
-    }
-}
-
-fn classify_trae_payload_for_discovery(bytes: &[u8], chat_key: &str) -> TraePayloadProbeOutcome {
-    match trae_payload_admission(bytes, chat_key) {
-        Ok(TraePayloadAdmission::SupportedChat) => TraePayloadProbeOutcome::SupportedChat,
-        Ok(TraePayloadAdmission::Empty) => TraePayloadProbeOutcome::Empty,
-        Ok(TraePayloadAdmission::Unrecognized) | Err(_) => TraePayloadProbeOutcome::Incompatible,
     }
 }
 
@@ -268,7 +239,6 @@ pub fn provider_source_status_reason(
 #[cfg(test)]
 mod extraction_regression_tests {
     use super::*;
-    use rusqlite::{types::Value, Connection};
 
     fn tempdir() -> tempfile::TempDir {
         tempfile::tempdir().expect("temporary source-discovery fixture")
@@ -284,100 +254,6 @@ mod extraction_regression_tests {
                 ..DiscoveryPlatformDirs::default()
             },
         )
-    }
-
-    fn trae_database(context: &DiscoveryContext) -> PathBuf {
-        let path = context
-            .platform_dirs()
-            .config
-            .as_ref()
-            .unwrap()
-            .join("Trae/ModularData/ai-agent/database.db");
-        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
-        Connection::open(&path)
-            .unwrap()
-            .execute("create table ItemTable ([key] text, value)", [])
-            .unwrap();
-        path
-    }
-
-    fn trae_status(context: &DiscoveryContext) -> ProviderSourceStatus {
-        discover_provider_sources_for_provider_with_context(context, CaptureProvider::Trae)
-            .sources
-            .into_iter()
-            .next()
-            .unwrap()
-            .status
-    }
-
-    #[test]
-    fn capture_catalog_trae_supported_payload_wins_over_malformed_sibling() {
-        let temp = tempdir();
-        let context = context(temp.path());
-        let database = trae_database(&context);
-        let connection = Connection::open(database).unwrap();
-        connection
-            .execute(
-                "insert into ItemTable ([key], value) values (?1, ?2), (?3, ?4)",
-                rusqlite::params![
-                    TRAE_CHAT_KEYS[0],
-                    r#"{"list":[{"id":"supported","messages":[{"content":"hello"}]}]}"#,
-                    TRAE_CHAT_KEYS[1],
-                    "invalid JSON",
-                ],
-            )
-            .unwrap();
-
-        assert_eq!(trae_status(&context), ProviderSourceStatus::Available);
-    }
-
-    #[test]
-    fn capture_catalog_trae_rejects_invalid_non_text_and_unrecognized_payloads() {
-        for value in [
-            Value::Text("arbitrary nonempty garbage".to_owned()),
-            Value::Blob(br#"{"list":[]}"#.to_vec()),
-            Value::Text(r#"{"futureSessions":[]}"#.to_owned()),
-        ] {
-            let temp = tempdir();
-            let context = context(temp.path());
-            let database = trae_database(&context);
-            Connection::open(database)
-                .unwrap()
-                .execute(
-                    "insert into ItemTable ([key], value) values (?1, ?2)",
-                    rusqlite::params![TRAE_CHAT_KEYS[0], value],
-                )
-                .unwrap();
-            assert_eq!(trae_status(&context), ProviderSourceStatus::Unknown);
-        }
-    }
-
-    #[test]
-    fn capture_catalog_trae_status_matrix_preserves_missing_empty_valid_and_malformed() {
-        let temp = tempdir();
-        let missing = context(temp.path());
-        assert_eq!(trae_status(&missing), ProviderSourceStatus::Missing);
-
-        for (payload, expected) in [
-            (r#"{"list":[]}"#, ProviderSourceStatus::Empty),
-            (
-                r#"{"list":[{"id":"supported","messages":[{"content":"hello"}]}]}"#,
-                ProviderSourceStatus::Available,
-            ),
-            ("invalid JSON", ProviderSourceStatus::Unknown),
-        ] {
-            let temp = tempdir();
-            let context = context(temp.path());
-            let database = trae_database(&context);
-            Connection::open(database)
-                .unwrap()
-                .execute(
-                    "insert into ItemTable ([key], value) values (?1, ?2)",
-                    rusqlite::params![TRAE_CHAT_KEYS[0], payload],
-                )
-                .unwrap();
-            assert_eq!(trae_status(&context), expected);
-        }
     }
 
     #[test]

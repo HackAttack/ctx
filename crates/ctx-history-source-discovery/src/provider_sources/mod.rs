@@ -21,17 +21,7 @@ pub enum CursorTranscriptProbeOutcome {
     IoError,
 }
 
-/// The only Trae parser result discovery needs to order generic SQLite probe
-/// outcomes. Parser details stay in capture.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum TraePayloadProbeOutcome {
-    SupportedChat,
-    Empty,
-    Incompatible,
-}
-
 pub type CursorTranscriptProbe = for<'a> fn(&'a Path) -> CursorTranscriptProbeOutcome;
-pub type TraePayloadProbe = for<'a, 'b> fn(&'a [u8], &'b str) -> TraePayloadProbeOutcome;
 
 #[derive(Debug, Clone, Copy)]
 pub struct CursorProbeFragment {
@@ -44,52 +34,25 @@ impl CursorProbeFragment {
     }
 }
 
-#[derive(Debug, Clone, Copy)]
-pub struct TraeProbeFragment {
-    chat_keys: [&'static str; 6],
-    chat_rows_query: &'static str,
-    sqlite_value_overhead_bytes: u64,
-    classify_payload: TraePayloadProbe,
-}
-
-impl TraeProbeFragment {
-    pub const fn new(
-        chat_keys: [&'static str; 6],
-        chat_rows_query: &'static str,
-        sqlite_value_overhead_bytes: u64,
-        classify_payload: TraePayloadProbe,
-    ) -> Self {
-        Self {
-            chat_keys,
-            chat_rows_query,
-            sqlite_value_overhead_bytes,
-            classify_payload,
-        }
-    }
-}
-
-/// Closed composition seam for the two provider implementations that cannot
-/// move into generic discovery. This type intentionally has no default,
-/// optional fragments, registration, or dynamic lookup.
+/// Closed composition seam for the provider implementation that cannot move
+/// into generic discovery. This type intentionally has no default, optional
+/// fragments, registration, or dynamic lookup.
 #[derive(Debug, Clone, Copy)]
 pub struct StaticProviderProbeCatalog {
     cursor: CursorProbeFragment,
-    trae: TraeProbeFragment,
 }
 
 impl StaticProviderProbeCatalog {
-    pub const fn new(cursor: CursorProbeFragment, trae: TraeProbeFragment) -> Self {
-        Self { cursor, trae }
+    pub const fn new(cursor: CursorProbeFragment) -> Self {
+        Self { cursor }
     }
 }
 
 pub use context::{
     DiscoveryContext, DiscoveryPlatform, DiscoveryPlatformDirs, DISCOVERY_ENV_ALLOWLIST,
 };
+pub(crate) use ctx_history_source_io::open_ordinary_file_without_following;
 pub use ctx_history_source_io::OrdinaryFileObservation;
-pub(crate) use ctx_history_source_io::{
-    observe_ordinary_file, open_ordinary_file_without_following,
-};
 #[cfg(test)]
 pub(crate) use ctx_history_source_sqlite::{
     fail_next_opened_snapshot_cleanup_for_test, SqliteSourceDirectoryAuthority,
@@ -131,33 +94,8 @@ pub use warp::{
 };
 
 #[cfg(test)]
-pub(crate) const TRAE_CHAT_KEYS: [&str; 6] = [
-    "memento/icube-ai-agent-storage",
-    "icube-ai-agent-storage-input-history",
-    "chat.ChatSessionStore.index",
-    "ChatStore",
-    "memento/icube-ai-chat-storage-7467774676505887760",
-    "memento/icube-ai-ng-chat-storage-7467774676505887760",
-];
-#[cfg(test)]
-pub(crate) const TRAE_SQLITE_VALUE_OVERHEAD_BYTES: u64 = 16 * 64;
-#[cfg(test)]
-pub(crate) const TEST_PROVIDER_PROBES: StaticProviderProbeCatalog = StaticProviderProbeCatalog::new(
-    CursorProbeFragment::new(test_cursor_transcript_probe),
-    TraeProbeFragment::new(
-        TRAE_CHAT_KEYS,
-        "select [key], count(*), typeof(value), coalesce(octet_length(value), 0), \
-            case when count(*) = 1 \
-                       and typeof(value) = 'text' \
-                       and octet_length(value) + octet_length([key]) + ?7 <= ?8 \
-                 then cast(value as text) end \
-     from ItemTable \
-     where [key] in (?1, ?2, ?3, ?4, ?5, ?6) \
-     group by [key]",
-        TRAE_SQLITE_VALUE_OVERHEAD_BYTES,
-        test_trae_payload_probe,
-    ),
-);
+pub(crate) const TEST_PROVIDER_PROBES: StaticProviderProbeCatalog =
+    StaticProviderProbeCatalog::new(CursorProbeFragment::new(test_cursor_transcript_probe));
 
 #[cfg(test)]
 fn test_cursor_transcript_probe(path: &Path) -> CursorTranscriptProbeOutcome {
@@ -243,26 +181,6 @@ fn test_cursor_transcript_probe(path: &Path) -> CursorTranscriptProbeOutcome {
         Ok(true) => CursorTranscriptProbeOutcome::Found,
         Ok(false) => CursorTranscriptProbeOutcome::NotFound,
         Err(outcome) => outcome,
-    }
-}
-
-#[cfg(test)]
-fn test_trae_payload_probe(payload: &[u8], _key: &str) -> TraePayloadProbeOutcome {
-    let Ok(value) = serde_json::from_slice::<serde_json::Value>(payload) else {
-        return TraePayloadProbeOutcome::Incompatible;
-    };
-    let Some(sessions) = value.get("list").and_then(serde_json::Value::as_array) else {
-        return TraePayloadProbeOutcome::Incompatible;
-    };
-    if sessions.iter().any(|session| {
-        session
-            .get("messages")
-            .and_then(serde_json::Value::as_array)
-            .is_some_and(|messages| !messages.is_empty())
-    }) {
-        TraePayloadProbeOutcome::SupportedChat
-    } else {
-        TraePayloadProbeOutcome::Empty
     }
 }
 

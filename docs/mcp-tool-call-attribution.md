@@ -71,14 +71,14 @@ structured-content channel.
 
 ## Provider and format capability
 
-General provider support remains the 43-provider local-history contract in
+General provider support remains the 42-provider local-history contract in
 [`provider-support-matrix.json`](provider-support-matrix.json). Exact MCP
 activity attribution has a separate provider + route + source format + format
 version contract in
 [`mcp-tool-call-attribution-capabilities.json`](mcp-tool-call-attribution-capabilities.json).
 
-Capability revision 4 evaluates all 43 providers across 45 base routes and 48
-capability lanes: three `exact`, 44 `not-qualified`, and one `excluded`.
+Capability revision 4 evaluates all 42 providers across 44 base routes and 47
+capability lanes: three `exact`, 43 `not-qualified`, and one `excluded`.
 Codex contributes separate session-tree and legacy prompt-history routes; Deep
 Agents contributes its local SQLite import plus a separately excluded hosted
 trace. Capability revision 4 exact providers are Codex, Warp, and Copilot CLI.
@@ -98,7 +98,7 @@ The exact full tuples are:
   generation 1. Observed versions and the pinned source commit are evidence,
   not runtime admission selectors.
 
-The 44 `not-qualified` rows do not mean their providers are unsupported. They
+The 43 `not-qualified` rows do not mean their providers are unsupported. They
 mean only that ctx does not claim exact MCP server/tool activity for those
 tuples. New source variants or versions require their own non-overlapping row;
 unknown generations fail closed. The public

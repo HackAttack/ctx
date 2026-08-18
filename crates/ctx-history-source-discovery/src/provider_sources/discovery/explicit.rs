@@ -9,9 +9,8 @@ use serde_json::Value;
 use ctx_history_source_io::open_provider_source_file;
 
 use super::super::{
-    probes::{has_deepseek_harness_session_file, has_trae_state_vscdb_chat_history, BoundedProbe},
+    probes::{has_deepseek_harness_session_file, BoundedProbe},
     provider_source_spec,
-    reasons::blocked_auth_or_encryption_reason,
     resolvers::unsupported_source,
     selectors::{self, SourcePathError, SourcePathKind},
     ProviderCatalogSupport, ProviderDefaultLocation, ProviderImportSupport, ProviderSource,
@@ -63,12 +62,6 @@ pub fn provider_source_for_path(
         return unsupported_source(spec, path, DEEPSEEK_HARNESS_INVALID_SOURCE_REASON);
     }
     let exists = !matches!(observed, Err(SourcePathError::Missing));
-    let trae_blocked_auth_or_encryption = provider == CaptureProvider::Trae
-        && observed == Ok(SourcePathKind::File)
-        && matches!(
-            has_trae_state_vscdb_chat_history(probes, None, &path, 10_000),
-            BoundedProbe::BlockedAuthOrEncryption
-        );
 
     let source_format = match provider {
         CaptureProvider::Codex if is_directory => "codex_session_jsonl_tree",
@@ -140,20 +133,13 @@ pub fn provider_source_for_path(
         CaptureProvider::Cline => "cline_task_directory_json",
         CaptureProvider::RooCode => "roo_task_directory_json",
         CaptureProvider::Lingma => "lingma_sqlite",
-        CaptureProvider::Trae => "trae_state_vscdb",
         CaptureProvider::Qoder if is_directory => "qoder_transcript_jsonl_tree",
         CaptureProvider::Qoder => "qoder_transcript_jsonl",
         CaptureProvider::Warp => "warp_sqlite",
         CaptureProvider::CodeBuddy => "codebuddy_history_json",
         _ => "unsupported",
     };
-    let explicit_import_support = if trae_blocked_auth_or_encryption {
-        ProviderImportSupport::Unsupported
-    } else if provider == CaptureProvider::Trae && spec.import_support.is_importable() {
-        ProviderImportSupport::Explicit
-    } else {
-        spec.import_support
-    };
+    let explicit_import_support = spec.import_support;
     let source_kind = if explicit_import_support.is_importable() {
         ProviderSourceKind::NativeHistory
     } else {
@@ -167,14 +153,8 @@ pub fn provider_source_for_path(
         source_format,
         source_kind,
         import_support: explicit_import_support,
-        catalog_support: if trae_blocked_auth_or_encryption {
-            ProviderCatalogSupport::None
-        } else {
-            spec.catalog_support
-        },
-        status: if trae_blocked_auth_or_encryption {
-            ProviderSourceStatus::Unknown
-        } else if matches!(explicit_import_support, ProviderImportSupport::Unsupported)
+        catalog_support: spec.catalog_support,
+        status: if matches!(explicit_import_support, ProviderImportSupport::Unsupported)
             || matches!(observed, Err(SourcePathError::Unsupported))
         {
             ProviderSourceStatus::Unsupported
@@ -187,8 +167,6 @@ pub fn provider_source_for_path(
         },
         unsupported_reason: if matches!(observed, Err(SourcePathError::Unsupported)) {
             Some(UNSUPPORTED_EXPLICIT_ROOT_REASON)
-        } else if trae_blocked_auth_or_encryption {
-            blocked_auth_or_encryption_reason(provider)
         } else {
             spec.unsupported_reason
         },

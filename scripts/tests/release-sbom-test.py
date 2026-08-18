@@ -84,7 +84,6 @@ WORKSPACE_PACKAGES = (
     ),
     ("ctx-history-provider-runtime", "crates/ctx-history-provider-runtime"),
     ("ctx-history-provider-codex", "crates/ctx-history-provider-codex"),
-    ("ctx-history-provider-trae", "crates/ctx-history-provider-trae"),
     (
         "ctx-history-providers-sqlite-selected",
         "crates/ctx-history-providers-sqlite-selected",
@@ -268,7 +267,6 @@ members = [
   "crates/ctx-history-provider-native-jsonl",
   "crates/ctx-history-provider-runtime",
   "crates/ctx-history-provider-codex",
-  "crates/ctx-history-provider-trae",
   "crates/ctx-history-providers-sqlite-selected",
   "crates/ctx-history-providers-sqlite-inventory",
   "crates/ctx-history-providers-sqlite-logical",
@@ -332,7 +330,6 @@ uuid = "1.0.0"
                     "ctx-history-provider-gemini = { path = \"../ctx-history-provider-gemini\" }\n"
                     "ctx-history-provider-native-jsonl = { path = \"../ctx-history-provider-native-jsonl\" }\n"
                     "ctx-history-provider-runtime = { path = \"../ctx-history-provider-runtime\" }\n"
-                    "ctx-history-provider-trae = { path = \"../ctx-history-provider-trae\" }\n"
                     "ctx-history-providers-sqlite-selected = { path = \"../ctx-history-providers-sqlite-selected\" }\n"
                     "ctx-history-providers-sqlite-inventory = { path = \"../ctx-history-providers-sqlite-inventory\" }\n"
                     "ctx-history-providers-sqlite-logical = { path = \"../ctx-history-providers-sqlite-logical\" }\n"
@@ -415,7 +412,6 @@ uuid = "1.0.0"
                     "ctx-history-provider-mistral-mux = { path = \"../ctx-history-provider-mistral-mux\" }\n"
                     "ctx-history-provider-native-jsonl = { path = \"../ctx-history-provider-native-jsonl\" }\n"
                     "ctx-history-provider-runtime = { path = \"../ctx-history-provider-runtime\" }\n"
-                    "ctx-history-provider-trae = { path = \"../ctx-history-provider-trae\" }\n"
                     "ctx-history-providers-jsonl-shared = { path = \"../ctx-history-providers-jsonl-shared\" }\n"
                     "ctx-history-providers-sqlite-inventory = { path = \"../ctx-history-providers-sqlite-inventory\" }\n"
                     "ctx-history-providers-sqlite-logical = { path = \"../ctx-history-providers-sqlite-logical\" }\n"
@@ -522,21 +518,6 @@ uuid = "1.0.0"
                     "tempfile.workspace = true\n"
                     "thiserror.workspace = true\n"
                     "uuid.workspace = true"
-                ),
-                "ctx-history-provider-trae": (
-                    "ctx-history-capture-model = { path = \"../ctx-history-capture-model\" }\n"
-                    "ctx-history-capture-runtime = { path = \"../ctx-history-capture-runtime\" }\n"
-                    "ctx-history-core = { path = \"../ctx-history-core\" }\n"
-                    "ctx-history-provider-runtime = { path = \"../ctx-history-provider-runtime\" }\n"
-                    "ctx-history-source-io = { path = \"../ctx-history-source-io\" }\n"
-                    "ctx-history-source-sqlite = { path = \"../ctx-history-source-sqlite\" }\n"
-                    "chrono.workspace = true\n"
-                    "rusqlite.workspace = true\n"
-                    "serde.workspace = true\n"
-                    "serde_json.workspace = true\n"
-                    "sha2.workspace = true\n"
-                    "thiserror.workspace = true\n"
-                    "tempfile.workspace = true"
                 ),
                 "ctx-history-providers-task-docs": (
                     "base64.workspace = true\n"
@@ -731,7 +712,6 @@ repository = "https://example.invalid/{name}"
             "@@//crates/ctx-history-provider-native-jsonl:ctx_history_provider_native_jsonl",
             "@@//crates/ctx-history-provider-runtime:ctx_history_provider_runtime",
             "@@//crates/ctx-history-provider-codex:ctx_history_provider_codex",
-            "@@//crates/ctx-history-provider-trae:ctx_history_provider_trae",
             "@@//crates/ctx-history-providers-sqlite-selected:ctx_history_providers_sqlite_selected",
             "@@//crates/ctx-history-providers-sqlite-inventory:ctx_history_providers_sqlite_inventory",
             "@@//crates/ctx-history-providers-sqlite-logical:ctx_history_providers_sqlite_logical",

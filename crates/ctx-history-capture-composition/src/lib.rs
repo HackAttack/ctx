@@ -26,20 +26,11 @@ pub(crate) fn provider_source_for_path(
 
 #[cfg(test)]
 pub(crate) fn test_provider_probes() -> StaticProviderProbeCatalog {
-    use ctx_history_source_discovery::{
-        CursorProbeFragment, CursorTranscriptProbeOutcome, TraePayloadProbeOutcome,
-        TraeProbeFragment,
-    };
+    use ctx_history_source_discovery::{CursorProbeFragment, CursorTranscriptProbeOutcome};
     fn cursor(_: &std::path::Path) -> CursorTranscriptProbeOutcome {
         CursorTranscriptProbeOutcome::NotFound
     }
-    fn trae(_: &[u8], _: &str) -> TraePayloadProbeOutcome {
-        TraePayloadProbeOutcome::Incompatible
-    }
-    StaticProviderProbeCatalog::new(
-        CursorProbeFragment::new(cursor),
-        TraeProbeFragment::new([""; 6], "select 1", 0, trae),
-    )
+    StaticProviderProbeCatalog::new(CursorProbeFragment::new(cursor))
 }
 
 #[cfg(test)]
@@ -89,14 +80,6 @@ pub(crate) mod common {
 pub(crate) mod provider {
     pub(crate) use ctx_history_provider_codex::codex;
     pub(crate) mod providers {
-        pub(crate) mod trae {
-            pub(crate) mod nativepath {
-                pub(crate) type TraeReplacementTree =
-                    ctx_history_provider_trae::TraeReplacementTree<
-                        crate::source_backed::family::CaptureProviderRuntime,
-                    >;
-            }
-        }
         pub(crate) use crate::providers::auggie;
     }
     pub(crate) mod source_backed {

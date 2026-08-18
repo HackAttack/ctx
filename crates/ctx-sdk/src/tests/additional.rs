@@ -344,10 +344,10 @@ fn sources_and_import_preserve_legitimate_nested_source_semantics() {
         BackendInfo::local(None),
         json!({
             "sources": [{
-                "provider": "trae",
+                "provider": "codex",
                 "path": "/configured/root",
                 "status": "unknown",
-                "status_reason": "blocked_auth_or_encryption",
+                "status_reason": "probe_io_error",
                 "importable": false,
                 "acquisition": {
                     "source": "local_scan",
@@ -358,10 +358,7 @@ fn sources_and_import_preserve_legitimate_nested_source_semantics() {
     )
     .unwrap();
     let source = &sources.sources.as_ref().unwrap()[0];
-    assert_eq!(
-        source.status_reason.as_deref(),
-        Some("blocked_auth_or_encryption")
-    );
+    assert_eq!(source.status_reason.as_deref(), Some("probe_io_error"));
     assert_eq!(source.extra["acquisition"]["source"], "local_scan");
     assert_eq!(source.extra["acquisition"]["cursor"], "opaque-checkpoint");
 

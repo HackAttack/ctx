@@ -23,7 +23,7 @@ pub(crate) fn discover_provider_sources_for_provider_with_context(
     provider: ctx_history_core::CaptureProvider,
 ) -> DiscoveryReport {
     // The pack only asks for its own provider cohort. The frozen lower catalog
-    // contains those probes directly; unrelated Cursor/Trae fragments are not
+    // contains its probes directly; unrelated provider fragments are not
     // linked into the pack.
     ctx_history_source_discovery::discover_provider_sources_for_provider_with_context(
         &SQLITE_INVENTORY_DISCOVERY_PROBES,
@@ -38,22 +38,9 @@ fn unused_cursor_probe(
     ctx_history_source_discovery::CursorTranscriptProbeOutcome::NotFound
 }
 
-fn unused_trae_probe(
-    _value: &[u8],
-    _key: &str,
-) -> ctx_history_source_discovery::TraePayloadProbeOutcome {
-    ctx_history_source_discovery::TraePayloadProbeOutcome::Incompatible
-}
-
 const SQLITE_INVENTORY_DISCOVERY_PROBES: ctx_history_source_discovery::StaticProviderProbeCatalog =
     ctx_history_source_discovery::StaticProviderProbeCatalog::new(
         ctx_history_source_discovery::CursorProbeFragment::new(unused_cursor_probe),
-        ctx_history_source_discovery::TraeProbeFragment::new(
-            [""; 6],
-            "select 1 where false",
-            0,
-            unused_trae_probe,
-        ),
     );
 pub use provider::providers::crush::native_path::source_backed::{
     CrushProjectDatabaseV0, CrushProjectInventoryObservationV0, CrushProjectInventorySourceV0,

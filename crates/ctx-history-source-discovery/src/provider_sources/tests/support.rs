@@ -152,39 +152,6 @@ pub(super) fn write_lingma_discovery_db(path: &Path) {
     .unwrap();
 }
 
-pub(super) fn write_trae_discovery_db(path: &Path) {
-    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
-    let conn = Connection::open(path).unwrap();
-    conn.execute(
-        "CREATE TABLE ItemTable ([key] TEXT PRIMARY KEY, value TEXT)",
-        [],
-    )
-    .unwrap();
-    conn.execute(
-        "INSERT INTO ItemTable ([key], value) VALUES (?1, ?2)",
-        rusqlite::params![
-            "memento/icube-ai-agent-storage",
-            r#"{"list":[{"id":"input-1","messages":[{"role":"user","content":"trae discovery"}]}]}"#
-        ],
-    )
-    .unwrap();
-}
-
-pub(super) fn write_trae_non_chat_state_db(path: &Path) {
-    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
-    let conn = Connection::open(path).unwrap();
-    conn.execute(
-        "CREATE TABLE ItemTable ([key] TEXT PRIMARY KEY, value TEXT)",
-        [],
-    )
-    .unwrap();
-    conn.execute(
-        "INSERT INTO ItemTable ([key], value) VALUES ('workbench.view.extension', '{}')",
-        [],
-    )
-    .unwrap();
-}
-
 pub(super) fn assert_source_status(
     home: &Path,
     provider: CaptureProvider,

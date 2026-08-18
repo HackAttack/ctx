@@ -168,8 +168,8 @@ def validate_pack_sources(root: Path) -> None:
             "logical SQLite provider source contains forbidden authority imports: "
             + ", ".join(sorted(forbidden))
         )
-    if re.search(r"(?i)\b(?:hermes|trae)\b", production):
-        raise BoundaryError("logical SQLite provider source absorbed Hermes or Trae")
+    if re.search(r"(?i)\bhermes\b", production):
+        raise BoundaryError("logical SQLite provider source absorbed Hermes")
 
 
 def validate_composition_sources(root: Path) -> None:
