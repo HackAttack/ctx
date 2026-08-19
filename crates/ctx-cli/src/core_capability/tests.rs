@@ -3,6 +3,10 @@ use super::hosted_pair_install::{
     HostedInstallMarker,
 };
 use super::*;
+use ctx_history_index::SourceRouteIdentity;
+use ctx_history_refresh::{
+    RefreshOutcomeClass, RefreshOutcomeCode, RefreshRetryAdvice, RefreshTerminalOutcome,
+};
 
 #[test]
 fn fingerprint_is_the_sha256_of_the_canonical_inventory() {
@@ -85,6 +89,91 @@ fn capability_response_is_one_exact_flushed_json_frame() {
     let mut output = Vec::new();
     write_response_frame(&mut output, br#"{"ok":true}"#).unwrap();
     assert_eq!(output, b"{\"ok\":true}\n");
+}
+
+#[test]
+fn recognized_terminal_failure_writes_one_exact_frame_and_exits_nonzero() {
+    let root = tempfile::tempdir().unwrap();
+    let request = json!({
+        "data_root": root.path(),
+        "operation": "RefreshAndWait",
+        "options": {},
+        "protocol_version": CORE_PRO_PROTOCOL_VERSION.get(),
+        "schema_version": 1,
+    });
+    let mut input = canonical(&request).unwrap();
+    input.push(b'\n');
+
+    let route = SourceRouteIdentity::from_sha256("ab".repeat(32)).unwrap();
+    let terminal: anyhow::Error =
+        crate::semantic::SourceBackedRefreshTerminalError::from(RefreshTerminalOutcome {
+            code: RefreshOutcomeCode::IndexCorruption,
+            class: RefreshOutcomeClass::Corruption,
+            retryable: false,
+            affected_routes: BTreeSet::from([route.clone()]),
+            retryable_routes: BTreeSet::new(),
+            blocked_routes: BTreeSet::from([route]),
+            physical_attempt_id: "00000000-0000-0000-0000-000000000123".to_owned(),
+            retained_generation: Some("cd".repeat(32)),
+            published_generation: None,
+            retry_advice: Some(RefreshRetryAdvice::RebuildIndex),
+            detail: Some("arbitrary source detail must not cross the boundary".to_owned()),
+        })
+        .into();
+    let terminal = terminal.context("arbitrary internal context must not cross the boundary");
+    let mut output = Vec::new();
+
+    let status = capability_exit_code(run_with_io(
+        std::io::Cursor::new(input),
+        &mut output,
+        |request| {
+            assert_eq!(request.operation, Operation::RefreshAndWait);
+            Err(terminal)
+        },
+    ));
+
+    assert_eq!(status, ExitCode::FAILURE);
+    assert_eq!(
+        output,
+        format!(
+            "{{\"details\":{{\"affected_routes\":[\"{}\"],\"blocked_routes\":[\"{}\"],\"class\":\"corruption\",\"physical_attempt_id\":\"00000000-0000-0000-0000-000000000123\",\"retained_generation\":\"{}\",\"retry_advice\":\"rebuild_index\",\"retryable_routes\":[]}},\"error_code\":\"index_corruption\",\"ok\":false,\"operation\":\"RefreshAndWait\",\"protocol_version\":3,\"retryable\":false,\"schema_version\":1}}\n",
+            "ab".repeat(32),
+            "ab".repeat(32),
+            "cd".repeat(32),
+        )
+        .as_bytes()
+    );
+}
+
+#[test]
+fn malformed_and_unknown_failures_remain_silent_and_nonzero() {
+    let mut malformed_output = Vec::new();
+    let malformed_status = capability_exit_code(run_with_io(
+        std::io::Cursor::new(b"not-json\n"),
+        &mut malformed_output,
+        |_| -> Result<Value> { panic!("malformed input must not execute") },
+    ));
+    assert_eq!(malformed_status, ExitCode::FAILURE);
+    assert!(malformed_output.is_empty());
+
+    let root = tempfile::tempdir().unwrap();
+    let request = json!({
+        "data_root": root.path(),
+        "operation": "RefreshAndWait",
+        "options": {},
+        "protocol_version": CORE_PRO_PROTOCOL_VERSION.get(),
+        "schema_version": 1,
+    });
+    let mut input = canonical(&request).unwrap();
+    input.push(b'\n');
+    let mut internal_output = Vec::new();
+    let internal_status = capability_exit_code(run_with_io(
+        std::io::Cursor::new(input),
+        &mut internal_output,
+        |_| Err(anyhow!("unrecognized internal failure")),
+    ));
+    assert_eq!(internal_status, ExitCode::FAILURE);
+    assert!(internal_output.is_empty());
 }
 
 #[test]
