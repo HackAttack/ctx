@@ -2,14 +2,34 @@ use std::{
     collections::BTreeSet,
     ops::Deref,
     path::{Path, PathBuf},
-    sync::Arc,
+    sync::{
+        atomic::{AtomicBool, AtomicU64, AtomicU8, Ordering},
+        Arc,
+    },
 };
 
 use crate::{
     CoreRouteByteLease, CoreRouteResourceError, CoreRouteResourceKind, CoreRouteResources,
 };
 
-use super::SourceBackedReconciliationDemand;
+use super::{SourceBackedCurrentSourceProgressStage, SourceBackedReconciliationDemand};
+
+const INTERMEDIATE_ACTIVITY_PARSING: u8 = 1;
+const INTERMEDIATE_ACTIVITY_INDEX_WRITING: u8 = 2;
+
+#[derive(Debug, Default)]
+struct SourceBackedIntermediateActivity {
+    generation: AtomicU64,
+    stage: AtomicU8,
+}
+
+/// One best-effort route-local activity observation. It is deliberately not a
+/// record, byte, session, message, or tool-call accounting surface.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) struct SourceBackedIntermediateActivitySnapshot {
+    pub(super) generation: u64,
+    pub(super) stage: SourceBackedCurrentSourceProgressStage,
+}
 
 pub type SourceBackedRouteResourceKind = CoreRouteResourceKind;
 pub type SourceBackedRouteByteReservation = CoreRouteByteLease;
@@ -24,6 +44,8 @@ pub struct SourceBackedRouteResources {
     core: CoreRouteResources,
     reconciliation_demand: SourceBackedReconciliationDemand,
     member_workset: Option<Arc<BTreeSet<PathBuf>>>,
+    intermediate_activity: Arc<SourceBackedIntermediateActivity>,
+    scan_cancellation: Option<Arc<AtomicBool>>,
 }
 
 impl SourceBackedRouteResources {
@@ -32,6 +54,8 @@ impl SourceBackedRouteResources {
             core: CoreRouteResources::production(leaf_worker_budget),
             reconciliation_demand: SourceBackedReconciliationDemand::Exhaustive,
             member_workset: None,
+            intermediate_activity: Arc::new(SourceBackedIntermediateActivity::default()),
+            scan_cancellation: None,
         }
     }
 
@@ -49,7 +73,23 @@ impl SourceBackedRouteResources {
             ),
             reconciliation_demand: SourceBackedReconciliationDemand::Exhaustive,
             member_workset: None,
+            intermediate_activity: Arc::new(SourceBackedIntermediateActivity::default()),
+            scan_cancellation: None,
         }
+    }
+
+    pub(super) fn with_scan_cancellation(mut self, cancellation: Arc<AtomicBool>) -> Self {
+        self.scan_cancellation = Some(cancellation);
+        self
+    }
+
+    /// Reports cancellation of the parallel scan that owns these resources.
+    /// Serial route resources have no bound cancellation signal.
+    #[doc(hidden)]
+    pub fn scan_cancelled(&self) -> bool {
+        self.scan_cancellation
+            .as_ref()
+            .is_some_and(|cancellation| cancellation.load(Ordering::Acquire))
     }
 
     pub fn with_reconciliation_demand(mut self, demand: SourceBackedReconciliationDemand) -> Self {
@@ -85,6 +125,54 @@ impl SourceBackedRouteResources {
 
     pub fn core_output_batch_reservation_bytes(&self) -> u64 {
         self.core.core_output_batch_reservation_bytes()
+    }
+
+    /// Records only transient route activity. Scanner hot paths may call this
+    /// without crossing into progress callbacks or durable accounting.
+    #[doc(hidden)]
+    pub fn record_intermediate_activity(&self, stage: SourceBackedCurrentSourceProgressStage) {
+        let stage = match stage {
+            SourceBackedCurrentSourceProgressStage::Parsing => INTERMEDIATE_ACTIVITY_PARSING,
+            SourceBackedCurrentSourceProgressStage::IndexWriting => {
+                INTERMEDIATE_ACTIVITY_INDEX_WRITING
+            }
+            SourceBackedCurrentSourceProgressStage::SourceFamilyCopy
+            | SourceBackedCurrentSourceProgressStage::OnlineBackup
+            | SourceBackedCurrentSourceProgressStage::LogicalFingerprint
+            | SourceBackedCurrentSourceProgressStage::LogicalScan => return,
+        };
+        self.intermediate_activity
+            .stage
+            .store(stage, Ordering::Relaxed);
+        self.intermediate_activity
+            .generation
+            .fetch_add(1, Ordering::Release);
+    }
+
+    #[doc(hidden)]
+    pub(super) fn intermediate_activity_generation(&self) -> u64 {
+        self.intermediate_activity
+            .generation
+            .load(Ordering::Acquire)
+    }
+
+    #[doc(hidden)]
+    pub(super) fn intermediate_activity_after(
+        &self,
+        observed_generation: u64,
+    ) -> Option<SourceBackedIntermediateActivitySnapshot> {
+        let generation = self.intermediate_activity_generation();
+        if generation == observed_generation {
+            return None;
+        }
+        let stage = match self.intermediate_activity.stage.load(Ordering::Relaxed) {
+            INTERMEDIATE_ACTIVITY_PARSING => SourceBackedCurrentSourceProgressStage::Parsing,
+            INTERMEDIATE_ACTIVITY_INDEX_WRITING => {
+                SourceBackedCurrentSourceProgressStage::IndexWriting
+            }
+            _ => return None,
+        };
+        Some(SourceBackedIntermediateActivitySnapshot { generation, stage })
     }
 
     pub fn reserve(

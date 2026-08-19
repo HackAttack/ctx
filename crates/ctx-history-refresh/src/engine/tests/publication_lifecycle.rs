@@ -65,6 +65,60 @@ fn failed_refresh_retains_the_previous_published_generation() {
 }
 
 #[test]
+fn published_terminal_clears_transient_activity_and_keeps_durable_counters() {
+    let coordinator = CoreRefreshEngine::new();
+    let request = coordinator.enqueue(Some("generation-1".to_owned()));
+    let request_id = request_id(&request);
+    let run = coordinator
+        .run_next_with(
+            |request_id, coordinator| {
+                assert!(coordinator
+                    .set_progress(
+                        request_id,
+                        SourceBackedRefreshProgressUpdate {
+                            phase: "refreshing".to_owned(),
+                            completed_sources: 0,
+                            total_sources: 1,
+                            total_sources_known: true,
+                            current_source: Some("source-a".to_owned()),
+                            current_source_progress: Some(SourceBackedCurrentSourceProgress {
+                                stage: SourceBackedCurrentSourceProgressStage::IndexWriting,
+                                snapshot_pages_completed: None,
+                                snapshot_pages_total: None,
+                                snapshot_bytes_completed: None,
+                                snapshot_bytes_total: None,
+                                logical_rows_scanned: None,
+                                logical_certified_bytes: None,
+                            }),
+                            processed_sessions: 5,
+                            processed_messages: 7,
+                            processed_tool_calls: 11,
+                            processed_bytes: 13,
+                            ..Default::default()
+                        },
+                    )
+                    .is_some());
+                Ok(test_publication("generation-2"))
+            },
+            || Ok(Some("generation-2".to_owned())),
+            |_| Ok(()),
+            |_| Ok(()),
+        )
+        .expect("queued refresh");
+
+    assert!(!run.failed, "{:#}", run.job);
+    let status = coordinator.status(&request_id).expect("published request");
+    assert_eq!(status["request_state"], "published");
+    assert_eq!(status["progress"]["phase"], "published");
+    assert!(status["progress"].get("current_source").is_none());
+    assert!(status["progress"].get("current_source_progress").is_none());
+    assert_eq!(status["progress"]["processed_sessions"], 5);
+    assert_eq!(status["progress"]["processed_messages"], 7);
+    assert_eq!(status["progress"]["processed_tool_calls"], 11);
+    assert_eq!(status["progress"]["processed_bytes"], 13);
+}
+
+#[test]
 fn all_cold_route_failures_keep_their_typed_daemon_classification() {
     let cases = [
         (

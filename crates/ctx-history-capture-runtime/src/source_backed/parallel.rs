@@ -7,10 +7,11 @@ use std::{
     panic::{catch_unwind, AssertUnwindSafe},
     sync::{
         atomic::{AtomicBool, Ordering},
-        mpsc::{self, Receiver, SyncSender},
+        mpsc::{self, Receiver, RecvTimeoutError, SyncSender},
         Arc,
     },
     thread,
+    time::Duration,
 };
 
 use super::{SourceBackedGenerationSink, SourceBackedSourceOutcome};
@@ -37,6 +38,7 @@ const MAX_PARALLEL_LEAF_WORKERS: usize = 16;
 const INDEXER_THREAD_CAP: usize = 8;
 const RUNTIME_THREAD_RESERVATION: usize = 1;
 const SOURCE_WORKER_THREAD_PREFIX: &str = "ctx-src-scan";
+const INTERMEDIATE_ACTIVITY_POLL_INTERVAL: Duration = Duration::from_millis(100);
 
 #[derive(Clone)]
 struct ParallelLeafWorkerContext<P: CorePreparationPort> {
@@ -371,9 +373,13 @@ impl<L: CaptureLifecycleSink> SourceBackedGenerationSink<'_, L> {
         let stripes = stripe_leaf_jobs(jobs, worker_count, &worker_assignments);
         let cancellation = Arc::new(AtomicBool::new(false));
         let worker_context = ParallelLeafWorkerContext {
-            resources: self.resources.clone(),
+            resources: self
+                .resources
+                .clone()
+                .with_scan_cancellation(Arc::clone(&cancellation)),
             core_record_preparer: self.core_record_preparer.clone(),
         };
+        let initial_activity_generation = self.resources.intermediate_activity_generation();
 
         thread::scope(|scope| {
             // One shared rendezvous accepts whichever worker is ready without
@@ -430,8 +436,12 @@ impl<L: CaptureLifecycleSink> SourceBackedGenerationSink<'_, L> {
             }
             drop(sender);
 
-            let mut result =
-                self.consume_parallel_leaf_events(&receiver, &mut states, &mut results);
+            let mut result = self.consume_parallel_leaf_events(
+                &receiver,
+                &mut states,
+                &mut results,
+                initial_activity_generation,
+            );
             if result.is_err() {
                 cancellation.store(true, Ordering::Release);
             }
@@ -477,17 +487,36 @@ impl<L: CaptureLifecycleSink> SourceBackedGenerationSink<'_, L> {
         receiver: &Receiver<ParallelLeafWorkerEvent<R, E, L::Preparation>>,
         states: &mut [ParallelLeafJobState],
         results: &mut [Option<SourceBackedSourceOutcome<R>>],
+        mut observed_activity_generation: u64,
     ) -> Result<(), ParallelLeafScanError<E, L::Error>>
     where
         E: StdError + 'static,
     {
         let mut returned_jobs = 0_usize;
         while returned_jobs < states.len() {
-            let event = receiver.recv().map_err(|_| {
-                ParallelLeafScanProtocolError::TransportDisconnected {
-                    unfinished_jobs: states.len().saturating_sub(returned_jobs),
+            let event = match receiver.recv_timeout(INTERMEDIATE_ACTIVITY_POLL_INTERVAL) {
+                Ok(event) => event,
+                Err(RecvTimeoutError::Timeout) => {
+                    if let Some(activity) = self
+                        .resources
+                        .intermediate_activity_after(observed_activity_generation)
+                    {
+                        observed_activity_generation = activity.generation;
+                        self.report_intermediate_activity(activity.stage)
+                            .map_err(|source| ParallelLeafScanError::Activity { source })?;
+                    } else {
+                        self.flush_intermediate_activity()
+                            .map_err(|source| ParallelLeafScanError::Activity { source })?;
+                    }
+                    continue;
                 }
-            })?;
+                Err(RecvTimeoutError::Disconnected) => {
+                    return Err(ParallelLeafScanProtocolError::TransportDisconnected {
+                        unfinished_jobs: states.len().saturating_sub(returned_jobs),
+                    }
+                    .into());
+                }
+            };
             match event {
                 ParallelLeafWorkerEvent::Protocol {
                     worker_index,

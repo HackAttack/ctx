@@ -50,6 +50,8 @@ pub(super) use prepare::prepare_leaf;
 use prepare::prepare_leaf_with_resources;
 use semantic::{prepare_semantic_leaf, SemanticLeafExecution, SemanticLeafPlan};
 
+const JSONL_SINGLE_LEAF_PIPELINE_MIN_BYTES: u64 = 1024 * 1024;
+
 pub(super) struct PreparedLeaf<E: JsonlFamilyError> {
     pub(super) certificate: CertifiedSource,
     pub(super) append: Option<CertifiedSourceAppend>,
@@ -602,11 +604,13 @@ pub(super) fn scan_leaves<R: JsonlFamilyRuntime>(
     let mut serial_worker = JsonlFamilyWorkerContext::default();
     #[cfg(test)]
     let scanner_probe = jsonl_family_scanner_probe(if saw_partition { 1 } else { worker_count });
-    // A dependency cap of one limits concurrent scanners, but a multi-leaf
-    // family still benefits from overlapping that one scanner with writer
-    // admission of the preceding page. Keep the direct path for the truly
-    // single-leaf case where spawning a pipeline cannot amortize its setup.
-    if worker_count <= 1 && leaves.len() <= 1 {
+    // Pipeline multi-leaf families and large single files so scanning can
+    // overlap writer admission even when concurrency is capped at one.
+    let large_single_leaf = leaves.len() == 1
+        && leaves.first().is_some_and(|leaf| {
+            leaf.estimated_scan_bytes() >= JSONL_SINGLE_LEAF_PIPELINE_MIN_BYTES
+        });
+    if worker_count <= 1 && leaves.len() <= 1 && !large_single_leaf {
         let mut terminal_sources = HashMap::with_capacity(leaves.len());
         for (leaf_index, leaf) in leaves.iter().enumerate() {
             let partition = leaf_metadata

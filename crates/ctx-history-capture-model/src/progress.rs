@@ -63,6 +63,11 @@ pub enum SourceBackedCurrentSourceProgressStage {
     OnlineBackup,
     LogicalFingerprint,
     LogicalScan,
+    /// Transient evidence that a source scanner is consuming physical input.
+    Parsing,
+    /// Transient evidence that accepted Core candidates are waiting on or
+    /// being applied to the index writer.
+    IndexWriting,
 }
 
 impl SourceBackedCurrentSourceProgressStage {
@@ -72,6 +77,8 @@ impl SourceBackedCurrentSourceProgressStage {
             Self::OnlineBackup => "online_backup",
             Self::LogicalFingerprint => "logical_fingerprint",
             Self::LogicalScan => "logical_scan",
+            Self::Parsing => "parsing",
+            Self::IndexWriting => "index_writing",
         }
     }
 }

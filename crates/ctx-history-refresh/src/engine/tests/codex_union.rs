@@ -159,6 +159,87 @@ fn successful_codex_route_derives_rejected_records_from_committed_core_sources()
 }
 
 #[test]
+fn long_codex_page_reports_parsing_before_durable_acceptance() {
+    use std::io::{BufWriter, Write};
+
+    const IGNORED_ROWS: usize = 4 * 1024;
+    const IGNORED_PADDING_BYTES: usize = 8 * 1024;
+
+    let temp = tempfile::tempdir().unwrap();
+    let data_root = temp.path().join("data");
+    let index_root = source_backed_index_root(&data_root);
+    let home = temp.path().join("home");
+    let cwd = temp.path().join("cwd");
+    let root = temp.path().join("long-codex-page");
+    let session = "019fb600-0000-7000-8000-000000000011";
+    fs::create_dir_all(&home).unwrap();
+    fs::create_dir_all(&cwd).unwrap();
+    let rollout = write_codex_rollout(&root, session, "longpageactivitymarker");
+    let file = fs::OpenOptions::new().append(true).open(&rollout).unwrap();
+    let mut writer = BufWriter::new(file);
+    let padding = "x".repeat(IGNORED_PADDING_BYTES);
+    let ignored = format!(
+        "{{\"timestamp\":\"2026-07-30T12:00:02Z\",\"type\":\"telemetry\\u005fignored\",\"payload\":{{\"padding\":\"{padding}\"}}}}\n"
+    );
+    for _ in 0..IGNORED_ROWS {
+        writer.write_all(ignored.as_bytes()).unwrap();
+    }
+    writer.flush().unwrap();
+    drop(writer);
+
+    let report = DiscoveryReport {
+        sources: vec![provider_source_for_path(CaptureProvider::Codex, root)],
+        issues: Vec::new(),
+    };
+    let discovery = DiscoveryContext::new(
+        &home,
+        &cwd,
+        DiscoveryPlatform::Linux,
+        DiscoveryPlatformDirs::default(),
+    );
+    let mut updates = Vec::new();
+    let mut progress = |update: CaptureSourceBackedDetailedRefreshProgress| {
+        updates.push(update);
+        Ok::<(), SourceBackedRouteError>(())
+    };
+
+    let publication = refresh_all_provider_sources(
+        &discovery,
+        report,
+        StdDuration::ZERO,
+        &data_root,
+        &index_root,
+        None,
+        SourceBackedRefreshScope::All,
+        &mut progress,
+    )
+    .unwrap();
+
+    assert_eq!(publication.current.indexed_documents, 1);
+    let accepted = updates
+        .iter()
+        .position(|update| update.progress.processed_messages == 1)
+        .expect("the retained Codex message must eventually be durably accepted");
+    let parsing = updates
+        .iter()
+        .position(|update| {
+            update.current_source_progress.is_some_and(|progress| {
+                progress.stage
+                    == ctx_history_capture::SourceBackedCurrentSourceProgressStage::Parsing
+            })
+        })
+        .expect("missing Parsing activity for a long Codex page");
+    assert!(
+        parsing < accepted,
+        "Parsing must precede durable acceptance"
+    );
+    assert_eq!(updates[parsing].progress.processed_sessions, 0);
+    assert_eq!(updates[parsing].progress.processed_messages, 0);
+    assert_eq!(updates[parsing].progress.processed_tool_calls, 0);
+    assert_eq!(updates[parsing].progress.processed_bytes, 0);
+}
+
+#[test]
 fn codex_nested_root_advisory_is_admitted_from_each_childs_own_bytes() {
     let temp = tempfile::tempdir().unwrap();
     let data_root = temp.path().join("data");

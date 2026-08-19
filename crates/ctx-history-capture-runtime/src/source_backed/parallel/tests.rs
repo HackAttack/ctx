@@ -5,7 +5,7 @@ use std::{
         atomic::{AtomicBool, AtomicUsize, Ordering},
         mpsc, Arc, Barrier, Mutex,
     },
-    time::Duration,
+    time::{Duration, Instant},
 };
 
 use ctx_history_capture_model::SourceRouteIdentity;
@@ -24,6 +24,7 @@ use crate::{
     DocumentInventoryAuthority, DocumentLeafFingerprint, DocumentRecordSpool,
     DocumentSourceTerminal, ImmutableCaptureSnapshot, ObservedDocumentLeaf, PresentCaptureRoute,
     ReplacementDocumentTree, SourceBackedCoordinatorError as RuntimeSourceBackedCoordinatorError,
+    SourceBackedCurrentSourceProgress, SourceBackedCurrentSourceProgressStage,
     SourceBackedGenerationSink as RuntimeSourceBackedGenerationSink,
     SourceBackedLogicalSourceFailures, SourceBackedRecordProgressDelta,
     SourceBackedRecordRejectionClass, SourceBackedRecordRejectionDraft,
@@ -188,12 +189,20 @@ struct FakeLifecycle {
     records: Vec<CoreRecord>,
     certified_sources: Vec<CertifiedSource>,
     retained_unstaged_routes: usize,
+    add_prepared_delay: Duration,
 }
 
 impl FakeLifecycle {
     fn with_base(base: CertifiedSource) -> Self {
         Self {
             base_sources: vec![base],
+            ..Self::default()
+        }
+    }
+
+    fn with_add_prepared_delay(delay: Duration) -> Self {
+        Self {
+            add_prepared_delay: delay,
             ..Self::default()
         }
     }
@@ -395,6 +404,9 @@ impl CaptureLifecycleSink for FakeLifecycle {
     }
 
     fn add_prepared(&mut self, prepared: FakePrepared) -> Result<(), Self::Error> {
+        if !self.add_prepared_delay.is_zero() {
+            std::thread::sleep(self.add_prepared_delay);
+        }
         self.records.push(prepared.record);
         Ok(())
     }
@@ -688,6 +700,55 @@ impl SinkHarness {
             record_rejections: &mut self.record_rejections,
             record_progress: Some(report_progress),
             current_source_progress: None,
+            intermediate_progress_last_emitted_at: None,
+            intermediate_progress_pending_stage: None,
+            last_progress_session_id: None,
+            exact_scan_total_bytes: None,
+            exact_scan_accounting_enabled: false,
+        };
+        sink.run_parallel_leaf_scans(jobs, worker_count, scan)
+    }
+
+    fn run_with_resources_and_progress<L, R, F>(
+        &mut self,
+        jobs: Vec<ParallelLeafScanJob<L>>,
+        worker_count: usize,
+        resources: SourceBackedRouteResources,
+        report_record_progress: &mut dyn FnMut(
+            SourceBackedRecordProgressDelta,
+        ) -> SourceBackedCoordinatorResult<()>,
+        report_current_source_progress: &mut dyn FnMut(
+            SourceBackedCurrentSourceProgress,
+        ) -> SourceBackedRouteResult<()>,
+        scan: F,
+    ) -> TestRunResult<R>
+    where
+        L: Send,
+        R: Send,
+        F: Fn(
+                &ParallelLeafScanJob<L>,
+                &mut ParallelLeafScanEmitter<'_, R, TestWorkerFailure>,
+            ) -> TestWorkerResult
+            + Sync,
+    {
+        let mut applied_removals = Vec::new();
+        let core_record_preparer = self.writer.core_preparation();
+        let mut sink = RuntimeSourceBackedGenerationSink {
+            lifecycle: &mut self.writer,
+            core_record_preparer,
+            owners: &mut self.owners,
+            complete_inventories: &mut self.complete_inventories,
+            applied_removals: &mut applied_removals,
+            route_index: 0,
+            route_identity: test_route_identity(),
+            base_route_control: None,
+            resources,
+            logical_source_failures: &mut self.logical_source_failures,
+            record_rejections: &mut self.record_rejections,
+            record_progress: Some(report_record_progress),
+            current_source_progress: Some(report_current_source_progress),
+            intermediate_progress_last_emitted_at: None,
+            intermediate_progress_pending_stage: None,
             last_progress_session_id: None,
             exact_scan_total_bytes: None,
             exact_scan_accounting_enabled: false,

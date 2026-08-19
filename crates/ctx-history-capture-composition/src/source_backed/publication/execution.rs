@@ -384,6 +384,8 @@ pub(super) fn refresh_source_backed_generation_with_detailed_progress_and_discov
                     record_rejections: &mut record_rejections,
                     record_progress: Some(&mut report_record_progress),
                     current_source_progress: Some(&mut report_current_source_progress),
+                    intermediate_progress_last_emitted_at: None,
+                    intermediate_progress_pending_stage: None,
                     last_progress_session_id: None,
                     exact_scan_total_bytes: None,
                     exact_scan_accounting_enabled: false,

@@ -49,6 +49,8 @@ pub enum SourceBackedCurrentSourceProgressStage {
     OnlineBackup,
     LogicalFingerprint,
     LogicalScan,
+    Parsing,
+    IndexWriting,
 }
 
 impl SourceBackedCurrentSourceProgressStage {
@@ -58,6 +60,8 @@ impl SourceBackedCurrentSourceProgressStage {
             Self::OnlineBackup => "online_backup",
             Self::LogicalFingerprint => "logical_fingerprint",
             Self::LogicalScan => "logical_scan",
+            Self::Parsing => "parsing",
+            Self::IndexWriting => "index_writing",
         }
     }
 
@@ -67,6 +71,8 @@ impl SourceBackedCurrentSourceProgressStage {
             "online_backup" => Some(Self::OnlineBackup),
             "logical_fingerprint" => Some(Self::LogicalFingerprint),
             "logical_scan" => Some(Self::LogicalScan),
+            "parsing" => Some(Self::Parsing),
+            "index_writing" => Some(Self::IndexWriting),
             _ => None,
         }
     }
@@ -137,6 +143,12 @@ impl SourceBackedCurrentSourceProgress {
                 }
                 ctx_history_capture::SourceBackedCurrentSourceProgressStage::LogicalScan => {
                     SourceBackedCurrentSourceProgressStage::LogicalScan
+                }
+                ctx_history_capture::SourceBackedCurrentSourceProgressStage::Parsing => {
+                    SourceBackedCurrentSourceProgressStage::Parsing
+                }
+                ctx_history_capture::SourceBackedCurrentSourceProgressStage::IndexWriting => {
+                    SourceBackedCurrentSourceProgressStage::IndexWriting
                 }
             },
             snapshot_pages_completed: progress.snapshot_pages_completed,

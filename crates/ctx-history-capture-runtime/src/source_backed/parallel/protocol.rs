@@ -22,7 +22,8 @@ use ctx_history_core::{
 use thiserror::Error;
 
 use super::super::{
-    SourceBackedCoordinatorError, SourceBackedGenerationSink, SourceBackedLogicalSourceFailureFact,
+    SourceBackedCoordinatorError, SourceBackedCurrentSourceProgressStage,
+    SourceBackedGenerationSink, SourceBackedLogicalSourceFailureFact,
     SourceBackedRecordRejectionDrafts, SourceBackedRouteError, SourceBackedRouteErrorKind,
     SourceBackedRouteResourceKind, SourceBackedRouteResources, SourceBackedSourceOutcome,
     SOURCE_BACKED_CORE_RECORD_BATCH_MAX_RECORDS,
@@ -408,6 +409,11 @@ where
         #[source]
         source: SourceBackedCoordinatorError<LE>,
     },
+    #[error("parallel leaf activity reporting failed: {source}")]
+    Activity {
+        #[source]
+        source: SourceBackedCoordinatorError<LE>,
+    },
 }
 
 pub(super) enum ParallelLeafProtocolMessage<R, P: CorePreparationPort> {
@@ -649,6 +655,8 @@ impl<R, E, P: CorePreparationPort> ParallelLeafScanEmitter<'_, R, E, P> {
             .map_err(SourceBackedRouteError::from)?
             .map(Box::new);
         if batch.is_some() || completed_bytes != 0 {
+            self.resources
+                .record_intermediate_activity(SourceBackedCurrentSourceProgressStage::IndexWriting);
             self.send(ParallelLeafProtocolMessage::CoreRecordBatch {
                 batch,
                 completed_bytes,
@@ -676,6 +684,9 @@ impl<R, E, P: CorePreparationPort> ParallelLeafScanEmitter<'_, R, E, P> {
                 Err(CorePreparationError::Resource(CoreRouteResourceError::Unavailable {
                     ..
                 })) if reservation_bytes <= route_maximum_bytes => {
+                    self.resources.record_intermediate_activity(
+                        SourceBackedCurrentSourceProgressStage::IndexWriting,
+                    );
                     thread::sleep(CORE_OUTPUT_RESERVATION_RETRY_DELAY);
                 }
                 Err(error) => return Err(SourceBackedRouteError::from(error).into()),

@@ -6,6 +6,7 @@ use std::{
     fmt,
     path::PathBuf,
     sync::Arc,
+    time::{Duration, Instant},
 };
 
 use ctx_history_capture_model::{
@@ -25,8 +26,11 @@ use crate::{
 
 use super::{
     diagnostics::{self, *},
-    SourceBackedCertifiedRemoval, SourceBackedCurrentSourceProgress, SourceBackedRouteResources,
+    SourceBackedCertifiedRemoval, SourceBackedCurrentSourceProgress,
+    SourceBackedCurrentSourceProgressStage, SourceBackedRouteResources,
 };
+
+const SOURCE_BACKED_INTERMEDIATE_PROGRESS_INTERVAL: Duration = Duration::from_millis(100);
 
 pub const MAX_RECORDED_SOURCE_BACKED_FAILURES: usize = 64;
 pub const MAX_SOURCE_BACKED_FAILURE_SELECTOR_BYTES: usize = 512;
@@ -240,6 +244,8 @@ pub struct SourceBackedGenerationSink<'writer, L: CaptureLifecycleSink> {
     pub current_source_progress: Option<
         &'writer mut dyn FnMut(SourceBackedCurrentSourceProgress) -> SourceBackedRouteResult<()>,
     >,
+    pub intermediate_progress_last_emitted_at: Option<Instant>,
+    pub intermediate_progress_pending_stage: Option<SourceBackedCurrentSourceProgressStage>,
     pub last_progress_session_id: Option<[u8; 32]>,
     /// Private estimator accounting, carried on existing progress callbacks.
     #[doc(hidden)]
@@ -288,6 +294,8 @@ impl<L: CaptureLifecycleSink> SourceBackedGenerationSink<'_, L> {
             record_rejections,
             record_progress,
             current_source_progress,
+            intermediate_progress_last_emitted_at: None,
+            intermediate_progress_pending_stage: None,
             last_progress_session_id,
             exact_scan_total_bytes: None,
             exact_scan_accounting_enabled: false,
@@ -417,6 +425,52 @@ impl<L: CaptureLifecycleSink> SourceBackedGenerationSink<'_, L> {
         self.current_source_progress
             .as_mut()
             .map_or(Ok(()), |report| report(progress))
+    }
+
+    /// Publishes route activity independently from accepted Core accounting.
+    /// All stages share one route-wide cadence. Activity inside the gate is
+    /// coalesced to the latest stage rather than bypassing the rate limit.
+    pub(crate) fn report_intermediate_activity(
+        &mut self,
+        stage: SourceBackedCurrentSourceProgressStage,
+    ) -> SourceBackedCoordinatorResult<(), L::Error> {
+        if self.current_source_progress.is_none() {
+            self.intermediate_progress_pending_stage = None;
+            return Ok(());
+        }
+        self.intermediate_progress_pending_stage = Some(stage);
+        self.flush_intermediate_activity()
+    }
+
+    pub(crate) fn flush_intermediate_activity(
+        &mut self,
+    ) -> SourceBackedCoordinatorResult<(), L::Error> {
+        let Some(stage) = self.intermediate_progress_pending_stage else {
+            return Ok(());
+        };
+        let now = Instant::now();
+        let interval_elapsed = self
+            .intermediate_progress_last_emitted_at
+            .is_none_or(|last| {
+                now.saturating_duration_since(last) >= SOURCE_BACKED_INTERMEDIATE_PROGRESS_INTERVAL
+            });
+        if !interval_elapsed {
+            return Ok(());
+        }
+        self.report_current_source_progress(SourceBackedCurrentSourceProgress::new(stage))
+            .map_err(SourceBackedCoordinatorError::Progress)?;
+        self.intermediate_progress_last_emitted_at = Some(now);
+        self.intermediate_progress_pending_stage = None;
+        Ok(())
+    }
+
+    fn report_index_writer_activity(&mut self) -> SourceBackedCoordinatorResult<(), L::Error> {
+        if self.resources.intermediate_activity_generation() == 0 {
+            return Ok(());
+        }
+        self.resources
+            .record_intermediate_activity(SourceBackedCurrentSourceProgressStage::IndexWriting);
+        self.report_intermediate_activity(SourceBackedCurrentSourceProgressStage::IndexWriting)
     }
 
     pub fn base_source(&self, source: &SourceKey) -> Option<&CertifiedSource> {
@@ -556,7 +610,9 @@ impl<L: CaptureLifecycleSink> SourceBackedGenerationSink<'_, L> {
         emission: CoreRecordEmission<L>,
     ) -> SourceBackedCoordinatorResult<(), L::Error> {
         let (prepared, reservation) = emission.into_prepared();
+        self.report_index_writer_activity()?;
         self.lifecycle.add_prepared(prepared)?;
+        self.flush_intermediate_activity()?;
         drop(reservation);
         Ok(())
     }
@@ -604,7 +660,9 @@ impl<L: CaptureLifecycleSink> SourceBackedGenerationSink<'_, L> {
         let progress = batch.progress().clone();
         let (prepared_records, reservation) = batch.into_prepared();
         for prepared in prepared_records {
+            self.report_index_writer_activity()?;
             self.lifecycle.add_prepared(prepared)?;
+            self.flush_intermediate_activity()?;
         }
         drop(reservation);
         self.report_record_progress(

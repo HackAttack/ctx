@@ -256,6 +256,10 @@ fn presentation_current_source_progress(
             EngineCurrentSourceProgressStage::LogicalScan => {
                 RefreshCurrentSourceProgressStage::LogicalScan
             }
+            EngineCurrentSourceProgressStage::Parsing => RefreshCurrentSourceProgressStage::Parsing,
+            EngineCurrentSourceProgressStage::IndexWriting => {
+                RefreshCurrentSourceProgressStage::IndexWriting
+            }
         },
         snapshot_pages_completed: value.snapshot_pages_completed,
         snapshot_pages_total: value.snapshot_pages_total,

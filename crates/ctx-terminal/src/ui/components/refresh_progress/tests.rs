@@ -380,6 +380,65 @@ fn setup_live_maps_every_whole_run_stage_truthfully() {
 }
 
 #[test]
+fn transient_ingestion_activity_overrides_only_the_live_reading_label() {
+    let mut snapshot = active_status(RefreshLogicalPhase::Direct, "refreshing", true, 1);
+    for (stage, expected) in [
+        (
+            RefreshCurrentSourceProgressStage::Parsing,
+            "Parsing your agent history",
+        ),
+        (
+            RefreshCurrentSourceProgressStage::IndexWriting,
+            "Writing search index",
+        ),
+    ] {
+        snapshot.progress.current_source_progress = Some(RefreshCurrentSourceProgress {
+            stage,
+            snapshot_pages_completed: None,
+            snapshot_pages_total: None,
+            snapshot_bytes_completed: None,
+            snapshot_bytes_total: None,
+            logical_rows_scanned: None,
+            logical_certified_bytes: None,
+        });
+        assert_eq!(snapshot.phase(), stage.as_str());
+        assert_eq!(shared_refresh_label(&snapshot), expected);
+        assert_eq!(human_refresh_label(&snapshot), expected);
+        assert_eq!(snapshot.progress.processed_sessions, 0);
+        assert_eq!(snapshot.progress.processed_messages, 0);
+        assert_eq!(snapshot.progress.processed_tool_calls, 0);
+    }
+}
+
+#[test]
+fn terminal_state_ignores_stale_activity_and_preserves_authoritative_counters() {
+    let mut snapshot = terminal_status(
+        RefreshRequestState::Published,
+        "completed",
+        "completed",
+        false,
+    );
+    snapshot.progress.current_source_progress = Some(RefreshCurrentSourceProgress {
+        stage: RefreshCurrentSourceProgressStage::IndexWriting,
+        snapshot_pages_completed: None,
+        snapshot_pages_total: None,
+        snapshot_bytes_completed: None,
+        snapshot_bytes_total: None,
+        logical_rows_scanned: None,
+        logical_certified_bytes: None,
+    });
+    snapshot.set_terminal_history_totals(7, 11, 13, 17);
+
+    assert_eq!(snapshot.phase(), "published");
+    assert_eq!(shared_refresh_label(&snapshot), "History refresh complete");
+    assert_eq!(human_refresh_label(&snapshot), "History refresh complete");
+    assert_eq!(snapshot.progress.processed_sessions, 7);
+    assert_eq!(snapshot.progress.processed_messages, 11);
+    assert_eq!(snapshot.progress.processed_tool_calls, 13);
+    assert_eq!(snapshot.progress.processed_bytes, 17);
+}
+
+#[test]
 fn setup_live_never_substitutes_source_byte_progress_for_whole_run_eta() {
     let context = RenderContext::for_test(TestContext::tty(StreamKind::Stderr, 80));
     let mut snapshot = active_status(RefreshLogicalPhase::Direct, "refreshing", true, 1);

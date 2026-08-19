@@ -5,7 +5,9 @@ use std::{
 
 use sha2::{Digest, Sha256};
 
-use ctx_history_capture_runtime::SourceBackedRouteResources;
+use ctx_history_capture_runtime::{
+    SourceBackedCurrentSourceProgressStage, SourceBackedRouteResources,
+};
 
 use super::{
     read_bounded_record, read_bounded_record_complete_and_prefix_sha256,
@@ -36,6 +38,7 @@ const ZSTD_FRAME_MAGIC: [u8; 4] = [0x28, 0xb5, 0x2f, 0xfd];
 const MAX_ZSTD_DECODED_FRAME_BYTES: usize = 64 * 1024 * 1024;
 const MAX_ZSTD_FRAME_BYTES: usize = MAX_ZSTD_DECODED_FRAME_BYTES + (1024 * 1024);
 const MAX_ZSTD_WINDOW_LOG: u32 = 26;
+const INTERMEDIATE_ACTIVITY_RECORD_STRIDE: u8 = 64;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum JsonlPhysicalEncoding {
@@ -282,6 +285,8 @@ pub struct JsonlPhysicalStream<E: JsonlFamilyError> {
     source_changed: fn() -> E,
     digest: JsonlPhysicalDigest,
     record_buffer: Vec<u8>,
+    route_resources: Option<SourceBackedRouteResources>,
+    records_since_activity: u8,
     incomplete_tail: bool,
     exhausted: bool,
 }
@@ -393,12 +398,21 @@ impl<E: JsonlFamilyError> JsonlPhysicalStream<E> {
             source_changed,
             digest,
             record_buffer: Vec::new(),
+            route_resources: route_resources.cloned(),
+            records_since_activity: 0,
             incomplete_tail: false,
             exhausted: false,
         })
     }
 
     pub fn next_record(&mut self) -> JsonlResult<Option<JsonlPhysicalRecord>, E> {
+        if self
+            .route_resources
+            .as_ref()
+            .is_some_and(ctx_history_capture_runtime::SourceBackedRouteResources::scan_cancelled)
+        {
+            return Err(E::system_invariant("JSONL parallel scan was cancelled"));
+        }
         if self.exhausted {
             return Ok(None);
         }
@@ -508,6 +522,14 @@ impl<E: JsonlFamilyError> JsonlPhysicalStream<E> {
         } else {
             self.incomplete_tail = true;
             self.exhausted = true;
+        }
+        if let Some(resources) = self.route_resources.as_ref() {
+            if self.records_since_activity == 0 {
+                resources
+                    .record_intermediate_activity(SourceBackedCurrentSourceProgressStage::Parsing);
+            }
+            self.records_since_activity =
+                self.records_since_activity.saturating_add(1) % INTERMEDIATE_ACTIVITY_RECORD_STRIDE;
         }
         Ok(Some(JsonlPhysicalRecord {
             physical_ordinal,

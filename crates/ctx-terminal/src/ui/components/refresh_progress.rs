@@ -174,7 +174,9 @@ impl RefreshProgressSnapshot {
                 .zip(current.snapshot_bytes_total)
                 .unwrap_or((0, 0)),
             RefreshCurrentSourceProgressStage::LogicalFingerprint
-            | RefreshCurrentSourceProgressStage::LogicalScan => (0, 0),
+            | RefreshCurrentSourceProgressStage::LogicalScan
+            | RefreshCurrentSourceProgressStage::Parsing
+            | RefreshCurrentSourceProgressStage::IndexWriting => (0, 0),
         }
     }
 
@@ -395,6 +397,8 @@ pub enum RefreshCurrentSourceProgressStage {
     OnlineBackup,
     LogicalFingerprint,
     LogicalScan,
+    Parsing,
+    IndexWriting,
 }
 impl RefreshCurrentSourceProgressStage {
     pub const fn as_str(self) -> &'static str {
@@ -403,6 +407,8 @@ impl RefreshCurrentSourceProgressStage {
             Self::OnlineBackup => "online_backup",
             Self::LogicalFingerprint => "logical_fingerprint",
             Self::LogicalScan => "logical_scan",
+            Self::Parsing => "parsing",
+            Self::IndexWriting => "index_writing",
         }
     }
 }
@@ -508,16 +514,20 @@ fn shared_refresh_label(snapshot: &RefreshProgressSnapshot) -> &'static str {
             RefreshRequestState::AdmissionPending | RefreshRequestState::Queued => {
                 "History refresh is queued"
             }
-            RefreshRequestState::Running => shared_physical_label(&snapshot.progress.phase),
+            RefreshRequestState::Running => transient_activity_label(snapshot)
+                .unwrap_or_else(|| shared_physical_label(&snapshot.progress.phase)),
             RefreshRequestState::Published => "History refresh complete",
             RefreshRequestState::Failed => "History refresh failed",
         },
         RefreshStatusKind::Logical(logical) => match logical.logical_phase {
             RefreshLogicalPhase::Waiting => "History refresh is waiting",
-            RefreshLogicalPhase::Attached => "Refreshing history with shared work",
+            RefreshLogicalPhase::Attached => {
+                transient_activity_label(snapshot).unwrap_or("Refreshing history with shared work")
+            }
             RefreshLogicalPhase::CoverageCheck => "Checking refresh coverage",
             RefreshLogicalPhase::ExactSuccessor => "Waiting for successor refresh",
-            RefreshLogicalPhase::Direct => shared_physical_label(&snapshot.progress.phase),
+            RefreshLogicalPhase::Direct => transient_activity_label(snapshot)
+                .unwrap_or_else(|| shared_physical_label(&snapshot.progress.phase)),
             RefreshLogicalPhase::Terminal => terminal_label(logical),
         },
     }
@@ -638,7 +648,8 @@ fn human_refresh_label(snapshot: &RefreshProgressSnapshot) -> &'static str {
             RefreshRequestState::AdmissionPending | RefreshRequestState::Queued => {
                 "Preparing your history"
             }
-            RefreshRequestState::Running => whole_run_label(snapshot.whole_run_stage()),
+            RefreshRequestState::Running => transient_activity_label(snapshot)
+                .unwrap_or_else(|| whole_run_label(snapshot.whole_run_stage())),
             RefreshRequestState::Published => "History refresh complete",
             RefreshRequestState::Failed => "History refresh failed",
         },
@@ -647,10 +658,30 @@ fn human_refresh_label(snapshot: &RefreshProgressSnapshot) -> &'static str {
             | RefreshLogicalPhase::CoverageCheck
             | RefreshLogicalPhase::ExactSuccessor => "Preparing your history",
             RefreshLogicalPhase::Attached | RefreshLogicalPhase::Direct => {
-                whole_run_label(snapshot.whole_run_stage())
+                transient_activity_label(snapshot)
+                    .unwrap_or_else(|| whole_run_label(snapshot.whole_run_stage()))
             }
             RefreshLogicalPhase::Terminal => terminal_label(logical),
         },
+    }
+}
+
+fn transient_activity_label(snapshot: &RefreshProgressSnapshot) -> Option<&'static str> {
+    match snapshot
+        .progress
+        .current_source_progress
+        .as_ref()
+        .map(|progress| progress.stage)
+    {
+        Some(RefreshCurrentSourceProgressStage::Parsing) => Some("Parsing your agent history"),
+        Some(RefreshCurrentSourceProgressStage::IndexWriting) => Some("Writing search index"),
+        Some(
+            RefreshCurrentSourceProgressStage::SourceFamilyCopy
+            | RefreshCurrentSourceProgressStage::OnlineBackup
+            | RefreshCurrentSourceProgressStage::LogicalFingerprint
+            | RefreshCurrentSourceProgressStage::LogicalScan,
+        )
+        | None => None,
     }
 }
 

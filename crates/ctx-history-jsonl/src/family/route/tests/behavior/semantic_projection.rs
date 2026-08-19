@@ -217,6 +217,8 @@ fn single_leaf_serial_jsonl_page_accounts_sessions_messages_and_tool_calls() {
         applied_removals: &mut applied_removals,
         record_progress: Some(&mut report_progress),
         current_source_progress: None,
+        intermediate_progress_last_emitted_at: None,
+        intermediate_progress_pending_stage: None,
         last_progress_session_id: None,
         exact_scan_total_bytes: None,
         exact_scan_accounting_enabled: false,

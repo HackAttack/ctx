@@ -1,4 +1,5 @@
 use super::*;
+use std::cell::RefCell;
 
 #[test]
 fn ready_driven_mixed_outcomes_finalize_diagnostics_in_canonical_job_order() {
@@ -570,6 +571,8 @@ fn worker_budget_coordinates_indexers_runtime_and_scanners() {
         applied_removals: &mut Vec::new(),
         record_progress: None,
         current_source_progress: None,
+        intermediate_progress_last_emitted_at: None,
+        intermediate_progress_pending_stage: None,
         last_progress_session_id: None,
         exact_scan_total_bytes: None,
         exact_scan_accounting_enabled: false,
@@ -1030,6 +1033,172 @@ fn batch_application_preserves_order_accounts_progress_and_releases_reservations
     assert_eq!(
         batch_commit.generation_id, reference_commit.generation_id,
         "one batch must preserve the canonical order of the equivalent single-record emissions"
+    );
+}
+
+#[test]
+fn scanner_and_slow_writer_activity_precede_durable_batch_acceptance() {
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    enum Observation {
+        Activity(SourceBackedCurrentSourceProgressStage),
+        Accepted(u64),
+    }
+
+    let source = test_source(38);
+    let record = test_core_record(&source, 1, 38);
+    let resources = SourceBackedRouteResources::production(1);
+    let scanner_resources = resources.clone();
+    let observations = RefCell::new(Vec::new());
+    let mut report_record_progress = |delta: SourceBackedRecordProgressDelta| {
+        observations
+            .borrow_mut()
+            .push(Observation::Accepted(delta.accepted_records));
+        Ok(())
+    };
+    let mut report_current_source_progress = |progress: SourceBackedCurrentSourceProgress| {
+        observations
+            .borrow_mut()
+            .push(Observation::Activity(progress.stage));
+        Ok(())
+    };
+    let mut harness = SinkHarness::with_lifecycle(FakeLifecycle::with_add_prepared_delay(
+        Duration::from_millis(150),
+    ));
+
+    harness
+        .run_with_resources_and_progress::<_, (), _>(
+            vec![ParallelLeafScanJob::new(source, ())],
+            1,
+            resources,
+            &mut report_record_progress,
+            &mut report_current_source_progress,
+            move |job, emitter| {
+                emitter.begin(ParallelLeafScanBegin::replace(job.source().clone()))?;
+                scanner_resources
+                    .record_intermediate_activity(SourceBackedCurrentSourceProgressStage::Parsing);
+                std::thread::sleep(Duration::from_millis(150));
+                emitter.emit_core_record(record.clone())?;
+                emitter.complete(ParallelLeafScanComplete::replace(
+                    test_certificate(job.source(), 38, 1, false),
+                    (),
+                ))?;
+                Ok(())
+            },
+        )
+        .unwrap();
+
+    assert_eq!(
+        observations.into_inner(),
+        [
+            Observation::Activity(SourceBackedCurrentSourceProgressStage::Parsing),
+            Observation::Activity(SourceBackedCurrentSourceProgressStage::IndexWriting),
+            Observation::Accepted(1),
+        ],
+        "scanner and writer liveness must not fabricate accepted Core counters"
+    );
+    assert_eq!(harness.writer.records.len(), 1);
+}
+
+#[test]
+fn alternating_intermediate_stages_share_one_ten_hertz_cadence() {
+    let source = test_source(39);
+    let resources = SourceBackedRouteResources::production(1);
+    let scanner_resources = resources.clone();
+    let observations = RefCell::new(Vec::new());
+    let mut report_record_progress = |_delta: SourceBackedRecordProgressDelta| Ok(());
+    let mut report_current_source_progress = |progress: SourceBackedCurrentSourceProgress| {
+        observations
+            .borrow_mut()
+            .push((Instant::now(), progress.stage));
+        Ok(())
+    };
+    let mut harness = SinkHarness::with_lifecycle(FakeLifecycle::default());
+
+    harness
+        .run_with_resources_and_progress::<_, (), _>(
+            vec![ParallelLeafScanJob::new(source, ())],
+            1,
+            resources,
+            &mut report_record_progress,
+            &mut report_current_source_progress,
+            move |job, emitter| {
+                emitter.begin(ParallelLeafScanBegin::replace(job.source().clone()))?;
+                for index in 0..32 {
+                    let stage = if index % 2 == 0 {
+                        SourceBackedCurrentSourceProgressStage::Parsing
+                    } else {
+                        SourceBackedCurrentSourceProgressStage::IndexWriting
+                    };
+                    scanner_resources.record_intermediate_activity(stage);
+                    std::thread::sleep(Duration::from_millis(15));
+                }
+                emitter.complete(ParallelLeafScanComplete::replace(
+                    test_certificate(job.source(), 39, 0, false),
+                    (),
+                ))?;
+                Ok(())
+            },
+        )
+        .unwrap();
+
+    let observations = observations.into_inner();
+    assert!(
+        observations.len() >= 3,
+        "expected repeated liveness callbacks"
+    );
+    assert!(
+        observations.windows(2).all(|window| {
+            window[1].0.saturating_duration_since(window[0].0) >= Duration::from_millis(100)
+        }),
+        "all stages must share the same route-wide 100 ms gate: {observations:?}"
+    );
+}
+
+#[test]
+fn intermediate_callback_failure_cancels_and_joins_worker_promptly() {
+    let source = test_source(40);
+    let resources = SourceBackedRouteResources::production(1);
+    let scanner_resources = resources.clone();
+    let worker_observed_cancellation = Arc::new(AtomicBool::new(false));
+    let worker_cancelled = Arc::clone(&worker_observed_cancellation);
+    let callback_count = AtomicUsize::new(0);
+    let mut report_record_progress = |_delta: SourceBackedRecordProgressDelta| Ok(());
+    let mut report_current_source_progress = |_progress: SourceBackedCurrentSourceProgress| {
+        callback_count.fetch_add(1, Ordering::SeqCst);
+        Err(SourceBackedRouteError::new(
+            SourceBackedRouteErrorKind::Internal,
+            "injected intermediate progress failure",
+        ))
+    };
+    let mut harness = SinkHarness::with_lifecycle(FakeLifecycle::default());
+    let started = Instant::now();
+
+    let error = harness
+        .run_with_resources_and_progress::<_, (), _>(
+            vec![ParallelLeafScanJob::new(source, ())],
+            1,
+            resources,
+            &mut report_record_progress,
+            &mut report_current_source_progress,
+            move |job, emitter| {
+                emitter.begin(ParallelLeafScanBegin::replace(job.source().clone()))?;
+                scanner_resources
+                    .record_intermediate_activity(SourceBackedCurrentSourceProgressStage::Parsing);
+                while !emitter.is_cancelled() {
+                    std::thread::yield_now();
+                }
+                worker_cancelled.store(true, Ordering::Release);
+                Err(ParallelLeafScanCancelled.into())
+            },
+        )
+        .unwrap_err();
+
+    assert!(matches!(error, ParallelLeafScanError::Activity { .. }));
+    assert_eq!(callback_count.load(Ordering::SeqCst), 1);
+    assert!(worker_observed_cancellation.load(Ordering::Acquire));
+    assert!(
+        started.elapsed() < Duration::from_secs(1),
+        "callback failure must cancel and join without an unbounded wait"
     );
 }
 
