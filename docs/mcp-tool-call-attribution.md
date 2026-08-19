@@ -98,7 +98,7 @@ The exact full tuples are:
   generation 1. Observed versions and the pinned source commit are evidence,
   not runtime admission selectors.
 
-The 46 `not-qualified` rows do not mean their providers are unsupported. They
+The 45 `not-qualified` rows do not mean their providers are unsupported. They
 mean only that ctx does not claim exact MCP server/tool activity for those
 tuples. New source variants or versions require their own non-overlapping row;
 unknown generations fail closed. The public
