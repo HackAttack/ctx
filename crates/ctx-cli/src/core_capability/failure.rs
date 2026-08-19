@@ -21,6 +21,8 @@ pub(super) fn produce_response(
 }
 
 fn terminal_failure_response(operation: Operation, error: &anyhow::Error) -> Option<Value> {
+    use super::progress_events::neutral_dynamic_text;
+
     let terminal = error.chain().find_map(|cause| {
         cause.downcast_ref::<crate::semantic::SourceBackedRefreshTerminalError>()
     })?;
@@ -31,8 +33,8 @@ fn terminal_failure_response(operation: Operation, error: &anyhow::Error) -> Opt
             "affected_routes": &terminal.affected_routes,
             "blocked_routes": &terminal.blocked_routes,
             "class": terminal.class.as_str(),
-            "physical_attempt_id": terminal.physical_attempt_id.as_str(),
-            "retained_generation": terminal.retained_generation.as_deref(),
+            "physical_attempt_id": neutral_dynamic_text(&terminal.physical_attempt_id),
+            "retained_generation": terminal.retained_generation.as_deref().map(neutral_dynamic_text),
             "retry_advice": terminal.retry_advice.as_deref(),
             "retryable_routes": &terminal.retryable_routes,
         },

@@ -1,6 +1,12 @@
 use anyhow::{anyhow, Result};
 use serde_json::Value;
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) enum SetupProgressMode {
+    Legacy(crate::progress::ProgressArg),
+    Events,
+}
+
 pub(super) fn setup_notice_lines(object: &serde_json::Map<String, Value>) -> Result<Vec<String>> {
     const MAX_NOTICE_LINES: usize = 8;
     const MAX_NOTICE_LINE_BYTES: usize = 512;
@@ -50,12 +56,21 @@ pub(super) fn progress_mode_for_notice(
 
 pub(super) fn setup_progress_mode(
     object: &serde_json::Map<String, Value>,
-) -> Result<crate::progress::ProgressArg> {
+) -> Result<SetupProgressMode> {
     match object.get("progress").and_then(Value::as_str) {
-        Some("auto") => Ok(crate::progress::ProgressArg::Auto),
-        Some("plain") => Ok(crate::progress::ProgressArg::Plain),
-        Some("json") => Ok(crate::progress::ProgressArg::Json),
-        Some("none") => Ok(crate::progress::ProgressArg::None),
+        Some("auto") => Ok(SetupProgressMode::Legacy(
+            crate::progress::ProgressArg::Auto,
+        )),
+        Some("plain") => Ok(SetupProgressMode::Legacy(
+            crate::progress::ProgressArg::Plain,
+        )),
+        Some("json") => Ok(SetupProgressMode::Legacy(
+            crate::progress::ProgressArg::Json,
+        )),
+        Some("none") => Ok(SetupProgressMode::Legacy(
+            crate::progress::ProgressArg::None,
+        )),
+        Some("events") => Ok(SetupProgressMode::Events),
         _ => Err(anyhow!("setup progress option is invalid")),
     }
 }

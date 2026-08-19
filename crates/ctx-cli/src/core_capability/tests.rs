@@ -2,6 +2,7 @@ use super::hosted_pair_install::{
     acquire_hosted_install_lock, hosted_source_path, replace_hosted_file, stage_hosted_bytes,
     HostedInstallMarker,
 };
+use super::progress_events::{CapabilityEventSink, IgnoreEvents, ProtocolEventWriter};
 use super::*;
 use ctx_history_index::SourceRouteIdentity;
 use ctx_history_refresh::{
@@ -92,6 +93,331 @@ fn capability_response_is_one_exact_flushed_json_frame() {
 }
 
 #[test]
+fn refresh_progress_event_is_canonical_bounded_control_free_protocol_json() {
+    let status = crate::semantic::RefreshStatus::parse_schema_v1(json!({
+        "request_id": "logical-request",
+        "request_state": "running",
+        "logical_request_id": "logical-request",
+        "logical_phase": "exact_successor",
+        "physical_attempt_id": "physical-attempt",
+        "physical_attempt_state": "running",
+        "progress_owner_request_id": "physical-attempt",
+        "progress_owner_attempt_state": "running",
+        "progress": {
+            "phase": "copying",
+            "completed_sources": 1,
+            "total_sources": 2,
+            "total_sources_known": true,
+            "current_source": "history\u{001b}[31m\u{009b}red",
+            "completed_records": 8,
+            "completed_bytes": 256,
+            "providers": ["codex"],
+            "processed_sessions": 3,
+            "processed_messages": 5,
+            "processed_tool_calls": 2,
+            "processed_bytes": 1024,
+            "elapsed_millis": 1200,
+            "whole_run_stage": "reading",
+            "estimated_remaining_millis": 3400,
+            "current_source_progress": {
+                "stage": "online_backup",
+                "snapshot_pages_completed": 2,
+                "snapshot_pages_total": 4,
+                "snapshot_bytes_completed": 256,
+                "snapshot_bytes_total": 512
+            }
+        }
+    }))
+    .unwrap();
+    let mut output = Vec::new();
+    let mut events = ProtocolEventWriter::new(Operation::CoreSetup, &mut output);
+
+    events.refresh(&status).unwrap();
+
+    assert_eq!(output.iter().filter(|byte| **byte == b'\n').count(), 1);
+    assert!(!output.contains(&0x1b));
+    assert!(!output.contains(&b'\r'));
+    let frame: Value = serde_json::from_slice(output.strip_suffix(b"\n").unwrap()).unwrap();
+    assert_eq!(canonical(&frame).unwrap(), output[..output.len() - 1]);
+    assert_eq!(frame["type"], "ctx_core_capability_event");
+    assert_eq!(frame["event"], "refresh");
+    assert_eq!(frame["operation"], "CoreSetup");
+    assert_eq!(frame["protocol_version"], CORE_PRO_PROTOCOL_VERSION.get());
+    assert_eq!(frame["schema_version"], 1);
+    assert_eq!(frame["sequence"], 0);
+    assert_eq!(frame["refresh"]["request_id"], "logical-request");
+    assert_eq!(frame["refresh"]["request_state"], "running");
+    assert_eq!(frame["refresh"]["whole_run_stage"], "reading");
+    assert_eq!(frame["refresh"]["providers"], json!(["codex"]));
+    assert_eq!(
+        frame["refresh"]["current_source"],
+        "history\\u{001B}[31m\\u{009B}red"
+    );
+    assert_eq!(
+        frame["refresh"]["current_source_progress"],
+        json!({
+            "stage": "online_backup",
+            "snapshot_pages_completed": 2,
+            "snapshot_pages_total": 4,
+            "snapshot_bytes_completed": 256,
+            "snapshot_bytes_total": 512,
+        })
+    );
+    assert!(frame["refresh"].get("terminal_state").is_none());
+}
+
+#[test]
+fn refresh_terminal_event_preserves_typed_outcome_and_hides_arbitrary_detail() {
+    let route = "ab".repeat(32);
+    let retained = "cd".repeat(32);
+    let status = crate::semantic::RefreshStatus::parse_schema_v1(json!({
+        "request_id": "logical-request",
+        "request_state": "failed",
+        "logical_request_id": "logical-request",
+        "logical_phase": "terminal",
+        "physical_attempt_id": "physical-attempt",
+        "physical_attempt_state": "failed",
+        "progress_owner_request_id": "physical-attempt",
+        "progress_owner_attempt_state": "failed",
+        "progress": {
+            "phase": "failed",
+            "completed_sources": 1,
+            "total_sources": 2,
+            "total_sources_known": true,
+            "providers": ["codex"],
+            "whole_run_stage": "failed"
+        },
+        "structured_outcome": {
+            "code": "index_corruption",
+            "class": "corruption",
+            "retryable": false,
+            "affected_routes": [route],
+            "retryable_routes": [],
+            "blocked_routes": [route],
+            "physical_attempt_id": "physical-attempt",
+            "retained_generation": retained,
+            "published_generation": null,
+            "retry_advice": "rebuild_index",
+            "detail": "raw path, token, and arbitrary diagnostics stay inside Core"
+        }
+    }))
+    .unwrap();
+    let mut output = Vec::new();
+    let mut events = ProtocolEventWriter::new(Operation::RefreshAndWait, &mut output);
+
+    events.refresh(&status).unwrap();
+
+    let frame: Value = serde_json::from_slice(output.strip_suffix(b"\n").unwrap()).unwrap();
+    assert_eq!(frame["event"], "refresh");
+    assert_eq!(frame["refresh"]["request_state"], "failed");
+    assert_eq!(
+        frame["refresh"]["terminal_state"]["error_code"],
+        "index_corruption"
+    );
+    assert_eq!(frame["refresh"]["terminal_state"]["retryable"], false);
+    assert_eq!(
+        frame["refresh"]["terminal_state"]["details"],
+        json!({
+            "affected_routes": [route],
+            "blocked_routes": [route],
+            "class": "corruption",
+            "physical_attempt_id": "physical-attempt",
+            "retained_generation": retained,
+            "retry_advice": "rebuild_index",
+            "retryable_routes": [],
+        })
+    );
+    assert!(!String::from_utf8(output)
+        .unwrap()
+        .contains("arbitrary diagnostics"));
+}
+
+#[test]
+fn protocol_stream_orders_progress_before_the_single_terminal_response() {
+    let root = tempfile::tempdir().unwrap();
+    let request = json!({
+        "data_root": root.path(),
+        "operation": "CoreSetup",
+        "options": {
+            "catalog_only": false,
+            "defer_fresh_empty_wait": false,
+            "no_daemon": false,
+            "notice_lines": [],
+            "progress": "events",
+            "semantic": false,
+            "wait": true
+        },
+        "protocol_version": CORE_PRO_PROTOCOL_VERSION.get(),
+        "schema_version": 1,
+    });
+    let mut input = canonical(&request).unwrap();
+    input.push(b'\n');
+    let status = crate::semantic::RefreshStatus::parse_schema_v1(json!({
+        "request_state": "running",
+        "progress": {
+            "phase": "reading",
+            "completed_sources": 0,
+            "total_sources": 1,
+            "total_sources_known": true,
+            "whole_run_stage": "reading"
+        }
+    }))
+    .unwrap();
+    let mut output = Vec::new();
+
+    run_with_protocol_io(
+        std::io::Cursor::new(input),
+        &mut output,
+        |request, events| {
+            events.refresh(&status)?;
+            Ok(json!({
+                "facts": {"generation_id": null},
+                "ok": true,
+                "operation": request.operation.name(),
+                "protocol_version": CORE_PRO_PROTOCOL_VERSION.get(),
+                "schema_version": 1,
+            }))
+        },
+    )
+    .unwrap();
+
+    let frames = output
+        .split(|byte| *byte == b'\n')
+        .filter(|frame| !frame.is_empty())
+        .map(|frame| serde_json::from_slice::<Value>(frame).unwrap())
+        .collect::<Vec<_>>();
+    assert_eq!(frames.len(), 2);
+    assert_eq!(frames[0]["event"], "refresh");
+    assert_eq!(frames[0]["sequence"], 0);
+    assert_eq!(frames[1]["ok"], true);
+    assert!(frames[1].get("type").is_none());
+}
+
+#[test]
+fn legacy_refresh_request_still_writes_exactly_one_terminal_response() {
+    let root = tempfile::tempdir().unwrap();
+    let request = json!({
+        "data_root": root.path(),
+        "operation": "RefreshAndWait",
+        "options": {},
+        "protocol_version": CORE_PRO_PROTOCOL_VERSION.get(),
+        "schema_version": 1,
+    });
+    let mut input = canonical(&request).unwrap();
+    input.push(b'\n');
+    let mut output = Vec::new();
+
+    run_with_protocol_io(
+        std::io::Cursor::new(input),
+        &mut output,
+        |request, _events| {
+            assert!(matches!(
+                request.options,
+                Options::Refresh { events: false }
+            ));
+            Ok(json!({
+                "facts": {},
+                "generation_id": null,
+                "ok": true,
+                "operation": request.operation.name(),
+                "protocol_version": CORE_PRO_PROTOCOL_VERSION.get(),
+                "schema_version": 1,
+            }))
+        },
+    )
+    .unwrap();
+
+    assert_eq!(output.iter().filter(|byte| **byte == b'\n').count(), 1);
+    let response: Value = serde_json::from_slice(output.strip_suffix(b"\n").unwrap()).unwrap();
+    assert_eq!(response["ok"], true);
+    assert!(response.get("event").is_none());
+}
+
+#[test]
+fn event_frame_and_cumulative_stream_bounds_fail_before_writing() {
+    let oversized = crate::semantic::RefreshStatus::parse_schema_v1(json!({
+        "request_state": "running",
+        "progress": {
+            "phase": "reading",
+            "completed_sources": 0,
+            "total_sources": 1,
+            "total_sources_known": true,
+            "current_source": "x".repeat(48 * 1024),
+            "whole_run_stage": "reading"
+        }
+    }))
+    .unwrap();
+    let mut oversized_output = Vec::new();
+    let mut oversized_writer =
+        ProtocolEventWriter::new(Operation::CoreSetup, &mut oversized_output);
+    let error = oversized_writer.refresh(&oversized).unwrap_err();
+    assert!(progress_events::event_writer_error(&error));
+    assert!(oversized_output.is_empty());
+
+    let status = crate::semantic::RefreshStatus::parse_schema_v1(json!({
+        "request_state": "running",
+        "progress": {
+            "phase": "reading",
+            "completed_sources": 0,
+            "total_sources": 1,
+            "total_sources_known": true,
+            "whole_run_stage": "reading"
+        }
+    }))
+    .unwrap();
+    let mut byte_output = Vec::new();
+    let mut byte_writer = ProtocolEventWriter::new(Operation::CoreSetup, &mut byte_output);
+    byte_writer.exhaust_byte_budget_for_test();
+    let error = byte_writer.refresh(&status).unwrap_err();
+    assert!(progress_events::event_writer_error(&error));
+    assert!(byte_output.is_empty());
+
+    let mut frame_output = Vec::new();
+    let mut frame_writer = ProtocolEventWriter::new(Operation::CoreSetup, &mut frame_output);
+    frame_writer.exhaust_frame_budget_for_test();
+    let error = frame_writer.refresh(&status).unwrap_err();
+    assert!(progress_events::event_writer_error(&error));
+    assert!(frame_output.is_empty());
+}
+
+#[test]
+fn broken_event_stream_is_a_typed_writer_failure() {
+    struct BrokenWriter;
+
+    impl std::io::Write for BrokenWriter {
+        fn write(&mut self, _buffer: &[u8]) -> std::io::Result<usize> {
+            Err(std::io::Error::new(
+                std::io::ErrorKind::BrokenPipe,
+                "injected broken event stream",
+            ))
+        }
+
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    let status = crate::semantic::RefreshStatus::parse_schema_v1(json!({
+        "request_state": "running",
+        "progress": {
+            "phase": "reading",
+            "completed_sources": 0,
+            "total_sources": 1,
+            "total_sources_known": true,
+            "whole_run_stage": "reading"
+        }
+    }))
+    .unwrap();
+    let mut output = BrokenWriter;
+    let mut events = ProtocolEventWriter::new(Operation::CoreSetup, &mut output);
+
+    let error = events.refresh(&status).unwrap_err();
+
+    assert!(progress_events::event_writer_error(&error));
+    assert!(should_propagate_setup_refresh_failure(false, &error));
+}
+
+#[test]
 fn recognized_terminal_failure_writes_one_exact_frame_and_exits_nonzero() {
     let root = tempfile::tempdir().unwrap();
     let request = json!({
@@ -113,8 +439,8 @@ fn recognized_terminal_failure_writes_one_exact_frame_and_exits_nonzero() {
             affected_routes: BTreeSet::from([route.clone()]),
             retryable_routes: BTreeSet::new(),
             blocked_routes: BTreeSet::from([route]),
-            physical_attempt_id: "00000000-0000-0000-0000-000000000123".to_owned(),
-            retained_generation: Some("cd".repeat(32)),
+            physical_attempt_id: "attempt\u{009b}[31m".to_owned(),
+            retained_generation: Some(format!("{}\u{001b}[32m", "cd".repeat(32))),
             published_generation: None,
             retry_advice: Some(RefreshRetryAdvice::RebuildIndex),
             detail: Some("arbitrary source detail must not cross the boundary".to_owned()),
@@ -133,16 +459,119 @@ fn recognized_terminal_failure_writes_one_exact_frame_and_exits_nonzero() {
     ));
 
     assert_eq!(status, ExitCode::FAILURE);
+    assert_eq!(output.iter().filter(|byte| **byte == b'\n').count(), 1);
+    assert!(!output.contains(&0x1b));
+    let response: Value = serde_json::from_slice(output.strip_suffix(b"\n").unwrap()).unwrap();
+    assert_eq!(canonical(&response).unwrap(), output[..output.len() - 1]);
+    assert_eq!(response["error_code"], "index_corruption");
+    assert_eq!(response["retryable"], false);
     assert_eq!(
-        output,
-        format!(
-            "{{\"details\":{{\"affected_routes\":[\"{}\"],\"blocked_routes\":[\"{}\"],\"class\":\"corruption\",\"physical_attempt_id\":\"00000000-0000-0000-0000-000000000123\",\"retained_generation\":\"{}\",\"retry_advice\":\"rebuild_index\",\"retryable_routes\":[]}},\"error_code\":\"index_corruption\",\"ok\":false,\"operation\":\"RefreshAndWait\",\"protocol_version\":3,\"retryable\":false,\"schema_version\":1}}\n",
-            "ab".repeat(32),
-            "ab".repeat(32),
-            "cd".repeat(32),
-        )
-        .as_bytes()
+        response["details"]["physical_attempt_id"],
+        "attempt\\u{009B}[31m"
     );
+    assert_eq!(
+        response["details"]["retained_generation"],
+        format!("{}\\u{{001B}}[32m", "cd".repeat(32))
+    );
+    assert!(!String::from_utf8(output).unwrap().contains('\u{009b}'));
+}
+
+#[test]
+fn event_terminal_state_and_final_failure_are_ordered_and_typed_the_same() {
+    let root = tempfile::tempdir().unwrap();
+    let request = json!({
+        "data_root": root.path(),
+        "operation": "RefreshAndWait",
+        "options": {"progress": "events"},
+        "protocol_version": CORE_PRO_PROTOCOL_VERSION.get(),
+        "schema_version": 1,
+    });
+    let mut input = canonical(&request).unwrap();
+    input.push(b'\n');
+    let route_text = "ab".repeat(32);
+    let retained = "cd".repeat(32);
+    let status = crate::semantic::RefreshStatus::parse_schema_v1(json!({
+        "request_id": "logical-request",
+        "request_state": "failed",
+        "logical_request_id": "logical-request",
+        "logical_phase": "terminal",
+        "physical_attempt_id": "physical-attempt",
+        "physical_attempt_state": "failed",
+        "progress_owner_request_id": "physical-attempt",
+        "progress_owner_attempt_state": "failed",
+        "progress": {
+            "phase": "failed",
+            "completed_sources": 0,
+            "total_sources": 1,
+            "total_sources_known": true,
+            "whole_run_stage": "failed"
+        },
+        "structured_outcome": {
+            "code": "index_corruption",
+            "class": "corruption",
+            "retryable": false,
+            "affected_routes": [route_text],
+            "retryable_routes": [],
+            "blocked_routes": [route_text],
+            "physical_attempt_id": "physical-attempt",
+            "retained_generation": retained,
+            "published_generation": null,
+            "retry_advice": "rebuild_index"
+        }
+    }))
+    .unwrap();
+    let route = SourceRouteIdentity::from_sha256(route_text).unwrap();
+    let terminal: anyhow::Error =
+        crate::semantic::SourceBackedRefreshTerminalError::from(RefreshTerminalOutcome {
+            code: RefreshOutcomeCode::IndexCorruption,
+            class: RefreshOutcomeClass::Corruption,
+            retryable: false,
+            affected_routes: BTreeSet::from([route.clone()]),
+            retryable_routes: BTreeSet::new(),
+            blocked_routes: BTreeSet::from([route]),
+            physical_attempt_id: "physical-attempt".to_owned(),
+            retained_generation: Some(retained),
+            published_generation: None,
+            retry_advice: Some(RefreshRetryAdvice::RebuildIndex),
+            detail: Some("private terminal detail".to_owned()),
+        })
+        .into();
+    let mut output = Vec::new();
+
+    let exit = capability_exit_code(run_with_protocol_io(
+        std::io::Cursor::new(input),
+        &mut output,
+        |_request, events| {
+            events.refresh(&status)?;
+            Err(terminal)
+        },
+    ));
+
+    assert_eq!(exit, ExitCode::FAILURE);
+    let frames = output
+        .split(|byte| *byte == b'\n')
+        .filter(|frame| !frame.is_empty())
+        .map(|frame| serde_json::from_slice::<Value>(frame).unwrap())
+        .collect::<Vec<_>>();
+    assert_eq!(frames.len(), 2);
+    assert_eq!(frames[0]["event"], "refresh");
+    assert_eq!(frames[0]["refresh"]["request_state"], "failed");
+    assert_eq!(frames[1]["ok"], false);
+    assert_eq!(
+        frames[0]["refresh"]["terminal_state"]["error_code"],
+        frames[1]["error_code"]
+    );
+    assert_eq!(
+        frames[0]["refresh"]["terminal_state"]["retryable"],
+        frames[1]["retryable"]
+    );
+    assert_eq!(
+        frames[0]["refresh"]["terminal_state"]["details"],
+        frames[1]["details"]
+    );
+    assert!(!String::from_utf8(output)
+        .unwrap()
+        .contains("private terminal detail"));
 }
 
 #[test]
@@ -185,11 +614,14 @@ fn local_usage_summary_returns_canonical_config_error_without_aborting() {
     )
     .unwrap();
 
-    let response = execute(Request {
-        data_root: root.path().to_path_buf(),
-        operation: Operation::LocalUsageSummary,
-        options: Options::Empty,
-    })
+    let response = execute(
+        Request {
+            data_root: root.path().to_path_buf(),
+            operation: Operation::LocalUsageSummary,
+            options: Options::Empty,
+        },
+        &mut IgnoreEvents,
+    )
     .unwrap();
 
     assert_eq!(response["ok"], true);
@@ -297,7 +729,29 @@ fn managed_setup_presentation_options_are_closed_and_bounded() {
     };
     assert!(defer_fresh_empty_wait);
     assert_eq!(notice_lines[2], "https://companion.example.test/opaque");
-    assert_eq!(progress, crate::progress::ProgressArg::Auto);
+    assert_eq!(
+        progress,
+        SetupProgressMode::Legacy(crate::progress::ProgressArg::Auto)
+    );
+
+    let mut event_options = options.clone();
+    event_options["progress"] = json!("events");
+    let Options::Setup(CoreSetupOptions { progress, .. }) =
+        parse_options(Operation::CoreSetup, &event_options).unwrap()
+    else {
+        panic!("expected setup event options")
+    };
+    assert_eq!(progress, SetupProgressMode::Events);
+
+    assert!(matches!(
+        parse_options(Operation::RefreshAndWait, &json!({})).unwrap(),
+        Options::Refresh { events: false }
+    ));
+    assert!(matches!(
+        parse_options(Operation::RefreshAndWait, &json!({"progress": "events"})).unwrap(),
+        Options::Refresh { events: true }
+    ));
+    assert!(parse_options(Operation::RefreshAndWait, &json!({"progress": "plain"})).is_err());
 
     let mut invalid = options.clone();
     invalid["notice_lines"] = json!(["line\nforgery"]);
