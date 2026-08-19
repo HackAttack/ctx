@@ -23,9 +23,11 @@ use serde_json::{json, Value};
 #[cfg(test)]
 use sha2::{Digest as _, Sha256};
 
+mod failure;
 mod hosted_pair_install;
 mod setup_options;
 
+use failure::produce_response;
 use setup_options::{progress_mode_for_notice, setup_notice_lines, setup_progress_mode};
 
 const INVOCATION: &str = "--ctx-core-capability-v1";
@@ -126,20 +128,36 @@ pub(crate) fn intercept(arguments: &[std::ffi::OsString]) -> Option<ExitCode> {
     if arguments.len() != 2 || arguments.get(1).is_none_or(|value| value != INVOCATION) {
         return None;
     }
-    Some(match run() {
+    Some(capability_exit_code(run()))
+}
+
+fn capability_exit_code(result: Result<()>) -> ExitCode {
+    match result {
         Ok(()) => ExitCode::SUCCESS,
         Err(_) => ExitCode::FAILURE,
-    })
+    }
 }
 
 fn run() -> Result<()> {
-    let request = parse_frame(read_frame()?)?;
-    let response = execute(request)?;
-    let bytes = canonical(&response)?;
-    if bytes.len() > MAX_RESPONSE_BYTES {
-        return Err(anyhow!("response exceeds bound"));
-    }
+    let (bytes, terminal_error) = produce_response(read_frame()?, execute)?;
     write_response_frame(std::io::stdout().lock(), &bytes)?;
+    if let Some(error) = terminal_error {
+        return Err(error);
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+fn run_with_io(
+    reader: impl std::io::Read,
+    writer: impl std::io::Write,
+    execute_request: impl FnOnce(Request) -> Result<Value>,
+) -> Result<()> {
+    let (bytes, terminal_error) = produce_response(read_frame_from(reader)?, execute_request)?;
+    write_response_frame(writer, &bytes)?;
+    if let Some(error) = terminal_error {
+        return Err(error);
+    }
     Ok(())
 }
 
@@ -823,9 +841,12 @@ fn normalized_absolute_root(value: &str) -> Result<PathBuf> {
 }
 
 fn read_frame() -> Result<Vec<u8>> {
+    read_frame_from(std::io::stdin().lock())
+}
+
+fn read_frame_from(reader: impl std::io::Read) -> Result<Vec<u8>> {
     let mut bytes = Vec::new();
-    std::io::stdin()
-        .lock()
+    reader
         .take((MAX_FRAME_BYTES + 2) as u64)
         .read_to_end(&mut bytes)?;
     if bytes.last() == Some(&b'\n') {

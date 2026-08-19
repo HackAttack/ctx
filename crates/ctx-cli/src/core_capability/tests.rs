@@ -3,6 +3,10 @@ use super::hosted_pair_install::{
     HostedInstallMarker,
 };
 use super::*;
+use ctx_history_index::SourceRouteIdentity;
+use ctx_history_refresh::{
+    RefreshOutcomeClass, RefreshOutcomeCode, RefreshRetryAdvice, RefreshTerminalOutcome,
+};
 
 #[test]
 fn fingerprint_is_the_sha256_of_the_canonical_inventory() {
@@ -85,6 +89,315 @@ fn capability_response_is_one_exact_flushed_json_frame() {
     let mut output = Vec::new();
     write_response_frame(&mut output, br#"{"ok":true}"#).unwrap();
     assert_eq!(output, b"{\"ok\":true}\n");
+}
+
+fn terminal_failure_with_blocked_routes(
+    route_count: usize,
+) -> crate::semantic::SourceBackedRefreshTerminalError {
+    let routes = (0..route_count)
+        .map(|index| SourceRouteIdentity::from_sha256(format!("{index:064x}")).unwrap())
+        .collect::<BTreeSet<_>>();
+    crate::semantic::SourceBackedRefreshTerminalError::from(RefreshTerminalOutcome {
+        code: RefreshOutcomeCode::IndexCorruption,
+        class: RefreshOutcomeClass::Corruption,
+        retryable: false,
+        affected_routes: routes.clone(),
+        retryable_routes: BTreeSet::new(),
+        blocked_routes: routes,
+        physical_attempt_id: "00000000-0000-0000-0000-000000000123".to_owned(),
+        retained_generation: Some("cd".repeat(32)),
+        published_generation: None,
+        retry_advice: Some(RefreshRetryAdvice::RebuildIndex),
+        detail: Some("arbitrary source detail must not cross the boundary".to_owned()),
+    })
+}
+
+fn retryable_terminal_failure() -> crate::semantic::SourceBackedRefreshTerminalError {
+    let route = SourceRouteIdentity::from_sha256("ab".repeat(32)).unwrap();
+    crate::semantic::SourceBackedRefreshTerminalError::from(RefreshTerminalOutcome {
+        code: RefreshOutcomeCode::SourceUnavailable,
+        class: RefreshOutcomeClass::Unavailable,
+        retryable: true,
+        affected_routes: BTreeSet::from([route.clone()]),
+        retryable_routes: BTreeSet::from([route]),
+        blocked_routes: BTreeSet::new(),
+        physical_attempt_id: "00000000-0000-0000-0000-000000000123".to_owned(),
+        retained_generation: Some("cd".repeat(32)),
+        published_generation: None,
+        retry_advice: Some(RefreshRetryAdvice::RetryAffectedRoutes),
+        detail: None,
+    })
+}
+
+fn mutated_terminal_failure(
+    mutate: impl FnOnce(&mut crate::semantic::SourceBackedRefreshTerminalError),
+) -> crate::semantic::SourceBackedRefreshTerminalError {
+    let mut terminal = terminal_failure_with_blocked_routes(1);
+    mutate(&mut terminal);
+    terminal
+}
+
+fn mutated_retryable_terminal_failure(
+    mutate: impl FnOnce(&mut crate::semantic::SourceBackedRefreshTerminalError),
+) -> crate::semantic::SourceBackedRefreshTerminalError {
+    let mut terminal = retryable_terminal_failure();
+    mutate(&mut terminal);
+    terminal
+}
+
+fn run_terminal_failure(
+    terminal: crate::semantic::SourceBackedRefreshTerminalError,
+) -> (ExitCode, Vec<u8>) {
+    let root = tempfile::tempdir().unwrap();
+    let request = json!({
+        "data_root": root.path(),
+        "operation": "RefreshAndWait",
+        "options": {},
+        "protocol_version": CORE_PRO_PROTOCOL_VERSION.get(),
+        "schema_version": 1,
+    });
+    let mut input = canonical(&request).unwrap();
+    input.push(b'\n');
+    let mut output = Vec::new();
+    let error = anyhow::Error::new(terminal);
+    let status = capability_exit_code(run_with_io(
+        std::io::Cursor::new(input),
+        &mut output,
+        move |_| -> Result<Value> { Err(error) },
+    ));
+    (status, output)
+}
+
+#[test]
+fn recognized_terminal_failure_writes_one_exact_frame_and_exits_nonzero() {
+    let root = tempfile::tempdir().unwrap();
+    let request = json!({
+        "data_root": root.path(),
+        "operation": "RefreshAndWait",
+        "options": {},
+        "protocol_version": CORE_PRO_PROTOCOL_VERSION.get(),
+        "schema_version": 1,
+    });
+    let mut input = canonical(&request).unwrap();
+    input.push(b'\n');
+
+    let route = SourceRouteIdentity::from_sha256("ab".repeat(32)).unwrap();
+    let terminal: anyhow::Error =
+        crate::semantic::SourceBackedRefreshTerminalError::from(RefreshTerminalOutcome {
+            code: RefreshOutcomeCode::IndexCorruption,
+            class: RefreshOutcomeClass::Corruption,
+            retryable: false,
+            affected_routes: BTreeSet::from([route.clone()]),
+            retryable_routes: BTreeSet::new(),
+            blocked_routes: BTreeSet::from([route]),
+            physical_attempt_id: "00000000-0000-0000-0000-000000000123".to_owned(),
+            retained_generation: Some("cd".repeat(32)),
+            published_generation: None,
+            retry_advice: Some(RefreshRetryAdvice::RebuildIndex),
+            detail: Some("arbitrary source detail must not cross the boundary".to_owned()),
+        })
+        .into();
+    let terminal = terminal.context("arbitrary internal context must not cross the boundary");
+    let mut output = Vec::new();
+
+    let status = capability_exit_code(run_with_io(
+        std::io::Cursor::new(input),
+        &mut output,
+        |request| {
+            assert_eq!(request.operation, Operation::RefreshAndWait);
+            Err(terminal)
+        },
+    ));
+
+    assert_eq!(status, ExitCode::FAILURE);
+    assert_eq!(
+        output,
+        format!(
+            "{{\"details\":{{\"affected_routes\":[\"{}\"],\"blocked_routes\":[\"{}\"],\"class\":\"corruption\",\"physical_attempt_id\":\"00000000-0000-0000-0000-000000000123\",\"retained_generation\":\"{}\",\"retry_advice\":\"rebuild_index\",\"retryable_routes\":[]}},\"error_code\":\"index_corruption\",\"ok\":false,\"operation\":\"RefreshAndWait\",\"protocol_version\":3,\"retryable\":false,\"schema_version\":1}}\n",
+            "ab".repeat(32),
+            "ab".repeat(32),
+            "cd".repeat(32),
+        )
+        .as_bytes()
+    );
+}
+
+#[test]
+fn malformed_typed_failures_remain_silent_and_nonzero() {
+    let route = "00".repeat(32);
+    let other = "11".repeat(32);
+    let upper = "22".repeat(32);
+    let cases = [
+        (
+            "unknown_code",
+            mutated_terminal_failure(|terminal| terminal.code = "future_failure".to_owned()),
+        ),
+        (
+            "unknown_class",
+            mutated_terminal_failure(|terminal| terminal.class = "future_class".to_owned()),
+        ),
+        (
+            "code_class_mismatch",
+            mutated_terminal_failure(|terminal| terminal.class = "unavailable".to_owned()),
+        ),
+        (
+            "code_retryability_mismatch",
+            mutated_terminal_failure(|terminal| {
+                terminal.affected_routes.clear();
+                terminal.blocked_routes.clear();
+                terminal.retryable = true;
+                terminal.retry_advice = None;
+            }),
+        ),
+        (
+            "malformed_route",
+            mutated_terminal_failure(|terminal| {
+                terminal.affected_routes = vec!["AB".repeat(32)];
+                terminal.blocked_routes = terminal.affected_routes.clone();
+            }),
+        ),
+        (
+            "duplicate_route",
+            mutated_terminal_failure(|terminal| {
+                terminal.affected_routes = vec![route.clone(), route.clone()];
+                terminal.blocked_routes = terminal.affected_routes.clone();
+            }),
+        ),
+        (
+            "unsorted_routes",
+            mutated_terminal_failure(|terminal| {
+                terminal.affected_routes = vec![upper.clone(), other.clone()];
+                terminal.blocked_routes = terminal.affected_routes.clone();
+            }),
+        ),
+        (
+            "retryable_not_affected",
+            mutated_retryable_terminal_failure(|terminal| {
+                terminal.retryable_routes = vec![other.clone()];
+            }),
+        ),
+        (
+            "overlapping_dispositions",
+            mutated_retryable_terminal_failure(|terminal| {
+                terminal.blocked_routes = terminal.affected_routes.clone();
+            }),
+        ),
+        (
+            "undisposed_route",
+            mutated_terminal_failure(|terminal| {
+                terminal.affected_routes.push(other.clone());
+            }),
+        ),
+        (
+            "route_retryability_mismatch",
+            mutated_terminal_failure(|terminal| {
+                terminal.code = "source_failures".to_owned();
+                terminal.class = "mixed".to_owned();
+                terminal.retryable = true;
+                terminal.retry_advice = None;
+            }),
+        ),
+        (
+            "unknown_advice",
+            mutated_terminal_failure(|terminal| {
+                terminal.retry_advice = Some("try_magic".to_owned());
+            }),
+        ),
+        (
+            "advice_retryability_mismatch",
+            mutated_terminal_failure(|terminal| {
+                terminal.retry_advice = Some("retry_request".to_owned());
+            }),
+        ),
+        (
+            "known_but_wrong_advice",
+            mutated_terminal_failure(|terminal| {
+                terminal.retry_advice = Some("inspect_sources".to_owned());
+            }),
+        ),
+        (
+            "malformed_attempt_identity",
+            mutated_terminal_failure(|terminal| {
+                terminal.physical_attempt_id = "00000000-0000-0000-0000-00000000\n123".to_owned();
+            }),
+        ),
+        (
+            "malformed_generation_identity",
+            mutated_terminal_failure(|terminal| {
+                terminal.retained_generation = Some("AB".repeat(32));
+            }),
+        ),
+    ];
+
+    for (name, terminal) in cases {
+        let (status, output) = run_terminal_failure(terminal);
+        assert_eq!(status, ExitCode::FAILURE, "{name}");
+        assert!(output.is_empty(), "{name}: {output:?}");
+    }
+}
+
+#[test]
+fn maximum_valid_failure_frame_writes_and_route_cap_fails_closed() {
+    let (status, output) = run_terminal_failure(terminal_failure_with_blocked_routes(
+        failure::MAX_FAILURE_ROUTES,
+    ));
+    assert_eq!(status, ExitCode::FAILURE);
+    assert_eq!(output.last(), Some(&b'\n'));
+    assert_eq!(output.iter().filter(|byte| **byte == b'\n').count(), 1);
+    let frame = &output[..output.len() - 1];
+    assert!(frame.len() <= MAX_RESPONSE_BYTES);
+    let response: Value = serde_json::from_slice(frame).unwrap();
+    assert_eq!(
+        response["details"]["affected_routes"]
+            .as_array()
+            .unwrap()
+            .len(),
+        failure::MAX_FAILURE_ROUTES
+    );
+    assert_eq!(
+        response["details"]["blocked_routes"]
+            .as_array()
+            .unwrap()
+            .len(),
+        failure::MAX_FAILURE_ROUTES
+    );
+
+    let (status, output) = run_terminal_failure(terminal_failure_with_blocked_routes(
+        failure::MAX_FAILURE_ROUTES + 1,
+    ));
+    assert_eq!(status, ExitCode::FAILURE);
+    assert!(output.is_empty());
+}
+
+#[test]
+fn malformed_and_unknown_failures_remain_silent_and_nonzero() {
+    let mut malformed_output = Vec::new();
+    let malformed_status = capability_exit_code(run_with_io(
+        std::io::Cursor::new(b"not-json\n"),
+        &mut malformed_output,
+        |_| -> Result<Value> { panic!("malformed input must not execute") },
+    ));
+    assert_eq!(malformed_status, ExitCode::FAILURE);
+    assert!(malformed_output.is_empty());
+
+    let root = tempfile::tempdir().unwrap();
+    let request = json!({
+        "data_root": root.path(),
+        "operation": "RefreshAndWait",
+        "options": {},
+        "protocol_version": CORE_PRO_PROTOCOL_VERSION.get(),
+        "schema_version": 1,
+    });
+    let mut input = canonical(&request).unwrap();
+    input.push(b'\n');
+    let mut internal_output = Vec::new();
+    let internal_status = capability_exit_code(run_with_io(
+        std::io::Cursor::new(input),
+        &mut internal_output,
+        |_| Err(anyhow!("unrecognized internal failure")),
+    ));
+    assert_eq!(internal_status, ExitCode::FAILURE);
+    assert!(internal_output.is_empty());
 }
 
 #[test]
