@@ -18,8 +18,9 @@ use serde_json::{json, Value};
 
 const MCP_PROXY_MAX_BYTES: usize = 1024 * 1024;
 const PRO_PATH_OVERRIDE_ENVIRONMENT: &str = "CTX_PRO_PATH";
-const FORWARDED_ENVIRONMENT: [(EnvironmentKey, &str); 7] = [
+const FORWARDED_ENVIRONMENT: [(EnvironmentKey, &str); 8] = [
     (EnvironmentKey::Home, "HOME"),
+    (EnvironmentKey::Path, "PATH"),
     (EnvironmentKey::Lang, "LANG"),
     (EnvironmentKey::LcAll, "LC_ALL"),
     (EnvironmentKey::TimeZone, "TZ"),
@@ -565,6 +566,7 @@ mod tests {
         assert!(FORWARDED_ENVIRONMENT
             .contains(&(EnvironmentKey::LocalUsageEnabled, "CTX_LOCAL_USAGE_ENABLED")));
         assert!(FORWARDED_ENVIRONMENT.contains(&(EnvironmentKey::Home, "HOME")));
+        assert!(FORWARDED_ENVIRONMENT.contains(&(EnvironmentKey::Path, "PATH")));
         assert!(environment_value_is_forwardable(
             EnvironmentKey::Home,
             OsStr::new("/home/tester")

@@ -281,6 +281,10 @@ fn typed_environment_allowlist_is_preserved_and_ambient_is_cleared() {
     request
         .environment_mut()
         .set(EnvironmentKey::Home, OsStr::new("/home/tester"))
+        .set(
+            EnvironmentKey::Path,
+            OsStr::new("/usr/local/bin:/usr/bin:/bin"),
+        )
         .set(EnvironmentKey::Lang, OsStr::new("C.UTF-8"));
     let output = launch_mcp_with(
         &fixture,
@@ -292,7 +296,11 @@ fn typed_environment_allowlist_is_preserved_and_ambient_is_cleared() {
     let fields: Vec<_> = output.stdout().split(|byte| *byte == 0).collect();
     assert_eq!(
         fields,
-        [b"<missing>".as_slice(), b"C.UTF-8", b"/home/tester"]
+        [
+            b"/usr/local/bin:/usr/bin:/bin".as_slice(),
+            b"C.UTF-8",
+            b"/home/tester"
+        ]
     );
 }
 
