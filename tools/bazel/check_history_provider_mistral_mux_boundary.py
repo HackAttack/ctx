@@ -55,6 +55,8 @@ EXPECTED_SOURCES = {
     "mux/native_path.rs",
     "mux/native_path/source_backed.rs",
     "mux/native_path/source_backed/projection.rs",
+    "mux/native_path/source_backed/projection/seam.rs",
+    "mux/native_path/source_backed/tests.rs",
     "mux/normalization.rs",
     "mux/source.rs",
 }

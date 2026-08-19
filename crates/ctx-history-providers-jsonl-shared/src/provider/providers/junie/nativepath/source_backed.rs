@@ -437,6 +437,28 @@ fn push_fact(facts: &mut Vec<ProviderDeclaredFact>, kind: LiteralFactKind, value
     }
 }
 
+fn decode_binding(leaf: &JsonlFamilyLeaf) -> Result<JunieBinding> {
+    let TypedKey::Bytes(bytes) = leaf.binding() else {
+        return Err(CaptureError::InvalidPayload(
+            "Junie family binding is malformed".to_owned(),
+        ));
+    };
+    Ok(serde_json::from_slice(bytes)?)
+}
+
+fn relative_to_authority(authority: &ProviderSourceRoot, path: &Path) -> Result<PathBuf> {
+    path.strip_prefix(authority.named_path())
+        .map(Path::to_path_buf)
+        .map_err(|_| CaptureError::InvalidProviderTranscriptPath {
+            path: path.to_path_buf(),
+            reason: "Junie source escaped its retained authority",
+        })
+}
+
+fn contract(error: impl std::fmt::Display) -> CaptureError {
+    CaptureError::InvalidPayload(error.to_string())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -477,26 +499,4 @@ mod tests {
         assert!(activity.result.is_none());
         assert_eq!(activity.facts, facts);
     }
-}
-
-fn decode_binding(leaf: &JsonlFamilyLeaf) -> Result<JunieBinding> {
-    let TypedKey::Bytes(bytes) = leaf.binding() else {
-        return Err(CaptureError::InvalidPayload(
-            "Junie family binding is malformed".to_owned(),
-        ));
-    };
-    Ok(serde_json::from_slice(bytes)?)
-}
-
-fn relative_to_authority(authority: &ProviderSourceRoot, path: &Path) -> Result<PathBuf> {
-    path.strip_prefix(authority.named_path())
-        .map(Path::to_path_buf)
-        .map_err(|_| CaptureError::InvalidProviderTranscriptPath {
-            path: path.to_path_buf(),
-            reason: "Junie source escaped its retained authority",
-        })
-}
-
-fn contract(error: impl std::fmt::Display) -> CaptureError {
-    CaptureError::InvalidPayload(error.to_string())
 }

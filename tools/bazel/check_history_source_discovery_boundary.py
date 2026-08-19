@@ -15,6 +15,7 @@ EXPECTED_DEPENDENCIES: dict[str, Any] = {
     "chrono": {"workspace": True},
     "ctx-history-capture-model": {"path": "../ctx-history-capture-model"},
     "ctx-history-core": {"path": "../ctx-history-core"},
+    "ctx-history-openclaw-schema": {"path": "../ctx-history-openclaw-schema"},
     "ctx-history-platform": {"path": "../ctx-history-platform"},
     "ctx-history-source-io": {"path": "../ctx-history-source-io"},
     "ctx-history-source-sqlite": {"path": "../ctx-history-source-sqlite"},
@@ -32,6 +33,10 @@ EXPECTED_DEPENDENCIES: dict[str, Any] = {
     "toml_edit": {"workspace": True},
 }
 EXPECTED_DEV_DEPENDENCIES: dict[str, Any] = {
+    "ctx-history-openclaw-schema": {
+        "path": "../ctx-history-openclaw-schema",
+        "features": ["test-support"],
+    },
     "ctx-history-source-io": {
         "path": "../ctx-history-source-io",
         "features": ["test-support"],
@@ -45,6 +50,7 @@ EXPECTED_DEV_DEPENDENCIES: dict[str, Any] = {
 EXPECTED_INTERNAL_CARGO = {
     "ctx-history-capture-model",
     "ctx-history-core",
+    "ctx-history-openclaw-schema",
     "ctx-history-platform",
     "ctx-history-source-io",
     "ctx-history-source-sqlite",
@@ -52,6 +58,7 @@ EXPECTED_INTERNAL_CARGO = {
 EXPECTED_INTERNAL_BAZEL = {
     "//crates/ctx-history-capture-model:lib",
     "//crates/ctx-history-core:lib",
+    "//crates/ctx-history-openclaw-schema:lib",
     "//crates/ctx-history-platform:lib",
     "//crates/ctx-history-source-discovery:lib",
     "//crates/ctx-history-source-io:lib",
