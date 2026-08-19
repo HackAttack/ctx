@@ -54,6 +54,11 @@ const LIVE_OUTPUT: TestOwner = TestOwner::behavioral(
     &["crates/ctx-terminal/src/ui/writer.rs"],
     &["LiveOutput", "write_frame", "assert_eq"],
 );
+const LIVE_RESIZE: TestOwner = TestOwner::behavioral(
+    "crates/ctx-terminal/src/ui/writer/tests.rs::resize_invalidates_wrapped_rows_and_restores_cursor_after_height_change",
+    &["crates/ctx-terminal/src/ui/writer.rs"],
+    &["LiveOutput", "render_frame", "shrink_repaint", "SENTINEL"],
+);
 const PLAIN_REFRESH_PROGRESS: TestOwner = TestOwner::behavioral(
     "crates/ctx-terminal/src/progress/tests.rs::plain_refresh_progress_is_the_stable_live_document_without_internal_routes",
     &["crates/ctx-terminal/src/progress.rs"],
@@ -82,6 +87,16 @@ const SOURCE_INDEX_STREAM: TestOwner = TestOwner::behavioral(
     "crates/ctx-history-cli/src/source_index/tests/additional.rs::unbounded_cli_show_streams_valid_json_beyond_4096_events_in_order",
     &["crates/ctx-history-cli/src/source_index/show.rs"],
     &["stream_cli_session", "events_returned", "from_slice"],
+);
+const SOURCE_INDEX_HUMAN_STREAM: TestOwner = TestOwner::behavioral(
+    "crates/ctx-history-cli/src/source_index/tests/additional.rs::human_cli_show_stream_renders_header_events_empty_and_truncation",
+    &["crates/ctx-history-cli/src/source_index/show.rs"],
+    &[
+        "stream_cli_session",
+        "OutputFormat::Text",
+        "Transcript is truncated.",
+        "No transcript events.",
+    ],
 );
 const HISTORY_CLI_TERMINAL_PORT: TestOwner = TestOwner::behavioral(
     "crates/ctx-history-cli/src/ports.rs::terminal_port_preserves_selected_stream_bytes",
@@ -426,6 +441,38 @@ pub(super) const ALLOWLIST: &[AllowEntry] = &[
         Infrastructure,
         SPECIALIZED_STREAM,
         SOURCE_INDEX_STREAM
+    ),
+    allow!(
+        SOURCE_INDEX_SHOW,
+        "emit#1@e00603b31705f733",
+        DocumentRender,
+        JustifiedPlainHuman,
+        "streamed human show events use the shared terminal document renderer",
+        SOURCE_INDEX_HUMAN_STREAM
+    ),
+    allow!(
+        SOURCE_INDEX_SHOW,
+        "finish#1@83de2ef9ce802211",
+        DocumentRender,
+        JustifiedPlainHuman,
+        "streamed empty human show results use the shared terminal document renderer",
+        SOURCE_INDEX_HUMAN_STREAM
+    ),
+    allow!(
+        SOURCE_INDEX_SHOW,
+        "finish#2@bc572009073a0869",
+        DocumentRender,
+        JustifiedPlainHuman,
+        "streamed truncated human show results use the shared terminal document renderer",
+        SOURCE_INDEX_HUMAN_STREAM
+    ),
+    allow!(
+        SOURCE_INDEX_SHOW,
+        "write_header#1@311e92a0e876bc18",
+        DocumentRender,
+        JustifiedPlainHuman,
+        "streamed human show headers use the shared terminal document renderer",
+        SOURCE_INDEX_HUMAN_STREAM
     ),
     allow!(
         SOURCE_INDEX_SHARED,
@@ -845,15 +892,23 @@ pub(super) const ALLOWLIST: &[AllowEntry] = &[
     ),
     allow!(
         UI_WRITER,
-        "write_frame#1@800a077f8a4bc2c0",
+        "render_frame#1@570278e406fabb4a",
         DocumentRender,
         Infrastructure,
         UI_INFRASTRUCTURE,
-        LIVE_OUTPUT
+        LIVE_RESIZE
     ),
     allow!(
         UI_WRITER,
-        "write_frame#1@9e176dd4991e94f2",
+        "render_frame#2@21157661e5d7d8c9",
+        DocumentRender,
+        Infrastructure,
+        UI_INFRASTRUCTURE,
+        LIVE_RESIZE
+    ),
+    allow!(
+        UI_WRITER,
+        "write_rendered_frame#1@c3fea88d95687a11",
         DirectWrite,
         Infrastructure,
         SPECIALIZED_STREAM,
@@ -861,7 +916,7 @@ pub(super) const ALLOWLIST: &[AllowEntry] = &[
     ),
     allow!(
         UI_WRITER,
-        "write_frame#2@26dbdba5809c8356",
+        "write_rendered_frame#2@26dbdba5809c8356",
         DirectWrite,
         Infrastructure,
         SPECIALIZED_STREAM,
@@ -869,7 +924,7 @@ pub(super) const ALLOWLIST: &[AllowEntry] = &[
     ),
     allow!(
         UI_WRITER,
-        "write_frame#3@601d22f56b79cdd3",
+        "write_rendered_frame#3@0ba0fd9d995d5136",
         DirectWrite,
         Infrastructure,
         SPECIALIZED_STREAM,
@@ -877,7 +932,7 @@ pub(super) const ALLOWLIST: &[AllowEntry] = &[
     ),
     allow!(
         UI_WRITER,
-        "write_frame#4@ed3cb2ef0bf6912f",
+        "write_rendered_frame#4@05c759eaddd10788",
         DirectWrite,
         Infrastructure,
         SPECIALIZED_STREAM,
@@ -901,7 +956,7 @@ pub(super) const ALLOWLIST: &[AllowEntry] = &[
     ),
     allow!(
         UI_WRITER,
-        "repaint_changed_rows#2@4f59ef5cdaf825f7",
+        "repaint_changed_rows#2@2aaf68bbaa8f574a",
         DirectWrite,
         Infrastructure,
         SPECIALIZED_STREAM,
@@ -922,6 +977,30 @@ pub(super) const ALLOWLIST: &[AllowEntry] = &[
         Infrastructure,
         SPECIALIZED_STREAM,
         LIVE_OUTPUT
+    ),
+    allow!(
+        UI_WRITER,
+        "repaint_full_frame#1@25d91e214faa3726",
+        DirectWrite,
+        Infrastructure,
+        SPECIALIZED_STREAM,
+        LIVE_RESIZE
+    ),
+    allow!(
+        UI_WRITER,
+        "repaint_full_frame#2@33d04ce985307180",
+        DirectWrite,
+        Infrastructure,
+        SPECIALIZED_STREAM,
+        LIVE_RESIZE
+    ),
+    allow!(
+        UI_WRITER,
+        "repaint_full_frame#3@177ec66628e8b21e",
+        DirectWrite,
+        Infrastructure,
+        SPECIALIZED_STREAM,
+        LIVE_RESIZE
     ),
     allow!(
         UI_WRITER,
@@ -1021,7 +1100,7 @@ pub(super) const ALLOWLIST: &[AllowEntry] = &[
     ),
     allow!(
         UI_WRITER,
-        "write#1@62dfe1a34afb27b0",
+        "write#1@cae68c8b3d8eadff",
         DocumentRender,
         Infrastructure,
         UI_INFRASTRUCTURE,
@@ -1029,7 +1108,7 @@ pub(super) const ALLOWLIST: &[AllowEntry] = &[
     ),
     allow!(
         UI_WRITER,
-        "write#1@62dfe1a34afb27b0",
+        "write#1@cae68c8b3d8eadff",
         DirectWrite,
         Infrastructure,
         UI_INFRASTRUCTURE,

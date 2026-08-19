@@ -1,4 +1,8 @@
+use std::sync::Arc;
+
 pub const DEFAULT_TERMINAL_WIDTH: usize = 80;
+
+type WidthProbe = Arc<dyn Fn() -> Option<usize> + Send + Sync>;
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum ColorMode {
@@ -109,9 +113,7 @@ impl RenderContext {
             ColorMode::Never => false,
             ColorMode::Auto => auto_color_enabled,
         };
-        let terminal_width = is_terminal
-            .then_some(terminal_width.unwrap_or(DEFAULT_TERMINAL_WIDTH))
-            .filter(|width| *width > 0);
+        let terminal_width = is_terminal.then(|| resolved_terminal_width(terminal_width));
 
         Self {
             stream,
@@ -149,6 +151,13 @@ impl RenderContext {
         self
     }
 
+    pub(super) fn with_terminal_width(mut self, terminal_width: Option<usize>) -> Self {
+        if self.is_terminal {
+            self.terminal_width = Some(resolved_terminal_width(terminal_width));
+        }
+        self
+    }
+
     pub const fn terminal_width(self) -> Option<usize> {
         self.terminal_width
     }
@@ -162,6 +171,51 @@ impl RenderContext {
 
     pub const fn unicode(self) -> bool {
         self.unicode
+    }
+}
+
+fn resolved_terminal_width(terminal_width: Option<usize>) -> usize {
+    terminal_width
+        .filter(|width| *width > 0)
+        .unwrap_or(DEFAULT_TERMINAL_WIDTH)
+}
+
+/// Capabilities established once for one output destination at the command
+/// root. Live rendering re-queries only the dimension that can change while a
+/// command is running; styling, Unicode, stream identity, and interactivity
+/// remain authoritative for the lifetime of the destination.
+#[derive(Clone)]
+pub(super) struct DestinationRuntime {
+    context: RenderContext,
+    width_probe: WidthProbe,
+}
+
+impl DestinationRuntime {
+    pub(super) fn fixed(context: RenderContext) -> Self {
+        let terminal_width = context.terminal_width();
+        Self::new(context, move || terminal_width)
+    }
+
+    pub(super) fn new(
+        context: RenderContext,
+        width_probe: impl Fn() -> Option<usize> + Send + Sync + 'static,
+    ) -> Self {
+        Self {
+            context,
+            width_probe: Arc::new(width_probe),
+        }
+    }
+
+    pub(super) const fn context(&self) -> &RenderContext {
+        &self.context
+    }
+
+    pub(super) fn current_live_context(&self) -> RenderContext {
+        if self.context.live_output_capable() {
+            self.context.with_terminal_width((self.width_probe)())
+        } else {
+            self.context
+        }
     }
 }
 

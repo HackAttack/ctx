@@ -5,7 +5,9 @@ use std::{
 
 use crate::output::MeasuredWriter;
 
-use super::{ColorMode, Document, RenderContext, StreamKind};
+use super::{
+    context::DestinationRuntime, display_width, ColorMode, Document, RenderContext, StreamKind,
+};
 
 type BoxedWriter = Box<dyn Write + Send>;
 
@@ -70,8 +72,8 @@ impl Ui {
         );
         let stderr_terminal_controls = stdio_terminal_controls(&stderr, stderr_context);
         Self {
-            stdout: Destination::adapted(stdout_context, stdout, stdout_terminal_controls),
-            stderr: Destination::adapted(stderr_context, stderr, stderr_terminal_controls),
+            stdout: Destination::stdio(stdout_context, stdout, stdout_terminal_controls),
+            stderr: Destination::stdio(stderr_context, stderr, stderr_terminal_controls),
         }
     }
 
@@ -160,18 +162,18 @@ impl Ui {
     }
 
     pub fn stdout_live_output(&mut self) -> LiveOutput<&mut (dyn Write + Send)> {
-        let context = *self.stdout.context();
-        LiveOutput::new(self.stdout.writer(), context)
+        self.stdout.live_output()
     }
 
     pub fn stderr_live_output(&mut self) -> LiveOutput<&mut (dyn Write + Send)> {
-        let context = *self.stderr.context();
-        LiveOutput::new(self.stderr.writer(), context)
+        self.stderr.live_output()
     }
 
     pub(crate) fn stderr_shared_live_output(&self) -> LiveOutput<BoxedWriter> {
-        let context = *self.stderr.context();
-        LiveOutput::new(Box::new(self.stderr.shared_writer()), context)
+        LiveOutput::with_runtime(
+            Box::new(self.stderr.shared_writer()),
+            self.stderr.runtime.clone(),
+        )
     }
 
     pub fn stdout_writer(&mut self) -> &mut (dyn Write + Send) {
@@ -192,10 +194,23 @@ impl Ui {
 /// content is rendered separately and is never part of a control sequence.
 pub struct LiveOutput<W: Write> {
     writer: W,
+    runtime: DestinationRuntime,
     context: RenderContext,
-    rendered_rows: Vec<String>,
+    rendered_rows: Vec<RenderedRow>,
+    rendered_width: Option<usize>,
     repaint_cursor: Option<RepaintCursor>,
     cursor_hidden: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct RenderedRow {
+    text: String,
+    display_width: usize,
+}
+
+struct RenderedFrame {
+    text: String,
+    rows: Vec<RenderedRow>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -206,10 +221,17 @@ struct RepaintCursor {
 
 impl<W: Write> LiveOutput<W> {
     pub fn new(writer: W, context: RenderContext) -> Self {
+        Self::with_runtime(writer, DestinationRuntime::fixed(context))
+    }
+
+    fn with_runtime(writer: W, runtime: DestinationRuntime) -> Self {
+        let context = *runtime.context();
         Self {
             writer,
+            runtime,
             context,
             rendered_rows: Vec::new(),
+            rendered_width: None,
             repaint_cursor: None,
             cursor_hidden: false,
         }
@@ -246,30 +268,55 @@ impl<W: Write> LiveOutput<W> {
     }
 
     pub fn write_frame(&mut self, document: &Document, final_frame: bool) -> io::Result<()> {
-        let frame = document.render(&self.context);
+        self.context = self.runtime.current_live_context();
+        self.write_rendered_frame(render_frame(document, &self.context), final_frame)
+    }
+
+    /// Rebuilds and renders one semantic live frame using the destination's
+    /// current terminal dimensions. Other destination capabilities remain the
+    /// values established by the root [`Ui`].
+    pub fn render_frame(
+        &mut self,
+        final_frame: bool,
+        render: impl FnOnce(&RenderContext) -> Document,
+    ) -> io::Result<()> {
+        self.context = self.runtime.current_live_context();
+        let document = render(&self.context);
+        self.write_rendered_frame(render_frame(&document, &self.context), final_frame)
+    }
+
+    fn write_rendered_frame(&mut self, frame: RenderedFrame, final_frame: bool) -> io::Result<()> {
         if !self.context.live_output_capable() {
-            self.writer.write_all(frame.as_bytes())?;
+            self.writer.write_all(frame.text.as_bytes())?;
             self.writer.write_all(b"\n")?;
             return self.writer.flush();
         }
 
-        let rows = frame_rows(&frame);
         if !self.cursor_hidden {
             let write_result = if final_frame {
-                self.writer.write_all(frame.as_bytes())
+                self.writer.write_all(frame.text.as_bytes())
             } else {
                 self.hide_cursor()
-                    .and_then(|()| self.writer.write_all(frame.as_bytes()))
+                    .and_then(|()| self.writer.write_all(frame.text.as_bytes()))
             };
             if !final_frame && write_result.is_ok() {
-                self.rendered_rows = rows.iter().map(|row| (*row).to_owned()).collect();
+                self.rendered_rows = frame.rows;
+                self.rendered_width = self.context.terminal_width();
             }
             return self.finish_frame(final_frame, write_result);
         }
 
-        let repaint_result = self.repaint_changed_rows(&rows);
+        let width_changed = self.rendered_width != self.context.terminal_width();
+        let wrapped_frame = self.frame_has_wrapped_rows(&self.rendered_rows)
+            || self.frame_has_wrapped_rows(&frame.rows);
+        let repaint_result = if width_changed || wrapped_frame {
+            self.repaint_full_frame(&frame.rows)
+        } else {
+            self.repaint_changed_rows(&frame.rows)
+        };
         if repaint_result.is_ok() {
-            self.rendered_rows = rows.iter().map(|row| (*row).to_owned()).collect();
+            self.rendered_rows = frame.rows;
+            self.rendered_width = self.context.terminal_width();
         }
         self.finish_frame(final_frame, repaint_result)
     }
@@ -279,13 +326,8 @@ impl<W: Write> LiveOutput<W> {
         self.writer.write_all(b"\x1b[?25l")
     }
 
-    fn repaint_changed_rows(&mut self, rows: &[&str]) -> io::Result<()> {
-        if self
-            .rendered_rows
-            .iter()
-            .map(String::as_str)
-            .eq(rows.iter().copied())
-        {
+    fn repaint_changed_rows(&mut self, rows: &[RenderedRow]) -> io::Result<()> {
+        if self.rendered_rows == rows {
             return Ok(());
         }
 
@@ -303,7 +345,7 @@ impl<W: Write> LiveOutput<W> {
             Some(&mut cursor.current_row),
         )?;
         for row in 0..height {
-            if self.rendered_rows.get(row).map(String::as_str) == rows.get(row).copied() {
+            if self.rendered_rows.get(row) == rows.get(row) {
                 continue;
             }
             let Some(cursor) = self.repaint_cursor.as_mut() else {
@@ -316,7 +358,7 @@ impl<W: Write> LiveOutput<W> {
             )?;
             self.writer.write_all(b"\r")?;
             if let Some(line) = rows.get(row) {
-                self.writer.write_all(line.as_bytes())?;
+                self.writer.write_all(line.text.as_bytes())?;
             }
             self.writer.write_all(b"\x1b[K")?;
         }
@@ -342,18 +384,67 @@ impl<W: Write> LiveOutput<W> {
         Ok(())
     }
 
+    fn repaint_full_frame(&mut self, rows: &[RenderedRow]) -> io::Result<()> {
+        let old_height = self.physical_height(&self.rendered_rows);
+        let new_height = self.physical_height(rows);
+        self.repaint_cursor = Some(RepaintCursor {
+            current_row: old_height,
+            recovery_row: old_height.max(new_height),
+        });
+        let Some(cursor) = self.repaint_cursor.as_mut() else {
+            return Err(io::Error::other("missing repaint cursor"));
+        };
+        write_cursor_up(&mut self.writer, old_height, Some(&mut cursor.current_row))?;
+        for _ in 0..old_height {
+            self.writer.write_all(b"\r\x1b[K")?;
+            let Some(cursor) = self.repaint_cursor.as_mut() else {
+                return Err(io::Error::other("missing repaint cursor"));
+            };
+            write_cursor_down(&mut self.writer, 1, Some(&mut cursor.current_row))?;
+        }
+        let Some(cursor) = self.repaint_cursor.as_mut() else {
+            return Err(io::Error::other("missing repaint cursor"));
+        };
+        write_cursor_up(&mut self.writer, old_height, Some(&mut cursor.current_row))?;
+        for row in rows {
+            self.writer.write_all(row.text.as_bytes())?;
+            self.writer.write_all(b"\n")?;
+            let row_height = self.row_height(row);
+            if let Some(cursor) = self.repaint_cursor.as_mut() {
+                cursor.current_row = cursor.current_row.saturating_add(row_height);
+            }
+        }
+        self.repaint_cursor = None;
+        Ok(())
+    }
+
+    fn frame_has_wrapped_rows(&self, rows: &[RenderedRow]) -> bool {
+        rows.iter().any(|row| self.row_height(row) > 1)
+    }
+
+    fn physical_height(&self, rows: &[RenderedRow]) -> usize {
+        rows.iter().map(|row| self.row_height(row)).sum()
+    }
+
+    fn row_height(&self, row: &RenderedRow) -> usize {
+        let width = self.context.terminal_width().unwrap_or(usize::MAX).max(1);
+        row.display_width.saturating_sub(1) / width + 1
+    }
+
     fn finish_frame(&mut self, final_frame: bool, result: io::Result<()>) -> io::Result<()> {
         if let Err(error) = result {
             self.restore_repaint_anchor_best_effort();
             let _ = self.writer.write_all(b"\r");
             let _ = self.restore_cursor();
             self.rendered_rows.clear();
+            self.rendered_width = None;
             let _ = self.writer.flush();
             return Err(error);
         }
         if final_frame {
             let restore_result = self.restore_cursor();
             self.rendered_rows.clear();
+            self.rendered_width = None;
             return restore_result.and_then(|()| self.writer.flush());
         }
         self.writer.flush()
@@ -413,6 +504,23 @@ fn frame_rows(frame: &str) -> Vec<&str> {
     }
 }
 
+fn render_frame(document: &Document, context: &RenderContext) -> RenderedFrame {
+    let text = document.render(context);
+    let plain = document.render_plain();
+    let plain_rows = frame_rows(&plain);
+    let styled_rows = frame_rows(&text);
+    debug_assert_eq!(styled_rows.len(), plain_rows.len());
+    let rows = styled_rows
+        .into_iter()
+        .enumerate()
+        .map(|(index, text)| RenderedRow {
+            text: text.to_owned(),
+            display_width: plain_rows.get(index).map_or(0, |row| display_width(row)),
+        })
+        .collect();
+    RenderedFrame { text, rows }
+}
+
 fn write_cursor_up(
     writer: &mut impl Write,
     rows: usize,
@@ -442,14 +550,21 @@ fn write_cursor_down(
 }
 
 struct Destination {
-    context: RenderContext,
+    runtime: DestinationRuntime,
     writer: SharedDestinationWriter,
 }
 
 impl Destination {
     fn new(context: RenderContext, writer: BoxedWriter) -> Self {
         Self {
-            context,
+            runtime: DestinationRuntime::fixed(context),
+            writer: SharedDestinationWriter::new(writer),
+        }
+    }
+
+    fn new_with_runtime(runtime: DestinationRuntime, writer: BoxedWriter) -> Self {
+        Self {
+            runtime,
             writer: SharedDestinationWriter::new(writer),
         }
     }
@@ -486,13 +601,27 @@ impl Destination {
         Self::new(context, measured)
     }
 
+    fn stdio<W>(context: RenderContext, writer: W, terminal_controls: bool) -> Self
+    where
+        W: anstream::stream::RawStream + anstream::stream::AsLockedWrite + Send + 'static,
+    {
+        let context = context.with_terminal_control_support(terminal_controls);
+        let stream = context.stream();
+        let adapted = terminal_adapter(writer, context);
+        let measured: BoxedWriter = Box::new(MeasuredWriter::current(adapted, context.stream()));
+        Self::new_with_runtime(
+            DestinationRuntime::new(context, move || stream_width(stream)),
+            measured,
+        )
+    }
+
     const fn context(&self) -> &RenderContext {
-        &self.context
+        self.runtime.context()
     }
 
     fn write(&mut self, document: &Document) -> io::Result<()> {
         self.writer
-            .write_all(document.render(&self.context).as_bytes())
+            .write_all(document.render(self.context()).as_bytes())
     }
 
     fn writer(&mut self) -> &mut (dyn Write + Send) {
@@ -501,6 +630,11 @@ impl Destination {
 
     fn shared_writer(&self) -> SharedDestinationWriter {
         self.writer.clone()
+    }
+
+    fn live_output(&mut self) -> LiveOutput<&mut (dyn Write + Send)> {
+        let runtime = self.runtime.clone();
+        LiveOutput::with_runtime(self.writer(), runtime)
     }
 
     fn flush(&mut self) -> io::Result<()> {

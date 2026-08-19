@@ -1047,8 +1047,6 @@ fn primitive_at(
     }
     if text == "render" && tokens.get(index + 1).map(|token| token.text.as_str()) == Some("(") {
         let document_call = previous_is(tokens, index, ".")
-            && tokens.get(index + 2).map(|token| token.text.as_str()) == Some("&")
-            && tokens.get(index + 3).map(|token| token.text.as_str()) != Some("mut")
             && documents.render_receiver_is_document(tokens, functions, index, document_catalog);
         let document_api =
             path == "crates/ctx-terminal/src/ui/document.rs" && previous_is(tokens, index, "fn");

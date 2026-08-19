@@ -86,6 +86,9 @@ fn render_context_resolves_color_width_and_unicode_explicitly() {
 
     let unknown = RenderContext::for_test(TestContext::tty(StreamKind::Stdout, 32).unknown_width());
     assert_eq!(unknown.terminal_width(), Some(80));
+
+    let zero = RenderContext::for_test(TestContext::tty(StreamKind::Stdout, 0));
+    assert_eq!(zero.terminal_width(), Some(80));
 }
 
 #[test]

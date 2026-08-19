@@ -574,13 +574,20 @@ fn scanner_tracks_raw_writers_through_free_function_parameters() {
 #[test]
 fn scanner_covers_document_render_regardless_of_binding_names() {
     let source = r#"
-        fn emit(page: &Document, palette: RenderContext) {
+        fn emit(page: &Document, palette: RenderContext, borrowed: &RenderContext) {
             let _ = page.render(&palette);
+            let _ = page.render(borrowed);
+            let _ = page.render(context());
         }
     "#;
     let sites = scan_source("src/example.rs", source);
-    assert_eq!(sites.len(), 1, "{sites:#?}");
-    assert_eq!(sites[0].key.primitive, Primitive::DocumentRender);
+    assert_eq!(sites.len(), 3, "{sites:#?}");
+    assert!(
+        sites
+            .iter()
+            .all(|site| site.key.primitive == Primitive::DocumentRender),
+        "{sites:#?}"
+    );
 }
 
 #[test]

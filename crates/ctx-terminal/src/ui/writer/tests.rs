@@ -1,8 +1,18 @@
 use super::*;
-use crate::ui::{Line, Span, TestContext, Token};
+use crate::ui::{context::DEFAULT_TERMINAL_WIDTH, Line, Span, TestContext, Token};
 use std::{
     cell::Cell,
-    sync::{Arc, Mutex},
+    sync::{
+        atomic::{AtomicUsize, Ordering},
+        Arc, Mutex,
+    },
+};
+
+#[cfg(target_os = "linux")]
+use std::{
+    ffi::{c_char, c_int, c_ulong, c_void},
+    fs::File,
+    os::fd::{AsRawFd as _, FromRawFd as _},
 };
 
 #[derive(Clone, Default)]
@@ -49,7 +59,7 @@ impl FailOnceWriter {
 impl Write for FailOnceWriter {
     fn write(&mut self, buffer: &[u8]) -> io::Result<usize> {
         let mut state = self.0.lock().unwrap();
-        if !state.failed && buffer == b"\x1b[K" {
+        if !state.failed && (buffer == b"\x1b[K" || buffer == b"\r\x1b[K") {
             state.failed = true;
             return Err(io::Error::other("injected repaint failure"));
         }
@@ -602,4 +612,289 @@ fn dynamic_text_is_neutralized_before_live_control_bytes() {
         .unwrap();
     let rendered = String::from_utf8(output.into_inner()).unwrap();
     assert_eq!(rendered, "\x1b[?25lsource\\x1b[999A\\rname\n\x1b[?25h");
+}
+
+#[test]
+fn semantic_live_frames_rebuild_at_current_standard_widths() {
+    let width = Arc::new(AtomicUsize::new(80));
+    let width_probe = Arc::clone(&width);
+    let context = RenderContext::for_test(
+        TestContext::tty(StreamKind::Stderr, 80)
+            .color(ColorMode::Never)
+            .unicode(false),
+    );
+    let runtime =
+        DestinationRuntime::new(context, move || Some(width_probe.load(Ordering::Relaxed)));
+    let mut output = LiveOutput::with_runtime(Vec::new(), runtime);
+    let mut observed = Vec::new();
+
+    for terminal_width in [32, 48, 80, 120] {
+        width.store(terminal_width, Ordering::Relaxed);
+        output
+            .render_frame(false, |current| {
+                observed.push((
+                    current.stream(),
+                    current.terminal_width(),
+                    current.color_enabled(),
+                    current.unicode(),
+                    current.live_output_capable(),
+                ));
+                Document::from_line(Line::text(format!(
+                    "destination={:?} width={}",
+                    current.stream(),
+                    current.terminal_width().unwrap_or_default()
+                )))
+            })
+            .unwrap();
+    }
+
+    assert_eq!(
+        observed,
+        [32, 48, 80, 120].map(|width| (StreamKind::Stderr, Some(width), false, false, true))
+    );
+    let rendered = String::from_utf8(output.into_inner()).unwrap();
+    for terminal_width in [32, 48, 80, 120] {
+        assert!(
+            rendered.contains(&format!("destination=Stderr width={terminal_width}")),
+            "{rendered:?}"
+        );
+    }
+}
+
+#[test]
+fn resize_invalidates_wrapped_rows_and_restores_cursor_after_height_change() {
+    let width = Arc::new(AtomicUsize::new(80));
+    let width_probe = Arc::clone(&width);
+    let context = RenderContext::for_test(TestContext::tty(StreamKind::Stdout, 80));
+    let runtime =
+        DestinationRuntime::new(context, move || Some(width_probe.load(Ordering::Relaxed)));
+    let mut output = LiveOutput::with_runtime(Vec::new(), runtime);
+
+    output
+        .render_frame(false, |_| Document::from_line(Line::text("x".repeat(79))))
+        .unwrap();
+    width.store(32, Ordering::Relaxed);
+    output
+        .render_frame(false, |_| {
+            document(&["narrow one", "narrow two", "narrow three", "narrow four"])
+        })
+        .unwrap();
+    width.store(120, Ordering::Relaxed);
+    output.render_frame(true, |_| document(&["done"])).unwrap();
+    output.write_document(&document(&["SENTINEL"])).unwrap();
+
+    let rendered = String::from_utf8(output.into_inner()).unwrap();
+    let shrink_repaint = concat!(
+        "\x1b[A\x1b[A\x1b[A",
+        "\r\x1b[K\x1b[B\r\x1b[K\x1b[B\r\x1b[K\x1b[B",
+        "\x1b[A\x1b[A\x1b[A",
+        "narrow one\nnarrow two\nnarrow three\nnarrow four\n",
+    );
+    assert!(rendered.contains(shrink_repaint), "{rendered:?}");
+    assert!(
+        rendered.ends_with("done\n\x1b[?25hSENTINEL\n"),
+        "{rendered:?}"
+    );
+}
+
+#[test]
+fn frame_height_measurement_ignores_ansi_and_counts_terminal_cells() {
+    let context =
+        RenderContext::for_test(TestContext::tty(StreamKind::Stdout, 32).color(ColorMode::Always));
+    let mut document = Document::new();
+    document.push_line(Line::styled("界".repeat(20), Token::Heading));
+    document.push_line(Line::text("e\u{301}".repeat(32)));
+    document.push_blank();
+    document.push_line(Line::text("x".repeat(65)));
+    let frame = render_frame(&document, &context);
+    assert!(frame.text.contains("\x1b[1m"));
+
+    let output = LiveOutput::new(Vec::new(), context);
+    let row_heights = frame
+        .rows
+        .iter()
+        .map(|row| output.row_height(row))
+        .collect::<Vec<_>>();
+    assert_eq!(row_heights, vec![2, 1, 1, 3]);
+    assert_eq!(output.physical_height(&frame.rows), 7);
+}
+
+#[test]
+fn full_repaint_failure_recovers_below_reflowed_block_and_restores_cursor() {
+    let width = Arc::new(AtomicUsize::new(80));
+    let width_probe = Arc::clone(&width);
+    let context = RenderContext::for_test(TestContext::tty(StreamKind::Stdout, 80));
+    let runtime =
+        DestinationRuntime::new(context, move || Some(width_probe.load(Ordering::Relaxed)));
+    let writer = FailOnceWriter::new();
+    let capture = writer.clone();
+    {
+        let mut output = LiveOutput::with_runtime(writer, runtime);
+        output
+            .render_frame(false, |_| Document::from_line(Line::text("x".repeat(79))))
+            .unwrap();
+        width.store(32, Ordering::Relaxed);
+        let error = output
+            .render_frame(false, |_| document(&["replacement"]))
+            .expect_err("full repaint failure must propagate");
+        assert_eq!(error.to_string(), "injected repaint failure");
+    }
+    let mut sentinel = capture.clone();
+    sentinel.write_all(b"SENTINEL").unwrap();
+
+    let rendered = capture.text();
+    assert!(
+        rendered.ends_with("\x1b[B\x1b[B\x1b[B\r\x1b[?25hSENTINEL"),
+        "{rendered:?}"
+    );
+}
+
+#[test]
+fn zero_or_unknown_live_width_falls_back_to_eighty_columns() {
+    let probed_width = Arc::new(AtomicUsize::new(0));
+    let width_probe = Arc::clone(&probed_width);
+    let context = RenderContext::for_test(TestContext::tty(StreamKind::Stdout, 32));
+    let runtime =
+        DestinationRuntime::new(context, move || Some(width_probe.load(Ordering::Relaxed)));
+    let mut output = LiveOutput::with_runtime(Vec::new(), runtime);
+    output
+        .render_frame(false, |current| {
+            assert_eq!(current.terminal_width(), Some(DEFAULT_TERMINAL_WIDTH));
+            document(&["zero"])
+        })
+        .unwrap();
+
+    let unknown_runtime = DestinationRuntime::new(context, || None);
+    let mut unknown_output = LiveOutput::with_runtime(Vec::new(), unknown_runtime);
+    unknown_output
+        .render_frame(false, |current| {
+            assert_eq!(current.terminal_width(), Some(DEFAULT_TERMINAL_WIDTH));
+            document(&["unknown"])
+        })
+        .unwrap();
+}
+
+#[test]
+fn redirected_and_dumb_destinations_never_probe_resize_or_move_the_cursor() {
+    for context in [
+        RenderContext::for_test(TestContext::pipe(StreamKind::Stdout)),
+        RenderContext::for_test(TestContext::tty(StreamKind::Stderr, 80).term_dumb(true)),
+    ] {
+        let probes = Arc::new(AtomicUsize::new(0));
+        let probe_count = Arc::clone(&probes);
+        let runtime = DestinationRuntime::new(context, move || {
+            probe_count.fetch_add(1, Ordering::Relaxed);
+            Some(32)
+        });
+        let mut output = LiveOutput::with_runtime(Vec::new(), runtime);
+        let expected_width = context.terminal_width();
+        output
+            .render_frame(false, |current| {
+                assert_eq!(current.terminal_width(), expected_width);
+                document(&["stable"])
+            })
+            .unwrap();
+        output
+            .render_frame(false, |current| {
+                assert_eq!(current.terminal_width(), expected_width);
+                document(&["still stable"])
+            })
+            .unwrap();
+
+        assert_eq!(probes.load(Ordering::Relaxed), 0);
+        let rendered = String::from_utf8(output.into_inner()).unwrap();
+        assert_eq!(rendered, "stable\n\nstill stable\n\n");
+        assert!(!rendered.contains('\u{1b}'));
+    }
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn live_runtime_observes_pty_resize_between_frames() {
+    #[repr(C)]
+    struct LinuxWinsize {
+        rows: u16,
+        columns: u16,
+        x_pixels: u16,
+        y_pixels: u16,
+    }
+
+    unsafe extern "C" {
+        fn openpty(
+            master: *mut c_int,
+            slave: *mut c_int,
+            name: *mut c_char,
+            termios: *const c_void,
+            winsize: *const LinuxWinsize,
+        ) -> c_int;
+        fn ioctl(file_descriptor: c_int, request: c_ulong, ...) -> c_int;
+    }
+
+    const TIOCSWINSZ: c_ulong = 0x5414;
+
+    fn open_pty(width: u16) -> io::Result<(File, Arc<File>)> {
+        let mut master = -1;
+        let mut slave = -1;
+        let dimensions = LinuxWinsize {
+            rows: 24,
+            columns: width,
+            x_pixels: 0,
+            y_pixels: 0,
+        };
+        let status = unsafe {
+            openpty(
+                &mut master,
+                &mut slave,
+                std::ptr::null_mut(),
+                std::ptr::null(),
+                &dimensions,
+            )
+        };
+        if status != 0 {
+            return Err(io::Error::last_os_error());
+        }
+        let master = unsafe { File::from_raw_fd(master) };
+        let slave = Arc::new(unsafe { File::from_raw_fd(slave) });
+        Ok((master, slave))
+    }
+
+    fn resize_pty(master: &File, width: u16) -> io::Result<()> {
+        let dimensions = LinuxWinsize {
+            rows: 24,
+            columns: width,
+            x_pixels: 0,
+            y_pixels: 0,
+        };
+        let status = unsafe { ioctl(master.as_raw_fd(), TIOCSWINSZ, &dimensions) };
+        if status == -1 {
+            Err(io::Error::last_os_error())
+        } else {
+            Ok(())
+        }
+    }
+
+    let (master, slave) = open_pty(80).unwrap();
+    let width_handle = Arc::clone(&slave);
+    let context = RenderContext::for_test(TestContext::tty(StreamKind::Stdout, 80));
+    let runtime = DestinationRuntime::new(context, move || {
+        terminal_size::terminal_size_of(&*width_handle)
+            .map(|(terminal_size::Width(width), _)| usize::from(width))
+    });
+    let mut output = LiveOutput::with_runtime(Vec::new(), runtime);
+    let mut observed = Vec::new();
+    output
+        .render_frame(false, |current| {
+            observed.push(current.terminal_width());
+            document(&["wide"])
+        })
+        .unwrap();
+    resize_pty(&master, 32).unwrap();
+    output
+        .render_frame(true, |current| {
+            observed.push(current.terminal_width());
+            document(&["narrow"])
+        })
+        .unwrap();
+
+    assert_eq!(observed, vec![Some(80), Some(32)]);
 }

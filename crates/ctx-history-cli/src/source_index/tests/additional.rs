@@ -917,6 +917,72 @@ fn unbounded_cli_show_streams_valid_json_beyond_4096_events_in_order() {
 }
 
 #[test]
+fn human_cli_show_stream_renders_header_events_empty_and_truncation() {
+    let temp = tempdir().unwrap();
+    write_test_generation(temp.path());
+
+    let events = (1..=2)
+        .map(|sequence| {
+            let event = fixture_event(CaptureProvider::Codex, "codex_session_jsonl", 78, sequence);
+            fixture_core_event(&event, format!("human-event-{sequence}"))
+        })
+        .collect::<Vec<_>>();
+    append_fixture_session(temp.path(), &events, 78);
+    let session = SessionRecord::from(&events[0].event);
+    let (mut ui, stdout) = test_ui();
+
+    let result = stream_cli_session(
+        temp.path(),
+        Some(session.session_id.to_string()),
+        None,
+        None,
+        TranscriptMode::Log,
+        OutputFormat::Text,
+        Some(1),
+        None,
+        &mut ui,
+    )
+    .unwrap();
+    ui.flush().unwrap();
+
+    assert_eq!(result.events_returned, 1);
+    let rendered = String::from_utf8(stdout.bytes()).unwrap();
+    assert!(rendered.contains("Session"));
+    assert!(rendered.contains("human-event-1"));
+    assert!(!rendered.contains("human-event-2"));
+    assert!(rendered.contains("Transcript is truncated."));
+    assert!(rendered.contains("Showing the first 1 events."));
+
+    let mut filtered = fixture_event(CaptureProvider::Codex, "codex_session_jsonl", 79, 1);
+    filtered.event_type = "tool_call".to_owned();
+    filtered.role = None;
+    let filtered = fixture_core_event(&filtered, "filtered-human-event");
+    append_fixture_session(temp.path(), std::slice::from_ref(&filtered), 79);
+    let filtered_session = SessionRecord::from(&filtered.event);
+    let (mut ui, stdout) = test_ui();
+
+    let result = stream_cli_session(
+        temp.path(),
+        Some(filtered_session.session_id.to_string()),
+        None,
+        None,
+        TranscriptMode::Lite,
+        OutputFormat::Text,
+        None,
+        None,
+        &mut ui,
+    )
+    .unwrap();
+    ui.flush().unwrap();
+
+    assert_eq!(result.events_returned, 0);
+    let rendered = String::from_utf8(stdout.bytes()).unwrap();
+    assert!(rendered.contains("Session"));
+    assert!(rendered.contains("No transcript events."));
+    assert!(!rendered.contains("filtered-human-event"));
+}
+
+#[test]
 fn max_events_does_not_claim_truncation_for_only_filtered_raw_events() {
     let temp = tempdir().unwrap();
     write_test_generation(temp.path());

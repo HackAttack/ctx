@@ -303,8 +303,8 @@ impl<W: io::Write> IndexWatchOutput<W> {
     }
 
     pub fn print_human(&mut self, status: &Value) -> io::Result<()> {
-        let document = self.dashboard.render(status, self.output.context());
-        self.output.write_frame(&document, false)
+        self.output
+            .render_frame(false, |context| self.dashboard.render(status, context))
     }
 
     #[doc(hidden)]

@@ -296,14 +296,9 @@ fn run_live_renderer(
                 let terminal = snapshot.is_terminal();
                 let rendered =
                     prepare_live_snapshot((*snapshot).clone(), &mut clock, started.elapsed(), true);
-                let context = *output.context();
-                let document = render_live_refresh(
-                    presentation,
-                    &context,
-                    rendered,
-                    persistent_notice.as_ref(),
-                );
-                let result = output.write_frame(&document, terminal);
+                let result = output.render_frame(terminal, |context| {
+                    render_live_refresh(presentation, context, rendered, persistent_notice.as_ref())
+                });
                 let failed = result.is_err();
                 let _ = complete.send(result);
                 if failed {
@@ -316,25 +311,25 @@ fn run_live_renderer(
             }
             Ok(LiveRenderCommand::Notice { document, complete }) => {
                 persistent_notice = Some(document);
-                let context = *output.context();
-                let document = active.as_ref().map_or_else(
-                    || persistent_notice.as_ref().cloned().unwrap_or_default(),
-                    |snapshot| {
-                        let rendered = prepare_live_snapshot(
-                            snapshot.clone(),
-                            &mut clock,
-                            started.elapsed(),
-                            false,
-                        );
-                        render_live_refresh(
-                            presentation,
-                            &context,
-                            rendered,
-                            persistent_notice.as_ref(),
-                        )
-                    },
-                );
-                let result = output.write_frame(&document, false);
+                let result = output.render_frame(false, |context| {
+                    active.as_ref().map_or_else(
+                        || persistent_notice.as_ref().cloned().unwrap_or_default(),
+                        |snapshot| {
+                            let rendered = prepare_live_snapshot(
+                                snapshot.clone(),
+                                &mut clock,
+                                started.elapsed(),
+                                false,
+                            );
+                            render_live_refresh(
+                                presentation,
+                                &context,
+                                rendered,
+                                persistent_notice.as_ref(),
+                            )
+                        },
+                    )
+                });
                 let failed = result.is_err();
                 let _ = complete.send(result);
                 if failed {
@@ -348,14 +343,9 @@ fn run_live_renderer(
                 };
                 let rendered =
                     prepare_live_snapshot(snapshot.clone(), &mut clock, started.elapsed(), false);
-                let context = *output.context();
-                let document = render_live_refresh(
-                    presentation,
-                    &context,
-                    rendered,
-                    persistent_notice.as_ref(),
-                );
-                if let Err(error) = output.write_frame(&document, false) {
+                if let Err(error) = output.render_frame(false, |context| {
+                    render_live_refresh(presentation, context, rendered, persistent_notice.as_ref())
+                }) {
                     *background_error
                         .lock()
                         .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(error);
