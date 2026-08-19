@@ -46,13 +46,34 @@ const DESTINATION_FILE_SHARE_MODE: u32 = FILE_SHARE_READ;
 
 pub(super) fn open_directory_path(path: &Path) -> io::Result<File> {
     OpenOptions::new()
-        .access_mode(FILE_GENERIC_READ | DELETE)
+        // Root topology guards authenticate the route but never delete the
+        // guarded object. Requesting DELETE here makes this handle
+        // incompatible with the no-delete-sharing read-root capability used
+        // by generation leases during publication. Ordinary child topology
+        // opens below follow the same rule; the discardable destination path
+        // retains DELETE because CandidateGuard::discard owns it.
+        .access_mode(FILE_GENERIC_READ)
         .share_mode(DIRECTORY_SHARE_MODE)
         .custom_flags(FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT)
         .open(path)
 }
 
 pub(super) fn open_directory_at(
+    parent: &File,
+    _parent_path: &Path,
+    name: &Path,
+) -> io::Result<File> {
+    nt_open_at(
+        parent,
+        name,
+        FILE_LIST_DIRECTORY | FILE_READ_ATTRIBUTES | SYNCHRONIZE,
+        FILE_OPEN,
+        FILE_ATTRIBUTE_DIRECTORY,
+        FILE_DIRECTORY_FILE,
+    )
+}
+
+pub(super) fn open_discardable_directory_at(
     parent: &File,
     _parent_path: &Path,
     name: &Path,

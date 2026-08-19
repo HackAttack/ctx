@@ -4,6 +4,16 @@ use std::{
     path::{Path, PathBuf},
 };
 
+#[cfg(unix)]
+use std::os::unix::fs::OpenOptionsExt as _;
+#[cfg(windows)]
+use std::os::windows::fs::OpenOptionsExt as _;
+
+#[cfg(windows)]
+use windows_sys::Win32::Storage::FileSystem::{
+    FILE_FLAG_OPEN_REPARSE_POINT, FILE_GENERIC_WRITE, READ_CONTROL, WRITE_DAC,
+};
+
 use ctx_history_platform::platform_security::{
     restrict_private_file_handle, verify_private_file, verify_private_file_handle,
 };
@@ -261,11 +271,7 @@ fn publish_lease(root: &Path, lease: &GenerationRetentionLease) -> Result<()> {
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
         Err(error) => return Err(error.into()),
     }
-    let mut file = OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .open(&staged)?;
-    restrict_private_file_handle(&file)?;
+    let mut file = create_private_lease_stage(&staged)?;
     file.write_all(&bytes)?;
     file.sync_all()?;
     drop(file);
@@ -278,6 +284,26 @@ fn publish_lease(root: &Path, lease: &GenerationRetentionLease) -> Result<()> {
         return Err(IndexError::InvalidGenerationRetentionLease);
     }
     Ok(())
+}
+
+fn create_private_lease_stage(path: &Path) -> std::io::Result<File> {
+    let mut options = OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    options
+        .mode(0o600)
+        .custom_flags(libc::O_CLOEXEC | libc::O_NOFOLLOW);
+    #[cfg(windows)]
+    options
+        .access_mode(FILE_GENERIC_WRITE | READ_CONTROL | WRITE_DAC)
+        .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT);
+    let file = options.open(path)?;
+    if let Err(error) = restrict_private_file_handle(&file) {
+        drop(file);
+        let _ = fs::remove_file(path);
+        return Err(error);
+    }
+    Ok(file)
 }
 
 fn remove_lease_file(root: &Path) -> Result<()> {

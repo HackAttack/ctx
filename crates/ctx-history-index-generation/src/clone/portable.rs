@@ -84,6 +84,13 @@ impl BoundDirectory {
         Self::from_child(parent, name, file)
     }
 
+    fn open_discardable_at(parent: &Self, name: &Path) -> Result<Self> {
+        validate_single_component(name)?;
+        let file = platform::open_discardable_directory_at(&parent.file, &parent.path, name)
+            .map_err(source_topology_open_error)?;
+        Self::from_child(parent, name, file)
+    }
+
     fn create_at(parent: &Self, name: &Path) -> Result<Self> {
         validate_single_component(name)?;
         let file = platform::create_directory_at(&parent.file, &parent.path, name)?;
@@ -137,7 +144,7 @@ impl CandidateGuard {
         validate_single_component(destination_name)?;
         let root = BoundDirectory::open_path(root)?;
         let generations = BoundDirectory::open_at(&root, Path::new(INDEX_GENERATIONS_DIRECTORY))?;
-        let destination = BoundDirectory::open_at(&generations, destination_name)?;
+        let destination = BoundDirectory::open_discardable_at(&generations, destination_name)?;
         Ok(Self {
             _root: root,
             generations,
@@ -345,6 +352,36 @@ struct OpenedFile {
     file: File,
     identity: FileIdentity,
     permissions: Permissions,
+}
+
+#[cfg(all(test, windows))]
+mod windows_tests {
+    use ctx_history_platform::platform_security::ensure_private_directory;
+    use tempfile::tempdir;
+
+    use super::*;
+    use crate::GenerationReadRoot;
+
+    #[test]
+    fn source_topology_guard_coexists_with_generation_read_root_descent() {
+        let temp = tempdir().unwrap();
+        ensure_private_directory(temp.path()).unwrap();
+        let generations = temp.path().join(INDEX_GENERATIONS_DIRECTORY);
+        ensure_private_directory(&generations).unwrap();
+        let source_name = Path::new("generation-00000000000000000000000000000000");
+        ensure_private_directory(&generations.join(source_name)).unwrap();
+
+        let root_guard = BoundDirectory::open_path(temp.path()).unwrap();
+        let generations_guard =
+            BoundDirectory::open_at(&root_guard, Path::new(INDEX_GENERATIONS_DIRECTORY)).unwrap();
+        let _source_guard = BoundDirectory::open_at(&generations_guard, source_name).unwrap();
+
+        let read_root = GenerationReadRoot::open_index_root(temp.path()).unwrap();
+        read_root
+            .opened()
+            .open_directory(&Path::new(INDEX_GENERATIONS_DIRECTORY).join(source_name))
+            .unwrap();
+    }
 }
 
 fn open_bound_file(directory: &BoundDirectory, relative: &Path) -> Result<OpenedFile> {

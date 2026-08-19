@@ -599,6 +599,7 @@ mod tests {
     #[test]
     fn completed_generation_syncs_before_validated_pointer_publication() {
         let root = tempfile::tempdir().unwrap();
+        ensure_private_directory(root.path()).unwrap();
         let candidate =
             create_candidate_generation(root.path(), None, Schema::builder().build(), 0).unwrap();
         let slot = GenerationSlot::new(

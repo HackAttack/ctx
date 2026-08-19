@@ -206,6 +206,7 @@ pub fn durable_atomic_replace_file(source: &Path, target: &Path) -> io::Result<(
     // failure to open it cannot occur after the target becomes visible.
     let parent_sync = ParentDirectorySync::open(target_parent)?;
     replace_file(source, target)?;
+    #[cfg(not(windows))]
     File::open(target)?.sync_all()?;
     parent_sync.sync()
 }
@@ -890,16 +891,20 @@ mod tests {
         let temporary_directory = tempdir().unwrap();
         let target = temporary_directory.path().join("projection.sqlite");
         let first = temporary_directory.path().join("projection.first");
-        fs::write(&first, b"first").unwrap();
-        File::open(&first).unwrap().sync_all().unwrap();
+        let mut first_file = File::create(&first).unwrap();
+        first_file.write_all(b"first").unwrap();
+        first_file.sync_all().unwrap();
+        drop(first_file);
 
         durable_atomic_replace_file(&first, &target).unwrap();
         assert_eq!(fs::read(&target).unwrap(), b"first");
         assert!(!first.exists());
 
         let replacement = temporary_directory.path().join("projection.replacement");
-        fs::write(&replacement, b"replacement").unwrap();
-        File::open(&replacement).unwrap().sync_all().unwrap();
+        let mut replacement_file = File::create(&replacement).unwrap();
+        replacement_file.write_all(b"replacement").unwrap();
+        replacement_file.sync_all().unwrap();
+        drop(replacement_file);
 
         durable_atomic_replace_file(&replacement, &target).unwrap();
         assert_eq!(fs::read(&target).unwrap(), b"replacement");

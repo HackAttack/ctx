@@ -35,6 +35,14 @@ pub(super) fn open_directory_at(
     )
 }
 
+pub(super) fn open_discardable_directory_at(
+    parent: &File,
+    parent_path: &Path,
+    name: &Path,
+) -> io::Result<File> {
+    open_directory_at(parent, parent_path, name)
+}
+
 pub(super) fn create_directory_at(
     parent: &File,
     parent_path: &Path,
