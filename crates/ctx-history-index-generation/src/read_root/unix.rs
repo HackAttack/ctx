@@ -130,23 +130,41 @@ impl OpenedDirectory {
     }
 
     pub(crate) fn stable_path(&self, original_path: &Path) -> io::Result<PathBuf> {
-        let _ = original_path;
-        #[cfg(any(target_os = "linux", target_os = "android"))]
-        let path = PathBuf::from(format!("/proc/self/fd/{}", self.file.as_raw_fd()));
-        #[cfg(not(any(target_os = "linux", target_os = "android")))]
-        let path = PathBuf::from(format!("/dev/fd/{}", self.file.as_raw_fd()));
-        let metadata = std::fs::metadata(&path)?;
-        let observed = ObjectIdentity {
-            device: metadata.dev(),
-            inode: metadata.ino(),
-        };
-        if observed != self.identity {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidData,
-                "stable directory-handle path changed identity",
-            ));
+        #[cfg(target_os = "macos")]
+        {
+            // Darwin's fdesc nodes duplicate a directory descriptor when
+            // opened, but cannot be traversed as `/dev/fd/<n>/child`. Keep a
+            // usable registry key after binding it to the retained descriptor;
+            // registered descendant access still uses that descriptor.
+            let reopened = Self::open_absolute(original_path)?;
+            if reopened.identity != self.identity {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "stable directory-handle path changed identity",
+                ));
+            }
+            Ok(original_path.to_path_buf())
         }
-        Ok(path)
+        #[cfg(not(target_os = "macos"))]
+        {
+            let _ = original_path;
+            #[cfg(any(target_os = "linux", target_os = "android"))]
+            let path = PathBuf::from(format!("/proc/self/fd/{}", self.file.as_raw_fd()));
+            #[cfg(not(any(target_os = "linux", target_os = "android")))]
+            let path = PathBuf::from(format!("/dev/fd/{}", self.file.as_raw_fd()));
+            let metadata = std::fs::metadata(&path)?;
+            let observed = ObjectIdentity {
+                device: metadata.dev(),
+                inode: metadata.ino(),
+            };
+            if observed != self.identity {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "stable directory-handle path changed identity",
+                ));
+            }
+            Ok(path)
+        }
     }
 
     pub(crate) fn try_clone_file(&self) -> io::Result<File> {
@@ -224,6 +242,7 @@ mod tests {
         let directory = tempfile::tempdir()?;
         let original = directory.path().canonicalize()?;
         let opened = OpenedDirectory::open_absolute(&original)?;
+        std::fs::write(original.join("child"), b"stable child")?;
 
         let path = opened.stable_path(&original)?;
 
@@ -231,9 +250,13 @@ mod tests {
         assert!(!path
             .components()
             .any(|component| matches!(component, Component::CurDir | Component::ParentDir)));
-        let metadata = std::fs::metadata(path)?;
+        let metadata = std::fs::metadata(&path)?;
         assert_eq!(metadata.dev(), opened.identity.device);
         assert_eq!(metadata.ino(), opened.identity.inode);
+        assert_eq!(
+            std::fs::read(path.join("child"))?,
+            b"stable child"
+        );
         Ok(())
     }
 }

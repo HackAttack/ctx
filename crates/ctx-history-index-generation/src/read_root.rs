@@ -132,7 +132,7 @@ fn normalized_absolute(path: &Path) -> Result<PathBuf> {
     {
         return Err(GenerationError::InvalidGenerationRetentionLease);
     }
-    Ok(path.to_path_buf())
+    Ok(ctx_history_platform::platform_security::normalize_platform_namespace_alias(path))
 }
 
 fn map_unavailable_generation_root(error: io::Error) -> GenerationError {

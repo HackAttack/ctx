@@ -1,6 +1,9 @@
 //! Owner-only filesystem primitives for local ctx state.
 
-use std::{io, path::Path};
+use std::{
+    io,
+    path::{Path, PathBuf},
+};
 
 #[cfg(unix)]
 use std::fs;
@@ -20,6 +23,12 @@ pub fn validate_provider_source_outside_data_root(
     source_root: &Path,
 ) -> io::Result<()> {
     path_overlap::validate_provider_source_outside_data_root(data_root, source_root)
+}
+
+/// Rewrites only platform-defined absolute namespace aliases to the native
+/// path used for no-follow component traversal.
+pub fn normalize_platform_namespace_alias(path: &Path) -> PathBuf {
+    path_overlap::normalize_platform_namespace_alias(path)
 }
 
 /// Establishes the selected ctx data root as an owner-private directory before
