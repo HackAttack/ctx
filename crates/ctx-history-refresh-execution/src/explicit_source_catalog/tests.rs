@@ -1,10 +1,14 @@
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::{collections::BTreeMap, time::Instant};
 
     fn custom_source(path: PathBuf) -> ProviderSource {
         custom_provider_source(path, true).unwrap()
     }
+
+    const CODEX_ROLLOUT_FIRST_RECORD: &[u8] = br#"{"timestamp":"2026-08-19T12:00:00Z","type":"session_meta","payload":{"id":"019fc000-0000-7000-8000-000000000001","cwd":"/workspace","source":"cli"}}
+"#;
 
     #[test]
     fn exact_source_registration_is_an_inline_request_overlay() {
@@ -45,148 +49,13 @@ mod tests {
         );
     }
 
-    #[test]
-    fn retained_shadow_deduplication_uses_exact_route_keys_not_lineage() {
-        let temp = tempfile::tempdir().unwrap();
-        let data_root = temp.path().join("data");
-        let old_path = temp.path().join("old.jsonl");
-        let new_path = temp.path().join("new.jsonl");
-        fs::write(&old_path, b"\n").unwrap();
-        fs::write(&new_path, b"\n").unwrap();
-
-        let retained = upsert_explicit_source(&data_root, &custom_source(old_path.clone()))
-            .unwrap()
-            .authority;
-        let mut relocated = upsert_explicit_source(&data_root, &custom_source(new_path.clone()))
-            .unwrap()
-            .authority;
-        relocated.entries[0].catalog_lineage = retained.entries[0].catalog_lineage.clone();
-        relocated = authority_for(relocated.revision, &relocated.entries).unwrap();
-
-        let mut report = DiscoveryReport {
-            sources: vec![
-                custom_source(old_path.clone()),
-                custom_source(new_path.clone()),
-            ],
-            issues: Vec::new(),
-        };
-        retained
-            .prepare_retained_discovery_report(Some(&relocated), &mut report)
-            .unwrap();
-        assert_eq!(report.sources.len(), 1);
-        assert_eq!(report.sources[0].path, new_path);
-
-        relocated.prepare_discovery_report(&mut report, &[]);
-        assert!(report.sources.is_empty());
-
-        let mut repeated = DiscoveryReport {
-            sources: vec![custom_source(old_path.clone())],
-            issues: Vec::new(),
-        };
-        retained
-            .prepare_retained_discovery_report(Some(&retained), &mut repeated)
-            .unwrap();
-        assert_eq!(repeated.sources.len(), 1);
-        assert_eq!(repeated.sources[0].path, old_path);
-        retained.prepare_discovery_report(&mut repeated, &[]);
-        assert!(repeated.sources.is_empty());
-    }
-
-    #[test]
-    fn exact_automatic_route_can_reclaim_a_retained_explicit_owner() {
-        let temp = tempfile::tempdir().unwrap();
-        let data_root = temp.path().join("data");
-        let sessions = temp.path().join("codex-sessions");
+    fn codex_automatic_build(
+        temp: &tempfile::TempDir,
+        data_root: &Path,
+    ) -> (SourceBackedAutomaticRegistryBuild, PathBuf) {
+        let sessions = temp.path().join(".codex/sessions");
         fs::create_dir_all(&sessions).unwrap();
-        let source = provider_source_for_path(CaptureProvider::Codex, sessions);
-        let retained = upsert_explicit_source(&data_root, &source)
-            .unwrap()
-            .authority;
-        let mut report = DiscoveryReport {
-            sources: vec![source.clone()],
-            issues: Vec::new(),
-        };
-
-        retained
-            .prepare_retained_discovery_report_with_automatic_routes(
-                None,
-                &mut report,
-                std::slice::from_ref(&source),
-            )
-            .unwrap();
-
-        assert_eq!(report.sources.len(), 1);
-        assert_eq!(report.sources[0].provider, CaptureProvider::Codex);
-    }
-
-    #[test]
-    fn certified_missing_reactivation_does_not_retire_an_explicit_owner() {
-        let temp = tempfile::tempdir().unwrap();
-        let data_root = temp.path().join("data");
-        let explicit_path = temp.path().join("history.jsonl");
-        fs::write(&explicit_path, b"\n").unwrap();
-        let missing_source = provider_source_for_path(
-            CaptureProvider::Hermes,
-            temp.path().join(".hermes/state.db"),
-        );
-        let missing_route = ctx_history_capture::SourceBackedRoute::certified_missing(
-            missing_source,
-            ctx_history_capture::SourceBackedSelectorAuthority::DiscoveredWinner,
-        )
-        .unwrap();
-        let mut registry = SourceBackedProviderRegistry::new();
-        registry.register(missing_route);
-        let build = SourceBackedAutomaticRegistryBuild {
-            registry,
-            issues: Vec::new(),
-            discovery_duration: std::time::Duration::default(),
-        };
-        let automatic_route = build
-            .registry
-            .routes()
-            .find_map(|route| route.route_identity.clone())
-            .unwrap();
-        assert!(build
-            .registry
-            .automatic_route_registration_sources(&automatic_route)
-            .is_none());
-
-        let retained = upsert_explicit_source(&data_root, &custom_source(explicit_path)).unwrap();
-        let previous_route =
-            ctx_history_index::SourceRouteIdentity::from_sha256("33".repeat(32)).unwrap();
-        let bindings = vec![ExplicitSourceCatalogRouteBinding {
-            catalog_lineage: retained.catalog_lineage_hex(),
-            route_identity: previous_route.as_str().to_owned(),
-        }];
-
-        assert_eq!(
-            retained
-                .authority
-                .automatic_reactivation_retirements(
-                    &bindings,
-                    &build,
-                    &BTreeSet::from([automatic_route.clone()]),
-                )
-                .unwrap(),
-            std::collections::BTreeMap::new()
-        );
-    }
-
-    #[test]
-    fn grouped_automatic_route_reclaims_its_secondary_registration_root_only() {
-        let temp = tempfile::tempdir().unwrap();
-        let data_root = temp.path().join("data");
-        let codex_root = temp.path().join(".codex");
-        let sessions = codex_root.join("sessions");
-        let archived_sessions = codex_root.join("archived_sessions");
-        let unrelated_path = temp.path().join("unrelated.jsonl");
-        fs::create_dir_all(&sessions).unwrap();
-        fs::create_dir_all(&archived_sessions).unwrap();
-        fs::write(&unrelated_path, b"\n").unwrap();
-
-        let sessions_source = provider_source_for_path(CaptureProvider::Codex, sessions);
-        let archived_source =
-            provider_source_for_path(CaptureProvider::Codex, archived_sessions.clone());
+        let source = provider_source_for_path(CaptureProvider::Codex, sessions.clone());
         let discovery = ctx_history_capture::DiscoveryContext::new(
             temp.path(),
             temp.path(),
@@ -195,9 +64,138 @@ mod tests {
         );
         let build = ctx_history_capture::build_automatic_source_backed_registry_from_report(
             &discovery,
+            data_root,
+            DiscoveryReport {
+                sources: vec![source],
+                issues: Vec::new(),
+            },
+        );
+        (build, sessions)
+    }
+
+    #[test]
+    fn exact_import_selects_the_existing_automatic_route() {
+        let temp = tempfile::tempdir().unwrap();
+        let data_root = temp.path().join("data");
+        let (mut build, sessions) = codex_automatic_build(&temp, &data_root);
+        let automatic_route = build
+            .registry
+            .routes()
+            .find_map(|route| route.route_identity.clone())
+            .unwrap();
+        let request = upsert_explicit_source(
+            &data_root,
+            &provider_source_for_path(CaptureProvider::Codex, sessions),
+        )
+        .unwrap();
+
+        let bindings = request
+            .authority
+            .register_routes_after_discovery_merge(&data_root, None, &mut build)
+            .unwrap();
+
+        assert_eq!(bindings.len(), 1);
+        assert_eq!(bindings[0].route_identity, automatic_route.as_str());
+        assert_eq!(build.registry.routes().count(), 1);
+        assert_eq!(
+            request
+                .authority
+                .automatic_route_worksets(&build.registry, &bindings)
+                .unwrap(),
+            BTreeMap::from([(automatic_route, SourceBackedRefreshWorkset::Exhaustive)])
+        );
+    }
+
+    #[test]
+    fn exact_leaf_import_selects_one_member_of_the_automatic_route() {
+        let temp = tempfile::tempdir().unwrap();
+        let data_root = temp.path().join("data");
+        let (mut build, sessions) = codex_automatic_build(&temp, &data_root);
+        let leaf = sessions.join("2026/08/19/rollout.jsonl");
+        fs::create_dir_all(leaf.parent().unwrap()).unwrap();
+        fs::write(
+            &leaf,
+            br#"{"timestamp":"2026-08-19T12:00:00Z","type":"session_meta","payload":{"id":"019fc000-0000-7000-8000-000000000001","cwd":"/workspace","source":"cli"}}
+"#,
+        )
+        .unwrap();
+        let request = upsert_explicit_source(
+            &data_root,
+            &provider_source_for_path(CaptureProvider::Codex, leaf.clone()),
+        )
+        .unwrap();
+
+        let bindings = request
+            .authority
+            .register_routes_after_discovery_merge(&data_root, None, &mut build)
+            .unwrap();
+        let route =
+            ctx_history_index::SourceRouteIdentity::from_sha256(bindings[0].route_identity.clone())
+                .unwrap();
+
+        assert_eq!(build.registry.routes().count(), 1);
+        assert_eq!(
+            request
+                .authority
+                .automatic_route_worksets(&build.registry, &bindings)
+                .unwrap(),
+            BTreeMap::from([(route, SourceBackedRefreshWorkset::members([leaf]))])
+        );
+    }
+
+    #[test]
+    fn nested_directory_import_selects_the_automatic_route() {
+        let temp = tempfile::tempdir().unwrap();
+        let data_root = temp.path().join("data");
+        let (mut build, sessions) = codex_automatic_build(&temp, &data_root);
+        let nested = sessions.join("2026/08/19");
+        fs::create_dir_all(&nested).unwrap();
+        let request = upsert_explicit_source(
+            &data_root,
+            &provider_source_for_path(CaptureProvider::Codex, nested),
+        )
+        .unwrap();
+
+        let bindings = request
+            .authority
+            .register_routes_after_discovery_merge(&data_root, None, &mut build)
+            .unwrap();
+        let route =
+            ctx_history_index::SourceRouteIdentity::from_sha256(bindings[0].route_identity.clone())
+                .unwrap();
+
+        assert_eq!(build.registry.routes().count(), 1);
+        assert_eq!(
+            request
+                .authority
+                .automatic_route_worksets(&build.registry, &bindings)
+                .unwrap(),
+            BTreeMap::from([(route, SourceBackedRefreshWorkset::Exhaustive)])
+        );
+    }
+
+    #[test]
+    fn grouped_automatic_route_covers_its_secondary_registration_root() {
+        let temp = tempfile::tempdir().unwrap();
+        let data_root = temp.path().join("data");
+        let sessions = temp.path().join(".codex/sessions");
+        let archived = temp.path().join(".codex/archived_sessions");
+        fs::create_dir_all(&sessions).unwrap();
+        fs::create_dir_all(&archived).unwrap();
+        let discovery = ctx_history_capture::DiscoveryContext::new(
+            temp.path(),
+            temp.path(),
+            ctx_history_capture::DiscoveryPlatform::Linux,
+            ctx_history_capture::DiscoveryPlatformDirs::default(),
+        );
+        let mut build = ctx_history_capture::build_automatic_source_backed_registry_from_report(
+            &discovery,
             &data_root,
             DiscoveryReport {
-                sources: vec![sessions_source, archived_source.clone()],
+                sources: vec![
+                    provider_source_for_path(CaptureProvider::Codex, sessions.clone()),
+                    provider_source_for_path(CaptureProvider::Codex, archived.clone()),
+                ],
                 issues: Vec::new(),
             },
         );
@@ -206,59 +204,265 @@ mod tests {
             .routes()
             .find_map(|route| route.route_identity.clone())
             .unwrap();
+        let request = upsert_explicit_source(
+            &data_root,
+            &provider_source_for_path(CaptureProvider::Codex, archived),
+        )
+        .unwrap();
 
-        let archived = upsert_explicit_source(&data_root, &archived_source).unwrap();
-        let unrelated = upsert_explicit_source(&data_root, &custom_source(unrelated_path)).unwrap();
-        let archived_route =
-            ctx_history_index::SourceRouteIdentity::from_sha256("11".repeat(32)).unwrap();
-        let unrelated_route =
-            ctx_history_index::SourceRouteIdentity::from_sha256("22".repeat(32)).unwrap();
-        let mut entries = vec![
-            archived.authority.entries[0].clone(),
-            unrelated.authority.entries[0].clone(),
-        ];
-        sort_and_validate_entries(&mut entries).unwrap();
-        let retained = authority_for(1, &entries).unwrap();
-        let bindings = vec![
-            ExplicitSourceCatalogRouteBinding {
-                catalog_lineage: archived.catalog_lineage_hex(),
-                route_identity: archived_route.as_str().to_owned(),
-            },
-            ExplicitSourceCatalogRouteBinding {
-                catalog_lineage: unrelated.catalog_lineage_hex(),
-                route_identity: unrelated_route.as_str().to_owned(),
-            },
-        ];
-
-        let retained_secondary_sources = retained
-            .secondary_codex_registration_sources(&build.registry)
+        let bindings = request
+            .authority
+            .register_routes_after_discovery_merge(&data_root, None, &mut build)
             .unwrap();
-        assert_eq!(retained_secondary_sources, vec![archived_source.clone()]);
-        let mut requested_report = DiscoveryReport {
-            sources: vec![
-                provider_source_for_path(CaptureProvider::Codex, codex_root.join("sessions")),
-                archived_source,
-            ],
-            issues: Vec::new(),
-        };
-        retained.prepare_discovery_report(&mut requested_report, &retained_secondary_sources);
+
+        assert_eq!(build.registry.routes().count(), 1);
+        assert_eq!(bindings[0].route_identity, automatic_route.as_str());
         assert_eq!(
-            requested_report
-                .sources
-                .iter()
-                .map(|source| source.path.clone())
-                .collect::<BTreeSet<_>>(),
-            BTreeSet::from([codex_root.join("sessions"), archived_sessions])
+            request
+                .authority
+                .automatic_route_worksets(&build.registry, &bindings)
+                .unwrap(),
+            BTreeMap::from([(automatic_route, SourceBackedRefreshWorkset::Exhaustive)])
+        );
+    }
+
+    #[test]
+    fn admitted_automatic_route_migrates_a_legacy_explicit_binding() {
+        let temp = tempfile::tempdir().unwrap();
+        let data_root = temp.path().join("data");
+        let (build, sessions) = codex_automatic_build(&temp, &data_root);
+        let automatic_route = build
+            .registry
+            .routes()
+            .find_map(|route| route.route_identity.clone())
+            .unwrap();
+        let request = upsert_explicit_source(
+            &data_root,
+            &provider_source_for_path(CaptureProvider::Codex, sessions),
+        )
+        .unwrap();
+        let previous_route =
+            ctx_history_index::SourceRouteIdentity::from_sha256("33".repeat(32)).unwrap();
+        let previous_binding = ExplicitSourceCatalogRouteBinding {
+            catalog_lineage: request.catalog_lineage_hex(),
+            route_identity: previous_route.as_str().to_owned(),
+        };
+
+        let canonicalized = request
+            .authority
+            .canonicalize_published_bindings(
+                &[previous_binding],
+                &build.registry,
+                &BTreeSet::from([automatic_route.clone()]),
+            )
+            .unwrap();
+
+        assert_eq!(
+            canonicalized.bindings[0].route_identity,
+            automatic_route.as_str()
         );
         assert_eq!(
-            retained
-                .automatic_reactivation_retirements(
-                    &bindings,
-                    &build,
-                    &BTreeSet::from([automatic_route.clone()]),
-                )
-                .unwrap(),
-            std::collections::BTreeMap::from([(automatic_route, vec![archived_route])])
+            canonicalized.retirements,
+            BTreeMap::from([(automatic_route.clone(), vec![previous_route])])
+        );
+        assert_eq!(
+            canonicalized.transitioned_routes,
+            BTreeSet::from([automatic_route])
+        );
+    }
+
+    #[test]
+    fn unadmitted_automatic_route_does_not_change_a_published_binding() {
+        let temp = tempfile::tempdir().unwrap();
+        let data_root = temp.path().join("data");
+        let (build, sessions) = codex_automatic_build(&temp, &data_root);
+        let request = upsert_explicit_source(
+            &data_root,
+            &provider_source_for_path(CaptureProvider::Codex, sessions),
+        )
+        .unwrap();
+        let previous_route =
+            ctx_history_index::SourceRouteIdentity::from_sha256("44".repeat(32)).unwrap();
+        let previous_binding = ExplicitSourceCatalogRouteBinding {
+            catalog_lineage: request.catalog_lineage_hex(),
+            route_identity: previous_route.as_str().to_owned(),
+        };
+
+        let canonicalized = request
+            .authority
+            .canonicalize_published_bindings(
+                std::slice::from_ref(&previous_binding),
+                &build.registry,
+                &BTreeSet::new(),
+            )
+            .unwrap();
+
+        assert_eq!(canonicalized.bindings, vec![previous_binding]);
+        assert!(canonicalized.retirements.is_empty());
+        assert!(canonicalized.transitioned_routes.is_empty());
+    }
+
+    #[test]
+    fn overlapping_automatic_roots_select_the_most_specific_route() {
+        let temp = tempfile::tempdir().unwrap();
+        let parent = temp.path().join("sessions");
+        let nested = parent.join("2026/08/19");
+        let leaf = nested.join("rollout.jsonl");
+        fs::create_dir_all(&nested).unwrap();
+        fs::write(&leaf, CODEX_ROLLOUT_FIRST_RECORD).unwrap();
+
+        let parent_source = provider_source_for_path(CaptureProvider::Codex, parent);
+        let mut nested_source = parent_source.clone();
+        nested_source.path = nested;
+        let mut requested_source = parent_source.clone();
+        requested_source.path = leaf.clone();
+        let requested = SourceRouteCoverageKey::from_source(&requested_source).unwrap();
+        let parent_route =
+            ctx_history_index::SourceRouteIdentity::from_sha256("11".repeat(32)).unwrap();
+        let nested_route =
+            ctx_history_index::SourceRouteIdentity::from_sha256("22".repeat(32)).unwrap();
+        let mut selected = None;
+
+        for candidate in [
+            route_coverage_binding(
+                &requested,
+                RouteCoveragePathKind::File,
+                &parent_route,
+                [&parent_source],
+            )
+            .unwrap()
+            .unwrap(),
+            route_coverage_binding(
+                &requested,
+                RouteCoveragePathKind::File,
+                &nested_route,
+                [&nested_source],
+            )
+            .unwrap()
+            .unwrap(),
+        ] {
+            select_route_coverage_binding(&leaf, &mut selected, candidate).unwrap();
+        }
+
+        let selected = selected.unwrap();
+        assert_eq!(selected.route_identity, nested_route);
+        assert_eq!(
+            selected.workset,
+            SourceBackedRefreshWorkset::members([leaf])
+        );
+    }
+
+    #[test]
+    fn unrelated_explicit_source_falls_back_to_its_own_route() {
+        let temp = tempfile::tempdir().unwrap();
+        let data_root = temp.path().join("data");
+        let (mut build, _) = codex_automatic_build(&temp, &data_root);
+        let automatic_route = build
+            .registry
+            .routes()
+            .find_map(|route| route.route_identity.clone())
+            .unwrap();
+        let unrelated = temp.path().join("other/rollout.jsonl");
+        fs::create_dir_all(unrelated.parent().unwrap()).unwrap();
+        fs::write(&unrelated, CODEX_ROLLOUT_FIRST_RECORD).unwrap();
+        let request = upsert_explicit_source(
+            &data_root,
+            &provider_source_for_path(CaptureProvider::Codex, unrelated.clone()),
+        )
+        .unwrap();
+
+        let admission = request
+            .authority
+            .admission_discovery_report_with_automatic_catalog(
+                &data_root,
+                &build.registry.watch_catalog(),
+            )
+            .unwrap();
+        assert_eq!(admission.sources.len(), 1);
+        assert_eq!(admission.sources[0].path, unrelated);
+
+        let bindings = request
+            .authority
+            .register_routes_after_discovery_merge(&data_root, None, &mut build)
+            .unwrap();
+        let explicit_route =
+            ctx_history_index::SourceRouteIdentity::from_sha256(bindings[0].route_identity.clone())
+                .unwrap();
+        assert_ne!(explicit_route, automatic_route);
+        assert_eq!(build.registry.routes().count(), 2);
+        assert!(request
+            .authority
+            .automatic_route_worksets(&build.registry, &bindings)
+            .unwrap()
+            .is_empty());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn canonicalized_symlink_aliases_match_route_coverage() {
+        use std::os::unix::fs::symlink;
+
+        let temp = tempfile::tempdir().unwrap();
+        let real_root = temp.path().join("real/sessions");
+        let leaf = real_root.join("2026/08/19/rollout.jsonl");
+        fs::create_dir_all(leaf.parent().unwrap()).unwrap();
+        fs::write(&leaf, CODEX_ROLLOUT_FIRST_RECORD).unwrap();
+        let alias_root = temp.path().join("sessions-alias");
+        symlink(&real_root, &alias_root).unwrap();
+        let alias_leaf = alias_root.join("2026/08/19/rollout.jsonl");
+
+        let requested = SourceRouteCoverageKey::from_source(&provider_source_for_path(
+            CaptureProvider::Codex,
+            alias_leaf,
+        ))
+        .unwrap();
+        let registered = provider_source_for_path(CaptureProvider::Codex, real_root);
+        let route = ctx_history_index::SourceRouteIdentity::from_sha256("55".repeat(32)).unwrap();
+        let binding = route_coverage_binding(
+            &requested,
+            RouteCoveragePathKind::File,
+            &route,
+            [&registered],
+        )
+        .unwrap()
+        .unwrap();
+
+        assert_eq!(binding.route_identity, route);
+        assert_eq!(binding.workset, SourceBackedRefreshWorkset::members([leaf]));
+    }
+
+    #[test]
+    fn exact_admission_uses_the_installed_catalog_without_walking_a_large_tree() {
+        let temp = tempfile::tempdir().unwrap();
+        let data_root = temp.path().join("data");
+        let (build, sessions) = codex_automatic_build(&temp, &data_root);
+        let requested_leaf = sessions.join("requested.jsonl");
+        fs::write(&requested_leaf, CODEX_ROLLOUT_FIRST_RECORD).unwrap();
+        for ordinal in 0..10_000 {
+            fs::write(sessions.join(format!("noise-{ordinal:05}.jsonl")), b"{}\n").unwrap();
+        }
+        let request = upsert_explicit_source(
+            &data_root,
+            &provider_source_for_path(CaptureProvider::Codex, requested_leaf.clone()),
+        )
+        .unwrap();
+        let catalog = build.registry.watch_catalog();
+
+        let started = Instant::now();
+        let report = request
+            .authority
+            .admission_discovery_report_with_automatic_catalog(&data_root, &catalog)
+            .unwrap();
+        let elapsed = started.elapsed();
+
+        assert!(report
+            .sources
+            .iter()
+            .all(|source| source.path != requested_leaf));
+        assert!(report.sources.len() <= 2);
+        assert!(
+            elapsed.as_secs_f64() < 2.0,
+            "bounded exact admission took {elapsed:?}"
         );
     }
 

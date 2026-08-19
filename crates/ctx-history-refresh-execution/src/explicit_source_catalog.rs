@@ -1,5 +1,6 @@
 mod catalog_merge;
 mod generation_witness;
+mod route_coverage;
 mod source_helpers;
 mod storage;
 
@@ -23,6 +24,7 @@ use ctx_history_capture::{
     source_backed_route_inventory, validate_provider_source_roots_outside_data_root,
     SourceBackedAutomaticRegistryBuild, SourceBackedProviderRegistry, SourceBackedRouteConstructor,
     SourceBackedRouteError, SourceBackedRouteErrorKind, SourceBackedRouteSelection,
+    SourceBackedWatchCatalog,
 };
 use ctx_history_capture_model::{
     DiscoveryReport, ProviderCatalogSupport, ProviderImportSupport, ProviderSource,
@@ -34,6 +36,9 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 
+use crate::SourceBackedRefreshWorkset;
+
+use route_coverage::*;
 use source_helpers::{custom_provider_source, goose_platform_root};
 use storage::{
     authority_for, decode_digest, encode_hex, sort_and_validate_entries, validate_approved_path,
@@ -83,12 +88,68 @@ impl ExplicitSourceCatalogAuthority {
             .entries
             .iter()
             .filter(|entry| entry.enabled)
-            .map(|entry| source_from_catalog_entry(data_root, entry, true))
+            .map(|entry| {
+                let mut source = source_from_catalog_entry(data_root, entry, true)?;
+                // This report carries request authority, not automatic
+                // discovery provenance. An independently discovered source
+                // with the same route coverage may supersede it during
+                // admission; otherwise automatic route construction must not
+                // reinterpret the explicit path as a discovered root.
+                source.import_support = ProviderImportSupport::Explicit;
+                Ok(source)
+            })
             .collect::<Result<Vec<_>>>()?;
         Ok(DiscoveryReport {
             sources,
             issues: Vec::new(),
         })
+    }
+
+    /// Merges the exact request with only the automatic routes already proven
+    /// by the installed immutable watch catalog. This is bounded by catalog
+    /// entries and route registrations; it never walks the provider tree.
+    pub fn admission_discovery_report_with_automatic_catalog(
+        &self,
+        data_root: &Path,
+        catalog: &SourceBackedWatchCatalog,
+    ) -> Result<DiscoveryReport> {
+        let requested = self.admission_discovery_report(data_root)?;
+        let mut automatic_routes = BTreeSet::new();
+        let mut automatically_covered = Vec::new();
+        for entry in self.entries.iter().filter(|entry| entry.enabled) {
+            if let Some(binding) = installed_automatic_route_coverage(catalog, entry)? {
+                automatic_routes.insert(binding.route_identity);
+                automatically_covered.push(SourceRouteCoverageKey::from_entry(entry)?);
+            }
+        }
+        let mut report = if automatic_routes.is_empty() {
+            DiscoveryReport {
+                sources: Vec::new(),
+                issues: Vec::new(),
+            }
+        } else {
+            catalog
+                .route_admission_report(&automatic_routes)
+                .ok_or_else(|| {
+                    anyhow!("installed automatic route coverage has no bounded admission report")
+                })?
+        };
+        report.issues.extend(requested.issues);
+        for source in requested.sources {
+            let requested_key = SourceRouteCoverageKey::from_source(&source)?;
+            if !automatically_covered.contains(&requested_key) {
+                report.sources.push(source);
+            }
+        }
+        report.sources.sort_by(|left, right| {
+            left.provider
+                .as_str()
+                .cmp(right.provider.as_str())
+                .then_with(|| left.source_format.cmp(right.source_format))
+                .then_with(|| left.path.cmp(&right.path))
+        });
+        report.sources.dedup();
+        Ok(report)
     }
 
     pub fn route_lineages(&self) -> BTreeSet<String> {
@@ -435,60 +496,12 @@ fn validate_explicit_source_catalog_snapshot_roots(
     Ok(())
 }
 
-fn remove_automatic_routes_shadowed_by_snapshot(
-    report: &mut DiscoveryReport,
-    snapshot: &ExplicitSourceCatalogSnapshot,
-    reactivated_automatic_sources: &[ProviderSource],
-) {
-    report.sources.retain(|source| {
-        let source_certified_format = route_metadata(source.provider, source.source_format)
-            .ok()
-            .map(|metadata| metadata.certified_source_format);
-        let explicitly_reactivated = reactivated_automatic_sources.iter().any(|registered| {
-            registered.provider == source.provider
-                && registered.path == source.path
-                && route_metadata(registered.provider, registered.source_format)
-                    .ok()
-                    .map(|metadata| metadata.certified_source_format)
-                    == source_certified_format
-        });
-        explicitly_reactivated
-            || !snapshot.entries.iter().any(|entry| {
-                entry.enabled
-                    && entry.provider().ok() == Some(source.provider)
-                    && entry.path == source.path
-                    && entry.certified_source_format().ok()
-                        == route_metadata(source.provider, source.source_format)
-                            .ok()
-                            .map(|metadata| metadata.certified_source_format)
-            })
-    });
-}
-
 fn register_explicit_source_catalog_snapshot_routes(
     data_root: &Path,
     base_generation: Option<&VerifiedIndex>,
     build: &mut SourceBackedAutomaticRegistryBuild,
     snapshot: &ExplicitSourceCatalogSnapshot,
 ) -> Result<Vec<ExplicitSourceCatalogRouteBinding>> {
-    for entry in &snapshot.entries {
-        let provider = entry.provider()?;
-        let certified_format = entry.certified_source_format()?;
-        if build.registry.routes().any(|route| {
-            route.selection == Some(SourceBackedRouteSelection::Automatic)
-                && route.source.provider == provider
-                && route.source.path == entry.path
-                && route.certified_source_format == certified_format
-        }) {
-            bail!(
-                "explicit source catalog authority {}/{} at {} was not removed from automatic discovery before registration",
-                provider.as_str(),
-                certified_format,
-                entry.path.display()
-            );
-        }
-    }
-
     let mut nanoclaw_lineages = HashSet::new();
     for entry in &snapshot.entries {
         if entry.provider()? == CaptureProvider::NanoClaw {
@@ -519,6 +532,13 @@ fn register_explicit_source_catalog_snapshot_routes(
         };
     let mut bindings = Vec::new();
     for entry in &snapshot.entries {
+        if let Some(coverage) = automatic_route_coverage_binding(&build.registry, entry)? {
+            bindings.push(ExplicitSourceCatalogRouteBinding {
+                catalog_lineage: entry.catalog_lineage.clone(),
+                route_identity: coverage.route_identity.as_str().to_owned(),
+            });
+            continue;
+        }
         let before = build
             .registry
             .routes()

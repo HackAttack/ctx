@@ -70,6 +70,23 @@ impl SourceBackedWatchCatalog {
             .collect()
     }
 
+    /// Returns the immutable registration roots for one executable automatic
+    /// route. Exact import admission uses this bounded catalog authority to
+    /// select existing routes without rerunning provider-wide discovery.
+    pub fn automatic_route_registration_sources(
+        &self,
+        route: &SourceRouteIdentity,
+    ) -> Option<impl ExactSizeIterator<Item = &ProviderSource>> {
+        Some(
+            self.routes
+                .get(route)?
+                .registration_sources
+                .as_ref()?
+                .iter()
+                .map(|registered| &registered.source),
+        )
+    }
+
     pub fn route_targets(
         &self,
     ) -> impl ExactSizeIterator<Item = (&SourceRouteIdentity, &BTreeSet<PathBuf>)> {

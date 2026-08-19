@@ -328,7 +328,12 @@ impl CoreRefreshEngine {
                     .validate_source_roots(data_root)
                     .context("validate explicit source roots before scoped admission")?;
                 let started = StdInstant::now();
-                let report = authority.admission_discovery_report(data_root)?;
+                let installed_catalog = self.lock_state().watch_catalog.clone();
+                let report = match installed_catalog.as_ref() {
+                    Some(catalog) => authority
+                        .admission_discovery_report_with_automatic_catalog(data_root, catalog)?,
+                    None => authority.admission_discovery_report(data_root)?,
+                };
                 let duration = started.elapsed();
                 self.resolve_scoped_admission_report(data_root, claim, &discovery, report, duration)
                     .context("resolve explicit-catalog source refresh admission")

@@ -445,11 +445,6 @@ fn refresh_all_provider_sources_route_local_with_reconciliation(
             bail!("selected-route publication does not match physical admission");
         }
     }
-    let no_admitted_automatic_routes = BTreeSet::new();
-    let admitted_automatic_routes = match explicit_source_catalog {
-        None => physical_routes,
-        Some(_) => &no_admitted_automatic_routes,
-    };
     let MergedSourceBackedRegistry {
         mut build,
         reactivated_automatic_routes,
@@ -465,7 +460,7 @@ fn refresh_all_provider_sources_route_local_with_reconciliation(
         discovery_duration,
         data_root,
         explicit_source_catalog,
-        admitted_automatic_routes,
+        physical_routes,
         published_state,
     )?;
     // A newly reactivated automatic identity has no same-route base state

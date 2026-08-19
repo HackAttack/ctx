@@ -12,6 +12,26 @@ fn refresh_exact_source(
     ) -> SourceBackedRouteResult<()>,
 ) -> Result<SourceBackedRefreshPublication> {
     let report = authority.admission_discovery_report(data_root)?;
+    refresh_exact_source_from_report(
+        discovery,
+        authority,
+        data_root,
+        index_root,
+        report,
+        report_progress,
+    )
+}
+
+fn refresh_exact_source_from_report(
+    discovery: &DiscoveryContext,
+    authority: &ExplicitSourceCatalogAuthority,
+    data_root: &Path,
+    index_root: &Path,
+    report: DiscoveryReport,
+    report_progress: &mut dyn FnMut(
+        CaptureSourceBackedDetailedRefreshProgress,
+    ) -> SourceBackedRouteResult<()>,
+) -> Result<SourceBackedRefreshPublication> {
     let journal = TestRefreshJournal::default();
     let published_state = crate::orchestration::RetainedPublishedState { journal: &journal };
     let admitted = ctx_history_refresh_execution::source_backed_admitted_discovery_from_report(
@@ -472,7 +492,7 @@ fn registered_codex_parent_and_exact_subdir_share_route_scoped_ownership() {
         "019fb600-0000-7000-8000-000000000001",
         "automaticrootmarker",
     );
-    write_codex_rollout(
+    let explicit_rollout = write_codex_rollout(
         &explicit_root,
         "019fb600-0000-7000-8000-000000000002",
         "explicitrootmarker",
@@ -506,14 +526,27 @@ fn registered_codex_parent_and_exact_subdir_share_route_scoped_ownership() {
     assert_eq!(parent_publication.route_results.len(), 1);
     assert!(parent_publication.route_results[0].outcome.is_success());
     let parent_generation = parent_publication.generation_id.clone();
+    let automatic_catalog =
+        ctx_history_capture::build_automatic_source_backed_registry_from_report(
+            &discovery,
+            &data_root,
+            report.clone(),
+        )
+        .registry
+        .watch_catalog();
 
     let explicit_source = provider_source_for_path(CaptureProvider::Codex, explicit_root.clone());
     let upsert = crate::upsert_explicit_source(&data_root, &explicit_source).unwrap();
-    let first = refresh_exact_source(
+    let exact_report = upsert
+        .authority
+        .admission_discovery_report_with_automatic_catalog(&data_root, &automatic_catalog)
+        .unwrap();
+    let first = refresh_exact_source_from_report(
         &discovery,
         &upsert.authority,
         &data_root,
         &index_root,
+        exact_report,
         &mut progress,
     )
     .unwrap();
@@ -536,6 +569,10 @@ fn registered_codex_parent_and_exact_subdir_share_route_scoped_ownership() {
         first.route_results[0].route_identity,
         binding.route_identity
     );
+    assert_eq!(
+        first.route_results[0].route_identity,
+        parent_publication.route_results[0].route_identity
+    );
     assert!(first.route_results[0].outcome.is_success());
     let verified = VerifiedIndex::open(&index_root).unwrap();
     assert!(!verified.manifest().sources.is_empty());
@@ -555,18 +592,24 @@ fn registered_codex_parent_and_exact_subdir_share_route_scoped_ownership() {
             .len(),
         1
     );
-    assert_ne!(first.generation_id, parent_generation);
+    assert_eq!(first.generation_id, parent_generation);
     drop(verified);
 
-    let replay = refresh_exact_source(
+    append_codex_message(&explicit_rollout, "explicitappendafterimportmarker");
+    let replay_report = upsert
+        .authority
+        .admission_discovery_report_with_automatic_catalog(&data_root, &automatic_catalog)
+        .unwrap();
+    let replay = refresh_exact_source_from_report(
         &discovery,
         &upsert.authority,
         &data_root,
         &index_root,
+        replay_report,
         &mut progress,
     )
     .unwrap();
-    assert_eq!(replay.generation_id, first.generation_id);
+    assert_ne!(replay.generation_id, first.generation_id);
     assert_eq!(replay.route_results.len(), 1);
     assert!(replay.published_explicit_source_catalog.is_some());
     assert_eq!(replay.catalog_route_bindings.len(), 1);
@@ -578,6 +621,14 @@ fn registered_codex_parent_and_exact_subdir_share_route_scoped_ownership() {
             .map(|result| result.source_failure_total)
             .sum::<usize>(),
         0
+    );
+    assert_eq!(
+        VerifiedIndex::open(&index_root)
+            .unwrap()
+            .search_event_candidates("explicitappendafterimportmarker", 10)
+            .unwrap()
+            .len(),
+        1
     );
 }
 
@@ -907,6 +958,25 @@ fn codex_core_records(index: &VerifiedIndex) -> Vec<CoreRecord> {
 
 pub(super) fn write_codex_rollout(root: &Path, native_session_id: &str, text: &str) -> PathBuf {
     write_codex_rollout_with_parent(root, native_session_id, None, text)
+}
+
+fn append_codex_message(path: &Path, text: &str) {
+    use std::io::Write;
+
+    let message = json!({
+        "timestamp": "2026-07-30T12:00:02Z",
+        "type": "response_item",
+        "payload": {
+            "type": "message",
+            "role": "user",
+            "content": [{
+                "type": "input_text",
+                "text": text
+            }]
+        }
+    });
+    let mut file = fs::OpenOptions::new().append(true).open(path).unwrap();
+    writeln!(file, "{message}").unwrap();
 }
 
 fn write_codex_related_rollout(

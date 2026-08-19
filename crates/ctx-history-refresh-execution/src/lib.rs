@@ -425,6 +425,15 @@ pub fn source_backed_admitted_discovery_from_report(
             .cloned()
             .collect()
     };
+    let route_worksets = explicit_source_catalog
+        .map(|catalog| {
+            catalog.automatic_route_worksets(
+                &merged.build.registry,
+                &merged.requested_catalog_route_bindings,
+            )
+        })
+        .transpose()?
+        .unwrap_or_default();
     let admission_failure_policy = match coverage {
         AdmittedRefreshCoverage::CompleteCatalog => {
             AutomaticRegistryAdmissionFailurePolicy::SystemicOnly
@@ -474,5 +483,6 @@ pub fn source_backed_admitted_discovery_from_report(
         coverage,
         selected_routes,
         SourceBackedAdmittedDiscovery::new(admitted_report, discovery_duration, watch_catalog),
-    )
+    )?
+    .with_execution_facts(route_worksets)
 }
