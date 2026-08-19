@@ -174,10 +174,35 @@ fn protocol_mismatch_is_typed_and_prevents_operation() {
         error,
         BridgeError::ProtocolMismatch {
             expected: CORE_PRO_PROTOCOL_VERSION,
-            observed: Some(observed),
+            observed,
         } if observed == ProtocolVersion::new(2)
     ));
     assert!(!marker.exists());
+}
+
+#[test]
+fn pre_handshake_exit_is_a_launch_failure_with_bounded_stderr() {
+    let temp = tempfile::tempdir().unwrap();
+    let pro = temp.path().join("ctx-pro");
+    write_executable(
+        &pro,
+        b"#!/bin/sh\nprintf 'loader diagnostic' >&2\nexit 70\n",
+    );
+    let error = CompanionBridge::default()
+        .launch_mcp(
+            &InstalledCompanion::new(&pro),
+            McpRequest::new(Vec::new()),
+            &CancellationToken::new(),
+        )
+        .unwrap_err();
+    assert!(matches!(
+        error,
+        BridgeError::HandshakeFailed {
+            exit: ExitClass::Code(70),
+            ref stderr,
+            stderr_truncated: false,
+        } if stderr == b"loader diagnostic"
+    ));
 }
 
 #[test]

@@ -207,13 +207,21 @@ impl CompanionBridge {
         if output.exit == ExitClass::Terminated(TerminationReason::Cancelled) {
             return Err(BridgeError::CancelledBeforeSpawn);
         }
-        let observed = (output.exit == ExitClass::Success
-            && !output.stdout_truncated
-            && !output.stderr_truncated
-            && output.stderr.is_empty())
-        .then(|| parse_handshake_receipt(&output.stdout))
-        .flatten();
-        if observed != Some(CORE_PRO_PROTOCOL_VERSION) {
+        if output.exit != ExitClass::Success
+            || output.stdout_truncated
+            || output.stderr_truncated
+            || output.stdout.is_empty()
+            || !output.stderr.is_empty()
+        {
+            return Err(BridgeError::HandshakeFailed {
+                exit: output.exit,
+                stderr: output.stderr,
+                stderr_truncated: output.stderr_truncated,
+            });
+        }
+        let observed = parse_handshake_receipt(&output.stdout)
+            .ok_or(BridgeError::InvalidProtocolResponse("handshake"))?;
+        if observed != CORE_PRO_PROTOCOL_VERSION {
             return Err(BridgeError::ProtocolMismatch {
                 expected: CORE_PRO_PROTOCOL_VERSION,
                 observed,

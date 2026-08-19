@@ -45,7 +45,11 @@ enum CompanionLaunchError {
     },
     ProtocolMismatch {
         expected: ProtocolVersion,
-        observed: Option<ProtocolVersion>,
+        observed: ProtocolVersion,
+    },
+    LaunchFailed {
+        stderr: Vec<u8>,
+        stderr_truncated: bool,
     },
     InvalidLaunch {
         reason: &'static str,
@@ -67,22 +71,26 @@ impl CompanionLaunchError {
         match self {
             Self::MissingExecutable { .. } => "companion_missing_executable",
             Self::ProtocolMismatch { .. } => "companion_protocol_mismatch",
+            Self::LaunchFailed { .. } => "companion_unavailable",
             Self::InvalidLaunch { .. } => "companion_launch_invalid",
             Self::Unavailable => "companion_unavailable",
         }
     }
 
     const fn retryable(&self) -> bool {
-        matches!(self, Self::MissingExecutable { .. } | Self::Unavailable)
+        matches!(
+            self,
+            Self::MissingExecutable { .. } | Self::LaunchFailed { .. } | Self::Unavailable
+        )
     }
 }
 
 impl From<CompanionLaunchError> for CompanionRouteError {
     fn from(error: CompanionLaunchError) -> Self {
         match error {
-            CompanionLaunchError::MissingExecutable { .. } | CompanionLaunchError::Unavailable => {
-                Self::Unavailable
-            }
+            CompanionLaunchError::MissingExecutable { .. }
+            | CompanionLaunchError::LaunchFailed { .. }
+            | CompanionLaunchError::Unavailable => Self::Unavailable,
             CompanionLaunchError::ProtocolMismatch { .. }
             | CompanionLaunchError::InvalidLaunch { .. } => Self::Incompatible,
         }
@@ -405,6 +413,14 @@ fn classify_bridge_error(error: BridgeError) -> CompanionLaunchError {
         BridgeError::ProtocolMismatch { expected, observed } => {
             CompanionLaunchError::ProtocolMismatch { expected, observed }
         }
+        BridgeError::HandshakeFailed {
+            stderr,
+            stderr_truncated,
+            ..
+        } => CompanionLaunchError::LaunchFailed {
+            stderr,
+            stderr_truncated,
+        },
         BridgeError::InvalidExecutablePath => CompanionLaunchError::InvalidLaunch {
             reason: "Pro executable path must be absolute",
         },
@@ -446,6 +462,11 @@ fn write_companion_stderr(bytes: &[u8]) -> std::io::Result<()> {
 }
 
 fn write_cli_launch_error(error: &CompanionLaunchError) {
+    let document = cli_launch_error_document(error);
+    let _ = writeln!(std::io::stderr(), "{document}");
+}
+
+fn cli_launch_error_document(error: &CompanionLaunchError) -> Value {
     let code = error.code();
     let mut document = json!({
         "error": code,
@@ -458,7 +479,15 @@ fn write_cli_launch_error(error: &CompanionLaunchError) {
         }
         CompanionLaunchError::ProtocolMismatch { expected, observed } => json!({
             "expected_protocol_version": expected.get(),
-            "observed_protocol_version": observed.map(ProtocolVersion::get),
+            "observed_protocol_version": observed.get(),
+        }),
+        CompanionLaunchError::LaunchFailed {
+            stderr,
+            stderr_truncated,
+        } => json!({
+            "reason": "companion exited before Protocol V3 handshake",
+            "stderr": String::from_utf8_lossy(stderr),
+            "stderr_truncated": stderr_truncated,
         }),
         CompanionLaunchError::InvalidLaunch { reason } => json!({"reason": reason}),
         CompanionLaunchError::Unavailable => Value::Null,
@@ -466,7 +495,7 @@ fn write_cli_launch_error(error: &CompanionLaunchError) {
     if !details.is_null() {
         document["details"] = details;
     }
-    let _ = writeln!(std::io::stderr(), "{document}");
+    document
 }
 
 #[cfg(test)]
@@ -668,10 +697,38 @@ printf '{"jsonrpc":"2.0"}\n'
             error,
             CompanionLaunchError::ProtocolMismatch {
                 expected,
-                observed: Some(observed),
+                observed,
             } if expected.get() == 3 && observed.get() == 2
         ));
         assert_eq!(error.code(), "companion_protocol_mismatch");
+    }
+
+    #[test]
+    fn pre_handshake_exit_is_retryable_unavailable_not_protocol_mismatch() {
+        let error = classify_bridge_error(BridgeError::HandshakeFailed {
+            exit: ExitClass::Code(70),
+            stderr: b"loader diagnostic".to_vec(),
+            stderr_truncated: false,
+        });
+        assert!(matches!(
+            error,
+            CompanionLaunchError::LaunchFailed {
+                ref stderr,
+                stderr_truncated: false,
+            } if stderr == b"loader diagnostic"
+        ));
+        assert_eq!(error.code(), "companion_unavailable");
+        assert!(error.retryable());
+        let document = cli_launch_error_document(&error);
+        assert_eq!(document["details"]["stderr"], "loader diagnostic");
+        assert_eq!(document["details"]["stderr_truncated"], false);
+        assert!(document["details"]
+            .get("observed_protocol_version")
+            .is_none());
+        assert_eq!(
+            CompanionRouteError::from(error),
+            CompanionRouteError::Unavailable
+        );
     }
 
     #[test]

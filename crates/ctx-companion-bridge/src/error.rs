@@ -2,7 +2,7 @@ use std::{io, path::PathBuf};
 
 use thiserror::Error;
 
-use crate::ProtocolVersion;
+use crate::{ExitClass, ProtocolVersion};
 
 #[derive(Debug, Error)]
 pub enum BridgeError {
@@ -23,7 +23,13 @@ pub enum BridgeError {
     #[error("installed companion failed the Core protocol {expected} handshake")]
     ProtocolMismatch {
         expected: ProtocolVersion,
-        observed: Option<ProtocolVersion>,
+        observed: ProtocolVersion,
+    },
+    #[error("installed companion exited before completing the Protocol V3 handshake")]
+    HandshakeFailed {
+        exit: ExitClass,
+        stderr: Vec<u8>,
+        stderr_truncated: bool,
     },
     #[error("installed companion returned an invalid Protocol V3 {0} response")]
     InvalidProtocolResponse(&'static str),
