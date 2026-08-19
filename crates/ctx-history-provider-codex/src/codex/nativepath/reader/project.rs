@@ -2,6 +2,10 @@ use super::super::checkpoint::{
     CodexPendingCallOriginV0, CodexPendingCallV0, MAX_CODEX_CALL_ID_BYTES, MAX_CODEX_PENDING_CALLS,
 };
 use super::*;
+use crate::provider::codex::session_meta::{
+    select_codex_session_meta_owner, CodexSessionMetaIdentity,
+    MAX_CODEX_SESSION_META_PREFIX_RECORDS,
+};
 use ctx_history_core::{ProviderNativeSessionRelationship, TypedKey};
 
 impl CodexNativeScanner {
@@ -43,16 +47,7 @@ impl CodexNativeScanner {
             CodexRecordClass::SessionMeta => {
                 self.counters.typed_json_parses = self.counters.typed_json_parses.saturating_add(1);
                 match parse_session_meta(record) {
-                    Some(owner) => {
-                        let owner = validate_catalog_owner(&self.source, owner)?;
-                        if let Some(admitted_owner) = self.owner.as_ref() {
-                            validate_repeated_owner(admitted_owner, &owner)?;
-                            self.counters.ignored_records =
-                                self.counters.ignored_records.saturating_add(1);
-                        } else {
-                            self.owner = Some(owner);
-                        }
-                    }
+                    Some(metadata) => self.observe_session_metadata(metadata)?,
                     None => self.reject(false),
                 }
                 Ok(CodexRecordProjection::default())
@@ -137,6 +132,72 @@ impl CodexNativeScanner {
                 self.process_output(record, &probe, result_kind, physical)
             }
         }
+    }
+
+    fn observe_session_metadata(&mut self, metadata: CodexSessionRow) -> Result<()> {
+        let is_owner = self.source.catalog_native_session_id.as_deref()
+            == Some(metadata.native_session_id.as_str());
+        if let Some(existing) = self
+            .session_metadata
+            .iter()
+            .find(|existing| existing.native_session_id == metadata.native_session_id)
+        {
+            validate_repeated_owner(existing, &metadata)?;
+            if is_owner && self.owner.is_none() {
+                self.owner = Some(validate_catalog_owner(&self.source, metadata)?);
+            }
+            self.counters.ignored_records = self.counters.ignored_records.saturating_add(1);
+            return Ok(());
+        }
+        if self.session_metadata.len() >= MAX_CODEX_SESSION_META_PREFIX_RECORDS {
+            return Err(CaptureError::InvalidPayload(
+                "Codex session_meta prefix exceeds the ownership bound".to_owned(),
+            ));
+        }
+        if is_owner {
+            self.owner = Some(validate_catalog_owner(&self.source, metadata.clone())?);
+        } else {
+            self.counters.ignored_records = self.counters.ignored_records.saturating_add(1);
+        }
+        self.session_metadata.push(metadata);
+        Ok(())
+    }
+
+    pub(super) fn validate_session_metadata_owner(&mut self) -> Result<()> {
+        if self.session_metadata.is_empty() {
+            return Ok(());
+        }
+        let identities = self
+            .session_metadata
+            .iter()
+            .map(|metadata| CodexSessionMetaIdentity {
+                native_session_id: metadata.native_session_id.clone(),
+                parent_native_session_id: metadata.parent_native_session_id.clone(),
+                root_native_session_id: metadata.root_native_session_id.clone(),
+                session_relationship: metadata.session_relationship,
+            })
+            .collect::<Vec<_>>();
+        let expected_owner = self.source.catalog_native_session_id.as_deref();
+        let owner =
+            select_codex_session_meta_owner(&identities, expected_owner).ok_or_else(|| {
+                CaptureError::InvalidPayload(
+                    "Codex session_meta owner changed within one source".to_owned(),
+                )
+            })?;
+        let owner =
+            self.session_metadata
+                .get(owner)
+                .cloned()
+                .ok_or(CaptureError::SystemInvariant(
+                    "Codex selected session_meta owner is missing",
+                ))?;
+        let owner = validate_catalog_owner(&self.source, owner)?;
+        if let Some(admitted_owner) = self.owner.as_ref() {
+            validate_repeated_owner(admitted_owner, &owner)?;
+        } else {
+            self.owner = Some(owner);
+        }
+        Ok(())
     }
 
     /// Applies the counter-only projection the prefilter proved sufficient.

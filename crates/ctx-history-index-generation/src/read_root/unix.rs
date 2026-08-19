@@ -253,10 +253,7 @@ mod tests {
         let metadata = std::fs::metadata(&path)?;
         assert_eq!(metadata.dev(), opened.identity.device);
         assert_eq!(metadata.ino(), opened.identity.inode);
-        assert_eq!(
-            std::fs::read(path.join("child"))?,
-            b"stable child"
-        );
+        assert_eq!(std::fs::read(path.join("child"))?, b"stable child");
         Ok(())
     }
 }

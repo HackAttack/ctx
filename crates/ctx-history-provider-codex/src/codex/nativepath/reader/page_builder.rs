@@ -44,12 +44,13 @@ impl CodexNativeScanner {
         self.finish_semantic_page(page).map(Some)
     }
 
-    pub(in crate::codex::nativepath) fn finish_semantic(self) -> Result<CodexSemanticScan> {
+    pub(in crate::codex::nativepath) fn finish_semantic(mut self) -> Result<CodexSemanticScan> {
         if !self.exhausted || self.active_core_page.is_some() {
             return Err(CaptureError::InvalidPayload(
                 "Codex semantic scan must drain every owned page before finishing".to_owned(),
             ));
         }
+        self.validate_session_metadata_owner()?;
         let terminal_authority = self.terminal_authority.checkpoint();
         let checkpoint = super::super::checkpoint::CodexSemanticCheckpoint::from_state(
             super::super::checkpoint::CodexSemanticCheckpointState {

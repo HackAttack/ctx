@@ -10,7 +10,7 @@ use ctx_history_core::{
 };
 use ctx_history_index::{GenerationWriter, RevalidationTarget, WriterOptions};
 
-const CURRENT_PARSER_REVISION: &str = "codex-nativepath-core-activity-v7-provider-root-session";
+const CURRENT_PARSER_REVISION: &str = "codex-nativepath-core-activity-v8-inherited-session-lineage";
 
 fn writer_options() -> WriterOptions {
     WriterOptions {
@@ -700,6 +700,104 @@ fn source_snapshot(
 }
 
 #[test]
+fn inherited_codex_session_metadata_is_admitted_in_both_provider_orders() {
+    let temp = tempdir().unwrap();
+    let sessions = temp.path().join("sessions-inherited-metadata-orders");
+    let index_root = temp.path().join("index-inherited-metadata-orders");
+    fs::create_dir_all(&sessions).unwrap();
+    let owner_first_id = "019fb000-0000-7000-8000-000000000050";
+    let owner_first_parent = "019fb000-0000-7000-8000-000000000051";
+    let ancestor_first_id = "019fb000-0000-7000-8000-000000000052";
+    let ancestor_first_parent = "019fb000-0000-7000-8000-000000000053";
+    let neighbor_id = "019fb000-0000-7000-8000-000000000054";
+
+    fs::write(
+        session_path(&sessions, owner_first_id),
+        jsonl_bytes([
+            session_meta(
+                owner_first_id,
+                ProviderNativeSessionRelationship::Forked,
+                Some(owner_first_parent),
+            ),
+            message("ownerfirstinheritedmetadatamarker"),
+            session_meta(
+                owner_first_parent,
+                ProviderNativeSessionRelationship::Root,
+                None,
+            ),
+            session_meta(
+                owner_first_id,
+                ProviderNativeSessionRelationship::Forked,
+                Some(owner_first_parent),
+            ),
+        ]),
+    )
+    .unwrap();
+    fs::write(
+        session_path(&sessions, ancestor_first_id),
+        jsonl_bytes([
+            session_meta(
+                ancestor_first_parent,
+                ProviderNativeSessionRelationship::Root,
+                None,
+            ),
+            session_meta(
+                ancestor_first_id,
+                ProviderNativeSessionRelationship::Forked,
+                Some(ancestor_first_parent),
+            ),
+            message("ancestorfirstinheritedmetadatamarker"),
+            session_meta(
+                ancestor_first_parent,
+                ProviderNativeSessionRelationship::Root,
+                None,
+            ),
+        ]),
+    )
+    .unwrap();
+    write_session(
+        &sessions,
+        neighbor_id,
+        ProviderNativeSessionRelationship::Root,
+        None,
+        [message("inheritedmetadataneighbormarker")],
+    );
+
+    let registry = register_tree(&[&sessions]);
+    let receipt =
+        refresh_source_backed_generation(&index_root, &registry, writer_options()).unwrap();
+    assert!(receipt.failed_routes.is_empty());
+    assert!(receipt.logical_source_failures.is_empty());
+    assert_eq!(receipt.sources.len(), 3);
+
+    let index = VerifiedIndex::open(&index_root).unwrap();
+    for (native_session_id, marker) in [
+        (owner_first_id, "ownerfirstinheritedmetadatamarker"),
+        (ancestor_first_id, "ancestorfirstinheritedmetadatamarker"),
+        (neighbor_id, "inheritedmetadataneighbormarker"),
+    ] {
+        assert_eq!(records_for(&index, native_session_id).len(), 1);
+        assert_eq!(index.search_event_candidates(marker, 8).unwrap().len(), 1);
+    }
+    for native_session_id in [owner_first_id, ancestor_first_id] {
+        let records = records_for(&index, native_session_id);
+        let [record] = records.as_slice() else {
+            panic!("one inherited-metadata owner record expected");
+        };
+        assert_eq!(
+            record.provider_session_id.as_deref(),
+            Some(native_session_id)
+        );
+        assert_eq!(
+            record.session_relationship,
+            Some(ProviderNativeSessionRelationship::Forked)
+        );
+        assert!(record.parent_session_id.is_some());
+        assert!(record.root_session_id.is_none());
+    }
+}
+
+#[test]
 fn malformed_codex_owner_leaf_is_quarantined_without_hiding_valid_neighbor() {
     let temp = tempdir().unwrap();
     let sessions = temp.path().join("sessions-malformed-owner-neighbor");
@@ -717,22 +815,20 @@ fn malformed_codex_owner_leaf_is_quarantined_without_hiding_valid_neighbor() {
         [message(marker)],
     );
 
-    let mut malformed = serde_json::to_vec(&session_meta(
-        malformed_session_id,
-        ProviderNativeSessionRelationship::Root,
-        None,
-    ))
-    .unwrap();
-    malformed.extend(
-        serde_json::to_vec(&session_meta(
+    let malformed = jsonl_bytes([
+        session_meta(
+            malformed_session_id,
+            ProviderNativeSessionRelationship::Root,
+            None,
+        ),
+        session_meta(
             conflicting_session_id,
             ProviderNativeSessionRelationship::Root,
             None,
-        ))
-        .unwrap(),
-    );
-    malformed.push(b'\n');
-    fs::write(session_path(&sessions, malformed_session_id), malformed).unwrap();
+        ),
+        message("quarantinedunrelatedownermarker"),
+    ]);
+    fs::write(sessions.join("renamed-corrupt-rollout.jsonl"), malformed).unwrap();
 
     let registry = register_tree(&[&sessions]);
     let receipt =
@@ -753,6 +849,10 @@ fn malformed_codex_owner_leaf_is_quarantined_without_hiding_valid_neighbor() {
                 if value == malformed_session_id || value == conflicting_session_id
         )
     }));
+    assert!(index
+        .search_event_candidates("quarantinedunrelatedownermarker", 8)
+        .unwrap()
+        .is_empty());
 }
 
 #[test]

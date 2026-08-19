@@ -16,6 +16,7 @@ impl CodexNativeScanner {
         Ok(Self {
             source,
             owner: None,
+            session_metadata: Vec::new(),
             pending_calls: BTreeMap::new(),
             terminal_authority: CodexTerminalAuthority::default(),
             counters: CodexScanCounters::default(),
@@ -36,6 +37,7 @@ impl CodexNativeScanner {
     ) -> Result<()> {
         if !checkpoint.direct_append_safe()
             || self.owner.is_some()
+            || !self.session_metadata.is_empty()
             || !self.pending_calls.is_empty()
             || !self
                 .terminal_authority
@@ -46,6 +48,9 @@ impl CodexNativeScanner {
             ));
         }
         self.owner = checkpoint.owner().cloned();
+        if let Some(owner) = self.owner.clone() {
+            self.session_metadata.push(owner);
+        }
         self.local_turn_started = checkpoint.local_turn_started();
         self.pending_calls.clone_from(checkpoint.pending_calls());
         Ok(())

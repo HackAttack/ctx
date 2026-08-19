@@ -84,6 +84,7 @@ pub(super) struct CodexSemanticScan {
 pub(crate) struct CodexNativeScanner {
     source: CodexCatalogSource,
     owner: Option<CodexSessionRow>,
+    session_metadata: Vec<CodexSessionRow>,
     pending_calls: BTreeMap<String, CodexPendingCallV0>,
     terminal_authority: CodexTerminalAuthority,
     counters: CodexScanCounters,

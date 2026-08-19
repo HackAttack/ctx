@@ -44,7 +44,8 @@ fn carried_or_observe_generation_source_capability_v0(
 #[derive(serde::Serialize)]
 struct CodexRejectedOwnerProofV0<'a> {
     schema_version: u32,
-    expected_native_session_id: &'a str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    expected_native_session_id: Option<&'a str>,
     observation: &'a CodexFileObservation,
     reason: &'static str,
 }
@@ -78,16 +79,32 @@ fn rejected_owner_leaf_v0(
     authority_path: PathBuf,
     expected_native_session_id: &str,
 ) -> Result<JsonlFamilyRejectedLeaf> {
+    rejected_catalog_leaf_v0(
+        &source.source_path,
+        authority_path,
+        &source.catalog_observation,
+        Some(expected_native_session_id),
+        "missing or conflicting Codex session owner",
+    )
+}
+
+fn rejected_catalog_leaf_v0(
+    source_path: &Path,
+    authority_path: PathBuf,
+    observation: &CodexFileObservation,
+    expected_native_session_id: Option<&str>,
+    reason: &'static str,
+) -> Result<JsonlFamilyRejectedLeaf> {
     let proof = CodexRejectedOwnerProofV0 {
         schema_version: 1,
         expected_native_session_id,
-        observation: &source.catalog_observation,
-        reason: "missing or conflicting Codex session owner",
+        observation,
+        reason,
     };
     let proof = TypedKey::bytes(serde_json::to_vec(&proof)?)
         .map_err(|error| CaptureError::InvalidPayload(error.to_string()))?;
     Ok(JsonlFamilyRejectedLeaf::bind_observed(
-        source.source_path.clone(),
+        source_path.to_path_buf(),
         authority_path,
         proof,
         1,
@@ -313,11 +330,23 @@ impl<B: ProviderRuntimeBinding> CodexSessionJsonlFamilyAdapterV0<B> {
             ));
         }
         let plans = prepared.sources;
+        let mut rejected_leaves = prepared
+            .rejected_leaves
+            .iter()
+            .map(|leaf| {
+                rejected_catalog_leaf_v0(
+                    &leaf.source_path,
+                    leaf.authority_path.clone(),
+                    &leaf.observation,
+                    None,
+                    leaf.reason,
+                )
+            })
+            .collect::<Result<Vec<_>>>()?;
         let mut ordered_sources = (0..plans.len()).collect::<Vec<_>>();
         ordered_sources.sort_by_key(|index| plans[*index].1.identity().digest());
         let mut authorities = BTreeMap::<PathBuf, Arc<ProviderSourceRoot>>::new();
         let mut leaves = Vec::with_capacity(plans.len());
-        let mut rejected_leaves = Vec::new();
         for index in ordered_sources {
             let (source, source_key, native_session_id) = plans.get(index).ok_or(
                 CaptureError::SystemInvariant("Codex generation source ordering changed"),

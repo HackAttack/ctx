@@ -164,7 +164,7 @@ pub(super) fn bind_source_keys(
 /// its own bytes.
 pub(crate) fn discover_codex_deferred_session_tree_inventory_v0(
     session_roots: &[PathBuf],
-) -> CodexSourceBackedResultV0<Vec<(CodexCatalogSource, SourceKey, String)>> {
+) -> CodexSourceBackedResultV0<CodexDeferredSessionTreeInventoryV0> {
     discover_codex_session_tree_metadata_inventory_v0(session_roots)
 }
 
@@ -183,18 +183,19 @@ pub(super) fn bind_codex_partial_member_v0(
     ctx_history_source_io::provider_path_identity(member.source_path())
         .map_err(CaptureError::from)?;
     let observation = opened_codex_file_observation(member.source_path(), member.opened().file())?;
-    let native_session_id = codex_canonical_native_session_id_path_hint(member.source_path())
-        .or(
-            crate::provider::codex::catalog::probe_codex_native_session_id(
-                member.source_path(),
-                member.opened(),
-                observation.len,
-            )?,
-        )
-        .or_else(|| codex_uncompressed_native_session_id_path_hint(member.source_path()))
-        .ok_or_else(|| CodexSourceBackedErrorV0::MissingNativeSessionId {
-            path: member.source_path().to_path_buf(),
-        })?;
+    let native_session_id =
+        crate::provider::codex::catalog::codex_canonical_session_id_from_path(member.source_path())
+            .or(
+                crate::provider::codex::catalog::probe_codex_native_session_id(
+                    member.source_path(),
+                    member.opened(),
+                    observation.len,
+                )?,
+            )
+            .or_else(|| codex_uncompressed_native_session_id_path_hint(member.source_path()))
+            .ok_or_else(|| CodexSourceBackedErrorV0::MissingNativeSessionId {
+                path: member.source_path().to_path_buf(),
+            })?;
     let after = opened_codex_file_observation(member.source_path(), member.opened().file())?;
     if !observation.admits_append_only_growth(&after) {
         return Err(CodexSourceBackedErrorV0::Capture(
@@ -224,9 +225,22 @@ struct CodexMetadataInventoryLeafV0 {
     authority: ProviderSourceRoot,
 }
 
+#[derive(Debug, Clone)]
+pub(super) struct CodexRejectedCatalogLeafV0 {
+    pub(super) source_path: PathBuf,
+    pub(super) authority_path: PathBuf,
+    pub(super) observation: CodexFileObservation,
+    pub(super) reason: &'static str,
+}
+
+pub(crate) struct CodexDeferredSessionTreeInventoryV0 {
+    pub(super) sources: Vec<CodexSessionPlanV0>,
+    pub(super) rejected_leaves: Vec<CodexRejectedCatalogLeafV0>,
+}
+
 fn discover_codex_session_tree_metadata_inventory_v0(
     session_roots: &[PathBuf],
-) -> CodexSourceBackedResultV0<Vec<(CodexCatalogSource, SourceKey, String)>> {
+) -> CodexSourceBackedResultV0<CodexDeferredSessionTreeInventoryV0> {
     let normalized_roots = normalized_session_roots(session_roots)?;
     let mut leaves = Vec::new();
     let mut authorities = Vec::with_capacity(normalized_roots.len());
@@ -243,8 +257,21 @@ fn discover_codex_session_tree_metadata_inventory_v0(
     run_after_codex_metadata_inventory_hook();
 
     let mut catalog_sources = Vec::with_capacity(leaves.len());
+    let mut rejected_leaves = Vec::new();
     for leaf in leaves {
-        catalog_sources.push(catalog_source_from_path_hint(&leaf)?);
+        match catalog_source_from_path_hint(&leaf) {
+            Ok(source) => catalog_sources.push(source),
+            Err(CodexSourceBackedErrorV0::Capture(CaptureError::InvalidPayload(_)))
+            | Err(CodexSourceBackedErrorV0::MissingNativeSessionId { .. }) => {
+                rejected_leaves.push(CodexRejectedCatalogLeafV0 {
+                    source_path: leaf.source_path,
+                    authority_path: leaf.relative_path,
+                    observation: leaf.observation,
+                    reason: "missing or conflicting Codex session owner",
+                });
+            }
+            Err(error) => return Err(error),
+        }
     }
     for authority in &authorities {
         authority.revalidate()?;
@@ -253,7 +280,11 @@ fn discover_codex_session_tree_metadata_inventory_v0(
     let mut sources = bind_source_keys(catalog_sources)?;
     sort_bound_sources(&mut sources);
     coalesce_codex_session_representations(&mut sources);
-    Ok(sources)
+    rejected_leaves.sort_by(|left, right| left.source_path.cmp(&right.source_path));
+    Ok(CodexDeferredSessionTreeInventoryV0 {
+        sources,
+        rejected_leaves,
+    })
 }
 
 fn discover_codex_metadata_inventory_root_v0(
@@ -368,28 +399,33 @@ fn discover_codex_metadata_inventory_root_v0(
 fn catalog_source_from_path_hint(
     leaf: &CodexMetadataInventoryLeafV0,
 ) -> CodexSourceBackedResultV0<CodexCatalogSource> {
-    let native_session_id = match codex_canonical_native_session_id_path_hint(&leaf.source_path) {
-        Some(native_session_id) => native_session_id,
-        None => {
-            let opened = leaf.authority.open_file(&leaf.relative_path)?;
-            let admitted = opened_codex_file_observation(&leaf.source_path, opened.file())?;
-            if !leaf.observation.admits_append_only_growth(&admitted) {
-                return Err(CodexSourceBackedErrorV0::Capture(
-                    CaptureError::SourceChangedDuringCapture,
-                ));
+    let native_session_id =
+        match crate::provider::codex::catalog::codex_canonical_session_id_from_path(
+            &leaf.source_path,
+        ) {
+            Some(native_session_id) => native_session_id,
+            None => {
+                let opened = leaf.authority.open_file(&leaf.relative_path)?;
+                let admitted = opened_codex_file_observation(&leaf.source_path, opened.file())?;
+                if !leaf.observation.admits_append_only_growth(&admitted) {
+                    return Err(CodexSourceBackedErrorV0::Capture(
+                        CaptureError::SourceChangedDuringCapture,
+                    ));
+                }
+                let native_session_id =
+                    crate::provider::codex::catalog::probe_codex_native_session_id(
+                        &leaf.source_path,
+                        &opened,
+                        leaf.observation.len,
+                    );
+                opened.revalidate_leaf()?;
+                native_session_id?
+                    .or_else(|| codex_uncompressed_native_session_id_path_hint(&leaf.source_path))
+                    .ok_or_else(|| CodexSourceBackedErrorV0::MissingNativeSessionId {
+                        path: leaf.source_path.clone(),
+                    })?
             }
-            let native_session_id = crate::provider::codex::catalog::probe_codex_native_session_id(
-                &leaf.source_path,
-                &opened,
-                leaf.observation.len,
-            )?
-            .or_else(|| codex_uncompressed_native_session_id_path_hint(&leaf.source_path));
-            opened.revalidate_leaf()?;
-            native_session_id.ok_or_else(|| CodexSourceBackedErrorV0::MissingNativeSessionId {
-                path: leaf.source_path.clone(),
-            })?
-        }
-    };
+        };
     Ok(CodexCatalogSource {
         source_path: leaf.source_path.clone(),
         catalog_observation: leaf.observation.clone(),
@@ -401,22 +437,10 @@ fn catalog_source_from_path_hint(
     })
 }
 
-fn codex_canonical_native_session_id_path_hint(path: &Path) -> Option<String> {
-    let stem = crate::provider::codex::catalog::codex_session_file_stem(path)?;
-    if stem.len() >= 36 {
-        let tail = &stem[stem.len() - 36..];
-        if tail
-            .chars()
-            .all(|character| character.is_ascii_hexdigit() || character == '-')
-        {
-            return Some(tail.to_owned());
-        }
-    }
-    None
-}
-
 pub(super) fn codex_native_session_id_path_hint(path: &Path) -> Option<String> {
-    if let Some(native_session_id) = codex_canonical_native_session_id_path_hint(path) {
+    if let Some(native_session_id) =
+        crate::provider::codex::catalog::codex_canonical_session_id_from_path(path)
+    {
         return Some(native_session_id);
     }
     let stem = crate::provider::codex::catalog::codex_session_file_stem(path)?;
@@ -436,14 +460,20 @@ pub(super) fn codex_terminal_native_session_id_hint(
 ) -> CodexSourceBackedResultV0<Option<String>> {
     let opened = authority.open_file(authority_path)?;
     let observation = opened_codex_file_observation(path, opened.file())?;
-    Ok(
-        crate::provider::codex::catalog::probe_codex_native_session_id(
-            path,
-            &opened,
-            observation.len,
-        )?
-        .or_else(|| codex_uncompressed_native_session_id_path_hint(path)),
-    )
+    let native_session_id = match crate::provider::codex::catalog::probe_codex_native_session_id(
+        path,
+        &opened,
+        observation.len,
+    ) {
+        Ok(native_session_id) => native_session_id,
+        // Opening discovery already binds malformed ownership as a
+        // rejected leaf. A terminal hint must abstain for that same path
+        // rather than promote one quarantined file into a route failure.
+        Err(CaptureError::InvalidPayload(_)) => None,
+        Err(error) => return Err(error.into()),
+    };
+    opened.revalidate_leaf()?;
+    Ok(native_session_id.or_else(|| codex_uncompressed_native_session_id_path_hint(path)))
 }
 
 fn normalized_session_roots(session_roots: &[PathBuf]) -> CodexSourceBackedResultV0<Vec<PathBuf>> {

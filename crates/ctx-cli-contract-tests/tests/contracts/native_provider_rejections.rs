@@ -113,6 +113,22 @@ fn write_codex_lineage_rollout(
     marker: &str,
 ) -> PathBuf {
     fs::create_dir_all(root).unwrap();
+    let session_meta = codex_lineage_session_meta(
+        native_session_id,
+        parent_native_session_id,
+        advisory_session_id,
+    );
+    let message = codex_lineage_message(marker);
+    let path = root.join(format!("rollout-{native_session_id}.jsonl"));
+    fs::write(&path, format!("{session_meta}\n{message}\n")).unwrap();
+    path
+}
+
+fn codex_lineage_session_meta(
+    native_session_id: &str,
+    parent_native_session_id: Option<&str>,
+    advisory_session_id: Option<&str>,
+) -> serde_json::Value {
     let mut payload = serde_json::json!({
         "id": native_session_id,
         "timestamp": "2026-08-07T12:00:00Z",
@@ -128,12 +144,15 @@ fn write_codex_lineage_rollout(
     if let Some(advisory) = advisory_session_id {
         payload["session_id"] = serde_json::json!(advisory);
     }
-    let session_meta = serde_json::json!({
+    serde_json::json!({
         "timestamp": "2026-08-07T12:00:00Z",
         "type": "session_meta",
         "payload": payload,
-    });
-    let message = serde_json::json!({
+    })
+}
+
+fn codex_lineage_message(marker: &str) -> serde_json::Value {
+    serde_json::json!({
         "timestamp": "2026-08-07T12:00:01Z",
         "type": "response_item",
         "payload": {
@@ -141,9 +160,23 @@ fn write_codex_lineage_rollout(
             "role": "assistant",
             "content": [{"type": "output_text", "text": marker}]
         }
-    });
+    })
+}
+
+fn write_codex_metadata_rollout(
+    root: &Path,
+    native_session_id: &str,
+    metadata: impl IntoIterator<Item = serde_json::Value>,
+    marker: &str,
+) -> PathBuf {
+    fs::create_dir_all(root).unwrap();
     let path = root.join(format!("rollout-{native_session_id}.jsonl"));
-    fs::write(&path, format!("{session_meta}\n{message}\n")).unwrap();
+    let mut body = metadata
+        .into_iter()
+        .map(|value| format!("{value}\n"))
+        .collect::<String>();
+    body.push_str(&format!("{}\n", codex_lineage_message(marker)));
+    fs::write(&path, body).unwrap();
     path
 }
 
@@ -665,6 +698,96 @@ fn codex_nested_root_advisory_import_is_searchable_and_showable_without_source_f
     assert!(shown["event"]["text"]
         .as_str()
         .is_some_and(|text| text.contains(great_grandchild_marker)));
+}
+
+#[test]
+fn codex_cold_import_keeps_inherited_metadata_and_quarantines_unrelated_owner() {
+    let temp = daemon_test_root();
+    let sessions = temp.path().join("codex-inherited-metadata-sessions");
+    let owner_first = "019fc000-0000-7000-8000-0000000032b0";
+    let owner_first_parent = "019fc000-0000-7000-8000-0000000032b1";
+    let ancestor_first = "019fc000-0000-7000-8000-0000000032b2";
+    let ancestor_first_parent = "019fc000-0000-7000-8000-0000000032b3";
+    let malformed_owner = "019fc000-0000-7000-8000-0000000032b4";
+    let unrelated_owner = "019fc000-0000-7000-8000-0000000032b5";
+    let owner_first_marker = "ownerfirstcoldimportcanary614";
+    let ancestor_first_marker = "ancestorfirstcoldimportcanary614";
+    let quarantined_marker = "unrelatedownercoldimportcanary614";
+
+    write_codex_metadata_rollout(
+        &sessions,
+        owner_first,
+        [
+            codex_lineage_session_meta(owner_first, Some(owner_first_parent), Some(owner_first)),
+            codex_lineage_session_meta(owner_first_parent, None, Some(owner_first_parent)),
+        ],
+        owner_first_marker,
+    );
+    write_codex_metadata_rollout(
+        &sessions,
+        ancestor_first,
+        [
+            codex_lineage_session_meta(ancestor_first_parent, None, Some(ancestor_first_parent)),
+            codex_lineage_session_meta(
+                ancestor_first,
+                Some(ancestor_first_parent),
+                Some(ancestor_first),
+            ),
+        ],
+        ancestor_first_marker,
+    );
+    let malformed_path = write_codex_metadata_rollout(
+        &sessions,
+        malformed_owner,
+        [
+            codex_lineage_session_meta(malformed_owner, None, Some(malformed_owner)),
+            codex_lineage_session_meta(unrelated_owner, None, Some(unrelated_owner)),
+        ],
+        quarantined_marker,
+    );
+    fs::rename(
+        malformed_path,
+        sessions.join("renamed-corrupt-owner-rollout.jsonl"),
+    )
+    .unwrap();
+
+    let report = json_output(ctx(&temp).args([
+        "import",
+        "--provider",
+        "codex",
+        "--path",
+        sessions.to_str().unwrap(),
+        "--format=json",
+        "--progress",
+        "none",
+    ]));
+    let source = assert_source_backed_publication(&report, "codex", "codex_session_jsonl_tree", 0);
+    assert_eq!(source["source_failure_total"], 0, "{report:#}");
+    assert_eq!(source["route_source_failure_total"], 0, "{report:#}");
+    assert_eq!(source["current_source_count"], 2, "{report:#}");
+
+    for marker in [owner_first_marker, ancestor_first_marker] {
+        let search = json_output(ctx(&temp).args([
+            "search",
+            marker,
+            "--provider",
+            "codex",
+            "--refresh",
+            "off",
+            "--format=json",
+        ]));
+        assert_search_provider_oracle(&search, "codex", marker, 1, "message");
+    }
+    let quarantined = json_output(ctx(&temp).args([
+        "search",
+        quarantined_marker,
+        "--provider",
+        "codex",
+        "--refresh",
+        "off",
+        "--format=json",
+    ]));
+    assert!(quarantined["results"].as_array().unwrap().is_empty());
 }
 
 #[test]

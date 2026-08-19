@@ -43,6 +43,100 @@ fn logical_identity(records: &[CoreRecord]) -> Vec<(String, String, String)> {
         .collect()
 }
 
+fn revert_session_path(
+    root: &Path,
+    native_session_id: &str,
+    rollout_id: &str,
+    compressed: bool,
+) -> PathBuf {
+    root.join(format!(
+        "rollout-2026-08-19T12-00-00-{native_session_id}_{rollout_id}.jsonl{}",
+        if compressed { ".zst" } else { "" }
+    ))
+}
+
+#[test]
+fn revert_rollouts_use_embedded_owner_for_raw_and_compressed_tree_and_explicit_routes() {
+    let temp = tempdir().unwrap();
+    let tree_root = temp.path().join("revert-tree");
+    let tree_index = temp.path().join("revert-tree-index");
+    let explicit_root = temp.path().join("revert-explicit");
+    let explicit_index = temp.path().join("revert-explicit-index");
+    fs::create_dir_all(&tree_root).unwrap();
+    fs::create_dir_all(&explicit_root).unwrap();
+
+    let cases = [
+        (
+            "019fb000-0000-7000-8000-000000000076",
+            "019fb000-0000-7000-8000-000000000077",
+            false,
+            "rawtreerevertowner",
+        ),
+        (
+            "019fb000-0000-7000-8000-000000000078",
+            "019fb000-0000-7000-8000-000000000079",
+            true,
+            "compressedtreerevertowner",
+        ),
+    ];
+    for (native_session_id, rollout_id, compressed, marker) in cases {
+        let path = revert_session_path(&tree_root, native_session_id, rollout_id, compressed);
+        let bytes = session_bytes(native_session_id, marker);
+        if compressed {
+            write_compressed(&path, &bytes);
+        } else {
+            fs::write(path, bytes).unwrap();
+        }
+    }
+    let registry = register_tree(&[&tree_root]);
+    let receipt =
+        refresh_source_backed_generation(&tree_index, &registry, writer_options()).unwrap();
+    assert!(receipt.failed_routes.is_empty());
+    assert!(receipt.logical_source_failures.is_empty());
+    assert_eq!(receipt.sources.len(), 2);
+    let index = VerifiedIndex::open(&tree_index).unwrap();
+    for (native_session_id, _, _, marker) in cases {
+        assert_eq!(records_for(&index, native_session_id).len(), 1);
+        assert_eq!(index.search_event_candidates(marker, 8).unwrap().len(), 1);
+    }
+
+    let explicit_cases = [
+        (
+            "019fb000-0000-7000-8000-00000000007a",
+            "019fb000-0000-7000-8000-00000000007b",
+            false,
+            "rawexplicitrevertowner",
+        ),
+        (
+            "019fb000-0000-7000-8000-00000000007c",
+            "019fb000-0000-7000-8000-00000000007d",
+            true,
+            "compressedexplicitrevertowner",
+        ),
+    ];
+    let mut registry = SourceBackedProviderRegistry::new();
+    for (native_session_id, rollout_id, compressed, marker) in explicit_cases {
+        let path = revert_session_path(&explicit_root, native_session_id, rollout_id, compressed);
+        let bytes = session_bytes(native_session_id, marker);
+        if compressed {
+            write_compressed(&path, &bytes);
+        } else {
+            fs::write(&path, bytes).unwrap();
+        }
+        add_explicit_route(&mut registry, &path);
+    }
+    let receipt =
+        refresh_source_backed_generation(&explicit_index, &registry, writer_options()).unwrap();
+    assert!(receipt.failed_routes.is_empty());
+    assert!(receipt.logical_source_failures.is_empty());
+    assert_eq!(receipt.sources.len(), 2);
+    let index = VerifiedIndex::open(&explicit_index).unwrap();
+    for (native_session_id, _, _, marker) in explicit_cases {
+        assert_eq!(records_for(&index, native_session_id).len(), 1);
+        assert_eq!(index.search_event_candidates(marker, 8).unwrap().len(), 1);
+    }
+}
+
 #[test]
 fn exact_compressed_and_raw_rollouts_have_identical_logical_identity() {
     let temp = tempdir().unwrap();

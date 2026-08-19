@@ -14,6 +14,10 @@ use crate::{CaptureError, Result, CODEX_SESSION_SOURCE_FORMAT};
 use ctx_history_capture_model::time::{parse_rfc3339_utc, system_time_ms};
 
 use crate::provider::codex::nativepath::{opened_codex_file_observation, CodexFileObservation};
+use crate::provider::codex::session_meta::{
+    select_codex_session_meta_owner, CodexSessionMetaIdentity,
+    MAX_CODEX_SESSION_META_PREFIX_RECORDS,
+};
 use crate::provider::codex::{CODEX_CAPTURE_REVISION, CODEX_POLICY_REVISION};
 
 pub(crate) const CODEX_CATALOG_MAX_SOURCES: usize = 131_072;
@@ -184,8 +188,12 @@ fn read_codex_session_meta(
 ) -> Result<Option<Value>> {
     let mut file = opened.file().try_clone()?;
     file.seek(SeekFrom::Start(0))?;
+    let expected_owner = codex_canonical_session_id_from_path(path);
     if !is_codex_compressed_session_rollout_path(path) {
-        return read_codex_session_meta_from_reader(BufReader::new(file));
+        return read_codex_session_meta_from_reader(
+            BufReader::new(file),
+            expected_owner.as_deref(),
+        );
     }
     if compressed_length == 0
         || compressed_length > ctx_history_jsonl::MAX_STANDARD_ZSTD_COMPRESSED_BYTES
@@ -204,7 +212,7 @@ fn read_codex_session_meta(
     let mut reader = BufReader::new(
         decoder.take(CODEX_COMPRESSED_CATALOG_MAX_DECODED_PREFIX_BYTES.saturating_add(1)),
     );
-    let session_meta = read_codex_session_meta_from_reader(&mut reader)?;
+    let session_meta = read_codex_session_meta_from_reader(&mut reader, expected_owner.as_deref())?;
     if session_meta.is_none() && reader.get_ref().limit() == 0 {
         return Err(CaptureError::InvalidPayload(
             "Codex compressed catalog prefix exceeds the bounded decompression limit".to_owned(),
@@ -213,11 +221,15 @@ fn read_codex_session_meta(
     Ok(session_meta)
 }
 
-fn read_codex_session_meta_from_reader(mut reader: impl std::io::BufRead) -> Result<Option<Value>> {
+fn read_codex_session_meta_from_reader(
+    mut reader: impl std::io::BufRead,
+    expected_owner: Option<&str>,
+) -> Result<Option<Value>> {
     let mut line = Vec::new();
-    let mut session_meta = None;
-    let mut native_session_id = None;
-    for _ in 0..32 {
+    let mut first_session_meta = None;
+    let mut metadata = Vec::new();
+    let mut identities = Vec::new();
+    for _ in 0..MAX_CODEX_SESSION_META_PREFIX_RECORDS {
         match read_provider_jsonl_line_or_skip_oversized(&mut reader, &mut line)? {
             ProviderJsonlLineRead::Eof => break,
             ProviderJsonlLineRead::Line { .. } => {}
@@ -232,24 +244,56 @@ fn read_codex_session_meta_from_reader(mut reader: impl std::io::BufRead) -> Res
         if value.get("type").and_then(Value::as_str) != Some("session_meta") {
             continue;
         }
-        let candidate_native_session_id = codex_native_session_id_from_meta(&value);
-        if native_session_id
-            .as_ref()
-            .zip(candidate_native_session_id.as_ref())
-            .is_some_and(|(admitted, candidate)| admitted != candidate)
-        {
-            return Err(CaptureError::InvalidPayload(
-                "Codex catalog prefix contains conflicting session_meta owners".to_owned(),
-            ));
+        if first_session_meta.is_none() {
+            first_session_meta = Some(value.clone());
         }
-        if native_session_id.is_none() {
-            native_session_id = candidate_native_session_id;
-        }
-        if session_meta.is_none() {
-            session_meta = Some(value);
+        if let Some(identity) = codex_session_meta_identity(&value) {
+            metadata.push(value);
+            identities.push(identity);
         }
     }
-    Ok(session_meta)
+    if identities.is_empty() {
+        return Ok(first_session_meta);
+    }
+    let owner = select_codex_session_meta_owner(&identities, expected_owner).ok_or_else(|| {
+        CaptureError::InvalidPayload(
+            "Codex catalog prefix contains conflicting session_meta owners".to_owned(),
+        )
+    })?;
+    Ok(metadata.get(owner).cloned())
+}
+
+fn codex_session_meta_identity(value: &Value) -> Option<CodexSessionMetaIdentity> {
+    let payload = value.get("payload")?;
+    let native_session_id = codex_native_session_id_from_meta(value)?;
+    let provider_root_native_session_id = payload
+        .get("session_id")
+        .and_then(Value::as_str)
+        .filter(|id| !id.trim().is_empty())
+        .map(str::to_owned);
+    let parent_thread_id = payload.get("parent_thread_id").and_then(Value::as_str);
+    let forked_from_id = payload.get("forked_from_id").and_then(Value::as_str);
+    let history_base_thread_id = payload
+        .pointer("/history_base/thread_id")
+        .and_then(Value::as_str);
+    let source = payload.get("source").cloned().unwrap_or(Value::Null);
+    let (parent_native_session_id, session_relationship) = codex_session_relationship(
+        &source,
+        parent_thread_id,
+        forked_from_id,
+        history_base_thread_id,
+    );
+    let root_native_session_id = match session_relationship {
+        Some(ProviderNativeSessionRelationship::Root) | None => None,
+        Some(_) => provider_root_native_session_id
+            .filter(|root_native_session_id| root_native_session_id != &native_session_id),
+    };
+    Some(CodexSessionMetaIdentity {
+        native_session_id,
+        parent_native_session_id,
+        root_native_session_id,
+        session_relationship,
+    })
 }
 
 /// Reads only the bounded session-meta prefix needed to identify a newly
@@ -373,6 +417,27 @@ pub(crate) fn codex_session_id_from_path(path: &Path) -> Option<String> {
     (!stem.trim().is_empty()).then(|| stem.to_owned())
 }
 
+pub(crate) fn codex_canonical_session_id_from_path(path: &Path) -> Option<String> {
+    let stem = codex_session_file_stem(path)?;
+    let bytes = stem.as_bytes();
+    let tail = codex_uuid_suffix(bytes)?;
+    let prefix = &bytes[..bytes.len().saturating_sub(36)];
+    if prefix.last() == Some(&b'_') && codex_uuid_suffix(&prefix[..prefix.len() - 1]).is_some() {
+        // Revert keeps the thread ID stable but appends a distinct rollout ID
+        // after an underscore. The embedded session_meta owns that file.
+        return None;
+    }
+    Some(tail.to_owned())
+}
+
+fn codex_uuid_suffix(bytes: &[u8]) -> Option<&str> {
+    let tail = bytes.get(bytes.len().checked_sub(36)?..)?;
+    tail.iter()
+        .all(|byte| byte.is_ascii_hexdigit() || *byte == b'-')
+        .then(|| std::str::from_utf8(tail).ok())
+        .flatten()
+}
+
 pub(crate) fn is_codex_session_rollout_path(path: &Path) -> bool {
     path.file_name()
         .and_then(|name| name.to_str())
@@ -393,7 +458,7 @@ pub(crate) fn codex_session_file_stem(path: &Path) -> Option<&str> {
 
 #[cfg(test)]
 mod tests {
-    use std::io::Cursor;
+    use std::{io::Cursor, path::PathBuf};
 
     use serde_json::json;
 
@@ -450,6 +515,23 @@ mod tests {
         assert_eq!(
             probe_codex_native_session_id(&path, &opened, bytes.len() as u64).unwrap(),
             Some(native_session_id.to_owned())
+        );
+    }
+
+    #[test]
+    fn revert_rollout_suffix_defers_to_embedded_thread_owner() {
+        let thread_id = "019fb000-0000-7000-8000-000000000074";
+        let rollout_id = "019fb000-0000-7000-8000-000000000075";
+        for suffix in ["jsonl", "jsonl.zst"] {
+            let path = PathBuf::from(format!(
+                "rollout-2026-08-19T12-00-00-{thread_id}_{rollout_id}.{suffix}"
+            ));
+            assert!(codex_canonical_session_id_from_path(&path).is_none());
+        }
+        let canonical = PathBuf::from(format!("rollout-2026-08-19T12-00-00-{thread_id}.jsonl"));
+        assert_eq!(
+            codex_canonical_session_id_from_path(&canonical).as_deref(),
+            Some(thread_id)
         );
     }
 }

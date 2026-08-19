@@ -69,6 +69,7 @@ impl CodexGenerationRouteV0 {
 pub(super) struct CodexPreparedRouteV0 {
     pub(super) missing: bool,
     pub(super) sources: Vec<CodexSessionPlanV0>,
+    pub(super) rejected_leaves: Vec<super::catalog::CodexRejectedCatalogLeafV0>,
 }
 
 struct CodexPreparedGenerationV0 {
@@ -195,15 +196,15 @@ impl CodexGenerationNormalizationCoordinatorV0 {
         let mut established_owners = HashMap::<(PathBuf, String), usize>::new();
         let mut descriptor_bindings = HashMap::<[u8; 32], (SourceKey, String)>::new();
         for (participant_id, participant) in participants {
-            let (missing, discovered) = match &participant.authority {
+            let (missing, discovered, rejected_leaves) = match &participant.authority {
                 CodexGenerationParticipantAuthorityV0::SessionTree { roots } => {
-                    let sources =
+                    let inventory =
                         super::catalog::discover_codex_deferred_session_tree_inventory_v0(roots)?;
-                    (false, sources)
+                    (false, inventory.sources, inventory.rejected_leaves)
                 }
                 CodexGenerationParticipantAuthorityV0::ExplicitSession { input } => {
                     let plan = observe_codex_explicit_session_source_backed_v0(input)?;
-                    (plan.is_none(), plan.into_iter().collect())
+                    (plan.is_none(), plan.into_iter().collect(), Vec::new())
                 }
             };
 
@@ -235,7 +236,14 @@ impl CodexGenerationNormalizationCoordinatorV0 {
                 // same child-local tuple from its own checkpoint.
                 sources.push(plan);
             }
-            routes.insert(participant_id, CodexPreparedRouteV0 { missing, sources });
+            routes.insert(
+                participant_id,
+                CodexPreparedRouteV0 {
+                    missing,
+                    sources,
+                    rejected_leaves,
+                },
+            );
         }
 
         self.state

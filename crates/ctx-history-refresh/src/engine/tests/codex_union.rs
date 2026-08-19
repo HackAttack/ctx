@@ -261,7 +261,7 @@ fn codex_nested_root_advisory_is_admitted_from_each_childs_own_bytes() {
     assert!(root_record.parent_session_id.is_none());
     assert_eq!(child_record.provider_session_id.as_deref(), Some(child));
     assert_eq!(child_record.parent_session_id, Some(root_record.session_id));
-    assert!(child_record.root_session_id.is_none());
+    assert_eq!(child_record.root_session_id, Some(root_record.session_id));
     assert_eq!(
         grandchild_record.provider_session_id.as_deref(),
         Some(grandchild)
@@ -270,7 +270,10 @@ fn codex_nested_root_advisory_is_admitted_from_each_childs_own_bytes() {
         grandchild_record.parent_session_id,
         Some(child_record.session_id)
     );
-    assert!(grandchild_record.root_session_id.is_none());
+    assert_eq!(
+        grandchild_record.root_session_id,
+        Some(root_record.session_id)
+    );
     assert_eq!(
         great_grandchild_record.provider_session_id.as_deref(),
         Some(great_grandchild)
@@ -279,7 +282,10 @@ fn codex_nested_root_advisory_is_admitted_from_each_childs_own_bytes() {
         great_grandchild_record.parent_session_id,
         Some(grandchild_record.session_id)
     );
-    assert!(great_grandchild_record.root_session_id.is_none());
+    assert_eq!(
+        great_grandchild_record.root_session_id,
+        Some(root_record.session_id)
+    );
 }
 
 #[test]
@@ -753,7 +759,7 @@ fn explicit_child_without_selected_parent_publishes_unresolved_and_never_reroots
         Some("forked")
     );
     let unresolved_parent = child.parent_session_id.expect("direct parent claim");
-    assert!(child.root_session_id.is_none());
+    assert_eq!(child.root_session_id, Some(unresolved_parent));
     assert_ne!(unresolved_parent, selected.session_id);
     assert!(records
         .iter()
@@ -795,7 +801,7 @@ fn assert_codex_parent_child_records(
         Some("forked")
     );
     assert_eq!(child.parent_session_id, Some(parent.session_id));
-    assert!(child.root_session_id.is_none());
+    assert_eq!(child.root_session_id, Some(parent.session_id));
     assert_ne!(child.session_id, parent.session_id);
 }
 
