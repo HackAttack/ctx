@@ -35,6 +35,18 @@ const PHYSICAL_HASH_BUFFER_BYTES: usize = 64 * 1024;
 const TANTIVY_META_FILE: &str = "meta.json";
 const MANAGED_FILE: &str = ".managed.json";
 pub(crate) const MAX_MANAGED_METADATA_BYTES: u64 = 1024 * 1024;
+pub(crate) const MAX_MANAGED_FILE_ENTRIES: usize = 4_096;
+pub(crate) const MAX_MANAGED_GENERATION_BYTES: u64 = 1024 * 1024 * 1024 * 1024;
+
+pub(crate) struct ManagedFileTopology {
+    retired: BTreeSet<PathBuf>,
+}
+
+impl ManagedFileTopology {
+    pub(crate) fn retired(&self) -> &BTreeSet<PathBuf> {
+        &self.retired
+    }
+}
 
 #[derive(Debug)]
 pub(super) struct PhysicalFileDigest {
@@ -282,18 +294,131 @@ pub fn validate_candidate_managed_files(
 
     let managed =
         serde_json::from_slice::<Vec<PathBuf>>(&bytes).map_err(|_| IndexError::ChecksumMismatch)?;
-    if managed.iter().any(|path| {
-        let mut components = path.components();
-        !matches!(components.next(), Some(std::path::Component::Normal(_)))
-            || components.next().is_some()
-    }) {
-        return Err(IndexError::ChecksumMismatch);
+    let active = active_paths(index)?;
+    let topology = managed_file_topology(&managed, &active).ok_or(IndexError::ChecksumMismatch)?;
+    validate_retired_managed_files(
+        root,
+        generation_path,
+        topology_authority,
+        topology.retired(),
+    )?;
+    Ok(())
+}
+
+/// Classifies Tantivy's managed-file ledger against the searchable topology.
+///
+/// `meta.json` remains authoritative for the active segment set. The managed
+/// ledger must contain every active path, but it may also retain bounded,
+/// uniquely named Tantivy segment components that garbage collection could not
+/// remove. No other managed namespace is accepted.
+pub(crate) fn managed_file_topology(
+    managed: &[PathBuf],
+    active: &BTreeSet<PathBuf>,
+) -> Option<ManagedFileTopology> {
+    if managed.len() > MAX_MANAGED_FILE_ENTRIES
+        || managed
+            .iter()
+            .any(|path| !is_single_relative_component(path))
+    {
+        return None;
     }
     let managed_set = managed.iter().cloned().collect::<BTreeSet<_>>();
-    if managed_set.len() != managed.len() || managed_set != active_paths(index)? {
+    if managed_set.len() != managed.len() || !active.is_subset(&managed_set) {
+        return None;
+    }
+    let retired = managed_set
+        .difference(active)
+        .cloned()
+        .collect::<BTreeSet<_>>();
+    if retired.iter().any(|path| !is_tantivy_segment_path(path)) {
+        return None;
+    }
+    Some(ManagedFileTopology { retired })
+}
+
+pub(crate) fn canonical_active_managed_bytes(active: &BTreeSet<PathBuf>) -> Result<Vec<u8>> {
+    let mut bytes = serde_json::to_vec(active)?;
+    bytes.push(b'\n');
+    if bytes.len() as u64 > MAX_MANAGED_METADATA_BYTES {
         return Err(IndexError::ChecksumMismatch);
     }
+    Ok(bytes)
+}
+
+fn validate_retired_managed_files(
+    root: &Path,
+    generation_path: &Path,
+    topology_authority: Option<&ActiveGenerationPointer>,
+    retired: &BTreeSet<PathBuf>,
+) -> Result<()> {
+    let mut present_bytes = 0_u64;
+    for relative in retired {
+        let path = generation_path.join(relative);
+        let metadata = match std::fs::symlink_metadata(&path) {
+            Ok(metadata) => metadata,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(_) => return Err(IndexError::ChecksumMismatch),
+        };
+        if !metadata.file_type().is_file() || metadata.file_type().is_symlink() {
+            return Err(IndexError::ChecksumMismatch);
+        }
+        let (file, before) =
+            open_authenticated_artifact(root, generation_path, relative, topology_authority)?;
+        present_bytes = present_bytes
+            .checked_add(before.identity.length())
+            .ok_or(IndexError::CountOverflow)?;
+        if present_bytes > MAX_MANAGED_GENERATION_BYTES {
+            return Err(IndexError::ChecksumMismatch);
+        }
+        let after = recapture_authenticated_artifact(
+            root,
+            generation_path,
+            relative,
+            &file,
+            topology_authority,
+        )?;
+        if after != before {
+            return Err(IndexError::ConcurrentGenerationChange);
+        }
+    }
     Ok(())
+}
+
+fn is_single_relative_component(path: &Path) -> bool {
+    let mut components = path.components();
+    matches!(components.next(), Some(std::path::Component::Normal(_)))
+        && components.next().is_none()
+}
+
+fn is_tantivy_segment_path(path: &Path) -> bool {
+    let Some(name) = path.to_str() else {
+        return false;
+    };
+    let Some((segment_id, suffix)) = name.get(..32).zip(name.get(32..)) else {
+        return false;
+    };
+    if !segment_id
+        .bytes()
+        .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+    {
+        return false;
+    }
+    if matches!(
+        suffix,
+        ".idx" | ".pos" | ".term" | ".store" | ".fast" | ".fieldnorm"
+    ) {
+        return true;
+    }
+    let Some(delete_opstamp) = suffix
+        .strip_prefix('.')
+        .and_then(|suffix| suffix.strip_suffix(".del"))
+    else {
+        return false;
+    };
+    !delete_opstamp.is_empty()
+        && (delete_opstamp == "0" || !delete_opstamp.starts_with('0'))
+        && delete_opstamp.bytes().all(|byte| byte.is_ascii_digit())
+        && delete_opstamp.parse::<u64>().is_ok()
 }
 
 fn generation_root(generation_path: &Path) -> Result<&Path> {
@@ -454,6 +579,45 @@ fn sha256_physical_authority_distinguishes_stubbed_crc_collision() {
         canonical_physical_integrity_digest(&[entry(&first)]).unwrap(),
         canonical_physical_integrity_digest(&[entry(&second)]).unwrap()
     );
+}
+
+#[cfg(test)]
+#[test]
+fn managed_topology_accepts_only_bounded_retired_tantivy_segments() {
+    let active_segment = PathBuf::from("11111111111111111111111111111111.store");
+    let active = BTreeSet::from([PathBuf::from(TANTIVY_META_FILE), active_segment.clone()]);
+    let retired_store = PathBuf::from("22222222222222222222222222222222.store");
+    let retired_delete = PathBuf::from("33333333333333333333333333333333.42.del");
+    let managed = vec![
+        PathBuf::from(TANTIVY_META_FILE),
+        active_segment,
+        retired_store.clone(),
+        retired_delete.clone(),
+    ];
+
+    let topology = managed_file_topology(&managed, &active).unwrap();
+    assert_eq!(
+        topology.retired(),
+        &BTreeSet::from([retired_store, retired_delete])
+    );
+
+    for invalid in [
+        PathBuf::from("operator-note.txt"),
+        PathBuf::from("../22222222222222222222222222222222.store"),
+        PathBuf::from("2222222222222222222222222222222.store"),
+        PathBuf::from("2222222222222222222222222222222g.store"),
+        PathBuf::from("22222222222222222222222222222222.segment"),
+        PathBuf::from("22222222222222222222222222222222.01.del"),
+    ] {
+        let mut invalid_managed = managed.clone();
+        invalid_managed.push(invalid);
+        assert!(managed_file_topology(&invalid_managed, &active).is_none());
+    }
+
+    let mut duplicate = managed.clone();
+    duplicate.push(managed[0].clone());
+    assert!(managed_file_topology(&duplicate, &active).is_none());
+    assert!(managed_file_topology(&managed[1..], &active).is_none());
 }
 
 pub fn active_index_files(index: &tantivy::Index) -> Result<BTreeSet<PathBuf>> {

@@ -28,7 +28,10 @@ use crate::{
         capture_artifact_identity, open_authenticated_artifact, recapture_authenticated_artifact,
     },
     lexical_index_settings,
-    physical::{PhysicalFileDigest, MAX_MANAGED_METADATA_BYTES},
+    physical::{
+        canonical_active_managed_bytes, managed_file_topology, PhysicalFileDigest,
+        MAX_MANAGED_METADATA_BYTES,
+    },
     physical_integrity_digest, verify_or_certify_physical_integrity, ActiveGenerationPointer,
     CandidateGeneration, CandidatePhysicalProof, CertifiedPhysicalIntegrity, DurableMmapDirectory,
     GenerationError as IndexError, Result, INDEX_GENERATIONS_DIRECTORY,
@@ -357,63 +360,102 @@ fn authenticated_clone_plan(source: &BoundDirectory, index: &Index) -> Result<Cl
         validate_single_component(path)?;
     }
 
-    let mut seen_active = BTreeSet::new();
-    let mut managed_seen = false;
-    let mut planned = BTreeMap::new();
-    let mut total_files = 0_usize;
-    let mut total_bytes = 0_u64;
+    let mut observed = BTreeMap::new();
     for name in directory_entries(&source.file, MAX_REPUBLISH_DIRECTORY_ENTRIES)? {
-        let name_text = name
-            .to_str()
-            .ok_or(IndexError::CurrentRepublishSourceTopology(
+        if name.to_str().is_none() {
+            return Err(IndexError::CurrentRepublishSourceTopology(
                 "non-UTF-8 directory entry",
-            ))?;
+            ));
+        }
         let relative = PathBuf::from(&name);
         validate_single_component(&relative)?;
         let file = open_regular_file_at(&source.file, &relative)?;
         let identity = FileIdentity::from_metadata(&file.metadata()?);
         validate_file_binding(&source.file, &relative, identity)?;
-        if active.contains(&relative) {
-            seen_active.insert(relative.clone());
+        let copy_required =
+            relative == Path::new("meta.json") || relative == Path::new(MANAGED_FILE);
+        if observed
+            .insert(
+                relative.clone(),
+                PlannedFile {
+                    path: relative,
+                    identity,
+                    copy_required,
+                },
+            )
+            .is_some()
+        {
+            return Err(IndexError::CurrentRepublishSourceTopology(
+                "duplicate directory entry",
+            ));
+        }
+    }
+    let managed =
+        observed
+            .get(Path::new(MANAGED_FILE))
+            .ok_or(IndexError::CurrentRepublishSourceTopology(
+                "managed file missing",
+            ))?;
+    if managed.identity.bytes > MAX_MANAGED_METADATA_BYTES {
+        return Err(IndexError::CurrentRepublishByteLimit {
+            actual: managed.identity.bytes,
+            maximum: MAX_MANAGED_METADATA_BYTES,
+        });
+    }
+    let managed_bytes = read_bound_file(source, managed, MAX_MANAGED_METADATA_BYTES)?;
+    let managed_paths: Vec<PathBuf> = serde_json::from_slice(&managed_bytes)
+        .map_err(|_| IndexError::CurrentRepublishSourceTopology("invalid managed metadata"))?;
+    for path in &managed_paths {
+        validate_single_component(path)?;
+    }
+    let topology = managed_file_topology(&managed_paths, &active).ok_or(
+        IndexError::CurrentRepublishSourceTopology(
+            "managed metadata is not a safe active superset",
+        ),
+    )?;
+    let managed_bytes = if topology.retired().is_empty() {
+        managed_bytes
+    } else {
+        canonical_active_managed_bytes(&active)?
+    };
+
+    let mut seen_active = BTreeSet::new();
+    let mut planned = BTreeMap::new();
+    let mut admitted_files = 0_usize;
+    let mut admitted_bytes = 0_u64;
+    let mut total_files = 0_usize;
+    let mut total_bytes = 0_u64;
+    for (relative, file) in observed {
+        let name_text = relative
+            .to_str()
+            .ok_or(IndexError::CurrentRepublishSourceTopology(
+                "non-UTF-8 directory entry",
+            ))?;
+        let clone_file = active.contains(&relative) || relative == Path::new(MANAGED_FILE);
+        if clone_file || topology.retired().contains(&relative) {
             admit_clone_resource(
-                &mut total_files,
-                &mut total_bytes,
-                identity.bytes,
+                &mut admitted_files,
+                &mut admitted_bytes,
+                file.identity.bytes,
                 MAX_REPUBLISH_CLONE_FILES,
                 MAX_REPUBLISH_CLONE_BYTES,
             )?;
-            planned.insert(
-                relative.clone(),
-                PlannedFile {
-                    copy_required: relative == Path::new("meta.json"),
-                    path: relative,
-                    identity,
-                },
-            );
-        } else if name_text == MANAGED_FILE {
-            if identity.bytes > MAX_MANAGED_METADATA_BYTES {
-                return Err(IndexError::CurrentRepublishByteLimit {
-                    actual: identity.bytes,
-                    maximum: MAX_MANAGED_METADATA_BYTES,
-                });
+        }
+        if clone_file {
+            if active.contains(&relative) {
+                seen_active.insert(relative.clone());
             }
-            managed_seen = true;
             admit_clone_resource(
                 &mut total_files,
                 &mut total_bytes,
-                identity.bytes,
+                file.identity.bytes,
                 MAX_REPUBLISH_CLONE_FILES,
                 MAX_REPUBLISH_CLONE_BYTES,
             )?;
-            planned.insert(
-                relative.clone(),
-                PlannedFile {
-                    path: relative,
-                    identity,
-                    copy_required: true,
-                },
-            );
-        } else if TANTIVY_LOCK_FILES.contains(&name_text) && identity.bytes == 0 {
+            planned.insert(relative, file);
+        } else if topology.retired().contains(&relative)
+            || (TANTIVY_LOCK_FILES.contains(&name_text) && file.identity.bytes == 0)
+        {
             continue;
         } else {
             return Err(IndexError::CurrentRepublishSourceTopology(
@@ -421,28 +463,9 @@ fn authenticated_clone_plan(source: &BoundDirectory, index: &Index) -> Result<Cl
             ));
         }
     }
-    if seen_active != active || !managed_seen {
+    if seen_active != active {
         return Err(IndexError::CurrentRepublishSourceTopology(
             "active or managed file missing",
-        ));
-    }
-
-    let managed =
-        planned
-            .get(Path::new(MANAGED_FILE))
-            .ok_or(IndexError::CurrentRepublishSourceTopology(
-                "managed file missing",
-            ))?;
-    let managed_bytes = read_bound_file(source, managed, MAX_MANAGED_METADATA_BYTES)?;
-    let managed_paths: Vec<PathBuf> = serde_json::from_slice(&managed_bytes)
-        .map_err(|_| IndexError::CurrentRepublishSourceTopology("invalid managed metadata"))?;
-    for path in &managed_paths {
-        validate_single_component(path)?;
-    }
-    let managed_set = managed_paths.iter().cloned().collect::<BTreeSet<_>>();
-    if managed_set.len() != managed_paths.len() || managed_set != active {
-        return Err(IndexError::CurrentRepublishSourceTopology(
-            "managed metadata does not match active files",
         ));
     }
 

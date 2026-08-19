@@ -694,6 +694,42 @@ fn unexpected_regular_file_is_not_cloned_and_keeps_predecessor_queryable() {
     );
 }
 
+#[test]
+fn arbitrary_managed_extra_is_not_treated_as_a_retired_segment() {
+    let predecessor = GoldenPredecessor::copy();
+    let generation = active_generation_path(predecessor.root());
+    let arbitrary = PathBuf::from("operator-note.txt");
+    fs::write(
+        generation.join(&arbitrary),
+        b"not a Tantivy segment component",
+    )
+    .unwrap();
+    let managed_path = generation.join(".managed.json");
+    let mut managed =
+        serde_json::from_slice::<Vec<PathBuf>>(&fs::read(&managed_path).unwrap()).unwrap();
+    managed.push(arbitrary);
+    fs::write(&managed_path, serde_json::to_vec(&managed).unwrap()).unwrap();
+    let pointer_before = fs::read(predecessor.root().join("active-generation.json")).unwrap();
+
+    assert!(matches!(
+        open_writer_error(predecessor.root()),
+        IndexError::CurrentRepublishSourceTopology(
+            "managed metadata is not a safe active superset"
+        )
+    ));
+    assert_eq!(
+        fs::read(predecessor.root().join("active-generation.json")).unwrap(),
+        pointer_before
+    );
+    assert_eq!(
+        VerifiedIndex::open(predecessor.root())
+            .unwrap()
+            .count_term("evidence")
+            .unwrap(),
+        3
+    );
+}
+
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 #[test]
 fn symlink_in_predecessor_generation_is_rejected_before_clone() {

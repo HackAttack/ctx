@@ -34,7 +34,7 @@ pub use metrics::{candidate_clone_metrics, reset_candidate_clone_metrics, Candid
 use resource::{admit_clone_resource, validate_single_component};
 
 pub(super) const MAX_REPUBLISH_CLONE_FILES: usize = 4_096;
-pub(super) const MAX_REPUBLISH_CLONE_BYTES: u64 = 1024 * 1024 * 1024 * 1024;
+pub(super) const MAX_REPUBLISH_CLONE_BYTES: u64 = crate::physical::MAX_MANAGED_GENERATION_BYTES;
 const MAX_REPUBLISH_DIRECTORY_ENTRIES: usize = 4_096;
 const REPUBLISH_HEADROOM_RESERVE_BYTES: u64 = 16 * 1024 * 1024;
 const MANAGED_FILE: &str = ".managed.json";

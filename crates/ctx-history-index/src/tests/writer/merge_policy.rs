@@ -91,6 +91,163 @@ fn production_merge_policy_bounds_repeated_tiny_appends_amortized() {
 }
 
 #[test]
+fn merged_retired_managed_files_do_not_poison_the_active_generation() {
+    let temp = tempdir().unwrap();
+    let source = source("retired-merge-files.jsonl");
+    let mut initial = GenerationWriter::open(temp.path(), WriterOptions::default())
+        .unwrap()
+        .into_writer()
+        .unwrap();
+    initial.begin_source(source.clone()).unwrap();
+    initial
+        .add_core_record(document(&source, 1, "merge survivor 1"))
+        .unwrap();
+    initial
+        .certify_source(appendable_certificate(&source, 1, 1, 10))
+        .unwrap();
+    initial.commit(|_| true).unwrap();
+
+    let retired_witness = Arc::new(std::sync::Mutex::new(Vec::<PathBuf>::new()));
+    let mut merged_sequence = None;
+    for append_ordinal in 1..=LEXICAL_SEGMENT_MERGE_FAN_IN * 2 + 1 {
+        let sequence = append_ordinal as u64 + 1;
+        let predecessor_path = active_generation_path(temp.path());
+        let predecessor_index =
+            Index::open(DurableMmapDirectory::open(&predecessor_path).unwrap()).unwrap();
+        let predecessor_files =
+            ctx_history_index_generation::active_index_files(&predecessor_index).unwrap();
+
+        let mut append = GenerationWriter::open(temp.path(), WriterOptions::default())
+            .unwrap()
+            .into_writer()
+            .unwrap();
+        let base = append.begin_source_append(source.clone()).unwrap().clone();
+        append
+            .add_core_record(document(
+                &source,
+                sequence,
+                &format!("merge survivor {sequence}"),
+            ))
+            .unwrap();
+        let frontier = base.frontier().unwrap();
+        append
+            .certify_source_append(
+                CertifiedSourceAppend::certify(
+                    &base,
+                    appendable_certificate(&source, sequence as u8, sequence, sequence * 10),
+                    frontier.certified_prefix_bytes(),
+                    *frontier.certified_prefix_digest(),
+                )
+                .unwrap(),
+            )
+            .unwrap();
+
+        let retired_for_hook = Arc::clone(&retired_witness);
+        append.after_candidate_commit = Some(Box::new(move |candidate_path| {
+            let candidate_index =
+                Index::open(DurableMmapDirectory::open(candidate_path).unwrap()).unwrap();
+            let candidate_files =
+                ctx_history_index_generation::active_index_files(&candidate_index).unwrap();
+            let retired = predecessor_files
+                .difference(&candidate_files)
+                .cloned()
+                .collect::<Vec<_>>();
+            if retired.is_empty() {
+                return;
+            }
+
+            for relative in &retired {
+                let candidate_file = candidate_path.join(relative);
+                if !candidate_file.exists() {
+                    fs::copy(predecessor_path.join(relative), candidate_file).unwrap();
+                }
+            }
+            let managed_path = candidate_path.join(".managed.json");
+            let mut managed =
+                serde_json::from_slice::<Vec<PathBuf>>(&fs::read(&managed_path).unwrap()).unwrap();
+            managed.extend(retired.iter().cloned());
+            managed.sort();
+            managed.dedup();
+            fs::write(&managed_path, serde_json::to_vec(&managed).unwrap()).unwrap();
+            *retired_for_hook.lock().unwrap() = retired;
+        }));
+
+        append.commit(|_| true).unwrap();
+        if !retired_witness.lock().unwrap().is_empty() {
+            merged_sequence = Some(sequence);
+            break;
+        }
+    }
+
+    let merged_sequence =
+        merged_sequence.expect("production merge policy never coalesced segments");
+    let retired = retired_witness.lock().unwrap().clone();
+    let merged_path = active_generation_path(temp.path());
+    let merged_index = Index::open(DurableMmapDirectory::open(&merged_path).unwrap()).unwrap();
+    let active = ctx_history_index_generation::active_index_files(&merged_index).unwrap();
+    let managed = serde_json::from_slice::<HashSet<PathBuf>>(
+        &fs::read(merged_path.join(".managed.json")).unwrap(),
+    )
+    .unwrap();
+    assert!(retired.iter().all(|path| managed.contains(path)));
+    assert!(retired.iter().all(|path| !active.contains(path)));
+    assert!(retired.iter().all(|path| merged_path.join(path).is_file()));
+    assert_eq!(
+        VerifiedIndex::open(temp.path()).unwrap().document_count(),
+        merged_sequence
+    );
+
+    let successor_sequence = merged_sequence + 1;
+    let mut successor = GenerationWriter::open(temp.path(), WriterOptions::default())
+        .unwrap()
+        .into_writer()
+        .unwrap();
+    let base = successor
+        .begin_source_append(source.clone())
+        .unwrap()
+        .clone();
+    successor
+        .add_core_record(document(
+            &source,
+            successor_sequence,
+            "successor after retired merge files",
+        ))
+        .unwrap();
+    let frontier = base.frontier().unwrap();
+    successor
+        .certify_source_append(
+            CertifiedSourceAppend::certify(
+                &base,
+                appendable_certificate(
+                    &source,
+                    successor_sequence as u8,
+                    successor_sequence,
+                    successor_sequence * 10,
+                ),
+                frontier.certified_prefix_bytes(),
+                *frontier.certified_prefix_digest(),
+            )
+            .unwrap(),
+        )
+        .unwrap();
+    successor.commit(|_| true).unwrap();
+
+    let successor_path = active_generation_path(temp.path());
+    let successor_managed = serde_json::from_slice::<HashSet<PathBuf>>(
+        &fs::read(successor_path.join(".managed.json")).unwrap(),
+    )
+    .unwrap();
+    assert!(retired.iter().all(|path| !successor_managed.contains(path)));
+    assert!(retired
+        .iter()
+        .all(|path| !successor_path.join(path).exists()));
+    assert_eq!(
+        VerifiedIndex::open(temp.path()).unwrap().document_count(),
+        successor_sequence
+    );
+}
+
+#[test]
 fn postcommit_delete_recommit_cannot_replace_the_active_generation() {
     const REPLACED_DOCUMENTS: u64 = 3;
 
