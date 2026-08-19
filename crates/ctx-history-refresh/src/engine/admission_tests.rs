@@ -40,6 +40,19 @@ fn scoped_runtime(root: &Path) -> Arc<dyn RefreshRuntime> {
     Arc::new(ScopedAdmissionRuntime { home, cwd })
 }
 
+fn write_codex_session_fixture(sessions: &Path) {
+    fs::write(
+        sessions.join("session.jsonl"),
+        concat!(
+            r#"{"timestamp":"2026-07-30T12:00:00Z","type":"session_meta","payload":{"id":"session","cwd":"/repo/refresh-admission","originator":"codex_cli_rs","cli_version":"1.0.0","source":"cli","model_provider":"openai"}}"#,
+            "\n",
+            r#"{"timestamp":"2026-07-30T12:00:01Z","type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"refresh admission fixture"}]}}"#,
+            "\n",
+        ),
+    )
+    .unwrap();
+}
+
 fn release_pending_admission(
     coordinator: &CoreRefreshEngine,
     admission: RefreshAdmission,
@@ -280,7 +293,7 @@ fn automatic_provider_admission_is_exact_on_a_fresh_root_without_global_discover
     let runtime = scoped_runtime(temp.path());
     let sessions = temp.path().join("home/.codex/sessions");
     fs::create_dir_all(&sessions).unwrap();
-    fs::write(sessions.join("session.jsonl"), "{}\n").unwrap();
+    write_codex_session_fixture(&sessions);
     let unrelated = temp.path().join("home/.claude/projects/unrelated");
     fs::create_dir_all(&unrelated).unwrap();
     fs::write(unrelated.join("broken.jsonl"), "not-json\n").unwrap();
@@ -452,7 +465,7 @@ fn recovered_provider_scope_is_rehydrated_and_cannot_widen() {
     let runtime = scoped_runtime(temp.path());
     let sessions = temp.path().join("home/.codex/sessions");
     fs::create_dir_all(&sessions).unwrap();
-    fs::write(sessions.join("session.jsonl"), "{}\n").unwrap();
+    write_codex_session_fixture(&sessions);
     let journal = Arc::new(TestRefreshJournal::default());
     let request_id = "019fcaaa-0000-7000-8000-000000000504";
     let first = CoreRefreshEngine::with_admission_fence_for_test(
@@ -511,7 +524,7 @@ fn recovered_provider_scope_fails_when_a_persisted_route_disappears() {
     let runtime = scoped_runtime(temp.path());
     let sessions = temp.path().join("home/.codex/sessions");
     fs::create_dir_all(&sessions).unwrap();
-    fs::write(sessions.join("session.jsonl"), "{}\n").unwrap();
+    write_codex_session_fixture(&sessions);
     let journal = Arc::new(TestRefreshJournal::default());
     let request_id = "019fcaaa-0000-7000-8000-000000000507";
     let first = CoreRefreshEngine::with_admission_fence_for_test(

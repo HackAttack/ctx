@@ -53,6 +53,12 @@ fn generation_source_owner_is_admissible_v0(
     source: &CodexCatalogSource,
     expected_native_session_id: &str,
 ) -> Result<bool> {
+    // A zero-byte rollout has no records to attribute. Preserve the existing
+    // ignored-file behavior for partial writes while quarantining any
+    // nonempty source whose owner is absent or conflicting.
+    if source.catalog_observation.len == 0 {
+        return Ok(true);
+    }
     let opened = reopen_codex_source_capability(source)?;
     let observed = match crate::provider::codex::catalog::probe_codex_native_session_id(
         &source.source_path,
