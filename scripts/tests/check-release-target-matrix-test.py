@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import importlib.util
+import hashlib
 import json
 from pathlib import Path
+import re
 import tempfile
 import unittest
 
@@ -18,6 +20,24 @@ SPEC.loader.exec_module(matrix)
 
 
 class ReleaseTargetMatrixTest(unittest.TestCase):
+    def test_runtime_verifier_embeds_exact_matrix_digest(self) -> None:
+        matrix_path = SCRIPT.parents[1] / "contracts" / "release-targets-v1.json"
+        verifier_path = (
+            SCRIPT.parents[1]
+            / "crates"
+            / "ctx-companion-bridge"
+            / "src"
+            / "verifier.rs"
+        )
+        expected = hashlib.sha256(matrix_path.read_bytes()).hexdigest()
+        verifier = verifier_path.read_text(encoding="utf-8")
+        match = re.search(
+            r'const TARGET_MATRIX_SHA256: &str =\s*"([0-9a-f]{64})";',
+            verifier,
+        )
+        self.assertIsNotNone(match)
+        self.assertEqual(match.group(1), expected)
+
     def test_repository_matrix_is_exact(self) -> None:
         value = matrix.load_and_validate()
         matrix.validate_advisory_policy_coverage(value)

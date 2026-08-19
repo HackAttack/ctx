@@ -689,6 +689,7 @@ py_test(
     data = [
         ":release_advisory_policy",
         ":release_contracts",
+        "//crates/ctx-companion-bridge:cargo_package_data",
     ],
     tags = ["release-gate"],
 )

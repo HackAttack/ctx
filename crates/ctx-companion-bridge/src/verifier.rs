@@ -29,7 +29,7 @@ const EMBEDDED_TARGET_MATRIX: &[u8] = include_bytes!("../../../contracts/release
 const STATE_SCHEMA_SHA256: &str =
     "bc81eae66d02e436e3f97cbcc5e019508cf9591be05eb8e4bf86ad4659e7dbe1";
 const TARGET_MATRIX_SHA256: &str =
-    "d5d62904b417ea41ff593e4c40a3b7238af24733fbf82757d06b150f3243eefa";
+    "718d2f364e10f57e3a98228d8feaea59c955db0fd7da309a7b0479a6296e18ef";
 const MAX_ENVELOPE_BYTES: usize = 2 * 1024 * 1024;
 const MAX_MANIFEST_BYTES: usize = 1024 * 1024;
 const MAX_SIGNATURE_BYTES: usize = 16 * 1024;
