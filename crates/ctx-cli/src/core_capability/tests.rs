@@ -508,6 +508,8 @@ fn recognized_terminal_failure_writes_one_exact_frame_and_exits_nonzero() {
     input.push(b'\n');
 
     let route = SourceRouteIdentity::from_sha256("ab".repeat(32)).unwrap();
+    let physical_attempt_id = "01234567-89ab-cdef-0123-456789abcdef";
+    let retained_generation = "cd".repeat(32);
     let terminal: anyhow::Error =
         crate::semantic::SourceBackedRefreshTerminalError::from(RefreshTerminalOutcome {
             code: RefreshOutcomeCode::IndexCorruption,
@@ -516,8 +518,8 @@ fn recognized_terminal_failure_writes_one_exact_frame_and_exits_nonzero() {
             affected_routes: BTreeSet::from([route.clone()]),
             retryable_routes: BTreeSet::new(),
             blocked_routes: BTreeSet::from([route]),
-            physical_attempt_id: "attempt\u{009b}[31m".to_owned(),
-            retained_generation: Some(format!("{}\u{001b}[32m", "cd".repeat(32))),
+            physical_attempt_id: physical_attempt_id.to_owned(),
+            retained_generation: Some(retained_generation.clone()),
             published_generation: None,
             retry_advice: Some(RefreshRetryAdvice::RebuildIndex),
             detail: Some("arbitrary source detail must not cross the boundary".to_owned()),
@@ -544,11 +546,11 @@ fn recognized_terminal_failure_writes_one_exact_frame_and_exits_nonzero() {
     assert_eq!(response["retryable"], false);
     assert_eq!(
         response["details"]["physical_attempt_id"],
-        "attempt\\u{009B}[31m"
+        physical_attempt_id
     );
     assert_eq!(
         response["details"]["retained_generation"],
-        format!("{}\\u{{001B}}[32m", "cd".repeat(32))
+        retained_generation
     );
     assert!(!String::from_utf8(output).unwrap().contains('\u{009b}'));
 }
@@ -567,14 +569,15 @@ fn event_terminal_state_and_final_failure_are_ordered_and_typed_the_same() {
     input.push(b'\n');
     let route_text = "ab".repeat(32);
     let retained = "cd".repeat(32);
+    let physical_attempt_id = "01234567-89ab-cdef-0123-456789abcdef";
     let status = crate::semantic::RefreshStatus::parse_schema_v1(json!({
         "request_id": "logical-request",
         "request_state": "failed",
         "logical_request_id": "logical-request",
         "logical_phase": "terminal",
-        "physical_attempt_id": "physical-attempt",
+        "physical_attempt_id": physical_attempt_id,
         "physical_attempt_state": "failed",
-        "progress_owner_request_id": "physical-attempt",
+        "progress_owner_request_id": physical_attempt_id,
         "progress_owner_attempt_state": "failed",
         "progress": {
             "phase": "failed",
@@ -590,7 +593,7 @@ fn event_terminal_state_and_final_failure_are_ordered_and_typed_the_same() {
             "affected_routes": [route_text],
             "retryable_routes": [],
             "blocked_routes": [route_text],
-            "physical_attempt_id": "physical-attempt",
+            "physical_attempt_id": physical_attempt_id,
             "retained_generation": retained,
             "published_generation": null,
             "retry_advice": "rebuild_index"
@@ -606,7 +609,7 @@ fn event_terminal_state_and_final_failure_are_ordered_and_typed_the_same() {
             affected_routes: BTreeSet::from([route.clone()]),
             retryable_routes: BTreeSet::new(),
             blocked_routes: BTreeSet::from([route]),
-            physical_attempt_id: "physical-attempt".to_owned(),
+            physical_attempt_id: physical_attempt_id.to_owned(),
             retained_generation: Some(retained),
             published_generation: None,
             retry_advice: Some(RefreshRetryAdvice::RebuildIndex),

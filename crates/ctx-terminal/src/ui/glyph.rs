@@ -2,6 +2,7 @@ use super::RenderContext;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum Glyph {
+    Bullet,
     Success,
     Failure,
     Warning,
@@ -17,6 +18,8 @@ pub(super) enum Glyph {
 impl Glyph {
     pub(super) const fn render(self, context: &RenderContext) -> &'static str {
         match (self, context.unicode()) {
+            (Self::Bullet, true) => "•",
+            (Self::Bullet, false) => "-",
             (Self::Success, true) => "✓",
             (Self::Success, false) => "OK",
             (Self::Failure, true) => "✗",

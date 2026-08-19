@@ -15,11 +15,12 @@ mod writer;
 pub use bootstrap::{bootstrap_color_choice, scan_color_mode, scan_machine_output_hint};
 pub use components::{
     callout, diagnostic, display_width, empty_state, evidence_list, fields, hint, is_copyable_atom,
-    outcome, progress, refresh_progress, section, table, Action, Callout, Diagnostic,
-    DiagnosticLevel, EmptyState, Evidence, Field, Hint, Outcome, OutcomeState, Progress,
-    RefreshCurrentSourceProgress, RefreshCurrentSourceProgressStage, RefreshLogicalPhase,
-    RefreshLogicalStatus, RefreshProgress, RefreshProgressSnapshot, RefreshRequestState,
-    RefreshStatusKind, RefreshStructuredOutcome, RefreshWholeRunStage, Table,
+    outcome, progress, refresh_progress, section, table, Action, Callout, CalloutPresentation,
+    CalloutRow, CalloutStatus, Diagnostic, DiagnosticLevel, EmptyState, Evidence, Field, Hint,
+    Outcome, OutcomeState, Progress, RefreshCurrentSourceProgress,
+    RefreshCurrentSourceProgressStage, RefreshLogicalPhase, RefreshLogicalStatus, RefreshProgress,
+    RefreshProgressSnapshot, RefreshRequestState, RefreshStatusKind, RefreshStructuredOutcome,
+    RefreshWholeRunStage, Table,
 };
 pub use context::{ColorMode, RenderContext, StreamKind, TestContext};
 pub use document::{sanitize_untrusted_history_body_for_terminal, Document, Line, Span};

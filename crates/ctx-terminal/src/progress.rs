@@ -9,7 +9,8 @@ use std::{
 use serde_json::json;
 
 use crate::ui::{
-    refresh_progress, Document, Line, LiveOutput, RefreshProgressSnapshot, Span, Token, Ui,
+    refresh_progress, CalloutPresentation, CalloutRow, CalloutStatus, Document, Line, LiveOutput,
+    RefreshProgressSnapshot, Span, Token, Ui,
 };
 
 const MAX_PROGRESS_MESSAGE_BYTES: usize = 512;
@@ -120,6 +121,7 @@ pub struct ProgressReporter<'a> {
     total_bytes: u64,
     started: Instant,
     presentation_agent_histories: Option<Vec<String>>,
+    persistent_callout: Option<CalloutPresentation>,
     output: ProgressOutput<'a>,
 }
 
@@ -152,6 +154,13 @@ impl<'a> ProgressOutput<'a> {
         }
     }
 
+    fn write_live_callout(&mut self, presentation: CalloutPresentation) -> io::Result<()> {
+        match self {
+            Self::Live(output) => output.write_callout(presentation),
+            Self::Direct(_) => Err(io::Error::other("direct renderer has no live worker")),
+        }
+    }
+
     fn write_live_notice(&mut self, document: Document) -> io::Result<()> {
         match self {
             Self::Live(output) => output.write_notice(document),
@@ -168,6 +177,10 @@ enum LiveRenderCommand {
     },
     Refresh {
         snapshot: Box<RefreshProgressSnapshot>,
+        complete: mpsc::Sender<io::Result<()>>,
+    },
+    Callout {
+        presentation: CalloutPresentation,
         complete: mpsc::Sender<io::Result<()>>,
     },
     Notice {
@@ -237,6 +250,20 @@ impl LocalLiveRenderer {
             .map_err(|_| io::Error::new(io::ErrorKind::BrokenPipe, "live renderer stopped"))?
     }
 
+    fn write_callout(&mut self, presentation: CalloutPresentation) -> io::Result<()> {
+        self.check_background_error()?;
+        let (complete, completed) = mpsc::channel();
+        self.commands
+            .send(LiveRenderCommand::Callout {
+                presentation,
+                complete,
+            })
+            .map_err(|_| io::Error::new(io::ErrorKind::BrokenPipe, "live renderer stopped"))?;
+        completed
+            .recv()
+            .map_err(|_| io::Error::new(io::ErrorKind::BrokenPipe, "live renderer stopped"))?
+    }
+
     fn write_notice(&mut self, document: Document) -> io::Result<()> {
         self.check_background_error()?;
         let (complete, completed) = mpsc::channel();
@@ -274,6 +301,7 @@ fn run_live_renderer(
     background_error: &Mutex<Option<io::Error>>,
 ) {
     let mut active = None;
+    let mut persistent_callout = None;
     let mut persistent_notice = None;
     let mut clock = ActiveElapsedClock::default();
     loop {
@@ -297,7 +325,13 @@ fn run_live_renderer(
                 let rendered =
                     prepare_live_snapshot((*snapshot).clone(), &mut clock, started.elapsed(), true);
                 let result = output.render_frame(terminal, |context| {
-                    render_live_refresh(presentation, context, rendered, persistent_notice.as_ref())
+                    render_live_refresh(
+                        presentation,
+                        context,
+                        rendered,
+                        persistent_notice.as_ref(),
+                        persistent_callout.as_ref(),
+                    )
                 });
                 let failed = result.is_err();
                 let _ = complete.send(result);
@@ -309,27 +343,57 @@ fn run_live_renderer(
                     clock.reset();
                 }
             }
+            Ok(LiveRenderCommand::Callout {
+                presentation: callout,
+                complete,
+            }) => {
+                persistent_callout = Some(callout);
+                let result = if let Some(snapshot) = active.as_ref() {
+                    output.render_frame(false, |context| {
+                        let rendered = prepare_live_snapshot(
+                            snapshot.clone(),
+                            &mut clock,
+                            started.elapsed(),
+                            false,
+                        );
+                        render_live_refresh(
+                            presentation,
+                            context,
+                            rendered,
+                            persistent_notice.as_ref(),
+                            persistent_callout.as_ref(),
+                        )
+                    })
+                } else {
+                    Ok(())
+                };
+                let failed = result.is_err();
+                let _ = complete.send(result);
+                if failed {
+                    break;
+                }
+            }
             Ok(LiveRenderCommand::Notice { document, complete }) => {
                 persistent_notice = Some(document);
-                let result = output.render_frame(false, |context| {
-                    active.as_ref().map_or_else(
-                        || persistent_notice.as_ref().cloned().unwrap_or_default(),
-                        |snapshot| {
-                            let rendered = prepare_live_snapshot(
-                                snapshot.clone(),
-                                &mut clock,
-                                started.elapsed(),
-                                false,
-                            );
-                            render_live_refresh(
-                                presentation,
-                                &context,
-                                rendered,
-                                persistent_notice.as_ref(),
-                            )
-                        },
-                    )
-                });
+                let result = if let Some(snapshot) = active.as_ref() {
+                    output.render_frame(false, |context| {
+                        let rendered = prepare_live_snapshot(
+                            snapshot.clone(),
+                            &mut clock,
+                            started.elapsed(),
+                            false,
+                        );
+                        render_live_refresh(
+                            presentation,
+                            context,
+                            rendered,
+                            persistent_notice.as_ref(),
+                            persistent_callout.as_ref(),
+                        )
+                    })
+                } else {
+                    Ok(())
+                };
                 let failed = result.is_err();
                 let _ = complete.send(result);
                 if failed {
@@ -344,7 +408,13 @@ fn run_live_renderer(
                 let rendered =
                     prepare_live_snapshot(snapshot.clone(), &mut clock, started.elapsed(), false);
                 if let Err(error) = output.render_frame(false, |context| {
-                    render_live_refresh(presentation, context, rendered, persistent_notice.as_ref())
+                    render_live_refresh(
+                        presentation,
+                        context,
+                        rendered,
+                        persistent_notice.as_ref(),
+                        persistent_callout.as_ref(),
+                    )
                 }) {
                     *background_error
                         .lock()
@@ -361,20 +431,17 @@ fn render_live_refresh(
     context: &crate::ui::RenderContext,
     mut snapshot: RefreshProgressSnapshot,
     persistent_notice: Option<&Document>,
+    persistent_callout: Option<&CalloutPresentation>,
 ) -> Document {
-    let terminal = snapshot.is_terminal();
     if presentation == LiveRefreshPresentation::Setup {
         snapshot.use_setup_live_presentation();
     }
     let mut document = refresh_progress(context, &snapshot);
     if let Some(notice) = persistent_notice {
         document.append(notice.clone());
-        if terminal {
-            // Terminal setup frames intentionally omit the no-longer-relevant
-            // ETA row. Keep the live block's height stable through that final
-            // differential repaint without adding space before the notice.
-            document.push_blank();
-        }
+    } else if let Some(callout) = persistent_callout {
+        document.push_blank();
+        document.append(callout.render(context));
     }
     document
 }
@@ -451,6 +518,7 @@ impl<'a> ProgressReporter<'a> {
             total_bytes,
             started,
             presentation_agent_histories: None,
+            persistent_callout: None,
             output,
         }
     }
@@ -479,13 +547,12 @@ impl<'a> ProgressReporter<'a> {
             imported_events: None,
             done: false,
             refresh: None,
+            callout: None,
         })
     }
 
-    /// Emits a trusted, source-authored multi-line notice through the active
-    /// progress transport. Unlike dynamic progress messages, line boundaries
-    /// are preserved so a live or hosted renderer can present the notice while
-    /// another operation continues.
+    /// Compatibility transport for the legacy Core setup progress modes.
+    /// New structured-event consumers should compose a typed callout instead.
     pub fn notice(
         &mut self,
         phase: &'static str,
@@ -532,6 +599,54 @@ impl<'a> ProgressReporter<'a> {
                     imported_events: None,
                     done: false,
                     refresh: None,
+                    callout: None,
+                },
+                elapsed,
+            )
+            .map_err(ProgressWriterError),
+        }
+    }
+
+    /// Installs or replaces one product-neutral callout beneath setup progress.
+    /// Live output re-renders the owned facts at the destination's current
+    /// width; plain output emits the callout only after terminal progress.
+    pub fn callout(
+        &mut self,
+        phase: &'static str,
+        presentation: CalloutPresentation,
+    ) -> Result<(), ProgressWriterError> {
+        if !self.is_enabled() {
+            return Ok(());
+        }
+        self.presentation_agent_histories = None;
+        self.persistent_callout = Some(presentation.clone());
+        let message = bounded_progress_text(
+            &presentation.plain_message(&crate::ui::RenderContext::canonical_human_measurement()),
+            MAX_PROGRESS_MESSAGE_BYTES,
+        );
+        let elapsed = self.started.elapsed();
+        match self.mode {
+            ProgressRenderMode::None => Ok(()),
+            ProgressRenderMode::Live => self
+                .output
+                .write_live_callout(presentation)
+                .map_err(ProgressWriterError),
+            ProgressRenderMode::Plain => Ok(()),
+            ProgressRenderMode::Json => write_progress(
+                &mut self.output,
+                self.mode,
+                self.operation,
+                &ProgressLine {
+                    phase: bounded_progress_text(phase, MAX_PROGRESS_PHASE_BYTES),
+                    message,
+                    completed_bytes: 0,
+                    total_bytes: self.total_bytes,
+                    completed_files: None,
+                    total_files: None,
+                    imported_events: None,
+                    done: false,
+                    refresh: None,
+                    callout: Some(callout_json(&presentation)),
                 },
                 elapsed,
             )
@@ -566,8 +681,19 @@ impl<'a> ProgressReporter<'a> {
             snapshot.set_presentation_agent_histories(self.presentation_agent_histories.clone());
         }
         let line = source_refresh_line(snapshot, self.total_bytes);
+        let terminal = line.done;
         write_progress(&mut self.output, self.mode, self.operation, &line, now)
-            .map_err(ProgressWriterError)
+            .map_err(ProgressWriterError)?;
+        if terminal && self.mode == ProgressRenderMode::Plain {
+            if let Some(callout) = self.persistent_callout.take() {
+                let output = self.output.direct_mut().map_err(ProgressWriterError)?;
+                let document = callout.render(output.context());
+                output
+                    .write_line(document.render_plain().trim_end_matches('\n'))
+                    .map_err(ProgressWriterError)?;
+            }
+        }
+        Ok(())
     }
 
     fn emit_status(&mut self, line: ProgressLine) -> Result<(), ProgressWriterError> {
@@ -587,6 +713,7 @@ struct ProgressLine {
     imported_events: Option<usize>,
     done: bool,
     refresh: Option<RefreshProgressSnapshot>,
+    callout: Option<serde_json::Value>,
 }
 
 fn write_progress(
@@ -668,6 +795,9 @@ fn progress_json(operation: &'static str, line: &ProgressLine, elapsed: StdDurat
             .unwrap_or(serde_json::Value::Null);
         snapshot.append_json_fields(&mut value);
     }
+    if let Some(callout) = line.callout.as_ref() {
+        value["callout"] = callout.clone();
+    }
     value.to_string()
 }
 
@@ -698,7 +828,37 @@ fn source_refresh_line(
         imported_events,
         done,
         refresh: Some(snapshot),
+        callout: None,
     }
+}
+
+fn callout_json(presentation: &CalloutPresentation) -> serde_json::Value {
+    let rows = presentation
+        .rows()
+        .iter()
+        .map(|row| match row {
+            CalloutRow::Blank => json!({"kind": "blank"}),
+            CalloutRow::Text(text) => json!({"kind": "text", "text": text}),
+            CalloutRow::Bullet(text) => json!({"kind": "bullet", "text": text}),
+            CalloutRow::Status { level, text } => json!({
+                "kind": "status",
+                "level": match level {
+                    CalloutStatus::Neutral => "neutral",
+                    CalloutStatus::Success => "success",
+                    CalloutStatus::Warning => "warning",
+                    CalloutStatus::Failure => "failure",
+                },
+                "text": text,
+            }),
+            CalloutRow::Action(text) => json!({"kind": "action", "text": text}),
+            CalloutRow::Reference(text) => json!({"kind": "reference", "text": text}),
+            CalloutRow::Command(text) => json!({"kind": "command", "text": text}),
+        })
+        .collect::<Vec<_>>();
+    json!({
+        "title": presentation.title(),
+        "rows": rows,
+    })
 }
 
 fn progress_percent(completed: u64, total: u64) -> f64 {

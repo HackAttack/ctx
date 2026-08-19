@@ -105,8 +105,8 @@ fn local_live_clock_suppresses_eta_after_backend_snapshot_silence() {
         crate::ui::StreamKind::Stderr,
         80,
     ));
-    let rendered =
-        render_live_refresh(LiveRefreshPresentation::Setup, &context, stale, None).render_plain();
+    let rendered = render_live_refresh(LiveRefreshPresentation::Setup, &context, stale, None, None)
+        .render_plain();
     assert!(
         rendered.contains("Estimated remaining  Estimating"),
         "{rendered}"

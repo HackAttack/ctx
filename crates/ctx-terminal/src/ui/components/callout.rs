@@ -1,4 +1,5 @@
 use super::layout::{display_width, is_copyable_atom, line_width, wrap_line};
+use crate::ui::document::neutralize_controls;
 use crate::ui::{glyph::Glyph, Document, Line, RenderContext, Span, Token};
 
 const MAX_WIDTH: usize = 80;
@@ -13,6 +14,124 @@ const BORDER_OVERHEAD: usize = 4;
 pub struct Callout<'a> {
     pub title: &'a str,
     pub body: &'a Document,
+}
+
+/// Owned, product-neutral callout facts that can be rendered again when a live
+/// destination changes width.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CalloutPresentation {
+    title: String,
+    rows: Vec<CalloutRow>,
+}
+
+impl CalloutPresentation {
+    pub fn new(title: impl Into<String>, rows: Vec<CalloutRow>) -> Self {
+        let title = title.into();
+        Self {
+            title: neutralize_controls(&title),
+            rows: rows.into_iter().map(CalloutRow::neutralized).collect(),
+        }
+    }
+
+    pub fn title(&self) -> &str {
+        &self.title
+    }
+
+    pub fn rows(&self) -> &[CalloutRow] {
+        &self.rows
+    }
+
+    pub fn render(&self, context: &RenderContext) -> Document {
+        let body = self.body(context);
+        callout(
+            context,
+            Callout {
+                title: &self.title,
+                body: &body,
+            },
+        )
+    }
+
+    pub fn plain_message(&self, context: &RenderContext) -> String {
+        let mut document = Document::from_line(Line::text(&self.title));
+        document.append(self.body(context));
+        document.render_plain().trim_end_matches('\n').to_owned()
+    }
+
+    fn body(&self, context: &RenderContext) -> Document {
+        let mut body = Document::new();
+        for row in &self.rows {
+            body.push_line(row.render(context));
+        }
+        body
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CalloutRow {
+    Blank,
+    Text(String),
+    Bullet(String),
+    Status { level: CalloutStatus, text: String },
+    Action(String),
+    Reference(String),
+    Command(String),
+}
+
+impl CalloutRow {
+    fn neutralized(self) -> Self {
+        match self {
+            Self::Blank => Self::Blank,
+            Self::Text(text) => Self::Text(neutralize_controls(&text)),
+            Self::Bullet(text) => Self::Bullet(neutralize_controls(&text)),
+            Self::Status { level, text } => Self::Status {
+                level,
+                text: neutralize_controls(&text),
+            },
+            Self::Action(text) => Self::Action(neutralize_controls(&text)),
+            Self::Reference(text) => Self::Reference(neutralize_controls(&text)),
+            Self::Command(text) => Self::Command(neutralize_controls(&text)),
+        }
+    }
+
+    fn render(&self, context: &RenderContext) -> Line {
+        match self {
+            Self::Blank => Line::new(),
+            Self::Text(text) | Self::Action(text) => Line::text(text),
+            Self::Bullet(text) => prefixed_line(
+                Glyph::Bullet.render(context),
+                Token::Accent,
+                text,
+                Token::Text,
+            ),
+            Self::Status { level, text } => {
+                let (glyph, token) = match level {
+                    CalloutStatus::Neutral => (Glyph::Bullet, Token::Accent),
+                    CalloutStatus::Success => (Glyph::Success, Token::Success),
+                    CalloutStatus::Warning => (Glyph::Warning, Token::Warning),
+                    CalloutStatus::Failure => (Glyph::Failure, Token::Error),
+                };
+                prefixed_line(glyph.render(context), token, text, Token::Text)
+            }
+            Self::Reference(reference) => Line::styled(reference, Token::Reference),
+            Self::Command(command) => Line::styled(command, Token::Command),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CalloutStatus {
+    Neutral,
+    Success,
+    Warning,
+    Failure,
+}
+
+fn prefixed_line(prefix: &str, prefix_token: Token, text: &str, text_token: Token) -> Line {
+    Line::new()
+        .with(Span::new(prefix, prefix_token))
+        .with(Span::text(" "))
+        .with(Span::new(text, text_token))
 }
 
 pub fn callout(context: &RenderContext, callout: Callout<'_>) -> Document {

@@ -429,6 +429,7 @@ fn done_progress_json_forces_complete_bytes_with_incomplete_bytes() {
         imported_events: None,
         done: true,
         refresh: None,
+        callout: None,
     };
 
     let value: serde_json::Value =
@@ -454,6 +455,7 @@ fn progress_json_remains_exact_and_ansi_free() {
         imported_events: Some(7),
         done: false,
         refresh: None,
+        callout: None,
     };
 
     let rendered = progress_json("import", &line, StdDuration::from_secs(2));
@@ -483,6 +485,7 @@ fn plain_and_json_progress_keep_explicit_stream_contracts() {
         imported_events: None,
         done: false,
         refresh: None,
+        callout: None,
     };
 
     let plain = match ProgressRenderMode::Plain {
@@ -539,6 +542,7 @@ fn progress_write_and_flush_failures_remain_errors() {
         imported_events: None,
         done: false,
         refresh: None,
+        callout: None,
     };
     for (failure, expected) in [
         (WriterFailure::Write, "injected progress write failure"),
