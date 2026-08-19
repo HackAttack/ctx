@@ -73,6 +73,8 @@ pub fn mux_jsonl_adapter<B>() -> ProviderJsonlRuntime<B> { todo!() }
     "mux/native_path.rs": "",
     "mux/native_path/source_backed.rs": "ProviderBaseEventLookup<B>\n",
     "mux/native_path/source_backed/projection.rs": "mux-content-occurrence-v1\n",
+    "mux/native_path/source_backed/projection/seam.rs": "",
+    "mux/native_path/source_backed/tests.rs": "",
     "mux/normalization.rs": "",
     "mux/source.rs": "",
 }

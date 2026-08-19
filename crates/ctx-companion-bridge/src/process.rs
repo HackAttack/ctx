@@ -203,9 +203,7 @@ fn run_captured_with_wall_time(
                 return Err(BridgeError::Transport(error));
             }
         }
-        thread::sleep(
-            Duration::from_millis(5).min(wall_time.saturating_sub(started.elapsed())),
-        );
+        thread::sleep(Duration::from_millis(5).min(wall_time.saturating_sub(started.elapsed())));
     }
 
     // A companion operation never authorizes detached descendants. Closing the
