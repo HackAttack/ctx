@@ -610,6 +610,7 @@ struct CodexSessionMetaEnvelope {
 #[derive(Debug, Deserialize)]
 struct CodexSessionMetaPayload {
     id: String,
+    session_id: Option<String>,
     timestamp: Option<String>,
     cwd: Option<String>,
     originator: Option<String>,
@@ -646,6 +647,10 @@ pub(super) fn parse_session_meta(line: &[u8]) -> Option<CodexSessionRow> {
     let envelope = serde_json::from_slice::<CodexSessionMetaEnvelope>(line).ok()?;
     let payload = envelope.payload;
     let native_session_id = bounded_nonempty(payload.id, MAX_CODEX_DURABLE_SESSION_ID_BYTES)?;
+    let provider_root_native_session_id = match payload.session_id {
+        Some(value) => Some(bounded_nonempty(value, MAX_CODEX_DURABLE_SESSION_ID_BYTES)?),
+        None => None,
+    };
     let started_at = payload
         .timestamp
         .as_deref()
@@ -666,10 +671,15 @@ pub(super) fn parse_session_meta(line: &[u8]) -> Option<CodexSessionRow> {
     {
         return None;
     }
+    let root_native_session_id = match session_relationship {
+        Some(ctx_history_core::ProviderNativeSessionRelationship::Root) | None => None,
+        Some(_) => provider_root_native_session_id
+            .filter(|root_native_session_id| root_native_session_id != &native_session_id),
+    };
     Some(CodexSessionRow {
         native_session_id,
         parent_native_session_id,
-        root_native_session_id: None,
+        root_native_session_id,
         session_relationship,
         started_at,
         cwd: payload

@@ -134,6 +134,7 @@ pub(super) fn validate_repeated_owner(
 ) -> Result<()> {
     if admitted_owner.native_session_id != repeated_owner.native_session_id
         || admitted_owner.parent_native_session_id != repeated_owner.parent_native_session_id
+        || admitted_owner.root_native_session_id != repeated_owner.root_native_session_id
         || admitted_owner.session_relationship != repeated_owner.session_relationship
     {
         return Err(CaptureError::InvalidPayload(

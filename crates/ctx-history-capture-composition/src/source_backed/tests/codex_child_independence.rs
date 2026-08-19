@@ -10,8 +10,7 @@ use ctx_history_core::{
 };
 use ctx_history_index::{GenerationWriter, RevalidationTarget, WriterOptions};
 
-const CURRENT_PARSER_REVISION: &str =
-    "codex-nativepath-core-activity-v6-command-output-retrieval-exclusion";
+const CURRENT_PARSER_REVISION: &str = "codex-nativepath-core-activity-v7-provider-root-session";
 
 fn writer_options() -> WriterOptions {
     WriterOptions {
@@ -281,6 +280,61 @@ fn add_explicit_route(registry: &mut SourceBackedProviderRegistry, path: &Path) 
         SourceBackedRouteSelection::ExplicitManual,
     )
     .unwrap();
+}
+
+#[test]
+fn codex_subagent_preserves_provider_root_session_in_core_records() {
+    let temp = tempdir().unwrap();
+    let sessions = temp.path().join("sessions");
+    let index_root = temp.path().join("index");
+    fs::create_dir_all(&sessions).unwrap();
+    let root_native_session_id = "019fb000-0000-7000-8000-000000000081";
+    let child_native_session_id = "019fb000-0000-7000-8000-000000000082";
+    let metadata = serde_json::json!({
+        "timestamp": "2026-08-09T12:00:00Z",
+        "type": "session_meta",
+        "payload": {
+            "id": child_native_session_id,
+            "session_id": root_native_session_id,
+            "parent_thread_id": root_native_session_id,
+            "timestamp": "2026-08-09T12:00:00Z",
+            "cwd": "/tmp/codex-child-independence",
+            "source": {
+                "subagent": {
+                    "thread_spawn": {
+                        "depth": 1,
+                        "parent_thread_id": root_native_session_id
+                    }
+                }
+            }
+        }
+    });
+    fs::write(
+        session_path(&sessions, child_native_session_id),
+        jsonl_bytes([metadata, message("providerrootsessionmarker")]),
+    )
+    .unwrap();
+
+    let registry = register_tree(&[&sessions]);
+    let receipt =
+        refresh_source_backed_generation(&index_root, &registry, writer_options()).unwrap();
+    assert!(receipt.failed_routes.is_empty());
+    assert!(receipt.logical_source_failures.is_empty());
+    let index = VerifiedIndex::open(&index_root).unwrap();
+    let records = records_for(&index, child_native_session_id);
+    assert_eq!(records.len(), 1);
+    let record = &records[0];
+    assert_eq!(
+        record.session_relationship,
+        Some(ProviderNativeSessionRelationship::Delegated)
+    );
+    assert_eq!(
+        record.agent_scope,
+        Some(ctx_history_core::AgentScope::Subagent)
+    );
+    assert!(record.parent_session_id.is_some());
+    assert_eq!(record.root_session_id, record.parent_session_id);
+    assert_eq!(record.parser_revision, CURRENT_PARSER_REVISION);
 }
 
 fn route_identity(registry: &SourceBackedProviderRegistry, root: &Path) -> SourceRouteIdentity {
