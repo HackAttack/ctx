@@ -138,9 +138,18 @@ fn protocol_v3_cli_request_is_typed_and_launches_directly() {
 
 #[test]
 fn protocol_v3_maintenance_response_is_closed_and_typed() {
-    let fixture =
-        Fixture::new(b"#!/bin/sh\nprintf '{\"accepted\":true,\"schema_version\":1}\\n'\n");
-    let response = CompanionBridge::default()
+    let fixture = Fixture::new(
+        b"#!/bin/sh\n/usr/bin/sleep 0.15\nprintf '{\"accepted\":true,\"schema_version\":1}\\n'\n",
+    );
+    let bridge = CompanionBridge::new(
+        BridgeLimits::new(LimitConfiguration {
+            captured_wall_time: Duration::from_millis(25),
+            ..LimitConfiguration::default()
+        })
+        .unwrap(),
+    );
+    let started = Instant::now();
+    let response = bridge
         .launch_maintenance(
             &fixture.companion(),
             MaintenanceRequest::new(),
@@ -148,6 +157,7 @@ fn protocol_v3_maintenance_response_is_closed_and_typed() {
         )
         .unwrap();
     assert!(response.accepted());
+    assert!(started.elapsed() >= Duration::from_millis(100));
 }
 
 #[test]

@@ -46,6 +46,7 @@ use request::ProcessRequest;
 const HANDSHAKE_STDOUT_BYTES: usize = 256;
 const HANDSHAKE_STDERR_BYTES: usize = 4 * 1024;
 const HANDSHAKE_WALL_TIME: Duration = Duration::from_secs(5);
+const MAINTENANCE_WALL_TIME: Duration = Duration::from_secs(6 * 60 * 60);
 const MAINTENANCE_RECEIPT: &[u8] = b"{\"accepted\":true,\"schema_version\":1}\n";
 
 #[derive(Debug)]
@@ -148,7 +149,17 @@ impl CompanionBridge {
         let request = request.into_process();
         request.validate(self.limits)?;
         let _permit = self.prepare_launch(companion, cancellation)?;
-        let output = process::run_captured(companion, request, cancellation, self.limits)?;
+        // Maintenance is owned by the persistent Core daemon and can
+        // legitimately materialize a large local corpus. Keep the same
+        // process-tree containment and byte limits, but give it a dedicated
+        // product-operation deadline instead of the short captured-RPC limit.
+        let output = process::run_maintenance(
+            companion,
+            request,
+            cancellation,
+            self.limits,
+            MAINTENANCE_WALL_TIME,
+        )?;
         if output.exit != ExitClass::Success
             || output.stdout_truncated
             || output.stderr_truncated

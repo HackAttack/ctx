@@ -35,10 +35,10 @@ const POST_EXIT_UNINSTALL_INVOCATION: &str = "--ctx-core-managed-pair-uninstall-
 const MAX_FRAME_BYTES: usize = 64 * 1024;
 const MAX_RESPONSE_BYTES: usize = 48 * 1024;
 #[cfg(test)]
-const API_INVENTORY: &str = r#"{"operations":{"CoreDoctor":{"request_keys":[],"response_keys":["facts"]},"CoreSetup":{"request_keys":["catalog_only","defer_fresh_empty_wait","no_daemon","notice_lines","progress","semantic","wait"],"response_keys":["facts","generation_id"]},"CoreStatus":{"request_keys":["usage"],"response_keys":["facts"]},"LocalUsageSummary":{"request_keys":[],"response_keys":["facts"]},"ManagedPairAbort":{"request_keys":["attempt_id"],"response_keys":["aborted"]},"ManagedPairBegin":{"request_keys":[],"response_keys":["attempt_id","candidate_root"]},"ManagedPairStage":{"request_keys":["attempt_id"],"response_keys":["attempt_id","release_name","rollback_generation","status"]},"ManagedPairStatus":{"request_keys":["attempt_id"],"response_keys":["status"]},"ManagedPairUninstall":{"request_keys":[],"response_keys":["attempt_id","cleanup_mode","status"]},"RefreshAndWait":{"request_keys":[],"response_keys":["facts","generation_id"]},"WakeCompanionMaintenance":{"request_keys":[],"response_keys":["accepted"]},"WakeRefresh":{"request_keys":[],"response_keys":["accepted"]}},"protocol":"ctx-core-capability","schema_version":1}"#;
+const API_INVENTORY: &str = r#"{"operations":{"CoreDoctor":{"request_keys":[],"response_keys":["facts"]},"CoreSetup":{"request_keys":["catalog_only","defer_fresh_empty_wait","no_daemon","notice_lines","progress","semantic","wait"],"response_keys":["facts","generation_id"]},"CoreStatus":{"request_keys":["usage"],"response_keys":["facts"]},"LocalUsageSummary":{"request_keys":[],"response_keys":["facts"]},"ManagedPairAbort":{"request_keys":["attempt_id"],"response_keys":["aborted"]},"ManagedPairBegin":{"request_keys":[],"response_keys":["attempt_id","candidate_root"]},"ManagedPairStage":{"request_keys":["attempt_id"],"response_keys":["attempt_id","release_name","rollback_generation","status"]},"ManagedPairStatus":{"request_keys":["attempt_id"],"response_keys":["status"]},"ManagedPairUninstall":{"request_keys":[],"response_keys":["attempt_id","cleanup_mode","status"]},"RefreshAndWait":{"request_keys":[],"response_keys":["facts","generation_id"]},"WakeRefresh":{"request_keys":[],"response_keys":["accepted"]}},"protocol":"ctx-core-capability","schema_version":1}"#;
 #[cfg(test)]
 pub(crate) const API_FINGERPRINT: &str =
-    "b92406887e8d39b0249e8a7b3a12ba904de025d9b1b8f4fdca9570576bc4cc6e";
+    "eed67ebb32371c264e6dae66f5499f8bb8baf6c71f5c39eb801fadd25fba9b07";
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum Operation {
@@ -48,7 +48,6 @@ enum Operation {
     LocalUsageSummary,
     RefreshAndWait,
     WakeRefresh,
-    WakeCompanionMaintenance,
     ManagedPairBegin,
     ManagedPairStage,
     ManagedPairAbort,
@@ -65,7 +64,6 @@ impl Operation {
             "LocalUsageSummary" => Ok(Self::LocalUsageSummary),
             "RefreshAndWait" => Ok(Self::RefreshAndWait),
             "WakeRefresh" => Ok(Self::WakeRefresh),
-            "WakeCompanionMaintenance" => Ok(Self::WakeCompanionMaintenance),
             "ManagedPairBegin" => Ok(Self::ManagedPairBegin),
             "ManagedPairStage" => Ok(Self::ManagedPairStage),
             "ManagedPairAbort" => Ok(Self::ManagedPairAbort),
@@ -83,7 +81,6 @@ impl Operation {
             Self::LocalUsageSummary => "LocalUsageSummary",
             Self::RefreshAndWait => "RefreshAndWait",
             Self::WakeRefresh => "WakeRefresh",
-            Self::WakeCompanionMaintenance => "WakeCompanionMaintenance",
             Self::ManagedPairBegin => "ManagedPairBegin",
             Self::ManagedPairStage => "ManagedPairStage",
             Self::ManagedPairAbort => "ManagedPairAbort",
@@ -271,10 +268,6 @@ fn execute(request: Request) -> Result<Value> {
                     crate::DaemonTriggerCommandArg::Setup,
                 );
             }
-            json!({"accepted": true})
-        }
-        (Operation::WakeCompanionMaintenance, Options::Empty) => {
-            let _ = crate::companion::wake_verified_private_maintenance(&request.data_root);
             json!({"accepted": true})
         }
         (Operation::ManagedPairBegin, Options::Empty) => {
@@ -595,7 +588,6 @@ fn parse_options(operation: Operation, value: &Value) -> Result<Options> {
         | Operation::LocalUsageSummary
         | Operation::RefreshAndWait
         | Operation::WakeRefresh
-        | Operation::WakeCompanionMaintenance
         | Operation::ManagedPairBegin
         | Operation::ManagedPairUninstall => &[],
         Operation::ManagedPairStage

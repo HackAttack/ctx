@@ -61,6 +61,32 @@ pub(crate) fn run_captured(
     cancellation: &CancellationToken,
     limits: LimitConfiguration,
 ) -> Result<ProcessOutput, BridgeError> {
+    run_captured_with_wall_time(
+        companion,
+        request,
+        cancellation,
+        limits,
+        limits.captured_wall_time,
+    )
+}
+
+pub(crate) fn run_maintenance(
+    companion: &InstalledCompanion,
+    request: CapturedProcessRequest,
+    cancellation: &CancellationToken,
+    limits: LimitConfiguration,
+    wall_time: Duration,
+) -> Result<ProcessOutput, BridgeError> {
+    run_captured_with_wall_time(companion, request, cancellation, limits, wall_time)
+}
+
+fn run_captured_with_wall_time(
+    companion: &InstalledCompanion,
+    request: CapturedProcessRequest,
+    cancellation: &CancellationToken,
+    limits: LimitConfiguration,
+    wall_time: Duration,
+) -> Result<ProcessOutput, BridgeError> {
     let CapturedProcessRequest {
         control,
         stdin: captured_stdin,
@@ -158,7 +184,7 @@ pub(crate) fn run_captured(
             termination = Some(TerminationReason::StderrLimit);
             break;
         }
-        if started.elapsed() >= limits.captured_wall_time {
+        if started.elapsed() >= wall_time {
             termination = Some(TerminationReason::WallTime);
             break;
         }
@@ -178,8 +204,7 @@ pub(crate) fn run_captured(
             }
         }
         thread::sleep(
-            Duration::from_millis(5)
-                .min(limits.captured_wall_time.saturating_sub(started.elapsed())),
+            Duration::from_millis(5).min(wall_time.saturating_sub(started.elapsed())),
         );
     }
 
