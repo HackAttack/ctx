@@ -54,16 +54,21 @@ printf 'not a real binary\n' > "${tmp}/candidate"
 # Parser fixtures execute only through this disposable checker copy. The
 # production checker retains fixed package-root resolution unless the release
 # packager passes an explicit platform-constrained tool declaration.
-fixture_checker="${tmp}/check-release-binary-compat-fixture.sh"
+fixture_root="${tmp}/fixture"
+mkdir -p "${fixture_root}/scripts/release" "${fixture_root}/contracts"
+fixture_checker="${fixture_root}/scripts/check-release-binary-compat-fixture.sh"
 sed \
   "s#^  LLVM_TOOL_ROOT=.*#  LLVM_TOOL_ROOT=\"${tmp}\"#" \
   "${checker}" > "${fixture_checker}"
 chmod 700 "${fixture_checker}"
+cp "${repo_root}/scripts/public-cli-release-targets.py" \
+  "${repo_root}/scripts/check-release-target-matrix.py" "${fixture_root}/scripts/"
+cp "${repo_root}/contracts/release-targets-v1.json" "${fixture_root}/contracts/"
 fixture_snapshot="${tmp}/approved-snapshot"
-mkdir -p "${fixture_snapshot}/bin" "${tmp}/release"
+mkdir -p "${fixture_snapshot}/bin"
 cp "${tmp}/llvm-readobj" "${fixture_snapshot}/bin/llvm-readobj"
 cp "${tmp}/llvm-objdump" "${fixture_snapshot}/bin/llvm-objdump"
-cat >"${tmp}/release/macos_llvm_authority.py" <<'PY'
+cat >"${fixture_root}/scripts/release/macos_llvm_authority.py" <<'PY'
 #!/usr/bin/env python3
 import os
 from pathlib import Path
@@ -186,10 +191,12 @@ DynamicSection [
 Interpreter: /lib64/ld-linux-x86-64.so.2
 NeededLibraries [
   ld-linux-x86-64.so.2
+  libdl.so.2
+  libpthread.so.0
   libm.so.6
   libc.so.6
 ]
-Name: GLIBC_2.35
+Name: GLIBC_2.28
 Name: GCC_4.2.0
 GNU_PROPERTY_X86_ISA_1_NEEDED: x86-64-baseline
 Sections [
@@ -230,10 +237,12 @@ DynamicSection [
 ]
 Interpreter: /lib/ld-linux-aarch64.so.1
 NeededLibraries [
+  libdl.so.2
+  libpthread.so.0
   libm.so.6
   libc.so.6
 ]
-Name: GLIBC_2.35
+Name: GLIBC_2.28
 Name: GCC_4.2.0
 Sections [
 ]
@@ -396,6 +405,14 @@ EOF
 
 expect_pass linux_x64 run_check linux-x64 "${linux_x64}"
 expect_pass linux_arm64 run_check linux-aarch64 "${linux_arm64}"
+linux_x64_libgcc="${tmp}/linux-x64-libgcc.txt"
+sed '/  libm\.so\.6/a\  libgcc_s.so.1' "${linux_x64}" >"${linux_x64_libgcc}"
+expect_pass linux_x64_optional_libgcc run_check linux-x64 "${linux_x64_libgcc}"
+linux_arm64_gnu_runtime="${tmp}/linux-arm64-gnu-runtime.txt"
+sed '/NeededLibraries \[/a\  ld-linux-aarch64.so.1\
+  libgcc_s.so.1' "${linux_arm64}" >"${linux_arm64_gnu_runtime}"
+expect_pass linux_arm64_optional_gnu_runtime run_check linux-aarch64 \
+  "${linux_arm64_gnu_runtime}"
 expect_pass mac_arm64_frameworks run_check macos-arm64 "${mac_arm_readobj}" "${mac_objdump}"
 expect_pass mac_x64_frameworks run_check macos-x64 "${mac_x64_readobj}" "${mac_objdump}"
 expect_pass windows run_check windows-x64 "${windows}"
@@ -529,18 +546,18 @@ mutate_and_fail linux_missing_bind_now linux-x64 "${linux_x64}" \
 mutate_and_fail linux_missing_pie linux-x64 "${linux_x64}" \
   's/FLAGS_1      NOW PIE/FLAGS_1      NOW/' 'missing PIE dynamic flag'
 mutate_and_fail linux_interpreter linux-x64 "${linux_x64}" 's#/lib64/ld-linux-x86-64.so.2#/lib/ld-linux.so.2#'
-mutate_and_fail linux_glibc linux-x64 "${linux_x64}" 's/GLIBC_2.35/GLIBC_2.36/'
-grep -Fq 'requires GLIBC_2.36, above allowed GLIBC_2.35' "${tmp}/linux_glibc.err"
-mutate_and_fail arm_glibc linux-aarch64 "${linux_arm64}" 's/GLIBC_2.35/GLIBC_2.36/'
-grep -Fq 'requires GLIBC_2.36, above allowed GLIBC_2.35' "${tmp}/arm_glibc.err"
-mutate_and_fail linux_glibcxx linux-x64 "${linux_x64}" 's/Name: GLIBC_2.35/Name: GLIBC_2.35\nName: GLIBCXX_3.4.30/'
-mutate_and_fail linux_cxxabi linux-x64 "${linux_x64}" 's/Name: GLIBC_2.35/Name: GLIBC_2.35\nName: CXXABI_1.3.11/'
+mutate_and_fail linux_glibc linux-x64 "${linux_x64}" 's/GLIBC_2.28/GLIBC_2.29/'
+grep -Fq 'requires GLIBC_2.29, above allowed GLIBC_2.28' "${tmp}/linux_glibc.err"
+mutate_and_fail arm_glibc linux-aarch64 "${linux_arm64}" 's/GLIBC_2.28/GLIBC_2.29/'
+grep -Fq 'requires GLIBC_2.29, above allowed GLIBC_2.28' "${tmp}/arm_glibc.err"
+mutate_and_fail linux_glibcxx linux-x64 "${linux_x64}" 's/Name: GLIBC_2.28/Name: GLIBC_2.28\nName: GLIBCXX_3.4.30/'
+mutate_and_fail linux_cxxabi linux-x64 "${linux_x64}" 's/Name: GLIBC_2.28/Name: GLIBC_2.28\nName: CXXABI_1.3.11/'
 mutate_and_fail linux_gcc linux-x64 "${linux_x64}" 's/GCC_4.2.0/GCC_4.3.0/'
 mutate_and_fail linux_needed linux-x64 "${linux_x64}" 's/libm.so.6/libz.so.1/'
-mutate_and_fail linux_rpath linux-x64 "${linux_x64}" 's/Name: GLIBC_2.35/RUNPATH: \/tmp\nName: GLIBC_2.35/'
+mutate_and_fail linux_rpath linux-x64 "${linux_x64}" 's/Name: GLIBC_2.28/RUNPATH: \/tmp\nName: GLIBC_2.28/'
 mutate_and_fail linux_isa linux-x64 "${linux_x64}" 's/x86-64-baseline/x86-64-v3/'
 mutate_and_fail linux_avx linux-x64 "${linux_x64}" 's/GNU_PROPERTY_X86_ISA_1_NEEDED: x86-64-baseline/GNU_PROPERTY_X86_ISA_1_NEEDED: x86-64-baseline AVX/'
-mutate_and_fail arm_glibcxx linux-aarch64 "${linux_arm64}" 's/Name: GLIBC_2.35/Name: GLIBC_2.35\nName: GLIBCXX_3.4.30/'
+mutate_and_fail arm_glibcxx linux-aarch64 "${linux_arm64}" 's/Name: GLIBC_2.28/Name: GLIBC_2.28\nName: GLIBCXX_3.4.30/'
 mutate_and_fail linux_static_symbols linux-x64 "${linux_x64}" 's/Section {/Symbols [\n  Symbol {\n    Name: main (1)\n  }\n]\nSection {/'
 mutate_and_fail linux_debug_section linux-x64 "${linux_x64}" 's/Name: .dynsym/Name: .debug_info/'
 mutate_and_fail linux_rust_gdb_section linux-x64 "${linux_x64}" \

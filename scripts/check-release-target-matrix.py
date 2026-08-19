@@ -33,6 +33,7 @@ STRING_FIELDS = set(
 )
 TARGET_FIELDS = STRING_FIELDS | {"diagnostic_authorities", "linux_build"}
 LINUX_FIELDS = {"glibc_max"}
+LINUX_GLIBC_MAX = "2.28"
 
 
 def require_string_fields(value: dict[str, Any], fields: set[str], label: str) -> None:
@@ -53,6 +54,10 @@ def validate_linux_build(target: dict[str, Any]) -> None:
     require_string_fields(linux_build, LINUX_FIELDS, "Linux build contract")
     if re.fullmatch(r"\d+\.\d+", linux_build["glibc_max"]) is None:
         raise ValueError("Linux build contract has malformed immutable pins")
+    if linux_build["glibc_max"] != LINUX_GLIBC_MAX:
+        raise ValueError(
+            f"Linux build contract must use GLIBC_{LINUX_GLIBC_MAX}"
+        )
 
 
 def validate_target(target: dict[str, Any]) -> None:

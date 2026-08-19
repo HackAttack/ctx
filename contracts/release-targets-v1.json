@@ -19,7 +19,7 @@
       "diagnostic_authorities": ["qemu-user"],
       "platform_signature": "release-manifest",
       "linux_build": {
-        "glibc_max": "2.35"
+        "glibc_max": "2.28"
       }
     },
     {
@@ -40,7 +40,7 @@
       "diagnostic_authorities": [],
       "platform_signature": "release-manifest",
       "linux_build": {
-        "glibc_max": "2.35"
+        "glibc_max": "2.28"
       }
     },
     {

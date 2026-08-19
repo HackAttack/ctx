@@ -158,7 +158,7 @@ class LinuxReleaseFactoryTest(unittest.TestCase):
             self.assertNotIn("bazel_platform", target_value)
             if target_value["os"] == "linux":
                 self.assertEqual(
-                    target_value["linux_build"], {"glibc_max": "2.35"}
+                    target_value["linux_build"], {"glibc_max": "2.28"}
                 )
             else:
                 self.assertIsNone(target_value["linux_build"])
@@ -171,6 +171,27 @@ class LinuxReleaseFactoryTest(unittest.TestCase):
             "ubuntu_snapshot",
         ):
             self.assertNotIn(stale_field, serialized)
+
+    def test_linux_factory_scanner_and_metadata_share_matrix_glibc_authority(self) -> None:
+        factory = (
+            ROOT / "scripts" / "release" / "build-public-candidate-on-linux.sh"
+        ).read_text(encoding="utf-8")
+        scanner = (ROOT / "scripts" / "check-release-binary-compat.sh").read_text(
+            encoding="utf-8"
+        )
+        metadata = (
+            ROOT / "scripts" / "release" / "linux-factory-build-info.py"
+        ).read_text(encoding="utf-8")
+        self.assertIn(
+            'build_triple="${triple}.${CTX_PUBLIC_TARGET_GLIBC_MAX}"', factory
+        )
+        self.assertIn(
+            'check_symbol_ceiling GLIBC "${CTX_PUBLIC_TARGET_GLIBC_MAX}"', scanner
+        )
+        self.assertIn('"linux_build": selected["linux_build"]', metadata)
+        self.assertNotIn('build_triple="${triple}.2.28"', factory)
+        self.assertNotIn('check_symbol_ceiling GLIBC "2.28"', scanner)
+        self.assertNotIn('"glibc_max": "2.28"', metadata)
 
     def test_factory_sealer_loads_its_sibling_under_isolated_python(self) -> None:
         subprocess.run(

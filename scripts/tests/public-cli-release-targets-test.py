@@ -65,6 +65,7 @@ class PublicCliReleaseTargetsTest(unittest.TestCase):
         self.assertIn("CTX_PUBLIC_TARGET_ID=linux-arm64", shell)
         self.assertIn("CTX_PUBLIC_TARGET_PLATFORM=linux-aarch64", shell)
         self.assertIn("CTX_PUBLIC_TARGET_TRIPLE=aarch64-unknown-linux-gnu", shell)
+        self.assertIn("CTX_PUBLIC_TARGET_GLIBC_MAX=2.28", shell)
         self.assertIn(
             "CTX_PUBLIC_TARGET_CONSTRUCTION_AUTHORITY=linux-cross-cargo-zigbuild-v1",
             shell,

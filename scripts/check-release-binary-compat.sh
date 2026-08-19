@@ -210,6 +210,24 @@ assert_exact_lines() {
   fi
 }
 
+assert_allowed_required_lines() {
+  local label="$1"
+  local actual="$2"
+  local allowed="$3"
+  local required="$4"
+  local actual_sorted allowed_sorted required_sorted unexpected missing
+  actual_sorted="$(printf '%s\n' "${actual}" | sorted_lines)"
+  allowed_sorted="$(printf '%s\n' "${allowed}" | sorted_lines)"
+  required_sorted="$(printf '%s\n' "${required}" | sorted_lines)"
+  unexpected="$(comm -23 <(printf '%s\n' "${actual_sorted}") <(printf '%s\n' "${allowed_sorted}"))"
+  missing="$(comm -23 <(printf '%s\n' "${required_sorted}") <(printf '%s\n' "${actual_sorted}"))"
+  if [[ -n "${unexpected}" || -n "${missing}" ]]; then
+    [[ -z "${unexpected}" ]] || printf 'unexpected %s:\n%s\n' "${label}" "${unexpected}" >&2
+    [[ -z "${missing}" ]] || printf 'missing required %s:\n%s\n' "${label}" "${missing}" >&2
+    fail "unapproved ${label}"
+  fi
+}
+
 elf_needed_libraries() {
   printf '%s\n' "${readobj_output}" | awk '
     /^NeededLibraries \[/ { in_needed=1; next }
@@ -353,23 +371,47 @@ check_elf_hardening() {
 }
 
 check_linux() {
-  local expected_machine expected_interpreter expected_needed
+  local expected_machine expected_interpreter allowed_needed required_needed target_id
   if [[ "${platform}" == "linux-x64" ]]; then
+    target_id="linux-x64"
     expected_machine="EM_X86_64"
     expected_interpreter="/lib64/ld-linux-x86-64.so.2"
-    # The loader is identified by PT_INTERP. The x86_64 Zig/glibc link emits
-    # the loader in DT_NEEDED as well; AArch64 does not. Rust/Zig may also
-    # satisfy unwinding without libgcc_s, so that optional entry is not part
-    # of the portable glibc ABI contract.
-    expected_needed="libc.so.6
+    # The GLIBC 2.28 sysroot predates the libpthread/libdl merge into libc, so
+    # those component DSOs are required. The loader is independently bound by
+    # PT_INTERP; x86_64 also emits it in DT_NEEDED. libgcc_s remains an allowed
+    # GNU runtime only when its symbol versions satisfy the ceiling below.
+    allowed_needed="libc.so.6
 ld-linux-x86-64.so.2
-libm.so.6"
+libdl.so.2
+libgcc_s.so.1
+libm.so.6
+libpthread.so.0"
+    required_needed="libc.so.6
+ld-linux-x86-64.so.2
+libdl.so.2
+libm.so.6
+libpthread.so.0"
   else
+    target_id="linux-arm64"
     expected_machine="EM_AARCH64"
     expected_interpreter="/lib/ld-linux-aarch64.so.1"
-    expected_needed="libc.so.6
-libm.so.6"
+    allowed_needed="libc.so.6
+ld-linux-aarch64.so.1
+libdl.so.2
+libgcc_s.so.1
+libm.so.6
+libpthread.so.0"
+    required_needed="libc.so.6
+libdl.so.2
+libm.so.6
+libpthread.so.0"
   fi
+
+  local CTX_PUBLIC_TARGET_GLIBC_MAX
+  eval "$(python3 "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)/public-cli-release-targets.py" shell "${target_id}")" \
+    || fail "release target matrix is unavailable for ${platform}"
+  [[ "${CTX_PUBLIC_TARGET_GLIBC_MAX}" =~ ^[0-9]+\.[0-9]+$ ]] \
+    || fail "release target matrix has no valid GLIBC ceiling for ${platform}"
 
   grep -Eq 'Format:[[:space:]]+ELF64-|Class:[[:space:]]+(ELFCLASS64|64-bit)' <<<"${readobj_output}" \
     || fail "expected ELF64"
@@ -385,11 +427,12 @@ libm.so.6"
   interpreter="$(elf_interpreter)"
   [[ "${interpreter}" == "${expected_interpreter}" ]] \
     || fail "expected interpreter ${expected_interpreter}, got ${interpreter:-none}"
-  assert_exact_lines "DT_NEEDED libraries" "$(elf_needed_libraries)" "${expected_needed}"
+  assert_allowed_required_lines "DT_NEEDED libraries" "$(elf_needed_libraries)" \
+    "${allowed_needed}" "${required_needed}"
   check_no_elf_search_path
 
   [[ -n "$(max_symbol_version GLIBC)" ]] || fail "no GLIBC requirement found"
-  check_symbol_ceiling GLIBC 2.35
+  check_symbol_ceiling GLIBC "${CTX_PUBLIC_TARGET_GLIBC_MAX}"
   check_symbol_ceiling GCC 4.2.0
   if [[ "${platform}" == "linux-x64" ]]; then
     if grep -Eq 'GLIBCXX_[0-9]|CXXABI_[0-9]' <<<"${readobj_output}"; then

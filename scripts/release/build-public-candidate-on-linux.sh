@@ -359,12 +359,17 @@ build_target() {
   local target_id="$1" platform triple build_triple binary raw target_dir
   local encoded_flags
   local CTX_PUBLIC_TARGET_PLATFORM CTX_PUBLIC_TARGET_TRIPLE CTX_PUBLIC_TARGET_BINARY
+  local CTX_PUBLIC_TARGET_GLIBC_MAX
   local -a build_env
   eval "$(python3 "${repo_root}/scripts/public-cli-release-targets.py" shell "${target_id}")"
   platform="${CTX_PUBLIC_TARGET_PLATFORM}"
   triple="${CTX_PUBLIC_TARGET_TRIPLE}"
   build_triple="${triple}"
-  [[ "${target_id}" != linux-* ]] || build_triple="${triple}.2.35"
+  if [[ "${target_id}" == linux-* ]]; then
+    [[ "${CTX_PUBLIC_TARGET_GLIBC_MAX}" =~ ^[0-9]+\.[0-9]+$ ]] || \
+      die "Linux target ${target_id} has no valid GLIBC ceiling"
+    build_triple="${triple}.${CTX_PUBLIC_TARGET_GLIBC_MAX}"
+  fi
   binary="${CTX_PUBLIC_TARGET_BINARY}"
   raw="ctx"
   [[ "${target_id}" != "windows-x64" ]] || raw="ctx.exe"

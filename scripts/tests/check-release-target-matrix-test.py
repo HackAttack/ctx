@@ -48,7 +48,7 @@ class ReleaseTargetMatrixTest(unittest.TestCase):
         linux = next(
             target for target in value["targets"] if target["id"] == "linux-x64"
         )
-        self.assertEqual(linux["linux_build"], {"glibc_max": "2.35"})
+        self.assertEqual(linux["linux_build"], {"glibc_max": "2.28"})
         serialized = json.dumps(value)
         for stale_field in (
             "builder_image",
@@ -165,6 +165,17 @@ class ReleaseTargetMatrixTest(unittest.TestCase):
             path = Path(directory) / "matrix.json"
             path.write_text(json.dumps(value), encoding="utf-8")
             with self.assertRaisesRegex(ValueError, "malformed immutable pins"):
+                matrix.load_and_validate(path)
+
+        value = matrix.load_and_validate()
+        linux = next(
+            target for target in value["targets"] if target["id"] == "linux-x64"
+        )
+        linux["linux_build"]["glibc_max"] = "2.35"
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "matrix.json"
+            path.write_text(json.dumps(value), encoding="utf-8")
+            with self.assertRaisesRegex(ValueError, "must use GLIBC_2.28"):
                 matrix.load_and_validate(path)
 
     def test_bazel_platform_cannot_reenter_the_target_shape(self) -> None:
