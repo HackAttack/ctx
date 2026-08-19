@@ -9,7 +9,7 @@ fn rejected_leaf_exact_proof_rejects_change_since_discovery() {
     let transcript = root.join("rejected.jsonl");
     fs::write(&transcript, TEST_RECORD).unwrap();
     let inventory = TestAdapter.discover(&root).unwrap();
-    let leaf = inventory.leaves().first().unwrap();
+    let leaf = inventory.accepted_leaves().next().unwrap();
     fs::write(&transcript, b"{\"message\":\"repaired\"}\n").unwrap();
 
     let error = JsonlFamilyTerminalProof::exact_admitted_path(
@@ -156,7 +156,7 @@ fn optimized_leaf_execution_keeps_publication_inside_the_shared_family() {
         emit_progress_records: false,
     };
     let inventory = adapter.discover(&root).unwrap();
-    let leaf = inventory.leaves().first().unwrap();
+    let leaf = inventory.accepted_leaves().next().unwrap();
     let writer = match TestLifecycle::open(&temp.path().join("index"), ()).unwrap() {
         CaptureLifecycleOpenOutcome::Ready(writer) => writer,
         CaptureLifecycleOpenOutcome::RecoveryRequired { .. } => unreachable!(),
@@ -300,7 +300,7 @@ fn active_source_family_contract_jsonl_optimized_proof_rejects_cross_leaf_bindin
         emit_progress_records: false,
     };
     let inventory = adapter.discover(&root).unwrap();
-    let first = inventory.leaves().first().unwrap();
+    let first = inventory.accepted_leaves().next().unwrap();
     let other_source = SourceKey::derive(
         adapter.provider().as_str(),
         TEST_SOURCE_FORMAT,
@@ -348,7 +348,7 @@ fn active_source_family_contract_jsonl_optimized_proof_rejects_mismatched_certif
         emit_progress_records: false,
     };
     let inventory = adapter.discover(&root).unwrap();
-    let leaf = inventory.leaves().first().unwrap();
+    let leaf = inventory.accepted_leaves().next().unwrap();
     let certificate =
         optimized_test_certificate(&adapter, leaf, Sha256::digest(TEST_RECORD).into());
     let mismatched = optimized_test_certificate(&adapter, leaf, [9; 32]);
@@ -375,7 +375,7 @@ fn optimized_leaf_execution_rejects_records_owned_by_another_source() {
         emit_progress_records: false,
     };
     let inventory = adapter.discover(&root).unwrap();
-    let leaf = inventory.leaves().first().unwrap();
+    let leaf = inventory.accepted_leaves().next().unwrap();
     let writer = match TestLifecycle::open(&temp.path().join("index"), ()).unwrap() {
         CaptureLifecycleOpenOutcome::Ready(writer) => writer,
         CaptureLifecycleOpenOutcome::RecoveryRequired { .. } => unreachable!(),
@@ -405,7 +405,7 @@ fn project_framing_policy_fixture(
     index: &Path,
 ) -> CertifiedSource {
     let inventory = adapter.discover(root).unwrap();
-    let leaf = inventory.leaves().first().unwrap();
+    let leaf = inventory.accepted_leaves().next().unwrap();
     let writer = match TestLifecycle::open(index, ()).unwrap() {
         CaptureLifecycleOpenOutcome::Ready(writer) => writer,
         CaptureLifecycleOpenOutcome::RecoveryRequired { .. } => unreachable!(),
@@ -494,7 +494,7 @@ fn generic_projection_streams_record_and_finish_fanout_before_record_65() {
             observed_before_65: Some(Arc::clone(&observed_before_65)),
         };
         let inventory = adapter.discover(&root).unwrap();
-        let leaf = inventory.leaves().first().unwrap();
+        let leaf = inventory.accepted_leaves().next().unwrap();
         let writer = match TestLifecycle::open(&temp.path().join("index"), ()).unwrap() {
             CaptureLifecycleOpenOutcome::Ready(writer) => writer,
             CaptureLifecycleOpenOutcome::RecoveryRequired { .. } => unreachable!(),

@@ -186,8 +186,7 @@ fn active_source_family_contract_jsonl_terminal_inventory_rejects_reappearance()
     let adapter = TestAdapter;
     let before = adapter.discover(&root).unwrap();
     let deleted_source = before
-        .leaves()
-        .iter()
+        .accepted_leaves()
         .find(|leaf| leaf.source_path() == deleted_path)
         .unwrap()
         .source()
@@ -344,8 +343,7 @@ fn active_source_family_contract_jsonl_frozen_inventory_rejects_deleted_source_r
     let selection_root = temp.path().join("codex-selection");
     let before = adapter.discover(&selection_root).unwrap();
     let deleted_source = before
-        .leaves()
-        .iter()
+        .accepted_leaves()
         .find(|leaf| leaf.source_path() == deleted_path)
         .unwrap()
         .source()

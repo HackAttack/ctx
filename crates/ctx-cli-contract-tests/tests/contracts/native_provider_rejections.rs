@@ -761,9 +761,27 @@ fn codex_cold_import_keeps_inherited_metadata_and_quarantines_unrelated_owner() 
         "--progress",
         "none",
     ]));
-    let source = assert_source_backed_publication(&report, "codex", "codex_session_jsonl_tree", 0);
-    assert_eq!(source["source_failure_total"], 0, "{report:#}");
-    assert_eq!(source["route_source_failure_total"], 0, "{report:#}");
+    assert_eq!(report["schema_version"], 2, "{report:#}");
+    assert_eq!(
+        report["outcome"], "completed_with_source_failures",
+        "{report:#}"
+    );
+    assert_eq!(report["failure_scope"], "source", "{report:#}");
+    assert_eq!(report["failure_type"], "source_failure", "{report:#}");
+    let sources = report["sources"]
+        .as_array()
+        .unwrap_or_else(|| panic!("missing Codex source receipt in {report:#}"));
+    assert_eq!(sources.len(), 1, "{report:#}");
+    let source = &sources[0];
+    assert_eq!(source["provider"], "codex", "{report:#}");
+    assert_eq!(
+        source["source_format"], "codex_session_jsonl_tree",
+        "{report:#}"
+    );
+    assert_eq!(source["status"], "partial", "{report:#}");
+    assert_eq!(source["source_failure_total"], 1, "{report:#}");
+    assert_eq!(source["route_source_failure_total"], 1, "{report:#}");
+    assert_eq!(source["carried_forward"], false, "{report:#}");
     assert_eq!(source["current_source_count"], 2, "{report:#}");
 
     for marker in [owner_first_marker, ancestor_first_marker] {

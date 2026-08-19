@@ -139,8 +139,8 @@ pub(super) fn prepare_semantic_lifecycle_test(
 ) -> Result<leaf::PreparedLeaf<CaptureError>> {
     let inventory = adapter.discover(root)?;
     let leaf = inventory
-        .leaves()
-        .first()
+        .accepted_leaves()
+        .next()
         .ok_or(CaptureError::SystemInvariant(
             "semantic lifecycle test has no leaf",
         ))?;

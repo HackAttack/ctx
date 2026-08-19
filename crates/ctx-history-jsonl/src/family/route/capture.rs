@@ -30,28 +30,21 @@ pub(super) fn default_base_source_path<R: JsonlFamilyRuntime>(
     Ok(checkpoint.physical.identity().source_path().clone())
 }
 
-fn rejected_leaf_terminal_proof<R: JsonlFamilyRuntime>(
+fn disposition_terminal_proof<R: JsonlFamilyRuntime>(
     opening: &JsonlFamilyInventory<JsonlRuntimeError<R>>,
-    leaf: &JsonlFamilyRejectedLeaf,
+    source_path: &Path,
+    authority_path: &Path,
+    observation: &JsonlFileObservation,
 ) -> JsonlResult<JsonlFamilyTerminalProof<JsonlRuntimeError<R>>, JsonlRuntimeError<R>> {
-    let authority = opening
-        .authorities
-        .iter()
-        .find(|authority| {
-            leaf.source_path
-                .strip_prefix(authority.named_path())
-                .is_ok_and(|relative| relative == leaf.authority_path)
-        })
-        .ok_or_else(|| {
-            JsonlRuntimeError::<R>::invalid_payload(
-                "rejected JSONL member lost its retained root authority".to_owned(),
-            )
-        })?;
     JsonlFamilyTerminalProof::exact_admitted_path(
-        leaf.source_path.clone(),
-        Arc::clone(authority),
-        leaf.authority_path.clone(),
-        &leaf.observation,
+        source_path.to_path_buf(),
+        Arc::clone(exact_member_authority(
+            &opening.authorities,
+            source_path,
+            authority_path,
+        )?),
+        authority_path.to_path_buf(),
+        observation,
     )
 }
 
@@ -125,11 +118,10 @@ pub(super) fn capture<R: JsonlFamilyRuntime>(
             .map_err(|error| route_discovery(adapter, error))?;
     }
     reset_terminal(resident)?;
-    let opening = adapter
+    let mut opening = adapter
         .discover(root)
         .map_err(|error| route_discovery(adapter, error))?;
-    let opening_membership = adapter
-        .observe_terminal_membership(root, &opening)
+    classify_incomplete_first_records(adapter, &mut opening)
         .map_err(|error| route_discovery(adapter, error))?;
     if opening.root_missing()
         && adapter.root_missing_mode() == JsonlFamilyRootMissingMode::Unavailable
@@ -139,12 +131,16 @@ pub(super) fn capture<R: JsonlFamilyRuntime>(
             "provider JSONL root is unavailable",
         ));
     }
+    let bases = base_sources_for_root(adapter, &opening, root, sink)?;
+    bind_prior_disposition_sources(adapter, &mut opening, &bases)?;
+    let opening_membership = adapter
+        .observe_terminal_membership(root, &opening)
+        .map_err(|error| route_discovery(adapter, error))?;
     let route_fatal_rejected = opening
-        .rejected_leaves()
-        .iter()
+        .quarantined_leaves()
         .filter(|leaf| leaf.logical_source_failure.is_none())
         .collect::<Vec<_>>();
-    if opening.leaves().is_empty() && !route_fatal_rejected.is_empty() {
+    if opening.accepted_len() == 0 && !route_fatal_rejected.is_empty() && bases.is_empty() {
         let rejected_records = route_fatal_rejected.iter().try_fold(0_u64, |total, leaf| {
             total.checked_add(leaf.rejected_records).ok_or_else(|| {
                 SourceBackedRouteError::new(
@@ -162,7 +158,7 @@ pub(super) fn capture<R: JsonlFamilyRuntime>(
             ),
         ));
     }
-    for rejected in opening.rejected_leaves() {
+    for rejected in opening.quarantined_leaves() {
         if let Some((source, detail)) = &rejected.logical_source_failure {
             let failure =
                 SourceBackedRouteError::new(SourceBackedRouteErrorKind::InvalidSource, detail);
@@ -174,30 +170,9 @@ pub(super) fn capture<R: JsonlFamilyRuntime>(
             .map_err(route_internal)?;
         }
     }
-    let bases = base_sources_for_root(adapter, &opening, root, sink)?;
-    let base_paths = bases
-        .iter()
-        .map(|base| {
-            adapter
-                .base_source_path(base)
-                .map(|path| (base.observation().source().exact_descriptor_digest(), path))
-                .map_err(|error| route_scan(adapter, error))
-        })
-        .collect::<SourceBackedRouteResult<HashMap<_, _>>>()?;
-    let mut rejected_quarantine_paths = BTreeSet::new();
     let mut rejected_quarantine_sources = HashMap::new();
-    let mut rejected_quarantine_dependencies = Vec::new();
-    for rejected in opening
-        .rejected_leaves()
-        .iter()
-        .filter(|leaf| leaf.logical_source_failure.is_some())
-    {
-        rejected_quarantine_paths.insert(rejected.source_path.clone());
-        rejected_quarantine_dependencies.push(
-            rejected_leaf_terminal_proof::<R>(&opening, rejected)
-                .map_err(|error| route_scan(adapter, error))?,
-        );
-        if let Some(source) = &rejected.quarantined_source {
+    for rejected in opening.quarantined_leaves() {
+        if let Some(source) = rejected.source() {
             if rejected_quarantine_sources
                 .insert(source.exact_descriptor_digest(), source.clone())
                 .is_some_and(|previous: SourceKey| !previous.exact_descriptor_eq(source))
@@ -207,27 +182,18 @@ pub(super) fn capture<R: JsonlFamilyRuntime>(
                 ));
             }
         }
-        // A catalog-level ownership rejection may not be able to reconstruct
-        // a current provider source key. An exact prior certificate for the
-        // same physical member remains sufficient authority to delete stale
-        // published records without guessing a replacement owner.
-        for base in &bases {
-            let source = base.observation().source();
-            if base_paths.get(&source.exact_descriptor_digest()) == Some(&rejected.source_path) {
-                if rejected_quarantine_sources
-                    .insert(source.exact_descriptor_digest(), source.clone())
-                    .is_some_and(|previous| !previous.exact_descriptor_eq(source))
-                {
-                    return Err(route_invalid(
-                        "rejected JSONL base descriptor digest collision",
-                    ));
-                }
-            }
-        }
+    }
+    if opening.accepted_len() == 0 && opening.pending_len() != 0 && bases.is_empty() {
+        return Err(SourceBackedRouteError::new(
+            SourceBackedRouteErrorKind::SourceChanged,
+            format!(
+                "provider JSONL inventory contains {} incomplete sources and no complete source; retry after a pending file changes",
+                opening.pending_len(),
+            ),
+        ));
     }
     let mut selected_leaves = opening
-        .leaves()
-        .iter()
+        .accepted_leaves()
         .filter(|leaf| {
             adapter.base_scope() == JsonlFamilyBaseScope::ProviderFamily
                 || !sink.source_owned_by_other_route(leaf.source())
@@ -330,7 +296,43 @@ pub(super) fn capture<R: JsonlFamilyRuntime>(
         .map_err(|error| route_scan(adapter, error));
     let mut scan_result = terminal_sources?;
     finish_leaf_scans?;
+    let mut disposition_dependencies = opening
+        .members()
+        .iter()
+        .filter_map(|member| match member {
+            JsonlFamilyInventoryMember::Quarantined { leaf, .. } => Some((
+                leaf.source_path.as_path(),
+                leaf.authority_path.as_path(),
+                &leaf.observation,
+            )),
+            JsonlFamilyInventoryMember::Pending { leaf, .. } => Some((
+                leaf.source_path.as_path(),
+                leaf.authority_path.as_path(),
+                &leaf.observation,
+            )),
+            JsonlFamilyInventoryMember::Accepted { .. } => None,
+        })
+        .map(|(source_path, authority_path, observation)| {
+            disposition_terminal_proof::<R>(&opening, source_path, authority_path, observation)
+        })
+        .collect::<JsonlResult<Vec<_>, _>>()
+        .map_err(|error| route_scan(adapter, error))?;
     for quarantined in &scan_result.quarantined {
+        if !opening.accepted_leaves().any(|leaf| {
+            leaf.source_path() == quarantined.source_path
+                && leaf
+                    .source()
+                    .exact_descriptor_eq(&quarantined.claimed_source)
+        }) {
+            return Err(route_invalid(
+                "scanned JSONL quarantine is not bound to an accepted physical member",
+            ));
+        }
+        quarantined
+            .terminal_proof
+            .revalidate_dependency()
+            .map_err(|error| route_scan(adapter, error))?;
+        disposition_dependencies.push(quarantined.terminal_proof.clone());
         let failure = SourceBackedRouteError::new(
             SourceBackedRouteErrorKind::InvalidSource,
             &quarantined.detail,
@@ -360,13 +362,6 @@ pub(super) fn capture<R: JsonlFamilyRuntime>(
         .keys()
         .copied()
         .collect::<BTreeSet<_>>();
-    let mut quarantined_paths = rejected_quarantine_paths;
-    quarantined_paths.extend(
-        scan_result
-            .quarantined
-            .iter()
-            .map(|leaf| leaf.source_path.clone()),
-    );
     let mut owned_sources = HashMap::with_capacity(bases.len() + selected_leaves.len());
     for source in bases
         .iter()
@@ -393,18 +388,42 @@ pub(super) fn capture<R: JsonlFamilyRuntime>(
         }
     }
 
+    let partial_inventory = opening.quarantined_len() != 0
+        || opening.pending_len() != 0
+        || !scan_result.quarantined.is_empty();
+    if partial_inventory && !bases.is_empty() {
+        for dependency in &disposition_dependencies {
+            dependency
+                .revalidate_dependency()
+                .map_err(|error| route_scan(adapter, error))?;
+        }
+        // A non-accepted physical member makes absence unprovable. Publish
+        // trustworthy accepted peers as a partial route update and carry every
+        // unstaged base member until a later clean inventory can certify
+        // deletion. This is the same retained-generation safety contract used
+        // by bounded exact-member refreshes.
+        sink.retain_unstaged_base_route_sources()
+            .map_err(route_internal)?;
+        let mut resident = resident
+            .lock()
+            .map_err(|_| route_internal("JSONL resident catalog lock was poisoned"))?;
+        resident.ownership_initialized = false;
+        resident.owned_sources = owned_sources;
+        resident.quarantined_sources = quarantined_source_ownership;
+        resident.terminal_sources = terminal_sources;
+        resident.absent_sources.clear();
+        resident.opening_membership = None;
+        resident.certified_inventory = None;
+        resident.opening_inventory = None;
+        return Ok(());
+    }
+
     let selected_sources = selected_leaves
         .iter()
         .filter(|leaf| !quarantined_sources.contains(&leaf.source().exact_descriptor_digest()))
         .map(|leaf| leaf.source().clone())
         .collect::<Vec<_>>();
-    rejected_quarantine_dependencies.extend(
-        scan_result
-            .quarantined
-            .into_iter()
-            .map(|leaf| leaf.terminal_proof),
-    );
-    let opening = opening.with_appended_exact_dependencies(rejected_quarantine_dependencies);
+    let opening = opening.with_appended_exact_dependencies(disposition_dependencies);
     let inventory = opening
         .certify_selected_against(&opening, selected_sources)
         .map_err(route_invalid)?;
@@ -413,14 +432,13 @@ pub(super) fn capture<R: JsonlFamilyRuntime>(
     let mut absent_sources = Vec::new();
     for base in &bases {
         if !inventory.contains(base.observation().source()) {
-            let base_path = base_paths
-                .get(&base.observation().source().exact_descriptor_digest())
-                .cloned()
-                .ok_or_else(|| route_internal("JSONL base source lost its physical path"))?;
-            if !quarantined_paths.contains(&base_path) {
-                if let Some(absent) = JsonlFamilyAbsentMember::from_path(&opening, base_path) {
-                    absent_sources.push(absent);
-                }
+            if let Some(absent) = JsonlFamilyAbsentMember::from_path(
+                &opening,
+                adapter
+                    .base_source_path(base)
+                    .map_err(|error| route_scan(adapter, error))?,
+            ) {
+                absent_sources.push(absent);
             }
             let deletion = CertifiedSourceDeletion::from_inventory(
                 base.observation().source().clone(),
@@ -442,6 +460,181 @@ pub(super) fn capture<R: JsonlFamilyRuntime>(
     resident.opening_membership = Some(opening_membership);
     resident.certified_inventory = Some(inventory);
     resident.opening_inventory = Some(opening);
+    Ok(())
+}
+
+/// Applies the shared physical JSONL contract before any provider semantic
+/// classification. A nonempty first record without its framing terminator is
+/// pending/incomplete; zero-byte files and complete malformed records retain
+/// their existing provider semantics.
+fn classify_incomplete_first_records<R: JsonlFamilyRuntime>(
+    adapter: &dyn JsonlFamilyAdapter<Runtime = R>,
+    opening: &mut JsonlFamilyInventory<JsonlRuntimeError<R>>,
+) -> JsonlResult<(), JsonlRuntimeError<R>> {
+    if opening.root_missing {
+        return Ok(());
+    }
+    let mut changed = false;
+    let mut classified = Vec::with_capacity(opening.members.len());
+    for member in std::mem::take(&mut opening.members) {
+        match member {
+            JsonlFamilyInventoryMember::Accepted { identity, leaf }
+                if !leaf.whole_record
+                    && first_record_is_incomplete(
+                        &leaf.source_path,
+                        &leaf.authority,
+                        &leaf.authority_path,
+                        Some(&leaf.observation),
+                        adapter.physical_encoding(&leaf),
+                        adapter.record_framing(),
+                    )? =>
+            {
+                changed = true;
+                classified.push(JsonlFamilyInventoryMember::Pending {
+                    identity,
+                    leaf: JsonlFamilyPendingLeaf::bind_observed(
+                        leaf.source_path,
+                        leaf.authority_path,
+                        leaf.observation,
+                        leaf.binding,
+                        Some(leaf.source),
+                    ),
+                });
+            }
+            JsonlFamilyInventoryMember::Quarantined { identity, leaf } => {
+                let authority = exact_member_authority(
+                    &opening.authorities,
+                    &leaf.source_path,
+                    &leaf.authority_path,
+                )?;
+                if first_record_is_incomplete(
+                    &leaf.source_path,
+                    authority,
+                    &leaf.authority_path,
+                    Some(&leaf.observation),
+                    leaf.physical_encoding,
+                    adapter.record_framing(),
+                )? {
+                    changed = true;
+                    classified.push(JsonlFamilyInventoryMember::Pending {
+                        identity,
+                        leaf: JsonlFamilyPendingLeaf::bind_observed(
+                            leaf.source_path,
+                            leaf.authority_path,
+                            leaf.observation,
+                            leaf.proof,
+                            leaf.quarantined_source,
+                        ),
+                    });
+                } else {
+                    classified.push(JsonlFamilyInventoryMember::Quarantined { identity, leaf });
+                }
+            }
+            member => classified.push(member),
+        }
+    }
+    opening.members = classified;
+    if changed {
+        opening.rebuild_observation()?;
+    }
+    Ok(())
+}
+
+fn first_record_is_incomplete<E: JsonlFamilyError>(
+    source_path: &Path,
+    authority: &Arc<ProviderSourceRoot<E>>,
+    authority_path: &Path,
+    expected: Option<&JsonlFileObservation>,
+    encoding: JsonlPhysicalEncoding,
+    framing: JsonlRecordFraming,
+) -> JsonlResult<bool, E> {
+    let opened = authority.open_file(authority_path)?;
+    let observation = observe_opened_file(source_path, &opened)?;
+    if expected.is_some_and(|expected| expected != &observation) {
+        return Err(E::source_changed());
+    }
+    if observation.length() == 0 {
+        opened.revalidate_same_object()?;
+        return Ok(false);
+    }
+    let mut file = opened.reopen_same_object()?;
+    if encoding == JsonlPhysicalEncoding::RawJsonl && observation.length() >= 4 {
+        let mut magic = [0_u8; 4];
+        file.read_exact(&mut magic)?;
+        file.seek(SeekFrom::Start(0))?;
+        if magic == [0x28, 0xb5, 0x2f, 0xfd] {
+            // A quarantined member does not necessarily have a provider leaf
+            // from which to ask for encoding. Never reinterpret an ordinary
+            // Zstandard stream as an unfinished raw JSONL record.
+            opened.revalidate_same_object()?;
+            return Ok(false);
+        }
+    }
+    let mut stream = JsonlPhysicalStream::open_with_encoding(
+        file,
+        observation.length(),
+        0,
+        0,
+        encoding,
+        framing,
+        JsonlPhysicalDigest::complete(JsonlResumableSha256::new()),
+        E::source_changed,
+    )?;
+    let incomplete = stream.next_record()?.is_none_or(|record| !record.complete);
+    opened.revalidate_same_object()?;
+    Ok(incomplete)
+}
+
+fn bind_prior_disposition_sources<R: JsonlFamilyRuntime>(
+    adapter: &dyn JsonlFamilyAdapter<Runtime = R>,
+    opening: &mut JsonlFamilyInventory<JsonlRuntimeError<R>>,
+    bases: &[CertifiedSource],
+) -> SourceBackedRouteResult<()> {
+    let mut bases_by_path = BTreeMap::<PathBuf, SourceKey>::new();
+    for base in bases {
+        let path = adapter
+            .base_source_path(base)
+            .map_err(|error| route_scan(adapter, error))?;
+        let source = base.observation().source();
+        if bases_by_path
+            .insert(path, source.clone())
+            .is_some_and(|previous| !previous.exact_descriptor_eq(source))
+        {
+            return Err(route_invalid(
+                "multiple JSONL base sources claim one physical member path",
+            ));
+        }
+    }
+    let mut changed = false;
+    for member in &mut opening.members {
+        let (path, bound) = match member {
+            JsonlFamilyInventoryMember::Quarantined { leaf, .. } => {
+                (&leaf.source_path, &mut leaf.quarantined_source)
+            }
+            JsonlFamilyInventoryMember::Pending { leaf, .. } => {
+                (&leaf.source_path, &mut leaf.source)
+            }
+            JsonlFamilyInventoryMember::Accepted { .. } => continue,
+        };
+        let Some(base_source) = bases_by_path.get(path) else {
+            continue;
+        };
+        if bound
+            .as_ref()
+            .is_some_and(|source| !source.exact_descriptor_eq(base_source))
+        {
+            return Err(route_invalid(
+                "JSONL disposition source conflicts with the exact base member path",
+            ));
+        }
+        if bound.is_none() {
+            *bound = Some(base_source.clone());
+            changed = true;
+        }
+    }
+    if changed {
+        opening.rebuild_observation().map_err(route_invalid)?;
+    }
     Ok(())
 }
 

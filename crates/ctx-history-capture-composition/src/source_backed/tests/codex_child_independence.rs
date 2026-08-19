@@ -682,6 +682,16 @@ fn records_for(index: &VerifiedIndex, native_session_id: &str) -> Vec<CoreRecord
     records
 }
 
+fn source_records_contain(index: &VerifiedIndex, native_session_id: &str, marker: &str) -> bool {
+    records_for(index, native_session_id).iter().any(|record| {
+        record
+            .content
+            .normalized_body
+            .as_deref()
+            .is_some_and(|body| body.contains(marker))
+    })
+}
+
 fn result_record_for_call<'a>(records: &'a [CoreRecord], call_id: &str) -> &'a CoreRecord {
     records
         .iter()
@@ -882,7 +892,7 @@ fn codex_rollout_ownership_quarantine_retries_after_file_repair() {
 
     // The member workset first exercises append checkpoint restoration in the
     // bounded partial path. Quarantine then falls through to exhaustive
-    // discovery so the stale base is deleted rather than retained.
+    // discovery, which retains the exact prior source until this file repairs.
     let quarantined = incremental_refresh_member(
         &index_root,
         &registry,
@@ -919,17 +929,25 @@ fn codex_rollout_ownership_quarantine_retries_after_file_repair() {
         .unwrap()
         .into_iter()
         .any(|candidate| candidate.event.provider_session_id.as_deref() == Some(valid_session_id)));
+    assert!(index.manifest().sources.iter().any(|certificate| {
+        matches!(
+            certificate.observation().source().anchor(),
+            SourceAnchor::ProviderNative { key: TypedKey::Utf8(value), .. }
+                if value == repairable_session_id
+        )
+    }));
     assert!(index.manifest().sources.iter().all(|certificate| {
         !matches!(
             certificate.observation().source().anchor(),
             SourceAnchor::ProviderNative { key: TypedKey::Utf8(value), .. }
-                if value == repairable_session_id || value == conflicting_session_id
+                if value == conflicting_session_id
         )
     }));
-    assert!(index
-        .search_event_candidates(previously_valid_marker, 8)
-        .unwrap()
-        .is_empty());
+    assert!(source_records_contain(
+        &index,
+        repairable_session_id,
+        previously_valid_marker
+    ));
     assert!(index
         .search_event_candidates(late_bad_marker, 8)
         .unwrap()
@@ -960,6 +978,11 @@ fn codex_rollout_ownership_quarantine_retries_after_file_repair() {
     assert!(repaired.logical_source_failures.is_empty());
     let repaired_index = VerifiedIndex::open(&index_root).unwrap();
     assert_eq!(records_for(&repaired_index, repairable_session_id).len(), 1);
+    assert!(!source_records_contain(
+        &repaired_index,
+        repairable_session_id,
+        previously_valid_marker
+    ));
     assert_eq!(
         repaired_index
             .search_event_candidates(repaired_marker, 8)

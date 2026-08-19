@@ -33,8 +33,8 @@ fn discovered_leaf() -> (
     >();
     assert_eq!(adapter.provider(), CaptureProvider::CopilotCli);
     let inventory = adapter.discover(&root).unwrap();
-    assert_eq!(inventory.leaves().len(), 1);
-    let retained = inventory.leaves()[0].clone();
+    assert_eq!(inventory.accepted_len(), 1);
+    let retained = inventory.accepted_leaves().next().unwrap().clone();
     (temp, ancestor, root, retained)
 }
 
@@ -131,9 +131,9 @@ fn shared_native_jsonl_skips_unselected_link_and_special_file_siblings() {
     >();
     let inventory = adapter.discover(&root).unwrap();
 
-    assert_eq!(inventory.leaves().len(), 1);
+    assert_eq!(inventory.accepted_len(), 1);
     assert_eq!(
-        inventory.leaves()[0].source_path(),
+        inventory.accepted_leaves().next().unwrap().source_path(),
         root.join("copilot-cli-native/events.jsonl")
     );
 }

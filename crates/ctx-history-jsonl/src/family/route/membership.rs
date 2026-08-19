@@ -40,12 +40,12 @@ impl<E: JsonlFamilyError> JsonlFamilyMembershipObservation<E> {
         }
 
         let absolute_root = std::path::absolute(root)?;
-        if let Some(leaf) = opening
-            .leaves
+        if let Some(member) = opening
+            .members
             .iter()
-            .find(|leaf| leaf.source_path == absolute_root)
+            .find(|member| member.source_path() == absolute_root)
         {
-            return Self::observe_leaf(leaf, opening);
+            return Self::observe_member(member, opening);
         }
         Self::observe_authorities(opening)
     }
@@ -60,26 +60,51 @@ impl<E: JsonlFamilyError> JsonlFamilyMembershipObservation<E> {
         Self::from_routes(state.routes, opening)
     }
 
-    fn observe_leaf(
-        leaf: &JsonlFamilyLeaf<E>,
+    fn observe_member(
+        member: &JsonlFamilyInventoryMember<E>,
         opening: &JsonlFamilyInventory<E>,
     ) -> JsonlResult<Self, E> {
-        check_membership_path::<E>(&leaf.source_path)?;
-        if leaf.authority_path.components().count()
+        let (source_path, authority_path, authority) = match member {
+            JsonlFamilyInventoryMember::Accepted { leaf, .. } => (
+                leaf.source_path.as_path(),
+                leaf.authority_path.as_path(),
+                Arc::clone(&leaf.authority),
+            ),
+            JsonlFamilyInventoryMember::Quarantined { leaf, .. } => (
+                leaf.source_path.as_path(),
+                leaf.authority_path.as_path(),
+                Arc::clone(exact_member_authority(
+                    &opening.authorities,
+                    &leaf.source_path,
+                    &leaf.authority_path,
+                )?),
+            ),
+            JsonlFamilyInventoryMember::Pending { leaf, .. } => (
+                leaf.source_path.as_path(),
+                leaf.authority_path.as_path(),
+                Arc::clone(exact_member_authority(
+                    &opening.authorities,
+                    &leaf.source_path,
+                    &leaf.authority_path,
+                )?),
+            ),
+        };
+        check_membership_path::<E>(source_path)?;
+        if authority_path.components().count()
             > PROVIDER_JSONL_INVENTORY_MAX_DEPTH.saturating_add(1)
         {
             return Err(E::invalid_payload(
                 "JSONL membership path depth exceeds the provider inventory bound".to_owned(),
             ));
         }
-        let opened = leaf.authority.open_file(&leaf.authority_path)?;
+        let opened = authority.open_file(authority_path)?;
         opened.revalidate_same_object()?;
         let mut routes = BTreeMap::new();
         routes.insert(
-            leaf.source_path.clone(),
+            source_path.to_path_buf(),
             JsonlFamilyMembershipRoute {
-                authority: Arc::clone(&leaf.authority),
-                authority_path: leaf.authority_path.clone(),
+                authority,
+                authority_path: authority_path.to_path_buf(),
             },
         );
         Self::from_routes(routes, opening)
@@ -90,10 +115,14 @@ impl<E: JsonlFamilyError> JsonlFamilyMembershipObservation<E> {
         opening: &JsonlFamilyInventory<E>,
     ) -> JsonlResult<Self, E> {
         let source_hints = opening
-            .leaves
+            .members
             .iter()
-            .filter(|leaf| routes.contains_key(&leaf.source_path))
-            .map(|leaf| (leaf.source_path.clone(), leaf.source.clone()))
+            .filter(|member| routes.contains_key(member.source_path()))
+            .filter_map(|member| {
+                member
+                    .source()
+                    .map(|source| (member.source_path().to_path_buf(), source.clone()))
+            })
             .collect();
         Ok(Self {
             root_missing: false,

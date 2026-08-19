@@ -76,10 +76,9 @@ fn logical_counts_decode_and_retain_unchanged_committed_checkpoints() {
 
     let adapter = TestAdapter;
     let inventory = adapter.discover(&root).unwrap();
-    assert_eq!(inventory.leaves().len(), LEAVES);
+    assert_eq!(inventory.accepted_len(), LEAVES);
     let mut sources = inventory
-        .leaves()
-        .iter()
+        .accepted_leaves()
         .map(|leaf| {
             let (checkpoint, certificate) = logical_count_checkpoint(&adapter, leaf);
             assert_eq!(certificate.counts().complete_records, 2);
@@ -249,7 +248,7 @@ fn nonterminal_checkpoint_noops_then_resumes_only_its_uncertified_tail() {
 
     let cold = {
         let inventory = adapter.discover(&root).unwrap();
-        let leaf = inventory.leaves().first().unwrap();
+        let leaf = inventory.accepted_leaves().next().unwrap();
         let mut emit = |_event| Ok(());
         let mut output = JsonlLeafOutput::new(&mut emit);
         prepare_leaf(
@@ -266,7 +265,7 @@ fn nonterminal_checkpoint_noops_then_resumes_only_its_uncertified_tail() {
     let cold_inventory = adapter.discover(&root).unwrap();
     let cold_checkpoint = super::super::leaf::decode_checkpoint(
         &adapter,
-        cold_inventory.leaves().first().unwrap(),
+        cold_inventory.accepted_leaves().next().unwrap(),
         &cold.certificate,
     )
     .unwrap();
@@ -280,7 +279,7 @@ fn nonterminal_checkpoint_noops_then_resumes_only_its_uncertified_tail() {
 
     let unchanged = {
         let inventory = adapter.discover(&root).unwrap();
-        let leaf = inventory.leaves().first().unwrap();
+        let leaf = inventory.accepted_leaves().next().unwrap();
         let mut events = Vec::new();
         let mut emit = |event| {
             events.push(event);
@@ -318,7 +317,7 @@ fn nonterminal_checkpoint_noops_then_resumes_only_its_uncertified_tail() {
         .unwrap();
     let completed = {
         let inventory = adapter.discover(&root).unwrap();
-        let leaf = inventory.leaves().first().unwrap();
+        let leaf = inventory.accepted_leaves().next().unwrap();
         let mut emit = |_event| Ok(());
         let mut output = JsonlLeafOutput::new(&mut emit);
         prepare_leaf(
@@ -336,7 +335,7 @@ fn nonterminal_checkpoint_noops_then_resumes_only_its_uncertified_tail() {
     let completed_inventory = adapter.discover(&root).unwrap();
     let completed_checkpoint = super::super::leaf::decode_checkpoint(
         &adapter,
-        completed_inventory.leaves().first().unwrap(),
+        completed_inventory.accepted_leaves().next().unwrap(),
         &completed.certificate,
     )
     .unwrap();

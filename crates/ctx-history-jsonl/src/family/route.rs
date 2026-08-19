@@ -1,13 +1,15 @@
 use std::{
     collections::{BTreeMap, BTreeSet, HashMap},
+    io::{Read, Seek, SeekFrom},
     path::{Path, PathBuf},
     sync::{Arc, Mutex},
 };
 
 use super::{
     observe_opened_file, observe_opened_file_allow_append, revalidate_frozen_prefix,
-    JsonlCheckpoint, JsonlFileObservation, JsonlOversizedRecordPolicy, JsonlPhysicalEncoding,
-    JsonlProbe, JsonlRecordFraming, OpenedProviderSourceFile, OpenedProviderSourcePath,
+    JsonlCheckpoint, JsonlFileObservation, JsonlOversizedRecordPolicy, JsonlPhysicalDigest,
+    JsonlPhysicalEncoding, JsonlPhysicalStream, JsonlProbe, JsonlRecordFraming,
+    JsonlResumableSha256, OpenedProviderSourceFile, OpenedProviderSourcePath,
     ProviderSourceDirectory, ProviderSourceRoot,
 };
 use super::{
@@ -772,61 +774,14 @@ impl<E: JsonlFamilyError> JsonlFamilyLeaf<E> {
     }
 }
 
-#[derive(Debug, Clone)]
-pub struct JsonlFamilyRejectedLeaf {
-    source_path: PathBuf,
-    authority_path: PathBuf,
-    observation: JsonlFileObservation,
-    proof: TypedKey,
-    rejected_records: u64,
-    logical_source_failure: Option<(SourceKey, String)>,
-    quarantined_source: Option<SourceKey>,
-}
-
-impl JsonlFamilyRejectedLeaf {
-    pub fn bind_observed(
-        source_path: PathBuf,
-        authority_path: PathBuf,
-        observation: JsonlFileObservation,
-        proof: TypedKey,
-        rejected_records: u64,
-    ) -> Self {
-        Self {
-            source_path,
-            authority_path,
-            observation,
-            proof,
-            rejected_records,
-            logical_source_failure: None,
-            quarantined_source: None,
-        }
-    }
-
-    /// Records a file-local failure alongside a rejected membership leaf.
-    ///
-    /// The supplied key must identify only the physical rejected member, not
-    /// an inferred provider session. This lets a family publish trustworthy
-    /// peers while the member remains retryable on later discovery.
-    pub fn with_logical_source_failure(
-        mut self,
-        source: SourceKey,
-        detail: impl Into<String>,
-    ) -> Self {
-        self.logical_source_failure = Some((source, detail.into()));
-        self
-    }
-
-    /// Retains the exact provider source that an ownership-rejected member
-    /// would otherwise have claimed. This is deletion/retry authority only;
-    /// the source is never admitted to the certified inventory.
-    pub fn with_quarantined_source(mut self, source: SourceKey) -> Self {
-        self.quarantined_source = Some(source);
-        self
-    }
-}
-
 mod inventory;
+use inventory::exact_member_authority;
 pub use inventory::JsonlFamilyInventory;
+mod member;
+pub use member::{
+    JsonlFamilyInventoryMember, JsonlFamilyLeafDisposition, JsonlFamilyPendingLeaf,
+    JsonlFamilyPhysicalSourceIdentity, JsonlFamilyRejectedLeaf,
+};
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 struct FamilyCheckpoint {

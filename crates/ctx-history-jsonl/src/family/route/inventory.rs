@@ -2,22 +2,24 @@ use super::*;
 
 #[derive(Debug)]
 pub struct JsonlFamilyInventory<E: JsonlFamilyError> {
+    pub(super) provider: CaptureProvider,
+    pub(super) root: PathBuf,
     pub(super) root_missing: bool,
     pub(super) observation: SourceInventoryObservation,
     pub(super) authorities: Vec<Arc<ProviderSourceRoot<E>>>,
-    pub(super) leaves: Vec<JsonlFamilyLeaf<E>>,
-    pub(super) rejected_leaves: Vec<JsonlFamilyRejectedLeaf>,
+    pub(super) members: Vec<JsonlFamilyInventoryMember<E>>,
     pub(super) exact_dependencies: Vec<JsonlFamilyTerminalProof<E>>,
 }
 
 impl<E: JsonlFamilyError> Clone for JsonlFamilyInventory<E> {
     fn clone(&self) -> Self {
         Self {
+            provider: self.provider,
+            root: self.root.clone(),
             root_missing: self.root_missing,
             observation: self.observation.clone(),
             authorities: self.authorities.clone(),
-            leaves: self.leaves.clone(),
-            rejected_leaves: self.rejected_leaves.clone(),
+            members: self.members.clone(),
             exact_dependencies: self.exact_dependencies.clone(),
         }
     }
@@ -55,9 +57,27 @@ impl<E: JsonlFamilyError> JsonlFamilyInventory<E> {
     pub fn present_multi_with_rejected(
         provider: CaptureProvider,
         root: &Path,
+        authorities: Vec<Arc<ProviderSourceRoot<E>>>,
+        leaves: Vec<JsonlFamilyLeaf<E>>,
+        rejected_leaves: Vec<JsonlFamilyRejectedLeaf>,
+    ) -> JsonlResult<Self, E> {
+        Self::present_multi_with_dispositions(
+            provider,
+            root,
+            authorities,
+            leaves,
+            rejected_leaves,
+            Vec::new(),
+        )
+    }
+
+    pub fn present_multi_with_dispositions(
+        provider: CaptureProvider,
+        root: &Path,
         mut authorities: Vec<Arc<ProviderSourceRoot<E>>>,
-        mut leaves: Vec<JsonlFamilyLeaf<E>>,
-        mut rejected_leaves: Vec<JsonlFamilyRejectedLeaf>,
+        leaves: Vec<JsonlFamilyLeaf<E>>,
+        rejected_leaves: Vec<JsonlFamilyRejectedLeaf>,
+        pending_leaves: Vec<JsonlFamilyPendingLeaf>,
     ) -> JsonlResult<Self, E> {
         if authorities.is_empty() {
             return Err(E::invalid_payload(
@@ -73,7 +93,14 @@ impl<E: JsonlFamilyError> JsonlFamilyInventory<E> {
                 )));
             }
         }
-        for leaf in &leaves {
+
+        let mut members = Vec::with_capacity(
+            leaves
+                .len()
+                .saturating_add(rejected_leaves.len())
+                .saturating_add(pending_leaves.len()),
+        );
+        for leaf in leaves {
             let retained = authorities.iter().any(|authority| {
                 authority.named_path() == leaf.authority.named_path()
                     && authority.authority_fingerprint() == leaf.authority.authority_fingerprint()
@@ -84,34 +111,48 @@ impl<E: JsonlFamilyError> JsonlFamilyInventory<E> {
                     leaf.source_path.display()
                 )));
             }
+            members.push(JsonlFamilyInventoryMember::Accepted {
+                identity: JsonlFamilyPhysicalSourceIdentity::derive(provider, &leaf.source_path),
+                leaf,
+            });
         }
-        leaves.sort_by(|left, right| left.source_path.cmp(&right.source_path));
-        rejected_leaves.sort_by(|left, right| left.source_path.cmp(&right.source_path));
-        let observation = inventory_observation(
-            provider,
-            root,
-            false,
-            &authorities,
-            &leaves,
-            &rejected_leaves,
-        )?;
+        for leaf in rejected_leaves {
+            validate_disposition_authority(&authorities, &leaf.source_path, &leaf.authority_path)?;
+            members.push(JsonlFamilyInventoryMember::Quarantined {
+                identity: JsonlFamilyPhysicalSourceIdentity::derive(provider, &leaf.source_path),
+                leaf,
+            });
+        }
+        for leaf in pending_leaves {
+            validate_disposition_authority(&authorities, &leaf.source_path, &leaf.authority_path)?;
+            members.push(JsonlFamilyInventoryMember::Pending {
+                identity: JsonlFamilyPhysicalSourceIdentity::derive(provider, &leaf.source_path),
+                leaf,
+            });
+        }
+        members.sort_by(|left, right| left.source_path().cmp(right.source_path()));
+        validate_unique_members(&members)?;
+        let observation = inventory_observation(provider, root, false, &authorities, &members)?;
         Ok(Self {
+            provider,
+            root: root.to_path_buf(),
             root_missing: false,
             observation,
             authorities,
-            leaves,
-            rejected_leaves,
+            members,
             exact_dependencies: Vec::new(),
         })
     }
 
     pub fn missing(provider: CaptureProvider, root: &Path) -> JsonlResult<Self, E> {
+        let members = Vec::new();
         Ok(Self {
+            provider,
+            root: root.to_path_buf(),
             root_missing: true,
-            observation: inventory_observation::<E>(provider, root, true, &[], &[], &[])?,
+            observation: inventory_observation::<E>(provider, root, true, &[], &members)?,
             authorities: Vec::new(),
-            leaves: Vec::new(),
-            rejected_leaves: Vec::new(),
+            members,
             exact_dependencies: Vec::new(),
         })
     }
@@ -136,12 +177,56 @@ impl<E: JsonlFamilyError> JsonlFamilyInventory<E> {
         self.root_missing
     }
 
-    pub fn leaves(&self) -> &[JsonlFamilyLeaf<E>] {
-        &self.leaves
+    pub fn members(&self) -> &[JsonlFamilyInventoryMember<E>] {
+        &self.members
     }
 
-    pub fn rejected_leaves(&self) -> &[JsonlFamilyRejectedLeaf] {
-        &self.rejected_leaves
+    pub fn accepted_leaves(&self) -> impl Iterator<Item = &JsonlFamilyLeaf<E>> {
+        self.members.iter().filter_map(|member| match member {
+            JsonlFamilyInventoryMember::Accepted { leaf, .. } => Some(leaf),
+            JsonlFamilyInventoryMember::Quarantined { .. }
+            | JsonlFamilyInventoryMember::Pending { .. } => None,
+        })
+    }
+
+    pub fn quarantined_leaves(&self) -> impl Iterator<Item = &JsonlFamilyRejectedLeaf> {
+        self.members.iter().filter_map(|member| match member {
+            JsonlFamilyInventoryMember::Quarantined { leaf, .. } => Some(leaf),
+            JsonlFamilyInventoryMember::Accepted { .. }
+            | JsonlFamilyInventoryMember::Pending { .. } => None,
+        })
+    }
+
+    pub fn pending_leaves(&self) -> impl Iterator<Item = &JsonlFamilyPendingLeaf> {
+        self.members.iter().filter_map(|member| match member {
+            JsonlFamilyInventoryMember::Pending { leaf, .. } => Some(leaf),
+            JsonlFamilyInventoryMember::Accepted { .. }
+            | JsonlFamilyInventoryMember::Quarantined { .. } => None,
+        })
+    }
+
+    pub fn accepted_len(&self) -> usize {
+        self.accepted_leaves().count()
+    }
+
+    pub fn quarantined_len(&self) -> usize {
+        self.quarantined_leaves().count()
+    }
+
+    pub fn pending_len(&self) -> usize {
+        self.pending_leaves().count()
+    }
+
+    pub(super) fn rebuild_observation(&mut self) -> JsonlResult<(), E> {
+        validate_unique_members(&self.members)?;
+        self.observation = inventory_observation(
+            self.provider,
+            &self.root,
+            self.root_missing,
+            &self.authorities,
+            &self.members,
+        )?;
+        Ok(())
     }
 
     #[cfg(test)]
@@ -152,8 +237,7 @@ impl<E: JsonlFamilyError> JsonlFamilyInventory<E> {
         self.certify_selected_against(
             closing,
             closing
-                .leaves
-                .iter()
+                .accepted_leaves()
                 .map(|leaf| leaf.source.clone())
                 .collect(),
         )
@@ -227,4 +311,59 @@ impl<E: JsonlFamilyError> JsonlFamilyInventory<E> {
             }
         }
     }
+}
+
+fn validate_disposition_authority<E: JsonlFamilyError>(
+    authorities: &[Arc<ProviderSourceRoot<E>>],
+    source_path: &Path,
+    authority_path: &Path,
+) -> JsonlResult<(), E> {
+    let matches = authorities
+        .iter()
+        .filter(|authority| authority.named_path().join(authority_path) == source_path)
+        .count();
+    if matches != 1 {
+        return Err(E::invalid_payload(format!(
+            "JSONL physical member {} has {matches} retained root authorities",
+            source_path.display()
+        )));
+    }
+    Ok(())
+}
+
+pub(super) fn exact_member_authority<'a, E: JsonlFamilyError>(
+    authorities: &'a [Arc<ProviderSourceRoot<E>>],
+    source_path: &Path,
+    authority_path: &Path,
+) -> JsonlResult<&'a Arc<ProviderSourceRoot<E>>, E> {
+    let mut matches = authorities
+        .iter()
+        .filter(|authority| authority.named_path().join(authority_path) == source_path);
+    let authority = matches.next().ok_or_else(|| {
+        E::invalid_payload(format!(
+            "JSONL physical member {} has no retained root authority",
+            source_path.display()
+        ))
+    })?;
+    if matches.next().is_some() {
+        return Err(E::invalid_payload(format!(
+            "JSONL physical member {} has ambiguous retained root authority",
+            source_path.display()
+        )));
+    }
+    Ok(authority)
+}
+
+fn validate_unique_members<E: JsonlFamilyError>(
+    members: &[JsonlFamilyInventoryMember<E>],
+) -> JsonlResult<(), E> {
+    for pair in members.windows(2) {
+        if pair[0].source_path() == pair[1].source_path() {
+            return Err(E::invalid_payload(format!(
+                "JSONL physical inventory contains duplicate member {}",
+                pair[0].source_path().display()
+            )));
+        }
+    }
+    Ok(())
 }

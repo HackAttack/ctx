@@ -2,6 +2,8 @@ use super::*;
 
 pub(super) struct TestAdapter;
 
+struct PendingOnlyAdapter;
+
 pub(super) const TEST_RECORD: &[u8] = b"{\"message\":\"before\"}\n";
 pub(super) const PROGRESS_TEST_RECORDS: &[u8] =
     b"{\"message\":\"one\"}\n{\"message\":\"two\"}\n{\"tool_call\":\"three\"}\n";
@@ -76,6 +78,148 @@ impl JsonlFamilyAdapter for TestAdapter {
             "terminal witness tests never project",
         ))
     }
+}
+
+impl JsonlFamilyAdapter for PendingOnlyAdapter {
+    type Runtime = TestJsonlRuntime;
+
+    fn provider(&self) -> CaptureProvider {
+        CaptureProvider::Pi
+    }
+
+    fn source_format(&self) -> &'static str {
+        TEST_SOURCE_FORMAT
+    }
+
+    fn schema_variant(&self) -> &'static str {
+        TEST_SCHEMA
+    }
+
+    fn parser_revision(&self) -> &'static str {
+        "pending-only-parser-v1"
+    }
+
+    fn append_mode(&self) -> JsonlFamilyAppendMode {
+        JsonlFamilyAppendMode::CertifiedSuffix
+    }
+
+    fn discover(&self, root: &Path) -> Result<JsonlFamilyInventory> {
+        // Deliberately present this as accepted provider input. The shared
+        // capture boundary, not this adapter, must recognize its physical
+        // first record as pending.
+        TestAdapter.discover(root)
+    }
+}
+
+#[test]
+fn canonical_inventory_exposes_typed_physical_leaf_dispositions() {
+    let temp = tempfile::tempdir().unwrap();
+    let accepted_path = temp.path().join("accepted.jsonl");
+    let quarantined_path = temp.path().join("quarantined.jsonl");
+    let pending_path = temp.path().join("pending.jsonl");
+    fs::write(&accepted_path, TEST_RECORD).unwrap();
+    fs::write(&quarantined_path, b"not-json\n").unwrap();
+    fs::write(&pending_path, b"").unwrap();
+
+    let discovered = TestAdapter.discover(temp.path()).unwrap();
+    let accepted = discovered
+        .accepted_leaves()
+        .find(|leaf| leaf.source_path() == accepted_path)
+        .unwrap()
+        .clone();
+    let authority = Arc::clone(&discovered.authorities[0]);
+    let rejected_opened = authority.open_file(Path::new("quarantined.jsonl")).unwrap();
+    let rejected_observation = observe_opened_file(&quarantined_path, &rejected_opened).unwrap();
+    let pending_opened = authority.open_file(Path::new("pending.jsonl")).unwrap();
+    let pending_observation = observe_opened_file(&pending_path, &pending_opened).unwrap();
+    let inventory = JsonlFamilyInventory::present_multi_with_dispositions(
+        CaptureProvider::Pi,
+        temp.path(),
+        vec![authority],
+        vec![accepted],
+        vec![JsonlFamilyRejectedLeaf::bind_observed(
+            quarantined_path,
+            PathBuf::from("quarantined.jsonl"),
+            rejected_observation,
+            TypedKey::utf8("bad-owner").unwrap(),
+            1,
+        )],
+        vec![JsonlFamilyPendingLeaf::bind_observed(
+            pending_path,
+            PathBuf::from("pending.jsonl"),
+            pending_observation,
+            TypedKey::utf8("incomplete").unwrap(),
+            None,
+        )],
+    )
+    .unwrap();
+
+    assert_eq!(
+        inventory
+            .members()
+            .iter()
+            .map(JsonlFamilyInventoryMember::disposition)
+            .collect::<Vec<_>>(),
+        vec![
+            JsonlFamilyLeafDisposition::Accepted,
+            JsonlFamilyLeafDisposition::Pending,
+            JsonlFamilyLeafDisposition::Quarantined,
+        ]
+    );
+    assert!(inventory
+        .members()
+        .windows(2)
+        .all(|pair| pair[0].identity() != pair[1].identity()));
+}
+
+#[test]
+fn canonical_inventory_rejects_two_dispositions_for_one_physical_leaf() {
+    let temp = tempfile::tempdir().unwrap();
+    let path = temp.path().join("same.jsonl");
+    fs::write(&path, TEST_RECORD).unwrap();
+    let discovered = TestAdapter.discover(temp.path()).unwrap();
+    let accepted = discovered.accepted_leaves().next().unwrap().clone();
+    let pending_observation = accepted.observation().clone();
+    let authority = Arc::clone(&discovered.authorities[0]);
+
+    let error = JsonlFamilyInventory::present_multi_with_dispositions(
+        CaptureProvider::Pi,
+        temp.path(),
+        vec![authority],
+        vec![accepted],
+        Vec::new(),
+        vec![JsonlFamilyPendingLeaf::bind_observed(
+            path,
+            PathBuf::from("same.jsonl"),
+            pending_observation,
+            TypedKey::utf8("incomplete").unwrap(),
+            None,
+        )],
+    )
+    .unwrap_err();
+
+    assert!(error
+        .to_string()
+        .contains("physical inventory contains duplicate member"));
+}
+
+#[test]
+fn nonzero_incomplete_first_record_is_pending_before_provider_projection() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path().join("sessions");
+    fs::create_dir_all(&root).unwrap();
+    fs::write(root.join("pending.jsonl"), br#"{"message":"unfinished""#).unwrap();
+    let (_writer, _resident, result) = capture_test_generation!(
+        &PendingOnlyAdapter,
+        &root,
+        &temp.path().join("index"),
+        1,
+        |resident, sink| capture(&PendingOnlyAdapter, &root, resident, sink)
+    );
+
+    let error = result.unwrap_err();
+    assert_eq!(error.kind, SourceBackedRouteErrorKind::SourceChanged);
+    assert!(error.detail.contains("incomplete sources"));
 }
 
 macro_rules! impl_standard_jsonl_test_adapter {
@@ -206,8 +350,7 @@ pub(super) fn expected_state(
         .unwrap();
     let inventory = observed.certify_against(&observed).unwrap();
     let terminal_sources = observed
-        .leaves()
-        .iter()
+        .accepted_leaves()
         .map(|leaf| {
             let opened = leaf.open_verified().unwrap();
             let mut reader =
@@ -253,8 +396,7 @@ pub(super) fn expected_state(
         })
         .collect();
     let owned_sources = observed
-        .leaves()
-        .iter()
+        .accepted_leaves()
         .map(|leaf| {
             (
                 leaf.source().exact_descriptor_digest(),

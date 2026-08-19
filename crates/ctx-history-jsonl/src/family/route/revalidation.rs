@@ -166,14 +166,29 @@ pub(super) fn inventory_observation<E: JsonlFamilyError>(
     root: &Path,
     missing: bool,
     authorities: &[Arc<ProviderSourceRoot<E>>],
-    leaves: &[JsonlFamilyLeaf<E>],
-    rejected_leaves: &[JsonlFamilyRejectedLeaf],
+    members: &[JsonlFamilyInventoryMember<E>],
 ) -> JsonlResult<SourceInventoryObservation, E> {
+    let accepted_count = members
+        .iter()
+        .filter(|member| matches!(member, JsonlFamilyInventoryMember::Accepted { .. }))
+        .count();
+    let quarantined_count = members
+        .iter()
+        .filter(|member| matches!(member, JsonlFamilyInventoryMember::Quarantined { .. }))
+        .count();
+    let pending_count = members
+        .iter()
+        .filter(|member| matches!(member, JsonlFamilyInventoryMember::Pending { .. }))
+        .count();
     let mut digest = Sha256::new();
     digest.update(FAMILY_INVENTORY_DOMAIN);
     digest.update([u8::from(missing)]);
-    digest.update((leaves.len() as u64).to_be_bytes());
-    digest.update((rejected_leaves.len() as u64).to_be_bytes());
+    digest.update((accepted_count as u64).to_be_bytes());
+    digest.update((quarantined_count as u64).to_be_bytes());
+    if pending_count != 0 {
+        digest.update(b"pending-leaves-v1\0");
+        digest.update((pending_count as u64).to_be_bytes());
+    }
     match authorities {
         [] => {}
         [authority] => {
@@ -193,7 +208,11 @@ pub(super) fn inventory_observation<E: JsonlFamilyError>(
             }
         }
     }
-    for leaf in leaves {
+    for leaf in members.iter().filter_map(|member| match member {
+        JsonlFamilyInventoryMember::Accepted { leaf, .. } => Some(leaf),
+        JsonlFamilyInventoryMember::Quarantined { .. }
+        | JsonlFamilyInventoryMember::Pending { .. } => None,
+    }) {
         digest.update([0]);
         digest.update(leaf.source.exact_descriptor_digest());
         digest.update([u8::from(leaf.whole_record)]);
@@ -203,7 +222,11 @@ pub(super) fn inventory_observation<E: JsonlFamilyError>(
         digest.update(leaf.authority_path.as_os_str().as_encoded_bytes());
         digest.update(binding_digest(leaf)?);
     }
-    for leaf in rejected_leaves {
+    for leaf in members.iter().filter_map(|member| match member {
+        JsonlFamilyInventoryMember::Quarantined { leaf, .. } => Some(leaf),
+        JsonlFamilyInventoryMember::Accepted { .. }
+        | JsonlFamilyInventoryMember::Pending { .. } => None,
+    }) {
         digest.update([1]);
         digest.update(
             (leaf.authority_path.as_os_str().as_encoded_bytes().len() as u64).to_be_bytes(),
@@ -213,6 +236,35 @@ pub(super) fn inventory_observation<E: JsonlFamilyError>(
         digest.update(leaf.source_path.as_os_str().as_encoded_bytes());
         digest.update(serde_json::to_vec(&leaf.observation)?);
         digest.update(serde_json::to_vec(&leaf.proof)?);
+        digest.update(b"bound-source-v1\0");
+        if let Some(source) = &leaf.quarantined_source {
+            digest.update([1]);
+            digest.update(source.exact_descriptor_digest());
+        } else {
+            digest.update([0]);
+        }
+    }
+    for leaf in members.iter().filter_map(|member| match member {
+        JsonlFamilyInventoryMember::Pending { leaf, .. } => Some(leaf),
+        JsonlFamilyInventoryMember::Accepted { .. }
+        | JsonlFamilyInventoryMember::Quarantined { .. } => None,
+    }) {
+        digest.update([2]);
+        digest.update(
+            (leaf.authority_path.as_os_str().as_encoded_bytes().len() as u64).to_be_bytes(),
+        );
+        digest.update(leaf.authority_path.as_os_str().as_encoded_bytes());
+        digest.update((leaf.source_path.as_os_str().as_encoded_bytes().len() as u64).to_be_bytes());
+        digest.update(leaf.source_path.as_os_str().as_encoded_bytes());
+        digest.update(serde_json::to_vec(&leaf.observation)?);
+        digest.update(serde_json::to_vec(&leaf.proof)?);
+        digest.update(b"bound-source-v1\0");
+        if let Some(source) = &leaf.source {
+            digest.update([1]);
+            digest.update(source.exact_descriptor_digest());
+        } else {
+            digest.update([0]);
+        }
     }
     SourceInventoryObservation::new(
         provider.as_str(),

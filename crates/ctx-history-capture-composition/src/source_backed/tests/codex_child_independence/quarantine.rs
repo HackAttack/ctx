@@ -38,7 +38,7 @@ fn catalog_owner_rejection_is_retryable_without_a_valid_sibling() {
 }
 
 #[test]
-fn codex_prefix_ownership_quarantine_deletes_stale_source_and_repairs() {
+fn codex_prefix_ownership_quarantine_retains_prior_source_and_repairs() {
     let temp = tempdir().unwrap();
     let sessions = temp.path().join("sessions-prefix-owner-conflict");
     let index_root = temp.path().join("index-prefix-owner-conflict");
@@ -79,13 +79,18 @@ fn codex_prefix_ownership_quarantine_deletes_stale_source_and_repairs() {
     assert!(quarantined.failed_routes.is_empty());
     assert_eq!(quarantined.logical_source_failures.total(), 1);
     let index = VerifiedIndex::open(&index_root).unwrap();
-    assert!(index.manifest().sources.iter().all(|certificate| {
-        !matches!(
+    assert!(index.manifest().sources.iter().any(|certificate| {
+        matches!(
             certificate.observation().source().anchor(),
             SourceAnchor::ProviderNative { key: TypedKey::Utf8(value), .. }
-                if value == native_session_id || value == conflicting_session_id
+                if value == native_session_id
         )
     }));
+    assert!(source_records_contain(
+        &index,
+        native_session_id,
+        "prefixownerinitialmarker"
+    ));
     assert!(index
         .search_event_candidates("prefixownerquarantinedmarker", 8)
         .unwrap()
@@ -97,19 +102,33 @@ fn codex_prefix_ownership_quarantine_deletes_stale_source_and_repairs() {
         native_session_id,
         ProviderNativeSessionRelationship::Root,
         None,
-        [message("prefixownerrepairedmarker")],
+        [message("prefixownerfixedmarker")],
     );
-    let (repaired, _) = incremental_refresh(&index_root, &registry, &quarantined);
+    let repaired = incremental_refresh_member(
+        &index_root,
+        &registry,
+        &quarantined,
+        &sessions,
+        path.clone(),
+    );
     assert!(repaired.failed_routes.is_empty());
     assert!(repaired.logical_source_failures.is_empty());
-    assert_eq!(
-        VerifiedIndex::open(&index_root)
-            .unwrap()
-            .search_event_candidates("prefixownerrepairedmarker", 8)
-            .unwrap()
-            .len(),
-        1
+    let repaired_index = VerifiedIndex::open(&index_root).unwrap();
+    let repaired_records = records_for(&repaired_index, native_session_id);
+    assert_eq!(repaired_records.len(), 1);
+    assert!(
+        source_records_contain(&repaired_index, native_session_id, "prefixownerfixedmarker"),
+        "repaired bodies: {:?}",
+        repaired_records
+            .iter()
+            .map(|record| record.content.normalized_body.as_deref())
+            .collect::<Vec<_>>()
     );
+    assert!(!source_records_contain(
+        &repaired_index,
+        native_session_id,
+        "prefixownerinitialmarker"
+    ));
 }
 
 #[test]
@@ -213,4 +232,176 @@ fn selector_ambiguous_session_meta_quarantines_its_rollout() {
         .search_event_candidates("selectorambiguousquarantinedmarker", 8)
         .unwrap()
         .is_empty());
+}
+
+#[test]
+fn committed_codex_good_bad_good_retains_prior_source_while_neighbor_advances() {
+    let temp = tempdir().unwrap();
+    let sessions = temp.path().join("sessions-good-bad-good");
+    let index_root = temp.path().join("index-good-bad-good");
+    fs::create_dir_all(&sessions).unwrap();
+    let repairable_id = "019fb000-0000-7000-8000-000000000063";
+    let conflicting_parent = "019fb000-0000-7000-8000-000000000064";
+    let neighbor_id = "019fb000-0000-7000-8000-000000000065";
+    let repairable_path = session_path(&sessions, repairable_id);
+    let neighbor_path = session_path(&sessions, neighbor_id);
+    write_session(
+        &sessions,
+        repairable_id,
+        ProviderNativeSessionRelationship::Root,
+        None,
+        [message("goodbadgood-original")],
+    );
+    write_session(
+        &sessions,
+        neighbor_id,
+        ProviderNativeSessionRelationship::Root,
+        None,
+        [message("goodbadgood-neighbor-original")],
+    );
+    let registry = register_tree(&[&sessions]);
+    let cold = refresh_source_backed_generation(&index_root, &registry, writer_options()).unwrap();
+    assert!(cold.failed_routes.is_empty());
+
+    fs::write(
+        &repairable_path,
+        jsonl_bytes([
+            session_meta(repairable_id, ProviderNativeSessionRelationship::Root, None),
+            session_meta(
+                repairable_id,
+                ProviderNativeSessionRelationship::Forked,
+                Some(conflicting_parent),
+            ),
+            message("goodbadgood-quarantined"),
+        ]),
+    )
+    .unwrap();
+    append_event(&neighbor_path, message("goodbadgood-neighbor-advanced"));
+
+    let (middle, _) = incremental_refresh(&index_root, &registry, &cold);
+    assert!(middle.failed_routes.is_empty());
+    let middle_index = VerifiedIndex::open(&index_root).unwrap();
+    assert_eq!(records_for(&middle_index, repairable_id).len(), 1);
+    assert!(source_records_contain(
+        &middle_index,
+        repairable_id,
+        "goodbadgood-original"
+    ));
+    assert!(!source_records_contain(
+        &middle_index,
+        repairable_id,
+        "goodbadgood-quarantined"
+    ));
+    assert!(source_records_contain(
+        &middle_index,
+        neighbor_id,
+        "goodbadgood-neighbor-advanced"
+    ));
+    drop(middle_index);
+
+    fs::write(
+        &repairable_path,
+        jsonl_bytes([
+            session_meta(repairable_id, ProviderNativeSessionRelationship::Root, None),
+            message("goodbadgood-repaired"),
+        ]),
+    )
+    .unwrap();
+    let (repaired, _) = incremental_refresh(&index_root, &registry, &middle);
+    assert!(repaired.failed_routes.is_empty());
+    let repaired_index = VerifiedIndex::open(&index_root).unwrap();
+    assert!(!source_records_contain(
+        &repaired_index,
+        repairable_id,
+        "goodbadgood-original"
+    ));
+    assert!(source_records_contain(
+        &repaired_index,
+        repairable_id,
+        "goodbadgood-repaired"
+    ));
+    assert!(source_records_contain(
+        &repaired_index,
+        neighbor_id,
+        "goodbadgood-neighbor-advanced"
+    ));
+}
+
+#[test]
+fn committed_codex_good_partial_repaired_retains_prior_source_while_neighbor_advances() {
+    let temp = tempdir().unwrap();
+    let sessions = temp.path().join("sessions-good-partial-repaired");
+    let index_root = temp.path().join("index-good-partial-repaired");
+    fs::create_dir_all(&sessions).unwrap();
+    let repairable_id = "019fb000-0000-7000-8000-000000000066";
+    let neighbor_id = "019fb000-0000-7000-8000-000000000067";
+    let repairable_path = session_path(&sessions, repairable_id);
+    let neighbor_path = session_path(&sessions, neighbor_id);
+    write_session(
+        &sessions,
+        repairable_id,
+        ProviderNativeSessionRelationship::Root,
+        None,
+        [message("partial-original")],
+    );
+    write_session(
+        &sessions,
+        neighbor_id,
+        ProviderNativeSessionRelationship::Root,
+        None,
+        [message("partial-neighbor-original")],
+    );
+    let registry = register_tree(&[&sessions]);
+    let cold = refresh_source_backed_generation(&index_root, &registry, writer_options()).unwrap();
+    assert!(cold.failed_routes.is_empty());
+
+    fs::write(
+        &repairable_path,
+        br#"{"timestamp":"2026-08-09T12:00:00Z","type":"session_meta","payload":{"id":"019fb000-0000-7000-8000-000000000066""#,
+    )
+    .unwrap();
+    append_event(&neighbor_path, message("partial-neighbor-advanced"));
+
+    let (middle, _) = incremental_refresh(&index_root, &registry, &cold);
+    assert!(middle.failed_routes.is_empty());
+    let middle_index = VerifiedIndex::open(&index_root).unwrap();
+    assert_eq!(records_for(&middle_index, repairable_id).len(), 1);
+    assert!(source_records_contain(
+        &middle_index,
+        repairable_id,
+        "partial-original"
+    ));
+    assert!(source_records_contain(
+        &middle_index,
+        neighbor_id,
+        "partial-neighbor-advanced"
+    ));
+    drop(middle_index);
+
+    fs::write(
+        &repairable_path,
+        jsonl_bytes([
+            session_meta(repairable_id, ProviderNativeSessionRelationship::Root, None),
+            message("partial-repaired"),
+        ]),
+    )
+    .unwrap();
+    let (repaired, _) = incremental_refresh(&index_root, &registry, &middle);
+    assert!(repaired.failed_routes.is_empty());
+    let repaired_index = VerifiedIndex::open(&index_root).unwrap();
+    assert!(!source_records_contain(
+        &repaired_index,
+        repairable_id,
+        "partial-original"
+    ));
+    assert!(source_records_contain(
+        &repaired_index,
+        repairable_id,
+        "partial-repaired"
+    ));
+    assert!(source_records_contain(
+        &repaired_index,
+        neighbor_id,
+        "partial-neighbor-advanced"
+    ));
 }
