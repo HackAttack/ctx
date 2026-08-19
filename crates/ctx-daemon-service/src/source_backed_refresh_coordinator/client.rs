@@ -14,7 +14,9 @@ pub(super) use observation_recovery::{
     recover_typed_unknown_coalesced_request_with, recover_typed_unknown_request_with,
     TypedUnknownRequestRecovery,
 };
-use observation_recovery::{request_bound_status_with_recovery, retained_request_unobservable};
+use observation_recovery::{
+    request_bound_status_with_outage_budget, retained_request_unobservable,
+};
 #[cfg(test)]
 pub(super) use observation_recovery::{
     SourceRefreshRequestRecoveryFailed, SourceRefreshRequestRecoveryFailureReason,
@@ -508,9 +510,10 @@ fn wait_for_published_generation_inner(
             "op": SOURCE_REFRESH_STATUS_OP,
             "request_id": request_id,
         }));
-        let response = match request_bound_status_with_recovery(
+        let response = match request_bound_status_with_outage_budget(
             &request_id,
             std::thread::sleep,
+            StdInstant::now,
             || {
                 daemon_source_refresh_request(
                     data_root,

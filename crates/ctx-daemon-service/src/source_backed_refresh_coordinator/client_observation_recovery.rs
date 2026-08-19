@@ -1,6 +1,7 @@
 use super::*;
 
 const REQUEST_BOUND_STATUS_RECOVERY_ATTEMPT_LIMIT: usize = 3;
+const RETAINED_REQUEST_CONTINUOUS_OUTAGE_BUDGET: StdDuration = StdDuration::from_secs(30);
 const TYPED_UNKNOWN_RECOVERY_ATTEMPT_LIMIT: usize = 3;
 pub(super) const DISCONNECT_POLICY: &str = "retain_after_durable_admission";
 
@@ -260,6 +261,39 @@ where
         request_id,
         REQUEST_BOUND_STATUS_RECOVERY_ATTEMPT_LIMIT,
     ))
+}
+
+pub(super) fn request_bound_status_with_outage_budget<S, N, R>(
+    request_id: &str,
+    mut sleep: S,
+    mut now: N,
+    mut roundtrip: R,
+) -> Result<Option<Value>>
+where
+    S: FnMut(StdDuration),
+    N: FnMut() -> StdInstant,
+    R: FnMut() -> Result<Option<Value>>,
+{
+    let mut outage_started_at = None;
+    loop {
+        let burst_started_at = now();
+        match request_bound_status_with_recovery(request_id, &mut sleep, &mut roundtrip) {
+            Err(error)
+                if error
+                    .downcast_ref::<SourceRefreshObservationRecoveryFailed>()
+                    .is_some() =>
+            {
+                let outage_started_at = *outage_started_at.get_or_insert(burst_started_at);
+                if now().saturating_duration_since(outage_started_at)
+                    >= RETAINED_REQUEST_CONTINUOUS_OUTAGE_BUDGET
+                {
+                    return Err(error);
+                }
+                sleep(SOURCE_REFRESH_POLL_INTERVAL);
+            }
+            outcome => return outcome,
+        }
+    }
 }
 
 #[cfg(test)]
