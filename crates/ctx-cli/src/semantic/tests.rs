@@ -1,4 +1,13 @@
-use std::{borrow::Cow, ffi::OsString, fs, time::Duration};
+use std::{
+    borrow::Cow,
+    ffi::OsString,
+    fs,
+    sync::{
+        atomic::{AtomicBool, Ordering as AtomicOrdering},
+        Arc,
+    },
+    time::Duration,
+};
 
 use anyhow::Result;
 use ctx_client_observability::analytics::{
@@ -21,6 +30,34 @@ fn companion_maintenance_wake_coalesces_without_losing_a_publication() {
     take_companion_maintenance_request(&state);
     assert!(!companion_maintenance_should_continue(&state));
     assert_eq!(state.load(Ordering::Acquire), 0);
+}
+
+#[test]
+fn daemon_shutdown_cancels_and_joins_companion_maintenance_worker() {
+    let state = AtomicU8::new(COMPANION_MAINTENANCE_WAKE_RUNNING);
+    let cancellation = CancellationToken::new();
+    let worker_cancellation = cancellation.clone();
+    let stopped = Arc::new(AtomicBool::new(false));
+    let worker_stopped = Arc::clone(&stopped);
+    let handle = std::thread::spawn(move || {
+        while !worker_cancellation.is_cancelled() {
+            std::thread::yield_now();
+        }
+        worker_stopped.store(true, AtomicOrdering::Release);
+    });
+    let worker = Mutex::new(Some(CompanionMaintenanceWorker {
+        cancellation,
+        handle,
+    }));
+
+    stop_companion_maintenance_worker_in(&state, &worker);
+
+    assert!(stopped.load(AtomicOrdering::Acquire));
+    assert_eq!(state.load(Ordering::Acquire), 0);
+    assert!(worker
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .is_none());
 }
 
 struct RestoreEnvironment {

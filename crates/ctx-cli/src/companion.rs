@@ -157,6 +157,7 @@ pub(crate) fn proxy_paid_mcp(
 
 pub(crate) fn wake_verified_private_maintenance(
     _data_root: &Path,
+    cancellation: &CancellationToken,
 ) -> Result<(), CompanionRouteError> {
     let limits = BridgeLimits::new(LimitConfiguration {
         control_bytes: MAX_CONTROL_BYTES,
@@ -174,11 +175,7 @@ pub(crate) fn wake_verified_private_maintenance(
     let mut request = MaintenanceRequest::new();
     forward_environment(request.environment_mut());
     let response = CompanionBridge::new(limits)
-        .launch_maintenance(
-            &companion,
-            request,
-            companion_cancellation().map_err(CompanionRouteError::from)?,
-        )
+        .launch_maintenance(&companion, request, cancellation)
         .map_err(classify_bridge_error)
         .map_err(CompanionRouteError::from)?;
     if !response.accepted() {

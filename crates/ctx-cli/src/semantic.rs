@@ -1,10 +1,14 @@
 //! Final-binary composition for daemon and semantic adapters.
 
-use std::sync::atomic::{AtomicU8, Ordering};
+use std::sync::{
+    atomic::{AtomicU8, Ordering},
+    Mutex,
+};
 use std::{borrow::Cow, io::Write, path::Path, time::Duration};
 
 use anyhow::Result;
 use ctx_client_observability::analytics::PublicEventV1;
+use ctx_companion_bridge::CancellationToken;
 use ctx_daemon_cli::{AppConfig as DaemonCliConfig, DaemonConfig, DaemonMode};
 
 pub(crate) use ctx_daemon_cli::{
@@ -32,6 +36,12 @@ static HOST: CtxDaemonCliHost = CtxDaemonCliHost;
 const COMPANION_MAINTENANCE_WAKE_RUNNING: u8 = 1;
 const COMPANION_MAINTENANCE_WAKE_PENDING: u8 = 2;
 static COMPANION_MAINTENANCE_WAKE_STATE: AtomicU8 = AtomicU8::new(0);
+static COMPANION_MAINTENANCE_WORKER: Mutex<Option<CompanionMaintenanceWorker>> = Mutex::new(None);
+
+struct CompanionMaintenanceWorker {
+    cancellation: CancellationToken,
+    handle: std::thread::JoinHandle<()>,
+}
 
 fn request_companion_maintenance_worker(state: &AtomicU8) -> bool {
     let mut observed = state.fetch_or(COMPANION_MAINTENANCE_WAKE_PENDING, Ordering::AcqRel)
@@ -74,6 +84,28 @@ fn companion_maintenance_should_continue(state: &AtomicU8) -> bool {
             return false;
         }
     }
+}
+
+fn stop_companion_maintenance_worker_in(
+    state: &AtomicU8,
+    worker: &Mutex<Option<CompanionMaintenanceWorker>>,
+) {
+    let worker = worker
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .take();
+    if let Some(worker) = worker {
+        worker.cancellation.cancel();
+        let _ = worker.handle.join();
+    }
+    state.store(0, Ordering::Release);
+}
+
+fn stop_companion_maintenance_worker() {
+    stop_companion_maintenance_worker_in(
+        &COMPANION_MAINTENANCE_WAKE_STATE,
+        &COMPANION_MAINTENANCE_WORKER,
+    );
 }
 
 pub(crate) fn initialize() -> Result<()> {
@@ -301,9 +333,13 @@ impl ctx_daemon_cli::DaemonCliHost for CtxDaemonCliHost {
             automatic_policy: &crate::upgrade::ports::AUTOMATIC_POLICY,
             observer: &crate::upgrade::ports::UPGRADE_OBSERVER,
         };
-        ctx_daemon_cli::daemon_service_ports::run_daemon_service(
+        let result = ctx_daemon_cli::daemon_service_ports::run_daemon_service(
             request, data_root, config, &upgrade,
-        )
+        );
+        // The daemon owns the maintenance worker. Cancel and join it before
+        // returning so Pro and any contained descendants cannot outlive Core.
+        stop_companion_maintenance_worker();
+        result
     }
 
     fn deliver_daemon_events(&self, data_root: &Path, events: &[PublicEventV1]) {
@@ -347,18 +383,39 @@ impl ctx_daemon_cli::DaemonCliHost for CtxDaemonCliHost {
             return Ok(());
         }
         let data_root = data_root.to_path_buf();
-        if std::thread::Builder::new()
+        let cancellation = CancellationToken::new();
+        let worker_cancellation = cancellation.clone();
+        let worker = std::thread::Builder::new()
             .name("ctx-pro-maintenance-wake".to_owned())
             .spawn(move || loop {
                 take_companion_maintenance_request(&COMPANION_MAINTENANCE_WAKE_STATE);
-                let _ = crate::companion::wake_verified_private_maintenance(&data_root);
+                let _ = crate::companion::wake_verified_private_maintenance(
+                    &data_root,
+                    &worker_cancellation,
+                );
+                if worker_cancellation.is_cancelled() {
+                    COMPANION_MAINTENANCE_WAKE_STATE.store(0, Ordering::Release);
+                    break;
+                }
                 if !companion_maintenance_should_continue(&COMPANION_MAINTENANCE_WAKE_STATE) {
                     break;
                 }
-            })
-            .is_err()
-        {
-            COMPANION_MAINTENANCE_WAKE_STATE.store(0, Ordering::Release);
+            });
+        match worker {
+            Ok(handle) => {
+                let previous = COMPANION_MAINTENANCE_WORKER
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner())
+                    .replace(CompanionMaintenanceWorker {
+                        cancellation,
+                        handle,
+                    });
+                if let Some(previous) = previous {
+                    previous.cancellation.cancel();
+                    let _ = previous.handle.join();
+                }
+            }
+            Err(_) => COMPANION_MAINTENANCE_WAKE_STATE.store(0, Ordering::Release),
         }
         Ok(())
     }
