@@ -106,17 +106,6 @@ fn provider_native_helpers_preserve_every_migrated_jsonl_identity_byte() {
             session_uuid: "4b704899-c421-855e-9865-9fb4dd30b59d",
         },
         Case {
-            provider: "windsurf",
-            source_format: "windsurf_cascade_hook_transcript_jsonl",
-            schema_variant: "windsurf-direct-native-jsonl-v1",
-            source_namespace: "windsurf.direct-jsonl-session",
-            session_namespace: "windsurf.direct-jsonl-session",
-            logical_session_kind: "direct-jsonl-session",
-            key: utf8(),
-            source_uuid: "6b7c480d-54db-8aad-921c-04b11eef80e6",
-            session_uuid: "bc68f87e-96e2-8b64-a59a-5c7f8b08aacb",
-        },
-        Case {
             provider: "claude",
             source_format: "claude_projects_jsonl_tree",
             schema_variant: "claude-nativepath-jsonl-v6",

@@ -560,20 +560,20 @@ mod ui_tests {
         );
         factory.provider = CaptureProvider::FactoryAiDroid;
         factory.source_format = "factory_ai_droid_sessions_jsonl";
-        let windsurf_path = home.join(".codeium/windsurf/trajectories");
-        let mut windsurf = source(
+        let cursor_path = home.join(".cursor/projects/example/agent-transcripts");
+        let mut cursor = source(
             ProviderSourceStatus::Available,
-            &windsurf_path.to_string_lossy(),
+            &cursor_path.to_string_lossy(),
         );
-        windsurf.provider = CaptureProvider::Windsurf;
-        windsurf.source_format = "windsurf_cascade_hook_transcript_jsonl_tree";
-        let sources = [factory, windsurf];
+        cursor.provider = CaptureProvider::Cursor;
+        cursor.source_format = "cursor_agent_transcript_jsonl_tree";
+        let sources = [factory, cursor];
 
         for width in [80, 100, 120] {
             let context = context(width, ColorMode::Never);
             let document = render_sources_human(&context, &sources, &[], &[], &[], 0, Some(&home));
             let rendered = document.render_plain();
-            for atom in ["factory-ai-droid", "available", "windsurf"] {
+            for atom in ["factory-ai-droid", "available", "cursor"] {
                 assert!(
                     rendered.split_whitespace().any(|token| token == atom),
                     "{atom:?} did not remain intact at {width} columns: {rendered}"

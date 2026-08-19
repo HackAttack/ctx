@@ -783,34 +783,15 @@ fn antigravity_accepts_only_official_fixed_transcript_leaves() {
 }
 
 #[test]
-fn windsurf_accepts_only_direct_trajectory_jsonl_and_is_platform_gated() {
-    let temp = tempdir();
-    let selected_context = context(temp.path(), DiscoveryPlatform::Linux);
-    let root = selected_context.home().join(".windsurf/transcripts");
-    write_file(&root.join("nested/trajectory.jsonl"), b"{}\n");
-    let report = provider_report(&selected_context, CaptureProvider::Windsurf);
-    assert_eq!(report.sources[0].status, ProviderSourceStatus::Empty);
-    write_file(&root.join("trajectory.jsonl"), b"{}\n");
-    let report = provider_report(&selected_context, CaptureProvider::Windsurf);
-    assert_eq!(report.sources[0].status, ProviderSourceStatus::Available);
-    assert!(provider_report(
-        &context(temp.path(), DiscoveryPlatform::OtherUnix),
-        CaptureProvider::Windsurf
-    )
-    .sources
-    .is_empty());
-}
-
-#[test]
 fn fixed_leaf_discovery_is_bounded() {
     let temp = tempdir();
     let context = context(temp.path(), DiscoveryPlatform::Linux);
-    let root = context.home().join(".windsurf/transcripts");
+    let root = context.home().join(".gemini/antigravity-cli/brain");
     fs::create_dir_all(&root).unwrap();
     for index in 0..=super::super::super::selectors::MAX_DIRECT_DIRECTORY_ENTRIES {
         fs::create_dir(root.join(format!("entry-{index:04}"))).unwrap();
     }
-    let report = provider_report(&context, CaptureProvider::Windsurf);
+    let report = provider_report(&context, CaptureProvider::Antigravity);
     assert_eq!(report.sources[0].status, ProviderSourceStatus::Unknown);
 }
 
@@ -822,11 +803,14 @@ fn automatic_sources_do_not_follow_symlink_roots() {
     let temp = tempdir();
     let context = context(temp.path(), DiscoveryPlatform::Linux);
     let target = temp.path().join("outside");
-    write_file(&target.join("trajectory.jsonl"), b"{}\n");
-    let root = context.home().join(".windsurf/transcripts");
+    write_file(
+        &target.join("session/.system_generated/logs/transcript.jsonl"),
+        b"{}\n",
+    );
+    let root = context.home().join(".gemini/antigravity-cli/brain");
     fs::create_dir_all(root.parent().unwrap()).unwrap();
     symlink(&target, &root).unwrap();
-    let report = provider_report(&context, CaptureProvider::Windsurf);
+    let report = provider_report(&context, CaptureProvider::Antigravity);
     assert_eq!(report.sources[0].status, ProviderSourceStatus::Unsupported);
 }
 

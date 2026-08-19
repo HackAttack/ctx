@@ -25,6 +25,10 @@ name = "native_providers"
 path = "tests/contracts/native_providers.rs"
 
 [[test]]
+name = "provider_support_conformance"
+path = "tests/contracts/provider_support_conformance.rs"
+
+[[test]]
 name = "setup_sources_import"
 path = "tests/contracts/setup_sources_import.rs"
 

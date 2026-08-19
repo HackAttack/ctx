@@ -71,14 +71,14 @@ structured-content channel.
 
 ## Provider and format capability
 
-General provider support remains the 42-provider local-history contract in
+General provider support remains the 41-provider local-history contract in
 [`provider-support-matrix.json`](provider-support-matrix.json). Exact MCP
 activity attribution has a separate provider + route + source format + format
 version contract in
 [`mcp-tool-call-attribution-capabilities.json`](mcp-tool-call-attribution-capabilities.json).
 
-Capability revision 4 evaluates all 42 providers across 47 base routes and 50
-capability lanes: three `exact`, 46 `not-qualified`, and one `excluded`.
+Capability revision 4 evaluates all 41 providers across 46 base routes and 49
+capability lanes: three `exact`, 45 `not-qualified`, and one `excluded`.
 Codex contributes separate session-tree and legacy prompt-history routes; Deep
 Agents contributes its local SQLite import plus a separately excluded hosted
 trace. Capability revision 4 exact providers are Codex, Warp, and Copilot CLI.

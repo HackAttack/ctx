@@ -263,20 +263,6 @@ pub const LANDED_SOURCE_BACKED_ROUTES: &[SourceBackedProviderRouteMetadata] = &[
         true,
         ExplicitPath
     ),
-    route!(
-        Windsurf,
-        "windsurf_cascade_hook_transcript_jsonl_tree" => "windsurf_cascade_hook_transcript_jsonl",
-        true,
-        true,
-        DiscoveredWinner
-    ),
-    route!(
-        Windsurf,
-        "windsurf_cascade_hook_transcript_jsonl" => "windsurf_cascade_hook_transcript_jsonl",
-        false,
-        true,
-        ExplicitPath
-    ),
     sqlite_route!(Zed, "zed_threads_sqlite", true, true, DiscoveredWinner),
     route!(
         CopilotCli,
@@ -554,8 +540,6 @@ Gemini|gemini_cli_chat_recording_jsonl|gemini_cli_chat_recording_jsonl|true|true
 Tabnine|tabnine_cli_chat_recording_jsonl|tabnine_cli_chat_recording_jsonl|true|true|DiscoveredWinner|none|ProviderSource
 Cursor|cursor_agent_transcript_jsonl_tree|cursor_agent_transcript_jsonl_tree|true|true|DiscoveredWinner|none|ProviderSource
 Cursor|cursor_agent_transcript_jsonl|cursor_agent_transcript_jsonl_tree|false|true|ExplicitPath|none|ProviderSource
-Windsurf|windsurf_cascade_hook_transcript_jsonl_tree|windsurf_cascade_hook_transcript_jsonl|true|true|DiscoveredWinner|none|ProviderSource
-Windsurf|windsurf_cascade_hook_transcript_jsonl|windsurf_cascade_hook_transcript_jsonl|false|true|ExplicitPath|none|ProviderSource
 Zed|zed_threads_sqlite|zed_threads_sqlite|true|true|DiscoveredWinner|none|ProviderSource
 CopilotCli|copilot_cli_session_events_jsonl|copilot_cli_session_events_jsonl|true|true|DiscoveredWinner|none|ProviderSource
 FactoryAiDroid|factory_ai_droid_sessions_jsonl|factory_ai_droid_sessions_jsonl|true|true|DiscoveredWinner|none|ProviderSource

@@ -16,8 +16,7 @@ use ctx_history_capture_model::time::parse_rfc3339_utc;
 use super::native_path::{
     factory_droid_event_text, factory_droid_event_type, factory_droid_header_cwd,
     factory_droid_header_session_id, factory_droid_model, factory_droid_role,
-    factory_droid_session_relationships, windsurf_event_role, windsurf_event_text,
-    windsurf_event_type,
+    factory_droid_session_relationships,
 };
 pub(crate) fn antigravity_tool_call_text(value: &Value) -> Option<String> {
     value.as_array().and_then(|calls| {
@@ -273,7 +272,6 @@ pub(crate) fn native_jsonl_event_type(provider: CaptureProvider, value: &Value) 
             Some("abort") => EventType::Notice,
             _ => EventType::Notice,
         },
-        CaptureProvider::Windsurf => windsurf_event_type(value),
         CaptureProvider::QwenCode => match value.get("type").and_then(Value::as_str) {
             Some("user" | "assistant") if native_jsonl_content_has(value, "tool_use") => {
                 EventType::ToolCall
@@ -313,7 +311,6 @@ pub(crate) fn native_jsonl_role(provider: CaptureProvider, value: &Value) -> Eve
             Some("tool.execution_start" | "tool.execution_complete") => EventRole::Tool,
             _ => EventRole::System,
         },
-        CaptureProvider::Windsurf => windsurf_event_role(value),
         CaptureProvider::QwenCode => provider_role(
             value
                 .pointer("/message/role")
@@ -328,7 +325,6 @@ pub(crate) fn native_jsonl_event_text(
     provider: CaptureProvider,
     value: &Value,
     _event_type: EventType,
-    entry_type: &str,
 ) -> String {
     match provider {
         CaptureProvider::Antigravity => value
@@ -380,7 +376,6 @@ pub(crate) fn native_jsonl_event_text(
                     .map(|tool| format!("tool {tool}"))
             })
             .unwrap_or_default(),
-        CaptureProvider::Windsurf => windsurf_event_text(value, entry_type),
         CaptureProvider::QwenCode => value
             .pointer("/message/content")
             .or_else(|| value.get("message"))

@@ -9,8 +9,7 @@ use super::json_tree::{
     write_native_auggie_fixture, write_native_claude_fixture, write_native_continue_fixture,
     write_native_cursor_fixture, write_native_junie_fixture, write_native_mistral_vibe_fixture,
     write_native_mux_fixture, write_native_openclaw_fixture, write_native_openhands_fixture,
-    write_native_qoder_fixture, write_native_rovodev_fixture, write_native_windsurf_fixture,
-    write_pi_session_jsonl,
+    write_native_qoder_fixture, write_native_rovodev_fixture, write_pi_session_jsonl,
 };
 use super::sqlite::{
     write_lingma_sqlite_fixture, write_mimocode_sqlite_fixture, write_native_astrbot_fixture,
@@ -36,11 +35,6 @@ pub(crate) fn install_default_pi_fixture(temp: &TempDir, query: &str) {
 pub(crate) fn install_default_cursor_fixture(temp: &TempDir, query: &str) {
     let source = PathBuf::from(write_native_cursor_fixture(temp, query));
     copy_dir_all(&source, &temp.path().join(".cursor").join("projects"));
-}
-
-pub(crate) fn install_default_windsurf_fixture(temp: &TempDir, query: &str) {
-    let source = PathBuf::from(write_native_windsurf_fixture(temp, query));
-    copy_dir_all(&source, &temp.path().join(".windsurf").join("transcripts"));
 }
 
 pub(crate) fn install_default_qoder_fixture(temp: &TempDir, query: &str) {

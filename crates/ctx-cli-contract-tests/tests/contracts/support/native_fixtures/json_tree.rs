@@ -470,37 +470,6 @@ pub(crate) fn write_native_cursor_fixture(temp: &TempDir, query: &str) -> String
         .to_owned()
 }
 
-pub(crate) fn write_native_windsurf_fixture(temp: &TempDir, query: &str) -> String {
-    let root = temp.path().join("native-windsurf/transcripts");
-    fs::create_dir_all(&root).unwrap();
-    fs::write(
-        root.join("windsurf-cli-native.jsonl"),
-        format!(
-            "{}\n{}\n{}\n",
-            json!({
-                "status": "done",
-                "type": "user_input",
-                "user_input": {"user_response": query}
-            }),
-            json!({
-                "status": "done",
-                "type": "planner_response",
-                "planner_response": {"response": "native import ok"}
-            }),
-            json!({
-                "status": "done",
-                "type": "code_action",
-                "code_action": {
-                    "path": "src/windsurf_cli_native.py",
-                    "new_content": "print('native import ok')\n"
-                }
-            })
-        ),
-    )
-    .unwrap();
-    root.to_str().unwrap().to_owned()
-}
-
 pub(crate) fn write_native_qoder_fixture(temp: &TempDir, query: &str) -> String {
     let root = temp
         .path()

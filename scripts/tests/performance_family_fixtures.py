@@ -48,7 +48,6 @@ PROVIDER_FAMILY_COVERAGE = (
     ("gemini", JSONL_FAMILY, None),
     ("tabnine", JSONL_FAMILY, None),
     ("cursor", JSONL_FAMILY, None),
-    ("windsurf", JSONL_FAMILY, None),
     ("zed", SQLITE_WAL_FAMILY, None),
     ("copilot_cli", JSONL_FAMILY, None),
     ("factory_ai_droid", JSONL_FAMILY, None),

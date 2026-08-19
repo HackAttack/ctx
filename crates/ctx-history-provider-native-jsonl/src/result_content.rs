@@ -276,9 +276,9 @@ fn native_result_tool_name(value: &Value) -> Option<&str> {
 /// JSONL provider. The profile token is stable data: changing field selection
 /// or normalization requires a new token.
 ///
-/// Antigravity and Windsurf intentionally have no profile: their admitted
-/// native dialects expose calls/messages but no stable result-bearing record
-/// shape. Qoder uses its stricter provider-specific parser instead.
+/// Antigravity intentionally has no profile: its admitted native dialect
+/// exposes calls/messages but no stable result-bearing record shape. Qoder
+/// uses its stricter provider-specific parser instead.
 pub(crate) const fn native_jsonl_result_content_profile(
     provider: CaptureProvider,
 ) -> Option<&'static str> {
@@ -333,7 +333,6 @@ mod tests {
         }
         for provider in [
             CaptureProvider::Antigravity,
-            CaptureProvider::Windsurf,
             CaptureProvider::Qoder,
             CaptureProvider::Codex,
             CaptureProvider::Gemini,

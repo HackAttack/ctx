@@ -125,20 +125,6 @@ fn provider_inventory_covers_supported_automatic_routes() {
             true,
         ),
         (
-            CaptureProvider::Windsurf,
-            "windsurf_cascade_hook_transcript_jsonl_tree",
-            "windsurf_cascade_hook_transcript_jsonl",
-            true,
-            true,
-        ),
-        (
-            CaptureProvider::Windsurf,
-            "windsurf_cascade_hook_transcript_jsonl",
-            "windsurf_cascade_hook_transcript_jsonl",
-            false,
-            true,
-        ),
-        (
             CaptureProvider::QwenCode,
             "qwen_code_chat_jsonl_tree",
             "qwen_code_chat_jsonl",

@@ -1,8 +1,18 @@
 # Provider Support
 
-Provider support is intentionally conservative. A provider is documented as
-supported only when the public CLI can read existing local history for that
-provider from a bounded source format.
+Supported is a functional product claim. For a provider's normal supported
+version, the public CLI automatically locates an ordinary default native
+history source, imports it through `ctx import --all`, and makes meaningful
+user and assistant content available through search, show, and citations.
+Repeating an unchanged import is a stable no-op without source failures or
+duplicate records, and the route participates in the shared incremental,
+read-only history architecture. Public deterministic tests exercise that
+contract for every supported provider. Deeper route qualification is separate
+from this functional support claim.
+
+Support means backfilling history that the provider persists during ordinary
+operation. Output from an installed runtime hook, opt-in exporter, or separately
+configured sink does not qualify as provider history support.
 
 The provider import policy in
 [`provider-import-policy.md`](provider-import-policy.md) defines the native
@@ -37,8 +47,8 @@ event-local Core capability has its own provider + route + source format +
 format version authority in
 [`mcp-tool-call-attribution-capabilities.json`](mcp-tool-call-attribution-capabilities.json).
 Capability revision 4 exact providers are Codex, Warp, and Copilot CLI. The
-complete evidence matrix contains 47 base routes and 50 capability lanes:
-three exact, 46 not-qualified, and one excluded. The Deep Agents hosted trace
+complete evidence matrix contains 46 base routes and 49 capability lanes:
+three exact, 45 not-qualified, and one excluded. The Deep Agents hosted trace
 is excluded from the local-only boundary, while its local SQLite history import
 remains Supported but not qualified for exact attribution. See
 [`mcp-tool-call-attribution.md`](mcp-tool-call-attribution.md) for absence,
@@ -80,7 +90,6 @@ support matrix is:
 | Gemini | Supported | `gemini_cli_chat_recording_jsonl` |
 | Tabnine | Supported | `tabnine_cli_chat_recording_jsonl` |
 | Cursor | Supported | `cursor_agent_transcript_jsonl_tree` |
-| Windsurf | Supported | `windsurf_cascade_hook_transcript_jsonl_tree` |
 | Zed | Supported | `zed_threads_sqlite` |
 | Copilot CLI | Supported | `copilot_cli_session_events_jsonl` |
 | Factory AI Droid | Supported | `factory_ai_droid_sessions_jsonl` |

@@ -18,7 +18,6 @@ const ALL_SLASH_COMMAND_AGENTS: &[&str] = &[
     "pi",
     "goose",
     "continue",
-    "windsurf",
 ];
 const SKILL_ONLY_SLASH_COMMAND_AGENTS: &[&str] = &[
     "codex",
@@ -30,13 +29,7 @@ const SKILL_ONLY_SLASH_COMMAND_AGENTS: &[&str] = &[
     "pi",
 ];
 const MANUAL_ONLY_SLASH_COMMAND_AGENTS: &[&str] = &["goose", "continue"];
-const WRITABLE_SLASH_COMMAND_AGENTS: &[&str] = &[
-    "opencode",
-    "mimocode",
-    "gemini-cli",
-    "qwen-code",
-    "windsurf",
-];
+const WRITABLE_SLASH_COMMAND_AGENTS: &[&str] = &["opencode", "mimocode", "gemini-cli", "qwen-code"];
 
 // These tests are hermetic fake-harness E2E checks. They run the real ctx
 // installer binary with temp HOME/XDG/CTX_DATA_ROOT, then simulate the stable
@@ -54,7 +47,6 @@ fn slash_command_e2e_detected_global_harnesses_discover_and_invoke() {
     fs::create_dir_all(xdg.join("mimocode")).unwrap();
     fs::create_dir_all(temp.path().join(".gemini")).unwrap();
     fs::create_dir_all(temp.path().join(".qwen")).unwrap();
-    fs::create_dir_all(temp.path().join(".codeium").join("windsurf")).unwrap();
 
     let output = json_output(ctx(&temp).env("XDG_CONFIG_HOME", &xdg).args([
         "integrations",
@@ -67,33 +59,24 @@ fn slash_command_e2e_detected_global_harnesses_discover_and_invoke() {
     assert_eq!(output["scope"], "global");
     assert_eq!(
         output_agents(&output),
-        vec![
-            "opencode",
-            "mimocode",
-            "gemini-cli",
-            "qwen-code",
-            "windsurf"
-        ]
+        vec!["opencode", "mimocode", "gemini-cli", "qwen-code"]
     );
 
     let opencode = OpenCodeHarness::global(&xdg);
     let mimocode = MiMoCodeHarness::global(&xdg);
     let gemini = GeminiHarness::global(temp.path());
     let qwen = QwenHarness::global(temp.path());
-    let windsurf = WindsurfHarness::global(temp.path());
 
     assert_result_path(&output, "opencode", &opencode.command_path(COMMAND_NAME));
     assert_result_path(&output, "mimocode", &mimocode.command_path(COMMAND_NAME));
     assert_result_path(&output, "gemini-cli", &gemini.command_path(COMMAND_NAME));
     assert_result_path(&output, "qwen-code", &qwen.command_path(COMMAND_NAME));
-    assert_result_path(&output, "windsurf", &windsurf.command_path(COMMAND_NAME));
     assert_result_paths_under(&output, &[temp.path(), &xdg]);
 
     assert_ctx_prompt(&opencode.invoke(COMMAND_NAME, QUERY), QUERY);
     assert_ctx_prompt(&mimocode.invoke(COMMAND_NAME, QUERY), QUERY);
     assert_ctx_prompt(&gemini.invoke(COMMAND_NAME, QUERY), QUERY);
     assert_ctx_prompt(&qwen.invoke(COMMAND_NAME, QUERY), QUERY);
-    windsurf.assert_workflow_ready(COMMAND_NAME);
 }
 
 #[test]
@@ -178,8 +161,6 @@ fn slash_command_e2e_project_harnesses_discover_and_invoke() {
         "gemini-cli",
         "--agent",
         "qwen-code",
-        "--agent",
-        "windsurf",
         "--project",
         "--format=json",
     ]);
@@ -188,33 +169,24 @@ fn slash_command_e2e_project_harnesses_discover_and_invoke() {
     assert_eq!(output["scope"], "project");
     assert_eq!(
         output_agents(&output),
-        vec![
-            "opencode",
-            "mimocode",
-            "gemini-cli",
-            "qwen-code",
-            "windsurf"
-        ]
+        vec!["opencode", "mimocode", "gemini-cli", "qwen-code"]
     );
 
     let opencode = OpenCodeHarness::project(&project);
     let mimocode = MiMoCodeHarness::project(&project);
     let gemini = GeminiHarness::project(&project);
     let qwen = QwenHarness::project(&project);
-    let windsurf = WindsurfHarness::project(&project);
 
     assert_result_path(&output, "opencode", &opencode.command_path(COMMAND_NAME));
     assert_result_path(&output, "mimocode", &mimocode.command_path(COMMAND_NAME));
     assert_result_path(&output, "gemini-cli", &gemini.command_path(COMMAND_NAME));
     assert_result_path(&output, "qwen-code", &qwen.command_path(COMMAND_NAME));
-    assert_result_path(&output, "windsurf", &windsurf.command_path(COMMAND_NAME));
     assert_result_paths_under(&output, &[&project]);
 
     assert_ctx_prompt(&opencode.invoke(COMMAND_NAME, QUERY), QUERY);
     assert_ctx_prompt(&mimocode.invoke(COMMAND_NAME, QUERY), QUERY);
     assert_ctx_prompt(&gemini.invoke(COMMAND_NAME, QUERY), QUERY);
     assert_ctx_prompt(&qwen.invoke(COMMAND_NAME, QUERY), QUERY);
-    windsurf.assert_workflow_ready(COMMAND_NAME);
 }
 
 #[test]
@@ -339,13 +311,11 @@ fn slash_command_e2e_project_all_agents_json_covers_the_complete_accepted_matrix
     let mimocode = MiMoCodeHarness::project(&project);
     let gemini = GeminiHarness::project(&project);
     let qwen = QwenHarness::project(&project);
-    let windsurf = WindsurfHarness::project(&project);
 
     assert_ctx_prompt(&opencode.invoke(COMMAND_NAME, QUERY), QUERY);
     assert_ctx_prompt(&mimocode.invoke(COMMAND_NAME, QUERY), QUERY);
     assert_ctx_prompt(&gemini.invoke(COMMAND_NAME, QUERY), QUERY);
     assert_ctx_prompt(&qwen.invoke(COMMAND_NAME, QUERY), QUERY);
-    windsurf.assert_workflow_ready(COMMAND_NAME);
 }
 
 struct OpenCodeHarness {
@@ -501,44 +471,6 @@ impl QwenHarness {
 
     fn command_path(&self, command_name: &str) -> PathBuf {
         command_path(&self.command_dir, command_name, "md")
-    }
-}
-
-struct WindsurfHarness {
-    workflow_dir: PathBuf,
-}
-
-impl WindsurfHarness {
-    fn global(home: &Path) -> Self {
-        Self {
-            workflow_dir: home
-                .join(".codeium")
-                .join("windsurf")
-                .join("global_workflows"),
-        }
-    }
-
-    fn project(project: &Path) -> Self {
-        Self {
-            workflow_dir: project.join(".windsurf").join("workflows"),
-        }
-    }
-
-    fn assert_workflow_ready(&self, command_name: &str) {
-        assert_ctx_metadata(&self.workflow_dir, &format!("{command_name}.md"));
-        let body = read_command(&self.command_path(command_name));
-        assert!(body.starts_with("# ctx\n"));
-        assert!(body.contains("text after `/ctx`"));
-        assert!(body.contains("ctx search \"<query>\""));
-        assert!(body.contains("ctx show event <id> --window 5"));
-        assert!(
-            !body.contains("$ARGUMENTS") && !body.contains("{{args}}"),
-            "Windsurf workflows are UI/manual instructions, not token interpolation commands"
-        );
-    }
-
-    fn command_path(&self, command_name: &str) -> PathBuf {
-        command_path(&self.workflow_dir, command_name, "md")
     }
 }
 

@@ -219,7 +219,6 @@ Read more about [agent memory](https://ctx.rs/comparisons/agent-memory), [codeba
 | Rovo Dev | Supported |
 | Tabnine CLI | Supported |
 | Warp | Supported |
-| Windsurf | Supported |
 | Zed | Supported |
 
 ## Refer a dev to ctx pro and we'll buy you $120 in LLM tokens

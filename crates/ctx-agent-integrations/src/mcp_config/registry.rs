@@ -181,7 +181,6 @@ pub enum McpAgentArg {
     Cline,
     GitHubCopilot,
     Zed,
-    Windsurf,
     RooCode,
 }
 
@@ -202,7 +201,6 @@ pub fn parse_mcp_agent(value: &str) -> std::result::Result<McpAgentArg, String> 
         "cline" => Ok(McpAgentArg::Cline),
         "github-copilot" | "copilot" | "copilot-cli" => Ok(McpAgentArg::GitHubCopilot),
         "zed" => Ok(McpAgentArg::Zed),
-        "windsurf" => Ok(McpAgentArg::Windsurf),
         "roo-code" | "roo" => Ok(McpAgentArg::RooCode),
         _ => Err(format!("unknown MCP agent: {value}")),
     }
@@ -225,7 +223,6 @@ impl McpAgentArg {
         Self::Cline,
         Self::GitHubCopilot,
         Self::Zed,
-        Self::Windsurf,
     ];
     pub const PROJECT_CAPABLE: &'static [Self] = &[
         Self::Codex,
@@ -260,7 +257,6 @@ impl McpAgentArg {
             Self::Cline => "cline",
             Self::GitHubCopilot => "github-copilot",
             Self::Zed => "zed",
-            Self::Windsurf => "windsurf",
             Self::RooCode => "roo-code",
         }
     }
@@ -282,7 +278,6 @@ impl McpAgentArg {
             Self::Cline => "Cline",
             Self::GitHubCopilot => "GitHub Copilot CLI",
             Self::Zed => "Zed",
-            Self::Windsurf => "Windsurf",
             Self::RooCode => "Roo Code",
         }
     }
@@ -322,7 +317,6 @@ impl McpAgentArg {
                     || context.home.join(".copilot").exists()
             }
             Self::Zed => context.xdg_config_home.join("zed").exists(),
-            Self::Windsurf => context.home.join(".codeium").exists(),
             Self::RooCode => {
                 context.home.join(".roo").exists() || context.cwd.join(".roo").exists()
             }
@@ -434,13 +428,6 @@ impl McpAgentArg {
                     server: JsonServerShape::Plain,
                 },
             ),
-            Self::Windsurf => (
-                context.home.join(".codeium").join("mcp_config.json"),
-                ConfigKind::Json {
-                    root: JsonRoot::McpServers,
-                    server: JsonServerShape::Plain,
-                },
-            ),
             Self::RooCode => {
                 return McpTarget::unsupported(
                     self,
@@ -534,7 +521,7 @@ impl McpAgentArg {
                     server: JsonServerShape::Plain,
                 },
             )),
-            Self::Cline | Self::Goose | Self::GitHubCopilot | Self::Windsurf => None,
+            Self::Cline | Self::Goose | Self::GitHubCopilot => None,
         };
         match target {
             Some((path, kind)) => McpTarget::supported(
@@ -568,10 +555,7 @@ pub fn project_detection_path(agent: McpAgentArg, context: &McpPathContext) -> P
         McpAgentArg::Continue => context.cwd.join(".continue"),
         McpAgentArg::Zed => context.cwd.join(".zed"),
         McpAgentArg::RooCode => context.cwd.join(".roo"),
-        McpAgentArg::Cline
-        | McpAgentArg::Goose
-        | McpAgentArg::GitHubCopilot
-        | McpAgentArg::Windsurf => context.cwd.clone(),
+        McpAgentArg::Cline | McpAgentArg::Goose | McpAgentArg::GitHubCopilot => context.cwd.clone(),
     }
 }
 

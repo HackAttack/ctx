@@ -688,6 +688,8 @@ mod tests {
     fn every_capture_provider_has_an_unsuppressed_closed_wire_name() {
         let providers = [
             CaptureProvider::Codex,
+            CaptureProvider::GrokBuild,
+            CaptureProvider::DeepSeekHarness,
             CaptureProvider::Claude,
             CaptureProvider::Pi,
             CaptureProvider::OpenCode,
@@ -697,7 +699,6 @@ mod tests {
             CaptureProvider::Gemini,
             CaptureProvider::Tabnine,
             CaptureProvider::Cursor,
-            CaptureProvider::Windsurf,
             CaptureProvider::Zed,
             CaptureProvider::CopilotCli,
             CaptureProvider::FactoryAiDroid,

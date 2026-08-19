@@ -24,7 +24,6 @@ entry points:
 | MiMo Code | `MIMOCODE_CONFIG_DIR/commands/ctx.md`, `MIMOCODE_HOME/config/commands/ctx.md`, or `$XDG_CONFIG_HOME/mimocode/commands/ctx.md` | `.mimocode/commands/ctx.md` | Markdown with YAML frontmatter | `/ctx <query>` | `MIMOCODE_CONFIG_DIR`, absolute `MIMOCODE_HOME`, or `$XDG_CONFIG_HOME/mimocode` exists |
 | Gemini CLI | `~/.gemini/commands/ctx.toml` | `.gemini/commands/ctx.toml` | TOML custom command | `/ctx <query>` | `~/.gemini` exists |
 | Qwen Code | `~/.qwen/commands/ctx.md` | `.qwen/commands/ctx.md` | Markdown with YAML frontmatter and `{{args}}` | `/ctx <query>` | `~/.qwen` exists |
-| Windsurf | `~/.codeium/windsurf/global_workflows/ctx.md` | `.windsurf/workflows/ctx.md` | Markdown workflow | `/ctx` | `~/.codeium/windsurf` exists |
 
 Each writer stores `.ctx-slash-commands.json` beside the generated command. A
 reinstall refreshes stale ctx-owned files, leaves locally modified files alone,
@@ -48,8 +47,7 @@ fake-harness tests for the implemented file writers. Those tests execute the
 real ctx installer with temporary home and config directories, discover the
 generated files from the documented provider paths, parse the provider command
 formats, and substitute a multi-word query through the provider argument token
-where the provider supports one. Windsurf is covered as a workflow-readiness
-parser because its invocation and reload path is UI/manual.
+where the provider supports one.
 
 Optional live-harness smoke tests should stay outside the default Bazel gate.
 They require installed third-party CLIs or desktop UI state and, for some
@@ -69,7 +67,6 @@ Source links were checked on August 12, 2026.
 | MiMo Code | Yes, separate | `MIMOCODE_CONFIG_DIR/commands`, `MIMOCODE_HOME/config/commands`, or `$XDG_CONFIG_HOME/mimocode/commands` | `.mimocode/commands` | Markdown with YAML frontmatter, `$ARGUMENTS` | `/ctx <query>` | Implemented with metadata hash and detection by MiMo config dir | [MiMo Code command loader](https://github.com/XiaomiMiMo/MiMo-Code/blob/main/packages/opencode/src/config/command.ts), [MiMo Code README](https://github.com/XiaomiMiMo/MiMo-Code) | `MIMOCODE_HOME` must be absolute; MiMo supports both `command` and `commands`, and ctx writes plural `commands`. |
 | Gemini CLI | Yes, separate | `~/.gemini/commands` | `.gemini/commands` | TOML command, `{{args}}` | `/ctx <query>` | Implemented with metadata hash and detection by `~/.gemini` | [Gemini custom commands](https://geminicli.com/docs/cli/custom-commands/), [Gemini commands reference](https://geminicli.com/docs/reference/commands/) | Gemini still documents TOML custom commands and `/commands reload`. |
 | Qwen Code | Yes, separate | `~/.qwen/commands` | `.qwen/commands` | Markdown with YAML frontmatter, `{{args}}` | `/ctx <query>` | Implemented with metadata hash and detection by `~/.qwen` | [Qwen commands](https://qwenlm.github.io/qwen-code-docs/en/users/features/commands/) | Qwen documents Markdown commands as recommended and TOML as deprecated. |
-| Windsurf | Yes, separate workflow | `~/.codeium/windsurf/global_workflows` | `.windsurf/workflows` | Markdown workflow | `/ctx` | Implemented with metadata hash and detection by Windsurf config dir | [Windsurf workflows](https://docs.devin.ai/desktop/cascade/workflows), [Windsurf skills](https://docs.devin.ai/desktop/cascade/skills) | Workflows are manual; skills are a separate progressive-disclosure mechanism. |
 | GitHub Copilot CLI | Skill-only | `~/.copilot/skills`, `~/.agents/skills` | `.github/skills`, `.claude/skills`, `.agents/skills` | `SKILL.md` | `/<skill-name>`, `/skills list` | Covered by `ctx integrations install skills --agent github-copilot` | [Copilot CLI skills](https://docs.github.com/en/copilot/how-tos/copilot-cli/customize-copilot/add-skills), [Copilot CLI custom agents](https://docs.github.com/en/copilot/how-tos/copilot-cli/customize-copilot/create-custom-agents-for-cli) | No separate prompt-command file writer found. |
 | Pi | Skill-only | `~/.pi/agent/skills` | `.pi/skills` | Skill directory | `/skill:<name> <args>` | Covered by `ctx integrations install skills --agent pi`; invocation is not `/ctx` | [Pi skills](https://pi.dev/docs/latest/skills), [Pi usage](https://pi.dev/docs/latest/usage) | Pi skill commands use `/skill:` rather than a direct command alias. |
 | Goose | Manual-only | `~/.config/goose/config.yaml` | Not documented as a file drop-in | YAML `slash_commands` mapping to recipes | `/<name>` | Do not edit YAML yet; a safe writer needs YAML round-tripping and recipe ownership | [Goose custom slash commands](https://goose-docs.ai/docs/guides/context-engineering/slash-commands/) | Goose commands are shortcuts to recipes and accept at most one parameter. |

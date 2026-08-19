@@ -170,12 +170,6 @@ fn provider_source_for_path_with_optional_data_root(
             "cursor_agent_transcript_jsonl"
         }
         CaptureProvider::Cursor => "cursor_agent_transcript_jsonl_tree",
-        CaptureProvider::Windsurf
-            if path.extension().and_then(|ext| ext.to_str()) == Some("jsonl") =>
-        {
-            "windsurf_cascade_hook_transcript_jsonl"
-        }
-        CaptureProvider::Windsurf => "windsurf_cascade_hook_transcript_jsonl_tree",
         CaptureProvider::Zed => "zed_threads_sqlite",
         CaptureProvider::CopilotCli => "copilot_cli_session_events_jsonl",
         CaptureProvider::FactoryAiDroid => "factory_ai_droid_sessions_jsonl",

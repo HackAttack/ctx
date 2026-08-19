@@ -197,7 +197,6 @@ Secondary traits are noted only to guide tests and hardening work.
 | Gemini | `gemini_cli_chat_recording_jsonl` | JSONL transcript stream/tree | Chat recording JSONL. |
 | Tabnine | `tabnine_cli_chat_recording_jsonl` | JSONL transcript stream/tree | Chat recording JSONL. |
 | Cursor | `cursor_agent_transcript_jsonl_tree` | JSONL transcript stream/tree | Agent transcript tree. |
-| Windsurf | `windsurf_cascade_hook_transcript_jsonl_tree` | JSONL transcript stream/tree | Cascade hook transcript tree. |
 | Zed | `zed_threads_sqlite` | SQLite encoded/blob store | SQLite thread rows with decoded JSON payloads. |
 | Copilot CLI | `copilot_cli_session_events_jsonl` | JSONL transcript stream/tree | Session event JSONL. |
 | Factory AI Droid | `factory_ai_droid_sessions_jsonl` | JSONL transcript stream/tree | Session JSONL. |

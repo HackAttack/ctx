@@ -59,7 +59,6 @@ enum SlashCommandAgentArg {
     Pi,
     Goose,
     Continue,
-    Windsurf,
 }
 
 impl SlashCommandAgentArg {
@@ -78,7 +77,6 @@ impl SlashCommandAgentArg {
             Self::Pi => SlashCommandAgent::Pi,
             Self::Goose => SlashCommandAgent::Goose,
             Self::Continue => SlashCommandAgent::Continue,
-            Self::Windsurf => SlashCommandAgent::Windsurf,
         }
     }
 }

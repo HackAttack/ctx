@@ -19,7 +19,6 @@ fn provider_jsonl_path_is_native(provider: CaptureProvider, path: &Path) -> bool
         CaptureProvider::Tabnine => path
             .components()
             .any(|component| component.as_os_str() == "chats"),
-        CaptureProvider::Windsurf => path.extension().and_then(|ext| ext.to_str()) == Some("jsonl"),
         CaptureProvider::Qoder => {
             path.extension().and_then(|ext| ext.to_str()) == Some("jsonl")
                 && (path
@@ -86,10 +85,8 @@ pub(super) fn native_jsonl_file_candidate_is_selected(
 }
 
 pub(super) fn native_jsonl_record_starts_session(provider: CaptureProvider, value: &Value) -> bool {
-    matches!(
-        provider,
-        CaptureProvider::Antigravity | CaptureProvider::Windsurf
-    ) || native_jsonl_header_session_id(provider, value).is_some()
+    provider == CaptureProvider::Antigravity
+        || native_jsonl_header_session_id(provider, value).is_some()
 }
 
 pub(super) fn validate_direct_native_jsonl_provider(provider: CaptureProvider) -> Result<()> {
@@ -98,7 +95,6 @@ pub(super) fn validate_direct_native_jsonl_provider(provider: CaptureProvider) -
         CaptureProvider::Antigravity
             | CaptureProvider::Tabnine
             | CaptureProvider::FactoryAiDroid
-            | CaptureProvider::Windsurf
             | CaptureProvider::Qoder
             | CaptureProvider::CopilotCli
             | CaptureProvider::QwenCode

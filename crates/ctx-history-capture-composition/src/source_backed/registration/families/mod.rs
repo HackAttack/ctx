@@ -79,7 +79,6 @@ fn register_landed_source_backed_route_inner(
         | CaptureProvider::Pi
         | CaptureProvider::Antigravity
         | CaptureProvider::Tabnine
-        | CaptureProvider::Windsurf
         | CaptureProvider::Gemini
         | CaptureProvider::Cursor
         | CaptureProvider::CopilotCli

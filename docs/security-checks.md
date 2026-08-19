@@ -83,6 +83,8 @@ the local retrieval product.
 - The public provider support matrix contains only supported providers and uses
   only the `supported` status. Unsupported-provider rationale is outside the
   public support matrix.
+- Every support row is exercised by a deterministic public locate, import-all,
+  user-and-assistant search/show/citation, and unchanged-repeat contract test.
 
 ## Static Docs Checks
 

@@ -186,7 +186,6 @@ ctx integrations install slash-commands --agent opencode
 ctx integrations install slash-commands --agent mimocode
 ctx integrations install slash-commands --agent gemini-cli --project
 ctx integrations install slash-commands --agent qwen-code
-ctx integrations install slash-commands --agent windsurf
 ctx integrations install slash-commands --all-agents
 ctx integrations install slash-commands --force
 ctx integrations install slash-commands --format json
@@ -210,7 +209,7 @@ reported and left untouched. `integrations status mcp` reports `current`,
 
 `integrations install slash-commands` installs a `/ctx` entry point only
 for providers where ctx has a documented, file-based command surface it can
-manage safely: OpenCode, MiMo Code, Gemini CLI, Qwen Code, and Windsurf. With no
+manage safely: OpenCode, MiMo Code, Gemini CLI, and Qwen Code. With no
 explicit agent flag, it writes detected file-based targets only. `--project`
 installs into the current repository's command folder instead of the user/global
 folder.
@@ -313,7 +312,6 @@ ctx import --provider copilot-cli
 ctx import --provider factory-ai-droid
 ctx import --provider qwen-code
 ctx import --provider kimi-code-cli
-ctx import --provider windsurf
 ctx import --provider lingma
 ctx import --provider codebuddy
 ctx import --provider codex --path ~/.codex/sessions
@@ -620,7 +618,7 @@ and optimized for agent reading; it ends with exactly
 
 Filters:
 
-- `--provider codex|pi|claude|opencode|kilo|kiro-cli|crush|goose|antigravity|gemini|tabnine|cursor|windsurf|zed|copilot-cli|factory-ai-droid|qwen-code|kimi-code-cli|auggie|junie|firebender|forgecode|deepagents|mistral-vibe|mux|rovodev|openclaw|hermes|nanoclaw|astrbot|shelley|continue|openhands|cline|roo|lingma|qoder|warp|codebuddy|custom`;
+- `--provider codex|pi|claude|opencode|kilo|kiro-cli|crush|goose|antigravity|gemini|tabnine|cursor|zed|copilot-cli|factory-ai-droid|qwen-code|kimi-code-cli|auggie|junie|firebender|forgecode|deepagents|mistral-vibe|mux|rovodev|openclaw|hermes|nanoclaw|astrbot|shelley|continue|openhands|cline|roo|lingma|qoder|warp|codebuddy|custom`;
 - `--workspace <name-or-path>`, substring match over stored workspace, cwd,
   source path, or repository-name text;
 - `--since <rfc3339-or-days>d`, for example `2026-06-01T00:00:00Z` or `30d`;

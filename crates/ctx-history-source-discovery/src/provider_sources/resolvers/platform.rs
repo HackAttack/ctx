@@ -36,7 +36,6 @@ const CODEBUDDY_FORMAT: &str = "codebuddy_history_json";
 const ZED_FORMAT: &str = "zed_threads_sqlite";
 const COPILOT_FORMAT: &str = "copilot_cli_session_events_jsonl";
 const ANTIGRAVITY_FORMAT: &str = "antigravity_cli_transcript_jsonl_tree";
-const WINDSURF_FORMAT: &str = "windsurf_cascade_hook_transcript_jsonl_tree";
 
 const SELECTOR_MANUAL_REASON: &str = "the provider selected a path whose location cannot be reconstructed safely; use an exact --path";
 const UNSAFE_SOURCE_REASON: &str =
@@ -57,7 +56,6 @@ pub(super) fn resolve(
         CaptureProvider::Zed => resolve_zed(probes, context, spec),
         CaptureProvider::CopilotCli => resolve_copilot(probes, context, spec),
         CaptureProvider::Antigravity => resolve_antigravity(context, spec),
-        CaptureProvider::Windsurf => resolve_windsurf(context, spec),
         _ => DiscoveryReport::default(),
     };
     dedupe_report(report)
@@ -486,26 +484,9 @@ fn resolve_antigravity(context: &DiscoveryContext, spec: &ProviderSourceSpec) ->
     report
 }
 
-fn resolve_windsurf(context: &DiscoveryContext, spec: &ProviderSourceSpec) -> DiscoveryReport {
-    if !supported_desktop_platform(context.platform()) {
-        return DiscoveryReport::default();
-    }
-    let root = context.home().join(".windsurf").join("transcripts");
-    DiscoveryReport {
-        sources: vec![exact_tree_source(
-            spec,
-            root,
-            WINDSURF_FORMAT,
-            ExactTree::Windsurf,
-        )],
-        issues: Vec::new(),
-    }
-}
-
 #[derive(Debug, Clone, Copy)]
 enum ExactTree {
     Antigravity,
-    Windsurf,
 }
 
 fn exact_tree_source(
@@ -548,9 +529,6 @@ fn exact_tree_source(
                     ExactTree::Antigravity => {
                         "path exists but no official Antigravity transcript.jsonl leaf was found"
                     }
-                    ExactTree::Windsurf => {
-                        "path exists but no direct Windsurf trajectory JSONL file was found"
-                    }
                 }),
             ),
             Err(SelectorReadError::DirectoryLimit) => (
@@ -585,12 +563,6 @@ fn exact_tree_has_history(root: &Path, tree: ExactTree) -> Result<bool, Selector
                 .join(".system_generated")
                 .join("logs")
                 .join("transcript.jsonl"),
-            ExactTree::Windsurf => {
-                if candidate.extension().and_then(OsStr::to_str) != Some("jsonl") {
-                    continue;
-                }
-                candidate
-            }
         };
         if ordinary_file(&leaf) {
             return Ok(true);

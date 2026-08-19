@@ -202,7 +202,6 @@ fn generated_command_bytes_match_the_public_contract() {
             .replace("$ARGUMENTS", "{{args}}")
             .as_str()
     ));
-    assert!(WINDSURF_WORKFLOW.ends_with("machine-readable fields.\n"));
 }
 
 #[test]

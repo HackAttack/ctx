@@ -164,12 +164,6 @@ const CURSOR_DEFAULTS: &[ProviderDefaultLocation] = &[ProviderDefaultLocation {
     source_kind: ProviderSourceKind::NativeHistory,
 }];
 
-const WINDSURF_DEFAULTS: &[ProviderDefaultLocation] = &[ProviderDefaultLocation {
-    path_components: &[".windsurf", "transcripts"],
-    source_format: "windsurf_cascade_hook_transcript_jsonl_tree",
-    source_kind: ProviderSourceKind::NativeHistory,
-}];
-
 const ZED_DEFAULTS: &[ProviderDefaultLocation] = &[ProviderDefaultLocation {
     path_components: &[".local", "share", "zed", "threads", "threads.db"],
     source_format: "zed_threads_sqlite",
@@ -470,14 +464,6 @@ pub(super) const PROVIDER_SPECS: &[ProviderSourceSpec] = &[
         provider: CaptureProvider::Cursor,
         display_name: "Cursor",
         default_locations: CURSOR_DEFAULTS,
-        import_support: ProviderImportSupport::Native,
-        catalog_support: ProviderCatalogSupport::None,
-        unsupported_reason: None,
-    },
-    ProviderSourceSpec {
-        provider: CaptureProvider::Windsurf,
-        display_name: "Windsurf",
-        default_locations: WINDSURF_DEFAULTS,
         import_support: ProviderImportSupport::Native,
         catalog_support: ProviderCatalogSupport::None,
         unsupported_reason: None,

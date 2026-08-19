@@ -11,7 +11,6 @@ mod qwen_code;
 mod reader;
 mod source_backed;
 mod tabnine;
-mod windsurf;
 
 pub use antigravity::antigravity_source_backed_adapter;
 pub use copilot::copilot_source_backed_adapter;
@@ -32,7 +31,5 @@ pub(crate) use qwen_code::qwen_code_file_is_selected;
 pub use qwen_code::qwen_code_source_backed_adapter;
 pub use source_backed::DirectJsonlFamilyAdapter;
 pub use tabnine::tabnine_source_backed_adapter;
-pub use windsurf::windsurf_source_backed_adapter;
-pub(crate) use windsurf::{windsurf_event_role, windsurf_event_text, windsurf_event_type};
 
 pub(super) use grok_build::grok_build_file_is_selected;

@@ -83,11 +83,6 @@ const NATIVE_PROVIDER_CLI_SPECS: &[ProviderCliSpec] = &[
         aliases: &[],
     },
     ProviderCliSpec {
-        provider: CaptureProvider::Windsurf,
-        cli_name: "windsurf",
-        aliases: &["windsurf-cascade", "windsurf_cascade"],
-    },
-    ProviderCliSpec {
         provider: CaptureProvider::Zed,
         cli_name: "zed",
         aliases: &[],

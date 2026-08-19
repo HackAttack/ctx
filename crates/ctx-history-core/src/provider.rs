@@ -31,12 +31,6 @@ pub enum ProviderId {
     Gemini,
     CopilotCli,
     Copilot,
-    #[serde(
-        rename = "windsurf",
-        alias = "windsurf_cascade",
-        alias = "windsurf-cascade"
-    )]
-    Windsurf,
     Zed,
     FactoryAiDroid,
     FactoryDroid,
@@ -106,7 +100,7 @@ pub enum ProviderId {
 }
 
 impl ProviderId {
-    pub const ALL: [Self; 52] = [
+    pub const ALL: [Self; 51] = [
         Self::Codex,
         Self::GrokBuild,
         Self::DeepSeekHarness,
@@ -121,7 +115,6 @@ impl ProviderId {
         Self::Tabnine,
         Self::CopilotCli,
         Self::Copilot,
-        Self::Windsurf,
         Self::Zed,
         Self::FactoryAiDroid,
         Self::FactoryDroid,
@@ -335,7 +328,6 @@ mod tests {
             ProviderId::Continue,
             ProviderId::Crush,
             ProviderId::Cursor,
-            ProviderId::Windsurf,
             ProviderId::CopilotCli,
             ProviderId::FactoryAiDroid,
             ProviderId::Firebender,

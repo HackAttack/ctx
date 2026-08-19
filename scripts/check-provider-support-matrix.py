@@ -18,6 +18,7 @@ from typing import Any
 REPO_ROOT = Path(__file__).resolve().parents[1]
 MATRIX_PATH = REPO_ROOT / "docs/provider-support-matrix.json"
 ALLOWED_STATUSES = {"supported"}
+EXPECTED_SUPPORTED_PROVIDER_COUNT = 41
 ALLOWED_PATH_KINDS = {"native_import"}
 ALLOWED_FIDELITY = {
     "imported",
@@ -485,13 +486,18 @@ def main() -> int:
         }:
             fail("custom_history_lineage_support does not match admitted custom contracts")
         providers = expect_type(matrix.get("providers"), list, "providers")
-        if not providers:
-            fail("providers must not be empty")
+        if len(providers) != EXPECTED_SUPPORTED_PROVIDER_COUNT:
+            fail(
+                "providers must contain exactly "
+                f"{EXPECTED_SUPPORTED_PROVIDER_COUNT} supported rows, found {len(providers)}"
+            )
         validate_public_claim_docs()
 
         seen_ids: set[str] = set()
         for index, provider in enumerate(providers):
             validate_provider(provider, index, seen_ids)
+        if len(seen_ids) != EXPECTED_SUPPORTED_PROVIDER_COUNT:
+            fail("supported provider classification must not be vacuous")
         validate_provider_lineage_claims(providers)
         validate_detected_unsupported_sources(
             matrix.get("detected_unsupported_sources"), seen_ids

@@ -1,5 +1,6 @@
 use std::{
     io::Read,
+    path::Path,
     process::{Child, Command as StdCommand, Stdio},
 };
 
@@ -24,6 +25,13 @@ impl Drop for SourceRefreshDaemon {
 }
 
 pub(super) fn start_isolated_provider_daemon(temp: &TempDir) -> SourceRefreshDaemon {
+    start_isolated_provider_daemon_in(temp, temp.path())
+}
+
+pub(super) fn start_isolated_provider_daemon_in(
+    temp: &TempDir,
+    current_dir: &Path,
+) -> SourceRefreshDaemon {
     let data_root = data_root(temp);
     fs::create_dir_all(&data_root).unwrap();
     fs::write(
@@ -45,7 +53,7 @@ pub(super) fn start_isolated_provider_daemon(temp: &TempDir) -> SourceRefreshDae
         }
     }
     command
-        .current_dir(temp.path())
+        .current_dir(current_dir)
         .args(["daemon", "run", "--force", "--loop-interval-seconds", "600"])
         .env("CTX_DAEMON_MODE", "full")
         .stdout(Stdio::null())

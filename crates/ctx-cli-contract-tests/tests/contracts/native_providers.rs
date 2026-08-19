@@ -302,67 +302,6 @@ fn mimocode_default_and_env_sources_import_search_and_reimport() {
     );
 }
 
-#[test]
-fn windsurf_default_discovery_is_native_and_search_refresh_imports() {
-    let temp = tempdir();
-    let query = "windsurf-native-default-discovery-oracle";
-    install_default_windsurf_fixture(&temp, query);
-
-    let sources = json_output(ctx(&temp).args(["sources", "--format=json"]));
-    let windsurf = sources["sources"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .find(|source| source["provider"] == "windsurf")
-        .unwrap();
-    assert_eq!(windsurf["status"], "available");
-    assert_eq!(
-        windsurf["source_format"],
-        "windsurf_cascade_hook_transcript_jsonl_tree"
-    );
-    assert_eq!(windsurf["import_support"], "native");
-    assert_eq!(windsurf["native_import"], true);
-    assert_eq!(windsurf["importable"], true);
-    assert!(windsurf["path"]
-        .as_str()
-        .unwrap()
-        .ends_with(".windsurf/transcripts"));
-
-    let search = json_output(ctx(&temp).args([
-        "search",
-        query,
-        "--provider",
-        "windsurf",
-        "--refresh",
-        "wait",
-        "--format=json",
-    ]));
-    assert_eq!(search["freshness"]["mode"], "wait");
-    assert_eq!(search["freshness"]["status"], "completed");
-    assert_eq!(search["freshness"]["source_count"], 1);
-    assert!(
-        search["retrieval"]["indexed_documents"]
-            .as_u64()
-            .is_some_and(|count| count >= 1),
-        "{search:#}"
-    );
-    assert_search_provider_oracle(&search, "windsurf", query, 1, "message");
-
-    let second = json_output(ctx(&temp).args([
-        "import",
-        "--provider",
-        "windsurf",
-        "--format=json",
-        "--progress",
-        "none",
-    ]));
-    assert_authoritative_provider_publication(&second);
-    assert_eq!(
-        second["totals"]["current_rejected_records"], 0,
-        "{second:#}"
-    );
-}
-
 #[cfg(unix)]
 #[test]
 fn copilot_cli_import_skips_symlinked_session_files_checkout() {
@@ -577,12 +516,6 @@ fn native_provider_cli_flow_imports_supported_provider_paths() {
             "cursor",
             "cursor_agent_transcript_jsonl_tree",
             write_native_cursor_fixture,
-        ),
-        (
-            "windsurf",
-            "windsurf",
-            "windsurf_cascade_hook_transcript_jsonl_tree",
-            write_native_windsurf_fixture,
         ),
         (
             "copilot-cli",

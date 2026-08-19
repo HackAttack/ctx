@@ -38,6 +38,13 @@ class ProviderSupportMatrixTest(unittest.TestCase):
     def test_repository_matrix_passes_the_full_checker(self) -> None:
         self.assertEqual(matrix.main(), 0)
 
+    def test_repository_matrix_has_exact_non_vacuous_supported_count(self) -> None:
+        providers = self.providers()
+        self.assertEqual(len(providers), matrix.EXPECTED_SUPPORTED_PROVIDER_COUNT)
+        self.assertTrue(providers)
+        self.assertEqual({provider["status"] for provider in providers}, {"supported"})
+        self.assertNotIn("windsurf", {provider["id"] for provider in providers})
+
     def test_codex_copy_claim_stays_deferred(self) -> None:
         providers = copy.deepcopy(self.providers())
         codex = next(provider for provider in providers if provider["id"] == "codex")

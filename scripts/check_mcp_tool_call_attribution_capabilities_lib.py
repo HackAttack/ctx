@@ -68,12 +68,12 @@ PUBLIC_AUTHORITY_SOURCE_PATHS = (
 
 ALLOWED_STATUSES = {"exact", "not-qualified", "excluded"}
 EXACT_PROVIDERS = {"codex", "copilot_cli", "warp"}
-EXPECTED_PROVIDER_STATUS_COUNTS = {"exact": 3, "not-qualified": 39, "excluded": 0}
-EXPECTED_LANE_STATUS_COUNTS = {"exact": 3, "not-qualified": 46, "excluded": 1}
+EXPECTED_PROVIDER_STATUS_COUNTS = {"exact": 3, "not-qualified": 38, "excluded": 0}
+EXPECTED_LANE_STATUS_COUNTS = {"exact": 3, "not-qualified": 45, "excluded": 1}
 EXPECTED_COUNTS = {
-    "providers": 42,
-    "base_routes": 47,
-    "capability_lanes": 50,
+    "providers": 41,
+    "base_routes": 46,
+    "capability_lanes": 49,
     "lane_statuses": EXPECTED_LANE_STATUS_COUNTS,
     "provider_statuses": EXPECTED_PROVIDER_STATUS_COUNTS,
 }
@@ -112,7 +112,6 @@ EXPECTED_NOT_QUALIFIED_REASONS = {
     "gemini_cli": "lossy_composite",
     "tabnine": "lossy_composite",
     "cursor": "no_unique_terminal_link",
-    "windsurf": "route_mismatch",
     "zed": "lossy_composite",
     "factory_ai_droid": "lossy_composite",
     "qwen_code": "lossy_composite",
@@ -867,7 +866,7 @@ def validate_public_docs(
     normalized_main = " ".join(main.split())
     required = (
         "Codex `codex_session_jsonl_tree` / `codex-nativepath-jsonl-v0`",
-        "50 capability lanes: three `exact`, 46 `not-qualified`, and one `excluded`",
+        "49 capability lanes: three `exact`, 45 `not-qualified`, and one `excluded`",
         "`codex-nativepath-core-activity-v6-command-output-retrieval-exclusion`",
         "`warp-source-backed-logical-v7-neutral-activity-agent-scope`",
         "`copilot-cli-direct-native-jsonl-v8-optional-activity-admission`",
@@ -898,7 +897,7 @@ def validate_public_docs(
     for snippet in (
         CONFORMANCE_MANIFEST,
         CONFORMANCE_SUITES,
-        "three `supported`, 46 `not_qualified`, and one `excluded`",
+        "three `supported`, 45 `not_qualified`, and one `excluded`",
         "only unversioned generation 1 is supported",
         "`ambiguity_duplicate_linkage`, `canonical_terminal_outcomes`, `exact_boundary`, `exact_positive_pair`, `malformed_identity`, `max_plus_one`, `privacy_sinks`, `result_preservation`, and `stable_ids`",
     ):
@@ -966,8 +965,8 @@ def validate_contract(
         if provider_id in support_by_id:
             fail(f"duplicate support provider: {provider_id}")
         support_by_id[provider_id] = row
-    if len(support_by_id) != 42:
-        fail(f"support matrix must contain 42 providers, found {len(support_by_id)}")
+    if len(support_by_id) != 41:
+        fail(f"support matrix must contain 41 providers, found {len(support_by_id)}")
 
     rows, lane_statuses, provider_statuses = validate_routes(capability, support_by_id)
     exact_suites, exact_tests, exact_links = validate_exact_checks(

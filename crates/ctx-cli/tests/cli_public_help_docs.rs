@@ -383,7 +383,6 @@ fn provider_json_names_are_accepted_as_cli_filter_aliases() {
         ("open_claw", "openclaw"),
         ("nano_claw", "nanoclaw"),
         ("astr_bot", "astrbot"),
-        ("windsurf_cascade", "windsurf"),
         ("open_hands", "openhands"),
     ] {
         let search = json_output(ctx(&temp).args([

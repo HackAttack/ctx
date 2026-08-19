@@ -18,7 +18,6 @@ text_enum! {
         Gemini => "gemini",
         Tabnine => "tabnine",
         Cursor => "cursor",
-        Windsurf => "windsurf",
         Zed => "zed",
         CopilotCli => "copilot_cli",
         FactoryAiDroid => "factory_ai_droid",

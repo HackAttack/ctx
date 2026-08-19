@@ -93,7 +93,6 @@ pub(super) fn default_location_import_probe(
         }),
         CaptureProvider::Gemini | CaptureProvider::Tabnine => has_gemini_chat_jsonl(path, 10_000),
         CaptureProvider::Cursor => has_cursor_agent_transcript(probes, path),
-        CaptureProvider::Windsurf => has_jsonl_file_under_matching(path, 10_000, |_| true),
         CaptureProvider::Qoder => {
             has_jsonl_file_under_matching(path, 10_000, qoder_jsonl_path_is_supported)
         }

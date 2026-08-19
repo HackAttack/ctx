@@ -1225,51 +1225,6 @@
       "public_docs": "docs/provider-support.md"
     },
     {
-      "id": "windsurf",
-      "display_name": "Windsurf",
-      "status": "supported",
-      "capture_provider": "windsurf",
-      "implemented_paths": [
-        {
-          "kind": "native_import",
-          "source_format": "windsurf_cascade_hook_transcript_jsonl_tree",
-          "fidelity": "partial",
-          "notes": [
-            "Native importer for official Cascade hook transcript JSONL files under ~/.windsurf/transcripts; search refresh and ctx import --all include this source when transcript JSONL files are present.",
-            "The hook is opt-in and usually captures sessions after hook setup; docs warn transcript rows can include sensitive customer-owned data and may change shape.",
-            "Does not import the private ~/.codeium/windsurf/cascade cache or guessed VS Code state databases."
-          ]
-        }
-      ],
-      "history_locations": [
-        "Fixed: `~/.windsurf/transcripts/<trajectory-id>.jsonl`."
-      ],
-      "imports_existing_history": true,
-      "captures_new_runs_passively": false,
-      "child_sessions_supported": false,
-      "lineage_support": {
-        "session_relationship": "unknown",
-        "event_origin": "unknown"
-      },
-      "fidelity": {
-        "user_prompts": true,
-        "assistant_messages": true,
-        "tool_calls": true,
-        "tool_output": false,
-        "command_output": false,
-        "files_touched": true,
-        "artifacts": false,
-        "model_identity": false,
-        "costs": false,
-        "token_usage": false,
-        "parent_child_session_edges": false
-      },
-      "limitations": [
-        "No custom root is automatic. Hook copies/sinks, Devin, VS Code, cache, and workspace guesses require exact `--path`; unwritten sessions cannot be backfilled."
-      ],
-      "public_docs": "docs/provider-support.md"
-    },
-    {
       "id": "zed",
       "display_name": "Zed",
       "status": "supported",

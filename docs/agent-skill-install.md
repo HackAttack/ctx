@@ -193,7 +193,6 @@ ctx integrations install slash-commands --agent opencode
 ctx integrations install slash-commands --agent mimocode
 ctx integrations install slash-commands --agent gemini-cli
 ctx integrations install slash-commands --agent qwen-code
-ctx integrations install slash-commands --agent windsurf
 ```
 
 See `ctx docs show slash-command-integrations` for the full provider matrix.

@@ -224,7 +224,6 @@ fn every_capture_provider_emits_without_usage_suppression() {
         CaptureProvider::Gemini,
         CaptureProvider::Tabnine,
         CaptureProvider::Cursor,
-        CaptureProvider::Windsurf,
         CaptureProvider::Zed,
         CaptureProvider::CopilotCli,
         CaptureProvider::FactoryAiDroid,

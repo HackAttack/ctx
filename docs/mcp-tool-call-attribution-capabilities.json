@@ -6,7 +6,7 @@
   "conformance_authority": {
     "manifest": "crates/ctx-history-capture/tests/mcp-attribution-conformance.manifest.json",
     "suite_registry": "crates/ctx-history-capture/tests/mcp_attribution_suites.bzl",
-    "manifest_sha256": "435ed6b2a16536de40bf15a98e297e0802a06b32bb2150f2cd439a1129c6d4ea",
+    "manifest_sha256": "8a4e10bfa031764f296d076ba9a8cff4106f8c39d1c0c57976d9383383e01305",
     "suite_registry_sha256": "4ea7e8bf8d4e671fb6c0ebd82d19c99d14510c286f9615d9808af9aaf0257466",
     "manifest_schema_version": 7,
     "capability_revision": 8,
@@ -16,13 +16,13 @@
       "excluded": "excluded"
     },
     "expected_counts": {
-      "providers": 42,
-      "base_routes": 47,
-      "schema_generations": 46,
-      "capability_lanes": 50,
+      "providers": 41,
+      "base_routes": 46,
+      "schema_generations": 45,
+      "capability_lanes": 49,
       "status_rows": {
         "supported": 3,
-        "not_qualified": 46,
+        "not_qualified": 45,
         "excluded": 1
       }
     }
@@ -76,17 +76,17 @@
     "exact_requires_source_commits": false
   },
   "expected_counts": {
-    "providers": 42,
-    "base_routes": 47,
-    "capability_lanes": 50,
+    "providers": 41,
+    "base_routes": 46,
+    "capability_lanes": 49,
     "lane_statuses": {
       "exact": 3,
-      "not-qualified": 46,
+      "not-qualified": 45,
       "excluded": 1
     },
     "provider_statuses": {
       "exact": 3,
-      "not-qualified": 39,
+      "not-qualified": 38,
       "excluded": 0
     }
   },
@@ -330,13 +330,6 @@
       "status": "not-qualified", "reason": "no_unique_terminal_link",
       "detail": "The current imported transcript strips call IDs, results, and server identity; older observed rows are also ungated and lack a durable exact server link.",
       "evidence": ["https://downloads.cursor.com/lab/2026.07.23-e383d2b/linux/x64/agent-cli-package.tar.gz"]
-    },
-    {
-      "provider_id": "windsurf", "route": "native_import", "source_format": "windsurf_cascade_hook_transcript_jsonl_tree", "source_schema": "windsurf-direct-native-jsonl-v1",
-      "producer_bound": {"kind": "unversioned", "generation": 1, "unknown_generations": "not-qualified"},
-      "status": "not-qualified", "reason": "route_mismatch",
-      "detail": "Separate MCP fields exist on pre/post hook input, but the imported transcript hook is a different route and its execution_id identifies a turn rather than one call.",
-      "evidence": ["https://docs.devin.ai/desktop/cascade/hooks#post_cascade_response_with_transcript"]
     },
     {
       "provider_id": "zed", "route": "native_import", "source_format": "zed_threads_sqlite", "source_schema": "zed-dbthread-json-0.3.0",

@@ -350,7 +350,6 @@ fn direct_jsonl_event_text(
     provider: CaptureProvider,
     value: &Value,
     event_type: EventType,
-    entry_type: &str,
 ) -> String {
     if event_type == EventType::ToolCall {
         if let Some(text) = direct_jsonl_structured_tool_call_text(provider, value) {
@@ -362,7 +361,7 @@ fn direct_jsonl_event_text(
         CaptureProvider::GrokBuild => super::grok_build::grok_build_event_text(value),
         CaptureProvider::Qoder => super::qoder_parser::qoder_event_text(value, event_type),
         CaptureProvider::QwenCode => super::qwen_code::qwen_code_event_text(value),
-        _ => native_jsonl_event_text(provider, value, event_type, entry_type),
+        _ => native_jsonl_event_text(provider, value, event_type),
     }
 }
 
@@ -385,7 +384,6 @@ fn direct_jsonl_structured_tool_call_text(
                 .or_else(|| value.get("content"))
                 .cloned()
         }
-        CaptureProvider::Windsurf => value.get("code_action").cloned(),
         _ => None,
     }?;
     Some(selected.to_string())
@@ -472,7 +470,7 @@ fn direct_event(
     {
         String::new()
     } else {
-        direct_jsonl_event_text(provider, value, event_type, &entry_type)
+        direct_jsonl_event_text(provider, value, event_type)
     };
     let mut lexical_text = direct_jsonl_lexical_text(event_type, &text, result);
     if matches!(
@@ -617,7 +615,6 @@ fn direct_jsonl_native_event_identity(provider: CaptureProvider, value: &Value) 
         CaptureProvider::Tabnine => {
             super::tabnine::tabnine_event_identity(value).map(str::to_owned)
         }
-        CaptureProvider::Windsurf => generic_native_event_identity(value),
         _ => None,
     }
 }
@@ -643,8 +640,6 @@ fn session_from_header(
         CaptureProvider::Antigravity => {
             antigravity_session_id_from_path(path).unwrap_or_else(|| "unknown-session".to_owned())
         }
-        CaptureProvider::Windsurf => super::windsurf::windsurf_session_id_from_path(path)
-            .unwrap_or_else(|| "unknown-session".to_owned()),
         CaptureProvider::GrokBuild => super::grok_build::grok_build_header_session_id(header)
             .unwrap_or_else(|| "unknown-session".to_owned()),
         CaptureProvider::Qoder => super::qoder_parser::qoder_header_session_id(header)

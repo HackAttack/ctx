@@ -20,7 +20,6 @@ const GLOBAL_MCP_AGENTS: &[&str] = &[
     "cline",
     "github-copilot",
     "zed",
-    "windsurf",
 ];
 
 const PROJECT_MCP_AGENTS: &[&str] = &[
@@ -550,10 +549,6 @@ fn mcp_global_all_agents_json_covers_the_complete_supported_matrix() {
         fake_zed_global(&xdg_config),
         Some(CommandServer::ctx_stdio())
     );
-    assert_eq!(
-        fake_windsurf_global(temp.path()),
-        Some(CommandServer::ctx_stdio())
-    );
 }
 
 #[test]
@@ -745,7 +740,7 @@ fn zed_global_and_project_configs_use_context_servers_root() {
 }
 
 #[test]
-fn cline_copilot_and_windsurf_global_configs_use_native_json_shapes() {
+fn cline_and_copilot_global_configs_use_native_json_shapes() {
     let temp = tempdir();
     let copilot_home = temp.path().join("copilot-home");
 
@@ -772,19 +767,6 @@ fn cline_copilot_and_windsurf_global_configs_use_native_json_shapes() {
     ]));
     assert_eq!(
         fake_github_copilot_global(&copilot_home),
-        Some(CommandServer::ctx_stdio())
-    );
-
-    json_output(ctx(&temp).args([
-        "integrations",
-        "install",
-        "mcp",
-        "--agent",
-        "windsurf",
-        "--format=json",
-    ]));
-    assert_eq!(
-        fake_windsurf_global(temp.path()),
         Some(CommandServer::ctx_stdio())
     );
 }
@@ -1160,10 +1142,6 @@ fn fake_zed_global(xdg_config: &Path) -> Option<CommandServer> {
 
 fn fake_zed_project(project: &Path) -> Option<CommandServer> {
     json_context_server(&project.join(".zed").join("settings.json"))
-}
-
-fn fake_windsurf_global(home: &Path) -> Option<CommandServer> {
-    json_mcp_plain_server(&home.join(".codeium").join("mcp_config.json"))
 }
 
 fn fake_goose_global(xdg_config: &Path) -> Option<GooseExtension> {

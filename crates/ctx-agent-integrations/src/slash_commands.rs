@@ -29,18 +29,6 @@ Prefer default text output for agent reading; use `--format json` only for
 scripts or exact machine-readable fields.
 "#;
 
-const WINDSURF_WORKFLOW: &str = r#"# ctx
-
-Search coding-agent history or trace code to its original agent session with ctx.
-
-1. Treat any text after `/ctx` as the user request.
-2. Choose `ctx search "<query>"` for history or a `ctx blame` command for code provenance.
-3. Remember that ctx pro is a paid add-on; do not imply that the plugin enables it.
-4. Inspect relevant citations with `ctx show event <id> --window 5` or `ctx show session <id>`.
-5. Answer concisely and include ctx citations for claims based on local evidence.
-6. Use `--format json` only for scripts or exact machine-readable fields.
-"#;
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum SlashCommandAgent {
     Codex,
@@ -56,7 +44,6 @@ pub enum SlashCommandAgent {
     Pi,
     Goose,
     Continue,
-    Windsurf,
 }
 
 impl SlashCommandAgent {
@@ -74,7 +61,6 @@ impl SlashCommandAgent {
         Self::Pi,
         Self::Goose,
         Self::Continue,
-        Self::Windsurf,
     ];
 
     const WRITABLE: &'static [Self] = &[
@@ -82,7 +68,6 @@ impl SlashCommandAgent {
         Self::MiMoCode,
         Self::GeminiCli,
         Self::QwenCode,
-        Self::Windsurf,
     ];
 
     pub const fn id(self) -> &'static str {
@@ -100,7 +85,6 @@ impl SlashCommandAgent {
             Self::Pi => "pi",
             Self::Goose => "goose",
             Self::Continue => "continue",
-            Self::Windsurf => "windsurf",
         }
     }
 
@@ -119,7 +103,6 @@ impl SlashCommandAgent {
             Self::Pi => "Pi",
             Self::Goose => "Goose",
             Self::Continue => "Continue",
-            Self::Windsurf => "Windsurf",
         }
     }
 
@@ -133,7 +116,6 @@ impl SlashCommandAgent {
             }
             Self::GeminiCli => context.home.join(".gemini").exists(),
             Self::QwenCode => context.home.join(".qwen").exists(),
-            Self::Windsurf => context.home.join(".codeium").join("windsurf").exists(),
             Self::Codex
             | Self::GrokBuild
             | Self::ClaudeCode
@@ -192,19 +174,6 @@ impl SlashCommandAgent {
                 },
                 format!("{COMMAND_NAME}.md"),
                 qwen_command_body(),
-            ),
-            Self::Windsurf => file(
-                if project {
-                    context.cwd.join(".windsurf").join("workflows")
-                } else {
-                    context
-                        .home
-                        .join(".codeium")
-                        .join("windsurf")
-                        .join("global_workflows")
-                },
-                format!("{COMMAND_NAME}.md"),
-                WINDSURF_WORKFLOW.to_owned(),
             ),
             Self::Codex
             | Self::GrokBuild

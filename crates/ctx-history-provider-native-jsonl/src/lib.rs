@@ -14,8 +14,6 @@ use thiserror::Error;
 
 pub const ANTIGRAVITY_CLI_SOURCE_FORMAT: &str = "antigravity_cli_transcript_jsonl_tree";
 pub const TABNINE_CLI_SOURCE_FORMAT: &str = "tabnine_cli_chat_recording_jsonl";
-pub const WINDSURF_CASCADE_HOOK_TRANSCRIPT_SOURCE_FORMAT: &str =
-    "windsurf_cascade_hook_transcript_jsonl";
 pub const QODER_SOURCE_FORMAT: &str = "qoder_transcript_jsonl";
 pub const FACTORY_DROID_SOURCE_FORMAT: &str = "factory_ai_droid_sessions_jsonl";
 pub const COPILOT_CLI_SOURCE_FORMAT: &str = "copilot_cli_session_events_jsonl";

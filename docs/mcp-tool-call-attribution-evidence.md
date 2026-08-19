@@ -31,8 +31,8 @@ The machine authority is
 `crates/ctx-history-capture/tests/mcp-attribution-conformance.manifest.json`.
 Its executable suite registry is
 `crates/ctx-history-capture/tests/mcp_attribution_suites.bzl`. Manifest
-capability revision 8 freezes 42 providers, 47 base routes, 46 imported schema
-generations, and 50 capability lanes: three `supported`, 46 `not_qualified`,
+capability revision 8 freezes 41 providers, 46 base routes, 45 imported schema
+generations, and 49 capability lanes: three `supported`, 45 `not_qualified`,
 and one `excluded`. Every supported row requires
 `ambiguity_duplicate_linkage`, `canonical_terminal_outcomes`, `exact_boundary`,
 `exact_positive_pair`, `malformed_identity`, `max_plus_one`, `privacy_sinks`,

@@ -20,14 +20,18 @@ fn discovered_leaf() -> (
 ) {
     let temp = crate::test_support_paths::tempdir().unwrap();
     let ancestor = temp.path().join("authority");
-    let root = ancestor.join("transcripts");
-    let leaf = root.join("session.jsonl");
-    fs::create_dir_all(&root).unwrap();
-    fs::write(&leaf, b"{\"type\":\"message\"}\n").unwrap();
-    let adapter = super::super::windsurf_source_backed_adapter::<
+    let root = ancestor.join("session-state");
+    let leaf = root.join("copilot-cli-native/events.jsonl");
+    fs::create_dir_all(leaf.parent().unwrap()).unwrap();
+    fs::write(
+        &leaf,
+        b"{\"type\":\"session.start\",\"data\":{\"sessionId\":\"authority-swap\"}}\n",
+    )
+    .unwrap();
+    let adapter = super::super::copilot_source_backed_adapter::<
         crate::test_support::NativeJsonlTestRuntime,
     >();
-    assert_eq!(adapter.provider(), CaptureProvider::Windsurf);
+    assert_eq!(adapter.provider(), CaptureProvider::CopilotCli);
     let inventory = adapter.discover(&root).unwrap();
     assert_eq!(inventory.leaves().len(), 1);
     let retained = inventory.leaves()[0].clone();
@@ -39,8 +43,12 @@ fn shared_native_jsonl_rejects_root_swap_after_discovery() {
     let (_temp, _ancestor, root, retained) = discovered_leaf();
     let displaced = root.with_file_name("transcripts-displaced");
     fs::rename(&root, &displaced).unwrap();
-    fs::create_dir_all(&root).unwrap();
-    fs::write(root.join("session.jsonl"), b"{\"replacement\":true}\n").unwrap();
+    fs::create_dir_all(root.join("copilot-cli-native")).unwrap();
+    fs::write(
+        root.join("copilot-cli-native/events.jsonl"),
+        b"{\"replacement\":true}\n",
+    )
+    .unwrap();
 
     assert!(retained.open_verified().is_err());
 }
@@ -50,8 +58,12 @@ fn shared_native_jsonl_rejects_ancestor_swap_after_discovery() {
     let (temp, ancestor, root, retained) = discovered_leaf();
     let displaced = temp.path().join("authority-displaced");
     fs::rename(&ancestor, &displaced).unwrap();
-    fs::create_dir_all(&root).unwrap();
-    fs::write(root.join("session.jsonl"), b"{\"replacement\":true}\n").unwrap();
+    fs::create_dir_all(root.join("copilot-cli-native")).unwrap();
+    fs::write(
+        root.join("copilot-cli-native/events.jsonl"),
+        b"{\"replacement\":true}\n",
+    )
+    .unwrap();
 
     assert!(retained.open_verified().is_err());
 }
@@ -59,8 +71,12 @@ fn shared_native_jsonl_rejects_ancestor_swap_after_discovery() {
 #[test]
 fn shared_native_jsonl_rejects_leaf_swap_after_discovery() {
     let (_temp, _ancestor, root, retained) = discovered_leaf();
-    let leaf = root.join("session.jsonl");
-    fs::rename(&leaf, root.join("session-displaced.jsonl")).unwrap();
+    let leaf = root.join("copilot-cli-native/events.jsonl");
+    fs::rename(
+        &leaf,
+        root.join("copilot-cli-native/events-displaced.jsonl"),
+    )
+    .unwrap();
     fs::write(&leaf, b"{\"replacement\":true}\n").unwrap();
 
     assert!(retained.open_verified().is_err());
@@ -95,9 +111,13 @@ fn shared_native_jsonl_skips_unselected_link_and_special_file_siblings() {
 
     let temp = tempdir().unwrap();
     let outside = crate::test_support_paths::tempdir().unwrap();
-    let root = temp.path().join("transcripts");
-    fs::create_dir_all(&root).unwrap();
-    fs::write(root.join("session.jsonl"), b"{\"type\":\"message\"}\n").unwrap();
+    let root = temp.path().join("session-state");
+    fs::create_dir_all(root.join("copilot-cli-native")).unwrap();
+    fs::write(
+        root.join("copilot-cli-native/events.jsonl"),
+        b"{\"type\":\"session.start\",\"data\":{\"sessionId\":\"membership\"}}\n",
+    )
+    .unwrap();
     fs::write(
         outside.path().join("outside.jsonl"),
         b"{\"outside\":true}\n",
@@ -106,7 +126,7 @@ fn shared_native_jsonl_skips_unselected_link_and_special_file_siblings() {
     symlink(outside.path(), root.join("unselected-link")).unwrap();
     make_fifo(&root.join("unselected.fifo")).unwrap();
 
-    let adapter = super::super::windsurf_source_backed_adapter::<
+    let adapter = super::super::copilot_source_backed_adapter::<
         crate::test_support::NativeJsonlTestRuntime,
     >();
     let inventory = adapter.discover(&root).unwrap();
@@ -114,7 +134,7 @@ fn shared_native_jsonl_skips_unselected_link_and_special_file_siblings() {
     assert_eq!(inventory.leaves().len(), 1);
     assert_eq!(
         inventory.leaves()[0].source_path(),
-        root.join("session.jsonl")
+        root.join("copilot-cli-native/events.jsonl")
     );
 }
 
@@ -124,11 +144,13 @@ fn shared_native_jsonl_rejects_selected_link_and_special_file_transcripts() {
     use std::os::unix::fs::symlink;
 
     let outside = crate::test_support_paths::tempdir().unwrap();
-    let adapter = super::super::windsurf_source_backed_adapter::<
+    let adapter = super::super::copilot_source_backed_adapter::<
         crate::test_support::NativeJsonlTestRuntime,
     >();
 
     let linked = crate::test_support_paths::tempdir().unwrap();
+    let linked_session = linked.path().join("copilot-cli-native");
+    fs::create_dir_all(&linked_session).unwrap();
     fs::write(
         outside.path().join("outside.jsonl"),
         b"{\"outside\":true}\n",
@@ -136,7 +158,7 @@ fn shared_native_jsonl_rejects_selected_link_and_special_file_transcripts() {
     .unwrap();
     symlink(
         outside.path().join("outside.jsonl"),
-        linked.path().join("linked.jsonl"),
+        linked_session.join("events.jsonl"),
     )
     .unwrap();
     let error = adapter.discover(linked.path()).unwrap_err();
@@ -147,7 +169,9 @@ fn shared_native_jsonl_rejects_selected_link_and_special_file_transcripts() {
     ));
 
     let special = tempdir().unwrap();
-    make_fifo(&special.path().join("fifo.jsonl")).unwrap();
+    let special_session = special.path().join("copilot-cli-native");
+    fs::create_dir_all(&special_session).unwrap();
+    make_fifo(&special_session.join("events.jsonl")).unwrap();
     let error = adapter.discover(special.path()).unwrap_err();
     assert!(matches!(
         error,

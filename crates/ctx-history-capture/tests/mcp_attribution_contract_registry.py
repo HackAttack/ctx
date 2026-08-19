@@ -379,17 +379,6 @@ ROUTE_SCHEMA_CONTRACTS = (
         sha256="d3acdb294a7dbad229abca076f4270b48be2a225feb8f2a0ad79ead1e0f45326",
     ),
     RouteSchemaContract(
-        provider="windsurf",
-        route="native_import",
-        source_format="windsurf_cascade_hook_transcript_jsonl_tree",
-        format_schema=_structural(1),
-        producer_domain=_discrete(_unversioned(1)),
-        path="crates/ctx-history-capture/tests/contracts/mcp-attribution/windsurf/windsurf_cascade_hook_transcript_jsonl_tree/shape-contract.json",
-        allowed_subtree="crates/ctx-history-capture/tests/contracts/mcp-attribution/windsurf/windsurf_cascade_hook_transcript_jsonl_tree",
-        classification=ROUTE_CONTRACT_CLASSIFICATION,
-        sha256="44be3095787812a224ad320fe1dda479e7f0ae9669403fbf8edf40a5a0b5b15a",
-    ),
-    RouteSchemaContract(
         provider="zed",
         route="native_import",
         source_format="zed_threads_sqlite",

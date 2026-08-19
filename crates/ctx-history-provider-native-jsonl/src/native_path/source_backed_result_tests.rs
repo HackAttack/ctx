@@ -24,9 +24,6 @@ fn adapter(provider: CaptureProvider) -> DirectJsonlFamilyAdapter<NativeJsonlTes
         CaptureProvider::GrokBuild => {
             super::super::grok_build_source_backed_adapter::<NativeJsonlTestRuntime>()
         }
-        CaptureProvider::Windsurf => {
-            super::super::windsurf_source_backed_adapter::<NativeJsonlTestRuntime>()
-        }
         CaptureProvider::Qoder => {
             super::super::qoder_source_backed_adapter::<NativeJsonlTestRuntime>()
         }
@@ -128,18 +125,14 @@ fn native_subrecord_index(record: &CoreRecord) -> u64 {
 fn project_all(provider: CaptureProvider, values: &[Value]) -> (Vec<CoreRecord>, u64) {
     let adapter = adapter(provider);
     let session = session(provider);
-    let source_path = if provider == CaptureProvider::Windsurf {
-        format!("{}.jsonl", session.native_session_id)
-    } else {
-        "direct-jsonl-identity-contract.jsonl".to_owned()
-    };
+    let source_path = "direct-jsonl-identity-contract.jsonl";
     let (source, session_id) = adapter
         .session_identity(&session.native_session_id)
         .unwrap();
     let direct = DirectJsonlProjector::new(
         provider,
         adapter.source_format,
-        Path::new(&source_path),
+        Path::new(source_path),
         None,
         DateTime::<Utc>::UNIX_EPOCH,
         Some(session.clone()),
@@ -305,10 +298,6 @@ fn direct_provider_revision_matrix_matches_the_neutral_projection_and_identity_i
             CaptureProvider::Tabnine,
             "direct-native-jsonl-parser-v6-optional-activity-admission",
         ),
-        (
-            CaptureProvider::Windsurf,
-            "direct-native-jsonl-parser-v6-optional-activity-admission",
-        ),
     ];
     for (provider, parser_revision) in parser_cases {
         let adapter = adapter(provider);
@@ -435,35 +424,20 @@ fn copilot_no_native_id_fixture_keeps_exact_v2_fallback_event_ids() {
 }
 
 #[test]
-fn copilot_and_windsurf_replay_preserve_current_revision_ids_and_records() {
-    let cases = [
-        (
-            CaptureProvider::Windsurf,
-            json!({
-                "id": "windsurf-replay-event",
-                "type": "user_input",
-                "timestamp": "2026-08-03T12:34:56Z",
-                "user_input": {"user_response": "windsurf replay body"}
-            }),
-            "ac4f77cb-6658-8c1d-89fe-6d23fbf96fd0",
-            "6c78de65-0cee-8b0c-841f-56d0004e2af8",
-            "cb5a35bb-fb49-8701-8739-101eb01c524f",
-            "3f61ed135293b4d64d3682911a0e84457c1a5a8633fd9ff24a13ec41a0aa875b",
-        ),
-        (
-            CaptureProvider::CopilotCli,
-            json!({
-                "id": "copilot-replay-event",
-                "type": "user.message",
-                "timestamp": "2026-08-03T12:34:56Z",
-                "data": {"content": "copilot replay body"}
-            }),
-            "c1ebd99c-7338-859b-891d-1c7e04d9ae9d",
-            "5ff93a01-4aa3-82f8-8d9e-784490016567",
-            "8d4627ce-c12c-8d64-af2d-d85ac722121f",
-            "242c534cc04212dd8babe58be9810c1c91b3bced3be22056c3bc1ff66e3e9739",
-        ),
-    ];
+fn copilot_replay_preserves_current_revision_ids_and_records() {
+    let cases = [(
+        CaptureProvider::CopilotCli,
+        json!({
+            "id": "copilot-replay-event",
+            "type": "user.message",
+            "timestamp": "2026-08-03T12:34:56Z",
+            "data": {"content": "copilot replay body"}
+        }),
+        "c1ebd99c-7338-859b-891d-1c7e04d9ae9d",
+        "5ff93a01-4aa3-82f8-8d9e-784490016567",
+        "8d4627ce-c12c-8d64-af2d-d85ac722121f",
+        "242c534cc04212dd8babe58be9810c1c91b3bced3be22056c3bc1ff66e3e9739",
+    )];
 
     for (provider, value, event_id, session_id, source_id, record_leaf) in cases {
         let adapter = adapter(provider);
@@ -939,25 +913,19 @@ fn malformed_shapes_reject_and_ambiguous_descendants_abstain() {
 }
 
 #[test]
-fn antigravity_and_windsurf_do_not_invent_result_semantics() {
-    for provider in [CaptureProvider::Antigravity, CaptureProvider::Windsurf] {
-        assert_eq!(
-            super::super::super::result_content::native_jsonl_result_content_profile(provider),
-            None
-        );
-        let candidate = json!({
-            "type": "tool_result",
-            "result": {"content": "unsupported result candidate"}
-        });
-        let event_type = match provider {
-            CaptureProvider::Antigravity => {
-                super::super::super::normalization::native_jsonl_event_type(provider, &candidate)
-            }
-            CaptureProvider::Windsurf => super::super::windsurf_event_type(&candidate),
-            _ => unreachable!(),
-        };
-        assert_ne!(event_type, EventType::ToolOutput, "{provider:?}");
-    }
+fn antigravity_does_not_invent_result_semantics() {
+    let provider = CaptureProvider::Antigravity;
+    assert_eq!(
+        super::super::super::result_content::native_jsonl_result_content_profile(provider),
+        None
+    );
+    let candidate = json!({
+        "type": "tool_result",
+        "result": {"content": "unsupported result candidate"}
+    });
+    let event_type =
+        super::super::super::normalization::native_jsonl_event_type(provider, &candidate);
+    assert_ne!(event_type, EventType::ToolOutput);
 }
 
 #[test]

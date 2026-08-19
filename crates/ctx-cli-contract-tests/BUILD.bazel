@@ -35,6 +35,7 @@ filegroup(
         "tests/contracts/support/fixtures.rs",
         "tests/contracts/support/native_fixtures.rs",
         "tests/contracts/support/native_fixtures/appends.rs",
+        "tests/contracts/support/native_fixtures/default_installs.rs",
         "tests/contracts/support/native_fixtures/installs.rs",
         "tests/contracts/support/native_fixtures/json_tree.rs",
         "tests/contracts/support/native_fixtures/sqlite.rs",
@@ -133,6 +134,17 @@ ctx_cli_contract_test(
     name = "native_providers_tests",
     src = "tests/contracts/native_providers.rs",
     extra_srcs = [":native_providers_extra_srcs"],
+    test_support = [
+        "base",
+        "fixtures",
+    ],
+)
+
+ctx_cli_contract_test(
+    name = "provider_support_conformance_tests",
+    src = "tests/contracts/provider_support_conformance.rs",
+    extra_data = ["//:provider_support_matrix"],
+    extra_srcs = ["tests/contracts/support/native_providers/daemon.rs"],
     test_support = [
         "base",
         "fixtures",

@@ -106,7 +106,6 @@ const PROVIDER_EVIDENCE_COHORTS: &[(CaptureProvider, EvidenceCohort)] = &[
     (CaptureProvider::Gemini, EvidenceCohort::SharedNativeJsonl),
     (CaptureProvider::Tabnine, EvidenceCohort::SharedNativeJsonl),
     (CaptureProvider::Cursor, EvidenceCohort::SharedNativeJsonl),
-    (CaptureProvider::Windsurf, EvidenceCohort::SharedNativeJsonl),
     (
         CaptureProvider::Zed,
         EvidenceCohort::DedicatedSqliteMessages,
@@ -194,7 +193,7 @@ fn every_registered_provider_is_routed_to_one_evidence_cohort() {
     let registered = provider_source_specs();
     assert_eq!(
         registered.len(),
-        42,
+        41,
         "update the evidence matrix deliberately"
     );
     assert_eq!(PROVIDER_EVIDENCE_COHORTS.len(), registered.len());
