@@ -25,10 +25,20 @@ use sha2::{Digest as _, Sha256};
 
 mod failure;
 mod hosted_pair_install;
+mod progress_events;
 mod setup_options;
+mod setup_refresh;
 
 use failure::produce_response;
-use setup_options::{progress_mode_for_notice, setup_notice_lines, setup_progress_mode};
+use progress_events::{CapabilityEventSink, IgnoreEvents, ProtocolEventWriter};
+use setup_options::{
+    progress_mode_for_notice, setup_notice_lines, setup_progress_mode, SetupProgressMode,
+};
+use setup_refresh::core_setup_refresh;
+#[cfg(test)]
+use setup_refresh::{
+    should_propagate_setup_refresh_failure, should_wait_for_fresh_empty_publication,
+};
 
 const INVOCATION: &str = "--ctx-core-capability-v1";
 const HOSTED_PAIR_INSTALL_INVOCATION: &str = "--ctx-core-hosted-pair-install-v1";
@@ -37,10 +47,10 @@ const POST_EXIT_UNINSTALL_INVOCATION: &str = "--ctx-core-managed-pair-uninstall-
 const MAX_FRAME_BYTES: usize = 64 * 1024;
 const MAX_RESPONSE_BYTES: usize = 48 * 1024;
 #[cfg(test)]
-const API_INVENTORY: &str = r#"{"operations":{"CoreDoctor":{"request_keys":[],"response_keys":["facts"]},"CoreSetup":{"request_keys":["catalog_only","defer_fresh_empty_wait","no_daemon","notice_lines","progress","semantic","wait"],"response_keys":["facts","generation_id"]},"CoreStatus":{"request_keys":["usage"],"response_keys":["facts"]},"LocalUsageSummary":{"request_keys":[],"response_keys":["facts"]},"ManagedPairAbort":{"request_keys":["attempt_id"],"response_keys":["aborted"]},"ManagedPairBegin":{"request_keys":[],"response_keys":["attempt_id","candidate_root"]},"ManagedPairStage":{"request_keys":["attempt_id"],"response_keys":["attempt_id","release_name","rollback_generation","status"]},"ManagedPairStatus":{"request_keys":["attempt_id"],"response_keys":["status"]},"ManagedPairUninstall":{"request_keys":[],"response_keys":["attempt_id","cleanup_mode","status"]},"RefreshAndWait":{"request_keys":[],"response_keys":["facts","generation_id"]},"WakeRefresh":{"request_keys":[],"response_keys":["accepted"]}},"protocol":"ctx-core-capability","schema_version":1}"#;
+const API_INVENTORY: &str = r#"{"event_frames":{"Refresh":{"current_source_progress_keys":["logical_certified_bytes","logical_rows_scanned","snapshot_bytes_completed","snapshot_bytes_total","snapshot_pages_completed","snapshot_pages_total","stage"],"frame_keys":["event","operation","protocol_version","refresh","schema_version","sequence","type"],"refresh_keys":["completed_bytes","completed_records","completed_sources","current_source","current_source_progress","elapsed_millis","estimated_remaining_millis","logical_phase","maintenance_wake","phase","physical_attempt_id","physical_attempt_state","processed_bytes","processed_messages","processed_sessions","processed_tool_calls","progress_owner_attempt_state","progress_owner_request_id","providers","request_id","request_state","terminal_state","total_sources","total_sources_known","whole_run_stage"],"terminal_state_details_keys":["affected_routes","blocked_routes","class","physical_attempt_id","published_generation","retained_generation","retry_advice","retryable_routes"],"terminal_state_keys":["details","error_code","retryable"]}},"operations":{"CoreDoctor":{"request_keys":[],"response_keys":["facts"]},"CoreSetup":{"request_keys":["catalog_only","defer_fresh_empty_wait","no_daemon","notice_lines","progress","semantic","wait"],"request_values":{"progress":["auto","events","json","none","plain"]},"response_keys":["facts","generation_id"]},"CoreStatus":{"request_keys":["usage"],"response_keys":["facts"]},"LocalUsageSummary":{"request_keys":[],"response_keys":["facts"]},"ManagedPairAbort":{"request_keys":["attempt_id"],"response_keys":["aborted"]},"ManagedPairBegin":{"request_keys":[],"response_keys":["attempt_id","candidate_root"]},"ManagedPairStage":{"request_keys":["attempt_id"],"response_keys":["attempt_id","release_name","rollback_generation","status"]},"ManagedPairStatus":{"request_keys":["attempt_id"],"response_keys":["status"]},"ManagedPairUninstall":{"request_keys":[],"response_keys":["attempt_id","cleanup_mode","status"]},"RefreshAndWait":{"optional_request_keys":["progress"],"request_keys":[],"request_values":{"progress":["events"]},"response_keys":["facts","generation_id"]},"WakeRefresh":{"request_keys":[],"response_keys":["accepted"]}},"protocol":"ctx-core-capability","schema_version":1,"terminal_failure":{"details_keys":["affected_routes","blocked_routes","class","physical_attempt_id","retained_generation","retry_advice","retryable_routes"],"response_keys":["details","error_code","ok","operation","protocol_version","retryable","schema_version"]}}"#;
 #[cfg(test)]
 pub(crate) const API_FINGERPRINT: &str =
-    "eed67ebb32371c264e6dae66f5499f8bb8baf6c71f5c39eb801fadd25fba9b07";
+    "d03afbac7c95df2df850fcb6b81f49c4051265d70c70a6d7519b18845b9909f2";
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum Operation {
@@ -139,8 +149,20 @@ fn capability_exit_code(result: Result<()>) -> ExitCode {
 }
 
 fn run() -> Result<()> {
-    let (bytes, terminal_error) = produce_response(read_frame()?, execute)?;
-    write_response_frame(std::io::stdout().lock(), &bytes)?;
+    run_with_protocol_io(std::io::stdin().lock(), std::io::stdout().lock(), execute)
+}
+
+fn run_with_protocol_io(
+    reader: impl std::io::Read,
+    mut writer: impl std::io::Write,
+    execute_request: impl FnOnce(Request, &mut dyn CapabilityEventSink) -> Result<Value>,
+) -> Result<()> {
+    let input = read_frame_from(reader)?;
+    let (bytes, terminal_error) = produce_response(input, |request| {
+        let mut events = ProtocolEventWriter::new(request.operation, &mut writer);
+        execute_request(request, &mut events)
+    })?;
+    write_response_frame(&mut writer, &bytes)?;
     if let Some(error) = terminal_error {
         return Err(error);
     }
@@ -153,12 +175,7 @@ fn run_with_io(
     writer: impl std::io::Write,
     execute_request: impl FnOnce(Request) -> Result<Value>,
 ) -> Result<()> {
-    let (bytes, terminal_error) = produce_response(read_frame_from(reader)?, execute_request)?;
-    write_response_frame(writer, &bytes)?;
-    if let Some(error) = terminal_error {
-        return Err(error);
-    }
-    Ok(())
+    run_with_protocol_io(reader, writer, |request, _events| execute_request(request))
 }
 
 fn write_response_frame(mut writer: impl std::io::Write, bytes: &[u8]) -> Result<()> {
@@ -177,6 +194,7 @@ struct Request {
 enum Options {
     Setup(CoreSetupOptions),
     Status { usage: Option<UsageAction> },
+    Refresh { events: bool },
     PairAttempt { attempt_id: String },
     Empty,
 }
@@ -186,7 +204,7 @@ struct CoreSetupOptions {
     defer_fresh_empty_wait: bool,
     no_daemon: bool,
     notice_lines: Vec<String>,
-    progress: crate::progress::ProgressArg,
+    progress: SetupProgressMode,
     semantic: bool,
     wait: bool,
 }
@@ -252,7 +270,7 @@ fn parse_frame(bytes: Vec<u8>) -> Result<Request> {
     })
 }
 
-fn execute(request: Request) -> Result<Value> {
+fn execute(request: Request, events: &mut dyn CapabilityEventSink) -> Result<Value> {
     if !matches!(
         request.operation,
         Operation::LocalUsageSummary
@@ -266,7 +284,7 @@ fn execute(request: Request) -> Result<Value> {
     }
     let facts = match (request.operation, request.options) {
         (Operation::CoreSetup, Options::Setup(options)) => {
-            core_setup_facts(&request.data_root, options)?
+            core_setup_facts(&request.data_root, options, events)?
         }
         (Operation::CoreStatus, Options::Status { usage }) => {
             core_status_facts(&request.data_root, usage)?
@@ -277,7 +295,12 @@ fn execute(request: Request) -> Result<Value> {
         (Operation::LocalUsageSummary, Options::Empty) => {
             local_usage_summary_facts(&request.data_root)?
         }
-        (Operation::RefreshAndWait, Options::Empty) => refresh_and_facts(&request.data_root)?,
+        (Operation::RefreshAndWait, Options::Refresh { events: true }) => {
+            refresh_and_facts(&request.data_root, events)?
+        }
+        (Operation::RefreshAndWait, Options::Refresh { events: false }) => {
+            refresh_and_facts(&request.data_root, &mut IgnoreEvents)?
+        }
         (Operation::WakeRefresh, Options::Empty) => {
             if let Ok(config) = crate::config::AppConfig::load(&request.data_root) {
                 crate::semantic::maybe_autostart_daemon(
@@ -388,7 +411,11 @@ fn core_status_facts(data_root: &Path, usage: Option<UsageAction>) -> Result<Val
     }))
 }
 
-fn core_setup_facts(data_root: &Path, options: CoreSetupOptions) -> Result<Value> {
+fn core_setup_facts(
+    data_root: &Path,
+    options: CoreSetupOptions,
+    events: &mut dyn CapabilityEventSink,
+) -> Result<Value> {
     let CoreSetupOptions {
         catalog_only,
         defer_fresh_empty_wait,
@@ -429,6 +456,7 @@ fn core_setup_facts(data_root: &Path, options: CoreSetupOptions) -> Result<Value
             defer_fresh_empty_wait,
             &notice_lines,
             progress_mode,
+            events,
         )?
     } else {
         (
@@ -454,142 +482,6 @@ fn core_setup_facts(data_root: &Path, options: CoreSetupOptions) -> Result<Value
     }))
 }
 
-fn core_setup_refresh(
-    data_root: &Path,
-    wait: bool,
-    defer_fresh_empty_wait: bool,
-    notice_lines: &[String],
-    progress_mode: crate::progress::ProgressArg,
-) -> Result<(Option<String>, Value)> {
-    let mut effective_wait = wait;
-    let mut ui = crate::ui::Ui::stdio(ctx_terminal::ui::ColorMode::Auto);
-    let progress_mode = progress_mode_for_notice(
-        progress_mode,
-        ui.stderr_context().content_width(),
-        notice_lines,
-    );
-    let mut reporter =
-        crate::progress::ProgressReporter::new(&mut ui, progress_mode.into(), false, "setup", 0);
-    if !notice_lines.is_empty() {
-        let lines = notice_lines.iter().map(String::as_str).collect::<Vec<_>>();
-        reporter.notice("companion", &lines)?;
-    }
-    let defer_terminal = reporter.is_enabled();
-    let mut terminal_progress = None;
-    let result = {
-        let mut progress = |status: &crate::semantic::RefreshStatus| {
-            if defer_terminal && status.kind()?.request_state().is_terminal() {
-                terminal_progress = Some(status.schema_v1_fields().clone());
-                Ok(())
-            } else {
-                reporter.source_refresh(status).map_err(anyhow::Error::new)
-            }
-        };
-        let mode = if wait {
-            crate::semantic::SourceBackedRefreshMode::Wait
-        } else {
-            crate::semantic::SourceBackedRefreshMode::Background
-        };
-        let mut result = crate::semantic::coordinate_setup_source_backed_refresh_with_progress(
-            data_root,
-            mode,
-            &mut progress,
-        );
-        if result.as_ref().is_err_and(|error| {
-            !defer_fresh_empty_wait && should_wait_for_fresh_empty_publication(wait, error)
-        }) {
-            effective_wait = true;
-            result = crate::semantic::coordinate_setup_source_backed_refresh_with_progress(
-                data_root,
-                crate::semantic::SourceBackedRefreshMode::Wait,
-                &mut progress,
-            );
-        }
-        result
-    };
-    match result {
-        Ok(observation) => {
-            if let Some(terminal) = terminal_progress.take() {
-                let terminal = crate::semantic::RefreshStatus::parse_schema_v1(terminal)?;
-                reporter.source_refresh_with_published_index(
-                    &terminal,
-                    observation.pin.verified_index(),
-                )?;
-            }
-            let generation_id = observation.pin.generation_id().to_owned();
-            let receipt = observation
-                .receipt
-                .as_ref()
-                .map(|receipt| receipt.to_json());
-            Ok((
-                Some(generation_id.clone()),
-                json!({
-                    "daemon_available": observation.daemon_available,
-                    "mode": if effective_wait { "wait" } else { "background" },
-                    "published_generation": generation_id,
-                    "reason": Value::Null,
-                    "receipt": receipt,
-                    "request_id": observation.request_id,
-                    "source_count": observation.source_count,
-                    "status": observation.status,
-                }),
-            ))
-        }
-        Err(error) => {
-            if let Some(terminal) = terminal_progress.take() {
-                let terminal = crate::semantic::RefreshStatus::parse_schema_v1(terminal)?;
-                reporter
-                    .source_refresh(&terminal)
-                    .map_err(anyhow::Error::new)?;
-            }
-            // A caller that explicitly waited asked for a usable generation, not
-            // merely admission. Keep background admission fail-soft, but never
-            // turn a failed waited refresh into a successful setup response.
-            if should_propagate_setup_refresh_failure(effective_wait, &error) {
-                return Err(error);
-            }
-            let pending = (!effective_wait)
-                .then(|| {
-                    error.downcast_ref::<crate::semantic::SourceBackedRefreshPendingPublication>()
-                })
-                .flatten();
-            Ok((
-                None,
-                json!({
-                    "daemon_available": true,
-                    "last_error": format!("{error:#}"),
-                    "mode": if effective_wait { "wait" } else { "background" },
-                    "reason": if pending.is_some() {
-                        "refresh_queued_without_published_generation"
-                    } else {
-                        "refresh_failed"
-                    },
-                    "request_id": pending.map(crate::semantic::SourceBackedRefreshPendingPublication::request_id),
-                    "request_state": pending.map(crate::semantic::SourceBackedRefreshPendingPublication::request_state),
-                    "source_count": pending.map(crate::semantic::SourceBackedRefreshPendingPublication::source_count),
-                    "status": if pending.is_some() { "pending" } else { "unavailable" },
-                }),
-            ))
-        }
-    }
-}
-
-fn should_propagate_setup_refresh_failure(effective_wait: bool, error: &anyhow::Error) -> bool {
-    effective_wait
-        || error.chain().any(|cause| {
-            cause
-                .downcast_ref::<crate::progress::ProgressWriterError>()
-                .is_some()
-        })
-}
-
-fn should_wait_for_fresh_empty_publication(wait: bool, error: &anyhow::Error) -> bool {
-    !wait
-        && error
-            .downcast_ref::<crate::semantic::SourceBackedRefreshPendingPublication>()
-            .is_some_and(|pending| pending.source_count() == 0)
-}
-
 fn setup_generation_id(published: Option<String>, status: &Value) -> Option<String> {
     published.or_else(|| {
         status["lexical"]["generation_id"]
@@ -598,13 +490,35 @@ fn setup_generation_id(published: Option<String>, status: &Value) -> Option<Stri
     })
 }
 
-fn refresh_and_facts(data_root: &Path) -> Result<Value> {
-    let mut progress = |_status: &crate::semantic::RefreshStatus| Ok(());
-    let observation = crate::semantic::coordinate_source_backed_refresh_with_progress(
+fn refresh_and_facts(data_root: &Path, events: &mut dyn CapabilityEventSink) -> Result<Value> {
+    let mut terminal_progress = None;
+    let mut progress = |status: &crate::semantic::RefreshStatus| {
+        if status.kind()?.request_state().is_terminal() {
+            terminal_progress = Some(status.schema_v1_fields().clone());
+            Ok(())
+        } else {
+            events.refresh(status)
+        }
+    };
+    let result = crate::semantic::coordinate_source_backed_refresh_with_progress(
         data_root,
         crate::semantic::SourceBackedRefreshMode::Wait,
         &mut progress,
-    )?;
+    );
+    let observation = match result {
+        Ok(observation) => observation,
+        Err(error) => {
+            if let Some(terminal) = terminal_progress.take() {
+                let terminal = crate::semantic::RefreshStatus::parse_schema_v1(terminal)?;
+                events.refresh(&terminal)?;
+            }
+            return Err(error);
+        }
+    };
+    if let Some(terminal) = terminal_progress.take() {
+        let terminal = crate::semantic::RefreshStatus::parse_schema_v1(terminal)?;
+        events.refresh(&terminal)?;
+    }
     let generation_id = observation.pin.generation_id().to_owned();
     let status = status_facts(data_root)?;
     bounded_value(json!({"generation_id": generation_id, "status": status}))
@@ -614,6 +528,15 @@ fn parse_options(operation: Operation, value: &Value) -> Result<Options> {
     let object = value
         .as_object()
         .ok_or_else(|| anyhow!("options are not an object"))?;
+    if operation == Operation::RefreshAndWait {
+        return match object.len() {
+            0 => Ok(Options::Refresh { events: false }),
+            1 if object.get("progress").and_then(Value::as_str) == Some("events") => {
+                Ok(Options::Refresh { events: true })
+            }
+            _ => Err(anyhow!("refresh progress option is invalid")),
+        };
+    }
     let expected: &[&str] = match operation {
         Operation::CoreSetup => &[
             "catalog_only",
@@ -627,13 +550,13 @@ fn parse_options(operation: Operation, value: &Value) -> Result<Options> {
         Operation::CoreStatus => &["usage"],
         Operation::CoreDoctor
         | Operation::LocalUsageSummary
-        | Operation::RefreshAndWait
         | Operation::WakeRefresh
         | Operation::ManagedPairBegin
         | Operation::ManagedPairUninstall => &[],
         Operation::ManagedPairStage
         | Operation::ManagedPairAbort
         | Operation::ManagedPairStatus => &["attempt_id"],
+        Operation::RefreshAndWait => unreachable!("refresh options returned above"),
     };
     exact_keys(object.keys().map(String::as_str), expected.iter().copied())?;
     match operation {
@@ -838,10 +761,6 @@ fn normalized_absolute_root(value: &str) -> Result<PathBuf> {
         return Err(anyhow!("data root must already be normalized"));
     }
     Ok(path)
-}
-
-fn read_frame() -> Result<Vec<u8>> {
-    read_frame_from(std::io::stdin().lock())
 }
 
 fn read_frame_from(reader: impl std::io::Read) -> Result<Vec<u8>> {
