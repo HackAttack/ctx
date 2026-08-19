@@ -321,6 +321,30 @@ fn presentation_eta_honors_usefulness_floor_and_terminal_state() {
 }
 
 #[test]
+fn setup_terminal_reconciles_empty_refresh_counters_with_committed_history() {
+    let context = RenderContext::for_test(TestContext::tty(StreamKind::Stderr, 80));
+    let mut terminal = terminal_status(
+        RefreshRequestState::Published,
+        "completed",
+        "completed",
+        false,
+    );
+    terminal.set_presentation_agent_histories(Some(vec!["Codex".to_owned()]));
+    terminal.set_terminal_history_totals(2, 5, 1, 2_346);
+    terminal.use_setup_live_presentation();
+
+    let rendered = refresh_progress(&context, &terminal).render_plain();
+    assert!(rendered.contains("History refresh complete"), "{rendered}");
+    assert!(rendered.contains("Sessions             2"), "{rendered}");
+    assert!(rendered.contains("Messages             5"), "{rendered}");
+    assert!(rendered.contains("Tool calls           1"), "{rendered}");
+    assert!(
+        rendered.contains("Data scanned         2.3 KiB"),
+        "{rendered}"
+    );
+}
+
+#[test]
 fn indeterminate_bar_moves_one_cell_per_tick_and_reverses_at_edges() {
     let context = RenderContext::for_test(TestContext::tty(StreamKind::Stderr, 80));
     assert_eq!(indeterminate_position(&context, 0), 0);

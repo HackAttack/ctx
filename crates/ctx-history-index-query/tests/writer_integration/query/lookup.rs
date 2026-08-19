@@ -18,6 +18,8 @@ fn pinned_query_api_returns_typed_records_in_deterministic_order() {
 
     let index = VerifiedIndex::open(temp.path()).unwrap();
     assert_eq!(index.session_count().unwrap(), 1);
+    assert_eq!(index.event_type_count("message").unwrap(), 2);
+    assert_eq!(index.event_type_count("tool_call").unwrap(), 0);
     let candidates = index
         .search_event_candidates("atomic:generation", 10)
         .unwrap();
@@ -135,6 +137,7 @@ fn session_count_excludes_sessions_removed_by_source_replacement() {
 
     let index = VerifiedIndex::open(temp.path()).unwrap();
     assert_eq!(index.session_count().unwrap(), 1);
+    assert_eq!(index.event_type_count("message").unwrap(), 1);
 }
 
 #[test]

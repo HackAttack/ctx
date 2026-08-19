@@ -456,31 +456,48 @@ fn core_setup_refresh(
         let lines = notice_lines.iter().map(String::as_str).collect::<Vec<_>>();
         reporter.notice("companion", &lines)?;
     }
-    let mut progress = |status: &crate::semantic::RefreshStatus| {
-        reporter.source_refresh(status).map_err(anyhow::Error::new)
-    };
-    let mode = if wait {
-        crate::semantic::SourceBackedRefreshMode::Wait
-    } else {
-        crate::semantic::SourceBackedRefreshMode::Background
-    };
-    let mut result = crate::semantic::coordinate_setup_source_backed_refresh_with_progress(
-        data_root,
-        mode,
-        &mut progress,
-    );
-    if result.as_ref().is_err_and(|error| {
-        !defer_fresh_empty_wait && should_wait_for_fresh_empty_publication(wait, error)
-    }) {
-        effective_wait = true;
-        result = crate::semantic::coordinate_setup_source_backed_refresh_with_progress(
+    let defer_terminal = reporter.is_enabled();
+    let mut terminal_progress = None;
+    let result = {
+        let mut progress = |status: &crate::semantic::RefreshStatus| {
+            if defer_terminal && status.kind()?.request_state().is_terminal() {
+                terminal_progress = Some(status.schema_v1_fields().clone());
+                Ok(())
+            } else {
+                reporter.source_refresh(status).map_err(anyhow::Error::new)
+            }
+        };
+        let mode = if wait {
+            crate::semantic::SourceBackedRefreshMode::Wait
+        } else {
+            crate::semantic::SourceBackedRefreshMode::Background
+        };
+        let mut result = crate::semantic::coordinate_setup_source_backed_refresh_with_progress(
             data_root,
-            crate::semantic::SourceBackedRefreshMode::Wait,
+            mode,
             &mut progress,
         );
-    }
+        if result.as_ref().is_err_and(|error| {
+            !defer_fresh_empty_wait && should_wait_for_fresh_empty_publication(wait, error)
+        }) {
+            effective_wait = true;
+            result = crate::semantic::coordinate_setup_source_backed_refresh_with_progress(
+                data_root,
+                crate::semantic::SourceBackedRefreshMode::Wait,
+                &mut progress,
+            );
+        }
+        result
+    };
     match result {
         Ok(observation) => {
+            if let Some(terminal) = terminal_progress.take() {
+                let terminal = crate::semantic::RefreshStatus::parse_schema_v1(terminal)?;
+                reporter.source_refresh_with_published_index(
+                    &terminal,
+                    observation.pin.verified_index(),
+                )?;
+            }
             let generation_id = observation.pin.generation_id().to_owned();
             let receipt = observation
                 .receipt
@@ -501,6 +518,12 @@ fn core_setup_refresh(
             ))
         }
         Err(error) => {
+            if let Some(terminal) = terminal_progress.take() {
+                let terminal = crate::semantic::RefreshStatus::parse_schema_v1(terminal)?;
+                reporter
+                    .source_refresh(&terminal)
+                    .map_err(anyhow::Error::new)?;
+            }
             // A caller that explicitly waited asked for a usable generation, not
             // merely admission. Keep background admission fail-soft, but never
             // turn a failed waited refresh into a successful setup response.

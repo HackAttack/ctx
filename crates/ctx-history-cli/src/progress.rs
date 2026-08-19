@@ -84,11 +84,30 @@ impl<'a> ProgressReporter<'a> {
         self.0.notice(phase, lines)
     }
 
+    pub fn is_enabled(&self) -> bool {
+        self.0.is_enabled()
+    }
+
     pub fn source_refresh(&mut self, status: &RefreshStatus) -> Result<(), ProgressWriterError> {
         let snapshot = presentation_snapshot(status).map_err(|error| {
             ProgressWriterError::from(std::io::Error::new(std::io::ErrorKind::InvalidData, error))
         })?;
         self.0.source_refresh(snapshot)
+    }
+
+    pub fn source_refresh_with_published_index(
+        &mut self,
+        status: &RefreshStatus,
+        index: &ctx_history_index::VerifiedIndex,
+    ) -> anyhow::Result<()> {
+        let mut snapshot = presentation_snapshot(status)?;
+        snapshot.set_terminal_history_totals(
+            index.session_count()?,
+            index.event_type_count("message")?,
+            index.event_type_count("tool_call")?,
+            index.manifest().certified_source_bytes,
+        );
+        self.0.source_refresh(snapshot).map_err(anyhow::Error::new)
     }
 }
 

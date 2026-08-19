@@ -55,6 +55,17 @@ impl VerifiedIndex {
         Ok(count)
     }
 
+    /// Counts live records of one exact event type without reading stored
+    /// event bodies.
+    pub fn event_type_count(&self, event_type: &str) -> Result<u64> {
+        let event_type_field = fields_from_schema(self.searcher.schema())?.event_type;
+        let query = TermQuery::new(
+            Term::from_field_text(event_type_field, event_type),
+            IndexRecordOption::Basic,
+        );
+        u64::try_from(self.searcher.search(&query, &Count)?).map_err(|_| IndexError::CountOverflow)
+    }
+
     fn body_query_terms(&self, natural_texts: &[&str], fields: Fields) -> Result<Vec<Term>> {
         let mut analyzer = self
             .searcher

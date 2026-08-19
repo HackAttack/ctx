@@ -114,6 +114,23 @@ impl RefreshProgressSnapshot {
         self.presentation = RefreshProgressPresentation::SetupLive;
     }
 
+    /// Reconciles a successful setup's terminal presentation with the
+    /// committed index. Live refresh counters describe in-flight work and may
+    /// legitimately be empty when a fast or coalesced refresh publishes.
+    pub fn set_terminal_history_totals(
+        &mut self,
+        sessions: u64,
+        messages: u64,
+        tool_calls: u64,
+        source_bytes: u64,
+    ) {
+        debug_assert!(self.is_terminal());
+        self.progress.processed_sessions = sessions;
+        self.progress.processed_messages = messages;
+        self.progress.processed_tool_calls = tool_calls;
+        self.progress.processed_bytes = source_bytes;
+    }
+
     pub fn is_terminal(&self) -> bool {
         self.kind.request_state().is_terminal()
     }
