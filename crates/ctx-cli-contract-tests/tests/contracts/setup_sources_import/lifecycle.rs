@@ -100,6 +100,7 @@ fn fake_operational_systemd_user_manager(
     temp: &TempDir,
     binary: &std::path::Path,
     managed_root: &std::path::Path,
+    clean_exit_before_manager_restart: bool,
 ) -> (std::path::PathBuf, FakeSystemdDaemon) {
     use std::os::unix::fs::PermissionsExt as _;
 
@@ -110,12 +111,15 @@ fn fake_operational_systemd_user_manager(
     let enabled_file = temp.path().join("fake-systemd-enabled");
     let stdout_file = temp.path().join("fake-systemd-daemon.stdout");
     let stderr_file = temp.path().join("fake-systemd-daemon.stderr");
+    let unit_file = temp.path().join(".config/systemd/user/ctx.service");
     fs::write(
         &systemctl,
         format!(
             r#"#!/bin/sh
 pid_file='{pid_file}'
 enabled_file='{enabled_file}'
+unit_file='{unit_file}'
+clean_exit_before_manager_restart='{clean_exit_before_manager_restart}'
 case "$*" in
   "--user show --property=Version --value")
     printf '255\n'
@@ -130,6 +134,17 @@ case "$*" in
     ;;
   "--user start ctx.service")
     if [ -s "$pid_file" ] && kill -0 "$(sed -n '1p' "$pid_file")" 2>/dev/null; then
+      exit 0
+    fi
+    if [ "$clean_exit_before_manager_restart" = 1 ]; then
+      rm -f "$pid_file"
+      if grep -Fxq 'Restart=always' "$unit_file"; then
+        (
+          sleep 0.1
+          '{binary}' --data-root '{managed_root}' daemon run --format=json >'{stdout_file}' 2>'{stderr_file}' &
+          printf '%s\n' "$!" > "$pid_file"
+        ) &
+      fi
       exit 0
     fi
     '{binary}' --data-root '{managed_root}' daemon run --format=json >'{stdout_file}' 2>'{stderr_file}' &
@@ -162,6 +177,9 @@ exit 2
 "#,
             pid_file = pid_file.display(),
             enabled_file = enabled_file.display(),
+            unit_file = unit_file.display(),
+            clean_exit_before_manager_restart =
+                if clean_exit_before_manager_restart { 1 } else { 0 },
             binary = binary.display(),
             managed_root = managed_root.display(),
             stdout_file = stdout_file.display(),

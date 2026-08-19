@@ -325,13 +325,13 @@ fn managed_supervisor_input_excludes_pro_channel_and_freezes_manager_environment
 
 #[cfg(target_os = "linux")]
 #[test]
-fn systemd_unit_is_persistent_and_restart_on_failure() {
+fn systemd_unit_is_persistent_and_restarts_after_clean_or_failed_exit() {
     let unit = linux_systemd_unit(
         Path::new("/home/user/.local/bin/ctx"),
         Path::new("/home/user/.local/share/ctx"),
     )
     .unwrap();
-    assert!(unit.contains("Restart=on-failure"));
+    assert!(unit.contains("Restart=always"));
     assert!(unit.contains("WantedBy=default.target"));
     assert!(unit.contains("ExecStart=/usr/bin/env -i "));
     assert!(!unit.contains("CTX_RELEASE_"));

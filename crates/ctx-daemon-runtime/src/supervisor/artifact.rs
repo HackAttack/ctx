@@ -111,7 +111,7 @@ pub fn linux_systemd_unit(spec: &SupervisorSpec) -> Result<String> {
             .collect::<Result<Vec<_>>>()?
             .join(" ");
     Ok(format!(
-        "[Unit]\nDescription={}\n\n[Service]\nType=simple\nExecStart=/usr/bin/env -i {} {}{}\nRestart=on-failure\nRestartSec=2\nStandardOutput=null\nStandardError=journal\n\n[Install]\nWantedBy=default.target\n",
+        "[Unit]\nDescription={}\n\n[Service]\nType=simple\nExecStart=/usr/bin/env -i {} {}{}\nRestart=always\nRestartSec=2\nStandardOutput=null\nStandardError=journal\n\n[Install]\nWantedBy=default.target\n",
         spec.description(),
         environment,
         systemd_quote_text(executable),

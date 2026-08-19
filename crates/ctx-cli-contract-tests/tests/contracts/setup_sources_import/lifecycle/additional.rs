@@ -22,7 +22,7 @@ fn operational_systemd_installer_style_setup_verifies_an_empty_noop_core() {
     install_managed_test_marker(&binary);
     let managed_root = temp.path().join(".ctx");
     let (manager_bin, _daemon_guard) =
-        fake_operational_systemd_user_manager(&temp, &binary, &managed_root);
+        fake_operational_systemd_user_manager(&temp, &binary, &managed_root, false);
     let path = std::env::var_os("PATH")
         .map(|path| {
             let mut paths = vec![manager_bin.clone()];
@@ -89,6 +89,51 @@ fn operational_systemd_installer_style_setup_verifies_an_empty_noop_core() {
         .env("PATH", &path)
         .env_remove("CTX_DAEMON_AUTOSTART_OFF");
     disable.args(["daemon", "disable"]).assert().success();
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn hosted_setup_recovers_when_the_new_systemd_service_first_exits_cleanly() {
+    let temp = tempdir();
+    let binary = copied_ctx_binary(&temp);
+    install_managed_test_marker(&binary);
+    let managed_root = temp.path().join(".ctx");
+    let (manager_bin, _daemon_guard) =
+        fake_operational_systemd_user_manager(&temp, &binary, &managed_root, true);
+    let path = std::env::var_os("PATH")
+        .map(|path| {
+            let mut paths = vec![manager_bin.clone()];
+            paths.extend(std::env::split_paths(&path));
+            std::env::join_paths(paths).unwrap()
+        })
+        .unwrap_or_else(|| manager_bin.as_os_str().to_os_string());
+
+    let mut setup_command = ctx_from_binary(&temp, &binary);
+    setup_command
+        .env("CTX_DATA_ROOT", &managed_root)
+        .env("CTX_DAEMON_AUTOSTART_EXE", &binary)
+        .env("CTX_HOSTED_INSTALLER_SETUP", "1")
+        .env("CTX_SEARCH_SEMANTIC", "false")
+        .env("CTX_UPGRADE_CHANNEL", "staging")
+        .env("PATH", &path)
+        .env_remove("CTX_DAEMON_AUTOSTART_OFF");
+    let output = setup_command
+        .args(["setup", "--format=json", "--progress", "none"])
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "setup stderr:\n{}\ndaemon stdout:\n{}\ndaemon stderr:\n{}",
+        String::from_utf8_lossy(&output.stderr),
+        fs::read_to_string(temp.path().join("fake-systemd-daemon.stdout")).unwrap_or_default(),
+        fs::read_to_string(temp.path().join("fake-systemd-daemon.stderr")).unwrap_or_default(),
+    );
+    let setup: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(setup["mode"], "ready", "{setup:#}");
+    assert_eq!(setup["daemon_autostart"]["status"], "verified", "{setup:#}");
+    assert_eq!(setup["daemon_autostart"]["persistent"], true, "{setup:#}");
+    assert_eq!(setup["daemon"]["supervisor"]["status"], "installed", "{setup:#}");
+    assert_empty_catalog_default_background_setup(&setup);
 }
 
 #[cfg(target_os = "linux")]
