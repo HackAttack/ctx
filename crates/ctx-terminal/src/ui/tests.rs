@@ -8,10 +8,11 @@ use unicode_width::UnicodeWidthStr as _;
 
 use super::{
     bootstrap::{scan_color_mode, scan_machine_output_hint},
-    canonical_human_output_bytes, diagnostic, empty_state, evidence_list, fields, hint, outcome,
-    progress, sanitize_untrusted_history_body_for_terminal, section, table, Action, ColorMode,
-    Diagnostic, DiagnosticLevel, Document, EmptyState, Evidence, Field, Hint, Line, Outcome,
-    OutcomeState, Progress, RenderContext, Span, StreamKind, Table, TestContext, Token, Ui,
+    callout, canonical_human_output_bytes, diagnostic, empty_state, evidence_list, fields, hint,
+    outcome, progress, sanitize_untrusted_history_body_for_terminal, section, table, Action,
+    Callout, ColorMode, Diagnostic, DiagnosticLevel, Document, EmptyState, Evidence, Field, Hint,
+    Line, Outcome, OutcomeState, Progress, RenderContext, Span, StreamKind, Table, TestContext,
+    Token, Ui,
 };
 
 fn tty(width: usize) -> RenderContext {
@@ -311,6 +312,28 @@ fn decorative_glyphs_have_only_the_approved_ascii_fallbacks() {
     .render_plain();
     assert!(indeterminate.contains("========"));
     assert!(indeterminate.contains('-'));
+
+    let callout_body = Document::from_line(Line::text("Complete human output."));
+    let unicode_callout = callout(
+        &unicode,
+        Callout {
+            title: "Note",
+            body: &callout_body,
+        },
+    )
+    .render_plain();
+    let ascii_callout = callout(
+        &ascii,
+        Callout {
+            title: "Note",
+            body: &callout_body,
+        },
+    )
+    .render_plain();
+    assert!(unicode_callout.starts_with('╭'));
+    assert!(unicode_callout.trim_end().ends_with('╯'));
+    assert!(ascii_callout.starts_with('+'));
+    assert!(ascii_callout.trim_end().ends_with('+'));
 }
 
 #[test]
@@ -325,7 +348,19 @@ fn every_component_has_byte_identical_ansi_stripped_and_plain_output() {
     let table_value = Table::new(["Provider", "State"])
         .row(["codex", "ready"])
         .row(["claude", "pending"]);
+    let callout_body = Document::from_line(
+        Line::new()
+            .with(Span::text("Local history remains "))
+            .with(Span::new("on this device", Token::Accent)),
+    );
     let documents = vec![
+        callout(
+            &context,
+            Callout {
+                title: "History stays local",
+                body: &callout_body,
+            },
+        ),
         outcome(
             &context,
             Outcome {

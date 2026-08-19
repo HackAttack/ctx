@@ -7,6 +7,11 @@ pub(super) enum Glyph {
     Warning,
     Progress,
     Rule,
+    BoxTopLeft,
+    BoxTopRight,
+    BoxBottomLeft,
+    BoxBottomRight,
+    BoxVertical,
 }
 
 impl Glyph {
@@ -21,6 +26,16 @@ impl Glyph {
             (Self::Progress, false) => "=",
             (Self::Rule, true) => "─",
             (Self::Rule, false) => "-",
+            (Self::BoxTopLeft, true) => "╭",
+            (Self::BoxTopLeft, false) => "+",
+            (Self::BoxTopRight, true) => "╮",
+            (Self::BoxTopRight, false) => "+",
+            (Self::BoxBottomLeft, true) => "╰",
+            (Self::BoxBottomLeft, false) => "+",
+            (Self::BoxBottomRight, true) => "╯",
+            (Self::BoxBottomRight, false) => "+",
+            (Self::BoxVertical, true) => "│",
+            (Self::BoxVertical, false) => "|",
         }
     }
 }
