@@ -2,29 +2,20 @@ use super::*;
 use std::cell::RefCell;
 
 const DAEMON_ENV_PROBE_STAGE: &str = "CTX_DAEMON_ENV_PROBE_STAGE";
-const DAEMON_ENV_PROBE_EXPECTED_CHANNEL: &str = "CTX_DAEMON_ENV_PROBE_EXPECTED_CHANNEL";
 const DAEMON_ENV_PRO_CHANNEL: &str = "CTX_PRO_CHANNEL";
 const DAEMON_ENV_PROBE_TEST: &str =
-    "lifecycle::tests::daemon_child_environment_preserves_supported_pro_channel_and_strips_authority";
+    "lifecycle::tests::daemon_child_environment_strips_pro_channel_and_authority";
 const DAEMON_ENV_HOSTILE: &str = "CTX_UNTRUSTED_DAEMON_AMBIENT_SECRET";
 const DAEMON_ENV_ALLOWED_SENTINEL: &str = "/ctx-daemon-allowed-home";
 
 #[test]
-fn daemon_child_environment_preserves_supported_pro_channel_and_strips_authority() -> Result<()> {
+fn daemon_child_environment_strips_pro_channel_and_authority() -> Result<()> {
     match env::var(DAEMON_ENV_PROBE_STAGE).as_deref() {
         Ok("final") => {
-            let expected_channel = env::var(DAEMON_ENV_PROBE_EXPECTED_CHANNEL)?;
             assert_eq!(env::var("HOME").as_deref(), Ok(DAEMON_ENV_ALLOWED_SENTINEL));
             assert_eq!(env::var("GROK_HOME").as_deref(), Ok("/ctx-grok-home"));
             assert_eq!(env::var("DSH_HOME").as_deref(), Ok("/ctx-dsh-home"));
-            if expected_channel == "default" {
-                assert!(env::var_os(DAEMON_ENV_PRO_CHANNEL).is_none());
-            } else {
-                assert_eq!(
-                    env::var(DAEMON_ENV_PRO_CHANNEL).as_deref(),
-                    Ok(expected_channel.as_str())
-                );
-            }
+            assert!(env::var_os(DAEMON_ENV_PRO_CHANNEL).is_none());
             assert!(env::var_os(DAEMON_ENV_HOSTILE).is_none());
             assert!(env::var_os("CTX_RELEASE_INHERITED_AUTHORITY").is_none());
             assert!(env::var_os("CTX_RELEASE_CONFIGURED_AUTHORITY").is_none());
@@ -37,7 +28,6 @@ fn daemon_child_environment_preserves_supported_pro_channel_and_strips_authority
             return Ok(());
         }
         Ok("inherited") => {
-            let expected_channel = env::var(DAEMON_ENV_PROBE_EXPECTED_CHANNEL)?;
             assert_eq!(env::var(DAEMON_ENV_HOSTILE).as_deref(), Ok("attacker"));
             assert_eq!(
                 env::var("CTX_RELEASE_INHERITED_AUTHORITY").as_deref(),
@@ -47,16 +37,10 @@ fn daemon_child_environment_preserves_supported_pro_channel_and_strips_authority
                 .into_iter()
                 .map(OsString::from)
                 .collect();
-            let overrides = BTreeMap::from([
-                (
-                    OsString::from(DAEMON_ENV_PROBE_STAGE),
-                    OsString::from("final"),
-                ),
-                (
-                    OsString::from(DAEMON_ENV_PROBE_EXPECTED_CHANNEL),
-                    OsString::from(&expected_channel),
-                ),
-            ]);
+            let overrides = BTreeMap::from([(
+                OsString::from(DAEMON_ENV_PROBE_STAGE),
+                OsString::from("final"),
+            )]);
             let mut forbidden = overrides.clone();
             forbidden.insert(
                 OsString::from("CTX_RELEASE_CONFIGURED_AUTHORITY"),
@@ -68,30 +52,17 @@ fn daemon_child_environment_preserves_supported_pro_channel_and_strips_authority
             assert_eq!(forbidden_error.kind(), io::ErrorKind::InvalidInput);
             let descendant =
                 normalized_daemon_launch_for_test(env::current_exe()?, args, overrides);
-            if expected_channel == "invalid" {
-                let error =
-                    descendant.expect_err("unsupported Pro channel must fail during normalization");
-                assert_eq!(error.kind(), io::ErrorKind::InvalidInput);
-                assert!(error.to_string().contains("must be stable or staging"));
-            } else {
-                assert!(spawn_detached_daemon_child(descendant?)?.wait()?.success());
-            }
+            assert!(spawn_detached_daemon_child(descendant?)?.wait()?.success());
             return Ok(());
         }
         _ => {}
     }
 
-    for (expected_channel, channel) in [
-        ("default", None),
-        ("stable", Some("stable")),
-        ("staging", Some("staging")),
-        ("invalid", Some("preview")),
-    ] {
+    for channel in [None, Some("stable"), Some("staging"), Some("preview")] {
         let mut inherited = std::process::Command::new(env::current_exe()?);
         inherited
             .args(["--exact", DAEMON_ENV_PROBE_TEST, "--nocapture"])
             .env(DAEMON_ENV_PROBE_STAGE, "inherited")
-            .env(DAEMON_ENV_PROBE_EXPECTED_CHANNEL, expected_channel)
             .env(DAEMON_ENV_HOSTILE, "attacker")
             .env("CTX_RELEASE_INHERITED_AUTHORITY", "attacker")
             .env("CTX_PRO_STAGING_ACCESS_CLIENT_SECRET", "attacker")

@@ -89,7 +89,6 @@ const DAEMON_CHILD_ENV_ALLOWLIST: &[&str] = &[
     "CTX_HISTORY_PLUGIN_PATH",
     "CTX_LOCAL_USAGE_ENABLED",
     "CTX_MACHINE_ID",
-    "CTX_PRO_CHANNEL",
     "CTX_PRO_HELPER",
     "CTX_RUNTIME_DIR",
     "CTX_SEARCH_SEMANTIC",
@@ -140,8 +139,6 @@ const DAEMON_CHILD_ENV_ALLOWLIST: &[&str] = &[
     "http_proxy",
     "no_proxy",
 ];
-const DAEMON_PRO_CHANNEL_ENV: &str = "CTX_PRO_CHANNEL";
-
 fn daemon_child_environment() -> BTreeMap<OsString, OsString> {
     DAEMON_CHILD_ENV_ALLOWLIST
         .iter()
@@ -152,11 +149,6 @@ fn daemon_child_environment() -> BTreeMap<OsString, OsString> {
 fn validate_daemon_launch_environment(
     environment: &BTreeMap<OsString, OsString>,
 ) -> io::Result<()> {
-    validate_daemon_pro_channel(
-        environment
-            .get(OsStr::new(DAEMON_PRO_CHANNEL_ENV))
-            .map(OsString::as_os_str),
-    )?;
     if let Some(name) = environment
         .keys()
         .find(|name| is_release_authority_environment_name(name.as_os_str()))
@@ -210,18 +202,6 @@ pub fn spawn_detached_daemon_child(launch: NormalizedLaunch) -> io::Result<Child
 fn is_release_authority_environment_name(name: &OsStr) -> bool {
     let name = name.to_string_lossy().to_ascii_uppercase();
     name.starts_with("CTX_RELEASE_") || name == "CTX_ALLOW_CUSTOM_RELEASE_BASE_URL"
-}
-
-fn validate_daemon_pro_channel(channel: Option<&OsStr>) -> io::Result<()> {
-    if channel.is_none_or(|value| {
-        value == std::ffi::OsStr::new("stable") || value == std::ffi::OsStr::new("staging")
-    }) {
-        return Ok(());
-    }
-    Err(io::Error::new(
-        io::ErrorKind::InvalidInput,
-        format!("{DAEMON_PRO_CHANNEL_ENV} must be stable or staging"),
-    ))
 }
 
 pub fn configured_daemon_autostart_command(

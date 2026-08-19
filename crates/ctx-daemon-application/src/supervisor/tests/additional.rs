@@ -598,7 +598,7 @@ fn status_invalidates_healthy_receipt_when_current_launch_environment_is_unreada
     let report = daemon_supervisor_report_with_normalized_environment(
         &TestHost,
         temp.path(),
-        Err(anyhow!("CTX_PRO_CHANNEL is not Unicode")),
+        Err(anyhow!("HOME is not Unicode")),
     );
     assert_eq!(report["status"], "environment_invalid");
     assert_eq!(report["registration_verified"], false);

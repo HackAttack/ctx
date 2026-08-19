@@ -280,7 +280,7 @@ fn manager_control_environment_is_exact_and_rejects_release_authority() -> Resul
 }
 
 #[test]
-fn managed_supervisor_input_freezes_daemon_and_manager_environments() -> Result<()> {
+fn managed_supervisor_input_excludes_pro_channel_and_freezes_manager_environment() -> Result<()> {
     struct RestoreEnvironment {
         pro_channel: Option<OsString>,
         home: Option<OsString>,
@@ -311,14 +311,11 @@ fn managed_supervisor_input_freezes_daemon_and_manager_environments() -> Result<
     env::set_var("CTX_PRO_CHANNEL", "staging");
     env::set_var("HOME", "/manager-after-normalization");
 
-    assert!(input
-        .daemon_environment
-        .values
-        .contains(&("CTX_PRO_CHANNEL".to_owned(), "stable".to_owned())));
     assert!(!input
         .daemon_environment
         .values
-        .contains(&("CTX_PRO_CHANNEL".to_owned(), "staging".to_owned())));
+        .iter()
+        .any(|(name, _)| name == "CTX_PRO_CHANNEL"));
     assert_eq!(
         input.manager_environment.get("HOME"),
         Some(OsStr::new("/manager-before-normalization"))
@@ -776,9 +773,8 @@ fn native_supervisor_artifacts_exclude_authority_and_fail_closed_on_controls() -
     let windows = windows_sanitized_daemon_script(executable, data_root)?;
     for artifact in [&systemd, &launchd, &windows] {
         assert!(
-            artifact.contains("CTX_PRO_CHANNEL=staging")
-                || artifact.contains("['CTX_PRO_CHANNEL']='staging'"),
-            "staging Pro channel missing from {artifact}"
+            !artifact.contains("CTX_PRO_CHANNEL"),
+            "Pro-owned channel leaked into Core daemon artifact: {artifact}"
         );
     }
     for name in forbidden {

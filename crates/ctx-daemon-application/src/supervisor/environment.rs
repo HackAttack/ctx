@@ -17,7 +17,6 @@ const SUPERVISOR_DAEMON_POLICY_ENV_ALLOWLIST: &[&str] = &[
     "CTX_DAEMON_ENABLED",
     "CTX_DAEMON_MODE",
     "CTX_LOCAL_USAGE_ENABLED",
-    "CTX_PRO_CHANNEL",
     "CTX_SEARCH_SEMANTIC",
     "CTX_UPGRADE_AUTO",
     "CTX_UPGRADE_CHANNEL",
@@ -49,7 +48,6 @@ const SUPERVISOR_DAEMON_POLICY_ENV_ALLOWLIST: &[&str] = &[
     "http_proxy",
     "no_proxy",
 ];
-const PRO_CHANNEL_ENV: &str = "CTX_PRO_CHANNEL";
 const DAEMON_LOOP_INTERVAL_ENV: &str = "CTX_DAEMON_AUTOSTART_LOOP_INTERVAL_SECONDS";
 pub(super) const HOSTED_INSTALLER_SETUP_ENV: &str = "CTX_HOSTED_INSTALLER_SETUP";
 const HOSTED_INSTALLER_TRANSIENT_POLICY_ENV: &[&str] =
@@ -181,9 +179,6 @@ pub(super) fn supervisor_environment_snapshot(
         .iter()
         .chain(SUPERVISOR_DAEMON_POLICY_ENV_ALLOWLIST)
     {
-        if *name == PRO_CHANNEL_ENV {
-            continue;
-        }
         if hosted_installer_setup && HOSTED_INSTALLER_TRANSIENT_POLICY_ENV.contains(name) {
             continue;
         }
@@ -194,9 +189,6 @@ pub(super) fn supervisor_environment_snapshot(
             (*name).to_owned(),
             validated_supervisor_environment_value(name, value)?,
         );
-    }
-    if let Some(channel) = validated_supervisor_pro_channel(env::var_os(PRO_CHANNEL_ENV))? {
-        values.insert(PRO_CHANNEL_ENV.to_owned(), channel);
     }
     values.insert("PATH".to_owned(), SUPERVISOR_DAEMON_FIXED_PATH.to_owned());
     #[cfg(unix)]
@@ -340,19 +332,6 @@ fn validated_supervisor_environment_value(name: &str, value: OsString) -> Result
     Ok(value)
 }
 
-fn validated_supervisor_pro_channel(value: Option<OsString>) -> Result<Option<String>> {
-    let Some(value) = value else {
-        return Ok(None);
-    };
-    let value = validated_supervisor_environment_value(PRO_CHANNEL_ENV, value)?;
-    if matches!(value.as_str(), "stable" | "staging") {
-        return Ok(Some(value));
-    }
-    Err(anyhow!(
-        "supervisor environment variable {PRO_CHANNEL_ENV} must be stable or staging"
-    ))
-}
-
 #[cfg(unix)]
 fn validated_supervisor_fallback_home(home: PathBuf) -> Result<String> {
     validated_supervisor_environment_value("HOME", home.into_os_string())
@@ -423,7 +402,6 @@ mod tests {
             "XDG_CONFIG_HOME",
             "CTX_LOCAL_USAGE_ENABLED",
             "CTX_ANALYTICS_ENABLED",
-            "CTX_PRO_CHANNEL",
             "CTX_SEARCH_SEMANTIC",
             "CTX_UPGRADE_AUTO",
             "CTX_UPGRADE_CHANNEL",
@@ -437,6 +415,7 @@ mod tests {
             assert!(allowlist.contains(&required), "missing {required}");
         }
         for forbidden in [
+            "CTX_PRO_CHANNEL",
             "CTX_PRO_HELPER",
             "CTX_SEMANTIC_MODEL_ONNX",
             "CTX_SEMANTIC_COREML_NATIVE_COMPUTE",
@@ -479,21 +458,6 @@ mod tests {
         }
         #[cfg(unix)]
         assert!(validated_supervisor_fallback_home(PathBuf::from("/tmp/home\ninjected")).is_err());
-
-        assert_eq!(validated_supervisor_pro_channel(None).unwrap(), None);
-        for channel in ["stable", "staging"] {
-            assert_eq!(
-                validated_supervisor_pro_channel(Some(channel.into())).unwrap(),
-                Some(channel.to_owned())
-            );
-        }
-        for invalid in ["", "production", "STAGING", "staging "] {
-            let error = validated_supervisor_pro_channel(Some(invalid.into())).unwrap_err();
-            assert!(
-                error.to_string().contains("must be stable or staging"),
-                "{error:#}"
-            );
-        }
     }
 
     #[test]
